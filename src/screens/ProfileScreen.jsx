@@ -1,0 +1,264 @@
+import { useState } from "react";
+import { View, Text, StyleSheet, ScrollView, Pressable, Image, Linking } from "react-native";
+import { colors, mono, radius } from "../theme";
+import { useStore } from "../store";
+import { listenUrl } from "../seed/songs";
+import { artistMeta } from "../seed/ingested";
+import Avatar from "../components/Avatar";
+import Icon from "../components/Icon";
+import SpinningRecord from "../components/SpinningRecord";
+import TicketStub from "../components/TicketStub";
+
+function Stat({ value, label }) {
+  return (
+    <View style={styles.stat}>
+      <Text style={styles.statVal}>{value}</Text>
+      <Text style={styles.statLabel}>{label}</Text>
+    </View>
+  );
+}
+
+function TrebleBass({ kind, song, playing, onPlay, onOpenArtist }) {
+  const treble = kind === "treble";
+  const c = treble ? colors.amber : colors.magenta;
+  const art = song ? artistMeta(song.artist)?.photo : null;
+  return (
+    <Pressable style={[styles.tb, { borderColor: c }]} onPress={song ? onPlay : undefined}>
+      <Text style={[styles.tbKind, { color: c }]}>{treble ? "TREBLE" : "BASS"}</Text>
+      <View style={styles.tbRecord}>
+        <SpinningRecord size={72} playing={playing} color={c} art={art} />
+      </View>
+      {song ? (
+        <>
+          <Text style={styles.tbTitle} numberOfLines={1}>{song.title}</Text>
+          <Pressable onPress={() => onOpenArtist?.(song.artist)}>
+            <Text style={styles.tbArtist} numberOfLines={1}>{song.artist}</Text>
+          </Pressable>
+          <Pressable style={styles.tbListen} onPress={() => Linking.openURL(listenUrl(song))}>
+            <Icon name="play" size={11} color={c} />
+            <Text style={[styles.tbListenTxt, { color: c }]}>Listen</Text>
+          </Pressable>
+        </>
+      ) : (
+        <Text style={styles.tbEmpty}>{treble ? "top pick" : "underdog pick"}</Text>
+      )}
+    </Pressable>
+  );
+}
+
+// MySpace-style profile - banner, pfp, now-playing, theme song, Treble/Bass top
+// artists, planned shows, reviews. Built to make people findable and followable.
+export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtist, onOpenVenue, onEditProfile, onPreview, onMessage, onReport }) {
+  const { session, userById, logsByUser, isFollowing, follow, unfollow, followerCount, followingCount, goingFor } = useStore();
+  const user = userById(userId);
+  if (!user) return null;
+
+  const logs = logsByUser(user.id);
+  const planned = goingFor(user.id);
+  const isSelf = session?.id === user.id;
+  const following = isFollowing(user.id);
+  const roleLabel = user.role === "admin" ? "ADMIN" : user.role === "artist" ? "VERIFIED ARTIST" : "FAN";
+  const [playing, setPlaying] = useState(null);
+  const playSong = (slot, song) => {
+    if (!song) return;
+    setPlaying((p) => (p === slot ? null : slot));
+    onPreview?.(song.title, song.artist);
+  };
+
+  return (
+    <View style={styles.wrap}>
+      <View style={styles.topbar}>
+        <Pressable style={styles.backBtn} onPress={onClose} hitSlop={12}>
+          <View style={styles.backCircle}><Icon name="chevron-left" size={20} color={colors.text} /></View>
+        </Pressable>
+        <Text style={styles.topTitle}>@{user.handle}</Text>
+        <View style={{ width: 40 }} />
+      </View>
+
+      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+        {/* banner + avatar */}
+        <View style={styles.banner}>
+          {user.banner ? <Image source={{ uri: user.banner }} style={StyleSheet.absoluteFill} resizeMode="cover" /> : <View style={styles.bannerFallback} />}
+          <View style={styles.bannerShade} />
+        </View>
+        <View style={styles.head}>
+          <View style={styles.avatarWrap}><Avatar user={user} size={88} /></View>
+          <Text style={styles.name}>{user.name}</Text>
+          <Text style={styles.handle}>@{user.handle}</Text>
+          <View style={styles.roleBadge}><Text style={styles.roleTxt}>{roleLabel}</Text></View>
+          {!!user.bio && <Text style={styles.bio}>{user.bio}</Text>}
+
+          {isSelf ? (
+            <Pressable style={styles.editBtn} onPress={onEditProfile}>
+              <Icon name="edit" size={15} color={colors.amber} />
+              <Text style={styles.editTxt}>Edit profile</Text>
+            </Pressable>
+          ) : (
+            session && (
+              <View style={styles.actionRow}>
+                <Pressable style={[styles.followBtn, following && styles.followingBtn]} onPress={() => (following ? unfollow(user.id) : follow(user.id))}>
+                  {!following && <Icon name="user-plus" size={15} color="#1A1206" />}
+                  <Text style={[styles.followTxt, following && styles.followingTxt]}>{following ? "Following" : "Follow"}</Text>
+                </Pressable>
+                <Pressable style={styles.msgBtn} onPress={() => onMessage?.(user.id)}>
+                  <Icon name="comment" size={15} color={colors.amber} />
+                  <Text style={styles.msgTxt}>Message</Text>
+                </Pressable>
+              </View>
+            )
+          )}
+        </View>
+
+        <View style={styles.statsRow}>
+          <Stat value={logs.length} label="REVIEWS" />
+          <Stat value={planned.length} label="GOING" />
+          <Stat value={followerCount(user.id)} label="FOLLOWERS" />
+          <Stat value={followingCount(user.id)} label="FOLLOWING" />
+        </View>
+
+        {/* on rotation: now playing + treble/bass with spinning records */}
+        {!!user.nowPlaying && (
+          <Pressable style={styles.nowCard} onPress={() => playSong("now", user.nowPlaying)}>
+            <SpinningRecord size={44} playing={playing === "now"} color={colors.good} art={artistMeta(user.nowPlaying.artist)?.photo} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.nowLabel}>NOW PLAYING</Text>
+              <Text style={styles.nowTxt} numberOfLines={1}>{user.nowPlaying.title} · {user.nowPlaying.artist}</Text>
+            </View>
+            <Pressable style={styles.listenBtn} onPress={() => Linking.openURL(listenUrl(user.nowPlaying))}>
+              <Text style={styles.listenTxt}>Listen</Text>
+            </Pressable>
+          </Pressable>
+        )}
+
+        {(user.treble || user.bass) && (
+          <>
+            <Text style={styles.sectionLabel}>TREBLE & BASS</Text>
+            <Text style={styles.hint}>their top pick and their underdog. tap to spin, then listen.</Text>
+            <View style={styles.topRow}>
+              <TrebleBass kind="treble" song={user.treble} playing={playing === "treble"} onPlay={() => playSong("treble", user.treble)} onOpenArtist={onOpenArtist} />
+              <TrebleBass kind="bass" song={user.bass} playing={playing === "bass"} onPlay={() => playSong("bass", user.bass)} onOpenArtist={onOpenArtist} />
+            </View>
+          </>
+        )}
+
+        {/* planned shows */}
+        <Text style={styles.sectionLabel}>GOING TO · {planned.length}</Text>
+        {planned.length === 0 && <Text style={styles.empty}>No planned shows yet.</Text>}
+        {planned.map((p) => (
+          <Pressable key={p.key} style={styles.showRow} onPress={() => onOpenArtist?.(p.artist)}>
+            <View style={styles.goingDot}><Icon name="calendar" size={15} color={colors.amber} /></View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.showArtist}>{p.artist}</Text>
+              <Text style={styles.showVenue}>{p.venue} · {p.date}</Text>
+            </View>
+          </Pressable>
+        ))}
+
+        {/* their posts — the same feed card as home, so a profile reads like a
+            wall of everything this person has posted (Facebook/Letterboxd style) */}
+        <Text style={styles.sectionLabel}>{isSelf ? "YOUR POSTS" : "POSTS"} · {logs.length}</Text>
+        {logs.length === 0 && (
+          <Text style={styles.empty}>{isSelf ? "You haven't posted a show yet. Tap “Make a post” to log your first night." : "No posts yet."}</Text>
+        )}
+        <View style={styles.postsWrap}>
+          {logs.map((l) => (
+            <TicketStub
+              key={l.id}
+              log={l}
+              onOpen={onOpenShow}
+              onPreview={onPreview}
+              onOpenProfile={() => {}}
+              onOpenArtist={onOpenArtist}
+              onOpenVenue={onOpenVenue}
+              onReport={onReport}
+            />
+          ))}
+        </View>
+
+        {/* playlists */}
+        {user.playlists?.length > 0 && <Text style={styles.sectionLabel}>PLAYLISTS</Text>}
+        {user.playlists?.map((pl) => (
+          <View key={pl.id} style={styles.playlist}>
+            <View style={styles.plHead}>
+              <Icon name="music" size={16} color={colors.amber} />
+              <Text style={styles.plName}>{pl.name}</Text>
+            </View>
+            {pl.tracks.map((t, i) => (
+              <Pressable key={i} style={styles.track} onPress={() => onPreview?.(t.title, t.artist)}>
+                <Text style={styles.trackTxt}>{t.title} <Text style={styles.trackArtist}>· {t.artist}</Text></Text>
+                <View style={styles.playBtn}><Icon name="play" size={11} color={colors.amber} /></View>
+              </Pressable>
+            ))}
+          </View>
+        ))}
+      </ScrollView>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  wrap: { flex: 1, backgroundColor: colors.bg },
+  topbar: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 12, paddingBottom: 8 },
+  backBtn: { width: 40 },
+  backCircle: { width: 36, height: 36, borderRadius: 18, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
+  topTitle: { color: colors.text, fontSize: 14, fontWeight: "800" },
+  content: { paddingBottom: 48 },
+  banner: { height: 120, overflow: "hidden", backgroundColor: colors.surfaceAlt },
+  bannerFallback: { ...StyleSheet.absoluteFillObject, backgroundColor: colors.surfaceAlt },
+  bannerShade: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(11,14,22,0.25)" },
+  head: { alignItems: "center", paddingHorizontal: 16 },
+  avatarWrap: { marginTop: -44, borderWidth: 3, borderColor: colors.bg, borderRadius: 50 },
+  name: { color: colors.text, fontSize: 23, fontWeight: "900", marginTop: 10 },
+  handle: { color: colors.textDim, fontSize: 13, marginTop: 2 },
+  roleBadge: { marginTop: 10, borderWidth: 1, borderColor: colors.amber, borderRadius: radius.pill, paddingHorizontal: 12, paddingVertical: 4 },
+  roleTxt: { color: colors.amber, fontSize: 10, letterSpacing: 1.5, fontWeight: "800" },
+  bio: { color: colors.textDim, fontSize: 14, lineHeight: 20, textAlign: "center", marginTop: 12 },
+  editBtn: { flexDirection: "row", alignItems: "center", gap: 7, borderWidth: 1, borderColor: colors.line, borderRadius: radius.pill, paddingHorizontal: 18, paddingVertical: 9, marginTop: 16 },
+  editTxt: { color: colors.amber, fontSize: 14, fontWeight: "600" },
+  actionRow: { flexDirection: "row", gap: 10, marginTop: 16 },
+  followBtn: { flexDirection: "row", alignItems: "center", gap: 7, backgroundColor: colors.amberStrong, borderRadius: radius.pill, paddingHorizontal: 22, paddingVertical: 10 },
+  msgBtn: { flexDirection: "row", alignItems: "center", gap: 7, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 18, paddingVertical: 10 },
+  msgTxt: { color: colors.amber, fontSize: 14, fontWeight: "700" },
+  followingBtn: { backgroundColor: "transparent", borderWidth: 1, borderColor: colors.line },
+  followTxt: { color: "#1A1206", fontSize: 14, fontWeight: "800" },
+  followingTxt: { color: colors.textDim },
+  statsRow: { flexDirection: "row", backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, marginTop: 20, marginHorizontal: 16, paddingVertical: 14 },
+  stat: { flex: 1, alignItems: "center" },
+  statVal: { color: colors.text, fontFamily: mono, fontSize: 20, fontWeight: "800" },
+  statLabel: { color: colors.textFaint, fontSize: 9, letterSpacing: 1, marginTop: 4, fontWeight: "700" },
+  nowCard: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: colors.bgElev, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, marginHorizontal: 16, marginTop: 12, padding: 12 },
+  nowLabel: { color: colors.good, fontSize: 9, letterSpacing: 1, fontWeight: "800" },
+  nowTxt: { color: colors.text, fontSize: 13, marginTop: 3 },
+  listenBtn: { borderWidth: 1, borderColor: colors.good, borderRadius: radius.pill, paddingHorizontal: 14, paddingVertical: 7 },
+  listenTxt: { color: colors.good, fontSize: 12, fontWeight: "800" },
+  sectionLabel: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "700", marginTop: 22, marginBottom: 10, marginHorizontal: 16 },
+  hint: { color: colors.textDim, fontSize: 12, marginHorizontal: 16, marginTop: -6, marginBottom: 12 },
+  empty: { color: colors.textDim, fontSize: 13, fontStyle: "italic", marginHorizontal: 16 },
+  topRow: { flexDirection: "row", gap: 12, marginHorizontal: 16 },
+  tb: { flex: 1, alignItems: "center", backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, padding: 14 },
+  tbKind: { fontSize: 10, letterSpacing: 2, fontWeight: "800" },
+  tbRecord: { marginVertical: 10 },
+  tbTitle: { color: colors.text, fontSize: 14, fontWeight: "800", textAlign: "center" },
+  tbArtist: { color: colors.textDim, fontSize: 12, marginTop: 2, textAlign: "center" },
+  tbListen: { flexDirection: "row", alignItems: "center", gap: 5, marginTop: 8 },
+  tbListenTxt: { fontSize: 12, fontWeight: "800" },
+  tbEmpty: { color: colors.textFaint, fontSize: 12 },
+  showRow: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 14, marginBottom: 8, marginHorizontal: 16 },
+  goingDot: { width: 36, height: 36, borderRadius: 18, backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
+  goingDotTxt: {},
+  showArtist: { color: colors.text, fontSize: 16, fontWeight: "700" },
+  showVenue: { color: colors.textDim, fontSize: 12, marginTop: 2 },
+  postsWrap: { paddingHorizontal: 16 },
+  reviewRow: { backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 14, marginBottom: 8, marginHorizontal: 16 },
+  reviewTop: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  reviewText: { color: colors.textDim, fontSize: 13, lineHeight: 19, marginTop: 8 },
+  scorePill: { flexDirection: "row", alignItems: "center", gap: 4 },
+  scoreTxt: { color: colors.gold, fontFamily: mono, fontSize: 14, fontWeight: "700" },
+  playlist: { backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 14, marginBottom: 10, marginHorizontal: 16 },
+  plHead: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10 },
+  plName: { color: colors.text, fontSize: 15, fontWeight: "700" },
+  track: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingVertical: 6 },
+  trackTxt: { color: colors.text, fontSize: 13, flex: 1 },
+  trackArtist: { color: colors.textDim },
+  playBtn: { width: 24, height: 24, borderRadius: 12, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center", paddingLeft: 2 },
+});

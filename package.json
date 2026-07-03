@@ -1,0 +1,36 @@
+{
+  "name": "pit",
+  "version": "1.0.0",
+  "main": "index.js",
+  "dependencies": {
+    "@expo/metro-runtime": "~56.0.15",
+    "expo": "~56.0.12",
+    "expo-image-picker": "~56.0.18",
+    "expo-status-bar": "~56.0.4",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "react-native": "0.85.3",
+    "react-native-svg": "15.15.4",
+    "react-native-web": "^0.21.2"
+  },
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web": "expo start --web",
+    "ingest:venues": "node scripts/ingest-venues.mjs",
+    "ingest:artists": "node scripts/ingest.mjs",
+    "ingest:venue-photos": "node scripts/ingest-venue-photos.mjs",
+    "ingest:famous-photos": "node scripts/ingest-famous-venue-photos.mjs",
+    "ingest:details": "node scripts/ingest-artist-details.mjs",
+    "ingest:fix-bios": "node scripts/fix-bios.mjs",
+    "ingest:all": "node scripts/ingest-venues.mjs && node scripts/ingest-famous-venue-photos.mjs && node scripts/ingest-venue-photos.mjs && node scripts/ingest-artist-details.mjs && node scripts/fix-bios.mjs",
+    "pipeline": "node --env-file=.env scripts/pipeline.mjs",
+    "server": "node server/index.js",
+    "build:web": "expo export -p web"
+  },
+  "private": true,
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}

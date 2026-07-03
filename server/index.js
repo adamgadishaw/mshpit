@@ -1,0 +1,198 @@
+#!/usr/bin/env node
+// mshpit.com backend — zero-dependency Node server.
+//
+//   node server/index.js            # serves API + the exported web build (dist/)
+//   PORT=3000 NODE_ENV=production ADMIN_PASSWORD=... node server/index.js
+//
+// Crash posture: a request can only ever fail ITS OWN response. Every handler is
+// wrapped; JSON bodies are size-capped; unknown routes 404; process-level
+// handlers log-and-continue so one bad request never takes the site down.
+import { createServer } from "node:http";
+import { readFileSync, existsSync, statSync } from "node:fs";
+import { join, extname, normalize, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { db, q, publicUser } from "./db.js";
+import { routes, ApiError } from "./api.js";
+import { getSession, sweepExpiredSessions, sessionCookie, clearCookie, parseCookies, COOKIE, hashPassword, rateLimit } from "./auth.js";
+import { randomBytes, randomUUID } from "node:crypto";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const PORT = Number(process.env.PORT) || 3000;
+const PROD = process.env.NODE_ENV === "production";
+const DIST = join(HERE, "..", "dist"); // `npx expo export -p web` output
+const BODY_LIMIT = 256 * 1024; // 256 KB is plenty for JSON
+
+// ---- seed the admin account (server-side only — never in the client bundle) --
+function seedAdmin() {
+  const email = (process.env.ADMIN_EMAIL || "adamgadishaw@gmail.com").toLowerCase();
+  if (q.userByEmail.get(email)) return;
+  const password = process.env.ADMIN_PASSWORD || randomBytes(9).toString("base64url");
+  q.insertUser.run(`u_${randomUUID().slice(0, 12)}`, email, "Adam", "admin", hashPassword(password),
+    "admin", "Toronto", 43.6532, -79.3832, "AD", "#F2A65A", Date.now());
+  console.log(`[pit] admin account created: ${email}`);
+  if (!process.env.ADMIN_PASSWORD) {
+    console.log(`[pit] generated admin password (SAVE THIS, shown once): ${password}`);
+  }
+}
+seedAdmin();
+
+// ---- security headers --------------------------------------------------------
+// CSP: the app hotlinks images from many hosts (Commons/Openverse/web + wsrv.nl
+// proxy + Spotify/Unsplash CDNs), so img-src stays broad; everything else locked.
+const HEADERS = {
+  "X-Content-Type-Options": "nosniff",
+  "Referrer-Policy": "strict-origin-when-cross-origin",
+  "X-Frame-Options": "DENY",
+  "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+  "Content-Security-Policy": [
+    "default-src 'self'",
+    "img-src * data: blob:",
+    "media-src *",
+    "script-src 'self' 'unsafe-inline'", // expo web build inlines its bootstrap
+    "style-src 'self' 'unsafe-inline'",
+    "connect-src 'self'",
+    "frame-ancestors 'none'",
+  ].join("; "),
+  ...(PROD ? { "Strict-Transport-Security": "max-age=31536000; includeSubDomains" } : {}),
+};
+
+// Dev CORS: Expo dev server runs on :8081, API on :3000. In production both are
+// same-origin (this server serves dist/), so CORS is OFF entirely.
+const DEV_ORIGINS = new Set(["http://localhost:8081", "http://127.0.0.1:8081"]);
+
+const MIME = {
+  ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".css": "text/css",
+  ".json": "application/json", ".png": "image/png", ".jpg": "image/jpeg", ".ico": "image/x-icon",
+  ".svg": "image/svg+xml", ".woff2": "font/woff2", ".map": "application/json", ".txt": "text/plain",
+};
+
+function send(res, status, body, extra = {}) {
+  const data = typeof body === "string" || Buffer.isBuffer(body) ? body : JSON.stringify(body);
+  res.writeHead(status, { "Content-Type": extra["Content-Type"] || "application/json; charset=utf-8", ...HEADERS, ...extra });
+  res.end(data);
+}
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    let size = 0;
+    const chunks = [];
+    req.on("data", (c) => {
+      size += c.length;
+      if (size > BODY_LIMIT) { reject(new ApiError(413, "Request too large.")); req.destroy(); return; }
+      chunks.push(c);
+    });
+    req.on("end", () => {
+      if (!chunks.length) return resolve({});
+      try { resolve(JSON.parse(Buffer.concat(chunks).toString("utf8"))); }
+      catch { reject(new ApiError(400, "Invalid JSON.")); }
+    });
+    req.on("error", () => reject(new ApiError(400, "Bad request.")));
+  });
+}
+
+// Match "METHOD /api/x/:param/y" patterns against the route table.
+function matchRoute(method, pathname) {
+  const direct = routes[`${method} ${pathname}`];
+  if (direct) return { handler: direct, params: {} };
+  const segs = pathname.split("/");
+  for (const [key, handler] of Object.entries(routes)) {
+    const [m, pattern] = key.split(" ");
+    if (m !== method) continue;
+    const pSegs = pattern.split("/");
+    if (pSegs.length !== segs.length) continue;
+    const params = {};
+    let ok = true;
+    for (let i = 0; i < pSegs.length; i++) {
+      if (pSegs[i].startsWith(":")) params[pSegs[i].slice(1)] = segs[i];
+      else if (pSegs[i] !== segs[i]) { ok = false; break; }
+    }
+    if (ok) return { handler, params };
+  }
+  return null;
+}
+
+function serveStatic(res, pathname) {
+  if (!existsSync(DIST)) {
+    return send(res, 503, { error: "Web build not found. Run: npx expo export -p web" });
+  }
+  // path-traversal proof: normalize then require the DIST prefix
+  let file = normalize(join(DIST, pathname === "/" ? "index.html" : pathname));
+  if (!file.startsWith(normalize(DIST))) return send(res, 403, { error: "Forbidden" });
+  if (!existsSync(file) || statSync(file).isDirectory()) file = join(DIST, "index.html"); // SPA fallback
+  const ext = extname(file).toLowerCase();
+  const cache = ext === ".html" ? "no-cache" : "public, max-age=31536000, immutable";
+  send(res, 200, readFileSync(file), { "Content-Type": MIME[ext] || "application/octet-stream", "Cache-Control": cache });
+}
+
+const server = createServer(async (req, res) => {
+  const started = Date.now();
+  let pathname = "/", query = {};
+  try {
+    const u = new URL(req.url, "http://x");
+    pathname = u.pathname;
+    query = Object.fromEntries(u.searchParams);
+  } catch { return send(res, 400, { error: "Bad URL." }); }
+
+  // dev CORS (no-op in production, same-origin there)
+  const origin = req.headers.origin;
+  const cors = !PROD && origin && DEV_ORIGINS.has(origin)
+    ? { "Access-Control-Allow-Origin": origin, "Access-Control-Allow-Credentials": "true",
+        "Access-Control-Allow-Methods": "GET,POST,PATCH,DELETE,OPTIONS", "Access-Control-Allow-Headers": "Content-Type" }
+    : {};
+  if (req.method === "OPTIONS") return send(res, 204, "", cors);
+
+  try {
+    if (pathname.startsWith("/api/")) {
+      // global flood guard on top of per-route limits
+      const ip = req.socket.remoteAddress || "?";
+      if (!rateLimit(`global:${ip}`, 300, 60 * 1000)) return send(res, 429, { error: "Too many requests." }, cors);
+
+      const match = matchRoute(req.method, pathname);
+      if (!match) return send(res, 404, { error: "Not found." }, cors);
+
+      const token = parseCookies(req.headers.cookie)[COOKIE];
+      const sess = getSession(token);
+      const user = sess ? q.userById.get(sess.user_id) : null;
+
+      const setCookies = [];
+      const ctx = {
+        body: ["POST", "PATCH", "PUT"].includes(req.method) ? await readBody(req) : {},
+        query, params: match.params, ip, ua: req.headers["user-agent"], token, user,
+        setSession: (s) => setCookies.push(sessionCookie(s.token, s.expiresAt, PROD)),
+        clearSession: () => setCookies.push(clearCookie(PROD)),
+      };
+      const result = await match.handler(ctx);
+      const extra = { ...cors };
+      if (setCookies.length) extra["Set-Cookie"] = setCookies;
+      return send(res, 200, result ?? { ok: true }, extra);
+    }
+
+    // everything else = the web app
+    if (req.method !== "GET" && req.method !== "HEAD") return send(res, 405, { error: "Method not allowed." });
+    return serveStatic(res, pathname);
+  } catch (e) {
+    if (e instanceof ApiError) return send(res, e.status, { error: e.message }, cors);
+    console.error(`[pit] 500 on ${req.method} ${pathname} (${Date.now() - started}ms):`, e);
+    return send(res, 500, { error: "Something broke on our end — it's been logged." }, cors);
+  }
+});
+
+// A single bad socket/promise must never kill the site.
+process.on("uncaughtException", (e) => console.error("[pit] uncaughtException:", e));
+process.on("unhandledRejection", (e) => console.error("[pit] unhandledRejection:", e));
+
+// hourly session sweep
+setInterval(sweepExpiredSessions, 60 * 60 * 1000).unref();
+
+// graceful shutdown — finish in-flight requests, close the DB cleanly
+function shutdown() {
+  console.log("\n[pit] shutting down…");
+  server.close(() => { try { db.close(); } catch {} process.exit(0); });
+  setTimeout(() => process.exit(0), 5000).unref();
+}
+process.on("SIGINT", shutdown);
+process.on("SIGTERM", shutdown);
+
+server.listen(PORT, () => {
+  console.log(`[pit] up on http://localhost:${PORT} ${PROD ? "(production)" : "(dev)"} — serving API${existsSync(DIST) ? " + web build" : " (no dist/ yet)"}`);
+});

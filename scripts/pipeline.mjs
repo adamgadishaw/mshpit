@@ -1,0 +1,121 @@
+#!/usr/bin/env node
+/**
+ * The self-running catalog pipeline. One process, runs forever:
+ *
+ *   every cycle:
+ *     1. grow the roster (MusicBrainz tag search) until ARTIST_TARGET
+ *     2. sync curated venues (arenas.js) into the catalog
+ *     3. official Spotify photos for artists that lack them
+ *     4. album covers + honest release labels for artists that lack them
+ *     5. real top tracks for artists that lack them
+ *     6. photos for venues that lack them
+ *     then sleep CYCLE_H hours and do it again.
+ *
+ * Every stage is PRECHECKED against the catalog first — when there is nothing to
+ * do, nothing is written, so the dev server doesn't hot-reload the app for
+ * no-op cycles. Stages run sequentially (never two writers on the catalog).
+ *
+ *   npm run pipeline                # uses .env for Spotify keys
+ *   ARTIST_TARGET=1000 CYCLE_H=12 npm run pipeline
+ *
+ * Stop with Ctrl+C (finishes the current stage first). Until the SQLite
+ * migration, active stages rewrite the bundled catalog and the dev app reloads —
+ * run it overnight or while you're not clicking around.
+ */
+import { readFile } from "node:fs/promises";
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const CAT = join(HERE, "..", "src", "seed", "catalog.generated.json");
+const ARTIST_TARGET = Number(process.env.ARTIST_TARGET) || 800;
+const PER_TAG = Number(process.env.PER_TAG) || 50;
+const CYCLE_H = Number(process.env.CYCLE_H) || 6;
+
+const ts = () => new Date().toISOString().slice(11, 19);
+const log = (m) => console.log(`[pipeline ${ts()}] ${m}`);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+let stopping = false;
+process.on("SIGINT", () => { stopping = true; log("stopping after current stage…"); });
+
+function run(script, args = [], env = {}) {
+  return new Promise((resolve) => {
+    const p = spawn(process.execPath, [join(HERE, script), ...args], {
+      env: { ...process.env, ...env },
+      stdio: ["ignore", "inherit", "inherit"],
+    });
+    p.on("exit", (code) => resolve(code ?? 1));
+  });
+}
+
+async function stats() {
+  const cat = JSON.parse(await readFile(CAT, "utf8"));
+  const artists = Object.values(cat.artists || {});
+  const venues = Object.values(cat.venues || {});
+  const { arenaVenues } = await import("../src/seed/arenas.js");
+  return {
+    artistCount: artists.length,
+    missingSpotify: artists.filter((a) => !a.spotifyId).length,
+    missingArt: artists.filter((a) => !(a.albums || []).some((x) => x.art)).length,
+    missingTracks: artists.filter((a) => !(a.topTracks || []).length).length,
+    blankVenues: venues.filter((v) => !(v.galleryPool || []).length && !v.photo).length,
+    missingAnchors: Object.keys(arenaVenues).filter((k) => !cat.venues?.[k]).length,
+  };
+}
+
+async function cycle(n) {
+  const s = await stats();
+  log(`cycle ${n} — artists ${s.artistCount}/${ARTIST_TARGET} · missing: spotify ${s.missingSpotify}, covers ${s.missingArt}, tracks ${s.missingTracks} · blank venues ${s.blankVenues} · unsynced anchors ${s.missingAnchors}`);
+
+  let did = false;
+  if (!stopping && s.artistCount < ARTIST_TARGET) {
+    log("stage: roster growth");
+    await run("ingest-artists.mjs", [], { PER_TAG: String(PER_TAG) });
+    did = true;
+  }
+  if (!stopping && s.missingAnchors > 0) {
+    log("stage: sync curated venues");
+    await run("sync-anchors.mjs");
+    did = true;
+  }
+  // Re-read after growth so the enrichers see the newcomers.
+  const s2 = did ? await stats() : s;
+  if (!stopping && s2.missingSpotify > 0) {
+    log(`stage: spotify photos (${s2.missingSpotify} artists)`);
+    await run("enrich-spotify.mjs", ["--missing"]);
+    did = true;
+  }
+  if (!stopping && s2.missingArt > 0) {
+    log(`stage: album covers (${s2.missingArt} artists)`);
+    await run("enrich-album-art.mjs");
+    did = true;
+  }
+  if (!stopping && s2.missingTracks > 0) {
+    log(`stage: top tracks (${s2.missingTracks} artists)`);
+    await run("enrich-toptracks.mjs");
+    did = true;
+  }
+  if (!stopping && s2.blankVenues > 0) {
+    log(`stage: venue photos (${s2.blankVenues} venues)`);
+    await run("enrich-venue-photos.mjs");
+    did = true;
+  }
+  if (!did) log("nothing to do — catalog is complete and fresh (no writes, no reloads).");
+  return did;
+}
+
+async function main() {
+  log(`self-running pipeline up. target ${ARTIST_TARGET} artists, cycle every ${CYCLE_H}h.`);
+  let n = 1;
+  while (!stopping) {
+    try { await cycle(n++); } catch (e) { log(`cycle error: ${e.message} (will retry next cycle)`); }
+    if (stopping) break;
+    log(`sleeping ${CYCLE_H}h…`);
+    // sleep in 30s slices so Ctrl+C exits promptly
+    for (let i = 0; i < CYCLE_H * 120 && !stopping; i++) await sleep(30000);
+  }
+  log("stopped.");
+}
+main();

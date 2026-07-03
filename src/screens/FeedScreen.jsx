@@ -1,0 +1,107 @@
+import { useState } from "react";
+import { View, Text, StyleSheet, FlatList, Pressable } from "react-native";
+import { colors, mono } from "../theme";
+import TicketStub from "../components/TicketStub";
+import Icon from "../components/Icon";
+
+const PAGE = 8; // load the feed in pages, like the big apps - never all at once
+
+export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, homeCity, unread = 0, onOpen, onPreview, onOpenProfile, onOpenArtist, onOpenVenue, onOpenNearby, onOpenInbox, onOpenMenu, onReport }) {
+  const [filter, setFilter] = useState("everyone"); // following | local | everyone
+  const [count, setCount] = useState(PAGE);
+  const full = filter === "following" ? followingFeed : filter === "local" ? localFeed : feed;
+  const data = full.slice(0, count);
+
+  const pick = (f) => { setFilter(f); setCount(PAGE); };
+  const loadMore = () => { if (count < full.length) setCount((c) => c + PAGE); };
+
+  return (
+    <FlatList
+      data={data}
+      keyExtractor={(item) => item.id}
+      contentContainerStyle={styles.content}
+      showsVerticalScrollIndicator={false}
+      onEndReached={loadMore}
+      onEndReachedThreshold={0.6}
+      removeClippedSubviews
+      windowSize={7}
+      ListHeaderComponent={
+        <View style={styles.head}>
+          <View style={styles.wordmarkRow}>
+            <Text style={styles.wordmark}>PIT</Text>
+            <View style={styles.headerBtns}>
+              <Pressable style={styles.inboxBtn} onPress={onOpenInbox} hitSlop={8}>
+                <Icon name="mail" size={22} color={colors.text} />
+                {unread > 0 && <View style={styles.inboxBadge}><Text style={styles.inboxBadgeTxt}>{unread}</Text></View>}
+              </Pressable>
+              <Pressable style={styles.inboxBtn} onPress={onOpenMenu} hitSlop={8}>
+                <Icon name="menu" size={22} color={colors.text} />
+              </Pressable>
+            </View>
+          </View>
+          <Text style={styles.tag}>shows worth seeing, from people you trust</Text>
+
+          {loggedIn && (
+            <Pressable style={styles.nearBtn} onPress={onOpenNearby}>
+              <Icon name="pin" size={16} color={colors.amber} />
+              <Text style={styles.nearTxt}>
+                Near you{homeCity ? ` · ${homeCity}` : ""}
+                <Text style={styles.nearSub}>  - local venues & upcoming shows</Text>
+              </Text>
+              <Icon name="chevron-right" size={16} color={colors.textDim} />
+            </Pressable>
+          )}
+
+          {loggedIn && (
+            <View style={styles.segment}>
+              <Seg label="Following" on={filter === "following"} onPress={() => pick("following")} />
+              <Seg label="Local" on={filter === "local"} onPress={() => pick("local")} />
+              <Seg label="Everyone" on={filter === "everyone"} onPress={() => pick("everyone")} />
+            </View>
+          )}
+        </View>
+      }
+      ListEmptyComponent={
+        <Text style={styles.empty}>
+          {filter === "following"
+            ? "The people you follow haven't logged anything yet."
+            : filter === "local"
+            ? `No one in ${homeCity || "your city"} has logged a show yet. Be the first.`
+            : "No shows logged yet."}
+        </Text>
+      }
+      renderItem={({ item }) => (
+        <TicketStub log={item} onOpen={onOpen} onPreview={onPreview} onOpenProfile={onOpenProfile} onOpenArtist={onOpenArtist} onOpenVenue={onOpenVenue} onReport={onReport} />
+      )}
+    />
+  );
+}
+
+function Seg({ label, on, onPress }) {
+  return (
+    <Pressable style={[styles.seg, on && styles.segOn]} onPress={onPress}>
+      <Text style={[styles.segTxt, on && styles.segTxtOn]}>{label}</Text>
+    </Pressable>
+  );
+}
+
+const styles = StyleSheet.create({
+  content: { padding: 16, paddingBottom: 40 },
+  head: { marginBottom: 18, marginTop: 4 },
+  wordmarkRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  headerBtns: { flexDirection: "row", gap: 8 },
+  wordmark: { color: colors.text, fontSize: 30, fontWeight: "900", letterSpacing: 4, fontFamily: mono },
+  inboxBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
+  inboxBadge: { position: "absolute", top: -2, right: -2, minWidth: 18, height: 18, borderRadius: 9, backgroundColor: colors.magenta, alignItems: "center", justifyContent: "center", paddingHorizontal: 5, borderWidth: 2, borderColor: colors.bg },
+  inboxBadgeTxt: { color: "#fff", fontSize: 10, fontWeight: "800", fontFamily: mono },
+  tag: { color: colors.textDim, fontSize: 13, marginTop: 4 },
+  nearBtn: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: colors.bgElev, borderRadius: 14, borderWidth: 1, borderColor: colors.amber, paddingHorizontal: 14, paddingVertical: 13, marginTop: 16 },
+  nearTxt: { flex: 1, color: colors.text, fontSize: 14, fontWeight: "700" },
+  nearSub: { color: colors.textDim, fontWeight: "400" },
+  segment: { flexDirection: "row", gap: 8, marginTop: 12 },
+  seg: { flex: 1, alignItems: "center", paddingVertical: 9, borderRadius: 999, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
+  segOn: { borderColor: colors.amber, backgroundColor: colors.bgElev },
+  segTxt: { color: colors.textDim, fontSize: 13, fontWeight: "600" },
+  segTxtOn: { color: colors.amber, fontWeight: "700" },
+  empty: { color: colors.textDim, fontSize: 14, lineHeight: 21, fontStyle: "italic", paddingHorizontal: 4 },
+});

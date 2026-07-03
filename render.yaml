@@ -1,0 +1,29 @@
+# Render Blueprint — one-click deploy of mshpit.com.
+# In Render: New ▸ Blueprint ▸ pick this repo. It provisions the web service,
+# a PERSISTENT DISK for the SQLite DB (critical — without it the database is
+# wiped on every deploy), Node 24, and the production env. Set ADMIN_PASSWORD
+# when prompted (it's marked sync:false so it isn't stored in git).
+services:
+  - type: web
+    name: mshpit
+    runtime: node
+    plan: starter                      # $7/mo; has persistent disk support
+    buildCommand: npm ci && npm run build:web
+    startCommand: node server/index.js
+    healthCheckPath: /api/health
+    autoDeploy: true
+    disk:
+      name: pit-data
+      mountPath: /data                 # PIT_DATA_DIR points here → pit.db survives deploys
+      sizeGB: 1
+    envVars:
+      - key: NODE_VERSION
+        value: "24"
+      - key: NODE_ENV
+        value: production
+      - key: PIT_DATA_DIR
+        value: /data
+      - key: ADMIN_EMAIL
+        value: adamgadishaw@gmail.com
+      - key: ADMIN_PASSWORD
+        sync: false                    # you enter this in the Render dashboard
