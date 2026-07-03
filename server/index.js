@@ -25,7 +25,17 @@ const BODY_LIMIT = 256 * 1024; // 256 KB is plenty for JSON
 // ---- seed the admin account (server-side only — never in the client bundle) --
 function seedAdmin() {
   const email = (process.env.ADMIN_EMAIL || "adamgadishaw@gmail.com").toLowerCase();
-  if (q.userByEmail.get(email)) return;
+  const existing = q.userByEmail.get(email);
+  if (existing) {
+    // ADMIN_PASSWORD is the source of truth: set/change it in the host env and
+    // redeploy to reset the admin login (and un-ban/re-admin the account).
+    if (process.env.ADMIN_PASSWORD) {
+      db.prepare("UPDATE users SET pass_hash = ?, role = 'admin', is_banned = 0 WHERE id = ?")
+        .run(hashPassword(process.env.ADMIN_PASSWORD), existing.id);
+      console.log(`[pit] admin password synced from ADMIN_PASSWORD for ${email}`);
+    }
+    return;
+  }
   const password = process.env.ADMIN_PASSWORD || randomBytes(9).toString("base64url");
   q.insertUser.run(`u_${randomUUID().slice(0, 12)}`, email, "Adam", "admin", hashPassword(password),
     "admin", "Toronto", 43.6532, -79.3832, "AD", "#F2A65A", Date.now());

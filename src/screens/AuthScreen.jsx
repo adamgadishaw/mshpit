@@ -88,12 +88,6 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) 
             your profile - an admin reviews every request before approval.
           </Text>
         </View>
-
-        <View style={styles.seed}>
-          <Text style={styles.seedTitle}>DEMO LOGINS</Text>
-          <Text style={styles.seedLine}>fan · demo@example.com / password123</Text>
-          <Text style={styles.seedLine}>artist · band@turnstile.com / password123</Text>
-        </View>
       </ScrollView>
     </View>
   );
