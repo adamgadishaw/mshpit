@@ -71,7 +71,10 @@ function Root() {
   const local = localFeed(staff);
 
   const { width } = useWindowDimensions();
-  const wide = Platform.OS === "web" && width >= 980; // desktop 3-column layout
+  // Only true desktops get the 3-column shell. Below this (tablets, landscape
+  // phones, split-screen, narrow windows) use the single-column mobile layout —
+  // it's fluid and clean, whereas the 3-column shell squishes and misaligns.
+  const wide = Platform.OS === "web" && width >= 1150; // desktop 3-column layout
 
   const [tab, setTab] = useState("feed");
   const [nav, setNav] = useState({}); // { openLog, logging, prefill, topRated, auth, admin, bulk, reqArtist, profileId, editProfile, reporting }

@@ -23,6 +23,7 @@ async function getToken() {
     method: "POST",
     headers: { Authorization: `Basic ${basic}`, "Content-Type": "application/x-www-form-urlencoded" },
     body: "grant_type=client_credentials",
+    signal: AbortSignal.timeout(15000), // never hang the whole pipeline on one call
   });
   if (!r.ok) throw new Error(`Spotify auth failed: ${r.status} ${await r.text()}`);
   const d = await r.json();
@@ -31,16 +32,24 @@ async function getToken() {
   return token;
 }
 
-async function api(path) {
+// A single stalled request must never freeze the run: 15s hard timeout, at most
+// a few 429 retries (bounded), and any network error resolves to null so the
+// caller skips this artist and moves on instead of blocking forever.
+async function api(path, tries = 0) {
   const t = await getToken();
-  const r = await fetch(`https://api.spotify.com/v1${path}`, { headers: { Authorization: `Bearer ${t}` } });
-  if (r.status === 429) {
-    const wait = (Number(r.headers.get("retry-after")) || 2) * 1000;
+  let r;
+  try {
+    r = await fetch(`https://api.spotify.com/v1${path}`, { headers: { Authorization: `Bearer ${t}` }, signal: AbortSignal.timeout(15000) });
+  } catch {
+    return null;
+  }
+  if (r.status === 429 && tries < 5) {
+    const wait = Math.min((Number(r.headers.get("retry-after")) || 2) * 1000, 30000);
     await new Promise((res) => setTimeout(res, wait));
-    return api(path);
+    return api(path, tries + 1);
   }
   if (!r.ok) return null;
-  return r.json();
+  return r.json().catch(() => null);
 }
 
 // Best-match artist for a name. Returns normalized fields the catalog wants.

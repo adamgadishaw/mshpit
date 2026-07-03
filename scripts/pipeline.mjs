@@ -40,13 +40,22 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let stopping = false;
 process.on("SIGINT", () => { stopping = true; log("stopping after current stage…"); });
 
+const STAGE_TIMEOUT_MS = Number(process.env.STAGE_TIMEOUT_MS) || 45 * 60 * 1000; // 45 min
+
 function run(script, args = [], env = {}) {
   return new Promise((resolve) => {
     const p = spawn(process.execPath, [join(HERE, script), ...args], {
       env: { ...process.env, ...env },
       stdio: ["ignore", "inherit", "inherit"],
     });
-    p.on("exit", (code) => resolve(code ?? 1));
+    // Watchdog: if a stage wedges (hung socket, etc.), kill it and move on so the
+    // pipeline can never freeze the way it did before.
+    const t = setTimeout(() => {
+      log(`stage ${script} exceeded ${Math.round(STAGE_TIMEOUT_MS / 60000)}m — killing and continuing.`);
+      try { p.kill("SIGKILL"); } catch {}
+    }, STAGE_TIMEOUT_MS);
+    p.on("exit", (code) => { clearTimeout(t); resolve(code ?? 1); });
+    p.on("error", () => { clearTimeout(t); resolve(1); });
   });
 }
 

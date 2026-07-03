@@ -65,22 +65,22 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse }) {
     // slow push-in on the visible slide, reset when it rotates back around
     const startZoom = (i) => {
       zooms[i].setValue(0);
-      Animated.timing(zooms[i], { toValue: 1, duration: SLIDE_MS + FADE_MS + 600, easing: Easing.linear, useNativeDriver: true }).start();
+      Animated.timing(zooms[i], { toValue: 1, duration: SLIDE_MS + FADE_MS + 600, easing: Easing.linear, useNativeDriver: Platform.OS !== "web" }).start();
     };
     startZoom(0);
     const t = setInterval(() => {
       setIdx((cur) => {
         const next = (cur + 1) % SLIDES.length;
         startZoom(next);
-        Animated.timing(fades[next], { toValue: 1, duration: FADE_MS, useNativeDriver: true }).start();
-        Animated.timing(fades[cur], { toValue: 0, duration: FADE_MS + 300, useNativeDriver: true }).start();
+        Animated.timing(fades[next], { toValue: 1, duration: FADE_MS, useNativeDriver: Platform.OS !== "web" }).start();
+        Animated.timing(fades[cur], { toValue: 0, duration: FADE_MS + 300, useNativeDriver: Platform.OS !== "web" }).start();
         return next;
       });
     }, SLIDE_MS);
 
     const glow = Animated.loop(Animated.sequence([
-      Animated.timing(pulse, { toValue: 1, duration: 2600, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
-      Animated.timing(pulse, { toValue: 0, duration: 2600, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
+      Animated.timing(pulse, { toValue: 1, duration: 2600, easing: Easing.inOut(Easing.sin), useNativeDriver: Platform.OS !== "web" }),
+      Animated.timing(pulse, { toValue: 0, duration: 2600, easing: Easing.inOut(Easing.sin), useNativeDriver: Platform.OS !== "web" }),
     ]));
     glow.start();
     return () => { clearInterval(t); glow.stop(); };
