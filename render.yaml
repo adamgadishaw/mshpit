@@ -27,3 +27,5 @@ services:
         value: adamgadishaw@gmail.com
       - key: ADMIN_PASSWORD
         sync: false                    # you enter this in the Render dashboard
+      - key: EXPO_PUBLIC_GOOGLE_MAPS_KEY
+        sync: false                    # your restricted Google Maps key (read at build time)
