@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from "react";
 import { View, Text, StyleSheet, Pressable, SafeAreaView, Platform, StatusBar as RNStatusBar, Animated, useWindowDimensions } from "react-native";
 import { StatusBar } from "expo-status-bar";
+import "./src/lib/safeArea"; // reserves iOS notch / toolbar safe areas (web)
 import "./src/lib/webInputFix"; // strips the harsh browser focus box from inputs (web)
 import { colors, mono, radius } from "./src/theme";
 import { StoreProvider, useStore, isStaff } from "./src/store";
