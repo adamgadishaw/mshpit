@@ -90,7 +90,7 @@ export function StoreProvider({ children }) {
     turnstile: { feedEnabled: true },
   });
   const [artistPosts, setArtistPosts] = useState({
-    turnstile: [{ id: "ap1", text: "New tour dates just dropped. MSG we're coming for you 🔥", ts: "2d" }],
+    turnstile: [{ id: "ap1", text: "New tour dates just dropped. MSG we're coming for you.", ts: "2d" }],
   });
   // Venue reviews (rating + text + photos), keyed by venue name
   const [venueReviews, setVenueReviews] = useState({});
