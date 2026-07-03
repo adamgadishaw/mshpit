@@ -54,6 +54,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
   const [q, setQ] = useState("");
   const [focused, setFocused] = useState(false);
   const [w, setW] = useState(0);
+  const [activePane, setActivePane] = useState("artists"); // mobile: which category
   const query = q.trim().toLowerCase();
 
   const artists = useMemo(() => {
@@ -138,8 +139,10 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
       ] },
   ];
 
+  const active = panes.find((p) => p.key === activePane) || panes[0];
+
   return (
-    <View style={styles.wrap}>
+    <View style={styles.wrap} onLayout={(e) => setW(e.nativeEvent.layout.width)}>
       <View style={styles.header}>
         <View style={[styles.field, focused && styles.fieldFocused]}>
           <Icon name="search" size={18} color={focused ? colors.amber : colors.textDim} />
@@ -158,22 +161,46 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
         </View>
       </View>
 
-      <View
-        onLayout={(e) => setW(e.nativeEvent.layout.width)}
-        style={[styles.panes, wide ? styles.panesRow : styles.panesCol]}
-      >
-        {panes.map((p) => (
-          <View key={p.key} style={[styles.pane, wide ? styles.paneWide : styles.paneTall]}>
-            <View style={styles.paneHead}>
-              <Text style={styles.paneTitle}>{p.title}</Text>
-              <Text style={styles.paneCount}>{p.count}</Text>
+      {wide ? (
+        // Desktop: side-by-side panes, each scrolling independently.
+        <View style={[styles.panes, styles.panesRow]}>
+          {panes.map((p) => (
+            <View key={p.key} style={[styles.pane, styles.paneWide]}>
+              <View style={styles.paneHead}>
+                <Text style={styles.paneTitle}>{p.title}</Text>
+                <Text style={styles.paneCount}>{p.count}</Text>
+              </View>
+              <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.paneBody} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+                {p.rows.length === 0 ? <Text style={styles.empty}>{p.empty}</Text> : p.rows}
+              </ScrollView>
             </View>
-            <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.paneBody} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-              {p.rows.length === 0 ? <Text style={styles.empty}>{p.empty}</Text> : p.rows}
-            </ScrollView>
-          </View>
-        ))}
-      </View>
+          ))}
+        </View>
+      ) : (
+        // Mobile: a segmented control picks the category; ONE list scrolls the page.
+        <>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={styles.tabsScroll}
+            contentContainerStyle={styles.tabs}
+            keyboardShouldPersistTaps="handled"
+          >
+            {panes.map((p) => {
+              const on = p.key === active.key;
+              return (
+                <Pressable key={p.key} style={[styles.tab, on && styles.tabOn]} onPress={() => setActivePane(p.key)}>
+                  <Text style={[styles.tabTxt, on && styles.tabTxtOn]}>{p.title}</Text>
+                  <View style={[styles.tabCount, on && styles.tabCountOn]}><Text style={[styles.tabCountTxt, on && styles.tabCountTxtOn]}>{p.count}</Text></View>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+          <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.mobileList} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+            {active.rows.length === 0 ? <Text style={styles.empty}>{active.empty}</Text> : active.rows}
+          </ScrollView>
+        </>
+      )}
     </View>
   );
 }
@@ -187,7 +214,19 @@ const styles = StyleSheet.create({
 
   panes: { flex: 1, paddingHorizontal: 16, paddingBottom: 16 },
   panesRow: { flexDirection: "row", gap: 12 },
-  panesCol: { flexDirection: "column", gap: 12 },
+
+  // mobile segmented control + single list
+  tabsScroll: { flexGrow: 0, flexShrink: 0 }, // don't stretch to fill column height
+  tabs: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 16, paddingBottom: 10 },
+  tab: { flexDirection: "row", alignItems: "center", gap: 7, paddingHorizontal: 14, paddingVertical: 9, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
+  tabOn: { backgroundColor: colors.amberStrong, borderColor: colors.amberStrong },
+  tabTxt: { color: colors.textDim, fontSize: 12.5, fontWeight: "800", letterSpacing: 0.5 },
+  tabTxtOn: { color: "#1A1206" },
+  tabCount: { backgroundColor: colors.bgElev, borderRadius: radius.pill, minWidth: 20, paddingHorizontal: 6, paddingVertical: 1, alignItems: "center" },
+  tabCountOn: { backgroundColor: "rgba(26,18,6,0.18)" },
+  tabCountTxt: { color: colors.textDim, fontSize: 11, fontWeight: "800", fontFamily: mono },
+  tabCountTxtOn: { color: "#1A1206" },
+  mobileList: { paddingHorizontal: 16, paddingBottom: 24 },
   pane: { backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, overflow: "hidden" },
   paneWide: { flex: 1 },
   paneTall: { height: 320 },

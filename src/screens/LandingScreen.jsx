@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { View, Text, StyleSheet, Pressable, Animated, Easing, useWindowDimensions, Platform } from "react-native";
+import { View, Text, StyleSheet, Pressable, Animated, Easing, useWindowDimensions, Platform, ScrollView } from "react-native";
 import Svg, { Defs, LinearGradient, Stop, Rect } from "react-native-svg";
 import { mono, radius } from "../theme";
 import Icon from "../components/Icon";
@@ -90,6 +90,14 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse }) {
   const venueCount = Object.keys(catalogVenues).length;
   const artistCount = Object.keys(catalogArtists).length;
 
+  // On phones the pitch SCROLLS (centered when it fits, scrollable when the user
+  // has large text) so it can never overlap the top bar or get clipped. On desktop
+  // it's a bottom-anchored hero.
+  const Pitch = wide ? View : ScrollView;
+  const pitchProps = wide
+    ? { style: [styles.content, styles.contentWide] }
+    : { style: styles.content, contentContainerStyle: styles.scrollNarrow, showsVerticalScrollIndicator: false, keyboardShouldPersistTaps: "handled" };
+
   return (
     <View style={styles.wrap}>
       {/* ---- photography ---- */}
@@ -136,7 +144,7 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse }) {
       </View>
 
       {/* ---- the pitch ---- */}
-      <View style={[styles.content, wide ? styles.contentWide : styles.contentNarrow]} pointerEvents="box-none">
+      <Pitch {...pitchProps} pointerEvents="box-none">
         <View style={wide ? styles.blockWide : styles.blockNarrow}>
           <Text style={styles.kicker}>THE CROWD KEEPS THE SCORE</Text>
           <Animated.Text style={[styles.headline, { opacity: glowOp }, !wide && styles.headlineNarrow]}>
@@ -173,7 +181,7 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse }) {
             </View>
           </View>
         </View>
-      </View>
+      </Pitch>
 
       {/* ---- footer strip ---- */}
       <View style={styles.foot} pointerEvents="none">
@@ -204,7 +212,9 @@ const styles = StyleSheet.create({
 
   content: { flex: 1, zIndex: 4 },
   contentWide: { justifyContent: "flex-end", paddingHorizontal: 72, paddingBottom: 96 },
-  contentNarrow: { justifyContent: "flex-end", alignItems: "center", paddingHorizontal: 24, paddingBottom: 88 },
+  // grows to center the pitch when it fits, scrolls when large text makes it tall;
+  // top padding always clears the brand/login bar.
+  scrollNarrow: { flexGrow: 1, justifyContent: "center", alignItems: "center", paddingHorizontal: 24, paddingTop: 92, paddingBottom: 64 },
   blockWide: { maxWidth: 640 },
   blockNarrow: { alignItems: "center" },
 
