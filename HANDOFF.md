@@ -90,15 +90,15 @@ npm run pipeline             # self-running scraper (needs .env, see below)
 - ~~Theme saved to the account + chosen at signup~~ ✅ (2026-07-04)
 - ~~Profile photo gallery~~ ✅ (2026-07-04)
 - ~~DM Requests vs Friends split~~ ✅ (2026-07-04)
-1. **Full SQLite migration** — move `src/store.js` dynamic data (accounts, posts,
-   follows, comments, DMs, fan clubs, ratings) onto the backend API. **Still the
-   big open task.** The server already has most endpoints (`server/api.js`:
-   signup/login/me/feed/posts/comments/follows/fanclubs/reports); the work is
-   rewiring the store's *reads/writes* from local `useState`+`persist` to async API
-   calls without breaking the ~35 screens that call `useStore()` synchronously.
-   Large surface, high regression risk on a LIVE app — do it as its own focused
-   effort, screen group by screen group (auth already server-first), not in a rush.
-   Theme already round-trips through the server (`extras.theme`) as a template.
+1. **Full SQLite migration** — move `src/store.js` dynamic data onto the backend
+   API. **Big open task; started.** See **`MIGRATION.md`** for the ordered plan +
+   prerequisites (server data seeding, missing read endpoints). Done so far:
+   **slice 1 (follows)** — `follow`/`unfollow` write through to
+   `POST /api/users/:id/follow`, login hydrates via new `GET /api/me/following`,
+   best-effort/non-breaking. `chooseTheme` (server `extras.theme`) is the
+   write-through template. Remaining slices: posts/feed, likes/comments, DMs, fan
+   clubs, reports, ratings/going/venue-reviews. Verify with `npm run server`
+   running (port 3000) + a real signed-up account (local `u_demo` is offline-only).
 2. **Broader mobile/responsive polish + accessibility.** Started: a11y
    labels/roles on core nav controls. Remaining: audit remaining icon-only buttons,
    test large OS text sizes for clipping in fixed-height rows, tighten responsive
