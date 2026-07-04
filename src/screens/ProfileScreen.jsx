@@ -48,7 +48,7 @@ function TrebleBass({ kind, song, playing, onPlay, onOpenArtist }) {
 
 // MySpace-style profile - banner, pfp, now-playing, theme song, Treble/Bass top
 // artists, planned shows, reviews. Built to make people findable and followable.
-export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtist, onOpenVenue, onEditProfile, onPreview, onMessage, onReport }) {
+export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtist, onOpenVenue, onEditProfile, onPreview, onMessage, onReport, onOpenPhotos }) {
   const { session, userById, logsByUser, isFollowing, follow, unfollow, followerCount, followingCount, goingFor } = useStore();
   const user = userById(userId);
   if (!user) return null;
@@ -56,6 +56,13 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtis
   const logs = logsByUser(user.id);
   const planned = goingFor(user.id);
   const isSelf = session?.id === user.id;
+
+  // Photo gallery — every photo this person attached to a post, newest first.
+  // On someone else's profile we only show ones they marked public; you always
+  // see all of your own. Each remembers the show it came from.
+  const gallery = logs.flatMap((l) =>
+    (isSelf || l.photosPublic !== false ? (l.photos || []) : []).map((uri) => ({ uri, log: l }))
+  );
   const following = isFollowing(user.id);
   const roleLabel = user.role === "admin" ? "ADMIN" : user.role === "artist" ? "VERIFIED ARTIST" : "FAN";
   const [playing, setPlaying] = useState(null);
@@ -68,7 +75,7 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtis
   return (
     <View style={styles.wrap}>
       <View style={styles.topbar}>
-        <Pressable style={styles.backBtn} onPress={onClose} hitSlop={12}>
+        <Pressable style={styles.backBtn} onPress={onClose} hitSlop={12} accessibilityRole="button" accessibilityLabel="Go back">
           <View style={styles.backCircle}><Icon name="chevron-left" size={20} color={colors.text} /></View>
         </Pressable>
         <Text style={styles.topTitle}>@{user.handle}</Text>
@@ -115,6 +122,20 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtis
           <Stat value={followerCount(user.id)} label="FOLLOWERS" />
           <Stat value={followingCount(user.id)} label="FOLLOWING" />
         </View>
+
+        {/* photo gallery — a wall of every shot from their nights */}
+        {gallery.length > 0 && (
+          <>
+            <Text style={styles.sectionLabel}>PHOTOS · {gallery.length}</Text>
+            <View style={styles.gallery}>
+              {gallery.map((g, i) => (
+                <Pressable key={i} style={styles.galleryCell} onPress={() => onOpenPhotos?.(gallery.map((x) => ({ uri: x.uri, by: user.name })), i)}>
+                  <Image source={{ uri: g.uri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
+                </Pressable>
+              ))}
+            </View>
+          </>
+        )}
 
         {/* on rotation: now playing + treble/bass with spinning records */}
         {!!user.nowPlaying && (
@@ -234,6 +255,8 @@ const styles = StyleSheet.create({
   sectionLabel: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "700", marginTop: 22, marginBottom: 10, marginHorizontal: 16 },
   hint: { color: colors.textDim, fontSize: 12, marginHorizontal: 16, marginTop: -6, marginBottom: 12 },
   empty: { color: colors.textDim, fontSize: 13, fontStyle: "italic", marginHorizontal: 16 },
+  gallery: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginHorizontal: 16 },
+  galleryCell: { width: "32%", aspectRatio: 1, backgroundColor: colors.surfaceAlt, borderRadius: 8, overflow: "hidden", borderWidth: 1, borderColor: colors.lineSoft },
   topRow: { flexDirection: "row", gap: 12, marginHorizontal: 16 },
   tb: { flex: 1, alignItems: "center", backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, padding: 14 },
   tbKind: { fontSize: 10, letterSpacing: 2, fontWeight: "800" },

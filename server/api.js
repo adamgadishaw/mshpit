@@ -129,6 +129,7 @@ export const routes = {
       lng: { parse: (x) => (Number.isFinite(Number(x)) ? Number(x) : undefined) },
       genres: { parse: (x) => cleanStringArray(x, { maxItems: 12, maxLen: 30 }) },
       favoriteArtists: { parse: (x) => cleanStringArray(x, { maxItems: 50, maxLen: 80 }) },
+      theme: { parse: (x) => (["stage", "daylight", "neon", "forest"].includes(x) ? x : undefined) },
       extras: { parse: (x) => (typeof x === "object" && x ? JSON.stringify(x).slice(0, 8000) : undefined) },
     });
     const sets = [];
@@ -140,7 +141,13 @@ export const routes = {
     if (v.city !== undefined) { sets.push("home_city = ?", "home_lat = ?", "home_lng = ?"); args.push(v.city, v.lat ?? null, v.lng ?? null); }
     if (v.genres) { sets.push("genres = ?"); args.push(JSON.stringify(v.genres)); }
     if (v.favoriteArtists) { sets.push("favorite_artists = ?"); args.push(JSON.stringify(v.favoriteArtists)); }
-    if (v.extras) { sets.push("extras = ?"); args.push(v.extras); }
+    // Theme is stored inside the extras blob (which publicUser spreads back out as
+    // user.theme), so it survives sign-out and follows the account to new devices.
+    if (v.theme && v.extras === undefined) {
+      const cur = JSON.parse(u.extras || "{}");
+      cur.theme = v.theme;
+      sets.push("extras = ?"); args.push(JSON.stringify(cur).slice(0, 8000));
+    } else if (v.extras) { sets.push("extras = ?"); args.push(v.extras); }
     if (sets.length) db.prepare(`UPDATE users SET ${sets.join(", ")} WHERE id = ?`).run(...args, u.id);
     return { user: publicUser(q.userById.get(u.id), { self: true }) };
   },

@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { View, Text, StyleSheet, ScrollView, Pressable } from "react-native";
 import { colors, mono, radius } from "../theme";
 import Stars from "../components/Stars";
@@ -19,6 +20,10 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
   const going = isGoing(key);
   const attendees = attendeesFor(key);
   const loungeCount = loungeFor(key).length;
+  // Setlists are spoiler-gated while a show sits inside the artist's active tour
+  // window: nobody wants the surprise ruined before their own night. Hidden by
+  // default, one tap reveals.
+  const [revealed, setRevealed] = useState(!log.inTourWindow);
   return (
     <View style={styles.wrap}>
       <ScreenHeader kicker="PERFORMANCE" title={log.artist} onBack={onClose} />
@@ -105,19 +110,34 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
           <AfterpartySection log={log} coord={coord} onOpenProfile={onOpenProfile} onRequireAuth={onRequireAuth} />
         </View>
 
-        <Text style={styles.sectionLabel}>SETLIST · {log.setlist.length} SONGS</Text>
-        <View style={styles.reviewCard}>
-          {log.setlist.map((s, i) => (
-            <View key={i} style={styles.songRow}>
-              <Text style={styles.songNum}>{String(i + 1).padStart(2, "0")}</Text>
-              <Text style={styles.song}>{s}</Text>
-              <Pressable style={styles.previewBtn} hitSlop={8} onPress={() => onPreview?.(s, log.artist)}>
-                <Icon name="play" size={12} color={colors.amber} />
+        {log.setlist.length > 0 && (
+          <>
+            <Text style={styles.sectionLabel}>SETLIST · {log.setlist.length} SONGS</Text>
+            {revealed ? (
+              <View style={styles.reviewCard}>
+                {log.setlist.map((s, i) => (
+                  <View key={i} style={styles.songRow}>
+                    <Text style={styles.songNum}>{String(i + 1).padStart(2, "0")}</Text>
+                    <Text style={styles.song}>{s}</Text>
+                    <Pressable style={styles.previewBtn} hitSlop={8} onPress={() => onPreview?.(s, log.artist)}>
+                      <Icon name="play" size={12} color={colors.amber} />
+                    </Pressable>
+                  </View>
+                ))}
+                <Text style={styles.previewHint}>Tap a song for a licensed 30s preview.</Text>
+              </View>
+            ) : (
+              <Pressable style={styles.spoiler} onPress={() => setRevealed(true)}>
+                <Icon name="lock" size={18} color={colors.amber} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.spoilerTitle}>Setlist hidden</Text>
+                  <Text style={styles.spoilerSub}>This tour is still running — tap to reveal (spoiler).</Text>
+                </View>
+                <Text style={styles.spoilerCta}>Reveal</Text>
               </Pressable>
-            </View>
-          ))}
-          <Text style={styles.previewHint}>Tap a song for a licensed 30s preview.</Text>
-        </View>
+            )}
+          </>
+        )}
       </ScrollView>
     </View>
   );
@@ -147,6 +167,10 @@ const styles = StyleSheet.create({
   attendees: { color: colors.textDim, fontSize: 12, marginTop: 10, textAlign: "center" },
   reviewCta: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, backgroundColor: colors.amberStrong, borderRadius: radius.md, paddingVertical: 14, marginTop: 16 },
   reviewCtaTxt: { color: "#1A1206", fontSize: 15, fontWeight: "800", letterSpacing: 0.5 },
+  spoiler: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.amber, borderStyle: "dashed", paddingHorizontal: 16, paddingVertical: 16, marginTop: 8 },
+  spoilerTitle: { color: colors.text, fontSize: 14, fontWeight: "800" },
+  spoilerSub: { color: colors.textDim, fontSize: 12, marginTop: 2 },
+  spoilerCta: { color: colors.amber, fontSize: 13, fontWeight: "800", letterSpacing: 0.5 },
   artist: { color: colors.text, fontSize: 30, fontWeight: "900", letterSpacing: -0.5 },
   artistLink: { color: colors.amber, fontSize: 12, marginTop: 4, fontWeight: "600" },
   seeRow: { flexDirection: "row", gap: 10, marginTop: 16 },

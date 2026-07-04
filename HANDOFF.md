@@ -2,7 +2,7 @@
 
 > **Living doc.** Whoever works on this next: read this first, and UPDATE it before you end a session (move things between "Done" and "Backlog", note anything running). Point a fresh Claude Code chat at this file to get up to speed without re-explaining.
 >
-> Last updated: 2026-07-03
+> Last updated: 2026-07-04
 
 ---
 
@@ -45,20 +45,64 @@ npm run pipeline             # self-running scraper (needs .env, see below)
 - Catalog now: ~550+ artists (Spotify photos/genres/popularity, album covers via Cover Art Archive, top tracks), ~1010 venues across 15 countries incl. major CA/US arenas.
 - Other scripts: `scripts/prune-photos.mjs` (drop dead image URLs), `scripts/sync-anchors.mjs` (curated arenas → catalog), `scripts/enrich-*.mjs`.
 
-## Recently done (this stretch)
+## Recently done (2026-07-04 session)
+- **Back navigation rebuilt as a real stack** (`App.js`). Was a single flat `nav`
+  object where every close called `clear()` → always dumped you to the feed. Now
+  `stack` of frames: `go()` pushes a screen, `back()` pops one, `replace()` swaps,
+  `clear()` returns to the tabs. Browser/hardware Back is wired to the same stack
+  (web routes through `history.back()` → `popstate`; Android via `BackHandler`).
+  Verified: feed→artist→fan club, Back retraces correctly.
+- **Live Google Maps fixed.** Code was always correct; the live build had no key
+  because `render.yaml` had `EXPO_PUBLIC_GOOGLE_MAPS_KEY` as `sync:false` (blank
+  unless typed into the Render dashboard). Now committed as a `value:` in
+  render.yaml — safe because `EXPO_PUBLIC_*` ships in the public bundle anyway and
+  the key is referrer-locked to mshpit.com. **⚠️ Render may keep the old blank
+  dashboard value on first deploy — if the map is still drawn after deploy, delete
+  the env var in the Render dashboard so the blueprint `value:` takes, or paste the
+  key there.** Map only renders on the **Near you / Nearby** screen (ConcertMap).
+- **Setlist spoiler gating** re-added to the full `ShowScreen` (feed card already
+  had it): hidden when `log.inTourWindow`, tap "Reveal" to show.
+- **Theme saved to the account.** New `chooseTheme()` in `store.js` persists the
+  preset on the user (session + server `extras` blob via `PATCH /api/me`) and
+  applies it; on login/new device a `session.theme` effect re-applies it. Wired
+  into Menu, Settings, Edit profile, and the **signup onboarding** (theme swatches
+  in `PickArtistsScreen`, applied on Done). Removed the old local-only
+  `themeMode`/`setThemeMode`.
+- **DM Requests vs Friends split.** `inboxThreads()` now tags each thread `main`
+  vs `requests` (stranger = not followed AND you haven't replied). Inbox has
+  Messages / Requests tabs; replying promotes a request to Messages; the unread
+  badge counts only `main`. `requestCount()` added.
+- **Profile photo gallery.** `ProfileScreen` aggregates every `photos[]` from a
+  user's posts into a grid (public-only on others' profiles); tap opens the
+  full-screen `PhotoViewer`. Seed: added photos to Mara's Fillmore post to demo it.
+- **a11y slice:** accessibility labels/roles on the core nav controls (ScreenHeader
+  back, bottom tab bar, profile back).
+
+## Recently done (earlier stretch)
 - Backend foundation + admin seed; launch on Render + GoDaddy DNS + HTTPS.
 - Real **Google map** on "Near you" (drawn map is the no-key fallback); watermark-safe city label.
 - Mobile fixes: iOS **safe-area** insets (viewport-fit=cover + dynamic viewport); **search** = segmented tabs + single scroll (was unreachable stacked panes); **landing scrolls** so large text can't overlap; desktop 3-col shell only ≥1150px (tablets/landscape get mobile layout).
 - Photo reliability: prune dead URLs + runtime proxy fallback (wsrv.nl) + skip-on-error, so venues aren't blank.
 - Signup **artist taste picker** feeding recommendations; "Make a post" rename; theme presets (4); community search (fan clubs + afterparties); emoji removed.
 
-## Open backlog (user-requested, not yet done)
-1. **Setlist spoiler tag** — re-introduce the spoiler gating on setlists.
-2. **Theme saved to the account** (persist server-side; survives sign-out / new device) and **chosen at signup**. Currently theme is localStorage-only + reload-based (`src/theme.js`).
-3. **Profile photo gallery** on individual profiles.
-4. **DM Requests vs Friends** split — strangers go to Requests, not the main inbox.
-5. **Full SQLite migration** — move `src/store.js` dynamic data (accounts, posts, follows, comments, DMs, fan clubs, ratings) onto the backend API. This is the structural fix that also ends the "stale bundle / dev reload" pain for real data.
-6. Broader mobile/responsive polish + accessibility (respect OS text-size).
+## Open backlog (user-requested)
+- ~~Setlist spoiler tag~~ ✅ (2026-07-04)
+- ~~Theme saved to the account + chosen at signup~~ ✅ (2026-07-04)
+- ~~Profile photo gallery~~ ✅ (2026-07-04)
+- ~~DM Requests vs Friends split~~ ✅ (2026-07-04)
+1. **Full SQLite migration** — move `src/store.js` dynamic data (accounts, posts,
+   follows, comments, DMs, fan clubs, ratings) onto the backend API. **Still the
+   big open task.** The server already has most endpoints (`server/api.js`:
+   signup/login/me/feed/posts/comments/follows/fanclubs/reports); the work is
+   rewiring the store's *reads/writes* from local `useState`+`persist` to async API
+   calls without breaking the ~35 screens that call `useStore()` synchronously.
+   Large surface, high regression risk on a LIVE app — do it as its own focused
+   effort, screen group by screen group (auth already server-first), not in a rush.
+   Theme already round-trips through the server (`extras.theme`) as a template.
+2. **Broader mobile/responsive polish + accessibility.** Started: a11y
+   labels/roles on core nav controls. Remaining: audit remaining icon-only buttons,
+   test large OS text sizes for clipping in fixed-height rows, tighten responsive
+   breakpoints. (Native `<Text>` already scales with OS size by default.)
 
 ## Known gotchas
 - **Hard-refresh** after deploys/changes (browser caches the bundle).

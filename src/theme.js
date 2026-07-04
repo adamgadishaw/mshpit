@@ -69,9 +69,13 @@ export function setTheme(next) {
   } catch {}
 }
 
-// Back-compat exports still used by EditProfile / Menu (dark|light toggle).
-export const themeMode = (PRESETS[key] || PRESETS.stage).dark ? "dark" : "light";
-export const setThemeMode = (m) => setTheme(m === "light" ? "daylight" : "stage");
+// Apply a theme that came from the signed-in account (login / a new device).
+// No-op when it already matches what's rendered, so it never loops on the
+// reload it triggers: after the reload themeKey === next and this returns early.
+export function syncThemeFromAccount(next) {
+  if (!next || !PRESETS[next] || next === key) return;
+  setTheme(next);
+}
 
 export const mono = Platform.select({ ios: "Menlo", android: "monospace", default: "monospace" });
 // Rounder geometry reads modern — cards at 16, sheets/heroes at 24.

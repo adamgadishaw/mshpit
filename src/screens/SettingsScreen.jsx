@@ -1,5 +1,5 @@
 import { View, Text, StyleSheet, ScrollView, Pressable } from "react-native";
-import { colors, radius, mono, THEMES, themeKey, setTheme } from "../theme";
+import { colors, radius, mono, THEMES, themeKey } from "../theme";
 import { useStore } from "../store";
 import SheetHeader from "../components/SheetHeader";
 import Icon from "../components/Icon";
@@ -37,17 +37,17 @@ function Swatch({ theme, active, onPress }) {
 }
 
 export default function SettingsScreen({ onClose, onEditProfile, onOpenProfile, onOpenPrivacy, onOpenTerms, onLogout }) {
-  const { session } = useStore();
+  const { session, chooseTheme } = useStore();
 
   return (
     <View style={styles.wrap}>
       <SheetHeader title="Settings" onClose={onClose} />
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <Text style={styles.section}>APPEARANCE</Text>
-        <Text style={styles.hint}>Pick a theme. It applies across the whole app.</Text>
+        <Text style={styles.hint}>{session ? "Pick a theme. It's saved to your account and follows you to any device." : "Pick a theme. It applies across the whole app."}</Text>
         <View style={styles.swatchGrid}>
           {THEMES.map((t) => (
-            <Swatch key={t.key} theme={t} active={t.key === themeKey} onPress={() => t.key !== themeKey && setTheme(t.key)} />
+            <Swatch key={t.key} theme={t} active={t.key === themeKey} onPress={() => t.key !== themeKey && chooseTheme(t.key)} />
           ))}
         </View>
 

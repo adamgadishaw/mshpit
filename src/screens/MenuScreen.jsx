@@ -1,5 +1,5 @@
 import { View, Text, StyleSheet, ScrollView, Pressable } from "react-native";
-import { colors, radius, themeMode, setThemeMode } from "../theme";
+import { colors, radius, THEMES, themeKey } from "../theme";
 import { useStore, isStaff, isArtist } from "../store";
 import ScreenHeader from "../components/ScreenHeader";
 import Avatar from "../components/Avatar";
@@ -20,7 +20,7 @@ function Row({ icon, label, sub, onPress, danger }) {
 
 // One place to reach everything - so features aren't scattered.
 export default function MenuScreen({ onClose, onNear, onVenues, onFanClubs, onTopRated, onInbox, onProfile, onEditProfile, onAdmin, onTourDates, onRequestArtist, onLogin, onLogout, onBackToLanding }) {
-  const { session, inboxUnread } = useStore();
+  const { session, inboxUnread, chooseTheme } = useStore();
   const unread = session ? inboxUnread() : 0;
 
   return (
@@ -65,13 +65,21 @@ export default function MenuScreen({ onClose, onNear, onVenues, onFanClubs, onTo
         )}
 
         <Text style={styles.section}>APPEARANCE</Text>
+        {session && <Text style={styles.themeHint}>Saved to your account — follows you to any device.</Text>}
         <View style={styles.themeRow}>
-          <Pressable style={[styles.themeBtn, themeMode === "dark" && styles.themeOn]} onPress={() => themeMode !== "dark" && setThemeMode("dark")}>
-            <Text style={[styles.themeTxt, themeMode === "dark" && styles.themeTxtOn]}>Dark</Text>
-          </Pressable>
-          <Pressable style={[styles.themeBtn, themeMode === "light" && styles.themeOn]} onPress={() => themeMode !== "light" && setThemeMode("light")}>
-            <Text style={[styles.themeTxt, themeMode === "light" && styles.themeTxtOn]}>Light</Text>
-          </Pressable>
+          {THEMES.map((t) => {
+            const on = t.key === themeKey;
+            return (
+              <Pressable key={t.key} style={[styles.themeChip, { backgroundColor: t.swatch.bg, borderColor: on ? t.swatch.accent : colors.line }]} onPress={() => !on && chooseTheme(t.key)}>
+                <View style={styles.themeDots}>
+                  <View style={[styles.themeDot, { backgroundColor: t.swatch.accent }]} />
+                  <View style={[styles.themeDot, { backgroundColor: t.swatch.accent2 }]} />
+                </View>
+                <Text style={[styles.themeName, { color: t.swatch.text }]} numberOfLines={1}>{t.name}</Text>
+                {on && <View style={[styles.themeCheck, { backgroundColor: t.swatch.accent }]}><Icon name="check" size={10} color={t.swatch.bg} strokeWidth={3} /></View>}
+              </Pressable>
+            );
+          })}
         </View>
 
         {session && <Row icon="logout" label="Log out" onPress={onLogout} danger />}
@@ -93,9 +101,11 @@ const styles = StyleSheet.create({
   rowIcon: { width: 38, height: 38, borderRadius: 10, backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
   rowLabel: { color: colors.text, fontSize: 15, fontWeight: "700" },
   rowSub: { color: colors.textDim, fontSize: 12, marginTop: 2 },
-  themeRow: { flexDirection: "row", gap: 10 },
-  themeBtn: { flex: 1, alignItems: "center", paddingVertical: 12, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
-  themeOn: { borderColor: colors.amber, backgroundColor: colors.bgElev },
-  themeTxt: { color: colors.textDim, fontSize: 14, fontWeight: "600" },
-  themeTxtOn: { color: colors.amber, fontWeight: "800" },
+  themeHint: { color: colors.textDim, fontSize: 12, marginTop: -4, marginBottom: 10 },
+  themeRow: { flexDirection: "row", gap: 8 },
+  themeChip: { flex: 1, borderRadius: radius.sm, borderWidth: 1.5, paddingVertical: 12, paddingHorizontal: 8, gap: 8 },
+  themeDots: { flexDirection: "row", gap: 4 },
+  themeDot: { width: 12, height: 12, borderRadius: 6 },
+  themeName: { fontSize: 12.5, fontWeight: "800" },
+  themeCheck: { position: "absolute", top: 6, right: 6, width: 16, height: 16, borderRadius: 8, alignItems: "center", justifyContent: "center" },
 });

@@ -7,7 +7,7 @@ import Icon from "./Icon";
 export default function ScreenHeader({ title, kicker, onBack, right }) {
   return (
     <View style={styles.wrap}>
-      <Pressable style={styles.back} onPress={onBack} hitSlop={10}>
+      <Pressable style={styles.back} onPress={onBack} hitSlop={10} accessibilityRole="button" accessibilityLabel="Go back">
         <Icon name="chevron-left" size={22} color={colors.text} strokeWidth={2.4} />
       </Pressable>
       <View style={styles.titleBox}>

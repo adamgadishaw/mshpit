@@ -17,6 +17,12 @@ export const seedFeed = [
     city: "San Francisco, CA",
     date: "2026 · 06 · 21",
     media: 3,
+    photos: [
+      "https://upload.wikimedia.org/wikipedia/commons/3/3e/The_Fillmore.jpg",
+      "https://live.staticflickr.com/8070/29219848934_a5ff3b64da_b.jpg",
+      "https://live.staticflickr.com/111/256049291_abaab71b2b.jpg",
+    ],
+    photosPublic: true,
     overall: 4.5,
     band: 4.8, // performance / setlist / energy
     room: 3.2, // sound / venue / crowd

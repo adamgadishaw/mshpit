@@ -28,4 +28,8 @@ services:
       - key: ADMIN_PASSWORD
         sync: false                    # you enter this in the Render dashboard
       - key: EXPO_PUBLIC_GOOGLE_MAPS_KEY
-        sync: false                    # your restricted Google Maps key (read at build time)
+        # Referrer-locked (mshpit.com/*) + Maps Static API only. Safe to commit:
+        # EXPO_PUBLIC_* vars are inlined into the public web bundle on every build,
+        # so this key is shipped to every visitor regardless — sync:false only made
+        # deploys silently fall back to the drawn map when the dashboard was blank.
+        value: AIzaSyBbH03hTjAwT603T0pWew-2L9aaBVlGFXw

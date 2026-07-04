@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, Image } from "react-native";
-import { colors, mono, radius } from "../theme";
+import { colors, mono, radius, THEMES, themeKey } from "../theme";
 import { useStore } from "../store";
 import { ingestedArtists } from "../seed/ingested";
 import Icon from "../components/Icon";
@@ -36,9 +36,10 @@ function ArtistTile({ a, picked, onToggle }) {
 const MIN_PICKS = 3;
 
 export default function PickArtistsScreen({ onDone, onSkip }) {
-  const { session, updateProfile } = useStore();
+  const { session, updateProfile, chooseTheme } = useStore();
   const [q, setQ] = useState("");
   const [picked, setPicked] = useState(() => new Set(session?.favoriteArtists || []));
+  const [theme, setThemeChoice] = useState(themeKey); // the current/default preset
   const query = q.trim().toLowerCase();
 
   // Popular first (Spotify popularity), then alphabetical — so the grid opens
@@ -61,8 +62,12 @@ export default function PickArtistsScreen({ onDone, onSkip }) {
     // fold the picks' genres into the profile so genre affinity works instantly
     const genres = new Set(session?.genres || []);
     favoriteArtists.forEach((n) => { const g = ingestedArtists[n.toLowerCase()]?.genre; if (g) genres.add(g); });
-    updateProfile({ favoriteArtists, genres: [...genres] });
-    onDone?.();
+    const safe = updateProfile({ favoriteArtists, genres: [...genres] });
+    // A theme change re-resolves the StyleSheet, which needs a reload — so hand
+    // the sanitized picks to chooseTheme to persist in the same write (no reload
+    // race) and let it reload straight into the freshly themed feed.
+    if (theme && theme !== themeKey) chooseTheme(theme, safe);
+    else onDone?.();
   };
 
   return (
@@ -92,6 +97,23 @@ export default function PickArtistsScreen({ onDone, onSkip }) {
       </View>
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+        <Text style={styles.themeLabel}>PICK A THEME</Text>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.themeRow}>
+          {THEMES.map((t) => {
+            const on = t.key === theme;
+            return (
+              <Pressable key={t.key} style={[styles.themeChip, { backgroundColor: t.swatch.bg, borderColor: on ? t.swatch.accent : colors.line }]} onPress={() => setThemeChoice(t.key)}>
+                <View style={styles.themeDots}>
+                  <View style={[styles.themeDot, { backgroundColor: t.swatch.accent }]} />
+                  <View style={[styles.themeDot, { backgroundColor: t.swatch.accent2 }]} />
+                </View>
+                <Text style={[styles.themeName, { color: t.swatch.text }]}>{t.name}</Text>
+                {on && <View style={[styles.themeCheck, { backgroundColor: t.swatch.accent }]}><Icon name="check" size={11} color={t.swatch.bg} strokeWidth={3} /></View>}
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+
         {shown.length === 0 && <Text style={styles.empty}>No artists match "{q}".</Text>}
         <CardGrid minColWidth={220} gap={10}>
           {shown.map((a) => (
@@ -112,7 +134,14 @@ const styles = StyleSheet.create({
   field: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 14, marginHorizontal: 16, marginTop: 12 },
   input: { flex: 1, color: colors.text, fontSize: 15, paddingVertical: 11 },
   content: { padding: 16, paddingBottom: 48 },
-  empty: { color: colors.textDim, fontSize: 13, fontStyle: "italic" },
+  themeLabel: { color: colors.textFaint, fontFamily: mono, fontSize: 11, letterSpacing: 1.5, fontWeight: "800", marginBottom: 10 },
+  themeRow: { gap: 10, paddingBottom: 4 },
+  themeChip: { width: 104, borderRadius: radius.md, borderWidth: 1.5, padding: 12, gap: 10 },
+  themeDots: { flexDirection: "row", gap: 5 },
+  themeDot: { width: 14, height: 14, borderRadius: 7 },
+  themeName: { fontSize: 13, fontWeight: "800" },
+  themeCheck: { position: "absolute", top: 8, right: 8, width: 18, height: 18, borderRadius: 9, alignItems: "center", justifyContent: "center" },
+  empty: { color: colors.textDim, fontSize: 13, fontStyle: "italic", marginTop: 16 },
   moreHint: { color: colors.textFaint, fontFamily: mono, fontSize: 11, textAlign: "center", marginTop: 16 },
 
   tile: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1.5, borderColor: colors.lineSoft, padding: 8 },

@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from "react";
-import { View, Text, StyleSheet, Pressable, SafeAreaView, Platform, StatusBar as RNStatusBar, Animated, useWindowDimensions } from "react-native";
+import { View, Text, StyleSheet, Pressable, SafeAreaView, Platform, StatusBar as RNStatusBar, Animated, useWindowDimensions, BackHandler } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import "./src/lib/safeArea"; // reserves iOS notch / toolbar safe areas (web)
 import "./src/lib/webInputFix"; // strips the harsh browser focus box from inputs (web)
@@ -77,42 +77,82 @@ function Root() {
   // it's fluid and clean, whereas the 3-column shell squishes and misaligns.
   const wide = Platform.OS === "web" && width >= 1150; // desktop 3-column layout
 
+  const web = Platform.OS === "web" && typeof window !== "undefined";
+
   const [tab, setTab] = useState("feed");
-  const [nav, setNav] = useState({}); // { openLog, logging, prefill, topRated, auth, admin, bulk, reqArtist, profileId, editProfile, reporting }
+  // Navigation is a STACK of frames. Each frame is one overlay screen, e.g.
+  // { artistName } or { profileId }; the top frame is what's showing. An empty
+  // base frame ({}) means "just the tab screens." Opening a screen PUSHES a
+  // frame; Back POPS one — so you retrace your steps instead of always being
+  // dumped back to the feed. (Before this, nav was a single flat object and
+  // every close reset it to {}, which is why Back only ever went to the feed.)
+  const [stack, setStack] = useState([{}]);
+  const nav = stack[stack.length - 1];
+  const stackRef = useRef(stack);
+  stackRef.current = stack;
+
   const [preview, setPreview] = useState(null);
   const [acctOpen, setAcctOpen] = useState(false);
   // The concert opening screen: fresh visitors (and anyone who logs out) see it;
   // "browse as guest" or logging in dismisses it. Guest choice persists.
   const [landing, setLanding] = useState(() => !load("pit.session", null) && !load("pit.entered", false));
+
+  // Push a fresh screen onto the stack. On web we mirror it into browser history
+  // so the hardware/browser Back button pops the same stack the in-app back
+  // buttons do (both funnel through popstate below).
+  const go = (frame) => {
+    setStack((s) => [...s, frame]);
+    if (web) { try { window.history.pushState({ pit: "nav" }, ""); } catch {} }
+  };
+  // Swap the top screen without growing the stack — for lateral moves where the
+  // previous screen shouldn't come back (menu → target, signup → pick-artists).
+  const replace = (frame) => setStack((s) => [...s.slice(0, -1), frame]);
+  const popStack = () => setStack((s) => (s.length > 1 ? s.slice(0, -1) : s));
+  // Back one screen. On web, route through history.back() so the browser Back
+  // button and in-app back share one code path (the popstate handler pops).
+  const back = () => { if (web) { try { window.history.back(); return; } catch {} } popStack(); };
+  // Jump straight to the tab screens (after posting, tab switches, brand tap).
+  const clear = () => setStack([{}]);
+
   const enter = () => {
     setLanding(false);
     save("pit.entered", true);
-    // Give the browser back button somewhere to go: entering as a guest pushes a
-    // history entry, so Back returns to the landing instead of leaving the site.
-    if (Platform.OS === "web" && typeof window !== "undefined") {
-      try { window.history.pushState({ pit: "app" }, ""); } catch {}
-    }
+    // Arm one history entry so browser Back from the app root returns to landing.
+    if (web) { try { window.history.pushState({ pit: "app" }, ""); } catch {} }
   };
   const exitToLanding = () => { save("pit.entered", false); setLanding(true); };
 
-  // Browser back → landing (guests only; logged-in users are never bounced).
-  // Show the landing without persisting the choice: if the popstate came from
-  // something other than a real Back press (HMR, tooling), a reload still puts
-  // the guest back in the app instead of locking them out.
+  // Wire browser/hardware Back to the nav stack. If there's a screen to pop, pop
+  // it; at the root, guests fall back to the landing and signed-in users are kept
+  // in-app (re-arm a history entry so a stray Back never boots them off the site).
   const sessionRef = useRef(session);
   sessionRef.current = session;
   useEffect(() => {
-    if (Platform.OS !== "web" || typeof window === "undefined") return;
-    const onPop = () => { if (!sessionRef.current) setLanding(true); };
+    if (!web) return;
+    // Arm a base history buffer so the very first Back press is caught here
+    // rather than navigating away from the site.
+    try { window.history.pushState({ pit: "base" }, ""); } catch {}
+    const onPop = () => {
+      if (stackRef.current.length > 1) popStack();
+      else if (!sessionRef.current) setLanding(true);
+      else { try { window.history.pushState({ pit: "root" }, ""); } catch {} }
+    };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
   }, []);
 
+  // Android hardware back: pop the stack when we have somewhere to go.
+  useEffect(() => {
+    if (Platform.OS !== "android") return;
+    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+      if (stackRef.current.length > 1) { popStack(); return true; }
+      return false;
+    });
+    return () => sub.remove();
+  }, []);
+
   const fade = useRef(new Animated.Value(0)).current;
   const previewTimer = useRef(null);
-
-  const set = (patch) => setNav((n) => ({ ...n, ...patch }));
-  const clear = () => setNav({});
 
   const showPreview = (song, artist) => {
     setPreview({ song, artist });
@@ -124,7 +164,7 @@ function Root() {
     }, 3200);
   };
 
-  const requireAuth = (fn) => (session ? fn() : set({ auth: true }));
+  const requireAuth = (fn) => (session ? fn() : go({ auth: true }));
 
   const onAddLog = (log) => {
     addLog(log);
@@ -132,61 +172,61 @@ function Root() {
     setTab("feed");
   };
 
-  const openProfile = (id) => set({ profileId: id, thread: null, inbox: null });
+  const openProfile = (id) => go({ profileId: id });
   const openProfileByHandle = (h) => { const u = userByHandle(h); if (u) openProfile(u.id); };
-  const openShow = (log) => set({ openLog: log, profileId: null, artistName: null });
-  const openArtist = (name) => set({ artistName: name, venueName: null, openLog: null, profileId: null });
-  const openVenue = (name) => set({ venueName: name, artistName: null, openLog: null, profileId: null });
-  const openFanClub = (artist) => set({ fanClub: artist });
-  const openPhotos = (images, index = 0) => set({ photos: { images, index } });
-  const reviewShow = (log) => requireAuth(() => set({ logging: true, prefill: { artist: log.artist, venue: log.venue, city: log.city } }));
-  const openInbox = () => requireAuth(() => set({ inbox: true, thread: null }));
-  const openThread = (otherId) => requireAuth(() => set({ thread: otherId, inbox: null, profileId: null }));
-  const openVenueReview = (name) => requireAuth(() => set({ venueReview: name }));
+  const openShow = (log) => go({ openLog: log });
+  const openArtist = (name) => go({ artistName: name });
+  const openVenue = (name) => go({ venueName: name });
+  const openFanClub = (artist) => go({ fanClub: artist });
+  const openPhotos = (images, index = 0) => go({ photos: { images, index } });
+  const reviewShow = (log) => requireAuth(() => go({ logging: true, prefill: { artist: log.artist, venue: log.venue, city: log.city } }));
+  const openInbox = () => requireAuth(() => go({ inbox: true }));
+  const openThread = (otherId) => requireAuth(() => go({ thread: otherId }));
+  const openVenueReview = (name) => requireAuth(() => go({ venueReview: name }));
 
   let overlay = null;
   // Auth is a modal that must win over any page overlay — requireAuth() can fire
   // from inside a venue/show/profile page, and the login sheet has to surface.
-  if (nav.photos) overlay = <PhotoViewer photos={nav.photos.images} index={nav.photos.index} onClose={() => set({ photos: null })} />;
-  else if (nav.auth) overlay = <AuthScreen initialMode={nav.authMode} onDone={(mode) => set({ auth: false, authMode: null, pickArtists: mode === "signup" })} onCancel={() => set({ auth: false, authMode: null })} />;
+  if (nav.photos) overlay = <PhotoViewer photos={nav.photos.images} index={nav.photos.index} onClose={back} />;
+  else if (nav.auth) overlay = <AuthScreen initialMode={nav.authMode} onDone={(mode) => (mode === "signup" ? replace({ pickArtists: true }) : back())} onCancel={back} />;
   else if (nav.pickArtists) overlay = <PickArtistsScreen onDone={clear} onSkip={clear} />;
-  else if (nav.logging) overlay = <LogScreen user={session} prefill={nav.prefill} onPost={onAddLog} onCancel={clear} />;
-  else if (nav.reporting) overlay = <ReportScreen log={nav.reporting} onClose={clear} />;
-  else if (nav.editProfile) overlay = <EditProfileScreen onClose={() => set({ editProfile: false })} onPickArtists={() => set({ editProfile: false, pickArtists: true })} />;
-  else if (nav.venueReview) overlay = <VenueReviewScreen venueName={nav.venueReview} onClose={() => set({ venueReview: null, venueName: nav.venueReview })} />;
-  else if (nav.thread) overlay = <ThreadScreen otherId={nav.thread} onClose={openInbox} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} />;
-  else if (nav.inbox) overlay = <InboxScreen onClose={clear} onOpenThread={openThread} />;
-  else if (nav.profileId) overlay = <ProfileScreen userId={nav.profileId} onClose={clear} onOpenShow={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onEditProfile={() => set({ editProfile: true })} onPreview={showPreview} onMessage={openThread} onReport={(log) => requireAuth(() => set({ reporting: log }))} />;
-  else if (nav.fanClub) overlay = <FanClubScreen artist={nav.fanClub} onClose={() => set({ fanClub: null })} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} />;
-  else if (nav.editArtist) overlay = <EditArtistProfileScreen artistName={nav.editArtist} onClose={() => set({ editArtist: null, artistName: nav.editArtist })} />;
-  else if (nav.artistName) overlay = <ArtistScreen artistName={nav.artistName} onClose={clear} onOpenShow={openShow} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenPhotos={openPhotos} onEditArtist={(name) => set({ editArtist: name })} />;
-  else if (nav.venueName) overlay = <VenueScreen venueName={nav.venueName} onClose={clear} onOpenShow={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onReviewVenue={openVenueReview} onOpenProfile={openProfile} onOpenPhotos={openPhotos} />;
-  else if (nav.nearby) overlay = <NearbyScreen onClose={clear} onOpenVenue={openVenue} onOpenArtist={openArtist} />;
-  else if (nav.venues) overlay = <VenuesScreen onClose={clear} onOpenVenue={openVenue} />;
-  else if (nav.fanClubs) overlay = <FanClubsScreen onClose={clear} onOpenFanClub={openFanClub} />;
-  else if (nav.settings) overlay = <SettingsScreen onClose={clear} onEditProfile={() => set({ editProfile: true, settings: false })} onOpenProfile={() => (session ? set({ profileId: session.id, settings: false }) : set({ auth: true }))} onOpenPrivacy={() => set({ privacy: true, settings: false })} onOpenTerms={() => set({ terms: true, settings: false })} onLogout={() => { logout(); clear(); exitToLanding(); }} />;
-  else if (nav.privacy) overlay = <PrivacyScreen onClose={clear} />;
-  else if (nav.terms) overlay = <TermsScreen onClose={clear} />;
-  else if (nav.lounge) overlay = <LoungeScreen log={nav.lounge} onClose={() => set({ lounge: null, openLog: nav.lounge })} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} />;
-  else if (nav.openLog) overlay = <ShowScreen log={nav.openLog} onClose={clear} onPreview={showPreview} onReview={reviewShow} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenLounge={(log) => set({ lounge: log })} onRequireAuth={() => set({ auth: true })} />;
-  else if (nav.topRated) overlay = <TopRatedScreen onClose={clear} onOpen={openShow} />;
-  else if (nav.admin) overlay = <AdminScreen onClose={clear} />;
-  else if (nav.bulk) overlay = <BulkTourDatesScreen onClose={clear} />;
-  else if (nav.reqArtist) overlay = <RequestArtistScreen onClose={clear} />;
+  else if (nav.logging) overlay = <LogScreen user={session} prefill={nav.prefill} onPost={onAddLog} onCancel={back} />;
+  else if (nav.reporting) overlay = <ReportScreen log={nav.reporting} onClose={back} />;
+  else if (nav.editProfile) overlay = <EditProfileScreen onClose={back} onPickArtists={() => replace({ pickArtists: true })} />;
+  else if (nav.venueReview) overlay = <VenueReviewScreen venueName={nav.venueReview} onClose={back} />;
+  else if (nav.thread) overlay = <ThreadScreen otherId={nav.thread} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} />;
+  else if (nav.inbox) overlay = <InboxScreen onClose={back} onOpenThread={openThread} />;
+  else if (nav.profileId) overlay = <ProfileScreen userId={nav.profileId} onClose={back} onOpenShow={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onEditProfile={() => go({ editProfile: true })} onPreview={showPreview} onMessage={openThread} onReport={(log) => requireAuth(() => go({ reporting: log }))} onOpenPhotos={openPhotos} />;
+  else if (nav.fanClub) overlay = <FanClubScreen artist={nav.fanClub} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} />;
+  else if (nav.editArtist) overlay = <EditArtistProfileScreen artistName={nav.editArtist} onClose={back} />;
+  else if (nav.artistName) overlay = <ArtistScreen artistName={nav.artistName} onClose={back} onOpenShow={openShow} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenPhotos={openPhotos} onEditArtist={(name) => go({ editArtist: name })} />;
+  else if (nav.venueName) overlay = <VenueScreen venueName={nav.venueName} onClose={back} onOpenShow={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onReviewVenue={openVenueReview} onOpenProfile={openProfile} onOpenPhotos={openPhotos} />;
+  else if (nav.nearby) overlay = <NearbyScreen onClose={back} onOpenVenue={openVenue} onOpenArtist={openArtist} />;
+  else if (nav.venues) overlay = <VenuesScreen onClose={back} onOpenVenue={openVenue} />;
+  else if (nav.fanClubs) overlay = <FanClubsScreen onClose={back} onOpenFanClub={openFanClub} />;
+  else if (nav.settings) overlay = <SettingsScreen onClose={back} onEditProfile={() => go({ editProfile: true })} onOpenProfile={() => (session ? go({ profileId: session.id }) : go({ auth: true }))} onOpenPrivacy={() => go({ privacy: true })} onOpenTerms={() => go({ terms: true })} onLogout={() => { logout(); clear(); exitToLanding(); }} />;
+  else if (nav.privacy) overlay = <PrivacyScreen onClose={back} />;
+  else if (nav.terms) overlay = <TermsScreen onClose={back} />;
+  else if (nav.lounge) overlay = <LoungeScreen log={nav.lounge} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} />;
+  else if (nav.openLog) overlay = <ShowScreen log={nav.openLog} onClose={back} onPreview={showPreview} onReview={reviewShow} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenLounge={(log) => go({ lounge: log })} onRequireAuth={() => go({ auth: true })} />;
+  else if (nav.topRated) overlay = <TopRatedScreen onClose={back} onOpen={openShow} />;
+  else if (nav.admin) overlay = <AdminScreen onClose={back} />;
+  else if (nav.bulk) overlay = <BulkTourDatesScreen onClose={back} />;
+  else if (nav.reqArtist) overlay = <RequestArtistScreen onClose={back} />;
   else if (nav.menu) overlay = (
     <MenuScreen
-      onClose={clear}
-      onNear={() => requireAuth(() => set({ nearby: true, menu: null }))}
-      onVenues={() => set({ venues: true, menu: null })}
-      onFanClubs={() => set({ fanClubs: true, menu: null })}
-      onTopRated={() => set({ topRated: true, menu: null })}
-      onInbox={() => requireAuth(() => set({ inbox: true, menu: null }))}
-      onProfile={() => session && set({ profileId: session.id, menu: null })}
-      onEditProfile={() => set({ editProfile: true, menu: null })}
-      onAdmin={() => set({ admin: true, menu: null })}
-      onTourDates={() => set({ bulk: true, menu: null })}
-      onRequestArtist={() => set({ reqArtist: true, menu: null })}
-      onLogin={() => set({ auth: true, menu: null })}
+      onClose={back}
+      onNear={() => requireAuth(() => replace({ nearby: true }))}
+      onVenues={() => replace({ venues: true })}
+      onFanClubs={() => replace({ fanClubs: true })}
+      onTopRated={() => replace({ topRated: true })}
+      onInbox={() => requireAuth(() => replace({ inbox: true }))}
+      onProfile={() => session && replace({ profileId: session.id })}
+      onEditProfile={() => replace({ editProfile: true })}
+      onAdmin={() => replace({ admin: true })}
+      onTourDates={() => replace({ bulk: true })}
+      onRequestArtist={() => replace({ reqArtist: true })}
+      onLogin={() => replace({ auth: true })}
       onLogout={() => { logout(); clear(); exitToLanding(); }}
       onBackToLanding={() => { clear(); exitToLanding(); }}
     />
@@ -210,22 +250,22 @@ function Root() {
                   onOpenProfile={openProfile}
                   onOpenArtist={openArtist}
                   onOpenVenue={openVenue}
-                  onOpenNearby={() => requireAuth(() => set({ nearby: true }))}
-                  onOpenMenu={() => set({ menu: true })}
-                  onReport={(log) => requireAuth(() => set({ reporting: log }))}
+                  onOpenNearby={() => requireAuth(() => go({ nearby: true }))}
+                  onOpenMenu={() => go({ menu: true })}
+                  onReport={(log) => requireAuth(() => go({ reporting: log }))}
                 />
               )}
               {tab === "search" && <SearchScreen onOpen={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenFanClub={openFanClub} />}
-              {tab === "discover" && <DiscoverScreen onOpenTopRated={() => set({ topRated: true })} onOpen={openShow} onOpenArtist={openArtist} onOpenNearby={() => requireAuth(() => set({ nearby: true }))} />}
+              {tab === "discover" && <DiscoverScreen onOpenTopRated={() => go({ topRated: true })} onOpen={openShow} onOpenArtist={openArtist} onOpenNearby={() => requireAuth(() => go({ nearby: true }))} />}
               {tab === "you" && (
                 <YouScreen
                   feed={feed}
-                  onLogin={() => set({ auth: true })}
+                  onLogin={() => go({ auth: true })}
                   onLogout={() => { logout(); exitToLanding(); }}
-                  onAdmin={() => set({ admin: true })}
-                  onAddTourDate={() => set({ bulk: true })}
-                  onRequestArtist={() => set({ reqArtist: true })}
-                  onEditProfile={() => set({ editProfile: true })}
+                  onAdmin={() => go({ admin: true })}
+                  onAddTourDate={() => go({ bulk: true })}
+                  onRequestArtist={() => go({ reqArtist: true })}
+                  onEditProfile={() => go({ editProfile: true })}
                   onOpenProfile={openProfile}
                   onOpen={openShow}
                 />
@@ -255,10 +295,10 @@ function Root() {
               <Icon name="chevron-left" size={15} color={colors.textDim} />
               <Text style={styles.introBtnTxt}>Intro</Text>
             </Pressable>
-            <Pressable style={styles.loginPill} onPress={() => set({ auth: true, authMode: "login" })}>
+            <Pressable style={styles.loginPill} onPress={() => go({ auth: true, authMode: "login" })}>
               <Text style={styles.loginPillTxt}>Log in</Text>
             </Pressable>
-            <Pressable style={styles.signupPill} onPress={() => set({ auth: true, authMode: "signup" })}>
+            <Pressable style={styles.signupPill} onPress={() => go({ auth: true, authMode: "signup" })}>
               <Text style={styles.signupPillTxt}>Sign up</Text>
             </Pressable>
           </View>
@@ -270,17 +310,17 @@ function Root() {
           setTab={(k) => { setTab(k); clear(); }}
           session={session}
           unread={session ? inboxUnread() : 0}
-          onLog={() => requireAuth(() => setNav({ logging: true }))}
-          onFindVenues={() => setNav({ venues: true })}
-          onFanClubs={() => setNav({ fanClubs: true })}
-          onNearby={() => requireAuth(() => setNav({ nearby: true }))}
-          onTopRated={() => setNav({ topRated: true })}
+          onLog={() => requireAuth(() => go({ logging: true }))}
+          onFindVenues={() => go({ venues: true })}
+          onFanClubs={() => go({ fanClubs: true })}
+          onNearby={() => requireAuth(() => go({ nearby: true }))}
+          onTopRated={() => go({ topRated: true })}
           onInbox={openInbox}
-          onProfile={() => (session ? openProfile(session.id) : set({ auth: true }))}
-          onLogin={() => set({ auth: true })}
+          onProfile={() => (session ? openProfile(session.id) : go({ auth: true }))}
+          onLogin={() => go({ auth: true })}
         />
         <View style={styles.deskCenter}>{overlay || tabScreens}</View>
-        <RightRail onOpenArtist={openArtist} onOpenVenue={openVenue} onFindVenues={() => setNav({ venues: true })} onOpenEvent={(t) => openArtist(t.artist)} />
+        <RightRail onOpenArtist={openArtist} onOpenVenue={openVenue} onFindVenues={() => go({ venues: true })} onOpenEvent={(t) => openArtist(t.artist)} />
       </View>
     </View>
   );
@@ -292,8 +332,8 @@ function Root() {
 
         {landing && !session ? (
           <LandingScreen
-            onLogin={() => { enter(); set({ auth: true, authMode: "login" }); }}
-            onSignup={() => { enter(); set({ auth: true, authMode: "signup" }); }}
+            onLogin={() => { enter(); go({ auth: true, authMode: "login" }); }}
+            onSignup={() => { enter(); go({ auth: true, authMode: "signup" }); }}
             onBrowse={enter}
           />
         ) : status !== "ok" ? (
@@ -308,7 +348,7 @@ function Root() {
             <View style={styles.tabbar}>
               {LEFT.map((t) => <TabButton key={t.key} tab={t} active={tab} onPress={setTab} />)}
               <View style={styles.fabCol}>
-                <Pressable style={styles.fab} onPress={() => requireAuth(() => set({ logging: true }))} accessibilityLabel="Make a post">
+                <Pressable style={styles.fab} onPress={() => requireAuth(() => go({ logging: true }))} accessibilityLabel="Make a post">
                   <Icon name="plus" size={26} color="#1A1206" strokeWidth={2.6} />
                 </Pressable>
                 <Text style={styles.fabLabel}>Post</Text>
@@ -337,10 +377,10 @@ function Root() {
           onClose={() => setAcctOpen(false)}
           items={[
             { icon: "you", label: "Go to profile", onPress: () => { setAcctOpen(false); session && openProfile(session.id); } },
-            { icon: "edit", label: "Edit profile", onPress: () => { setAcctOpen(false); set({ editProfile: true }); } },
-            { icon: "menu", label: "Settings", onPress: () => { setAcctOpen(false); set({ settings: true }); } },
-            { icon: "lock", label: "Privacy", onPress: () => { setAcctOpen(false); set({ privacy: true }); } },
-            { icon: "shield", label: "Terms & conditions", onPress: () => { setAcctOpen(false); set({ terms: true }); } },
+            { icon: "edit", label: "Edit profile", onPress: () => { setAcctOpen(false); go({ editProfile: true }); } },
+            { icon: "menu", label: "Settings", onPress: () => { setAcctOpen(false); go({ settings: true }); } },
+            { icon: "lock", label: "Privacy", onPress: () => { setAcctOpen(false); go({ privacy: true }); } },
+            { icon: "shield", label: "Terms & conditions", onPress: () => { setAcctOpen(false); go({ terms: true }); } },
             { divider: true },
             { icon: "logout", label: "Log out", danger: true, onPress: () => { setAcctOpen(false); logout(); clear(); exitToLanding(); } },
           ]}
@@ -353,7 +393,7 @@ function Root() {
 function TabButton({ tab, active, onPress }) {
   const on = active === tab.key;
   return (
-    <Pressable style={styles.tab} onPress={() => onPress(tab.key)}>
+    <Pressable style={styles.tab} onPress={() => onPress(tab.key)} accessibilityRole="tab" accessibilityState={{ selected: on }} accessibilityLabel={tab.label}>
       <Icon name={tab.icon} size={22} color={on ? colors.amber : colors.textDim} />
       <Text style={[styles.tabLabel, on && { color: colors.amber }]}>{tab.label}</Text>
     </Pressable>

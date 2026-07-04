@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, Image } from "react-native";
 import * as ImagePicker from "expo-image-picker";
-import { colors, radius, themeMode, setThemeMode } from "../theme";
+import { colors, radius, themeKey, THEMES } from "../theme";
 import { useStore } from "../store";
 import { GENRES, cityCoords } from "../data";
 import Avatar from "../components/Avatar";
@@ -28,7 +28,8 @@ function SongField({ song, color, onPress, onClear }) {
 }
 
 export default function EditProfileScreen({ onClose, onPickArtists }) {
-  const { session, updateProfile } = useStore();
+  const { session, updateProfile, chooseTheme } = useStore();
+  const isDark = (THEMES.find((t) => t.key === themeKey) || {}).dark;
   const [name, setName] = useState(session?.name || "");
   const [bio, setBio] = useState(session?.bio || "");
   const [avatarUri, setAvatarUri] = useState(session?.avatarUri || null);
@@ -138,13 +139,13 @@ export default function EditProfileScreen({ onClose, onPickArtists }) {
 
         <Text style={styles.label}>APPEARANCE</Text>
         <View style={styles.themeRow}>
-          <Pressable style={[styles.themeBtn, themeMode === "dark" && styles.themeOn]} onPress={() => themeMode !== "dark" && setThemeMode("dark")}>
-            <Icon name="you" size={15} color={themeMode === "dark" ? colors.amber : colors.textDim} />
-            <Text style={[styles.themeTxt, themeMode === "dark" && styles.themeTxtOn]}>Dark</Text>
+          <Pressable style={[styles.themeBtn, isDark && styles.themeOn]} onPress={() => !isDark && chooseTheme("stage")}>
+            <Icon name="you" size={15} color={isDark ? colors.amber : colors.textDim} />
+            <Text style={[styles.themeTxt, isDark && styles.themeTxtOn]}>Dark</Text>
           </Pressable>
-          <Pressable style={[styles.themeBtn, themeMode === "light" && styles.themeOn]} onPress={() => themeMode !== "light" && setThemeMode("light")}>
-            <Icon name="star" size={15} color={themeMode === "light" ? colors.amber : colors.textDim} />
-            <Text style={[styles.themeTxt, themeMode === "light" && styles.themeTxtOn]}>Light</Text>
+          <Pressable style={[styles.themeBtn, !isDark && styles.themeOn]} onPress={() => isDark && chooseTheme("daylight")}>
+            <Icon name="star" size={15} color={!isDark ? colors.amber : colors.textDim} />
+            <Text style={[styles.themeTxt, !isDark && styles.themeTxtOn]}>Light</Text>
           </Pressable>
         </View>
 

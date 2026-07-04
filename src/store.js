@@ -4,6 +4,7 @@ import { catalogVenues, catalogTourDates, catalogArtists } from "./seed/catalog"
 import { clean, cleanEmail, isEmail, cleanName, isName, cleanHandle, isPassword, clampRating, LIMITS } from "./lib/validate";
 import { load, save } from "./lib/persist";
 import { api } from "./lib/api";
+import { setTheme as applyTheme, syncThemeFromAccount } from "./theme";
 import { artistMeta } from "./seed/ingested";
 
 // Prototype in-memory store: auth, profiles, social graph, content, reports,
@@ -101,6 +102,11 @@ export function StoreProvider({ children }) {
       { id: "dm2", from: "u_demo", text: "trying to get tickets! you?", ts: "1d" },
       { id: "dm3", from: "u_mara", text: "got mine. @priyalive is coming too", ts: "23h" },
     ],
+    // A message from someone the demo user doesn't follow and hasn't replied to
+    // yet — lands in Requests, not the main inbox. Reply to promote it.
+    u_demo__u_priya: [
+      { id: "dm4", from: "u_priya", text: "hey! saw you were at the Fillmore show too — small world", ts: "3h" },
+    ],
   });
   const [dmRead, setDmRead] = useState({});
   // Album + song ratings (stand-in for stream data) keyed by artist|title
@@ -113,6 +119,11 @@ export function StoreProvider({ children }) {
   useEffect(() => save("pit.users", users), [users]);
   useEffect(() => save("pit.feed", feed), [feed]);
   useEffect(() => save("pit.follows", follows), [follows]);
+
+  // When you sign in (here or on a new device) apply the theme saved on your
+  // account. syncThemeFromAccount no-ops if it already matches, so this only
+  // reloads when the rendered theme and the account theme actually differ.
+  useEffect(() => { if (session?.theme) syncThemeFromAccount(session.theme); }, [session?.theme]);
 
   const userById = (id) => users.find((u) => u.id === id);
   const userByHandle = (h) => users.find((u) => u.handle === h);
@@ -202,6 +213,23 @@ export function StoreProvider({ children }) {
     setSession(null);
   };
 
+  // Pick a theme. Saved on the account (so it survives sign-out and follows you
+  // to a new device) AND applied immediately. applyTheme reloads to re-resolve
+  // the StyleSheet colors, so we persist to disk + the server first. An optional
+  // `mergePatch` (already-sanitized profile fields) is persisted in the same
+  // write — used at signup so the artist picks aren't lost to the reload.
+  const chooseTheme = async (next, mergePatch = null) => {
+    if (session) {
+      const extra = mergePatch || {};
+      const updated = { ...session, ...extra, theme: next };
+      setUsers((all) => all.map((u) => (u.id === session.id ? { ...u, ...extra, theme: next } : u)));
+      setSession(updated);
+      save("pit.session", updated); // synchronous — the reload below would race the effect
+      try { await api("/api/me", { method: "PATCH", body: { theme: next, ...extra } }); } catch {}
+    }
+    applyTheme(next);
+  };
+
   const updateProfile = (patch) => {
     if (!session) return;
     // Sanitize the free-text fields; pass structured fields (home, songs) through.
@@ -218,6 +246,7 @@ export function StoreProvider({ children }) {
     if ("name" in safe) safe.initials = (safe.name.match(/\p{L}|\p{N}/gu) || ["?"]).slice(0, 2).join("").toUpperCase();
     setUsers((all) => all.map((u) => (u.id === session.id ? { ...u, ...safe } : u)));
     setSession((s) => ({ ...s, ...safe }));
+    return safe; // caller may need the sanitized patch (e.g. to persist alongside a theme)
   };
 
   const addLog = (log) => {
@@ -505,11 +534,21 @@ export function StoreProvider({ children }) {
         const otherId = k.split("__").find((id) => id !== session.id);
         const last = msgs[msgs.length - 1];
         const unread = msgs.filter((m, i) => m.from !== session.id && i >= (dmRead[k] || 0)).length;
-        return { otherId, otherUser: userById(otherId), last, unread, count: msgs.length };
+        // A thread is a "request" until you accept it: someone you don't follow
+        // messaged you and you haven't replied yet. Following them or sending a
+        // single reply promotes it to the main inbox (Instagram-style gating).
+        const iReplied = msgs.some((m) => m.from === session.id);
+        const bucket = (isFollowing(otherId) || iReplied) ? "main" : "requests";
+        return { otherId, otherUser: userById(otherId), last, unread, count: msgs.length, bucket };
       })
       .sort((a, b) => b.count - a.count);
   };
-  const inboxUnread = () => inboxThreads().reduce((s, t) => s + t.unread, 0);
+  const mainThreads = () => inboxThreads().filter((t) => t.bucket === "main");
+  const requestThreads = () => inboxThreads().filter((t) => t.bucket === "requests");
+  // The tab/feed badge counts only accepted conversations, so strangers can't
+  // light it up; pending requests are surfaced separately by requestCount().
+  const inboxUnread = () => mainThreads().reduce((s, t) => s + t.unread, 0);
+  const requestCount = () => requestThreads().length;
 
   const artistSummary = (name) => {
     const key = norm(name);
@@ -859,7 +898,7 @@ export function StoreProvider({ children }) {
   const value = {
     users, session, feed, removedIds, requests, tourDates, reports, follows,
     userById, userByHandle, logsByUser,
-    login, signup, logout, updateProfile,
+    login, signup, logout, updateProfile, chooseTheme,
     addLog, reportContent, actionReport, dismissReport, removeContent, restoreContent,
     requestArtist, approveArtist, rejectArtist,
     addTourDatesBatch,
@@ -878,7 +917,7 @@ export function StoreProvider({ children }) {
     goingFor, isGoing, toggleGoing, attendeesFor,
     venueReviewsFor, addVenueReview, venueRating, venueTopPhotos, venuePhotos, artistFanPhotos,
     artistGallery, isPhotoRemoved, removePhoto, restorePhoto,
-    threadMessages, sendDM, markThreadRead, inboxThreads, inboxUnread,
+    threadMessages, sendDM, markThreadRead, inboxThreads, mainThreads, requestThreads, inboxUnread, requestCount,
   };
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;
