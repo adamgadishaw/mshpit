@@ -78,7 +78,9 @@ function Pin({ pos, name, focal, show, onPress, onHoverIn, onHoverOut }) {
 
 const styles = StyleSheet.create({
   wrap: { width: "100%", aspectRatio: 320 / 206, borderRadius: 14, overflow: "hidden", borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.bgElev },
-  cityLabel: { position: "absolute", left: 12, bottom: 10, color: colors.text, fontFamily: mono, fontSize: 12, fontWeight: "700", textShadowColor: "#000", textShadowRadius: 4 },
+  // Top-left, in a readable pill — keeps clear of Google's bottom-left logo /
+  // attribution (which their terms require us to leave visible).
+  cityLabel: { position: "absolute", left: 10, top: 10, color: colors.text, fontFamily: mono, fontSize: 12, fontWeight: "800", letterSpacing: 0.5, backgroundColor: "rgba(7,9,15,0.66)", paddingHorizontal: 10, paddingVertical: 5, borderRadius: radius.pill, overflow: "hidden" },
   anchor: { position: "absolute", alignItems: "center", justifyContent: "center" },
   anchorFocal: { width: 18, height: 18, marginLeft: -9, marginTop: -9 },
   anchorOther: { width: 14, height: 14, marginLeft: -7, marginTop: -7 },
