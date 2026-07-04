@@ -134,6 +134,12 @@ export function StoreProvider({ children }) {
     const merged = { playlists: [], genres: [], favoriteArtists: [], ...su };
     setUsers((all) => (all.some((x) => x.id === su.id) ? all.map((x) => (x.id === su.id ? { ...x, ...merged } : x)) : [...all, merged]));
     setSession(merged);
+    // Hydrate the follow graph for this account from the server (see MIGRATION.md,
+    // slice 1). Best-effort: if the endpoint/back-end isn't there we keep whatever
+    // is cached locally.
+    api("/api/me/following")
+      .then(({ following }) => { if (Array.isArray(following)) setFollows((f) => ({ ...f, [su.id]: following })); })
+      .catch(() => {});
   };
 
   // Server-first auth (real accounts, hashed passwords, httpOnly sessions).
@@ -308,10 +314,20 @@ export function StoreProvider({ children }) {
     setTourDates((t) => [...batch, ...t]);
   };
 
-  // Social graph
+  // Social graph. First slice of the SQLite migration (see MIGRATION.md): follow
+  // state is still cached locally + persisted, but mutations now WRITE THROUGH to
+  // the server (best-effort) and login HYDRATES the follow list from the server,
+  // so a real account's follows survive a new device. Falls back to local-only
+  // when the backend is unreachable (dev / offline).
   const isFollowing = (id) => (follows[session?.id] || []).includes(id);
-  const follow = (id) => setFollows((f) => ({ ...f, [session.id]: [...new Set([...(f[session.id] || []), id])] }));
-  const unfollow = (id) => setFollows((f) => ({ ...f, [session.id]: (f[session.id] || []).filter((x) => x !== id) }));
+  const follow = (id) => {
+    setFollows((f) => ({ ...f, [session.id]: [...new Set([...(f[session.id] || []), id])] }));
+    if (!isFollowing(id)) api(`/api/users/${id}/follow`, { method: "POST" }).catch(() => {}); // server toggles
+  };
+  const unfollow = (id) => {
+    setFollows((f) => ({ ...f, [session.id]: (f[session.id] || []).filter((x) => x !== id) }));
+    if (isFollowing(id)) api(`/api/users/${id}/follow`, { method: "POST" }).catch(() => {}); // server toggles
+  };
   const followerCount = (id) => Object.values(follows).filter((arr) => arr.includes(id)).length;
   const followingCount = (id) => (follows[id] || []).length;
 

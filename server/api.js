@@ -115,6 +115,14 @@ export const routes = {
 
   "GET /api/me": (ctx) => ({ user: ctx.user ? publicUser(ctx.user, { self: true }) : null }),
 
+  // The ids this account follows — lets the client hydrate its follow graph on
+  // login / a new device (SQLite migration slice 1, see MIGRATION.md).
+  "GET /api/me/following": (ctx) => {
+    const u = requireUser(ctx);
+    const rows = db.prepare("SELECT followee_id FROM follows WHERE follower_id = ?").all(u.id);
+    return { following: rows.map((r) => r.followee_id) };
+  },
+
   // ---- profile ----
   "PATCH /api/me": (ctx) => {
     const u = requireUser(ctx);

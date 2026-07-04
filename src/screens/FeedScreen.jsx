@@ -30,11 +30,11 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, h
           <View style={styles.wordmarkRow}>
             <Text style={styles.wordmark}>PIT</Text>
             <View style={styles.headerBtns}>
-              <Pressable style={styles.inboxBtn} onPress={onOpenInbox} hitSlop={8}>
+              <Pressable style={styles.inboxBtn} onPress={onOpenInbox} hitSlop={8} accessibilityRole="button" accessibilityLabel={unread > 0 ? `Inbox, ${unread} unread` : "Inbox"}>
                 <Icon name="mail" size={22} color={colors.text} />
                 {unread > 0 && <View style={styles.inboxBadge}><Text style={styles.inboxBadgeTxt}>{unread}</Text></View>}
               </Pressable>
-              <Pressable style={styles.inboxBtn} onPress={onOpenMenu} hitSlop={8}>
+              <Pressable style={styles.inboxBtn} onPress={onOpenMenu} hitSlop={8} accessibilityRole="button" accessibilityLabel="Menu">
                 <Icon name="menu" size={22} color={colors.text} />
               </Pressable>
             </View>

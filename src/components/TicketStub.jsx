@@ -98,11 +98,11 @@ export default function TicketStub({ log, onOpen, onPreview, onOpenProfile, onOp
 
       {/* footer → the Afterparty */}
       <View style={styles.footer}>
-        <Pressable style={styles.fBtn} onPress={() => (session ? toggleLike(log.id, log.likes || 0) : onOpen?.(log))} hitSlop={8}>
+        <Pressable style={styles.fBtn} onPress={() => (session ? toggleLike(log.id, log.likes || 0) : onOpen?.(log))} hitSlop={8} accessibilityRole="button" accessibilityLabel={`${liked ? "Unlike" : "Like"}, ${likeCount} likes`}>
           <Icon name="heart" size={18} color={liked ? colors.magenta : colors.textDim} filled={liked} />
           <Text style={[styles.fCount, liked && { color: colors.magenta }]}>{likeCount}</Text>
         </Pressable>
-        <Pressable style={styles.fBtn} onPress={() => onOpen?.(log)} hitSlop={8}>
+        <Pressable style={styles.fBtn} onPress={() => onOpen?.(log)} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Comments, ${commentCount}`}>
           <Icon name="comment" size={17} color={colors.textDim} />
           <Text style={styles.fCount}>{commentCount}</Text>
         </Pressable>
@@ -111,7 +111,7 @@ export default function TicketStub({ log, onOpen, onPreview, onOpenProfile, onOp
           <Icon name="chevron-right" size={14} color={colors.amber} />
         </Pressable>
         <View style={{ flex: 1 }} />
-        <Pressable style={styles.fBtn} hitSlop={8} onPress={() => onReport?.(log)}>
+        <Pressable style={styles.fBtn} hitSlop={8} onPress={() => onReport?.(log)} accessibilityRole="button" accessibilityLabel="Report post">
           <Icon name="flag" size={15} color={colors.textFaint} />
         </Pressable>
       </View>
