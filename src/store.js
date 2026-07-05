@@ -206,6 +206,21 @@ export function StoreProvider({ children }) {
     api("/api/me/fanclubs")
       .then(({ artists }) => { if (Array.isArray(artists)) setFanClubs((f) => ({ ...f, [su.id]: artists })); })
       .catch(() => {});
+    // Slice 6: admins hydrate the open report queue (server rows → client shape).
+    if (su.role === "admin") {
+      api("/api/admin/reports")
+        .then(({ reports: rows }) => {
+          if (!Array.isArray(rows) || !rows.length) return;
+          setReports((rs) => {
+            const have = new Set(rs.map((x) => x.id));
+            const fresh = rows
+              .filter((r) => !have.has(r.id))
+              .map((r) => ({ id: r.id, targetId: r.target_id, reason: r.reason, reporterId: r.reporter_id, status: "open" }));
+            return fresh.length ? [...fresh, ...rs] : rs;
+          });
+        })
+        .catch(() => {});
+    }
   };
 
   // Server-first auth (real accounts, hashed passwords, httpOnly sessions).
@@ -352,17 +367,27 @@ export function StoreProvider({ children }) {
   };
 
   // Per-report moderation: content is public on post; reports drive action.
-  const reportContent = (targetId, reason) => {
+  // Slice 6: reports write through to the server so an admin on any device sees
+  // them; admins hydrate the open queue on login (see absorbServerUser). Reports
+  // are always on a post here. Best-effort/offline-safe.
+  const reportContent = (targetId, reason, targetType = "post") => {
     const r = clean(reason, { max: LIMITS.note });
     setReports((rs) => [{ id: "rep_" + Date.now(), targetId, reason: r, reporterId: session?.id, status: "open" }, ...rs]);
+    if (session) api("/api/reports", { method: "POST", body: { targetType, targetId, reason: r } }).catch(() => {});
     return { ok: true };
   };
   const actionReport = (repId) => {
     const r = reports.find((x) => x.id === repId);
     if (r) setRemovedIds((ids) => (ids.includes(r.targetId) ? ids : [...ids, r.targetId]));
     setReports((rs) => rs.map((x) => (x.id === repId ? { ...x, status: "actioned" } : x)));
+    // Server ids (r_...) get removed + closed server-side; local ids (rep_...) 404
+    // harmlessly and stay local-only.
+    api(`/api/admin/reports/${repId}/action`, { method: "POST" }).catch(() => {});
   };
-  const dismissReport = (repId) => setReports((rs) => rs.map((x) => (x.id === repId ? { ...x, status: "dismissed" } : x)));
+  const dismissReport = (repId) => {
+    setReports((rs) => rs.map((x) => (x.id === repId ? { ...x, status: "dismissed" } : x)));
+    api(`/api/admin/reports/${repId}/dismiss`, { method: "POST" }).catch(() => {});
+  };
   const removeContent = (id) => setRemovedIds((r) => (r.includes(id) ? r : [...r, id]));
   const restoreContent = (id) => setRemovedIds((r) => r.filter((x) => x !== id));
 
@@ -594,7 +619,7 @@ export function StoreProvider({ children }) {
     if (u.suspendedUntil && u.suspendedUntil > Date.now()) return "suspended";
     return "ok";
   };
-  const banUser = (id) => setUsers((all) => all.map((u) => (u.id === id ? { ...u, isBanned: true } : u)));
+  const banUser = (id) => { setUsers((all) => all.map((u) => (u.id === id ? { ...u, isBanned: true } : u))); api(`/api/admin/users/${id}/ban`, { method: "POST" }).catch(() => {}); };
   const unbanUser = (id) => setUsers((all) => all.map((u) => (u.id === id ? { ...u, isBanned: false, suspendedUntil: null } : u)));
   const suspendUser = (id, days = 7) => setUsers((all) => all.map((u) => (u.id === id ? { ...u, suspendedUntil: Date.now() + days * 86400000 } : u)));
   // moderation: drop a single chat/lounge/comment message (staff)

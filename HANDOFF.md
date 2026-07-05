@@ -116,8 +116,11 @@ npm run pipeline             # self-running scraper (needs .env, see below)
    `npm run server` (3000): signup→post→like→comment and two-way DMs persist and
    re-hydrate. **Slice 5 (fan clubs)** also done: `GET /api/me/fanclubs` +
    join/message write-through + `loadFanClub()` hydrate (messages + real member
-   count). Remaining slices: reports, ratings/going/venue-reviews. Verify with the
-   server running + a real signed-up account (`u_demo` is offline-only).
+   count). **Slice 6 (reports/moderation)** done: report write-through, admin queue
+   hydrate, action/dismiss/ban write-through. Remaining: **slice 7** (ratings,
+   going/attendance, venue reviews, artist requests/profiles) — the only slice that
+   needs NEW tables + endpoints (lowest priority). Verify with the server running +
+   a real signed-up account (`u_demo` is offline-only).
 2. **Broader mobile/responsive polish + accessibility.** Started: a11y
    labels/roles on core nav controls. Remaining: audit remaining icon-only buttons,
    test large OS text sizes for clipping in fixed-height rows, tighten responsive

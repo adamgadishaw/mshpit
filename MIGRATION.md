@@ -61,7 +61,11 @@ persist server-side).
    `joinFanClub`/`addFanClubMessage` write through (adopt ids); `loadFanClub()`
    hydrates a club's messages + real member count on open (`FanClubScreen`).
    `fanClubMeta` holds the server member count, preferred over the local-graph count.
-6. **Reports / moderation** — endpoints exist (`/api/reports`, `/api/admin/...`).
+6. **Reports / moderation** ✅ (slice 6). `reportContent` writes through
+   `POST /api/reports`; admins hydrate the open queue on login (`GET /api/admin/reports`,
+   mapped to client shape); `actionReport`/`dismissReport` write through to the
+   admin action/dismiss endpoints; `banUser` writes through `POST /api/admin/users/:id/ban`.
+   Server ids (`r_...`) round-trip; local-only ids (`rep_...`) 404 harmlessly.
 7. **Ratings, going/attendance, venue reviews, artist requests/profiles** — need
    new tables + endpoints; lowest priority.
 
