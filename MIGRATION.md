@@ -56,7 +56,11 @@ persist server-side).
    users), `sendDM` writes through + adopts the server id, `loadThread()` refreshes
    a thread on open (called from `ThreadScreen`). The Requests/Friends `bucket` and
    unread markers stay **client-side** (computed from the follow graph), per plan.
-5. **Fan clubs** — endpoints exist (`/api/fanclubs/...`).
+5. **Fan clubs** ✅ (slice 5). Added `GET /api/me/fanclubs` (my memberships) to the
+   existing join/messages endpoints. Client hydrates membership on login;
+   `joinFanClub`/`addFanClubMessage` write through (adopt ids); `loadFanClub()`
+   hydrates a club's messages + real member count on open (`FanClubScreen`).
+   `fanClubMeta` holds the server member count, preferred over the local-graph count.
 6. **Reports / moderation** — endpoints exist (`/api/reports`, `/api/admin/...`).
 7. **Ratings, going/attendance, venue reviews, artist requests/profiles** — need
    new tables + endpoints; lowest priority.

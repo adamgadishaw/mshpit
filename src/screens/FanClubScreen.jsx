@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, KeyboardAvoidingView, Platform } from "react-native";
 import { colors, mono, radius } from "../theme";
 import { useStore } from "../store";
@@ -11,9 +11,11 @@ import SpinningRecord from "../components/SpinningRecord";
 
 // The artist Fan Club - a permanent chat for fans, even with no show coming up.
 export default function FanClubScreen({ artist, onClose, onOpenProfile, onOpenProfileByHandle }) {
-  const { session, userById, fanClubFor, addFanClubMessage, isFanClubMember, joinFanClub, fanClubCount } = useStore();
+  const { session, userById, fanClubFor, loadFanClub, addFanClubMessage, isFanClubMember, joinFanClub, fanClubCount } = useStore();
   const [text, setText] = useState("");
   const messages = fanClubFor(artist);
+  // Hydrate this club's messages + real member count from the server (slice 5).
+  useEffect(() => { loadFanClub(artist); }, [artist]);
   const member = isFanClubMember(artist);
   const art = artistMeta(artist)?.photo;
 

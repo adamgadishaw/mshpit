@@ -288,7 +288,15 @@ export const routes = {
     return { id };
   },
 
-  // ---- fan clubs ----
+  // ---- fan clubs (SQLite migration slice 5) ----
+  // The artists this account is a member of — lets the client hydrate membership
+  // (join-button state + counts) on login. Names are stored lowercased.
+  "GET /api/me/fanclubs": (ctx) => {
+    const u = requireUser(ctx);
+    const rows = db.prepare("SELECT artist FROM fan_club_members WHERE user_id = ?").all(u.id);
+    return { artists: rows.map((r) => r.artist) };
+  },
+
   "POST /api/fanclubs/:artist/join": (ctx) => {
     const u = requireUser(ctx);
     limit(ctx, "fanclub", 60, 10 * 60 * 1000);

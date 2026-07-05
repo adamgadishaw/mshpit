@@ -114,8 +114,10 @@ npm run pipeline             # self-running scraper (needs .env, see below)
    the Requests/Friends split + unread stay client-side. `chooseTheme` (server
    `extras.theme`) was the original template. **Verified end-to-end** against
    `npm run server` (3000): signup→post→like→comment and two-way DMs persist and
-   re-hydrate. Remaining slices: fan clubs, reports, ratings/going/venue-reviews.
-   Verify with the server running + a real signed-up account (`u_demo` is offline-only).
+   re-hydrate. **Slice 5 (fan clubs)** also done: `GET /api/me/fanclubs` +
+   join/message write-through + `loadFanClub()` hydrate (messages + real member
+   count). Remaining slices: reports, ratings/going/venue-reviews. Verify with the
+   server running + a real signed-up account (`u_demo` is offline-only).
 2. **Broader mobile/responsive polish + accessibility.** Started: a11y
    labels/roles on core nav controls. Remaining: audit remaining icon-only buttons,
    test large OS text sizes for clipping in fixed-height rows, tighten responsive

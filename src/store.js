@@ -99,6 +99,10 @@ export function StoreProvider({ children }) {
     ],
   });
   const [fanClubs, setFanClubs] = useState({ u_demo: ["Turnstile"], u_mara: ["Turnstile", "Militarie Gun"] });
+  // Server-truth member counts per fan club (slice 5), keyed by fcKey. Preferred
+  // over the local-graph count when present so totals reflect everyone, not just
+  // the users this browser happens to know about.
+  const [fanClubMeta, setFanClubMeta] = useState({});
   // Artist-owned profile overrides (banner/avatar/bio/feedEnabled) + updates feed
   const [artistProfiles, setArtistProfiles] = useState({
     turnstile: { feedEnabled: true },
@@ -197,6 +201,10 @@ export function StoreProvider({ children }) {
           return n;
         });
       })
+      .catch(() => {});
+    // Slice 5: hydrate the fan clubs I've joined (drives the join button + counts).
+    api("/api/me/fanclubs")
+      .then(({ artists }) => { if (Array.isArray(artists)) setFanClubs((f) => ({ ...f, [su.id]: artists })); })
       .catch(() => {});
   };
 
@@ -488,22 +496,51 @@ export function StoreProvider({ children }) {
   // --- Artist fan clubs (permanent chat, keyed by artist) ---
   const fcKey = (artist) => norm(artist);
   const fanClubFor = (artist) => fanClubMsgs[fcKey(artist)] || [];
+  // Slice 5: pull a club's messages + real member count from the server, merging
+  // messages by id. No-op offline; bundled seed clubs keep their seed chatter.
+  const loadFanClub = (artist) => {
+    const enc = encodeURIComponent(norm(artist));
+    api(`/api/fanclubs/${enc}/messages`)
+      .then(({ members, messages }) => {
+        if (typeof members === "number") setFanClubMeta((meta) => ({ ...meta, [fcKey(artist)]: { members } }));
+        if (!Array.isArray(messages) || !messages.length) return;
+        setFanClubMsgs((L) => {
+          const existing = L[fcKey(artist)] || [];
+          const have = new Set(existing.map((m) => m.id));
+          const fresh = messages
+            .filter((m) => !have.has(m.id))
+            .map((m) => ({ id: m.id, userId: m.userId, name: m.name, initials: m.initials, text: m.text, ts: ago(m.createdAt) }));
+          return fresh.length ? { ...L, [fcKey(artist)]: [...existing, ...fresh] } : L;
+        });
+      })
+      .catch(() => {});
+  };
   const addFanClubMessage = (artist, text) => {
     const t = clean(text, { max: LIMITS.message, newlines: true });
     if (!session || !t) return;
-    const m = { id: "fc_" + Date.now(), userId: session.id, name: session.name, initials: session.initials, text: t, ts: "now" };
+    const localId = "fc_" + Date.now();
+    const m = { id: localId, userId: session.id, name: session.name, initials: session.initials, text: t, ts: "now" };
     setFanClubMsgs((L) => ({ ...L, [fcKey(artist)]: [...(L[fcKey(artist)] || []), m] }));
+    const enc = encodeURIComponent(norm(artist));
+    api(`/api/fanclubs/${enc}/messages`, { method: "POST", body: { text: t } })
+      .then(({ id }) => { if (id) setFanClubMsgs((L) => ({ ...L, [fcKey(artist)]: (L[fcKey(artist)] || []).map((x) => (x.id === localId ? { ...x, id } : x)) })); })
+      .catch(() => {});
   };
   const isFanClubMember = (artist) => (fanClubs[session?.id] || []).some((a) => norm(a) === norm(artist));
   const joinFanClub = (artist) => {
     if (!session) return;
+    const has = isFanClubMember(artist);
     setFanClubs((f) => {
       const mine = f[session.id] || [];
-      const has = mine.some((a) => norm(a) === norm(artist));
       return { ...f, [session.id]: has ? mine.filter((a) => norm(a) !== norm(artist)) : [...mine, artist] };
     });
+    // Optimistically nudge the server-truth count so it tracks my toggle.
+    setFanClubMeta((meta) => { const cur = meta[fcKey(artist)]; return cur ? { ...meta, [fcKey(artist)]: { members: Math.max(0, cur.members + (has ? -1 : 1)) } } : meta; });
+    const enc = encodeURIComponent(norm(artist));
+    api(`/api/fanclubs/${enc}/join`, { method: "POST" }).catch(() => {}); // server toggles
   };
-  const fanClubCount = (artist) => Object.values(fanClubs).filter((arr) => arr.some((a) => norm(a) === norm(artist))).length;
+  const fanClubCount = (artist) =>
+    fanClubMeta[fcKey(artist)]?.members ?? Object.values(fanClubs).filter((arr) => arr.some((a) => norm(a) === norm(artist))).length;
 
   // Directory of fan clubs, most members first — powers the Fan clubs screen and
   // the Community search pane so clubs are findable, not buried on artist pages.
@@ -1049,7 +1086,7 @@ export function StoreProvider({ children }) {
     commentsFor, addComment, loadComments, likeInfo, toggleLike,
     concertKey, loungeFor, addLoungeMessage,
     albumRating, songRating, rateAlbum, rateSong,
-    fanClubFor, addFanClubMessage, isFanClubMember, joinFanClub, fanClubCount, fanClubsDirectory,
+    fanClubFor, loadFanClub, addFanClubMessage, isFanClubMember, joinFanClub, fanClubCount, fanClubsDirectory,
     isArtistOwner, artistProfile, updateArtistProfile, artistFeedEnabled,
     artistPostsFor, addArtistPost, removeArtistPost,
     accountStatus, banUser, unbanUser, suspendUser, removeLoungeMessage, removeComment,
