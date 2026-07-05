@@ -133,6 +133,74 @@ CREATE TABLE IF NOT EXISTS reports (
   status      TEXT NOT NULL DEFAULT 'open',
   created_at  INTEGER NOT NULL
 );
+
+-- ---- SQLite migration slice 7 (ratings, going, venue reviews, artist pages) ----
+
+-- Album + song ratings. kind = 'album' | 'song', ref = norm(artist)|norm(title).
+CREATE TABLE IF NOT EXISTS ratings (
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind    TEXT NOT NULL,
+  ref     TEXT NOT NULL,
+  rating  REAL NOT NULL,
+  PRIMARY KEY (user_id, kind, ref)
+);
+CREATE INDEX IF NOT EXISTS idx_ratings_ref ON ratings(kind, ref);
+
+-- Planned attendance ("I'm going"), keyed by the concert key (artist|venue|date).
+CREATE TABLE IF NOT EXISTS going (
+  user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  concert_key TEXT NOT NULL,
+  artist      TEXT NOT NULL,
+  venue       TEXT NOT NULL,
+  city        TEXT NOT NULL DEFAULT '',
+  date        TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (user_id, concert_key)
+);
+CREATE INDEX IF NOT EXISTS idx_going_key ON going(concert_key);
+
+-- Venue reviews (room reputation), keyed by norm(venue).
+CREATE TABLE IF NOT EXISTS venue_reviews (
+  id         TEXT PRIMARY KEY,
+  venue_key  TEXT NOT NULL,
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  rating     REAL NOT NULL,
+  text       TEXT NOT NULL DEFAULT '',
+  photos     TEXT NOT NULL DEFAULT '[]',
+  removed    INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_venue_reviews_venue ON venue_reviews(venue_key);
+
+-- Artist account requests (fan → admin-approved artist).
+CREATE TABLE IF NOT EXISTS artist_requests (
+  id          TEXT PRIMARY KEY,
+  user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  artist_name TEXT NOT NULL,
+  note        TEXT NOT NULL DEFAULT '',
+  status      TEXT NOT NULL DEFAULT 'pending',
+  created_at  INTEGER NOT NULL
+);
+
+-- Artist-owned profile overrides (banner/avatar/bio/feed toggle), keyed by norm(name).
+CREATE TABLE IF NOT EXISTS artist_profiles (
+  artist_key   TEXT PRIMARY KEY,
+  bio          TEXT,
+  banner       TEXT,
+  avatar_uri   TEXT,
+  feed_enabled INTEGER NOT NULL DEFAULT 0,
+  owner_id     TEXT REFERENCES users(id) ON DELETE SET NULL,
+  updated_at   INTEGER
+);
+
+-- The artist "updates" feed (posts on their own page).
+CREATE TABLE IF NOT EXISTS artist_posts (
+  id         TEXT PRIMARY KEY,
+  artist_key TEXT NOT NULL,
+  user_id    TEXT REFERENCES users(id) ON DELETE SET NULL,
+  text       TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_artist_posts_artist ON artist_posts(artist_key);
 `);
 
 const ver = db.prepare("SELECT version FROM schema_version LIMIT 1").get();

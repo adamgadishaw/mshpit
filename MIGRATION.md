@@ -1,7 +1,10 @@
 # SQLite migration plan — `src/store.js` → backend API
 
-> Status: **planning / not started in code.** This is the execution plan for
-> backlog item #1 in `HANDOFF.md`. Read it before writing migration code.
+> Status: **COMPLETE (slices 1–7).** Every dynamic data type now writes through to
+> the server and hydrates back, best-effort/offline-safe. Kept as the reference for
+> how the write-through + hydrate pattern works. Prereqs remain for prod scale
+> (server-side seeding of demo users/catalog is still optional — the bundled seed
+> is the offline cache).
 
 ## The goal
 
@@ -66,8 +69,16 @@ persist server-side).
    mapped to client shape); `actionReport`/`dismissReport` write through to the
    admin action/dismiss endpoints; `banUser` writes through `POST /api/admin/users/:id/ban`.
    Server ids (`r_...`) round-trip; local-only ids (`rep_...`) 404 harmlessly.
-7. **Ratings, going/attendance, venue reviews, artist requests/profiles** — need
-   new tables + endpoints; lowest priority.
+7. **Ratings · going · venue reviews · artist requests/profiles** ✅ (slice 7).
+   Added 6 tables (`ratings`, `going`, `venue_reviews`, `artist_requests`,
+   `artist_profiles`, `artist_posts`) + endpoints. Client: `rateAlbum`/`rateSong`
+   write through and overlay a server aggregate (`ratingAgg`, loaded via
+   `loadRating`); `toggleGoing` writes through + hydrates on login; `addVenueReview`
+   writes through, `loadVenueReviews` hydrates (VenueScreen); `requestArtist` +
+   admin approve/reject write through, admins hydrate the pending queue;
+   `updateArtistProfile`/`addArtistPost`/`removeArtistPost` write through with an
+   owner check (`ownsArtist`), `loadArtistPage` hydrates overrides + updates feed
+   (ArtistScreen). All best-effort/offline-safe.
 
 ## Pattern to follow (already proven by the theme feature)
 

@@ -129,6 +129,8 @@ export function StoreProvider({ children }) {
   // Album + song ratings (stand-in for stream data) keyed by artist|title
   const [albumRatings, setAlbumRatings] = useState({ "turnstile|glow on": { u_mara: 5, u_devon: 4.5 }, "turnstile|never enough": { u_mara: 4 } });
   const [songRatings, setSongRatings] = useState({ "turnstile|healing": { u_mara: 5, u_demo: 5 } });
+  // Server-truth rating aggregates keyed by `${kind}|${ref}` (slice 7).
+  const [ratingAgg, setRatingAgg] = useState({});
 
   // Persist identity + continuity state so a refresh doesn't wipe your session,
   // account, posts, or follows.
@@ -206,6 +208,10 @@ export function StoreProvider({ children }) {
     api("/api/me/fanclubs")
       .then(({ artists }) => { if (Array.isArray(artists)) setFanClubs((f) => ({ ...f, [su.id]: artists })); })
       .catch(() => {});
+    // Slice 7: hydrate my "going" list so planned attendance survives a new device.
+    api("/api/me/going")
+      .then(({ going: rows }) => { if (Array.isArray(rows)) setGoing((G) => ({ ...G, [su.id]: rows })); })
+      .catch(() => {});
     // Slice 6: admins hydrate the open report queue (server rows → client shape).
     if (su.role === "admin") {
       api("/api/admin/reports")
@@ -216,6 +222,17 @@ export function StoreProvider({ children }) {
             const fresh = rows
               .filter((r) => !have.has(r.id))
               .map((r) => ({ id: r.id, targetId: r.target_id, reason: r.reason, reporterId: r.reporter_id, status: "open" }));
+            return fresh.length ? [...fresh, ...rs] : rs;
+          });
+        })
+        .catch(() => {});
+      // Slice 7: admins hydrate pending artist-account requests.
+      api("/api/admin/artist-requests")
+        .then(({ requests: rows }) => {
+          if (!Array.isArray(rows) || !rows.length) return;
+          setRequests((rs) => {
+            const have = new Set(rs.map((x) => x.id));
+            const fresh = rows.filter((r) => !have.has(r.id));
             return fresh.length ? [...fresh, ...rs] : rs;
           });
         })
@@ -397,6 +414,7 @@ export function StoreProvider({ children }) {
     const an = clean(artistName, { max: LIMITS.artist });
     if (an.length < 2) return { ok: false, error: "Enter the artist name." };
     setRequests((rs) => [...rs, { id: "r_" + Date.now(), userId: session.id, artistName: an, note: clean(note, { max: LIMITS.note, newlines: true }), status: "pending" }]);
+    api("/api/artist-requests", { method: "POST", body: { artistName: an, note } }).catch(() => {}); // slice 7
     return { ok: true };
   };
   const approveArtist = (reqId) => {
@@ -406,8 +424,12 @@ export function StoreProvider({ children }) {
       setUsers((all) => all.map((u) => (u.id === req.userId ? { ...u, role: "artist", artistName: req.artistName } : u)));
       setSession((s) => (s && s.id === req.userId ? { ...s, role: "artist", artistName: req.artistName } : s));
     }
+    api(`/api/admin/artist-requests/${reqId}/approve`, { method: "POST" }).catch(() => {}); // flips role server-side
   };
-  const rejectArtist = (reqId) => setRequests((rs) => rs.map((r) => (r.id === reqId ? { ...r, status: "rejected" } : r)));
+  const rejectArtist = (reqId) => {
+    setRequests((rs) => rs.map((r) => (r.id === reqId ? { ...r, status: "rejected" } : r)));
+    api(`/api/admin/artist-requests/${reqId}/reject`, { method: "POST" }).catch(() => {});
+  };
 
   // Tour dates - bulk batch with a scheduled release time.
   const addTourDatesBatch = (list, releaseAt) => {
@@ -505,18 +527,36 @@ export function StoreProvider({ children }) {
     setLounge((L) => ({ ...L, [key]: [...(L[key] || []), m] }));
   };
 
-  // --- Album + song ratings (Apple-Music-style stars; user reviews for now) ---
+  // --- Album + song ratings (Apple-Music-style stars) — slice 7 ---
+  // Local map stays the offline model; ratingAgg overlays the server aggregate
+  // ({ avg, count, mine }) once loaded, so counts reflect everyone, not just this
+  // browser. Reads prefer the server aggregate when present.
   const rKey = (artist, title) => `${norm(artist)}|${norm(title)}`;
+  const aggKey = (kind, artist, title) => `${kind}|${rKey(artist, title)}`;
   const aggRate = (map, artist, title) => {
     const r = map[rKey(artist, title)];
     if (!r) return { avg: 0, count: 0, mine: 0 };
     const vals = Object.values(r);
     return { avg: vals.reduce((a, b) => a + b, 0) / vals.length, count: vals.length, mine: (session && r[session.id]) || 0 };
   };
-  const albumRating = (artist, title) => aggRate(albumRatings, artist, title);
-  const songRating = (artist, title) => aggRate(songRatings, artist, title);
-  const rateAlbum = (artist, title, n) => { if (!session) return; setAlbumRatings((m) => ({ ...m, [rKey(artist, title)]: { ...(m[rKey(artist, title)] || {}), [session.id]: clampRating(n) } })); };
-  const rateSong = (artist, title, n) => { if (!session) return; setSongRatings((m) => ({ ...m, [rKey(artist, title)]: { ...(m[rKey(artist, title)] || {}), [session.id]: clampRating(n) } })); };
+  const loadRating = (kind, artist, title) => {
+    api(`/api/ratings?kind=${kind}&ref=${encodeURIComponent(rKey(artist, title))}`)
+      .then((r) => setRatingAgg((m) => ({ ...m, [aggKey(kind, artist, title)]: { avg: r.avg, count: r.count, mine: r.mine } })))
+      .catch(() => {});
+  };
+  const albumRating = (artist, title) => ratingAgg[aggKey("album", artist, title)] || aggRate(albumRatings, artist, title);
+  const songRating = (artist, title) => ratingAgg[aggKey("song", artist, title)] || aggRate(songRatings, artist, title);
+  const rate = (kind, setMap, artist, title, n) => {
+    if (!session) return;
+    const nn = clampRating(n);
+    setMap((m) => ({ ...m, [rKey(artist, title)]: { ...(m[rKey(artist, title)] || {}), [session.id]: nn } }));
+    setRatingAgg((m) => { const cur = m[aggKey(kind, artist, title)]; return cur ? { ...m, [aggKey(kind, artist, title)]: { ...cur, mine: nn } } : m; });
+    api("/api/ratings", { method: "POST", body: { kind, ref: rKey(artist, title), rating: nn } })
+      .then((r) => setRatingAgg((m) => ({ ...m, [aggKey(kind, artist, title)]: { avg: r.avg, count: r.count, mine: r.mine } })))
+      .catch(() => {});
+  };
+  const rateAlbum = (artist, title, n) => rate("album", setAlbumRatings, artist, title, n);
+  const rateSong = (artist, title, n) => rate("song", setSongRatings, artist, title, n);
 
   // --- Artist fan clubs (permanent chat, keyed by artist) ---
   const fcKey = (artist) => norm(artist);
@@ -593,23 +633,49 @@ export function StoreProvider({ children }) {
     return session.role === "artist" && norm(session.artistName) === norm(name);
   };
   const artistProfile = (name) => artistProfiles[norm(name)] || {};
+  // Slice 7: hydrate an artist page's owner overrides + updates feed.
+  const loadArtistPage = (name) => {
+    const enc = encodeURIComponent(norm(name));
+    api(`/api/artists/${enc}/profile`)
+      .then(({ profile, posts }) => {
+        if (profile) setArtistProfiles((m) => ({ ...m, [norm(name)]: { ...(m[norm(name)] || {}), ...profile } }));
+        if (Array.isArray(posts) && posts.length) {
+          setArtistPosts((m) => {
+            const existing = m[norm(name)] || [];
+            const have = new Set(existing.map((p) => p.id));
+            const fresh = posts.filter((p) => !have.has(p.id)).map((p) => ({ id: p.id, text: p.text, ts: ago(p.createdAt) }));
+            return fresh.length ? { ...m, [norm(name)]: [...fresh, ...existing] } : m;
+          });
+        }
+      })
+      .catch(() => {});
+  };
   const updateArtistProfile = (name, patch) => {
     if (!isArtistOwner(name)) return;
     const safe = { ...patch };
     if ("bio" in safe) safe.bio = clean(safe.bio, { max: 600, newlines: true });
     setArtistProfiles((m) => ({ ...m, [norm(name)]: { ...(m[norm(name)] || {}), ...safe } }));
+    const enc = encodeURIComponent(norm(name));
+    api(`/api/artists/${enc}/profile`, { method: "PATCH", body: safe }).catch(() => {});
   };
   const artistFeedEnabled = (name) => !!artistProfiles[norm(name)]?.feedEnabled;
   const artistPostsFor = (name) => artistPosts[norm(name)] || [];
   const addArtistPost = (name, text) => {
     const t = clean(text, { max: LIMITS.message, newlines: true });
     if (!isArtistOwner(name) || !t) return;
-    const p = { id: "ap_" + Date.now(), text: t, ts: "now" };
+    const localId = "ap_" + Date.now();
+    const p = { id: localId, text: t, ts: "now" };
     setArtistPosts((m) => ({ ...m, [norm(name)]: [p, ...(m[norm(name)] || [])] }));
+    const enc = encodeURIComponent(norm(name));
+    api(`/api/artists/${enc}/posts`, { method: "POST", body: { text: t } })
+      .then(({ id }) => { if (id) setArtistPosts((m) => ({ ...m, [norm(name)]: (m[norm(name)] || []).map((x) => (x.id === localId ? { ...x, id } : x)) })); })
+      .catch(() => {});
   };
   const removeArtistPost = (name, id) => {
     if (!isArtistOwner(name)) return;
     setArtistPosts((m) => ({ ...m, [norm(name)]: (m[norm(name)] || []).filter((p) => p.id !== id) }));
+    const enc = encodeURIComponent(norm(name));
+    api(`/api/artists/${enc}/posts/${id}`, { method: "DELETE" }).catch(() => {});
   };
 
   // --- Ban / suspend (admin) ---
@@ -637,15 +703,39 @@ export function StoreProvider({ children }) {
       const exists = mine.some((g) => g.key === key);
       return { ...G, [session.id]: exists ? mine.filter((g) => g.key !== key) : [...mine, { key, artist: log.artist, venue: log.venue, city: log.city, date: log.date }] };
     });
+    // Slice 7: server toggles my attendance (best-effort, offline-safe).
+    api("/api/going", { method: "POST", body: { key, artist: log.artist, venue: log.venue, city: log.city, date: log.date } }).catch(() => {});
   };
   const attendeesFor = (key) => users.filter((u) => (going[u.id] || []).some((g) => g.key === key));
 
   // --- Venue reviews + photos ---
   const venueReviewsFor = (venueName) => venueReviews[norm(venueName)] || [];
+  // Slice 7: hydrate a venue's reviews from the server (merge by id).
+  const loadVenueReviews = (venueName) => {
+    const enc = encodeURIComponent(norm(venueName));
+    api(`/api/venues/${enc}/reviews`)
+      .then(({ reviews }) => {
+        if (!Array.isArray(reviews) || !reviews.length) return;
+        setVenueReviews((m) => {
+          const existing = m[norm(venueName)] || [];
+          const have = new Set(existing.map((r) => r.id));
+          const fresh = reviews
+            .filter((r) => !have.has(r.id))
+            .map((r) => ({ id: r.id, userId: r.userId, name: r.name, initials: r.initials, rating: r.rating, text: r.text, photos: r.photos || [], ts: ago(r.createdAt) }));
+          return fresh.length ? { ...m, [norm(venueName)]: [...fresh, ...existing] } : m;
+        });
+      })
+      .catch(() => {});
+  };
   const addVenueReview = (venueName, { rating, text, photos }) => {
     if (!session) return;
-    const r = { id: "vr_" + Date.now(), userId: session.id, name: session.name, initials: session.initials, rating: clampRating(rating), text: clean(text, { max: LIMITS.review, newlines: true }), photos: (photos || []).slice(0, 8), ts: "now" };
+    const localId = "vr_" + Date.now();
+    const r = { id: localId, userId: session.id, name: session.name, initials: session.initials, rating: clampRating(rating), text: clean(text, { max: LIMITS.review, newlines: true }), photos: (photos || []).slice(0, 8), ts: "now" };
     setVenueReviews((m) => ({ ...m, [norm(venueName)]: [r, ...(m[norm(venueName)] || [])] }));
+    const enc = encodeURIComponent(norm(venueName));
+    api(`/api/venues/${enc}/reviews`, { method: "POST", body: { rating: r.rating, text: r.text, photos: r.photos } })
+      .then(({ id }) => { if (id) setVenueReviews((m) => ({ ...m, [norm(venueName)]: (m[norm(venueName)] || []).map((x) => (x.id === localId ? { ...x, id } : x)) })); })
+      .catch(() => {});
   };
   const venueRating = (venueName) => { const rs = venueReviewsFor(venueName); return rs.length ? rs.reduce((s, r) => s + r.rating, 0) / rs.length : 0; };
   const venueTopPhotos = (venueName, n = 20) => venueReviewsFor(venueName).flatMap((r) => r.photos.map((p) => ({ uri: p, by: r.name }))).slice(0, n);
@@ -1110,13 +1200,13 @@ export function StoreProvider({ children }) {
     allArtists, topArtists, artistsAlphabetical, upcomingEvents, trendingVenues,
     commentsFor, addComment, loadComments, likeInfo, toggleLike,
     concertKey, loungeFor, addLoungeMessage,
-    albumRating, songRating, rateAlbum, rateSong,
+    albumRating, songRating, rateAlbum, rateSong, loadRating,
     fanClubFor, loadFanClub, addFanClubMessage, isFanClubMember, joinFanClub, fanClubCount, fanClubsDirectory,
-    isArtistOwner, artistProfile, updateArtistProfile, artistFeedEnabled,
+    isArtistOwner, artistProfile, loadArtistPage, updateArtistProfile, artistFeedEnabled,
     artistPostsFor, addArtistPost, removeArtistPost,
     accountStatus, banUser, unbanUser, suspendUser, removeLoungeMessage, removeComment,
     goingFor, isGoing, toggleGoing, attendeesFor,
-    venueReviewsFor, addVenueReview, venueRating, venueTopPhotos, venuePhotos, artistFanPhotos,
+    venueReviewsFor, loadVenueReviews, addVenueReview, venueRating, venueTopPhotos, venuePhotos, artistFanPhotos,
     artistGallery, isPhotoRemoved, removePhoto, restorePhoto,
     threadMessages, sendDM, loadThread, markThreadRead, inboxThreads, mainThreads, requestThreads, inboxUnread, requestCount,
   };

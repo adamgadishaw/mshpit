@@ -102,9 +102,10 @@ npm run pipeline             # self-running scraper (needs .env, see below)
 - ~~Theme saved to the account + chosen at signup~~ ✅ (2026-07-04)
 - ~~Profile photo gallery~~ ✅ (2026-07-04)
 - ~~DM Requests vs Friends split~~ ✅ (2026-07-04)
-1. **Full SQLite migration** — move `src/store.js` dynamic data onto the backend
-   API. **Big open task; started.** See **`MIGRATION.md`** for the ordered plan +
-   prerequisites (server data seeding, missing read endpoints). Done so far:
+1. **Full SQLite migration** ✅ **COMPLETE (slices 1–7).** All dynamic data
+   (follows, posts/feed, likes, comments, DMs, fan clubs, reports, ratings, going,
+   venue reviews, artist requests/profiles/posts) now writes through to the backend
+   and hydrates back, best-effort/offline-safe. See **`MIGRATION.md`**. History:
    **slice 1 (follows)**, **slice 2 (posts/feed)**, **slice 3 (likes/comments)**,
    **slice 4 (DMs)** — all write-through + hydrate, best-effort/non-breaking.
    `hydrateFeed()` pulls the public server feed on load (guests too) and merges it

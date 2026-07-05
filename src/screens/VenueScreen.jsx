@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { View, Text, StyleSheet, ScrollView, Pressable, Linking, Image } from "react-native";
 import { colors, mono, radius } from "../theme";
 import { useStore } from "../store";
@@ -11,11 +12,13 @@ import MentionText from "../components/MentionText";
 // Venue page - the room's reputation. Sound, views and crowd live with the
 // building, so they aggregate here rather than dragging down the touring band.
 export default function VenueScreen({ venueName, onClose, onOpenShow, onOpenArtist, onOpenVenue, onReviewVenue, onOpenProfile, onOpenPhotos }) {
-  const { venueSummary, venueCoord, venueReviewsFor, venueRating, venueTopPhotos, venuePhotos, userByHandle } = useStore();
+  const { venueSummary, venueCoord, venueReviewsFor, loadVenueReviews, venueRating, venueTopPhotos, venuePhotos, userByHandle } = useStore();
   const v = venueSummary(venueName);
   const coord = venueCoord(v.name);
   const photos = venuePhotos(v.name);
   const reviews = venueReviewsFor(v.name);
+  // Slice 7: pull this venue's reviews from the server on open.
+  useEffect(() => { loadVenueReviews(v.name); }, [v.name]);
   const userRating = venueRating(v.name);
   const gridPhotos = venueTopPhotos(v.name, 20);
   const onMention = (h) => { const u = userByHandle(h); if (u) onOpenProfile?.(u.id); };

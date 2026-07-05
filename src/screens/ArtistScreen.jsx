@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { View, Text, StyleSheet, ScrollView, Pressable, Linking, Image, TextInput } from "react-native";
 import { colors, mono, radius } from "../theme";
 import { useStore, isStaff } from "../store";
@@ -35,8 +35,8 @@ function AlbumArt({ uri }) {
 // Artist page - the rollup of a band's live reputation across every night,
 // plus where to catch them next. Answers "is this band worth seeing?"
 export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFanClub, onOpenPhotos, onEditArtist }) {
-  const { session, artistSummary, albumRating, songRating, rateAlbum, rateSong,
-    isArtistOwner, artistPostsFor, addArtistPost, removeArtistPost,
+  const { session, artistSummary, albumRating, songRating, rateAlbum, rateSong, loadRating,
+    isArtistOwner, artistPostsFor, loadArtistPage, addArtistPost, removeArtistPost,
     artistGallery, removePhoto } = useStore();
   const a = artistSummary(artistName);
   const meta = artistMeta(a.name);
@@ -54,6 +54,15 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
   const avatarUser = { avatarUri: a.photo || meta?.photo || null, initials: a.name.slice(0, 2).toUpperCase(), avatarColor: colors.amber };
   const posts = artistPostsFor(a.name);
   const [draft, setDraft] = useState("");
+
+  // Slice 7: hydrate the artist's owner overrides + updates feed, and the server
+  // aggregates for each album/song rating shown on the page.
+  useEffect(() => { loadArtistPage(a.name); }, [a.name]);
+  useEffect(() => {
+    (meta?.albums || []).forEach((al) => loadRating("album", a.name, al.title));
+    songs.forEach((s) => loadRating("song", a.name, s.title));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [a.name]);
   const post = () => { if (draft.trim()) { addArtistPost(a.name, draft); setDraft(""); } };
 
   return (

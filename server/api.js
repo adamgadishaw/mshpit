@@ -30,6 +30,13 @@ function limit(ctx, name, max, windowMs) {
   if (!rateLimit(`${name}:${ctx.ip}`, max, windowMs)) throw new ApiError(429, "Too many requests — slow down and try again.");
 }
 
+// An account "owns" the artist page whose name matches theirs; admins own all.
+function ownsArtist(u, key) {
+  if (!u) return false;
+  if (u.role === "admin") return true;
+  return u.role === "artist" && (u.artist_name || "").trim().toLowerCase() === key;
+}
+
 // Ensure a unique handle derived from a base string.
 function uniqueHandle(base) {
   let h = cleanHandle(base) || "fan";
@@ -369,6 +376,150 @@ export const routes = {
     if (ctx.params.id === ctx.user.id) throw new ApiError(400, "You can't ban yourself.");
     db.prepare("UPDATE users SET is_banned=1 WHERE id=?").run(ctx.params.id);
     db.prepare("DELETE FROM sessions WHERE user_id=?").run(ctx.params.id); // kill their sessions immediately
+    return { ok: true };
+  },
+
+  // ---- ratings: album + song stars (SQLite migration slice 7) ----
+  "GET /api/ratings": (ctx) => {
+    const kind = ctx.query.kind === "song" ? "song" : "album";
+    const ref = clean(ctx.query.ref, { max: 200 });
+    if (!ref) throw new ApiError(400, "Missing ref.");
+    const agg = db.prepare("SELECT AVG(rating) avg, COUNT(*) count FROM ratings WHERE kind=? AND ref=?").get(kind, ref);
+    const mine = ctx.user ? db.prepare("SELECT rating FROM ratings WHERE user_id=? AND kind=? AND ref=?").get(ctx.user.id, kind, ref) : null;
+    return { avg: agg.avg || 0, count: agg.count || 0, mine: mine?.rating || 0 };
+  },
+  "POST /api/ratings": (ctx) => {
+    const u = requireUser(ctx);
+    limit(ctx, "rate", 120, 10 * 60 * 1000);
+    const kind = ctx.body?.kind === "song" ? "song" : "album";
+    const ref = clean(ctx.body?.ref, { max: 200 });
+    const rating = clampRating(ctx.body?.rating);
+    if (!ref || !rating) throw new ApiError(400, "Bad rating.");
+    db.prepare(`INSERT INTO ratings (user_id,kind,ref,rating) VALUES (?,?,?,?)
+                ON CONFLICT(user_id,kind,ref) DO UPDATE SET rating=excluded.rating`).run(u.id, kind, ref, rating);
+    const agg = db.prepare("SELECT AVG(rating) avg, COUNT(*) count FROM ratings WHERE kind=? AND ref=?").get(kind, ref);
+    return { avg: agg.avg || 0, count: agg.count || 0, mine: rating };
+  },
+
+  // ---- going / attendance (slice 7) ----
+  "GET /api/me/going": (ctx) => {
+    const u = requireUser(ctx);
+    const rows = db.prepare("SELECT concert_key, artist, venue, city, date FROM going WHERE user_id=?").all(u.id);
+    return { going: rows.map((r) => ({ key: r.concert_key, artist: r.artist, venue: r.venue, city: r.city, date: r.date })) };
+  },
+  "POST /api/going": (ctx) => {
+    const u = requireUser(ctx);
+    limit(ctx, "going", 120, 10 * 60 * 1000);
+    const key = clean(ctx.body?.key, { max: 300 });
+    if (!key) throw new ApiError(400, "Missing key.");
+    const has = db.prepare("SELECT 1 FROM going WHERE user_id=? AND concert_key=?").get(u.id, key);
+    if (has) { db.prepare("DELETE FROM going WHERE user_id=? AND concert_key=?").run(u.id, key); return { going: false }; }
+    db.prepare("INSERT INTO going (user_id,concert_key,artist,venue,city,date) VALUES (?,?,?,?,?,?)")
+      .run(u.id, key, clean(ctx.body?.artist, { max: LIMITS.artist }) || "", clean(ctx.body?.venue, { max: LIMITS.venue }) || "",
+        clean(ctx.body?.city, { max: LIMITS.city }) || "", clean(ctx.body?.date, { max: LIMITS.date }) || "");
+    return { going: true };
+  },
+  "GET /api/going/:key/attendees": (ctx) => {
+    const key = decodeURIComponent(ctx.params.key);
+    const rows = db.prepare("SELECT user_id FROM going WHERE concert_key=? LIMIT 200").all(key);
+    return { attendees: rows.map((r) => publicUser(q.userById.get(r.user_id))).filter(Boolean) };
+  },
+
+  // ---- venue reviews (slice 7) ----
+  "GET /api/venues/:key/reviews": (ctx) => {
+    const key = clean(decodeURIComponent(ctx.params.key), { max: 200 }).toLowerCase();
+    const rows = db.prepare(`SELECT r.*, u.name, u.initials FROM venue_reviews r JOIN users u ON u.id=r.user_id
+                             WHERE r.venue_key=? AND r.removed=0 ORDER BY r.created_at DESC LIMIT 200`).all(key);
+    return { reviews: rows.map((r) => ({ id: r.id, userId: r.user_id, name: r.name, initials: r.initials, rating: r.rating, text: r.text, photos: JSON.parse(r.photos || "[]"), createdAt: r.created_at })) };
+  },
+  "POST /api/venues/:key/reviews": (ctx) => {
+    const u = requireUser(ctx);
+    limit(ctx, "venuereview", 30, 60 * 60 * 1000);
+    const key = clean(decodeURIComponent(ctx.params.key), { max: 200 }).toLowerCase();
+    const rating = clampRating(ctx.body?.rating);
+    if (!key || !rating) throw new ApiError(400, "Bad review.");
+    const text = clean(ctx.body?.text, { max: LIMITS.review, newlines: true });
+    const photos = cleanStringArray(ctx.body?.photos, { maxItems: 8, maxLen: 2000 });
+    const id = uid("vr");
+    db.prepare("INSERT INTO venue_reviews (id,venue_key,user_id,rating,text,photos,created_at) VALUES (?,?,?,?,?,?,?)")
+      .run(id, key, u.id, rating, text || "", JSON.stringify(photos || []), now());
+    return { id };
+  },
+
+  // ---- artist requests + owned profiles (slice 7) ----
+  "POST /api/artist-requests": (ctx) => {
+    const u = requireUser(ctx);
+    limit(ctx, "artistreq", 5, 60 * 60 * 1000);
+    const artistName = clean(ctx.body?.artistName, { max: LIMITS.artist });
+    if (!artistName || artistName.length < 2) throw new ApiError(400, "Enter the artist name.");
+    const id = uid("ar");
+    db.prepare("INSERT INTO artist_requests (id,user_id,artist_name,note,status,created_at) VALUES (?,?,?,?,'pending',?)")
+      .run(id, u.id, artistName, clean(ctx.body?.note, { max: LIMITS.note, newlines: true }) || "", now());
+    return { id };
+  },
+  "GET /api/admin/artist-requests": (ctx) => {
+    requireAdmin(ctx);
+    const rows = db.prepare("SELECT * FROM artist_requests WHERE status='pending' ORDER BY created_at DESC LIMIT 200").all();
+    return { requests: rows.map((r) => ({ id: r.id, userId: r.user_id, artistName: r.artist_name, note: r.note, status: r.status })) };
+  },
+  "POST /api/admin/artist-requests/:id/approve": (ctx) => {
+    requireAdmin(ctx);
+    const r = db.prepare("SELECT * FROM artist_requests WHERE id=?").get(ctx.params.id);
+    if (!r) throw new ApiError(404, "No such request.");
+    db.prepare("UPDATE artist_requests SET status='approved' WHERE id=?").run(r.id);
+    db.prepare("UPDATE users SET role='artist', artist_name=? WHERE id=?").run(r.artist_name, r.user_id);
+    return { ok: true };
+  },
+  "POST /api/admin/artist-requests/:id/reject": (ctx) => {
+    requireAdmin(ctx);
+    db.prepare("UPDATE artist_requests SET status='rejected' WHERE id=?").run(ctx.params.id);
+    return { ok: true };
+  },
+  "GET /api/artists/:key/profile": (ctx) => {
+    const key = clean(decodeURIComponent(ctx.params.key), { max: 200 }).toLowerCase();
+    const p = db.prepare("SELECT * FROM artist_profiles WHERE artist_key=?").get(key);
+    const posts = db.prepare("SELECT id, text, created_at FROM artist_posts WHERE artist_key=? ORDER BY created_at DESC LIMIT 100").all(key);
+    return {
+      profile: p ? { bio: p.bio, banner: p.banner, avatarUri: p.avatar_uri, feedEnabled: !!p.feed_enabled } : null,
+      posts: posts.map((x) => ({ id: x.id, text: x.text, createdAt: x.created_at })),
+    };
+  },
+  "PATCH /api/artists/:key/profile": (ctx) => {
+    const u = requireUser(ctx);
+    const key = clean(decodeURIComponent(ctx.params.key), { max: 200 }).toLowerCase();
+    if (!ownsArtist(u, key)) throw new ApiError(403, "Not your page.");
+    const [, v] = shape(ctx.body, {
+      bio: { parse: (x) => clean(x, { max: 600, newlines: true }) },
+      banner: { parse: (x) => clean(x, { max: 2000 }) },
+      avatarUri: { parse: (x) => clean(x, { max: 2000 }) },
+      feedEnabled: { parse: (x) => (x ? 1 : 0) },
+    });
+    if (!db.prepare("SELECT 1 FROM artist_profiles WHERE artist_key=?").get(key))
+      db.prepare("INSERT INTO artist_profiles (artist_key,owner_id,updated_at) VALUES (?,?,?)").run(key, u.id, now());
+    const sets = [], args = [];
+    if (v.bio !== undefined) { sets.push("bio=?"); args.push(v.bio); }
+    if (v.banner !== undefined) { sets.push("banner=?"); args.push(v.banner); }
+    if (v.avatarUri !== undefined) { sets.push("avatar_uri=?"); args.push(v.avatarUri); }
+    if (v.feedEnabled !== undefined) { sets.push("feed_enabled=?"); args.push(v.feedEnabled); }
+    sets.push("updated_at=?"); args.push(now());
+    db.prepare(`UPDATE artist_profiles SET ${sets.join(", ")} WHERE artist_key=?`).run(...args, key);
+    return { ok: true };
+  },
+  "POST /api/artists/:key/posts": (ctx) => {
+    const u = requireUser(ctx);
+    const key = clean(decodeURIComponent(ctx.params.key), { max: 200 }).toLowerCase();
+    if (!ownsArtist(u, key)) throw new ApiError(403, "Not your page.");
+    const text = clean(ctx.body?.text, { max: LIMITS.message, newlines: true });
+    if (!text) throw new ApiError(400, "Say something first.");
+    const id = uid("ap");
+    db.prepare("INSERT INTO artist_posts (id,artist_key,user_id,text,created_at) VALUES (?,?,?,?,?)").run(id, key, u.id, text, now());
+    return { id };
+  },
+  "DELETE /api/artists/:key/posts/:id": (ctx) => {
+    const u = requireUser(ctx);
+    const key = clean(decodeURIComponent(ctx.params.key), { max: 200 }).toLowerCase();
+    if (!ownsArtist(u, key)) throw new ApiError(403, "Not your page.");
+    db.prepare("DELETE FROM artist_posts WHERE id=? AND artist_key=?").run(ctx.params.id, key);
     return { ok: true };
   },
 };
