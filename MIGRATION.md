@@ -37,18 +37,25 @@ Run `npm run server` (port 3000) and load the app so the preview (8081) proxies
 to it; sign up a **real** account (local demo `u_demo` is offline-only and won't
 persist server-side).
 
-1. **Follows** — smallest graph. Add `GET /api/me/following` (returns ids).
-   Hydrate `follows[session.id]` on login; `follow`/`unfollow` write through to
-   `POST /api/users/:id/follow`. Server endpoints for the toggle already exist.
-2. **Posts / feed** — `GET /api/feed` + `POST /api/posts` exist. Decide catalog
-   vs user posts (keep catalog bundled; store user posts in `posts`). Hydrate
-   feed on load, merge with bundled catalog shows, write through `addLog`.
-3. **Likes + comments** — endpoints exist (`/api/posts/:id/like`,
-   `/api/posts/:id/comments`). Write-through `toggleLike`, `addComment`.
-4. **DMs** — needs new tables usage + `GET /api/me/threads`, `GET /api/dms/:otherId`,
-   `POST /api/dms/:otherId`. The `dms` table already exists in `server/db.js`.
-   Preserve the new Requests/Friends split (`bucket`) server-side or compute it
-   client-side from the follow graph as it does now.
+1. **Follows** ✅ (slice 1). `GET /api/me/following`; hydrate on login;
+   `follow`/`unfollow` write through to `POST /api/users/:id/follow`.
+2. **Posts / feed** ✅ (slice 2). `hydrateFeed()` in `store.js` pulls `GET /api/feed`
+   on mount (public — guests included) and again on login, merging server posts
+   OVER the bundled seed (dedupe by id; catalog stays bundled). `addLog` writes
+   through `POST /api/posts` and adopts the returned server id so likes/comments
+   key correctly. Best-effort/offline-safe.
+3. **Likes + comments** ✅ (slice 3). `toggleLike` → `POST /api/posts/:id/like`;
+   `addComment` → `POST /api/posts/:id/comments` (adopts server comment id);
+   `loadComments(id)` hydrates a post's thread (called from `AfterpartySection`).
+   Like counts/`liked` hydrate from the feed payload. The local like model
+   (`likes[id]` excludes the viewer, `myLikes[id]` is their toggle) is preserved by
+   subtracting the viewer back out of the server total on hydrate.
+4. **DMs** ✅ (slice 4). Added `GET /api/me/threads` (each thread + its messages +
+   the other user), `GET /api/dms/:otherId`, `POST /api/dms/:otherId` on the
+   existing `dms` table. Client hydrates threads on login (absorbing the other
+   users), `sendDM` writes through + adopts the server id, `loadThread()` refreshes
+   a thread on open (called from `ThreadScreen`). The Requests/Friends `bucket` and
+   unread markers stay **client-side** (computed from the follow graph), per plan.
 5. **Fan clubs** — endpoints exist (`/api/fanclubs/...`).
 6. **Reports / moderation** — endpoints exist (`/api/reports`, `/api/admin/...`).
 7. **Ratings, going/attendance, venue reviews, artist requests/profiles** — need

@@ -247,6 +247,47 @@ export const routes = {
     return { id };
   },
 
+  // ---- direct messages (SQLite migration slice 4) ----
+  // Every user I've DM'd + that thread's messages. At prototype scale returning
+  // all messages is cheap and lets the client compute the Requests/Friends split
+  // and unread exactly as it does locally (read markers stay client-side).
+  "GET /api/me/threads": (ctx) => {
+    const u = requireUser(ctx);
+    const others = db.prepare(`SELECT DISTINCT CASE WHEN from_id = ? THEN to_id ELSE from_id END AS other
+                               FROM dms WHERE from_id = ? OR to_id = ?`).all(u.id, u.id, u.id);
+    const threads = others.map((o) => {
+      const other = q.userById.get(o.other);
+      if (!other) return null;
+      const msgs = db.prepare(`SELECT id, from_id, text, created_at FROM dms
+        WHERE (from_id=? AND to_id=?) OR (from_id=? AND to_id=?) ORDER BY created_at ASC LIMIT 500`)
+        .all(u.id, o.other, o.other, u.id);
+      return { otherId: o.other, otherUser: publicUser(other), messages: msgs.map((m) => ({ id: m.id, from: m.from_id, text: m.text, createdAt: m.created_at })) };
+    }).filter(Boolean);
+    return { threads };
+  },
+
+  "GET /api/dms/:otherId": (ctx) => {
+    const u = requireUser(ctx);
+    const other = ctx.params.otherId;
+    const msgs = db.prepare(`SELECT id, from_id, text, created_at FROM dms
+      WHERE (from_id=? AND to_id=?) OR (from_id=? AND to_id=?) ORDER BY created_at ASC LIMIT 500`)
+      .all(u.id, other, other, u.id);
+    return { messages: msgs.map((m) => ({ id: m.id, from: m.from_id, text: m.text, createdAt: m.created_at })) };
+  },
+
+  "POST /api/dms/:otherId": (ctx) => {
+    const u = requireUser(ctx);
+    limit(ctx, "dm", 120, 10 * 60 * 1000);
+    const other = ctx.params.otherId;
+    if (other === u.id) throw new ApiError(400, "You can't message yourself.");
+    if (!q.userById.get(other)) throw new ApiError(404, "No such user.");
+    const text = clean(ctx.body?.text, { max: LIMITS.message, newlines: true });
+    if (!text) throw new ApiError(400, "Say something first.");
+    const id = uid("dm");
+    db.prepare("INSERT INTO dms (id,from_id,to_id,text,created_at) VALUES (?,?,?,?,?)").run(id, u.id, other, text, now());
+    return { id };
+  },
+
   // ---- fan clubs ----
   "POST /api/fanclubs/:artist/join": (ctx) => {
     const u = requireUser(ctx);

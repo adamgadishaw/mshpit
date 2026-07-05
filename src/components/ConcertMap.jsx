@@ -1,19 +1,41 @@
 import { useState } from "react";
-import { View, Text, Image, Pressable, StyleSheet } from "react-native";
+import { View, Text, Image, Pressable, StyleSheet, Platform } from "react-native";
 import CityMap from "./CityMap";
-import { HAS_MAP, mapStaticUrl } from "../mapConfig";
+import LiveMap from "./LiveMap";
+import { HAS_MAP, MAP_PROVIDER, GOOGLE_KEY, mapStaticUrl } from "../mapConfig";
 import { linearProjector, pixelProjector, MAP_W, MAP_H } from "../lib/mapProject";
 import { colors, mono, radius } from "../theme";
 
-// The map shown on concert / venue pages. Renders a real Mapbox dark map when a
-// token is set, else the drawn CityMap - and overlays interactive venue pins on
-// either. Focal venue glows; blue pins are nearby venues: hover (or tap once)
-// shows the name, click (or tap again) opens that venue's page.
-export default function ConcertMap({ points = [], highlight, focalName, label, onOpenVenue }) {
+const web = Platform.OS === "web" && typeof window !== "undefined";
+
+// The map shown on concert / venue / nearby pages. On web with a Google key it's
+// a REAL interactive map (LiveMap: pan, zoom, clickable pins). Without that it
+// falls back to a Mapbox static snapshot or the drawn CityMap, with tappable pin
+// overlays. Focal venue glows; blue pins are nearby venues (tap opens the page).
+export default function ConcertMap({ points = [], highlight, focalName, label, onOpenVenue, onPressPoint, height }) {
   const [active, setActive] = useState(null);
+  const [liveFailed, setLiveFailed] = useState(false);
   const all = highlight ? [...points, highlight] : points;
   const coords = all.filter((p) => p && p.lat != null && p.lng != null);
   if (coords.length === 0) return null;
+
+  // Interactive Google map (web only). If the JS API fails to load, drop through
+  // to the static/drawn fallback below so the map is never blank.
+  if (web && MAP_PROVIDER === "google" && GOOGLE_KEY && !liveFailed) {
+    return (
+      <LiveMap
+        points={points}
+        highlight={highlight}
+        focalName={focalName}
+        label={label}
+        onOpenVenue={onOpenVenue}
+        onPressPoint={onPressPoint}
+        height={height}
+        onFail={() => setLiveFailed(true)}
+        key="live"
+      />
+    );
+  }
 
   const proj = HAS_MAP ? pixelProjector(coords, MAP_W, MAP_H) : linearProjector(coords);
   const at = (p) => ({ left: `${proj.xPct(p.lng) * 100}%`, top: `${proj.yPct(p.lat) * 100}%` });

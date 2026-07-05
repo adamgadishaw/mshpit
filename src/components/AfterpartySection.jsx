@@ -1,19 +1,23 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { View, Text, StyleSheet, Pressable, TextInput, Linking } from "react-native";
 import { colors, mono, radius } from "../theme";
 import { useStore } from "../store";
 import { afterpartySpots, mapsDir, uberTo } from "../lib/afterparty";
 import Icon from "./Icon";
 import Avatar from "./Avatar";
+import ConcertMap from "./ConcertMap";
 
 const typeIcon = (t) => (t === "food" ? "food" : t === "activity" ? "star" : "drink");
 const typeLabel = (t) => (t === "food" ? "Food" : t === "bar" ? "Bar" : t === "club" ? "Club" : "Activity");
 
 export default function AfterpartySection({ log, coord, onOpenProfile, onRequireAuth }) {
-  const { session, commentsFor, addComment, likeInfo, toggleLike } = useStore();
+  const { session, commentsFor, addComment, loadComments, likeInfo, toggleLike } = useStore();
   const [draft, setDraft] = useState("");
   const spots = afterpartySpots(coord);
   const thread = commentsFor(log.id);
+  // Hydrate this post's comments from the server (slice 3). No-op for bundled demo
+  // posts, which keep their seed comments.
+  useEffect(() => { if (log.id) loadComments(log.id); }, [log.id]);
   const { count, liked } = likeInfo(log.id, log.likes || 0);
 
   const post = () => {
@@ -37,6 +41,18 @@ export default function AfterpartySection({ log, coord, onOpenProfile, onRequire
       {spots.length > 0 && (
         <>
           <Text style={styles.sub}>STILL OPEN NEARBY</Text>
+          {coord && coord.lat != null && (
+            <View style={styles.mapWrap}>
+              <ConcertMap
+                points={spots.map((s) => ({ name: `${s.name} · till ${s.openUntil}`, lat: s.lat, lng: s.lng, kind: "spot" }))}
+                highlight={{ lat: coord.lat, lng: coord.lng }}
+                focalName={log.venue}
+                label={log.venue}
+                onPressPoint={(p) => Linking.openURL(mapsDir(p.lat, p.lng))}
+              />
+              <Text style={styles.mapHint}>The venue is amber · pink pins are afterparty spots — tap one for directions.</Text>
+            </View>
+          )}
           {spots.map((s) => (
             <View key={s.id} style={styles.spot}>
               <View style={styles.spotIcon}>
@@ -96,6 +112,8 @@ const styles = StyleSheet.create({
   likeBtn: { flexDirection: "row", alignItems: "center", gap: 7, borderWidth: 1, borderColor: colors.line, borderRadius: radius.pill, paddingHorizontal: 14, paddingVertical: 7 },
   likeTxt: { color: colors.textDim, fontFamily: mono, fontSize: 13, fontWeight: "700" },
   sub: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "700", marginTop: 18, marginBottom: 10 },
+  mapWrap: { marginBottom: 12 },
+  mapHint: { color: colors.textFaint, fontSize: 11, marginTop: 6, textAlign: "center" },
   spot: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 12, marginBottom: 8 },
   spotIcon: { width: 34, height: 34, borderRadius: 17, backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
   spotName: { color: colors.text, fontSize: 14, fontWeight: "700" },

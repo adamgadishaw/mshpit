@@ -8,11 +8,13 @@ import Icon from "../components/Icon";
 import MentionText from "../components/MentionText";
 
 export default function ThreadScreen({ otherId, onClose, onOpenProfile, onOpenProfileByHandle }) {
-  const { session, userById, threadMessages, sendDM, markThreadRead } = useStore();
+  const { session, userById, threadMessages, sendDM, loadThread, markThreadRead } = useStore();
   const other = userById(otherId);
   const [text, setText] = useState("");
   const messages = threadMessages(otherId);
 
+  // Pull the latest messages from the server when the thread opens (slice 4).
+  useEffect(() => { loadThread(otherId); }, [otherId]);
   useEffect(() => { markThreadRead(otherId); }, [otherId, messages.length]);
 
   const send = () => { if (text.trim()) { sendDM(otherId, text); setText(""); } };

@@ -59,7 +59,19 @@ npm run pipeline             # self-running scraper (needs .env, see below)
   the key is referrer-locked to mshpit.com. **⚠️ Render may keep the old blank
   dashboard value on first deploy — if the map is still drawn after deploy, delete
   the env var in the Render dashboard so the blueprint `value:` takes, or paste the
-  key there.** Map only renders on the **Near you / Nearby** screen (ConcertMap).
+  key there.**
+- **Interactive Google map (upgrade).** The static snapshot looked garish (bright
+  amber road grid + colliding labels). Replaced with a REAL embedded map on web:
+  new `LiveMap.jsx` uses the Maps **JavaScript** API (pan/zoom, clickable pins,
+  a cleaner muted dark theme). `ConcertMap` delegates to it on web when a Google
+  key is present, and falls back to the static/drawn map (incl. on native, or on
+  `gm_authFailure`). Now used on **Nearby** AND the **performance page**: the
+  `AfterpartySection` shows the venue (amber pin) + afterparty spots (pink pins,
+  tap for directions). `mapConfig` now `export`s `GOOGLE_KEY`.
+  **⚠️ Needs the "Maps JavaScript API" enabled on the key** (Static Maps alone is
+  not enough). It works locally with the current key; if the live map shows a grey
+  "can't load Google Maps" tile, enable that API + add it to the key's API
+  restrictions in Google Cloud. Costs fall under the $200/mo free credit.
 - **Setlist spoiler gating** re-added to the full `ShowScreen` (feed card already
   had it): hidden when `log.inTourWindow`, tap "Reveal" to show.
 - **Theme saved to the account.** New `chooseTheme()` in `store.js` persists the
@@ -93,12 +105,17 @@ npm run pipeline             # self-running scraper (needs .env, see below)
 1. **Full SQLite migration** — move `src/store.js` dynamic data onto the backend
    API. **Big open task; started.** See **`MIGRATION.md`** for the ordered plan +
    prerequisites (server data seeding, missing read endpoints). Done so far:
-   **slice 1 (follows)** — `follow`/`unfollow` write through to
-   `POST /api/users/:id/follow`, login hydrates via new `GET /api/me/following`,
-   best-effort/non-breaking. `chooseTheme` (server `extras.theme`) is the
-   write-through template. Remaining slices: posts/feed, likes/comments, DMs, fan
-   clubs, reports, ratings/going/venue-reviews. Verify with `npm run server`
-   running (port 3000) + a real signed-up account (local `u_demo` is offline-only).
+   **slice 1 (follows)**, **slice 2 (posts/feed)**, **slice 3 (likes/comments)**,
+   **slice 4 (DMs)** — all write-through + hydrate, best-effort/non-breaking.
+   `hydrateFeed()` pulls the public server feed on load (guests too) and merges it
+   over the bundled seed; `addLog`/`toggleLike`/`addComment`/`sendDM` write through
+   and adopt server ids; `loadComments()`/`loadThread()` hydrate a thread on open.
+   DMs added 3 endpoints (`GET /api/me/threads`, `GET`/`POST /api/dms/:otherId`);
+   the Requests/Friends split + unread stay client-side. `chooseTheme` (server
+   `extras.theme`) was the original template. **Verified end-to-end** against
+   `npm run server` (3000): signup→post→like→comment and two-way DMs persist and
+   re-hydrate. Remaining slices: fan clubs, reports, ratings/going/venue-reviews.
+   Verify with the server running + a real signed-up account (`u_demo` is offline-only).
 2. **Broader mobile/responsive polish + accessibility.** Started: a11y
    labels/roles on core nav controls. Remaining: audit remaining icon-only buttons,
    test large OS text sizes for clipping in fixed-height rows, tighten responsive

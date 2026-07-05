@@ -13,6 +13,19 @@ import { artistMeta } from "./seed/ingested";
 
 const AV = ["#F2A65A", "#E0457B", "#5B8DEF", "#6FCF97", "#B98AE0", "#E8B65A"];
 
+// Compact relative time ("now" / "5m" / "3h" / "2d") for server timestamps that
+// arrive as epoch ms, so hydrated DMs/comments read like the seed ones.
+const ago = (ms) => {
+  if (!ms) return "now";
+  const s = Math.floor((Date.now() - ms) / 1000);
+  if (s < 60) return "now";
+  const m = Math.floor(s / 60); if (m < 60) return m + "m";
+  const h = Math.floor(m / 60); if (h < 24) return h + "h";
+  const d = Math.floor(h / 24); if (d < 7) return d + "d";
+  const w = Math.floor(d / 7); if (w < 5) return w + "w";
+  return Math.floor(d / 30) + "mo";
+};
+
 const seedUsers = [
   // NOTE: the real admin account lives ONLY on the server (server/index.js
   // seedAdmin) — never ship admin credentials in the client bundle.
@@ -125,6 +138,29 @@ export function StoreProvider({ children }) {
   // reloads when the rendered theme and the account theme actually differ.
   useEffect(() => { if (session?.theme) syncThemeFromAccount(session.theme); }, [session?.theme]);
 
+  // --- SQLite migration slices 2 & 3: public feed + likes/comments -----------
+  // Pull real server posts (with their like/comment counts + whether *I* liked)
+  // and merge them over the bundled demo feed. Idempotent (dedupes by id) and
+  // best-effort, so the app still works fully offline on the bundled seed.
+  const hydrateFeed = () => {
+    api("/api/feed?limit=50")
+      .then(({ posts }) => {
+        if (!Array.isArray(posts) || !posts.length) return;
+        setFeed((f) => {
+          const have = new Set(f.map((l) => l.id));
+          const fresh = posts.filter((p) => !have.has(p.id));
+          return fresh.length ? [...fresh, ...f] : f;
+        });
+        // Like model: likes[id] is the count EXCLUDING the viewer; myLikes[id] is
+        // their own toggle. The server total includes me, so subtract it back out.
+        setLikes((l) => { const n = { ...l }; posts.forEach((p) => { n[p.id] = (p.likes || 0) - (p.liked ? 1 : 0); }); return n; });
+        setMyLikes((m) => { const n = { ...m }; posts.forEach((p) => { n[p.id] = !!p.liked; }); return n; });
+      })
+      .catch(() => {});
+  };
+  // Load once on mount so even guests see real posts (the feed is public).
+  useEffect(() => { hydrateFeed(); }, []);
+
   const userById = (id) => users.find((u) => u.id === id);
   const userByHandle = (h) => users.find((u) => u.handle === h);
   const logsByUser = (id) => feed.filter((l) => l.userId === id);
@@ -139,6 +175,28 @@ export function StoreProvider({ children }) {
     // is cached locally.
     api("/api/me/following")
       .then(({ following }) => { if (Array.isArray(following)) setFollows((f) => ({ ...f, [su.id]: following })); })
+      .catch(() => {});
+    // Re-hydrate the feed now that we're authenticated, so `liked` reflects THIS
+    // account (a guest hydrate always reports liked:false).
+    hydrateFeed();
+    // Slice 4: hydrate my DM threads (+ absorb the people I've messaged so their
+    // names/avatars resolve in the inbox). Bucket/unread stay computed client-side.
+    api("/api/me/threads")
+      .then(({ threads }) => {
+        if (!Array.isArray(threads) || !threads.length) return;
+        setUsers((all) => {
+          let next = all;
+          threads.forEach((t) => {
+            if (t.otherUser && !next.some((x) => x.id === t.otherUser.id)) next = [...next, { playlists: [], genres: [], favoriteArtists: [], ...t.otherUser }];
+          });
+          return next;
+        });
+        setDms((d) => {
+          const n = { ...d };
+          threads.forEach((t) => { n[dmKey(su.id, t.otherId)] = t.messages.map((m) => ({ id: m.id, from: m.from, text: m.text, ts: ago(m.createdAt) })); });
+          return n;
+        });
+      })
       .catch(() => {});
   };
 
@@ -256,8 +314,10 @@ export function StoreProvider({ children }) {
   };
 
   const addLog = (log) => {
+    const localId = log.id || "p_local_" + Date.now();
     const safe = {
       ...log,
+      id: localId,
       artist: clean(log.artist, { max: 80 }),
       venue: clean(log.venue, { max: 80 }),
       review: clean(log.review, { max: LIMITS.review, newlines: true }),
@@ -267,6 +327,20 @@ export function StoreProvider({ children }) {
       userId: session?.id,
     };
     setFeed((f) => [safe, ...f]);
+    // Slice 2 write-through: persist the post server-side, then adopt the server
+    // id so likes/comments on it key correctly. Best-effort (offline keeps local).
+    if (session) {
+      api("/api/posts", {
+        method: "POST",
+        body: {
+          artist: safe.artist, venue: safe.venue, city: safe.city, date: safe.date,
+          overall: safe.overall, band: safe.band, room: safe.room, review: safe.review,
+          photos: safe.photos, photosPublic: safe.photosPublic ? 1 : 0, setlist: safe.setlist,
+        },
+      })
+        .then(({ id }) => { if (id && id !== localId) setFeed((f) => f.map((l) => (l.id === localId ? { ...l, id } : l))); })
+        .catch(() => {});
+    }
   };
 
   // Per-report moderation: content is public on post; reports drive action.
@@ -333,16 +407,43 @@ export function StoreProvider({ children }) {
 
   // Afterparty interactions
   const commentsFor = (id) => comments[id] || [];
+  // Slice 3: pull a post's comments from the server and merge them in (dedupe by
+  // id). For bundled demo posts the server has none, so the seed comments stand.
+  const loadComments = (id) => {
+    if (!id) return;
+    api(`/api/posts/${id}/comments`)
+      .then(({ comments: rows }) => {
+        if (!Array.isArray(rows) || !rows.length) return;
+        setComments((m) => {
+          const existing = m[id] || [];
+          const have = new Set(existing.map((c) => c.id));
+          const fresh = rows
+            .filter((c) => !have.has(c.id))
+            .map((c) => ({ id: c.id, userId: c.userId, name: c.name, initials: c.initials, text: c.text, likes: 0 }));
+          return fresh.length ? { ...m, [id]: [...fresh, ...existing] } : m;
+        });
+      })
+      .catch(() => {});
+  };
   const addComment = (id, text) => {
     const t = clean(text, { max: LIMITS.message, newlines: true });
     if (!session || !t) return;
-    const c = { id: "c_" + Date.now(), userId: session.id, name: session.name, initials: session.initials, text: t, likes: 0 };
+    const localId = "c_" + Date.now();
+    const c = { id: localId, userId: session.id, name: session.name, initials: session.initials, text: t, likes: 0 };
     setComments((m) => ({ ...m, [id]: [c, ...(m[id] || [])] }));
+    // Write-through + adopt the server id so a later loadComments() dedupes it
+    // instead of showing my comment twice.
+    api(`/api/posts/${id}/comments`, { method: "POST", body: { text: t } })
+      .then(({ id: sid }) => { if (sid) setComments((m) => ({ ...m, [id]: (m[id] || []).map((x) => (x.id === localId ? { ...x, id: sid } : x)) })); })
+      .catch(() => {});
   };
   const likeInfo = (id, base = 0) => ({ count: (likes[id] ?? base) + (myLikes[id] ? 1 : 0), liked: !!myLikes[id] });
   const toggleLike = (id, base = 0) => {
     setMyLikes((m) => ({ ...m, [id]: !m[id] }));
     setLikes((l) => ({ ...l, [id]: l[id] ?? base }));
+    // Server toggles the like for the authenticated user (best-effort; a 404 on a
+    // bundled demo post is swallowed and the local toggle stands).
+    if (session) api(`/api/posts/${id}/like`, { method: "POST" }).catch(() => {});
   };
 
   const visibleFeed = (staff) => (staff ? feed : feed.filter((l) => !removedIds.includes(l.id)));
@@ -528,13 +629,35 @@ export function StoreProvider({ children }) {
   // --- Direct messages + inbox ---
   const dmKey = (a, b) => [a, b].sort().join("__");
   const threadMessages = (otherId) => (session ? dms[dmKey(session.id, otherId)] || [] : []);
+  // Slice 4: pull a thread's messages from the server and merge them (dedupe by
+  // id, keeping any optimistic local-only message not yet echoed back).
+  const loadThread = (otherId) => {
+    if (!session || !otherId) return;
+    const key = dmKey(session.id, otherId);
+    api(`/api/dms/${otherId}`)
+      .then(({ messages }) => {
+        if (!Array.isArray(messages)) return;
+        setDms((d) => {
+          const serverIds = new Set(messages.map((m) => m.id));
+          const localOnly = (d[key] || []).filter((m) => !serverIds.has(m.id));
+          const server = messages.map((m) => ({ id: m.id, from: m.from, text: m.text, ts: ago(m.createdAt) }));
+          return { ...d, [key]: [...server, ...localOnly] };
+        });
+      })
+      .catch(() => {});
+  };
   const sendDM = (otherId, text) => {
     const t = clean(text, { max: LIMITS.message, newlines: true });
     if (!session || !t) return;
     const key = dmKey(session.id, otherId);
-    const m = { id: "dm_" + Date.now(), from: session.id, text: t, ts: "now" };
+    const localId = "dm_" + Date.now();
+    const m = { id: localId, from: session.id, text: t, ts: "now" };
     setDms((d) => ({ ...d, [key]: [...(d[key] || []), m] }));
     setDmRead((r) => ({ ...r, [key]: (dms[key]?.length || 0) + 1 }));
+    // Write-through + adopt the server id so a later loadThread() dedupes it.
+    api(`/api/dms/${otherId}`, { method: "POST", body: { text: t } })
+      .then(({ id }) => { if (id) setDms((d) => ({ ...d, [key]: (d[key] || []).map((x) => (x.id === localId ? { ...x, id } : x)) })); })
+      .catch(() => {});
   };
   const markThreadRead = (otherId) => {
     if (!session) return;
@@ -923,7 +1046,7 @@ export function StoreProvider({ children }) {
     localVenues, regionShows, localFeed, recommendedShows, venueCoord,
     searchVenues, venuesByCity, venueUpcomingCount,
     allArtists, topArtists, artistsAlphabetical, upcomingEvents, trendingVenues,
-    commentsFor, addComment, likeInfo, toggleLike,
+    commentsFor, addComment, loadComments, likeInfo, toggleLike,
     concertKey, loungeFor, addLoungeMessage,
     albumRating, songRating, rateAlbum, rateSong,
     fanClubFor, addFanClubMessage, isFanClubMember, joinFanClub, fanClubCount, fanClubsDirectory,
@@ -933,7 +1056,7 @@ export function StoreProvider({ children }) {
     goingFor, isGoing, toggleGoing, attendeesFor,
     venueReviewsFor, addVenueReview, venueRating, venueTopPhotos, venuePhotos, artistFanPhotos,
     artistGallery, isPhotoRemoved, removePhoto, restorePhoto,
-    threadMessages, sendDM, markThreadRead, inboxThreads, mainThreads, requestThreads, inboxUnread, requestCount,
+    threadMessages, sendDM, loadThread, markThreadRead, inboxThreads, mainThreads, requestThreads, inboxUnread, requestCount,
   };
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;

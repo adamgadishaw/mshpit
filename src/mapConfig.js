@@ -7,7 +7,7 @@
 //
 // Free tiers cover plenty for launch. Without a key, the drawn CityMap is used
 // so the app is never blank.
-const GOOGLE_KEY = process.env.EXPO_PUBLIC_GOOGLE_MAPS_KEY || "";
+export const GOOGLE_KEY = process.env.EXPO_PUBLIC_GOOGLE_MAPS_KEY || "";
 const MAPBOX_TOKEN = process.env.EXPO_PUBLIC_MAPBOX_TOKEN || "";
 
 export const MAP_PROVIDER = GOOGLE_KEY ? "google" : MAPBOX_TOKEN ? "mapbox" : null;
