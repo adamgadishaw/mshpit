@@ -256,7 +256,7 @@ function Root() {
                 />
               )}
               {tab === "search" && <SearchScreen onOpen={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenFanClub={openFanClub} />}
-              {tab === "discover" && <DiscoverScreen onOpenTopRated={() => go({ topRated: true })} onOpen={openShow} onOpenArtist={openArtist} onOpenNearby={() => requireAuth(() => go({ nearby: true }))} />}
+              {tab === "discover" && <DiscoverScreen onOpenTopRated={() => go({ topRated: true })} onOpen={openShow} onOpenArtist={openArtist} onOpenNearby={() => requireAuth(() => go({ nearby: true }))} onOpenFanClubs={() => go({ fanClubs: true })} onOpenVenues={() => go({ venues: true })} />}
               {tab === "you" && (
                 <YouScreen
                   feed={feed}

@@ -6,9 +6,17 @@ import Stars from "../components/Stars";
 import Icon from "../components/Icon";
 import CardGrid from "../components/CardGrid";
 
-export default function DiscoverScreen({ onOpenTopRated, onOpen, onOpenArtist, onOpenNearby }) {
+export default function DiscoverScreen({ onOpenTopRated, onOpen, onOpenArtist, onOpenNearby, onOpenFanClubs, onOpenVenues }) {
   const { session, recommendedShows } = useStore();
   const recs = session ? recommendedShows() : [];
+
+  // Every explorable surface in one place, so nothing is buried in a menu.
+  const HUBS = [
+    { icon: "trophy", tint: colors.gold, title: "Best rated", sub: "Top-scored shows", onPress: onOpenTopRated },
+    { icon: "pin", tint: colors.amber, title: "Near you", sub: "Local venues & shows", onPress: onOpenNearby },
+    { icon: "comment", tint: colors.magenta, title: "Fan clubs", sub: "Chat by artist", onPress: onOpenFanClubs },
+    { icon: "search", tint: colors.cool, title: "Find venues", sub: "Browse every room", onPress: onOpenVenues },
+  ].filter((h) => h.onPress);
 
   const openMatch = (m) => {
     const venue = (m.near.split(" · ")[1] || "Upcoming show").trim();
@@ -24,24 +32,19 @@ export default function DiscoverScreen({ onOpenTopRated, onOpen, onOpenArtist, o
       <Text style={styles.title}>Discover</Text>
       <Text style={styles.sub}>find shows worth seeing</Text>
 
-      {/* quick entry points */}
-      <CardGrid minColWidth={240} style={{ marginTop: 16 }}>
-        <Pressable style={styles.entry} onPress={onOpenTopRated}>
-          <View style={styles.entryIcon}><Icon name="trophy" size={18} color={colors.gold} /></View>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.entryTitle}>Best rated</Text>
-            <Text style={styles.entrySub}>Top shows near you</Text>
-          </View>
-          <Icon name="chevron-right" size={18} color={colors.textDim} />
-        </Pressable>
-        <Pressable style={styles.entry} onPress={onOpenNearby}>
-          <View style={styles.entryIcon}><Icon name="pin" size={18} color={colors.amber} /></View>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.entryTitle}>Near you</Text>
-            <Text style={styles.entrySub}>Local venues & shows</Text>
-          </View>
-          <Icon name="chevron-right" size={18} color={colors.textDim} />
-        </Pressable>
+      {/* quick entry points — the whole app's surfaces, surfaced */}
+      <Text style={styles.sectionLabel}>EXPLORE</Text>
+      <CardGrid minColWidth={220}>
+        {HUBS.map((h) => (
+          <Pressable key={h.title} style={styles.entry} onPress={h.onPress}>
+            <View style={[styles.entryIcon, { borderColor: h.tint }]}><Icon name={h.icon} size={18} color={h.tint} /></View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.entryTitle}>{h.title}</Text>
+              <Text style={styles.entrySub}>{h.sub}</Text>
+            </View>
+            <Icon name="chevron-right" size={18} color={colors.textDim} />
+          </Pressable>
+        ))}
       </CardGrid>
 
       {/* personalized push: genre affinity + proximity + who you follow */}
@@ -98,7 +101,7 @@ const styles = StyleSheet.create({
   title: { color: colors.text, fontSize: 26, fontWeight: "800" },
   sub: { color: colors.textDim, fontSize: 13, marginTop: 3 },
 
-  entry: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: colors.bgElev, borderRadius: radius.md, borderWidth: 1, borderColor: colors.amber, padding: 14 },
+  entry: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: colors.bgElev, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 14 },
   entryIcon: { width: 38, height: 38, borderRadius: 19, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
   entryTitle: { color: colors.text, fontSize: 15, fontWeight: "700" },
   entrySub: { color: colors.textDim, fontSize: 12, marginTop: 2 },
