@@ -1,6 +1,6 @@
 import { View, Text, StyleSheet, ScrollView, Pressable } from "react-native";
 import { colors, radius, THEMES, themeKey } from "../theme";
-import { useStore, isStaff, isArtist } from "../store";
+import { useStore, isStaff, isMod, isArtist } from "../store";
 import ScreenHeader from "../components/ScreenHeader";
 import Avatar from "../components/Avatar";
 import Icon from "../components/Icon";
@@ -58,7 +58,7 @@ export default function MenuScreen({ onClose, onNear, onVenues, onFanClubs, onTo
           <>
             <Text style={styles.section}>ACCOUNT</Text>
             <Row icon="edit" label="Edit profile" sub="Photo, music, banner, theme" onPress={onEditProfile} />
-            {isStaff(session.role) && <Row icon="shield" label="Admin" sub="Reports, bans, verification" onPress={onAdmin} />}
+            {isMod(session.role) && <Row icon="shield" label="Moderation" sub="Reports, members, content" onPress={onAdmin} />}
             {isArtist(session.role) && <Row icon="calendar" label="Post tour dates" sub="Bulk + scheduled" onPress={onTourDates} />}
             {session.role === "fan" && <Row icon="shield" label="Claim an artist profile" sub="Verify with your label / KYC" onPress={onRequestArtist} />}
           </>

@@ -2,7 +2,7 @@ import { View, Text, StyleSheet, ScrollView, Pressable } from "react-native";
 import { colors, mono, radius } from "../theme";
 import Icon from "../components/Icon";
 import Avatar from "../components/Avatar";
-import { useStore, isStaff, isArtist } from "../store";
+import { useStore, isStaff, isMod, isArtist } from "../store";
 
 function Stat({ value, label }) {
   return (
@@ -88,8 +88,8 @@ export default function YouScreen({ feed, onLogin, onLogout, onAdmin, onAddTourD
       {/* role-based tools */}
       <Text style={styles.sectionLabel}>ACCOUNT</Text>
       <ActionRow icon="edit" label="Edit profile" sub="Photo, name, bio, genres" onPress={onEditProfile} />
-      {isStaff(session.role) && (
-        <ActionRow icon="shield" label="Admin · moderation" sub="Report triage, verification, upkeep" onPress={onAdmin} />
+      {isMod(session.role) && (
+        <ActionRow icon="shield" label={isStaff(session.role) ? "Moderation console" : "Moderation"} sub={isStaff(session.role) ? "Reports, members, content, ads" : "Reports, members, content"} onPress={onAdmin} />
       )}
       {isArtist(session.role) && (
         <ActionRow icon="calendar" label="Post tour dates (bulk)" sub="Schedule a batch + ticket links" onPress={onAddTourDate} />

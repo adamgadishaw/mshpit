@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { View, Text, StyleSheet, ScrollView, Pressable, TextInput } from "react-native";
 import { colors, mono, radius } from "../theme";
-import { useStore } from "../store";
+import { useStore, isStaff, isMod } from "../store";
 import { api } from "../lib/api";
 import Icon from "../components/Icon";
 import Avatar from "../components/Avatar";
@@ -64,11 +64,11 @@ function AdInsights() {
   );
 }
 
-const ROLES = ["fan", "artist", "admin"];
-const roleColor = (r) => (r === "admin" ? colors.magenta : r === "artist" ? colors.amber : colors.textDim);
+const ROLES = ["fan", "artist", "moderator", "admin"];
+const roleColor = (r) => (r === "admin" ? colors.magenta : r === "moderator" ? colors.good : r === "artist" ? colors.amber : colors.textDim);
 
 // A single member row with inline Discord-style moderation: role, timeout, ban.
-function MemberRow({ u, self, status, onRole, onTimeout, onLift, onBan, onUnban }) {
+function MemberRow({ u, self, status, canRole, onRole, onTimeout, onLift, onBan, onUnban }) {
   const banned = status === "banned";
   const timed = status === "suspended";
   return (
@@ -90,20 +90,22 @@ function MemberRow({ u, self, status, onRole, onTimeout, onLift, onBan, onUnban 
         </View>
       </View>
 
-      {/* role pills */}
-      <View style={styles.pillRow}>
-        <Text style={styles.pillLabel}>Role</Text>
-        {ROLES.map((r) => (
-          <Pressable
-            key={r}
-            style={[styles.rolePill, u.role === r && styles.rolePillOn, self && styles.pillDisabled]}
-            onPress={() => !self && onRole(r)}
-            disabled={self}
-          >
-            <Text style={[styles.rolePillTxt, u.role === r && styles.rolePillTxtOn]}>{r}</Text>
-          </Pressable>
-        ))}
-      </View>
+      {/* role pills — admins only (Discord-style role administration) */}
+      {canRole && (
+        <View style={styles.pillRow}>
+          <Text style={styles.pillLabel}>Role</Text>
+          {ROLES.map((r) => (
+            <Pressable
+              key={r}
+              style={[styles.rolePill, u.role === r && styles.rolePillOn, self && styles.pillDisabled]}
+              onPress={() => !self && onRole(r)}
+              disabled={self}
+            >
+              <Text style={[styles.rolePillTxt, u.role === r && { color: roleColor(r) }]}>{r}</Text>
+            </Pressable>
+          ))}
+        </View>
+      )}
 
       {/* moderation actions */}
       {!self && (
@@ -138,7 +140,8 @@ export default function AdminScreen({ onClose }) {
     removeComment, removeFanClubMessage, removeLoungeMessage,
   } = useStore();
 
-  const [tab, setTab] = useState("overview");
+  const iAmAdmin = isStaff(session?.role); // full access; mods get a subset
+  const [tab, setTab] = useState(iAmAdmin ? "overview" : "reports");
   const [q, setQ] = useState("");
 
   const pending = requests.filter((r) => r.status === "pending");
@@ -162,12 +165,21 @@ export default function AdminScreen({ onClose }) {
   const allLounge = useMemo(() => Object.entries(lounge).flatMap(([key, arr]) => arr.map((m) => ({ key, ...m }))), [lounge]);
 
   const TABS = [
-    { key: "overview", label: "Overview", icon: "discover" },
+    { key: "overview", label: "Overview", icon: "discover", admin: true },
     { key: "reports", label: "Reports", icon: "flag", badge: openReports.length },
     { key: "members", label: "Members", icon: "you", badge: bannedCount || undefined },
     { key: "content", label: "Content", icon: "feed" },
-    { key: "requests", label: "Requests", icon: "shield", badge: pending.length },
-  ];
+    { key: "requests", label: "Requests", icon: "shield", badge: pending.length, admin: true },
+  ].filter((t) => iAmAdmin || !t.admin);
+
+  if (!isMod(session?.role)) {
+    return (
+      <View style={styles.wrap}>
+        <SheetHeader title="Moderation" onBack={onClose} />
+        <Text style={[styles.empty, { padding: 20 }]}>You don't have access to moderation.</Text>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.wrap}>
@@ -176,10 +188,13 @@ export default function AdminScreen({ onClose }) {
       <View style={styles.h1Row}>
         <Icon name="shield" size={20} color={colors.amber} />
         <Text style={styles.h1}>Moderation console</Text>
+        <View style={[styles.roleTag, { borderColor: roleColor(session?.role) }]}>
+          <Text style={[styles.roleTagTxt, { color: roleColor(session?.role) }]}>{session?.role}</Text>
+        </View>
       </View>
 
-      {/* tab bar */}
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabbar}>
+      {/* tab bar — a clean segmented control (no more stretched ovals) */}
+      <View style={styles.tabbar}>
         {TABS.map((t) => (
           <Pressable key={t.key} style={[styles.tab, tab === t.key && styles.tabOn]} onPress={() => setTab(t.key)}>
             <Icon name={t.icon} size={15} color={tab === t.key ? "#1A1206" : colors.textDim} />
@@ -187,7 +202,7 @@ export default function AdminScreen({ onClose }) {
             {t.badge ? <View style={styles.tabBadge}><Text style={styles.tabBadgeTxt}>{t.badge}</Text></View> : null}
           </Pressable>
         ))}
-      </ScrollView>
+      </View>
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         {/* ---- OVERVIEW ---- */}
@@ -264,6 +279,7 @@ export default function AdminScreen({ onClose }) {
                 u={u}
                 self={u.id === session?.id}
                 status={accountStatus(u)}
+                canRole={iAmAdmin}
                 onRole={(r) => setUserRole(u.id, r)}
                 onTimeout={(days) => suspendUser(u.id, days)}
                 onLift={() => unbanUser(u.id)}
@@ -371,8 +387,8 @@ const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: colors.bg },
   h1Row: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 16, paddingTop: 6 },
   h1: { color: colors.text, fontSize: 20, fontWeight: "800" },
-  tabbar: { paddingHorizontal: 12, paddingVertical: 12, gap: 8 },
-  tab: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 14, paddingVertical: 9, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
+  tabbar: { flexDirection: "row", flexWrap: "wrap", gap: 8, paddingHorizontal: 16, paddingTop: 12, paddingBottom: 4 },
+  tab: { flexDirection: "row", alignItems: "center", gap: 7, height: 38, paddingHorizontal: 15, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
   tabOn: { backgroundColor: colors.amberStrong, borderColor: colors.amberStrong },
   tabTxt: { color: colors.textDim, fontSize: 13, fontWeight: "700" },
   tabTxtOn: { color: "#1A1206" },

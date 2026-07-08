@@ -50,6 +50,9 @@ const seedTourDates = [
 const seedRequests = [{ id: "r1", userId: "u_demo", artistName: "Demo Band", note: "I front Demo Band, want to post our tour dates.", status: "pending" }];
 
 export const isStaff = (role) => role === "admin";
+// Moderators can moderate (reports, members, content) but not administer roles,
+// see ad analytics, or approve artists — those stay admin-only. Discord-style tier.
+export const isMod = (role) => role === "admin" || role === "moderator";
 export const isArtist = (role) => role === "artist" || role === "admin";
 
 // Bump when the Terms/Privacy change materially, so we can tell who consented to
@@ -765,7 +768,7 @@ export function StoreProvider({ children }) {
   const removeFanClubMessage = (artistKey, msgId) => setFanClubMsgs((L) => ({ ...L, [artistKey]: (L[artistKey] || []).filter((m) => m.id !== msgId) }));
   // Promote/demote a member (fan ⇄ artist ⇄ admin). Admin grants full moderation.
   const setUserRole = (id, role) => {
-    if (!["fan", "artist", "admin"].includes(role)) return;
+    if (!["fan", "artist", "moderator", "admin"].includes(role)) return;
     setUsers((all) => all.map((u) => (u.id === id ? { ...u, role } : u)));
     setSession((s) => (s && s.id === id ? { ...s, role } : s));
   };
