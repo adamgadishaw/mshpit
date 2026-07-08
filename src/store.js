@@ -762,6 +762,13 @@ export function StoreProvider({ children }) {
   // moderation: drop a single chat/lounge/comment message (staff)
   const removeLoungeMessage = (key, msgId) => setLounge((L) => ({ ...L, [key]: (L[key] || []).filter((m) => m.id !== msgId) }));
   const removeComment = (logId, cId) => setComments((m) => ({ ...m, [logId]: (m[logId] || []).filter((c) => c.id !== cId) }));
+  const removeFanClubMessage = (artistKey, msgId) => setFanClubMsgs((L) => ({ ...L, [artistKey]: (L[artistKey] || []).filter((m) => m.id !== msgId) }));
+  // Promote/demote a member (fan ⇄ artist ⇄ admin). Admin grants full moderation.
+  const setUserRole = (id, role) => {
+    if (!["fan", "artist", "admin"].includes(role)) return;
+    setUsers((all) => all.map((u) => (u.id === id ? { ...u, role } : u)));
+    setSession((s) => (s && s.id === id ? { ...s, role } : s));
+  };
 
   // --- Planned attendance ---
   const goingFor = (userId) => going[userId] || [];
@@ -1275,7 +1282,8 @@ export function StoreProvider({ children }) {
     fanClubFor, loadFanClub, addFanClubMessage, isFanClubMember, joinFanClub, fanClubCount, fanClubsDirectory,
     isArtistOwner, artistProfile, loadArtistPage, updateArtistProfile, artistFeedEnabled,
     artistPostsFor, addArtistPost, removeArtistPost,
-    accountStatus, banUser, unbanUser, suspendUser, removeLoungeMessage, removeComment,
+    accountStatus, banUser, unbanUser, suspendUser, setUserRole, removeLoungeMessage, removeComment, removeFanClubMessage,
+    comments, fanClubMsgs, lounge,
     goingFor, isGoing, toggleGoing, attendeesFor,
     venueReviewsFor, loadVenueReviews, addVenueReview, venueRating, venueTopPhotos, venuePhotos, artistFanPhotos,
     artistGallery, isPhotoRemoved, removePhoto, restorePhoto,

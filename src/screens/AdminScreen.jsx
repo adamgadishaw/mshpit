@@ -1,9 +1,10 @@
-import { useState, useEffect } from "react";
-import { View, Text, StyleSheet, ScrollView, Pressable } from "react-native";
+import { useState, useEffect, useMemo } from "react";
+import { View, Text, StyleSheet, ScrollView, Pressable, TextInput } from "react-native";
 import { colors, mono, radius } from "../theme";
 import { useStore } from "../store";
 import { api } from "../lib/api";
 import Icon from "../components/Icon";
+import Avatar from "../components/Avatar";
 import SheetHeader from "../components/SheetHeader";
 
 // Audience & ads: the activity data we collect (see Privacy policy) surfaced for
@@ -12,11 +13,9 @@ import SheetHeader from "../components/SheetHeader";
 function AdInsights() {
   const [data, setData] = useState(null);
   const [err, setErr] = useState(false);
-  useEffect(() => {
-    api("/api/admin/analytics").then(setData).catch(() => setErr(true));
-  }, []);
+  useEffect(() => { api("/api/admin/analytics").then(setData).catch(() => setErr(true)); }, []);
 
-  if (err) return null;
+  if (err) return <Text style={styles.empty}>Audience data needs the backend running.</Text>;
   if (!data) return <Text style={styles.empty}>Loading audience data…</Text>;
 
   const t = data.totals || {};
@@ -41,7 +40,7 @@ function AdInsights() {
       <View style={styles.statRow}>
         <Stat n={t.events} label="events" />
         <Stat n={t.events24h} label="last 24h" />
-        <Stat n={t.knownUsers} label="tracked users" />
+        <Stat n={t.knownUsers} label="tracked" />
         <Stat n={t.guestHits} label="guest hits" />
       </View>
       <View style={styles.insightGrid}>
@@ -65,116 +64,304 @@ function AdInsights() {
   );
 }
 
+const ROLES = ["fan", "artist", "admin"];
+const roleColor = (r) => (r === "admin" ? colors.magenta : r === "artist" ? colors.amber : colors.textDim);
+
+// A single member row with inline Discord-style moderation: role, timeout, ban.
+function MemberRow({ u, self, status, onRole, onTimeout, onLift, onBan, onUnban }) {
+  const banned = status === "banned";
+  const timed = status === "suspended";
+  return (
+    <View style={[styles.member, banned && styles.removedCard]}>
+      <View style={styles.memberTop}>
+        <Avatar user={u} size={38} />
+        <View style={{ flex: 1 }}>
+          <View style={styles.memberNameRow}>
+            <Text style={styles.memberName} numberOfLines={1}>{u.name}</Text>
+            <View style={[styles.roleTag, { borderColor: roleColor(u.role) }]}>
+              <Text style={[styles.roleTagTxt, { color: roleColor(u.role) }]}>{u.role}</Text>
+            </View>
+            {self && <Text style={styles.youTag}>you</Text>}
+          </View>
+          <Text style={styles.memberSub} numberOfLines={1}>
+            @{u.handle}{u.home?.city ? ` · ${u.home.city}` : ""}
+            {banned ? " · BANNED" : timed ? " · TIMED OUT" : ""}
+          </Text>
+        </View>
+      </View>
+
+      {/* role pills */}
+      <View style={styles.pillRow}>
+        <Text style={styles.pillLabel}>Role</Text>
+        {ROLES.map((r) => (
+          <Pressable
+            key={r}
+            style={[styles.rolePill, u.role === r && styles.rolePillOn, self && styles.pillDisabled]}
+            onPress={() => !self && onRole(r)}
+            disabled={self}
+          >
+            <Text style={[styles.rolePillTxt, u.role === r && styles.rolePillTxtOn]}>{r}</Text>
+          </Pressable>
+        ))}
+      </View>
+
+      {/* moderation actions */}
+      {!self && (
+        <View style={styles.pillRow}>
+          <Text style={styles.pillLabel}>Mod</Text>
+          {!banned && !timed && (
+            <>
+              <Pressable style={[styles.modBtn, styles.warn]} onPress={() => onTimeout(1)}><Icon name="clock" size={13} color={colors.gold} /><Text style={styles.warnTxt}>1d</Text></Pressable>
+              <Pressable style={[styles.modBtn, styles.warn]} onPress={() => onTimeout(7)}><Icon name="clock" size={13} color={colors.gold} /><Text style={styles.warnTxt}>7d</Text></Pressable>
+            </>
+          )}
+          {timed && (
+            <Pressable style={[styles.modBtn, styles.ok]} onPress={onLift}><Icon name="check" size={13} color={colors.good} /><Text style={styles.okTxt}>Lift timeout</Text></Pressable>
+          )}
+          {banned ? (
+            <Pressable style={[styles.modBtn, styles.ok]} onPress={onUnban}><Icon name="check" size={13} color={colors.good} /><Text style={styles.okTxt}>Unban</Text></Pressable>
+          ) : (
+            <Pressable style={[styles.modBtn, styles.danger]} onPress={onBan}><Icon name="x" size={13} color={colors.danger} /><Text style={styles.dangerTxt}>Ban</Text></Pressable>
+          )}
+        </View>
+      )}
+    </View>
+  );
+}
+
 export default function AdminScreen({ onClose }) {
-  const { requests, users, feed, removedIds, reports, approveArtist, rejectArtist, removeContent, restoreContent, actionReport, dismissReport, suspendUser, banUser } = useStore();
+  const {
+    requests, users, feed, removedIds, reports, session,
+    comments, fanClubMsgs, lounge,
+    approveArtist, rejectArtist, removeContent, restoreContent, actionReport, dismissReport,
+    suspendUser, banUser, unbanUser, setUserRole, accountStatus,
+    removeComment, removeFanClubMessage, removeLoungeMessage,
+  } = useStore();
+
+  const [tab, setTab] = useState("overview");
+  const [q, setQ] = useState("");
+
   const pending = requests.filter((r) => r.status === "pending");
   const openReports = reports.filter((r) => r.status === "open");
-
   const userFor = (id) => users.find((u) => u.id === id);
   const logFor = (id) => feed.find((l) => l.id === id);
+  const bannedCount = users.filter((u) => u.isBanned).length;
+
+  const query = q.trim().toLowerCase();
+  const members = useMemo(() => {
+    const list = query
+      ? users.filter((u) => u.name.toLowerCase().includes(query) || u.handle.toLowerCase().includes(query))
+      : users;
+    // Staff first, then flagged (banned/suspended), then everyone.
+    const rank = (u) => (u.role === "admin" ? 0 : u.isBanned || u.suspendedUntil ? 1 : u.role === "artist" ? 2 : 3);
+    return [...list].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
+  }, [users, query]);
+
+  const allComments = useMemo(() => Object.entries(comments).flatMap(([logId, arr]) => arr.map((c) => ({ logId, ...c }))), [comments]);
+  const allFanMsgs = useMemo(() => Object.entries(fanClubMsgs).flatMap(([artist, arr]) => arr.map((m) => ({ artist, ...m }))), [fanClubMsgs]);
+  const allLounge = useMemo(() => Object.entries(lounge).flatMap(([key, arr]) => arr.map((m) => ({ key, ...m }))), [lounge]);
+
+  const TABS = [
+    { key: "overview", label: "Overview", icon: "discover" },
+    { key: "reports", label: "Reports", icon: "flag", badge: openReports.length },
+    { key: "members", label: "Members", icon: "you", badge: bannedCount || undefined },
+    { key: "content", label: "Content", icon: "feed" },
+    { key: "requests", label: "Requests", icon: "shield", badge: pending.length },
+  ];
 
   return (
     <View style={styles.wrap}>
-      <SheetHeader title="Admin" onBack={onClose} />
+      <SheetHeader title="Moderation" onBack={onClose} />
+
+      <View style={styles.h1Row}>
+        <Icon name="shield" size={20} color={colors.amber} />
+        <Text style={styles.h1}>Moderation console</Text>
+      </View>
+
+      {/* tab bar */}
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tabbar}>
+        {TABS.map((t) => (
+          <Pressable key={t.key} style={[styles.tab, tab === t.key && styles.tabOn]} onPress={() => setTab(t.key)}>
+            <Icon name={t.icon} size={15} color={tab === t.key ? "#1A1206" : colors.textDim} />
+            <Text style={[styles.tabTxt, tab === t.key && styles.tabTxtOn]}>{t.label}</Text>
+            {t.badge ? <View style={styles.tabBadge}><Text style={styles.tabBadgeTxt}>{t.badge}</Text></View> : null}
+          </Pressable>
+        ))}
+      </ScrollView>
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        <View style={styles.h1Row}>
-          <Icon name="shield" size={22} color={colors.amber} />
-          <Text style={styles.h1}>Admin</Text>
-        </View>
-        <Text style={styles.subtitle}>Report triage · verification · site upkeep. Content is public on post; reports drive removal.</Text>
+        {/* ---- OVERVIEW ---- */}
+        {tab === "overview" && (
+          <>
+            <View style={styles.statRow}>
+              <View style={styles.stat}><Text style={styles.statN}>{users.length}</Text><Text style={styles.statL}>members</Text></View>
+              <View style={styles.stat}><Text style={styles.statN}>{feed.length}</Text><Text style={styles.statL}>posts</Text></View>
+              <View style={styles.stat}><Text style={[styles.statN, openReports.length ? { color: colors.danger } : null]}>{openReports.length}</Text><Text style={styles.statL}>reports</Text></View>
+              <View style={styles.stat}><Text style={[styles.statN, bannedCount ? { color: colors.danger } : null]}>{bannedCount}</Text><Text style={styles.statL}>banned</Text></View>
+            </View>
+            <Text style={styles.sectionLabel}>AUDIENCE &amp; ADS</Text>
+            <AdInsights />
+          </>
+        )}
 
-        <Text style={styles.sectionLabel}>AUDIENCE &amp; ADS</Text>
-        <AdInsights />
-
-        <Text style={styles.sectionLabel}>REPORT QUEUE · {openReports.length}</Text>
-        {openReports.length === 0 && <Text style={styles.empty}>No open reports.</Text>}
-        {openReports.map((r) => {
-          const log = logFor(r.targetId);
-          const reporter = userFor(r.reporterId);
-          return (
-            <View key={r.id} style={styles.card}>
-              <View style={styles.reasonRow}>
-                <Icon name="flag" size={14} color={colors.danger} />
-                <Text style={styles.reason}>{r.reason}</Text>
-              </View>
-              <Text style={styles.artist}>{log ? `${log.artist} - by ${log.user?.name}` : "content removed"}</Text>
-              <Text style={styles.sub}>reported by {reporter ? `@${reporter.handle}` : "a user"}</Text>
-              <View style={styles.actions}>
-                <Pressable style={[styles.btn, styles.remove]} onPress={() => actionReport(r.id)}>
-                  <Icon name="trash" size={15} color={colors.danger} />
-                  <Text style={styles.rejectTxt}>Remove content</Text>
-                </Pressable>
-                <Pressable style={[styles.btn, styles.reject]} onPress={() => dismissReport(r.id)}>
-                  <Icon name="check" size={15} color={colors.textDim} />
-                  <Text style={styles.dismissTxt}>Dismiss</Text>
-                </Pressable>
-              </View>
-              {log?.userId && (
-                <View style={styles.actions}>
-                  <Pressable style={[styles.btn, styles.suspend]} onPress={() => { suspendUser(log.userId, 7); dismissReport(r.id); }}>
-                    <Icon name="clock" size={14} color={colors.gold} />
-                    <Text style={[styles.dismissTxt, { color: colors.gold }]}>Suspend 7d</Text>
-                  </Pressable>
-                  <Pressable style={[styles.btn, styles.remove]} onPress={() => { banUser(log.userId); actionReport(r.id); }}>
-                    <Icon name="x" size={14} color={colors.danger} />
-                    <Text style={styles.rejectTxt}>Ban user</Text>
-                  </Pressable>
+        {/* ---- REPORTS ---- */}
+        {tab === "reports" && (
+          <>
+            <Text style={styles.policy}>Content is public on post; the community reports it and you act here. Removing hides it from everyone but staff.</Text>
+            {openReports.length === 0 && <Text style={styles.empty}>No open reports. 🎉</Text>}
+            {openReports.map((r) => {
+              const log = logFor(r.targetId);
+              const reporter = userFor(r.reporterId);
+              return (
+                <View key={r.id} style={styles.card}>
+                  <View style={styles.reasonRow}>
+                    <Icon name="flag" size={14} color={colors.danger} />
+                    <Text style={styles.reason}>{r.reason || "reported"}</Text>
+                  </View>
+                  <Text style={styles.artist}>{log ? `${log.artist} — by ${log.user?.name}` : "content removed"}</Text>
+                  <Text style={styles.sub}>reported by {reporter ? `@${reporter.handle}` : "a user"}</Text>
+                  <View style={styles.actions}>
+                    <Pressable style={[styles.btn, styles.remove]} onPress={() => actionReport(r.id)}>
+                      <Icon name="trash" size={15} color={colors.danger} /><Text style={styles.rejectTxt}>Remove content</Text>
+                    </Pressable>
+                    <Pressable style={[styles.btn, styles.reject]} onPress={() => dismissReport(r.id)}>
+                      <Icon name="check" size={15} color={colors.textDim} /><Text style={styles.dismissTxt}>Dismiss</Text>
+                    </Pressable>
+                  </View>
+                  {log?.userId && log.userId !== session?.id && (
+                    <View style={styles.actions}>
+                      <Pressable style={[styles.btn, styles.suspend]} onPress={() => { suspendUser(log.userId, 7); dismissReport(r.id); }}>
+                        <Icon name="clock" size={14} color={colors.gold} /><Text style={[styles.dismissTxt, { color: colors.gold }]}>Timeout 7d</Text>
+                      </Pressable>
+                      <Pressable style={[styles.btn, styles.remove]} onPress={() => { banUser(log.userId); actionReport(r.id); }}>
+                        <Icon name="x" size={14} color={colors.danger} /><Text style={styles.rejectTxt}>Ban user</Text>
+                      </Pressable>
+                    </View>
+                  )}
                 </View>
-              )}
-            </View>
-          );
-        })}
+              );
+            })}
+          </>
+        )}
 
-        <Text style={styles.sectionLabel}>ARTIST ACCOUNT REQUESTS · {pending.length}</Text>
-        {pending.length === 0 && <Text style={styles.empty}>No pending requests.</Text>}
-        {pending.map((r) => {
-          const u = userFor(r.userId);
-          return (
-            <View key={r.id} style={styles.card}>
-              <Text style={styles.artist}>{r.artistName}</Text>
-              <Text style={styles.sub}>requested by {u ? `${u.name} (@${u.handle})` : "unknown"}</Text>
-              {!!r.note && <Text style={styles.note}>"{r.note}"</Text>}
-              <View style={styles.actions}>
-                <Pressable style={[styles.btn, styles.approve]} onPress={() => approveArtist(r.id)}>
-                  <Icon name="check" size={15} color="#0C1A0F" />
-                  <Text style={styles.approveTxt}>Approve</Text>
-                </Pressable>
-                <Pressable style={[styles.btn, styles.reject]} onPress={() => rejectArtist(r.id)}>
-                  <Icon name="x" size={15} color={colors.danger} />
-                  <Text style={styles.rejectTxt}>Reject</Text>
-                </Pressable>
-              </View>
+        {/* ---- MEMBERS ---- */}
+        {tab === "members" && (
+          <>
+            <View style={styles.search}>
+              <Icon name="search" size={16} color={colors.textDim} />
+              <TextInput
+                style={styles.searchInput}
+                placeholder={`Search ${users.length} members…`}
+                placeholderTextColor={colors.textFaint}
+                value={q}
+                onChangeText={setQ}
+                autoCapitalize="none"
+              />
             </View>
-          );
-        })}
+            {members.map((u) => (
+              <MemberRow
+                key={u.id}
+                u={u}
+                self={u.id === session?.id}
+                status={accountStatus(u)}
+                onRole={(r) => setUserRole(u.id, r)}
+                onTimeout={(days) => suspendUser(u.id, days)}
+                onLift={() => unbanUser(u.id)}
+                onBan={() => banUser(u.id)}
+                onUnban={() => unbanUser(u.id)}
+              />
+            ))}
+            {members.length === 0 && <Text style={styles.empty}>No members match “{q}”.</Text>}
+          </>
+        )}
 
-        <Text style={styles.sectionLabel}>ALL CONTENT · {feed.length} LOGS</Text>
-        <Text style={styles.policy}>Manual override for inappropriate, illegal, or copyright-infringing posts (most removals come through the report queue above). Removed posts are hidden from everyone but staff.</Text>
-        {feed.map((l) => {
-          const removed = removedIds.includes(l.id);
-          return (
-            <View key={l.id} style={[styles.card, removed && styles.removedCard]}>
-              <View style={styles.contentRow}>
+        {/* ---- CONTENT ---- */}
+        {tab === "content" && (
+          <>
+            <Text style={styles.sectionLabel}>POSTS · {feed.length}</Text>
+            {feed.map((l) => {
+              const removed = removedIds.includes(l.id);
+              return (
+                <View key={l.id} style={[styles.card, removed && styles.removedCard]}>
+                  <View style={styles.contentRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.artist}>{l.artist}</Text>
+                      <Text style={styles.sub}>by {l.user?.name || "a fan"} · {l.venue}</Text>
+                      {removed && <Text style={styles.removedTag}>REMOVED — hidden from public</Text>}
+                    </View>
+                    {removed ? (
+                      <Pressable style={[styles.btn, styles.reject]} onPress={() => restoreContent(l.id)}><Text style={styles.dismissTxt}>Restore</Text></Pressable>
+                    ) : (
+                      <Pressable style={[styles.btn, styles.remove]} onPress={() => removeContent(l.id)}><Icon name="trash" size={14} color={colors.danger} /><Text style={styles.rejectTxt}>Remove</Text></Pressable>
+                    )}
+                  </View>
+                </View>
+              );
+            })}
+
+            <Text style={styles.sectionLabel}>AFTERPARTY COMMENTS · {allComments.length}</Text>
+            {allComments.length === 0 && <Text style={styles.empty}>No comments.</Text>}
+            {allComments.map((c) => (
+              <View key={c.id} style={styles.msgRow}>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.artist}>{l.artist}</Text>
-                  <Text style={styles.sub}>by {l.user.name} · {l.venue}</Text>
-                  {removed && <Text style={styles.removedTag}>REMOVED - hidden from public</Text>}
+                  <Text style={styles.msgWho}>{c.name}</Text>
+                  <Text style={styles.msgTxt}>{c.text}</Text>
                 </View>
-                {removed ? (
-                  <Pressable style={[styles.btn, styles.reject]} onPress={() => restoreContent(l.id)}>
-                    <Text style={styles.rejectTxt}>Restore</Text>
-                  </Pressable>
-                ) : (
-                  <Pressable style={[styles.btn, styles.remove]} onPress={() => removeContent(l.id)}>
-                    <Icon name="trash" size={15} color={colors.danger} />
-                    <Text style={styles.rejectTxt}>Remove</Text>
-                  </Pressable>
-                )}
+                <Pressable style={styles.msgDel} onPress={() => removeComment(c.logId, c.id)} hitSlop={8}><Icon name="trash" size={14} color={colors.danger} /></Pressable>
               </View>
-            </View>
-          );
-        })}
+            ))}
+
+            <Text style={styles.sectionLabel}>FAN CLUB MESSAGES · {allFanMsgs.length}</Text>
+            {allFanMsgs.length === 0 && <Text style={styles.empty}>No messages.</Text>}
+            {allFanMsgs.map((m) => (
+              <View key={m.id} style={styles.msgRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.msgWho}>{m.name} <Text style={styles.msgWhere}>· {m.artist}</Text></Text>
+                  <Text style={styles.msgTxt}>{m.text}</Text>
+                </View>
+                <Pressable style={styles.msgDel} onPress={() => removeFanClubMessage(m.artist, m.id)} hitSlop={8}><Icon name="trash" size={14} color={colors.danger} /></Pressable>
+              </View>
+            ))}
+
+            <Text style={styles.sectionLabel}>CONCERT LOUNGE · {allLounge.length}</Text>
+            {allLounge.length === 0 && <Text style={styles.empty}>No messages.</Text>}
+            {allLounge.map((m) => (
+              <View key={m.id} style={styles.msgRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.msgWho}>{m.name}</Text>
+                  <Text style={styles.msgTxt}>{m.text}</Text>
+                </View>
+                <Pressable style={styles.msgDel} onPress={() => removeLoungeMessage(m.key, m.id)} hitSlop={8}><Icon name="trash" size={14} color={colors.danger} /></Pressable>
+              </View>
+            ))}
+          </>
+        )}
+
+        {/* ---- REQUESTS ---- */}
+        {tab === "requests" && (
+          <>
+            <Text style={styles.policy}>Fans requesting an official artist account. Approve to let them post tour dates for their artist.</Text>
+            {pending.length === 0 && <Text style={styles.empty}>No pending requests.</Text>}
+            {pending.map((r) => {
+              const u = userFor(r.userId);
+              return (
+                <View key={r.id} style={styles.card}>
+                  <Text style={styles.artist}>{r.artistName}</Text>
+                  <Text style={styles.sub}>requested by {u ? `${u.name} (@${u.handle})` : "unknown"}</Text>
+                  {!!r.note && <Text style={styles.note}>"{r.note}"</Text>}
+                  <View style={styles.actions}>
+                    <Pressable style={[styles.btn, styles.approve]} onPress={() => approveArtist(r.id)}>
+                      <Icon name="check" size={15} color="#0C1A0F" /><Text style={styles.approveTxt}>Approve</Text>
+                    </Pressable>
+                    <Pressable style={[styles.btn, styles.reject]} onPress={() => rejectArtist(r.id)}>
+                      <Icon name="x" size={15} color={colors.danger} /><Text style={styles.rejectTxt}>Reject</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              );
+            })}
+          </>
+        )}
       </ScrollView>
     </View>
   );
@@ -182,25 +369,27 @@ export default function AdminScreen({ onClose }) {
 
 const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: colors.bg },
-  topbar: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingBottom: 10 },
-  backBtn: { flexDirection: "row", alignItems: "center", width: 56 },
-  back: { color: colors.amber, fontSize: 15 },
-  topTitle: { color: colors.textFaint, fontSize: 11, letterSpacing: 2, fontWeight: "700" },
-  content: { padding: 16, paddingBottom: 48 },
-  h1Row: { flexDirection: "row", alignItems: "center", gap: 10 },
-  h1: { color: colors.text, fontSize: 26, fontWeight: "800" },
-  subtitle: { color: colors.textDim, fontSize: 13, lineHeight: 19, marginTop: 8 },
-  reasonRow: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 8 },
-  reason: { color: colors.danger, fontSize: 11, letterSpacing: 1, fontWeight: "700", textTransform: "uppercase" },
-  dismissTxt: { color: colors.textDim, fontWeight: "700", fontSize: 13 },
-  sectionLabel: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "700", marginTop: 24, marginBottom: 8 },
-  policy: { color: colors.textDim, fontSize: 12, lineHeight: 18, marginBottom: 12, fontStyle: "italic" },
-  empty: { color: colors.textDim, fontSize: 13, fontStyle: "italic" },
-  // audience & ads panel
-  statRow: { flexDirection: "row", gap: 8, marginBottom: 4 },
+  h1Row: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 16, paddingTop: 6 },
+  h1: { color: colors.text, fontSize: 20, fontWeight: "800" },
+  tabbar: { paddingHorizontal: 12, paddingVertical: 12, gap: 8 },
+  tab: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 14, paddingVertical: 9, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
+  tabOn: { backgroundColor: colors.amberStrong, borderColor: colors.amberStrong },
+  tabTxt: { color: colors.textDim, fontSize: 13, fontWeight: "700" },
+  tabTxtOn: { color: "#1A1206" },
+  tabBadge: { minWidth: 18, height: 18, borderRadius: 9, paddingHorizontal: 5, backgroundColor: colors.danger, alignItems: "center", justifyContent: "center" },
+  tabBadgeTxt: { color: "#fff", fontSize: 10, fontWeight: "800" },
+  content: { paddingHorizontal: 16, paddingBottom: 60 },
+  sectionLabel: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "700", marginTop: 22, marginBottom: 8 },
+  policy: { color: colors.textDim, fontSize: 12, lineHeight: 18, marginBottom: 12, marginTop: 4, fontStyle: "italic" },
+  empty: { color: colors.textDim, fontSize: 13, fontStyle: "italic", marginTop: 4 },
+
+  // stats
+  statRow: { flexDirection: "row", gap: 8, marginTop: 4, marginBottom: 4 },
   stat: { flex: 1, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, paddingVertical: 12, alignItems: "center" },
   statN: { color: colors.amber, fontFamily: mono, fontSize: 20, fontWeight: "800" },
   statL: { color: colors.textDim, fontSize: 10, letterSpacing: 0.5, marginTop: 2 },
+
+  // ad insights
   insightGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10, marginTop: 12 },
   insightCol: { flexGrow: 1, flexBasis: "46%", minWidth: 150, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 12 },
   insightH: { color: colors.textFaint, fontSize: 10, letterSpacing: 1, fontWeight: "800", marginTop: 14, marginBottom: 8 },
@@ -209,19 +398,57 @@ const styles = StyleSheet.create({
   insightCount: { color: colors.amber, fontFamily: mono, fontSize: 13, fontWeight: "700" },
   activityLine: { color: colors.textDim, fontSize: 12, fontFamily: mono, paddingVertical: 2 },
   activityWho: { color: colors.cool },
+
+  // cards + report/request actions
   card: { backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 14, marginBottom: 10 },
-  removedCard: { borderColor: colors.danger, opacity: 0.8 },
-  artist: { color: colors.text, fontSize: 16, fontWeight: "700" },
-  sub: { color: colors.textDim, fontSize: 13, marginTop: 2 },
-  note: { color: colors.textDim, fontSize: 13, marginTop: 8, fontStyle: "italic" },
-  removedTag: { color: colors.danger, fontFamily: mono, fontSize: 11, marginTop: 6, letterSpacing: 0.5 },
-  contentRow: { flexDirection: "row", alignItems: "center", gap: 12 },
-  actions: { flexDirection: "row", gap: 10, marginTop: 12 },
-  btn: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 14, paddingVertical: 9, borderRadius: radius.pill, borderWidth: 1 },
-  approve: { backgroundColor: colors.good, borderColor: colors.good },
-  approveTxt: { color: "#0C1A0F", fontWeight: "800", fontSize: 13 },
-  reject: { backgroundColor: "transparent", borderColor: colors.line },
-  rejectTxt: { color: colors.danger, fontWeight: "700", fontSize: 13 },
-  remove: { backgroundColor: "transparent", borderColor: colors.line },
-  suspend: { backgroundColor: "transparent", borderColor: colors.line },
+  removedCard: { opacity: 0.6, borderColor: colors.danger },
+  reasonRow: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 8 },
+  reason: { color: colors.danger, fontSize: 11, letterSpacing: 1, fontWeight: "700", textTransform: "uppercase" },
+  artist: { color: colors.text, fontSize: 15, fontWeight: "800" },
+  sub: { color: colors.textDim, fontSize: 12, marginTop: 2 },
+  note: { color: colors.textDim, fontSize: 13, fontStyle: "italic", marginTop: 6 },
+  removedTag: { color: colors.danger, fontSize: 10, letterSpacing: 1, fontWeight: "700", marginTop: 4 },
+  contentRow: { flexDirection: "row", alignItems: "center", gap: 10 },
+  actions: { flexDirection: "row", gap: 8, marginTop: 10 },
+  btn: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 12, paddingVertical: 9, borderRadius: radius.sm, borderWidth: 1 },
+  remove: { borderColor: colors.danger, backgroundColor: "rgba(224,69,123,0.08)" },
+  reject: { borderColor: colors.line },
+  suspend: { borderColor: colors.gold, backgroundColor: "rgba(232,182,90,0.08)" },
+  approve: { borderColor: colors.good, backgroundColor: colors.good },
+  approveTxt: { color: "#0C1A0F", fontSize: 13, fontWeight: "800" },
+  rejectTxt: { color: colors.danger, fontSize: 13, fontWeight: "700" },
+  dismissTxt: { color: colors.textDim, fontSize: 13, fontWeight: "700" },
+
+  // members
+  search: { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 12, paddingVertical: 10, marginTop: 6, marginBottom: 12 },
+  searchInput: { flex: 1, color: colors.text, fontSize: 14 },
+  member: { backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 12, marginBottom: 10 },
+  memberTop: { flexDirection: "row", alignItems: "center", gap: 10 },
+  memberNameRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+  memberName: { color: colors.text, fontSize: 15, fontWeight: "800", flexShrink: 1 },
+  roleTag: { borderWidth: 1, borderRadius: radius.pill, paddingHorizontal: 8, paddingVertical: 1 },
+  roleTagTxt: { fontSize: 10, fontWeight: "800", letterSpacing: 0.5, textTransform: "uppercase" },
+  youTag: { color: colors.textFaint, fontSize: 11, fontStyle: "italic" },
+  memberSub: { color: colors.textDim, fontSize: 12, marginTop: 2 },
+  pillRow: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 6, marginTop: 10 },
+  pillLabel: { color: colors.textFaint, fontSize: 10, letterSpacing: 1, fontWeight: "700", width: 34 },
+  rolePill: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line },
+  rolePillOn: { backgroundColor: colors.surfaceAlt, borderColor: colors.amber },
+  rolePillTxt: { color: colors.textDim, fontSize: 12, fontWeight: "700", textTransform: "capitalize" },
+  rolePillTxtOn: { color: colors.amber },
+  pillDisabled: { opacity: 0.4 },
+  modBtn: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 11, paddingVertical: 6, borderRadius: radius.pill, borderWidth: 1 },
+  warn: { borderColor: colors.gold },
+  warnTxt: { color: colors.gold, fontSize: 12, fontWeight: "700" },
+  danger: { borderColor: colors.danger },
+  dangerTxt: { color: colors.danger, fontSize: 12, fontWeight: "700" },
+  ok: { borderColor: colors.good },
+  okTxt: { color: colors.good, fontSize: 12, fontWeight: "700" },
+
+  // content messages
+  msgRow: { flexDirection: "row", alignItems: "flex-start", gap: 10, backgroundColor: colors.surface, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.lineSoft, padding: 11, marginBottom: 7 },
+  msgWho: { color: colors.text, fontSize: 13, fontWeight: "700" },
+  msgWhere: { color: colors.textFaint, fontWeight: "400" },
+  msgTxt: { color: colors.textDim, fontSize: 13, lineHeight: 19, marginTop: 2 },
+  msgDel: { width: 32, height: 32, borderRadius: 16, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
 });
