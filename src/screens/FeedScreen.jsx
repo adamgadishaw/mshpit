@@ -81,13 +81,21 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, h
         </View>
       }
       ListEmptyComponent={
-        <Text style={styles.empty}>
-          {filter === "following"
-            ? "The people you follow haven't logged anything yet."
-            : filter === "local"
-            ? `No one in ${homeCity || "your city"} has logged a show yet. Be the first.`
-            : "No shows logged yet."}
-        </Text>
+        <View style={styles.emptyBox}>
+          <View style={styles.emptyIcon}>
+            <Icon name={filter === "following" ? "you" : filter === "local" ? "pin" : "feed"} size={26} color={colors.textFaint} />
+          </View>
+          <Text style={styles.emptyTitle}>
+            {filter === "following" ? "Your Following feed is quiet" : filter === "local" ? `Nothing in ${homeCity || "your city"} yet` : "No shows logged yet"}
+          </Text>
+          <Text style={styles.emptySub}>
+            {filter === "following"
+              ? "Follow people whose taste matches yours — tap any reviewer's name to see their profile and follow."
+              : filter === "local"
+              ? "Be the first to log a show in your city — tap the + to post one."
+              : "Log the first show — tap the + to rate the band and the room."}
+          </Text>
+        </View>
       }
       renderItem={({ item }) => (
         <TicketStub log={item} onOpen={onOpen} onPreview={onPreview} onOpenProfile={onOpenProfile} onOpenArtist={onOpenArtist} onOpenVenue={onOpenVenue} onReport={onReport} />
@@ -126,6 +134,10 @@ const styles = StyleSheet.create({
   gsIcon: { width: 34, height: 34, borderRadius: 17, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
   gsLabel: { color: colors.text, fontSize: 14, fontWeight: "700" },
   gsSub: { color: colors.textDim, fontSize: 12, marginTop: 1 },
+  emptyBox: { alignItems: "center", paddingTop: 40, paddingHorizontal: 30, gap: 6 },
+  emptyIcon: { width: 56, height: 56, borderRadius: 28, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center", marginBottom: 6 },
+  emptyTitle: { color: colors.text, fontSize: 17, fontWeight: "800", textAlign: "center" },
+  emptySub: { color: colors.textDim, fontSize: 14, lineHeight: 20, textAlign: "center" },
   head: { marginBottom: 18, marginTop: 4 },
   wordmarkRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   headerBtns: { flexDirection: "row", gap: 8 },
