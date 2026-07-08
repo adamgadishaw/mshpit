@@ -268,6 +268,15 @@ export function StoreProvider({ children }) {
     api("/api/me/going")
       .then(({ going: rows }) => { if (Array.isArray(rows)) setGoing((G) => ({ ...G, [su.id]: rows })); })
       .catch(() => {});
+    // Server-backed notifications: replace MY notifications with the authoritative
+    // server list (keep local welcome/system ones), so activity is real cross-device.
+    api("/api/me/notifications")
+      .then(({ notifications: rows }) => {
+        if (!Array.isArray(rows)) return;
+        const mine = rows.map((r) => ({ ...r, userId: su.id }));
+        setNotifications((all) => [...mine, ...all.filter((n) => n.userId !== su.id || n.type === "welcome")]);
+      })
+      .catch(() => {});
     // Slice 6: admins hydrate the open report queue (server rows → client shape).
     if (su.role === "admin") {
       api("/api/admin/reports")
@@ -549,6 +558,7 @@ export function StoreProvider({ children }) {
   const markNotificationsRead = () => {
     if (!session) return;
     setNotifications((all) => all.map((n) => (n.userId === session.id ? { ...n, read: true } : n)));
+    api("/api/me/notifications/read", { method: "POST" }).catch(() => {});
   };
   const postOwner = (postId) => feed.find((l) => l.id === postId)?.userId;
 

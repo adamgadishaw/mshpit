@@ -215,6 +215,21 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS idx_events_name ON events(name, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_events_user ON events(user_id, created_at DESC);
+
+-- ---- Notifications / activity (server-backed, cross-device) -----------------
+-- Addressed to a recipient (user_id) when someone (actor_id) acts on their stuff.
+CREATE TABLE IF NOT EXISTS notifications (
+  id         TEXT PRIMARY KEY,
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  actor_id   TEXT REFERENCES users(id) ON DELETE SET NULL,
+  type       TEXT NOT NULL,
+  post_id    TEXT,
+  artist     TEXT,
+  text       TEXT,
+  read       INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_notifs_user ON notifications(user_id, created_at DESC);
 `);
 
 const ver = db.prepare("SELECT version FROM schema_version LIMIT 1").get();

@@ -55,6 +55,13 @@ const feedQuery = db.prepare(`
   FROM posts p JOIN users u ON u.id = p.user_id
   WHERE p.removed = 0 ORDER BY p.created_at DESC LIMIT ? OFFSET ?`);
 
+// Insert a notification for a recipient (never notify yourself).
+const notifRow = db.prepare("INSERT INTO notifications (id,user_id,actor_id,type,post_id,artist,text,created_at) VALUES (?,?,?,?,?,?,?,?)");
+function addNotif(recipientId, actorId, type, extra = {}) {
+  if (!recipientId || recipientId === actorId) return;
+  notifRow.run(uid("n"), recipientId, actorId, type, extra.postId ?? null, extra.artist ?? null, extra.text ?? null, now());
+}
+
 function postJson(p, viewerId) {
   return {
     id: p.id,
@@ -183,7 +190,7 @@ export const routes = {
     if (!q.userById.get(ctx.params.id)) throw new ApiError(404, "No such user.");
     const has = db.prepare("SELECT 1 FROM follows WHERE follower_id=? AND followee_id=?").get(u.id, ctx.params.id);
     if (has) db.prepare("DELETE FROM follows WHERE follower_id=? AND followee_id=?").run(u.id, ctx.params.id);
-    else db.prepare("INSERT INTO follows (follower_id,followee_id) VALUES (?,?)").run(u.id, ctx.params.id);
+    else { db.prepare("INSERT INTO follows (follower_id,followee_id) VALUES (?,?)").run(u.id, ctx.params.id); addNotif(ctx.params.id, u.id, "follow"); }
     return { following: !has };
   },
 
@@ -233,7 +240,11 @@ export const routes = {
     if (!db.prepare("SELECT 1 FROM posts WHERE id=? AND removed=0").get(ctx.params.id)) throw new ApiError(404, "No such post.");
     const has = db.prepare("SELECT 1 FROM likes WHERE post_id=? AND user_id=?").get(ctx.params.id, u.id);
     if (has) db.prepare("DELETE FROM likes WHERE post_id=? AND user_id=?").run(ctx.params.id, u.id);
-    else db.prepare("INSERT INTO likes (post_id,user_id) VALUES (?,?)").run(ctx.params.id, u.id);
+    else {
+      db.prepare("INSERT INTO likes (post_id,user_id) VALUES (?,?)").run(ctx.params.id, u.id);
+      const p = db.prepare("SELECT user_id, artist FROM posts WHERE id=?").get(ctx.params.id);
+      if (p) addNotif(p.user_id, u.id, "like", { postId: ctx.params.id, artist: p.artist });
+    }
     return { liked: !has };
   },
 
@@ -251,6 +262,8 @@ export const routes = {
     if (!db.prepare("SELECT 1 FROM posts WHERE id=? AND removed=0").get(ctx.params.id)) throw new ApiError(404, "No such post.");
     const id = uid("c");
     db.prepare("INSERT INTO comments (id,post_id,user_id,text,created_at) VALUES (?,?,?,?,?)").run(id, ctx.params.id, u.id, text, now());
+    const p = db.prepare("SELECT user_id, artist FROM posts WHERE id=?").get(ctx.params.id);
+    if (p) addNotif(p.user_id, u.id, "comment", { postId: ctx.params.id, artist: p.artist, text: text.slice(0, 80) });
     return { id };
   },
 
@@ -292,7 +305,33 @@ export const routes = {
     if (!text) throw new ApiError(400, "Say something first.");
     const id = uid("dm");
     db.prepare("INSERT INTO dms (id,from_id,to_id,text,created_at) VALUES (?,?,?,?,?)").run(id, u.id, other, text, now());
+    addNotif(other, u.id, "dm", { text: text.slice(0, 80) });
     return { id };
+  },
+
+  // ---- notifications / activity (server-backed) ----
+  "GET /api/me/notifications": (ctx) => {
+    const u = requireUser(ctx);
+    const rows = db.prepare(`
+      SELECT n.*, a.name AS actor_name, a.initials AS actor_initials, a.avatar_uri AS actor_uri, a.avatar_color AS actor_color
+      FROM notifications n LEFT JOIN users a ON a.id = n.actor_id
+      WHERE n.user_id = ? ORDER BY n.created_at DESC LIMIT 100`).all(u.id);
+    return {
+      notifications: rows.map((n) => ({
+        id: n.id, type: n.type, actorId: n.actor_id,
+        actorName: n.actor_name || "Someone", actorInitials: n.actor_initials || "?",
+        actorUri: n.actor_uri, actorColor: n.actor_color,
+        postId: n.post_id, artist: n.artist, text: n.text,
+        ts: n.created_at, read: !!n.read,
+      })),
+      unread: db.prepare("SELECT COUNT(*) c FROM notifications WHERE user_id=? AND read=0").get(u.id).c,
+    };
+  },
+
+  "POST /api/me/notifications/read": (ctx) => {
+    const u = requireUser(ctx);
+    db.prepare("UPDATE notifications SET read=1 WHERE user_id=? AND read=0").run(u.id);
+    return { ok: true };
   },
 
   // ---- fan clubs (SQLite migration slice 5) ----
