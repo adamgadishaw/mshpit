@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { View, Text, StyleSheet, Pressable } from "react-native";
-import { colors, mono, radius } from "../theme";
+import { colors, mono, radius, shadow } from "../theme";
 import Stars from "./Stars";
 import Icon from "./Icon";
 import Avatar from "./Avatar";
@@ -120,7 +120,7 @@ export default function TicketStub({ log, onOpen, onPreview, onOpenProfile, onOp
 }
 
 const styles = StyleSheet.create({
-  card: { backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 16, marginBottom: 16 },
+  card: { backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 16, marginBottom: 16, ...shadow.card },
   header: { flexDirection: "row", alignItems: "center", gap: 10 },
   name: { color: colors.text, fontWeight: "700", fontSize: 14 },
   sub: { color: colors.textFaint, fontSize: 12, marginTop: 1 },

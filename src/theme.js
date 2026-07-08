@@ -81,3 +81,15 @@ export const mono = Platform.select({ ios: "Menlo", android: "monospace", defaul
 // Rounder geometry reads modern — cards at 16, sheets/heroes at 24.
 export const radius = { sm: 10, md: 16, lg: 24, pill: 999 };
 export const space = (n) => n * 4;
+
+// Elevation. Real dark-mode apps lift surfaces with soft shadows instead of
+// outlining everything with 1px borders (which reads as "wireframe"). Use these
+// on cards/sheets so depth — not a hard border — separates content from the page.
+export const shadow = {
+  card: Platform.OS === "web"
+    ? { boxShadow: "0 1px 2px rgba(0,0,0,0.30), 0 6px 20px rgba(0,0,0,0.22)" }
+    : { shadowColor: "#000", shadowOpacity: 0.3, shadowRadius: 10, shadowOffset: { width: 0, height: 4 }, elevation: 3 },
+  sheet: Platform.OS === "web"
+    ? { boxShadow: "0 10px 44px rgba(0,0,0,0.5)" }
+    : { shadowColor: "#000", shadowOpacity: 0.5, shadowRadius: 22, shadowOffset: { width: 0, height: 10 }, elevation: 12 },
+};
