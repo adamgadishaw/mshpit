@@ -274,6 +274,8 @@ function Root() {
                   onEditProfile={() => go({ editProfile: true })}
                   onOpenProfile={openProfile}
                   onOpen={openShow}
+                  onActivity={openNotifications}
+                  onInbox={openInbox}
                 />
               )}
             </View>

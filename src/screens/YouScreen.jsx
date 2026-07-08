@@ -28,9 +28,11 @@ function ActionRow({ icon, label, sub, onPress, danger }) {
   );
 }
 
-export default function YouScreen({ feed, onLogin, onLogout, onAdmin, onAddTourDate, onRequestArtist, onEditProfile, onOpenProfile, onOpen }) {
-  const { session, logsByUser } = useStore();
+export default function YouScreen({ feed, onLogin, onLogout, onAdmin, onAddTourDate, onRequestArtist, onEditProfile, onOpenProfile, onOpen, onActivity, onInbox }) {
+  const { session, logsByUser, unreadNotifications, inboxUnread } = useStore();
   const mine = session ? logsByUser(session.id) : [];
+  const notif = session ? unreadNotifications() : 0;
+  const unread = session ? inboxUnread() : 0;
 
   // Logged out - show a login prompt instead of a fake profile.
   if (!session) {
@@ -84,6 +86,14 @@ export default function YouScreen({ feed, onLogin, onLogout, onAdmin, onAddTourD
         </Text>
         <Text style={styles.recapCta}>tap to see your full year</Text>
       </View>
+
+      {(onActivity || onInbox) && (
+        <>
+          <Text style={styles.sectionLabel}>SOCIAL</Text>
+          {onActivity && <ActionRow icon="bell" label="Activity" sub={notif ? `${notif} new` : "Follows, likes, replies"} onPress={onActivity} />}
+          {onInbox && <ActionRow icon="mail" label="Inbox" sub={unread ? `${unread} unread` : "Your messages"} onPress={onInbox} />}
+        </>
+      )}
 
       {/* role-based tools */}
       <Text style={styles.sectionLabel}>ACCOUNT</Text>
