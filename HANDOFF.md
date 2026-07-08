@@ -59,9 +59,21 @@ npm run pipeline             # self-running scraper (needs .env, see below)
   state). Entry points + unread badges: feed-header bell, desktop LeftRail, Menu.
   New `bell` icon. **Client-side** (prototype) — server-backed notifications are the
   next step to make it real cross-device.
-- **Cohesion is the north star now:** the user wants a legit social product, not a
-  prototype. Remaining pillars: consistent nav, onboarding/story, visual-consistency
-  pass, and server-backing the social features (notifications, moderation actions).
+- **Cohesion drive (all 5 pillars done this session):**
+  1. Notifications/Activity system (above).
+  2. **Nav cohesion** — Activity + Inbox reachable from the You tab (were feed-header
+     only); menu/rail/Discover-hub now expose the same surfaces.
+  3. **Onboarding** — system "Welcome to Pit" notification on signup + a dismissible
+     "Get started" card in the feed for users with 0 posts (log a show / near you /
+     complete profile).
+  4. **Visual pass (targeted)** — polished, guiding empty states in the feed
+     (icon+title+next-step). NOT an exhaustive pass — browser tools were down, so a
+     full screen-by-screen visual audit is still open (do it with preview working).
+  5. **Server-backed notifications** — `notifications` table + `addNotif()` from the
+     follow/like/comment/DM endpoints + `GET/POST /api/me/notifications[/read]`;
+     client hydrates on login/reload, writes read-state through. Verified A→B cross
+     account. **Still client-side:** moderation actions (suspend/role/unban — only
+     ban writes through) and lounge/venue-review/rating writes for some paths.
 
 ## Recently done (2026-07-08 session)
 - **Interactive Google map** (LiveMap) shipped; live-map failure on prod traced to
