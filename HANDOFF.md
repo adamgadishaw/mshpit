@@ -45,6 +45,24 @@ npm run pipeline             # self-running scraper (needs .env, see below)
 - Catalog now: ~550+ artists (Spotify photos/genres/popularity, album covers via Cover Art Archive, top tracks), ~1010 venues across 15 countries incl. major CA/US arenas.
 - Other scripts: `scripts/prune-photos.mjs` (drop dead image URLs), `scripts/sync-anchors.mjs` (curated arenas → catalog), `scripts/enrich-*.mjs`.
 
+## Recently done (2026-07-08 session, part 2 — toward "real social product")
+- **Moderation console** rebuilt (tabbed: Overview/Reports/Members/Content/Requests),
+  fixed the stretched-oval tab bar. Added a **moderator** role tier (`isMod`): mods
+  moderate reports/members/content; admins additionally administer roles + see ads +
+  approve artists. Members tab = Discord-style role pills + Timeout/Ban/Unban.
+- **Discover = hub**: an "Explore" grid surfaces the buried features (Best rated,
+  Near you, Fan clubs, Find venues).
+- **Notifications / Activity system** (the social heartbeat). `notifications` state
+  (persisted) + `notify()` generated on follow / like / comment / DM; selectors
+  `myNotifications`/`unreadNotifications`/`markNotificationsRead`. New
+  `NotificationsScreen` (Activity feed w/ actor avatars, per-type badges, empty
+  state). Entry points + unread badges: feed-header bell, desktop LeftRail, Menu.
+  New `bell` icon. **Client-side** (prototype) — server-backed notifications are the
+  next step to make it real cross-device.
+- **Cohesion is the north star now:** the user wants a legit social product, not a
+  prototype. Remaining pillars: consistent nav, onboarding/story, visual-consistency
+  pass, and server-backing the social features (notifications, moderation actions).
+
 ## Recently done (2026-07-08 session)
 - **Interactive Google map** (LiveMap) shipped; live-map failure on prod traced to
   the server **CSP** blocking `maps.googleapis.com` — widened `script/connect/worker`

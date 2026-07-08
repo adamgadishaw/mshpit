@@ -16,6 +16,7 @@ import YouScreen from "./src/screens/YouScreen";
 import ShowScreen from "./src/screens/ShowScreen";
 import LoungeScreen from "./src/screens/LoungeScreen";
 import InboxScreen from "./src/screens/InboxScreen";
+import NotificationsScreen from "./src/screens/NotificationsScreen";
 import ThreadScreen from "./src/screens/ThreadScreen";
 import VenueReviewScreen from "./src/screens/VenueReviewScreen";
 import FanClubScreen from "./src/screens/FanClubScreen";
@@ -65,7 +66,7 @@ export default function App() {
 }
 
 function Root() {
-  const { session, addLog, visibleFeed, followingFeed, localFeed, logout, userByHandle, inboxUnread, accountStatus, track } = useStore();
+  const { session, addLog, visibleFeed, followingFeed, localFeed, logout, userByHandle, inboxUnread, accountStatus, track, unreadNotifications } = useStore();
   const staff = isStaff(session?.role);
   const feed = visibleFeed(staff);
   const following = followingFeed(staff);
@@ -181,6 +182,7 @@ function Root() {
   const openPhotos = (images, index = 0) => go({ photos: { images, index } });
   const reviewShow = (log) => requireAuth(() => go({ logging: true, prefill: { artist: log.artist, venue: log.venue, city: log.city } }));
   const openInbox = () => requireAuth(() => go({ inbox: true }));
+  const openNotifications = () => requireAuth(() => go({ notifications: true }));
   const openThread = (otherId) => requireAuth(() => go({ thread: otherId }));
   const openVenueReview = (name) => requireAuth(() => go({ venueReview: name }));
 
@@ -196,6 +198,7 @@ function Root() {
   else if (nav.venueReview) overlay = <VenueReviewScreen venueName={nav.venueReview} onClose={back} />;
   else if (nav.thread) overlay = <ThreadScreen otherId={nav.thread} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} />;
   else if (nav.inbox) overlay = <InboxScreen onClose={back} onOpenThread={openThread} />;
+  else if (nav.notifications) overlay = <NotificationsScreen onClose={back} onOpenProfile={openProfile} onOpenThread={openThread} onOpen={openShow} />;
   else if (nav.profileId) overlay = <ProfileScreen userId={nav.profileId} onClose={back} onOpenShow={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onEditProfile={() => go({ editProfile: true })} onPreview={showPreview} onMessage={openThread} onReport={(log) => requireAuth(() => go({ reporting: log }))} onOpenPhotos={openPhotos} />;
   else if (nav.fanClub) overlay = <FanClubScreen artist={nav.fanClub} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} />;
   else if (nav.editArtist) overlay = <EditArtistProfileScreen artistName={nav.editArtist} onClose={back} />;
@@ -221,6 +224,7 @@ function Root() {
       onFanClubs={() => replace({ fanClubs: true })}
       onTopRated={() => replace({ topRated: true })}
       onInbox={() => requireAuth(() => replace({ inbox: true }))}
+      onActivity={() => requireAuth(() => replace({ notifications: true }))}
       onProfile={() => session && replace({ profileId: session.id })}
       onEditProfile={() => replace({ editProfile: true })}
       onAdmin={() => replace({ admin: true })}
@@ -244,7 +248,9 @@ function Root() {
                   loggedIn={!!session}
                   homeCity={session?.home?.city}
                   unread={inboxUnread()}
+                  notifUnread={session ? unreadNotifications() : 0}
                   onOpenInbox={openInbox}
+                  onOpenNotifications={openNotifications}
                   onOpen={openShow}
                   onPreview={showPreview}
                   onOpenProfile={openProfile}
@@ -310,6 +316,8 @@ function Root() {
           setTab={(k) => { setTab(k); clear(); }}
           session={session}
           unread={session ? inboxUnread() : 0}
+          notifUnread={session ? unreadNotifications() : 0}
+          onActivity={openNotifications}
           onLog={() => requireAuth(() => go({ logging: true }))}
           onFindVenues={() => go({ venues: true })}
           onFanClubs={() => go({ fanClubs: true })}

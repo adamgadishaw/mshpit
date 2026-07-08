@@ -6,7 +6,7 @@ import Icon from "../components/Icon";
 
 const PAGE = 8; // load the feed in pages, like the big apps - never all at once
 
-export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, homeCity, unread = 0, onOpen, onPreview, onOpenProfile, onOpenArtist, onOpenVenue, onOpenNearby, onOpenInbox, onOpenMenu, onReport }) {
+export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, homeCity, unread = 0, notifUnread = 0, onOpen, onPreview, onOpenProfile, onOpenArtist, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onReport }) {
   const [filter, setFilter] = useState("everyone"); // following | local | everyone
   const [count, setCount] = useState(PAGE);
   const full = filter === "following" ? followingFeed : filter === "local" ? localFeed : feed;
@@ -30,6 +30,10 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, h
           <View style={styles.wordmarkRow}>
             <Text style={styles.wordmark}>PIT</Text>
             <View style={styles.headerBtns}>
+              <Pressable style={styles.inboxBtn} onPress={onOpenNotifications} hitSlop={8} accessibilityRole="button" accessibilityLabel={notifUnread > 0 ? `Activity, ${notifUnread} new` : "Activity"}>
+                <Icon name="bell" size={22} color={colors.text} />
+                {notifUnread > 0 && <View style={styles.inboxBadge}><Text style={styles.inboxBadgeTxt}>{notifUnread}</Text></View>}
+              </Pressable>
               <Pressable style={styles.inboxBtn} onPress={onOpenInbox} hitSlop={8} accessibilityRole="button" accessibilityLabel={unread > 0 ? `Inbox, ${unread} unread` : "Inbox"}>
                 <Icon name="mail" size={22} color={colors.text} />
                 {unread > 0 && <View style={styles.inboxBadge}><Text style={styles.inboxBadgeTxt}>{unread}</Text></View>}

@@ -143,6 +143,13 @@ export function StoreProvider({ children }) {
     ],
   });
   const [dmRead, setDmRead] = usePersisted("pit.dmRead", {});
+  // Notifications / activity — the social heartbeat. Each item is addressed to a
+  // recipient (userId) and generated when someone acts on their content/graph.
+  const [notifications, setNotifications] = usePersisted("pit.notifications", [
+    { id: "nf1", userId: "u_demo", type: "follow", actorId: "u_mara", actorName: "Mara Quinn", actorInitials: "MQ", ts: Date.now() - 3600000, read: false },
+    { id: "nf2", userId: "u_demo", type: "like", actorId: "u_devon", actorName: "Devon Ash", actorInitials: "DA", postId: "log_1", artist: "Turnstile", ts: Date.now() - 7200000, read: false },
+    { id: "nf3", userId: "u_demo", type: "comment", actorId: "u_priya", actorName: "Priya N.", actorInitials: "PN", postId: "log_1", artist: "Turnstile", ts: Date.now() - 10800000, read: true },
+  ]);
   // Album + song ratings (stand-in for stream data) keyed by artist|title
   const [albumRatings, setAlbumRatings] = usePersisted("pit.albumRatings", { "turnstile|glow on": { u_mara: 5, u_devon: 4.5 }, "turnstile|never enough": { u_mara: 4 } });
   const [songRatings, setSongRatings] = usePersisted("pit.songRatings", { "turnstile|healing": { u_mara: 5, u_demo: 5 } });
@@ -515,6 +522,28 @@ export function StoreProvider({ children }) {
     setTourDates((t) => [...batch, ...t]);
   };
 
+  // --- Notifications / activity ---------------------------------------------
+  // Address a notification to a recipient when someone acts on their stuff. Never
+  // notify yourself. (Client-side in this prototype, like the rest of the graph.)
+  const notify = (recipientId, type, payload = {}) => {
+    if (!session || !recipientId || recipientId === session.id) return;
+    const n = {
+      id: "n_" + Date.now() + Math.random().toString(36).slice(2, 6),
+      userId: recipientId, type,
+      actorId: session.id, actorName: session.name, actorInitials: session.initials,
+      actorColor: session.avatarColor, actorUri: session.avatarUri,
+      ts: Date.now(), read: false, ...payload,
+    };
+    setNotifications((all) => [n, ...all].slice(0, 300));
+  };
+  const myNotifications = () => (session ? notifications.filter((n) => n.userId === session.id).sort((a, b) => b.ts - a.ts) : []);
+  const unreadNotifications = () => myNotifications().filter((n) => !n.read).length;
+  const markNotificationsRead = () => {
+    if (!session) return;
+    setNotifications((all) => all.map((n) => (n.userId === session.id ? { ...n, read: true } : n)));
+  };
+  const postOwner = (postId) => feed.find((l) => l.id === postId)?.userId;
+
   // Social graph. First slice of the SQLite migration (see MIGRATION.md): follow
   // state is still cached locally + persisted, but mutations now WRITE THROUGH to
   // the server (best-effort) and login HYDRATES the follow list from the server,
@@ -522,7 +551,7 @@ export function StoreProvider({ children }) {
   // when the backend is unreachable (dev / offline).
   const isFollowing = (id) => (follows[session?.id] || []).includes(id);
   const follow = (id) => {
-    if (!isFollowing(id)) { api(`/api/users/${id}/follow`, { method: "POST" }).catch(() => {}); track("follow", { target: id }); } // server toggles
+    if (!isFollowing(id)) { api(`/api/users/${id}/follow`, { method: "POST" }).catch(() => {}); track("follow", { target: id }); notify(id, "follow"); } // server toggles
     setFollows((f) => ({ ...f, [session.id]: [...new Set([...(f[session.id] || []), id])] }));
   };
   const unfollow = (id) => {
@@ -558,6 +587,7 @@ export function StoreProvider({ children }) {
     const localId = "c_" + Date.now();
     const c = { id: localId, userId: session.id, name: session.name, initials: session.initials, text: t, likes: 0 };
     setComments((m) => ({ ...m, [id]: [c, ...(m[id] || [])] }));
+    { const o = postOwner(id); if (o) notify(o, "comment", { postId: id, artist: feed.find((l) => l.id === id)?.artist, text: t.slice(0, 60) }); }
     // Write-through + adopt the server id so a later loadComments() dedupes it
     // instead of showing my comment twice.
     api(`/api/posts/${id}/comments`, { method: "POST", body: { text: t } })
@@ -566,7 +596,7 @@ export function StoreProvider({ children }) {
   };
   const likeInfo = (id, base = 0) => ({ count: (likes[id] ?? base) + (myLikes[id] ? 1 : 0), liked: !!myLikes[id] });
   const toggleLike = (id, base = 0) => {
-    if (!myLikes[id]) track("like", { post: id });
+    if (!myLikes[id]) { track("like", { post: id }); const o = postOwner(id); if (o) notify(o, "like", { postId: id, artist: feed.find((l) => l.id === id)?.artist }); }
     setMyLikes((m) => ({ ...m, [id]: !m[id] }));
     setLikes((l) => ({ ...l, [id]: l[id] ?? base }));
     // Server toggles the like for the authenticated user (best-effort; a 404 on a
@@ -887,6 +917,7 @@ export function StoreProvider({ children }) {
     const m = { id: localId, from: session.id, text: t, ts: "now" };
     setDms((d) => ({ ...d, [key]: [...(d[key] || []), m] }));
     setDmRead((r) => ({ ...r, [key]: (dms[key]?.length || 0) + 1 }));
+    notify(otherId, "dm", { text: t.slice(0, 60) });
     // Write-through + adopt the server id so a later loadThread() dedupes it.
     api(`/api/dms/${otherId}`, { method: "POST", body: { text: t } })
       .then(({ id }) => { if (id) setDms((d) => ({ ...d, [key]: (d[key] || []).map((x) => (x.id === localId ? { ...x, id } : x)) })); })
@@ -1292,6 +1323,7 @@ export function StoreProvider({ children }) {
     artistGallery, isPhotoRemoved, removePhoto, restorePhoto,
     threadMessages, sendDM, loadThread, markThreadRead, inboxThreads, mainThreads, requestThreads, inboxUnread, requestCount,
     track,
+    myNotifications, unreadNotifications, markNotificationsRead,
   };
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;

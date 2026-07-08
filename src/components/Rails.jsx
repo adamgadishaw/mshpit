@@ -14,7 +14,7 @@ const NAV = [
 
 // Left navigation rail (desktop). Mirrors the mobile tab bar + the menu's quick
 // links, so nothing is lost when the bottom bar is hidden on wide screens.
-export function LeftRail({ tab, setTab, session, unread = 0, onLog, onFindVenues, onFanClubs, onNearby, onTopRated, onInbox, onProfile, onEditProfile, onLogin }) {
+export function LeftRail({ tab, setTab, session, unread = 0, notifUnread = 0, onLog, onFindVenues, onFanClubs, onNearby, onTopRated, onInbox, onActivity, onProfile, onEditProfile, onLogin }) {
   const NavItem = ({ item }) => {
     const on = tab === item.key;
     return (
@@ -49,6 +49,7 @@ export function LeftRail({ tab, setTab, session, unread = 0, onLog, onFindVenues
       <Link icon="search" label="Find venues" onPress={onFindVenues} />
       <Link icon="comment" label="Fan clubs" onPress={onFanClubs} />
       <Link icon="trophy" label="Best rated" onPress={onTopRated} />
+      <Link icon="bell" label="Activity" badge={notifUnread} onPress={onActivity} />
       <Link icon="mail" label="Inbox" badge={unread} onPress={onInbox} />
     </View>
   );

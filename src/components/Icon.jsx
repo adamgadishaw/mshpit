@@ -174,6 +174,13 @@ function paths(name, { stroke, solid, color, filled }) {
           <Path d="M22 6 12 13 2 6" {...stroke} />
         </>
       );
+    case "bell":
+      return (
+        <>
+          <Path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" {...stroke} />
+          <Path d="M13.7 21a2 2 0 0 1-3.4 0" {...stroke} />
+        </>
+      );
     case "flag":
       return (
         <>

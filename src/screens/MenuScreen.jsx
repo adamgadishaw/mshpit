@@ -19,9 +19,10 @@ function Row({ icon, label, sub, onPress, danger }) {
 }
 
 // One place to reach everything - so features aren't scattered.
-export default function MenuScreen({ onClose, onNear, onVenues, onFanClubs, onTopRated, onInbox, onProfile, onEditProfile, onAdmin, onTourDates, onRequestArtist, onLogin, onLogout, onBackToLanding }) {
-  const { session, inboxUnread, chooseTheme } = useStore();
+export default function MenuScreen({ onClose, onNear, onVenues, onFanClubs, onTopRated, onInbox, onActivity, onProfile, onEditProfile, onAdmin, onTourDates, onRequestArtist, onLogin, onLogout, onBackToLanding }) {
+  const { session, inboxUnread, unreadNotifications, chooseTheme } = useStore();
   const unread = session ? inboxUnread() : 0;
+  const notif = session ? unreadNotifications() : 0;
 
   return (
     <View style={styles.wrap}>
@@ -52,6 +53,7 @@ export default function MenuScreen({ onClose, onNear, onVenues, onFanClubs, onTo
         <Row icon="search" label="Find venues" sub="Browse rooms by city" onPress={onVenues} />
         <Row icon="comment" label="Fan clubs" sub="Every artist's permanent chat" onPress={onFanClubs} />
         <Row icon="trophy" label="Best rated near you" sub="Top shows by rating & distance" onPress={onTopRated} />
+        {onActivity && <Row icon="bell" label="Activity" sub={notif ? `${notif} new` : "Follows, likes, replies"} onPress={onActivity} />}
         <Row icon="mail" label="Inbox" sub={unread ? `${unread} unread` : "Your messages"} onPress={onInbox} />
 
         {session && (
