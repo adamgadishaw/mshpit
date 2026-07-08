@@ -124,15 +124,18 @@ async function cycle(n) {
 }
 
 async function main() {
-  log(`self-running pipeline up. target ${ARTIST_TARGET} artists, cycle every ${CYCLE_H}h.`);
+  // --once: run a single cycle and exit. That's the mode the Render cron job uses
+  // (it invokes this on a schedule, then commits + pushes the refreshed catalog).
+  const once = process.argv.includes("--once");
+  log(`pipeline up. target ${ARTIST_TARGET} artists${once ? " · single cycle (--once)" : ` · cycle every ${CYCLE_H}h`}.`);
   let n = 1;
-  while (!stopping) {
+  do {
     try { await cycle(n++); } catch (e) { log(`cycle error: ${e.message} (will retry next cycle)`); }
-    if (stopping) break;
+    if (once || stopping) break;
     log(`sleeping ${CYCLE_H}h…`);
     // sleep in 30s slices so Ctrl+C exits promptly
     for (let i = 0; i < CYCLE_H * 120 && !stopping; i++) await sleep(30000);
-  }
+  } while (!stopping);
   log("stopped.");
 }
 main();
