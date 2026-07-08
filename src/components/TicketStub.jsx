@@ -4,17 +4,23 @@ import { colors, mono, radius, shadow } from "../theme";
 import Stars from "./Stars";
 import Icon from "./Icon";
 import Avatar from "./Avatar";
+import SmartImage from "./SmartImage";
 import { useStore } from "../store";
 
-function MediaStrip({ count }) {
+// Real photo thumbnails only — never empty placeholder tiles (that reads as a
+// broken/prototype UI). Renders nothing when the post has no photos.
+function MediaStrip({ photos }) {
+  const shown = photos.slice(0, 4);
   return (
     <View style={styles.media}>
-      {Array.from({ length: Math.min(count, 4) }).map((_, i) => (
-        <View key={i} style={styles.mediaTile}>
-          <Icon name={i === 0 ? "play" : "photo"} size={16} color={colors.textFaint} />
-        </View>
+      {shown.map((uri, i) => (
+        <SmartImage key={i} uri={uri} style={styles.mediaTile} contain={false} />
       ))}
-      {count > 4 && <Text style={styles.mediaMore}>+{count - 4}</Text>}
+      {photos.length > 4 && (
+        <View style={[styles.mediaTile, styles.mediaMoreTile]}>
+          <Text style={styles.mediaMore}>+{photos.length - 4}</Text>
+        </View>
+      )}
     </View>
   );
 }
@@ -61,7 +67,7 @@ export default function TicketStub({ log, onOpen, onPreview, onOpenProfile, onOp
         ) : (
           <Text style={styles.noReview}>Logged this show - no review yet. Tap to open.</Text>
         )}
-        {log.media > 0 && <MediaStrip count={log.media} />}
+        {log.photos?.length > 0 && <MediaStrip photos={log.photos} />}
       </Pressable>
 
       {/* perforated ticket-stub line */}
@@ -134,9 +140,10 @@ const styles = StyleSheet.create({
   review: { color: colors.text, fontSize: 17, lineHeight: 25, fontWeight: "500" },
   noReview: { color: colors.textFaint, fontSize: 14, marginTop: 10, fontStyle: "italic" },
 
-  media: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 12 },
-  mediaTile: { width: 52, height: 52, borderRadius: 8, backgroundColor: colors.surfaceAlt, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.line },
-  mediaMore: { color: colors.textFaint, fontSize: 12, marginLeft: 2 },
+  media: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 12 },
+  mediaTile: { width: 64, height: 64, borderRadius: 12, backgroundColor: colors.surfaceAlt },
+  mediaMoreTile: { alignItems: "center", justifyContent: "center" },
+  mediaMore: { color: colors.textDim, fontFamily: mono, fontSize: 14, fontWeight: "700" },
 
   perfWrap: { flexDirection: "row", alignItems: "center", height: 16, marginVertical: 14 },
   dashed: { flex: 1, borderTopWidth: 1, borderStyle: "dashed", borderColor: colors.line },
