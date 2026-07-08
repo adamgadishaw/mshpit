@@ -55,6 +55,16 @@ export const isArtist = (role) => role === "artist" || role === "admin";
 const StoreContext = createContext(null);
 export const useStore = () => useContext(StoreContext);
 
+// State that survives a reload: hydrates from localStorage on init and writes back
+// on every change. This is the offline cache (server hydration layers on top for
+// signed-in accounts). Without it, interactions like joining a fan club, DMs, or
+// "going" were dropped on refresh because they lived only in memory.
+function usePersisted(key, seed) {
+  const [value, setValue] = useState(() => load(key, seed));
+  useEffect(() => { save(key, value); }, [key, value]);
+  return [value, setValue];
+}
+
 export function StoreProvider({ children }) {
   // Hydrate the identity-critical state from storage so a refresh / new page keeps
   // you logged in and keeps your data. (See src/lib/persist.js.)
@@ -66,54 +76,54 @@ export function StoreProvider({ children }) {
   // like the rest of moderation — but removing one photo backfills the gallery
   // from the next available source instead of leaving a hole.
   const [removedPhotos, setRemovedPhotos] = useState([]);
-  const [requests, setRequests] = useState(seedRequests);
-  const [tourDates, setTourDates] = useState(seedTourDates);
+  const [requests, setRequests] = usePersisted("pit.requests", seedRequests);
+  const [tourDates, setTourDates] = usePersisted("pit.tourDates", seedTourDates);
   const [reports, setReports] = useState([]);
   const [follows, setFollows] = useState(() => load("pit.follows", { u_demo: ["u_mara", "u_devon"] }));
   // Afterparty: like + comment a concert (keyed by the concert/log id)
-  const [comments, setComments] = useState({
+  const [comments, setComments] = usePersisted("pit.comments", {
     log_1: [
       { id: "c1", userId: "u_devon", name: "Devon Ash", initials: "DA", text: "The two-step during HEALING was unreal. Worth the bruises.", likes: 5 },
       { id: "c2", userId: "u_priya", name: "Priya N.", initials: "PN", text: "Back of the room sound was rough but the pit didn't care.", likes: 2 },
     ],
   });
-  const [likes, setLikes] = useState({ log_1: 42, log_2: 88, log_3: 156 });
-  const [myLikes, setMyLikes] = useState({});
+  const [likes, setLikes] = usePersisted("pit.likes", { log_1: 42, log_2: 88, log_3: 156 });
+  const [myLikes, setMyLikes] = usePersisted("pit.myLikes", {});
 
   // Concert Lounge: a gated, Discord-style chat per concert (keyed by concertKey)
-  const [lounge, setLounge] = useState({
+  const [lounge, setLounge] = usePersisted("pit.lounge", {
     "turnstile|the fillmore|2026 · 06 · 21": [
       { id: "m1", userId: "u_devon", name: "Devon Ash", initials: "DA", text: "anyone else lose a shoe in the pit lol", ts: "2h" },
       { id: "m2", userId: "u_priya", name: "Priya N.", initials: "PN", text: "the HEALING singalong gave me chills", ts: "2h" },
     ],
   });
   // Planned attendance ("Going") - per user, list of concert refs
-  const [going, setGoing] = useState({
+  const [going, setGoing] = usePersisted("pit.going", {
     u_mara: [{ key: "geese|the independent|2026 · 08 · 26", artist: "Geese", venue: "The Independent", city: "San Francisco", date: "2026 · 08 · 26" }],
   });
   // Artist fan clubs: permanent chat per artist + membership
-  const [fanClubMsgs, setFanClubMsgs] = useState({
+  const [fanClubMsgs, setFanClubMsgs] = usePersisted("pit.fanClubMsgs", {
     turnstile: [
       { id: "fc1", userId: "u_mara", name: "Mara Quinn", initials: "MQ", text: "GLOW ON changed my life, no notes", ts: "3h" },
       { id: "fc2", userId: "u_devon", name: "Devon Ash", initials: "DA", text: "who's getting the MSG tickets??", ts: "1h" },
     ],
   });
-  const [fanClubs, setFanClubs] = useState({ u_demo: ["Turnstile"], u_mara: ["Turnstile", "Militarie Gun"] });
+  const [fanClubs, setFanClubs] = usePersisted("pit.fanClubs", { u_demo: ["Turnstile"], u_mara: ["Turnstile", "Militarie Gun"] });
   // Server-truth member counts per fan club (slice 5), keyed by fcKey. Preferred
   // over the local-graph count when present so totals reflect everyone, not just
   // the users this browser happens to know about.
   const [fanClubMeta, setFanClubMeta] = useState({});
   // Artist-owned profile overrides (banner/avatar/bio/feedEnabled) + updates feed
-  const [artistProfiles, setArtistProfiles] = useState({
+  const [artistProfiles, setArtistProfiles] = usePersisted("pit.artistProfiles", {
     turnstile: { feedEnabled: true },
   });
-  const [artistPosts, setArtistPosts] = useState({
+  const [artistPosts, setArtistPosts] = usePersisted("pit.artistPosts", {
     turnstile: [{ id: "ap1", text: "New tour dates just dropped. MSG we're coming for you.", ts: "2d" }],
   });
   // Venue reviews (rating + text + photos), keyed by venue name
-  const [venueReviews, setVenueReviews] = useState({});
+  const [venueReviews, setVenueReviews] = usePersisted("pit.venueReviews", {});
   // Direct messages - keyed by the sorted pair of user ids; plus read markers.
-  const [dms, setDms] = useState({
+  const [dms, setDms] = usePersisted("pit.dms", {
     u_demo__u_mara: [
       { id: "dm1", from: "u_mara", text: "yo are you going to the Geese show?", ts: "1d" },
       { id: "dm2", from: "u_demo", text: "trying to get tickets! you?", ts: "1d" },
@@ -125,10 +135,10 @@ export function StoreProvider({ children }) {
       { id: "dm4", from: "u_priya", text: "hey! saw you were at the Fillmore show too — small world", ts: "3h" },
     ],
   });
-  const [dmRead, setDmRead] = useState({});
+  const [dmRead, setDmRead] = usePersisted("pit.dmRead", {});
   // Album + song ratings (stand-in for stream data) keyed by artist|title
-  const [albumRatings, setAlbumRatings] = useState({ "turnstile|glow on": { u_mara: 5, u_devon: 4.5 }, "turnstile|never enough": { u_mara: 4 } });
-  const [songRatings, setSongRatings] = useState({ "turnstile|healing": { u_mara: 5, u_demo: 5 } });
+  const [albumRatings, setAlbumRatings] = usePersisted("pit.albumRatings", { "turnstile|glow on": { u_mara: 5, u_devon: 4.5 }, "turnstile|never enough": { u_mara: 4 } });
+  const [songRatings, setSongRatings] = usePersisted("pit.songRatings", { "turnstile|healing": { u_mara: 5, u_demo: 5 } });
   // Server-truth rating aggregates keyed by `${kind}|${ref}` (slice 7).
   const [ratingAgg, setRatingAgg] = useState({});
 
@@ -239,6 +249,18 @@ export function StoreProvider({ children }) {
         .catch(() => {});
     }
   };
+
+  // Restore the session on reload. The httpOnly session cookie survives a refresh,
+  // so ask the server who we are and re-absorb — which re-runs ALL the per-account
+  // hydration (follows, DM threads, fan clubs, going, admin queues). Before this,
+  // a refresh skipped hydration entirely, so server-only state looked like it
+  // "didn't save." No-op for guests / offline (returns null / rejects).
+  useEffect(() => {
+    api("/api/me")
+      .then(({ user }) => { if (user) absorbServerUser(user); })
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Server-first auth (real accounts, hashed passwords, httpOnly sessions).
   // Falls back to the local in-memory demo accounts ONLY when the backend is
