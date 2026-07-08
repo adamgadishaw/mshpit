@@ -111,7 +111,15 @@ async function cycle(n) {
     await run("enrich-venue-photos.mjs");
     did = true;
   }
-  if (!did) log("nothing to do — catalog is complete and fresh (no writes, no reloads).");
+  // Tour dates from the official Ticketmaster Discovery API. Runs only when a key
+  // is set; polls the top artists by popularity each cycle so newly-announced
+  // dates get picked up (tour dates are dynamic — unlike photos, we re-check).
+  if (!stopping && process.env.TICKETMASTER_KEY) {
+    log("stage: tour dates (Ticketmaster Discovery)");
+    await run("enrich-tourdates.mjs");
+    did = true;
+  }
+  if (!did) log("nothing to do — catalog is complete and fresh (no writes, no reloads). Set TICKETMASTER_KEY to also pull tour dates.");
   return did;
 }
 
