@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { View, Text, StyleSheet, FlatList, Pressable } from "react-native";
-import { colors, mono, radius } from "../theme";
+import { colors, mono, radius, shadow } from "../theme";
 import { load, save } from "../lib/persist";
 import TicketStub from "../components/TicketStub";
 import Icon from "../components/Icon";
@@ -149,10 +149,12 @@ const styles = StyleSheet.create({
   nearBtn: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: colors.bgElev, borderRadius: 14, borderWidth: 1, borderColor: colors.amber, paddingHorizontal: 14, paddingVertical: 13, marginTop: 16 },
   nearTxt: { flex: 1, color: colors.text, fontSize: 14, fontWeight: "700" },
   nearSub: { color: colors.textDim, fontWeight: "400" },
-  segment: { flexDirection: "row", gap: 8, marginTop: 12 },
-  seg: { flex: 1, alignItems: "center", paddingVertical: 9, borderRadius: 999, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
-  segOn: { borderColor: colors.amber, backgroundColor: colors.bgElev },
+  // A proper segmented control: one rounded track, the active segment lifts on a
+  // filled pill with a shadow (like iOS / real apps) instead of three bordered pills.
+  segment: { flexDirection: "row", marginTop: 14, backgroundColor: colors.bgElev, borderRadius: radius.pill, padding: 4, borderWidth: 1, borderColor: colors.lineSoft },
+  seg: { flex: 1, alignItems: "center", paddingVertical: 8, borderRadius: radius.pill },
+  segOn: { backgroundColor: colors.surfaceAlt, ...shadow.card },
   segTxt: { color: colors.textDim, fontSize: 13, fontWeight: "600" },
-  segTxtOn: { color: colors.amber, fontWeight: "700" },
+  segTxtOn: { color: colors.text, fontWeight: "800" },
   empty: { color: colors.textDim, fontSize: 14, lineHeight: 21, fontStyle: "italic", paddingHorizontal: 4 },
 });
