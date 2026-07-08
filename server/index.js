@@ -49,6 +49,10 @@ seedAdmin();
 // ---- security headers --------------------------------------------------------
 // CSP: the app hotlinks images from many hosts (Commons/Openverse/web + wsrv.nl
 // proxy + Spotify/Unsplash CDNs), so img-src stays broad; everything else locked.
+// The interactive Google map (LiveMap) needs the Google Maps domains allowed for
+// its loader script, its tile/data fetches, and its vector-map web workers —
+// without these the browser blocks the script and the map silently falls back to
+// the static image.
 const HEADERS = {
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "strict-origin-when-cross-origin",
@@ -58,9 +62,14 @@ const HEADERS = {
     "default-src 'self'",
     "img-src * data: blob:",
     "media-src *",
-    "script-src 'self' 'unsafe-inline'", // expo web build inlines its bootstrap
+    // expo web build inlines its bootstrap ('unsafe-inline'); Google Maps JS loads
+    // from *.googleapis.com / *.gstatic.com.
+    "script-src 'self' 'unsafe-inline' https://*.googleapis.com https://*.gstatic.com",
     "style-src 'self' 'unsafe-inline'",
-    "connect-src 'self'",
+    // Google Maps fetches tiles/metadata over XHR/fetch from these hosts.
+    "connect-src 'self' https://*.googleapis.com https://*.gstatic.com",
+    "worker-src 'self' blob:", // vector maps run in blob web workers
+    "font-src 'self' data: https://*.gstatic.com",
     "frame-ancestors 'none'",
   ].join("; "),
   ...(PROD ? { "Strict-Transport-Security": "max-age=31536000; includeSubDomains" } : {}),
