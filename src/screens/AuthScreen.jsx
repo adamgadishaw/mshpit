@@ -5,6 +5,8 @@ import { useStore } from "../store";
 import Icon from "../components/Icon";
 import SheetHeader from "../components/SheetHeader";
 import LocationPicker from "../components/LocationPicker";
+import PrivacyScreen from "./PrivacyScreen";
+import TermsScreen from "./TermsScreen";
 
 export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) {
   const { login, signup } = useStore();
@@ -14,10 +16,18 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) 
   const [password, setPassword] = useState("");
   const [city, setCity] = useState(null); // { city, label }
   const [pickingCity, setPickingCity] = useState(false);
+  const [agreed, setAgreed] = useState(false); // signup: consent to Terms + Privacy
+  const [viewing, setViewing] = useState(null); // "terms" | "privacy" — inline reader
   const [error, setError] = useState("");
 
   const submit = async () => {
-    const res = mode === "login" ? await login(email, password) : await signup({ name, email, password, city: city?.city });
+    if (mode === "signup" && !agreed) {
+      setError("Please agree to the Terms & Conditions and Privacy policy to create your account.");
+      return;
+    }
+    const res = mode === "login"
+      ? await login(email, password)
+      : await signup({ name, email, password, city: city?.city, agreedToTerms: true });
     if (res.ok) onDone?.(mode); // signup flows into the artist taste picker
     else setError(res.error);
   };
@@ -30,6 +40,10 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) 
       />
     );
   }
+
+  // Let people actually read what they're agreeing to, without leaving sign-up.
+  if (viewing === "terms") return <TermsScreen onClose={() => setViewing(null)} />;
+  if (viewing === "privacy") return <PrivacyScreen onClose={() => setViewing(null)} />;
 
   return (
     <View style={styles.wrap}>
@@ -69,9 +83,23 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) 
           maxLength={100}
         />
 
+        {mode === "signup" && (
+          <Pressable style={styles.consent} onPress={() => { setAgreed((v) => !v); setError(""); }}>
+            <View style={[styles.box, agreed && styles.boxOn]}>
+              {agreed ? <Icon name="check" size={14} color="#1A1206" strokeWidth={3} /> : null}
+            </View>
+            <Text style={styles.consentTxt}>
+              I'm 13+ and agree to the{" "}
+              <Text style={styles.link} onPress={() => setViewing("terms")}>Terms & Conditions</Text> and{" "}
+              <Text style={styles.link} onPress={() => setViewing("privacy")}>Privacy policy</Text>, including
+              collection of my activity to personalize content and show relevant ads.
+            </Text>
+          </Pressable>
+        )}
+
         {!!error && <Text style={styles.error}>{error}</Text>}
 
-        <Pressable style={styles.primary} onPress={submit}>
+        <Pressable style={[styles.primary, mode === "signup" && !agreed && styles.primaryOff]} onPress={submit}>
           <Text style={styles.primaryTxt}>{mode === "login" ? "LOG IN" : "CREATE ACCOUNT"}</Text>
         </Pressable>
 
@@ -116,7 +144,13 @@ const styles = StyleSheet.create({
   cityTxt: { flex: 1, color: colors.text, fontSize: 15 },
   cityPlaceholder: { color: colors.textFaint },
   error: { color: colors.danger, fontSize: 13, marginBottom: 8 },
-  primary: { backgroundColor: colors.amberStrong, borderRadius: radius.md, paddingVertical: 15, alignItems: "center", marginTop: 6 },
+  consent: { flexDirection: "row", alignItems: "flex-start", gap: 10, marginTop: 14, marginBottom: 4 },
+  box: { width: 22, height: 22, borderRadius: 6, borderWidth: 1.5, borderColor: colors.line, backgroundColor: colors.surface, alignItems: "center", justifyContent: "center", marginTop: 1 },
+  boxOn: { backgroundColor: colors.amberStrong, borderColor: colors.amberStrong },
+  consentTxt: { flex: 1, color: colors.textDim, fontSize: 12.5, lineHeight: 18 },
+  link: { color: colors.amber, fontWeight: "700", textDecorationLine: "underline" },
+  primary: { backgroundColor: colors.amberStrong, borderRadius: radius.md, paddingVertical: 15, alignItems: "center", marginTop: 10 },
+  primaryOff: { opacity: 0.5 },
   primaryTxt: { color: "#1A1206", fontSize: 15, fontWeight: "800", letterSpacing: 1 },
   switch: { color: colors.amber, fontSize: 14, textAlign: "center", marginTop: 18 },
   artistNote: { flexDirection: "row", gap: 10, backgroundColor: colors.bgElev, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 14, marginTop: 24 },

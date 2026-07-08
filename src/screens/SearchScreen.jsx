@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
 import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, Linking } from "react-native";
 import { colors, mono, radius } from "../theme";
 import { ratedShows } from "../data";
@@ -50,12 +50,19 @@ function EventRow({ t, onOpenArtist, onOpenVenue }) {
 }
 
 export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpenFanClub }) {
-  const { tourDates, searchVenues, artistsAlphabetical, venuesByCity, upcomingEvents, fanClubsDirectory, commentsFor } = useStore();
+  const { tourDates, searchVenues, artistsAlphabetical, venuesByCity, upcomingEvents, fanClubsDirectory, commentsFor, track } = useStore();
   const [q, setQ] = useState("");
   const [focused, setFocused] = useState(false);
   const [w, setW] = useState(0);
   const [activePane, setActivePane] = useState("artists"); // mobile: which category
   const query = q.trim().toLowerCase();
+
+  // Log searches once they settle (debounced), as an ad-interest signal.
+  useEffect(() => {
+    if (query.length < 2) return;
+    const id = setTimeout(() => track("search", { q: query }), 900);
+    return () => clearTimeout(id);
+  }, [query]);
 
   const artists = useMemo(() => {
     if (!query) return artistsAlphabetical(400).map((a) => ({ name: a.name, genre: a.genre }));

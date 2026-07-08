@@ -45,6 +45,28 @@ npm run pipeline             # self-running scraper (needs .env, see below)
 - Catalog now: ~550+ artists (Spotify photos/genres/popularity, album covers via Cover Art Archive, top tracks), ~1010 venues across 15 countries incl. major CA/US arenas.
 - Other scripts: `scripts/prune-photos.mjs` (drop dead image URLs), `scripts/sync-anchors.mjs` (curated arenas → catalog), `scripts/enrich-*.mjs`.
 
+## Recently done (2026-07-08 session)
+- **Interactive Google map** (LiveMap) shipped; live-map failure on prod traced to
+  the server **CSP** blocking `maps.googleapis.com` — widened `script/connect/worker`
+  in `server/index.js`. Key/API/billing were fine; no Google Cloud change needed.
+- **Data-loss-on-reload fix.** Only session/users/feed/follows were persisted, and
+  server hydration only ran on login. Added `usePersisted()` (fan clubs, DMs, going,
+  comments, likes, lounge, reviews, ratings, tour dates, artist content now cached)
+  + an `/api/me` **restore-on-reload** effect that re-absorbs the account and
+  re-hydrates server state. Joins/DMs/going now survive refresh.
+- **Privacy + Terms rewritten** as full, FB/Twitter-style documents that disclose
+  activity collection, profiling, and **ad targeting**. `PolicyScreen` note is now
+  overridable (no "prototype" disclaimer on these).
+- **Consent at sign-up.** Required checkbox agreeing to Terms + Privacy (with inline
+  readers); signup blocked until checked; `consentAt`/`termsVersion` recorded on the
+  account (`TERMS_VERSION` in store.js).
+- **Data collection + ad-interest analytics.** New `events` table + `POST /api/events`
+  (batched) + `GET /api/admin/analytics`. Client `track()` (batched flush) logs
+  login/signup/post/like/follow/join + view_artist/venue/show + search. Admin screen
+  has an **Audience & ads** panel: totals, top artists/venues/searches (targeting
+  signals), live activity tail. All best-effort/consented. **Next ad step:** a
+  targeted "Sponsored" feed slot keyed to each user's top genre/artist (not built).
+
 ## Recently done (2026-07-04 session)
 - **Back navigation rebuilt as a real stack** (`App.js`). Was a single flat `nav`
   object where every close called `clear()` → always dumped you to the feed. Now

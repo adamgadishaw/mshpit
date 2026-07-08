@@ -334,6 +334,68 @@ export const routes = {
     return { id };
   },
 
+  // ---- analytics / ad-targeting data ----
+  // Ingest a batch of activity events. Open to guests too (user_id null); this is
+  // the behavioral data disclosed in the Privacy policy + consented at sign-up.
+  "POST /api/events": (ctx) => {
+    limit(ctx, "events", 240, 10 * 60 * 1000);
+    const list = Array.isArray(ctx.body?.events) ? ctx.body.events.slice(0, 50) : [];
+    if (!list.length) return { ok: true, stored: 0 };
+    const ins = db.prepare("INSERT INTO events (id,user_id,name,props,ip,created_at) VALUES (?,?,?,?,?,?)");
+    let stored = 0;
+    for (const e of list) {
+      const name = clean(e?.name, { max: 40 });
+      if (!name) continue;
+      let props = {};
+      if (e && typeof e.props === "object" && e.props) {
+        for (const [k, v] of Object.entries(e.props).slice(0, 12)) {
+          if (typeof v === "string") props[clean(k, { max: 24 })] = clean(v, { max: 120 });
+          else if (typeof v === "number" || typeof v === "boolean") props[clean(k, { max: 24 })] = v;
+        }
+      }
+      ins.run(uid("e"), ctx.user?.id ?? null, name, JSON.stringify(props), ctx.ip, now());
+      stored++;
+    }
+    return { ok: true, stored };
+  },
+
+  // Admin analytics dashboard — the collected data + the ad-interest signals
+  // derived from it (top artists / venues / genres / searches).
+  "GET /api/admin/analytics": (ctx) => {
+    requireAdmin(ctx);
+    const dayAgo = now() - 24 * 60 * 60 * 1000;
+    const one = (sql, ...a) => db.prepare(sql).get(...a);
+    const all = (sql, ...a) => db.prepare(sql).all(...a);
+    const totals = {
+      events: one("SELECT COUNT(*) c FROM events").c,
+      events24h: one("SELECT COUNT(*) c FROM events WHERE created_at >= ?", dayAgo).c,
+      knownUsers: one("SELECT COUNT(DISTINCT user_id) c FROM events WHERE user_id IS NOT NULL").c,
+      guestHits: one("SELECT COUNT(*) c FROM events WHERE user_id IS NULL").c,
+      users: one("SELECT COUNT(*) c FROM users").c,
+      posts: one("SELECT COUNT(*) c FROM posts WHERE removed=0").c,
+    };
+    const topBy = (json, name, n = 12) =>
+      all(
+        `SELECT json_extract(props, '$.${json}') AS k, COUNT(*) c
+         FROM events WHERE name = ? AND json_extract(props, '$.${json}') IS NOT NULL
+         GROUP BY k ORDER BY c DESC LIMIT ?`,
+        name, n
+      ).map((r) => ({ label: r.k, count: r.c }));
+    return {
+      totals,
+      byName: all("SELECT name, COUNT(*) c FROM events GROUP BY name ORDER BY c DESC LIMIT 20").map((r) => ({ label: r.name, count: r.c })),
+      topArtists: topBy("artist", "view_artist"),
+      topVenues: topBy("venue", "view_venue"),
+      topGenres: topBy("genre", "view_artist"),
+      topSearches: topBy("q", "search"),
+      recent: all(
+        `SELECT e.name, e.props, e.created_at, u.handle
+         FROM events e LEFT JOIN users u ON u.id = e.user_id
+         ORDER BY e.created_at DESC LIMIT 30`
+      ).map((r) => ({ name: r.name, props: JSON.parse(r.props || "{}"), at: r.created_at, handle: r.handle || "guest" })),
+    };
+  },
+
   // ---- reports + admin ----
   "POST /api/reports": (ctx) => {
     const u = requireUser(ctx);

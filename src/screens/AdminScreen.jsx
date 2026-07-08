@@ -1,8 +1,69 @@
+import { useState, useEffect } from "react";
 import { View, Text, StyleSheet, ScrollView, Pressable } from "react-native";
 import { colors, mono, radius } from "../theme";
 import { useStore } from "../store";
+import { api } from "../lib/api";
 import Icon from "../components/Icon";
 import SheetHeader from "../components/SheetHeader";
+
+// Audience & ads: the activity data we collect (see Privacy policy) surfaced for
+// the operator — top artists/venues/searches are the ad-interest signals you'd
+// target campaigns against, plus raw volume and a live activity tail.
+function AdInsights() {
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState(false);
+  useEffect(() => {
+    api("/api/admin/analytics").then(setData).catch(() => setErr(true));
+  }, []);
+
+  if (err) return null;
+  if (!data) return <Text style={styles.empty}>Loading audience data…</Text>;
+
+  const t = data.totals || {};
+  const Stat = ({ n, label }) => (
+    <View style={styles.stat}><Text style={styles.statN}>{n ?? 0}</Text><Text style={styles.statL}>{label}</Text></View>
+  );
+  const List = ({ title, rows }) =>
+    rows && rows.length ? (
+      <View style={styles.insightCol}>
+        <Text style={styles.insightH}>{title}</Text>
+        {rows.slice(0, 8).map((r, i) => (
+          <View key={i} style={styles.insightRow}>
+            <Text style={styles.insightLabel} numberOfLines={1}>{r.label}</Text>
+            <Text style={styles.insightCount}>{r.count}</Text>
+          </View>
+        ))}
+      </View>
+    ) : null;
+
+  return (
+    <View>
+      <View style={styles.statRow}>
+        <Stat n={t.events} label="events" />
+        <Stat n={t.events24h} label="last 24h" />
+        <Stat n={t.knownUsers} label="tracked users" />
+        <Stat n={t.guestHits} label="guest hits" />
+      </View>
+      <View style={styles.insightGrid}>
+        <List title="TOP ARTISTS (AD INTEREST)" rows={data.topArtists} />
+        <List title="TOP VENUES" rows={data.topVenues} />
+        <List title="TOP SEARCHES" rows={data.topSearches} />
+        <List title="EVENTS BY TYPE" rows={data.byName} />
+      </View>
+      {data.recent && data.recent.length > 0 && (
+        <>
+          <Text style={styles.insightH}>LIVE ACTIVITY</Text>
+          {data.recent.slice(0, 12).map((e, i) => (
+            <Text key={i} style={styles.activityLine} numberOfLines={1}>
+              <Text style={styles.activityWho}>@{e.handle}</Text> {e.name}
+              {e.props && Object.keys(e.props).length ? ` · ${Object.values(e.props).join(" ")}` : ""}
+            </Text>
+          ))}
+        </>
+      )}
+    </View>
+  );
+}
 
 export default function AdminScreen({ onClose }) {
   const { requests, users, feed, removedIds, reports, approveArtist, rejectArtist, removeContent, restoreContent, actionReport, dismissReport, suspendUser, banUser } = useStore();
@@ -22,6 +83,9 @@ export default function AdminScreen({ onClose }) {
           <Text style={styles.h1}>Admin</Text>
         </View>
         <Text style={styles.subtitle}>Report triage · verification · site upkeep. Content is public on post; reports drive removal.</Text>
+
+        <Text style={styles.sectionLabel}>AUDIENCE &amp; ADS</Text>
+        <AdInsights />
 
         <Text style={styles.sectionLabel}>REPORT QUEUE · {openReports.length}</Text>
         {openReports.length === 0 && <Text style={styles.empty}>No open reports.</Text>}
@@ -132,6 +196,19 @@ const styles = StyleSheet.create({
   sectionLabel: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "700", marginTop: 24, marginBottom: 8 },
   policy: { color: colors.textDim, fontSize: 12, lineHeight: 18, marginBottom: 12, fontStyle: "italic" },
   empty: { color: colors.textDim, fontSize: 13, fontStyle: "italic" },
+  // audience & ads panel
+  statRow: { flexDirection: "row", gap: 8, marginBottom: 4 },
+  stat: { flex: 1, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, paddingVertical: 12, alignItems: "center" },
+  statN: { color: colors.amber, fontFamily: mono, fontSize: 20, fontWeight: "800" },
+  statL: { color: colors.textDim, fontSize: 10, letterSpacing: 0.5, marginTop: 2 },
+  insightGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10, marginTop: 12 },
+  insightCol: { flexGrow: 1, flexBasis: "46%", minWidth: 150, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 12 },
+  insightH: { color: colors.textFaint, fontSize: 10, letterSpacing: 1, fontWeight: "800", marginTop: 14, marginBottom: 8 },
+  insightRow: { flexDirection: "row", justifyContent: "space-between", gap: 8, paddingVertical: 3 },
+  insightLabel: { color: colors.text, fontSize: 13, flex: 1 },
+  insightCount: { color: colors.amber, fontFamily: mono, fontSize: 13, fontWeight: "700" },
+  activityLine: { color: colors.textDim, fontSize: 12, fontFamily: mono, paddingVertical: 2 },
+  activityWho: { color: colors.cool },
   card: { backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 14, marginBottom: 10 },
   removedCard: { borderColor: colors.danger, opacity: 0.8 },
   artist: { color: colors.text, fontSize: 16, fontWeight: "700" },

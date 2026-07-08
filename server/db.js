@@ -201,6 +201,20 @@ CREATE TABLE IF NOT EXISTS artist_posts (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_artist_posts_artist ON artist_posts(artist_key);
+
+-- ---- Analytics / ad-targeting events ---------------------------------------
+-- The activity we collect to personalize content and advertising (disclosed in
+-- the Privacy policy and consented to at sign-up). user_id is null for guests.
+CREATE TABLE IF NOT EXISTS events (
+  id         TEXT PRIMARY KEY,
+  user_id    TEXT REFERENCES users(id) ON DELETE SET NULL,
+  name       TEXT NOT NULL,
+  props      TEXT NOT NULL DEFAULT '{}',
+  ip         TEXT,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_events_name ON events(name, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_events_user ON events(user_id, created_at DESC);
 `);
 
 const ver = db.prepare("SELECT version FROM schema_version LIMIT 1").get();

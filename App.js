@@ -65,7 +65,7 @@ export default function App() {
 }
 
 function Root() {
-  const { session, addLog, visibleFeed, followingFeed, localFeed, logout, userByHandle, inboxUnread, accountStatus } = useStore();
+  const { session, addLog, visibleFeed, followingFeed, localFeed, logout, userByHandle, inboxUnread, accountStatus, track } = useStore();
   const staff = isStaff(session?.role);
   const feed = visibleFeed(staff);
   const following = followingFeed(staff);
@@ -174,9 +174,9 @@ function Root() {
 
   const openProfile = (id) => go({ profileId: id });
   const openProfileByHandle = (h) => { const u = userByHandle(h); if (u) openProfile(u.id); };
-  const openShow = (log) => go({ openLog: log });
-  const openArtist = (name) => go({ artistName: name });
-  const openVenue = (name) => go({ venueName: name });
+  const openShow = (log) => { track("view_show", { artist: log?.artist, venue: log?.venue }); go({ openLog: log }); };
+  const openArtist = (name) => { track("view_artist", { artist: name }); go({ artistName: name }); };
+  const openVenue = (name) => { track("view_venue", { venue: name }); go({ venueName: name }); };
   const openFanClub = (artist) => go({ fanClub: artist });
   const openPhotos = (images, index = 0) => go({ photos: { images, index } });
   const reviewShow = (log) => requireAuth(() => go({ logging: true, prefill: { artist: log.artist, venue: log.venue, city: log.city } }));

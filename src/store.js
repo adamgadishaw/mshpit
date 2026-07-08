@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect } from "react";
+import { createContext, useContext, useState, useEffect, useRef } from "react";
 import { seedFeed, ratedShows, cityCoords, haversineKm } from "./data";
 import { catalogVenues, catalogTourDates, catalogArtists } from "./seed/catalog";
 import { clean, cleanEmail, isEmail, cleanName, isName, cleanHandle, isPassword, clampRating, LIMITS } from "./lib/validate";
@@ -51,6 +51,10 @@ const seedRequests = [{ id: "r1", userId: "u_demo", artistName: "Demo Band", not
 
 export const isStaff = (role) => role === "admin";
 export const isArtist = (role) => role === "artist" || role === "admin";
+
+// Bump when the Terms/Privacy change materially, so we can tell who consented to
+// which version (recorded on the account at sign-up).
+export const TERMS_VERSION = "2026-07";
 
 const StoreContext = createContext(null);
 export const useStore = () => useContext(StoreContext);
@@ -177,6 +181,38 @@ export function StoreProvider({ children }) {
   // Load once on mount so even guests see real posts (the feed is public).
   useEffect(() => { hydrateFeed(); }, []);
 
+  // --- Activity tracking (data collection for personalization + ads) ---------
+  // Every meaningful action queues an event; a background flush batches them to
+  // the server. This is the behavioral data disclosed in the Privacy policy and
+  // consented to at sign-up. Best-effort: failures are dropped, never surfaced.
+  const eventQueue = useRef([]);
+  const track = (name, props = {}) => {
+    if (!name) return;
+    eventQueue.current.push({ name, props });
+    if (eventQueue.current.length >= 25) flushEvents();
+  };
+  const flushEvents = () => {
+    if (!eventQueue.current.length) return;
+    const batch = eventQueue.current.splice(0, 50);
+    api("/api/events", { method: "POST", body: { events: batch } }).catch(() => {});
+  };
+  useEffect(() => {
+    const id = setInterval(flushEvents, 8000);
+    const onHide = () => flushEvents();
+    if (typeof window !== "undefined") {
+      window.addEventListener("beforeunload", onHide);
+      window.addEventListener("visibilitychange", onHide);
+    }
+    return () => {
+      clearInterval(id);
+      if (typeof window !== "undefined") {
+        window.removeEventListener("beforeunload", onHide);
+        window.removeEventListener("visibilitychange", onHide);
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const userById = (id) => users.find((u) => u.id === id);
   const userByHandle = (h) => users.find((u) => u.handle === h);
   const logsByUser = (id) => feed.filter((l) => l.userId === id);
@@ -269,6 +305,7 @@ export function StoreProvider({ children }) {
     try {
       const { user } = await api("/api/login", { method: "POST", body: { email, password } });
       absorbServerUser(user);
+      track("login");
       return { ok: true };
     } catch (e) {
       if (e.status) return { ok: false, error: e.message }; // real server verdict
@@ -292,13 +329,16 @@ export function StoreProvider({ children }) {
     return candidate;
   };
 
-  const signup = async ({ name, email, password, city }) => {
+  const signup = async ({ name, email, password, city, agreedToTerms }) => {
     const nm = cleanName(name);
     const em = cleanEmail(email);
     if (!isName(nm)) return { ok: false, error: "Enter a name (letters or numbers, up to 40 chars)." };
     if (!isEmail(em)) return { ok: false, error: "Enter a valid email address." };
     if (!isPassword(password)) return { ok: false, error: "Password needs 8+ characters with letters and numbers." };
     if (!city) return { ok: false, error: "Pick your city - it powers your local feed." };
+    if (!agreedToTerms) return { ok: false, error: "Please agree to the Terms & Conditions and Privacy policy." };
+    // Record consent to the current Terms/Privacy at the moment of sign-up.
+    const consent = { consentAt: Date.now(), termsVersion: TERMS_VERSION };
     const srvCoords = cityCoords[city] || null;
     try {
       const { user } = await api("/api/signup", {
@@ -306,6 +346,11 @@ export function StoreProvider({ children }) {
         body: { name: nm, email: em, password, city, lat: srvCoords?.lat, lng: srvCoords?.lng },
       });
       absorbServerUser(user);
+      // Persist the consent record on the account (client + best-effort server).
+      setSession((s) => (s ? { ...s, ...consent } : s));
+      setUsers((all) => all.map((x) => (x.id === user.id ? { ...x, ...consent } : x)));
+      api("/api/me", { method: "PATCH", body: { extras: consent } }).catch(() => {});
+      track("signup", { city });
       return { ok: true };
     } catch (e) {
       if (e.status) return { ok: false, error: e.message };
@@ -328,6 +373,7 @@ export function StoreProvider({ children }) {
       favoriteArtists: [],
       playlists: [],
       home: { city, lat: coords?.lat ?? null, lng: coords?.lng ?? null },
+      ...consent,
     };
     setUsers((all) => [...all, u]);
     setSession(u);
@@ -389,6 +435,7 @@ export function StoreProvider({ children }) {
       userId: session?.id,
     };
     setFeed((f) => [safe, ...f]);
+    track("post", { artist: safe.artist, venue: safe.venue });
     // Slice 2 write-through: persist the post server-side, then adopt the server
     // id so likes/comments on it key correctly. Best-effort (offline keeps local).
     if (session) {
@@ -472,8 +519,8 @@ export function StoreProvider({ children }) {
   // when the backend is unreachable (dev / offline).
   const isFollowing = (id) => (follows[session?.id] || []).includes(id);
   const follow = (id) => {
+    if (!isFollowing(id)) { api(`/api/users/${id}/follow`, { method: "POST" }).catch(() => {}); track("follow", { target: id }); } // server toggles
     setFollows((f) => ({ ...f, [session.id]: [...new Set([...(f[session.id] || []), id])] }));
-    if (!isFollowing(id)) api(`/api/users/${id}/follow`, { method: "POST" }).catch(() => {}); // server toggles
   };
   const unfollow = (id) => {
     setFollows((f) => ({ ...f, [session.id]: (f[session.id] || []).filter((x) => x !== id) }));
@@ -516,6 +563,7 @@ export function StoreProvider({ children }) {
   };
   const likeInfo = (id, base = 0) => ({ count: (likes[id] ?? base) + (myLikes[id] ? 1 : 0), liked: !!myLikes[id] });
   const toggleLike = (id, base = 0) => {
+    if (!myLikes[id]) track("like", { post: id });
     setMyLikes((m) => ({ ...m, [id]: !m[id] }));
     setLikes((l) => ({ ...l, [id]: l[id] ?? base }));
     // Server toggles the like for the authenticated user (best-effort; a 404 on a
@@ -617,6 +665,7 @@ export function StoreProvider({ children }) {
   const joinFanClub = (artist) => {
     if (!session) return;
     const has = isFanClubMember(artist);
+    if (!has) track("join_fanclub", { artist });
     setFanClubs((f) => {
       const mine = f[session.id] || [];
       return { ...f, [session.id]: has ? mine.filter((a) => norm(a) !== norm(artist)) : [...mine, artist] };
@@ -1231,6 +1280,7 @@ export function StoreProvider({ children }) {
     venueReviewsFor, loadVenueReviews, addVenueReview, venueRating, venueTopPhotos, venuePhotos, artistFanPhotos,
     artistGallery, isPhotoRemoved, removePhoto, restorePhoto,
     threadMessages, sendDM, loadThread, markThreadRead, inboxThreads, mainThreads, requestThreads, inboxUnread, requestCount,
+    track,
   };
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;
