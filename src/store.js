@@ -361,6 +361,7 @@ export function StoreProvider({ children }) {
       setUsers((all) => all.map((x) => (x.id === user.id ? { ...x, ...consent } : x)));
       api("/api/me", { method: "PATCH", body: { extras: consent } }).catch(() => {});
       track("signup", { city });
+      pushWelcome(user.id);
       return { ok: true };
     } catch (e) {
       if (e.status) return { ok: false, error: e.message };
@@ -387,6 +388,7 @@ export function StoreProvider({ children }) {
     };
     setUsers((all) => [...all, u]);
     setSession(u);
+    pushWelcome(u.id);
     return { ok: true };
   };
 
@@ -536,6 +538,12 @@ export function StoreProvider({ children }) {
     };
     setNotifications((all) => [n, ...all].slice(0, 300));
   };
+  // A system "welcome" notification so a new account's Activity isn't empty and
+  // the first thing they see guides them into the product.
+  const pushWelcome = (uid) => setNotifications((all) => [
+    { id: "nw_" + Date.now(), userId: uid, type: "welcome", actorName: "Pit", actorInitials: "PT", actorColor: "#FF8C42", ts: Date.now(), read: false },
+    ...all,
+  ]);
   const myNotifications = () => (session ? notifications.filter((n) => n.userId === session.id).sort((a, b) => b.ts - a.ts) : []);
   const unreadNotifications = () => myNotifications().filter((n) => !n.read).length;
   const markNotificationsRead = () => {

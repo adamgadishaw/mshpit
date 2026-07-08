@@ -249,6 +249,9 @@ function Root() {
                   homeCity={session?.home?.city}
                   unread={inboxUnread()}
                   notifUnread={session ? unreadNotifications() : 0}
+                  newUser={!!session && feed.filter((l) => l.userId === session.id).length === 0}
+                  onLogShow={() => requireAuth(() => go({ logging: true }))}
+                  onEditProfile={() => go({ editProfile: true })}
                   onOpenInbox={openInbox}
                   onOpenNotifications={openNotifications}
                   onOpen={openShow}

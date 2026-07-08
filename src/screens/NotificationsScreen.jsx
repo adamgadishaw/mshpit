@@ -19,6 +19,7 @@ const META = {
   like: { icon: "heart", tint: colors.magenta, verb: "liked your review" },
   comment: { icon: "comment", tint: colors.amber, verb: "commented on your review" },
   dm: { icon: "mail", tint: colors.good, verb: "sent you a message" },
+  welcome: { icon: "star", tint: colors.amber, verb: "" },
 };
 
 // The activity feed — the social heartbeat that connects follows, likes, comments
@@ -31,6 +32,7 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
   useEffect(() => { markNotificationsRead(); }, []);
 
   const open = (n) => {
+    if (n.type === "welcome") return;
     if (n.type === "follow") return onOpenProfile?.(n.actorId);
     if (n.type === "dm") return onOpenThread?.(n.actorId);
     const log = feed.find((l) => l.id === n.postId);
@@ -60,10 +62,17 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
                 </View>
               </View>
               <View style={{ flex: 1 }}>
-                <Text style={styles.text}>
-                  <Text style={styles.who}>{n.actorName}</Text> {meta.verb}
-                  {(n.type === "like" || n.type === "comment") && n.artist ? <Text style={styles.ref}> of {n.artist}</Text> : null}
-                </Text>
+                {n.type === "welcome" ? (
+                  <Text style={styles.text}>
+                    <Text style={styles.who}>Welcome to Pit! </Text>
+                    Follow people whose taste matches yours, log the shows you go to, and rate the band vs. the room.
+                  </Text>
+                ) : (
+                  <Text style={styles.text}>
+                    <Text style={styles.who}>{n.actorName}</Text> {meta.verb}
+                    {(n.type === "like" || n.type === "comment") && n.artist ? <Text style={styles.ref}> of {n.artist}</Text> : null}
+                  </Text>
+                )}
                 {n.type === "comment" && n.text ? <Text style={styles.preview} numberOfLines={1}>“{n.text}”</Text> : null}
                 {n.type === "dm" && n.text ? <Text style={styles.preview} numberOfLines={1}>“{n.text}”</Text> : null}
               </View>

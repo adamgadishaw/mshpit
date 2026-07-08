@@ -1,14 +1,17 @@
 import { useState } from "react";
 import { View, Text, StyleSheet, FlatList, Pressable } from "react-native";
-import { colors, mono } from "../theme";
+import { colors, mono, radius } from "../theme";
+import { load, save } from "../lib/persist";
 import TicketStub from "../components/TicketStub";
 import Icon from "../components/Icon";
 
 const PAGE = 8; // load the feed in pages, like the big apps - never all at once
 
-export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, homeCity, unread = 0, notifUnread = 0, onOpen, onPreview, onOpenProfile, onOpenArtist, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onReport }) {
+export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, homeCity, unread = 0, notifUnread = 0, newUser = false, onOpen, onPreview, onOpenProfile, onOpenArtist, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onReport, onLogShow, onEditProfile }) {
   const [filter, setFilter] = useState("everyone"); // following | local | everyone
   const [count, setCount] = useState(PAGE);
+  const [gsDone, setGsDone] = useState(() => load("pit.gsDismissed", false));
+  const dismissGs = () => { setGsDone(true); save("pit.gsDismissed", true); };
   const full = filter === "following" ? followingFeed : filter === "local" ? localFeed : feed;
   const data = full.slice(0, count);
 
@@ -56,6 +59,18 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, h
             </Pressable>
           )}
 
+          {loggedIn && newUser && !gsDone && (
+            <View style={styles.gs}>
+              <View style={styles.gsHead}>
+                <Text style={styles.gsTitle}>Get started on Pit</Text>
+                <Pressable onPress={dismissGs} hitSlop={10}><Icon name="x" size={16} color={colors.textDim} /></Pressable>
+              </View>
+              <GsStep n="1" icon="plus" label="Log your first show" sub="Rate the band and the room" onPress={onLogShow} />
+              <GsStep n="2" icon="pin" label="Find shows near you" sub="Local venues & upcoming gigs" onPress={onOpenNearby} />
+              <GsStep n="3" icon="edit" label="Complete your profile" sub="Photo, bio, favorite artists" onPress={onEditProfile} />
+            </View>
+          )}
+
           {loggedIn && (
             <View style={styles.segment}>
               <Seg label="Following" on={filter === "following"} onPress={() => pick("following")} />
@@ -89,8 +104,28 @@ function Seg({ label, on, onPress }) {
   );
 }
 
+function GsStep({ n, icon, label, sub, onPress }) {
+  return (
+    <Pressable style={styles.gsStep} onPress={onPress}>
+      <View style={styles.gsIcon}><Icon name={icon} size={16} color={colors.amber} /></View>
+      <View style={{ flex: 1 }}>
+        <Text style={styles.gsLabel}>{label}</Text>
+        <Text style={styles.gsSub}>{sub}</Text>
+      </View>
+      <Icon name="chevron-right" size={16} color={colors.textDim} />
+    </Pressable>
+  );
+}
+
 const styles = StyleSheet.create({
   content: { padding: 16, paddingBottom: 40 },
+  gs: { backgroundColor: colors.bgElev, borderRadius: radius.md, borderWidth: 1, borderColor: colors.amber, padding: 14, marginBottom: 14 },
+  gsHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 10 },
+  gsTitle: { color: colors.text, fontSize: 16, fontWeight: "800" },
+  gsStep: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 9 },
+  gsIcon: { width: 34, height: 34, borderRadius: 17, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
+  gsLabel: { color: colors.text, fontSize: 14, fontWeight: "700" },
+  gsSub: { color: colors.textDim, fontSize: 12, marginTop: 1 },
   head: { marginBottom: 18, marginTop: 4 },
   wordmarkRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   headerBtns: { flexDirection: "row", gap: 8 },
