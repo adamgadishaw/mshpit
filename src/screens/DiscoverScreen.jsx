@@ -52,22 +52,23 @@ function GenreDonut({ data, size = 188, centerTop, centerSub }) {
   );
 }
 
-// One podium plinth (rank 1/2/3) — stage-lit.
+// One podium plinth (rank 1/2/3). The step blocks sit flush at the bottom to form
+// a single connected podium; the avatar + medal float above it.
 function Plinth({ row, rank, onPress }) {
   const first = rank === 1;
-  const h = first ? 104 : rank === 2 ? 72 : 54;
-  const size = first ? 104 : 80;
+  const h = first ? 92 : rank === 2 ? 60 : 44;
+  const size = first ? 100 : 76;
   const ring = RING[rank];
   return (
     <Pressable style={[styles.plinthCol, first && styles.plinthCol1]} onPress={onPress}>
-      <View style={[styles.avatarRing, { width: size + 8, height: size + 8, borderColor: ring }, glow(ring, first)]}>
+      <View style={[styles.avatarRing, { width: size + 6, height: size + 6, borderColor: ring }, glow(ring, first)]}>
         <Avatar user={artistUser(row.name, row.photo)} size={size} />
-        <View style={styles.plinthMedal}><Badge type={`rank${rank}`} size={first ? 34 : 26} /></View>
+        <View style={styles.plinthMedal}><Badge type={`rank${rank}`} size={first ? 32 : 24} /></View>
       </View>
       <Text style={[styles.plinthName, first && styles.plinthName1]} numberOfLines={1}>{row.name}</Text>
-      <Text style={styles.plinthMetric} numberOfLines={1}>{metricOf(row)}</Text>
-      <View style={[styles.block, { height: h }, first ? styles.block1 : { borderColor: ring + "55" }]}>
-        <Text style={[styles.blockRank, { color: ring }]}>{rank}</Text>
+      {!!row.genre && <Text style={styles.plinthGenre} numberOfLines={1}>{row.genre}</Text>}
+      <View style={[styles.block, { height: h }, first && styles.block1]}>
+        <Text style={[styles.blockRank, { color: ring }, first && styles.blockRank1]}>{rank}</Text>
       </View>
     </Pressable>
   );
@@ -146,21 +147,10 @@ export default function DiscoverScreen({ onOpenTopRated, onOpenArtist, onOpenNea
             </View>
           </View>
 
-          <View style={styles.stage}>
-            <Svg style={StyleSheet.absoluteFill} pointerEvents="none">
-              <Defs>
-                <RadialGradient id="spot" cx="50%" cy="34%" r="60%">
-                  <Stop offset="0" stopColor={colors.gold} stopOpacity="0.16" />
-                  <Stop offset="1" stopColor={colors.gold} stopOpacity="0" />
-                </RadialGradient>
-              </Defs>
-              <Ellipse cx="50%" cy="34%" rx="52%" ry="46%" fill="url(#spot)" />
-            </Svg>
-            <View style={styles.podium}>
-              <Plinth row={podium[1]} rank={2} onPress={() => onOpenArtist?.(podium[1].name)} />
-              <Plinth row={podium[0]} rank={1} onPress={() => onOpenArtist?.(podium[0].name)} />
-              <Plinth row={podium[2]} rank={3} onPress={() => onOpenArtist?.(podium[2].name)} />
-            </View>
+          <View style={styles.podium}>
+            <Plinth row={podium[1]} rank={2} onPress={() => onOpenArtist?.(podium[1].name)} />
+            <Plinth row={podium[0]} rank={1} onPress={() => onOpenArtist?.(podium[0].name)} />
+            <Plinth row={podium[2]} rank={3} onPress={() => onOpenArtist?.(podium[2].name)} />
           </View>
 
           {rest.length > 0 && (
@@ -271,18 +261,18 @@ const styles = StyleSheet.create({
   dotLive: { width: 7, height: 7, borderRadius: 4 },
   sourceTxt: { color: colors.textDim, fontSize: 10.5, fontWeight: "800", letterSpacing: 0.3 },
 
-  stage: { position: "relative", paddingTop: 14 },
-  podium: { flexDirection: "row", alignItems: "flex-end", justifyContent: "center", gap: 14 },
-  plinthCol: { flex: 1, alignItems: "center", maxWidth: 150 },
+  podium: { flexDirection: "row", alignItems: "flex-end", justifyContent: "center", gap: 4, paddingTop: 8 },
+  plinthCol: { flex: 1, alignItems: "center", maxWidth: 160 },
   plinthCol1: { zIndex: 2 },
   avatarRing: { borderRadius: 999, borderWidth: 3, alignItems: "center", justifyContent: "center", backgroundColor: colors.bg },
-  plinthMedal: { position: "absolute", bottom: -6, right: -8 },
+  plinthMedal: { position: "absolute", bottom: -5, right: -7 },
   plinthName: { color: colors.text, fontSize: 13.5, fontWeight: "800", marginTop: 12, textAlign: "center" },
   plinthName1: { fontSize: 16 },
-  plinthMetric: { color: colors.amber, fontSize: 10.5, fontWeight: "800", fontFamily: mono, letterSpacing: 0.4, marginTop: 2 },
-  block: { alignSelf: "stretch", marginTop: 10, borderTopLeftRadius: radius.sm, borderTopRightRadius: radius.sm, backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line, borderBottomWidth: 0, alignItems: "center", justifyContent: "center" },
+  plinthGenre: { color: colors.amber, fontSize: 10, fontWeight: "800", fontFamily: mono, letterSpacing: 0.6, textTransform: "uppercase", marginTop: 3 },
+  block: { alignSelf: "stretch", marginTop: 12, borderTopLeftRadius: 12, borderTopRightRadius: 12, backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.lineSoft, borderBottomWidth: 0, alignItems: "center", justifyContent: "center" },
   block1: { backgroundColor: colors.surfaceAlt, borderColor: colors.gold, borderTopWidth: 2 },
-  blockRank: { fontFamily: mono, fontSize: 26, fontWeight: "900" },
+  blockRank: { fontFamily: mono, fontSize: 24, fontWeight: "900", opacity: 0.9 },
+  blockRank1: { fontSize: 34, opacity: 1 },
 
   rankList: { marginTop: 18, borderTopWidth: 1, borderTopColor: colors.lineSoft, paddingTop: 8 },
   rankRow: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 8 },
