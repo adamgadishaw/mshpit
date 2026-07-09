@@ -8,6 +8,7 @@ import Stars from "../components/Stars";
 import TapStars from "../components/TapStars";
 import Button from "../components/Button";
 import SheetHeader from "../components/SheetHeader";
+import DatePicker from "../components/DatePicker";
 
 const GROUP_COLOR = { "THE BAND": colors.amber, "THE ROOM": colors.cool, "THE NIGHT": colors.magenta };
 const GROUPS = ["THE BAND", "THE ROOM", "THE NIGHT"];
@@ -38,6 +39,13 @@ export default function LogScreen({ onPost, onCancel, user, prefill }) {
   const [review, setReview] = useState("");
   const [photos, setPhotos] = useState([]);
   const [photosPublic, setPhotosPublic] = useState(true);
+  // Show date — defaults to today so logging stays one-tap, but you can set the
+  // real date of a past show. Years run from this year back to 2000, descending.
+  const today = new Date();
+  const todayStr = `${today.getFullYear()} · ${String(today.getMonth() + 1).padStart(2, "0")} · ${String(today.getDate()).padStart(2, "0")}`;
+  const PAST_YEARS = Array.from({ length: today.getFullYear() - 1999 }, (_, i) => today.getFullYear() - i);
+  const [date, setDate] = useState(todayStr);
+  const [showDate, setShowDate] = useState(false);
 
   const addPhoto = async () => {
     const res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images"], quality: 0.6, allowsMultipleSelection: true, selectionLimit: 6 });
@@ -49,8 +57,6 @@ export default function LogScreen({ onPost, onCancel, user, prefill }) {
   const canPost = artist.trim() && computed.overall > 0;
 
   const submit = () => {
-    const now = new Date();
-    const date = `${now.getFullYear()} · ${String(now.getMonth() + 1).padStart(2, "0")} · ${String(now.getDate()).padStart(2, "0")}`;
     onPost({
       id: newId(),
       user: user
@@ -87,6 +93,18 @@ export default function LogScreen({ onPost, onCancel, user, prefill }) {
           <TextInput style={[styles.input, { flex: 1.4 }]} placeholder="Venue" placeholderTextColor={colors.textFaint} value={venue} onChangeText={setVenue} />
           <TextInput style={[styles.input, { flex: 1 }]} placeholder="City" placeholderTextColor={colors.textFaint} value={city} onChangeText={setCity} />
         </View>
+
+        <Text style={[styles.fieldLabel, { marginTop: 18 }]}>WHEN?</Text>
+        <Pressable style={styles.dateBtn} onPress={() => setShowDate((s) => !s)}>
+          <Icon name="calendar" size={16} color={colors.amber} />
+          <Text style={styles.dateTxt}>{date === todayStr ? "Today" : date}</Text>
+          <Icon name={showDate ? "chevron-down" : "chevron-right"} size={16} color={colors.textDim} />
+        </Pressable>
+        {showDate && (
+          <View style={styles.datePickerWrap}>
+            <DatePicker years={PAST_YEARS} defaultYear={today.getFullYear()} onChange={setDate} />
+          </View>
+        )}
 
         {/* live weighted overall */}
         <View style={styles.overallCard}>
@@ -160,6 +178,9 @@ const styles = StyleSheet.create({
   fieldLabel: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "700", marginBottom: 8 },
   optional: { color: colors.textFaint, fontWeight: "400", letterSpacing: 0 },
   input: { backgroundColor: colors.surface, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.line, color: colors.text, paddingHorizontal: 14, paddingVertical: 12, fontSize: 15, marginBottom: 10 },
+  dateBtn: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: colors.surface, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 14, paddingVertical: 12 },
+  dateTxt: { flex: 1, color: colors.text, fontSize: 15, fontFamily: mono },
+  datePickerWrap: { marginTop: 10, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 12 },
   multiline: { minHeight: 110, textAlignVertical: "top", fontSize: 16 },
   photoRow: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
   thumb: { width: 76, height: 76, borderRadius: 10, overflow: "hidden", borderWidth: 1, borderColor: colors.line },

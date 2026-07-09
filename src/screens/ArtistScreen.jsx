@@ -209,10 +209,68 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
           </>
         )}
 
-        {!!bio && (
+        {/* Upcoming shows first — this is a live-music app, gigs lead. */}
+        {a.upcoming.length > 0 && (
           <>
-            <Text style={styles.sectionLabel}>ABOUT</Text>
-            <Text style={styles.bio}>{bio}</Text>
+            <Text style={styles.sectionLabel}>UPCOMING · {a.upcoming.length}</Text>
+            {a.upcoming.map((t) => (
+              <View key={t.id} style={styles.upRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.upVenue}>{t.venue}</Text>
+                  <Text style={styles.upPlace}>{t.place}</Text>
+                  <Text style={styles.upDate}>{t.date}{t.scheduled ? "  · scheduled" : ""}</Text>
+                </View>
+                {t.soldOut ? (
+                  <View style={styles.soldOut}><Text style={styles.soldOutTxt}>SOLD OUT</Text></View>
+                ) : (
+                  <Pressable style={styles.ticketBtn} onPress={() => Linking.openURL(t.ticketUrl)}>
+                    <Icon name="ticket" size={14} color="#1A1206" />
+                    <Text style={styles.ticketTxt}>Tickets</Text>
+                  </Pressable>
+                )}
+              </View>
+            ))}
+          </>
+        )}
+
+        {/* Then what people said — reviews of every night, fan-first. */}
+        <Text style={styles.sectionLabel}>EVERY NIGHT · {a.nights.length}</Text>
+        {a.nights.length === 0 && <Text style={styles.empty}>No shows logged yet. Be the first.</Text>}
+        {a.nights.map((n) => (
+          <Pressable key={n.id} style={styles.nightRow} onPress={() => onOpenShow?.(n)}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.nightVenue}>{n.venue}</Text>
+              <Text style={styles.nightMeta}>
+                {n.city}{n.date !== "aggregate" ? ` · ${n.date}` : " · community avg"}
+              </Text>
+            </View>
+            <View style={styles.scorePill}>
+              <Icon name="star" size={11} color={colors.gold} />
+              <Text style={styles.scoreTxt}>{n.overall.toFixed(1)}</Text>
+            </View>
+          </Pressable>
+        ))}
+
+        {/* Fan photos/media next. */}
+        {gallery.length > 0 && (
+          <>
+            <Text style={styles.sectionLabel}>GALLERY · {gallery.length}</Text>
+            <Text style={styles.bio}>Fan shots first, then licensed portraits & live photos. Stays full even when a photo is pulled.</Text>
+            <View style={styles.fanGrid}>
+              {gallery.map((p, i) => (
+                <View key={p.uri || i} style={styles.fanTile}>
+                  <Image source={{ uri: p.uri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
+                  {p.source !== "fan" && !!p.by && (
+                    <View style={styles.creditTag}><Text style={styles.creditTxt} numberOfLines={1}>{p.by}</Text></View>
+                  )}
+                  {canModerate && (
+                    <Pressable style={styles.modBtn} hitSlop={6} onPress={() => removePhoto(p.uri)}>
+                      <Icon name="x" size={12} color="#fff" />
+                    </Pressable>
+                  )}
+                </View>
+              ))}
+            </View>
           </>
         )}
 
@@ -226,6 +284,13 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
                 </Pressable>
               ))}
             </ScrollView>
+          </>
+        )}
+
+        {!!bio && (
+          <>
+            <Text style={styles.sectionLabel}>ABOUT</Text>
+            <Text style={styles.bio}>{bio}</Text>
           </>
         )}
 
@@ -281,67 +346,6 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
           </>
         )}
 
-        {gallery.length > 0 && (
-          <>
-            <Text style={styles.sectionLabel}>GALLERY · {gallery.length}</Text>
-            <Text style={styles.bio}>Fan shots first, then licensed portraits & live photos. Stays full even when a photo is pulled.</Text>
-            <View style={styles.fanGrid}>
-              {gallery.map((p, i) => (
-                <View key={p.uri || i} style={styles.fanTile}>
-                  <Image source={{ uri: p.uri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
-                  {p.source !== "fan" && !!p.by && (
-                    <View style={styles.creditTag}><Text style={styles.creditTxt} numberOfLines={1}>{p.by}</Text></View>
-                  )}
-                  {canModerate && (
-                    <Pressable style={styles.modBtn} hitSlop={6} onPress={() => removePhoto(p.uri)}>
-                      <Icon name="x" size={12} color="#fff" />
-                    </Pressable>
-                  )}
-                </View>
-              ))}
-            </View>
-          </>
-        )}
-
-        {a.upcoming.length > 0 && (
-          <>
-            <Text style={styles.sectionLabel}>UPCOMING · {a.upcoming.length}</Text>
-            {a.upcoming.map((t) => (
-              <View key={t.id} style={styles.upRow}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.upVenue}>{t.venue}</Text>
-                  <Text style={styles.upPlace}>{t.place}</Text>
-                  <Text style={styles.upDate}>{t.date}{t.scheduled ? "  · scheduled" : ""}</Text>
-                </View>
-                {t.soldOut ? (
-                  <View style={styles.soldOut}><Text style={styles.soldOutTxt}>SOLD OUT</Text></View>
-                ) : (
-                  <Pressable style={styles.ticketBtn} onPress={() => Linking.openURL(t.ticketUrl)}>
-                    <Icon name="ticket" size={14} color="#1A1206" />
-                    <Text style={styles.ticketTxt}>Tickets</Text>
-                  </Pressable>
-                )}
-              </View>
-            ))}
-          </>
-        )}
-
-        <Text style={styles.sectionLabel}>EVERY NIGHT · {a.nights.length}</Text>
-        {a.nights.length === 0 && <Text style={styles.empty}>No shows logged yet. Be the first.</Text>}
-        {a.nights.map((n) => (
-          <Pressable key={n.id} style={styles.nightRow} onPress={() => onOpenShow?.(n)}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.nightVenue}>{n.venue}</Text>
-              <Text style={styles.nightMeta}>
-                {n.city}{n.date !== "aggregate" ? ` · ${n.date}` : " · community avg"}
-              </Text>
-            </View>
-            <View style={styles.scorePill}>
-              <Icon name="star" size={11} color={colors.gold} />
-              <Text style={styles.scoreTxt}>{n.overall.toFixed(1)}</Text>
-            </View>
-          </Pressable>
-        ))}
       </ScrollView>
     </View>
   );

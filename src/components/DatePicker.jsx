@@ -23,9 +23,9 @@ function Column({ values, selected, onSelect, render }) {
   );
 }
 
-export default function DatePicker({ onChange }) {
+export default function DatePicker({ onChange, years = YEARS, defaultYear }) {
   const today = new Date();
-  const [year, setYear] = useState(2026);
+  const [year, setYear] = useState(defaultYear || years[0]);
   const [month, setMonth] = useState(today.getMonth() + 1);
   const [day, setDay] = useState(today.getDate());
 
@@ -47,7 +47,7 @@ export default function DatePicker({ onChange }) {
         <Text style={styles.head}>DAY</Text>
       </View>
       <View style={styles.cols}>
-        <Column values={YEARS} selected={year} onSelect={setYear} render={(v) => String(v)} />
+        <Column values={years} selected={year} onSelect={setYear} render={(v) => String(v)} />
         <Column values={MONTHS} selected={month} onSelect={setMonth} render={(v) => `${pad(v)} ${MONTH_NAMES[v - 1]}`} />
         <Column values={days} selected={clampedDay} onSelect={setDay} />
       </View>

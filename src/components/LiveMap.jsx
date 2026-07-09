@@ -14,8 +14,10 @@ const web = Platform.OS === "web" && typeof window !== "undefined";
 // POIs are hushed so they don't fight the venue pins, water reads deep blue-black.
 const DARK_STYLE = [
   { elementType: "geometry", stylers: [{ color: "#0e1119" }] },
-  { elementType: "labels.text.fill", stylers: [{ color: "#727a8c" }] },
-  { elementType: "labels.text.stroke", stylers: [{ color: "#0b0e16" }] },
+  // Labels: bright fill + a heavy near-black stroke/halo so city + neighborhood
+  // names stay legible over the dark land and water (the old dim grey washed out).
+  { elementType: "labels.text.fill", stylers: [{ color: "#c3cad8" }] },
+  { elementType: "labels.text.stroke", stylers: [{ color: "#05070c" }, { weight: 3 }] },
   { elementType: "labels.icon", stylers: [{ visibility: "off" }] },
   { featureType: "poi", elementType: "labels", stylers: [{ visibility: "off" }] },
   { featureType: "poi.park", elementType: "geometry", stylers: [{ color: "#152018" }] },
@@ -27,9 +29,11 @@ const DARK_STYLE = [
   { featureType: "road.highway", elementType: "geometry.stroke", stylers: [{ color: "#241d12" }] },
   { featureType: "transit", stylers: [{ visibility: "off" }] },
   { featureType: "water", elementType: "geometry", stylers: [{ color: "#0a1626" }] },
-  { featureType: "water", elementType: "labels.text.fill", stylers: [{ color: "#2a4a68" }] },
+  { featureType: "water", elementType: "labels.text.fill", stylers: [{ color: "#5b83a8" }] },
   { featureType: "administrative", elementType: "geometry", stylers: [{ color: "#28303f" }] },
-  { featureType: "administrative.locality", elementType: "labels.text.fill", stylers: [{ color: "#8891a5" }] },
+  // City/town names — the important ones — brightest of all.
+  { featureType: "administrative.locality", elementType: "labels.text.fill", stylers: [{ color: "#eef1f6" }] },
+  { featureType: "administrative.neighborhood", elementType: "labels.text.fill", stylers: [{ color: "#aab2c2" }] },
   { featureType: "administrative.land_parcel", stylers: [{ visibility: "off" }] },
 ];
 
