@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { View, Text, StyleSheet, ScrollView, Pressable, Image, Linking } from "react-native";
-import { colors, mono, radius } from "../theme";
+import { colors, mono, radius, roleColor } from "../theme";
 import { useStore } from "../store";
 import { listenUrl } from "../seed/songs";
 import { artistMeta } from "../seed/ingested";
@@ -91,7 +91,7 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtis
         <View style={styles.head}>
           <View style={styles.avatarWrap}><Avatar user={user} size={88} /></View>
           <Text style={styles.name}>{user.name}</Text>
-          <Text style={styles.handle}>@{user.handle}</Text>
+          <Text style={[styles.handle, roleColor(user.role) && { color: roleColor(user.role), fontWeight: "800" }]}>@{user.handle}</Text>
           <View style={styles.roleBadge}><Text style={styles.roleTxt}>{roleLabel}</Text></View>
           {!!user.bio && <Text style={styles.bio}>{user.bio}</Text>}
 

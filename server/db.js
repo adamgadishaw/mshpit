@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS users (
   extras          TEXT NOT NULL DEFAULT '{}',
   is_banned       INTEGER NOT NULL DEFAULT 0,
   suspended_until INTEGER,
+  handle_changed_at INTEGER NOT NULL DEFAULT 0,
   created_at      INTEGER NOT NULL
 );
 
@@ -253,6 +254,12 @@ CREATE INDEX IF NOT EXISTS idx_tourdates_artist ON tour_dates(artist);
 
 const ver = db.prepare("SELECT version FROM schema_version LIMIT 1").get();
 if (!ver) db.prepare("INSERT INTO schema_version (version) VALUES (1)").run();
+
+// Additive migrations for DBs created before a column existed. ADD COLUMN throws
+// if it's already there, so each is best-effort — safe to run on every boot.
+for (const stmt of [
+  "ALTER TABLE users ADD COLUMN handle_changed_at INTEGER NOT NULL DEFAULT 0",
+]) { try { db.exec(stmt); } catch {} }
 
 // --- tiny helpers ------------------------------------------------------------
 export const q = {

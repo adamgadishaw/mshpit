@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { View, Text, StyleSheet, Pressable } from "react-native";
-import { colors, mono, radius, shadow } from "../theme";
+import { colors, mono, radius, shadow, roleColor } from "../theme";
 import Stars from "./Stars";
 import Icon from "./Icon";
 import Avatar from "./Avatar";
@@ -46,7 +46,7 @@ export default function TicketStub({ log, onOpen, onPreview, onOpenProfile, onOp
         <Avatar user={author} size={38} onPress={log.userId ? () => onOpenProfile?.(log.userId) : undefined} />
         <Pressable style={{ flex: 1 }} onPress={log.userId ? () => onOpenProfile?.(log.userId) : undefined}>
           <Text style={styles.name}>{author.name}</Text>
-          <Text style={styles.sub}>@{author.handle} · {log.timeAgo}</Text>
+          <Text style={styles.sub}><Text style={roleColor(author.role) ? { color: roleColor(author.role), fontWeight: "800" } : null}>@{author.handle}</Text> · {log.timeAgo}</Text>
         </Pressable>
         <View style={styles.scorePill}>
           <Text style={styles.scoreNum}>{log.overall.toFixed(1)}</Text>

@@ -488,7 +488,11 @@ export function StoreProvider({ children }) {
       if (Object.keys(body).length) {
         api("/api/me", { method: "PATCH", body })
           .then(({ user }) => { if (user) { setUsers((all) => all.map((u) => (u.id === user.id ? { ...u, ...user } : u))); setSession((s) => ({ ...s, ...user })); } })
-          .catch(() => {});
+          .catch(() => {
+            // Server rejected something (e.g. handle taken / cooldown / role tag) —
+            // snap back to server truth so the UI doesn't show a change that didn't stick.
+            api("/api/me").then(({ user }) => { if (user) { setUsers((all) => all.map((u) => (u.id === user.id ? { ...u, ...user } : u))); setSession((s) => ({ ...s, ...user })); } }).catch(() => {});
+          });
       }
     }
     return safe; // caller may need the sanitized patch (e.g. to persist alongside a theme)
@@ -869,8 +873,18 @@ export function StoreProvider({ children }) {
   // Promote/demote a member (fan ⇄ artist ⇄ admin). Admin grants full moderation.
   const setUserRole = (id, role) => {
     if (!["fan", "artist", "moderator", "admin"].includes(role)) return;
-    setUsers((all) => all.map((u) => (u.id === id ? { ...u, role } : u)));
-    setSession((s) => (s && s.id === id ? { ...s, role } : s));
+    // Staff carry their role in their @ (admin → "admin", moderator → "mod"); on
+    // promotion, tag the handle if it isn't already, keeping it unique.
+    const target = users.find((u) => u.id === id);
+    let handle = target?.handle;
+    const tag = role === "admin" ? "admin" : role === "moderator" ? "mod" : null;
+    if (target && tag && handle && !handle.includes(tag)) {
+      let cand = `${handle}_${tag}`.slice(0, 20), i = 1;
+      while (users.some((x) => x.id !== id && x.handle === cand)) cand = `${handle}_${tag}${i++}`.slice(0, 20);
+      handle = cand;
+    }
+    setUsers((all) => all.map((u) => (u.id === id ? { ...u, role, handle: handle || u.handle } : u)));
+    setSession((s) => (s && s.id === id ? { ...s, role, handle: handle || s.handle } : s));
   };
 
   // --- Planned attendance ---

@@ -15,6 +15,21 @@ export class ApiError extends Error {
 const now = () => Date.now();
 const uid = (p) => `${p}_${randomUUID().slice(0, 12)}`;
 
+// Advance a timestamp by N business days (skip Sat/Sun) — for the @handle cooldown.
+function addBusinessDays(ts, n) {
+  const d = new Date(ts);
+  let added = 0;
+  while (added < n) { d.setUTCDate(d.getUTCDate() + 1); const day = d.getUTCDay(); if (day !== 0 && day !== 6) added++; }
+  return d.getTime();
+}
+const HANDLE_COOLDOWN_DAYS = 10; // business days between username changes
+// Staff must carry their role in their @ (moderator → "mod", admin → "admin").
+function handleAllowedForRole(handle, role) {
+  if (role === "admin") return handle.includes("admin");
+  if (role === "moderator") return handle.includes("mod");
+  return true;
+}
+
 function requireUser(ctx) {
   if (!ctx.user) throw new ApiError(401, "Log in first.");
   if (ctx.user.is_banned) throw new ApiError(403, "This account is banned.");
@@ -158,11 +173,21 @@ export const routes = {
     const sets = [];
     const args = [];
     if (v.name) { sets.push("name = ?", "initials = ?"); args.push(v.name, (v.name.match(/\p{L}|\p{N}/gu) || ["?"]).slice(0, 2).join("").toUpperCase()); }
-    // @handle: change it only if it's free (owned by nobody, or already you).
+    // @handle change: unique + role-tag + a 10-business-day cooldown.
     if (v.handle && v.handle !== u.handle) {
       const taken = q.userByHandle.get(v.handle);
       if (taken && taken.id !== u.id) throw new ApiError(409, "That username is taken.");
-      sets.push("handle = ?"); args.push(v.handle);
+      if (!handleAllowedForRole(v.handle, u.role)) {
+        throw new ApiError(400, u.role === "admin" ? 'Admin usernames must contain "admin".' : 'Moderator usernames must contain "mod".');
+      }
+      if (u.handle_changed_at) {
+        const nextAt = addBusinessDays(u.handle_changed_at, HANDLE_COOLDOWN_DAYS);
+        if (now() < nextAt) {
+          const when = new Date(nextAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+          throw new ApiError(429, `Username can only change every ${HANDLE_COOLDOWN_DAYS} business days — next change available ${when}.`);
+        }
+      }
+      sets.push("handle = ?", "handle_changed_at = ?"); args.push(v.handle, now());
     }
     if (v.bio !== undefined) { sets.push("bio = ?"); args.push(v.bio); }
     if (v.banner !== undefined) { sets.push("banner = ?"); args.push(v.banner); }

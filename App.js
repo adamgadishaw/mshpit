@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, Pressable, SafeAreaView, Platform, StatusBar as
 import { StatusBar } from "expo-status-bar";
 import "./src/lib/safeArea"; // reserves iOS notch / toolbar safe areas (web)
 import "./src/lib/webInputFix"; // strips the harsh browser focus box from inputs (web)
-import { colors, mono, radius } from "./src/theme";
+import { colors, mono, radius, roleColor } from "./src/theme";
 import { StoreProvider, useStore, isStaff } from "./src/store";
 import Icon from "./src/components/Icon";
 import Avatar from "./src/components/Avatar";
@@ -296,7 +296,7 @@ function Root() {
             <Avatar user={session} size={30} />
             <View style={{ maxWidth: 150 }}>
               <Text style={styles.acctName} numberOfLines={1}>{session.name}</Text>
-              <Text style={styles.acctSub} numberOfLines={1}>@{session.handle}</Text>
+              <Text style={[styles.acctSub, roleColor(session.role) && { color: roleColor(session.role), fontWeight: "800" }]} numberOfLines={1}>@{session.handle}</Text>
             </View>
             <Icon name="chevron-down" size={16} color={colors.textDim} />
           </Pressable>
