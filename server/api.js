@@ -143,6 +143,7 @@ export const routes = {
     limit(ctx, "profile", 30, 10 * 60 * 1000);
     const [, v] = shape(ctx.body, {
       name: { parse: (x) => (isName(x) ? cleanName(x) : undefined) },
+      handle: { parse: (x) => { const h = cleanHandle(x); return h && h.length >= 3 ? h : undefined; } },
       bio: { parse: (x) => clean(x, { max: LIMITS.bio, newlines: true }) },
       banner: { parse: (x) => clean(x, { max: 2000 }) },
       avatarUri: { parse: (x) => clean(x, { max: 2000 }) },
@@ -157,6 +158,12 @@ export const routes = {
     const sets = [];
     const args = [];
     if (v.name) { sets.push("name = ?", "initials = ?"); args.push(v.name, (v.name.match(/\p{L}|\p{N}/gu) || ["?"]).slice(0, 2).join("").toUpperCase()); }
+    // @handle: change it only if it's free (owned by nobody, or already you).
+    if (v.handle && v.handle !== u.handle) {
+      const taken = q.userByHandle.get(v.handle);
+      if (taken && taken.id !== u.id) throw new ApiError(409, "That username is taken.");
+      sets.push("handle = ?"); args.push(v.handle);
+    }
     if (v.bio !== undefined) { sets.push("bio = ?"); args.push(v.bio); }
     if (v.banner !== undefined) { sets.push("banner = ?"); args.push(v.banner); }
     if (v.avatarUri !== undefined) { sets.push("avatar_uri = ?"); args.push(v.avatarUri); }

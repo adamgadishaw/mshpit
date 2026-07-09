@@ -476,6 +476,21 @@ export function StoreProvider({ children }) {
     if ("name" in safe) safe.initials = (safe.name.match(/\p{L}|\p{N}/gu) || ["?"]).slice(0, 2).join("").toUpperCase();
     setUsers((all) => all.map((u) => (u.id === session.id ? { ...u, ...safe } : u)));
     setSession((s) => ({ ...s, ...safe }));
+    // Persist to the server so profile edits (incl. your @handle) survive sign-out
+    // and follow you to a new device. The server is the authority on handle
+    // uniqueness — re-absorb its response so a taken handle reverts cleanly.
+    if (session) {
+      const body = {};
+      for (const k of ["name", "bio", "handle", "avatarUri", "banner"]) if (k in safe) body[k] = safe[k];
+      if (safe.home) { body.city = safe.home.city; body.lat = safe.home.lat; body.lng = safe.home.lng; }
+      if (Array.isArray(safe.genres)) body.genres = safe.genres;
+      if (Array.isArray(safe.favoriteArtists)) body.favoriteArtists = safe.favoriteArtists;
+      if (Object.keys(body).length) {
+        api("/api/me", { method: "PATCH", body })
+          .then(({ user }) => { if (user) { setUsers((all) => all.map((u) => (u.id === user.id ? { ...u, ...user } : u))); setSession((s) => ({ ...s, ...user })); } })
+          .catch(() => {});
+      }
+    }
     return safe; // caller may need the sanitized patch (e.g. to persist alongside a theme)
   };
 

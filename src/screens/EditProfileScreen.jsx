@@ -28,9 +28,14 @@ function SongField({ song, color, onPress, onClear }) {
 }
 
 export default function EditProfileScreen({ onClose, onPickArtists }) {
-  const { session, updateProfile, chooseTheme } = useStore();
+  const { session, users, updateProfile, chooseTheme } = useStore();
   const isDark = (THEMES.find((t) => t.key === themeKey) || {}).dark;
   const [name, setName] = useState(session?.name || "");
+  const [handle, setHandle] = useState(session?.handle || "");
+  const cleanHandleInput = (v) => v.toLowerCase().replace(/[^a-z0-9_]/g, "").slice(0, 20);
+  const handleTaken = handle.length >= 3 && (users || []).some((u) => u.handle === handle && u.id !== session?.id);
+  const handleTooShort = handle.length > 0 && handle.length < 3;
+  const handleChanged = handle !== session?.handle;
   const [bio, setBio] = useState(session?.bio || "");
   const [avatarUri, setAvatarUri] = useState(session?.avatarUri || null);
   const [banner, setBanner] = useState(session?.banner || null);
@@ -79,6 +84,7 @@ export default function EditProfileScreen({ onClose, onPickArtists }) {
     updateProfile({
       name: name.trim() || session.name, bio: bio.trim(), avatarUri, banner, genres, initials, home,
       nowPlaying, treble, bass,
+      ...(handleChanged && !handleTaken && !handleTooShort ? { handle } : {}),
     });
     onClose?.();
   };
@@ -110,6 +116,27 @@ export default function EditProfileScreen({ onClose, onPickArtists }) {
 
         <Text style={styles.label}>NAME</Text>
         <TextInput style={styles.input} value={name} onChangeText={setName} placeholder="Your name" placeholderTextColor={colors.textFaint} maxLength={40} />
+
+        <Text style={styles.label}>USERNAME</Text>
+        <View style={[styles.handleRow, handleTaken && styles.handleRowBad, handleChanged && !handleTaken && !handleTooShort && styles.handleRowGood]}>
+          <Text style={styles.at}>@</Text>
+          <TextInput
+            style={styles.handleInput}
+            value={handle}
+            onChangeText={(v) => setHandle(cleanHandleInput(v))}
+            placeholder="username"
+            placeholderTextColor={colors.textFaint}
+            autoCapitalize="none"
+            autoCorrect={false}
+            maxLength={20}
+          />
+          {handleChanged && !handleTooShort && (
+            <Text style={[styles.handleStatus, handleTaken ? styles.bad : styles.good]}>{handleTaken ? "taken" : "available"}</Text>
+          )}
+        </View>
+        <Text style={styles.handleHint}>
+          {handleTooShort ? "At least 3 characters." : "Letters, numbers, and underscores. This is your @ across Pit."}
+        </Text>
 
         <Text style={styles.label}>HOME CITY</Text>
         <Pressable style={styles.cityPick} onPress={() => setPickingCity(true)}>
@@ -194,6 +221,15 @@ const styles = StyleSheet.create({
   label: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "700", marginBottom: 8, marginTop: 20 },
   input: { backgroundColor: colors.surface, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.line, color: colors.text, paddingHorizontal: 14, paddingVertical: 12, fontSize: 15 },
   multiline: { minHeight: 70, textAlignVertical: "top" },
+  handleRow: { flexDirection: "row", alignItems: "center", backgroundColor: colors.surface, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 14 },
+  handleRowGood: { borderColor: colors.good },
+  handleRowBad: { borderColor: colors.danger },
+  at: { color: colors.textDim, fontSize: 16, fontWeight: "700", marginRight: 2 },
+  handleInput: { flex: 1, color: colors.text, fontSize: 15, paddingVertical: 12 },
+  handleStatus: { fontSize: 12, fontWeight: "700" },
+  good: { color: colors.good },
+  bad: { color: colors.danger },
+  handleHint: { color: colors.textFaint, fontSize: 12, marginTop: 6 },
   cityPick: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: colors.surface, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 14, paddingVertical: 13 },
   cityTxt: { flex: 1, color: colors.text, fontSize: 15 },
   cityPlaceholder: { color: colors.textFaint },
