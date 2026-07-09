@@ -4,6 +4,10 @@
 >
 > Last updated: **2026-07-09**
 
+> **Working agreement (owner's standing instruction):** ALWAYS `git commit` **and** `git push` to `master` after a change — no need to ask. Push auto-deploys (brief 502 while Render restarts). Do not leave work only committed locally.
+
+**Members ARE persisting + searchable** (verified live: `GET /api/people?q=` returns the directory + `total`). The old "can't find anyone" was a missing UI, not lost data: no member browse, no member count, and the People list had been emptied. Fixed 2026-07-09 (empty search now browses the member directory; Discover has a MEMBERS stat). Known-open basics: **nav flash on reload** (backlog #8) and **admin verification console** (backlog #9).
+
 ---
 
 ## What this is
