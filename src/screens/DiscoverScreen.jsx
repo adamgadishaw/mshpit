@@ -75,7 +75,8 @@ function Plinth({ row, rank, onPress }) {
 }
 
 export default function DiscoverScreen({ onOpenTopRated, onOpenArtist, onOpenNearby, onOpenFanClubs, onOpenVenues, onOpenPhotos }) {
-  const { session, chartTop, chartInfo, catalogCountries, topGenres, topPhotos, discoverStats } = useStore();
+  const { session, chartTop, chartInfo, catalogCountries, topGenres, topPhotos, discoverStats, loadMembers, memberCount } = useStore();
+  useEffect(() => { loadMembers(); }, []); // pull the live member count + directory
 
   const chart = useMemo(() => chartTop(10), []);
   const info = useMemo(() => chartInfo(), []);
@@ -114,9 +115,9 @@ export default function DiscoverScreen({ onOpenTopRated, onOpenArtist, onOpenNea
   const regionGenreCount = genres.length;
 
   const STAT_TILES = [
+    { k: "members", label: "MEMBERS", icon: "you", tint: colors.gold },
     { k: "artists", label: "ARTISTS", icon: "music", tint: colors.amber },
     { k: "venues", label: "VENUES", icon: "pin", tint: colors.cool },
-    { k: "countries", label: "COUNTRIES", icon: "globe", tint: colors.good },
     { k: "genres", label: "GENRES", icon: "discover", tint: colors.magenta },
   ];
 

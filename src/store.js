@@ -94,6 +94,7 @@ export function StoreProvider({ children }) {
   // Hydrate the identity-critical state from storage so a refresh / new page keeps
   // you logged in and keeps your data. (See src/lib/persist.js.)
   const [users, setUsers] = useState(() => load("pit.users", seedUsers));
+  const [memberCount, setMemberCount] = useState(0); // total signed-up members (from the server)
   const [session, setSession] = useState(() => load("pit.session", null));
   const [feed, setFeed] = useState(() => load("pit.feed", seedFeed));
   const [removedIds, setRemovedIds] = useState([]);
@@ -274,13 +275,18 @@ export function StoreProvider({ children }) {
     });
   };
   // Search users by name/handle on the server (cross-device friend finding).
+  // Also captures the member count (`total`) so the app can show a real stat.
   const searchPeople = async (q) => {
     try {
-      const { users: found } = await api(`/api/people?q=${encodeURIComponent(q)}`);
+      const { users: found, total } = await api(`/api/people?q=${encodeURIComponent(q || "")}`);
       absorbUsers(found);
+      if (typeof total === "number") setMemberCount(total);
       return found || [];
     } catch { return []; }
   };
+  // Browse the member directory (newest first) — used when the search box is empty
+  // so you can find people without knowing their exact handle.
+  const loadMembers = () => searchPeople("");
 
   // Fold a server user into local state so profiles/avatars resolve everywhere.
   const absorbServerUser = (su) => {
@@ -1327,6 +1333,7 @@ export function StoreProvider({ children }) {
   };
 
   const discoverStats = () => ({
+    members: memberCount,
     artists: Object.keys(catalogArtists || {}).length,
     venues: Object.keys(catalogVenues || {}).length,
     countries: catalogCountries(1).length,
@@ -1510,7 +1517,7 @@ export function StoreProvider({ children }) {
     addLog, reportContent, actionReport, dismissReport, removeContent, restoreContent,
     requestArtist, approveArtist, rejectArtist,
     addTourDatesBatch,
-    isFollowing, follow, unfollow, followerCount, followingCount, absorbUsers, searchPeople,
+    isFollowing, follow, unfollow, followerCount, followingCount, absorbUsers, searchPeople, loadMembers, memberCount,
     visibleFeed, followingFeed, visibleTourDates, artistSummary, venueSummary,
     localVenues, regionShows, localFeed, recommendedShows, venueCoord,
     searchVenues, venuesByCity, venueUpcomingCount,

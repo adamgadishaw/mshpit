@@ -206,15 +206,25 @@ export const routes = {
     return { user: publicUser(q.userById.get(u.id), { self: true }) };
   },
 
-  // People search (find friends) — by name or handle, cross-device.
+  // People search + member directory (find friends), cross-device.
+  //  - q >= 1 char: substring match on name/handle (exact matches float to top).
+  //  - q empty: browse the newest members, so you can find people WITHOUT knowing
+  //    their exact handle (the "I can't locate anyone" fix).
+  // Always returns `total` = member count, so the app can show a real stat.
   "GET /api/people": (ctx) => {
     const term = clean(ctx.query.q, { max: 60 }).toLowerCase();
-    if (term.length < 2) return { users: [] };
+    const total = db.prepare("SELECT COUNT(*) c FROM users WHERE is_banned=0").get().c;
+    const cols = "id,name,handle,initials,avatar_uri,avatar_color,verified,role,home_city";
+    const map = (r) => ({ id: r.id, name: r.name, handle: r.handle, initials: r.initials, avatarUri: r.avatar_uri, avatarColor: r.avatar_color, verified: !!r.verified, role: r.role, home: { city: r.home_city } });
+    if (term.length < 1) {
+      const rows = db.prepare(`SELECT ${cols} FROM users WHERE is_banned=0 ORDER BY created_at DESC LIMIT 40`).all();
+      return { users: rows.map(map), total };
+    }
     const like = `%${term.replace(/[%_\\]/g, "")}%`;
     const rows = db.prepare(
-      "SELECT id,name,handle,initials,avatar_uri,avatar_color,home_city FROM users WHERE is_banned=0 AND (lower(name) LIKE ? OR lower(handle) LIKE ?) ORDER BY name LIMIT 20"
-    ).all(like, like);
-    return { users: rows.map((r) => ({ id: r.id, name: r.name, handle: r.handle, initials: r.initials, avatarUri: r.avatar_uri, avatarColor: r.avatar_color, home: { city: r.home_city } })) };
+      `SELECT ${cols} FROM users WHERE is_banned=0 AND (lower(name) LIKE ? OR lower(handle) LIKE ?) ORDER BY (lower(handle)=? OR lower(name)=?) DESC, name LIMIT 30`
+    ).all(like, like, term, term);
+    return { users: rows.map(map), total };
   },
 
   "GET /api/users/:id": (ctx) => {
