@@ -114,8 +114,8 @@ async function cycle(n) {
   // Tour dates from the official Ticketmaster Discovery API. Runs only when a key
   // is set; polls the top artists by popularity each cycle so newly-announced
   // dates get picked up (tour dates are dynamic — unlike photos, we re-check).
-  if (!stopping && process.env.TICKETMASTER_KEY) {
-    log("stage: tour dates (Ticketmaster Discovery)");
+  if (!stopping && (process.env.TICKETMASTER_KEY || process.env.BANDSINTOWN_APP_ID)) {
+    log("stage: tour dates (Ticketmaster / Bandsintown)");
     await run("enrich-tourdates.mjs");
     did = true;
   }

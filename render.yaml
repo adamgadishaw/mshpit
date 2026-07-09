@@ -59,5 +59,7 @@ services:
         sync: false
       - key: TICKETMASTER_KEY
         sync: false                    # free at developer.ticketmaster.com
+      - key: BANDSINTOWN_APP_ID
+        sync: false                    # self-assigned string; developer.bandsintown.com
       - key: GITHUB_TOKEN
         sync: false                    # fine-grained PAT, Contents: read/write on the repo
