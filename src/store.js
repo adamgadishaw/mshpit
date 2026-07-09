@@ -263,6 +263,28 @@ export function StoreProvider({ children }) {
   const userByHandle = (h) => users.find((u) => u.handle === h);
   const logsByUser = (id) => feed.filter((l) => l.userId === id);
 
+  // "Crossed paths" — shows YOU and another user have BOTH logged (same exact
+  // performance: artist + venue + date). The overlap tracker: "this person's been
+  // to N of the same concerts as you." Returns the list of shared performances,
+  // most recent first. Also exposes the set of artists you've both seen live.
+  const sharedShows = (otherId) => {
+    const me = session?.id;
+    if (!me || !otherId || me === otherId) return { shows: [], artists: [] };
+    const mine = new Map();
+    logsByUser(me).forEach((l) => mine.set(concertKey(l), l));
+    const shows = [];
+    const seen = new Set();
+    const artists = new Set();
+    const myArtists = new Set(logsByUser(me).map((l) => norm(l.artist)));
+    logsByUser(otherId).forEach((l) => {
+      const k = concertKey(l);
+      if (mine.has(k) && !seen.has(k)) { seen.add(k); shows.push(mine.get(k)); }
+      if (myArtists.has(norm(l.artist))) artists.add(l.artist);
+    });
+    shows.sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
+    return { shows, artists: [...artists] };
+  };
+
   // Merge found users (people search) into local state so their profiles, avatars,
   // and follow buttons resolve everywhere — without touching the session.
   const absorbUsers = (list) => {
@@ -1530,7 +1552,7 @@ export function StoreProvider({ children }) {
 
   const value = {
     users, session, feed, removedIds, requests, tourDates, reports, follows,
-    userById, userByHandle, logsByUser,
+    userById, userByHandle, logsByUser, sharedShows,
     login, signup, logout, updateProfile, chooseTheme,
     addLog, reportContent, actionReport, dismissReport, removeContent, restoreContent,
     requestArtist, approveArtist, rejectArtist,

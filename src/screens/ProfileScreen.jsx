@@ -50,13 +50,15 @@ function TrebleBass({ kind, song, playing, onPlay, onOpenArtist }) {
 // MySpace-style profile - banner, pfp, now-playing, theme song, Treble/Bass top
 // artists, planned shows, reviews. Built to make people findable and followable.
 export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtist, onOpenVenue, onEditProfile, onPreview, onMessage, onReport, onOpenPhotos }) {
-  const { session, userById, logsByUser, isFollowing, follow, unfollow, followerCount, followingCount, goingFor, userBadges } = useStore();
+  const { session, userById, logsByUser, isFollowing, follow, unfollow, followerCount, followingCount, goingFor, userBadges, sharedShows } = useStore();
   const user = userById(userId);
   if (!user) return null;
 
   const logs = logsByUser(user.id);
   const planned = goingFor(user.id);
   const isSelf = session?.id === user.id;
+  // "Crossed paths" — shows you've both been to (and artists you've both seen).
+  const crossed = !isSelf && session ? sharedShows(user.id) : { shows: [], artists: [] };
 
   // Photo gallery — every photo this person attached to a post, newest first.
   // On someone else's profile we only show ones they marked public; you always
@@ -126,6 +128,34 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtis
           <Stat value={followerCount(user.id)} label="FOLLOWERS" />
           <Stat value={followingCount(user.id)} label="FOLLOWING" />
         </View>
+
+        {/* Crossed paths — the concert-overlap tracker. */}
+        {!isSelf && session && (crossed.shows.length > 0 || crossed.artists.length > 0) && (
+          <Pressable
+            style={styles.crossed}
+            onPress={crossed.shows.length ? () => onOpenShow?.(crossed.shows[0]) : undefined}
+          >
+            <View style={styles.crossedIcon}><Icon name="ticket" size={17} color={colors.magenta} /></View>
+            {crossed.shows.length > 0 ? (
+              <View style={{ flex: 1 }}>
+                <Text style={styles.crossedTitle}>
+                  You've crossed paths at <Text style={styles.crossedNum}>{crossed.shows.length}</Text> {crossed.shows.length === 1 ? "show" : "shows"}
+                </Text>
+                <Text style={styles.crossedSub} numberOfLines={1}>
+                  {crossed.shows.slice(0, 3).map((s) => s.artist).join(" · ")}{crossed.shows.length > 3 ? " …" : ""}
+                </Text>
+              </View>
+            ) : (
+              <View style={{ flex: 1 }}>
+                <Text style={styles.crossedTitle}>
+                  You've both seen <Text style={styles.crossedNum}>{crossed.artists.length}</Text> {crossed.artists.length === 1 ? "artist" : "artists"} live
+                </Text>
+                <Text style={styles.crossedSub} numberOfLines={1}>{crossed.artists.slice(0, 3).join(" · ")}</Text>
+              </View>
+            )}
+            {crossed.shows.length > 0 && <Icon name="chevron-right" size={16} color={colors.textDim} />}
+          </Pressable>
+        )}
 
         {/* photo gallery — a wall of every shot from their nights */}
         {gallery.length > 0 && (
@@ -249,6 +279,11 @@ const styles = StyleSheet.create({
   followTxt: { color: "#1A1206", fontSize: 14, fontWeight: "800" },
   followingTxt: { color: colors.textDim },
   statsRow: { flexDirection: "row", backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, marginTop: 20, marginHorizontal: 16, paddingVertical: 14 },
+  crossed: { flexDirection: "row", alignItems: "center", gap: 12, marginTop: 12, marginHorizontal: 16, paddingVertical: 12, paddingHorizontal: 14, borderRadius: radius.md, borderWidth: 1, borderColor: colors.magenta, backgroundColor: "rgba(224,69,123,0.07)" },
+  crossedIcon: { width: 34, height: 34, borderRadius: 17, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.magenta, backgroundColor: colors.bgElev },
+  crossedTitle: { color: colors.text, fontSize: 14, fontWeight: "700" },
+  crossedNum: { color: colors.magenta, fontWeight: "900", fontFamily: mono },
+  crossedSub: { color: colors.textDim, fontSize: 11.5, marginTop: 2 },
   stat: { flex: 1, alignItems: "center" },
   statVal: { color: colors.text, fontFamily: mono, fontSize: 20, fontWeight: "800" },
   statLabel: { color: colors.textFaint, fontSize: 9, letterSpacing: 1, marginTop: 4, fontWeight: "700" },
