@@ -1,6 +1,6 @@
 import { useMemo, useState, useEffect } from "react";
 import { View, Text, StyleSheet, ScrollView, TextInput, Pressable } from "react-native";
-import { colors, mono, radius } from "../theme";
+import { colors, mono, radius, shadow } from "../theme";
 import { ratedShows } from "../data";
 import { ingestedArtists } from "../seed/ingested";
 import { useStore } from "../store";
@@ -91,8 +91,10 @@ export default function SearchScreen({ onOpenArtist, onOpenVenue, onOpenFanClub 
   return (
     <View style={styles.wrap}>
       <View style={styles.header}>
+        <Text style={styles.kicker}>FIND ANYTHING</Text>
+        <Text style={styles.hTitle}>Search</Text>
         <View style={[styles.field, focused && styles.fieldFocused]}>
-          <Icon name="search" size={18} color={focused ? colors.amber : colors.textDim} />
+          <Icon name="search" size={20} color={focused ? colors.amber : colors.textDim} />
           <TextInput
             style={styles.input}
             placeholder="Search artists, venues, shows, cities"
@@ -152,9 +154,11 @@ export default function SearchScreen({ onOpenArtist, onOpenVenue, onOpenFanClub 
 const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: colors.bg },
   header: { padding: 16, paddingBottom: 12 },
-  field: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 14 },
+  kicker: { color: colors.amber, fontSize: 11, letterSpacing: 2, fontWeight: "800", fontFamily: mono },
+  hTitle: { color: colors.text, fontSize: 28, fontWeight: "900", letterSpacing: -0.5, marginTop: 4, marginBottom: 12 },
+  field: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 16, ...shadow.card },
   fieldFocused: { borderColor: colors.amber },
-  input: { flex: 1, color: colors.text, fontSize: 15, paddingVertical: 13 },
+  input: { flex: 1, color: colors.text, fontSize: 16, paddingVertical: 15 },
 
   list: { paddingHorizontal: 16, paddingBottom: 24 },
   sectionLabel: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "800", marginTop: 8, marginBottom: 8, marginLeft: 4 },

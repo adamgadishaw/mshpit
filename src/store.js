@@ -1269,6 +1269,70 @@ export function StoreProvider({ children }) {
     return [...b];
   };
 
+  // --- Discover: chart ranking + region genres + top photos ------------------
+  // The ranking SOURCE is abstracted so we can swap in Billboard Hot 100 or an
+  // in-app score later without touching the Discover UI. Today it prefers Spotify
+  // popularity, then follower count, then live fan-reputation, then A–Z — so the
+  // podium always has a top 3 even before the popularity scrape has run.
+  const CHART_SOURCE = "spotify-popularity"; // future: "billboard-hot-100" | "in-app-score"
+  const chartTop = (n = 10) => {
+    const arts = Object.values(catalogArtists || {});
+    const withPop = arts.filter((a) => a.popularity != null);
+    let ranked, basis;
+    if (withPop.length >= 3) {
+      ranked = withPop.slice().sort((x, y) => (y.popularity - x.popularity) || ((y.followers || 0) - (x.followers || 0)));
+      basis = "popularity";
+    } else {
+      const rep = topArtists(Math.max(n, 40));
+      if (rep.length >= 3) { ranked = rep; basis = "reputation"; }
+      else { ranked = arts.slice().sort((a, b) => (a.name || "").localeCompare(b.name || "")); basis = "az"; }
+    }
+    return ranked.slice(0, n).map((a, i) => {
+      const meta = artistMeta(a.name) || a;
+      return { rank: i + 1, name: a.name, genre: a.genre || meta.genre || null, popularity: a.popularity ?? null, followers: a.followers ?? null, photo: meta.photo || null, basis };
+    });
+  };
+  const chartInfo = () => {
+    const withPop = Object.values(catalogArtists || {}).filter((a) => a.popularity != null).length;
+    return { source: CHART_SOURCE, live: withPop >= 3, label: withPop >= 3 ? "By popularity" : "By fan reputation" };
+  };
+
+  // Genre distribution, optionally scoped to one country — the region pies.
+  const catalogCountries = (min = 12) => {
+    const c = {};
+    Object.values(catalogArtists || {}).forEach((a) => { if (a.country) c[a.country] = (c[a.country] || 0) + 1; });
+    return Object.entries(c).filter(([, v]) => v >= min).sort((a, b) => b[1] - a[1]).map(([country, count]) => ({ country, count }));
+  };
+  const topGenres = (country, n = 6) => {
+    const g = {};
+    Object.values(catalogArtists || {}).forEach((a) => {
+      if (country && a.country !== country) return;
+      if (a.genre) g[a.genre] = (g[a.genre] || 0) + 1;
+    });
+    const rows = Object.entries(g).sort((a, b) => b[1] - a[1]);
+    const total = rows.reduce((s, [, v]) => s + v, 0) || 1;
+    const out = rows.slice(0, n).map(([genre, count]) => ({ genre, count, pct: count / total }));
+    const rest = rows.slice(n).reduce((s, [, v]) => s + v, 0);
+    if (rest > 0) out.push({ genre: "Other", count: rest, pct: rest / total });
+    return out;
+  };
+
+  // Most-liked uploaded photos across the feed (the "top photos" wall).
+  const topPhotos = (n = 12) => {
+    const out = [];
+    visibleFeed(false).forEach((l) => {
+      (l.photos || []).forEach((uri) => uri && out.push({ uri, artist: l.artist, venue: l.venue, by: l.user?.name || "", likes: l.likes || 0, logId: l.id }));
+    });
+    return out.sort((a, b) => b.likes - a.likes).slice(0, n);
+  };
+
+  const discoverStats = () => ({
+    artists: Object.keys(catalogArtists || {}).length,
+    venues: Object.keys(catalogVenues || {}).length,
+    countries: catalogCountries(1).length,
+    genres: new Set(Object.values(catalogArtists || {}).map((a) => a.genre).filter(Boolean)).size,
+  });
+
   // Soonest released upcoming dates across the whole catalog.
   const upcomingEvents = (n = 8) =>
     tourDates
@@ -1452,6 +1516,7 @@ export function StoreProvider({ children }) {
     searchVenues, venuesByCity, venueUpcomingCount,
     allArtists, topArtists, artistsAlphabetical, upcomingEvents, trendingVenues,
     isVerifiedArtist, isTop100, artistRank, artistBadges, userBadges,
+    chartTop, chartInfo, catalogCountries, topGenres, topPhotos, discoverStats,
     commentsFor, addComment, loadComments, likeInfo, toggleLike,
     concertKey, loungeFor, addLoungeMessage,
     albumRating, songRating, rateAlbum, rateSong, loadRating,

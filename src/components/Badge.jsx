@@ -1,4 +1,4 @@
-import Svg, { Path, Polyline, Polygon, G, Defs, RadialGradient, Stop } from "react-native-svg";
+import Svg, { Path, Polyline, Polygon, G, Defs, RadialGradient, Stop, Text as SvgText } from "react-native-svg";
 import { View, Text, StyleSheet } from "react-native";
 import { colors, mono, radius } from "../theme";
 
@@ -40,6 +40,9 @@ const STAR = "12 6.2 13.7 10.2 18 10.5 14.7 13.3 15.7 17.5 12 15.2 8.3 17.5 9.3 
 function config(type) {
   switch (type) {
     case "top100": return { fill: colors.gold, edge: "#7A5A12", glyph: "star", tip: "Top 100 artist" };
+    case "rank1": return { fill: colors.gold, edge: "#7A5A12", glyph: "num", num: "1", tip: "#1 this week" };
+    case "rank2": return { fill: "#C7CDD6", edge: "#6E7784", glyph: "num", num: "2", tip: "#2 this week" };
+    case "rank3": return { fill: "#D08A55", edge: "#7A4A22", glyph: "num", num: "3", tip: "#3 this week" };
     case "staff": return { fill: colors.magenta, edge: "#5E1633", glyph: "check", tip: "Pit team" };
     case "mod": return { fill: colors.good, edge: "#14512F", glyph: "check", tip: "Moderator" };
     case "founder": return { fill: colors.amberStrong, edge: "#6B3410", glyph: "check", tip: "Founder" };
@@ -47,6 +50,14 @@ function config(type) {
     case "verified":
     default: return { fill: colors.cool, edge: "#123A6B", glyph: "check", tip: "Verified" };
   }
+}
+
+function Glyph({ c }) {
+  if (c.glyph === "check")
+    return <Polyline points="7.6 12.4 10.6 15.3 16.4 8.9" fill="none" stroke="#ffffff" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round" />;
+  if (c.glyph === "num")
+    return <SvgText x="12" y="16.3" fontSize="12" fontWeight="900" fill="#ffffff" textAnchor="middle">{c.num}</SvgText>;
+  return <Polygon points={STAR} fill="#ffffff" />;
 }
 
 export default function Badge({ type = "verified", size = 18 }) {
@@ -64,13 +75,7 @@ export default function Badge({ type = "verified", size = 18 }) {
       </Defs>
       <Path d={SEAL} fill={c.fill} stroke={c.edge} strokeWidth="0.8" strokeLinejoin="round" />
       <Path d={SEAL} fill={`url(#${gid})`} />
-      {c.glyph === "check" ? (
-        <Polyline points="7.6 12.4 10.6 15.3 16.4 8.9" fill="none" stroke="#ffffff" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round" />
-      ) : (
-        <G>
-          <Polygon points={STAR} fill="#ffffff" />
-        </G>
-      )}
+      <Glyph c={c} />
     </Svg>
   );
 }
