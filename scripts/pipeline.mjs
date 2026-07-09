@@ -29,7 +29,7 @@ import { dirname, join } from "node:path";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CAT = join(HERE, "..", "src", "seed", "catalog.generated.json");
-const ARTIST_TARGET = Number(process.env.ARTIST_TARGET) || 800;
+const ARTIST_TARGET = Number(process.env.ARTIST_TARGET) || 1500;
 const PER_TAG = Number(process.env.PER_TAG) || 50;
 const CYCLE_H = Number(process.env.CYCLE_H) || 6;
 

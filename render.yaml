@@ -50,7 +50,7 @@ services:
       - key: NODE_VERSION
         value: "24"
       - key: ARTIST_TARGET
-        value: "1200"                  # keep growing the roster past the current 800
+        value: "1500"                  # keep growing the roster (MusicBrainz, keyless)
       - key: TOURDATE_LIMIT
         value: "150"                   # artists polled for tour dates per run
       - key: SPOTIFY_CLIENT_ID
