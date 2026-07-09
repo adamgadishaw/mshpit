@@ -1289,7 +1289,7 @@ export function StoreProvider({ children }) {
     }
     return ranked.slice(0, n).map((a, i) => {
       const meta = artistMeta(a.name) || a;
-      return { rank: i + 1, name: a.name, genre: a.genre || meta.genre || null, popularity: a.popularity ?? null, followers: a.followers ?? null, photo: meta.photo || null, basis };
+      return { rank: i + 1, name: a.name, genre: a.genre || meta.genre || null, popularity: a.popularity ?? null, followers: a.followers ?? null, rating: a.avg ?? null, photo: meta.photo || null, basis };
     });
   };
   const chartInfo = () => {
