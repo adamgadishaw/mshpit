@@ -94,7 +94,13 @@ function Root() {
   const [stack, setStack] = useState(() => {
     if (!web) return [{}];
     const saved = load("pit.stack", null);
-    return Array.isArray(saved) && saved.length ? saved : [{}];
+    if (!Array.isArray(saved) || !saved.length) return [{}];
+    // Restore the exact screen you were on, but COLLAPSE the back-stack to a single
+    // step. Before, a refresh resurrected the whole chain of pages you'd visited,
+    // so Back walked through a string of half-remembered screens ("jumps to a
+    // random back page"). Now: refresh lands you here; Back goes straight to the tab.
+    const top = saved[saved.length - 1];
+    return top && Object.keys(top).length ? [{}, top] : [{}];
   });
   const nav = stack[stack.length - 1];
   const stackRef = useRef(stack);

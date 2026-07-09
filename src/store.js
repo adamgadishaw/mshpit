@@ -95,6 +95,7 @@ export function StoreProvider({ children }) {
   // you logged in and keeps your data. (See src/lib/persist.js.)
   const [users, setUsers] = useState(() => load("pit.users", seedUsers));
   const [memberCount, setMemberCount] = useState(0); // total signed-up members (from the server)
+  const [adminStats, setAdminStats] = useState({ total: 0, banned: 0, verified: 0, regions: [] }); // admin member console stats
   const [session, setSession] = useState(() => load("pit.session", null));
   const [feed, setFeed] = useState(() => load("pit.feed", seedFeed));
   const [removedIds, setRemovedIds] = useState([]);
@@ -888,8 +889,24 @@ export function StoreProvider({ children }) {
     return "ok";
   };
   const banUser = (id) => { setUsers((all) => all.map((u) => (u.id === id ? { ...u, isBanned: true } : u))); api(`/api/admin/users/${id}/ban`, { method: "POST" }).catch(() => {}); };
-  const unbanUser = (id) => setUsers((all) => all.map((u) => (u.id === id ? { ...u, isBanned: false, suspendedUntil: null } : u)));
-  const suspendUser = (id, days = 7) => setUsers((all) => all.map((u) => (u.id === id ? { ...u, suspendedUntil: Date.now() + days * 86400000 } : u)));
+  const unbanUser = (id) => { setUsers((all) => all.map((u) => (u.id === id ? { ...u, isBanned: false, suspendedUntil: null } : u))); api(`/api/admin/users/${id}/unban`, { method: "POST" }).catch(() => {}); };
+  const suspendUser = (id, days = 7) => { setUsers((all) => all.map((u) => (u.id === id ? { ...u, suspendedUntil: Date.now() + days * 86400000 } : u))); api(`/api/admin/users/${id}/suspend`, { method: "POST", body: { days } }).catch(() => {}); };
+  // Full member directory for the admin console (all signups, incl. banned) + live
+  // counts and a per-region breakdown. Absorbs everyone into `users` so they're
+  // visible/moderatable, and stores the stats for the Members header.
+  const loadAdminMembers = async () => {
+    try {
+      const { users: list, total, banned, verified, regions } = await api("/api/admin/members");
+      if (Array.isArray(list)) setUsers((all) => {
+        const byId = new Map(all.map((u) => [u.id, u]));
+        list.forEach((su) => byId.set(su.id, { playlists: [], genres: [], favoriteArtists: [], ...(byId.get(su.id) || {}), ...su }));
+        return [...byId.values()];
+      });
+      setAdminStats({ total: total || 0, banned: banned || 0, verified: verified || 0, regions: regions || [] });
+      if (typeof total === "number") setMemberCount(total);
+      return list || [];
+    } catch { return []; }
+  };
   // moderation: drop a single chat/lounge/comment message (staff)
   const removeLoungeMessage = (key, msgId) => setLounge((L) => ({ ...L, [key]: (L[key] || []).filter((m) => m.id !== msgId) }));
   const removeComment = (logId, cId) => setComments((m) => ({ ...m, [logId]: (m[logId] || []).filter((c) => c.id !== cId) }));
@@ -909,6 +926,7 @@ export function StoreProvider({ children }) {
     }
     setUsers((all) => all.map((u) => (u.id === id ? { ...u, role, handle: handle || u.handle } : u)));
     setSession((s) => (s && s.id === id ? { ...s, role, handle: handle || s.handle } : s));
+    api(`/api/admin/users/${id}/role`, { method: "POST", body: { role, handle } }).catch(() => {}); // persist cross-device
   };
 
   // Admin-granted verification (the blue check) — independent of role, so any
@@ -1530,7 +1548,7 @@ export function StoreProvider({ children }) {
     fanClubFor, loadFanClub, addFanClubMessage, isFanClubMember, joinFanClub, fanClubCount, fanClubsDirectory,
     isArtistOwner, artistProfile, loadArtistPage, updateArtistProfile, artistFeedEnabled,
     artistPostsFor, addArtistPost, removeArtistPost,
-    accountStatus, banUser, unbanUser, suspendUser, setUserRole, setVerified, removeLoungeMessage, removeComment, removeFanClubMessage,
+    accountStatus, banUser, unbanUser, suspendUser, setUserRole, setVerified, loadAdminMembers, adminStats, removeLoungeMessage, removeComment, removeFanClubMessage,
     comments, fanClubMsgs, lounge,
     goingFor, isGoing, toggleGoing, attendeesFor,
     venueReviewsFor, loadVenueReviews, addVenueReview, venueRating, venueTopPhotos, venuePhotos, artistFanPhotos,

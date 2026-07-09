@@ -154,11 +154,16 @@ export default function AdminScreen({ onClose }) {
     approveArtist, rejectArtist, removeContent, restoreContent, actionReport, dismissReport,
     suspendUser, banUser, unbanUser, setUserRole, setVerified, accountStatus,
     removeComment, removeFanClubMessage, removeLoungeMessage,
+    loadAdminMembers, adminStats,
   } = useStore();
 
   const iAmAdmin = isStaff(session?.role); // full access; mods get a subset
   const [tab, setTab] = useState(iAmAdmin ? "overview" : "reports");
   const [q, setQ] = useState("");
+
+  // Pull EVERY signup (incl. banned) from the server so the console shows real
+  // members — not just the seed + whoever happens to be cached locally.
+  useEffect(() => { loadAdminMembers(); }, []);
 
   const pending = requests.filter((r) => r.status === "pending");
   const openReports = reports.filter((r) => r.status === "open");
@@ -278,11 +283,29 @@ export default function AdminScreen({ onClose }) {
         {/* ---- MEMBERS ---- */}
         {tab === "members" && (
           <>
+            <View style={styles.memberStats}>
+              <View style={styles.mStat}><Text style={styles.mStatN}>{(adminStats.total || users.length).toLocaleString()}</Text><Text style={styles.mStatL}>members</Text></View>
+              <View style={styles.mStatDiv} />
+              <View style={styles.mStat}><Text style={[styles.mStatN, { color: colors.gold }]}>{adminStats.verified || users.filter((u) => u.verified).length}</Text><Text style={styles.mStatL}>verified</Text></View>
+              <View style={styles.mStatDiv} />
+              <View style={styles.mStat}><Text style={[styles.mStatN, { color: colors.danger }]}>{adminStats.banned || bannedCount}</Text><Text style={styles.mStatL}>banned</Text></View>
+            </View>
+            {adminStats.regions?.length > 0 && (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.regionRow}>
+                {adminStats.regions.map((r) => (
+                  <View key={r.city} style={styles.regionChip}>
+                    <Icon name="pin" size={11} color={colors.cool} />
+                    <Text style={styles.regionCity} numberOfLines={1}>{r.city}</Text>
+                    <Text style={styles.regionN}>{r.count}</Text>
+                  </View>
+                ))}
+              </ScrollView>
+            )}
             <View style={styles.search}>
               <Icon name="search" size={16} color={colors.textDim} />
               <TextInput
                 style={styles.searchInput}
-                placeholder={`Search ${users.length} members…`}
+                placeholder={`Search ${(adminStats.total || users.length)} members…`}
                 placeholderTextColor={colors.textFaint}
                 value={q}
                 onChangeText={setQ}
@@ -453,6 +476,15 @@ const styles = StyleSheet.create({
   dismissTxt: { color: colors.textDim, fontSize: 13, fontWeight: "700" },
 
   // members
+  memberStats: { flexDirection: "row", alignItems: "center", backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, paddingVertical: 12, marginTop: 4, marginBottom: 10 },
+  mStat: { flex: 1, alignItems: "center" },
+  mStatN: { color: colors.text, fontSize: 20, fontWeight: "900", fontFamily: mono },
+  mStatL: { color: colors.textFaint, fontSize: 10, letterSpacing: 1, fontWeight: "800", marginTop: 2, textTransform: "uppercase" },
+  mStatDiv: { width: 1, alignSelf: "stretch", backgroundColor: colors.lineSoft, marginVertical: 4 },
+  regionRow: { flexDirection: "row", gap: 8, paddingBottom: 12 },
+  regionChip: { flexDirection: "row", alignItems: "center", gap: 5, backgroundColor: colors.bgElev, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.lineSoft, paddingHorizontal: 11, paddingVertical: 6 },
+  regionCity: { color: colors.text, fontSize: 12, fontWeight: "700" },
+  regionN: { color: colors.cool, fontSize: 11, fontFamily: mono, fontWeight: "800" },
   search: { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 12, paddingVertical: 10, marginTop: 6, marginBottom: 12 },
   searchInput: { flex: 1, color: colors.text, fontSize: 14 },
   member: { backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 12, marginBottom: 10 },

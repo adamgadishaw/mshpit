@@ -554,6 +554,51 @@ export const routes = {
     return { ok: true, verified: !!verified };
   },
 
+  // Full member directory for the admin console (includes banned) + live counts and
+  // a per-region (home city) breakdown. This is what makes every real signup show
+  // up in the Members tab so it can be verified / moderated.
+  "GET /api/admin/members": (ctx) => {
+    requireAdmin(ctx);
+    const rows = db.prepare(
+      "SELECT id,name,handle,initials,avatar_uri,avatar_color,verified,role,home_city,is_banned,suspended_until,created_at FROM users ORDER BY created_at DESC LIMIT 500"
+    ).all();
+    const users = rows.map((r) => ({ id: r.id, name: r.name, handle: r.handle, initials: r.initials, avatarUri: r.avatar_uri, avatarColor: r.avatar_color, verified: !!r.verified, role: r.role, home: { city: r.home_city }, isBanned: !!r.is_banned, suspendedUntil: r.suspended_until || null, createdAt: r.created_at }));
+    const total = db.prepare("SELECT COUNT(*) c FROM users").get().c;
+    const banned = db.prepare("SELECT COUNT(*) c FROM users WHERE is_banned=1").get().c;
+    const verified = db.prepare("SELECT COUNT(*) c FROM users WHERE verified=1").get().c;
+    const regions = db.prepare("SELECT COALESCE(NULLIF(home_city,''),'Unknown') city, COUNT(*) c FROM users GROUP BY city ORDER BY c DESC LIMIT 12").all().map((r) => ({ city: r.city, count: r.c }));
+    return { users, total, banned, verified, regions };
+  },
+
+  // Persist a role change (fan/artist/moderator/admin) + optional role-tagged handle.
+  "POST /api/admin/users/:id/role": (ctx) => {
+    requireAdmin(ctx);
+    const role = ["fan", "artist", "moderator", "admin"].includes(ctx.body?.role) ? ctx.body.role : null;
+    if (!role) throw new ApiError(400, "Bad role.");
+    if (ctx.params.id === ctx.user.id) throw new ApiError(400, "You can't change your own role.");
+    const handle = ctx.body?.handle ? cleanHandle(ctx.body.handle) : null;
+    const free = handle && !db.prepare("SELECT 1 FROM users WHERE handle=? AND id<>?").get(handle, ctx.params.id);
+    if (free) db.prepare("UPDATE users SET role=?, handle=? WHERE id=?").run(role, handle, ctx.params.id);
+    else db.prepare("UPDATE users SET role=? WHERE id=?").run(role, ctx.params.id);
+    return { ok: true, role };
+  },
+
+  "POST /api/admin/users/:id/unban": (ctx) => {
+    requireAdmin(ctx);
+    db.prepare("UPDATE users SET is_banned=0, suspended_until=NULL WHERE id=?").run(ctx.params.id);
+    return { ok: true };
+  },
+
+  "POST /api/admin/users/:id/suspend": (ctx) => {
+    requireAdmin(ctx);
+    if (ctx.params.id === ctx.user.id) throw new ApiError(400, "You can't suspend yourself.");
+    const days = Math.max(1, Math.min(365, Number(ctx.body?.days) || 7));
+    const until = now() + days * 86400000;
+    db.prepare("UPDATE users SET suspended_until=? WHERE id=?").run(until, ctx.params.id);
+    db.prepare("DELETE FROM sessions WHERE user_id=?").run(ctx.params.id);
+    return { ok: true, suspendedUntil: until };
+  },
+
   // ---- ratings: album + song stars (SQLite migration slice 7) ----
   "GET /api/ratings": (ctx) => {
     const kind = ctx.query.kind === "song" ? "song" : "album";
