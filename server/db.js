@@ -259,6 +259,7 @@ if (!ver) db.prepare("INSERT INTO schema_version (version) VALUES (1)").run();
 // if it's already there, so each is best-effort — safe to run on every boot.
 for (const stmt of [
   "ALTER TABLE users ADD COLUMN handle_changed_at INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE users ADD COLUMN verified INTEGER NOT NULL DEFAULT 0",
 ]) { try { db.exec(stmt); } catch {} }
 
 // --- tiny helpers ------------------------------------------------------------
@@ -282,6 +283,7 @@ export function publicUser(u, { self = false } = {}) {
     name: u.name,
     handle: u.handle,
     role: u.role,
+    verified: !!u.verified,
     artistName: u.artist_name || undefined,
     home: u.home_city ? { city: u.home_city, lat: u.home_lat, lng: u.home_lng } : null,
     bio: u.bio,

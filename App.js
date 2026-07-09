@@ -81,14 +81,21 @@ function Root() {
 
   const web = Platform.OS === "web" && typeof window !== "undefined";
 
-  const [tab, setTab] = useState("feed");
+  // Restore the last tab on reload so a refresh doesn't dump you back on the feed.
+  const [tab, setTab] = useState(() => (web ? load("pit.tab", "feed") : "feed"));
   // Navigation is a STACK of frames. Each frame is one overlay screen, e.g.
   // { artistName } or { profileId }; the top frame is what's showing. An empty
   // base frame ({}) means "just the tab screens." Opening a screen PUSHES a
   // frame; Back POPS one — so you retrace your steps instead of always being
   // dumped back to the feed. (Before this, nav was a single flat object and
   // every close reset it to {}, which is why Back only ever went to the feed.)
-  const [stack, setStack] = useState([{}]);
+  // The whole stack is PERSISTED, so a refresh restores the exact screen you were
+  // on (and its back-stack) instead of flashing the feed then jumping around.
+  const [stack, setStack] = useState(() => {
+    if (!web) return [{}];
+    const saved = load("pit.stack", null);
+    return Array.isArray(saved) && saved.length ? saved : [{}];
+  });
   const nav = stack[stack.length - 1];
   const stackRef = useRef(stack);
   stackRef.current = stack;
@@ -123,7 +130,11 @@ function Root() {
     // Arm one history entry so browser Back from the app root returns to landing.
     if (web) { try { window.history.pushState({ pit: "app" }, ""); } catch {} }
   };
-  const exitToLanding = () => { save("pit.entered", false); setLanding(true); };
+  const exitToLanding = () => { save("pit.entered", false); setTab("feed"); setStack([{}]); setLanding(true); };
+
+  // Persist tab + nav stack so a reload lands exactly where you were.
+  useEffect(() => { if (web) save("pit.tab", tab); }, [tab]);
+  useEffect(() => { if (web) save("pit.stack", stack); }, [stack]);
 
   // Wire browser/hardware Back to the nav stack. If there's a screen to pop, pop
   // it; at the root, guests fall back to the landing and signed-in users are kept
@@ -133,8 +144,13 @@ function Root() {
   useEffect(() => {
     if (!web) return;
     // Arm a base history buffer so the very first Back press is caught here
-    // rather than navigating away from the site.
-    try { window.history.pushState({ pit: "base" }, ""); } catch {}
+    // rather than navigating away from the site — PLUS one entry per restored
+    // overlay so browser/in-app Back pops the restored stack 1:1 (otherwise a
+    // deep restored stack would send Back off the site on the first press).
+    try {
+      window.history.pushState({ pit: "base" }, "");
+      for (let i = 0; i < stackRef.current.length - 1; i++) window.history.pushState({ pit: "nav" }, "");
+    } catch {}
     const onPop = () => {
       if (stackRef.current.length > 1) popStack();
       else if (!sessionRef.current) setLanding(true);

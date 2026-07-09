@@ -52,7 +52,15 @@ Two separate paths now:
 
 ---
 
-## This session (2026-07-09, later) — ⚠️ UNCOMMITTED (verify on your dev server, then push to deploy)
+## Workflow rule (standing)
+- **Always commit AND push finished work to `master`** (auto-deploys to mshpit.com) — the user asked for this as the default; don't wait for per-change approval. An automated committer also periodically commits `catalog.generated.json` (scrape output).
+
+## This session (2026-07-09, later)
+- **Navigation persistence.** Reload no longer dumps you on the feed / flashes around: `App.js` now persists `tab` + the whole nav `stack` (localStorage, `pit.tab`/`pit.stack`) and restores synchronously in the `useState` initializers, and **rebuilds browser history to the restored depth** on mount so Back stays 1:1. `exitToLanding` resets nav (feed + empty stack) on logout.
+- **Admin-managed verification.** New admin-granted blue check, independent of role (groundwork for a paid tier — not surfaced as paid). Full-stack: `users.verified` column + `POST /api/admin/users/:id/verified` (admin-gated) + `publicUser` projection; store `setVerified` (optimistic, best-effort write-through); `userBadges` folds it in (deduped). Admin → Members tab has a **Verify** toggle per user + shows the badge on the row.
+- **Search = typeahead dropdown.** Removed the People column and the whole multi-column/tab layout. `SearchScreen` is now one character-matched **dropdown** merging artists/venues/events/fan clubs (prefix matches first, per-type icon + tag, badges on artist rows); empty state shows a Popular-artists + Trending-venues browse shelf.
+
+## Earlier this session (2026-07-09) — badges, map, search-people, 10k scrape
 - **Search — People auto-match.** Killed the endless default People list; results now populate only as you type, matched on characters against name/@handle (`SearchScreen.jsx`).
 - **Map polish.** Replaced the flat `SymbolPath.CIRCLE` markers ("MS-Paint circles") in `LiveMap.jsx` with themed teardrop SVG map-pins (drop shadow, glossy highlight, white core; amber focal w/ glow, blue venues, magenta afterparty dots). Added a **Google-Maps-style hover card** (photo · name · place+capacity · star rating) positioned via a hidden `OverlayView` projection, themed dark. `NearbyScreen` now enriches each pin with photo/rating/cap from `venueSummary`.
 - **Badge / verification system.** New `components/Badge.jsx` — generated scalloped verification **seals** (Catmull-Rom spline, `sealPath()`) + gold **Top-100 star medallion**; `Badge`, `BadgeRow`, `BadgeChip`. Types: `verified` (blue), `top100` (gold), `staff` (magenta), `mod` (green), `founder`. Wired into ArtistScreen (real, data-driven — replaced the always-on "VERIFIED ARTIST" tag), ProfileScreen, TicketStub (feed author), and Search rows. Store: `isVerifiedArtist` (claimed+approved account), `isTop100`/`artistRank` (Spotify popularity, `ARTIST_RANK` map), `artistBadges`/`userBadges`, `roleBadge`. **Colored @s** extended: verified artist → amber (`roleColor` in `theme.js`).

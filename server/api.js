@@ -535,6 +535,15 @@ export const routes = {
     return { ok: true };
   },
 
+  // Admin-granted verification (the blue check), independent of role. Persisted so
+  // it survives reload + shows cross-device.
+  "POST /api/admin/users/:id/verified": (ctx) => {
+    requireAdmin(ctx);
+    const verified = ctx.body?.verified ? 1 : 0;
+    db.prepare("UPDATE users SET verified=? WHERE id=?").run(verified, ctx.params.id);
+    return { ok: true, verified: !!verified };
+  },
+
   // ---- ratings: album + song stars (SQLite migration slice 7) ----
   "GET /api/ratings": (ctx) => {
     const kind = ctx.query.kind === "song" ? "song" : "album";

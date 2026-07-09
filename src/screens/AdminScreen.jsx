@@ -6,6 +6,7 @@ import { api } from "../lib/api";
 import Icon from "../components/Icon";
 import Avatar from "../components/Avatar";
 import SheetHeader from "../components/SheetHeader";
+import Badge from "../components/Badge";
 
 // Audience & ads: the activity data we collect (see Privacy policy) surfaced for
 // the operator — top artists/venues/searches are the ad-interest signals you'd
@@ -68,7 +69,7 @@ const ROLES = ["fan", "artist", "moderator", "admin"];
 const roleColor = (r) => (r === "admin" ? colors.magenta : r === "moderator" ? colors.good : r === "artist" ? colors.amber : colors.textDim);
 
 // A single member row with inline Discord-style moderation: role, timeout, ban.
-function MemberRow({ u, self, status, canRole, onRole, onTimeout, onLift, onBan, onUnban }) {
+function MemberRow({ u, self, status, canRole, onRole, onTimeout, onLift, onBan, onUnban, onVerify }) {
   const banned = status === "banned";
   const timed = status === "suspended";
   return (
@@ -78,6 +79,7 @@ function MemberRow({ u, self, status, canRole, onRole, onTimeout, onLift, onBan,
         <View style={{ flex: 1 }}>
           <View style={styles.memberNameRow}>
             <Text style={styles.memberName} numberOfLines={1}>{u.name}</Text>
+            {u.verified && <Badge type="verified" size={16} />}
             <View style={[styles.roleTag, { borderColor: roleColor(u.role) }]}>
               <Text style={[styles.roleTagTxt, { color: roleColor(u.role) }]}>{u.role}</Text>
             </View>
@@ -104,6 +106,20 @@ function MemberRow({ u, self, status, canRole, onRole, onTimeout, onLift, onBan,
               <Text style={[styles.rolePillTxt, u.role === r && { color: roleColor(r) }]}>{r}</Text>
             </Pressable>
           ))}
+        </View>
+      )}
+
+      {/* verification — admin-granted blue check, independent of role */}
+      {canRole && (
+        <View style={styles.pillRow}>
+          <Text style={styles.pillLabel}>Verify</Text>
+          <Pressable
+            style={[styles.verifyBtn, u.verified && styles.verifyBtnOn]}
+            onPress={() => onVerify(!u.verified)}
+          >
+            <Badge type="verified" size={15} />
+            <Text style={[styles.verifyTxt, u.verified && styles.verifyTxtOn]}>{u.verified ? "Verified — tap to remove" : "Grant verification"}</Text>
+          </Pressable>
         </View>
       )}
 
@@ -136,7 +152,7 @@ export default function AdminScreen({ onClose }) {
     requests, users, feed, removedIds, reports, session,
     comments, fanClubMsgs, lounge,
     approveArtist, rejectArtist, removeContent, restoreContent, actionReport, dismissReport,
-    suspendUser, banUser, unbanUser, setUserRole, accountStatus,
+    suspendUser, banUser, unbanUser, setUserRole, setVerified, accountStatus,
     removeComment, removeFanClubMessage, removeLoungeMessage,
   } = useStore();
 
@@ -285,6 +301,7 @@ export default function AdminScreen({ onClose }) {
                 onLift={() => unbanUser(u.id)}
                 onBan={() => banUser(u.id)}
                 onUnban={() => unbanUser(u.id)}
+                onVerify={(val) => setVerified(u.id, val)}
               />
             ))}
             {members.length === 0 && <Text style={styles.empty}>No members match “{q}”.</Text>}
@@ -451,6 +468,10 @@ const styles = StyleSheet.create({
   rolePill: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line },
   rolePillOn: { backgroundColor: colors.surfaceAlt, borderColor: colors.amber },
   rolePillTxt: { color: colors.textDim, fontSize: 12, fontWeight: "700", textTransform: "capitalize" },
+  verifyBtn: { flexDirection: "row", alignItems: "center", gap: 7, paddingHorizontal: 12, paddingVertical: 7, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line },
+  verifyBtnOn: { borderColor: colors.cool, backgroundColor: colors.surfaceAlt },
+  verifyTxt: { color: colors.textDim, fontSize: 12, fontWeight: "700" },
+  verifyTxtOn: { color: colors.cool },
   rolePillTxtOn: { color: colors.amber },
   pillDisabled: { opacity: 0.4 },
   modBtn: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 11, paddingVertical: 6, borderRadius: radius.pill, borderWidth: 1 },

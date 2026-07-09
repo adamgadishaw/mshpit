@@ -905,6 +905,17 @@ export function StoreProvider({ children }) {
     setSession((s) => (s && s.id === id ? { ...s, role, handle: handle || s.handle } : s));
   };
 
+  // Admin-granted verification (the blue check) — independent of role, so any
+  // account can be verified. (Groundwork for a paid tier later; not surfaced as
+  // paid yet.) Admin-only.
+  const setVerified = (id, val) => {
+    if (!isStaff(session?.role)) return;
+    const verified = !!val;
+    setUsers((all) => all.map((u) => (u.id === id ? { ...u, verified } : u)));
+    setSession((s) => (s && s.id === id ? { ...s, verified } : s));
+    api(`/api/admin/users/${id}/verified`, { method: "POST", body: { verified } }).catch(() => {}); // best-effort, offline-safe
+  };
+
   // --- Planned attendance ---
   const goingFor = (userId) => going[userId] || [];
   const isGoing = (key) => (going[session?.id] || []).some((g) => g.key === key);
@@ -1250,11 +1261,12 @@ export function StoreProvider({ children }) {
   // claimed artist charts).
   const userBadges = (u) => {
     if (!u) return [];
-    const b = [];
+    const b = new Set();
     const rb = roleBadge(u.role);
-    if (rb) b.push(rb);
-    if (u.artistName && isTop100(u.artistName)) b.push("top100");
-    return b;
+    if (rb) b.add(rb);
+    if (u.verified) b.add("verified"); // admin-granted check, any account
+    if (u.artistName && isTop100(u.artistName)) b.add("top100");
+    return [...b];
   };
 
   // Soonest released upcoming dates across the whole catalog.
@@ -1446,7 +1458,7 @@ export function StoreProvider({ children }) {
     fanClubFor, loadFanClub, addFanClubMessage, isFanClubMember, joinFanClub, fanClubCount, fanClubsDirectory,
     isArtistOwner, artistProfile, loadArtistPage, updateArtistProfile, artistFeedEnabled,
     artistPostsFor, addArtistPost, removeArtistPost,
-    accountStatus, banUser, unbanUser, suspendUser, setUserRole, removeLoungeMessage, removeComment, removeFanClubMessage,
+    accountStatus, banUser, unbanUser, suspendUser, setUserRole, setVerified, removeLoungeMessage, removeComment, removeFanClubMessage,
     comments, fanClubMsgs, lounge,
     goingFor, isGoing, toggleGoing, attendeesFor,
     venueReviewsFor, loadVenueReviews, addVenueReview, venueRating, venueTopPhotos, venuePhotos, artistFanPhotos,
