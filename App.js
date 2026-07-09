@@ -43,6 +43,7 @@ import SettingsScreen from "./src/screens/SettingsScreen";
 import PrivacyScreen from "./src/screens/PrivacyScreen";
 import TermsScreen from "./src/screens/TermsScreen";
 import AccountMenu from "./src/components/AccountMenu";
+import MediaSheet from "./src/components/MediaSheet";
 import LandingScreen from "./src/screens/LandingScreen";
 import { load, save } from "./src/lib/persist";
 
@@ -93,6 +94,7 @@ function Root() {
   stackRef.current = stack;
 
   const [preview, setPreview] = useState(null);
+  const [player, setPlayer] = useState(null); // in-app Spotify player sheet (floats over the screen)
   const [acctOpen, setAcctOpen] = useState(false);
   // The concert opening screen: fresh visitors (and anyone who logs out) see it;
   // "browse as guest" or logging in dismisses it. Guest choice persists.
@@ -179,6 +181,7 @@ function Root() {
   const openArtist = (name) => { track("view_artist", { artist: name }); go({ artistName: name }); };
   const openVenue = (name) => { track("view_venue", { venue: name }); go({ venueName: name }); };
   const openFanClub = (artist) => go({ fanClub: artist });
+  const openPlayer = (media) => setPlayer(media); // { kind, id/url, title, artist }
   const openPhotos = (images, index = 0) => go({ photos: { images, index } });
   const reviewShow = (log) => requireAuth(() => go({ logging: true, prefill: { artist: log.artist, venue: log.venue, city: log.city } }));
   const openInbox = () => requireAuth(() => go({ inbox: true }));
@@ -202,7 +205,7 @@ function Root() {
   else if (nav.profileId) overlay = <ProfileScreen userId={nav.profileId} onClose={back} onOpenShow={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onEditProfile={() => go({ editProfile: true })} onPreview={showPreview} onMessage={openThread} onReport={(log) => requireAuth(() => go({ reporting: log }))} onOpenPhotos={openPhotos} />;
   else if (nav.fanClub) overlay = <FanClubScreen artist={nav.fanClub} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} />;
   else if (nav.editArtist) overlay = <EditArtistProfileScreen artistName={nav.editArtist} onClose={back} />;
-  else if (nav.artistName) overlay = <ArtistScreen artistName={nav.artistName} onClose={back} onOpenShow={openShow} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenPhotos={openPhotos} onEditArtist={(name) => go({ editArtist: name })} />;
+  else if (nav.artistName) overlay = <ArtistScreen artistName={nav.artistName} onClose={back} onOpenShow={openShow} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenPhotos={openPhotos} onEditArtist={(name) => go({ editArtist: name })} onPlay={openPlayer} />;
   else if (nav.venueName) overlay = <VenueScreen venueName={nav.venueName} onClose={back} onOpenShow={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onReviewVenue={openVenueReview} onOpenProfile={openProfile} onOpenPhotos={openPhotos} />;
   else if (nav.nearby) overlay = <NearbyScreen onClose={back} onOpenVenue={openVenue} onOpenArtist={openArtist} />;
   else if (nav.venues) overlay = <VenuesScreen onClose={back} onOpenVenue={openVenue} />;
@@ -383,6 +386,8 @@ function Root() {
             </View>
           </Animated.View>
         )}
+
+        {player && <MediaSheet media={player} onClose={() => setPlayer(null)} />}
 
         <AccountMenu
           visible={acctOpen}

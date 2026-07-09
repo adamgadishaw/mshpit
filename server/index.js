@@ -71,6 +71,10 @@ const HEADERS = {
     "connect-src 'self' https://*.googleapis.com https://*.gstatic.com",
     "worker-src 'self' blob:", // vector maps run in blob web workers
     "font-src 'self' data: https://*.gstatic.com",
+    // In-app players: Spotify embeds (music) + YouTube (video) are framed in-app so
+    // people never leave the site. frame-src lets US embed them; frame-ancestors
+    // still stops anyone from embedding US.
+    "frame-src 'self' https://open.spotify.com https://www.youtube.com https://www.youtube-nocookie.com",
     "frame-ancestors 'none'",
   ].join("; "),
   ...(PROD ? { "Strict-Transport-Security": "max-age=31536000; includeSubDomains" } : {}),

@@ -11,6 +11,7 @@ import Icon from "../components/Icon";
 import Avatar from "../components/Avatar";
 import ScreenHeader from "../components/ScreenHeader";
 import SmartImage from "../components/SmartImage";
+import SpotifyEmbed from "../components/SpotifyEmbed";
 import { proxied, isHttp } from "../lib/img";
 import Svg, { Defs, LinearGradient, Stop, Rect } from "react-native-svg";
 
@@ -34,7 +35,7 @@ function AlbumArt({ uri }) {
 
 // Artist page - the rollup of a band's live reputation across every night,
 // plus where to catch them next. Answers "is this band worth seeing?"
-export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFanClub, onOpenPhotos, onEditArtist }) {
+export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFanClub, onOpenPhotos, onEditArtist, onPlay }) {
   const { session, artistSummary, albumRating, songRating, rateAlbum, rateSong, loadRating,
     isArtistOwner, artistPostsFor, loadArtistPage, addArtistPost, removeArtistPost,
     artistGallery, removePhoto } = useStore();
@@ -159,7 +160,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
             <Icon name="comment" size={16} color="#1A1206" />
             <Text style={styles.fcTxt}>Fan Club</Text>
           </Pressable>
-          <Pressable style={styles.listenBtn} onPress={() => Linking.openURL(`https://www.youtube.com/results?search_query=${encodeURIComponent(a.name)}`)}>
+          <Pressable style={styles.listenBtn} onPress={() => (meta?.spotifyId ? onPlay?.({ kind: "artist", id: meta.spotifyId, artist: a.name }) : Linking.openURL(`https://www.youtube.com/results?search_query=${encodeURIComponent(a.name)}`))}>
             <Icon name="play" size={15} color={colors.amber} />
             <Text style={styles.listenTxt}>Listen</Text>
           </Pressable>
@@ -294,6 +295,14 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
           </>
         )}
 
+        {meta?.spotifyId && (
+          <>
+            <Text style={styles.sectionLabel}>LISTEN</Text>
+            <Text style={styles.bio}>Their top tracks, playing right here — no leaving the app.</Text>
+            <SpotifyEmbed kind="artist" id={meta.spotifyId} height={352} fallbackLabel={`Play ${a.name} on Spotify`} />
+          </>
+        )}
+
         {meta?.albums?.length > 0 && (
           <>
             <Text style={styles.sectionLabel}>RELEASES · {meta.albums.length}</Text>
@@ -305,7 +314,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
                 const kind = al.type === "Album" && /^live\s+(at|in|from|on)\b/i.test(al.title) ? "Live album" : al.type;
                 return (
                   <View key={i} style={styles.album}>
-                    <Pressable onPress={() => Linking.openURL(`https://www.youtube.com/results?search_query=${encodeURIComponent(a.name + " " + al.title)}`)}>
+                    <Pressable onPress={() => (meta?.spotifyId ? onPlay?.({ kind: "artist", id: meta.spotifyId, title: al.title, artist: a.name }) : Linking.openURL(`https://www.youtube.com/results?search_query=${encodeURIComponent(a.name + " " + al.title)}`))}>
                       <AlbumArt uri={al.art} />
                     </Pressable>
                     <Text style={styles.albumTitle} numberOfLines={2}>{al.title}</Text>
@@ -337,7 +346,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
                     )}
                   </View>
                   <TapStars value={sr.mine} onChange={(n) => rateSong(a.name, s.title, n)} size={16} gap={3} />
-                  <Pressable style={styles.songPlay} onPress={() => Linking.openURL(s.url || listenUrl(s))} hitSlop={8}>
+                  <Pressable style={styles.songPlay} onPress={() => (s.url ? onPlay?.({ kind: "track", url: s.url, title: s.title, artist: a.name }) : Linking.openURL(listenUrl(s)))} hitSlop={8}>
                     <Icon name="play" size={13} color={colors.amber} />
                   </Pressable>
                 </View>
