@@ -12,6 +12,7 @@ import Avatar from "../components/Avatar";
 import ScreenHeader from "../components/ScreenHeader";
 import SmartImage from "../components/SmartImage";
 import SpotifyEmbed from "../components/SpotifyEmbed";
+import Badge, { BadgeRow, BadgeChip } from "../components/Badge";
 import { proxied, isHttp } from "../lib/img";
 import Svg, { Defs, LinearGradient, Stop, Rect } from "react-native-svg";
 
@@ -38,8 +39,10 @@ function AlbumArt({ uri }) {
 export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFanClub, onOpenPhotos, onEditArtist, onPlay }) {
   const { session, artistSummary, albumRating, songRating, rateAlbum, rateSong, loadRating,
     isArtistOwner, artistPostsFor, loadArtistPage, addArtistPost, removeArtistPost,
-    artistGallery, removePhoto } = useStore();
+    artistGallery, removePhoto, artistBadges, artistRank } = useStore();
   const a = artistSummary(artistName);
+  const badges = artistBadges(a.name);
+  const rank = artistRank(a.name);
   const meta = artistMeta(a.name);
   const gallery = artistGallery(a.name, 5);
   const canModerate = isStaff(session?.role);
@@ -99,16 +102,19 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
               <Icon name="edit" size={14} color={colors.amber} />
               <Text style={styles.editTxt}>Edit profile</Text>
             </Pressable>
-          ) : (
-            <View style={styles.verifiedTag}>
-              <Icon name="check" size={12} color={colors.amber} />
-              <Text style={styles.verifiedTxt}>VERIFIED ARTIST</Text>
+          ) : badges.length ? (
+            <View style={styles.badgeChips}>
+              {badges.includes("verified") && <BadgeChip type="verified" label="VERIFIED" />}
+              {badges.includes("top100") && <BadgeChip type="top100" label={rank && rank <= 100 ? `TOP 100 · #${rank}` : "TOP 100"} />}
             </View>
-          )}
+          ) : null}
         </View>
 
         <View style={styles.headInfo}>
-          <Text style={styles.heroName}>{a.name}</Text>
+          <View style={styles.nameRow}>
+            <Text style={styles.heroName}>{a.name}</Text>
+            {badges.length ? <BadgeRow badges={badges} size={20} style={styles.nameBadges} /> : null}
+          </View>
           <View style={styles.chipRow}>
             <View style={styles.genreChip}>
               <Text style={styles.genreTxt}>{genre}</Text>
@@ -373,9 +379,10 @@ const styles = StyleSheet.create({
   avatarWrap: { borderWidth: 3, borderColor: colors.bg, borderRadius: 48, backgroundColor: colors.bg },
   editBtn: { flexDirection: "row", alignItems: "center", gap: 7, borderWidth: 1, borderColor: colors.amber, borderRadius: radius.pill, paddingHorizontal: 16, paddingVertical: 8, marginBottom: 4 },
   editTxt: { color: colors.amber, fontSize: 13, fontWeight: "700" },
-  verifiedTag: { flexDirection: "row", alignItems: "center", gap: 5, borderWidth: 1, borderColor: colors.amber, borderRadius: radius.pill, paddingHorizontal: 12, paddingVertical: 6, marginBottom: 4 },
-  verifiedTxt: { color: colors.amber, fontSize: 9, letterSpacing: 1.2, fontWeight: "800" },
+  badgeChips: { alignItems: "flex-end", gap: 6, marginBottom: 4 },
   headInfo: { marginTop: 12 },
+  nameRow: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 4 },
+  nameBadges: { marginTop: 4 },
   heroName: { color: colors.text, fontSize: 30, fontWeight: "900", letterSpacing: -0.6 },
   chipRow: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 10, flexWrap: "wrap" },
   genreChip: { alignSelf: "flex-start", borderWidth: 1, borderColor: colors.line, borderRadius: radius.pill, paddingHorizontal: 12, paddingVertical: 4 },

@@ -110,9 +110,11 @@ export function syncThemeFromAccount(next) {
   setTheme(next);
 }
 
-// Staff get a colored @handle so they're unmistakable (Discord-style): admins in
-// the magenta gel, moderators in green. Everyone else uses the default text color.
-export const roleColor = (role) => (role === "admin" ? colors.magenta : role === "moderator" ? colors.good : null);
+// Official positions get a colored @handle so they're unmistakable (Discord-
+// style): admins in the magenta gel, moderators in green, verified artists in the
+// tungsten amber. Everyone else uses the default text color.
+export const roleColor = (role) =>
+  role === "admin" ? colors.magenta : role === "moderator" ? colors.good : role === "artist" ? colors.amber : null;
 
 export const mono = Platform.select({ ios: "Menlo", android: "monospace", default: "monospace" });
 // Rounder geometry reads modern — cards at 16, sheets/heroes at 24.

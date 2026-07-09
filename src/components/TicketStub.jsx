@@ -6,6 +6,7 @@ import Icon from "./Icon";
 import Avatar from "./Avatar";
 import SmartImage from "./SmartImage";
 import { useStore } from "../store";
+import { BadgeRow } from "./Badge";
 
 // Real photo thumbnails only — never empty placeholder tiles (that reads as a
 // broken/prototype UI). Renders nothing when the post has no photos.
@@ -29,7 +30,7 @@ function MediaStrip({ photos }) {
 // sit on a ticket-stub line below, the score reads at a glance, and the footer
 // opens the Afterparty (like + comments) for that concert.
 export default function TicketStub({ log, onOpen, onPreview, onOpenProfile, onOpenArtist, onOpenVenue, onReport }) {
-  const { userById, likeInfo, toggleLike, commentsFor, session } = useStore();
+  const { userById, likeInfo, toggleLike, commentsFor, session, userBadges } = useStore();
   const author = userById?.(log.userId) || { initials: log.user?.initials, name: log.user?.name, handle: log.user?.handle };
   const [revealed, setRevealed] = useState(!log.inTourWindow);
 
@@ -45,7 +46,10 @@ export default function TicketStub({ log, onOpen, onPreview, onOpenProfile, onOp
       <View style={styles.header}>
         <Avatar user={author} size={38} onPress={log.userId ? () => onOpenProfile?.(log.userId) : undefined} />
         <Pressable style={{ flex: 1 }} onPress={log.userId ? () => onOpenProfile?.(log.userId) : undefined}>
-          <Text style={styles.name}>{author.name}</Text>
+          <View style={styles.nameRow}>
+            <Text style={styles.name}>{author.name}</Text>
+            <BadgeRow badges={userBadges(author)} size={14} />
+          </View>
           <Text style={styles.sub}><Text style={roleColor(author.role) ? { color: roleColor(author.role), fontWeight: "800" } : null}>@{author.handle}</Text> · {log.timeAgo}</Text>
         </Pressable>
         <View style={styles.scorePill}>
@@ -128,6 +132,7 @@ export default function TicketStub({ log, onOpen, onPreview, onOpenProfile, onOp
 const styles = StyleSheet.create({
   card: { backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 16, marginBottom: 16, ...shadow.card },
   header: { flexDirection: "row", alignItems: "center", gap: 10 },
+  nameRow: { flexDirection: "row", alignItems: "center", gap: 4 },
   name: { color: colors.text, fontWeight: "700", fontSize: 14 },
   sub: { color: colors.textFaint, fontSize: 12, marginTop: 1 },
   scorePill: { alignItems: "center", backgroundColor: colors.bgElev, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 10, paddingVertical: 6, gap: 3 },

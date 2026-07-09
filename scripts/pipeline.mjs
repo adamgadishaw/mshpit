@@ -29,8 +29,8 @@ import { dirname, join } from "node:path";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CAT = join(HERE, "..", "src", "seed", "catalog.generated.json");
-const ARTIST_TARGET = Number(process.env.ARTIST_TARGET) || 1500;
-const PER_TAG = Number(process.env.PER_TAG) || 50;
+const ARTIST_TARGET = Number(process.env.ARTIST_TARGET) || 10000;
+const PER_TAG = Number(process.env.PER_TAG) || 400; // deep-crawl depth per genre tag (paginated) so the roster can climb toward ARTIST_TARGET
 const CYCLE_H = Number(process.env.CYCLE_H) || 6;
 
 const ts = () => new Date().toISOString().slice(11, 19);
@@ -81,7 +81,7 @@ async function cycle(n) {
   let did = false;
   if (!stopping && s.artistCount < ARTIST_TARGET) {
     log("stage: roster growth");
-    await run("ingest-artists.mjs", [], { PER_TAG: String(PER_TAG) });
+    await run("ingest-artists.mjs", [], { PER_TAG: String(PER_TAG), ARTIST_TARGET: String(ARTIST_TARGET) });
     did = true;
   }
   if (!stopping && s.missingAnchors > 0) {

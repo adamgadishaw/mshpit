@@ -21,7 +21,12 @@ import { dirname, join } from "node:path";
 const UA = "PitConcertApp/0.1 (contact@example.com)";
 const OUT = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "seed", "catalog.generated.json");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const PER_TAG = Number(process.env.PER_TAG) || 30;
+// PER_TAG is now the DEEP-CRAWL DEPTH per tag (fetched 100 at a time via offset
+// pagination), not a single-page cap — so the roster can climb well past the old
+// ~2.5k plateau toward ARTIST_TARGET. Stop the whole crawl once the target is hit.
+const PER_TAG = Number(process.env.PER_TAG) || 400;
+const TARGET = Number(process.env.ARTIST_TARGET) || Infinity;
+const PAGE = 100; // MusicBrainz hard max per request
 
 // Tag → app genre label. Tags chosen to match the app's existing genre set.
 // Broad + deep on purpose — every tag pulls up to 100 real artists from
@@ -79,8 +84,8 @@ const TAGS = [
   ["singer-songwriter", "Singer-Songwriter"],
 ];
 
-async function artistsForTag(tag) {
-  const url = `https://musicbrainz.org/ws/2/artist?query=${encodeURIComponent(`tag:"${tag}"`)}&fmt=json&limit=${Math.min(PER_TAG, 100)}`;
+async function artistsForTag(tag, offset = 0) {
+  const url = `https://musicbrainz.org/ws/2/artist?query=${encodeURIComponent(`tag:"${tag}"`)}&fmt=json&limit=${PAGE}&offset=${offset}`;
   try {
     const r = await fetch(url, { headers: { "User-Agent": UA, Accept: "application/json" } });
     if (!r.ok) return [];
@@ -107,33 +112,40 @@ async function main() {
   cat.artists ||= {};
   const before = Object.keys(cat.artists).length;
 
-  console.log(`Expanding roster: ${TAGS.length} tags × up to ${PER_TAG} artists…`);
+  const targetLabel = TARGET === Infinity ? "∞" : TARGET;
+  console.log(`Expanding roster: ${TAGS.length} tags, up to ${PER_TAG} deep each → target ${targetLabel} artists…`);
   let added = 0, dissolved = 0;
-  for (const [tag, genre] of TAGS) {
-    const list = await artistsForTag(tag);
+  outer: for (const [tag, genre] of TAGS) {
     let tagAdded = 0;
-    for (const x of list) {
-      const k = x.name.toLowerCase();
-      if (cat.artists[k]) continue; // additive only
-      cat.artists[k] = {
-        name: x.name,
-        genre,
-        mbid: x.mbid,
-        photo: null,
-        photoCredit: null,
-        status: x.ended ? "dissolved" : "active",
-        beginYear: x.beginYear,
-        endYear: x.endYear,
-        country: x.country,
-      };
-      added++; tagAdded++;
-      if (x.ended) dissolved++;
+    // Deep-crawl this tag one 100-page at a time until we hit the depth cap, run
+    // out of results (last page < PAGE), or the global target is reached.
+    for (let offset = 0; offset < PER_TAG; offset += PAGE) {
+      if (Object.keys(cat.artists).length >= TARGET) break outer;
+      const list = await artistsForTag(tag, offset);
+      await sleep(1100); // MusicBrainz rate limit (~1 req/s)
+      for (const x of list) {
+        const k = x.name.toLowerCase();
+        if (cat.artists[k]) continue; // additive only
+        cat.artists[k] = {
+          name: x.name,
+          genre,
+          mbid: x.mbid,
+          photo: null,
+          photoCredit: null,
+          status: x.ended ? "dissolved" : "active",
+          beginYear: x.beginYear,
+          endYear: x.endYear,
+          country: x.country,
+        };
+        added++; tagAdded++;
+        if (x.ended) dissolved++;
+      }
+      if (list.length < PAGE) break; // exhausted this tag's results
     }
-    console.log(`  ✓ ${tag}: +${tagAdded}`);
-    await sleep(1100); // MusicBrainz rate limit
+    console.log(`  ✓ ${tag}: +${tagAdded} (roster ${Object.keys(cat.artists).length})`);
+    await writeFile(OUT, JSON.stringify(cat, null, 2)); // save per tag so progress survives a kill
   }
 
-  await writeFile(OUT, JSON.stringify(cat, null, 2));
   console.log(`\nDone (additive). ${before} -> ${Object.keys(cat.artists).length} artists (+${added}, ${dissolved} marked dissolved).`);
   console.log("Now run: enrich-spotify, enrich-album-art, enrich-toptracks.");
 }

@@ -8,6 +8,7 @@ import Avatar from "../components/Avatar";
 import Icon from "../components/Icon";
 import SpinningRecord from "../components/SpinningRecord";
 import TicketStub from "../components/TicketStub";
+import { BadgeRow } from "../components/Badge";
 
 function Stat({ value, label }) {
   return (
@@ -49,7 +50,7 @@ function TrebleBass({ kind, song, playing, onPlay, onOpenArtist }) {
 // MySpace-style profile - banner, pfp, now-playing, theme song, Treble/Bass top
 // artists, planned shows, reviews. Built to make people findable and followable.
 export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtist, onOpenVenue, onEditProfile, onPreview, onMessage, onReport, onOpenPhotos }) {
-  const { session, userById, logsByUser, isFollowing, follow, unfollow, followerCount, followingCount, goingFor } = useStore();
+  const { session, userById, logsByUser, isFollowing, follow, unfollow, followerCount, followingCount, goingFor, userBadges } = useStore();
   const user = userById(userId);
   if (!user) return null;
 
@@ -90,7 +91,10 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtis
         </View>
         <View style={styles.head}>
           <View style={styles.avatarWrap}><Avatar user={user} size={88} /></View>
-          <Text style={styles.name}>{user.name}</Text>
+          <View style={styles.nameRow}>
+            <Text style={styles.name}>{user.name}</Text>
+            <BadgeRow badges={userBadges(user)} size={20} />
+          </View>
           <Text style={[styles.handle, roleColor(user.role) && { color: roleColor(user.role), fontWeight: "800" }]}>@{user.handle}</Text>
           <View style={styles.roleBadge}><Text style={styles.roleTxt}>{roleLabel}</Text></View>
           {!!user.bio && <Text style={styles.bio}>{user.bio}</Text>}
@@ -229,7 +233,8 @@ const styles = StyleSheet.create({
   bannerShade: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(11,14,22,0.25)" },
   head: { alignItems: "center", paddingHorizontal: 16 },
   avatarWrap: { marginTop: -44, borderWidth: 3, borderColor: colors.bg, borderRadius: 50 },
-  name: { color: colors.text, fontSize: 23, fontWeight: "900", marginTop: 10 },
+  nameRow: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 10 },
+  name: { color: colors.text, fontSize: 23, fontWeight: "900" },
   handle: { color: colors.textDim, fontSize: 13, marginTop: 2 },
   roleBadge: { marginTop: 10, borderWidth: 1, borderColor: colors.amber, borderRadius: radius.pill, paddingHorizontal: 12, paddingVertical: 4 },
   roleTxt: { color: colors.amber, fontSize: 10, letterSpacing: 1.5, fontWeight: "800" },

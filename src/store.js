@@ -55,6 +55,24 @@ export const isStaff = (role) => role === "admin";
 export const isMod = (role) => role === "admin" || role === "moderator";
 export const isArtist = (role) => role === "artist" || role === "admin";
 
+// Popularity ranking for the Top-100 badge — computed once from the bundled
+// catalog (Spotify popularity, tie-break followers). Names still missing a
+// popularity score (not yet enriched) are simply unranked. Rebuilds on reload
+// after each scrape refreshes the bundled catalog.
+const ARTIST_RANK = (() => {
+  const rows = Object.values(catalogArtists || {})
+    .filter((a) => a && a.popularity != null)
+    .sort((x, y) => (y.popularity - x.popularity) || ((y.followers || 0) - (x.followers || 0)));
+  const m = new Map();
+  rows.forEach((a, i) => m.set((a.name || "").toLowerCase(), i + 1));
+  return m;
+})();
+export const artistRankOf = (name) => ARTIST_RANK.get((name || "").trim().toLowerCase()) || null;
+
+// role → the official badge it earns (Pit team / moderator / verified artist).
+export const roleBadge = (role) =>
+  role === "admin" ? "staff" : role === "moderator" ? "mod" : role === "artist" ? "verified" : null;
+
 // Bump when the Terms/Privacy change materially, so we can tell who consented to
 // which version (recorded on the account at sign-up).
 export const TERMS_VERSION = "2026-07";
@@ -1212,6 +1230,33 @@ export function StoreProvider({ children }) {
   const artistsAlphabetical = (n = 12) =>
     allArtists().sort((a, b) => a.name.localeCompare(b.name)).slice(0, n);
 
+  // --- Verification & badges -------------------------------------------------
+  // An artist is "verified" when a claimed account was admin-approved for that
+  // name (Twitter-style: only claimed + approved get the check).
+  const isVerifiedArtist = (name) => {
+    const k = norm(name);
+    return !!k && users.some((u) => isArtist(u.role) && norm(u.artistName) === k);
+  };
+  const artistRank = (name) => artistRankOf(name);
+  const isTop100 = (name) => { const r = artistRankOf(name); return !!r && r <= 100; };
+  // Badge types to show after an ARTIST name (profile page / rows).
+  const artistBadges = (name) => {
+    const b = [];
+    if (isVerifiedArtist(name)) b.push("verified");
+    if (isTop100(name)) b.push("top100");
+    return b;
+  };
+  // Badge types to show after a USER name (their role, plus Top-100 if their
+  // claimed artist charts).
+  const userBadges = (u) => {
+    if (!u) return [];
+    const b = [];
+    const rb = roleBadge(u.role);
+    if (rb) b.push(rb);
+    if (u.artistName && isTop100(u.artistName)) b.push("top100");
+    return b;
+  };
+
   // Soonest released upcoming dates across the whole catalog.
   const upcomingEvents = (n = 8) =>
     tourDates
@@ -1394,6 +1439,7 @@ export function StoreProvider({ children }) {
     localVenues, regionShows, localFeed, recommendedShows, venueCoord,
     searchVenues, venuesByCity, venueUpcomingCount,
     allArtists, topArtists, artistsAlphabetical, upcomingEvents, trendingVenues,
+    isVerifiedArtist, isTop100, artistRank, artistBadges, userBadges,
     commentsFor, addComment, loadComments, likeInfo, toggleLike,
     concertKey, loungeFor, addLoungeMessage,
     albumRating, songRating, rateAlbum, rateSong, loadRating,

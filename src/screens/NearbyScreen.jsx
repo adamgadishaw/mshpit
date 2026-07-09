@@ -27,7 +27,7 @@ function TicketAction({ show }) {
 }
 
 export default function NearbyScreen({ onClose, onOpenVenue, onOpenArtist }) {
-  const { session, localVenues, regionShows } = useStore();
+  const { session, localVenues, regionShows, venueSummary } = useStore();
   const [center, setCenter] = useState(session?.home || null);
   const [km, setKm] = useState(75);
   const [tab, setTab] = useState("venues");
@@ -49,7 +49,18 @@ export default function NearbyScreen({ onClose, onOpenVenue, onOpenArtist }) {
   const hasCoords = center && center.lat != null;
   const venues = localVenues(km, center);
   const shows = regionShows(km, center);
-  const mapPoints = venues.map((v) => ({ name: v.name, lat: v.coord.lat, lng: v.coord.lng }));
+  // Enrich each pin with the data the hover card shows (photo / rating / cap).
+  const mapPoints = venues.map((v) => {
+    const s = venueSummary(v.name);
+    return {
+      name: v.name, lat: v.coord.lat, lng: v.coord.lng,
+      photo: s.photo || null,
+      sub: v.place || center?.city || "",
+      rating: s.avgOverall || 0,
+      reviews: s.totalShows || 0,
+      capacity: s.capacity || null,
+    };
+  });
 
   return (
     <View style={styles.wrap}>

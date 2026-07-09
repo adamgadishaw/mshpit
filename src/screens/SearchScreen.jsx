@@ -7,14 +7,18 @@ import { useStore } from "../store";
 import Stars from "../components/Stars";
 import Icon from "../components/Icon";
 import Avatar from "../components/Avatar";
+import { BadgeRow } from "../components/Badge";
 
 // A person result — avatar, name/handle, and a follow toggle (find friends).
-function PersonRow({ u, following, canFollow, onFollow, onOpen }) {
+function PersonRow({ u, badges, following, canFollow, onFollow, onOpen }) {
   return (
     <Pressable style={styles.row} onPress={onOpen}>
       <Avatar user={u} size={34} />
       <View style={{ flex: 1 }}>
-        <Text style={styles.rowName} numberOfLines={1}>{u.name}</Text>
+        <View style={styles.rowNameLine}>
+          <Text style={styles.rowName} numberOfLines={1}>{u.name}</Text>
+          {badges?.length ? <BadgeRow badges={badges} size={13} /> : null}
+        </View>
         <Text style={styles.rowSub} numberOfLines={1}>@{u.handle}{u.home?.city ? ` · ${u.home.city}` : ""}</Text>
       </View>
       {canFollow && (
@@ -27,12 +31,15 @@ function PersonRow({ u, following, canFollow, onFollow, onOpen }) {
 }
 
 // ---- compact rows shared by the panes ----
-function ArtistRow({ name, genre, onPress }) {
+function ArtistRow({ name, genre, badges, onPress }) {
   return (
     <Pressable style={styles.row} onPress={onPress}>
       <View style={[styles.dot, { borderColor: colors.amber }]}><Icon name="music" size={14} color={colors.amber} /></View>
       <View style={{ flex: 1 }}>
-        <Text style={styles.rowName} numberOfLines={1}>{name}</Text>
+        <View style={styles.rowNameLine}>
+          <Text style={styles.rowName} numberOfLines={1}>{name}</Text>
+          {badges?.length ? <BadgeRow badges={badges} size={14} /> : null}
+        </View>
         {!!genre && <Text style={styles.rowSub} numberOfLines={1}>{genre}</Text>}
       </View>
       <Icon name="chevron-right" size={16} color={colors.textDim} />
@@ -70,7 +77,7 @@ function EventRow({ t, onOpenArtist, onOpenVenue }) {
 
 export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpenFanClub, onOpenProfile }) {
   const { tourDates, searchVenues, artistsAlphabetical, venuesByCity, upcomingEvents, fanClubsDirectory, commentsFor, track,
-    users, session, isFollowing, follow, unfollow, searchPeople } = useStore();
+    users, session, isFollowing, follow, unfollow, searchPeople, artistBadges, userBadges } = useStore();
   const [q, setQ] = useState("");
   const [focused, setFocused] = useState(false);
   const [w, setW] = useState(0);
@@ -124,8 +131,10 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
     return () => clearTimeout(id);
   }, [query]);
   const people = useMemo(() => {
+    // No endless default list — people surface only as you type, matched by the
+    // input characters against name/handle (avoids scrolling every user on Earth).
+    if (!query) return [];
     const mine = session?.id;
-    if (!query) return users.filter((u) => u.id !== mine).slice(0, 30);
     return users
       .filter((u) => u.id !== mine && (u.name.toLowerCase().includes(query) || u.handle.toLowerCase().includes(query)))
       .slice(0, 50);
@@ -142,12 +151,13 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
 
   const panes = [
     { key: "artists", title: "ARTISTS", count: artists.length, empty: "No artists match.",
-      rows: artists.map((a) => <ArtistRow key={a.name} name={a.name} genre={a.genre} onPress={() => onOpenArtist?.(a.name)} />) },
+      rows: artists.map((a) => <ArtistRow key={a.name} name={a.name} genre={a.genre} badges={artistBadges(a.name)} onPress={() => onOpenArtist?.(a.name)} />) },
     { key: "people", title: "PEOPLE", count: people.length, empty: query ? "No people match." : "Search a name or @handle to find friends.",
       rows: people.map((u) => (
         <PersonRow
           key={u.id}
           u={u}
+          badges={userBadges(u)}
           following={isFollowing(u.id)}
           canFollow={!!session && u.id !== session?.id}
           onFollow={() => (isFollowing(u.id) ? unfollow(u.id) : follow(u.id))}
@@ -290,7 +300,8 @@ const styles = StyleSheet.create({
 
   row: { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 8, paddingVertical: 9, borderRadius: radius.sm },
   dot: { width: 30, height: 30, borderRadius: 15, backgroundColor: colors.bgElev, borderWidth: 1, alignItems: "center", justifyContent: "center" },
-  rowName: { color: colors.text, fontSize: 14, fontWeight: "700" },
+  rowNameLine: { flexDirection: "row", alignItems: "center", gap: 4 },
+  rowName: { color: colors.text, fontSize: 14, fontWeight: "700", flexShrink: 1 },
   rowSub: { color: colors.textDim, fontSize: 11, marginTop: 1 },
   link: { color: colors.text, fontWeight: "700" },
   pill: { backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.amber, borderRadius: radius.pill, minWidth: 22, paddingHorizontal: 7, paddingVertical: 1, alignItems: "center" },
