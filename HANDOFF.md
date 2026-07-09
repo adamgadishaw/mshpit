@@ -2,185 +2,91 @@
 
 > **Living doc.** Whoever works on this next: read this first, and UPDATE it before you end a session (move things between "Done" and "Backlog", note anything running). Point a fresh Claude Code chat at this file to get up to speed without re-explaining.
 >
-> Last updated: 2026-07-04
+> Last updated: **2026-07-09**
 
 ---
 
 ## What this is
-**Pit** (live at **mshpit.com**) — "Letterboxd for concerts." Log shows, rate band-vs-room, follow people with your taste, discover gigs worth seeing. Expo / React Native (web + iOS/Android via react-native-web), JavaScript, no TypeScript. See `BRIEF.md` (vision) and `CLAUDE.md` (rules).
+**Pit** (live at **mshpit.com**) — "Letterboxd for concerts." Log shows, rate band-vs-room, follow people with your taste, discover gigs worth seeing, chat in fan clubs / afterparties, DMs. Expo / React Native (web + iOS/Android via react-native-web), JavaScript, no TypeScript. See `BRIEF.md` (vision) and `CLAUDE.md` (rules).
 
 ## Run it locally
 ```
 npm install
-npx expo start --web         # app on http://localhost:8081
-npm run server               # backend API + serves the web build (server/index.js)
-npm run pipeline             # self-running scraper (needs .env, see below)
+npx expo start --web         # app on http://localhost:8081  (NO CSP in dev)
+npm run server               # backend API on :3000 + serves the web build (server/index.js)
+npm run pipeline             # local scraper (roster + Spotify enrichment); writes the bundled catalog
 ```
-- **Node 24 required** (backend uses built-in `node:sqlite`; pinned in package.json engines).
-- After code changes, **hard-refresh the browser (Ctrl+Shift+R)** — Metro lets the tab cache the old bundle. This has repeatedly looked like "changes didn't apply."
+- **Node 24 required** (`node:sqlite`). After code changes, **hard-refresh (Ctrl+Shift+R)** — Metro caches the bundle; this repeatedly looked like "changes didn't apply."
+- **Dev architecture:** the Expo dev server (:8081) serves the app and talks to the backend at `localhost:3000` (see `src/lib/api.js`). Run BOTH for full-stack local testing. `npm run server` does **not** auto-load `.env`; pass env vars inline if the in-process tour-date scheduler needs them (e.g. `TICKETMASTER_KEY`).
+- Build-check without a browser: `curl "http://localhost:8081/index.bundle?platform=web&dev=true"` and grep for `SyntaxError`/`Unable to resolve`.
 
-## Deployment (LIVE)
-- Host: **Render**, one-click via `render.yaml` (Blueprint). Plan: Starter ($7/mo — needed for the **persistent disk** at `/data` that holds the SQLite DB; without it every deploy wipes users).
-- Build: `npm ci && npm run build:web` → start: `node server/index.js`.
-- Domain: **mshpit.com** bought at **GoDaddy**. DNS: `A @ → 216.24.57.1`, `CNAME www → mshpit.onrender.com`. HTTPS auto-issued by Render.
-- **To deploy changes:** commit → **push to GitHub** (repo `adamgadishaw/mshpit`, branch `master`) → Render auto-redeploys.
+## Deployment (LIVE) — **auto-deploys, nothing manual for code**
+- Host: **Render**, Blueprint via `render.yaml`. Plan: **Starter** ($7/mo — needs the **persistent disk** at `/data` holding `pit.db`; without it every deploy wipes users).
+- Build `npm ci && npm run build:web` → start `node server/index.js`. Health check `/api/health`.
+- Domain **mshpit.com** (GoDaddy). DNS `A @ → 216.24.57.1`, `CNAME www → mshpit.onrender.com`. HTTPS auto. Cloudflare sits in front (index.html is `no-cache`).
+- **Code changes deploy automatically on push to `master`** (repo `adamgadishaw/mshpit`, `autoDeploy: true`). A brief **502 for ~30–60s after each push is normal** (service restarting) — wait and refresh.
+- **`render.yaml` structural changes** (new services, env-var slots) need a **Blueprint re-sync** in the Render dashboard to take effect. Code alone does not.
+- ⚠️ **TODO in Render dashboard:** delete the retired **`pit-catalog-refresh` cron** service (replaced by the in-process scheduler — see Scraper). It will otherwise keep failing daily.
 - Full details: `LAUNCH.md`.
 
-## Backend
-- `server/` — **zero-dependency** Node (built-ins only: `node:sqlite`, `crypto` scrypt + HMAC-signed sessions). Chosen for "hard to crash, easy to fix." Schema/tables in `server/db.js`; auth in `server/auth.js`; routes in `server/index.js`.
-- **Admin** is seeded server-side from env `ADMIN_EMAIL` + `ADMIN_PASSWORD` on boot. (Locally you may not have run the server; admin lives in the DB once the server starts.)
-- ⚠️ **Client is NOT fully wired to the backend yet.** The app still runs largely on the in-memory `src/store.js` + `localStorage` persistence (`src/lib/persist.js`). The backend is a working foundation; migrating the store's reads/writes to the API is the big open architecture task.
+## Backend — the client IS now wired to it
+- `server/` — **zero-dependency** Node (built-ins only: `node:sqlite`, `crypto` scrypt + HMAC sessions). Tables/schema in `server/db.js`; routes in `server/api.js`; boot/CSP/static-serving in `server/index.js`; auth in `server/auth.js`; tour-date scraper in `server/tourdates.js`.
+- **The SQLite migration is DONE (slices 1–7).** `src/store.js` is now a reactive cache: it **hydrates** from the API on load/login and **writes through** on mutations (best-effort, offline-safe — the app still works with no backend on the bundled seed). Server-backed: auth, follows, feed/posts, likes, comments, DMs, fan clubs, reports/moderation-queue, ratings, going, notifications, people search, profile edits (incl. @handle), tour dates. See `MIGRATION.md`.
+- **DB tables:** users (+ `handle_changed_at`), sessions, posts, likes, comments, follows, dms, fan_club_members, fan_club_messages, reports, ratings, going, **notifications**, **tour_dates**, **events** (analytics), schema_version. Additive column migrations run on boot (guarded `ALTER TABLE … ADD COLUMN`, see bottom of `db.js`).
+- **Admin** seeded from env `ADMIN_EMAIL` (default adamgadishaw@gmail.com) + `ADMIN_PASSWORD` on boot.
+- **Session restore on reload:** an `/api/me` effect in `store.js` re-absorbs the account + re-hydrates everything (fixed the old "data didn't save on reload").
+- **CSP** (in `server/index.js`, prod only — dev has none): broad `img-src`; `script/connect/worker-src` allow `*.googleapis.com`/`*.gstatic.com` (interactive map); **`frame-src`** allows `open.spotify.com` + `youtube.com`/`youtube-nocookie.com` (in-app players). If you embed a new external thing and it's blank on prod but fine in dev, it's almost always the CSP.
 
-## Secrets — where they live (NOT in git)
-- **Local:** `pit/.env` (gitignored). Keys present: `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`, `EXPO_PUBLIC_GOOGLE_MAPS_KEY`.
-- **Production:** Render dashboard → service → Environment. Needs: `ADMIN_PASSWORD`, `EXPO_PUBLIC_GOOGLE_MAPS_KEY` (build-time), plus the ones in render.yaml.
-- Google Maps key is restricted to `mshpit.com/*`, `www.mshpit.com/*`, `localhost:8081/*` + Maps Static API only. Cost ≈ $0 (Static Maps: $2/1k views, $200/mo free credit). Consider a daily quota cap in Google Cloud as a hard safety net.
-- If a secret was ever pasted into a chat, **rotate it.**
+## Secrets & keys
+- **Local `.env`** (gitignored): `SPOTIFY_CLIENT_ID`, `SPOTIFY_CLIENT_SECRET`, `EXPO_PUBLIC_GOOGLE_MAPS_KEY`, `TICKETMASTER_KEY`.
+- **Google Maps key** is committed as a `value:` in `render.yaml` (safe — `EXPO_PUBLIC_*` ships in the public bundle regardless; the key is referrer-locked + the **Maps JavaScript API is enabled**, so the interactive map works live).
+- **Render WEB-service env** (dashboard, `sync:false`): `ADMIN_PASSWORD`, and for tour dates `TICKETMASTER_KEY` and/or `BANDSINTOWN_APP_ID` (+ optional `TOURDATE_LIMIT`, `TOURDATE_REFRESH_H`). Spotify keys are only for the **local** scraper enrichment, not the server.
+- ⚠️ The Ticketmaster key in `.env` currently returns **`Invalid ApiKey`** — almost certainly the new-key **activation delay** (TM keys can take hours). Re-test: `curl "https://app.ticketmaster.com/discovery/v2/events.json?keyword=Coldplay&apikey=KEY"` — when it returns events (not a `fault`), it's live. **Bandsintown** now requires an **approved app_id** (self-assign no longer works). **SeatGeek** (free instant `client_id`) is the easiest untried backup.
+- If a secret was pasted into a chat, **rotate it.**
 
 ## The scraper / data pipeline
-- `npm run pipeline` → `scripts/pipeline.mjs`. Self-running loop: grows the artist roster (MusicBrainz), syncs curated arenas, then Spotify photos → album covers → top tracks → venue photos. **Precheck-skips** finished work (no-op cycles don't rewrite the file).
-- Hardened: 15s request timeouts + a 45-min per-stage watchdog, so it can't freeze (it did once — hung 7h on a timeout-less fetch).
-- Env knobs: `ARTIST_TARGET` (default 800), `CYCLE_H` (6), `STAGE_TIMEOUT_MS`.
-- **It writes `src/seed/catalog.generated.json`.** That's bundled data — changes only reach the LIVE site after a **rebuild + redeploy (push)**. Also, running it while `expo start` is up triggers dev hot-reloads, so run it when you're NOT actively clicking around (or overnight).
-- Catalog now: ~550+ artists (Spotify photos/genres/popularity, album covers via Cover Art Archive, top tracks), ~1010 venues across 15 countries incl. major CA/US arenas.
-- Other scripts: `scripts/prune-photos.mjs` (drop dead image URLs), `scripts/sync-anchors.mjs` (curated arenas → catalog), `scripts/enrich-*.mjs`.
+Two separate paths now:
+1. **Roster + media (bundled file, manual).** `npm run pipeline` → `scripts/pipeline.mjs`: grows the artist roster from **MusicBrainz** (keyless; ~50 genre tags, `ARTIST_TARGET` default **1500**), syncs curated arenas, then Spotify photos → album covers → top tracks → venue photos. Precheck-skips finished work; 15s timeouts + 45-min stage watchdog. **Writes `src/seed/catalog.generated.json`** (bundled) → only reaches LIVE after a rebuild/push. Running it while `expo start` is up triggers dev hot-reloads. Catalog now ~560 artists / ~1010 venues. `--once` runs a single cycle.
+2. **Tour dates (DB, automatic, live).** `server/tourdates.js` runs **in the web server** on a timer (`startTourDateScheduler()`), scraping **Ticketmaster + Bandsintown** (whichever keys are set) for the top artists by popularity and upserting into the `tour_dates` table. `GET /api/tourdates` serves them; the client hydrates + merges over the bundled catalog. **No cron, no git push, no redeploy — live the moment it writes.** Needs `TICKETMASTER_KEY` and/or `BANDSINTOWN_APP_ID` on the Render web service. (Render disks attach to ONE service, which is why a cron can't do this — it runs in-process.)
+- `scripts/enrich-tourdates.mjs` is the standalone/local version (writes the bundled file). `scripts/cron-scrape.mjs` is the **retired** git-push cron entrypoint — kept for reference, not used.
 
-## Recently done (2026-07-08 session, part 2 — toward "real social product")
-- **Moderation console** rebuilt (tabbed: Overview/Reports/Members/Content/Requests),
-  fixed the stretched-oval tab bar. Added a **moderator** role tier (`isMod`): mods
-  moderate reports/members/content; admins additionally administer roles + see ads +
-  approve artists. Members tab = Discord-style role pills + Timeout/Ban/Unban.
-- **Discover = hub**: an "Explore" grid surfaces the buried features (Best rated,
-  Near you, Fan clubs, Find venues).
-- **Notifications / Activity system** (the social heartbeat). `notifications` state
-  (persisted) + `notify()` generated on follow / like / comment / DM; selectors
-  `myNotifications`/`unreadNotifications`/`markNotificationsRead`. New
-  `NotificationsScreen` (Activity feed w/ actor avatars, per-type badges, empty
-  state). Entry points + unread badges: feed-header bell, desktop LeftRail, Menu.
-  New `bell` icon. **Client-side** (prototype) — server-backed notifications are the
-  next step to make it real cross-device.
-- **Cohesion drive (all 5 pillars done this session):**
-  1. Notifications/Activity system (above).
-  2. **Nav cohesion** — Activity + Inbox reachable from the You tab (were feed-header
-     only); menu/rail/Discover-hub now expose the same surfaces.
-  3. **Onboarding** — system "Welcome to Pit" notification on signup + a dismissible
-     "Get started" card in the feed for users with 0 posts (log a show / near you /
-     complete profile).
-  4. **Visual pass (targeted)** — polished, guiding empty states in the feed
-     (icon+title+next-step). NOT an exhaustive pass — browser tools were down, so a
-     full screen-by-screen visual audit is still open (do it with preview working).
-  5. **Server-backed notifications** — `notifications` table + `addNotif()` from the
-     follow/like/comment/DM endpoints + `GET/POST /api/me/notifications[/read]`;
-     client hydrates on login/reload, writes read-state through. Verified A→B cross
-     account. **Still client-side:** moderation actions (suspend/role/unban — only
-     ban writes through) and lounge/venue-review/rating writes for some paths.
+---
 
-## Recently done (2026-07-08 session)
-- **Interactive Google map** (LiveMap) shipped; live-map failure on prod traced to
-  the server **CSP** blocking `maps.googleapis.com` — widened `script/connect/worker`
-  in `server/index.js`. Key/API/billing were fine; no Google Cloud change needed.
-- **Data-loss-on-reload fix.** Only session/users/feed/follows were persisted, and
-  server hydration only ran on login. Added `usePersisted()` (fan clubs, DMs, going,
-  comments, likes, lounge, reviews, ratings, tour dates, artist content now cached)
-  + an `/api/me` **restore-on-reload** effect that re-absorbs the account and
-  re-hydrates server state. Joins/DMs/going now survive refresh.
-- **Privacy + Terms rewritten** as full, FB/Twitter-style documents that disclose
-  activity collection, profiling, and **ad targeting**. `PolicyScreen` note is now
-  overridable (no "prototype" disclaimer on these).
-- **Consent at sign-up.** Required checkbox agreeing to Terms + Privacy (with inline
-  readers); signup blocked until checked; `consentAt`/`termsVersion` recorded on the
-  account (`TERMS_VERSION` in store.js).
-- **Data collection + ad-interest analytics.** New `events` table + `POST /api/events`
-  (batched) + `GET /api/admin/analytics`. Client `track()` (batched flush) logs
-  login/signup/post/like/follow/join + view_artist/venue/show + search. Admin screen
-  has an **Audience & ads** panel: totals, top artists/venues/searches (targeting
-  signals), live activity tail. All best-effort/consented. **Next ad step:** a
-  targeted "Sponsored" feed slot keyed to each user's top genre/artist (not built).
+## Recently done (2026-07-09 session)
+Everything below is committed to `master` and auto-deployed.
+- **In-app playback (Spotify).** No more `Linking.openURL` to spotify/youtube for music. New `SpotifyEmbed.jsx` (mounts the official embed iframe into the RNW DOM node; native falls back to tap-to-open) + `MediaSheet.jsx` (floating player sheet, opened via `App.js` `openPlayer`). Artist pages get a **LISTEN** section (artist embed) + song taps + Listen button + album art all play in-app. CSP `frame-src` opened for Spotify + YouTube. **Video is NOT embedded yet** — no video IDs in the data (see backlog).
+- **Real @handles.** Editable **USERNAME** in Edit Profile with live available/taken check; server enforces uniqueness (409). Profile edits (name/handle/bio/avatar/banner/city/genres) now **write through to the server** (previously only theme persisted). **10-business-day cooldown** on handle changes (`users.handle_changed_at`; 429 with next-eligible date). **Staff role-tags:** admins must have `admin` in their @, mods `mod` (enforced on change; `setUserRole` auto-tags on promotion). **Colored @s** (Discord-style): admin = magenta, moderator = green — in profile header, feed author line, account chip (`roleColor()` in `theme.js`).
+- **8 themes** (was 4): dark = Stage/Neon/Forest/**Ember**; light = Daylight/**Ice**/**Rose**/**Mint**. All shown as swatches in Edit Profile. **Shadows are theme-aware** (`shadow` in `theme.js`) — dark themes get a deeper shadow so cards read as lifted (a black shadow vanished on the near-black page = the "dark has no depth" complaint).
+- **Find friends.** `GET /api/people` (name/handle search) + a **People** tab in Search with avatars + inline Follow/Following; results absorbed into `users`. `searchPeople`/`absorbUsers` in store.
+- **Moderation console** rebuilt (tabbed: Overview/Reports/Members/Content/Requests); fixed the stretched-oval tab bar. **Moderator role tier** (`isMod`): mods moderate reports/members/content; admins also administer roles, see the Audience/ads panel, approve artists. Members tab = role pills + Timeout/Ban/Unban.
+- **Discover = hub** (Explore grid surfaces Best rated / Near you / Fan clubs / Find venues). **Nav cohesion:** Activity + Inbox reachable from the You tab. **Onboarding:** welcome notification + dismissible "Get started" feed card. **Visual polish:** shadows, real segmented control, real photo thumbnails in the feed (killed the empty-placeholder tiles), guiding empty states.
+- **Notifications / Activity** — server-backed cross-device (`notifications` table, `addNotif()` from follow/like/comment/DM, `GET/POST /api/me/notifications[/read]`, client hydrate). `NotificationsScreen`.
+- **Quick wins:** log-a-show **date picker** (DatePicker takes a year range; past years back to 2000); **map city labels** brightened for dark mode; **artist profile reordered** (upcoming shows → fan reviews → fan photos, releases/songs below).
+- **Interactive Google map** fully working live (was falling back to the static image because the server **CSP** blocked `maps.googleapis.com`; widened it). LiveMap (pan/zoom, clickable pins) on Nearby + the performance page (`AfterpartySection`: venue + afterparty pins).
 
-## Recently done (2026-07-04 session)
-- **Back navigation rebuilt as a real stack** (`App.js`). Was a single flat `nav`
-  object where every close called `clear()` → always dumped you to the feed. Now
-  `stack` of frames: `go()` pushes a screen, `back()` pops one, `replace()` swaps,
-  `clear()` returns to the tabs. Browser/hardware Back is wired to the same stack
-  (web routes through `history.back()` → `popstate`; Android via `BackHandler`).
-  Verified: feed→artist→fan club, Back retraces correctly.
-- **Live Google Maps fixed.** Code was always correct; the live build had no key
-  because `render.yaml` had `EXPO_PUBLIC_GOOGLE_MAPS_KEY` as `sync:false` (blank
-  unless typed into the Render dashboard). Now committed as a `value:` in
-  render.yaml — safe because `EXPO_PUBLIC_*` ships in the public bundle anyway and
-  the key is referrer-locked to mshpit.com. **⚠️ Render may keep the old blank
-  dashboard value on first deploy — if the map is still drawn after deploy, delete
-  the env var in the Render dashboard so the blueprint `value:` takes, or paste the
-  key there.**
-- **Interactive Google map (upgrade).** The static snapshot looked garish (bright
-  amber road grid + colliding labels). Replaced with a REAL embedded map on web:
-  new `LiveMap.jsx` uses the Maps **JavaScript** API (pan/zoom, clickable pins,
-  a cleaner muted dark theme). `ConcertMap` delegates to it on web when a Google
-  key is present, and falls back to the static/drawn map (incl. on native, or on
-  `gm_authFailure`). Now used on **Nearby** AND the **performance page**: the
-  `AfterpartySection` shows the venue (amber pin) + afterparty spots (pink pins,
-  tap for directions). `mapConfig` now `export`s `GOOGLE_KEY`.
-  **⚠️ Needs the "Maps JavaScript API" enabled on the key** (Static Maps alone is
-  not enough). It works locally with the current key; if the live map shows a grey
-  "can't load Google Maps" tile, enable that API + add it to the key's API
-  restrictions in Google Cloud. Costs fall under the $200/mo free credit.
-- **Setlist spoiler gating** re-added to the full `ShowScreen` (feed card already
-  had it): hidden when `log.inTourWindow`, tap "Reveal" to show.
-- **Theme saved to the account.** New `chooseTheme()` in `store.js` persists the
-  preset on the user (session + server `extras` blob via `PATCH /api/me`) and
-  applies it; on login/new device a `session.theme` effect re-applies it. Wired
-  into Menu, Settings, Edit profile, and the **signup onboarding** (theme swatches
-  in `PickArtistsScreen`, applied on Done). Removed the old local-only
-  `themeMode`/`setThemeMode`.
-- **DM Requests vs Friends split.** `inboxThreads()` now tags each thread `main`
-  vs `requests` (stranger = not followed AND you haven't replied). Inbox has
-  Messages / Requests tabs; replying promotes a request to Messages; the unread
-  badge counts only `main`. `requestCount()` added.
-- **Profile photo gallery.** `ProfileScreen` aggregates every `photos[]` from a
-  user's posts into a grid (public-only on others' profiles); tap opens the
-  full-screen `PhotoViewer`. Seed: added photos to Mara's Fillmore post to demo it.
-- **a11y slice:** accessibility labels/roles on the core nav controls (ScreenHeader
-  back, bottom tab bar, profile back).
+## Earlier sessions (condensed)
+- **SQLite migration slices 1–7** complete (see Backend + `MIGRATION.md`).
+- **Privacy + Terms** rewritten as full FB/Twitter-style docs (activity collection, profiling, **ad targeting**); **consent checkbox at signup** (`consentAt`/`TERMS_VERSION`); **analytics** (`events` table, `POST /api/events`, `GET /api/admin/analytics`, client `track()`, Admin "Audience & ads" panel).
+- **Back navigation** rebuilt as a real stack in `App.js` (`go`/`back`/`replace`/`clear`; browser/Android Back wired in). **Data-loss-on-reload** fixed (`usePersisted` + `/api/me` restore).
+- Setlist spoiler gating; theme saved to account; DM Requests-vs-Friends split; profile photo gallery; a11y on core nav.
+- Backend foundation + admin seed; Render + GoDaddy + HTTPS launch. Mobile safe-areas; search segmented tabs; photo self-heal (wsrv.nl proxy).
 
-## Recently done (earlier stretch)
-- Backend foundation + admin seed; launch on Render + GoDaddy DNS + HTTPS.
-- Real **Google map** on "Near you" (drawn map is the no-key fallback); watermark-safe city label.
-- Mobile fixes: iOS **safe-area** insets (viewport-fit=cover + dynamic viewport); **search** = segmented tabs + single scroll (was unreachable stacked panes); **landing scrolls** so large text can't overlap; desktop 3-col shell only ≥1150px (tablets/landscape get mobile layout).
-- Photo reliability: prune dead URLs + runtime proxy fallback (wsrv.nl) + skip-on-error, so venues aren't blank.
-- Signup **artist taste picker** feeding recommendations; "Make a post" rename; theme presets (4); community search (fan clubs + afterparties); emoji removed.
+---
 
-## Open backlog (user-requested)
-- ~~Setlist spoiler tag~~ ✅ (2026-07-04)
-- ~~Theme saved to the account + chosen at signup~~ ✅ (2026-07-04)
-- ~~Profile photo gallery~~ ✅ (2026-07-04)
-- ~~DM Requests vs Friends split~~ ✅ (2026-07-04)
-1. **Full SQLite migration** ✅ **COMPLETE (slices 1–7).** All dynamic data
-   (follows, posts/feed, likes, comments, DMs, fan clubs, reports, ratings, going,
-   venue reviews, artist requests/profiles/posts) now writes through to the backend
-   and hydrates back, best-effort/offline-safe. See **`MIGRATION.md`**. History:
-   **slice 1 (follows)**, **slice 2 (posts/feed)**, **slice 3 (likes/comments)**,
-   **slice 4 (DMs)** — all write-through + hydrate, best-effort/non-breaking.
-   `hydrateFeed()` pulls the public server feed on load (guests too) and merges it
-   over the bundled seed; `addLog`/`toggleLike`/`addComment`/`sendDM` write through
-   and adopt server ids; `loadComments()`/`loadThread()` hydrate a thread on open.
-   DMs added 3 endpoints (`GET /api/me/threads`, `GET`/`POST /api/dms/:otherId`);
-   the Requests/Friends split + unread stay client-side. `chooseTheme` (server
-   `extras.theme`) was the original template. **Verified end-to-end** against
-   `npm run server` (3000): signup→post→like→comment and two-way DMs persist and
-   re-hydrate. **Slice 5 (fan clubs)** also done: `GET /api/me/fanclubs` +
-   join/message write-through + `loadFanClub()` hydrate (messages + real member
-   count). **Slice 6 (reports/moderation)** done: report write-through, admin queue
-   hydrate, action/dismiss/ban write-through. Remaining: **slice 7** (ratings,
-   going/attendance, venue reviews, artist requests/profiles) — the only slice that
-   needs NEW tables + endpoints (lowest priority). Verify with the server running +
-   a real signed-up account (`u_demo` is offline-only).
-2. **Broader mobile/responsive polish + accessibility.** Started: a11y
-   labels/roles on core nav controls. Remaining: audit remaining icon-only buttons,
-   test large OS text sizes for clipping in fixed-height rows, tighten responsive
-   breakpoints. (Native `<Text>` already scales with OS size by default.)
+## Open backlog (what to do next)
+**User-requested, not yet done:**
+1. **📱 Mobile polish.** User says mobile "feels like old-gen Pit, not easily accessible." Needs iterative visual work — get a phone screenshot of the feed (or resize narrow) and fix header density / touch targets / spacing on real pixels. Browser tools (claude-in-chrome / preview) have been **flaky all session** — a full screen-by-screen visual audit is still open; do it with a working preview.
+2. **🛡️ Moderation user-tracking.** Extend the Members tab: **users per region + a live total count**; **granular Discord-style mutes** — remove/mute a user within a specific **fan club** or **afterparty** (not just global ban/timeout). Self-contained; buildable without a browser.
+3. **🎬 Video embeds (in-app).** CSP is ready for YouTube. Two paths: (a) scrape a top **YouTube video ID** per artist (needs a free YouTube Data API key) → embed a WATCH section; (b) let users attach **video clips** to posts and play inline. Music (Spotify) is done; video is the remaining "keep them in-app" piece.
+4. **🔔 Show-near-you push.** Notify when a followed/loved artist announces a gig near the user's city. Depends on a **working tour-date source** (see below). This answers "what to push besides DMs."
+5. **Tour dates need a valid key.** Set `TICKETMASTER_KEY` on the Render **web service** (the current key is invalid — likely still activating; re-test per Secrets). Or add **SeatGeek** as a source (free instant key; ~10-min wire-up next to the TM/Bandsintown fetchers in `server/tourdates.js`).
+6. **Sponsored feed slot.** The analytics collect ad-interest signals (top genres/artists/searches); the actual targeted "Sponsored" feed card keyed to a user's taste is **not built**.
+7. **Roster growth to prod is still manual** (bundled catalog): `npm run pipeline` locally → push. Could be re-automated later (a proper cron/worker or moving artists to the DB too).
 
 ## Known gotchas
-- **Hard-refresh** after deploys/changes (browser caches the bundle).
-- Git shows harmless `LF will be replaced by CRLF` warnings on Windows — ignore.
-- `node:sqlite` needs Node ≥ 24.
-- Background processes started in a chat session are killed when that session ends — restart `npm run pipeline` / `npm run server` as needed.
+- **Hard-refresh** after deploys (bundle cache). Brief **502 right after a push** = normal restart.
+- **CSP** blocks new external embeds/scripts on prod (fine in dev) — update `server/index.js` `frame-src`/`script-src`/`connect-src`.
+- **Render disks are single-service** — background scrapers must run in the web process (that's why tour dates moved in-process).
+- Git shows harmless `LF will be replaced by CRLF` on Windows — ignore.
+- `node:sqlite` needs Node ≥ 24. Background processes started in a chat die when the session ends — restart `npm run server` / `npm run pipeline`.
+- Don't bulk-edit `.jsx` with PowerShell Get/Set-Content (mangles UTF-8) — use editor tools.
