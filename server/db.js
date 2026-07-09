@@ -230,6 +230,25 @@ CREATE TABLE IF NOT EXISTS notifications (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_notifs_user ON notifications(user_id, created_at DESC);
+
+-- ---- Tour dates (scraped live into the DB, not the bundled file) -------------
+-- Written by the in-process scheduler (server/tourdates.js) from Ticketmaster /
+-- Bandsintown; served via GET /api/tourdates and merged into the client catalog.
+-- No git push, no redeploy — updates go live the moment the scheduler writes.
+CREATE TABLE IF NOT EXISTS tour_dates (
+  id         TEXT PRIMARY KEY,
+  artist     TEXT NOT NULL,
+  venue      TEXT,
+  place      TEXT,
+  lat        REAL,
+  lng        REAL,
+  date       TEXT,
+  ticket_url TEXT,
+  sold_out   INTEGER NOT NULL DEFAULT 0,
+  source     TEXT,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tourdates_artist ON tour_dates(artist);
 `);
 
 const ver = db.prepare("SELECT version FROM schema_version LIMIT 1").get();

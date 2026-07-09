@@ -33,33 +33,19 @@ services:
         # so this key is shipped to every visitor regardless — sync:false only made
         # deploys silently fall back to the drawn map when the dashboard was blank.
         value: AIzaSyBbH03hTjAwT603T0pWew-2L9aaBVlGFXw
-
-  # Durable, hosted scraper. Runs ONE pipeline cycle on a schedule (roster growth +
-  # Spotify enrichment + Ticketmaster tour dates), then commits + pushes the
-  # refreshed catalog to master — which trips the web service's autoDeploy above,
-  # shipping fresh data live with nobody in the loop. Set the four sync:false env
-  # vars in the Render dashboard (Spotify pair, Ticketmaster key, and a GitHub PAT
-  # with Contents: read/write). See scripts/cron-scrape.mjs.
-  - type: cron
-    name: pit-catalog-refresh
-    runtime: node
-    schedule: "0 8 * * *"              # daily, 08:00 UTC (adjust as you like)
-    buildCommand: npm ci
-    startCommand: node scripts/cron-scrape.mjs
-    envVars:
-      - key: NODE_VERSION
-        value: "24"
-      - key: ARTIST_TARGET
-        value: "1500"                  # keep growing the roster (MusicBrainz, keyless)
-      - key: TOURDATE_LIMIT
-        value: "150"                   # artists polled for tour dates per run
-      - key: SPOTIFY_CLIENT_ID
-        sync: false
-      - key: SPOTIFY_CLIENT_SECRET
-        sync: false
+      # Tour dates are scraped IN-PROCESS into SQLite (server/tourdates.js) on a
+      # timer and served via GET /api/tourdates — no cron, no git push, no redeploy.
+      # Set these (at least one) in the dashboard to turn scraping on.
       - key: TICKETMASTER_KEY
-        sync: false                    # free at developer.ticketmaster.com
+        sync: false                    # free: developer.ticketmaster.com (Consumer Key only)
       - key: BANDSINTOWN_APP_ID
         sync: false                    # self-assigned string; developer.bandsintown.com
-      - key: GITHUB_TOKEN
-        sync: false                    # fine-grained PAT, Contents: read/write on the repo
+      - key: TOURDATE_LIMIT
+        value: "150"                   # top artists polled per refresh
+      - key: TOURDATE_REFRESH_H
+        value: "12"                    # hours between refreshes
+
+  # NOTE: the old git-push cron ("pit-catalog-refresh") is retired — the in-process
+  # scheduler above replaces it for tour dates (no token, no redeploy, live instantly).
+  # To grow the ARTIST roster (a bundled file), run `npm run pipeline` locally and
+  # push, or re-add a cron later if you want it automated.

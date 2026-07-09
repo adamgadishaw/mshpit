@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { db, q, publicUser } from "./db.js";
 import { routes, ApiError } from "./api.js";
 import { getSession, sweepExpiredSessions, sessionCookie, clearCookie, parseCookies, COOKIE, hashPassword, rateLimit } from "./auth.js";
+import { startTourDateScheduler } from "./tourdates.js";
 import { randomBytes, randomUUID } from "node:crypto";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -214,4 +215,5 @@ process.on("SIGTERM", shutdown);
 
 server.listen(PORT, () => {
   console.log(`[pit] up on http://localhost:${PORT} ${PROD ? "(production)" : "(dev)"} — serving API${existsSync(DIST) ? " + web build" : " (no dist/ yet)"}`);
+  startTourDateScheduler(); // scrapes tour dates into the DB on a timer (no cron/redeploy)
 });

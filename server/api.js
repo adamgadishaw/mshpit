@@ -205,6 +205,18 @@ export const routes = {
     return { following: !has };
   },
 
+  // ---- tour dates (scraped into the DB by server/tourdates.js) ----
+  "GET /api/tourdates": () => {
+    const rows = db.prepare("SELECT * FROM tour_dates ORDER BY date ASC LIMIT 5000").all();
+    return {
+      tourDates: rows.map((r) => ({
+        id: r.id, artist: r.artist, venue: r.venue, place: r.place,
+        lat: r.lat, lng: r.lng, date: r.date, ticketUrl: r.ticket_url,
+        soldOut: !!r.sold_out, source: r.source, releaseAt: 0, createdBy: "import",
+      })),
+    };
+  },
+
   // ---- feed / posts ----
   "GET /api/feed": (ctx) => {
     const lim = Math.min(Number(ctx.query.limit) || 30, 100);

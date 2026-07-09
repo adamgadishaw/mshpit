@@ -191,6 +191,22 @@ export function StoreProvider({ children }) {
   // Load once on mount so even guests see real posts (the feed is public).
   useEffect(() => { hydrateFeed(); }, []);
 
+  // Live tour dates scraped into the DB (server/tourdates.js). Merged over the
+  // bundled seed so Nearby / Discover / artist pages show real, fresh gigs without
+  // a redeploy. Dedupe by id; best-effort/offline-safe.
+  useEffect(() => {
+    api("/api/tourdates")
+      .then(({ tourDates: live }) => {
+        if (!Array.isArray(live) || !live.length) return;
+        setTourDates((cur) => {
+          const have = new Set(cur.map((t) => t.id));
+          const fresh = live.filter((t) => !have.has(t.id));
+          return fresh.length ? [...fresh, ...cur] : cur;
+        });
+      })
+      .catch(() => {});
+  }, []);
+
   // --- Activity tracking (data collection for personalization + ads) ---------
   // Every meaningful action queues an event; a background flush batches them to
   // the server. This is the behavioral data disclosed in the Privacy policy and
