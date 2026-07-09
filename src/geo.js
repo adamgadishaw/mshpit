@@ -102,6 +102,26 @@ export const GEO = {
   },
 };
 
+// Reverse lookup: which country contains this city. Used to default region-scoped
+// views (e.g. Discover's genre pie) to the signed-in user's own country instead of
+// a global/US default. Returns the country name (matches the catalog's country
+// values) or null. Built once, lazily.
+let _cityCountry = null;
+export function countryForCity(city) {
+  if (!city) return null;
+  if (!_cityCountry) {
+    _cityCountry = {};
+    for (const continent of Object.values(GEO)) {
+      for (const [country, states] of Object.entries(continent)) {
+        for (const cities of Object.values(states)) {
+          for (const c of cities) if (!(c.toLowerCase() in _cityCountry)) _cityCountry[c.toLowerCase()] = country;
+        }
+      }
+    }
+  }
+  return _cityCountry[String(city).toLowerCase()] || null;
+}
+
 // "City, State, Country" - the canonical display string.
 export function formatPlace({ continent, country, state, city }) {
   if (!city) return "";

@@ -1,8 +1,9 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect, useRef } from "react";
 import { View, Text, StyleSheet, ScrollView, Pressable, Image, Platform } from "react-native";
 import Svg, { Path, Circle, Defs, RadialGradient, Stop, Ellipse } from "react-native-svg";
 import { colors, mono, radius, shadow } from "../theme";
 import { useStore } from "../store";
+import { countryForCity } from "../geo";
 import Icon from "../components/Icon";
 import Avatar from "../components/Avatar";
 import Badge from "../components/Badge";
@@ -73,13 +74,35 @@ function Plinth({ row, rank, onPress }) {
 }
 
 export default function DiscoverScreen({ onOpenTopRated, onOpenArtist, onOpenNearby, onOpenFanClubs, onOpenVenues, onOpenPhotos }) {
-  const { chartTop, chartInfo, catalogCountries, topGenres, topPhotos, discoverStats } = useStore();
+  const { session, chartTop, chartInfo, catalogCountries, topGenres, topPhotos, discoverStats } = useStore();
 
   const chart = useMemo(() => chartTop(10), []);
   const info = useMemo(() => chartInfo(), []);
   const stats = useMemo(() => discoverStats(), []);
-  const countries = useMemo(() => [{ country: "Worldwide", count: stats.artists }, ...catalogCountries(14)].slice(0, 10), []);
+  // Default the genre pie to the signed-in user's OWN country (Toronto → Canada),
+  // not a global/US default. Their country leads the chip row.
+  const homeCountry = countryForCity(session?.home?.city);
+  const countries = useMemo(() => {
+    const all = catalogCountries(1);
+    const homeEntry = all.find((c) => c.country === homeCountry);
+    const top = catalogCountries(14);
+    const ordered = [{ country: "Worldwide", count: stats.artists }];
+    if (homeEntry) ordered.push(homeEntry);
+    top.forEach((c) => c.country !== homeCountry && ordered.push(c));
+    const seen = new Set();
+    return ordered.filter((c) => !seen.has(c.country) && seen.add(c.country)).slice(0, 10);
+  }, [homeCountry]);
+
   const [region, setRegion] = useState("Worldwide");
+  const touched = useRef(false);
+  // Once we know the user's country (session may hydrate async), snap to it —
+  // unless they've already picked a region themselves.
+  useEffect(() => {
+    if (touched.current || !homeCountry) return;
+    if (countries.some((c) => c.country === homeCountry)) setRegion(homeCountry);
+  }, [homeCountry, countries]);
+  const pickRegion = (c) => { touched.current = true; setRegion(c); };
+
   const genres = useMemo(() => topGenres(region === "Worldwide" ? null : region, 6), [region]);
   const photos = useMemo(() => topPhotos(12), []);
 
@@ -169,7 +192,7 @@ export default function DiscoverScreen({ onOpenTopRated, onOpenArtist, onOpenNea
             {countries.map((c) => {
               const on = c.country === region;
               return (
-                <Pressable key={c.country} style={[styles.regionChip, on && styles.regionChipOn]} onPress={() => setRegion(c.country)}>
+                <Pressable key={c.country} style={[styles.regionChip, on && styles.regionChipOn]} onPress={() => pickRegion(c.country)}>
                   <Text style={[styles.regionTxt, on && styles.regionTxtOn]} numberOfLines={1}>{c.country}</Text>
                   <Text style={[styles.regionCount, on && styles.regionCountOn]}>{c.count.toLocaleString()}</Text>
                 </Pressable>
