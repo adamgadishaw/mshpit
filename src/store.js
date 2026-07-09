@@ -227,6 +227,27 @@ export function StoreProvider({ children }) {
   const userByHandle = (h) => users.find((u) => u.handle === h);
   const logsByUser = (id) => feed.filter((l) => l.userId === id);
 
+  // Merge found users (people search) into local state so their profiles, avatars,
+  // and follow buttons resolve everywhere — without touching the session.
+  const absorbUsers = (list) => {
+    if (!Array.isArray(list) || !list.length) return;
+    setUsers((all) => {
+      let next = all;
+      for (const su of list) {
+        if (su?.id && !next.some((x) => x.id === su.id)) next = [...next, { playlists: [], genres: [], favoriteArtists: [], ...su }];
+      }
+      return next;
+    });
+  };
+  // Search users by name/handle on the server (cross-device friend finding).
+  const searchPeople = async (q) => {
+    try {
+      const { users: found } = await api(`/api/people?q=${encodeURIComponent(q)}`);
+      absorbUsers(found);
+      return found || [];
+    } catch { return []; }
+  };
+
   // Fold a server user into local state so profiles/avatars resolve everywhere.
   const absorbServerUser = (su) => {
     const merged = { playlists: [], genres: [], favoriteArtists: [], ...su };
@@ -1323,7 +1344,7 @@ export function StoreProvider({ children }) {
     addLog, reportContent, actionReport, dismissReport, removeContent, restoreContent,
     requestArtist, approveArtist, rejectArtist,
     addTourDatesBatch,
-    isFollowing, follow, unfollow, followerCount, followingCount,
+    isFollowing, follow, unfollow, followerCount, followingCount, absorbUsers, searchPeople,
     visibleFeed, followingFeed, visibleTourDates, artistSummary, venueSummary,
     localVenues, regionShows, localFeed, recommendedShows, venueCoord,
     searchVenues, venuesByCity, venueUpcomingCount,

@@ -6,6 +6,25 @@ import { ingestedArtists } from "../seed/ingested";
 import { useStore } from "../store";
 import Stars from "../components/Stars";
 import Icon from "../components/Icon";
+import Avatar from "../components/Avatar";
+
+// A person result — avatar, name/handle, and a follow toggle (find friends).
+function PersonRow({ u, following, canFollow, onFollow, onOpen }) {
+  return (
+    <Pressable style={styles.row} onPress={onOpen}>
+      <Avatar user={u} size={34} />
+      <View style={{ flex: 1 }}>
+        <Text style={styles.rowName} numberOfLines={1}>{u.name}</Text>
+        <Text style={styles.rowSub} numberOfLines={1}>@{u.handle}{u.home?.city ? ` · ${u.home.city}` : ""}</Text>
+      </View>
+      {canFollow && (
+        <Pressable style={[styles.followBtn, following && styles.followingBtn]} onPress={onFollow} hitSlop={6}>
+          <Text style={[styles.followTxt, following && styles.followingTxt]}>{following ? "Following" : "Follow"}</Text>
+        </Pressable>
+      )}
+    </Pressable>
+  );
+}
 
 // ---- compact rows shared by the panes ----
 function ArtistRow({ name, genre, onPress }) {
@@ -49,8 +68,9 @@ function EventRow({ t, onOpenArtist, onOpenVenue }) {
   );
 }
 
-export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpenFanClub }) {
-  const { tourDates, searchVenues, artistsAlphabetical, venuesByCity, upcomingEvents, fanClubsDirectory, commentsFor, track } = useStore();
+export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpenFanClub, onOpenProfile }) {
+  const { tourDates, searchVenues, artistsAlphabetical, venuesByCity, upcomingEvents, fanClubsDirectory, commentsFor, track,
+    users, session, isFollowing, follow, unfollow, searchPeople } = useStore();
   const [q, setQ] = useState("");
   const [focused, setFocused] = useState(false);
   const [w, setW] = useState(0);
@@ -96,6 +116,21 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
     return [...dir.filter((c) => c.artist.toLowerCase().includes(query)), ...extra].slice(0, 60);
   }, [query, artists]);
 
+  // People search — hit the server (cross-device) as the query settles; results
+  // get absorbed into `users`, so we render from there (local + found).
+  useEffect(() => {
+    if (query.length < 2) return;
+    const id = setTimeout(() => searchPeople(query), 400);
+    return () => clearTimeout(id);
+  }, [query]);
+  const people = useMemo(() => {
+    const mine = session?.id;
+    if (!query) return users.filter((u) => u.id !== mine).slice(0, 30);
+    return users
+      .filter((u) => u.id !== mine && (u.name.toLowerCase().includes(query) || u.handle.toLowerCase().includes(query)))
+      .slice(0, 50);
+  }, [query, users, session]);
+
   const afterparties = useMemo(() => {
     const list = query
       ? ratedShows.filter((s) => `${s.artist} ${s.venue} ${s.city}`.toLowerCase().includes(query))
@@ -108,6 +143,17 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
   const panes = [
     { key: "artists", title: "ARTISTS", count: artists.length, empty: "No artists match.",
       rows: artists.map((a) => <ArtistRow key={a.name} name={a.name} genre={a.genre} onPress={() => onOpenArtist?.(a.name)} />) },
+    { key: "people", title: "PEOPLE", count: people.length, empty: query ? "No people match." : "Search a name or @handle to find friends.",
+      rows: people.map((u) => (
+        <PersonRow
+          key={u.id}
+          u={u}
+          following={isFollowing(u.id)}
+          canFollow={!!session && u.id !== session?.id}
+          onFollow={() => (isFollowing(u.id) ? unfollow(u.id) : follow(u.id))}
+          onOpen={() => onOpenProfile?.(u.id)}
+        />
+      )) },
     { key: "venues", title: "VENUES", count: venues.length, empty: "No venues match.",
       rows: venues.map((v) => <VenueRow key={v.name} v={v} onPress={() => onOpenVenue?.(v.name)} />) },
     { key: "events", title: "EVENTS", count: events.length, empty: "No upcoming dates.",
@@ -155,7 +201,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
           <Icon name="search" size={18} color={focused ? colors.amber : colors.textDim} />
           <TextInput
             style={styles.input}
-            placeholder="Search artists, venues, cities"
+            placeholder="Search artists, people, venues, cities"
             placeholderTextColor={colors.textFaint}
             value={q}
             onChangeText={setQ}
@@ -251,4 +297,8 @@ const styles = StyleSheet.create({
   pillTxt: { color: colors.amber, fontSize: 11, fontWeight: "800" },
   soldOut: { color: colors.danger, fontSize: 10, fontWeight: "800", letterSpacing: 0.5 },
   empty: { color: colors.textDim, fontSize: 13, fontStyle: "italic", padding: 12 },
+  followBtn: { paddingHorizontal: 14, paddingVertical: 7, borderRadius: radius.pill, backgroundColor: colors.amberStrong },
+  followTxt: { color: "#1A1206", fontSize: 12.5, fontWeight: "800" },
+  followingBtn: { backgroundColor: "transparent", borderWidth: 1, borderColor: colors.line },
+  followingTxt: { color: colors.textDim },
 });

@@ -174,6 +174,17 @@ export const routes = {
     return { user: publicUser(q.userById.get(u.id), { self: true }) };
   },
 
+  // People search (find friends) — by name or handle, cross-device.
+  "GET /api/people": (ctx) => {
+    const term = clean(ctx.query.q, { max: 60 }).toLowerCase();
+    if (term.length < 2) return { users: [] };
+    const like = `%${term.replace(/[%_\\]/g, "")}%`;
+    const rows = db.prepare(
+      "SELECT id,name,handle,initials,avatar_uri,avatar_color,home_city FROM users WHERE is_banned=0 AND (lower(name) LIKE ? OR lower(handle) LIKE ?) ORDER BY name LIMIT 20"
+    ).all(like, like);
+    return { users: rows.map((r) => ({ id: r.id, name: r.name, handle: r.handle, initials: r.initials, avatarUri: r.avatar_uri, avatarColor: r.avatar_color, home: { city: r.home_city } })) };
+  },
+
   "GET /api/users/:id": (ctx) => {
     const u = q.userById.get(ctx.params.id);
     if (!u) throw new ApiError(404, "No such user.");
