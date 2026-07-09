@@ -167,7 +167,10 @@ export const routes = {
       lng: { parse: (x) => (Number.isFinite(Number(x)) ? Number(x) : undefined) },
       genres: { parse: (x) => cleanStringArray(x, { maxItems: 12, maxLen: 30 }) },
       favoriteArtists: { parse: (x) => cleanStringArray(x, { maxItems: 50, maxLen: 80 }) },
-      theme: { parse: (x) => (["stage", "daylight", "neon", "forest"].includes(x) ? x : undefined) },
+      // All 8 themes (4 dark + 4 light). If this list falls behind theme.js, the
+      // newer themes get silently rejected here — the server then re-hydrates the
+      // stale theme on /api/me and the client "snaps back" to a previous theme.
+      theme: { parse: (x) => (["stage", "neon", "forest", "ember", "daylight", "ice", "rose", "mint"].includes(x) ? x : undefined) },
       extras: { parse: (x) => (typeof x === "object" && x ? JSON.stringify(x).slice(0, 8000) : undefined) },
     });
     const sets = [];
