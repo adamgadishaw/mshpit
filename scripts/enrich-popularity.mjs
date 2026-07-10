@@ -38,6 +38,13 @@ async function main() {
     const chunk = ids.slice(i, i + 50);
     let map = {};
     try { map = await getArtistsByIds(chunk); } catch (e) { console.warn(`  ! chunk ${i}: ${e.message}`); }
+    // Restricted (dev-mode) Spotify apps 403 the batch /artists endpoint and strip
+    // popularity everywhere. Detect that on the first chunk and stop with guidance
+    // instead of grinding through the whole catalog for nothing.
+    if (i === 0 && (Object.keys(map).length === 0 || Object.values(map).every((a) => a.popularity == null))) {
+      console.error("\nSpotify returned NO popularity for the first batch. This app is almost certainly in\nrestricted/development mode — popularity/followers are unavailable. Apply for\n'extended quota mode' in the Spotify dashboard, then re-run. Aborting.");
+      process.exit(2);
+    }
     for (const id of chunk) {
       const full = map[id], a = byId[id];
       if (full && a) {

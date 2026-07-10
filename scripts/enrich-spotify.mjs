@@ -32,7 +32,7 @@ async function main() {
   const filter = process.argv.slice(2).filter((s) => !s.startsWith("--")).map((s) => s.toLowerCase());
   const keys = Object.keys(cat.artists || {}).filter((k) => {
     if (filter.length) return filter.includes(k) || filter.includes(cat.artists[k].name?.toLowerCase());
-    if (missingOnly) return !cat.artists[k].spotifyId || cat.artists[k].popularity == null; // pipeline mode: newcomers + anyone missing rank (popularity backfill for the Top-100 badge)
+    if (missingOnly) return !cat.artists[k].spotifyId; // pipeline mode: only newcomers (popularity is unavailable on this restricted app — see enrich-popularity.mjs / HANDOFF)
     return true;
   });
   console.log(`Enriching ${keys.length} artist(s) from Spotify…`);

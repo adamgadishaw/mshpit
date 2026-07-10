@@ -97,11 +97,10 @@ async function cycle(n) {
     await run("enrich-spotify.mjs", ["--missing"]);
     did = true;
   }
-  if (!stopping && s2.missingPopularity > 0) {
-    log(`stage: popularity/followers backfill (${s2.missingPopularity} artists)`);
-    await run("enrich-popularity.mjs");
-    did = true;
-  }
+  // NOTE: no popularity stage — this Spotify app is in restricted/dev mode, which
+  // strips popularity/followers/genres from all artist endpoints (search omits
+  // them, /artists/{id} returns a stub, /artists?ids= 403s). Re-enable
+  // enrich-popularity.mjs only once the app is approved for extended quota mode.
   if (!stopping && s2.missingArt > 0) {
     log(`stage: album covers (${s2.missingArt} artists)`);
     await run("enrich-album-art.mjs");

@@ -107,6 +107,7 @@ Everything below is committed to `master` and auto-deployed.
 7. **Roster growth to prod is still manual** (bundled catalog): `npm run pipeline` locally → push. Could be re-automated later (a proper cron/worker or moving artists to the DB too).
 
 ## Known gotchas
+- **Spotify app is in RESTRICTED / dev mode** → popularity/followers/genres are stripped from every artist endpoint (search omits them, `/artists/{id}` returns a stub of `id/name/images/uri`, `/artists?ids=` **403s**). Photos + top-tracks (search) still work. **Top-100 ranking cannot use Spotify popularity** until the app is approved for **extended quota mode** (Spotify dashboard → request extension). `enrich-popularity.mjs` exists + aborts fast when restricted; the pipeline has NO popularity stage for now. Until then, the chart/podium falls back to **fan-reputation** ranking; the founder also wants a **Billboard Hot 100** source for the Top-3 pedestal + Top-100 badge (backlog).
 - **Hard-refresh** after deploys (bundle cache). Brief **502 right after a push** = normal restart.
 - **CSP** blocks new external embeds/scripts on prod (fine in dev) — update `server/index.js` `frame-src`/`script-src`/`connect-src`.
 - **Render disks are single-service** — background scrapers must run in the web process (that's why tour dates moved in-process).
