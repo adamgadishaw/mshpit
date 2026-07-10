@@ -95,6 +95,7 @@ export function StoreProvider({ children }) {
   // you logged in and keeps your data. (See src/lib/persist.js.)
   const [users, setUsers] = useState(() => load("pit.users", seedUsers));
   const [memberCount, setMemberCount] = useState(0); // total signed-up members (from the server)
+  const [remoteArtists, setRemoteArtists] = useState({}); // norm -> meta, from the DB artist catalog API
   const [adminStats, setAdminStats] = useState({ total: 0, banned: 0, verified: 0, regions: [] }); // admin member console stats
   const [session, setSession] = useState(() => load("pit.session", null));
   const [feed, setFeed] = useState(() => load("pit.feed", seedFeed));
@@ -310,6 +311,32 @@ export function StoreProvider({ children }) {
   // Browse the member directory (newest first) — used when the search box is empty
   // so you can find people without knowing their exact handle.
   const loadMembers = () => searchPeople("");
+
+  // --- DB-backed artist catalog (scales past the bundled JSON) ---------------
+  // Cache artist metadata pulled from the server so it resolves everywhere.
+  const cacheArtists = (list) => {
+    if (!Array.isArray(list) || !list.length) return;
+    setRemoteArtists((m) => {
+      const n = { ...m };
+      for (const a of list) if (a?.name) n[norm(a.name)] = a;
+      return n;
+    });
+  };
+  // Search the DB catalog (notable-first). Powers Search so ANY catalog artist is
+  // findable — not just the ~1.6k bundled ones.
+  const searchArtistsApi = async (query) => {
+    try { const { artists } = await api(`/api/artists?q=${encodeURIComponent(query || "")}`); cacheArtists(artists); return artists || []; }
+    catch { return []; }
+  };
+  // Resolve one artist by name — creates it from MusicBrainz on the server if it's
+  // not in the catalog yet, so no artist page is ever empty. Cached client-side.
+  const resolveArtist = async (name) => {
+    const k = norm(name);
+    if (remoteArtists[k]) return remoteArtists[k];
+    try { const { artist } = await api(`/api/artists/resolve?name=${encodeURIComponent(name)}`); if (artist) cacheArtists([artist]); return artist || null; }
+    catch { return null; }
+  };
+  const remoteArtistMeta = (name) => remoteArtists[norm(name)] || null;
 
   // Fold a server user into local state so profiles/avatars resolve everywhere.
   const absorbServerUser = (su) => {
@@ -1558,6 +1585,7 @@ export function StoreProvider({ children }) {
     requestArtist, approveArtist, rejectArtist,
     addTourDatesBatch,
     isFollowing, follow, unfollow, followerCount, followingCount, absorbUsers, searchPeople, loadMembers, memberCount,
+    searchArtistsApi, resolveArtist, remoteArtistMeta,
     visibleFeed, followingFeed, visibleTourDates, artistSummary, venueSummary,
     localVenues, regionShows, localFeed, recommendedShows, venueCoord,
     searchVenues, venuesByCity, venueUpcomingCount,

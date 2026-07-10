@@ -87,18 +87,23 @@ function Section({ icon, tint, title, count, rows }) {
 
 export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpenFanClub, onOpenProfile }) {
   const { tourDates, searchVenues, artistsAlphabetical, venuesByCity, upcomingEvents, fanClubsDirectory, commentsFor, track,
-    users, session, isFollowing, follow, unfollow, searchPeople, loadMembers, memberCount } = useStore();
+    users, session, isFollowing, follow, unfollow, searchPeople, loadMembers, memberCount, searchArtistsApi, resolveArtist } = useStore();
   const [q, setQ] = useState("");
   const [focused, setFocused] = useState(false);
+  const [dbArtists, setDbArtists] = useState([]); // from the DB catalog API (scales past the bundle)
   const query = q.trim().toLowerCase();
 
   // Pull the member directory on open + whenever the box is cleared, so people are
   // browsable without knowing a handle. Hitting the server on each keystroke (≥1
   // char) keeps cross-device results fresh; a short debounce avoids spamming it.
-  useEffect(() => { loadMembers(); }, []);
+  useEffect(() => { loadMembers(); searchArtistsApi("").then(setDbArtists); }, []);
   useEffect(() => {
-    if (!query) { loadMembers(); return; }
-    const id = setTimeout(() => { searchPeople(query); track("search", { q: query }); }, 250);
+    if (!query) { loadMembers(); searchArtistsApi("").then(setDbArtists); return; }
+    const id = setTimeout(() => {
+      searchPeople(query);
+      searchArtistsApi(query).then(setDbArtists); // pulls the full DB catalog, not just the bundle
+      track("search", { q: query });
+    }, 250);
     return () => clearTimeout(id);
   }, [query]);
 
@@ -110,14 +115,19 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
   }, [query, users, mine]);
 
   const artists = useMemo(() => {
-    if (!query) return artistsAlphabetical(24).map((a) => ({ name: a.name, genre: a.genre }));
     const map = new Map();
-    const add = (name, genre) => { const k = name.toLowerCase(); if (!map.has(k)) map.set(k, { name, genre }); };
+    const add = (name, genre) => { const k = name.toLowerCase(); if (name && !map.has(k)) map.set(k, { name, genre }); };
+    // DB catalog first (notable-first, includes on-demand-resolved artists).
+    dbArtists.forEach((a) => add(a.name, a.genre));
+    if (!query) {
+      artistsAlphabetical(24).forEach((a) => add(a.name, a.genre));
+      return [...map.values()].slice(0, 24);
+    }
     ratedShows.forEach((s) => s.artist.toLowerCase().includes(query) && add(s.artist, s.genre));
     tourDates.forEach((t) => t.artist.toLowerCase().includes(query) && add(t.artist, t.genre));
     Object.values(ingestedArtists).forEach((a) => a.name.toLowerCase().includes(query) && add(a.name, a.genre));
-    return [...map.values()].slice(0, 24);
-  }, [query, tourDates]);
+    return [...map.values()].slice(0, 30);
+  }, [query, tourDates, dbArtists]);
 
   const venues = useMemo(() => (query ? searchVenues(query, 24) : []), [query, tourDates]);
   const events = useMemo(() => (query ? tourDates.filter((t) => `${t.artist} ${t.venue} ${t.place || t.city || ""}`.toLowerCase().includes(query)).slice(0, 24) : []), [query, tourDates]);
@@ -127,6 +137,13 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
   }, [query]);
 
   const showBrowse = !query;
+  const exactArtist = artists.some((a) => a.name.toLowerCase() === query);
+  // First person to search a not-yet-catalogued artist: resolve it from
+  // MusicBrainz on the server (creates the page), then open it.
+  const lookUp = async (name) => {
+    const a = await resolveArtist(name);
+    onOpenArtist?.(a?.name || name);
+  };
 
   return (
     <View style={styles.wrap}>
@@ -173,7 +190,19 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
         <Section
           icon="music" tint={colors.amber}
           title={showBrowse ? "ARTISTS TO EXPLORE" : "ARTISTS"} count={artists.length}
-          rows={artists.map((a) => <ArtistRow key={a.name} name={a.name} genre={a.genre} onPress={() => onOpenArtist?.(a.name)} />)}
+          rows={[
+            ...artists.map((a) => <ArtistRow key={a.name} name={a.name} genre={a.genre} onPress={() => onOpenArtist?.(a.name)} />),
+            query.length >= 2 && !exactArtist ? (
+              <Pressable key="_lookup" style={styles.row} onPress={() => lookUp(q.trim())}>
+                <View style={[styles.dot, { borderColor: colors.good }]}><Icon name="search" size={14} color={colors.good} /></View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.rowName} numberOfLines={1}>Look up “{q.trim()}”</Text>
+                  <Text style={styles.rowSub} numberOfLines={1}>Add from MusicBrainz if they're not here yet</Text>
+                </View>
+                <Icon name="chevron-right" size={16} color={colors.textDim} />
+              </Pressable>
+            ) : null,
+          ].filter(Boolean)}
         />
 
         <Section icon="pin" tint={colors.cool} title="VENUES" count={venues.length}

@@ -39,11 +39,14 @@ function AlbumArt({ uri }) {
 export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFanClub, onOpenPhotos, onEditArtist, onPlay }) {
   const { session, artistSummary, albumRating, songRating, rateAlbum, rateSong, loadRating,
     isArtistOwner, artistPostsFor, loadArtistPage, addArtistPost, removeArtistPost,
-    artistGallery, removePhoto, artistBadges, artistRank } = useStore();
+    artistGallery, removePhoto, artistBadges, artistRank, remoteArtistMeta, resolveArtist } = useStore();
   const a = artistSummary(artistName);
   const badges = artistBadges(a.name);
   const rank = artistRank(a.name);
-  const meta = artistMeta(a.name);
+  // Metadata: bundled catalog first, else the DB catalog (resolved from
+  // MusicBrainz on demand if we've never seen this artist — no empty pages).
+  const meta = artistMeta(a.name) || remoteArtistMeta(a.name);
+  useEffect(() => { if (!artistMeta(a.name) && !remoteArtistMeta(a.name)) resolveArtist(a.name); }, [a.name]);
   const gallery = artistGallery(a.name, 5);
   const canModerate = isStaff(session?.role);
   const genre = a.genre !== "—" ? a.genre : cap(meta?.genre) || "—";
