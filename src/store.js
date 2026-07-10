@@ -96,6 +96,10 @@ export function StoreProvider({ children }) {
   const [users, setUsers] = useState(() => load("pit.users", seedUsers));
   const [memberCount, setMemberCount] = useState(0); // total signed-up members (from the server)
   const [remoteArtists, setRemoteArtists] = useState({}); // norm -> meta, from the DB artist catalog API
+  const [playHistory, setPlayHistory] = useState(() => load("pit.playhistory", [])); // every song played, newest first
+  const [snapshots, setSnapshots] = useState(() => load("pit.snapshots", [])); // saved listening sessions (playlist seeds)
+  useEffect(() => { save("pit.playhistory", playHistory); }, [playHistory]);
+  useEffect(() => { save("pit.snapshots", snapshots); }, [snapshots]);
   const [adminStats, setAdminStats] = useState({ total: 0, banned: 0, verified: 0, regions: [] }); // admin member console stats
   const [session, setSession] = useState(() => load("pit.session", null));
   const [feed, setFeed] = useState(() => load("pit.feed", seedFeed));
@@ -345,6 +349,24 @@ export function StoreProvider({ children }) {
   const resolveSpotifyTrack = async (title, artist) => {
     try { const { url } = await api(`/api/spotify/track?title=${encodeURIComponent(title)}&artist=${encodeURIComponent(artist || "")}`); return url || null; } catch { return null; }
   };
+  // Listening history: log every song played (the framework for "listening now",
+  // playlists, and taste snapshots). Skips consecutive repeats, caps at 200.
+  const recordPlay = (t) => {
+    if (!t || (!t.url && !t.id)) return;
+    const key = t.url || t.id;
+    setPlayHistory((h) => (h[0] && (h[0].url || h[0].id) === key ? h : [{ title: t.title, artist: t.artist, url: t.url, id: t.id, art: t.art || null, at: Date.now() }, ...h].slice(0, 200)));
+    track("play", { artist: t.artist, title: t.title }); // analytics signal
+  };
+  // Snapshot a listening session (queue) into a saved playlist seed that shows on
+  // the profile and can be resumed.
+  const saveSnapshot = (tracks, name) => {
+    const list = (tracks || []).filter((t) => t && (t.url || t.id));
+    if (!list.length) return null;
+    const snap = { id: "snap_" + Date.now(), name: name || `Session ${new Date().toLocaleDateString()}`, tracks: list, at: Date.now(), by: session?.id || null };
+    setSnapshots((s) => [snap, ...s].slice(0, 50));
+    return snap;
+  };
+  const removeSnapshot = (id) => setSnapshots((s) => s.filter((x) => x.id !== id));
 
   // --- Spotify Connect (full-track playback) ---------------------------------
   const spotifyConnected = !!session?.spotifyConnected;
@@ -1642,6 +1664,7 @@ export function StoreProvider({ children }) {
     addTourDatesBatch,
     isFollowing, follow, unfollow, followerCount, followingCount, absorbUsers, searchPeople, loadMembers, memberCount,
     searchArtistsApi, resolveArtist, remoteArtistMeta, artistDiscography, resolveSpotifyTrack,
+    playHistory, recordPlay, snapshots, saveSnapshot, removeSnapshot,
     spotifyConnected, connectSpotify, disconnectSpotify,
     visibleFeed, followingFeed, visibleTourDates, artistSummary, venueSummary,
     localVenues, regionShows, localFeed, recommendedShows, venueCoord,

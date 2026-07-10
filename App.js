@@ -67,7 +67,7 @@ export default function App() {
 }
 
 function Root() {
-  const { session, addLog, visibleFeed, followingFeed, localFeed, logout, userByHandle, inboxUnread, accountStatus, track, unreadNotifications } = useStore();
+  const { session, addLog, visibleFeed, followingFeed, localFeed, logout, userByHandle, inboxUnread, accountStatus, track, unreadNotifications, recordPlay, playHistory, saveSnapshot } = useStore();
   const staff = isStaff(session?.role);
   const feed = visibleFeed(staff);
   const following = followingFeed(staff);
@@ -213,8 +213,30 @@ function Root() {
     const list = Array.isArray(queue) && queue.length ? queue : [media];
     const key = (m) => m?.id || m?.url || m?.title;
     setPlayer({ list, index: Math.max(0, list.findIndex((m) => key(m) === key(media))) });
+    recordPlay(media);
   };
-  const setPlayerIndex = (i) => setPlayer((p) => (p ? { ...p, index: Math.max(0, Math.min(i, p.list.length - 1)) } : p));
+  const setPlayerIndex = (i) => setPlayer((p) => {
+    if (!p) return p;
+    const idx = Math.max(0, Math.min(i, p.list.length - 1));
+    recordPlay(p.list[idx]);
+    return { ...p, index: idx };
+  });
+  // Queue edits from the up-next panel: jump to, remove, or move a track to next.
+  const playAt = (i) => setPlayerIndex(i);
+  const removeFromQueue = (i) => setPlayer((p) => {
+    if (!p || i === p.index) return p;
+    const list = p.list.filter((_, j) => j !== i);
+    const index = i < p.index ? p.index - 1 : p.index;
+    return { ...p, list, index };
+  });
+  const moveToNext = (i) => setPlayer((p) => {
+    if (!p || i === p.index) return p;
+    const item = p.list[i];
+    const rest = p.list.filter((_, j) => j !== i);
+    const curPos = rest.indexOf(p.list[p.index]);
+    rest.splice(curPos + 1, 0, item);
+    return { ...p, list: rest, index: curPos };
+  });
   const openPhotos = (images, index = 0) => go({ photos: { images, index } });
   const reviewShow = (log) => requireAuth(() => go({ logging: true, prefill: { artist: log.artist, venue: log.venue, city: log.city } }));
   const openInbox = () => requireAuth(() => go({ inbox: true }));
@@ -380,7 +402,9 @@ function Root() {
         <StatusBar style="light" />
 
         {!(landing && !session) && player && (
-          <PlayerBar player={player} onClose={() => setPlayer(null)} onIndex={setPlayerIndex} />
+          <PlayerBar player={player} onClose={() => setPlayer(null)} onIndex={setPlayerIndex}
+            onPlayAt={playAt} onRemove={removeFromQueue} onMoveNext={moveToNext}
+            history={playHistory} onSaveSession={saveSnapshot} onPlayTrack={openPlayer} onOpenArtist={openArtist} />
         )}
 
         {landing && !session ? (
