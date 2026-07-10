@@ -100,32 +100,31 @@ Everything below is committed to `master` and auto-deployed.
 
 ---
 
-## Big feature requests (2026-07-10, owner) - not built yet, ordered roughly by value
+## Big feature requests (2026-07-10, owner) - DONE marked; rest ordered by value
 **Reviews / logging**
-- Attach a review to the **ARTIST** (typing artist/venue in Log did not attach to the artist). Add a **tour name** field with **presets** (one-off, reunion, festival, random tour) that let you bypass album/tour and just attach to the artist.
-- **Venue AKA**: label a venue as renamed / new ownership / defunct, still attach to the same venue under old or new name. AKA names must be accurate, so require a **disclosure/confirmation** when posting under an AKA. Add a **Terms section on user inputs + user agreements** to cover this.
-- **Review drafts**: save an incomplete review to a Drafts section and finish later.
-- **Attach standout songs** to a review (songs you loved live), tied to the **real artist + real song** so they are listenable on the artist page. If the artist has no songs on file, let them list it and show a disclaimer on the profile.
+- DONE: review binds to a real ARTIST (Log autocomplete) + tour/occasion presets.
+- DONE: **Review drafts** (Save as draft + Resume strip in Log; store.drafts).
+- DONE: **Terms section "User inputs & accuracy"** (covers AKA/former venue names, attribution).
+- STILL OPEN: **Venue AKA** *function* (relabel a venue renamed/defunct/new-owner, with a post-time confirmation, still attaching to the same venue). Terms cover it legally; the UI + venue-alias data model is not built.
+- STILL OPEN: **Attach standout songs** to a review, tied to the real artist + song (listenable on the artist page), with a disclaimer if the artist has no songs on file.
 
 **Player / listening**
-- **Up-next queue** in the bar: now-playing stays static, next up to ~10 songs scroll side to side; **hover drops down** a panel showing the full listening session. Fills the empty bar + data collection.
-- **Reorderable queue** (interchangeable songs).
-- **Play history** of every song played on the site (framework for playlists + "listening now" + see what friends play).
-- **Snapshot a listening session** into a playlist that saves to the site + resume later.
+- DONE: **up-next queue** panel (hover/tap), reorder (bump/remove), **play history**, **save session as playlist**, and all now **server-side** (plays table, /api/plays, /api/plays/friends) so it's cross-device.
+- DONE: **Friends listening** rail on Discover.
 
 **Discover / algorithm**
-- Top artists AND top **songs per genre** and **per region** (today only a top-100 snapshot). Let people **search by genre** and by song, real discovery.
-- **Listening history drives** the genre/algorithm push per profile (Spotify-style).
-- **Monthly snapshot** ("your month in review"), viewable and postable.
+- DONE: **top artists + top songs per genre AND region** (EXPLORE BY GENRE panel, playable songs).
+- STILL OPEN: **listening history drives the algorithm** (personalized genre/artist push from store.playHistory / the plays table).
+- STILL OPEN: **Monthly "your month in review"** snapshot, viewable + postable (build from the plays table).
 
-**Artist coverage (better than a blind dump)**
-- **Snapshot searched-but-not-found artists** into an admin list. Admin triggers an **in-app seed dump** for just those, ~4x/day (info + photos). Show a **"artist coming soon"** blank profile meanwhile. Add a **typo/error** path + **purge** for dead/never-found profiles to save space.
+**Artist coverage**
+- DONE: capture searched-but-not-found + thin profiles, **admin Catalog tab** seeds them from Deezer on demand, **"coming soon"** profiles, **purge**. (A scheduled 4x/day auto-seed could layer on `server/tourdates.js`-style in-process timer later.)
 
-**Integrations**
-- **YouTube** official-video embeds as a fallback; let users **connect YouTube Premium + Apple Music** (same as Spotify) so playback has fallbacks.
+**Integrations (STILL OPEN)**
+- **YouTube** official-video embeds as a fallback; **connect YouTube Premium + Apple Music** like Spotify for playback fallbacks.
 
 **Playlists**
-- Full **playlist create + share** (with friends / on profile), as deep as the rest of the app.
+- DONE (core): create via Save-as-playlist, persisted (playlists table), shown on the profile, plays the whole set. STILL OPEN: explicit share links + collaborative/curated playlist building.
 
 **Player bugs handled 2026-07-10:** switching artists stopped playback (added 404-retry + clear 403/Premium reporting); Premium-not-active now shows a "Premium needed" note and falls back to the embed; theme switch reloads the page (mitigated by persisting the player queue, but **fully seamless theming needs a runtime-CSS-variable refactor of theme.js**, still open); choppy fonts fixed (antialiasing on every node).
 
