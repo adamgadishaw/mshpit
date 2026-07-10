@@ -98,8 +98,18 @@ export function StoreProvider({ children }) {
   const [remoteArtists, setRemoteArtists] = useState({}); // norm -> meta, from the DB artist catalog API
   const [playHistory, setPlayHistory] = useState(() => load("pit.playhistory", [])); // every song played, newest first
   const [snapshots, setSnapshots] = useState(() => load("pit.snapshots", [])); // saved listening sessions (playlist seeds)
+  const [drafts, setDrafts] = useState(() => load("pit.drafts", [])); // unfinished reviews, saved locally
   useEffect(() => { save("pit.playhistory", playHistory); }, [playHistory]);
   useEffect(() => { save("pit.snapshots", snapshots); }, [snapshots]);
+  useEffect(() => { save("pit.drafts", drafts); }, [drafts]);
+  // Review drafts: save an unfinished log to resume later.
+  const saveDraft = (d) => {
+    const id = d.id || "draft_" + Date.now();
+    const entry = { ...d, id, at: Date.now() };
+    setDrafts((all) => [entry, ...all.filter((x) => x.id !== id)].slice(0, 30));
+    return id;
+  };
+  const deleteDraft = (id) => setDrafts((all) => all.filter((x) => x.id !== id));
   const [adminStats, setAdminStats] = useState({ total: 0, banned: 0, verified: 0, regions: [] }); // admin member console stats
   const [session, setSession] = useState(() => load("pit.session", null));
   const [feed, setFeed] = useState(() => load("pit.feed", seedFeed));
@@ -1678,6 +1688,7 @@ export function StoreProvider({ children }) {
     isFollowing, follow, unfollow, followerCount, followingCount, absorbUsers, searchPeople, loadMembers, memberCount,
     searchArtistsApi, resolveArtist, remoteArtistMeta, artistDiscography, resolveSpotifyTrack,
     playHistory, recordPlay, snapshots, saveSnapshot, removeSnapshot, friendsListening, loadFriendsListening, userPlaylists, deletePlaylist,
+    drafts, saveDraft, deleteDraft,
     spotifyConnected, connectSpotify, disconnectSpotify,
     visibleFeed, followingFeed, visibleTourDates, artistSummary, venueSummary,
     localVenues, regionShows, localFeed, recommendedShows, venueCoord,

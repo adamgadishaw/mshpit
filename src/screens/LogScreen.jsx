@@ -36,7 +36,8 @@ function Stepper({ label, value, onChange, color }) {
 }
 
 export default function LogScreen({ onPost, onCancel, user, prefill }) {
-  const { searchArtistsApi } = useStore();
+  const { searchArtistsApi, drafts, saveDraft, deleteDraft } = useStore();
+  const [draftId, setDraftId] = useState(null);
   const [artist, setArtist] = useState(prefill?.artist || "");
   const [venue, setVenue] = useState(prefill?.venue || "");
   const [city, setCity] = useState(prefill?.city || "");
@@ -72,7 +73,16 @@ export default function LogScreen({ onPost, onCancel, user, prefill }) {
   const computed = computeReview(dims);
   const canPost = artist.trim() && computed.overall > 0;
 
+  const stash = () => { const id = saveDraft({ id: draftId, artist, venue, city, tour, date, dims, review, photos }); setDraftId(id); onCancel?.(); };
+  const resume = (d) => {
+    setDraftId(d.id);
+    setArtist(d.artist || ""); setArtistPicked(!!d.artist); setVenue(d.venue || ""); setCity(d.city || "");
+    setTour(d.tour || ""); setDate(d.date || todayStr); setDims(d.dims || dims); setReview(d.review || ""); setPhotos(d.photos || []);
+  };
+  const hasContent = artist.trim() || venue.trim() || review.trim();
+
   const submit = () => {
+    if (draftId) deleteDraft(draftId);
     onPost({
       id: newId(),
       user: user
@@ -104,6 +114,21 @@ export default function LogScreen({ onPost, onCancel, user, prefill }) {
       <SheetHeader title="Log a show" onClose={onCancel} action={{ label: "Post", onPress: submit, disabled: !canPost }} />
 
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+        {!draftId && drafts.length > 0 && !hasContent && (
+          <View style={styles.drafts}>
+            <Text style={styles.draftsLabel}>RESUME A DRAFT</Text>
+            {drafts.slice(0, 5).map((d) => (
+              <Pressable key={d.id} style={styles.draftRow} onPress={() => resume(d)}>
+                <Icon name="edit" size={14} color={colors.amber} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.draftName} numberOfLines={1}>{d.artist || "Untitled"}{d.venue ? ` · ${d.venue}` : ""}</Text>
+                  {!!d.review && <Text style={styles.draftSub} numberOfLines={1}>{d.review}</Text>}
+                </View>
+                <Pressable onPress={() => deleteDraft(d.id)} hitSlop={8}><Icon name="x" size={14} color={colors.textFaint} /></Pressable>
+              </Pressable>
+            ))}
+          </View>
+        )}
         <Text style={styles.fieldLabel}>WHO DID YOU SEE?</Text>
         <View>
           <TextInput
@@ -217,6 +242,12 @@ export default function LogScreen({ onPost, onCancel, user, prefill }) {
         )}
 
         <Button title="Post to feed" icon="check" onPress={submit} disabled={!canPost} style={{ marginTop: 28 }} />
+        {hasContent && (
+          <Pressable style={styles.saveDraft} onPress={stash}>
+            <Icon name="edit" size={14} color={colors.textDim} />
+            <Text style={styles.saveDraftTxt}>{draftId ? "Update draft" : "Save as draft"}</Text>
+          </Pressable>
+        )}
       </ScrollView>
     </KeyboardAvoidingView>
   );
@@ -230,6 +261,13 @@ const styles = StyleSheet.create({
   content: { padding: 16, paddingBottom: 60 },
   fieldLabel: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "700", marginBottom: 8 },
   optional: { color: colors.textFaint, fontSize: 10, fontWeight: "700", letterSpacing: 0.5 },
+  drafts: { backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 12, marginBottom: 16 },
+  draftsLabel: { color: colors.textFaint, fontSize: 10, letterSpacing: 1.2, fontWeight: "800", marginBottom: 8 },
+  draftRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 8, borderTopWidth: 1, borderTopColor: colors.lineSoft },
+  draftName: { color: colors.text, fontSize: 13.5, fontWeight: "700" },
+  draftSub: { color: colors.textDim, fontSize: 11.5, marginTop: 1 },
+  saveDraft: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, marginTop: 12, paddingVertical: 12, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.line },
+  saveDraftTxt: { color: colors.textDim, fontSize: 14, fontWeight: "700" },
   hits: { backgroundColor: colors.surface, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.line, marginTop: -4, marginBottom: 10, overflow: "hidden" },
   hit: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, paddingVertical: 10, borderTopWidth: 1, borderTopColor: colors.lineSoft },
   hitName: { color: colors.text, fontSize: 14, fontWeight: "700", flexShrink: 1 },
