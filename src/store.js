@@ -622,7 +622,7 @@ export function StoreProvider({ children }) {
         body: {
           artist: safe.artist, venue: safe.venue, city: safe.city, date: safe.date,
           overall: safe.overall, band: safe.band, room: safe.room, review: safe.review,
-          photos: safe.photos, photosPublic: safe.photosPublic ? 1 : 0, setlist: safe.setlist,
+          photos: safe.photos, photosPublic: safe.photosPublic ? 1 : 0, setlist: safe.setlist, tour: safe.tour || null,
         },
       })
         .then(({ id }) => { if (id && id !== localId) setFeed((f) => f.map((l) => (l.id === localId ? { ...l, id } : l))); })

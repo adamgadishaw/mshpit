@@ -61,8 +61,8 @@ function uniqueHandle(base) {
   return candidate;
 }
 
-const postRow = db.prepare(`INSERT INTO posts (id,user_id,artist,venue,city,date,overall,band,room,review,photos,photos_public,setlist,created_at)
-                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+const postRow = db.prepare(`INSERT INTO posts (id,user_id,artist,venue,city,date,overall,band,room,review,photos,photos_public,setlist,tour,created_at)
+                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
 const feedQuery = db.prepare(`
   SELECT p.*, u.name AS u_name, u.handle AS u_handle, u.initials AS u_initials, u.avatar_uri AS u_avatar, u.avatar_color AS u_color,
     (SELECT COUNT(*) FROM likes l WHERE l.post_id = p.id) AS like_count,
@@ -86,6 +86,7 @@ function postJson(p, viewerId) {
     overall: p.overall, band: p.band, room: p.room, review: p.review,
     photos: JSON.parse(p.photos || "[]"), photosPublic: !!p.photos_public,
     setlist: JSON.parse(p.setlist || "[]"),
+    tour: p.tour || null,
     likes: p.like_count ?? 0, comments: p.comment_count ?? 0,
     liked: viewerId ? !!db.prepare("SELECT 1 FROM likes WHERE post_id=? AND user_id=?").get(p.id, viewerId) : false,
     createdAt: p.created_at,
@@ -494,11 +495,12 @@ export const routes = {
       photos: { parse: (x) => cleanStringArray(x, { maxItems: 8, maxLen: 2000 }) },
       photosPublic: { parse: (x) => (x ? 1 : 0) },
       setlist: { parse: (x) => cleanStringArray(x, { maxItems: 40, maxLen: 120 }) },
+      tour: { parse: (x) => clean(x, { max: 80 }) || null },
     });
     if (errs.length) throw new ApiError(400, errs[0]);
     const id = uid("p");
     postRow.run(id, u.id, v.artist, v.venue, v.city || "", v.date || "", v.overall, v.band ?? null, v.room ?? null,
-      v.review || "", JSON.stringify(v.photos || []), v.photosPublic ?? 0, JSON.stringify(v.setlist || []), now());
+      v.review || "", JSON.stringify(v.photos || []), v.photosPublic ?? 0, JSON.stringify(v.setlist || []), v.tour || null, now());
     return { id };
   },
 

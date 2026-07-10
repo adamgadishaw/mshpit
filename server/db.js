@@ -288,6 +288,7 @@ for (const stmt of [
   "ALTER TABLE users ADD COLUMN spotify_access_token TEXT",
   "ALTER TABLE users ADD COLUMN spotify_refresh_token TEXT",
   "ALTER TABLE users ADD COLUMN spotify_expires_at INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE posts ADD COLUMN tour TEXT",
 ]) { try { db.exec(stmt); } catch {} }
 
 // --- tiny helpers ------------------------------------------------------------

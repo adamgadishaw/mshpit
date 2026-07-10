@@ -1,8 +1,12 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, KeyboardAvoidingView, Platform, Image } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import { colors, mono, radius } from "../theme";
+import { useStore } from "../store";
 import { newId, RATING_DIMS, computeReview } from "../data";
+
+// Tour presets: pick one to attach the show to the artist without an album/tour.
+const TOUR_PRESETS = ["One-off show", "Reunion tour", "Festival set", "Anniversary tour", "Surprise show"];
 import Icon from "../components/Icon";
 import Stars from "../components/Stars";
 import TapStars from "../components/TapStars";
@@ -32,9 +36,21 @@ function Stepper({ label, value, onChange, color }) {
 }
 
 export default function LogScreen({ onPost, onCancel, user, prefill }) {
+  const { searchArtistsApi } = useStore();
   const [artist, setArtist] = useState(prefill?.artist || "");
   const [venue, setVenue] = useState(prefill?.venue || "");
   const [city, setCity] = useState(prefill?.city || "");
+  const [tour, setTour] = useState("");
+  // Artist autocomplete: bind the review to a REAL catalog artist so it links to
+  // the artist page, instead of free text that may match nothing.
+  const [artistHits, setArtistHits] = useState([]);
+  const [artistPicked, setArtistPicked] = useState(!!prefill?.artist);
+  useEffect(() => {
+    const q = artist.trim();
+    if (artistPicked || q.length < 2) { setArtistHits([]); return; }
+    const id = setTimeout(() => searchArtistsApi(q).then((list) => setArtistHits((list || []).slice(0, 6))), 220);
+    return () => clearTimeout(id);
+  }, [artist, artistPicked]);
   const [dims, setDims] = useState({ performance: 0, setlist: 0, sound: 0, venue: 0, crowd: 0, experience: 0 });
   const [review, setReview] = useState("");
   const [photos, setPhotos] = useState([]);
@@ -66,6 +82,7 @@ export default function LogScreen({ onPost, onCancel, user, prefill }) {
       artist: artist.trim(),
       venue: venue.trim() || "Unknown venue",
       city: city.trim() || "-",
+      tour: tour.trim() || null,
       date,
       media: photos.length,
       photos,
@@ -88,11 +105,47 @@ export default function LogScreen({ onPost, onCancel, user, prefill }) {
 
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <Text style={styles.fieldLabel}>WHO DID YOU SEE?</Text>
-        <TextInput style={styles.input} placeholder="Artist" placeholderTextColor={colors.textFaint} value={artist} onChangeText={setArtist} />
+        <View>
+          <TextInput
+            style={styles.input}
+            placeholder="Artist"
+            placeholderTextColor={colors.textFaint}
+            value={artist}
+            onChangeText={(t) => { setArtist(t); setArtistPicked(false); }}
+            autoCapitalize="words"
+          />
+          {artistHits.length > 0 && (
+            <View style={styles.hits}>
+              {artistHits.map((h) => (
+                <Pressable key={h.name} style={styles.hit} onPress={() => { setArtist(h.name); setArtistPicked(true); setArtistHits([]); }}>
+                  <Icon name="music" size={13} color={colors.amber} />
+                  <Text style={styles.hitName} numberOfLines={1}>{h.name}</Text>
+                  {!!h.genre && <Text style={styles.hitGenre} numberOfLines={1}>{h.genre}</Text>}
+                </Pressable>
+              ))}
+            </View>
+          )}
+          {artistPicked && !!artist.trim() && (
+            <View style={styles.linked}><Icon name="check" size={12} color={colors.good} /><Text style={styles.linkedTxt}>Linked to {artist.trim()}'s page</Text></View>
+          )}
+        </View>
         <View style={{ flexDirection: "row", gap: 10 }}>
           <TextInput style={[styles.input, { flex: 1.4 }]} placeholder="Venue" placeholderTextColor={colors.textFaint} value={venue} onChangeText={setVenue} />
           <TextInput style={[styles.input, { flex: 1 }]} placeholder="City" placeholderTextColor={colors.textFaint} value={city} onChangeText={setCity} />
         </View>
+
+        <Text style={styles.fieldLabel}>TOUR OR OCCASION <Text style={styles.optional}>optional</Text></Text>
+        <TextInput style={styles.input} placeholder="Tour name (or pick below)" placeholderTextColor={colors.textFaint} value={tour} onChangeText={setTour} />
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.presets} keyboardShouldPersistTaps="handled">
+          {TOUR_PRESETS.map((p) => {
+            const on = tour === p;
+            return (
+              <Pressable key={p} style={[styles.preset, on && styles.presetOn]} onPress={() => setTour(on ? "" : p)}>
+                <Text style={[styles.presetTxt, on && styles.presetTxtOn]}>{p}</Text>
+              </Pressable>
+            );
+          })}
+        </ScrollView>
 
         <Text style={[styles.fieldLabel, { marginTop: 18 }]}>WHEN?</Text>
         <Pressable style={styles.dateBtn} onPress={() => setShowDate((s) => !s)}>
@@ -176,6 +229,18 @@ const styles = StyleSheet.create({
   post: { color: colors.amber, fontSize: 15, fontWeight: "700" },
   content: { padding: 16, paddingBottom: 60 },
   fieldLabel: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "700", marginBottom: 8 },
+  optional: { color: colors.textFaint, fontSize: 10, fontWeight: "700", letterSpacing: 0.5 },
+  hits: { backgroundColor: colors.surface, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.line, marginTop: -4, marginBottom: 10, overflow: "hidden" },
+  hit: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, paddingVertical: 10, borderTopWidth: 1, borderTopColor: colors.lineSoft },
+  hitName: { color: colors.text, fontSize: 14, fontWeight: "700", flexShrink: 1 },
+  hitGenre: { color: colors.textDim, fontSize: 11, fontFamily: mono, marginLeft: "auto" },
+  linked: { flexDirection: "row", alignItems: "center", gap: 5, marginTop: -4, marginBottom: 10 },
+  linkedTxt: { color: colors.good, fontSize: 11.5, fontWeight: "700" },
+  presets: { flexDirection: "row", gap: 8, paddingBottom: 12, paddingTop: 2 },
+  preset: { paddingHorizontal: 13, paddingVertical: 8, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
+  presetOn: { backgroundColor: colors.magenta, borderColor: colors.magenta },
+  presetTxt: { color: colors.textDim, fontSize: 12.5, fontWeight: "700" },
+  presetTxtOn: { color: "#fff" },
   optional: { color: colors.textFaint, fontWeight: "400", letterSpacing: 0 },
   input: { backgroundColor: colors.surface, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.line, color: colors.text, paddingHorizontal: 14, paddingVertical: 12, fontSize: 15, marginBottom: 10 },
   dateBtn: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: colors.surface, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 14, paddingVertical: 12 },
