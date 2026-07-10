@@ -9,6 +9,10 @@ const BASE =
     ? "http://localhost:3000"
     : "");
 
+// Absolute URL for a route (for full-page redirects like the Spotify OAuth handoff,
+// which must carry the session cookie).
+export const apiUrl = (path) => BASE + path;
+
 export async function api(path, { method = "GET", body } = {}) {
   const res = await fetch(BASE + path, {
     method,

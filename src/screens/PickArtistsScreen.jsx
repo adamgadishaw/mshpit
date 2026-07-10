@@ -36,7 +36,7 @@ function ArtistTile({ a, picked, onToggle }) {
 const MIN_PICKS = 3;
 
 export default function PickArtistsScreen({ onDone, onSkip }) {
-  const { session, updateProfile, chooseTheme } = useStore();
+  const { session, updateProfile, chooseTheme, spotifyConnected, connectSpotify } = useStore();
   const [q, setQ] = useState("");
   const [picked, setPicked] = useState(() => new Set(session?.favoriteArtists || []));
   const [theme, setThemeChoice] = useState(themeKey); // the current/default preset
@@ -121,7 +121,18 @@ export default function PickArtistsScreen({ onDone, onSkip }) {
           ))}
         </CardGrid>
         {!query && all.length > 60 && (
-          <Text style={styles.moreHint}>Showing the {Math.min(60, all.length)} most popular — search to find anyone.</Text>
+          <Text style={styles.moreHint}>Showing the {Math.min(60, all.length)} most popular. Search to find anyone.</Text>
+        )}
+
+        {!spotifyConnected && (
+          <Pressable style={styles.spotify} onPress={connectSpotify}>
+            <View style={styles.spotifyIcon}><Icon name="music" size={18} color={colors.good} /></View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.spotifyTitle}>Connect Spotify</Text>
+              <Text style={styles.spotifySub}>Play full songs in the app as you browse. Premium accounts stream complete tracks.</Text>
+            </View>
+            <Icon name="chevron-right" size={18} color={colors.good} />
+          </Pressable>
         )}
       </ScrollView>
     </View>
@@ -143,6 +154,10 @@ const styles = StyleSheet.create({
   themeCheck: { position: "absolute", top: 8, right: 8, width: 18, height: 18, borderRadius: 9, alignItems: "center", justifyContent: "center" },
   empty: { color: colors.textDim, fontSize: 13, fontStyle: "italic", marginTop: 16 },
   moreHint: { color: colors.textFaint, fontFamily: mono, fontSize: 11, textAlign: "center", marginTop: 16 },
+  spotify: { flexDirection: "row", alignItems: "center", gap: 12, marginTop: 20, padding: 14, borderRadius: radius.md, borderWidth: 1, borderColor: colors.good, backgroundColor: "rgba(111,207,151,0.08)" },
+  spotifyIcon: { width: 38, height: 38, borderRadius: 19, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.good, backgroundColor: colors.bgElev },
+  spotifyTitle: { color: colors.text, fontSize: 14.5, fontWeight: "800" },
+  spotifySub: { color: colors.textDim, fontSize: 11.5, marginTop: 2, lineHeight: 16 },
 
   tile: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1.5, borderColor: colors.lineSoft, padding: 8 },
   tileOn: { borderColor: colors.amber, backgroundColor: colors.bgElev },

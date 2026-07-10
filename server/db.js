@@ -285,6 +285,9 @@ if (!ver) db.prepare("INSERT INTO schema_version (version) VALUES (1)").run();
 for (const stmt of [
   "ALTER TABLE users ADD COLUMN handle_changed_at INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE users ADD COLUMN verified INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE users ADD COLUMN spotify_access_token TEXT",
+  "ALTER TABLE users ADD COLUMN spotify_refresh_token TEXT",
+  "ALTER TABLE users ADD COLUMN spotify_expires_at INTEGER NOT NULL DEFAULT 0",
 ]) { try { db.exec(stmt); } catch {} }
 
 // --- tiny helpers ------------------------------------------------------------
@@ -389,6 +392,7 @@ export function publicUser(u, { self = false } = {}) {
     handle: u.handle,
     role: u.role,
     verified: !!u.verified,
+    spotifyConnected: !!u.spotify_refresh_token, // safe boolean; tokens never leave the server
     artistName: u.artist_name || undefined,
     home: u.home_city ? { city: u.home_city, lat: u.home_lat, lng: u.home_lng } : null,
     bio: u.bio,

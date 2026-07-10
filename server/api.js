@@ -118,6 +118,12 @@ async function resolveFromMusicBrainz(name) {
   };
 }
 
+// Spotify Connect config. Keys come from the server env (SPOTIFY_CLIENT_ID/SECRET);
+// scopes cover the Web Playback SDK (streaming) + reading/controlling playback.
+const SPOTIFY_SCOPES = "streaming user-read-email user-read-private user-modify-playback-state user-read-playback-state";
+const spotifyStates = new Map(); // CSRF state -> { userId, exp }; single server instance, so in-memory is fine
+const spotifyKeys = () => ({ id: process.env.SPOTIFY_CLIENT_ID, secret: process.env.SPOTIFY_CLIENT_SECRET });
+
 // route table: "METHOD /path" -> handler(ctx) ; :params exposed as ctx.params
 export const routes = {
   // ---- health ----
@@ -148,6 +154,74 @@ export const routes = {
     if (!mb) return { artist: null, created: false };
     artistStmts.upsert.run(artistRow(mb.name, mb, "musicbrainz"));
     return { artist: publicArtist(artistStmts.byNorm.get(normName(mb.name))), created: true };
+  },
+
+  // ---- Spotify Connect: OAuth + Web Playback SDK tokens ----
+  // Lets a user link their own Spotify so the in-app player streams FULL tracks
+  // (Premium only, per Spotify's SDK). Tokens live server-side only.
+  "GET /api/spotify/login": (ctx) => {
+    const u = requireUser(ctx);
+    const { id } = spotifyKeys();
+    if (!id) throw new ApiError(503, "Spotify is not configured on the server.");
+    const state = randomUUID();
+    spotifyStates.set(state, { userId: u.id, exp: Date.now() + 10 * 60 * 1000 });
+    const url = "https://accounts.spotify.com/authorize?" + new URLSearchParams({
+      response_type: "code", client_id: id, scope: SPOTIFY_SCOPES, redirect_uri: `${ctx.origin}/api/spotify/callback`, state,
+    }).toString();
+    return { redirect: url };
+  },
+  "GET /api/spotify/callback": async (ctx) => {
+    const home = `${ctx.origin}/`;
+    const pending = ctx.query.state && spotifyStates.get(ctx.query.state);
+    if (ctx.query.state) spotifyStates.delete(ctx.query.state);
+    if (ctx.query.error || !ctx.query.code || !pending || pending.exp < Date.now()) return { redirect: `${home}?spotify=error` };
+    const { id, secret } = spotifyKeys();
+    try {
+      const r = await fetch("https://accounts.spotify.com/api/token", {
+        method: "POST",
+        headers: { Authorization: "Basic " + Buffer.from(`${id}:${secret}`).toString("base64"), "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ grant_type: "authorization_code", code: ctx.query.code, redirect_uri: `${ctx.origin}/api/spotify/callback` }).toString(),
+        signal: AbortSignal.timeout(10000),
+      });
+      const d = await r.json();
+      if (!r.ok || !d.access_token) return { redirect: `${home}?spotify=error` };
+      db.prepare("UPDATE users SET spotify_access_token=?, spotify_refresh_token=?, spotify_expires_at=? WHERE id=?")
+        .run(d.access_token, d.refresh_token || null, Date.now() + (d.expires_in || 3600) * 1000, pending.userId);
+      return { redirect: `${home}?spotify=connected` };
+    } catch { return { redirect: `${home}?spotify=error` }; }
+  },
+  "GET /api/spotify/status": (ctx) => {
+    const u = requireUser(ctx);
+    return { connected: !!q.userById.get(u.id)?.spotify_refresh_token };
+  },
+  "POST /api/spotify/disconnect": (ctx) => {
+    const u = requireUser(ctx);
+    db.prepare("UPDATE users SET spotify_access_token=NULL, spotify_refresh_token=NULL, spotify_expires_at=0 WHERE id=?").run(u.id);
+    return { ok: true };
+  },
+  // Hand the client a fresh access token for the Web Playback SDK, refreshing when
+  // it's within 30s of expiry. Never exposes the refresh token.
+  "GET /api/spotify/token": async (ctx) => {
+    const u = requireUser(ctx);
+    const row = q.userById.get(u.id);
+    if (!row?.spotify_refresh_token) throw new ApiError(400, "Spotify not connected.");
+    if (row.spotify_access_token && row.spotify_expires_at > Date.now() + 30000) return { token: row.spotify_access_token, expiresAt: row.spotify_expires_at };
+    const { id, secret } = spotifyKeys();
+    const r = await fetch("https://accounts.spotify.com/api/token", {
+      method: "POST",
+      headers: { Authorization: "Basic " + Buffer.from(`${id}:${secret}`).toString("base64"), "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: row.spotify_refresh_token }).toString(),
+      signal: AbortSignal.timeout(10000),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || !d.access_token) {
+      db.prepare("UPDATE users SET spotify_access_token=NULL, spotify_refresh_token=NULL, spotify_expires_at=0 WHERE id=?").run(u.id);
+      throw new ApiError(401, "Spotify session expired, reconnect.");
+    }
+    const exp = Date.now() + (d.expires_in || 3600) * 1000;
+    if (d.refresh_token) db.prepare("UPDATE users SET spotify_access_token=?, spotify_expires_at=?, spotify_refresh_token=? WHERE id=?").run(d.access_token, exp, d.refresh_token, u.id);
+    else db.prepare("UPDATE users SET spotify_access_token=?, spotify_expires_at=? WHERE id=?").run(d.access_token, exp, u.id);
+    return { token: d.access_token, expiresAt: exp };
   },
 
   // ---- auth ----

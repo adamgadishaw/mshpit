@@ -65,16 +65,17 @@ const HEADERS = {
     "media-src *",
     // expo web build inlines its bootstrap ('unsafe-inline'); Google Maps JS loads
     // from *.googleapis.com / *.gstatic.com.
-    "script-src 'self' 'unsafe-inline' https://*.googleapis.com https://*.gstatic.com",
+    // Google Maps JS + the Spotify Web Playback SDK (sdk.scdn.co) load as scripts.
+    "script-src 'self' 'unsafe-inline' https://*.googleapis.com https://*.gstatic.com https://sdk.scdn.co",
     "style-src 'self' 'unsafe-inline'",
-    // Google Maps fetches tiles/metadata over XHR/fetch from these hosts.
-    "connect-src 'self' https://*.googleapis.com https://*.gstatic.com",
+    // Google Maps XHR + Spotify Web Playback SDK talks to *.spotify.com over
+    // https and wss (its realtime dealer connection).
+    "connect-src 'self' https://*.googleapis.com https://*.gstatic.com https://api.spotify.com https://*.spotify.com wss://*.spotify.com",
     "worker-src 'self' blob:", // vector maps run in blob web workers
     "font-src 'self' data: https://*.gstatic.com",
-    // In-app players: Spotify embeds (music) + YouTube (video) are framed in-app so
-    // people never leave the site. frame-src lets US embed them; frame-ancestors
-    // still stops anyone from embedding US.
-    "frame-src 'self' https://open.spotify.com https://www.youtube.com https://www.youtube-nocookie.com",
+    // In-app players: Spotify embeds + the Playback SDK iframe (sdk.scdn.co) +
+    // YouTube (video) are framed in-app so people never leave the site.
+    "frame-src 'self' https://open.spotify.com https://sdk.scdn.co https://www.youtube.com https://www.youtube-nocookie.com",
     "frame-ancestors 'none'",
   ].join("; "),
   ...(PROD ? { "Strict-Transport-Security": "max-age=31536000; includeSubDomains" } : {}),
@@ -179,15 +180,20 @@ const server = createServer(async (req, res) => {
       const user = sess ? q.userById.get(sess.user_id) : null;
 
       const setCookies = [];
+      const proto = (req.headers["x-forwarded-proto"] || "").split(",")[0] || (req.socket.encrypted ? "https" : "http");
       const ctx = {
         body: ["POST", "PATCH", "PUT"].includes(req.method) ? await readBody(req) : {},
         query, params: match.params, ip, ua: req.headers["user-agent"], token, user,
+        host: req.headers.host, proto, origin: `${proto}://${req.headers.host}`,
+        setCookie: (c) => setCookies.push(c),
         setSession: (s) => setCookies.push(sessionCookie(s.token, s.expiresAt, PROD)),
         clearSession: () => setCookies.push(clearCookie(PROD)),
       };
       const result = await match.handler(ctx);
       const extra = { ...cors };
       if (setCookies.length) extra["Set-Cookie"] = setCookies;
+      // A handler can 302-redirect (OAuth handoff) by returning { redirect: url }.
+      if (result && result.redirect) { res.writeHead(302, { Location: result.redirect, ...extra }); return res.end(); }
       return send(res, 200, result ?? { ok: true }, extra);
     }
 

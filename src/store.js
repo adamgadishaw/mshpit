@@ -3,7 +3,7 @@ import { seedFeed, ratedShows, cityCoords, haversineKm } from "./data";
 import { catalogVenues, catalogTourDates, catalogArtists } from "./seed/catalog";
 import { clean, cleanEmail, isEmail, cleanName, isName, cleanHandle, isPassword, clampRating, LIMITS } from "./lib/validate";
 import { load, save } from "./lib/persist";
-import { api } from "./lib/api";
+import { api, apiUrl } from "./lib/api";
 import { setTheme as applyTheme, syncThemeFromAccount } from "./theme";
 import { artistMeta } from "./seed/ingested";
 
@@ -337,6 +337,25 @@ export function StoreProvider({ children }) {
     catch { return null; }
   };
   const remoteArtistMeta = (name) => remoteArtists[norm(name)] || null;
+
+  // --- Spotify Connect (full-track playback) ---------------------------------
+  const spotifyConnected = !!session?.spotifyConnected;
+  // Full-page handoff to the server OAuth route (carries the session cookie).
+  const connectSpotify = () => { if (typeof window !== "undefined") window.location.href = apiUrl("/api/spotify/login"); };
+  const disconnectSpotify = async () => {
+    try { await api("/api/spotify/disconnect", { method: "POST" }); } catch {}
+    setSession((s) => (s ? { ...s, spotifyConnected: false } : s));
+    setUsers((all) => all.map((u) => (u.id === session?.id ? { ...u, spotifyConnected: false } : u)));
+  };
+  // When we come back from the OAuth redirect (?spotify=connected|error), refresh
+  // the account so spotifyConnected flips, and clean the URL.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const flag = new URLSearchParams(window.location.search).get("spotify");
+    if (!flag) return;
+    try { const url = new URL(window.location.href); url.searchParams.delete("spotify"); window.history.replaceState({}, "", url.pathname + url.search); } catch {}
+    if (flag === "connected") api("/api/me").then(({ user }) => user && absorbServerUser(user)).catch(() => {});
+  }, []);
 
   // Fold a server user into local state so profiles/avatars resolve everywhere.
   const absorbServerUser = (su) => {
@@ -1586,6 +1605,7 @@ export function StoreProvider({ children }) {
     addTourDatesBatch,
     isFollowing, follow, unfollow, followerCount, followingCount, absorbUsers, searchPeople, loadMembers, memberCount,
     searchArtistsApi, resolveArtist, remoteArtistMeta,
+    spotifyConnected, connectSpotify, disconnectSpotify,
     visibleFeed, followingFeed, visibleTourDates, artistSummary, venueSummary,
     localVenues, regionShows, localFeed, recommendedShows, venueCoord,
     searchVenues, venuesByCity, venueUpcomingCount,
