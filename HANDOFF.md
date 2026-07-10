@@ -6,7 +6,9 @@
 
 > **Working agreement (owner's standing instruction):** ALWAYS `git commit` **and** `git push` to `master` after a change — no need to ask. Push auto-deploys (brief 502 while Render restarts). Do not leave work only committed locally.
 
-**Members ARE persisting + searchable** (verified live: `GET /api/people?q=` returns the directory + `total`). The old "can't find anyone" was a missing UI, not lost data: no member browse, no member count, and the People list had been emptied. Fixed 2026-07-09 (empty search now browses the member directory; Discover has a MEMBERS stat). Known-open basics: **nav flash on reload** (backlog #8) and **admin verification console** (backlog #9).
+**Members ARE persisting + searchable** (verified live: `GET /api/people?q=` returns the directory + `total`). The old "can't find anyone" was a missing UI, not lost data: no member browse, no member count, and the People list had been emptied. Fixed 2026-07-09 (empty search now browses the member directory; Discover has a MEMBERS stat).
+
+**Artist catalog is now DB-BACKED (2026-07-09)** — the fix for "missing key artists / can't keep manually inputting them." Artists moved out of the bundled JSON into a server `artists` table (seeded once on boot from `catalog.generated.json`). Endpoints: `GET /api/artists?q=` (search, notable-first via `rank_score`) and `GET /api/artists/resolve?name=` (**on-demand**: if absent, fetch from MusicBrainz + insert — so no artist is ever missing; the first lookup creates it). Client wired: Search queries the API + a "Look up '…'" row resolves misses; ArtistScreen resolves on open. Verified live (Gulfer/Oso Oso created from MB). **Bulk pre-seed:** `scripts/seed-mb-dump.mjs <mbdump-dir> --min-releases N` loads notable MB artists (ranked by release count) — run locally or in a Render one-off shell against `PIT_DATA_DIR=/data`; NOT run on deploy. The tag-crawl (`ingest-artists.mjs`) is now just for growing the bundled seed; the DB is the real catalog.
 
 ---
 
