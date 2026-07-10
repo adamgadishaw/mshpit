@@ -4,7 +4,7 @@
 //   message) is the ONLY sanctioned way to fail, anything else becomes a clean 500
 // - responses only ever contain public projections (publicUser), never raw rows
 import { randomUUID } from "node:crypto";
-import { db, q, publicUser } from "./db.js";
+import { db, q, publicUser, artistStmts, publicArtist, artistRow, normName } from "./db.js";
 import { hashPassword, verifyPassword, createSession, destroySession, rateLimit } from "./auth.js";
 import { clean, cleanEmail, isEmail, cleanName, isName, cleanHandle, isPassword, clampRating, cleanStringArray, shape, LIMITS } from "./validate.js";
 
@@ -92,10 +92,63 @@ function postJson(p, viewerId) {
   };
 }
 
+// Resolve an artist by name from MusicBrainz (CC0, keyless). One request per
+// lookup (their policy needs a real User-Agent); returns the catalog shape.
+async function resolveFromMusicBrainz(name) {
+  const url = `https://musicbrainz.org/ws/2/artist?query=${encodeURIComponent(`artist:"${name}"`)}&fmt=json&limit=5`;
+  let d;
+  try {
+    const r = await fetch(url, { headers: { "User-Agent": "Pit/1.0 (https://mshpit.com)" }, signal: AbortSignal.timeout(8000) });
+    if (!r.ok) return null;
+    d = await r.json();
+  } catch { return null; }
+  const items = d?.artists || [];
+  if (!items.length) return null;
+  const lower = name.toLowerCase();
+  const a = items.find((x) => (x.name || "").toLowerCase() === lower) || items[0];
+  const tags = (a.tags || []).slice().sort((x, y) => (y.count || 0) - (x.count || 0));
+  const genre = tags[0]?.name ? tags[0].name.replace(/\b\w/g, (c) => c.toUpperCase()) : null;
+  return {
+    name: a.name,
+    mbid: a.id,
+    genre,
+    country: a.area?.name || a.country || null,
+    beginYear: (a["life-span"]?.begin || "").slice(0, 4) || null,
+    rank_score: a.score ? Number(a.score) : 1,
+  };
+}
+
 // route table: "METHOD /path" -> handler(ctx) ; :params exposed as ctx.params
 export const routes = {
   // ---- health ----
   "GET /api/health": () => ({ ok: true, ts: now() }),
+
+  // ---- artist catalog (DB-backed; scales past the bundled JSON) ----
+  // Search the catalog. Empty query → the top artists by rank. Notable artists
+  // surface first (rank_score); exact name matches float to the top.
+  "GET /api/artists": (ctx) => {
+    const term = clean(ctx.query.q, { max: 80 }).toLowerCase();
+    const lim = Math.min(40, Math.max(1, Number(ctx.query.limit) || 20));
+    const rows = term.length >= 1
+      ? artistStmts.search.all(`%${term.replace(/[%_\\]/g, "")}%`, term, lim)
+      : artistStmts.top.all(lim);
+    return { artists: rows.map(publicArtist), total: artistStmts.count.get().c };
+  },
+
+  // Resolve one artist by name. If it's not in the catalog yet, fetch it live from
+  // MusicBrainz and insert it — so NO artist is ever "missing": the first person
+  // to look one up creates it. Enrichment (photo/tracks) happens later.
+  "GET /api/artists/resolve": async (ctx) => {
+    const name = clean(ctx.query.name, { max: 120 });
+    if (!name) throw new ApiError(400, "Missing name.");
+    const existing = artistStmts.byNorm.get(normName(name));
+    if (existing) return { artist: publicArtist(existing), created: false };
+    limit(ctx, "resolve", 90, 10 * 60 * 1000); // cap outbound MB lookups per client
+    const mb = await resolveFromMusicBrainz(name);
+    if (!mb) return { artist: null, created: false };
+    artistStmts.upsert.run(artistRow(mb.name, mb, "musicbrainz"));
+    return { artist: publicArtist(artistStmts.byNorm.get(normName(mb.name))), created: true };
+  },
 
   // ---- auth ----
   "POST /api/signup": (ctx) => {

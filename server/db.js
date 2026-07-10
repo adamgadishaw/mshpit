@@ -3,7 +3,7 @@
 // survives crashes mid-write (WAL journal replays), and the whole DB is one
 // file you can back up by copying.
 import { DatabaseSync } from "node:sqlite";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -250,6 +250,31 @@ CREATE TABLE IF NOT EXISTS tour_dates (
   updated_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_tourdates_artist ON tour_dates(artist);
+
+-- ---- Artist catalog (moved out of the bundled JSON so it can scale past a
+-- bundle: on-demand resolution + a full MusicBrainz dump seed). norm is the
+-- lowercased/trimmed name and the key. data holds the rich blob (albums,
+-- topTracks, photos, galleryPool). rank_score orders search (release count /
+-- popularity proxy) so notable artists surface first. ----
+CREATE TABLE IF NOT EXISTS artists (
+  norm        TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  genre       TEXT,
+  photo       TEXT,
+  bio         TEXT,
+  mbid        TEXT,
+  spotify_id  TEXT,
+  country     TEXT,
+  formed      TEXT,
+  popularity  INTEGER,
+  rank_score  INTEGER NOT NULL DEFAULT 0,
+  data        TEXT,
+  source      TEXT,
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_artists_rank ON artists(rank_score DESC);
+CREATE INDEX IF NOT EXISTS idx_artists_name ON artists(name);
 `);
 
 const ver = db.prepare("SELECT version FROM schema_version LIMIT 1").get();
@@ -274,6 +299,84 @@ export const q = {
   deleteSession: db.prepare("DELETE FROM sessions WHERE token_hash = ?"),
   deleteExpiredSessions: db.prepare("DELETE FROM sessions WHERE expires_at < ?"),
 };
+
+// --- Artist catalog statements + helpers -------------------------------------
+const ARTIST_COLS = "norm,name,genre,photo,bio,mbid,spotify_id,country,formed,popularity,rank_score,data,source,created_at,updated_at";
+export const artistStmts = {
+  byNorm: db.prepare("SELECT * FROM artists WHERE norm = ?"),
+  count: db.prepare("SELECT COUNT(*) c FROM artists"),
+  search: db.prepare("SELECT * FROM artists WHERE norm LIKE ? ORDER BY (norm = ?) DESC, rank_score DESC, name LIMIT ?"),
+  top: db.prepare("SELECT * FROM artists ORDER BY rank_score DESC, name LIMIT ?"),
+  upsert: db.prepare(`INSERT INTO artists (${ARTIST_COLS})
+    VALUES (@norm,@name,@genre,@photo,@bio,@mbid,@spotify_id,@country,@formed,@popularity,@rank_score,@data,@source,@created_at,@updated_at)
+    ON CONFLICT(norm) DO UPDATE SET
+      name=excluded.name,
+      genre=COALESCE(excluded.genre,artists.genre),
+      photo=COALESCE(excluded.photo,artists.photo),
+      bio=COALESCE(excluded.bio,artists.bio),
+      mbid=COALESCE(excluded.mbid,artists.mbid),
+      spotify_id=COALESCE(excluded.spotify_id,artists.spotify_id),
+      country=COALESCE(excluded.country,artists.country),
+      formed=COALESCE(excluded.formed,artists.formed),
+      popularity=COALESCE(excluded.popularity,artists.popularity),
+      rank_score=MAX(excluded.rank_score,artists.rank_score),
+      data=COALESCE(excluded.data,artists.data),
+      updated_at=excluded.updated_at`),
+};
+
+export const normName = (s) => (s || "").trim().toLowerCase();
+
+// Build a row from an artist object (bundled shape or a resolved MB/Spotify one).
+export function artistRow(key, a, source = "musicbrainz") {
+  const now = Date.now();
+  const rank = (a.popularity != null ? a.popularity * 1000 : 0) + (a.albums?.length || 0) * 10 + ((a.topTracks?.length || 0) ? 5 : 0);
+  return {
+    norm: normName(key || a.name),
+    name: a.name || key,
+    genre: a.genre || null,
+    photo: a.photo || null,
+    bio: a.bio || null,
+    mbid: a.mbid || null,
+    spotify_id: a.spotifyId || null,
+    country: a.country || null,
+    formed: a.beginYear || a.formed || null,
+    popularity: a.popularity ?? null,
+    rank_score: Math.round(a.rank_score ?? rank),
+    data: JSON.stringify(a),
+    source,
+    created_at: now,
+    updated_at: now,
+  };
+}
+
+// Public projection — merges the rich `data` blob with the typed columns.
+export function publicArtist(r) {
+  if (!r) return null;
+  let data = {};
+  try { data = r.data ? JSON.parse(r.data) : {}; } catch {}
+  return { ...data, name: r.name, genre: r.genre, photo: r.photo, bio: r.bio, mbid: r.mbid, spotifyId: r.spotify_id, country: r.country, popularity: r.popularity };
+}
+
+// One-time seed of the DB catalog from the bundled JSON (so the ~1.6k already-
+// enriched artists are searchable via the API from day one). Skips if already
+// populated. New artists arrive via on-demand resolve + the MB dump seed.
+export function seedArtistsFromBundle() {
+  try {
+    if (artistStmts.count.get().c > 0) return;
+    const path = join(HERE, "..", "src", "seed", "catalog.generated.json");
+    const cat = JSON.parse(readFileSync(path, "utf8"));
+    const entries = Object.entries(cat.artists || {});
+    if (!entries.length) return;
+    db.exec("BEGIN");
+    for (const [key, a] of entries) artistStmts.upsert.run(artistRow(key, a, "bundle"));
+    db.exec("COMMIT");
+    console.log(`[db] seeded ${entries.length} artists into the DB from the bundled catalog`);
+  } catch (e) {
+    try { db.exec("ROLLBACK"); } catch {}
+    console.warn("[db] artist seed skipped:", e.message);
+  }
+}
+seedArtistsFromBundle();
 
 // Public projection — NEVER include pass_hash or email in list responses.
 export function publicUser(u, { self = false } = {}) {
