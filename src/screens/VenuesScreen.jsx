@@ -5,7 +5,7 @@ import { useStore } from "../store";
 import ScreenHeader from "../components/ScreenHeader";
 import Icon from "../components/Icon";
 
-// Find venues by location — the same "attach a city" mental model as the profile
+// Find venues by location, the same "attach a city" mental model as the profile
 // city picker, but for browsing rooms. Cities carry a venue count; tap one to see
 // its venues, or type to jump straight to a venue anywhere.
 export default function VenuesScreen({ onClose, onOpenVenue }) {
@@ -35,7 +35,7 @@ export default function VenuesScreen({ onClose, onOpenVenue }) {
       <View style={styles.vIcon}><Icon name="pin" size={16} color={colors.cool} /></View>
       <View style={{ flex: 1 }}>
         <Text style={styles.vName}>{v.name}</Text>
-        <Text style={styles.vPlace} numberOfLines={1}>{v.place || "—"}</Text>
+        <Text style={styles.vPlace} numberOfLines={1}>{v.place || "-"}</Text>
       </View>
       {v.upcoming > 0 && (
         <View style={styles.upPill}><Text style={styles.upPillTxt}>{v.upcoming} upcoming</Text></View>
@@ -86,7 +86,7 @@ export default function VenuesScreen({ onClose, onOpenVenue }) {
           </>
         ) : (
           <>
-            <Text style={styles.hint}>Browse rooms by city — the number shows how many venues we track there.</Text>
+            <Text style={styles.hint}>Browse rooms by city, the number shows how many venues we track there.</Text>
             <Text style={styles.sectionLabel}>CITIES · {cityList.length}</Text>
             {cityList.map((c) => (
               <Pressable key={c.city + c.region} style={styles.cityRow} onPress={() => setCity(c.city)}>

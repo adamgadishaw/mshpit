@@ -17,7 +17,7 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) 
   const [city, setCity] = useState(null); // { city, label }
   const [pickingCity, setPickingCity] = useState(false);
   const [agreed, setAgreed] = useState(false); // signup: consent to Terms + Privacy
-  const [viewing, setViewing] = useState(null); // "terms" | "privacy" — inline reader
+  const [viewing, setViewing] = useState(null); // "terms" | "privacy", inline reader
   const [error, setError] = useState("");
 
   const submit = async () => {

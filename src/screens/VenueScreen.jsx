@@ -31,7 +31,7 @@ export default function VenueScreen({ venueName, onClose, onOpenShow, onOpenArti
         <Text style={styles.venue}>{v.name}</Text>
         <View style={styles.metaRow}>
           <Icon name="pin" size={14} color={colors.textDim} />
-          <Text style={styles.place}>{v.place || "—"}</Text>
+          <Text style={styles.place}>{v.place || "-"}</Text>
         </View>
         {v.capacity ? <Text style={styles.cap}>Capacity ~{v.capacity.toLocaleString()}</Text> : null}
 
@@ -42,7 +42,7 @@ export default function VenueScreen({ venueName, onClose, onOpenShow, onOpenArti
         <View style={styles.repCard}>
           <Text style={styles.repLabel}>ROOM REPUTATION</Text>
           <View style={styles.repRow}>
-            <Text style={styles.bigScore}>{v.avgRoom ? v.avgRoom.toFixed(1) : "—"}</Text>
+            <Text style={styles.bigScore}>{v.avgRoom ? v.avgRoom.toFixed(1) : "-"}</Text>
             <View style={{ flex: 1 }}>
               <Stars value={v.avgRoom} size={18} color={colors.cool} />
               <Text style={styles.repSub}>{v.totalShows} show{v.totalShows === 1 ? "" : "s"} here · sound, views & crowd</Text>

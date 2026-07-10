@@ -5,11 +5,11 @@ import { GOOGLE_KEY } from "../mapConfig";
 import { proxied, isHttp } from "../lib/img";
 import Stars from "./Stars";
 
-// A REAL, interactive Google map (pan / zoom / clickable pins) — the "actual map
+// A REAL, interactive Google map (pan / zoom / clickable pins), the "actual map
 // embedded in the program." Renders on web when a Google key is present; on
 // native (or without a key) callers fall back to the drawn/static map. Styled to
 // match the stage-light theme but far cleaner than the static snapshot: subtle
-// dark roads, muted warm highways, quiet labels — no garish amber grid.
+// dark roads, muted warm highways, quiet labels, no garish amber grid.
 const web = Platform.OS === "web" && typeof window !== "undefined";
 
 // Cleaner, quieter dark theme. Highways are a muted tungsten (not neon amber),
@@ -33,14 +33,14 @@ const DARK_STYLE = [
   { featureType: "water", elementType: "geometry", stylers: [{ color: "#0a1626" }] },
   { featureType: "water", elementType: "labels.text.fill", stylers: [{ color: "#5b83a8" }] },
   { featureType: "administrative", elementType: "geometry", stylers: [{ color: "#28303f" }] },
-  // City/town names — the important ones — brightest of all.
+  // City/town names, the important ones, brightest of all.
   { featureType: "administrative.locality", elementType: "labels.text.fill", stylers: [{ color: "#eef1f6" }] },
   { featureType: "administrative.neighborhood", elementType: "labels.text.fill", stylers: [{ color: "#aab2c2" }] },
   { featureType: "administrative.land_parcel", stylers: [{ visibility: "off" }] },
 ];
 
 // --- Custom pin art. Real teardrop map pins with a drop shadow, a glossy
-// highlight and a white core — reads as a proper location marker instead of the
+// highlight and a white core, reads as a proper location marker instead of the
 // flat MS-Paint circle that clashed with the polished map tiles.
 function pinDataUri(color, { glow } = {}) {
   const svg =
@@ -95,7 +95,7 @@ function loadMaps() {
 // points: [{ name, lat, lng, kind?, photo?, sub?, rating?, reviews?, capacity? }]
 // kind "spot" renders a small dot with no venue navigation (afterparty spots).
 // highlight: the focal point (venue). Extra fields (photo/rating/sub) drive the
-// hover card — Google-Maps-style, but themed dark.
+// hover card, Google-Maps-style, but themed dark.
 export default function LiveMap({ points = [], highlight, focalName, label, onOpenVenue, onPressPoint, height, onFail }) {
   const hostRef = useRef(null);
   const mapRef = useRef(null);
@@ -148,7 +148,7 @@ export default function LiveMap({ points = [], highlight, focalName, label, onOp
           ov.onRemove = () => {};
           ov.setMap(map);
           overlayRef.current = ov;
-          // Any camera move invalidates a shown card's pixel position — hide it.
+          // Any camera move invalidates a shown card's pixel position, hide it.
           map.addListener("bounds_changed", () => setHover(null));
         }
 

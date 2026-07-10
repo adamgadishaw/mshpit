@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, Pressable, Linking, Platform } from "react-nati
 import { colors, radius } from "../theme";
 import Icon from "./Icon";
 
-// Real in-app playback — Spotify's official embed iframe (plays a preview for
+// Real in-app playback, Spotify's official embed iframe (plays a preview for
 // everyone, full tracks for logged-in Spotify users) WITHOUT sending anyone off
 // the app. Web mounts the iframe into the View's DOM node; native (no webview
 // dependency) shows a tap-to-open fallback.

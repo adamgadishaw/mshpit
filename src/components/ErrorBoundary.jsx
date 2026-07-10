@@ -5,8 +5,8 @@ import { colors, mono, radius } from "../theme";
 // App-wide crash net. React unmounts a subtree when a render throws; without this
 // the user gets a blank/white screen and a refresh just re-runs the same crash
 // (especially if it came from bad persisted state). This catches the error and
-// offers three escape hatches — retry, reload, and a hard reset that clears the
-// local data most likely to be the culprit — so a crash is never a dead end.
+// offers three escape hatches, retry, reload, and a hard reset that clears the
+// local data most likely to be the culprit, so a crash is never a dead end.
 export default class ErrorBoundary extends Component {
   state = { error: null };
 
@@ -28,7 +28,7 @@ export default class ErrorBoundary extends Component {
 
   // Clear the local state most likely to have caused a load-time crash (theme +
   // hydrated store), keeping nothing that can re-trigger it. Session included so a
-  // corrupt user object can't wedge the app — worst case the user logs back in.
+  // corrupt user object can't wedge the app, worst case the user logs back in.
   reset = () => {
     try {
       if (typeof window !== "undefined" && window.localStorage) {
@@ -46,7 +46,7 @@ export default class ErrorBoundary extends Component {
           <Text style={styles.brand}>PIT</Text>
           <Text style={styles.title}>The night hit a snag</Text>
           <Text style={styles.sub}>
-            Something crashed on our end. Your data is safe — try again, and if it keeps
+            Something crashed on our end. Your data is safe, try again, and if it keeps
             happening, reset the app to get moving.
           </Text>
 

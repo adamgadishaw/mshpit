@@ -22,7 +22,7 @@ const META = {
   welcome: { icon: "star", tint: colors.amber, verb: "" },
 };
 
-// The activity feed — the social heartbeat that connects follows, likes, comments
+// The activity feed, the social heartbeat that connects follows, likes, comments
 // and DMs into one place instead of leaving them scattered across the app.
 export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThread, onOpen }) {
   const { myNotifications, markNotificationsRead, feed } = useStore();

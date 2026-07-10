@@ -1,4 +1,4 @@
-// SQLite database layer — Node's built-in node:sqlite, zero dependencies.
+// SQLite database layer, Node's built-in node:sqlite, zero dependencies.
 // WAL mode + foreign keys + busy timeout: safe under concurrent requests,
 // survives crashes mid-write (WAL journal replays), and the whole DB is one
 // file you can back up by copying.
@@ -19,7 +19,7 @@ db.exec(`
   PRAGMA busy_timeout = 5000;
 `);
 
-// Schema — created idempotently. Migrations append below with schema_version.
+// Schema, created idempotently. Migrations append below with schema_version.
 db.exec(`
 CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL);
 
@@ -235,7 +235,7 @@ CREATE INDEX IF NOT EXISTS idx_notifs_user ON notifications(user_id, created_at 
 -- ---- Tour dates (scraped live into the DB, not the bundled file) -------------
 -- Written by the in-process scheduler (server/tourdates.js) from Ticketmaster /
 -- Bandsintown; served via GET /api/tourdates and merged into the client catalog.
--- No git push, no redeploy — updates go live the moment the scheduler writes.
+-- No git push, no redeploy, updates go live the moment the scheduler writes.
 CREATE TABLE IF NOT EXISTS tour_dates (
   id         TEXT PRIMARY KEY,
   artist     TEXT NOT NULL,
@@ -281,7 +281,7 @@ const ver = db.prepare("SELECT version FROM schema_version LIMIT 1").get();
 if (!ver) db.prepare("INSERT INTO schema_version (version) VALUES (1)").run();
 
 // Additive migrations for DBs created before a column existed. ADD COLUMN throws
-// if it's already there, so each is best-effort — safe to run on every boot.
+// if it's already there, so each is best-effort, safe to run on every boot.
 for (const stmt of [
   "ALTER TABLE users ADD COLUMN handle_changed_at INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE users ADD COLUMN verified INTEGER NOT NULL DEFAULT 0",
@@ -352,7 +352,7 @@ export function artistRow(key, a, source = "musicbrainz") {
   };
 }
 
-// Public projection — merges the rich `data` blob with the typed columns.
+// Public projection, merges the rich `data` blob with the typed columns.
 export function publicArtist(r) {
   if (!r) return null;
   let data = {};
@@ -383,7 +383,7 @@ export function seedArtistsFromBundle() {
 }
 seedArtistsFromBundle();
 
-// Public projection — NEVER include pass_hash or email in list responses.
+// Public projection, NEVER include pass_hash or email in list responses.
 export function publicUser(u, { self = false } = {}) {
   if (!u) return null;
   return {

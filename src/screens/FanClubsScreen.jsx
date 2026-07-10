@@ -6,7 +6,7 @@ import ScreenHeader from "../components/ScreenHeader";
 import Icon from "../components/Icon";
 
 // Fan clubs, front and center: a browsable directory of every club (most members
-// first) plus type-to-find across ALL artists — so any club is one search away
+// first) plus type-to-find across ALL artists, so any club is one search away
 // instead of buried behind its artist page.
 export default function FanClubsScreen({ onClose, onOpenFanClub }) {
   const { fanClubsDirectory, artistsAlphabetical, fanClubCount } = useStore();
@@ -16,7 +16,7 @@ export default function FanClubsScreen({ onClose, onOpenFanClub }) {
   const active = useMemo(() => fanClubsDirectory(), []);
 
   // Searching matches every artist in the catalog, so you can open (and be the
-  // first member of) any club — not just the already-active ones.
+  // first member of) any club, not just the already-active ones.
   const results = useMemo(() => {
     if (!query) return [];
     const seen = new Set();
@@ -74,9 +74,9 @@ export default function FanClubsScreen({ onClose, onOpenFanClub }) {
           </>
         ) : (
           <>
-            <Text style={styles.hint}>Permanent chats for every artist — swap shows, plan trips, no ticket needed.</Text>
+            <Text style={styles.hint}>Permanent chats for every artist, swap shows, plan trips, no ticket needed.</Text>
             <Text style={styles.sectionLabel}>ACTIVE CLUBS · {active.length}</Text>
-            {active.length === 0 && <Text style={styles.empty}>No clubs yet — search an artist to start one.</Text>}
+            {active.length === 0 && <Text style={styles.empty}>No clubs yet, search an artist to start one.</Text>}
             {active.map((c) => <Row key={c.artist} c={c} />)}
           </>
         )}

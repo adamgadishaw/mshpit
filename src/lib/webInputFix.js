@@ -1,7 +1,7 @@
 import { Platform } from "react-native";
 
 // react-native-web renders TextInput as a real <input>/<textarea>, which the
-// browser decorates with its default focus *outline* — the harsh square box the
+// browser decorates with its default focus *outline*, the harsh square box the
 // app's inputs were showing on focus. We replace it app-wide with a subtle,
 // on-theme amber treatment: no outline, and a soft amber border + faint glow on
 // focus so every field reads the same way (Search, Edit Profile, Auth, chat…).

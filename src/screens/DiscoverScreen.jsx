@@ -9,7 +9,7 @@ import Avatar from "../components/Avatar";
 import Badge from "../components/Badge";
 import { proxied, isHttp } from "../lib/img";
 
-// Distinct hues for the genre pie — theme accents first (adapt per preset), then
+// Distinct hues for the genre pie, theme accents first (adapt per preset), then
 // a couple of fixed extras.
 const PALETTE = [colors.amber, colors.cool, colors.magenta, colors.good, colors.gold, "#9B7BFF", "#4FD0E0", "#E8794B"];
 const RING = { 1: colors.gold, 2: "#C7CDD6", 3: "#D08A55" };
@@ -17,10 +17,10 @@ const initialsOf = (name = "") => name.split(/\s+/).filter(Boolean).slice(0, 2).
 const artistUser = (name, photo) => ({ avatarUri: photo && isHttp(photo) ? proxied(photo, 240) : photo || null, initials: initialsOf(name), avatarColor: colors.amber });
 const fmt = (n) => (n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? (n / 1e3).toFixed(1) + "K" : String(n));
 const metricOf = (r) => (r.popularity != null ? `POP ${r.popularity}` : r.followers != null ? `${fmt(r.followers)} fans` : r.rating != null ? `★ ${r.rating.toFixed(1)}` : r.genre || "");
-// Soft glow behind the #1 avatar (web only — RN shadows don't tint on native).
+// Soft glow behind the #1 avatar (web only, RN shadows don't tint on native).
 const glow = (color, on) => (on && Platform.OS === "web" ? { boxShadow: `0 0 26px ${color}66, 0 6px 18px rgba(0,0,0,0.5)` } : null);
 
-// A drawn donut of genre share — filled wedges (crisp, reliable on web) with a
+// A drawn donut of genre share, filled wedges (crisp, reliable on web) with a
 // gap stroke in the panel colour so slices read as separate.
 function GenreDonut({ data, size = 188, centerTop, centerSub }) {
   const cx = size / 2, cy = size / 2, R = size / 2 - 3, r = R * 0.62;
@@ -97,7 +97,7 @@ export default function DiscoverScreen({ onOpenTopRated, onOpenArtist, onOpenNea
 
   const [region, setRegion] = useState("Worldwide");
   const touched = useRef(false);
-  // Once we know the user's country (session may hydrate async), snap to it —
+  // Once we know the user's country (session may hydrate async), snap to it -
   // unless they've already picked a region themselves.
   useEffect(() => {
     if (touched.current || !homeCountry) return;
@@ -137,7 +137,7 @@ export default function DiscoverScreen({ onOpenTopRated, onOpenArtist, onOpenNea
         ))}
       </View>
 
-      {/* Chart podium — the hero */}
+      {/* Chart podium, the hero */}
       {podium.length === 3 && (
         <View style={styles.panel}>
           <View style={styles.panelHead}>

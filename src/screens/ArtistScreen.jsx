@@ -18,7 +18,7 @@ import Svg, { Defs, LinearGradient, Stop, Rect } from "react-native-svg";
 
 const cap = (s) => (s ? s.replace(/\b\w/g, (c) => c.toUpperCase()) : s);
 
-// Album cover from the Cover Art Archive, served via the wsrv.nl image CDN —
+// Album cover from the Cover Art Archive, served via the wsrv.nl image CDN -
 // the archive rate-limits direct traffic, while the CDN fetches once and
 // edge-caches. Ladder: proxied -> direct -> clean fallback tile.
 function AlbumArt({ uri }) {
@@ -44,16 +44,16 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
   const badges = artistBadges(a.name);
   const rank = artistRank(a.name);
   // Metadata: bundled catalog first, else the DB catalog (resolved from
-  // MusicBrainz on demand if we've never seen this artist — no empty pages).
+  // MusicBrainz on demand if we've never seen this artist, no empty pages).
   const meta = artistMeta(a.name) || remoteArtistMeta(a.name);
   useEffect(() => { if (!artistMeta(a.name) && !remoteArtistMeta(a.name)) resolveArtist(a.name); }, [a.name]);
   const gallery = artistGallery(a.name, 5);
   const canModerate = isStaff(session?.role);
-  const genre = a.genre !== "—" ? a.genre : cap(meta?.genre) || "—";
+  const genre = a.genre !== "-" ? a.genre : cap(meta?.genre) || "-";
   // Real Spotify top tracks when ingested; hand-seeded SONGS as the fallback.
   const spotTracks = (meta?.topTracks || []).map((t, i) => ({ id: "sp_" + i, title: t.title, artist: a.name, album: t.album, url: t.url, preview: t.preview }));
   const songs = spotTracks.length ? spotTracks : SONGS.filter((s) => s.artist.toLowerCase() === a.name.toLowerCase()).slice(0, 8);
-  // Queue for the top player — every playable track on the page, so next/prev walk
+  // Queue for the top player, every playable track on the page, so next/prev walk
   // this artist's songs while you keep browsing.
   const songQueue = songs.filter((s) => s.url).map((s) => ({ kind: "track", url: s.url, title: s.title, artist: a.name }));
 
@@ -150,7 +150,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
         <View style={styles.repCard}>
           <Text style={styles.repLabel}>LIVE REPUTATION</Text>
           <View style={styles.repRow}>
-            <Text style={styles.bigScore}>{a.avgOverall ? a.avgOverall.toFixed(1) : "—"}</Text>
+            <Text style={styles.bigScore}>{a.avgOverall ? a.avgOverall.toFixed(1) : "-"}</Text>
             <View style={{ flex: 1 }}>
               <Stars value={a.avgOverall} size={18} />
               <Text style={styles.repSub}>
@@ -178,7 +178,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
           </Pressable>
         </View>
 
-        {/* Updates feed — the band's own posts. Owner enables it in Edit profile;
+        {/* Updates feed, the band's own posts. Owner enables it in Edit profile;
             when on, the owner gets a composer box and fans see the feed. */}
         {(a.feedEnabled || isOwner) && (
           <>
@@ -222,7 +222,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
           </>
         )}
 
-        {/* Upcoming shows first — this is a live-music app, gigs lead. */}
+        {/* Upcoming shows first, this is a live-music app, gigs lead. */}
         {a.upcoming.length > 0 && (
           <>
             <Text style={styles.sectionLabel}>UPCOMING · {a.upcoming.length}</Text>
@@ -246,7 +246,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
           </>
         )}
 
-        {/* Then what people said — reviews of every night, fan-first. */}
+        {/* Then what people said, reviews of every night, fan-first. */}
         <Text style={styles.sectionLabel}>EVERY NIGHT · {a.nights.length}</Text>
         {a.nights.length === 0 && <Text style={styles.empty}>No shows logged yet. Be the first.</Text>}
         {a.nights.map((n) => (
@@ -310,7 +310,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
         {meta?.spotifyId && (
           <>
             <Text style={styles.sectionLabel}>LISTEN</Text>
-            <Text style={styles.bio}>Their top tracks, playing right here — no leaving the app.</Text>
+            <Text style={styles.bio}>Their top tracks, playing right here, no leaving the app.</Text>
             <SpotifyEmbed kind="artist" id={meta.spotifyId} height={352} fallbackLabel={`Play ${a.name} on Spotify`} />
           </>
         )}
@@ -343,7 +343,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
           <>
             <Text style={styles.sectionLabel}>POPULAR SONGS</Text>
             <Text style={styles.bio}>
-              {spotTracks.length ? "Their biggest tracks, live from Spotify. Rate the hits — stars show what fans think." : "Rate the hits. Stars show what fans think (real stream data comes later)."}
+              {spotTracks.length ? "Their biggest tracks, live from Spotify. Rate the hits, stars show what fans think." : "Rate the hits. Stars show what fans think (real stream data comes later)."}
             </Text>
             {songs.map((s) => {
               const sr = songRating(a.name, s.title);

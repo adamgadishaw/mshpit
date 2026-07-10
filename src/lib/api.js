@@ -30,7 +30,7 @@ export async function api(path, { method = "GET", body } = {}) {
   return data;
 }
 
-// True when the backend is reachable — lets the store fall back to local-only
+// True when the backend is reachable, lets the store fall back to local-only
 // mode in dev instead of hard-failing when the server isn't running.
 export async function serverUp() {
   try {

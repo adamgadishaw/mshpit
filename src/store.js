@@ -28,7 +28,7 @@ const ago = (ms) => {
 
 const seedUsers = [
   // NOTE: the real admin account lives ONLY on the server (server/index.js
-  // seedAdmin) — never ship admin credentials in the client bundle.
+  // seedAdmin), never ship admin credentials in the client bundle.
   { id: "u_demo", name: "Demo Fan", handle: "demo", home: { city: "San Francisco", lat: 37.7749, lng: -122.4194 }, email: "demo@example.com", password: "password123", role: "fan", initials: "DF", avatarColor: AV[2], avatarUri: null, bio: "Just here for the pit.", genres: ["Indie"], banner: null, nowPlaying: { title: "Not Strong Enough", artist: "boygenius" }, treble: { title: "Not Strong Enough", artist: "boygenius" }, bass: { title: "3D Country", artist: "Geese" }, playlists: [{ id: "pl1", name: "Front row faves", tracks: [{ title: "Be Sweet", artist: "Japanese Breakfast" }, { title: "$20", artist: "boygenius" }] }] },
   { id: "u_artist", name: "Turnstile", handle: "turnstile", home: { city: "Los Angeles", lat: 34.0522, lng: -118.2437 }, email: "band@turnstile.com", password: "password123", role: "artist", artistName: "Turnstile", initials: "TS", avatarColor: AV[1], avatarUri: null, bio: "GLOW ON. Official.", genres: ["Hardcore"], playlists: [] },
   { id: "u_mara", name: "Mara Quinn", handle: "maraq", home: { city: "San Francisco", lat: 37.7749, lng: -122.4194 }, email: "mara@example.com", password: "x", role: "fan", initials: "MQ", avatarColor: AV[1], avatarUri: null, bio: "Hardcore shows + disposable cameras.", genres: ["Hardcore", "Punk"], banner: null, nowPlaying: { title: "HEALING", artist: "Turnstile" }, treble: { title: "HEALING", artist: "Turnstile" }, bass: { title: "Do It Faster", artist: "Militarie Gun" }, playlists: [{ id: "pl2", name: "Two-step starters", tracks: [{ title: "HEALING", artist: "Turnstile" }, { title: "Do It Faster", artist: "Militarie Gun" }] }] },
@@ -51,11 +51,11 @@ const seedRequests = [{ id: "r1", userId: "u_demo", artistName: "Demo Band", not
 
 export const isStaff = (role) => role === "admin";
 // Moderators can moderate (reports, members, content) but not administer roles,
-// see ad analytics, or approve artists — those stay admin-only. Discord-style tier.
+// see ad analytics, or approve artists, those stay admin-only. Discord-style tier.
 export const isMod = (role) => role === "admin" || role === "moderator";
 export const isArtist = (role) => role === "artist" || role === "admin";
 
-// Popularity ranking for the Top-100 badge — computed once from the bundled
+// Popularity ranking for the Top-100 badge, computed once from the bundled
 // catalog (Spotify popularity, tie-break followers). Names still missing a
 // popularity score (not yet enriched) are simply unranked. Rebuilds on reload
 // after each scrape refreshes the bundled catalog.
@@ -101,7 +101,7 @@ export function StoreProvider({ children }) {
   const [feed, setFeed] = useState(() => load("pit.feed", seedFeed));
   const [removedIds, setRemovedIds] = useState([]);
   // Per-image moderation: individual photo URLs pulled from galleries. Reactive,
-  // like the rest of moderation — but removing one photo backfills the gallery
+  // like the rest of moderation, but removing one photo backfills the gallery
   // from the next available source instead of leaving a hole.
   const [removedPhotos, setRemovedPhotos] = useState([]);
   const [requests, setRequests] = usePersisted("pit.requests", seedRequests);
@@ -158,13 +158,13 @@ export function StoreProvider({ children }) {
       { id: "dm3", from: "u_mara", text: "got mine. @priyalive is coming too", ts: "23h" },
     ],
     // A message from someone the demo user doesn't follow and hasn't replied to
-    // yet — lands in Requests, not the main inbox. Reply to promote it.
+    // yet, lands in Requests, not the main inbox. Reply to promote it.
     u_demo__u_priya: [
-      { id: "dm4", from: "u_priya", text: "hey! saw you were at the Fillmore show too — small world", ts: "3h" },
+      { id: "dm4", from: "u_priya", text: "hey! saw you were at the Fillmore show too, small world", ts: "3h" },
     ],
   });
   const [dmRead, setDmRead] = usePersisted("pit.dmRead", {});
-  // Notifications / activity — the social heartbeat. Each item is addressed to a
+  // Notifications / activity, the social heartbeat. Each item is addressed to a
   // recipient (userId) and generated when someone acts on their content/graph.
   const [notifications, setNotifications] = usePersisted("pit.notifications", [
     { id: "nf1", userId: "u_demo", type: "follow", actorId: "u_mara", actorName: "Mara Quinn", actorInitials: "MQ", ts: Date.now() - 3600000, read: false },
@@ -264,7 +264,7 @@ export function StoreProvider({ children }) {
   const userByHandle = (h) => users.find((u) => u.handle === h);
   const logsByUser = (id) => feed.filter((l) => l.userId === id);
 
-  // "Crossed paths" — shows YOU and another user have BOTH logged (same exact
+  // "Crossed paths", shows YOU and another user have BOTH logged (same exact
   // performance: artist + venue + date). The overlap tracker: "this person's been
   // to N of the same concerts as you." Returns the list of shared performances,
   // most recent first. Also exposes the set of artists you've both seen live.
@@ -287,7 +287,7 @@ export function StoreProvider({ children }) {
   };
 
   // Merge found users (people search) into local state so their profiles, avatars,
-  // and follow buttons resolve everywhere — without touching the session.
+  // and follow buttons resolve everywhere, without touching the session.
   const absorbUsers = (list) => {
     if (!Array.isArray(list) || !list.length) return;
     setUsers((all) => {
@@ -308,7 +308,7 @@ export function StoreProvider({ children }) {
       return found || [];
     } catch { return []; }
   };
-  // Browse the member directory (newest first) — used when the search box is empty
+  // Browse the member directory (newest first), used when the search box is empty
   // so you can find people without knowing their exact handle.
   const loadMembers = () => searchPeople("");
 
@@ -323,12 +323,12 @@ export function StoreProvider({ children }) {
     });
   };
   // Search the DB catalog (notable-first). Powers Search so ANY catalog artist is
-  // findable — not just the ~1.6k bundled ones.
+  // findable, not just the ~1.6k bundled ones.
   const searchArtistsApi = async (query) => {
     try { const { artists } = await api(`/api/artists?q=${encodeURIComponent(query || "")}`); cacheArtists(artists); return artists || []; }
     catch { return []; }
   };
-  // Resolve one artist by name — creates it from MusicBrainz on the server if it's
+  // Resolve one artist by name, creates it from MusicBrainz on the server if it's
   // not in the catalog yet, so no artist page is ever empty. Cached client-side.
   const resolveArtist = async (name) => {
     const k = norm(name);
@@ -436,7 +436,7 @@ export function StoreProvider({ children }) {
   };
 
   // Restore the session on reload. The httpOnly session cookie survives a refresh,
-  // so ask the server who we are and re-absorb — which re-runs ALL the per-account
+  // so ask the server who we are and re-absorb, which re-runs ALL the per-account
   // hydration (follows, DM threads, fan clubs, going, admin queues). Before this,
   // a refresh skipped hydration entirely, so server-only state looked like it
   // "didn't save." No-op for guests / offline (returns null / rejects).
@@ -540,14 +540,14 @@ export function StoreProvider({ children }) {
   // to a new device) AND applied immediately. applyTheme reloads to re-resolve
   // the StyleSheet colors, so we persist to disk + the server first. An optional
   // `mergePatch` (already-sanitized profile fields) is persisted in the same
-  // write — used at signup so the artist picks aren't lost to the reload.
+  // write, used at signup so the artist picks aren't lost to the reload.
   const chooseTheme = async (next, mergePatch = null) => {
     if (session) {
       const extra = mergePatch || {};
       const updated = { ...session, ...extra, theme: next };
       setUsers((all) => all.map((u) => (u.id === session.id ? { ...u, ...extra, theme: next } : u)));
       setSession(updated);
-      save("pit.session", updated); // synchronous — the reload below would race the effect
+      save("pit.session", updated); // synchronous, the reload below would race the effect
       try { await api("/api/me", { method: "PATCH", body: { theme: next, ...extra } }); } catch {}
     }
     applyTheme(next);
@@ -571,7 +571,7 @@ export function StoreProvider({ children }) {
     setSession((s) => ({ ...s, ...safe }));
     // Persist to the server so profile edits (incl. your @handle) survive sign-out
     // and follow you to a new device. The server is the authority on handle
-    // uniqueness — re-absorb its response so a taken handle reverts cleanly.
+    // uniqueness, re-absorb its response so a taken handle reverts cleanly.
     if (session) {
       const body = {};
       for (const k of ["name", "bio", "handle", "avatarUri", "banner"]) if (k in safe) body[k] = safe[k];
@@ -582,7 +582,7 @@ export function StoreProvider({ children }) {
         api("/api/me", { method: "PATCH", body })
           .then(({ user }) => { if (user) { setUsers((all) => all.map((u) => (u.id === user.id ? { ...u, ...user } : u))); setSession((s) => ({ ...s, ...user })); } })
           .catch(() => {
-            // Server rejected something (e.g. handle taken / cooldown / role tag) —
+            // Server rejected something (e.g. handle taken / cooldown / role tag) -
             // snap back to server truth so the UI doesn't show a change that didn't stick.
             api("/api/me").then(({ user }) => { if (user) { setUsers((all) => all.map((u) => (u.id === user.id ? { ...u, ...user } : u))); setSession((s) => ({ ...s, ...user })); } }).catch(() => {});
           });
@@ -797,7 +797,7 @@ export function StoreProvider({ children }) {
     setLounge((L) => ({ ...L, [key]: [...(L[key] || []), m] }));
   };
 
-  // --- Album + song ratings (Apple-Music-style stars) — slice 7 ---
+  // --- Album + song ratings (Apple-Music-style stars), slice 7 ---
   // Local map stays the offline model; ratingAgg overlays the server aggregate
   // ({ avg, count, mine }) once loaded, so counts reflect everyone, not just this
   // browser. Reads prefer the server aggregate when present.
@@ -878,7 +878,7 @@ export function StoreProvider({ children }) {
   const fanClubCount = (artist) =>
     fanClubMeta[fcKey(artist)]?.members ?? Object.values(fanClubs).filter((arr) => arr.some((a) => norm(a) === norm(artist))).length;
 
-  // Directory of fan clubs, most members first — powers the Fan clubs screen and
+  // Directory of fan clubs, most members first, powers the Fan clubs screen and
   // the Community search pane so clubs are findable, not buried on artist pages.
   const fanClubsDirectory = () => {
     const byKey = {};
@@ -997,7 +997,7 @@ export function StoreProvider({ children }) {
     api(`/api/admin/users/${id}/role`, { method: "POST", body: { role, handle } }).catch(() => {}); // persist cross-device
   };
 
-  // Admin-granted verification (the blue check) — independent of role, so any
+  // Admin-granted verification (the blue check), independent of role, so any
   // account can be verified. (Groundwork for a paid tier later; not surfaced as
   // paid yet.) Admin-only.
   const setVerified = (id, val) => {
@@ -1193,7 +1193,7 @@ export function StoreProvider({ children }) {
     const prof = artistProfiles[key] || {};
     return {
       name,
-      genre: nights.find((n) => n.genre)?.genre || cat?.genre || "—",
+      genre: nights.find((n) => n.genre)?.genre || cat?.genre || "-",
       photo: prof.avatarUri || cat?.photo || null,
       photoCredit: prof.avatarUri ? null : cat?.photoCredit || null,
       banner: prof.banner || null,
@@ -1364,7 +1364,7 @@ export function StoreProvider({ children }) {
   // --- Discover: chart ranking + region genres + top photos ------------------
   // The ranking SOURCE is abstracted so we can swap in Billboard Hot 100 or an
   // in-app score later without touching the Discover UI. Today it prefers Spotify
-  // popularity, then follower count, then live fan-reputation, then A–Z — so the
+  // popularity, then follower count, then live fan-reputation, then A-Z, so the
   // podium always has a top 3 even before the popularity scrape has run.
   const CHART_SOURCE = "spotify-popularity"; // future: "billboard-hot-100" | "in-app-score"
   const chartTop = (n = 10) => {
@@ -1389,7 +1389,7 @@ export function StoreProvider({ children }) {
     return { source: CHART_SOURCE, live: withPop >= 3, label: withPop >= 3 ? "By popularity" : "By fan reputation" };
   };
 
-  // Genre distribution, optionally scoped to one country — the region pies.
+  // Genre distribution, optionally scoped to one country, the region pies.
   const catalogCountries = (min = 12) => {
     const c = {};
     Object.values(catalogArtists || {}).forEach((a) => { if (a.country) c[a.country] = (c[a.country] || 0) + 1; });

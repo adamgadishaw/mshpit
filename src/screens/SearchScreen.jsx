@@ -47,7 +47,7 @@ function VenueRow({ v, onPress }) {
       <View style={[styles.dot, { borderColor: colors.cool }]}><Icon name="pin" size={14} color={colors.cool} /></View>
       <View style={{ flex: 1 }}>
         <Text style={styles.rowName} numberOfLines={1}>{v.name}</Text>
-        <Text style={styles.rowSub} numberOfLines={1}>{v.place || "—"}</Text>
+        <Text style={styles.rowSub} numberOfLines={1}>{v.place || "-"}</Text>
       </View>
       {v.upcoming > 0 && <View style={styles.pill}><Text style={styles.pillTxt}>{v.upcoming}</Text></View>}
     </Pressable>

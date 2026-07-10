@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// mshpit.com backend — zero-dependency Node server.
+// mshpit.com backend, zero-dependency Node server.
 //
 //   node server/index.js            # serves API + the exported web build (dist/)
 //   PORT=3000 NODE_ENV=production ADMIN_PASSWORD=... node server/index.js
@@ -23,7 +23,7 @@ const PROD = process.env.NODE_ENV === "production";
 const DIST = join(HERE, "..", "dist"); // `npx expo export -p web` output
 const BODY_LIMIT = 256 * 1024; // 256 KB is plenty for JSON
 
-// ---- seed the admin account (server-side only — never in the client bundle) --
+// ---- seed the admin account (server-side only, never in the client bundle) --
 function seedAdmin() {
   const email = (process.env.ADMIN_EMAIL || "adamgadishaw@gmail.com").toLowerCase();
   const existing = q.userByEmail.get(email);
@@ -51,7 +51,7 @@ seedAdmin();
 // CSP: the app hotlinks images from many hosts (Commons/Openverse/web + wsrv.nl
 // proxy + Spotify/Unsplash CDNs), so img-src stays broad; everything else locked.
 // The interactive Google map (LiveMap) needs the Google Maps domains allowed for
-// its loader script, its tile/data fetches, and its vector-map web workers —
+// its loader script, its tile/data fetches, and its vector-map web workers -
 // without these the browser blocks the script and the map silently falls back to
 // the static image.
 const HEADERS = {
@@ -203,7 +203,7 @@ const server = createServer(async (req, res) => {
   } catch (e) {
     if (e instanceof ApiError) return send(res, e.status, { error: e.message }, cors);
     console.error(`[pit] 500 on ${req.method} ${pathname} (${Date.now() - started}ms):`, e);
-    return send(res, 500, { error: "Something broke on our end — it's been logged." }, cors);
+    return send(res, 500, { error: "Something broke on our end, it's been logged." }, cors);
   }
 });
 
@@ -214,7 +214,7 @@ process.on("unhandledRejection", (e) => console.error("[pit] unhandledRejection:
 // hourly session sweep
 setInterval(sweepExpiredSessions, 60 * 60 * 1000).unref();
 
-// graceful shutdown — finish in-flight requests, close the DB cleanly
+// graceful shutdown, finish in-flight requests, close the DB cleanly
 function shutdown() {
   console.log("\n[pit] shutting down…");
   server.close(() => { try { db.close(); } catch {} process.exit(0); });
@@ -224,6 +224,6 @@ process.on("SIGINT", shutdown);
 process.on("SIGTERM", shutdown);
 
 server.listen(PORT, () => {
-  console.log(`[pit] up on http://localhost:${PORT} ${PROD ? "(production)" : "(dev)"} — serving API${existsSync(DIST) ? " + web build" : " (no dist/ yet)"}`);
+  console.log(`[pit] up on http://localhost:${PORT} ${PROD ? "(production)" : "(dev)"}, serving API${existsSync(DIST) ? " + web build" : " (no dist/ yet)"}`);
   startTourDateScheduler(); // scrapes tour dates into the DB on a timer (no cron/redeploy)
 });

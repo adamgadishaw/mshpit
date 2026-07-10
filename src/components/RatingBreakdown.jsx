@@ -9,7 +9,7 @@ function Factor({ label, value, color }) {
     <View style={styles.factor}>
       <View style={styles.row}>
         <Text style={styles.label}>{label}</Text>
-        <Text style={[styles.val, { color }]}>{value ? value.toFixed(1) : "—"}</Text>
+        <Text style={[styles.val, { color }]}>{value ? value.toFixed(1) : "-"}</Text>
       </View>
       <View style={styles.track}>
         <View style={[styles.fill, { width: `${(value / 5) * 100}%`, backgroundColor: color }]} />

@@ -159,7 +159,7 @@ export const haversineKm = (a, b) => haversine(a, b, 6371);
 // Coordinates for the major US + Canada cities in geo.js (stands in for real
 // geocoding; the ingest fills exact venue coords from Ticketmaster).
 export const cityCoords = {
-  // - United States —
+  // - United States -
   Birmingham: { lat: 33.5186, lng: -86.8104 }, Montgomery: { lat: 32.3668, lng: -86.3 }, Huntsville: { lat: 34.7304, lng: -86.5861 }, Mobile: { lat: 30.6954, lng: -88.0399 },
   Anchorage: { lat: 61.2181, lng: -149.9003 }, Fairbanks: { lat: 64.8378, lng: -147.7164 }, Juneau: { lat: 58.3019, lng: -134.4197 },
   Phoenix: { lat: 33.4484, lng: -112.074 }, Tucson: { lat: 32.2226, lng: -110.9747 }, Tempe: { lat: 33.4255, lng: -111.94 }, Mesa: { lat: 33.4152, lng: -111.8315 }, Flagstaff: { lat: 35.1983, lng: -111.6513 },
@@ -211,7 +211,7 @@ export const cityCoords = {
   Morgantown: { lat: 39.6295, lng: -79.9559 },
   Milwaukee: { lat: 43.0389, lng: -87.9065 }, Madison: { lat: 43.0731, lng: -89.4012 }, "Green Bay": { lat: 44.5133, lng: -88.0133 },
   Cheyenne: { lat: 41.14, lng: -104.8202 }, Jackson: { lat: 43.4799, lng: -110.7624 },
-  // - Canada —
+  // - Canada -
   Calgary: { lat: 51.0447, lng: -114.0719 }, Edmonton: { lat: 53.5461, lng: -113.4938 }, Banff: { lat: 51.1784, lng: -115.5708 },
   Vancouver: { lat: 49.2827, lng: -123.1207 }, Victoria: { lat: 48.4284, lng: -123.3656 }, Kelowna: { lat: 49.888, lng: -119.496 },
   Winnipeg: { lat: 49.8951, lng: -97.1384 },

@@ -8,7 +8,7 @@ import SmartImage from "./SmartImage";
 import { useStore } from "../store";
 import { BadgeRow } from "./Badge";
 
-// Real photo thumbnails only — never empty placeholder tiles (that reads as a
+// Real photo thumbnails only, never empty placeholder tiles (that reads as a
 // broken/prototype UI). Renders nothing when the post has no photos.
 function MediaStrip({ photos }) {
   const shown = photos.slice(0, 4);

@@ -1,9 +1,9 @@
 import { Platform } from "react-native";
 
 // Mobile-web safe areas. Two real problems on phones (esp. iOS Safari):
-//   1. Content hid behind the notch / home indicator — because the page never
+//   1. Content hid behind the notch / home indicator, because the page never
 //      opted into safe-area insets (`viewport-fit=cover`) and reserved nothing.
-//   2. The bottom tab bar hid behind Safari's toolbar — because the app was
+//   2. The bottom tab bar hid behind Safari's toolbar, because the app was
 //      sized to the *layout* viewport (`height:100%`), which is TALLER than what's
 //      actually visible when the browser chrome is showing.
 //

@@ -9,7 +9,7 @@ import SheetHeader from "../components/SheetHeader";
 import Badge from "../components/Badge";
 
 // Audience & ads: the activity data we collect (see Privacy policy) surfaced for
-// the operator — top artists/venues/searches are the ad-interest signals you'd
+// the operator, top artists/venues/searches are the ad-interest signals you'd
 // target campaigns against, plus raw volume and a live activity tail.
 function AdInsights() {
   const [data, setData] = useState(null);
@@ -92,7 +92,7 @@ function MemberRow({ u, self, status, canRole, onRole, onTimeout, onLift, onBan,
         </View>
       </View>
 
-      {/* role pills — admins only (Discord-style role administration) */}
+      {/* role pills, admins only (Discord-style role administration) */}
       {canRole && (
         <View style={styles.pillRow}>
           <Text style={styles.pillLabel}>Role</Text>
@@ -109,7 +109,7 @@ function MemberRow({ u, self, status, canRole, onRole, onTimeout, onLift, onBan,
         </View>
       )}
 
-      {/* verification — admin-granted blue check, independent of role */}
+      {/* verification, admin-granted blue check, independent of role */}
       {canRole && (
         <View style={styles.pillRow}>
           <Text style={styles.pillLabel}>Verify</Text>
@@ -118,7 +118,7 @@ function MemberRow({ u, self, status, canRole, onRole, onTimeout, onLift, onBan,
             onPress={() => onVerify(!u.verified)}
           >
             <Badge type="verified" size={15} />
-            <Text style={[styles.verifyTxt, u.verified && styles.verifyTxtOn]}>{u.verified ? "Verified — tap to remove" : "Grant verification"}</Text>
+            <Text style={[styles.verifyTxt, u.verified && styles.verifyTxtOn]}>{u.verified ? "Verified, tap to remove" : "Grant verification"}</Text>
           </Pressable>
         </View>
       )}
@@ -162,7 +162,7 @@ export default function AdminScreen({ onClose }) {
   const [q, setQ] = useState("");
 
   // Pull EVERY signup (incl. banned) from the server so the console shows real
-  // members — not just the seed + whoever happens to be cached locally.
+  // members, not just the seed + whoever happens to be cached locally.
   useEffect(() => { loadAdminMembers(); }, []);
 
   const pending = requests.filter((r) => r.status === "pending");
@@ -214,7 +214,7 @@ export default function AdminScreen({ onClose }) {
         </View>
       </View>
 
-      {/* tab bar — a clean segmented control (no more stretched ovals) */}
+      {/* tab bar, a clean segmented control (no more stretched ovals) */}
       <View style={styles.tabbar}>
         {TABS.map((t) => (
           <Pressable key={t.key} style={[styles.tab, tab === t.key && styles.tabOn]} onPress={() => setTab(t.key)}>
@@ -254,7 +254,7 @@ export default function AdminScreen({ onClose }) {
                     <Icon name="flag" size={14} color={colors.danger} />
                     <Text style={styles.reason}>{r.reason || "reported"}</Text>
                   </View>
-                  <Text style={styles.artist}>{log ? `${log.artist} — by ${log.user?.name}` : "content removed"}</Text>
+                  <Text style={styles.artist}>{log ? `${log.artist}, by ${log.user?.name}` : "content removed"}</Text>
                   <Text style={styles.sub}>reported by {reporter ? `@${reporter.handle}` : "a user"}</Text>
                   <View style={styles.actions}>
                     <Pressable style={[styles.btn, styles.remove]} onPress={() => actionReport(r.id)}>
@@ -343,7 +343,7 @@ export default function AdminScreen({ onClose }) {
                     <View style={{ flex: 1 }}>
                       <Text style={styles.artist}>{l.artist}</Text>
                       <Text style={styles.sub}>by {l.user?.name || "a fan"} · {l.venue}</Text>
-                      {removed && <Text style={styles.removedTag}>REMOVED — hidden from public</Text>}
+                      {removed && <Text style={styles.removedTag}>REMOVED, hidden from public</Text>}
                     </View>
                     {removed ? (
                       <Pressable style={[styles.btn, styles.reject]} onPress={() => restoreContent(l.id)}><Text style={styles.dismissTxt}>Restore</Text></Pressable>

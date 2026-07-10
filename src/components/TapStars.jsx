@@ -19,7 +19,7 @@ function OneStar({ size, fill, color }) {
 }
 
 // Tap a star to rate. Tap the left half for a half-star, right half for a full
-// one. No plus/minus buttons. value is 0–5 in 0.5 steps.
+// one. No plus/minus buttons. value is 0-5 in 0.5 steps.
 export default function TapStars({ value = 0, onChange, size = 40, gap = 8, color = colors.gold }) {
   return (
     <View style={{ flexDirection: "row", gap }}>

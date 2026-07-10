@@ -15,7 +15,7 @@ export class ApiError extends Error {
 const now = () => Date.now();
 const uid = (p) => `${p}_${randomUUID().slice(0, 12)}`;
 
-// Advance a timestamp by N business days (skip Sat/Sun) — for the @handle cooldown.
+// Advance a timestamp by N business days (skip Sat/Sun), for the @handle cooldown.
 function addBusinessDays(ts, n) {
   const d = new Date(ts);
   let added = 0;
@@ -42,7 +42,7 @@ function requireAdmin(ctx) {
   return u;
 }
 function limit(ctx, name, max, windowMs) {
-  if (!rateLimit(`${name}:${ctx.ip}`, max, windowMs)) throw new ApiError(429, "Too many requests — slow down and try again.");
+  if (!rateLimit(`${name}:${ctx.ip}`, max, windowMs)) throw new ApiError(429, "Too many requests, slow down and try again.");
 }
 
 // An account "owns" the artist page whose name matches theirs; admins own all.
@@ -142,7 +142,7 @@ export const routes = {
   },
 
   // Resolve one artist by name. If it's not in the catalog yet, fetch it live from
-  // MusicBrainz and insert it — so NO artist is ever "missing": the first person
+  // MusicBrainz and insert it, so NO artist is ever "missing": the first person
   // to look one up creates it. Enrichment (photo/tracks) happens later.
   "GET /api/artists/resolve": async (ctx) => {
     const name = clean(ctx.query.name, { max: 120 });
@@ -255,7 +255,7 @@ export const routes = {
     });
     if (errs.length) throw new ApiError(400, errs[0]);
     const u = q.userByEmail.get(v.email);
-    // same error either way — never reveal which part was wrong
+    // same error either way, never reveal which part was wrong
     if (!u || !verifyPassword(v.password, u.pass_hash)) throw new ApiError(401, "Wrong email or password.");
     if (u.is_banned) throw new ApiError(403, "This account is banned.");
     const sess = createSession(u.id, ctx.ip, ctx.ua);
@@ -271,7 +271,7 @@ export const routes = {
 
   "GET /api/me": (ctx) => ({ user: ctx.user ? publicUser(ctx.user, { self: true }) : null }),
 
-  // The ids this account follows — lets the client hydrate its follow graph on
+  // The ids this account follows, lets the client hydrate its follow graph on
   // login / a new device (SQLite migration slice 1, see MIGRATION.md).
   "GET /api/me/following": (ctx) => {
     const u = requireUser(ctx);
@@ -295,7 +295,7 @@ export const routes = {
       genres: { parse: (x) => cleanStringArray(x, { maxItems: 12, maxLen: 30 }) },
       favoriteArtists: { parse: (x) => cleanStringArray(x, { maxItems: 50, maxLen: 80 }) },
       // All 8 themes (4 dark + 4 light). If this list falls behind theme.js, the
-      // newer themes get silently rejected here — the server then re-hydrates the
+      // newer themes get silently rejected here, the server then re-hydrates the
       // stale theme on /api/me and the client "snaps back" to a previous theme.
       theme: { parse: (x) => (["stage", "neon", "forest", "ember", "daylight", "ice", "rose", "mint"].includes(x) ? x : undefined) },
       extras: { parse: (x) => (typeof x === "object" && x ? JSON.stringify(x).slice(0, 8000) : undefined) },
@@ -314,7 +314,7 @@ export const routes = {
         const nextAt = addBusinessDays(u.handle_changed_at, HANDLE_COOLDOWN_DAYS);
         if (now() < nextAt) {
           const when = new Date(nextAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-          throw new ApiError(429, `Username can only change every ${HANDLE_COOLDOWN_DAYS} business days — next change available ${when}.`);
+          throw new ApiError(429, `Username can only change every ${HANDLE_COOLDOWN_DAYS} business days, next change available ${when}.`);
         }
       }
       sets.push("handle = ?", "handle_changed_at = ?"); args.push(v.handle, now());
@@ -530,7 +530,7 @@ export const routes = {
   },
 
   // ---- fan clubs (SQLite migration slice 5) ----
-  // The artists this account is a member of — lets the client hydrate membership
+  // The artists this account is a member of, lets the client hydrate membership
   // (join-button state + counts) on login. Names are stored lowercased.
   "GET /api/me/fanclubs": (ctx) => {
     const u = requireUser(ctx);
@@ -593,7 +593,7 @@ export const routes = {
     return { ok: true, stored };
   },
 
-  // Admin analytics dashboard — the collected data + the ad-interest signals
+  // Admin analytics dashboard, the collected data + the ad-interest signals
   // derived from it (top artists / venues / genres / searches).
   "GET /api/admin/analytics": (ctx) => {
     requireAdmin(ctx);

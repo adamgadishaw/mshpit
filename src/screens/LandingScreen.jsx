@@ -6,7 +6,7 @@ import Icon from "../components/Icon";
 import { catalogVenues, catalogArtists } from "../seed/catalog";
 
 // ----------------------------------------------------------------------------
-// The opening act — the way real music apps do it: full-bleed live-show
+// The opening act, the way real music apps do it: full-bleed live-show
 // photography with a slow cinematic drift, layered scrims for legibility, and
 // editorial type. Photos are Unsplash-licensed (free commercial use), served
 // from Unsplash's CDN, credited on-screen, and crossfaded on a loop.
@@ -153,7 +153,7 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse }) {
           </Animated.Text>
           <Text style={[styles.sub, !wide && { textAlign: "center" }]}>
             Log the shows you go to, rate the band and the room, and find the nights worth
-            leaving the house for — from people whose taste you trust.
+            leaving the house for, from people whose taste you trust.
           </Text>
 
           <View style={[styles.ctas, !wide && { justifyContent: "center" }]}>

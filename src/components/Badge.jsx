@@ -2,10 +2,10 @@ import Svg, { Path, Polyline, Polygon, G, Defs, RadialGradient, Stop, Text as Sv
 import { View, Text, StyleSheet } from "react-native";
 import { colors, mono, radius } from "../theme";
 
-// Pit badge system — high-quality "clip art" seals, drawn (no emoji, no glyph
+// Pit badge system, high-quality "clip art" seals, drawn (no emoji, no glyph
 // stand-ins; same house style as Icon.jsx). A scalloped verification seal for
 // official accounts, a gold star medallion for Top-100 artists. One component,
-// many meanings — driven by `type`.
+// many meanings, driven by `type`.
 //
 //   <Badge type="verified" size={18} />
 //   <Badge type="top100" size={18} />
@@ -91,7 +91,7 @@ export function BadgeRow({ badges = [], size = 16, style }) {
 }
 
 // An optional labelled chip (badge + word) for headers where there's room to
-// spell it out — "VERIFIED", "TOP 100".
+// spell it out, "VERIFIED", "TOP 100".
 export function BadgeChip({ type, label, size = 16 }) {
   const c = config(type);
   return (

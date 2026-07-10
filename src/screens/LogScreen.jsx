@@ -22,7 +22,7 @@ function Stepper({ label, value, onChange, color }) {
         <Pressable style={styles.stepBtn} onPress={() => step(-0.5)} hitSlop={8}>
           <Icon name="minus" size={18} color={colors.text} />
         </Pressable>
-        <Text style={[styles.stepVal, { color: value > 0 ? color : colors.textFaint }]}>{value > 0 ? value.toFixed(1) : "–"}</Text>
+        <Text style={[styles.stepVal, { color: value > 0 ? color : colors.textFaint }]}>{value > 0 ? value.toFixed(1) : "-"}</Text>
         <Pressable style={styles.stepBtn} onPress={() => step(0.5)} hitSlop={8}>
           <Icon name="plus" size={18} color={colors.text} />
         </Pressable>
@@ -39,7 +39,7 @@ export default function LogScreen({ onPost, onCancel, user, prefill }) {
   const [review, setReview] = useState("");
   const [photos, setPhotos] = useState([]);
   const [photosPublic, setPhotosPublic] = useState(true);
-  // Show date — defaults to today so logging stays one-tap, but you can set the
+  // Show date, defaults to today so logging stays one-tap, but you can set the
   // real date of a past show. Years run from this year back to 2000, descending.
   const today = new Date();
   const todayStr = `${today.getFullYear()} · ${String(today.getMonth() + 1).padStart(2, "0")} · ${String(today.getDate()).padStart(2, "0")}`;
@@ -65,7 +65,7 @@ export default function LogScreen({ onPost, onCancel, user, prefill }) {
       timeAgo: "now",
       artist: artist.trim(),
       venue: venue.trim() || "Unknown venue",
-      city: city.trim() || "—",
+      city: city.trim() || "-",
       date,
       media: photos.length,
       photos,
@@ -108,7 +108,7 @@ export default function LogScreen({ onPost, onCancel, user, prefill }) {
 
         {/* live weighted overall */}
         <View style={styles.overallCard}>
-          <Text style={styles.overallNum}>{computed.overall ? computed.overall.toFixed(1) : "–"}</Text>
+          <Text style={styles.overallNum}>{computed.overall ? computed.overall.toFixed(1) : "-"}</Text>
           <View>
             <Stars value={computed.overall} size={18} />
             <Text style={styles.overallSub}>weighted overall · rate the factors below</Text>

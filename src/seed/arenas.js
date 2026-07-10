@@ -1,7 +1,7 @@
-// Major arenas, stadiums & amphitheatres across Canada + the USA — the flagship
+// Major arenas, stadiums & amphitheatres across Canada + the USA, the flagship
 // rooms artists actually headline. These were missing because MusicBrainz files
 // them under place types "Indoor arena" / "Stadium", not "Venue", so the scraper's
-// `type:Venue` filter skipped them (now widened too — see scripts/ingest-*.mjs).
+// `type:Venue` filter skipped them (now widened too, see scripts/ingest-*.mjs).
 //
 // Curated facts (name, city, coordinates, capacity) are public/uncopyrighted, so
 // seeding them guarantees artists can attach performances to the right room today.

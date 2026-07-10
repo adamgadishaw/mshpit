@@ -55,7 +55,7 @@ export function LeftRail({ tab, setTab, session, unread = 0, notifUnread = 0, on
   );
 }
 
-// Right rail: contextual widgets — Top / A–Z artists, trending venues, upcoming
+// Right rail: contextual widgets, Top / A-Z artists, trending venues, upcoming
 // events. Read-only discovery surfaces that stay out of the feed's way.
 export function RightRail({ onOpenArtist, onOpenVenue, onFindVenues, onOpenEvent }) {
   const { topArtists, artistsAlphabetical, trendingVenues, upcomingEvents } = useStore();
@@ -66,7 +66,7 @@ export function RightRail({ onOpenArtist, onOpenVenue, onFindVenues, onOpenEvent
 
   return (
     <ScrollView style={styles.right} contentContainerStyle={styles.rightContent} showsVerticalScrollIndicator={false}>
-      {/* Artists — Top / A–Z toggle */}
+      {/* Artists, Top / A-Z toggle */}
       <View style={styles.card}>
         <View style={styles.cardHead}>
           <Text style={styles.cardTitle}>ARTISTS</Text>
@@ -75,7 +75,7 @@ export function RightRail({ onOpenArtist, onOpenVenue, onFindVenues, onOpenEvent
               <Text style={[styles.tgTxt, artistMode === "top" && styles.tgTxtOn]}>Top</Text>
             </Pressable>
             <Pressable onPress={() => setArtistMode("az")} style={[styles.tgBtn, artistMode === "az" && styles.tgOn]}>
-              <Text style={[styles.tgTxt, artistMode === "az" && styles.tgTxtOn]}>A–Z</Text>
+              <Text style={[styles.tgTxt, artistMode === "az" && styles.tgTxtOn]}>A-Z</Text>
             </Pressable>
           </View>
         </View>
@@ -155,7 +155,7 @@ const styles = StyleSheet.create({
   loginBtn: { backgroundColor: colors.amberStrong, borderRadius: radius.md, paddingVertical: 12, alignItems: "center" },
   loginTxt: { color: "#1A1206", fontSize: 13, fontWeight: "800", letterSpacing: 1 },
 
-  // right rail — RNW gives ScrollView a default flex:1, so pin it rigid or it
+  // right rail, RNW gives ScrollView a default flex:1, so pin it rigid or it
   // grows past its width and starves the feed column.
   right: { width: 340, flexGrow: 0, flexShrink: 0, flexBasis: 340 },
   rightContent: { padding: 16, gap: 14 },

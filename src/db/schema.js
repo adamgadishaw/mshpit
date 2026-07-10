@@ -1,4 +1,4 @@
-// SQLite storage layer (scaffold) — the efficient, normalized store that replaces
+// SQLite storage layer (scaffold), the efficient, normalized store that replaces
 // the in-memory JSON as the catalog grows to Soundmap/Spotify scale.
 //
 // NOT wired in yet: nothing imports this module, so it does not affect the running
@@ -7,7 +7,7 @@
 // Why this is efficient vs the current catalog.generated.json:
 //  - Data is normalized: an event stores artist_id + venue_id, not repeated copies
 //    of the full artist/venue objects (the JSON currently duplicates them).
-//  - Photos are ONE row per URL (deduped), referenced by owner — no repetition.
+//  - Photos are ONE row per URL (deduped), referenced by owner, no repetition.
 //  - Indexed columns (name, city, artist_id) make search/browse O(log n), not a
 //    full scan of a giant JSON blob loaded entirely into memory on every launch.
 //  - Only the rows a screen needs are read; images are lazy-loaded + disk-cached.

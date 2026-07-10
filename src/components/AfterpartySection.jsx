@@ -50,7 +50,7 @@ export default function AfterpartySection({ log, coord, onOpenProfile, onRequire
                 label={log.venue}
                 onPressPoint={(p) => Linking.openURL(mapsDir(p.lat, p.lng))}
               />
-              <Text style={styles.mapHint}>The venue is amber · pink pins are afterparty spots — tap one for directions.</Text>
+              <Text style={styles.mapHint}>The venue is amber · pink pins are afterparty spots, tap one for directions.</Text>
             </View>
           )}
           {spots.map((s) => (

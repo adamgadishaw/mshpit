@@ -67,7 +67,7 @@ export const catalogVenues = (() => {
     const gen = out[k] || {};
     const a = anchors[k];
     // Anchors win on FACTS (name/place/coords/capacity); photos always come from
-    // whichever side actually has them — a curated `photo: null` must never
+    // whichever side actually has them, a curated `photo: null` must never
     // blank out a scraped gallery (that bug hid the arena photos once already).
     out[k] = {
       ...gen,

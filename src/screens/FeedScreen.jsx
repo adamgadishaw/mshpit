@@ -90,10 +90,10 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, h
           </Text>
           <Text style={styles.emptySub}>
             {filter === "following"
-              ? "Follow people whose taste matches yours — tap any reviewer's name to see their profile and follow."
+              ? "Follow people whose taste matches yours, tap any reviewer's name to see their profile and follow."
               : filter === "local"
-              ? "Be the first to log a show in your city — tap the + to post one."
-              : "Log the first show — tap the + to rate the band and the room."}
+              ? "Be the first to log a show in your city, tap the + to post one."
+              : "Log the first show, tap the + to rate the band and the room."}
           </Text>
         </View>
       }

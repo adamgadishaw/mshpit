@@ -57,10 +57,10 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtis
   const logs = logsByUser(user.id);
   const planned = goingFor(user.id);
   const isSelf = session?.id === user.id;
-  // "Crossed paths" — shows you've both been to (and artists you've both seen).
+  // "Crossed paths", shows you've both been to (and artists you've both seen).
   const crossed = !isSelf && session ? sharedShows(user.id) : { shows: [], artists: [] };
 
-  // Photo gallery — every photo this person attached to a post, newest first.
+  // Photo gallery, every photo this person attached to a post, newest first.
   // On someone else's profile we only show ones they marked public; you always
   // see all of your own. Each remembers the show it came from.
   const gallery = logs.flatMap((l) =>
@@ -129,7 +129,7 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtis
           <Stat value={followingCount(user.id)} label="FOLLOWING" />
         </View>
 
-        {/* Crossed paths — the concert-overlap tracker. */}
+        {/* Crossed paths, the concert-overlap tracker. */}
         {!isSelf && session && (crossed.shows.length > 0 || crossed.artists.length > 0) && (
           <Pressable
             style={styles.crossed}
@@ -157,7 +157,7 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtis
           </Pressable>
         )}
 
-        {/* photo gallery — a wall of every shot from their nights */}
+        {/* photo gallery, a wall of every shot from their nights */}
         {gallery.length > 0 && (
           <>
             <Text style={styles.sectionLabel}>PHOTOS · {gallery.length}</Text>
@@ -209,7 +209,7 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtis
           </Pressable>
         ))}
 
-        {/* their posts — the same feed card as home, so a profile reads like a
+        {/* their posts, the same feed card as home, so a profile reads like a
             wall of everything this person has posted (Facebook/Letterboxd style) */}
         <Text style={styles.sectionLabel}>{isSelf ? "YOUR POSTS" : "POSTS"} · {logs.length}</Text>
         {logs.length === 0 && (

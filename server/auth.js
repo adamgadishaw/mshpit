@@ -1,4 +1,4 @@
-// Auth primitives — scrypt password hashing + opaque session tokens.
+// Auth primitives, scrypt password hashing + opaque session tokens.
 // Zero dependencies (node:crypto only).
 //
 // Design notes, so this stays easy to fix:
@@ -6,9 +6,9 @@
 //   "scrypt:<salt hex>:<hash hex>" so the algorithm can be swapped later and old
 //   hashes still verify.
 // - Sessions: 32 random bytes, sent to the client as an httpOnly cookie. The DB
-//   stores only sha256(token) — a leaked DB cannot be replayed as a session.
+//   stores only sha256(token), a leaked DB cannot be replayed as a session.
 // - Rate limiting: fixed-window in-memory buckets per key. Survivable default:
-//   if the process restarts, buckets reset — acceptable, fails open not closed.
+//   if the process restarts, buckets reset, acceptable, fails open not closed.
 import { scryptSync, randomBytes, timingSafeEqual, createHash } from "node:crypto";
 import { q } from "./db.js";
 

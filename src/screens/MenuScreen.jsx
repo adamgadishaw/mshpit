@@ -67,7 +67,7 @@ export default function MenuScreen({ onClose, onNear, onVenues, onFanClubs, onTo
         )}
 
         <Text style={styles.section}>APPEARANCE</Text>
-        {session && <Text style={styles.themeHint}>Saved to your account — follows you to any device.</Text>}
+        {session && <Text style={styles.themeHint}>Saved to your account, follows you to any device.</Text>}
         <View style={styles.themeRow}>
           {THEMES.map((t) => {
             const on = t.key === themeKey;

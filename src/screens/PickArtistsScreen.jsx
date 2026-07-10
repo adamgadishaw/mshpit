@@ -8,7 +8,7 @@ import SheetHeader from "../components/SheetHeader";
 import CardGrid from "../components/CardGrid";
 import { proxied, isHttp } from "../lib/img";
 
-// Signup taste picker — choose the artists you love so the feed and
+// Signup taste picker, choose the artists you love so the feed and
 // recommendations start personal instead of generic. Also reachable from Edit
 // profile to tune your picks later.
 function ArtistTile({ a, picked, onToggle }) {
@@ -42,7 +42,7 @@ export default function PickArtistsScreen({ onDone, onSkip }) {
   const [theme, setThemeChoice] = useState(themeKey); // the current/default preset
   const query = q.trim().toLowerCase();
 
-  // Popular first (Spotify popularity), then alphabetical — so the grid opens
+  // Popular first (Spotify popularity), then alphabetical, so the grid opens
   // with names people recognize.
   const all = useMemo(() =>
     Object.values(ingestedArtists)
@@ -63,7 +63,7 @@ export default function PickArtistsScreen({ onDone, onSkip }) {
     const genres = new Set(session?.genres || []);
     favoriteArtists.forEach((n) => { const g = ingestedArtists[n.toLowerCase()]?.genre; if (g) genres.add(g); });
     const safe = updateProfile({ favoriteArtists, genres: [...genres] });
-    // A theme change re-resolves the StyleSheet, which needs a reload — so hand
+    // A theme change re-resolves the StyleSheet, which needs a reload, so hand
     // the sanitized picks to chooseTheme to persist in the same write (no reload
     // race) and let it reload straight into the freshly themed feed.
     if (theme && theme !== themeKey) chooseTheme(theme, safe);
@@ -78,7 +78,7 @@ export default function PickArtistsScreen({ onDone, onSkip }) {
         action={{ label: picked.size >= MIN_PICKS ? `Done · ${picked.size}` : `Pick ${MIN_PICKS - picked.size} more`, onPress: save, disabled: picked.size < MIN_PICKS }}
       />
       <Text style={styles.sub}>
-        Choose at least {MIN_PICKS} artists you love — your feed, recommendations, and events
+        Choose at least {MIN_PICKS} artists you love, your feed, recommendations, and events
         get built around them.
       </Text>
 

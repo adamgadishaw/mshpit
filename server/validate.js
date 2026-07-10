@@ -1,4 +1,4 @@
-// Server-side input guarding — the authoritative twin of src/lib/validate.js.
+// Server-side input guarding, the authoritative twin of src/lib/validate.js.
 // The client copy is UX; THIS is the trust boundary. Every route cleans and
 // validates through these before anything touches the database.
 

@@ -48,7 +48,7 @@ export default function InboxScreen({ onClose, onOpenThread }) {
         {!session && <Text style={styles.empty}>Log in to message people.</Text>}
 
         {session && tab === "requests" && (
-          <Text style={styles.hint}>Messages from people you don't follow. Reply to accept — the chat then moves to Messages.</Text>
+          <Text style={styles.hint}>Messages from people you don't follow. Reply to accept, the chat then moves to Messages.</Text>
         )}
 
         {session && threads.length === 0 && (

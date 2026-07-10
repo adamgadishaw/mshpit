@@ -1,8 +1,8 @@
 // In-process tour-date scraper. Runs inside the web server (which owns the SQLite
-// DB + persistent disk — a Render cron can't share that disk), on a timer:
+// DB + persistent disk, a Render cron can't share that disk), on a timer:
 // fetches upcoming dates from Ticketmaster and/or Bandsintown for the top artists
 // and upserts them into `tour_dates`. GET /api/tourdates serves them, the client
-// merges them into its catalog. No git push, no redeploy — live the moment we write.
+// merges them into its catalog. No git push, no redeploy, live the moment we write.
 import { db } from "./db.js";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -117,7 +117,7 @@ async function refresh() {
 
 export function startTourDateScheduler() {
   if (!KEY && !BIT) {
-    console.log("[pit] tour-date scheduler idle — set TICKETMASTER_KEY and/or BANDSINTOWN_APP_ID to enable.");
+    console.log("[pit] tour-date scheduler idle, set TICKETMASTER_KEY and/or BANDSINTOWN_APP_ID to enable.");
     return;
   }
   console.log(`[pit] tour-date scheduler on (${[KEY && "Ticketmaster", BIT && "Bandsintown"].filter(Boolean).join(" + ")}, every ${REFRESH_H}h).`);

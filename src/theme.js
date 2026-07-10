@@ -31,14 +31,14 @@ const FOREST = {
   amber: "#34D399", amberStrong: "#10B981", gold: "#FBBF24", magenta: "#F472B6", cool: "#38BDF8", good: "#34D399", danger: "#FB7185",
 };
 
-// Ember: warm charcoal dark with a coral/pink primary + violet gel — a hot dark.
+// Ember: warm charcoal dark with a coral/pink primary + violet gel, a hot dark.
 const EMBER = {
   bg: "#150E11", bgElev: "#1D1318", surface: "#251820", surfaceAlt: "#33232C",
   line: "#412C38", lineSoft: "#2D1E28", text: "#FCEEE9", textDim: "#CBA69F", textFaint: "#8C6A64",
   amber: "#FF8A73", amberStrong: "#FF6B5E", gold: "#F4B45C", magenta: "#C86BFF", cool: "#5BD0EF", good: "#5FD08A", danger: "#FF5E7E",
 };
 
-// Ice: cool near-white LIGHT theme led by blue (not warm amber) — a real
+// Ice: cool near-white LIGHT theme led by blue (not warm amber), a real
 // alternative to Daylight, not a near-twin.
 const ICE = {
   bg: "#F1F6FC", bgElev: "#FFFFFF", surface: "#FFFFFF", surfaceAlt: "#E6EEF8",
@@ -117,7 +117,7 @@ export const roleColor = (role) =>
   role === "admin" ? colors.magenta : role === "moderator" ? colors.good : role === "artist" ? colors.amber : null;
 
 export const mono = Platform.select({ ios: "Menlo", android: "monospace", default: "monospace" });
-// Rounder geometry reads modern — cards at 16, sheets/heroes at 24.
+// Rounder geometry reads modern, cards at 16, sheets/heroes at 24.
 export const radius = { sm: 10, md: 16, lg: 24, pill: 999 };
 export const space = (n) => n * 4;
 

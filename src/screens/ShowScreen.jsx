@@ -85,7 +85,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
             <View style={styles.reviewCard}>
               <Text style={styles.review}>{log.review}</Text>
               <Pressable onPress={log.userId ? () => onOpenProfile?.(log.userId) : undefined}>
-                <Text style={styles.byline}>— {log.user?.name || "a fan"}</Text>
+                <Text style={styles.byline}>- {log.user?.name || "a fan"}</Text>
               </Pressable>
             </View>
           </>
@@ -131,7 +131,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
                 <Icon name="lock" size={18} color={colors.amber} />
                 <View style={{ flex: 1 }}>
                   <Text style={styles.spoilerTitle}>Setlist hidden</Text>
-                  <Text style={styles.spoilerSub}>This tour is still running — tap to reveal (spoiler).</Text>
+                  <Text style={styles.spoilerSub}>This tour is still running, tap to reveal (spoiler).</Text>
                 </View>
                 <Text style={styles.spoilerCta}>Reveal</Text>
               </Pressable>

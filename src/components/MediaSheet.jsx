@@ -4,7 +4,7 @@ import Icon from "./Icon";
 import SpotifyEmbed from "./SpotifyEmbed";
 
 // In-app player sheet. Opens over whatever you were on, plays the track/artist via
-// the Spotify embed, and closes back to it — nobody leaves the app.
+// the Spotify embed, and closes back to it, nobody leaves the app.
 export default function MediaSheet({ media, onClose }) {
   if (!media) return null;
   const { kind = "track", id, url, title, artist } = media;
