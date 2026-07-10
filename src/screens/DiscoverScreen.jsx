@@ -74,8 +74,8 @@ function Plinth({ row, rank, onPress }) {
   );
 }
 
-export default function DiscoverScreen({ onOpenTopRated, onOpenArtist, onOpenNearby, onOpenFanClubs, onOpenVenues, onOpenPhotos }) {
-  const { session, chartTop, chartInfo, catalogCountries, topGenres, topPhotos, discoverStats, loadMembers, memberCount } = useStore();
+export default function DiscoverScreen({ onOpenTopRated, onOpenArtist, onOpenNearby, onOpenFanClubs, onOpenVenues, onOpenPhotos, onPlay }) {
+  const { session, chartTop, chartInfo, catalogCountries, topGenres, topPhotos, discoverStats, loadMembers, memberCount, topArtistsBy, topSongsBy, resolveSpotifyTrack } = useStore();
   useEffect(() => { loadMembers(); }, []); // pull the live member count + directory
 
   const chart = useMemo(() => chartTop(10), []);
@@ -107,6 +107,21 @@ export default function DiscoverScreen({ onOpenTopRated, onOpenArtist, onOpenNea
 
   const genres = useMemo(() => topGenres(region === "Worldwide" ? null : region, 6), [region]);
   const photos = useMemo(() => topPhotos(12), []);
+
+  // Explore-by-genre: pick a genre (in the current region) to see its top artists
+  // and songs, so you can dig past the global top 100.
+  const [genre, setGenre] = useState(null);
+  const country = region === "Worldwide" ? null : region;
+  const genreChips = useMemo(() => topGenres(country, 12).filter((g) => g.genre !== "Other"), [region]);
+  const genreArtists = useMemo(() => (genre ? topArtistsBy({ genre, country, n: 12 }) : []), [genre, region]);
+  const genreSongs = useMemo(() => (genre ? topSongsBy({ genre, country, n: 10 }) : []), [genre, region]);
+  const playSong = async (s) => {
+    const url = s.url || (await resolveSpotifyTrack(s.title, s.artist));
+    if (url) onPlay?.({ kind: "track", url, title: s.title, artist: s.artist, art: s.art }, null);
+  };
+  // Default to the region's top genre so the section always shows something; keep
+  // the picked genre across region changes when it still exists there.
+  useEffect(() => { if (genreChips.length && !genreChips.some((g) => g.genre === genre)) setGenre(genreChips[0].genre); }, [genreChips]);
 
   const podium = chart.slice(0, 3);
   const rest = chart.slice(3);
@@ -213,6 +228,58 @@ export default function DiscoverScreen({ onOpenTopRated, onOpenArtist, onOpenNea
         </View>
       )}
 
+      {/* Explore by genre: top artists + songs in a genre and region */}
+      {genreChips.length > 0 && (
+        <View style={styles.panel}>
+          <View style={styles.panelHead}>
+            <Text style={styles.panelTitle}>EXPLORE BY GENRE</Text>
+            <Text style={styles.panelSub}>{region}</Text>
+          </View>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.regionRow}>
+            {genreChips.map((g) => {
+              const on = g.genre === genre;
+              return (
+                <Pressable key={g.genre} style={[styles.regionChip, on && styles.regionChipOn]} onPress={() => setGenre(g.genre)}>
+                  <Text style={[styles.regionTxt, on && styles.regionTxtOn]}>{g.genre}</Text>
+                  <Text style={[styles.regionCount, on && styles.regionCountOn]}>{g.count}</Text>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+
+          {genreArtists.length > 0 && (
+            <>
+              <Text style={styles.subLabel}>TOP {(genre || "").toUpperCase()} ARTISTS</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.gArtistRow}>
+                {genreArtists.map((a, i) => (
+                  <Pressable key={a.name} style={styles.gArtist} onPress={() => onOpenArtist?.(a.name)}>
+                    <Avatar user={artistUser(a.name, a.photo)} size={66} />
+                    <View style={styles.gRank}><Text style={styles.gRankTxt}>{i + 1}</Text></View>
+                    <Text style={styles.gArtistName} numberOfLines={1}>{a.name}</Text>
+                  </Pressable>
+                ))}
+              </ScrollView>
+            </>
+          )}
+
+          {genreSongs.length > 0 && (
+            <>
+              <Text style={styles.subLabel}>TOP {(genre || "").toUpperCase()} SONGS</Text>
+              {genreSongs.map((s, i) => (
+                <Pressable key={s.title + s.artist} style={styles.gSong} onPress={() => playSong(s)}>
+                  <Text style={styles.gSongRank}>{i + 1}</Text>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.gSongTitle} numberOfLines={1}>{s.title}</Text>
+                    <Pressable onPress={() => onOpenArtist?.(s.artist)}><Text style={styles.gSongArtist} numberOfLines={1}>{s.artist}</Text></Pressable>
+                  </View>
+                  <View style={styles.gSongPlay}><Icon name="play" size={13} color={colors.amber} /></View>
+                </Pressable>
+              ))}
+            </>
+          )}
+        </View>
+      )}
+
       {/* Top uploaded photos */}
       {photos.length > 0 && (
         <View style={styles.panel}>
@@ -283,6 +350,17 @@ const styles = StyleSheet.create({
   rankMetric: { color: colors.textDim, fontSize: 11, fontWeight: "700", fontFamily: mono },
 
   regionRow: { flexDirection: "row", gap: 8, paddingVertical: 4 },
+  subLabel: { color: colors.textFaint, fontSize: 10.5, letterSpacing: 1.2, fontWeight: "800", marginTop: 16, marginBottom: 8 },
+  gArtistRow: { flexDirection: "row", gap: 14, paddingVertical: 2, paddingRight: 8 },
+  gArtist: { width: 74, alignItems: "center" },
+  gRank: { position: "absolute", top: 0, left: 2, backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line, borderRadius: 9, minWidth: 18, height: 18, alignItems: "center", justifyContent: "center", paddingHorizontal: 3 },
+  gRankTxt: { color: colors.amber, fontFamily: mono, fontSize: 10, fontWeight: "800" },
+  gArtistName: { color: colors.text, fontSize: 11.5, fontWeight: "700", marginTop: 6, textAlign: "center" },
+  gSong: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 8, borderTopWidth: 1, borderTopColor: colors.lineSoft },
+  gSongRank: { color: colors.textFaint, fontFamily: mono, fontSize: 13, fontWeight: "800", width: 22, textAlign: "center" },
+  gSongTitle: { color: colors.text, fontSize: 14, fontWeight: "700" },
+  gSongArtist: { color: colors.textDim, fontSize: 11.5, marginTop: 1 },
+  gSongPlay: { width: 32, height: 32, borderRadius: 16, borderWidth: 1, borderColor: colors.amber, alignItems: "center", justifyContent: "center" },
   regionChip: { flexDirection: "row", alignItems: "center", gap: 7, backgroundColor: colors.bgElev, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 13, paddingVertical: 8 },
   regionChipOn: { backgroundColor: colors.amberStrong, borderColor: colors.amberStrong },
   regionTxt: { color: colors.textDim, fontSize: 12.5, fontWeight: "700" },

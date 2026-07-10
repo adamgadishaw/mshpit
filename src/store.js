@@ -1423,6 +1423,29 @@ export function StoreProvider({ children }) {
     return out;
   };
 
+  // Top artists in a genre and/or region, ranked by popularity. Powers Discover's
+  // "explore by genre" so people can dig past the global top 100.
+  const topArtistsBy = ({ genre, country, n = 12 } = {}) => {
+    const g = genre ? norm(genre) : null;
+    const c = country && country !== "Worldwide" ? country : null;
+    return Object.values(catalogArtists || {})
+      .filter((a) => a.popularity != null && (!g || norm(a.genre) === g) && (!c || a.country === c))
+      .sort((x, y) => (y.popularity || 0) - (x.popularity || 0))
+      .slice(0, n)
+      .map((a) => ({ name: a.name, genre: a.genre, photo: a.photo, popularity: a.popularity }));
+  };
+  // Top songs in a genre/region: the lead track from the most popular artists that
+  // match. Ranked by artist popularity (a stand-in for song popularity). Playable.
+  const topSongsBy = ({ genre, country, n = 12 } = {}) => {
+    const g = genre ? norm(genre) : null;
+    const c = country && country !== "Worldwide" ? country : null;
+    const arts = Object.values(catalogArtists || {})
+      .filter((a) => a.popularity != null && (a.topTracks || []).length && (!g || norm(a.genre) === g) && (!c || a.country === c))
+      .sort((x, y) => (y.popularity || 0) - (x.popularity || 0))
+      .slice(0, n);
+    return arts.map((a) => { const t = a.topTracks[0]; return { title: t.title, artist: a.name, url: t.url || null, art: a.photo, pop: a.popularity }; });
+  };
+
   // Most-liked uploaded photos across the feed (the "top photos" wall).
   const topPhotos = (n = 12) => {
     const out = [];
@@ -1625,7 +1648,7 @@ export function StoreProvider({ children }) {
     searchVenues, venuesByCity, venueUpcomingCount,
     allArtists, topArtists, artistsAlphabetical, upcomingEvents, trendingVenues,
     isVerifiedArtist, isTop100, artistRank, artistBadges, userBadges,
-    chartTop, chartInfo, catalogCountries, topGenres, topPhotos, discoverStats,
+    chartTop, chartInfo, catalogCountries, topGenres, topPhotos, discoverStats, topArtistsBy, topSongsBy,
     commentsFor, addComment, loadComments, likeInfo, toggleLike,
     concertKey, loungeFor, addLoungeMessage,
     albumRating, songRating, rateAlbum, rateSong, loadRating,
