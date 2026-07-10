@@ -126,8 +126,8 @@ const spotifyKeys = () => ({ id: process.env.SPOTIFY_CLIENT_ID, secret: process.
 
 // route table: "METHOD /path" -> handler(ctx) ; :params exposed as ctx.params
 export const routes = {
-  // ---- health ----
-  "GET /api/health": () => ({ ok: true, ts: now() }),
+  // ---- health ---- (spotify + origin are safe config diagnostics, no secrets)
+  "GET /api/health": (ctx) => ({ ok: true, ts: now(), spotify: !!process.env.SPOTIFY_CLIENT_ID, redirectUri: `${ctx.origin}/api/spotify/callback` }),
 
   // ---- artist catalog (DB-backed; scales past the bundled JSON) ----
   // Search the catalog. Empty query → the top artists by rank. Notable artists
