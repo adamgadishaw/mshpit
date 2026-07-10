@@ -100,6 +100,35 @@ Everything below is committed to `master` and auto-deployed.
 
 ---
 
+## Big feature requests (2026-07-10, owner) - not built yet, ordered roughly by value
+**Reviews / logging**
+- Attach a review to the **ARTIST** (typing artist/venue in Log did not attach to the artist). Add a **tour name** field with **presets** (one-off, reunion, festival, random tour) that let you bypass album/tour and just attach to the artist.
+- **Venue AKA**: label a venue as renamed / new ownership / defunct, still attach to the same venue under old or new name. AKA names must be accurate, so require a **disclosure/confirmation** when posting under an AKA. Add a **Terms section on user inputs + user agreements** to cover this.
+- **Review drafts**: save an incomplete review to a Drafts section and finish later.
+- **Attach standout songs** to a review (songs you loved live), tied to the **real artist + real song** so they are listenable on the artist page. If the artist has no songs on file, let them list it and show a disclaimer on the profile.
+
+**Player / listening**
+- **Up-next queue** in the bar: now-playing stays static, next up to ~10 songs scroll side to side; **hover drops down** a panel showing the full listening session. Fills the empty bar + data collection.
+- **Reorderable queue** (interchangeable songs).
+- **Play history** of every song played on the site (framework for playlists + "listening now" + see what friends play).
+- **Snapshot a listening session** into a playlist that saves to the site + resume later.
+
+**Discover / algorithm**
+- Top artists AND top **songs per genre** and **per region** (today only a top-100 snapshot). Let people **search by genre** and by song, real discovery.
+- **Listening history drives** the genre/algorithm push per profile (Spotify-style).
+- **Monthly snapshot** ("your month in review"), viewable and postable.
+
+**Artist coverage (better than a blind dump)**
+- **Snapshot searched-but-not-found artists** into an admin list. Admin triggers an **in-app seed dump** for just those, ~4x/day (info + photos). Show a **"artist coming soon"** blank profile meanwhile. Add a **typo/error** path + **purge** for dead/never-found profiles to save space.
+
+**Integrations**
+- **YouTube** official-video embeds as a fallback; let users **connect YouTube Premium + Apple Music** (same as Spotify) so playback has fallbacks.
+
+**Playlists**
+- Full **playlist create + share** (with friends / on profile), as deep as the rest of the app.
+
+**Player bugs handled 2026-07-10:** switching artists stopped playback (added 404-retry + clear 403/Premium reporting); Premium-not-active now shows a "Premium needed" note and falls back to the embed; theme switch reloads the page (mitigated by persisting the player queue, but **fully seamless theming needs a runtime-CSS-variable refactor of theme.js**, still open); choppy fonts fixed (antialiasing on every node).
+
 ## Open backlog (what to do next)
 **User-requested, not yet done:**
 1. **📱 Mobile polish.** User says mobile "feels like old-gen Pit, not easily accessible." Needs iterative visual work — get a phone screenshot of the feed (or resize narrow) and fix header density / touch targets / spacing on real pixels. Browser tools (claude-in-chrome / preview) have been **flaky all session** — a full screen-by-screen visual audit is still open; do it with a working preview.
