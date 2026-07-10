@@ -107,7 +107,10 @@ function Root() {
   stackRef.current = stack;
 
   const [preview, setPreview] = useState(null);
-  const [player, setPlayer] = useState(null); // in-app Spotify player sheet (floats over the screen)
+  // Persisted so the player survives a reload (switching themes reloads the page):
+  // the bar comes back with its queue instead of vanishing mid-listen.
+  const [player, setPlayer] = useState(() => (web ? load("pit.player", null) : null));
+  useEffect(() => { if (web) save("pit.player", player); }, [player]);
   const [acctOpen, setAcctOpen] = useState(false);
   // The concert opening screen: fresh visitors (and anyone who logs out) see it;
   // "browse as guest" or logging in dismisses it. Guest choice persists.

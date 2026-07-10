@@ -20,7 +20,10 @@ if (Platform.OS === "web" && typeof document !== "undefined" && !document.getEle
     input::placeholder, textarea::placeholder { opacity: 1; }
 
     /* modern web polish: crisp type, quiet scrollbars, on-brand selection */
-    html, body { -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+    html, body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+    /* Antialiasing must be on EVERY node: react-native-web renders text in nested
+       divs that do not inherit smoothing from body, which read as choppy up close. */
+    html, body, * { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; text-rendering: optimizeLegibility; }
     ::selection { background: rgba(255,140,66,0.35); }
     * { scrollbar-width: thin; scrollbar-color: rgba(100,107,130,0.35) transparent; }
     *::-webkit-scrollbar { width: 8px; height: 8px; }

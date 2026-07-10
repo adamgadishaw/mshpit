@@ -21,10 +21,11 @@ export default function PlayerBar({ player, onClose, onIndex }) {
   const cur = list[index];
 
   const uris = list.map((t) => { const id = spotifyId(t?.url || t?.id, "track"); return id ? "spotify:track:" + id : null; }).filter(Boolean);
-  const { ready, state, playUris, toggle, next, prev } = useSpotifyPlayer(spotifyConnected && !!cur);
+  const { ready, state, error, playUris, toggle, next, prev } = useSpotifyPlayer(spotifyConnected && !!cur);
 
   // If connected but the SDK never becomes ready (non-Premium, blocked, etc.),
-  // fall back to the embed so playback still works.
+  // fall back to the embed so playback still works. An SDK error (no Premium, auth)
+  // also drops us to the embed and surfaces a reason.
   const [failed, setFailed] = useState(false);
   useEffect(() => {
     if (!spotifyConnected || ready) { setFailed(false); return; }
@@ -32,8 +33,9 @@ export default function PlayerBar({ player, onClose, onIndex }) {
     return () => clearTimeout(t);
   }, [spotifyConnected, ready]);
 
-  const sdkMode = spotifyConnected && ready && !failed && uris.length > 0;
-  const connecting = spotifyConnected && !ready && !failed && uris.length > 0;
+  const blocked = failed || !!error;
+  const sdkMode = spotifyConnected && ready && !blocked && uris.length > 0;
+  const connecting = spotifyConnected && !ready && !blocked && uris.length > 0;
 
   // Attempt to start the queue when a new track is opened. Autoplay may block this
   // (no gesture), in which case the play button below force-starts it.
@@ -95,12 +97,17 @@ export default function PlayerBar({ player, onClose, onIndex }) {
         </>
       )}
 
-      {!spotifyConnected && (
+      {error ? (
+        <Pressable style={styles.notice} onPress={error.kind === "auth" ? connectSpotify : undefined}>
+          <Icon name={error.kind === "premium" ? "star" : "lock"} size={12} color={colors.gold} />
+          <Text style={styles.noticeTxt} numberOfLines={1}>{error.kind === "premium" ? "Premium needed" : "Reconnect"}</Text>
+        </Pressable>
+      ) : !spotifyConnected ? (
         <Pressable style={styles.connect} onPress={connectSpotify} hitSlop={6}>
           <Icon name="music" size={13} color={colors.good} />
           <Text style={styles.connectTxt}>Full songs</Text>
         </Pressable>
-      )}
+      ) : null}
       <Ctrl icon="x" onPress={onClose} />
     </View>
   );
@@ -130,4 +137,6 @@ const styles = StyleSheet.create({
   dot: { width: 6, height: 6, borderRadius: 3, backgroundColor: colors.textFaint },
   connect: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 11, height: 36, borderRadius: 18, borderWidth: 1, borderColor: colors.good, backgroundColor: "rgba(111,207,151,0.10)" },
   connectTxt: { color: colors.good, fontSize: 12, fontWeight: "800" },
+  notice: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 10, height: 36, borderRadius: 18, borderWidth: 1, borderColor: colors.gold, backgroundColor: "rgba(232,182,90,0.10)" },
+  noticeTxt: { color: colors.gold, fontSize: 12, fontWeight: "800" },
 });
