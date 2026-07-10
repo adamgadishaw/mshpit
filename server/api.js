@@ -148,6 +148,31 @@ async function spotifyAppToken() {
 const deezerCache = new Map(); // norm(name) -> { data, exp }
 async function dz(url) { const r = await fetch(url, { signal: AbortSignal.timeout(9000) }); return r.ok ? r.json() : null; }
 
+// Enrich a (usually thin) catalog artist from Deezer: photo, popularity, and top
+// track titles. Upserts into the artists table so the page fills in. Returns true
+// if Deezer had a match.
+async function enrichArtistFromDeezer(name) {
+  const s = await dz(`https://api.deezer.com/search/artist?q=${encodeURIComponent(name)}&limit=1`);
+  const dzA = s?.data?.[0];
+  if (!dzA) return false;
+  const existing = artistStmts.byNorm.get(normName(name));
+  let data = {};
+  try { data = existing?.data ? JSON.parse(existing.data) : {}; } catch {}
+  const top = await dz(`https://api.deezer.com/artist/${dzA.id}/top?limit=10`);
+  data.topTracks = (top?.data || []).map((t) => ({ title: t.title, album: t.album?.title || null, preview: t.preview || null }));
+  data.name = existing?.name || dzA.name;
+  const pop = Math.max(1, Math.min(100, Math.round(Math.log10((dzA.nb_fan || 0) + 1) * 12.5)));
+  const now = Date.now();
+  artistStmts.upsert.run({
+    norm: normName(name), name: existing?.name || dzA.name, genre: existing?.genre || null,
+    photo: dzA.picture_xl || dzA.picture_big || null, bio: existing?.bio || null,
+    mbid: existing?.mbid || null, spotify_id: existing?.spotify_id || null, country: existing?.country || null,
+    formed: existing?.formed || null, popularity: pop, rank_score: Math.round(pop * 1000),
+    data: JSON.stringify(data), source: existing?.source || "deezer", created_at: existing?.created_at || now, updated_at: now,
+  });
+  return true;
+}
+
 // route table: "METHOD /path" -> handler(ctx) ; :params exposed as ctx.params
 export const routes = {
   // ---- health ---- (spotify + origin are safe config diagnostics, no secrets)
@@ -172,11 +197,16 @@ export const routes = {
     const name = clean(ctx.query.name, { max: 120 });
     if (!name) throw new ApiError(400, "Missing name.");
     const existing = artistStmts.byNorm.get(normName(name));
-    if (existing) return { artist: publicArtist(existing), created: false };
+    if (existing) { artistStmts.bumpSearches.run(normName(name)); return { artist: publicArtist(existing), created: false }; }
     limit(ctx, "resolve", 90, 10 * 60 * 1000); // cap outbound MB lookups per client
     const mb = await resolveFromMusicBrainz(name);
-    if (!mb) return { artist: null, created: false };
+    if (!mb) {
+      // Nothing found: log it for the admin catalog queue instead of a blind dump.
+      artistStmts.recordMissing.run(normName(name), name, Date.now());
+      return { artist: null, created: false };
+    }
     artistStmts.upsert.run(artistRow(mb.name, mb, "musicbrainz"));
+    artistStmts.bumpSearches.run(normName(mb.name));
     return { artist: publicArtist(artistStmts.byNorm.get(normName(mb.name))), created: true };
   },
 
@@ -786,6 +816,33 @@ export const routes = {
     if (free) db.prepare("UPDATE users SET role=?, handle=? WHERE id=?").run(role, handle, ctx.params.id);
     else db.prepare("UPDATE users SET role=? WHERE id=?").run(role, ctx.params.id);
     return { ok: true, role };
+  },
+
+  // Catalog queue: thin artists (in the DB but no photo yet) + names people
+  // searched that MusicBrainz had nothing for. Admin seeds these on demand.
+  "GET /api/admin/artist-queue": (ctx) => {
+    requireAdmin(ctx);
+    return {
+      thin: artistStmts.thin.all(60).map((r) => ({ norm: r.norm, name: r.name, searches: r.searches, genre: r.genre })),
+      missing: artistStmts.listMissing.all(60).map((r) => ({ norm: r.norm, name: r.name, searches: r.searches })),
+      thinTotal: artistStmts.thinCount.get().c,
+    };
+  },
+  // Seed info + photos for specific artists from Deezer (the targeted alternative
+  // to a blind 10M dump). Handles both thin artists and missing-search names.
+  "POST /api/admin/artists/enrich": async (ctx) => {
+    requireAdmin(ctx);
+    const names = Array.isArray(ctx.body?.names) ? ctx.body.names.slice(0, 40).map((n) => String(n).slice(0, 120)) : [];
+    let enriched = 0;
+    for (const n of names) { if (await enrichArtistFromDeezer(n)) { enriched++; artistStmts.clearMissing.run(normName(n)); } }
+    return { enriched, requested: names.length };
+  },
+  // Purge a dead / typo / never-found artist to keep the catalog clean.
+  "POST /api/admin/artists/purge": (ctx) => {
+    requireAdmin(ctx);
+    const norm = normName(clean(ctx.body?.norm, { max: 200 }));
+    if (norm) { artistStmts.purge.run(norm); artistStmts.clearMissing.run(norm); }
+    return { ok: true };
   },
 
   "POST /api/admin/users/:id/unban": (ctx) => {

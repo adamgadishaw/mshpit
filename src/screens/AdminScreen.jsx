@@ -154,7 +154,7 @@ export default function AdminScreen({ onClose }) {
     approveArtist, rejectArtist, removeContent, restoreContent, actionReport, dismissReport,
     suspendUser, banUser, unbanUser, setUserRole, setVerified, accountStatus,
     removeComment, removeFanClubMessage, removeLoungeMessage,
-    loadAdminMembers, adminStats,
+    loadAdminMembers, adminStats, adminArtistQueue, enrichArtists, purgeArtist,
   } = useStore();
 
   const iAmAdmin = isStaff(session?.role); // full access; mods get a subset
@@ -164,6 +164,20 @@ export default function AdminScreen({ onClose }) {
   // Pull EVERY signup (incl. banned) from the server so the console shows real
   // members, not just the seed + whoever happens to be cached locally.
   useEffect(() => { loadAdminMembers(); }, []);
+
+  // Catalog queue: thin artists + searched-but-not-found names, seed on demand.
+  const [catalog, setCatalog] = useState({ thin: [], missing: [], thinTotal: 0 });
+  const [seeding, setSeeding] = useState(false);
+  const refreshCatalog = () => adminArtistQueue().then(setCatalog);
+  useEffect(() => { if (tab === "catalog") refreshCatalog(); }, [tab]);
+  const seedNames = async (names) => {
+    if (!names.length) return;
+    setSeeding(true);
+    await enrichArtists(names.slice(0, 40));
+    setSeeding(false);
+    refreshCatalog();
+  };
+  const purge = async (norm) => { await purgeArtist(norm); refreshCatalog(); };
 
   const pending = requests.filter((r) => r.status === "pending");
   const openReports = reports.filter((r) => r.status === "open");
@@ -190,6 +204,7 @@ export default function AdminScreen({ onClose }) {
     { key: "reports", label: "Reports", icon: "flag", badge: openReports.length },
     { key: "members", label: "Members", icon: "you", badge: bannedCount || undefined },
     { key: "content", label: "Content", icon: "feed" },
+    { key: "catalog", label: "Catalog", icon: "music", admin: true },
     { key: "requests", label: "Requests", icon: "shield", badge: pending.length, admin: true },
   ].filter((t) => iAmAdmin || !t.admin);
 
@@ -393,6 +408,55 @@ export default function AdminScreen({ onClose }) {
           </>
         )}
 
+        {/* ---- CATALOG ---- */}
+        {tab === "catalog" && (
+          <>
+            <Text style={styles.policy}>Artists people looked up. Seed them from Deezer (photo, popularity, top songs) on demand, the targeted alternative to a blind bulk dump. Purge dead or typo entries.</Text>
+
+            <View style={styles.catHead}>
+              <Text style={styles.catTitle}>NOT FOUND · {catalog.missing.length}</Text>
+              {catalog.missing.length > 0 && (
+                <Pressable style={[styles.seedBtn, seeding && styles.pillDisabled]} disabled={seeding} onPress={() => seedNames(catalog.missing.map((m) => m.name))}>
+                  <Icon name="music" size={13} color="#1A1206" /><Text style={styles.seedTxt}>{seeding ? "Seeding..." : "Seed all"}</Text>
+                </Pressable>
+              )}
+            </View>
+            <Text style={styles.catHint}>Searched, but MusicBrainz had nothing. Seeding checks Deezer.</Text>
+            {catalog.missing.length === 0 && <Text style={styles.empty}>Nothing missing right now.</Text>}
+            {catalog.missing.map((m) => (
+              <View key={m.norm} style={styles.catRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.catName} numberOfLines={1}>{m.name}</Text>
+                  <Text style={styles.catSub}>{m.searches} search{m.searches === 1 ? "" : "es"}</Text>
+                </View>
+                <Pressable style={styles.catAction} onPress={() => seedNames([m.name])}><Icon name="music" size={13} color={colors.good} /><Text style={[styles.catActionTxt, { color: colors.good }]}>Seed</Text></Pressable>
+                <Pressable style={styles.catAction} onPress={() => purge(m.norm)}><Icon name="trash" size={13} color={colors.danger} /></Pressable>
+              </View>
+            ))}
+
+            <View style={styles.catHead}>
+              <Text style={styles.catTitle}>THIN PROFILES · {catalog.thinTotal}</Text>
+              {catalog.thin.length > 0 && (
+                <Pressable style={[styles.seedBtn, seeding && styles.pillDisabled]} disabled={seeding} onPress={() => seedNames(catalog.thin.map((t) => t.name))}>
+                  <Icon name="music" size={13} color="#1A1206" /><Text style={styles.seedTxt}>{seeding ? "Seeding..." : "Seed top"}</Text>
+                </Pressable>
+              )}
+            </View>
+            <Text style={styles.catHint}>In the catalog but no photo yet, most-searched first. Seeding fills them in.</Text>
+            {catalog.thin.length === 0 && <Text style={styles.empty}>Every profile has a photo.</Text>}
+            {catalog.thin.map((t) => (
+              <View key={t.norm} style={styles.catRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.catName} numberOfLines={1}>{t.name}</Text>
+                  <Text style={styles.catSub}>{t.genre ? t.genre + " · " : ""}{t.searches} search{t.searches === 1 ? "" : "es"}</Text>
+                </View>
+                <Pressable style={styles.catAction} onPress={() => seedNames([t.name])}><Icon name="music" size={13} color={colors.good} /><Text style={[styles.catActionTxt, { color: colors.good }]}>Seed</Text></Pressable>
+                <Pressable style={styles.catAction} onPress={() => purge(t.norm)}><Icon name="trash" size={13} color={colors.danger} /></Pressable>
+              </View>
+            ))}
+          </>
+        )}
+
         {/* ---- REQUESTS ---- */}
         {tab === "requests" && (
           <>
@@ -474,6 +538,18 @@ const styles = StyleSheet.create({
   approveTxt: { color: "#0C1A0F", fontSize: 13, fontWeight: "800" },
   rejectTxt: { color: colors.danger, fontSize: 13, fontWeight: "700" },
   dismissTxt: { color: colors.textDim, fontSize: 13, fontWeight: "700" },
+
+  // catalog
+  catHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 18, marginBottom: 2 },
+  catTitle: { color: colors.text, fontSize: 12.5, letterSpacing: 1.2, fontWeight: "900" },
+  catHint: { color: colors.textDim, fontSize: 11.5, marginBottom: 8 },
+  seedBtn: { flexDirection: "row", alignItems: "center", gap: 5, backgroundColor: colors.amberStrong, borderRadius: radius.pill, paddingHorizontal: 12, paddingVertical: 7 },
+  seedTxt: { color: "#1A1206", fontSize: 12, fontWeight: "800" },
+  catRow: { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: colors.surface, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.lineSoft, paddingHorizontal: 12, paddingVertical: 10, marginBottom: 6 },
+  catName: { color: colors.text, fontSize: 14, fontWeight: "700" },
+  catSub: { color: colors.textDim, fontSize: 11, fontFamily: mono, marginTop: 1 },
+  catAction: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 10, paddingVertical: 7, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.line },
+  catActionTxt: { fontSize: 12, fontWeight: "800" },
 
   // members
   memberStats: { flexDirection: "row", alignItems: "center", backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, paddingVertical: 12, marginTop: 4, marginBottom: 10 },

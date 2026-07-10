@@ -275,6 +275,15 @@ CREATE TABLE IF NOT EXISTS artists (
 );
 CREATE INDEX IF NOT EXISTS idx_artists_rank ON artists(rank_score DESC);
 CREATE INDEX IF NOT EXISTS idx_artists_name ON artists(name);
+
+-- Names people searched that returned nothing from MusicBrainz. The admin catalog
+-- queue reads this to seed on demand (info + photos) instead of a blind bulk dump.
+CREATE TABLE IF NOT EXISTS missing_artists (
+  norm      TEXT PRIMARY KEY,
+  name      TEXT NOT NULL,
+  searches  INTEGER NOT NULL DEFAULT 1,
+  last_at   INTEGER NOT NULL
+);
 `);
 
 const ver = db.prepare("SELECT version FROM schema_version LIMIT 1").get();
@@ -289,6 +298,7 @@ for (const stmt of [
   "ALTER TABLE users ADD COLUMN spotify_refresh_token TEXT",
   "ALTER TABLE users ADD COLUMN spotify_expires_at INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE posts ADD COLUMN tour TEXT",
+  "ALTER TABLE artists ADD COLUMN searches INTEGER NOT NULL DEFAULT 0",
 ]) { try { db.exec(stmt); } catch {} }
 
 // --- tiny helpers ------------------------------------------------------------
@@ -311,6 +321,13 @@ export const artistStmts = {
   count: db.prepare("SELECT COUNT(*) c FROM artists"),
   search: db.prepare("SELECT * FROM artists WHERE norm LIKE ? ORDER BY (norm = ?) DESC, rank_score DESC, name LIMIT ?"),
   top: db.prepare("SELECT * FROM artists ORDER BY rank_score DESC, name LIMIT ?"),
+  bumpSearches: db.prepare("UPDATE artists SET searches = searches + 1 WHERE norm = ?"),
+  thin: db.prepare("SELECT * FROM artists WHERE photo IS NULL ORDER BY searches DESC, updated_at DESC LIMIT ?"),
+  thinCount: db.prepare("SELECT COUNT(*) c FROM artists WHERE photo IS NULL"),
+  purge: db.prepare("DELETE FROM artists WHERE norm = ?"),
+  recordMissing: db.prepare("INSERT INTO missing_artists (norm,name,searches,last_at) VALUES (?,?,1,?) ON CONFLICT(norm) DO UPDATE SET searches = searches + 1, last_at = excluded.last_at"),
+  listMissing: db.prepare("SELECT * FROM missing_artists ORDER BY searches DESC, last_at DESC LIMIT ?"),
+  clearMissing: db.prepare("DELETE FROM missing_artists WHERE norm = ?"),
   upsert: db.prepare(`INSERT INTO artists (${ARTIST_COLS})
     VALUES (@norm,@name,@genre,@photo,@bio,@mbid,@spotify_id,@country,@formed,@popularity,@rank_score,@data,@source,@created_at,@updated_at)
     ON CONFLICT(norm) DO UPDATE SET

@@ -79,6 +79,9 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
     const url = await resolveSpotifyTrack(title, a.name);
     if (url) onPlay?.({ kind: "track", url, title, artist: a.name, art: cover || a.photo || meta?.photo || null });
   };
+  // A resolved-but-empty artist (no photo, no songs). Show a "coming soon" note
+  // and log the interest so an admin can seed it (see the admin Catalog tab).
+  const thin = !!meta && !meta.photo && !(meta.topTracks && meta.topTracks.length) && !(disco && disco.albums && disco.albums.length);
 
   // Slice 7: hydrate the artist's owner overrides + updates feed, and the server
   // aggregates for each album/song rating shown on the page.
@@ -152,6 +155,16 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
             )}
           </View>
         </View>
+
+        {thin && !isOwner && (
+          <View style={styles.comingSoon}>
+            <Icon name="clock" size={16} color={colors.amber} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.comingSoonTitle}>We're adding this artist</Text>
+              <Text style={styles.comingSoonSub}>Photos and songs are on the way. Your reviews still count and will show here.</Text>
+            </View>
+          </View>
+        )}
 
         {/* age / hometown / genre line */}
         {(meta?.hometown || meta?.formed) && (
@@ -494,6 +507,9 @@ const styles = StyleSheet.create({
   discTrack: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 8, paddingHorizontal: 12, borderTopWidth: 1, borderTopColor: colors.lineSoft },
   discTrackNo: { color: colors.textFaint, fontFamily: mono, fontSize: 12, width: 20, textAlign: "center" },
   discTrackTitle: { color: colors.text, fontSize: 13.5, fontWeight: "600" },
+  comingSoon: { flexDirection: "row", alignItems: "center", gap: 12, marginHorizontal: 16, marginTop: 12, padding: 14, borderRadius: radius.md, borderWidth: 1, borderColor: colors.amber, backgroundColor: "rgba(242,166,90,0.08)" },
+  comingSoonTitle: { color: colors.text, fontSize: 14, fontWeight: "800" },
+  comingSoonSub: { color: colors.textDim, fontSize: 11.5, marginTop: 2, lineHeight: 16 },
   songRow: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 12, marginBottom: 8 },
   songTitle: { color: colors.text, fontSize: 15, fontWeight: "700" },
   songMeta: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 4 },
