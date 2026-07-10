@@ -284,6 +284,29 @@ CREATE TABLE IF NOT EXISTS missing_artists (
   searches  INTEGER NOT NULL DEFAULT 1,
   last_at   INTEGER NOT NULL
 );
+
+-- Every song played, cross-device. Powers listening history + "friends listening".
+CREATE TABLE IF NOT EXISTS plays (
+  id         TEXT PRIMARY KEY,
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  title      TEXT NOT NULL,
+  artist     TEXT,
+  url        TEXT,
+  art        TEXT,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_plays_user ON plays(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_plays_created ON plays(created_at DESC);
+
+-- Saved listening sessions / playlists (from the player's Save-as-playlist).
+CREATE TABLE IF NOT EXISTS playlists (
+  id         TEXT PRIMARY KEY,
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name       TEXT NOT NULL,
+  tracks     TEXT NOT NULL DEFAULT '[]',
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_playlists_user ON playlists(user_id, created_at DESC);
 `);
 
 const ver = db.prepare("SELECT version FROM schema_version LIMIT 1").get();

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { View, Text, StyleSheet, ScrollView, Pressable, Image, Linking } from "react-native";
 import { colors, mono, radius, roleColor } from "../theme";
 import { useStore } from "../store";
@@ -49,14 +49,18 @@ function TrebleBass({ kind, song, playing, onPlay, onOpenArtist }) {
 
 // MySpace-style profile - banner, pfp, now-playing, theme song, Treble/Bass top
 // artists, planned shows, reviews. Built to make people findable and followable.
-export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtist, onOpenVenue, onEditProfile, onPreview, onMessage, onReport, onOpenPhotos }) {
-  const { session, userById, logsByUser, isFollowing, follow, unfollow, followerCount, followingCount, goingFor, userBadges, sharedShows } = useStore();
+export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtist, onOpenVenue, onEditProfile, onPreview, onMessage, onReport, onOpenPhotos, onPlay }) {
+  const { session, userById, logsByUser, isFollowing, follow, unfollow, followerCount, followingCount, goingFor, userBadges, sharedShows, userPlaylists } = useStore();
   const user = userById(userId);
+  const [playlists, setPlaylists] = useState([]);
+  useEffect(() => { if (userId) userPlaylists(userId).then(setPlaylists); }, [userId]);
   if (!user) return null;
 
   const logs = logsByUser(user.id);
   const planned = goingFor(user.id);
   const isSelf = session?.id === user.id;
+  // Play a saved playlist: first track opens the bar with the whole list queued.
+  const playPlaylist = (pl) => { const q = (pl.tracks || []).filter((t) => t.url); if (q.length) onPlay?.(q[0], q); };
   // "Crossed paths", shows you've both been to (and artists you've both seen).
   const crossed = !isSelf && session ? sharedShows(user.id) : { shows: [], artists: [] };
 
@@ -155,6 +159,23 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtis
             )}
             {crossed.shows.length > 0 && <Icon name="chevron-right" size={16} color={colors.textDim} />}
           </Pressable>
+        )}
+
+        {/* playlists, saved listening sessions (tap to play the whole set) */}
+        {playlists.length > 0 && (
+          <>
+            <Text style={styles.sectionLabel}>PLAYLISTS · {playlists.length}</Text>
+            {playlists.map((pl) => (
+              <Pressable key={pl.id} style={styles.playlist} onPress={() => playPlaylist(pl)}>
+                <View style={styles.playlistIcon}><Icon name="play" size={16} color={colors.amber} /></View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.playlistName} numberOfLines={1}>{pl.name}</Text>
+                  <Text style={styles.playlistSub} numberOfLines={1}>{pl.tracks.length} song{pl.tracks.length === 1 ? "" : "s"} · {pl.tracks.slice(0, 3).map((t) => t.artist).filter(Boolean).join(", ")}</Text>
+                </View>
+                <Icon name="chevron-right" size={16} color={colors.textDim} />
+              </Pressable>
+            ))}
+          </>
         )}
 
         {/* photo gallery, a wall of every shot from their nights */}
@@ -284,6 +305,10 @@ const styles = StyleSheet.create({
   crossedTitle: { color: colors.text, fontSize: 14, fontWeight: "700" },
   crossedNum: { color: colors.magenta, fontWeight: "900", fontFamily: mono },
   crossedSub: { color: colors.textDim, fontSize: 11.5, marginTop: 2 },
+  playlist: { flexDirection: "row", alignItems: "center", gap: 12, marginHorizontal: 16, marginBottom: 8, padding: 12, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface },
+  playlistIcon: { width: 40, height: 40, borderRadius: 20, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.amber, backgroundColor: colors.bgElev },
+  playlistName: { color: colors.text, fontSize: 14.5, fontWeight: "800" },
+  playlistSub: { color: colors.textDim, fontSize: 11.5, marginTop: 2 },
   stat: { flex: 1, alignItems: "center" },
   statVal: { color: colors.text, fontFamily: mono, fontSize: 20, fontWeight: "800" },
   statLabel: { color: colors.textFaint, fontSize: 9, letterSpacing: 1, marginTop: 4, fontWeight: "700" },

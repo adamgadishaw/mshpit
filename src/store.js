@@ -356,7 +356,17 @@ export function StoreProvider({ children }) {
     const key = t.url || t.id;
     setPlayHistory((h) => (h[0] && (h[0].url || h[0].id) === key ? h : [{ title: t.title, artist: t.artist, url: t.url, id: t.id, art: t.art || null, at: Date.now() }, ...h].slice(0, 200)));
     track("play", { artist: t.artist, title: t.title }); // analytics signal
+    // Cross-device history + "friends listening" (best-effort, offline keeps local).
+    if (session) api("/api/plays", { method: "POST", body: { title: t.title, artist: t.artist, url: t.url || null, art: t.art || null } }).catch(() => {});
   };
+  // The latest track each person you follow played (for the "friends listening" rail).
+  const [friendsListening, setFriendsListening] = useState([]);
+  const loadFriendsListening = async () => {
+    if (!session) return [];
+    try { const { listening } = await api("/api/plays/friends"); setFriendsListening(listening || []); return listening || []; } catch { return []; }
+  };
+  const userPlaylists = async (id) => { try { const { playlists } = await api(`/api/users/${id}/playlists`); return playlists || []; } catch { return []; } };
+  const deletePlaylist = async (id) => { try { await api(`/api/playlists/${id}`, { method: "DELETE" }); } catch {} };
   // Snapshot a listening session (queue) into a saved playlist seed that shows on
   // the profile and can be resumed.
   const saveSnapshot = (tracks, name) => {
@@ -364,6 +374,9 @@ export function StoreProvider({ children }) {
     if (!list.length) return null;
     const snap = { id: "snap_" + Date.now(), name: name || `Session ${new Date().toLocaleDateString()}`, tracks: list, at: Date.now(), by: session?.id || null };
     setSnapshots((s) => [snap, ...s].slice(0, 50));
+    // Persist as a real playlist on the account (shows on the profile, shareable).
+    if (session) api("/api/playlists", { method: "POST", body: { name: snap.name, tracks: list } })
+      .then(({ id }) => { if (id) setSnapshots((s) => s.map((x) => (x.id === snap.id ? { ...x, serverId: id } : x))); }).catch(() => {});
     return snap;
   };
   const removeSnapshot = (id) => setSnapshots((s) => s.filter((x) => x.id !== id));
@@ -1664,7 +1677,7 @@ export function StoreProvider({ children }) {
     addTourDatesBatch,
     isFollowing, follow, unfollow, followerCount, followingCount, absorbUsers, searchPeople, loadMembers, memberCount,
     searchArtistsApi, resolveArtist, remoteArtistMeta, artistDiscography, resolveSpotifyTrack,
-    playHistory, recordPlay, snapshots, saveSnapshot, removeSnapshot,
+    playHistory, recordPlay, snapshots, saveSnapshot, removeSnapshot, friendsListening, loadFriendsListening, userPlaylists, deletePlaylist,
     spotifyConnected, connectSpotify, disconnectSpotify,
     visibleFeed, followingFeed, visibleTourDates, artistSummary, venueSummary,
     localVenues, regionShows, localFeed, recommendedShows, venueCoord,

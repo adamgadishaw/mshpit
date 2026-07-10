@@ -257,7 +257,7 @@ function Root() {
   else if (nav.thread) overlay = <ThreadScreen otherId={nav.thread} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} />;
   else if (nav.inbox) overlay = <InboxScreen onClose={back} onOpenThread={openThread} />;
   else if (nav.notifications) overlay = <NotificationsScreen onClose={back} onOpenProfile={openProfile} onOpenThread={openThread} onOpen={openShow} />;
-  else if (nav.profileId) overlay = <ProfileScreen userId={nav.profileId} onClose={back} onOpenShow={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onEditProfile={() => go({ editProfile: true })} onPreview={showPreview} onMessage={openThread} onReport={(log) => requireAuth(() => go({ reporting: log }))} onOpenPhotos={openPhotos} />;
+  else if (nav.profileId) overlay = <ProfileScreen userId={nav.profileId} onClose={back} onOpenShow={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onEditProfile={() => go({ editProfile: true })} onPreview={showPreview} onMessage={openThread} onReport={(log) => requireAuth(() => go({ reporting: log }))} onOpenPhotos={openPhotos} onPlay={openPlayer} />;
   else if (nav.fanClub) overlay = <FanClubScreen artist={nav.fanClub} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} />;
   else if (nav.editArtist) overlay = <EditArtistProfileScreen artistName={nav.editArtist} onClose={back} />;
   else if (nav.artistName) overlay = <ArtistScreen artistName={nav.artistName} onClose={back} onOpenShow={openShow} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenPhotos={openPhotos} onEditArtist={(name) => go({ editArtist: name })} onPlay={openPlayer} />;
@@ -323,7 +323,7 @@ function Root() {
                 />
               )}
               {tab === "search" && <SearchScreen onOpen={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenProfile={openProfile} />}
-              {tab === "discover" && <DiscoverScreen onOpenTopRated={() => go({ topRated: true })} onOpen={openShow} onOpenArtist={openArtist} onOpenNearby={() => requireAuth(() => go({ nearby: true }))} onOpenFanClubs={() => go({ fanClubs: true })} onOpenVenues={() => go({ venues: true })} onOpenPhotos={openPhotos} onPlay={openPlayer} />}
+              {tab === "discover" && <DiscoverScreen onOpenTopRated={() => go({ topRated: true })} onOpen={openShow} onOpenArtist={openArtist} onOpenNearby={() => requireAuth(() => go({ nearby: true }))} onOpenFanClubs={() => go({ fanClubs: true })} onOpenVenues={() => go({ venues: true })} onOpenPhotos={openPhotos} onPlay={openPlayer} onOpenProfile={openProfile} />}
               {tab === "you" && (
                 <YouScreen
                   feed={feed}

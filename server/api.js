@@ -260,6 +260,62 @@ export const routes = {
     } catch { return { url: null }; }
   },
 
+  // ---- Listening: cross-device play history + "friends listening" ----
+  "POST /api/plays": (ctx) => {
+    const u = requireUser(ctx);
+    const title = clean(ctx.body?.title, { max: 200 });
+    if (!title) return { ok: false };
+    limit(ctx, "play", 300, 60 * 60 * 1000);
+    db.prepare("INSERT INTO plays (id,user_id,title,artist,url,art,created_at) VALUES (?,?,?,?,?,?,?)")
+      .run(uid("pl"), u.id, title, clean(ctx.body?.artist, { max: 120 }) || null, clean(ctx.body?.url, { max: 400 }) || null, clean(ctx.body?.art, { max: 500 }) || null, now());
+    db.prepare("DELETE FROM plays WHERE user_id=? AND id NOT IN (SELECT id FROM plays WHERE user_id=? ORDER BY created_at DESC LIMIT 300)").run(u.id, u.id);
+    return { ok: true };
+  },
+  "GET /api/me/plays": (ctx) => {
+    const u = requireUser(ctx);
+    const rows = db.prepare("SELECT title,artist,url,art,created_at FROM plays WHERE user_id=? ORDER BY created_at DESC LIMIT 100").all(u.id);
+    return { plays: rows.map((r) => ({ title: r.title, artist: r.artist, url: r.url, art: r.art, at: r.created_at })) };
+  },
+  // The latest track from each person you follow, most recent first.
+  "GET /api/plays/friends": (ctx) => {
+    const u = requireUser(ctx);
+    const rows = db.prepare(`
+      SELECT p.user_id, p.title, p.artist, p.url, p.art, p.created_at,
+        us.name u_name, us.handle u_handle, us.initials u_initials, us.avatar_uri u_avatar, us.avatar_color u_color, us.verified u_verified, us.role u_role
+      FROM plays p JOIN users us ON us.id = p.user_id
+      WHERE p.user_id IN (SELECT followee_id FROM follows WHERE follower_id=?)
+      ORDER BY p.created_at DESC LIMIT 200`).all(u.id);
+    const seen = new Set();
+    const out = [];
+    for (const r of rows) {
+      if (seen.has(r.user_id)) continue;
+      seen.add(r.user_id);
+      out.push({ user: { id: r.user_id, name: r.u_name, handle: r.u_handle, initials: r.u_initials, avatarUri: r.u_avatar, avatarColor: r.u_color, verified: !!r.u_verified, role: r.u_role }, track: { title: r.title, artist: r.artist, url: r.url, art: r.art, at: r.created_at } });
+      if (out.length >= 30) break;
+    }
+    return { listening: out };
+  },
+
+  // ---- Playlists (saved sessions, shareable, on the profile) ----
+  "POST /api/playlists": (ctx) => {
+    const u = requireUser(ctx);
+    const name = clean(ctx.body?.name, { max: 80 }) || "Untitled";
+    const tracks = Array.isArray(ctx.body?.tracks) ? ctx.body.tracks.slice(0, 100).map((t) => ({ title: clean(t?.title, { max: 200 }), artist: clean(t?.artist, { max: 120 }) || null, url: clean(t?.url, { max: 400 }) || null, art: clean(t?.art, { max: 500 }) || null })).filter((t) => t.title) : [];
+    if (!tracks.length) throw new ApiError(400, "A playlist needs tracks.");
+    const id = uid("pls");
+    db.prepare("INSERT INTO playlists (id,user_id,name,tracks,created_at) VALUES (?,?,?,?,?)").run(id, u.id, name, JSON.stringify(tracks), now());
+    return { id, name, tracks, at: now() };
+  },
+  "GET /api/users/:id/playlists": (ctx) => {
+    const rows = db.prepare("SELECT id,name,tracks,created_at FROM playlists WHERE user_id=? ORDER BY created_at DESC LIMIT 50").all(ctx.params.id);
+    return { playlists: rows.map((r) => ({ id: r.id, name: r.name, tracks: JSON.parse(r.tracks || "[]"), at: r.created_at })) };
+  },
+  "DELETE /api/playlists/:id": (ctx) => {
+    const u = requireUser(ctx);
+    db.prepare("DELETE FROM playlists WHERE id=? AND user_id=?").run(ctx.params.id, u.id);
+    return { ok: true };
+  },
+
   // ---- Spotify Connect: OAuth + Web Playback SDK tokens ----
   // Lets a user link their own Spotify so the in-app player streams FULL tracks
   // (Premium only, per Spotify's SDK). Tokens live server-side only.

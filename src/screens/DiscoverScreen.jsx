@@ -74,9 +74,9 @@ function Plinth({ row, rank, onPress }) {
   );
 }
 
-export default function DiscoverScreen({ onOpenTopRated, onOpenArtist, onOpenNearby, onOpenFanClubs, onOpenVenues, onOpenPhotos, onPlay }) {
-  const { session, chartTop, chartInfo, catalogCountries, topGenres, topPhotos, discoverStats, loadMembers, memberCount, topArtistsBy, topSongsBy, resolveSpotifyTrack } = useStore();
-  useEffect(() => { loadMembers(); }, []); // pull the live member count + directory
+export default function DiscoverScreen({ onOpenTopRated, onOpenArtist, onOpenNearby, onOpenFanClubs, onOpenVenues, onOpenPhotos, onPlay, onOpenProfile }) {
+  const { session, chartTop, chartInfo, catalogCountries, topGenres, topPhotos, discoverStats, loadMembers, memberCount, topArtistsBy, topSongsBy, resolveSpotifyTrack, friendsListening, loadFriendsListening } = useStore();
+  useEffect(() => { loadMembers(); loadFriendsListening(); }, []); // live member count + what friends are playing
 
   const chart = useMemo(() => chartTop(10), []);
   const info = useMemo(() => chartInfo(), []);
@@ -151,6 +151,33 @@ export default function DiscoverScreen({ onOpenTopRated, onOpenArtist, onOpenNea
           </View>
         ))}
       </View>
+
+      {/* Friends listening: the latest track from each person you follow */}
+      {friendsListening.length > 0 && (
+        <View style={styles.panel}>
+          <View style={styles.panelHead}>
+            <Text style={styles.panelTitle}>FRIENDS LISTENING</Text>
+            <Text style={styles.panelSub}>Latest plays</Text>
+          </View>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.flRow}>
+            {friendsListening.map((f) => (
+              <View key={f.user.id} style={styles.flCard}>
+                <Pressable onPress={() => onOpenProfile?.(f.user.id)} style={{ alignItems: "center" }}>
+                  <Avatar user={f.user} size={46} />
+                  <Text style={styles.flName} numberOfLines={1}>{f.user.name}</Text>
+                </Pressable>
+                <Pressable style={styles.flTrack} onPress={() => playSong({ title: f.track.title, artist: f.track.artist, url: f.track.url, art: f.track.art })}>
+                  <Icon name="play" size={11} color={colors.amber} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.flTitle} numberOfLines={1}>{f.track.title}</Text>
+                    <Text style={styles.flArtist} numberOfLines={1}>{f.track.artist}</Text>
+                  </View>
+                </Pressable>
+              </View>
+            ))}
+          </ScrollView>
+        </View>
+      )}
 
       {/* Chart podium, the hero */}
       {podium.length === 3 && (
@@ -351,6 +378,12 @@ const styles = StyleSheet.create({
 
   regionRow: { flexDirection: "row", gap: 8, paddingVertical: 4 },
   subLabel: { color: colors.textFaint, fontSize: 10.5, letterSpacing: 1.2, fontWeight: "800", marginTop: 16, marginBottom: 8 },
+  flRow: { flexDirection: "row", gap: 12, paddingVertical: 2, paddingRight: 8 },
+  flCard: { width: 150, backgroundColor: colors.bgElev, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 12, alignItems: "center", gap: 8 },
+  flName: { color: colors.text, fontSize: 12.5, fontWeight: "700", marginTop: 6, maxWidth: 124, textAlign: "center" },
+  flTrack: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: colors.surface, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 8, paddingVertical: 6, alignSelf: "stretch" },
+  flTitle: { color: colors.text, fontSize: 11.5, fontWeight: "700" },
+  flArtist: { color: colors.textDim, fontSize: 10, marginTop: 1 },
   gArtistRow: { flexDirection: "row", gap: 14, paddingVertical: 2, paddingRight: 8 },
   gArtist: { width: 74, alignItems: "center" },
   gRank: { position: "absolute", top: 0, left: 2, backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line, borderRadius: 9, minWidth: 18, height: 18, alignItems: "center", justifyContent: "center", paddingHorizontal: 3 },
