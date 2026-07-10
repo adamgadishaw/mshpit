@@ -39,7 +39,8 @@ function AlbumArt({ uri }) {
 export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFanClub, onOpenPhotos, onEditArtist, onPlay }) {
   const { session, artistSummary, albumRating, songRating, rateAlbum, rateSong, loadRating,
     isArtistOwner, artistPostsFor, loadArtistPage, addArtistPost, removeArtistPost,
-    artistGallery, removePhoto, artistBadges, artistRank, remoteArtistMeta, resolveArtist } = useStore();
+    artistGallery, removePhoto, artistBadges, artistRank, remoteArtistMeta, resolveArtist,
+    artistDiscography, resolveSpotifyTrack } = useStore();
   const a = artistSummary(artistName);
   const badges = artistBadges(a.name);
   const rank = artistRank(a.name);
@@ -64,6 +65,20 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
   const avatarUser = { avatarUri: a.photo || meta?.photo || null, initials: a.name.slice(0, 2).toUpperCase(), avatarColor: colors.amber };
   const posts = artistPostsFor(a.name);
   const [draft, setDraft] = useState("");
+
+  // Full discography (albums + tracklists) from Deezer, so the page has real depth:
+  // open an album, see every song, rate them, play them in the top bar.
+  const [disco, setDisco] = useState(null);
+  const [openAlbum, setOpenAlbum] = useState(null);
+  useEffect(() => { setDisco(null); setOpenAlbum(null); artistDiscography(a.name).then(setDisco); }, [a.name]);
+  const toggleAlbum = (id, tracks) => {
+    setOpenAlbum((cur) => (cur === id ? null : id));
+    (tracks || []).forEach((t) => loadRating("song", a.name, t.title));
+  };
+  const playTrack = async (title, cover) => {
+    const url = await resolveSpotifyTrack(title, a.name);
+    if (url) onPlay?.({ kind: "track", url, title, artist: a.name, art: cover || a.photo || meta?.photo || null });
+  };
 
   // Slice 7: hydrate the artist's owner overrides + updates feed, and the server
   // aggregates for each album/song rating shown on the page.
@@ -315,20 +330,54 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
           </>
         )}
 
-        {meta?.albums?.length > 0 && (
+        {disco?.albums?.length > 0 ? (
+          <>
+            <Text style={styles.sectionLabel}>DISCOGRAPHY · {disco.albums.length}</Text>
+            <Text style={styles.bio}>Every album. Open one to see the tracklist, rate songs, and play them in the top bar.</Text>
+            {disco.albums.map((al) => {
+              const ar = albumRating(a.name, al.title);
+              const open = openAlbum === al.id;
+              return (
+                <View key={al.id} style={styles.discAlbum}>
+                  <Pressable style={styles.discHead} onPress={() => toggleAlbum(al.id, al.tracks)}>
+                    {al.cover ? <Image source={{ uri: al.cover }} style={styles.discCover} /> : <View style={[styles.discCover, styles.discCoverEmpty]}><Icon name="music" size={16} color={colors.textFaint} /></View>}
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.discTitle} numberOfLines={1}>{al.title}</Text>
+                      <Text style={styles.discSub}>{al.year || ""}{al.tracks?.length ? ` · ${al.tracks.length} songs` : ""}{ar.count > 0 ? ` · ${ar.avg.toFixed(1)}★` : ""}</Text>
+                      <TapStars value={ar.mine} onChange={(n) => rateAlbum(a.name, al.title, n)} size={13} gap={2} />
+                    </View>
+                    <Icon name={open ? "chevron-down" : "chevron-right"} size={16} color={colors.textDim} />
+                  </Pressable>
+                  {open && (al.tracks || []).map((t, ti) => {
+                    const sr = songRating(a.name, t.title);
+                    return (
+                      <View key={ti} style={styles.discTrack}>
+                        <Text style={styles.discTrackNo}>{ti + 1}</Text>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.discTrackTitle} numberOfLines={1}>{t.title}</Text>
+                          {sr.count > 0 && <View style={styles.songMeta}><Stars value={sr.avg} size={10} /><Text style={styles.songAvg}>{sr.avg.toFixed(1)} · {sr.count}</Text></View>}
+                        </View>
+                        <TapStars value={sr.mine} onChange={(n) => rateSong(a.name, t.title, n)} size={15} gap={2} />
+                        <Pressable style={styles.songPlay} onPress={() => playTrack(t.title, al.cover)} hitSlop={8}>
+                          <Icon name="play" size={13} color={colors.amber} />
+                        </Pressable>
+                      </View>
+                    );
+                  })}
+                </View>
+              );
+            })}
+          </>
+        ) : meta?.albums?.length > 0 ? (
           <>
             <Text style={styles.sectionLabel}>RELEASES · {meta.albums.length}</Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.albumRow}>
               {meta.albums.map((al, i) => {
                 const ar = albumRating(a.name, al.title);
-                // Honest label even before the art enrichment ran: "Live at…"
-                // release-groups are live albums, not studio albums (or tours).
                 const kind = al.type === "Album" && /^live\s+(at|in|from|on)\b/i.test(al.title) ? "Live album" : al.type;
                 return (
                   <View key={i} style={styles.album}>
-                    <Pressable onPress={() => (meta?.spotifyId ? onPlay?.({ kind: "artist", id: meta.spotifyId, title: al.title, artist: a.name }) : Linking.openURL(`https://www.youtube.com/results?search_query=${encodeURIComponent(a.name + " " + al.title)}`))}>
-                      <AlbumArt uri={al.art} />
-                    </Pressable>
+                    <AlbumArt uri={al.art} />
                     <Text style={styles.albumTitle} numberOfLines={2}>{al.title}</Text>
                     <Text style={styles.albumYear}>{al.year} · {kind}{ar.count > 0 ? `  ${ar.avg.toFixed(1)}★` : ""}</Text>
                     <TapStars value={ar.mine} onChange={(n) => rateAlbum(a.name, al.title, n)} size={13} gap={2} />
@@ -337,7 +386,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
               })}
             </ScrollView>
           </>
-        )}
+        ) : null}
 
         {songs.length > 0 && (
           <>
@@ -436,6 +485,15 @@ const styles = StyleSheet.create({
   albumArtImg: { width: 120, height: 120, borderRadius: 10, backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.line },
   albumTitle: { color: colors.text, fontSize: 13, fontWeight: "700", marginTop: 6 },
   albumYear: { color: colors.textFaint, fontFamily: mono, fontSize: 11, marginTop: 2, marginBottom: 6 },
+  discAlbum: { backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, marginBottom: 8, overflow: "hidden" },
+  discHead: { flexDirection: "row", alignItems: "center", gap: 12, padding: 10 },
+  discCover: { width: 54, height: 54, borderRadius: 8, backgroundColor: colors.surfaceAlt },
+  discCoverEmpty: { alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.line },
+  discTitle: { color: colors.text, fontSize: 14.5, fontWeight: "800" },
+  discSub: { color: colors.textDim, fontFamily: mono, fontSize: 11, marginTop: 2, marginBottom: 4 },
+  discTrack: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 8, paddingHorizontal: 12, borderTopWidth: 1, borderTopColor: colors.lineSoft },
+  discTrackNo: { color: colors.textFaint, fontFamily: mono, fontSize: 12, width: 20, textAlign: "center" },
+  discTrackTitle: { color: colors.text, fontSize: 13.5, fontWeight: "600" },
   songRow: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 12, marginBottom: 8 },
   songTitle: { color: colors.text, fontSize: 15, fontWeight: "700" },
   songMeta: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 4 },

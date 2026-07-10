@@ -337,6 +337,14 @@ export function StoreProvider({ children }) {
     catch { return null; }
   };
   const remoteArtistMeta = (name) => remoteArtists[norm(name)] || null;
+  // Full discography (albums + tracklists) from the server (Deezer-backed).
+  const artistDiscography = async (name) => {
+    try { return await api(`/api/artists/discography?name=${encodeURIComponent(name)}`); } catch { return { albums: [] }; }
+  };
+  // Resolve a track title to a playable Spotify URL (for album tracks).
+  const resolveSpotifyTrack = async (title, artist) => {
+    try { const { url } = await api(`/api/spotify/track?title=${encodeURIComponent(title)}&artist=${encodeURIComponent(artist || "")}`); return url || null; } catch { return null; }
+  };
 
   // --- Spotify Connect (full-track playback) ---------------------------------
   const spotifyConnected = !!session?.spotifyConnected;
@@ -1604,7 +1612,7 @@ export function StoreProvider({ children }) {
     requestArtist, approveArtist, rejectArtist,
     addTourDatesBatch,
     isFollowing, follow, unfollow, followerCount, followingCount, absorbUsers, searchPeople, loadMembers, memberCount,
-    searchArtistsApi, resolveArtist, remoteArtistMeta,
+    searchArtistsApi, resolveArtist, remoteArtistMeta, artistDiscography, resolveSpotifyTrack,
     spotifyConnected, connectSpotify, disconnectSpotify,
     visibleFeed, followingFeed, visibleTourDates, artistSummary, venueSummary,
     localVenues, regionShows, localFeed, recommendedShows, venueCoord,

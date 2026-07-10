@@ -124,6 +124,29 @@ const SPOTIFY_SCOPES = "streaming user-read-email user-read-private user-modify-
 const spotifyStates = new Map(); // CSRF state -> { userId, exp }; single server instance, so in-memory is fine
 const spotifyKeys = () => ({ id: process.env.SPOTIFY_CLIENT_ID, secret: process.env.SPOTIFY_CLIENT_SECRET });
 
+// App-level Spotify token (client credentials) for catalog lookups like resolving a
+// track title to a playable URL. Cached until ~expiry.
+let spAppTok = null, spAppExp = 0;
+async function spotifyAppToken() {
+  if (spAppTok && Date.now() < spAppExp - 30000) return spAppTok;
+  const { id, secret } = spotifyKeys();
+  if (!id || !secret) return null;
+  try {
+    const r = await fetch("https://accounts.spotify.com/api/token", {
+      method: "POST",
+      headers: { Authorization: "Basic " + Buffer.from(`${id}:${secret}`).toString("base64"), "Content-Type": "application/x-www-form-urlencoded" },
+      body: "grant_type=client_credentials", signal: AbortSignal.timeout(8000),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!d.access_token) return null;
+    spAppTok = d.access_token; spAppExp = Date.now() + (d.expires_in || 3600) * 1000;
+    return spAppTok;
+  } catch { return null; }
+}
+
+const deezerCache = new Map(); // norm(name) -> { data, exp }
+async function dz(url) { const r = await fetch(url, { signal: AbortSignal.timeout(9000) }); return r.ok ? r.json() : null; }
+
 // route table: "METHOD /path" -> handler(ctx) ; :params exposed as ctx.params
 export const routes = {
   // ---- health ---- (spotify + origin are safe config diagnostics, no secrets)
@@ -154,6 +177,56 @@ export const routes = {
     if (!mb) return { artist: null, created: false };
     artistStmts.upsert.run(artistRow(mb.name, mb, "musicbrainz"));
     return { artist: publicArtist(artistStmts.byNorm.get(normName(mb.name))), created: true };
+  },
+
+  // Full discography with tracklists, from Deezer (keyless). Powers the artist
+  // page: real albums you can expand into songs to rate and play. Cached a day.
+  "GET /api/artists/discography": async (ctx) => {
+    const name = clean(ctx.query.name, { max: 120 });
+    if (!name) throw new ApiError(400, "Missing name.");
+    const key = name.toLowerCase();
+    const hit = deezerCache.get(key);
+    if (hit && hit.exp > Date.now()) return hit.data;
+    limit(ctx, "discography", 40, 10 * 60 * 1000);
+    try {
+      const s = await dz(`https://api.deezer.com/search/artist?q=${encodeURIComponent(name)}&limit=1`);
+      const artist = s?.data?.[0];
+      if (!artist) return { albums: [] };
+      const al = await dz(`https://api.deezer.com/artist/${artist.id}/albums?limit=50`);
+      const seen = new Set();
+      const picks = (al?.data || [])
+        .filter((x) => x.record_type === "album" && x.title && !seen.has(x.title.toLowerCase()) && seen.add(x.title.toLowerCase()))
+        .sort((a, b) => String(b.release_date || "").localeCompare(String(a.release_date || "")))
+        .slice(0, 12);
+      const albums = [];
+      for (const alb of picks) {
+        const full = await dz(`https://api.deezer.com/album/${alb.id}`);
+        albums.push({
+          id: alb.id, title: alb.title, year: (alb.release_date || "").slice(0, 4), cover: alb.cover_medium || alb.cover || null,
+          tracks: (full?.tracks?.data || []).map((t) => ({ title: t.title, preview: t.preview || null, duration: t.duration || 0 })),
+        });
+      }
+      const data = { artist: { name: artist.name, fans: artist.nb_fan, photo: artist.picture_xl || artist.picture_big }, albums };
+      deezerCache.set(key, { data, exp: Date.now() + 24 * 3600 * 1000 });
+      return data;
+    } catch { return { albums: [] }; }
+  },
+
+  // Resolve a track title (+ artist) to a playable Spotify URL, so album tracks
+  // can stream full in the top player.
+  "GET /api/spotify/track": async (ctx) => {
+    const title = clean(ctx.query.title, { max: 200 });
+    const artist = clean(ctx.query.artist, { max: 120 });
+    if (!title) throw new ApiError(400, "Missing title.");
+    const tok = await spotifyAppToken();
+    if (!tok) return { url: null };
+    const query = encodeURIComponent(`track:"${title}"${artist ? ` artist:"${artist}"` : ""}`);
+    try {
+      const r = await fetch(`https://api.spotify.com/v1/search?type=track&limit=1&q=${query}`, { headers: { Authorization: "Bearer " + tok }, signal: AbortSignal.timeout(8000) });
+      const d = await r.json().catch(() => ({}));
+      const t = d?.tracks?.items?.[0];
+      return { url: t?.external_urls?.spotify || null };
+    } catch { return { url: null }; }
   },
 
   // ---- Spotify Connect: OAuth + Web Playback SDK tokens ----
