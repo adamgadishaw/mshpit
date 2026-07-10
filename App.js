@@ -43,7 +43,7 @@ import SettingsScreen from "./src/screens/SettingsScreen";
 import PrivacyScreen from "./src/screens/PrivacyScreen";
 import TermsScreen from "./src/screens/TermsScreen";
 import AccountMenu from "./src/components/AccountMenu";
-import MediaSheet from "./src/components/MediaSheet";
+import PlayerBar from "./src/components/PlayerBar";
 import LandingScreen from "./src/screens/LandingScreen";
 import { load, save } from "./src/lib/persist";
 
@@ -203,7 +203,15 @@ function Root() {
   const openArtist = (name) => { track("view_artist", { artist: name }); go({ artistName: name }); };
   const openVenue = (name) => { track("view_venue", { venue: name }); go({ venueName: name }); };
   const openFanClub = (artist) => go({ fanClub: artist });
-  const openPlayer = (media) => setPlayer(media); // { kind, id/url, title, artist }
+  // Open the persistent top player. `queue` (optional) is a list of tracks so the
+  // bar can skip prev/next; without it, a single track. player = { list, index }.
+  const openPlayer = (media, queue) => {
+    if (!media) return;
+    const list = Array.isArray(queue) && queue.length ? queue : [media];
+    const key = (m) => m?.id || m?.url || m?.title;
+    setPlayer({ list, index: Math.max(0, list.findIndex((m) => key(m) === key(media))) });
+  };
+  const setPlayerIndex = (i) => setPlayer((p) => (p ? { ...p, index: Math.max(0, Math.min(i, p.list.length - 1)) } : p));
   const openPhotos = (images, index = 0) => go({ photos: { images, index } });
   const reviewShow = (log) => requireAuth(() => go({ logging: true, prefill: { artist: log.artist, venue: log.venue, city: log.city } }));
   const openInbox = () => requireAuth(() => go({ inbox: true }));
@@ -368,6 +376,10 @@ function Root() {
       <SafeAreaView style={styles.safe}>
         <StatusBar style="light" />
 
+        {!(landing && !session) && player && (
+          <PlayerBar player={player} onClose={() => setPlayer(null)} onIndex={setPlayerIndex} />
+        )}
+
         {landing && !session ? (
           <LandingScreen
             onLogin={() => { enter(); go({ auth: true, authMode: "login" }); }}
@@ -409,7 +421,6 @@ function Root() {
           </Animated.View>
         )}
 
-        {player && <MediaSheet media={player} onClose={() => setPlayer(null)} />}
 
         <AccountMenu
           visible={acctOpen}

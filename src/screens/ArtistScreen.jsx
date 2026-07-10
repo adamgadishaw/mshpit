@@ -53,6 +53,9 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
   // Real Spotify top tracks when ingested; hand-seeded SONGS as the fallback.
   const spotTracks = (meta?.topTracks || []).map((t, i) => ({ id: "sp_" + i, title: t.title, artist: a.name, album: t.album, url: t.url, preview: t.preview }));
   const songs = spotTracks.length ? spotTracks : SONGS.filter((s) => s.artist.toLowerCase() === a.name.toLowerCase()).slice(0, 8);
+  // Queue for the top player — every playable track on the page, so next/prev walk
+  // this artist's songs while you keep browsing.
+  const songQueue = songs.filter((s) => s.url).map((s) => ({ kind: "track", url: s.url, title: s.title, artist: a.name }));
 
   // Artist-owned profile: the band's account can edit its header + post updates.
   const isOwner = isArtistOwner(a.name);
@@ -355,7 +358,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
                     )}
                   </View>
                   <TapStars value={sr.mine} onChange={(n) => rateSong(a.name, s.title, n)} size={16} gap={3} />
-                  <Pressable style={styles.songPlay} onPress={() => (s.url ? onPlay?.({ kind: "track", url: s.url, title: s.title, artist: a.name }) : Linking.openURL(listenUrl(s)))} hitSlop={8}>
+                  <Pressable style={styles.songPlay} onPress={() => (s.url ? onPlay?.({ kind: "track", url: s.url, title: s.title, artist: a.name }, songQueue) : Linking.openURL(listenUrl(s)))} hitSlop={8}>
                     <Icon name="play" size={13} color={colors.amber} />
                   </Pressable>
                 </View>
