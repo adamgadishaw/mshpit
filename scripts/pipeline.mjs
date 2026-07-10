@@ -67,6 +67,7 @@ async function stats() {
   return {
     artistCount: artists.length,
     missingSpotify: artists.filter((a) => !a.spotifyId).length,
+    missingPopularity: artists.filter((a) => a.spotifyId && a.popularity == null).length,
     missingArt: artists.filter((a) => !(a.albums || []).some((x) => x.art)).length,
     missingTracks: artists.filter((a) => !(a.topTracks || []).length).length,
     blankVenues: venues.filter((v) => !(v.galleryPool || []).length && !v.photo).length,
@@ -94,6 +95,11 @@ async function cycle(n) {
   if (!stopping && s2.missingSpotify > 0) {
     log(`stage: spotify photos (${s2.missingSpotify} artists)`);
     await run("enrich-spotify.mjs", ["--missing"]);
+    did = true;
+  }
+  if (!stopping && s2.missingPopularity > 0) {
+    log(`stage: popularity/followers backfill (${s2.missingPopularity} artists)`);
+    await run("enrich-popularity.mjs");
     did = true;
   }
   if (!stopping && s2.missingArt > 0) {

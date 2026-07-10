@@ -60,6 +60,9 @@ export async function findArtist(name) {
   // prefer an exact (case-insensitive) name match, else the most popular result.
   const exact = items.find((a) => a.name.toLowerCase() === name.toLowerCase());
   const a = exact || items.sort((x, y) => (y.popularity || 0) - (x.popularity || 0))[0];
+  // NOTE: restricted (post-2024 dev-mode) apps get search results WITHOUT
+  // popularity/followers, so those come back null here. `enrich-popularity.mjs`
+  // backfills them in bulk via the batch /artists endpoint (far fewer calls).
   return {
     id: a.id,
     name: a.name,
@@ -70,6 +73,16 @@ export async function findArtist(name) {
     // largest or the gallery fills with triplicates.
     images: (a.images || []).map((im) => im.url).filter(Boolean).slice(0, 1),
   };
+}
+
+// Batch-fetch full artist objects (popularity, followers, genres) by id — up to
+// 50 per call via /artists?ids=. This is how we get popularity/followers, which
+// the /search endpoint omits for restricted apps. Returns { id: artistObj }.
+export async function getArtistsByIds(ids) {
+  const d = await api(`/artists?ids=${ids.slice(0, 50).join(",")}`);
+  const out = {};
+  for (const a of d?.artists || []) if (a && a.id) out[a.id] = a;
+  return out;
 }
 
 // Top tracks by artist NAME via track search. (The dedicated top-tracks endpoint
