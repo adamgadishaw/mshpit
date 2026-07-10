@@ -67,7 +67,7 @@ async function stats() {
   return {
     artistCount: artists.length,
     missingSpotify: artists.filter((a) => !a.spotifyId).length,
-    missingPopularity: artists.filter((a) => a.spotifyId && a.popularity == null).length,
+    missingPopularity: artists.filter((a) => a.popularity == null).length, // Deezer fills this (Spotify strips it now)
     missingArt: artists.filter((a) => !(a.albums || []).some((x) => x.art)).length,
     missingTracks: artists.filter((a) => !(a.topTracks || []).length).length,
     blankVenues: venues.filter((v) => !(v.galleryPool || []).length && !v.photo).length,
@@ -97,10 +97,14 @@ async function cycle(n) {
     await run("enrich-spotify.mjs", ["--missing"]);
     did = true;
   }
-  // NOTE: no popularity stage — this Spotify app is in restricted/dev mode, which
-  // strips popularity/followers/genres from all artist endpoints (search omits
-  // them, /artists/{id} returns a stub, /artists?ids= 403s). Re-enable
-  // enrich-popularity.mjs only once the app is approved for extended quota mode.
+  // Popularity + rank via Deezer (keyless). Spotify's dev-mode app strips
+  // popularity/followers/genres from every endpoint, so Deezer's fan count is our
+  // ranking signal (drives the Top-100 badge + the DB rank_score).
+  if (!stopping && s2.missingPopularity > 0) {
+    log(`stage: deezer ranking (${s2.missingPopularity} artists)`);
+    await run("enrich-deezer.mjs", ["--missing"]);
+    did = true;
+  }
   if (!stopping && s2.missingArt > 0) {
     log(`stage: album covers (${s2.missingArt} artists)`);
     await run("enrich-album-art.mjs");

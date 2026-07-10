@@ -357,20 +357,22 @@ export function publicArtist(r) {
   return { ...data, name: r.name, genre: r.genre, photo: r.photo, bio: r.bio, mbid: r.mbid, spotifyId: r.spotify_id, country: r.country, popularity: r.popularity };
 }
 
-// One-time seed of the DB catalog from the bundled JSON (so the ~1.6k already-
-// enriched artists are searchable via the API from day one). Skips if already
-// populated. New artists arrive via on-demand resolve + the MB dump seed.
+// Merge the bundled catalog into the DB on boot. The upsert is idempotent
+// (COALESCE + MAX rank), so re-merging every boot cheaply propagates fresh
+// enrichment (e.g. Deezer popularity/rank) to the ~1.6k bundled artists without
+// touching on-demand-resolved ones. New artists arrive via resolve + MB dump.
 export function seedArtistsFromBundle() {
   try {
-    if (artistStmts.count.get().c > 0) return;
     const path = join(HERE, "..", "src", "seed", "catalog.generated.json");
     const cat = JSON.parse(readFileSync(path, "utf8"));
     const entries = Object.entries(cat.artists || {});
     if (!entries.length) return;
+    const fresh = artistStmts.count.get().c === 0;
     db.exec("BEGIN");
     for (const [key, a] of entries) artistStmts.upsert.run(artistRow(key, a, "bundle"));
     db.exec("COMMIT");
-    console.log(`[db] seeded ${entries.length} artists into the DB from the bundled catalog`);
+    if (fresh) console.log(`[db] seeded ${entries.length} artists into the DB from the bundled catalog`);
+    else console.log(`[db] merged ${entries.length} bundled artists (refreshed rank/enrichment)`);
   } catch (e) {
     try { db.exec("ROLLBACK"); } catch {}
     console.warn("[db] artist seed skipped:", e.message);

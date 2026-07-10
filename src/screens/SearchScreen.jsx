@@ -96,11 +96,11 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
   // Pull the member directory on open + whenever the box is cleared, so people are
   // browsable without knowing a handle. Hitting the server on each keystroke (≥1
   // char) keeps cross-device results fresh; a short debounce avoids spamming it.
-  useEffect(() => { loadMembers(); searchArtistsApi("").then(setDbArtists); }, []);
+  useEffect(() => { searchArtistsApi("").then(setDbArtists); }, []);
   useEffect(() => {
-    if (!query) { loadMembers(); searchArtistsApi("").then(setDbArtists); return; }
+    if (!query) { searchArtistsApi("").then(setDbArtists); return; }
     const id = setTimeout(() => {
-      searchPeople(query);
+      searchPeople(query); // type-ahead: people only ever surface as you type
       searchArtistsApi(query).then(setDbArtists); // pulls the full DB catalog, not just the bundle
       track("search", { q: query });
     }, 250);
@@ -108,10 +108,13 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
   }, [query]);
 
   const mine = session?.id;
+  // People are pure type-ahead (like every social app): never a full list, always
+  // narrowing as you type. Empty query shows nobody.
   const people = useMemo(() => {
-    const list = users.filter((u) => u.id !== mine);
-    if (!query) return list.slice(0, 24); // browse newest members
-    return list.filter((u) => u.name.toLowerCase().includes(query) || u.handle.toLowerCase().includes(query)).slice(0, 30);
+    if (!query) return [];
+    return users
+      .filter((u) => u.id !== mine && (u.name.toLowerCase().includes(query) || u.handle.toLowerCase().includes(query)))
+      .slice(0, 20);
   }, [query, users, mine]);
 
   const artists = useMemo(() => {
@@ -168,13 +171,13 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
       <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.list} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
         {showBrowse && (
           <Text style={styles.browseHint}>
-            {memberCount > 0 ? `${memberCount.toLocaleString()} member${memberCount === 1 ? "" : "s"} on Pit` : "Browse members"} · start typing to search everything
+            {memberCount > 0 ? `${memberCount.toLocaleString()} member${memberCount === 1 ? "" : "s"} on Pit` : "Discover Pit"} · start typing to search people, artists, venues
           </Text>
         )}
 
         <Section
           icon="you" tint={colors.gold}
-          title={showBrowse ? "MEMBERS" : "PEOPLE"} count={showBrowse && memberCount ? memberCount : people.length}
+          title="PEOPLE" count={people.length}
           rows={people.map((u) => (
             <PersonRow
               key={u.id}
