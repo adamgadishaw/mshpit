@@ -11,7 +11,7 @@ const web = Platform.OS === "web";
 // Persistent top player. Keeps playing across navigation, streams full tracks via
 // the Web Playback SDK when connected (embed otherwise), and drops down a session
 // panel (up next + recently played + save-as-playlist) on hover or tap.
-export default function PlayerBar({ player, onClose, onIndex, onPlayAt, onRemove, onMoveNext, history = [], onSaveSession, onPlayTrack, onOpenArtist }) {
+export default function PlayerBar({ player, onClose, onIndex, onPlayAt, onRemove, onMoveNext, history = [], onSaveSession, onPlayTrack, onOpenArtist, onAddToPlaylist }) {
   const { spotifyConnected, connectSpotify } = useStore();
   const list = player && Array.isArray(player.list) ? player.list : [];
   const index = Math.max(0, Math.min(player?.index || 0, list.length - 1));
@@ -121,10 +121,18 @@ export default function PlayerBar({ player, onClose, onIndex, onPlayAt, onRemove
         <View style={styles.panel}>
           <View style={styles.panelHead}>
             <Text style={styles.panelTitle}>LISTENING SESSION</Text>
-            <Pressable style={styles.saveBtn} onPress={doSave}>
-              <Icon name={saved ? "check" : "star"} size={12} color={saved ? colors.good : colors.amber} />
-              <Text style={[styles.saveTxt, saved && { color: colors.good }]}>{saved ? "Saved" : "Save as playlist"}</Text>
-            </Pressable>
+            <View style={styles.panelActions}>
+              {onAddToPlaylist && (
+                <Pressable style={styles.addBtn} onPress={() => onAddToPlaylist({ title: cur.title || cur.artist, artist: cur.artist, url: cur.url, art })}>
+                  <Icon name="plus" size={12} color={colors.textDim} />
+                  <Text style={styles.addTxt}>Add song</Text>
+                </Pressable>
+              )}
+              <Pressable style={styles.saveBtn} onPress={doSave}>
+                <Icon name={saved ? "check" : "star"} size={12} color={saved ? colors.good : colors.amber} />
+                <Text style={[styles.saveTxt, saved && { color: colors.good }]}>{saved ? "Saved" : "Save session"}</Text>
+              </Pressable>
+            </View>
           </View>
 
           <ScrollView style={styles.panelScroll} showsVerticalScrollIndicator={false}>
@@ -138,6 +146,7 @@ export default function PlayerBar({ player, onClose, onIndex, onPlayAt, onRemove
                     <Text style={styles.qTitle} numberOfLines={1}>{t.title}</Text>
                     <Text style={styles.qArtist} numberOfLines={1}>{t.artist}</Text>
                   </Pressable>
+                  {onAddToPlaylist && <Pressable style={styles.qAct} onPress={() => onAddToPlaylist({ title: t.title, artist: t.artist, url: t.url, art: t.art })} hitSlop={6}><Icon name="plus" size={14} color={colors.textDim} /></Pressable>}
                   <Pressable style={styles.qAct} onPress={() => onMoveNext?.(real)} hitSlop={6}><Icon name="menu" size={14} color={colors.textDim} /></Pressable>
                   <Pressable style={styles.qAct} onPress={() => onRemove?.(real)} hitSlop={6}><Icon name="x" size={13} color={colors.textDim} /></Pressable>
                 </View>
@@ -194,8 +203,11 @@ const styles = StyleSheet.create({
   panel: { backgroundColor: colors.bgElev, borderBottomWidth: 1, borderBottomColor: colors.line, paddingHorizontal: 12, paddingBottom: 10, ...shadow.sheet },
   panelHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingVertical: 8 },
   panelTitle: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "800" },
+  panelActions: { flexDirection: "row", alignItems: "center", gap: 8 },
   saveBtn: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 11, paddingVertical: 6, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.amber, backgroundColor: "rgba(242,166,90,0.08)" },
   saveTxt: { color: colors.amber, fontSize: 12, fontWeight: "800" },
+  addBtn: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 11, paddingVertical: 6, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
+  addTxt: { color: colors.textDim, fontSize: 12, fontWeight: "800" },
   panelScroll: { maxHeight: 300 },
   groupLabel: { color: colors.textFaint, fontSize: 10, letterSpacing: 1.2, fontWeight: "800", marginTop: 8, marginBottom: 4 },
   qRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 6 },

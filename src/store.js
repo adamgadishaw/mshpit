@@ -202,6 +202,8 @@ export function StoreProvider({ children }) {
   // account. syncThemeFromAccount no-ops if it already matches, so this only
   // reloads when the rendered theme and the account theme actually differ.
   useEffect(() => { if (session?.theme) syncThemeFromAccount(session.theme); }, [session?.theme]);
+  // Keep the current user's playlists loaded (for the "add to playlist" picker + profile).
+  useEffect(() => { loadMyPlaylists(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [session?.id]);
 
   // --- SQLite migration slices 2 & 3: public feed + likes/comments -----------
   // Pull real server posts (with their like/comment counts + whether *I* liked)
@@ -377,6 +379,76 @@ export function StoreProvider({ children }) {
   };
   const userPlaylists = async (id) => { try { const { playlists } = await api(`/api/users/${id}/playlists`); return playlists || []; } catch { return []; } };
   const deletePlaylist = async (id) => { try { await api(`/api/playlists/${id}`, { method: "DELETE" }); } catch {} };
+
+  // --- Listening algorithm (drives autoplay "up next") -----------------------
+  // Favorite genre = the genre you play most (falls back to your picked genres).
+  const genreOfArtist = (name) => catalogArtists[norm(name)]?.genre || artistMeta(name)?.genre || null;
+  const favoriteGenre = () => {
+    const counts = {};
+    (playHistory || []).slice(0, 60).forEach((t) => { const g = genreOfArtist(t.artist); if (g) counts[g] = (counts[g] || 0) + 1; });
+    const top = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+    return top ? top[0] : (session?.genres?.[0] || null);
+  };
+  // Recommend the next tracks to keep the player going: same genre as what you're
+  // playing (or your favorite genre) first, then the rest of the catalog, ranked by
+  // popularity, capped at ~2 per artist so one band never hogs the queue. Skips the
+  // seed and anything you just heard. Works even when Spotify popularity is missing.
+  const recommendTracks = (seed, n = 24) => {
+    const keyOf = (t) => (t?.url || (t?.title || "").toLowerCase());
+    const seen = new Set();
+    if (seed) seen.add(keyOf(seed));
+    (playHistory || []).slice(0, 25).forEach((t) => seen.add(keyOf(t)));
+    const seedGenre = (seed && genreOfArtist(seed.artist)) || favoriteGenre();
+    const g = seedGenre ? norm(seedGenre) : null;
+    const withTracks = Object.values(catalogArtists || {})
+      .map((a) => ({ a, meta: artistMeta(a.name) || a }))
+      .filter((x) => (x.meta.topTracks || []).length);
+    const score = (x) => (x.a.popularity ?? 0);
+    const inGenre = withTracks.filter((x) => g && norm(x.a.genre) === g).sort((p, q) => score(q) - score(p));
+    const rest = withTracks.filter((x) => !(g && norm(x.a.genre) === g)).sort((p, q) => score(q) - score(p));
+    const out = [];
+    for (const x of [...inGenre, ...rest]) {
+      let taken = 0;
+      for (const t of x.meta.topTracks || []) {
+        if (!t.url) continue;
+        const track = { kind: "track", title: t.title, artist: x.a.name, url: t.url, art: x.meta.photo || x.a.photo || null };
+        const k = keyOf(track);
+        if (seen.has(k)) continue;
+        seen.add(k); out.push(track); taken++;
+        if (taken >= 2 || out.length >= n) break;
+      }
+      if (out.length >= n) break;
+    }
+    return out;
+  };
+  // Build the queue the top player runs: whatever was explicitly queued, then a
+  // recommended tail so "up next" is always populated and playback never dead-ends
+  // after one song.
+  const autoplayQueue = (seed, baseList) => {
+    const keyOf = (t) => (t?.url || t?.id || (t?.title || "").toLowerCase());
+    const base = ((Array.isArray(baseList) && baseList.length ? baseList : (seed ? [seed] : [])) || []).filter((t) => t && (t.url || t.id));
+    const seen = new Set(base.map(keyOf));
+    const recs = recommendTracks(seed || base[0], 30).filter((t) => { const k = keyOf(t); if (seen.has(k)) return false; seen.add(k); return true; });
+    return [...base, ...recs].slice(0, 60);
+  };
+
+  // --- Playlists (build one song at a time, not just whole-session snapshots) --
+  const [myPlaylists, setMyPlaylists] = useState([]);
+  const loadMyPlaylists = async () => {
+    if (!session) { setMyPlaylists([]); return []; }
+    try { const { playlists } = await api(`/api/users/${session.id}/playlists`); setMyPlaylists(playlists || []); return playlists || []; } catch { return []; }
+  };
+  const cleanTrack = (t) => ({ title: t.title, artist: t.artist || null, url: t.url || null, art: t.art || null });
+  const createPlaylist = async (name, tracks) => {
+    if (!session) return null;
+    const list = (Array.isArray(tracks) ? tracks : [tracks]).filter((t) => t && t.title).map(cleanTrack);
+    if (!list.length) return null;
+    try { const pl = await api("/api/playlists", { method: "POST", body: { name: name || "New playlist", tracks: list } }); await loadMyPlaylists(); return pl; } catch { return null; }
+  };
+  const addToPlaylist = async (id, track) => {
+    if (!session || !track?.title) return false;
+    try { await api(`/api/playlists/${id}`, { method: "PATCH", body: { track: cleanTrack(track) } }); await loadMyPlaylists(); return true; } catch { return false; }
+  };
   // Snapshot a listening session (queue) into a saved playlist seed that shows on
   // the profile and can be resumed.
   const saveSnapshot = (tracks, name) => {
@@ -386,7 +458,7 @@ export function StoreProvider({ children }) {
     setSnapshots((s) => [snap, ...s].slice(0, 50));
     // Persist as a real playlist on the account (shows on the profile, shareable).
     if (session) api("/api/playlists", { method: "POST", body: { name: snap.name, tracks: list } })
-      .then(({ id }) => { if (id) setSnapshots((s) => s.map((x) => (x.id === snap.id ? { ...x, serverId: id } : x))); }).catch(() => {});
+      .then(({ id }) => { if (id) setSnapshots((s) => s.map((x) => (x.id === snap.id ? { ...x, serverId: id } : x))); loadMyPlaylists(); }).catch(() => {});
     return snap;
   };
   const removeSnapshot = (id) => setSnapshots((s) => s.filter((x) => x.id !== id));
@@ -1688,6 +1760,7 @@ export function StoreProvider({ children }) {
     isFollowing, follow, unfollow, followerCount, followingCount, absorbUsers, searchPeople, loadMembers, memberCount,
     searchArtistsApi, resolveArtist, remoteArtistMeta, artistDiscography, resolveSpotifyTrack,
     playHistory, recordPlay, snapshots, saveSnapshot, removeSnapshot, friendsListening, loadFriendsListening, userPlaylists, deletePlaylist,
+    favoriteGenre, recommendTracks, autoplayQueue, myPlaylists, loadMyPlaylists, createPlaylist, addToPlaylist,
     drafts, saveDraft, deleteDraft,
     spotifyConnected, connectSpotify, disconnectSpotify,
     visibleFeed, followingFeed, visibleTourDates, artistSummary, venueSummary,

@@ -310,6 +310,25 @@ export const routes = {
     const rows = db.prepare("SELECT id,name,tracks,created_at FROM playlists WHERE user_id=? ORDER BY created_at DESC LIMIT 50").all(ctx.params.id);
     return { playlists: rows.map((r) => ({ id: r.id, name: r.name, tracks: JSON.parse(r.tracks || "[]"), at: r.created_at })) };
   },
+  // Add tracks to (and/or rename) an existing playlist. Lets people build a
+  // playlist one song at a time instead of only snapshotting a whole session.
+  "PATCH /api/playlists/:id": (ctx) => {
+    const u = requireUser(ctx);
+    const row = db.prepare("SELECT tracks FROM playlists WHERE id=? AND user_id=?").get(ctx.params.id, u.id);
+    if (!row) throw new ApiError(404, "Playlist not found.");
+    let tracks = JSON.parse(row.tracks || "[]");
+    const incoming = Array.isArray(ctx.body?.add) ? ctx.body.add : (ctx.body?.track ? [ctx.body.track] : []);
+    const add = incoming.map((t) => ({ title: clean(t?.title, { max: 200 }), artist: clean(t?.artist, { max: 120 }) || null, url: clean(t?.url, { max: 400 }) || null, art: clean(t?.art, { max: 500 }) || null })).filter((t) => t.title);
+    for (const t of add) {
+      const k = t.url || t.title.toLowerCase();
+      if (!tracks.some((x) => (x.url || (x.title || "").toLowerCase()) === k)) tracks.push(t);
+    }
+    tracks = tracks.slice(0, 100);
+    const name = ctx.body?.name != null ? (clean(ctx.body.name, { max: 80 }) || "Untitled") : null;
+    if (name) db.prepare("UPDATE playlists SET tracks=?, name=? WHERE id=? AND user_id=?").run(JSON.stringify(tracks), name, ctx.params.id, u.id);
+    else db.prepare("UPDATE playlists SET tracks=? WHERE id=? AND user_id=?").run(JSON.stringify(tracks), ctx.params.id, u.id);
+    return { ok: true, count: tracks.length };
+  },
   "DELETE /api/playlists/:id": (ctx) => {
     const u = requireUser(ctx);
     db.prepare("DELETE FROM playlists WHERE id=? AND user_id=?").run(ctx.params.id, u.id);

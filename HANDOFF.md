@@ -2,7 +2,7 @@
 
 > **Living doc.** Whoever works on this next: read this first, and UPDATE it before you end a session (move things between "Done" and "Backlog", note anything running). Point a fresh Claude Code chat at this file to get up to speed without re-explaining.
 >
-> Last updated: **2026-07-09**
+> Last updated: **2026-07-10**
 
 > **Working agreement (owner's standing instruction):** ALWAYS `git commit` **and** `git push` to `master` after a change — no need to ask. Push auto-deploys (brief 502 while Render restarts). Do not leave work only committed locally.
 
@@ -63,6 +63,13 @@ Two separate paths now:
 ## Workflow rule (standing)
 - **Always commit AND push finished work to `master`** (auto-deploys to mshpit.com) — the user asked for this as the default; don't wait for per-change approval. An automated committer also periodically commits `catalog.generated.json` (scrape output).
 
+## This session (2026-07-10, latest) — player autoplay algorithm + build-a-playlist
+Fixes for the owner's report that the artist-page player / Listen button / top media bar / playlists were broken. All committed + pushed.
+- **Autoplay "up next" now has a real algorithm.** New store engine (`src/store.js`): `favoriteGenre()` (your most-played genre from `playHistory`, falling back to your picked `genres`), `recommendTracks(seed, n)` (same-genre-first, then the rest of the catalog ranked by popularity, max 2 tracks/artist, skips the seed + recently played, works even when Spotify popularity is missing), and `autoplayQueue(seed, base)` (appends a recommended tail so the queue never dead-ends). `App.js` `openPlayer` now runs every play through `autoplayQueue`, so **one tap fills the queue** (verified live: playing one Turnstile track queued 35 recs). This is the "push the next song based on favourite genre / what they listen to" ask.
+- **Listen button = play a random song from the artist's catalog** (was: just mounted the artist embed, or bounced to a YouTube search). `ArtistScreen.playRandom()` shuffles the page's playable tracks, plays one, queues the rest (then recs continue). Album/top-track play buttons now prefer a URL already on the page before hitting `resolveSpotifyTrack` (more reliable given Spotify's restricted mode), and feed the song queue.
+- **Build playlists one song at a time** (was: could only Save-as-playlist a whole session). New `POST`-friendly `PATCH /api/playlists/:id` (add tracks / rename, dedupes) + store `createPlaylist` / `addToPlaylist` / `myPlaylists` / `loadMyPlaylists`. New `PlaylistPickerScreen.jsx` overlay (pick an existing playlist or name a new one) wired app-wide via `openAddToPlaylist` (auth-gated). **"+" add-to-playlist button** on every ArtistScreen song row (popular songs + album tracklists) and in the player's session panel (per up-next row + "Add song" for the current track). The old "Save as playlist" is relabeled **"Save session"** (snapshots the whole queue — still there, it's the other use).
+- **Known limit (not a bug):** in **embed mode** (not Spotify-Connected / no Premium) each track is a separate iframe that browsers won't autoplay-chain, so the queue advances on **next / tapping a row**, not automatically at song-end. Full hands-off auto-advance only happens in **SDK mode** (Connected + Premium), where Spotify plays the whole `uris` list. The up-next queue + recommendations are populated in both modes.
+
 ## This session (2026-07-09, latest)
 - **Discover = music-data dashboard.** Rebuilt `DiscoverScreen` as a "data-center": KPI tiles (artists/venues/countries/genres), a **top-3 podium** with new gold/silver/bronze **medallion badges** (`rank1/2/3` in `Badge.jsx`, drawn numerals), a **region→genre donut** (drawn with react-native-svg arcs, country picker from catalog `country` field, `topGenres`), and a **top-photos wall** (most-liked feed photos). Store: **ranking-provider framework** `chartTop`/`chartInfo` — abstracted `CHART_SOURCE` (`spotify-popularity` now → swap to `billboard-hot-100`/`in-app-score` later), **falls back** popularity → followers → fan-reputation → A–Z so the podium always fills; plus `catalogCountries`, `topGenres`, `topPhotos`, `discoverStats`. (Removed the old "For you"/tasteMatches sections — say if you want them back.)
 - **Search polish.** Kept the typeahead; added an editorial header (kicker + "Search") and a bigger, elevated field to match Discover.
@@ -114,7 +121,7 @@ Everything below is committed to `master` and auto-deployed.
 
 **Discover / algorithm**
 - DONE: **top artists + top songs per genre AND region** (EXPLORE BY GENRE panel, playable songs).
-- STILL OPEN: **listening history drives the algorithm** (personalized genre/artist push from store.playHistory / the plays table).
+- PARTIAL (2026-07-10): **listening history drives the algorithm** — the *player autoplay* now uses `favoriteGenre()` (from `playHistory`) + `recommendTracks()` to fill up-next (see this-session notes). STILL OPEN: pushing this same taste signal into **Discover** (personalized genre/artist shelves) and the server `plays` table (currently favorite-genre is computed client-side from local `playHistory`).
 - STILL OPEN: **Monthly "your month in review"** snapshot, viewable + postable (build from the plays table).
 
 **Artist coverage**
@@ -124,7 +131,7 @@ Everything below is committed to `master` and auto-deployed.
 - **YouTube** official-video embeds as a fallback; **connect YouTube Premium + Apple Music** like Spotify for playback fallbacks.
 
 **Playlists**
-- DONE (core): create via Save-as-playlist, persisted (playlists table), shown on the profile, plays the whole set. STILL OPEN: explicit share links + collaborative/curated playlist building.
+- DONE (core): create via Save-as-playlist (whole session) AND **build one song at a time** (2026-07-10: `PlaylistPickerScreen` + "+" on song rows / player panel, `PATCH /api/playlists/:id` to append). Persisted (playlists table), shown on the profile, plays the whole set. STILL OPEN: explicit share links + collaborative/curated playlist building; editing an existing playlist (reorder / remove tracks) beyond add.
 
 **Player bugs handled 2026-07-10:** switching artists stopped playback (added 404-retry + clear 403/Premium reporting); Premium-not-active now shows a "Premium needed" note and falls back to the embed; theme switch reloads the page (mitigated by persisting the player queue, but **fully seamless theming needs a runtime-CSS-variable refactor of theme.js**, still open); choppy fonts fixed (antialiasing on every node).
 

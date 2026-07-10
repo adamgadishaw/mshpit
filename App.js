@@ -44,6 +44,7 @@ import PrivacyScreen from "./src/screens/PrivacyScreen";
 import TermsScreen from "./src/screens/TermsScreen";
 import AccountMenu from "./src/components/AccountMenu";
 import PlayerBar from "./src/components/PlayerBar";
+import PlaylistPickerScreen from "./src/screens/PlaylistPickerScreen";
 import LandingScreen from "./src/screens/LandingScreen";
 import { load, save } from "./src/lib/persist";
 
@@ -67,7 +68,7 @@ export default function App() {
 }
 
 function Root() {
-  const { session, addLog, visibleFeed, followingFeed, localFeed, logout, userByHandle, inboxUnread, accountStatus, track, unreadNotifications, recordPlay, playHistory, saveSnapshot } = useStore();
+  const { session, addLog, visibleFeed, followingFeed, localFeed, logout, userByHandle, inboxUnread, accountStatus, track, unreadNotifications, recordPlay, playHistory, saveSnapshot, autoplayQueue } = useStore();
   const staff = isStaff(session?.role);
   const feed = visibleFeed(staff);
   const following = followingFeed(staff);
@@ -210,8 +211,11 @@ function Root() {
   // bar can skip prev/next; without it, a single track. player = { list, index }.
   const openPlayer = (media, queue) => {
     if (!media) return;
-    const list = Array.isArray(queue) && queue.length ? queue : [media];
     const key = (m) => m?.id || m?.url || m?.title;
+    // Always continue past the explicit queue with genre/taste-based recommendations
+    // so "up next" is populated and playback never dead-ends after one song.
+    const base = Array.isArray(queue) && queue.length ? queue : [media];
+    const list = autoplayQueue(media, base);
     setPlayer({ list, index: Math.max(0, list.findIndex((m) => key(m) === key(media))) });
     recordPlay(media);
   };
@@ -238,6 +242,7 @@ function Root() {
     return { ...p, list: rest, index: curPos };
   });
   const openPhotos = (images, index = 0) => go({ photos: { images, index } });
+  const openAddToPlaylist = (track) => requireAuth(() => go({ addToPlaylist: track }));
   const reviewShow = (log) => requireAuth(() => go({ logging: true, prefill: { artist: log.artist, venue: log.venue, city: log.city } }));
   const openInbox = () => requireAuth(() => go({ inbox: true }));
   const openNotifications = () => requireAuth(() => go({ notifications: true }));
@@ -248,6 +253,7 @@ function Root() {
   // Auth is a modal that must win over any page overlay — requireAuth() can fire
   // from inside a venue/show/profile page, and the login sheet has to surface.
   if (nav.photos) overlay = <PhotoViewer photos={nav.photos.images} index={nav.photos.index} onClose={back} />;
+  else if (nav.addToPlaylist) overlay = <PlaylistPickerScreen track={nav.addToPlaylist} onClose={back} />;
   else if (nav.auth) overlay = <AuthScreen initialMode={nav.authMode} onDone={(mode) => (mode === "signup" ? replace({ pickArtists: true }) : back())} onCancel={back} />;
   else if (nav.pickArtists) overlay = <PickArtistsScreen onDone={clear} onSkip={clear} />;
   else if (nav.logging) overlay = <LogScreen user={session} prefill={nav.prefill} onPost={onAddLog} onCancel={back} />;
@@ -260,7 +266,7 @@ function Root() {
   else if (nav.profileId) overlay = <ProfileScreen userId={nav.profileId} onClose={back} onOpenShow={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onEditProfile={() => go({ editProfile: true })} onPreview={showPreview} onMessage={openThread} onReport={(log) => requireAuth(() => go({ reporting: log }))} onOpenPhotos={openPhotos} onPlay={openPlayer} />;
   else if (nav.fanClub) overlay = <FanClubScreen artist={nav.fanClub} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} />;
   else if (nav.editArtist) overlay = <EditArtistProfileScreen artistName={nav.editArtist} onClose={back} />;
-  else if (nav.artistName) overlay = <ArtistScreen artistName={nav.artistName} onClose={back} onOpenShow={openShow} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenPhotos={openPhotos} onEditArtist={(name) => go({ editArtist: name })} onPlay={openPlayer} />;
+  else if (nav.artistName) overlay = <ArtistScreen artistName={nav.artistName} onClose={back} onOpenShow={openShow} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenPhotos={openPhotos} onEditArtist={(name) => go({ editArtist: name })} onPlay={openPlayer} onAddToPlaylist={openAddToPlaylist} />;
   else if (nav.venueName) overlay = <VenueScreen venueName={nav.venueName} onClose={back} onOpenShow={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onReviewVenue={openVenueReview} onOpenProfile={openProfile} onOpenPhotos={openPhotos} />;
   else if (nav.nearby) overlay = <NearbyScreen onClose={back} onOpenVenue={openVenue} onOpenArtist={openArtist} />;
   else if (nav.venues) overlay = <VenuesScreen onClose={back} onOpenVenue={openVenue} />;
@@ -404,7 +410,7 @@ function Root() {
         {!(landing && !session) && player && (
           <PlayerBar player={player} onClose={() => setPlayer(null)} onIndex={setPlayerIndex}
             onPlayAt={playAt} onRemove={removeFromQueue} onMoveNext={moveToNext}
-            history={playHistory} onSaveSession={saveSnapshot} onPlayTrack={openPlayer} onOpenArtist={openArtist} />
+            history={playHistory} onSaveSession={saveSnapshot} onPlayTrack={openPlayer} onOpenArtist={openArtist} onAddToPlaylist={openAddToPlaylist} />
         )}
 
         {landing && !session ? (

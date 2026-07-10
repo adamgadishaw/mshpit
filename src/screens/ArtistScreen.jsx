@@ -36,7 +36,7 @@ function AlbumArt({ uri }) {
 
 // Artist page - the rollup of a band's live reputation across every night,
 // plus where to catch them next. Answers "is this band worth seeing?"
-export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFanClub, onOpenPhotos, onEditArtist, onPlay }) {
+export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFanClub, onOpenPhotos, onEditArtist, onPlay, onAddToPlaylist }) {
   const { session, artistSummary, albumRating, songRating, rateAlbum, rateSong, loadRating,
     isArtistOwner, artistPostsFor, loadArtistPage, addArtistPost, removeArtistPost,
     artistGallery, removePhoto, artistBadges, artistRank, remoteArtistMeta, resolveArtist,
@@ -76,9 +76,24 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
     (tracks || []).forEach((t) => loadRating("song", a.name, t.title));
   };
   const playTrack = async (title, cover) => {
-    const url = await resolveSpotifyTrack(title, a.name);
-    if (url) onPlay?.({ kind: "track", url, title, artist: a.name, art: cover || a.photo || meta?.photo || null });
+    // Prefer a URL we already have on the page (top tracks) before hitting Spotify.
+    const known = songQueue.find((s) => s.title === title);
+    const url = known?.url || (await resolveSpotifyTrack(title, a.name));
+    if (url) onPlay?.({ kind: "track", url, title, artist: a.name, art: cover || a.photo || meta?.photo || null }, songQueue.length ? songQueue : undefined);
   };
+  // Listen = play a random song from this artist's catalog, with the rest queued up
+  // (the player then keeps going with genre-matched recommendations).
+  const playRandom = () => {
+    if (songQueue.length) {
+      const shuffled = [...songQueue].sort(() => Math.random() - 0.5);
+      onPlay?.(shuffled[0], shuffled);
+    } else if (meta?.spotifyId) {
+      onPlay?.({ kind: "artist", id: meta.spotifyId, artist: a.name });
+    } else {
+      Linking.openURL(`https://www.youtube.com/results?search_query=${encodeURIComponent(a.name)}`);
+    }
+  };
+  const addSong = (t) => onAddToPlaylist?.({ title: t.title, artist: a.name, url: t.url || null, art: t.art || a.photo || meta?.photo || null });
   // A resolved-but-empty artist (no photo, no songs). Show a "coming soon" note
   // and log the interest so an admin can seed it (see the admin Catalog tab).
   const thin = !!meta && !meta.photo && !(meta.topTracks && meta.topTracks.length) && !(disco && disco.albums && disco.albums.length);
@@ -200,7 +215,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
             <Icon name="comment" size={16} color="#1A1206" />
             <Text style={styles.fcTxt}>Fan Club</Text>
           </Pressable>
-          <Pressable style={styles.listenBtn} onPress={() => (meta?.spotifyId ? onPlay?.({ kind: "artist", id: meta.spotifyId, artist: a.name }) : Linking.openURL(`https://www.youtube.com/results?search_query=${encodeURIComponent(a.name)}`))}>
+          <Pressable style={styles.listenBtn} onPress={playRandom}>
             <Icon name="play" size={15} color={colors.amber} />
             <Text style={styles.listenTxt}>Listen</Text>
           </Pressable>
@@ -371,6 +386,11 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
                           {sr.count > 0 && <View style={styles.songMeta}><Stars value={sr.avg} size={10} /><Text style={styles.songAvg}>{sr.avg.toFixed(1)} · {sr.count}</Text></View>}
                         </View>
                         <TapStars value={sr.mine} onChange={(n) => rateSong(a.name, t.title, n)} size={15} gap={2} />
+                        {onAddToPlaylist && (
+                          <Pressable style={styles.songAdd} onPress={() => addSong({ title: t.title, art: al.cover })} hitSlop={8}>
+                            <Icon name="plus" size={13} color={colors.textDim} />
+                          </Pressable>
+                        )}
                         <Pressable style={styles.songPlay} onPress={() => playTrack(t.title, al.cover)} hitSlop={8}>
                           <Icon name="play" size={13} color={colors.amber} />
                         </Pressable>
@@ -420,6 +440,11 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
                     )}
                   </View>
                   <TapStars value={sr.mine} onChange={(n) => rateSong(a.name, s.title, n)} size={16} gap={3} />
+                  {onAddToPlaylist && (
+                    <Pressable style={styles.songAdd} onPress={() => addSong(s)} hitSlop={8}>
+                      <Icon name="plus" size={13} color={colors.textDim} />
+                    </Pressable>
+                  )}
                   <Pressable style={styles.songPlay} onPress={() => (s.url ? onPlay?.({ kind: "track", url: s.url, title: s.title, artist: a.name }, songQueue) : Linking.openURL(listenUrl(s)))} hitSlop={8}>
                     <Icon name="play" size={13} color={colors.amber} />
                   </Pressable>
@@ -516,6 +541,7 @@ const styles = StyleSheet.create({
   songAvg: { color: colors.gold, fontFamily: mono, fontSize: 12, fontWeight: "700" },
   songMetaEmpty: { color: colors.textFaint, fontSize: 12, marginTop: 4 },
   songPlay: { width: 30, height: 30, borderRadius: 15, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center", paddingLeft: 2 },
+  songAdd: { width: 30, height: 30, borderRadius: 15, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
   empty: { color: colors.textDim, fontSize: 13, fontStyle: "italic" },
 
   upRow: { flexDirection: "row", alignItems: "center", backgroundColor: colors.bgElev, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 14, marginBottom: 8, gap: 12 },
