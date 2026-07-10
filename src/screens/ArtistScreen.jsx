@@ -55,7 +55,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
   const songs = spotTracks.length ? spotTracks : SONGS.filter((s) => s.artist.toLowerCase() === a.name.toLowerCase()).slice(0, 8);
   // Queue for the top player, every playable track on the page, so next/prev walk
   // this artist's songs while you keep browsing.
-  const songQueue = songs.filter((s) => s.url).map((s) => ({ kind: "track", url: s.url, title: s.title, artist: a.name }));
+  const songQueue = songs.filter((s) => s.url).map((s) => ({ kind: "track", url: s.url, title: s.title, artist: a.name, art: a.photo || meta?.photo || null }));
 
   // Artist-owned profile: the band's account can edit its header + post updates.
   const isOwner = isArtistOwner(a.name);
