@@ -129,8 +129,11 @@ function Root() {
     if (nav.pickArtists || nav.auth) return; // wait until the picker is gone
     save("pit.welcomePending", false);
     setWelcome(true);
+    // Depend on the picker/auth booleans, not the whole nav object (which is a new
+    // reference every render — that made this effect + a localStorage read fire on
+    // every render, a real source of lag).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session?.id, nav]);
+  }, [session?.id, !!nav.pickArtists, !!nav.auth]);
 
   // Push a fresh screen onto the stack. On web we mirror it into browser history
   // so the hardware/browser Back button pops the same stack the in-app back

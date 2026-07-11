@@ -259,6 +259,22 @@ function paths(name, { stroke, solid, color, filled }) {
       return <Polyline points="6 9 12 15 18 9" {...stroke} />;
     case "star":
       return <Polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" {...solid} />;
+    case "volume":
+      return (
+        <>
+          <Polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" {...solid} />
+          <Path d="M15.5 8.5a5 5 0 0 1 0 7" {...stroke} />
+          <Path d="M18.5 5.5a9 9 0 0 1 0 13" {...stroke} />
+        </>
+      );
+    case "volume-x":
+      return (
+        <>
+          <Polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" {...solid} />
+          <Line x1="22" y1="9" x2="16" y2="15" {...stroke} />
+          <Line x1="16" y1="9" x2="22" y2="15" {...stroke} />
+        </>
+      );
     case "shuffle":
       return (
         <>

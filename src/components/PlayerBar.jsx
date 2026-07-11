@@ -68,6 +68,46 @@ function Scrubber({ posMs, durMs, onSeek, live }) {
   );
 }
 
+// Volume: a speaker toggle (click to mute/restore) + a draggable level bar.
+function VolumeControl({ volume, onChange }) {
+  const [w, setW] = useState(0);
+  const trackRef = useRef(null);
+  const prevRef = useRef(volume > 0 ? volume : 0.8);
+  const cbRef = useRef(onChange);
+  cbRef.current = onChange;
+  useEffect(() => {
+    if (!web) return;
+    const el = trackRef.current;
+    if (!el || !el.addEventListener) return;
+    const setAt = (clientX) => { const r = el.getBoundingClientRect(); cbRef.current(Math.max(0, Math.min(1, (clientX - r.left) / r.width))); };
+    const move = (ev) => setAt(ev.clientX);
+    const up = () => { window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); };
+    const down = (ev) => { ev.preventDefault(); setAt(ev.clientX); window.addEventListener("mousemove", move); window.addEventListener("mouseup", up); };
+    el.addEventListener("mousedown", down);
+    return () => { el.removeEventListener("mousedown", down); up(); };
+  }, []);
+  const setAtX = (x) => { if (w > 0) onChange(Math.max(0, Math.min(1, x / w))); };
+  const muted = volume <= 0.001;
+  const toggleMute = () => { if (muted) onChange(prevRef.current || 0.8); else { prevRef.current = volume; onChange(0); } };
+  const pct = `${(Math.max(0, Math.min(1, volume)) * 100).toFixed(1)}%`;
+  const nativeResponder = web ? {} : {
+    onStartShouldSetResponder: () => true, onMoveShouldSetResponder: () => true,
+    onResponderGrant: (e) => setAtX(e.nativeEvent.locationX), onResponderMove: (e) => setAtX(e.nativeEvent.locationX),
+  };
+  return (
+    <View style={styles.vol}>
+      <Pressable onPress={toggleMute} hitSlop={6} accessibilityRole="button" accessibilityLabel={muted ? "Unmute" : "Mute"}>
+        <Icon name={muted ? "volume-x" : "volume"} size={16} color={colors.textDim} />
+      </Pressable>
+      <View ref={trackRef} style={styles.volTrack} onLayout={(e) => setW(e.nativeEvent.layout.width)} {...nativeResponder}>
+        <View style={styles.trackBg} />
+        <View style={[styles.trackFill, { width: pct }]} />
+        <View style={[styles.thumb, { left: pct }]} />
+      </View>
+    </View>
+  );
+}
+
 // Persistent top player. One unified in-app player: streams the FULL track through
 // the user's own Spotify (Web Playback SDK) when they've connected Premium, and
 // otherwise plays a Deezer 30s preview mp3, so every song is playable for everyone
@@ -80,7 +120,12 @@ export default function PlayerBar({ player, onClose, onIndex, onPlayAt, onRemove
   const cur = list[index];
   const curKey = cur ? (cur.url || cur.id || cur.preview || cur.title) : null;
 
-  const { ready, state, error, playUris, toggle, seek } = useSpotifyPlayer(spotifyConnected && !!cur);
+  const { ready, state, error, playUris, toggle, seek, setVolume } = useSpotifyPlayer(spotifyConnected && !!cur);
+
+  // Volume (0–1), persisted across sessions; applied to whichever engine is live.
+  const [volume, setVol] = useState(() => { try { return web && typeof localStorage !== "undefined" ? Math.max(0, Math.min(1, JSON.parse(localStorage.getItem("pit.volume") ?? "0.8"))) : 0.8; } catch { return 0.8; } });
+  useEffect(() => { try { if (web) localStorage.setItem("pit.volume", String(volume)); } catch {} }, [volume]);
+  useEffect(() => { if (setVolume) setVolume(volume); }, [volume, setVolume, ready]);
 
   // Give the SDK a generous window to come up before we fall back to preview, and
   // clear the flag the moment it connects (so a slow start doesn't latch us out).
@@ -136,6 +181,7 @@ export default function PlayerBar({ player, onClose, onIndex, onPlayAt, onRemove
     enabled: !sdkActive,
     onEnded: () => { if (hasNext) onIndex?.(index + 1); },
     startAt: resumeMs / 1000,
+    volume,
   });
 
   // Stream a single resolved URI through the SDK; our index (prev/next) drives it.
@@ -230,10 +276,10 @@ export default function PlayerBar({ player, onClose, onIndex, onPlayAt, onRemove
     : unplayable ? "Not available to play"
     : artist + (sdkActive ? "  ·  Spotify" : previewSrc ? "  ·  preview" : "");
 
-  const hoverProps = web ? { onMouseEnter: () => setOpen(true), onMouseLeave: () => setOpen(false) } : {};
-
+  // The queue panel opens ONLY on an explicit tap (the queue button or the title),
+  // never on hover — hovering the bar was accidentally popping the panel open.
   return (
-    <View style={styles.shell} {...hoverProps}>
+    <View style={styles.shell}>
       <View style={styles.bar}>
         {art ? <Image source={{ uri: art }} style={styles.art} /> : <View style={[styles.art, styles.artEmpty]}><Icon name="music" size={16} color={colors.textFaint} /></View>}
         <Pressable style={[styles.meta, styles.metaGrow]} onPress={() => multi && setOpen((o) => !o)} accessibilityRole={multi ? "button" : undefined} accessibilityLabel={multi ? `Now playing ${title}. ${upNext.length} up next. Open queue.` : undefined}>
@@ -273,7 +319,8 @@ export default function PlayerBar({ player, onClose, onIndex, onPlayAt, onRemove
 
       {scrubbable && (
         <View style={styles.scrubRow}>
-          <Scrubber posMs={posMs} durMs={durMs} onSeek={onSeek} live />
+          <View style={{ flex: 1 }}><Scrubber posMs={posMs} durMs={durMs} onSeek={onSeek} live /></View>
+          <VolumeControl volume={volume} onChange={setVol} />
         </View>
       )}
 
@@ -348,6 +395,8 @@ const styles = StyleSheet.create({
   embedWrap: { flex: 1, minWidth: 0, borderRadius: radius.sm, overflow: "hidden" },
   scrubRow: { backgroundColor: colors.bgElev, borderBottomWidth: 1, borderBottomColor: colors.line, paddingHorizontal: 12, paddingBottom: 8, paddingTop: 2 },
   scrub: { flexDirection: "row", alignItems: "center", gap: 10 },
+  vol: { flexDirection: "row", alignItems: "center", gap: 7, marginLeft: 12, ...(web ? { width: 110 } : { width: 90 }) },
+  volTrack: { flex: 1, height: 16, justifyContent: "center", ...(web ? { cursor: "pointer" } : null) },
   time: { color: colors.textDim, fontSize: 11, fontFamily: mono, width: 40, textAlign: "center" },
   track: { flex: 1, height: 16, justifyContent: "center", ...(web ? { cursor: "pointer" } : null) },
   trackBg: { position: "absolute", left: 0, right: 0, height: 4, borderRadius: 2, backgroundColor: colors.surfaceAlt },

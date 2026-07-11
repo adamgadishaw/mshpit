@@ -359,7 +359,9 @@ export function StoreProvider({ children }) {
       const { users: found, total } = await api(`/api/people?q=${encodeURIComponent(q || "")}`);
       absorbUsers(found);
       if (typeof total === "number") setMemberCount(total);
-      return found || [];
+      // Belt-and-suspenders: hide anyone I've blocked immediately, even before the
+      // server's own block filter (which needs my block to have persisted).
+      return (found || []).filter((u) => !blockedIds.includes(u.id));
     } catch { return []; }
   };
   // Browse the member directory (newest first), used when the search box is empty

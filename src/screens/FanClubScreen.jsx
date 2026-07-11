@@ -14,8 +14,13 @@ export default function FanClubScreen({ artist, onClose, onOpenProfile, onOpenPr
   const { session, userById, fanClubFor, loadFanClub, addFanClubMessage, isFanClubMember, joinFanClub, fanClubCount } = useStore();
   const [text, setText] = useState("");
   const messages = fanClubFor(artist);
-  // Hydrate this club's messages + real member count from the server (slice 5).
-  useEffect(() => { loadFanClub(artist); }, [artist]);
+  // Live chat: hydrate on open AND poll, so other people's messages appear without
+  // a refresh (loadFanClub merges by id, so re-polling is cheap + dedup-safe).
+  useEffect(() => {
+    loadFanClub(artist);
+    const id = setInterval(() => loadFanClub(artist), 3500);
+    return () => clearInterval(id);
+  }, [artist]);
   const member = isFanClubMember(artist);
   const art = artistMeta(artist)?.photo;
 

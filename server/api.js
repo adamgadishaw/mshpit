@@ -644,15 +644,17 @@ export const routes = {
     const total = db.prepare("SELECT COUNT(*) c FROM users WHERE is_banned=0").get().c;
     const cols = "id,name,handle,initials,avatar_uri,avatar_color,verified,role,home_city";
     const map = (r) => ({ id: r.id, name: r.name, handle: r.handle, initials: r.initials, avatarUri: r.avatar_uri, avatarColor: r.avatar_color, verified: !!r.verified, role: r.role, home: { city: r.home_city } });
+    // Never surface someone you've blocked (or who blocked you) in search.
+    const hidden = blockedIdSet(ctx.user?.id);
     if (term.length < 1) {
-      const rows = db.prepare(`SELECT ${cols} FROM users WHERE is_banned=0 ORDER BY created_at DESC LIMIT 40`).all();
-      return { users: rows.map(map), total };
+      const rows = db.prepare(`SELECT ${cols} FROM users WHERE is_banned=0 ORDER BY created_at DESC LIMIT 60`).all();
+      return { users: rows.filter((r) => !hidden.has(r.id)).map(map).slice(0, 40), total };
     }
     const like = `%${term.replace(/[%_\\]/g, "")}%`;
     const rows = db.prepare(
-      `SELECT ${cols} FROM users WHERE is_banned=0 AND (lower(name) LIKE ? OR lower(handle) LIKE ?) ORDER BY (lower(handle)=? OR lower(name)=?) DESC, name LIMIT 30`
+      `SELECT ${cols} FROM users WHERE is_banned=0 AND (lower(name) LIKE ? OR lower(handle) LIKE ?) ORDER BY (lower(handle)=? OR lower(name)=?) DESC, name LIMIT 40`
     ).all(like, like, term, term);
-    return { users: rows.map(map), total };
+    return { users: rows.filter((r) => !hidden.has(r.id)).map(map).slice(0, 30), total };
   },
 
   "GET /api/users/:id": (ctx) => {

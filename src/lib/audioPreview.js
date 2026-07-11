@@ -8,7 +8,7 @@ import { Platform } from "react-native";
 // tracks) still takes priority when a listener has linked a Premium account.
 const web = Platform.OS === "web" && typeof window !== "undefined";
 
-export function useAudioPreview(src, { enabled = true, onEnded, startAt = 0 } = {}) {
+export function useAudioPreview(src, { enabled = true, onEnded, startAt = 0, volume = 1 } = {}) {
   const audioRef = useRef(null);
   const endedRef = useRef(onEnded);
   endedRef.current = onEnded;
@@ -17,6 +17,7 @@ export function useAudioPreview(src, { enabled = true, onEnded, startAt = 0 } = 
   const [pos, setPos] = useState(0);
   const [dur, setDur] = useState(0);
   const [playing, setPlaying] = useState(false);
+  const lastPos = useRef(0); // throttle position state updates to cut re-renders (lag)
 
   // One <audio> element per mount, wired to state.
   useEffect(() => {
@@ -24,7 +25,9 @@ export function useAudioPreview(src, { enabled = true, onEnded, startAt = 0 } = 
     const a = new window.Audio();
     a.preload = "auto";
     audioRef.current = a;
-    const onTime = () => setPos(a.currentTime || 0);
+    // timeupdate fires ~4x/sec; only push to state ~3x/sec so the whole player
+    // bar isn't re-rendering on every tick (that was a real lag source).
+    const onTime = () => { const t = a.currentTime || 0; if (Math.abs(t - lastPos.current) >= 0.28) { lastPos.current = t; setPos(t); } };
     const onMeta = () => setDur(isFinite(a.duration) ? a.duration : 0);
     const onPlay = () => setPlaying(true);
     const onPause = () => setPlaying(false);
@@ -57,6 +60,7 @@ export function useAudioPreview(src, { enabled = true, onEnded, startAt = 0 } = 
     setPos(0); setDur(0);
     if (!src) { try { a.pause(); a.removeAttribute("src"); a.load(); } catch {} return; }
     a.src = src;
+    try { a.volume = Math.max(0, Math.min(1, volume)); } catch {}
     // Resume where we left off before a reload (theme change / refresh), once.
     const resumeAt = startRef.current;
     if (resumeAt > 0.5) {
@@ -76,5 +80,7 @@ export function useAudioPreview(src, { enabled = true, onEnded, startAt = 0 } = 
     if (!a || !isFinite(sec)) return;
     try { a.currentTime = Math.max(0, Math.min(sec, a.duration || sec)); setPos(a.currentTime); } catch {}
   };
+  // Keep the element's volume in sync when the caller changes it live.
+  useEffect(() => { const a = audioRef.current; if (a) { try { a.volume = Math.max(0, Math.min(1, volume)); } catch {} } }, [volume]);
   return { pos, dur, playing, toggle, seek };
 }

@@ -122,6 +122,7 @@ export function useSpotifyPlayer(enabled) {
   const next = useCallback(() => { playerRef.current && playerRef.current.nextTrack(); }, []);
   const prev = useCallback(() => { playerRef.current && playerRef.current.previousTrack(); }, []);
   const seek = useCallback((ms) => { playerRef.current && playerRef.current.seek(Math.max(0, ms)); }, []);
+  const setVolume = useCallback((v) => { playerRef.current && playerRef.current.setVolume(Math.max(0, Math.min(1, v))); }, []);
 
-  return { ready, state, error, playUris, toggle, next, prev, seek };
+  return { ready, state, error, playUris, toggle, next, prev, seek, setVolume };
 }

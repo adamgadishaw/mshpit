@@ -13,8 +13,13 @@ export default function ThreadScreen({ otherId, onClose, onOpenProfile, onOpenPr
   const [text, setText] = useState("");
   const messages = threadMessages(otherId);
 
-  // Pull the latest messages from the server when the thread opens (slice 4).
-  useEffect(() => { loadThread(otherId); }, [otherId]);
+  // Live DMs: hydrate on open AND poll, so replies land without a refresh
+  // (loadThread merges by id, so re-polling is cheap + dedup-safe).
+  useEffect(() => {
+    loadThread(otherId);
+    const id = setInterval(() => loadThread(otherId), 3500);
+    return () => clearInterval(id);
+  }, [otherId]);
   // A DM notification can open a chat with someone this device never cached;
   // fetch them so the name + avatar resolve instead of a nameless "Chat".
   useEffect(() => { if (otherId && !userById(otherId)) loadUser(otherId); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [otherId]);
