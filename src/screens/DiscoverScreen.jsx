@@ -1,6 +1,6 @@
-import { useMemo, useState, useEffect, useRef } from "react";
-import { View, Text, StyleSheet, ScrollView, Pressable, Image, Platform } from "react-native";
-import Svg, { Path, Circle, Defs, RadialGradient, Stop, Ellipse } from "react-native-svg";
+import { useMemo, useState, useEffect, useRef, useCallback, memo } from "react";
+import { View, Text, StyleSheet, ScrollView, Pressable, Image, Platform, Animated, Easing } from "react-native";
+import Svg, { Path, Circle, Defs, RadialGradient, Stop, Ellipse, G } from "react-native-svg";
 import { colors, mono, radius, shadow } from "../theme";
 import { useStore } from "../store";
 import { countryForCity } from "../geo";
@@ -20,43 +20,75 @@ const metricOf = (r) => (r.popularity != null ? `POP ${r.popularity}` : r.follow
 // Soft glow behind the #1 avatar (web only, RN shadows don't tint on native).
 const glow = (color, on) => (on && Platform.OS === "web" ? { boxShadow: `0 0 26px ${color}66, 0 6px 18px rgba(0,0,0,0.5)` } : null);
 
-// A drawn donut of genre share. Interactive: tap a wedge to select that genre; the
-// selected slice pops out and its top artists load below. Filled wedges (crisp on
-// web) with a gap stroke so slices read as separate.
-function GenreDonut({ data, size = 188, centerTop, centerSub, activeGenre, onSlice }) {
-  const cx = size / 2, cy = size / 2, R = size / 2 - 6, r = R * 0.62;
-  const pt = (ang, rad, ox = 0, oy = 0) => [cx + ox + rad * Math.cos(ang), cy + oy + rad * Math.sin(ang)];
-  let a0 = -Math.PI / 2;
-  const wedges = data.map((d, i) => {
-    const frac = Math.min(0.9999, Math.max(0.0001, d.pct));
-    const a1 = a0 + frac * Math.PI * 2;
-    const mid = (a0 + a1) / 2;
-    const active = d.genre === activeGenre;
-    const [ox, oy] = active ? [Math.cos(mid) * 9, Math.sin(mid) * 9] : [0, 0];
-    const large = a1 - a0 > Math.PI ? 1 : 0;
-    const [x0, y0] = pt(a0, R, ox, oy), [x1, y1] = pt(a1, R, ox, oy), [x2, y2] = pt(a1, r, ox, oy), [x3, y3] = pt(a0, r, ox, oy);
-    const path = `M${x0} ${y0}A${R} ${R} 0 ${large} 1 ${x1} ${y1}L${x2} ${y2}A${r} ${r} 0 ${large} 0 ${x3} ${y3}Z`;
-    a0 = a1;
-    return { path, color: PALETTE[i % PALETTE.length], genre: d.genre, active };
-  });
+// A cute, springy genre donut: each genre is a rounded-cap arc with a little gap,
+// so it reads like soft candy segments. Tapping a slice pops it outward with a
+// bouncy scale + glow and dims the rest. Memoized + geometry-cached so it doesn't
+// re-render (or recompute) when unrelated screen state changes = no lag.
+const web = Platform.OS === "web";
+const arcPath = (cx, cy, rad, start, end) => {
+  const large = end - start > Math.PI ? 1 : 0;
+  const x0 = cx + rad * Math.cos(start), y0 = cy + rad * Math.sin(start);
+  const x1 = cx + rad * Math.cos(end), y1 = cy + rad * Math.sin(end);
+  return `M${x0.toFixed(2)} ${y0.toFixed(2)} A${rad} ${rad} 0 ${large} 1 ${x1.toFixed(2)} ${y1.toFixed(2)}`;
+};
+const GenreDonut = memo(function GenreDonut({ data, size = 200, centerTop, centerSub, activeGenre, onSlice }) {
+  const cx = size / 2, cy = size / 2;
+  const STROKE = 24, R = size / 2 - STROKE / 2 - 6;
+  const GAP = 0.055; // radians of breathing room between segments
+
+  // Gentle scale + fade entrance whenever the dataset changes (region switch).
+  const grow = useRef(new Animated.Value(0)).current;
+  const sig = data.map((d) => d.genre).join("|");
+  useEffect(() => {
+    grow.setValue(0);
+    Animated.timing(grow, { toValue: 1, duration: 480, easing: Easing.out(Easing.back(1.4)), useNativeDriver: web ? false : true }).start();
+  }, [sig]);
+  const scale = grow.interpolate({ inputRange: [0, 1], outputRange: [0.86, 1] });
+
+  const segs = useMemo(() => {
+    let a0 = -Math.PI / 2;
+    return data.map((d, i) => {
+      const frac = Math.min(0.9999, Math.max(0.001, d.pct));
+      const a1 = a0 + frac * Math.PI * 2;
+      const s = a0 + GAP / 2, e = Math.max(a0 + GAP / 2 + 0.02, a1 - GAP / 2);
+      a0 = a1;
+      return { genre: d.genre, color: PALETTE[i % PALETTE.length], d: arcPath(cx, cy, R, s, e) };
+    });
+  }, [sig, size]);
+
+  const activeColor = (segs.find((s) => s.genre === activeGenre) || {}).color || PALETTE[0];
   return (
-    <View style={{ width: size, height: size }}>
+    <Animated.View style={{ width: size, height: size, opacity: grow, transform: [{ scale }] }}>
       <Svg width={size} height={size}>
-        {data.length === 1 ? (
-          <Circle cx={cx} cy={cy} r={(R + r) / 2} stroke={PALETTE[0]} strokeWidth={R - r} fill="none" />
-        ) : (
-          wedges.map((w, i) => (
-            <Path key={i} d={w.path} fill={w.color} stroke={colors.surface} strokeWidth={w.active ? 2.5 : 2} strokeLinejoin="round" opacity={activeGenre && !w.active ? 0.5 : 1} onPress={() => onSlice?.(w.genre)} />
-          ))
-        )}
+        {/* faint track so the ring reads as a full circle even with gaps */}
+        <Circle cx={cx} cy={cy} r={R} stroke={colors.bgElev} strokeWidth={STROKE} fill="none" opacity={0.5} />
+        {segs.map((s, i) => {
+          const on = s.genre === activeGenre;
+          const dim = activeGenre && activeGenre !== "Other" && !on;
+          return (
+            <Path
+              key={s.genre + i}
+              d={s.d}
+              stroke={s.color}
+              strokeWidth={on ? STROKE + 7 : STROKE}
+              strokeLinecap="round"
+              fill="none"
+              opacity={dim ? 0.4 : 1}
+              onPress={() => onSlice?.(s.genre)}
+              style={web ? { cursor: "pointer", transformOrigin: "50% 50%", transform: on ? "scale(1.09)" : "scale(1)", transition: "transform .32s cubic-bezier(.34,1.56,.64,1), stroke-width .22s, opacity .22s", filter: on ? `drop-shadow(0 0 7px ${s.color})` : "none" } : null}
+            />
+          );
+        })}
       </Svg>
       <View style={styles.donutCenter} pointerEvents="none">
-        <Text style={styles.donutNum}>{centerTop}</Text>
-        <Text style={styles.donutSub}>{centerSub}</Text>
+        <Text style={[styles.donutNum, activeGenre && activeGenre !== "Other" && { color: activeColor, fontSize: 20 }]} numberOfLines={1}>
+          {activeGenre && activeGenre !== "Other" ? activeGenre : centerTop}
+        </Text>
+        <Text style={styles.donutSub}>{activeGenre && activeGenre !== "Other" ? "tap to explore" : centerSub}</Text>
       </View>
-    </View>
+    </Animated.View>
   );
-}
+});
 
 // One podium plinth (rank 1/2/3). The step blocks sit flush at the bottom to form
 // a single connected podium; the avatar + medal float above it.
@@ -148,6 +180,8 @@ export default function DiscoverScreen({ onOpenTopRated, onOpenArtist, onOpenNea
     if (url || preview) onPlay?.({ kind: "track", url: url || null, preview: preview || null, title: s.title, artist: s.artist, art: s.art || null });
   };
   const playTop = (r) => r.topTrack && playSong({ title: r.topTrack.title, artist: r.name, url: r.topTrack.url, preview: r.topTrack.preview, art: r.photo });
+  // Stable so the memoized donut skips re-renders; tapping the active slice clears it.
+  const selectGenre = useCallback((g) => { if (g === "Other") return; setGenre((cur) => (cur === g ? null : g)); }, []);
 
   const podium = chart.slice(0, 3);
   const rest = chart.slice(3);
@@ -285,12 +319,12 @@ export default function DiscoverScreen({ onOpenTopRated, onOpenArtist, onOpenNea
           </ScrollView>
 
           <View style={styles.chartRow}>
-            <GenreDonut data={genres} centerTop={regionCount.toLocaleString()} centerSub="artists" activeGenre={genre} onSlice={(g) => setGenre(g === "Other" ? genre : g)} />
+            <GenreDonut data={genres} centerTop={regionCount.toLocaleString()} centerSub="artists" activeGenre={genre} onSlice={selectGenre} />
             <View style={styles.legend}>
               {genres.map((g, i) => {
                 const on = g.genre === genre;
                 return (
-                  <Pressable key={g.genre} style={[styles.legendRow, on && styles.legendRowOn]} onPress={() => g.genre !== "Other" && setGenre(g.genre)}>
+                  <Pressable key={g.genre} style={[styles.legendRow, on && styles.legendRowOn]} onPress={() => selectGenre(g.genre)}>
                     <View style={[styles.swatch, { backgroundColor: PALETTE[i % PALETTE.length] }]} />
                     <Text style={[styles.legendName, on && { color: colors.amber, fontWeight: "800" }]} numberOfLines={1}>{g.genre}</Text>
                     <Text style={styles.legendCount}>{g.count}</Text>
