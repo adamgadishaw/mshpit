@@ -6,6 +6,7 @@
 import { randomUUID } from "node:crypto";
 import { db, q, publicUser, artistStmts, publicArtist, artistRow, normName } from "./db.js";
 import { hashPassword, verifyPassword, createSession, destroySession, rateLimit } from "./auth.js";
+import { startCatalogSeed, catalogSeedStatus } from "./catalogSeed.js";
 import { clean, cleanEmail, isEmail, cleanName, isName, cleanHandle, isPassword, clampRating, cleanStringArray, shape, LIMITS } from "./validate.js";
 
 export class ApiError extends Error {
@@ -1026,6 +1027,18 @@ export const routes = {
     const norm = normName(clean(ctx.body?.norm, { max: 200 }));
     if (norm) { artistStmts.purge.run(norm); artistStmts.clearMissing.run(norm); }
     return { ok: true };
+  },
+  // Grow the whole catalog toward N artists across all genres (MusicBrainz crawl +
+  // Deezer ranking), as a background job so the request returns immediately. Poll
+  // GET for live progress. No bundle change, nothing to deploy.
+  "POST /api/admin/catalog/seed": (ctx) => {
+    requireAdmin(ctx);
+    const target = Math.max(200, Math.min(20000, Number(ctx.body?.target) || 10000));
+    return startCatalogSeed({ target });
+  },
+  "GET /api/admin/catalog/seed": (ctx) => {
+    requireAdmin(ctx);
+    return catalogSeedStatus();
   },
 
   "POST /api/admin/users/:id/unban": (ctx) => {

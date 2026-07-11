@@ -1199,6 +1199,9 @@ export function StoreProvider({ children }) {
   const adminArtistQueue = async () => { try { return await api("/api/admin/artist-queue"); } catch { return { thin: [], missing: [], thinTotal: 0 }; } };
   const enrichArtists = async (names) => { try { const r = await api("/api/admin/artists/enrich", { method: "POST", body: { names } }); return r.enriched || 0; } catch { return 0; } };
   const purgeArtist = async (norm) => { try { await api("/api/admin/artists/purge", { method: "POST", body: { norm } }); } catch {} };
+  // Kick off / poll the background "grow the catalog to N artists" job (admin).
+  const startCatalogSeed = async (target) => { try { return await api("/api/admin/catalog/seed", { method: "POST", body: { target } }); } catch { return { started: false }; } };
+  const catalogSeedStatus = async () => { try { return await api("/api/admin/catalog/seed"); } catch { return null; } };
 
   // moderation: drop a single chat/lounge/comment message (staff)
   const removeLoungeMessage = (key, msgId) => setLounge((L) => ({ ...L, [key]: (L[key] || []).filter((m) => m.id !== msgId) }));
@@ -1872,7 +1875,7 @@ export function StoreProvider({ children }) {
     fanClubFor, loadFanClub, addFanClubMessage, isFanClubMember, joinFanClub, fanClubCount, fanClubsDirectory,
     isArtistOwner, artistProfile, loadArtistPage, updateArtistProfile, artistFeedEnabled,
     artistPostsFor, addArtistPost, removeArtistPost,
-    accountStatus, banUser, unbanUser, suspendUser, setUserRole, setVerified, loadAdminMembers, adminStats, adminArtistQueue, enrichArtists, purgeArtist, removeLoungeMessage, removeComment, removeFanClubMessage,
+    accountStatus, banUser, unbanUser, suspendUser, setUserRole, setVerified, loadAdminMembers, adminStats, adminArtistQueue, enrichArtists, purgeArtist, startCatalogSeed, catalogSeedStatus, removeLoungeMessage, removeComment, removeFanClubMessage,
     comments, fanClubMsgs, lounge,
     goingFor, isGoing, toggleGoing, attendeesFor,
     venueReviewsFor, loadVenueReviews, addVenueReview, venueRating, venueTopPhotos, venuePhotos, artistFanPhotos,

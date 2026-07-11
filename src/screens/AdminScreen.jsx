@@ -154,7 +154,7 @@ export default function AdminScreen({ onClose }) {
     approveArtist, rejectArtist, removeContent, restoreContent, actionReport, dismissReport,
     suspendUser, banUser, unbanUser, setUserRole, setVerified, accountStatus,
     removeComment, removeFanClubMessage, removeLoungeMessage,
-    loadAdminMembers, adminStats, adminArtistQueue, enrichArtists, purgeArtist,
+    loadAdminMembers, adminStats, adminArtistQueue, enrichArtists, purgeArtist, startCatalogSeed, catalogSeedStatus,
   } = useStore();
 
   const iAmAdmin = isStaff(session?.role); // full access; mods get a subset
@@ -169,7 +169,17 @@ export default function AdminScreen({ onClose }) {
   const [catalog, setCatalog] = useState({ thin: [], missing: [], thinTotal: 0 });
   const [seeding, setSeeding] = useState(false);
   const refreshCatalog = () => adminArtistQueue().then(setCatalog);
-  useEffect(() => { if (tab === "catalog") refreshCatalog(); }, [tab]);
+  // Background "grow catalog to N" job: kick it off + poll live progress.
+  const [seedJob, setSeedJob] = useState(null);
+  const [seedTarget, setSeedTarget] = useState(10000);
+  const refreshSeed = () => catalogSeedStatus().then((s) => s && setSeedJob(s));
+  useEffect(() => { if (tab === "catalog") { refreshCatalog(); refreshSeed(); } }, [tab]);
+  useEffect(() => {
+    if (tab !== "catalog" || !seedJob?.running) return;
+    const id = setInterval(refreshSeed, 3000);
+    return () => clearInterval(id);
+  }, [tab, seedJob?.running]);
+  const startSeed = async () => { const r = await startCatalogSeed(seedTarget); if (r?.status) setSeedJob(r.status); refreshSeed(); };
   const seedNames = async (names) => {
     if (!names.length) return;
     setSeeding(true);
@@ -413,6 +423,48 @@ export default function AdminScreen({ onClose }) {
           <>
             <Text style={styles.policy}>Artists people looked up. Seed them from Deezer (photo, popularity, top songs) on demand, the targeted alternative to a blind bulk dump. Purge dead or typo entries.</Text>
 
+            {/* Grow the whole catalog across all genres, in the background */}
+            <View style={styles.growBox}>
+              <View style={styles.catHead}>
+                <Text style={styles.catTitle}>GROW CATALOG</Text>
+                <Text style={styles.growCount}>{seedJob?.total != null ? `${seedJob.total.toLocaleString()} artists` : ""}</Text>
+              </View>
+              <Text style={styles.catHint}>Crawl MusicBrainz across all genres into the database, then rank with Deezer (popularity + photos). Runs in the background (~30-45 min for 10k). Songs load on demand, nothing to deploy.</Text>
+
+              {seedJob?.running ? (
+                <View style={styles.seedRun}>
+                  <View style={styles.seedRunHead}>
+                    <View style={styles.liveDot} />
+                    <Text style={styles.seedRunTxt}>
+                      {seedJob.phase === "enrich"
+                        ? `Ranking with Deezer… ${seedJob.ranked.toLocaleString()} enriched`
+                        : `Crawling ${seedJob.note || ""}… +${seedJob.added.toLocaleString()} added`}
+                    </Text>
+                  </View>
+                  <View style={styles.seedBar}>
+                    <View style={[styles.seedBarFill, { width: `${Math.max(3, Math.min(100, Math.round((seedJob.total / (seedJob.target || 1)) * 100)))}%` }]} />
+                  </View>
+                  <Text style={styles.catHint}>Toward {seedJob.target.toLocaleString()}. Safe to leave, close this tab, it keeps going.</Text>
+                </View>
+              ) : (
+                <>
+                  <View style={styles.targetRow}>
+                    {[2000, 5000, 10000].map((n) => (
+                      <Pressable key={n} style={[styles.targetPill, seedTarget === n && styles.targetPillOn]} onPress={() => setSeedTarget(n)}>
+                        <Text style={[styles.targetTxt, seedTarget === n && styles.targetTxtOn]}>{(n / 1000) + "k"}</Text>
+                      </Pressable>
+                    ))}
+                    <Pressable style={styles.growBtn} onPress={startSeed}>
+                      <Icon name="music" size={14} color="#1A1206" />
+                      <Text style={styles.seedTxt}>Grow to {(seedTarget / 1000) + "k"}</Text>
+                    </Pressable>
+                  </View>
+                  {seedJob?.phase === "done" && <Text style={styles.growDone}>Last run: +{seedJob.added.toLocaleString()} added, {seedJob.ranked.toLocaleString()} ranked.</Text>}
+                  {seedJob?.phase === "error" && <Text style={styles.growErr}>Last run failed: {seedJob.error}</Text>}
+                </>
+              )}
+            </View>
+
             <View style={styles.catHead}>
               <Text style={styles.catTitle}>NOT FOUND · {catalog.missing.length}</Text>
               {catalog.missing.length > 0 && (
@@ -545,6 +597,22 @@ const styles = StyleSheet.create({
   catHint: { color: colors.textDim, fontSize: 11.5, marginBottom: 8 },
   seedBtn: { flexDirection: "row", alignItems: "center", gap: 5, backgroundColor: colors.amberStrong, borderRadius: radius.pill, paddingHorizontal: 12, paddingVertical: 7 },
   seedTxt: { color: "#1A1206", fontSize: 12, fontWeight: "800" },
+  growBox: { backgroundColor: colors.bgElev, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, padding: 14, marginTop: 6, marginBottom: 4 },
+  growCount: { color: colors.amber, fontSize: 12, fontWeight: "800", fontFamily: mono },
+  targetRow: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 4 },
+  targetPill: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
+  targetPillOn: { borderColor: colors.amber, backgroundColor: "rgba(242,166,90,0.10)" },
+  targetTxt: { color: colors.textDim, fontSize: 12.5, fontWeight: "800" },
+  targetTxtOn: { color: colors.amber },
+  growBtn: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: colors.amberStrong, borderRadius: radius.pill, paddingHorizontal: 14, paddingVertical: 8, marginLeft: "auto" },
+  growDone: { color: colors.good, fontSize: 11.5, marginTop: 8, fontFamily: mono },
+  growErr: { color: colors.danger, fontSize: 11.5, marginTop: 8 },
+  seedRun: { marginTop: 6 },
+  seedRunHead: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 8 },
+  liveDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.good },
+  seedRunTxt: { color: colors.text, fontSize: 13, fontWeight: "700", flex: 1 },
+  seedBar: { height: 6, borderRadius: 3, backgroundColor: colors.surfaceAlt, overflow: "hidden", marginBottom: 6 },
+  seedBarFill: { height: 6, borderRadius: 3, backgroundColor: colors.amber },
   catRow: { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: colors.surface, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.lineSoft, paddingHorizontal: 12, paddingVertical: 10, marginBottom: 6 },
   catName: { color: colors.text, fontSize: 14, fontWeight: "700" },
   catSub: { color: colors.textDim, fontSize: 11, fontFamily: mono, marginTop: 1 },
