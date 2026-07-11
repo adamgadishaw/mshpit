@@ -402,6 +402,27 @@ export function StoreProvider({ children }) {
   // Resolve any song to a Deezer 30s preview mp3, so the in-app player can play it
   // for everyone (no Spotify needed). Cached per title+artist on this device.
   const previewCache = useRef({});
+  // --- Discover: DB-backed charts / genre share / regions (live, not the bundle) ---
+  const discoverChart = async ({ by = "popularity", genre, country, limit = 24 } = {}) => {
+    try {
+      const p = new URLSearchParams({ by, limit: String(limit) });
+      if (genre) p.set("genre", genre);
+      if (country && country !== "Worldwide") p.set("country", country);
+      const r = await api("/api/discover/chart?" + p.toString());
+      return r || { rows: [], source: by };
+    } catch { return { rows: [], source: by }; }
+  };
+  const discoverGenres = async ({ country, n = 8 } = {}) => {
+    try {
+      const p = new URLSearchParams({ n: String(n) });
+      if (country && country !== "Worldwide") p.set("country", country);
+      return await api("/api/discover/genres?" + p.toString());
+    } catch { return { genres: [], total: 0 }; }
+  };
+  const discoverCountries = async ({ min = 5 } = {}) => {
+    try { return await api("/api/discover/countries?min=" + min); } catch { return { countries: [] }; }
+  };
+
   const resolveDeezerPreview = async (title, artist) => {
     if (!title) return null;
     const k = (artist || "") + "|" + title;
@@ -1873,6 +1894,7 @@ export function StoreProvider({ children }) {
     loadUser, followersOf, followingOf,
     isBlocked, blockUser, unblockUser, blockedUsers, exportMyData,
     searchArtistsApi, resolveArtist, remoteArtistMeta, artistDiscography, resolveSpotifyTrack, resolveDeezerPreview,
+    discoverChart, discoverGenres, discoverCountries,
     playHistory, recordPlay, snapshots, saveSnapshot, removeSnapshot, friendsListening, loadFriendsListening, userPlaylists, deletePlaylist,
     favoriteGenre, recommendTracks, autoplayQueue, myPlaylists, loadMyPlaylists, createPlaylist, addToPlaylist,
     drafts, saveDraft, deleteDraft,

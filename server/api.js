@@ -163,6 +163,48 @@ async function spotifyAppToken() {
 const deezerCache = new Map(); // norm(name) -> { data, exp }
 async function dz(url) { const r = await fetch(url, { signal: AbortSignal.timeout(9000) }); return r.ok ? r.json() : null; }
 
+// --- Genre canonicalization: collapse the messy raw tags (case/format variants +
+// a few obvious synonyms) into one clean label per genre, so Discover's charts and
+// pie reflect the RIGHT genre per artist instead of "Hip-Hop / hip hop / Hip Hop"
+// as three separate slices. Deliberately conservative: it does NOT merge distinct
+// subgenres (Death Metal stays Death Metal). ---
+const GENRE_ALIAS = {
+  "hip hop": "Hip-Hop", "hiphop": "Hip-Hop", "hip-hop": "Hip-Hop", "rap": "Hip-Hop", "trap": "Hip-Hop", "conscious hip hop": "Hip-Hop",
+  "r&b": "R&B", "rnb": "R&B", "r & b": "R&B", "contemporary r&b": "R&B", "rhythm and blues": "R&B", "rhythm & blues": "R&B",
+  "drum and bass": "Drum & Bass", "drum & bass": "Drum & Bass", "dnb": "Drum & Bass", "d&b": "Drum & Bass",
+  "k-pop": "K-Pop", "k pop": "K-Pop", "kpop": "K-Pop", "j-pop": "J-Pop", "j pop": "J-Pop", "jpop": "J-Pop",
+  "edm": "EDM", "idm": "Electronic", "electronica": "Electronic", "dance": "Electronic",
+  "singer-songwriter": "Singer-Songwriter", "singer songwriter": "Singer-Songwriter",
+  "afrobeats": "Afrobeat", "alt rock": "Alternative Rock", "alt-rock": "Alternative Rock",
+  "indie": "Indie", "indie rock": "Indie", "indie pop": "Indie",
+};
+function canonGenre(g) {
+  if (!g) return null;
+  const s = String(g).trim().toLowerCase();
+  if (!s) return null;
+  if (GENRE_ALIAS[s]) return GENRE_ALIAS[s];
+  return s.replace(/\band\b/g, "&").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+// Map a canonical genre back to every raw DB genre that collapses to it, so a
+// genre filter can use a plain `genre IN (...)` on the indexed column.
+let _rawGenreCache = { at: 0, map: null };
+function rawGenresFor(canon) {
+  if (!canon) return [];
+  if (Date.now() - _rawGenreCache.at > 5 * 60 * 1000 || !_rawGenreCache.map) {
+    const rows = db.prepare("SELECT DISTINCT genre FROM artists WHERE genre IS NOT NULL").all();
+    const map = {};
+    for (const r of rows) { const c = canonGenre(r.genre); if (!c) continue; (map[c] ||= []).push(r.genre); }
+    _rawGenreCache = { at: Date.now(), map };
+  }
+  return _rawGenreCache.map[canon] || [];
+}
+// Chart row: typed columns + a lead "top track" pulled from the artist's data blob.
+function chartRow(name, a, rank, extra = {}) {
+  let top = null;
+  if (a?.data) { try { const d = JSON.parse(a.data); const t = (d.topTracks || [])[0]; if (t?.title) top = { title: t.title, url: t.url || null, preview: t.preview || null }; } catch {} }
+  return { rank, name: a?.name || name, genre: canonGenre(a?.genre) || null, popularity: a?.popularity ?? null, followers: (() => { try { return a?.data ? JSON.parse(a.data).followers ?? null : null; } catch { return null; } })(), photo: a?.photo || null, topTrack: top, ...extra };
+}
+
 // Enrich a (usually thin) catalog artist from Deezer: photo, popularity, and top
 // track titles. Upserts into the artists table so the page fills in. Returns true
 // if Deezer had a match.
@@ -290,6 +332,51 @@ export const routes = {
       const t = d?.tracks?.items?.[0];
       return { url: t?.external_urls?.spotify || null };
     } catch { return { url: null }; }
+  },
+
+  // ---- Discover: DB-backed charts, genre share, explore-by-genre ----
+  // Live from the whole catalog (not the bundled snapshot), so it reflects real
+  // growth and re-ranks as popularity/plays change (new artists can take top spots).
+  // `by=popularity` = the Deezer-tracked chart; `by=plays` = what Pit users actually
+  // play. Optional genre + country filters power the interactive pie + explore.
+  "GET /api/discover/chart": (ctx) => {
+    const by = ctx.query.by === "plays" ? "plays" : "popularity";
+    const n = Math.min(60, Math.max(3, Number(ctx.query.limit) || 24));
+    const genre = clean(ctx.query.genre, { max: 60 });
+    const country = clean(ctx.query.country, { max: 60 });
+    if (by === "plays") {
+      const rows = db.prepare("SELECT artist AS name, COUNT(*) AS plays FROM plays WHERE artist IS NOT NULL GROUP BY LOWER(artist) ORDER BY plays DESC, MAX(created_at) DESC LIMIT ?").all(n);
+      return { source: "plays", label: "Most played on Pit", live: true, rows: rows.map((r, i) => chartRow(r.name, artistStmts.byNorm.get(normName(r.name)), i + 1, { plays: r.plays })) };
+    }
+    let sql = "SELECT * FROM artists WHERE popularity IS NOT NULL";
+    const params = [];
+    if (country && country !== "Worldwide") { sql += " AND country = ?"; params.push(country); }
+    if (genre) { const raw = rawGenresFor(genre); if (!raw.length) return { source: "popularity", label: "By popularity", live: true, rows: [] }; sql += ` AND genre IN (${raw.map(() => "?").join(",")})`; params.push(...raw); }
+    sql += " ORDER BY popularity DESC, rank_score DESC, name LIMIT ?"; params.push(n);
+    const rows = db.prepare(sql).all(...params);
+    return { source: "popularity", label: "By popularity", live: true, rows: rows.map((r, i) => chartRow(r.name, r, i + 1)) };
+  },
+  // Genre distribution for the pie, canonicalized (optionally scoped to a country).
+  "GET /api/discover/genres": (ctx) => {
+    const country = clean(ctx.query.country, { max: 60 });
+    const n = Math.min(12, Math.max(4, Number(ctx.query.n) || 8));
+    const rows = country && country !== "Worldwide"
+      ? db.prepare("SELECT genre FROM artists WHERE genre IS NOT NULL AND country = ?").all(country)
+      : db.prepare("SELECT genre FROM artists WHERE genre IS NOT NULL").all();
+    const counts = {};
+    for (const r of rows) { const c = canonGenre(r.genre); if (c) counts[c] = (counts[c] || 0) + 1; }
+    const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+    const total = rows.length || 1;
+    const out = sorted.slice(0, n).map(([genre, count]) => ({ genre, count, pct: count / total }));
+    const rest = sorted.slice(n).reduce((s, [, v]) => s + v, 0);
+    if (rest > 0) out.push({ genre: "Other", count: rest, pct: rest / total });
+    return { total: rows.length, genres: out };
+  },
+  // Country distribution for the region chips (biggest scenes first).
+  "GET /api/discover/countries": (ctx) => {
+    const min = Math.max(1, Number(ctx.query.min) || 5);
+    const rows = db.prepare("SELECT country, COUNT(*) c FROM artists WHERE country IS NOT NULL GROUP BY country HAVING c >= ? ORDER BY c DESC LIMIT 40").all(min);
+    return { countries: rows.map((r) => ({ country: r.country, count: r.c })) };
   },
 
   // ---- Listening: cross-device play history + "friends listening" ----

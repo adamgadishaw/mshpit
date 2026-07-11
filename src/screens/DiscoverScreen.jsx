@@ -20,20 +20,24 @@ const metricOf = (r) => (r.popularity != null ? `POP ${r.popularity}` : r.follow
 // Soft glow behind the #1 avatar (web only, RN shadows don't tint on native).
 const glow = (color, on) => (on && Platform.OS === "web" ? { boxShadow: `0 0 26px ${color}66, 0 6px 18px rgba(0,0,0,0.5)` } : null);
 
-// A drawn donut of genre share, filled wedges (crisp, reliable on web) with a
-// gap stroke in the panel colour so slices read as separate.
-function GenreDonut({ data, size = 188, centerTop, centerSub }) {
-  const cx = size / 2, cy = size / 2, R = size / 2 - 3, r = R * 0.62;
-  const pt = (ang, rad) => [cx + rad * Math.cos(ang), cy + rad * Math.sin(ang)];
+// A drawn donut of genre share. Interactive: tap a wedge to select that genre; the
+// selected slice pops out and its top artists load below. Filled wedges (crisp on
+// web) with a gap stroke so slices read as separate.
+function GenreDonut({ data, size = 188, centerTop, centerSub, activeGenre, onSlice }) {
+  const cx = size / 2, cy = size / 2, R = size / 2 - 6, r = R * 0.62;
+  const pt = (ang, rad, ox = 0, oy = 0) => [cx + ox + rad * Math.cos(ang), cy + oy + rad * Math.sin(ang)];
   let a0 = -Math.PI / 2;
   const wedges = data.map((d, i) => {
     const frac = Math.min(0.9999, Math.max(0.0001, d.pct));
     const a1 = a0 + frac * Math.PI * 2;
+    const mid = (a0 + a1) / 2;
+    const active = d.genre === activeGenre;
+    const [ox, oy] = active ? [Math.cos(mid) * 9, Math.sin(mid) * 9] : [0, 0];
     const large = a1 - a0 > Math.PI ? 1 : 0;
-    const [x0, y0] = pt(a0, R), [x1, y1] = pt(a1, R), [x2, y2] = pt(a1, r), [x3, y3] = pt(a0, r);
-    const d1 = `M${x0} ${y0}A${R} ${R} 0 ${large} 1 ${x1} ${y1}L${x2} ${y2}A${r} ${r} 0 ${large} 0 ${x3} ${y3}Z`;
+    const [x0, y0] = pt(a0, R, ox, oy), [x1, y1] = pt(a1, R, ox, oy), [x2, y2] = pt(a1, r, ox, oy), [x3, y3] = pt(a0, r, ox, oy);
+    const path = `M${x0} ${y0}A${R} ${R} 0 ${large} 1 ${x1} ${y1}L${x2} ${y2}A${r} ${r} 0 ${large} 0 ${x3} ${y3}Z`;
     a0 = a1;
-    return { d: d1, color: PALETTE[i % PALETTE.length] };
+    return { path, color: PALETTE[i % PALETTE.length], genre: d.genre, active };
   });
   return (
     <View style={{ width: size, height: size }}>
@@ -41,7 +45,9 @@ function GenreDonut({ data, size = 188, centerTop, centerSub }) {
         {data.length === 1 ? (
           <Circle cx={cx} cy={cy} r={(R + r) / 2} stroke={PALETTE[0]} strokeWidth={R - r} fill="none" />
         ) : (
-          wedges.map((w, i) => <Path key={i} d={w.d} fill={w.color} stroke={colors.surface} strokeWidth={2} strokeLinejoin="round" />)
+          wedges.map((w, i) => (
+            <Path key={i} d={w.path} fill={w.color} stroke={colors.surface} strokeWidth={w.active ? 2.5 : 2} strokeLinejoin="round" opacity={activeGenre && !w.active ? 0.5 : 1} onPress={() => onSlice?.(w.genre)} />
+          ))
         )}
       </Svg>
       <View style={styles.donutCenter} pointerEvents="none">
@@ -75,65 +81,85 @@ function Plinth({ row, rank, onPress }) {
 }
 
 export default function DiscoverScreen({ onOpenTopRated, onOpenArtist, onOpenNearby, onOpenFanClubs, onOpenVenues, onOpenPhotos, onPlay, onOpenProfile }) {
-  const { session, chartTop, chartInfo, catalogCountries, topGenres, topPhotos, discoverStats, loadMembers, memberCount, topArtistsBy, topSongsBy, resolveSpotifyTrack, friendsListening, loadFriendsListening } = useStore();
-  useEffect(() => { loadMembers(); loadFriendsListening(); }, []); // live member count + what friends are playing
+  const { session, discoverChart, discoverGenres, discoverCountries, topPhotos, discoverStats, loadMembers, memberCount, resolveDeezerPreview, friendsListening, loadFriendsListening } = useStore();
 
-  const chart = useMemo(() => chartTop(10), []);
-  const info = useMemo(() => chartInfo(), []);
-  const stats = useMemo(() => discoverStats(), []);
-  // Default the genre pie to the signed-in user's OWN country (Toronto → Canada),
-  // not a global/US default. Their country leads the chip row.
   const homeCountry = countryForCity(session?.home?.city);
-  const countries = useMemo(() => {
-    const all = catalogCountries(1);
-    const homeEntry = all.find((c) => c.country === homeCountry);
-    const top = catalogCountries(14);
-    const ordered = [{ country: "Worldwide", count: stats.artists }];
-    if (homeEntry) ordered.push(homeEntry);
-    top.forEach((c) => c.country !== homeCountry && ordered.push(c));
-    const seen = new Set();
-    return ordered.filter((c) => !seen.has(c.country) && seen.add(c.country)).slice(0, 10);
-  }, [homeCountry]);
-
   const [region, setRegion] = useState("Worldwide");
   const touched = useRef(false);
-  // Once we know the user's country (session may hydrate async), snap to it -
-  // unless they've already picked a region themselves.
-  useEffect(() => {
-    if (touched.current || !homeCountry) return;
-    if (countries.some((c) => c.country === homeCountry)) setRegion(homeCountry);
-  }, [homeCountry, countries]);
   const pickRegion = (c) => { touched.current = true; setRegion(c); };
 
-  const genres = useMemo(() => topGenres(region === "Worldwide" ? null : region, 6), [region]);
-  const photos = useMemo(() => topPhotos(12), []);
+  // The chart source: Deezer-tracked popularity, or what Pit users actually play.
+  const [chartBy, setChartBy] = useState("popularity");
+  const [chart, setChart] = useState([]);
+  const [chartInfo, setChartInfo] = useState({ label: "By popularity", live: true });
 
-  // Explore-by-genre: pick a genre (in the current region) to see its top artists
-  // and songs, so you can dig past the global top 100.
-  const [genre, setGenre] = useState(null);
-  const country = region === "Worldwide" ? null : region;
-  const genreChips = useMemo(() => topGenres(country, 12).filter((g) => g.genre !== "Other"), [region]);
-  const genreArtists = useMemo(() => (genre ? topArtistsBy({ genre, country, n: 12 }) : []), [genre, region]);
-  const genreSongs = useMemo(() => (genre ? topSongsBy({ genre, country, n: 10 }) : []), [genre, region]);
+  const [countries, setCountries] = useState([{ country: "Worldwide" }]);
+  const [genres, setGenres] = useState([]);
+  const [genreTotal, setGenreTotal] = useState(0);
+  const [genre, setGenre] = useState(null);       // selected genre (pie slice / legend)
+  const [genreRows, setGenreRows] = useState([]); // top artists in that genre (+ topTrack)
+
+  const photos = useMemo(() => topPhotos(12), []);
+  const stats = useMemo(() => discoverStats(), []);
+
+  useEffect(() => { loadMembers(); loadFriendsListening(); }, []);
+
+  // Region chips: Worldwide + the user's home country + the biggest scenes (live DB).
+  useEffect(() => {
+    let live = true;
+    discoverCountries({ min: 5 }).then(({ countries: cs }) => {
+      if (!live) return;
+      const ordered = [{ country: "Worldwide" }];
+      const home = cs.find((c) => c.country === homeCountry);
+      if (home) ordered.push(home);
+      cs.forEach((c) => c.country !== homeCountry && ordered.push(c));
+      const seen = new Set();
+      setCountries(ordered.filter((c) => !seen.has(c.country) && seen.add(c.country)).slice(0, 12));
+      if (!touched.current && home) setRegion(homeCountry);
+    });
+    return () => { live = false; };
+  }, [homeCountry]);
+
+  // Chart reloads on source or region change.
+  useEffect(() => {
+    let live = true;
+    discoverChart({ by: chartBy, country: region, limit: 24 }).then((r) => { if (live) { setChart(r.rows || []); setChartInfo({ label: r.label, live: r.live }); } });
+    return () => { live = false; };
+  }, [chartBy, region]);
+
+  // Genre share reloads on region change; reset the selected genre.
+  useEffect(() => {
+    let live = true;
+    discoverGenres({ country: region, n: 8 }).then((g) => { if (live) { setGenres(g.genres || []); setGenreTotal(g.total || 0); setGenre((cur) => (g.genres || []).some((x) => x.genre === cur && x.genre !== "Other") ? cur : ((g.genres || []).find((x) => x.genre !== "Other")?.genre || null)); } });
+    return () => { live = false; };
+  }, [region]);
+
+  // Selected genre's top artists (each carries a lead track for the songs list).
+  useEffect(() => {
+    if (!genre) { setGenreRows([]); return; }
+    let live = true;
+    discoverChart({ genre, country: region, limit: 12 }).then((r) => { if (live) setGenreRows(r.rows || []); });
+    return () => { live = false; };
+  }, [genre, region]);
+
   const playSong = async (s) => {
-    const url = s.url || (await resolveSpotifyTrack(s.title, s.artist));
-    if (url) onPlay?.({ kind: "track", url, title: s.title, artist: s.artist, art: s.art }, null);
+    let url = s.url, preview = s.preview;
+    if (!url && !preview) preview = await resolveDeezerPreview(s.title, s.artist);
+    if (url || preview) onPlay?.({ kind: "track", url: url || null, preview: preview || null, title: s.title, artist: s.artist, art: s.art || null });
   };
-  // Default to the region's top genre so the section always shows something; keep
-  // the picked genre across region changes when it still exists there.
-  useEffect(() => { if (genreChips.length && !genreChips.some((g) => g.genre === genre)) setGenre(genreChips[0].genre); }, [genreChips]);
+  const playTop = (r) => r.topTrack && playSong({ title: r.topTrack.title, artist: r.name, url: r.topTrack.url, preview: r.topTrack.preview, art: r.photo });
 
   const podium = chart.slice(0, 3);
   const rest = chart.slice(3);
   const photoUris = photos.map((p) => p.uri);
-  const regionCount = countries.find((c) => c.country === region)?.count || 0;
-  const regionGenreCount = genres.length;
+  const regionCount = region === "Worldwide" ? genreTotal : (countries.find((c) => c.country === region)?.count || genreTotal);
+  const genreSongs = genreRows.filter((r) => r.topTrack).map((r) => ({ title: r.topTrack.title, artist: r.name, url: r.topTrack.url, preview: r.topTrack.preview, art: r.photo }));
 
   const STAT_TILES = [
-    { k: "members", label: "MEMBERS", icon: "you", tint: colors.gold },
-    { k: "artists", label: "ARTISTS", icon: "music", tint: colors.amber },
-    { k: "venues", label: "VENUES", icon: "pin", tint: colors.cool },
-    { k: "genres", label: "GENRES", icon: "discover", tint: colors.magenta },
+    { k: "members", label: "MEMBERS", icon: "you", tint: colors.gold, val: memberCount || stats.members },
+    { k: "artists", label: "ARTISTS", icon: "music", tint: colors.amber, val: genreTotal || stats.artists },
+    { k: "venues", label: "VENUES", icon: "pin", tint: colors.cool, val: stats.venues },
+    { k: "genres", label: "GENRES", icon: "discover", tint: colors.magenta, val: genres.filter((g) => g.genre !== "Other").length || stats.genres },
   ];
 
   return (
@@ -146,7 +172,7 @@ export default function DiscoverScreen({ onOpenTopRated, onOpenArtist, onOpenNea
         {STAT_TILES.map((t) => (
           <View key={t.k} style={styles.tile}>
             <View style={[styles.tileIcon, { borderColor: t.tint }]}><Icon name={t.icon} size={15} color={t.tint} /></View>
-            <Text style={styles.tileNum}>{(stats[t.k] || 0).toLocaleString()}</Text>
+            <Text style={styles.tileNum}>{(t.val || 0).toLocaleString()}</Text>
             <Text style={styles.tileLabel}>{t.label}</Text>
           </View>
         ))}
@@ -185,10 +211,21 @@ export default function DiscoverScreen({ onOpenTopRated, onOpenArtist, onOpenNea
           <View style={styles.panelHead}>
             <Text style={styles.panelTitle}>THE CHART</Text>
             <View style={styles.sourcePill}>
-              <View style={[styles.dotLive, { backgroundColor: info.live ? colors.good : colors.gold }]} />
-              <Text style={styles.sourceTxt}>{info.label}</Text>
+              <View style={[styles.dotLive, { backgroundColor: colors.good }]} />
+              <Text style={styles.sourceTxt}>{region === "Worldwide" ? "Live" : region}</Text>
             </View>
           </View>
+
+          {/* Which chart: the popularity chart (Deezer) or what Pit plays. */}
+          <View style={styles.segRow}>
+            <Pressable style={[styles.seg, chartBy === "popularity" && styles.segOn]} onPress={() => setChartBy("popularity")}>
+              <Text style={[styles.segTxt, chartBy === "popularity" && styles.segTxtOn]}>Popularity</Text>
+            </Pressable>
+            <Pressable style={[styles.seg, chartBy === "plays" && styles.segOn]} onPress={() => setChartBy("plays")}>
+              <Text style={[styles.segTxt, chartBy === "plays" && styles.segTxtOn]}>On Pit</Text>
+            </Pressable>
+          </View>
+          <Text style={styles.chartNote}>{chartBy === "plays" ? "Ranked by how much Pit members are playing them right now." : "Popularity is a 0 to 100 score from Deezer fan reach. Higher means a bigger global following."}</Text>
 
           <View style={styles.podium}>
             <Plinth row={podium[1]} rank={2} onPress={() => onOpenArtist?.(podium[1].name)} />
@@ -199,27 +236,41 @@ export default function DiscoverScreen({ onOpenTopRated, onOpenArtist, onOpenNea
           {rest.length > 0 && (
             <View style={styles.rankList}>
               {rest.map((r) => (
-                <Pressable key={r.name} style={styles.rankRow} onPress={() => onOpenArtist?.(r.name)}>
+                <View key={r.name} style={styles.rankRow}>
                   <Text style={styles.rankNum}>{r.rank}</Text>
-                  <Avatar user={artistUser(r.name, r.photo)} size={34} />
-                  <View style={{ flex: 1 }}>
+                  <Avatar user={artistUser(r.name, r.photo)} size={38} />
+                  <Pressable style={{ flex: 1 }} onPress={() => onOpenArtist?.(r.name)}>
                     <Text style={styles.rankName} numberOfLines={1}>{r.name}</Text>
-                    {!!r.genre && <Text style={styles.rankGenre} numberOfLines={1}>{r.genre}</Text>}
+                    <Text style={styles.rankGenre} numberOfLines={1}>
+                      {r.genre || "Artist"}{r.topTrack ? "  ·  " + r.topTrack.title : ""}
+                    </Text>
+                  </Pressable>
+                  {r.topTrack && (
+                    <Pressable style={styles.rankPlay} onPress={() => playTop(r)} hitSlop={6} accessibilityRole="button" accessibilityLabel={`Play ${r.topTrack.title}`}>
+                      <Icon name="play" size={13} color={colors.amber} />
+                    </Pressable>
+                  )}
+                  <View style={styles.metricChip}>
+                    <Text style={styles.metricNum}>{r.plays != null ? r.plays : (r.popularity != null ? r.popularity : (r.followers != null ? fmt(r.followers) : "-"))}</Text>
+                    <Text style={styles.metricLbl}>{r.plays != null ? "plays" : (r.popularity != null ? "pop" : "fans")}</Text>
                   </View>
-                  <Text style={styles.rankMetric} numberOfLines={1}>{metricOf(r)}</Text>
-                </Pressable>
+                </View>
               ))}
             </View>
           )}
+          <Pressable style={styles.checkOut} onPress={() => onOpenArtist?.(podium[0].name)}>
+            <Text style={styles.checkOutTxt}>Check out #1: {podium[0].name}</Text>
+            <Icon name="chevron-right" size={15} color={colors.amber} />
+          </Pressable>
         </View>
       )}
 
-      {/* Genre share by region */}
+      {/* Genre share by region — tap a slice or legend row to explore that genre */}
       {genres.length > 0 && (
         <View style={styles.panel}>
           <View style={styles.panelHead}>
-            <Text style={styles.panelTitle}>GENRE SHARE</Text>
-            <Text style={styles.panelSub}>{regionGenreCount} genres tracked</Text>
+            <Text style={styles.panelTitle}>GENRES</Text>
+            <Text style={styles.panelSub}>Tap a slice to explore</Text>
           </View>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.regionRow}>
             {countries.map((c) => {
@@ -227,58 +278,35 @@ export default function DiscoverScreen({ onOpenTopRated, onOpenArtist, onOpenNea
               return (
                 <Pressable key={c.country} style={[styles.regionChip, on && styles.regionChipOn]} onPress={() => pickRegion(c.country)}>
                   <Text style={[styles.regionTxt, on && styles.regionTxtOn]} numberOfLines={1}>{c.country}</Text>
-                  <Text style={[styles.regionCount, on && styles.regionCountOn]}>{c.count.toLocaleString()}</Text>
+                  {c.count != null && <Text style={[styles.regionCount, on && styles.regionCountOn]}>{c.count.toLocaleString()}</Text>}
                 </Pressable>
               );
             })}
           </ScrollView>
-
-          <View style={styles.regionHead}>
-            <Icon name="globe" size={15} color={colors.good} />
-            <Text style={styles.regionName}>{region}</Text>
-            <Text style={styles.regionMeta}>· {regionCount.toLocaleString()} artists</Text>
-          </View>
 
           <View style={styles.chartRow}>
-            <GenreDonut data={genres} centerTop={regionCount.toLocaleString()} centerSub="artists" />
+            <GenreDonut data={genres} centerTop={regionCount.toLocaleString()} centerSub="artists" activeGenre={genre} onSlice={(g) => setGenre(g === "Other" ? genre : g)} />
             <View style={styles.legend}>
-              {genres.map((g, i) => (
-                <View key={g.genre} style={styles.legendRow}>
-                  <View style={[styles.swatch, { backgroundColor: PALETTE[i % PALETTE.length] }]} />
-                  <Text style={styles.legendName} numberOfLines={1}>{g.genre}</Text>
-                  <Text style={styles.legendCount}>{g.count}</Text>
-                  <Text style={styles.legendPct}>{Math.round(g.pct * 100)}%</Text>
-                </View>
-              ))}
+              {genres.map((g, i) => {
+                const on = g.genre === genre;
+                return (
+                  <Pressable key={g.genre} style={[styles.legendRow, on && styles.legendRowOn]} onPress={() => g.genre !== "Other" && setGenre(g.genre)}>
+                    <View style={[styles.swatch, { backgroundColor: PALETTE[i % PALETTE.length] }]} />
+                    <Text style={[styles.legendName, on && { color: colors.amber, fontWeight: "800" }]} numberOfLines={1}>{g.genre}</Text>
+                    <Text style={styles.legendCount}>{g.count}</Text>
+                    <Text style={styles.legendPct}>{Math.round(g.pct * 100)}%</Text>
+                  </Pressable>
+                );
+              })}
             </View>
           </View>
-        </View>
-      )}
 
-      {/* Explore by genre: top artists + songs in a genre and region */}
-      {genreChips.length > 0 && (
-        <View style={styles.panel}>
-          <View style={styles.panelHead}>
-            <Text style={styles.panelTitle}>EXPLORE BY GENRE</Text>
-            <Text style={styles.panelSub}>{region}</Text>
-          </View>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.regionRow}>
-            {genreChips.map((g) => {
-              const on = g.genre === genre;
-              return (
-                <Pressable key={g.genre} style={[styles.regionChip, on && styles.regionChipOn]} onPress={() => setGenre(g.genre)}>
-                  <Text style={[styles.regionTxt, on && styles.regionTxtOn]}>{g.genre}</Text>
-                  <Text style={[styles.regionCount, on && styles.regionCountOn]}>{g.count}</Text>
-                </Pressable>
-              );
-            })}
-          </ScrollView>
-
-          {genreArtists.length > 0 && (
-            <>
-              <Text style={styles.subLabel}>TOP {(genre || "").toUpperCase()} ARTISTS</Text>
+          {/* Selected genre: its top artists + songs (the "pop-out" detail) */}
+          {genre && genreRows.length > 0 && (
+            <View style={styles.genreDetail}>
+              <Text style={styles.subLabel}>TOP {genre.toUpperCase()} ARTISTS{region !== "Worldwide" ? " · " + region.toUpperCase() : ""}</Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.gArtistRow}>
-                {genreArtists.map((a, i) => (
+                {genreRows.map((a, i) => (
                   <Pressable key={a.name} style={styles.gArtist} onPress={() => onOpenArtist?.(a.name)}>
                     <Avatar user={artistUser(a.name, a.photo)} size={66} />
                     <View style={styles.gRank}><Text style={styles.gRankTxt}>{i + 1}</Text></View>
@@ -286,23 +314,23 @@ export default function DiscoverScreen({ onOpenTopRated, onOpenArtist, onOpenNea
                   </Pressable>
                 ))}
               </ScrollView>
-            </>
-          )}
 
-          {genreSongs.length > 0 && (
-            <>
-              <Text style={styles.subLabel}>TOP {(genre || "").toUpperCase()} SONGS</Text>
-              {genreSongs.map((s, i) => (
-                <Pressable key={s.title + s.artist} style={styles.gSong} onPress={() => playSong(s)}>
-                  <Text style={styles.gSongRank}>{i + 1}</Text>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.gSongTitle} numberOfLines={1}>{s.title}</Text>
-                    <Pressable onPress={() => onOpenArtist?.(s.artist)}><Text style={styles.gSongArtist} numberOfLines={1}>{s.artist}</Text></Pressable>
-                  </View>
-                  <View style={styles.gSongPlay}><Icon name="play" size={13} color={colors.amber} /></View>
-                </Pressable>
-              ))}
-            </>
+              {genreSongs.length > 0 && (
+                <>
+                  <Text style={styles.subLabel}>TOP {genre.toUpperCase()} SONGS</Text>
+                  {genreSongs.slice(0, 8).map((s, i) => (
+                    <View key={s.title + s.artist} style={styles.gSong}>
+                      <Text style={styles.gSongRank}>{i + 1}</Text>
+                      <Pressable style={{ flex: 1 }} onPress={() => playSong(s)}>
+                        <Text style={styles.gSongTitle} numberOfLines={1}>{s.title}</Text>
+                        <Text style={styles.gSongArtist} numberOfLines={1}>{s.artist}</Text>
+                      </Pressable>
+                      <Pressable style={styles.gSongPlay} onPress={() => playSong(s)} hitSlop={6} accessibilityRole="button" accessibilityLabel={`Play ${s.title}`}><Icon name="play" size={13} color={colors.amber} /></Pressable>
+                    </View>
+                  ))}
+                </>
+              )}
+            </View>
           )}
         </View>
       )}
@@ -369,12 +397,24 @@ const styles = StyleSheet.create({
   blockRank: { fontFamily: mono, fontSize: 24, fontWeight: "900", opacity: 0.9 },
   blockRank1: { fontSize: 34, opacity: 1 },
 
-  rankList: { marginTop: 18, borderTopWidth: 1, borderTopColor: colors.lineSoft, paddingTop: 8 },
-  rankRow: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 8 },
+  segRow: { flexDirection: "row", gap: 6, backgroundColor: colors.bgElev, borderRadius: radius.pill, padding: 4, alignSelf: "flex-start", borderWidth: 1, borderColor: colors.lineSoft },
+  seg: { paddingHorizontal: 16, paddingVertical: 7, borderRadius: radius.pill },
+  segOn: { backgroundColor: colors.amberStrong },
+  segTxt: { color: colors.textDim, fontSize: 12.5, fontWeight: "800" },
+  segTxtOn: { color: "#1A1206" },
+  chartNote: { color: colors.textDim, fontSize: 11.5, lineHeight: 16, marginTop: 8 },
+
+  rankList: { marginTop: 16, borderTopWidth: 1, borderTopColor: colors.lineSoft, paddingTop: 8 },
+  rankRow: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 7 },
   rankNum: { color: colors.textFaint, fontFamily: mono, fontSize: 13, fontWeight: "800", width: 22 },
   rankName: { color: colors.text, fontSize: 14, fontWeight: "700" },
   rankGenre: { color: colors.textDim, fontSize: 11, marginTop: 1 },
-  rankMetric: { color: colors.textDim, fontSize: 11, fontWeight: "700", fontFamily: mono },
+  rankPlay: { width: 30, height: 30, borderRadius: 15, borderWidth: 1, borderColor: colors.amber, alignItems: "center", justifyContent: "center", paddingLeft: 2 },
+  metricChip: { alignItems: "center", minWidth: 40 },
+  metricNum: { color: colors.text, fontFamily: mono, fontSize: 14, fontWeight: "800" },
+  metricLbl: { color: colors.textFaint, fontSize: 8.5, letterSpacing: 1, fontWeight: "800", marginTop: 1 },
+  checkOut: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 5, marginTop: 14, paddingVertical: 10, borderRadius: radius.md, borderWidth: 1, borderColor: colors.amber, backgroundColor: "rgba(242,166,90,0.06)" },
+  checkOutTxt: { color: colors.amber, fontSize: 13.5, fontWeight: "800" },
 
   regionRow: { flexDirection: "row", gap: 8, paddingVertical: 4 },
   subLabel: { color: colors.textFaint, fontSize: 10.5, letterSpacing: 1.2, fontWeight: "800", marginTop: 16, marginBottom: 8 },
@@ -409,9 +449,11 @@ const styles = StyleSheet.create({
   donutCenter: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center" },
   donutNum: { color: colors.text, fontSize: 24, fontWeight: "900", fontFamily: mono, letterSpacing: -0.5 },
   donutSub: { color: colors.textDim, fontSize: 11, fontWeight: "700", marginTop: -1, textTransform: "uppercase", letterSpacing: 1 },
-  legend: { flex: 1, minWidth: 170, gap: 10 },
-  legendRow: { flexDirection: "row", alignItems: "center", gap: 9 },
+  legend: { flex: 1, minWidth: 170, gap: 4 },
+  legendRow: { flexDirection: "row", alignItems: "center", gap: 9, paddingVertical: 6, paddingHorizontal: 8, borderRadius: radius.sm, ...(Platform.OS === "web" ? { cursor: "pointer" } : null) },
+  legendRowOn: { backgroundColor: colors.bgElev },
   swatch: { width: 12, height: 12, borderRadius: 3 },
+  genreDetail: { marginTop: 6, borderTopWidth: 1, borderTopColor: colors.lineSoft },
   legendName: { color: colors.text, fontSize: 13, fontWeight: "600", flex: 1 },
   legendCount: { color: colors.textFaint, fontSize: 11, fontFamily: mono, width: 34, textAlign: "right" },
   legendPct: { color: colors.textDim, fontSize: 12.5, fontFamily: mono, fontWeight: "800", width: 40, textAlign: "right" },
