@@ -11,7 +11,6 @@ import Icon from "../components/Icon";
 import Avatar from "../components/Avatar";
 import ScreenHeader from "../components/ScreenHeader";
 import SmartImage from "../components/SmartImage";
-import SpotifyEmbed from "../components/SpotifyEmbed";
 import Badge, { BadgeRow, BadgeChip } from "../components/Badge";
 import { proxied, isHttp } from "../lib/img";
 import Svg, { Defs, LinearGradient, Stop, Rect } from "react-native-svg";
@@ -351,14 +350,6 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
           <>
             <Text style={styles.sectionLabel}>ABOUT</Text>
             <Text style={styles.bio}>{bio}</Text>
-          </>
-        )}
-
-        {meta?.spotifyId && (
-          <>
-            <Text style={styles.sectionLabel}>LISTEN</Text>
-            <Text style={styles.bio}>Their top tracks, playing right here, no leaving the app.</Text>
-            <SpotifyEmbed kind="artist" id={meta.spotifyId} height={352} fallbackLabel={`Play ${a.name} on Spotify`} />
           </>
         )}
 

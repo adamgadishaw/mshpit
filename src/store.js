@@ -386,6 +386,19 @@ export function StoreProvider({ children }) {
   const resolveSpotifyTrack = async (title, artist) => {
     try { const { url } = await api(`/api/spotify/track?title=${encodeURIComponent(title)}&artist=${encodeURIComponent(artist || "")}`); return url || null; } catch { return null; }
   };
+  // Resolve any song to a Deezer 30s preview mp3, so the in-app player can play it
+  // for everyone (no Spotify needed). Cached per title+artist on this device.
+  const previewCache = useRef({});
+  const resolveDeezerPreview = async (title, artist) => {
+    if (!title) return null;
+    const k = (artist || "") + "|" + title;
+    if (previewCache.current[k] !== undefined) return previewCache.current[k];
+    try {
+      const { preview } = await api(`/api/deezer/track?title=${encodeURIComponent(title)}&artist=${encodeURIComponent(artist || "")}`);
+      previewCache.current[k] = preview || null;
+      return preview || null;
+    } catch { return null; }
+  };
   // Listening history: log every song played (the framework for "listening now",
   // playlists, and taste snapshots). Skips consecutive repeats, caps at 200.
   const recordPlay = (t) => {
@@ -1842,7 +1855,7 @@ export function StoreProvider({ children }) {
     isFollowing, follow, unfollow, followerCount, followingCount, absorbUsers, searchPeople, loadMembers, memberCount,
     loadUser, followersOf, followingOf,
     isBlocked, blockUser, unblockUser, blockedUsers, exportMyData,
-    searchArtistsApi, resolveArtist, remoteArtistMeta, artistDiscography, resolveSpotifyTrack,
+    searchArtistsApi, resolveArtist, remoteArtistMeta, artistDiscography, resolveSpotifyTrack, resolveDeezerPreview,
     playHistory, recordPlay, snapshots, saveSnapshot, removeSnapshot, friendsListening, loadFriendsListening, userPlaylists, deletePlaylist,
     favoriteGenre, recommendTracks, autoplayQueue, myPlaylists, loadMyPlaylists, createPlaylist, addToPlaylist,
     drafts, saveDraft, deleteDraft,

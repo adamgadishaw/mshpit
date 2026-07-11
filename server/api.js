@@ -257,6 +257,23 @@ export const routes = {
     } catch { return { albums: [] }; }
   },
 
+  // Resolve a track title (+ artist) to a Deezer 30s preview mp3 (keyless), so the
+  // in-app player can play ANY song for everyone, no Spotify account needed.
+  "GET /api/deezer/track": async (ctx) => {
+    const title = clean(ctx.query.title, { max: 200 });
+    const artist = clean(ctx.query.artist, { max: 120 });
+    if (!title) throw new ApiError(400, "Missing title.");
+    const key = "dztrk:" + (artist + "|" + title).toLowerCase();
+    const hit = deezerCache.get(key);
+    if (hit && hit.exp > Date.now()) return hit.data;
+    let s = await dz(`https://api.deezer.com/search?q=${encodeURIComponent(`track:"${title}"${artist ? ` artist:"${artist}"` : ""}`)}&limit=1`);
+    if (!s?.data?.length) s = await dz(`https://api.deezer.com/search?q=${encodeURIComponent((artist ? artist + " " : "") + title)}&limit=1`);
+    const t = s?.data?.[0];
+    const data = { preview: t?.preview || null, url: t?.link || null, title: t?.title || null, artist: t?.artist?.name || null };
+    deezerCache.set(key, { data, exp: Date.now() + 24 * 3600 * 1000 });
+    return data;
+  },
+
   // Resolve a track title (+ artist) to a playable Spotify URL, so album tracks
   // can stream full in the top player.
   "GET /api/spotify/track": async (ctx) => {

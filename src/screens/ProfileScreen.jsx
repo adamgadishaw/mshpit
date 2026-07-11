@@ -315,6 +315,9 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtis
 
 const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: colors.bg },
+  missingBox: { flex: 1, alignItems: "center", justifyContent: "center", gap: 10, padding: 40 },
+  missingTitle: { color: colors.text, fontSize: 17, fontWeight: "800", marginTop: 6 },
+  missingSub: { color: colors.textDim, fontSize: 14, textAlign: "center", lineHeight: 20 },
   topbar: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 12, paddingBottom: 8 },
   backBtn: { width: 40 },
   backCircle: { width: 36, height: 36, borderRadius: 18, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },

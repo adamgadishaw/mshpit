@@ -5,7 +5,7 @@ import { useStore } from "../store";
 import { useSpotifyPlayer } from "../lib/spotifyPlayer";
 import { useAudioPreview } from "../lib/audioPreview";
 import Icon from "./Icon";
-import SpotifyEmbed, { spotifyId } from "./SpotifyEmbed";
+import { spotifyId } from "./SpotifyEmbed";
 
 const web = Platform.OS === "web";
 
@@ -68,49 +68,88 @@ function Scrubber({ posMs, durMs, onSeek, live }) {
   );
 }
 
-// Persistent top player. Keeps playing across navigation, streams full tracks via
-// the Web Playback SDK when connected (embed otherwise), and drops down a session
-// panel (up next + recently played + save-as-playlist) on hover or tap.
+// Persistent top player. One unified in-app player: streams the FULL track through
+// the user's own Spotify (Web Playback SDK) when they've connected Premium, and
+// otherwise plays a Deezer 30s preview mp3, so every song is playable for everyone
+// with no confusing embedded Spotify window. Plays ONE track at a time, driven by
+// our own queue index, so the song you tap is always the song that plays.
 export default function PlayerBar({ player, onClose, onIndex, onPlayAt, onRemove, onMoveNext, history = [], onSaveSession, onPlayTrack, onOpenArtist, onAddToPlaylist }) {
-  const { spotifyConnected, connectSpotify } = useStore();
+  const { spotifyConnected, connectSpotify, resolveSpotifyTrack, resolveDeezerPreview } = useStore();
   const list = player && Array.isArray(player.list) ? player.list : [];
   const index = Math.max(0, Math.min(player?.index || 0, list.length - 1));
   const cur = list[index];
+  const curKey = cur ? (cur.url || cur.id || cur.preview || cur.title) : null;
 
-  const uris = list.map((t) => { const id = spotifyId(t?.url || t?.id, "track"); return id ? "spotify:track:" + id : null; }).filter(Boolean);
-  const { ready, state, error, playUris, toggle, next, prev, seek } = useSpotifyPlayer(spotifyConnected && !!cur);
+  const { ready, state, error, playUris, toggle, seek } = useSpotifyPlayer(spotifyConnected && !!cur);
 
+  // Give the SDK a generous window to come up before we fall back to preview, and
+  // clear the flag the moment it connects (so a slow start doesn't latch us out).
   const [failed, setFailed] = useState(false);
   useEffect(() => {
     if (!spotifyConnected || ready) { setFailed(false); return; }
-    const t = setTimeout(() => setFailed(true), 6000);
+    const t = setTimeout(() => setFailed(true), 12000);
     return () => clearTimeout(t);
   }, [spotifyConnected, ready]);
-
   const blocked = failed || !!error;
-  const sdkMode = spotifyConnected && ready && !blocked && uris.length > 0;
-  const connecting = spotifyConnected && !ready && !blocked && uris.length > 0;
+  const wantSdk = spotifyConnected && ready && !blocked;
+  const connecting = spotifyConnected && !ready && !blocked;
 
-  // Preview mode: play the 30s mp3 directly (works for everyone, no Premium). This
-  // is the default when Spotify Connect isn't streaming and we have a preview URL.
-  const previewUrl = cur?.preview || null;
-  const previewMode = !sdkMode && !connecting && !!previewUrl;
-  const embedMode = !sdkMode && !connecting && !previewMode;
+  // Resolve the CURRENT track for whichever engine is live: a Spotify URI for full
+  // playback (looked up by title/artist when the track only has a Deezer link), or
+  // a Deezer preview mp3 otherwise. One track at a time = the right song, always.
+  const [resolved, setResolved] = useState({ key: null, uri: null, preview: null });
+  useEffect(() => {
+    if (!cur) { setResolved({ key: null, uri: null, preview: null }); return; }
+    let cancelled = false;
+    (async () => {
+      if (wantSdk) {
+        let uri = null;
+        const id = spotifyId(cur.url || cur.id, "track");
+        if (id) uri = "spotify:track:" + id;
+        else { const url = await resolveSpotifyTrack(cur.title, cur.artist); const rid = spotifyId(url, "track"); if (rid) uri = "spotify:track:" + rid; }
+        let preview = null;
+        if (!uri) preview = cur.preview || (await resolveDeezerPreview(cur.title, cur.artist));
+        if (!cancelled) setResolved({ key: curKey, uri, preview });
+      } else {
+        let preview = cur.preview || null;
+        if (!preview) preview = await resolveDeezerPreview(cur.title, cur.artist);
+        if (!cancelled) setResolved({ key: curKey, uri: null, preview });
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [curKey, wantSdk]);
+
+  const forThis = resolved.key === curKey;
+  const sdkActive = wantSdk && forThis && !!resolved.uri;
+  const previewSrc = !sdkActive && forThis ? resolved.preview : null;
   const hasNext = index < list.length - 1;
-  const audio = useAudioPreview(previewMode ? previewUrl : null, {
-    enabled: previewMode,
+  const audio = useAudioPreview(previewSrc, {
+    enabled: !sdkActive,
     onEnded: () => { if (hasNext) onIndex?.(index + 1); },
   });
 
+  // Stream a single resolved URI through the SDK; our index (prev/next) drives it.
   const sigRef = useRef("");
   useEffect(() => {
-    if (!sdkMode) return;
-    const sig = uris.join("|") + "@" + index;
+    if (!sdkActive) return;
+    const sig = resolved.uri + "@" + index;
     if (sig === sigRef.current) return;
     sigRef.current = sig;
-    playUris(uris, Math.min(index, uris.length - 1));
+    playUris([resolved.uri], 0);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sdkMode, uris.join("|"), index]);
+  }, [sdkActive, resolved.uri, index]);
+
+  // Auto-advance when the SDK track ends (single-URI playback stops instead of
+  // rolling on): it had been playing, now it's paused back at the start.
+  const playedRef = useRef(false);
+  useEffect(() => {
+    if (!sdkActive) { playedRef.current = false; return; }
+    const pos = state?.position || 0, paused = !!state?.paused, hasTrack = !!state?.track;
+    if (hasTrack && !paused && pos > 1000) playedRef.current = true;
+    else if (playedRef.current && hasTrack && paused && pos <= 1200) { playedRef.current = false; if (hasNext) onIndex?.(index + 1); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sdkActive, state?.position, state?.paused, state?.track]);
 
   const [open, setOpen] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -120,23 +159,25 @@ export default function PlayerBar({ player, onClose, onIndex, onPlayAt, onRemove
   if (!cur) return null;
 
   const multi = list.length > 1;
-  const tk = sdkMode && state?.track ? state.track : null;
+  const tk = sdkActive && state?.track ? state.track : null;
   const title = tk?.name || cur.title || cur.artist || "Now playing";
   const artist = tk?.artist || cur.artist || "";
   const art = tk?.art || cur.art || null;
 
   // Unified transport across whichever engine is live (Spotify SDK or preview mp3).
-  const scrubbable = sdkMode || previewMode;
-  const posMs = sdkMode ? (state?.position || 0) : audio.pos * 1000;
-  const durMs = sdkMode ? (state?.duration || 0) : audio.dur * 1000;
-  const playing = sdkMode ? (state && !state.paused && !!state.track) : (previewMode && audio.playing);
+  const scrubbable = sdkActive || !!previewSrc;
+  const resolving = !forThis; // still fetching a source for this track
+  const unplayable = forThis && !sdkActive && !previewSrc && !connecting;
+  const posMs = sdkActive ? (state?.position || 0) : audio.pos * 1000;
+  const durMs = sdkActive ? (state?.duration || 0) : audio.dur * 1000;
+  const playing = sdkActive ? (state && !state.paused && !!state.track) : audio.playing;
   const playPause = () => {
-    if (sdkMode) { if (!state || !state.track) playUris(uris, Math.min(index, uris.length - 1)); else toggle(); }
-    else if (previewMode) audio.toggle();
+    if (sdkActive) { if (!state || !state.track) playUris([resolved.uri], 0); else toggle(); }
+    else if (previewSrc) audio.toggle();
   };
-  const onSeek = (ms) => { if (sdkMode) seek(ms); else if (previewMode) audio.seek(ms / 1000); };
-  const goPrev = () => { if (sdkMode) prev(); else onIndex?.(index - 1); };
-  const goNext = () => { if (sdkMode) next(); else onIndex?.(index + 1); };
+  const onSeek = (ms) => { if (sdkActive) seek(ms); else audio.seek(ms / 1000); };
+  const goPrev = () => onIndex?.(index - 1);
+  const goNext = () => onIndex?.(index + 1);
 
   const doSave = () => { const s = onSaveSession?.(list, `${cur.artist || "Session"} mix`); if (s) { setSaved(true); setTimeout(() => setSaved(false), 1800); } };
 
@@ -146,38 +187,29 @@ export default function PlayerBar({ player, onClose, onIndex, onPlayAt, onRemove
     </Pressable>
   );
 
+  const statusLine = connecting ? "Connecting Spotify..."
+    : resolving ? "Loading..."
+    : unplayable ? "Not available to play"
+    : artist + (sdkActive ? "  ·  Spotify" : previewSrc ? "  ·  preview" : "");
+
   const hoverProps = web ? { onMouseEnter: () => setOpen(true), onMouseLeave: () => setOpen(false) } : {};
 
   return (
     <View style={styles.shell} {...hoverProps}>
       <View style={styles.bar}>
         {art ? <Image source={{ uri: art }} style={styles.art} /> : <View style={[styles.art, styles.artEmpty]}><Icon name="music" size={16} color={colors.textFaint} /></View>}
-        <View style={[styles.meta, (scrubbable || connecting) && styles.metaGrow]}>
+        <View style={[styles.meta, styles.metaGrow]}>
           <Text style={styles.title} numberOfLines={1}>{title}</Text>
-          {connecting
-            ? <Text style={styles.sub} numberOfLines={1}>Connecting Spotify...</Text>
-            : !!artist && <Text style={styles.sub} numberOfLines={1}>{artist}{previewMode ? "  ·  preview" : ""}</Text>}
+          <Text style={styles.sub} numberOfLines={1}>{statusLine}</Text>
         </View>
 
-        {scrubbable ? (
-          <>
-            <Ctrl icon="chevron-left" onPress={goPrev} disabled={!sdkMode && index <= 0} />
-            <Pressable style={[styles.ctrl, styles.play]} onPress={playPause} hitSlop={6}>
-              {playing ? <View style={styles.pauseGlyph}><View style={styles.pauseBar} /><View style={styles.pauseBar} /></View> : <Icon name="play" size={16} color="#1A1206" />}
-            </Pressable>
-            <Ctrl icon="chevron-right" onPress={goNext} disabled={!sdkMode && index >= list.length - 1} />
-          </>
-        ) : connecting ? (
-          <View style={styles.dots}><View style={styles.dot} /><View style={styles.dot} /><View style={styles.dot} /></View>
-        ) : (
-          <>
-            <Ctrl icon="chevron-left" onPress={() => onIndex?.(index - 1)} disabled={!multi || index <= 0} />
-            <View style={styles.embedWrap}>
-              <SpotifyEmbed kind={cur.kind || "track"} id={cur.id} url={cur.url} height={80} />
-            </View>
-            <Ctrl icon="chevron-right" onPress={() => onIndex?.(index + 1)} disabled={!multi || index >= list.length - 1} />
-          </>
-        )}
+        <Ctrl icon="chevron-left" onPress={goPrev} disabled={index <= 0} />
+        <Pressable style={[styles.ctrl, styles.play, !scrubbable && styles.ctrlOff]} onPress={playPause} hitSlop={6} disabled={!scrubbable}>
+          {(connecting || resolving) && !scrubbable
+            ? <View style={styles.dots}><View style={styles.dotDark} /><View style={styles.dotDark} /><View style={styles.dotDark} /></View>
+            : playing ? <View style={styles.pauseGlyph}><View style={styles.pauseBar} /><View style={styles.pauseBar} /></View> : <Icon name="play" size={16} color="#1A1206" />}
+        </Pressable>
+        <Ctrl icon="chevron-right" onPress={goNext} disabled={index >= list.length - 1} />
 
         {multi && (
           <Pressable style={[styles.queueBtn, panelOpen && styles.queueBtnOn]} onPress={() => setOpen((o) => !o)} hitSlop={6}>
@@ -193,7 +225,7 @@ export default function PlayerBar({ player, onClose, onIndex, onPlayAt, onRemove
         ) : !spotifyConnected ? (
           <Pressable style={styles.connect} onPress={connectSpotify} hitSlop={6}>
             <Icon name="music" size={13} color={colors.good} />
-            <Text style={styles.connectTxt}>Full songs</Text>
+            <Text style={styles.connectTxt}>Connect Spotify</Text>
           </Pressable>
         ) : null}
         <Ctrl icon="x" onPress={onClose} />
@@ -285,8 +317,9 @@ const styles = StyleSheet.create({
   play: { backgroundColor: colors.amberStrong, borderColor: colors.amberStrong },
   pauseGlyph: { flexDirection: "row", gap: 3 },
   pauseBar: { width: 3.5, height: 13, borderRadius: 1.5, backgroundColor: "#1A1206" },
-  dots: { flexDirection: "row", gap: 4, paddingHorizontal: 12 },
+  dots: { flexDirection: "row", gap: 3, alignItems: "center", justifyContent: "center" },
   dot: { width: 6, height: 6, borderRadius: 3, backgroundColor: colors.textFaint },
+  dotDark: { width: 4, height: 4, borderRadius: 2, backgroundColor: "#1A1206" },
   queueBtn: { flexDirection: "row", alignItems: "center", gap: 4, height: 36, paddingHorizontal: 10, borderRadius: 18, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
   queueBtnOn: { borderColor: colors.amber },
   queueTxt: { color: colors.textDim, fontSize: 12, fontWeight: "800", fontFamily: mono },
