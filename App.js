@@ -45,6 +45,7 @@ import TermsScreen from "./src/screens/TermsScreen";
 import AccountMenu from "./src/components/AccountMenu";
 import PlayerBar from "./src/components/PlayerBar";
 import PlaylistPickerScreen from "./src/screens/PlaylistPickerScreen";
+import WelcomeScreen from "./src/screens/WelcomeScreen";
 import FollowListScreen from "./src/screens/FollowListScreen";
 import LandingScreen from "./src/screens/LandingScreen";
 import { load, save } from "./src/lib/persist";
@@ -69,7 +70,7 @@ export default function App() {
 }
 
 function Root() {
-  const { session, addLog, visibleFeed, followingFeed, localFeed, logout, userByHandle, searchPeople, inboxUnread, accountStatus, track, unreadNotifications, recordPlay, playHistory, saveSnapshot, autoplayQueue } = useStore();
+  const { session, addLog, visibleFeed, followingFeed, localFeed, logout, userByHandle, searchPeople, inboxUnread, accountStatus, track, unreadNotifications, recordPlay, playHistory, saveSnapshot, autoplayQueue, followingCount } = useStore();
   const staff = isStaff(session?.role);
   const feed = visibleFeed(staff);
   const following = followingFeed(staff);
@@ -114,9 +115,22 @@ function Root() {
   const [player, setPlayer] = useState(() => (web ? load("pit.player", null) : null));
   useEffect(() => { if (web) save("pit.player", player); }, [player]);
   const [acctOpen, setAcctOpen] = useState(false);
+  // First-run welcome (Spotify + find-your-people). Armed at signup, shown once the
+  // taste picker is closed so it survives the theme reload PickArtists can trigger.
+  const [welcome, setWelcome] = useState(false);
   // The concert opening screen: fresh visitors (and anyone who logs out) see it;
   // "browse as guest" or logging in dismisses it. Guest choice persists.
   const [landing, setLanding] = useState(() => !load("pit.session", null) && !load("pit.entered", false));
+
+  // Fire the welcome once signup's taste picker is closed (survives a theme reload
+  // because the "pending" flag is on disk). Consume the flag so it shows only once.
+  useEffect(() => {
+    if (!web || !session?.id || !load("pit.welcomePending", false)) return;
+    if (nav.pickArtists || nav.auth) return; // wait until the picker is gone
+    save("pit.welcomePending", false);
+    setWelcome(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.id, nav]);
 
   // Push a fresh screen onto the stack. On web we mirror it into browser history
   // so the hardware/browser Back button pops the same stack the in-app back
@@ -268,7 +282,7 @@ function Root() {
   if (nav.photos) overlay = <PhotoViewer photos={nav.photos.images} index={nav.photos.index} onClose={back} />;
   else if (nav.addToPlaylist) overlay = <PlaylistPickerScreen track={nav.addToPlaylist} onClose={back} />;
   else if (nav.followList) overlay = <FollowListScreen userId={nav.followList.userId} mode={nav.followList.mode} onClose={back} onOpenProfile={openProfile} />;
-  else if (nav.auth) overlay = <AuthScreen initialMode={nav.authMode} onDone={(mode) => (mode === "signup" ? replace({ pickArtists: true }) : back())} onCancel={back} />;
+  else if (nav.auth) overlay = <AuthScreen initialMode={nav.authMode} onDone={(mode) => { if (mode === "signup") { if (web) save("pit.welcomePending", true); replace({ pickArtists: true }); } else back(); }} onCancel={back} />;
   else if (nav.pickArtists) overlay = <PickArtistsScreen onDone={clear} onSkip={clear} />;
   else if (nav.logging) overlay = <LogScreen user={session} prefill={nav.prefill} onPost={onAddLog} onCancel={back} />;
   else if (nav.reporting) overlay = <ReportScreen log={nav.reporting} onClose={back} />;
@@ -483,6 +497,18 @@ function Root() {
             { icon: "logout", label: "Log out", danger: true, onPress: () => { setAcctOpen(false); logout(); clear(); exitToLanding(); } },
           ]}
         />
+
+        {welcome && session && (
+          <View style={styles.welcomeModal}>
+            <WelcomeScreen
+              onClose={() => setWelcome(false)}
+              onOpenFanClub={(a) => { setWelcome(false); openFanClub(a); }}
+              onOpenShow={(s) => { setWelcome(false); openShow(s); }}
+              onOpenFanClubs={() => { setWelcome(false); go({ fanClubs: true }); }}
+              onOpenNearby={() => { setWelcome(false); requireAuth(() => go({ nearby: true })); }}
+            />
+          </View>
+        )}
       </SafeAreaView>
     </View>
   );
@@ -546,6 +572,7 @@ const styles = StyleSheet.create({
     elevation: 6,
   },
   fabLabel: { color: colors.amber, fontSize: 10, marginTop: 4, letterSpacing: 0.3 },
+  welcomeModal: { ...StyleSheet.absoluteFillObject, backgroundColor: colors.bg, zIndex: 200, ...(Platform.OS === "web" ? { position: "fixed" } : null) },
 
   preview: {
     position: "absolute",
