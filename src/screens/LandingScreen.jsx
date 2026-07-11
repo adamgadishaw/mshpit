@@ -4,6 +4,7 @@ import Svg, { Defs, LinearGradient, Stop, Rect } from "react-native-svg";
 import { mono, radius } from "../theme";
 import Icon from "../components/Icon";
 import { catalogVenues, catalogArtists } from "../seed/catalog";
+import { api } from "../lib/api";
 
 // ----------------------------------------------------------------------------
 // The opening act, the way real music apps do it: full-bleed live-show
@@ -85,8 +86,16 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse }) {
   }, [idx]);
 
   const glowOp = pulse.interpolate({ inputRange: [0, 1], outputRange: [0.72, 1] });
+  // Live counts from the DB so the stats reflect real, saved catalog growth (the
+  // bundled numbers are a frozen snapshot). Falls back to the bundle if offline.
+  const [liveArtists, setLiveArtists] = useState(null);
+  const [liveMembers, setLiveMembers] = useState(null);
+  useEffect(() => {
+    api("/api/artists?q=").then(({ total }) => { if (typeof total === "number") setLiveArtists(total); }).catch(() => {});
+    api("/api/people?q=").then(({ total }) => { if (typeof total === "number") setLiveMembers(total); }).catch(() => {});
+  }, []);
   const venueCount = Object.keys(catalogVenues).length;
-  const artistCount = Object.keys(catalogArtists).length;
+  const artistCount = liveArtists ?? Object.keys(catalogArtists).length;
 
   // On phones the pitch SCROLLS (centered when it fits, scrollable when the user
   // has large text) so it can never overlap the top bar or get clipped. On desktop
@@ -173,6 +182,12 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse }) {
               <Text style={styles.statNum}>{artistCount.toLocaleString()}</Text>
               <Text style={styles.statLbl}>ARTISTS</Text>
             </View>
+            {liveMembers != null && liveMembers > 0 && (
+              <View style={styles.statChip}>
+                <Text style={styles.statNum}>{liveMembers.toLocaleString()}</Text>
+                <Text style={styles.statLbl}>MEMBERS</Text>
+              </View>
+            )}
             <View style={styles.statChip}>
               <Text style={styles.statNum}>2</Text>
               <Text style={styles.statLbl}>SCORES · BAND & ROOM</Text>
