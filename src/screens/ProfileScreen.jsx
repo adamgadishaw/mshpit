@@ -49,8 +49,8 @@ function TrebleBass({ kind, song, playing, onPlay, onOpenArtist }) {
 
 // MySpace-style profile - banner, pfp, now-playing, theme song, Treble/Bass top
 // artists, planned shows, reviews. Built to make people findable and followable.
-export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtist, onOpenVenue, onEditProfile, onPreview, onMessage, onReport, onOpenPhotos, onPlay, onOpenFollowList }) {
-  const { session, userById, logsByUser, isFollowing, follow, unfollow, followerCount, followingCount, goingFor, userBadges, sharedShows, userPlaylists, loadUser, isBlocked, blockUser, unblockUser } = useStore();
+export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtist, onOpenVenue, onEditProfile, onPreview, onMessage, onReport, onOpenPhotos, onPlay, onOpenFollowList, onOpenBadges }) {
+  const { session, userById, logsByUser, isFollowing, follow, unfollow, followerCount, followingCount, goingFor, userBadges, sharedShows, userPlaylists, loadUser, isBlocked, blockUser, unblockUser, userPoints, userAchievements } = useStore();
   const user = userById(userId);
   const [playlists, setPlaylists] = useState([]);
   const [missing, setMissing] = useState(false);
@@ -173,6 +173,16 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtis
           <Stat value={followerCount(user.id)} label="FOLLOWERS" onPress={() => onOpenFollowList?.(user.id, "followers")} />
           <Stat value={followingCount(user.id)} label="FOLLOWING" onPress={() => onOpenFollowList?.(user.id, "following")} />
         </View>
+
+        {/* Rewards: points + badges earned, tap for the full legend. */}
+        <Pressable style={styles.rewards} onPress={() => onOpenBadges?.(user.id)}>
+          <View style={styles.rewardsIcon}><Icon name="star" size={16} color={colors.amber} filled /></View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.rewardsTitle}>{userPoints(user).toLocaleString()} points · {userAchievements(user).length}/10 badges</Text>
+            <Text style={styles.rewardsSub}>{isSelf ? "See what you can earn next" : "See their badges"}</Text>
+          </View>
+          <Icon name="chevron-right" size={16} color={colors.textDim} />
+        </Pressable>
 
         {/* Crossed paths, the concert-overlap tracker. */}
         {!isSelf && session && (crossed.shows.length > 0 || crossed.artists.length > 0) && (
@@ -352,6 +362,10 @@ const styles = StyleSheet.create({
   followTxt: { color: "#1A1206", fontSize: 14, fontWeight: "800" },
   followingTxt: { color: colors.textDim },
   statsRow: { flexDirection: "row", backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, marginTop: 20, marginHorizontal: 16, paddingVertical: 14 },
+  rewards: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.amber, marginTop: 10, marginHorizontal: 16, padding: 12 },
+  rewardsIcon: { width: 36, height: 36, borderRadius: 18, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.amber, backgroundColor: colors.bgElev },
+  rewardsTitle: { color: colors.text, fontSize: 14, fontWeight: "800" },
+  rewardsSub: { color: colors.textDim, fontSize: 12, marginTop: 1 },
   crossed: { flexDirection: "row", alignItems: "center", gap: 12, marginTop: 12, marginHorizontal: 16, paddingVertical: 12, paddingHorizontal: 14, borderRadius: radius.md, borderWidth: 1, borderColor: colors.magenta, backgroundColor: "rgba(224,69,123,0.07)" },
   crossedIcon: { width: 34, height: 34, borderRadius: 17, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.magenta, backgroundColor: colors.bgElev },
   crossedTitle: { color: colors.text, fontSize: 14, fontWeight: "700" },

@@ -1067,6 +1067,12 @@ export const routes = {
     db.prepare("UPDATE users SET verified=? WHERE id=?").run(verified, ctx.params.id);
     return { ok: true, verified: !!verified };
   },
+  "POST /api/admin/users/:id/sponsor": (ctx) => {
+    requireAdmin(ctx);
+    const sponsor = ctx.body?.sponsor ? 1 : 0;
+    db.prepare("UPDATE users SET sponsor=? WHERE id=?").run(sponsor, ctx.params.id);
+    return { ok: true, sponsor: !!sponsor };
+  },
 
   // Full member directory for the admin console (includes banned) + live counts and
   // a per-region (home city) breakdown. This is what makes every real signup show

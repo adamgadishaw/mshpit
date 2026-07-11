@@ -69,7 +69,7 @@ const ROLES = ["fan", "artist", "moderator", "admin"];
 const roleColor = (r) => (r === "admin" ? colors.magenta : r === "moderator" ? colors.good : r === "artist" ? colors.amber : colors.textDim);
 
 // A single member row with inline Discord-style moderation: role, timeout, ban.
-function MemberRow({ u, self, status, canRole, onRole, onTimeout, onLift, onBan, onUnban, onVerify }) {
+function MemberRow({ u, self, status, canRole, onRole, onTimeout, onLift, onBan, onUnban, onVerify, onSponsor }) {
   const banned = status === "banned";
   const timed = status === "suspended";
   return (
@@ -117,8 +117,22 @@ function MemberRow({ u, self, status, canRole, onRole, onTimeout, onLift, onBan,
             style={[styles.verifyBtn, u.verified && styles.verifyBtnOn]}
             onPress={() => onVerify(!u.verified)}
           >
-            <Badge type="verified" size={15} />
+            <Badge type="verified" size={15} tooltip={false} />
             <Text style={[styles.verifyTxt, u.verified && styles.verifyTxtOn]}>{u.verified ? "Verified, tap to remove" : "Grant verification"}</Text>
+          </Pressable>
+        </View>
+      )}
+
+      {/* sponsor / partner mark, admin-granted */}
+      {canRole && (
+        <View style={styles.pillRow}>
+          <Text style={styles.pillLabel}>Sponsor</Text>
+          <Pressable
+            style={[styles.verifyBtn, u.sponsor && styles.verifyBtnOn]}
+            onPress={() => onSponsor(!u.sponsor)}
+          >
+            <Badge type="sponsor" size={15} tooltip={false} />
+            <Text style={[styles.verifyTxt, u.sponsor && styles.verifyTxtOn]}>{u.sponsor ? "Sponsor, tap to remove" : "Grant sponsor"}</Text>
           </Pressable>
         </View>
       )}
@@ -152,7 +166,7 @@ export default function AdminScreen({ onClose }) {
     requests, users, feed, removedIds, reports, session,
     comments, fanClubMsgs, lounge,
     approveArtist, rejectArtist, removeContent, restoreContent, actionReport, dismissReport,
-    suspendUser, banUser, unbanUser, setUserRole, setVerified, accountStatus,
+    suspendUser, banUser, unbanUser, setUserRole, setVerified, setSponsor, accountStatus,
     removeComment, removeFanClubMessage, removeLoungeMessage,
     loadAdminMembers, adminStats, adminArtistQueue, enrichArtists, purgeArtist, startCatalogSeed, catalogSeedStatus, stopCatalogSeed,
   } = useStore();
@@ -351,6 +365,7 @@ export default function AdminScreen({ onClose }) {
                 onBan={() => banUser(u.id)}
                 onUnban={() => unbanUser(u.id)}
                 onVerify={(val) => setVerified(u.id, val)}
+                onSponsor={(val) => setSponsor(u.id, val)}
               />
             ))}
             {members.length === 0 && <Text style={styles.empty}>No members match “{q}”.</Text>}

@@ -259,6 +259,13 @@ function paths(name, { stroke, solid, color, filled }) {
       return <Polyline points="6 9 12 15 18 9" {...stroke} />;
     case "star":
       return <Polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" {...solid} />;
+    case "map":
+      return (
+        <>
+          <Path d="M12 21s-6.5-5.5-6.5-10.5a6.5 6.5 0 0 1 13 0C18.5 15.5 12 21 12 21z" {...stroke} />
+          <Circle cx="12" cy="10.5" r="2.4" {...stroke} />
+        </>
+      );
     case "volume":
       return (
         <>

@@ -1,6 +1,10 @@
+import { useState } from "react";
 import Svg, { Path, Polyline, Polygon, G, Defs, RadialGradient, Stop, Text as SvgText } from "react-native-svg";
-import { View, Text, StyleSheet } from "react-native";
+import { View, Text, StyleSheet, Pressable, Platform } from "react-native";
 import { colors, mono, radius } from "../theme";
+import { STATUS_BADGES } from "../lib/badges";
+
+const web = Platform.OS === "web";
 
 // Pit badge system, high-quality "clip art" seals, drawn (no emoji, no glyph
 // stand-ins; same house style as Icon.jsx). A scalloped verification seal for
@@ -43,6 +47,7 @@ function config(type) {
     case "rank1": return { fill: colors.gold, edge: "#7A5A12", glyph: "num", num: "1", tip: "#1 this week" };
     case "rank2": return { fill: "#C7CDD6", edge: "#6E7784", glyph: "num", num: "2", tip: "#2 this week" };
     case "rank3": return { fill: "#D08A55", edge: "#7A4A22", glyph: "num", num: "3", tip: "#3 this week" };
+    case "sponsor": return { fill: "#A855F7", edge: "#4C1D95", glyph: "star", tip: "Sponsor" };
     case "staff": return { fill: colors.magenta, edge: "#5E1633", glyph: "check", tip: "Pit team" };
     case "mod": return { fill: colors.good, edge: "#14512F", glyph: "check", tip: "Moderator" };
     case "founder": return { fill: colors.amberStrong, edge: "#6B3410", glyph: "check", tip: "Founder" };
@@ -60,7 +65,7 @@ function Glyph({ c }) {
   return <Polygon points={STAR} fill="#ffffff" />;
 }
 
-export default function Badge({ type = "verified", size = 18 }) {
+function Seal({ type, size }) {
   const c = config(type);
   const gid = `bg_${type}`;
   return (
@@ -77,6 +82,29 @@ export default function Badge({ type = "verified", size = 18 }) {
       <Path d={SEAL} fill={`url(#${gid})`} />
       <Glyph c={c} />
     </Svg>
+  );
+}
+
+// A badge, with an on-theme hover tooltip (web) that explains what it means +
+// how it's earned — so people aren't staring at a mystery seal.
+export default function Badge({ type = "verified", size = 18, tooltip = true }) {
+  const [hover, setHover] = useState(false);
+  const info = STATUS_BADGES[type];
+  const seal = <Seal type={type} size={size} />;
+  if (!web || !tooltip || !info) return seal;
+  return (
+    <View style={styles.tipWrap}>
+      <Pressable onHoverIn={() => setHover(true)} onHoverOut={() => setHover(false)} accessibilityRole="image" accessibilityLabel={`${info.label} badge. ${info.desc}`}>
+        {seal}
+      </Pressable>
+      {hover && (
+        <View style={styles.tip} pointerEvents="none">
+          <Text style={styles.tipTitle}>{info.label}</Text>
+          <Text style={styles.tipDesc}>{info.desc}</Text>
+          <Text style={styles.tipHow}>{info.how}</Text>
+        </View>
+      )}
+    </View>
   );
 }
 
@@ -103,6 +131,15 @@ export function BadgeChip({ type, label, size = 16 }) {
 }
 
 const styles = StyleSheet.create({
+  tipWrap: { position: "relative", ...(web ? { cursor: "help" } : null) },
+  tip: {
+    position: "absolute", bottom: "120%", left: "50%", transform: [{ translateX: -110 }], width: 220,
+    backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line, borderRadius: radius.md,
+    padding: 10, zIndex: 999, ...(web ? { boxShadow: "0 8px 24px rgba(0,0,0,0.4)" } : null),
+  },
+  tipTitle: { color: colors.text, fontSize: 13, fontWeight: "800" },
+  tipDesc: { color: colors.textDim, fontSize: 12, lineHeight: 17, marginTop: 3 },
+  tipHow: { color: colors.amber, fontSize: 11, marginTop: 5, fontStyle: "italic" },
   row: { flexDirection: "row", alignItems: "center", gap: 3 },
   chip: { flexDirection: "row", alignItems: "center", gap: 6, borderWidth: 1, borderRadius: radius.pill, paddingLeft: 6, paddingRight: 11, paddingVertical: 5 },
   chipTxt: { fontSize: 9.5, letterSpacing: 1.1, fontWeight: "800", fontFamily: mono },

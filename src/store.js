@@ -6,6 +6,7 @@ import { load, save } from "./lib/persist";
 import { api, apiUrl } from "./lib/api";
 import { setTheme as applyTheme, syncThemeFromAccount } from "./theme";
 import { artistMeta } from "./seed/ingested";
+import { ACHIEVEMENTS } from "./lib/badges";
 
 // Prototype in-memory store: auth, profiles, social graph, content, reports,
 // artist approvals, scheduled tour dates. NO backend - resets on reload. The
@@ -1273,6 +1274,13 @@ export function StoreProvider({ children }) {
     setSession((s) => (s && s.id === id ? { ...s, verified } : s));
     api(`/api/admin/users/${id}/verified`, { method: "POST", body: { verified } }).catch(() => {}); // best-effort, offline-safe
   };
+  const setSponsor = (id, val) => {
+    if (!isStaff(session?.role)) return;
+    const sponsor = !!val;
+    setUsers((all) => all.map((u) => (u.id === id ? { ...u, sponsor } : u)));
+    setSession((s) => (s && s.id === id ? { ...s, sponsor } : s));
+    api(`/api/admin/users/${id}/sponsor`, { method: "POST", body: { sponsor } }).catch(() => {});
+  };
 
   // --- Planned attendance ---
   const goingFor = (userId) => going[userId] || [];
@@ -1624,9 +1632,31 @@ export function StoreProvider({ children }) {
     const rb = roleBadge(u.role);
     if (rb) b.add(rb);
     if (u.verified) b.add("verified"); // admin-granted check, any account
+    if (u.sponsor) b.add("sponsor");   // admin-granted partner/sponsor mark
     if (u.artistName && isTop100(u.artistName)) b.add("top100");
     return [...b];
   };
+
+  // --- Gamification: activity → stats → points + achievement badges -----------
+  // Stats are derived from what we already store (a user's logs/follows/clubs), so
+  // there's no separate ledger to keep in sync. Best-effort for other users (only
+  // their cached posts count); complete for the signed-in user.
+  const activityStats = (u) => {
+    if (!u) return { shows: 0, reviews: 0, likes: 0, photos: 0, cities: 0, artists: 0, follows: 0, fanClubs: 0 };
+    const logs = logsByUser(u.id);
+    return {
+      shows: logs.length,
+      reviews: logs.filter((l) => (l.review || "").trim().length > 0).length,
+      likes: logs.reduce((s, l) => s + (l.likes || 0), 0),
+      photos: logs.reduce((s, l) => s + (l.photos?.length || 0), 0),
+      cities: new Set(logs.map((l) => l.city).filter(Boolean)).size,
+      artists: new Set(logs.map((l) => norm(l.artist)).filter(Boolean)).size,
+      follows: followingCount(u.id),
+      fanClubs: (fanClubs[u.id] || []).length,
+    };
+  };
+  const userAchievements = (u) => { const s = activityStats(u); return ACHIEVEMENTS.filter((a) => a.test(s)).map((a) => a.id); };
+  const userPoints = (u) => { const s = activityStats(u); return ACHIEVEMENTS.reduce((sum, a) => sum + (a.test(s) ? a.points : 0), 0); };
 
   // --- Discover: chart ranking + region genres + top photos ------------------
   // The ranking SOURCE is abstracted so we can swap in Billboard Hot 100 or an
@@ -1907,6 +1937,7 @@ export function StoreProvider({ children }) {
     searchVenues, venuesByCity, venueUpcomingCount,
     allArtists, topArtists, artistsAlphabetical, upcomingEvents, trendingVenues,
     isVerifiedArtist, isTop100, artistRank, artistBadges, userBadges,
+    activityStats, userAchievements, userPoints,
     chartTop, chartInfo, catalogCountries, topGenres, topPhotos, discoverStats, topArtistsBy, topSongsBy,
     commentsFor, addComment, loadComments, likeInfo, toggleLike,
     concertKey, loungeFor, addLoungeMessage,
@@ -1914,7 +1945,7 @@ export function StoreProvider({ children }) {
     fanClubFor, loadFanClub, addFanClubMessage, isFanClubMember, joinFanClub, fanClubCount, fanClubsDirectory,
     isArtistOwner, artistProfile, loadArtistPage, updateArtistProfile, artistFeedEnabled,
     artistPostsFor, addArtistPost, removeArtistPost,
-    accountStatus, banUser, unbanUser, suspendUser, setUserRole, setVerified, loadAdminMembers, adminStats, adminArtistQueue, enrichArtists, purgeArtist, startCatalogSeed, catalogSeedStatus, stopCatalogSeed, removeLoungeMessage, removeComment, removeFanClubMessage,
+    accountStatus, banUser, unbanUser, suspendUser, setUserRole, setVerified, setSponsor, loadAdminMembers, adminStats, adminArtistQueue, enrichArtists, purgeArtist, startCatalogSeed, catalogSeedStatus, stopCatalogSeed, removeLoungeMessage, removeComment, removeFanClubMessage,
     comments, fanClubMsgs, lounge,
     goingFor, isGoing, toggleGoing, attendeesFor,
     venueReviewsFor, loadVenueReviews, addVenueReview, venueRating, venueTopPhotos, venuePhotos, artistFanPhotos,

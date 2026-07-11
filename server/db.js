@@ -341,6 +341,7 @@ for (const stmt of [
   "ALTER TABLE posts ADD COLUMN tour TEXT",
   "ALTER TABLE artists ADD COLUMN searches INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE comments ADD COLUMN parent_id TEXT", // forum-style reply threading
+  "ALTER TABLE users ADD COLUMN sponsor INTEGER NOT NULL DEFAULT 0", // admin-granted partner mark
 ]) { try { db.exec(stmt); } catch {} }
 
 // --- tiny helpers ------------------------------------------------------------
@@ -452,6 +453,7 @@ export function publicUser(u, { self = false } = {}) {
     handle: u.handle,
     role: u.role,
     verified: !!u.verified,
+    sponsor: !!u.sponsor,
     spotifyConnected: !!u.spotify_refresh_token, // safe boolean; tokens never leave the server
     artistName: u.artist_name || undefined,
     home: u.home_city ? { city: u.home_city, lat: u.home_lat, lng: u.home_lng } : null,
