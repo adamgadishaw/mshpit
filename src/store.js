@@ -989,28 +989,29 @@ export function StoreProvider({ children }) {
     if (!id) return;
     api(`/api/posts/${id}/comments`)
       .then(({ comments: rows }) => {
-        if (!Array.isArray(rows) || !rows.length) return;
+        if (!Array.isArray(rows)) return;
         setComments((m) => {
           const existing = m[id] || [];
-          const have = new Set(existing.map((c) => c.id));
-          const fresh = rows
-            .filter((c) => !have.has(c.id))
-            .map((c) => ({ id: c.id, userId: c.userId, name: c.name, initials: c.initials, text: c.text, likes: 0 }));
-          return fresh.length ? { ...m, [id]: [...fresh, ...existing] } : m;
+          const byId = new Map(existing.map((c) => [c.id, c]));
+          // Merge server rows over local (adopt parentId/avatar/role), keep any
+          // optimistic locals not yet on the server. Sorted oldest→newest.
+          for (const c of rows) byId.set(c.id, { id: c.id, userId: c.userId, name: c.name, initials: c.initials, avatarUri: c.avatarUri, avatarColor: c.avatarColor, role: c.role, verified: c.verified, text: c.text, parentId: c.parentId || null, at: c.createdAt, likes: 0 });
+          const merged = [...byId.values()].sort((a, b) => (a.at || 0) - (b.at || 0));
+          return { ...m, [id]: merged };
         });
       })
       .catch(() => {});
   };
-  const addComment = (id, text) => {
+  const addComment = (id, text, parentId = null) => {
     const t = clean(text, { max: LIMITS.message, newlines: true });
     if (!session || !t) return;
     const localId = "c_" + Date.now();
-    const c = { id: localId, userId: session.id, name: session.name, initials: session.initials, text: t, likes: 0 };
-    setComments((m) => ({ ...m, [id]: [c, ...(m[id] || [])] }));
+    const c = { id: localId, userId: session.id, name: session.name, initials: session.initials, avatarUri: session.avatarUri, avatarColor: session.avatarColor, role: session.role, text: t, parentId: parentId || null, at: Date.now(), likes: 0 };
+    setComments((m) => ({ ...m, [id]: [...(m[id] || []), c] }));
     { const o = postOwner(id); if (o) notify(o, "comment", { postId: id, artist: feed.find((l) => l.id === id)?.artist, text: t.slice(0, 60) }); }
     // Write-through + adopt the server id so a later loadComments() dedupes it
     // instead of showing my comment twice.
-    api(`/api/posts/${id}/comments`, { method: "POST", body: { text: t } })
+    api(`/api/posts/${id}/comments`, { method: "POST", body: { text: t, parentId: parentId || null } })
       .then(({ id: sid }) => { if (sid) setComments((m) => ({ ...m, [id]: (m[id] || []).map((x) => (x.id === localId ? { ...x, id: sid } : x)) })); })
       .catch(() => {});
   };

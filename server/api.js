@@ -817,9 +817,10 @@ export const routes = {
   },
 
   "GET /api/posts/:id/comments": (ctx) => {
-    const rows = db.prepare(`SELECT c.*, u.name, u.initials FROM comments c JOIN users u ON u.id=c.user_id
-                             WHERE c.post_id=? AND c.removed=0 ORDER BY c.created_at DESC LIMIT 200`).all(ctx.params.id);
-    return { comments: rows.map((c) => ({ id: c.id, userId: c.user_id, name: c.name, initials: c.initials, text: c.text, createdAt: c.created_at })) };
+    const hidden = blockedIdSet(ctx.user?.id);
+    const rows = db.prepare(`SELECT c.*, u.name, u.initials, u.avatar_uri, u.avatar_color, u.role, u.verified FROM comments c JOIN users u ON u.id=c.user_id
+                             WHERE c.post_id=? AND c.removed=0 ORDER BY c.created_at ASC LIMIT 400`).all(ctx.params.id);
+    return { comments: rows.filter((c) => !hidden.has(c.user_id)).map((c) => ({ id: c.id, userId: c.user_id, name: c.name, initials: c.initials, avatarUri: c.avatar_uri, avatarColor: c.avatar_color, role: c.role, verified: !!c.verified, text: c.text, parentId: c.parent_id || null, createdAt: c.created_at })) };
   },
 
   "POST /api/posts/:id/comments": (ctx) => {
@@ -828,11 +829,16 @@ export const routes = {
     const text = clean(ctx.body?.text, { max: LIMITS.message, newlines: true });
     if (!text) throw new ApiError(400, "Say something first.");
     if (!db.prepare("SELECT 1 FROM posts WHERE id=? AND removed=0").get(ctx.params.id)) throw new ApiError(404, "No such post.");
+    // A reply must point at a real comment on THIS post; ignore anything else.
+    let parentId = clean(ctx.body?.parentId, { max: 60 }) || null;
+    if (parentId && !db.prepare("SELECT 1 FROM comments WHERE id=? AND post_id=? AND removed=0").get(parentId, ctx.params.id)) parentId = null;
     const id = uid("c");
-    db.prepare("INSERT INTO comments (id,post_id,user_id,text,created_at) VALUES (?,?,?,?,?)").run(id, ctx.params.id, u.id, text, now());
+    db.prepare("INSERT INTO comments (id,post_id,user_id,text,parent_id,created_at) VALUES (?,?,?,?,?,?)").run(id, ctx.params.id, u.id, text, parentId, now());
     const p = db.prepare("SELECT user_id, artist FROM posts WHERE id=?").get(ctx.params.id);
     if (p) addNotif(p.user_id, u.id, "comment", { postId: ctx.params.id, artist: p.artist, text: text.slice(0, 80) });
-    return { id };
+    // Also ping the parent comment's author (if it's someone else) so replies notify.
+    if (parentId) { const pc = db.prepare("SELECT user_id FROM comments WHERE id=?").get(parentId); if (pc && pc.user_id !== (p && p.user_id)) addNotif(pc.user_id, u.id, "comment", { postId: ctx.params.id, artist: p?.artist, text: text.slice(0, 80) }); }
+    return { id, parentId };
   },
 
   // ---- direct messages (SQLite migration slice 4) ----

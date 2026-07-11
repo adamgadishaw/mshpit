@@ -340,6 +340,7 @@ for (const stmt of [
   "ALTER TABLE users ADD COLUMN spotify_expires_at INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE posts ADD COLUMN tour TEXT",
   "ALTER TABLE artists ADD COLUMN searches INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE comments ADD COLUMN parent_id TEXT", // forum-style reply threading
 ]) { try { db.exec(stmt); } catch {} }
 
 // --- tiny helpers ------------------------------------------------------------

@@ -29,7 +29,8 @@ function MediaStrip({ photos }) {
 // Review-forward feed card: the review is the centerpiece. Artist / venue / date
 // sit on a ticket-stub line below, the score reads at a glance, and the footer
 // opens the Afterparty (like + comments) for that concert.
-export default function TicketStub({ log, onOpen, onPreview, onOpenProfile, onOpenArtist, onOpenVenue, onReport }) {
+export default function TicketStub({ log, onOpen, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenVenue, onReport }) {
+  const openComments = () => (onComment || onOpen)?.(log);
   const { userById, likeInfo, toggleLike, commentsFor, session, userBadges } = useStore();
   const author = userById?.(log.userId) || { initials: log.user?.initials, name: log.user?.name, handle: log.user?.handle };
   const [revealed, setRevealed] = useState(!log.inTourWindow);
@@ -114,7 +115,7 @@ export default function TicketStub({ log, onOpen, onPreview, onOpenProfile, onOp
           <Icon name="heart" size={18} color={liked ? colors.magenta : colors.textDim} filled={liked} />
           <Text style={[styles.fCount, liked && { color: colors.magenta }]}>{likeCount}</Text>
         </Pressable>
-        <Pressable style={styles.fBtn} onPress={() => onOpen?.(log)} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Comments, ${commentCount}`}>
+        <Pressable style={styles.fBtn} onPress={openComments} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Comments, ${commentCount}`}>
           <Icon name="comment" size={17} color={colors.textDim} />
           <Text style={styles.fCount}>{commentCount}</Text>
         </Pressable>

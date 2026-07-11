@@ -45,6 +45,7 @@ import TermsScreen from "./src/screens/TermsScreen";
 import AccountMenu from "./src/components/AccountMenu";
 import PlayerBar from "./src/components/PlayerBar";
 import PlaylistPickerScreen from "./src/screens/PlaylistPickerScreen";
+import PostScreen from "./src/screens/PostScreen";
 import WelcomeScreen from "./src/screens/WelcomeScreen";
 import FollowListScreen from "./src/screens/FollowListScreen";
 import LandingScreen from "./src/screens/LandingScreen";
@@ -230,6 +231,7 @@ function Root() {
     if (hit) openProfile(hit.id);
   };
   const openShow = (log) => { track("view_show", { artist: log?.artist, venue: log?.venue }); go({ openLog: log }); };
+  const openPost = (log) => { if (log) go({ post: log }); };
   const openArtist = (name) => { track("view_artist", { artist: name }); go({ artistName: name }); };
   const openVenue = (name) => { track("view_venue", { venue: name }); go({ venueName: name }); };
   const openFanClub = (artist) => go({ fanClub: artist });
@@ -293,7 +295,7 @@ function Root() {
   else if (nav.venueReview) overlay = <VenueReviewScreen venueName={nav.venueReview} onClose={back} />;
   else if (nav.thread) overlay = <ThreadScreen otherId={nav.thread} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} />;
   else if (nav.inbox) overlay = <InboxScreen onClose={back} onOpenThread={openThread} />;
-  else if (nav.notifications) overlay = <NotificationsScreen onClose={back} onOpenProfile={openProfile} onOpenThread={openThread} onOpen={openShow} />;
+  else if (nav.notifications) overlay = <NotificationsScreen onClose={back} onOpenProfile={openProfile} onOpenThread={openThread} onOpen={openShow} onOpenPost={openPost} />;
   else if (nav.profileId) overlay = <ProfileScreen userId={nav.profileId} onClose={back} onOpenShow={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onEditProfile={() => go({ editProfile: true })} onPreview={showPreview} onMessage={openThread} onReport={(log) => requireAuth(() => go({ reporting: log }))} onOpenPhotos={openPhotos} onPlay={openPlayer} onOpenFollowList={openFollowList} />;
   else if (nav.fanClub) overlay = <FanClubScreen artist={nav.fanClub} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} />;
   else if (nav.editArtist) overlay = <EditArtistProfileScreen artistName={nav.editArtist} onClose={back} />;
@@ -307,6 +309,7 @@ function Root() {
   else if (nav.terms) overlay = <TermsScreen onClose={back} />;
   else if (nav.lounge) overlay = <LoungeScreen log={nav.lounge} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} />;
   else if (nav.openLog) overlay = <ShowScreen log={nav.openLog} onClose={back} onPreview={showPreview} onReview={reviewShow} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenLounge={(log) => go({ lounge: log })} onRequireAuth={() => go({ auth: true })} />;
+  else if (nav.post) overlay = <PostScreen log={nav.post} onClose={back} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenShow={openShow} onReport={(log) => requireAuth(() => go({ reporting: log }))} />;
   else if (nav.topRated) overlay = <TopRatedScreen onClose={back} onOpen={openShow} />;
   else if (nav.admin) overlay = <AdminScreen onClose={back} />;
   else if (nav.bulk) overlay = <BulkTourDatesScreen onClose={back} />;
@@ -350,6 +353,7 @@ function Root() {
                   onOpenInbox={openInbox}
                   onOpenNotifications={openNotifications}
                   onOpen={openShow}
+                  onComment={openPost}
                   onPreview={showPreview}
                   onOpenProfile={openProfile}
                   onOpenArtist={openArtist}

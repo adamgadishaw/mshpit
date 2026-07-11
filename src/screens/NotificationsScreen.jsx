@@ -24,19 +24,25 @@ const META = {
 
 // The activity feed, the social heartbeat that connects follows, likes, comments
 // and DMs into one place instead of leaving them scattered across the app.
-export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThread, onOpen }) {
+export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThread, onOpen, onOpenPost }) {
   const { myNotifications, markNotificationsRead, feed } = useStore();
   const items = myNotifications();
 
   // Mark everything read when the screen opens (badge clears).
   useEffect(() => { markNotificationsRead(); }, []);
 
+  // Tapping the ROW goes to the thing the notification is about; tapping the
+  // AVATAR always goes to the person who did it.
   const open = (n) => {
     if (n.type === "welcome") return;
     if (n.type === "follow") return onOpenProfile?.(n.actorId);
     if (n.type === "dm") return onOpenThread?.(n.actorId);
-    const log = feed.find((l) => l.id === n.postId);
-    if (log) return onOpen?.(log);
+    // Likes/comments are about YOUR post — open the post (+ its comments), not the
+    // performance page it happened to review.
+    if (n.type === "like" || n.type === "comment") {
+      const log = feed.find((l) => l.id === n.postId);
+      if (log) return onOpenPost?.(log);
+    }
     onOpenProfile?.(n.actorId);
   };
 
@@ -56,7 +62,7 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
           return (
             <Pressable key={n.id} style={[styles.row, !n.read && styles.rowUnread]} onPress={() => open(n)}>
               <View style={styles.avatarWrap}>
-                <Avatar user={{ name: n.actorName, initials: n.actorInitials, avatarUri: n.actorUri, avatarColor: n.actorColor }} size={40} />
+                <Avatar user={{ name: n.actorName, initials: n.actorInitials, avatarUri: n.actorUri, avatarColor: n.actorColor }} size={40} onPress={n.actorId ? () => onOpenProfile?.(n.actorId) : undefined} />
                 <View style={[styles.badge, { backgroundColor: meta.tint }]}>
                   <Icon name={meta.icon} size={11} color="#0B0E16" filled />
                 </View>
