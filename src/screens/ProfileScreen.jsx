@@ -10,12 +10,12 @@ import SpinningRecord from "../components/SpinningRecord";
 import TicketStub from "../components/TicketStub";
 import { BadgeRow } from "../components/Badge";
 
-function Stat({ value, label }) {
+function Stat({ value, label, onPress }) {
   return (
-    <View style={styles.stat}>
+    <Pressable style={styles.stat} onPress={onPress} disabled={!onPress}>
       <Text style={styles.statVal}>{value}</Text>
       <Text style={styles.statLabel}>{label}</Text>
-    </View>
+    </Pressable>
   );
 }
 
@@ -49,12 +49,43 @@ function TrebleBass({ kind, song, playing, onPlay, onOpenArtist }) {
 
 // MySpace-style profile - banner, pfp, now-playing, theme song, Treble/Bass top
 // artists, planned shows, reviews. Built to make people findable and followable.
-export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtist, onOpenVenue, onEditProfile, onPreview, onMessage, onReport, onOpenPhotos, onPlay }) {
-  const { session, userById, logsByUser, isFollowing, follow, unfollow, followerCount, followingCount, goingFor, userBadges, sharedShows, userPlaylists } = useStore();
+export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtist, onOpenVenue, onEditProfile, onPreview, onMessage, onReport, onOpenPhotos, onPlay, onOpenFollowList }) {
+  const { session, userById, logsByUser, isFollowing, follow, unfollow, followerCount, followingCount, goingFor, userBadges, sharedShows, userPlaylists, loadUser, isBlocked, blockUser, unblockUser } = useStore();
   const user = userById(userId);
   const [playlists, setPlaylists] = useState([]);
+  const [missing, setMissing] = useState(false);
   useEffect(() => { if (userId) userPlaylists(userId).then(setPlaylists); }, [userId]);
-  if (!user) return null;
+  // Always refresh from the server: fills real follower counts, and makes profiles
+  // we've never cached (a follower from a notification) open instead of blanking.
+  useEffect(() => {
+    setMissing(false);
+    if (userId) loadUser(userId).then((u) => { if (!u && !userById(userId)) setMissing(true); });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId]);
+  if (!user) {
+    return (
+      <View style={styles.wrap}>
+        <View style={styles.topbar}>
+          <Pressable style={styles.backBtn} onPress={onClose} hitSlop={12} accessibilityRole="button" accessibilityLabel="Go back">
+            <View style={styles.backCircle}><Icon name="chevron-left" size={20} color={colors.text} /></View>
+          </Pressable>
+          <Text style={styles.topTitle}>{missing ? "Not found" : "Profile"}</Text>
+          <View style={{ width: 40 }} />
+        </View>
+        <View style={styles.missingBox}>
+          {missing ? (
+            <>
+              <Icon name="you" size={30} color={colors.textFaint} />
+              <Text style={styles.missingTitle}>This account isn't available</Text>
+              <Text style={styles.missingSub}>It may have been deleted, or the link is broken.</Text>
+            </>
+          ) : (
+            <Text style={styles.missingSub}>Loading profile...</Text>
+          )}
+        </View>
+      </View>
+    );
+  }
 
   const logs = logsByUser(user.id);
   const planned = goingFor(user.id);
@@ -110,6 +141,13 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtis
               <Icon name="edit" size={15} color={colors.amber} />
               <Text style={styles.editTxt}>Edit profile</Text>
             </Pressable>
+          ) : session && isBlocked(user.id) ? (
+            <View style={styles.blockedBox}>
+              <Text style={styles.blockedTxt}>You've blocked this account. They can't message you, follow you, or see your posts.</Text>
+              <Pressable style={styles.unblockBtn} onPress={() => unblockUser(user.id)}>
+                <Text style={styles.unblockTxt}>Unblock</Text>
+              </Pressable>
+            </View>
           ) : (
             session && (
               <View style={styles.actionRow}>
@@ -121,6 +159,9 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtis
                   <Icon name="comment" size={15} color={colors.amber} />
                   <Text style={styles.msgTxt}>Message</Text>
                 </Pressable>
+                <Pressable style={styles.blockBtn} onPress={() => blockUser(user.id)} hitSlop={6} accessibilityLabel="Block user">
+                  <Icon name="lock" size={15} color={colors.danger} />
+                </Pressable>
               </View>
             )
           )}
@@ -129,8 +170,8 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtis
         <View style={styles.statsRow}>
           <Stat value={logs.length} label="REVIEWS" />
           <Stat value={planned.length} label="GOING" />
-          <Stat value={followerCount(user.id)} label="FOLLOWERS" />
-          <Stat value={followingCount(user.id)} label="FOLLOWING" />
+          <Stat value={followerCount(user.id)} label="FOLLOWERS" onPress={() => onOpenFollowList?.(user.id, "followers")} />
+          <Stat value={followingCount(user.id)} label="FOLLOWING" onPress={() => onOpenFollowList?.(user.id, "following")} />
         </View>
 
         {/* Crossed paths, the concert-overlap tracker. */}
@@ -278,6 +319,9 @@ const styles = StyleSheet.create({
   backBtn: { width: 40 },
   backCircle: { width: 36, height: 36, borderRadius: 18, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
   topTitle: { color: colors.text, fontSize: 14, fontWeight: "800" },
+  missingBox: { alignItems: "center", gap: 8, paddingTop: 80, paddingHorizontal: 40 },
+  missingTitle: { color: colors.text, fontSize: 17, fontWeight: "800", marginTop: 6 },
+  missingSub: { color: colors.textDim, fontSize: 14, textAlign: "center", lineHeight: 20 },
   content: { paddingBottom: 48 },
   banner: { height: 120, overflow: "hidden", backgroundColor: colors.surfaceAlt },
   bannerFallback: { ...StyleSheet.absoluteFillObject, backgroundColor: colors.surfaceAlt },
@@ -296,6 +340,11 @@ const styles = StyleSheet.create({
   followBtn: { flexDirection: "row", alignItems: "center", gap: 7, backgroundColor: colors.amberStrong, borderRadius: radius.pill, paddingHorizontal: 22, paddingVertical: 10 },
   msgBtn: { flexDirection: "row", alignItems: "center", gap: 7, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 18, paddingVertical: 10 },
   msgTxt: { color: colors.amber, fontSize: 14, fontWeight: "700" },
+  blockBtn: { width: 40, height: 40, borderRadius: 20, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
+  blockedBox: { alignItems: "center", gap: 10, marginTop: 14, paddingHorizontal: 20 },
+  blockedTxt: { color: colors.textDim, fontSize: 13, textAlign: "center", lineHeight: 19 },
+  unblockBtn: { borderRadius: radius.pill, borderWidth: 1, borderColor: colors.danger, paddingHorizontal: 20, paddingVertical: 9 },
+  unblockTxt: { color: colors.danger, fontSize: 14, fontWeight: "800" },
   followingBtn: { backgroundColor: "transparent", borderWidth: 1, borderColor: colors.line },
   followTxt: { color: "#1A1206", fontSize: 14, fontWeight: "800" },
   followingTxt: { color: colors.textDim },

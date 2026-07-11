@@ -307,6 +307,15 @@ CREATE TABLE IF NOT EXISTS playlists (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_playlists_user ON playlists(user_id, created_at DESC);
+
+-- User blocks: blocker never sees or hears from blocked (posts, DMs, follows).
+CREATE TABLE IF NOT EXISTS blocks (
+  blocker_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  blocked_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (blocker_id, blocked_id)
+);
+CREATE INDEX IF NOT EXISTS idx_blocks_blocked ON blocks(blocked_id);
 `);
 
 const ver = db.prepare("SELECT version FROM schema_version LIMIT 1").get();

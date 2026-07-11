@@ -1,8 +1,10 @@
+import { useState } from "react";
 import { View, Text, StyleSheet, ScrollView, Pressable } from "react-native";
 import { colors, radius, mono, THEMES, themeKey } from "../theme";
 import { useStore } from "../store";
 import SheetHeader from "../components/SheetHeader";
 import Icon from "../components/Icon";
+import Avatar from "../components/Avatar";
 
 function Row({ icon, label, sub, onPress, danger, right }) {
   return (
@@ -37,7 +39,15 @@ function Swatch({ theme, active, onPress }) {
 }
 
 export default function SettingsScreen({ onClose, onEditProfile, onOpenProfile, onOpenPrivacy, onOpenTerms, onLogout }) {
-  const { session, chooseTheme, spotifyConnected, connectSpotify, disconnectSpotify } = useStore();
+  const { session, chooseTheme, spotifyConnected, connectSpotify, disconnectSpotify, blockedUsers, unblockUser, exportMyData } = useStore();
+  const blocked = session ? blockedUsers() : [];
+  const [exporting, setExporting] = useState(false);
+  const doExport = async () => {
+    if (exporting) return;
+    setExporting(true);
+    await exportMyData();
+    setExporting(false);
+  };
 
   return (
     <View style={styles.wrap}>
@@ -63,6 +73,32 @@ export default function SettingsScreen({ onClose, onEditProfile, onOpenProfile, 
               onPress={spotifyConnected ? disconnectSpotify : connectSpotify}
               right={spotifyConnected ? <Icon name="check" size={18} color={colors.good} /> : undefined}
             />
+          </>
+        )}
+
+        {session && (
+          <>
+            <Text style={styles.section}>PRIVACY & SAFETY</Text>
+            <Row
+              icon="share"
+              label={exporting ? "Preparing your backup..." : "Download your data"}
+              sub="A full backup of your profile, reviews, playlists, and activity (JSON)"
+              onPress={doExport}
+            />
+            <Text style={[styles.hint, { marginTop: 6 }]}>BLOCKED ACCOUNTS{blocked.length ? ` · ${blocked.length}` : ""}</Text>
+            {blocked.length === 0 && <Text style={styles.blockedEmpty}>No one blocked. Block someone from their profile and they can't message you, follow you, or see your posts.</Text>}
+            {blocked.map((u) => (
+              <View key={u.id} style={styles.blockedRow}>
+                <Avatar user={u} size={36} />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.rowLabel} numberOfLines={1}>{u.name}</Text>
+                  <Text style={styles.rowSub} numberOfLines={1}>@{u.handle}</Text>
+                </View>
+                <Pressable style={styles.unblockBtn} onPress={() => unblockUser(u.id)}>
+                  <Text style={styles.unblockTxt}>Unblock</Text>
+                </Pressable>
+              </View>
+            ))}
           </>
         )}
 
@@ -100,4 +136,8 @@ const styles = StyleSheet.create({
   rowLabel: { color: colors.text, fontSize: 15, fontWeight: "700" },
   rowSub: { color: colors.textDim, fontSize: 12, marginTop: 2 },
   ver: { color: colors.textFaint, fontFamily: mono, fontSize: 13 },
+  blockedRow: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 12, marginBottom: 8 },
+  blockedEmpty: { color: colors.textFaint, fontSize: 12.5, lineHeight: 18, marginBottom: 8 },
+  unblockBtn: { borderRadius: radius.pill, borderWidth: 1, borderColor: colors.danger, paddingHorizontal: 14, paddingVertical: 7 },
+  unblockTxt: { color: colors.danger, fontSize: 12.5, fontWeight: "800" },
 });

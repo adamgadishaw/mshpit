@@ -122,6 +122,8 @@ export function StoreProvider({ children }) {
   const [tourDates, setTourDates] = usePersisted("pit.tourDates", seedTourDates);
   const [reports, setReports] = useState([]);
   const [follows, setFollows] = useState(() => load("pit.follows", { u_demo: ["u_mara", "u_devon"] }));
+  const [blockedIds, setBlockedIds] = useState(() => load("pit.blocked", []));
+  useEffect(() => { save("pit.blocked", blockedIds); }, [blockedIds]);
   // Afterparty: like + comment a concert (keyed by the concert/log id)
   const [comments, setComments] = usePersisted("pit.comments", {
     log_1: [
@@ -309,10 +311,33 @@ export function StoreProvider({ children }) {
     setUsers((all) => {
       let next = all;
       for (const su of list) {
-        if (su?.id && !next.some((x) => x.id === su.id)) next = [...next, { playlists: [], genres: [], favoriteArtists: [], ...su }];
+        if (!su?.id) continue;
+        const i = next.findIndex((x) => x.id === su.id);
+        if (i === -1) next = [...next, { playlists: [], genres: [], favoriteArtists: [], ...su }];
+        else next = next.map((x, j) => (j === i ? { ...x, ...su } : x)); // refresh stale profile data
       }
       return next;
     });
+  };
+  // Server-truth follower/following counts per user (the local follows map only
+  // ever knows the graph this device has seen; these are the real numbers).
+  const [userStats, setUserStats] = useState({});
+  // Fetch one user from the server and absorb them, so ANY profile can open (a
+  // follower from a notification, a handle in a comment) even if this device has
+  // never seen them. Returns the user or null (deleted / no such account).
+  const loadUser = async (id) => {
+    if (!id) return null;
+    try {
+      const { user: su, followers, following, isFollowing: fol } = await api(`/api/users/${id}`);
+      if (!su) return null;
+      absorbUsers([su]);
+      setUserStats((m) => ({ ...m, [su.id]: { followers: followers || 0, following: following || 0 } }));
+      // Sync my follow state for this person (another device may have followed).
+      if (session && fol && !(follows[session.id] || []).includes(su.id)) {
+        setFollows((f) => ({ ...f, [session.id]: [...new Set([...(f[session.id] || []), su.id])] }));
+      }
+      return su;
+    } catch { return null; }
   };
   // Search users by name/handle on the server (cross-device friend finding).
   // Also captures the member count (`total`) so the app can show a real stat.
@@ -492,6 +517,10 @@ export function StoreProvider({ children }) {
     // is cached locally.
     api("/api/me/following")
       .then(({ following }) => { if (Array.isArray(following)) setFollows((f) => ({ ...f, [su.id]: following })); })
+      .catch(() => {});
+    // Hydrate who this account has blocked (drives feed/DM/profile filtering).
+    api("/api/me/blocked")
+      .then(({ users: list }) => { if (Array.isArray(list)) { setBlockedIds(list.map((x) => x.id)); absorbUsers(list); } })
       .catch(() => {});
     // Re-hydrate the feed now that we're authenticated, so `liked` reflects THIS
     // account (a guest hydrate always reports liked:false).
@@ -842,16 +871,66 @@ export function StoreProvider({ children }) {
   // so a real account's follows survive a new device. Falls back to local-only
   // when the backend is unreachable (dev / offline).
   const isFollowing = (id) => (follows[session?.id] || []).includes(id);
+  const bumpFollowers = (id, d) =>
+    setUserStats((m) => (m[id] ? { ...m, [id]: { ...m[id], followers: Math.max(0, (m[id].followers || 0) + d) } } : m));
   const follow = (id) => {
-    if (!isFollowing(id)) { api(`/api/users/${id}/follow`, { method: "POST" }).catch(() => {}); track("follow", { target: id }); notify(id, "follow"); } // server toggles
+    if (!isFollowing(id)) { api(`/api/users/${id}/follow`, { method: "POST" }).catch(() => {}); track("follow", { target: id }); notify(id, "follow"); bumpFollowers(id, 1); } // server toggles
     setFollows((f) => ({ ...f, [session.id]: [...new Set([...(f[session.id] || []), id])] }));
   };
   const unfollow = (id) => {
+    if (isFollowing(id)) { api(`/api/users/${id}/follow`, { method: "POST" }).catch(() => {}); bumpFollowers(id, -1); } // server toggles
     setFollows((f) => ({ ...f, [session.id]: (f[session.id] || []).filter((x) => x !== id) }));
-    if (isFollowing(id)) api(`/api/users/${id}/follow`, { method: "POST" }).catch(() => {}); // server toggles
   };
-  const followerCount = (id) => Object.values(follows).filter((arr) => arr.includes(id)).length;
-  const followingCount = (id) => (follows[id] || []).length;
+  // Prefer the server's real numbers (loadUser fills them); the local follows map
+  // only knows what this device has seen and undercounts everyone else.
+  const followerCount = (id) => userStats[id]?.followers ?? Object.values(follows).filter((arr) => arr.includes(id)).length;
+  const followingCount = (id) => userStats[id]?.following ?? (follows[id] || []).length;
+  // The people lists behind those numbers (server-truth, absorbed so rows resolve).
+  const followersOf = async (id) => {
+    try { const { users: list } = await api(`/api/users/${id}/followers`); absorbUsers(list); return list || []; } catch { return []; }
+  };
+  const followingOf = async (id) => {
+    try { const { users: list } = await api(`/api/users/${id}/following`); absorbUsers(list); return list || []; } catch { return []; }
+  };
+
+  // --- Blocks: a real block, not a mute. Server severs follows both ways, stops
+  // DMs, hides posts; locally we mirror the list so the UI reacts instantly. ---
+  const isBlocked = (id) => blockedIds.includes(id);
+  const blockUser = (id) => {
+    if (!session || !id || isBlocked(id)) return;
+    setBlockedIds((b) => [...new Set([...b, id])]);
+    // Sever locally the way the server does.
+    setFollows((f) => ({ ...f, [session.id]: (f[session.id] || []).filter((x) => x !== id), [id]: (f[id] || []).filter((x) => x !== session.id) }));
+    api(`/api/users/${id}/block`, { method: "POST" }).catch(() => {});
+    track("block", { target: id });
+  };
+  const unblockUser = (id) => {
+    if (!session || !isBlocked(id)) return;
+    setBlockedIds((b) => b.filter((x) => x !== id));
+    api(`/api/users/${id}/block`, { method: "POST" }).catch(() => {}); // server toggles
+  };
+  const blockedUsers = () => blockedIds.map((id) => userById(id)).filter(Boolean);
+
+  // Personal data backup: pull the full account export and hand it to the user
+  // as a downloadable JSON file (their profile, reviews, playlists, everything).
+  const exportMyData = async () => {
+    if (!session) return false;
+    try {
+      const data = await api("/api/me/export");
+      if (typeof window !== "undefined" && typeof document !== "undefined") {
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `pit-backup-${session.handle || "me"}-${new Date().toISOString().slice(0, 10)}.json`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+      }
+      return true;
+    } catch { return false; }
+  };
 
   // Afterparty interactions
   const commentsFor = (id) => comments[id] || [];
@@ -896,7 +975,9 @@ export function StoreProvider({ children }) {
     if (session) api(`/api/posts/${id}/like`, { method: "POST" }).catch(() => {});
   };
 
-  const visibleFeed = (staff) => (staff ? feed : feed.filter((l) => !removedIds.includes(l.id)));
+  const visibleFeed = (staff) =>
+    (staff ? feed : feed.filter((l) => !removedIds.includes(l.id)))
+      .filter((l) => !l.userId || !blockedIds.includes(l.userId));
 
   // Feed of only the people you follow (plus yourself).
   const followingFeed = (staff) => {
@@ -1247,7 +1328,7 @@ export function StoreProvider({ children }) {
   };
   const sendDM = (otherId, text) => {
     const t = clean(text, { max: LIMITS.message, newlines: true });
-    if (!session || !t) return;
+    if (!session || !t || blockedIds.includes(otherId)) return;
     const key = dmKey(session.id, otherId);
     const localId = "dm_" + Date.now();
     const m = { id: localId, from: session.id, text: t, ts: "now" };
@@ -1268,6 +1349,7 @@ export function StoreProvider({ children }) {
     if (!session) return [];
     return Object.keys(dms)
       .filter((k) => k.split("__").includes(session.id))
+      .filter((k) => !k.split("__").some((id) => blockedIds.includes(id)))
       .map((k) => {
         const msgs = dms[k];
         const otherId = k.split("__").find((id) => id !== session.id);
@@ -1758,6 +1840,8 @@ export function StoreProvider({ children }) {
     requestArtist, approveArtist, rejectArtist,
     addTourDatesBatch,
     isFollowing, follow, unfollow, followerCount, followingCount, absorbUsers, searchPeople, loadMembers, memberCount,
+    loadUser, followersOf, followingOf,
+    isBlocked, blockUser, unblockUser, blockedUsers, exportMyData,
     searchArtistsApi, resolveArtist, remoteArtistMeta, artistDiscography, resolveSpotifyTrack,
     playHistory, recordPlay, snapshots, saveSnapshot, removeSnapshot, friendsListening, loadFriendsListening, userPlaylists, deletePlaylist,
     favoriteGenre, recommendTracks, autoplayQueue, myPlaylists, loadMyPlaylists, createPlaylist, addToPlaylist,

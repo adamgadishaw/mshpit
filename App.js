@@ -45,6 +45,7 @@ import TermsScreen from "./src/screens/TermsScreen";
 import AccountMenu from "./src/components/AccountMenu";
 import PlayerBar from "./src/components/PlayerBar";
 import PlaylistPickerScreen from "./src/screens/PlaylistPickerScreen";
+import FollowListScreen from "./src/screens/FollowListScreen";
 import LandingScreen from "./src/screens/LandingScreen";
 import { load, save } from "./src/lib/persist";
 
@@ -68,7 +69,7 @@ export default function App() {
 }
 
 function Root() {
-  const { session, addLog, visibleFeed, followingFeed, localFeed, logout, userByHandle, inboxUnread, accountStatus, track, unreadNotifications, recordPlay, playHistory, saveSnapshot, autoplayQueue } = useStore();
+  const { session, addLog, visibleFeed, followingFeed, localFeed, logout, userByHandle, searchPeople, inboxUnread, accountStatus, track, unreadNotifications, recordPlay, playHistory, saveSnapshot, autoplayQueue } = useStore();
   const staff = isStaff(session?.role);
   const feed = visibleFeed(staff);
   const following = followingFeed(staff);
@@ -202,7 +203,15 @@ function Root() {
   };
 
   const openProfile = (id) => go({ profileId: id });
-  const openProfileByHandle = (h) => { const u = userByHandle(h); if (u) openProfile(u.id); };
+  const openProfileByHandle = async (h) => {
+    const u = userByHandle(h);
+    if (u) return openProfile(u.id);
+    // Unknown handle (an @mention of someone this device never cached): look them
+    // up on the server instead of silently doing nothing.
+    const found = await searchPeople(h);
+    const hit = (found || []).find((x) => x.handle === h);
+    if (hit) openProfile(hit.id);
+  };
   const openShow = (log) => { track("view_show", { artist: log?.artist, venue: log?.venue }); go({ openLog: log }); };
   const openArtist = (name) => { track("view_artist", { artist: name }); go({ artistName: name }); };
   const openVenue = (name) => { track("view_venue", { venue: name }); go({ venueName: name }); };
@@ -246,6 +255,7 @@ function Root() {
   });
   const openPhotos = (images, index = 0) => go({ photos: { images, index } });
   const openAddToPlaylist = (track) => requireAuth(() => go({ addToPlaylist: track }));
+  const openFollowList = (userId, mode) => go({ followList: { userId, mode } });
   const reviewShow = (log) => requireAuth(() => go({ logging: true, prefill: { artist: log.artist, venue: log.venue, city: log.city } }));
   const openInbox = () => requireAuth(() => go({ inbox: true }));
   const openNotifications = () => requireAuth(() => go({ notifications: true }));
@@ -257,6 +267,7 @@ function Root() {
   // from inside a venue/show/profile page, and the login sheet has to surface.
   if (nav.photos) overlay = <PhotoViewer photos={nav.photos.images} index={nav.photos.index} onClose={back} />;
   else if (nav.addToPlaylist) overlay = <PlaylistPickerScreen track={nav.addToPlaylist} onClose={back} />;
+  else if (nav.followList) overlay = <FollowListScreen userId={nav.followList.userId} mode={nav.followList.mode} onClose={back} onOpenProfile={openProfile} />;
   else if (nav.auth) overlay = <AuthScreen initialMode={nav.authMode} onDone={(mode) => (mode === "signup" ? replace({ pickArtists: true }) : back())} onCancel={back} />;
   else if (nav.pickArtists) overlay = <PickArtistsScreen onDone={clear} onSkip={clear} />;
   else if (nav.logging) overlay = <LogScreen user={session} prefill={nav.prefill} onPost={onAddLog} onCancel={back} />;
@@ -266,7 +277,7 @@ function Root() {
   else if (nav.thread) overlay = <ThreadScreen otherId={nav.thread} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} />;
   else if (nav.inbox) overlay = <InboxScreen onClose={back} onOpenThread={openThread} />;
   else if (nav.notifications) overlay = <NotificationsScreen onClose={back} onOpenProfile={openProfile} onOpenThread={openThread} onOpen={openShow} />;
-  else if (nav.profileId) overlay = <ProfileScreen userId={nav.profileId} onClose={back} onOpenShow={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onEditProfile={() => go({ editProfile: true })} onPreview={showPreview} onMessage={openThread} onReport={(log) => requireAuth(() => go({ reporting: log }))} onOpenPhotos={openPhotos} onPlay={openPlayer} />;
+  else if (nav.profileId) overlay = <ProfileScreen userId={nav.profileId} onClose={back} onOpenShow={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onEditProfile={() => go({ editProfile: true })} onPreview={showPreview} onMessage={openThread} onReport={(log) => requireAuth(() => go({ reporting: log }))} onOpenPhotos={openPhotos} onPlay={openPlayer} onOpenFollowList={openFollowList} />;
   else if (nav.fanClub) overlay = <FanClubScreen artist={nav.fanClub} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} />;
   else if (nav.editArtist) overlay = <EditArtistProfileScreen artistName={nav.editArtist} onClose={back} />;
   else if (nav.artistName) overlay = <ArtistScreen artistName={nav.artistName} onClose={back} onOpenShow={openShow} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenPhotos={openPhotos} onEditArtist={(name) => go({ editArtist: name })} onPlay={openPlayer} onAddToPlaylist={openAddToPlaylist} />;

@@ -74,7 +74,21 @@ const feedQuery = db.prepare(`
 const notifRow = db.prepare("INSERT INTO notifications (id,user_id,actor_id,type,post_id,artist,text,created_at) VALUES (?,?,?,?,?,?,?,?)");
 function addNotif(recipientId, actorId, type, extra = {}) {
   if (!recipientId || recipientId === actorId) return;
+  if (actorId && blockedEitherWay(recipientId, actorId)) return; // no pings across a block
   notifRow.run(uid("n"), recipientId, actorId, type, extra.postId ?? null, extra.artist ?? null, extra.text ?? null, now());
+}
+
+// True when either user has blocked the other (blocks act both ways).
+const blockCheck = db.prepare("SELECT 1 FROM blocks WHERE (blocker_id=? AND blocked_id=?) OR (blocker_id=? AND blocked_id=?)");
+function blockedEitherWay(a, b) {
+  if (!a || !b) return false;
+  return !!blockCheck.get(a, b, b, a);
+}
+// Ids hidden from a viewer's feed (people they blocked or who blocked them).
+const blockedIdsStmt = db.prepare("SELECT blocked_id id FROM blocks WHERE blocker_id=? UNION SELECT blocker_id id FROM blocks WHERE blocked_id=?");
+function blockedIdSet(userId) {
+  if (!userId) return new Set();
+  return new Set(blockedIdsStmt.all(userId, userId).map((r) => r.id));
 }
 
 function postJson(p, viewerId) {
@@ -545,15 +559,86 @@ export const routes = {
     return { user: publicUser(u), followers, following, isFollowing };
   },
 
+  // The real people behind the follower/following numbers, so profiles have a
+  // clickable follow list like any social platform.
+  "GET /api/users/:id/followers": (ctx) => {
+    const rows = db.prepare(`
+      SELECT u.* FROM follows f JOIN users u ON u.id = f.follower_id
+      WHERE f.followee_id = ? ORDER BY u.name COLLATE NOCASE LIMIT 500`).all(ctx.params.id);
+    return { users: rows.map((r) => publicUser(r)) };
+  },
+  "GET /api/users/:id/following": (ctx) => {
+    const rows = db.prepare(`
+      SELECT u.* FROM follows f JOIN users u ON u.id = f.followee_id
+      WHERE f.follower_id = ? ORDER BY u.name COLLATE NOCASE LIMIT 500`).all(ctx.params.id);
+    return { users: rows.map((r) => publicUser(r)) };
+  },
+
   "POST /api/users/:id/follow": (ctx) => {
     const u = requireUser(ctx);
     limit(ctx, "follow", 60, 10 * 60 * 1000);
     if (u.id === ctx.params.id) throw new ApiError(400, "You can't follow yourself.");
     if (!q.userById.get(ctx.params.id)) throw new ApiError(404, "No such user.");
+    if (blockedEitherWay(u.id, ctx.params.id)) throw new ApiError(403, "You can't follow this account.");
     const has = db.prepare("SELECT 1 FROM follows WHERE follower_id=? AND followee_id=?").get(u.id, ctx.params.id);
     if (has) db.prepare("DELETE FROM follows WHERE follower_id=? AND followee_id=?").run(u.id, ctx.params.id);
     else { db.prepare("INSERT INTO follows (follower_id,followee_id) VALUES (?,?)").run(u.id, ctx.params.id); addNotif(ctx.params.id, u.id, "follow"); }
     return { following: !has };
+  },
+
+  // ---- blocks: a real block, not a mute. Severs the follow both ways, stops
+  // DMs in both directions, and hides each other's posts from the feed. ----
+  "POST /api/users/:id/block": (ctx) => {
+    const u = requireUser(ctx);
+    limit(ctx, "block", 30, 10 * 60 * 1000);
+    const other = ctx.params.id;
+    if (other === u.id) throw new ApiError(400, "You can't block yourself.");
+    if (!q.userById.get(other)) throw new ApiError(404, "No such user.");
+    const has = db.prepare("SELECT 1 FROM blocks WHERE blocker_id=? AND blocked_id=?").get(u.id, other);
+    if (has) {
+      db.prepare("DELETE FROM blocks WHERE blocker_id=? AND blocked_id=?").run(u.id, other);
+    } else {
+      db.prepare("INSERT INTO blocks (blocker_id,blocked_id,created_at) VALUES (?,?,?)").run(u.id, other, now());
+      // Sever the relationship both ways so neither keeps the other in a list.
+      db.prepare("DELETE FROM follows WHERE (follower_id=? AND followee_id=?) OR (follower_id=? AND followee_id=?)").run(u.id, other, other, u.id);
+    }
+    return { blocked: !has };
+  },
+  "GET /api/me/blocked": (ctx) => {
+    const u = requireUser(ctx);
+    const rows = db.prepare(`
+      SELECT us.* FROM blocks b JOIN users us ON us.id = b.blocked_id
+      WHERE b.blocker_id = ? ORDER BY b.created_at DESC LIMIT 500`).all(u.id);
+    return { users: rows.map((r) => publicUser(r)) };
+  },
+
+  // ---- personal data export: a full backup of everything this account owns.
+  // Facebook-style "Download your information", one JSON file. ----
+  "GET /api/me/export": (ctx) => {
+    const u = requireUser(ctx);
+    limit(ctx, "export", 5, 10 * 60 * 1000);
+    const name = (id) => { const x = q.userById.get(id); return x ? { id, name: x.name, handle: x.handle } : { id }; };
+    return {
+      exportedAt: new Date().toISOString(),
+      profile: publicUser(u, { self: true }),
+      posts: db.prepare("SELECT * FROM posts WHERE user_id=? ORDER BY created_at DESC").all(u.id)
+        .map((p) => ({ id: p.id, artist: p.artist, venue: p.venue, city: p.city, date: p.date, overall: p.overall, band: p.band, room: p.room, review: p.review, tour: p.tour, setlist: p.setlist ? JSON.parse(p.setlist) : [], photos: p.photos ? JSON.parse(p.photos) : [], createdAt: p.created_at })),
+      comments: db.prepare("SELECT post_id, text, created_at FROM comments WHERE user_id=? AND removed=0 ORDER BY created_at DESC").all(u.id)
+        .map((c) => ({ postId: c.post_id, text: c.text, createdAt: c.created_at })),
+      following: db.prepare("SELECT followee_id id FROM follows WHERE follower_id=?").all(u.id).map((r) => name(r.id)),
+      followers: db.prepare("SELECT follower_id id FROM follows WHERE followee_id=?").all(u.id).map((r) => name(r.id)),
+      blocked: db.prepare("SELECT blocked_id id FROM blocks WHERE blocker_id=?").all(u.id).map((r) => name(r.id)),
+      playlists: db.prepare("SELECT id,name,tracks,created_at FROM playlists WHERE user_id=? ORDER BY created_at DESC").all(u.id)
+        .map((r) => ({ id: r.id, name: r.name, tracks: JSON.parse(r.tracks || "[]"), createdAt: r.created_at })),
+      listeningHistory: db.prepare("SELECT title,artist,url,created_at FROM plays WHERE user_id=? ORDER BY created_at DESC LIMIT 300").all(u.id)
+        .map((r) => ({ title: r.title, artist: r.artist, url: r.url, at: r.created_at })),
+      going: db.prepare("SELECT artist, venue, city, date FROM going WHERE user_id=?").all(u.id),
+      ratings: db.prepare("SELECT kind, ref, rating FROM ratings WHERE user_id=?").all(u.id),
+      messagesSent: db.prepare("SELECT to_id, text, created_at FROM dms WHERE from_id=? ORDER BY created_at DESC LIMIT 1000").all(u.id)
+        .map((m) => ({ to: name(m.to_id), text: m.text, createdAt: m.created_at })),
+      notifications: db.prepare("SELECT type, actor_id, artist, text, created_at FROM notifications WHERE user_id=? ORDER BY created_at DESC LIMIT 200").all(u.id)
+        .map((n) => ({ type: n.type, from: n.actor_id ? name(n.actor_id) : null, artist: n.artist, text: n.text, at: n.created_at })),
+    };
   },
 
   // ---- tour dates (scraped into the DB by server/tourdates.js) ----
@@ -572,7 +657,8 @@ export const routes = {
   "GET /api/feed": (ctx) => {
     const lim = Math.min(Number(ctx.query.limit) || 30, 100);
     const off = Math.max(Number(ctx.query.offset) || 0, 0);
-    return { posts: feedQuery.all(lim, off).map((p) => postJson(p, ctx.user?.id)) };
+    const hidden = blockedIdSet(ctx.user?.id);
+    return { posts: feedQuery.all(lim, off).filter((p) => !hidden.has(p.user_id)).map((p) => postJson(p, ctx.user?.id)) };
   },
 
   "GET /api/users/:id/posts": (ctx) => {
@@ -650,7 +736,9 @@ export const routes = {
     const u = requireUser(ctx);
     const others = db.prepare(`SELECT DISTINCT CASE WHEN from_id = ? THEN to_id ELSE from_id END AS other
                                FROM dms WHERE from_id = ? OR to_id = ?`).all(u.id, u.id, u.id);
+    const hidden = blockedIdSet(u.id);
     const threads = others.map((o) => {
+      if (hidden.has(o.other)) return null; // blocked conversations disappear
       const other = q.userById.get(o.other);
       if (!other) return null;
       const msgs = db.prepare(`SELECT id, from_id, text, created_at FROM dms
@@ -676,6 +764,7 @@ export const routes = {
     const other = ctx.params.otherId;
     if (other === u.id) throw new ApiError(400, "You can't message yourself.");
     if (!q.userById.get(other)) throw new ApiError(404, "No such user.");
+    if (blockedEitherWay(u.id, other)) throw new ApiError(403, "You can't message this account.");
     const text = clean(ctx.body?.text, { max: LIMITS.message, newlines: true });
     if (!text) throw new ApiError(400, "Say something first.");
     const id = uid("dm");
@@ -687,10 +776,12 @@ export const routes = {
   // ---- notifications / activity (server-backed) ----
   "GET /api/me/notifications": (ctx) => {
     const u = requireUser(ctx);
+    const hidden = blockedIdSet(u.id);
     const rows = db.prepare(`
       SELECT n.*, a.name AS actor_name, a.initials AS actor_initials, a.avatar_uri AS actor_uri, a.avatar_color AS actor_color
       FROM notifications n LEFT JOIN users a ON a.id = n.actor_id
-      WHERE n.user_id = ? ORDER BY n.created_at DESC LIMIT 100`).all(u.id);
+      WHERE n.user_id = ? ORDER BY n.created_at DESC LIMIT 100`).all(u.id)
+      .filter((n) => !n.actor_id || !hidden.has(n.actor_id)); // old pings from blocked people vanish too
     return {
       notifications: rows.map((n) => ({
         id: n.id, type: n.type, actorId: n.actor_id,
