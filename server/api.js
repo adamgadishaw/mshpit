@@ -6,7 +6,7 @@
 import { randomUUID } from "node:crypto";
 import { db, q, publicUser, artistStmts, publicArtist, artistRow, normName } from "./db.js";
 import { hashPassword, verifyPassword, createSession, destroySession, rateLimit } from "./auth.js";
-import { startCatalogSeed, catalogSeedStatus } from "./catalogSeed.js";
+import { startCatalogSeed, catalogSeedStatus, stopCatalogSeed } from "./catalogSeed.js";
 import { clean, cleanEmail, isEmail, cleanName, isName, cleanHandle, isPassword, clampRating, cleanStringArray, shape, LIMITS } from "./validate.js";
 
 export class ApiError extends Error {
@@ -1039,6 +1039,10 @@ export const routes = {
   "GET /api/admin/catalog/seed": (ctx) => {
     requireAdmin(ctx);
     return catalogSeedStatus();
+  },
+  "DELETE /api/admin/catalog/seed": (ctx) => {
+    requireAdmin(ctx);
+    return stopCatalogSeed();
   },
 
   "POST /api/admin/users/:id/unban": (ctx) => {

@@ -1202,6 +1202,7 @@ export function StoreProvider({ children }) {
   // Kick off / poll the background "grow the catalog to N artists" job (admin).
   const startCatalogSeed = async (target) => { try { return await api("/api/admin/catalog/seed", { method: "POST", body: { target } }); } catch { return { started: false }; } };
   const catalogSeedStatus = async () => { try { return await api("/api/admin/catalog/seed"); } catch { return null; } };
+  const stopCatalogSeed = async () => { try { return await api("/api/admin/catalog/seed", { method: "DELETE" }); } catch { return null; } };
 
   // moderation: drop a single chat/lounge/comment message (staff)
   const removeLoungeMessage = (key, msgId) => setLounge((L) => ({ ...L, [key]: (L[key] || []).filter((m) => m.id !== msgId) }));
@@ -1875,7 +1876,7 @@ export function StoreProvider({ children }) {
     fanClubFor, loadFanClub, addFanClubMessage, isFanClubMember, joinFanClub, fanClubCount, fanClubsDirectory,
     isArtistOwner, artistProfile, loadArtistPage, updateArtistProfile, artistFeedEnabled,
     artistPostsFor, addArtistPost, removeArtistPost,
-    accountStatus, banUser, unbanUser, suspendUser, setUserRole, setVerified, loadAdminMembers, adminStats, adminArtistQueue, enrichArtists, purgeArtist, startCatalogSeed, catalogSeedStatus, removeLoungeMessage, removeComment, removeFanClubMessage,
+    accountStatus, banUser, unbanUser, suspendUser, setUserRole, setVerified, loadAdminMembers, adminStats, adminArtistQueue, enrichArtists, purgeArtist, startCatalogSeed, catalogSeedStatus, stopCatalogSeed, removeLoungeMessage, removeComment, removeFanClubMessage,
     comments, fanClubMsgs, lounge,
     goingFor, isGoing, toggleGoing, attendeesFor,
     venueReviewsFor, loadVenueReviews, addVenueReview, venueRating, venueTopPhotos, venuePhotos, artistFanPhotos,

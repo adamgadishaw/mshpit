@@ -58,22 +58,33 @@ async function deezerArtist(name) {
   } catch { return null; }
 }
 
-// Phase 1: crawl MusicBrainz tags → upsert bare rows. Additive (never clobbers).
+// Per-tag crawl cursor so re-runs never re-fetch a page they already finished.
+const cursorGet = db.prepare("SELECT next_off, exhausted FROM seed_cursor WHERE tag = ?");
+const cursorSet = db.prepare(`INSERT INTO seed_cursor (tag, next_off, exhausted, updated_at) VALUES (?,?,?,?)
+  ON CONFLICT(tag) DO UPDATE SET next_off = excluded.next_off, exhausted = excluded.exhausted, updated_at = excluded.updated_at`);
+
+// Phase 1: crawl MusicBrainz tags → upsert bare rows. Additive (never clobbers an
+// existing artist) AND resumable (skips exhausted tags, resumes each at its saved
+// offset), so nothing is fetched or inserted twice across runs.
 export async function crawlArtists({ target = 10000, perTag = 600, shouldStop = () => false, tick = () => {} } = {}) {
   let added = 0;
   outer: for (const [tag, genre] of GENRE_TAGS) {
-    for (let offset = 0; offset < perTag; offset += PAGE) {
+    const cur = cursorGet.get(tag);
+    if (cur?.exhausted) continue; // whole tag already crawled — skip the network entirely
+    for (let offset = cur?.next_off || 0; offset < perTag; offset += PAGE) {
       if (shouldStop() || artistStmts.count.get().c >= target) break outer;
       const list = await mbTag(tag, offset);
       await sleep(1100); // MusicBrainz ~1 req/s
       for (const x of list) {
         const norm = normName(x.name);
-        if (artistStmts.byNorm.get(norm)) continue;
+        if (artistStmts.byNorm.get(norm)) continue; // additive: never re-add
         artistStmts.upsert.run(artistRow(norm, { name: x.name, genre, mbid: x.mbid, country: x.country, beginYear: x.beginYear }, "musicbrainz"));
         added++;
       }
+      const done = list.length < PAGE; // exhausted this tag's results
+      cursorSet.run(tag, offset + PAGE, done ? 1 : 0, Date.now());
       tick({ phase: "crawl", added, total: artistStmts.count.get().c, note: tag });
-      if (list.length < PAGE) break; // tag exhausted
+      if (done) break;
     }
   }
   return added;
@@ -105,25 +116,32 @@ export async function enrichThin({ shouldStop = () => false, tick = () => {} } =
 }
 
 // ---- In-process background job (admin console) ----
-let state = { running: false, phase: "idle", target: 0, added: 0, ranked: 0, total: 0, startedAt: 0, finishedAt: 0, error: null, note: "" };
+let state = { running: false, stopRequested: false, phase: "idle", target: 0, added: 0, ranked: 0, total: 0, startedAt: 0, finishedAt: 0, error: null, note: "" };
 
 export function catalogSeedStatus() {
   return { ...state, total: artistStmts.count.get().c };
 }
 
+// Ask a running job to stop at the next page/artist boundary (finishes cleanly,
+// keeps everything already seeded; the cursor means a later run resumes here).
+export function stopCatalogSeed() {
+  if (state.running) { state.stopRequested = true; state.note = "stopping"; }
+  return catalogSeedStatus();
+}
+
 export function startCatalogSeed({ target = 10000, perTag = 600, enrich = true } = {}) {
   if (state.running) return { started: false, reason: "already-running", status: catalogSeedStatus() };
-  state = { running: true, phase: "crawl", target, added: 0, ranked: 0, total: artistStmts.count.get().c, startedAt: Date.now(), finishedAt: 0, error: null, note: "" };
-  const stop = () => !state.running; // toggled false only on completion; here as a guard hook
+  state = { running: true, stopRequested: false, phase: "crawl", target, added: 0, ranked: 0, total: artistStmts.count.get().c, startedAt: Date.now(), finishedAt: 0, error: null, note: "" };
+  const shouldStop = () => state.stopRequested;
   (async () => {
     try {
-      await crawlArtists({ target, perTag, tick: ({ added, total, note }) => { state.added = added; state.total = total; if (note) state.note = note; } });
-      if (enrich) { state.phase = "enrich"; await enrichThin({ tick: ({ ranked }) => { state.ranked = ranked; } }); }
-      state.phase = "done"; state.finishedAt = Date.now();
+      await crawlArtists({ target, perTag, shouldStop, tick: ({ added, total, note }) => { state.added = added; state.total = total; if (note) state.note = note; } });
+      if (enrich && !state.stopRequested) { state.phase = "enrich"; await enrichThin({ shouldStop, tick: ({ ranked }) => { state.ranked = ranked; } }); }
+      state.phase = state.stopRequested ? "stopped" : "done"; state.finishedAt = Date.now();
     } catch (e) {
       state.error = String(e?.message || e); state.phase = "error"; state.finishedAt = Date.now();
     } finally {
-      state.running = false;
+      state.running = false; state.stopRequested = false;
     }
   })();
   return { started: true, status: catalogSeedStatus() };

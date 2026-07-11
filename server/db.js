@@ -316,6 +316,15 @@ CREATE TABLE IF NOT EXISTS blocks (
   PRIMARY KEY (blocker_id, blocked_id)
 );
 CREATE INDEX IF NOT EXISTS idx_blocks_blocked ON blocks(blocked_id);
+
+-- Catalog-seed crawl cursor: how deep each genre tag has been crawled, so a
+-- re-run resumes instead of re-fetching MusicBrainz pages it already finished.
+CREATE TABLE IF NOT EXISTS seed_cursor (
+  tag        TEXT PRIMARY KEY,
+  next_off   INTEGER NOT NULL DEFAULT 0,
+  exhausted  INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL
+);
 `);
 
 const ver = db.prepare("SELECT version FROM schema_version LIMIT 1").get();

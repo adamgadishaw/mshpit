@@ -154,7 +154,7 @@ export default function AdminScreen({ onClose }) {
     approveArtist, rejectArtist, removeContent, restoreContent, actionReport, dismissReport,
     suspendUser, banUser, unbanUser, setUserRole, setVerified, accountStatus,
     removeComment, removeFanClubMessage, removeLoungeMessage,
-    loadAdminMembers, adminStats, adminArtistQueue, enrichArtists, purgeArtist, startCatalogSeed, catalogSeedStatus,
+    loadAdminMembers, adminStats, adminArtistQueue, enrichArtists, purgeArtist, startCatalogSeed, catalogSeedStatus, stopCatalogSeed,
   } = useStore();
 
   const iAmAdmin = isStaff(session?.role); // full access; mods get a subset
@@ -180,6 +180,7 @@ export default function AdminScreen({ onClose }) {
     return () => clearInterval(id);
   }, [tab, seedJob?.running]);
   const startSeed = async () => { const r = await startCatalogSeed(seedTarget); if (r?.status) setSeedJob(r.status); refreshSeed(); };
+  const stopSeed = async () => { const s = await stopCatalogSeed(); if (s) setSeedJob(s); };
   const seedNames = async (names) => {
     if (!names.length) return;
     setSeeding(true);
@@ -436,15 +437,21 @@ export default function AdminScreen({ onClose }) {
                   <View style={styles.seedRunHead}>
                     <View style={styles.liveDot} />
                     <Text style={styles.seedRunTxt}>
-                      {seedJob.phase === "enrich"
+                      {seedJob.note === "stopping"
+                        ? "Stopping…"
+                        : seedJob.phase === "enrich"
                         ? `Ranking with Deezer… ${seedJob.ranked.toLocaleString()} enriched`
                         : `Crawling ${seedJob.note || ""}… +${seedJob.added.toLocaleString()} added`}
                     </Text>
+                    <Pressable style={styles.stopBtn} onPress={stopSeed} disabled={seedJob.note === "stopping"}>
+                      <Icon name="x" size={12} color={colors.danger} />
+                      <Text style={styles.stopTxt}>Stop</Text>
+                    </Pressable>
                   </View>
                   <View style={styles.seedBar}>
                     <View style={[styles.seedBarFill, { width: `${Math.max(3, Math.min(100, Math.round((seedJob.total / (seedJob.target || 1)) * 100)))}%` }]} />
                   </View>
-                  <Text style={styles.catHint}>Toward {seedJob.target.toLocaleString()}. Safe to leave, close this tab, it keeps going.</Text>
+                  <Text style={styles.catHint}>Toward {seedJob.target.toLocaleString()}. Safe to leave or close this tab, it keeps going. Stopping keeps everything already added.</Text>
                 </View>
               ) : (
                 <>
@@ -459,7 +466,7 @@ export default function AdminScreen({ onClose }) {
                       <Text style={styles.seedTxt}>Grow to {(seedTarget / 1000) + "k"}</Text>
                     </Pressable>
                   </View>
-                  {seedJob?.phase === "done" && <Text style={styles.growDone}>Last run: +{seedJob.added.toLocaleString()} added, {seedJob.ranked.toLocaleString()} ranked.</Text>}
+                  {(seedJob?.phase === "done" || seedJob?.phase === "stopped") && <Text style={styles.growDone}>{seedJob.phase === "stopped" ? "Stopped" : "Last run"}: +{seedJob.added.toLocaleString()} added, {seedJob.ranked.toLocaleString()} ranked. Run again to resume.</Text>}
                   {seedJob?.phase === "error" && <Text style={styles.growErr}>Last run failed: {seedJob.error}</Text>}
                 </>
               )}
@@ -611,6 +618,8 @@ const styles = StyleSheet.create({
   seedRunHead: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 8 },
   liveDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.good },
   seedRunTxt: { color: colors.text, fontSize: 13, fontWeight: "700", flex: 1 },
+  stopBtn: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 10, paddingVertical: 6, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.danger, backgroundColor: "rgba(224,69,123,0.08)" },
+  stopTxt: { color: colors.danger, fontSize: 12, fontWeight: "800" },
   seedBar: { height: 6, borderRadius: 3, backgroundColor: colors.surfaceAlt, overflow: "hidden", marginBottom: 6 },
   seedBarFill: { height: 6, borderRadius: 3, backgroundColor: colors.amber },
   catRow: { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: colors.surface, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.lineSoft, paddingHorizontal: 12, paddingVertical: 10, marginBottom: 6 },
