@@ -952,6 +952,25 @@ export const routes = {
     return { id };
   },
 
+  // ---- concert lounge (shared attendee chat, keyed by concertKey) ----
+  "GET /api/lounges/:key/messages": (ctx) => {
+    const key = clean(decodeURIComponent(ctx.params.key), { max: 300 }).toLowerCase();
+    const hidden = blockedIdSet(ctx.user?.id);
+    const rows = db.prepare(`SELECT m.*, u.name, u.initials, u.avatar_uri, u.avatar_color, u.role FROM lounge_messages m JOIN users u ON u.id=m.user_id
+                             WHERE m.lounge_id=? AND m.removed=0 ORDER BY m.created_at ASC LIMIT 300`).all(key);
+    return { messages: rows.filter((m) => !hidden.has(m.user_id)).map((m) => ({ id: m.id, userId: m.user_id, name: m.name, initials: m.initials, avatarUri: m.avatar_uri, avatarColor: m.avatar_color, role: m.role, text: m.text, createdAt: m.created_at })) };
+  },
+  "POST /api/lounges/:key/messages": (ctx) => {
+    const u = requireUser(ctx);
+    limit(ctx, "loungemsg", 90, 60 * 60 * 1000);
+    const key = clean(decodeURIComponent(ctx.params.key), { max: 300 }).toLowerCase();
+    const text = clean(ctx.body?.text, { max: LIMITS.message, newlines: true });
+    if (!key || !text) throw new ApiError(400, "Say something first.");
+    const id = uid("lm");
+    db.prepare("INSERT INTO lounge_messages (id,lounge_id,user_id,text,created_at) VALUES (?,?,?,?,?)").run(id, key, u.id, text, now());
+    return { id };
+  },
+
   // ---- analytics / ad-targeting data ----
   // Ingest a batch of activity events. Open to guests too (user_id null); this is
   // the behavioral data disclosed in the Privacy policy + consented at sign-up.

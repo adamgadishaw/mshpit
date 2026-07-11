@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, KeyboardAvoidingView, Platform } from "react-native";
 import { colors, mono, radius } from "../theme";
 import { useStore, isStaff } from "../store";
@@ -10,11 +10,19 @@ import MentionText from "../components/MentionText";
 // The Concert Lounge - a Discord/YouTube-style chat for everyone at a show.
 // Gated: you have to tap in, so it feels like a room you enter.
 export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfileByHandle }) {
-  const { session, concertKey, loungeFor, addLoungeMessage, attendeesFor, userById, removeLoungeMessage } = useStore();
+  const { session, concertKey, loungeFor, addLoungeMessage, loadLounge, attendeesFor, userById, removeLoungeMessage } = useStore();
   const staff = isStaff(session?.role);
   const key = concertKey(log);
   const [entered, setEntered] = useState(false);
   const [text, setText] = useState("");
+
+  // Live once you're in the room: hydrate + poll so others' messages appear.
+  useEffect(() => {
+    if (!entered) return;
+    loadLounge(key);
+    const id = setInterval(() => loadLounge(key), 3500);
+    return () => clearInterval(id);
+  }, [entered, key]);
 
   const messages = loungeFor(key);
   const attendees = attendeesFor(key);

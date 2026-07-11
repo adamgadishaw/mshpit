@@ -317,6 +317,18 @@ CREATE TABLE IF NOT EXISTS blocks (
 );
 CREATE INDEX IF NOT EXISTS idx_blocks_blocked ON blocks(blocked_id);
 
+-- Concert lounge / afterparty chat, keyed by concertKey (artist|venue|date), so
+-- attendee chat is shared + live like the fan clubs (not device-local).
+CREATE TABLE IF NOT EXISTS lounge_messages (
+  id         TEXT PRIMARY KEY,
+  lounge_id  TEXT NOT NULL,
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  text       TEXT NOT NULL,
+  removed    INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_lounge ON lounge_messages(lounge_id, created_at);
+
 -- Catalog-seed crawl cursor: how deep each genre tag has been crawled, so a
 -- re-run resumes instead of re-fetching MusicBrainz pages it already finished.
 CREATE TABLE IF NOT EXISTS seed_cursor (

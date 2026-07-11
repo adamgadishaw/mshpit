@@ -1045,13 +1045,34 @@ export function StoreProvider({ children }) {
   // list, and attendees all key off the same thing.
   const concertKey = (log) => `${norm(log.artist)}|${norm(log.venue)}|${log.date || ""}`;
 
-  // --- Concert Lounge (gated attendee chat) ---
+  // --- Concert Lounge (gated attendee chat, now server-backed + live) ---
   const loungeFor = (key) => lounge[key] || [];
+  // Pull a lounge's messages from the server and merge by id (dedup-safe, so this
+  // can be polled while the screen is open to get live chat like the fan clubs).
+  const loadLounge = (key) => {
+    if (!key) return;
+    api(`/api/lounges/${encodeURIComponent(key)}/messages`)
+      .then(({ messages }) => {
+        if (!Array.isArray(messages)) return;
+        setLounge((L) => {
+          const existing = L[key] || [];
+          const byId = new Map(existing.map((m) => [m.id, m]));
+          for (const m of messages) byId.set(m.id, { id: m.id, userId: m.userId, name: m.name, initials: m.initials, avatarUri: m.avatarUri, avatarColor: m.avatarColor, role: m.role, text: m.text, at: m.createdAt, ts: ago(m.createdAt) });
+          const merged = [...byId.values()].sort((a, b) => (a.at || 0) - (b.at || 0));
+          return { ...L, [key]: merged };
+        });
+      })
+      .catch(() => {});
+  };
   const addLoungeMessage = (key, text) => {
     const t = clean(text, { max: LIMITS.message, newlines: true });
     if (!session || !t) return;
-    const m = { id: "m_" + Date.now(), userId: session.id, name: session.name, initials: session.initials, text: t, ts: "now" };
+    const localId = "m_" + Date.now();
+    const m = { id: localId, userId: session.id, name: session.name, initials: session.initials, avatarUri: session.avatarUri, avatarColor: session.avatarColor, role: session.role, text: t, at: Date.now(), ts: "now" };
     setLounge((L) => ({ ...L, [key]: [...(L[key] || []), m] }));
+    api(`/api/lounges/${encodeURIComponent(key)}/messages`, { method: "POST", body: { text: t } })
+      .then(({ id }) => { if (id) setLounge((L) => ({ ...L, [key]: (L[key] || []).map((x) => (x.id === localId ? { ...x, id } : x)) })); })
+      .catch(() => {});
   };
 
   // --- Album + song ratings (Apple-Music-style stars), slice 7 ---
@@ -1940,7 +1961,7 @@ export function StoreProvider({ children }) {
     activityStats, userAchievements, userPoints,
     chartTop, chartInfo, catalogCountries, topGenres, topPhotos, discoverStats, topArtistsBy, topSongsBy,
     commentsFor, addComment, loadComments, likeInfo, toggleLike,
-    concertKey, loungeFor, addLoungeMessage,
+    concertKey, loungeFor, addLoungeMessage, loadLounge,
     albumRating, songRating, rateAlbum, rateSong, loadRating,
     fanClubFor, loadFanClub, addFanClubMessage, isFanClubMember, joinFanClub, fanClubCount, fanClubsDirectory,
     isArtistOwner, artistProfile, loadArtistPage, updateArtistProfile, artistFeedEnabled,
