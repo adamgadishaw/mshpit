@@ -8,24 +8,27 @@
  *
  * Idempotent + resumable (WAL-safe to run while the web service is live).
  *
- *   local:   node scripts/seed-db-artists.mjs --target 10000
- *   Render:  PIT_DATA_DIR=/data node scripts/seed-db-artists.mjs --target 10000
+ *   local:   node scripts/seed-db-artists.mjs --add 10000
+ *   Render:  PIT_DATA_DIR=/data node scripts/seed-db-artists.mjs --add 10000
  *
- * Flags: --target N (default 10000) · --per-tag N (crawl depth/genre, default 600)
- *        · --no-enrich (crawl only) · --enrich-only (skip crawl, rank thin rows).
+ * Flags: --add N (grow BY N artists, default 10000) · --per-tag N (crawl
+ *        depth/genre, default 600) · --no-enrich (crawl only) · --enrich-only
+ *        (skip crawl, rank thin rows).
  */
 import { crawlArtists, enrichThin } from "../server/catalogSeed.js";
 import { artistStmts } from "../server/db.js";
 
 const args = process.argv.slice(2);
 const flag = (n, d) => { const i = args.indexOf(n); return i >= 0 ? (args[i + 1] ?? d) : d; };
-const target = Number(flag("--target", 10000)) || 10000;
+const add = Number(flag("--add", 10000)) || 10000;
 const perTag = Number(flag("--per-tag", 600)) || 600;
 
 (async () => {
   const t0 = Date.now();
   if (!args.includes("--enrich-only")) {
-    console.log(`Crawl → target ${target} (DB has ${artistStmts.count.get().c})…`);
+    const start = artistStmts.count.get().c;
+    const target = start + add;
+    console.log(`Crawl → grow by ${add} to ${target} (DB has ${start})…`);
     const added = await crawlArtists({ target, perTag, tick: ({ added, total, note }) => console.log(`  +${added} (DB ${total}) · ${note}`) });
     console.log(`Crawl done: +${added} (DB now ${artistStmts.count.get().c}).`);
   }

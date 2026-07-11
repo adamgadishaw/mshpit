@@ -116,7 +116,9 @@ export async function enrichThin({ shouldStop = () => false, tick = () => {} } =
 }
 
 // ---- In-process background job (admin console) ----
-let state = { running: false, stopRequested: false, phase: "idle", target: 0, added: 0, ranked: 0, total: 0, startedAt: 0, finishedAt: 0, error: null, note: "" };
+// `add` is a DELTA: grow the catalog BY this many artists (target = current + add),
+// so it always adds and is never a no-op regardless of how big the catalog is.
+let state = { running: false, stopRequested: false, phase: "idle", add: 0, target: 0, startTotal: 0, added: 0, ranked: 0, total: 0, startedAt: 0, finishedAt: 0, error: null, note: "" };
 
 export function catalogSeedStatus() {
   return { ...state, total: artistStmts.count.get().c };
@@ -129,9 +131,11 @@ export function stopCatalogSeed() {
   return catalogSeedStatus();
 }
 
-export function startCatalogSeed({ target = 10000, perTag = 600, enrich = true } = {}) {
+export function startCatalogSeed({ add = 2000, perTag = 600, enrich = true } = {}) {
   if (state.running) return { started: false, reason: "already-running", status: catalogSeedStatus() };
-  state = { running: true, stopRequested: false, phase: "crawl", target, added: 0, ranked: 0, total: artistStmts.count.get().c, startedAt: Date.now(), finishedAt: 0, error: null, note: "" };
+  const startTotal = artistStmts.count.get().c;
+  const target = startTotal + add; // absolute stop for the crawl
+  state = { running: true, stopRequested: false, phase: "crawl", add, target, startTotal, added: 0, ranked: 0, total: startTotal, startedAt: Date.now(), finishedAt: 0, error: null, note: "" };
   const shouldStop = () => state.stopRequested;
   (async () => {
     try {

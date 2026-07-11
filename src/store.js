@@ -1200,7 +1200,7 @@ export function StoreProvider({ children }) {
   const enrichArtists = async (names) => { try { const r = await api("/api/admin/artists/enrich", { method: "POST", body: { names } }); return r.enriched || 0; } catch { return 0; } };
   const purgeArtist = async (norm) => { try { await api("/api/admin/artists/purge", { method: "POST", body: { norm } }); } catch {} };
   // Kick off / poll the background "grow the catalog to N artists" job (admin).
-  const startCatalogSeed = async (target) => { try { return await api("/api/admin/catalog/seed", { method: "POST", body: { target } }); } catch { return { started: false }; } };
+  const startCatalogSeed = async (add) => { try { return await api("/api/admin/catalog/seed", { method: "POST", body: { add } }); } catch { return { started: false }; } };
   const catalogSeedStatus = async () => { try { return await api("/api/admin/catalog/seed"); } catch { return null; } };
   const stopCatalogSeed = async () => { try { return await api("/api/admin/catalog/seed", { method: "DELETE" }); } catch { return null; } };
 

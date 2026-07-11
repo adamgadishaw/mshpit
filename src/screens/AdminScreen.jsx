@@ -171,7 +171,7 @@ export default function AdminScreen({ onClose }) {
   const refreshCatalog = () => adminArtistQueue().then(setCatalog);
   // Background "grow catalog to N" job: kick it off + poll live progress.
   const [seedJob, setSeedJob] = useState(null);
-  const [seedTarget, setSeedTarget] = useState(10000);
+  const [seedAdd, setSeedAdd] = useState(10000);
   const refreshSeed = () => catalogSeedStatus().then((s) => s && setSeedJob(s));
   useEffect(() => { if (tab === "catalog") { refreshCatalog(); refreshSeed(); } }, [tab]);
   useEffect(() => {
@@ -179,7 +179,7 @@ export default function AdminScreen({ onClose }) {
     const id = setInterval(refreshSeed, 3000);
     return () => clearInterval(id);
   }, [tab, seedJob?.running]);
-  const startSeed = async () => { const r = await startCatalogSeed(seedTarget); if (r?.status) setSeedJob(r.status); refreshSeed(); };
+  const startSeed = async () => { const r = await startCatalogSeed(seedAdd); if (r?.status) setSeedJob(r.status); refreshSeed(); };
   const stopSeed = async () => { const s = await stopCatalogSeed(); if (s) setSeedJob(s); };
   const seedNames = async (names) => {
     if (!names.length) return;
@@ -449,21 +449,21 @@ export default function AdminScreen({ onClose }) {
                     </Pressable>
                   </View>
                   <View style={styles.seedBar}>
-                    <View style={[styles.seedBarFill, { width: `${Math.max(3, Math.min(100, Math.round((seedJob.total / (seedJob.target || 1)) * 100)))}%` }]} />
+                    <View style={[styles.seedBarFill, { width: `${Math.max(3, Math.min(100, Math.round((seedJob.added / (seedJob.add || 1)) * 100)))}%` }]} />
                   </View>
-                  <Text style={styles.catHint}>Toward {seedJob.target.toLocaleString()}. Safe to leave or close this tab, it keeps going. Stopping keeps everything already added.</Text>
+                  <Text style={styles.catHint}>+{(seedJob.added || 0).toLocaleString()} of {(seedJob.add || 0).toLocaleString()} new. Safe to leave or close this tab, it keeps going. Stopping keeps everything already added.</Text>
                 </View>
               ) : (
                 <>
                   <View style={styles.targetRow}>
                     {[2000, 5000, 10000].map((n) => (
-                      <Pressable key={n} style={[styles.targetPill, seedTarget === n && styles.targetPillOn]} onPress={() => setSeedTarget(n)}>
-                        <Text style={[styles.targetTxt, seedTarget === n && styles.targetTxtOn]}>{(n / 1000) + "k"}</Text>
+                      <Pressable key={n} style={[styles.targetPill, seedAdd === n && styles.targetPillOn]} onPress={() => setSeedAdd(n)}>
+                        <Text style={[styles.targetTxt, seedAdd === n && styles.targetTxtOn]}>+{(n / 1000) + "k"}</Text>
                       </Pressable>
                     ))}
                     <Pressable style={styles.growBtn} onPress={startSeed}>
                       <Icon name="music" size={14} color="#1A1206" />
-                      <Text style={styles.seedTxt}>Grow to {(seedTarget / 1000) + "k"}</Text>
+                      <Text style={styles.seedTxt}>Grow by {(seedAdd / 1000) + "k"}</Text>
                     </Pressable>
                   </View>
                   {(seedJob?.phase === "done" || seedJob?.phase === "stopped") && <Text style={styles.growDone}>{seedJob.phase === "stopped" ? "Stopped" : "Last run"}: +{seedJob.added.toLocaleString()} added, {seedJob.ranked.toLocaleString()} ranked. Run again to resume.</Text>}

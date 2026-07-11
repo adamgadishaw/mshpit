@@ -1033,8 +1033,8 @@ export const routes = {
   // GET for live progress. No bundle change, nothing to deploy.
   "POST /api/admin/catalog/seed": (ctx) => {
     requireAdmin(ctx);
-    const target = Math.max(200, Math.min(20000, Number(ctx.body?.target) || 10000));
-    return startCatalogSeed({ target });
+    const add = Math.max(100, Math.min(20000, Number(ctx.body?.add) || 2000));
+    return startCatalogSeed({ add });
   },
   "GET /api/admin/catalog/seed": (ctx) => {
     requireAdmin(ctx);
