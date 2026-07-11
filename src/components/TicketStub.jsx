@@ -36,9 +36,11 @@ export default function TicketStub({ log, onOpen, onPreview, onOpenProfile, onOp
 
   const { count: likeCount, liked } = likeInfo(log.id, log.likes || 0);
   const commentCount = commentsFor(log.id).length || log.comments || 0;
+  // Server posts can arrive with null scores (photo-only posts); never crash the feed.
+  const band = log.band ?? 0, room = log.room ?? 0, overall = log.overall ?? 0;
   const factors = log.dims
-    ? `Band ${log.band.toFixed(1)} · Room ${log.room.toFixed(1)} · Night ${(((log.dims.crowd || 0) + (log.dims.experience || 0)) / 2 || log.overall).toFixed(1)}`
-    : `Band ${log.band.toFixed(1)} · Room ${log.room.toFixed(1)}`;
+    ? `Band ${band.toFixed(1)} · Room ${room.toFixed(1)} · Night ${(((log.dims.crowd || 0) + (log.dims.experience || 0)) / 2 || overall).toFixed(1)}`
+    : `Band ${band.toFixed(1)} · Room ${room.toFixed(1)}`;
 
   return (
     <View style={styles.card}>
@@ -53,8 +55,8 @@ export default function TicketStub({ log, onOpen, onPreview, onOpenProfile, onOp
           <Text style={styles.sub}><Text style={roleColor(author.role) ? { color: roleColor(author.role), fontWeight: "800" } : null}>@{author.handle}</Text> · {log.timeAgo}</Text>
         </Pressable>
         <View style={styles.scorePill}>
-          <Text style={styles.scoreNum}>{log.overall.toFixed(1)}</Text>
-          <Stars value={log.overall} size={11} gap={1} />
+          <Text style={styles.scoreNum}>{overall.toFixed(1)}</Text>
+          <Stars value={overall} size={11} gap={1} />
         </View>
       </View>
 

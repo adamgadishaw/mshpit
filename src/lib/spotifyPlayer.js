@@ -96,9 +96,32 @@ export function useSpotifyPlayer(enabled) {
     } catch (e) { console.warn("[spotify] play error", e.message); }
   }, []);
 
+  // Poll the SDK for a live position while a track is playing, so the scrubber
+  // animates (player_state_changed alone only fires on discrete events).
+  useEffect(() => {
+    if (!web || !enabled) return;
+    const id = setInterval(async () => {
+      const p = playerRef.current;
+      if (!p) return;
+      try {
+        const s = await p.getCurrentState();
+        if (!s) return;
+        const t = s.track_window && s.track_window.current_track;
+        setState({
+          paused: s.paused,
+          position: s.position,
+          duration: s.duration,
+          track: t ? { name: t.name, artist: (t.artists || []).map((a) => a.name).join(", "), art: t.album && t.album.images && t.album.images[0] && t.album.images[0].url, uri: t.uri } : null,
+        });
+      } catch {}
+    }, 500);
+    return () => clearInterval(id);
+  }, [enabled]);
+
   const toggle = useCallback(() => { playerRef.current && playerRef.current.togglePlay(); }, []);
   const next = useCallback(() => { playerRef.current && playerRef.current.nextTrack(); }, []);
   const prev = useCallback(() => { playerRef.current && playerRef.current.previousTrack(); }, []);
+  const seek = useCallback((ms) => { playerRef.current && playerRef.current.seek(Math.max(0, ms)); }, []);
 
-  return { ready, state, error, playUris, toggle, next, prev };
+  return { ready, state, error, playUris, toggle, next, prev, seek };
 }

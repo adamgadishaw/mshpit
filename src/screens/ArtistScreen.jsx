@@ -56,7 +56,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
   const songs = spotTracks.length ? spotTracks : SONGS.filter((s) => s.artist.toLowerCase() === a.name.toLowerCase()).slice(0, 8);
   // Queue for the top player, every playable track on the page, so next/prev walk
   // this artist's songs while you keep browsing.
-  const songQueue = songs.filter((s) => s.url).map((s) => ({ kind: "track", url: s.url, title: s.title, artist: a.name, art: a.photo || meta?.photo || null }));
+  const songQueue = songs.filter((s) => s.url || s.preview).map((s) => ({ kind: "track", url: s.url || null, preview: s.preview || null, title: s.title, artist: a.name, art: a.photo || meta?.photo || null }));
 
   // Artist-owned profile: the band's account can edit its header + post updates.
   const isOwner = isArtistOwner(a.name);
@@ -75,11 +75,15 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
     setOpenAlbum((cur) => (cur === id ? null : id));
     (tracks || []).forEach((t) => loadRating("song", a.name, t.title));
   };
-  const playTrack = async (title, cover) => {
-    // Prefer a URL we already have on the page (top tracks) before hitting Spotify.
-    const known = songQueue.find((s) => s.title === title);
-    const url = known?.url || (await resolveSpotifyTrack(title, a.name));
-    if (url) onPlay?.({ kind: "track", url, title, artist: a.name, art: cover || a.photo || meta?.photo || null }, songQueue.length ? songQueue : undefined);
+  const playTrack = async (t, cover) => {
+    // Deezer album tracks carry a 30s preview mp3 that plays for everyone (no
+    // Spotify needed); fall back to a known/Spotify URL only if there's no preview.
+    const known = songQueue.find((s) => s.title === t.title);
+    const preview = t.preview || known?.preview || null;
+    let url = known?.url || null;
+    if (!preview && !url) url = await resolveSpotifyTrack(t.title, a.name);
+    if (!preview && !url) return;
+    onPlay?.({ kind: "track", title: t.title, artist: a.name, url, preview, art: cover || a.photo || meta?.photo || null }, songQueue.length ? songQueue : undefined);
   };
   // Listen = play a random song from this artist's catalog, with the rest queued up
   // (the player then keeps going with genre-matched recommendations).
@@ -93,7 +97,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
       Linking.openURL(`https://www.youtube.com/results?search_query=${encodeURIComponent(a.name)}`);
     }
   };
-  const addSong = (t) => onAddToPlaylist?.({ title: t.title, artist: a.name, url: t.url || null, art: t.art || a.photo || meta?.photo || null });
+  const addSong = (t) => onAddToPlaylist?.({ title: t.title, artist: a.name, url: t.url || null, preview: t.preview || null, art: t.art || a.photo || meta?.photo || null });
   // A resolved-but-empty artist (no photo, no songs). Show a "coming soon" note
   // and log the interest so an admin can seed it (see the admin Catalog tab).
   const thin = !!meta && !meta.photo && !(meta.topTracks && meta.topTracks.length) && !(disco && disco.albums && disco.albums.length);
@@ -387,11 +391,11 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
                         </View>
                         <TapStars value={sr.mine} onChange={(n) => rateSong(a.name, t.title, n)} size={15} gap={2} />
                         {onAddToPlaylist && (
-                          <Pressable style={styles.songAdd} onPress={() => addSong({ title: t.title, art: al.cover })} hitSlop={8}>
+                          <Pressable style={styles.songAdd} onPress={() => addSong({ title: t.title, preview: t.preview, art: al.cover })} hitSlop={8}>
                             <Icon name="plus" size={13} color={colors.textDim} />
                           </Pressable>
                         )}
-                        <Pressable style={styles.songPlay} onPress={() => playTrack(t.title, al.cover)} hitSlop={8}>
+                        <Pressable style={styles.songPlay} onPress={() => playTrack(t, al.cover)} hitSlop={8}>
                           <Icon name="play" size={13} color={colors.amber} />
                         </Pressable>
                       </View>
@@ -445,7 +449,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
                       <Icon name="plus" size={13} color={colors.textDim} />
                     </Pressable>
                   )}
-                  <Pressable style={styles.songPlay} onPress={() => (s.url ? onPlay?.({ kind: "track", url: s.url, title: s.title, artist: a.name }, songQueue) : Linking.openURL(listenUrl(s)))} hitSlop={8}>
+                  <Pressable style={styles.songPlay} onPress={() => ((s.url || s.preview) ? onPlay?.({ kind: "track", url: s.url || null, preview: s.preview || null, title: s.title, artist: a.name, art: a.photo || meta?.photo || null }, songQueue) : Linking.openURL(listenUrl(s)))} hitSlop={8}>
                     <Icon name="play" size={13} color={colors.amber} />
                   </Pressable>
                 </View>

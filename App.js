@@ -211,10 +211,13 @@ function Root() {
   // bar can skip prev/next; without it, a single track. player = { list, index }.
   const openPlayer = (media, queue) => {
     if (!media) return;
-    const key = (m) => m?.id || m?.url || m?.title;
+    const key = (m) => m?.id || m?.url || m?.preview || m?.title;
     // Always continue past the explicit queue with genre/taste-based recommendations
     // so "up next" is populated and playback never dead-ends after one song.
-    const base = Array.isArray(queue) && queue.length ? queue : [media];
+    let base = Array.isArray(queue) && queue.length ? queue : [media];
+    // The tapped track MUST be what plays: if it's not in the queue it was handed
+    // (e.g. an album track played against the top-tracks queue), put it first.
+    if (!base.some((m) => key(m) === key(media))) base = [media, ...base];
     const list = autoplayQueue(media, base);
     setPlayer({ list, index: Math.max(0, list.findIndex((m) => key(m) === key(media))) });
     recordPlay(media);

@@ -60,7 +60,7 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtis
   const planned = goingFor(user.id);
   const isSelf = session?.id === user.id;
   // Play a saved playlist: first track opens the bar with the whole list queued.
-  const playPlaylist = (pl) => { const q = (pl.tracks || []).filter((t) => t.url); if (q.length) onPlay?.(q[0], q); };
+  const playPlaylist = (pl) => { const q = (pl.tracks || []).filter((t) => t.url || t.preview); if (q.length) onPlay?.(q[0], q); };
   // "Crossed paths", shows you've both been to (and artists you've both seen).
   const crossed = !isSelf && session ? sharedShows(user.id) : { shows: [], artists: [] };
 

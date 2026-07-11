@@ -364,9 +364,9 @@ export function StoreProvider({ children }) {
   // Listening history: log every song played (the framework for "listening now",
   // playlists, and taste snapshots). Skips consecutive repeats, caps at 200.
   const recordPlay = (t) => {
-    if (!t || (!t.url && !t.id)) return;
-    const key = t.url || t.id;
-    setPlayHistory((h) => (h[0] && (h[0].url || h[0].id) === key ? h : [{ title: t.title, artist: t.artist, url: t.url, id: t.id, art: t.art || null, at: Date.now() }, ...h].slice(0, 200)));
+    if (!t || (!t.url && !t.id && !t.preview)) return;
+    const key = t.url || t.id || t.preview;
+    setPlayHistory((h) => (h[0] && (h[0].url || h[0].id || h[0].preview) === key ? h : [{ title: t.title, artist: t.artist, url: t.url, id: t.id, preview: t.preview || null, art: t.art || null, at: Date.now() }, ...h].slice(0, 200)));
     track("play", { artist: t.artist, title: t.title }); // analytics signal
     // Cross-device history + "friends listening" (best-effort, offline keeps local).
     if (session) api("/api/plays", { method: "POST", body: { title: t.title, artist: t.artist, url: t.url || null, art: t.art || null } }).catch(() => {});
@@ -410,8 +410,8 @@ export function StoreProvider({ children }) {
     for (const x of [...inGenre, ...rest]) {
       let taken = 0;
       for (const t of x.meta.topTracks || []) {
-        if (!t.url) continue;
-        const track = { kind: "track", title: t.title, artist: x.a.name, url: t.url, art: x.meta.photo || x.a.photo || null };
+        if (!t.url && !t.preview) continue;
+        const track = { kind: "track", title: t.title, artist: x.a.name, url: t.url || null, preview: t.preview || null, art: x.meta.photo || x.a.photo || null };
         const k = keyOf(track);
         if (seen.has(k)) continue;
         seen.add(k); out.push(track); taken++;
@@ -425,8 +425,8 @@ export function StoreProvider({ children }) {
   // recommended tail so "up next" is always populated and playback never dead-ends
   // after one song.
   const autoplayQueue = (seed, baseList) => {
-    const keyOf = (t) => (t?.url || t?.id || (t?.title || "").toLowerCase());
-    const base = ((Array.isArray(baseList) && baseList.length ? baseList : (seed ? [seed] : [])) || []).filter((t) => t && (t.url || t.id));
+    const keyOf = (t) => (t?.url || t?.id || t?.preview || (t?.title || "").toLowerCase());
+    const base = ((Array.isArray(baseList) && baseList.length ? baseList : (seed ? [seed] : [])) || []).filter((t) => t && (t.url || t.id || t.preview));
     const seen = new Set(base.map(keyOf));
     const recs = recommendTracks(seed || base[0], 30).filter((t) => { const k = keyOf(t); if (seen.has(k)) return false; seen.add(k); return true; });
     return [...base, ...recs].slice(0, 60);
@@ -438,7 +438,7 @@ export function StoreProvider({ children }) {
     if (!session) { setMyPlaylists([]); return []; }
     try { const { playlists } = await api(`/api/users/${session.id}/playlists`); setMyPlaylists(playlists || []); return playlists || []; } catch { return []; }
   };
-  const cleanTrack = (t) => ({ title: t.title, artist: t.artist || null, url: t.url || null, art: t.art || null });
+  const cleanTrack = (t) => ({ title: t.title, artist: t.artist || null, url: t.url || null, preview: t.preview || null, art: t.art || null });
   const createPlaylist = async (name, tracks) => {
     if (!session) return null;
     const list = (Array.isArray(tracks) ? tracks : [tracks]).filter((t) => t && t.title).map(cleanTrack);
@@ -452,7 +452,7 @@ export function StoreProvider({ children }) {
   // Snapshot a listening session (queue) into a saved playlist seed that shows on
   // the profile and can be resumed.
   const saveSnapshot = (tracks, name) => {
-    const list = (tracks || []).filter((t) => t && (t.url || t.id));
+    const list = (tracks || []).filter((t) => t && (t.url || t.id || t.preview));
     if (!list.length) return null;
     const snap = { id: "snap_" + Date.now(), name: name || `Session ${new Date().toLocaleDateString()}`, tracks: list, at: Date.now(), by: session?.id || null };
     setSnapshots((s) => [snap, ...s].slice(0, 50));

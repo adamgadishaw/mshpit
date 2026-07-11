@@ -300,7 +300,7 @@ export const routes = {
   "POST /api/playlists": (ctx) => {
     const u = requireUser(ctx);
     const name = clean(ctx.body?.name, { max: 80 }) || "Untitled";
-    const tracks = Array.isArray(ctx.body?.tracks) ? ctx.body.tracks.slice(0, 100).map((t) => ({ title: clean(t?.title, { max: 200 }), artist: clean(t?.artist, { max: 120 }) || null, url: clean(t?.url, { max: 400 }) || null, art: clean(t?.art, { max: 500 }) || null })).filter((t) => t.title) : [];
+    const tracks = Array.isArray(ctx.body?.tracks) ? ctx.body.tracks.slice(0, 100).map((t) => ({ title: clean(t?.title, { max: 200 }), artist: clean(t?.artist, { max: 120 }) || null, url: clean(t?.url, { max: 400 }) || null, preview: clean(t?.preview, { max: 500 }) || null, art: clean(t?.art, { max: 500 }) || null })).filter((t) => t.title) : [];
     if (!tracks.length) throw new ApiError(400, "A playlist needs tracks.");
     const id = uid("pls");
     db.prepare("INSERT INTO playlists (id,user_id,name,tracks,created_at) VALUES (?,?,?,?,?)").run(id, u.id, name, JSON.stringify(tracks), now());
@@ -318,7 +318,7 @@ export const routes = {
     if (!row) throw new ApiError(404, "Playlist not found.");
     let tracks = JSON.parse(row.tracks || "[]");
     const incoming = Array.isArray(ctx.body?.add) ? ctx.body.add : (ctx.body?.track ? [ctx.body.track] : []);
-    const add = incoming.map((t) => ({ title: clean(t?.title, { max: 200 }), artist: clean(t?.artist, { max: 120 }) || null, url: clean(t?.url, { max: 400 }) || null, art: clean(t?.art, { max: 500 }) || null })).filter((t) => t.title);
+    const add = incoming.map((t) => ({ title: clean(t?.title, { max: 200 }), artist: clean(t?.artist, { max: 120 }) || null, url: clean(t?.url, { max: 400 }) || null, preview: clean(t?.preview, { max: 500 }) || null, art: clean(t?.art, { max: 500 }) || null })).filter((t) => t.title);
     for (const t of add) {
       const k = t.url || t.title.toLowerCase();
       if (!tracks.some((x) => (x.url || (x.title || "").toLowerCase()) === k)) tracks.push(t);
