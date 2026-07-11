@@ -549,13 +549,16 @@ export function StoreProvider({ children }) {
   };
   // When we come back from the OAuth redirect (?spotify=connected|error), refresh
   // the account so spotifyConnected flips, and clean the URL.
+  const [spotifyNotice, setSpotifyNotice] = useState(null);
   useEffect(() => {
     if (typeof window === "undefined") return;
     const flag = new URLSearchParams(window.location.search).get("spotify");
     if (!flag) return;
     try { const url = new URL(window.location.href); url.searchParams.delete("spotify"); window.history.replaceState({}, "", url.pathname + url.search); } catch {}
     if (flag === "connected") api("/api/me").then(({ user }) => user && absorbServerUser(user)).catch(() => {});
+    else if (flag === "error") setSpotifyNotice("Spotify couldn't connect. While the app is in Spotify's development mode, the owner has to add your Spotify account email to the app's allow-list (Spotify dashboard → User Management). Full-song streaming also needs Spotify Premium. Until then you'll still hear 30-second previews.");
   }, []);
+  const dismissSpotifyNotice = () => setSpotifyNotice(null);
 
   // Fold a server user into local state so profiles/avatars resolve everywhere.
   const absorbServerUser = (su) => {
@@ -1952,7 +1955,7 @@ export function StoreProvider({ children }) {
     playHistory, recordPlay, snapshots, saveSnapshot, removeSnapshot, friendsListening, loadFriendsListening, userPlaylists, deletePlaylist,
     favoriteGenre, recommendTracks, autoplayQueue, myPlaylists, loadMyPlaylists, createPlaylist, addToPlaylist,
     drafts, saveDraft, deleteDraft,
-    spotifyConnected, connectSpotify, disconnectSpotify,
+    spotifyConnected, connectSpotify, disconnectSpotify, spotifyNotice, dismissSpotifyNotice,
     visibleFeed, followingFeed, visibleTourDates, artistSummary, venueSummary,
     localVenues, regionShows, localFeed, recommendedShows, venueCoord,
     searchVenues, venuesByCity, venueUpcomingCount,

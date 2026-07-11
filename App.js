@@ -72,7 +72,7 @@ export default function App() {
 }
 
 function Root() {
-  const { session, addLog, visibleFeed, followingFeed, localFeed, logout, userByHandle, searchPeople, inboxUnread, accountStatus, track, unreadNotifications, recordPlay, playHistory, saveSnapshot, autoplayQueue, followingCount } = useStore();
+  const { session, addLog, visibleFeed, followingFeed, localFeed, logout, userByHandle, searchPeople, inboxUnread, accountStatus, track, unreadNotifications, recordPlay, playHistory, saveSnapshot, autoplayQueue, followingCount, spotifyNotice, dismissSpotifyNotice } = useStore();
   const staff = isStaff(session?.role);
   const feed = visibleFeed(staff);
   const following = followingFeed(staff);
@@ -508,6 +508,14 @@ function Root() {
           ]}
         />
 
+        {spotifyNotice && (
+          <View style={styles.spotifyBanner}>
+            <Icon name="music" size={16} color={colors.gold} />
+            <Text style={styles.spotifyBannerTxt}>{spotifyNotice}</Text>
+            <Pressable onPress={dismissSpotifyNotice} hitSlop={8}><Icon name="x" size={15} color={colors.textDim} /></Pressable>
+          </View>
+        )}
+
         {welcome && session && (
           <View style={styles.welcomeModal}>
             <WelcomeScreen
@@ -583,6 +591,8 @@ const styles = StyleSheet.create({
   },
   fabLabel: { color: colors.amber, fontSize: 10, marginTop: 4, letterSpacing: 0.3 },
   welcomeModal: { ...StyleSheet.absoluteFillObject, backgroundColor: colors.bg, zIndex: 200, ...(Platform.OS === "web" ? { position: "fixed" } : null) },
+  spotifyBanner: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.gold, borderRadius: radius.md, margin: 12, padding: 12, ...(Platform.OS === "web" ? { position: "fixed", left: 12, right: 12, bottom: 12, zIndex: 210, maxWidth: 520 } : null) },
+  spotifyBannerTxt: { color: colors.text, fontSize: 12.5, lineHeight: 18, flex: 1 },
 
   preview: {
     position: "absolute",
