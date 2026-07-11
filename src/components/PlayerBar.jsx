@@ -124,9 +124,18 @@ export default function PlayerBar({ player, onClose, onIndex, onPlayAt, onRemove
   const sdkActive = wantSdk && forThis && !!resolved.uri;
   const previewSrc = !sdkActive && forThis ? resolved.preview : null;
   const hasNext = index < list.length - 1;
+
+  // Resume across reloads (theme switch / F5): remember where we were and pick the
+  // song back up instead of restarting it. Position is persisted every few seconds
+  // to localStorage; on mount we seek to it once for the same track.
+  const [resume] = useState(() => { try { return web && typeof localStorage !== "undefined" ? JSON.parse(localStorage.getItem("pit.playpos") || "null") : null; } catch { return null; } });
+  const resumedRef = useRef(false);
+  const resumeMs = !resumedRef.current && resume && resume.key === curKey ? (resume.ms || 0) : 0;
+
   const audio = useAudioPreview(previewSrc, {
     enabled: !sdkActive,
     onEnded: () => { if (hasNext) onIndex?.(index + 1); },
+    startAt: resumeMs / 1000,
   });
 
   // Stream a single resolved URI through the SDK; our index (prev/next) drives it.
@@ -137,8 +146,12 @@ export default function PlayerBar({ player, onClose, onIndex, onPlayAt, onRemove
     if (sig === sigRef.current) return;
     sigRef.current = sig;
     playUris([resolved.uri], 0);
+    if (resumeMs > 1000) { const at = resumeMs; setTimeout(() => seek(at), 900); } // resume full track after reload
+    resumedRef.current = true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sdkActive, resolved.uri, index]);
+  // Mark preview resume consumed once it's flowing, so later tracks start at 0.
+  useEffect(() => { if (previewSrc && resumeMs > 0) resumedRef.current = true; }, [previewSrc, resumeMs]);
 
   // Auto-advance when the SDK track ends (single-URI playback stops instead of
   // rolling on): it had been playing, now it's paused back at the start.
@@ -156,6 +169,30 @@ export default function PlayerBar({ player, onClose, onIndex, onPlayAt, onRemove
   const upNext = list.slice(index + 1);
   const panelOpen = open;
 
+  // Persist playback position every few seconds so a reload (theme change / F5)
+  // can resume the song instead of restarting it.
+  const posRef = useRef(0);
+  const keyRef = useRef(curKey);
+  keyRef.current = curKey;
+  useEffect(() => {
+    if (!web) return;
+    const id = setInterval(() => {
+      if (posRef.current > 1000 && keyRef.current) { try { localStorage.setItem("pit.playpos", JSON.stringify({ key: keyRef.current, ms: posRef.current })); } catch {} }
+    }, 3000);
+    return () => clearInterval(id);
+  }, []);
+
+  // Occasionally flash "up next" right on the bar, so people see what's coming
+  // without opening the queue.
+  const [peekNext, setPeekNext] = useState(false);
+  const nextTitle = upNext[0]?.title || null;
+  useEffect(() => {
+    if (!nextTitle) { setPeekNext(false); return; }
+    let off;
+    const id = setInterval(() => { setPeekNext(true); off = setTimeout(() => setPeekNext(false), 3800); }, 13000);
+    return () => { clearInterval(id); clearTimeout(off); };
+  }, [nextTitle]);
+
   if (!cur) return null;
 
   const multi = list.length > 1;
@@ -170,6 +207,7 @@ export default function PlayerBar({ player, onClose, onIndex, onPlayAt, onRemove
   const unplayable = forThis && !sdkActive && !previewSrc && !connecting;
   const posMs = sdkActive ? (state?.position || 0) : audio.pos * 1000;
   const durMs = sdkActive ? (state?.duration || 0) : audio.dur * 1000;
+  posRef.current = posMs;
   const playing = sdkActive ? (state && !state.paused && !!state.track) : audio.playing;
   const playPause = () => {
     if (sdkActive) { if (!state || !state.track) playUris([resolved.uri], 0); else toggle(); }
@@ -198,10 +236,12 @@ export default function PlayerBar({ player, onClose, onIndex, onPlayAt, onRemove
     <View style={styles.shell} {...hoverProps}>
       <View style={styles.bar}>
         {art ? <Image source={{ uri: art }} style={styles.art} /> : <View style={[styles.art, styles.artEmpty]}><Icon name="music" size={16} color={colors.textFaint} /></View>}
-        <View style={[styles.meta, styles.metaGrow]}>
+        <Pressable style={[styles.meta, styles.metaGrow]} onPress={() => multi && setOpen((o) => !o)} accessibilityRole={multi ? "button" : undefined} accessibilityLabel={multi ? `Now playing ${title}. ${upNext.length} up next. Open queue.` : undefined}>
           <Text style={styles.title} numberOfLines={1}>{title}</Text>
-          <Text style={styles.sub} numberOfLines={1}>{statusLine}</Text>
-        </View>
+          {peekNext && nextTitle
+            ? <Text style={styles.peekNext} numberOfLines={1}>{"↑ Up next · " + nextTitle}</Text>
+            : <Text style={styles.sub} numberOfLines={1}>{statusLine}</Text>}
+        </Pressable>
 
         <Ctrl icon="chevron-left" onPress={goPrev} disabled={index <= 0} />
         <Pressable style={[styles.ctrl, styles.play, !scrubbable && styles.ctrlOff]} onPress={playPause} hitSlop={6} disabled={!scrubbable}>
@@ -212,7 +252,7 @@ export default function PlayerBar({ player, onClose, onIndex, onPlayAt, onRemove
         <Ctrl icon="chevron-right" onPress={goNext} disabled={index >= list.length - 1} />
 
         {multi && (
-          <Pressable style={[styles.queueBtn, panelOpen && styles.queueBtnOn]} onPress={() => setOpen((o) => !o)} hitSlop={6}>
+          <Pressable style={[styles.queueBtn, panelOpen && styles.queueBtnOn]} onPress={() => setOpen((o) => !o)} hitSlop={6} accessibilityRole="button" accessibilityState={{ expanded: panelOpen }} accessibilityLabel={`${panelOpen ? "Hide" : "Show"} queue, ${upNext.length} up next`}>
             <Icon name="feed" size={13} color={panelOpen ? colors.amber : colors.textDim} />
             <Text style={[styles.queueTxt, panelOpen && { color: colors.amber }]}>{upNext.length}</Text>
           </Pressable>
@@ -260,15 +300,15 @@ export default function PlayerBar({ player, onClose, onIndex, onPlayAt, onRemove
             {upNext.slice(0, 10).map((t, j) => {
               const real = index + 1 + j;
               return (
-                <View key={(t.url || t.title) + real} style={styles.qRow}>
+                <View key={(t.url || t.title) + real} style={styles.qRow} accessibilityLabel={`Up next ${j + 1}: ${t.title}${t.artist ? " by " + t.artist : ""}`}>
                   {t.art ? <Image source={{ uri: t.art }} style={styles.qArt} /> : <View style={[styles.qArt, styles.artEmpty]}><Icon name="music" size={12} color={colors.textFaint} /></View>}
-                  <Pressable style={{ flex: 1 }} onPress={() => onPlayAt?.(real)}>
+                  <Pressable style={{ flex: 1 }} onPress={() => onPlayAt?.(real)} accessibilityRole="button" accessibilityLabel={`Play ${t.title}`}>
                     <Text style={styles.qTitle} numberOfLines={1}>{t.title}</Text>
                     <Text style={styles.qArtist} numberOfLines={1}>{t.artist}</Text>
                   </Pressable>
-                  {onAddToPlaylist && <Pressable style={styles.qAct} onPress={() => onAddToPlaylist({ title: t.title, artist: t.artist, url: t.url, preview: t.preview, art: t.art })} hitSlop={6}><Icon name="plus" size={14} color={colors.textDim} /></Pressable>}
-                  <Pressable style={styles.qAct} onPress={() => onMoveNext?.(real)} hitSlop={6}><Icon name="menu" size={14} color={colors.textDim} /></Pressable>
-                  <Pressable style={styles.qAct} onPress={() => onRemove?.(real)} hitSlop={6}><Icon name="x" size={13} color={colors.textDim} /></Pressable>
+                  {onAddToPlaylist && <Pressable style={styles.qAct} onPress={() => onAddToPlaylist({ title: t.title, artist: t.artist, url: t.url, preview: t.preview, art: t.art })} hitSlop={6} accessibilityRole="button" accessibilityLabel={`Add ${t.title} to a playlist`}><Icon name="plus" size={14} color={colors.textDim} /></Pressable>}
+                  <Pressable style={styles.qAct} onPress={() => onMoveNext?.(real)} hitSlop={6} accessibilityRole="button" accessibilityLabel={`Play ${t.title} next`}><Icon name="menu" size={14} color={colors.textDim} /></Pressable>
+                  <Pressable style={styles.qAct} onPress={() => onRemove?.(real)} hitSlop={6} accessibilityRole="button" accessibilityLabel={`Remove ${t.title} from queue`}><Icon name="x" size={13} color={colors.textDim} /></Pressable>
                 </View>
               );
             })}
@@ -304,6 +344,7 @@ const styles = StyleSheet.create({
   metaGrow: { flex: 1, width: undefined },
   title: { color: colors.text, fontSize: 13.5, fontWeight: "800" },
   sub: { color: colors.textDim, fontSize: 11, marginTop: 1, fontFamily: mono },
+  peekNext: { color: colors.amber, fontSize: 11, marginTop: 1, fontFamily: mono, fontWeight: "700" },
   embedWrap: { flex: 1, minWidth: 0, borderRadius: radius.sm, overflow: "hidden" },
   scrubRow: { backgroundColor: colors.bgElev, borderBottomWidth: 1, borderBottomColor: colors.line, paddingHorizontal: 12, paddingBottom: 8, paddingTop: 2 },
   scrub: { flexDirection: "row", alignItems: "center", gap: 10 },

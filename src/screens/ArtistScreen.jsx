@@ -97,6 +97,36 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
     }
   };
   const addSong = (t) => onAddToPlaylist?.({ title: t.title, artist: a.name, url: t.url || null, preview: t.preview || null, art: t.art || a.photo || meta?.photo || null });
+
+  // Play a single top-track (its own song, then genre-matched recs continue).
+  const playSingle = (s) => {
+    if (s.url || s.preview) onPlay?.({ kind: "track", url: s.url || null, preview: s.preview || null, title: s.title, artist: a.name, art: a.photo || meta?.photo || null }, songQueue);
+    else Linking.openURL(listenUrl(s));
+  };
+  // Play an album AS AN ALBUM: in track order (optionally starting mid-album), or
+  // shuffled. Recs append after the last track, so shuffle "kicks in" when it ends.
+  const albumTrack = (t, al) => ({ kind: "track", title: t.title, artist: a.name, preview: t.preview || null, art: al.cover || a.photo || meta?.photo || null });
+  const playAlbum = (al, startTitle = null, shuffle = false) => {
+    let tracks = (al.tracks || []).map((t) => albumTrack(t, al)).filter((t) => t.preview);
+    if (!tracks.length) return;
+    if (shuffle) tracks = [...tracks].sort(() => Math.random() - 0.5);
+    else if (startTitle) { const i = tracks.findIndex((t) => t.title === startTitle); if (i > 0) tracks = tracks.slice(i); }
+    onPlay?.(tracks[0], tracks);
+  };
+  // Highest community-rated track on an album (needs ≥1 rating) — the "start here" flag.
+  const topTrackOf = (al) => {
+    let best = null;
+    for (const t of al.tracks || []) { const r = songRating(a.name, t.title); if (r.count > 0 && (!best || r.avg > best.avg)) best = { title: t.title, avg: r.avg, count: r.count }; }
+    return best;
+  };
+  // The artist's standout song: highest-rated popular track, else the top track.
+  const topSong = (() => {
+    let best = null;
+    for (const s of songs) { const r = songRating(a.name, s.title); if (r.count > 0 && (!best || r.avg > best.avg)) best = { song: s, avg: r.avg, count: r.count }; }
+    if (best) return best;
+    const first = songs.find((s) => s.url || s.preview);
+    return first ? { song: first, avg: 0, count: 0 } : null;
+  })();
   // A resolved-but-empty artist (no photo, no songs). Show a "coming soon" note
   // and log the interest so an admin can seed it (see the admin Catalog tab).
   const thin = !!meta && !meta.photo && !(meta.topTracks && meta.topTracks.length) && !(disco && disco.albums && disco.albums.length);
@@ -223,6 +253,18 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
             <Text style={styles.listenTxt}>Listen</Text>
           </Pressable>
         </View>
+
+        {/* Top song — a "start here" pick beside the profile, one tap to play. */}
+        {topSong && (
+          <Pressable style={styles.topSong} onPress={() => playSingle(topSong.song)} accessibilityRole="button" accessibilityLabel={`Play top song ${topSong.song.title}`}>
+            <View style={styles.topSongPlay}><Icon name="play" size={16} color="#1A1206" /></View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.topSongKicker}>TOP SONG{topSong.count > 0 ? ` · ${topSong.avg.toFixed(1)}★ (${topSong.count})` : ""}</Text>
+              <Text style={styles.topSongTitle} numberOfLines={1}>{topSong.song.title}</Text>
+            </View>
+            <Icon name="chevron-right" size={16} color={colors.textDim} />
+          </Pressable>
+        )}
 
         {/* Updates feed, the band's own posts. Owner enables it in Edit profile;
             when on, the owner gets a composer box and fans see the feed. */}
@@ -357,36 +399,57 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
           <>
             <Text style={styles.sectionLabel}>DISCOGRAPHY · {disco.albums.length}</Text>
             <Text style={styles.bio}>Every album. Open one to see the tracklist, rate songs, and play them in the top bar.</Text>
+            <Text style={styles.bio}>Tap a song to play the album from there in order; shuffle takes over when it ends. ★ marks the fan-favorite to start with.</Text>
             {disco.albums.map((al) => {
               const ar = albumRating(a.name, al.title);
               const open = openAlbum === al.id;
+              const playable = (al.tracks || []).some((t) => t.preview);
+              const top = topTrackOf(al);
               return (
                 <View key={al.id} style={styles.discAlbum}>
-                  <Pressable style={styles.discHead} onPress={() => toggleAlbum(al.id, al.tracks)}>
-                    {al.cover ? <Image source={{ uri: al.cover }} style={styles.discCover} /> : <View style={[styles.discCover, styles.discCoverEmpty]}><Icon name="music" size={16} color={colors.textFaint} /></View>}
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.discTitle} numberOfLines={1}>{al.title}</Text>
-                      <Text style={styles.discSub}>{al.year || ""}{al.tracks?.length ? ` · ${al.tracks.length} songs` : ""}{ar.count > 0 ? ` · ${ar.avg.toFixed(1)}★` : ""}</Text>
-                      <TapStars value={ar.mine} onChange={(n) => rateAlbum(a.name, al.title, n)} size={13} gap={2} />
-                    </View>
-                    <Icon name={open ? "chevron-down" : "chevron-right"} size={16} color={colors.textDim} />
-                  </Pressable>
+                  <View style={styles.discHead}>
+                    <Pressable style={styles.discHeadMain} onPress={() => toggleAlbum(al.id, al.tracks)}>
+                      {al.cover ? <Image source={{ uri: al.cover }} style={styles.discCover} /> : <View style={[styles.discCover, styles.discCoverEmpty]}><Icon name="music" size={16} color={colors.textFaint} /></View>}
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.discTitle} numberOfLines={1}>{al.title}</Text>
+                        <Text style={styles.discSub}>{al.year || ""}{al.tracks?.length ? ` · ${al.tracks.length} songs` : ""}{ar.count > 0 ? ` · ${ar.avg.toFixed(1)}★` : ""}</Text>
+                        <TapStars value={ar.mine} onChange={(n) => rateAlbum(a.name, al.title, n)} size={13} gap={2} />
+                      </View>
+                    </Pressable>
+                    {playable && (
+                      <>
+                        <Pressable style={styles.albAct} onPress={() => playAlbum(al, null, true)} hitSlop={6} accessibilityRole="button" accessibilityLabel={`Shuffle ${al.title}`}>
+                          <Icon name="shuffle" size={15} color={colors.textDim} />
+                        </Pressable>
+                        <Pressable style={styles.albPlay} onPress={() => playAlbum(al)} hitSlop={6} accessibilityRole="button" accessibilityLabel={`Play album ${al.title} in order`}>
+                          <Icon name="play" size={14} color="#1A1206" />
+                        </Pressable>
+                      </>
+                    )}
+                    <Pressable style={styles.albAct} onPress={() => toggleAlbum(al.id, al.tracks)} hitSlop={6}><Icon name={open ? "chevron-down" : "chevron-right"} size={16} color={colors.textDim} /></Pressable>
+                  </View>
                   {open && (al.tracks || []).map((t, ti) => {
                     const sr = songRating(a.name, t.title);
+                    const isTop = top && top.title === t.title;
                     return (
                       <View key={ti} style={styles.discTrack}>
-                        <Text style={styles.discTrackNo}>{ti + 1}</Text>
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.discTrackTitle} numberOfLines={1}>{t.title}</Text>
-                          {sr.count > 0 && <View style={styles.songMeta}><Stars value={sr.avg} size={10} /><Text style={styles.songAvg}>{sr.avg.toFixed(1)} · {sr.count}</Text></View>}
-                        </View>
+                        <Pressable style={styles.discTrackMain} onPress={() => (t.preview ? playAlbum(al, t.title) : playTrack(t, al.cover))} accessibilityRole="button" accessibilityLabel={`Play ${t.title} from here`}>
+                          <Text style={styles.discTrackNo}>{ti + 1}</Text>
+                          <View style={{ flex: 1 }}>
+                            <View style={styles.discTrackTitleRow}>
+                              {isTop && <Icon name="star" size={11} color={colors.gold} filled />}
+                              <Text style={styles.discTrackTitle} numberOfLines={1}>{t.title}</Text>
+                            </View>
+                            {sr.count > 0 && <View style={styles.songMeta}><Stars value={sr.avg} size={10} /><Text style={styles.songAvg}>{sr.avg.toFixed(1)} · {sr.count}</Text></View>}
+                          </View>
+                        </Pressable>
                         <TapStars value={sr.mine} onChange={(n) => rateSong(a.name, t.title, n)} size={15} gap={2} />
                         {onAddToPlaylist && (
                           <Pressable style={styles.songAdd} onPress={() => addSong({ title: t.title, preview: t.preview, art: al.cover })} hitSlop={8}>
                             <Icon name="plus" size={13} color={colors.textDim} />
                           </Pressable>
                         )}
-                        <Pressable style={styles.songPlay} onPress={() => playTrack(t, al.cover)} hitSlop={8}>
+                        <Pressable style={styles.songPlay} onPress={() => playTrack(t, al.cover)} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Play ${t.title} as a single`}>
                           <Icon name="play" size={13} color={colors.amber} />
                         </Pressable>
                       </View>
@@ -426,21 +489,21 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
               const sr = songRating(a.name, s.title);
               return (
                 <View key={s.id} style={styles.songRow}>
-                  <View style={{ flex: 1 }}>
+                  <Pressable style={styles.songMain} onPress={() => playSingle(s)} accessibilityRole="button" accessibilityLabel={`Play ${s.title}`}>
                     <Text style={styles.songTitle} numberOfLines={1}>{s.title}</Text>
                     {sr.count > 0 ? (
                       <View style={styles.songMeta}><Stars value={sr.avg} size={11} /><Text style={styles.songAvg}>{sr.avg.toFixed(1)} · {sr.count}</Text></View>
                     ) : (
-                      <Text style={styles.songMetaEmpty} numberOfLines={1}>{s.album ? s.album : "Tap to rate"}</Text>
+                      <Text style={styles.songMetaEmpty} numberOfLines={1}>{s.album ? s.album : "Tap to play · rate below"}</Text>
                     )}
-                  </View>
+                  </Pressable>
                   <TapStars value={sr.mine} onChange={(n) => rateSong(a.name, s.title, n)} size={16} gap={3} />
                   {onAddToPlaylist && (
                     <Pressable style={styles.songAdd} onPress={() => addSong(s)} hitSlop={8}>
                       <Icon name="plus" size={13} color={colors.textDim} />
                     </Pressable>
                   )}
-                  <Pressable style={styles.songPlay} onPress={() => ((s.url || s.preview) ? onPlay?.({ kind: "track", url: s.url || null, preview: s.preview || null, title: s.title, artist: a.name, art: a.photo || meta?.photo || null }, songQueue) : Linking.openURL(listenUrl(s)))} hitSlop={8}>
+                  <Pressable style={styles.songPlay} onPress={() => playSingle(s)} hitSlop={8}>
                     <Icon name="play" size={13} color={colors.amber} />
                   </Pressable>
                 </View>
@@ -519,19 +582,29 @@ const styles = StyleSheet.create({
   albumTitle: { color: colors.text, fontSize: 13, fontWeight: "700", marginTop: 6 },
   albumYear: { color: colors.textFaint, fontFamily: mono, fontSize: 11, marginTop: 2, marginBottom: 6 },
   discAlbum: { backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, marginBottom: 8, overflow: "hidden" },
-  discHead: { flexDirection: "row", alignItems: "center", gap: 12, padding: 10 },
+  discHead: { flexDirection: "row", alignItems: "center", gap: 8, padding: 10 },
+  discHeadMain: { flex: 1, flexDirection: "row", alignItems: "center", gap: 12 },
+  albAct: { width: 34, height: 34, borderRadius: 17, alignItems: "center", justifyContent: "center" },
+  albPlay: { width: 34, height: 34, borderRadius: 17, alignItems: "center", justifyContent: "center", backgroundColor: colors.amberStrong, paddingLeft: 2 },
   discCover: { width: 54, height: 54, borderRadius: 8, backgroundColor: colors.surfaceAlt },
   discCoverEmpty: { alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.line },
   discTitle: { color: colors.text, fontSize: 14.5, fontWeight: "800" },
   discSub: { color: colors.textDim, fontFamily: mono, fontSize: 11, marginTop: 2, marginBottom: 4 },
   discTrack: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 8, paddingHorizontal: 12, borderTopWidth: 1, borderTopColor: colors.lineSoft },
+  discTrackMain: { flex: 1, flexDirection: "row", alignItems: "center", gap: 10 },
   discTrackNo: { color: colors.textFaint, fontFamily: mono, fontSize: 12, width: 20, textAlign: "center" },
+  discTrackTitleRow: { flexDirection: "row", alignItems: "center", gap: 5 },
   discTrackTitle: { color: colors.text, fontSize: 13.5, fontWeight: "600" },
   comingSoon: { flexDirection: "row", alignItems: "center", gap: 12, marginHorizontal: 16, marginTop: 12, padding: 14, borderRadius: radius.md, borderWidth: 1, borderColor: colors.amber, backgroundColor: "rgba(242,166,90,0.08)" },
   comingSoonTitle: { color: colors.text, fontSize: 14, fontWeight: "800" },
   comingSoonSub: { color: colors.textDim, fontSize: 11.5, marginTop: 2, lineHeight: 16 },
   songRow: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 12, marginBottom: 8 },
+  songMain: { flex: 1 },
   songTitle: { color: colors.text, fontSize: 15, fontWeight: "700" },
+  topSong: { flexDirection: "row", alignItems: "center", gap: 12, marginTop: 14, padding: 12, borderRadius: radius.md, borderWidth: 1, borderColor: colors.amber, backgroundColor: "rgba(242,166,90,0.07)" },
+  topSongPlay: { width: 40, height: 40, borderRadius: 20, alignItems: "center", justifyContent: "center", backgroundColor: colors.amberStrong, paddingLeft: 2 },
+  topSongKicker: { color: colors.amber, fontFamily: mono, fontSize: 10, letterSpacing: 1.2, fontWeight: "800" },
+  topSongTitle: { color: colors.text, fontSize: 15, fontWeight: "800", marginTop: 2 },
   songMeta: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 4 },
   songAvg: { color: colors.gold, fontFamily: mono, fontSize: 12, fontWeight: "700" },
   songMetaEmpty: { color: colors.textFaint, fontSize: 12, marginTop: 4 },

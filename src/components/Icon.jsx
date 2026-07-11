@@ -259,6 +259,16 @@ function paths(name, { stroke, solid, color, filled }) {
       return <Polyline points="6 9 12 15 18 9" {...stroke} />;
     case "star":
       return <Polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" {...solid} />;
+    case "shuffle":
+      return (
+        <>
+          <Polyline points="16 3 21 3 21 8" {...stroke} />
+          <Line x1="4" y1="20" x2="21" y2="3" {...stroke} />
+          <Polyline points="21 16 21 21 16 21" {...stroke} />
+          <Line x1="15" y1="15" x2="21" y2="21" {...stroke} />
+          <Line x1="4" y1="4" x2="9" y2="9" {...stroke} />
+        </>
+      );
     default:
       return null;
   }

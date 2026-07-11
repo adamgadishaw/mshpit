@@ -200,10 +200,23 @@ export function StoreProvider({ children }) {
   useEffect(() => save("pit.feed", feed), [feed]);
   useEffect(() => save("pit.follows", follows), [follows]);
 
-  // When you sign in (here or on a new device) apply the theme saved on your
-  // account. syncThemeFromAccount no-ops if it already matches, so this only
-  // reloads when the rendered theme and the account theme actually differ.
-  useEffect(() => { if (session?.theme) syncThemeFromAccount(session.theme); }, [session?.theme]);
+  // Theme reconciliation. A DEVICE choice (localStorage `pit_theme`, written when
+  // you pick a theme) always wins over the account, so hydrating /api/me can never
+  // yank the theme you just set out from under you and reload-loop back to it (the
+  // old "can't switch off Forest" bug). If the account is stale, we heal it up to
+  // the server instead of reloading. Only a device with NO local choice (a fresh
+  // login) adopts the account's theme.
+  useEffect(() => {
+    if (!session?.theme) return;
+    let localTheme = null;
+    try { localTheme = typeof window !== "undefined" && window.localStorage ? window.localStorage.getItem("pit_theme") : null; } catch {}
+    if (localTheme) {
+      if (session.theme !== localTheme) api("/api/me", { method: "PATCH", body: { theme: localTheme } }).catch(() => {});
+    } else {
+      syncThemeFromAccount(session.theme);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.theme]);
   // Keep the current user's playlists loaded (for the "add to playlist" picker + profile).
   useEffect(() => { loadMyPlaylists(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [session?.id]);
 

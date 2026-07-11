@@ -8,10 +8,12 @@ import { Platform } from "react-native";
 // tracks) still takes priority when a listener has linked a Premium account.
 const web = Platform.OS === "web" && typeof window !== "undefined";
 
-export function useAudioPreview(src, { enabled = true, onEnded } = {}) {
+export function useAudioPreview(src, { enabled = true, onEnded, startAt = 0 } = {}) {
   const audioRef = useRef(null);
   const endedRef = useRef(onEnded);
   endedRef.current = onEnded;
+  const startRef = useRef(startAt); // where to resume this src (survives a reload)
+  startRef.current = startAt;
   const [pos, setPos] = useState(0);
   const [dur, setDur] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -55,6 +57,12 @@ export function useAudioPreview(src, { enabled = true, onEnded } = {}) {
     setPos(0); setDur(0);
     if (!src) { try { a.pause(); a.removeAttribute("src"); a.load(); } catch {} return; }
     a.src = src;
+    // Resume where we left off before a reload (theme change / refresh), once.
+    const resumeAt = startRef.current;
+    if (resumeAt > 0.5) {
+      const seekOnce = () => { try { a.currentTime = Math.min(resumeAt, (a.duration || resumeAt) - 0.3); } catch {}; a.removeEventListener("loadedmetadata", seekOnce); };
+      a.addEventListener("loadedmetadata", seekOnce);
+    }
     a.play().catch(() => {});
   }, [src, enabled]);
 
