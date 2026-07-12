@@ -3,7 +3,8 @@
 // - all handlers are wrapped by the server's try/catch; throwing ApiError(status,
 //   message) is the ONLY sanctioned way to fail, anything else becomes a clean 500
 // - responses only ever contain public projections (publicUser), never raw rows
-import { randomUUID } from "node:crypto";
+import { randomUUID, randomBytes, createHash } from "node:crypto";
+import { sendEmail } from "./mailer.js";
 import { db, q, publicUser, artistStmts, publicArtist, artistRow, normName } from "./db.js";
 import { hashPassword, verifyPassword, createSession, destroySession, rateLimit } from "./auth.js";
 import { startCatalogSeed, catalogSeedStatus, stopCatalogSeed } from "./catalogSeed.js";
@@ -565,6 +566,47 @@ export const routes = {
     destroySession(ctx.token);
     ctx.clearSession();
     return { ok: true };
+  },
+
+  // Forgot password — email a one-hour reset link. Always responds the same way so
+  // it never reveals which emails have accounts. If email isn't configured yet, the
+  // link is logged server-side so the owner can still complete a reset.
+  "POST /api/forgot": async (ctx) => {
+    limit(ctx, "forgot", 5, 15 * 60 * 1000);
+    const email = cleanEmail(ctx.body?.email);
+    const generic = { ok: true };
+    if (!email) return generic;
+    const u = q.userByEmail.get(email);
+    if (!u || u.is_banned) return generic;
+    const token = randomBytes(32).toString("base64url");
+    const hash = createHash("sha256").update(token).digest("hex");
+    db.prepare("UPDATE users SET reset_hash=?, reset_expires=? WHERE id=?").run(hash, Date.now() + 60 * 60 * 1000, u.id);
+    const link = `${ctx.origin}/?reset=${token}`;
+    const r = await sendEmail({
+      to: email,
+      subject: "Reset your Pit password",
+      text: `Reset your Pit password with this link (valid 1 hour):\n${link}\n\nIf you didn't request this, ignore this email.`,
+      html: `<div style="font-family:system-ui,sans-serif;max-width:480px;margin:0 auto"><h2 style="color:#FF8C42">Reset your Pit password</h2><p>Tap the button to set a new password. This link is valid for 1 hour.</p><p><a href="${link}" style="display:inline-block;background:#FF8C42;color:#1A1206;font-weight:700;text-decoration:none;padding:12px 22px;border-radius:999px">Reset password</a></p><p style="color:#888;font-size:13px">If you didn't request this, you can safely ignore this email.</p></div>`,
+    });
+    if (!r.sent) console.log(`[reset] email not sent (${r.reason}); link for ${email}: ${link}`);
+    return generic;
+  },
+
+  // Complete a reset: swap the password, invalidate the token + all sessions, and
+  // sign the user straight in on this device.
+  "POST /api/reset": (ctx) => {
+    limit(ctx, "reset", 10, 15 * 60 * 1000);
+    const token = clean(ctx.body?.token, { max: 200 });
+    const password = typeof ctx.body?.password === "string" ? ctx.body.password : "";
+    if (!token || !isPassword(password)) throw new ApiError(400, "Need a valid link and a new password of at least 8 characters.");
+    const hash = createHash("sha256").update(token).digest("hex");
+    const u = db.prepare("SELECT * FROM users WHERE reset_hash=? AND reset_expires > ?").get(hash, Date.now());
+    if (!u) throw new ApiError(400, "This reset link is invalid or has expired. Request a new one.");
+    db.prepare("UPDATE users SET pass_hash=?, reset_hash=NULL, reset_expires=0 WHERE id=?").run(hashPassword(password), u.id);
+    db.prepare("DELETE FROM sessions WHERE user_id=?").run(u.id); // sign out everywhere else
+    const sess = createSession(u.id, ctx.ip, ctx.ua);
+    ctx.setSession(sess);
+    return { user: publicUser(q.userById.get(u.id), { self: true }) };
   },
 
   "GET /api/me": (ctx) => ({ user: ctx.user ? publicUser(ctx.user, { self: true }) : null }),

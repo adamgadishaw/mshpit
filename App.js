@@ -46,6 +46,7 @@ import AccountMenu from "./src/components/AccountMenu";
 import PlayerBar from "./src/components/PlayerBar";
 import PlaylistPickerScreen from "./src/screens/PlaylistPickerScreen";
 import PostScreen from "./src/screens/PostScreen";
+import ResetPasswordScreen from "./src/screens/ResetPasswordScreen";
 import BadgeLegendScreen from "./src/screens/BadgeLegendScreen";
 import WelcomeScreen from "./src/screens/WelcomeScreen";
 import FollowListScreen from "./src/screens/FollowListScreen";
@@ -120,6 +121,10 @@ function Root() {
   // First-run welcome (Spotify + find-your-people). Armed at signup, shown once the
   // taste picker is closed so it survives the theme reload PickArtists can trigger.
   const [welcome, setWelcome] = useState(false);
+  // Password reset: if we arrived on an emailed ?reset=TOKEN link, show the set-new-
+  // password screen over everything until it's completed or cancelled.
+  const [resetToken, setResetToken] = useState(() => { try { return web ? new URLSearchParams(window.location.search).get("reset") : null; } catch { return null; } });
+  const clearResetUrl = () => { try { if (web) window.history.replaceState({}, "", window.location.pathname); } catch {} setResetToken(null); };
   // The concert opening screen: fresh visitors (and anyone who logs out) see it;
   // "browse as guest" or logging in dismisses it. Guest choice persists.
   const [landing, setLanding] = useState(() => !load("pit.session", null) && !load("pit.entered", false));
@@ -513,6 +518,12 @@ function Root() {
             <Icon name="music" size={16} color={colors.gold} />
             <Text style={styles.spotifyBannerTxt}>{spotifyNotice}</Text>
             <Pressable onPress={dismissSpotifyNotice} hitSlop={8}><Icon name="x" size={15} color={colors.textDim} /></Pressable>
+          </View>
+        )}
+
+        {resetToken && (
+          <View style={styles.welcomeModal}>
+            <ResetPasswordScreen token={resetToken} onDone={clearResetUrl} onCancel={clearResetUrl} />
           </View>
         )}
 

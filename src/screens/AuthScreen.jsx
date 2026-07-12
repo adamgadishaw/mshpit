@@ -9,8 +9,9 @@ import PrivacyScreen from "./PrivacyScreen";
 import TermsScreen from "./TermsScreen";
 
 export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) {
-  const { login, signup } = useStore();
+  const { login, signup, forgotPassword } = useStore();
   const [mode, setMode] = useState(initialMode === "signup" ? "signup" : "login");
+  const [sentTo, setSentTo] = useState(null); // email a reset link was requested for
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -44,6 +45,48 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) 
   // Let people actually read what they're agreeing to, without leaving sign-up.
   if (viewing === "terms") return <TermsScreen onClose={() => setViewing(null)} />;
   if (viewing === "privacy") return <PrivacyScreen onClose={() => setViewing(null)} />;
+
+  const sendReset = async () => {
+    if (!email.trim()) { setError("Enter the email on your account."); return; }
+    await forgotPassword(email.trim());
+    setSentTo(email.trim());
+  };
+
+  // Forgot-password view: request a reset link, then a neutral confirmation.
+  if (mode === "forgot") {
+    return (
+      <View style={styles.wrap}>
+        <SheetHeader title="Reset password" onClose={onCancel} />
+        <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+          <Text style={styles.wordmark}>PIT</Text>
+          {sentTo ? (
+            <>
+              <Text style={[styles.tag, { marginBottom: 20 }]}>Check your email</Text>
+              <View style={styles.artistNote}>
+                <Icon name="mail" size={16} color={colors.amber} />
+                <Text style={styles.artistNoteTxt}>If an account exists for {sentTo}, we've emailed a link to reset your password. It's valid for 1 hour. Check spam if you don't see it.</Text>
+              </View>
+              <Pressable style={styles.primary} onPress={() => { setMode("login"); setSentTo(null); setError(""); }}>
+                <Text style={styles.primaryTxt}>BACK TO LOG IN</Text>
+              </Pressable>
+            </>
+          ) : (
+            <>
+              <Text style={[styles.tag, { marginBottom: 20 }]}>Enter your email and we'll send a reset link.</Text>
+              <TextInput style={styles.input} placeholder="Email" placeholderTextColor={colors.textFaint} value={email} onChangeText={setEmail} autoCapitalize="none" keyboardType="email-address" maxLength={120} onSubmitEditing={sendReset} />
+              {!!error && <Text style={styles.error}>{error}</Text>}
+              <Pressable style={styles.primary} onPress={sendReset}>
+                <Text style={styles.primaryTxt}>SEND RESET LINK</Text>
+              </Pressable>
+              <Pressable onPress={() => { setMode("login"); setError(""); }}>
+                <Text style={styles.switch}>Back to log in</Text>
+              </Pressable>
+            </>
+          )}
+        </ScrollView>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.wrap}>
@@ -94,6 +137,12 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) 
               <Text style={styles.link} onPress={() => setViewing("privacy")}>Privacy policy</Text>, including
               collection of my activity to personalize content and show relevant ads.
             </Text>
+          </Pressable>
+        )}
+
+        {mode === "login" && (
+          <Pressable onPress={() => { setMode("forgot"); setError(""); }} hitSlop={6}>
+            <Text style={styles.forgot}>Forgot password?</Text>
           </Pressable>
         )}
 
@@ -153,6 +202,7 @@ const styles = StyleSheet.create({
   primaryOff: { opacity: 0.5 },
   primaryTxt: { color: "#1A1206", fontSize: 15, fontWeight: "800", letterSpacing: 1 },
   switch: { color: colors.amber, fontSize: 14, textAlign: "center", marginTop: 18 },
+  forgot: { color: colors.textDim, fontSize: 13, textAlign: "right", marginTop: 4, marginBottom: 2 },
   artistNote: { flexDirection: "row", gap: 10, backgroundColor: colors.bgElev, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 14, marginTop: 24 },
   artistNoteTxt: { color: colors.textDim, fontSize: 12, lineHeight: 18, flex: 1 },
   seed: { marginTop: 20, backgroundColor: colors.surface, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.lineSoft, padding: 14 },

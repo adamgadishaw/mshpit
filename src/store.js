@@ -676,6 +676,21 @@ export function StoreProvider({ children }) {
     return { ok: true };
   };
 
+  // Request a password-reset email. Always resolves ok (never leaks which emails
+  // have accounts); the server emails a 1-hour link.
+  const forgotPassword = async (email) => {
+    try { await api("/api/forgot", { method: "POST", body: { email } }); } catch {}
+    return { ok: true };
+  };
+  // Complete a reset from the emailed token; on success we're signed in.
+  const resetPassword = async (token, password) => {
+    try {
+      const { user } = await api("/api/reset", { method: "POST", body: { token, password } });
+      absorbServerUser(user);
+      return { ok: true };
+    } catch (e) { return { ok: false, error: e.status ? e.message : "Couldn't reset. Try requesting a new link." }; }
+  };
+
   // Ensure a handle is unique by suffixing a number if taken.
   const uniqueHandle = (base) => {
     let h = cleanHandle(base) || "fan";
@@ -1943,7 +1958,7 @@ export function StoreProvider({ children }) {
   const value = {
     users, session, feed, removedIds, requests, tourDates, reports, follows,
     userById, userByHandle, logsByUser, sharedShows,
-    login, signup, logout, updateProfile, chooseTheme,
+    login, signup, logout, forgotPassword, resetPassword, updateProfile, chooseTheme,
     addLog, reportContent, actionReport, dismissReport, removeContent, restoreContent,
     requestArtist, approveArtist, rejectArtist,
     addTourDatesBatch,

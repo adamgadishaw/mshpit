@@ -354,6 +354,8 @@ for (const stmt of [
   "ALTER TABLE artists ADD COLUMN searches INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE comments ADD COLUMN parent_id TEXT", // forum-style reply threading
   "ALTER TABLE users ADD COLUMN sponsor INTEGER NOT NULL DEFAULT 0", // admin-granted partner mark
+  "ALTER TABLE users ADD COLUMN reset_hash TEXT", // sha256 of a password-reset token
+  "ALTER TABLE users ADD COLUMN reset_expires INTEGER NOT NULL DEFAULT 0",
 ]) { try { db.exec(stmt); } catch {} }
 
 // --- tiny helpers ------------------------------------------------------------
