@@ -194,6 +194,7 @@ export default function AdminScreen({ onClose }) {
     return () => clearInterval(id);
   }, [tab, seedJob?.running]);
   const startSeed = async () => { const r = await startCatalogSeed(seedAdd); if (r?.status) setSeedJob(r.status); refreshSeed(); };
+  const refreshSongs = async () => { const r = await startCatalogSeed({ mode: "refresh" }); if (r?.status) setSeedJob(r.status); refreshSeed(); };
   const stopSeed = async () => { const s = await stopCatalogSeed(); if (s) setSeedJob(s); };
   const seedNames = async (names) => {
     if (!names.length) return;
@@ -454,6 +455,8 @@ export default function AdminScreen({ onClose }) {
                     <Text style={styles.seedRunTxt}>
                       {seedJob.note === "stopping"
                         ? "Stopping…"
+                        : seedJob.phase === "songs"
+                        ? `Filling songs & genres… ${seedJob.ranked.toLocaleString()} done`
                         : seedJob.phase === "enrich"
                         ? `Ranking with Deezer… ${seedJob.ranked.toLocaleString()} enriched`
                         : `Crawling ${seedJob.note || ""}… +${seedJob.added.toLocaleString()} added`}
@@ -481,7 +484,12 @@ export default function AdminScreen({ onClose }) {
                       <Text style={styles.seedTxt}>Grow by {(seedAdd / 1000) + "k"}</Text>
                     </Pressable>
                   </View>
-                  {(seedJob?.phase === "done" || seedJob?.phase === "stopped") && <Text style={styles.growDone}>{seedJob.phase === "stopped" ? "Stopped" : "Last run"}: +{seedJob.added.toLocaleString()} added, {seedJob.ranked.toLocaleString()} ranked. Run again to resume.</Text>}
+                  <Pressable style={styles.refreshBtn} onPress={refreshSongs}>
+                    <Icon name="play" size={13} color={colors.amber} />
+                    <Text style={styles.refreshTxt}>Refresh songs & genres</Text>
+                  </Pressable>
+                  <Text style={styles.catHint}>Fills in the top song + genre for ranked artists that don't have one yet (fixes blank "top song"s on Discover). Background job, most-popular first.</Text>
+                  {(seedJob?.phase === "done" || seedJob?.phase === "stopped") && <Text style={styles.growDone}>{seedJob.phase === "stopped" ? "Stopped" : "Last run"}: {seedJob.mode === "refresh" ? `${seedJob.ranked.toLocaleString()} songs filled.` : `+${seedJob.added.toLocaleString()} added, ${seedJob.ranked.toLocaleString()} ranked.`} Run again to resume.</Text>}
                   {seedJob?.phase === "error" && <Text style={styles.growErr}>Last run failed: {seedJob.error}</Text>}
                 </>
               )}
@@ -629,6 +637,8 @@ const styles = StyleSheet.create({
   growBtn: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: colors.amberStrong, borderRadius: radius.pill, paddingHorizontal: 14, paddingVertical: 8, marginLeft: "auto" },
   growDone: { color: colors.good, fontSize: 11.5, marginTop: 8, fontFamily: mono },
   growErr: { color: colors.danger, fontSize: 11.5, marginTop: 8 },
+  refreshBtn: { flexDirection: "row", alignItems: "center", gap: 6, alignSelf: "flex-start", marginTop: 12, paddingHorizontal: 12, paddingVertical: 8, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.amber, backgroundColor: "rgba(242,166,90,0.08)" },
+  refreshTxt: { color: colors.amber, fontSize: 12.5, fontWeight: "800" },
   seedRun: { marginTop: 6 },
   seedRunHead: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 8 },
   liveDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.good },

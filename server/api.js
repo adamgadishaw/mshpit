@@ -7,7 +7,7 @@ import { randomUUID, randomBytes, createHash } from "node:crypto";
 import { sendEmail } from "./mailer.js";
 import { db, q, ytStmts, publicUser, artistStmts, publicArtist, artistRow, normName } from "./db.js";
 import { hashPassword, verifyPassword, createSession, destroySession, rateLimit } from "./auth.js";
-import { startCatalogSeed, catalogSeedStatus, stopCatalogSeed } from "./catalogSeed.js";
+import { startCatalogSeed, catalogSeedStatus, stopCatalogSeed, deezerEnrich } from "./catalogSeed.js";
 import { clean, cleanEmail, isEmail, cleanName, isName, cleanHandle, isPassword, clampRating, cleanStringArray, shape, LIMITS } from "./validate.js";
 
 export class ApiError extends Error {
@@ -180,6 +180,8 @@ const GENRE_ALIAS = {
   "singer-songwriter": "Singer-Songwriter", "singer songwriter": "Singer-Songwriter",
   "afrobeats": "Afrobeat", "alt rock": "Alternative Rock", "alt-rock": "Alternative Rock",
   "indie": "Indie", "indie rock": "Indie", "indie pop": "Indie",
+  // Deezer's compound genre labels (from the enrichment pass).
+  "rap/hip hop": "Hip-Hop", "soul & funk": "Soul", "latin music": "Latin", "electro": "Electronic",
 };
 function canonGenre(g) {
   if (!g) return null;
@@ -208,28 +210,25 @@ function chartRow(name, a, rank, extra = {}) {
   return { rank, name: a?.name || name, genre: canonGenre(a?.genre) || null, popularity: a?.popularity ?? null, followers: (() => { try { return a?.data ? JSON.parse(a.data).followers ?? null : null; } catch { return null; } })(), photo: a?.photo || null, topTrack: top, ...extra };
 }
 
-// Enrich a (usually thin) catalog artist from Deezer: photo, popularity, and top
-// track titles. Upserts into the artists table so the page fills in. Returns true
-// if Deezer had a match.
+// Enrich a (usually thin) catalog artist from Deezer: photo, popularity, top
+// tracks, and a genre if it has none. Uses the shared exact-name-preferred matcher
+// so we don't attach a same-named act's photo/songs. Upserts so the page fills in.
+// Returns true if Deezer had a match.
 async function enrichArtistFromDeezer(name) {
-  const s = await dz(`https://api.deezer.com/search/artist?q=${encodeURIComponent(name)}&limit=1`);
-  const dzA = s?.data?.[0];
-  if (!dzA) return false;
+  const e = await deezerEnrich(name);
+  if (!e) return false;
   const existing = artistStmts.byNorm.get(normName(name));
   let data = {};
   try { data = existing?.data ? JSON.parse(existing.data) : {}; } catch {}
-  const top = await dz(`https://api.deezer.com/artist/${dzA.id}/top?limit=10`);
-  data.topTracks = (top?.data || []).map((t) => ({ title: t.title, album: t.album?.title || null, preview: t.preview || null }));
-  data.name = existing?.name || dzA.name;
-  const pop = Math.max(1, Math.min(100, Math.round(Math.log10((dzA.nb_fan || 0) + 1) * 12.5)));
-  const now = Date.now();
-  artistStmts.upsert.run({
-    norm: normName(name), name: existing?.name || dzA.name, genre: existing?.genre || null,
-    photo: dzA.picture_xl || dzA.picture_big || null, bio: existing?.bio || null,
-    mbid: existing?.mbid || null, spotify_id: existing?.spotify_id || null, country: existing?.country || null,
-    formed: existing?.formed || null, popularity: pop, rank_score: Math.round(pop * 1000),
-    data: JSON.stringify(data), source: existing?.source || "deezer", created_at: existing?.created_at || now, updated_at: now,
-  });
+  const merged = {
+    ...data,
+    name: existing?.name || name,
+    genre: existing?.genre || e.genre || null,
+    photo: e.photo || data.photo || null,
+    mbid: existing?.mbid || null, country: existing?.country || null, beginYear: existing?.formed || null,
+    popularity: e.popularity, followers: e.followers, topTracks: e.topTracks,
+  };
+  artistStmts.upsert.run(artistRow(normName(name), merged, "deezer"));
   return true;
 }
 
@@ -1125,6 +1124,8 @@ export const routes = {
   // GET for live progress. No bundle change, nothing to deploy.
   "POST /api/admin/catalog/seed": (ctx) => {
     requireAdmin(ctx);
+    const mode = ctx.body?.mode === "refresh" ? "refresh" : "grow";
+    if (mode === "refresh") return startCatalogSeed({ mode });
     const add = Math.max(100, Math.min(20000, Number(ctx.body?.add) || 2000));
     return startCatalogSeed({ add });
   },
