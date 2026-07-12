@@ -9,7 +9,17 @@ const MONTHS = ["January", "February", "March", "April", "May", "June", "July", 
 const DOW = ["S", "M", "T", "W", "T", "F", "S"];
 const pad = (n) => String(n).padStart(2, "0");
 const keyOf = (y, m, d) => `${y}-${pad(m + 1)}-${pad(d)}`;
-const dayKeyFromDate = (s) => (s ? String(s).slice(0, 10) : null);
+// Dates in this app come in mixed shapes: ISO "2026-06-21", the seed's
+// "2026 · 08 · 14" (middot), and the odd mojibake separator. Pull the first
+// year/month/day number groups regardless of separator, else fall back to Date.
+const dayKeyFromDate = (s) => {
+  if (!s) return null;
+  const str = String(s);
+  const m = str.match(/(\d{4})\D+(\d{1,2})\D+(\d{1,2})/);
+  if (m) return `${m[1]}-${pad(+m[2])}-${pad(+m[3])}`;
+  const d = new Date(str);
+  return isNaN(d.getTime()) ? null : keyOf(d.getFullYear(), d.getMonth(), d.getDate());
+};
 const prettyDay = (k) => {
   const [y, m, d] = k.split("-").map(Number);
   const dt = new Date(y, m - 1, d);
