@@ -28,7 +28,7 @@ function ActionRow({ icon, label, sub, onPress, danger }) {
   );
 }
 
-export default function YouScreen({ feed, onLogin, onLogout, onAdmin, onAddTourDate, onRequestArtist, onEditProfile, onOpenProfile, onOpen, onActivity, onInbox }) {
+export default function YouScreen({ feed, onLogin, onLogout, onAdmin, onAddTourDate, onRequestArtist, onEditProfile, onOpenProfile, onOpen, onActivity, onInbox, onCalendar }) {
   const { session, logsByUser, unreadNotifications, inboxUnread } = useStore();
   const mine = session ? logsByUser(session.id) : [];
   const notif = session ? unreadNotifications() : 0;
@@ -87,11 +87,12 @@ export default function YouScreen({ feed, onLogin, onLogout, onAdmin, onAddTourD
         <Text style={styles.recapCta}>tap to see your full year</Text>
       </View>
 
-      {(onActivity || onInbox) && (
+      {(onActivity || onInbox || onCalendar) && (
         <>
           <Text style={styles.sectionLabel}>SOCIAL</Text>
           {onActivity && <ActionRow icon="bell" label="Activity" sub={notif ? `${notif} new` : "Follows, likes, replies"} onPress={onActivity} />}
           {onInbox && <ActionRow icon="mail" label="Inbox" sub={unread ? `${unread} unread` : "Your messages"} onPress={onInbox} />}
+          {onCalendar && <ActionRow icon="calendar" label="Calendar" sub="Upcoming shows + your plans" onPress={onCalendar} />}
         </>
       )}
 

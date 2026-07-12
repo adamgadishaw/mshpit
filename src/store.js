@@ -434,6 +434,9 @@ export function StoreProvider({ children }) {
   const discoverCountries = async ({ min = 5 } = {}) => {
     try { return await api("/api/discover/countries?min=" + min); } catch { return { countries: [] }; }
   };
+  // Authoritative server clock (so the calendar marks "today" without trusting the
+  // device clock). Returns { now, iso, tz, offsetMinutes } or null when offline.
+  const serverTime = async () => { try { return await api("/api/time"); } catch { return null; } };
 
   const resolveDeezerPreview = async (title, artist) => {
     if (!title) return null;
@@ -1956,7 +1959,7 @@ export function StoreProvider({ children }) {
     loadUser, followersOf, followingOf,
     isBlocked, blockUser, unblockUser, blockedUsers, exportMyData,
     searchArtistsApi, resolveArtist, remoteArtistMeta, artistDiscography, resolveYouTube, resolveDeezerPreview,
-    discoverChart, discoverGenres, discoverCountries,
+    discoverChart, discoverGenres, discoverCountries, serverTime,
     playHistory, recordPlay, snapshots, saveSnapshot, removeSnapshot, friendsListening, loadFriendsListening, userPlaylists, deletePlaylist,
     favoriteGenre, recommendTracks, autoplayQueue, myPlaylists, loadMyPlaylists, createPlaylist, addToPlaylist,
     drafts, saveDraft, deleteDraft,

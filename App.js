@@ -17,6 +17,7 @@ import ShowScreen from "./src/screens/ShowScreen";
 import LoungeScreen from "./src/screens/LoungeScreen";
 import InboxScreen from "./src/screens/InboxScreen";
 import NotificationsScreen from "./src/screens/NotificationsScreen";
+import CalendarScreen from "./src/screens/CalendarScreen";
 import ThreadScreen from "./src/screens/ThreadScreen";
 import VenueReviewScreen from "./src/screens/VenueReviewScreen";
 import FanClubScreen from "./src/screens/FanClubScreen";
@@ -303,6 +304,7 @@ function Root() {
   else if (nav.thread) overlay = <ThreadScreen otherId={nav.thread} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} />;
   else if (nav.inbox) overlay = <InboxScreen onClose={back} onOpenThread={openThread} />;
   else if (nav.notifications) overlay = <NotificationsScreen onClose={back} onOpenProfile={openProfile} onOpenThread={openThread} onOpen={openShow} onOpenPost={openPost} />;
+  else if (nav.calendar) overlay = <CalendarScreen onClose={back} onOpen={openShow} onOpenArtist={openArtist} />;
   else if (nav.profileId) overlay = <ProfileScreen userId={nav.profileId} onClose={back} onOpenShow={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onEditProfile={() => go({ editProfile: true })} onPreview={showPreview} onMessage={openThread} onReport={(log) => requireAuth(() => go({ reporting: log }))} onOpenPhotos={openPhotos} onPlay={openPlayer} onOpenFollowList={openFollowList} onOpenBadges={openBadges} />;
   else if (nav.fanClub) overlay = <FanClubScreen artist={nav.fanClub} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} />;
   else if (nav.editArtist) overlay = <EditArtistProfileScreen artistName={nav.editArtist} onClose={back} />;
@@ -386,6 +388,7 @@ function Root() {
                   onOpen={openShow}
                   onActivity={openNotifications}
                   onInbox={openInbox}
+                  onCalendar={() => go({ calendar: true })}
                 />
               )}
             </View>

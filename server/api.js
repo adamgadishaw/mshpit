@@ -237,6 +237,16 @@ export const routes = {
   // ---- health ---- (youtube config flag is a safe diagnostic, no secrets)
   "GET /api/health": () => ({ ok: true, ts: now(), youtube: !!process.env.YOUTUBE_API_KEY }),
 
+  // ---- server clock ---- authoritative time so the calendar + scheduling don't
+  // trust the device clock. Returns epoch ms, ISO, the server's IANA timezone and
+  // its current UTC offset (minutes), so the client can render "today" correctly.
+  "GET /api/time": () => {
+    const d = new Date();
+    let tz = "UTC";
+    try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch {}
+    return { now: d.getTime(), iso: d.toISOString(), tz, offsetMinutes: -d.getTimezoneOffset() };
+  },
+
   // ---- artist catalog (DB-backed; scales past the bundled JSON) ----
   // Search the catalog. Empty query → the top artists by rank. Notable artists
   // surface first (rank_score); exact name matches float to the top.
