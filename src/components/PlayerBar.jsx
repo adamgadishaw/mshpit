@@ -188,9 +188,13 @@ export default function PlayerBar({ player, onClose, onIndex, onPlayAt, onRemove
   // Auto-advance when the YouTube track ends (fires once, via the player's state).
   useEffect(() => { yt.onEnded(() => { if (hasNext) onIndex?.(index + 1); }); }); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Show / hide the floating video (audio keeps playing either way).
+  // Show / hide the floating video window (audio keeps playing either way).
   const [showVideo, setShowVideo] = useState(true);
   useEffect(() => { yt.setVisible(ytActive && showVideo); }, [ytActive, showVideo]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Keep the window's title current and wire its prev / next / close buttons to the
+  // same queue the top bar drives, so the pop-out player is fully in sync.
+  useEffect(() => { yt.setMeta({ title: cur ? (cur.title || cur.artist || "Now playing") : "Now playing" }); }, [curKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { yt.setControls({ onPrev: () => onIndex?.(index - 1), onNext: () => onIndex?.(index + 1), onClose: () => setShowVideo(false) }); }); // eslint-disable-line react-hooks/exhaustive-deps
 
   const [open, setOpen] = useState(false);
   const [saved, setSaved] = useState(false);
