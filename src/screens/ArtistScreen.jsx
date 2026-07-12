@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, ScrollView, Pressable, Linking, Image, TextInpu
 import { colors, mono, radius } from "../theme";
 import { useStore, isStaff } from "../store";
 import { artistMeta } from "../seed/ingested";
-import { SONGS, listenUrl } from "../seed/songs";
+import { SONGS } from "../seed/songs";
 import Stars from "../components/Stars";
 import TapStars from "../components/TapStars";
 import RatingSplit from "../components/RatingSplit";
@@ -39,7 +39,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
   const { session, artistSummary, albumRating, songRating, rateAlbum, rateSong, loadRating,
     isArtistOwner, artistPostsFor, loadArtistPage, addArtistPost, removeArtistPost,
     artistGallery, removePhoto, artistBadges, artistRank, remoteArtistMeta, resolveArtist,
-    artistDiscography, resolveSpotifyTrack } = useStore();
+    artistDiscography } = useStore();
   const a = artistSummary(artistName);
   const badges = artistBadges(a.name);
   const rank = artistRank(a.name);
@@ -53,9 +53,10 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
   // Real Spotify top tracks when ingested; hand-seeded SONGS as the fallback.
   const spotTracks = (meta?.topTracks || []).map((t, i) => ({ id: "sp_" + i, title: t.title, artist: a.name, album: t.album, url: t.url, preview: t.preview }));
   const songs = spotTracks.length ? spotTracks : SONGS.filter((s) => s.artist.toLowerCase() === a.name.toLowerCase()).slice(0, 8);
-  // Queue for the top player, every playable track on the page, so next/prev walk
-  // this artist's songs while you keep browsing.
-  const songQueue = songs.filter((s) => s.url || s.preview).map((s) => ({ kind: "track", url: s.url || null, preview: s.preview || null, title: s.title, artist: a.name, art: a.photo || meta?.photo || null }));
+  // Queue for the top player, every track on the page (all playable — the player
+  // resolves each to a YouTube video by title, or a Deezer preview), so next/prev
+  // walk this artist's songs while you keep browsing.
+  const songQueue = songs.filter((s) => s.title).map((s) => ({ kind: "track", url: null, preview: s.preview || null, title: s.title, artist: a.name, art: a.photo || meta?.photo || null }));
 
   // Artist-owned profile: the band's account can edit its header + post updates.
   const isOwner = isArtistOwner(a.name);
@@ -74,15 +75,12 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
     setOpenAlbum((cur) => (cur === id ? null : id));
     (tracks || []).forEach((t) => loadRating("song", a.name, t.title));
   };
-  const playTrack = async (t, cover) => {
-    // Deezer album tracks carry a 30s preview mp3 that plays for everyone (no
-    // Spotify needed); fall back to a known/Spotify URL only if there's no preview.
+  const playTrack = (t, cover) => {
+    // Every track is playable: the top player resolves it to a YouTube video by
+    // title/artist, or a Deezer 30s preview mp3 when there's no match.
     const known = songQueue.find((s) => s.title === t.title);
     const preview = t.preview || known?.preview || null;
-    let url = known?.url || null;
-    if (!preview && !url) url = await resolveSpotifyTrack(t.title, a.name);
-    if (!preview && !url) return;
-    onPlay?.({ kind: "track", title: t.title, artist: a.name, url, preview, art: cover || a.photo || meta?.photo || null }, songQueue.length ? songQueue : undefined);
+    onPlay?.({ kind: "track", title: t.title, artist: a.name, url: null, preview, art: cover || a.photo || meta?.photo || null }, songQueue.length ? songQueue : undefined);
   };
   // Listen = play a random song from this artist's catalog, with the rest queued up
   // (the player then keeps going with genre-matched recommendations).
@@ -90,24 +88,22 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
     if (songQueue.length) {
       const shuffled = [...songQueue].sort(() => Math.random() - 0.5);
       onPlay?.(shuffled[0], shuffled);
-    } else if (meta?.spotifyId) {
-      onPlay?.({ kind: "artist", id: meta.spotifyId, artist: a.name });
     } else {
-      Linking.openURL(`https://www.youtube.com/results?search_query=${encodeURIComponent(a.name)}`);
+      // No listed songs yet: let the player find the artist on YouTube by name.
+      onPlay?.({ kind: "track", title: a.name, artist: a.name, art: a.photo || meta?.photo || null });
     }
   };
   const addSong = (t) => onAddToPlaylist?.({ title: t.title, artist: a.name, url: t.url || null, preview: t.preview || null, art: t.art || a.photo || meta?.photo || null });
 
   // Play a single top-track (its own song, then genre-matched recs continue).
   const playSingle = (s) => {
-    if (s.url || s.preview) onPlay?.({ kind: "track", url: s.url || null, preview: s.preview || null, title: s.title, artist: a.name, art: a.photo || meta?.photo || null }, songQueue);
-    else Linking.openURL(listenUrl(s));
+    onPlay?.({ kind: "track", url: null, preview: s.preview || null, title: s.title, artist: a.name, art: a.photo || meta?.photo || null }, songQueue);
   };
   // Play an album AS AN ALBUM: in track order (optionally starting mid-album), or
   // shuffled. Recs append after the last track, so shuffle "kicks in" when it ends.
   const albumTrack = (t, al) => ({ kind: "track", title: t.title, artist: a.name, preview: t.preview || null, art: al.cover || a.photo || meta?.photo || null });
   const playAlbum = (al, startTitle = null, shuffle = false) => {
-    let tracks = (al.tracks || []).map((t) => albumTrack(t, al)).filter((t) => t.preview);
+    let tracks = (al.tracks || []).map((t) => albumTrack(t, al)).filter((t) => t.title);
     if (!tracks.length) return;
     if (shuffle) tracks = [...tracks].sort(() => Math.random() - 0.5);
     else if (startTitle) { const i = tracks.findIndex((t) => t.title === startTitle); if (i > 0) tracks = tracks.slice(i); }
@@ -483,7 +479,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
           <>
             <Text style={styles.sectionLabel}>POPULAR SONGS</Text>
             <Text style={styles.bio}>
-              {spotTracks.length ? "Their biggest tracks, live from Spotify. Rate the hits, stars show what fans think." : "Rate the hits. Stars show what fans think (real stream data comes later)."}
+              {spotTracks.length ? "Their biggest tracks. Tap to play, rate the hits, stars show what fans think." : "Rate the hits. Stars show what fans think (real stream data comes later)."}
             </Text>
             {songs.map((s) => {
               const sr = songRating(a.name, s.title);

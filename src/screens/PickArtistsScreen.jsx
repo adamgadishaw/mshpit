@@ -36,7 +36,7 @@ function ArtistTile({ a, picked, onToggle }) {
 const MIN_PICKS = 3;
 
 export default function PickArtistsScreen({ onDone, onSkip }) {
-  const { session, updateProfile, chooseTheme, spotifyConnected, connectSpotify } = useStore();
+  const { session, updateProfile, chooseTheme } = useStore();
   const [q, setQ] = useState("");
   const [picked, setPicked] = useState(() => new Set(session?.favoriteArtists || []));
   const [theme, setThemeChoice] = useState(themeKey); // the current/default preset
@@ -122,17 +122,6 @@ export default function PickArtistsScreen({ onDone, onSkip }) {
         </CardGrid>
         {!query && all.length > 60 && (
           <Text style={styles.moreHint}>Showing the {Math.min(60, all.length)} most popular. Search to find anyone.</Text>
-        )}
-
-        {!spotifyConnected && (
-          <Pressable style={styles.spotify} onPress={connectSpotify}>
-            <View style={styles.spotifyIcon}><Icon name="music" size={18} color={colors.good} /></View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.spotifyTitle}>Connect Spotify</Text>
-              <Text style={styles.spotifySub}>Play full songs in the app as you browse. Premium accounts stream complete tracks.</Text>
-            </View>
-            <Icon name="chevron-right" size={18} color={colors.good} />
-          </Pressable>
         )}
       </ScrollView>
     </View>

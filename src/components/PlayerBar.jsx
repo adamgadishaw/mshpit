@@ -2,10 +2,9 @@ import { useEffect, useRef, useState } from "react";
 import { View, Text, StyleSheet, Pressable, Image, ScrollView, Platform } from "react-native";
 import { colors, radius, mono, shadow } from "../theme";
 import { useStore } from "../store";
-import { useSpotifyPlayer } from "../lib/spotifyPlayer";
+import { useYouTubePlayer } from "../lib/youtubePlayer";
 import { useAudioPreview } from "../lib/audioPreview";
 import Icon from "./Icon";
-import { spotifyId } from "./SpotifyEmbed";
 
 const web = Platform.OS === "web";
 
@@ -108,66 +107,51 @@ function VolumeControl({ volume, onChange }) {
   );
 }
 
-// Persistent top player. One unified in-app player: streams the FULL track through
-// the user's own Spotify (Web Playback SDK) when they've connected Premium, and
-// otherwise plays a Deezer 30s preview mp3, so every song is playable for everyone
-// with no confusing embedded Spotify window. Plays ONE track at a time, driven by
-// our own queue index, so the song you tap is always the song that plays.
+// Persistent top player. One unified in-app player that streams the FULL song or
+// video through the YouTube IFrame Player, so every track plays for everyone with
+// no account and no Premium. When YouTube has no match it falls back to a Deezer
+// 30s preview mp3. Plays ONE track at a time, driven by our own queue index, so the
+// song you tap is always the song that plays.
 export default function PlayerBar({ player, onClose, onIndex, onPlayAt, onRemove, onMoveNext, history = [], onSaveSession, onPlayTrack, onOpenArtist, onAddToPlaylist }) {
-  const { spotifyConnected, connectSpotify, resolveSpotifyTrack, resolveDeezerPreview } = useStore();
+  const { resolveYouTube, resolveDeezerPreview } = useStore();
   const list = player && Array.isArray(player.list) ? player.list : [];
   const index = Math.max(0, Math.min(player?.index || 0, list.length - 1));
   const cur = list[index];
   const curKey = cur ? (cur.url || cur.id || cur.preview || cur.title) : null;
 
-  const { ready, state, error, playUris, toggle, seek, setVolume } = useSpotifyPlayer(spotifyConnected && !!cur);
+  const yt = useYouTubePlayer(web);
 
   // Volume (0–1), persisted across sessions; applied to whichever engine is live.
   const [volume, setVol] = useState(() => { try { return web && typeof localStorage !== "undefined" ? Math.max(0, Math.min(1, JSON.parse(localStorage.getItem("pit.volume") ?? "0.8"))) : 0.8; } catch { return 0.8; } });
   useEffect(() => { try { if (web) localStorage.setItem("pit.volume", String(volume)); } catch {} }, [volume]);
-  useEffect(() => { if (setVolume) setVolume(volume); }, [volume, setVolume, ready]);
+  useEffect(() => { yt.setVolume(volume); }, [volume, yt.ready]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Give the SDK a generous window to come up before we fall back to preview, and
-  // clear the flag the moment it connects (so a slow start doesn't latch us out).
-  const [failed, setFailed] = useState(false);
+  // Resolve the CURRENT track: a YouTube video ID for full playback AND a Deezer
+  // preview mp3 in parallel, so the preview is ready as a fallback if YouTube has
+  // no match or the video turns out to be un-embeddable. One track at a time.
+  const [resolved, setResolved] = useState({ key: null, videoId: null, preview: null });
   useEffect(() => {
-    if (!spotifyConnected || ready) { setFailed(false); return; }
-    const t = setTimeout(() => setFailed(true), 12000);
-    return () => clearTimeout(t);
-  }, [spotifyConnected, ready]);
-  const blocked = failed || !!error;
-  const wantSdk = spotifyConnected && ready && !blocked;
-  const connecting = spotifyConnected && !ready && !blocked;
-
-  // Resolve the CURRENT track for whichever engine is live: a Spotify URI for full
-  // playback (looked up by title/artist when the track only has a Deezer link), or
-  // a Deezer preview mp3 otherwise. One track at a time = the right song, always.
-  const [resolved, setResolved] = useState({ key: null, uri: null, preview: null });
-  useEffect(() => {
-    if (!cur) { setResolved({ key: null, uri: null, preview: null }); return; }
+    if (!cur) { setResolved({ key: null, videoId: null, preview: null }); return; }
     let cancelled = false;
     (async () => {
-      if (wantSdk) {
-        let uri = null;
-        const id = spotifyId(cur.url || cur.id, "track");
-        if (id) uri = "spotify:track:" + id;
-        else { const url = await resolveSpotifyTrack(cur.title, cur.artist); const rid = spotifyId(url, "track"); if (rid) uri = "spotify:track:" + rid; }
-        let preview = null;
-        if (!uri) preview = cur.preview || (await resolveDeezerPreview(cur.title, cur.artist));
-        if (!cancelled) setResolved({ key: curKey, uri, preview });
-      } else {
-        let preview = cur.preview || null;
-        if (!preview) preview = await resolveDeezerPreview(cur.title, cur.artist);
-        if (!cancelled) setResolved({ key: curKey, uri: null, preview });
-      }
+      const [videoId, preview] = await Promise.all([
+        resolveYouTube(cur.title, cur.artist),
+        cur.preview ? Promise.resolve(cur.preview) : resolveDeezerPreview(cur.title, cur.artist),
+      ]);
+      if (!cancelled) setResolved({ key: curKey, videoId, preview });
     })();
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [curKey, wantSdk]);
+  }, [curKey]);
 
   const forThis = resolved.key === curKey;
-  const sdkActive = wantSdk && forThis && !!resolved.uri;
-  const previewSrc = !sdkActive && forThis ? resolved.preview : null;
+  // A video the current player errored on (embedding disabled / removed) is not
+  // usable — drop to the preview instead of playing silence.
+  const ytFailed = !!yt.error && (yt.error.kind === "embed" || yt.error.kind === "playback");
+  const hasVideo = forThis && !!resolved.videoId && !ytFailed;
+  const ytActive = hasVideo && yt.ready;
+  const connecting = hasVideo && !yt.ready;
+  const previewSrc = forThis && !hasVideo ? resolved.preview : null;
   const hasNext = index < list.length - 1;
 
   // Resume across reloads (theme switch / F5): remember where we were and pick the
@@ -178,37 +162,35 @@ export default function PlayerBar({ player, onClose, onIndex, onPlayAt, onRemove
   const resumeMs = !resumedRef.current && resume && resume.key === curKey ? (resume.ms || 0) : 0;
 
   const audio = useAudioPreview(previewSrc, {
-    enabled: !sdkActive,
+    enabled: !ytActive,
     onEnded: () => { if (hasNext) onIndex?.(index + 1); },
     startAt: resumeMs / 1000,
     volume,
   });
 
-  // Stream a single resolved URI through the SDK; our index (prev/next) drives it.
+  // Load the resolved video into the YouTube player; our index (prev/next) drives
+  // it. loadVideoById auto-plays, matching tap-to-play. Resume seeks on reload.
   const sigRef = useRef("");
   useEffect(() => {
-    if (!sdkActive) return;
-    const sig = resolved.uri + "@" + index;
+    if (!ytActive) return;
+    const sig = resolved.videoId + "@" + index;
     if (sig === sigRef.current) return;
     sigRef.current = sig;
-    playUris([resolved.uri], 0);
-    if (resumeMs > 1000) { const at = resumeMs; setTimeout(() => seek(at), 900); } // resume full track after reload
+    yt.load(resolved.videoId, { startSec: resumeMs > 1000 ? resumeMs / 1000 : 0 });
     resumedRef.current = true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sdkActive, resolved.uri, index]);
+  }, [ytActive, resolved.videoId, index]);
+  // When the preview engine is driving this track, stop any video still playing.
+  useEffect(() => { if (forThis && !ytActive) yt.pause(); }, [forThis, ytActive, curKey]); // eslint-disable-line react-hooks/exhaustive-deps
   // Mark preview resume consumed once it's flowing, so later tracks start at 0.
   useEffect(() => { if (previewSrc && resumeMs > 0) resumedRef.current = true; }, [previewSrc, resumeMs]);
 
-  // Auto-advance when the SDK track ends (single-URI playback stops instead of
-  // rolling on): it had been playing, now it's paused back at the start.
-  const playedRef = useRef(false);
-  useEffect(() => {
-    if (!sdkActive) { playedRef.current = false; return; }
-    const pos = state?.position || 0, paused = !!state?.paused, hasTrack = !!state?.track;
-    if (hasTrack && !paused && pos > 1000) playedRef.current = true;
-    else if (playedRef.current && hasTrack && paused && pos <= 1200) { playedRef.current = false; if (hasNext) onIndex?.(index + 1); }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sdkActive, state?.position, state?.paused, state?.track]);
+  // Auto-advance when the YouTube track ends (fires once, via the player's state).
+  useEffect(() => { yt.onEnded(() => { if (hasNext) onIndex?.(index + 1); }); }); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Show / hide the floating video (audio keeps playing either way).
+  const [showVideo, setShowVideo] = useState(true);
+  useEffect(() => { yt.setVisible(ytActive && showVideo); }, [ytActive, showVideo]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const [open, setOpen] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -242,24 +224,20 @@ export default function PlayerBar({ player, onClose, onIndex, onPlayAt, onRemove
   if (!cur) return null;
 
   const multi = list.length > 1;
-  const tk = sdkActive && state?.track ? state.track : null;
-  const title = tk?.name || cur.title || cur.artist || "Now playing";
-  const artist = tk?.artist || cur.artist || "";
-  const art = tk?.art || cur.art || null;
+  const title = cur.title || cur.artist || "Now playing";
+  const artist = cur.artist || "";
+  const art = cur.art || null;
 
-  // Unified transport across whichever engine is live (Spotify SDK or preview mp3).
-  const scrubbable = sdkActive || !!previewSrc;
+  // Unified transport across whichever engine is live (YouTube player or preview mp3).
+  const scrubbable = ytActive || !!previewSrc;
   const resolving = !forThis; // still fetching a source for this track
-  const unplayable = forThis && !sdkActive && !previewSrc && !connecting;
-  const posMs = sdkActive ? (state?.position || 0) : audio.pos * 1000;
-  const durMs = sdkActive ? (state?.duration || 0) : audio.dur * 1000;
+  const unplayable = forThis && !ytActive && !previewSrc && !connecting;
+  const posMs = ytActive ? (yt.state.position || 0) : audio.pos * 1000;
+  const durMs = ytActive ? (yt.state.duration || 0) : audio.dur * 1000;
   posRef.current = posMs;
-  const playing = sdkActive ? (state && !state.paused && !!state.track) : audio.playing;
-  const playPause = () => {
-    if (sdkActive) { if (!state || !state.track) playUris([resolved.uri], 0); else toggle(); }
-    else if (previewSrc) audio.toggle();
-  };
-  const onSeek = (ms) => { if (sdkActive) seek(ms); else audio.seek(ms / 1000); };
+  const playing = ytActive ? yt.state.playing : audio.playing;
+  const playPause = () => { if (ytActive) yt.toggle(); else if (previewSrc) audio.toggle(); };
+  const onSeek = (ms) => { if (ytActive) yt.seek(ms); else audio.seek(ms / 1000); };
   const goPrev = () => onIndex?.(index - 1);
   const goNext = () => onIndex?.(index + 1);
 
@@ -271,10 +249,10 @@ export default function PlayerBar({ player, onClose, onIndex, onPlayAt, onRemove
     </Pressable>
   );
 
-  const statusLine = connecting ? "Connecting Spotify..."
+  const statusLine = connecting ? "Loading video..."
     : resolving ? "Loading..."
     : unplayable ? "Not available to play"
-    : artist + (sdkActive ? "  ·  Spotify" : previewSrc ? "  ·  preview" : "");
+    : artist + (ytActive ? "  ·  YouTube" : previewSrc ? "  ·  preview" : "");
 
   // The queue panel opens ONLY on an explicit tap (the queue button or the title),
   // never on hover — hovering the bar was accidentally popping the panel open.
@@ -303,17 +281,12 @@ export default function PlayerBar({ player, onClose, onIndex, onPlayAt, onRemove
             <Text style={[styles.queueTxt, panelOpen && { color: colors.amber }]}>{upNext.length}</Text>
           </Pressable>
         )}
-        {error ? (
-          <Pressable style={styles.notice} onPress={error.kind === "auth" ? connectSpotify : undefined}>
-            <Icon name={error.kind === "premium" ? "star" : "lock"} size={12} color={colors.gold} />
-            <Text style={styles.noticeTxt} numberOfLines={1}>{error.kind === "premium" ? "Premium needed" : "Reconnect"}</Text>
+        {ytActive && (
+          <Pressable style={[styles.queueBtn, showVideo && styles.queueBtnOn]} onPress={() => setShowVideo((v) => !v)} hitSlop={6} accessibilityRole="button" accessibilityState={{ selected: showVideo }} accessibilityLabel={showVideo ? "Hide video" : "Show video"}>
+            <Icon name="play" size={12} color={showVideo ? colors.amber : colors.textDim} />
+            <Text style={[styles.queueTxt, showVideo && { color: colors.amber }]}>{showVideo ? "Video" : "Video"}</Text>
           </Pressable>
-        ) : !spotifyConnected ? (
-          <Pressable style={styles.connect} onPress={connectSpotify} hitSlop={6}>
-            <Icon name="music" size={13} color={colors.good} />
-            <Text style={styles.connectTxt}>Connect Spotify</Text>
-          </Pressable>
-        ) : null}
+        )}
         <Ctrl icon="x" onPress={onClose} />
       </View>
 

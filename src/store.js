@@ -3,7 +3,7 @@ import { seedFeed, ratedShows, cityCoords, haversineKm } from "./data";
 import { catalogVenues, catalogTourDates, catalogArtists } from "./seed/catalog";
 import { clean, cleanEmail, isEmail, cleanName, isName, cleanHandle, isPassword, clampRating, LIMITS } from "./lib/validate";
 import { load, save } from "./lib/persist";
-import { api, apiUrl } from "./lib/api";
+import { api } from "./lib/api";
 import { setTheme as applyTheme, syncThemeFromAccount } from "./theme";
 import { artistMeta } from "./seed/ingested";
 import { ACHIEVEMENTS } from "./lib/badges";
@@ -398,12 +398,21 @@ export function StoreProvider({ children }) {
   const artistDiscography = async (name) => {
     try { return await api(`/api/artists/discography?name=${encodeURIComponent(name)}`); } catch { return { albums: [] }; }
   };
-  // Resolve a track title to a playable Spotify URL (for album tracks).
-  const resolveSpotifyTrack = async (title, artist) => {
-    try { const { url } = await api(`/api/spotify/track?title=${encodeURIComponent(title)}&artist=${encodeURIComponent(artist || "")}`); return url || null; } catch { return null; }
+  // Resolve a track title (+ artist) to a YouTube video ID, so the in-app player
+  // streams the full song/video for everyone. Cached per title+artist on device.
+  const ytCache = useRef({});
+  const resolveYouTube = async (title, artist) => {
+    if (!title) return null;
+    const k = (artist || "") + "|" + title;
+    if (ytCache.current[k] !== undefined) return ytCache.current[k];
+    try {
+      const { videoId } = await api(`/api/youtube/track?title=${encodeURIComponent(title)}&artist=${encodeURIComponent(artist || "")}`);
+      ytCache.current[k] = videoId || null;
+      return videoId || null;
+    } catch { return null; }
   };
-  // Resolve any song to a Deezer 30s preview mp3, so the in-app player can play it
-  // for everyone (no Spotify needed). Cached per title+artist on this device.
+  // Resolve any song to a Deezer 30s preview mp3, the fallback when YouTube has no
+  // match. Cached per title+artist on this device.
   const previewCache = useRef({});
   // --- Discover: DB-backed charts / genre share / regions (live, not the bundle) ---
   const discoverChart = async ({ by = "popularity", genre, country, limit = 24 } = {}) => {
@@ -537,28 +546,6 @@ export function StoreProvider({ children }) {
     return snap;
   };
   const removeSnapshot = (id) => setSnapshots((s) => s.filter((x) => x.id !== id));
-
-  // --- Spotify Connect (full-track playback) ---------------------------------
-  const spotifyConnected = !!session?.spotifyConnected;
-  // Full-page handoff to the server OAuth route (carries the session cookie).
-  const connectSpotify = () => { if (typeof window !== "undefined") window.location.href = apiUrl("/api/spotify/login"); };
-  const disconnectSpotify = async () => {
-    try { await api("/api/spotify/disconnect", { method: "POST" }); } catch {}
-    setSession((s) => (s ? { ...s, spotifyConnected: false } : s));
-    setUsers((all) => all.map((u) => (u.id === session?.id ? { ...u, spotifyConnected: false } : u)));
-  };
-  // When we come back from the OAuth redirect (?spotify=connected|error), refresh
-  // the account so spotifyConnected flips, and clean the URL.
-  const [spotifyNotice, setSpotifyNotice] = useState(null);
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const flag = new URLSearchParams(window.location.search).get("spotify");
-    if (!flag) return;
-    try { const url = new URL(window.location.href); url.searchParams.delete("spotify"); window.history.replaceState({}, "", url.pathname + url.search); } catch {}
-    if (flag === "connected") api("/api/me").then(({ user }) => user && absorbServerUser(user)).catch(() => {});
-    else if (flag === "error") setSpotifyNotice("Spotify couldn't connect. While the app is in Spotify's development mode, the owner has to add your Spotify account email to the app's allow-list (Spotify dashboard → User Management). Full-song streaming also needs Spotify Premium. Until then you'll still hear 30-second previews.");
-  }, []);
-  const dismissSpotifyNotice = () => setSpotifyNotice(null);
 
   // Fold a server user into local state so profiles/avatars resolve everywhere.
   const absorbServerUser = (su) => {
@@ -1965,12 +1952,11 @@ export function StoreProvider({ children }) {
     isFollowing, follow, unfollow, followerCount, followingCount, absorbUsers, searchPeople, loadMembers, memberCount,
     loadUser, followersOf, followingOf,
     isBlocked, blockUser, unblockUser, blockedUsers, exportMyData,
-    searchArtistsApi, resolveArtist, remoteArtistMeta, artistDiscography, resolveSpotifyTrack, resolveDeezerPreview,
+    searchArtistsApi, resolveArtist, remoteArtistMeta, artistDiscography, resolveYouTube, resolveDeezerPreview,
     discoverChart, discoverGenres, discoverCountries,
     playHistory, recordPlay, snapshots, saveSnapshot, removeSnapshot, friendsListening, loadFriendsListening, userPlaylists, deletePlaylist,
     favoriteGenre, recommendTracks, autoplayQueue, myPlaylists, loadMyPlaylists, createPlaylist, addToPlaylist,
     drafts, saveDraft, deleteDraft,
-    spotifyConnected, connectSpotify, disconnectSpotify, spotifyNotice, dismissSpotifyNotice,
     visibleFeed, followingFeed, visibleTourDates, artistSummary, venueSummary,
     localVenues, regionShows, localFeed, recommendedShows, venueCoord,
     searchVenues, venuesByCity, venueUpcomingCount,

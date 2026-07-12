@@ -49,7 +49,7 @@ seedAdmin();
 
 // ---- security headers --------------------------------------------------------
 // CSP: the app hotlinks images from many hosts (Commons/Openverse/web + wsrv.nl
-// proxy + Spotify/Unsplash CDNs), so img-src stays broad; everything else locked.
+// proxy + YouTube/Unsplash CDNs), so img-src stays broad; everything else locked.
 // The interactive Google map (LiveMap) needs the Google Maps domains allowed for
 // its loader script, its tile/data fetches, and its vector-map web workers -
 // without these the browser blocks the script and the map silently falls back to
@@ -64,18 +64,17 @@ const HEADERS = {
     "img-src * data: blob:",
     "media-src *",
     // expo web build inlines its bootstrap ('unsafe-inline'); Google Maps JS loads
-    // from *.googleapis.com / *.gstatic.com.
-    // Google Maps JS + the Spotify Web Playback SDK (sdk.scdn.co) load as scripts.
-    "script-src 'self' 'unsafe-inline' https://*.googleapis.com https://*.gstatic.com https://sdk.scdn.co",
+    // from *.googleapis.com / *.gstatic.com. The YouTube IFrame Player API loads
+    // its script from www.youtube.com + its widget/player code from s.ytimg.com.
+    "script-src 'self' 'unsafe-inline' https://*.googleapis.com https://*.gstatic.com https://www.youtube.com https://s.ytimg.com",
     "style-src 'self' 'unsafe-inline'",
-    // Google Maps XHR + Spotify Web Playback SDK talks to *.spotify.com over
-    // https and wss (its realtime dealer connection).
-    "connect-src 'self' https://*.googleapis.com https://*.gstatic.com https://api.spotify.com https://*.spotify.com wss://*.spotify.com",
+    // Google Maps XHR + the YouTube player's own data/stats fetches.
+    "connect-src 'self' https://*.googleapis.com https://*.gstatic.com https://www.youtube.com https://*.googlevideo.com",
     "worker-src 'self' blob:", // vector maps run in blob web workers
     "font-src 'self' data: https://*.gstatic.com",
-    // In-app players: Spotify embeds + the Playback SDK iframe (sdk.scdn.co) +
-    // YouTube (video) are framed in-app so people never leave the site.
-    "frame-src 'self' https://open.spotify.com https://sdk.scdn.co https://www.youtube.com https://www.youtube-nocookie.com",
+    // In-app player: YouTube video/audio is framed in-app so people never leave
+    // the site (full songs, no account needed).
+    "frame-src 'self' https://www.youtube.com https://www.youtube-nocookie.com",
     "frame-ancestors 'none'",
   ].join("; "),
   ...(PROD ? { "Strict-Transport-Security": "max-age=31536000; includeSubDomains" } : {}),

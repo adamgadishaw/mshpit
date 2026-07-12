@@ -39,7 +39,7 @@ function Swatch({ theme, active, onPress }) {
 }
 
 export default function SettingsScreen({ onClose, onEditProfile, onOpenProfile, onOpenPrivacy, onOpenTerms, onLogout }) {
-  const { session, chooseTheme, spotifyConnected, connectSpotify, disconnectSpotify, blockedUsers, unblockUser, exportMyData } = useStore();
+  const { session, chooseTheme, blockedUsers, unblockUser, exportMyData } = useStore();
   const blocked = session ? blockedUsers() : [];
   const [exporting, setExporting] = useState(false);
   const doExport = async () => {
@@ -66,13 +66,6 @@ export default function SettingsScreen({ onClose, onEditProfile, onOpenProfile, 
             <Text style={styles.section}>ACCOUNT</Text>
             <Row icon="you" label="Go to profile" sub={`@${session.handle}`} onPress={onOpenProfile} />
             <Row icon="edit" label="Edit profile" sub="Photo, bio, music, banner" onPress={onEditProfile} />
-            <Row
-              icon="music"
-              label={spotifyConnected ? "Spotify connected" : "Connect Spotify"}
-              sub={spotifyConnected ? "Full songs play in the top bar. Tap to disconnect." : "Stream full tracks in the player (Premium)"}
-              onPress={spotifyConnected ? disconnectSpotify : connectSpotify}
-              right={spotifyConnected ? <Icon name="check" size={18} color={colors.good} /> : undefined}
-            />
           </>
         )}
 

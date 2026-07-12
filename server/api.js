@@ -5,7 +5,7 @@
 // - responses only ever contain public projections (publicUser), never raw rows
 import { randomUUID, randomBytes, createHash } from "node:crypto";
 import { sendEmail } from "./mailer.js";
-import { db, q, publicUser, artistStmts, publicArtist, artistRow, normName } from "./db.js";
+import { db, q, ytStmts, publicUser, artistStmts, publicArtist, artistRow, normName } from "./db.js";
 import { hashPassword, verifyPassword, createSession, destroySession, rateLimit } from "./auth.js";
 import { startCatalogSeed, catalogSeedStatus, stopCatalogSeed } from "./catalogSeed.js";
 import { clean, cleanEmail, isEmail, cleanName, isName, cleanHandle, isPassword, clampRating, cleanStringArray, shape, LIMITS } from "./validate.js";
@@ -135,30 +135,32 @@ async function resolveFromMusicBrainz(name) {
   };
 }
 
-// Spotify Connect config. Keys come from the server env (SPOTIFY_CLIENT_ID/SECRET);
-// scopes cover the Web Playback SDK (streaming) + reading/controlling playback.
-const SPOTIFY_SCOPES = "streaming user-read-email user-read-private user-modify-playback-state user-read-playback-state";
-const spotifyStates = new Map(); // CSRF state -> { userId, exp }; single server instance, so in-memory is fine
-const spotifyKeys = () => ({ id: process.env.SPOTIFY_CLIENT_ID, secret: process.env.SPOTIFY_CLIENT_SECRET });
-
-// App-level Spotify token (client credentials) for catalog lookups like resolving a
-// track title to a playable URL. Cached until ~expiry.
-let spAppTok = null, spAppExp = 0;
-async function spotifyAppToken() {
-  if (spAppTok && Date.now() < spAppExp - 30000) return spAppTok;
-  const { id, secret } = spotifyKeys();
-  if (!id || !secret) return null;
+// YouTube video-ID resolver. Playback runs on the YouTube IFrame Player (full
+// songs/videos, no account, works for everyone), so every track needs a videoId.
+// We look it up once via the YouTube Data API (key in YOUTUBE_API_KEY on the
+// server) and cache it in the DB FOREVER, because the free quota is small
+// (~100 searches/day). A cached NULL is a "no match" and gets a short TTL so a
+// miss doesn't re-burn quota on every play. No key / quota exhausted -> null, and
+// the client falls back to the Deezer 30s preview.
+const YT_MISS_TTL = 6 * 3600 * 1000; // re-try a "no match" after 6h
+async function resolveYouTubeId(title, artist) {
+  const key = ("yt:" + (artist || "") + "|" + title).toLowerCase().slice(0, 300);
+  const hit = ytStmts.get.get(key);
+  if (hit && (hit.video_id || Date.now() - hit.updated_at < YT_MISS_TTL)) return hit.video_id || null;
+  const apiKey = process.env.YOUTUBE_API_KEY;
+  if (!apiKey) return null; // not configured -> preview fallback
+  const q = encodeURIComponent(`${artist ? artist + " " : ""}${title} official audio`);
   try {
-    const r = await fetch("https://accounts.spotify.com/api/token", {
-      method: "POST",
-      headers: { Authorization: "Basic " + Buffer.from(`${id}:${secret}`).toString("base64"), "Content-Type": "application/x-www-form-urlencoded" },
-      body: "grant_type=client_credentials", signal: AbortSignal.timeout(8000),
-    });
+    const r = await fetch(
+      `https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&videoEmbeddable=true&maxResults=1&q=${q}&key=${apiKey}`,
+      { signal: AbortSignal.timeout(8000) }
+    );
+    if (!r.ok) return hit?.video_id || null; // quota/error: keep any prior hit, don't cache a miss over it
     const d = await r.json().catch(() => ({}));
-    if (!d.access_token) return null;
-    spAppTok = d.access_token; spAppExp = Date.now() + (d.expires_in || 3600) * 1000;
-    return spAppTok;
-  } catch { return null; }
+    const vid = d?.items?.[0]?.id?.videoId || null;
+    ytStmts.set.run(key, vid, Date.now());
+    return vid;
+  } catch { return hit?.video_id || null; }
 }
 
 const deezerCache = new Map(); // norm(name) -> { data, exp }
@@ -233,8 +235,8 @@ async function enrichArtistFromDeezer(name) {
 
 // route table: "METHOD /path" -> handler(ctx) ; :params exposed as ctx.params
 export const routes = {
-  // ---- health ---- (spotify + origin are safe config diagnostics, no secrets)
-  "GET /api/health": (ctx) => ({ ok: true, ts: now(), spotify: !!process.env.SPOTIFY_CLIENT_ID, redirectUri: `${ctx.origin}/api/spotify/callback` }),
+  // ---- health ---- (youtube config flag is a safe diagnostic, no secrets)
+  "GET /api/health": () => ({ ok: true, ts: now(), youtube: !!process.env.YOUTUBE_API_KEY }),
 
   // ---- artist catalog (DB-backed; scales past the bundled JSON) ----
   // Search the catalog. Empty query → the top artists by rank. Notable artists
@@ -318,21 +320,17 @@ export const routes = {
     return data;
   },
 
-  // Resolve a track title (+ artist) to a playable Spotify URL, so album tracks
-  // can stream full in the top player.
-  "GET /api/spotify/track": async (ctx) => {
+  // Resolve a track title (+ artist) to a YouTube video ID, so the in-app player
+  // streams the FULL song/video for everyone (no account, no Premium). Cached in
+  // the DB forever; null means no match / not configured -> client plays the
+  // Deezer preview instead.
+  "GET /api/youtube/track": async (ctx) => {
     const title = clean(ctx.query.title, { max: 200 });
     const artist = clean(ctx.query.artist, { max: 120 });
     if (!title) throw new ApiError(400, "Missing title.");
-    const tok = await spotifyAppToken();
-    if (!tok) return { url: null };
-    const query = encodeURIComponent(`track:"${title}"${artist ? ` artist:"${artist}"` : ""}`);
-    try {
-      const r = await fetch(`https://api.spotify.com/v1/search?type=track&limit=1&q=${query}`, { headers: { Authorization: "Bearer " + tok }, signal: AbortSignal.timeout(8000) });
-      const d = await r.json().catch(() => ({}));
-      const t = d?.tracks?.items?.[0];
-      return { url: t?.external_urls?.spotify || null };
-    } catch { return { url: null }; }
+    limit(ctx, "yt", 120, 10 * 60 * 1000);
+    const videoId = await resolveYouTubeId(title, artist);
+    return { videoId: videoId || null };
   },
 
   // ---- Discover: DB-backed charts, genre share, explore-by-genre ----
@@ -453,74 +451,6 @@ export const routes = {
     const u = requireUser(ctx);
     db.prepare("DELETE FROM playlists WHERE id=? AND user_id=?").run(ctx.params.id, u.id);
     return { ok: true };
-  },
-
-  // ---- Spotify Connect: OAuth + Web Playback SDK tokens ----
-  // Lets a user link their own Spotify so the in-app player streams FULL tracks
-  // (Premium only, per Spotify's SDK). Tokens live server-side only.
-  "GET /api/spotify/login": (ctx) => {
-    const u = requireUser(ctx);
-    const { id } = spotifyKeys();
-    if (!id) throw new ApiError(503, "Spotify is not configured on the server.");
-    const state = randomUUID();
-    spotifyStates.set(state, { userId: u.id, exp: Date.now() + 10 * 60 * 1000 });
-    const url = "https://accounts.spotify.com/authorize?" + new URLSearchParams({
-      response_type: "code", client_id: id, scope: SPOTIFY_SCOPES, redirect_uri: `${ctx.origin}/api/spotify/callback`, state,
-    }).toString();
-    return { redirect: url };
-  },
-  "GET /api/spotify/callback": async (ctx) => {
-    const home = `${ctx.origin}/`;
-    const pending = ctx.query.state && spotifyStates.get(ctx.query.state);
-    if (ctx.query.state) spotifyStates.delete(ctx.query.state);
-    if (ctx.query.error || !ctx.query.code || !pending || pending.exp < Date.now()) return { redirect: `${home}?spotify=error` };
-    const { id, secret } = spotifyKeys();
-    try {
-      const r = await fetch("https://accounts.spotify.com/api/token", {
-        method: "POST",
-        headers: { Authorization: "Basic " + Buffer.from(`${id}:${secret}`).toString("base64"), "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({ grant_type: "authorization_code", code: ctx.query.code, redirect_uri: `${ctx.origin}/api/spotify/callback` }).toString(),
-        signal: AbortSignal.timeout(10000),
-      });
-      const d = await r.json();
-      if (!r.ok || !d.access_token) return { redirect: `${home}?spotify=error` };
-      db.prepare("UPDATE users SET spotify_access_token=?, spotify_refresh_token=?, spotify_expires_at=? WHERE id=?")
-        .run(d.access_token, d.refresh_token || null, Date.now() + (d.expires_in || 3600) * 1000, pending.userId);
-      return { redirect: `${home}?spotify=connected` };
-    } catch { return { redirect: `${home}?spotify=error` }; }
-  },
-  "GET /api/spotify/status": (ctx) => {
-    const u = requireUser(ctx);
-    return { connected: !!q.userById.get(u.id)?.spotify_refresh_token };
-  },
-  "POST /api/spotify/disconnect": (ctx) => {
-    const u = requireUser(ctx);
-    db.prepare("UPDATE users SET spotify_access_token=NULL, spotify_refresh_token=NULL, spotify_expires_at=0 WHERE id=?").run(u.id);
-    return { ok: true };
-  },
-  // Hand the client a fresh access token for the Web Playback SDK, refreshing when
-  // it's within 30s of expiry. Never exposes the refresh token.
-  "GET /api/spotify/token": async (ctx) => {
-    const u = requireUser(ctx);
-    const row = q.userById.get(u.id);
-    if (!row?.spotify_refresh_token) throw new ApiError(400, "Spotify not connected.");
-    if (row.spotify_access_token && row.spotify_expires_at > Date.now() + 30000) return { token: row.spotify_access_token, expiresAt: row.spotify_expires_at };
-    const { id, secret } = spotifyKeys();
-    const r = await fetch("https://accounts.spotify.com/api/token", {
-      method: "POST",
-      headers: { Authorization: "Basic " + Buffer.from(`${id}:${secret}`).toString("base64"), "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: row.spotify_refresh_token }).toString(),
-      signal: AbortSignal.timeout(10000),
-    });
-    const d = await r.json().catch(() => ({}));
-    if (!r.ok || !d.access_token) {
-      db.prepare("UPDATE users SET spotify_access_token=NULL, spotify_refresh_token=NULL, spotify_expires_at=0 WHERE id=?").run(u.id);
-      throw new ApiError(401, "Spotify session expired, reconnect.");
-    }
-    const exp = Date.now() + (d.expires_in || 3600) * 1000;
-    if (d.refresh_token) db.prepare("UPDATE users SET spotify_access_token=?, spotify_expires_at=?, spotify_refresh_token=? WHERE id=?").run(d.access_token, exp, d.refresh_token, u.id);
-    else db.prepare("UPDATE users SET spotify_access_token=?, spotify_expires_at=? WHERE id=?").run(d.access_token, exp, u.id);
-    return { token: d.access_token, expiresAt: exp };
   },
 
   // ---- auth ----

@@ -73,7 +73,7 @@ export default function App() {
 }
 
 function Root() {
-  const { session, addLog, visibleFeed, followingFeed, localFeed, logout, userByHandle, searchPeople, inboxUnread, accountStatus, track, unreadNotifications, recordPlay, playHistory, saveSnapshot, autoplayQueue, followingCount, spotifyNotice, dismissSpotifyNotice } = useStore();
+  const { session, addLog, visibleFeed, followingFeed, localFeed, logout, userByHandle, searchPeople, inboxUnread, accountStatus, track, unreadNotifications, recordPlay, playHistory, saveSnapshot, autoplayQueue, followingCount } = useStore();
   const staff = isStaff(session?.role);
   const feed = visibleFeed(staff);
   const following = followingFeed(staff);
@@ -512,14 +512,6 @@ function Root() {
             { icon: "logout", label: "Log out", danger: true, onPress: () => { setAcctOpen(false); logout(); clear(); exitToLanding(); } },
           ]}
         />
-
-        {spotifyNotice && (
-          <View style={styles.spotifyBanner}>
-            <Icon name="music" size={16} color={colors.gold} />
-            <Text style={styles.spotifyBannerTxt}>{spotifyNotice}</Text>
-            <Pressable onPress={dismissSpotifyNotice} hitSlop={8}><Icon name="x" size={15} color={colors.textDim} /></Pressable>
-          </View>
-        )}
 
         {resetToken && (
           <View style={styles.welcomeModal}>

@@ -337,6 +337,16 @@ CREATE TABLE IF NOT EXISTS seed_cursor (
   exhausted  INTEGER NOT NULL DEFAULT 0,
   updated_at INTEGER NOT NULL
 );
+
+-- YouTube video-ID cache: title+artist -> videoId, resolved via the YouTube Data
+-- API and kept FOREVER (the free API quota is small, so we never re-resolve a
+-- track we've already looked up). video_id NULL is a cached "no match" (short TTL
+-- via updated_at) so a miss doesn't burn quota on every play.
+CREATE TABLE IF NOT EXISTS yt_cache (
+  key        TEXT PRIMARY KEY,
+  video_id   TEXT,
+  updated_at INTEGER NOT NULL
+);
 `);
 
 const ver = db.prepare("SELECT version FROM schema_version LIMIT 1").get();
@@ -369,6 +379,12 @@ export const q = {
   sessionByHash: db.prepare("SELECT * FROM sessions WHERE token_hash = ?"),
   deleteSession: db.prepare("DELETE FROM sessions WHERE token_hash = ?"),
   deleteExpiredSessions: db.prepare("DELETE FROM sessions WHERE expires_at < ?"),
+};
+
+// YouTube video-ID cache statements (persistent; see yt_cache above).
+export const ytStmts = {
+  get: db.prepare("SELECT video_id, updated_at FROM yt_cache WHERE key = ?"),
+  set: db.prepare("INSERT INTO yt_cache (key,video_id,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET video_id=excluded.video_id, updated_at=excluded.updated_at"),
 };
 
 // --- Artist catalog statements + helpers -------------------------------------
@@ -468,7 +484,6 @@ export function publicUser(u, { self = false } = {}) {
     role: u.role,
     verified: !!u.verified,
     sponsor: !!u.sponsor,
-    spotifyConnected: !!u.spotify_refresh_token, // safe boolean; tokens never leave the server
     artistName: u.artist_name || undefined,
     home: u.home_city ? { city: u.home_city, lat: u.home_lat, lng: u.home_lng } : null,
     bio: u.bio,

@@ -11,7 +11,7 @@ import { artistMeta } from "../seed/ingested";
 // pre-show / afterparty of a gig near them — so the empty-social-network problem
 // (log in, know nobody, leave) has an answer.
 export default function WelcomeScreen({ onClose, onOpenFanClub, onOpenShow, onOpenFanClubs, onOpenNearby }) {
-  const { session, spotifyConnected, connectSpotify, followingCount, isFanClubMember, joinFanClub, recommendedShows, chartTop } = useStore();
+  const { session, followingCount, isFanClubMember, joinFanClub, recommendedShows, chartTop } = useStore();
   const name = (session?.name || "").split(" ")[0] || "there";
   const noFriends = session ? followingCount(session.id) === 0 : true;
 
@@ -35,24 +35,7 @@ export default function WelcomeScreen({ onClose, onOpenFanClub, onOpenShow, onOp
           <Text style={styles.sub}>Two quick things to get the full experience, then you're off.</Text>
         </View>
 
-        {/* 1 — Spotify */}
-        {!spotifyConnected && (
-          <View style={[styles.card, styles.cardSpotify]}>
-            <View style={styles.cardHead}>
-              <View style={[styles.badge, { borderColor: colors.good }]}><Icon name="music" size={18} color={colors.good} /></View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.cardTitle}>Connect Spotify</Text>
-                <Text style={styles.cardSub}>Play full songs right here as you browse. Premium streams complete tracks; everyone gets previews.</Text>
-              </View>
-            </View>
-            <Pressable style={[styles.primary, { backgroundColor: colors.good }]} onPress={connectSpotify}>
-              <Icon name="music" size={15} color="#08120D" />
-              <Text style={styles.primaryTxt}>Connect Spotify</Text>
-            </Pressable>
-          </View>
-        )}
-
-        {/* 2 — Find your people */}
+        {/* Find your people */}
         <View style={styles.card}>
           <View style={styles.cardHead}>
             <View style={[styles.badge, { borderColor: colors.amber }]}><Icon name="you" size={18} color={colors.amber} /></View>
