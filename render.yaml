@@ -75,6 +75,8 @@ services:
         value: "150"                   # top artists polled per refresh
       - key: TOURDATE_REFRESH_H
         value: "12"                    # hours between refreshes
+      - key: TOURDATE_CITY_LIMIT
+        value: "50"                    # most-used member cities refreshed per pass
 
   # NOTE: the old git-push cron ("pit-catalog-refresh") is retired — the in-process
   # scheduler above replaces it for tour dates (no token, no redeploy, live instantly).

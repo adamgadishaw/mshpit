@@ -12,6 +12,8 @@ import { startCatalogSeed, catalogSeedStatus, stopCatalogSeed, deezerEnrich } fr
 import { clean, cleanEmail, isEmail, cleanName, isName, cleanHandle, isPassword, clampRating, cleanStringArray, shape, LIMITS } from "./validate.js";
 import { ApiError } from "./errors.js";
 import { createMediaPresign, mediaConfigured } from "./media.js";
+import { discoverySidebar } from "./discovery.js";
+import { userRewards } from "./rewards.js";
 
 export { ApiError } from "./errors.js";
 
@@ -67,6 +69,11 @@ function requireUser(ctx) {
 function requireAdmin(ctx) {
   const u = requireUser(ctx);
   if (u.role !== "admin") throw new ApiError(403, "Admins only.", "FORBIDDEN");
+  return u;
+}
+function requireModerator(ctx) {
+  const u = requireUser(ctx);
+  if (u.role !== "admin" && u.role !== "moderator") throw new ApiError(403, "Moderators only.", "FORBIDDEN");
   return u;
 }
 function limit(ctx, name, max, windowMs) {
@@ -127,13 +134,6 @@ function uniqueHandle(base) {
 
 const postRow = db.prepare(`INSERT INTO posts (id,user_id,artist,venue,city,date,overall,band,room,review,photos,photos_public,setlist,tour,created_at)
                             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
-const feedQuery = db.prepare(`
-  SELECT p.*, u.name AS u_name, u.handle AS u_handle, u.initials AS u_initials, u.avatar_uri AS u_avatar, u.avatar_color AS u_color,
-    (SELECT COUNT(*) FROM likes l WHERE l.post_id = p.id) AS like_count,
-    (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id AND c.removed = 0) AS comment_count
-  FROM posts p JOIN users u ON u.id = p.user_id
-  WHERE p.removed = 0 ORDER BY p.created_at DESC, p.id DESC LIMIT ? OFFSET ?`);
-
 // Insert a notification for a recipient (never notify yourself).
 const notifRow = db.prepare("INSERT INTO notifications (id,user_id,actor_id,type,post_id,artist,text,created_at) VALUES (?,?,?,?,?,?,?,?)");
 function addNotif(recipientId, actorId, type, extra = {}) {
@@ -153,6 +153,32 @@ const blockedIdsStmt = db.prepare("SELECT blocked_id id FROM blocks WHERE blocke
 function blockedIdSet(userId) {
   if (!userId) return new Set();
   return new Set(blockedIdsStmt.all(userId, userId).map((r) => r.id));
+}
+
+const MODERATABLE_CONTENT = {
+  post: "posts",
+  comment: "comments",
+  fan_message: "fan_club_messages",
+  lounge_message: "lounge_messages",
+  venue_review: "venue_reviews",
+};
+function moderationRecord(ctx, action, targetType, targetId, reason = "", prior = {}, next = {}) {
+  db.prepare(`INSERT INTO moderation_actions
+    (id,actor_id,action,target_type,target_id,reason,prior_state,next_state,request_id,created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
+    uid("ma"), ctx.user?.id || null, action, targetType, targetId,
+    clean(reason, { max: LIMITS.note }) || "", JSON.stringify(prior), JSON.stringify(next), ctx.requestId || null, now()
+  );
+}
+function setContentRemoved(ctx, targetType, targetId, removed, reason = "") {
+  const table = MODERATABLE_CONTENT[targetType];
+  if (!table) throw new ApiError(400, "That content type cannot be moderated here.", "VALIDATION_FAILED");
+  const current = db.prepare(`SELECT removed FROM ${table} WHERE id=?`).get(targetId);
+  if (!current) throw new ApiError(404, "That content is no longer available.", "NOT_FOUND");
+  const next = removed ? 1 : 0;
+  db.prepare(`UPDATE ${table} SET removed=? WHERE id=?`).run(next, targetId);
+  moderationRecord(ctx, removed ? "remove" : "restore", targetType, targetId, reason, { removed: !!current.removed }, { removed: !!next });
+  return { ok: true, removed: !!next };
 }
 
 function postJson(p, viewerId) {
@@ -308,6 +334,8 @@ export const routes = {
       services: {
         database,
         youtubeConfigured: !!process.env.YOUTUBE_API_KEY,
+        tourProviderConfigured: !!(process.env.TICKETMASTER_KEY || process.env.BANDSINTOWN_APP_ID),
+        tourDates: db.prepare("SELECT COUNT(*) c FROM tour_dates").get().c,
         mailConfigured: mailConfigured(),
         mediaStorageConfigured: mediaConfigured(),
       },
@@ -519,6 +547,7 @@ export const routes = {
     return { id, name, tracks, at: now() };
   },
   "GET /api/users/:id/playlists": (ctx) => {
+    if (ctx.user?.id !== ctx.params.id && blockedEitherWay(ctx.user?.id, ctx.params.id)) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
     const rows = db.prepare("SELECT id,name,tracks,created_at FROM playlists WHERE user_id=? ORDER BY created_at DESC LIMIT 50").all(ctx.params.id);
     return { playlists: rows.map((r) => ({ id: r.id, name: r.name, tracks: JSON.parse(r.tracks || "[]"), at: r.created_at })) };
   },
@@ -736,6 +765,7 @@ export const routes = {
   },
 
   "GET /api/users/:id": (ctx) => {
+    if (ctx.user?.id !== ctx.params.id && blockedEitherWay(ctx.user?.id, ctx.params.id)) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
     const u = q.userById.get(ctx.params.id);
     if (!u) throw new ApiError(404, "No such user.");
     const followers = db.prepare("SELECT COUNT(*) c FROM follows WHERE followee_id = ?").get(u.id).c;
@@ -747,16 +777,26 @@ export const routes = {
   // The real people behind the follower/following numbers, so profiles have a
   // clickable follow list like any social platform.
   "GET /api/users/:id/followers": (ctx) => {
+    if (ctx.user?.id !== ctx.params.id && blockedEitherWay(ctx.user?.id, ctx.params.id)) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
+    const hidden = blockedIdSet(ctx.user?.id);
     const rows = db.prepare(`
       SELECT u.* FROM follows f JOIN users u ON u.id = f.follower_id
       WHERE f.followee_id = ? ORDER BY u.name COLLATE NOCASE LIMIT 500`).all(ctx.params.id);
-    return { users: rows.map((r) => publicUser(r)) };
+    return { users: rows.filter((r) => !hidden.has(r.id)).map((r) => publicUser(r)) };
   },
   "GET /api/users/:id/following": (ctx) => {
+    if (ctx.user?.id !== ctx.params.id && blockedEitherWay(ctx.user?.id, ctx.params.id)) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
+    const hidden = blockedIdSet(ctx.user?.id);
     const rows = db.prepare(`
       SELECT u.* FROM follows f JOIN users u ON u.id = f.followee_id
       WHERE f.follower_id = ? ORDER BY u.name COLLATE NOCASE LIMIT 500`).all(ctx.params.id);
-    return { users: rows.map((r) => publicUser(r)) };
+    return { users: rows.filter((r) => !hidden.has(r.id)).map((r) => publicUser(r)) };
+  },
+
+  "GET /api/users/:id/rewards": (ctx) => {
+    if (!q.userById.get(ctx.params.id)) throw new ApiError(404, "No such user.", "NOT_FOUND");
+    if (ctx.user?.id !== ctx.params.id && blockedEitherWay(ctx.user?.id, ctx.params.id)) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
+    return userRewards(ctx.params.id);
   },
 
   "POST /api/users/:id/follow": (ctx) => {
@@ -901,6 +941,8 @@ export const routes = {
   },
 
   // ---- tour dates (scraped into the DB by server/tourdates.js) ----
+  "GET /api/discovery/sidebar": (ctx) => discoverySidebar(ctx.user),
+
   "GET /api/tourdates": () => {
     const rows = db.prepare("SELECT * FROM tour_dates ORDER BY date ASC LIMIT 5000").all();
     return {
@@ -917,21 +959,29 @@ export const routes = {
     const { cursor, limit: lim } = pageRequest(ctx, 30, 100);
     const requestedOffset = Number(ctx.query?.offset);
     const off = !cursor && Number.isSafeInteger(requestedOffset) && requestedOffset > 0 ? Math.min(requestedOffset, 1_000_000) : 0;
-    const hidden = blockedIdSet(ctx.user?.id);
-    const found = cursor
-      ? db.prepare(`
-          SELECT p.*, u.name AS u_name, u.handle AS u_handle, u.initials AS u_initials, u.avatar_uri AS u_avatar, u.avatar_color AS u_color,
-            (SELECT COUNT(*) FROM likes l WHERE l.post_id = p.id) AS like_count,
-            (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id AND c.removed = 0) AS comment_count
-          FROM posts p JOIN users u ON u.id = p.user_id
-          WHERE p.removed = 0 AND (p.created_at < ? OR (p.created_at = ? AND p.id < ?))
-          ORDER BY p.created_at DESC, p.id DESC LIMIT ?`).all(cursor.createdAt, cursor.createdAt, cursor.id, lim + 1)
-      : feedQuery.all(lim + 1, off);
+    const viewer = ctx.user?.id;
+    const blockSql = viewer ? `AND NOT EXISTS (
+      SELECT 1 FROM blocks b WHERE (b.blocker_id=? AND b.blocked_id=p.user_id) OR (b.blocker_id=p.user_id AND b.blocked_id=?)
+    )` : "";
+    const cursorSql = cursor ? "AND (p.created_at < ? OR (p.created_at = ? AND p.id < ?))" : "";
+    const args = [];
+    if (cursor) args.push(cursor.createdAt, cursor.createdAt, cursor.id);
+    if (viewer) args.push(viewer, viewer);
+    args.push(lim + 1);
+    if (!cursor) args.push(off);
+    const found = db.prepare(`
+      SELECT p.*, u.name AS u_name, u.handle AS u_handle, u.initials AS u_initials, u.avatar_uri AS u_avatar, u.avatar_color AS u_color,
+        (SELECT COUNT(*) FROM likes l WHERE l.post_id = p.id) AS like_count,
+        (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id AND c.removed = 0) AS comment_count
+      FROM posts p JOIN users u ON u.id = p.user_id
+      WHERE p.removed = 0 ${cursorSql} ${blockSql}
+      ORDER BY p.created_at DESC, p.id DESC LIMIT ?${cursor ? "" : " OFFSET ?"}`).all(...args);
     const { rows, nextCursor } = finishPage(found, lim);
-    return { posts: rows.filter((p) => !hidden.has(p.user_id)).map((p) => postJson(p, ctx.user?.id)), nextCursor };
+    return { posts: rows.map((p) => postJson(p, viewer)), nextCursor };
   },
 
   "GET /api/users/:id/posts": (ctx) => {
+    if (ctx.user?.id !== ctx.params.id && blockedEitherWay(ctx.user?.id, ctx.params.id)) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
     const rows = db.prepare(`
       SELECT p.*, u.name AS u_name, u.handle AS u_handle, u.initials AS u_initials, u.avatar_uri AS u_avatar, u.avatar_color AS u_color,
         (SELECT COUNT(*) FROM likes l WHERE l.post_id = p.id) AS like_count,
@@ -968,14 +1018,15 @@ export const routes = {
   "POST /api/posts/:id/like": (ctx) => {
     const u = requireUser(ctx);
     limit(ctx, "like", 120, 10 * 60 * 1000);
-    if (!db.prepare("SELECT 1 FROM posts WHERE id=? AND removed=0").get(ctx.params.id)) throw new ApiError(404, "No such post.");
+    const targetPost = db.prepare("SELECT user_id,artist FROM posts WHERE id=? AND removed=0").get(ctx.params.id);
+    if (!targetPost) throw new ApiError(404, "No such post.");
+    if (blockedEitherWay(u.id, targetPost.user_id)) throw new ApiError(403, "This interaction isn't available.", "FORBIDDEN");
     const has = !!db.prepare("SELECT 1 FROM likes WHERE post_id=? AND user_id=?").get(ctx.params.id, u.id);
     const liked = desiredState(ctx.body, "liked", has);
     if (!liked && has) db.prepare("DELETE FROM likes WHERE post_id=? AND user_id=?").run(ctx.params.id, u.id);
     else if (liked && !has) {
       db.prepare("INSERT INTO likes (post_id,user_id) VALUES (?,?)").run(ctx.params.id, u.id);
-      const p = db.prepare("SELECT user_id, artist FROM posts WHERE id=?").get(ctx.params.id);
-      if (p) addNotif(p.user_id, u.id, "like", { postId: ctx.params.id, artist: p.artist });
+      addNotif(targetPost.user_id, u.id, "like", { postId: ctx.params.id, artist: targetPost.artist });
     }
     return { liked };
   },
@@ -996,10 +1047,14 @@ export const routes = {
     limit(ctx, "comment", 60, 60 * 60 * 1000);
     const text = clean(ctx.body?.text, { max: LIMITS.message, newlines: true });
     if (!text) throw new ApiError(400, "Say something first.");
-    if (!db.prepare("SELECT 1 FROM posts WHERE id=? AND removed=0").get(ctx.params.id)) throw new ApiError(404, "No such post.");
+    const targetPost = db.prepare("SELECT user_id,artist FROM posts WHERE id=? AND removed=0").get(ctx.params.id);
+    if (!targetPost) throw new ApiError(404, "No such post.");
+    if (blockedEitherWay(u.id, targetPost.user_id)) throw new ApiError(403, "This interaction isn't available.", "FORBIDDEN");
     // A reply must point at a real comment on THIS post; ignore anything else.
     let parentId = clean(ctx.body?.parentId, { max: 60 }) || null;
-    if (parentId && !db.prepare("SELECT 1 FROM comments WHERE id=? AND post_id=? AND removed=0").get(parentId, ctx.params.id)) parentId = null;
+    const parent = parentId ? db.prepare("SELECT user_id FROM comments WHERE id=? AND post_id=? AND removed=0").get(parentId, ctx.params.id) : null;
+    if (parentId && !parent) parentId = null;
+    if (parent && blockedEitherWay(u.id, parent.user_id)) throw new ApiError(403, "This reply isn't available.", "FORBIDDEN");
     const id = uid("c");
     db.prepare("INSERT INTO comments (id,post_id,user_id,text,parent_id,created_at) VALUES (?,?,?,?,?,?)").run(id, ctx.params.id, u.id, text, parentId, now());
     const p = db.prepare("SELECT user_id, artist FROM posts WHERE id=?").get(ctx.params.id);
@@ -1033,6 +1088,7 @@ export const routes = {
   "GET /api/dms/:otherId": (ctx) => {
     const u = requireUser(ctx);
     const other = ctx.params.otherId;
+    if (blockedEitherWay(u.id, other)) throw new ApiError(403, "This conversation isn't available.", "FORBIDDEN");
     const { cursor, limit } = pageRequest(ctx, 500, 500);
     const cursorSql = cursor ? "AND (created_at < ? OR (created_at = ? AND id < ?))" : "";
     const args = [u.id, other, other, u.id];
@@ -1079,7 +1135,10 @@ export const routes = {
         postId: n.post_id, artist: n.artist, text: n.text,
         ts: n.created_at, read: !!n.read,
       })),
-      unread: db.prepare("SELECT COUNT(*) c FROM notifications WHERE user_id=? AND read=0").get(u.id).c,
+      unread: db.prepare(`SELECT COUNT(*) c FROM notifications n WHERE n.user_id=? AND n.read=0
+        AND (n.actor_id IS NULL OR NOT EXISTS (
+          SELECT 1 FROM blocks b WHERE (b.blocker_id=n.user_id AND b.blocked_id=n.actor_id) OR (b.blocker_id=n.actor_id AND b.blocked_id=n.user_id)
+        ))`).get(u.id).c,
       nextCursor,
     };
   },
@@ -1113,6 +1172,7 @@ export const routes = {
 
   "GET /api/fanclubs/:artist/messages": (ctx) => {
     const artist = clean(decodeURIComponent(ctx.params.artist), { max: LIMITS.artist }).toLowerCase();
+    const hidden = blockedIdSet(ctx.user?.id);
     const { cursor, limit } = pageRequest(ctx, 300, 300);
     const cursorSql = cursor ? "AND (m.created_at < ? OR (m.created_at = ? AND m.id < ?))" : "";
     const args = cursor ? [artist, cursor.createdAt, cursor.createdAt, cursor.id, limit + 1] : [artist, limit + 1];
@@ -1120,7 +1180,7 @@ export const routes = {
                              WHERE m.artist=? AND m.removed=0 ${cursorSql} ORDER BY m.created_at DESC, m.id DESC LIMIT ?`).all(...args);
     const { rows, nextCursor } = finishPage(found, limit);
     const members = db.prepare("SELECT COUNT(*) c FROM fan_club_members WHERE artist=?").get(artist).c;
-    return { members, messages: rows.reverse().map((m) => ({ id: m.id, userId: m.user_id, name: m.name, initials: m.initials, text: m.text, createdAt: m.created_at })), nextCursor };
+    return { members, messages: rows.reverse().filter((m) => !hidden.has(m.user_id)).map((m) => ({ id: m.id, userId: m.user_id, name: m.name, initials: m.initials, text: m.text, createdAt: m.created_at })), nextCursor };
   },
 
   "POST /api/fanclubs/:artist/messages": (ctx) => {
@@ -1229,6 +1289,10 @@ export const routes = {
       reason: { parse: (x) => clean(x, { max: LIMITS.note }) },
     });
     if (errs.length) throw new ApiError(400, errs[0]);
+    const table = { post: "posts", comment: "comments", user: "users", message: "dms" }[v.targetType];
+    if (!db.prepare(`SELECT 1 FROM ${table} WHERE id=?`).get(v.targetId)) throw new ApiError(404, "That item is no longer available.", "NOT_FOUND");
+    const existing = db.prepare("SELECT id FROM reports WHERE reporter_id=? AND target_type=? AND target_id=? AND status='open'").get(u.id, v.targetType, v.targetId);
+    if (existing) return { id: existing.id, duplicate: true };
     const id = uid("r");
     db.prepare("INSERT INTO reports (id,target_type,target_id,reason,reporter_id,created_at) VALUES (?,?,?,?,?,?)")
       .run(id, v.targetType, v.targetId, v.reason || "", u.id, now());
@@ -1236,31 +1300,51 @@ export const routes = {
   },
 
   "GET /api/admin/reports": (ctx) => {
-    requireAdmin(ctx);
+    requireModerator(ctx);
     return { reports: db.prepare("SELECT * FROM reports WHERE status='open' ORDER BY created_at DESC LIMIT 200").all() };
   },
 
   "POST /api/admin/reports/:id/action": (ctx) => {
-    requireAdmin(ctx);
+    requireModerator(ctx);
     const r = db.prepare("SELECT * FROM reports WHERE id=?").get(ctx.params.id);
     if (!r) throw new ApiError(404, "No such report.");
-    if (r.target_type === "post") db.prepare("UPDATE posts SET removed=1 WHERE id=?").run(r.target_id);
-    if (r.target_type === "comment") db.prepare("UPDATE comments SET removed=1 WHERE id=?").run(r.target_id);
-    db.prepare("UPDATE reports SET status='actioned' WHERE id=?").run(r.id);
-    return { ok: true };
+    if (!MODERATABLE_CONTENT[r.target_type]) throw new ApiError(422, "This report needs manual review before it can be closed.", "VALIDATION_FAILED");
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      setContentRemoved(ctx, r.target_type, r.target_id, true, r.reason);
+      db.prepare("UPDATE reports SET status='actioned' WHERE id=?").run(r.id);
+      db.exec("COMMIT");
+      return { ok: true, targetType: r.target_type, targetId: r.target_id };
+    } catch (error) {
+      try { db.exec("ROLLBACK"); } catch {}
+      throw error;
+    }
   },
 
   "POST /api/admin/reports/:id/dismiss": (ctx) => {
-    requireAdmin(ctx);
+    requireModerator(ctx);
+    const report = db.prepare("SELECT * FROM reports WHERE id=?").get(ctx.params.id);
+    if (!report) throw new ApiError(404, "No such report.", "NOT_FOUND");
     db.prepare("UPDATE reports SET status='dismissed' WHERE id=?").run(ctx.params.id);
+    moderationRecord(ctx, "dismiss_report", "report", report.id, report.reason, { status: report.status }, { status: "dismissed" });
     return { ok: true };
   },
 
+  "POST /api/admin/content/:type/:id": (ctx) => {
+    requireModerator(ctx);
+    if (typeof ctx.body?.removed !== "boolean") throw new ApiError(400, "removed must be true or false.", "VALIDATION_FAILED");
+    return setContentRemoved(ctx, ctx.params.type, ctx.params.id, ctx.body.removed, ctx.body?.reason || "");
+  },
+
   "POST /api/admin/users/:id/ban": (ctx) => {
-    requireAdmin(ctx);
+    const actor = requireAdmin(ctx);
     if (ctx.params.id === ctx.user.id) throw new ApiError(400, "You can't ban yourself.");
+    const target = q.userById.get(ctx.params.id);
+    if (!target) throw new ApiError(404, "No such user.", "NOT_FOUND");
+    if (target.role === "admin") throw new ApiError(403, "Administrator accounts require owner review.", "FORBIDDEN");
     db.prepare("UPDATE users SET is_banned=1 WHERE id=?").run(ctx.params.id);
     db.prepare("DELETE FROM sessions WHERE user_id=?").run(ctx.params.id); // kill their sessions immediately
+    moderationRecord(ctx, "ban", "user", target.id, ctx.body?.reason || "", { banned: !!target.is_banned }, { banned: true, by: actor.id });
     return { ok: true };
   },
 
@@ -1268,14 +1352,20 @@ export const routes = {
   // it survives reload + shows cross-device.
   "POST /api/admin/users/:id/verified": (ctx) => {
     requireAdmin(ctx);
+    const target = q.userById.get(ctx.params.id);
+    if (!target) throw new ApiError(404, "No such user.", "NOT_FOUND");
     const verified = ctx.body?.verified ? 1 : 0;
     db.prepare("UPDATE users SET verified=? WHERE id=?").run(verified, ctx.params.id);
+    moderationRecord(ctx, verified ? "grant_verification" : "remove_verification", "user", target.id, ctx.body?.reason || "", { verified: !!target.verified }, { verified: !!verified });
     return { ok: true, verified: !!verified };
   },
   "POST /api/admin/users/:id/sponsor": (ctx) => {
     requireAdmin(ctx);
+    const target = q.userById.get(ctx.params.id);
+    if (!target) throw new ApiError(404, "No such user.", "NOT_FOUND");
     const sponsor = ctx.body?.sponsor ? 1 : 0;
     db.prepare("UPDATE users SET sponsor=? WHERE id=?").run(sponsor, ctx.params.id);
+    moderationRecord(ctx, sponsor ? "grant_sponsor" : "remove_sponsor", "user", target.id, ctx.body?.reason || "", { sponsor: !!target.sponsor }, { sponsor: !!sponsor });
     return { ok: true, sponsor: !!sponsor };
   },
 
@@ -1283,11 +1373,11 @@ export const routes = {
   // a per-region (home city) breakdown. This is what makes every real signup show
   // up in the Members tab so it can be verified / moderated.
   "GET /api/admin/members": (ctx) => {
-    requireAdmin(ctx);
+    requireModerator(ctx);
     const rows = db.prepare(
-      "SELECT id,name,handle,initials,avatar_uri,avatar_color,verified,role,home_city,is_banned,suspended_until,created_at FROM users ORDER BY created_at DESC LIMIT 500"
+      "SELECT id,name,handle,initials,avatar_uri,avatar_color,verified,sponsor,role,home_city,is_banned,suspended_until,created_at FROM users ORDER BY created_at DESC LIMIT 500"
     ).all();
-    const users = rows.map((r) => ({ id: r.id, name: r.name, handle: r.handle, initials: r.initials, avatarUri: r.avatar_uri, avatarColor: r.avatar_color, verified: !!r.verified, role: r.role, home: { city: r.home_city }, isBanned: !!r.is_banned, suspendedUntil: r.suspended_until || null, createdAt: r.created_at }));
+    const users = rows.map((r) => ({ id: r.id, name: r.name, handle: r.handle, initials: r.initials, avatarUri: r.avatar_uri, avatarColor: r.avatar_color, verified: !!r.verified, sponsor: !!r.sponsor, role: r.role, home: { city: r.home_city }, isBanned: !!r.is_banned, suspendedUntil: r.suspended_until || null, createdAt: r.created_at }));
     const total = db.prepare("SELECT COUNT(*) c FROM users").get().c;
     const banned = db.prepare("SELECT COUNT(*) c FROM users WHERE is_banned=1").get().c;
     const verified = db.prepare("SELECT COUNT(*) c FROM users WHERE verified=1").get().c;
@@ -1301,10 +1391,18 @@ export const routes = {
     const role = ["fan", "artist", "moderator", "admin"].includes(ctx.body?.role) ? ctx.body.role : null;
     if (!role) throw new ApiError(400, "Bad role.");
     if (ctx.params.id === ctx.user.id) throw new ApiError(400, "You can't change your own role.");
+    const target = q.userById.get(ctx.params.id);
+    if (!target) throw new ApiError(404, "No such user.", "NOT_FOUND");
+    if (target.role === "admin") throw new ApiError(403, "Administrator accounts require owner review.", "FORBIDDEN");
     const handle = ctx.body?.handle ? cleanHandle(ctx.body.handle) : null;
+    if (handle && !handleAllowedForRole(handle, role)) throw new ApiError(400, `A ${role} username must include ${role === "admin" ? "admin" : "mod"}.`, "VALIDATION_FAILED");
+    const effectiveHandle = handle || target.handle;
+    if (!handleAllowedForRole(effectiveHandle, role)) throw new ApiError(400, `A ${role} username must include ${role === "admin" ? "admin" : "mod"}.`, "VALIDATION_FAILED");
     const free = handle && !db.prepare("SELECT 1 FROM users WHERE handle=? AND id<>?").get(handle, ctx.params.id);
+    if (handle && !free) throw new ApiError(409, "That username is already taken.", "CONFLICT");
     if (free) db.prepare("UPDATE users SET role=?, handle=? WHERE id=?").run(role, handle, ctx.params.id);
     else db.prepare("UPDATE users SET role=? WHERE id=?").run(role, ctx.params.id);
+    moderationRecord(ctx, "change_role", "user", target.id, ctx.body?.reason || "", { role: target.role, handle: target.handle }, { role, handle: free ? handle : target.handle });
     return { ok: true, role };
   },
 
@@ -1355,17 +1453,34 @@ export const routes = {
 
   "POST /api/admin/users/:id/unban": (ctx) => {
     requireAdmin(ctx);
+    const target = q.userById.get(ctx.params.id);
+    if (!target) throw new ApiError(404, "No such user.", "NOT_FOUND");
     db.prepare("UPDATE users SET is_banned=0, suspended_until=NULL WHERE id=?").run(ctx.params.id);
+    moderationRecord(ctx, "unban", "user", target.id, ctx.body?.reason || "", { banned: !!target.is_banned, suspendedUntil: target.suspended_until || null }, { banned: false, suspendedUntil: null });
+    return { ok: true };
+  },
+
+  "POST /api/admin/users/:id/unsuspend": (ctx) => {
+    requireModerator(ctx);
+    const target = q.userById.get(ctx.params.id);
+    if (!target) throw new ApiError(404, "No such user.", "NOT_FOUND");
+    if (target.is_banned) throw new ApiError(409, "This account is banned; an administrator must unban it.", "CONFLICT");
+    db.prepare("UPDATE users SET suspended_until=NULL WHERE id=?").run(target.id);
+    moderationRecord(ctx, "lift_suspension", "user", target.id, ctx.body?.reason || "", { suspendedUntil: target.suspended_until || null }, { suspendedUntil: null });
     return { ok: true };
   },
 
   "POST /api/admin/users/:id/suspend": (ctx) => {
-    requireAdmin(ctx);
+    requireModerator(ctx);
     if (ctx.params.id === ctx.user.id) throw new ApiError(400, "You can't suspend yourself.");
     const days = Math.max(1, Math.min(365, Number(ctx.body?.days) || 7));
+    const target = q.userById.get(ctx.params.id);
+    if (!target) throw new ApiError(404, "No such user.", "NOT_FOUND");
+    if (target.role === "admin") throw new ApiError(403, "Administrator accounts require owner review.", "FORBIDDEN");
     const until = now() + days * 86400000;
     db.prepare("UPDATE users SET suspended_until=? WHERE id=?").run(until, ctx.params.id);
     db.prepare("DELETE FROM sessions WHERE user_id=?").run(ctx.params.id);
+    moderationRecord(ctx, "suspend", "user", target.id, ctx.body?.reason || "", { suspendedUntil: target.suspended_until || null }, { suspendedUntil: until, days });
     return { ok: true, suspendedUntil: until };
   },
 
@@ -1413,19 +1528,21 @@ export const routes = {
   "GET /api/going/:key/attendees": (ctx) => {
     const key = decodeURIComponent(ctx.params.key);
     const rows = db.prepare("SELECT user_id FROM going WHERE concert_key=? LIMIT 200").all(key);
-    return { attendees: rows.map((r) => publicUser(q.userById.get(r.user_id))).filter(Boolean) };
+    const hidden = blockedIdSet(ctx.user?.id);
+    return { attendees: rows.filter((r) => !hidden.has(r.user_id)).map((r) => publicUser(q.userById.get(r.user_id))).filter(Boolean) };
   },
 
   // ---- venue reviews (slice 7) ----
   "GET /api/venues/:key/reviews": (ctx) => {
     const key = clean(decodeURIComponent(ctx.params.key), { max: 200 }).toLowerCase();
+    const hidden = blockedIdSet(ctx.user?.id);
     const { cursor, limit } = pageRequest(ctx, 200, 200);
     const cursorSql = cursor ? "AND (r.created_at < ? OR (r.created_at = ? AND r.id < ?))" : "";
     const args = cursor ? [key, cursor.createdAt, cursor.createdAt, cursor.id, limit + 1] : [key, limit + 1];
     const found = db.prepare(`SELECT r.*, u.name, u.initials FROM venue_reviews r JOIN users u ON u.id=r.user_id
                              WHERE r.venue_key=? AND r.removed=0 ${cursorSql} ORDER BY r.created_at DESC, r.id DESC LIMIT ?`).all(...args);
     const { rows, nextCursor } = finishPage(found, limit);
-    return { reviews: rows.map((r) => ({ id: r.id, userId: r.user_id, name: r.name, initials: r.initials, rating: r.rating, text: r.text, photos: JSON.parse(r.photos || "[]"), createdAt: r.created_at })), nextCursor };
+    return { reviews: rows.filter((r) => !hidden.has(r.user_id)).map((r) => ({ id: r.id, userId: r.user_id, name: r.name, initials: r.initials, rating: r.rating, text: r.text, photos: JSON.parse(r.photos || "[]"), createdAt: r.created_at })), nextCursor };
   },
   "POST /api/venues/:key/reviews": (ctx) => {
     const u = requireUser(ctx);

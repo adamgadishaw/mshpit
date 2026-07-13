@@ -78,11 +78,21 @@ export function LeftRail({ tab, setTab, session, unread = 0, notifUnread = 0, on
 // Right rail: contextual widgets, Top / A-Z artists, trending venues, upcoming
 // events. Read-only discovery surfaces that stay out of the feed's way.
 export function RightRail({ onOpenArtist, onOpenVenue, onFindVenues, onOpenEvent }) {
-  const { topArtists, artistsAlphabetical, trendingVenues, upcomingEvents } = useStore();
+  const { topArtists, artistsAlphabetical, trendingVenues, upcomingEvents, discoverySidebar, discoverySidebarStatus } = useStore();
   const [artistMode, setArtistMode] = useState("top"); // 'top' | 'az'
-  const artists = artistMode === "top" ? topArtists(8) : artistsAlphabetical(10);
-  const venues = trendingVenues(6);
-  const events = upcomingEvents(6);
+  const artists = artistMode === "top"
+    ? (discoverySidebar.topArtists?.length ? discoverySidebar.topArtists.slice(0, 8) : topArtists(8))
+    : artistsAlphabetical(10);
+  const venues = discoverySidebar.trendingVenues?.length ? discoverySidebar.trendingVenues.slice(0, 6) : trendingVenues(6);
+  const events = discoverySidebar.upcomingEvents?.length ? discoverySidebar.upcomingEvents.slice(0, 6) : upcomingEvents(6);
+  const localLabel = discoverySidebar.location?.city ? ` near ${discoverySidebar.location.city}` : "";
+  const listingEmpty = discoverySidebarStatus === "loading"
+    ? "Tuning your local lineup..."
+    : discoverySidebarStatus === "error"
+      ? "The local lineup missed a beat. Try refreshing."
+      : discoverySidebar.source?.providerConfigured === false
+        ? "Live listings are waiting for a ticket provider."
+        : `No upcoming shows${localLabel} yet.`;
 
   return (
     <ScrollView style={styles.right} contentContainerStyle={styles.rightContent} showsVerticalScrollIndicator={false}>
@@ -123,7 +133,7 @@ export function RightRail({ onOpenArtist, onOpenVenue, onFindVenues, onOpenEvent
           <Text style={styles.cardTitle}>TRENDING VENUES</Text>
           <Pressable onPress={onFindVenues}><Text style={styles.seeAll}>See all</Text></Pressable>
         </View>
-        {venues.length === 0 && <Text style={styles.empty}>No upcoming shows yet.</Text>}
+        {venues.length === 0 && <Text style={styles.empty}>{listingEmpty}</Text>}
         {venues.map((v) => (
           <Pressable key={v.name} style={({ pressed, hovered, focused }) => [styles.aRow, hovered && styles.rowHover, pressed && styles.rowPressed, focused && focusRing]} onPress={() => onOpenVenue?.(v.name)} accessibilityRole="button">
             <View style={styles.aDot}><Icon name="pin" size={13} color={colors.cool} /></View>
@@ -139,13 +149,13 @@ export function RightRail({ onOpenArtist, onOpenVenue, onFindVenues, onOpenEvent
       {/* Upcoming events */}
       <View style={styles.card}>
         <Text style={styles.cardTitle}>UPCOMING EVENTS</Text>
-        {events.length === 0 && <Text style={styles.empty}>No dates yet.</Text>}
+        {events.length === 0 && <Text style={styles.empty}>{listingEmpty}</Text>}
         {events.map((t) => (
           <Pressable key={t.id} style={({ pressed, hovered, focused }) => [styles.eRow, hovered && styles.rowHover, pressed && styles.rowPressed, focused && focusRing]} onPress={() => (onOpenEvent ? onOpenEvent(t) : onOpenArtist?.(t.artist))} accessibilityRole="button">
             <View style={styles.eDate}><Icon name="calendar" size={13} color={colors.amber} /></View>
             <View style={{ flex: 1 }}>
               <Text style={styles.aName} numberOfLines={1}>{t.artist}</Text>
-              <Text style={styles.aSub} numberOfLines={1}>{t.venue} · {t.date}</Text>
+              <Text style={styles.aSub} numberOfLines={1}>{t.venue}{t.place ? ` · ${t.place.split(",")[0]}` : ""} · {t.date}</Text>
             </View>
           </Pressable>
         ))}

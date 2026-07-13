@@ -13,6 +13,7 @@ const CATALOG = join(HERE, "..", "src", "seed", "catalog.generated.json");
 const KEY = process.env.TICKETMASTER_KEY;
 const BIT = process.env.BANDSINTOWN_APP_ID;
 const LIMIT = Number(process.env.TOURDATE_LIMIT) || 150;
+const CITY_LIMIT = Number(process.env.TOURDATE_CITY_LIMIT) || 50;
 const REFRESH_H = Number(process.env.TOURDATE_REFRESH_H) || 12;
 const DAY = 86400000;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -42,6 +43,32 @@ async function tmDates(name) {
     if (!v?.name || !date || !isRequestedArtist) continue;
     out.push({
       id: e.id ? `tm_${e.id}` : slugId("tm", name, v.name, date), artist: name, venue: v.name,
+      place: [v.city?.name, v.state?.name, v.country?.name].filter(Boolean).join(", "),
+      lat: v.location?.latitude ? Number(v.location.latitude) : null,
+      lng: v.location?.longitude ? Number(v.location.longitude) : null,
+      date, ticket_url: e.url, sold_out: e.dates?.status?.code === "offsale" ? 1 : 0, source: "ticketmaster",
+    });
+  }
+  return out;
+}
+
+// Fill the areas where actual members live. Artist-keyword polling alone can
+// produce a large global catalogue with no dates near a Toronto account. The
+// official Discovery API supports city + music classification filters, so one
+// request per distinct member city gives the local rail useful coverage.
+async function tmCityDates(city) {
+  if (!KEY || !city) return [];
+  const data = await getJSON(
+    `https://app.ticketmaster.com/discovery/v2/events.json?city=${encodeURIComponent(city)}&classificationName=music&size=200&sort=date,asc&apikey=${KEY}`
+  );
+  const out = [];
+  for (const e of data._embedded?.events || []) {
+    const v = e._embedded?.venues?.[0];
+    const artist = e._embedded?.attractions?.[0]?.name || e.name;
+    const date = e.dates?.start?.localDate?.replace(/-/g, " · ");
+    if (!artist || !v?.name || !date) continue;
+    out.push({
+      id: e.id ? `tm_${e.id}` : slugId("tm", artist, v.name, date), artist, venue: v.name,
       place: [v.city?.name, v.state?.name, v.country?.name].filter(Boolean).join(", "),
       lat: v.location?.latitude ? Number(v.location.latitude) : null,
       lng: v.location?.longitude ? Number(v.location.longitude) : null,
@@ -109,9 +136,23 @@ async function refresh() {
       } catch (e) { try { db.exec("ROLLBACK"); } catch {} }
       await sleep(250); // stay gentle on the APIs (and our event loop)
     }
+    const cities = db.prepare(`SELECT home_city city, COUNT(*) members FROM users
+      WHERE home_city IS NOT NULL AND trim(home_city) <> ''
+      GROUP BY lower(trim(home_city)) ORDER BY members DESC LIMIT ?`).all(CITY_LIMIT);
+    for (const { city } of cities) {
+      try {
+        const rows = await tmCityDates(city);
+        const now = Date.now();
+        db.exec("BEGIN");
+        for (const r of rows) upsert.run({ lat: null, lng: null, ...r, updated_at: now });
+        db.exec("COMMIT");
+        total += rows.length;
+      } catch { try { db.exec("ROLLBACK"); } catch {} }
+      await sleep(250);
+    }
     // Drop dates we haven't seen in a month (past shows / cancellations).
     db.prepare("DELETE FROM tour_dates WHERE updated_at < ?").run(Date.now() - 30 * DAY);
-    console.log(`[pit] tour dates refreshed: ${total} dates / ${artists.length} artists in ${Math.round((Date.now() - t0) / 1000)}s`);
+    console.log(`[pit] tour dates refreshed: ${total} dates / ${artists.length} artists + ${cities.length} member cities in ${Math.round((Date.now() - t0) / 1000)}s`);
   } catch (e) {
     console.error("[pit] tour-date refresh failed:", e.message);
   } finally { running = false; }
@@ -123,6 +164,6 @@ export function startTourDateScheduler() {
     return;
   }
   console.log(`[pit] tour-date scheduler on (${[KEY && "Ticketmaster", BIT && "Bandsintown"].filter(Boolean).join(" + ")}, every ${REFRESH_H}h).`);
-  setTimeout(refresh, 20000).unref(); // first pass ~20s after boot
+  setTimeout(refresh, 5000).unref(); // populate local discovery shortly after deploy
   setInterval(refresh, REFRESH_H * 3600 * 1000).unref();
 }

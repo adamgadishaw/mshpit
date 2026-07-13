@@ -32,9 +32,9 @@ export const TINT = { amber: "amber", magenta: "magenta", cool: "cool", good: "g
 
 // A friendly tier from total points (for a headline on the profile / legend).
 export function pointsTier(points) {
-  if (points >= 900) return { name: "Legend", next: null };
-  if (points >= 500) return { name: "Headliner", next: 900 };
-  if (points >= 250) return { name: "Regular", next: 500 };
-  if (points >= 75) return { name: "Opener", next: 250 };
-  return { name: "Newcomer", next: 75 };
+  if (points >= 900) return { name: "Legend", start: 900, next: null };
+  if (points >= 500) return { name: "Headliner", start: 500, next: 900 };
+  if (points >= 250) return { name: "Regular", start: 250, next: 500 };
+  if (points >= 75) return { name: "Opener", start: 75, next: 250 };
+  return { name: "Newcomer", start: 0, next: 75 };
 }

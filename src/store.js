@@ -111,6 +111,9 @@ export function StoreProvider({ children }) {
     sanitizePersistedStoreValue("pit.users", load("pit.users", seedUsers), ENABLE_DEMO_DATA));
   const [memberCount, setMemberCount] = useState(0); // total signed-up members (from the server)
   const [remoteArtists, setRemoteArtists] = useState({}); // norm -> meta, from the DB artist catalog API
+  const [discoverySidebar, setDiscoverySidebar] = useState({ topArtists: [], trendingVenues: [], upcomingEvents: [], location: null, source: null });
+  const [discoverySidebarStatus, setDiscoverySidebarStatus] = useState("loading");
+  const [rewardProfiles, setRewardProfiles] = useState({}); // user id -> authoritative server rewards
   const [playHistory, setPlayHistory] = useState(() => load("pit.playhistory", [])); // every song played, newest first
   const [snapshots, setSnapshots] = useState(() => load("pit.snapshots", [])); // saved listening sessions (playlist seeds)
   const [drafts, setDrafts] = useState(() => load("pit.drafts", [])); // unfinished reviews, saved locally
@@ -312,6 +315,35 @@ export function StoreProvider({ children }) {
       })
       .catch(() => {});
   }, []);
+
+  // The server ranks real provider dates against the signed-in account's saved
+  // location and widens gracefully if the exact city has no upcoming listings.
+  useEffect(() => {
+    let active = true;
+    setDiscoverySidebarStatus("loading");
+    api("/api/discovery/sidebar", { context: "Loading your local concert lineup", silent: true })
+      .then((data) => {
+        if (!active) return;
+        const next = {
+          topArtists: Array.isArray(data?.topArtists) ? data.topArtists : [],
+          trendingVenues: Array.isArray(data?.trendingVenues) ? data.trendingVenues : [],
+          upcomingEvents: Array.isArray(data?.upcomingEvents) ? data.upcomingEvents : [],
+          location: data?.location || null,
+          source: data?.source || null,
+        };
+        setDiscoverySidebar(next);
+        setDiscoverySidebarStatus("ready");
+        if (next.upcomingEvents.length) {
+          setTourDates((current) => {
+            const byId = new Map(current.map((event) => [event.id, event]));
+            next.upcomingEvents.forEach((event) => byId.set(event.id, { ...(byId.get(event.id) || {}), ...event }));
+            return [...byId.values()];
+          });
+        }
+      })
+      .catch(() => { if (active) setDiscoverySidebarStatus("error"); });
+    return () => { active = false; };
+  }, [session?.id, session?.home?.city, session?.home?.lat, session?.home?.lng]);
 
   // --- Activity tracking (data collection for personalization + ads) ---------
   // Every meaningful action queues an event; a background flush batches them to
@@ -661,7 +693,7 @@ export function StoreProvider({ children }) {
       })
       .catch(() => {});
     // Slice 6: admins hydrate the open report queue (server rows → client shape).
-    if (su.role === "admin") {
+    if (isMod(su.role)) {
       api("/api/admin/reports")
         .then(({ reports: rows }) => {
           if (!Array.isArray(rows) || !rows.length) return;
@@ -669,13 +701,13 @@ export function StoreProvider({ children }) {
             const have = new Set(rs.map((x) => x.id));
             const fresh = rows
               .filter((r) => !have.has(r.id))
-              .map((r) => ({ id: r.id, targetId: r.target_id, reason: r.reason, reporterId: r.reporter_id, status: "open" }));
+              .map((r) => ({ id: r.id, targetType: r.target_type, targetId: r.target_id, reason: r.reason, reporterId: r.reporter_id, status: "open" }));
             return fresh.length ? [...fresh, ...rs] : rs;
           });
         })
         .catch(() => {});
       // Slice 7: admins hydrate pending artist-account requests.
-      api("/api/admin/artist-requests")
+      if (su.role === "admin") api("/api/admin/artist-requests")
         .then(({ requests: rows }) => {
           if (!Array.isArray(rows) || !rows.length) return;
           setRequests((rs) => {
@@ -1025,18 +1057,30 @@ export function StoreProvider({ children }) {
   };
   const actionReport = (repId) => {
     const r = reports.find((x) => x.id === repId);
-    if (r) setRemovedIds((ids) => (ids.includes(r.targetId) ? ids : [...ids, r.targetId]));
-    setReports((rs) => rs.map((x) => (x.id === repId ? { ...x, status: "actioned" } : x)));
-    // Server ids (r_...) get removed + closed server-side; local ids (rep_...) 404
-    // harmlessly and stay local-only.
-    api(`/api/admin/reports/${repId}/action`, { method: "POST" }).catch(() => {});
+    return api(`/api/admin/reports/${repId}/action`, { method: "POST", context: "Removing reported content" })
+      .then(() => {
+        if (r?.targetType === "post" || !r?.targetType) setRemovedIds((ids) => (ids.includes(r.targetId) ? ids : [...ids, r.targetId]));
+        setReports((rs) => rs.map((x) => (x.id === repId ? { ...x, status: "actioned" } : x)));
+        return true;
+      })
+      .catch(() => false);
   };
   const dismissReport = (repId) => {
-    setReports((rs) => rs.map((x) => (x.id === repId ? { ...x, status: "dismissed" } : x)));
-    api(`/api/admin/reports/${repId}/dismiss`, { method: "POST" }).catch(() => {});
+    return api(`/api/admin/reports/${repId}/dismiss`, { method: "POST", context: "Dismissing this report" })
+      .then(() => { setReports((rs) => rs.map((x) => (x.id === repId ? { ...x, status: "dismissed" } : x))); return true; })
+      .catch(() => false);
   };
-  const removeContent = (id) => setRemovedIds((r) => (r.includes(id) ? r : [...r, id]));
-  const restoreContent = (id) => setRemovedIds((r) => r.filter((x) => x !== id));
+  const moderateContent = (type, id, removed) => api(`/api/admin/content/${type}/${id}`, {
+    method: "POST",
+    body: { removed },
+    context: removed ? "Removing community content" : "Restoring community content",
+  });
+  const removeContent = (id) => moderateContent("post", id, true)
+    .then(() => { setRemovedIds((rows) => (rows.includes(id) ? rows : [...rows, id])); return true; })
+    .catch(() => false);
+  const restoreContent = (id) => moderateContent("post", id, false)
+    .then(() => { setRemovedIds((rows) => rows.filter((value) => value !== id)); return true; })
+    .catch(() => false);
 
   // Artist account requests
   const requestArtist = (artistName, note) => {
@@ -1154,6 +1198,14 @@ export function StoreProvider({ children }) {
     // Sever locally the way the server does.
     setFollows((f) => ({ ...f, [session.id]: (f[session.id] || []).filter((x) => x !== id), [id]: (f[id] || []).filter((x) => x !== session.id) }));
     api(`/api/users/${id}/block`, { method: "POST", body: { blocked: true }, context: "Blocking this account" })
+      .then(() => {
+        setFeed((rows) => rows.filter((post) => post.userId !== id));
+        setComments((groups) => Object.fromEntries(Object.entries(groups).map(([key, rows]) => [key, rows.filter((row) => row.userId !== id)])));
+        setFanClubMsgs((groups) => Object.fromEntries(Object.entries(groups).map(([key, rows]) => [key, rows.filter((row) => row.userId !== id)])));
+        setLounge((groups) => Object.fromEntries(Object.entries(groups).map(([key, rows]) => [key, rows.filter((row) => row.userId !== id)])));
+        setDms((threads) => { const next = { ...threads }; delete next[dmKey(session.id, id)]; return next; });
+        setNotifications((rows) => rows.filter((notification) => notification.actorId !== id));
+      })
       .catch(() => {
         setBlockedIds((b) => b.filter((x) => x !== id));
         setFollows((f) => ({ ...f, [session.id]: mineBefore, [id]: theirsBefore }));
@@ -1501,9 +1553,14 @@ export function StoreProvider({ children }) {
     if (u.suspendedUntil && u.suspendedUntil > Date.now()) return "suspended";
     return "ok";
   };
-  const banUser = (id) => { setUsers((all) => all.map((u) => (u.id === id ? { ...u, isBanned: true } : u))); api(`/api/admin/users/${id}/ban`, { method: "POST" }).catch(() => {}); };
-  const unbanUser = (id) => { setUsers((all) => all.map((u) => (u.id === id ? { ...u, isBanned: false, suspendedUntil: null } : u))); api(`/api/admin/users/${id}/unban`, { method: "POST" }).catch(() => {}); };
-  const suspendUser = (id, days = 7) => { setUsers((all) => all.map((u) => (u.id === id ? { ...u, suspendedUntil: Date.now() + days * 86400000 } : u))); api(`/api/admin/users/${id}/suspend`, { method: "POST", body: { days } }).catch(() => {}); };
+  const banUser = (id) => api(`/api/admin/users/${id}/ban`, { method: "POST", context: "Banning this account" })
+    .then(() => { setUsers((all) => all.map((u) => (u.id === id ? { ...u, isBanned: true } : u))); return true; }).catch(() => false);
+  const unbanUser = (id) => api(`/api/admin/users/${id}/unban`, { method: "POST", context: "Unbanning this account" })
+    .then(() => { setUsers((all) => all.map((u) => (u.id === id ? { ...u, isBanned: false, suspendedUntil: null } : u))); return true; }).catch(() => false);
+  const suspendUser = (id, days = 7) => api(`/api/admin/users/${id}/suspend`, { method: "POST", body: { days }, context: "Timing out this account" })
+    .then(({ suspendedUntil }) => { setUsers((all) => all.map((u) => (u.id === id ? { ...u, suspendedUntil } : u))); return true; }).catch(() => false);
+  const liftSuspension = (id) => api(`/api/admin/users/${id}/unsuspend`, { method: "POST", context: "Lifting this timeout" })
+    .then(() => { setUsers((all) => all.map((u) => (u.id === id ? { ...u, suspendedUntil: null } : u))); return true; }).catch(() => false);
   // Full member directory for the admin console (all signups, incl. banned) + live
   // counts and a per-region breakdown. Absorbs everyone into `users` so they're
   // visible/moderatable, and stores the stats for the Members header.
@@ -1534,11 +1591,14 @@ export function StoreProvider({ children }) {
   const stopCatalogSeed = async () => { try { return await api("/api/admin/catalog/seed", { method: "DELETE" }); } catch { return null; } };
 
   // moderation: drop a single chat/lounge/comment message (staff)
-  const removeLoungeMessage = (key, msgId) => setLounge((L) => ({ ...L, [key]: (L[key] || []).filter((m) => m.id !== msgId) }));
-  const removeComment = (logId, cId) => setComments((m) => ({ ...m, [logId]: (m[logId] || []).filter((c) => c.id !== cId) }));
-  const removeFanClubMessage = (artistKey, msgId) => setFanClubMsgs((L) => ({ ...L, [artistKey]: (L[artistKey] || []).filter((m) => m.id !== msgId) }));
+  const removeLoungeMessage = (key, msgId) => moderateContent("lounge_message", msgId, true)
+    .then(() => { setLounge((L) => ({ ...L, [key]: (L[key] || []).filter((m) => m.id !== msgId) })); return true; }).catch(() => false);
+  const removeComment = (logId, cId) => moderateContent("comment", cId, true)
+    .then(() => { setComments((m) => ({ ...m, [logId]: (m[logId] || []).filter((c) => c.id !== cId) })); return true; }).catch(() => false);
+  const removeFanClubMessage = (artistKey, msgId) => moderateContent("fan_message", msgId, true)
+    .then(() => { setFanClubMsgs((L) => ({ ...L, [artistKey]: (L[artistKey] || []).filter((m) => m.id !== msgId) })); return true; }).catch(() => false);
   // Promote/demote a member (fan ⇄ artist ⇄ admin). Admin grants full moderation.
-  const setUserRole = (id, role) => {
+  const setUserRole = async (id, role) => {
     if (!["fan", "artist", "moderator", "admin"].includes(role)) return;
     // Staff carry their role in their @ (admin → "admin", moderator → "mod"); on
     // promotion, tag the handle if it isn't already, keeping it unique.
@@ -1550,27 +1610,36 @@ export function StoreProvider({ children }) {
       while (users.some((x) => x.id !== id && x.handle === cand)) cand = `${handle}_${tag}${i++}`.slice(0, 20);
       handle = cand;
     }
-    setUsers((all) => all.map((u) => (u.id === id ? { ...u, role, handle: handle || u.handle } : u)));
-    setSession((s) => (s && s.id === id ? { ...s, role, handle: handle || s.handle } : s));
-    api(`/api/admin/users/${id}/role`, { method: "POST", body: { role, handle } }).catch(() => {}); // persist cross-device
+    try {
+      await api(`/api/admin/users/${id}/role`, { method: "POST", body: { role, handle }, context: "Changing this account role" });
+      setUsers((all) => all.map((u) => (u.id === id ? { ...u, role, handle: handle || u.handle } : u)));
+      setSession((s) => (s && s.id === id ? { ...s, role, handle: handle || s.handle } : s));
+      return true;
+    } catch { return false; }
   };
 
   // Admin-granted verification (the blue check), independent of role, so any
   // account can be verified. (Groundwork for a paid tier later; not surfaced as
   // paid yet.) Admin-only.
-  const setVerified = (id, val) => {
+  const setVerified = async (id, val) => {
     if (!isStaff(session?.role)) return;
     const verified = !!val;
-    setUsers((all) => all.map((u) => (u.id === id ? { ...u, verified } : u)));
-    setSession((s) => (s && s.id === id ? { ...s, verified } : s));
-    api(`/api/admin/users/${id}/verified`, { method: "POST", body: { verified } }).catch(() => {}); // best-effort, offline-safe
+    try {
+      await api(`/api/admin/users/${id}/verified`, { method: "POST", body: { verified }, context: "Updating verification" });
+      setUsers((all) => all.map((u) => (u.id === id ? { ...u, verified } : u)));
+      setSession((s) => (s && s.id === id ? { ...s, verified } : s));
+      return true;
+    } catch { return false; }
   };
-  const setSponsor = (id, val) => {
+  const setSponsor = async (id, val) => {
     if (!isStaff(session?.role)) return;
     const sponsor = !!val;
-    setUsers((all) => all.map((u) => (u.id === id ? { ...u, sponsor } : u)));
-    setSession((s) => (s && s.id === id ? { ...s, sponsor } : s));
-    api(`/api/admin/users/${id}/sponsor`, { method: "POST", body: { sponsor } }).catch(() => {});
+    try {
+      await api(`/api/admin/users/${id}/sponsor`, { method: "POST", body: { sponsor }, context: "Updating sponsorship" });
+      setUsers((all) => all.map((u) => (u.id === id ? { ...u, sponsor } : u)));
+      setSession((s) => (s && s.id === id ? { ...s, sponsor } : s));
+      return true;
+    } catch { return false; }
   };
 
   // --- Planned attendance ---
@@ -1923,10 +1992,16 @@ export function StoreProvider({ children }) {
     const rows = Object.values(agg).map((a) => ({ name: a.name, genre: a.genre, nights: a.nights, reviews: a.reviews, avg: a.reviews ? a.sum / a.reviews : 0 }));
     const C = 40; // prior weight
     const M = rows.length ? rows.reduce((s, a) => s + a.avg, 0) / rows.length : 4;
-    return rows
+    const ranked = rows
       .map((a) => ({ ...a, score: (a.avg * a.reviews + M * C) / (a.reviews + C) }))
       .sort((a, b) => b.score - a.score)
       .slice(0, n);
+    if (ranked.length) return ranked;
+    return Object.values(catalogArtists || {})
+      .filter((artist) => artist?.name)
+      .sort((a, b) => (b.popularity ?? -1) - (a.popularity ?? -1) || (b.followers || 0) - (a.followers || 0) || a.name.localeCompare(b.name))
+      .slice(0, n)
+      .map((artist) => ({ name: artist.name, genre: artist.genre || null, avg: 0, popularity: artist.popularity ?? null }));
   };
 
   const artistsAlphabetical = (n = 12) =>
@@ -1967,6 +2042,7 @@ export function StoreProvider({ children }) {
   // their cached posts count); complete for the signed-in user.
   const activityStats = (u) => {
     if (!u) return { shows: 0, reviews: 0, likes: 0, photos: 0, cities: 0, artists: 0, follows: 0, fanClubs: 0 };
+    if (rewardProfiles[u.id]?.stats) return rewardProfiles[u.id].stats;
     const logs = logsByUser(u.id);
     return {
       shows: logs.length,
@@ -1979,8 +2055,16 @@ export function StoreProvider({ children }) {
       fanClubs: (fanClubs[u.id] || []).length,
     };
   };
-  const userAchievements = (u) => { const s = activityStats(u); return ACHIEVEMENTS.filter((a) => a.test(s)).map((a) => a.id); };
-  const userPoints = (u) => { const s = activityStats(u); return ACHIEVEMENTS.reduce((sum, a) => sum + (a.test(s) ? a.points : 0), 0); };
+  const userAchievements = (u) => rewardProfiles[u?.id]?.earnedIds || (() => { const s = activityStats(u); return ACHIEVEMENTS.filter((a) => a.test(s)).map((a) => a.id); })();
+  const userPoints = (u) => rewardProfiles[u?.id]?.points ?? (() => { const s = activityStats(u); return ACHIEVEMENTS.reduce((sum, a) => sum + (a.test(s) ? a.points : 0), 0); })();
+  const loadRewards = async (userId) => {
+    if (!userId) return null;
+    try {
+      const rewards = await api(`/api/users/${userId}/rewards`, { context: "Loading badge progress", silent: true });
+      setRewardProfiles((all) => ({ ...all, [userId]: rewards }));
+      return rewards;
+    } catch { return null; }
+  };
 
   // --- Discover: chart ranking + region genres + top photos ------------------
   // The ranking SOURCE is abstracted so we can swap in Billboard Hot 100 or an
@@ -2243,7 +2327,7 @@ export function StoreProvider({ children }) {
   };
 
   const value = {
-    users, session, feed, removedIds, requests, tourDates, reports, follows,
+    users, session, feed, removedIds, requests, tourDates, reports, follows, discoverySidebar, discoverySidebarStatus,
     userById, userByHandle, logsByUser, sharedShows,
     login, signup, logout, deleteAccount, forgotPassword, resetPassword, updateProfile, chooseTheme,
     addLog, reportContent, actionReport, dismissReport, removeContent, restoreContent,
@@ -2262,7 +2346,7 @@ export function StoreProvider({ children }) {
     searchVenues, venuesByCity, venueUpcomingCount,
     allArtists, topArtists, artistsAlphabetical, upcomingEvents, trendingVenues,
     isVerifiedArtist, isTop100, artistRank, artistBadges, userBadges,
-    activityStats, userAchievements, userPoints,
+    activityStats, userAchievements, userPoints, loadRewards,
     chartTop, chartInfo, catalogCountries, topGenres, topPhotos, discoverStats, topArtistsBy, topSongsBy,
     commentsFor, addComment, loadComments, likeInfo, toggleLike,
     concertKey, loungeFor, addLoungeMessage, loadLounge,
@@ -2270,7 +2354,7 @@ export function StoreProvider({ children }) {
     fanClubFor, loadFanClub, addFanClubMessage, isFanClubMember, joinFanClub, fanClubCount, fanClubsDirectory,
     isArtistOwner, artistProfile, loadArtistPage, updateArtistProfile, artistFeedEnabled,
     artistPostsFor, addArtistPost, removeArtistPost,
-    accountStatus, banUser, unbanUser, suspendUser, setUserRole, setVerified, setSponsor, loadAdminMembers, adminStats, adminArtistQueue, enrichArtists, purgeArtist, startCatalogSeed, catalogSeedStatus, stopCatalogSeed, removeLoungeMessage, removeComment, removeFanClubMessage,
+    accountStatus, banUser, unbanUser, suspendUser, liftSuspension, setUserRole, setVerified, setSponsor, loadAdminMembers, adminStats, adminArtistQueue, enrichArtists, purgeArtist, startCatalogSeed, catalogSeedStatus, stopCatalogSeed, removeLoungeMessage, removeComment, removeFanClubMessage,
     comments, fanClubMsgs, lounge,
     goingFor, isGoing, toggleGoing, attendeesFor,
     venueReviewsFor, loadVenueReviews, addVenueReview, venueRating, venueTopPhotos, venuePhotos, artistFanPhotos,

@@ -6,6 +6,34 @@
 
 > **Working agreement (owner's standing instruction):** ALWAYS `git commit` **and** `git push` after a verified batch. Stabilization work uses a review branch; do not merge/push directly to `master` until the branch checks pass. A master push auto-deploys and briefly restarts Render.
 
+## Rewards, local discovery, moderation, and blocking - 2026-07-13 (Codex)
+
+**Owner request:** preserve the current layout while repairing the empty right rail, badge correctness, admin actions, and blocking. This batch does that without changing navigation or page structure. All earlier YouTube/player, error-catalogue, upload, account, and stabilization notes remain below.
+
+### Completed
+
+1. **Right rail is server-backed and location-aware.** New `GET /api/discovery/sidebar` returns real DB-ranked artists, upcoming provider events, and venue counts. Shows/venues rank by the signed-in account's saved city and coordinates, then widen through 75 km, province/state, 250 km, country, and global results rather than leaving the cards blank. `RightRail` uses this response and shows themed loading/provider/error copy. Production no longer depends on stripped demo reviews for its Top Artists list; the bundled real artist catalogue remains a safe visual fallback while the request is loading.
+2. **Tour ingestion now covers member cities.** `server/tourdates.js` still refreshes named artists, but now also requests real music events for the 50 most-used account cities through Ticketmaster's official `city + classificationName=music` search. The first refresh starts 5 seconds after boot. `TOURDATE_CITY_LIMIT=50` is in `render.yaml`. Health now exposes `services.tourProviderConfigured` and `services.tourDates` without exposing any provider key.
+3. **Badges use authoritative server history.** New `user_achievements` is an append-only, idempotent SQLite ledger. `GET /api/users/:id/rewards` calculates shows, written reviews, received likes, photos, unique cities/artists, follows, and fan-club memberships from non-removed server records; it records each earned badge once. Profiles and the badge board hydrate this data, the hard-coded `/10` was removed, and tier progress now measures progress inside the current tier.
+4. **Moderation buttons change the server or report failure.** `POST /api/admin/content/:type/:id` removes/restores posts, comments, fan-club messages, lounge messages, and venue reviews. The client waits for server success before changing the screen. Report action/dismiss, bans, suspensions, role changes, verification, and sponsor changes no longer silently claim success after failure.
+5. **Moderator permissions are real and bounded.** Moderators can load reports/members, remove/restore content, suspend accounts, and lift suspensions. Administrators retain bans/unbans, role/verification/sponsor changes, artist approvals, analytics, and catalogue control. Moderator screens no longer offer Ban. Administrator targets cannot be banned/suspended/role-changed through ordinary admin routes.
+6. **Append-only admin audit trail.** `moderation_actions` records actor, action, target, reason, prior/next state, request ID, and timestamp without storing content bodies or credentials. Report actions are transactional; unsupported user/message report targets remain open for manual review instead of being falsely marked actioned. Duplicate open reports from one reporter are coalesced.
+7. **Blocking is enforced across direct routes.** Either-direction blocks now close direct profiles, posts, rewards, playlists, follows/following lists, likes, comments/replies, DM history, fan-club messages, event attendees, venue reviews, and blocked notification counts. Feed block filtering happens in SQL before pagination. A successful block purges already-cached posts, comments, shared chat entries, DM thread, and notifications from the browser.
+8. **Regression coverage.** Tests now prove local-first discovery, permanent one-time badge awards, block enforcement across reads/writes, and real audited moderator changes. `npm test`, syntax checks, Expo SDK 56 web export, and `git diff --check` passed before commit.
+
+### Database/deployment behavior
+
+- No manual migration command is required. `user_achievements` and `moderation_actions` are created idempotently at server boot on the existing persistent SQLite disk.
+- A valid Render `TICKETMASTER_KEY` or approved `BANDSINTOWN_APP_ID` is still required for real dates. A configured-but-invalid Ticketmaster key produces zero rows; check `/api/health`: `tourProviderConfigured` must be true and `tourDates` must rise above zero after the first refresh. Never restore fabricated `g_t_*`, `ca_t_*`, `ct*`, or `t1`-`t4` rows merely to fill the cards.
+- The older note below says the local Ticketmaster key returned `Invalid ApiKey`. Treat that as unresolved until production health shows a non-zero date count. Ticketmaster keys can require activation; replace the Render secret if it remains at zero.
+
+### Deliberately remaining work
+
+- Add badge-earned notifications, definition-version migration rules, quality/anti-farming thresholds, and a profile badge showcase. The ledger foundation is present; do not move badge authority back into `src/store.js`.
+- Add an admin Audit/Case UI, required action-reason forms, evidence snapshots, report grouping, appeals/reversals, cursor pagination/server search, an `owner` role, and step-up authentication/MFA for dangerous actions. The audit data exists but has no screen yet.
+- Finish SQL-level blocked-user predicates on every high-volume comment/community query before those tables become large. Correct filtering exists now, but some community endpoints filter the returned page in memory.
+- A public signed-out visitor can still see intentionally public content; account blocking cannot prevent the same person from logging out. Keep user-facing wording accurate.
+
 ## Production rollout — 2026-07-13 (Codex)
 
 - `codex/stabilize-core` was fast-forwarded into `master` and deployed by Render at commit `4150a0d`.
@@ -98,7 +126,7 @@
 3. Add cursor pagination and thread summaries; remove the DM thread N+1 query.
 4. Split `src/store.js` by domain behind the same screen-facing API. Introduce a server-state query cache incrementally rather than rewriting every screen at once.
 5. Add canonical `Performance`, `Artist`, `Venue`, and media IDs, then migrate attendance/reviews/posts away from concatenated display strings.
-6. Complete immutable consent versions, object-file deletion, asynchronous large-account exports, block enforcement coverage, moderation permissions/audit logs, and recovery-mail readiness. Relational deletion and bounded portable export are implemented.
+6. Complete immutable consent versions, object-file deletion, asynchronous large-account exports, the remaining SQL-level block filters, moderation case/appeal UI, and recovery-mail readiness. Core block enforcement, bounded moderator permissions, and append-only audit records are implemented.
 7. Before serious growth, migrate the single-instance SQLite/data jobs to managed Postgres, object storage/CDN, a shared rate-limit/cache service, background workers, observability, and tested off-host backups. That backend work does not require a visual redesign.
 8. Decide the supported native playback path: SDK 56 `expo-audio` for previews/audio and a focused Expo DOM component for YouTube embeds. The current YouTube player remains web-only.
 

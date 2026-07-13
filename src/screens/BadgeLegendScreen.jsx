@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { View, Text, StyleSheet, ScrollView } from "react-native";
 import { colors, mono, radius } from "../theme";
 import { useStore } from "../store";
@@ -11,14 +12,15 @@ const TINT = { amber: colors.amber, magenta: colors.magenta, cool: colors.cool, 
 // The badge legend + rewards board: what every badge means, how it's earned, and
 // (for you) your points, tier, and progress toward the ones you haven't unlocked.
 export default function BadgeLegendScreen({ onClose, userId }) {
-  const { session, userById, activityStats, userAchievements, userPoints } = useStore();
+  const { session, userById, activityStats, userAchievements, userPoints, loadRewards } = useStore();
   const uid = userId || session?.id;
   const user = uid ? userById(uid) : null;
   const stats = activityStats(user);
   const earned = new Set(userAchievements(user));
   const points = userPoints(user);
   const tier = pointsTier(points);
-  const nextPct = tier.next ? Math.min(1, points / tier.next) : 1;
+  const nextPct = tier.next ? Math.min(1, Math.max(0, (points - tier.start) / (tier.next - tier.start))) : 1;
+  useEffect(() => { if (uid) loadRewards(uid); }, [uid]);
 
   return (
     <View style={styles.wrap}>
@@ -68,7 +70,7 @@ export default function BadgeLegendScreen({ onClose, userId }) {
         })}
 
         <Text style={styles.section}>STATUS BADGES · GRANTED</Text>
-        {Object.entries(STATUS_BADGES).filter(([k]) => k !== "artist" || true).map(([type, info]) => (
+        {Object.entries(STATUS_BADGES).map(([type, info]) => (
           <View key={type} style={styles.statusRow}>
             <Badge type={type} size={26} tooltip={false} />
             <View style={{ flex: 1 }}>

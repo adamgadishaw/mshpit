@@ -9,6 +9,7 @@ import Icon from "../components/Icon";
 import SpinningRecord from "../components/SpinningRecord";
 import TicketStub from "../components/TicketStub";
 import { BadgeRow } from "../components/Badge";
+import { ACHIEVEMENTS } from "../lib/badges";
 
 function Stat({ value, label, onPress }) {
   return (
@@ -50,12 +51,13 @@ function TrebleBass({ kind, song, playing, onPlay, onOpenArtist }) {
 // MySpace-style profile - banner, pfp, now-playing, theme song, Treble/Bass top
 // artists, planned shows, reviews. Built to make people findable and followable.
 export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtist, onOpenVenue, onEditProfile, onPreview, onMessage, onReport, onOpenPhotos, onPlay, onOpenFollowList, onOpenBadges }) {
-  const { session, userById, logsByUser, isFollowing, follow, unfollow, followerCount, followingCount, goingFor, userBadges, sharedShows, userPlaylists, loadUser, isBlocked, blockUser, unblockUser, userPoints, userAchievements } = useStore();
+  const { session, userById, logsByUser, isFollowing, follow, unfollow, followerCount, followingCount, goingFor, userBadges, sharedShows, userPlaylists, loadUser, isBlocked, blockUser, unblockUser, userPoints, userAchievements, loadRewards } = useStore();
   const user = userById(userId);
   const [playlists, setPlaylists] = useState([]);
   const [missing, setMissing] = useState(false);
   const [playing, setPlaying] = useState(null);
   useEffect(() => { if (userId) userPlaylists(userId).then(setPlaylists); }, [userId]);
+  useEffect(() => { if (userId) loadRewards(userId); }, [userId]);
   // Always refresh from the server: fills real follower counts, and makes profiles
   // we've never cached (a follower from a notification) open instead of blanking.
   useEffect(() => {
@@ -178,7 +180,7 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtis
         <Pressable style={styles.rewards} onPress={() => onOpenBadges?.(user.id)}>
           <View style={styles.rewardsIcon}><Icon name="star" size={16} color={colors.amber} filled /></View>
           <View style={{ flex: 1 }}>
-            <Text style={styles.rewardsTitle}>{userPoints(user).toLocaleString()} points · {userAchievements(user).length}/10 badges</Text>
+            <Text style={styles.rewardsTitle}>{userPoints(user).toLocaleString()} points · {userAchievements(user).length}/{ACHIEVEMENTS.length} badges</Text>
             <Text style={styles.rewardsSub}>{isSelf ? "See what you can earn next" : "See their badges"}</Text>
           </View>
           <Icon name="chevron-right" size={16} color={colors.textDim} />

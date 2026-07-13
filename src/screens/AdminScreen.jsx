@@ -69,7 +69,7 @@ const ROLES = ["fan", "artist", "moderator", "admin"];
 const roleColor = (r) => (r === "admin" ? colors.magenta : r === "moderator" ? colors.good : r === "artist" ? colors.amber : colors.textDim);
 
 // A single member row with inline Discord-style moderation: role, timeout, ban.
-function MemberRow({ u, self, status, canRole, onRole, onTimeout, onLift, onBan, onUnban, onVerify, onSponsor }) {
+function MemberRow({ u, self, status, canRole, canBan, onRole, onTimeout, onLift, onBan, onUnban, onVerify, onSponsor }) {
   const banned = status === "banned";
   const timed = status === "suspended";
   return (
@@ -150,11 +150,11 @@ function MemberRow({ u, self, status, canRole, onRole, onTimeout, onLift, onBan,
           {timed && (
             <Pressable style={[styles.modBtn, styles.ok]} onPress={onLift}><Icon name="check" size={13} color={colors.good} /><Text style={styles.okTxt}>Lift timeout</Text></Pressable>
           )}
-          {banned ? (
+          {canBan && (banned ? (
             <Pressable style={[styles.modBtn, styles.ok]} onPress={onUnban}><Icon name="check" size={13} color={colors.good} /><Text style={styles.okTxt}>Unban</Text></Pressable>
           ) : (
             <Pressable style={[styles.modBtn, styles.danger]} onPress={onBan}><Icon name="x" size={13} color={colors.danger} /><Text style={styles.dangerTxt}>Ban</Text></Pressable>
-          )}
+          ))}
         </View>
       )}
     </View>
@@ -166,7 +166,7 @@ export default function AdminScreen({ onClose }) {
     requests, users, feed, removedIds, reports, session,
     comments, fanClubMsgs, lounge,
     approveArtist, rejectArtist, removeContent, restoreContent, actionReport, dismissReport,
-    suspendUser, banUser, unbanUser, setUserRole, setVerified, setSponsor, accountStatus,
+    suspendUser, liftSuspension, banUser, unbanUser, setUserRole, setVerified, setSponsor, accountStatus,
     removeComment, removeFanClubMessage, removeLoungeMessage,
     loadAdminMembers, adminStats, adminArtistQueue, enrichArtists, purgeArtist, startCatalogSeed, catalogSeedStatus, stopCatalogSeed,
   } = useStore();
@@ -310,9 +310,9 @@ export default function AdminScreen({ onClose }) {
                       <Pressable style={[styles.btn, styles.suspend]} onPress={() => { suspendUser(log.userId, 7); dismissReport(r.id); }}>
                         <Icon name="clock" size={14} color={colors.gold} /><Text style={[styles.dismissTxt, { color: colors.gold }]}>Timeout 7d</Text>
                       </Pressable>
-                      <Pressable style={[styles.btn, styles.remove]} onPress={() => { banUser(log.userId); actionReport(r.id); }}>
+                      {iAmAdmin && <Pressable style={[styles.btn, styles.remove]} onPress={() => { banUser(log.userId); actionReport(r.id); }}>
                         <Icon name="x" size={14} color={colors.danger} /><Text style={styles.rejectTxt}>Ban user</Text>
-                      </Pressable>
+                      </Pressable>}
                     </View>
                   )}
                 </View>
@@ -360,9 +360,10 @@ export default function AdminScreen({ onClose }) {
                 self={u.id === session?.id}
                 status={accountStatus(u)}
                 canRole={iAmAdmin}
+                canBan={iAmAdmin}
                 onRole={(r) => setUserRole(u.id, r)}
                 onTimeout={(days) => suspendUser(u.id, days)}
-                onLift={() => unbanUser(u.id)}
+                onLift={() => liftSuspension(u.id)}
                 onBan={() => banUser(u.id)}
                 onUnban={() => unbanUser(u.id)}
                 onVerify={(val) => setVerified(u.id, val)}

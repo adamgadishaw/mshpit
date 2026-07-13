@@ -323,6 +323,35 @@ CREATE TABLE IF NOT EXISTS blocks (
 );
 CREATE INDEX IF NOT EXISTS idx_blocks_blocked ON blocks(blocked_id);
 
+-- Durable achievement ledger. Progress is computed from authoritative tables;
+-- earned rows remain as a historical record and cannot be duplicated.
+CREATE TABLE IF NOT EXISTS user_achievements (
+  user_id            TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  badge_id           TEXT NOT NULL,
+  definition_version INTEGER NOT NULL DEFAULT 1,
+  points             INTEGER NOT NULL,
+  earned_at          INTEGER NOT NULL,
+  progress_snapshot  TEXT NOT NULL DEFAULT '{}',
+  PRIMARY KEY (user_id, badge_id)
+);
+CREATE INDEX IF NOT EXISTS idx_achievements_user ON user_achievements(user_id, earned_at);
+
+-- Append-only moderation trail: records who changed what and why. It stores no
+-- private content body, credentials, or session material.
+CREATE TABLE IF NOT EXISTS moderation_actions (
+  id          TEXT PRIMARY KEY,
+  actor_id    TEXT REFERENCES users(id) ON DELETE SET NULL,
+  action      TEXT NOT NULL,
+  target_type TEXT NOT NULL,
+  target_id   TEXT NOT NULL,
+  reason      TEXT NOT NULL DEFAULT '',
+  prior_state TEXT NOT NULL DEFAULT '{}',
+  next_state  TEXT NOT NULL DEFAULT '{}',
+  request_id  TEXT,
+  created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_moderation_actions_created ON moderation_actions(created_at DESC);
+
 -- Concert lounge / afterparty chat, keyed by concertKey (artist|venue|date), so
 -- attendee chat is shared + live like the fan clubs (not device-local).
 CREATE TABLE IF NOT EXISTS lounge_messages (

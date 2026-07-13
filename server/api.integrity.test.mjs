@@ -181,6 +181,87 @@ test("feed cursor pagination is stable while offset remains compatible", () => {
   assert.deepEqual(offset.posts.map((p) => p.id), ["cursor_post_5", "cursor_post_4"]);
 });
 
+test("discovery sidebar returns real top artists and local-first shows and venues", () => {
+  const user = addUser("u_sidebar", "sidebar@example.com", "sidebaruser");
+  const insert = db.prepare(`INSERT INTO tour_dates
+    (id,artist,venue,place,lat,lng,date,ticket_url,sold_out,source,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
+  insert.run("tm_sidebar_far", "Far Artist", "Far Hall", "Vancouver, British Columbia, Canada", 49.2827, -123.1207, "2099 · 08 · 20", "https://tickets.example/far", 0, "ticketmaster", Date.now());
+  insert.run("tm_sidebar_local", "Local Artist", "Local Hall", "Toronto, Ontario, Canada", 43.6532, -79.3832, "2099 · 09 · 01", "https://tickets.example/local", 0, "ticketmaster", Date.now());
+
+  const result = routes["GET /api/discovery/sidebar"]({ user });
+  assert.ok(result.topArtists.length >= 3);
+  assert.equal(result.upcomingEvents[0].id, "tm_sidebar_local");
+  assert.equal(result.upcomingEvents[0].local, true);
+  assert.equal(result.trendingVenues[0].name, "Local Hall");
+  assert.equal(result.location.city, "Toronto");
+});
+
+test("rewards use authoritative server activity and persist each award once", () => {
+  const user = addUser("u_rewards", "rewards@example.com", "rewardsuser");
+  const fan = addUser("u_rewards_fan", "rewards-fan@example.com", "rewardsfan");
+  db.prepare("INSERT INTO posts (id,user_id,artist,venue,city,overall,review,photos,created_at) VALUES (?,?,?,?,?,?,?,?,?)")
+    .run("post_rewards", user.id, "Artist One", "Venue One", "Toronto", 4.5, "A proper review", '["https://cdn.example/photo.jpg"]', 100);
+  db.prepare("INSERT INTO likes (post_id,user_id) VALUES (?,?)").run("post_rewards", fan.id);
+  db.prepare("INSERT INTO follows (follower_id,followee_id) VALUES (?,?)").run(user.id, fan.id);
+  db.prepare("INSERT INTO fan_club_members (artist,user_id) VALUES (?,?)").run("artist one", user.id);
+
+  const handler = routes["GET /api/users/:id/rewards"];
+  const first = handler({ user, params: { id: user.id } });
+  const second = handler({ user, params: { id: user.id } });
+  assert.equal(first.stats.shows, 1);
+  assert.equal(first.stats.reviews, 1);
+  assert.equal(first.stats.likes, 1);
+  assert.equal(first.stats.photos, 1);
+  assert.ok(first.earnedIds.includes("first_show"));
+  assert.deepEqual(second.earnedIds, first.earnedIds);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM user_achievements WHERE user_id=? AND badge_id='first_show'").get(user.id).c, 1);
+});
+
+test("blocking closes direct profile, content, interaction, and community read paths", () => {
+  const blocker = addUser("u_block_matrix_a", "block-matrix-a@example.com", "blockmatrixa");
+  const blocked = addUser("u_block_matrix_b", "block-matrix-b@example.com", "blockmatrixb");
+  db.prepare("INSERT INTO posts (id,user_id,artist,venue,overall,created_at) VALUES (?,?,?,?,?,?)").run("post_block_matrix", blocked.id, "Artist", "Venue", 4, 100);
+  db.prepare("INSERT INTO playlists (id,user_id,name,tracks,created_at) VALUES (?,?,?,?,?)").run("playlist_block_matrix", blocked.id, "List", '[{"title":"Song"}]', 100);
+  db.prepare("INSERT INTO fan_club_messages (id,artist,user_id,text,created_at) VALUES (?,?,?,?,?)").run("fan_block_matrix", "artist", blocked.id, "hidden", 100);
+  db.prepare("INSERT INTO going (user_id,concert_key,artist,venue) VALUES (?,?,?,?)").run(blocked.id, "show-block-matrix", "Artist", "Venue");
+  db.prepare("INSERT INTO venue_reviews (id,venue_key,user_id,rating,text,created_at) VALUES (?,?,?,?,?,?)").run("venue_block_matrix", "venue", blocked.id, 4, "hidden", 100);
+  db.prepare("INSERT INTO notifications (id,user_id,actor_id,type,created_at) VALUES (?,?,?,?,?)").run("notif_block_matrix", blocker.id, blocked.id, "follow", 100);
+
+  routes["POST /api/users/:id/block"]({ user: blocker, ip: "block-matrix", params: { id: blocked.id }, body: { blocked: true } });
+  for (const [route, params] of [
+    ["GET /api/users/:id", { id: blocked.id }],
+    ["GET /api/users/:id/posts", { id: blocked.id }],
+    ["GET /api/users/:id/playlists", { id: blocked.id }],
+    ["GET /api/users/:id/rewards", { id: blocked.id }],
+  ]) assert.throws(() => routes[route]({ user: blocker, params }), (error) => error.status === 404);
+  assert.throws(() => routes["POST /api/posts/:id/like"]({ user: blocker, ip: "block-like", params: { id: "post_block_matrix" }, body: { liked: true } }), (error) => error.status === 403);
+  assert.throws(() => routes["POST /api/posts/:id/comments"]({ user: blocker, ip: "block-comment", params: { id: "post_block_matrix" }, body: { text: "nope" } }), (error) => error.status === 403);
+  assert.equal(routes["GET /api/fanclubs/:artist/messages"]({ user: blocker, params: { artist: "artist" } }).messages.some((message) => message.userId === blocked.id), false);
+  assert.equal(routes["GET /api/going/:key/attendees"]({ user: blocker, params: { key: "show-block-matrix" } }).attendees.length, 0);
+  assert.equal(routes["GET /api/venues/:key/reviews"]({ user: blocker, params: { key: "venue" } }).reviews.length, 0);
+  assert.equal(routes["GET /api/me/notifications"]({ user: blocker }).unread, 0);
+});
+
+test("moderators have real bounded actions and every content change is audited", () => {
+  addUser("u_mod_actions", "mod-actions@example.com", "modactions");
+  const target = addUser("u_mod_target", "mod-target@example.com", "modtarget");
+  db.prepare("UPDATE users SET role='moderator' WHERE id='u_mod_actions'").run();
+  const moderator = q.userById.get("u_mod_actions");
+  db.prepare("INSERT INTO posts (id,user_id,artist,venue,overall,created_at) VALUES (?,?,?,?,?,?)").run("post_mod_actions", target.id, "Artist", "Venue", 4, 100);
+
+  const result = routes["POST /api/admin/content/:type/:id"]({ user: moderator, requestId: "request-mod-actions", params: { type: "post", id: "post_mod_actions" }, body: { removed: true } });
+  assert.equal(result.removed, true);
+  assert.equal(db.prepare("SELECT removed FROM posts WHERE id='post_mod_actions'").get().removed, 1);
+  const audit = db.prepare("SELECT * FROM moderation_actions WHERE target_id='post_mod_actions'").get();
+  assert.equal(audit.actor_id, moderator.id);
+  assert.equal(audit.action, "remove");
+  assert.equal(audit.request_id, "request-mod-actions");
+  assert.doesNotThrow(() => routes["GET /api/admin/members"]({ user: moderator }));
+  assert.throws(() => routes["POST /api/admin/users/:id/ban"]({ user: moderator, params: { id: target.id }, body: {} }), (error) => error.status === 403);
+  assert.equal(routes["POST /api/admin/users/:id/suspend"]({ user: moderator, params: { id: target.id }, body: { days: 1 } }).ok, true);
+});
+
 test("account export covers owned social data without secrets or raw IP addresses", () => {
   const user = addUser("u_export", "export@example.com", "exportuser");
   db.prepare("UPDATE users SET suspended_until=? WHERE id=?").run(Date.now() + 86_400_000, user.id);
