@@ -216,7 +216,7 @@ export default function LiveMap({ points = [], highlight, focalName, label, onOp
           Maps API mounts into. */}
       <View ref={hostRef} style={StyleSheet.absoluteFill} />
       {label ? (
-        <View style={styles.labelPill} pointerEvents="none">
+        <View style={[styles.labelPill, styles.noPointerEvents]}>
           <Text style={styles.labelTxt}>{label}</Text>
         </View>
       ) : null}
@@ -232,7 +232,7 @@ function HoverCard({ hover }) {
   const photo = p.photo && isHttp(p.photo) ? proxied(p.photo, 320) : p.photo;
   const rating = typeof p.rating === "number" && p.rating > 0 ? p.rating : null;
   return (
-    <View style={[styles.cardAnchor, { left: x, top: y }]} pointerEvents="none">
+    <View style={[styles.cardAnchor, { left: x, top: y }, styles.noPointerEvents]}>
       <View style={styles.card}>
         {photo ? (
           <Image source={{ uri: photo }} style={styles.cardPhoto} resizeMode="cover" />
@@ -259,6 +259,7 @@ function HoverCard({ hover }) {
 }
 
 const styles = StyleSheet.create({
+  noPointerEvents: { pointerEvents: "none" },
   wrap: { width: "100%", aspectRatio: 320 / 206, borderRadius: 14, overflow: "hidden", borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: "#0e1119" },
   labelPill: { position: "absolute", left: 10, top: 10, backgroundColor: "rgba(7,9,15,0.72)", paddingHorizontal: 10, paddingVertical: 5, borderRadius: radius.pill },
   labelTxt: { color: colors.text, fontFamily: mono, fontSize: 12, fontWeight: "800", letterSpacing: 0.5 },

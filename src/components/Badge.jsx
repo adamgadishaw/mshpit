@@ -98,7 +98,7 @@ export default function Badge({ type = "verified", size = 18, tooltip = true }) 
         {seal}
       </Pressable>
       {hover && (
-        <View style={styles.tip} pointerEvents="none">
+        <View style={[styles.tip, styles.noPointerEvents]}>
           <Text style={styles.tipTitle}>{info.label}</Text>
           <Text style={styles.tipDesc}>{info.desc}</Text>
           <Text style={styles.tipHow}>{info.how}</Text>
@@ -131,6 +131,7 @@ export function BadgeChip({ type, label, size = 16 }) {
 }
 
 const styles = StyleSheet.create({
+  noPointerEvents: { pointerEvents: "none" },
   tipWrap: { position: "relative", ...(web ? { cursor: "help" } : null) },
   tip: {
     position: "absolute", bottom: "120%", left: "50%", transform: [{ translateX: -110 }], width: 220,

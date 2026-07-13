@@ -6,6 +6,7 @@ Read these files before editing:
 2. `BRIEF.md` — product vision and the Performance/Artist/Venue data spine.
 3. `HANDOFF.md` — current branch, completed work, validation, and blockers.
 4. `SCALING.md`, `SECURITY.md`, and `MIGRATION.md` for longer-term constraints.
+5. `ERROR_CATALOG.md` before changing API, upload, playback, persistence, or error handling.
 
 ## Product contract
 
@@ -21,12 +22,18 @@ performance ID instead of reconstructing identity from display strings.
 ## Current stack
 
 - Expo SDK 56, React 19.2, React Native 0.85, React Native Web 0.21.
+- SDK-matched native modules include Image Picker for uploads and FileSystem +
+  Sharing for portable account exports. Check the exact SDK 56 page before using
+  a newer/legacy API; `File`/`Paths` is the current filesystem surface.
 - JavaScript/JSX and `StyleSheet`; no TypeScript or UI framework yet.
 - `App.js` owns the existing overlay navigation and screen wiring.
 - `src/store.js` is the legacy client facade. It mixes server hydration, cached
   state, mutations, player recommendations, and compatibility data; reduce it in
   small tested extractions rather than rewriting it in one pass.
 - `src/lib/api.js` is the client API boundary.
+- `src/lib/diagnostics.js` and `src/lib/errorCatalog.mjs` own failure capture and
+  user copy. Components should not invent ad-hoc technical error messages.
+- `src/lib/mediaUpload.js` and `server/media.js` own the durable upload contract.
 - `server/` is the Node 24 HTTP API backed by SQLite on a persistent Render disk.
 - `src/seed/catalog.generated.json` is legacy bundled catalog data. It is large;
   do not add new runtime data to it. Production growth belongs in the database.
@@ -43,6 +50,15 @@ performance ID instead of reconstructing identity from display strings.
   must be stored durably before its URL is saved.
 - Server responses are authoritative. Optimistic client actions need visible
   pending/failed states and reconciliation; do not silently swallow writes.
+- Never save a selected device URI. Use `src/lib/mediaUpload.js` to upload first,
+  then persist only the returned `http:`/`https:` object URL. Keep the form or
+  draft intact when upload or save fails.
+- Public failures use the existing stable `PIT-*` catalogue. Add a catalogue
+  entry deliberately; do not surface raw server, provider, SQL, token, file-path,
+  request-body, or stack-trace text. Include a short operation `context` on API
+  writes so Diagnostics identifies the failure point without recording content.
+- New list endpoints should use stable cursor ordering with a unique tie-breaker.
+  Keep a compatibility offset only while an existing client still needs it.
 
 ## Code organization
 

@@ -38,14 +38,17 @@ function Swatch({ theme, active, onPress }) {
   );
 }
 
-export default function SettingsScreen({ onClose, onEditProfile, onOpenProfile, onOpenPrivacy, onOpenTerms, onLogout }) {
+export default function SettingsScreen({ onClose, onEditProfile, onOpenProfile, onOpenPrivacy, onOpenTerms, onOpenDiagnostics, onOpenDeleteAccount, onLogout }) {
   const { session, chooseTheme, blockedUsers, unblockUser, exportMyData } = useStore();
   const blocked = session ? blockedUsers() : [];
   const [exporting, setExporting] = useState(false);
+  const [exportResult, setExportResult] = useState(null);
   const doExport = async () => {
     if (exporting) return;
     setExporting(true);
-    await exportMyData();
+    setExportResult(null);
+    const result = await exportMyData();
+    setExportResult(result);
     setExporting(false);
   };
 
@@ -75,9 +78,14 @@ export default function SettingsScreen({ onClose, onEditProfile, onOpenProfile, 
             <Row
               icon="share"
               label={exporting ? "Preparing your backup..." : "Download your data"}
-              sub="A full backup of your profile, reviews, playlists, and activity (JSON)"
-              onPress={doExport}
+              sub="A portable backup of your profile, reviews, playlists, and activity (JSON)"
+              onPress={exporting ? undefined : doExport}
             />
+            {exportResult && (
+              <Text style={[styles.exportStatus, !exportResult.ok && styles.exportError]} accessibilityRole="alert">
+                {exportResult.ok ? "Your Pit data file is ready." : exportResult.error}
+              </Text>
+            )}
             <Text style={[styles.hint, { marginTop: 6 }]}>BLOCKED ACCOUNTS{blocked.length ? ` · ${blocked.length}` : ""}</Text>
             {blocked.length === 0 && <Text style={styles.blockedEmpty}>No one blocked. Block someone from their profile and they can't message you, follow you, or see your posts.</Text>}
             {blocked.map((u) => (
@@ -96,6 +104,7 @@ export default function SettingsScreen({ onClose, onEditProfile, onOpenProfile, 
         )}
 
         <Text style={styles.section}>ABOUT</Text>
+        <Row icon="discover" label="Diagnostics" sub="Recent errors, request references, and failure points" onPress={onOpenDiagnostics} />
         <Row icon="lock" label="Privacy policy" onPress={onOpenPrivacy} />
         <Row icon="shield" label="Terms & conditions" onPress={onOpenTerms} />
         <Row icon="globe" label="Version" sub="Pit · prototype build" onPress={undefined} right={<Text style={styles.ver}>0.1</Text>} />
@@ -104,6 +113,8 @@ export default function SettingsScreen({ onClose, onEditProfile, onOpenProfile, 
           <>
             <View style={{ height: 12 }} />
             <Row icon="logout" label="Log out" danger onPress={onLogout} />
+            <Text style={styles.section}>DANGER ZONE</Text>
+            <Row icon="trash" label="Delete account" sub="Permanently remove your account and activity" danger onPress={onOpenDeleteAccount} />
           </>
         )}
       </ScrollView>
@@ -131,6 +142,8 @@ const styles = StyleSheet.create({
   ver: { color: colors.textFaint, fontFamily: mono, fontSize: 13 },
   blockedRow: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 12, marginBottom: 8 },
   blockedEmpty: { color: colors.textFaint, fontSize: 12.5, lineHeight: 18, marginBottom: 8 },
+  exportStatus: { color: colors.good, fontSize: 12.5, lineHeight: 18, marginTop: -1, marginBottom: 10, paddingHorizontal: 4 },
+  exportError: { color: colors.danger },
   unblockBtn: { borderRadius: radius.pill, borderWidth: 1, borderColor: colors.danger, paddingHorizontal: 14, paddingVertical: 7 },
   unblockTxt: { color: colors.danger, fontSize: 12.5, fontWeight: "800" },
 });

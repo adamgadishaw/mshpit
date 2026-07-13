@@ -17,6 +17,7 @@ export function useAudioPreview(src, { enabled = true, onEnded, startAt = 0, vol
   const [pos, setPos] = useState(0);
   const [dur, setDur] = useState(0);
   const [playing, setPlaying] = useState(false);
+  const [error, setError] = useState(null);
   const lastPos = useRef(0); // throttle position state updates to cut re-renders (lag)
 
   // One <audio> element per mount, wired to state.
@@ -29,9 +30,10 @@ export function useAudioPreview(src, { enabled = true, onEnded, startAt = 0, vol
     // bar isn't re-rendering on every tick (that was a real lag source).
     const onTime = () => { const t = a.currentTime || 0; if (Math.abs(t - lastPos.current) >= 0.28) { lastPos.current = t; setPos(t); } };
     const onMeta = () => setDur(isFinite(a.duration) ? a.duration : 0);
-    const onPlay = () => setPlaying(true);
+    const onPlay = () => { setPlaying(true); setError(null); };
     const onPause = () => setPlaying(false);
     const onEnd = () => { setPlaying(false); endedRef.current && endedRef.current(); };
+    const onError = () => { setPlaying(false); setError({ kind: "playback", code: a.error?.code || 0 }); };
     a.addEventListener("timeupdate", onTime);
     a.addEventListener("loadedmetadata", onMeta);
     a.addEventListener("durationchange", onMeta);
@@ -39,6 +41,7 @@ export function useAudioPreview(src, { enabled = true, onEnded, startAt = 0, vol
     a.addEventListener("playing", onPlay);
     a.addEventListener("pause", onPause);
     a.addEventListener("ended", onEnd);
+    a.addEventListener("error", onError);
     return () => {
       a.removeEventListener("timeupdate", onTime);
       a.removeEventListener("loadedmetadata", onMeta);
@@ -47,6 +50,7 @@ export function useAudioPreview(src, { enabled = true, onEnded, startAt = 0, vol
       a.removeEventListener("playing", onPlay);
       a.removeEventListener("pause", onPause);
       a.removeEventListener("ended", onEnd);
+      a.removeEventListener("error", onError);
       try { a.pause(); a.src = ""; } catch {}
       audioRef.current = null;
     };
@@ -57,7 +61,7 @@ export function useAudioPreview(src, { enabled = true, onEnded, startAt = 0, vol
   useEffect(() => {
     const a = audioRef.current;
     if (!a) return;
-    setPos(0); setDur(0);
+    setPos(0); setDur(0); setError(null);
     if (!src) { try { a.pause(); a.removeAttribute("src"); a.load(); } catch {} return; }
     a.src = src;
     try { a.volume = Math.max(0, Math.min(1, volume)); } catch {}
@@ -67,13 +71,13 @@ export function useAudioPreview(src, { enabled = true, onEnded, startAt = 0, vol
       const seekOnce = () => { try { a.currentTime = Math.min(resumeAt, (a.duration || resumeAt) - 0.3); } catch {}; a.removeEventListener("loadedmetadata", seekOnce); };
       a.addEventListener("loadedmetadata", seekOnce);
     }
-    a.play().catch(() => {});
+    a.play().catch((reason) => setError({ kind: reason?.name === "NotAllowedError" ? "permission" : "playback" }));
   }, [src, enabled]);
 
   const toggle = () => {
     const a = audioRef.current;
     if (!a) return;
-    if (a.paused) a.play().catch(() => {}); else a.pause();
+    if (a.paused) a.play().catch((reason) => setError({ kind: reason?.name === "NotAllowedError" ? "permission" : "playback" })); else a.pause();
   };
   const seek = (sec) => {
     const a = audioRef.current;
@@ -82,5 +86,5 @@ export function useAudioPreview(src, { enabled = true, onEnded, startAt = 0, vol
   };
   // Keep the element's volume in sync when the caller changes it live.
   useEffect(() => { const a = audioRef.current; if (a) { try { a.volume = Math.max(0, Math.min(1, volume)); } catch {} } }, [volume]);
-  return { pos, dur, playing, toggle, seek };
+  return { pos, dur, playing, error, toggle, seek };
 }

@@ -1,5 +1,5 @@
 import { View, Text, StyleSheet, Pressable } from "react-native";
-import { colors, radius } from "../theme";
+import { colors, displayFont, focusRing, radius, shadow } from "../theme";
 import Icon from "./Icon";
 
 // One consistent modal/detail header with REAL buttons instead of stray text.
@@ -12,7 +12,7 @@ export default function SheetHeader({ title, onClose, onBack, action }) {
   return (
     <View style={styles.wrap}>
       <Pressable
-        style={styles.lead}
+        style={({ pressed, focused }) => [styles.lead, pressed && styles.controlPressed, focused && focusRing]}
         onPress={lead}
         hitSlop={8}
         accessibilityRole="button"
@@ -25,11 +25,12 @@ export default function SheetHeader({ title, onClose, onBack, action }) {
 
       {action ? (
         <Pressable
-          style={[styles.action, action.disabled && styles.actionOff]}
+          style={({ pressed, focused }) => [styles.action, action.disabled && styles.actionOff, pressed && !action.disabled && styles.actionPressed, focused && focusRing]}
           onPress={action.disabled ? undefined : action.onPress}
           hitSlop={8}
           accessibilityRole="button"
           accessibilityLabel={action.label}
+          accessibilityState={{ disabled: !!action.disabled }}
         >
           <Text style={[styles.actionTxt, action.disabled && styles.actionTxtOff]}>{action.label}</Text>
         </Pressable>
@@ -42,11 +43,13 @@ export default function SheetHeader({ title, onClose, onBack, action }) {
 
 const styles = StyleSheet.create({
   wrap: { flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 14, paddingTop: 6, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: colors.lineSoft },
-  lead: { width: 40, height: 40, borderRadius: 20, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
-  title: { flex: 1, color: colors.text, fontSize: 17, fontWeight: "800", letterSpacing: -0.2, textAlign: "center" },
-  spacer: { minWidth: 40 },
-  action: { backgroundColor: colors.amberStrong, borderRadius: radius.pill, paddingHorizontal: 16, paddingVertical: 9 },
+  lead: { width: 42, height: 42, borderRadius: radius.sm, borderCurve: "continuous", backgroundColor: colors.surfaceAlt, borderWidth: 1, borderBottomWidth: 3, borderColor: colors.line, alignItems: "center", justifyContent: "center", ...shadow.control },
+  controlPressed: { transform: [{ translateY: 2 }], boxShadow: "inset 0 1px 3px rgba(0,0,0,0.18)" },
+  title: { flex: 1, color: colors.text, fontFamily: displayFont, fontSize: 17, fontWeight: "800", letterSpacing: -0.25, textAlign: "center" },
+  spacer: { minWidth: 42 },
+  action: { backgroundColor: colors.amberStrong, borderRadius: radius.pill, borderWidth: 1, borderBottomWidth: 3, borderColor: colors.amber, borderBottomColor: colors.accentEdge, paddingHorizontal: 16, paddingVertical: 9, ...shadow.control },
+  actionPressed: { transform: [{ translateY: 2 }], boxShadow: "inset 0 1px 3px rgba(0,0,0,0.18)" },
   actionOff: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line },
-  actionTxt: { color: "#1A1206", fontSize: 14, fontWeight: "800" },
+  actionTxt: { color: "#1A1206", fontFamily: displayFont, fontSize: 14, fontWeight: "800" },
   actionTxtOff: { color: colors.textFaint },
 });

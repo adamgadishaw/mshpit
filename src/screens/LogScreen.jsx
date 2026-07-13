@@ -13,6 +13,7 @@ import TapStars from "../components/TapStars";
 import Button from "../components/Button";
 import SheetHeader from "../components/SheetHeader";
 import DatePicker from "../components/DatePicker";
+import { isDurableMediaUrl, reportMediaPickerError, uploadMediaAsset } from "../lib/mediaUpload";
 
 const GROUP_COLOR = { "THE BAND": colors.amber, "THE ROOM": colors.cool, "THE NIGHT": colors.magenta };
 const GROUPS = ["THE BAND", "THE ROOM", "THE NIGHT"];
@@ -56,6 +57,8 @@ export default function LogScreen({ onPost, onCancel, user, prefill }) {
   const [review, setReview] = useState("");
   const [photos, setPhotos] = useState([]);
   const [photosPublic, setPhotosPublic] = useState(true);
+  const [uploadingPhotos, setUploadingPhotos] = useState(false);
+  const [posting, setPosting] = useState(false);
   // Show date, defaults to today so logging stays one-tap, but you can set the
   // real date of a past show. Years run from this year back to 2000, descending.
   const today = new Date();
@@ -65,53 +68,94 @@ export default function LogScreen({ onPost, onCancel, user, prefill }) {
   const [showDate, setShowDate] = useState(false);
 
   const addPhoto = async () => {
-    const res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images"], quality: 0.6, allowsMultipleSelection: true, selectionLimit: 6 });
-    if (!res.canceled) setPhotos((p) => [...p, ...res.assets.map((a) => a.uri)].slice(0, 8));
+    if (uploadingPhotos || posting) return;
+    const remaining = Math.max(0, 8 - photos.length);
+    if (!remaining) return;
+    let res;
+    try {
+      res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images"], quality: 0.6, allowsMultipleSelection: true, selectionLimit: Math.min(6, remaining) });
+    } catch (error) {
+      reportMediaPickerError(error, "Opening the concert photo library");
+      return;
+    }
+    if (!res || res.canceled || !res.assets?.length) return;
+    setUploadingPhotos(true);
+    const uploaded = [];
+    try {
+      // Upload sequentially to keep mobile memory predictable. Successful
+      // objects remain available even if a later selection fails.
+      for (const asset of res.assets.slice(0, remaining)) {
+        try {
+          uploaded.push(await uploadMediaAsset(asset, "post"));
+        } catch {
+          break;
+        }
+      }
+    } finally {
+      if (uploaded.length) setPhotos((current) => [...current, ...uploaded].filter(isDurableMediaUrl).slice(0, 8));
+      setUploadingPhotos(false);
+    }
   };
 
   const setDim = (k, v) => setDims((d) => ({ ...d, [k]: v }));
   const computed = computeReview(dims);
   const canPost = artist.trim() && computed.overall > 0;
+  const submitBusy = uploadingPhotos || posting;
 
-  const stash = () => { const id = saveDraft({ id: draftId, artist, venue, city, tour, date, dims, review, photos }); setDraftId(id); onCancel?.(); };
+  const stash = () => {
+    if (submitBusy) return;
+    const id = saveDraft({ id: draftId, artist, venue, city, tour, date, dims, review, photos: photos.filter(isDurableMediaUrl) });
+    setDraftId(id);
+    onCancel?.();
+  };
   const resume = (d) => {
     setDraftId(d.id);
     setArtist(d.artist || ""); setArtistPicked(!!d.artist); setVenue(d.venue || ""); setCity(d.city || "");
-    setTour(d.tour || ""); setDate(d.date || todayStr); setDims(d.dims || dims); setReview(d.review || ""); setPhotos(d.photos || []);
+    setTour(d.tour || ""); setDate(d.date || todayStr); setDims(d.dims || dims); setReview(d.review || ""); setPhotos((d.photos || []).filter(isDurableMediaUrl));
   };
   const hasContent = artist.trim() || venue.trim() || review.trim();
 
-  const submit = () => {
-    if (draftId) deleteDraft(draftId);
-    onPost({
-      id: newId(),
-      user: user
-        ? { name: user.name, handle: user.handle, initials: user.initials }
-        : { name: "You", handle: "you", initials: "YOU" },
-      timeAgo: "now",
-      artist: artist.trim(),
-      venue: venue.trim() || "Unknown venue",
-      city: city.trim() || "-",
-      tour: tour.trim() || null,
-      date,
-      media: photos.length,
-      photos,
-      photosPublic,
-      overall: computed.overall,
-      band: computed.band || computed.overall,
-      room: computed.room || computed.overall,
-      dims,
-      review: review.trim(),
-      setlist: [],
-      likes: 0,
-      comments: 0,
-      inTourWindow: false,
-    });
+  const submit = async () => {
+    if (!canPost || submitBusy) return;
+    setPosting(true);
+    try {
+      const durablePhotos = photos.filter(isDurableMediaUrl);
+      const result = await onPost?.({
+        id: newId(),
+        user: user
+          ? { name: user.name, handle: user.handle, initials: user.initials }
+          : { name: "You", handle: "you", initials: "YOU" },
+        timeAgo: "now",
+        artist: artist.trim(),
+        venue: venue.trim() || "Unknown venue",
+        city: city.trim() || "-",
+        tour: tour.trim() || null,
+        date,
+        media: durablePhotos.length,
+        photos: durablePhotos,
+        photosPublic,
+        overall: computed.overall,
+        band: computed.band || computed.overall,
+        room: computed.room || computed.overall,
+        dims,
+        review: review.trim(),
+        setlist: [],
+        likes: 0,
+        comments: 0,
+        inTourWindow: false,
+      });
+      // Failed posts stay fully editable and retain any saved draft.
+      if (result?.ok !== false && draftId) deleteDraft(draftId);
+    } catch {
+      // The store/API layer presents the themed failure; do not clear the form.
+    } finally {
+      setPosting(false);
+    }
   };
 
   return (
     <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-      <SheetHeader title="Log a show" onClose={onCancel} action={{ label: "Post", onPress: submit, disabled: !canPost }} />
+      <SheetHeader title="Log a show" onClose={onCancel} action={{ label: posting ? "Posting..." : uploadingPhotos ? "Uploading..." : "Post", onPress: submit, disabled: !canPost || submitBusy }} />
 
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         {!draftId && drafts.length > 0 && !hasContent && (
@@ -221,15 +265,15 @@ export default function LogScreen({ onPost, onCancel, user, prefill }) {
           {photos.map((uri, i) => (
             <View key={i} style={styles.thumb}>
               <Image source={{ uri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
-              <Pressable style={styles.removeThumb} onPress={() => setPhotos((p) => p.filter((_, idx) => idx !== i))}>
+              <Pressable style={styles.removeThumb} onPress={() => setPhotos((p) => p.filter((_, idx) => idx !== i))} disabled={submitBusy}>
                 <Icon name="x" size={12} color="#fff" />
               </Pressable>
             </View>
           ))}
           {photos.length < 8 && (
-            <Pressable style={styles.addThumb} onPress={addPhoto}>
+            <Pressable style={styles.addThumb} onPress={addPhoto} disabled={submitBusy}>
               <Icon name="camera" size={20} color={colors.amber} />
-              <Text style={styles.addThumbTxt}>Add</Text>
+              <Text style={styles.addThumbTxt}>{uploadingPhotos ? "Uploading" : "Add"}</Text>
             </Pressable>
           )}
         </View>
@@ -241,9 +285,9 @@ export default function LogScreen({ onPost, onCancel, user, prefill }) {
           </Pressable>
         )}
 
-        <Button title="Post to feed" icon="check" onPress={submit} disabled={!canPost} style={{ marginTop: 28 }} />
+        <Button title={posting ? "Posting review..." : uploadingPhotos ? "Uploading photos..." : "Post to feed"} icon="check" onPress={submit} disabled={!canPost || submitBusy} style={{ marginTop: 28 }} />
         {hasContent && (
-          <Pressable style={styles.saveDraft} onPress={stash}>
+          <Pressable style={styles.saveDraft} onPress={stash} disabled={submitBusy}>
             <Icon name="edit" size={14} color={colors.textDim} />
             <Text style={styles.saveDraftTxt}>{draftId ? "Update draft" : "Save as draft"}</Text>
           </Pressable>

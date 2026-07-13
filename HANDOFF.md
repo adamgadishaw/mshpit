@@ -6,6 +6,47 @@
 
 > **Working agreement (owner's standing instruction):** ALWAYS `git commit` **and** `git push` after a verified batch. Stabilization work uses a review branch; do not merge/push directly to `master` until the branch checks pass. A master push auto-deploys and briefly restarts Render.
 
+## Reliability, media, and feedback batch — 2026-07-12 (Codex)
+
+**Branch:** `codex/stabilize-core`
+**Visual contract:** preserve the existing information architecture and page layout. The owner authorized a restrained polish pass: rounder type, softer corners, clearer focus states, and tactile depth inspired by Duolingo. No navigation or content hierarchy was redesigned.
+
+### Completed in this batch
+
+1. **One themed failure language across the app.** `ERROR_CATALOG.md`, `src/lib/errorCatalog.mjs`, and `src/lib/diagnostics.js` define stable `PIT-*` support codes, safe messages, retry guidance, failure points, request IDs, a 75-entry device history, deduplicated feedback, and privacy-safe route templates. Failed mutations show a themed toast; routine read failures are recorded without interrupting the user. Settings now links to the new Diagnostics screen, and the render error boundary uses the same catalogue.
+2. **Safe server error envelopes.** `server/errors.js` and `server/index.js` add stable server codes, HTTP status, retryability, and an `X-Request-Id`/body request ID without returning raw stack traces or internal 5xx messages. Client calls have bounded deadlines and preserve caller cancellation.
+3. **Durable direct media uploads.** `server/media.js` issues AWS Signature V4 presigned PUT URLs for S3-compatible storage. `src/lib/mediaUpload.js` uploads the selected file before any profile, artist, post, or venue-review URL is saved. Device-local `file:`, `blob:`, and `data:` values are rejected. Avatar limit is 5 MB; post/banner/venue media limit is 12 MB; accepted types are JPEG, PNG, WebP, GIF, HEIC, and HEIF. Expo Image Picker is installed and declared for SDK 56 with photo access only.
+4. **Truthful social writes.** Profile, artist profile, posts, venue reviews, follow/block, like, fan-club membership, attendance, comments, lounge messages, fan-club messages, DMs, and ratings now resolve success/failure instead of silently pretending a failed write worked. Existing optimistic interactions roll back or reconcile from the server, and forms/drafts remain available after failed saves.
+5. **Stable pagination paths.** The main feed uses `(created_at,id)` cursors on the server and can load later server pages from the current feed UI. DMs, comments, fan-club messages, lounges, notifications, and venue reviews expose server cursors for incremental client adoption. Matching composite SQLite indexes avoid re-sorting those parent/time/ID paths. Offset feed compatibility remains temporarily available.
+6. **Account deletion and broader export.** Settings has a two-step password-confirmed delete flow. The server deletes the relational account graph in one immediate transaction and clears the session only after success; an ambiguous lost response is verified through `/api/me` before the client clears data or invites a retry. Export includes major user content and relationship categories while excluding secrets, network metadata, and session material. Web downloads JSON; native writes an SDK 56 `expo-file-system` cache file and opens the `expo-sharing` sheet. Banned/suspended accounts remain blocked from social use but can still export or delete through `AccountGate`. Very large exports and object-storage cleanup remain background-worker work.
+7. **Playback and device-storage failures are visible.** Preview/YouTube fallback failures and persistence failures now enter the same diagnostic catalogue. A successful preview fallback does not show a frightening toast; it records why YouTube failed for later support review.
+8. **Subtle visual polish, no layout rewrite.** Shared theme tokens, buttons, rails, ticket cards, and headers now use rounder system display fonts, consistent radii, keyboard focus rings, soft elevation, and a small pressed state. Expo web's deprecated shadow/text-shadow/pointer-events syntax was isolated to native or replaced with current web styles so future console signals stay useful.
+
+### Deployment requirements
+
+- Configure `MEDIA_ENDPOINT`, `MEDIA_BUCKET`, `MEDIA_REGION`, `MEDIA_ACCESS_KEY_ID`, `MEDIA_SECRET_ACCESS_KEY`, and `MEDIA_PUBLIC_BASE_URL` on the Render web service. `MEDIA_PUBLIC_BASE_URL` must serve the same keys written to the bucket.
+- Set bucket CORS to allow `PUT` from `https://www.mshpit.com` and the explicitly supported development origin, with the `Content-Type` header. Do not use `*` origins for credentialed site traffic.
+- The current presign path validates the declared type and size. Before broad public uploads, add a finalize endpoint/job that verifies the stored bytes, sniffs content, strips metadata, creates bounded thumbnails, moderates/quarantines files, and deletes orphaned or account-owned objects.
+- No manual database migration is required for this batch. Idempotent cursor indexes are created on server boot. The media provider is intentionally unconfigured until the above secrets and CORS policy exist; users will receive `PIT-UPLOAD-001` rather than saving a broken local URL.
+
+### Verification performed
+
+- `npm run check`: Node regression tests, server/script syntax, and Expo SDK 56 production web export.
+- `git diff --check`.
+- `npx expo config --type public` confirmed SDK 56, the Image Picker photo-only permission text, and the Sharing plugin. Installed versions match the exact SDK 56 references: `expo-image-picker ~56.0.20`, `expo-file-system ~56.0.8`, and `expo-sharing ~56.0.21`.
+- Desktop and 390x844 in-app browser smoke: guest feed, mobile navigation, and sign-in surface; no horizontal overflow at 390 px. The development server's React Native Web deprecation warnings found during this pass were corrected in source.
+
+### Remaining scale and launch risks
+
+1. Configure object storage, then build upload finalization, image derivatives, malware/content scanning, moderation, object inventory, orphan cleanup, and delete-account object cleanup.
+2. Move SQLite, in-process rate limits, and background ingestion to managed Postgres, shared cache/rate limits, durable workers/queues, observability, and tested off-host backups before claiming readiness for millions of users.
+3. Replace synchronous capped export with an authenticated asynchronous archive job for large accounts.
+4. Wire the new server cursors into long conversation/review screens and remove thread-summary/count N+1 reads. The feed is the first client cursor consumer, not the end of pagination work.
+5. Split `src/store.js` incrementally by domain behind its existing public facade; do not pair this with a visual/navigation rewrite.
+6. Introduce canonical Performance, Artist, Venue, and Media IDs and migrate concatenated display-string identities.
+7. Choose and verify a supported native YouTube path. The current iframe player is web-only; native preview audio and focused Expo DOM/video behavior need device testing.
+8. `npm audit --omit=dev` currently reports the Expo toolchain path `expo -> @expo/config-plugins -> xcode -> uuid` for GHSA-w5hq-g745-h8pq. The app does not call the affected UUID buffer APIs, and `xcode` calls `uuid.v4()`; `npm audit fix --force` would incorrectly downgrade Expo to 46. Monitor Expo's dependency update instead of forcing a breaking downgrade.
+
 ## Stabilization batch — 2026-07-12 (Codex)
 
 **Branch:** `codex/stabilize-core`
@@ -49,7 +90,7 @@
 3. Add cursor pagination and thread summaries; remove the DM thread N+1 query.
 4. Split `src/store.js` by domain behind the same screen-facing API. Introduce a server-state query cache incrementally rather than rewriting every screen at once.
 5. Add canonical `Performance`, `Artist`, `Venue`, and media IDs, then migrate attendance/reviews/posts away from concatenated display strings.
-6. Implement full account deletion/export, immutable consent versions, block enforcement, moderation permissions/audit logs, and recovery-mail readiness.
+6. Complete immutable consent versions, object-file deletion, asynchronous large-account exports, block enforcement coverage, moderation permissions/audit logs, and recovery-mail readiness. Relational deletion and bounded portable export are implemented.
 7. Before serious growth, migrate the single-instance SQLite/data jobs to managed Postgres, object storage/CDN, a shared rate-limit/cache service, background workers, observability, and tested off-host backups. That backend work does not require a visual redesign.
 8. Decide the supported native playback path: SDK 56 `expo-audio` for previews/audio and a focused Expo DOM component for YouTube embeds. The current YouTube player remains web-only.
 
@@ -137,7 +178,7 @@ Owner: "fix the notifications" (tapping a follow notification blanked the screen
 - **Notification blank = unknown-profile blank, FIXED.** `ProfileScreen` did `if (!user) return null` — any profile not in the local cache (a stranger who followed you) rendered NOTHING. Now every profile view calls new store `loadUser(id)` (`GET /api/users/:id`, absorbs the user + real follower counts), with a Loading state and a proper "This account isn't available" screen for deleted accounts. Same fix applied to `ThreadScreen` (DM notification from an uncached user) and `openProfileByHandle` (@mention taps now search the server instead of silently doing nothing). `absorbUsers` also now MERGES fresh data over stale cached entries.
 - **Real follow lists.** `GET /api/users/:id/followers` + `/following` (public, 500 cap); store `followersOf`/`followingOf`; new `FollowListScreen` (tap row -> profile, inline Follow/Following buttons); the FOLLOWERS/FOLLOWING numbers on every profile are now tappable. Counts prefer server truth (`userStats` via loadUser) over the device-local follow map.
 - **True block/unblock.** New `blocks` table. `POST /api/users/:id/block` (toggle) severs the follow BOTH ways; DMs refused 403 in both directions; blocked users' posts filtered from `/api/feed`; their old+new notifications hidden; threads with them vanish from the inbox; can't re-follow while blocked (403). Client mirrors instantly (`blockedIds`, persisted + hydrated on login): block button (lock icon) on profiles, blocked-profile state with Unblock, and a **Settings -> PRIVACY & SAFETY -> Blocked accounts** manager. `addNotif` also refuses pings across any block.
-- **Profile backup.** `GET /api/me/export` = full account JSON (profile, posts, comments, followers/following/blocked with names, playlists, listening history, going, ratings, sent DMs, notifications). Settings "Download your data" saves it as `pit-backup-<handle>-<date>.json`. This + loadUser-everywhere is the start of the "real profiles like Facebook" ask; deeper profile fields (work/school-style sections) still open if wanted.
+- **Profile backup (historical note; expanded above).** `GET /api/me/export` returns a bounded portable JSON account export. Web downloads `pit-backup-<handle>-<date>.json`; native shares the same file. See the current batch for included categories, privacy exclusions, restricted-account access, and the remaining asynchronous-archive requirement.
 - **Dev gotcha hit again:** Metro's file watcher MISSED an edit to store.js and served a stale split bundle (`blockedIds is not defined` at runtime while the file was correct). `touch src/store.js` forces a re-transform. If the app crashes after edits Metro "didn't see", touch the file or restart expo.
 
 ## Earlier (2026-07-10) — preview playback engine + scrubber (play buttons FIXED)

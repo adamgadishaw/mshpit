@@ -80,7 +80,7 @@ const GenreDonut = memo(function GenreDonut({ data, size = 200, centerTop, cente
           );
         })}
       </Svg>
-      <View style={styles.donutCenter} pointerEvents="none">
+      <View style={[styles.donutCenter, styles.noPointerEvents]}>
         <Text style={[styles.donutNum, activeGenre && activeGenre !== "Other" && { color: activeColor, fontSize: 20 }]} numberOfLines={1}>
           {activeGenre && activeGenre !== "Other" ? activeGenre : centerTop}
         </Text>
@@ -399,6 +399,7 @@ export default function DiscoverScreen({ onOpenTopRated, onOpenArtist, onOpenNea
 }
 
 const styles = StyleSheet.create({
+  noPointerEvents: { pointerEvents: "none" },
   content: { padding: 16, paddingBottom: 44, maxWidth: 900, width: "100%", alignSelf: "center" },
   kicker: { color: colors.amber, fontSize: 11, letterSpacing: 2.5, fontWeight: "800", fontFamily: mono },
   title: { color: colors.text, fontSize: 30, fontWeight: "900", letterSpacing: -0.6, marginTop: 4 },

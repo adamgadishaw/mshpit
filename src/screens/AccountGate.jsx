@@ -1,14 +1,26 @@
+import { useState } from "react";
 import { View, Text, StyleSheet, Pressable } from "react-native";
 import { colors } from "../theme";
 import Icon from "../components/Icon";
 
 // Full-screen block for banned (red) or suspended (yellow) accounts. They can't
-// post, DM, or browse - just see why and log out.
-export default function AccountGate({ status, until, onLogout }) {
+// post, DM, or browse. Privacy rights remain available: a restriction must not
+// prevent someone from exporting or deleting their own account.
+export default function AccountGate({ status, until, onLogout, onExport, onDelete }) {
   const banned = status === "banned";
   const bg = banned ? "#2A0E12" : "#2A2208";
   const accent = banned ? "#E0457B" : "#E8B65A";
   const left = until ? Math.max(1, Math.ceil((until - Date.now()) / 86400000)) : 0;
+  const [exporting, setExporting] = useState(false);
+  const [exportResult, setExportResult] = useState(null);
+  const exportData = async () => {
+    if (exporting) return;
+    setExporting(true);
+    setExportResult(null);
+    const result = await onExport?.();
+    setExportResult(result || { ok: false, error: "Pit could not prepare your data file." });
+    setExporting(false);
+  };
   return (
     <View style={[styles.wrap, { backgroundColor: bg }]}>
       <View style={[styles.badge, { borderColor: accent }]}>
@@ -21,6 +33,16 @@ export default function AccountGate({ status, until, onLogout }) {
           : `Your account is on a time-out for ${left} more day${left === 1 ? "" : "s"}. You can't post or message until it lifts.`}
       </Text>
       <Text style={styles.appeal}>Think this is a mistake? Email appeals@pit.app.</Text>
+      <Text style={styles.rights}>You can still download your data or permanently delete this account.</Text>
+      <View style={styles.actions}>
+        <Pressable style={[styles.btn, { borderColor: accent }]} onPress={exportData} disabled={exporting}>
+          <Text style={[styles.btnTxt, { color: accent }]}>{exporting ? "Preparing data..." : "Download my data"}</Text>
+        </Pressable>
+        <Pressable style={[styles.btn, styles.deleteBtn]} onPress={onDelete}>
+          <Text style={[styles.btnTxt, { color: "#fff" }]}>Delete account</Text>
+        </Pressable>
+      </View>
+      {exportResult && <Text style={[styles.result, !exportResult.ok && styles.resultError]} accessibilityRole="alert">{exportResult.ok ? "Your Pit data file is ready." : exportResult.error}</Text>}
       <Pressable style={[styles.btn, { borderColor: accent }]} onPress={onLogout}>
         <Text style={[styles.btnTxt, { color: accent }]}>Log out</Text>
       </Pressable>
@@ -34,6 +56,11 @@ const styles = StyleSheet.create({
   title: { fontSize: 26, fontWeight: "900" },
   body: { color: "#fff", fontSize: 15, lineHeight: 23, textAlign: "center", opacity: 0.92 },
   appeal: { color: "rgba(255,255,255,0.6)", fontSize: 13, marginTop: 4 },
+  rights: { color: "rgba(255,255,255,0.78)", fontSize: 12.5, lineHeight: 18, textAlign: "center", marginTop: 6 },
+  actions: { flexDirection: "row", flexWrap: "wrap", justifyContent: "center", gap: 10 },
   btn: { borderWidth: 1, borderRadius: 999, paddingHorizontal: 28, paddingVertical: 12, marginTop: 12 },
+  deleteBtn: { backgroundColor: colors.danger, borderColor: colors.danger },
   btnTxt: { fontSize: 15, fontWeight: "800" },
+  result: { color: colors.good, fontSize: 12.5, lineHeight: 18, textAlign: "center" },
+  resultError: { color: "#fff" },
 });

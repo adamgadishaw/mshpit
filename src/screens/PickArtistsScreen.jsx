@@ -40,6 +40,7 @@ export default function PickArtistsScreen({ onDone, onSkip }) {
   const [q, setQ] = useState("");
   const [picked, setPicked] = useState(() => new Set(session?.favoriteArtists || []));
   const [theme, setThemeChoice] = useState(themeKey); // the current/default preset
+  const [saving, setSaving] = useState(false);
   const query = q.trim().toLowerCase();
 
   // Popular first (Spotify popularity), then alphabetical, so the grid opens
@@ -57,17 +58,24 @@ export default function PickArtistsScreen({ onDone, onSkip }) {
   const toggle = (name) =>
     setPicked((p) => { const n = new Set(p); n.has(name) ? n.delete(name) : n.add(name); return n; });
 
-  const save = () => {
+  const save = async () => {
+    if (saving) return;
     const favoriteArtists = [...picked];
     // fold the picks' genres into the profile so genre affinity works instantly
     const genres = new Set(session?.genres || []);
     favoriteArtists.forEach((n) => { const g = ingestedArtists[n.toLowerCase()]?.genre; if (g) genres.add(g); });
-    const safe = updateProfile({ favoriteArtists, genres: [...genres] });
+    setSaving(true);
+    const result = await updateProfile({ favoriteArtists, genres: [...genres] });
+    if (result?.ok === false) {
+      setSaving(false);
+      return;
+    }
     // A theme change re-resolves the StyleSheet, which needs a reload, so hand
     // the sanitized picks to chooseTheme to persist in the same write (no reload
     // race) and let it reload straight into the freshly themed feed.
-    if (theme && theme !== themeKey) chooseTheme(theme, safe);
+    if (theme && theme !== themeKey) await chooseTheme(theme, result?.patch || { favoriteArtists, genres: [...genres] });
     else onDone?.();
+    setSaving(false);
   };
 
   return (
@@ -75,7 +83,7 @@ export default function PickArtistsScreen({ onDone, onSkip }) {
       <SheetHeader
         title="Pick your artists"
         onClose={onSkip}
-        action={{ label: picked.size >= MIN_PICKS ? `Done · ${picked.size}` : `Pick ${MIN_PICKS - picked.size} more`, onPress: save, disabled: picked.size < MIN_PICKS }}
+        action={{ label: saving ? "Saving..." : picked.size >= MIN_PICKS ? `Done · ${picked.size}` : `Pick ${MIN_PICKS - picked.size} more`, onPress: save, disabled: saving || picked.size < MIN_PICKS }}
       />
       <Text style={styles.sub}>
         Choose at least {MIN_PICKS} artists you love, your feed, recommendations, and events

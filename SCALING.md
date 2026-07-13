@@ -11,9 +11,11 @@ Originals are huge; never serve them to a feed.
 - **Images** → an image CDN with on-the-fly resizing (Cloudflare Images, imgix,
   Cloudinary, or S3 + Lambda@Edge). Upload once; request `?w=400` for a feed
   thumb, full-res only when a user taps. Serve modern formats (AVIF/WebP).
-  *Pit today:* feed media are lightweight tiles, maps are static snapshots (not
-  live tiles), artist photos come from Commons (already CDN-hosted, sized via
-  `?width=`). Next: route user uploads through an image CDN.
+  *Pit today:* selected user images upload directly to configured S3-compatible
+  object storage through short-lived signed PUT URLs; only the public object URL
+  is saved. This is durable storage, but not yet a complete media pipeline. Next:
+  verify stored bytes, strip metadata, generate bounded feed/avatar derivatives,
+  moderate/quarantine content, and deliver those derivatives through a CDN.
 - **Video** (clips of shows) → **never store/stream raw MP4.** Transcode to
   **HLS / adaptive bitrate** (multiple renditions) like TikTok/YouTube; the
   player pulls the rendition that fits the network. Store in object storage (S3),
@@ -34,8 +36,11 @@ Originals are huge; never serve them to a feed.
 ## 3. Feed delivery without fanout pain
 
 - **Cursor pagination**, not offset — `?after=<cursor>&limit=20`. Stable under
-  inserts, cheap on the DB. *Pit today:* the feed now pages client-side
-  (load-more on scroll) — swap the slice for a cursor API call.
+  inserts, cheap on the DB. *Pit today:* the main feed uses a server
+  `(created_at,id)` cursor and the client requests later pages. DMs, comments,
+  fan-club messages, lounges, notifications, and venue reviews expose cursors,
+  but their screens still need incremental load-more wiring. Remove the temporary
+  feed offset path after old clients no longer use it.
 - **Pull + cache** for most users; precomputed fan-out only for high-follow
   accounts (the Twitter/IG hybrid). Cache hot pages in Redis/edge.
 - **Counters** (likes/comments) live in Redis and flush to Postgres in batches —
@@ -66,6 +71,7 @@ This is the Spotify/TikTok core and what "embedding features" means:
 
 ## 6. Client manners
 
-Optimistic UI on like/comment, debounce search, prefetch the next feed page,
-lazy-load images as they near the viewport, and compress uploads on-device before
-they ever hit the network.
+Optimistic UI may acknowledge input immediately, but the server must remain
+authoritative: show pending state and roll back/reconcile on failure. Debounce
+search, prefetch the next feed page, lazy-load images near the viewport, and
+compress uploads on-device before they reach the network.

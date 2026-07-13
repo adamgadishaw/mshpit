@@ -8,6 +8,7 @@ import Avatar from "../components/Avatar";
 import Icon from "../components/Icon";
 import Button from "../components/Button";
 import SheetHeader from "../components/SheetHeader";
+import { isDurableMediaUrl, reportMediaPickerError, uploadMediaAsset } from "../lib/mediaUpload";
 
 // The band's own account edits its public artist page: banner, profile photo,
 // bio, and whether the Updates feed is enabled. Mirrors EditProfileScreen but
@@ -19,9 +20,14 @@ export default function EditArtistProfileScreen({ artistName, onClose }) {
   const prof = artistProfile(a.name);
 
   const [bio, setBio] = useState(prof.bio ?? meta?.bio ?? "");
-  const [avatarUri, setAvatarUri] = useState(prof.avatarUri ?? meta?.photo ?? null);
-  const [banner, setBanner] = useState(prof.banner ?? meta?.photo ?? null);
+  const initialAvatar = prof.avatarUri ?? meta?.photo;
+  const initialBanner = prof.banner ?? meta?.photo;
+  const [avatarUri, setAvatarUri] = useState(isDurableMediaUrl(initialAvatar) ? initialAvatar : null);
+  const [banner, setBanner] = useState(isDurableMediaUrl(initialBanner) ? initialBanner : null);
   const [feedEnabled, setFeedEnabled] = useState(!!prof.feedEnabled);
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
+  const [uploadingBanner, setUploadingBanner] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   if (!isArtistOwner(a.name)) {
     return (
@@ -33,43 +39,82 @@ export default function EditArtistProfileScreen({ artistName, onClose }) {
   }
 
   const pickPhoto = async () => {
-    const res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images"], allowsEditing: true, aspect: [1, 1], quality: 0.6 });
-    if (!res.canceled && res.assets?.[0]) setAvatarUri(res.assets[0].uri);
+    if (uploadingAvatar || saving) return;
+    let res;
+    try {
+      res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images"], allowsEditing: true, aspect: [1, 1], quality: 0.6 });
+    } catch (error) {
+      reportMediaPickerError(error, "Opening the artist profile photo library");
+      return;
+    }
+    if (!res || res.canceled || !res.assets?.[0]) return;
+    setUploadingAvatar(true);
+    try {
+      setAvatarUri(await uploadMediaAsset(res.assets[0], "avatar"));
+    } catch {
+      // Keep the previous durable photo; the helper records themed feedback.
+    } finally {
+      setUploadingAvatar(false);
+    }
   };
   const pickBanner = async () => {
-    const res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images"], allowsEditing: true, aspect: [3, 1], quality: 0.6 });
-    if (!res.canceled && res.assets?.[0]) setBanner(res.assets[0].uri);
+    if (uploadingBanner || saving) return;
+    let res;
+    try {
+      res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images"], allowsEditing: true, aspect: [3, 1], quality: 0.6 });
+    } catch (error) {
+      reportMediaPickerError(error, "Opening the artist banner photo library");
+      return;
+    }
+    if (!res || res.canceled || !res.assets?.[0]) return;
+    setUploadingBanner(true);
+    try {
+      setBanner(await uploadMediaAsset(res.assets[0], "banner"));
+    } catch {
+      // Keep this editor open so the owner can retry without losing the bio.
+    } finally {
+      setUploadingBanner(false);
+    }
   };
 
-  const save = () => {
-    updateArtistProfile(a.name, { bio: bio.trim(), avatarUri, banner, feedEnabled });
-    onClose?.();
+  const mediaBusy = uploadingAvatar || uploadingBanner;
+  const save = async () => {
+    if (mediaBusy || saving) return;
+    setSaving(true);
+    try {
+      const result = await updateArtistProfile(a.name, { bio: bio.trim(), avatarUri, banner, feedEnabled });
+      if (result?.ok !== false) onClose?.();
+    } catch {
+      // API diagnostics already explain the failure; preserve the form values.
+    } finally {
+      setSaving(false);
+    }
   };
 
   const preview = { avatarUri, initials: a.name.slice(0, 2).toUpperCase(), avatarColor: colors.amber };
 
   return (
     <View style={styles.wrap}>
-      <SheetHeader title="Edit artist page" onClose={onClose} action={{ label: "Save", onPress: save }} />
+      <SheetHeader title="Edit artist page" onClose={onClose} action={{ label: saving ? "Saving..." : mediaBusy ? "Uploading..." : "Save", onPress: save, disabled: mediaBusy || saving }} />
 
-      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-        <Pressable style={styles.bannerEdit} onPress={pickBanner}>
+      <ScrollView style={saving ? styles.savingLock : null} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+        <Pressable style={styles.bannerEdit} onPress={pickBanner} disabled={uploadingBanner || saving}>
           {banner ? <Image source={{ uri: banner }} style={StyleSheet.absoluteFill} resizeMode="cover" /> : null}
           <View style={styles.bannerOverlay}>
             <Icon name="camera" size={18} color={colors.text} />
-            <Text style={styles.bannerEditTxt}>{banner ? "Change banner" : "Add a banner"}</Text>
+            <Text style={styles.bannerEditTxt}>{uploadingBanner ? "Uploading..." : banner ? "Change banner" : "Add a banner"}</Text>
           </View>
         </Pressable>
 
         <View style={styles.headRow}>
           <View style={styles.avatarWrap}>
             <Avatar user={preview} size={84} />
-            <Pressable style={styles.cameraBtn} onPress={pickPhoto}>
+            <Pressable style={styles.cameraBtn} onPress={pickPhoto} disabled={uploadingAvatar || saving}>
               <Icon name="camera" size={15} color="#1A1206" />
             </Pressable>
           </View>
         </View>
-        <Pressable onPress={pickPhoto}><Text style={styles.changePhoto}>Change profile photo</Text></Pressable>
+        <Pressable onPress={pickPhoto} disabled={uploadingAvatar || saving}><Text style={styles.changePhoto}>{uploadingAvatar ? "Uploading photo..." : "Change profile photo"}</Text></Pressable>
 
         <Text style={styles.label}>BIO</Text>
         <TextInput style={[styles.input, styles.multiline]} value={bio} onChangeText={setBio} placeholder="Tell fans who you are" placeholderTextColor={colors.textFaint} multiline />
@@ -85,13 +130,14 @@ export default function EditArtistProfileScreen({ artistName, onClose }) {
           </View>
         </Pressable>
 
-        <Button title="Save artist page" icon="check" onPress={save} style={{ marginTop: 28 }} />
+        <Button title={saving ? "Saving artist page..." : mediaBusy ? "Uploading photo..." : "Save artist page"} icon="check" onPress={save} disabled={mediaBusy || saving} style={{ marginTop: 28 }} />
       </ScrollView>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
+  savingLock: { pointerEvents: "none", opacity: 0.82 },
   wrap: { flex: 1, backgroundColor: colors.bg },
   topbar: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingBottom: 10 },
   cancel: { color: colors.textDim, fontSize: 15 },

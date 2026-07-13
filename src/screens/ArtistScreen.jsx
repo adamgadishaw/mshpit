@@ -150,7 +150,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
           ) : (
             <View style={styles.bannerFallback} />
           )}
-          <Svg style={StyleSheet.absoluteFill} pointerEvents="none">
+          <Svg style={[StyleSheet.absoluteFill, styles.noPointerEvents]}>
             <Defs>
               <LinearGradient id="heroFade" x1="0" y1="0" x2="0" y2="1">
                 <Stop offset="0.45" stopColor="#05060A" stopOpacity="0" />
@@ -514,6 +514,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
 }
 
 const styles = StyleSheet.create({
+  noPointerEvents: { pointerEvents: "none" },
   wrap: { flex: 1, backgroundColor: colors.bg },
   topbar: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingBottom: 10 },
   backBtn: { flexDirection: "row", alignItems: "center", width: 56 },

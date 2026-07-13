@@ -55,7 +55,7 @@ export default function ConcertMap({ points = [], highlight, focalName, label, o
         <CityMap points={points} highlight={highlight} label={label} showPins={false} />
       )}
 
-      <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
+      <View style={[StyleSheet.absoluteFill, styles.boxNonePointerEvents]}>
         {others.map((p, i) => (
           <Pin
             key={`o${i}`}
@@ -85,7 +85,7 @@ export default function ConcertMap({ points = [], highlight, focalName, label, o
 
 function Pin({ pos, name, focal, show, onPress, onHoverIn, onHoverOut }) {
   return (
-    <View style={[styles.anchor, pos, focal ? styles.anchorFocal : styles.anchorOther]} pointerEvents="box-none">
+    <View style={[styles.anchor, pos, focal ? styles.anchorFocal : styles.anchorOther, styles.boxNonePointerEvents]}>
       {show && name ? (
         <View style={styles.tip}>
           <Text style={styles.tipTxt} numberOfLines={1}>{name}</Text>
@@ -99,6 +99,7 @@ function Pin({ pos, name, focal, show, onPress, onHoverIn, onHoverOut }) {
 }
 
 const styles = StyleSheet.create({
+  boxNonePointerEvents: { pointerEvents: "box-none" },
   wrap: { width: "100%", aspectRatio: 320 / 206, borderRadius: 14, overflow: "hidden", borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.bgElev },
   // Top-left, in a readable pill, keeps clear of Google's bottom-left logo /
   // attribution (which their terms require us to leave visible).

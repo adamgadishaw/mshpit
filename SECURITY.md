@@ -1,67 +1,102 @@
-# Security & launch readiness — mshpit.com
+# Security and launch readiness — mshpit.com
 
-Honest assessment for going public. Split into **what's handled in the app** and
-**what MUST exist server-side before a real public launch**. Read the second list
-as blocking.
+Honest status: Pit now has a real server boundary and is suitable for controlled
+testing, but it is not yet engineered or operated for millions of users. This
+document separates controls already present from work still required before a
+broad public launch.
 
-## ✅ Handled at the app layer
-- **Input guarding.** Every user text field is sanitized + length-capped at the
-  store boundary (`src/lib/validate.js`): control/zero-width/bidi chars stripped,
-  emails/handles/passwords validated, ratings clamped. Applies to auth, profile,
-  posts, reviews, messages, fan clubs, reports.
-- **No XSS sink.** The UI is React Native views, not HTML — there is no
-  `innerHTML`/`dangerouslySetInnerHTML`. The only injected web CSS
-  (`webInputFix.js`) is static.
-- **No secrets in the client.** Spotify keys live only in `.env` (gitignored) and
-  are used by build-time scripts. The shipped bundle + `catalog.generated.json`
-  contain no API keys (verified). Runtime never calls a keyed API.
-- **Outbound links** are built with `encodeURIComponent` or from catalog data,
-  never raw user text.
-- **Crash recovery.** A top-level `ErrorBoundary` catches render crashes and
-  offers Retry / Reload / Reset-app-data, so a crash (or a bad persisted theme)
-  is never a dead white screen the user can't escape.
-- **Takedown path** for images (`removePhoto`) is wired for copyright requests.
+## Controls present now
 
-## ⛔ Blocking — requires a backend before public launch
-The app is currently **backendless**: auth, users, and content live in memory +
-`localStorage`. That is fine for a demo and **not safe for a public site**. None
-of the following can be fixed in the client alone.
+- **Server-owned authentication and authorization.** Passwords are hashed,
+  sessions use `HttpOnly` cookies, `/api/me` is authoritative, and protected
+  routes resolve the signed-in account server-side. Production cannot enable the
+  bundled development identities or demo feed.
+- **Safe public failures.** API errors return stable codes, status, retryability,
+  and request IDs. Raw server stacks, SQL/provider details, request bodies,
+  credentials, and internal 5xx messages are not returned to users. Client
+  diagnostics store only bounded, privacy-safe metadata described in
+  `ERROR_CATALOG.md`.
+- **Input and profile projection controls.** Text and rating inputs are bounded;
+  profile `extras` cannot overwrite trusted role/verification/identity fields;
+  malformed stored JSON fails safely. React Native views do not use an HTML
+  injection sink.
+- **Transport headers.** The Node server sets CSP, frame restrictions, HSTS in
+  production, `X-Content-Type-Options`, and a referrer policy. Provider/frame
+  domains are explicitly allow-listed.
+- **Rate limiting and abuse foundations.** Sensitive and mutating API paths are
+  rate-limited, primarily by authenticated account where available. Blocking and
+  staff moderation/report surfaces exist.
+- **Password recovery.** Reset tokens are random, expiry-limited, stored as a
+  one-way hash, single-use, and revoke other sessions after reset. Recovery
+  responses do not reveal whether an email is registered.
+- **Durable upload boundary.** The server issues short-lived, user-scoped,
+  AWS-SigV4 PUT URLs for configured S3-compatible storage. Types and declared
+  sizes are allow-listed, and the client never saves `file:`, `blob:`, or `data:`
+  values as media URLs.
+- **Account lifecycle.** Authenticated export excludes session, password, reset,
+  IP, and user-agent fields and produces a real JSON download on web or shareable
+  file on native. Password-confirmed deletion removes the relational account
+  graph in one transaction; an ambiguous lost response is verified before local
+  cleanup. Banned and suspended accounts retain export/delete access while social
+  use stays locked.
+- **Build gates.** Tests, Node syntax checks, and the Expo production export run
+  through `npm run check` before deploy.
 
-1. **Real authentication.** Today "login" is a client-side compare and the session
-   is a plain object in `localStorage`. Needed: a server with **hashed passwords
-   (bcrypt/argon2)**, signed session tokens (httpOnly, secure, SameSite cookies),
-   and server-side authorization on every action. Until then, roles (admin/artist)
-   are trivially forgeable.
-2. **Remove seeded credentials from the bundle.** `src/store.js` ships demo
-   accounts *including the owner admin* (`adamgadishaw@gmail.com` / `admin1234`)
-   and the Auth screen prints demo logins. Anyone can read these from the JS
-   bundle and log in as admin. **Delete all seeded accounts + the demo-login panel
-   before launch**; create the real admin only in the backend.
-3. **Stop persisting credentials client-side.** `localStorage` currently holds the
-   users list with plaintext passwords. With server sessions this goes away
-   (client stores a token, never passwords).
-4. **Transport + headers.** Serve only over **HTTPS**, add **HSTS**, a strict
-   **Content-Security-Policy** (the app hotlinks images from many hosts + wsrv.nl
-   — scope `img-src` accordingly), `X-Content-Type-Options: nosniff`,
-   `Referrer-Policy`, and frame-ancestors to prevent clickjacking.
-5. **Rate limiting + abuse controls** on signup, login, posting, messaging, and
-   reports (server-side). Add CAPTCHA on signup/login.
-6. **Moderation at write time** for a public feed (today it's reactive/per-report).
-   At minimum: server-side profanity/spam checks + the ability to hard-delete.
-7. **Privacy/compliance.** A real privacy policy + terms (the in-app pages are
-   placeholders), cookie/consent handling, a data-export/delete path (GDPR/CCPA),
-   and image licensing review (the web/Bing photo tier is takedown-on-request, not
-   pre-cleared — fine for a prototype, risky at scale).
-8. **Secret management.** Keys in a server secret store / CI env, not a local
-   `.env`. Rotate the Spotify secret before launch (it was shared in chat).
+## Required before broad public uploads
 
-## Recommended path
-The `localStorage` store (`src/store.js`) is the seam. Replace it with a backend
-(Postgres or the SQLite→server plan already discussed) exposing the same
-`useStore()` shape, move auth to server sessions, delete the seed accounts, and
-put it behind HTTPS with the headers above. That converts this from "safe demo"
-to "safe to launch."
+The current presign path trusts the declared MIME type and size. Add an upload
+finalization pipeline that:
 
-> Bottom line: the client is clean and hardened for what a client can do, but a
-> public mshpit.com is **not secure until the backend exists**. Items 1–4 are the
-> minimum bar.
+1. reads object metadata and sniffs magic bytes rather than trusting extensions;
+2. rejects polyglots/invalid formats, strips EXIF/location metadata, and decodes
+   images with resource limits to prevent decompression bombs;
+3. generates fixed avatar/feed/full derivatives and serves them through a CDN;
+4. quarantines new objects until malware and content-moderation checks pass;
+5. records object ownership and state in the database, then deletes abandoned,
+   replaced, moderated, and account-owned objects through durable jobs;
+6. applies bucket lifecycle/versioning and denies public listing and direct
+   unsigned writes. CORS should permit only the intended origins and methods.
+
+Until that pipeline exists, uploads should remain limited to trusted testers.
+
+## Required before high-volume public launch
+
+1. **Managed state and resilience.** Migrate single-instance SQLite to managed
+   Postgres; move rate limits/cache to a shared service; use durable queues/workers
+   for email, media, exports, ingestion, fan-out, and deletion; test off-host
+   backups and restore procedures.
+2. **Abuse prevention.** Add risk-based signup/login throttling, CAPTCHA or an
+   equivalent challenge at abuse thresholds, email verification, spam/link
+   controls, media/text moderation, staff audit logs, appeals, and emergency
+   account/content disable controls.
+3. **Privacy operations.** Version consent immutably, document retention, make
+   large exports asynchronous, complete object deletion, verify third-party image
+   licensing, and obtain jurisdiction-specific privacy/terms review.
+4. **Observability without content leakage.** Centralize request-ID logs, metrics,
+   traces, error rates, queue lag, storage failures, and alerting. Never put
+   messages, reviews, searches, tokens, emails, or image contents in telemetry.
+5. **Session and secret operations.** Add secret rotation, environment separation,
+   session/device management, dependency update cadence, and incident response.
+   Native session persistence must use platform-secure storage rather than
+   browser-oriented storage.
+6. **Authorization coverage.** Expand automated tests for every role, blocking in
+   both directions, moderation transitions, deleted/private resources, and object
+   ownership. Treat client-side visibility as presentation, never authorization.
+
+## Dependency note
+
+`npm audit --omit=dev` currently traces a moderate UUID advisory through Expo's
+build tooling: `expo -> @expo/config-plugins -> xcode@3.0.1 -> uuid@7.0.3`.
+The project does not import `uuid`; the installed `xcode` package uses `uuid.v4()`
+rather than the affected buffer-writing APIs. The proposed forced npm fix would
+downgrade Expo to 46 and violate the SDK 56 requirement. Track the Expo upstream
+update and rerun the audit regularly; do not apply the breaking forced downgrade.
+
+## Launch decision
+
+Pit is no longer a backendless prototype. It has credible authentication, API,
+error, and data-integrity foundations. The blocking risks are now operational and
+scale-related: unfinished media verification, single-instance storage/process
+state, incomplete abuse automation, synchronous export/object deletion, and
+production observability. Do not market the service as “millions-ready” until
+those controls have been implemented and load/restore/incident tested.

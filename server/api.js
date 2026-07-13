@@ -1,7 +1,8 @@
 // API routes. Conventions that keep this hard to crash and easy to fix:
 // - every route: authenticate -> rate-limit -> validate (shape) -> act -> respond
 // - all handlers are wrapped by the server's try/catch; throwing ApiError(status,
-//   message) is the ONLY sanctioned way to fail, anything else becomes a clean 500
+//   message, stableCode) is the ONLY sanctioned way to fail; anything else is a
+//   clean INTERNAL_ERROR with a request ID and no internal details
 // - responses only ever contain public projections (publicUser), never raw rows
 import { randomUUID, randomBytes, createHash } from "node:crypto";
 import { mailConfigured, sendEmail } from "./mailer.js";
@@ -9,10 +10,10 @@ import { db, q, ytStmts, publicUser, artistStmts, publicArtist, artistRow, normN
 import { hashPassword, verifyPassword, createSession, destroySession, rateLimit } from "./auth.js";
 import { startCatalogSeed, catalogSeedStatus, stopCatalogSeed, deezerEnrich } from "./catalogSeed.js";
 import { clean, cleanEmail, isEmail, cleanName, isName, cleanHandle, isPassword, clampRating, cleanStringArray, shape, LIMITS } from "./validate.js";
+import { ApiError } from "./errors.js";
+import { createMediaPresign, mediaConfigured } from "./media.js";
 
-export class ApiError extends Error {
-  constructor(status, message) { super(message); this.status = status; }
-}
+export { ApiError } from "./errors.js";
 
 const now = () => Date.now();
 const uid = (p) => `${p}_${randomUUID().slice(0, 12)}`;
@@ -53,22 +54,59 @@ function handleAllowedForRole(handle, role) {
   return true;
 }
 
-function requireUser(ctx) {
-  if (!ctx.user) throw new ApiError(401, "Log in first.");
-  if (ctx.user.is_banned) throw new ApiError(403, "This account is banned.");
-  if (ctx.user.suspended_until && ctx.user.suspended_until > now()) throw new ApiError(403, "This account is suspended.");
+function requireSessionUser(ctx) {
+  if (!ctx.user) throw new ApiError(401, "Log in first.", "AUTH_REQUIRED");
   return ctx.user;
+}
+function requireUser(ctx) {
+  const user = requireSessionUser(ctx);
+  if (user.is_banned) throw new ApiError(403, "This account is banned.", "FORBIDDEN");
+  if (user.suspended_until && user.suspended_until > now()) throw new ApiError(403, "This account is suspended.", "FORBIDDEN");
+  return user;
 }
 function requireAdmin(ctx) {
   const u = requireUser(ctx);
-  if (u.role !== "admin") throw new ApiError(403, "Admins only.");
+  if (u.role !== "admin") throw new ApiError(403, "Admins only.", "FORBIDDEN");
   return u;
 }
 function limit(ctx, name, max, windowMs) {
   // Authenticated activity is primarily limited per account so users behind the
   // same carrier/proxy do not consume one shared posting or messaging bucket.
   const actor = ctx.user?.id ? `user:${ctx.user.id}` : `ip:${ctx.ip}`;
-  if (!rateLimit(`${name}:${actor}`, max, windowMs)) throw new ApiError(429, "Too many requests, slow down and try again.");
+  if (!rateLimit(`${name}:${actor}`, max, windowMs)) throw new ApiError(429, "Too many requests, slow down and try again.", "RATE_LIMITED");
+}
+
+function desiredState(body, field, current) {
+  if (!Object.prototype.hasOwnProperty.call(body || {}, field)) return !current;
+  if (typeof body[field] !== "boolean") throw new ApiError(400, `${field} must be true or false.`, "VALIDATION_FAILED");
+  return body[field];
+}
+
+function encodeCursor(row) {
+  return Buffer.from(JSON.stringify([row.created_at, row.id]), "utf8").toString("base64url");
+}
+
+function decodeCursor(value) {
+  if (!value) return null;
+  try {
+    const [createdAt, id] = JSON.parse(Buffer.from(String(value), "base64url").toString("utf8"));
+    if (!Number.isSafeInteger(createdAt) || createdAt < 0 || typeof id !== "string" || !id || id.length > 100) throw new Error();
+    return { createdAt, id };
+  } catch {
+    throw new ApiError(400, "That page link is invalid. Refresh and try again.", "VALIDATION_FAILED");
+  }
+}
+
+function pageRequest(ctx, defaultLimit, maxLimit) {
+  const requested = Number(ctx.query?.limit);
+  const limit = Number.isSafeInteger(requested) && requested > 0 ? Math.min(requested, maxLimit) : defaultLimit;
+  return { cursor: decodeCursor(ctx.query?.before), limit };
+}
+
+function finishPage(rows, limit) {
+  const hasMore = rows.length > limit;
+  const page = hasMore ? rows.slice(0, limit) : rows;
+  return { rows: page, nextCursor: hasMore && page.length ? encodeCursor(page.at(-1)) : null };
 }
 
 // An account "owns" the artist page whose name matches theirs; admins own all.
@@ -94,7 +132,7 @@ const feedQuery = db.prepare(`
     (SELECT COUNT(*) FROM likes l WHERE l.post_id = p.id) AS like_count,
     (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id AND c.removed = 0) AS comment_count
   FROM posts p JOIN users u ON u.id = p.user_id
-  WHERE p.removed = 0 ORDER BY p.created_at DESC LIMIT ? OFFSET ?`);
+  WHERE p.removed = 0 ORDER BY p.created_at DESC, p.id DESC LIMIT ? OFFSET ?`);
 
 // Insert a notification for a recipient (never notify yourself).
 const notifRow = db.prepare("INSERT INTO notifications (id,user_id,actor_id,type,post_id,artist,text,created_at) VALUES (?,?,?,?,?,?,?,?)");
@@ -271,8 +309,18 @@ export const routes = {
         database,
         youtubeConfigured: !!process.env.YOUTUBE_API_KEY,
         mailConfigured: mailConfigured(),
+        mediaStorageConfigured: mediaConfigured(),
       },
     };
+  },
+
+  // Direct-to-object-storage photo uploads. The application server signs a
+  // short-lived, user-owned key; the image bytes never pass through SQLite or
+  // this JSON server. Persist `publicUrl` only after the PUT succeeds.
+  "POST /api/media/presign": (ctx) => {
+    const u = requireUser(ctx);
+    limit(ctx, "media-presign", 30, 10 * 60 * 1000);
+    return createMediaPresign({ userId: u.id, body: ctx.body });
   },
 
   // ---- server clock ---- authoritative time so the calendar + scheduling don't
@@ -531,7 +579,7 @@ export const routes = {
     if (errs.length) throw new ApiError(400, errs[0]);
     const u = q.userByEmail.get(v.email);
     // same error either way, never reveal which part was wrong
-    if (!u || !verifyPassword(v.password, u.pass_hash)) throw new ApiError(401, "Wrong email or password.");
+    if (!u || !verifyPassword(v.password, u.pass_hash)) throw new ApiError(401, "Wrong email or password.", "AUTH_INVALID");
     if (u.is_banned) throw new ApiError(403, "This account is banned.");
     const sess = createSession(u.id, ctx.ip, ctx.ua);
     ctx.setSession(sess);
@@ -717,10 +765,11 @@ export const routes = {
     if (u.id === ctx.params.id) throw new ApiError(400, "You can't follow yourself.");
     if (!q.userById.get(ctx.params.id)) throw new ApiError(404, "No such user.");
     if (blockedEitherWay(u.id, ctx.params.id)) throw new ApiError(403, "You can't follow this account.");
-    const has = db.prepare("SELECT 1 FROM follows WHERE follower_id=? AND followee_id=?").get(u.id, ctx.params.id);
-    if (has) db.prepare("DELETE FROM follows WHERE follower_id=? AND followee_id=?").run(u.id, ctx.params.id);
-    else { db.prepare("INSERT INTO follows (follower_id,followee_id) VALUES (?,?)").run(u.id, ctx.params.id); addNotif(ctx.params.id, u.id, "follow"); }
-    return { following: !has };
+    const has = !!db.prepare("SELECT 1 FROM follows WHERE follower_id=? AND followee_id=?").get(u.id, ctx.params.id);
+    const following = desiredState(ctx.body, "following", has);
+    if (!following && has) db.prepare("DELETE FROM follows WHERE follower_id=? AND followee_id=?").run(u.id, ctx.params.id);
+    else if (following && !has) { db.prepare("INSERT INTO follows (follower_id,followee_id) VALUES (?,?)").run(u.id, ctx.params.id); addNotif(ctx.params.id, u.id, "follow"); }
+    return { following };
   },
 
   // ---- blocks: a real block, not a mute. Severs the follow both ways, stops
@@ -731,15 +780,16 @@ export const routes = {
     const other = ctx.params.id;
     if (other === u.id) throw new ApiError(400, "You can't block yourself.");
     if (!q.userById.get(other)) throw new ApiError(404, "No such user.");
-    const has = db.prepare("SELECT 1 FROM blocks WHERE blocker_id=? AND blocked_id=?").get(u.id, other);
-    if (has) {
+    const has = !!db.prepare("SELECT 1 FROM blocks WHERE blocker_id=? AND blocked_id=?").get(u.id, other);
+    const blocked = desiredState(ctx.body, "blocked", has);
+    if (!blocked && has) {
       db.prepare("DELETE FROM blocks WHERE blocker_id=? AND blocked_id=?").run(u.id, other);
-    } else {
+    } else if (blocked && !has) {
       db.prepare("INSERT INTO blocks (blocker_id,blocked_id,created_at) VALUES (?,?,?)").run(u.id, other, now());
       // Sever the relationship both ways so neither keeps the other in a list.
       db.prepare("DELETE FROM follows WHERE (follower_id=? AND followee_id=?) OR (follower_id=? AND followee_id=?)").run(u.id, other, other, u.id);
     }
-    return { blocked: !has };
+    return { blocked };
   },
   "GET /api/me/blocked": (ctx) => {
     const u = requireUser(ctx);
@@ -749,33 +799,105 @@ export const routes = {
     return { users: rows.map((r) => publicUser(r)) };
   },
 
-  // ---- personal data export: a full backup of everything this account owns.
-  // Facebook-style "Download your information", one JSON file. ----
+  // ---- personal data export: a portable backup of this account's data.
+  // High-volume histories are bounded until this becomes an asynchronous archive
+  // job; the response documents those windows rather than claiming completeness.
   "GET /api/me/export": (ctx) => {
-    const u = requireUser(ctx);
+    // Privacy rights remain available even while posting/browsing is restricted.
+    const u = requireSessionUser(ctx);
     limit(ctx, "export", 5, 10 * 60 * 1000);
     const name = (id) => { const x = q.userById.get(id); return x ? { id, name: x.name, handle: x.handle } : { id }; };
+    const json = (value, fallback) => {
+      try { return value ? JSON.parse(value) : fallback; }
+      catch { return fallback; }
+    };
     return {
       exportedAt: new Date().toISOString(),
+      exportNotes: [
+        "Password hashes, reset credentials, provider tokens, session cookies, raw IP addresses, and user-agent strings are intentionally excluded.",
+        "Uploaded media files are represented by the URLs attached to exported records; storage-provider audit metadata is not part of the account export.",
+        "This synchronous export includes up to 300 plays, 1,000 sent and received messages, 200 notifications, and 5,000 activity events. A queued archive job is required before production-scale launch.",
+      ],
       profile: publicUser(u, { self: true }),
       posts: db.prepare("SELECT * FROM posts WHERE user_id=? ORDER BY created_at DESC").all(u.id)
-        .map((p) => ({ id: p.id, artist: p.artist, venue: p.venue, city: p.city, date: p.date, overall: p.overall, band: p.band, room: p.room, review: p.review, tour: p.tour, setlist: p.setlist ? JSON.parse(p.setlist) : [], photos: p.photos ? JSON.parse(p.photos) : [], createdAt: p.created_at })),
-      comments: db.prepare("SELECT post_id, text, created_at FROM comments WHERE user_id=? AND removed=0 ORDER BY created_at DESC").all(u.id)
-        .map((c) => ({ postId: c.post_id, text: c.text, createdAt: c.created_at })),
+        .map((p) => ({ id: p.id, artist: p.artist, venue: p.venue, city: p.city, date: p.date, overall: p.overall, band: p.band, room: p.room, review: p.review, tour: p.tour, setlist: json(p.setlist, []), photos: json(p.photos, []), removed: !!p.removed, createdAt: p.created_at })),
+      comments: db.prepare("SELECT post_id, text, removed, created_at FROM comments WHERE user_id=? ORDER BY created_at DESC").all(u.id)
+        .map((c) => ({ postId: c.post_id, text: c.text, removed: !!c.removed, createdAt: c.created_at })),
+      likedPosts: db.prepare("SELECT post_id FROM likes WHERE user_id=?").all(u.id).map((r) => r.post_id),
       following: db.prepare("SELECT followee_id id FROM follows WHERE follower_id=?").all(u.id).map((r) => name(r.id)),
       followers: db.prepare("SELECT follower_id id FROM follows WHERE followee_id=?").all(u.id).map((r) => name(r.id)),
       blocked: db.prepare("SELECT blocked_id id FROM blocks WHERE blocker_id=?").all(u.id).map((r) => name(r.id)),
       playlists: db.prepare("SELECT id,name,tracks,created_at FROM playlists WHERE user_id=? ORDER BY created_at DESC").all(u.id)
-        .map((r) => ({ id: r.id, name: r.name, tracks: JSON.parse(r.tracks || "[]"), createdAt: r.created_at })),
+        .map((r) => ({ id: r.id, name: r.name, tracks: json(r.tracks, []), createdAt: r.created_at })),
       listeningHistory: db.prepare("SELECT title,artist,url,created_at FROM plays WHERE user_id=? ORDER BY created_at DESC LIMIT 300").all(u.id)
         .map((r) => ({ title: r.title, artist: r.artist, url: r.url, at: r.created_at })),
       going: db.prepare("SELECT artist, venue, city, date FROM going WHERE user_id=?").all(u.id),
       ratings: db.prepare("SELECT kind, ref, rating FROM ratings WHERE user_id=?").all(u.id),
+      venueReviews: db.prepare("SELECT id,venue_key,rating,text,photos,removed,created_at FROM venue_reviews WHERE user_id=? ORDER BY created_at DESC").all(u.id)
+        .map((r) => ({ id: r.id, venueKey: r.venue_key, rating: r.rating, text: r.text, photos: json(r.photos, []), removed: !!r.removed, createdAt: r.created_at })),
+      fanClubs: {
+        memberships: db.prepare("SELECT artist FROM fan_club_members WHERE user_id=? ORDER BY artist COLLATE NOCASE").all(u.id).map((r) => r.artist),
+        messages: db.prepare("SELECT id,artist,text,removed,created_at FROM fan_club_messages WHERE user_id=? ORDER BY created_at DESC").all(u.id)
+          .map((r) => ({ id: r.id, artist: r.artist, text: r.text, removed: !!r.removed, createdAt: r.created_at })),
+      },
+      loungeMessages: db.prepare("SELECT id,lounge_id,text,removed,created_at FROM lounge_messages WHERE user_id=? ORDER BY created_at DESC").all(u.id)
+        .map((r) => ({ id: r.id, loungeId: r.lounge_id, text: r.text, removed: !!r.removed, createdAt: r.created_at })),
       messagesSent: db.prepare("SELECT to_id, text, created_at FROM dms WHERE from_id=? ORDER BY created_at DESC LIMIT 1000").all(u.id)
         .map((m) => ({ to: name(m.to_id), text: m.text, createdAt: m.created_at })),
+      messagesReceived: db.prepare("SELECT from_id, text, created_at FROM dms WHERE to_id=? ORDER BY created_at DESC LIMIT 1000").all(u.id)
+        .map((m) => ({ from: name(m.from_id), text: m.text, createdAt: m.created_at })),
+      artistAccount: {
+        requests: db.prepare("SELECT id,artist_name,note,status,created_at FROM artist_requests WHERE user_id=? ORDER BY created_at DESC").all(u.id)
+          .map((r) => ({ id: r.id, artistName: r.artist_name, note: r.note, status: r.status, createdAt: r.created_at })),
+        profiles: db.prepare("SELECT artist_key,bio,banner,avatar_uri,feed_enabled,updated_at FROM artist_profiles WHERE owner_id=?").all(u.id)
+          .map((r) => ({ artistKey: r.artist_key, bio: r.bio, banner: r.banner, avatarUri: r.avatar_uri, feedEnabled: !!r.feed_enabled, updatedAt: r.updated_at })),
+        posts: db.prepare("SELECT id,artist_key,text,created_at FROM artist_posts WHERE user_id=? ORDER BY created_at DESC").all(u.id)
+          .map((r) => ({ id: r.id, artistKey: r.artist_key, text: r.text, createdAt: r.created_at })),
+      },
+      reportsSubmitted: db.prepare("SELECT id,target_type,target_id,reason,status,created_at FROM reports WHERE reporter_id=? ORDER BY created_at DESC").all(u.id)
+        .map((r) => ({ id: r.id, targetType: r.target_type, targetId: r.target_id, reason: r.reason, status: r.status, createdAt: r.created_at })),
+      activityEvents: db.prepare("SELECT id,name,props,created_at FROM events WHERE user_id=? ORDER BY created_at DESC LIMIT 5000").all(u.id)
+        .map((r) => ({ id: r.id, name: r.name, properties: json(r.props, {}), createdAt: r.created_at })),
       notifications: db.prepare("SELECT type, actor_id, artist, text, created_at FROM notifications WHERE user_id=? ORDER BY created_at DESC LIMIT 200").all(u.id)
         .map((n) => ({ type: n.type, from: n.actor_id ? name(n.actor_id) : null, artist: n.artist, text: n.text, at: n.created_at })),
     };
+  },
+
+  // Permanent account deletion. Password confirmation and a tight rate limit
+  // guard the destructive action. Rows whose foreign keys would otherwise be
+  // anonymized with SET NULL are explicitly removed before deleting the user;
+  // all remaining account-owned rows disappear through FK cascades.
+  "DELETE /api/me": (ctx) => {
+    // A moderation restriction cannot trap someone in the service.
+    const u = requireSessionUser(ctx);
+    limit(ctx, "delete-account", 5, 60 * 60 * 1000);
+    const password = typeof ctx.body?.password === "string" ? ctx.body.password : "";
+    if (!password) throw new ApiError(400, "Enter your current password to delete your account.", "VALIDATION_FAILED");
+    if (!verifyPassword(password, u.pass_hash)) throw new ApiError(401, "That password doesn't match your account.", "AUTH_INVALID");
+
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      // These relationships use ON DELETE SET NULL so shared rows can normally
+      // survive account changes. Deletion is a privacy erasure, so remove the
+      // account's authored/attributable records instead of leaving them behind.
+      db.prepare("DELETE FROM notifications WHERE actor_id=?").run(u.id);
+      db.prepare("DELETE FROM events WHERE user_id=?").run(u.id);
+      db.prepare(`DELETE FROM reports WHERE reporter_id=?
+        OR (target_type='user' AND target_id=?)
+        OR (target_type='post' AND target_id IN (SELECT id FROM posts WHERE user_id=?))
+        OR (target_type='comment' AND target_id IN (SELECT id FROM comments WHERE user_id=?))
+        OR (target_type='message' AND target_id IN (SELECT id FROM dms WHERE from_id=? OR to_id=?))`
+      ).run(u.id, u.id, u.id, u.id, u.id, u.id);
+      db.prepare("DELETE FROM artist_posts WHERE user_id=?").run(u.id);
+      db.prepare("DELETE FROM artist_profiles WHERE owner_id=?").run(u.id);
+      db.prepare("DELETE FROM users WHERE id=?").run(u.id);
+      db.exec("COMMIT");
+    } catch (error) {
+      try { db.exec("ROLLBACK"); } catch {}
+      throw error;
+    }
+    ctx.clearSession?.();
+    return { ok: true };
   },
 
   // ---- tour dates (scraped into the DB by server/tourdates.js) ----
@@ -792,10 +914,21 @@ export const routes = {
 
   // ---- feed / posts ----
   "GET /api/feed": (ctx) => {
-    const lim = Math.min(Number(ctx.query.limit) || 30, 100);
-    const off = Math.max(Number(ctx.query.offset) || 0, 0);
+    const { cursor, limit: lim } = pageRequest(ctx, 30, 100);
+    const requestedOffset = Number(ctx.query?.offset);
+    const off = !cursor && Number.isSafeInteger(requestedOffset) && requestedOffset > 0 ? Math.min(requestedOffset, 1_000_000) : 0;
     const hidden = blockedIdSet(ctx.user?.id);
-    return { posts: feedQuery.all(lim, off).filter((p) => !hidden.has(p.user_id)).map((p) => postJson(p, ctx.user?.id)) };
+    const found = cursor
+      ? db.prepare(`
+          SELECT p.*, u.name AS u_name, u.handle AS u_handle, u.initials AS u_initials, u.avatar_uri AS u_avatar, u.avatar_color AS u_color,
+            (SELECT COUNT(*) FROM likes l WHERE l.post_id = p.id) AS like_count,
+            (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id AND c.removed = 0) AS comment_count
+          FROM posts p JOIN users u ON u.id = p.user_id
+          WHERE p.removed = 0 AND (p.created_at < ? OR (p.created_at = ? AND p.id < ?))
+          ORDER BY p.created_at DESC, p.id DESC LIMIT ?`).all(cursor.createdAt, cursor.createdAt, cursor.id, lim + 1)
+      : feedQuery.all(lim + 1, off);
+    const { rows, nextCursor } = finishPage(found, lim);
+    return { posts: rows.filter((p) => !hidden.has(p.user_id)).map((p) => postJson(p, ctx.user?.id)), nextCursor };
   },
 
   "GET /api/users/:id/posts": (ctx) => {
@@ -836,21 +969,26 @@ export const routes = {
     const u = requireUser(ctx);
     limit(ctx, "like", 120, 10 * 60 * 1000);
     if (!db.prepare("SELECT 1 FROM posts WHERE id=? AND removed=0").get(ctx.params.id)) throw new ApiError(404, "No such post.");
-    const has = db.prepare("SELECT 1 FROM likes WHERE post_id=? AND user_id=?").get(ctx.params.id, u.id);
-    if (has) db.prepare("DELETE FROM likes WHERE post_id=? AND user_id=?").run(ctx.params.id, u.id);
-    else {
+    const has = !!db.prepare("SELECT 1 FROM likes WHERE post_id=? AND user_id=?").get(ctx.params.id, u.id);
+    const liked = desiredState(ctx.body, "liked", has);
+    if (!liked && has) db.prepare("DELETE FROM likes WHERE post_id=? AND user_id=?").run(ctx.params.id, u.id);
+    else if (liked && !has) {
       db.prepare("INSERT INTO likes (post_id,user_id) VALUES (?,?)").run(ctx.params.id, u.id);
       const p = db.prepare("SELECT user_id, artist FROM posts WHERE id=?").get(ctx.params.id);
       if (p) addNotif(p.user_id, u.id, "like", { postId: ctx.params.id, artist: p.artist });
     }
-    return { liked: !has };
+    return { liked };
   },
 
   "GET /api/posts/:id/comments": (ctx) => {
     const hidden = blockedIdSet(ctx.user?.id);
-    const rows = db.prepare(`SELECT c.*, u.name, u.initials, u.avatar_uri, u.avatar_color, u.role, u.verified FROM comments c JOIN users u ON u.id=c.user_id
-                             WHERE c.post_id=? AND c.removed=0 ORDER BY c.created_at DESC, c.id DESC LIMIT 400`).all(ctx.params.id);
-    return { comments: rows.reverse().filter((c) => !hidden.has(c.user_id)).map((c) => ({ id: c.id, userId: c.user_id, name: c.name, initials: c.initials, avatarUri: c.avatar_uri, avatarColor: c.avatar_color, role: c.role, verified: !!c.verified, text: c.text, parentId: c.parent_id || null, createdAt: c.created_at })) };
+    const { cursor, limit } = pageRequest(ctx, 400, 400);
+    const cursorSql = cursor ? "AND (c.created_at < ? OR (c.created_at = ? AND c.id < ?))" : "";
+    const args = cursor ? [ctx.params.id, cursor.createdAt, cursor.createdAt, cursor.id, limit + 1] : [ctx.params.id, limit + 1];
+    const found = db.prepare(`SELECT c.*, u.name, u.initials, u.avatar_uri, u.avatar_color, u.role, u.verified FROM comments c JOIN users u ON u.id=c.user_id
+                             WHERE c.post_id=? AND c.removed=0 ${cursorSql} ORDER BY c.created_at DESC, c.id DESC LIMIT ?`).all(...args);
+    const { rows, nextCursor } = finishPage(found, limit);
+    return { comments: rows.reverse().filter((c) => !hidden.has(c.user_id)).map((c) => ({ id: c.id, userId: c.user_id, name: c.name, initials: c.initials, avatarUri: c.avatar_uri, avatarColor: c.avatar_color, role: c.role, verified: !!c.verified, text: c.text, parentId: c.parent_id || null, createdAt: c.created_at })), nextCursor };
   },
 
   "POST /api/posts/:id/comments": (ctx) => {
@@ -895,10 +1033,15 @@ export const routes = {
   "GET /api/dms/:otherId": (ctx) => {
     const u = requireUser(ctx);
     const other = ctx.params.otherId;
-    const msgs = db.prepare(`SELECT id, from_id, text, created_at FROM dms
-      WHERE (from_id=? AND to_id=?) OR (from_id=? AND to_id=?) ORDER BY created_at DESC, id DESC LIMIT 500`)
-      .all(u.id, other, other, u.id);
-    return { messages: msgs.reverse().map((m) => ({ id: m.id, from: m.from_id, text: m.text, createdAt: m.created_at })) };
+    const { cursor, limit } = pageRequest(ctx, 500, 500);
+    const cursorSql = cursor ? "AND (created_at < ? OR (created_at = ? AND id < ?))" : "";
+    const args = [u.id, other, other, u.id];
+    if (cursor) args.push(cursor.createdAt, cursor.createdAt, cursor.id);
+    args.push(limit + 1);
+    const found = db.prepare(`SELECT id, from_id, text, created_at FROM dms
+      WHERE ((from_id=? AND to_id=?) OR (from_id=? AND to_id=?)) ${cursorSql} ORDER BY created_at DESC, id DESC LIMIT ?`).all(...args);
+    const { rows, nextCursor } = finishPage(found, limit);
+    return { messages: rows.reverse().map((m) => ({ id: m.id, from: m.from_id, text: m.text, createdAt: m.created_at })), nextCursor };
   },
 
   "POST /api/dms/:otherId": (ctx) => {
@@ -920,13 +1063,16 @@ export const routes = {
   "GET /api/me/notifications": (ctx) => {
     const u = requireUser(ctx);
     const hidden = blockedIdSet(u.id);
-    const rows = db.prepare(`
+    const { cursor, limit } = pageRequest(ctx, 100, 100);
+    const cursorSql = cursor ? "AND (n.created_at < ? OR (n.created_at = ? AND n.id < ?))" : "";
+    const args = cursor ? [u.id, cursor.createdAt, cursor.createdAt, cursor.id, limit + 1] : [u.id, limit + 1];
+    const found = db.prepare(`
       SELECT n.*, a.name AS actor_name, a.initials AS actor_initials, a.avatar_uri AS actor_uri, a.avatar_color AS actor_color
       FROM notifications n LEFT JOIN users a ON a.id = n.actor_id
-      WHERE n.user_id = ? ORDER BY n.created_at DESC LIMIT 100`).all(u.id)
-      .filter((n) => !n.actor_id || !hidden.has(n.actor_id)); // old pings from blocked people vanish too
+      WHERE n.user_id = ? ${cursorSql} ORDER BY n.created_at DESC, n.id DESC LIMIT ?`).all(...args);
+    const { rows, nextCursor } = finishPage(found, limit);
     return {
-      notifications: rows.map((n) => ({
+      notifications: rows.filter((n) => !n.actor_id || !hidden.has(n.actor_id)).map((n) => ({
         id: n.id, type: n.type, actorId: n.actor_id,
         actorName: n.actor_name || "Someone", actorInitials: n.actor_initials || "?",
         actorUri: n.actor_uri, actorColor: n.actor_color,
@@ -934,6 +1080,7 @@ export const routes = {
         ts: n.created_at, read: !!n.read,
       })),
       unread: db.prepare("SELECT COUNT(*) c FROM notifications WHERE user_id=? AND read=0").get(u.id).c,
+      nextCursor,
     };
   },
 
@@ -957,18 +1104,23 @@ export const routes = {
     limit(ctx, "fanclub", 60, 10 * 60 * 1000);
     const artist = clean(decodeURIComponent(ctx.params.artist), { max: LIMITS.artist }).toLowerCase();
     if (!artist) throw new ApiError(400, "Bad artist.");
-    const has = db.prepare("SELECT 1 FROM fan_club_members WHERE artist=? AND user_id=?").get(artist, u.id);
-    if (has) db.prepare("DELETE FROM fan_club_members WHERE artist=? AND user_id=?").run(artist, u.id);
-    else db.prepare("INSERT INTO fan_club_members (artist,user_id) VALUES (?,?)").run(artist, u.id);
-    return { member: !has };
+    const has = !!db.prepare("SELECT 1 FROM fan_club_members WHERE artist=? AND user_id=?").get(artist, u.id);
+    const joined = desiredState(ctx.body, "joined", has);
+    if (!joined && has) db.prepare("DELETE FROM fan_club_members WHERE artist=? AND user_id=?").run(artist, u.id);
+    else if (joined && !has) db.prepare("INSERT INTO fan_club_members (artist,user_id) VALUES (?,?)").run(artist, u.id);
+    return { member: joined, joined };
   },
 
   "GET /api/fanclubs/:artist/messages": (ctx) => {
     const artist = clean(decodeURIComponent(ctx.params.artist), { max: LIMITS.artist }).toLowerCase();
-    const rows = db.prepare(`SELECT m.*, u.name, u.initials FROM fan_club_messages m JOIN users u ON u.id=m.user_id
-                             WHERE m.artist=? AND m.removed=0 ORDER BY m.created_at DESC, m.id DESC LIMIT 300`).all(artist);
+    const { cursor, limit } = pageRequest(ctx, 300, 300);
+    const cursorSql = cursor ? "AND (m.created_at < ? OR (m.created_at = ? AND m.id < ?))" : "";
+    const args = cursor ? [artist, cursor.createdAt, cursor.createdAt, cursor.id, limit + 1] : [artist, limit + 1];
+    const found = db.prepare(`SELECT m.*, u.name, u.initials FROM fan_club_messages m JOIN users u ON u.id=m.user_id
+                             WHERE m.artist=? AND m.removed=0 ${cursorSql} ORDER BY m.created_at DESC, m.id DESC LIMIT ?`).all(...args);
+    const { rows, nextCursor } = finishPage(found, limit);
     const members = db.prepare("SELECT COUNT(*) c FROM fan_club_members WHERE artist=?").get(artist).c;
-    return { members, messages: rows.reverse().map((m) => ({ id: m.id, userId: m.user_id, name: m.name, initials: m.initials, text: m.text, createdAt: m.created_at })) };
+    return { members, messages: rows.reverse().map((m) => ({ id: m.id, userId: m.user_id, name: m.name, initials: m.initials, text: m.text, createdAt: m.created_at })), nextCursor };
   },
 
   "POST /api/fanclubs/:artist/messages": (ctx) => {
@@ -986,9 +1138,13 @@ export const routes = {
   "GET /api/lounges/:key/messages": (ctx) => {
     const key = clean(decodeURIComponent(ctx.params.key), { max: 300 }).toLowerCase();
     const hidden = blockedIdSet(ctx.user?.id);
-    const rows = db.prepare(`SELECT m.*, u.name, u.initials, u.avatar_uri, u.avatar_color, u.role FROM lounge_messages m JOIN users u ON u.id=m.user_id
-                             WHERE m.lounge_id=? AND m.removed=0 ORDER BY m.created_at DESC, m.id DESC LIMIT 300`).all(key);
-    return { messages: rows.reverse().filter((m) => !hidden.has(m.user_id)).map((m) => ({ id: m.id, userId: m.user_id, name: m.name, initials: m.initials, avatarUri: m.avatar_uri, avatarColor: m.avatar_color, role: m.role, text: m.text, createdAt: m.created_at })) };
+    const { cursor, limit } = pageRequest(ctx, 300, 300);
+    const cursorSql = cursor ? "AND (m.created_at < ? OR (m.created_at = ? AND m.id < ?))" : "";
+    const args = cursor ? [key, cursor.createdAt, cursor.createdAt, cursor.id, limit + 1] : [key, limit + 1];
+    const found = db.prepare(`SELECT m.*, u.name, u.initials, u.avatar_uri, u.avatar_color, u.role FROM lounge_messages m JOIN users u ON u.id=m.user_id
+                             WHERE m.lounge_id=? AND m.removed=0 ${cursorSql} ORDER BY m.created_at DESC, m.id DESC LIMIT ?`).all(...args);
+    const { rows, nextCursor } = finishPage(found, limit);
+    return { messages: rows.reverse().filter((m) => !hidden.has(m.user_id)).map((m) => ({ id: m.id, userId: m.user_id, name: m.name, initials: m.initials, avatarUri: m.avatar_uri, avatarColor: m.avatar_color, role: m.role, text: m.text, createdAt: m.created_at })), nextCursor };
   },
   "POST /api/lounges/:key/messages": (ctx) => {
     const u = requireUser(ctx);
@@ -1246,12 +1402,13 @@ export const routes = {
     limit(ctx, "going", 120, 10 * 60 * 1000);
     const key = clean(ctx.body?.key, { max: 300 });
     if (!key) throw new ApiError(400, "Missing key.");
-    const has = db.prepare("SELECT 1 FROM going WHERE user_id=? AND concert_key=?").get(u.id, key);
-    if (has) { db.prepare("DELETE FROM going WHERE user_id=? AND concert_key=?").run(u.id, key); return { going: false }; }
-    db.prepare("INSERT INTO going (user_id,concert_key,artist,venue,city,date) VALUES (?,?,?,?,?,?)")
+    const has = !!db.prepare("SELECT 1 FROM going WHERE user_id=? AND concert_key=?").get(u.id, key);
+    const going = desiredState(ctx.body, "going", has);
+    if (!going && has) db.prepare("DELETE FROM going WHERE user_id=? AND concert_key=?").run(u.id, key);
+    else if (going && !has) db.prepare("INSERT INTO going (user_id,concert_key,artist,venue,city,date) VALUES (?,?,?,?,?,?)")
       .run(u.id, key, clean(ctx.body?.artist, { max: LIMITS.artist }) || "", clean(ctx.body?.venue, { max: LIMITS.venue }) || "",
         clean(ctx.body?.city, { max: LIMITS.city }) || "", clean(ctx.body?.date, { max: LIMITS.date }) || "");
-    return { going: true };
+    return { going };
   },
   "GET /api/going/:key/attendees": (ctx) => {
     const key = decodeURIComponent(ctx.params.key);
@@ -1262,9 +1419,13 @@ export const routes = {
   // ---- venue reviews (slice 7) ----
   "GET /api/venues/:key/reviews": (ctx) => {
     const key = clean(decodeURIComponent(ctx.params.key), { max: 200 }).toLowerCase();
-    const rows = db.prepare(`SELECT r.*, u.name, u.initials FROM venue_reviews r JOIN users u ON u.id=r.user_id
-                             WHERE r.venue_key=? AND r.removed=0 ORDER BY r.created_at DESC LIMIT 200`).all(key);
-    return { reviews: rows.map((r) => ({ id: r.id, userId: r.user_id, name: r.name, initials: r.initials, rating: r.rating, text: r.text, photos: JSON.parse(r.photos || "[]"), createdAt: r.created_at })) };
+    const { cursor, limit } = pageRequest(ctx, 200, 200);
+    const cursorSql = cursor ? "AND (r.created_at < ? OR (r.created_at = ? AND r.id < ?))" : "";
+    const args = cursor ? [key, cursor.createdAt, cursor.createdAt, cursor.id, limit + 1] : [key, limit + 1];
+    const found = db.prepare(`SELECT r.*, u.name, u.initials FROM venue_reviews r JOIN users u ON u.id=r.user_id
+                             WHERE r.venue_key=? AND r.removed=0 ${cursorSql} ORDER BY r.created_at DESC, r.id DESC LIMIT ?`).all(...args);
+    const { rows, nextCursor } = finishPage(found, limit);
+    return { reviews: rows.map((r) => ({ id: r.id, userId: r.user_id, name: r.name, initials: r.initials, rating: r.rating, text: r.text, photos: JSON.parse(r.photos || "[]"), createdAt: r.created_at })), nextCursor };
   },
   "POST /api/venues/:key/reviews": (ctx) => {
     const u = requireUser(ctx);

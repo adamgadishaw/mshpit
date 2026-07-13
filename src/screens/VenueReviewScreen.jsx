@@ -7,27 +7,65 @@ import ScreenHeader from "../components/ScreenHeader";
 import Icon from "../components/Icon";
 import TapStars from "../components/TapStars";
 import Button from "../components/Button";
+import { isDurableMediaUrl, reportMediaPickerError, uploadMediaAsset } from "../lib/mediaUpload";
 
 export default function VenueReviewScreen({ venueName, onClose }) {
   const { addVenueReview } = useStore();
   const [rating, setRating] = useState(0);
   const [text, setText] = useState("");
   const [photos, setPhotos] = useState([]);
+  const [uploadingPhotos, setUploadingPhotos] = useState(false);
+  const [posting, setPosting] = useState(false);
 
   const addPhoto = async () => {
-    const res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images"], quality: 0.6, allowsMultipleSelection: true, selectionLimit: 5 });
-    if (!res.canceled) setPhotos((p) => [...p, ...res.assets.map((a) => a.uri)].slice(0, 8));
+    if (uploadingPhotos || posting) return;
+    const remaining = Math.max(0, 8 - photos.length);
+    if (!remaining) return;
+    let res;
+    try {
+      res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images"], quality: 0.6, allowsMultipleSelection: true, selectionLimit: Math.min(5, remaining) });
+    } catch (error) {
+      reportMediaPickerError(error, "Opening the venue photo library");
+      return;
+    }
+    if (!res || res.canceled || !res.assets?.length) return;
+    setUploadingPhotos(true);
+    const uploaded = [];
+    try {
+      for (const asset of res.assets.slice(0, remaining)) {
+        try {
+          uploaded.push(await uploadMediaAsset(asset, "venue"));
+        } catch {
+          break;
+        }
+      }
+    } finally {
+      if (uploaded.length) setPhotos((current) => [...current, ...uploaded].filter(isDurableMediaUrl).slice(0, 8));
+      setUploadingPhotos(false);
+    }
   };
 
   const canPost = rating > 0;
-  const save = () => { addVenueReview(venueName, { rating, text, photos }); onClose?.(); };
+  const submitBusy = uploadingPhotos || posting;
+  const save = async () => {
+    if (!canPost || submitBusy) return;
+    setPosting(true);
+    try {
+      const result = await addVenueReview(venueName, { rating, text, photos: photos.filter(isDurableMediaUrl) });
+      if (result?.ok !== false) onClose?.();
+    } catch {
+      // Keep the review editable; the API layer already logged and displayed it.
+    } finally {
+      setPosting(false);
+    }
+  };
 
   return (
     <View style={styles.wrap}>
       <ScreenHeader kicker="REVIEW VENUE" title={venueName} onBack={onClose}
         right={
-          <Pressable style={[styles.postBtn, !canPost && styles.postBtnOff]} onPress={canPost ? save : undefined} accessibilityRole="button" accessibilityLabel="Post review">
-            <Text style={[styles.postTxt, !canPost && styles.postTxtOff]}>Post</Text>
+          <Pressable style={[styles.postBtn, (!canPost || submitBusy) && styles.postBtnOff]} onPress={canPost && !submitBusy ? save : undefined} accessibilityRole="button" accessibilityLabel="Post review" accessibilityState={{ disabled: !canPost || submitBusy }}>
+            <Text style={[styles.postTxt, (!canPost || submitBusy) && styles.postTxtOff]}>{posting ? "Posting..." : uploadingPhotos ? "Uploading..." : "Post"}</Text>
           </Pressable>
         } />
 
@@ -44,20 +82,20 @@ export default function VenueReviewScreen({ venueName, onClose }) {
           {photos.map((uri, i) => (
             <View key={i} style={styles.thumb}>
               <Image source={{ uri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
-              <Pressable style={styles.removeThumb} onPress={() => setPhotos((p) => p.filter((_, idx) => idx !== i))}>
+              <Pressable style={styles.removeThumb} onPress={() => setPhotos((p) => p.filter((_, idx) => idx !== i))} disabled={submitBusy}>
                 <Icon name="x" size={12} color="#fff" />
               </Pressable>
             </View>
           ))}
           {photos.length < 8 && (
-            <Pressable style={styles.addThumb} onPress={addPhoto}>
+            <Pressable style={styles.addThumb} onPress={addPhoto} disabled={submitBusy}>
               <Icon name="camera" size={20} color={colors.amber} />
-              <Text style={styles.addThumbTxt}>Add</Text>
+              <Text style={styles.addThumbTxt}>{uploadingPhotos ? "Uploading" : "Add"}</Text>
             </Pressable>
           )}
         </View>
 
-        <Button title="Post venue review" icon="check" onPress={save} disabled={!canPost} style={{ marginTop: 28 }} />
+        <Button title={posting ? "Posting review..." : uploadingPhotos ? "Uploading photos..." : "Post venue review"} icon="check" onPress={save} disabled={!canPost || submitBusy} style={{ marginTop: 28 }} />
       </ScrollView>
     </View>
   );

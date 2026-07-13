@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { View, Text, StyleSheet, Image, Pressable, Linking } from "react-native";
+import { View, Text, StyleSheet, Image, Pressable, Linking, Platform } from "react-native";
 import Svg, { Defs, LinearGradient, Stop, Rect } from "react-native-svg";
 import { colors, mono, radius } from "../theme";
 import Icon from "../components/Icon";
@@ -93,8 +93,14 @@ const styles = StyleSheet.create({
   frame: { width: "100%", aspectRatio: 16 / 10, borderRadius: 16, overflow: "hidden", borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.bgElev },
   scrim: { ...StyleSheet.absoluteFillObject, backgroundColor: "transparent", borderRadius: 16 },
   title: { position: "absolute", left: 16, bottom: 16, right: 16 },
-  venue: { color: "#fff", fontSize: 22, fontWeight: "900", letterSpacing: -0.4, textShadowColor: "rgba(0,0,0,0.7)", textShadowRadius: 8 },
-  city: { color: "#fff", fontFamily: mono, fontSize: 12, marginTop: 3, opacity: 0.9, textShadowColor: "rgba(0,0,0,0.7)", textShadowRadius: 6 },
+  venue: {
+    color: "#fff", fontSize: 22, fontWeight: "900", letterSpacing: -0.4,
+    ...(Platform.OS === "web" ? { textShadow: "0 1px 8px rgba(0,0,0,0.7)" } : { textShadowColor: "rgba(0,0,0,0.7)", textShadowRadius: 8 }),
+  },
+  city: {
+    color: "#fff", fontFamily: mono, fontSize: 12, marginTop: 3, opacity: 0.9,
+    ...(Platform.OS === "web" ? { textShadow: "0 1px 6px rgba(0,0,0,0.7)" } : { textShadowColor: "rgba(0,0,0,0.7)", textShadowRadius: 6 }),
+  },
   credit: { position: "absolute", right: 10, bottom: 10, maxWidth: "60%", backgroundColor: "rgba(5,6,10,0.55)", borderRadius: 6, paddingHorizontal: 7, paddingVertical: 3 },
   creditTxt: { color: "rgba(255,255,255,0.8)", fontSize: 9 },
   dots: { position: "absolute", top: 12, right: 12, flexDirection: "row", gap: 5 },

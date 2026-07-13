@@ -10,6 +10,7 @@ import LocationPicker from "../components/LocationPicker";
 import SongPicker from "./SongPicker";
 import Button from "../components/Button";
 import SheetHeader from "../components/SheetHeader";
+import { isDurableMediaUrl, reportMediaPickerError, uploadMediaAsset } from "../lib/mediaUpload";
 
 function SongField({ song, color, onPress, onClear }) {
   return (
@@ -37,8 +38,8 @@ export default function EditProfileScreen({ onClose, onPickArtists }) {
   const handleTooShort = handle.length > 0 && handle.length < 3;
   const handleChanged = handle !== session?.handle;
   const [bio, setBio] = useState(session?.bio || "");
-  const [avatarUri, setAvatarUri] = useState(session?.avatarUri || null);
-  const [banner, setBanner] = useState(session?.banner || null);
+  const [avatarUri, setAvatarUri] = useState(isDurableMediaUrl(session?.avatarUri) ? session.avatarUri : null);
+  const [banner, setBanner] = useState(isDurableMediaUrl(session?.banner) ? session.banner : null);
   const [genres, setGenres] = useState(session?.genres || []);
   const [home, setHome] = useState(session?.home || null);
   const [nowPlaying, setNowPlaying] = useState(session?.nowPlaying || null);
@@ -46,6 +47,9 @@ export default function EditProfileScreen({ onClose, onPickArtists }) {
   const [bass, setBass] = useState(session?.bass || null);
   const [pickingCity, setPickingCity] = useState(false);
   const [pickingSong, setPickingSong] = useState(null); // 'now' | 'treble' | 'bass'
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
+  const [uploadingBanner, setUploadingBanner] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   if (pickingCity) {
     return (
@@ -69,49 +73,89 @@ export default function EditProfileScreen({ onClose, onPickArtists }) {
   }
 
   const pickPhoto = async () => {
-    const res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images"], allowsEditing: true, aspect: [1, 1], quality: 0.6 });
-    if (!res.canceled && res.assets?.[0]) setAvatarUri(res.assets[0].uri);
+    if (uploadingAvatar || saving) return;
+    let res;
+    try {
+      res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images"], allowsEditing: true, aspect: [1, 1], quality: 0.6 });
+    } catch (error) {
+      reportMediaPickerError(error, "Opening the profile photo library");
+      return;
+    }
+    if (!res || res.canceled || !res.assets?.[0]) return;
+    setUploadingAvatar(true);
+    try {
+      setAvatarUri(await uploadMediaAsset(res.assets[0], "avatar"));
+    } catch {
+      // The upload helper records the themed diagnostic and leaves the existing
+      // durable photo untouched.
+    } finally {
+      setUploadingAvatar(false);
+    }
   };
   const pickBanner = async () => {
-    const res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images"], allowsEditing: true, aspect: [3, 1], quality: 0.6 });
-    if (!res.canceled && res.assets?.[0]) setBanner(res.assets[0].uri);
+    if (uploadingBanner || saving) return;
+    let res;
+    try {
+      res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images"], allowsEditing: true, aspect: [3, 1], quality: 0.6 });
+    } catch (error) {
+      reportMediaPickerError(error, "Opening the banner photo library");
+      return;
+    }
+    if (!res || res.canceled || !res.assets?.[0]) return;
+    setUploadingBanner(true);
+    try {
+      setBanner(await uploadMediaAsset(res.assets[0], "banner"));
+    } catch {
+      // Keep the editor open with its previous banner when upload fails.
+    } finally {
+      setUploadingBanner(false);
+    }
   };
 
   const toggleGenre = (g) => setGenres((gs) => (gs.includes(g) ? gs.filter((x) => x !== g) : [...gs, g]));
 
-  const save = () => {
+  const mediaBusy = uploadingAvatar || uploadingBanner;
+  const save = async () => {
+    if (mediaBusy || saving) return;
     const initials = (name.trim() || "?").split(/\s+/).map((w) => w[0]).slice(0, 2).join("").toUpperCase();
-    updateProfile({
-      name: name.trim() || session.name, bio: bio.trim(), avatarUri, banner, genres, initials, home,
-      nowPlaying, treble, bass,
-      ...(handleChanged && !handleTaken && !handleTooShort ? { handle } : {}),
-    });
-    onClose?.();
+    setSaving(true);
+    try {
+      const result = await Promise.resolve(updateProfile({
+        name: name.trim() || session.name, bio: bio.trim(), avatarUri, banner, genres, initials, home,
+        nowPlaying, treble, bass,
+        ...(handleChanged && !handleTaken && !handleTooShort ? { handle } : {}),
+      }));
+      if (result?.ok !== false) onClose?.();
+    } catch {
+      // The API layer owns user feedback; preserving this screen preserves edits.
+    } finally {
+      setSaving(false);
+    }
   };
 
   const preview = { ...session, name, avatarUri, initials: (name.trim() || "?").slice(0, 2).toUpperCase() };
 
   return (
     <View style={styles.wrap}>
-      <SheetHeader title="Edit profile" onClose={onClose} action={{ label: "Save", onPress: save }} />
+      <SheetHeader title="Edit profile" onClose={onClose} action={{ label: saving ? "Saving..." : mediaBusy ? "Uploading..." : "Save", onPress: save, disabled: mediaBusy || saving }} />
 
-      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-        <Pressable style={styles.bannerEdit} onPress={pickBanner}>
+      <ScrollView style={saving ? styles.savingLock : null} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+        <Pressable style={styles.bannerEdit} onPress={pickBanner} disabled={uploadingBanner || saving}>
           {banner ? <Image source={{ uri: banner }} style={StyleSheet.absoluteFill} resizeMode="cover" /> : null}
           <View style={styles.bannerOverlay}>
             <Icon name="camera" size={18} color={colors.text} />
-            <Text style={styles.bannerEditTxt}>{banner ? "Change banner" : "Add a banner"}</Text>
+            <Text style={styles.bannerEditTxt}>{uploadingBanner ? "Uploading..." : banner ? "Change banner" : "Add a banner"}</Text>
           </View>
         </Pressable>
 
         <View style={styles.avatarWrap}>
           <Avatar user={preview} size={96} />
-          <Pressable style={styles.cameraBtn} onPress={pickPhoto}>
+          <Pressable style={styles.cameraBtn} onPress={pickPhoto} disabled={uploadingAvatar || saving}>
             <Icon name="camera" size={16} color="#1A1206" />
           </Pressable>
         </View>
-        <Pressable onPress={pickPhoto}>
-          <Text style={styles.changePhoto}>Change photo</Text>
+        <Pressable onPress={pickPhoto} disabled={uploadingAvatar || saving}>
+          <Text style={styles.changePhoto}>{uploadingAvatar ? "Uploading photo..." : "Change photo"}</Text>
         </Pressable>
 
         <Text style={styles.label}>NAME</Text>
@@ -207,13 +251,14 @@ export default function EditProfileScreen({ onClose, onPickArtists }) {
           })}
         </View>
 
-        <Button title="Save profile" icon="check" onPress={save} style={{ marginTop: 28 }} />
+        <Button title={saving ? "Saving profile..." : mediaBusy ? "Uploading photo..." : "Save profile"} icon="check" onPress={save} disabled={mediaBusy || saving} style={{ marginTop: 28 }} />
       </ScrollView>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
+  savingLock: { pointerEvents: "none", opacity: 0.82 },
   wrap: { flex: 1, backgroundColor: colors.bg },
   topbar: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingBottom: 10 },
   cancel: { color: colors.textDim, fontSize: 15 },

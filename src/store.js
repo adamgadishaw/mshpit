@@ -3,16 +3,16 @@ import { seedFeed, ratedShows, cityCoords, haversineKm } from "./data";
 import { catalogVenues, catalogTourDates, catalogArtists } from "./seed/catalog";
 import { clean, cleanEmail, isEmail, cleanName, isName, cleanHandle, isPassword, clampRating, LIMITS } from "./lib/validate";
 import { load, save } from "./lib/persist";
-import { api } from "./lib/api";
+import { api, captureAppError } from "./lib/api";
 import { setTheme as applyTheme, syncThemeFromAccount } from "./theme";
 import { artistMeta } from "./seed/ingested";
 import { ACHIEVEMENTS } from "./lib/badges";
 import { ENABLE_DEMO_DATA } from "./config/runtime.mjs";
 import { isUpcomingEventDate, sanitizePersistedStoreValue, sanitizeTourDates } from "./domain/dataPolicy.mjs";
 
-// Prototype in-memory store: auth, profiles, social graph, content, reports,
-// artist approvals, scheduled tour dates. NO backend - resets on reload. The
-// real build replaces this with a server + DB + sessions, keeping this shape.
+// Legacy client facade: combines server hydration, small persisted caches, social
+// state, and compatibility data behind one screen-facing shape. Server responses
+// and the HttpOnly session remain authoritative; split domains incrementally.
 
 const AV = ["#F2A65A", "#E0457B", "#5B8DEF", "#6FCF97", "#B98AE0", "#E8B65A"];
 // Local plaintext accounts exist only to keep the prototype usable while running
@@ -211,6 +211,9 @@ export function StoreProvider({ children }) {
   const [songRatings, setSongRatings] = usePersisted("pit.songRatings", demoSeed({ "turnstile|healing": { u_mara: 5, u_demo: 5 } }, {}));
   // Server-truth rating aggregates keyed by `${kind}|${ref}` (slice 7).
   const [ratingAgg, setRatingAgg] = useState({});
+  const [feedNextCursor, setFeedNextCursor] = useState(null);
+  const [feedLoadingMore, setFeedLoadingMore] = useState(false);
+  const [feedHasMore, setFeedHasMore] = useState(true);
 
   // Persist identity + continuity state so a refresh doesn't wipe your session,
   // account, posts, or follows.
@@ -243,20 +246,53 @@ export function StoreProvider({ children }) {
   // Pull server posts (with current counts and viewer-like state) and upsert them
   // into the local cache. Existing IDs must be replaced, not skipped, otherwise
   // edits and cross-device likes/comments remain stale forever.
+  const mergeServerFeed = (posts, { prepend = true } = {}) => {
+    if (!Array.isArray(posts) || !posts.length) return;
+    setFeed((current) => {
+      const serverIds = new Set(posts.map((post) => post.id));
+      const remaining = current.filter((post) => !serverIds.has(post.id));
+      return prepend ? [...posts, ...remaining] : [...remaining, ...posts];
+    });
+    // Like model: likes[id] is the count EXCLUDING the viewer; myLikes[id] is
+    // their own toggle. The server total includes me, so subtract it back out.
+    setLikes((current) => {
+      const next = { ...current };
+      posts.forEach((post) => { next[post.id] = (post.likes || 0) - (post.liked ? 1 : 0); });
+      return next;
+    });
+    setMyLikes((current) => {
+      const next = { ...current };
+      posts.forEach((post) => { next[post.id] = !!post.liked; });
+      return next;
+    });
+  };
+
   const hydrateFeed = () => {
     api("/api/feed?limit=50")
-      .then(({ posts }) => {
-        if (!Array.isArray(posts) || !posts.length) return;
-        setFeed((f) => {
-          const serverIds = new Set(posts.map((p) => p.id));
-          return [...posts, ...f.filter((p) => !serverIds.has(p.id))];
-        });
-        // Like model: likes[id] is the count EXCLUDING the viewer; myLikes[id] is
-        // their own toggle. The server total includes me, so subtract it back out.
-        setLikes((l) => { const n = { ...l }; posts.forEach((p) => { n[p.id] = (p.likes || 0) - (p.liked ? 1 : 0); }); return n; });
-        setMyLikes((m) => { const n = { ...m }; posts.forEach((p) => { n[p.id] = !!p.liked; }); return n; });
+      .then(({ posts, nextCursor }) => {
+        mergeServerFeed(posts, { prepend: true });
+        setFeedNextCursor(nextCursor || null);
+        setFeedHasMore(!!nextCursor);
       })
       .catch(() => {});
+  };
+  const loadMoreFeed = async () => {
+    if (feedLoadingMore || !feedHasMore || !feedNextCursor) return false;
+    setFeedLoadingMore(true);
+    try {
+      const { posts, nextCursor } = await api(`/api/feed?limit=50&before=${encodeURIComponent(feedNextCursor)}`, {
+        context: "Loading more concert reviews",
+        silent: true,
+      });
+      mergeServerFeed(posts, { prepend: false });
+      setFeedNextCursor(nextCursor || null);
+      setFeedHasMore(!!nextCursor);
+      return true;
+    } catch {
+      return false;
+    } finally {
+      setFeedLoadingMore(false);
+    }
   };
   // Load once on mount so even guests see real posts (the feed is public).
   useEffect(() => { hydrateFeed(); }, []);
@@ -669,7 +705,7 @@ export function StoreProvider({ children }) {
   // A production network failure must never authenticate a bundled plaintext user.
   const login = async (email, password) => {
     try {
-      const { user } = await api("/api/login", { method: "POST", body: { email, password } });
+      const { user } = await api("/api/login", { method: "POST", body: { email, password }, context: "Signing in", silent: true });
       absorbServerUser(user);
       track("login");
       return { ok: true };
@@ -690,13 +726,13 @@ export function StoreProvider({ children }) {
   // Request a password-reset email. Always resolves ok (never leaks which emails
   // have accounts); the server emails a 1-hour link.
   const forgotPassword = async (email) => {
-    try { await api("/api/forgot", { method: "POST", body: { email } }); } catch {}
+    try { await api("/api/forgot", { method: "POST", body: { email }, context: "Requesting a password reset", silent: true }); } catch {}
     return { ok: true };
   };
   // Complete a reset from the emailed token; on success we're signed in.
   const resetPassword = async (token, password) => {
     try {
-      const { user } = await api("/api/reset", { method: "POST", body: { token, password } });
+      const { user } = await api("/api/reset", { method: "POST", body: { token, password }, context: "Resetting your password", silent: true });
       absorbServerUser(user);
       return { ok: true };
     } catch (e) { return { ok: false, error: e.status ? e.message : "Couldn't reset. Try requesting a new link." }; }
@@ -726,6 +762,8 @@ export function StoreProvider({ children }) {
       const { user } = await api("/api/signup", {
         method: "POST",
         body: { name: nm, email: em, password, city, lat: srvCoords?.lat, lng: srvCoords?.lng },
+        context: "Creating your Pit account",
+        silent: true,
       });
       absorbServerUser(user);
       // Persist the consent record on the account (client + best-effort server).
@@ -770,6 +808,101 @@ export function StoreProvider({ children }) {
     setSession(null);
   };
 
+  // Permanent deletion is deliberately server-first. Nothing is cleared from
+  // this device until the password is verified and the database transaction has
+  // committed, so a network/auth failure leaves the account and form recoverable.
+  const deleteAccount = async (password) => {
+    if (!session) return { ok: false, error: "Log in before deleting your account." };
+    const deleted = session;
+    let confirmedDeleted = false;
+    try {
+      await api("/api/me", {
+        method: "DELETE",
+        body: { password },
+        context: "Deleting your Pit account",
+        silent: true,
+      });
+      confirmedDeleted = true;
+    } catch (error) {
+      const ambiguous = !error?.status || error?.code === "PIT-NET-001" || error?.code === "PIT-NET-002";
+      if (!ambiguous) return { ok: false, error: error?.message || "Your account couldn't be deleted. Try again.", appError: error };
+      try {
+        // The DELETE may have committed even if its response was lost. Confirm
+        // the authoritative session before inviting a destructive retry.
+        const check = await api("/api/me", { context: "Confirming account deletion", silent: true });
+        confirmedDeleted = !check?.user;
+        if (!confirmedDeleted) return { ok: false, error: "Pit did not delete the account. Your account is still active.", appError: error };
+      } catch (verificationError) {
+        return {
+          ok: false,
+          unknown: true,
+          error: "Pit could not confirm whether deletion finished. Do not retry yet. Reconnect, then sign in or contact support with the diagnostic request ID.",
+          appError: verificationError,
+        };
+      }
+    }
+
+    if (!confirmedDeleted) return { ok: false, unknown: true, error: "Pit could not confirm account deletion." };
+
+    const withoutUserEntries = (map) => Object.fromEntries(
+      Object.entries(map || {}).map(([key, rows]) => [key, Array.isArray(rows) ? rows.filter((row) => row?.userId !== deleted.id && row?.user_id !== deleted.id) : rows])
+    );
+    const withoutRating = (map) => Object.fromEntries(
+      Object.entries(map || {}).map(([key, ratings]) => {
+        const next = { ...(ratings || {}) };
+        delete next[deleted.id];
+        return [key, next];
+      }).filter(([, ratings]) => Object.keys(ratings).length)
+    );
+
+    setUsers((all) => all.filter((user) => user.id !== deleted.id));
+    setFeed((all) => all.filter((post) => post.userId !== deleted.id));
+    setComments(withoutUserEntries);
+    setMyLikes({});
+    setFollows((all) => Object.fromEntries(
+      Object.entries(all || {})
+        .filter(([id]) => id !== deleted.id)
+        .map(([id, ids]) => [id, (ids || []).filter((otherId) => otherId !== deleted.id)])
+    ));
+    setBlockedIds([]);
+    setRequests((all) => all.filter((request) => request.userId !== deleted.id));
+    setReports((all) => all.filter((report) => report.reporterId !== deleted.id));
+    setLounge(withoutUserEntries);
+    setFanClubMsgs(withoutUserEntries);
+    setGoing((all) => { const next = { ...all }; delete next[deleted.id]; return next; });
+    setFanClubs((all) => { const next = { ...all }; delete next[deleted.id]; return next; });
+    setVenueReviews(withoutUserEntries);
+    setDms((all) => Object.fromEntries(Object.entries(all || {}).filter(([key]) => !key.split("__").includes(deleted.id))));
+    setDmRead((all) => Object.fromEntries(Object.entries(all || {}).filter(([key]) => !key.split("__").includes(deleted.id))));
+    setNotifications((all) => all.filter((item) => item.userId !== deleted.id && item.actorId !== deleted.id));
+    setAlbumRatings(withoutRating);
+    setSongRatings(withoutRating);
+    setUserStats((all) => { const next = { ...all }; delete next[deleted.id]; return next; });
+    setPlayHistory([]);
+    setSnapshots([]);
+    setDrafts([]);
+    setMyPlaylists([]);
+    setFriendsListening([]);
+    setRatingAgg({});
+    setFanClubMeta({});
+    setFeedNextCursor(null);
+    setFeedHasMore(true);
+
+    // Artist-owned client caches do not retain author IDs on every legacy row;
+    // remove the deleted artist's own page cache while preserving unrelated
+    // public artist pages. The server deletes all attributable rows precisely.
+    if (deleted.artistName) {
+      const artistKey = norm(deleted.artistName);
+      setArtistProfiles((all) => { const next = { ...all }; delete next[artistKey]; return next; });
+      setArtistPosts((all) => { const next = { ...all }; delete next[artistKey]; return next; });
+    }
+
+    save("pit.session", null);
+    setSession(null);
+    setMemberCount((count) => Math.max(0, count - 1));
+    return { ok: true };
+  };
+
   // Pick a theme. Saved on the account (so it survives sign-out and follows you
   // to a new device) AND applied immediately. applyTheme reloads to re-resolve
   // the StyleSheet colors, so we persist to disk + the server first. An optional
@@ -788,7 +921,8 @@ export function StoreProvider({ children }) {
   };
 
   const updateProfile = (patch) => {
-    if (!session) return;
+    if (!session) return Promise.resolve({ ok: false });
+    const previousSession = session;
     // Sanitize the free-text fields; pass structured fields (home, songs) through.
     const safe = { ...patch };
     if ("name" in safe) safe.name = cleanName(safe.name) || session.name;
@@ -806,23 +940,37 @@ export function StoreProvider({ children }) {
     // Persist to the server so profile edits (incl. your @handle) survive sign-out
     // and follow you to a new device. The server is the authority on handle
     // uniqueness, re-absorb its response so a taken handle reverts cleanly.
-    if (session) {
-      const body = {};
-      for (const k of ["name", "bio", "handle", "avatarUri", "banner"]) if (k in safe) body[k] = safe[k];
-      if (safe.home) { body.city = safe.home.city; body.lat = safe.home.lat; body.lng = safe.home.lng; }
-      if (Array.isArray(safe.genres)) body.genres = safe.genres;
-      if (Array.isArray(safe.favoriteArtists)) body.favoriteArtists = safe.favoriteArtists;
-      if (Object.keys(body).length) {
-        api("/api/me", { method: "PATCH", body })
-          .then(({ user }) => { if (user) { setUsers((all) => all.map((u) => (u.id === user.id ? { ...u, ...user } : u))); setSession((s) => ({ ...s, ...user })); } })
-          .catch(() => {
-            // Server rejected something (e.g. handle taken / cooldown / role tag) -
-            // snap back to server truth so the UI doesn't show a change that didn't stick.
-            api("/api/me").then(({ user }) => { if (user) { setUsers((all) => all.map((u) => (u.id === user.id ? { ...u, ...user } : u))); setSession((s) => ({ ...s, ...user })); } }).catch(() => {});
-          });
-      }
+    const body = {};
+    for (const k of ["name", "bio", "handle", "avatarUri", "banner"]) if (k in safe) body[k] = safe[k];
+    if (safe.home) { body.city = safe.home.city; body.lat = safe.home.lat; body.lng = safe.home.lng; }
+    if (Array.isArray(safe.genres)) body.genres = safe.genres;
+    if (Array.isArray(safe.favoriteArtists)) body.favoriteArtists = safe.favoriteArtists;
+
+    // Music picks live in the bounded profile extras object on the server. Send
+    // the complete known set whenever one changes so saving a song cannot erase
+    // the account theme or its recorded Terms consent.
+    const extraKeys = ["theme", "consentAt", "termsVersion", "nowPlaying", "treble", "bass", "playlists"];
+    if (["nowPlaying", "treble", "bass", "playlists"].some((key) => key in safe)) {
+      const merged = { ...previousSession, ...safe };
+      body.extras = Object.fromEntries(extraKeys.filter((key) => merged[key] !== undefined).map((key) => [key, merged[key]]));
     }
-    return safe; // caller may need the sanitized patch (e.g. to persist alongside a theme)
+    if (!Object.keys(body).length) return Promise.resolve({ ok: true, patch: safe });
+
+    return api("/api/me", { method: "PATCH", body, context: "Saving your profile" })
+      .then(({ user }) => {
+        if (user) {
+          setUsers((all) => all.map((u) => (u.id === user.id ? { ...u, ...user } : u)));
+          setSession((s) => ({ ...s, ...user }));
+        }
+        return { ok: true, user, patch: safe };
+      })
+      .catch((error) => {
+        // Server rejected something (e.g. handle taken / cooldown / role tag).
+        // Restore the last server-backed snapshot instead of leaving a false save.
+        setUsers((all) => all.map((u) => (u.id === previousSession.id ? previousSession : u)));
+        setSession(previousSession);
+        return { ok: false, error };
+      });
   };
 
   const addLog = (log) => {
@@ -843,17 +991,26 @@ export function StoreProvider({ children }) {
     // Slice 2 write-through: persist the post server-side, then adopt the server
     // id so likes/comments on it key correctly. Best-effort (offline keeps local).
     if (session) {
-      api("/api/posts", {
+      return api("/api/posts", {
         method: "POST",
+        context: "Posting your concert review",
         body: {
           artist: safe.artist, venue: safe.venue, city: safe.city, date: safe.date,
           overall: safe.overall, band: safe.band, room: safe.room, review: safe.review,
           photos: safe.photos, photosPublic: safe.photosPublic ? 1 : 0, setlist: safe.setlist, tour: safe.tour || null,
         },
       })
-        .then(({ id }) => { if (id && id !== localId) setFeed((f) => f.map((l) => (l.id === localId ? { ...l, id } : l))); })
-        .catch(() => {});
+        .then(({ id }) => {
+          if (id && id !== localId) setFeed((f) => f.map((l) => (l.id === localId ? { ...l, id } : l)));
+          return { ok: true, id: id || localId };
+        })
+        .catch((error) => {
+          // A failed write must not remain looking published on this device.
+          setFeed((f) => f.filter((l) => l.id !== localId));
+          return { ok: false, error };
+        });
     }
+    return Promise.resolve({ ok: true, localOnly: true });
   };
 
   // Per-report moderation: content is public on post; reports drive action.
@@ -954,12 +1111,25 @@ export function StoreProvider({ children }) {
   const bumpFollowers = (id, d) =>
     setUserStats((m) => (m[id] ? { ...m, [id]: { ...m[id], followers: Math.max(0, (m[id].followers || 0) + d) } } : m));
   const follow = (id) => {
-    if (!isFollowing(id)) { api(`/api/users/${id}/follow`, { method: "POST" }).catch(() => {}); track("follow", { target: id }); notify(id, "follow"); bumpFollowers(id, 1); } // server toggles
+    if (!session || isFollowing(id)) return;
     setFollows((f) => ({ ...f, [session.id]: [...new Set([...(f[session.id] || []), id])] }));
+    bumpFollowers(id, 1);
+    api(`/api/users/${id}/follow`, { method: "POST", body: { following: true }, context: "Following this fan" })
+      .then(() => { track("follow", { target: id }); notify(id, "follow"); })
+      .catch(() => {
+        setFollows((f) => ({ ...f, [session.id]: (f[session.id] || []).filter((x) => x !== id) }));
+        bumpFollowers(id, -1);
+      });
   };
   const unfollow = (id) => {
-    if (isFollowing(id)) { api(`/api/users/${id}/follow`, { method: "POST" }).catch(() => {}); bumpFollowers(id, -1); } // server toggles
+    if (!session || !isFollowing(id)) return;
     setFollows((f) => ({ ...f, [session.id]: (f[session.id] || []).filter((x) => x !== id) }));
+    bumpFollowers(id, -1);
+    api(`/api/users/${id}/follow`, { method: "POST", body: { following: false }, context: "Unfollowing this fan" })
+      .catch(() => {
+        setFollows((f) => ({ ...f, [session.id]: [...new Set([...(f[session.id] || []), id])] }));
+        bumpFollowers(id, 1);
+      });
   };
   // Prefer the server's real numbers (loadUser fills them); the local follows map
   // only knows what this device has seen and undercounts everyone else.
@@ -978,38 +1148,65 @@ export function StoreProvider({ children }) {
   const isBlocked = (id) => blockedIds.includes(id);
   const blockUser = (id) => {
     if (!session || !id || isBlocked(id)) return;
+    const mineBefore = follows[session.id] || [];
+    const theirsBefore = follows[id] || [];
     setBlockedIds((b) => [...new Set([...b, id])]);
     // Sever locally the way the server does.
     setFollows((f) => ({ ...f, [session.id]: (f[session.id] || []).filter((x) => x !== id), [id]: (f[id] || []).filter((x) => x !== session.id) }));
-    api(`/api/users/${id}/block`, { method: "POST" }).catch(() => {});
+    api(`/api/users/${id}/block`, { method: "POST", body: { blocked: true }, context: "Blocking this account" })
+      .catch(() => {
+        setBlockedIds((b) => b.filter((x) => x !== id));
+        setFollows((f) => ({ ...f, [session.id]: mineBefore, [id]: theirsBefore }));
+      });
     track("block", { target: id });
   };
   const unblockUser = (id) => {
     if (!session || !isBlocked(id)) return;
     setBlockedIds((b) => b.filter((x) => x !== id));
-    api(`/api/users/${id}/block`, { method: "POST" }).catch(() => {}); // server toggles
+    api(`/api/users/${id}/block`, { method: "POST", body: { blocked: false }, context: "Unblocking this account" })
+      .catch(() => setBlockedIds((b) => [...new Set([...b, id])]));
   };
   const blockedUsers = () => blockedIds.map((id) => userById(id)).filter(Boolean);
 
-  // Personal data backup: pull the full account export and hand it to the user
-  // as a downloadable JSON file (their profile, reviews, playlists, everything).
+  // Personal data backup: pull the server's portable account export and hand it
+  // to the user as a downloadable JSON file.
   const exportMyData = async () => {
-    if (!session) return false;
+    if (!session) return { ok: false, error: "Log in before exporting your data." };
     try {
-      const data = await api("/api/me/export");
+      const data = await api("/api/me/export", { context: "Preparing your account export", silent: true });
+      const fileName = `pit-backup-${session.handle || "me"}-${new Date().toISOString().slice(0, 10)}.json`;
+      const json = JSON.stringify(data, null, 2);
       if (typeof window !== "undefined" && typeof document !== "undefined") {
-        const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+        const blob = new Blob([json], { type: "application/json" });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
-        a.download = `pit-backup-${session.handle || "me"}-${new Date().toISOString().slice(0, 10)}.json`;
+        a.download = fileName;
         document.body.appendChild(a);
         a.click();
         a.remove();
         setTimeout(() => URL.revokeObjectURL(url), 5000);
+      } else {
+        const [{ File, Paths }, Sharing] = await Promise.all([
+          import("expo-file-system"),
+          import("expo-sharing"),
+        ]);
+        if (!(await Sharing.isAvailableAsync())) throw new Error("File sharing is unavailable on this device.");
+        const file = new File(Paths.cache, fileName);
+        file.create({ overwrite: true, intermediates: true });
+        file.write(json);
+        await Sharing.shareAsync(file.uri, { mimeType: "application/json", dialogTitle: "Save your Pit data" });
       }
-      return true;
-    } catch { return false; }
+      return { ok: true, fileName };
+    } catch (error) {
+      const appError = captureAppError(error, {
+        code: error?.status ? undefined : "PIT-STORE-001",
+        context: "Saving your account export",
+        source: "account-export",
+        toast: false,
+      });
+      return { ok: false, error: appError.userMessage || "Pit could not prepare your data file.", appError };
+    }
   };
 
   // Afterparty interactions
@@ -1039,21 +1236,28 @@ export function StoreProvider({ children }) {
     const localId = "c_" + Date.now();
     const c = { id: localId, userId: session.id, name: session.name, initials: session.initials, avatarUri: session.avatarUri, avatarColor: session.avatarColor, role: session.role, text: t, parentId: parentId || null, at: Date.now(), likes: 0 };
     setComments((m) => ({ ...m, [id]: [...(m[id] || []), c] }));
-    { const o = postOwner(id); if (o) notify(o, "comment", { postId: id, artist: feed.find((l) => l.id === id)?.artist, text: t.slice(0, 60) }); }
     // Write-through + adopt the server id so a later loadComments() dedupes it
     // instead of showing my comment twice.
-    api(`/api/posts/${id}/comments`, { method: "POST", body: { text: t, parentId: parentId || null } })
-      .then(({ id: sid }) => { if (sid) setComments((m) => ({ ...m, [id]: (m[id] || []).map((x) => (x.id === localId ? { ...x, id: sid } : x)) })); })
-      .catch(() => {});
+    api(`/api/posts/${id}/comments`, { method: "POST", body: { text: t, parentId: parentId || null }, context: "Adding your afterparty comment" })
+      .then(({ id: sid }) => {
+        if (sid) setComments((m) => ({ ...m, [id]: (m[id] || []).map((x) => (x.id === localId ? { ...x, id: sid } : x)) }));
+        const owner = postOwner(id);
+        if (owner) notify(owner, "comment", { postId: id, artist: feed.find((l) => l.id === id)?.artist, text: t.slice(0, 60) });
+      })
+      .catch(() => setComments((m) => ({ ...m, [id]: (m[id] || []).filter((x) => x.id !== localId) })));
   };
   const likeInfo = (id, base = 0) => ({ count: (likes[id] ?? base) + (myLikes[id] ? 1 : 0), liked: !!myLikes[id] });
   const toggleLike = (id, base = 0) => {
-    if (!myLikes[id]) { track("like", { post: id }); const o = postOwner(id); if (o) notify(o, "like", { postId: id, artist: feed.find((l) => l.id === id)?.artist }); }
-    setMyLikes((m) => ({ ...m, [id]: !m[id] }));
+    const previous = !!myLikes[id];
+    const liked = !previous;
+    setMyLikes((m) => ({ ...m, [id]: liked }));
     setLikes((l) => ({ ...l, [id]: l[id] ?? base }));
-    // Server toggles the like for the authenticated user (best-effort; a 404 on a
-    // bundled demo post is swallowed and the local toggle stands).
-    if (session) api(`/api/posts/${id}/like`, { method: "POST" }).catch(() => {});
+    if (session) api(`/api/posts/${id}/like`, { method: "POST", body: { liked }, context: liked ? "Liking this review" : "Removing your like" })
+      .then((result) => {
+        if (typeof result?.liked === "boolean") setMyLikes((m) => ({ ...m, [id]: result.liked }));
+        if (liked) { track("like", { post: id }); const o = postOwner(id); if (o) notify(o, "like", { postId: id, artist: feed.find((l) => l.id === id)?.artist }); }
+      })
+      .catch(() => setMyLikes((m) => ({ ...m, [id]: previous })));
   };
 
   const visibleFeed = (staff) =>
@@ -1100,9 +1304,9 @@ export function StoreProvider({ children }) {
     const localId = "m_" + Date.now();
     const m = { id: localId, userId: session.id, name: session.name, initials: session.initials, avatarUri: session.avatarUri, avatarColor: session.avatarColor, role: session.role, text: t, at: Date.now(), ts: "now" };
     setLounge((L) => ({ ...L, [key]: [...(L[key] || []), m] }));
-    api(`/api/lounges/${encodeURIComponent(key)}/messages`, { method: "POST", body: { text: t } })
+    api(`/api/lounges/${encodeURIComponent(key)}/messages`, { method: "POST", body: { text: t }, context: "Sending your afterparty message" })
       .then(({ id }) => { if (id) setLounge((L) => ({ ...L, [key]: (L[key] || []).map((x) => (x.id === localId ? { ...x, id } : x)) })); })
-      .catch(() => {});
+      .catch(() => setLounge((L) => ({ ...L, [key]: (L[key] || []).filter((x) => x.id !== localId) })));
   };
 
   // --- Album + song ratings (Apple-Music-style stars), slice 7 ---
@@ -1127,11 +1331,29 @@ export function StoreProvider({ children }) {
   const rate = (kind, setMap, artist, title, n) => {
     if (!session) return;
     const nn = clampRating(n);
-    setMap((m) => ({ ...m, [rKey(artist, title)]: { ...(m[rKey(artist, title)] || {}), [session.id]: nn } }));
-    setRatingAgg((m) => { const cur = m[aggKey(kind, artist, title)]; return cur ? { ...m, [aggKey(kind, artist, title)]: { ...cur, mine: nn } } : m; });
-    api("/api/ratings", { method: "POST", body: { kind, ref: rKey(artist, title), rating: nn } })
+    const key = rKey(artist, title);
+    const aggregateKey = aggKey(kind, artist, title);
+    const sourceMap = kind === "album" ? albumRatings : songRatings;
+    const previous = sourceMap[key]?.[session.id];
+    const previousAggregate = ratingAgg[aggregateKey];
+    setMap((m) => ({ ...m, [key]: { ...(m[key] || {}), [session.id]: nn } }));
+    setRatingAgg((m) => { const cur = m[aggregateKey]; return cur ? { ...m, [aggregateKey]: { ...cur, mine: nn } } : m; });
+    api("/api/ratings", { method: "POST", body: { kind, ref: key, rating: nn }, context: `Rating this ${kind}` })
       .then((r) => setRatingAgg((m) => ({ ...m, [aggKey(kind, artist, title)]: { avg: r.avg, count: r.count, mine: r.mine } })))
-      .catch(() => {});
+      .catch(() => {
+        setMap((m) => {
+          const ratings = { ...(m[key] || {}) };
+          if (previous == null) delete ratings[session.id]; else ratings[session.id] = previous;
+          const next = { ...m };
+          if (Object.keys(ratings).length) next[key] = ratings; else delete next[key];
+          return next;
+        });
+        setRatingAgg((m) => {
+          const next = { ...m };
+          if (previousAggregate) next[aggregateKey] = previousAggregate; else delete next[aggregateKey];
+          return next;
+        });
+      });
   };
   const rateAlbum = (artist, title, n) => rate("album", setAlbumRatings, artist, title, n);
   const rateSong = (artist, title, n) => rate("song", setSongRatings, artist, title, n);
@@ -1165,9 +1387,9 @@ export function StoreProvider({ children }) {
     const m = { id: localId, userId: session.id, name: session.name, initials: session.initials, text: t, ts: "now" };
     setFanClubMsgs((L) => ({ ...L, [fcKey(artist)]: [...(L[fcKey(artist)] || []), m] }));
     const enc = encodeURIComponent(norm(artist));
-    api(`/api/fanclubs/${enc}/messages`, { method: "POST", body: { text: t } })
+    api(`/api/fanclubs/${enc}/messages`, { method: "POST", body: { text: t }, context: "Sending your fan-club message" })
       .then(({ id }) => { if (id) setFanClubMsgs((L) => ({ ...L, [fcKey(artist)]: (L[fcKey(artist)] || []).map((x) => (x.id === localId ? { ...x, id } : x)) })); })
-      .catch(() => {});
+      .catch(() => setFanClubMsgs((L) => ({ ...L, [fcKey(artist)]: (L[fcKey(artist)] || []).filter((x) => x.id !== localId) })));
   };
   const isFanClubMember = (artist) => (fanClubs[session?.id] || []).some((a) => norm(a) === norm(artist));
   const joinFanClub = (artist) => {
@@ -1181,7 +1403,15 @@ export function StoreProvider({ children }) {
     // Optimistically nudge the server-truth count so it tracks my toggle.
     setFanClubMeta((meta) => { const cur = meta[fcKey(artist)]; return cur ? { ...meta, [fcKey(artist)]: { members: Math.max(0, cur.members + (has ? -1 : 1)) } } : meta; });
     const enc = encodeURIComponent(norm(artist));
-    api(`/api/fanclubs/${enc}/join`, { method: "POST" }).catch(() => {}); // server toggles
+    const joined = !has;
+    api(`/api/fanclubs/${enc}/join`, { method: "POST", body: { joined }, context: joined ? "Joining this fan club" : "Leaving this fan club" })
+      .catch(() => {
+        setFanClubs((f) => {
+          const mine = f[session.id] || [];
+          return { ...f, [session.id]: has ? [...mine, artist] : mine.filter((a) => norm(a) !== norm(artist)) };
+        });
+        setFanClubMeta((meta) => { const cur = meta[fcKey(artist)]; return cur ? { ...meta, [fcKey(artist)]: { members: Math.max(0, cur.members + (has ? 1 : -1)) } } : meta; });
+      });
   };
   const fanClubCount = (artist) =>
     fanClubMeta[fcKey(artist)]?.members ?? Object.values(fanClubs).filter((arr) => arr.some((a) => norm(a) === norm(artist))).length;
@@ -1230,12 +1460,19 @@ export function StoreProvider({ children }) {
       .catch(() => {});
   };
   const updateArtistProfile = (name, patch) => {
-    if (!isArtistOwner(name)) return;
+    if (!isArtistOwner(name)) return Promise.resolve({ ok: false });
+    const key = norm(name);
+    const previous = artistProfiles[key] || {};
     const safe = { ...patch };
     if ("bio" in safe) safe.bio = clean(safe.bio, { max: 600, newlines: true });
-    setArtistProfiles((m) => ({ ...m, [norm(name)]: { ...(m[norm(name)] || {}), ...safe } }));
-    const enc = encodeURIComponent(norm(name));
-    api(`/api/artists/${enc}/profile`, { method: "PATCH", body: safe }).catch(() => {});
+    setArtistProfiles((m) => ({ ...m, [key]: { ...(m[key] || {}), ...safe } }));
+    const enc = encodeURIComponent(key);
+    return api(`/api/artists/${enc}/profile`, { method: "PATCH", body: safe, context: "Saving this artist page" })
+      .then(() => ({ ok: true }))
+      .catch((error) => {
+        setArtistProfiles((m) => ({ ...m, [key]: previous }));
+        return { ok: false, error };
+      });
   };
   const artistFeedEnabled = (name) => !!artistProfiles[norm(name)]?.feedEnabled;
   const artistPostsFor = (name) => artistPosts[norm(name)] || [];
@@ -1342,13 +1579,27 @@ export function StoreProvider({ children }) {
   const toggleGoing = (log) => {
     if (!session) return;
     const key = concertKey(log);
+    const wasGoing = isGoing(key);
     setGoing((G) => {
       const mine = G[session.id] || [];
       const exists = mine.some((g) => g.key === key);
       return { ...G, [session.id]: exists ? mine.filter((g) => g.key !== key) : [...mine, { key, artist: log.artist, venue: log.venue, city: log.city, date: log.date }] };
     });
-    // Slice 7: server toggles my attendance (best-effort, offline-safe).
-    api("/api/going", { method: "POST", body: { key, artist: log.artist, venue: log.venue, city: log.city, date: log.date } }).catch(() => {});
+    const desired = !wasGoing;
+    api("/api/going", { method: "POST", body: { key, artist: log.artist, venue: log.venue, city: log.city, date: log.date, going: desired }, context: desired ? "Adding this show to your calendar" : "Removing this show from your calendar" })
+      .then((result) => {
+        if (typeof result?.going !== "boolean" || result.going === desired) return;
+        setGoing((G) => {
+          const mine = G[session.id] || [];
+          return { ...G, [session.id]: result.going ? [...mine.filter((g) => g.key !== key), { key, artist: log.artist, venue: log.venue, city: log.city, date: log.date }] : mine.filter((g) => g.key !== key) };
+        });
+      })
+      .catch(() => {
+        setGoing((G) => {
+          const mine = G[session.id] || [];
+          return { ...G, [session.id]: wasGoing ? [...mine.filter((g) => g.key !== key), { key, artist: log.artist, venue: log.venue, city: log.city, date: log.date }] : mine.filter((g) => g.key !== key) };
+        });
+      });
   };
   const attendeesFor = (key) => users.filter((u) => (going[u.id] || []).some((g) => g.key === key));
 
@@ -1372,14 +1623,20 @@ export function StoreProvider({ children }) {
       .catch(() => {});
   };
   const addVenueReview = (venueName, { rating, text, photos }) => {
-    if (!session) return;
+    if (!session) return Promise.resolve({ ok: false });
     const localId = "vr_" + Date.now();
     const r = { id: localId, userId: session.id, name: session.name, initials: session.initials, rating: clampRating(rating), text: clean(text, { max: LIMITS.review, newlines: true }), photos: (photos || []).slice(0, 8), ts: "now" };
     setVenueReviews((m) => ({ ...m, [norm(venueName)]: [r, ...(m[norm(venueName)] || [])] }));
     const enc = encodeURIComponent(norm(venueName));
-    api(`/api/venues/${enc}/reviews`, { method: "POST", body: { rating: r.rating, text: r.text, photos: r.photos } })
-      .then(({ id }) => { if (id) setVenueReviews((m) => ({ ...m, [norm(venueName)]: (m[norm(venueName)] || []).map((x) => (x.id === localId ? { ...x, id } : x)) })); })
-      .catch(() => {});
+    return api(`/api/venues/${enc}/reviews`, { method: "POST", body: { rating: r.rating, text: r.text, photos: r.photos }, context: "Posting your venue review" })
+      .then(({ id }) => {
+        if (id) setVenueReviews((m) => ({ ...m, [norm(venueName)]: (m[norm(venueName)] || []).map((x) => (x.id === localId ? { ...x, id } : x)) }));
+        return { ok: true, id: id || localId };
+      })
+      .catch((error) => {
+        setVenueReviews((m) => ({ ...m, [norm(venueName)]: (m[norm(venueName)] || []).filter((x) => x.id !== localId) }));
+        return { ok: false, error };
+      });
   };
   const venueRating = (venueName) => { const rs = venueReviewsFor(venueName); return rs.length ? rs.reduce((s, r) => s + r.rating, 0) / rs.length : 0; };
   const venueTopPhotos = (venueName, n = 20) => venueReviewsFor(venueName).flatMap((r) => r.photos.map((p) => ({ uri: p, by: r.name }))).slice(0, n);
@@ -1450,11 +1707,16 @@ export function StoreProvider({ children }) {
     const m = { id: localId, from: session.id, text: t, ts: "now" };
     setDms((d) => ({ ...d, [key]: [...(d[key] || []), m] }));
     setDmRead((r) => ({ ...r, [key]: (dms[key]?.length || 0) + 1 }));
-    notify(otherId, "dm", { text: t.slice(0, 60) });
     // Write-through + adopt the server id so a later loadThread() dedupes it.
-    api(`/api/dms/${otherId}`, { method: "POST", body: { text: t } })
-      .then(({ id }) => { if (id) setDms((d) => ({ ...d, [key]: (d[key] || []).map((x) => (x.id === localId ? { ...x, id } : x)) })); })
-      .catch(() => {});
+    api(`/api/dms/${otherId}`, { method: "POST", body: { text: t }, context: "Sending your direct message" })
+      .then(({ id }) => {
+        if (id) setDms((d) => ({ ...d, [key]: (d[key] || []).map((x) => (x.id === localId ? { ...x, id } : x)) }));
+        notify(otherId, "dm", { text: t.slice(0, 60) });
+      })
+      .catch(() => {
+        setDms((d) => ({ ...d, [key]: (d[key] || []).filter((x) => x.id !== localId) }));
+        setDmRead((r) => ({ ...r, [key]: Math.max(0, (r[key] || 1) - 1) }));
+      });
   };
   const markThreadRead = (otherId) => {
     if (!session) return;
@@ -1983,7 +2245,7 @@ export function StoreProvider({ children }) {
   const value = {
     users, session, feed, removedIds, requests, tourDates, reports, follows,
     userById, userByHandle, logsByUser, sharedShows,
-    login, signup, logout, forgotPassword, resetPassword, updateProfile, chooseTheme,
+    login, signup, logout, deleteAccount, forgotPassword, resetPassword, updateProfile, chooseTheme,
     addLog, reportContent, actionReport, dismissReport, removeContent, restoreContent,
     requestArtist, approveArtist, rejectArtist,
     addTourDatesBatch,
@@ -1995,7 +2257,7 @@ export function StoreProvider({ children }) {
     playHistory, recordPlay, snapshots, saveSnapshot, removeSnapshot, friendsListening, loadFriendsListening, userPlaylists, deletePlaylist,
     favoriteGenre, recommendTracks, autoplayQueue, myPlaylists, loadMyPlaylists, createPlaylist, addToPlaylist,
     drafts, saveDraft, deleteDraft,
-    visibleFeed, followingFeed, visibleTourDates, artistSummary, venueSummary,
+    visibleFeed, followingFeed, loadMoreFeed, feedHasMore, feedLoadingMore, visibleTourDates, artistSummary, venueSummary,
     localVenues, regionShows, localFeed, recommendedShows, venueCoord,
     searchVenues, venuesByCity, venueUpcomingCount,
     allArtists, topArtists, artistsAlphabetical, upcomingEvents, trendingVenues,

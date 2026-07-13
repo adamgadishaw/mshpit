@@ -124,7 +124,7 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse }) {
       })}
 
       {/* ---- scrims: readable type without killing the photo ---- */}
-      <Svg width="100%" height="100%" style={StyleSheet.absoluteFill} pointerEvents="none">
+      <Svg width="100%" height="100%" style={[StyleSheet.absoluteFill, styles.noPointerEvents]}>
         <Defs>
           <LinearGradient id="scrimV" x1="0" y1="0" x2="0" y2="1">
             <Stop offset="0" stopColor="#05060B" stopOpacity="0.82" />
@@ -143,7 +143,7 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse }) {
       </Svg>
 
       {/* ---- top bar: brand + login ---- */}
-      <View style={styles.topbar} pointerEvents="box-none">
+      <View style={[styles.topbar, styles.boxNonePointerEvents]}>
         <Text style={styles.brand}>PIT</Text>
         <Pressable style={styles.topLogin} onPress={onLogin} hitSlop={8}>
           <Text style={styles.topLoginTxt}>Log in</Text>
@@ -151,7 +151,7 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse }) {
       </View>
 
       {/* ---- the pitch ---- */}
-      <Pitch {...pitchProps} pointerEvents="box-none">
+      <Pitch {...pitchProps} style={[pitchProps.style, styles.boxNonePointerEvents]}>
         <View style={wide ? styles.blockWide : styles.blockNarrow}>
           <Text style={styles.kicker}>THE CROWD KEEPS THE SCORE</Text>
           <Animated.Text style={[styles.headline, { opacity: glowOp }, !wide && styles.headlineNarrow]}>
@@ -197,7 +197,7 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse }) {
       </Pitch>
 
       {/* ---- footer strip ---- */}
-      <View style={styles.foot} pointerEvents="none">
+      <View style={[styles.foot, styles.noPointerEvents]}>
         <Text style={styles.footTxt}>BAND VS ROOM · SPOILER-SAFE SETLISTS · YOUR CITY&apos;S ROOMS</Text>
         <Text style={styles.credit}>{SLIDES[idx].credit}</Text>
       </View>
@@ -215,7 +215,7 @@ const styles = StyleSheet.create({
   },
   brand: {
     color: "#F4EFE7", fontFamily: mono, fontSize: 24, fontWeight: "900", letterSpacing: 6,
-    textShadowColor: "rgba(0,0,0,0.7)", textShadowRadius: 12,
+    ...(Platform.OS === "web" ? { textShadow: "0 1px 12px rgba(0,0,0,0.7)" } : { textShadowColor: "rgba(0,0,0,0.7)", textShadowRadius: 12 }),
   },
   topLogin: {
     borderRadius: radius.pill, borderWidth: 1.5, borderColor: "rgba(244,239,231,0.45)",
@@ -234,7 +234,7 @@ const styles = StyleSheet.create({
   kicker: { color: "#F2A65A", fontFamily: mono, fontSize: 12, letterSpacing: 5, fontWeight: "800", marginBottom: 14 },
   headline: {
     color: "#FFFFFF", fontSize: 58, lineHeight: 62, fontWeight: "900", letterSpacing: -1.2,
-    textShadowColor: "rgba(0,0,0,0.55)", textShadowRadius: 18,
+    ...(Platform.OS === "web" ? { textShadow: "0 1px 18px rgba(0,0,0,0.55)" } : { textShadowColor: "rgba(0,0,0,0.55)", textShadowRadius: 18 }),
   },
   headlineNarrow: { fontSize: 40, lineHeight: 44, textAlign: "center" },
   headlineAccent: { color: "#FF8C42" },
@@ -244,8 +244,12 @@ const styles = StyleSheet.create({
   primary: {
     flexDirection: "row", alignItems: "center", gap: 9, backgroundColor: "#FF8C42",
     borderRadius: radius.pill, paddingHorizontal: 30, paddingVertical: 15,
-    shadowColor: "#FF8C42", shadowOpacity: 0.55, shadowRadius: 24, shadowOffset: { width: 0, height: 6 }, elevation: 10,
+    ...(Platform.OS === "web"
+      ? { boxShadow: "0 6px 24px rgba(255,140,66,0.55)" }
+      : { shadowColor: "#FF8C42", shadowOpacity: 0.55, shadowRadius: 24, shadowOffset: { width: 0, height: 6 }, elevation: 10 }),
   },
+  noPointerEvents: { pointerEvents: "none" },
+  boxNonePointerEvents: { pointerEvents: "box-none" },
   primaryTxt: { color: "#1A1206", fontSize: 16, fontWeight: "900", letterSpacing: 0.3 },
   ghost: {
     borderRadius: radius.pill, paddingHorizontal: 26, paddingVertical: 15,

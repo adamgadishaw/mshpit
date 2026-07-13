@@ -12,7 +12,8 @@ import { createReadStream, existsSync, statSync } from "node:fs";
 import { join, extname, normalize, dirname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { db, q, publicUser } from "./db.js";
-import { routes, ApiError } from "./api.js";
+import { routes } from "./api.js";
+import { ApiError, errorEnvelope } from "./errors.js";
 import { getSession, sweepExpiredSessions, sessionCookie, clearCookie, parseCookies, COOKIE, hashPassword, rateLimit } from "./auth.js";
 import { startTourDateScheduler } from "./tourdates.js";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -22,6 +23,14 @@ const PORT = Number(process.env.PORT) || 3000;
 const PROD = process.env.NODE_ENV === "production";
 const DIST = join(HERE, "..", "dist"); // `npx expo export -p web` output
 const BODY_LIMIT = 256 * 1024; // 256 KB is plenty for JSON
+
+function mediaConnectOrigin() {
+  try {
+    const url = new URL(process.env.MEDIA_ENDPOINT || "");
+    return url.protocol === "https:" || (!PROD && url.protocol === "http:") ? url.origin : null;
+  } catch { return null; }
+}
+const MEDIA_CONNECT_ORIGIN = mediaConnectOrigin();
 
 // ---- seed the admin account (server-side only, never in the client bundle) --
 function seedAdmin() {
@@ -69,7 +78,7 @@ const HEADERS = {
     "script-src 'self' 'unsafe-inline' https://*.googleapis.com https://*.gstatic.com https://www.youtube.com https://s.ytimg.com",
     "style-src 'self' 'unsafe-inline'",
     // Google Maps XHR + the YouTube player's own data/stats fetches.
-    "connect-src 'self' https://*.googleapis.com https://*.gstatic.com https://www.youtube.com https://*.googlevideo.com",
+    `connect-src 'self' https://*.googleapis.com https://*.gstatic.com https://www.youtube.com https://*.googlevideo.com${MEDIA_CONNECT_ORIGIN ? ` ${MEDIA_CONNECT_ORIGIN}` : ""}`,
     "worker-src 'self' blob:", // vector maps run in blob web workers
     "font-src 'self' data: https://*.gstatic.com",
     // In-app player: YouTube video/audio is framed in-app so people never leave
@@ -96,21 +105,39 @@ function send(res, status, body, extra = {}) {
   res.end(data);
 }
 
+function sendApiError(res, error, requestId, extra = {}) {
+  const safe = error instanceof ApiError ? error : new ApiError(500, "Something broke on our end, it's been logged.", "INTERNAL_ERROR");
+  return send(res, safe.status, errorEnvelope(safe, requestId), extra);
+}
+
+function withRequestId(body, requestId) {
+  if (body && typeof body === "object" && !Array.isArray(body) && !Buffer.isBuffer(body)) return { ...body, requestId };
+  return body;
+}
+
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let size = 0;
+    let tooLarge = false;
     const chunks = [];
     req.on("data", (c) => {
+      if (tooLarge) return; // keep draining so the structured 413 can be sent
       size += c.length;
-      if (size > BODY_LIMIT) { reject(new ApiError(413, "Request too large.")); req.destroy(); return; }
+      if (size > BODY_LIMIT) {
+        tooLarge = true;
+        chunks.length = 0;
+        reject(new ApiError(413, "Request too large.", "VALIDATION_FAILED"));
+        return;
+      }
       chunks.push(c);
     });
     req.on("end", () => {
+      if (tooLarge) return;
       if (!chunks.length) return resolve({});
       try { resolve(JSON.parse(Buffer.concat(chunks).toString("utf8"))); }
-      catch { reject(new ApiError(400, "Invalid JSON.")); }
+      catch { reject(new ApiError(400, "Invalid JSON.", "VALIDATION_FAILED")); }
     });
-    req.on("error", () => reject(new ApiError(400, "Bad request.")));
+    req.on("error", () => reject(new ApiError(400, "Bad request.", "VALIDATION_FAILED")));
   });
 }
 
@@ -164,18 +191,21 @@ function serveStatic(req, res, pathname) {
 
 const server = createServer(async (req, res) => {
   const started = Date.now();
+  const requestId = randomUUID();
+  res.setHeader("X-Request-Id", requestId);
   let pathname = "/", query = {};
   try {
     const u = new URL(req.url, "http://x");
     pathname = u.pathname;
     query = Object.fromEntries(u.searchParams);
-  } catch { return send(res, 400, { error: "Bad URL." }); }
+  } catch { return sendApiError(res, new ApiError(400, "Bad URL.", "VALIDATION_FAILED"), requestId); }
 
   // dev CORS (no-op in production, same-origin there)
   const origin = req.headers.origin;
   const cors = !PROD && origin && DEV_ORIGINS.has(origin)
     ? { "Access-Control-Allow-Origin": origin, "Access-Control-Allow-Credentials": "true",
-        "Access-Control-Allow-Methods": "GET,POST,PATCH,DELETE,OPTIONS", "Access-Control-Allow-Headers": "Content-Type" }
+        "Access-Control-Allow-Methods": "GET,POST,PATCH,DELETE,OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, X-Request-Id", "Access-Control-Expose-Headers": "X-Request-Id" }
     : {};
   if (req.method === "OPTIONS") return send(res, 204, "", cors);
 
@@ -183,10 +213,10 @@ const server = createServer(async (req, res) => {
     if (pathname.startsWith("/api/")) {
       // global flood guard on top of per-route limits
       const ip = req.socket.remoteAddress || "?";
-      if (!rateLimit(`global:${ip}`, 300, 60 * 1000)) return send(res, 429, { error: "Too many requests." }, cors);
+      if (!rateLimit(`global:${ip}`, 300, 60 * 1000)) return sendApiError(res, new ApiError(429, "Too many requests.", "RATE_LIMITED"), requestId, cors);
 
       const match = matchRoute(req.method, pathname);
-      if (!match) return send(res, 404, { error: "Not found." }, cors);
+      if (!match) return sendApiError(res, new ApiError(404, "Not found.", "NOT_FOUND"), requestId, cors);
 
       const token = parseCookies(req.headers.cookie)[COOKIE];
       const sess = getSession(token);
@@ -195,9 +225,11 @@ const server = createServer(async (req, res) => {
       const setCookies = [];
       const proto = (req.headers["x-forwarded-proto"] || "").split(",")[0] || (req.socket.encrypted ? "https" : "http");
       const ctx = {
-        body: ["POST", "PATCH", "PUT"].includes(req.method) ? await readBody(req) : {},
+        // DELETE /api/me requires the current password. Parse JSON on DELETE as
+        // well as write verbs so that confirmation is verified server-side.
+        body: ["POST", "PATCH", "PUT", "DELETE"].includes(req.method) ? await readBody(req) : {},
         query, params: match.params, ip, ua: req.headers["user-agent"], token, user,
-        host: req.headers.host, proto, origin: `${proto}://${req.headers.host}`,
+        host: req.headers.host, proto, origin: `${proto}://${req.headers.host}`, requestId,
         setCookie: (c) => setCookies.push(c),
         setSession: (s) => setCookies.push(sessionCookie(s.token, s.expiresAt, PROD)),
         clearSession: () => setCookies.push(clearCookie(PROD)),
@@ -207,16 +239,23 @@ const server = createServer(async (req, res) => {
       if (setCookies.length) extra["Set-Cookie"] = setCookies;
       // A handler can 302-redirect (OAuth handoff) by returning { redirect: url }.
       if (result && result.redirect) { res.writeHead(302, { Location: result.redirect, ...extra }); return res.end(); }
-      return send(res, 200, result ?? { ok: true }, extra);
+      return send(res, 200, withRequestId(result ?? { ok: true }, requestId), extra);
     }
 
     // everything else = the web app
     if (req.method !== "GET" && req.method !== "HEAD") return send(res, 405, { error: "Method not allowed." });
     return serveStatic(req, res, pathname);
   } catch (e) {
-    if (e instanceof ApiError) return send(res, e.status, { error: e.message }, cors);
-    console.error(`[pit] 500 on ${req.method} ${pathname} (${Date.now() - started}ms):`, e);
-    return send(res, 500, { error: "Something broke on our end, it's been logged." }, cors);
+    if (e instanceof ApiError) {
+      if (e.status >= 500) {
+        const causeName = String(e.cause?.name || "none").replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 40);
+        const causeCode = String(e.cause?.code || "").replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 40);
+        console.error(`[pit] ${e.status} ${requestId} on ${req.method} ${pathname} (${Date.now() - started}ms): code=${e.code} cause=${causeName}${causeCode ? `/${causeCode}` : ""}`);
+      }
+      return sendApiError(res, e, requestId, cors);
+    }
+    console.error(`[pit] 500 ${requestId} on ${req.method} ${pathname} (${Date.now() - started}ms):`, e);
+    return sendApiError(res, e, requestId, cors);
   }
 });
 

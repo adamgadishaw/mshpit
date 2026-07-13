@@ -7,7 +7,7 @@ import Icon from "../components/Icon";
 
 const PAGE = 8; // load the feed in pages, like the big apps - never all at once
 
-export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, homeCity, unread = 0, notifUnread = 0, newUser = false, onOpen, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onReport, onLogShow, onEditProfile }) {
+export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, homeCity, unread = 0, notifUnread = 0, newUser = false, onLoadMore, hasMore = false, loadingMore = false, onOpen, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onReport, onLogShow, onEditProfile }) {
   const [filter, setFilter] = useState("everyone"); // following | local | everyone
   const [count, setCount] = useState(PAGE);
   const [gsDone, setGsDone] = useState(() => load("pit.gsDismissed", false));
@@ -16,7 +16,13 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, h
   const data = full.slice(0, count);
 
   const pick = (f) => { setFilter(f); setCount(PAGE); };
-  const loadMore = () => { if (count < full.length) setCount((c) => c + PAGE); };
+  const loadMore = async () => {
+    if (count < full.length) setCount((c) => c + PAGE);
+    else if (hasMore && !loadingMore) {
+      const loaded = await onLoadMore?.();
+      if (loaded) setCount((c) => c + PAGE);
+    }
+  };
 
   return (
     <FlatList

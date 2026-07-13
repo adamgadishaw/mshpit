@@ -1,4 +1,4 @@
-import { View, Text, StyleSheet, Pressable, Modal } from "react-native";
+import { View, Text, StyleSheet, Pressable, Modal, Platform } from "react-native";
 import { colors, radius } from "../theme";
 import Avatar from "./Avatar";
 import Icon from "./Icon";
@@ -38,7 +38,12 @@ export default function AccountMenu({ visible, user, onClose, items = [] }) {
 
 const styles = StyleSheet.create({
   backdrop: { flex: 1, alignItems: "flex-end", paddingTop: 56, paddingRight: 16 },
-  menu: { width: 232, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, paddingVertical: 6, shadowColor: "#000", shadowOpacity: 0.4, shadowRadius: 16, shadowOffset: { width: 0, height: 8 }, elevation: 12 },
+  menu: {
+    width: 232, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, paddingVertical: 6,
+    ...(Platform.OS === "web"
+      ? { boxShadow: "0 8px 16px rgba(0,0,0,0.4)" }
+      : { shadowColor: "#000", shadowOpacity: 0.4, shadowRadius: 16, shadowOffset: { width: 0, height: 8 }, elevation: 12 }),
+  },
   head: { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 12, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: colors.lineSoft, marginBottom: 4 },
   name: { color: colors.text, fontSize: 14, fontWeight: "800" },
   handle: { color: colors.textDim, fontSize: 12, marginTop: 1 },

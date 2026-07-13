@@ -4,6 +4,7 @@ import { colors, radius, mono, shadow } from "../theme";
 import { useStore } from "../store";
 import { useYouTubePlayer } from "../lib/youtubePlayer";
 import { useAudioPreview } from "../lib/audioPreview";
+import { captureAppError } from "../lib/diagnostics";
 import Icon from "./Icon";
 
 const web = Platform.OS === "web";
@@ -241,6 +242,25 @@ export default function PlayerBar({ player, onClose, onIndex, onPlayAt, onRemove
     return () => { clearInterval(id); clearTimeout(off); };
   }, [nextTitle]);
 
+  // Keep diagnostics hooks above the empty-player return. Persisted queues can
+  // briefly resolve to an invalid index and later recover without remounting.
+  const unplayable = !!cur && forThis && !ytActive && !previewSrc && !connecting;
+  const reportedFailure = useRef(null);
+  useEffect(() => {
+    const failureKind = audio.error?.kind || yt.error?.kind || (unplayable ? "unavailable" : null);
+    if (!failureKind || !curKey) return;
+    const key = `${curKey}:${failureKind}`;
+    if (reportedFailure.current === key) return;
+    reportedFailure.current = key;
+    captureAppError(new Error("Playback source failed"), {
+      code: "PIT-MEDIA-001",
+      context: "Starting the selected track",
+      source: audio.error ? "audio-preview" : "youtube-player",
+      severity: "warning",
+      toast: unplayable || !!audio.error,
+    });
+  }, [audio.error?.kind, curKey, unplayable, yt.error?.kind]);
+
   if (!cur) return null;
 
   const multi = list.length > 1;
@@ -251,7 +271,6 @@ export default function PlayerBar({ player, onClose, onIndex, onPlayAt, onRemove
   // Unified transport across whichever engine is live (YouTube player or preview mp3).
   const scrubbable = ytActive || !!previewSrc;
   const resolving = !forThis; // still fetching a source for this track
-  const unplayable = forThis && !ytActive && !previewSrc && !connecting;
   const posMs = ytActive ? (yt.state.position || 0) : audio.pos * 1000;
   const durMs = ytActive ? (yt.state.duration || 0) : audio.dur * 1000;
   posRef.current = posMs;

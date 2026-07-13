@@ -1,11 +1,14 @@
 {
   "name": "pit",
   "version": "1.0.0",
+  "type": "module",
   "main": "index.js",
   "dependencies": {
     "@expo/metro-runtime": "~56.0.15",
     "expo": "~56.0.12",
-    "expo-image-picker": "~56.0.18",
+    "expo-file-system": "~56.0.8",
+    "expo-image-picker": "~56.0.20",
+    "expo-sharing": "~56.0.21",
     "expo-status-bar": "~56.0.4",
     "react": "19.2.3",
     "react-dom": "19.2.3",

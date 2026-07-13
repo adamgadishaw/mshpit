@@ -8,34 +8,34 @@ import { Platform } from "react-native";
 const STAGE = {
   bg: "#07090F", bgElev: "#0C1018", surface: "#10151F", surfaceAlt: "#1A2030",
   line: "#232B42", lineSoft: "#1A202F", text: "#F4EFE7", textDim: "#9AA0B6", textFaint: "#646B82",
-  amber: "#F2A65A", amberStrong: "#FF8C42", gold: "#E8B65A", magenta: "#E0457B", cool: "#5B8DEF", good: "#6FCF97", danger: "#E0457B",
+  amber: "#F2A65A", amberStrong: "#FF8C42", accentEdge: "#A94F1F", gold: "#E8B65A", magenta: "#E0457B", cool: "#5B8DEF", good: "#6FCF97", danger: "#E0457B",
 };
 
 const DAYLIGHT = {
   bg: "#FBF7F0", bgElev: "#FFFFFF", surface: "#FFFFFF", surfaceAlt: "#F3ECE1",
   line: "#E4DACB", lineSoft: "#EFE8DC", text: "#1C140C", textDim: "#6E6355", textFaint: "#9C8F7C",
-  amber: "#C96A1C", amberStrong: "#E47A24", gold: "#B5862A", magenta: "#C8356B", cool: "#3D6FD6", good: "#2E9E5B", danger: "#C8356B",
+  amber: "#C96A1C", amberStrong: "#E47A24", accentEdge: "#9B4710", gold: "#B5862A", magenta: "#C8356B", cool: "#3D6FD6", good: "#2E9E5B", danger: "#C8356B",
 };
 
 // Synthwave: deep indigo with violet + magenta gels.
 const NEON = {
   bg: "#0C0A1A", bgElev: "#131029", surface: "#1B1636", surfaceAlt: "#251D48",
   line: "#362B63", lineSoft: "#2A2150", text: "#F1ECFF", textDim: "#ADA2D6", textFaint: "#726699",
-  amber: "#C084FC", amberStrong: "#A855F7", gold: "#F0ABFC", magenta: "#F472B6", cool: "#38BDF8", good: "#34D399", danger: "#FB7185",
+  amber: "#C084FC", amberStrong: "#A855F7", accentEdge: "#6824A8", gold: "#F0ABFC", magenta: "#F472B6", cool: "#38BDF8", good: "#34D399", danger: "#FB7185",
 };
 
 // Forest: near-black green with emerald + gold.
 const FOREST = {
   bg: "#08120D", bgElev: "#0D1A13", surface: "#12241A", surfaceAlt: "#1A3025",
   line: "#274A38", lineSoft: "#1F3A2C", text: "#E9F5EC", textDim: "#90AE9C", textFaint: "#5E7A69",
-  amber: "#34D399", amberStrong: "#10B981", gold: "#FBBF24", magenta: "#F472B6", cool: "#38BDF8", good: "#34D399", danger: "#FB7185",
+  amber: "#34D399", amberStrong: "#10B981", accentEdge: "#087557", gold: "#FBBF24", magenta: "#F472B6", cool: "#38BDF8", good: "#34D399", danger: "#FB7185",
 };
 
 // Ember: warm charcoal dark with a coral/pink primary + violet gel, a hot dark.
 const EMBER = {
   bg: "#150E11", bgElev: "#1D1318", surface: "#251820", surfaceAlt: "#33232C",
   line: "#412C38", lineSoft: "#2D1E28", text: "#FCEEE9", textDim: "#CBA69F", textFaint: "#8C6A64",
-  amber: "#FF8A73", amberStrong: "#FF6B5E", gold: "#F4B45C", magenta: "#C86BFF", cool: "#5BD0EF", good: "#5FD08A", danger: "#FF5E7E",
+  amber: "#FF8A73", amberStrong: "#FF6B5E", accentEdge: "#B63E38", gold: "#F4B45C", magenta: "#C86BFF", cool: "#5BD0EF", good: "#5FD08A", danger: "#FF5E7E",
 };
 
 // Ice: cool near-white LIGHT theme led by blue (not warm amber), a real
@@ -43,21 +43,21 @@ const EMBER = {
 const ICE = {
   bg: "#F1F6FC", bgElev: "#FFFFFF", surface: "#FFFFFF", surfaceAlt: "#E6EEF8",
   line: "#D2DEEE", lineSoft: "#E2EAF5", text: "#0F1B2A", textDim: "#566880", textFaint: "#8FA0B6",
-  amber: "#2E86DE", amberStrong: "#1B6FD1", gold: "#B5862A", magenta: "#7B5CF0", cool: "#0FA9C4", good: "#159E6B", danger: "#E0457B",
+  amber: "#2E86DE", amberStrong: "#1B6FD1", accentEdge: "#114B91", gold: "#B5862A", magenta: "#7B5CF0", cool: "#0FA9C4", good: "#159E6B", danger: "#E0457B",
 };
 
 // Rose: soft blush LIGHT theme led by rose-pink + gold stars.
 const ROSE = {
   bg: "#FDF3F6", bgElev: "#FFFFFF", surface: "#FFFFFF", surfaceAlt: "#F8E6EC",
   line: "#EFD2DC", lineSoft: "#F4E1E8", text: "#2A1420", textDim: "#7A5563", textFaint: "#B1899C",
-  amber: "#E04E86", amberStrong: "#D53A78", gold: "#C79A2E", magenta: "#9B5CF0", cool: "#4A8FE0", good: "#2E9E5B", danger: "#D53A78",
+  amber: "#E04E86", amberStrong: "#D53A78", accentEdge: "#9A2453", gold: "#C79A2E", magenta: "#9B5CF0", cool: "#4A8FE0", good: "#2E9E5B", danger: "#D53A78",
 };
 
 // Mint: pale green LIGHT theme led by emerald + a coral gel.
 const MINT = {
   bg: "#EFFAF4", bgElev: "#FFFFFF", surface: "#FFFFFF", surfaceAlt: "#E0F2E9",
   line: "#CCE7D8", lineSoft: "#DDF0E6", text: "#0E241A", textDim: "#4E7060", textFaint: "#8DB0A0",
-  amber: "#14A06A", amberStrong: "#0E9160", gold: "#C08A2E", magenta: "#C05CE0", cool: "#2E9ED6", good: "#0E9160", danger: "#E0457B",
+  amber: "#14A06A", amberStrong: "#0E9160", accentEdge: "#075D3E", gold: "#C08A2E", magenta: "#C05CE0", cool: "#2E9ED6", good: "#0E9160", danger: "#E0457B",
 };
 
 const PRESETS = {
@@ -116,9 +116,24 @@ export function syncThemeFromAccount(next) {
 export const roleColor = (role) =>
   role === "admin" ? colors.magenta : role === "moderator" ? colors.good : role === "artist" ? colors.amber : null;
 
-export const mono = Platform.select({ ios: "Menlo", android: "monospace", default: "monospace" });
-// Rounder geometry reads modern, cards at 16, sheets/heroes at 24.
-export const radius = { sm: 10, md: 16, lg: 24, pill: 999 };
+// System-first stacks keep the app crisp without adding a font download to the
+// startup path. The rounded display stack gives labels and headings personality;
+// body copy stays neutral and highly readable.
+export const font = Platform.select({
+  ios: "System",
+  android: "sans-serif",
+  default: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+});
+export const displayFont = Platform.select({
+  ios: "Avenir Next",
+  android: "sans-serif-medium",
+  default: 'ui-rounded, "SF Pro Rounded", "Avenir Next", "Arial Rounded MT Bold", "Trebuchet MS", "Segoe UI", sans-serif',
+});
+export const mono = Platform.select({ ios: "Menlo", android: "monospace", default: '"SFMono-Regular", Consolas, monospace' });
+
+// A small radius scale keeps controls related while continuous curves make
+// cards feel less boxy. The two-pixel lift is deliberately subtle site-wide.
+export const radius = { sm: 12, md: 18, lg: 26, pill: 999 };
 export const space = (n) => n * 4;
 
 // Elevation. Real apps lift surfaces with soft shadows instead of outlining
@@ -127,10 +142,24 @@ export const space = (n) => n * 4;
 // to actually read as depth; LIGHT themes get a soft, subtle one.
 const _dark = (PRESETS[key] || PRESETS.stage).dark;
 export const shadow = {
-  card: Platform.OS === "web"
-    ? { boxShadow: _dark ? "0 2px 4px rgba(0,0,0,0.45), 0 10px 30px rgba(0,0,0,0.5)" : "0 1px 2px rgba(16,24,40,0.10), 0 6px 20px rgba(16,24,40,0.10)" }
-    : { shadowColor: "#000", shadowOpacity: _dark ? 0.5 : 0.14, shadowRadius: _dark ? 14 : 10, shadowOffset: { width: 0, height: 5 }, elevation: 3 },
-  sheet: Platform.OS === "web"
-    ? { boxShadow: _dark ? "0 14px 50px rgba(0,0,0,0.65)" : "0 12px 40px rgba(16,24,40,0.18)" }
-    : { shadowColor: "#000", shadowOpacity: _dark ? 0.6 : 0.2, shadowRadius: 22, shadowOffset: { width: 0, height: 10 }, elevation: 12 },
+  card: {
+    boxShadow: _dark
+      ? "inset 0 1px 0 rgba(255,255,255,0.035), 0 2px 4px rgba(0,0,0,0.36), 0 12px 28px rgba(0,0,0,0.38)"
+      : "inset 0 1px 0 rgba(255,255,255,0.82), 0 2px 4px rgba(16,24,40,0.07), 0 10px 24px rgba(16,24,40,0.09)",
+  },
+  control: {
+    boxShadow: _dark
+      ? "inset 0 1px 0 rgba(255,255,255,0.08), 0 4px 10px rgba(0,0,0,0.28)"
+      : "inset 0 1px 0 rgba(255,255,255,0.68), 0 3px 8px rgba(16,24,40,0.12)",
+  },
+  sheet: {
+    boxShadow: _dark ? "0 16px 52px rgba(0,0,0,0.62)" : "0 14px 44px rgba(16,24,40,0.17)",
+  },
 };
+
+// Web gets a visible keyboard-focus halo; native platforms keep their standard
+// accessibility focus treatment. Components can spread this into focused state.
+export const focusRing = Platform.select({
+  web: { outlineColor: colors.amber, outlineOffset: 2, outlineStyle: "solid", outlineWidth: 3 },
+  default: {},
+});

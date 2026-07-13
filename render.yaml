@@ -42,6 +42,22 @@ services:
         sync: false
       - key: MAIL_FROM
         sync: false
+      # Durable photos upload directly to an S3-compatible bucket using a
+      # short-lived signed PUT. Keep credentials server-side; MEDIA_PUBLIC_BASE_URL
+      # is the CDN/public bucket base where an uploaded object key is readable.
+      # Example R2 endpoint: https://<account-id>.r2.cloudflarestorage.com
+      - key: MEDIA_ENDPOINT
+        sync: false
+      - key: MEDIA_BUCKET
+        sync: false
+      - key: MEDIA_REGION
+        sync: false
+      - key: MEDIA_ACCESS_KEY_ID
+        sync: false
+      - key: MEDIA_SECRET_ACCESS_KEY
+        sync: false
+      - key: MEDIA_PUBLIC_BASE_URL
+        sync: false
       - key: EXPO_PUBLIC_GOOGLE_MAPS_KEY
         # Referrer-locked (mshpit.com/*) + Maps Static API only. Safe to commit:
         # EXPO_PUBLIC_* vars are inlined into the public web bundle on every build,

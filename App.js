@@ -8,6 +8,7 @@ import { StoreProvider, useStore, isStaff } from "./src/store";
 import Icon from "./src/components/Icon";
 import Avatar from "./src/components/Avatar";
 import ErrorBoundary from "./src/components/ErrorBoundary";
+import FeedbackHost from "./src/components/FeedbackHost";
 import { LeftRail, RightRail } from "./src/components/Rails";
 import FeedScreen from "./src/screens/FeedScreen";
 import SearchScreen from "./src/screens/SearchScreen";
@@ -41,6 +42,8 @@ import PickArtistsScreen from "./src/screens/PickArtistsScreen";
 import FanClubsScreen from "./src/screens/FanClubsScreen";
 import NearbyScreen from "./src/screens/NearbyScreen";
 import SettingsScreen from "./src/screens/SettingsScreen";
+import DeleteAccountScreen from "./src/screens/DeleteAccountScreen";
+import DiagnosticsScreen from "./src/screens/DiagnosticsScreen";
 import PrivacyScreen from "./src/screens/PrivacyScreen";
 import TermsScreen from "./src/screens/TermsScreen";
 import AccountMenu from "./src/components/AccountMenu";
@@ -74,7 +77,7 @@ export default function App() {
 }
 
 function Root() {
-  const { session, addLog, visibleFeed, followingFeed, localFeed, logout, userByHandle, searchPeople, inboxUnread, accountStatus, track, unreadNotifications, recordPlay, playHistory, saveSnapshot, autoplayQueue, followingCount } = useStore();
+  const { session, addLog, visibleFeed, followingFeed, localFeed, loadMoreFeed, feedHasMore, feedLoadingMore, logout, exportMyData, userByHandle, searchPeople, inboxUnread, accountStatus, track, unreadNotifications, recordPlay, playHistory, saveSnapshot, autoplayQueue, followingCount } = useStore();
   const staff = isStaff(session?.role);
   const feed = visibleFeed(staff);
   const following = followingFeed(staff);
@@ -167,6 +170,11 @@ function Root() {
     if (web) { try { window.history.pushState({ pit: "app" }, ""); } catch {} }
   };
   const exitToLanding = () => { save("pit.entered", false); setTab("feed"); setStack([{}]); setLanding(true); };
+  const onAccountDeleted = () => {
+    setPlayer(null);
+    save("pit.player", null);
+    exitToLanding();
+  };
 
   // Persist tab + nav stack so a reload lands exactly where you were.
   useEffect(() => { if (web) save("pit.tab", tab); }, [tab]);
@@ -221,10 +229,12 @@ function Root() {
 
   const requireAuth = (fn) => (session ? fn() : go({ auth: true }));
 
-  const onAddLog = (log) => {
-    addLog(log);
+  const onAddLog = async (log) => {
+    const result = await addLog(log);
+    if (result?.ok === false) return result;
     clear();
     setTab("feed");
+    return result;
   };
 
   const openProfile = (id) => go({ profileId: id });
@@ -313,7 +323,9 @@ function Root() {
   else if (nav.nearby) overlay = <NearbyScreen onClose={back} onOpenVenue={openVenue} onOpenArtist={openArtist} />;
   else if (nav.venues) overlay = <VenuesScreen onClose={back} onOpenVenue={openVenue} />;
   else if (nav.fanClubs) overlay = <FanClubsScreen onClose={back} onOpenFanClub={openFanClub} />;
-  else if (nav.settings) overlay = <SettingsScreen onClose={back} onEditProfile={() => go({ editProfile: true })} onOpenProfile={() => (session ? go({ profileId: session.id }) : go({ auth: true }))} onOpenPrivacy={() => go({ privacy: true })} onOpenTerms={() => go({ terms: true })} onLogout={() => { logout(); clear(); exitToLanding(); }} />;
+  else if (nav.settings) overlay = <SettingsScreen onClose={back} onEditProfile={() => go({ editProfile: true })} onOpenProfile={() => (session ? go({ profileId: session.id }) : go({ auth: true }))} onOpenPrivacy={() => go({ privacy: true })} onOpenTerms={() => go({ terms: true })} onOpenDiagnostics={() => go({ diagnostics: true })} onOpenDeleteAccount={() => go({ deleteAccount: true })} onLogout={() => { logout(); clear(); exitToLanding(); }} />;
+  else if (nav.deleteAccount) overlay = <DeleteAccountScreen onClose={back} onDeleted={onAccountDeleted} />;
+  else if (nav.diagnostics) overlay = <DiagnosticsScreen onClose={back} />;
   else if (nav.privacy) overlay = <PrivacyScreen onClose={back} />;
   else if (nav.terms) overlay = <TermsScreen onClose={back} />;
   else if (nav.lounge) overlay = <LoungeScreen log={nav.lounge} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} />;
@@ -358,6 +370,9 @@ function Root() {
                   unread={inboxUnread()}
                   notifUnread={session ? unreadNotifications() : 0}
                   newUser={!!session && feed.filter((l) => l.userId === session.id).length === 0}
+                  onLoadMore={loadMoreFeed}
+                  hasMore={feedHasMore}
+                  loadingMore={feedLoadingMore}
                   onLogShow={() => requireAuth(() => go({ logging: true }))}
                   onEditProfile={() => go({ editProfile: true })}
                   onOpenInbox={openInbox}
@@ -466,7 +481,7 @@ function Root() {
             onBrowse={enter}
           />
         ) : status !== "ok" ? (
-          <AccountGate status={status} until={session?.suspendedUntil} onLogout={logout} />
+          nav.deleteAccount ? overlay : <AccountGate status={status} until={session?.suspendedUntil} onLogout={logout} onExport={exportMyData} onDelete={() => go({ deleteAccount: true })} />
         ) : wide ? (
           desktop
         ) : (
@@ -487,6 +502,8 @@ function Root() {
           </>
           )
         )}
+
+        <FeedbackHost onOpenDiagnostics={() => go({ diagnostics: true })} />
 
         {status === "ok" && preview && (
           <Animated.View style={[styles.preview, { opacity: fade }]}>
@@ -589,11 +606,9 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     marginTop: -22,
-    shadowColor: colors.amberStrong,
-    shadowOpacity: 0.45,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 4 },
-    elevation: 6,
+    ...(Platform.OS === "web"
+      ? { boxShadow: `0 4px 12px ${colors.amberStrong}73` }
+      : { shadowColor: colors.amberStrong, shadowOpacity: 0.45, shadowRadius: 12, shadowOffset: { width: 0, height: 4 }, elevation: 6 }),
   },
   fabLabel: { color: colors.amber, fontSize: 10, marginTop: 4, letterSpacing: 0.3 },
   welcomeModal: { ...StyleSheet.absoluteFillObject, backgroundColor: colors.bg, zIndex: 200, ...(Platform.OS === "web" ? { position: "fixed" } : null) },

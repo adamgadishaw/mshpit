@@ -1,23 +1,31 @@
 import { useState } from "react";
-import { Pressable, Text, StyleSheet, View } from "react-native";
-import { colors, radius } from "../theme";
+import { Platform, Pressable, Text, StyleSheet, View } from "react-native";
+import { colors, displayFont, focusRing, radius, shadow } from "../theme";
 import Icon from "./Icon";
 
 // Cleaner, slightly 3D buttons: a raised face with a darker bottom edge + soft
 // glow that presses in on tap. variant: primary | secondary | danger.
 export default function Button({ title, onPress, variant = "primary", icon, disabled, style, small }) {
-  const [pressed, setPressed] = useState(false);
+  const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
   const v = VARIANTS[variant];
   return (
     <Pressable
       onPress={disabled ? null : onPress}
-      onPressIn={() => setPressed(true)}
-      onPressOut={() => setPressed(false)}
-      style={[
+      onHoverIn={() => setHovered(true)}
+      onHoverOut={() => setHovered(false)}
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
+      accessibilityRole="button"
+      accessibilityState={{ disabled: !!disabled }}
+      style={({ pressed }) => [
         styles.base,
         small && styles.small,
-        { backgroundColor: v.bg, borderBottomColor: v.edge, shadowColor: v.glow },
-        pressed && styles.pressed,
+        { backgroundColor: v.bg, borderColor: v.border, borderBottomColor: v.edge },
+        shadow.control,
+        hovered && !pressed && !disabled && styles.hovered,
+        focused && focusRing,
+        pressed && !disabled && styles.pressed,
         disabled && styles.disabled,
         style,
       ]}
@@ -31,28 +39,29 @@ export default function Button({ title, onPress, variant = "primary", icon, disa
 }
 
 const VARIANTS = {
-  primary: { bg: colors.amberStrong, edge: "#B65E1F", fg: "#1A1206", glow: colors.amberStrong },
-  secondary: { bg: colors.surfaceAlt, edge: colors.line, fg: colors.text, glow: "#000" },
-  danger: { bg: colors.magenta, edge: "#9E2B57", fg: "#fff", glow: colors.magenta },
+  primary: { bg: colors.amberStrong, edge: colors.accentEdge, border: colors.amber, fg: "#1A1206" },
+  secondary: { bg: colors.surfaceAlt, edge: colors.line, border: colors.line, fg: colors.text },
+  danger: { bg: colors.magenta, edge: "#8D284E", border: colors.danger, fg: "#fff" },
 };
 
 const styles = StyleSheet.create({
   base: {
     borderRadius: radius.md,
+    borderCurve: "continuous",
     paddingVertical: 15,
     paddingHorizontal: 18,
     alignItems: "center",
     justifyContent: "center",
-    borderBottomWidth: 3,
-    shadowOpacity: 0.35,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 5 },
-    elevation: 5,
+    borderWidth: 1,
+    borderBottomWidth: 4,
+    minHeight: 50,
+    ...Platform.select({ web: { cursor: "pointer", transitionDuration: "120ms", transitionProperty: "filter, transform, box-shadow" } }),
   },
-  small: { paddingVertical: 10, paddingHorizontal: 14, borderRadius: radius.sm, borderBottomWidth: 2 },
-  pressed: { transform: [{ translateY: 2 }], borderBottomWidth: 1, shadowOpacity: 0.15 },
-  disabled: { opacity: 0.4 },
+  small: { paddingVertical: 9, paddingHorizontal: 14, borderRadius: radius.sm, borderBottomWidth: 3, minHeight: 40 },
+  hovered: { transform: [{ translateY: -1 }], ...Platform.select({ web: { filter: "brightness(1.06)" } }) },
+  pressed: { transform: [{ translateY: 3 }], boxShadow: "inset 0 1px 3px rgba(0,0,0,0.18), 0 1px 2px rgba(0,0,0,0.14)" },
+  disabled: { opacity: 0.42, ...Platform.select({ web: { cursor: "not-allowed" } }) },
   inner: { flexDirection: "row", alignItems: "center", gap: 8 },
-  txt: { fontSize: 15, fontWeight: "800", letterSpacing: 0.3 },
+  txt: { fontFamily: displayFont, fontSize: 15, fontWeight: "800", letterSpacing: 0.15, lineHeight: 20 },
   txtSmall: { fontSize: 13 },
 });

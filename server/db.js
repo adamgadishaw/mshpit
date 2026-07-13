@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS posts (
 );
 CREATE INDEX IF NOT EXISTS idx_posts_user ON posts(user_id);
 CREATE INDEX IF NOT EXISTS idx_posts_created ON posts(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_posts_cursor ON posts(created_at DESC, id DESC);
 
 CREATE TABLE IF NOT EXISTS likes (
   post_id TEXT NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
@@ -93,6 +94,7 @@ CREATE TABLE IF NOT EXISTS comments (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_comments_post ON comments(post_id);
+CREATE INDEX IF NOT EXISTS idx_comments_cursor ON comments(post_id, removed, created_at DESC, id DESC);
 
 CREATE TABLE IF NOT EXISTS follows (
   follower_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -115,6 +117,7 @@ CREATE TABLE IF NOT EXISTS fan_club_messages (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_fcm_artist ON fan_club_messages(artist);
+CREATE INDEX IF NOT EXISTS idx_fcm_cursor ON fan_club_messages(artist, removed, created_at DESC, id DESC);
 
 CREATE TABLE IF NOT EXISTS dms (
   id         TEXT PRIMARY KEY,
@@ -124,6 +127,7 @@ CREATE TABLE IF NOT EXISTS dms (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_dms_pair ON dms(from_id, to_id);
+CREATE INDEX IF NOT EXISTS idx_dms_cursor ON dms(from_id, to_id, created_at DESC, id DESC);
 
 CREATE TABLE IF NOT EXISTS reports (
   id          TEXT PRIMARY KEY,
@@ -171,6 +175,7 @@ CREATE TABLE IF NOT EXISTS venue_reviews (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_venue_reviews_venue ON venue_reviews(venue_key);
+CREATE INDEX IF NOT EXISTS idx_venue_reviews_cursor ON venue_reviews(venue_key, removed, created_at DESC, id DESC);
 
 -- Artist account requests (fan → admin-approved artist).
 CREATE TABLE IF NOT EXISTS artist_requests (
@@ -231,6 +236,7 @@ CREATE TABLE IF NOT EXISTS notifications (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_notifs_user ON notifications(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notifs_cursor ON notifications(user_id, created_at DESC, id DESC);
 
 -- ---- Tour dates (scraped live into the DB, not the bundled file) -------------
 -- Written by the in-process scheduler (server/tourdates.js) from Ticketmaster /
@@ -328,6 +334,7 @@ CREATE TABLE IF NOT EXISTS lounge_messages (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_lounge ON lounge_messages(lounge_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_lounge_cursor ON lounge_messages(lounge_id, removed, created_at DESC, id DESC);
 
 -- Catalog-seed crawl cursor: how deep each genre tag has been crawled, so a
 -- re-run resumes instead of re-fetching MusicBrainz pages it already finished.
