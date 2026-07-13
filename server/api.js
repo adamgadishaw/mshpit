@@ -4,7 +4,7 @@
 //   message) is the ONLY sanctioned way to fail, anything else becomes a clean 500
 // - responses only ever contain public projections (publicUser), never raw rows
 import { randomUUID, randomBytes, createHash } from "node:crypto";
-import { sendEmail } from "./mailer.js";
+import { mailConfigured, sendEmail } from "./mailer.js";
 import { db, q, ytStmts, publicUser, artistStmts, publicArtist, artistRow, normName } from "./db.js";
 import { hashPassword, verifyPassword, createSession, destroySession, rateLimit } from "./auth.js";
 import { startCatalogSeed, catalogSeedStatus, stopCatalogSeed, deezerEnrich } from "./catalogSeed.js";
@@ -16,6 +16,27 @@ export class ApiError extends Error {
 
 const now = () => Date.now();
 const uid = (p) => `${p}_${randomUUID().slice(0, 12)}`;
+const PROFILE_EXTRAS_MAX_BYTES = 8000;
+
+function serializeProfileExtras(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  try {
+    const encoded = JSON.stringify(value);
+    if (!encoded || Buffer.byteLength(encoded, "utf8") > PROFILE_EXTRAS_MAX_BYTES) return null;
+    return encoded;
+  } catch {
+    return null;
+  }
+}
+
+function parseStoredProfileExtras(value) {
+  try {
+    const parsed = JSON.parse(value || "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
 
 // Advance a timestamp by N business days (skip Sat/Sun), for the @handle cooldown.
 function addBusinessDays(ts, n) {
@@ -44,7 +65,10 @@ function requireAdmin(ctx) {
   return u;
 }
 function limit(ctx, name, max, windowMs) {
-  if (!rateLimit(`${name}:${ctx.ip}`, max, windowMs)) throw new ApiError(429, "Too many requests, slow down and try again.");
+  // Authenticated activity is primarily limited per account so users behind the
+  // same carrier/proxy do not consume one shared posting or messaging bucket.
+  const actor = ctx.user?.id ? `user:${ctx.user.id}` : `ip:${ctx.ip}`;
+  if (!rateLimit(`${name}:${actor}`, max, windowMs)) throw new ApiError(429, "Too many requests, slow down and try again.");
 }
 
 // An account "owns" the artist page whose name matches theirs; admins own all.
@@ -146,21 +170,22 @@ const YT_MISS_TTL = 6 * 3600 * 1000; // re-try a "no match" after 6h
 async function resolveYouTubeId(title, artist) {
   const key = ("yt:" + (artist || "") + "|" + title).toLowerCase().slice(0, 300);
   const hit = ytStmts.get.get(key);
-  if (hit && (hit.video_id || Date.now() - hit.updated_at < YT_MISS_TTL)) return hit.video_id || null;
+  if (hit?.video_id) return { videoId: hit.video_id, status: "cached" };
+  if (hit && Date.now() - hit.updated_at < YT_MISS_TTL) return { videoId: null, status: "not_found" };
   const apiKey = process.env.YOUTUBE_API_KEY;
-  if (!apiKey) return null; // not configured -> preview fallback
+  if (!apiKey) return { videoId: null, status: "unconfigured" }; // preview fallback
   const q = encodeURIComponent(`${artist ? artist + " " : ""}${title} official audio`);
   try {
     const r = await fetch(
-      `https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&videoEmbeddable=true&maxResults=1&q=${q}&key=${apiKey}`,
+      `https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&videoEmbeddable=true&videoSyndicated=true&maxResults=1&q=${q}&key=${apiKey}`,
       { signal: AbortSignal.timeout(8000) }
     );
-    if (!r.ok) return hit?.video_id || null; // quota/error: keep any prior hit, don't cache a miss over it
+    if (!r.ok) return { videoId: null, status: r.status === 403 ? "quota_or_forbidden" : "provider_error" };
     const d = await r.json().catch(() => ({}));
     const vid = d?.items?.[0]?.id?.videoId || null;
     ytStmts.set.run(key, vid, Date.now());
-    return vid;
-  } catch { return hit?.video_id || null; }
+    return { videoId: vid, status: vid ? "resolved" : "not_found" };
+  } catch { return { videoId: null, status: "provider_error" }; }
 }
 
 const deezerCache = new Map(); // norm(name) -> { data, exp }
@@ -235,7 +260,20 @@ async function enrichArtistFromDeezer(name) {
 // route table: "METHOD /path" -> handler(ctx) ; :params exposed as ctx.params
 export const routes = {
   // ---- health ---- (youtube config flag is a safe diagnostic, no secrets)
-  "GET /api/health": () => ({ ok: true, ts: now(), youtube: !!process.env.YOUTUBE_API_KEY }),
+  "GET /api/health": () => {
+    let database = false;
+    try { database = db.prepare("SELECT 1 AS ok").get()?.ok === 1; } catch {}
+    return {
+      ok: database,
+      ts: now(),
+      youtube: !!process.env.YOUTUBE_API_KEY,
+      services: {
+        database,
+        youtubeConfigured: !!process.env.YOUTUBE_API_KEY,
+        mailConfigured: mailConfigured(),
+      },
+    };
+  },
 
   // ---- server clock ---- authoritative time so the calendar + scheduling don't
   // trust the device clock. Returns epoch ms, ISO, the server's IANA timezone and
@@ -338,8 +376,7 @@ export const routes = {
     const artist = clean(ctx.query.artist, { max: 120 });
     if (!title) throw new ApiError(400, "Missing title.");
     limit(ctx, "yt", 120, 10 * 60 * 1000);
-    const videoId = await resolveYouTubeId(title, artist);
-    return { videoId: videoId || null };
+    return resolveYouTubeId(title, artist);
   },
 
   // ---- Discover: DB-backed charts, genre share, explore-by-genre ----
@@ -508,8 +545,7 @@ export const routes = {
   },
 
   // Forgot password — email a one-hour reset link. Always responds the same way so
-  // it never reveals which emails have accounts. If email isn't configured yet, the
-  // link is logged server-side so the owner can still complete a reset.
+  // it never reveals which emails have accounts. Reset secrets are never logged.
   "POST /api/forgot": async (ctx) => {
     limit(ctx, "forgot", 5, 15 * 60 * 1000);
     const email = cleanEmail(ctx.body?.email);
@@ -520,14 +556,16 @@ export const routes = {
     const token = randomBytes(32).toString("base64url");
     const hash = createHash("sha256").update(token).digest("hex");
     db.prepare("UPDATE users SET reset_hash=?, reset_expires=? WHERE id=?").run(hash, Date.now() + 60 * 60 * 1000, u.id);
-    const link = `${ctx.origin}/?reset=${token}`;
+    const configuredOrigin = (process.env.PUBLIC_ORIGIN || "").replace(/\/+$/, "");
+    const publicOrigin = configuredOrigin || (process.env.NODE_ENV === "production" ? "https://www.mshpit.com" : ctx.origin);
+    const link = `${publicOrigin}/?reset=${token}`;
     const r = await sendEmail({
       to: email,
       subject: "Reset your Pit password",
       text: `Reset your Pit password with this link (valid 1 hour):\n${link}\n\nIf you didn't request this, ignore this email.`,
       html: `<div style="font-family:system-ui,sans-serif;max-width:480px;margin:0 auto"><h2 style="color:#FF8C42">Reset your Pit password</h2><p>Tap the button to set a new password. This link is valid for 1 hour.</p><p><a href="${link}" style="display:inline-block;background:#FF8C42;color:#1A1206;font-weight:700;text-decoration:none;padding:12px 22px;border-radius:999px">Reset password</a></p><p style="color:#888;font-size:13px">If you didn't request this, you can safely ignore this email.</p></div>`,
     });
-    if (!r.sent) console.log(`[reset] email not sent (${r.reason}); link for ${email}: ${link}`);
+    if (!r.sent) console.warn(`[reset] email delivery unavailable (${r.reason}); no reset secret was logged.`);
     return generic;
   },
 
@@ -562,6 +600,15 @@ export const routes = {
   "PATCH /api/me": (ctx) => {
     const u = requireUser(ctx);
     limit(ctx, "profile", 30, 10 * 60 * 1000);
+
+    // Reject invalid/oversized metadata atomically. Truncating serialized JSON
+    // can leave an account with malformed data that breaks every projection.
+    const hasExtras = Object.prototype.hasOwnProperty.call(ctx.body || {}, "extras");
+    const serializedExtras = hasExtras ? serializeProfileExtras(ctx.body.extras) : undefined;
+    if (hasExtras && serializedExtras === null) {
+      throw new ApiError(400, `extras must be a JSON object no larger than ${PROFILE_EXTRAS_MAX_BYTES} bytes.`);
+    }
+
     const [, v] = shape(ctx.body, {
       name: { parse: (x) => (isName(x) ? cleanName(x) : undefined) },
       handle: { parse: (x) => { const h = cleanHandle(x); return h && h.length >= 3 ? h : undefined; } },
@@ -577,7 +624,7 @@ export const routes = {
       // newer themes get silently rejected here, the server then re-hydrates the
       // stale theme on /api/me and the client "snaps back" to a previous theme.
       theme: { parse: (x) => (["stage", "neon", "forest", "ember", "daylight", "ice", "rose", "mint"].includes(x) ? x : undefined) },
-      extras: { parse: (x) => (typeof x === "object" && x ? JSON.stringify(x).slice(0, 8000) : undefined) },
+      extras: { parse: () => serializedExtras },
     });
     const sets = [];
     const args = [];
@@ -604,13 +651,15 @@ export const routes = {
     if (v.city !== undefined) { sets.push("home_city = ?", "home_lat = ?", "home_lng = ?"); args.push(v.city, v.lat ?? null, v.lng ?? null); }
     if (v.genres) { sets.push("genres = ?"); args.push(JSON.stringify(v.genres)); }
     if (v.favoriteArtists) { sets.push("favorite_artists = ?"); args.push(JSON.stringify(v.favoriteArtists)); }
-    // Theme is stored inside the extras blob (which publicUser spreads back out as
-    // user.theme), so it survives sign-out and follows the account to new devices.
-    if (v.theme && v.extras === undefined) {
-      const cur = JSON.parse(u.extras || "{}");
+    // Theme is stored inside the extras blob, so it survives sign-out and follows
+    // the account. Merge it with an extras patch when both arrive together.
+    if (v.theme) {
+      const cur = parseStoredProfileExtras(v.extras ?? u.extras);
       cur.theme = v.theme;
-      sets.push("extras = ?"); args.push(JSON.stringify(cur).slice(0, 8000));
-    } else if (v.extras) { sets.push("extras = ?"); args.push(v.extras); }
+      const encoded = serializeProfileExtras(cur);
+      if (!encoded) throw new ApiError(400, `profile metadata must be no larger than ${PROFILE_EXTRAS_MAX_BYTES} bytes.`);
+      sets.push("extras = ?"); args.push(encoded);
+    } else if (v.extras !== undefined) { sets.push("extras = ?"); args.push(v.extras); }
     if (sets.length) db.prepare(`UPDATE users SET ${sets.join(", ")} WHERE id = ?`).run(...args, u.id);
     return { user: publicUser(q.userById.get(u.id), { self: true }) };
   },
@@ -800,8 +849,8 @@ export const routes = {
   "GET /api/posts/:id/comments": (ctx) => {
     const hidden = blockedIdSet(ctx.user?.id);
     const rows = db.prepare(`SELECT c.*, u.name, u.initials, u.avatar_uri, u.avatar_color, u.role, u.verified FROM comments c JOIN users u ON u.id=c.user_id
-                             WHERE c.post_id=? AND c.removed=0 ORDER BY c.created_at ASC LIMIT 400`).all(ctx.params.id);
-    return { comments: rows.filter((c) => !hidden.has(c.user_id)).map((c) => ({ id: c.id, userId: c.user_id, name: c.name, initials: c.initials, avatarUri: c.avatar_uri, avatarColor: c.avatar_color, role: c.role, verified: !!c.verified, text: c.text, parentId: c.parent_id || null, createdAt: c.created_at })) };
+                             WHERE c.post_id=? AND c.removed=0 ORDER BY c.created_at DESC, c.id DESC LIMIT 400`).all(ctx.params.id);
+    return { comments: rows.reverse().filter((c) => !hidden.has(c.user_id)).map((c) => ({ id: c.id, userId: c.user_id, name: c.name, initials: c.initials, avatarUri: c.avatar_uri, avatarColor: c.avatar_color, role: c.role, verified: !!c.verified, text: c.text, parentId: c.parent_id || null, createdAt: c.created_at })) };
   },
 
   "POST /api/posts/:id/comments": (ctx) => {
@@ -836,9 +885,9 @@ export const routes = {
       const other = q.userById.get(o.other);
       if (!other) return null;
       const msgs = db.prepare(`SELECT id, from_id, text, created_at FROM dms
-        WHERE (from_id=? AND to_id=?) OR (from_id=? AND to_id=?) ORDER BY created_at ASC LIMIT 500`)
+        WHERE (from_id=? AND to_id=?) OR (from_id=? AND to_id=?) ORDER BY created_at DESC, id DESC LIMIT 500`)
         .all(u.id, o.other, o.other, u.id);
-      return { otherId: o.other, otherUser: publicUser(other), messages: msgs.map((m) => ({ id: m.id, from: m.from_id, text: m.text, createdAt: m.created_at })) };
+      return { otherId: o.other, otherUser: publicUser(other), messages: msgs.reverse().map((m) => ({ id: m.id, from: m.from_id, text: m.text, createdAt: m.created_at })) };
     }).filter(Boolean);
     return { threads };
   },
@@ -847,9 +896,9 @@ export const routes = {
     const u = requireUser(ctx);
     const other = ctx.params.otherId;
     const msgs = db.prepare(`SELECT id, from_id, text, created_at FROM dms
-      WHERE (from_id=? AND to_id=?) OR (from_id=? AND to_id=?) ORDER BY created_at ASC LIMIT 500`)
+      WHERE (from_id=? AND to_id=?) OR (from_id=? AND to_id=?) ORDER BY created_at DESC, id DESC LIMIT 500`)
       .all(u.id, other, other, u.id);
-    return { messages: msgs.map((m) => ({ id: m.id, from: m.from_id, text: m.text, createdAt: m.created_at })) };
+    return { messages: msgs.reverse().map((m) => ({ id: m.id, from: m.from_id, text: m.text, createdAt: m.created_at })) };
   },
 
   "POST /api/dms/:otherId": (ctx) => {
@@ -917,9 +966,9 @@ export const routes = {
   "GET /api/fanclubs/:artist/messages": (ctx) => {
     const artist = clean(decodeURIComponent(ctx.params.artist), { max: LIMITS.artist }).toLowerCase();
     const rows = db.prepare(`SELECT m.*, u.name, u.initials FROM fan_club_messages m JOIN users u ON u.id=m.user_id
-                             WHERE m.artist=? AND m.removed=0 ORDER BY m.created_at ASC LIMIT 300`).all(artist);
+                             WHERE m.artist=? AND m.removed=0 ORDER BY m.created_at DESC, m.id DESC LIMIT 300`).all(artist);
     const members = db.prepare("SELECT COUNT(*) c FROM fan_club_members WHERE artist=?").get(artist).c;
-    return { members, messages: rows.map((m) => ({ id: m.id, userId: m.user_id, name: m.name, initials: m.initials, text: m.text, createdAt: m.created_at })) };
+    return { members, messages: rows.reverse().map((m) => ({ id: m.id, userId: m.user_id, name: m.name, initials: m.initials, text: m.text, createdAt: m.created_at })) };
   },
 
   "POST /api/fanclubs/:artist/messages": (ctx) => {
@@ -938,8 +987,8 @@ export const routes = {
     const key = clean(decodeURIComponent(ctx.params.key), { max: 300 }).toLowerCase();
     const hidden = blockedIdSet(ctx.user?.id);
     const rows = db.prepare(`SELECT m.*, u.name, u.initials, u.avatar_uri, u.avatar_color, u.role FROM lounge_messages m JOIN users u ON u.id=m.user_id
-                             WHERE m.lounge_id=? AND m.removed=0 ORDER BY m.created_at ASC LIMIT 300`).all(key);
-    return { messages: rows.filter((m) => !hidden.has(m.user_id)).map((m) => ({ id: m.id, userId: m.user_id, name: m.name, initials: m.initials, avatarUri: m.avatar_uri, avatarColor: m.avatar_color, role: m.role, text: m.text, createdAt: m.created_at })) };
+                             WHERE m.lounge_id=? AND m.removed=0 ORDER BY m.created_at DESC, m.id DESC LIMIT 300`).all(key);
+    return { messages: rows.reverse().filter((m) => !hidden.has(m.user_id)).map((m) => ({ id: m.id, userId: m.user_id, name: m.name, initials: m.initials, avatarUri: m.avatar_uri, avatarColor: m.avatar_color, role: m.role, text: m.text, createdAt: m.created_at })) };
   },
   "POST /api/lounges/:key/messages": (ctx) => {
     const u = requireUser(ctx);

@@ -3,14 +3,12 @@
 // Every call sends the httpOnly session cookie; errors normalize to Error(message).
 import { Platform } from "react-native";
 
-const BASE =
-  process.env.EXPO_PUBLIC_API_URL ||
-  (Platform.OS === "web" && typeof window !== "undefined" && window.location.port === "8081"
-    ? "http://localhost:3000"
-    : "");
+const DEV_WEB = Platform.OS === "web" && typeof window !== "undefined" && window.location.port === "8081";
+const CONFIGURED_ORIGIN = (process.env.EXPO_PUBLIC_API_URL || "").replace(/\/+$/, "");
+const BASE = CONFIGURED_ORIGIN || (DEV_WEB ? "http://localhost:3000" : Platform.OS === "web" ? "" : "https://www.mshpit.com");
 
-// Absolute URL for a route (for full-page redirects like the Spotify OAuth handoff,
-// which must carry the session cookie).
+// Absolute URL for routes that leave the app shell. Web production intentionally
+// stays same-origin; native uses EXPO_PUBLIC_API_URL or the production origin.
 export const apiUrl = (path) => BASE + path;
 
 export async function api(path, { method = "GET", body } = {}) {

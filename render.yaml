@@ -8,7 +8,7 @@ services:
     name: mshpit
     runtime: node
     plan: starter                      # $7/mo; has persistent disk support
-    buildCommand: npm ci && npm run build:web
+    buildCommand: npm ci && npm run check
     startCommand: node server/index.js
     healthCheckPath: /api/health
     autoDeploy: true
@@ -23,6 +23,8 @@ services:
         value: production
       - key: PIT_DATA_DIR
         value: /data
+      - key: PUBLIC_ORIGIN
+        value: https://www.mshpit.com
       - key: ADMIN_EMAIL
         value: adamgadishaw@gmail.com
       - key: ADMIN_PASSWORD
@@ -33,6 +35,12 @@ services:
       # console.cloud.google.com → enable "YouTube Data API v3" → Credentials → API
       # key. Without it, playback falls back to Deezer 30s previews for everyone.
       - key: YOUTUBE_API_KEY
+        sync: false
+      # Password recovery is disabled gracefully until both values are set. Never
+      # log or expose reset links as a substitute for transactional email.
+      - key: RESEND_API_KEY
+        sync: false
+      - key: MAIL_FROM
         sync: false
       - key: EXPO_PUBLIC_GOOGLE_MAPS_KEY
         # Referrer-locked (mshpit.com/*) + Maps Static API only. Safe to commit:

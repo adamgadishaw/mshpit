@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
  * Active venue scraper — pulls REAL venues (with real coordinates) for every
- * major US + Canada city from MusicBrainz (CC0, keyless), then generates
- * plausible upcoming concerts by pairing real touring artists with those venues
- * (Ticketmaster *search* deep links — no API key needed). Preserves any artists
- * already scraped (with their Wikimedia Commons photos).
+ * major US + Canada city from MusicBrainz (CC0, keyless). This job imports venue
+ * facts only. Performances must come from a provider that supplies a real event
+ * id (Ticketmaster/Bandsintown), never from generated artist pairings. Artists
+ * and provider-backed tour dates already in the catalog are preserved.
  *
  *   node scripts/ingest-venues.mjs
  *
@@ -14,7 +14,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-const UA = "PitConcertApp/0.1 (https://example.com; contact@example.com)";
+const UA = "mshpit/1.0 (https://www.mshpit.com)";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const here = dirname(fileURLToPath(import.meta.url));
 const OUT = join(here, "..", "src", "seed", "catalog.generated.json");
@@ -74,15 +74,6 @@ const CITIES = [
   ["Victoria", "Victoria", "British Columbia", "Canada", 48.4284, -123.3656],
 ];
 
-const ARTISTS = [
-  ["Turnstile", "Hardcore"], ["IDLES", "Punk"], ["Mitski", "Indie"], ["Khruangbin", "Psych Rock"],
-  ["Japanese Breakfast", "Indie"], ["King Gizzard & the Lizard Wizard", "Psych Rock"], ["Geese", "Indie"],
-  ["Wednesday", "Alt-Country"], ["boygenius", "Indie"], ["Big Thief", "Indie"], ["Beach House", "Shoegaze"],
-  ["Phoebe Bridgers", "Indie"], ["Snail Mail", "Indie"], ["Fontaines D.C.", "Punk"], ["Militarie Gun", "Hardcore"],
-  ["The National", "Indie"], ["Vampire Weekend", "Indie"], ["Tame Impala", "Psych Rock"], ["Clairo", "Indie"],
-  ["Mac DeMarco", "Indie"], ["Charli XCX", "Electronic"], ["Knocked Loose", "Hardcore"], ["MJ Lenderman", "Alt-Country"],
-];
-
 // Include Stadiums + Indoor arenas + Amphitheatres, not just "Venue" — the big
 // rooms artists headline are filed under those types in MusicBrainz.
 const PLACE_TYPES = `(type:Venue OR type:Stadium OR type:"Indoor arena" OR type:Amphitheatre)`;
@@ -108,17 +99,14 @@ async function venuesForCity(c) {
   }
 }
 
-const pad = (n) => String(n).padStart(2, "0");
-const tm = (a) => `https://www.ticketmaster.com/search?q=${encodeURIComponent(a)}`;
-
 async function main() {
   let existing = { artists: {} };
   try { existing = JSON.parse(await readFile(OUT, "utf8")); } catch {}
 
   const venues = {};
-  const tourDates = [];
-  const shows = [];
-  let ai = 0, di = 0;
+  // Strip legacy generated rows. Provider imports use stable tm_/bit_ ids.
+  const tourDates = (existing.tourDates || []).filter((row) => /^(tm|bit)_/.test(String(row?.id || "")));
+  const shows = (existing.shows || []).filter((row) => !/^(g|ca)_s_/.test(String(row?.id || "")));
 
   console.log(`Scraping venues for ${CITIES.length} cities from MusicBrainz…`);
   for (const c of CITIES) {
@@ -127,20 +115,6 @@ async function main() {
       const key = v.name.trim().toLowerCase();
       if (!venues[key]) venues[key] = { name: v.name, place: v.place, lat: v.lat, lng: v.lng, capacity: null, photo: null, photoCredit: null };
     }
-    // 2 upcoming concerts per city + 1 historical show, pairing real artists with real venues
-    const picks = list.slice(0, 3);
-    picks.forEach((v, idx) => {
-      const [artist, genre] = ARTISTS[ai++ % ARTISTS.length];
-      const month = 7 + (di % 6); // Jul–Dec 2026
-      const day = 1 + ((di * 7) % 27);
-      di++;
-      if (idx < 2) {
-        tourDates.push({ id: `g_t_${di}`, artist, genre, venue: v.name, place: v.place, date: `2026 · ${pad(month)} · ${pad(day)}`, ticketUrl: tm(artist), releaseAt: Date.now() - 86400000, createdBy: "import", soldOut: di % 5 === 0 });
-      } else {
-        const rating = Math.round((3.8 + Math.random() * 1.1) * 10) / 10;
-        shows.push({ id: `g_s_${di}`, artist, genre, venue: v.name, city: c[0], lat: v.lat, lng: v.lng, rating, reviews: 20 + ((di * 13) % 300), band: rating, room: Math.round((3.5 + Math.random()) * 10) / 10, setlist: [] });
-      }
-    });
     console.log(`  ✓ ${c[0]}: ${list.length} venues`);
     await sleep(1100); // MusicBrainz rate limit
   }

@@ -27,7 +27,10 @@
     "ingest:all": "node scripts/ingest-venues.mjs && node scripts/ingest-famous-venue-photos.mjs && node scripts/ingest-venue-photos.mjs && node scripts/ingest-artist-details.mjs && node scripts/fix-bios.mjs",
     "pipeline": "node --env-file=.env scripts/pipeline.mjs",
     "server": "node server/index.js",
-    "build:web": "expo export -p web"
+    "build:web": "expo export -p web",
+    "test": "node --test",
+    "check:syntax": "node scripts/check-syntax.mjs",
+    "check": "npm run test && npm run check:syntax && npm run build:web"
   },
   "private": true,
   "engines": {

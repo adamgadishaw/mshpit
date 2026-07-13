@@ -16,7 +16,8 @@ const LIMIT = Number(process.env.TOURDATE_LIMIT) || 150;
 const REFRESH_H = Number(process.env.TOURDATE_REFRESH_H) || 12;
 const DAY = 86400000;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const slugId = (p, n, v, d) => `${p}_${n}_${v}_${d}`.toLowerCase().replace(/[^a-z0-9]+/g, "_").slice(0, 60);
+const slugId = (p, n, v, d) => `${p}_${n}_${v}_${d}`.toLowerCase().replace(/[^a-z0-9]+/g, "_").slice(0, 120);
+const norm = (value) => String(value || "").trim().toLowerCase();
 
 async function getJSON(url) {
   const ctrl = new AbortController();
@@ -36,10 +37,11 @@ async function tmDates(name) {
   const out = [];
   for (const e of data._embedded?.events || []) {
     const v = e._embedded?.venues?.[0];
+    const isRequestedArtist = (e._embedded?.attractions || []).some((a) => norm(a.name) === norm(name));
     const date = e.dates?.start?.localDate?.replace(/-/g, " · ");
-    if (!v?.name || !date) continue;
+    if (!v?.name || !date || !isRequestedArtist) continue;
     out.push({
-      id: slugId("tm", name, v.name, date), artist: name, venue: v.name,
+      id: e.id ? `tm_${e.id}` : slugId("tm", name, v.name, date), artist: name, venue: v.name,
       place: [v.city?.name, v.state?.name, v.country?.name].filter(Boolean).join(", "),
       lat: v.location?.latitude ? Number(v.location.latitude) : null,
       lng: v.location?.longitude ? Number(v.location.longitude) : null,
@@ -59,7 +61,7 @@ async function bitDates(name) {
     const date = (e.datetime || "").slice(0, 10).replace(/-/g, " · ");
     if (!v.name || !date) continue;
     out.push({
-      id: slugId("bit", name, v.name, date), artist: name, venue: v.name,
+      id: e.id ? `bit_${e.id}` : slugId("bit", name, v.name, date), artist: name, venue: v.name,
       place: [v.city, v.region, v.country].filter(Boolean).join(", "),
       lat: v.latitude ? Number(v.latitude) : null, lng: v.longitude ? Number(v.longitude) : null,
       date, ticket_url: (e.offers || []).find((o) => o.type === "Tickets")?.url || e.url || "https://www.bandsintown.com/",

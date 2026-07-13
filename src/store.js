@@ -7,12 +7,19 @@ import { api } from "./lib/api";
 import { setTheme as applyTheme, syncThemeFromAccount } from "./theme";
 import { artistMeta } from "./seed/ingested";
 import { ACHIEVEMENTS } from "./lib/badges";
+import { ENABLE_DEMO_DATA } from "./config/runtime.mjs";
+import { isUpcomingEventDate, sanitizePersistedStoreValue, sanitizeTourDates } from "./domain/dataPolicy.mjs";
 
 // Prototype in-memory store: auth, profiles, social graph, content, reports,
 // artist approvals, scheduled tour dates. NO backend - resets on reload. The
 // real build replaces this with a server + DB + sessions, keeping this shape.
 
 const AV = ["#F2A65A", "#E0457B", "#5B8DEF", "#6FCF97", "#B98AE0", "#E8B65A"];
+// Local plaintext accounts exist only to keep the prototype usable while running
+// an explicit development build without the API. Production must never treat a
+// network failure as a successful local authentication or signup.
+const LOCAL_AUTH_FALLBACK = ENABLE_DEMO_DATA;
+const demoSeed = (value, emptyValue) => (ENABLE_DEMO_DATA ? value : emptyValue);
 
 // Compact relative time ("now" / "5m" / "3h" / "2d") for server timestamps that
 // arrive as epoch ms, so hydrated DMs/comments read like the seed ones.
@@ -27,7 +34,7 @@ const ago = (ms) => {
   return Math.floor(d / 30) + "mo";
 };
 
-const seedUsers = [
+const demoUsers = [
   // NOTE: the real admin account lives ONLY on the server (server/index.js
   // seedAdmin), never ship admin credentials in the client bundle.
   { id: "u_demo", name: "Demo Fan", handle: "demo", home: { city: "San Francisco", lat: 37.7749, lng: -122.4194 }, email: "demo@example.com", password: "password123", role: "fan", initials: "DF", avatarColor: AV[2], avatarUri: null, bio: "Just here for the pit.", genres: ["Indie"], banner: null, nowPlaying: { title: "Not Strong Enough", artist: "boygenius" }, treble: { title: "Not Strong Enough", artist: "boygenius" }, bass: { title: "3D Country", artist: "Geese" }, playlists: [{ id: "pl1", name: "Front row faves", tracks: [{ title: "Be Sweet", artist: "Japanese Breakfast" }, { title: "$20", artist: "boygenius" }] }] },
@@ -36,10 +43,11 @@ const seedUsers = [
   { id: "u_devon", name: "Devon Ash", handle: "dash", home: { city: "New York City", lat: 40.7128, lng: -74.006 }, email: "devon@example.com", password: "x", role: "fan", initials: "DA", avatarColor: AV[3], avatarUri: null, bio: "Indie sad boy. Will cry at the barricade.", genres: ["Indie", "Shoegaze"], playlists: [{ id: "pl3", name: "Cry at the barricade", tracks: [{ title: "Paprika", artist: "Japanese Breakfast" }, { title: "Pristine", artist: "Snail Mail" }] }] },
   { id: "u_priya", name: "Priya N.", handle: "priyalive", home: { city: "Denver", lat: 39.7392, lng: -104.9903 }, email: "priya@example.com", password: "x", role: "fan", initials: "PN", avatarColor: AV[4], avatarUri: null, bio: "Jam bands & amphitheaters.", genres: ["Psych Rock"], playlists: [] },
 ];
+const seedUsers = demoSeed(demoUsers, []);
 
 const now = Date.now();
 const DAY = 86400000;
-const seedTourDates = [
+const demoTourDates = [
   { id: "t1", artist: "Turnstile", venue: "The Greek Theatre", place: "Los Angeles, California, United States", date: "2026 · 08 · 14", ticketUrl: "https://www.ticketmaster.com/search?q=Turnstile", releaseAt: now - DAY, createdBy: "u_artist" },
   { id: "t2", artist: "Geese", venue: "Brooklyn Steel", place: "Brooklyn, New York, United States", date: "2026 · 09 · 02", ticketUrl: "https://www.ticketmaster.com/search?q=Geese", releaseAt: now - DAY, createdBy: "u_admin" },
   { id: "t3", artist: "Japanese Breakfast", venue: "The Fillmore", place: "San Francisco, California, United States", date: "2026 · 10 · 11", ticketUrl: "https://www.ticketmaster.com/search?q=Japanese%20Breakfast", releaseAt: now - DAY, createdBy: "u_admin" },
@@ -47,8 +55,12 @@ const seedTourDates = [
   { id: "t4", artist: "Turnstile", venue: "Madison Square Garden", place: "New York City, New York, United States", date: "2026 · 12 · 31", ticketUrl: "https://www.ticketmaster.com/search?q=Turnstile", releaseAt: now + 7 * DAY, createdBy: "u_artist" },
   ...catalogTourDates,
 ];
+const seedTourDates = demoSeed(demoTourDates, []);
 
-const seedRequests = [{ id: "r1", userId: "u_demo", artistName: "Demo Band", note: "I front Demo Band, want to post our tour dates.", status: "pending" }];
+const seedRequests = demoSeed(
+  [{ id: "r1", userId: "u_demo", artistName: "Demo Band", note: "I front Demo Band, want to post our tour dates.", status: "pending" }],
+  [],
+);
 
 export const isStaff = (role) => role === "admin";
 // Moderators can moderate (reports, members, content) but not administer roles,
@@ -86,7 +98,8 @@ export const useStore = () => useContext(StoreContext);
 // signed-in accounts). Without it, interactions like joining a fan club, DMs, or
 // "going" were dropped on refresh because they lived only in memory.
 function usePersisted(key, seed) {
-  const [value, setValue] = useState(() => load(key, seed));
+  const [value, setValue] = useState(() =>
+    sanitizePersistedStoreValue(key, load(key, seed), ENABLE_DEMO_DATA));
   useEffect(() => { save(key, value); }, [key, value]);
   return [value, setValue];
 }
@@ -94,7 +107,8 @@ function usePersisted(key, seed) {
 export function StoreProvider({ children }) {
   // Hydrate the identity-critical state from storage so a refresh / new page keeps
   // you logged in and keeps your data. (See src/lib/persist.js.)
-  const [users, setUsers] = useState(() => load("pit.users", seedUsers));
+  const [users, setUsers] = useState(() =>
+    sanitizePersistedStoreValue("pit.users", load("pit.users", seedUsers), ENABLE_DEMO_DATA));
   const [memberCount, setMemberCount] = useState(0); // total signed-up members (from the server)
   const [remoteArtists, setRemoteArtists] = useState({}); // norm -> meta, from the DB artist catalog API
   const [playHistory, setPlayHistory] = useState(() => load("pit.playhistory", [])); // every song played, newest first
@@ -112,8 +126,10 @@ export function StoreProvider({ children }) {
   };
   const deleteDraft = (id) => setDrafts((all) => all.filter((x) => x.id !== id));
   const [adminStats, setAdminStats] = useState({ total: 0, banned: 0, verified: 0, regions: [] }); // admin member console stats
-  const [session, setSession] = useState(() => load("pit.session", null));
-  const [feed, setFeed] = useState(() => load("pit.feed", seedFeed));
+  const [session, setSession] = useState(() =>
+    sanitizePersistedStoreValue("pit.session", load("pit.session", null), ENABLE_DEMO_DATA));
+  const [feed, setFeed] = useState(() =>
+    sanitizePersistedStoreValue("pit.feed", load("pit.feed", demoSeed(seedFeed, [])), ENABLE_DEMO_DATA));
   const [removedIds, setRemovedIds] = useState([]);
   // Per-image moderation: individual photo URLs pulled from galleries. Reactive,
   // like the rest of moderation, but removing one photo backfills the gallery
@@ -122,53 +138,55 @@ export function StoreProvider({ children }) {
   const [requests, setRequests] = usePersisted("pit.requests", seedRequests);
   const [tourDates, setTourDates] = usePersisted("pit.tourDates", seedTourDates);
   const [reports, setReports] = useState([]);
-  const [follows, setFollows] = useState(() => load("pit.follows", { u_demo: ["u_mara", "u_devon"] }));
-  const [blockedIds, setBlockedIds] = useState(() => load("pit.blocked", []));
+  const [follows, setFollows] = useState(() =>
+    sanitizePersistedStoreValue("pit.follows", load("pit.follows", demoSeed({ u_demo: ["u_mara", "u_devon"] }, {})), ENABLE_DEMO_DATA));
+  const [blockedIds, setBlockedIds] = useState(() =>
+    sanitizePersistedStoreValue("pit.blocked", load("pit.blocked", []), ENABLE_DEMO_DATA));
   useEffect(() => { save("pit.blocked", blockedIds); }, [blockedIds]);
   // Afterparty: like + comment a concert (keyed by the concert/log id)
-  const [comments, setComments] = usePersisted("pit.comments", {
+  const [comments, setComments] = usePersisted("pit.comments", demoSeed({
     log_1: [
       { id: "c1", userId: "u_devon", name: "Devon Ash", initials: "DA", text: "The two-step during HEALING was unreal. Worth the bruises.", likes: 5 },
       { id: "c2", userId: "u_priya", name: "Priya N.", initials: "PN", text: "Back of the room sound was rough but the pit didn't care.", likes: 2 },
     ],
-  });
-  const [likes, setLikes] = usePersisted("pit.likes", { log_1: 42, log_2: 88, log_3: 156 });
+  }, {}));
+  const [likes, setLikes] = usePersisted("pit.likes", demoSeed({ log_1: 42, log_2: 88, log_3: 156 }, {}));
   const [myLikes, setMyLikes] = usePersisted("pit.myLikes", {});
 
   // Concert Lounge: a gated, Discord-style chat per concert (keyed by concertKey)
-  const [lounge, setLounge] = usePersisted("pit.lounge", {
+  const [lounge, setLounge] = usePersisted("pit.lounge", demoSeed({
     "turnstile|the fillmore|2026 · 06 · 21": [
       { id: "m1", userId: "u_devon", name: "Devon Ash", initials: "DA", text: "anyone else lose a shoe in the pit lol", ts: "2h" },
       { id: "m2", userId: "u_priya", name: "Priya N.", initials: "PN", text: "the HEALING singalong gave me chills", ts: "2h" },
     ],
-  });
+  }, {}));
   // Planned attendance ("Going") - per user, list of concert refs
-  const [going, setGoing] = usePersisted("pit.going", {
+  const [going, setGoing] = usePersisted("pit.going", demoSeed({
     u_mara: [{ key: "geese|the independent|2026 · 08 · 26", artist: "Geese", venue: "The Independent", city: "San Francisco", date: "2026 · 08 · 26" }],
-  });
+  }, {}));
   // Artist fan clubs: permanent chat per artist + membership
-  const [fanClubMsgs, setFanClubMsgs] = usePersisted("pit.fanClubMsgs", {
+  const [fanClubMsgs, setFanClubMsgs] = usePersisted("pit.fanClubMsgs", demoSeed({
     turnstile: [
       { id: "fc1", userId: "u_mara", name: "Mara Quinn", initials: "MQ", text: "GLOW ON changed my life, no notes", ts: "3h" },
       { id: "fc2", userId: "u_devon", name: "Devon Ash", initials: "DA", text: "who's getting the MSG tickets??", ts: "1h" },
     ],
-  });
-  const [fanClubs, setFanClubs] = usePersisted("pit.fanClubs", { u_demo: ["Turnstile"], u_mara: ["Turnstile", "Militarie Gun"] });
+  }, {}));
+  const [fanClubs, setFanClubs] = usePersisted("pit.fanClubs", demoSeed({ u_demo: ["Turnstile"], u_mara: ["Turnstile", "Militarie Gun"] }, {}));
   // Server-truth member counts per fan club (slice 5), keyed by fcKey. Preferred
   // over the local-graph count when present so totals reflect everyone, not just
   // the users this browser happens to know about.
   const [fanClubMeta, setFanClubMeta] = useState({});
   // Artist-owned profile overrides (banner/avatar/bio/feedEnabled) + updates feed
-  const [artistProfiles, setArtistProfiles] = usePersisted("pit.artistProfiles", {
+  const [artistProfiles, setArtistProfiles] = usePersisted("pit.artistProfiles", demoSeed({
     turnstile: { feedEnabled: true },
-  });
-  const [artistPosts, setArtistPosts] = usePersisted("pit.artistPosts", {
+  }, {}));
+  const [artistPosts, setArtistPosts] = usePersisted("pit.artistPosts", demoSeed({
     turnstile: [{ id: "ap1", text: "New tour dates just dropped. MSG we're coming for you.", ts: "2d" }],
-  });
+  }, {}));
   // Venue reviews (rating + text + photos), keyed by venue name
   const [venueReviews, setVenueReviews] = usePersisted("pit.venueReviews", {});
   // Direct messages - keyed by the sorted pair of user ids; plus read markers.
-  const [dms, setDms] = usePersisted("pit.dms", {
+  const [dms, setDms] = usePersisted("pit.dms", demoSeed({
     u_demo__u_mara: [
       { id: "dm1", from: "u_mara", text: "yo are you going to the Geese show?", ts: "1d" },
       { id: "dm2", from: "u_demo", text: "trying to get tickets! you?", ts: "1d" },
@@ -179,18 +197,18 @@ export function StoreProvider({ children }) {
     u_demo__u_priya: [
       { id: "dm4", from: "u_priya", text: "hey! saw you were at the Fillmore show too, small world", ts: "3h" },
     ],
-  });
+  }, {}));
   const [dmRead, setDmRead] = usePersisted("pit.dmRead", {});
   // Notifications / activity, the social heartbeat. Each item is addressed to a
   // recipient (userId) and generated when someone acts on their content/graph.
-  const [notifications, setNotifications] = usePersisted("pit.notifications", [
+  const [notifications, setNotifications] = usePersisted("pit.notifications", demoSeed([
     { id: "nf1", userId: "u_demo", type: "follow", actorId: "u_mara", actorName: "Mara Quinn", actorInitials: "MQ", ts: Date.now() - 3600000, read: false },
     { id: "nf2", userId: "u_demo", type: "like", actorId: "u_devon", actorName: "Devon Ash", actorInitials: "DA", postId: "log_1", artist: "Turnstile", ts: Date.now() - 7200000, read: false },
     { id: "nf3", userId: "u_demo", type: "comment", actorId: "u_priya", actorName: "Priya N.", actorInitials: "PN", postId: "log_1", artist: "Turnstile", ts: Date.now() - 10800000, read: true },
-  ]);
+  ], []));
   // Album + song ratings (stand-in for stream data) keyed by artist|title
-  const [albumRatings, setAlbumRatings] = usePersisted("pit.albumRatings", { "turnstile|glow on": { u_mara: 5, u_devon: 4.5 }, "turnstile|never enough": { u_mara: 4 } });
-  const [songRatings, setSongRatings] = usePersisted("pit.songRatings", { "turnstile|healing": { u_mara: 5, u_demo: 5 } });
+  const [albumRatings, setAlbumRatings] = usePersisted("pit.albumRatings", demoSeed({ "turnstile|glow on": { u_mara: 5, u_devon: 4.5 }, "turnstile|never enough": { u_mara: 4 } }, {}));
+  const [songRatings, setSongRatings] = usePersisted("pit.songRatings", demoSeed({ "turnstile|healing": { u_mara: 5, u_demo: 5 } }, {}));
   // Server-truth rating aggregates keyed by `${kind}|${ref}` (slice 7).
   const [ratingAgg, setRatingAgg] = useState({});
 
@@ -222,17 +240,16 @@ export function StoreProvider({ children }) {
   useEffect(() => { loadMyPlaylists(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [session?.id]);
 
   // --- SQLite migration slices 2 & 3: public feed + likes/comments -----------
-  // Pull real server posts (with their like/comment counts + whether *I* liked)
-  // and merge them over the bundled demo feed. Idempotent (dedupes by id) and
-  // best-effort, so the app still works fully offline on the bundled seed.
+  // Pull server posts (with current counts and viewer-like state) and upsert them
+  // into the local cache. Existing IDs must be replaced, not skipped, otherwise
+  // edits and cross-device likes/comments remain stale forever.
   const hydrateFeed = () => {
     api("/api/feed?limit=50")
       .then(({ posts }) => {
         if (!Array.isArray(posts) || !posts.length) return;
         setFeed((f) => {
-          const have = new Set(f.map((l) => l.id));
-          const fresh = posts.filter((p) => !have.has(p.id));
-          return fresh.length ? [...fresh, ...f] : f;
+          const serverIds = new Set(posts.map((p) => p.id));
+          return [...posts, ...f.filter((p) => !serverIds.has(p.id))];
         });
         // Like model: likes[id] is the count EXCLUDING the viewer; myLikes[id] is
         // their own toggle. The server total includes me, so subtract it back out.
@@ -244,16 +261,16 @@ export function StoreProvider({ children }) {
   // Load once on mount so even guests see real posts (the feed is public).
   useEffect(() => { hydrateFeed(); }, []);
 
-  // Live tour dates scraped into the DB (server/tourdates.js). Merged over the
-  // bundled seed so Nearby / Discover / artist pages show real, fresh gigs without
-  // a redeploy. Dedupe by id; best-effort/offline-safe.
+  // Live provider-backed tour dates from the DB. Production also rejects legacy
+  // generated IDs so an old server/cache cannot reintroduce prototype concerts.
   useEffect(() => {
     api("/api/tourdates")
       .then(({ tourDates: live }) => {
-        if (!Array.isArray(live) || !live.length) return;
+        const accepted = sanitizeTourDates(live, ENABLE_DEMO_DATA);
+        if (!accepted.length) return;
         setTourDates((cur) => {
           const have = new Set(cur.map((t) => t.id));
-          const fresh = live.filter((t) => !have.has(t.id));
+          const fresh = accepted.filter((t) => !have.has(t.id));
           return fresh.length ? [...fresh, ...cur] : cur;
         });
       })
@@ -481,7 +498,7 @@ export function StoreProvider({ children }) {
   // popularity, capped at ~2 per artist so one band never hogs the queue. Skips the
   // seed and anything you just heard. Works even when Spotify popularity is missing.
   const recommendTracks = (seed, n = 24) => {
-    const keyOf = (t) => (t?.url || (t?.title || "").toLowerCase());
+    const keyOf = (t) => String(t?.url || t?.id || t?.preview || `${t?.artist || ""}|${t?.title || ""}`).toLowerCase();
     const seen = new Set();
     if (seed) seen.add(keyOf(seed));
     (playHistory || []).slice(0, 25).forEach((t) => seen.add(keyOf(t)));
@@ -497,8 +514,10 @@ export function StoreProvider({ children }) {
     for (const x of [...inGenre, ...rest]) {
       let taken = 0;
       for (const t of x.meta.topTracks || []) {
-        if (!t.url && !t.preview) continue;
-        const track = { kind: "track", title: t.title, artist: x.a.name, url: t.url || null, preview: t.preview || null, art: x.meta.photo || x.a.photo || null };
+        // Artist + title is a complete track reference. Provider URLs are optional
+        // enrichments that the player resolves only when this track becomes current.
+        if (!t.title) continue;
+        const track = { kind: "track", title: t.title, artist: x.a.name, id: t.id || null, url: t.url || null, preview: t.preview || null, art: x.meta.photo || x.a.photo || null };
         const k = keyOf(track);
         if (seen.has(k)) continue;
         seen.add(k); out.push(track); taken++;
@@ -512,8 +531,9 @@ export function StoreProvider({ children }) {
   // recommended tail so "up next" is always populated and playback never dead-ends
   // after one song.
   const autoplayQueue = (seed, baseList) => {
-    const keyOf = (t) => (t?.url || t?.id || t?.preview || (t?.title || "").toLowerCase());
-    const base = ((Array.isArray(baseList) && baseList.length ? baseList : (seed ? [seed] : [])) || []).filter((t) => t && (t.url || t.id || t.preview));
+    const keyOf = (t) => String(t?.url || t?.id || t?.preview || `${t?.artist || ""}|${t?.title || ""}`).toLowerCase();
+    const isTrackRef = (t) => !!(t && (t.url || t.id || t.preview || (t.title && t.artist)));
+    const base = ((Array.isArray(baseList) && baseList.length ? baseList : (seed ? [seed] : [])) || []).filter(isTrackRef);
     const seen = new Set(base.map(keyOf));
     const recs = recommendTracks(seed || base[0], 30).filter((t) => { const k = keyOf(t); if (seen.has(k)) return false; seen.add(k); return true; });
     return [...base, ...recs].slice(0, 60);
@@ -639,14 +659,14 @@ export function StoreProvider({ children }) {
   // "didn't save." No-op for guests / offline (returns null / rejects).
   useEffect(() => {
     api("/api/me")
-      .then(({ user }) => { if (user) absorbServerUser(user); })
-      .catch(() => {});
+      .then(({ user }) => { if (user) absorbServerUser(user); else setSession(null); })
+      .catch((e) => { if (e?.status === 401) setSession(null); });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Server-first auth (real accounts, hashed passwords, httpOnly sessions).
-  // Falls back to the local in-memory demo accounts ONLY when the backend is
-  // unreachable, so dev without the server still works.
+  // Falls back to the local in-memory demo accounts only in an explicit dev build.
+  // A production network failure must never authenticate a bundled plaintext user.
   const login = async (email, password) => {
     try {
       const { user } = await api("/api/login", { method: "POST", body: { email, password } });
@@ -656,6 +676,7 @@ export function StoreProvider({ children }) {
     } catch (e) {
       if (e.status) return { ok: false, error: e.message }; // real server verdict
     }
+    if (!LOCAL_AUTH_FALLBACK) return { ok: false, error: "Couldn't connect. Check your connection and try again." };
     // offline/dev fallback
     const em = cleanEmail(email);
     const pw = typeof password === "string" ? password.slice(0, 100) : "";
@@ -717,6 +738,7 @@ export function StoreProvider({ children }) {
     } catch (e) {
       if (e.status) return { ok: false, error: e.message };
     }
+    if (!LOCAL_AUTH_FALLBACK) return { ok: false, error: "Couldn't connect. Check your connection and try again." };
     // offline/dev fallback
     if (users.some((x) => x.email.toLowerCase() === em)) return { ok: false, error: "That email is already registered." };
     const coords = cityCoords[city] || null;
@@ -1493,7 +1515,9 @@ export function StoreProvider({ children }) {
     const nights = [...liveLogs, ...aggregateNights];
     const avg = (sel) => (nights.length ? nights.reduce((s, n) => s + sel(n), 0) / nights.length : 0);
     const upcoming = tourDates
-      .filter((t) => norm(t.artist) === key && (t.releaseAt <= Date.now() || isStaff(session?.role) || t.createdBy === session?.id))
+      .filter((t) => isUpcomingEventDate(t)
+        && norm(t.artist) === key
+        && (t.releaseAt <= Date.now() || isStaff(session?.role) || t.createdBy === session?.id))
       .map((t) => ({ ...t, scheduled: t.releaseAt > Date.now() }));
     const totalRatings = nights.reduce((s, n) => s + (n.likes || 0), 0);
     const cat = catalogArtists[key];
@@ -1516,10 +1540,12 @@ export function StoreProvider({ children }) {
   };
 
   // Public sees released dates; the creating team + admins also see scheduled.
-  const visibleTourDates = ({ staff, viewerId }) =>
-    tourDates
-      .filter((t) => t.releaseAt <= Date.now() || staff || t.createdBy === viewerId)
+  const visibleTourDates = ({ staff, viewerId }) => {
+    const at = Date.now();
+    return tourDates
+      .filter((t) => isUpcomingEventDate(t, at) && (t.releaseAt <= at || staff || t.createdBy === viewerId))
       .map((t) => ({ ...t, scheduled: t.releaseAt > Date.now() }));
+  };
 
   // Venue page - the room's reputation across every show held there. Sound,
   // views, and crowd live with the building, not the touring band.
@@ -1550,7 +1576,9 @@ export function StoreProvider({ children }) {
     const nights = [...liveLogs, ...aggregateNights];
     const avg = (sel) => (nights.length ? nights.reduce((s, n) => s + sel(n), 0) / nights.length : 0);
     const upcoming = tourDates
-      .filter((t) => norm(t.venue) === key && (t.releaseAt <= Date.now() || isStaff(session?.role) || t.createdBy === session?.id))
+      .filter((t) => isUpcomingEventDate(t)
+        && norm(t.venue) === key
+        && (t.releaseAt <= Date.now() || isStaff(session?.role) || t.createdBy === session?.id))
       .map((t) => ({ ...t, scheduled: t.releaseAt > Date.now() }));
     const cat = catalogVenues[key];
     const place = (cat && cat.place) || nights.find((n) => n.city)?.city || upcoming.find((u) => u.place)?.place || "";
@@ -1600,7 +1628,9 @@ export function StoreProvider({ children }) {
 
   // # of public upcoming dates at a venue (released only).
   const venueUpcomingCount = (name) =>
-    tourDates.filter((t) => norm(t.venue) === norm(name) && t.releaseAt <= Date.now()).length;
+    tourDates.filter((t) => isUpcomingEventDate(t)
+      && norm(t.venue) === norm(name)
+      && t.releaseAt <= Date.now()).length;
 
   // --- Sidebar data (desktop rails) ------------------------------------------
   // Every artist we know of, from the scraped catalog + rated shows + tour dates.
@@ -1781,7 +1811,7 @@ export function StoreProvider({ children }) {
   // Soonest released upcoming dates across the whole catalog.
   const upcomingEvents = (n = 8) =>
     tourDates
-      .filter((t) => t.releaseAt <= Date.now())
+      .filter((t) => isUpcomingEventDate(t) && t.releaseAt <= Date.now())
       .map((t) => ({ ...t }))
       .sort((a, b) => String(a.date).localeCompare(String(b.date)))
       .slice(0, n);
@@ -1852,7 +1882,9 @@ export function StoreProvider({ children }) {
       .map((v) => ({
         ...v,
         distanceKm: haversineKm(center, v.coord),
-        upcoming: tourDates.filter((t) => norm(t.venue) === norm(v.name) && t.releaseAt <= Date.now()).length,
+        upcoming: tourDates.filter((t) => isUpcomingEventDate(t)
+          && norm(t.venue) === norm(v.name)
+          && t.releaseAt <= Date.now()).length,
       }))
       .filter((v) => v.distanceKm <= maxKm)
       .sort((a, b) => a.distanceKm - b.distanceKm);
@@ -1862,7 +1894,7 @@ export function StoreProvider({ children }) {
   const regionShows = (maxKm = 75, center = home) => {
     if (!center || center.lat == null) return [];
     return tourDates
-      .filter((t) => t.releaseAt <= Date.now())
+      .filter((t) => isUpcomingEventDate(t) && t.releaseAt <= Date.now())
       .map((t) => ({ ...t, coord: venueCoord(t.venue), genre: artistGenre(t.artist) }))
       .filter((t) => t.coord && haversineKm(center, t.coord) <= maxKm)
       .map((t) => ({ ...t, distanceKm: haversineKm(center, t.coord) }))
@@ -1889,7 +1921,7 @@ export function StoreProvider({ children }) {
     const followed = new Set(follows[session.id] || []);
     const followedArtists = new Set(feed.filter((l) => followed.has(l.userId)).map((l) => norm(l.artist)));
     return tourDates
-      .filter((t) => t.releaseAt <= Date.now())
+      .filter((t) => isUpcomingEventDate(t) && t.releaseAt <= Date.now())
       .map((t) => {
         const genre = artistGenre(t.artist);
         const coord = venueCoord(t.venue);

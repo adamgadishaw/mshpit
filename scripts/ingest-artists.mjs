@@ -18,7 +18,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-const UA = "PitConcertApp/0.1 (contact@example.com)";
+const UA = "mshpit/1.0 (https://www.mshpit.com)";
 const OUT = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "seed", "catalog.generated.json");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // PER_TAG is now the DEEP-CRAWL DEPTH per tag (fetched 100 at a time via offset
@@ -128,7 +128,10 @@ async function main() {
         if (cat.artists[k]) continue; // additive only
         cat.artists[k] = {
           name: x.name,
-          genre,
+          // A search-tag match is discovery evidence, not a canonical primary
+          // genre. Keep it as a hint until enrichment verifies it.
+          genre: null,
+          genreHint: genre,
           mbid: x.mbid,
           photo: null,
           photoCredit: null,

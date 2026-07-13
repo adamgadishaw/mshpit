@@ -4,12 +4,12 @@
 //   node server/index.js            # serves API + the exported web build (dist/)
 //   PORT=3000 NODE_ENV=production ADMIN_PASSWORD=... node server/index.js
 //
-// Crash posture: a request can only ever fail ITS OWN response. Every handler is
-// wrapped; JSON bodies are size-capped; unknown routes 404; process-level
-// handlers log-and-continue so one bad request never takes the site down.
+// Crash posture: request errors are isolated and JSON bodies are size-capped.
+// Truly uncaught process errors trigger a graceful restart; continuing after an
+// unknown fatal state can corrupt later requests or database work.
 import { createServer } from "node:http";
-import { readFileSync, existsSync, statSync } from "node:fs";
-import { join, extname, normalize, dirname } from "node:path";
+import { createReadStream, existsSync, statSync } from "node:fs";
+import { join, extname, normalize, dirname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { db, q, publicUser } from "./db.js";
 import { routes, ApiError } from "./api.js";
@@ -135,17 +135,31 @@ function matchRoute(method, pathname) {
   return null;
 }
 
-function serveStatic(res, pathname) {
+function serveStatic(req, res, pathname) {
   if (!existsSync(DIST)) {
     return send(res, 503, { error: "Web build not found. Run: npx expo export -p web" });
   }
   // path-traversal proof: normalize then require the DIST prefix
   let file = normalize(join(DIST, pathname === "/" ? "index.html" : pathname));
-  if (!file.startsWith(normalize(DIST))) return send(res, 403, { error: "Forbidden" });
+  const distRoot = normalize(DIST) + sep;
+  if (!file.startsWith(distRoot)) return send(res, 403, { error: "Forbidden" });
   if (!existsSync(file) || statSync(file).isDirectory()) file = join(DIST, "index.html"); // SPA fallback
   const ext = extname(file).toLowerCase();
   const cache = ext === ".html" ? "no-cache" : "public, max-age=31536000, immutable";
-  send(res, 200, readFileSync(file), { "Content-Type": MIME[ext] || "application/octet-stream", "Cache-Control": cache });
+  const size = statSync(file).size;
+  res.writeHead(200, {
+    ...HEADERS,
+    "Content-Type": MIME[ext] || "application/octet-stream",
+    "Content-Length": size,
+    "Cache-Control": cache,
+  });
+  if (req.method === "HEAD") return res.end();
+  const stream = createReadStream(file);
+  stream.on("error", (error) => {
+    console.error(`[pit] static read failed for ${file}:`, error);
+    res.destroy(error);
+  });
+  stream.pipe(res);
 }
 
 const server = createServer(async (req, res) => {
@@ -198,7 +212,7 @@ const server = createServer(async (req, res) => {
 
     // everything else = the web app
     if (req.method !== "GET" && req.method !== "HEAD") return send(res, 405, { error: "Method not allowed." });
-    return serveStatic(res, pathname);
+    return serveStatic(req, res, pathname);
   } catch (e) {
     if (e instanceof ApiError) return send(res, e.status, { error: e.message }, cors);
     console.error(`[pit] 500 on ${req.method} ${pathname} (${Date.now() - started}ms):`, e);
@@ -206,21 +220,25 @@ const server = createServer(async (req, res) => {
   }
 });
 
-// A single bad socket/promise must never kill the site.
-process.on("uncaughtException", (e) => console.error("[pit] uncaughtException:", e));
-process.on("unhandledRejection", (e) => console.error("[pit] unhandledRejection:", e));
+// Unknown process-level failures are not safe to recover from. Log once, drain
+// active requests, close SQLite, and let Render restart a clean process.
+process.on("uncaughtException", (e) => { console.error("[pit] uncaughtException:", e); shutdown(1); });
+process.on("unhandledRejection", (e) => { console.error("[pit] unhandledRejection:", e); shutdown(1); });
 
 // hourly session sweep
 setInterval(sweepExpiredSessions, 60 * 60 * 1000).unref();
 
 // graceful shutdown, finish in-flight requests, close the DB cleanly
-function shutdown() {
+let shuttingDown = false;
+function shutdown(exitCode = 0) {
+  if (shuttingDown) return;
+  shuttingDown = true;
   console.log("\n[pit] shutting down…");
-  server.close(() => { try { db.close(); } catch {} process.exit(0); });
-  setTimeout(() => process.exit(0), 5000).unref();
+  server.close(() => { try { db.close(); } catch {} process.exit(exitCode); });
+  setTimeout(() => process.exit(exitCode), 5000).unref();
 }
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
+process.on("SIGINT", () => shutdown(0));
+process.on("SIGTERM", () => shutdown(0));
 
 server.listen(PORT, () => {
   console.log(`[pit] up on http://localhost:${PORT} ${PROD ? "(production)" : "(dev)"}, serving API${existsSync(DIST) ? " + web build" : " (no dist/ yet)"}`);

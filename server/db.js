@@ -474,10 +474,41 @@ export function seedArtistsFromBundle() {
 }
 seedArtistsFromBundle();
 
+function parseJsonObject(value) {
+  try {
+    const parsed = JSON.parse(value || "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function parseJsonArray(value) {
+  try {
+    const parsed = JSON.parse(value || "[]");
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
 // Public projection, NEVER include pass_hash or email in list responses.
 export function publicUser(u, { self = false } = {}) {
   if (!u) return null;
+
+  // Extras hold optional client profile fields (theme, consent record, music
+  // picks). They are user-controlled, so they must never replace typed/trusted
+  // DB columns or expose a raw column under its database or public name.
+  const extras = parseJsonObject(u.extras);
+  for (const key of Object.keys(u)) delete extras[key];
+  for (const key of [
+    "id", "email", "name", "handle", "role", "verified", "sponsor",
+    "artistName", "home", "bio", "avatarUri", "avatarColor", "banner",
+    "initials", "genres", "favoriteArtists",
+  ]) delete extras[key];
+
   return {
+    ...extras,
     id: u.id,
     name: u.name,
     handle: u.handle,
@@ -491,9 +522,8 @@ export function publicUser(u, { self = false } = {}) {
     avatarColor: u.avatar_color,
     banner: u.banner,
     initials: u.initials,
-    genres: JSON.parse(u.genres || "[]"),
-    favoriteArtists: JSON.parse(u.favorite_artists || "[]"),
-    ...(JSON.parse(u.extras || "{}")),
+    genres: parseJsonArray(u.genres),
+    favoriteArtists: parseJsonArray(u.favorite_artists),
     ...(self ? { email: u.email } : {}),
   };
 }

@@ -133,21 +133,37 @@ export default function PlayerBar({ player, onClose, onIndex, onPlayAt, onRemove
   useEffect(() => {
     if (!cur) { setResolved({ key: null, videoId: null, preview: null }); return; }
     let cancelled = false;
+    const timers = new Set();
+    // A stalled provider request must settle so the player can show its existing
+    // unavailable state instead of spinning forever. The underlying fetch may
+    // still finish, but its result is ignored after this track changes.
+    const within = (promise, ms = 12000) => new Promise((resolve) => {
+      const timer = setTimeout(() => { timers.delete(timer); resolve(null); }, ms);
+      timers.add(timer);
+      Promise.resolve(promise).then((value) => {
+        clearTimeout(timer); timers.delete(timer); resolve(value ?? null);
+      }).catch(() => {
+        clearTimeout(timer); timers.delete(timer); resolve(null);
+      });
+    });
     (async () => {
       const [videoId, preview] = await Promise.all([
-        resolveYouTube(cur.title, cur.artist),
-        cur.preview ? Promise.resolve(cur.preview) : resolveDeezerPreview(cur.title, cur.artist),
+        within(resolveYouTube(cur.title, cur.artist)),
+        cur.preview ? Promise.resolve(cur.preview) : within(resolveDeezerPreview(cur.title, cur.artist)),
       ]);
       if (!cancelled) setResolved({ key: curKey, videoId, preview });
     })();
-    return () => { cancelled = true; };
+    return () => { cancelled = true; timers.forEach(clearTimeout); timers.clear(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [curKey]);
 
   const forThis = resolved.key === curKey;
   // A video the current player errored on (embedding disabled / removed) is not
   // usable — drop to the preview instead of playing silence.
-  const ytFailed = !!yt.error && (yt.error.kind === "embed" || yt.error.kind === "playback");
+  // Initialization errors are terminal for this player instance too. Without
+  // this, an API-load failure leaves `hasVideo` true and "Loading video..."
+  // visible forever instead of selecting the already-resolved preview fallback.
+  const ytFailed = yt.error?.kind === "init" || (!!yt.error?.videoId && yt.error.videoId === resolved.videoId);
   const hasVideo = forThis && !!resolved.videoId && !ytFailed;
   const ytActive = hasVideo && yt.ready;
   const connecting = hasVideo && !yt.ready;

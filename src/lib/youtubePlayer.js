@@ -16,13 +16,26 @@ function loadApi() {
   if (window.YT && window.YT.Player) return Promise.resolve(window.YT);
   if (apiPromise) return apiPromise;
   apiPromise = new Promise((resolve, reject) => {
+    let settled = false;
+    let timeout = null;
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      fn(value);
+    };
     const prev = window.onYouTubeIframeAPIReady;
-    window.onYouTubeIframeAPIReady = () => { try { prev && prev(); } catch {} resolve(window.YT); };
+    window.onYouTubeIframeAPIReady = () => { try { prev && prev(); } catch {} finish(resolve, window.YT); };
     const s = document.createElement("script");
     s.src = "https://www.youtube.com/iframe_api";
     s.async = true;
-    s.onerror = () => reject(new Error("yt-api-load-failed"));
+    s.onerror = () => finish(reject, new Error("yt-api-load-failed"));
+    timeout = setTimeout(() => finish(reject, new Error("yt-api-load-timeout")), 12000);
     document.head.appendChild(s);
+  }).catch((error) => {
+    // Permit a later mount to retry after a transient script/CDN failure.
+    apiPromise = null;
+    throw error;
   });
   return apiPromise;
 }
@@ -78,6 +91,7 @@ function clampPos(x, y, w, h) {
 
 export function useYouTubePlayer(enabled) {
   const playerRef = useRef(null);
+  const videoIdRef = useRef(null);
   const [ready, setReady] = useState(false);
   const [state, setState] = useState({ position: 0, duration: 0, playing: false });
   const [error, setError] = useState(null); // { kind, message }
@@ -130,6 +144,8 @@ export function useYouTubePlayer(enabled) {
       const apply = () => {
         win.classList.toggle("on", shownRef.current);
         win.classList.toggle("collapsed", collapsedRef.current);
+        win.setAttribute("aria-hidden", shownRef.current ? "false" : "true");
+        if ("inert" in win) win.inert = !shownRef.current;
         // Collapse by shrinking the WINDOW to its header (its overflow:hidden clips
         // the video + controls). The iframe stays rendered underneath, so audio keeps
         // playing while minimized. (Setting the video wrapper's own height is ignored
@@ -171,16 +187,35 @@ export function useYouTubePlayer(enabled) {
       const reclamp = () => { pos = clampPos(pos.x, pos.y, w, winH()); win.style.left = pos.x + "px"; win.style.top = pos.y + "px"; };
       window.addEventListener("resize", reclamp);
 
+      let playerInitFailed = false;
+      const playerReadyTimeout = setTimeout(() => {
+        playerInitFailed = true;
+        setError({ kind: "init", message: "YouTube player failed to initialize." });
+      }, 12000);
+      cleanupDom = () => {
+        clearTimeout(playerReadyTimeout);
+        window.removeEventListener("resize", reclamp);
+        head.removeEventListener("mousedown", onDown);
+        onUp();
+        try { win.remove(); } catch {}
+      };
       const player = new YT.Player("pit-yt-player", {
         width: String(w), height: String(vh),
         playerVars: { autoplay: 0, controls: 1, rel: 0, modestbranding: 1, playsinline: 1, origin: window.location.origin },
         events: {
-          onReady: () => { setReady(true); setError(null); },
+          onReady: () => {
+            clearTimeout(playerReadyTimeout);
+            if (playerInitFailed) return;
+            setReady(true); setError(null);
+          },
           onError: (e) => {
+            clearTimeout(playerReadyTimeout);
+            if (playerInitFailed) return;
             const kind = e?.data === 101 || e?.data === 150 ? "embed" : "playback";
-            setError({ kind, code: e?.data, message: kind === "embed" ? "This video can't be embedded; playing a preview." : "Video unavailable." });
+            setError({ kind, code: e?.data, videoId: videoIdRef.current, message: kind === "embed" ? "This video can't be embedded; playing a preview." : "Video unavailable." });
           },
           onStateChange: (e) => {
+            if (playerInitFailed) return;
             if (e.data === 0) { endedCbRef.current && endedCbRef.current(); }
             if (e.data === 1) { setError(null); }
             const pb = $("pit-ytwin-play"); if (pb) pb.innerHTML = e.data === 1 ? SVG.pause : SVG.play;
@@ -188,14 +223,10 @@ export function useYouTubePlayer(enabled) {
         },
       });
       playerRef.current = player;
-
-      cleanupDom = () => {
-        window.removeEventListener("resize", reclamp);
-        head.removeEventListener("mousedown", onDown);
-        onUp();
-        try { win.remove(); } catch {}
-      };
-    }).catch(() => setError({ kind: "init", message: "YouTube player failed to load." }));
+    }).catch(() => {
+      cleanupDom();
+      setError({ kind: "init", message: "YouTube player failed to load." });
+    });
 
     return () => {
       cancelled = true;
@@ -222,6 +253,7 @@ export function useYouTubePlayer(enabled) {
   const load = useCallback((videoId, { startSec = 0 } = {}) => {
     const p = playerRef.current;
     if (!p || !p.loadVideoById) return;
+    videoIdRef.current = videoId;
     setError(null);
     try { p.loadVideoById({ videoId, startSeconds: Math.max(0, startSec) }); } catch {}
   }, []);

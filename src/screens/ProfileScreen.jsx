@@ -54,6 +54,7 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtis
   const user = userById(userId);
   const [playlists, setPlaylists] = useState([]);
   const [missing, setMissing] = useState(false);
+  const [playing, setPlaying] = useState(null);
   useEffect(() => { if (userId) userPlaylists(userId).then(setPlaylists); }, [userId]);
   // Always refresh from the server: fills real follower counts, and makes profiles
   // we've never cached (a follower from a notification) open instead of blanking.
@@ -103,7 +104,6 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtis
   );
   const following = isFollowing(user.id);
   const roleLabel = user.role === "admin" ? "ADMIN" : user.role === "artist" ? "VERIFIED ARTIST" : "FAN";
-  const [playing, setPlaying] = useState(null);
   const playSong = (slot, song) => {
     if (!song) return;
     setPlaying((p) => (p === slot ? null : slot));

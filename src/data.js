@@ -1,6 +1,7 @@
 // Mock data for the prototype. No backend - this stands in for what would come
 // from the Performance / Artist / Venue spine described in the brief.
 import { catalogShows } from "./seed/catalog";
+import { ENABLE_DEMO_DATA } from "./config/runtime.mjs";
 
 let _id = 100;
 export const newId = () => `log_${_id++}`;
@@ -112,7 +113,9 @@ const baseRatedShows = [
   { id: "rs8", artist: "Snail Mail", genre: "Indie", venue: "Crocodile", city: "Seattle", lat: 47.6130, lng: -122.3430, rating: 4.2, reviews: 19, band: 4.3, room: 4.1, setlist: ["Pristine", "Valentine"] },
 ];
 
-export const ratedShows = [...baseRatedShows, ...catalogShows];
+// These aggregates are prototype fixtures, not verified community reviews.
+// Production rankings are built from server posts only.
+export const ratedShows = ENABLE_DEMO_DATA ? [...baseRatedShows, ...catalogShows] : [];
 
 export const GENRES = ["Hardcore", "Indie", "Psych Rock", "Alt-Country", "Punk", "Shoegaze", "Metal", "Electronic", "Hip-Hop", "Jazz"];
 
@@ -242,8 +245,8 @@ export function rankShows(origin) {
     .sort((a, b) => b.score - a.score);
 }
 
-export const tasteMatches = [
+export const tasteMatches = ENABLE_DEMO_DATA ? [
   { artist: "Geese", reason: "3 people you follow rated this 5★", near: "Aug 14 · The Independent", band: 4.7 },
   { artist: "Wednesday", reason: "Matches your alt-country logs", near: "Sep 02 · Great American", band: 4.4 },
   { artist: "Militarie Gun", reason: "Trending in your scene", near: "Jul 28 · Bottom of the Hill", band: 4.5 },
-];
+] : [];

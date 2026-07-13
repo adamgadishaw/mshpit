@@ -4,7 +4,54 @@
 >
 > Last updated: **2026-07-12**
 
-> **Working agreement (owner's standing instruction):** ALWAYS `git commit` **and** `git push` to `master` after a change — no need to ask. Push auto-deploys (brief 502 while Render restarts). Do not leave work only committed locally.
+> **Working agreement (owner's standing instruction):** ALWAYS `git commit` **and** `git push` after a verified batch. Stabilization work uses a review branch; do not merge/push directly to `master` until the branch checks pass. A master push auto-deploys and briefly restarts Render.
+
+## Stabilization batch — 2026-07-12 (Codex)
+
+**Branch:** `codex/stabilize-core`
+**Visual contract:** no layout, theme, spacing, typography, or component redesigns in this batch.
+
+### Completed in this batch
+
+1. **Profile crash fixed.** `ProfileScreen` now calls every hook before its missing-user return. An uncached profile that resolves after the first render no longer changes hook count.
+2. **YouTube/player dead ends fixed.** Artist+title-only tracks remain valid queue entries. Provider resolution, iframe API loading, and player initialization have terminal 12-second paths. Initialization/embed/playback failures fall back to the existing preview/unavailable behavior instead of spinning forever. A failed video is scoped to its own ID. Hidden video DOM is `aria-hidden` and inert.
+3. **Authentication made authoritative.** `/api/me` returning 401 or no user clears the cached session. Bundled plaintext login/signup fallback now requires both a development build and `EXPO_PUBLIC_ENABLE_DEMO_DATA=true`; production network failures cannot create a fake logged-in state.
+4. **Production demo data isolated.** Demo users/feed/messages/notifications/ratings/fan clubs/requests/fabricated tour dates start empty in production. Bootstrap removes exact known prototype IDs from persisted browser state while retaining server-created records. The explicit demo flag cannot enable demo content in a production build.
+5. **Upcoming events corrected.** All upcoming/nearby/recommended/venue-count paths now require a valid today-or-future calendar date. Legacy generated event IDs (`g_t_*`, `ca_t_*`, curated `ct*`, and `t1`–`t4`) are rejected in production.
+6. **Ingestion stopped fabricating social proof.** Venue/Canada jobs no longer invent concerts, sold-out status, ratings, reviews, or setlists. They remove their legacy generated rows. Provider imports now prefer Ticketmaster/Bandsintown event IDs and exact requested-artist attraction matches. MusicBrainz search tags are stored as `genreHint`, not published as the primary genre until enrichment verifies one. The bundled JSON still contains legacy rows for development compatibility, but production runtime policy excludes them.
+7. **Backend profile integrity fixed.** User-controlled `extras` cannot overwrite trusted public identity/role/verification fields. Malformed stored JSON recovers safely. Oversized/non-object extras are rejected atomically instead of being truncated into corrupt JSON.
+8. **Newest social content restored.** DMs, comments, fan-club messages, and lounges select the newest capped records and reverse only the returned page for chronological display. This fixes new messages disappearing after the old cap was reached. Cursor pagination is still the required scale follow-up.
+9. **Feed hydration now upserts.** Existing server post IDs are replaced with current server values instead of remaining permanently stale.
+10. **API/server reliability improved.** Native API requests now have a production origin fallback and can be overridden with `EXPO_PUBLIC_API_URL`. Authenticated route limits are keyed primarily by account instead of forcing users behind one network into the same action bucket. Health now reports database readiness plus mail/YouTube configuration. YouTube search requires embeddable + syndicated results and returns a diagnostic status. Password recovery uses a fixed production origin and never logs email addresses, tokens, or reset links when mail is unavailable. Static assets stream instead of blocking the Node event loop, HEAD responses send no body, and fatal uncaught errors drain/exit for a clean Render restart.
+11. **Quality gates added.** `npm test`, `npm run check:syntax`, and `npm run check` are available. GitHub Actions runs the full test/syntax/Expo production-build gate on PRs and master, and Render now runs the same gate before accepting a deploy. Regression tests cover health/database readiness, profile projection spoofing/corrupt JSON, newest capped messages, demo-data gating/cleanup, and calendar filtering.
+12. **Claude guide refreshed.** `CLAUDE.md` now describes the real server-backed codebase, data rules, file boundaries, required checks, and handoff expectations instead of the obsolete “no backend” prototype.
+
+### Validation required before merge
+
+- `npm run check`
+- `git diff --check`
+- Local server smoke: `/api/health`, GET `/`, HEAD static asset
+- Browser smoke: guest feed/search, login/session expiry, uncached profile, title-only track, YouTube unavailable/preview fallback, mobile viewport
+
+### Deployment/configuration notes
+
+- Do **not** set `EXPO_PUBLIC_ENABLE_DEMO_DATA` in production.
+- Keep `YOUTUBE_API_KEY` server-side. `/api/youtube/track` now reports `unconfigured`, `quota_or_forbidden`, `provider_error`, `not_found`, `cached`, or `resolved` alongside `videoId`.
+- Set both `RESEND_API_KEY` and a verified `MAIL_FROM` in Render before advertising password recovery. `PUBLIC_ORIGIN` is pinned to `https://www.mshpit.com` in the Blueprint.
+- Native builds may set `EXPO_PUBLIC_API_URL`; otherwise they use `https://www.mshpit.com`. Expo public variables are build-time values and must never contain secrets.
+- No database schema migration is required for this batch.
+- GitHub CLI was unavailable in the Codex environment. Git branch/commit/push can proceed, but draft PR creation may need the GitHub website or `gh` later.
+
+### Next stabilization priorities (preserve the current visuals)
+
+1. Choose durable object storage/CDN and replace every persisted `file:`/`blob:` media URI with validated uploads.
+2. Replace remaining silent optimistic writes with idempotent desired-state APIs, pending/failed state, retry, and reconciliation.
+3. Add cursor pagination and thread summaries; remove the DM thread N+1 query.
+4. Split `src/store.js` by domain behind the same screen-facing API. Introduce a server-state query cache incrementally rather than rewriting every screen at once.
+5. Add canonical `Performance`, `Artist`, `Venue`, and media IDs, then migrate attendance/reviews/posts away from concatenated display strings.
+6. Implement full account deletion/export, immutable consent versions, block enforcement, moderation permissions/audit logs, and recovery-mail readiness.
+7. Before serious growth, migrate the single-instance SQLite/data jobs to managed Postgres, object storage/CDN, a shared rate-limit/cache service, background workers, observability, and tested off-host backups. That backend work does not require a visual redesign.
+8. Decide the supported native playback path: SDK 56 `expo-audio` for previews/audio and a focused Expo DOM component for YouTube embeds. The current YouTube player remains web-only.
 
 **PLAYBACK = YOUTUBE NOW, SPOTIFY REMOVED (2026-07-12).** The Spotify Web Playback SDK is gone (it needed Premium + a dev-mode allow-list per tester and was the source of the playback problems). Every song now streams the FULL track/video through the **YouTube IFrame Player** for everyone, no account. `src/lib/youtubePlayer.js` is a persistent, body-mounted player driving the existing scrubber/volume/auto-advance transport. **Pop-out video window (2026-07-12):** the video is a real draggable mini-window (drag by its header, **minimize-to-audio** collapses it to a header bar while the iframe stays rendered so sound keeps going, hide/close, and its own prev/play/next wired to the same queue). It's body-mounted so it **keeps playing as you navigate the whole app**; position persists across reloads; the top bar's "Video" button shows/hides it. Verified live (drag persists, minimize 274->44px with audio continuing, expand restores, title tracks the song). Gotcha found + worked around: under react-native-web's global CSS, setting a child div's `height` is ignored, so the collapse clips at the WINDOW (its `overflow:hidden`) instead of the video wrapper. `PlayerBar.jsx` was rewired onto it; when YouTube has no match (or no key/quota) it falls back to the **Deezer 30s preview** mp3 — so playback never dies. Server: `GET /api/youtube/track?title=&artist=` resolves a videoId via the **YouTube Data API** and caches it FOREVER in a new `yt_cache` table (a cached null miss gets a 6h TTL). All Spotify routes/OAuth/columns-usage removed; `enrichArtistFromDeezer` no longer needs Spotify. CSP swapped to youtube.com / s.ytimg.com / googlevideo.com. **CONFIG NEEDED:** set **`YOUTUBE_API_KEY`** on the Render web service (console.cloud.google.com → enable "YouTube Data API v3" → API key). Slot added to `render.yaml` (needs a Blueprint re-sync to appear). The free quota is ~100 searches/day, so the id cache fills gradually (top artists first) — until it does, and for any un-embeddable video, everyone hears the Deezer preview, which is a fine default. Build-verified (server boots, endpoints correct, bundle compiles); **in-browser playback pass still pending** (needs the key + the preview classifier, which was down again this session).
 

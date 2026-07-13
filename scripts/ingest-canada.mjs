@@ -3,15 +3,14 @@
  * Canada booster — make the catalog as deep for Canadians as for Americans.
  *
  * ADDITIVE and idempotent: it merges new Canadian venues from MusicBrainz (CC0),
- * seeds a roster of real Canadian touring artists, and generates upcoming dates +
- * historical shows pairing those artists with Canadian rooms. It NEVER overwrites
- * an existing venue (so the photo galleryPools stay intact) and only re-creates
- * its own rows (ids prefixed `ca_`), so re-running just refreshes the Canadian set.
+ * seeds a roster of real Canadian touring artists. It never invents performances
+ * or ratings; those must come from a provider with a stable event id. It never overwrites
+ * an existing venue (so the photo galleryPools stay intact). Re-running removes
+ * legacy generated `ca_` event rows and refreshes venue/artist facts only.
  *
  *   node scripts/ingest-canada.mjs
  *
- * Tour/ticket links use ticketmaster.ca. Run the photo enrichment afterwards to
- * fill the new artists/venues:
+ * Run the photo enrichment afterwards to fill the new artists/venues:
  *   node scripts/enrich-photos.mjs <new artists…>
  *   node scripts/enrich-venue-photos.mjs        # fills any new blank venues
  */
@@ -19,7 +18,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-const UA = "PitConcertApp/0.1 (https://example.com; contact@example.com)";
+const UA = "mshpit/1.0 (https://www.mshpit.com)";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const OUT = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "seed", "catalog.generated.json");
 
@@ -75,9 +74,6 @@ const ARTISTS = [
   ["Purity Ring", "Electronic"], ["Charlotte Cardin", "Pop"],
 ];
 
-const pad = (n) => String(n).padStart(2, "0");
-const tm = (a) => `https://www.ticketmaster.ca/search?q=${encodeURIComponent(a)}`;
-
 // Include arenas/stadiums/amphitheatres, not just "Venue" (MusicBrainz files the
 // big rooms under those types), and keep the biggest first so they survive the slice.
 const PLACE_TYPES = `(type:Venue OR type:Stadium OR type:"Indoor arena" OR type:Amphitheatre)`;
@@ -121,7 +117,7 @@ async function main() {
   }
 
   console.log(`Scraping Canadian venues for ${CITIES.length} cities from MusicBrainz…`);
-  let newVenues = 0, di = 0, ai = 0;
+  let newVenues = 0;
   for (const c of CITIES) {
     const list = await venuesForCity(c);
     for (const v of list) {
@@ -132,20 +128,6 @@ async function main() {
         newVenues++;
       }
     }
-    // 3 upcoming dates + 2 historical shows per city, pairing CA artists with CA rooms.
-    const picks = list.slice(0, 5);
-    picks.forEach((v, idx) => {
-      const [artist, genre] = ARTISTS[ai++ % ARTISTS.length];
-      const month = 7 + (di % 6); // Jul–Dec 2026
-      const day = 1 + ((di * 7) % 27);
-      di++;
-      if (idx < 3) {
-        cat.tourDates.push({ id: `ca_t_${di}`, artist, genre, venue: v.name, place: v.place, date: `2026 · ${pad(month)} · ${pad(day)}`, ticketUrl: tm(artist), releaseAt: Date.now() - 86400000, createdBy: "import", soldOut: di % 6 === 0 });
-      } else {
-        const rating = Math.round((3.9 + Math.random() * 1.0) * 10) / 10;
-        cat.shows.push({ id: `ca_s_${di}`, artist, genre, venue: v.name, city: c[0], lat: v.lat, lng: v.lng, rating, reviews: 25 + ((di * 17) % 280), band: rating, room: Math.round((3.6 + Math.random()) * 10) / 10, setlist: [] });
-      }
-    });
     console.log(`  ✓ ${c[0]}: ${list.length} venues`);
     await sleep(1100); // MusicBrainz rate limit
   }

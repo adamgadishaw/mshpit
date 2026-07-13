@@ -100,7 +100,9 @@ export async function crawlArtists({ target = 10000, perTag = 600, shouldStop = 
       for (const x of list) {
         const norm = normName(x.name);
         if (artistStmts.byNorm.get(norm)) continue; // additive: never re-add
-        artistStmts.upsert.run(artistRow(norm, { name: x.name, genre, mbid: x.mbid, country: x.country, beginYear: x.beginYear }, "musicbrainz"));
+        // Search tags are useful for discovery, but not authoritative enough to
+        // publish as the artist's primary genre. Enrichment can verify it later.
+        artistStmts.upsert.run(artistRow(norm, { name: x.name, genre: null, genreHint: genre, mbid: x.mbid, country: x.country, beginYear: x.beginYear }, "musicbrainz"));
         added++;
       }
       const done = list.length < PAGE; // exhausted this tag's results
