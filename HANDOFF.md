@@ -2,9 +2,17 @@
 
 > **Living doc.** Whoever works on this next: read this first, and UPDATE it before you end a session (move things between "Done" and "Backlog", note anything running). Point a fresh Claude Code chat at this file to get up to speed without re-explaining.
 >
-> Last updated: **2026-07-12**
+> Last updated: **2026-07-13**
 
 > **Working agreement (owner's standing instruction):** ALWAYS `git commit` **and** `git push` after a verified batch. Stabilization work uses a review branch; do not merge/push directly to `master` until the branch checks pass. A master push auto-deploys and briefly restarts Render.
+
+## Production rollout — 2026-07-13 (Codex)
+
+- `codex/stabilize-core` was fast-forwarded into `master` and deployed by Render at commit `4150a0d`.
+- The GitHub production quality job passed. The live homepage and `/api/health` returned HTTP 200 after the Render restart.
+- `YOUTUBE_API_KEY` is now configured as a Render-only secret. Production health reports `database: true` and `youtubeConfigured: true`. The key is not stored in Git, the Expo bundle, or this handoff.
+- Recovery email and durable photo storage remain intentionally unavailable until their private Render configuration is completed. Production currently reports `mailConfigured: false` and `mediaStorageConfigured: false`.
+- Playback testing should cover a previously uncached artist/title, visible pop-out video, minimize-to-audio, navigation while playing, queue advance, and the Deezer fallback. Check Settings → Diagnostics for a `PIT-*` reference if a track fails.
 
 ## Reliability, media, and feedback batch — 2026-07-12 (Codex)
 
