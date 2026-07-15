@@ -25,6 +25,51 @@ These are blocked on private configuration only. No code work is required.
 
 `YOUTUBE_API_KEY` is already set (health: `youtubeConfigured: true`). Nothing to do.
 
+### Media bucket runbook (Cloudflare R2, chosen 2026-07-21)
+
+R2 was picked over S3 because egress is free, and this app serves a lot of photos.
+The upload is a **direct browser PUT to a presigned URL** (`src/lib/mediaUpload.js`
+asks `POST /api/media/presign`, then PUTs the file straight to the bucket). That
+means the bucket's own CORS policy has to allow it. Credentials never reach the
+client; the server signs with SigV4 (`server/media.js`).
+
+Steps, all in the Cloudflare dashboard:
+
+1. **R2 > Create bucket**, name it `pit-media`.
+2. **Account ID** is on the R2 overview page. `MEDIA_ENDPOINT` is
+   `https://<ACCOUNT_ID>.r2.cloudflarestorage.com` (no bucket in the host, the
+   signer uses path style and appends it).
+3. `MEDIA_BUCKET` = `pit-media`.
+4. `MEDIA_REGION` = `auto` (R2 always uses `auto`).
+5. **R2 > Manage R2 API Tokens > Create API token**, permission **Object Read &
+   Write**, scoped to `pit-media`. It shows an Access Key ID and a Secret Access
+   Key **once**. Those are `MEDIA_ACCESS_KEY_ID` and `MEDIA_SECRET_ACCESS_KEY`.
+6. **Public access**: on the bucket, enable the **r2.dev** subdomain, then
+   `MEDIA_PUBLIC_BASE_URL` = `https://pub-<hash>.r2.dev`. A custom domain
+   (`https://media.mshpit.com`) also works and is nicer long term. It must be
+   HTTPS with no query, hash, or credentials in the URL or the config is rejected.
+7. **CORS policy on the bucket** (required, this is the step people miss: without
+   it the browser PUT is blocked and uploads fail even though every key is right):
+
+   ```json
+   [
+     {
+       "AllowedOrigins": ["https://www.mshpit.com", "https://mshpit.com", "http://localhost:8081"],
+       "AllowedMethods": ["PUT"],
+       "AllowedHeaders": ["content-type"],
+       "MaxAgeSeconds": 3600
+     }
+   ]
+   ```
+
+8. Put all six on the **Render web service** env, then let it restart.
+
+Verify: `/api/health` should report `mediaStorageConfigured: true`, then post a
+photo. CSP needs no edit, `connect-src` derives the bucket origin from
+`MEDIA_ENDPOINT` at boot (`mediaConnectOrigin()` in `server/index.js`), so the
+endpoint must be set **before** the process starts. If a PUT fails in the browser
+with a CORS error, step 7 is wrong or missing. Presigned PUTs are valid 10 minutes.
+
 ## Catalog job now tells the truth — 2026-07-21 (Claude)
 
 **Finishes the 2026-07-14 incident repair that was left half-done.** The server side already detected an exhausted crawl and recorded durable run history, but nothing surfaced either, so the admin console still had the misleading button that caused the incident.
