@@ -96,10 +96,15 @@ Reproduced locally: pointing `PIT_DATA_DIR` at an unwritable path makes
    from writing test rows into the real dev database in `server/data`, which it
    was silently doing before.
 
-**If the next deploy still fails fast:** Render may need the blueprint change
-applied manually once (dashboard, the service's "Sync Blueprint" / accept the
-`render.yaml` change). Code-only pushes auto-deploy; `buildCommand` lives in the
-blueprint layer.
+**Outcome, confirmed live:** Render auto-applied the `render.yaml` change on the
+push, no manual blueprint sync was needed. The `2fa5077` deploy went green (new
+bundle hash live ~2 min after push), and prod now serves the whole backlog that
+had been stuck behind the failures: the 07-15 ALPHA batch (post edit, live chat,
+provider identity) plus everything after. Verified on prod after the restart:
+`/api/health` 200, `/api/admin/catalog/runs` 401 (route exists, admin-gated),
+`/api/time` 200. Health still shows `tourProviderConfigured`, `mailConfigured`,
+and `mediaStorageConfigured` all `false`: those keys are still not on the Render
+dashboard (see OWNER ACTIONS above).
 
 Validation: `npm test` passes with no env, AND with `PIT_DATA_DIR` pointing at a
 nonexistent drive (both 45/45); full `npm run check` green including the web
