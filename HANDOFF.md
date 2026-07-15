@@ -70,6 +70,41 @@ photo. CSP needs no edit, `connect-src` derives the bucket origin from
 endpoint must be set **before** the process starts. If a PUT fails in the browser
 with a CORS error, step 7 is wrong or missing. Presigned PUTs are valid 10 minutes.
 
+## Deploy failures fixed: tests were running inside the Render build — 2026-07-21 (Claude)
+
+Every deploy from `556c6c0` onward failed with "Exited with status 1 while
+building your code", each dying within the same minute it started (a real Expo
+export takes 5+ minutes, so the build was dying at the first step).
+
+**Root cause:** the 2026-07-12 stabilization batch changed `render.yaml`'s
+`buildCommand` from `npm ci && npm run build:web` to `npm ci && npm run check`,
+which runs the whole Node test suite during the production build. The test files
+import `server/db.js`, which opens SQLite at `PIT_DATA_DIR` **on import**, and on
+Render that is `/data`, the persistent disk, **which is not mounted during
+builds**. The import throws, `node --test` exits 1, the deploy dies in seconds.
+Reproduced locally: pointing `PIT_DATA_DIR` at an unwritable path makes
+`npm test` exit 1 in 1.4 seconds, the exact failure signature.
+
+**Fix (both directions):**
+
+1. `render.yaml` `buildCommand` is back to `npm ci && npm run build:web`. The
+   test suite is a local/pre-commit gate (`npm run check`), not a production
+   build step; a build container has no data disk and never will.
+2. `npm test` is now hermetic: `scripts/run-tests.mjs` always runs the suite
+   against a fresh throwaway temp `PIT_DATA_DIR` and cleans it up. This both
+   makes the suite immune to hostile environments AND stops a bare `npm test`
+   from writing test rows into the real dev database in `server/data`, which it
+   was silently doing before.
+
+**If the next deploy still fails fast:** Render may need the blueprint change
+applied manually once (dashboard, the service's "Sync Blueprint" / accept the
+`render.yaml` change). Code-only pushes auto-deploy; `buildCommand` lives in the
+blueprint layer.
+
+Validation: `npm test` passes with no env, AND with `PIT_DATA_DIR` pointing at a
+nonexistent drive (both 45/45); full `npm run check` green including the web
+export; no temp dirs left behind.
+
 ## Catalog job now tells the truth — 2026-07-21 (Claude)
 
 **Finishes the 2026-07-14 incident repair that was left half-done.** The server side already detected an exhausted crawl and recorded durable run history, but nothing surfaced either, so the admin console still had the misleading button that caused the incident.

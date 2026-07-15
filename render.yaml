@@ -8,7 +8,11 @@ services:
     name: mshpit
     runtime: node
     plan: starter                      # $7/mo; has persistent disk support
-    buildCommand: npm ci && npm run check
+    # Build must NOT run the test suite: the persistent disk is not mounted during
+    # Render builds, so anything importing server/db.js (which opens SQLite at
+    # PIT_DATA_DIR=/data) dies instantly and the deploy fails in under a minute.
+    # Tests run locally / pre-commit via `npm run check`.
+    buildCommand: npm ci && npm run build:web
     startCommand: node server/index.js
     healthCheckPath: /api/health
     autoDeploy: true

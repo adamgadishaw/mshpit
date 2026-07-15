@@ -31,7 +31,7 @@
     "pipeline": "node --env-file=.env scripts/pipeline.mjs",
     "server": "node server/index.js",
     "build:web": "expo export -p web",
-    "test": "node --test",
+    "test": "node scripts/run-tests.mjs",
     "check:syntax": "node scripts/check-syntax.mjs",
     "check": "npm run test && npm run check:syntax && npm run build:web"
   },
