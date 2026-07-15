@@ -43,3 +43,7 @@ yarn-error.*
 # local env (API keys)
 .env
 server/data/
+
+# Never let a secret backup/copy slip in (.env.bak, .env.local, ...)
+.env*
+!.env.example

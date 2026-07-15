@@ -35,7 +35,7 @@ export default function BadgeLegendScreen({ onClose, userId }) {
           </View>
           <View style={styles.bar}><View style={[styles.barFill, { width: `${nextPct * 100}%` }]} /></View>
           <Text style={styles.heroSub}>
-            {tier.next ? `${(tier.next - points).toLocaleString()} pts to ${pointsTier(tier.next).name}` : "Top tier — Legend status."}
+            {tier.next ? `${(tier.next - points).toLocaleString()} pts to ${pointsTier(tier.next).name}` : "Top tier. Legend status."}
             {"  ·  "}{earned.size}/{ACHIEVEMENTS.length} badges
           </Text>
         </View>
