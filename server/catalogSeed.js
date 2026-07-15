@@ -6,7 +6,9 @@
 // Deezer fills fan-count popularity + photo + the rank_score that orders search.
 // Songs/albums stay on-demand (the artist page pulls its Deezer discography with
 // previews when opened), so every seeded artist is playable without a song scrape.
+import { randomUUID } from "node:crypto";
 import { artistStmts, artistRow, normName, db } from "./db.js";
+import { findDeezerArtist, providerJson, ProviderError } from "./musicProviders.js";
 
 const PAGE = 100; // MusicBrainz hard max per request
 const UA = "PitConcertApp/1.0 (https://mshpit.com)";
@@ -38,25 +40,26 @@ export const GENRE_TAGS = [
 
 async function mbTag(tag, offset) {
   const url = `https://musicbrainz.org/ws/2/artist?query=${encodeURIComponent(`tag:"${tag}"`)}&fmt=json&limit=${PAGE}&offset=${offset}`;
-  try {
-    const r = await fetch(url, { headers: { "User-Agent": UA, Accept: "application/json" }, signal: AbortSignal.timeout(15000) });
-    if (!r.ok) return [];
-    const d = await r.json();
-    return (d.artists || [])
-      .filter((x) => x.name && (x.type === "Group" || x.type === "Person"))
-      .map((x) => ({ name: x.name, mbid: x.id, beginYear: x["life-span"]?.begin?.slice(0, 4) || null, country: x.area?.name || null }));
-  } catch { return []; }
-}
-
-async function dzGet(url) {
-  try { const r = await fetch(url, { signal: AbortSignal.timeout(12000) }); return r.ok ? r.json() : null; } catch { return null; }
-}
-
-async function deezerArtist(name) {
-  const d = await dzGet(`https://api.deezer.com/search/artist?q=${encodeURIComponent(name)}&limit=5`);
-  const items = d?.data || [];
-  const lower = name.toLowerCase();
-  return items.find((x) => (x.name || "").toLowerCase() === lower) || items[0] || null;
+  let lastError;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const r = await fetch(url, { headers: { "User-Agent": UA, Accept: "application/json" }, signal: AbortSignal.timeout(15000) });
+      if (!r.ok) throw new ProviderError("MusicBrainz", r.status, `MusicBrainz returned ${r.status}.`, { code: r.status === 429 ? "rate_limited" : "http_error" });
+      const d = await r.json();
+      const raw = Array.isArray(d.artists) ? d.artists : [];
+      return {
+        items: raw
+          .filter((x) => x.name && (x.type === "Group" || x.type === "Person"))
+          .map((x) => ({ name: x.name, mbid: x.id, beginYear: x["life-span"]?.begin?.slice(0, 4) || null, country: x.area?.name || null })),
+        rawCount: raw.length,
+        total: Number(d.count ?? d["artist-count"]) || null,
+      };
+    } catch (error) {
+      lastError = error;
+      if (attempt < 2) await sleep(1000 * (attempt + 1));
+    }
+  }
+  throw lastError || new ProviderError("MusicBrainz", 502, "MusicBrainz could not be reached.");
 }
 
 // Deezer's genre labels are broad and a couple aren't useful as a music genre;
@@ -69,15 +72,27 @@ const cleanDzGenre = (g) => (g == null ? null : g in DZ_GENRE ? DZ_GENRE[g] : g)
 // photo / wrong songs" on profiles). Returns photo, popularity, followers, the top
 // tracks (title/album/preview) that power Discover's "top song", and a genre.
 export async function deezerEnrich(name) {
-  const dzA = await deezerArtist(name);
+  const row = artistStmts.byNorm.get(normName(name));
+  let existing = {};
+  try { existing = JSON.parse(row?.data || "{}"); } catch {}
+  const match = await findDeezerArtist(name, { preferredId: existing.deezerId || null });
+  const dzA = match?.artist;
   if (!dzA) return null;
-  const top = await dzGet(`https://api.deezer.com/artist/${dzA.id}/top?limit=10`);
+  const top = await providerJson("Deezer", `https://api.deezer.com/artist/${dzA.id}/top?limit=10`);
   await sleep(60);
-  const topTracks = (top?.data || []).map((t) => ({ title: t.title, album: t.album?.title || null, preview: t.preview || null }));
+  const topTracks = (top?.data || []).map((t) => ({ id: t.id || null, title: t.title, album: t.album?.title || null, duration: t.duration || 0 }));
   let genre = null;
   const albumId = top?.data?.[0]?.album?.id;
-  if (albumId) { const alb = await dzGet(`https://api.deezer.com/album/${albumId}`); genre = cleanDzGenre(alb?.genres?.data?.[0]?.name || null); }
-  return { photo: dzA.picture_xl || dzA.picture_big || null, popularity: popFromFans(dzA.nb_fan), followers: dzA.nb_fan, topTracks, genre };
+  if (albumId) { const alb = await providerJson("Deezer", `https://api.deezer.com/album/${albumId}`); genre = cleanDzGenre(alb?.genres?.data?.[0]?.name || null); }
+  return {
+    deezerId: dzA.id,
+    identityConfidence: match.confidence,
+    photo: dzA.picture_xl || dzA.picture_big || null,
+    popularity: popFromFans(dzA.nb_fan),
+    followers: dzA.nb_fan,
+    topTracks,
+    genre,
+  };
 }
 
 // Per-tag crawl cursor so re-runs never re-fetch a page they already finished.
@@ -85,17 +100,38 @@ const cursorGet = db.prepare("SELECT next_off, exhausted FROM seed_cursor WHERE 
 const cursorSet = db.prepare(`INSERT INTO seed_cursor (tag, next_off, exhausted, updated_at) VALUES (?,?,?,?)
   ON CONFLICT(tag) DO UPDATE SET next_off = excluded.next_off, exhausted = excluded.exhausted, updated_at = excluded.updated_at`);
 
+// Older builds marked a tag exhausted after filtering a raw page down to
+// Group/Person results. Reopen those cursors once; the corrected crawl below
+// closes a tag only from MusicBrainz's unfiltered count/page length.
+function reopenLegacyCursors() {
+  const marker = "repair-musicbrainz-cursors-v1";
+  if (db.prepare("SELECT 1 FROM app_meta WHERE key=?").get(marker)) return;
+  db.exec("BEGIN");
+  try {
+    db.prepare("UPDATE seed_cursor SET exhausted=0 WHERE exhausted=1").run();
+    db.prepare("INSERT INTO app_meta (key,value) VALUES (?,?)").run(marker, String(Date.now()));
+    db.exec("COMMIT");
+  } catch (error) {
+    try { db.exec("ROLLBACK"); } catch {}
+    throw error;
+  }
+}
+reopenLegacyCursors();
+
 // Phase 1: crawl MusicBrainz tags → upsert bare rows. Additive (never clobbers an
 // existing artist) AND resumable (skips exhausted tags, resumes each at its saved
 // offset), so nothing is fetched or inserted twice across runs.
 export async function crawlArtists({ target = 10000, perTag = 600, shouldStop = () => false, tick = () => {} } = {}) {
-  let added = 0;
+  let added = 0, pages = 0, openTags = 0;
   outer: for (const [tag, genre] of GENRE_TAGS) {
     const cur = cursorGet.get(tag);
     if (cur?.exhausted) continue; // whole tag already crawled — skip the network entirely
+    openTags++;
     for (let offset = cur?.next_off || 0; offset < perTag; offset += PAGE) {
       if (shouldStop() || artistStmts.count.get().c >= target) break outer;
-      const list = await mbTag(tag, offset);
+      const page = await mbTag(tag, offset);
+      const list = page.items;
+      pages++;
       await sleep(1100); // MusicBrainz ~1 req/s
       for (const x of list) {
         const norm = normName(x.name);
@@ -105,13 +141,13 @@ export async function crawlArtists({ target = 10000, perTag = 600, shouldStop = 
         artistStmts.upsert.run(artistRow(norm, { name: x.name, genre: null, genreHint: genre, mbid: x.mbid, country: x.country, beginYear: x.beginYear }, "musicbrainz"));
         added++;
       }
-      const done = list.length < PAGE; // exhausted this tag's results
+      const done = page.total != null ? offset + PAGE >= page.total : page.rawCount < PAGE;
       cursorSet.run(tag, offset + PAGE, done ? 1 : 0, Date.now());
       tick({ phase: "crawl", added, total: artistStmts.count.get().c, note: tag });
       if (done) break;
     }
   }
-  return added;
+  return { added, total: artistStmts.count.get().c, pages, openTags, reachedTarget: artistStmts.count.get().c >= target };
 }
 
 // Phase 2: rank the artists still missing popularity via Deezer, filling photo,
@@ -128,7 +164,7 @@ export async function enrichThin({ shouldStop = () => false, tick = () => {} } =
       let data = {}; try { data = JSON.parse(row.data || "{}"); } catch {}
       const merged = {
         ...data, name: row.name, genre: row.genre || e.genre, mbid: row.mbid, country: row.country, beginYear: row.formed,
-        popularity: e.popularity, followers: e.followers,
+        popularity: e.popularity, followers: e.followers, deezerId: e.deezerId,
         photo: data.photo || e.photo, photoCredit: data.photo ? data.photoCredit : (e.photo ? "Deezer" : null),
         topTracks: (data.topTracks && data.topTracks.length) ? data.topTracks : e.topTracks,
       };
@@ -155,7 +191,7 @@ export async function enrichSongs({ shouldStop = () => false, tick = () => {} } 
     await sleep(90);
     if (e && e.topTracks.length) {
       let data = {}; try { data = JSON.parse(row.data || "{}"); } catch {}
-      const merged = { ...data, name: row.name, genre: row.genre || e.genre, topTracks: e.topTracks, photo: data.photo || e.photo, followers: data.followers ?? e.followers };
+      const merged = { ...data, name: row.name, genre: row.genre || e.genre, topTracks: e.topTracks, photo: data.photo || e.photo, followers: data.followers ?? e.followers, deezerId: e.deezerId || data.deezerId };
       artistStmts.upsert.run(artistRow(row.norm, merged, "deezer"));
       filled++;
     }
@@ -166,9 +202,39 @@ export async function enrichSongs({ shouldStop = () => false, tick = () => {} } 
 }
 
 // ---- In-process background job (admin console) ----
-// `add` is a DELTA: grow the catalog BY this many artists (target = current + add),
-// so it always adds and is never a no-op regardless of how big the catalog is.
-let state = { running: false, stopRequested: false, mode: "grow", phase: "idle", add: 0, target: 0, startTotal: 0, added: 0, ranked: 0, total: 0, startedAt: 0, finishedAt: 0, error: null, note: "" };
+// `add` is a DELTA: grow the catalog BY this many artists (target = current + add).
+// It is NOT guaranteed to add anything: once every genre tag has been crawled to
+// the end of its results, a run legitimately adds zero and finishes as
+// "exhausted" with CATALOG_CRAWL_EXHAUSTED. It must say so rather than report
+// success, and it must not fall through into a mass re-enrichment of profiles
+// that are already fine (that is what rewrote ~46k preview URLs on 2026-07-14).
+const seedRunInsert = db.prepare(`INSERT INTO seed_runs
+  (id,mode,status,start_total,target,added,enriched,error_code,note,started_at,finished_at)
+  VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
+const seedRunUpdate = db.prepare(`UPDATE seed_runs SET status=?,added=?,enriched=?,error_code=?,note=?,finished_at=? WHERE id=?`);
+db.prepare("UPDATE seed_runs SET status='interrupted',error_code='CATALOG_JOB_INTERRUPTED',finished_at=? WHERE status='running'").run(Date.now());
+
+// Decide what a finished grow run ACTUALLY did. A run that crawled every genre to
+// the end of its results and added nothing is not a success; reporting "done" is
+// exactly what made the admin button look like it worked while doing nothing.
+export function growOutcome({ added, reachedTarget, stopRequested }) {
+  if (stopRequested) return { phase: "stopped" };
+  if (added === 0 && !reachedTarget) {
+    return {
+      phase: "exhausted",
+      errorCode: "CATALOG_CRAWL_EXHAUSTED",
+      note: "No new artists were returned at this crawl depth; existing profiles were left untouched.",
+    };
+  }
+  return { phase: "done" };
+}
+
+// Enrichment must only run for artists this crawl actually added. A no-op grow
+// that fell through into a full re-enrich is what rewrote ~46k expiring Deezer
+// preview URLs on 2026-07-14 and made playback progressively worse.
+export const shouldEnrichAfterCrawl = ({ enrich, added, stopRequested }) => !!enrich && added > 0 && !stopRequested;
+
+let state = { runId: null, running: false, stopRequested: false, mode: "grow", phase: "idle", add: 0, target: 0, startTotal: 0, added: 0, ranked: 0, total: 0, startedAt: 0, finishedAt: 0, error: null, errorCode: null, note: "" };
 
 export function catalogSeedStatus() {
   return { ...state, total: artistStmts.count.get().c };
@@ -181,7 +247,7 @@ export function stopCatalogSeed() {
   return catalogSeedStatus();
 }
 
-export function startCatalogSeed({ add = 2000, perTag = 600, enrich = true, mode = "grow" } = {}) {
+export function startCatalogSeed({ add = 2000, perTag = null, enrich = false, mode = "grow" } = {}) {
   if (state.running) return { started: false, reason: "already-running", status: catalogSeedStatus() };
   const startTotal = artistStmts.count.get().c;
   const shouldStop = () => state.stopRequested;
@@ -189,29 +255,52 @@ export function startCatalogSeed({ add = 2000, perTag = 600, enrich = true, mode
   // "refresh" mode: no crawl, just backfill songs + genres for ranked artists that
   // are still missing a top song (fixes blank "top song"s on Discover).
   if (mode === "refresh") {
-    state = { running: true, stopRequested: false, mode, phase: "songs", add: 0, target: startTotal, startTotal, added: 0, ranked: 0, total: startTotal, startedAt: Date.now(), finishedAt: 0, error: null, note: "songs & genres" };
+    const runId = `seed_${randomUUID().slice(0, 12)}`;
+    state = { runId, running: true, stopRequested: false, mode, phase: "songs", add: 0, target: startTotal, startTotal, added: 0, ranked: 0, total: startTotal, startedAt: Date.now(), finishedAt: 0, error: null, errorCode: null, note: "songs & genres" };
+    seedRunInsert.run(runId, mode, "running", startTotal, startTotal, 0, 0, null, state.note, state.startedAt, null);
     (async () => {
       try {
         await enrichSongs({ shouldStop, tick: ({ ranked, done, of }) => { state.ranked = ranked; state.added = done; state.target = of; } });
         state.phase = state.stopRequested ? "stopped" : "done"; state.finishedAt = Date.now();
       } catch (e) {
-        state.error = String(e?.message || e); state.phase = "error"; state.finishedAt = Date.now();
-      } finally { state.running = false; state.stopRequested = false; }
+        state.error = String(e?.message || e);
+        state.errorCode = e instanceof ProviderError ? "PROVIDER_UNAVAILABLE" : "CATALOG_JOB_FAILED";
+        state.phase = "error"; state.finishedAt = Date.now();
+      } finally {
+        state.running = false; state.stopRequested = false;
+        seedRunUpdate.run(state.phase, state.added, state.ranked, state.errorCode, state.note, state.finishedAt || Date.now(), runId);
+      }
     })();
     return { started: true, status: catalogSeedStatus() };
   }
 
   const target = startTotal + add; // absolute stop for the crawl
-  state = { running: true, stopRequested: false, mode: "grow", phase: "crawl", add, target, startTotal, added: 0, ranked: 0, total: startTotal, startedAt: Date.now(), finishedAt: 0, error: null, note: "" };
+  const currentMax = db.prepare("SELECT COALESCE(MAX(next_off),0) n FROM seed_cursor").get().n;
+  const calculatedDepth = currentMax + Math.max(600, Math.ceil(add / Math.max(1, GENRE_TAGS.length) / PAGE) * PAGE + 400);
+  const crawlDepth = Number.isSafeInteger(perTag) && perTag > currentMax ? perTag : calculatedDepth;
+  const runId = `seed_${randomUUID().slice(0, 12)}`;
+  state = { runId, running: true, stopRequested: false, mode: "grow", phase: "crawl", add, target, startTotal, added: 0, ranked: 0, total: startTotal, startedAt: Date.now(), finishedAt: 0, error: null, errorCode: null, note: `crawl depth ${crawlDepth}` };
+  seedRunInsert.run(runId, mode, "running", startTotal, target, 0, 0, null, state.note, state.startedAt, null);
   (async () => {
     try {
-      await crawlArtists({ target, perTag, shouldStop, tick: ({ added, total, note }) => { state.added = added; state.total = total; if (note) state.note = note; } });
-      if (enrich && !state.stopRequested) { state.phase = "enrich"; await enrichThin({ shouldStop, tick: ({ ranked }) => { state.ranked = ranked; } }); }
-      state.phase = state.stopRequested ? "stopped" : "done"; state.finishedAt = Date.now();
+      const result = await crawlArtists({ target, perTag: crawlDepth, shouldStop, tick: ({ added, total, note }) => { state.added = added; state.total = total; if (note) state.note = note; } });
+      state.added = result.added; state.total = result.total;
+      if (shouldEnrichAfterCrawl({ enrich, added: result.added, stopRequested: state.stopRequested })) {
+        state.phase = "enrich";
+        await enrichThin({ shouldStop, tick: ({ ranked }) => { state.ranked = ranked; } });
+      }
+      const outcome = growOutcome({ added: result.added, reachedTarget: result.reachedTarget, stopRequested: state.stopRequested });
+      state.phase = outcome.phase;
+      if (outcome.errorCode) state.errorCode = outcome.errorCode;
+      if (outcome.note) state.note = outcome.note;
+      state.finishedAt = Date.now();
     } catch (e) {
-      state.error = String(e?.message || e); state.phase = "error"; state.finishedAt = Date.now();
+      state.error = String(e?.message || e);
+      state.errorCode = e instanceof ProviderError ? "PROVIDER_UNAVAILABLE" : "CATALOG_JOB_FAILED";
+      state.phase = "error"; state.finishedAt = Date.now();
     } finally {
       state.running = false; state.stopRequested = false;
+      seedRunUpdate.run(state.phase, state.added, state.ranked, state.errorCode, state.note, state.finishedAt || Date.now(), runId);
     }
   })();
   return { started: true, status: catalogSeedStatus() };

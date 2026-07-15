@@ -3,7 +3,9 @@
  * Seed the DB artist catalog toward ~10k artists across ALL genres, keyless.
  * Thin CLI over server/catalogSeed.js (same code the admin console runs), so the
  * two never drift. DB-backed (not the bundle) → scales without bundle bloat; the
- * artist page pulls songs/albums (with previews) from Deezer on demand, so every
+ * artist page pulls songs/albums from Deezer on demand and resolves a fresh
+ * preview only when played, so every seeded artist is playable without storing
+ * expiring links.
  * seeded artist is playable without a song scrape.
  *
  * Idempotent + resumable (WAL-safe to run while the web service is live).
@@ -12,16 +14,19 @@
  *   Render:  PIT_DATA_DIR=/data node scripts/seed-db-artists.mjs --add 10000
  *
  * Flags: --add N (grow BY N artists, default 10000) · --per-tag N (crawl
- *        depth/genre, default 600) · --no-enrich (crawl only) · --enrich-only
+ *        absolute depth/genre; default resumes beyond the deepest cursor) ·
+ *        --no-enrich (crawl only) · --enrich-only
  *        (skip crawl, rank thin rows).
  */
 import { crawlArtists, enrichThin } from "../server/catalogSeed.js";
-import { artistStmts } from "../server/db.js";
+import { artistStmts, db } from "../server/db.js";
 
 const args = process.argv.slice(2);
 const flag = (n, d) => { const i = args.indexOf(n); return i >= 0 ? (args[i + 1] ?? d) : d; };
 const add = Number(flag("--add", 10000)) || 10000;
-const perTag = Number(flag("--per-tag", 600)) || 600;
+const requestedDepth = Number(flag("--per-tag", 0)) || 0;
+const currentDepth = db.prepare("SELECT COALESCE(MAX(next_off),0) n FROM seed_cursor").get().n;
+const perTag = requestedDepth > currentDepth ? requestedDepth : currentDepth + 1200;
 
 (async () => {
   const t0 = Date.now();
@@ -29,8 +34,8 @@ const perTag = Number(flag("--per-tag", 600)) || 600;
     const start = artistStmts.count.get().c;
     const target = start + add;
     console.log(`Crawl → grow by ${add} to ${target} (DB has ${start})…`);
-    const added = await crawlArtists({ target, perTag, tick: ({ added, total, note }) => console.log(`  +${added} (DB ${total}) · ${note}`) });
-    console.log(`Crawl done: +${added} (DB now ${artistStmts.count.get().c}).`);
+    const result = await crawlArtists({ target, perTag, tick: ({ added, total, note }) => console.log(`  +${added} (DB ${total}) · ${note}`) });
+    console.log(`Crawl done: +${result.added} across ${result.pages} pages (DB now ${artistStmts.count.get().c}).`);
   }
   if (!args.includes("--no-enrich")) {
     console.log(`Enrich thin rows via Deezer…`);

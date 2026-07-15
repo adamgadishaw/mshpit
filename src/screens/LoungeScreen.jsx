@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, KeyboardAvoidingView, Platform } from "react-native";
 import { colors, mono, radius } from "../theme";
 import { useStore, isStaff } from "../store";
@@ -6,28 +6,46 @@ import ScreenHeader from "../components/ScreenHeader";
 import Avatar from "../components/Avatar";
 import Icon from "../components/Icon";
 import MentionText from "../components/MentionText";
+import useLiveChat from "../lib/useLiveChat";
+import useChatScroll from "../lib/useChatScroll";
 
 // The Concert Lounge - a Discord/YouTube-style chat for everyone at a show.
 // Gated: you have to tap in, so it feels like a room you enter.
 export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfileByHandle }) {
-  const { session, concertKey, loungeFor, addLoungeMessage, loadLounge, attendeesFor, userById, removeLoungeMessage } = useStore();
+  const { session, concertKey, loungeFor, enterLounge, addLoungeMessage, loadLounge, attendeesFor, userById, removeLoungeMessage } = useStore();
   const staff = isStaff(session?.role);
   const key = concertKey(log);
   const [entered, setEntered] = useState(false);
+  const [entering, setEntering] = useState(false);
+  const [sending, setSending] = useState(false);
   const [text, setText] = useState("");
+  const { scrollRef, onScroll, onContentSizeChange } = useChatScroll();
 
-  // Live once you're in the room: hydrate + poll so others' messages appear.
-  useEffect(() => {
-    if (!entered) return;
-    loadLounge(key);
-    const id = setInterval(() => loadLounge(key), 3500);
-    return () => clearInterval(id);
-  }, [entered, key]);
+  useLiveChat(
+    ({ after, signal }) => loadLounge(key, { after, signal }),
+    { channelKey: `lounge:${key}`, enabled: !!key },
+  );
 
   const messages = loungeFor(key);
   const attendees = attendeesFor(key);
 
-  const send = () => { if (text.trim()) { addLoungeMessage(key, text); setText(""); } };
+  const enter = async () => {
+    if (entering) return;
+    setEntering(true);
+    const result = await enterLounge(log);
+    if (result?.ok) setEntered(true);
+    setEntering(false);
+  };
+
+  const send = async () => {
+    const submitted = text;
+    const draft = submitted.trim();
+    if (!draft || sending) return;
+    setSending(true);
+    const result = await addLoungeMessage(key, draft);
+    if (result?.ok) setText((current) => current === submitted ? "" : current);
+    setSending(false);
+  };
 
   if (!entered) {
     return (
@@ -41,8 +59,8 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
             <Text style={{ color: colors.text, fontWeight: "700" }}>{log.artist}</Text> · {log.venue}
           </Text>
           <Text style={styles.gateMeta}>{messages.length} messages · {attendees.length} going</Text>
-          <Pressable style={styles.enterBtn} onPress={() => setEntered(true)}>
-            <Text style={styles.enterTxt}>I'm going - enter the lounge</Text>
+          <Pressable style={[styles.enterBtn, entering && { opacity: 0.65 }]} onPress={enter} disabled={entering}>
+            <Text style={styles.enterTxt}>{entering ? "Saving your spotâ€¦" : "I'm going - enter the lounge"}</Text>
           </Pressable>
           <Text style={styles.gateNote}>Be decent. Mods can remove anyone.</Text>
         </View>
@@ -53,7 +71,8 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
   return (
     <KeyboardAvoidingView style={styles.wrap} behavior={Platform.OS === "ios" ? "padding" : undefined}>
       <ScreenHeader kicker={`LOUNGE · ${log.venue}`} title={log.artist} onBack={onClose} />
-      <ScrollView contentContainerStyle={styles.chat} showsVerticalScrollIndicator={false}>
+      <ScrollView ref={scrollRef} contentContainerStyle={styles.chat} showsVerticalScrollIndicator={false}
+        onScroll={onScroll} onContentSizeChange={onContentSizeChange} scrollEventThrottle={100}>
         {messages.length === 0 && <Text style={styles.empty}>No messages yet - say hi.</Text>}
         {messages.map((m) => {
           const mine = m.userId === session?.id;
@@ -81,7 +100,7 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
       {session ? (
         <View style={styles.inputBar}>
           <TextInput style={styles.input} placeholder="Message the lounge…" placeholderTextColor={colors.textFaint} value={text} onChangeText={setText} onSubmitEditing={send} returnKeyType="send" maxLength={1000} />
-          <Pressable style={styles.sendBtn} onPress={send}>
+          <Pressable style={[styles.sendBtn, sending && { opacity: 0.65 }]} onPress={send} disabled={sending}>
             <Icon name="chevron-right" size={20} color="#1A1206" />
           </Pressable>
         </View>

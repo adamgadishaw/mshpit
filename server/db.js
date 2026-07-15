@@ -68,11 +68,13 @@ CREATE TABLE IF NOT EXISTS posts (
   overall       REAL NOT NULL,
   band          REAL,
   room          REAL,
+  dims          TEXT NOT NULL DEFAULT '{}',
   review        TEXT NOT NULL DEFAULT '',
   photos        TEXT NOT NULL DEFAULT '[]',
   photos_public INTEGER NOT NULL DEFAULT 0,
   setlist       TEXT NOT NULL DEFAULT '[]',
   removed       INTEGER NOT NULL DEFAULT 0,
+  updated_at    INTEGER,
   created_at    INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_posts_user ON posts(user_id);
@@ -383,6 +385,38 @@ CREATE TABLE IF NOT EXISTS yt_cache (
   video_id   TEXT,
   updated_at INTEGER NOT NULL
 );
+
+-- Provider responses that are safe to keep across restarts. Only durable
+-- metadata belongs here: short-lived playback URLs are deliberately excluded.
+CREATE TABLE IF NOT EXISTS provider_cache (
+  key        TEXT PRIMARY KEY,
+  data       TEXT NOT NULL,
+  updated_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_provider_cache_expiry ON provider_cache(expires_at);
+
+-- Durable history for long-running catalog jobs. The previous in-memory-only
+-- status disappeared on every restart and could report success after adding 0.
+CREATE TABLE IF NOT EXISTS seed_runs (
+  id          TEXT PRIMARY KEY,
+  mode        TEXT NOT NULL,
+  status      TEXT NOT NULL,
+  start_total INTEGER NOT NULL,
+  target      INTEGER NOT NULL,
+  added       INTEGER NOT NULL DEFAULT 0,
+  enriched    INTEGER NOT NULL DEFAULT 0,
+  error_code  TEXT,
+  note        TEXT NOT NULL DEFAULT '',
+  started_at  INTEGER NOT NULL,
+  finished_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_seed_runs_started ON seed_runs(started_at DESC);
+
+CREATE TABLE IF NOT EXISTS app_meta (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 `);
 
 const ver = db.prepare("SELECT version FROM schema_version LIMIT 1").get();
@@ -397,11 +431,17 @@ for (const stmt of [
   "ALTER TABLE users ADD COLUMN spotify_refresh_token TEXT",
   "ALTER TABLE users ADD COLUMN spotify_expires_at INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE posts ADD COLUMN tour TEXT",
+  "ALTER TABLE posts ADD COLUMN updated_at INTEGER",
+  "ALTER TABLE posts ADD COLUMN dims TEXT NOT NULL DEFAULT '{}'",
   "ALTER TABLE artists ADD COLUMN searches INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE comments ADD COLUMN parent_id TEXT", // forum-style reply threading
   "ALTER TABLE users ADD COLUMN sponsor INTEGER NOT NULL DEFAULT 0", // admin-granted partner mark
   "ALTER TABLE users ADD COLUMN reset_hash TEXT", // sha256 of a password-reset token
   "ALTER TABLE users ADD COLUMN reset_expires INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE yt_cache ADD COLUMN metadata TEXT",
+  "ALTER TABLE yt_cache ADD COLUMN score REAL",
+  "ALTER TABLE yt_cache ADD COLUMN expires_at INTEGER",
+  "ALTER TABLE yt_cache ADD COLUMN rejected_ids TEXT NOT NULL DEFAULT '[]'",
 ]) { try { db.exec(stmt); } catch {} }
 
 // --- tiny helpers ------------------------------------------------------------
@@ -417,10 +457,23 @@ export const q = {
   deleteExpiredSessions: db.prepare("DELETE FROM sessions WHERE expires_at < ?"),
 };
 
-// YouTube video-ID cache statements (persistent; see yt_cache above).
+// YouTube video-ID cache statements. Positive entries are periodically
+// revalidated and known-bad iframe IDs are retained as exclusions so the next
+// lookup does not select the same unavailable/karaoke result again.
 export const ytStmts = {
-  get: db.prepare("SELECT video_id, updated_at FROM yt_cache WHERE key = ?"),
-  set: db.prepare("INSERT INTO yt_cache (key,video_id,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET video_id=excluded.video_id, updated_at=excluded.updated_at"),
+  get: db.prepare("SELECT key,video_id,updated_at,metadata,score,expires_at,rejected_ids FROM yt_cache WHERE key = ?"),
+  set: db.prepare(`INSERT INTO yt_cache (key,video_id,updated_at,metadata,score,expires_at,rejected_ids)
+    VALUES (@key,@video_id,@updated_at,@metadata,@score,@expires_at,@rejected_ids)
+    ON CONFLICT(key) DO UPDATE SET video_id=excluded.video_id,updated_at=excluded.updated_at,
+      metadata=excluded.metadata,score=excluded.score,expires_at=excluded.expires_at,rejected_ids=excluded.rejected_ids`),
+  invalidate: db.prepare("UPDATE yt_cache SET video_id=NULL, metadata=NULL, score=NULL, expires_at=0, rejected_ids=? WHERE key=?"),
+};
+
+export const providerCacheStmts = {
+  get: db.prepare("SELECT data,updated_at,expires_at FROM provider_cache WHERE key=?"),
+  set: db.prepare(`INSERT INTO provider_cache (key,data,updated_at,expires_at) VALUES (?,?,?,?)
+    ON CONFLICT(key) DO UPDATE SET data=excluded.data,updated_at=excluded.updated_at,expires_at=excluded.expires_at`),
+  deleteExpired: db.prepare("DELETE FROM provider_cache WHERE expires_at < ?"),
 };
 
 // --- Artist catalog statements + helpers -------------------------------------
@@ -487,6 +540,56 @@ export function publicArtist(r) {
   return { ...data, name: r.name, genre: r.genre, photo: r.photo, bio: r.bio, mbid: r.mbid, spotifyId: r.spotify_id, country: r.country, popularity: r.popularity };
 }
 
+function objectData(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return value;
+}
+
+// Bundled rows are a useful baseline, but they are not newer than production
+// enrichment. Keep the DB-rich fields authoritative and only fill gaps from the
+// bundle. This prevents every server boot from restoring stale tracks/previews.
+export function mergeBundledArtist(existingRow, bundled) {
+  const incoming = objectData(bundled);
+  let existingData = {};
+  try { existingData = objectData(JSON.parse(existingRow?.data || "{}")); } catch {}
+  const merged = { ...incoming, ...existingData };
+  for (const field of ["albums", "topTracks", "photos", "galleryPool"]) {
+    const current = existingData[field];
+    if (!Array.isArray(current) || current.length === 0) {
+      const fallback = incoming[field];
+      if (Array.isArray(fallback) && fallback.length) merged[field] = fallback;
+    }
+  }
+  if (!existingRow) return merged;
+  return {
+    ...merged,
+    name: existingRow.name || merged.name,
+    genre: existingRow.genre || merged.genre || null,
+    photo: existingRow.photo || merged.photo || null,
+    bio: existingRow.bio || merged.bio || null,
+    mbid: existingRow.mbid || merged.mbid || null,
+    spotifyId: existingRow.spotify_id || merged.spotifyId || null,
+    country: existingRow.country || merged.country || null,
+    beginYear: existingRow.formed || merged.beginYear || merged.formed || null,
+    popularity: existingRow.popularity ?? merged.popularity ?? null,
+    rank_score: Math.max(Number(existingRow.rank_score) || 0, Number(merged.rank_score) || 0),
+  };
+}
+
+// Deezer preview links are signed, short-lived URLs. Removing only URL-valued
+// `preview` fields keeps titles/albums/photos intact while ensuring old links can
+// never be replayed after their signature expires. Playback resolves a fresh URL.
+export function stripEphemeralPreviews(value) {
+  if (Array.isArray(value)) return value.map(stripEphemeralPreviews);
+  if (!value || typeof value !== "object") return value;
+  const out = {};
+  for (const [key, child] of Object.entries(value)) {
+    if (key === "preview" && typeof child === "string" && /^https?:\/\//i.test(child)) continue;
+    out[key] = stripEphemeralPreviews(child);
+  }
+  return out;
+}
+
 // Merge the bundled catalog into the DB on boot. The upsert is idempotent
 // (COALESCE + MAX rank), so re-merging every boot cheaply propagates fresh
 // enrichment (e.g. Deezer popularity/rank) to the ~1.6k bundled artists without
@@ -499,7 +602,10 @@ export function seedArtistsFromBundle() {
     if (!entries.length) return;
     const fresh = artistStmts.count.get().c === 0;
     db.exec("BEGIN");
-    for (const [key, a] of entries) artistStmts.upsert.run(artistRow(key, a, "bundle"));
+    for (const [key, a] of entries) {
+      const existing = artistStmts.byNorm.get(normName(key || a?.name));
+      artistStmts.upsert.run(artistRow(key, mergeBundledArtist(existing, a), "bundle"));
+    }
     db.exec("COMMIT");
     if (fresh) console.log(`[db] seeded ${entries.length} artists into the DB from the bundled catalog`);
     else console.log(`[db] merged ${entries.length} bundled artists (refreshed rank/enrichment)`);
@@ -509,6 +615,34 @@ export function seedArtistsFromBundle() {
   }
 }
 seedArtistsFromBundle();
+
+// One-time cleanup for rows written by the old enrichment job. A marker avoids
+// reparsing the full catalogue on every boot; new writes no longer persist these
+// links, so the migration remains complete after it runs once.
+export function sanitizeStoredArtistPreviews() {
+  const marker = "strip-ephemeral-artist-previews-v1";
+  if (db.prepare("SELECT 1 FROM app_meta WHERE key=?").get(marker)) return 0;
+  const rows = db.prepare(`SELECT norm,data FROM artists WHERE data LIKE '%"preview"%'`).all();
+  const update = db.prepare("UPDATE artists SET data=? WHERE norm=?");
+  let changed = 0;
+  db.exec("BEGIN");
+  try {
+    for (const row of rows) {
+      let parsed;
+      try { parsed = JSON.parse(row.data || "{}"); } catch { continue; }
+      const cleaned = JSON.stringify(stripEphemeralPreviews(parsed));
+      if (cleaned !== row.data) { update.run(cleaned, row.norm); changed++; }
+    }
+    db.prepare("INSERT INTO app_meta (key,value) VALUES (?,?)").run(marker, String(Date.now()));
+    db.exec("COMMIT");
+  } catch (error) {
+    try { db.exec("ROLLBACK"); } catch {}
+    throw error;
+  }
+  if (changed) console.log(`[db] removed expired preview URLs from ${changed} artist profiles`);
+  return changed;
+}
+sanitizeStoredArtistPreviews();
 
 function parseJsonObject(value) {
   try {

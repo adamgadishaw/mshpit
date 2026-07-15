@@ -2,9 +2,88 @@
 
 > **Living doc.** Whoever works on this next: read this first, and UPDATE it before you end a session (move things between "Done" and "Backlog", note anything running). Point a fresh Claude Code chat at this file to get up to speed without re-explaining.
 >
-> Last updated: **2026-07-13**
+> Last updated: **2026-07-21**
 
 > **Working agreement (owner's standing instruction):** ALWAYS `git commit` **and** `git push` after a verified batch. Stabilization work uses a review branch; do not merge/push directly to `master` until the branch checks pass. A master push auto-deploys and briefly restarts Render.
+
+## OWNER ACTIONS OUTSTANDING (read first)
+
+These are blocked on private configuration only. No code work is required.
+
+| What | Where | Effect while unset |
+| --- | --- | --- |
+| **`TICKETMASTER_KEY`** — **the owner has a key and has offered to supply it.** Ask for it, then set it on the Render web service (it is `sync:false`, so it is entered in the dashboard, never committed). | Render web service env | Real tour dates stay empty. Verify with `/api/health`: `tourProviderConfigured` must be `true` and `tourDates` must rise above zero after the first refresh (starts 5s after boot). Never backfill fabricated `g_t_*`/`ca_t_*`/`ct*`/`t1`-`t4` rows to fill the cards. |
+| `MEDIA_ENDPOINT`, `MEDIA_BUCKET`, `MEDIA_REGION`, `MEDIA_ACCESS_KEY_ID`, `MEDIA_SECRET_ACCESS_KEY`, `MEDIA_PUBLIC_BASE_URL` | Render web service env | Photo/video uploads fail closed by design. Health reports `mediaStorageConfigured: false`. This is why "I can't add photos or videos" — the code path is complete and tested; only the bucket credentials are missing. |
+| `RESEND_API_KEY`, `MAIL_FROM` | Render web service env | Password-reset links are logged server-side instead of emailed. Health reports `mailConfigured: false`. |
+
+`YOUTUBE_API_KEY` is already set (health: `youtubeConfigured: true`). Nothing to do.
+
+## Catalog job now tells the truth — 2026-07-21 (Claude)
+
+**Finishes the 2026-07-14 incident repair that was left half-done.** The server side already detected an exhausted crawl and recorded durable run history, but nothing surfaced either, so the admin console still had the misleading button that caused the incident.
+
+### Root cause recap (unchanged, for context)
+
+"Grow by 10k" added **zero** artists (all 76 genre cursors had reached the end of their results) yet reported success, and still fell through into a full Deezer re-enrichment of 5,599 existing profiles. That pass rewrote ~46,676 short-lived preview URLs, which expired ~15 minutes later and progressively broke playback. The catalogue itself never shrank — the "243 artists" reading was Discover showing a region+genre-filtered count as the global total.
+
+### Completed this batch
+
+1. **The admin console can no longer lie.** `AdminScreen` renders the `exhausted` phase explicitly ("Nothing left to add (CATALOG_CRAWL_EXHAUSTED)") with the server's note; previously that phase rendered **nothing**, so a no-op grow looked like a success. Error rows now include the stable `errorCode`.
+2. **Durable run history is visible.** New `GET /api/admin/catalog/runs` (admin-only, bounded to 20) exposes the `seed_runs` table that already existed but was written and never read. The Catalog tab shows the last five jobs with mode, status, added/filled counts, error code, and date — a record that survives restarts.
+3. **The false claim is gone from the code and the UI.** The `startCatalogSeed` comment asserting it "always adds and is never a no-op" was the inverted truth; it and the Catalog tab copy now state that an exhausted crawl adds nothing and that enrichment never touches already-complete profiles.
+4. **The incident logic is now pinned by tests.** Extracted two pure helpers, `growOutcome()` and `shouldEnrichAfterCrawl()`, used by the live job, and covered them in `server/catalogSeed.test.mjs` (7 tests): zero-added reports `exhausted` not `done`, a satisfied target is not misreported as exhausted, an operator stop outranks both, and enrichment never runs when the crawl added nothing.
+
+### Validation
+
+`npm run check` green: 45 Node tests pass, syntax check passes (48 files), Expo SDK 56 web export succeeds.
+
+### Still open
+
+- Deleting a post is still not implemented (soft-delete + tombstone; see the post ALPHA note below).
+- Chat/feed live sync is 3.5s/12s polling — an ALPHA bridge, not the end state. See the scale follow-ups below.
+- `perTag` crawl depth can be raised to reach genuinely new MusicBrainz results; the crawl is exhausted only *at the current depth*. A new source (or deeper paging) is what actually grows the roster past ~10k.
+
+## Post create/edit and live feed ALPHA — 2026-07-15 (Codex)
+
+**Owner request:** keep the existing review-forward layout, make posts editable and cross-device fresh without manual reloads, and remove prototype-only state gaps.
+
+### Completed
+
+1. `POST /api/posts` now returns the canonical server post. Six-factor review dimensions are persisted in the additive `posts.dims` column, so hydration no longer removes the Night score or other rating detail.
+2. `PATCH /api/posts/:id` explicitly whitelists and validates editable fields, preserves banned/suspended checks, allows the author or an administrator, rejects stale versions with `CONFLICT`, and records administrator edits in `moderation_actions`. IDs, authorship, timestamps, removal state, and counters cannot be edited. Photo visibility now requires a real boolean/0-or-1 instead of accepting truthy strings.
+3. `LogScreen` is reused in Edit post mode with the existing layout, photo controls, autocomplete, ratings, and failure feedback. Failed/conflicting saves keep the form open. Existing ratings are not recomputed unless the user actually changes them.
+4. Feed cards expose an author/admin Edit control and an `edited` label. Open post details resolve the current feed row by ID, so a saved edit is visible immediately instead of showing the navigation snapshot.
+5. The public feed refreshes every 12 seconds while the app is active. Refreshes do not overlap, abort on unmount, pause in the background, resume on foreground, back off to two minutes after failures, reject responses older than a local create/edit/like, and never reset the older-page cursor after initial hydration.
+6. Profile opening now hydrates that account's bounded server post wall (`GET /api/users/:id/posts`) rather than showing only posts already present in the first global feed page. Server timestamps are normalized into the relative label expected by `TicketStub`.
+7. Focused regression coverage lives in `server/post.edit.test.mjs`: canonical create/dim persistence, strict visibility validation, author/non-owner/admin permissions, immutable fields, optional-field clearing, stale-edit conflict, audit recording, suspended-account enforcement, and missing posts. Focused post tests, API integrity tests, syntax checks, and Expo SDK 56 web export passed during implementation.
+
+### Scale follow-up
+
+- The 12-second first-page poll is an ALPHA bridge. At large scale, replace it with WebSocket/SSE fan-out plus durable pub/sub while retaining cursor catch-up; add feed upsert/removal tombstones so moderation and deletion propagate without rereading windows.
+- Owner post deletion is still not implemented. Use a soft-delete/audited route rather than erasing the post graph, then add an idempotent client action and tombstone sync.
+- The current profile post endpoint is capped at 100 and needs cursor pagination before high-volume accounts.
+- Comment polling remains merge-only; moderated/deleted comments need tombstones or authoritative-window reconciliation.
+
+## Group-chat ALPHA integrity and live sync — 2026-07-15 (Codex)
+
+**Owner request:** fan clubs and concert lounges must receive new messages without a browser refresh, keep failed drafts available, and enforce the membership/attendance gates they advertise. This batch changes behavior only; it does not redesign either chat.
+
+### Completed
+
+1. **Forward live cursors.** DM, fan-club, and lounge GET routes retain their existing `before` history cursor and now also accept an exclusive `after` cursor. Responses include `syncCursor` and `hasMore`; ties are stable on `(created_at,id)`. The client catches up in bounded pages instead of downloading the full newest window every 3.5 seconds.
+2. **One safe polling lifecycle.** `src/lib/useLiveChat.js` starts immediately, prevents overlapping reads, drains short bursts, pauses in the background, resumes on foreground, and cancels/cleans up when the room unmounts. Intentional caller cancellation no longer creates a false `PIT-NET-002` diagnostic; genuine timeouts still do.
+3. **Deterministic client state.** Store loaders retain server timestamps, upsert/deduplicate by ID, sort chronologically, cap device memory (600 shared-chat messages / 750 DMs), and reconcile staff-removed message IDs. Optimistic messages adopt the server ID without briefly duplicating when a poll and send response cross.
+4. **Messages are visible as they arrive.** Fan clubs, concert lounges, and DMs start at the newest message and follow new content while the reader remains near the bottom. Scrolling up to read history disables that automatic movement until the reader returns near the bottom. The lounge gate also hydrates its real message count before entry.
+5. **Truthful retry behavior.** Chat inputs clear only after the server confirms the write. Failed sends remove the optimistic bubble but keep the typed draft for a retry; the existing feedback host presents the corresponding themed diagnostic. Send buttons prevent duplicate submissions while a write is in flight.
+6. **Fan-club membership is enforced.** Joining/leaving waits for server confirmation, closing the former join/send race. `POST /api/fanclubs/:artist/messages` rejects non-members with `FAN_CLUB_MEMBERSHIP_REQUIRED`, mapped to `PIT-CHAT-001` ("Join the crowd first"). Direct API calls can no longer bypass the Join gate.
+7. **Lounge attendance is enforced.** Entering a lounge idempotently saves `going: true` before opening the composer and never toggles an existing attendee off during retry. `POST /api/lounges/:key/messages` rejects accounts outside that show's Going list with `LOUNGE_ATTENDANCE_REQUIRED`, mapped to `PIT-CHAT-002` ("Save your spot first"). Guests may still inspect the public lounge after entering but cannot post.
+8. **Regression coverage.** `server/api.integrity.test.mjs` covers forward pagination/catch-up, `before`/`after` conflict rejection, moderation tombstones, membership and attendance rejection, idempotent gate writes, and a successful retry after satisfying each gate. Focused API, error-catalogue, request-control, and syntax checks pass.
+
+### Scale follow-up
+
+- Polling is an appropriate ALPHA bridge, not the millions-user end state. Before broad scale, move shared chat to a horizontally scalable realtime service (WebSocket/SSE gateway plus pub/sub), managed relational storage, durable queues, server-side unread/read cursors, delivery acknowledgements, and observability. Preserve the current cursor contract as reconnect/catch-up fallback.
+- The UI currently keeps only a recent bounded window and has no "load older messages" control even though the API's `before` cursor exists. Add explicit history pagination before long-running rooms need more than that window.
+- Moderation tombstones are returned as a bounded recent list. A durable deletion/event cursor should replace that list when chat volume becomes material.
 
 ## Rewards, local discovery, moderation, and blocking - 2026-07-13 (Codex)
 

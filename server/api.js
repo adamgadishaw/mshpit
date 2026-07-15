@@ -6,7 +6,7 @@
 // - responses only ever contain public projections (publicUser), never raw rows
 import { randomUUID, randomBytes, createHash } from "node:crypto";
 import { mailConfigured, sendEmail } from "./mailer.js";
-import { db, q, ytStmts, publicUser, artistStmts, publicArtist, artistRow, normName } from "./db.js";
+import { db, q, publicUser, artistStmts, publicArtist, artistRow, normName } from "./db.js";
 import { hashPassword, verifyPassword, createSession, destroySession, rateLimit } from "./auth.js";
 import { startCatalogSeed, catalogSeedStatus, stopCatalogSeed, deezerEnrich } from "./catalogSeed.js";
 import { clean, cleanEmail, isEmail, cleanName, isName, cleanHandle, isPassword, clampRating, cleanStringArray, shape, LIMITS } from "./validate.js";
@@ -14,6 +14,13 @@ import { ApiError } from "./errors.js";
 import { createMediaPresign, mediaConfigured } from "./media.js";
 import { discoverySidebar } from "./discovery.js";
 import { userRewards } from "./rewards.js";
+import {
+  ProviderError,
+  getDeezerDiscography,
+  getFreshDeezerPreview,
+  invalidateYouTubeTrack,
+  resolveYouTubeTrack,
+} from "./musicProviders.js";
 
 export { ApiError } from "./errors.js";
 
@@ -132,8 +139,27 @@ function uniqueHandle(base) {
   return candidate;
 }
 
-const postRow = db.prepare(`INSERT INTO posts (id,user_id,artist,venue,city,date,overall,band,room,review,photos,photos_public,setlist,tour,created_at)
-                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+const POST_RATING_DIM_KEYS = ["performance", "setlist", "sound", "venue", "crowd", "experience"];
+function cleanPostRatingDims(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const out = {};
+  for (const key of POST_RATING_DIM_KEYS) {
+    if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
+    const numeric = Number(value[key]);
+    if (!Number.isFinite(numeric)) return undefined;
+    out[key] = clampRating(numeric);
+  }
+  return out;
+}
+
+const postRow = db.prepare(`INSERT INTO posts (id,user_id,artist,venue,city,date,overall,band,room,dims,review,photos,photos_public,setlist,tour,created_at)
+                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+const feedPostById = db.prepare(`
+  SELECT p.*, u.name AS u_name, u.handle AS u_handle, u.initials AS u_initials, u.avatar_uri AS u_avatar, u.avatar_color AS u_color,
+    (SELECT COUNT(*) FROM likes l WHERE l.post_id = p.id) AS like_count,
+    (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id AND c.removed = 0) AS comment_count
+  FROM posts p JOIN users u ON u.id = p.user_id
+  WHERE p.id = ?`);
 // Insert a notification for a recipient (never notify yourself).
 const notifRow = db.prepare("INSERT INTO notifications (id,user_id,actor_id,type,post_id,artist,text,created_at) VALUES (?,?,?,?,?,?,?,?)");
 function addNotif(recipientId, actorId, type, extra = {}) {
@@ -187,13 +213,15 @@ function postJson(p, viewerId) {
     userId: p.user_id,
     user: { name: p.u_name, handle: p.u_handle, initials: p.u_initials, avatarUri: p.u_avatar, avatarColor: p.u_color },
     artist: p.artist, venue: p.venue, city: p.city, date: p.date,
-    overall: p.overall, band: p.band, room: p.room, review: p.review,
+    overall: p.overall, band: p.band, room: p.room, dims: JSON.parse(p.dims || "{}"), review: p.review,
     photos: JSON.parse(p.photos || "[]"), photosPublic: !!p.photos_public,
     setlist: JSON.parse(p.setlist || "[]"),
     tour: p.tour || null,
     likes: p.like_count ?? 0, comments: p.comment_count ?? 0,
     liked: viewerId ? !!db.prepare("SELECT 1 FROM likes WHERE post_id=? AND user_id=?").get(p.id, viewerId) : false,
     createdAt: p.created_at,
+    editedAt: p.updated_at || null,
+    version: p.updated_at || p.created_at,
   };
 }
 
@@ -222,38 +250,6 @@ async function resolveFromMusicBrainz(name) {
     rank_score: a.score ? Number(a.score) : 1,
   };
 }
-
-// YouTube video-ID resolver. Playback runs on the YouTube IFrame Player (full
-// songs/videos, no account, works for everyone), so every track needs a videoId.
-// We look it up once via the YouTube Data API (key in YOUTUBE_API_KEY on the
-// server) and cache it in the DB FOREVER, because the free quota is small
-// (~100 searches/day). A cached NULL is a "no match" and gets a short TTL so a
-// miss doesn't re-burn quota on every play. No key / quota exhausted -> null, and
-// the client falls back to the Deezer 30s preview.
-const YT_MISS_TTL = 6 * 3600 * 1000; // re-try a "no match" after 6h
-async function resolveYouTubeId(title, artist) {
-  const key = ("yt:" + (artist || "") + "|" + title).toLowerCase().slice(0, 300);
-  const hit = ytStmts.get.get(key);
-  if (hit?.video_id) return { videoId: hit.video_id, status: "cached" };
-  if (hit && Date.now() - hit.updated_at < YT_MISS_TTL) return { videoId: null, status: "not_found" };
-  const apiKey = process.env.YOUTUBE_API_KEY;
-  if (!apiKey) return { videoId: null, status: "unconfigured" }; // preview fallback
-  const q = encodeURIComponent(`${artist ? artist + " " : ""}${title} official audio`);
-  try {
-    const r = await fetch(
-      `https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&videoEmbeddable=true&videoSyndicated=true&maxResults=1&q=${q}&key=${apiKey}`,
-      { signal: AbortSignal.timeout(8000) }
-    );
-    if (!r.ok) return { videoId: null, status: r.status === 403 ? "quota_or_forbidden" : "provider_error" };
-    const d = await r.json().catch(() => ({}));
-    const vid = d?.items?.[0]?.id?.videoId || null;
-    ytStmts.set.run(key, vid, Date.now());
-    return { videoId: vid, status: vid ? "resolved" : "not_found" };
-  } catch { return { videoId: null, status: "provider_error" }; }
-}
-
-const deezerCache = new Map(); // norm(name) -> { data, exp }
-async function dz(url) { const r = await fetch(url, { signal: AbortSignal.timeout(9000) }); return r.ok ? r.json() : null; }
 
 // --- Genre canonicalization: collapse the messy raw tags (case/format variants +
 // a few obvious synonyms) into one clean label per genre, so Discover's charts and
@@ -295,7 +291,7 @@ function rawGenresFor(canon) {
 // Chart row: typed columns + a lead "top track" pulled from the artist's data blob.
 function chartRow(name, a, rank, extra = {}) {
   let top = null;
-  if (a?.data) { try { const d = JSON.parse(a.data); const t = (d.topTracks || [])[0]; if (t?.title) top = { title: t.title, url: t.url || null, preview: t.preview || null }; } catch {} }
+  if (a?.data) { try { const d = JSON.parse(a.data); const t = (d.topTracks || [])[0]; if (t?.title) top = { title: t.title, url: t.url || null }; } catch {} }
   return { rank, name: a?.name || name, genre: canonGenre(a?.genre) || null, popularity: a?.popularity ?? null, followers: (() => { try { return a?.data ? JSON.parse(a.data).followers ?? null : null; } catch { return null; } })(), photo: a?.photo || null, topTrack: top, ...extra };
 }
 
@@ -315,7 +311,7 @@ async function enrichArtistFromDeezer(name) {
     genre: existing?.genre || e.genre || null,
     photo: e.photo || data.photo || null,
     mbid: existing?.mbid || null, country: existing?.country || null, beginYear: existing?.formed || null,
-    popularity: e.popularity, followers: e.followers, topTracks: e.topTracks,
+    popularity: e.popularity, followers: e.followers, topTracks: e.topTracks, deezerId: e.deezerId,
   };
   artistStmts.upsert.run(artistRow(normName(name), merged, "deezer"));
   return true;
@@ -393,66 +389,60 @@ export const routes = {
     return { artist: publicArtist(artistStmts.byNorm.get(normName(mb.name))), created: true };
   },
 
-  // Full discography with tracklists, from Deezer (keyless). Powers the artist
-  // page: real albums you can expand into songs to rate and play. Cached a day.
+  // Full discography metadata from Deezer. The durable cache intentionally omits
+  // signed preview URLs; a fresh preview is resolved only when Play is pressed.
   "GET /api/artists/discography": async (ctx) => {
     const name = clean(ctx.query.name, { max: 120 });
     if (!name) throw new ApiError(400, "Missing name.");
-    const key = name.toLowerCase();
-    const hit = deezerCache.get(key);
-    if (hit && hit.exp > Date.now()) return hit.data;
     limit(ctx, "discography", 40, 10 * 60 * 1000);
-    try {
-      const s = await dz(`https://api.deezer.com/search/artist?q=${encodeURIComponent(name)}&limit=1`);
-      const artist = s?.data?.[0];
-      if (!artist) return { albums: [] };
-      const al = await dz(`https://api.deezer.com/artist/${artist.id}/albums?limit=50`);
-      const seen = new Set();
-      const picks = (al?.data || [])
-        .filter((x) => x.record_type === "album" && x.title && !seen.has(x.title.toLowerCase()) && seen.add(x.title.toLowerCase()))
-        .sort((a, b) => String(b.release_date || "").localeCompare(String(a.release_date || "")))
-        .slice(0, 12);
-      const albums = [];
-      for (const alb of picks) {
-        const full = await dz(`https://api.deezer.com/album/${alb.id}`);
-        albums.push({
-          id: alb.id, title: alb.title, year: (alb.release_date || "").slice(0, 4), cover: alb.cover_medium || alb.cover || null,
-          tracks: (full?.tracks?.data || []).map((t) => ({ title: t.title, preview: t.preview || null, duration: t.duration || 0 })),
-        });
-      }
-      const data = { artist: { name: artist.name, fans: artist.nb_fan, photo: artist.picture_xl || artist.picture_big }, albums };
-      deezerCache.set(key, { data, exp: Date.now() + 24 * 3600 * 1000 });
-      return data;
-    } catch { return { albums: [] }; }
+    try { return await getDeezerDiscography(name); }
+    catch (error) {
+      if (error instanceof ProviderError) throw new ApiError(502, "The discography source missed its cue. Try again shortly.", "PROVIDER_UNAVAILABLE", error);
+      throw error;
+    }
   },
 
-  // Resolve a track title (+ artist) to a Deezer 30s preview mp3 (keyless), so the
-  // in-app player can play ANY song for everyone, no Spotify account needed.
+  // Resolve a fresh, identity-checked Deezer preview. These signed links expire
+  // within minutes and are therefore cached only briefly in memory, never in DB.
   "GET /api/deezer/track": async (ctx) => {
     const title = clean(ctx.query.title, { max: 200 });
     const artist = clean(ctx.query.artist, { max: 120 });
     if (!title) throw new ApiError(400, "Missing title.");
-    const key = "dztrk:" + (artist + "|" + title).toLowerCase();
-    const hit = deezerCache.get(key);
-    if (hit && hit.exp > Date.now()) return hit.data;
-    let s = await dz(`https://api.deezer.com/search?q=${encodeURIComponent(`track:"${title}"${artist ? ` artist:"${artist}"` : ""}`)}&limit=1`);
-    if (!s?.data?.length) s = await dz(`https://api.deezer.com/search?q=${encodeURIComponent((artist ? artist + " " : "") + title)}&limit=1`);
-    const t = s?.data?.[0];
-    const data = { preview: t?.preview || null, url: t?.link || null, title: t?.title || null, artist: t?.artist?.name || null };
-    deezerCache.set(key, { data, exp: Date.now() + 24 * 3600 * 1000 });
-    return data;
+    limit(ctx, "deezer-track", 180, 10 * 60 * 1000);
+    try { return await getFreshDeezerPreview(title, artist); }
+    catch (error) {
+      if (error instanceof ProviderError) throw new ApiError(502, "The preview source missed its cue. Try again shortly.", "PROVIDER_UNAVAILABLE", error);
+      throw error;
+    }
   },
 
   // Resolve a track title (+ artist) to a YouTube video ID, so the in-app player
-  // streams the FULL song/video for everyone (no account, no Premium). Cached in
-  // the DB forever; null means no match / not configured -> client plays the
-  // Deezer preview instead.
+  // streams the full song/video. Candidate metadata, embeddability, artist/title,
+  // duration, official-channel patterns, and known bad variants are scored before
+  // a finite-lived cache entry is accepted.
   "GET /api/youtube/track": async (ctx) => {
     const title = clean(ctx.query.title, { max: 200 });
     const artist = clean(ctx.query.artist, { max: 120 });
     if (!title) throw new ApiError(400, "Missing title.");
     limit(ctx, "yt", 120, 10 * 60 * 1000);
-    return resolveYouTubeId(title, artist);
+    const duration = Math.max(0, Math.min(24 * 60 * 60, Number(ctx.query.duration) || 0));
+    try { return await resolveYouTubeTrack(title, artist, { expectedDurationSec: duration }); }
+    catch (error) {
+      if (error instanceof ProviderError) return { videoId: null, status: error.code, retryable: error.retryable };
+      throw error;
+    }
+  },
+
+  // IFrame errors 100/101/150 mean a cached video is gone or cannot be embedded.
+  // Remember the failed ID and re-resolve next time instead of replaying it.
+  "POST /api/youtube/invalidate": (ctx) => {
+    requireUser(ctx);
+    limit(ctx, "yt-invalidate", 60, 60 * 60 * 1000);
+    const title = clean(ctx.body?.title, { max: 200 });
+    const artist = clean(ctx.body?.artist, { max: 120 });
+    const videoId = clean(ctx.body?.videoId, { max: 32 });
+    if (!title || !videoId || !/^[A-Za-z0-9_-]{6,20}$/.test(videoId)) throw new ApiError(400, "That failed video could not be identified.", "VALIDATION_FAILED");
+    return invalidateYouTubeTrack(title, artist, videoId);
   },
 
   // ---- Discover: DB-backed charts, genre share, explore-by-genre ----
@@ -491,7 +481,7 @@ export const routes = {
     const out = sorted.slice(0, n).map(([genre, count]) => ({ genre, count, pct: count / total }));
     const rest = sorted.slice(n).reduce((s, [, v]) => s + v, 0);
     if (rest > 0) out.push({ genre: "Other", count: rest, pct: rest / total });
-    return { total: rows.length, genres: out };
+    return { total: rows.length, catalogTotal: artistStmts.count.get().c, genres: out };
   },
   // Country distribution for the region chips (biggest scenes first).
   "GET /api/discover/countries": (ctx) => {
@@ -1002,17 +992,101 @@ export const routes = {
       overall: { required: true, parse: (x) => { const r = clampRating(x); return r > 0 ? r : undefined; } },
       band: { parse: (x) => clampRating(x) },
       room: { parse: (x) => clampRating(x) },
+      dims: { parse: cleanPostRatingDims },
       review: { parse: (x) => clean(x, { max: LIMITS.review, newlines: true }) },
       photos: { parse: (x) => cleanStringArray(x, { maxItems: 8, maxLen: 2000 }) },
-      photosPublic: { parse: (x) => (x ? 1 : 0) },
+      photosPublic: { parse: (x) => typeof x === "boolean" ? (x ? 1 : 0) : x === 0 || x === 1 ? x : undefined },
       setlist: { parse: (x) => cleanStringArray(x, { maxItems: 40, maxLen: 120 }) },
       tour: { parse: (x) => clean(x, { max: 80 }) || null },
     });
     if (errs.length) throw new ApiError(400, errs[0]);
     const id = uid("p");
     postRow.run(id, u.id, v.artist, v.venue, v.city || "", v.date || "", v.overall, v.band ?? null, v.room ?? null,
-      v.review || "", JSON.stringify(v.photos || []), v.photosPublic ?? 0, JSON.stringify(v.setlist || []), v.tour || null, now());
-    return { id };
+      JSON.stringify(v.dims || {}), v.review || "", JSON.stringify(v.photos || []), v.photosPublic ?? 0, JSON.stringify(v.setlist || []), v.tour || null, now());
+    return { id, post: postJson(feedPostById.get(id), u.id) };
+  },
+
+  "PATCH /api/posts/:id": (ctx) => {
+    const u = requireUser(ctx);
+    limit(ctx, "post-edit", 60, 60 * 60 * 1000);
+    const current = db.prepare("SELECT * FROM posts WHERE id=? AND removed=0").get(ctx.params.id);
+    if (!current) throw new ApiError(404, "That post left the stage. Refresh the feed and try again.", "NOT_FOUND");
+    if (current.user_id !== u.id && u.role !== "admin") {
+      throw new ApiError(403, "Only the person who posted this review can edit it.", "FORBIDDEN");
+    }
+
+    const body = ctx.body && typeof ctx.body === "object" && !Array.isArray(ctx.body) ? ctx.body : {};
+    const has = (key) => Object.prototype.hasOwnProperty.call(body, key);
+    const editable = ["artist", "venue", "city", "date", "overall", "band", "room", "dims", "review", "photos", "photosPublic", "setlist", "tour"];
+    if (!editable.some(has)) throw new ApiError(400, "Make a change before saving this post.", "VALIDATION_FAILED");
+
+    // Optimistic concurrency prevents two devices (or an old open edit sheet)
+    // from silently overwriting one another. Older clients may omit `version`,
+    // while current clients always send the server projection's version.
+    const currentVersion = current.updated_at || current.created_at;
+    if (has("version")) {
+      const expected = Number(body.version);
+      if (!Number.isSafeInteger(expected) || expected < 0) throw new ApiError(400, "That post version is invalid. Refresh and try again.", "VALIDATION_FAILED");
+      if (expected !== currentVersion) throw new ApiError(409, "This review changed on another screen. Refresh before saving again.", "CONFLICT");
+    }
+
+    const next = { ...current };
+    const textField = (key, max, { required = false, newlines = false } = {}) => {
+      if (!has(key)) return;
+      if (typeof body[key] !== "string") throw new ApiError(400, `${key} is invalid`, "VALIDATION_FAILED");
+      const value = clean(body[key], { max, newlines });
+      if (required && !value) throw new ApiError(400, `${key} is required`, "VALIDATION_FAILED");
+      next[key] = value;
+    };
+    const ratingField = (key, { required = false } = {}) => {
+      if (!has(key)) return;
+      if (body[key] === null && !required) { next[key] = null; return; }
+      const numeric = Number(body[key]);
+      if (!Number.isFinite(numeric)) throw new ApiError(400, `${key} is invalid`, "VALIDATION_FAILED");
+      const value = clampRating(numeric);
+      if (required && value <= 0) throw new ApiError(400, `${key} is required`, "VALIDATION_FAILED");
+      next[key] = value;
+    };
+
+    textField("artist", LIMITS.artist, { required: true });
+    textField("venue", LIMITS.venue, { required: true });
+    textField("city", LIMITS.city);
+    textField("date", LIMITS.date);
+    textField("review", LIMITS.review, { newlines: true });
+    ratingField("overall", { required: true });
+    ratingField("band");
+    ratingField("room");
+    if (has("dims")) {
+      const dims = cleanPostRatingDims(body.dims);
+      if (!dims) throw new ApiError(400, "dims is invalid", "VALIDATION_FAILED");
+      next.dims = JSON.stringify(dims);
+    }
+
+    if (has("photos")) {
+      if (!Array.isArray(body.photos) || body.photos.some((item) => typeof item !== "string")) throw new ApiError(400, "photos is invalid", "VALIDATION_FAILED");
+      next.photos = JSON.stringify(cleanStringArray(body.photos, { maxItems: 8, maxLen: 2000 }));
+    }
+    if (has("photosPublic")) {
+      if (typeof body.photosPublic === "boolean") next.photos_public = body.photosPublic ? 1 : 0;
+      else if (body.photosPublic === 0 || body.photosPublic === 1) next.photos_public = body.photosPublic;
+      else throw new ApiError(400, "photosPublic is invalid", "VALIDATION_FAILED");
+    }
+    if (has("setlist")) {
+      if (!Array.isArray(body.setlist) || body.setlist.some((item) => typeof item !== "string")) throw new ApiError(400, "setlist is invalid", "VALIDATION_FAILED");
+      next.setlist = JSON.stringify(cleanStringArray(body.setlist, { maxItems: 40, maxLen: 120 }));
+    }
+    if (has("tour")) {
+      if (body.tour !== null && typeof body.tour !== "string") throw new ApiError(400, "tour is invalid", "VALIDATION_FAILED");
+      next.tour = body.tour === null ? null : clean(body.tour, { max: 80 }) || null;
+    }
+
+    const editedAt = Math.max(now(), currentVersion + 1);
+    db.prepare(`UPDATE posts SET artist=?,venue=?,city=?,date=?,overall=?,band=?,room=?,dims=?,review=?,photos=?,photos_public=?,setlist=?,tour=?,updated_at=? WHERE id=?`)
+      .run(next.artist, next.venue, next.city, next.date, next.overall, next.band, next.room, next.dims, next.review, next.photos, next.photos_public, next.setlist, next.tour, editedAt, current.id);
+    if (u.role === "admin" && u.id !== current.user_id) {
+      moderationRecord(ctx, "edit", "post", current.id, "Administrator edited post", { version: currentVersion }, { version: editedAt });
+    }
+    return { post: postJson(feedPostById.get(current.id), u.id) };
   },
 
   "POST /api/posts/:id/like": (ctx) => {
@@ -1090,6 +1164,27 @@ export const routes = {
     const other = ctx.params.otherId;
     if (blockedEitherWay(u.id, other)) throw new ApiError(403, "This conversation isn't available.", "FORBIDDEN");
     const { cursor, limit } = pageRequest(ctx, 500, 500);
+    const after = decodeCursor(ctx.query?.after);
+    if (cursor && after) throw new ApiError(400, "Use either before or after, not both.", "VALIDATION_FAILED");
+
+    // Live-chat polling walks forward from the newest row the client has seen.
+    // Keep the existing `before` cursor untouched for loading older history.
+    if (after) {
+      const found = db.prepare(`SELECT id, from_id, text, created_at FROM dms
+        WHERE ((from_id=? AND to_id=?) OR (from_id=? AND to_id=?))
+          AND (created_at > ? OR (created_at = ? AND id > ?))
+        ORDER BY created_at ASC, id ASC LIMIT ?`)
+        .all(u.id, other, other, u.id, after.createdAt, after.createdAt, after.id, limit + 1);
+      const hasMore = found.length > limit;
+      const rows = hasMore ? found.slice(0, limit) : found;
+      return {
+        messages: rows.map((m) => ({ id: m.id, from: m.from_id, text: m.text, createdAt: m.created_at })),
+        nextCursor: null,
+        syncCursor: rows.length ? encodeCursor(rows.at(-1)) : String(ctx.query.after),
+        hasMore,
+      };
+    }
+
     const cursorSql = cursor ? "AND (created_at < ? OR (created_at = ? AND id < ?))" : "";
     const args = [u.id, other, other, u.id];
     if (cursor) args.push(cursor.createdAt, cursor.createdAt, cursor.id);
@@ -1097,7 +1192,8 @@ export const routes = {
     const found = db.prepare(`SELECT id, from_id, text, created_at FROM dms
       WHERE ((from_id=? AND to_id=?) OR (from_id=? AND to_id=?)) ${cursorSql} ORDER BY created_at DESC, id DESC LIMIT ?`).all(...args);
     const { rows, nextCursor } = finishPage(found, limit);
-    return { messages: rows.reverse().map((m) => ({ id: m.id, from: m.from_id, text: m.text, createdAt: m.created_at })), nextCursor };
+    const syncCursor = !cursor && rows.length ? encodeCursor(rows[0]) : null;
+    return { messages: rows.reverse().map((m) => ({ id: m.id, from: m.from_id, text: m.text, createdAt: m.created_at })), nextCursor, syncCursor, hasMore: false };
   },
 
   "POST /api/dms/:otherId": (ctx) => {
@@ -1174,13 +1270,37 @@ export const routes = {
     const artist = clean(decodeURIComponent(ctx.params.artist), { max: LIMITS.artist }).toLowerCase();
     const hidden = blockedIdSet(ctx.user?.id);
     const { cursor, limit } = pageRequest(ctx, 300, 300);
+    const after = decodeCursor(ctx.query?.after);
+    if (cursor && after) throw new ApiError(400, "Use either before or after, not both.", "VALIDATION_FAILED");
+    const members = db.prepare("SELECT COUNT(*) c FROM fan_club_members WHERE artist=?").get(artist).c;
+    const removedIds = db.prepare("SELECT id FROM fan_club_messages WHERE artist=? AND removed=1 ORDER BY created_at DESC, id DESC LIMIT 300")
+      .all(artist).map((row) => row.id);
+
+    if (after) {
+      const found = db.prepare(`SELECT m.*, u.name, u.initials FROM fan_club_messages m JOIN users u ON u.id=m.user_id
+                               WHERE m.artist=? AND m.removed=0
+                                 AND (m.created_at > ? OR (m.created_at = ? AND m.id > ?))
+                               ORDER BY m.created_at ASC, m.id ASC LIMIT ?`)
+        .all(artist, after.createdAt, after.createdAt, after.id, limit + 1);
+      const hasMore = found.length > limit;
+      const rows = hasMore ? found.slice(0, limit) : found;
+      return {
+        members,
+        messages: rows.filter((m) => !hidden.has(m.user_id)).map((m) => ({ id: m.id, userId: m.user_id, name: m.name, initials: m.initials, text: m.text, createdAt: m.created_at })),
+        nextCursor: null,
+        syncCursor: rows.length ? encodeCursor(rows.at(-1)) : String(ctx.query.after),
+        hasMore,
+        removedIds,
+      };
+    }
+
     const cursorSql = cursor ? "AND (m.created_at < ? OR (m.created_at = ? AND m.id < ?))" : "";
     const args = cursor ? [artist, cursor.createdAt, cursor.createdAt, cursor.id, limit + 1] : [artist, limit + 1];
     const found = db.prepare(`SELECT m.*, u.name, u.initials FROM fan_club_messages m JOIN users u ON u.id=m.user_id
                              WHERE m.artist=? AND m.removed=0 ${cursorSql} ORDER BY m.created_at DESC, m.id DESC LIMIT ?`).all(...args);
     const { rows, nextCursor } = finishPage(found, limit);
-    const members = db.prepare("SELECT COUNT(*) c FROM fan_club_members WHERE artist=?").get(artist).c;
-    return { members, messages: rows.reverse().filter((m) => !hidden.has(m.user_id)).map((m) => ({ id: m.id, userId: m.user_id, name: m.name, initials: m.initials, text: m.text, createdAt: m.created_at })), nextCursor };
+    const syncCursor = !cursor && rows.length ? encodeCursor(rows[0]) : null;
+    return { members, messages: rows.reverse().filter((m) => !hidden.has(m.user_id)).map((m) => ({ id: m.id, userId: m.user_id, name: m.name, initials: m.initials, text: m.text, createdAt: m.created_at })), nextCursor, syncCursor, hasMore: false, removedIds };
   },
 
   "POST /api/fanclubs/:artist/messages": (ctx) => {
@@ -1189,6 +1309,8 @@ export const routes = {
     const artist = clean(decodeURIComponent(ctx.params.artist), { max: LIMITS.artist }).toLowerCase();
     const text = clean(ctx.body?.text, { max: LIMITS.message, newlines: true });
     if (!artist || !text) throw new ApiError(400, "Say something first.");
+    const member = db.prepare("SELECT 1 FROM fan_club_members WHERE artist=? AND user_id=?").get(artist, u.id);
+    if (!member) throw new ApiError(403, "Join this fan club before jumping into the conversation.", "FAN_CLUB_MEMBERSHIP_REQUIRED");
     const id = uid("fc");
     db.prepare("INSERT INTO fan_club_messages (id,artist,user_id,text,created_at) VALUES (?,?,?,?,?)").run(id, artist, u.id, text, now());
     return { id };
@@ -1199,12 +1321,35 @@ export const routes = {
     const key = clean(decodeURIComponent(ctx.params.key), { max: 300 }).toLowerCase();
     const hidden = blockedIdSet(ctx.user?.id);
     const { cursor, limit } = pageRequest(ctx, 300, 300);
+    const after = decodeCursor(ctx.query?.after);
+    if (cursor && after) throw new ApiError(400, "Use either before or after, not both.", "VALIDATION_FAILED");
+    const removedIds = db.prepare("SELECT id FROM lounge_messages WHERE lounge_id=? AND removed=1 ORDER BY created_at DESC, id DESC LIMIT 300")
+      .all(key).map((row) => row.id);
+
+    if (after) {
+      const found = db.prepare(`SELECT m.*, u.name, u.initials, u.avatar_uri, u.avatar_color, u.role FROM lounge_messages m JOIN users u ON u.id=m.user_id
+                               WHERE m.lounge_id=? AND m.removed=0
+                                 AND (m.created_at > ? OR (m.created_at = ? AND m.id > ?))
+                               ORDER BY m.created_at ASC, m.id ASC LIMIT ?`)
+        .all(key, after.createdAt, after.createdAt, after.id, limit + 1);
+      const hasMore = found.length > limit;
+      const rows = hasMore ? found.slice(0, limit) : found;
+      return {
+        messages: rows.filter((m) => !hidden.has(m.user_id)).map((m) => ({ id: m.id, userId: m.user_id, name: m.name, initials: m.initials, avatarUri: m.avatar_uri, avatarColor: m.avatar_color, role: m.role, text: m.text, createdAt: m.created_at })),
+        nextCursor: null,
+        syncCursor: rows.length ? encodeCursor(rows.at(-1)) : String(ctx.query.after),
+        hasMore,
+        removedIds,
+      };
+    }
+
     const cursorSql = cursor ? "AND (m.created_at < ? OR (m.created_at = ? AND m.id < ?))" : "";
     const args = cursor ? [key, cursor.createdAt, cursor.createdAt, cursor.id, limit + 1] : [key, limit + 1];
     const found = db.prepare(`SELECT m.*, u.name, u.initials, u.avatar_uri, u.avatar_color, u.role FROM lounge_messages m JOIN users u ON u.id=m.user_id
                              WHERE m.lounge_id=? AND m.removed=0 ${cursorSql} ORDER BY m.created_at DESC, m.id DESC LIMIT ?`).all(...args);
     const { rows, nextCursor } = finishPage(found, limit);
-    return { messages: rows.reverse().filter((m) => !hidden.has(m.user_id)).map((m) => ({ id: m.id, userId: m.user_id, name: m.name, initials: m.initials, avatarUri: m.avatar_uri, avatarColor: m.avatar_color, role: m.role, text: m.text, createdAt: m.created_at })), nextCursor };
+    const syncCursor = !cursor && rows.length ? encodeCursor(rows[0]) : null;
+    return { messages: rows.reverse().filter((m) => !hidden.has(m.user_id)).map((m) => ({ id: m.id, userId: m.user_id, name: m.name, initials: m.initials, avatarUri: m.avatar_uri, avatarColor: m.avatar_color, role: m.role, text: m.text, createdAt: m.created_at })), nextCursor, syncCursor, hasMore: false, removedIds };
   },
   "POST /api/lounges/:key/messages": (ctx) => {
     const u = requireUser(ctx);
@@ -1212,6 +1357,8 @@ export const routes = {
     const key = clean(decodeURIComponent(ctx.params.key), { max: 300 }).toLowerCase();
     const text = clean(ctx.body?.text, { max: LIMITS.message, newlines: true });
     if (!key || !text) throw new ApiError(400, "Say something first.");
+    const attendee = db.prepare("SELECT 1 FROM going WHERE user_id=? AND concert_key=?").get(u.id, key);
+    if (!attendee) throw new ApiError(403, "Join this show's Going list before posting in the lounge.", "LOUNGE_ATTENDANCE_REQUIRED");
     const id = uid("lm");
     db.prepare("INSERT INTO lounge_messages (id,lounge_id,user_id,text,created_at) VALUES (?,?,?,?,?)").run(id, key, u.id, text, now());
     return { id };
@@ -1449,6 +1596,22 @@ export const routes = {
   "DELETE /api/admin/catalog/seed": (ctx) => {
     requireAdmin(ctx);
     return stopCatalogSeed();
+  },
+  // Durable history for catalog jobs. The in-memory status is lost on restart and
+  // once reported "done" after adding nothing, which is how a no-op grow looked
+  // successful. This is the record that survives and tells the truth.
+  "GET /api/admin/catalog/runs": (ctx) => {
+    requireAdmin(ctx);
+    const limitN = Math.min(20, Math.max(1, Number(ctx.query.limit) || 8));
+    const rows = db.prepare(`SELECT id,mode,status,start_total,target,added,enriched,error_code,note,started_at,finished_at
+      FROM seed_runs ORDER BY started_at DESC LIMIT ?`).all(limitN);
+    return {
+      runs: rows.map((r) => ({
+        id: r.id, mode: r.mode, status: r.status, startTotal: r.start_total, target: r.target,
+        added: r.added, enriched: r.enriched, errorCode: r.error_code, note: r.note,
+        startedAt: r.started_at, finishedAt: r.finished_at,
+      })),
+    };
   },
 
   "POST /api/admin/users/:id/unban": (ctx) => {

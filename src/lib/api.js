@@ -65,6 +65,12 @@ export async function api(path, { method = "GET", body, context, silent = false,
       signal: control.signal,
     });
   } catch (error) {
+    // Leaving a live screen intentionally cancels its read. That is lifecycle
+    // cleanup, not a network failure, so do not add a false PIT-NET diagnostic.
+    if (signal?.aborted && !control.didTimeout()) {
+      control.cleanup();
+      throw error;
+    }
     const kind = control.didTimeout() ? "timeout" : signal?.aborted || error?.name === "AbortError" ? "abort" : "network";
     control.cleanup();
     throw apiFailure(error, { path, method: verb, context: operation, silent, kind });
@@ -74,6 +80,10 @@ export async function api(path, { method = "GET", body, context, silent = false,
   try {
     text = await res.text();
   } catch (error) {
+    if (signal?.aborted && !control.didTimeout()) {
+      control.cleanup();
+      throw error;
+    }
     const kind = control.didTimeout() ? "timeout" : signal?.aborted || error?.name === "AbortError" ? "abort" : "network";
     control.cleanup();
     throw apiFailure(error, { path, method: verb, context: operation, silent, kind, status: res.status });

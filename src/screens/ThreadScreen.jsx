@@ -6,26 +6,35 @@ import ScreenHeader from "../components/ScreenHeader";
 import Avatar from "../components/Avatar";
 import Icon from "../components/Icon";
 import MentionText from "../components/MentionText";
+import useLiveChat from "../lib/useLiveChat";
+import useChatScroll from "../lib/useChatScroll";
 
 export default function ThreadScreen({ otherId, onClose, onOpenProfile, onOpenProfileByHandle }) {
   const { session, userById, threadMessages, sendDM, loadThread, markThreadRead, loadUser } = useStore();
   const other = userById(otherId);
   const [text, setText] = useState("");
+  const [sending, setSending] = useState(false);
+  const { scrollRef, onScroll, onContentSizeChange } = useChatScroll();
   const messages = threadMessages(otherId);
 
-  // Live DMs: hydrate on open AND poll, so replies land without a refresh
-  // (loadThread merges by id, so re-polling is cheap + dedup-safe).
-  useEffect(() => {
-    loadThread(otherId);
-    const id = setInterval(() => loadThread(otherId), 3500);
-    return () => clearInterval(id);
-  }, [otherId]);
+  useLiveChat(
+    ({ after, signal }) => loadThread(otherId, { after, signal }),
+    { channelKey: `dm:${otherId}`, enabled: !!session && !!otherId },
+  );
   // A DM notification can open a chat with someone this device never cached;
   // fetch them so the name + avatar resolve instead of a nameless "Chat".
   useEffect(() => { if (otherId && !userById(otherId)) loadUser(otherId); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [otherId]);
   useEffect(() => { markThreadRead(otherId); }, [otherId, messages.length]);
 
-  const send = () => { if (text.trim()) { sendDM(otherId, text); setText(""); } };
+  const send = async () => {
+    const submitted = text;
+    const draft = submitted.trim();
+    if (!draft || sending) return;
+    setSending(true);
+    const result = await sendDM(otherId, draft);
+    if (result?.ok) setText((current) => current === submitted ? "" : current);
+    setSending(false);
+  };
   const onMention = (h) => onOpenProfileByHandle?.(h);
 
   return (
@@ -33,7 +42,8 @@ export default function ThreadScreen({ otherId, onClose, onOpenProfile, onOpenPr
       <ScreenHeader kicker="DIRECT MESSAGE" title={other?.name || "Chat"} onBack={onClose}
         right={<Pressable onPress={() => onOpenProfile?.(otherId)}><Avatar user={other} size={32} /></Pressable>} />
 
-      <ScrollView contentContainerStyle={styles.chat} showsVerticalScrollIndicator={false}>
+      <ScrollView ref={scrollRef} contentContainerStyle={styles.chat} showsVerticalScrollIndicator={false}
+        onScroll={onScroll} onContentSizeChange={onContentSizeChange} scrollEventThrottle={100}>
         {messages.length === 0 && <Text style={styles.empty}>Say hi to {other?.name?.split(" ")[0]}.</Text>}
         {messages.map((m) => {
           const mine = m.from === session?.id;
@@ -51,7 +61,7 @@ export default function ThreadScreen({ otherId, onClose, onOpenProfile, onOpenPr
       {session ? (
         <View style={styles.inputBar}>
           <TextInput style={styles.input} placeholder={`Message ${other?.name?.split(" ")[0] || ""}…  (use @ to tag)`} placeholderTextColor={colors.textFaint} value={text} onChangeText={setText} onSubmitEditing={send} returnKeyType="send" maxLength={1000} />
-          <Pressable style={styles.sendBtn} onPress={send}>
+          <Pressable style={[styles.sendBtn, sending && { opacity: 0.65 }]} onPress={send} disabled={sending}>
             <Icon name="chevron-right" size={20} color="#1A1206" />
           </Pressable>
         </View>

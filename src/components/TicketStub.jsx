@@ -8,6 +8,15 @@ import SmartImage from "./SmartImage";
 import { useStore } from "../store";
 import { BadgeRow } from "./Badge";
 
+const relativeTime = (timestamp) => {
+  if (!timestamp) return "now";
+  const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+  if (seconds < 60) return "now";
+  const minutes = Math.floor(seconds / 60); if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60); if (hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24); return days < 30 ? `${days}d` : `${Math.floor(days / 30)}mo`;
+};
+
 // Real photo thumbnails only, never empty placeholder tiles (that reads as a
 // broken/prototype UI). Renders nothing when the post has no photos.
 function MediaStrip({ photos }) {
@@ -29,11 +38,14 @@ function MediaStrip({ photos }) {
 // Review-forward feed card: the review is the centerpiece. Artist / venue / date
 // sit on a ticket-stub line below, the score reads at a glance, and the footer
 // opens the Afterparty (like + comments) for that concert.
-export default function TicketStub({ log, onOpen, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenVenue, onReport }) {
+export default function TicketStub({ log, onOpen, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenVenue, onReport, onEdit }) {
   const openComments = () => (onComment || onOpen)?.(log);
   const { userById, likeInfo, toggleLike, commentsFor, session, userBadges } = useStore();
   const author = userById?.(log.userId) || { initials: log.user?.initials, name: log.user?.name, handle: log.user?.handle };
   const [revealed, setRevealed] = useState(!log.inTourWindow);
+  const canEdit = !!onEdit && !!session && (session.id === log.userId || session.role === "admin");
+  const setlist = Array.isArray(log.setlist) ? log.setlist : [];
+  const timeLabel = log.timeAgo || relativeTime(log.createdAt);
 
   const { count: likeCount, liked } = likeInfo(log.id, log.likes || 0);
   const commentCount = commentsFor(log.id).length || log.comments || 0;
@@ -53,7 +65,7 @@ export default function TicketStub({ log, onOpen, onComment, onPreview, onOpenPr
             <Text style={styles.name}>{author.name}</Text>
             <BadgeRow badges={userBadges(author)} size={14} />
           </View>
-          <Text style={styles.sub}><Text style={roleColor(author.role) ? { color: roleColor(author.role), fontWeight: "800" } : null}>@{author.handle}</Text> · {log.timeAgo}</Text>
+          <Text style={styles.sub}><Text style={roleColor(author.role) ? { color: roleColor(author.role), fontWeight: "800" } : null}>@{author.handle}</Text> · {timeLabel}{log.editedAt ? " · edited" : ""}</Text>
         </Pressable>
         <View style={styles.scorePill}>
           <Text style={styles.scoreNum}>{overall.toFixed(1)}</Text>
@@ -98,15 +110,15 @@ export default function TicketStub({ log, onOpen, onComment, onPreview, onOpenPr
       </Pressable>
 
       {/* setlist - de-emphasized, collapsible */}
-      {log.setlist.length > 0 && (
+      {setlist.length > 0 && (
         <Pressable style={styles.setRow} onPress={() => setRevealed((v) => !v)}>
           <Icon name={revealed ? "chevron-down" : "chevron-right"} size={15} color={colors.textFaint} />
-          <Text style={styles.setTitle}>SETLIST · {log.setlist.length}</Text>
+          <Text style={styles.setTitle}>SETLIST · {setlist.length}</Text>
           {!revealed && <Text style={styles.lock}>tap to reveal</Text>}
         </Pressable>
       )}
-      {revealed && log.setlist.length > 0 && (
-        <Text style={styles.setBody}>{log.setlist.join("  ·  ")}</Text>
+      {revealed && setlist.length > 0 && (
+        <Text style={styles.setBody}>{setlist.join("  ·  ")}</Text>
       )}
 
       {/* footer → the Afterparty */}
@@ -124,6 +136,11 @@ export default function TicketStub({ log, onOpen, onComment, onPreview, onOpenPr
           <Icon name="chevron-right" size={14} color={colors.amber} />
         </Pressable>
         <View style={{ flex: 1 }} />
+        {canEdit && (
+          <Pressable style={({ pressed }) => [styles.fBtn, pressed && styles.controlPressed]} hitSlop={8} onPress={() => onEdit?.(log)} accessibilityRole="button" accessibilityLabel="Edit post">
+            <Icon name="edit" size={16} color={colors.amber} />
+          </Pressable>
+        )}
         <Pressable style={({ pressed }) => [styles.fBtn, pressed && styles.controlPressed]} hitSlop={8} onPress={() => onReport?.(log)} accessibilityRole="button" accessibilityLabel="Report post">
           <Icon name="flag" size={15} color={colors.textFaint} />
         </Pressable>

@@ -36,27 +36,44 @@ function Stepper({ label, value, onChange, color }) {
   );
 }
 
-export default function LogScreen({ onPost, onCancel, user, prefill }) {
+function postDims(post) {
+  const stored = post?.dims && typeof post.dims === "object" ? post.dims : {};
+  const value = (candidate, fallback = 0) => Number.isFinite(Number(candidate)) ? Number(candidate) : Number(fallback) || 0;
+  const overall = value(post?.overall);
+  const band = value(post?.band, overall);
+  const room = value(post?.room, overall);
+  return {
+    performance: value(stored.performance, band),
+    setlist: value(stored.setlist, band),
+    sound: value(stored.sound, room),
+    venue: value(stored.venue, room),
+    crowd: value(stored.crowd, overall),
+    experience: value(stored.experience, overall),
+  };
+}
+
+export default function LogScreen({ onPost, onCancel, user, prefill, editing = null }) {
   const { searchArtistsApi, drafts, saveDraft, deleteDraft } = useStore();
   const [draftId, setDraftId] = useState(null);
-  const [artist, setArtist] = useState(prefill?.artist || "");
-  const [venue, setVenue] = useState(prefill?.venue || "");
-  const [city, setCity] = useState(prefill?.city || "");
-  const [tour, setTour] = useState("");
+  const [artist, setArtist] = useState(editing?.artist || prefill?.artist || "");
+  const [venue, setVenue] = useState(editing?.venue || prefill?.venue || "");
+  const [city, setCity] = useState(editing?.city || prefill?.city || "");
+  const [tour, setTour] = useState(editing?.tour || "");
   // Artist autocomplete: bind the review to a REAL catalog artist so it links to
   // the artist page, instead of free text that may match nothing.
   const [artistHits, setArtistHits] = useState([]);
-  const [artistPicked, setArtistPicked] = useState(!!prefill?.artist);
+  const [artistPicked, setArtistPicked] = useState(!!editing?.artist || !!prefill?.artist);
   useEffect(() => {
     const q = artist.trim();
     if (artistPicked || q.length < 2) { setArtistHits([]); return; }
     const id = setTimeout(() => searchArtistsApi(q).then((list) => setArtistHits((list || []).slice(0, 6))), 220);
     return () => clearTimeout(id);
   }, [artist, artistPicked]);
-  const [dims, setDims] = useState({ performance: 0, setlist: 0, sound: 0, venue: 0, crowd: 0, experience: 0 });
-  const [review, setReview] = useState("");
-  const [photos, setPhotos] = useState([]);
-  const [photosPublic, setPhotosPublic] = useState(true);
+  const [dims, setDims] = useState(() => editing ? postDims(editing) : { performance: 0, setlist: 0, sound: 0, venue: 0, crowd: 0, experience: 0 });
+  const [ratingsDirty, setRatingsDirty] = useState(false);
+  const [review, setReview] = useState(editing?.review || "");
+  const [photos, setPhotos] = useState(() => (editing?.photos || []).filter(isDurableMediaUrl));
+  const [photosPublic, setPhotosPublic] = useState(editing ? editing.photosPublic !== false : true);
   const [uploadingPhotos, setUploadingPhotos] = useState(false);
   const [posting, setPosting] = useState(false);
   // Show date, defaults to today so logging stays one-tap, but you can set the
@@ -64,7 +81,7 @@ export default function LogScreen({ onPost, onCancel, user, prefill }) {
   const today = new Date();
   const todayStr = `${today.getFullYear()} · ${String(today.getMonth() + 1).padStart(2, "0")} · ${String(today.getDate()).padStart(2, "0")}`;
   const PAST_YEARS = Array.from({ length: today.getFullYear() - 1999 }, (_, i) => today.getFullYear() - i);
-  const [date, setDate] = useState(todayStr);
+  const [date, setDate] = useState(editing?.date || todayStr);
   const [showDate, setShowDate] = useState(false);
 
   const addPhoto = async () => {
@@ -97,12 +114,20 @@ export default function LogScreen({ onPost, onCancel, user, prefill }) {
     }
   };
 
-  const setDim = (k, v) => setDims((d) => ({ ...d, [k]: v }));
+  const setDim = (k, v) => { setRatingsDirty(true); setDims((d) => ({ ...d, [k]: v })); };
   const computed = computeReview(dims);
+  const submittedRatings = editing && !ratingsDirty
+    ? {
+        overall: Number(editing.overall) || computed.overall,
+        band: editing.band == null ? computed.band : Number(editing.band),
+        room: editing.room == null ? computed.room : Number(editing.room),
+      }
+    : computed;
   const canPost = artist.trim() && computed.overall > 0;
   const submitBusy = uploadingPhotos || posting;
 
   const stash = () => {
+    if (editing) return;
     if (submitBusy) return;
     const id = saveDraft({ id: draftId, artist, venue, city, tour, date, dims, review, photos: photos.filter(isDurableMediaUrl) });
     setDraftId(id);
@@ -121,28 +146,28 @@ export default function LogScreen({ onPost, onCancel, user, prefill }) {
     try {
       const durablePhotos = photos.filter(isDurableMediaUrl);
       const result = await onPost?.({
-        id: newId(),
-        user: user
+        id: editing?.id || newId(),
+        user: editing?.user || (user
           ? { name: user.name, handle: user.handle, initials: user.initials }
-          : { name: "You", handle: "you", initials: "YOU" },
-        timeAgo: "now",
+          : { name: "You", handle: "you", initials: "YOU" }),
+        timeAgo: editing?.timeAgo || "now",
         artist: artist.trim(),
         venue: venue.trim() || "Unknown venue",
-        city: city.trim() || "-",
+        city: editing ? city.trim() : city.trim() || "-",
         tour: tour.trim() || null,
         date,
         media: durablePhotos.length,
         photos: durablePhotos,
         photosPublic,
-        overall: computed.overall,
-        band: computed.band || computed.overall,
-        room: computed.room || computed.overall,
+        overall: submittedRatings.overall,
+        band: submittedRatings.band || submittedRatings.overall,
+        room: submittedRatings.room || submittedRatings.overall,
         dims,
         review: review.trim(),
-        setlist: [],
-        likes: 0,
-        comments: 0,
-        inTourWindow: false,
+        setlist: editing?.setlist || [],
+        likes: editing?.likes || 0,
+        comments: editing?.comments || 0,
+        inTourWindow: editing?.inTourWindow || false,
       });
       // Failed posts stay fully editable and retain any saved draft.
       if (result?.ok !== false && draftId) deleteDraft(draftId);
@@ -155,10 +180,10 @@ export default function LogScreen({ onPost, onCancel, user, prefill }) {
 
   return (
     <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-      <SheetHeader title="Log a show" onClose={onCancel} action={{ label: posting ? "Posting..." : uploadingPhotos ? "Uploading..." : "Post", onPress: submit, disabled: !canPost || submitBusy }} />
+      <SheetHeader title={editing ? "Edit post" : "Log a show"} onClose={onCancel} action={{ label: posting ? (editing ? "Saving..." : "Posting...") : uploadingPhotos ? "Uploading..." : editing ? "Save" : "Post", onPress: submit, disabled: !canPost || submitBusy }} />
 
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-        {!draftId && drafts.length > 0 && !hasContent && (
+        {!editing && !draftId && drafts.length > 0 && !hasContent && (
           <View style={styles.drafts}>
             <Text style={styles.draftsLabel}>RESUME A DRAFT</Text>
             {drafts.slice(0, 5).map((d) => (
@@ -285,8 +310,8 @@ export default function LogScreen({ onPost, onCancel, user, prefill }) {
           </Pressable>
         )}
 
-        <Button title={posting ? "Posting review..." : uploadingPhotos ? "Uploading photos..." : "Post to feed"} icon="check" onPress={submit} disabled={!canPost || submitBusy} style={{ marginTop: 28 }} />
-        {hasContent && (
+        <Button title={posting ? (editing ? "Saving changes..." : "Posting review...") : uploadingPhotos ? "Uploading photos..." : editing ? "Save changes" : "Post to feed"} icon="check" onPress={submit} disabled={!canPost || submitBusy} style={{ marginTop: 28 }} />
+        {!editing && hasContent && (
           <Pressable style={styles.saveDraft} onPress={stash} disabled={submitBusy}>
             <Icon name="edit" size={14} color={colors.textDim} />
             <Text style={styles.saveDraftTxt}>{draftId ? "Update draft" : "Save as draft"}</Text>

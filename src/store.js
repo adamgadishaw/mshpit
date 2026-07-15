@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useEffect, useRef } from "react";
+import { AppState, Platform } from "react-native";
 import { seedFeed, ratedShows, cityCoords, haversineKm } from "./data";
 import { catalogVenues, catalogTourDates, catalogArtists } from "./seed/catalog";
 import { clean, cleanEmail, isEmail, cleanName, isName, cleanHandle, isPassword, clampRating, LIMITS } from "./lib/validate";
@@ -33,6 +34,37 @@ const ago = (ms) => {
   const w = Math.floor(d / 7); if (w < 5) return w + "w";
   return Math.floor(d / 30) + "mo";
 };
+
+const chatTime = (message) => Number.isFinite(message?.at) ? message.at : 0;
+const mergeChatMessages = (existing, incoming, removedIds = [], max = 600) => {
+  const removed = new Set(removedIds);
+  const byId = new Map();
+  for (const message of existing || []) {
+    if (message?.id && !removed.has(message.id)) byId.set(message.id, message);
+  }
+  for (const message of incoming || []) {
+    if (message?.id && !removed.has(message.id)) byId.set(message.id, { ...byId.get(message.id), ...message });
+  }
+  const ordered = [...byId.values()].sort((a, b) => chatTime(a) - chatTime(b) || String(a.id).localeCompare(String(b.id)));
+  return ordered.length > max ? ordered.slice(-max) : ordered;
+};
+const adoptChatMessageId = (messages, localId, serverId, max) => mergeChatMessages(
+  [],
+  (messages || []).map((message) => message.id === localId
+    ? { ...message, id: serverId, pending: false, server: true }
+    : message),
+  [],
+  max,
+);
+
+const FEED_REFRESH_MS = 12_000;
+const FEED_REFRESH_MAX_BACKOFF_MS = 120_000;
+const normalizeServerPost = (post) => ({
+  ...post,
+  photos: Array.isArray(post?.photos) ? post.photos : [],
+  setlist: Array.isArray(post?.setlist) ? post.setlist : [],
+  timeAgo: ago(post?.createdAt),
+});
 
 const demoUsers = [
   // NOTE: the real admin account lives ONLY on the server (server/index.js
@@ -133,6 +165,11 @@ export function StoreProvider({ children }) {
     sanitizePersistedStoreValue("pit.session", load("pit.session", null), ENABLE_DEMO_DATA));
   const [feed, setFeed] = useState(() =>
     sanitizePersistedStoreValue("pit.feed", load("pit.feed", demoSeed(seedFeed, [])), ENABLE_DEMO_DATA));
+  // Polling and mutations can finish out of order. A revision invalidates a
+  // response that started before a local create/edit/like, while the request
+  // state prevents overlapping refreshes from racing each other.
+  const feedMutationRevisionRef = useRef(0);
+  const feedRefreshRef = useRef({ inFlight: false, sequence: 0 });
   const [removedIds, setRemovedIds] = useState([]);
   // Per-image moderation: individual photo URLs pulled from galleries. Reactive,
   // like the rest of moderation, but removing one photo backfills the gallery
@@ -249,35 +286,61 @@ export function StoreProvider({ children }) {
   // Pull server posts (with current counts and viewer-like state) and upsert them
   // into the local cache. Existing IDs must be replaced, not skipped, otherwise
   // edits and cross-device likes/comments remain stale forever.
-  const mergeServerFeed = (posts, { prepend = true } = {}) => {
+  const mergeServerFeed = (posts, { prepend = true, preserveOrder = false } = {}) => {
     if (!Array.isArray(posts) || !posts.length) return;
+    const normalized = posts.map(normalizeServerPost);
     setFeed((current) => {
-      const serverIds = new Set(posts.map((post) => post.id));
+      const serverIds = new Set(normalized.map((post) => post.id));
       const remaining = current.filter((post) => !serverIds.has(post.id));
-      return prepend ? [...posts, ...remaining] : [...remaining, ...posts];
+      if (preserveOrder) {
+        const byId = new Map(normalized.map((post) => [post.id, post]));
+        const replaced = current.map((post) => byId.get(post.id) || post);
+        const existingIds = new Set(current.map((post) => post.id));
+        const missing = normalized.filter((post) => !existingIds.has(post.id));
+        return [...replaced, ...missing].sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0));
+      }
+      return prepend ? [...normalized, ...remaining] : [...remaining, ...normalized];
     });
     // Like model: likes[id] is the count EXCLUDING the viewer; myLikes[id] is
     // their own toggle. The server total includes me, so subtract it back out.
     setLikes((current) => {
       const next = { ...current };
-      posts.forEach((post) => { next[post.id] = (post.likes || 0) - (post.liked ? 1 : 0); });
+      normalized.forEach((post) => { next[post.id] = (post.likes || 0) - (post.liked ? 1 : 0); });
       return next;
     });
     setMyLikes((current) => {
       const next = { ...current };
-      posts.forEach((post) => { next[post.id] = !!post.liked; });
+      normalized.forEach((post) => { next[post.id] = !!post.liked; });
       return next;
     });
   };
 
-  const hydrateFeed = () => {
-    api("/api/feed?limit=50")
-      .then(({ posts, nextCursor }) => {
-        mergeServerFeed(posts, { prepend: true });
+  const hydrateFeed = async ({ resetPagination = true, signal } = {}) => {
+    const refresh = feedRefreshRef.current;
+    if (refresh.inFlight) return null;
+    const sequence = ++refresh.sequence;
+    const mutationRevision = feedMutationRevisionRef.current;
+    refresh.inFlight = true;
+    try {
+      const { posts, nextCursor } = await api("/api/feed?limit=50", {
+        context: "Refreshing the concert feed",
+        silent: true,
+        signal,
+      });
+      // A create/edit/like that happened after this read began is newer than the
+      // response. Ignore the response and let the next poll reconcile it.
+      if (signal?.aborted || sequence !== refresh.sequence || mutationRevision !== feedMutationRevisionRef.current) return null;
+      mergeServerFeed(posts, { prepend: true });
+      if (resetPagination) {
         setFeedNextCursor(nextCursor || null);
         setFeedHasMore(!!nextCursor);
-      })
-      .catch(() => {});
+      }
+      return true;
+    } catch {
+      return signal?.aborted ? null : false;
+    } finally {
+      if (sequence === refresh.sequence) refresh.inFlight = false;
+    }
   };
   const loadMoreFeed = async () => {
     if (feedLoadingMore || !feedHasMore || !feedNextCursor) return false;
@@ -297,8 +360,48 @@ export function StoreProvider({ children }) {
       setFeedLoadingMore(false);
     }
   };
-  // Load once on mount so even guests see real posts (the feed is public).
-  useEffect(() => { hydrateFeed(); }, []);
+  // Keep the public feed fresh without requiring a browser reload. Refreshes
+  // pause in the background, abort on unmount, back off after failures, and do
+  // not reset the older-page cursor after the initial load.
+  useEffect(() => {
+    let stopped = false;
+    let timer = null;
+    let delay = FEED_REFRESH_MS;
+    const controller = new AbortController();
+    const canRefresh = () => {
+      if (Platform.OS === "web" && typeof document !== "undefined" && document.hidden) return false;
+      return Platform.OS === "web" || AppState.currentState == null || AppState.currentState === "active";
+    };
+    const schedule = (ms) => {
+      if (stopped) return;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => run(false), ms);
+    };
+    const run = async (initial) => {
+      if (stopped) return;
+      if (!canRefresh()) return;
+      const result = await hydrateFeed({ resetPagination: initial, signal: controller.signal });
+      if (stopped) return;
+      if (result === true) delay = FEED_REFRESH_MS;
+      else if (result === false) delay = Math.min(delay * 2, FEED_REFRESH_MAX_BACKOFF_MS);
+      schedule(delay);
+    };
+    const wake = () => schedule(0);
+    const appStateSubscription = AppState.addEventListener("change", (state) => { if (state === "active") wake(); });
+    if (Platform.OS === "web" && typeof document !== "undefined") document.addEventListener("visibilitychange", wake);
+    run(true);
+    return () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+      controller.abort();
+      feedRefreshRef.current.sequence += 1;
+      feedRefreshRef.current.inFlight = false;
+      appStateSubscription?.remove?.();
+      if (Platform.OS === "web" && typeof document !== "undefined") document.removeEventListener("visibilitychange", wake);
+    };
+    // This lifecycle intentionally owns one polling loop for the provider.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Live provider-backed tour dates from the DB. Production also rejects legacy
   // generated IDs so an old server/cache cannot reintroduce prototype concerts.
@@ -435,6 +538,11 @@ export function StoreProvider({ children }) {
       if (session && fol && !(follows[session.id] || []).includes(su.id)) {
         setFollows((f) => ({ ...f, [session.id]: [...new Set([...(f[session.id] || []), su.id])] }));
       }
+      // A profile is a user's complete wall, not merely the subset already in
+      // the first global feed page. Merge its bounded server-backed post list.
+      api(`/api/users/${encodeURIComponent(id)}/posts`, { context: "Loading profile posts", silent: true })
+        .then(({ posts }) => mergeServerFeed(posts, { preserveOrder: true }))
+        .catch(() => {});
       return su;
     } catch { return null; }
   };
@@ -484,17 +592,33 @@ export function StoreProvider({ children }) {
     try { return await api(`/api/artists/discography?name=${encodeURIComponent(name)}`); } catch { return { albums: [] }; }
   };
   // Resolve a track title (+ artist) to a YouTube video ID, so the in-app player
-  // streams the full song/video for everyone. Cached per title+artist on device.
+  // streams the full song/video for everyone. The server performs identity and
+  // quality scoring; this small client cache never outlives the session for long.
   const ytCache = useRef({});
-  const resolveYouTube = async (title, artist) => {
+  const resolveYouTube = async (title, artist, duration = 0) => {
     if (!title) return null;
     const k = (artist || "") + "|" + title;
-    if (ytCache.current[k] !== undefined) return ytCache.current[k];
+    const hit = ytCache.current[k];
+    if (hit && hit.expiresAt > Date.now()) return hit.videoId;
     try {
-      const { videoId } = await api(`/api/youtube/track?title=${encodeURIComponent(title)}&artist=${encodeURIComponent(artist || "")}`);
-      ytCache.current[k] = videoId || null;
+      const query = new URLSearchParams({ title, artist: artist || "" });
+      if (Number(duration) > 0) query.set("duration", String(Math.round(Number(duration))));
+      const { videoId } = await api(`/api/youtube/track?${query.toString()}`);
+      ytCache.current[k] = { videoId: videoId || null, expiresAt: Date.now() + (videoId ? 30 * 60 * 1000 : 5 * 60 * 1000) };
       return videoId || null;
     } catch { return null; }
+  };
+  const invalidateYouTube = async (title, artist, videoId) => {
+    if (!title || !videoId) return { ok: false };
+    delete ytCache.current[(artist || "") + "|" + title];
+    try {
+      return await api("/api/youtube/invalidate", {
+        method: "POST",
+        body: { title, artist: artist || "", videoId },
+        context: "Replacing an unavailable video",
+        silent: true,
+      });
+    } catch { return { ok: false }; }
   };
   // Resolve any song to a Deezer 30s preview mp3, the fallback when YouTube has no
   // match. Cached per title+artist on this device.
@@ -526,10 +650,11 @@ export function StoreProvider({ children }) {
   const resolveDeezerPreview = async (title, artist) => {
     if (!title) return null;
     const k = (artist || "") + "|" + title;
-    if (previewCache.current[k] !== undefined) return previewCache.current[k];
+    const hit = previewCache.current[k];
+    if (hit && hit.expiresAt > Date.now()) return hit.preview;
     try {
-      const { preview } = await api(`/api/deezer/track?title=${encodeURIComponent(title)}&artist=${encodeURIComponent(artist || "")}`);
-      previewCache.current[k] = preview || null;
+      const { preview, expiresAt } = await api(`/api/deezer/track?title=${encodeURIComponent(title)}&artist=${encodeURIComponent(artist || "")}`);
+      previewCache.current[k] = { preview: preview || null, expiresAt: preview ? Math.min(Number(expiresAt) || Date.now() + 4 * 60 * 1000, Date.now() + 4 * 60 * 1000) : Date.now() + 60 * 1000 };
       return preview || null;
     } catch { return null; }
   };
@@ -1018,6 +1143,7 @@ export function StoreProvider({ children }) {
       room: log.room == null ? log.room : clampRating(log.room),
       userId: session?.id,
     };
+    feedMutationRevisionRef.current += 1;
     setFeed((f) => [safe, ...f]);
     track("post", { artist: safe.artist, venue: safe.venue });
     // Slice 2 write-through: persist the post server-side, then adopt the server
@@ -1028,21 +1154,66 @@ export function StoreProvider({ children }) {
         context: "Posting your concert review",
         body: {
           artist: safe.artist, venue: safe.venue, city: safe.city, date: safe.date,
-          overall: safe.overall, band: safe.band, room: safe.room, review: safe.review,
+          overall: safe.overall, band: safe.band, room: safe.room, dims: safe.dims, review: safe.review,
           photos: safe.photos, photosPublic: safe.photosPublic ? 1 : 0, setlist: safe.setlist, tour: safe.tour || null,
         },
       })
-        .then(({ id }) => {
-          if (id && id !== localId) setFeed((f) => f.map((l) => (l.id === localId ? { ...l, id } : l)));
+        .then(({ id, post }) => {
+          feedMutationRevisionRef.current += 1;
+          if (post) {
+            const published = { ...normalizeServerPost(post), dims: post.dims || safe.dims };
+            setFeed((f) => f.map((l) => (l.id === localId ? published : l)));
+          } else if (id && id !== localId) {
+            setFeed((f) => f.map((l) => (l.id === localId ? { ...l, id } : l)));
+          }
           return { ok: true, id: id || localId };
         })
         .catch((error) => {
+          feedMutationRevisionRef.current += 1;
           // A failed write must not remain looking published on this device.
           setFeed((f) => f.filter((l) => l.id !== localId));
           return { ok: false, error };
         });
     }
     return Promise.resolve({ ok: true, localOnly: true });
+  };
+
+  const editLog = async (id, changes) => {
+    if (!session || !id) return { ok: false };
+    const previous = feed.find((post) => post.id === id) || changes;
+    if (!previous || (previous.userId !== session.id && session.role !== "admin")) return { ok: false };
+    const safe = {
+      artist: clean(changes.artist, { max: 80 }),
+      venue: clean(changes.venue, { max: 80 }),
+      city: clean(changes.city, { max: 60 }),
+      date: clean(changes.date, { max: 20 }),
+      overall: clampRating(changes.overall),
+      band: changes.band == null ? null : clampRating(changes.band),
+      room: changes.room == null ? null : clampRating(changes.room),
+      dims: changes.dims && typeof changes.dims === "object" ? changes.dims : {},
+      review: clean(changes.review, { max: LIMITS.review, newlines: true }),
+      photos: Array.isArray(changes.photos) ? changes.photos.filter((item) => typeof item === "string").slice(0, 8) : [],
+      photosPublic: !!changes.photosPublic,
+      setlist: Array.isArray(changes.setlist) ? changes.setlist.filter((item) => typeof item === "string").slice(0, 40) : [],
+      tour: clean(changes.tour, { max: 80 }) || null,
+    };
+    if (!safe.artist || !safe.venue || safe.overall <= 0) return { ok: false };
+    const version = previous.version ?? previous.editedAt ?? previous.createdAt;
+    feedMutationRevisionRef.current += 1;
+    try {
+      const { post } = await api(`/api/posts/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        context: "Saving your concert review",
+        body: { ...safe, ...(Number.isSafeInteger(version) ? { version } : {}) },
+      });
+      feedMutationRevisionRef.current += 1;
+      const updated = normalizeServerPost(post);
+      setFeed((all) => all.map((item) => (item.id === id ? updated : item)));
+      return { ok: true, post: updated };
+    } catch (error) {
+      feedMutationRevisionRef.current += 1;
+      return { ok: false, error };
+    }
   };
 
   // Per-report moderation: content is public on post; reports drive action.
@@ -1302,14 +1473,19 @@ export function StoreProvider({ children }) {
   const toggleLike = (id, base = 0) => {
     const previous = !!myLikes[id];
     const liked = !previous;
+    feedMutationRevisionRef.current += 1;
     setMyLikes((m) => ({ ...m, [id]: liked }));
     setLikes((l) => ({ ...l, [id]: l[id] ?? base }));
     if (session) api(`/api/posts/${id}/like`, { method: "POST", body: { liked }, context: liked ? "Liking this review" : "Removing your like" })
       .then((result) => {
+        feedMutationRevisionRef.current += 1;
         if (typeof result?.liked === "boolean") setMyLikes((m) => ({ ...m, [id]: result.liked }));
         if (liked) { track("like", { post: id }); const o = postOwner(id); if (o) notify(o, "like", { postId: id, artist: feed.find((l) => l.id === id)?.artist }); }
       })
-      .catch(() => setMyLikes((m) => ({ ...m, [id]: previous })));
+      .catch(() => {
+        feedMutationRevisionRef.current += 1;
+        setMyLikes((m) => ({ ...m, [id]: previous }));
+      });
   };
 
   const visibleFeed = (staff) =>
@@ -1329,36 +1505,71 @@ export function StoreProvider({ children }) {
 
   // A stable id for a concert (artist + venue + date) so the lounge, the going
   // list, and attendees all key off the same thing.
-  const concertKey = (log) => `${norm(log.artist)}|${norm(log.venue)}|${log.date || ""}`;
+  const concertKey = (log) => `${norm(log.artist)}|${norm(log.venue)}|${log.date || ""}`.toLowerCase();
 
   // --- Concert Lounge (gated attendee chat, now server-backed + live) ---
   const loungeFor = (key) => lounge[key] || [];
   // Pull a lounge's messages from the server and merge by id (dedup-safe, so this
   // can be polled while the screen is open to get live chat like the fan clubs).
-  const loadLounge = (key) => {
-    if (!key) return;
-    api(`/api/lounges/${encodeURIComponent(key)}/messages`)
-      .then(({ messages }) => {
+  const loadLounge = (key, { after, signal } = {}) => {
+    if (!key) return Promise.resolve({ syncCursor: after || null, hasMore: false });
+    const query = after ? `?after=${encodeURIComponent(after)}` : "";
+    return api(`/api/lounges/${encodeURIComponent(key)}/messages${query}`, {
+      signal,
+      silent: true,
+      context: "Refreshing the concert lounge",
+    })
+      .then(({ messages, syncCursor, hasMore, removedIds }) => {
         if (!Array.isArray(messages)) return;
         setLounge((L) => {
           const existing = L[key] || [];
-          const byId = new Map(existing.map((m) => [m.id, m]));
-          for (const m of messages) byId.set(m.id, { id: m.id, userId: m.userId, name: m.name, initials: m.initials, avatarUri: m.avatarUri, avatarColor: m.avatarColor, role: m.role, text: m.text, at: m.createdAt, ts: ago(m.createdAt) });
-          const merged = [...byId.values()].sort((a, b) => (a.at || 0) - (b.at || 0));
-          return { ...L, [key]: merged };
+          const incoming = messages.map((m) => ({ id: m.id, userId: m.userId, name: m.name, initials: m.initials, avatarUri: m.avatarUri, avatarColor: m.avatarColor, role: m.role, text: m.text, at: m.createdAt, ts: ago(m.createdAt), server: true }));
+          return { ...L, [key]: mergeChatMessages(existing, incoming, removedIds, 600) };
         });
+        return { syncCursor: syncCursor || after || null, hasMore: !!hasMore };
       })
-      .catch(() => {});
+      .catch((error) => {
+        if (signal?.aborted) throw error;
+        return { syncCursor: after || null, hasMore: false };
+      });
+  };
+  // Entering a lounge is also the user's explicit "I'm going" action. Save it
+  // before revealing the composer so the server-side attendance gate cannot race
+  // the first message. The desired state is idempotent and never removes an
+  // existing attendee when entry is retried.
+  const enterLounge = async (log) => {
+    if (!log) return { ok: false };
+    if (!session) return { ok: true, guest: true };
+    const key = concertKey(log);
+    const mine = going[session.id] || [];
+    const wasGoing = mine.some((entry) => entry.key === key);
+    const entry = { key, artist: log.artist, venue: log.venue, city: log.city, date: log.date };
+    if (!wasGoing) setGoing((all) => ({ ...all, [session.id]: [...(all[session.id] || []).filter((item) => item.key !== key), entry] }));
+    try {
+      const result = await api("/api/going", {
+        method: "POST",
+        body: { ...entry, going: true },
+        context: "Entering the concert lounge",
+      });
+      if (result?.going !== true) throw new Error("Lounge entry was not confirmed");
+      return { ok: true, key };
+    } catch {
+      if (!wasGoing) setGoing((all) => ({ ...all, [session.id]: (all[session.id] || []).filter((item) => item.key !== key) }));
+      return { ok: false };
+    }
   };
   const addLoungeMessage = (key, text) => {
     const t = clean(text, { max: LIMITS.message, newlines: true });
     if (!session || !t) return;
     const localId = "m_" + Date.now();
-    const m = { id: localId, userId: session.id, name: session.name, initials: session.initials, avatarUri: session.avatarUri, avatarColor: session.avatarColor, role: session.role, text: t, at: Date.now(), ts: "now" };
-    setLounge((L) => ({ ...L, [key]: [...(L[key] || []), m] }));
-    api(`/api/lounges/${encodeURIComponent(key)}/messages`, { method: "POST", body: { text: t }, context: "Sending your afterparty message" })
-      .then(({ id }) => { if (id) setLounge((L) => ({ ...L, [key]: (L[key] || []).map((x) => (x.id === localId ? { ...x, id } : x)) })); })
-      .catch(() => setLounge((L) => ({ ...L, [key]: (L[key] || []).filter((x) => x.id !== localId) })));
+    const m = { id: localId, userId: session.id, name: session.name, initials: session.initials, avatarUri: session.avatarUri, avatarColor: session.avatarColor, role: session.role, text: t, at: Date.now(), ts: "now", pending: true };
+    setLounge((L) => ({ ...L, [key]: mergeChatMessages(L[key] || [], [m], [], 600) }));
+    return api(`/api/lounges/${encodeURIComponent(key)}/messages`, { method: "POST", body: { text: t }, context: "Sending your afterparty message" })
+      .then(({ id }) => { if (id) setLounge((L) => ({ ...L, [key]: adoptChatMessageId(L[key], localId, id, 600) })); return { ok: true, id }; })
+      .catch(() => {
+        setLounge((L) => ({ ...L, [key]: (L[key] || []).filter((x) => x.id !== localId) }));
+        return { ok: false };
+      });
   };
 
   // --- Album + song ratings (Apple-Music-style stars), slice 7 ---
@@ -1415,55 +1626,65 @@ export function StoreProvider({ children }) {
   const fanClubFor = (artist) => fanClubMsgs[fcKey(artist)] || [];
   // Slice 5: pull a club's messages + real member count from the server, merging
   // messages by id. No-op offline; bundled seed clubs keep their seed chatter.
-  const loadFanClub = (artist) => {
+  const loadFanClub = (artist, { after, signal } = {}) => {
     const enc = encodeURIComponent(norm(artist));
-    api(`/api/fanclubs/${enc}/messages`)
-      .then(({ members, messages }) => {
+    const query = after ? `?after=${encodeURIComponent(after)}` : "";
+    return api(`/api/fanclubs/${enc}/messages${query}`, {
+      signal,
+      silent: true,
+      context: "Refreshing the fan-club chat",
+    })
+      .then(({ members, messages, syncCursor, hasMore, removedIds }) => {
         if (typeof members === "number") setFanClubMeta((meta) => ({ ...meta, [fcKey(artist)]: { members } }));
-        if (!Array.isArray(messages) || !messages.length) return;
-        setFanClubMsgs((L) => {
-          const existing = L[fcKey(artist)] || [];
-          const have = new Set(existing.map((m) => m.id));
-          const fresh = messages
-            .filter((m) => !have.has(m.id))
-            .map((m) => ({ id: m.id, userId: m.userId, name: m.name, initials: m.initials, text: m.text, ts: ago(m.createdAt) }));
-          return fresh.length ? { ...L, [fcKey(artist)]: [...existing, ...fresh] } : L;
+        if (Array.isArray(messages)) setFanClubMsgs((L) => {
+          const key = fcKey(artist);
+          const incoming = messages.map((m) => ({ id: m.id, userId: m.userId, name: m.name, initials: m.initials, text: m.text, at: m.createdAt, ts: ago(m.createdAt), server: true }));
+          return { ...L, [key]: mergeChatMessages(L[key] || [], incoming, removedIds, 600) };
         });
+        return { syncCursor: syncCursor || after || null, hasMore: !!hasMore };
       })
-      .catch(() => {});
+      .catch((error) => {
+        if (signal?.aborted) throw error;
+        return { syncCursor: after || null, hasMore: false };
+      });
   };
   const addFanClubMessage = (artist, text) => {
     const t = clean(text, { max: LIMITS.message, newlines: true });
     if (!session || !t) return;
     const localId = "fc_" + Date.now();
-    const m = { id: localId, userId: session.id, name: session.name, initials: session.initials, text: t, ts: "now" };
-    setFanClubMsgs((L) => ({ ...L, [fcKey(artist)]: [...(L[fcKey(artist)] || []), m] }));
+    const m = { id: localId, userId: session.id, name: session.name, initials: session.initials, text: t, at: Date.now(), ts: "now", pending: true };
+    setFanClubMsgs((L) => ({ ...L, [fcKey(artist)]: mergeChatMessages(L[fcKey(artist)] || [], [m], [], 600) }));
     const enc = encodeURIComponent(norm(artist));
-    api(`/api/fanclubs/${enc}/messages`, { method: "POST", body: { text: t }, context: "Sending your fan-club message" })
-      .then(({ id }) => { if (id) setFanClubMsgs((L) => ({ ...L, [fcKey(artist)]: (L[fcKey(artist)] || []).map((x) => (x.id === localId ? { ...x, id } : x)) })); })
-      .catch(() => setFanClubMsgs((L) => ({ ...L, [fcKey(artist)]: (L[fcKey(artist)] || []).filter((x) => x.id !== localId) })));
+    return api(`/api/fanclubs/${enc}/messages`, { method: "POST", body: { text: t }, context: "Sending your fan-club message" })
+      .then(({ id }) => { if (id) setFanClubMsgs((L) => ({ ...L, [fcKey(artist)]: adoptChatMessageId(L[fcKey(artist)], localId, id, 600) })); return { ok: true, id }; })
+      .catch(() => {
+        setFanClubMsgs((L) => ({ ...L, [fcKey(artist)]: (L[fcKey(artist)] || []).filter((x) => x.id !== localId) }));
+        return { ok: false };
+      });
   };
   const isFanClubMember = (artist) => (fanClubs[session?.id] || []).some((a) => norm(a) === norm(artist));
   const joinFanClub = (artist) => {
-    if (!session) return;
+    if (!session) return Promise.resolve({ ok: false, joined: false });
     const has = isFanClubMember(artist);
-    if (!has) track("join_fanclub", { artist });
-    setFanClubs((f) => {
-      const mine = f[session.id] || [];
-      return { ...f, [session.id]: has ? mine.filter((a) => norm(a) !== norm(artist)) : [...mine, artist] };
-    });
-    // Optimistically nudge the server-truth count so it tracks my toggle.
-    setFanClubMeta((meta) => { const cur = meta[fcKey(artist)]; return cur ? { ...meta, [fcKey(artist)]: { members: Math.max(0, cur.members + (has ? -1 : 1)) } } : meta; });
     const enc = encodeURIComponent(norm(artist));
     const joined = !has;
-    api(`/api/fanclubs/${enc}/join`, { method: "POST", body: { joined }, context: joined ? "Joining this fan club" : "Leaving this fan club" })
-      .catch(() => {
+    return api(`/api/fanclubs/${enc}/join`, { method: "POST", body: { joined }, context: joined ? "Joining this fan club" : "Leaving this fan club" })
+      .then((result) => {
+        const confirmed = typeof result?.joined === "boolean" ? result.joined : joined;
         setFanClubs((f) => {
           const mine = f[session.id] || [];
-          return { ...f, [session.id]: has ? [...mine, artist] : mine.filter((a) => norm(a) !== norm(artist)) };
+          return { ...f, [session.id]: confirmed
+            ? [...mine.filter((a) => norm(a) !== norm(artist)), artist]
+            : mine.filter((a) => norm(a) !== norm(artist)) };
         });
-        setFanClubMeta((meta) => { const cur = meta[fcKey(artist)]; return cur ? { ...meta, [fcKey(artist)]: { members: Math.max(0, cur.members + (has ? 1 : -1)) } } : meta; });
-      });
+        if (confirmed !== has) setFanClubMeta((meta) => {
+          const cur = meta[fcKey(artist)];
+          return cur ? { ...meta, [fcKey(artist)]: { members: Math.max(0, cur.members + (confirmed ? 1 : -1)) } } : meta;
+        });
+        if (confirmed && !has) track("join_fanclub", { artist });
+        return { ok: true, joined: confirmed };
+      })
+      .catch(() => ({ ok: false, joined: has }));
   };
   const fanClubCount = (artist) =>
     fanClubMeta[fcKey(artist)]?.members ?? Object.values(fanClubs).filter((arr) => arr.some((a) => norm(a) === norm(artist))).length;
@@ -1589,6 +1810,9 @@ export function StoreProvider({ children }) {
   };
   const catalogSeedStatus = async () => { try { return await api("/api/admin/catalog/seed"); } catch { return null; } };
   const stopCatalogSeed = async () => { try { return await api("/api/admin/catalog/seed", { method: "DELETE" }); } catch { return null; } };
+  // Durable job history, so the console can show what a run actually did even
+  // after a restart (an in-memory "done" once hid a run that added nothing).
+  const catalogSeedRuns = async () => { try { return (await api("/api/admin/catalog/runs"))?.runs || []; } catch { return []; } };
 
   // moderation: drop a single chat/lounge/comment message (staff)
   const removeLoungeMessage = (key, msgId) => moderateContent("lounge_message", msgId, true)
@@ -1753,38 +1977,47 @@ export function StoreProvider({ children }) {
   const threadMessages = (otherId) => (session ? dms[dmKey(session.id, otherId)] || [] : []);
   // Slice 4: pull a thread's messages from the server and merge them (dedupe by
   // id, keeping any optimistic local-only message not yet echoed back).
-  const loadThread = (otherId) => {
-    if (!session || !otherId) return;
+  const loadThread = (otherId, { after, signal } = {}) => {
+    if (!session || !otherId) return Promise.resolve({ syncCursor: after || null, hasMore: false });
     const key = dmKey(session.id, otherId);
-    api(`/api/dms/${otherId}`)
-      .then(({ messages }) => {
+    const query = after ? `?after=${encodeURIComponent(after)}` : "";
+    return api(`/api/dms/${otherId}${query}`, {
+      signal,
+      silent: true,
+      context: "Refreshing direct messages",
+    })
+      .then(({ messages, syncCursor, hasMore }) => {
         if (!Array.isArray(messages)) return;
         setDms((d) => {
-          const serverIds = new Set(messages.map((m) => m.id));
-          const localOnly = (d[key] || []).filter((m) => !serverIds.has(m.id));
-          const server = messages.map((m) => ({ id: m.id, from: m.from, text: m.text, ts: ago(m.createdAt) }));
-          return { ...d, [key]: [...server, ...localOnly] };
+          const incoming = messages.map((m) => ({ id: m.id, from: m.from, text: m.text, at: m.createdAt, ts: ago(m.createdAt), server: true }));
+          return { ...d, [key]: mergeChatMessages(d[key] || [], incoming, [], 750) };
         });
+        return { syncCursor: syncCursor || after || null, hasMore: !!hasMore };
       })
-      .catch(() => {});
+      .catch((error) => {
+        if (signal?.aborted) throw error;
+        return { syncCursor: after || null, hasMore: false };
+      });
   };
   const sendDM = (otherId, text) => {
     const t = clean(text, { max: LIMITS.message, newlines: true });
     if (!session || !t || blockedIds.includes(otherId)) return;
     const key = dmKey(session.id, otherId);
     const localId = "dm_" + Date.now();
-    const m = { id: localId, from: session.id, text: t, ts: "now" };
-    setDms((d) => ({ ...d, [key]: [...(d[key] || []), m] }));
+    const m = { id: localId, from: session.id, text: t, at: Date.now(), ts: "now", pending: true };
+    setDms((d) => ({ ...d, [key]: mergeChatMessages(d[key] || [], [m], [], 750) }));
     setDmRead((r) => ({ ...r, [key]: (dms[key]?.length || 0) + 1 }));
     // Write-through + adopt the server id so a later loadThread() dedupes it.
-    api(`/api/dms/${otherId}`, { method: "POST", body: { text: t }, context: "Sending your direct message" })
+    return api(`/api/dms/${otherId}`, { method: "POST", body: { text: t }, context: "Sending your direct message" })
       .then(({ id }) => {
-        if (id) setDms((d) => ({ ...d, [key]: (d[key] || []).map((x) => (x.id === localId ? { ...x, id } : x)) }));
+        if (id) setDms((d) => ({ ...d, [key]: adoptChatMessageId(d[key], localId, id, 750) }));
         notify(otherId, "dm", { text: t.slice(0, 60) });
+        return { ok: true, id };
       })
       .catch(() => {
         setDms((d) => ({ ...d, [key]: (d[key] || []).filter((x) => x.id !== localId) }));
         setDmRead((r) => ({ ...r, [key]: Math.max(0, (r[key] || 1) - 1) }));
+        return { ok: false };
       });
   };
   const markThreadRead = (otherId) => {
@@ -2330,13 +2563,13 @@ export function StoreProvider({ children }) {
     users, session, feed, removedIds, requests, tourDates, reports, follows, discoverySidebar, discoverySidebarStatus,
     userById, userByHandle, logsByUser, sharedShows,
     login, signup, logout, deleteAccount, forgotPassword, resetPassword, updateProfile, chooseTheme,
-    addLog, reportContent, actionReport, dismissReport, removeContent, restoreContent,
+    addLog, editLog, reportContent, actionReport, dismissReport, removeContent, restoreContent,
     requestArtist, approveArtist, rejectArtist,
     addTourDatesBatch,
     isFollowing, follow, unfollow, followerCount, followingCount, absorbUsers, searchPeople, loadMembers, memberCount,
     loadUser, followersOf, followingOf,
     isBlocked, blockUser, unblockUser, blockedUsers, exportMyData,
-    searchArtistsApi, resolveArtist, remoteArtistMeta, artistDiscography, resolveYouTube, resolveDeezerPreview,
+    searchArtistsApi, resolveArtist, remoteArtistMeta, artistDiscography, resolveYouTube, invalidateYouTube, resolveDeezerPreview,
     discoverChart, discoverGenres, discoverCountries, serverTime,
     playHistory, recordPlay, snapshots, saveSnapshot, removeSnapshot, friendsListening, loadFriendsListening, userPlaylists, deletePlaylist,
     favoriteGenre, recommendTracks, autoplayQueue, myPlaylists, loadMyPlaylists, createPlaylist, addToPlaylist,
@@ -2349,12 +2582,12 @@ export function StoreProvider({ children }) {
     activityStats, userAchievements, userPoints, loadRewards,
     chartTop, chartInfo, catalogCountries, topGenres, topPhotos, discoverStats, topArtistsBy, topSongsBy,
     commentsFor, addComment, loadComments, likeInfo, toggleLike,
-    concertKey, loungeFor, addLoungeMessage, loadLounge,
+    concertKey, loungeFor, enterLounge, addLoungeMessage, loadLounge,
     albumRating, songRating, rateAlbum, rateSong, loadRating,
     fanClubFor, loadFanClub, addFanClubMessage, isFanClubMember, joinFanClub, fanClubCount, fanClubsDirectory,
     isArtistOwner, artistProfile, loadArtistPage, updateArtistProfile, artistFeedEnabled,
     artistPostsFor, addArtistPost, removeArtistPost,
-    accountStatus, banUser, unbanUser, suspendUser, liftSuspension, setUserRole, setVerified, setSponsor, loadAdminMembers, adminStats, adminArtistQueue, enrichArtists, purgeArtist, startCatalogSeed, catalogSeedStatus, stopCatalogSeed, removeLoungeMessage, removeComment, removeFanClubMessage,
+    accountStatus, banUser, unbanUser, suspendUser, liftSuspension, setUserRole, setVerified, setSponsor, loadAdminMembers, adminStats, adminArtistQueue, enrichArtists, purgeArtist, startCatalogSeed, catalogSeedStatus, stopCatalogSeed, catalogSeedRuns, removeLoungeMessage, removeComment, removeFanClubMessage,
     comments, fanClubMsgs, lounge,
     goingFor, isGoing, toggleGoing, attendeesFor,
     venueReviewsFor, loadVenueReviews, addVenueReview, venueRating, venueTopPhotos, venuePhotos, artistFanPhotos,

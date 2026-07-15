@@ -5,6 +5,8 @@ export const ERROR_CATALOG = Object.freeze({
   AUTH_REQUIRED: { status: 401, retryable: false },
   AUTH_INVALID: { status: 401, retryable: false },
   FORBIDDEN: { status: 403, retryable: false },
+  FAN_CLUB_MEMBERSHIP_REQUIRED: { status: 403, retryable: false },
+  LOUNGE_ATTENDANCE_REQUIRED: { status: 403, retryable: false },
   VALIDATION_FAILED: { status: 400, retryable: false },
   NOT_FOUND: { status: 404, retryable: false },
   CONFLICT: { status: 409, retryable: false },

@@ -50,7 +50,7 @@ function TrebleBass({ kind, song, playing, onPlay, onOpenArtist }) {
 
 // MySpace-style profile - banner, pfp, now-playing, theme song, Treble/Bass top
 // artists, planned shows, reviews. Built to make people findable and followable.
-export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtist, onOpenVenue, onEditProfile, onPreview, onMessage, onReport, onOpenPhotos, onPlay, onOpenFollowList, onOpenBadges }) {
+export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtist, onOpenVenue, onEditProfile, onPreview, onMessage, onReport, onEditPost, onOpenPhotos, onPlay, onOpenFollowList, onOpenBadges }) {
   const { session, userById, logsByUser, isFollowing, follow, unfollow, followerCount, followingCount, goingFor, userBadges, sharedShows, userPlaylists, loadUser, isBlocked, blockUser, unblockUser, userPoints, userAchievements, loadRewards } = useStore();
   const user = userById(userId);
   const [playlists, setPlaylists] = useState([]);
@@ -300,6 +300,7 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtis
               onOpenArtist={onOpenArtist}
               onOpenVenue={onOpenVenue}
               onReport={onReport}
+              onEdit={onEditPost}
             />
           ))}
         </View>

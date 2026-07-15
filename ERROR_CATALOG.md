@@ -13,6 +13,8 @@ reuse a published `PIT-*` code for a different meaning.
 | `PIT-AUTH-001` | Authentication | Session missing, invalid, or expired | Sign in first |
 | `PIT-AUTH-002` | Permission | Signed-in account lacks permission | No |
 | `PIT-AUTH-003` | Authentication | Email or password confirmation did not match | Check first |
+| `PIT-CHAT-001` | Permission | Fan-club membership is required before posting | Join first |
+| `PIT-CHAT-002` | Permission | Going attendance is required before lounge posting | Enter first |
 | `PIT-REQ-001` | Validation | Submitted details were rejected | Edit first |
 | `PIT-REQ-002` | Not found | Requested record is unavailable | Refresh first |
 | `PIT-REQ-003` | Conflict | Duplicate or stale update | Refresh first |

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, KeyboardAvoidingView, Platform } from "react-native";
 import { colors, mono, radius } from "../theme";
 import { useStore } from "../store";
@@ -8,23 +8,40 @@ import Avatar from "../components/Avatar";
 import Icon from "../components/Icon";
 import MentionText from "../components/MentionText";
 import SpinningRecord from "../components/SpinningRecord";
+import useLiveChat from "../lib/useLiveChat";
+import useChatScroll from "../lib/useChatScroll";
 
 // The artist Fan Club - a permanent chat for fans, even with no show coming up.
 export default function FanClubScreen({ artist, onClose, onOpenProfile, onOpenProfileByHandle }) {
   const { session, userById, fanClubFor, loadFanClub, addFanClubMessage, isFanClubMember, joinFanClub, fanClubCount } = useStore();
   const [text, setText] = useState("");
+  const [joining, setJoining] = useState(false);
+  const [sending, setSending] = useState(false);
+  const { scrollRef, onScroll, onContentSizeChange } = useChatScroll();
   const messages = fanClubFor(artist);
-  // Live chat: hydrate on open AND poll, so other people's messages appear without
-  // a refresh (loadFanClub merges by id, so re-polling is cheap + dedup-safe).
-  useEffect(() => {
-    loadFanClub(artist);
-    const id = setInterval(() => loadFanClub(artist), 3500);
-    return () => clearInterval(id);
-  }, [artist]);
+  useLiveChat(
+    ({ after, signal }) => loadFanClub(artist, { after, signal }),
+    { channelKey: `fan-club:${artist}`, enabled: !!artist },
+  );
   const member = isFanClubMember(artist);
   const art = artistMeta(artist)?.photo;
 
-  const send = () => { if (text.trim()) { addFanClubMessage(artist, text); setText(""); } };
+  const toggleMembership = async () => {
+    if (joining) return;
+    setJoining(true);
+    await joinFanClub(artist);
+    setJoining(false);
+  };
+
+  const send = async () => {
+    const submitted = text;
+    const draft = submitted.trim();
+    if (!draft || sending) return;
+    setSending(true);
+    const result = await addFanClubMessage(artist, draft);
+    if (result?.ok) setText((current) => current === submitted ? "" : current);
+    setSending(false);
+  };
 
   if (!member) {
     return (
@@ -36,9 +53,9 @@ export default function FanClubScreen({ artist, onClose, onOpenProfile, onOpenPr
           <Text style={styles.gateSub}>Talk to other fans, swap shows, plan trips. No ticket needed.</Text>
           <Text style={styles.gateMeta}>{fanClubCount(artist)} members · {messages.length} messages</Text>
           {session ? (
-            <Pressable style={styles.joinBtn} onPress={() => joinFanClub(artist)}>
+            <Pressable style={[styles.joinBtn, joining && { opacity: 0.65 }]} onPress={toggleMembership} disabled={joining}>
               <Icon name="user-plus" size={16} color="#1A1206" />
-              <Text style={styles.joinTxt}>Join the fan club</Text>
+              <Text style={styles.joinTxt}>{joining ? "Joining…" : "Join the fan club"}</Text>
             </Pressable>
           ) : (
             <Text style={styles.gateNote}>Log in to join.</Text>
@@ -51,8 +68,9 @@ export default function FanClubScreen({ artist, onClose, onOpenProfile, onOpenPr
   return (
     <KeyboardAvoidingView style={styles.wrap} behavior={Platform.OS === "ios" ? "padding" : undefined}>
       <ScreenHeader kicker={`FAN CLUB · ${fanClubCount(artist)} members`} title={artist} onBack={onClose}
-        right={<Pressable onPress={() => joinFanClub(artist)}><Text style={styles.leave}>leave</Text></Pressable>} />
-      <ScrollView contentContainerStyle={styles.chat} showsVerticalScrollIndicator={false}>
+        right={<Pressable onPress={toggleMembership} disabled={joining}><Text style={styles.leave}>{joining ? "leaving…" : "leave"}</Text></Pressable>} />
+      <ScrollView ref={scrollRef} contentContainerStyle={styles.chat} showsVerticalScrollIndicator={false}
+        onScroll={onScroll} onContentSizeChange={onContentSizeChange} scrollEventThrottle={100}>
         {messages.length === 0 && <Text style={styles.empty}>Be the first to post.</Text>}
         {messages.map((m) => {
           const mine = m.userId === session?.id;
@@ -72,7 +90,7 @@ export default function FanClubScreen({ artist, onClose, onOpenProfile, onOpenPr
       {session && (
         <View style={styles.inputBar}>
           <TextInput style={styles.input} placeholder={`Message the ${artist} fan club…`} placeholderTextColor={colors.textFaint} value={text} onChangeText={setText} onSubmitEditing={send} returnKeyType="send" maxLength={1000} />
-          <Pressable style={styles.sendBtn} onPress={send}><Icon name="chevron-right" size={20} color="#1A1206" /></Pressable>
+          <Pressable style={[styles.sendBtn, sending && { opacity: 0.65 }]} onPress={send} disabled={sending}><Icon name="chevron-right" size={20} color="#1A1206" /></Pressable>
         </View>
       )}
     </KeyboardAvoidingView>

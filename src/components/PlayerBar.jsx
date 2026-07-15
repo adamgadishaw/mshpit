@@ -114,7 +114,7 @@ function VolumeControl({ volume, onChange }) {
 // 30s preview mp3. Plays ONE track at a time, driven by our own queue index, so the
 // song you tap is always the song that plays.
 export default function PlayerBar({ player, onClose, onIndex, onPlayAt, onRemove, onMoveNext, history = [], onSaveSession, onPlayTrack, onOpenArtist, onAddToPlaylist }) {
-  const { resolveYouTube, resolveDeezerPreview } = useStore();
+  const { resolveYouTube, invalidateYouTube, resolveDeezerPreview } = useStore();
   const list = player && Array.isArray(player.list) ? player.list : [];
   const index = Math.max(0, Math.min(player?.index || 0, list.length - 1));
   const cur = list[index];
@@ -149,8 +149,10 @@ export default function PlayerBar({ player, onClose, onIndex, onPlayAt, onRemove
     });
     (async () => {
       const [videoId, preview] = await Promise.all([
-        within(resolveYouTube(cur.title, cur.artist)),
-        cur.preview ? Promise.resolve(cur.preview) : within(resolveDeezerPreview(cur.title, cur.artist)),
+        within(resolveYouTube(cur.title, cur.artist, cur.duration || 0)),
+        // Stored provider previews are short-lived signed URLs. Always ask the
+        // resolver for a fresh one; its bounded cache avoids duplicate requests.
+        within(resolveDeezerPreview(cur.title, cur.artist)),
       ]);
       if (!cancelled) setResolved({ key: curKey, videoId, preview });
     })();
@@ -170,6 +172,19 @@ export default function PlayerBar({ player, onClose, onIndex, onPlayAt, onRemove
   const connecting = hasVideo && !yt.ready;
   const previewSrc = forThis && !hasVideo ? resolved.preview : null;
   const hasNext = index < list.length - 1;
+
+  // Removed and non-embeddable videos (IFrame errors 100/101/150) must not stay
+  // pinned in either cache. The next play excludes this ID and selects a newly
+  // scored candidate while this play immediately falls back to a fresh preview.
+  const invalidatedRef = useRef("");
+  useEffect(() => {
+    const failedId = yt.error?.videoId;
+    if (!cur || !failedId || ![100, 101, 150].includes(Number(yt.error?.code))) return;
+    const signature = `${cur.artist || ""}|${cur.title || ""}|${failedId}`;
+    if (invalidatedRef.current === signature) return;
+    invalidatedRef.current = signature;
+    invalidateYouTube(cur.title, cur.artist, failedId);
+  }, [yt.error?.code, yt.error?.videoId, curKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Resume across reloads (theme switch / F5): remember where we were and pick the
   // song back up instead of restarting it. Position is persisted every few seconds

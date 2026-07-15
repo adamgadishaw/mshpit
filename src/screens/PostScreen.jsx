@@ -46,8 +46,11 @@ function CommentNode({ c, replies, depth, onReply, onOpenProfile, userById, user
 
 // Post detail — the actual post + its comment thread. This is where like/comment
 // notifications land (not the performance page), and where forum-style replies live.
-export default function PostScreen({ log, onClose, onOpenProfile, onOpenArtist, onOpenVenue, onOpenShow, onReport }) {
-  const { session, commentsFor, addComment, loadComments, userById, userBadges } = useStore();
+export default function PostScreen({ log, onClose, onOpenProfile, onOpenArtist, onOpenVenue, onOpenShow, onReport, onEdit }) {
+  const { session, feed, commentsFor, addComment, loadComments, userById, userBadges } = useStore();
+  // Navigation keeps the post that was originally opened. Resolve it against
+  // live feed state so an edit made on this screen appears immediately.
+  const activeLog = feed.find((post) => post.id === log.id) || log;
   const flat = commentsFor(log.id);
   const [text, setText] = useState("");
   const [replyTo, setReplyTo] = useState(null); // { id, name } or null (= reply to the post)
@@ -85,7 +88,7 @@ export default function PostScreen({ log, onClose, onOpenProfile, onOpenArtist, 
     <View style={styles.wrap}>
       <ScreenHeader kicker="POST" title="Comments" onBack={onClose} />
       <ScrollView ref={scrollRef} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-        <TicketStub log={log} onOpen={() => onOpenShow?.(log)} onOpenProfile={onOpenProfile} onOpenArtist={onOpenArtist} onOpenVenue={onOpenVenue} onReport={onReport} />
+        <TicketStub log={activeLog} onOpen={() => onOpenShow?.(activeLog)} onOpenProfile={onOpenProfile} onOpenArtist={onOpenArtist} onOpenVenue={onOpenVenue} onReport={onReport} onEdit={onEdit} />
 
         <Text style={styles.sectionLabel}>{flat.length} COMMENT{flat.length === 1 ? "" : "S"}</Text>
         {tree.length === 0 && <Text style={styles.empty}>No comments yet. Start the conversation.</Text>}

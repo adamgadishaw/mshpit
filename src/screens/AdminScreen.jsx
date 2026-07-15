@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { View, Text, StyleSheet, ScrollView, Pressable, TextInput } from "react-native";
 import { colors, mono, radius } from "../theme";
 import { useStore, isStaff, isMod } from "../store";
@@ -168,7 +168,7 @@ export default function AdminScreen({ onClose }) {
     approveArtist, rejectArtist, removeContent, restoreContent, actionReport, dismissReport,
     suspendUser, liftSuspension, banUser, unbanUser, setUserRole, setVerified, setSponsor, accountStatus,
     removeComment, removeFanClubMessage, removeLoungeMessage,
-    loadAdminMembers, adminStats, adminArtistQueue, enrichArtists, purgeArtist, startCatalogSeed, catalogSeedStatus, stopCatalogSeed,
+    loadAdminMembers, adminStats, adminArtistQueue, enrichArtists, purgeArtist, startCatalogSeed, catalogSeedStatus, stopCatalogSeed, catalogSeedRuns,
   } = useStore();
 
   const iAmAdmin = isStaff(session?.role); // full access; mods get a subset
@@ -186,13 +186,21 @@ export default function AdminScreen({ onClose }) {
   // Background "grow catalog to N" job: kick it off + poll live progress.
   const [seedJob, setSeedJob] = useState(null);
   const [seedAdd, setSeedAdd] = useState(10000);
+  const [seedRuns, setSeedRuns] = useState([]);
   const refreshSeed = () => catalogSeedStatus().then((s) => s && setSeedJob(s));
-  useEffect(() => { if (tab === "catalog") { refreshCatalog(); refreshSeed(); } }, [tab]);
+  const refreshRuns = () => catalogSeedRuns().then(setSeedRuns);
+  useEffect(() => { if (tab === "catalog") { refreshCatalog(); refreshSeed(); refreshRuns(); } }, [tab]);
   useEffect(() => {
     if (tab !== "catalog" || !seedJob?.running) return;
     const id = setInterval(refreshSeed, 3000);
     return () => clearInterval(id);
   }, [tab, seedJob?.running]);
+  // When a job stops running, pull the durable record of what it actually did.
+  const wasRunning = useRef(false);
+  useEffect(() => {
+    if (wasRunning.current && !seedJob?.running) refreshRuns();
+    wasRunning.current = !!seedJob?.running;
+  }, [seedJob?.running]);
   const startSeed = async () => { const r = await startCatalogSeed(seedAdd); if (r?.status) setSeedJob(r.status); refreshSeed(); };
   const refreshSongs = async () => { const r = await startCatalogSeed({ mode: "refresh" }); if (r?.status) setSeedJob(r.status); refreshSeed(); };
   const stopSeed = async () => { const s = await stopCatalogSeed(); if (s) setSeedJob(s); };
@@ -447,7 +455,7 @@ export default function AdminScreen({ onClose }) {
                 <Text style={styles.catTitle}>GROW CATALOG</Text>
                 <Text style={styles.growCount}>{seedJob?.total != null ? `${seedJob.total.toLocaleString()} artists` : ""}</Text>
               </View>
-              <Text style={styles.catHint}>Crawl MusicBrainz across all genres into the database, then rank with Deezer (popularity + photos). Runs in the background (~30-45 min for 10k). Songs load on demand, nothing to deploy.</Text>
+              <Text style={styles.catHint}>Crawl MusicBrainz across all genres into the database, then rank NEW artists with Deezer (popularity + photos). Runs in the background (~30-45 min for 10k). Once every genre is crawled to the end, a run adds nothing and says so instead of reporting success. It never re-enriches profiles that are already complete. Songs load on demand, nothing to deploy.</Text>
 
               {seedJob?.running ? (
                 <View style={styles.seedRun}>
@@ -491,7 +499,34 @@ export default function AdminScreen({ onClose }) {
                   </Pressable>
                   <Text style={styles.catHint}>Fills in the top song + genre for ranked artists that don't have one yet (fixes blank "top song"s on Discover). Background job, most-popular first.</Text>
                   {(seedJob?.phase === "done" || seedJob?.phase === "stopped") && <Text style={styles.growDone}>{seedJob.phase === "stopped" ? "Stopped" : "Last run"}: {seedJob.mode === "refresh" ? `${seedJob.ranked.toLocaleString()} songs filled.` : `+${seedJob.added.toLocaleString()} added, ${seedJob.ranked.toLocaleString()} ranked.`} Run again to resume.</Text>}
-                  {seedJob?.phase === "error" && <Text style={styles.growErr}>Last run failed: {seedJob.error}</Text>}
+                  {/* A grow that adds nothing used to render NOTHING here, so the
+                      button looked like it worked. Say so plainly instead. */}
+                  {seedJob?.phase === "exhausted" && (
+                    <View style={styles.growNotice}>
+                      <Text style={styles.growNoticeTitle}>Nothing left to add ({seedJob.errorCode})</Text>
+                      <Text style={styles.growNoticeTxt}>{seedJob.note || "Every genre has been crawled to the end at this depth."} Growing again will not add artists until a new source or a deeper crawl is available. Existing profiles were left untouched.</Text>
+                    </View>
+                  )}
+                  {seedJob?.phase === "error" && <Text style={styles.growErr}>Last run failed{seedJob.errorCode ? ` (${seedJob.errorCode})` : ""}: {seedJob.error}</Text>}
+
+                  {/* Durable record: survives restarts and never claims success for
+                      a run that added nothing. */}
+                  {seedRuns.length > 0 && (
+                    <View style={styles.runsBox}>
+                      <Text style={styles.runsTitle}>RECENT JOBS</Text>
+                      {seedRuns.slice(0, 5).map((r) => (
+                        <View key={r.id} style={styles.runRow}>
+                          <View style={[styles.runDot, { backgroundColor: r.status === "done" ? colors.good : r.status === "exhausted" ? colors.gold : r.status === "error" || r.status === "interrupted" ? colors.danger : colors.textFaint }]} />
+                          <Text style={styles.runTxt} numberOfLines={1}>
+                            {r.mode === "refresh" ? "Songs & genres" : "Grow"} · {r.status}
+                            {r.mode === "refresh" ? ` · ${(r.enriched || 0).toLocaleString()} filled` : ` · +${(r.added || 0).toLocaleString()} added`}
+                            {r.errorCode ? ` · ${r.errorCode}` : ""}
+                          </Text>
+                          <Text style={styles.runWhen}>{r.startedAt ? new Date(r.startedAt).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : ""}</Text>
+                        </View>
+                      ))}
+                    </View>
+                  )}
                 </>
               )}
             </View>
@@ -640,6 +675,15 @@ const styles = StyleSheet.create({
   growErr: { color: colors.danger, fontSize: 11.5, marginTop: 8 },
   refreshBtn: { flexDirection: "row", alignItems: "center", gap: 6, alignSelf: "flex-start", marginTop: 12, paddingHorizontal: 12, paddingVertical: 8, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.amber, backgroundColor: "rgba(242,166,90,0.08)" },
   refreshTxt: { color: colors.amber, fontSize: 12.5, fontWeight: "800" },
+  growNotice: { marginTop: 10, padding: 11, borderRadius: radius.md, borderWidth: 1, borderColor: colors.gold, backgroundColor: "rgba(232,182,90,0.08)" },
+  growNoticeTitle: { color: colors.gold, fontSize: 12, fontWeight: "900", letterSpacing: 0.3, marginBottom: 4, fontFamily: mono },
+  growNoticeTxt: { color: colors.textDim, fontSize: 11.5, lineHeight: 16 },
+  runsBox: { marginTop: 14, borderTopWidth: 1, borderTopColor: colors.lineSoft, paddingTop: 10 },
+  runsTitle: { color: colors.textFaint, fontSize: 10, letterSpacing: 1.2, fontWeight: "800", marginBottom: 6 },
+  runRow: { flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 4 },
+  runDot: { width: 6, height: 6, borderRadius: 3 },
+  runTxt: { flex: 1, color: colors.textDim, fontSize: 11, fontFamily: mono },
+  runWhen: { color: colors.textFaint, fontSize: 10, fontFamily: mono },
   seedRun: { marginTop: 6 },
   seedRunHead: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 8 },
   liveDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.good },

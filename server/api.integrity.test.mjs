@@ -93,6 +93,18 @@ test("capped social endpoints return the newest window in chronological order", 
   assert.equal(threads.threads[0].messages[0].createdAt, 6);
   assert.equal(threads.threads[0].messages.at(-1).createdAt, 505);
 
+  for (let i = 506; i <= 508; i++) insertDm.run(`dm_${String(i).padStart(4, "0")}`, "u_a", "u_b", `dm ${i}`, i);
+  const newerDirect = routes["GET /api/dms/:otherId"]({ user: userA, params: { otherId: "u_b" }, query: { after: direct.syncCursor, limit: 2 } });
+  assert.deepEqual(newerDirect.messages.map((m) => m.createdAt), [506, 507]);
+  assert.equal(newerDirect.hasMore, true);
+  const newestDirect = routes["GET /api/dms/:otherId"]({ user: userA, params: { otherId: "u_b" }, query: { after: newerDirect.syncCursor, limit: 2 } });
+  assert.deepEqual(newestDirect.messages.map((m) => m.createdAt), [508]);
+  assert.equal(newestDirect.hasMore, false);
+  assert.throws(
+    () => routes["GET /api/dms/:otherId"]({ user: userA, params: { otherId: "u_b" }, query: { before: direct.nextCursor, after: direct.syncCursor } }),
+    (error) => error.code === "VALIDATION_FAILED",
+  );
+
   db.prepare("INSERT INTO posts (id,user_id,artist,venue,overall,created_at) VALUES (?,?,?,?,?,?)")
     .run("post_1", "u_a", "Artist", "Venue", 4, 1);
   const insertComment = db.prepare("INSERT INTO comments (id,post_id,user_id,text,created_at) VALUES (?,?,?,?,?)");
@@ -116,12 +128,56 @@ test("capped social endpoints return the newest window in chronological order", 
   assert.equal(fan.messages[0].createdAt, 6);
   assert.equal(fan.messages.at(-1).createdAt, 305);
   assert.deepEqual(routes["GET /api/fanclubs/:artist/messages"]({ params: { artist: "artist" }, query: { before: fan.nextCursor } }).messages.map((m) => m.createdAt), [1, 2, 3, 4, 5]);
+  insertFanMessage.run("fc_0306", "artist", "u_a", "fan 306", 306);
+  const newerFan = routes["GET /api/fanclubs/:artist/messages"]({ params: { artist: "artist" }, query: { after: fan.syncCursor } });
+  assert.deepEqual(newerFan.messages.map((m) => m.createdAt), [306]);
+  db.prepare("UPDATE fan_club_messages SET removed=1 WHERE id=?").run("fc_0306");
+  assert.ok(routes["GET /api/fanclubs/:artist/messages"]({ params: { artist: "artist" }, query: { after: newerFan.syncCursor } }).removedIds.includes("fc_0306"));
 
   const lounge = routes["GET /api/lounges/:key/messages"]({ user: null, params: { key: "show" } });
   assert.equal(lounge.messages.length, 300);
   assert.equal(lounge.messages[0].createdAt, 6);
   assert.equal(lounge.messages.at(-1).createdAt, 305);
   assert.deepEqual(routes["GET /api/lounges/:key/messages"]({ user: null, params: { key: "show" }, query: { before: lounge.nextCursor } }).messages.map((m) => m.createdAt), [1, 2, 3, 4, 5]);
+  insertLoungeMessage.run("lm_0306", "show", "u_a", "lounge 306", 306);
+  const newerLounge = routes["GET /api/lounges/:key/messages"]({ user: null, params: { key: "show" }, query: { after: lounge.syncCursor } });
+  assert.deepEqual(newerLounge.messages.map((m) => m.createdAt), [306]);
+  db.prepare("UPDATE lounge_messages SET removed=1 WHERE id=?").run("lm_0306");
+  assert.ok(routes["GET /api/lounges/:key/messages"]({ user: null, params: { key: "show" }, query: { after: newerLounge.syncCursor } }).removedIds.includes("lm_0306"));
+});
+
+test("group-chat writes require membership and attendance, then succeed on retry", () => {
+  const user = addUser("u_chat_integrity", "chat-integrity@example.com", "chatintegrity");
+  const fanMessage = routes["POST /api/fanclubs/:artist/messages"];
+  const fanContext = (text) => ({ user, ip: "chat-integrity", params: { artist: "The Band" }, body: { text } });
+
+  assert.throws(
+    () => fanMessage(fanContext("not joined")),
+    (error) => error.code === "FAN_CLUB_MEMBERSHIP_REQUIRED",
+  );
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM fan_club_messages WHERE user_id=?").get(user.id).c, 0);
+
+  const joinFanClub = routes["POST /api/fanclubs/:artist/join"];
+  assert.equal(joinFanClub({ user, ip: "chat-integrity", params: { artist: "The Band" }, body: { joined: true } }).joined, true);
+  assert.equal(joinFanClub({ user, ip: "chat-integrity", params: { artist: "The Band" }, body: { joined: true } }).joined, true);
+  assert.ok(fanMessage(fanContext("joined now")).id);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM fan_club_messages WHERE user_id=?").get(user.id).c, 1);
+
+  const loungeMessage = routes["POST /api/lounges/:key/messages"];
+  const loungeContext = (text) => ({ user, ip: "chat-integrity", params: { key: "Artist|Venue|2026-07-15" }, body: { text } });
+  assert.throws(
+    () => loungeMessage(loungeContext("not going")),
+    (error) => error.code === "LOUNGE_ATTENDANCE_REQUIRED",
+  );
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM lounge_messages WHERE user_id=?").get(user.id).c, 0);
+
+  const markGoing = routes["POST /api/going"];
+  const goingContext = { user, ip: "chat-integrity", body: { key: "artist|venue|2026-07-15", artist: "Artist", venue: "Venue", date: "2026-07-15", going: true } };
+  assert.equal(markGoing(goingContext).going, true);
+  assert.equal(markGoing(goingContext).going, true);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM going WHERE user_id=? AND concert_key=?").get(user.id, "artist|venue|2026-07-15").c, 1);
+  assert.ok(loungeMessage(loungeContext("in the room")).id);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM lounge_messages WHERE user_id=?").get(user.id).c, 1);
 });
 
 test("desired-state social mutations are idempotent and old toggle calls still work", () => {
