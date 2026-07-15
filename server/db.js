@@ -417,6 +417,19 @@ CREATE TABLE IF NOT EXISTS app_meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+-- Human-curated song -> YouTube video pins. Checked BEFORE the search resolver,
+-- so a wrong match fixed by an admin stays fixed. video_id NULL means an admin
+-- confirmed no correct embeddable video exists (the player then uses the Deezer
+-- preview and says so, instead of playing a wrong version).
+CREATE TABLE IF NOT EXISTS track_overrides (
+  key        TEXT PRIMARY KEY,
+  title      TEXT NOT NULL,
+  artist     TEXT NOT NULL DEFAULT '',
+  video_id   TEXT,
+  set_by     TEXT,
+  updated_at INTEGER NOT NULL
+);
 `);
 
 const ver = db.prepare("SELECT version FROM schema_version LIMIT 1").get();
@@ -438,6 +451,7 @@ for (const stmt of [
   "ALTER TABLE users ADD COLUMN sponsor INTEGER NOT NULL DEFAULT 0", // admin-granted partner mark
   "ALTER TABLE users ADD COLUMN reset_hash TEXT", // sha256 of a password-reset token
   "ALTER TABLE users ADD COLUMN reset_expires INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE posts ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'", // short word-art descriptors on a review
   "ALTER TABLE yt_cache ADD COLUMN metadata TEXT",
   "ALTER TABLE yt_cache ADD COLUMN score REAL",
   "ALTER TABLE yt_cache ADD COLUMN expires_at INTEGER",

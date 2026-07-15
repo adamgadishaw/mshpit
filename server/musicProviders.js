@@ -31,6 +31,29 @@ export function normalizeMusicText(value) {
     .replace(/\s+/g, " ");
 }
 
+// Stable identity for one song across the override table, reports, and the
+// resolver cache, so a pin set from one spelling matches every other spelling.
+export function trackOverrideKey(title, artist) {
+  return `${normalizeMusicText(artist)}|${normalizeMusicText(title)}`;
+}
+
+// Accept the ways people actually paste a YouTube link (watch?v=, youtu.be,
+// shorts, embed, music.youtube) plus a bare 11-char id. Anything else is null:
+// never store a guess as a human-verified pin.
+export function parseYouTubeVideoId(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  if (/^[A-Za-z0-9_-]{11}$/.test(raw)) return raw;
+  let url;
+  try { url = new URL(raw.includes("://") ? raw : `https://${raw}`); } catch { return null; }
+  const host = url.hostname.replace(/^www\.|^m\./, "");
+  if (!/^(youtube\.com|youtu\.be|music\.youtube\.com|youtube-nocookie\.com)$/.test(host)) return null;
+  const candidate = host === "youtu.be"
+    ? url.pathname.split("/").filter(Boolean)[0]
+    : url.searchParams.get("v") || url.pathname.match(/\/(?:shorts|embed|live)\/([A-Za-z0-9_-]{11})/)?.[1];
+  return candidate && /^[A-Za-z0-9_-]{11}$/.test(candidate) ? candidate : null;
+}
+
 function tokenSet(value) {
   return new Set(normalizeMusicText(value).split(" ").filter(Boolean));
 }

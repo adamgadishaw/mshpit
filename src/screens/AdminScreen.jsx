@@ -169,10 +169,13 @@ export default function AdminScreen({ onClose }) {
     suspendUser, liftSuspension, banUser, unbanUser, setUserRole, setVerified, setSponsor, accountStatus,
     removeComment, removeFanClubMessage, removeLoungeMessage,
     loadAdminMembers, adminStats, adminArtistQueue, enrichArtists, purgeArtist, startCatalogSeed, catalogSeedStatus, stopCatalogSeed, catalogSeedRuns,
+    adminSetTrackVideo,
   } = useStore();
 
   const iAmAdmin = isStaff(session?.role); // full access; mods get a subset
   const [tab, setTab] = useState(iAmAdmin ? "overview" : "reports");
+  // Draft "correct link" per wrong-version track report.
+  const [trackFix, setTrackFix] = useState({});
   const [q, setQ] = useState("");
 
   // Pull EVERY signup (incl. banned) from the server so the console shows real
@@ -293,8 +296,45 @@ export default function AdminScreen({ onClose }) {
         {tab === "reports" && (
           <>
             <Text style={styles.policy}>Content is public on post; the community reports it and you act here. Removing hides it from everyone but staff.</Text>
-            {openReports.length === 0 && <Text style={styles.empty}>No open reports. 🎉</Text>}
+            {openReports.length === 0 && <Text style={styles.empty}>No open reports.</Text>}
             {openReports.map((r) => {
+              // Wrong-song-version reports carry the song identity (and often
+              // the correct link) in the reason payload; pin it in one tap.
+              if (r.targetType === "track") {
+                let t = {}; try { t = JSON.parse(r.reason || "{}"); } catch {}
+                const reporter = userFor(r.reporterId);
+                const draft = trackFix[r.id] ?? (t.suggestedVideoId ? `https://www.youtube.com/watch?v=${t.suggestedVideoId}` : "");
+                return (
+                  <View key={r.id} style={styles.card}>
+                    <View style={styles.reasonRow}>
+                      <Icon name="music" size={14} color={colors.gold} />
+                      <Text style={styles.reason}>wrong song version</Text>
+                    </View>
+                    <Text style={styles.artist}>{t.title || r.targetId}{t.artist ? ` · ${t.artist}` : ""}</Text>
+                    <Text style={styles.sub}>reported by {reporter ? `@${reporter.handle}` : "a user"}{t.note ? ` · "${t.note}"` : ""}{t.suggestedVideoId ? " · suggested a link" : ""}</Text>
+                    <TextInput
+                      style={styles.trackFixInput}
+                      placeholder="Correct YouTube link"
+                      placeholderTextColor={colors.textFaint}
+                      value={draft}
+                      onChangeText={(v) => setTrackFix((m) => ({ ...m, [r.id]: v }))}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                    />
+                    <View style={styles.actions}>
+                      <Pressable style={[styles.btn, styles.trackPin]} onPress={async () => { const res = await adminSetTrackVideo({ title: t.title || r.targetId, artist: t.artist || "", url: draft }); if (res.ok) dismissReport(r.id); }}>
+                        <Icon name="check" size={15} color={colors.good} /><Text style={[styles.dismissTxt, { color: colors.good }]}>Pin this video</Text>
+                      </Pressable>
+                      <Pressable style={[styles.btn, styles.suspend]} onPress={async () => { const res = await adminSetTrackVideo({ title: t.title || r.targetId, artist: t.artist || "", none: true }); if (res.ok) dismissReport(r.id); }}>
+                        <Icon name="x" size={14} color={colors.gold} /><Text style={[styles.dismissTxt, { color: colors.gold }]}>No correct video</Text>
+                      </Pressable>
+                      <Pressable style={[styles.btn, styles.reject]} onPress={() => dismissReport(r.id)}>
+                        <Text style={styles.dismissTxt}>Dismiss</Text>
+                      </Pressable>
+                    </View>
+                  </View>
+                );
+              }
               const log = logFor(r.targetId);
               const reporter = userFor(r.reporterId);
               return (
@@ -652,6 +692,8 @@ const styles = StyleSheet.create({
   remove: { borderColor: colors.danger, backgroundColor: "rgba(224,69,123,0.08)" },
   reject: { borderColor: colors.line },
   suspend: { borderColor: colors.gold, backgroundColor: "rgba(232,182,90,0.08)" },
+  trackPin: { borderColor: colors.good, backgroundColor: "rgba(111,207,151,0.08)" },
+  trackFixInput: { backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line, borderRadius: radius.sm, color: colors.text, fontSize: 12.5, paddingHorizontal: 10, paddingVertical: 8, marginTop: 10 },
   approve: { borderColor: colors.good, backgroundColor: colors.good },
   approveTxt: { color: "#0C1A0F", fontSize: 13, fontWeight: "800" },
   rejectTxt: { color: colors.danger, fontSize: 13, fontWeight: "700" },

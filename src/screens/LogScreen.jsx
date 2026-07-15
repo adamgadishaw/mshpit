@@ -72,6 +72,14 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
   const [dims, setDims] = useState(() => editing ? postDims(editing) : { performance: 0, setlist: 0, sound: 0, venue: 0, crowd: 0, experience: 0 });
   const [ratingsDirty, setRatingsDirty] = useState(false);
   const [review, setReview] = useState(editing?.review || "");
+  const [tags, setTags] = useState(() => (Array.isArray(editing?.tags) ? editing.tags.slice(0, 5) : []));
+  const [tagDraft, setTagDraft] = useState("");
+  const commitTag = (raw) => {
+    const tag = String(raw || "").replace(/[,\n]/g, " ").replace(/\s+/g, " ").trim().slice(0, 24);
+    setTagDraft("");
+    if (!tag) return;
+    setTags((all) => (all.length >= 5 || all.some((t) => t.toLowerCase() === tag.toLowerCase()) ? all : [...all, tag]));
+  };
   const [photos, setPhotos] = useState(() => (editing?.photos || []).filter(isDurableMediaUrl));
   const [photosPublic, setPhotosPublic] = useState(editing ? editing.photosPublic !== false : true);
   const [uploadingPhotos, setUploadingPhotos] = useState(false);
@@ -129,14 +137,14 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
   const stash = () => {
     if (editing) return;
     if (submitBusy) return;
-    const id = saveDraft({ id: draftId, artist, venue, city, tour, date, dims, review, photos: photos.filter(isDurableMediaUrl) });
+    const id = saveDraft({ id: draftId, artist, venue, city, tour, date, dims, review, tags, photos: photos.filter(isDurableMediaUrl) });
     setDraftId(id);
     onCancel?.();
   };
   const resume = (d) => {
     setDraftId(d.id);
     setArtist(d.artist || ""); setArtistPicked(!!d.artist); setVenue(d.venue || ""); setCity(d.city || "");
-    setTour(d.tour || ""); setDate(d.date || todayStr); setDims(d.dims || dims); setReview(d.review || ""); setPhotos((d.photos || []).filter(isDurableMediaUrl));
+    setTour(d.tour || ""); setDate(d.date || todayStr); setDims(d.dims || dims); setReview(d.review || ""); setTags(Array.isArray(d.tags) ? d.tags.slice(0, 5) : []); setPhotos((d.photos || []).filter(isDurableMediaUrl));
   };
   const hasContent = artist.trim() || venue.trim() || review.trim();
 
@@ -164,6 +172,7 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
         room: submittedRatings.room || submittedRatings.overall,
         dims,
         review: review.trim(),
+        tags: tagDraft.trim() && tags.length < 5 && !tags.some((t) => t.toLowerCase() === tagDraft.trim().toLowerCase()) ? [...tags, tagDraft.trim()] : tags,
         setlist: editing?.setlist || [],
         likes: editing?.likes || 0,
         comments: editing?.comments || 0,
@@ -275,7 +284,7 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
           </View>
         ))}
 
-        <Text style={[styles.fieldLabel, { marginTop: 22 }]}>YOUR REVIEW <Text style={styles.optional}>· the main event</Text></Text>
+        <Text style={[styles.fieldLabel, { marginTop: 22 }]}>YOUR REVIEW <Text style={styles.optional}>· optional, tag words below can say it for you</Text></Text>
         <TextInput
           style={[styles.input, styles.multiline]}
           placeholder="What made the night? Be honest - this is what people read."
@@ -284,6 +293,35 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
           onChangeText={setReview}
           multiline
         />
+
+        {/* Tag words: post without writing a review. Up to five loud little
+            descriptors that render as word-art chips on the card. */}
+        <Text style={[styles.fieldLabel, { marginTop: 22 }]}>TAG WORDS <Text style={styles.optional}>· up to 5, they show with your score</Text></Text>
+        {tags.length > 0 && (
+          <View style={styles.tagEditRow}>
+            {tags.map((t, i) => (
+              <Pressable key={t + i} style={styles.tagEditChip} onPress={() => setTags((all) => all.filter((_, idx) => idx !== i))} accessibilityRole="button" accessibilityLabel={`Remove tag ${t}`}>
+                <Text style={styles.tagEditTxt}>{t.toUpperCase()}</Text>
+                <Icon name="x" size={11} color={colors.textDim} />
+              </Pressable>
+            ))}
+          </View>
+        )}
+        {tags.length < 5 && (
+          <TextInput
+            style={styles.input}
+            placeholder={tags.length ? "Add another (enter or comma)" : "RAW · wall of sound · sweaty (enter or comma adds one)"}
+            placeholderTextColor={colors.textFaint}
+            value={tagDraft}
+            onChangeText={(text) => {
+              if (/[,\n]/.test(text)) { commitTag(text); return; }
+              setTagDraft(text);
+            }}
+            onSubmitEditing={() => commitTag(tagDraft)}
+            onBlur={() => commitTag(tagDraft)}
+            maxLength={24}
+          />
+        )}
 
         <Text style={[styles.fieldLabel, { marginTop: 22 }]}>PHOTOS <Text style={styles.optional}>· optional</Text></Text>
         <View style={styles.photoRow}>
@@ -323,6 +361,9 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
 }
 
 const styles = StyleSheet.create({
+  tagEditRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 8 },
+  tagEditChip: { flexDirection: "row", alignItems: "center", gap: 6, borderWidth: 1.5, borderColor: colors.amber, borderRadius: radius.sm, paddingHorizontal: 10, paddingVertical: 6, backgroundColor: colors.surfaceAlt },
+  tagEditTxt: { color: colors.amber, fontSize: 12, fontWeight: "900", letterSpacing: 1.2 },
   topbar: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingBottom: 12 },
   cancel: { color: colors.textDim, fontSize: 15 },
   topTitle: { color: colors.textFaint, fontSize: 11, letterSpacing: 2, fontWeight: "700" },

@@ -11,6 +11,24 @@ import TicketStub from "../components/TicketStub";
 import { BadgeRow } from "../components/Badge";
 import { ACHIEVEMENTS } from "../lib/badges";
 
+// Show dates arrive in mixed shapes ("2026-08-14", "2026 · 08 · 14"); pull the
+// numbers and aim at 8pm local, a sane default for doors.
+function showDateMs(s) {
+  const m = String(s || "").match(/(\d{4})\D+(\d{1,2})\D+(\d{1,2})/);
+  if (!m) return null;
+  const d = new Date(+m[1], +m[2] - 1, +m[3], 20, 0, 0);
+  return isNaN(d.getTime()) ? null : d.getTime();
+}
+// T-minus, Clock-app style: days + hh:mm:ss once close.
+function fmtCountdown(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const days = Math.floor(s / 86400);
+  const hh = String(Math.floor((s % 86400) / 3600)).padStart(2, "0");
+  const mm = String(Math.floor((s % 3600) / 60)).padStart(2, "0");
+  const ss = String(s % 60).padStart(2, "0");
+  return days > 0 ? `${days}d ${hh}:${mm}:${ss}` : `${hh}:${mm}:${ss}`;
+}
+
 function Stat({ value, label, onPress }) {
   return (
     <Pressable style={styles.stat} onPress={onPress} disabled={!onPress}>
@@ -65,6 +83,17 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtis
     if (userId) loadUser(userId).then((u) => { if (!u && !userById(userId)) setMissing(true); });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userId]);
+  // One shared 1s tick drives every GOING TO countdown row (no per-row timers).
+  // Lives above the loading early-return so the hook order never changes; only
+  // runs while a planned show actually has a parseable date.
+  const planned = user ? goingFor(user.id) : [];
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  const hasCountdown = planned.some((p) => showDateMs(p.date) != null);
+  useEffect(() => {
+    if (!hasCountdown) return;
+    const id = setInterval(() => setNowTick(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [hasCountdown]);
   if (!user) {
     return (
       <View style={styles.wrap}>
@@ -91,7 +120,6 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtis
   }
 
   const logs = logsByUser(user.id);
-  const planned = goingFor(user.id);
   const isSelf = session?.id === user.id;
   // Play a saved playlist: first track opens the bar with the whole list queued.
   const playPlaylist = (pl) => { const q = (pl.tracks || []).filter((t) => t.url || t.preview); if (q.length) onPlay?.(q[0], q); };
@@ -270,18 +298,29 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtis
           </>
         )}
 
-        {/* planned shows */}
+        {/* planned shows, with a live T-minus countdown per show (Clock-app
+            style list): the wait is half the fun. Past/undated rows show plain. */}
         <Text style={styles.sectionLabel}>GOING TO · {planned.length}</Text>
         {planned.length === 0 && <Text style={styles.empty}>No planned shows yet.</Text>}
-        {planned.map((p) => (
-          <Pressable key={p.key} style={styles.showRow} onPress={() => onOpenArtist?.(p.artist)}>
-            <View style={styles.goingDot}><Icon name="calendar" size={15} color={colors.amber} /></View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.showArtist}>{p.artist}</Text>
-              <Text style={styles.showVenue}>{p.venue} · {p.date}</Text>
-            </View>
-          </Pressable>
-        ))}
+        {planned.map((p) => {
+          const target = showDateMs(p.date);
+          const left = target != null ? target - nowTick : null;
+          return (
+            <Pressable key={p.key} style={styles.showRow} onPress={() => onOpenArtist?.(p.artist)}>
+              <View style={styles.goingDot}><Icon name="calendar" size={15} color={colors.amber} /></View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.showArtist}>{p.artist}</Text>
+                <Text style={styles.showVenue}>{p.venue} · {p.date}</Text>
+              </View>
+              {left != null && left > -86400000 && (
+                <View style={styles.countdownBox}>
+                  <Text style={styles.countdownT}>{left <= 0 ? "TONIGHT" : fmtCountdown(left)}</Text>
+                  {left > 0 && <Text style={styles.countdownLabel}>until doors</Text>}
+                </View>
+              )}
+            </Pressable>
+          );
+        })}
 
         {/* their posts, the same feed card as home, so a profile reads like a
             wall of everything this person has posted (Facebook/Letterboxd style) */}
@@ -387,6 +426,9 @@ const styles = StyleSheet.create({
   listenBtn: { borderWidth: 1, borderColor: colors.good, borderRadius: radius.pill, paddingHorizontal: 14, paddingVertical: 7 },
   listenTxt: { color: colors.good, fontSize: 12, fontWeight: "800" },
   sectionLabel: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "700", marginTop: 22, marginBottom: 10, marginHorizontal: 16 },
+  countdownBox: { alignItems: "flex-end" },
+  countdownT: { color: colors.amber, fontFamily: mono, fontSize: 15, fontWeight: "800", letterSpacing: 0.5, fontVariant: ["tabular-nums"] },
+  countdownLabel: { color: colors.textFaint, fontSize: 9.5, letterSpacing: 1, marginTop: 1, textTransform: "uppercase" },
   hint: { color: colors.textDim, fontSize: 12, marginHorizontal: 16, marginTop: -6, marginBottom: 12 },
   empty: { color: colors.textDim, fontSize: 13, fontStyle: "italic", marginHorizontal: 16 },
   gallery: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginHorizontal: 16 },

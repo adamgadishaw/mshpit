@@ -122,17 +122,20 @@ test("post edits enforce ownership, revisions, validation, and canonical fields"
   assert.deepEqual(cleared.post.photos, []);
   assert.equal(cleared.post.tour, null);
 
-  const adminEdit = edit({
-    user: admin,
-    ip: "post-edit-admin",
-    requestId: "post-edit-admin-request",
-    params: { id: "post_edit" },
-    body: { venue: "New Venue", version: cleared.post.version },
-  });
-  assert.equal(adminEdit.post.venue, "New Venue");
+  // A review is the author's own words: even admins may not rewrite it. They
+  // moderate by removing content or muting/banning people, never by editing.
+  assert.throws(
+    () => edit({
+      user: admin,
+      ip: "post-edit-admin",
+      requestId: "post-edit-admin-request",
+      params: { id: "post_edit" },
+      body: { venue: "New Venue", version: cleared.post.version },
+    }),
+    (error) => error.status === 403,
+  );
   const audit = db.prepare("SELECT * FROM moderation_actions WHERE target_type='post' AND target_id='post_edit' AND action='edit'").get();
-  assert.equal(audit.actor_id, admin.id);
-  assert.equal(audit.request_id, "post-edit-admin-request");
+  assert.equal(audit, undefined);
 });
 
 test("post edit keeps account restrictions and missing-post behavior", () => {

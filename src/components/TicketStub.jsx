@@ -5,8 +5,36 @@ import Stars from "./Stars";
 import Icon from "./Icon";
 import Avatar from "./Avatar";
 import SmartImage from "./SmartImage";
+import RatingBars from "./RatingBars";
+import SpinStar from "./SpinStar";
 import { useStore } from "../store";
 import { BadgeRow } from "./Badge";
+
+// "3rd time in the pit" needs a real ordinal, not "3th".
+const ordinal = (n) => {
+  const mod100 = n % 100;
+  if (mod100 >= 11 && mod100 <= 13) return `${n}th`;
+  return `${n}${["th", "st", "nd", "rd"][Math.min(n % 10, 4)] || "th"}`;
+};
+
+// Word-art tag chips: skewed, loud, but on-theme (no rainbow WordArt). Colors
+// rotate through the stage-light palette so a row reads as designed, not random.
+const TAG_COLORS = [colors.amber, colors.blue, colors.magenta, colors.gold];
+function TagRow({ tags, center = false }) {
+  if (!tags?.length) return null;
+  return (
+    <View style={[styles.tagRow, center && { justifyContent: "center" }]}>
+      {tags.map((tag, i) => {
+        const tint = TAG_COLORS[i % TAG_COLORS.length];
+        return (
+          <View key={tag + i} style={[styles.tagChip, { borderColor: tint, transform: [{ skewX: i % 2 ? "4deg" : "-4deg" }, { rotate: i % 2 ? "1.2deg" : "-1.2deg" }] }]}>
+            <Text style={[styles.tagTxt, { color: tint }]}>{tag.toUpperCase()}</Text>
+          </View>
+        );
+      })}
+    </View>
+  );
+}
 
 const relativeTime = (timestamp) => {
   if (!timestamp) return "now";
@@ -43,9 +71,17 @@ export default function TicketStub({ log, onOpen, onComment, onPreview, onOpenPr
   const { userById, likeInfo, toggleLike, commentsFor, session, userBadges } = useStore();
   const author = userById?.(log.userId) || { initials: log.user?.initials, name: log.user?.name, handle: log.user?.handle };
   const [revealed, setRevealed] = useState(!log.inTourWindow);
-  const canEdit = !!onEdit && !!session && (session.id === log.userId || session.role === "admin");
+  // Editing is the author's alone. Admins moderate (remove/mute/ban); they
+  // never rewrite someone's review, so no admin bypass here.
+  const canEdit = !!onEdit && !!session && session.id === log.userId;
+  const isStaffViewer = session && (session.role === "admin" || session.role === "moderator");
   const setlist = Array.isArray(log.setlist) ? log.setlist : [];
   const timeLabel = log.timeAgo || relativeTime(log.createdAt);
+  const tags = Array.isArray(log.tags) ? log.tags : [];
+  // Score analytics: tap the star pill to see WHY the night got its score;
+  // hovering it (web) previews the reviewer's tag words.
+  const [statsOpen, setStatsOpen] = useState(false);
+  const [hoverTags, setHoverTags] = useState(false);
 
   const { count: likeCount, liked } = likeInfo(log.id, log.likes || 0);
   const commentCount = commentsFor(log.id).length || log.comments || 0;
@@ -67,15 +103,52 @@ export default function TicketStub({ log, onOpen, onComment, onPreview, onOpenPr
           </View>
           <Text style={styles.sub}><Text style={roleColor(author.role) ? { color: roleColor(author.role), fontWeight: "800" } : null}>@{author.handle}</Text> · {timeLabel}{log.editedAt ? " · edited" : ""}</Text>
         </Pressable>
-        <View style={styles.scorePill}>
+        <Pressable
+          style={[styles.scorePill, statsOpen && styles.scorePillOpen]}
+          onPress={() => setStatsOpen((v) => !v)}
+          onHoverIn={() => setHoverTags(true)}
+          onHoverOut={() => setHoverTags(false)}
+          accessibilityRole="button"
+          accessibilityState={{ expanded: statsOpen }}
+          accessibilityLabel={`Overall ${overall.toFixed(1)} out of 5. ${statsOpen ? "Hide" : "Show"} the rating breakdown.`}
+        >
           <Text style={styles.scoreNum}>{overall.toFixed(1)}</Text>
           <Stars value={overall} size={11} gap={1} />
-        </View>
+        </Pressable>
       </View>
+
+      {/* Hovering the score previews the reviewer's tag words (web only). */}
+      {hoverTags && !statsOpen && tags.length > 0 && (
+        <View style={styles.hoverTags} pointerEvents="none"><TagRow tags={tags} /></View>
+      )}
+
+      {isStaffViewer && log.flags > 0 && (
+        <View style={styles.flaggedChip} accessibilityLabel={`Reported content, ${log.flags} open ${log.flags === 1 ? "report" : "reports"}`}>
+          <Icon name="flag" size={11} color={colors.danger} />
+          <Text style={styles.flaggedTxt}>REPORTED · {log.flags}</Text>
+        </View>
+      )}
 
       <Text style={styles.ratedLine}>
         reviewed <Text style={styles.artistLink} onPress={() => onOpenArtist?.(log.artist)}>{log.artist}</Text>
+        {log.seen > 1 ? <Text style={styles.seenTxt}>  ·  {ordinal(log.seen)} time in the pit</Text> : null}
       </Text>
+
+      {/* Score analytics: the template every review shares. The twirling star +
+          per-dimension bars show exactly why the night earned its score. */}
+      {statsOpen && (
+        <View style={styles.statsPanel}>
+          <View style={styles.statsHead}>
+            <SpinStar size={40} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.statsScore}>{overall.toFixed(1)} <Text style={styles.statsOutOf}>/ 5</Text></Text>
+              <Text style={styles.statsSub}>{log.dims && Object.values(log.dims).some((v) => v > 0) ? "How the night broke down" : "Band vs room"}</Text>
+            </View>
+          </View>
+          <RatingBars dims={log.dims} band={band} room={room} />
+          <TagRow tags={tags} />
+        </View>
+      )}
 
       {/* THE REVIEW - the main event */}
       <Pressable onPress={() => onOpen?.(log)}>
@@ -83,6 +156,9 @@ export default function TicketStub({ log, onOpen, onComment, onPreview, onOpenPr
           <View style={styles.reviewWrap}>
             <Text style={styles.review}>{log.review}</Text>
           </View>
+        ) : tags.length > 0 ? (
+          // The no-writing template: the reviewer said it in tag words instead.
+          <TagRow tags={tags} />
         ) : (
           <Text style={styles.noReview}>Logged this show - no review yet. Tap to open.</Text>
         )}
@@ -156,7 +232,23 @@ const styles = StyleSheet.create({
   name: { color: colors.text, fontFamily: displayFont, fontWeight: "800", fontSize: 14, letterSpacing: -0.1 },
   sub: { color: colors.textFaint, fontFamily: font, fontSize: 12, marginTop: 1 },
   scorePill: { alignItems: "center", backgroundColor: colors.bgElev, borderRadius: radius.sm, borderCurve: "continuous", borderWidth: 1, borderColor: colors.line, paddingHorizontal: 10, paddingVertical: 6, gap: 3, boxShadow: "inset 0 1px 0 rgba(255,255,255,0.05), 0 2px 5px rgba(0,0,0,0.16)" },
+  scorePillOpen: { borderColor: colors.gold },
   scoreNum: { color: colors.gold, fontFamily: mono, fontSize: 18, fontWeight: "800", lineHeight: 20 },
+  seenTxt: { color: colors.amber, fontFamily: mono, fontSize: 11, fontWeight: "800", letterSpacing: 0.4 },
+
+  hoverTags: { position: "absolute", top: 56, right: 14, zIndex: 20, backgroundColor: colors.bgElev, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 10, paddingVertical: 8, ...shadow.sheet },
+  flaggedChip: { flexDirection: "row", alignItems: "center", alignSelf: "flex-start", gap: 5, marginTop: 10, paddingHorizontal: 9, paddingVertical: 4, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.danger, backgroundColor: "rgba(224,108,108,0.10)" },
+  flaggedTxt: { color: colors.danger, fontFamily: mono, fontSize: 10, fontWeight: "900", letterSpacing: 1 },
+
+  statsPanel: { marginTop: 12, backgroundColor: colors.bgElev, borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: colors.lineSoft, padding: 12 },
+  statsHead: { flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 8 },
+  statsScore: { color: colors.gold, fontFamily: mono, fontSize: 22, fontWeight: "900", lineHeight: 24 },
+  statsOutOf: { color: colors.textFaint, fontSize: 13, fontWeight: "700" },
+  statsSub: { color: colors.textFaint, fontSize: 11, marginTop: 1 },
+
+  tagRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 12, alignItems: "center" },
+  tagChip: { borderWidth: 1.5, borderRadius: radius.sm, borderCurve: "continuous", paddingHorizontal: 10, paddingVertical: 5, backgroundColor: colors.surfaceAlt },
+  tagTxt: { fontFamily: displayFont, fontSize: 12.5, fontWeight: "900", letterSpacing: 1.4 },
 
   ratedLine: { color: colors.textDim, fontFamily: font, fontSize: 13, marginTop: 12 },
   artistLink: { color: colors.text, fontFamily: displayFont, fontSize: 16, fontWeight: "800", letterSpacing: -0.15 },

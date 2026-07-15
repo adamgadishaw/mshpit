@@ -140,7 +140,15 @@ export default function CalendarScreen({ onClose, onOpen, onOpenArtist }) {
 
         {/* selected-day events */}
         <Text style={styles.dayHeading}>{prettyDay(selected)}</Text>
-        {selectedEvents.length === 0 ? (
+        {Object.keys(byDay).length === 0 ? (
+          // The whole calendar is empty: say why instead of showing a wall of
+          // blank days (tour dates arrive from providers; Going pins are yours).
+          <View style={styles.empty}>
+            <Icon name="calendar" size={20} color={colors.textFaint} />
+            <Text style={styles.emptyTxt}>Nothing on the calendar yet.</Text>
+            <Text style={styles.emptyHint}>Tour dates land here automatically as they're announced. Tap "Going" on any show to pin your own plans.</Text>
+          </View>
+        ) : selectedEvents.length === 0 ? (
           <View style={styles.empty}>
             <Icon name="calendar" size={20} color={colors.textFaint} />
             <Text style={styles.emptyTxt}>No shows on this day.</Text>
@@ -207,6 +215,7 @@ const styles = StyleSheet.create({
   dayHeading: { color: colors.text, fontSize: 15, fontWeight: "800", marginTop: 16, marginBottom: 10, letterSpacing: -0.2 },
   empty: { alignItems: "center", gap: 8, paddingVertical: 28 },
   emptyTxt: { color: colors.textDim, fontSize: 13 },
+  emptyHint: { color: colors.textFaint, fontSize: 12, lineHeight: 18, textAlign: "center", maxWidth: 320 },
 
   eventRow: { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 12, marginBottom: 8, ...shadow.card },
   eventMain: { flex: 1, flexDirection: "row", alignItems: "center", gap: 8 },

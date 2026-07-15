@@ -19,7 +19,9 @@ import {
   getDeezerDiscography,
   getFreshDeezerPreview,
   invalidateYouTubeTrack,
+  parseYouTubeVideoId,
   resolveYouTubeTrack,
+  trackOverrideKey,
 } from "./musicProviders.js";
 
 export { ApiError } from "./errors.js";
@@ -152,14 +154,34 @@ function cleanPostRatingDims(value) {
   return out;
 }
 
-const postRow = db.prepare(`INSERT INTO posts (id,user_id,artist,venue,city,date,overall,band,room,dims,review,photos,photos_public,setlist,tour,created_at)
-                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+const postRow = db.prepare(`INSERT INTO posts (id,user_id,artist,venue,city,date,overall,band,room,dims,review,photos,photos_public,setlist,tour,tags,created_at)
+                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+// How many times the author has logged this artist up to and including this
+// post: powers the "3rd time in the pit" marker on the card.
+const SEEN_ORDINAL_SQL = `(SELECT COUNT(*) FROM posts s
+    WHERE s.user_id = p.user_id AND LOWER(s.artist) = LOWER(p.artist) AND s.removed = 0
+      AND (s.created_at < p.created_at OR (s.created_at = p.created_at AND s.id <= p.id))) AS seen_ordinal`;
 const feedPostById = db.prepare(`
   SELECT p.*, u.name AS u_name, u.handle AS u_handle, u.initials AS u_initials, u.avatar_uri AS u_avatar, u.avatar_color AS u_color,
     (SELECT COUNT(*) FROM likes l WHERE l.post_id = p.id) AS like_count,
-    (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id AND c.removed = 0) AS comment_count
+    (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id AND c.removed = 0) AS comment_count,
+    ${SEEN_ORDINAL_SQL}
   FROM posts p JOIN users u ON u.id = p.user_id
   WHERE p.id = ?`);
+// Short word-art descriptors on a review ("RAW", "wall of sound"). Word-ish
+// only, capped hard, so they can't become a second review or a slur vector for
+// markup injection.
+function cleanPostTags(value) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) return null;
+  const out = [];
+  for (const raw of value.slice(0, 12)) {
+    const tag = clean(String(raw ?? ""), { max: 24 }).replace(/[^\p{L}\p{N} '&.!-]/gu, "").replace(/\s+/g, " ").trim();
+    if (tag && !out.some((t) => t.toLowerCase() === tag.toLowerCase())) out.push(tag);
+    if (out.length >= 5) break;
+  }
+  return out;
+}
 // Insert a notification for a recipient (never notify yourself).
 const notifRow = db.prepare("INSERT INTO notifications (id,user_id,actor_id,type,post_id,artist,text,created_at) VALUES (?,?,?,?,?,?,?,?)");
 function addNotif(recipientId, actorId, type, extra = {}) {
@@ -217,6 +239,9 @@ function postJson(p, viewerId) {
     photos: JSON.parse(p.photos || "[]"), photosPublic: !!p.photos_public,
     setlist: JSON.parse(p.setlist || "[]"),
     tour: p.tour || null,
+    tags: JSON.parse(p.tags || "[]"),
+    seen: p.seen_ordinal ?? null,
+    ...(p.open_reports != null ? { flags: p.open_reports } : {}),
     likes: p.like_count ?? 0, comments: p.comment_count ?? 0,
     liked: viewerId ? !!db.prepare("SELECT 1 FROM likes WHERE post_id=? AND user_id=?").get(p.id, viewerId) : false,
     createdAt: p.created_at,
@@ -420,11 +445,26 @@ export const routes = {
   // streams the full song/video. Candidate metadata, embeddability, artist/title,
   // duration, official-channel patterns, and known bad variants are scored before
   // a finite-lived cache entry is accepted.
+  // How many times the signed-in user has logged this artist ("you've been in
+  // the pit with them N times" on the artist profile).
+  "GET /api/artists/seen": (ctx) => {
+    const u = requireUser(ctx);
+    const name = clean(ctx.query.name, { max: 120 });
+    if (!name) throw new ApiError(400, "Missing name.");
+    const row = db.prepare("SELECT COUNT(*) c, MAX(date) last FROM posts WHERE user_id=? AND LOWER(artist)=LOWER(?) AND removed=0").get(u.id, name);
+    return { count: row?.c || 0, last: row?.last || null };
+  },
+
   "GET /api/youtube/track": async (ctx) => {
     const title = clean(ctx.query.title, { max: 200 });
     const artist = clean(ctx.query.artist, { max: 120 });
     if (!title) throw new ApiError(400, "Missing title.");
     limit(ctx, "yt", 120, 10 * 60 * 1000);
+    // A human-pinned link always beats the search resolver. video_id NULL is an
+    // admin-confirmed "no correct video exists": tell the player honestly so it
+    // uses the preview instead of guessing a wrong version.
+    const pinned = db.prepare("SELECT video_id FROM track_overrides WHERE key=?").get(trackOverrideKey(title, artist));
+    if (pinned) return { videoId: pinned.video_id || null, status: pinned.video_id ? "pinned" : "confirmed_unavailable" };
     const duration = Math.max(0, Math.min(24 * 60 * 60, Number(ctx.query.duration) || 0));
     try { return await resolveYouTubeTrack(title, artist, { expectedDurationSec: duration }); }
     catch (error) {
@@ -959,10 +999,15 @@ export const routes = {
     if (viewer) args.push(viewer, viewer);
     args.push(lim + 1);
     if (!cursor) args.push(off);
+    // Moderators see which cards carry open reports right on the feed, so
+    // flagged content is visible in context instead of only in the queue.
+    const staff = ctx.user && (ctx.user.role === "admin" || ctx.user.role === "moderator");
+    const flagSql = staff ? `, (SELECT COUNT(*) FROM reports r WHERE r.target_type = 'post' AND r.target_id = p.id AND r.status = 'open') AS open_reports` : "";
     const found = db.prepare(`
       SELECT p.*, u.name AS u_name, u.handle AS u_handle, u.initials AS u_initials, u.avatar_uri AS u_avatar, u.avatar_color AS u_color,
         (SELECT COUNT(*) FROM likes l WHERE l.post_id = p.id) AS like_count,
-        (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id AND c.removed = 0) AS comment_count
+        (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id AND c.removed = 0) AS comment_count,
+        ${SEEN_ORDINAL_SQL}${flagSql}
       FROM posts p JOIN users u ON u.id = p.user_id
       WHERE p.removed = 0 ${cursorSql} ${blockSql}
       ORDER BY p.created_at DESC, p.id DESC LIMIT ?${cursor ? "" : " OFFSET ?"}`).all(...args);
@@ -975,7 +1020,8 @@ export const routes = {
     const rows = db.prepare(`
       SELECT p.*, u.name AS u_name, u.handle AS u_handle, u.initials AS u_initials, u.avatar_uri AS u_avatar, u.avatar_color AS u_color,
         (SELECT COUNT(*) FROM likes l WHERE l.post_id = p.id) AS like_count,
-        (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id AND c.removed = 0) AS comment_count
+        (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id AND c.removed = 0) AS comment_count,
+        ${SEEN_ORDINAL_SQL}
       FROM posts p JOIN users u ON u.id = p.user_id
       WHERE p.removed = 0 AND p.user_id = ? ORDER BY p.created_at DESC LIMIT 100`).all(ctx.params.id);
     return { posts: rows.map((p) => postJson(p, ctx.user?.id)) };
@@ -998,11 +1044,13 @@ export const routes = {
       photosPublic: { parse: (x) => typeof x === "boolean" ? (x ? 1 : 0) : x === 0 || x === 1 ? x : undefined },
       setlist: { parse: (x) => cleanStringArray(x, { maxItems: 40, maxLen: 120 }) },
       tour: { parse: (x) => clean(x, { max: 80 }) || null },
+      tags: { parse: cleanPostTags },
     });
     if (errs.length) throw new ApiError(400, errs[0]);
     const id = uid("p");
     postRow.run(id, u.id, v.artist, v.venue, v.city || "", v.date || "", v.overall, v.band ?? null, v.room ?? null,
-      JSON.stringify(v.dims || {}), v.review || "", JSON.stringify(v.photos || []), v.photosPublic ?? 0, JSON.stringify(v.setlist || []), v.tour || null, now());
+      JSON.stringify(v.dims || {}), v.review || "", JSON.stringify(v.photos || []), v.photosPublic ?? 0, JSON.stringify(v.setlist || []), v.tour || null,
+      JSON.stringify(v.tags || []), now());
     return { id, post: postJson(feedPostById.get(id), u.id) };
   },
 
@@ -1011,13 +1059,15 @@ export const routes = {
     limit(ctx, "post-edit", 60, 60 * 60 * 1000);
     const current = db.prepare("SELECT * FROM posts WHERE id=? AND removed=0").get(ctx.params.id);
     if (!current) throw new ApiError(404, "That post left the stage. Refresh the feed and try again.", "NOT_FOUND");
-    if (current.user_id !== u.id && u.role !== "admin") {
+    // Author-only, deliberately including admins: a review is someone's own
+    // words, and moderation removes content, it never rewrites it.
+    if (current.user_id !== u.id) {
       throw new ApiError(403, "Only the person who posted this review can edit it.", "FORBIDDEN");
     }
 
     const body = ctx.body && typeof ctx.body === "object" && !Array.isArray(ctx.body) ? ctx.body : {};
     const has = (key) => Object.prototype.hasOwnProperty.call(body, key);
-    const editable = ["artist", "venue", "city", "date", "overall", "band", "room", "dims", "review", "photos", "photosPublic", "setlist", "tour"];
+    const editable = ["artist", "venue", "city", "date", "overall", "band", "room", "dims", "review", "photos", "photosPublic", "setlist", "tour", "tags"];
     if (!editable.some(has)) throw new ApiError(400, "Make a change before saving this post.", "VALIDATION_FAILED");
 
     // Optimistic concurrency prevents two devices (or an old open edit sheet)
@@ -1079,13 +1129,15 @@ export const routes = {
       if (body.tour !== null && typeof body.tour !== "string") throw new ApiError(400, "tour is invalid", "VALIDATION_FAILED");
       next.tour = body.tour === null ? null : clean(body.tour, { max: 80 }) || null;
     }
+    if (has("tags")) {
+      const tags = cleanPostTags(body.tags);
+      if (!tags) throw new ApiError(400, "tags is invalid", "VALIDATION_FAILED");
+      next.tags = JSON.stringify(tags);
+    }
 
     const editedAt = Math.max(now(), currentVersion + 1);
-    db.prepare(`UPDATE posts SET artist=?,venue=?,city=?,date=?,overall=?,band=?,room=?,dims=?,review=?,photos=?,photos_public=?,setlist=?,tour=?,updated_at=? WHERE id=?`)
-      .run(next.artist, next.venue, next.city, next.date, next.overall, next.band, next.room, next.dims, next.review, next.photos, next.photos_public, next.setlist, next.tour, editedAt, current.id);
-    if (u.role === "admin" && u.id !== current.user_id) {
-      moderationRecord(ctx, "edit", "post", current.id, "Administrator edited post", { version: currentVersion }, { version: editedAt });
-    }
+    db.prepare(`UPDATE posts SET artist=?,venue=?,city=?,date=?,overall=?,band=?,room=?,dims=?,review=?,photos=?,photos_public=?,setlist=?,tour=?,tags=?,updated_at=? WHERE id=?`)
+      .run(next.artist, next.venue, next.city, next.date, next.overall, next.band, next.room, next.dims, next.review, next.photos, next.photos_public, next.setlist, next.tour, next.tags, editedAt, current.id);
     return { post: postJson(feedPostById.get(current.id), u.id) };
   },
 
@@ -1444,6 +1496,55 @@ export const routes = {
     db.prepare("INSERT INTO reports (id,target_type,target_id,reason,reporter_id,created_at) VALUES (?,?,?,?,?,?)")
       .run(id, v.targetType, v.targetId, v.reason || "", u.id, now());
     return { id };
+  },
+
+  // Report a song whose in-app video is the wrong version (lyrics/karaoke/
+  // remix/other artist). Optionally carries the CORRECT link, which an admin
+  // can pin with one action. Lands in the normal moderation queue.
+  "POST /api/tracks/report": (ctx) => {
+    const u = requireUser(ctx);
+    limit(ctx, "track-report", 15, 60 * 60 * 1000);
+    const [errs, v] = shape(ctx.body, {
+      title: { required: true, parse: (x) => clean(x, { max: 200 }) || undefined },
+      artist: { parse: (x) => clean(x, { max: 120 }) },
+      url: { parse: (x) => clean(x, { max: 400 }) },
+      note: { parse: (x) => clean(x, { max: LIMITS.note }) },
+    });
+    if (errs.length) throw new ApiError(400, errs[0]);
+    const suggestedId = v.url ? parseYouTubeVideoId(v.url) : null;
+    if (v.url && !suggestedId) throw new ApiError(400, "That doesn't look like a YouTube link.", "VALIDATION_FAILED");
+    const key = trackOverrideKey(v.title, v.artist);
+    const existing = db.prepare("SELECT id FROM reports WHERE reporter_id=? AND target_type='track' AND target_id=? AND status='open'").get(u.id, key);
+    if (existing) return { id: existing.id, duplicate: true };
+    const reason = JSON.stringify({ title: v.title, artist: v.artist || "", suggestedVideoId: suggestedId, note: v.note || "" });
+    const id = uid("r");
+    db.prepare("INSERT INTO reports (id,target_type,target_id,reason,reporter_id,created_at) VALUES (?,?,?,?,?,?)")
+      .run(id, "track", key, reason, u.id, now());
+    return { id };
+  },
+
+  // Pin the correct video for a song (or "none": confirmed nothing correct is
+  // embeddable). Closes every open report on that song and busts the resolver
+  // cache, so the fix is heard on the very next play.
+  "POST /api/admin/tracks/override": (ctx) => {
+    requireModerator(ctx);
+    const [errs, v] = shape(ctx.body, {
+      title: { required: true, parse: (x) => clean(x, { max: 200 }) || undefined },
+      artist: { parse: (x) => clean(x, { max: 120 }) },
+      url: { parse: (x) => clean(x, { max: 400 }) },
+      none: { parse: (x) => !!x },
+    });
+    if (errs.length) throw new ApiError(400, errs[0]);
+    const videoId = v.none ? null : parseYouTubeVideoId(v.url);
+    if (!v.none && !videoId) throw new ApiError(400, "Paste a YouTube link (watch, youtu.be, or shorts).", "VALIDATION_FAILED");
+    const key = trackOverrideKey(v.title, v.artist);
+    db.prepare(`INSERT INTO track_overrides (key,title,artist,video_id,set_by,updated_at) VALUES (?,?,?,?,?,?)
+      ON CONFLICT(key) DO UPDATE SET video_id=excluded.video_id, set_by=excluded.set_by, updated_at=excluded.updated_at`)
+      .run(key, v.title, v.artist || "", videoId, ctx.user.id, now());
+    invalidateYouTubeTrack(v.title, v.artist || "");
+    db.prepare("UPDATE reports SET status='actioned' WHERE target_type='track' AND target_id=? AND status='open'").run(key);
+    moderationRecord(ctx, "track-override", "track", key, v.none ? "confirmed no correct video" : `pinned ${videoId}`);
+    return { ok: true, videoId, confirmedUnavailable: v.none };
   },
 
   "GET /api/admin/reports": (ctx) => {

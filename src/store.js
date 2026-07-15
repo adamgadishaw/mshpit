@@ -647,6 +647,37 @@ export function StoreProvider({ children }) {
   // device clock). Returns { now, iso, tz, offsetMinutes } or null when offline.
   const serverTime = async () => { try { return await api("/api/time"); } catch { return null; } };
 
+  // How many times the signed-in user has logged this artist (artist profile
+  // "you've been in the pit with them" counter). Cached per session per artist.
+  const seenCountCache = useRef({});
+  const artistSeenCount = async (name) => {
+    if (!session || !name) return null;
+    const key = name.toLowerCase();
+    if (seenCountCache.current[key] !== undefined) return seenCountCache.current[key];
+    try {
+      const r = await api(`/api/artists/seen?name=${encodeURIComponent(name)}`, { silent: true });
+      seenCountCache.current[key] = r || null;
+      return r || null;
+    } catch { return null; }
+  };
+
+  // Flag a song whose in-app video is the wrong version; optionally carry the
+  // correct YouTube link so an admin can pin it in one tap.
+  const reportTrack = async ({ title, artist, url, note }) => {
+    try {
+      const r = await api("/api/tracks/report", { method: "POST", context: "Reporting a wrong song version", body: { title, artist, url: url || undefined, note: note || undefined } });
+      return { ok: true, duplicate: !!r?.duplicate };
+    } catch (error) { return { ok: false, error }; }
+  };
+
+  // Admin: pin the correct video for a song (or confirm none exists).
+  const adminSetTrackVideo = async ({ title, artist, url, none }) => {
+    try {
+      const r = await api("/api/admin/tracks/override", { method: "POST", context: "Pinning the correct song video", body: { title, artist, url: url || undefined, none: !!none } });
+      return { ok: true, ...r };
+    } catch (error) { return { ok: false, error }; }
+  };
+
   const resolveDeezerPreview = async (title, artist) => {
     if (!title) return null;
     const k = (artist || "") + "|" + title;
@@ -1156,6 +1187,7 @@ export function StoreProvider({ children }) {
           artist: safe.artist, venue: safe.venue, city: safe.city, date: safe.date,
           overall: safe.overall, band: safe.band, room: safe.room, dims: safe.dims, review: safe.review,
           photos: safe.photos, photosPublic: safe.photosPublic ? 1 : 0, setlist: safe.setlist, tour: safe.tour || null,
+          tags: Array.isArray(safe.tags) ? safe.tags : [],
         },
       })
         .then(({ id, post }) => {
@@ -1180,8 +1212,9 @@ export function StoreProvider({ children }) {
 
   const editLog = async (id, changes) => {
     if (!session || !id) return { ok: false };
+    // Author-only, admins included: moderation removes content, never rewrites it.
     const previous = feed.find((post) => post.id === id) || changes;
-    if (!previous || (previous.userId !== session.id && session.role !== "admin")) return { ok: false };
+    if (!previous || previous.userId !== session.id) return { ok: false };
     const safe = {
       artist: clean(changes.artist, { max: 80 }),
       venue: clean(changes.venue, { max: 80 }),
@@ -1196,6 +1229,7 @@ export function StoreProvider({ children }) {
       photosPublic: !!changes.photosPublic,
       setlist: Array.isArray(changes.setlist) ? changes.setlist.filter((item) => typeof item === "string").slice(0, 40) : [],
       tour: clean(changes.tour, { max: 80 }) || null,
+      tags: Array.isArray(changes.tags) ? changes.tags.filter((item) => typeof item === "string").slice(0, 5) : [],
     };
     if (!safe.artist || !safe.venue || safe.overall <= 0) return { ok: false };
     const version = previous.version ?? previous.editedAt ?? previous.createdAt;
@@ -2571,6 +2605,7 @@ export function StoreProvider({ children }) {
     isBlocked, blockUser, unblockUser, blockedUsers, exportMyData,
     searchArtistsApi, resolveArtist, remoteArtistMeta, artistDiscography, resolveYouTube, invalidateYouTube, resolveDeezerPreview,
     discoverChart, discoverGenres, discoverCountries, serverTime,
+    artistSeenCount, reportTrack, adminSetTrackVideo,
     playHistory, recordPlay, snapshots, saveSnapshot, removeSnapshot, friendsListening, loadFriendsListening, userPlaylists, deletePlaylist,
     favoriteGenre, recommendTracks, autoplayQueue, myPlaylists, loadMyPlaylists, createPlaylist, addToPlaylist,
     drafts, saveDraft, deleteDraft,

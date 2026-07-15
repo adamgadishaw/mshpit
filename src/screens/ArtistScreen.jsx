@@ -39,7 +39,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
   const { session, artistSummary, albumRating, songRating, rateAlbum, rateSong, loadRating,
     isArtistOwner, artistPostsFor, loadArtistPage, addArtistPost, removeArtistPost,
     artistGallery, removePhoto, artistBadges, artistRank, remoteArtistMeta, resolveArtist,
-    artistDiscography } = useStore();
+    artistDiscography, artistSeenCount, reportTrack } = useStore();
   const a = artistSummary(artistName);
   const badges = artistBadges(a.name);
   const rank = artistRank(a.name);
@@ -68,6 +68,26 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
 
   // Full discography (albums + tracklists) from Deezer, so the page has real depth:
   // open an album, see every song, rate them, play them in the top bar.
+  // "You've been in the pit with them N times" - the viewer's own show count
+  // for this artist, from their logged posts.
+  const [seen, setSeen] = useState(null);
+  useEffect(() => {
+    let ok = true;
+    setSeen(null);
+    if (session) artistSeenCount(a.name).then((r) => { if (ok) setSeen(r); });
+    return () => { ok = false; };
+  }, [a.name, session?.id]);
+
+  // Wrong-version reporting: any listener can flag a song whose video is the
+  // wrong version and optionally paste the correct YouTube link.
+  const [reportingSong, setReportingSong] = useState(null);
+  const [reportUrl, setReportUrl] = useState("");
+  const [reportedSongs, setReportedSongs] = useState({});
+  const submitSongReport = async (title) => {
+    const r = await reportTrack({ title, artist: a.name, url: reportUrl.trim() || undefined });
+    if (r.ok) { setReportedSongs((m) => ({ ...m, [title]: true })); setReportingSong(null); setReportUrl(""); }
+  };
+
   const [disco, setDisco] = useState(null);
   const [openAlbum, setOpenAlbum] = useState(null);
   useEffect(() => { setDisco(null); setOpenAlbum(null); artistDiscography(a.name).then(setDisco); }, [a.name]);
@@ -230,6 +250,14 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
               </Text>
             </View>
           </View>
+          {session && seen?.count > 0 && (
+            <View style={styles.seenChip} accessibilityLabel={`You have seen ${a.name} live ${seen.count} ${seen.count === 1 ? "time" : "times"}`}>
+              <Icon name="check" size={13} color={colors.good} />
+              <Text style={styles.seenChipTxt}>
+                You've been in the pit with them {seen.count === 1 ? "once" : seen.count === 2 ? "twice" : `${seen.count} times`}{seen.last ? ` · last ${seen.last}` : ""}
+              </Text>
+            </View>
+          )}
           {a.nights.length > 0 && (
             <View style={{ marginTop: 14 }}>
               <RatingSplit band={a.avgBand} room={a.avgRoom} />
@@ -483,25 +511,59 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
             </Text>
             {songs.map((s) => {
               const sr = songRating(a.name, s.title);
+              const reported = !!reportedSongs[s.title];
               return (
-                <View key={s.id} style={styles.songRow}>
-                  <Pressable style={styles.songMain} onPress={() => playSingle(s)} accessibilityRole="button" accessibilityLabel={`Play ${s.title}`}>
-                    <Text style={styles.songTitle} numberOfLines={1}>{s.title}</Text>
-                    {sr.count > 0 ? (
-                      <View style={styles.songMeta}><Stars value={sr.avg} size={11} /><Text style={styles.songAvg}>{sr.avg.toFixed(1)} · {sr.count}</Text></View>
-                    ) : (
-                      <Text style={styles.songMetaEmpty} numberOfLines={1}>{s.album ? s.album : "Tap to play · rate below"}</Text>
-                    )}
-                  </Pressable>
-                  <TapStars value={sr.mine} onChange={(n) => rateSong(a.name, s.title, n)} size={16} gap={3} />
-                  {onAddToPlaylist && (
-                    <Pressable style={styles.songAdd} onPress={() => addSong(s)} hitSlop={8}>
-                      <Icon name="plus" size={13} color={colors.textDim} />
+                <View key={s.id}>
+                  <View style={styles.songRow}>
+                    <Pressable style={styles.songMain} onPress={() => playSingle(s)} accessibilityRole="button" accessibilityLabel={`Play ${s.title}`}>
+                      <Text style={styles.songTitle} numberOfLines={1}>{s.title}</Text>
+                      {sr.count > 0 ? (
+                        <View style={styles.songMeta}><Stars value={sr.avg} size={11} /><Text style={styles.songAvg}>{sr.avg.toFixed(1)} · {sr.count}</Text></View>
+                      ) : (
+                        <Text style={styles.songMetaEmpty} numberOfLines={1}>{s.album ? s.album : "Tap to play · rate below"}</Text>
+                      )}
                     </Pressable>
+                    <TapStars value={sr.mine} onChange={(n) => rateSong(a.name, s.title, n)} size={16} gap={3} />
+                    {session && (
+                      <Pressable style={styles.songAdd} onPress={() => { setReportingSong((cur) => (cur === s.title ? null : s.title)); setReportUrl(""); }} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Report the wrong video playing for ${s.title}`}>
+                        <Icon name="flag" size={12} color={reported ? colors.good : colors.textFaint} />
+                      </Pressable>
+                    )}
+                    {onAddToPlaylist && (
+                      <Pressable style={styles.songAdd} onPress={() => addSong(s)} hitSlop={8}>
+                        <Icon name="plus" size={13} color={colors.textDim} />
+                      </Pressable>
+                    )}
+                    <Pressable style={styles.songPlay} onPress={() => playSingle(s)} hitSlop={8}>
+                      <Icon name="play" size={13} color={colors.amber} />
+                    </Pressable>
+                  </View>
+                  {reportingSong === s.title && (
+                    <View style={styles.songReportBox}>
+                      {reported ? (
+                        <Text style={styles.songReportDone}>Reported. A moderator will pin the right video.</Text>
+                      ) : (
+                        <>
+                          <Text style={styles.songReportLabel}>Wrong version playing? Paste the correct YouTube link if you have it, or just send the report.</Text>
+                          <TextInput
+                            style={styles.songReportInput}
+                            placeholder="https://youtube.com/watch?v=... (optional)"
+                            placeholderTextColor={colors.textFaint}
+                            value={reportUrl}
+                            onChangeText={setReportUrl}
+                            autoCapitalize="none"
+                            autoCorrect={false}
+                          />
+                          <View style={styles.songReportActions}>
+                            <Pressable style={styles.songReportBtn} onPress={() => submitSongReport(s.title)} accessibilityRole="button">
+                              <Text style={styles.songReportBtnTxt}>Send report</Text>
+                            </Pressable>
+                            <Pressable onPress={() => setReportingSong(null)} hitSlop={8}><Text style={styles.songReportCancel}>Cancel</Text></Pressable>
+                          </View>
+                        </>
+                      )}
+                    </View>
                   )}
-                  <Pressable style={styles.songPlay} onPress={() => playSingle(s)} hitSlop={8}>
-                    <Icon name="play" size={13} color={colors.amber} />
-                  </Pressable>
                 </View>
               );
             })}
@@ -596,6 +658,16 @@ const styles = StyleSheet.create({
   comingSoonTitle: { color: colors.text, fontSize: 14, fontWeight: "800" },
   comingSoonSub: { color: colors.textDim, fontSize: 11.5, marginTop: 2, lineHeight: 16 },
   songRow: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 12, marginBottom: 8 },
+  seenChip: { flexDirection: "row", alignItems: "center", alignSelf: "flex-start", gap: 6, marginTop: 12, paddingHorizontal: 10, paddingVertical: 6, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.good, backgroundColor: "rgba(111,207,151,0.08)" },
+  seenChipTxt: { color: colors.good, fontSize: 12, fontWeight: "700" },
+  songReportBox: { backgroundColor: colors.bgElev, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 12, marginTop: -4, marginBottom: 8 },
+  songReportLabel: { color: colors.textDim, fontSize: 12, lineHeight: 17, marginBottom: 8 },
+  songReportInput: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: radius.sm, color: colors.text, fontSize: 13, paddingHorizontal: 10, paddingVertical: 8 },
+  songReportActions: { flexDirection: "row", alignItems: "center", gap: 14, marginTop: 10 },
+  songReportBtn: { backgroundColor: colors.amberStrong, borderRadius: radius.pill, paddingHorizontal: 14, paddingVertical: 8 },
+  songReportBtnTxt: { color: "#1A1206", fontSize: 12.5, fontWeight: "800" },
+  songReportCancel: { color: colors.textDim, fontSize: 12.5 },
+  songReportDone: { color: colors.good, fontSize: 12.5, fontWeight: "700" },
   songMain: { flex: 1 },
   songTitle: { color: colors.text, fontSize: 15, fontWeight: "700" },
   topSong: { flexDirection: "row", alignItems: "center", gap: 12, marginTop: 14, padding: 12, borderRadius: radius.md, borderWidth: 1, borderColor: colors.amber, backgroundColor: "rgba(242,166,90,0.07)" },

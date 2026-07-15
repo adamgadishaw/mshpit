@@ -70,6 +70,57 @@ photo. CSP needs no edit, `connect-src` derives the bucket origin from
 endpoint must be set **before** the process starts. If a PUT fails in the browser
 with a CORS error, step 7 is wrong or missing. Presigned PUTs are valid 10 minutes.
 
+## Feature batch: seen counter, review template, countdowns, edit lockdown, song pins — 2026-07-22 (Claude)
+
+Five owner asks in one pass. All server changes are additive (one new table, one
+new posts column); `npm run check` green (46 tests) and every flow was verified
+live in the browser plus curl before pushing.
+
+1. **"Seen them before" counter.** `GET /api/artists/seen?name=` counts the
+   signed-in user's logged posts for an artist; the artist header shows "You've
+   been in the pit with them N times · last DATE" (verified live). Every feed
+   post also carries `seen`, the author's ordinal for that artist at that post
+   (`SEEN_ORDINAL_SQL` in `server/api.js`), and the card shows "3rd time in the
+   pit" next to the artist name when it's above 1.
+2. **Review template (score analytics + tags).** Posts have a `tags` column: up
+   to 5 short word-art descriptors entered in the Log sheet (chips, enter/comma
+   to add), validated server-side (`cleanPostTags`). A post with tags and no text
+   renders the tags as the review, so posting without writing is a real mechanic.
+   Tapping the star score on ANY card opens the analytics panel: a twirling gold
+   star (`src/components/SpinStar.jsx`, coin-spin via scaleX, our own drawn star),
+   per-dimension bar graph (`src/components/RatingBars.jsx`, band/room/night
+   color-coded, falls back to band+room for old posts), and the tag chips.
+   Hovering the score (web) previews the tags. Works on feed, profile walls, and
+   the PostScreen since they all render `TicketStub`.
+3. **Calendar + countdowns.** The calendar was never broken, it was EMPTY (zero
+   tour dates in prod until `TICKETMASTER_KEY` is set, and demo dates were
+   correctly purged); it now says exactly that instead of a wall of blank days.
+   Profile "GOING TO" rows now tick a live T-minus ("12d 04:32:11 until doors",
+   Clock-app style, one shared 1s interval, targets 8pm on the show date).
+4. **Edit lockdown + mod flag.** Post editing is the author's alone now: the
+   server PATCH 403s admins (regression test flipped to pin this), the store and
+   card no longer offer admin edit. Verified live: admin sees Edit only on their
+   own post. Mods/admins instead see a red "REPORTED · N" chip on feed cards
+   with open reports (staff-only `open_reports` subquery on `/api/feed`).
+5. **Song video pins + wrong-version reports.** New `track_overrides` table:
+   `GET /api/youtube/track` returns a pinned video before ever consulting the
+   search resolver (proven by curl: pin wins, spelling-insensitive via
+   `trackOverrideKey`). `video_id NULL` = admin confirmed no correct video, so
+   the player honestly falls back to the Deezer preview instead of guessing.
+   Every song row on an artist page has a small flag: report the wrong version,
+   optionally pasting the correct link (`POST /api/tracks/report`, rate-limited,
+   dedupes per reporter). Track reports render specially in the admin Reports
+   tab with a link input + "Pin this video" / "No correct video" actions
+   (`POST /api/admin/tracks/override`, closes the reports, busts the yt cache,
+   writes a moderation record). `parseYouTubeVideoId` accepts watch/youtu.be/
+   shorts/embed/music links and bare ids; tests cover it.
+
+Files: `server/{api,db,musicProviders}.js`, `server/{post.edit,musicProviders}.test.mjs`,
+`src/components/{TicketStub,RatingBars,SpinStar}.jsx`, `src/screens/{LogScreen,ArtistScreen,ProfileScreen,CalendarScreen,AdminScreen}.jsx`, `src/store.js`.
+Open follow-ups: the player bar could surface "confirmed unavailable" copy when a
+pin says no video exists (today it just says "preview"), and PostScreen could
+default the analytics panel open.
+
 ## Deploy failures fixed: tests were running inside the Render build — 2026-07-21 (Claude)
 
 Every deploy from `556c6c0` onward failed with "Exited with status 1 while

@@ -14,11 +14,13 @@ const {
 } = await import("./db.js");
 const {
   invalidateYouTubeTrack,
+  parseYouTubeVideoId,
   playbackUrlExpiry,
   resolveYouTubeTrack,
   scoreYouTubeCandidate,
   selectDeezerArtist,
   selectDeezerTrack,
+  trackOverrideKey,
 } = await import("./musicProviders.js");
 
 after(() => {
@@ -137,3 +139,14 @@ test("YouTube resolver scores multiple candidates, caches finitely, and excludes
   assert.notEqual(replacement.videoId, "official001");
 });
 
+
+test("track pins parse real YouTube link shapes and share one identity per song", () => {
+  assert.equal(parseYouTubeVideoId("https://www.youtube.com/watch?v=dQw4w9WgXcQ"), "dQw4w9WgXcQ");
+  assert.equal(parseYouTubeVideoId("youtu.be/dQw4w9WgXcQ?t=42"), "dQw4w9WgXcQ");
+  assert.equal(parseYouTubeVideoId("https://m.youtube.com/shorts/dQw4w9WgXcQ"), "dQw4w9WgXcQ");
+  assert.equal(parseYouTubeVideoId("dQw4w9WgXcQ"), "dQw4w9WgXcQ");
+  assert.equal(parseYouTubeVideoId("https://example.com/watch?v=dQw4w9WgXcQ"), null, "non-YouTube hosts are rejected");
+  assert.equal(parseYouTubeVideoId("https://www.youtube.com/watch?v=short"), null, "malformed ids are rejected");
+  assert.equal(trackOverrideKey("BIRDS", "Turnstile"), trackOverrideKey("Birds ", " TURNSTILE"), "spelling variants share a key");
+  assert.notEqual(trackOverrideKey("Birds", "Turnstile"), trackOverrideKey("Birds", "Koyo"), "different artists never collide");
+});
