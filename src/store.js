@@ -677,6 +677,29 @@ export function StoreProvider({ children }) {
       return { ok: true, ...r };
     } catch (error) { return { ok: false, error }; }
   };
+  // Admin: every current pin, live from the server (survives any refresh).
+  const trackOverridesList = async () => {
+    try { const { overrides } = await api("/api/admin/tracks/overrides", { silent: true }); return overrides || []; } catch { return []; }
+  };
+  const removeTrackOverride = async ({ title, artist }) => {
+    try { await api("/api/admin/tracks/override", { method: "DELETE", context: "Removing a song video pin", body: { title, artist } }); return { ok: true }; } catch (error) { return { ok: false, error }; }
+  };
+  // Re-pull the open moderation queue from the server. The login-time absorb
+  // only merges NEW ids into local state; this makes the console authoritative
+  // every time it opens, so reports survive refreshes and devices.
+  const loadModerationQueue = async () => {
+    try {
+      const { reports: rows } = await api("/api/admin/reports", { silent: true });
+      if (!Array.isArray(rows)) return false;
+      const fresh = rows.map((r) => ({ id: r.id, targetType: r.target_type, targetId: r.target_id, reason: r.reason, reporterId: r.reporter_id, status: "open" }));
+      setReports((rs) => {
+        const freshIds = new Set(fresh.map((x) => x.id));
+        // Server list IS the open queue; keep local non-open rows for history.
+        return [...fresh, ...rs.filter((x) => x.status !== "open" && !freshIds.has(x.id))];
+      });
+      return true;
+    } catch { return false; }
+  };
 
   const resolveDeezerPreview = async (title, artist) => {
     if (!title) return null;
@@ -2605,7 +2628,7 @@ export function StoreProvider({ children }) {
     isBlocked, blockUser, unblockUser, blockedUsers, exportMyData,
     searchArtistsApi, resolveArtist, remoteArtistMeta, artistDiscography, resolveYouTube, invalidateYouTube, resolveDeezerPreview,
     discoverChart, discoverGenres, discoverCountries, serverTime,
-    artistSeenCount, reportTrack, adminSetTrackVideo,
+    artistSeenCount, reportTrack, adminSetTrackVideo, trackOverridesList, removeTrackOverride, loadModerationQueue,
     playHistory, recordPlay, snapshots, saveSnapshot, removeSnapshot, friendsListening, loadFriendsListening, userPlaylists, deletePlaylist,
     favoriteGenre, recommendTracks, autoplayQueue, myPlaylists, loadMyPlaylists, createPlaylist, addToPlaylist,
     drafts, saveDraft, deleteDraft,

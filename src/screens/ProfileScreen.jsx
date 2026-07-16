@@ -10,24 +10,7 @@ import SpinningRecord from "../components/SpinningRecord";
 import TicketStub from "../components/TicketStub";
 import { BadgeRow } from "../components/Badge";
 import { ACHIEVEMENTS } from "../lib/badges";
-
-// Show dates arrive in mixed shapes ("2026-08-14", "2026 · 08 · 14"); pull the
-// numbers and aim at 8pm local, a sane default for doors.
-function showDateMs(s) {
-  const m = String(s || "").match(/(\d{4})\D+(\d{1,2})\D+(\d{1,2})/);
-  if (!m) return null;
-  const d = new Date(+m[1], +m[2] - 1, +m[3], 20, 0, 0);
-  return isNaN(d.getTime()) ? null : d.getTime();
-}
-// T-minus, Clock-app style: days + hh:mm:ss once close.
-function fmtCountdown(ms) {
-  const s = Math.max(0, Math.floor(ms / 1000));
-  const days = Math.floor(s / 86400);
-  const hh = String(Math.floor((s % 86400) / 3600)).padStart(2, "0");
-  const mm = String(Math.floor((s % 3600) / 60)).padStart(2, "0");
-  const ss = String(s % 60).padStart(2, "0");
-  return days > 0 ? `${days}d ${hh}:${mm}:${ss}` : `${hh}:${mm}:${ss}`;
-}
+import { showDateMs, fmtCountdown } from "../lib/showTime";
 
 function Stat({ value, label, onPress }) {
   return (

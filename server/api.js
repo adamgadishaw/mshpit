@@ -1547,6 +1547,29 @@ export const routes = {
     return { ok: true, videoId, confirmedUnavailable: v.none };
   },
 
+  // Every pinned song video, newest first, so the Songs tab shows what's been
+  // fixed (and lets a bad pin be removed).
+  "GET /api/admin/tracks/overrides": (ctx) => {
+    requireModerator(ctx);
+    const rows = db.prepare("SELECT key,title,artist,video_id,set_by,updated_at FROM track_overrides ORDER BY updated_at DESC LIMIT 200").all();
+    return { overrides: rows.map((r) => ({ key: r.key, title: r.title, artist: r.artist, videoId: r.video_id, setBy: r.set_by, updatedAt: r.updated_at })) };
+  },
+
+  // Remove a pin: the search resolver takes over again on the next play.
+  "DELETE /api/admin/tracks/override": (ctx) => {
+    requireModerator(ctx);
+    const [errs, v] = shape(ctx.body, {
+      title: { required: true, parse: (x) => clean(x, { max: 200 }) || undefined },
+      artist: { parse: (x) => clean(x, { max: 120 }) },
+    });
+    if (errs.length) throw new ApiError(400, errs[0]);
+    const key = trackOverrideKey(v.title, v.artist);
+    db.prepare("DELETE FROM track_overrides WHERE key=?").run(key);
+    invalidateYouTubeTrack(v.title, v.artist || "");
+    moderationRecord(ctx, "track-unpin", "track", key, "pin removed, resolver takes over");
+    return { ok: true };
+  },
+
   "GET /api/admin/reports": (ctx) => {
     requireModerator(ctx);
     return { reports: db.prepare("SELECT * FROM reports WHERE status='open' ORDER BY created_at DESC LIMIT 200").all() };

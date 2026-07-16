@@ -165,6 +165,40 @@ Validation: `npm test` passes with no env, AND with `PIT_DATA_DIR` pointing at a
 nonexistent drive (both 45/45); full `npm run check` green including the web
 export; no temp dirs left behind.
 
+## Performance-page identity + crash fix, durable Songs moderation (2026-07-16, Claude)
+
+Owner feedback: features were landing demo-grade (state that dies on refresh, no
+dedicated home, entry points that crash on real data). This batch closes those.
+
+**Calendar crash (PIT-APP-001), root cause.** ShowScreen assumed a logged review:
+`log.overall.toFixed(1)` and `log.setlist.length` threw on any bare tour date
+opened from the calendar. Fixed by normalizing the event shape (venue/place,
+missing city) and guarding every field.
+
+**Performance page is now its own thing (vs the venue page).** Ticket-style hero
+(amber stub edge, perforation, THE ROOM / THE DATE strip) and two honest modes:
+UPCOMING = live until-doors countdown (shared src/lib/showTime.js, also used by
+the profile GOING TO list), Get tickets, Going + lounge, no fabricated score and
+no review CTA; HAPPENED = community score card + setlist, "No score yet" state
+when nobody logged it. Verified in-browser on a real Ticketmaster date (The
+Weeknd, live countdown ticking).
+
+**Song reports are durable and have a real home.** New admin **Songs** tab (mods
+too): open wrong-version reports (with the reporter's suggested link prefilled)
++ a PINNED LINKS list. The moderation queue re-pulls from the server every time
+the Reports/Songs tab opens (store loadModerationQueue) instead of trusting the
+login-time absorb, so reports survive refresh and devices. New GET
+/api/admin/tracks/overrides + DELETE /api/admin/tracks/override (unpin, resolver
+takes over). Verified end to end by API: report -> queue -> pin -> resolver
+returns status "pinned" -> report auto-actioned -> unpin.
+
+Also confirmed while auditing: profile-wall post editing was already wired
+(onEditPost -> TicketStub), and the feed analytics pill renders live.
+
+Validation: npm run check green (46 tests, export ok), browser walkthrough of
+calendar -> show page, API cycle above on the running server.
+
+
 ## Catalog job now tells the truth — 2026-07-21 (Claude)
 
 **Finishes the 2026-07-14 incident repair that was left half-done.** The server side already detected an exhausted crawl and recorded durable run history, but nothing surfaced either, so the admin console still had the misleading button that caused the incident.

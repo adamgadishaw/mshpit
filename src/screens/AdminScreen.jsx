@@ -169,13 +169,23 @@ export default function AdminScreen({ onClose }) {
     suspendUser, liftSuspension, banUser, unbanUser, setUserRole, setVerified, setSponsor, accountStatus,
     removeComment, removeFanClubMessage, removeLoungeMessage,
     loadAdminMembers, adminStats, adminArtistQueue, enrichArtists, purgeArtist, startCatalogSeed, catalogSeedStatus, stopCatalogSeed, catalogSeedRuns,
-    adminSetTrackVideo,
+    adminSetTrackVideo, trackOverridesList, removeTrackOverride, loadModerationQueue,
   } = useStore();
 
   const iAmAdmin = isStaff(session?.role); // full access; mods get a subset
   const [tab, setTab] = useState(iAmAdmin ? "overview" : "reports");
   // Draft "correct link" per wrong-version track report.
   const [trackFix, setTrackFix] = useState({});
+  // Current song pins, live from the server (never trusts a login-time cache).
+  const [pins, setPins] = useState([]);
+  const refreshPins = () => trackOverridesList().then(setPins);
+  // The moderation queue is server-authoritative: re-pull it whenever a
+  // moderation tab opens so reports survive refreshes and other devices' work.
+  useEffect(() => {
+    if (tab === "reports" || tab === "songs") loadModerationQueue();
+    if (tab === "songs") refreshPins();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
   const [q, setQ] = useState("");
 
   // Pull EVERY signup (incl. banned) from the server so the console shows real
@@ -218,6 +228,9 @@ export default function AdminScreen({ onClose }) {
 
   const pending = requests.filter((r) => r.status === "pending");
   const openReports = reports.filter((r) => r.status === "open");
+  // Song reports get their own tab; content reports keep the classic queue.
+  const trackReports = openReports.filter((r) => r.targetType === "track");
+  const contentReports = openReports.filter((r) => r.targetType !== "track");
   const userFor = (id) => users.find((u) => u.id === id);
   const logFor = (id) => feed.find((l) => l.id === id);
   const bannedCount = users.filter((u) => u.isBanned).length;
@@ -238,7 +251,8 @@ export default function AdminScreen({ onClose }) {
 
   const TABS = [
     { key: "overview", label: "Overview", icon: "discover", admin: true },
-    { key: "reports", label: "Reports", icon: "flag", badge: openReports.length },
+    { key: "reports", label: "Reports", icon: "flag", badge: contentReports.length },
+    { key: "songs", label: "Songs", icon: "music", badge: trackReports.length || undefined },
     { key: "members", label: "Members", icon: "you", badge: bannedCount || undefined },
     { key: "content", label: "Content", icon: "feed" },
     { key: "catalog", label: "Catalog", icon: "music", admin: true },
@@ -296,45 +310,8 @@ export default function AdminScreen({ onClose }) {
         {tab === "reports" && (
           <>
             <Text style={styles.policy}>Content is public on post; the community reports it and you act here. Removing hides it from everyone but staff.</Text>
-            {openReports.length === 0 && <Text style={styles.empty}>No open reports.</Text>}
-            {openReports.map((r) => {
-              // Wrong-song-version reports carry the song identity (and often
-              // the correct link) in the reason payload; pin it in one tap.
-              if (r.targetType === "track") {
-                let t = {}; try { t = JSON.parse(r.reason || "{}"); } catch {}
-                const reporter = userFor(r.reporterId);
-                const draft = trackFix[r.id] ?? (t.suggestedVideoId ? `https://www.youtube.com/watch?v=${t.suggestedVideoId}` : "");
-                return (
-                  <View key={r.id} style={styles.card}>
-                    <View style={styles.reasonRow}>
-                      <Icon name="music" size={14} color={colors.gold} />
-                      <Text style={styles.reason}>wrong song version</Text>
-                    </View>
-                    <Text style={styles.artist}>{t.title || r.targetId}{t.artist ? ` · ${t.artist}` : ""}</Text>
-                    <Text style={styles.sub}>reported by {reporter ? `@${reporter.handle}` : "a user"}{t.note ? ` · "${t.note}"` : ""}{t.suggestedVideoId ? " · suggested a link" : ""}</Text>
-                    <TextInput
-                      style={styles.trackFixInput}
-                      placeholder="Correct YouTube link"
-                      placeholderTextColor={colors.textFaint}
-                      value={draft}
-                      onChangeText={(v) => setTrackFix((m) => ({ ...m, [r.id]: v }))}
-                      autoCapitalize="none"
-                      autoCorrect={false}
-                    />
-                    <View style={styles.actions}>
-                      <Pressable style={[styles.btn, styles.trackPin]} onPress={async () => { const res = await adminSetTrackVideo({ title: t.title || r.targetId, artist: t.artist || "", url: draft }); if (res.ok) dismissReport(r.id); }}>
-                        <Icon name="check" size={15} color={colors.good} /><Text style={[styles.dismissTxt, { color: colors.good }]}>Pin this video</Text>
-                      </Pressable>
-                      <Pressable style={[styles.btn, styles.suspend]} onPress={async () => { const res = await adminSetTrackVideo({ title: t.title || r.targetId, artist: t.artist || "", none: true }); if (res.ok) dismissReport(r.id); }}>
-                        <Icon name="x" size={14} color={colors.gold} /><Text style={[styles.dismissTxt, { color: colors.gold }]}>No correct video</Text>
-                      </Pressable>
-                      <Pressable style={[styles.btn, styles.reject]} onPress={() => dismissReport(r.id)}>
-                        <Text style={styles.dismissTxt}>Dismiss</Text>
-                      </Pressable>
-                    </View>
-                  </View>
-                );
-              }
+            {contentReports.length === 0 && <Text style={styles.empty}>No open reports.</Text>}
+            {contentReports.map((r) => {
               const log = logFor(r.targetId);
               const reporter = userFor(r.reporterId);
               return (
@@ -366,6 +343,66 @@ export default function AdminScreen({ onClose }) {
                 </View>
               );
             })}
+          </>
+        )}
+
+        {/* ---- SONGS: wrong-version reports + every pinned video ---- */}
+        {tab === "songs" && (
+          <>
+            <Text style={styles.policy}>Listeners flag songs whose video is the wrong version (lyrics, karaoke, remix, wrong artist). Pin the correct YouTube link and every future play uses it; pins beat the search resolver permanently.</Text>
+
+            <Text style={styles.catTitle}>WRONG-VERSION REPORTS · {trackReports.length}</Text>
+            {trackReports.length === 0 && <Text style={styles.empty}>No open song reports.</Text>}
+            {trackReports.map((r) => {
+              let t = {}; try { t = JSON.parse(r.reason || "{}"); } catch {}
+              const reporter = userFor(r.reporterId);
+              const draft = trackFix[r.id] ?? (t.suggestedVideoId ? `https://www.youtube.com/watch?v=${t.suggestedVideoId}` : "");
+              return (
+                <View key={r.id} style={styles.card}>
+                  <View style={styles.reasonRow}>
+                    <Icon name="music" size={14} color={colors.gold} />
+                    <Text style={styles.reason}>wrong song version</Text>
+                  </View>
+                  <Text style={styles.artist}>{t.title || r.targetId}{t.artist ? ` · ${t.artist}` : ""}</Text>
+                  <Text style={styles.sub}>reported by {reporter ? `@${reporter.handle}` : "a user"}{t.note ? ` · "${t.note}"` : ""}{t.suggestedVideoId ? " · suggested a link" : ""}</Text>
+                  <TextInput
+                    style={styles.trackFixInput}
+                    placeholder="Correct YouTube link"
+                    placeholderTextColor={colors.textFaint}
+                    value={draft}
+                    onChangeText={(v) => setTrackFix((m) => ({ ...m, [r.id]: v }))}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
+                  <View style={styles.actions}>
+                    <Pressable style={[styles.btn, styles.trackPin]} onPress={async () => { const res = await adminSetTrackVideo({ title: t.title || r.targetId, artist: t.artist || "", url: draft }); if (res.ok) { dismissReport(r.id); refreshPins(); } }}>
+                      <Icon name="check" size={15} color={colors.good} /><Text style={[styles.dismissTxt, { color: colors.good }]}>Pin this video</Text>
+                    </Pressable>
+                    <Pressable style={[styles.btn, styles.suspend]} onPress={async () => { const res = await adminSetTrackVideo({ title: t.title || r.targetId, artist: t.artist || "", none: true }); if (res.ok) { dismissReport(r.id); refreshPins(); } }}>
+                      <Icon name="x" size={14} color={colors.gold} /><Text style={[styles.dismissTxt, { color: colors.gold }]}>No correct video</Text>
+                    </Pressable>
+                    <Pressable style={[styles.btn, styles.reject]} onPress={() => dismissReport(r.id)}>
+                      <Text style={styles.dismissTxt}>Dismiss</Text>
+                    </Pressable>
+                  </View>
+                </View>
+              );
+            })}
+
+            <Text style={styles.catTitle}>PINNED LINKS · {pins.length}</Text>
+            <Text style={styles.catHint}>Every song with a human-verified video (or a confirmed "no correct video"). Unpinning hands the song back to the search resolver.</Text>
+            {pins.length === 0 && <Text style={styles.empty}>Nothing pinned yet.</Text>}
+            {pins.map((p) => (
+              <View key={p.key} style={styles.pinRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.pinTitle} numberOfLines={1}>{p.title}{p.artist ? ` · ${p.artist}` : ""}</Text>
+                  <Text style={styles.pinSub} numberOfLines={1}>{p.videoId ? `youtube.com/watch?v=${p.videoId}` : "confirmed: no correct video (plays preview)"}</Text>
+                </View>
+                <Pressable style={styles.pinRemove} onPress={async () => { const res = await removeTrackOverride({ title: p.title, artist: p.artist }); if (res.ok) refreshPins(); }} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Unpin ${p.title}`}>
+                  <Icon name="x" size={13} color={colors.textDim} />
+                </Pressable>
+              </View>
+            ))}
           </>
         )}
 
@@ -694,6 +731,10 @@ const styles = StyleSheet.create({
   suspend: { borderColor: colors.gold, backgroundColor: "rgba(232,182,90,0.08)" },
   trackPin: { borderColor: colors.good, backgroundColor: "rgba(111,207,151,0.08)" },
   trackFixInput: { backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line, borderRadius: radius.sm, color: colors.text, fontSize: 12.5, paddingHorizontal: 10, paddingVertical: 8, marginTop: 10 },
+  pinRow: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: colors.surface, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.lineSoft, paddingHorizontal: 12, paddingVertical: 10, marginBottom: 7 },
+  pinTitle: { color: colors.text, fontSize: 13, fontWeight: "700" },
+  pinSub: { color: colors.textDim, fontFamily: mono, fontSize: 11, marginTop: 2 },
+  pinRemove: { width: 30, height: 30, borderRadius: 15, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
   approve: { borderColor: colors.good, backgroundColor: colors.good },
   approveTxt: { color: "#0C1A0F", fontSize: 13, fontWeight: "800" },
   rejectTxt: { color: colors.danger, fontSize: 13, fontWeight: "700" },
