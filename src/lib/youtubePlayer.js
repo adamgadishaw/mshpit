@@ -3,11 +3,11 @@ import { Platform } from "react-native";
 
 // YouTube IFrame Player wrapper. Plays the FULL song/video for everyone with no
 // account and no Premium (the reason we moved off Spotify). The player lives in a
-// single, body-appended FLOATING WINDOW so React Native's DOM never reparents or
-// reloads it mid-song — the video keeps playing while you move around the app.
-// The window is a real pop-up: draggable by its header, minimizable to audio-only,
-// and closable, with its own prev / play / next controls. Our top bar drives the
-// same player, so the two stay in sync.
+// single, body-appended window DOCKED bottom-left (the space the left rail
+// reserves for it) so React Native's DOM never reparents it mid-song. YouTube's
+// API terms forbid hidden/background playback, so there is no audio-only mode:
+// the video is visible whenever it plays, and closing the window pauses it.
+// The dock has its own prev / play / next; the top bar drives the same player.
 const web = Platform.OS === "web" && typeof window !== "undefined";
 
 let apiPromise = null;
@@ -40,7 +40,7 @@ function loadApi() {
   return apiPromise;
 }
 
-const WIN_W = () => Math.min(320, (web ? window.innerWidth : 360) - 24);
+const WIN_W = () => Math.min(356, (web ? window.innerWidth : 380) - 24); // 356x200: above YouTube's 200px minimum player size
 const VID_H = (w) => Math.round((w * 9) / 16); // 16:9
 
 // Small media-control SVGs (no emoji — matches the app's hand-drawn icon set).
@@ -62,17 +62,14 @@ function injectStyleOnce() {
   .pit-ytwin{position:fixed;z-index:90;background:#14171f;border:1px solid #2a2f3a;border-radius:14px;box-shadow:0 18px 44px rgba(0,0,0,.55);overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;opacity:0;pointer-events:none;transition:opacity .16s ease;}
   .pit-ytwin.on{opacity:1;pointer-events:auto;}
   .pit-ytwin-head{display:flex;align-items:center;gap:8px;padding:8px 8px 8px 11px;background:#1b1f28;border-bottom:1px solid #2a2f3a;cursor:grab;user-select:none;}
-  .pit-ytwin-head:active{cursor:grabbing;}
-  .pit-ytwin.collapsed .pit-ytwin-head{cursor:pointer;border-bottom:none;}
+  .pit-ytwin-head:active{cursor:grabbing;}
   .pit-ytwin-dot{width:8px;height:8px;border-radius:4px;background:#f2a65a;box-shadow:0 0 8px rgba(242,166,90,.9);flex:none;}
   .pit-ytwin-title{flex:1;color:#eaecef;font-size:12.5px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
   .pit-ytwin-btn{width:26px;height:26px;border:none;border-radius:7px;background:transparent;color:#aeb4bf;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;}
   .pit-ytwin-btn:hover{background:#2a2f3a;color:#fff;}
-  .pit-ytwin-video{width:100%;background:#000;overflow:hidden;transition:height .18s ease;}
-  .pit-ytwin.collapsed .pit-ytwin-video{height:0 !important;}
+  .pit-ytwin-video{width:100%;background:#000;overflow:hidden;transition:height .18s ease;}
   .pit-ytwin-video iframe{width:100%;border:0;display:block;}
-  .pit-ytwin-ctrls{display:flex;align-items:center;justify-content:center;gap:16px;padding:8px;background:#1b1f28;border-top:1px solid #2a2f3a;}
-  .pit-ytwin.collapsed .pit-ytwin-ctrls{display:none;}
+  .pit-ytwin-ctrls{display:flex;align-items:center;justify-content:center;gap:16px;padding:8px;background:#1b1f28;border-top:1px solid #2a2f3a;}
   .pit-ytwin-c{border:none;background:transparent;color:#eaecef;cursor:pointer;width:36px;height:32px;border-radius:9px;display:flex;align-items:center;justify-content:center;padding:0;}
   .pit-ytwin-c:hover{background:#2a2f3a;}
   .pit-ytwin-play{background:#f2a65a;color:#1a1206;}
@@ -99,8 +96,7 @@ export function useYouTubePlayer(enabled) {
   const wantPlayRef = useRef(false); // a pending "should be playing" intent, survives the autoplay block
   const handlersRef = useRef({}); // { onPrev, onNext, onClose }
   const metaRef = useRef({ title: "" });
-  const shownRef = useRef(false);
-  const collapsedRef = useRef(false);
+  const shownRef = useRef(false);
   const applyRef = useRef(() => {});
 
   useEffect(() => {
@@ -118,12 +114,14 @@ export function useYouTubePlayer(enabled) {
       win.id = "pit-yt-window";
       const w = WIN_W(), vh = VID_H(w);
       win.style.width = w + "px";
+      // NO minimize-to-audio button: YouTube's API terms prohibit playing the
+      // audio with the video hidden, so the player has exactly two states -
+      // visible and playing, or closed and paused.
       win.innerHTML =
         '<div class="pit-ytwin-head" id="pit-ytwin-head">' +
           '<span class="pit-ytwin-dot"></span>' +
           '<span class="pit-ytwin-title" id="pit-ytwin-title">Now playing</span>' +
-          '<button class="pit-ytwin-btn" id="pit-ytwin-min" title="Minimize to audio" aria-label="Minimize video">' + SVG.min + '</button>' +
-          '<button class="pit-ytwin-btn" id="pit-ytwin-close" title="Hide video" aria-label="Hide video">' + SVG.close + '</button>' +
+          '<button class="pit-ytwin-btn" id="pit-ytwin-close" title="Close video (pauses playback)" aria-label="Close video, pauses playback">' + SVG.close + '</button>' +
         '</div>' +
         '<div class="pit-ytwin-video" id="pit-ytwin-video" style="height:' + vh + 'px"><div id="pit-yt-player"></div></div>' +
         '<div class="pit-ytwin-ctrls">' +
@@ -134,59 +132,27 @@ export function useYouTubePlayer(enabled) {
       document.body.appendChild(win);
 
       const $ = (id) => win.querySelector("#" + id);
-      const head = $("pit-ytwin-head"), video = $("pit-ytwin-video"), minBtn = $("pit-ytwin-min");
       if (metaRef.current.title) $("pit-ytwin-title").textContent = metaRef.current.title; // apply any title set before the window existed
 
-      // Position: restored or default bottom-right.
-      const winH = () => head.offsetHeight + (collapsedRef.current ? 0 : vh + 50);
-      const startPos = loadPos() || { x: window.innerWidth - w - 16, y: window.innerHeight - vh - 130 };
-      let pos = clampPos(startPos.x, startPos.y, w, winH());
+      // Docked bottom-left, in the space the left rail reserves for it (the old
+      // DISCOVER shortcut list). Fixed dock, no dragging: the player always
+      // lives in the same visible spot while anything plays.
+      win.style.left = "16px";
+      win.style.bottom = "16px";
+      win.style.top = "auto";
 
       const apply = () => {
         win.classList.toggle("on", shownRef.current);
-        win.classList.toggle("collapsed", collapsedRef.current);
         win.setAttribute("aria-hidden", shownRef.current ? "false" : "true");
         if ("inert" in win) win.inert = !shownRef.current;
-        // Collapse by shrinking the WINDOW to its header (its overflow:hidden clips
-        // the video + controls). The iframe stays rendered underneath, so audio keeps
-        // playing while minimized. (Setting the video wrapper's own height is ignored
-        // under react-native-web's global styles, so we clip at the window instead.)
-        win.style.height = collapsedRef.current ? head.offsetHeight + "px" : "";
-        minBtn.innerHTML = collapsedRef.current ? SVG.expand : SVG.min;
-        minBtn.title = collapsedRef.current ? "Show video" : "Minimize to audio";
-        pos = clampPos(pos.x, pos.y, w, winH());
-        win.style.left = pos.x + "px";
-        win.style.top = pos.y + "px";
       };
       applyRef.current = apply;
       apply();
 
-      // Drag by the header (but not when clicking a header button).
-      let dragging = false, dx = 0, dy = 0;
-      const onDown = (ev) => {
-        if (ev.target.closest("button")) return;
-        if (collapsedRef.current) return; // header acts as expand toggle when collapsed
-        dragging = true; dx = ev.clientX - pos.x; dy = ev.clientY - pos.y;
-        video.style.pointerEvents = "none"; // let the drag cross over the iframe
-        window.addEventListener("mousemove", onMove);
-        window.addEventListener("mouseup", onUp);
-        ev.preventDefault();
-      };
-      const onMove = (ev) => { if (!dragging) return; pos = clampPos(ev.clientX - dx, ev.clientY - dy, w, winH()); win.style.left = pos.x + "px"; win.style.top = pos.y + "px"; };
-      const onUp = () => { dragging = false; video.style.pointerEvents = ""; savePos(pos); window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
-      head.addEventListener("mousedown", onDown);
-      // Tapping the header while collapsed expands it back.
-      head.addEventListener("click", (ev) => { if (collapsedRef.current && !ev.target.closest("button")) { collapsedRef.current = false; apply(); } });
-
-      const toggleCollapse = () => { collapsedRef.current = !collapsedRef.current; apply(); };
-      minBtn.addEventListener("click", toggleCollapse);
       $("pit-ytwin-close").addEventListener("click", () => { (handlersRef.current.onClose || (() => { shownRef.current = false; apply(); }))(); });
       $("pit-ytwin-prev").addEventListener("click", () => handlersRef.current.onPrev && handlersRef.current.onPrev());
       $("pit-ytwin-next").addEventListener("click", () => handlersRef.current.onNext && handlersRef.current.onNext());
       $("pit-ytwin-play").addEventListener("click", () => { const p = playerRef.current; if (!p || !p.getPlayerState) return; try { (p.getPlayerState() === 1 ? p.pauseVideo() : p.playVideo()); } catch {} });
-
-      const reclamp = () => { pos = clampPos(pos.x, pos.y, w, winH()); win.style.left = pos.x + "px"; win.style.top = pos.y + "px"; };
-      window.addEventListener("resize", reclamp);
 
       let playerInitFailed = false;
       const playerReadyTimeout = setTimeout(() => {
@@ -195,9 +161,6 @@ export function useYouTubePlayer(enabled) {
       }, 12000);
       cleanupDom = () => {
         clearTimeout(playerReadyTimeout);
-        window.removeEventListener("resize", reclamp);
-        head.removeEventListener("mousedown", onDown);
-        onUp();
         try { win.remove(); } catch {}
       };
       const player = new YT.Player("pit-yt-player", {

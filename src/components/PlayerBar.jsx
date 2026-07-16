@@ -226,7 +226,7 @@ export default function PlayerBar({ player, onClose, onIndex, onPlayAt, onRemove
   // Keep the window's title current and wire its prev / next / close buttons to the
   // same queue the top bar drives, so the pop-out player is fully in sync.
   useEffect(() => { yt.setMeta({ title: cur ? (cur.title || cur.artist || "Now playing") : "Now playing" }); }, [curKey]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { yt.setControls({ onPrev: () => onIndex?.(index - 1), onNext: () => onIndex?.(index + 1), onClose: () => setShowVideo(false) }); }); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { yt.setControls({ onPrev: () => onIndex?.(index - 1), onNext: () => onIndex?.(index + 1), onClose: () => { yt.pause(); setShowVideo(false); } }); }); // eslint-disable-line react-hooks/exhaustive-deps
 
   const [open, setOpen] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -290,7 +290,7 @@ export default function PlayerBar({ player, onClose, onIndex, onPlayAt, onRemove
   const durMs = ytActive ? (yt.state.duration || 0) : audio.dur * 1000;
   posRef.current = posMs;
   const playing = ytActive ? yt.state.playing : audio.playing;
-  const playPause = () => { if (ytActive) yt.toggle(); else if (previewSrc) audio.toggle(); };
+  const playPause = () => { if (ytActive) { if (!yt.state.playing) setShowVideo(true); yt.toggle(); } else if (previewSrc) audio.toggle(); };
   const onSeek = (ms) => { if (ytActive) yt.seek(ms); else audio.seek(ms / 1000); };
   const goPrev = () => onIndex?.(index - 1);
   const goNext = () => onIndex?.(index + 1);
@@ -336,7 +336,7 @@ export default function PlayerBar({ player, onClose, onIndex, onPlayAt, onRemove
           </Pressable>
         )}
         {ytActive && (
-          <Pressable style={[styles.queueBtn, showVideo && styles.queueBtnOn]} onPress={() => setShowVideo((v) => !v)} hitSlop={6} accessibilityRole="button" accessibilityState={{ selected: showVideo }} accessibilityLabel={showVideo ? "Hide video" : "Show video"}>
+          <Pressable style={[styles.queueBtn, showVideo && styles.queueBtnOn]} onPress={() => setShowVideo((v) => { if (v) yt.pause(); return !v; })} hitSlop={6} accessibilityRole="button" accessibilityState={{ selected: showVideo }} accessibilityLabel={showVideo ? "Hide video" : "Show video"}>
             <Icon name="play" size={12} color={showVideo ? colors.amber : colors.textDim} />
             <Text style={[styles.queueTxt, showVideo && { color: colors.amber }]}>{showVideo ? "Video" : "Video"}</Text>
           </Pressable>

@@ -63,14 +63,12 @@ export function LeftRail({ tab, setTab, session, unread = 0, notifUnread = 0, on
         <Text style={styles.logTxt}>Make a post</Text>
       </Pressable>
 
-      <View style={styles.divider} />
-      <Text style={styles.railLabel}>DISCOVER</Text>
-      <Link icon="pin" label="Near you" onPress={onNearby} />
-      <Link icon="search" label="Find venues" onPress={onFindVenues} />
-      <Link icon="comment" label="Fan clubs" onPress={onFanClubs} />
-      <Link icon="trophy" label="Best rated" onPress={onTopRated} />
-      <Link icon="bell" label="Activity" badge={notifUnread} onPress={onActivity} />
-      <Link icon="mail" label="Inbox" badge={unread} onPress={onInbox} />
+      {/* The lower-left rail is deliberately EMPTY below this point: it's the
+          reserved dock for the YouTube player window (src/lib/youtubePlayer.js
+          pins itself bottom-left). YouTube's API terms require the video to be
+          visible whenever it's playing, so the player owns this space instead
+          of the old DISCOVER shortcut list (those all live elsewhere: Discover
+          tab, Search, and the top-bar Activity/Inbox buttons). */}
     </View>
   );
 }

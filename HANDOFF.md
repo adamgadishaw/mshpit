@@ -165,6 +165,20 @@ Validation: `npm test` passes with no env, AND with `PIT_DATA_DIR` pointing at a
 nonexistent drive (both 45/45); full `npm run check` green including the web
 export; no temp dirs left behind.
 
+## YouTube player docked + ToS compliance (2026-07-16, Claude)
+
+The left rail's DISCOVER shortcut list is gone (all destinations exist
+elsewhere); that bottom-left space is now the permanent dock for the YouTube
+player window. Compliance drove the design: YouTube's API terms prohibit
+hidden/background playback, so the minimize-to-audio mode was REMOVED, hiding
+the video (window close or the bar's Video toggle) now PAUSES playback, and
+pressing play always re-shows the dock first. Player bumped to 356x200, above
+YouTube's 200px minimum player size. Do not reintroduce any state where audio
+plays with the video hidden.
+
+Validation: npm run check green (46 tests, web export).
+
+
 ## Song flags on every row + video autoplay fix (2026-07-16, Claude)
 
 Two owner-reported bugs. (1) The wrong-version flag only existed on POPULAR
