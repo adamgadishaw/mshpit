@@ -7,7 +7,7 @@ import Icon from "../components/Icon";
 
 const PAGE = 8; // load the feed in pages, like the big apps - never all at once
 
-export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, homeCity, unread = 0, notifUnread = 0, newUser = false, onLoadMore, hasMore = false, loadingMore = false, onOpen, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onReport, onEdit, onLogShow, onEditProfile }) {
+export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, homeCity, unread = 0, notifUnread = 0, newUser = false, hideHeaderActions = false, onLoadMore, hasMore = false, loadingMore = false, onOpen, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onReport, onEdit, onLogShow, onEditProfile }) {
   const [filter, setFilter] = useState("everyone"); // following | local | everyone
   const [count, setCount] = useState(PAGE);
   const [gsDone, setGsDone] = useState(() => load("pit.gsDismissed", false));
@@ -38,7 +38,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, h
         <View style={styles.head}>
           <View style={styles.wordmarkRow}>
             <Text style={styles.wordmark}>PIT</Text>
-            <View style={styles.headerBtns}>
+            {!hideHeaderActions && <View style={styles.headerBtns}>
               <Pressable style={styles.inboxBtn} onPress={onOpenNotifications} hitSlop={8} accessibilityRole="button" accessibilityLabel={notifUnread > 0 ? `Activity, ${notifUnread} new` : "Activity"}>
                 <Icon name="bell" size={22} color={colors.text} />
                 {notifUnread > 0 && <View style={styles.inboxBadge}><Text style={styles.inboxBadgeTxt}>{notifUnread}</Text></View>}
@@ -50,7 +50,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, h
               <Pressable style={styles.inboxBtn} onPress={onOpenMenu} hitSlop={8} accessibilityRole="button" accessibilityLabel="Menu">
                 <Icon name="menu" size={22} color={colors.text} />
               </Pressable>
-            </View>
+            </View>}
           </View>
           <Text style={styles.tag}>shows worth seeing, from people you trust</Text>
 

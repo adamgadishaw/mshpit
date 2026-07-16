@@ -456,7 +456,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
             {disco.albums.map((al) => {
               const ar = albumRating(a.name, al.title);
               const open = openAlbum === al.id;
-              const playable = (al.tracks || []).some((t) => t.preview);
+              const playable = (al.tracks || []).some((t) => t?.title);
               const top = topTrackOf(al);
               return (
                 <View key={al.id} style={styles.discAlbum}>
@@ -487,7 +487,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
                     return (
                       <View key={ti}>
                         <View style={styles.discTrack}>
-                          <Pressable style={styles.discTrackMain} onPress={() => (t.preview ? playAlbum(al, t.title) : playTrack(t, al.cover))} accessibilityRole="button" accessibilityLabel={`Play ${t.title} from here`}>
+                          <Pressable style={styles.discTrackMain} onPress={() => playAlbum(al, t.title)} accessibilityRole="button" accessibilityLabel={`Play ${t.title} from here`}>
                             <Text style={styles.discTrackNo}>{ti + 1}</Text>
                             <View style={{ flex: 1 }}>
                               <View style={styles.discTrackTitleRow}>

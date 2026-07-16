@@ -11,6 +11,7 @@ import TicketStub from "../components/TicketStub";
 import { BadgeRow } from "../components/Badge";
 import { ACHIEVEMENTS } from "../lib/badges";
 import { showDateMs, fmtCountdown } from "../lib/showTime";
+import { trackKey } from "../lib/playback";
 
 function Stat({ value, label, onPress }) {
   return (
@@ -105,7 +106,7 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtis
   const logs = logsByUser(user.id);
   const isSelf = session?.id === user.id;
   // Play a saved playlist: first track opens the bar with the whole list queued.
-  const playPlaylist = (pl) => { const q = (pl.tracks || []).filter((t) => t.url || t.preview); if (q.length) onPlay?.(q[0], q); };
+  const playPlaylist = (pl) => { const q = (pl.tracks || []).filter((t) => !!trackKey(t)); if (q.length) onPlay?.(q[0], q); };
   // "Crossed paths", shows you've both been to (and artists you've both seen).
   const crossed = !isSelf && session ? sharedShows(user.id) : { shows: [], artists: [] };
 

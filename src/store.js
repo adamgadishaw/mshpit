@@ -10,6 +10,7 @@ import { artistMeta } from "./seed/ingested";
 import { ACHIEVEMENTS } from "./lib/badges";
 import { ENABLE_DEMO_DATA } from "./config/runtime.mjs";
 import { isUpcomingEventDate, sanitizePersistedStoreValue, sanitizeTourDates } from "./domain/dataPolicy.mjs";
+import { trackKey } from "./lib/playback";
 
 // Legacy client facade: combines server hydration, small persisted caches, social
 // state, and compatibility data behind one screen-facing shape. Server responses
@@ -715,9 +716,9 @@ export function StoreProvider({ children }) {
   // Listening history: log every song played (the framework for "listening now",
   // playlists, and taste snapshots). Skips consecutive repeats, caps at 200.
   const recordPlay = (t) => {
-    if (!t || (!t.url && !t.id && !t.preview)) return;
-    const key = t.url || t.id || t.preview;
-    setPlayHistory((h) => (h[0] && (h[0].url || h[0].id || h[0].preview) === key ? h : [{ title: t.title, artist: t.artist, url: t.url, id: t.id, preview: t.preview || null, art: t.art || null, at: Date.now() }, ...h].slice(0, 200)));
+    const key = trackKey(t);
+    if (!key) return;
+    setPlayHistory((h) => (h[0] && trackKey(h[0]) === key ? h : [{ title: t.title, artist: t.artist, url: t.url, id: t.id, preview: t.preview || null, art: t.art || null, at: Date.now() }, ...h].slice(0, 200)));
     track("play", { artist: t.artist, title: t.title }); // analytics signal
     // Cross-device history + "friends listening" (best-effort, offline keeps local).
     if (session) api("/api/plays", { method: "POST", body: { title: t.title, artist: t.artist, url: t.url || null, art: t.art || null } }).catch(() => {});
@@ -806,7 +807,7 @@ export function StoreProvider({ children }) {
   // Snapshot a listening session (queue) into a saved playlist seed that shows on
   // the profile and can be resumed.
   const saveSnapshot = (tracks, name) => {
-    const list = (tracks || []).filter((t) => t && (t.url || t.id || t.preview));
+    const list = (tracks || []).filter((t) => !!trackKey(t));
     if (!list.length) return null;
     const snap = { id: "snap_" + Date.now(), name: name || `Session ${new Date().toLocaleDateString()}`, tracks: list, at: Date.now(), by: session?.id || null };
     setSnapshots((s) => [snap, ...s].slice(0, 50));

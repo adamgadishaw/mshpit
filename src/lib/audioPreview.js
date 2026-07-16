@@ -8,10 +8,12 @@ import { Platform } from "react-native";
 // tracks) still takes priority when a listener has linked a Premium account.
 const web = Platform.OS === "web" && typeof window !== "undefined";
 
-export function useAudioPreview(src, { enabled = true, onEnded, startAt = 0, volume = 1 } = {}) {
+export function useAudioPreview(src, { enabled = true, onEnded, onStarted, startAt = 0, volume = 1 } = {}) {
   const audioRef = useRef(null);
   const endedRef = useRef(onEnded);
   endedRef.current = onEnded;
+  const startedRef = useRef(onStarted);
+  startedRef.current = onStarted;
   const startRef = useRef(startAt); // where to resume this src (survives a reload)
   startRef.current = startAt;
   const [pos, setPos] = useState(0);
@@ -30,7 +32,7 @@ export function useAudioPreview(src, { enabled = true, onEnded, startAt = 0, vol
     // bar isn't re-rendering on every tick (that was a real lag source).
     const onTime = () => { const t = a.currentTime || 0; if (Math.abs(t - lastPos.current) >= 0.28) { lastPos.current = t; setPos(t); } };
     const onMeta = () => setDur(isFinite(a.duration) ? a.duration : 0);
-    const onPlay = () => { setPlaying(true); setError(null); };
+    const onPlay = () => { setPlaying(true); setError(null); startedRef.current?.(); };
     const onPause = () => setPlaying(false);
     const onEnd = () => { setPlaying(false); endedRef.current && endedRef.current(); };
     const onError = () => { setPlaying(false); setError({ kind: "playback", code: a.error?.code || 0 }); };
@@ -79,6 +81,11 @@ export function useAudioPreview(src, { enabled = true, onEnded, startAt = 0, vol
     if (!a) return;
     if (a.paused) a.play().catch((reason) => setError({ kind: reason?.name === "NotAllowedError" ? "permission" : "playback" })); else a.pause();
   };
+  const pause = () => {
+    const a = audioRef.current;
+    if (!a) return;
+    try { a.pause(); } catch {}
+  };
   const seek = (sec) => {
     const a = audioRef.current;
     if (!a || !isFinite(sec)) return;
@@ -86,5 +93,5 @@ export function useAudioPreview(src, { enabled = true, onEnded, startAt = 0, vol
   };
   // Keep the element's volume in sync when the caller changes it live.
   useEffect(() => { const a = audioRef.current; if (a) { try { a.volume = Math.max(0, Math.min(1, volume)); } catch {} } }, [volume]);
-  return { pos, dur, playing, error, toggle, seek };
+  return { pos, dur, playing, error, toggle, pause, seek };
 }

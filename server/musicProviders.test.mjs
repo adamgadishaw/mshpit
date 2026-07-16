@@ -90,12 +90,12 @@ test("preview cache expiry never outlives the provider signature or five minutes
   assert.equal(playbackUrlExpiry("https://preview.example/no-exp.mp3", now), now);
 });
 
-function youtubeCandidate(id, title, channel, { embeddable = true, licensed = true, duration = "PT3M30S", views = "1000000" } = {}) {
+function youtubeCandidate(id, title, channel, { embeddable = true, madeForKids = false, licensed = true, duration = "PT3M30S", views = "1000000" } = {}) {
   return {
     id,
     snippet: { title, channelTitle: channel },
     contentDetails: { duration, licensedContent: licensed },
-    status: { embeddable, privacyStatus: "public" },
+    status: { embeddable, madeForKids, privacyStatus: "public" },
     statistics: { viewCount: views },
   };
 }
@@ -105,10 +105,12 @@ test("YouTube scoring strongly prefers official music over lyrics/karaoke and re
   const lyrics = scoreYouTubeCandidate(youtubeCandidate("lyrics0001", "Drake - Road Trips (Lyrics)", "Sound & Lyrics", { licensed: false }), { title: "Road Trips", artist: "Drake", expectedDurationSec: 210 });
   const karaoke = scoreYouTubeCandidate(youtubeCandidate("karaoke001", "Drake Road Trips Karaoke", "Karaoke Planet"), { title: "Road Trips", artist: "Drake" });
   const blocked = scoreYouTubeCandidate(youtubeCandidate("blocked001", "Drake - Road Trips", "Drake", { embeddable: false }), { title: "Road Trips", artist: "Drake" });
+  const childDirected = scoreYouTubeCandidate(youtubeCandidate("forkids0001", "Drake - Road Trips", "Drake", { madeForKids: true }), { title: "Road Trips", artist: "Drake" });
   assert.ok(official.score > lyrics.score);
   assert.equal(official.rejected, false);
   assert.equal(karaoke.rejected, true);
   assert.equal(blocked.rejected, true);
+  assert.equal(childDirected.rejected, true);
 });
 
 test("YouTube resolver scores multiple candidates, caches finitely, and excludes iframe failures", async () => {

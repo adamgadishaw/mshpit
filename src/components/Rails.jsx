@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Platform, View, Text, StyleSheet, Pressable, ScrollView } from "react-native";
-import { colors, displayFont, focusRing, font, mono, radius, shadow } from "../theme";
+import { colors, displayFont, focusRing, font, mono, radius, roleColor, shadow } from "../theme";
 import { useStore } from "../store";
 import Avatar from "./Avatar";
 import Icon from "./Icon";
@@ -12,8 +12,191 @@ const NAV = [
   { key: "you", label: "You", icon: "you" },
 ];
 
-// Left navigation rail (desktop). Mirrors the mobile tab bar + the menu's quick
-// links, so nothing is lost when the bottom bar is hidden on wide screens.
+function TopCountBadge({ count = 0 }) {
+  if (count <= 0) return null;
+  return (
+    <View style={styles.topCountBadge}>
+      <Text style={styles.topCountText}>{count > 99 ? "99+" : count}</Text>
+    </View>
+  );
+}
+
+function TopIconButton({ icon, label, count = 0, onPress }) {
+  return (
+    <Pressable
+      style={({ pressed, hovered, focused }) => [
+        styles.topIconButton,
+        hovered && styles.topControlHover,
+        pressed && styles.topControlPressed,
+        focused && focusRing,
+      ]}
+      onPress={onPress}
+      disabled={!onPress}
+      accessibilityRole="button"
+      accessibilityLabel={count > 0 ? `${label}, ${count} new` : label}
+      accessibilityState={{ disabled: !onPress }}
+      hitSlop={5}
+    >
+      <Icon name={icon} size={19} color={colors.textDim} />
+      <TopCountBadge count={count} />
+    </Pressable>
+  );
+}
+
+// Desktop's single global navigation surface. The app shell owns navigation
+// state; this component only presents it, so swapping pages never remounts the
+// persistent player column that sits beside the routed content.
+export function DesktopTopNav({
+  tab,
+  setTab,
+  session,
+  unread = 0,
+  notifUnread = 0,
+  compact = false,
+  onHome,
+  onLog,
+  onActivity,
+  onInbox,
+  onMenu,
+  onAccount,
+  onIntro,
+  onLogin,
+  onSignup,
+}) {
+  const selectTab = (key) => setTab?.(key);
+  const goHome = () => {
+    if (onHome) onHome();
+    else selectTab("feed");
+  };
+
+  return (
+    <View style={styles.desktopTopNav} accessibilityLabel="Primary navigation">
+      <Pressable
+        style={({ pressed, focused }) => [styles.topBrandButton, pressed && styles.topControlPressed, focused && focusRing]}
+        onPress={goHome}
+        accessibilityRole="button"
+        accessibilityLabel="Pit home"
+      >
+        <Text style={styles.topBrand}>PIT</Text>
+      </Pressable>
+
+      <View style={styles.topTabs} accessibilityRole="tablist">
+        {NAV.map((item) => {
+          const active = tab === item.key;
+          return (
+            <Pressable
+              key={item.key}
+              style={({ pressed, hovered, focused }) => [
+                styles.topTab,
+                active && styles.topTabActive,
+                hovered && !active && styles.topControlHover,
+                pressed && styles.topControlPressed,
+                focused && focusRing,
+              ]}
+              onPress={() => selectTab(item.key)}
+              accessibilityRole="tab"
+              accessibilityState={{ selected: active }}
+              accessibilityLabel={item.label}
+            >
+              <Icon name={item.icon} size={18} color={active ? colors.amber : colors.textDim} />
+              {!compact && <Text style={[styles.topTabText, active && styles.topTabTextActive]}>{item.label}</Text>}
+            </Pressable>
+          );
+        })}
+      </View>
+
+      <Pressable
+        style={({ pressed, hovered, focused }) => [
+          styles.topPostButton,
+          hovered && !pressed && styles.topPostHover,
+          pressed && styles.topPostPressed,
+          focused && focusRing,
+        ]}
+        onPress={onLog}
+        disabled={!onLog}
+        accessibilityRole="button"
+        accessibilityLabel="Make a post"
+        accessibilityState={{ disabled: !onLog }}
+      >
+        <Icon name="plus" size={17} color="#1A1206" strokeWidth={2.6} />
+        {!compact && <Text style={styles.topPostText}>Make a post</Text>}
+      </Pressable>
+
+      <View style={styles.topActions}>
+        <TopIconButton icon="bell" label="Activity" count={notifUnread} onPress={onActivity} />
+        <TopIconButton icon="mail" label="Inbox" count={unread} onPress={onInbox} />
+        <TopIconButton icon="menu" label="Menu" onPress={onMenu} />
+
+        {session ? (
+          <Pressable
+            style={({ pressed, hovered, focused }) => [
+              styles.topAccount,
+              hovered && styles.topControlHover,
+              pressed && styles.topControlPressed,
+              focused && focusRing,
+            ]}
+            onPress={onAccount}
+            disabled={!onAccount}
+            accessibilityRole="button"
+            accessibilityLabel={`Account menu for ${session.name || session.handle || "your account"}`}
+            accessibilityState={{ disabled: !onAccount }}
+          >
+            <Avatar user={session} size={30} />
+            {!compact && (
+              <View style={styles.topAccountCopy}>
+                <Text style={styles.topAccountName} numberOfLines={1}>{session.name}</Text>
+                <Text
+                  style={[styles.topAccountHandle, roleColor(session.role) && { color: roleColor(session.role), fontWeight: "800" }]}
+                  numberOfLines={1}
+                >
+                  @{session.handle}
+                </Text>
+              </View>
+            )}
+            <Icon name="chevron-down" size={14} color={colors.textDim} />
+          </Pressable>
+        ) : (
+          <View style={styles.topAuthActions}>
+            {!!onIntro && (
+              <Pressable
+                style={({ pressed, hovered, focused }) => [styles.topIntroButton, hovered && styles.topControlHover, pressed && styles.topControlPressed, focused && focusRing]}
+                onPress={onIntro}
+                accessibilityRole="button"
+                accessibilityLabel="Back to intro"
+              >
+                <Icon name="chevron-left" size={15} color={colors.textDim} />
+                {!compact && <Text style={styles.topIntroText}>Intro</Text>}
+              </Pressable>
+            )}
+            <Pressable
+              style={({ pressed, hovered, focused }) => [styles.topLoginButton, hovered && styles.topControlHover, pressed && styles.topControlPressed, focused && focusRing]}
+              onPress={onLogin}
+              disabled={!onLogin}
+              accessibilityRole="button"
+              accessibilityLabel="Log in"
+              accessibilityState={{ disabled: !onLogin }}
+            >
+              <Text style={styles.topLoginText}>Log in</Text>
+            </Pressable>
+            <Pressable
+              style={({ pressed, hovered, focused }) => [styles.topSignupButton, hovered && !pressed && styles.topPostHover, pressed && styles.topPostPressed, focused && focusRing]}
+              onPress={onSignup || onLogin}
+              disabled={!onSignup && !onLogin}
+              accessibilityRole="button"
+              accessibilityLabel="Sign up"
+              accessibilityState={{ disabled: !onSignup && !onLogin }}
+            >
+              <Text style={styles.topSignupText}>Sign up</Text>
+            </Pressable>
+          </View>
+        )}
+      </View>
+    </View>
+  );
+}
+
+// Legacy desktop rail retained for compatibility with older shells. App.js now
+// uses DesktopTopNav and the persistent player column instead.
 export function LeftRail({ tab, setTab, session, unread = 0, notifUnread = 0, onLog, onFindVenues, onFanClubs, onNearby, onTopRated, onInbox, onActivity, onProfile, onEditProfile, onLogin }) {
   const NavItem = ({ item }) => {
     const on = tab === item.key;
@@ -63,12 +246,6 @@ export function LeftRail({ tab, setTab, session, unread = 0, notifUnread = 0, on
         <Text style={styles.logTxt}>Make a post</Text>
       </Pressable>
 
-      {/* The lower-left rail is deliberately EMPTY below this point: it's the
-          reserved dock for the YouTube player window (src/lib/youtubePlayer.js
-          pins itself bottom-left). YouTube's API terms require the video to be
-          visible whenever it's playing, so the player owns this space instead
-          of the old DISCOVER shortcut list (those all live elsewhere: Discover
-          tab, Search, and the top-bar Activity/Inbox buttons). */}
     </View>
   );
 }
@@ -163,6 +340,99 @@ export function RightRail({ onOpenArtist, onOpenVenue, onFindVenues, onOpenEvent
 }
 
 const styles = StyleSheet.create({
+  // desktop global navigation
+  desktopTopNav: {
+    minHeight: 64,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    backgroundColor: colors.bgElev,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.lineSoft,
+  },
+  topBrandButton: { minWidth: 64, minHeight: 42, alignItems: "flex-start", justifyContent: "center", borderRadius: radius.sm, paddingHorizontal: 8 },
+  topBrand: { color: colors.amber, fontFamily: mono, fontSize: 22, fontWeight: "900", letterSpacing: 3 },
+  topTabs: { flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 4 },
+  topTab: {
+    minHeight: 40,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 7,
+    paddingHorizontal: 11,
+    paddingVertical: 8,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderColor: "transparent",
+    ...Platform.select({ web: { cursor: "pointer", transitionDuration: "110ms", transitionProperty: "background-color, border-color, transform" } }),
+  },
+  topTabActive: { backgroundColor: colors.surfaceAlt, borderColor: colors.line },
+  topTabText: { color: colors.textDim, fontFamily: font, fontSize: 13, fontWeight: "700" },
+  topTabTextActive: { color: colors.amber, fontFamily: displayFont, fontWeight: "800" },
+  topPostButton: {
+    minHeight: 40,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 7,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    backgroundColor: colors.amberStrong,
+    borderRadius: radius.pill,
+    borderWidth: 1,
+    borderBottomWidth: 3,
+    borderColor: colors.amber,
+    borderBottomColor: colors.accentEdge,
+    ...shadow.control,
+    ...Platform.select({ web: { cursor: "pointer", transitionDuration: "110ms", transitionProperty: "filter, transform, box-shadow" } }),
+  },
+  topPostHover: { transform: [{ translateY: -1 }], ...Platform.select({ web: { filter: "brightness(1.06)" } }) },
+  topPostPressed: { transform: [{ translateY: 2 }], boxShadow: "inset 0 1px 3px rgba(0,0,0,0.18)" },
+  topPostText: { color: "#1A1206", fontFamily: displayFont, fontSize: 13, fontWeight: "800" },
+  topActions: { flexDirection: "row", alignItems: "center", gap: 7, flexShrink: 0 },
+  topIconButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.line,
+    ...Platform.select({ web: { cursor: "pointer", transitionDuration: "110ms", transitionProperty: "background-color, transform" } }),
+  },
+  topCountBadge: { position: "absolute", top: -4, right: -4, minWidth: 18, height: 18, paddingHorizontal: 4, borderRadius: 9, alignItems: "center", justifyContent: "center", backgroundColor: colors.magenta, borderWidth: 2, borderColor: colors.bgElev },
+  topCountText: { color: "#FFFFFF", fontFamily: mono, fontSize: 9, fontWeight: "900", fontVariant: ["tabular-nums"] },
+  topControlHover: { backgroundColor: colors.surfaceAlt },
+  topControlPressed: { transform: [{ scale: 0.97 }], opacity: 0.9 },
+  topAccount: {
+    minHeight: 42,
+    maxWidth: 190,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 9,
+    paddingLeft: 5,
+    paddingRight: 10,
+    paddingVertical: 4,
+    borderRadius: radius.pill,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.line,
+    ...Platform.select({ web: { cursor: "pointer", transitionDuration: "110ms", transitionProperty: "background-color, transform" } }),
+  },
+  topAccountCopy: { minWidth: 0, maxWidth: 118 },
+  topAccountName: { color: colors.text, fontFamily: displayFont, fontSize: 12.5, fontWeight: "800" },
+  topAccountHandle: { color: colors.textDim, fontSize: 10.5, marginTop: 1 },
+  topAuthActions: { flexDirection: "row", alignItems: "center", gap: 7 },
+  topIntroButton: { minHeight: 40, flexDirection: "row", alignItems: "center", gap: 2, paddingHorizontal: 8, borderRadius: radius.pill },
+  topIntroText: { color: colors.textDim, fontFamily: font, fontSize: 13, fontWeight: "700" },
+  topLoginButton: { minHeight: 40, alignItems: "center", justifyContent: "center", paddingHorizontal: 13, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line },
+  topLoginText: { color: colors.text, fontFamily: displayFont, fontSize: 13, fontWeight: "800" },
+  topSignupButton: { minHeight: 40, alignItems: "center", justifyContent: "center", paddingHorizontal: 14, borderRadius: radius.pill, backgroundColor: colors.amberStrong, borderWidth: 1, borderBottomWidth: 3, borderColor: colors.amber, borderBottomColor: colors.accentEdge, ...shadow.control },
+  topSignupText: { color: "#1A1206", fontFamily: displayFont, fontSize: 13, fontWeight: "800" },
+
   // left rail
   left: { width: 200, flexGrow: 0, flexShrink: 0, flexBasis: 200, paddingHorizontal: 12, paddingVertical: 18, borderRightWidth: 1, borderRightColor: colors.lineSoft, gap: 6 },
   navItem: { flexDirection: "row", alignItems: "center", gap: 14, paddingVertical: 10, paddingHorizontal: 12, borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderBottomWidth: 3, borderColor: "transparent", ...Platform.select({ web: { cursor: "pointer", transitionDuration: "110ms", transitionProperty: "background-color, transform, box-shadow" } }) },

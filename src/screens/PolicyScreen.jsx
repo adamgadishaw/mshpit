@@ -1,4 +1,4 @@
-import { View, Text, StyleSheet, ScrollView } from "react-native";
+import { View, Text, StyleSheet, ScrollView, Pressable, Linking } from "react-native";
 import { colors, radius, mono } from "../theme";
 import SheetHeader from "../components/SheetHeader";
 
@@ -18,6 +18,20 @@ export default function PolicyScreen({ title, updated, intro, sections = [], onC
           <View key={i} style={styles.block}>
             <Text style={styles.h}>{i + 1}. {s.h}</Text>
             <Text style={styles.p}>{s.p}</Text>
+            {!!s.links?.length && (
+              <View style={styles.links}>
+                {s.links.map((link) => (
+                  <Pressable
+                    key={link.url}
+                    onPress={() => Linking.openURL(link.url).catch(() => {})}
+                    accessibilityRole="link"
+                    accessibilityLabel={link.label}
+                  >
+                    <Text style={styles.link}>{link.label} ↗</Text>
+                  </Pressable>
+                ))}
+              </View>
+            )}
           </View>
         ))}
         {!!note && (
@@ -38,6 +52,8 @@ const styles = StyleSheet.create({
   block: { marginTop: 18 },
   h: { color: colors.text, fontSize: 15, fontWeight: "800", marginBottom: 6 },
   p: { color: colors.textDim, fontSize: 14, lineHeight: 21 },
+  links: { marginTop: 8, gap: 6 },
+  link: { color: colors.amber, fontSize: 13, lineHeight: 19, fontWeight: "700", textDecorationLine: "underline" },
   note: { marginTop: 24, backgroundColor: colors.bgElev, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 14 },
   noteTxt: { color: colors.textFaint, fontSize: 12, lineHeight: 18, fontStyle: "italic" },
 });

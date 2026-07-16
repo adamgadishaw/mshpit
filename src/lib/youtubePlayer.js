@@ -1,247 +1,460 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Platform } from "react-native";
 
-// YouTube IFrame Player wrapper. Plays the FULL song/video for everyone with no
-// account and no Premium (the reason we moved off Spotify). The player lives in a
-// single, body-appended window DOCKED bottom-left (the space the left rail
-// reserves for it) so React Native's DOM never reparents it mid-song. YouTube's
-// API terms forbid hidden/background playback, so there is no audio-only mode:
-// the video is visible whenever it plays, and closing the window pauses it.
-// The dock has its own prev / play / next; the top bar drives the same player.
+// Web-only YouTube IFrame Player adapter. The React player surface owns the host
+// element and this hook owns exactly one iframe inside it. It deliberately does
+// not append a second window to document.body or render competing controls.
 const web = Platform.OS === "web" && typeof window !== "undefined";
+const DEFAULT_HOST_ID = "pit-youtube-player-host";
+const MIN_PLAYER_PX = 200;
+const MIN_VISIBLE_RATIO = 0.5;
 
 let apiPromise = null;
+
 function loadApi() {
   if (!web) return Promise.reject(new Error("no-dom"));
-  if (window.YT && window.YT.Player) return Promise.resolve(window.YT);
+  if (window.YT?.Player) return Promise.resolve(window.YT);
   if (apiPromise) return apiPromise;
+
   apiPromise = new Promise((resolve, reject) => {
     let settled = false;
     let timeout = null;
+    const previousReady = window.onYouTubeIframeAPIReady;
     const finish = (fn, value) => {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
       fn(value);
     };
-    const prev = window.onYouTubeIframeAPIReady;
-    window.onYouTubeIframeAPIReady = () => { try { prev && prev(); } catch {} finish(resolve, window.YT); };
-    const s = document.createElement("script");
-    s.src = "https://www.youtube.com/iframe_api";
-    s.async = true;
-    s.onerror = () => finish(reject, new Error("yt-api-load-failed"));
-    timeout = setTimeout(() => finish(reject, new Error("yt-api-load-timeout")), 12000);
-    document.head.appendChild(s);
+
+    window.onYouTubeIframeAPIReady = () => {
+      try { previousReady?.(); } catch {}
+      finish(resolve, window.YT);
+    };
+
+    let script = document.querySelector("script[data-pit-youtube-iframe-api]");
+    if (!script) {
+      script = document.createElement("script");
+      script.src = "https://www.youtube.com/iframe_api";
+      script.async = true;
+      script.dataset.pitYoutubeIframeApi = "true";
+      document.head.appendChild(script);
+    }
+    script.addEventListener("error", () => finish(reject, new Error("yt-api-load-failed")), { once: true });
+
+    timeout = setTimeout(() => finish(reject, new Error("yt-api-load-timeout")), 12_000);
   }).catch((error) => {
-    // Permit a later mount to retry after a transient script/CDN failure.
+    // A later mount may retry after a temporary CDN or network failure.
     apiPromise = null;
     throw error;
   });
+
   return apiPromise;
 }
 
-const WIN_W = () => Math.min(356, (web ? window.innerWidth : 380) - 24); // 356x200: above YouTube's 200px minimum player size
-const VID_H = (w) => Math.round((w * 9) / 16); // 16:9
-
-// Small media-control SVGs (no emoji — matches the app's hand-drawn icon set).
-const SVG = {
-  prev: '<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M7 5h2.2v14H7z"/><path d="M20 5v14l-9.5-7z"/></svg>',
-  next: '<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M14.8 5H17v14h-2.2z"/><path d="M4 5v14l9.5-7z"/></svg>',
-  play: '<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M7 5v14l12-7z"/></svg>',
-  pause: '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4.2" height="14" rx="1"/><rect x="13.8" y="5" width="4.2" height="14" rx="1"/></svg>',
-  min: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 15l6-6 6 6"/></svg>',
-  expand: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 9l6 6 6-6"/></svg>',
-  close: '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
-};
-
-function injectStyleOnce() {
-  if (document.getElementById("pit-yt-style")) return;
-  const s = document.createElement("style");
-  s.id = "pit-yt-style";
-  s.textContent = `
-  .pit-ytwin{position:fixed;z-index:90;background:#14171f;border:1px solid #2a2f3a;border-radius:14px;box-shadow:0 18px 44px rgba(0,0,0,.55);overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;opacity:0;pointer-events:none;transition:opacity .16s ease;}
-  .pit-ytwin.on{opacity:1;pointer-events:auto;}
-  .pit-ytwin-head{display:flex;align-items:center;gap:8px;padding:8px 8px 8px 11px;background:#1b1f28;border-bottom:1px solid #2a2f3a;cursor:grab;user-select:none;}
-  .pit-ytwin-head:active{cursor:grabbing;}
-  .pit-ytwin-dot{width:8px;height:8px;border-radius:4px;background:#f2a65a;box-shadow:0 0 8px rgba(242,166,90,.9);flex:none;}
-  .pit-ytwin-title{flex:1;color:#eaecef;font-size:12.5px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-  .pit-ytwin-btn{width:26px;height:26px;border:none;border-radius:7px;background:transparent;color:#aeb4bf;cursor:pointer;display:flex;align-items:center;justify-content:center;padding:0;}
-  .pit-ytwin-btn:hover{background:#2a2f3a;color:#fff;}
-  .pit-ytwin-video{width:100%;background:#000;overflow:hidden;transition:height .18s ease;}
-  .pit-ytwin-video iframe{width:100%;border:0;display:block;}
-  .pit-ytwin-ctrls{display:flex;align-items:center;justify-content:center;gap:16px;padding:8px;background:#1b1f28;border-top:1px solid #2a2f3a;}
-  .pit-ytwin-c{border:none;background:transparent;color:#eaecef;cursor:pointer;width:36px;height:32px;border-radius:9px;display:flex;align-items:center;justify-content:center;padding:0;}
-  .pit-ytwin-c:hover{background:#2a2f3a;}
-  .pit-ytwin-play{background:#f2a65a;color:#1a1206;}
-  .pit-ytwin-play:hover{background:#f4b673;}
-  `;
-  document.head.appendChild(s);
+function resolveHost(options) {
+  const supplied = options?.hostRef?.current || options?.hostElement || null;
+  if (supplied) return supplied;
+  return document.getElementById(options?.hostId || DEFAULT_HOST_ID);
 }
 
-// Persisted window position (so it stays where you dragged it, across reloads).
-function loadPos() { try { return JSON.parse(localStorage.getItem("pit.ytwin") || "null"); } catch { return null; } }
-function savePos(p) { try { localStorage.setItem("pit.ytwin", JSON.stringify(p)); } catch {} }
-function clampPos(x, y, w, h) {
-  const maxX = window.innerWidth - w - 8, maxY = window.innerHeight - h - 8;
-  return { x: Math.max(8, Math.min(x, maxX)), y: Math.max(8, Math.min(y, maxY)) };
+function visibleViewportRatio(element) {
+  if (!element?.getBoundingClientRect) return 0;
+  const rect = element.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return 0;
+  const visibleWidth = Math.max(0, Math.min(rect.right, window.innerWidth) - Math.max(rect.left, 0));
+  const visibleHeight = Math.max(0, Math.min(rect.bottom, window.innerHeight) - Math.max(rect.top, 0));
+  return (visibleWidth * visibleHeight) / (rect.width * rect.height);
 }
 
-export function useYouTubePlayer(enabled) {
+function validPlayerSize(element) {
+  if (!element?.getBoundingClientRect) return false;
+  const rect = element.getBoundingClientRect();
+  return rect.width >= MIN_PLAYER_PX && rect.height >= MIN_PLAYER_PX;
+}
+
+/**
+ * Keep the original hook API intact. A caller may optionally pass a second
+ * argument with { hostId, hostRef, or hostElement }. With no second argument,
+ * the hook binds to #pit-youtube-player-host.
+ */
+export function useYouTubePlayer(enabled, options = {}) {
   const playerRef = useRef(null);
+  const hostRef = useRef(null);
+  const mountRef = useRef(null);
   const videoIdRef = useRef(null);
+  const readyRef = useRef(false);
+  const shownRef = useRef(false);
+  const documentVisibleRef = useRef(!web || document.visibilityState === "visible");
+  const intersectionRatioRef = useRef(0);
+  const intersectionObserverRef = useRef({ enabled: false, observed: false });
+  const pendingLoadRef = useRef(null);
+  const pendingPlayRef = useRef(false);
+  const endedCbRef = useRef(null);
+  const metaRef = useRef({ title: "" });
+  const volumeRef = useRef(1);
+  const flushRef = useRef(() => {});
+
   const [ready, setReady] = useState(false);
   const [state, setState] = useState({ position: 0, duration: 0, playing: false });
-  const [error, setError] = useState(null); // { kind, message }
-  const endedCbRef = useRef(null);
-  const wantPlayRef = useRef(false); // a pending "should be playing" intent, survives the autoplay block
-  const handlersRef = useRef({}); // { onPrev, onNext, onClose }
-  const metaRef = useRef({ title: "" });
-  const shownRef = useRef(false);
-  const applyRef = useRef(() => {});
+  const [error, setError] = useState(null);
+  const [engineGeneration, setEngineGeneration] = useState(0);
+
+  const hostId = typeof options === "string"
+    ? options
+    : (options?.hostId || DEFAULT_HOST_ID);
+  const mediaKey = typeof options === "object" ? (options?.mediaKey || "") : "";
+  const retryMediaRef = useRef(mediaKey);
+
+  // A failed iframe bootstrap should not poison every later track. Reuse the
+  // healthy player across songs, but rebuild once when the media identity
+  // changes after an initialization failure.
+  useEffect(() => {
+    const changed = retryMediaRef.current !== mediaKey;
+    retryMediaRef.current = mediaKey;
+    if (changed && enabled && error?.kind === "init") setEngineGeneration((value) => value + 1);
+  }, [mediaKey, enabled, error?.kind]);
+
+  const canPlayNow = useCallback(() => {
+    const host = hostRef.current;
+    if (!web || !host || !shownRef.current || !documentVisibleRef.current) return false;
+    if (!validPlayerSize(host)) return false;
+    const observerState = intersectionObserverRef.current;
+    const ratio = observerState.enabled
+      ? (observerState.observed ? intersectionRatioRef.current : 0)
+      : visibleViewportRatio(host);
+    return ratio > MIN_VISIBLE_RATIO;
+  }, []);
+
+  const pauseImmediately = useCallback(({ cancelPending = true } = {}) => {
+    if (cancelPending) {
+      pendingPlayRef.current = false;
+      if (pendingLoadRef.current) pendingLoadRef.current.autoplay = false;
+    }
+    try { playerRef.current?.pauseVideo?.(); } catch {}
+    setState((current) => (current.playing ? { ...current, playing: false } : current));
+  }, []);
+
+  const flushPlaybackIntent = useCallback(() => {
+    const player = playerRef.current;
+    if (!readyRef.current || !player || !canPlayNow()) return;
+
+    const pending = pendingLoadRef.current;
+    if (pending) {
+      pendingLoadRef.current = null;
+      videoIdRef.current = pending.videoId;
+      setError(null);
+      const shouldAutoplay = pending.autoplay || pendingPlayRef.current;
+      try {
+        if (shouldAutoplay) {
+          player.loadVideoById({ videoId: pending.videoId, startSeconds: pending.startSec });
+        } else if (player.cueVideoById) {
+          player.cueVideoById({ videoId: pending.videoId, startSeconds: pending.startSec });
+        } else {
+          player.loadVideoById({ videoId: pending.videoId, startSeconds: pending.startSec });
+          player.pauseVideo?.();
+        }
+      } catch {
+        setError({ kind: "playback", videoId: pending.videoId, message: "Video unavailable." });
+      }
+      pendingPlayRef.current = false;
+      return;
+    }
+
+    if (pendingPlayRef.current) {
+      pendingPlayRef.current = false;
+      try { player.playVideo?.(); } catch {}
+    }
+  }, [canPlayNow]);
+
+  flushRef.current = flushPlaybackIntent;
+
+  const applyHostVisibility = useCallback(() => {
+    const host = hostRef.current;
+    if (!host) return;
+    const visible = shownRef.current;
+    host.style.visibility = visible ? "visible" : "hidden";
+    host.style.pointerEvents = visible ? "auto" : "none";
+    host.setAttribute("aria-hidden", visible ? "false" : "true");
+    if ("inert" in host) host.inert = !visible;
+  }, []);
 
   useEffect(() => {
-    if (!web || !enabled) return;
+    if (!web || !enabled) {
+      readyRef.current = false;
+      setReady(false);
+      return;
+    }
+
+    readyRef.current = false;
+    setReady(false);
+    setState((current) => (current.playing ? { ...current, playing: false } : current));
+    setError(null);
+
     let cancelled = false;
-    let cleanupDom = () => {};
+    let player = null;
+    let observer = null;
+    let resizeObserver = null;
+    let readyTimeout = null;
+    const host = resolveHost(typeof options === "string" ? { hostId: options } : options);
+
+    if (!host) {
+      setReady(false);
+      setError({ kind: "init", message: `YouTube player host #${hostId} was not found.` });
+      return;
+    }
+
+    hostRef.current = host;
+    intersectionRatioRef.current = visibleViewportRatio(host);
+    applyHostVisibility();
+
+    const onVisibilityChange = () => {
+      documentVisibleRef.current = document.visibilityState === "visible";
+      if (!documentVisibleRef.current) pauseImmediately();
+      else flushRef.current();
+    };
+    const onPageHide = () => {
+      documentVisibleRef.current = false;
+      pauseImmediately();
+    };
+    const onPageShow = () => {
+      documentVisibleRef.current = document.visibilityState === "visible";
+      // Deliberately do not restore a cancelled play intent automatically.
+    };
+
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("pagehide", onPageHide);
+    window.addEventListener("pageshow", onPageShow);
+
+    if (typeof IntersectionObserver !== "undefined") {
+      intersectionObserverRef.current = { enabled: true, observed: false };
+      observer = new IntersectionObserver((entries) => {
+        const entry = entries[0];
+        intersectionObserverRef.current.observed = true;
+        intersectionRatioRef.current = entry?.intersectionRatio || 0;
+        if (entry && entry.intersectionRatio <= MIN_VISIBLE_RATIO) pauseImmediately();
+        else flushRef.current();
+      }, { threshold: [0, MIN_VISIBLE_RATIO, 1] });
+      observer.observe(host);
+    }
+
+    if (typeof ResizeObserver !== "undefined") {
+      resizeObserver = new ResizeObserver(() => {
+        const rect = host.getBoundingClientRect();
+        if (player?.setSize && rect.width > 0 && rect.height > 0) {
+          try { player.setSize(Math.round(rect.width), Math.round(rect.height)); } catch {}
+        }
+        if (!validPlayerSize(host)) pauseImmediately();
+        else flushRef.current();
+      });
+      resizeObserver.observe(host);
+    }
 
     loadApi().then((YT) => {
       if (cancelled) return;
-      injectStyleOnce();
 
-      // Build the floating window once.
-      const win = document.createElement("div");
-      win.className = "pit-ytwin";
-      win.id = "pit-yt-window";
-      const w = WIN_W(), vh = VID_H(w);
-      win.style.width = w + "px";
-      // NO minimize-to-audio button: YouTube's API terms prohibit playing the
-      // audio with the video hidden, so the player has exactly two states -
-      // visible and playing, or closed and paused.
-      win.innerHTML =
-        '<div class="pit-ytwin-head" id="pit-ytwin-head">' +
-          '<span class="pit-ytwin-dot"></span>' +
-          '<span class="pit-ytwin-title" id="pit-ytwin-title">Now playing</span>' +
-          '<button class="pit-ytwin-btn" id="pit-ytwin-close" title="Close video (pauses playback)" aria-label="Close video, pauses playback">' + SVG.close + '</button>' +
-        '</div>' +
-        '<div class="pit-ytwin-video" id="pit-ytwin-video" style="height:' + vh + 'px"><div id="pit-yt-player"></div></div>' +
-        '<div class="pit-ytwin-ctrls">' +
-          '<button class="pit-ytwin-c" id="pit-ytwin-prev" aria-label="Previous">' + SVG.prev + '</button>' +
-          '<button class="pit-ytwin-c pit-ytwin-play" id="pit-ytwin-play" aria-label="Play or pause">' + SVG.pause + '</button>' +
-          '<button class="pit-ytwin-c" id="pit-ytwin-next" aria-label="Next">' + SVG.next + '</button>' +
-        '</div>';
-      document.body.appendChild(win);
+      const mount = document.createElement("div");
+      mount.dataset.pitYoutubePlayerMount = "true";
+      mount.style.width = "100%";
+      mount.style.height = "100%";
+      host.appendChild(mount);
+      mountRef.current = mount;
 
-      const $ = (id) => win.querySelector("#" + id);
-      if (metaRef.current.title) $("pit-ytwin-title").textContent = metaRef.current.title; // apply any title set before the window existed
+      const rect = host.getBoundingClientRect();
+      const width = Math.max(MIN_PLAYER_PX, Math.round(rect.width || MIN_PLAYER_PX));
+      const height = Math.max(MIN_PLAYER_PX, Math.round(rect.height || MIN_PLAYER_PX));
+      let initializationFailed = false;
 
-      // Docked bottom-left, in the space the left rail reserves for it (the old
-      // DISCOVER shortcut list). Fixed dock, no dragging: the player always
-      // lives in the same visible spot while anything plays.
-      win.style.left = "16px";
-      win.style.bottom = "16px";
-      win.style.top = "auto";
-
-      const apply = () => {
-        win.classList.toggle("on", shownRef.current);
-        win.setAttribute("aria-hidden", shownRef.current ? "false" : "true");
-        if ("inert" in win) win.inert = !shownRef.current;
-      };
-      applyRef.current = apply;
-      apply();
-
-      $("pit-ytwin-close").addEventListener("click", () => { (handlersRef.current.onClose || (() => { shownRef.current = false; apply(); }))(); });
-      $("pit-ytwin-prev").addEventListener("click", () => handlersRef.current.onPrev && handlersRef.current.onPrev());
-      $("pit-ytwin-next").addEventListener("click", () => handlersRef.current.onNext && handlersRef.current.onNext());
-      $("pit-ytwin-play").addEventListener("click", () => { const p = playerRef.current; if (!p || !p.getPlayerState) return; try { (p.getPlayerState() === 1 ? p.pauseVideo() : p.playVideo()); } catch {} });
-
-      let playerInitFailed = false;
-      const playerReadyTimeout = setTimeout(() => {
-        playerInitFailed = true;
+      readyTimeout = setTimeout(() => {
+        initializationFailed = true;
         setError({ kind: "init", message: "YouTube player failed to initialize." });
-      }, 12000);
-      cleanupDom = () => {
-        clearTimeout(playerReadyTimeout);
-        try { win.remove(); } catch {}
-      };
-      const player = new YT.Player("pit-yt-player", {
-        width: String(w), height: String(vh),
-        playerVars: { autoplay: 0, controls: 1, rel: 0, modestbranding: 1, playsinline: 1, origin: window.location.origin },
-        events: {
-          onReady: () => {
-            clearTimeout(playerReadyTimeout);
-            if (playerInitFailed) return;
-            setReady(true); setError(null);
+      }, 12_000);
+
+      try {
+        player = new YT.Player(mount, {
+          width: String(width),
+          height: String(height),
+          playerVars: {
+            autoplay: 0,
+            controls: 1,
+            rel: 0,
+            playsinline: 1,
+            origin: window.location.origin,
           },
-          onError: (e) => {
-            clearTimeout(playerReadyTimeout);
-            if (playerInitFailed) return;
-            const kind = e?.data === 101 || e?.data === 150 ? "embed" : "playback";
-            setError({ kind, code: e?.data, videoId: videoIdRef.current, message: kind === "embed" ? "This video can't be embedded; playing a preview." : "Video unavailable." });
+          events: {
+            onReady: () => {
+              clearTimeout(readyTimeout);
+              if (cancelled || initializationFailed) return;
+              playerRef.current = player;
+              readyRef.current = true;
+              try { player.setVolume(Math.round(volumeRef.current * 100)); } catch {}
+              setReady(true);
+              setError(null);
+              if (metaRef.current.title) host.setAttribute("aria-label", `YouTube player: ${metaRef.current.title}`);
+              flushRef.current();
+            },
+            onError: (event) => {
+              clearTimeout(readyTimeout);
+              if (cancelled || initializationFailed) return;
+              const code = Number(event?.data) || 0;
+              const kind = code === 101 || code === 150 ? "embed" : "playback";
+              pendingPlayRef.current = false;
+              setError({
+                kind,
+                code,
+                videoId: videoIdRef.current,
+                message: kind === "embed" ? "This video cannot be embedded; playing a preview." : "Video unavailable.",
+              });
+            },
+            onStateChange: (event) => {
+              if (cancelled || initializationFailed) return;
+              if (event.data === 0) endedCbRef.current?.();
+              if (event.data === 1) {
+                if (!canPlayNow()) {
+                  pauseImmediately();
+                  return;
+                }
+                pendingPlayRef.current = false;
+                setError(null);
+              }
+              setState((current) => ({ ...current, playing: event.data === 1 || event.data === 3 }));
+            },
           },
-          onStateChange: (e) => {
-            if (playerInitFailed) return;
-            if (e.data === 0) { endedCbRef.current && endedCbRef.current(); }
-            if (e.data === 1) { setError(null); wantPlayRef.current = false; }
-            // CUED after a load that expected playback = the browser blocked
-            // autoplay (our resolve is async, so the tap's gesture is gone by
-            // the time the video loads). Retry once; if it stays cued, the bar
-            // honestly shows the play button and one tap starts it.
-            if (e.data === 5 && wantPlayRef.current) {
-              wantPlayRef.current = false;
-              try { playerRef.current && playerRef.current.playVideo(); } catch {}
-            }
-            const pb = $("pit-ytwin-play"); if (pb) pb.innerHTML = e.data === 1 ? SVG.pause : SVG.play;
-          },
-        },
-      });
-      playerRef.current = player;
+        });
+        playerRef.current = player;
+      } catch {
+        clearTimeout(readyTimeout);
+        setError({ kind: "init", message: "YouTube player failed to load." });
+      }
     }).catch(() => {
-      cleanupDom();
-      setError({ kind: "init", message: "YouTube player failed to load." });
+      if (!cancelled) setError({ kind: "init", message: "YouTube player failed to load." });
     });
 
     return () => {
       cancelled = true;
-      try { playerRef.current && playerRef.current.destroy && playerRef.current.destroy(); } catch {}
-      cleanupDom();
-      playerRef.current = null; setReady(false);
+      clearTimeout(readyTimeout);
+      observer?.disconnect();
+      resizeObserver?.disconnect();
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("pagehide", onPageHide);
+      window.removeEventListener("pageshow", onPageShow);
+      try { playerRef.current?.pauseVideo?.(); } catch {}
+      try { playerRef.current?.destroy?.(); } catch {}
+      try { player?.destroy?.(); } catch {}
+      try { mountRef.current?.remove?.(); } catch {}
+      playerRef.current = null;
+      mountRef.current = null;
+      hostRef.current = null;
+      readyRef.current = false;
+      pendingLoadRef.current = null;
+      pendingPlayRef.current = false;
+      intersectionObserverRef.current = { enabled: false, observed: false };
     };
-  }, [enabled]);
+    // The host must be stable for the life of the player. Callers that need a
+    // different host should change hostId, which intentionally rebuilds it once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [enabled, hostId, engineGeneration]);
 
-  // Poll for position/duration so the scrubber animates (state events are discrete).
+  // Position and duration are polled because the iframe state events are discrete.
   useEffect(() => {
     if (!web || !enabled) return;
-    const id = setInterval(() => {
-      const p = playerRef.current;
-      if (!p || !p.getCurrentTime) return;
+    const timer = setInterval(() => {
+      const player = playerRef.current;
+      if (!player?.getCurrentTime) return;
       try {
-        const st = p.getPlayerState ? p.getPlayerState() : -1;
-        setState({ position: (p.getCurrentTime() || 0) * 1000, duration: (p.getDuration() || 0) * 1000, playing: st === 1 || st === 3 });
+        const playerState = player.getPlayerState?.() ?? -1;
+        if ((playerState === 1 || playerState === 3) && !canPlayNow()) {
+          pauseImmediately();
+          return;
+        }
+        setState({
+          position: (player.getCurrentTime() || 0) * 1000,
+          duration: (player.getDuration() || 0) * 1000,
+          playing: playerState === 1 || playerState === 3,
+        });
       } catch {}
     }, 500);
-    return () => clearInterval(id);
-  }, [enabled]);
+    return () => clearInterval(timer);
+  }, [enabled, canPlayNow, pauseImmediately]);
 
   const load = useCallback((videoId, { startSec = 0 } = {}) => {
-    const p = playerRef.current;
-    if (!p || !p.loadVideoById) return;
+    if (!videoId) return;
     videoIdRef.current = videoId;
-    wantPlayRef.current = true; // a load always means "and play it"
+    pendingLoadRef.current = {
+      videoId,
+      startSec: Math.max(0, Number(startSec) || 0),
+      autoplay: true,
+    };
+    pendingPlayRef.current = false;
     setError(null);
-    try { p.loadVideoById({ videoId, startSeconds: Math.max(0, startSec) }); } catch {}
+    flushRef.current();
   }, []);
-  const play = useCallback(() => { try { playerRef.current && playerRef.current.playVideo(); } catch {} }, []);
-  const pause = useCallback(() => { try { playerRef.current && playerRef.current.pauseVideo(); } catch {} }, []);
-  const toggle = useCallback(() => {
-    const p = playerRef.current; if (!p || !p.getPlayerState) return;
-    try { (p.getPlayerState() === 1 ? p.pauseVideo() : p.playVideo()); } catch {}
-  }, []);
-  const seek = useCallback((ms) => { try { playerRef.current && playerRef.current.seekTo(Math.max(0, ms / 1000), true); } catch {} }, []);
-  const setVolume = useCallback((v) => { try { playerRef.current && playerRef.current.setVolume(Math.max(0, Math.min(100, Math.round(v * 100)))); } catch {} }, []);
-  const setVisible = useCallback((visible) => { shownRef.current = !!visible; applyRef.current(); }, []);
-  const setMeta = useCallback(({ title } = {}) => { if (title) metaRef.current.title = title; const el = web && document.getElementById("pit-ytwin-title"); if (el && metaRef.current.title) el.textContent = metaRef.current.title; }, []);
-  const setControls = useCallback((h) => { handlersRef.current = h || {}; }, []);
-  const onEnded = useCallback((cb) => { endedCbRef.current = cb; }, []);
 
-  return { ready, state, error, load, play, pause, toggle, seek, setVolume, setVisible, setMeta, setControls, onEnded };
+  const play = useCallback(() => {
+    pendingPlayRef.current = true;
+    flushRef.current();
+  }, []);
+
+  const pause = useCallback(() => pauseImmediately(), [pauseImmediately]);
+
+  const toggle = useCallback(() => {
+    const player = playerRef.current;
+    try {
+      if (player?.getPlayerState?.() === 1) pauseImmediately();
+      else {
+        pendingPlayRef.current = true;
+        flushRef.current();
+      }
+    } catch {}
+  }, [pauseImmediately]);
+
+  const seek = useCallback((ms) => {
+    try { playerRef.current?.seekTo?.(Math.max(0, Number(ms) || 0) / 1000, true); } catch {}
+  }, []);
+
+  const setVolume = useCallback((value) => {
+    const volume = Math.max(0, Math.min(1, Number(value) || 0));
+    volumeRef.current = volume;
+    try { playerRef.current?.setVolume?.(Math.round(volume * 100)); } catch {}
+  }, []);
+
+  const setVisible = useCallback((visible) => {
+    shownRef.current = !!visible;
+    if (!shownRef.current) pauseImmediately();
+    applyHostVisibility();
+    if (shownRef.current) {
+      if (!intersectionObserverRef.current.enabled) {
+        intersectionRatioRef.current = visibleViewportRatio(hostRef.current);
+      }
+      requestAnimationFrame(() => flushRef.current());
+    }
+  }, [applyHostVisibility, pauseImmediately]);
+
+  const setMeta = useCallback(({ title } = {}) => {
+    if (title) metaRef.current.title = title;
+    const host = hostRef.current;
+    if (host && metaRef.current.title) host.setAttribute("aria-label", `YouTube player: ${metaRef.current.title}`);
+  }, []);
+
+  // The previous floating window exposed its own transport callbacks. The React
+  // player surface now owns those controls, but this no-op preserves the hook API
+  // while PlayerBar transitions without creating duplicate buttons.
+  const setControls = useCallback(() => {}, []);
+  const onEnded = useCallback((callback) => { endedCbRef.current = callback; }, []);
+
+  return {
+    ready,
+    state,
+    error,
+    load,
+    play,
+    pause,
+    toggle,
+    seek,
+    setVolume,
+    setVisible,
+    setMeta,
+    setControls,
+    onEnded,
+  };
 }

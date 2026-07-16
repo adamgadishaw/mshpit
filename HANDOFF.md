@@ -29,6 +29,86 @@ These are blocked on private configuration only. No code work is required.
 
 `YOUTUBE_API_KEY` is already set (`youtubeConfigured: true`). Nothing to do.
 
+## CURRENT: persistent 25% player column + desktop top navigation (Codex)
+
+This completes the layout request that stopped mid-session in Claude. **The old
+"top PlayerBar + separate body-fixed YouTube dock" design is obsolete.** Do not
+restore it, and treat the older "YouTube player docked" section farther down as
+historical context only.
+
+### What changed
+
+- Desktop web (`>=1200px`) is one stable shell: a left player column and a routed
+  app surface. The expanded player is `clamp(356px, 25vw, 460px)` (25% at normal
+  desktop widths); only the remaining content changes during navigation. The
+  player stays mounted across Feed/Search/Discover/You and overlay screens.
+- The old left menu rail is no longer used by `App.js`. `DesktopTopNav` in
+  `src/components/Rails.jsx` now owns PIT home, Feed, Search, Discover, You, Make
+  a post, Activity, Inbox, Menu, login/signup, and the account control. It becomes
+  icon-compact below 1500px. The local Feed activity/inbox/menu buttons hide on
+  desktop to avoid duplicate navigation.
+- The right Artists / Trending venues / Upcoming events rail is preserved when
+  there is room (`>=1480px`) and deliberately collapses below that so it cannot
+  crush the feed. Nothing was deleted from those discovery data flows.
+- `PlayerBar.jsx` now has a purpose-built Apple-style column presentation with
+  artwork/video, source status, transport, scrubber, volume, playlist/save
+  actions, full queue controls, recent history, and a coming-up card. The queue
+  no longer cuts off after ten rows. Narrow web keeps a compact player and a
+  16:9 video surface capped at 480x270.
+- Minimize is explicit and honest: it pauses first, collapses the column to 82px,
+  and labels the state PAUSED. Restore expands it and rebuilds YouTube at the
+  captured playback position (the same preservation applies across the 1200px
+  responsive host swap). Closing ends the session.
+  Normal logout, account gates, landing exit, and account deletion now share the
+  same cleanup path and remove `pit.player` plus `pit.playpos`, so another user
+  cannot inherit the previous queue.
+- Provider-neutral tracks now use `src/lib/playback.js::trackKey` (`artist|title`
+  when no durable provider ID exists). Same-titled songs by different artists no
+  longer collide in queue selection or resume identity.
+- Play history/analytics now records only after YouTube or preview audio actually
+  reports PLAYING; failed resolution, blocked autoplay, and queue selection no
+  longer inflate plays. Title+artist-only songs are valid history entries.
+- Provider-neutral songs also survive saved-session snapshots and profile
+  playlist playback. Discover no longer refuses a song just because Deezer has
+  no preview, and artist album Play/Shuffle buttons no longer disappear when the
+  track list has titles but no pre-attached preview URLs; the unified player is
+  allowed to resolve YouTube first.
+
+### YouTube engine / compliance behavior
+
+- `src/lib/youtubePlayer.js` no longer appends a draggable/fixed window or custom
+  controls to `document.body`. React owns one stable host and YouTube owns only
+  its child iframe. The native YouTube controls remain unobstructed; all Pit
+  controls sit outside the iframe.
+- The iframe engine mounts lazily only after a real video ID resolves. Scripted
+  load/play is gated on document visibility, >50% intersection, an explicitly
+  visible host, and at least 200x200. It pauses on tab hide, pagehide, minimize,
+  hiding, undersizing, or leaving the visible viewport and never auto-resumes
+  from the background.
+- At the 1200px desktop cutoff the measured host is 355x200; at 1520px it is
+  379x213. (YouTube's hard minimum is 200x200.) The server retains the strict
+  referrer policy required by embeds.
+- YouTube candidates marked `madeForKids: true` are rejected before caching or
+  playback. Terms now link YouTube's Terms of Service; Privacy now discloses the
+  YouTube API/embedded player and links Google Privacy. `PolicyScreen` renders
+  those as real accessible links.
+- Errors 100/101/150 still invalidate the bad match and fall back to a fresh
+  preview. A browser autoplay permission block is recorded diagnostically but
+  no longer throws an alarming failure toast; the visible Play button is the
+  intended recovery.
+
+### Verification and next-agent warnings
+
+- Verified locally in the actual browser at 1520x900, 1280x720, 1200x800, and
+  390x844. Confirmed navigation persistence, minimize/restore, full 37-track
+  queue, right-rail breakpoint, and the measured video-host sizes above.
+- `npm run check` must remain green before shipping. Production already has
+  `YOUTUBE_API_KEY`; the local server used the Deezer fallback because that key
+  is intentionally not in the tracked/local browser environment.
+- Keep the two owner-requested full builds below as separate work: (1) You-tab
+  server-backed listening analytics, and (2) Facebook-style per-photo viewer and
+  likes. They are **not** implemented by this player batch.
+
 ### Media bucket runbook (Cloudflare R2, chosen 2026-07-21)
 
 R2 was picked over S3 because egress is free, and this app serves a lot of photos.

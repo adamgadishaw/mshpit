@@ -300,6 +300,9 @@ export function scoreYouTubeCandidate(candidate, { title, artist, expectedDurati
   const requested = `${artist || ""} ${title || ""}`;
   const combined = `${rawTitle} ${channel}`;
   const reasons = [];
+  if (status.madeForKids === true) {
+    return { score: -Infinity, rejected: true, reasons: ["child-directed"] };
+  }
   if (!candidate?.id || status.embeddable === false || (status.privacyStatus && status.privacyStatus !== "public")) {
     return { score: -Infinity, rejected: true, reasons: ["not-embeddable"] };
   }

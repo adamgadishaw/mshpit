@@ -113,7 +113,7 @@ function Plinth({ row, rank, onPress }) {
 }
 
 export default function DiscoverScreen({ onOpenTopRated, onOpenArtist, onOpenNearby, onOpenFanClubs, onOpenVenues, onOpenPhotos, onPlay, onOpenProfile }) {
-  const { session, discoverChart, discoverGenres, discoverCountries, topPhotos, discoverStats, loadMembers, memberCount, resolveDeezerPreview, friendsListening, loadFriendsListening } = useStore();
+  const { session, discoverChart, discoverGenres, discoverCountries, topPhotos, discoverStats, loadMembers, memberCount, friendsListening, loadFriendsListening } = useStore();
 
   const homeCountry = countryForCity(session?.home?.city);
   const [region, setRegion] = useState("Worldwide");
@@ -175,11 +175,7 @@ export default function DiscoverScreen({ onOpenTopRated, onOpenArtist, onOpenNea
     return () => { live = false; };
   }, [genre, region]);
 
-  const playSong = async (s) => {
-    let url = s.url, preview = s.preview;
-    if (!url && !preview) preview = await resolveDeezerPreview(s.title, s.artist);
-    if (url || preview) onPlay?.({ kind: "track", url: url || null, preview: preview || null, title: s.title, artist: s.artist, art: s.art || null });
-  };
+  const playSong = (s) => onPlay?.({ kind: "track", url: s.url || null, preview: s.preview || null, title: s.title, artist: s.artist, art: s.art || null });
   const playTop = (r) => r.topTrack && playSong({ title: r.topTrack.title, artist: r.name, url: r.topTrack.url, preview: r.topTrack.preview, art: r.photo });
   // Stable so the memoized donut skips re-renders; tapping the active slice clears it.
   const selectGenre = useCallback((g) => { if (g === "Other") return; setGenre((cur) => (cur === g ? null : g)); }, []);

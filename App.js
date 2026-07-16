@@ -3,13 +3,12 @@ import { View, Text, StyleSheet, Pressable, SafeAreaView, Platform, StatusBar as
 import { StatusBar } from "expo-status-bar";
 import "./src/lib/safeArea"; // reserves iOS notch / toolbar safe areas (web)
 import "./src/lib/webInputFix"; // strips the harsh browser focus box from inputs (web)
-import { colors, mono, radius, roleColor } from "./src/theme";
+import { colors, mono, radius } from "./src/theme";
 import { StoreProvider, useStore, isStaff } from "./src/store";
 import Icon from "./src/components/Icon";
-import Avatar from "./src/components/Avatar";
 import ErrorBoundary from "./src/components/ErrorBoundary";
 import FeedbackHost from "./src/components/FeedbackHost";
-import { LeftRail, RightRail } from "./src/components/Rails";
+import { DesktopTopNav, RightRail } from "./src/components/Rails";
 import FeedScreen from "./src/screens/FeedScreen";
 import SearchScreen from "./src/screens/SearchScreen";
 import DiscoverScreen from "./src/screens/DiscoverScreen";
@@ -56,6 +55,7 @@ import WelcomeScreen from "./src/screens/WelcomeScreen";
 import FollowListScreen from "./src/screens/FollowListScreen";
 import LandingScreen from "./src/screens/LandingScreen";
 import { load, save } from "./src/lib/persist";
+import { trackKey } from "./src/lib/playback";
 
 const LEFT = [
   { key: "feed", label: "Feed", icon: "feed" },
@@ -84,10 +84,10 @@ function Root() {
   const local = localFeed(staff);
 
   const { width } = useWindowDimensions();
-  // Only true desktops get the 3-column shell. Below this (tablets, landscape
-  // phones, split-screen, narrow windows) use the single-column mobile layout —
-  // it's fluid and clean, whereas the 3-column shell squishes and misaligns.
-  const wide = Platform.OS === "web" && width >= 1150; // desktop 3-column layout
+  // Only true desktops get the persistent player column + top navigation. Below
+  // this, tablets, split-screen windows, and phones keep the compact shell.
+  const wide = Platform.OS === "web" && width >= 1200;
+  const showRightRail = wide && width >= 1480;
 
   const web = Platform.OS === "web" && typeof window !== "undefined";
 
@@ -120,6 +120,7 @@ function Root() {
   // Persisted so the player survives a reload (switching themes reloads the page):
   // the bar comes back with its queue instead of vanishing mid-listen.
   const [player, setPlayer] = useState(() => (web ? load("pit.player", null) : null));
+  const [playerMinimized, setPlayerMinimized] = useState(false);
   useEffect(() => { if (web) save("pit.player", player); }, [player]);
   const [acctOpen, setAcctOpen] = useState(false);
   // First-run welcome (Spotify + find-your-people). Armed at signup, shown once the
@@ -169,10 +170,23 @@ function Root() {
     // Arm one history entry so browser Back from the app root returns to landing.
     if (web) { try { window.history.pushState({ pit: "app" }, ""); } catch {} }
   };
-  const exitToLanding = () => { save("pit.entered", false); setTab("feed"); setStack([{}]); setLanding(true); };
-  const onAccountDeleted = () => {
+  const stopAndClearPlayback = () => {
     setPlayer(null);
-    save("pit.player", null);
+    setPlayerMinimized(false);
+    if (web) {
+      save("pit.player", null);
+      try { window.localStorage.removeItem("pit.playpos"); } catch {}
+    }
+  };
+  const exitToLanding = () => {
+    stopAndClearPlayback();
+    save("pit.entered", false);
+    setTab("feed");
+    setStack([{}]);
+    setLanding(true);
+  };
+  const signOut = () => { logout(); exitToLanding(); };
+  const onAccountDeleted = () => {
     exitToLanding();
   };
 
@@ -265,21 +279,19 @@ function Root() {
   // bar can skip prev/next; without it, a single track. player = { list, index }.
   const openPlayer = (media, queue) => {
     if (!media) return;
-    const key = (m) => m?.id || m?.url || m?.preview || m?.title;
     // Always continue past the explicit queue with genre/taste-based recommendations
     // so "up next" is populated and playback never dead-ends after one song.
     let base = Array.isArray(queue) && queue.length ? queue : [media];
     // The tapped track MUST be what plays: if it's not in the queue it was handed
     // (e.g. an album track played against the top-tracks queue), put it first.
-    if (!base.some((m) => key(m) === key(media))) base = [media, ...base];
+    if (!base.some((m) => trackKey(m) === trackKey(media))) base = [media, ...base];
     const list = autoplayQueue(media, base);
-    setPlayer({ list, index: Math.max(0, list.findIndex((m) => key(m) === key(media))) });
-    recordPlay(media);
+    setPlayerMinimized(false);
+    setPlayer({ list, index: Math.max(0, list.findIndex((m) => trackKey(m) === trackKey(media))) });
   };
   const setPlayerIndex = (i) => setPlayer((p) => {
     if (!p) return p;
     const idx = Math.max(0, Math.min(i, p.list.length - 1));
-    recordPlay(p.list[idx]);
     return { ...p, index: idx };
   });
   // Queue edits from the up-next panel: jump to, remove, or move a track to next.
@@ -332,7 +344,7 @@ function Root() {
   else if (nav.nearby) overlay = <NearbyScreen onClose={back} onOpenVenue={openVenue} onOpenArtist={openArtist} />;
   else if (nav.venues) overlay = <VenuesScreen onClose={back} onOpenVenue={openVenue} />;
   else if (nav.fanClubs) overlay = <FanClubsScreen onClose={back} onOpenFanClub={openFanClub} />;
-  else if (nav.settings) overlay = <SettingsScreen onClose={back} onEditProfile={() => go({ editProfile: true })} onOpenProfile={() => (session ? go({ profileId: session.id }) : go({ auth: true }))} onOpenPrivacy={() => go({ privacy: true })} onOpenTerms={() => go({ terms: true })} onOpenDiagnostics={() => go({ diagnostics: true })} onOpenDeleteAccount={() => go({ deleteAccount: true })} onLogout={() => { logout(); clear(); exitToLanding(); }} />;
+  else if (nav.settings) overlay = <SettingsScreen onClose={back} onEditProfile={() => go({ editProfile: true })} onOpenProfile={() => (session ? go({ profileId: session.id }) : go({ auth: true }))} onOpenPrivacy={() => go({ privacy: true })} onOpenTerms={() => go({ terms: true })} onOpenDiagnostics={() => go({ diagnostics: true })} onOpenDeleteAccount={() => go({ deleteAccount: true })} onLogout={signOut} />;
   else if (nav.deleteAccount) overlay = <DeleteAccountScreen onClose={back} onDeleted={onAccountDeleted} />;
   else if (nav.diagnostics) overlay = <DiagnosticsScreen onClose={back} />;
   else if (nav.privacy) overlay = <PrivacyScreen onClose={back} />;
@@ -360,7 +372,7 @@ function Root() {
       onTourDates={() => replace({ bulk: true })}
       onRequestArtist={() => replace({ reqArtist: true })}
       onLogin={() => replace({ auth: true })}
-      onLogout={() => { logout(); clear(); exitToLanding(); }}
+      onLogout={signOut}
       onBackToLanding={() => { clear(); exitToLanding(); }}
     />
   );
@@ -378,6 +390,7 @@ function Root() {
                   homeCity={session?.home?.city}
                   unread={inboxUnread()}
                   notifUnread={session ? unreadNotifications() : 0}
+                  hideHeaderActions={wide}
                   newUser={!!session && feed.filter((l) => l.userId === session.id).length === 0}
                   onLoadMore={loadMoreFeed}
                   hasMore={feedHasMore}
@@ -404,7 +417,7 @@ function Root() {
                 <YouScreen
                   feed={feed}
                   onLogin={() => go({ auth: true })}
-                  onLogout={() => { logout(); exitToLanding(); }}
+                  onLogout={signOut}
                   onAdmin={() => go({ admin: true })}
                   onAddTourDate={() => go({ bulk: true })}
                   onRequestArtist={() => go({ reqArtist: true })}
@@ -419,70 +432,40 @@ function Root() {
             </View>
   );
 
-  // Desktop (wide web): a top bar (brand + account) over a left nav rail, a wide
-  // centered content column, and a right sidebar.
+  // Desktop: the player owns a persistent left column (outside this routed
+  // surface), while navigation sits across the content that actually changes.
   const desktop = (
     <View style={styles.deskOuter}>
-      <View style={styles.topbar}>
-        <Pressable onPress={() => { setTab("feed"); clear(); }}><Text style={styles.topBrand}>PIT</Text></Pressable>
-        <View style={{ flex: 1 }} />
-        {session ? (
-          <Pressable style={styles.acctChip} onPress={() => setAcctOpen(true)}>
-            <Avatar user={session} size={30} />
-            <View style={{ maxWidth: 150 }}>
-              <Text style={styles.acctName} numberOfLines={1}>{session.name}</Text>
-              <Text style={[styles.acctSub, roleColor(session.role) && { color: roleColor(session.role), fontWeight: "800" }]} numberOfLines={1}>@{session.handle}</Text>
-            </View>
-            <Icon name="chevron-down" size={16} color={colors.textDim} />
-          </Pressable>
-        ) : (
-          <View style={styles.authBtns}>
-            <Pressable style={styles.introBtn} onPress={() => { clear(); exitToLanding(); }} hitSlop={6}>
-              <Icon name="chevron-left" size={15} color={colors.textDim} />
-              <Text style={styles.introBtnTxt}>Intro</Text>
-            </Pressable>
-            <Pressable style={styles.loginPill} onPress={() => go({ auth: true, authMode: "login" })}>
-              <Text style={styles.loginPillTxt}>Log in</Text>
-            </Pressable>
-            <Pressable style={styles.signupPill} onPress={() => go({ auth: true, authMode: "signup" })}>
-              <Text style={styles.signupPillTxt}>Sign up</Text>
-            </Pressable>
-          </View>
-        )}
-      </View>
+      <DesktopTopNav
+        tab={tab}
+        setTab={(key) => { setTab(key); clear(); }}
+        session={session}
+        unread={session ? inboxUnread() : 0}
+        notifUnread={session ? unreadNotifications() : 0}
+        compact={width < 1500}
+        onHome={() => { setTab("feed"); clear(); }}
+        onLog={() => requireAuth(() => go({ logging: true }))}
+        onActivity={openNotifications}
+        onInbox={openInbox}
+        onMenu={() => go({ menu: true })}
+        onAccount={() => setAcctOpen(true)}
+        onIntro={exitToLanding}
+        onLogin={() => go({ auth: true, authMode: "login" })}
+        onSignup={() => go({ auth: true, authMode: "signup" })}
+      />
       <View style={styles.deskWrap}>
-        <LeftRail
-          tab={tab}
-          setTab={(k) => { setTab(k); clear(); }}
-          session={session}
-          unread={session ? inboxUnread() : 0}
-          notifUnread={session ? unreadNotifications() : 0}
-          onActivity={openNotifications}
-          onLog={() => requireAuth(() => go({ logging: true }))}
-          onFindVenues={() => go({ venues: true })}
-          onFanClubs={() => go({ fanClubs: true })}
-          onNearby={() => requireAuth(() => go({ nearby: true }))}
-          onTopRated={() => go({ topRated: true })}
-          onInbox={openInbox}
-          onProfile={() => (session ? openProfile(session.id) : go({ auth: true }))}
-          onLogin={() => go({ auth: true })}
-        />
         <View style={styles.deskCenter}>{overlay || tabScreens}</View>
-        <RightRail onOpenArtist={openArtist} onOpenVenue={openVenue} onFindVenues={() => go({ venues: true })} onOpenEvent={(t) => openArtist(t.artist)} />
+        {showRightRail && <RightRail onOpenArtist={openArtist} onOpenVenue={openVenue} onFindVenues={() => go({ venues: true })} onOpenEvent={(t) => openArtist(t.artist)} />}
       </View>
     </View>
   );
+  const playerColumnWidth = playerMinimized ? 82 : Math.max(356, Math.min(460, Math.round(width * 0.25)));
+  const playerObscured = !!resetToken || !!welcome;
 
   return (
     <View style={styles.root}>
       <SafeAreaView style={styles.safe}>
         <StatusBar style="light" />
-
-        {!(landing && !session) && player && (
-          <PlayerBar player={player} onClose={() => setPlayer(null)} onIndex={setPlayerIndex}
-            onPlayAt={playAt} onRemove={removeFromQueue} onMoveNext={moveToNext}
-            history={playHistory} onSaveSession={saveSnapshot} onPlayTrack={openPlayer} onOpenArtist={openArtist} onAddToPlaylist={openAddToPlaylist} />
-        )}
 
         {landing && !session ? (
           <LandingScreen
@@ -491,26 +474,52 @@ function Root() {
             onBrowse={enter}
           />
         ) : status !== "ok" ? (
-          nav.deleteAccount ? overlay : <AccountGate status={status} until={session?.suspendedUntil} onLogout={logout} onExport={exportMyData} onDelete={() => go({ deleteAccount: true })} />
-        ) : wide ? (
-          desktop
+          nav.deleteAccount ? overlay : <AccountGate status={status} until={session?.suspendedUntil} onLogout={signOut} onExport={exportMyData} onDelete={() => go({ deleteAccount: true })} />
         ) : (
-          overlay || (
-          <>
-            {tabScreens}
-
-            <View style={styles.tabbar}>
-              {LEFT.map((t) => <TabButton key={t.key} tab={t} active={tab} onPress={setTab} />)}
-              <View style={styles.fabCol}>
-                <Pressable style={styles.fab} onPress={() => requireAuth(() => go({ logging: true }))} accessibilityLabel="Make a post">
-                  <Icon name="plus" size={26} color="#1A1206" strokeWidth={2.6} />
-                </Pressable>
-                <Text style={styles.fabLabel}>Post</Text>
+          <View style={[styles.appFrame, wide && styles.appFrameWide]}>
+            {(wide || player) && (
+              <View style={wide ? [styles.playerColumn, { width: playerColumnWidth }] : styles.mobilePlayerSlot}>
+                <PlayerBar
+                  player={player}
+                  layout={wide ? "column" : "bar"}
+                  minimized={wide && playerMinimized}
+                  obscured={playerObscured}
+                  onMinimize={() => setPlayerMinimized(true)}
+                  onRestore={() => setPlayerMinimized(false)}
+                  onClose={stopAndClearPlayback}
+                  onIndex={setPlayerIndex}
+                  onPlayAt={playAt}
+                  onRemove={removeFromQueue}
+                  onMoveNext={moveToNext}
+                  history={playHistory}
+                  onSaveSession={saveSnapshot}
+                  onPlayTrack={openPlayer}
+                  onPlaybackStarted={recordPlay}
+                  onOpenArtist={openArtist}
+                  onAddToPlaylist={openAddToPlaylist}
+                />
               </View>
-              {RIGHT.map((t) => <TabButton key={t.key} tab={t} active={tab} onPress={setTab} />)}
+            )}
+            <View style={styles.appContent}>
+              {wide ? desktop : (
+                overlay || (
+                  <>
+                    {tabScreens}
+                    <View style={styles.tabbar}>
+                      {LEFT.map((t) => <TabButton key={t.key} tab={t} active={tab} onPress={setTab} />)}
+                      <View style={styles.fabCol}>
+                        <Pressable style={styles.fab} onPress={() => requireAuth(() => go({ logging: true }))} accessibilityLabel="Make a post">
+                          <Icon name="plus" size={26} color="#1A1206" strokeWidth={2.6} />
+                        </Pressable>
+                        <Text style={styles.fabLabel}>Post</Text>
+                      </View>
+                      {RIGHT.map((t) => <TabButton key={t.key} tab={t} active={tab} onPress={setTab} />)}
+                    </View>
+                  </>
+                )
+              )}
             </View>
-          </>
-          )
+          </View>
         )}
 
         <FeedbackHost onOpenDiagnostics={() => go({ diagnostics: true })} />
@@ -539,7 +548,7 @@ function Root() {
             { icon: "lock", label: "Privacy", onPress: () => { setAcctOpen(false); go({ privacy: true }); } },
             { icon: "shield", label: "Terms & conditions", onPress: () => { setAcctOpen(false); go({ terms: true }); } },
             { divider: true },
-            { icon: "logout", label: "Log out", danger: true, onPress: () => { setAcctOpen(false); logout(); clear(); exitToLanding(); } },
+            { icon: "logout", label: "Log out", danger: true, onPress: () => { setAcctOpen(false); signOut(); } },
           ]}
         />
 
@@ -579,23 +588,14 @@ const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.bg },
   safe: { flex: 1, backgroundColor: colors.bg, paddingTop: Platform.OS === "android" ? RNStatusBar.currentHeight : 0 },
   screen: { flex: 1 },
-  // desktop 3-column shell — a top bar over fixed rails framing a wide, centered
-  // content column. Widths sum to deskOuter.maxWidth so there are no dead gaps.
-  deskOuter: { flex: 1, width: "100%", maxWidth: 1520, alignSelf: "center", borderLeftWidth: 1, borderRightWidth: 1, borderColor: colors.lineSoft },
-  topbar: { flexDirection: "row", alignItems: "center", height: 58, paddingHorizontal: 18, borderBottomWidth: 1, borderBottomColor: colors.lineSoft, backgroundColor: colors.bgElev },
-  topBrand: { color: colors.amber, fontSize: 22, fontWeight: "900", letterSpacing: 3 },
-  acctChip: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: colors.surface, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, paddingLeft: 6, paddingRight: 12, paddingVertical: 5 },
-  acctName: { color: colors.text, fontSize: 13, fontWeight: "800" },
-  acctSub: { color: colors.textDim, fontSize: 11 },
-  authBtns: { flexDirection: "row", alignItems: "center", gap: 10 },
-  introBtn: { flexDirection: "row", alignItems: "center", gap: 2, paddingHorizontal: 10, paddingVertical: 9, borderRadius: radius.pill },
-  introBtnTxt: { color: colors.textDim, fontSize: 14, fontWeight: "600" },
-  loginPill: { paddingHorizontal: 16, paddingVertical: 9, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line },
-  loginPillTxt: { color: colors.text, fontSize: 14, fontWeight: "700" },
-  signupPill: { paddingHorizontal: 16, paddingVertical: 9, borderRadius: radius.pill, backgroundColor: colors.amberStrong },
-  signupPillTxt: { color: "#1A1206", fontSize: 14, fontWeight: "800" },
-  deskWrap: { flex: 1, flexDirection: "row", width: "100%" },
-  deskCenter: { flex: 1, maxWidth: 980, borderRightWidth: 1, borderRightColor: colors.lineSoft },
+  appFrame: { flex: 1, minHeight: 0 },
+  appFrameWide: { flexDirection: "row" },
+  appContent: { flex: 1, minWidth: 0, minHeight: 0 },
+  playerColumn: { flexGrow: 0, flexShrink: 0, minWidth: 82, height: "100%" },
+  mobilePlayerSlot: { width: "100%", flexGrow: 0, flexShrink: 0 },
+  deskOuter: { flex: 1, minWidth: 0, width: "100%", borderRightWidth: 1, borderRightColor: colors.lineSoft },
+  deskWrap: { flex: 1, minHeight: 0, flexDirection: "row", width: "100%" },
+  deskCenter: { flex: 1, minWidth: 0, borderRightWidth: 1, borderRightColor: colors.lineSoft },
   tabbar: {
     flexDirection: "row",
     alignItems: "flex-start",

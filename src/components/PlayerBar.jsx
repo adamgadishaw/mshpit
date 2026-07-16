@@ -5,6 +5,7 @@ import { useStore } from "../store";
 import { useYouTubePlayer } from "../lib/youtubePlayer";
 import { useAudioPreview } from "../lib/audioPreview";
 import { captureAppError } from "../lib/diagnostics";
+import { trackKey } from "../lib/playback";
 import Icon from "./Icon";
 
 const web = Platform.OS === "web";
@@ -113,19 +114,36 @@ function VolumeControl({ volume, onChange }) {
 // no account and no Premium. When YouTube has no match it falls back to a Deezer
 // 30s preview mp3. Plays ONE track at a time, driven by our own queue index, so the
 // song you tap is always the song that plays.
-export default function PlayerBar({ player, onClose, onIndex, onPlayAt, onRemove, onMoveNext, history = [], onSaveSession, onPlayTrack, onOpenArtist, onAddToPlaylist }) {
+export default function PlayerBar({
+  player,
+  layout = "bar",
+  minimized = false,
+  obscured = false,
+  onMinimize,
+  onRestore,
+  onClose,
+  onIndex,
+  onPlayAt,
+  onRemove,
+  onMoveNext,
+  history = [],
+  onSaveSession,
+  onPlayTrack,
+  onPlaybackStarted,
+  onOpenArtist,
+  onAddToPlaylist,
+}) {
   const { resolveYouTube, invalidateYouTube, resolveDeezerPreview } = useStore();
+  const column = layout === "column";
   const list = player && Array.isArray(player.list) ? player.list : [];
   const index = Math.max(0, Math.min(player?.index || 0, list.length - 1));
   const cur = list[index];
-  const curKey = cur ? (cur.url || cur.id || cur.preview || cur.title) : null;
-
-  const yt = useYouTubePlayer(web);
+  const curKey = trackKey(cur);
+  const youtubeHostId = column ? "pit-youtube-player-host-column" : "pit-youtube-player-host-compact";
 
   // Volume (0–1), persisted across sessions; applied to whichever engine is live.
   const [volume, setVol] = useState(() => { try { return web && typeof localStorage !== "undefined" ? Math.max(0, Math.min(1, JSON.parse(localStorage.getItem("pit.volume") ?? "0.8"))) : 0.8; } catch { return 0.8; } });
   useEffect(() => { try { if (web) localStorage.setItem("pit.volume", String(volume)); } catch {} }, [volume]);
-  useEffect(() => { yt.setVolume(volume); }, [volume, yt.ready]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Resolve the CURRENT track: a YouTube video ID for full playback AND a Deezer
   // preview mp3 in parallel, so the preview is ready as a fallback if YouTube has
@@ -160,6 +178,11 @@ export default function PlayerBar({ player, onClose, onIndex, onPlayAt, onRemove
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [curKey]);
 
+  // Mount YouTube only after a real video ID resolves. Preview-only tracks keep
+  // the same visible player surface without creating a hidden cross-origin frame.
+  const yt = useYouTubePlayer(web && !!cur && !!resolved.videoId && !minimized, { hostId: youtubeHostId, mediaKey: curKey });
+  useEffect(() => { yt.setVolume(volume); }, [volume, yt.ready]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const forThis = resolved.key === curKey;
   // A video the current player errored on (embedding disabled / removed) is not
   // usable — drop to the preview instead of playing silence.
@@ -186,32 +209,69 @@ export default function PlayerBar({ player, onClose, onIndex, onPlayAt, onRemove
     invalidateYouTube(cur.title, cur.artist, failedId);
   }, [yt.error?.code, yt.error?.videoId, curKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Rebuilding the iframe (minimize/restore or a responsive host swap) must not
+  // restart the song. Capture the live YouTube clock and consume it on the next
+  // engine load; clear it only when the actual track changes.
+  const engineResumeRef = useRef(null);
+  const previousHostRef = useRef(youtubeHostId);
+  useEffect(() => {
+    if (previousHostRef.current === youtubeHostId) return;
+    if (ytActive && forThis && yt.state.position > 0) engineResumeRef.current = { key: curKey, ms: yt.state.position };
+    previousHostRef.current = youtubeHostId;
+  }, [youtubeHostId]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (engineResumeRef.current && engineResumeRef.current.key !== curKey) engineResumeRef.current = null;
+  }, [curKey]);
+  useEffect(() => {
+    if (minimized && ytActive && forThis && yt.state.position > 0) engineResumeRef.current = { key: curKey, ms: yt.state.position };
+  }, [minimized]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Resume across reloads (theme switch / F5): remember where we were and pick the
   // song back up instead of restarting it. Position is persisted every few seconds
   // to localStorage; on mount we seek to it once for the same track.
   const [resume] = useState(() => { try { return web && typeof localStorage !== "undefined" ? JSON.parse(localStorage.getItem("pit.playpos") || "null") : null; } catch { return null; } });
   const resumedRef = useRef(false);
-  const resumeMs = !resumedRef.current && resume && resume.key === curKey ? (resume.ms || 0) : 0;
+  const engineResumeMs = engineResumeRef.current?.key === curKey ? (engineResumeRef.current.ms || 0) : 0;
+  const resumeMs = engineResumeMs || (!resumedRef.current && resume && resume.key === curKey ? (resume.ms || 0) : 0);
+  const [showVideo, setShowVideo] = useState(true);
+
+  const recordedKeyRef = useRef(null);
+  const markPlaybackStarted = () => {
+    if (!curKey || recordedKeyRef.current === curKey) return;
+    recordedKeyRef.current = curKey;
+    onPlaybackStarted?.(cur);
+  };
 
   const audio = useAudioPreview(previewSrc, {
     enabled: !ytActive,
     onEnded: () => { if (hasNext) onIndex?.(index + 1); },
+    onStarted: markPlaybackStarted,
     startAt: resumeMs / 1000,
     volume,
   });
 
+  // Count YouTube only after its engine reports PLAYING. Preview audio reports
+  // the same event through onStarted above.
+  useEffect(() => {
+    if (ytActive && yt.state.playing) markPlaybackStarted();
+  }, [ytActive, yt.state.playing, curKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Load the resolved video into the YouTube player; our index (prev/next) drives
   // it. loadVideoById auto-plays, matching tap-to-play. Resume seeks on reload.
   const sigRef = useRef("");
+  useEffect(() => { if (minimized) sigRef.current = ""; }, [minimized]);
+  useEffect(() => { if (!yt.ready) sigRef.current = ""; }, [yt.ready]);
   useEffect(() => {
-    if (!ytActive) return;
-    const sig = resolved.videoId + "@" + index;
+    if (!ytActive || minimized || obscured || !showVideo) return;
+    const sig = `${resolved.videoId}@${index}@${youtubeHostId}`;
     if (sig === sigRef.current) return;
     sigRef.current = sig;
-    yt.load(resolved.videoId, { startSec: resumeMs > 1000 ? resumeMs / 1000 : 0 });
+    const liveResumeMs = engineResumeRef.current?.key === curKey ? (engineResumeRef.current.ms || 0) : resumeMs;
+    yt.load(resolved.videoId, { startSec: liveResumeMs > 1000 ? liveResumeMs / 1000 : 0 });
+    engineResumeRef.current = null;
     resumedRef.current = true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ytActive, resolved.videoId, index]);
+  }, [ytActive, resolved.videoId, index, minimized, obscured, showVideo, youtubeHostId]);
   // When the preview engine is driving this track, stop any video still playing.
   useEffect(() => { if (forThis && !ytActive) yt.pause(); }, [forThis, ytActive, curKey]); // eslint-disable-line react-hooks/exhaustive-deps
   // Mark preview resume consumed once it's flowing, so later tracks start at 0.
@@ -220,13 +280,16 @@ export default function PlayerBar({ player, onClose, onIndex, onPlayAt, onRemove
   // Auto-advance when the YouTube track ends (fires once, via the player's state).
   useEffect(() => { yt.onEnded(() => { if (hasNext) onIndex?.(index + 1); }); }); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Show / hide the floating video window (audio keeps playing either way).
-  const [showVideo, setShowVideo] = useState(true);
-  useEffect(() => { yt.setVisible(ytActive && showVideo); }, [ytActive, showVideo]); // eslint-disable-line react-hooks/exhaustive-deps
-  // Keep the window's title current and wire its prev / next / close buttons to the
-  // same queue the top bar drives, so the pop-out player is fully in sync.
+  // The React-owned player surface is the only iframe host. YouTube playback is
+  // paused whenever that surface is hidden, undersized, covered, or the tab is
+  // backgrounded; the engine also independently enforces those visibility gates.
+  useEffect(() => { yt.setVisible(ytActive && showVideo && !minimized && !obscured); }, [ytActive, showVideo, minimized, obscured]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!minimized && !obscured) return;
+    yt.pause();
+    audio.pause?.();
+  }, [minimized, obscured]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => { yt.setMeta({ title: cur ? (cur.title || cur.artist || "Now playing") : "Now playing" }); }, [curKey]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => { yt.setControls({ onPrev: () => onIndex?.(index - 1), onNext: () => onIndex?.(index + 1), onClose: () => { yt.pause(); setShowVideo(false); } }); }); // eslint-disable-line react-hooks/exhaustive-deps
 
   const [open, setOpen] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -272,11 +335,31 @@ export default function PlayerBar({ player, onClose, onIndex, onPlayAt, onRemove
       context: "Starting the selected track",
       source: audio.error ? "audio-preview" : "youtube-player",
       severity: "warning",
-      toast: unplayable || !!audio.error,
+      // Reload autoplay can be blocked until the next user gesture. Record that
+      // diagnostic without alarming the listener; the visible Play button is the
+      // expected recovery path, not a broken-track failure.
+      toast: unplayable || (!!audio.error && audio.error.kind !== "permission"),
     });
   }, [audio.error?.kind, curKey, unplayable, yt.error?.kind]);
 
-  if (!cur) return null;
+  if (!cur) {
+    if (!column) return null;
+    return (
+      <View style={styles.columnShell}>
+        <View style={styles.columnHead}>
+          <View>
+            <Text style={styles.columnEyebrow}>PIT PLAYER</Text>
+            <Text style={styles.columnHeadTitle}>Your listening session</Text>
+          </View>
+        </View>
+        <View style={styles.emptyPlayer}>
+          <View style={styles.emptyDisc}><Icon name="music" size={34} color={colors.amber} /></View>
+          <Text style={styles.emptyTitle}>Nothing playing yet</Text>
+          <Text style={styles.emptyCopy}>Choose a song from an artist, playlist, or Discover. Your player and queue will stay here while you explore Pit.</Text>
+        </View>
+      </View>
+    );
+  }
 
   const multi = list.length > 1;
   const title = cur.title || cur.artist || "Now playing";
@@ -290,10 +373,26 @@ export default function PlayerBar({ player, onClose, onIndex, onPlayAt, onRemove
   const durMs = ytActive ? (yt.state.duration || 0) : audio.dur * 1000;
   posRef.current = posMs;
   const playing = ytActive ? yt.state.playing : audio.playing;
-  const playPause = () => { if (ytActive) { if (!yt.state.playing) setShowVideo(true); yt.toggle(); } else if (previewSrc) audio.toggle(); };
+  const playPause = () => {
+    if (ytActive) {
+      if (yt.state.playing) yt.pause();
+      else {
+        if (!showVideo) setShowVideo(true);
+        // The engine queues this request until the host is visibly rendered.
+        yt.play();
+      }
+    } else if (previewSrc) audio.toggle();
+  };
   const onSeek = (ms) => { if (ytActive) yt.seek(ms); else audio.seek(ms / 1000); };
   const goPrev = () => onIndex?.(index - 1);
   const goNext = () => onIndex?.(index + 1);
+  const minimizePlayer = () => {
+    if (ytActive && yt.state.position > 0) engineResumeRef.current = { key: curKey, ms: yt.state.position };
+    yt.pause();
+    audio.pause?.();
+    onMinimize?.();
+  };
+  const closePlayer = () => { yt.pause(); audio.pause?.(); onClose?.(); };
 
   const doSave = () => { const s = onSaveSession?.(list, `${cur.artist || "Session"} mix`); if (s) { setSaved(true); setTimeout(() => setSaved(false), 1800); } };
 
@@ -308,10 +407,163 @@ export default function PlayerBar({ player, onClose, onIndex, onPlayAt, onRemove
     : unplayable ? "Not available to play"
     : artist + (ytActive ? "  ·  YouTube" : previewSrc ? "  ·  preview" : "");
 
+  const mediaSurface = (
+    <View style={[styles.videoStage, !column && styles.compactVideoStage]}>
+      <View
+        nativeID={youtubeHostId}
+        style={[styles.videoHost, { opacity: ytActive && showVideo ? 1 : 0 }]}
+        pointerEvents={ytActive && showVideo ? "auto" : "none"}
+        accessibilityLabel={`YouTube player for ${title}`}
+      />
+      {(!ytActive || !showVideo) && (
+        <View style={styles.mediaPlaceholder} pointerEvents="none">
+          {art ? <Image source={{ uri: art }} style={styles.heroArt} /> : <View style={[styles.heroArt, styles.artEmpty]}><Icon name="music" size={34} color={colors.amber} /></View>}
+          <View style={styles.placeholderShade} />
+          <View style={styles.placeholderLabel}>
+            <Icon name={showVideo ? "music" : "play"} size={12} color={colors.amber} />
+            <Text style={styles.placeholderTxt}>{showVideo ? (previewSrc ? "PREVIEW AUDIO" : "TUNING VIDEO") : "VIDEO PAUSED"}</Text>
+          </View>
+        </View>
+      )}
+    </View>
+  );
+
+  if (column && minimized) {
+    return (
+      <View style={styles.miniShell}>
+        <Pressable style={styles.miniRestore} onPress={onRestore} accessibilityRole="button" accessibilityLabel="Restore player">
+          <Icon name="chevron-right" size={18} color={colors.amber} />
+        </Pressable>
+        {art ? <Image source={{ uri: art }} style={styles.miniArt} /> : <View style={[styles.miniArt, styles.artEmpty]}><Icon name="music" size={18} color={colors.textDim} /></View>}
+        <Text style={styles.miniTitle} numberOfLines={3}>{title}</Text>
+        <Text style={styles.miniPaused}>PAUSED</Text>
+      </View>
+    );
+  }
+
+  if (column) {
+    return (
+      <View style={styles.columnShell}>
+        <View style={styles.columnHead}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.columnEyebrow}>PIT PLAYER</Text>
+            <Text style={styles.columnHeadTitle}>Now playing</Text>
+          </View>
+          <Pressable style={styles.headIcon} onPress={minimizePlayer} accessibilityRole="button" accessibilityLabel="Minimize player, pauses playback">
+            <Icon name="chevron-left" size={16} color={colors.textDim} />
+          </Pressable>
+          <Pressable style={styles.headIcon} onPress={closePlayer} accessibilityRole="button" accessibilityLabel="End listening session">
+            <Icon name="x" size={15} color={colors.textDim} />
+          </Pressable>
+        </View>
+
+        {mediaSurface}
+
+        <View style={styles.columnMeta}>
+          <Text style={styles.columnTitle} numberOfLines={2}>{title}</Text>
+          {artist ? (
+            <Pressable onPress={() => onOpenArtist?.(artist)} disabled={!onOpenArtist} accessibilityRole={onOpenArtist ? "button" : undefined} accessibilityLabel={onOpenArtist ? `Open ${artist}` : undefined}>
+              <Text style={styles.columnArtist} numberOfLines={1}>{artist}</Text>
+            </Pressable>
+          ) : null}
+          <Text style={[styles.columnStatus, unplayable && { color: colors.gold }]} numberOfLines={1}>{statusLine}</Text>
+        </View>
+
+        <View style={styles.columnTransport}>
+          <Pressable style={[styles.columnCtrl, index <= 0 && styles.ctrlOff]} disabled={index <= 0} onPress={goPrev} accessibilityRole="button" accessibilityLabel="Previous track">
+            <Icon name="chevron-left" size={21} color={index <= 0 ? colors.textFaint : colors.text} />
+          </Pressable>
+          <Pressable style={[styles.columnPlay, !scrubbable && styles.ctrlOff]} onPress={playPause} disabled={!scrubbable} accessibilityRole="button" accessibilityLabel={playing ? "Pause" : "Play"}>
+            {(connecting || resolving) && !scrubbable
+              ? <View style={styles.dots}><View style={styles.dotDark} /><View style={styles.dotDark} /><View style={styles.dotDark} /></View>
+              : playing ? <View style={styles.pauseGlyph}><View style={styles.pauseBar} /><View style={styles.pauseBar} /></View> : <Icon name="play" size={21} color="#1A1206" />}
+          </Pressable>
+          <Pressable style={[styles.columnCtrl, index >= list.length - 1 && styles.ctrlOff]} disabled={index >= list.length - 1} onPress={goNext} accessibilityRole="button" accessibilityLabel="Next track">
+            <Icon name="chevron-right" size={21} color={index >= list.length - 1 ? colors.textFaint : colors.text} />
+          </Pressable>
+        </View>
+
+        {scrubbable && (
+          <View style={styles.columnScrub}>
+            <Scrubber posMs={posMs} durMs={durMs} onSeek={onSeek} live />
+            <VolumeControl volume={volume} onChange={setVol} />
+          </View>
+        )}
+
+        <View style={styles.columnActions}>
+          <Pressable style={[styles.columnAction, panelOpen && styles.columnActionOn]} onPress={() => setOpen((o) => !o)} accessibilityRole="button" accessibilityState={{ expanded: panelOpen }} accessibilityLabel={`${panelOpen ? "Hide" : "Show"} queue, ${upNext.length} up next`}>
+            <Icon name="feed" size={14} color={panelOpen ? colors.amber : colors.textDim} />
+            <Text style={[styles.columnActionTxt, panelOpen && { color: colors.amber }]}>Queue {upNext.length}</Text>
+          </Pressable>
+          {ytActive && (
+            <Pressable style={[styles.columnAction, showVideo && styles.columnActionOn]} onPress={() => setShowVideo((visible) => { if (visible) yt.pause(); return !visible; })} accessibilityRole="button" accessibilityLabel={showVideo ? "Hide video, pauses playback" : "Show video"}>
+              <Icon name="play" size={13} color={showVideo ? colors.amber : colors.textDim} />
+              <Text style={[styles.columnActionTxt, showVideo && { color: colors.amber }]}>Video</Text>
+            </Pressable>
+          )}
+          {onAddToPlaylist && (
+            <Pressable style={styles.columnAction} onPress={() => onAddToPlaylist({ title: cur.title || cur.artist, artist: cur.artist, url: cur.url, preview: cur.preview, art })} accessibilityRole="button" accessibilityLabel={`Add ${title} to a playlist`}>
+              <Icon name="plus" size={14} color={colors.textDim} />
+              <Text style={styles.columnActionTxt}>Playlist</Text>
+            </Pressable>
+          )}
+          <Pressable style={styles.columnAction} onPress={doSave} accessibilityRole="button" accessibilityLabel="Save listening session">
+            <Icon name={saved ? "check" : "star"} size={13} color={saved ? colors.good : colors.textDim} />
+            <Text style={[styles.columnActionTxt, saved && { color: colors.good }]}>{saved ? "Saved" : "Save mix"}</Text>
+          </Pressable>
+        </View>
+
+        <View style={styles.columnQueueArea}>
+          <View style={styles.columnQueueHead}>
+            <Text style={styles.panelTitle}>{panelOpen ? "LISTENING SESSION" : "COMING UP"}</Text>
+            {!panelOpen && nextTitle ? <Text style={styles.columnQueueCount}>{upNext.length} queued</Text> : null}
+          </View>
+          {panelOpen ? (
+            <ScrollView style={styles.columnQueueScroll} contentContainerStyle={styles.columnQueueContent} showsVerticalScrollIndicator={false}>
+              {upNext.length > 0 && <Text style={styles.groupLabel}>UP NEXT · {upNext.length}</Text>}
+              {upNext.map((t, j) => {
+                const real = index + 1 + j;
+                return (
+                  <View key={`${trackKey(t) || "track"}:${real}`} style={styles.qRow} accessibilityLabel={`Up next ${j + 1}: ${t.title}${t.artist ? " by " + t.artist : ""}`}>
+                    {t.art ? <Image source={{ uri: t.art }} style={styles.qArt} /> : <View style={[styles.qArt, styles.artEmpty]}><Icon name="music" size={12} color={colors.textFaint} /></View>}
+                    <Pressable style={{ flex: 1 }} onPress={() => onPlayAt?.(real)} accessibilityRole="button" accessibilityLabel={`Play ${t.title}`}>
+                      <Text style={styles.qTitle} numberOfLines={1}>{t.title}</Text>
+                      <Text style={styles.qArtist} numberOfLines={1}>{t.artist}</Text>
+                    </Pressable>
+                    {onAddToPlaylist && <Pressable style={styles.qAct} onPress={() => onAddToPlaylist({ title: t.title, artist: t.artist, url: t.url, preview: t.preview, art: t.art })} accessibilityRole="button" accessibilityLabel={`Add ${t.title} to a playlist`}><Icon name="plus" size={14} color={colors.textDim} /></Pressable>}
+                    <Pressable style={styles.qAct} onPress={() => onMoveNext?.(real)} accessibilityRole="button" accessibilityLabel={`Play ${t.title} next`}><Icon name="menu" size={14} color={colors.textDim} /></Pressable>
+                    <Pressable style={styles.qAct} onPress={() => onRemove?.(real)} accessibilityRole="button" accessibilityLabel={`Remove ${t.title} from queue`}><Icon name="x" size={13} color={colors.textDim} /></Pressable>
+                  </View>
+                );
+              })}
+              {history.length > 0 && <Text style={styles.groupLabel}>RECENTLY PLAYED</Text>}
+              {history.slice(0, 8).map((t, j) => (
+                <Pressable key={`history:${j}:${trackKey(t) || "track"}`} style={styles.qRow} onPress={() => onPlayTrack?.({ kind: "track", url: t.url, id: t.id, preview: t.preview, title: t.title, artist: t.artist, art: t.art })} accessibilityRole="button" accessibilityLabel={`Play ${t.title} again`}>
+                  {t.art ? <Image source={{ uri: t.art }} style={styles.qArt} /> : <View style={[styles.qArt, styles.artEmpty]}><Icon name="music" size={12} color={colors.textFaint} /></View>}
+                  <View style={{ flex: 1 }}><Text style={styles.qTitle} numberOfLines={1}>{t.title}</Text><Text style={styles.qArtist} numberOfLines={1}>{t.artist}</Text></View>
+                  <Icon name="play" size={13} color={colors.textDim} />
+                </Pressable>
+              ))}
+            </ScrollView>
+          ) : nextTitle ? (
+            <Pressable style={styles.nextCard} onPress={() => onPlayAt?.(index + 1)} accessibilityRole="button" accessibilityLabel={`Play next, ${nextTitle}`}>
+              {upNext[0]?.art ? <Image source={{ uri: upNext[0].art }} style={styles.qArt} /> : <View style={[styles.qArt, styles.artEmpty]}><Icon name="music" size={12} color={colors.textFaint} /></View>}
+              <View style={{ flex: 1 }}><Text style={styles.qTitle} numberOfLines={1}>{nextTitle}</Text><Text style={styles.qArtist} numberOfLines={1}>{upNext[0]?.artist}</Text></View>
+              <Icon name="play" size={13} color={colors.amber} />
+            </Pressable>
+          ) : (
+            <Text style={styles.queueEmpty}>Your queue is clear. Pick another song to keep the session going.</Text>
+          )}
+        </View>
+      </View>
+    );
+  }
+
   // The queue panel opens ONLY on an explicit tap (the queue button or the title),
   // never on hover — hovering the bar was accidentally popping the panel open.
   return (
     <View style={styles.shell}>
+      {web && mediaSurface}
       <View style={styles.bar}>
         {art ? <Image source={{ uri: art }} style={styles.art} /> : <View style={[styles.art, styles.artEmpty]}><Icon name="music" size={16} color={colors.textFaint} /></View>}
         <Pressable style={[styles.meta, styles.metaGrow]} onPress={() => multi && setOpen((o) => !o)} accessibilityRole={multi ? "button" : undefined} accessibilityLabel={multi ? `Now playing ${title}. ${upNext.length} up next. Open queue.` : undefined}>
@@ -341,7 +593,7 @@ export default function PlayerBar({ player, onClose, onIndex, onPlayAt, onRemove
             <Text style={[styles.queueTxt, showVideo && { color: colors.amber }]}>{showVideo ? "Video" : "Video"}</Text>
           </Pressable>
         )}
-        <Ctrl icon="x" onPress={onClose} />
+        <Ctrl icon="x" onPress={closePlayer} />
       </View>
 
       {scrubbable && (
@@ -371,7 +623,7 @@ export default function PlayerBar({ player, onClose, onIndex, onPlayAt, onRemove
 
           <ScrollView style={styles.panelScroll} showsVerticalScrollIndicator={false}>
             {upNext.length > 0 && <Text style={styles.groupLabel}>UP NEXT · {upNext.length}</Text>}
-            {upNext.slice(0, 10).map((t, j) => {
+            {upNext.map((t, j) => {
               const real = index + 1 + j;
               return (
                 <View key={(t.url || t.title) + real} style={styles.qRow} accessibilityLabel={`Up next ${j + 1}: ${t.title}${t.artist ? " by " + t.artist : ""}`}>
@@ -406,6 +658,47 @@ export default function PlayerBar({ player, onClose, onIndex, onPlayAt, onRemove
 }
 
 const styles = StyleSheet.create({
+  columnShell: { flex: 1, minHeight: 0, minWidth: 0, backgroundColor: colors.bgElev, borderRightWidth: 1, borderRightColor: colors.line, overflow: "hidden" },
+  columnHead: { minHeight: 64, flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 16, paddingVertical: 11, borderBottomWidth: 1, borderBottomColor: colors.lineSoft },
+  columnEyebrow: { color: colors.amber, fontFamily: mono, fontSize: 10, fontWeight: "800", letterSpacing: 1.6 },
+  columnHeadTitle: { color: colors.text, fontSize: 16, fontWeight: "900", marginTop: 2 },
+  headIcon: { width: 34, height: 34, borderRadius: 17, alignItems: "center", justifyContent: "center", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line },
+  emptyPlayer: { flex: 1, alignItems: "center", justifyContent: "center", paddingHorizontal: 34, paddingBottom: 70 },
+  emptyDisc: { width: 90, height: 90, borderRadius: 45, alignItems: "center", justifyContent: "center", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, ...shadow.card },
+  emptyTitle: { color: colors.text, fontSize: 18, fontWeight: "900", marginTop: 18 },
+  emptyCopy: { color: colors.textDim, fontSize: 13, lineHeight: 20, textAlign: "center", marginTop: 8, maxWidth: 280 },
+  videoStage: { width: "100%", minHeight: 200, aspectRatio: 16 / 9, maxHeight: 270, alignItems: "center", justifyContent: "center", backgroundColor: "#000", overflow: "hidden" },
+  compactVideoStage: { alignSelf: "center", maxWidth: 480 },
+  videoHost: { ...StyleSheet.absoluteFillObject, minWidth: 200, minHeight: 200, backgroundColor: "#000" },
+  mediaPlaceholder: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center", backgroundColor: colors.bg },
+  heroArt: { width: 132, height: 132, borderRadius: 18, backgroundColor: colors.surfaceAlt, ...shadow.sheet },
+  placeholderShade: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(5,6,10,0.16)" },
+  placeholderLabel: { position: "absolute", left: 12, bottom: 10, flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: "rgba(9,10,14,0.86)", borderWidth: 1, borderColor: colors.line, borderRadius: radius.pill, paddingHorizontal: 9, paddingVertical: 5 },
+  placeholderTxt: { color: colors.amber, fontFamily: mono, fontSize: 9, fontWeight: "800", letterSpacing: 0.8 },
+  columnMeta: { paddingHorizontal: 18, paddingTop: 15, paddingBottom: 8 },
+  columnTitle: { color: colors.text, fontSize: 19, lineHeight: 24, fontWeight: "900", letterSpacing: -0.2 },
+  columnArtist: { color: colors.textDim, fontSize: 14, lineHeight: 20, fontWeight: "700", marginTop: 2 },
+  columnStatus: { color: colors.textFaint, fontFamily: mono, fontSize: 10.5, marginTop: 4 },
+  columnTransport: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 18, paddingHorizontal: 18, paddingVertical: 8 },
+  columnCtrl: { width: 42, height: 42, borderRadius: 21, alignItems: "center", justifyContent: "center", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line },
+  columnPlay: { width: 54, height: 54, borderRadius: 27, alignItems: "center", justifyContent: "center", backgroundColor: colors.amberStrong, borderWidth: 1, borderColor: colors.amber, ...shadow.control },
+  columnScrub: { paddingHorizontal: 12, paddingTop: 2, paddingBottom: 7, alignItems: "flex-end" },
+  columnActions: { flexDirection: "row", flexWrap: "wrap", gap: 7, paddingHorizontal: 14, paddingTop: 4, paddingBottom: 12 },
+  columnAction: { minWidth: 94, flexGrow: 1, height: 34, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingHorizontal: 9, borderRadius: radius.pill, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line },
+  columnActionOn: { borderColor: colors.amber, backgroundColor: "rgba(242,166,90,0.08)" },
+  columnActionTxt: { color: colors.textDim, fontSize: 11, fontWeight: "800" },
+  columnQueueArea: { flex: 1, minHeight: 92, paddingHorizontal: 14, paddingTop: 11, paddingBottom: 12, borderTopWidth: 1, borderTopColor: colors.lineSoft },
+  columnQueueHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 5 },
+  columnQueueCount: { color: colors.textFaint, fontFamily: mono, fontSize: 10 },
+  columnQueueScroll: { flex: 1 },
+  columnQueueContent: { paddingBottom: 12 },
+  nextCard: { flexDirection: "row", alignItems: "center", gap: 10, padding: 9, marginTop: 4, borderRadius: radius.md, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft },
+  queueEmpty: { color: colors.textFaint, fontSize: 12, lineHeight: 18, fontStyle: "italic", marginTop: 7 },
+  miniShell: { flex: 1, minWidth: 0, alignItems: "center", gap: 12, paddingTop: 14, backgroundColor: colors.bgElev, borderRightWidth: 1, borderRightColor: colors.line },
+  miniRestore: { width: 38, height: 38, borderRadius: 19, alignItems: "center", justifyContent: "center", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.amber },
+  miniArt: { width: 48, height: 48, borderRadius: 10, backgroundColor: colors.surfaceAlt },
+  miniTitle: { color: colors.text, fontSize: 11, lineHeight: 15, fontWeight: "800", textAlign: "center", paddingHorizontal: 8 },
+  miniPaused: { color: colors.textFaint, fontFamily: mono, fontSize: 8, letterSpacing: 1.2 },
   shell: { ...(web ? { position: "sticky", top: 0, zIndex: 60 } : null) },
   bar: {
     flexDirection: "row", alignItems: "center", gap: 8,
