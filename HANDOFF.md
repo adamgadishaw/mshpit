@@ -165,6 +165,30 @@ Validation: `npm test` passes with no env, AND with `PIT_DATA_DIR` pointing at a
 nonexistent drive (both 45/45); full `npm run check` green including the web
 export; no temp dirs left behind.
 
+## Song flags on every row + video autoplay fix (2026-07-16, Claude)
+
+Two owner-reported bugs. (1) The wrong-version flag only existed on POPULAR
+SONGS rows; album tracklist rows had none. The report box is now one shared
+renderer used by every song row on the artist page. (2) "Video won't play /
+greyed out": the resolver works fine in prod (real ids, good confidence); the
+cause is browser autoplay policy. Our resolve is async, so by the time
+loadVideoById runs, the user's tap gesture is gone and YouTube loads CUED
+(a dark thumbnail that looks dead). The player now records the play intent on
+every load and retries playVideo() once on the CUED state; if the browser still
+blocks it, the bar honestly shows the play button and one tap starts it.
+
+NEXT UP (owner-requested, needs a dedicated session each, do NOT half-ship):
+1. You-tab analytics page: move most of Discover's user-facing stats to You.
+   Real listening analytics (top songs/genres/most played from the server plays
+   table, not device-local), own gallery, playlists, going-to. Server work:
+   plays aggregation endpoint.
+2. Facebook-style photo viewer: PhotoViewer.jsx exists (fullscreen + arrows).
+   Add per-photo likes (new table photo_likes keyed post_id + photo index,
+   POST route, like counts in the photos projection), open it from TicketStub
+   photo taps, show the poster + like button per photo. Public post photos
+   already flow to the artist rolling gallery (artistFanPhotos -> artistGallery).
+
+
 ## Performance-page identity + crash fix, durable Songs moderation (2026-07-16, Claude)
 
 Owner feedback: features were landing demo-grade (state that dies on refresh, no

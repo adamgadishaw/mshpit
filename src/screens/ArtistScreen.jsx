@@ -87,6 +87,35 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
     const r = await reportTrack({ title, artist: a.name, url: reportUrl.trim() || undefined });
     if (r.ok) { setReportedSongs((m) => ({ ...m, [title]: true })); setReportingSong(null); setReportUrl(""); }
   };
+  // One report box shared by EVERY song row on the page (popular songs and
+  // album tracklists alike), keyed by title.
+  const renderReportBox = (title) => (
+    <View style={styles.songReportBox}>
+      {reportedSongs[title] ? (
+        <Text style={styles.songReportDone}>Reported. A moderator will pin the right video.</Text>
+      ) : (
+        <>
+          <Text style={styles.songReportLabel}>Wrong version playing? Paste the correct YouTube link if you have it, or just send the report.</Text>
+          <TextInput
+            style={styles.songReportInput}
+            placeholder="https://youtube.com/watch?v=... (optional)"
+            placeholderTextColor={colors.textFaint}
+            value={reportUrl}
+            onChangeText={setReportUrl}
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+          <View style={styles.songReportActions}>
+            <Pressable style={styles.songReportBtn} onPress={() => submitSongReport(title)} accessibilityRole="button">
+              <Text style={styles.songReportBtnTxt}>Send report</Text>
+            </Pressable>
+            <Pressable onPress={() => setReportingSong(null)} hitSlop={8}><Text style={styles.songReportCancel}>Cancel</Text></Pressable>
+          </View>
+        </>
+      )}
+    </View>
+  );
+  const toggleReportBox = (title) => { setReportingSong((cur) => (cur === title ? null : title)); setReportUrl(""); };
 
   const [disco, setDisco] = useState(null);
   const [openAlbum, setOpenAlbum] = useState(null);
@@ -456,26 +485,34 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
                     const sr = songRating(a.name, t.title);
                     const isTop = top && top.title === t.title;
                     return (
-                      <View key={ti} style={styles.discTrack}>
-                        <Pressable style={styles.discTrackMain} onPress={() => (t.preview ? playAlbum(al, t.title) : playTrack(t, al.cover))} accessibilityRole="button" accessibilityLabel={`Play ${t.title} from here`}>
-                          <Text style={styles.discTrackNo}>{ti + 1}</Text>
-                          <View style={{ flex: 1 }}>
-                            <View style={styles.discTrackTitleRow}>
-                              {isTop && <Icon name="star" size={11} color={colors.gold} filled />}
-                              <Text style={styles.discTrackTitle} numberOfLines={1}>{t.title}</Text>
+                      <View key={ti}>
+                        <View style={styles.discTrack}>
+                          <Pressable style={styles.discTrackMain} onPress={() => (t.preview ? playAlbum(al, t.title) : playTrack(t, al.cover))} accessibilityRole="button" accessibilityLabel={`Play ${t.title} from here`}>
+                            <Text style={styles.discTrackNo}>{ti + 1}</Text>
+                            <View style={{ flex: 1 }}>
+                              <View style={styles.discTrackTitleRow}>
+                                {isTop && <Icon name="star" size={11} color={colors.gold} filled />}
+                                <Text style={styles.discTrackTitle} numberOfLines={1}>{t.title}</Text>
+                              </View>
+                              {sr.count > 0 && <View style={styles.songMeta}><Stars value={sr.avg} size={10} /><Text style={styles.songAvg}>{sr.avg.toFixed(1)} · {sr.count}</Text></View>}
                             </View>
-                            {sr.count > 0 && <View style={styles.songMeta}><Stars value={sr.avg} size={10} /><Text style={styles.songAvg}>{sr.avg.toFixed(1)} · {sr.count}</Text></View>}
-                          </View>
-                        </Pressable>
-                        <TapStars value={sr.mine} onChange={(n) => rateSong(a.name, t.title, n)} size={15} gap={2} />
-                        {onAddToPlaylist && (
-                          <Pressable style={styles.songAdd} onPress={() => addSong({ title: t.title, preview: t.preview, art: al.cover })} hitSlop={8}>
-                            <Icon name="plus" size={13} color={colors.textDim} />
                           </Pressable>
-                        )}
-                        <Pressable style={styles.songPlay} onPress={() => playTrack(t, al.cover)} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Play ${t.title} as a single`}>
-                          <Icon name="play" size={13} color={colors.amber} />
-                        </Pressable>
+                          <TapStars value={sr.mine} onChange={(n) => rateSong(a.name, t.title, n)} size={15} gap={2} />
+                          {session && (
+                            <Pressable style={styles.songAdd} onPress={() => toggleReportBox(t.title)} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Report the wrong video playing for ${t.title}`}>
+                              <Icon name="flag" size={12} color={reportedSongs[t.title] ? colors.good : colors.textFaint} />
+                            </Pressable>
+                          )}
+                          {onAddToPlaylist && (
+                            <Pressable style={styles.songAdd} onPress={() => addSong({ title: t.title, preview: t.preview, art: al.cover })} hitSlop={8}>
+                              <Icon name="plus" size={13} color={colors.textDim} />
+                            </Pressable>
+                          )}
+                          <Pressable style={styles.songPlay} onPress={() => playTrack(t, al.cover)} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Play ${t.title} as a single`}>
+                            <Icon name="play" size={13} color={colors.amber} />
+                          </Pressable>
+                        </View>
+                        {reportingSong === t.title && renderReportBox(t.title)}
                       </View>
                     );
                   })}
@@ -525,7 +562,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
                     </Pressable>
                     <TapStars value={sr.mine} onChange={(n) => rateSong(a.name, s.title, n)} size={16} gap={3} />
                     {session && (
-                      <Pressable style={styles.songAdd} onPress={() => { setReportingSong((cur) => (cur === s.title ? null : s.title)); setReportUrl(""); }} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Report the wrong video playing for ${s.title}`}>
+                      <Pressable style={styles.songAdd} onPress={() => toggleReportBox(s.title)} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Report the wrong video playing for ${s.title}`}>
                         <Icon name="flag" size={12} color={reported ? colors.good : colors.textFaint} />
                       </Pressable>
                     )}
@@ -538,32 +575,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
                       <Icon name="play" size={13} color={colors.amber} />
                     </Pressable>
                   </View>
-                  {reportingSong === s.title && (
-                    <View style={styles.songReportBox}>
-                      {reported ? (
-                        <Text style={styles.songReportDone}>Reported. A moderator will pin the right video.</Text>
-                      ) : (
-                        <>
-                          <Text style={styles.songReportLabel}>Wrong version playing? Paste the correct YouTube link if you have it, or just send the report.</Text>
-                          <TextInput
-                            style={styles.songReportInput}
-                            placeholder="https://youtube.com/watch?v=... (optional)"
-                            placeholderTextColor={colors.textFaint}
-                            value={reportUrl}
-                            onChangeText={setReportUrl}
-                            autoCapitalize="none"
-                            autoCorrect={false}
-                          />
-                          <View style={styles.songReportActions}>
-                            <Pressable style={styles.songReportBtn} onPress={() => submitSongReport(s.title)} accessibilityRole="button">
-                              <Text style={styles.songReportBtnTxt}>Send report</Text>
-                            </Pressable>
-                            <Pressable onPress={() => setReportingSong(null)} hitSlop={8}><Text style={styles.songReportCancel}>Cancel</Text></Pressable>
-                          </View>
-                        </>
-                      )}
-                    </View>
-                  )}
+                  {reportingSong === s.title && renderReportBox(s.title)}
                 </View>
               );
             })}

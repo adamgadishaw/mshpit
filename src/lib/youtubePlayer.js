@@ -96,6 +96,7 @@ export function useYouTubePlayer(enabled) {
   const [state, setState] = useState({ position: 0, duration: 0, playing: false });
   const [error, setError] = useState(null); // { kind, message }
   const endedCbRef = useRef(null);
+  const wantPlayRef = useRef(false); // a pending "should be playing" intent, survives the autoplay block
   const handlersRef = useRef({}); // { onPrev, onNext, onClose }
   const metaRef = useRef({ title: "" });
   const shownRef = useRef(false);
@@ -217,7 +218,15 @@ export function useYouTubePlayer(enabled) {
           onStateChange: (e) => {
             if (playerInitFailed) return;
             if (e.data === 0) { endedCbRef.current && endedCbRef.current(); }
-            if (e.data === 1) { setError(null); }
+            if (e.data === 1) { setError(null); wantPlayRef.current = false; }
+            // CUED after a load that expected playback = the browser blocked
+            // autoplay (our resolve is async, so the tap's gesture is gone by
+            // the time the video loads). Retry once; if it stays cued, the bar
+            // honestly shows the play button and one tap starts it.
+            if (e.data === 5 && wantPlayRef.current) {
+              wantPlayRef.current = false;
+              try { playerRef.current && playerRef.current.playVideo(); } catch {}
+            }
             const pb = $("pit-ytwin-play"); if (pb) pb.innerHTML = e.data === 1 ? SVG.pause : SVG.play;
           },
         },
@@ -254,6 +263,7 @@ export function useYouTubePlayer(enabled) {
     const p = playerRef.current;
     if (!p || !p.loadVideoById) return;
     videoIdRef.current = videoId;
+    wantPlayRef.current = true; // a load always means "and play it"
     setError(null);
     try { p.loadVideoById({ videoId, startSeconds: Math.max(0, startSec) }); } catch {}
   }, []);
