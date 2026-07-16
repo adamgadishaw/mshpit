@@ -10,20 +10,24 @@
 
 These are blocked on private configuration only. No code work is required.
 
-> **Secrets hygiene:** the Ticketmaster and Resend keys below were pasted into a
-> chat on 2026-07-21, so they are considered exposed and **should be rotated**.
-> They live only in the local gitignored `.env`. `.gitignore` now ignores `.env*`
-> so no backup copy (`.env.bak`, `.env.local`) can ever be committed. Never put a
-> key value in this file or any other tracked file.
+> **Secrets hygiene:** the Ticketmaster, Resend, and Cloudflare R2 keys were all
+> pasted into a chat (2026-07-21 / 2026-07-16), so they are considered exposed and
+> **should be rotated after launch**. They live only in the local gitignored
+> `.env`. `.gitignore` ignores `.env*` so no backup copy can ever be committed.
+> Never put a key value in this file or any other tracked file.
+
+**Live status (prod `/api/health`, 2026-07-16):** `youtubeConfigured` ✅,
+`tourProviderConfigured` ✅ (672 tour dates), `mediaStorageConfigured` ✅,
+`mailConfigured` ❌. Only email remains.
 
 | What | Status | Where | Effect while unset |
 | --- | --- | --- | --- |
-| `TICKETMASTER_KEY` | **Supplied 2026-07-21 and verified live** (Discovery API returned real Coldplay events). In local `.env`. **Still needs setting on Render.** Only the *Consumer key* is used; the Consumer *Secret* is for OAuth and this scraper does not use it. | Render web service env (`sync:false`) | Real tour dates stay empty. Verify with `/api/health`: `tourProviderConfigured` must be `true` and `tourDates` must rise above zero after the first refresh (starts 5s after boot). Never backfill fabricated `g_t_*`/`ca_t_*`/`ct*`/`t1`-`t4` rows to fill the cards. |
-| `RESEND_API_KEY` | **Supplied 2026-07-21, key is valid.** In local `.env`. | Render web service env | Password-reset links are logged server-side instead of emailed. Health reports `mailConfigured: false`. |
-| `MAIL_FROM` | **BLOCKED.** The Resend account has zero verified domains. A send from `noreply@mshpit.com` will be **rejected** even with the key set. Fix: add + verify `mshpit.com` in the Resend dashboard (DNS records at GoDaddy). Until then the only sendable address is `onboarding@resend.dev`, which delivers **only to the Resend account owner**, so it is useless for real users. | Resend dashboard + Render env | Reset email silently fails; links keep getting logged instead. |
-| `MEDIA_ENDPOINT`, `MEDIA_BUCKET`, `MEDIA_REGION`, `MEDIA_ACCESS_KEY_ID`, `MEDIA_SECRET_ACCESS_KEY`, `MEDIA_PUBLIC_BASE_URL` | **STILL OUTSTANDING.** No bucket exists yet. All six are required together (`server/media.js` `REQUIRED_ENV`); the code fails closed until every one is present. Any S3-compatible store works (Cloudflare R2 is the cheapest fit; also S3/Backblaze B2). `MEDIA_ENDPOINT` and `MEDIA_PUBLIC_BASE_URL` must be **HTTPS** with no query/hash/credentials in the URL. | Render web service env | Photo/video uploads fail closed by design. Health reports `mediaStorageConfigured: false`. This is why "I can't add photos or videos": the code path is complete and tested, only the bucket credentials are missing. |
+| `TICKETMASTER_KEY` | ✅ **DONE.** Set on Render and live; `tourProviderConfigured: true`, 672 tour dates scraped. Only the Consumer key is used (the Secret is for OAuth, unused). | Render web service env (`sync:false`) | Was: real tour dates empty. Never backfill fabricated `g_t_*`/`ca_t_*`/`ct*`/`t1`-`t4` rows to fill cards. |
+| `MEDIA_*` (all six: `MEDIA_ENDPOINT`, `MEDIA_BUCKET`, `MEDIA_REGION`, `MEDIA_ACCESS_KEY_ID`, `MEDIA_SECRET_ACCESS_KEY`, `MEDIA_PUBLIC_BASE_URL`) | ✅ **DONE.** Cloudflare R2 bucket `pit-media`. Set on Render; `mediaStorageConfigured: true`. Verified end to end: keys authenticate (S3 PUT 200), public read via r2.dev 200, and a browser CORS preflight from `https://www.mshpit.com` returns `Access-Control-Allow-Methods: PUT, GET, HEAD`. Uploads work. `MEDIA_REGION` is literally `auto` for R2. | Render web service env | Was: photo/video uploads failed closed. |
+| `RESEND_API_KEY` | ⚠️ **Set on Render, key valid**, but see MAIL_FROM. | Render web service env | Reset links logged server-side, not emailed. |
+| `MAIL_FROM` | ❌ **THE LAST GAP.** Two parts: (1) set `MAIL_FROM = Pit <noreply@mshpit.com>` on Render (health shows `mailConfigured: false`, so this or the key is still missing there); (2) **verify `mshpit.com` in Resend** — the account has **zero verified domains**, so any send from `@mshpit.com` is rejected regardless. Add Resend's DNS records in **Cloudflare** (DNS now lives there), set the mail records to **DNS-only / grey cloud**, then click Verify. | Resend dashboard (Cloudflare DNS) + Render env | Reset email silently fails; links keep getting logged instead. |
 
-`YOUTUBE_API_KEY` is already set (health: `youtubeConfigured: true`). Nothing to do.
+`YOUTUBE_API_KEY` is already set (`youtubeConfigured: true`). Nothing to do.
 
 ### Media bucket runbook (Cloudflare R2, chosen 2026-07-21)
 
