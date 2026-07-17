@@ -2629,13 +2629,30 @@ export function StoreProvider({ children }) {
 
   // Top fan photos for an artist's page - only from reviewers who opted in,
   // ranked by the review's likes so the best shots rise (and unknown ones don't).
-  const artistFanPhotos = (name, n = 5) => {
+  // Fan photos for an artist. The SERVER list is the truth (every public post
+  // photo for the artist, forever); the viewer's feed cache only supplements it
+  // so a just-posted photo appears instantly before the next server load.
+  const [artistPhotosSrv, setArtistPhotosSrv] = useState({});
+  const loadArtistPhotos = async (name) => {
     const k = norm(name);
-    return feed
+    if (!k) return;
+    try {
+      const { photos } = await api(`/api/artists/photos?name=${encodeURIComponent(name)}`, { silent: true });
+      if (Array.isArray(photos)) setArtistPhotosSrv((m) => ({ ...m, [k]: photos.map((p) => ({ uri: p.uri, by: p.by, postId: p.postId, source: "fan" })) }));
+    } catch {}
+  };
+  const artistFanPhotos = (name) => {
+    const k = norm(name);
+    const local = feed
       .filter((l) => !removedIds.includes(l.id) && norm(l.artist) === k && l.photosPublic && l.photos?.length)
-      .flatMap((l) => l.photos.map((uri) => ({ uri, by: l.user?.name, likes: l.likes || 0, source: "fan" })))
-      .filter((p) => !isPhotoRemoved(p.uri))
-      .sort((a, b) => b.likes - a.likes);
+      .flatMap((l) => l.photos.map((uri) => ({ uri, by: l.user?.name, source: "fan" })));
+    const srv = artistPhotosSrv[k] || [];
+    const seen = new Set();
+    return [...local, ...srv].filter((p) => {
+      if (!p.uri || seen.has(p.uri) || isPhotoRemoved(p.uri)) return false;
+      seen.add(p.uri);
+      return true;
+    });
   };
 
   // The self-healing 5-pick gallery. Pools, in priority order:
@@ -2696,7 +2713,7 @@ export function StoreProvider({ children }) {
     accountStatus, banUser, unbanUser, suspendUser, liftSuspension, setUserRole, setVerified, setSponsor, loadAdminMembers, adminStats, adminArtistQueue, enrichArtists, purgeArtist, startCatalogSeed, catalogSeedStatus, stopCatalogSeed, catalogSeedRuns, removeLoungeMessage, removeComment, removeFanClubMessage,
     comments, fanClubMsgs, lounge,
     goingFor, isGoing, toggleGoing, attendeesFor,
-    venueReviewsFor, loadVenueReviews, addVenueReview, venueRating, venueTopPhotos, venuePhotos, artistFanPhotos,
+    venueReviewsFor, loadVenueReviews, addVenueReview, venueRating, venueTopPhotos, venuePhotos, artistFanPhotos, loadArtistPhotos,
     artistGallery, isPhotoRemoved, removePhoto, restorePhoto,
     threadMessages, sendDM, loadThread, markThreadRead, inboxThreads, mainThreads, requestThreads, inboxUnread, requestCount,
     track,

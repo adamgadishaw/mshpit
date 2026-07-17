@@ -488,6 +488,28 @@ export const routes = {
   // streams the full song/video. Candidate metadata, embeddability, artist/title,
   // duration, official-channel patterns, and known bad variants are scored before
   // a finite-lived cache entry is accepted.
+  // Every public fan photo posted for this artist, newest first, with the
+  // poster's name. The artist page's rolling gallery reads THIS instead of the
+  // viewer's transient feed cache, so photos never vanish just because the post
+  // scrolled off the first feed page.
+  "GET /api/artists/photos": (ctx) => {
+    const name = clean(ctx.query.name, { max: 120 });
+    if (!name) throw new ApiError(400, "Missing name.");
+    const rows = db.prepare(`SELECT p.id, p.photos, p.created_at, u.name AS by FROM posts p JOIN users u ON u.id = p.user_id
+      WHERE LOWER(p.artist) = LOWER(?) AND p.removed = 0 AND p.photos_public = 1 AND p.photos != '[]'
+      ORDER BY p.created_at DESC LIMIT 40`).all(name);
+    const photos = [];
+    for (const r of rows) {
+      let list = []; try { list = JSON.parse(r.photos || "[]"); } catch {}
+      for (const uri of list) {
+        if (typeof uri === "string" && /^https?:\/\//i.test(uri)) photos.push({ uri, by: r.by, postId: r.id, at: r.created_at });
+        if (photos.length >= 30) break;
+      }
+      if (photos.length >= 30) break;
+    }
+    return { photos };
+  },
+
   // How many times the signed-in user has logged this artist ("you've been in
   // the pit with them N times" on the artist profile).
   "GET /api/artists/seen": (ctx) => {

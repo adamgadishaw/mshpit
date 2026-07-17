@@ -245,6 +245,38 @@ Validation: `npm test` passes with no env, AND with `PIT_DATA_DIR` pointing at a
 nonexistent drive (both 45/45); full `npm run check` green including the web
 export; no temp dirs left behind.
 
+## You tab redesigned + artist gallery actually shows fan photos (2026-07-17, Claude)
+
+Owner feedback: the analytics You tab was "bar graphs and a menu", and fan
+photos were missing from artist profiles even though attaching them to the
+artist's rolling gallery is a core loop.
+
+**Artist gallery, root causes.** (1) artistFanPhotos scanned the viewer's FEED
+CACHE, so a photo vanished the moment its post left the first feed page. Fixed
+with GET /api/artists/photos (every public post photo for the artist, newest
+first, with poster name) which the store loads on artist-page open and merges
+with the feed for instant freshness. (2) Gallery tiles used plain Image, so
+iPhone HEIC shots rendered blank; they now use SmartImage (HEIC proxied to
+JPEG) and tap into the full-screen viewer with per-photo likes. Gallery cap
+raised 5 -> 12. Verified in-browser: GALLERY · 3 with every image decoded.
+
+**You tab, real design pass.** Profile-first like prime MySpace/Facebook:
+- Hero identity card: stage-light glow banner (user's own banner when set),
+  overlapping avatar, badges, points pill, 4 real stats, one-line Wrapped.
+- YOUR SOUND: springy genre DONUT (SoundDonut, lifted from Discover's arcs,
+  reusable in src/components/SoundDonut.jsx) with tap-to-highlight slices +
+  legend; top-3 MOST PLAYED ARTISTS as a medal podium with art; remaining
+  artists and MOST PLAYED SONGS as bars that SWEEP IN (Animated width).
+- Photo wall: feature-first layout (big lead photo + 2x2 side grid), "See all".
+- TOOLS: one compact tile grid replaces the stacked menu rows (the "menu'd to
+  death" complaint); badges on Activity/Inbox tiles.
+- Staggered fade-up entrance per section (Reveal wrapper).
+
+Validation: npm run check green (50 tests, export). Browser-verified: donut
+drawn (16 arcs), podium buttons live, photo wall HEIC decoded via proxy
+(naturalWidth 1600), artist gallery all images decoded.
+
+
 ## You tab is a real analytics page (2026-07-17, Claude)
 
 YouScreen rebuilt as the user's own analytics dashboard, everything DERIVED from

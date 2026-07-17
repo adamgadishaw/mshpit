@@ -38,7 +38,7 @@ function AlbumArt({ uri }) {
 export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFanClub, onOpenPhotos, onEditArtist, onPlay, onAddToPlaylist }) {
   const { session, artistSummary, albumRating, songRating, rateAlbum, rateSong, loadRating,
     isArtistOwner, artistPostsFor, loadArtistPage, addArtistPost, removeArtistPost,
-    artistGallery, removePhoto, artistBadges, artistRank, remoteArtistMeta, resolveArtist,
+    artistGallery, loadArtistPhotos, removePhoto, artistBadges, artistRank, remoteArtistMeta, resolveArtist,
     artistDiscography, artistSeenCount, reportTrack } = useStore();
   const a = artistSummary(artistName);
   const badges = artistBadges(a.name);
@@ -47,7 +47,10 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
   // MusicBrainz on demand if we've never seen this artist, no empty pages).
   const meta = artistMeta(a.name) || remoteArtistMeta(a.name);
   useEffect(() => { if (!artistMeta(a.name) && !remoteArtistMeta(a.name)) resolveArtist(a.name); }, [a.name]);
-  const gallery = artistGallery(a.name, 5);
+  // Pull the artist's fan photos from the server so the rolling gallery shows
+  // every public post photo ever, not just posts sitting in this device's feed.
+  useEffect(() => { loadArtistPhotos(a.name); }, [a.name]); // eslint-disable-line react-hooks/exhaustive-deps
+  const gallery = artistGallery(a.name, 12);
   const canModerate = isStaff(session?.role);
   const genre = a.genre !== "-" ? a.genre : cap(meta?.genre) || "-";
   // Real Spotify top tracks when ingested; hand-seeded SONGS as the fallback.
@@ -413,9 +416,12 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
             <View style={styles.fanGrid}>
               {gallery.map((p, i) => (
                 <View key={p.uri || i} style={styles.fanTile}>
-                  <Image source={{ uri: p.uri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
+                  {/* SmartImage: proxies HEIC (iPhone shots) to JPEG so no tile
+                      ever renders blank, and taps open the full-screen viewer. */}
+                  <SmartImage uri={p.uri} style={StyleSheet.absoluteFill} contain={false}
+                    onPress={() => onOpenPhotos?.(gallery.map((x) => ({ uri: x.uri, by: x.by })), i)} />
                   {p.source !== "fan" && !!p.by && (
-                    <View style={styles.creditTag}><Text style={styles.creditTxt} numberOfLines={1}>{p.by}</Text></View>
+                    <View style={styles.creditTag} pointerEvents="none"><Text style={styles.creditTxt} numberOfLines={1}>{p.by}</Text></View>
                   )}
                   {canModerate && (
                     <Pressable style={styles.modBtn} hitSlop={6} onPress={() => removePhoto(p.uri)}>
