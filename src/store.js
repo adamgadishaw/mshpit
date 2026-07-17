@@ -755,6 +755,20 @@ export function StoreProvider({ children }) {
     // Cross-device history + "friends listening" (best-effort, offline keeps local).
     if (session) api("/api/plays", { method: "POST", body: { title: t.title, artist: t.artist, url: t.url || null, art: t.art || null } }).catch(() => {});
   };
+  // Cross-device listening history: every play writes through to the server, so
+  // on login the SERVER list is the account's truth (a fresh device shows your
+  // real history, not an empty one). Device-local history stays as the fallback
+  // for logged-out listening and rows that predate the plays table.
+  useEffect(() => {
+    if (!session?.id) return;
+    let ok = true;
+    api("/api/me/plays", { silent: true })
+      .then(({ plays }) => { if (ok && Array.isArray(plays) && plays.length) setPlayHistory(plays.map((p) => ({ title: p.title, artist: p.artist, url: p.url, art: p.art, at: p.at }))); })
+      .catch(() => {});
+    return () => { ok = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.id]);
+
   // The latest track each person you follow played (for the "friends listening" rail).
   const [friendsListening, setFriendsListening] = useState([]);
   const loadFriendsListening = async () => {
@@ -2664,7 +2678,7 @@ export function StoreProvider({ children }) {
     artistSeenCount, reportTrack, adminSetTrackVideo, trackOverridesList, removeTrackOverride, loadModerationQueue,
     mediaReactions, loadMediaReactions, toggleMediaReaction,
     playHistory, recordPlay, snapshots, saveSnapshot, removeSnapshot, friendsListening, loadFriendsListening, userPlaylists, deletePlaylist,
-    favoriteGenre, recommendTracks, autoplayQueue, myPlaylists, loadMyPlaylists, createPlaylist, addToPlaylist,
+    favoriteGenre, genreOfArtist, recommendTracks, autoplayQueue, myPlaylists, loadMyPlaylists, createPlaylist, addToPlaylist,
     drafts, saveDraft, deleteDraft,
     visibleFeed, followingFeed, loadMoreFeed, feedHasMore, feedLoadingMore, visibleTourDates, artistSummary, venueSummary,
     localVenues, regionShows, localFeed, recommendedShows, venueCoord,

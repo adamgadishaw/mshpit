@@ -428,6 +428,9 @@ function Root() {
                   onActivity={openNotifications}
                   onInbox={openInbox}
                   onCalendar={() => go({ calendar: true })}
+                  onPlay={openPlayer}
+                  onOpenPhotos={openPhotos}
+                  onOpenArtist={openArtist}
                 />
               )}
             </View>

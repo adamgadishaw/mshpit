@@ -245,6 +245,34 @@ Validation: `npm test` passes with no env, AND with `PIT_DATA_DIR` pointing at a
 nonexistent drive (both 45/45); full `npm run check` green including the web
 export; no temp dirs left behind.
 
+## You tab is a real analytics page (2026-07-17, Claude)
+
+YouScreen rebuilt as the user's own analytics dashboard, everything DERIVED from
+real activity (the old screen hardcoded "7 artists / 5 venues" and a fake
+Wrapped line "punk / 5.0", which violated the no-fabrication rule):
+
+- Stats row: shows logged, DISTINCT artists seen, DISTINCT venues, from the diary.
+- Wrapped: real shows-this-year, most-seen live genre, best-rated night; honest
+  empty copy when the year is blank.
+- YOUR SOUND: total plays, top-genre chips (case-folded so Pop/pop is one
+  genre), MOST PLAYED ARTISTS and MOST PLAYED SONGS with count bars scaled to
+  the #1 row; artist rows open the artist page, song rows play in the player.
+- YOUR GALLERY: every photo the user posted, grid opens the full-screen viewer
+  (per-photo likes included) at the tapped photo.
+- PLAYLISTS (tap to play the whole list) and GOING TO with live countdowns
+  (shared src/lib/showTime.js); both sections hide when empty.
+- SOCIAL / ACCOUNT / DIARY unchanged below.
+
+Play history is now CROSS-DEVICE: on login the store hydrates playHistory from
+GET /api/me/plays (server truth; every play already wrote through), so a fresh
+device shows real charts instead of an empty page. Device-local history stays
+as the logged-out fallback. Store also exports genreOfArtist.
+
+Validation: npm run check green (50 tests, export). Browser-verified live:
+2 shows / 1 artist / 2 venues (real dedupe), Wrapped from real logs, 36 plays
+charted with correct genre merge, gallery opens the viewer.
+
+
 ## Images fixed (HEIC) + Facebook-style photo viewer with per-photo likes (2026-07-17, Claude)
 
 **"Images not loading on the platform," root cause.** iPhone photos upload as
