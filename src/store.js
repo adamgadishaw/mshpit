@@ -664,6 +664,38 @@ export function StoreProvider({ children }) {
 
   // Flag a song whose in-app video is the wrong version; optionally carry the
   // correct YouTube link so an admin can pin it in one tap.
+  // --- Per-photo reactions (full-screen media viewer) ---
+  // Cached by URL so the viewer, feed thumbnails, and artist galleries all read
+  // one truth. Server-authoritative; optimistic flip reconciled on response.
+  const [mediaReactions, setMediaReactions] = useState({});
+  const loadMediaReactions = async (urls) => {
+    const wanted = (urls || []).filter((u) => typeof u === "string" && u.startsWith("http")).slice(0, 24);
+    if (!wanted.length) return;
+    try {
+      const { reactions } = await api("/api/media/reactions", { method: "POST", silent: true, body: { urls: wanted } });
+      if (reactions) setMediaReactions((m) => ({ ...m, ...reactions }));
+    } catch {}
+  };
+  const toggleMediaReaction = async (url, postId) => {
+    if (!session || !url) return { ok: false };
+    setMediaReactions((m) => {
+      const cur = m[url] || { count: 0, mine: false };
+      return { ...m, [url]: { count: Math.max(0, cur.count + (cur.mine ? -1 : 1)), mine: !cur.mine } };
+    });
+    try {
+      const r = await api("/api/media/react", { method: "POST", context: "Liking a photo", body: { url, postId } });
+      setMediaReactions((m) => ({ ...m, [url]: { count: r.count, mine: r.liked } }));
+      return { ok: true };
+    } catch (error) {
+      // Roll back the optimistic flip; the server said no.
+      setMediaReactions((m) => {
+        const cur = m[url] || { count: 0, mine: false };
+        return { ...m, [url]: { count: Math.max(0, cur.count + (cur.mine ? -1 : 1)), mine: !cur.mine } };
+      });
+      return { ok: false, error };
+    }
+  };
+
   const reportTrack = async ({ title, artist, url, note }) => {
     try {
       const r = await api("/api/tracks/report", { method: "POST", context: "Reporting a wrong song version", body: { title, artist, url: url || undefined, note: note || undefined } });
@@ -2630,6 +2662,7 @@ export function StoreProvider({ children }) {
     searchArtistsApi, resolveArtist, remoteArtistMeta, artistDiscography, resolveYouTube, invalidateYouTube, resolveDeezerPreview,
     discoverChart, discoverGenres, discoverCountries, serverTime,
     artistSeenCount, reportTrack, adminSetTrackVideo, trackOverridesList, removeTrackOverride, loadModerationQueue,
+    mediaReactions, loadMediaReactions, toggleMediaReaction,
     playHistory, recordPlay, snapshots, saveSnapshot, removeSnapshot, friendsListening, loadFriendsListening, userPlaylists, deletePlaylist,
     favoriteGenre, recommendTracks, autoplayQueue, myPlaylists, loadMyPlaylists, createPlaylist, addToPlaylist,
     drafts, saveDraft, deleteDraft,

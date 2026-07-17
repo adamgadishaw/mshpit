@@ -16,7 +16,8 @@
           "microphonePermission": false
         }
       ],
-      "expo-sharing"
+      "expo-sharing",
+      "expo-video"
     ],
     "ios": {
       "supportsTablet": true

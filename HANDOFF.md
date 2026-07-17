@@ -245,6 +245,39 @@ Validation: `npm test` passes with no env, AND with `PIT_DATA_DIR` pointing at a
 nonexistent drive (both 45/45); full `npm run check` green including the web
 export; no temp dirs left behind.
 
+## Images fixed (HEIC) + Facebook-style photo viewer with per-photo likes (2026-07-17, Claude)
+
+**"Images not loading on the platform," root cause.** iPhone photos upload as
+HEIC; storage was healthy (200, image/heic, verified end to end) but no browser
+except Safari can DECODE HEIC, so most real posts rendered nothing. Fix:
+src/lib/img.js gains isHeic/displaySrc, and SmartImage renders known-HEIC URLs
+straight through the wsrv.nl transcode (output=jpg, verified against a real
+production photo: 1MB HEIC -> 112KB JPEG). Non-HEIC still loads direct with the
+existing proxy-on-error ladder. No stored data was touched; every already-broken
+photo displays as-is.
+
+**Facebook-style media viewer.** PhotoViewer rebuilt: SmartImage rendering (so
+HEIC works INSIDE the viewer too), arrows + keyboard nav + Esc/backdrop close,
+photo credit, and a per-photo like. Feed thumbnails now open the viewer at the
+tapped photo (TicketStub MediaStrip -> onOpenPhotos, threaded through
+FeedScreen/PostScreen/ProfileScreen); the +N tile opens the set.
+
+**Per-photo reactions are durable and follow the photo.** New media_reactions
+table keyed by the photo's object URL (unique per upload, so likes survive post
+edits/reordering and surface in the artist rolling gallery, which reads the
+same URLs). Routes: POST /api/media/react (auth, toggle, canonicalizes the URL,
+https-only) and POST /api/media/reactions (batch counts, public; `mine` for the
+signed-in viewer). Store: mediaReactions cache + optimistic toggle w/ rollback.
+Regression test: server/media.reactions.test.mjs.
+
+expo-video (GPT's install) is committed as a dependency only; video upload and
+playback remain the NEXT media batch, nothing references it yet.
+
+Validation: npm run check green (50 tests, web export). Browser-verified against
+a real production HEIC: feed thumbnail renders via wsrv, JPEG direct, viewer
+opens from the tap, like toggles to "1 like" and persists server-side.
+
+
 ## YouTube player docked + ToS compliance (2026-07-16, Claude)
 
 The left rail's DISCOVER shortcut list is gone (all destinations exist

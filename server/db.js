@@ -422,6 +422,20 @@ CREATE TABLE IF NOT EXISTS app_meta (
 -- so a wrong match fixed by an admin stays fixed. video_id NULL means an admin
 -- confirmed no correct embeddable video exists (the player then uses the Deezer
 -- preview and says so, instead of playing a wrong version).
+-- Per-photo likes (the Facebook-style media viewer). Keyed by the durable
+-- object URL, which is unique per upload and never reused, so a reaction stays
+-- attached to the right photo even when a post is edited or reordered. post_id
+-- is context (SET NULL on post deletion keeps the photo's count if the image
+-- also lives in a gallery).
+CREATE TABLE IF NOT EXISTS media_reactions (
+  media_url  TEXT NOT NULL,
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  post_id    TEXT,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (media_url, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_media_reactions_url ON media_reactions(media_url);
+
 CREATE TABLE IF NOT EXISTS track_overrides (
   key        TEXT PRIMARY KEY,
   title      TEXT NOT NULL,

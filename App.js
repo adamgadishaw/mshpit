@@ -310,7 +310,7 @@ function Root() {
     rest.splice(curPos + 1, 0, item);
     return { ...p, list: rest, index: curPos };
   });
-  const openPhotos = (images, index = 0) => go({ photos: { images, index } });
+  const openPhotos = (images, index = 0, postId = null) => go({ photos: { images, index, postId } });
   const openAddToPlaylist = (track) => requireAuth(() => go({ addToPlaylist: track }));
   const openFollowList = (userId, mode) => go({ followList: { userId, mode } });
   const reviewShow = (log) => requireAuth(() => go({ logging: true, prefill: { artist: log.artist, venue: log.venue, city: log.city } }));
@@ -322,7 +322,7 @@ function Root() {
   let overlay = null;
   // Auth is a modal that must win over any page overlay — requireAuth() can fire
   // from inside a venue/show/profile page, and the login sheet has to surface.
-  if (nav.photos) overlay = <PhotoViewer photos={nav.photos.images} index={nav.photos.index} onClose={back} />;
+  if (nav.photos) overlay = <PhotoViewer photos={nav.photos.images} index={nav.photos.index} postId={nav.photos.postId} onClose={back} />;
   else if (nav.addToPlaylist) overlay = <PlaylistPickerScreen track={nav.addToPlaylist} onClose={back} />;
   else if (nav.followList) overlay = <FollowListScreen userId={nav.followList.userId} mode={nav.followList.mode} onClose={back} onOpenProfile={openProfile} />;
   else if (nav.auth) overlay = <AuthScreen initialMode={nav.authMode} onDone={(mode) => { if (mode === "signup") { if (web) save("pit.welcomePending", true); replace({ pickArtists: true }); } else back(); }} onCancel={back} />;
@@ -351,7 +351,7 @@ function Root() {
   else if (nav.terms) overlay = <TermsScreen onClose={back} />;
   else if (nav.lounge) overlay = <LoungeScreen log={nav.lounge} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} />;
   else if (nav.openLog) overlay = <ShowScreen log={nav.openLog} onClose={back} onPreview={showPreview} onReview={reviewShow} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenLounge={(log) => go({ lounge: log })} onRequireAuth={() => go({ auth: true })} />;
-  else if (nav.post) overlay = <PostScreen log={nav.post} onClose={back} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenShow={openShow} onReport={(log) => requireAuth(() => go({ reporting: log }))} onEdit={openPostEditor} />;
+  else if (nav.post) overlay = <PostScreen log={nav.post} onClose={back} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenShow={openShow} onReport={(log) => requireAuth(() => go({ reporting: log }))} onEdit={openPostEditor} onOpenPhotos={openPhotos} />;
   else if (nav.badges) overlay = <BadgeLegendScreen userId={nav.badges.userId} onClose={back} />;
   else if (nav.topRated) overlay = <TopRatedScreen onClose={back} onOpen={openShow} />;
   else if (nav.admin) overlay = <AdminScreen onClose={back} />;
@@ -409,6 +409,7 @@ function Root() {
                   onOpenMenu={() => go({ menu: true })}
                   onReport={(log) => requireAuth(() => go({ reporting: log }))}
                   onEdit={openPostEditor}
+                  onOpenPhotos={openPhotos}
                 />
               )}
               {tab === "search" && <SearchScreen onOpen={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenProfile={openProfile} />}

@@ -46,18 +46,20 @@ const relativeTime = (timestamp) => {
 };
 
 // Real photo thumbnails only, never empty placeholder tiles (that reads as a
-// broken/prototype UI). Renders nothing when the post has no photos.
-function MediaStrip({ photos }) {
+// broken/prototype UI). Renders nothing when the post has no photos. Tapping a
+// thumbnail opens THAT photo full screen (Facebook-style viewer, per-photo
+// likes); the +N tile opens the set at the first hidden photo.
+function MediaStrip({ photos, onOpenPhoto }) {
   const shown = photos.slice(0, 4);
   return (
     <View style={styles.media}>
       {shown.map((uri, i) => (
-        <SmartImage key={i} uri={uri} style={styles.mediaTile} contain={false} />
+        <SmartImage key={i} uri={uri} style={styles.mediaTile} contain={false} onPress={onOpenPhoto ? () => onOpenPhoto(i) : undefined} />
       ))}
       {photos.length > 4 && (
-        <View style={[styles.mediaTile, styles.mediaMoreTile]}>
+        <Pressable style={[styles.mediaTile, styles.mediaMoreTile]} onPress={onOpenPhoto ? () => onOpenPhoto(4) : undefined} accessibilityRole="button" accessibilityLabel={`Show ${photos.length - 4} more photos`}>
           <Text style={styles.mediaMore}>+{photos.length - 4}</Text>
-        </View>
+        </Pressable>
       )}
     </View>
   );
@@ -66,7 +68,7 @@ function MediaStrip({ photos }) {
 // Review-forward feed card: the review is the centerpiece. Artist / venue / date
 // sit on a ticket-stub line below, the score reads at a glance, and the footer
 // opens the Afterparty (like + comments) for that concert.
-export default function TicketStub({ log, onOpen, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenVenue, onReport, onEdit }) {
+export default function TicketStub({ log, onOpen, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenVenue, onReport, onEdit, onOpenPhotos }) {
   const openComments = () => (onComment || onOpen)?.(log);
   const { userById, likeInfo, toggleLike, commentsFor, session, userBadges } = useStore();
   const author = userById?.(log.userId) || { initials: log.user?.initials, name: log.user?.name, handle: log.user?.handle };
@@ -162,7 +164,7 @@ export default function TicketStub({ log, onOpen, onComment, onPreview, onOpenPr
         ) : (
           <Text style={styles.noReview}>Logged this show - no review yet. Tap to open.</Text>
         )}
-        {log.photos?.length > 0 && <MediaStrip photos={log.photos} />}
+        {log.photos?.length > 0 && <MediaStrip photos={log.photos} onOpenPhoto={onOpenPhotos ? (i) => onOpenPhotos(log.photos.map((uri) => ({ uri, by: log.user?.name })), i, log.id) : undefined} />}
       </Pressable>
 
       {/* perforated ticket-stub line */}

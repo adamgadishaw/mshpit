@@ -2,7 +2,7 @@ import { useState } from "react";
 import { View, Image, StyleSheet, Pressable } from "react-native";
 import { colors } from "../theme";
 import Icon from "./Icon";
-import { proxied, isHttp } from "../lib/img";
+import { proxied, isHttp, displaySrc } from "../lib/img";
 
 // Fits any image (portrait or landscape) without ugly cropping: a blurred,
 // zoomed copy fills the frame behind the real image shown in full. Apple/Spotify
@@ -10,9 +10,9 @@ import { proxied, isHttp } from "../lib/img";
 // Load ladder: direct -> wsrv.nl proxy (rescues hotlink/CORS-blocked hosts) ->
 // clean on-theme placeholder. Never a broken tile.
 export default function SmartImage({ uri, style, contain = true, onPress }) {
-  const [stage, setStage] = useState(0); // 0 direct, 1 proxy, 2 dead
+  const [stage, setStage] = useState(0); // 0 direct (HEIC pre-transcoded), 1 proxy, 2 dead
   const fail = () => setStage((s) => s + 1);
-  const src = stage === 1 && isHttp(uri) ? proxied(uri) : uri;
+  const src = stage === 1 && isHttp(uri) ? proxied(uri) : displaySrc(uri);
   const inner = stage > 1 || !uri ? (
     <View style={[StyleSheet.absoluteFill, styles.fallback]}>
       <Icon name="music" size={22} color={colors.textFaint} />

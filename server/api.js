@@ -342,6 +342,19 @@ async function enrichArtistFromDeezer(name) {
   return true;
 }
 
+// A likeable media URL: real https, sane length, no credentials, hash dropped
+// (the URL is the reaction's primary key, so it has to be canonical).
+function cleanMediaReactionUrl(value) {
+  const raw = clean(value, { max: 600 });
+  if (!raw) return null;
+  try {
+    const u = new URL(raw);
+    if (u.protocol !== "https:" || u.username || u.password) return null;
+    u.hash = "";
+    return u.toString();
+  } catch { return null; }
+}
+
 // route table: "METHOD /path" -> handler(ctx) ; :params exposed as ctx.params
 export const routes = {
   // ---- health ---- (youtube config flag is a safe diagnostic, no secrets)
@@ -370,6 +383,36 @@ export const routes = {
     const u = requireUser(ctx);
     limit(ctx, "media-presign", 30, 10 * 60 * 1000);
     return createMediaPresign({ userId: u.id, body: ctx.body });
+  },
+
+  // ---- per-photo reactions (the full-screen media viewer) ----
+  // Keyed by the media URL itself: unique per upload, so likes survive post
+  // edits/reordering and follow the photo into artist galleries.
+  "POST /api/media/react": (ctx) => {
+    const u = requireUser(ctx);
+    limit(ctx, "media-react", 120, 10 * 60 * 1000);
+    const url = cleanMediaReactionUrl(ctx.body?.url);
+    if (!url) throw new ApiError(400, "That photo can't be liked.", "VALIDATION_FAILED");
+    const postId = clean(ctx.body?.postId, { max: 60 }) || null;
+    const existing = db.prepare("SELECT 1 FROM media_reactions WHERE media_url=? AND user_id=?").get(url, u.id);
+    if (existing) db.prepare("DELETE FROM media_reactions WHERE media_url=? AND user_id=?").run(url, u.id);
+    else db.prepare("INSERT INTO media_reactions (media_url,user_id,post_id,created_at) VALUES (?,?,?,?)").run(url, u.id, postId, now());
+    const count = db.prepare("SELECT COUNT(*) c FROM media_reactions WHERE media_url=?").get(url).c;
+    return { liked: !existing, count };
+  },
+
+  // Batch counts for a photo set (one call when the viewer opens). Public read;
+  // `mine` is filled only for a signed-in viewer.
+  "POST /api/media/reactions": (ctx) => {
+    limit(ctx, "media-react-read", 240, 10 * 60 * 1000);
+    const urls = (Array.isArray(ctx.body?.urls) ? ctx.body.urls : []).map(cleanMediaReactionUrl).filter(Boolean).slice(0, 24);
+    const out = {};
+    for (const url of urls) {
+      const count = db.prepare("SELECT COUNT(*) c FROM media_reactions WHERE media_url=?").get(url).c;
+      const mine = ctx.user ? !!db.prepare("SELECT 1 FROM media_reactions WHERE media_url=? AND user_id=?").get(url, ctx.user.id) : false;
+      out[url] = { count, mine };
+    }
+    return { reactions: out };
   },
 
   // ---- server clock ---- authoritative time so the calendar + scheduling don't
