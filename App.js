@@ -120,7 +120,9 @@ function Root() {
   // Persisted so the player survives a reload (switching themes reloads the page):
   // the bar comes back with its queue instead of vanishing mid-listen.
   const [player, setPlayer] = useState(() => (web ? load("pit.player", null) : null));
-  const [playerMinimized, setPlayerMinimized] = useState(false);
+  // The player starts COLLAPSED (a slim rail on desktop, hidden on mobile) and
+  // opens itself the moment something plays; collapsing pauses (YouTube terms).
+  const [playerMinimized, setPlayerMinimized] = useState(true);
   useEffect(() => { if (web) save("pit.player", player); }, [player]);
   const [acctOpen, setAcctOpen] = useState(false);
   // First-run welcome (Spotify + find-your-people). Armed at signup, shown once the
@@ -172,7 +174,8 @@ function Root() {
   };
   const stopAndClearPlayback = () => {
     setPlayer(null);
-    setPlayerMinimized(false);
+    // Back to the slim idle rail: an empty expanded column is just dead space.
+    setPlayerMinimized(true);
     if (web) {
       save("pit.player", null);
       try { window.localStorage.removeItem("pit.playpos"); } catch {}
@@ -486,7 +489,7 @@ function Root() {
                 <PlayerBar
                   player={player}
                   layout={wide ? "column" : "bar"}
-                  minimized={wide && playerMinimized}
+                  minimized={playerMinimized}
                   obscured={playerObscured}
                   onMinimize={() => setPlayerMinimized(true)}
                   onRestore={() => setPlayerMinimized(false)}

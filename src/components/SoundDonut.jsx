@@ -37,15 +37,35 @@ export default memo(function SoundDonut({ data = [], size = 180, centerTop, cent
       const frac = Math.min(0.9999, Math.max(0.004, (d.count || 0) / total));
       const a1 = a0 + frac * Math.PI * 2;
       const s = a0 + GAP / 2, e = Math.max(a0 + GAP / 2 + 0.02, a1 - GAP / 2);
+      const seg = { label: d.label, count: d.count, color: DONUT_PALETTE[i % DONUT_PALETTE.length], d: arcPath(cx, cy, R, s, e), a0, a1 };
       a0 = a1;
-      return { label: d.label, count: d.count, color: DONUT_PALETTE[i % DONUT_PALETTE.length], d: arcPath(cx, cy, R, s, e) };
+      return seg;
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sig, size]);
 
+  // Hover highlights (web): one mousemove on the container, hit-tested by angle
+  // and radius, because the SVG library only forwards click. Slices light up as
+  // the cursor sweeps the ring, no clicking needed; touch still taps.
+  const onMouseMove = web ? (e) => {
+    const node = e.currentTarget;
+    if (!node?.getBoundingClientRect) return;
+    const rect = node.getBoundingClientRect();
+    const me = e.nativeEvent || e;
+    const dx = me.clientX - (rect.left + rect.width / 2);
+    const dy = me.clientY - (rect.top + rect.height / 2);
+    const r = Math.hypot(dx, dy);
+    if (r < R - STROKE || r > R + STROKE) { setActive(null); return; }
+    let a = Math.atan2(dy, dx);
+    while (a < -Math.PI / 2) a += Math.PI * 2;
+    const hit = segs.find((s) => a >= s.a0 && a <= s.a1);
+    setActive(hit ? hit.label : null);
+  } : undefined;
+  const onMouseLeave = web ? () => setActive(null) : undefined;
+
   const activeSeg = segs.find((s) => s.label === active);
   return (
-    <Animated.View style={{ width: size, height: size, opacity: grow, transform: [{ scale }] }}>
+    <Animated.View style={{ width: size, height: size, opacity: grow, transform: [{ scale }] }} onMouseMove={onMouseMove} onMouseLeave={onMouseLeave}>
       <Svg width={size} height={size}>
         <Circle cx={cx} cy={cy} r={R} stroke={colors.bgElev} strokeWidth={STROKE} fill="none" opacity={0.5} />
         {segs.map((s, i) => {

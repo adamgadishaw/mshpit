@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { View, Text, StyleSheet, Pressable, Image, ScrollView, Platform } from "react-native";
+import { View, Text, StyleSheet, Pressable, Image, ScrollView, Platform, useWindowDimensions } from "react-native";
 import { colors, radius, mono, shadow } from "../theme";
 import { useStore } from "../store";
 import { useYouTubePlayer } from "../lib/youtubePlayer";
@@ -135,6 +135,7 @@ export default function PlayerBar({
 }) {
   const { resolveYouTube, invalidateYouTube, resolveDeezerPreview } = useStore();
   const column = layout === "column";
+  const { width: winWidth } = useWindowDimensions();
   const list = player && Array.isArray(player.list) ? player.list : [];
   const index = Math.max(0, Math.min(player?.index || 0, list.length - 1));
   const cur = list[index];
@@ -344,13 +345,29 @@ export default function PlayerBar({
 
   if (!cur) {
     if (!column) return null;
+    // Idle column: collapsed by default (App starts it minimized), so an empty
+    // session is a slim rail, not a quarter of the screen. It expands on play.
+    if (minimized) {
+      return (
+        <View style={styles.miniShell}>
+          <Pressable style={styles.miniRestore} onPress={onRestore} accessibilityRole="button" accessibilityLabel="Open the player panel">
+            <Icon name="chevron-right" size={18} color={colors.amber} />
+          </Pressable>
+          <View style={[styles.miniArt, styles.artEmpty]}><Icon name="music" size={18} color={colors.textDim} /></View>
+          <Text style={styles.miniTitle}>PLAYER</Text>
+        </View>
+      );
+    }
     return (
       <View style={styles.columnShell}>
         <View style={styles.columnHead}>
-          <View>
+          <View style={{ flex: 1 }}>
             <Text style={styles.columnEyebrow}>PIT PLAYER</Text>
             <Text style={styles.columnHeadTitle}>Your listening session</Text>
           </View>
+          <Pressable style={styles.headIcon} onPress={onMinimize} accessibilityRole="button" accessibilityLabel="Collapse the player panel">
+            <Icon name="chevron-left" size={16} color={colors.textDim} />
+          </Pressable>
         </View>
         <View style={styles.emptyPlayer}>
           <View style={styles.emptyDisc}><Icon name="music" size={34} color={colors.amber} /></View>
@@ -407,15 +424,21 @@ export default function PlayerBar({
     : unplayable ? "Not available to play"
     : artist + (ytActive ? "  ·  YouTube" : previewSrc ? "  ·  preview" : "");
 
+  // Compact (mobile) rule: the 200px video stage only takes space while the
+  // video is actually on screen. Preview audio or paused video collapses it to
+  // zero height (the host div stays mounted so the engine survives), which is
+  // what keeps the phone layout usable. The desktop column always shows the
+  // stage; it has the room and the placeholder art looks intentional there.
+  const compactStageCollapsed = !column && !(ytActive && showVideo);
   const mediaSurface = (
-    <View style={[styles.videoStage, !column && styles.compactVideoStage]}>
+    <View style={[styles.videoStage, !column && styles.compactVideoStage, compactStageCollapsed && styles.compactStageCollapsed]}>
       <View
         nativeID={youtubeHostId}
         style={[styles.videoHost, { opacity: ytActive && showVideo ? 1 : 0 }]}
         pointerEvents={ytActive && showVideo ? "auto" : "none"}
         accessibilityLabel={`YouTube player for ${title}`}
       />
-      {(!ytActive || !showVideo) && (
+      {(!ytActive || !showVideo) && !compactStageCollapsed && (
         <View style={styles.mediaPlaceholder} pointerEvents="none">
           {art ? <Image source={{ uri: art }} style={styles.heroArt} /> : <View style={[styles.heroArt, styles.artEmpty]}><Icon name="music" size={34} color={colors.amber} /></View>}
           <View style={styles.placeholderShade} />
@@ -438,6 +461,22 @@ export default function PlayerBar({
         <Text style={styles.miniTitle} numberOfLines={3}>{title}</Text>
         <Text style={styles.miniPaused}>PAUSED</Text>
       </View>
+    );
+  }
+
+  // Mobile collapsed: one slim row instead of bar + video + scrubber eating half
+  // the phone. Collapsing paused playback (YouTube terms: no hidden audio), so
+  // the row honestly reads PAUSED; tapping it restores and you resume from there.
+  if (minimized) {
+    return (
+      <Pressable style={styles.miniRowShell} onPress={onRestore} accessibilityRole="button" accessibilityLabel={`Open player. ${title} is paused.`}>
+        {art ? <Image source={{ uri: art }} style={styles.miniRowArt} /> : <View style={[styles.miniRowArt, styles.artEmpty]}><Icon name="music" size={14} color={colors.textFaint} /></View>}
+        <View style={{ flex: 1, minWidth: 0 }}>
+          <Text style={styles.title} numberOfLines={1}>{title}</Text>
+          <Text style={styles.sub} numberOfLines={1}>{artist ? artist + "  ·  " : ""}PAUSED</Text>
+        </View>
+        <View style={styles.miniRowBtn}><Icon name="chevron-down" size={16} color={colors.amber} /></View>
+      </Pressable>
     );
   }
 
@@ -593,13 +632,16 @@ export default function PlayerBar({
             <Text style={[styles.queueTxt, showVideo && { color: colors.amber }]}>{showVideo ? "Video" : "Video"}</Text>
           </Pressable>
         )}
+        <Ctrl icon="chevron-down" onPress={minimizePlayer} />
         <Ctrl icon="x" onPress={closePlayer} />
       </View>
 
       {scrubbable && (
         <View style={styles.scrubRow}>
           <View style={{ flex: 1 }}><Scrubber posMs={posMs} durMs={durMs} onSeek={onSeek} live /></View>
-          <VolumeControl volume={volume} onChange={setVol} />
+          {/* Phones have hardware volume; the slider only earns its width on
+              wider screens. */}
+          {winWidth >= 700 && <VolumeControl volume={volume} onChange={setVol} />}
         </View>
       )}
 
@@ -668,7 +710,10 @@ const styles = StyleSheet.create({
   emptyTitle: { color: colors.text, fontSize: 18, fontWeight: "900", marginTop: 18 },
   emptyCopy: { color: colors.textDim, fontSize: 13, lineHeight: 20, textAlign: "center", marginTop: 8, maxWidth: 280 },
   videoStage: { width: "100%", minHeight: 200, aspectRatio: 16 / 9, maxHeight: 270, alignItems: "center", justifyContent: "center", backgroundColor: "#000", overflow: "hidden" },
-  compactVideoStage: { alignSelf: "center", maxWidth: 480 },
+  compactVideoStage: { alignSelf: "center", maxWidth: 480, width: "100%" },
+  // Collapsed-but-mounted: zero footprint while no video is on screen (the
+  // engine's host div must stay in the DOM to survive pause/resume).
+  compactStageCollapsed: { minHeight: 0, maxHeight: 0, height: 0, aspectRatio: undefined },
   videoHost: { ...StyleSheet.absoluteFillObject, minWidth: 200, minHeight: 200, backgroundColor: "#000" },
   mediaPlaceholder: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center", backgroundColor: colors.bg },
   heroArt: { width: 132, height: 132, borderRadius: 18, backgroundColor: colors.surfaceAlt, ...shadow.sheet },
@@ -699,6 +744,9 @@ const styles = StyleSheet.create({
   miniArt: { width: 48, height: 48, borderRadius: 10, backgroundColor: colors.surfaceAlt },
   miniTitle: { color: colors.text, fontSize: 11, lineHeight: 15, fontWeight: "800", textAlign: "center", paddingHorizontal: 8 },
   miniPaused: { color: colors.textFaint, fontFamily: mono, fontSize: 8, letterSpacing: 1.2 },
+  miniRowShell: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: colors.bgElev, borderBottomWidth: 1, borderBottomColor: colors.line, paddingHorizontal: 12, paddingVertical: 7, minHeight: 52 },
+  miniRowArt: { width: 36, height: 36, borderRadius: 7, backgroundColor: colors.surfaceAlt },
+  miniRowBtn: { width: 32, height: 32, borderRadius: 16, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.amber, backgroundColor: colors.surface },
   shell: { ...(web ? { position: "sticky", top: 0, zIndex: 60 } : null) },
   bar: {
     flexDirection: "row", alignItems: "center", gap: 8,

@@ -51,20 +51,42 @@ const GenreDonut = memo(function GenreDonut({ data, size = 200, centerTop, cente
       const frac = Math.min(0.9999, Math.max(0.001, d.pct));
       const a1 = a0 + frac * Math.PI * 2;
       const s = a0 + GAP / 2, e = Math.max(a0 + GAP / 2 + 0.02, a1 - GAP / 2);
+      const seg = { genre: d.genre, color: PALETTE[i % PALETTE.length], d: arcPath(cx, cy, R, s, e), a0, a1 };
       a0 = a1;
-      return { genre: d.genre, color: PALETTE[i % PALETTE.length], d: arcPath(cx, cy, R, s, e) };
+      return seg;
     });
   }, [sig, size]);
 
-  const activeColor = (segs.find((s) => s.genre === activeGenre) || {}).color || PALETTE[0];
+  // Hover preview (web): slices light up under the cursor with no click, via one
+  // angle/radius hit-test on the container (the SVG library only forwards click).
+  // Clicking still SELECTS the genre and loads its chart below; hover only peeks.
+  const [hover, setHover] = useState(null);
+  const onMouseMove = web ? (e) => {
+    const node = e.currentTarget;
+    if (!node?.getBoundingClientRect) return;
+    const rect = node.getBoundingClientRect();
+    const me = e.nativeEvent || e;
+    const dx = me.clientX - (rect.left + rect.width / 2);
+    const dy = me.clientY - (rect.top + rect.height / 2);
+    const r = Math.hypot(dx, dy);
+    if (r < R - STROKE || r > R + STROKE) { setHover(null); return; }
+    let a = Math.atan2(dy, dx);
+    while (a < -Math.PI / 2) a += Math.PI * 2;
+    const hit = segs.find((s) => a >= s.a0 && a <= s.a1);
+    setHover(hit ? hit.genre : null);
+  } : undefined;
+
+  // The lit slice: what the cursor is over, else the clicked selection.
+  const lit = hover || activeGenre;
+  const litColor = (segs.find((s) => s.genre === lit) || {}).color || PALETTE[0];
   return (
-    <Animated.View style={{ width: size, height: size, opacity: grow, transform: [{ scale }] }}>
+    <Animated.View style={{ width: size, height: size, opacity: grow, transform: [{ scale }] }} onMouseMove={onMouseMove} onMouseLeave={web ? () => setHover(null) : undefined}>
       <Svg width={size} height={size}>
         {/* faint track so the ring reads as a full circle even with gaps */}
         <Circle cx={cx} cy={cy} r={R} stroke={colors.bgElev} strokeWidth={STROKE} fill="none" opacity={0.5} />
         {segs.map((s, i) => {
-          const on = s.genre === activeGenre;
-          const dim = activeGenre && activeGenre !== "Other" && !on;
+          const on = s.genre === lit;
+          const dim = lit && lit !== "Other" && !on;
           return (
             <Path
               key={s.genre + i}
@@ -81,10 +103,10 @@ const GenreDonut = memo(function GenreDonut({ data, size = 200, centerTop, cente
         })}
       </Svg>
       <View style={[styles.donutCenter, styles.noPointerEvents]}>
-        <Text style={[styles.donutNum, activeGenre && activeGenre !== "Other" && { color: activeColor, fontSize: 20 }]} numberOfLines={1}>
-          {activeGenre && activeGenre !== "Other" ? activeGenre : centerTop}
+        <Text style={[styles.donutNum, lit && lit !== "Other" && { color: litColor, fontSize: 20 }]} numberOfLines={1}>
+          {lit && lit !== "Other" ? lit : centerTop}
         </Text>
-        <Text style={styles.donutSub}>{activeGenre && activeGenre !== "Other" ? "tap to explore" : centerSub}</Text>
+        <Text style={styles.donutSub}>{lit && lit !== "Other" ? (hover && hover !== activeGenre ? "click to explore" : "tap to explore") : centerSub}</Text>
       </View>
     </Animated.View>
   );

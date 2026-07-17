@@ -277,6 +277,34 @@ drawn (16 arcs), podium buttons live, photo wall HEIC decoded via proxy
 (naturalWidth 1600), artist gallery all images decoded.
 
 
+## Donut hover, idle player rail, mobile footprint (2026-07-17, Claude)
+
+Three interaction fixes, all browser-verified:
+
+- **Both genre donuts respond to HOVER on web** (Discover + You tab): one
+  mousemove listener on the container, hit-tested by angle and radius, because
+  react-native-svg only forwards click. Slices light up as the cursor sweeps
+  the ring and the center shows the hovered genre + count; clicking still
+  selects (Discover loads that genre's chart). Verified live: center flipped
+  to "Hip Hop · 2 plays" on hover with no click.
+- **The player column stays out of the way when idle.** It already started
+  collapsed (82px rail) and auto-expands on play; closing playback now returns
+  it to the collapsed rail instead of expanding an EMPTY column (the old
+  setPlayerMinimized(false) in stopAndClearPlayback was backwards). Collapsing
+  while a song plays still pauses it (the engine is gated on !minimized), which
+  is also the YouTube-terms behavior.
+- **Mobile player footprint: 11% of the screen, was ~40%.** The compact layout
+  always reserved a 200px+ video stage even for preview audio or paused video.
+  The stage now collapses to zero height while no video is on screen (the host
+  div stays mounted so the engine survives pause/resume; a PLAYING video still
+  always shows at full size per YouTube's terms). The volume slider also hides
+  under 700px width - phones have hardware volume. Measured live at 375x812:
+  the whole playing player block is 91px.
+
+Validation: npm run check green (50 tests, export); measured/tested in the
+browser at mobile and desktop sizes.
+
+
 ## You tab is a real analytics page (2026-07-17, Claude)
 
 YouScreen rebuilt as the user's own analytics dashboard, everything DERIVED from
