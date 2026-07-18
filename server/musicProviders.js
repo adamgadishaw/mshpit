@@ -184,7 +184,7 @@ async function inBatches(items, size, mapper) {
 }
 
 export async function getDeezerDiscography(name, { fetchImpl = fetch } = {}) {
-  const key = `deezer:discography:v2:${normName(name)}`;
+  const key = `deezer:discography:v3:${normName(name)}`;
   const cached = readProviderCache(key);
   if (cached?.fresh) return { ...cached.data, status: "cached", stale: false };
   try {
@@ -192,6 +192,10 @@ export async function getDeezerDiscography(name, { fetchImpl = fetch } = {}) {
     if (!identity) return cached ? { ...cached.data, status: "stale", stale: true } : { albums: [], status: "not_found", stale: false };
     const artist = identity.artist;
     persistDeezerIdentity(name, artist.id);
+    // A deep popular-songs chart (up to 25) so the artist page isn't cut off at
+    // ~10. Resolved live for ANY artist, not just ones the seeder pre-enriched.
+    const topData = await providerJson("Deezer", `https://api.deezer.com/artist/${artist.id}/top?limit=25`, { fetchImpl });
+    const topTracks = (topData?.data || []).map((t) => ({ id: t.id || null, title: t.title, album: t.album?.title || null, duration: t.duration || 0 }));
     const albumData = await providerJson("Deezer", `https://api.deezer.com/artist/${artist.id}/albums?limit=100`, { fetchImpl });
     const seen = new Set();
     const picks = (albumData?.data || [])
@@ -213,10 +217,11 @@ export async function getDeezerDiscography(name, { fetchImpl = fetch } = {}) {
     const data = {
       artist: { id: artist.id, name: artist.name, fans: artist.nb_fan, photo: artist.picture_xl || artist.picture_big || null },
       albums: fullAlbums,
+      topTracks,
       identity: { confidence: identity.confidence, reason: identity.reason },
     };
     // Empty/partial provider failures never replace a last-known-good catalogue.
-    if (data.albums.length) writeProviderCache(key, data, DEEZER_DISCOGRAPHY_TTL_MS);
+    if (data.albums.length || data.topTracks.length) writeProviderCache(key, data, DEEZER_DISCOGRAPHY_TTL_MS);
     return { ...data, status: "fresh", stale: false };
   } catch (error) {
     if (cached) return { ...cached.data, status: "stale", stale: true };

@@ -7,7 +7,7 @@ import Icon from "../components/Icon";
 
 const PAGE = 8; // load the feed in pages, like the big apps - never all at once
 
-export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, homeCity, unread = 0, notifUnread = 0, newUser = false, hideHeaderActions = false, onLoadMore, hasMore = false, loadingMore = false, onOpen, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onReport, onEdit, onOpenPhotos, onLogShow, onEditProfile }) {
+export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, homeCity, unread = 0, notifUnread = 0, newUser = false, hideHeaderActions = false, onLoadMore, hasMore = false, loadingMore = false, onOpen, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onOpenClips, onReport, onEdit, onOpenPhotos, onLogShow, onEditProfile }) {
   const [filter, setFilter] = useState("everyone"); // following | local | everyone
   const [count, setCount] = useState(PAGE);
   const [gsDone, setGsDone] = useState(() => load("pit.gsDismissed", false));
@@ -39,6 +39,12 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, h
           <View style={styles.wordmarkRow}>
             <Text style={styles.wordmark}>PIT</Text>
             {!hideHeaderActions && <View style={styles.headerBtns}>
+              {onOpenClips && (
+                <Pressable style={styles.clipsBtn} onPress={onOpenClips} hitSlop={8} accessibilityRole="button" accessibilityLabel="Clips">
+                  <Icon name="play" size={15} color={colors.amber} />
+                  <Text style={styles.clipsTxt}>Clips</Text>
+                </Pressable>
+              )}
               <Pressable style={styles.inboxBtn} onPress={onOpenNotifications} hitSlop={8} accessibilityRole="button" accessibilityLabel={notifUnread > 0 ? `Activity, ${notifUnread} new` : "Activity"}>
                 <Icon name="bell" size={22} color={colors.text} />
                 {notifUnread > 0 && <View style={styles.inboxBadge}><Text style={styles.inboxBadgeTxt}>{notifUnread}</Text></View>}
@@ -146,7 +152,9 @@ const styles = StyleSheet.create({
   emptySub: { color: colors.textDim, fontSize: 14, lineHeight: 20, textAlign: "center" },
   head: { marginBottom: 18, marginTop: 4 },
   wordmarkRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
-  headerBtns: { flexDirection: "row", gap: 8 },
+  headerBtns: { flexDirection: "row", gap: 8, alignItems: "center" },
+  clipsBtn: { flexDirection: "row", alignItems: "center", gap: 5, height: 40, paddingHorizontal: 12, borderRadius: 20, borderWidth: 1, borderColor: colors.amber, backgroundColor: "rgba(242,166,90,0.08)" },
+  clipsTxt: { color: colors.amber, fontSize: 13, fontWeight: "800" },
   wordmark: { color: colors.text, fontSize: 30, fontWeight: "900", letterSpacing: 4, fontFamily: mono },
   inboxBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
   inboxBadge: { position: "absolute", top: -2, right: -2, minWidth: 18, height: 18, borderRadius: 9, backgroundColor: colors.magenta, alignItems: "center", justifyContent: "center", paddingHorizontal: 5, borderWidth: 2, borderColor: colors.bg },

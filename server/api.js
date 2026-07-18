@@ -1080,6 +1080,44 @@ export const routes = {
     return { posts: rows.map((p) => postJson(p, viewer)), nextCursor };
   },
 
+  // Clips reel: the same posts as the feed, but only the ones carrying a video,
+  // newest first, for the vertical swipe-through mode. Each row keeps its full
+  // post projection (so likes/comments/artist all work) plus a `clips` array of
+  // just the video URLs. Blocks respected; same (created_at,id) cursor as feed.
+  "GET /api/clips": (ctx) => {
+    const { cursor, limit: lim } = pageRequest(ctx, 12, 30);
+    const viewer = ctx.user?.id;
+    const blockSql = viewer ? `AND NOT EXISTS (
+      SELECT 1 FROM blocks b WHERE (b.blocker_id=? AND b.blocked_id=p.user_id) OR (b.blocker_id=p.user_id AND b.blocked_id=?)
+    )` : "";
+    const cursorSql = cursor ? "AND (p.created_at < ? OR (p.created_at = ? AND p.id < ?))" : "";
+    const args = [];
+    if (cursor) args.push(cursor.createdAt, cursor.createdAt, cursor.id);
+    if (viewer) args.push(viewer, viewer);
+    args.push(lim + 1);
+    // A cheap prefilter in SQL (photos JSON mentions a video extension); the
+    // authoritative per-URL check happens in JS below.
+    const found = db.prepare(`
+      SELECT p.*, u.name AS u_name, u.handle AS u_handle, u.initials AS u_initials, u.avatar_uri AS u_avatar, u.avatar_color AS u_color,
+        (SELECT COUNT(*) FROM likes l WHERE l.post_id = p.id) AS like_count,
+        (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id AND c.removed = 0) AS comment_count,
+        ${SEEN_ORDINAL_SQL}
+      FROM posts p JOIN users u ON u.id = p.user_id
+      WHERE p.removed = 0 AND p.photos_public = 1
+        AND (p.photos LIKE '%.mp4%' OR p.photos LIKE '%.webm%' OR p.photos LIKE '%.mov%' OR p.photos LIKE '%.m4v%')
+        ${cursorSql} ${blockSql}
+      ORDER BY p.created_at DESC, p.id DESC LIMIT ?`).all(...args);
+    const { rows, nextCursor } = finishPage(found, lim);
+    const isClip = (u) => typeof u === "string" && /\.(mp4|webm|mov|m4v)(\?|#|$)/i.test(u) && /^https?:\/\//i.test(u);
+    const clips = rows
+      .map((p) => {
+        const projected = postJson(p, viewer); // photos already parsed here
+        return { ...projected, clips: (projected.photos || []).filter(isClip) };
+      })
+      .filter((p) => p.clips.length > 0);
+    return { clips, nextCursor };
+  },
+
   "GET /api/users/:id/posts": (ctx) => {
     if (ctx.user?.id !== ctx.params.id && blockedEitherWay(ctx.user?.id, ctx.params.id)) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
     const rows = db.prepare(`

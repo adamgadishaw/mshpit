@@ -29,6 +29,37 @@ These are blocked on private configuration only. No code work is required.
 
 `YOUTUBE_API_KEY` is already set (`youtubeConfigured: true`). Nothing to do.
 
+## Clips mode + deeper artist charts (2026-07-17, Claude)
+
+**Clips mode** (the TikTok-style vertical swipe, but for traditional HORIZONTAL
+concert videos). New `GET /api/clips`: the same feed ordering, cursor-paginated,
+but only public posts carrying a real video (`.mp4/.webm/.mov/.m4v`), each row's
+full post projection plus a `clips` array of just the video urls. New
+`ClipsScreen`: a full-screen scroll-snap reel, one clip per page, only the ACTIVE
+page mounts an expo-video `VideoView` (never every video at once), with its own
+play/pause + mute + like/comment overlay. Opening it sets `playerObscured` so the
+app's music player PAUSES (clip audio + music don't fight). Entry points: a Clips
+button in the mobile feed header and the desktop top nav. Store `loadClips`.
+Tests: `server/clips.test.mjs` (video-only filter, image stripping, private
+exclusion, newest-first cursor). Verified live: real .webm clip auto-plays at
+854x481, scroll-snap on, only one `<video>` mounted.
+
+**Deeper artist song charts** (fixes the "cut off at ~10" complaint). The Deezer
+discography response now includes a 25-deep `topTracks` chart (resolved live for
+ANY artist, not just seeder-enriched ones; discography cache bumped to v3). The
+seeder's `/top?limit` went 10 -> 25. `ArtistScreen` shows the deep chart
+collapsed to 10 with a "Show all 25 songs" toggle. Verified live on Drake.
+
+**Still open** (explicitly deferred, its own session): the mobile nav
+rearchitecture the owner asked for - replacing the bottom action bar with a
+slide-away side menu + page-turning content, and the second per-clips player bar
+tied into that mode. Not started this batch to avoid half-shipping navigation.
+Also still open: the expandable/collapsible desktop player detail, and video
+posts still need the picker verified on a real device (web upload path is wired).
+
+Validation: npm run check green (54 tests, web export).
+
+
 ## Video posts are live end to end (2026-07-17, Claude)
 
 The missing half of "photos or videos". One shared media array, type carried by

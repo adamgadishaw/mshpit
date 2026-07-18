@@ -18,6 +18,7 @@ import LoungeScreen from "./src/screens/LoungeScreen";
 import InboxScreen from "./src/screens/InboxScreen";
 import NotificationsScreen from "./src/screens/NotificationsScreen";
 import CalendarScreen from "./src/screens/CalendarScreen";
+import ClipsScreen from "./src/screens/ClipsScreen";
 import ThreadScreen from "./src/screens/ThreadScreen";
 import VenueReviewScreen from "./src/screens/VenueReviewScreen";
 import FanClubScreen from "./src/screens/FanClubScreen";
@@ -339,6 +340,7 @@ function Root() {
   else if (nav.inbox) overlay = <InboxScreen onClose={back} onOpenThread={openThread} />;
   else if (nav.notifications) overlay = <NotificationsScreen onClose={back} onOpenProfile={openProfile} onOpenThread={openThread} onOpen={openShow} onOpenPost={openPost} />;
   else if (nav.calendar) overlay = <CalendarScreen onClose={back} onOpen={openShow} onOpenArtist={openArtist} />;
+  else if (nav.clips) overlay = <ClipsScreen onClose={back} onOpenPost={openPost} onOpenProfile={openProfile} onOpenArtist={openArtist} onRequireAuth={() => go({ auth: true })} />;
   else if (nav.profileId) overlay = <ProfileScreen userId={nav.profileId} onClose={back} onOpenShow={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onEditProfile={() => go({ editProfile: true })} onPreview={showPreview} onMessage={openThread} onReport={(log) => requireAuth(() => go({ reporting: log }))} onEditPost={openPostEditor} onOpenPhotos={openPhotos} onPlay={openPlayer} onOpenFollowList={openFollowList} onOpenBadges={openBadges} />;
   else if (nav.fanClub) overlay = <FanClubScreen artist={nav.fanClub} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} />;
   else if (nav.editArtist) overlay = <EditArtistProfileScreen artistName={nav.editArtist} onClose={back} />;
@@ -410,6 +412,7 @@ function Root() {
                   onOpenVenue={openVenue}
                   onOpenNearby={() => requireAuth(() => go({ nearby: true }))}
                   onOpenMenu={() => go({ menu: true })}
+                  onOpenClips={() => go({ clips: true })}
                   onReport={(log) => requireAuth(() => go({ reporting: log }))}
                   onEdit={openPostEditor}
                   onOpenPhotos={openPhotos}
@@ -454,6 +457,7 @@ function Root() {
         onLog={() => requireAuth(() => go({ logging: true }))}
         onActivity={openNotifications}
         onInbox={openInbox}
+        onClips={() => go({ clips: true })}
         onMenu={() => go({ menu: true })}
         onAccount={() => setAcctOpen(true)}
         onIntro={exitToLanding}
@@ -467,7 +471,9 @@ function Root() {
     </View>
   );
   const playerColumnWidth = playerMinimized ? 82 : Math.max(356, Math.min(460, Math.round(width * 0.25)));
-  const playerObscured = !!resetToken || !!welcome;
+  // Clips mode has its own audio; obscuring pauses the music player so the two
+  // don't talk over each other (the clip drives sound while you're in there).
+  const playerObscured = !!resetToken || !!welcome || !!nav.clips;
 
   return (
     <View style={styles.root}>

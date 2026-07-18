@@ -57,6 +57,7 @@ export function DesktopTopNav({
   onLog,
   onActivity,
   onInbox,
+  onClips,
   onMenu,
   onAccount,
   onIntro,
@@ -123,6 +124,7 @@ export function DesktopTopNav({
       </Pressable>
 
       <View style={styles.topActions}>
+        {!!onClips && <TopIconButton icon="play" label="Clips" onPress={onClips} />}
         <TopIconButton icon="bell" label="Activity" count={notifUnread} onPress={onActivity} />
         <TopIconButton icon="mail" label="Inbox" count={unread} onPress={onInbox} />
         <TopIconButton icon="menu" label="Menu" onPress={onMenu} />

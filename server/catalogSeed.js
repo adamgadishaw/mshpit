@@ -78,7 +78,7 @@ export async function deezerEnrich(name) {
   const match = await findDeezerArtist(name, { preferredId: existing.deezerId || null });
   const dzA = match?.artist;
   if (!dzA) return null;
-  const top = await providerJson("Deezer", `https://api.deezer.com/artist/${dzA.id}/top?limit=10`);
+  const top = await providerJson("Deezer", `https://api.deezer.com/artist/${dzA.id}/top?limit=25`);
   await sleep(60);
   const topTracks = (top?.data || []).map((t) => ({ id: t.id || null, title: t.title, album: t.album?.title || null, duration: t.duration || 0 }));
   let genre = null;

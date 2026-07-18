@@ -53,13 +53,13 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
   const gallery = artistGallery(a.name, 12);
   const canModerate = isStaff(session?.role);
   const genre = a.genre !== "-" ? a.genre : cap(meta?.genre) || "-";
-  // Real Spotify top tracks when ingested; hand-seeded SONGS as the fallback.
   const spotTracks = (meta?.topTracks || []).map((t, i) => ({ id: "sp_" + i, title: t.title, artist: a.name, album: t.album, url: t.url, preview: t.preview }));
-  const songs = spotTracks.length ? spotTracks : SONGS.filter((s) => s.artist.toLowerCase() === a.name.toLowerCase()).slice(0, 8);
+  const seedSongs = spotTracks.length ? spotTracks : SONGS.filter((s) => s.artist.toLowerCase() === a.name.toLowerCase());
   // Queue for the top player, every track on the page (all playable — the player
   // resolves each to a YouTube video by title, or a Deezer preview), so next/prev
-  // walk this artist's songs while you keep browsing.
-  const songQueue = songs.filter((s) => s.title).map((s) => ({ kind: "track", url: null, preview: s.preview || null, title: s.title, artist: a.name, art: a.photo || meta?.photo || null }));
+  // walk this artist's songs while you keep browsing. `chartSongs` (defined once
+  // the discography loads) is the deeper display list.
+  const songQueue = seedSongs.filter((s) => s.title).map((s) => ({ kind: "track", url: null, preview: s.preview || null, title: s.title, artist: a.name, art: a.photo || meta?.photo || null }));
 
   // Artist-owned profile: the band's account can edit its header + post updates.
   const isOwner = isArtistOwner(a.name);
@@ -122,7 +122,15 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
 
   const [disco, setDisco] = useState(null);
   const [openAlbum, setOpenAlbum] = useState(null);
-  useEffect(() => { setDisco(null); setOpenAlbum(null); artistDiscography(a.name).then(setDisco); }, [a.name]);
+  const [showAllSongs, setShowAllSongs] = useState(false);
+  useEffect(() => { setDisco(null); setOpenAlbum(null); setShowAllSongs(false); artistDiscography(a.name).then(setDisco); }, [a.name]);
+
+  // The deep chart: the discography's 25-track list once it loads (fixes the
+  // "cut off at ~10" complaint), else the seed list. Collapsed to 10 with a
+  // "Show all N" toggle so the page doesn't open as a wall of songs.
+  const discoTop = Array.isArray(disco?.topTracks) ? disco.topTracks.map((t, i) => ({ id: "dz_" + (t.id || i), title: t.title, artist: a.name, album: t.album || null })) : [];
+  const allSongs = discoTop.length ? discoTop : seedSongs;
+  const songs = showAllSongs ? allSongs : allSongs.slice(0, 10);
   const toggleAlbum = (id, tracks) => {
     setOpenAlbum((cur) => (cur === id ? null : id));
     (tracks || []).forEach((t) => loadRating("song", a.name, t.title));
@@ -585,6 +593,12 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
                 </View>
               );
             })}
+            {allSongs.length > 10 && (
+              <Pressable style={styles.showAllBtn} onPress={() => setShowAllSongs((v) => !v)} accessibilityRole="button" accessibilityLabel={showAllSongs ? "Show fewer songs" : `Show all ${allSongs.length} songs`}>
+                <Text style={styles.showAllTxt}>{showAllSongs ? "Show fewer" : `Show all ${allSongs.length} songs`}</Text>
+                <Icon name={showAllSongs ? "chevron-up" : "chevron-down"} size={15} color={colors.amber} />
+              </Pressable>
+            )}
           </>
         )}
 
@@ -682,6 +696,8 @@ const styles = StyleSheet.create({
   songReportLabel: { color: colors.textDim, fontSize: 12, lineHeight: 17, marginBottom: 8 },
   songReportInput: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: radius.sm, color: colors.text, fontSize: 13, paddingHorizontal: 10, paddingVertical: 8 },
   songReportActions: { flexDirection: "row", alignItems: "center", gap: 14, marginTop: 10 },
+  showAllBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 12, marginTop: 4, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface },
+  showAllTxt: { color: colors.amber, fontSize: 13, fontWeight: "800" },
   songReportBtn: { backgroundColor: colors.amberStrong, borderRadius: radius.pill, paddingHorizontal: 14, paddingVertical: 8 },
   songReportBtnTxt: { color: "#1A1206", fontSize: 12.5, fontWeight: "800" },
   songReportCancel: { color: colors.textDim, fontSize: 12.5 },

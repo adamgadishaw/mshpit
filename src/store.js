@@ -361,6 +361,18 @@ export function StoreProvider({ children }) {
       setFeedLoadingMore(false);
     }
   };
+  // Clips reel (the vertical swipe-through of posted videos). Cursor-paginated
+  // off the same feed ordering; `reset` reloads from the top, otherwise it
+  // appends the next page. Returns the merged list so the screen can swap in
+  // one setState.
+  const loadClips = async ({ before, signal } = {}) => {
+    try {
+      const q = before ? `?limit=12&before=${encodeURIComponent(before)}` : "?limit=12";
+      const { clips, nextCursor } = await api("/api/clips" + q, { context: "Loading concert clips", silent: true, signal });
+      return { clips: Array.isArray(clips) ? clips.map((c) => normalizeServerPost(c)) : [], nextCursor: nextCursor || null };
+    } catch { return { clips: [], nextCursor: null }; }
+  };
+
   // Keep the public feed fresh without requiring a browser reload. Refreshes
   // pause in the background, abort on unmount, back off after failures, and do
   // not reset the older-page cursor after the initial load.
@@ -2697,7 +2709,7 @@ export function StoreProvider({ children }) {
     playHistory, recordPlay, snapshots, saveSnapshot, removeSnapshot, friendsListening, loadFriendsListening, userPlaylists, deletePlaylist,
     favoriteGenre, genreOfArtist, recommendTracks, autoplayQueue, myPlaylists, loadMyPlaylists, createPlaylist, addToPlaylist,
     drafts, saveDraft, deleteDraft,
-    visibleFeed, followingFeed, loadMoreFeed, feedHasMore, feedLoadingMore, visibleTourDates, artistSummary, venueSummary,
+    visibleFeed, followingFeed, loadMoreFeed, feedHasMore, feedLoadingMore, loadClips, visibleTourDates, artistSummary, venueSummary,
     localVenues, regionShows, localFeed, recommendedShows, venueCoord,
     searchVenues, venuesByCity, venueUpcomingCount,
     allArtists, topArtists, artistsAlphabetical, upcomingEvents, trendingVenues,
