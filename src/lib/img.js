@@ -9,6 +9,10 @@ export const proxied = (uri, w = 1200) =>
 
 export const isHttp = (uri) => typeof uri === "string" && /^https?:\/\//i.test(uri);
 
+// Post media arrays mix photos and clips; type is carried by the object key's
+// extension (stable, server-assigned at presign time).
+export const isVideoUrl = (uri) => /\.(mp4|webm|mov|m4v)(\?|#|$)/i.test(String(uri || ""));
+
 // iPhone photos upload as HEIC, which every browser except Safari refuses to
 // decode - the file stores and serves fine (200, image/heic) but renders as
 // nothing. This was "images not loading on the platform."

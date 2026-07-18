@@ -29,6 +29,30 @@ These are blocked on private configuration only. No code work is required.
 
 `YOUTUBE_API_KEY` is already set (`youtubeConfigured: true`). Nothing to do.
 
+## Video posts are live end to end (2026-07-17, Claude)
+
+The missing half of "photos or videos". One shared media array, type carried by
+the server-assigned object extension, so every existing surface kept working:
+
+- server/media.js: MP4 / WebM / MOV accepted for post, review, and venue
+  purposes with their own 100 MB cap (photos keep 12 MB); avatars and banners
+  stay image-only. Pinned by tests (accept, oversize reject, purpose reject,
+  and the photo cap not loosening).
+- src/lib/mediaUpload.js: video mime/extension maps + a 5-minute upload timeout
+  for clips (a 100 MB PUT does not fit the 45 s photo timeout).
+- LogScreen picker now offers images AND videos.
+- SmartImage renders any clip URL as a play tile (dark tile, amber ring), which
+  covers the feed strip, profile wall, You-tab wall, and artist gallery with
+  zero call-site changes. The full-screen viewer plays clips via expo-video
+  (a real <video> with native controls on web), keyed by URL so leaving a clip
+  releases its player. Per-media likes work on clips exactly like photos.
+
+Verified end to end: real WebM uploaded through createMediaPresign to R2
+(PUT 200, public read video/webm), posted via the API, CLIP tile rendered on
+the feed, viewer played it in-browser (readyState 4, currentTime advancing).
+npm run check green (52 tests, web export).
+
+
 ## CURRENT: persistent 25% player column + desktop top navigation (Codex)
 
 This completes the layout request that stopped mid-session in Claude. **The old

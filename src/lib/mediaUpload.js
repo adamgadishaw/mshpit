@@ -10,6 +10,9 @@ const MIME_BY_EXTENSION = Object.freeze({
   gif: "image/gif",
   heic: "image/heic",
   heif: "image/heif",
+  mp4: "video/mp4",
+  webm: "video/webm",
+  mov: "video/quicktime",
 });
 const EXTENSION_BY_MIME = Object.freeze({
   "image/jpeg": "jpg",
@@ -18,6 +21,9 @@ const EXTENSION_BY_MIME = Object.freeze({
   "image/gif": "gif",
   "image/heic": "heic",
   "image/heif": "heif",
+  "video/mp4": "mp4",
+  "video/webm": "webm",
+  "video/quicktime": "mov",
 });
 
 export function isDurableMediaUrl(value) {
@@ -78,7 +84,7 @@ function capturedUploadError(error, { timedOut = false, context } = {}) {
  * The local URI is deliberately never returned to callers, persisted, or sent
  * to the Pit API.
  */
-export async function uploadMediaAsset(asset, purpose, { signal, timeoutMs = UPLOAD_TIMEOUT_MS } = {}) {
+export async function uploadMediaAsset(asset, purpose, { signal, timeoutMs } = {}) {
   const context = `Uploading a ${purpose} photo`;
   let body;
   try {
@@ -88,6 +94,9 @@ export async function uploadMediaAsset(asset, purpose, { signal, timeoutMs = UPL
   }
 
   const contentType = contentTypeFor(asset, body);
+  // Clips are an order of magnitude bigger than photos; give the PUT room
+  // before declaring it dead on a normal uplink.
+  if (timeoutMs == null) timeoutMs = contentType.startsWith("video/") ? 300_000 : UPLOAD_TIMEOUT_MS;
   if (!contentType) {
     throw captureAppError(new AppError(undefined, { code: "PIT-UPLOAD-002", context, source: "media" }), {
       context,

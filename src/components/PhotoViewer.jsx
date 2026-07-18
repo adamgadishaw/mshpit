@@ -1,11 +1,22 @@
 import { useEffect, useState } from "react";
 import { View, Text, StyleSheet, Pressable, Platform } from "react-native";
+import { useVideoPlayer, VideoView } from "expo-video";
 import { colors, mono, radius } from "../theme";
 import Icon from "./Icon";
 import SmartImage from "./SmartImage";
+import { isVideoUrl } from "../lib/img";
 import { useStore } from "../store";
 
 const web = Platform.OS === "web";
+
+// A clip inside the viewer: expo-video with the platform's own controls (a
+// <video> element on web). Mounted keyed by URL, so moving through the set
+// releases the old player and the audio stops with it. No autoplay: browsers
+// block un-gestured sound, so the user's tap on the controls starts it.
+function ClipStage({ uri }) {
+  const player = useVideoPlayer(uri);
+  return <VideoView player={player} style={styles.img} contentFit="contain" accessibilityLabel="Video clip player" />;
+}
 
 // Facebook-style full-screen media viewer: every photo set on the app (review
 // photos, fan galleries, venue shots) opens here. Arrows / keyboard to move,
@@ -55,8 +66,8 @@ export default function PhotoViewer({ photos = [], index = 0, postId = null, onC
 
       <View style={styles.stage} pointerEvents="box-none">
         {/* SmartImage = HEIC transcode + proxy-rescue ladder, so an iPhone photo
-            renders here instead of a black void. */}
-        <SmartImage uri={uri} style={styles.img} contain />
+            renders here instead of a black void. Clips get a real player. */}
+        {isVideoUrl(uri) ? <ClipStage key={uri} uri={uri} /> : <SmartImage uri={uri} style={styles.img} contain />}
         {photos.length > 1 && (
           <>
             <Pressable style={[styles.arrow, { left: 10 }]} onPress={prev} hitSlop={10} accessibilityRole="button" accessibilityLabel="Previous photo">

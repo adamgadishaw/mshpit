@@ -2,12 +2,15 @@ import { createHash, createHmac, randomUUID } from "node:crypto";
 import { ApiError } from "./errors.js";
 
 const MEBIBYTE = 1024 * 1024;
+// Video is allowed only where motion makes sense (concert clips on posts and
+// reviews, venue walkthroughs); avatars and banners stay image-only. Clips get
+// their own, larger cap because a minute of 1080p is nothing like a photo.
 const PURPOSES = Object.freeze({
   avatar: { maxBytes: 5 * MEBIBYTE },
   banner: { maxBytes: 12 * MEBIBYTE },
-  post: { maxBytes: 12 * MEBIBYTE },
-  review: { maxBytes: 12 * MEBIBYTE },
-  venue: { maxBytes: 12 * MEBIBYTE },
+  post: { maxBytes: 12 * MEBIBYTE, videoMaxBytes: 100 * MEBIBYTE },
+  review: { maxBytes: 12 * MEBIBYTE, videoMaxBytes: 100 * MEBIBYTE },
+  venue: { maxBytes: 12 * MEBIBYTE, videoMaxBytes: 100 * MEBIBYTE },
 });
 const TYPES = Object.freeze({
   "image/jpeg": "jpg",
@@ -16,6 +19,11 @@ const TYPES = Object.freeze({
   "image/gif": "gif",
   "image/heic": "heic",
   "image/heif": "heif",
+});
+const VIDEO_TYPES = Object.freeze({
+  "video/mp4": "mp4",
+  "video/webm": "webm",
+  "video/quicktime": "mov",
 });
 
 const REQUIRED_ENV = [
@@ -137,16 +145,20 @@ export function validateMediaRequest(body) {
     throw new ApiError(400, "Choose a supported photo destination.", "VALIDATION_FAILED");
   }
   const contentType = typeof body?.contentType === "string" ? body.contentType.split(";", 1)[0].trim().toLowerCase() : "";
-  const extension = TYPES[contentType];
+  const isVideo = !!VIDEO_TYPES[contentType];
+  const videoAllowed = !!PURPOSES[purpose].videoMaxBytes;
+  const extension = TYPES[contentType] || (videoAllowed ? VIDEO_TYPES[contentType] : undefined);
   if (!extension) {
-    throw new ApiError(415, "That photo format is not supported. Use JPEG, PNG, WebP, GIF, HEIC, or HEIF.", "MEDIA_TYPE_UNSUPPORTED");
+    if (isVideo) throw new ApiError(415, "Video isn't supported here. Clips can be attached to posts and reviews.", "MEDIA_TYPE_UNSUPPORTED");
+    throw new ApiError(415, "That format is not supported. Photos: JPEG, PNG, WebP, GIF, HEIC. Clips: MP4, WebM, MOV.", "MEDIA_TYPE_UNSUPPORTED");
   }
   const fileSize = Number(body?.fileSize);
   if (!Number.isSafeInteger(fileSize) || fileSize < 1) {
     throw new ApiError(400, "Photo size is missing or invalid.", "VALIDATION_FAILED");
   }
-  if (fileSize > PURPOSES[purpose].maxBytes) {
-    throw new ApiError(413, `That photo is too large. ${Math.floor(PURPOSES[purpose].maxBytes / MEBIBYTE)} MB is the limit.`, "MEDIA_TOO_LARGE");
+  const maxBytes = isVideo ? PURPOSES[purpose].videoMaxBytes : PURPOSES[purpose].maxBytes;
+  if (fileSize > maxBytes) {
+    throw new ApiError(413, `That ${isVideo ? "clip" : "photo"} is too large. ${Math.floor(maxBytes / MEBIBYTE)} MB is the limit.`, "MEDIA_TOO_LARGE");
   }
   const name = typeof body?.name === "string" ? body.name.trim() : "";
   if (!name || name.length > 180 || /[\u0000-\u001f\u007f/\\]/.test(name)) {

@@ -8,6 +8,7 @@ import { newId, RATING_DIMS, computeReview } from "../data";
 // Tour presets: pick one to attach the show to the artist without an album/tour.
 const TOUR_PRESETS = ["One-off show", "Reunion tour", "Festival set", "Anniversary tour", "Surprise show"];
 import Icon from "../components/Icon";
+import SmartImage from "../components/SmartImage";
 import Stars from "../components/Stars";
 import TapStars from "../components/TapStars";
 import Button from "../components/Button";
@@ -98,7 +99,7 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
     if (!remaining) return;
     let res;
     try {
-      res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images"], quality: 0.6, allowsMultipleSelection: true, selectionLimit: Math.min(6, remaining) });
+      res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images", "videos"], quality: 0.6, videoQuality: 1, allowsMultipleSelection: true, selectionLimit: Math.min(6, remaining) });
     } catch (error) {
       reportMediaPickerError(error, "Opening the concert photo library");
       return;
@@ -327,7 +328,8 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
         <View style={styles.photoRow}>
           {photos.map((uri, i) => (
             <View key={i} style={styles.thumb}>
-              <Image source={{ uri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
+              {/* SmartImage renders clips as a play tile and HEIC via transcode. */}
+              <SmartImage uri={uri} style={StyleSheet.absoluteFill} contain={false} />
               <Pressable style={styles.removeThumb} onPress={() => setPhotos((p) => p.filter((_, idx) => idx !== i))} disabled={submitBusy}>
                 <Icon name="x" size={12} color="#fff" />
               </Pressable>
