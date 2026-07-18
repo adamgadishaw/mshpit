@@ -2,7 +2,7 @@
 
 > **Living doc.** Whoever works on this next: read this first, and UPDATE it before you end a session (move things between "Done" and "Backlog", note anything running). Point a fresh Claude Code chat at this file to get up to speed without re-explaining.
 >
-> Last updated: **2026-07-21**
+> Last updated: **2026-07-17** (clips mode + deeper artist charts, live on prod)
 
 > **Working agreement (owner's standing instruction):** ALWAYS `git commit` **and** `git push` after a verified batch. Stabilization work uses a review branch; do not merge/push directly to `master` until the branch checks pass. A master push auto-deploys and briefly restarts Render.
 
@@ -16,9 +16,11 @@ These are blocked on private configuration only. No code work is required.
 > `.env`. `.gitignore` ignores `.env*` so no backup copy can ever be committed.
 > Never put a key value in this file or any other tracked file.
 
-**Live status (prod `/api/health`, 2026-07-16):** `youtubeConfigured` ✅,
-`tourProviderConfigured` ✅ (672 tour dates), `mediaStorageConfigured` ✅,
-`mailConfigured` ❌. Only email remains.
+**Live status (prod `/api/health`, 2026-07-17):** `database` ✅,
+`youtubeConfigured` ✅, `tourProviderConfigured` ✅ (**750** tour dates and
+climbing as the scheduler runs), `mediaStorageConfigured` ✅, `mailConfigured`
+❌. Only email remains. Prod bundle + all commits below are deployed and
+verified live (`git log origin/master..HEAD` is empty; tree clean).
 
 | What | Status | Where | Effect while unset |
 | --- | --- | --- | --- |
@@ -28,6 +30,45 @@ These are blocked on private configuration only. No code work is required.
 | `MAIL_FROM` | ❌ **THE LAST GAP.** Two parts: (1) set `MAIL_FROM = Pit <noreply@mshpit.com>` on Render (health shows `mailConfigured: false`, so this or the key is still missing there); (2) **verify `mshpit.com` in Resend** (the account has **zero verified domains**, so any send from `@mshpit.com` is rejected regardless). Add Resend's DNS records in **Cloudflare** (DNS now lives there), set the mail records to **DNS-only / grey cloud**, then click Verify. | Resend dashboard (Cloudflare DNS) + Render env | Reset email silently fails; links keep getting logged instead. |
 
 `YOUTUBE_API_KEY` is already set (`youtubeConfigured: true`). Nothing to do.
+
+## NEXT SESSION: mobile navigation overhaul (owner-requested, DEFERRED on purpose)
+
+The owner asked for a full mobile-nav rearchitecture in the same message as Clips
+mode. Clips + chart depth shipped; **this nav rework was deliberately left for its
+own focused session** because half-shipping navigation breaks the whole phone
+experience. Do this as one contained batch, mobile-only (`!wide`), and keep the
+existing desktop shell (the persistent 25% player column + `DesktopTopNav`)
+untouched. Verbatim asks, decoded:
+
+1. **Kill the bottom tab/action bar on mobile; replace it with a slide-away side
+   menu.** The menu picks the "function" (Feed / Search / Discover / You / Clips
+   / etc.). It can be swiped away so the content owns the full screen. This
+   replaces the current bottom tab strip only on narrow widths.
+2. **When the music player is playing, the content area switches from vertical
+   tile scroll to a page-turning (horizontal paged) method**, and the side menu
+   can be slid away to "enjoy the full bottom half of the screen." Read: while a
+   song plays, the mobile feed becomes a paged/card experience rather than a long
+   scroll, with the player owning a persistent region.
+3. **Expandable / collapsible player detail** ("more info on player"). The owner
+   flagged this as "more of a computer aspect", i.e. the desktop column already
+   has the rich detail; the MOBILE player bar needs a collapse/expand for song
+   info without eating the screen. (Mobile already collapses the video stage to
+   0-height when no video is on screen (see the Donut/idle-rail batch), so build
+   the expandable INFO on top of that, do not regress it.)
+4. **Clips already pause the music** (`playerObscured` on `nav.clips`). But the
+   owner's phrasing ("both music and videos should be able to play at the same
+   time … swipe menu to change song … this pauses the feed song") is ambiguous
+   and worth a quick clarify before building: current behavior fully pauses music
+   in Clips; the owner may instead want music to keep going UNTIL they change the
+   song via an in-Clips control. **Confirm the intended interaction with the
+   owner** rather than guessing. A per-Clips mini music control (change/skip the
+   background song from inside the reel) is the piece that is NOT built.
+
+Wiring notes for whoever picks this up: mobile vs desktop split is `wide` in
+`App.js` (`Platform.OS === "web" && width >= 1200`); the bottom tab strip and
+`mobilePlayerSlot` are the mobile-only render branches; `ClipsScreen` is the
+reference for a full-screen paged/scroll-snap surface; the music player pause hook
+is `playerObscured`. Do NOT touch the desktop column.
 
 ## Clips mode + deeper artist charts (2026-07-17, Claude)
 
