@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, KeyboardAvoidingView, Platform, Image } from "react-native";
+import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, KeyboardAvoidingView, Platform } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import { colors, mono, radius } from "../theme";
 import { useStore } from "../store";
@@ -15,6 +15,7 @@ import Button from "../components/Button";
 import SheetHeader from "../components/SheetHeader";
 import DatePicker from "../components/DatePicker";
 import { isDurableMediaUrl, reportMediaPickerError, uploadMediaAsset } from "../lib/mediaUpload";
+import { api } from "../lib/api";
 
 const GROUP_COLOR = { "THE BAND": colors.amber, "THE ROOM": colors.cool, "THE NIGHT": colors.magenta };
 const GROUPS = ["THE BAND", "THE ROOM", "THE NIGHT"];
@@ -79,6 +80,10 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
   const [dims, setDims] = useState(() => editing ? postDims(editing) : { performance: 0, setlist: 0, sound: 0, venue: 0, crowd: 0, experience: 0 });
   const [ratingsDirty, setRatingsDirty] = useState(false);
   const [review, setReview] = useState(editing?.review || "");
+  const [song, setSong] = useState(editing?.song || null);
+  const [songUrl, setSongUrl] = useState(editing?.song?.url || "");
+  const [resolvingSong, setResolvingSong] = useState(false);
+  const [songError, setSongError] = useState("");
   const [tags, setTags] = useState(() => (Array.isArray(editing?.tags) ? editing.tags.slice(0, 5) : []));
   const [tagDraft, setTagDraft] = useState("");
   const commitTag = (raw) => {
@@ -107,7 +112,7 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
     try {
       res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images", "videos"], quality: 0.6, videoQuality: 1, allowsMultipleSelection: true, selectionLimit: Math.min(6, remaining) });
     } catch (error) {
-      reportMediaPickerError(error, "Opening the concert photo library");
+      reportMediaPickerError(error, "Opening the media library");
       return;
     }
     if (!res || res.canceled || !res.assets?.length) return;
@@ -129,6 +134,27 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
     }
   };
 
+  const attachSong = async () => {
+    const url = songUrl.trim();
+    if (!url || resolvingSong || posting || uploadingPhotos) return;
+    setResolvingSong(true);
+    setSongError("");
+    try {
+      const result = await api(`/api/youtube/oembed?url=${encodeURIComponent(url)}`, {
+        context: "Checking a YouTube song link",
+        silent: true,
+      });
+      if (!result?.song?.videoId) throw new Error("No playable YouTube video was found.");
+      setSong(result.song);
+      setSongUrl(result.song.url || url);
+    } catch {
+      setSong(null);
+      setSongError("That link missed the cue. Paste a full YouTube watch, Shorts, or youtu.be link.");
+    } finally {
+      setResolvingSong(false);
+    }
+  };
+
   const setDim = (k, v) => { setRatingsDirty(true); setDims((d) => ({ ...d, [k]: v })); };
   const computed = computeReview(dims);
   const submittedRatings = editing && !ratingsDirty
@@ -138,23 +164,23 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
         room: editing.room == null ? computed.room : Number(editing.room),
       }
     : computed;
-  const canPostStatus = !!(review.trim() || photos.filter(isDurableMediaUrl).length);
+  const canPostStatus = !!(review.trim() || photos.filter(isDurableMediaUrl).length || song?.videoId);
   const canPost = isStatus ? canPostStatus : (artist.trim() && computed.overall > 0);
-  const submitBusy = uploadingPhotos || posting;
+  const submitBusy = uploadingPhotos || resolvingSong || posting;
 
   const stash = () => {
     if (editing) return;
     if (submitBusy) return;
-    const id = saveDraft({ id: draftId, artist, venue, city, tour, date, dims, review, tags, photos: photos.filter(isDurableMediaUrl) });
+    const id = saveDraft({ id: draftId, artist, venue, city, tour, date, dims, review, tags, song, photos: photos.filter(isDurableMediaUrl) });
     setDraftId(id);
     onCancel?.();
   };
   const resume = (d) => {
     setDraftId(d.id);
     setArtist(d.artist || ""); setArtistPicked(!!d.artist); setVenue(d.venue || ""); setCity(d.city || "");
-    setTour(d.tour || ""); setDate(d.date || todayStr); setDims(d.dims || dims); setReview(d.review || ""); setTags(Array.isArray(d.tags) ? d.tags.slice(0, 5) : []); setPhotos((d.photos || []).filter(isDurableMediaUrl));
+    setTour(d.tour || ""); setDate(d.date || todayStr); setDims(d.dims || dims); setReview(d.review || ""); setTags(Array.isArray(d.tags) ? d.tags.slice(0, 5) : []); setSong(d.song || null); setSongUrl(d.song?.url || ""); setPhotos((d.photos || []).filter(isDurableMediaUrl));
   };
-  const hasContent = artist.trim() || venue.trim() || review.trim();
+  const hasContent = artist.trim() || venue.trim() || review.trim() || photos.length || song?.videoId;
 
   const submit = async () => {
     if (!canPost || submitBusy) return;
@@ -170,6 +196,7 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
             : { name: "You", handle: "you", initials: "YOU" }),
           timeAgo: editing?.timeAgo || "now",
           review: review.trim(),
+          song,
           photos: durablePhotos,
           media: durablePhotos.length,
           photosPublic: true,
@@ -198,6 +225,7 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
         room: submittedRatings.room || submittedRatings.overall,
         dims,
         review: review.trim(),
+        song,
         tags: tagDraft.trim() && tags.length < 5 && !tags.some((t) => t.toLowerCase() === tagDraft.trim().toLowerCase()) ? [...tags, tagDraft.trim()] : tags,
         setlist: editing?.setlist || [],
         likes: editing?.likes || 0,
@@ -215,7 +243,7 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
 
   return (
     <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-      <SheetHeader title={editing ? "Edit post" : isStatus ? "New post" : "Log a show"} onClose={onCancel} action={{ label: posting ? (editing ? "Saving..." : "Posting...") : uploadingPhotos ? "Uploading..." : editing ? "Save" : "Post", onPress: submit, disabled: !canPost || submitBusy }} />
+      <SheetHeader title={editing ? "Edit post" : isStatus ? "New post" : "Log a show"} onClose={onCancel} action={{ label: posting ? (editing ? "Saving..." : "Posting...") : uploadingPhotos ? "Uploading..." : resolvingSong ? "Checking..." : editing ? "Save" : "Post", onPress: submit, disabled: !canPost || submitBusy }} />
 
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         {!editing && (
@@ -380,7 +408,42 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
           </>
         )}
 
-        <Text style={[styles.fieldLabel, { marginTop: 22 }]}>PHOTOS <Text style={styles.optional}>· optional</Text></Text>
+        <Text style={[styles.fieldLabel, { marginTop: 22 }]}>TAG A SONG <Text style={styles.optional}>· optional, paste its YouTube link</Text></Text>
+        {song?.videoId ? (
+          <View style={styles.songPreview}>
+            <SmartImage uri={song.thumb} style={styles.songArt} contain={false} />
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text style={styles.songReady}>READY TO PLAY</Text>
+              <Text style={styles.songTitle} numberOfLines={2}>{song.title || "YouTube song"}</Text>
+              {!!song.artist && <Text style={styles.songArtist} numberOfLines={1}>{song.artist}</Text>}
+            </View>
+            <Pressable onPress={() => { setSong(null); setSongUrl(""); setSongError(""); }} hitSlop={8} disabled={submitBusy} accessibilityRole="button" accessibilityLabel="Remove tagged song">
+              <Icon name="x" size={17} color={colors.textDim} />
+            </Pressable>
+          </View>
+        ) : (
+          <View style={styles.songInputRow}>
+            <TextInput
+              style={[styles.input, styles.songInput]}
+              placeholder="https://youtube.com/watch?v=..."
+              placeholderTextColor={colors.textFaint}
+              value={songUrl}
+              onChangeText={(text) => { setSongUrl(text); setSongError(""); }}
+              onSubmitEditing={attachSong}
+              autoCapitalize="none"
+              autoCorrect={false}
+              keyboardType="url"
+              returnKeyType="done"
+            />
+            <Pressable style={[styles.songAttachBtn, (!songUrl.trim() || submitBusy) && styles.songAttachOff]} onPress={attachSong} disabled={!songUrl.trim() || submitBusy} accessibilityRole="button">
+              <Icon name="music" size={15} color="#1A1206" />
+              <Text style={styles.songAttachTxt}>{resolvingSong ? "Checking" : "Attach"}</Text>
+            </Pressable>
+          </View>
+        )}
+        {!!songError && <Text style={styles.songError}>{songError}</Text>}
+
+        <Text style={[styles.fieldLabel, { marginTop: 22 }]}>PHOTOS &amp; VIDEOS <Text style={styles.optional}>· optional, up to 8</Text></Text>
         <View style={styles.photoRow}>
           {photos.map((uri, i) => (
             <View key={i} style={styles.thumb}>
@@ -394,7 +457,7 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
           {photos.length < 8 && (
             <Pressable style={styles.addThumb} onPress={addPhoto} disabled={submitBusy}>
               <Icon name="camera" size={20} color={colors.amber} />
-              <Text style={styles.addThumbTxt}>{uploadingPhotos ? "Uploading" : "Add"}</Text>
+              <Text style={styles.addThumbTxt}>{uploadingPhotos ? "Uploading" : "Add media"}</Text>
             </Pressable>
           )}
         </View>
@@ -406,7 +469,7 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
           </Pressable>
         )}
 
-        <Button title={posting ? (editing ? "Saving changes..." : "Posting...") : uploadingPhotos ? "Uploading photos..." : editing ? "Save changes" : isStatus ? "Post" : "Post to feed"} icon="check" onPress={submit} disabled={!canPost || submitBusy} style={{ marginTop: 28 }} />
+        <Button title={posting ? (editing ? "Saving changes..." : "Posting...") : uploadingPhotos ? "Uploading media..." : resolvingSong ? "Checking song..." : editing ? "Save changes" : isStatus ? "Post" : "Post to feed"} icon="check" onPress={submit} disabled={!canPost || submitBusy} style={{ marginTop: 28 }} />
         {!editing && !isStatus && hasContent && (
           <Pressable style={styles.saveDraft} onPress={stash} disabled={submitBusy}>
             <Icon name="edit" size={14} color={colors.textDim} />
@@ -425,6 +488,17 @@ const styles = StyleSheet.create({
   modeTxt: { color: colors.textDim, fontSize: 13.5, fontWeight: "800" },
   modeTxtOn: { color: "#1A1206" },
   statusBox: { minHeight: 130, textAlignVertical: "top", fontSize: 17, lineHeight: 24 },
+  songInputRow: { flexDirection: "row", alignItems: "stretch", gap: 8 },
+  songInput: { flex: 1, marginBottom: 0, minWidth: 0 },
+  songAttachBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, minWidth: 96, paddingHorizontal: 13, borderRadius: radius.sm, backgroundColor: colors.amberStrong },
+  songAttachOff: { opacity: 0.42 },
+  songAttachTxt: { color: "#1A1206", fontSize: 13, fontWeight: "900" },
+  songPreview: { flexDirection: "row", alignItems: "center", gap: 11, padding: 10, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.bgElev },
+  songArt: { width: 82, height: 58, borderRadius: radius.sm },
+  songReady: { color: colors.good, fontFamily: mono, fontSize: 9, fontWeight: "900", letterSpacing: 1.2 },
+  songTitle: { color: colors.text, fontSize: 14, lineHeight: 18, fontWeight: "800", marginTop: 2 },
+  songArtist: { color: colors.textDim, fontSize: 11.5, marginTop: 2 },
+  songError: { color: colors.danger, fontSize: 12.5, lineHeight: 18, marginTop: 7 },
   tagEditRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 8 },
   tagEditChip: { flexDirection: "row", alignItems: "center", gap: 6, borderWidth: 1.5, borderColor: colors.amber, borderRadius: radius.sm, paddingHorizontal: 10, paddingVertical: 6, backgroundColor: colors.surfaceAlt },
   tagEditTxt: { color: colors.amber, fontSize: 12, fontWeight: "900", letterSpacing: 1.2 },

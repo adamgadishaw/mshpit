@@ -68,11 +68,29 @@ test("status posts carry text/photos with no artist, venue, or rating", () => {
   assert.equal(status.post.review, "just left the best show of my life");
   assert.deepEqual(status.post.photos, ["https://cdn.example/night.jpg"]);
 
+  const songOnly = create({
+    user,
+    ip: "status-song",
+    body: { kind: "status", song: { url: "https://youtu.be/dQw4w9WgXcQ", title: "Shared song", artist: "Artist" } },
+  });
+  assert.equal(songOnly.post.song.videoId, "dQw4w9WgXcQ");
+  assert.equal(songOnly.post.song.url, "https://www.youtube.com/watch?v=dQw4w9WgXcQ");
+
   // A photo-only status is fine; a status with neither text nor a photo is not.
   const photoOnly = create({ user, ip: "status-photo", body: { kind: "status", photos: ["https://cdn.example/a.jpg"] } });
   assert.equal(photoOnly.post.kind, "status");
   assert.throws(
     () => create({ user, ip: "status-empty", body: { kind: "status", review: "   " } }),
+    (error) => error instanceof ApiError && error.status === 400,
+  );
+  assert.throws(
+    () => create({ user, ip: "status-bad-song", body: { kind: "status", review: "still invalid", song: { url: "https://example.com/video" } } }),
+    (error) => error instanceof ApiError && error.status === 400,
+  );
+
+  const edit = routes["PATCH /api/posts/:id"];
+  assert.throws(
+    () => edit({ user, ip: "status-clear", params: { id: status.id }, body: { review: "", photos: [], song: null, version: status.post.version } }),
     (error) => error instanceof ApiError && error.status === 400,
   );
 
@@ -106,6 +124,7 @@ test("post edits enforce ownership, revisions, validation, and canonical fields"
     params: { id: "post_edit" },
     body: {
       review: "Updated\u0000 review",
+      song: { url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ", title: "Post song", artist: "Artist" },
       photos: ["https://cdn.example/photo.jpg"],
       photosPublic: true,
       dims: { performance: 5, setlist: 4.5, sound: 4, venue: 3.5, crowd: 5, experience: 5, privileged: 5 },
@@ -116,6 +135,7 @@ test("post edits enforce ownership, revisions, validation, and canonical fields"
     },
   });
   assert.equal(first.post.review, "Updated review");
+  assert.equal(first.post.song.videoId, "dQw4w9WgXcQ");
   assert.deepEqual(first.post.photos, ["https://cdn.example/photo.jpg"]);
   assert.equal(first.post.photosPublic, true);
   assert.equal(first.post.dims.performance, 5);
@@ -142,13 +162,14 @@ test("post edits enforce ownership, revisions, validation, and canonical fields"
     user: owner,
     ip: "post-edit-clear",
     params: { id: "post_edit" },
-    body: { city: "", date: "", review: "", band: null, room: null, photos: [], setlist: [], tour: null, version: first.post.version },
+    body: { city: "", date: "", review: "", band: null, room: null, photos: [], setlist: [], tour: null, song: null, version: first.post.version },
   });
   assert.equal(cleared.post.city, "");
   assert.equal(cleared.post.review, "");
   assert.equal(cleared.post.band, null);
   assert.deepEqual(cleared.post.photos, []);
   assert.equal(cleared.post.tour, null);
+  assert.equal(cleared.post.song, null);
 
   // A review is the author's own words: even admins may not rewrite it. They
   // moderate by removing content or muting/banning people, never by editing.

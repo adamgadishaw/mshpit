@@ -183,12 +183,23 @@ async function inBatches(items, size, mapper) {
   return out;
 }
 
-export async function getDeezerDiscography(name, { fetchImpl = fetch } = {}) {
-  const key = `deezer:discography:v3:${normName(name)}`;
+// Deezer artist candidates for disambiguation: many acts share a name, so the
+// UI can show fans/photo/album-count and let the listener pick the right one.
+export async function findDeezerArtistCandidates(name, { fetchImpl = fetch, limit = 8 } = {}) {
+  const data = await providerJson("Deezer", `https://api.deezer.com/search/artist?q=${encodeURIComponent(name)}&limit=${limit}`, { fetchImpl });
+  return (data?.data || [])
+    .filter((a) => a?.id && a?.name)
+    .map((a) => ({ id: a.id, name: a.name, fans: Number(a.nb_fan) || 0, albums: Number(a.nb_album) || 0, photo: a.picture_medium || a.picture || null }));
+}
+
+export async function getDeezerDiscography(name, { fetchImpl = fetch, deezerId = null } = {}) {
+  const key = `deezer:discography:v4:${normName(name)}`;
   const cached = readProviderCache(key);
-  if (cached?.fresh) return { ...cached.data, status: "cached", stale: false };
+  // A caller-supplied deezerId (the listener picked a specific same-named artist)
+  // forces a fresh resolve and re-pins identity, even when one is already cached.
+  if (cached?.fresh && !deezerId) return { ...cached.data, status: "cached", stale: false };
   try {
-    const identity = await findDeezerArtist(name, { preferredId: storedDeezerId(name), fetchImpl });
+    const identity = await findDeezerArtist(name, { preferredId: deezerId || storedDeezerId(name), fetchImpl });
     if (!identity) return cached ? { ...cached.data, status: "stale", stale: true } : { albums: [], status: "not_found", stale: false };
     const artist = identity.artist;
     persistDeezerIdentity(name, artist.id);
@@ -196,17 +207,23 @@ export async function getDeezerDiscography(name, { fetchImpl = fetch } = {}) {
     // ~10. Resolved live for ANY artist, not just ones the seeder pre-enriched.
     const topData = await providerJson("Deezer", `https://api.deezer.com/artist/${artist.id}/top?limit=25`, { fetchImpl });
     const topTracks = (topData?.data || []).map((t) => ({ id: t.id || null, title: t.title, album: t.album?.title || null, duration: t.duration || 0 }));
-    const albumData = await providerJson("Deezer", `https://api.deezer.com/artist/${artist.id}/albums?limit=100`, { fetchImpl });
+    // Full discography: albums AND EPs (not just the most recent LPs), newest
+    // first, capped high enough to cover a deep back catalogue. Previously this
+    // kept only `record_type === "album"` and sliced to 12, so earlier releases
+    // and every EP silently vanished from the page.
+    const albumData = await providerJson("Deezer", `https://api.deezer.com/artist/${artist.id}/albums?limit=300`, { fetchImpl });
     const seen = new Set();
     const picks = (albumData?.data || [])
-      .filter((album) => album.record_type === "album" && album.title && !seen.has(normalizeMusicText(album.title)) && seen.add(normalizeMusicText(album.title)))
+      .filter((album) => (album.record_type === "album" || album.record_type === "ep") && album.title
+        && !seen.has(normalizeMusicText(album.title)) && seen.add(normalizeMusicText(album.title)))
       .sort((a, b) => String(b.release_date || "").localeCompare(String(a.release_date || "")))
-      .slice(0, 12);
-    const fullAlbums = await inBatches(picks, 3, async (album) => {
+      .slice(0, 40);
+    const fullAlbums = await inBatches(picks, 4, async (album) => {
       const full = await providerJson("Deezer", `https://api.deezer.com/album/${album.id}`, { fetchImpl });
       return {
         id: album.id,
         title: album.title,
+        type: album.record_type === "ep" ? "ep" : "album",
         year: String(album.release_date || "").slice(0, 4),
         cover: album.cover_medium || album.cover || null,
         // Never persist Deezer's signed preview URL. It expires in minutes and is
@@ -226,6 +243,29 @@ export async function getDeezerDiscography(name, { fetchImpl = fetch } = {}) {
   } catch (error) {
     if (cached) return { ...cached.data, status: "stale", stale: true };
     throw error;
+  }
+}
+
+// Resolve a pasted YouTube link to a tagged song for a post: its stable video id,
+// plus a title/author/thumbnail from YouTube's keyless oEmbed endpoint. Only
+// YouTube links are accepted (parseYouTubeVideoId returns null otherwise); a
+// thumbnail is always derivable from the id even if oEmbed metadata is missing.
+export async function youtubeOEmbed(url, { fetchImpl = fetch } = {}) {
+  const videoId = parseYouTubeVideoId(url);
+  if (!videoId) return null;
+  const canonical = `https://www.youtube.com/watch?v=${videoId}`;
+  const fallbackThumb = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+  try {
+    const data = await providerJson("YouTube", `https://www.youtube.com/oembed?url=${encodeURIComponent(canonical)}&format=json`, { fetchImpl, timeoutMs: 6_000 });
+    return {
+      videoId,
+      url: canonical,
+      title: data?.title ? String(data.title).slice(0, 200) : null,
+      artist: data?.author_name ? String(data.author_name).slice(0, 120) : null,
+      thumb: typeof data?.thumbnail_url === "string" && /^https:\/\//.test(data.thumbnail_url) ? data.thumbnail_url : fallbackThumb,
+    };
+  } catch {
+    return { videoId, url: canonical, title: null, artist: null, thumb: fallbackThumb };
   }
 }
 

@@ -21,6 +21,7 @@ const {
   selectDeezerArtist,
   selectDeezerTrack,
   trackOverrideKey,
+  youtubeOEmbed,
 } = await import("./musicProviders.js");
 
 after(() => {
@@ -178,4 +179,24 @@ test("track pins parse real YouTube link shapes and share one identity per song"
   assert.equal(parseYouTubeVideoId("https://www.youtube.com/watch?v=short"), null, "malformed ids are rejected");
   assert.equal(trackOverrideKey("BIRDS", "Turnstile"), trackOverrideKey("Birds ", " TURNSTILE"), "spelling variants share a key");
   assert.notEqual(trackOverrideKey("Birds", "Turnstile"), trackOverrideKey("Birds", "Koyo"), "different artists never collide");
+});
+
+test("YouTube post attachments canonicalize links and keep provider metadata", async () => {
+  let requested = "";
+  const song = await youtubeOEmbed("https://youtu.be/dQw4w9WgXcQ?t=42", {
+    fetchImpl: async (url) => {
+      requested = String(url);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ title: "Never Gonna Give You Up", author_name: "Rick Astley", thumbnail_url: "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg" }),
+      };
+    },
+  });
+  assert.match(requested, /^https:\/\/www\.youtube\.com\/oembed\?/);
+  assert.equal(song.videoId, "dQw4w9WgXcQ");
+  assert.equal(song.url, "https://www.youtube.com/watch?v=dQw4w9WgXcQ");
+  assert.equal(song.title, "Never Gonna Give You Up");
+  assert.equal(song.artist, "Rick Astley");
+  assert.equal(await youtubeOEmbed("https://example.com/not-youtube", { fetchImpl: async () => { throw new Error("must not fetch"); } }), null);
 });

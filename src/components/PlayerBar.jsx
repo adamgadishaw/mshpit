@@ -140,6 +140,7 @@ export default function PlayerBar({
   const index = Math.max(0, Math.min(player?.index || 0, list.length - 1));
   const cur = list[index];
   const curKey = trackKey(cur);
+  const directVideoId = /^[A-Za-z0-9_-]{11}$/.test(String(cur?.videoId || "")) ? String(cur.videoId) : null;
   const youtubeHostId = column ? "pit-youtube-player-host-column" : "pit-youtube-player-host-compact";
 
   // Volume (0–1), persisted across sessions; applied to whichever engine is live.
@@ -168,7 +169,7 @@ export default function PlayerBar({
     });
     (async () => {
       const [videoId, preview] = await Promise.all([
-        within(resolveYouTube(cur.title, cur.artist, cur.duration || 0)),
+        directVideoId ? Promise.resolve(directVideoId) : within(resolveYouTube(cur.title, cur.artist, cur.duration || 0)),
         // Stored provider previews are short-lived signed URLs. Always ask the
         // resolver for a fresh one; its bounded cache avoids duplicate requests.
         within(resolveDeezerPreview(cur.title, cur.artist)),

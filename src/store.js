@@ -67,6 +67,18 @@ const normalizeServerPost = (post) => ({
   timeAgo: ago(post?.createdAt),
 });
 
+// Poll responses contain fresh objects even when the underlying post is exactly
+// the same. Preserve the prior object in that case so a quiet feed refresh does
+// not rerender every Context consumer or rewrite the persisted feed cache.
+const sameServerPost = (a, b) => !!a && !!b
+  && a.id === b.id
+  && a.version === b.version
+  && a.likes === b.likes
+  && a.comments === b.comments
+  && a.liked === b.liked
+  && a.flags === b.flags
+  && JSON.stringify(a.user || null) === JSON.stringify(b.user || null);
+
 const demoUsers = [
   // NOTE: the real admin account lives ONLY on the server (server/index.js
   // seedAdmin), never ship admin credentials in the client bundle.
@@ -289,30 +301,46 @@ export function StoreProvider({ children }) {
   // edits and cross-device likes/comments remain stale forever.
   const mergeServerFeed = (posts, { prepend = true, preserveOrder = false } = {}) => {
     if (!Array.isArray(posts) || !posts.length) return;
-    const normalized = posts.map(normalizeServerPost);
+    const incoming = posts.map(normalizeServerPost);
     setFeed((current) => {
+      const currentById = new Map(current.map((post) => [post.id, post]));
+      const normalized = incoming.map((post) => {
+        const previous = currentById.get(post.id);
+        return sameServerPost(previous, post) ? previous : post;
+      });
       const serverIds = new Set(normalized.map((post) => post.id));
       const remaining = current.filter((post) => !serverIds.has(post.id));
+      let next;
       if (preserveOrder) {
         const byId = new Map(normalized.map((post) => [post.id, post]));
         const replaced = current.map((post) => byId.get(post.id) || post);
         const existingIds = new Set(current.map((post) => post.id));
         const missing = normalized.filter((post) => !existingIds.has(post.id));
-        return [...replaced, ...missing].sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0));
+        next = [...replaced, ...missing].sort((a, b) => (Number(b.createdAt) || 0) - (Number(a.createdAt) || 0));
+      } else {
+        next = prepend ? [...normalized, ...remaining] : [...remaining, ...normalized];
       }
-      return prepend ? [...normalized, ...remaining] : [...remaining, ...normalized];
+      return next.length === current.length && next.every((post, index) => post === current[index]) ? current : next;
     });
     // Like model: likes[id] is the count EXCLUDING the viewer; myLikes[id] is
     // their own toggle. The server total includes me, so subtract it back out.
     setLikes((current) => {
       const next = { ...current };
-      normalized.forEach((post) => { next[post.id] = (post.likes || 0) - (post.liked ? 1 : 0); });
-      return next;
+      let changed = false;
+      incoming.forEach((post) => {
+        const value = (post.likes || 0) - (post.liked ? 1 : 0);
+        if (next[post.id] !== value) { next[post.id] = value; changed = true; }
+      });
+      return changed ? next : current;
     });
     setMyLikes((current) => {
       const next = { ...current };
-      normalized.forEach((post) => { next[post.id] = !!post.liked; });
-      return next;
+      let changed = false;
+      incoming.forEach((post) => {
+        const value = !!post.liked;
+        if (next[post.id] !== value) { next[post.id] = value; changed = true; }
+      });
+      return changed ? next : current;
     });
   };
 
@@ -1267,12 +1295,12 @@ export function StoreProvider({ children }) {
     // id so likes/comments on it key correctly. Best-effort (offline keeps local).
     if (session) {
       const body = kind === "status"
-        ? { kind: "status", review: safe.review, photos: safe.photos || [], photosPublic: safe.photosPublic === false ? 0 : 1 }
+        ? { kind: "status", review: safe.review, song: safe.song || null, photos: safe.photos || [], photosPublic: safe.photosPublic === false ? 0 : 1 }
         : {
             artist: safe.artist, venue: safe.venue, city: safe.city, date: safe.date,
             overall: safe.overall, band: safe.band, room: safe.room, dims: safe.dims, review: safe.review,
             photos: safe.photos, photosPublic: safe.photosPublic ? 1 : 0, setlist: safe.setlist, tour: safe.tour || null,
-            tags: Array.isArray(safe.tags) ? safe.tags : [],
+            tags: Array.isArray(safe.tags) ? safe.tags : [], song: safe.song || null,
           };
       return api("/api/posts", {
         method: "POST",
@@ -1311,11 +1339,12 @@ export function StoreProvider({ children }) {
       const version = previous.version ?? previous.editedAt ?? previous.createdAt;
       const body = {
         review: clean(changes.review, { max: LIMITS.review, newlines: true }),
+        song: changes.song?.videoId ? changes.song : null,
         photos: Array.isArray(changes.photos) ? changes.photos.filter((item) => typeof item === "string").slice(0, 8) : [],
         photosPublic: changes.photosPublic !== false,
         ...(Number.isSafeInteger(version) ? { version } : {}),
       };
-      if (!body.review && !body.photos.length) return { ok: false };
+      if (!body.review && !body.photos.length && !body.song) return { ok: false };
       feedMutationRevisionRef.current += 1;
       try {
         const { post } = await api(`/api/posts/${encodeURIComponent(id)}`, { method: "PATCH", context: "Saving your update", body });
@@ -1344,6 +1373,7 @@ export function StoreProvider({ children }) {
       setlist: Array.isArray(changes.setlist) ? changes.setlist.filter((item) => typeof item === "string").slice(0, 40) : [],
       tour: clean(changes.tour, { max: 80 }) || null,
       tags: Array.isArray(changes.tags) ? changes.tags.filter((item) => typeof item === "string").slice(0, 5) : [],
+      song: changes.song?.videoId ? changes.song : null,
     };
     if (!safe.artist || !safe.venue || safe.overall <= 0) return { ok: false };
     const version = previous.version ?? previous.editedAt ?? previous.createdAt;
@@ -1585,14 +1615,19 @@ export function StoreProvider({ children }) {
   // Inline comment previews on the feed call this per card; a small in-flight
   // guard stops the same post being fetched twice at once (card + PostScreen).
   const commentsInflight = useRef(new Set());
+  const commentsLoadedAt = useRef(new Map());
   // Slice 3: pull a post's comments from the server and merge them in (dedupe by
   // id). For bundled demo posts the server has none, so the seed comments stand.
-  const loadComments = (id) => {
-    if (!id || commentsInflight.current.has(id)) return;
-    commentsInflight.current.add(id);
-    api(`/api/posts/${id}/comments`)
+  const loadComments = (id, { limit = 50, force = false } = {}) => {
+    const safeLimit = Math.max(1, Math.min(100, Number(limit) || 50));
+    const requestKey = `${id}:${safeLimit}`;
+    if (!id || commentsInflight.current.has(requestKey)) return;
+    if (!force && Date.now() - (commentsLoadedAt.current.get(requestKey) || 0) < 30_000) return;
+    commentsInflight.current.add(requestKey);
+    api(`/api/posts/${id}/comments?limit=${safeLimit}`)
       .then(({ comments: rows }) => {
         if (!Array.isArray(rows)) return;
+        commentsLoadedAt.current.set(requestKey, Date.now());
         setComments((m) => {
           const existing = m[id] || [];
           const byId = new Map(existing.map((c) => [c.id, c]));
@@ -1600,11 +1635,15 @@ export function StoreProvider({ children }) {
           // optimistic locals not yet on the server. Sorted oldest→newest.
           for (const c of rows) byId.set(c.id, { id: c.id, userId: c.userId, name: c.name, initials: c.initials, avatarUri: c.avatarUri, avatarColor: c.avatarColor, role: c.role, verified: c.verified, text: c.text, parentId: c.parentId || null, at: c.createdAt, likes: 0 });
           const merged = [...byId.values()].sort((a, b) => (a.at || 0) - (b.at || 0));
-          return { ...m, [id]: merged };
+          const unchanged = merged.length === existing.length && merged.every((comment, index) => {
+            const previous = existing[index];
+            return previous?.id === comment.id && previous.text === comment.text && previous.parentId === comment.parentId && previous.at === comment.at;
+          });
+          return unchanged ? m : { ...m, [id]: merged };
         });
       })
       .catch(() => {})
-      .finally(() => commentsInflight.current.delete(id));
+      .finally(() => commentsInflight.current.delete(requestKey));
   };
   const addComment = (id, text, parentId = null) => {
     const t = clean(text, { max: LIMITS.message, newlines: true });
@@ -2141,6 +2180,7 @@ export function StoreProvider({ children }) {
     })
       .then(({ messages, syncCursor, hasMore }) => {
         if (!Array.isArray(messages)) return;
+        if (!messages.length) return { syncCursor: syncCursor || after || null, hasMore: !!hasMore };
         setDms((d) => {
           const incoming = messages.map((m) => ({ id: m.id, from: m.from, text: m.text, at: m.createdAt, ts: ago(m.createdAt), server: true }));
           return { ...d, [key]: mergeChatMessages(d[key] || [], incoming, [], 750) };

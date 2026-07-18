@@ -4,10 +4,11 @@ import { colors, displayFont, font, mono, radius, shadow, roleColor } from "../t
 import Stars from "./Stars";
 import Icon from "./Icon";
 import Avatar from "./Avatar";
-import SmartImage from "./SmartImage";
 import RatingBars from "./RatingBars";
 import SpinStar from "./SpinStar";
 import AfterpartyPreview from "./AfterpartyPreview";
+import PostMediaGrid from "./PostMediaGrid";
+import SongAttachment from "./SongAttachment";
 import { useStore } from "../store";
 import { BadgeRow } from "./Badge";
 
@@ -46,44 +47,10 @@ const relativeTime = (timestamp) => {
   const days = Math.floor(hours / 24); return days < 30 ? `${days}d` : `${Math.floor(days / 30)}mo`;
 };
 
-// Real photo thumbnails only, never empty placeholder tiles (that reads as a
-// broken/prototype UI). Renders nothing when the post has no photos. Tapping a
-// thumbnail opens THAT photo full screen (Facebook-style viewer, per-photo
-// likes); the +N tile opens the set at the first hidden photo.
-function MediaStrip({ photos, onOpenPhoto }) {
-  const shown = photos.slice(0, 4);
-  return (
-    <View style={styles.media}>
-      {shown.map((uri, i) => (
-        <SmartImage key={i} uri={uri} style={styles.mediaTile} contain={false} onPress={onOpenPhoto ? () => onOpenPhoto(i) : undefined} />
-      ))}
-      {photos.length > 4 && (
-        <Pressable style={[styles.mediaTile, styles.mediaMoreTile]} onPress={onOpenPhoto ? () => onOpenPhoto(4) : undefined} accessibilityRole="button" accessibilityLabel={`Show ${photos.length - 4} more photos`}>
-          <Text style={styles.mediaMore}>+{photos.length - 4}</Text>
-        </Pressable>
-      )}
-    </View>
-  );
-}
-
-// Status posts show photos big and edge-to-edge like Facebook/Twitter: one photo
-// fills a hero frame, several fall back to the compact thumbnail strip.
-function StatusMedia({ photos, onOpenPhoto }) {
-  if (!photos?.length) return null;
-  if (photos.length === 1) {
-    return (
-      <Pressable style={styles.statusHero} onPress={onOpenPhoto ? () => onOpenPhoto(0) : undefined} accessibilityRole={onOpenPhoto ? "button" : undefined} accessibilityLabel="Open photo">
-        <SmartImage uri={photos[0]} style={StyleSheet.absoluteFill} contain />
-      </Pressable>
-    );
-  }
-  return <MediaStrip photos={photos} onOpenPhoto={onOpenPhoto} />;
-}
-
 // Review-forward feed card: the review is the centerpiece. Artist / venue / date
 // sit on a ticket-stub line below, the score reads at a glance, and the footer
 // opens the Afterparty (like + comments) for that concert.
-export default function TicketStub({ log, onOpen, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenVenue, onReport, onEdit, onOpenPhotos, showComments = true }) {
+export default function TicketStub({ log, onOpen, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenVenue, onReport, onEdit, onOpenPhotos, onPlay, showComments = true }) {
   const openComments = () => (onComment || onOpen)?.(log);
   const { userById, likeInfo, toggleLike, commentsFor, session, userBadges } = useStore();
   const author = userById?.(log.userId) || { initials: log.user?.initials, name: log.user?.name, handle: log.user?.handle };
@@ -142,8 +109,9 @@ export default function TicketStub({ log, onOpen, onComment, onPreview, onOpenPr
         {!!log.review && (
           <Pressable onPress={() => (onComment || onOpen)?.(log)}><Text style={styles.statusText}>{log.review}</Text></Pressable>
         )}
+        {!!log.song && <SongAttachment song={log.song} onPlay={onPlay} />}
         {log.photos?.length > 0 && (
-          <StatusMedia photos={log.photos} onOpenPhoto={onOpenPhotos ? (i) => onOpenPhotos(log.photos.map((uri) => ({ uri, by: log.user?.name })), i, log.id) : undefined} />
+          <PostMediaGrid media={log.photos} onOpen={onOpenPhotos ? (i) => onOpenPhotos(log.photos.map((uri) => ({ uri, by: log.user?.name, postId: log.id })), i, log.id) : undefined} />
         )}
 
         <View style={styles.statusFooter}>
@@ -233,8 +201,11 @@ export default function TicketStub({ log, onOpen, onComment, onPreview, onOpenPr
         ) : (
           <Text style={styles.noReview}>Logged this show - no review yet. Tap to open.</Text>
         )}
-        {log.photos?.length > 0 && <MediaStrip photos={log.photos} onOpenPhoto={onOpenPhotos ? (i) => onOpenPhotos(log.photos.map((uri) => ({ uri, by: log.user?.name })), i, log.id) : undefined} />}
       </Pressable>
+      {!!log.song && <SongAttachment song={log.song} onPlay={onPlay} />}
+      {log.photos?.length > 0 && (
+        <PostMediaGrid media={log.photos} onOpen={onOpenPhotos ? (i) => onOpenPhotos(log.photos.map((uri) => ({ uri, by: log.user?.name, postId: log.id })), i, log.id) : undefined} />
+      )}
 
       {/* perforated ticket-stub line */}
       <View style={styles.perfWrap}>
@@ -333,13 +304,7 @@ const styles = StyleSheet.create({
   // Status (Facebook/Twitter-style) card pieces.
   iconBtn: { width: 34, height: 34, borderRadius: 17, alignItems: "center", justifyContent: "center" },
   statusText: { color: colors.text, fontFamily: font, fontSize: 16, lineHeight: 23, marginTop: 12 },
-  statusHero: { width: "100%", height: 300, marginTop: 12, borderRadius: radius.md, borderCurve: "continuous", overflow: "hidden", borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.bgElev },
   statusFooter: { flexDirection: "row", alignItems: "center", gap: 14, marginTop: 14, paddingTop: 4, borderTopWidth: 1, borderTopColor: colors.lineSoft },
-
-  media: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 12 },
-  mediaTile: { width: 64, height: 64, borderRadius: radius.sm, borderCurve: "continuous", backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.lineSoft },
-  mediaMoreTile: { alignItems: "center", justifyContent: "center" },
-  mediaMore: { color: colors.textDim, fontFamily: mono, fontSize: 14, fontWeight: "700" },
 
   perfWrap: { flexDirection: "row", alignItems: "center", height: 16, marginVertical: 14 },
   dashed: { flex: 1, borderTopWidth: 1, borderStyle: "dashed", borderColor: colors.line },

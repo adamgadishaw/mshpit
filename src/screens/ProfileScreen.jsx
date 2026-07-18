@@ -325,6 +325,7 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtis
               onReport={onReport}
               onEdit={onEditPost}
               onOpenPhotos={onOpenPhotos}
+              onPlay={onPlay}
             />
           ))}
         </View>

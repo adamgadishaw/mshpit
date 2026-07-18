@@ -16,12 +16,14 @@ import { discoverySidebar } from "./discovery.js";
 import { userRewards } from "./rewards.js";
 import {
   ProviderError,
+  findDeezerArtistCandidates,
   getDeezerDiscography,
   getFreshDeezerPreview,
   invalidateYouTubeTrack,
   parseYouTubeVideoId,
   resolveYouTubeTrack,
   trackOverrideKey,
+  youtubeOEmbed,
 } from "./musicProviders.js";
 
 export { ApiError } from "./errors.js";
@@ -154,8 +156,22 @@ function cleanPostRatingDims(value) {
   return out;
 }
 
-const postRow = db.prepare(`INSERT INTO posts (id,user_id,artist,venue,city,date,overall,band,room,dims,review,photos,photos_public,setlist,tour,tags,kind,created_at)
-                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+const postRow = db.prepare(`INSERT INTO posts (id,user_id,artist,venue,city,date,overall,band,room,dims,review,photos,photos_public,setlist,tour,tags,kind,song,created_at)
+                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+
+// A tagged YouTube song on a post. Only a real YouTube video id is trusted; the
+// title/artist/thumb are stored as given (already cleaned) so the feed can render
+// the song card and hand the id straight to the player. Returns null for anything
+// that isn't a valid YouTube link, so a bad paste never becomes a dead card.
+function cleanSong(value) {
+  if (value == null) return null;
+  if (typeof value !== "object" || Array.isArray(value)) return undefined;
+  const videoId = parseYouTubeVideoId(value.videoId || value.url || "");
+  if (!videoId) return undefined;
+  const str = (v, max) => { const s = clean(String(v ?? ""), { max }); return s || null; };
+  const thumb = typeof value.thumb === "string" && /^https:\/\//.test(value.thumb) ? value.thumb.slice(0, 400) : `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+  return { videoId, url: `https://www.youtube.com/watch?v=${videoId}`, title: str(value.title, 200), artist: str(value.artist, 120), thumb };
+}
 // How many times the author has logged this artist up to and including this
 // post: powers the "3rd time in the pit" marker on the card.
 const SEEN_ORDINAL_SQL = `(SELECT COUNT(*) FROM posts s
@@ -241,6 +257,7 @@ function postJson(p, viewerId) {
     setlist: JSON.parse(p.setlist || "[]"),
     tour: p.tour || null,
     tags: JSON.parse(p.tags || "[]"),
+    song: p.song ? (() => { try { return JSON.parse(p.song); } catch { return null; } })() : null,
     seen: p.seen_ordinal ?? null,
     ...(p.open_reports != null ? { flags: p.open_reports } : {}),
     likes: p.like_count ?? 0, comments: p.comment_count ?? 0,
@@ -460,13 +477,30 @@ export const routes = {
 
   // Full discography metadata from Deezer. The durable cache intentionally omits
   // signed preview URLs; a fresh preview is resolved only when Play is pressed.
+  // An optional deezerId (from the "pick the right artist" flow) re-pins identity
+  // for same-named acts and refreshes the page to that artist's catalogue.
   "GET /api/artists/discography": async (ctx) => {
     const name = clean(ctx.query.name, { max: 120 });
     if (!name) throw new ApiError(400, "Missing name.");
+    const deezerId = /^\d{1,15}$/.test(String(ctx.query.deezerId || "")) ? Number(ctx.query.deezerId) : null;
     limit(ctx, "discography", 40, 10 * 60 * 1000);
-    try { return await getDeezerDiscography(name); }
+    try { return await getDeezerDiscography(name, { deezerId }); }
     catch (error) {
       if (error instanceof ProviderError) throw new ApiError(502, "The discography source missed its cue. Try again shortly.", "PROVIDER_UNAVAILABLE", error);
+      throw error;
+    }
+  },
+
+  // Same-named artists disambiguation: a short list of Deezer candidates (fans,
+  // photo, album count) so a listener can pick the one they actually mean and
+  // re-pin this name to that artist via the discography endpoint's deezerId.
+  "GET /api/artists/candidates": async (ctx) => {
+    const name = clean(ctx.query.name, { max: 120 });
+    if (!name) throw new ApiError(400, "Missing name.");
+    limit(ctx, "artist-candidates", 60, 10 * 60 * 1000);
+    try { return { candidates: await findDeezerArtistCandidates(name) }; }
+    catch (error) {
+      if (error instanceof ProviderError) return { candidates: [] };
       throw error;
     }
   },
@@ -537,6 +571,19 @@ export const routes = {
       if (error instanceof ProviderError) return { videoId: null, status: error.code, retryable: error.retryable };
       throw error;
     }
+  },
+
+  // Turn a pasted YouTube link into a safe post attachment. The provider call is
+  // keyless and only receives a canonical youtube.com URL derived from the video
+  // id, so arbitrary user URLs are never fetched by the server.
+  "GET /api/youtube/oembed": async (ctx) => {
+    requireUser(ctx);
+    limit(ctx, "yt-oembed", 60, 10 * 60 * 1000);
+    const url = clean(ctx.query.url, { max: 500 });
+    if (!url) throw new ApiError(400, "Paste a YouTube link to tag a song.", "VALIDATION_FAILED");
+    const song = await youtubeOEmbed(url);
+    if (!song) throw new ApiError(400, "That link is not a valid YouTube song or video.", "VALIDATION_FAILED");
+    return { song };
   },
 
   // IFrame errors 100/101/150 mean a cached video is gone or cannot be embedded.
@@ -1144,15 +1191,16 @@ export const routes = {
         review: { parse: (x) => clean(x, { max: LIMITS.review, newlines: true }) },
         photos: { parse: (x) => cleanStringArray(x, { maxItems: 8, maxLen: 2000 }) },
         photosPublic: { parse: (x) => typeof x === "boolean" ? (x ? 1 : 0) : x === 0 || x === 1 ? x : undefined },
+        song: { parse: cleanSong },
       });
       if (errs.length) throw new ApiError(400, errs[0]);
       const text = v.review || "";
       const photos = v.photos || [];
-      if (!text && !photos.length) throw new ApiError(400, "Write something or add a photo to post.", "VALIDATION_FAILED");
+      if (!text && !photos.length && !v.song) throw new ApiError(400, "Write something, add a photo, or tag a song to post.", "VALIDATION_FAILED");
       const id = uid("p");
       postRow.run(id, u.id, "", "", "", "", 0, null, null,
         "{}", text, JSON.stringify(photos), v.photosPublic ?? 1, "[]", null,
-        "[]", "status", now());
+        "[]", "status", v.song ? JSON.stringify(v.song) : null, now());
       return { id, post: postJson(feedPostById.get(id), u.id) };
     }
 
@@ -1171,12 +1219,13 @@ export const routes = {
       setlist: { parse: (x) => cleanStringArray(x, { maxItems: 40, maxLen: 120 }) },
       tour: { parse: (x) => clean(x, { max: 80 }) || null },
       tags: { parse: cleanPostTags },
+      song: { parse: cleanSong },
     });
     if (errs.length) throw new ApiError(400, errs[0]);
     const id = uid("p");
     postRow.run(id, u.id, v.artist, v.venue, v.city || "", v.date || "", v.overall, v.band ?? null, v.room ?? null,
       JSON.stringify(v.dims || {}), v.review || "", JSON.stringify(v.photos || []), v.photosPublic ?? 0, JSON.stringify(v.setlist || []), v.tour || null,
-      JSON.stringify(v.tags || []), "review", now());
+      JSON.stringify(v.tags || []), "review", v.song ? JSON.stringify(v.song) : null, now());
     return { id, post: postJson(feedPostById.get(id), u.id) };
   },
 
@@ -1193,7 +1242,7 @@ export const routes = {
 
     const body = ctx.body && typeof ctx.body === "object" && !Array.isArray(ctx.body) ? ctx.body : {};
     const has = (key) => Object.prototype.hasOwnProperty.call(body, key);
-    const editable = ["artist", "venue", "city", "date", "overall", "band", "room", "dims", "review", "photos", "photosPublic", "setlist", "tour", "tags"];
+    const editable = ["artist", "venue", "city", "date", "overall", "band", "room", "dims", "review", "photos", "photosPublic", "setlist", "tour", "tags", "song"];
     if (!editable.some(has)) throw new ApiError(400, "Make a change before saving this post.", "VALIDATION_FAILED");
 
     // Optimistic concurrency prevents two devices (or an old open edit sheet)
@@ -1260,10 +1309,24 @@ export const routes = {
       if (!tags) throw new ApiError(400, "tags is invalid", "VALIDATION_FAILED");
       next.tags = JSON.stringify(tags);
     }
+    if (has("song")) {
+      // null clears the tag; anything present must be a valid YouTube link.
+      const song = cleanSong(body.song);
+      if (song === undefined) throw new ApiError(400, "song is invalid", "VALIDATION_FAILED");
+      next.song = song ? JSON.stringify(song) : null;
+    }
+
+    if (current.kind === "status") {
+      let photos = [];
+      try { photos = JSON.parse(next.photos || "[]"); } catch {}
+      if (!next.review && !photos.length && !next.song) {
+        throw new ApiError(400, "Keep some text, media, or a tagged song in this post.", "VALIDATION_FAILED");
+      }
+    }
 
     const editedAt = Math.max(now(), currentVersion + 1);
-    db.prepare(`UPDATE posts SET artist=?,venue=?,city=?,date=?,overall=?,band=?,room=?,dims=?,review=?,photos=?,photos_public=?,setlist=?,tour=?,tags=?,updated_at=? WHERE id=?`)
-      .run(next.artist, next.venue, next.city, next.date, next.overall, next.band, next.room, next.dims, next.review, next.photos, next.photos_public, next.setlist, next.tour, next.tags, editedAt, current.id);
+    db.prepare(`UPDATE posts SET artist=?,venue=?,city=?,date=?,overall=?,band=?,room=?,dims=?,review=?,photos=?,photos_public=?,setlist=?,tour=?,tags=?,song=?,updated_at=? WHERE id=?`)
+      .run(next.artist, next.venue, next.city, next.date, next.overall, next.band, next.room, next.dims, next.review, next.photos, next.photos_public, next.setlist, next.tour, next.tags, next.song, editedAt, current.id);
     return { post: postJson(feedPostById.get(current.id), u.id) };
   },
 

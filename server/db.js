@@ -467,6 +467,7 @@ for (const stmt of [
   "ALTER TABLE users ADD COLUMN reset_expires INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE posts ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'", // short word-art descriptors on a review
   "ALTER TABLE posts ADD COLUMN kind TEXT NOT NULL DEFAULT 'review'", // 'review' = a logged show, 'status' = a plain post
+  "ALTER TABLE posts ADD COLUMN song TEXT", // JSON of a tagged YouTube song {videoId,title,artist,url,thumb}
   "ALTER TABLE yt_cache ADD COLUMN metadata TEXT",
   "ALTER TABLE yt_cache ADD COLUMN score REAL",
   "ALTER TABLE yt_cache ADD COLUMN expires_at INTEGER",

@@ -2,7 +2,7 @@
 
 > **Living doc.** Whoever works on this next: read this first, and UPDATE it before you end a session (move things between "Done" and "Backlog", note anything running). Point a fresh Claude Code chat at this file to get up to speed without re-explaining.
 >
-> Last updated: **2026-07-18** (status posts + social feed + YouTube sourcing gate)
+> Last updated: **2026-07-18** (media/post recovery, exact song shares, artist identity picker, performance audit)
 
 > **Working agreement (owner's standing instruction):** ALWAYS `git commit` **and** `git push` after a verified batch. Stabilization work uses a review branch; do not merge/push directly to `master` until the branch checks pass. A master push auto-deploys and briefly restarts Render.
 
@@ -30,6 +30,340 @@ verified live (`git log origin/master..HEAD` is empty; tree clean).
 | `MAIL_FROM` | ❌ **THE LAST GAP.** Two parts: (1) set `MAIL_FROM = Pit <noreply@mshpit.com>` on Render (health shows `mailConfigured: false`, so this or the key is still missing there); (2) **verify `mshpit.com` in Resend** (the account has **zero verified domains**, so any send from `@mshpit.com` is rejected regardless). Add Resend's DNS records in **Cloudflare** (DNS now lives there), set the mail records to **DNS-only / grey cloud**, then click Verify. | Resend dashboard (Cloudflare DNS) + Render env | Reset email silently fails; links keep getting logged instead. |
 
 `YOUTUBE_API_KEY` is already set (`youtubeConfigured: true`). Nothing to do.
+
+## OWNER PRIORITY BACKLOG (authoritative, deduplicated 2026-07-18)
+
+This is the current product backlog from the owner's latest report and the copied
+Claude transcript. It supersedes conflicting "next up" lists farther down this
+historical document. **A committed foundation is not the same as an accepted
+feature:** when the owner still reports it broken, tiny, laggy, or unprofessional,
+the item remains open until the user-visible acceptance checks below pass.
+
+Status terms used here:
+
+- **COMMITTED FOUNDATION / REOPENED:** useful code is on `master`, but the latest
+  owner report means the end-to-end feature is not accepted.
+- **PARTIAL / REOPENED:** a vertical slice now works, but one or more acceptance
+  checks (usually native-device or production validation) remain.
+- **OPEN:** no trustworthy end-to-end implementation has been demonstrated.
+
+### 2026-07-18 recovery batch completed from Claude's interrupted worktree
+
+The three partial server files left by Claude were preserved, reviewed, and
+completed as coherent vertical slices in this batch:
+
+- `posts.song` is migrated, validated on create/edit/read, resolved through a
+  rate-limited YouTube oEmbed endpoint, composed on both post types, rendered as
+  a song card, and handed to the existing player by exact video ID. The player no
+  longer searches again and substitutes a same-titled lyric/karaoke upload.
+- Same-name artist candidates now have an artist-page **Wrong artist?** picker.
+  Selecting a candidate reloads its Deezer identity, visible tracks/releases, and
+  persistent playback queue. Albums and EPs now load up to 40 releases instead of
+  silently stopping at 12 albums.
+- Native media upload now sends Expo SDK 56 `File` bodies through `expo/fetch`
+  instead of converting large local files to JS blobs. Status and review posts
+  share a large 1/2/3/4+ collage; the viewer is a true full-screen modal with
+  per-item likes and video playback.
+- Verification before commit: **57/57 tests**, syntax check, Expo web export, and
+  an isolated browser walkthrough covering song-only publish, exact YouTube IFrame
+  playback, a four-image feed collage, full-screen navigation, and a durable photo
+  reaction.
+
+Do not overstate the remaining gaps: a real iPhone/Android HEIC + MOV upload and
+production smoke test are still required; video posters/transcoding are still
+open; discography still has a 40-release ceiling and no singles/pagination; and a
+proper provider-identity mapping table remains preferable to name-keyed metadata.
+
+### P0 - restore correctness, media reliability, and responsiveness
+
+#### 1. Media uploads + large Facebook-style feed media + viewer/reactions
+
+**Current reality: PARTIAL / REOPENED.** The current recovery batch replaces the
+64px strip with the large responsive collage on both post types, portals the
+viewer to a true full-screen modal, and repairs the SDK 56 native upload body.
+R2, video playback, and durable per-media likes were already committed. Browser
+verification passed; physical-device formats and production remain the P0 gate.
+
+Acceptance criteria:
+
+- Reproduce the production failure with a real iPhone photo plus MP4/MOV on both
+  desktop and a narrow phone viewport. Upload has progress, retryable error copy,
+  and survives reload/cross-device hydration; no blank or device-local URLs.
+- A one-photo post uses the available card width with a natural, bounded aspect
+  ratio; 2-4 photos use a deliberate collage; text sits above the media. It must
+  not fall back to the old row of tiny thumbnails. Video cards show a real poster
+  and duration/play affordance rather than a generic dark tile.
+- Clicking any item opens the correct index in one fullscreen media viewer.
+  Arrows/swipe/keyboard/close work, only the active video mounts/plays, video uses
+  contain/letterbox rather than crop, and leaving it releases playback.
+- Like/reaction count and the signed-in user's state are consistent in the feed,
+  viewer, profile/artist galleries, and after reload. Optimistic failure rolls
+  back honestly. Preserve the existing inline comment preview.
+- Verify on production after deployment with one fresh image post, multi-image
+  post, HEIC, and video; record exact failing formats/browser if anything remains.
+
+**Required media-pipeline dependency before broad use:** direct-to-R2 upload is
+only the ingest step. Add a server-controlled finalize record/job that verifies
+the stored bytes and ownership, sniffs real MIME, strips image metadata, converts
+HEIC/HEIF, creates bounded responsive thumbnails, moderates/quarantines, and
+deletes abandoned objects. For video, validate duration/container/codecs, create
+a poster frame, and transcode to a broadly playable H.264/AAC MP4 (or an HLS
+ladder when volume justifies it); expose processing/failed/ready states. Feed and
+gallery surfaces must request derivatives, never decode the original 100 MB clip.
+This pipeline is also a dependency for the performance item below. Do not rely on
+the current external HEIC proxy or client-generated thumbnail as the long-term
+processing architecture.
+
+#### 2. Correct artist/song identity, full discographies, and same-name selection
+
+**Current reality: PARTIAL / REOPENED.** `05118d8` added hard YouTube artist/title
+gates. The current recovery batch completes the same-name candidate picker,
+candidate-specific reload/queue replacement, and album+EP expansion to 40 releases.
+This materially improves the reported Drake/same-name failure, but the remaining
+identity-table, singles, pagination, provider-gap, and production spot checks below
+are still required before calling discography correctness complete.
+
+Acceptance criteria:
+
+- Artist search returns distinct same-name candidates, not one guessed match.
+  Each row supplies enough identity evidence (photo, provider identity, releases
+  or top song, fan count and origin/genre where reliable) for a person to choose.
+- Persist a durable provider identity on the Pit artist/profile or navigation
+  target. Discography, artwork, top tracks, preview lookup, and YouTube resolution
+  must all use that selected identity; a display name alone is not a primary key.
+- Artist pages load the complete provider-backed release history available to the
+  app, including older albums and EPs, with pagination/lazy loading instead of a
+  silent 12/40-item cut. Define how singles, compilations, deluxe duplicates, and
+  reissues are grouped and label provider gaps honestly.
+- Playing any row must resolve the exact selected artist + exact title/version;
+  rejected/low-confidence YouTube candidates fall back visibly instead of playing
+  a different act. Preserve the official-channel and made-for-kids gates.
+- Add provider-mocked tests plus production spot checks for at least five deep
+  catalogues and five same-name collisions. Verify the tapped row, queue entry,
+  visible player metadata, and actual video/audio are the same recording.
+
+Dependencies: replace the current name-keyed provider pin with a first-class
+artist-provider identity mapping; respect Deezer/YouTube quotas and stale-cache
+fallback before removing the remaining release ceiling.
+
+#### 3. Site lag and scalable rendering/data flow
+
+**Current reality: OPEN / existing ALPHA foundations only.** Feed and chats have
+cursor contracts and bounded caches, active clip mounting is limited, and some
+duplicate-load guards exist. The site still feels increasingly laggy. Do not
+guess that bundle size is the only cause; profile it.
+
+**2026-07-18 read-only audit (fix in this order):** the worst amplification is
+runtime polling/state churn, not the bundle alone. The 12-second feed refresh
+always creates new feed/like objects inside one 211-field Context; eight visible
+cards can each fetch up to 400 comments, while post detail repeats that full read
+every four seconds; DM login hydrates up to 500 messages per thread and the 3.5s
+poll still rebuilds/persists the full DM map on empty responses. The web bundle is
+also 8.59 MB raw / 1.90 MB gzip because the 10.14 MB source catalog and 43 screens
+are eagerly imported. First patch should be a **quiet-poll batch**: no state write
+or persistence on unchanged feed/comment/DM responses, two-comment feed previews,
+cursor-based paged post comments, seed DM cursors from cache, and gate/jitter the
+feed refresh to the visible tab. **This recovery batch completed the no-op feed,
+comment, and empty-DM state bailouts; changed feed previews from 400 rows to 2;
+added a 30-second comment-load TTL; and reduced open-post polling from 4s/400 rows
+to 15s/50 rows.** Cursor deltas, visible-tab feed gating, DM hydration, the bundled
+catalog, lazy screens, and Context splitting remain. Measure again after each.
+
+Acceptance criteria:
+
+- Capture a repeatable desktop + mid-range mobile trace for cold load, feed
+  scroll, route changes, opening the player/viewer, and a long DM thread. Record
+  bundle, request count/bytes, JS/render time, memory, and slow API queries before
+  changing architecture, then compare after.
+- Virtualize/paginate long feed, discography, playlist, notification, and message
+  lists; lazy-mount heavy charts/media; keep only the active video/YouTube engine;
+  batch media-reaction/comment/user hydration instead of one request per card.
+- Serve thumbnail/poster derivatives and defer originals. Split/lazy-load screens
+  and heavy dependencies where the measured bundle proves it useful. Remove
+  duplicate timers/listeners and memoize stable cards/selectors.
+- Establish measurable budgets (for example, responsive taps/route changes with
+  no multi-second main-thread stall and documented p95 API targets) and add basic
+  client/API timing, error, and queue-depth observability.
+- Scale phase: replace 3.5s/12s polling with realtime fan-out plus the existing
+  cursor catch-up contract; remove DM/thread N+1 reads; move beyond single-process
+  SQLite only when measured concurrency requires managed relational storage,
+  pub/sub, workers, and CDN processing.
+
+Dependencies: the media derivative/transcode pipeline above, profiler access to
+a production-like dataset, and an explicit performance baseline before a broad
+rewrite.
+
+### P1 - finish the core music-social experience
+
+#### 4. Separate polished status and concert-review composers + YouTube attachment
+
+**Current reality: PARTIAL / REOPENED.** `05118d8` introduced `kind=status`; the
+current recovery batch completes the safe YouTube attachment UI/API/storage/card
+and exact-video player path for both post types. The status and review modes are
+visually distinct, but the owner's requested purpose-built composer polish,
+cancel confirmation, media ordering/progress, and playlist attachment remain open.
+
+Acceptance criteria:
+
+- "Create" first presents two clear choices: **Post an update** and **Review a
+  concert**. Each opens a purpose-built, uncluttered composer; shared text/media
+  controls may be reused internally, but review-only artist/venue/date/ratings/
+  setlist fields never clutter a regular post.
+- Drafts, edit mode, media order/removal, visibility, upload progress, validation,
+  cancel confirmation, and retry behavior work for both types. The resulting feed
+  cards look intentionally different: social post versus concert review/ticket.
+- A user can paste only a supported YouTube/youtu.be/Shorts URL, see verified
+  title/channel/thumbnail, remove or replace it, and publish it on either allowed
+  post type. Arbitrary iframe/embed HTML and non-YouTube URLs are rejected.
+- Clicking the YouTube card hands the exact video ID to the existing visible Pit
+  player, preserves compliant YouTube controls/attribution and minimum sizing,
+  and never opens a second competing hidden audio engine. Define whether a tagged
+  item joins the music queue or is a one-off video before implementation.
+- API create/edit/read validation, malformed/private/deleted video behavior,
+  browser/mobile rendering, and player handoff all have regression coverage.
+
+Remaining dependency: decide whether song shares should be one-off playback or
+seed the recommendation queue, then finish native/private/deleted-video behavior.
+
+#### 5. Reliable playlists and shareable playlist posts
+
+**Current reality: COMMITTED FOUNDATION / REOPENED.** `52bd491`/`9314756` provide
+server-backed playlists, add-one-song, save-session, profile display, and playback.
+The owner reports that playlists "don't really work," and explicit sharing,
+reorder/remove, and playlist posts remain open.
+
+Acceptance criteria:
+
+- Create, rename, add, remove, reorder, delete, and play-from-any-row work after
+  reload and on another signed-in device. Duplicate/provider-neutral tracks have
+  stable identity and the tapped track starts first with the expected queue order.
+- Every playlist has an owner-controlled public/unlisted/private state and a
+  stable share/deep link. Block/privacy rules apply on direct routes.
+- The regular-post composer can attach one of the user's playlists. Feed/profile
+  cards show cover mosaic, name, owner, track count/duration, and a Play action
+  into the existing player. Define and test whether old posts show a live playlist
+  or an immutable published snapshot.
+- Empty, deleted, private, partially unavailable, and mixed-provider playlists
+  fail gracefully. Add API/store/UI tests and a cross-device browser walkthrough.
+
+#### 6. Listening-session panel and previous-play history
+
+**Current reality: COMMITTED FOUNDATION / REOPENED.** Server plays, saved sessions,
+recent history, and "record only after PLAYING" logic exist (`52bd491`, `3746d87`,
+and the persistent-player batch). The owner still cannot reliably see previously
+listened songs in the listening session.
+
+Acceptance criteria:
+
+- Opening the player/session hydrates recent server history before rendering the
+  empty state; newest successful plays appear immediately, survive reload, and
+  match across devices. Failed resolves, selections, and autoplay blocks do not
+  count as listens.
+- Clearly separate **current queue/session**, **recent listening history**, and
+  **saved playlists/sessions**. Provide bounded pagination/load-more and a useful
+  action to replay or add any history row without corrupting the current queue.
+- Dedupe provider-neutral identity correctly while preserving legitimate repeat
+  listens and versions. Test signed-out/local fallback, account switch/logout,
+  stale requests, and long histories.
+
+#### 7. You tab redesign with Near You integrated into its flow
+
+**Current reality: COMMITTED FOUNDATION / REOPENED.** `643e6d7` added server-backed
+listening analytics/gallery/playlists/countdowns and `9032eb5` redesigned the tab.
+Earlier work also has `NearbyScreen`, a location-aware right rail, and real tour
+dates. The owner still finds You unpolished and says Near You disappeared/feels
+detached.
+
+Acceptance criteria:
+
+- Rework You as a clear personal home with a small hierarchy: identity/summary,
+  listening, posts/gallery/playlists, upcoming saved shows, and **Near You** as a
+  first-class section with a clear See all route to the existing map/list.
+- Near You uses saved city/coordinates, shows distance/date/venue and a transparent
+  widening fallback, offers location edit/permission recovery, and never silently
+  disappears when there are zero local events.
+- Remove duplicated entry points and visual clutter; keep Activity/Inbox reachable
+  without turning You into a miscellaneous menu. Validate phone and desktop with
+  real, sparse, and empty accounts.
+
+#### 8. Discover polish + useful last-five recent searches
+
+**Current reality: COMMITTED FOUNDATION / REOPENED.** DB-backed Discover charts
+and the interactive SVG donut exist (`a2f1c8f`, `26fc879`, `8793d32`), but the
+owner rejects the current pie-chart presentation. Search remains typeahead and
+does not provide a useful last-five history.
+
+Acceptance criteria:
+
+- Redesign Discover around a small number of understandable music/discovery
+  modules. Replace or substantially restyle the donut/pie if it remains; labels,
+  totals, selected state, color contrast, keyboard access, list fallback, and
+  mobile layout must make the data understandable without hover or animation.
+- Keep region/genre/chart data server-backed and truthful; no blank top-song rows,
+  misleading global totals, or janky chart rerenders. Near You lives primarily in
+  You, with at most a deliberate cross-link from Discover.
+- Before typing, Search shows the last **five** meaningful searches/selections
+  (query plus artist/person/venue context), newest first. Selecting reruns/opens
+  it, duplicates move to the top, Clear removes all, and blocked/private entities
+  are filtered. Persist per account where practical with a signed-out device
+  fallback; never log raw private message content.
+
+#### 9. Messenger-like DMs and professional Activity notifications
+
+**Current reality: COMMITTED ALPHA / REOPENED.** DMs have server persistence,
+requests-vs-friends, cursor catch-up, bounded state, retry-safe sending, and live
+polling. Notifications are server-backed and route likes/comments/follows/DMs to
+their targets. The owner rejects both current presentations.
+
+Acceptance criteria for DMs:
+
+- Inbox rows show avatar/name, last message, timestamp, unread badge, request
+  state, and a useful empty/loading/error state. Threads have familiar grouped
+  bubbles, day/time separators, sticky composer, sending/failed/retry state,
+  automatic follow only when near the bottom, and explicit older-history loading.
+- Unread/read state is server-backed; request accept/decline, blocking, account
+  deletion, moderation tombstones, reconnect/catch-up, keyboard avoidance, and
+  phone/desktop responsive layout behave predictably. Realtime transport may
+  replace polling only while preserving cursor recovery.
+
+Acceptance criteria for notifications:
+
+- Activity rows use actor avatar, concise human text, target preview, relative
+  time, clear unread styling, grouped/repeated-event treatment, Mark all read, and
+  correct destination behavior. Likes/comments/follows/messages/system notices
+  are visually distinguishable without looking like an admin log.
+- Counts reconcile across devices; blocked/deleted/private targets degrade safely;
+  pagination, loading, empty, and retry states are professional and accessible.
+
+#### 10. Fix existing themes and add the previously discussed themes
+
+**Current reality: PARTIAL.** Eight themes are committed (Stage, Neon, Forest,
+Ember, Daylight, Ice, Rose, Mint), with account persistence and some shadow fixes.
+Historical notes still leave per-theme art and four additional themes open. The
+latest message does not contain the names/palettes of those four, so recover that
+specification from the prior conversation or confirm it with the owner; do not
+invent and silently ship replacements.
+
+Acceptance criteria:
+
+- Audit every existing theme across feed, composer, player, viewer, You, Discover,
+  search, DM, Activity, dialogs, charts, focus/pressed/disabled/error states, and
+  light/dark system chrome. No unreadable text, invisible shadows, hard-coded
+  colors, stuck theme, or full-page reload that interrupts playback.
+- Centralize semantic tokens and chart/media overlays; switching persists to the
+  account and applies live across mounted screens. Add screenshot/contrast checks
+  for representative desktop and phone surfaces.
+- Add the agreed new theme names, palettes, artwork, and light/dark classification
+  only after the missing specification is recovered, with the same acceptance
+  matrix as the existing eight.
+
+### Shared definition of done for this backlog
+
+For every item: preserve migrations and privacy/block/moderation rules; add focused
+server/store/UI tests; keep `npm run check` green; test narrow phone + desktop web;
+then perform a production smoke test against real provider/media data. Update this
+section with evidence and move an item out only after the owner-visible behavior,
+not merely an API or isolated component, meets its acceptance criteria.
 
 ## NEXT SESSION: mobile navigation overhaul (owner-requested, DEFERRED on purpose)
 
@@ -947,15 +1281,23 @@ Everything below is committed to `master` and auto-deployed.
 
 **Player bugs handled 2026-07-10:** switching artists stopped playback (added 404-retry + clear 403/Premium reporting); Premium-not-active now shows a "Premium needed" note and falls back to the embed; theme switch reloads the page (mitigated by persisting the player queue, but **fully seamless theming needs a runtime-CSS-variable refactor of theme.js**, still open); choppy fonts fixed (antialiasing on every node).
 
-## Open backlog (what to do next)
-**User-requested, not yet done:**
-1. **📱 Mobile polish.** User says mobile "feels like old-gen Pit, not easily accessible." Needs iterative visual work — get a phone screenshot of the feed (or resize narrow) and fix header density / touch targets / spacing on real pixels. Browser tools (claude-in-chrome / preview) have been **flaky all session** — a full screen-by-screen visual audit is still open; do it with a working preview.
-2. **🛡️ Moderation user-tracking.** Extend the Members tab: **users per region + a live total count**; **granular Discord-style mutes** — remove/mute a user within a specific **fan club** or **afterparty** (not just global ban/timeout). Self-contained; buildable without a browser.
-3. **🎬 Video embeds (in-app).** CSP is ready for YouTube. Two paths: (a) scrape a top **YouTube video ID** per artist (needs a free YouTube Data API key) → embed a WATCH section; (b) let users attach **video clips** to posts and play inline. Music (Spotify) is done; video is the remaining "keep them in-app" piece.
-4. **🔔 Show-near-you push.** Notify when a followed/loved artist announces a gig near the user's city. Depends on a **working tour-date source** (see below). This answers "what to push besides DMs."
-5. **Tour dates need a valid key.** Set `TICKETMASTER_KEY` on the Render **web service** (the current key is invalid — likely still activating; re-test per Secrets). Or add **SeatGeek** as a source (free instant key; ~10-min wire-up next to the TM/Bandsintown fetchers in `server/tourdates.js`).
-6. **Sponsored feed slot.** The analytics collect ad-interest signals (top genres/artists/searches); the actual targeted "Sponsored" feed card keyed to a user's taste is **not built**.
-7. **Roster growth**: the DB path now exists — `scripts/seed-db-artists.mjs` seeds ~10k artists straight into the DB (see the 10K DB SEED note up top; run it in a Render one-off shell against `/data`). The old bundled-catalog path (`npm run pipeline` locally → push) still works for small curated additions but bloats the web bundle; prefer the DB seeder for scale.
+## Older secondary backlog (does not override the owner-priority list above)
+
+The current media/YouTube attachment, mobile polish, Near You, notification, and
+scale work is consolidated in the authoritative backlog near the top. Remaining
+older requests that are not duplicates of that list:
+
+1. **🛡️ Moderation user-tracking.** Extend the Members tab with users per region
+   and a live total count; add granular fan-club/afterparty mute/remove controls,
+   not only global ban/timeout.
+2. **🔔 Show-near-you push.** Notify when a followed/loved artist announces a gig
+   near the member's saved location. The Ticketmaster source is now configured
+   and live; this still needs durable notification dedupe, distance preferences,
+   opt-in controls, and scheduler coverage.
+3. **Sponsored feed slot.** Interest signals exist, but a clearly labelled,
+   frequency-capped, privacy-reviewed Sponsored card is not built.
+4. **Roster growth.** Prefer the DB-backed seeder over expanding the bundled
+   catalogue; current crawl depth/source coverage still limits genuinely new acts.
 
 ## Known gotchas
 - **Spotify is fully removed (2026-07-12).** Playback is YouTube (see the top note); artist ranking is **Deezer** (fan count → popularity). Ignore any older note below about Spotify Connect / dev-mode / `SPOTIFY_CLIENT_ID` — those env vars and OAuth routes no longer exist. The local `.env` Spotify keys are dead; only `YOUTUBE_API_KEY` (server) matters for playback now. The founder still wants a **Billboard Hot 100** source for the Top-3 pedestal + Top-100 badge (backlog).

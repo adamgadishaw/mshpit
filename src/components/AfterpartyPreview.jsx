@@ -16,7 +16,7 @@ export default function AfterpartyPreview({ log, onOpen, max = 2 }) {
   const comments = commentsFor(log.id);
   const [text, setText] = useState("");
 
-  useEffect(() => { loadComments(log.id); }, [log.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { loadComments(log.id, { limit: max }); }, [log.id, max]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const total = comments.length || log.comments || 0;
   const latest = comments.slice(-max);

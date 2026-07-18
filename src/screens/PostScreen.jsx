@@ -46,7 +46,7 @@ function CommentNode({ c, replies, depth, onReply, onOpenProfile, userById, user
 
 // Post detail — the actual post + its comment thread. This is where like/comment
 // notifications land (not the performance page), and where forum-style replies live.
-export default function PostScreen({ log, onClose, onOpenProfile, onOpenArtist, onOpenVenue, onOpenShow, onReport, onEdit, onOpenPhotos }) {
+export default function PostScreen({ log, onClose, onOpenProfile, onOpenArtist, onOpenVenue, onOpenShow, onReport, onEdit, onOpenPhotos, onPlay }) {
   const { session, feed, commentsFor, addComment, loadComments, userById, userBadges } = useStore();
   // Navigation keeps the post that was originally opened. Resolve it against
   // live feed state so an edit made on this screen appears immediately.
@@ -58,8 +58,8 @@ export default function PostScreen({ log, onClose, onOpenProfile, onOpenArtist, 
 
   // Live comments: hydrate + poll so replies appear without a refresh.
   useEffect(() => {
-    loadComments(log.id);
-    const t = setInterval(() => loadComments(log.id), 4000);
+    loadComments(log.id, { limit: 50, force: true });
+    const t = setInterval(() => loadComments(log.id, { limit: 50, force: true }), 15_000);
     return () => clearInterval(t);
   }, [log.id]);
 
@@ -88,7 +88,7 @@ export default function PostScreen({ log, onClose, onOpenProfile, onOpenArtist, 
     <View style={styles.wrap}>
       <ScreenHeader kicker="POST" title="Comments" onBack={onClose} />
       <ScrollView ref={scrollRef} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-        <TicketStub log={activeLog} showComments={false} onOpen={() => onOpenShow?.(activeLog)} onOpenProfile={onOpenProfile} onOpenArtist={onOpenArtist} onOpenVenue={onOpenVenue} onReport={onReport} onEdit={onEdit} onOpenPhotos={onOpenPhotos} />
+        <TicketStub log={activeLog} showComments={false} onOpen={() => onOpenShow?.(activeLog)} onOpenProfile={onOpenProfile} onOpenArtist={onOpenArtist} onOpenVenue={onOpenVenue} onReport={onReport} onEdit={onEdit} onOpenPhotos={onOpenPhotos} onPlay={onPlay} />
 
         <Text style={styles.sectionLabel}>{flat.length} COMMENT{flat.length === 1 ? "" : "S"}</Text>
         {tree.length === 0 && <Text style={styles.empty}>No comments yet. Start the conversation.</Text>}

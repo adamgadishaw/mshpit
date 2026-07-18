@@ -1,3 +1,6 @@
+import { Platform } from "react-native";
+import { fetch as expoFetch } from "expo/fetch";
+import { File } from "expo-file-system";
 import { api } from "./api";
 import { AppError, captureAppError } from "./diagnostics";
 
@@ -59,13 +62,16 @@ function safeFileName(asset, contentType) {
 }
 
 async function bodyFor(asset) {
-  // SDK 56 exposes the original File on web. Native supplies a local file URI,
-  // which React Native fetch can turn into a Blob without base64 expansion.
-  if (asset?.file && typeof asset.file.size === "number") return asset.file;
-  if (!asset?.uri) throw new Error("The selected photo did not include a readable file.");
-  const localResponse = await fetch(asset.uri);
-  if (!localResponse.ok && localResponse.status) throw new Error("The selected photo could not be read from this device.");
-  return localResponse.blob();
+  // SDK 56 exposes the browser's original File on web. On native, pass an Expo
+  // File directly to expo/fetch: this streams the local URI and avoids expanding
+  // a large clip into a JS Blob (the source of intermittent mobile upload stalls).
+  if (Platform.OS === "web" && asset?.file && typeof asset.file.size === "number") return asset.file;
+  if (!asset?.uri) throw new Error("The selected media did not include a readable file.");
+  const file = new File(asset.uri);
+  if (!Number.isFinite(Number(file.size)) || Number(file.size) < 1) {
+    throw new Error("The selected media could not be read from this device.");
+  }
+  return file;
 }
 
 function capturedUploadError(error, { timedOut = false, context } = {}) {
@@ -85,7 +91,7 @@ function capturedUploadError(error, { timedOut = false, context } = {}) {
  * to the Pit API.
  */
 export async function uploadMediaAsset(asset, purpose, { signal, timeoutMs } = {}) {
-  const context = `Uploading a ${purpose} photo`;
+  const context = `Uploading ${purpose} media`;
   let body;
   try {
     body = await bodyFor(asset);
@@ -109,7 +115,7 @@ export async function uploadMediaAsset(asset, purpose, { signal, timeoutMs } = {
   const measuredSize = Number(body?.size);
   const fileSize = Number.isFinite(measuredSize) ? measuredSize : Number(asset?.fileSize || 0);
   if (!Number.isSafeInteger(fileSize) || fileSize < 1) {
-    throw capturedUploadError(new Error("The selected photo had no readable file size."), { context });
+    throw capturedUploadError(new Error("The selected media had no readable file size."), { context });
   }
 
   // The authenticated Pit API validates size/type and returns a short-lived URL;
@@ -146,7 +152,7 @@ export async function uploadMediaAsset(asset, purpose, { signal, timeoutMs } = {
   }, Math.max(1_000, Number(timeoutMs) || UPLOAD_TIMEOUT_MS));
 
   try {
-    const response = await fetch(ticket.uploadUrl, {
+    const response = await expoFetch(ticket.uploadUrl, {
       method: ticket.method || "PUT",
       headers: ticket.requiredHeaders,
       body,

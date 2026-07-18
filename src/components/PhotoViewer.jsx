@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { View, Text, StyleSheet, Pressable, Platform } from "react-native";
+import { View, Text, StyleSheet, Pressable, Platform, Modal } from "react-native";
 import { useVideoPlayer, VideoView } from "expo-video";
 import { colors, mono, radius } from "../theme";
 import Icon from "./Icon";
@@ -51,9 +51,19 @@ export default function PhotoViewer({ photos = [], index = 0, postId = null, onC
 
   if (!photos.length) return null;
   const r = (uri && mediaReactions[uri]) || { count: 0, mine: false };
+  const video = isVideoUrl(uri);
 
   return (
-    <View style={styles.wrap}>
+    <Modal
+      visible
+      transparent
+      animationType="fade"
+      presentationStyle="overFullScreen"
+      statusBarTranslucent
+      hardwareAccelerated
+      onRequestClose={onClose}
+    >
+    <View style={styles.wrap} accessibilityViewIsModal>
       {/* Backdrop closes, like every photo lightbox people already know. */}
       <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityLabel="Close photo viewer" />
 
@@ -67,7 +77,7 @@ export default function PhotoViewer({ photos = [], index = 0, postId = null, onC
       <View style={styles.stage} pointerEvents="box-none">
         {/* SmartImage = HEIC transcode + proxy-rescue ladder, so an iPhone photo
             renders here instead of a black void. Clips get a real player. */}
-        {isVideoUrl(uri) ? <ClipStage key={uri} uri={uri} /> : <SmartImage uri={uri} style={styles.img} contain />}
+        {video ? <ClipStage key={uri} uri={uri} /> : <SmartImage uri={uri} style={styles.img} contain />}
         {photos.length > 1 && (
           <>
             <Pressable style={[styles.arrow, { left: 10 }]} onPress={prev} hitSlop={10} accessibilityRole="button" accessibilityLabel="Previous photo">
@@ -82,10 +92,11 @@ export default function PhotoViewer({ photos = [], index = 0, postId = null, onC
 
       {/* The photo's own footer: who shot it + its own like. */}
       <View style={styles.footer} pointerEvents="box-none">
-        {!!by && <Text style={styles.by}>Photo by {by}</Text>}
+        {!!by && <Text style={styles.by}>{video ? "Shared" : "Photo"} by {by}</Text>}
         <Pressable
-          style={[styles.likeBtn, r.mine && styles.likeBtnOn]}
-          onPress={() => (session ? toggleMediaReaction(uri, postId) : onClose?.())}
+          style={[styles.likeBtn, r.mine && styles.likeBtnOn, !session && styles.likeBtnDisabled]}
+          onPress={() => toggleMediaReaction(uri, postId)}
+          disabled={!session}
           hitSlop={8}
           accessibilityRole="button"
           accessibilityLabel={`${r.mine ? "Unlike" : "Like"} this photo, ${r.count} ${r.count === 1 ? "like" : "likes"}`}
@@ -102,11 +113,12 @@ export default function PhotoViewer({ photos = [], index = 0, postId = null, onC
         )}
       </View>
     </View>
+    </Modal>
   );
 }
 
 const styles = StyleSheet.create({
-  wrap: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(6,7,11,0.97)", zIndex: 100 },
+  wrap: { flex: 1, backgroundColor: "rgba(6,7,11,0.98)" },
   top: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingTop: 14, paddingBottom: 8 },
   count: { color: "#fff", fontFamily: mono, fontSize: 13, opacity: 0.85 },
   closeBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: "rgba(255,255,255,0.1)", alignItems: "center", justifyContent: "center" },
@@ -117,6 +129,7 @@ const styles = StyleSheet.create({
   by: { color: "rgba(255,255,255,0.7)", fontSize: 13, textAlign: "center" },
   likeBtn: { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: "rgba(255,255,255,0.10)", borderRadius: radius.pill, paddingHorizontal: 16, paddingVertical: 9 },
   likeBtnOn: { backgroundColor: "rgba(217,70,160,0.16)" },
+  likeBtnDisabled: { opacity: 0.55 },
   likeTxt: { color: "#fff", fontFamily: mono, fontSize: 14, fontWeight: "800" },
   dots: { flexDirection: "row", justifyContent: "center", gap: 6, paddingTop: 2 },
   dot: { width: 6, height: 6, borderRadius: 3, backgroundColor: "rgba(255,255,255,0.35)" },

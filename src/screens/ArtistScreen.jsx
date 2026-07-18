@@ -1,5 +1,5 @@
-import { useState, useEffect } from "react";
-import { View, Text, StyleSheet, ScrollView, Pressable, Linking, Image, TextInput } from "react-native";
+import { useState, useEffect, useRef } from "react";
+import { View, Text, StyleSheet, ScrollView, Pressable, Linking, Image, TextInput, ActivityIndicator } from "react-native";
 import { colors, mono, radius } from "../theme";
 import { useStore, isStaff } from "../store";
 import { artistMeta } from "../seed/ingested";
@@ -13,9 +13,17 @@ import ScreenHeader from "../components/ScreenHeader";
 import SmartImage from "../components/SmartImage";
 import Badge, { BadgeRow, BadgeChip } from "../components/Badge";
 import { proxied, isHttp } from "../lib/img";
+import { api } from "../lib/api";
 import Svg, { Defs, LinearGradient, Stop, Rect } from "react-native-svg";
 
 const cap = (s) => (s ? s.replace(/\b\w/g, (c) => c.toUpperCase()) : s);
+const compactCount = (value) => {
+  const count = Number(value) || 0;
+  if (count >= 1000000) return `${(count / 1000000).toFixed(count >= 10000000 ? 0 : 1).replace(/\.0$/, "")}M`;
+  if (count >= 1000) return `${(count / 1000).toFixed(count >= 100000 ? 0 : 1).replace(/\.0$/, "")}K`;
+  return String(count);
+};
+const releaseType = (album) => String(album?.type || "album").toLowerCase() === "ep" ? "EP" : "ALBUM";
 
 // Album cover from the Cover Art Archive, served via the wsrv.nl image CDN -
 // the archive rate-limits direct traffic, while the CDN fetches once and
@@ -55,12 +63,6 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
   const genre = a.genre !== "-" ? a.genre : cap(meta?.genre) || "-";
   const spotTracks = (meta?.topTracks || []).map((t, i) => ({ id: "sp_" + i, title: t.title, artist: a.name, album: t.album, url: t.url, preview: t.preview }));
   const seedSongs = spotTracks.length ? spotTracks : SONGS.filter((s) => s.artist.toLowerCase() === a.name.toLowerCase());
-  // Queue for the top player, every track on the page (all playable — the player
-  // resolves each to a YouTube video by title, or a Deezer preview), so next/prev
-  // walk this artist's songs while you keep browsing. `chartSongs` (defined once
-  // the discography loads) is the deeper display list.
-  const songQueue = seedSongs.filter((s) => s.title).map((s) => ({ kind: "track", url: null, preview: s.preview || null, title: s.title, artist: a.name, art: a.photo || meta?.photo || null }));
-
   // Artist-owned profile: the band's account can edit its header + post updates.
   const isOwner = isArtistOwner(a.name);
   const bio = a.ownerBio || meta?.bio;
@@ -123,13 +125,113 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
   const [disco, setDisco] = useState(null);
   const [openAlbum, setOpenAlbum] = useState(null);
   const [showAllSongs, setShowAllSongs] = useState(false);
-  useEffect(() => { setDisco(null); setOpenAlbum(null); setShowAllSongs(false); artistDiscography(a.name).then(setDisco); }, [a.name]);
+  const [identityOpen, setIdentityOpen] = useState(false);
+  const [candidates, setCandidates] = useState(null);
+  const [candidatesLoading, setCandidatesLoading] = useState(false);
+  const [selectingCandidate, setSelectingCandidate] = useState(null);
+  const [identityError, setIdentityError] = useState("");
+  const identityRequestRef = useRef(null);
+  const catalogRequestVersionRef = useRef(0);
+  useEffect(() => {
+    let alive = true;
+    const requestVersion = ++catalogRequestVersionRef.current;
+    setDisco(null);
+    setOpenAlbum(null);
+    setShowAllSongs(false);
+    setIdentityOpen(false);
+    setCandidates(null);
+    setCandidatesLoading(false);
+    setSelectingCandidate(null);
+    setIdentityError("");
+    identityRequestRef.current?.abort();
+    identityRequestRef.current = null;
+    artistDiscography(a.name).then((result) => {
+      if (alive && catalogRequestVersionRef.current === requestVersion) setDisco(result);
+    });
+    return () => { alive = false; identityRequestRef.current?.abort(); };
+  }, [a.name]);
+
+  const loadCandidates = async () => {
+    setIdentityOpen(true);
+    setIdentityError("");
+    if (candidates !== null || candidatesLoading) return;
+    const controller = new AbortController();
+    identityRequestRef.current?.abort();
+    identityRequestRef.current = controller;
+    setCandidatesLoading(true);
+    try {
+      const result = await api(`/api/artists/candidates?name=${encodeURIComponent(a.name)}`, {
+        context: "Finding matching artists",
+        silent: true,
+        signal: controller.signal,
+      });
+      if (!controller.signal.aborted) setCandidates(Array.isArray(result?.candidates) ? result.candidates : []);
+    } catch (error) {
+      if (!controller.signal.aborted) setIdentityError(error?.message || "The artist matches could not be loaded. Try again.");
+    } finally {
+      if (!controller.signal.aborted) setCandidatesLoading(false);
+      if (identityRequestRef.current === controller) identityRequestRef.current = null;
+    }
+  };
+
+  const chooseCandidate = async (candidate) => {
+    if (!candidate?.id || selectingCandidate) return;
+    const previousDisco = disco;
+    const requestVersion = ++catalogRequestVersionRef.current;
+    const controller = new AbortController();
+    identityRequestRef.current?.abort();
+    identityRequestRef.current = controller;
+    setSelectingCandidate(candidate.id);
+    setIdentityError("");
+    try {
+      const result = await api(`/api/artists/discography?name=${encodeURIComponent(a.name)}&deezerId=${encodeURIComponent(candidate.id)}`, {
+        context: "Switching artist catalog",
+        silent: true,
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted || catalogRequestVersionRef.current !== requestVersion) return;
+      setDisco(result);
+      setOpenAlbum(null);
+      setShowAllSongs(false);
+      setIdentityOpen(false);
+    } catch (error) {
+      if (!controller.signal.aborted && catalogRequestVersionRef.current === requestVersion) {
+        setIdentityError(error?.message || "That catalog could not be loaded. Try another match.");
+        // If the listener opened the picker before the default catalogue had
+        // finished, restore that baseline request rather than leaving a blank page.
+        if (!previousDisco) {
+          const fallbackVersion = ++catalogRequestVersionRef.current;
+          artistDiscography(a.name).then((result) => {
+            if (catalogRequestVersionRef.current === fallbackVersion) setDisco(result);
+          });
+        }
+      }
+    } finally {
+      if (!controller.signal.aborted) setSelectingCandidate(null);
+      if (identityRequestRef.current === controller) identityRequestRef.current = null;
+    }
+  };
+
+  const releases = Array.isArray(disco?.albums)
+    ? [...disco.albums].sort((left, right) => String(right?.year || "").localeCompare(String(left?.year || "")))
+    : [];
 
   // The deep chart: the discography's 25-track list once it loads (fixes the
   // "cut off at ~10" complaint), else the seed list. Collapsed to 10 with a
   // "Show all N" toggle so the page doesn't open as a wall of songs.
   const discoTop = Array.isArray(disco?.topTracks) ? disco.topTracks.map((t, i) => ({ id: "dz_" + (t.id || i), title: t.title, artist: a.name, album: t.album || null })) : [];
   const allSongs = discoTop.length ? discoTop : seedSongs;
+  // Keep next/previous tied to the selected Deezer identity too. Without this,
+  // choosing a same-named act changed the visible list but left the old act in
+  // the persistent player's queue.
+  const songQueue = allSongs.filter((s) => s.title).map((s) => ({
+    kind: "track",
+    url: null,
+    preview: s.preview || null,
+    title: s.title,
+    artist: a.name,
+    art: disco?.artist?.photo || a.photo || meta?.photo || null,
+  }));
   const songs = showAllSongs ? allSongs : allSongs.slice(0, 10);
   const toggleAlbum = (id, tracks) => {
     setOpenAlbum((cur) => (cur === id ? null : id));
@@ -140,7 +242,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
     // title/artist, or a Deezer 30s preview mp3 when there's no match.
     const known = songQueue.find((s) => s.title === t.title);
     const preview = t.preview || known?.preview || null;
-    onPlay?.({ kind: "track", title: t.title, artist: a.name, url: null, preview, art: cover || a.photo || meta?.photo || null }, songQueue.length ? songQueue : undefined);
+    onPlay?.({ kind: "track", title: t.title, artist: a.name, url: null, preview, art: cover || disco?.artist?.photo || a.photo || meta?.photo || null }, songQueue.length ? songQueue : undefined);
   };
   // Listen = play a random song from this artist's catalog, with the rest queued up
   // (the player then keeps going with genre-matched recommendations).
@@ -150,18 +252,18 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
       onPlay?.(shuffled[0], shuffled);
     } else {
       // No listed songs yet: let the player find the artist on YouTube by name.
-      onPlay?.({ kind: "track", title: a.name, artist: a.name, art: a.photo || meta?.photo || null });
+      onPlay?.({ kind: "track", title: a.name, artist: a.name, art: disco?.artist?.photo || a.photo || meta?.photo || null });
     }
   };
-  const addSong = (t) => onAddToPlaylist?.({ title: t.title, artist: a.name, url: t.url || null, preview: t.preview || null, art: t.art || a.photo || meta?.photo || null });
+  const addSong = (t) => onAddToPlaylist?.({ title: t.title, artist: a.name, url: t.url || null, preview: t.preview || null, art: t.art || disco?.artist?.photo || a.photo || meta?.photo || null });
 
   // Play a single top-track (its own song, then genre-matched recs continue).
   const playSingle = (s) => {
-    onPlay?.({ kind: "track", url: null, preview: s.preview || null, title: s.title, artist: a.name, art: a.photo || meta?.photo || null }, songQueue);
+    onPlay?.({ kind: "track", url: null, preview: s.preview || null, title: s.title, artist: a.name, art: disco?.artist?.photo || a.photo || meta?.photo || null }, songQueue);
   };
   // Play an album AS AN ALBUM: in track order (optionally starting mid-album), or
   // shuffled. Recs append after the last track, so shuffle "kicks in" when it ends.
-  const albumTrack = (t, al) => ({ kind: "track", title: t.title, artist: a.name, preview: t.preview || null, art: al.cover || a.photo || meta?.photo || null });
+  const albumTrack = (t, al) => ({ kind: "track", title: t.title, artist: a.name, preview: t.preview || null, art: al.cover || disco?.artist?.photo || a.photo || meta?.photo || null });
   const playAlbum = (al, startTitle = null, shuffle = false) => {
     let tracks = (al.tracks || []).map((t) => albumTrack(t, al)).filter((t) => t.title);
     if (!tracks.length) return;
@@ -180,7 +282,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
     let best = null;
     for (const s of songs) { const r = songRating(a.name, s.title); if (r.count > 0 && (!best || r.avg > best.avg)) best = { song: s, avg: r.avg, count: r.count }; }
     if (best) return best;
-    const first = songs.find((s) => s.url || s.preview);
+    const first = songs.find((s) => s.title);
     return first ? { song: first, avg: 0, count: 0 } : null;
   })();
   // A resolved-but-empty artist (no photo, no songs). Show a "coming soon" note
@@ -276,6 +378,76 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
             {!!meta?.hometown && <Text style={styles.metaItem}><Icon name="pin" size={12} color={colors.textDim} /> {meta.hometown}</Text>}
             {!!meta?.formed && <Text style={styles.metaItem}>· since {meta.formed}</Text>}
             <Text style={styles.metaItem}>· {genre}</Text>
+          </View>
+        )}
+
+        <View style={styles.catalogIdentity}>
+          <View style={styles.catalogIdentityIcon}><Icon name="music" size={15} color={colors.amber} /></View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.catalogIdentityLabel}>MUSIC CATALOG</Text>
+            <Text style={styles.catalogIdentityName} numberOfLines={1}>
+              {disco?.artist?.name ? `Matched to ${disco.artist.name}` : `Finding ${a.name}'s releases`}
+            </Text>
+          </View>
+          <Pressable
+            style={styles.wrongArtistBtn}
+            onPress={() => identityOpen ? setIdentityOpen(false) : loadCandidates()}
+            accessibilityRole="button"
+            accessibilityLabel={`Choose a different music catalog for ${a.name}`}
+          >
+            <Text style={styles.wrongArtistTxt}>{identityOpen ? "Close" : "Wrong artist?"}</Text>
+          </Pressable>
+        </View>
+
+        {identityOpen && (
+          <View style={styles.identityPanel}>
+            <Text style={styles.identityTitle}>Choose the right {a.name}</Text>
+            <Text style={styles.identityHelp}>Use the photo, fan count, and release count to pick the act you meant.</Text>
+            {candidatesLoading ? (
+              <View style={styles.identityLoading}>
+                <ActivityIndicator size="small" color={colors.amber} />
+                <Text style={styles.identityLoadingTxt}>Finding artist matches...</Text>
+              </View>
+            ) : candidates?.length ? (
+              <View style={styles.candidateGrid}>
+                {candidates.map((candidate) => {
+                  const active = String(disco?.artist?.id || "") === String(candidate.id);
+                  const busy = String(selectingCandidate || "") === String(candidate.id);
+                  return (
+                    <Pressable
+                      key={candidate.id}
+                      style={[styles.candidateCard, active && styles.candidateCardActive, selectingCandidate && !busy && styles.candidateCardDisabled]}
+                      onPress={() => chooseCandidate(candidate)}
+                      disabled={!!selectingCandidate || active}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected: active, disabled: !!selectingCandidate || active }}
+                      accessibilityLabel={`${candidate.name}, ${compactCount(candidate.fans)} fans, ${candidate.albums} releases${active ? ", currently selected" : ""}`}
+                    >
+                      {candidate.photo ? (
+                        <SmartImage uri={candidate.photo} style={styles.candidatePhoto} contain={false} />
+                      ) : (
+                        <View style={[styles.candidatePhoto, styles.candidatePhotoEmpty]}><Icon name="music" size={17} color={colors.textFaint} /></View>
+                      )}
+                      <View style={{ flex: 1, minWidth: 0 }}>
+                        <Text style={styles.candidateName} numberOfLines={1}>{candidate.name}</Text>
+                        <Text style={styles.candidateMeta}>{compactCount(candidate.fans)} fans · {candidate.albums || 0} releases</Text>
+                      </View>
+                      {busy ? <ActivityIndicator size="small" color={colors.amber} /> : active ? <Icon name="check" size={15} color={colors.good} /> : <Icon name="chevron-right" size={14} color={colors.textFaint} />}
+                    </Pressable>
+                  );
+                })}
+              </View>
+            ) : candidates ? (
+              <Text style={styles.identityEmpty}>No alternate matches were found for this name.</Text>
+            ) : null}
+            {!!identityError && (
+              <View style={styles.identityErrorRow}>
+                <Text style={styles.identityError}>{identityError}</Text>
+                {candidates === null && !candidatesLoading && (
+                  <Pressable onPress={loadCandidates} hitSlop={8} accessibilityRole="button"><Text style={styles.identityRetry}>Try again</Text></Pressable>
+                )}
+              </View>
+            )}
           </View>
         )}
 
@@ -462,12 +634,12 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
           </>
         )}
 
-        {disco?.albums?.length > 0 ? (
+        {releases.length > 0 ? (
           <>
-            <Text style={styles.sectionLabel}>DISCOGRAPHY · {disco.albums.length}</Text>
-            <Text style={styles.bio}>Every album. Open one to see the tracklist, rate songs, and play them in the top bar.</Text>
+            <Text style={styles.sectionLabel}>DISCOGRAPHY · {releases.length} RELEASES</Text>
+            <Text style={styles.bio}>Albums and EPs across the full available back catalogue. Open one to see its tracklist, rate songs, and play it in the top bar.</Text>
             <Text style={styles.bio}>Tap a song to play the album from there in order; shuffle takes over when it ends. ★ marks the fan-favorite to start with.</Text>
-            {disco.albums.map((al) => {
+            {releases.map((al) => {
               const ar = albumRating(a.name, al.title);
               const open = openAlbum === al.id;
               const playable = (al.tracks || []).some((t) => t?.title);
@@ -479,7 +651,12 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
                       {al.cover ? <Image source={{ uri: al.cover }} style={styles.discCover} /> : <View style={[styles.discCover, styles.discCoverEmpty]}><Icon name="music" size={16} color={colors.textFaint} /></View>}
                       <View style={{ flex: 1 }}>
                         <Text style={styles.discTitle} numberOfLines={1}>{al.title}</Text>
-                        <Text style={styles.discSub}>{al.year || ""}{al.tracks?.length ? ` · ${al.tracks.length} songs` : ""}{ar.count > 0 ? ` · ${ar.avg.toFixed(1)}★` : ""}</Text>
+                        <View style={styles.discMetaLine}>
+                          <View style={[styles.releaseTypeChip, releaseType(al) === "EP" && styles.releaseTypeEp]}>
+                            <Text style={[styles.releaseTypeTxt, releaseType(al) === "EP" && styles.releaseTypeEpTxt]}>{releaseType(al)}</Text>
+                          </View>
+                          <Text style={styles.discSub}>{al.year || "Year unknown"}{al.tracks?.length ? ` · ${al.tracks.length} songs` : ""}{ar.count > 0 ? ` · ${ar.avg.toFixed(1)}★` : ""}</Text>
+                        </View>
                         <TapStars value={ar.mine} onChange={(n) => rateAlbum(a.name, al.title, n)} size={13} gap={2} />
                       </View>
                     </Pressable>
@@ -659,6 +836,29 @@ const styles = StyleSheet.create({
   bio: { color: colors.textDim, fontSize: 14, lineHeight: 21 },
   metaLine: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6, marginTop: 12 },
   metaItem: { color: colors.textDim, fontSize: 13 },
+  catalogIdentity: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: 14, paddingHorizontal: 12, paddingVertical: 10, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface },
+  catalogIdentityIcon: { width: 32, height: 32, borderRadius: 16, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(242,166,90,0.10)" },
+  catalogIdentityLabel: { color: colors.textFaint, fontFamily: mono, fontSize: 9, letterSpacing: 1.1, fontWeight: "800" },
+  catalogIdentityName: { color: colors.textDim, fontSize: 12, fontWeight: "700", marginTop: 2 },
+  wrongArtistBtn: { borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 11, paddingVertical: 7 },
+  wrongArtistTxt: { color: colors.amber, fontSize: 11.5, fontWeight: "800" },
+  identityPanel: { gap: 8, marginTop: 8, padding: 12, borderRadius: radius.md, borderWidth: 1, borderColor: colors.amber, backgroundColor: colors.bgElev },
+  identityTitle: { color: colors.text, fontSize: 15, fontWeight: "900" },
+  identityHelp: { color: colors.textDim, fontSize: 12, lineHeight: 17 },
+  identityLoading: { flexDirection: "row", alignItems: "center", gap: 9, paddingVertical: 10 },
+  identityLoadingTxt: { color: colors.textDim, fontSize: 12.5 },
+  candidateGrid: { gap: 7, marginTop: 2 },
+  candidateCard: { flexDirection: "row", alignItems: "center", gap: 10, minHeight: 60, padding: 7, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface },
+  candidateCardActive: { borderColor: colors.good, backgroundColor: "rgba(111,207,151,0.07)" },
+  candidateCardDisabled: { opacity: 0.55 },
+  candidatePhoto: { width: 46, height: 46, borderRadius: 23, backgroundColor: colors.surfaceAlt },
+  candidatePhotoEmpty: { alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.line },
+  candidateName: { color: colors.text, fontSize: 13.5, fontWeight: "800" },
+  candidateMeta: { color: colors.textFaint, fontFamily: mono, fontSize: 10.5, marginTop: 3 },
+  identityEmpty: { color: colors.textDim, fontSize: 12.5, fontStyle: "italic", paddingVertical: 8 },
+  identityErrorRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingTop: 3 },
+  identityError: { flex: 1, color: colors.danger, fontSize: 12, lineHeight: 16 },
+  identityRetry: { color: colors.amber, fontSize: 12, fontWeight: "800" },
   galleryRow: { gap: 10, paddingRight: 16 },
   galleryTile: { width: 140, height: 140, borderRadius: 10 },
   fanGrid: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 10 },
@@ -681,6 +881,11 @@ const styles = StyleSheet.create({
   discCoverEmpty: { alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.line },
   discTitle: { color: colors.text, fontSize: 14.5, fontWeight: "800" },
   discSub: { color: colors.textDim, fontFamily: mono, fontSize: 11, marginTop: 2, marginBottom: 4 },
+  discMetaLine: { flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap", marginTop: 2 },
+  releaseTypeChip: { borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 6, paddingVertical: 2, backgroundColor: colors.surfaceAlt },
+  releaseTypeEp: { borderColor: colors.amber, backgroundColor: "rgba(242,166,90,0.08)" },
+  releaseTypeTxt: { color: colors.textFaint, fontFamily: mono, fontSize: 8.5, letterSpacing: 0.7, fontWeight: "900" },
+  releaseTypeEpTxt: { color: colors.amber },
   discTrack: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 8, paddingHorizontal: 12, borderTopWidth: 1, borderTopColor: colors.lineSoft },
   discTrackMain: { flex: 1, flexDirection: "row", alignItems: "center", gap: 10 },
   discTrackNo: { color: colors.textFaint, fontFamily: mono, fontSize: 12, width: 20, textAlign: "center" },
