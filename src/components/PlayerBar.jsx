@@ -714,7 +714,11 @@ const styles = StyleSheet.create({
   // Collapsed-but-mounted: zero footprint while no video is on screen (the
   // engine's host div must stay in the DOM to survive pause/resume).
   compactStageCollapsed: { minHeight: 0, maxHeight: 0, height: 0, aspectRatio: undefined },
-  videoHost: { ...StyleSheet.absoluteFillObject, minWidth: 200, minHeight: 200, backgroundColor: "#000" },
+  // Fill the 16:9 stage exactly. No min-width/height here: those forced the host
+  // larger than the stage at some breakpoints, and overflow:hidden then cropped
+  // the video. The iframe is pinned to 100%/100% of this host (youtubePlayer.js),
+  // so it always tracks the stage and letterboxes the video instead of cropping.
+  videoHost: { ...StyleSheet.absoluteFillObject, backgroundColor: "#000" },
   mediaPlaceholder: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center", backgroundColor: colors.bg },
   heroArt: { width: 132, height: 132, borderRadius: 18, backgroundColor: colors.surfaceAlt, ...shadow.sheet },
   placeholderShade: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(5,6,10,0.16)" },

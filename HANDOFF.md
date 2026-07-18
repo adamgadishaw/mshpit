@@ -2,7 +2,7 @@
 
 > **Living doc.** Whoever works on this next: read this first, and UPDATE it before you end a session (move things between "Done" and "Backlog", note anything running). Point a fresh Claude Code chat at this file to get up to speed without re-explaining.
 >
-> Last updated: **2026-07-17** (clips mode + deeper artist charts, live on prod)
+> Last updated: **2026-07-18** (status posts + social feed + YouTube sourcing gate)
 
 > **Working agreement (owner's standing instruction):** ALWAYS `git commit` **and** `git push` after a verified batch. Stabilization work uses a review branch; do not merge/push directly to `master` until the branch checks pass. A master push auto-deploys and briefly restarts Render.
 
@@ -69,6 +69,60 @@ Wiring notes for whoever picks this up: mobile vs desktop split is `wide` in
 `mobilePlayerSlot` are the mobile-only render branches; `ClipsScreen` is the
 reference for a full-screen paged/scroll-snap surface; the music player pause hook
 is `playerObscured`. Do NOT touch the desktop column.
+
+## Status posts + social feed + YouTube sourcing gate (2026-07-18, Claude)
+
+Four owner asks in one batch. `npm run check` green (56 tests, web export). The
+status-post half was verified end to end in a real browser (server on a temp DB:
+posted a status, it rendered as a social card, commented inline from the feed,
+confirmed `kind='status'` in `/api/feed`); a review still posts and shows the
+ticket stub. The two YouTube pieces are covered by unit tests but need a prod
+spot-check because the local server has no `YOUTUBE_API_KEY` (falls back to Deezer
+preview, so no real video mounts locally).
+
+1. **"Wrong artist / wrong song" YouTube results.** Root cause: the candidate
+   scorer (`scoreYouTubeCandidate` in `server/musicProviders.js`) only *added*
+   points for artist/title and could accept a flawless-title upload by a totally
+   different act on "official audio" alone. Added two hard gates that reject
+   (score `-Infinity`) before scoring: an **artist gate** (token coverage ≥ 0.6,
+   OR the spaceless artist key is a substring of the channel/title so VEVO/official
+   channels like `taylorswiftvevo` still pass) and a **title gate** (the requested
+   title's words must actually be in the video title, with an exact-substring
+   rescue). Also widened the search pool 5 → 10 (search quota is flat, videos.list
+   is one cheap unit), so the correct official upload is in the set more often.
+   Tests: `musicProviders.test.mjs` "gates on the artist and the song".
+2. **Video "cropped / doesn't fit" on the computer.** The YouTube IFrame was sized
+   only by pixel `setSize()`, so any lag/rounding vs the host let the frame overflow
+   its `overflow:hidden` 16:9 stage and read as cropped/zoomed. Now the iframe is
+   pinned to `position:absolute; width/height:100%` of the host in
+   `src/lib/youtubePlayer.js` (onReady, via `getIframe()`), and `PlayerBar`'s
+   `videoHost` lost its `minWidth/minHeight:200` (they could force the host bigger
+   than the stage). CSS now owns fit; the video letterboxes instead of cropping.
+   **Needs a prod look with the real key to confirm on a live video.**
+3. **Post anything, not just reviews.** New post `kind` column (`'review'` default,
+   `'status'` for a plain update; additive migration in `server/db.js`). `POST
+   /api/posts` branches on `kind==='status'`: text and/or photos only, no
+   artist/venue/rating (`overall` stored 0 so it never touches a chart). The
+   composer (`LogScreen`) gained a "Share something / Log a show" toggle; the
+   "Make a post" FAB + desktop nav default to status, get-started + artist prefills
+   default to show. `store.addLog`/`editLog` carry `kind`. Tests:
+   `post.edit.test.mjs` "status posts carry text/photos".
+4. **Feed reads like Facebook/Twitter with the comment section preloaded.** Status
+   posts render as a social card in `TicketStub` (avatar/name/@handle/time, big
+   text, hero photo, like/comment) with no ticket stub or score. New
+   `src/components/AfterpartyPreview.jsx` shows the latest ~2 comments + a one-line
+   "Write a comment..." composer inline on **every** feed card (reviews and status);
+   `PostScreen` passes `showComments={false}` since it has the full thread.
+   `loadComments` got an in-flight guard so per-card previews don't double-fetch.
+
+Files: `server/{api,db,musicProviders}.js`, `server/{musicProviders,post.edit,clips}.test.mjs`,
+`src/lib/youtubePlayer.js`, `src/components/{PlayerBar,TicketStub,AfterpartyPreview}.jsx`,
+`src/screens/{LogScreen,PostScreen}.jsx`, `src/store.js`, `App.js`.
+Also fixed a **pre-existing flaky test** (`clips.test.mjs` newest-first assertion
+tied on `created_at` and resolved on the random `uid`; now stamps distinct
+timestamps). Open follow-ups: status posts don't tag an artist yet (artist=''),
+and the desktop persistent-column layout couldn't be exercised in the preview
+harness (it rendered the mobile shell regardless of width).
 
 ## Clips mode + deeper artist charts (2026-07-17, Claude)
 

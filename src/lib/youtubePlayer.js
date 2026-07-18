@@ -286,6 +286,23 @@ export function useYouTubePlayer(enabled, options = {}) {
               clearTimeout(readyTimeout);
               if (cancelled || initializationFailed) return;
               playerRef.current = player;
+              // Let CSS, not the pixel setSize() dance, own the iframe's size.
+              // YouTube writes width/height ATTRIBUTES on the iframe; if they ever
+              // lag the host (a resize between mount and this callback, a rounding
+              // gap) the frame overflows its overflow:hidden stage and the video
+              // looks cropped/zoomed. Pinning the frame to fill the host means it
+              // always matches the 16:9 stage and letterboxes internally instead.
+              try {
+                const frame = player.getIframe?.();
+                if (frame) {
+                  frame.style.position = "absolute";
+                  frame.style.top = "0";
+                  frame.style.left = "0";
+                  frame.style.width = "100%";
+                  frame.style.height = "100%";
+                  frame.style.border = "0";
+                }
+              } catch {}
               readyRef.current = true;
               try { player.setVolume(Math.round(volumeRef.current * 100)); } catch {}
               setReady(true);

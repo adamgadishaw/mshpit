@@ -319,6 +319,32 @@ export function scoreYouTubeCandidate(candidate, { title, artist, expectedDurati
 
   const titleCoverage = coverage(title, rawTitle);
   const artistCoverage = artist ? coverage(artist, combined) : 1;
+
+  // Hard artist gate. The single biggest source of "that isn't even the right
+  // artist" was a video whose TITLE matched perfectly (a cover, a same-named
+  // song, a random upload) scoring high on title alone. Never return a video
+  // that is not credibly BY the requested artist. Token coverage handles normal
+  // channels and "Artist - Topic"; official/VEVO channels mash the name into one
+  // token (taylorswiftvevo), so also accept a spaceless-substring match against
+  // the channel or the video title.
+  if (artist) {
+    const artistKey = normalizeMusicText(artist).replace(/ /g, "");
+    const channelKey = normalizeMusicText(channel).replace(/ /g, "");
+    const titleKey = normalizeMusicText(rawTitle).replace(/ /g, "");
+    const namePresent = artistCoverage >= 0.6
+      || (artistKey.length >= 4 && (channelKey.includes(artistKey) || titleKey.includes(artistKey)));
+    if (!namePresent) return { score: -Infinity, rejected: true, reasons: ["artist-mismatch"] };
+  }
+
+  // Hard title gate. The requested song's words must actually be in the video
+  // title; a completely different song by the right artist is still the wrong
+  // result. `titleIncluded` rescues exact matches whose token ratio dips only
+  // because the official title carries extra words (feat., remaster years).
+  if (title) {
+    const titleIncluded = normalizeMusicText(rawTitle).includes(normalizeMusicText(title));
+    if (titleCoverage < 0.5 && !titleIncluded) return { score: -Infinity, rejected: true, reasons: ["title-mismatch"] };
+  }
+
   let score = titleCoverage * 45 + artistCoverage * 28;
   if (normalizeMusicText(rawTitle).includes(normalizeMusicText(title))) { score += 18; reasons.push("title-match"); }
   if (/\bofficial (audio|music video|video|visualizer)\b/i.test(rawTitle)) { score += 24; reasons.push("official"); }
@@ -407,13 +433,16 @@ export async function resolveYouTubeTrack(title, artist, { expectedDurationSec =
   }
 
   const query = `${artist ? `${artist} ` : ""}${title} official audio -karaoke -cover -reaction -nightcore`;
+  // A wider candidate pool (search quota is flat regardless of maxResults, and
+  // videos.list is one cheap unit per batch) so the correct official upload is
+  // in the set even when it ranks below noise on YouTube's own relevance sort.
   const search = await providerJson("YouTube", youtubeUrl("search", {
     part: "snippet",
     type: "video",
     videoCategoryId: "10",
     videoEmbeddable: "true",
     videoSyndicated: "true",
-    maxResults: "5",
+    maxResults: "10",
     q: query,
   }, apiKey), { fetchImpl, timeoutMs: 8_000 });
   const ids = (search?.items || []).map((item) => item?.id?.videoId).filter((id) => id && !rejected.has(id));

@@ -154,8 +154,8 @@ function cleanPostRatingDims(value) {
   return out;
 }
 
-const postRow = db.prepare(`INSERT INTO posts (id,user_id,artist,venue,city,date,overall,band,room,dims,review,photos,photos_public,setlist,tour,tags,created_at)
-                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+const postRow = db.prepare(`INSERT INTO posts (id,user_id,artist,venue,city,date,overall,band,room,dims,review,photos,photos_public,setlist,tour,tags,kind,created_at)
+                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
 // How many times the author has logged this artist up to and including this
 // post: powers the "3rd time in the pit" marker on the card.
 const SEEN_ORDINAL_SQL = `(SELECT COUNT(*) FROM posts s
@@ -233,6 +233,7 @@ function postJson(p, viewerId) {
   return {
     id: p.id,
     userId: p.user_id,
+    kind: p.kind || "review",
     user: { name: p.u_name, handle: p.u_handle, initials: p.u_initials, avatarUri: p.u_avatar, avatarColor: p.u_color },
     artist: p.artist, venue: p.venue, city: p.city, date: p.date,
     overall: p.overall, band: p.band, room: p.room, dims: JSON.parse(p.dims || "{}"), review: p.review,
@@ -1133,6 +1134,28 @@ export const routes = {
   "POST /api/posts": (ctx) => {
     const u = requireUser(ctx);
     limit(ctx, "post", 20, 60 * 60 * 1000);
+
+    // A plain status/update post ("post whatever", not a concert review): just
+    // text and/or photos, no artist/venue/rating. It shares the posts table so
+    // it flows through the same feed, likes, comments, and moderation, and the
+    // rating/show columns stay empty (overall 0 so it never inflates any chart).
+    if (ctx.body?.kind === "status") {
+      const [errs, v] = shape(ctx.body, {
+        review: { parse: (x) => clean(x, { max: LIMITS.review, newlines: true }) },
+        photos: { parse: (x) => cleanStringArray(x, { maxItems: 8, maxLen: 2000 }) },
+        photosPublic: { parse: (x) => typeof x === "boolean" ? (x ? 1 : 0) : x === 0 || x === 1 ? x : undefined },
+      });
+      if (errs.length) throw new ApiError(400, errs[0]);
+      const text = v.review || "";
+      const photos = v.photos || [];
+      if (!text && !photos.length) throw new ApiError(400, "Write something or add a photo to post.", "VALIDATION_FAILED");
+      const id = uid("p");
+      postRow.run(id, u.id, "", "", "", "", 0, null, null,
+        "{}", text, JSON.stringify(photos), v.photosPublic ?? 1, "[]", null,
+        "[]", "status", now());
+      return { id, post: postJson(feedPostById.get(id), u.id) };
+    }
+
     const [errs, v] = shape(ctx.body, {
       artist: { required: true, parse: (x) => clean(x, { max: LIMITS.artist }) || undefined },
       venue: { required: true, parse: (x) => clean(x, { max: LIMITS.venue }) || undefined },
@@ -1153,7 +1176,7 @@ export const routes = {
     const id = uid("p");
     postRow.run(id, u.id, v.artist, v.venue, v.city || "", v.date || "", v.overall, v.band ?? null, v.room ?? null,
       JSON.stringify(v.dims || {}), v.review || "", JSON.stringify(v.photos || []), v.photosPublic ?? 0, JSON.stringify(v.setlist || []), v.tour || null,
-      JSON.stringify(v.tags || []), now());
+      JSON.stringify(v.tags || []), "review", now());
     return { id, post: postJson(feedPostById.get(id), u.id) };
   },
 

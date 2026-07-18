@@ -113,6 +113,33 @@ test("YouTube scoring strongly prefers official music over lyrics/karaoke and re
   assert.equal(childDirected.rejected, true);
 });
 
+test("YouTube scoring gates on the artist and the song, not the title alone", () => {
+  // A flawless title match by a completely different act is the classic
+  // wrong-result: it must be rejected outright, never merely out-scored.
+  const wrongArtist = scoreYouTubeCandidate(
+    youtubeCandidate("wrongact001", "Espresso (Official Audio)", "Some Other Band"),
+    { title: "Espresso", artist: "Sabrina Carpenter" },
+  );
+  assert.equal(wrongArtist.rejected, true);
+  assert.deepEqual(wrongArtist.reasons, ["artist-mismatch"]);
+
+  // Official/VEVO channels concatenate the name into one token, so plain token
+  // coverage is 0 — the spaceless-substring rescue must still accept them.
+  const vevo = scoreYouTubeCandidate(
+    youtubeCandidate("vevo000001", "Sabrina Carpenter - Espresso (Official Video)", "SabrinaCarpenterVEVO"),
+    { title: "Espresso", artist: "Sabrina Carpenter" },
+  );
+  assert.equal(vevo.rejected, false);
+
+  // Right artist, wrong song is still the wrong result.
+  const wrongSong = scoreYouTubeCandidate(
+    youtubeCandidate("wrongsong01", "Sabrina Carpenter - Please Please Please (Official Audio)", "Sabrina Carpenter - Topic"),
+    { title: "Espresso", artist: "Sabrina Carpenter" },
+  );
+  assert.equal(wrongSong.rejected, true);
+  assert.deepEqual(wrongSong.reasons, ["title-mismatch"]);
+});
+
 test("YouTube resolver scores multiple candidates, caches finitely, and excludes iframe failures", async () => {
   let requests = 0;
   const searchItems = [

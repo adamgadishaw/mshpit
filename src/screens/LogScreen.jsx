@@ -53,8 +53,14 @@ function postDims(post) {
   };
 }
 
-export default function LogScreen({ onPost, onCancel, user, prefill, editing = null }) {
+export default function LogScreen({ onPost, onCancel, user, prefill, editing = null, defaultMode = "show" }) {
   const { searchArtistsApi, drafts, saveDraft, deleteDraft } = useStore();
+  // Two kinds of post share this composer: a full show review, or a plain
+  // status update ("post whatever" — text and/or photos, no artist/rating).
+  const [postType, setPostType] = useState(
+    editing ? (editing.kind === "status" ? "status" : "show") : (prefill?.artist ? "show" : defaultMode)
+  );
+  const isStatus = postType === "status";
   const [draftId, setDraftId] = useState(null);
   const [artist, setArtist] = useState(editing?.artist || prefill?.artist || "");
   const [venue, setVenue] = useState(editing?.venue || prefill?.venue || "");
@@ -132,7 +138,8 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
         room: editing.room == null ? computed.room : Number(editing.room),
       }
     : computed;
-  const canPost = artist.trim() && computed.overall > 0;
+  const canPostStatus = !!(review.trim() || photos.filter(isDurableMediaUrl).length);
+  const canPost = isStatus ? canPostStatus : (artist.trim() && computed.overall > 0);
   const submitBusy = uploadingPhotos || posting;
 
   const stash = () => {
@@ -154,6 +161,24 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
     setPosting(true);
     try {
       const durablePhotos = photos.filter(isDurableMediaUrl);
+      if (isStatus) {
+        const result = await onPost?.({
+          id: editing?.id || newId(),
+          kind: "status",
+          user: editing?.user || (user
+            ? { name: user.name, handle: user.handle, initials: user.initials }
+            : { name: "You", handle: "you", initials: "YOU" }),
+          timeAgo: editing?.timeAgo || "now",
+          review: review.trim(),
+          photos: durablePhotos,
+          media: durablePhotos.length,
+          photosPublic: true,
+          likes: editing?.likes || 0,
+          comments: editing?.comments || 0,
+        });
+        if (result?.ok !== false && draftId) deleteDraft(draftId);
+        return;
+      }
       const result = await onPost?.({
         id: editing?.id || newId(),
         user: editing?.user || (user
@@ -190,9 +215,37 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
 
   return (
     <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-      <SheetHeader title={editing ? "Edit post" : "Log a show"} onClose={onCancel} action={{ label: posting ? (editing ? "Saving..." : "Posting...") : uploadingPhotos ? "Uploading..." : editing ? "Save" : "Post", onPress: submit, disabled: !canPost || submitBusy }} />
+      <SheetHeader title={editing ? "Edit post" : isStatus ? "New post" : "Log a show"} onClose={onCancel} action={{ label: posting ? (editing ? "Saving..." : "Posting...") : uploadingPhotos ? "Uploading..." : editing ? "Save" : "Post", onPress: submit, disabled: !canPost || submitBusy }} />
 
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+        {!editing && (
+          <View style={styles.modeRow}>
+            <Pressable style={[styles.modeBtn, isStatus && styles.modeBtnOn]} onPress={() => setPostType("status")} accessibilityRole="button" accessibilityState={{ selected: isStatus }} accessibilityLabel="Share a status update">
+              <Icon name="edit" size={15} color={isStatus ? "#1A1206" : colors.textDim} />
+              <Text style={[styles.modeTxt, isStatus && styles.modeTxtOn]}>Share something</Text>
+            </Pressable>
+            <Pressable style={[styles.modeBtn, !isStatus && styles.modeBtnOn]} onPress={() => setPostType("show")} accessibilityRole="button" accessibilityState={{ selected: !isStatus }} accessibilityLabel="Log a concert">
+              <Icon name="star" size={15} color={!isStatus ? "#1A1206" : colors.textDim} />
+              <Text style={[styles.modeTxt, !isStatus && styles.modeTxtOn]}>Log a show</Text>
+            </Pressable>
+          </View>
+        )}
+
+        {isStatus ? (
+          <>
+            <Text style={styles.fieldLabel}>SHARE SOMETHING</Text>
+            <TextInput
+              style={[styles.input, styles.statusBox]}
+              placeholder="What's on your mind? A show, weekend plans, a hot take..."
+              placeholderTextColor={colors.textFaint}
+              value={review}
+              onChangeText={setReview}
+              multiline
+              autoFocus={!editing}
+            />
+          </>
+        ) : (
+          <>
         {!editing && !draftId && drafts.length > 0 && !hasContent && (
           <View style={styles.drafts}>
             <Text style={styles.draftsLabel}>RESUME A DRAFT</Text>
@@ -324,6 +377,9 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
           />
         )}
 
+          </>
+        )}
+
         <Text style={[styles.fieldLabel, { marginTop: 22 }]}>PHOTOS <Text style={styles.optional}>· optional</Text></Text>
         <View style={styles.photoRow}>
           {photos.map((uri, i) => (
@@ -343,15 +399,15 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
           )}
         </View>
 
-        {photos.length > 0 && (
+        {!isStatus && photos.length > 0 && (
           <Pressable style={styles.consent} onPress={() => setPhotosPublic((v) => !v)}>
             <View style={[styles.check, photosPublic && styles.checkOn]}>{photosPublic && <Icon name="check" size={13} color="#1A1206" />}</View>
             <Text style={styles.consentTxt}>Let my photos show on the {artist || "artist"}'s page (top ones, by likes). You can change this later.</Text>
           </Pressable>
         )}
 
-        <Button title={posting ? (editing ? "Saving changes..." : "Posting review...") : uploadingPhotos ? "Uploading photos..." : editing ? "Save changes" : "Post to feed"} icon="check" onPress={submit} disabled={!canPost || submitBusy} style={{ marginTop: 28 }} />
-        {!editing && hasContent && (
+        <Button title={posting ? (editing ? "Saving changes..." : "Posting...") : uploadingPhotos ? "Uploading photos..." : editing ? "Save changes" : isStatus ? "Post" : "Post to feed"} icon="check" onPress={submit} disabled={!canPost || submitBusy} style={{ marginTop: 28 }} />
+        {!editing && !isStatus && hasContent && (
           <Pressable style={styles.saveDraft} onPress={stash} disabled={submitBusy}>
             <Icon name="edit" size={14} color={colors.textDim} />
             <Text style={styles.saveDraftTxt}>{draftId ? "Update draft" : "Save as draft"}</Text>
@@ -363,6 +419,12 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
 }
 
 const styles = StyleSheet.create({
+  modeRow: { flexDirection: "row", gap: 8, backgroundColor: colors.bgElev, borderRadius: radius.pill, padding: 4, borderWidth: 1, borderColor: colors.lineSoft, marginBottom: 18 },
+  modeBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, paddingVertical: 10, borderRadius: radius.pill },
+  modeBtnOn: { backgroundColor: colors.amberStrong },
+  modeTxt: { color: colors.textDim, fontSize: 13.5, fontWeight: "800" },
+  modeTxtOn: { color: "#1A1206" },
+  statusBox: { minHeight: 130, textAlignVertical: "top", fontSize: 17, lineHeight: 24 },
   tagEditRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 8 },
   tagEditChip: { flexDirection: "row", alignItems: "center", gap: 6, borderWidth: 1.5, borderColor: colors.amber, borderRadius: radius.sm, paddingHorizontal: 10, paddingVertical: 6, backgroundColor: colors.surfaceAlt },
   tagEditTxt: { color: colors.amber, fontSize: 12, fontWeight: "900", letterSpacing: 1.2 },

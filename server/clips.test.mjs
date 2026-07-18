@@ -44,7 +44,14 @@ test("clips reel returns only public posts that carry a real video, with just th
 
 test("clips reel paginates newest-first with a stable cursor", () => {
   const u = addUser("clipper2");
-  for (let i = 0; i < 3; i++) post(u, { photos: [`https://cdn.example/users/clipper2/post/${i}.mp4`], artist: `Band ${i}` });
+  for (let i = 0; i < 3; i++) {
+    const p = post(u, { photos: [`https://cdn.example/users/clipper2/post/${i}.mp4`], artist: `Band ${i}` });
+    // The route stamps created_at = now(), which ties across this fast loop and
+    // left "newest first" resolving on the random uid tie-break. Give each post a
+    // distinct, increasing timestamp (and newer than any earlier test's post) so
+    // the ordering assertion is deterministic.
+    db.prepare("UPDATE posts SET created_at=? WHERE id=?").run(2_000_000_000_000 + i, p.id);
+  }
 
   const first = routes["GET /api/clips"]({ user: u, query: { limit: "2" } });
   assert.equal(first.clips.length, 2);

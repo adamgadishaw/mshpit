@@ -7,6 +7,7 @@ import Avatar from "./Avatar";
 import SmartImage from "./SmartImage";
 import RatingBars from "./RatingBars";
 import SpinStar from "./SpinStar";
+import AfterpartyPreview from "./AfterpartyPreview";
 import { useStore } from "../store";
 import { BadgeRow } from "./Badge";
 
@@ -65,10 +66,24 @@ function MediaStrip({ photos, onOpenPhoto }) {
   );
 }
 
+// Status posts show photos big and edge-to-edge like Facebook/Twitter: one photo
+// fills a hero frame, several fall back to the compact thumbnail strip.
+function StatusMedia({ photos, onOpenPhoto }) {
+  if (!photos?.length) return null;
+  if (photos.length === 1) {
+    return (
+      <Pressable style={styles.statusHero} onPress={onOpenPhoto ? () => onOpenPhoto(0) : undefined} accessibilityRole={onOpenPhoto ? "button" : undefined} accessibilityLabel="Open photo">
+        <SmartImage uri={photos[0]} style={StyleSheet.absoluteFill} contain />
+      </Pressable>
+    );
+  }
+  return <MediaStrip photos={photos} onOpenPhoto={onOpenPhoto} />;
+}
+
 // Review-forward feed card: the review is the centerpiece. Artist / venue / date
 // sit on a ticket-stub line below, the score reads at a glance, and the footer
 // opens the Afterparty (like + comments) for that concert.
-export default function TicketStub({ log, onOpen, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenVenue, onReport, onEdit, onOpenPhotos }) {
+export default function TicketStub({ log, onOpen, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenVenue, onReport, onEdit, onOpenPhotos, showComments = true }) {
   const openComments = () => (onComment || onOpen)?.(log);
   const { userById, likeInfo, toggleLike, commentsFor, session, userBadges } = useStore();
   const author = userById?.(log.userId) || { initials: log.user?.initials, name: log.user?.name, handle: log.user?.handle };
@@ -92,6 +107,60 @@ export default function TicketStub({ log, onOpen, onComment, onPreview, onOpenPr
   const factors = log.dims
     ? `Band ${band.toFixed(1)} · Room ${room.toFixed(1)} · Night ${(((log.dims.crowd || 0) + (log.dims.experience || 0)) / 2 || overall).toFixed(1)}`
     : `Band ${band.toFixed(1)} · Room ${room.toFixed(1)}`;
+
+  // A plain status update: a Facebook/Twitter-style social card (no ticket stub,
+  // no score, no artist/venue line) with the comment section preloaded below.
+  if (log.kind === "status") {
+    return (
+      <View style={styles.card}>
+        <View style={styles.header}>
+          <Avatar user={author} size={40} onPress={log.userId ? () => onOpenProfile?.(log.userId) : undefined} />
+          <Pressable style={{ flex: 1 }} onPress={log.userId ? () => onOpenProfile?.(log.userId) : undefined}>
+            <View style={styles.nameRow}>
+              <Text style={styles.name}>{author.name}</Text>
+              <BadgeRow badges={userBadges(author)} size={14} />
+            </View>
+            <Text style={styles.sub}><Text style={roleColor(author.role) ? { color: roleColor(author.role), fontWeight: "800" } : null}>@{author.handle}</Text> · {timeLabel}{log.editedAt ? " · edited" : ""}</Text>
+          </Pressable>
+          {canEdit && (
+            <Pressable style={styles.iconBtn} hitSlop={8} onPress={() => onEdit?.(log)} accessibilityRole="button" accessibilityLabel="Edit post">
+              <Icon name="edit" size={16} color={colors.amber} />
+            </Pressable>
+          )}
+          <Pressable style={styles.iconBtn} hitSlop={8} onPress={() => onReport?.(log)} accessibilityRole="button" accessibilityLabel="Report post">
+            <Icon name="flag" size={15} color={colors.textFaint} />
+          </Pressable>
+        </View>
+
+        {isStaffViewer && log.flags > 0 && (
+          <View style={styles.flaggedChip} accessibilityLabel={`Reported content, ${log.flags} open ${log.flags === 1 ? "report" : "reports"}`}>
+            <Icon name="flag" size={11} color={colors.danger} />
+            <Text style={styles.flaggedTxt}>REPORTED · {log.flags}</Text>
+          </View>
+        )}
+
+        {!!log.review && (
+          <Pressable onPress={() => (onComment || onOpen)?.(log)}><Text style={styles.statusText}>{log.review}</Text></Pressable>
+        )}
+        {log.photos?.length > 0 && (
+          <StatusMedia photos={log.photos} onOpenPhoto={onOpenPhotos ? (i) => onOpenPhotos(log.photos.map((uri) => ({ uri, by: log.user?.name })), i, log.id) : undefined} />
+        )}
+
+        <View style={styles.statusFooter}>
+          <Pressable style={({ pressed }) => [styles.fBtn, pressed && styles.controlPressed]} onPress={() => (session ? toggleLike(log.id, log.likes || 0) : onOpen?.(log))} hitSlop={8} accessibilityRole="button" accessibilityLabel={`${liked ? "Unlike" : "Like"}, ${likeCount} likes`}>
+            <Icon name="heart" size={18} color={liked ? colors.magenta : colors.textDim} filled={liked} />
+            <Text style={[styles.fCount, liked && { color: colors.magenta }]}>{likeCount}</Text>
+          </Pressable>
+          <Pressable style={({ pressed }) => [styles.fBtn, pressed && styles.controlPressed]} onPress={openComments} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Comments, ${commentCount}`}>
+            <Icon name="comment" size={17} color={colors.textDim} />
+            <Text style={styles.fCount}>{commentCount}</Text>
+          </Pressable>
+        </View>
+
+        {showComments && <AfterpartyPreview log={log} onOpen={onComment || onOpen} />}
+      </View>
+    );
+  }
 
   return (
     <View style={styles.card}>
@@ -223,6 +292,8 @@ export default function TicketStub({ log, onOpen, onComment, onPreview, onOpenPr
           <Icon name="flag" size={15} color={colors.textFaint} />
         </Pressable>
       </View>
+
+      {showComments && <AfterpartyPreview log={log} onOpen={onOpen} />}
     </View>
   );
 }
@@ -258,6 +329,12 @@ const styles = StyleSheet.create({
   reviewWrap: { borderLeftWidth: 3, borderLeftColor: colors.amber, paddingLeft: 12, marginTop: 10 },
   review: { color: colors.text, fontFamily: font, fontSize: 16, lineHeight: 24, fontWeight: "500" },
   noReview: { color: colors.textFaint, fontSize: 14, marginTop: 10, fontStyle: "italic" },
+
+  // Status (Facebook/Twitter-style) card pieces.
+  iconBtn: { width: 34, height: 34, borderRadius: 17, alignItems: "center", justifyContent: "center" },
+  statusText: { color: colors.text, fontFamily: font, fontSize: 16, lineHeight: 23, marginTop: 12 },
+  statusHero: { width: "100%", height: 300, marginTop: 12, borderRadius: radius.md, borderCurve: "continuous", overflow: "hidden", borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.bgElev },
+  statusFooter: { flexDirection: "row", alignItems: "center", gap: 14, marginTop: 14, paddingTop: 4, borderTopWidth: 1, borderTopColor: colors.lineSoft },
 
   media: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 12 },
   mediaTile: { width: 64, height: 64, borderRadius: radius.sm, borderCurve: "continuous", backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.lineSoft },

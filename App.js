@@ -272,8 +272,9 @@ function Root() {
     const hit = (found || []).find((x) => x.handle === h);
     if (hit) openProfile(hit.id);
   };
-  const openShow = (log) => { track("view_show", { artist: log?.artist, venue: log?.venue }); go({ openLog: log }); };
   const openPost = (log) => { if (log) go({ post: log }); };
+  // A status update has no performance page, so "open" it as its own post detail.
+  const openShow = (log) => { if (log?.kind === "status") return openPost(log); track("view_show", { artist: log?.artist, venue: log?.venue }); go({ openLog: log }); };
   const openPostEditor = (log) => requireAuth(() => { if (log?.id) go({ editingPost: log }); });
   const openBadges = (userId) => go({ badges: { userId } });
   const openArtist = (name) => { track("view_artist", { artist: name }); go({ artistName: name }); };
@@ -332,7 +333,7 @@ function Root() {
   else if (nav.auth) overlay = <AuthScreen initialMode={nav.authMode} onDone={(mode) => { if (mode === "signup") { if (web) save("pit.welcomePending", true); replace({ pickArtists: true }); } else back(); }} onCancel={back} />;
   else if (nav.pickArtists) overlay = <PickArtistsScreen onDone={clear} onSkip={clear} />;
   else if (nav.editingPost) overlay = <LogScreen user={session} editing={nav.editingPost} onPost={onEditLog} onCancel={back} />;
-  else if (nav.logging) overlay = <LogScreen user={session} prefill={nav.prefill} onPost={onAddLog} onCancel={back} />;
+  else if (nav.logging) overlay = <LogScreen user={session} prefill={nav.prefill} defaultMode={nav.postMode || "show"} onPost={onAddLog} onCancel={back} />;
   else if (nav.reporting) overlay = <ReportScreen log={nav.reporting} onClose={back} />;
   else if (nav.editProfile) overlay = <EditProfileScreen onClose={back} onPickArtists={() => replace({ pickArtists: true })} />;
   else if (nav.venueReview) overlay = <VenueReviewScreen venueName={nav.venueReview} onClose={back} />;
@@ -454,7 +455,7 @@ function Root() {
         notifUnread={session ? unreadNotifications() : 0}
         compact={width < 1500}
         onHome={() => { setTab("feed"); clear(); }}
-        onLog={() => requireAuth(() => go({ logging: true }))}
+        onLog={() => requireAuth(() => go({ logging: true, postMode: "status" }))}
         onActivity={openNotifications}
         onInbox={openInbox}
         onClips={() => go({ clips: true })}
@@ -521,7 +522,7 @@ function Root() {
                     <View style={styles.tabbar}>
                       {LEFT.map((t) => <TabButton key={t.key} tab={t} active={tab} onPress={setTab} />)}
                       <View style={styles.fabCol}>
-                        <Pressable style={styles.fab} onPress={() => requireAuth(() => go({ logging: true }))} accessibilityLabel="Make a post">
+                        <Pressable style={styles.fab} onPress={() => requireAuth(() => go({ logging: true, postMode: "status" }))} accessibilityLabel="Make a post">
                           <Icon name="plus" size={26} color="#1A1206" strokeWidth={2.6} />
                         </Pressable>
                         <Text style={styles.fabLabel}>Post</Text>

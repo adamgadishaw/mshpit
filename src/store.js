@@ -1245,9 +1245,13 @@ export function StoreProvider({ children }) {
 
   const addLog = (log) => {
     const localId = log.id || "p_local_" + Date.now();
+    // A plain status/update post ("post whatever") shares this path with a show
+    // review; it just carries no artist/venue/rating and renders as a social card.
+    const kind = log.kind === "status" ? "status" : "review";
     const safe = {
       ...log,
       id: localId,
+      kind,
       artist: clean(log.artist, { max: 80 }),
       venue: clean(log.venue, { max: 80 }),
       review: clean(log.review, { max: LIMITS.review, newlines: true }),
@@ -1258,19 +1262,22 @@ export function StoreProvider({ children }) {
     };
     feedMutationRevisionRef.current += 1;
     setFeed((f) => [safe, ...f]);
-    track("post", { artist: safe.artist, venue: safe.venue });
+    track("post", kind === "status" ? { kind: "status" } : { artist: safe.artist, venue: safe.venue });
     // Slice 2 write-through: persist the post server-side, then adopt the server
     // id so likes/comments on it key correctly. Best-effort (offline keeps local).
     if (session) {
+      const body = kind === "status"
+        ? { kind: "status", review: safe.review, photos: safe.photos || [], photosPublic: safe.photosPublic === false ? 0 : 1 }
+        : {
+            artist: safe.artist, venue: safe.venue, city: safe.city, date: safe.date,
+            overall: safe.overall, band: safe.band, room: safe.room, dims: safe.dims, review: safe.review,
+            photos: safe.photos, photosPublic: safe.photosPublic ? 1 : 0, setlist: safe.setlist, tour: safe.tour || null,
+            tags: Array.isArray(safe.tags) ? safe.tags : [],
+          };
       return api("/api/posts", {
         method: "POST",
-        context: "Posting your concert review",
-        body: {
-          artist: safe.artist, venue: safe.venue, city: safe.city, date: safe.date,
-          overall: safe.overall, band: safe.band, room: safe.room, dims: safe.dims, review: safe.review,
-          photos: safe.photos, photosPublic: safe.photosPublic ? 1 : 0, setlist: safe.setlist, tour: safe.tour || null,
-          tags: Array.isArray(safe.tags) ? safe.tags : [],
-        },
+        context: kind === "status" ? "Posting your update" : "Posting your concert review",
+        body,
       })
         .then(({ id, post }) => {
           feedMutationRevisionRef.current += 1;
@@ -1297,6 +1304,31 @@ export function StoreProvider({ children }) {
     // Author-only, admins included: moderation removes content, never rewrites it.
     const previous = feed.find((post) => post.id === id) || changes;
     if (!previous || previous.userId !== session.id) return { ok: false };
+
+    // A status post has no artist/venue/rating, so it only sends the fields it
+    // actually owns; sending empty artist/venue would trip the review validators.
+    if ((previous.kind || changes.kind) === "status") {
+      const version = previous.version ?? previous.editedAt ?? previous.createdAt;
+      const body = {
+        review: clean(changes.review, { max: LIMITS.review, newlines: true }),
+        photos: Array.isArray(changes.photos) ? changes.photos.filter((item) => typeof item === "string").slice(0, 8) : [],
+        photosPublic: changes.photosPublic !== false,
+        ...(Number.isSafeInteger(version) ? { version } : {}),
+      };
+      if (!body.review && !body.photos.length) return { ok: false };
+      feedMutationRevisionRef.current += 1;
+      try {
+        const { post } = await api(`/api/posts/${encodeURIComponent(id)}`, { method: "PATCH", context: "Saving your update", body });
+        feedMutationRevisionRef.current += 1;
+        const updated = normalizeServerPost(post);
+        setFeed((all) => all.map((item) => (item.id === id ? updated : item)));
+        return { ok: true, post: updated };
+      } catch (error) {
+        feedMutationRevisionRef.current += 1;
+        return { ok: false, error };
+      }
+    }
+
     const safe = {
       artist: clean(changes.artist, { max: 80 }),
       venue: clean(changes.venue, { max: 80 }),
@@ -1550,10 +1582,14 @@ export function StoreProvider({ children }) {
 
   // Afterparty interactions
   const commentsFor = (id) => comments[id] || [];
+  // Inline comment previews on the feed call this per card; a small in-flight
+  // guard stops the same post being fetched twice at once (card + PostScreen).
+  const commentsInflight = useRef(new Set());
   // Slice 3: pull a post's comments from the server and merge them in (dedupe by
   // id). For bundled demo posts the server has none, so the seed comments stand.
   const loadComments = (id) => {
-    if (!id) return;
+    if (!id || commentsInflight.current.has(id)) return;
+    commentsInflight.current.add(id);
     api(`/api/posts/${id}/comments`)
       .then(({ comments: rows }) => {
         if (!Array.isArray(rows)) return;
@@ -1567,7 +1603,8 @@ export function StoreProvider({ children }) {
           return { ...m, [id]: merged };
         });
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => commentsInflight.current.delete(id));
   };
   const addComment = (id, text, parentId = null) => {
     const t = clean(text, { max: LIMITS.message, newlines: true });

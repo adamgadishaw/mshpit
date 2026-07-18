@@ -53,6 +53,34 @@ test("post creation returns the canonical post and persists detailed ratings", (
   );
 });
 
+test("status posts carry text/photos with no artist, venue, or rating", () => {
+  const user = addUser("statusposter");
+  const create = routes["POST /api/posts"];
+  const status = create({
+    user,
+    ip: "status-create",
+    body: { kind: "status", review: "just left the best show of my life", photos: ["https://cdn.example/night.jpg"] },
+  });
+  assert.equal(status.post.kind, "status");
+  assert.equal(status.post.artist, "");
+  assert.equal(status.post.venue, "");
+  assert.equal(status.post.overall, 0);
+  assert.equal(status.post.review, "just left the best show of my life");
+  assert.deepEqual(status.post.photos, ["https://cdn.example/night.jpg"]);
+
+  // A photo-only status is fine; a status with neither text nor a photo is not.
+  const photoOnly = create({ user, ip: "status-photo", body: { kind: "status", photos: ["https://cdn.example/a.jpg"] } });
+  assert.equal(photoOnly.post.kind, "status");
+  assert.throws(
+    () => create({ user, ip: "status-empty", body: { kind: "status", review: "   " } }),
+    (error) => error instanceof ApiError && error.status === 400,
+  );
+
+  // A regular review is still a review, and never becomes a status by accident.
+  const review = create({ user, ip: "status-review", body: { artist: "Artist", venue: "Venue", overall: 4 } });
+  assert.equal(review.post.kind, "review");
+});
+
 test("post edits enforce ownership, revisions, validation, and canonical fields", () => {
   const owner = addUser("postowner");
   const stranger = addUser("poststranger");
