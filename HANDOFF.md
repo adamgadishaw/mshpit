@@ -31,6 +31,37 @@ verified live (`git log origin/master..HEAD` is empty; tree clean).
 
 `YOUTUBE_API_KEY` is already set (`youtubeConfigured: true`). Nothing to do.
 
+## Composer, search, You tab, genres (2026-07-18, shipped to master)
+
+Follow-on batches after the play-history/playlist recovery, each verified in the
+browser and pushed to master (auto-deployed):
+
+- **Composer redesign** (`a87964e`, `src/screens/LogScreen.jsx`): status mode
+  opens on an author card (avatar, name, Public chip) with a clean text box;
+  both modes get an "Add to your post" chip bar (Photo/Song, plus Playlist on
+  status) that reveals each attachment panel on tap instead of three always-open
+  labeled sections. Presentation only.
+- **Recent searches** (`eb26c56`, `src/store.js`, `src/screens/SearchScreen.jsx`):
+  opening any result records a deduped, newest-first, on-device recent list
+  (`pit.recentSearches`, max 8); the empty Search state shows the last 5 with
+  per-item remove + Clear.
+- **Near You on the You tab** (`265b0c8`, `App.js`, `src/screens/YouScreen.jsx`):
+  a prominent card under the hero (local venues + upcoming shows) that opens the
+  Nearby screen. It had no You-tab entry point before.
+- **Genre correction** (`34c39e6`, `server/musicProviders.js`): the catalog
+  genre column was full of wrong MusicBrainz tags (Justin Bieber -> "Metal").
+  `getDeezerDiscography` now reads each album's clean Deezer genre, takes the
+  most common, and persists it, overriding the bad tag. Discography cache bumped
+  to v5 so cached artists re-derive on next view. **Self-heals per artist on
+  view**; a bulk backfill script for all catalog artists remains a future option
+  (would need a rate-limited prod run). See [[discover-genre-data-wrong]].
+
+Still open from the owner's latest report (screenshot-blind items I could not
+verify locally, so deliberately not guessed at): the subjective You-tab / Discover
+**visual** polish (owner should point at specifics), a **performance/lag** pass
+(can't reproduce lag on a tiny local DB), and **artist song accuracy** (no local
+YouTube key; needs concrete failing examples).
+
 ## Play history + shareable playlists (2026-07-18, branch `codex/playlists-history`)
 
 Recovery + completion of a Codex session that ran out of usage mid-edit. The
