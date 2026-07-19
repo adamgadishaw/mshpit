@@ -1,13 +1,14 @@
 import { useState, useEffect } from "react";
 import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, KeyboardAvoidingView, Platform } from "react-native";
 import * as ImagePicker from "expo-image-picker";
-import { colors, mono, radius } from "../theme";
+import { colors, mono, radius, font, displayFont, shadow } from "../theme";
 import { useStore } from "../store";
 import { newId, RATING_DIMS, computeReview } from "../data";
 
 // Tour presets: pick one to attach the show to the artist without an album/tour.
 const TOUR_PRESETS = ["One-off show", "Reunion tour", "Festival set", "Anniversary tour", "Surprise show"];
 import Icon from "../components/Icon";
+import Avatar from "../components/Avatar";
 import SmartImage from "../components/SmartImage";
 import Stars from "../components/Stars";
 import TapStars from "../components/TapStars";
@@ -19,6 +20,19 @@ import { api } from "../lib/api";
 
 const GROUP_COLOR = { "THE BAND": colors.amber, "THE ROOM": colors.cool, "THE NIGHT": colors.magenta };
 const GROUPS = ["THE BAND", "THE ROOM", "THE NIGHT"];
+
+// A rounded "add to your post" action, like the Facebook/Instagram composer:
+// tap to reveal that attachment's input. Shows a filled state (and count) once
+// something is attached so the bar reads as intentional, not a stack of fields.
+function AttachChip({ icon, label, active, count, onPress, disabled }) {
+  return (
+    <Pressable style={[styles.attachChip, active && styles.attachChipOn]} onPress={onPress} disabled={disabled} accessibilityRole="button" accessibilityState={{ selected: !!active }} accessibilityLabel={label}>
+      <Icon name={icon} size={16} color={active ? colors.amber : colors.textDim} />
+      <Text style={[styles.attachChipTxt, active && styles.attachChipTxtOn]} numberOfLines={1}>{label}</Text>
+      {count > 0 && <Text style={styles.attachChipCount}>{count}</Text>}
+    </Pressable>
+  );
+}
 
 function Stepper({ label, value, onChange, color }) {
   const step = (d) => onChange(Math.max(0, Math.min(5, Math.round((value + d) * 2) / 2)));
@@ -87,6 +101,11 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
   // server-side so the post keeps its songs even if the playlist later changes.
   const [playlist, setPlaylist] = useState(editing?.playlist || null);
   const [playlistPicker, setPlaylistPicker] = useState(false);
+  // Which attachment panels are revealed. A panel auto-shows when it already has
+  // content (editing a post, or after you attach something), so nothing hides.
+  const [showSong, setShowSong] = useState(!!editing?.song);
+  const [showPhotos, setShowPhotos] = useState((editing?.photos || []).length > 0);
+  const [showPlaylist, setShowPlaylist] = useState(!!editing?.playlist);
   // Only shareable playlists (public/unlisted, with songs) can be attached.
   const shareablePlaylists = (myPlaylists || []).filter((pl) => pl?.visibility !== "private" && (pl?.tracks?.length || 0) > 0);
   useEffect(() => { loadMyPlaylists?.(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
@@ -269,10 +288,19 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
         )}
 
         {isStatus ? (
-          <>
-            <Text style={styles.fieldLabel}>SHARE SOMETHING</Text>
+          <View style={styles.composerCard}>
+            <View style={styles.authorRow}>
+              <Avatar user={user || { name: "You", initials: "YOU" }} size={44} />
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={styles.authorName} numberOfLines={1}>{user?.name || "You"}</Text>
+                <View style={styles.publicChip}>
+                  <Icon name="feed" size={10} color={colors.textDim} />
+                  <Text style={styles.publicTxt}>Public</Text>
+                </View>
+              </View>
+            </View>
             <TextInput
-              style={[styles.input, styles.statusBox]}
+              style={styles.statusBox}
               placeholder="What's on your mind? A show, weekend plans, a hot take..."
               placeholderTextColor={colors.textFaint}
               value={review}
@@ -280,7 +308,7 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
               multiline
               autoFocus={!editing}
             />
-          </>
+          </View>
         ) : (
           <>
         {!editing && !draftId && drafts.length > 0 && !hasContent && (
@@ -417,7 +445,16 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
           </>
         )}
 
-        <Text style={[styles.fieldLabel, { marginTop: 22 }]}>TAG A SONG <Text style={styles.optional}>· optional, paste its YouTube link</Text></Text>
+        <Text style={styles.attachLabel}>ADD TO YOUR POST</Text>
+        <View style={styles.attachBar}>
+          <AttachChip icon="camera" label="Photo / video" active={showPhotos || photos.length > 0} count={photos.length} onPress={() => setShowPhotos((v) => !v)} disabled={submitBusy} />
+          <AttachChip icon="music" label="Song" active={showSong || !!song?.videoId} onPress={() => setShowSong((v) => !v)} disabled={submitBusy} />
+          {isStatus && <AttachChip icon="feed" label="Playlist" active={showPlaylist || !!playlist} count={playlist ? (playlist.tracks?.length || 0) : 0} onPress={() => setShowPlaylist((v) => !v)} disabled={submitBusy} />}
+        </View>
+
+        {(showSong || song?.videoId) && (
+        <View style={styles.attachPanel}>
+        <Text style={styles.attachHint}>Paste a YouTube link — it plays in the Pit player, exactly the video you chose.</Text>
         {song?.videoId ? (
           <View style={styles.songPreview}>
             <SmartImage uri={song.thumb} style={styles.songArt} contain={false} />
@@ -451,10 +488,11 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
           </View>
         )}
         {!!songError && <Text style={styles.songError}>{songError}</Text>}
+        </View>
+        )}
 
-        {isStatus && (
-          <>
-            <Text style={[styles.fieldLabel, { marginTop: 22 }]}>SHARE A PLAYLIST <Text style={styles.optional}>· optional</Text></Text>
+        {isStatus && (showPlaylist || playlist) && (
+          <View style={styles.attachPanel}>
             {playlist ? (
               <View style={styles.songPreview}>
                 <View style={[styles.songArt, styles.playlistArt]}><Icon name="music" size={22} color={colors.amber} /></View>
@@ -480,10 +518,11 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
             ) : (
               <Text style={styles.plEmpty}>No shareable playlists yet. Build one from an artist page or the player, then share it here.</Text>
             )}
-          </>
+          </View>
         )}
 
-        <Text style={[styles.fieldLabel, { marginTop: 22 }]}>PHOTOS &amp; VIDEOS <Text style={styles.optional}>· optional, up to 8</Text></Text>
+        {(showPhotos || photos.length > 0) && (
+        <View style={styles.attachPanel}>
         <View style={styles.photoRow}>
           {photos.map((uri, i) => (
             <View key={i} style={styles.thumb}>
@@ -508,6 +547,8 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
             <Text style={styles.consentTxt}>Let my photos show on the {artist || "artist"}'s page (top ones, by likes). You can change this later.</Text>
           </Pressable>
         )}
+        </View>
+        )}
 
         <Button title={posting ? (editing ? "Saving changes..." : "Posting...") : uploadingPhotos ? "Uploading media..." : resolvingSong ? "Checking song..." : editing ? "Save changes" : isStatus ? "Post" : "Post to feed"} icon="check" onPress={submit} disabled={!canPost || submitBusy} style={{ marginTop: 28 }} />
         {!editing && !isStatus && hasContent && (
@@ -527,7 +568,23 @@ const styles = StyleSheet.create({
   modeBtnOn: { backgroundColor: colors.amberStrong },
   modeTxt: { color: colors.textDim, fontSize: 13.5, fontWeight: "800" },
   modeTxtOn: { color: "#1A1206" },
-  statusBox: { minHeight: 130, textAlignVertical: "top", fontSize: 17, lineHeight: 24 },
+  // Status composer: an author card like the big social apps.
+  composerCard: { backgroundColor: colors.surface, borderRadius: radius.lg, borderCurve: "continuous", borderWidth: 1, borderColor: colors.line, padding: 14, ...shadow.card },
+  authorRow: { flexDirection: "row", alignItems: "center", gap: 11, marginBottom: 10 },
+  authorName: { color: colors.text, fontFamily: displayFont, fontSize: 15.5, fontWeight: "800" },
+  publicChip: { flexDirection: "row", alignItems: "center", alignSelf: "flex-start", gap: 4, marginTop: 3, paddingHorizontal: 8, paddingVertical: 3, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.bgElev },
+  publicTxt: { color: colors.textDim, fontFamily: mono, fontSize: 9.5, fontWeight: "800", letterSpacing: 0.6 },
+  statusBox: { minHeight: 120, textAlignVertical: "top", fontSize: 17, lineHeight: 24, color: colors.text, padding: 0 },
+  // "Add to your post" attachment bar + reveal panels.
+  attachLabel: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "800", marginTop: 22, marginBottom: 10 },
+  attachBar: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  attachChip: { flexDirection: "row", alignItems: "center", gap: 7, paddingHorizontal: 13, paddingVertical: 10, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
+  attachChipOn: { borderColor: colors.amber, backgroundColor: "rgba(242,166,90,0.08)" },
+  attachChipTxt: { color: colors.textDim, fontSize: 13, fontWeight: "700" },
+  attachChipTxtOn: { color: colors.text },
+  attachChipCount: { color: colors.amber, fontFamily: mono, fontSize: 11, fontWeight: "800", marginLeft: 1 },
+  attachPanel: { marginTop: 12, backgroundColor: colors.bgElev, borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: colors.lineSoft, padding: 12 },
+  attachHint: { color: colors.textFaint, fontSize: 11.5, lineHeight: 16, marginBottom: 10 },
   songInputRow: { flexDirection: "row", alignItems: "stretch", gap: 8 },
   songInput: { flex: 1, marginBottom: 0, minWidth: 0 },
   songAttachBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, minWidth: 96, paddingHorizontal: 13, borderRadius: radius.sm, backgroundColor: colors.amberStrong },
