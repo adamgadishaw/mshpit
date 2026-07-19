@@ -18,6 +18,8 @@ const {
   playbackUrlExpiry,
   resolveYouTubeTrack,
   scoreYouTubeCandidate,
+  selectArtistChannel,
+  selectCatalogueTrack,
   selectDeezerArtist,
   selectDeezerTrack,
   trackOverrideKey,
@@ -35,6 +37,32 @@ test("same-name Deezer artists prefer the established exact match or stored ID",
   assert.equal(selectDeezerArtist("Drake", [small, canonical]).artist.id, canonical.id);
   assert.equal(selectDeezerArtist("Drake", [canonical, small], small.id).artist.id, small.id);
   assert.equal(selectDeezerArtist("Drake", [{ id: 1, name: "Drake Tribute", nb_fan: 5000 }]), null);
+});
+
+test("a stylized artist name beats exact-spelling impostors, and bad pins self-heal", () => {
+  // Deezer lists Korn as "KoЯn" (2.6M fans). Two impostor accounts are spelled
+  // exactly "Korn", so exact-match-first picked one with 2 albums and the real
+  // band's page came up empty.
+  const korn = [
+    { id: 267400112, name: "Korn", nb_fan: 4497 },
+    { id: 240940521, name: "Korn", nb_fan: 25 },
+    { id: 1327, name: "KoЯn", nb_fan: 2_609_988 },
+    { id: 394171, name: "Lorn", nb_fan: 27_228 },
+    { id: 7101, name: "Jorn", nb_fan: 12_679 },
+  ];
+  assert.equal(selectDeezerArtist("Korn", korn).artist.id, 1327, "the real band wins on audience size");
+
+  // A genuine same-name collision must still prefer the exact spelling: Lorn is
+  // more popular than Jorn but is NOT overwhelmingly bigger, so Jorn stays Jorn.
+  assert.equal(selectDeezerArtist("Jorn", korn).artist.id, 7101);
+  assert.equal(selectDeezerArtist("Lorn", korn).artist.id, 394171);
+
+  // An auto-saved id is only a hint: a previously mis-pinned impostor heals...
+  assert.equal(selectDeezerArtist("Korn", korn, null, { hintId: 267400112 }).artist.id, 1327);
+  // ...while a reasonable saved id keeps continuity...
+  assert.equal(selectDeezerArtist("Jorn", korn, null, { hintId: 7101 }).artist.id, 7101);
+  // ...and a listener's explicit pick always wins.
+  assert.equal(selectDeezerArtist("Korn", korn, 267400112).artist.id, 267400112);
 });
 
 test("artist migration removes URL previews without deleting durable song metadata", () => {
@@ -114,25 +142,44 @@ test("YouTube scoring strongly prefers official music over lyrics/karaoke and re
   assert.equal(childDirected.rejected, true);
 });
 
-test("YouTube scoring gates on the artist and the song, not the title alone", () => {
-  // A flawless title match by a completely different act is the classic
-  // wrong-result: it must be rejected outright, never merely out-scored.
+test("YouTube scoring gates on the creator and the song, not the title alone", () => {
+  // A flawless title match by a completely different uploader is the classic
+  // wrong-result: rejected outright because the creator is not the artist.
   const wrongArtist = scoreYouTubeCandidate(
     youtubeCandidate("wrongact001", "Espresso (Official Audio)", "Some Other Band"),
     { title: "Espresso", artist: "Sabrina Carpenter" },
   );
   assert.equal(wrongArtist.rejected, true);
-  assert.deepEqual(wrongArtist.reasons, ["artist-mismatch"]);
+  assert.deepEqual(wrongArtist.reasons, ["wrong-creator"]);
 
-  // Official/VEVO channels concatenate the name into one token, so plain token
-  // coverage is 0 — the spaceless-substring rescue must still accept them.
+  // The real failure the owner hit: a DIFFERENT act's video that merely features
+  // the requested artist ("Tory Lanez - X (feat. Nelly Furtado)") must not land
+  // on Nelly Furtado's page. Its title leads with Tory Lanez and its channel is
+  // Tory Lanez, so the creator gate rejects it.
+  const featBySomeoneElse = scoreYouTubeCandidate(
+    youtubeCandidate("featwrong01", "Tory Lanez - The Take (feat. Nelly Furtado)", "Tory Lanez"),
+    { title: "The Take", artist: "Nelly Furtado" },
+  );
+  assert.equal(featBySomeoneElse.rejected, true);
+  assert.deepEqual(featBySomeoneElse.reasons, ["wrong-creator"]);
+
+  // Official/VEVO and "Artist - Topic" channels carry the name, so they pass.
   const vevo = scoreYouTubeCandidate(
     youtubeCandidate("vevo000001", "Sabrina Carpenter - Espresso (Official Video)", "SabrinaCarpenterVEVO"),
     { title: "Espresso", artist: "Sabrina Carpenter" },
   );
   assert.equal(vevo.rejected, false);
+  assert.ok(vevo.reasons.includes("artist-channel"));
 
-  // Right artist, wrong song is still the wrong result.
+  // A label upload that leads with the artist ("Artist - Song") also passes even
+  // when the channel is not the artist's.
+  const labelLead = scoreYouTubeCandidate(
+    youtubeCandidate("label00001", "Nelly Furtado - Say It Right (Official Music Video)", "GeffenVEVO"),
+    { title: "Say It Right", artist: "Nelly Furtado" },
+  );
+  assert.equal(labelLead.rejected, false);
+
+  // Right creator, wrong song is still the wrong result.
   const wrongSong = scoreYouTubeCandidate(
     youtubeCandidate("wrongsong01", "Sabrina Carpenter - Please Please Please (Official Audio)", "Sabrina Carpenter - Topic"),
     { title: "Espresso", artist: "Sabrina Carpenter" },
@@ -140,6 +187,87 @@ test("YouTube scoring gates on the artist and the song, not the title alone", ()
   assert.equal(wrongSong.rejected, true);
   assert.deepEqual(wrongSong.reasons, ["title-mismatch"]);
 });
+
+test("the artist's own channel is picked over lookalike channels", () => {
+  const items = [
+    { id: { channelId: "UC_fanpage" }, snippet: { title: "Korn Fan Page" } },
+    { id: { channelId: "UC_topic" }, snippet: { title: "Korn - Topic" } },
+    { id: { channelId: "UC_vevo" }, snippet: { title: "KornVEVO" } },
+  ];
+  assert.equal(selectArtistChannel("Korn", items).channelId, "UC_topic", "the auto-generated Topic channel wins");
+  assert.equal(selectArtistChannel("Korn", [items[0], items[2]]).channelId, "UC_vevo", "VEVO is next best");
+  assert.equal(selectArtistChannel("Korn", [{ id: { channelId: "UC_x" }, snippet: { title: "Reaction Central" } }]), null);
+});
+
+test("catalogue matching picks the studio track over decorated and live variants", () => {
+  const catalogue = [
+    { videoId: "liveversion", title: "Say It Right (Live at Wembley)" },
+    { videoId: "studiotrack", title: "Say It Right" },
+    { videoId: "karaoketrk", title: "Say It Right (Karaoke Version)" },
+    { videoId: "otherssong", title: "Maneater" },
+  ];
+  assert.equal(selectCatalogueTrack("Say It Right", catalogue).videoId, "studiotrack");
+  // A decorated official title still matches when there is no bare version.
+  assert.equal(
+    selectCatalogueTrack("Say It Right", [{ videoId: "officialmv", title: "Say It Right (Official Music Video)" }]).videoId,
+    "officialmv",
+  );
+  // Nothing close enough is a miss, not a wrong guess.
+  assert.equal(selectCatalogueTrack("Say It Right", [{ videoId: "x", title: "Completely Different" }]), null);
+});
+
+test("the catalogue path resolves songs without burning a keyword search", async () => {
+  // Each keyword search costs 100 quota units and only ~99 fit in a day, which is
+  // why songs kept falling back to previews. channels/playlistItems cost 1 unit.
+  const calls = [];
+  const fetchImpl = async (url) => {
+    const u = String(url);
+    calls.push(u);
+    let data = {};
+    if (u.includes("type=channel")) data = { items: [{ id: { channelId: "UC_topic" }, snippet: { title: "Nelly Furtado - Topic" } }] };
+    else if (u.includes("/channels?")) data = { items: [{ contentDetails: { relatedPlaylists: { uploads: "UU_topic" } } }] };
+    else if (u.includes("/playlistItems?")) data = { items: [
+      { snippet: { title: "Say It Right", resourceId: { videoId: "studiotrack" } } },
+      { snippet: { title: "Maneater", resourceId: { videoId: "maneater001" } } },
+    ] };
+    else data = { items: [youtubeCandidate("studiotrack", "Say It Right", "Nelly Furtado - Topic")] };
+    return { ok: true, status: 200, json: async () => data };
+  };
+  const result = await resolveYouTubeTrack("Say It Right", "Nelly Furtado", { apiKey: "test-key", fetchImpl });
+  assert.equal(result.videoId, "studiotrack");
+  assert.equal(result.status, "artist_catalogue");
+  // Only the one-off channel lookup may use search; the song itself must not.
+  const songSearches = calls.filter((u) => u.includes("/search?") && !u.includes("type=channel"));
+  assert.equal(songSearches.length, 0, "the song resolved without a 100-unit search");
+});
+
+test("resolver searches the artist's channel first, so reactions can never win", async () => {
+  // A reaction upload outranks the real song on a blind keyword search. Scoping
+  // the search to the artist's Topic channel means it is never even a candidate.
+  // A distinct artist from the catalogue test above: the provider cache is shared
+  // across tests, so reusing a name would simply replay the cached catalogue.
+  const fetchImpl = async (url) => {
+    const u = String(url);
+    let data = {};
+    if (u.includes("type=channel")) data = { items: [{ id: { channelId: "UC_feist" }, snippet: { title: "Feist - Topic" } }] };
+    // No uploads playlist here, so the cheap catalogue path finds nothing and
+    // the resolver falls back to searching inside the artist's channel.
+    else if (u.includes("/channels?")) data = { items: [] };
+    else if (u.includes("/search?") && u.includes("channelId=UC_feist")) data = { items: [{ id: { videoId: "officialAud" } }] };
+    else if (u.includes("/search?")) data = { items: [{ id: { videoId: "reactvid001" } }] };
+    else data = {
+      items: [
+        youtubeCandidate("officialAud", "Mushaboom", "Feist - Topic"),
+        youtubeCandidate("reactvid001", "Mushaboom REACTION!!", "Reaction Central"),
+      ].filter((item) => u.includes(item.id)),
+    };
+    return { ok: true, status: 200, json: async () => data };
+  };
+  const result = await resolveYouTubeTrack("Mushaboom", "Feist", { apiKey: "test-key", fetchImpl });
+  assert.equal(result.videoId, "officialAud");
+  assert.equal(result.status, "artist_channel");
+});
+
 
 test("YouTube resolver scores multiple candidates, caches finitely, and excludes iframe failures", async () => {
   let requests = 0;

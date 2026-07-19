@@ -71,29 +71,79 @@ function fanWeight(value) {
   return Math.min(20, Math.log10(Math.max(0, Number(value) || 0) + 1) * 3);
 }
 
-// Deezer can return multiple exact-name artists (Drake is a real production
-// example). Exact spelling alone is therefore insufficient; among exact matches
-// the established artist with the strongest audience signal wins. A previously
-// verified Deezer ID remains authoritative on later requests.
-export function selectDeezerArtist(name, candidates = [], preferredId = null) {
+// Letters/digits only, diacritics folded, but NON-LATIN KEPT, so a stylized
+// spelling stays comparable character by character ("KoЯn" -> "koяn").
+function looseKey(value) {
+  return String(value || "").toLowerCase().normalize("NFKD")
+    .replace(/[̀-ͯ]/g, "").replace(/[^\p{L}\p{N}]+/gu, "");
+}
+
+function levenshtein(a, b) {
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const row = [i];
+    for (let j = 1; j <= b.length; j++) {
+      row[j] = Math.min(prev[j] + 1, row[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    prev = row;
+  }
+  return prev[b.length];
+}
+
+// Deezer can return multiple artists for one name, including impostors. Exact
+// spelling alone is NOT sufficient and is actively dangerous: Deezer lists Korn
+// as "KoЯn" (2.6M fans), whose tokens don't match "korn" at all, while two
+// impostor accounts spelled exactly "Korn" (4,497 and 25 fans) do. The old
+// exact-match-first rule therefore picked an impostor with two albums and the
+// real band's page came up empty. Now every plausible spelling competes and the
+// established act (audience size) wins. A verified Deezer ID still overrides.
+export function selectDeezerArtist(name, candidates = [], preferredId = null, { hintId = null } = {}) {
   const valid = candidates.filter((item) => item?.id && item?.name);
   if (!valid.length) return null;
+  // A listener's deliberate pick from the "wrong artist?" flow is authoritative.
   if (preferredId != null) {
     const preferred = valid.find((item) => String(item.id) === String(preferredId));
     if (preferred) return { artist: preferred, confidence: 1, reason: "stored-id" };
   }
   const wanted = normalizeMusicText(name);
-  const exact = valid.filter((item) => normalizeMusicText(item.name) === wanted);
-  if (exact.length) {
-    const artist = exact.sort((a, b) => (Number(b.nb_fan) || 0) - (Number(a.nb_fan) || 0))[0];
-    return { artist, confidence: exact.length === 1 ? 0.98 : 0.94, reason: exact.length === 1 ? "exact-name" : "exact-name-popularity" };
+  const wantedLoose = looseKey(name);
+  const scored = valid.map((artist) => {
+    const exact = normalizeMusicText(artist.name) === wanted;
+    const tokenSim = Math.min(coverage(name, artist.name), coverage(artist.name, name));
+    const loose = looseKey(artist.name);
+    const charSim = !wantedLoose || !loose
+      ? 0
+      : 1 - levenshtein(wantedLoose, loose) / Math.max(wantedLoose.length, loose.length);
+    return { artist, exact, similarity: Math.max(tokenSim, charSim), fans: Number(artist.nb_fan) || 0 };
+  });
+  const plausible = scored.filter((c) => c.exact || c.similarity >= 0.6);
+  if (!plausible.length) return null;
+  const byFans = (a, b) => b.fans - a.fans || b.similarity - a.similarity;
+  const exacts = plausible.filter((c) => c.exact).sort(byFans);
+  const nears = plausible.filter((c) => !c.exact).sort(byFans);
+  const bestExact = exacts[0] || null;
+  const bestNear = nears[0] || null;
+  // An exact spelling normally wins. A near spelling only takes it when it is
+  // overwhelmingly bigger, which is the stylized-name case (KoЯn has 580x the
+  // impostor's audience) and never a genuine same-name collision like Jorn/Lorn.
+  const stylizedWins = bestNear && (!bestExact || bestNear.fans >= Math.max(1000, bestExact.fans * 10));
+  const top = stylizedWins ? bestNear : bestExact;
+  if (!top) return null;
+  // An auto-saved id from a previous lookup keeps continuity, but it must never
+  // outrank an overwhelmingly bigger act. This is what un-sticks an artist that
+  // was already mis-pinned to an impostor (Korn was pinned to a 4k-fan account).
+  if (hintId != null) {
+    const hinted = plausible.find((c) => String(c.artist.id) === String(hintId));
+    if (hinted && !(top.fans >= Math.max(1000, hinted.fans * 10))) {
+      return { artist: hinted.artist, confidence: 0.96, reason: "stored-id" };
+    }
   }
-  const ranked = valid.map((artist) => {
-    const similarity = Math.min(coverage(name, artist.name), coverage(artist.name, name));
-    return { artist, similarity, score: similarity * 100 + fanWeight(artist.nb_fan) };
-  }).sort((a, b) => b.score - a.score);
-  if (!ranked[0] || ranked[0].similarity < 0.8) return null;
-  return { artist: ranked[0].artist, confidence: ranked[0].similarity * 0.85, reason: "near-name" };
+  const reason = top.exact ? (exacts.length > 1 ? "exact-name-popularity" : "exact-name") : "stylized-name-popularity";
+  const confidence = top.exact ? (exacts.length === 1 ? 0.98 : 0.94) : Math.min(0.9, 0.6 + top.similarity * 0.3);
+  return { artist: top.artist, confidence, reason };
 }
 
 function providerMessage(provider, status) {
@@ -128,9 +178,9 @@ export async function providerJson(provider, url, { timeoutMs = 10_000, fetchImp
   return data;
 }
 
-export async function findDeezerArtist(name, { preferredId = null, fetchImpl = fetch } = {}) {
+export async function findDeezerArtist(name, { preferredId = null, hintId = null, fetchImpl = fetch } = {}) {
   const data = await providerJson("Deezer", `https://api.deezer.com/search/artist?q=${encodeURIComponent(name)}&limit=10`, { fetchImpl });
-  return selectDeezerArtist(name, data?.data || [], preferredId);
+  return selectDeezerArtist(name, data?.data || [], preferredId, { hintId });
 }
 
 function storedDeezerId(name) {
@@ -204,7 +254,9 @@ export async function getDeezerDiscography(name, { fetchImpl = fetch, deezerId =
   // forces a fresh resolve and re-pins identity, even when one is already cached.
   if (cached?.fresh && !deezerId) return { ...cached.data, status: "cached", stale: false };
   try {
-    const identity = await findDeezerArtist(name, { preferredId: deezerId || storedDeezerId(name), fetchImpl });
+    // The listener's explicit pick overrides everything; a previously auto-saved
+    // id is only a hint, so a bad one can be corrected instead of sticking.
+    const identity = await findDeezerArtist(name, { preferredId: deezerId, hintId: storedDeezerId(name), fetchImpl });
     if (!identity) return cached ? { ...cached.data, status: "stale", stale: true } : { albums: [], status: "not_found", stale: false };
     const artist = identity.artist;
     persistDeezerIdentity(name, artist.id);
@@ -222,23 +274,30 @@ export async function getDeezerDiscography(name, { fetchImpl = fetch, deezerId =
       .filter((album) => (album.record_type === "album" || album.record_type === "ep") && album.title
         && !seen.has(normalizeMusicText(album.title)) && seen.add(normalizeMusicText(album.title)))
       .sort((a, b) => String(b.release_date || "").localeCompare(String(a.release_date || "")))
-      .slice(0, 40);
-    const fullAlbums = await inBatches(picks, 4, async (album) => {
-      const full = await providerJson("Deezer", `https://api.deezer.com/album/${album.id}`, { fetchImpl });
-      return {
-        id: album.id,
-        title: album.title,
-        type: album.record_type === "ep" ? "ep" : "album",
-        year: String(album.release_date || "").slice(0, 4),
-        cover: album.cover_medium || album.cover || null,
-        // Deezer's clean, canonical genre label for this release (used to correct
-        // the artist's noisy catalog genre below).
-        genre: full?.genres?.data?.[0]?.name || null,
-        // Never persist Deezer's signed preview URL. It expires in minutes and is
-        // resolved by getFreshDeezerPreview only when a listener presses play.
-        tracks: (full?.tracks?.data || []).map((track) => ({ id: track.id || null, title: track.title, duration: track.duration || 0 })),
-      };
-    });
+      .slice(0, 28);
+    // Each album detail is fetched independently and RESILIENTLY: a single bad
+    // album (rate limit, 403, a pulled release) used to reject the whole batch
+    // and throw away the entire discography AND the song chart (this is why some
+    // artists showed no songs at all). Now a failed album is just skipped.
+    // Slightly wider batches with fewer albums also cut the artist-page load.
+    const fullAlbums = (await inBatches(picks, 6, async (album) => {
+      try {
+        const full = await providerJson("Deezer", `https://api.deezer.com/album/${album.id}`, { fetchImpl });
+        return {
+          id: album.id,
+          title: album.title,
+          type: album.record_type === "ep" ? "ep" : "album",
+          year: String(album.release_date || "").slice(0, 4),
+          cover: album.cover_medium || album.cover || null,
+          // Deezer's clean, canonical genre label for this release (used to
+          // correct the artist's noisy catalog genre below).
+          genre: full?.genres?.data?.[0]?.name || null,
+          // Never persist Deezer's signed preview URL. It expires in minutes and
+          // is resolved by getFreshDeezerPreview only when a listener presses play.
+          tracks: (full?.tracks?.data || []).map((track) => ({ id: track.id || null, title: track.title, duration: track.duration || 0 })),
+        };
+      } catch { return null; }
+    })).filter(Boolean);
     // The artist's canonical genre is the one most of their releases carry. This
     // corrects the wrong catalog genre (from MusicBrainz tags) the moment anyone
     // opens the artist, so Discover and Search stop showing nonsense over time.
@@ -353,7 +412,7 @@ export function parseIsoDuration(value) {
   return (Number(match[1]) || 0) * 3600 + (Number(match[2]) || 0) * 60 + (Number(match[3]) || 0);
 }
 
-export function scoreYouTubeCandidate(candidate, { title, artist, expectedDurationSec = 0 } = {}) {
+export function scoreYouTubeCandidate(candidate, { title, artist, expectedDurationSec = 0, trustedChannel = false } = {}) {
   const snippet = candidate?.snippet || {};
   const status = candidate?.status || {};
   const rawTitle = String(snippet.title || "");
@@ -376,20 +435,36 @@ export function scoreYouTubeCandidate(candidate, { title, artist, expectedDurati
   const titleCoverage = coverage(title, rawTitle);
   const artistCoverage = artist ? coverage(artist, combined) : 1;
 
-  // Hard artist gate. The single biggest source of "that isn't even the right
-  // artist" was a video whose TITLE matched perfectly (a cover, a same-named
-  // song, a random upload) scoring high on title alone. Never return a video
-  // that is not credibly BY the requested artist. Token coverage handles normal
-  // channels and "Artist - Topic"; official/VEVO channels mash the name into one
-  // token (taylorswiftvevo), so also accept a spaceless-substring match against
-  // the channel or the video title.
-  if (artist) {
+  // Hard CREATOR gate. The old gate accepted a video if the artist name appeared
+  // ANYWHERE in the title or channel, so "Tory Lanez - X (feat. Nelly Furtado)"
+  // or a random channel that just name-drops the artist passed, which put the
+  // wrong act's songs on artist pages. Instead the uploader must credibly BE the
+  // artist: either the channel carries their name (official / "Artist - Topic" /
+  // VEVO all contain the name spaceless), or the title LEADS with their name
+  // (the standard "Artist - Song" official format). Everything else is rejected
+  // and playback falls back to the 30s preview, which is correct-artist audio.
+  let channelIsArtist = false;
+  // The candidate came from the artist's OWN channel, so the creator is already
+  // proven; only the song identity still has to be checked below.
+  if (trustedChannel) {
+    channelIsArtist = true;
+    reasons.push("artist-channel");
+  } else if (artist) {
     const artistKey = normalizeMusicText(artist).replace(/ /g, "");
     const channelKey = normalizeMusicText(channel).replace(/ /g, "");
-    const titleKey = normalizeMusicText(rawTitle).replace(/ /g, "");
-    const namePresent = artistCoverage >= 0.6
-      || (artistKey.length >= 4 && (channelKey.includes(artistKey) || titleKey.includes(artistKey)));
-    if (!namePresent) return { score: -Infinity, rejected: true, reasons: ["artist-mismatch"] };
+    const titleNorm = normalizeMusicText(rawTitle);
+    // Only gate on the creator when the name is long enough to match reliably.
+    // Very short or non-latin names (normalize to <3 chars) can't be gated
+    // without rejecting everything, so they fall through to the title gate and
+    // scoring instead.
+    if (artistKey.length >= 3) {
+      channelIsArtist = channelKey.includes(artistKey)
+        || (artistKey.length >= 6 && channelKey.length >= 4 && artistKey.includes(channelKey));
+      const titleLeadsWithArtist = titleNorm.startsWith(normalizeMusicText(artist));
+      if (!channelIsArtist && !titleLeadsWithArtist) {
+        return { score: -Infinity, rejected: true, reasons: ["wrong-creator"] };
+      }
+    }
   }
 
   // Hard title gate. The requested song's words must actually be in the video
@@ -402,6 +477,9 @@ export function scoreYouTubeCandidate(candidate, { title, artist, expectedDurati
   }
 
   let score = titleCoverage * 45 + artistCoverage * 28;
+  // The uploader being the artist is the strongest correctness signal, so weight
+  // it heavily above title-only matches.
+  if (channelIsArtist) { score += 22; reasons.push("artist-channel"); }
   if (normalizeMusicText(rawTitle).includes(normalizeMusicText(title))) { score += 18; reasons.push("title-match"); }
   if (/\bofficial (audio|music video|video|visualizer)\b/i.test(rawTitle)) { score += 24; reasons.push("official"); }
   if (/\bvevo\b/i.test(channel) || /\btopic\b/i.test(channel)) { score += 24; reasons.push("verified-channel-pattern"); }
@@ -425,6 +503,119 @@ export function scoreYouTubeCandidate(candidate, { title, artist, expectedDurati
   const views = Number(candidate?.statistics?.viewCount) || 0;
   if (views > 0) score += Math.min(10, Math.log10(views + 1));
   return { score: Math.round(score * 10) / 10, rejected: score < YOUTUBE_SCORE_MIN, reasons, duration };
+}
+
+const YOUTUBE_CHANNEL_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const YOUTUBE_CHANNEL_MISS_TTL_MS = 24 * 60 * 60 * 1000;
+
+// Pick the artist's OWN channel out of channel search results. YouTube
+// auto-generates an "<Artist> - Topic" channel that holds the official audio for
+// their entire catalogue; VEVO and the plain verified channel come next. Ranked
+// so an unrelated channel that merely contains the name can never win.
+export function selectArtistChannel(artist, items = []) {
+  const wanted = normalizeMusicText(artist);
+  const wantedKey = wanted.replace(/ /g, "");
+  if (!wantedKey) return null;
+  let best = null;
+  for (const item of items) {
+    const channelId = item?.id?.channelId || item?.snippet?.channelId;
+    const title = String(item?.snippet?.title || item?.snippet?.channelTitle || "");
+    if (!channelId || !title) continue;
+    const norm = normalizeMusicText(title);
+    const key = norm.replace(/ /g, "");
+    let rank = 0;
+    if (norm === `${wanted} topic`) rank = 100;
+    else if (key === `${wantedKey}vevo`) rank = 90;
+    else if (norm === wanted) rank = 80;
+    else if (key.startsWith(wantedKey) && key.length - wantedKey.length <= 6) rank = 60;
+    else if (key.includes(wantedKey)) rank = 40;
+    if (rank && (!best || rank > best.rank)) best = { channelId, title, rank };
+  }
+  return best && best.rank >= 40 ? best : null;
+}
+
+// One cheap, long-lived lookup per artist. Channels do not move, so this is
+// cached for a month and amortized across every song on the artist's page.
+async function resolveArtistChannelId(artist, apiKey, fetchImpl) {
+  if (!artist) return null;
+  const key = `yt:channel:v1:${normName(artist)}`;
+  const cached = readProviderCache(key);
+  if (cached?.fresh) return cached.data?.channelId || null;
+  try {
+    const data = await providerJson("YouTube", youtubeUrl("search", {
+      part: "snippet", type: "channel", maxResults: "5", q: `${artist} - Topic`,
+    }, apiKey), { fetchImpl, timeoutMs: 8_000 });
+    const best = selectArtistChannel(artist, data?.items || []);
+    writeProviderCache(key, { channelId: best?.channelId || null, title: best?.title || null },
+      best ? YOUTUBE_CHANNEL_TTL_MS : YOUTUBE_CHANNEL_MISS_TTL_MS);
+    return best?.channelId || null;
+  } catch {
+    return cached?.data?.channelId || null;
+  }
+}
+
+const YOUTUBE_CATALOGUE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+// Match a requested song against the artist's own upload catalogue, locally and
+// for free. Topic uploads are titled exactly the song name; official channels
+// add "(Official Video)" and friends, so those words are stripped before
+// comparing. Live/remix/karaoke variants are pushed down, never silently used.
+export function selectCatalogueTrack(title, catalogue = []) {
+  const wanted = normalizeMusicText(title);
+  if (!wanted) return null;
+  const DECOR = /\b(official|music|video|audio|lyric|lyrics|visualizer|hd|hq|remaster|remastered|explicit|version|full)\b/g;
+  let best = null;
+  for (const item of catalogue) {
+    const raw = String(item?.title || "");
+    const videoId = item?.videoId;
+    if (!raw || !videoId) continue;
+    const norm = normalizeMusicText(raw);
+    const stripped = norm.replace(DECOR, " ").replace(/\s+/g, " ").trim();
+    let score;
+    if (norm === wanted || stripped === wanted) score = 100;
+    else if (stripped.startsWith(`${wanted} `) || stripped === wanted) score = 88;
+    else if (norm.startsWith(`${wanted} `)) score = 84;
+    else score = Math.min(coverage(title, raw), coverage(raw, title)) * 80;
+    score -= titleQualifierPenalty(title, raw);
+    if (/\b(karaoke|cover|reaction|instrumental|tribute)\b/i.test(raw)) score -= 100;
+    if (!best || score > best.score) best = { videoId, title: raw, score: Math.round(score * 10) / 10 };
+  }
+  return best && best.score >= 70 ? best : null;
+}
+
+// The artist's entire upload catalogue, fetched with the CHEAP endpoints:
+// channels.list + playlistItems.list cost 1 unit per call (50 videos each),
+// versus 100 units for a single keyword search. This is what stops the daily
+// quota running out and dropping every song back to a 30 second preview.
+async function getArtistCatalogue(artist, channelId, apiKey, fetchImpl) {
+  const key = `yt:catalogue:v1:${normName(artist)}`;
+  const cached = readProviderCache(key);
+  if (cached?.fresh) return cached.data?.items || [];
+  try {
+    const channelData = await providerJson("YouTube", youtubeUrl("channels", {
+      part: "contentDetails", id: channelId,
+    }, apiKey), { fetchImpl, timeoutMs: 8_000 });
+    const uploads = channelData?.items?.[0]?.contentDetails?.relatedPlaylists?.uploads;
+    if (!uploads) return [];
+    const items = [];
+    let pageToken = "";
+    for (let page = 0; page < 4; page++) {
+      const params = { part: "snippet", playlistId: uploads, maxResults: "50" };
+      if (pageToken) params.pageToken = pageToken;
+      const data = await providerJson("YouTube", youtubeUrl("playlistItems", params, apiKey), { fetchImpl, timeoutMs: 8_000 });
+      for (const item of data?.items || []) {
+        const videoId = item?.snippet?.resourceId?.videoId;
+        const videoTitle = item?.snippet?.title;
+        if (videoId && videoTitle) items.push({ videoId, title: videoTitle });
+      }
+      pageToken = data?.nextPageToken || "";
+      if (!pageToken) break;
+    }
+    if (items.length) writeProviderCache(key, { items }, YOUTUBE_CATALOGUE_TTL_MS);
+    return items;
+  } catch {
+    return cached?.data?.items || [];
+  }
 }
 
 function youtubeCacheKey(title, artist) {
@@ -486,6 +677,68 @@ export async function resolveYouTubeTrack(title, artist, { expectedDurationSec =
       }
       rejected.add(hit.video_id);
     } else rejected.add(hit.video_id);
+  }
+
+  // PRIMARY PATH: search inside the artist's OWN channel. YouTube's
+  // auto-generated "<Artist> - Topic" channel holds the official audio for their
+  // whole catalogue, so a hit here cannot be a reaction video, a cover, or a
+  // different act's song. This is what a blind keyword search could never
+  // guarantee. Falls through to the global search when the artist has no
+  // resolvable channel.
+  if (artist) {
+    const channelId = await resolveArtistChannelId(artist, apiKey, fetchImpl);
+    if (channelId) {
+      // Cheapest and most accurate: match against the artist's own catalogue,
+      // pulled once per artist for ~5 quota units and reused for every song.
+      try {
+        const catalogue = await getArtistCatalogue(artist, channelId, apiKey, fetchImpl);
+        const picked = selectCatalogueTrack(title, catalogue.filter((item) => !rejected.has(item.videoId)));
+        if (picked) {
+          const verified = (await youtubeVideos([picked.videoId], apiKey, fetchImpl))[0];
+          const assessment = verified
+            ? scoreYouTubeCandidate(verified, { title, artist, expectedDurationSec, trustedChannel: true })
+            : null;
+          if (verified && assessment && !assessment.rejected) {
+            const metadata = {
+              title: verified.snippet?.title || null,
+              channel: verified.snippet?.channelTitle || null,
+              reasons: [...assessment.reasons, "artist-catalogue"],
+              duration: assessment.duration,
+            };
+            setYouTubeCache({ key, videoId: verified.id, metadata, score: assessment.score, expiresAt: currentTime + YOUTUBE_MATCH_TTL_MS, rejected });
+            return { videoId: verified.id, status: "artist_catalogue", confidence: assessment.score };
+          }
+        }
+      } catch { /* fall through to the channel search below */ }
+
+      try {
+        const inChannel = await providerJson("YouTube", youtubeUrl("search", {
+          part: "snippet",
+          type: "video",
+          channelId,
+          videoEmbeddable: "true",
+          videoSyndicated: "true",
+          maxResults: "10",
+          q: title,
+        }, apiKey), { fetchImpl, timeoutMs: 8_000 });
+        const channelIds = (inChannel?.items || []).map((item) => item?.id?.videoId).filter((id) => id && !rejected.has(id));
+        const channelRanked = (await youtubeVideos(channelIds, apiKey, fetchImpl))
+          .map((candidate) => ({ candidate, assessment: scoreYouTubeCandidate(candidate, { title, artist, expectedDurationSec, trustedChannel: true }) }))
+          .filter(({ assessment }) => !assessment.rejected)
+          .sort((a, b) => b.assessment.score - a.assessment.score);
+        const bestInChannel = channelRanked[0];
+        if (bestInChannel) {
+          const metadata = {
+            title: bestInChannel.candidate.snippet?.title || null,
+            channel: bestInChannel.candidate.snippet?.channelTitle || null,
+            reasons: bestInChannel.assessment.reasons,
+            duration: bestInChannel.assessment.duration,
+          };
+          setYouTubeCache({ key, videoId: bestInChannel.candidate.id, metadata, score: bestInChannel.assessment.score, expiresAt: currentTime + YOUTUBE_MATCH_TTL_MS, rejected });
+          return { videoId: bestInChannel.candidate.id, status: "artist_channel", confidence: bestInChannel.assessment.score };
+        }
+      } catch { /* fall through to the global search below */ }
+    }
   }
 
   const query = `${artist ? `${artist} ` : ""}${title} official audio -karaoke -cover -reaction -nightcore`;

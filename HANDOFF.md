@@ -31,6 +31,54 @@ verified live (`git log origin/master..HEAD` is empty; tree clean).
 
 `YOUTUBE_API_KEY` is already set (`youtubeConfigured: true`). Nothing to do.
 
+## Song sourcing rebuilt around the artist's own channel (2026-07-18)
+
+The owner reported, repeatedly, that songs played the wrong video (reaction
+videos, another act's song), that Korn was unreachable, and that many songs fell
+back to 30s previews. Three genuinely separate root causes, all now fixed:
+
+1. **Korn was unreachable: wrong Deezer artist.** Deezer lists the band as
+   **"KoЯn"** (Cyrillic Я, 2.6M fans). Two impostor accounts spelled exactly
+   "Korn" (4,497 and 25 fans) exist, and `selectDeezerArtist` considered ONLY
+   exact-name matches, so it picked a 2-album impostor and the page came up
+   empty. Selection now compares a character-level similarity that keeps
+   non-latin glyphs (so "koяn" ~ "korn" = 0.75) and lets the established act win
+   when it is overwhelmingly bigger, while a genuine same-name collision
+   (Jorn/Lorn) still prefers the exact spelling. A previously auto-saved wrong
+   id is now only a HINT and self-heals; a listener's explicit pick still wins.
+   Verified live: Korn resolves to KoЯn, 25 songs, 25 albums, genre Rock.
+2. **Wrong videos: the selection never checked the creator.** The old gate
+   accepted a video if the artist name appeared ANYWHERE in title or channel, so
+   "Tory Lanez - X (feat. Nelly Furtado)" passed on Nelly Furtado's page. The
+   resolver now searches **inside the artist's own channel** ("<Artist> - Topic",
+   the auto-generated channel holding official audio for their whole catalogue),
+   so a reaction video or another act's song is structurally impossible. When no
+   channel resolves, the global search runs behind a hard creator gate: the
+   channel must carry the artist's name, or the title must LEAD with it.
+3. **Previews everywhere: YouTube quota exhaustion.** Every song burned a
+   `search.list` at **100 quota units**, and the default daily quota is 10,000,
+   so roughly 99 songs a day then everything silently fell back to previews. The
+   resolver now pulls the artist's upload catalogue once via
+   `channels.list` + `playlistItems.list` (**1 unit per 50 videos**, ~5 units per
+   artist, cached 7 days) and matches titles locally, so a song costs ~1 unit
+   instead of 101. That is roughly 80x more songs per day.
+
+Order of attempts: artist catalogue (cheap, exact) -> search within the artist's
+channel -> global search behind the creator gate -> Deezer preview. Every step
+falls through safely, so the worst case is the previous behaviour.
+
+Files: `server/musicProviders.js`, `server/musicProviders.test.mjs`.
+Tests (15 in that file, 63 total): stylized-name/impostor/self-heal, creator gate
+including the exact feat. case, Topic-channel preference, catalogue matching
+(studio over live/karaoke), and a quota assertion that a song resolves with **no**
+keyword search. `npm run check` green.
+
+**Not verifiable locally** (no `YOUTUBE_API_KEY` in the dev env): the live
+YouTube paths are covered by mocked-fetch tests only. Spot-check on prod after
+deploy. If an artist has no Topic/VEVO channel the global-search fallback is
+stricter than before, so a few songs may prefer the preview over a doubtful
+video, which is the intended trade.
+
 ## Composer, search, You tab, genres (2026-07-18, shipped to master)
 
 Follow-on batches after the play-history/playlist recovery, each verified in the
