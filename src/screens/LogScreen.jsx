@@ -55,7 +55,7 @@ function postDims(post) {
 }
 
 export default function LogScreen({ onPost, onCancel, user, prefill, editing = null, defaultMode = "show" }) {
-  const { searchArtistsApi, drafts, saveDraft, deleteDraft } = useStore();
+  const { searchArtistsApi, drafts, saveDraft, deleteDraft, myPlaylists, loadMyPlaylists } = useStore();
   // Two kinds of post share this composer: a full show review, or a plain
   // status update ("post whatever" — text and/or photos, no artist/rating).
   const [postType, setPostType] = useState(
@@ -83,6 +83,13 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
   const [song, setSong] = useState(editing?.song || null);
   const [songUrl, setSongUrl] = useState(editing?.song?.url || "");
   const [resolvingSong, setResolvingSong] = useState(false);
+  // Share one of your playlists on a status post. The chosen playlist is snapshotted
+  // server-side so the post keeps its songs even if the playlist later changes.
+  const [playlist, setPlaylist] = useState(editing?.playlist || null);
+  const [playlistPicker, setPlaylistPicker] = useState(false);
+  // Only shareable playlists (public/unlisted, with songs) can be attached.
+  const shareablePlaylists = (myPlaylists || []).filter((pl) => pl?.visibility !== "private" && (pl?.tracks?.length || 0) > 0);
+  useEffect(() => { loadMyPlaylists?.(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
   const [songError, setSongError] = useState("");
   const [tags, setTags] = useState(() => (Array.isArray(editing?.tags) ? editing.tags.slice(0, 5) : []));
   const [tagDraft, setTagDraft] = useState("");
@@ -164,7 +171,7 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
         room: editing.room == null ? computed.room : Number(editing.room),
       }
     : computed;
-  const canPostStatus = !!(review.trim() || photos.filter(isDurableMediaUrl).length || song?.videoId);
+  const canPostStatus = !!(review.trim() || photos.filter(isDurableMediaUrl).length || song?.videoId || playlist);
   const canPost = isStatus ? canPostStatus : (artist.trim() && computed.overall > 0);
   const submitBusy = uploadingPhotos || resolvingSong || posting;
 
@@ -197,6 +204,8 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
           timeAgo: editing?.timeAgo || "now",
           review: review.trim(),
           song,
+          playlist,
+          playlistId: playlist?.id || null,
           photos: durablePhotos,
           media: durablePhotos.length,
           photosPublic: true,
@@ -443,6 +452,37 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
         )}
         {!!songError && <Text style={styles.songError}>{songError}</Text>}
 
+        {isStatus && (
+          <>
+            <Text style={[styles.fieldLabel, { marginTop: 22 }]}>SHARE A PLAYLIST <Text style={styles.optional}>· optional</Text></Text>
+            {playlist ? (
+              <View style={styles.songPreview}>
+                <View style={[styles.songArt, styles.playlistArt]}><Icon name="music" size={22} color={colors.amber} /></View>
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={styles.songReady}>PLAYLIST</Text>
+                  <Text style={styles.songTitle} numberOfLines={2}>{playlist.name}</Text>
+                  <Text style={styles.songArtist} numberOfLines={1}>{playlist.tracks?.length || 0} {(playlist.tracks?.length || 0) === 1 ? "song" : "songs"}</Text>
+                </View>
+                <Pressable onPress={() => { setPlaylist(null); setPlaylistPicker(false); }} hitSlop={8} disabled={submitBusy} accessibilityRole="button" accessibilityLabel="Remove shared playlist">
+                  <Icon name="x" size={17} color={colors.textDim} />
+                </Pressable>
+              </View>
+            ) : shareablePlaylists.length ? (
+              <View style={styles.plList}>
+                {shareablePlaylists.slice(0, 8).map((pl) => (
+                  <Pressable key={pl.id} style={styles.plChip} onPress={() => setPlaylist(pl)} disabled={submitBusy} accessibilityRole="button" accessibilityLabel={`Share ${pl.name}`}>
+                    <Icon name="music" size={13} color={colors.amber} />
+                    <Text style={styles.plChipTxt} numberOfLines={1}>{pl.name}</Text>
+                    <Text style={styles.plChipCount}>{pl.tracks?.length || 0}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            ) : (
+              <Text style={styles.plEmpty}>No shareable playlists yet. Build one from an artist page or the player, then share it here.</Text>
+            )}
+          </>
+        )}
+
         <Text style={[styles.fieldLabel, { marginTop: 22 }]}>PHOTOS &amp; VIDEOS <Text style={styles.optional}>· optional, up to 8</Text></Text>
         <View style={styles.photoRow}>
           {photos.map((uri, i) => (
@@ -499,6 +539,12 @@ const styles = StyleSheet.create({
   songTitle: { color: colors.text, fontSize: 14, lineHeight: 18, fontWeight: "800", marginTop: 2 },
   songArtist: { color: colors.textDim, fontSize: 11.5, marginTop: 2 },
   songError: { color: colors.danger, fontSize: 12.5, lineHeight: 18, marginTop: 7 },
+  playlistArt: { alignItems: "center", justifyContent: "center", backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.line },
+  plList: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  plChip: { flexDirection: "row", alignItems: "center", gap: 7, maxWidth: "100%", paddingHorizontal: 12, paddingVertical: 9, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
+  plChipTxt: { color: colors.text, fontSize: 13, fontWeight: "700", flexShrink: 1 },
+  plChipCount: { color: colors.amber, fontFamily: mono, fontSize: 11, fontWeight: "800" },
+  plEmpty: { color: colors.textDim, fontSize: 12.5, lineHeight: 18, fontStyle: "italic" },
   tagEditRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 8 },
   tagEditChip: { flexDirection: "row", alignItems: "center", gap: 6, borderWidth: 1.5, borderColor: colors.amber, borderRadius: radius.sm, paddingHorizontal: 10, paddingVertical: 6, backgroundColor: colors.surfaceAlt },
   tagEditTxt: { color: colors.amber, fontSize: 12, fontWeight: "900", letterSpacing: 1.2 },

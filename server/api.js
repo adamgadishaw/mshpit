@@ -156,8 +156,8 @@ function cleanPostRatingDims(value) {
   return out;
 }
 
-const postRow = db.prepare(`INSERT INTO posts (id,user_id,artist,venue,city,date,overall,band,room,dims,review,photos,photos_public,setlist,tour,tags,kind,song,created_at)
-                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+const postRow = db.prepare(`INSERT INTO posts (id,user_id,artist,venue,city,date,overall,band,room,dims,review,photos,photos_public,setlist,tour,tags,kind,song,playlist,created_at)
+                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
 
 // A tagged YouTube song on a post. Only a real YouTube video id is trusted; the
 // title/artist/thumb are stored as given (already cleaned) so the feed can render
@@ -171,6 +171,98 @@ function cleanSong(value) {
   const str = (v, max) => { const s = clean(String(v ?? ""), { max }); return s || null; };
   const thumb = typeof value.thumb === "string" && /^https:\/\//.test(value.thumb) ? value.thumb.slice(0, 400) : `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
   return { videoId, url: `https://www.youtube.com/watch?v=${videoId}`, title: str(value.title, 200), artist: str(value.artist, 120), thumb };
+}
+
+const PLAYLIST_VISIBILITIES = new Set(["public", "unlisted", "private"]);
+function cleanPlaylistVisibility(value, fallback = "public") {
+  const visibility = clean(value, { max: 20 });
+  return PLAYLIST_VISIBILITIES.has(visibility) ? visibility : fallback;
+}
+function cleanPlaylistTracks(value, { allowEmpty = true } = {}) {
+  if (!Array.isArray(value)) return undefined;
+  if (value.length > 100) return undefined;
+  const tracks = [];
+  const seen = new Set();
+  for (const raw of value.slice(0, 100)) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const title = clean(raw.title, { max: 200 });
+    if (!title) continue;
+    const artist = clean(raw.artist, { max: 120 }) || null;
+    const url = clean(raw.url, { max: 400 }) || null;
+    const videoId = parseYouTubeVideoId(raw.videoId || "") || null;
+    const sourceId = clean(String(raw.sourceId ?? raw.id ?? ""), { max: 120 }) || null;
+    const provider = clean(raw.provider, { max: 40 })?.toLowerCase() || null;
+    const art = typeof raw.art === "string" && /^https?:\/\//i.test(raw.art) ? raw.art.slice(0, 500) : null;
+    const durationValue = Number(raw.duration);
+    const duration = Number.isFinite(durationValue) && durationValue > 0 ? Math.min(Math.round(durationValue), 86_400) : null;
+    const identity = videoId
+      ? `youtube:${videoId}`
+      : sourceId
+        ? `source:${provider || "unknown"}:${sourceId.toLowerCase()}`
+        : url
+          ? `url:${url.toLowerCase()}`
+          : `text:${(artist || "").toLowerCase()}|${title.toLowerCase()}`;
+    if (seen.has(identity)) continue;
+    seen.add(identity);
+    tracks.push({ title, artist, url, videoId, provider, sourceId, art, duration });
+  }
+  if (!allowEmpty && !tracks.length) return undefined;
+  return tracks;
+}
+function playlistProjection(row) {
+  if (!row) return null;
+  let stored = [];
+  try { stored = JSON.parse(row.tracks || "[]"); } catch {}
+  const tracks = cleanPlaylistTracks(stored) || [];
+  return {
+    id: row.id,
+    ownerId: row.user_id,
+    owner: row.u_name ? { id: row.user_id, name: row.u_name, handle: row.u_handle } : undefined,
+    name: row.name,
+    tracks,
+    visibility: cleanPlaylistVisibility(row.visibility),
+    at: row.created_at,
+    updatedAt: row.updated_at || null,
+  };
+}
+const ownedPlaylistForPost = db.prepare(`SELECT p.*, u.name AS u_name, u.handle AS u_handle
+  FROM playlists p JOIN users u ON u.id=p.user_id WHERE p.id=? AND p.user_id=?`);
+function playlistSnapshotForPost(user, playlistId, currentSnapshot = null) {
+  if (playlistId == null || playlistId === "") return null;
+  if (typeof playlistId !== "string" || playlistId.length > 100) throw new ApiError(400, "That playlist could not be attached.", "VALIDATION_FAILED");
+  // An old post keeps its immutable snapshot even if its source playlist was
+  // later edited or deleted. Re-saving unrelated text must not rewrite the songs.
+  if (currentSnapshot?.id === playlistId) return currentSnapshot;
+  const row = ownedPlaylistForPost.get(playlistId, user.id);
+  if (!row) throw new ApiError(404, "That playlist left the set. Refresh and choose another.", "NOT_FOUND");
+  const playlist = playlistProjection(row);
+  if (playlist.visibility === "private") throw new ApiError(400, "Make this playlist public or unlisted before sharing it.", "VALIDATION_FAILED");
+  if (!playlist.tracks.length) throw new ApiError(400, "Add at least one song before sharing this playlist.", "VALIDATION_FAILED");
+  return {
+    id: playlist.id,
+    name: playlist.name,
+    tracks: playlist.tracks,
+    owner: playlist.owner,
+    publishedAt: now(),
+  };
+}
+function playlistPostProjection(value) {
+  if (!value) return null;
+  let playlist = value;
+  if (typeof value === "string") {
+    try { playlist = JSON.parse(value); } catch { return null; }
+  }
+  if (!playlist || typeof playlist !== "object" || Array.isArray(playlist)) return null;
+  const tracks = cleanPlaylistTracks(Array.isArray(playlist.tracks) ? playlist.tracks : []) || [];
+  return {
+    id: playlist.id,
+    name: playlist.name,
+    owner: playlist.owner,
+    trackCount: tracks.length,
+    duration: tracks.reduce((total, track) => total + (track.duration || 0), 0) || null,
+    tracks: tracks.slice(0, 4),
+    publishedAt: playlist.publishedAt || null,
+  };
 }
 // How many times the author has logged this artist up to and including this
 // post: powers the "3rd time in the pit" marker on the card.
@@ -258,6 +350,9 @@ function postJson(p, viewerId) {
     tour: p.tour || null,
     tags: JSON.parse(p.tags || "[]"),
     song: p.song ? (() => { try { return JSON.parse(p.song); } catch { return null; } })() : null,
+    // Feed pages receive a bounded preview. The full immutable song list is
+    // loaded only when somebody presses Play, keeping 50-card feeds lightweight.
+    playlist: playlistPostProjection(p.playlist),
     seen: p.seen_ordinal ?? null,
     ...(p.open_reports != null ? { flags: p.open_reports } : {}),
     likes: p.like_count ?? 0, comments: p.comment_count ?? 0,
@@ -649,15 +744,22 @@ export const routes = {
     const title = clean(ctx.body?.title, { max: 200 });
     if (!title) return { ok: false };
     limit(ctx, "play", 300, 60 * 60 * 1000);
-    db.prepare("INSERT INTO plays (id,user_id,title,artist,url,art,created_at) VALUES (?,?,?,?,?,?,?)")
-      .run(uid("pl"), u.id, title, clean(ctx.body?.artist, { max: 120 }) || null, clean(ctx.body?.url, { max: 400 }) || null, clean(ctx.body?.art, { max: 500 }) || null, now());
+    const id = uid("play");
+    const createdAt = now();
+    const videoId = parseYouTubeVideoId(ctx.body?.videoId || "") || null;
+    db.prepare("INSERT INTO plays (id,user_id,title,artist,url,video_id,art,created_at) VALUES (?,?,?,?,?,?,?,?)")
+      .run(id, u.id, title, clean(ctx.body?.artist, { max: 120 }) || null, clean(ctx.body?.url, { max: 400 }) || null, videoId, clean(ctx.body?.art, { max: 500 }) || null, createdAt);
     db.prepare("DELETE FROM plays WHERE user_id=? AND id NOT IN (SELECT id FROM plays WHERE user_id=? ORDER BY created_at DESC LIMIT 300)").run(u.id, u.id);
-    return { ok: true };
+    return { ok: true, play: { id, title, artist: clean(ctx.body?.artist, { max: 120 }) || null, url: clean(ctx.body?.url, { max: 400 }) || null, videoId, art: clean(ctx.body?.art, { max: 500 }) || null, at: createdAt } };
   },
   "GET /api/me/plays": (ctx) => {
     const u = requireUser(ctx);
-    const rows = db.prepare("SELECT title,artist,url,art,created_at FROM plays WHERE user_id=? ORDER BY created_at DESC LIMIT 100").all(u.id);
-    return { plays: rows.map((r) => ({ title: r.title, artist: r.artist, url: r.url, art: r.art, at: r.created_at })) };
+    const { cursor, limit: pageSize } = pageRequest(ctx, 50, 100);
+    const cursorSql = cursor ? "AND (created_at < ? OR (created_at = ? AND id < ?))" : "";
+    const args = cursor ? [u.id, cursor.createdAt, cursor.createdAt, cursor.id, pageSize + 1] : [u.id, pageSize + 1];
+    const found = db.prepare(`SELECT id,title,artist,url,video_id,art,created_at FROM plays WHERE user_id=? ${cursorSql} ORDER BY created_at DESC, id DESC LIMIT ?`).all(...args);
+    const { rows, nextCursor } = finishPage(found, pageSize);
+    return { plays: rows.map((r) => ({ id: r.id, title: r.title, artist: r.artist, url: r.url, videoId: r.video_id, art: r.art, at: r.created_at })), nextCursor };
   },
   // The latest track from each person you follow, most recent first.
   "GET /api/plays/friends": (ctx) => {
@@ -683,39 +785,69 @@ export const routes = {
   "POST /api/playlists": (ctx) => {
     const u = requireUser(ctx);
     const name = clean(ctx.body?.name, { max: 80 }) || "Untitled";
-    const tracks = Array.isArray(ctx.body?.tracks) ? ctx.body.tracks.slice(0, 100).map((t) => ({ title: clean(t?.title, { max: 200 }), artist: clean(t?.artist, { max: 120 }) || null, url: clean(t?.url, { max: 400 }) || null, preview: clean(t?.preview, { max: 500 }) || null, art: clean(t?.art, { max: 500 }) || null })).filter((t) => t.title) : [];
-    if (!tracks.length) throw new ApiError(400, "A playlist needs tracks.");
+    const tracks = cleanPlaylistTracks(ctx.body?.tracks, { allowEmpty: false });
+    if (!tracks) throw new ApiError(400, "A playlist needs at least one song.", "VALIDATION_FAILED");
+    const visibility = cleanPlaylistVisibility(ctx.body?.visibility);
     const id = uid("pls");
-    db.prepare("INSERT INTO playlists (id,user_id,name,tracks,created_at) VALUES (?,?,?,?,?)").run(id, u.id, name, JSON.stringify(tracks), now());
-    return { id, name, tracks, at: now() };
+    const createdAt = now();
+    db.prepare("INSERT INTO playlists (id,user_id,name,tracks,visibility,created_at,updated_at) VALUES (?,?,?,?,?,?,?)").run(id, u.id, name, JSON.stringify(tracks), visibility, createdAt, createdAt);
+    return playlistProjection({ id, user_id: u.id, u_name: u.name, u_handle: u.handle, name, tracks: JSON.stringify(tracks), visibility, created_at: createdAt, updated_at: createdAt });
   },
   "GET /api/users/:id/playlists": (ctx) => {
     if (ctx.user?.id !== ctx.params.id && blockedEitherWay(ctx.user?.id, ctx.params.id)) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
-    const rows = db.prepare("SELECT id,name,tracks,created_at FROM playlists WHERE user_id=? ORDER BY created_at DESC LIMIT 50").all(ctx.params.id);
-    return { playlists: rows.map((r) => ({ id: r.id, name: r.name, tracks: JSON.parse(r.tracks || "[]"), at: r.created_at })) };
+    const self = ctx.user?.id === ctx.params.id;
+    const rows = db.prepare(`SELECT p.*, u.name AS u_name, u.handle AS u_handle FROM playlists p JOIN users u ON u.id=p.user_id
+      WHERE p.user_id=? ${self ? "" : "AND p.visibility='public'"} ORDER BY COALESCE(p.updated_at,p.created_at) DESC, p.id DESC LIMIT 50`).all(ctx.params.id);
+    return { playlists: rows.map(playlistProjection) };
+  },
+  "GET /api/playlists/:id": (ctx) => {
+    const row = db.prepare(`SELECT p.*, u.name AS u_name, u.handle AS u_handle FROM playlists p JOIN users u ON u.id=p.user_id WHERE p.id=?`).get(ctx.params.id);
+    if (!row || blockedEitherWay(ctx.user?.id, row.user_id)) throw new ApiError(404, "That playlist isn't available.", "NOT_FOUND");
+    if (row.visibility === "private" && ctx.user?.id !== row.user_id) throw new ApiError(404, "That playlist isn't available.", "NOT_FOUND");
+    return { playlist: playlistProjection(row) };
   },
   // Add tracks to (and/or rename) an existing playlist. Lets people build a
   // playlist one song at a time instead of only snapshotting a whole session.
   "PATCH /api/playlists/:id": (ctx) => {
     const u = requireUser(ctx);
-    const row = db.prepare("SELECT tracks FROM playlists WHERE id=? AND user_id=?").get(ctx.params.id, u.id);
-    if (!row) throw new ApiError(404, "Playlist not found.");
-    let tracks = JSON.parse(row.tracks || "[]");
-    const incoming = Array.isArray(ctx.body?.add) ? ctx.body.add : (ctx.body?.track ? [ctx.body.track] : []);
-    const add = incoming.map((t) => ({ title: clean(t?.title, { max: 200 }), artist: clean(t?.artist, { max: 120 }) || null, url: clean(t?.url, { max: 400 }) || null, preview: clean(t?.preview, { max: 500 }) || null, art: clean(t?.art, { max: 500 }) || null })).filter((t) => t.title);
-    for (const t of add) {
-      const k = t.url || t.title.toLowerCase();
-      if (!tracks.some((x) => (x.url || (x.title || "").toLowerCase()) === k)) tracks.push(t);
+    const row = db.prepare("SELECT * FROM playlists WHERE id=? AND user_id=?").get(ctx.params.id, u.id);
+    if (!row) throw new ApiError(404, "That playlist left the set.", "NOT_FOUND");
+    let storedTracks = [];
+    try { storedTracks = JSON.parse(row.tracks || "[]"); } catch {}
+    let tracks = cleanPlaylistTracks(storedTracks) || [];
+    if (Object.prototype.hasOwnProperty.call(ctx.body || {}, "tracks")) {
+      const replacement = cleanPlaylistTracks(ctx.body.tracks);
+      if (!replacement) throw new ApiError(400, "Those playlist songs are invalid.", "VALIDATION_FAILED");
+      tracks = replacement;
     }
-    tracks = tracks.slice(0, 100);
-    const name = ctx.body?.name != null ? (clean(ctx.body.name, { max: 80 }) || "Untitled") : null;
-    if (name) db.prepare("UPDATE playlists SET tracks=?, name=? WHERE id=? AND user_id=?").run(JSON.stringify(tracks), name, ctx.params.id, u.id);
-    else db.prepare("UPDATE playlists SET tracks=? WHERE id=? AND user_id=?").run(JSON.stringify(tracks), ctx.params.id, u.id);
-    return { ok: true, count: tracks.length };
+    const incoming = Array.isArray(ctx.body?.add) ? ctx.body.add : (ctx.body?.track ? [ctx.body.track] : []);
+    const add = cleanPlaylistTracks(incoming);
+    if (!add) throw new ApiError(400, "A playlist can hold up to 100 valid songs.", "VALIDATION_FAILED");
+    for (const t of add) {
+      const key = t.videoId ? `youtube:${t.videoId}` : t.sourceId ? `source:${t.provider || "unknown"}:${t.sourceId.toLowerCase()}` : t.url ? `url:${t.url.toLowerCase()}` : `text:${(t.artist || "").toLowerCase()}|${t.title.toLowerCase()}`;
+      const exists = cleanPlaylistTracks(tracks)?.some((x) => {
+        const existingKey = x.videoId ? `youtube:${x.videoId}` : x.sourceId ? `source:${x.provider || "unknown"}:${x.sourceId.toLowerCase()}` : x.url ? `url:${x.url.toLowerCase()}` : `text:${(x.artist || "").toLowerCase()}|${x.title.toLowerCase()}`;
+        return existingKey === key;
+      });
+      if (!exists) tracks.push(t);
+    }
+    if (tracks.length > 100) throw new ApiError(400, "This playlist is full at 100 songs.", "VALIDATION_FAILED");
+    const name = Object.prototype.hasOwnProperty.call(ctx.body || {}, "name") ? clean(ctx.body.name, { max: 80 }) : row.name;
+    if (!name) throw new ApiError(400, "Give this playlist a name.", "VALIDATION_FAILED");
+    let visibility = row.visibility || "public";
+    if (Object.prototype.hasOwnProperty.call(ctx.body || {}, "visibility")) {
+      const requested = clean(ctx.body.visibility, { max: 20 });
+      if (!PLAYLIST_VISIBILITIES.has(requested)) throw new ApiError(400, "Choose public, unlisted, or private.", "VALIDATION_FAILED");
+      visibility = requested;
+    }
+    const updatedAt = now();
+    db.prepare("UPDATE playlists SET tracks=?, name=?, visibility=?, updated_at=? WHERE id=? AND user_id=?").run(JSON.stringify(tracks), name, visibility, updatedAt, ctx.params.id, u.id);
+    return { playlist: playlistProjection({ ...row, name, tracks: JSON.stringify(tracks), visibility, updated_at: updatedAt, u_name: u.name, u_handle: u.handle }) };
   },
   "DELETE /api/playlists/:id": (ctx) => {
     const u = requireUser(ctx);
-    db.prepare("DELETE FROM playlists WHERE id=? AND user_id=?").run(ctx.params.id, u.id);
+    const result = db.prepare("DELETE FROM playlists WHERE id=? AND user_id=?").run(ctx.params.id, u.id);
+    if (!result.changes) throw new ApiError(404, "That playlist already left the set.", "NOT_FOUND");
     return { ok: true };
   },
 
@@ -1003,17 +1135,17 @@ export const routes = {
       ],
       profile: publicUser(u, { self: true }),
       posts: db.prepare("SELECT * FROM posts WHERE user_id=? ORDER BY created_at DESC").all(u.id)
-        .map((p) => ({ id: p.id, artist: p.artist, venue: p.venue, city: p.city, date: p.date, overall: p.overall, band: p.band, room: p.room, review: p.review, tour: p.tour, setlist: json(p.setlist, []), photos: json(p.photos, []), removed: !!p.removed, createdAt: p.created_at })),
+        .map((p) => ({ id: p.id, kind: p.kind || "review", artist: p.artist, venue: p.venue, city: p.city, date: p.date, overall: p.overall, band: p.band, room: p.room, review: p.review, tour: p.tour, setlist: json(p.setlist, []), photos: json(p.photos, []), song: json(p.song, null), playlist: json(p.playlist, null), removed: !!p.removed, createdAt: p.created_at })),
       comments: db.prepare("SELECT post_id, text, removed, created_at FROM comments WHERE user_id=? ORDER BY created_at DESC").all(u.id)
         .map((c) => ({ postId: c.post_id, text: c.text, removed: !!c.removed, createdAt: c.created_at })),
       likedPosts: db.prepare("SELECT post_id FROM likes WHERE user_id=?").all(u.id).map((r) => r.post_id),
       following: db.prepare("SELECT followee_id id FROM follows WHERE follower_id=?").all(u.id).map((r) => name(r.id)),
       followers: db.prepare("SELECT follower_id id FROM follows WHERE followee_id=?").all(u.id).map((r) => name(r.id)),
       blocked: db.prepare("SELECT blocked_id id FROM blocks WHERE blocker_id=?").all(u.id).map((r) => name(r.id)),
-      playlists: db.prepare("SELECT id,name,tracks,created_at FROM playlists WHERE user_id=? ORDER BY created_at DESC").all(u.id)
-        .map((r) => ({ id: r.id, name: r.name, tracks: json(r.tracks, []), createdAt: r.created_at })),
-      listeningHistory: db.prepare("SELECT title,artist,url,created_at FROM plays WHERE user_id=? ORDER BY created_at DESC LIMIT 300").all(u.id)
-        .map((r) => ({ title: r.title, artist: r.artist, url: r.url, at: r.created_at })),
+      playlists: db.prepare("SELECT id,name,tracks,visibility,created_at,updated_at FROM playlists WHERE user_id=? ORDER BY created_at DESC").all(u.id)
+        .map((r) => ({ id: r.id, name: r.name, tracks: json(r.tracks, []), visibility: r.visibility || "public", createdAt: r.created_at, updatedAt: r.updated_at || null })),
+      listeningHistory: db.prepare("SELECT title,artist,url,video_id,created_at FROM plays WHERE user_id=? ORDER BY created_at DESC LIMIT 300").all(u.id)
+        .map((r) => ({ title: r.title, artist: r.artist, url: r.url, videoId: r.video_id, at: r.created_at })),
       going: db.prepare("SELECT artist, venue, city, date FROM going WHERE user_id=?").all(u.id),
       ratings: db.prepare("SELECT kind, ref, rating FROM ratings WHERE user_id=?").all(u.id),
       venueReviews: db.prepare("SELECT id,venue_key,rating,text,photos,removed,created_at FROM venue_reviews WHERE user_id=? ORDER BY created_at DESC").all(u.id)
@@ -1128,6 +1260,17 @@ export const routes = {
     return { posts: rows.map((p) => postJson(p, viewer)), nextCursor };
   },
 
+  "GET /api/posts/:id/playlist": (ctx) => {
+    const row = db.prepare("SELECT user_id,playlist,removed FROM posts WHERE id=?").get(ctx.params.id);
+    if (!row || row.removed || !row.playlist || blockedEitherWay(ctx.user?.id, row.user_id)) {
+      throw new ApiError(404, "That shared playlist isn't available.", "NOT_FOUND");
+    }
+    let playlist = null;
+    try { playlist = JSON.parse(row.playlist); } catch {}
+    if (!playlist?.id || !Array.isArray(playlist.tracks)) throw new ApiError(404, "That shared playlist isn't available.", "NOT_FOUND");
+    return { playlist: { ...playlist, tracks: cleanPlaylistTracks(playlist.tracks) || [] } };
+  },
+
   // Clips reel: the same posts as the feed, but only the ones carrying a video,
   // newest first, for the vertical swipe-through mode. Each row keeps its full
   // post projection (so likes/comments/artist all work) plus a `clips` array of
@@ -1196,11 +1339,12 @@ export const routes = {
       if (errs.length) throw new ApiError(400, errs[0]);
       const text = v.review || "";
       const photos = v.photos || [];
-      if (!text && !photos.length && !v.song) throw new ApiError(400, "Write something, add a photo, or tag a song to post.", "VALIDATION_FAILED");
+      const playlist = playlistSnapshotForPost(u, ctx.body?.playlistId);
+      if (!text && !photos.length && !v.song && !playlist) throw new ApiError(400, "Write something, add media, tag a song, or share a playlist to post.", "VALIDATION_FAILED");
       const id = uid("p");
       postRow.run(id, u.id, "", "", "", "", 0, null, null,
         "{}", text, JSON.stringify(photos), v.photosPublic ?? 1, "[]", null,
-        "[]", "status", v.song ? JSON.stringify(v.song) : null, now());
+        "[]", "status", v.song ? JSON.stringify(v.song) : null, playlist ? JSON.stringify(playlist) : null, now());
       return { id, post: postJson(feedPostById.get(id), u.id) };
     }
 
@@ -1225,7 +1369,7 @@ export const routes = {
     const id = uid("p");
     postRow.run(id, u.id, v.artist, v.venue, v.city || "", v.date || "", v.overall, v.band ?? null, v.room ?? null,
       JSON.stringify(v.dims || {}), v.review || "", JSON.stringify(v.photos || []), v.photosPublic ?? 0, JSON.stringify(v.setlist || []), v.tour || null,
-      JSON.stringify(v.tags || []), "review", v.song ? JSON.stringify(v.song) : null, now());
+      JSON.stringify(v.tags || []), "review", v.song ? JSON.stringify(v.song) : null, null, now());
     return { id, post: postJson(feedPostById.get(id), u.id) };
   },
 
@@ -1242,7 +1386,7 @@ export const routes = {
 
     const body = ctx.body && typeof ctx.body === "object" && !Array.isArray(ctx.body) ? ctx.body : {};
     const has = (key) => Object.prototype.hasOwnProperty.call(body, key);
-    const editable = ["artist", "venue", "city", "date", "overall", "band", "room", "dims", "review", "photos", "photosPublic", "setlist", "tour", "tags", "song"];
+    const editable = ["artist", "venue", "city", "date", "overall", "band", "room", "dims", "review", "photos", "photosPublic", "setlist", "tour", "tags", "song", "playlistId"];
     if (!editable.some(has)) throw new ApiError(400, "Make a change before saving this post.", "VALIDATION_FAILED");
 
     // Optimistic concurrency prevents two devices (or an old open edit sheet)
@@ -1315,18 +1459,25 @@ export const routes = {
       if (song === undefined) throw new ApiError(400, "song is invalid", "VALIDATION_FAILED");
       next.song = song ? JSON.stringify(song) : null;
     }
+    if (has("playlistId")) {
+      if (current.kind !== "status") throw new ApiError(400, "Playlists can only be attached to regular posts.", "VALIDATION_FAILED");
+      let currentSnapshot = null;
+      try { currentSnapshot = current.playlist ? JSON.parse(current.playlist) : null; } catch {}
+      const playlist = playlistSnapshotForPost(u, body.playlistId, currentSnapshot);
+      next.playlist = playlist ? JSON.stringify(playlist) : null;
+    }
 
     if (current.kind === "status") {
       let photos = [];
       try { photos = JSON.parse(next.photos || "[]"); } catch {}
-      if (!next.review && !photos.length && !next.song) {
-        throw new ApiError(400, "Keep some text, media, or a tagged song in this post.", "VALIDATION_FAILED");
+      if (!next.review && !photos.length && !next.song && !next.playlist) {
+        throw new ApiError(400, "Keep some text, media, a tagged song, or a playlist in this post.", "VALIDATION_FAILED");
       }
     }
 
     const editedAt = Math.max(now(), currentVersion + 1);
-    db.prepare(`UPDATE posts SET artist=?,venue=?,city=?,date=?,overall=?,band=?,room=?,dims=?,review=?,photos=?,photos_public=?,setlist=?,tour=?,tags=?,song=?,updated_at=? WHERE id=?`)
-      .run(next.artist, next.venue, next.city, next.date, next.overall, next.band, next.room, next.dims, next.review, next.photos, next.photos_public, next.setlist, next.tour, next.tags, next.song, editedAt, current.id);
+    db.prepare(`UPDATE posts SET artist=?,venue=?,city=?,date=?,overall=?,band=?,room=?,dims=?,review=?,photos=?,photos_public=?,setlist=?,tour=?,tags=?,song=?,playlist=?,updated_at=? WHERE id=?`)
+      .run(next.artist, next.venue, next.city, next.date, next.overall, next.band, next.room, next.dims, next.review, next.photos, next.photos_public, next.setlist, next.tour, next.tags, next.song, next.playlist, editedAt, current.id);
     return { post: postJson(feedPostById.get(current.id), u.id) };
   },
 

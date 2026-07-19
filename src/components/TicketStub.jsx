@@ -9,6 +9,7 @@ import SpinStar from "./SpinStar";
 import AfterpartyPreview from "./AfterpartyPreview";
 import PostMediaGrid from "./PostMediaGrid";
 import SongAttachment from "./SongAttachment";
+import PlaylistAttachment from "./PlaylistAttachment";
 import { useStore } from "../store";
 import { BadgeRow } from "./Badge";
 
@@ -110,6 +111,7 @@ export default function TicketStub({ log, onOpen, onComment, onPreview, onOpenPr
           <Pressable onPress={() => (onComment || onOpen)?.(log)}><Text style={styles.statusText}>{log.review}</Text></Pressable>
         )}
         {!!log.song && <SongAttachment song={log.song} onPlay={onPlay} />}
+        {!!log.playlist && <PlaylistAttachment playlist={log.playlist} onPlay={onPlay} />}
         {log.photos?.length > 0 && (
           <PostMediaGrid media={log.photos} onOpen={onOpenPhotos ? (i) => onOpenPhotos(log.photos.map((uri) => ({ uri, by: log.user?.name, postId: log.id })), i, log.id) : undefined} />
         )}

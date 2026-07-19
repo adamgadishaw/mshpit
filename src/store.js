@@ -159,10 +159,19 @@ export function StoreProvider({ children }) {
   const [discoverySidebar, setDiscoverySidebar] = useState({ topArtists: [], trendingVenues: [], upcomingEvents: [], location: null, source: null });
   const [discoverySidebarStatus, setDiscoverySidebarStatus] = useState("loading");
   const [rewardProfiles, setRewardProfiles] = useState({}); // user id -> authoritative server rewards
-  const [playHistory, setPlayHistory] = useState(() => load("pit.playhistory", [])); // every song played, newest first
+  const [session, setSession] = useState(() =>
+    sanitizePersistedStoreValue("pit.session", load("pit.session", null), ENABLE_DEMO_DATA));
+  const historyStorageKey = (userId = session?.id) => `pit.playhistory.${userId || "guest"}`;
+  const [playHistory, setPlayHistory] = useState(() => load(historyStorageKey(), [])); // every song played, newest first
+  const [playHistoryAccountId, setPlayHistoryAccountId] = useState(session?.id || null);
+  const [playHistoryStatus, setPlayHistoryStatus] = useState(session?.id ? "loading" : "ready");
+  const [playHistoryNextCursor, setPlayHistoryNextCursor] = useState(null);
+  const playHistoryRequestRef = useRef({ sequence: 0, accountId: session?.id || null });
   const [snapshots, setSnapshots] = useState(() => load("pit.snapshots", [])); // saved listening sessions (playlist seeds)
   const [drafts, setDrafts] = useState(() => load("pit.drafts", [])); // unfinished reviews, saved locally
-  useEffect(() => { save("pit.playhistory", playHistory); }, [playHistory]);
+  useEffect(() => {
+    if ((session?.id || null) === playHistoryAccountId) save(historyStorageKey(playHistoryAccountId), playHistory);
+  }, [session?.id, playHistoryAccountId, playHistory]);
   useEffect(() => { save("pit.snapshots", snapshots); }, [snapshots]);
   useEffect(() => { save("pit.drafts", drafts); }, [drafts]);
   // Review drafts: save an unfinished log to resume later.
@@ -174,8 +183,6 @@ export function StoreProvider({ children }) {
   };
   const deleteDraft = (id) => setDrafts((all) => all.filter((x) => x.id !== id));
   const [adminStats, setAdminStats] = useState({ total: 0, banned: 0, verified: 0, regions: [] }); // admin member console stats
-  const [session, setSession] = useState(() =>
-    sanitizePersistedStoreValue("pit.session", load("pit.session", null), ENABLE_DEMO_DATA));
   const [feed, setFeed] = useState(() =>
     sanitizePersistedStoreValue("pit.feed", load("pit.feed", demoSeed(seedFeed, [])), ENABLE_DEMO_DATA));
   // Polling and mutations can finish out of order. A revision invalidates a
@@ -785,27 +792,60 @@ export function StoreProvider({ children }) {
       return preview || null;
     } catch { return null; }
   };
-  // Listening history: log every song played (the framework for "listening now",
-  // playlists, and taste snapshots). Skips consecutive repeats, caps at 200.
+  // Listening history is account-scoped locally and server-backed. Preserve the
+  // exact resolved YouTube id so replay does not search for a different upload.
   const recordPlay = (t) => {
     const key = trackKey(t);
     if (!key) return;
-    setPlayHistory((h) => (h[0] && trackKey(h[0]) === key ? h : [{ title: t.title, artist: t.artist, url: t.url, id: t.id, preview: t.preview || null, art: t.art || null, at: Date.now() }, ...h].slice(0, 200)));
+    const played = { title: t.title, artist: t.artist, url: t.url, id: t.id, videoId: t.videoId || null, provider: t.provider || null, sourceId: t.sourceId || t.id || null, preview: t.preview || null, art: t.art || null, at: Date.now() };
+    setPlayHistory((h) => (h[0] && trackKey(h[0]) === key ? h : [played, ...h].slice(0, 300)));
     track("play", { artist: t.artist, title: t.title }); // analytics signal
     // Cross-device history + "friends listening" (best-effort, offline keeps local).
-    if (session) api("/api/plays", { method: "POST", body: { title: t.title, artist: t.artist, url: t.url || null, art: t.art || null } }).catch(() => {});
+    if (session) api("/api/plays", { method: "POST", body: { title: t.title, artist: t.artist, url: t.url || null, videoId: t.videoId || null, art: t.art || null } }).catch(() => {});
   };
-  // Cross-device listening history: every play writes through to the server, so
-  // on login the SERVER list is the account's truth (a fresh device shows your
-  // real history, not an empty one). Device-local history stays as the fallback
-  // for logged-out listening and rows that predate the plays table.
+
+  const loadPlayHistory = async ({ more = false, accountId = session?.id || null, cachedFallback = null } = {}) => {
+    if (!accountId) {
+      setPlayHistoryStatus("ready");
+      setPlayHistoryNextCursor(null);
+      return load(historyStorageKey(null), []);
+    }
+    const before = more ? playHistoryNextCursor : null;
+    if (more && !before) return [];
+    const sequence = ++playHistoryRequestRef.current.sequence;
+    playHistoryRequestRef.current.accountId = accountId;
+    setPlayHistoryStatus(more ? "loading-more" : "loading");
+    try {
+      const query = `?limit=50${before ? `&before=${encodeURIComponent(before)}` : ""}`;
+      const { plays, nextCursor } = await api(`/api/me/plays${query}`, { context: more ? "Loading more listening history" : "Loading listening history", silent: true });
+      if (playHistoryRequestRef.current.sequence !== sequence || playHistoryRequestRef.current.accountId !== accountId) return [];
+      const rows = Array.isArray(plays) ? plays.map((p) => ({ id: p.id, title: p.title, artist: p.artist, url: p.url, videoId: p.videoId || null, art: p.art, at: p.at })) : [];
+      setPlayHistory((current) => {
+        if (!more) return rows.length || !Array.isArray(cachedFallback) ? rows : cachedFallback;
+        const seen = new Set(current.map((item) => item.id || `${item.at}:${trackKey(item)}`));
+        const fresh = rows.filter((item) => !seen.has(item.id || `${item.at}:${trackKey(item)}`));
+        return fresh.length ? [...current, ...fresh].slice(0, 300) : current;
+      });
+      setPlayHistoryNextCursor(nextCursor || null);
+      setPlayHistoryStatus("ready");
+      return rows;
+    } catch {
+      if (playHistoryRequestRef.current.sequence === sequence && playHistoryRequestRef.current.accountId === accountId) setPlayHistoryStatus("error");
+      return [];
+    }
+  };
+
+  // Switch caches synchronously per account, then reconcile with server truth.
+  // A stale response from the prior login is rejected by the sequence/account guard.
   useEffect(() => {
-    if (!session?.id) return;
-    let ok = true;
-    api("/api/me/plays", { silent: true })
-      .then(({ plays }) => { if (ok && Array.isArray(plays) && plays.length) setPlayHistory(plays.map((p) => ({ title: p.title, artist: p.artist, url: p.url, art: p.art, at: p.at }))); })
-      .catch(() => {});
-    return () => { ok = false; };
+    const accountId = session?.id || null;
+    playHistoryRequestRef.current = { sequence: playHistoryRequestRef.current.sequence + 1, accountId };
+    const cached = load(historyStorageKey(accountId), []);
+    setPlayHistoryAccountId(accountId);
+    setPlayHistory(Array.isArray(cached) ? cached : []);
+    setPlayHistoryNextCursor(null);
+    if (accountId) loadPlayHistory({ accountId, cachedFallback: Array.isArray(cached) ? cached : [] });
+    else setPlayHistoryStatus("ready");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.id]);
 
@@ -815,8 +855,7 @@ export function StoreProvider({ children }) {
     if (!session) return [];
     try { const { listening } = await api("/api/plays/friends"); setFriendsListening(listening || []); return listening || []; } catch { return []; }
   };
-  const userPlaylists = async (id) => { try { const { playlists } = await api(`/api/users/${id}/playlists`); return playlists || []; } catch { return []; } };
-  const deletePlaylist = async (id) => { try { await api(`/api/playlists/${id}`, { method: "DELETE" }); } catch {} };
+  const userPlaylists = async (id, { signal } = {}) => { try { const { playlists } = await api(`/api/users/${id}/playlists`, { signal, context: "Loading playlists", silent: true }); return playlists || []; } catch { return []; } };
 
   // --- Listening algorithm (drives autoplay "up next") -----------------------
   // Favorite genre = the genre you play most (falls back to your picked genres).
@@ -875,31 +914,97 @@ export function StoreProvider({ children }) {
 
   // --- Playlists (build one song at a time, not just whole-session snapshots) --
   const [myPlaylists, setMyPlaylists] = useState([]);
+  const [myPlaylistsStatus, setMyPlaylistsStatus] = useState(session ? "loading" : "ready");
+  const playlistRequestRef = useRef({ sequence: 0, accountId: session?.id || null });
   const loadMyPlaylists = async () => {
-    if (!session) { setMyPlaylists([]); return []; }
-    try { const { playlists } = await api(`/api/users/${session.id}/playlists`); setMyPlaylists(playlists || []); return playlists || []; } catch { return []; }
+    const accountId = session?.id || null;
+    const previousAccountId = playlistRequestRef.current.accountId;
+    const sequence = ++playlistRequestRef.current.sequence;
+    playlistRequestRef.current.accountId = accountId;
+    if (!accountId) { setMyPlaylists([]); setMyPlaylistsStatus("ready"); return []; }
+    if (previousAccountId !== accountId) setMyPlaylists([]); // never flash the previous account's private library
+    setMyPlaylistsStatus("loading");
+    try {
+      const { playlists } = await api(`/api/users/${accountId}/playlists`, { context: "Loading your playlists", silent: true });
+      if (playlistRequestRef.current.sequence !== sequence || playlistRequestRef.current.accountId !== accountId) return [];
+      const rows = Array.isArray(playlists) ? playlists : [];
+      setMyPlaylists(rows);
+      setMyPlaylistsStatus("ready");
+      return rows;
+    } catch {
+      if (playlistRequestRef.current.sequence === sequence && playlistRequestRef.current.accountId === accountId) setMyPlaylistsStatus("error");
+      return [];
+    }
   };
-  const cleanTrack = (t) => ({ title: t.title, artist: t.artist || null, url: t.url || null, preview: t.preview || null, art: t.art || null });
-  const createPlaylist = async (name, tracks) => {
+  const loadPlaylist = async (id) => {
+    if (!id) return null;
+    try { const { playlist } = await api(`/api/playlists/${encodeURIComponent(id)}`, { context: "Loading this playlist", silent: true }); return playlist || null; }
+    catch { return null; }
+  };
+  const cleanTrack = (t) => ({
+    title: t.title,
+    artist: t.artist || null,
+    url: t.url || null,
+    videoId: t.videoId || null,
+    provider: t.provider || null,
+    sourceId: t.sourceId || t.id || null,
+    duration: Number(t.duration) > 0 ? Number(t.duration) : null,
+    preview: t.preview || null,
+    art: t.art || null,
+  });
+  const createPlaylist = async (name, tracks, visibility = "public") => {
     if (!session) return null;
     const list = (Array.isArray(tracks) ? tracks : [tracks]).filter((t) => t && t.title).map(cleanTrack);
     if (!list.length) return null;
-    try { const pl = await api("/api/playlists", { method: "POST", body: { name: name || "New playlist", tracks: list } }); await loadMyPlaylists(); return pl; } catch { return null; }
+    try {
+      const playlist = await api("/api/playlists", { method: "POST", context: "Creating your playlist", body: { name: name || "New playlist", tracks: list, visibility } });
+      setMyPlaylists((current) => [playlist, ...current.filter((item) => item.id !== playlist.id)]);
+      return playlist;
+    } catch { return null; }
   };
   const addToPlaylist = async (id, track) => {
     if (!session || !track?.title) return false;
-    try { await api(`/api/playlists/${id}`, { method: "PATCH", body: { track: cleanTrack(track) } }); await loadMyPlaylists(); return true; } catch { return false; }
+    try {
+      const { playlist } = await api(`/api/playlists/${encodeURIComponent(id)}`, { method: "PATCH", context: "Adding this song to your playlist", body: { track: cleanTrack(track) } });
+      if (playlist) setMyPlaylists((current) => current.map((item) => (item.id === playlist.id ? playlist : item)));
+      return true;
+    } catch { return false; }
+  };
+  const updatePlaylist = async (id, changes) => {
+    if (!session || !id) return null;
+    const body = {};
+    if (Object.prototype.hasOwnProperty.call(changes || {}, "name")) body.name = changes.name;
+    if (Object.prototype.hasOwnProperty.call(changes || {}, "visibility")) body.visibility = changes.visibility;
+    if (Object.prototype.hasOwnProperty.call(changes || {}, "tracks")) body.tracks = (changes.tracks || []).map(cleanTrack);
+    try {
+      const { playlist } = await api(`/api/playlists/${encodeURIComponent(id)}`, { method: "PATCH", context: "Saving your playlist", body });
+      if (playlist) setMyPlaylists((current) => current.map((item) => (item.id === playlist.id ? playlist : item)));
+      return playlist || null;
+    } catch { return null; }
+  };
+  const deletePlaylist = async (id) => {
+    if (!session || !id) return false;
+    try {
+      await api(`/api/playlists/${encodeURIComponent(id)}`, { method: "DELETE", context: "Deleting your playlist" });
+      setMyPlaylists((current) => current.filter((item) => item.id !== id));
+      return true;
+    } catch { return false; }
   };
   // Snapshot a listening session (queue) into a saved playlist seed that shows on
   // the profile and can be resumed.
-  const saveSnapshot = (tracks, name) => {
-    const list = (tracks || []).filter((t) => !!trackKey(t));
+  const saveSnapshot = async (tracks, name) => {
+    const list = (tracks || []).filter((t) => !!trackKey(t)).map(cleanTrack);
     if (!list.length) return null;
-    const snap = { id: "snap_" + Date.now(), name: name || `Session ${new Date().toLocaleDateString()}`, tracks: list, at: Date.now(), by: session?.id || null };
-    setSnapshots((s) => [snap, ...s].slice(0, 50));
-    // Persist as a real playlist on the account (shows on the profile, shareable).
-    if (session) api("/api/playlists", { method: "POST", body: { name: snap.name, tracks: list } })
-      .then(({ id }) => { if (id) setSnapshots((s) => s.map((x) => (x.id === snap.id ? { ...x, serverId: id } : x))); loadMyPlaylists(); }).catch(() => {});
+    const playlistName = name || `Session ${new Date().toLocaleDateString()}`;
+    if (session) {
+      const playlist = await createPlaylist(playlistName, list);
+      if (!playlist) return null;
+      const snap = { ...playlist, serverId: playlist.id, by: session.id };
+      setSnapshots((current) => [snap, ...current.filter((item) => item.serverId !== playlist.id)].slice(0, 50));
+      return snap;
+    }
+    const snap = { id: "snap_" + Date.now(), name: playlistName, tracks: list, at: Date.now(), by: null };
+    setSnapshots((current) => [snap, ...current].slice(0, 50));
     return snap;
   };
   const removeSnapshot = (id) => setSnapshots((s) => s.filter((x) => x.id !== id));
@@ -1103,6 +1208,16 @@ export function StoreProvider({ children }) {
 
   const logout = () => {
     api("/api/logout", { method: "POST" }).catch(() => {}); // best-effort server-side
+    playHistoryRequestRef.current = { sequence: playHistoryRequestRef.current.sequence + 1, accountId: null };
+    playlistRequestRef.current = { sequence: playlistRequestRef.current.sequence + 1, accountId: null };
+    setPlayHistory([]);
+    setPlayHistoryAccountId(null);
+    setPlayHistoryNextCursor(null);
+    setPlayHistoryStatus("ready");
+    setMyPlaylists([]);
+    setMyPlaylistsStatus("ready");
+    setSnapshots([]);
+    setFriendsListening([]);
     setSession(null);
   };
 
@@ -1295,7 +1410,7 @@ export function StoreProvider({ children }) {
     // id so likes/comments on it key correctly. Best-effort (offline keeps local).
     if (session) {
       const body = kind === "status"
-        ? { kind: "status", review: safe.review, song: safe.song || null, photos: safe.photos || [], photosPublic: safe.photosPublic === false ? 0 : 1 }
+        ? { kind: "status", review: safe.review, song: safe.song || null, photos: safe.photos || [], photosPublic: safe.photosPublic === false ? 0 : 1, ...(log.playlistId ? { playlistId: log.playlistId } : {}) }
         : {
             artist: safe.artist, venue: safe.venue, city: safe.city, date: safe.date,
             overall: safe.overall, band: safe.band, room: safe.room, dims: safe.dims, review: safe.review,
@@ -1337,14 +1452,16 @@ export function StoreProvider({ children }) {
     // actually owns; sending empty artist/venue would trip the review validators.
     if ((previous.kind || changes.kind) === "status") {
       const version = previous.version ?? previous.editedAt ?? previous.createdAt;
+      const playlistId = changes.playlistId ?? changes.playlist?.id ?? null;
       const body = {
         review: clean(changes.review, { max: LIMITS.review, newlines: true }),
         song: changes.song?.videoId ? changes.song : null,
+        playlistId,
         photos: Array.isArray(changes.photos) ? changes.photos.filter((item) => typeof item === "string").slice(0, 8) : [],
         photosPublic: changes.photosPublic !== false,
         ...(Number.isSafeInteger(version) ? { version } : {}),
       };
-      if (!body.review && !body.photos.length && !body.song) return { ok: false };
+      if (!body.review && !body.photos.length && !body.song && !playlistId) return { ok: false };
       feedMutationRevisionRef.current += 1;
       try {
         const { post } = await api(`/api/posts/${encodeURIComponent(id)}`, { method: "PATCH", context: "Saving your update", body });
@@ -2783,8 +2900,8 @@ export function StoreProvider({ children }) {
     discoverChart, discoverGenres, discoverCountries, serverTime,
     artistSeenCount, reportTrack, adminSetTrackVideo, trackOverridesList, removeTrackOverride, loadModerationQueue,
     mediaReactions, loadMediaReactions, toggleMediaReaction,
-    playHistory, recordPlay, snapshots, saveSnapshot, removeSnapshot, friendsListening, loadFriendsListening, userPlaylists, deletePlaylist,
-    favoriteGenre, genreOfArtist, recommendTracks, autoplayQueue, myPlaylists, loadMyPlaylists, createPlaylist, addToPlaylist,
+    playHistory, playHistoryStatus, playHistoryNextCursor, loadPlayHistory, recordPlay, snapshots, saveSnapshot, removeSnapshot, friendsListening, loadFriendsListening, userPlaylists,
+    favoriteGenre, genreOfArtist, recommendTracks, autoplayQueue, myPlaylists, myPlaylistsStatus, loadMyPlaylists, loadPlaylist, createPlaylist, addToPlaylist, updatePlaylist, deletePlaylist,
     drafts, saveDraft, deleteDraft,
     visibleFeed, followingFeed, loadMoreFeed, feedHasMore, feedLoadingMore, loadClips, visibleTourDates, artistSummary, venueSummary,
     localVenues, regionShows, localFeed, recommendedShows, venueCoord,

@@ -78,7 +78,7 @@ export default function App() {
 }
 
 function Root() {
-  const { session, addLog, editLog, visibleFeed, followingFeed, localFeed, loadMoreFeed, feedHasMore, feedLoadingMore, logout, exportMyData, userByHandle, searchPeople, inboxUnread, accountStatus, track, unreadNotifications, recordPlay, playHistory, saveSnapshot, autoplayQueue, followingCount } = useStore();
+  const { session, addLog, editLog, visibleFeed, followingFeed, localFeed, loadMoreFeed, feedHasMore, feedLoadingMore, logout, exportMyData, userByHandle, searchPeople, inboxUnread, accountStatus, track, unreadNotifications, recordPlay, playHistory, loadPlayHistory, saveSnapshot, autoplayQueue, followingCount } = useStore();
   const staff = isStaff(session?.role);
   const feed = visibleFeed(staff);
   const following = followingFeed(staff);
@@ -292,7 +292,7 @@ function Root() {
     if (!base.some((m) => trackKey(m) === trackKey(media))) base = [media, ...base];
     const list = autoplayQueue(media, base);
     setPlayerMinimized(false);
-    setPlayer({ list, index: Math.max(0, list.findIndex((m) => trackKey(m) === trackKey(media))) });
+    setPlayer({ list, explicitCount: Math.min(base.length, list.length), index: Math.max(0, list.findIndex((m) => trackKey(m) === trackKey(media))) });
   };
   const setPlayerIndex = (i) => setPlayer((p) => {
     if (!p) return p;
@@ -305,7 +305,8 @@ function Root() {
     if (!p || i === p.index) return p;
     const list = p.list.filter((_, j) => j !== i);
     const index = i < p.index ? p.index - 1 : p.index;
-    return { ...p, list, index };
+    const explicitCount = Math.max(0, (p.explicitCount ?? p.list.length) - (i < (p.explicitCount ?? p.list.length) ? 1 : 0));
+    return { ...p, list, index, explicitCount };
   });
   const moveToNext = (i) => setPlayer((p) => {
     if (!p || i === p.index) return p;
@@ -507,6 +508,7 @@ function Root() {
                   onRemove={removeFromQueue}
                   onMoveNext={moveToNext}
                   history={playHistory}
+                  onRefreshHistory={() => loadPlayHistory()}
                   onSaveSession={saveSnapshot}
                   onPlayTrack={openPlayer}
                   onPlaybackStarted={recordPlay}

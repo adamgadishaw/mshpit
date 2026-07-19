@@ -99,6 +99,43 @@ test("status posts carry text/photos with no artist, venue, or rating", () => {
   assert.equal(review.post.kind, "review");
 });
 
+test("status posts can share an owned playlist as an immutable snapshot", () => {
+  const user = addUser("plsharer");
+  db.prepare("INSERT INTO playlists (id,user_id,name,tracks,visibility,created_at,updated_at) VALUES (?,?,?,?,?,?,?)")
+    .run("pl_share", user.id, "Barricade Anthems",
+      JSON.stringify([{ title: "BLACKOUT", artist: "Turnstile", videoId: "dQw4w9WgXcQ" }, { title: "MYSTERY", artist: "Turnstile" }]),
+      "public", 100, 100);
+  db.prepare("INSERT INTO playlists (id,user_id,name,tracks,visibility,created_at,updated_at) VALUES (?,?,?,?,?,?,?)")
+    .run("pl_private", user.id, "Secret", JSON.stringify([{ title: "X" }]), "private", 100, 100);
+
+  const create = routes["POST /api/posts"];
+  const shared = create({ user, ip: "pl-share", body: { kind: "status", review: "on repeat", playlistId: "pl_share" } });
+  assert.equal(shared.post.kind, "status");
+  assert.equal(shared.post.playlist.name, "Barricade Anthems");
+  assert.equal(shared.post.playlist.tracks.length, 2);
+  assert.equal(shared.post.playlist.tracks[0].videoId, "dQw4w9WgXcQ");
+
+  // A private playlist cannot be shared, and a playlist you don't own is rejected.
+  assert.throws(
+    () => create({ user, ip: "pl-private", body: { kind: "status", playlistId: "pl_private" } }),
+    (error) => error instanceof ApiError && error.status === 400,
+  );
+  const stranger = addUser("plstranger");
+  assert.throws(
+    () => create({ user: stranger, ip: "pl-stranger", body: { kind: "status", playlistId: "pl_share" } }),
+    (error) => error instanceof ApiError && error.status === 404,
+  );
+
+  // Editing the post's text keeps the playlist snapshot (PATCH only touches it
+  // when playlistId is sent).
+  const edit = routes["PATCH /api/posts/:id"];
+  const edited = edit({ user, ip: "pl-edit", params: { id: shared.post.id }, body: { review: "still on repeat", version: shared.post.version } });
+  assert.equal(edited.post.playlist.name, "Barricade Anthems");
+  // Sending playlistId: null clears it.
+  const cleared = edit({ user, ip: "pl-clear", params: { id: shared.post.id }, body: { playlistId: null, review: "text stays", version: edited.post.version } });
+  assert.equal(cleared.post.playlist, null);
+});
+
 test("post edits enforce ownership, revisions, validation, and canonical fields", () => {
   const owner = addUser("postowner");
   const stranger = addUser("poststranger");

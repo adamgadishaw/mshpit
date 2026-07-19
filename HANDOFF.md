@@ -31,6 +31,49 @@ verified live (`git log origin/master..HEAD` is empty; tree clean).
 
 `YOUTUBE_API_KEY` is already set (`youtubeConfigured: true`). Nothing to do.
 
+## Play history + shareable playlists (2026-07-18, branch `codex/playlists-history`)
+
+Recovery + completion of a Codex session that ran out of usage mid-edit. The
+uncommitted tree parsed and passed all checks (the "duplicated code" the owner
+pasted was Codex's editor buffer, not the saved file). What that batch delivered,
+now verified and committed:
+
+- **Play history is account-scoped, server-backed, and paginated** (`src/store.js`).
+  Local cache keys per account (`pit.playhistory.<uid>`), hydrates from
+  `GET /api/me/plays` with a sequence/account guard so a stale login response
+  can't clobber the current one, and preserves the exact resolved YouTube
+  `videoId` so replay never searches for a different upload. Fixes the "listening
+  session shows previously listened songs" gap.
+- **Idle player column shows RECENTLY PLAYED** instead of an empty state
+  (`PlayerBar.jsx`); the panel refresh re-pulls history on open. Native treats a
+  resolved id as metadata (`hasVideo = web && …`) so it uses the preview engine
+  instead of hanging on "connecting".
+- **`explicitCount`** on the player (`App.js`, `PlayerBar.jsx`) so "Save mix"
+  snapshots only the songs you queued, not the auto-recommendations after them.
+
+**Completed this session (the client half Codex never wired):** posting a
+playlist. Server already accepted `playlistId` on status posts and stored an
+immutable snapshot (`playlistSnapshotForPost` / `playlistPostProjection` in
+`server/api.js`, `posts.playlist` column). Added:
+
+- Composer "SHARE A PLAYLIST" picker (status mode) listing the user's shareable
+  (public/unlisted, non-empty) playlists (`src/screens/LogScreen.jsx`).
+- `src/components/PlaylistAttachment.jsx`: a playable playlist card on the feed
+  (cover, name, owner, song count, first 3 tracks). Tap the header or any track
+  → `openPlayer(track, tracks)` loads the whole list, carrying each track's exact
+  `videoId`. Wired into `TicketStub` beside `SongAttachment`.
+- `addLog`/`editLog` send `playlistId`; PATCH preserves the snapshot unless
+  `playlistId` is sent, and `playlistId: null` clears it.
+- Regression test `server/post.edit.test.mjs` ("status posts can share an owned
+  playlist as an immutable snapshot": share, private-rejected, not-owned 404,
+  edit-preserves, null-clears).
+
+Verified: `npm run check` green (58 tests, web export); browser E2E on a fresh
+local DB — created a playlist + status post via the API, the feed rendered the
+PlaylistAttachment card, and clicking Play loaded a 33-item queue
+(`explicitCount: 3`) with `videoId` preserved (BLACKOUT→dQw4w9WgXcQ). No console
+errors. **Not yet deployed** — awaiting the owner's go-ahead to merge to master.
+
 ## OWNER PRIORITY BACKLOG (authoritative, deduplicated 2026-07-18)
 
 This is the current product backlog from the owner's latest report and the copied

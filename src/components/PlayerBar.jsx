@@ -127,6 +127,7 @@ export default function PlayerBar({
   onRemove,
   onMoveNext,
   history = [],
+  onRefreshHistory,
   onSaveSession,
   onPlayTrack,
   onPlaybackStarted,
@@ -192,7 +193,9 @@ export default function PlayerBar({
   // this, an API-load failure leaves `hasVideo` true and "Loading video..."
   // visible forever instead of selecting the already-resolved preview fallback.
   const ytFailed = yt.error?.kind === "init" || (!!yt.error?.videoId && yt.error.videoId === resolved.videoId);
-  const hasVideo = forThis && !!resolved.videoId && !ytFailed;
+  // Native has no YouTube iframe host in this component. Treat the resolved id
+  // as metadata there and use the preview engine instead of hanging "connecting".
+  const hasVideo = web && forThis && !!resolved.videoId && !ytFailed;
   const ytActive = hasVideo && yt.ready;
   const connecting = hasVideo && !yt.ready;
   const previewSrc = forThis && !hasVideo ? resolved.preview : null;
@@ -241,7 +244,7 @@ export default function PlayerBar({
   const markPlaybackStarted = () => {
     if (!curKey || recordedKeyRef.current === curKey) return;
     recordedKeyRef.current = curKey;
-    onPlaybackStarted?.(cur);
+    onPlaybackStarted?.({ ...cur, videoId: (forThis && resolved.videoId) || cur.videoId || null });
   };
 
   const audio = useAudioPreview(previewSrc, {
@@ -295,8 +298,19 @@ export default function PlayerBar({
 
   const [open, setOpen] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
   const upNext = list.slice(index + 1);
   const panelOpen = open;
+  const togglePanel = () => setOpen((wasOpen) => {
+    if (!wasOpen) onRefreshHistory?.();
+    return !wasOpen;
+  });
+
+  useEffect(() => {
+    if (column && !minimized) onRefreshHistory?.();
+    // Refresh only as the panel is restored, not whenever the callback identity changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [column, minimized]);
 
   // Persist playback position every few seconds so a reload (theme change / F5)
   // can resume the song instead of restarting it.
@@ -344,6 +358,19 @@ export default function PlayerBar({
     });
   }, [audio.error?.kind, curKey, unplayable, yt.error?.kind]);
 
+  const playlistTrack = (track, exactVideoId = null) => ({
+    title: track?.title || track?.artist,
+    artist: track?.artist,
+    url: track?.url,
+    id: track?.id,
+    sourceId: track?.sourceId || track?.id,
+    provider: track?.provider,
+    videoId: exactVideoId || track?.videoId || null,
+    duration: track?.duration,
+    preview: track?.preview,
+    art: track?.art,
+  });
+
   if (!cur) {
     if (!column) return null;
     // Idle column: collapsed by default (App starts it minimized), so an empty
@@ -370,11 +397,28 @@ export default function PlayerBar({
             <Icon name="chevron-left" size={16} color={colors.textDim} />
           </Pressable>
         </View>
-        <View style={styles.emptyPlayer}>
-          <View style={styles.emptyDisc}><Icon name="music" size={34} color={colors.amber} /></View>
-          <Text style={styles.emptyTitle}>Nothing playing yet</Text>
-          <Text style={styles.emptyCopy}>Choose a song from an artist, playlist, or Discover. Your player and queue will stay here while you explore Pit.</Text>
-        </View>
+        {history.length ? (
+          <ScrollView style={styles.columnQueueScroll} contentContainerStyle={styles.columnQueueContent} showsVerticalScrollIndicator={false}>
+            <Text style={styles.groupLabel}>RECENTLY PLAYED</Text>
+            {history.slice(0, 12).map((track, historyIndex) => (
+              <View key={`idle-history:${track.id || historyIndex}:${trackKey(track) || "track"}`} style={styles.qRow}>
+                {track.art ? <Image source={{ uri: track.art }} style={styles.qArt} /> : <View style={[styles.qArt, styles.artEmpty]}><Icon name="music" size={12} color={colors.textFaint} /></View>}
+                <Pressable style={{ flex: 1 }} onPress={() => onPlayTrack?.(playlistTrack(track))} accessibilityRole="button" accessibilityLabel={`Play ${track.title} again`}>
+                  <Text style={styles.qTitle} numberOfLines={1}>{track.title}</Text>
+                  <Text style={styles.qArtist} numberOfLines={1}>{track.artist}</Text>
+                </Pressable>
+                {onAddToPlaylist && <Pressable style={styles.qAct} onPress={() => onAddToPlaylist(playlistTrack(track))} accessibilityRole="button" accessibilityLabel={`Add ${track.title} to a playlist`}><Icon name="plus" size={14} color={colors.textDim} /></Pressable>}
+                <Icon name="play" size={13} color={colors.amber} />
+              </View>
+            ))}
+          </ScrollView>
+        ) : (
+          <View style={styles.emptyPlayer}>
+            <View style={styles.emptyDisc}><Icon name="music" size={34} color={colors.amber} /></View>
+            <Text style={styles.emptyTitle}>Nothing playing yet</Text>
+            <Text style={styles.emptyCopy}>Choose a song from an artist, playlist, or Discover. Your player and queue will stay here while you explore Pit.</Text>
+          </View>
+        )}
       </View>
     );
   }
@@ -412,8 +456,14 @@ export default function PlayerBar({
   };
   const closePlayer = () => { yt.pause(); audio.pause?.(); onClose?.(); };
 
-  const doSave = () => { const s = onSaveSession?.(list, `${cur.artist || "Session"} mix`); if (s) { setSaved(true); setTimeout(() => setSaved(false), 1800); } };
-
+  const doSave = async () => {
+    if (saving) return;
+    setSaving(true);
+    const intended = list.slice(0, Math.max(1, Math.min(player?.explicitCount ?? list.length, list.length)));
+    const result = await onSaveSession?.(intended, `${cur.artist || "Session"} mix`);
+    setSaving(false);
+    if (result) { setSaved(true); setTimeout(() => setSaved(false), 1800); }
+  };
   const Ctrl = ({ icon, onPress, disabled }) => (
     <Pressable style={[styles.ctrl, disabled && styles.ctrlOff]} disabled={disabled} onPress={onPress} hitSlop={6}>
       <Icon name={icon} size={17} color={disabled ? colors.textFaint : colors.text} />
@@ -531,7 +581,7 @@ export default function PlayerBar({
         )}
 
         <View style={styles.columnActions}>
-          <Pressable style={[styles.columnAction, panelOpen && styles.columnActionOn]} onPress={() => setOpen((o) => !o)} accessibilityRole="button" accessibilityState={{ expanded: panelOpen }} accessibilityLabel={`${panelOpen ? "Hide" : "Show"} queue, ${upNext.length} up next`}>
+          <Pressable style={[styles.columnAction, panelOpen && styles.columnActionOn]} onPress={togglePanel} accessibilityRole="button" accessibilityState={{ expanded: panelOpen }} accessibilityLabel={`${panelOpen ? "Hide" : "Show"} listening session, ${upNext.length} up next`}>
             <Icon name="feed" size={14} color={panelOpen ? colors.amber : colors.textDim} />
             <Text style={[styles.columnActionTxt, panelOpen && { color: colors.amber }]}>Queue {upNext.length}</Text>
           </Pressable>
@@ -542,14 +592,14 @@ export default function PlayerBar({
             </Pressable>
           )}
           {onAddToPlaylist && (
-            <Pressable style={styles.columnAction} onPress={() => onAddToPlaylist({ title: cur.title || cur.artist, artist: cur.artist, url: cur.url, preview: cur.preview, art })} accessibilityRole="button" accessibilityLabel={`Add ${title} to a playlist`}>
+            <Pressable style={styles.columnAction} onPress={() => onAddToPlaylist(playlistTrack(cur, forThis ? resolved.videoId : null))} accessibilityRole="button" accessibilityLabel={`Add ${title} to a playlist`}>
               <Icon name="plus" size={14} color={colors.textDim} />
               <Text style={styles.columnActionTxt}>Playlist</Text>
             </Pressable>
           )}
-          <Pressable style={styles.columnAction} onPress={doSave} accessibilityRole="button" accessibilityLabel="Save listening session">
+          <Pressable style={styles.columnAction} onPress={doSave} disabled={saving} accessibilityRole="button" accessibilityLabel="Save listening session">
             <Icon name={saved ? "check" : "star"} size={13} color={saved ? colors.good : colors.textDim} />
-            <Text style={[styles.columnActionTxt, saved && { color: colors.good }]}>{saved ? "Saved" : "Save mix"}</Text>
+            <Text style={[styles.columnActionTxt, saved && { color: colors.good }]}>{saved ? "Saved" : saving ? "Saving" : "Save mix"}</Text>
           </Pressable>
         </View>
 
@@ -570,7 +620,7 @@ export default function PlayerBar({
                       <Text style={styles.qTitle} numberOfLines={1}>{t.title}</Text>
                       <Text style={styles.qArtist} numberOfLines={1}>{t.artist}</Text>
                     </Pressable>
-                    {onAddToPlaylist && <Pressable style={styles.qAct} onPress={() => onAddToPlaylist({ title: t.title, artist: t.artist, url: t.url, preview: t.preview, art: t.art })} accessibilityRole="button" accessibilityLabel={`Add ${t.title} to a playlist`}><Icon name="plus" size={14} color={colors.textDim} /></Pressable>}
+                    {onAddToPlaylist && <Pressable style={styles.qAct} onPress={() => onAddToPlaylist(playlistTrack(t))} accessibilityRole="button" accessibilityLabel={`Add ${t.title} to a playlist`}><Icon name="plus" size={14} color={colors.textDim} /></Pressable>}
                     <Pressable style={styles.qAct} onPress={() => onMoveNext?.(real)} accessibilityRole="button" accessibilityLabel={`Play ${t.title} next`}><Icon name="menu" size={14} color={colors.textDim} /></Pressable>
                     <Pressable style={styles.qAct} onPress={() => onRemove?.(real)} accessibilityRole="button" accessibilityLabel={`Remove ${t.title} from queue`}><Icon name="x" size={13} color={colors.textDim} /></Pressable>
                   </View>
@@ -581,6 +631,7 @@ export default function PlayerBar({
                 <Pressable key={`history:${j}:${trackKey(t) || "track"}`} style={styles.qRow} onPress={() => onPlayTrack?.({ kind: "track", url: t.url, id: t.id, preview: t.preview, title: t.title, artist: t.artist, art: t.art })} accessibilityRole="button" accessibilityLabel={`Play ${t.title} again`}>
                   {t.art ? <Image source={{ uri: t.art }} style={styles.qArt} /> : <View style={[styles.qArt, styles.artEmpty]}><Icon name="music" size={12} color={colors.textFaint} /></View>}
                   <View style={{ flex: 1 }}><Text style={styles.qTitle} numberOfLines={1}>{t.title}</Text><Text style={styles.qArtist} numberOfLines={1}>{t.artist}</Text></View>
+                  {onAddToPlaylist && <Pressable style={styles.qAct} onPress={() => onAddToPlaylist(playlistTrack(t))} accessibilityRole="button" accessibilityLabel={`Add ${t.title} to a playlist`}><Icon name="plus" size={14} color={colors.textDim} /></Pressable>}
                   <Icon name="play" size={13} color={colors.textDim} />
                 </Pressable>
               ))}
@@ -606,7 +657,7 @@ export default function PlayerBar({
       {web && mediaSurface}
       <View style={styles.bar}>
         {art ? <Image source={{ uri: art }} style={styles.art} /> : <View style={[styles.art, styles.artEmpty]}><Icon name="music" size={16} color={colors.textFaint} /></View>}
-        <Pressable style={[styles.meta, styles.metaGrow]} onPress={() => multi && setOpen((o) => !o)} accessibilityRole={multi ? "button" : undefined} accessibilityLabel={multi ? `Now playing ${title}. ${upNext.length} up next. Open queue.` : undefined}>
+        <Pressable style={[styles.meta, styles.metaGrow]} onPress={(multi || history.length) ? togglePanel : undefined} accessibilityRole={(multi || history.length) ? "button" : undefined} accessibilityLabel={(multi || history.length) ? `Now playing ${title}. Open listening session.` : undefined}>
           <Text style={styles.title} numberOfLines={1}>{title}</Text>
           {peekNext && nextTitle
             ? <Text style={styles.peekNext} numberOfLines={1}>{"↑ Up next · " + nextTitle}</Text>
@@ -621,8 +672,8 @@ export default function PlayerBar({
         </Pressable>
         <Ctrl icon="chevron-right" onPress={goNext} disabled={index >= list.length - 1} />
 
-        {multi && (
-          <Pressable style={[styles.queueBtn, panelOpen && styles.queueBtnOn]} onPress={() => setOpen((o) => !o)} hitSlop={6} accessibilityRole="button" accessibilityState={{ expanded: panelOpen }} accessibilityLabel={`${panelOpen ? "Hide" : "Show"} queue, ${upNext.length} up next`}>
+        {(multi || history.length > 0) && (
+          <Pressable style={[styles.queueBtn, panelOpen && styles.queueBtnOn]} onPress={togglePanel} hitSlop={6} accessibilityRole="button" accessibilityState={{ expanded: panelOpen }} accessibilityLabel={`${panelOpen ? "Hide" : "Show"} listening session, ${upNext.length} up next`}>
             <Icon name="feed" size={13} color={panelOpen ? colors.amber : colors.textDim} />
             <Text style={[styles.queueTxt, panelOpen && { color: colors.amber }]}>{upNext.length}</Text>
           </Pressable>
@@ -652,14 +703,14 @@ export default function PlayerBar({
             <Text style={styles.panelTitle}>LISTENING SESSION</Text>
             <View style={styles.panelActions}>
               {onAddToPlaylist && (
-                <Pressable style={styles.addBtn} onPress={() => onAddToPlaylist({ title: cur.title || cur.artist, artist: cur.artist, url: cur.url, preview: cur.preview, art })}>
+                <Pressable style={styles.addBtn} onPress={() => onAddToPlaylist(playlistTrack(cur, forThis ? resolved.videoId : null))}>
                   <Icon name="plus" size={12} color={colors.textDim} />
                   <Text style={styles.addTxt}>Add song</Text>
                 </Pressable>
               )}
-              <Pressable style={styles.saveBtn} onPress={doSave}>
+              <Pressable style={styles.saveBtn} onPress={doSave} disabled={saving}>
                 <Icon name={saved ? "check" : "star"} size={12} color={saved ? colors.good : colors.amber} />
-                <Text style={[styles.saveTxt, saved && { color: colors.good }]}>{saved ? "Saved" : "Save session"}</Text>
+                <Text style={[styles.saveTxt, saved && { color: colors.good }]}>{saved ? "Saved" : saving ? "Saving" : "Save session"}</Text>
               </Pressable>
             </View>
           </View>
@@ -675,7 +726,7 @@ export default function PlayerBar({
                     <Text style={styles.qTitle} numberOfLines={1}>{t.title}</Text>
                     <Text style={styles.qArtist} numberOfLines={1}>{t.artist}</Text>
                   </Pressable>
-                  {onAddToPlaylist && <Pressable style={styles.qAct} onPress={() => onAddToPlaylist({ title: t.title, artist: t.artist, url: t.url, preview: t.preview, art: t.art })} hitSlop={6} accessibilityRole="button" accessibilityLabel={`Add ${t.title} to a playlist`}><Icon name="plus" size={14} color={colors.textDim} /></Pressable>}
+                  {onAddToPlaylist && <Pressable style={styles.qAct} onPress={() => onAddToPlaylist(playlistTrack(t))} hitSlop={6} accessibilityRole="button" accessibilityLabel={`Add ${t.title} to a playlist`}><Icon name="plus" size={14} color={colors.textDim} /></Pressable>}
                   <Pressable style={styles.qAct} onPress={() => onMoveNext?.(real)} hitSlop={6} accessibilityRole="button" accessibilityLabel={`Play ${t.title} next`}><Icon name="menu" size={14} color={colors.textDim} /></Pressable>
                   <Pressable style={styles.qAct} onPress={() => onRemove?.(real)} hitSlop={6} accessibilityRole="button" accessibilityLabel={`Remove ${t.title} from queue`}><Icon name="x" size={13} color={colors.textDim} /></Pressable>
                 </View>
@@ -690,6 +741,7 @@ export default function PlayerBar({
                   <Text style={styles.qTitle} numberOfLines={1}>{t.title}</Text>
                   <Text style={styles.qArtist} numberOfLines={1}>{t.artist}</Text>
                 </View>
+                {onAddToPlaylist && <Pressable style={styles.qAct} onPress={() => onAddToPlaylist(playlistTrack(t))} hitSlop={6} accessibilityRole="button" accessibilityLabel={`Add ${t.title} to a playlist`}><Icon name="plus" size={14} color={colors.textDim} /></Pressable>}
                 <Icon name="play" size={13} color={colors.textDim} />
               </Pressable>
             ))}

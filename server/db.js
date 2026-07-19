@@ -300,6 +300,7 @@ CREATE TABLE IF NOT EXISTS plays (
   title      TEXT NOT NULL,
   artist     TEXT,
   url        TEXT,
+  video_id   TEXT,
   art        TEXT,
   created_at INTEGER NOT NULL
 );
@@ -312,7 +313,9 @@ CREATE TABLE IF NOT EXISTS playlists (
   user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   name       TEXT NOT NULL,
   tracks     TEXT NOT NULL DEFAULT '[]',
-  created_at INTEGER NOT NULL
+  visibility TEXT NOT NULL DEFAULT 'public',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_playlists_user ON playlists(user_id, created_at DESC);
 
@@ -468,6 +471,10 @@ for (const stmt of [
   "ALTER TABLE posts ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'", // short word-art descriptors on a review
   "ALTER TABLE posts ADD COLUMN kind TEXT NOT NULL DEFAULT 'review'", // 'review' = a logged show, 'status' = a plain post
   "ALTER TABLE posts ADD COLUMN song TEXT", // JSON of a tagged YouTube song {videoId,title,artist,url,thumb}
+  "ALTER TABLE posts ADD COLUMN playlist TEXT", // immutable playlist snapshot attached to a post
+  "ALTER TABLE plays ADD COLUMN video_id TEXT", // exact YouTube identity for cross-device replay
+  "ALTER TABLE playlists ADD COLUMN visibility TEXT NOT NULL DEFAULT 'public'",
+  "ALTER TABLE playlists ADD COLUMN updated_at INTEGER",
   "ALTER TABLE yt_cache ADD COLUMN metadata TEXT",
   "ALTER TABLE yt_cache ADD COLUMN score REAL",
   "ALTER TABLE yt_cache ADD COLUMN expires_at INTEGER",
