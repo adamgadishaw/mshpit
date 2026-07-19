@@ -139,16 +139,21 @@ function storedDeezerId(name) {
   try { return JSON.parse(row.data)?.deezerId || null; } catch { return null; }
 }
 
-function persistDeezerIdentity(name, deezerId) {
+function persistDeezerIdentity(name, deezerId, derivedGenre = null) {
   const existing = artistStmts.byNorm.get(normName(name));
   if (!existing || !deezerId) return;
   let data = {};
   try { data = JSON.parse(existing.data || "{}"); } catch {}
-  if (String(data.deezerId || "") === String(deezerId)) return;
+  // Deezer's album genre is a clean canonical label, so it corrects the noisy
+  // MusicBrainz tag that got written into `genre` (e.g. Justin Bieber -> "Metal").
+  const genre = derivedGenre && String(derivedGenre).trim() ? String(derivedGenre).trim() : null;
+  const idUnchanged = String(data.deezerId || "") === String(deezerId);
+  const genreChanged = genre && genre !== existing.genre;
+  if (idUnchanged && !genreChanged) return;
   const merged = {
     ...data,
     name: existing.name,
-    genre: existing.genre || data.genre || null,
+    genre: genre || existing.genre || data.genre || null,
     photo: existing.photo || data.photo || null,
     bio: existing.bio || data.bio || null,
     mbid: existing.mbid || data.mbid || null,
@@ -193,7 +198,7 @@ export async function findDeezerArtistCandidates(name, { fetchImpl = fetch, limi
 }
 
 export async function getDeezerDiscography(name, { fetchImpl = fetch, deezerId = null } = {}) {
-  const key = `deezer:discography:v4:${normName(name)}`;
+  const key = `deezer:discography:v5:${normName(name)}`;
   const cached = readProviderCache(key);
   // A caller-supplied deezerId (the listener picked a specific same-named artist)
   // forces a fresh resolve and re-pins identity, even when one is already cached.
@@ -226,15 +231,26 @@ export async function getDeezerDiscography(name, { fetchImpl = fetch, deezerId =
         type: album.record_type === "ep" ? "ep" : "album",
         year: String(album.release_date || "").slice(0, 4),
         cover: album.cover_medium || album.cover || null,
+        // Deezer's clean, canonical genre label for this release (used to correct
+        // the artist's noisy catalog genre below).
+        genre: full?.genres?.data?.[0]?.name || null,
         // Never persist Deezer's signed preview URL. It expires in minutes and is
         // resolved by getFreshDeezerPreview only when a listener presses play.
         tracks: (full?.tracks?.data || []).map((track) => ({ id: track.id || null, title: track.title, duration: track.duration || 0 })),
       };
     });
+    // The artist's canonical genre is the one most of their releases carry. This
+    // corrects the wrong catalog genre (from MusicBrainz tags) the moment anyone
+    // opens the artist, so Discover and Search stop showing nonsense over time.
+    const genreCounts = {};
+    for (const al of fullAlbums) { const g = al.genre && al.genre.trim(); if (g) genreCounts[g] = (genreCounts[g] || 0) + 1; }
+    const derivedGenre = Object.entries(genreCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
+    if (derivedGenre) persistDeezerIdentity(name, artist.id, derivedGenre);
     const data = {
-      artist: { id: artist.id, name: artist.name, fans: artist.nb_fan, photo: artist.picture_xl || artist.picture_big || null },
+      artist: { id: artist.id, name: artist.name, fans: artist.nb_fan, photo: artist.picture_xl || artist.picture_big || null, genre: derivedGenre || null },
       albums: fullAlbums,
       topTracks,
+      genre: derivedGenre || null,
       identity: { confidence: identity.confidence, reason: identity.reason },
     };
     // Empty/partial provider failures never replace a last-known-good catalogue.
