@@ -618,8 +618,12 @@ async function getArtistCatalogue(artist, channelId, apiKey, fetchImpl) {
   }
 }
 
+// v2 deliberately invalidates every match resolved by the old blind keyword
+// search. Those rows are served straight from cache for 14 days without
+// re-scoring, so without this bump the previously chosen wrong videos (reaction
+// uploads, other acts' songs) would keep playing long after the fix shipped.
 function youtubeCacheKey(title, artist) {
-  return (`yt:${artist || ""}|${title}`).toLowerCase().slice(0, 300);
+  return (`yt:v2:${artist || ""}|${title}`).toLowerCase().slice(0, 300);
 }
 
 function rejectedSet(row) {
