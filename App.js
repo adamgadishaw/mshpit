@@ -437,6 +437,8 @@ function Root() {
                   onActivity={openNotifications}
                   onInbox={openInbox}
                   onCalendar={() => go({ calendar: true })}
+                  onOpenNearby={() => requireAuth(() => go({ nearby: true }))}
+                  homeCity={session?.home?.city}
                   onPlay={openPlayer}
                   onOpenPhotos={openPhotos}
                   onOpenArtist={openArtist}

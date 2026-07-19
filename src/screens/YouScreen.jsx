@@ -55,7 +55,7 @@ function SongBar({ rank, title, sub, count, max, art, onPress, delay = 0 }) {
 // a hero identity card, then the sound (donut + podium + charts), the photo
 // wall, plans, and a compact toolbelt. Every number is DERIVED from real
 // activity; empty sections hide instead of padding the page.
-export default function YouScreen({ feed, onLogin, onLogout, onAdmin, onAddTourDate, onRequestArtist, onEditProfile, onOpenProfile, onOpen, onActivity, onInbox, onCalendar, onPlay, onOpenPhotos, onOpenArtist }) {
+export default function YouScreen({ feed, onLogin, onLogout, onAdmin, onAddTourDate, onRequestArtist, onEditProfile, onOpenProfile, onOpen, onActivity, onInbox, onCalendar, onOpenNearby, homeCity, onPlay, onOpenPhotos, onOpenArtist }) {
   const { session, logsByUser, unreadNotifications, inboxUnread, playHistory, genreOfArtist, goingFor, myPlaylists, loadMyPlaylists, userBadges, userPoints } = useStore();
   const mine = session ? logsByUser(session.id) : [];
   const notif = session ? unreadNotifications() : 0;
@@ -212,6 +212,20 @@ export default function YouScreen({ feed, onLogin, onLogout, onAdmin, onAddTourD
           </View>
         </View>
       </Reveal>
+
+      {/* ---- NEAR YOU: local venues + upcoming shows, back on the You tab ---- */}
+      {session && onOpenNearby && (
+        <Reveal delay={50}>
+          <Pressable style={styles.nearCard} onPress={onOpenNearby} accessibilityRole="button" accessibilityLabel={`Near you${homeCity ? `, ${homeCity}` : ""}`}>
+            <View style={styles.nearIcon}><Icon name="pin" size={20} color={colors.amber} /></View>
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text style={styles.nearTitle} numberOfLines={1}>Near you{homeCity ? ` · ${homeCity}` : ""}</Text>
+              <Text style={styles.nearSub} numberOfLines={1}>Local venues &amp; upcoming shows</Text>
+            </View>
+            <Icon name="chevron-right" size={18} color={colors.textDim} />
+          </Pressable>
+        </Reveal>
+      )}
 
       {/* ---- YOUR SOUND: donut + legend, podium, song chart ---- */}
       <Reveal delay={90}>
@@ -395,6 +409,10 @@ const styles = StyleSheet.create({
   heroStatLabel: { color: colors.textFaint, fontSize: 9.5, letterSpacing: 1.2, marginTop: 3, fontWeight: "800" },
   wrappedLine: { color: colors.textDim, fontSize: 13, lineHeight: 19, marginTop: 12 },
 
+  nearCard: { flexDirection: "row", alignItems: "center", gap: 12, marginTop: 16, backgroundColor: colors.bgElev, borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: colors.amber, paddingHorizontal: 14, paddingVertical: 13, ...shadow.card },
+  nearIcon: { width: 40, height: 40, borderRadius: 20, alignItems: "center", justifyContent: "center", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line },
+  nearTitle: { color: colors.text, fontSize: 14.5, fontWeight: "800" },
+  nearSub: { color: colors.textDim, fontSize: 12, marginTop: 1 },
   sectionLabel: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "800", marginTop: 24, marginBottom: 10 },
   subLabel: { color: colors.textFaint, fontSize: 10, letterSpacing: 1.5, fontWeight: "800", marginTop: 18, marginBottom: 8 },
   card: { backgroundColor: colors.surface, borderRadius: radius.lg, borderCurve: "continuous", borderWidth: 1, borderColor: colors.lineSoft, padding: 16, ...shadow.card },
