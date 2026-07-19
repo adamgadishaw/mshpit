@@ -87,7 +87,8 @@ function Section({ icon, tint, title, count, rows }) {
 
 export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpenFanClub, onOpenProfile }) {
   const { tourDates, searchVenues, artistsAlphabetical, venuesByCity, upcomingEvents, fanClubsDirectory, commentsFor, track,
-    users, session, isFollowing, follow, unfollow, searchPeople, loadMembers, memberCount, searchArtistsApi, resolveArtist } = useStore();
+    users, session, isFollowing, follow, unfollow, searchPeople, loadMembers, memberCount, searchArtistsApi, resolveArtist,
+    recentSearches, addRecentSearch, removeRecentSearch, clearRecentSearches } = useStore();
   const [q, setQ] = useState("");
   const [focused, setFocused] = useState(false);
   const [dbArtists, setDbArtists] = useState([]); // from the DB catalog API (scales past the bundle)
@@ -141,10 +142,26 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
 
   const showBrowse = !query;
   const exactArtist = artists.some((a) => a.name.toLowerCase() === query);
+
+  // Opening any result records it as a recent search, so the empty state stays
+  // useful (like every big app). Re-opening a recent bumps it back to the top.
+  const openArtist = (name) => { addRecentSearch?.({ type: "artist", label: name }); onOpenArtist?.(name); };
+  const openVenue = (name) => { addRecentSearch?.({ type: "venue", label: name }); onOpenVenue?.(name); };
+  const openPerson = (u) => { addRecentSearch?.({ type: "person", label: u.name, id: u.id, sub: `@${u.handle}` }); onOpenProfile?.(u.id); };
+  const reopenRecent = (e) => {
+    if (e.type === "artist") openArtist(e.label);
+    else if (e.type === "venue") openVenue(e.label);
+    else if (e.type === "person" && e.id) openPerson({ id: e.id, name: e.label, handle: (e.sub || "").replace(/^@/, "") });
+    else setQ(e.label);
+  };
+  const recentIcon = (type) => (type === "venue" ? "pin" : type === "person" ? "you" : type === "query" ? "search" : "music");
+  const recentTint = (type) => (type === "venue" ? colors.cool : type === "person" ? colors.gold : colors.amber);
+
   // First person to search a not-yet-catalogued artist: resolve it from
   // MusicBrainz on the server (creates the page), then open it.
   const lookUp = async (name) => {
     const a = await resolveArtist(name);
+    addRecentSearch?.({ type: "artist", label: a?.name || name });
     onOpenArtist?.(a?.name || name);
   };
 
@@ -175,6 +192,30 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
           </Text>
         )}
 
+        {showBrowse && recentSearches.length > 0 && (
+          <View style={styles.section}>
+            <View style={styles.recentHead}>
+              <Icon name="search" size={13} color={colors.textDim} />
+              <Text style={[styles.secTitle, { flex: 1 }]}>RECENT</Text>
+              <Pressable onPress={clearRecentSearches} hitSlop={8} accessibilityRole="button" accessibilityLabel="Clear recent searches">
+                <Text style={styles.clearTxt}>Clear</Text>
+              </Pressable>
+            </View>
+            {recentSearches.slice(0, 5).map((e, i) => (
+              <Pressable key={`${e.type}:${e.label}:${i}`} style={styles.row} onPress={() => reopenRecent(e)} accessibilityRole="button" accessibilityLabel={`Reopen ${e.label}`}>
+                <View style={[styles.dot, { borderColor: recentTint(e.type) }]}><Icon name={recentIcon(e.type)} size={14} color={recentTint(e.type)} /></View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.rowName} numberOfLines={1}>{e.label}</Text>
+                  {!!e.sub && <Text style={styles.rowSub} numberOfLines={1}>{e.sub}</Text>}
+                </View>
+                <Pressable onPress={() => removeRecentSearch(e.label, e.type)} hitSlop={10} accessibilityRole="button" accessibilityLabel={`Remove ${e.label} from recent searches`}>
+                  <Icon name="x" size={15} color={colors.textFaint} />
+                </Pressable>
+              </Pressable>
+            ))}
+          </View>
+        )}
+
         <Section
           icon="you" tint={colors.gold}
           title="PEOPLE" count={people.length}
@@ -185,7 +226,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
               following={isFollowing(u.id)}
               canFollow={!!session && u.id !== session?.id}
               onFollow={() => (isFollowing(u.id) ? unfollow(u.id) : follow(u.id))}
-              onOpen={() => onOpenProfile?.(u.id)}
+              onOpen={() => openPerson(u)}
             />
           ))}
         />
@@ -194,7 +235,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
           icon="music" tint={colors.amber}
           title={showBrowse ? "ARTISTS TO EXPLORE" : "ARTISTS"} count={artists.length}
           rows={[
-            ...artists.map((a) => <ArtistRow key={a.name} name={a.name} genre={a.genre} onPress={() => onOpenArtist?.(a.name)} />),
+            ...artists.map((a) => <ArtistRow key={a.name} name={a.name} genre={a.genre} onPress={() => openArtist(a.name)} />),
             query.length >= 2 && !exactArtist ? (
               <Pressable key="_lookup" style={styles.row} onPress={() => lookUp(q.trim())}>
                 <View style={[styles.dot, { borderColor: colors.good }]}><Icon name="search" size={14} color={colors.good} /></View>
@@ -209,7 +250,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
         />
 
         <Section icon="pin" tint={colors.cool} title="VENUES" count={venues.length}
-          rows={venues.map((v) => <VenueRow key={v.name} v={v} onPress={() => onOpenVenue?.(v.name)} />)} />
+          rows={venues.map((v) => <VenueRow key={v.name} v={v} onPress={() => openVenue(v.name)} />)} />
 
         <Section icon="calendar" tint={colors.amber} title="EVENTS" count={events.length}
           rows={events.map((t) => <EventRow key={t.id} t={t} onOpenArtist={onOpenArtist} onOpenVenue={onOpenVenue} />)} />
@@ -246,6 +287,8 @@ const styles = StyleSheet.create({
   browseHint: { color: colors.textDim, fontSize: 12, marginBottom: 8, fontWeight: "600" },
 
   section: { marginBottom: 18 },
+  recentHead: { flexDirection: "row", alignItems: "center", gap: 7, paddingHorizontal: 4, paddingBottom: 6, marginBottom: 2, borderBottomWidth: 1, borderBottomColor: colors.lineSoft },
+  clearTxt: { color: colors.amber, fontSize: 12, fontWeight: "800" },
   secHead: { flexDirection: "row", alignItems: "center", gap: 7, paddingHorizontal: 4, paddingBottom: 6, marginBottom: 2, borderBottomWidth: 1, borderBottomColor: colors.lineSoft },
   secTitle: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "800", flex: 1 },
   secCount: { color: colors.amber, fontFamily: mono, fontSize: 12, fontWeight: "800" },

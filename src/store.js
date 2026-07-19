@@ -594,6 +594,28 @@ export function StoreProvider({ children }) {
       return su;
     } catch { return null; }
   };
+  // Recent searches: the last few things the user opened from Search, so the
+  // empty state is useful instead of blank (like every big app). Kept small,
+  // deduped by type+label, newest first, and persisted on-device.
+  const [recentSearches, setRecentSearches] = useState(() => {
+    const stored = load("pit.recentSearches", []);
+    return Array.isArray(stored) ? stored.filter((e) => e && e.label).slice(0, 8) : [];
+  });
+  useEffect(() => { save("pit.recentSearches", recentSearches); }, [recentSearches]);
+  const addRecentSearch = (entry) => {
+    if (!entry || !entry.label) return;
+    const type = entry.type || "query";
+    const key = `${type}:${String(entry.label).toLowerCase()}`;
+    setRecentSearches((list) => [
+      { type, label: String(entry.label).slice(0, 80), id: entry.id || null, sub: entry.sub || null, at: Date.now() },
+      ...list.filter((e) => `${e.type || "query"}:${String(e.label).toLowerCase()}` !== key),
+    ].slice(0, 8));
+  };
+  const removeRecentSearch = (label, type = "query") => {
+    const key = `${type}:${String(label).toLowerCase()}`;
+    setRecentSearches((list) => list.filter((e) => `${e.type || "query"}:${String(e.label).toLowerCase()}` !== key));
+  };
+  const clearRecentSearches = () => setRecentSearches([]);
   // Search users by name/handle on the server (cross-device friend finding).
   // Also captures the member count (`total`) so the app can show a real stat.
   const searchPeople = async (q) => {
@@ -2894,6 +2916,7 @@ export function StoreProvider({ children }) {
     requestArtist, approveArtist, rejectArtist,
     addTourDatesBatch,
     isFollowing, follow, unfollow, followerCount, followingCount, absorbUsers, searchPeople, loadMembers, memberCount,
+    recentSearches, addRecentSearch, removeRecentSearch, clearRecentSearches,
     loadUser, followersOf, followingOf,
     isBlocked, blockUser, unblockUser, blockedUsers, exportMyData,
     searchArtistsApi, resolveArtist, remoteArtistMeta, artistDiscography, resolveYouTube, invalidateYouTube, resolveDeezerPreview,
