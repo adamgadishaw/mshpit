@@ -248,7 +248,11 @@ export async function findDeezerArtistCandidates(name, { fetchImpl = fetch, limi
 }
 
 export async function getDeezerDiscography(name, { fetchImpl = fetch, deezerId = null } = {}) {
-  const key = `deezer:discography:v5:${normName(name)}`;
+  // v6 retires every discography resolved before the impostor fix below. Those
+  // rows are served straight from cache for 24 hours, so without this bump the
+  // wrong artist (Korn matched a 4.5k-fan impostor with one track) keeps being
+  // served long after the selection was corrected.
+  const key = `deezer:discography:v6:${normName(name)}`;
   const cached = readProviderCache(key);
   // A caller-supplied deezerId (the listener picked a specific same-named artist)
   // forces a fresh resolve and re-pins identity, even when one is already cached.

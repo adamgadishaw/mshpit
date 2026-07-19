@@ -53,7 +53,10 @@ export function useAudioPreview(src, { enabled = true, onEnded, onStarted, start
       a.removeEventListener("pause", onPause);
       a.removeEventListener("ended", onEnd);
       a.removeEventListener("error", onError);
-      try { a.pause(); a.src = ""; } catch {}
+      // Clearing with `src = ""` makes the browser resolve the empty string
+      // against the page URL and try to load the document itself as media
+      // ("Invalid URI. Load of media resource failed"). Remove the attribute.
+      try { a.pause(); a.removeAttribute("src"); a.load(); } catch {}
       audioRef.current = null;
     };
   }, [enabled]);
