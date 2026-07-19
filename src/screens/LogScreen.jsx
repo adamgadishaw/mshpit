@@ -71,7 +71,7 @@ function postDims(post) {
 export default function LogScreen({ onPost, onCancel, user, prefill, editing = null, defaultMode = "show" }) {
   const { searchArtistsApi, drafts, saveDraft, deleteDraft, myPlaylists, loadMyPlaylists } = useStore();
   // Two kinds of post share this composer: a full show review, or a plain
-  // status update ("post whatever" — text and/or photos, no artist/rating).
+  // status update ("post whatever": text and/or photos, no artist/rating).
   const [postType, setPostType] = useState(
     editing ? (editing.kind === "status" ? "status" : "show") : (prefill?.artist ? "show" : defaultMode)
   );
@@ -454,7 +454,7 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
 
         {(showSong || song?.videoId) && (
         <View style={styles.attachPanel}>
-        <Text style={styles.attachHint}>Paste a YouTube link — it plays in the Pit player, exactly the video you chose.</Text>
+        <Text style={styles.attachHint}>Paste a YouTube link. It plays in the Pit player, exactly the video you chose.</Text>
         {song?.videoId ? (
           <View style={styles.songPreview}>
             <SmartImage uri={song.thumb} style={styles.songArt} contain={false} />
