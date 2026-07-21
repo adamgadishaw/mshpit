@@ -2,9 +2,19 @@
 
 > **Living doc.** Whoever works on this next: read this first, and UPDATE it before you end a session (move things between "Done" and "Backlog", note anything running). Point a fresh Claude Code chat at this file to get up to speed without re-explaining.
 >
-> Last updated: **2026-07-18** (media/post recovery, exact song shares, artist identity picker, performance audit)
+> Last updated: **2026-07-21** (recovered vanished Claude requests; see `CLAUDE_SESSION_RECOVERY_2026-07-21.md`)
 
 > **Working agreement (owner's standing instruction):** ALWAYS `git commit` **and** `git push` after a verified batch. Stabilization work uses a review branch; do not merge/push directly to `master` until the branch checks pass. A master push auto-deploys and briefly restarts Render.
+
+## RECOVERED OWNER REQUESTS (2026-07-21)
+
+The vanished July 18-21 Claude Code conversation was recovered from the local
+Claude JSONL history. The supplied export ZIP only reaches July 12, so do not
+mistake it for the latest task record. The complete secret-redacted timeline and
+the final 18-item owner backlog are preserved in
+`CLAUDE_SESSION_RECOVERY_2026-07-21.md`. Item 19 was blank in the saved source.
+Treat those entries as requested/backlog work unless a current implementation and
+test prove an item has already shipped.
 
 ## OWNER ACTIONS OUTSTANDING (read first)
 
