@@ -59,26 +59,50 @@ search costs 100 quota units and permits about 99 songs/day is obsolete.
 
 ### 2. Trustworthy artist genre authority
 
-**Status: OPEN / design decision required; Spotify must not be the sole authority.**
+**Status: IMPLEMENTED; catalogue backfill partially run.**
 
-Spotify artist genre data is deprecated or may be empty in current API responses,
-so the recovered request cannot safely be implemented as "always use Spotify."
-The current client now prefers a live/provider genre over bundled fallback data,
-but no durable multi-provider authority model exists.
+Root cause found: the catalogue seeder crawls MusicBrainz *tag pages* to discover
+artists and published the crawl bucket as the artist's genre. Those pages return
+loosely related artists, so Justin Bieber came back under "Metal", Eminem under
+"Hardcore", Rihanna under "House", Nirvana under "Punk". CLAUDE.md already said
+MusicBrainz search tags are discovery hints, not canonical genres; the data
+violated its own rule. Enrichment then made it permanent with
+`genre: row.genre || e.genre`, so a stale bucket outranked Deezer knowing better.
 
-Acceptance criteria:
+`src/domain/genre.mjs` is now the authority. A genre is a claim with a source,
+never a bare string. Hierarchy: `staff` > `provider` > `consensus` > `tag_hint`,
+with confidence attached; only claims backed by evidence are stated as fact.
+Every source keeps its own claim on the record, so a staff correction is
+reversible and the provider evidence underneath survives it. `publicArtist`
+returns an unverified bucket as `genreHint` rather than `genre`, so review still
+has the signal but the interface stops asserting it.
 
-- Add provider identities and a provenance/confidence record for every genre
-  assignment. Use a documented hierarchy (staff override, reliable provider
-  evidence, consensus/fallback) rather than a display-name join.
-- Empty/deprecated Spotify fields never erase a valid classification. Conflicts
-  are observable and staff-correctable; changes are auditable.
-- Fixture and production checks cover mainstream, multi-genre, same-name, and
-  sparse artists, including the historically incorrect examples.
+`POST /api/admin/artists/genre` is the staff override: audited through
+`moderation_actions`, admin-only, reversible by passing an empty genre.
+`scripts/backfill-genres.mjs` asks Deezer what each artist actually is and
+records it as provider evidence, most-popular first and resumable.
+
+Verified: the top 200 ranked artists went from 37 to 180 evidence-backed genres,
+and Discover now reads Rihanna POP, Eminem HIP-HOP, Nirvana Rock, Michael
+Jackson Pop. 12 unit tests plus 2 API tests cover the hierarchy, the named
+mislabelled artists, empty-provider protection, staff precedence and undo.
+
+Remaining:
+
+- Only ~150 of 2657 artists have been backfilled so far. Run
+  `node scripts/backfill-genres.mjs 500` repeatedly (keyless, rate-limited,
+  resumable) until the pending count reaches zero. Until then most of the long
+  tail shows no genre rather than a wrong one, which is the intended failure.
+- `consensus` is defined and ranked but nothing emits it yet; a second provider
+  is needed before cross-provider agreement means anything.
+- Same-name artists still bind by display name in places; that overlaps item 10.
+- The bundled seed catalog still carries bucket genres. They are classified as
+  hints on read, so they cannot assert anything, and regenerating the catalog
+  converges it.
 
 ### 3. Account-scoped theme persistence
 
-**Status: IMPLEMENTED / VERIFY.**
+**Status: VERIFIED on desktop web (2026-07-22); cross-device unverified.**
 
 Theme storage is now tagged with its owning account, synchronized from the signed-
 in profile, and cleared on logout so one account's choice does not become another
@@ -165,7 +189,7 @@ Acceptance criteria:
 
 ### 8. Replies to comments
 
-**Status: IMPLEMENTED / VERIFY.**
+**Status: VERIFIED (2026-07-22), including deleted-parent tombstones.**
 
 Post detail and Afterparty comments now support replies. Server reads preserve a
 bounded ancestor chain, enforce post/block visibility, and return deleted-parent
@@ -180,7 +204,7 @@ Acceptance criteria:
 
 ### 9. Hide Clips while retaining its framework
 
-**Status: IMPLEMENTED / VERIFY.**
+**Status: VERIFIED (2026-07-22); no entry point on desktop or narrow web.**
 
 Clips navigation and persisted deep-route restoration are gated off through
 `ENABLE_CLIPS=false`; implementation files remain available for a future launch.
@@ -264,7 +288,7 @@ Acceptance criteria:
 
 ### 14. Delete one's own comments
 
-**Status: IMPLEMENTED / VERIFY.**
+**Status: VERIFIED (2026-07-22); owner-only, idempotent, tombstones kept.**
 
 An author-only, idempotent delete endpoint is wired to post and Afterparty UI.
 Leaf comments disappear; parents with replies become tombstones.
@@ -301,7 +325,7 @@ Acceptance criteria:
 
 ### 16. Add four themes and repair theme consistency
 
-**Status: IMPLEMENTED / VERIFY.**
+**Status: VERIFIED present (2026-07-22); all 12 listed. Full state audit still open.**
 
 With the owner's creative authorization, four new semantic-token themes are in
 the batch: Backstage, Vinyl, Sunset, and Lavender. Existing theme persistence and
@@ -318,7 +342,7 @@ Acceptance criteria:
 
 ### 17. Desktop progress bar
 
-**Status: IMPLEMENTED / VERIFY.**
+**Status: VERIFIED (2026-07-22); stretches full width, seeks accurately.**
 
 The column scrubber now explicitly stretches to full available width rather than
 collapsing around its thumb.

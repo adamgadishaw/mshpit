@@ -7,7 +7,7 @@ import test, { after } from "node:test";
 const dataDir = mkdtempSync(join(tmpdir(), "pit-api-integrity-"));
 process.env.PIT_DATA_DIR = dataDir;
 
-const { db, q, publicUser } = await import("./db.js");
+const { db, q, publicUser, artistStmts, artistRow, publicArtist } = await import("./db.js");
 const { ApiError, routes } = await import("./api.js");
 const { hashPassword } = await import("./auth.js");
 
@@ -516,4 +516,49 @@ test("account deletion requires the password and erases SET NULL privacy rows at
     assert.equal(db.prepare(`SELECT COUNT(*) count FROM ${table} WHERE ${column}=?`).get(user.id).count, 0, `${table} retained deleted-account data`);
   }
   assert.equal(db.prepare("SELECT COUNT(*) count FROM reports WHERE id='rep_delete_target'").get().count, 0);
+});
+
+// Discover looked broken because the catalogue seeder published its MusicBrainz
+// crawl bucket as the artist's genre: Justin Bieber came back under "Metal".
+// A bucket is a discovery hint, so the projection must not state it as fact.
+test("a crawl-bucket genre is offered as a hint, never stated as the artist's genre", () => {
+  artistStmts.upsert.run(artistRow("justin bieber", { name: "Justin Bieber", genre: "Metal" }, "musicbrainz"));
+  const shown = publicArtist(artistStmts.byNorm.get("justin bieber"));
+  assert.equal(shown.genre, null, "a crawl bucket must not be presented as the genre");
+  assert.equal(shown.genreHint, "Metal", "but it stays available for staff review");
+  assert.equal(shown.genreSource, "tag_hint");
+
+  // Provider enrichment arrives lowercased and is real evidence, so it shows.
+  artistStmts.upsert.run(artistRow("taylor swift", { name: "Taylor Swift", genre: "pop" }, "deezer"));
+  const evidence = publicArtist(artistStmts.byNorm.get("taylor swift"));
+  assert.equal(evidence.genre, "pop");
+  assert.equal(evidence.genreSource, "provider");
+});
+
+test("an admin genre correction outranks the crawl, is audited, and is reversible", () => {
+  artistStmts.upsert.run(artistRow("rihanna", { name: "Rihanna", genre: "House" }, "musicbrainz"));
+  const admin = addUser("u_genreadmin", "genreadmin@example.com", "genreadmin");
+  db.prepare("UPDATE users SET role='admin' WHERE id=?").run(admin.id);
+  const staff = q.userById.get(admin.id);
+  const setGenre = routes["POST /api/admin/artists/genre"];
+
+  const fixed = setGenre({ user: staff, ip: "genre-fix", body: { name: "Rihanna", genre: "r&b", reason: "obviously not house" } });
+  assert.equal(fixed.artist.genre, "r&b");
+  assert.equal(fixed.artist.genreSource, "staff");
+
+  const audit = db.prepare("SELECT * FROM moderation_actions WHERE action='artist_genre' AND target_id='rihanna'").get();
+  assert.ok(audit, "the correction is auditable");
+  assert.equal(JSON.parse(audit.prior_state).genre, "House");
+  assert.equal(JSON.parse(audit.next_state).genre, "r&b");
+
+  // An ordinary user cannot reach it.
+  assert.throws(
+    () => setGenre({ user: addUser("u_genrefan", "genrefan@example.com", "genrefan"), ip: "genre-deny", body: { name: "Rihanna", genre: "polka" } }),
+    (error) => error instanceof ApiError && (error.status === 403 || error.status === 404),
+  );
+
+  // Undo drops back to the evidence underneath, not to nothing forever.
+  const undone = setGenre({ user: staff, ip: "genre-undo", body: { name: "Rihanna", genre: "" } });
+  assert.equal(undone.artist.genre, null);
+  assert.equal(undone.artist.genreHint, "House");
 });

@@ -7,6 +7,7 @@
 import { randomUUID, randomBytes, createHash } from "node:crypto";
 import { mailConfigured, sendEmail } from "./mailer.js";
 import { db, q, publicUser, artistStmts, publicArtist, artistRow, normName } from "./db.js";
+import { genreClaim, resolveGenre, storedClaims, upsertClaim, withoutSource } from "../src/domain/genre.mjs";
 import { hashPassword, verifyPassword, createSession, destroySession, rateLimit } from "./auth.js";
 import { startCatalogSeed, catalogSeedStatus, stopCatalogSeed, deezerEnrich } from "./catalogSeed.js";
 import { clean, cleanEmail, isEmail, cleanName, isName, cleanHandle, isPassword, clampRating, cleanStringArray, cleanDate, shape, LIMITS } from "./validate.js";
@@ -2230,6 +2231,44 @@ export const routes = {
     for (const n of names) { if (await enrichArtistFromDeezer(n)) { enriched++; artistStmts.clearMissing.run(normName(n)); } }
     return { enriched, requested: names.length };
   },
+  // Staff correction for a genre. This is the top of the provenance hierarchy:
+  // once set it outranks every automated run, so a re-crawl cannot put Justin
+  // Bieber back under Metal. Auditable like every other moderation action, and
+  // reversible by passing an empty genre, which drops back to provider evidence.
+  "POST /api/admin/artists/genre": (ctx) => {
+    requireAdmin(ctx);
+    const name = clean(ctx.body?.name, { max: 120 });
+    if (!name) throw new ApiError(400, "Name is required.", "VALIDATION_FAILED");
+    const row = artistStmts.byNorm.get(normName(name));
+    if (!row) throw new ApiError(404, "That artist is not in the catalog.", "NOT_FOUND");
+
+    let data = {};
+    try { data = JSON.parse(row.data || "{}"); } catch {}
+    const claims = storedClaims(data, row.genre);
+    const prior = resolveGenre(claims);
+
+    const requested = clean(ctx.body?.genre, { max: 40 });
+    let nextClaims;
+    if (requested) {
+      const claim = genreClaim(requested, "staff");
+      if (!claim) throw new ApiError(400, "That genre is invalid.", "VALIDATION_FAILED");
+      nextClaims = upsertClaim(claims, claim);
+    } else {
+      // Undo: withdraw the staff decision only. The provider claims underneath
+      // are still on the record, so the artist falls back to evidence rather
+      // than to nothing, and the correction is genuinely reversible.
+      nextClaims = withoutSource(claims, "staff");
+    }
+    const next = resolveGenre(nextClaims);
+
+    const merged = { ...data, genre: next?.value || null, genreClaims: nextClaims, genreRecord: undefined };
+    artistStmts.upsert.run(artistRow(row.norm, { ...merged, name: row.name }, row.source || "staff"));
+    moderationRecord(ctx, "artist_genre", "artist", row.norm, clean(ctx.body?.reason, { max: LIMITS.note }),
+      { genre: prior?.value || null, source: prior?.source || null },
+      { genre: next?.value || null, source: next?.source || null });
+    return { artist: publicArtist(artistStmts.byNorm.get(row.norm)) };
+  },
+
   // Purge a dead / typo / never-found artist to keep the catalog clean.
   "POST /api/admin/artists/purge": (ctx) => {
     requireAdmin(ctx);

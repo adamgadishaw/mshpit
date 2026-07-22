@@ -129,6 +129,48 @@ mangled date is refused with 400, clearing works.
 **The real fix landed next; see the section below.** The guard above only stopped
 new damage.
 
+## Genre authority: Discover was reading crawl buckets (2026-07-22, Claude)
+
+TODO item 2, and the cause of the "Discover looks broken" complaint.
+
+**Root cause.** The catalogue seeder discovers artists by crawling MusicBrainz
+*tag pages* and published the crawl bucket as the artist's genre. Those pages
+return loosely related artists, so Justin Bieber came back under "Metal", Eminem
+under "Hardcore", Rihanna under "House", Nirvana under "Punk". CLAUDE.md already
+says MusicBrainz search tags are discovery hints, not canonical primary genres,
+so the data violated a rule the repo had already written down. Enrichment then
+froze it: `genre: row.genre || e.genre` let a stale bucket outrank Deezer, which
+knew perfectly well that Bieber is pop.
+
+**`src/domain/genre.mjs` is the authority.** A genre is a claim with a source,
+never a bare string. Hierarchy `staff` > `provider` > `consensus` > `tag_hint`,
+each with a confidence, and only evidence-backed claims may be stated as fact.
+Every source keeps its own claim, which is what makes a staff correction
+reversible without destroying the provider evidence underneath. `publicArtist`
+returns an unverified bucket as `genreHint`, not `genre`.
+
+Legacy rows are classified by shape: the seeder wrote an exact Title-Case label
+from its `GENRE_TAGS` vocabulary, while provider enrichment arrives lowercased
+("hip hop", "thrash metal"), so membership of that vocabulary identifies a
+bucket. Matching is exact, so a real "thrash metal" is never demoted.
+
+**Also shipped:** `POST /api/admin/artists/genre` (admin-only, audited via
+`moderation_actions`, reversible by passing an empty genre) and
+`scripts/backfill-genres.mjs`, which asks Deezer what each artist actually is,
+most-popular first and resumable.
+
+**Verified.** 91 tests pass. Against the real database, the top 200 ranked
+artists went from 37 to 180 evidence-backed genres, and Discover now reads
+Rihanna POP, Eminem HIP-HOP, Nirvana Rock, Michael Jackson Pop, Linkin Park
+Alternative. No console errors.
+
+**Unfinished, deliberately.** Only ~150 of 2657 artists are backfilled. Run
+`node scripts/backfill-genres.mjs 500` repeatedly until the pending count hits
+zero; it is keyless, rate-limited and safe against production. Until then the
+long tail shows **no** genre rather than a wrong one, which is the intended
+failure mode but does mean Discover's genre coverage is thinner than the old
+(wrong) data made it look. `consensus` is ranked but nothing emits it yet.
+
 ## Performance dates are canonical ISO now (2026-07-22, Claude)
 
 Storing a display-formatted date inside the identity key was fragile by

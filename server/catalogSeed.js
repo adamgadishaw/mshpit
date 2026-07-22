@@ -9,6 +9,18 @@
 import { randomUUID } from "node:crypto";
 import { artistStmts, artistRow, normName, db } from "./db.js";
 import { findDeezerArtist, providerJson, ProviderError } from "./musicProviders.js";
+import { genreClaim, resolveGenre, storedClaims, upsertClaim } from "../src/domain/genre.mjs";
+
+// Enrichment used to do `row.genre || e.genre`, which let a stale crawl-bucket
+// label outrank real provider evidence: Deezer knew Justin Bieber was pop, but
+// "Metal" from the tag crawl kept winning. Resolving through the provenance
+// hierarchy instead means evidence beats a hint, a staff decision beats both,
+// and a provider returning nothing leaves the record alone.
+function genreFields(data, columnGenre, providerGenre) {
+  const claims = upsertClaim(storedClaims(data, columnGenre), genreClaim(providerGenre, "provider"));
+  const record = resolveGenre(claims);
+  return record ? { genre: record.value, genreClaims: claims } : {};
+}
 
 const PAGE = 100; // MusicBrainz hard max per request
 const UA = "PitConcertApp/1.0 (https://mshpit.com)";
@@ -163,7 +175,7 @@ export async function enrichThin({ shouldStop = () => false, tick = () => {} } =
     if (e) {
       let data = {}; try { data = JSON.parse(row.data || "{}"); } catch {}
       const merged = {
-        ...data, name: row.name, genre: row.genre || e.genre, mbid: row.mbid, country: row.country, beginYear: row.formed,
+        ...data, name: row.name, ...genreFields(data, row.genre, e.genre), mbid: row.mbid, country: row.country, beginYear: row.formed,
         popularity: e.popularity, followers: e.followers, deezerId: e.deezerId,
         photo: data.photo || e.photo, photoCredit: data.photo ? data.photoCredit : (e.photo ? "Deezer" : null),
         topTracks: (data.topTracks && data.topTracks.length) ? data.topTracks : e.topTracks,
@@ -191,7 +203,7 @@ export async function enrichSongs({ shouldStop = () => false, tick = () => {} } 
     await sleep(90);
     if (e && e.topTracks.length) {
       let data = {}; try { data = JSON.parse(row.data || "{}"); } catch {}
-      const merged = { ...data, name: row.name, genre: row.genre || e.genre, topTracks: e.topTracks, photo: data.photo || e.photo, followers: data.followers ?? e.followers, deezerId: e.deezerId || data.deezerId };
+      const merged = { ...data, name: row.name, ...genreFields(data, row.genre, e.genre), topTracks: e.topTracks, photo: data.photo || e.photo, followers: data.followers ?? e.followers, deezerId: e.deezerId || data.deezerId };
       artistStmts.upsert.run(artistRow(row.norm, merged, "deezer"));
       filled++;
     }
@@ -217,6 +229,45 @@ db.prepare("UPDATE seed_runs SET status='interrupted',error_code='CATALOG_JOB_IN
 // Decide what a finished grow run ACTUALLY did. A run that crawled every genre to
 // the end of its results and added nothing is not a success; reporting "done" is
 // exactly what made the admin button look like it worked while doing nothing.
+// Genre backfill. The crawl published its discovery bucket as the artist's
+// genre, so most of the catalogue carries a hint rather than evidence and the
+// projection (rightly) refuses to state it. This asks Deezer what the artist
+// actually is and records it as a provider claim, which outranks the hint.
+//
+// Most-popular first, because that is what Discover surfaces, and resumable:
+// each run only touches artists that still lack an evidence-backed genre, so it
+// can be stopped and restarted without redoing work. Staff corrections are
+// untouched, since `provider` never outranks `staff`.
+export async function backfillGenres({ shouldStop = () => false, tick = () => {}, limit = 500 } = {}) {
+  const rows = db.prepare(`SELECT norm,name,genre,data FROM artists
+    ORDER BY popularity IS NULL, popularity DESC, rank_score DESC`).all();
+
+  const pending = [];
+  for (const row of rows) {
+    let data = {};
+    try { data = JSON.parse(row.data || "{}"); } catch {}
+    const record = resolveGenre(storedClaims(data, row.genre));
+    if (!record || !record.evidence) pending.push({ row, data });
+    if (pending.length >= limit) break;
+  }
+
+  let fixed = 0, done = 0;
+  for (const { row, data } of pending) {
+    if (shouldStop()) break;
+    let enriched = null;
+    try { enriched = await deezerEnrich(row.name); } catch { enriched = null; }
+    await sleep(90); // gentle on the keyless API
+    if (enriched?.genre) {
+      const merged = { ...data, name: row.name, ...genreFields(data, row.genre, enriched.genre) };
+      artistStmts.upsert.run(artistRow(row.norm, merged, row.source || "deezer"));
+      fixed++;
+    }
+    if (++done % 25 === 0) tick({ phase: "genres", fixed, done, of: pending.length });
+  }
+  tick({ phase: "genres", fixed, done, of: pending.length });
+  return { fixed, scanned: done, pending: pending.length };
+}
+
 export function growOutcome({ added, reachedTarget, stopRequested }) {
   if (stopRequested) return { phase: "stopped" };
   if (added === 0 && !reachedTarget) {

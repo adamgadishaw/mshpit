@@ -4,6 +4,7 @@
 // file you can back up by copying.
 import { DatabaseSync } from "node:sqlite";
 import { toIsoDate } from "../src/domain/dates.mjs";
+import { displayGenre, resolveGenre, storedClaims } from "../src/domain/genre.mjs";
 import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -651,7 +652,24 @@ export function publicArtist(r) {
   if (!r) return null;
   let data = {};
   try { data = r.data ? JSON.parse(r.data) : {}; } catch {}
-  return { ...data, name: r.name, genre: r.genre, photo: r.photo, bio: r.bio, mbid: r.mbid, spotifyId: r.spotify_id, country: r.country, popularity: r.popularity };
+  // A genre is a claim with a source, and only claims backed by evidence are
+  // stated as fact. `data.genreRecord` is written by enrichment and by staff
+  // corrections; rows that predate it are classified by shape. An unverified
+  // crawl-bucket guess is still returned, but as `genreHint`, so Discover and
+  // the artist page can stop presenting "Justin Bieber / Metal" as truth while
+  // admin review still has something to work with.
+  // The column is kept by COALESCE on partial enrichment, so it can hold a
+  // stale value; `data` carries the authoritative claims and wins.
+  const record = resolveGenre(storedClaims(data, r.genre));
+  const shown = displayGenre(record);
+  return {
+    ...data, name: r.name, photo: r.photo, bio: r.bio, mbid: r.mbid, spotifyId: r.spotify_id,
+    country: r.country, popularity: r.popularity,
+    genre: shown,
+    genreHint: shown ? null : (record?.value || null),
+    genreSource: record?.source || null,
+    genreConfidence: record?.confidence ?? null,
+  };
 }
 
 function objectData(value) {
