@@ -95,5 +95,8 @@ React Native rendering. Never commit `dist`, `.env`, secrets, or `server/data`.
   or provider change.
 - State root cause, files changed, validation performed, migration/deployment
   requirements, and remaining risks.
-- Work on a review branch and push it. Do not silently mix unrelated user work.
+- Build large or risky changes on a review branch, then merge to `master` and
+  push without asking; that is the owner's standing instruction. `npm run check`
+  must pass on the branch and again on `master` after the merge, since a master
+  push auto-deploys. Do not silently mix unrelated user work into one branch.
 - Current stabilization work is on `codex/stabilize-core`.
