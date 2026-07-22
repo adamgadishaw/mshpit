@@ -394,7 +394,7 @@ export default function PlayerBar({
             <Text style={styles.columnEyebrow}>PIT PLAYER</Text>
             <Text style={styles.columnHeadTitle}>Your listening session</Text>
           </View>
-          <Pressable style={styles.headIcon} onPress={onMinimize} accessibilityRole="button" accessibilityLabel="Collapse the player panel">
+          <Pressable style={styles.headIcon} hitSlop={5} onPress={onMinimize} accessibilityRole="button" accessibilityLabel="Collapse the player panel">
             <Icon name="chevron-left" size={16} color={colors.textDim} />
           </Pressable>
         </View>
@@ -408,7 +408,7 @@ export default function PlayerBar({
                   <Text style={styles.qTitle} numberOfLines={1}>{track.title}</Text>
                   <Text style={styles.qArtist} numberOfLines={1}>{track.artist}</Text>
                 </Pressable>
-                {onAddToPlaylist && <Pressable style={styles.qAct} onPress={() => onAddToPlaylist(playlistTrack(track))} accessibilityRole="button" accessibilityLabel={`Add ${track.title} to a playlist`}><Icon name="plus" size={14} color={colors.textDim} /></Pressable>}
+                {onAddToPlaylist && <Pressable style={styles.qAct} onPress={() => onAddToPlaylist(playlistTrack(track))} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Add ${track.title} to a playlist`}><Icon name="plus" size={14} color={colors.textDim} /></Pressable>}
                 <Icon name="play" size={13} color={colors.amber} />
               </View>
             ))}
@@ -540,10 +540,11 @@ export default function PlayerBar({
             <Text style={styles.columnEyebrow}>PIT PLAYER</Text>
             <Text style={styles.columnHeadTitle}>Now playing</Text>
           </View>
-          <Pressable style={styles.headIcon} onPress={minimizePlayer} accessibilityRole="button" accessibilityLabel="Minimize player, pauses playback">
+          {/* 34pt circles by design; hitSlop takes the touch target to 44pt. */}
+          <Pressable style={styles.headIcon} hitSlop={5} onPress={minimizePlayer} accessibilityRole="button" accessibilityLabel="Minimize player, pauses playback">
             <Icon name="chevron-left" size={16} color={colors.textDim} />
           </Pressable>
-          <Pressable style={styles.headIcon} onPress={closePlayer} accessibilityRole="button" accessibilityLabel="End listening session">
+          <Pressable style={styles.headIcon} hitSlop={5} onPress={closePlayer} accessibilityRole="button" accessibilityLabel="End listening session">
             <Icon name="x" size={15} color={colors.textDim} />
           </Pressable>
         </View>
@@ -621,9 +622,9 @@ export default function PlayerBar({
                       <Text style={styles.qTitle} numberOfLines={1}>{t.title}</Text>
                       <Text style={styles.qArtist} numberOfLines={1}>{t.artist}</Text>
                     </Pressable>
-                    {onAddToPlaylist && <Pressable style={styles.qAct} onPress={() => onAddToPlaylist(playlistTrack(t))} accessibilityRole="button" accessibilityLabel={`Add ${t.title} to a playlist`}><Icon name="plus" size={14} color={colors.textDim} /></Pressable>}
-                    <Pressable style={styles.qAct} onPress={() => onMoveNext?.(real)} accessibilityRole="button" accessibilityLabel={`Play ${t.title} next`}><Icon name="menu" size={14} color={colors.textDim} /></Pressable>
-                    <Pressable style={styles.qAct} onPress={() => onRemove?.(real)} accessibilityRole="button" accessibilityLabel={`Remove ${t.title} from queue`}><Icon name="x" size={13} color={colors.textDim} /></Pressable>
+                    {onAddToPlaylist && <Pressable style={styles.qAct} onPress={() => onAddToPlaylist(playlistTrack(t))} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Add ${t.title} to a playlist`}><Icon name="plus" size={14} color={colors.textDim} /></Pressable>}
+                    <Pressable style={styles.qAct} onPress={() => onMoveNext?.(real)} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Play ${t.title} next`}><Icon name="menu" size={14} color={colors.textDim} /></Pressable>
+                    <Pressable style={styles.qAct} onPress={() => onRemove?.(real)} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Remove ${t.title} from queue`}><Icon name="x" size={13} color={colors.textDim} /></Pressable>
                   </View>
                 );
               })}
@@ -632,7 +633,7 @@ export default function PlayerBar({
                 <Pressable key={`history:${j}:${trackKey(t) || "track"}`} style={styles.qRow} onPress={() => onPlayTrack?.(playlistTrack(t))} accessibilityRole="button" accessibilityLabel={`Play ${t.title} again`}>
                   {t.art ? <Image source={{ uri: t.art }} style={styles.qArt} /> : <View style={[styles.qArt, styles.artEmpty]}><Icon name="music" size={12} color={colors.textFaint} /></View>}
                   <View style={{ flex: 1 }}><Text style={styles.qTitle} numberOfLines={1}>{t.title}</Text><Text style={styles.qArtist} numberOfLines={1}>{t.artist}</Text></View>
-                  {onAddToPlaylist && <Pressable style={styles.qAct} onPress={() => onAddToPlaylist(playlistTrack(t))} accessibilityRole="button" accessibilityLabel={`Add ${t.title} to a playlist`}><Icon name="plus" size={14} color={colors.textDim} /></Pressable>}
+                  {onAddToPlaylist && <Pressable style={styles.qAct} onPress={() => onAddToPlaylist(playlistTrack(t))} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Add ${t.title} to a playlist`}><Icon name="plus" size={14} color={colors.textDim} /></Pressable>}
                   <Icon name="play" size={13} color={colors.textDim} />
                 </Pressable>
               ))}
@@ -742,9 +743,9 @@ export default function PlayerBar({
                     <Text style={styles.qTitle} numberOfLines={1}>{t.title}</Text>
                     <Text style={styles.qArtist} numberOfLines={1}>{t.artist}</Text>
                   </Pressable>
-                  {onAddToPlaylist && <Pressable style={styles.qAct} onPress={() => onAddToPlaylist(playlistTrack(t))} hitSlop={6} accessibilityRole="button" accessibilityLabel={`Add ${t.title} to a playlist`}><Icon name="plus" size={14} color={colors.textDim} /></Pressable>}
-                  <Pressable style={styles.qAct} onPress={() => onMoveNext?.(real)} hitSlop={6} accessibilityRole="button" accessibilityLabel={`Play ${t.title} next`}><Icon name="menu" size={14} color={colors.textDim} /></Pressable>
-                  <Pressable style={styles.qAct} onPress={() => onRemove?.(real)} hitSlop={6} accessibilityRole="button" accessibilityLabel={`Remove ${t.title} from queue`}><Icon name="x" size={13} color={colors.textDim} /></Pressable>
+                  {onAddToPlaylist && <Pressable style={styles.qAct} onPress={() => onAddToPlaylist(playlistTrack(t))} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Add ${t.title} to a playlist`}><Icon name="plus" size={14} color={colors.textDim} /></Pressable>}
+                  <Pressable style={styles.qAct} onPress={() => onMoveNext?.(real)} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Play ${t.title} next`}><Icon name="menu" size={14} color={colors.textDim} /></Pressable>
+                  <Pressable style={styles.qAct} onPress={() => onRemove?.(real)} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Remove ${t.title} from queue`}><Icon name="x" size={13} color={colors.textDim} /></Pressable>
                 </View>
               );
             })}
@@ -757,7 +758,7 @@ export default function PlayerBar({
                   <Text style={styles.qTitle} numberOfLines={1}>{t.title}</Text>
                   <Text style={styles.qArtist} numberOfLines={1}>{t.artist}</Text>
                 </View>
-                {onAddToPlaylist && <Pressable style={styles.qAct} onPress={() => onAddToPlaylist(playlistTrack(t))} hitSlop={6} accessibilityRole="button" accessibilityLabel={`Add ${t.title} to a playlist`}><Icon name="plus" size={14} color={colors.textDim} /></Pressable>}
+                {onAddToPlaylist && <Pressable style={styles.qAct} onPress={() => onAddToPlaylist(playlistTrack(t))} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Add ${t.title} to a playlist`}><Icon name="plus" size={14} color={colors.textDim} /></Pressable>}
                 <Icon name="play" size={13} color={colors.textDim} />
               </Pressable>
             ))}

@@ -94,9 +94,56 @@ start the local API without a shell.
   two-client check before item 5 can be accepted.
 - Items 1, 2, 7, 10, 15 stay PARTIAL/OPEN for the reasons in `TODO.md`. Nothing
   here changes the Resend configuration gap above.
-- Artist screen shows `2026 � 06 � 21` on one seeded performance row and a
-  leftover `Spotify` label in the gallery strip. Both are data/copy issues that
-  predate this batch and are not tracked in `TODO.md` yet.
+## Performance dates are now validated (2026-07-22, Claude)
+
+Chasing the `2026 � 06 � 21` row from the verification pass turned up a real
+spine bug rather than a display glitch.
+
+**Root cause.** `POST /api/posts` and `PATCH /api/posts/:id` only length-clamped
+`date` (`clean(x, { max: LIMITS.date })`), so any string up to 20 characters
+became a performance date. `concertKey` in `src/store.js` is
+`artist|venue|date`, so a mangled date forks one night into two performances and
+permanently splits its lounge, attendance and score aggregation. That is exactly
+what happened: The Fillmore shows twice on the Turnstile page, once as
+`2026-06-21` and once as `2026 <U+FFFD> 06 <U+FFFD> 21`. The stored bytes are
+`EF BF BD`, so the corruption happened before insertion, on a write path that
+lost the encoding. The row dates from 2026-07-05, long before this batch.
+
+**Careful bit.** The app does **not** store ISO dates. `DatePicker` and
+`LogScreen`'s `todayStr` both emit `YYYY · MM · DD` with U+00B7, so enforcing
+ISO would have rejected every concert log. `server/validate.js` now has `isDate`
+/ `cleanDate`, which accept the separators the product actually writes, require
+a real calendar day (so `2026-02-31` and `2026-13-01` are out), bound the year
+to 1900..next year, and **return the input unchanged**. Normalizing the
+separator here would give new posts a different identity than existing rows,
+which is the same fork the guard exists to prevent.
+
+Edit is guarded too, but only when the date changes, so a post already holding a
+legacy bad date stays editable by its owner. Clearing the date (`""`) remains a
+normal edit. Two regression tests in `server/post.edit.test.mjs` cover accepted
+formats, the mangled separator, impossible days, and the legacy-row path.
+
+Verified live: the picker's own format posts and round-trips unchanged, the
+mangled date is refused with 400, clearing works.
+
+**The real fix is still open.** Storing a display-formatted date inside the
+identity key is fragile by construction. Moving stored dates to ISO with
+display-time formatting needs a migration that rewrites posts, `going`, and
+lounge keys together; until then this guard only stops new damage. The one
+corrupted row is still in the local dev DB and may exist in production; repairing
+it means merging two performances, so it needs an owner decision, not a silent
+`UPDATE`.
+
+**Touch targets.** Re-measured rather than trusted: the nav buttons, album
+controls and report buttons already carried `hitSlop` putting them past 44pt.
+Genuinely short were the player's own `headIcon` controls (34pt, no `hitSlop`)
+and the queue row actions (28pt + 6). Both now reach 44pt via `hitSlop`, with
+the visual design unchanged per CLAUDE.md.
+
+**Still open from the verification pass:** 698 of 2657 artists (26%) have photos
+hotlinked from Spotify's CDN (`i.scdn.co`) with `"photoCredit":"Spotify"`, left
+over from the removed Spotify integration. That is a licensing and reliability
+problem needing an ingest change, tracked separately.
 
 ## Song sourcing rebuilt around the artist's own channel (2026-07-18)
 

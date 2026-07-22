@@ -41,6 +41,40 @@ export const isHandle = (s) => /^[a-z0-9_]{3,20}$/.test(cleanHandle(s));
 export const isPassword = (s) =>
   typeof s === "string" && s.length >= 8 && s.length <= 100 && /[a-zA-Z]/.test(s) && /[0-9]/.test(s);
 
+// A performance is artist + venue + date, and `concertKey` puts the raw date
+// string straight into that identity, so a date that is only length-clamped can
+// fork one night into two performances and split its lounge, attendance and
+// score aggregation permanently. That is not hypothetical: a row reached the
+// database as "2026 <U+FFFD> 06 <U+FFFD> 21" and became a second Fillmore night.
+//
+// The app's stored format is the DatePicker's "YYYY · MM · DD" (U+00B7), not
+// ISO, so this accepts the separators the product actually writes and only
+// requires that the value denote a real calendar day. It deliberately returns
+// the input unchanged rather than normalizing: rewriting the separator here
+// would give new posts a different identity than existing rows, which is the
+// very fork this guard exists to prevent. Moving the stored date to ISO with a
+// display-time format is the real fix and needs a migration; see HANDOFF.md.
+const DATE_PART = /^(\d{4})\s*[-·./]\s*(\d{2})\s*[-·./]\s*(\d{2})$/;
+
+export const isDate = (s) => {
+  if (typeof s !== "string") return false;
+  const m = DATE_PART.exec(s.trim());
+  if (!m) return false;
+  const [, y, mo, d] = m.map(Number);
+  // 1900 through next year: wide enough for archival logs and announced tours,
+  // narrow enough to catch a mistyped or mangled year.
+  if (y < 1900 || y > new Date().getFullYear() + 1) return false;
+  const parsed = new Date(Date.UTC(y, mo - 1, d));
+  // Rejects 2026-02-31 and friends: Date rolls those over to another day.
+  return parsed.getUTCFullYear() === y && parsed.getUTCMonth() === mo - 1 && parsed.getUTCDate() === d;
+};
+
+// Returns the date as stored, or undefined so `shape()` reports it as invalid.
+export const cleanDate = (s) => {
+  const v = clean(s, { max: LIMITS.date });
+  return isDate(v) ? v : undefined;
+};
+
 export const clampRating = (n) => {
   const v = Number(n);
   if (!Number.isFinite(v)) return 0;

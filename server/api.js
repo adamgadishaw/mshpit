@@ -9,7 +9,7 @@ import { mailConfigured, sendEmail } from "./mailer.js";
 import { db, q, publicUser, artistStmts, publicArtist, artistRow, normName } from "./db.js";
 import { hashPassword, verifyPassword, createSession, destroySession, rateLimit } from "./auth.js";
 import { startCatalogSeed, catalogSeedStatus, stopCatalogSeed, deezerEnrich } from "./catalogSeed.js";
-import { clean, cleanEmail, isEmail, cleanName, isName, cleanHandle, isPassword, clampRating, cleanStringArray, shape, LIMITS } from "./validate.js";
+import { clean, cleanEmail, isEmail, cleanName, isName, cleanHandle, isPassword, clampRating, cleanStringArray, cleanDate, shape, LIMITS } from "./validate.js";
 import { ApiError } from "./errors.js";
 import { createMediaPresign, mediaConfigured } from "./media.js";
 import { discoverySidebar } from "./discovery.js";
@@ -1385,7 +1385,7 @@ export const routes = {
       artist: { required: true, parse: (x) => clean(x, { max: LIMITS.artist }) || undefined },
       venue: { required: true, parse: (x) => clean(x, { max: LIMITS.venue }) || undefined },
       city: { parse: (x) => clean(x, { max: LIMITS.city }) },
-      date: { parse: (x) => clean(x, { max: LIMITS.date }) },
+      date: { parse: cleanDate },
       overall: { required: true, parse: (x) => { const r = clampRating(x); return r > 0 ? r : undefined; } },
       band: { parse: (x) => clampRating(x) },
       room: { parse: (x) => clampRating(x) },
@@ -1453,7 +1453,17 @@ export const routes = {
     textField("artist", LIMITS.artist, { required: true });
     textField("venue", LIMITS.venue, { required: true });
     textField("city", LIMITS.city);
-    textField("date", LIMITS.date);
+    // Same performance-identity guard as create. Validated only when the date
+    // actually changes, so a post already holding a legacy malformed date stays
+    // editable (its owner can still fix the review) while no edit can introduce
+    // or preserve-by-rewrite a date that forks the night into a new performance.
+    if (has("date")) {
+      if (typeof body.date !== "string") throw new ApiError(400, "date is invalid", "VALIDATION_FAILED");
+      const value = clean(body.date, { max: LIMITS.date });
+      // "" clears the field, which is a normal edit and not a forked identity.
+      if (value && value !== (current.date || "") && !cleanDate(value)) throw new ApiError(400, "date is invalid", "VALIDATION_FAILED");
+      next.date = value;
+    }
     textField("review", LIMITS.review, { newlines: true });
     ratingField("overall", { required: true });
     ratingField("band");
@@ -2333,7 +2343,9 @@ export const routes = {
     if (!going && has) db.prepare("DELETE FROM going WHERE user_id=? AND concert_key=?").run(u.id, key);
     else if (going && !has) db.prepare("INSERT INTO going (user_id,concert_key,artist,venue,city,date) VALUES (?,?,?,?,?,?)")
       .run(u.id, key, clean(ctx.body?.artist, { max: LIMITS.artist }) || "", clean(ctx.body?.venue, { max: LIMITS.venue }) || "",
-        clean(ctx.body?.city, { max: LIMITS.city }) || "", clean(ctx.body?.date, { max: LIMITS.date }) || "");
+        // Denormalized display copy only (the key is what identifies the night),
+        // so an unparseable date is dropped rather than refused.
+        clean(ctx.body?.city, { max: LIMITS.city }) || "", cleanDate(ctx.body?.date) || "");
     return { going };
   },
   "GET /api/going/:key/attendees": (ctx) => {

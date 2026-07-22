@@ -240,3 +240,64 @@ test("post edit keeps account restrictions and missing-post behavior", () => {
     (error) => error instanceof ApiError && error.status === 404
   );
 });
+
+// A performance is artist + venue + date and `concertKey` embeds the raw date
+// string, so a malformed date silently forks one night into two. A real row
+// reached the database as "2026 <U+FFFD> 06 <U+FFFD> 21" and split The Fillmore
+// into two performances; the create route now refuses that instead.
+test("post dates must denote a real calendar day, in the format the app writes", () => {
+  const user = addUser("postdates");
+  const create = routes["POST /api/posts"];
+  const base = { artist: "Artist", venue: "Venue", city: "Toronto", overall: 4 };
+
+  // The DatePicker's stored format, and ISO, both survive unchanged: canonical
+  // identity must not shift under existing rows.
+  for (const date of ["2026 · 06 · 21", "2026-06-21"]) {
+    const made = create({ user, ip: "post-date-ok", body: { ...base, date } });
+    assert.equal(made.post.date, date);
+  }
+
+  for (const date of [
+    "2026 � 06 � 21", // the mangled separator that caused the fork
+    "2026-02-31",               // rolls over to March, so it is not a real day
+    "2026-13-01",
+    "tomorrow night",
+    "0219-06-21",
+  ]) {
+    assert.throws(
+      () => create({ user, ip: "post-date-bad", body: { ...base, date } }),
+      (error) => error instanceof ApiError && error.status === 400,
+      `expected ${JSON.stringify(date)} to be refused`,
+    );
+  }
+});
+
+// A post already holding a legacy malformed date must stay editable, or its
+// owner could never fix the review; the edit just cannot introduce a new one.
+test("post edit refuses a new malformed date but does not trap legacy rows", () => {
+  const owner = addUser("postdateedit");
+  db.prepare("INSERT INTO posts (id,user_id,artist,venue,date,overall,created_at) VALUES (?,?,?,?,?,?,?)")
+    .run("post_legacy_date", owner.id, "Artist", "Venue", "2026 � 06 � 21", 4, 300);
+  const edit = routes["PATCH /api/posts/:id"];
+
+  // Resubmitting the stored legacy date alongside a real change is allowed.
+  const kept = edit({
+    user: owner, ip: "post-date-legacy", params: { id: "post_legacy_date" },
+    body: { artist: "Artist", venue: "Venue", date: "2026 � 06 � 21", overall: 4, review: "Fixing my review", version: 300 },
+  });
+  assert.equal(kept.post.review, "Fixing my review");
+
+  assert.throws(
+    () => edit({
+      user: owner, ip: "post-date-worse", params: { id: "post_legacy_date" },
+      body: { artist: "Artist", venue: "Venue", date: "2026 � 07 � 04", overall: 4, version: kept.post.version },
+    }),
+    (error) => error instanceof ApiError && error.status === 400,
+  );
+
+  const fixed = edit({
+    user: owner, ip: "post-date-fix", params: { id: "post_legacy_date" },
+    body: { artist: "Artist", venue: "Venue", date: "2026 · 06 · 21", overall: 4, version: kept.post.version },
+  });
+  assert.equal(fixed.post.date, "2026 · 06 · 21");
+});
