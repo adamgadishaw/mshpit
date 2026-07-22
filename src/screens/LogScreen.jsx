@@ -86,6 +86,10 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
   // the artist page, instead of free text that may match nothing.
   const [artistHits, setArtistHits] = useState([]);
   const [artistPicked, setArtistPicked] = useState(!!editing?.artist || !!prefill?.artist);
+  // The identity behind the name. Picking a suggestion binds the review to that
+  // catalog entity; typing over it drops the binding, so free text can never
+  // inherit the last artist's page. The server re-checks this before storing.
+  const [artistKey, setArtistKey] = useState(editing?.artistKey || null);
   useEffect(() => {
     const q = artist.trim();
     if (artistPicked || q.length < 2) { setArtistHits([]); return; }
@@ -209,13 +213,13 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
   const stash = () => {
     if (editing) return;
     if (submitBusy) return;
-    const id = saveDraft({ id: draftId, artist, venue, city, tour, date, dims, review, tags, song, photos: photos.filter(isDurableMediaUrl) });
+    const id = saveDraft({ id: draftId, artist, artistKey, venue, city, tour, date, dims, review, tags, song, photos: photos.filter(isDurableMediaUrl) });
     setDraftId(id);
     onCancel?.();
   };
   const resume = (d) => {
     setDraftId(d.id);
-    setArtist(d.artist || ""); setArtistPicked(!!d.artist); setVenue(d.venue || ""); setVenuePicked(!!d.venue); setCity(d.city || "");
+    setArtist(d.artist || ""); setArtistPicked(!!d.artist); setArtistKey(d.artistKey || null); setVenue(d.venue || ""); setVenuePicked(!!d.venue); setCity(d.city || "");
     setTour(d.tour || ""); setDate(toIsoDate(d.date) || d.date || todayStr); setDims(d.dims || dims); setReview(d.review || ""); setTags(Array.isArray(d.tags) ? d.tags.slice(0, 5) : []); setSong(d.song || null); setSongUrl(d.song?.url || ""); setPhotos((d.photos || []).filter(isDurableMediaUrl));
   };
   const hasContent = artist.trim() || venue.trim() || review.trim() || photos.length || song?.videoId;
@@ -253,6 +257,7 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
           : { name: "You", handle: "you", initials: "YOU" }),
         timeAgo: editing?.timeAgo || "now",
         artist: artist.trim(),
+        artistKey: artistPicked ? artistKey : null,
         venue: venue.trim(),
         city: city.trim(),
         tour: tour.trim() || null,
@@ -345,16 +350,22 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
             placeholder="Artist"
             placeholderTextColor={colors.textFaint}
             value={artist}
-            onChangeText={(t) => { setArtist(t); setArtistPicked(false); }}
+            onChangeText={(t) => { setArtist(t); setArtistPicked(false); setArtistKey(null); }}
             autoCapitalize="words"
           />
           {artistHits.length > 0 && (
             <View style={styles.hits}>
               {artistHits.map((h) => (
-                <Pressable key={h.name} style={styles.hit} onPress={() => { setArtist(h.name); setArtistPicked(true); setArtistHits([]); }}>
+                <Pressable key={h.key || h.name} style={styles.hit} onPress={() => { setArtist(h.name); setArtistKey(h.key || h.norm || h.name); setArtistPicked(true); setArtistHits([]); }}>
                   <Icon name="music" size={13} color={colors.amber} />
                   <Text style={styles.hitName} numberOfLines={1}>{h.name}</Text>
-                  {!!h.genre && <Text style={styles.hitGenre} numberOfLines={1}>{h.genre}</Text>}
+                  {/* Disambiguating evidence, so two same-named acts are
+                      distinguishable before one gets bound to the review. */}
+                  {!!(h.genre || h.country || h.formed) && (
+                    <Text style={styles.hitGenre} numberOfLines={1}>
+                      {[h.genre, h.country, h.formed].filter(Boolean).join(" · ")}
+                    </Text>
+                  )}
                 </Pressable>
               ))}
             </View>

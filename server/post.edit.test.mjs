@@ -287,3 +287,54 @@ test("editing a post repairs a legacy date instead of rejecting its owner", () =
     (error) => error instanceof ApiError && error.status === 400,
   );
 });
+
+// A review used to point at an artist only by display name, so two acts sharing
+// a name were the same entity and free text silently inherited a page it had no
+// claim to. Posts now carry a catalog binding the server re-checks.
+test("a review binds to the catalog entity it picked, and free text does not", () => {
+  const user = addUser("entitybinder");
+  const create = routes["POST /api/posts"];
+  const base = { venue: "The Fillmore", city: "SF", overall: 4 };
+
+  db.prepare("INSERT OR REPLACE INTO artists (norm,name,mbid,rank_score,source,created_at,updated_at) VALUES (?,?,?,?,?,?,?)")
+    .run("the binding test band", "The Binding Test Band", "mb-binding-test", 10, "test", 1, 1);
+
+  // Picking the suggestion binds the review to that artist and carries its
+  // provider identity across.
+  const bound = create({ user, ip: "bind-ok", body: { ...base, artist: "The Binding Test Band", artistKey: "the binding test band" } });
+  assert.equal(bound.post.artistKey, "the binding test band");
+  assert.equal(bound.post.artistMbid, "mb-binding-test");
+  assert.equal(bound.post.venueKey, "the fillmore");
+
+  // Free text for an artist that is not in the catalog stays unbound: the post
+  // is still saved, it just does not claim an entity.
+  const free = create({ user, ip: "bind-free", body: { ...base, artist: "Some Local Band" } });
+  assert.equal(free.post.artistKey, null);
+  assert.equal(free.post.artistMbid, null);
+
+  // A key that does not match the submitted name is refused rather than trusted,
+  // so a stale or forged key cannot attach a review to the wrong act.
+  const forged = create({ user, ip: "bind-forge", body: { ...base, artist: "Some Local Band", artistKey: "the binding test band" } });
+  assert.equal(forged.post.artistKey, null, "a mismatched key must not bind");
+});
+
+test("editing re-resolves the binding instead of leaving it on the old artist", () => {
+  const user = addUser("entityeditor");
+  const create = routes["POST /api/posts"];
+  const edit = routes["PATCH /api/posts/:id"];
+  db.prepare("INSERT OR REPLACE INTO artists (norm,name,mbid,rank_score,source,created_at,updated_at) VALUES (?,?,?,?,?,?,?)")
+    .run("rebind test act", "Rebind Test Act", "mb-rebind", 10, "test", 1, 1);
+
+  const made = create({ user, ip: "rebind", body: { artist: "Rebind Test Act", artistKey: "rebind test act", venue: "Room A", overall: 4 } });
+  assert.equal(made.post.artistKey, "rebind test act");
+
+  // Retyping the artist as something uncatalogued drops the binding, rather
+  // than leaving the review filed under the previous act.
+  const renamed = edit({
+    user, ip: "rebind-free", params: { id: made.id },
+    body: { artist: "A Different Band", venue: "Room A", overall: 4, version: made.post.version },
+  });
+  assert.equal(renamed.post.artist, "A Different Band");
+  assert.equal(renamed.post.artistKey, null);
+  assert.equal(renamed.post.venueKey, "room a");
+});

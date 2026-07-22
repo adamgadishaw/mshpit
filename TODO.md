@@ -218,21 +218,37 @@ Acceptance criteria:
 
 ### 10. Venue and artist preselection
 
-**Status: PARTIAL.**
+**Status: PARTIAL; entity binding shipped, same-name artists still blocked on the
+catalog's primary key.**
 
-Concert logging now searches venue entities, fills the canonical venue/city, and
-requires an artist, venue, and rating instead of saving fake unknown placeholders.
-Artist selection still relies too heavily on a name rather than a stable provider
-identity.
+Posts now carry `artist_key`, `artist_mbid` and `venue_key` alongside the display
+strings. Picking a suggestion binds the review to that catalog entity and its
+MusicBrainz identity; typing over the field drops the binding, so free text can
+never inherit the page of the artist that was there before. The server re-resolves
+the key and refuses one that does not match the submitted name, so a stale or
+forged key cannot attach a review to the wrong act. Editing re-resolves too, and
+drafts round-trip the binding. Suggestions now show genre/country/formed year as
+disambiguating evidence.
 
-Acceptance criteria:
+Verified by API tests (bind, free text, forged key, edit re-bind) and live:
+picking Turnstile stored `turnstile` + mbid `7b748dac…`, free text stored no
+artist key.
 
-- Artist and venue suggestions display disambiguating evidence and store stable
-  Pit/provider IDs; free text cannot silently bind to the wrong entity.
-- Editing/restoring a draft preserves the chosen entity. Missing venues support
-  an explicit, moderated suggestion flow rather than a fabricated placeholder.
-- Same-name artist and same-name venue fixtures round-trip through create/edit/
-  feed/detail with the correct canonical entity.
+Remaining:
+
+- **Same-name artists genuinely cannot coexist**: `artists.norm` (the normalized
+  display name) is the table's PRIMARY KEY, so two different acts called "Nirvana"
+  collapse to one row. The stored `artist_mbid` is the identity that would tell
+  them apart, so the fix is to key the catalog on a surrogate id with `norm` as a
+  lookup index, then let suggestions offer both. That is a catalog migration and
+  is not done; until then the same-name fixture in the acceptance criteria cannot
+  pass and should not be claimed.
+- Venues are still bundled catalog data rather than a table, so `venue_key` is the
+  normalized name. Two same-named rooms in different cities remain one key.
+- Missing venues still have no moderated suggestion flow; the composer requires an
+  existing venue instead of fabricating a placeholder, which was the urgent half.
+- Existing posts have null bindings. They resolve by name as before, so nothing
+  regresses; a backfill could bind them where the name is unambiguous.
 
 ### 11. General YouTube attachments in posts
 

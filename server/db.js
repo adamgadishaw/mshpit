@@ -482,6 +482,12 @@ for (const stmt of [
   "ALTER TABLE yt_cache ADD COLUMN score REAL",
   "ALTER TABLE yt_cache ADD COLUMN expires_at INTEGER",
   "ALTER TABLE yt_cache ADD COLUMN rejected_ids TEXT NOT NULL DEFAULT '[]'",
+  // A review pointed at an entity only by display name, so "The Fillmore" and a
+  // same-named room in another city were the same thing. These bind a post to a
+  // canonical catalog entity; the display strings stay for what the user typed.
+  "ALTER TABLE posts ADD COLUMN artist_key TEXT",
+  "ALTER TABLE posts ADD COLUMN artist_mbid TEXT",
+  "ALTER TABLE posts ADD COLUMN venue_key TEXT",
 ]) { try { db.exec(stmt); } catch {} }
 
 // Analytics never needs a network address once request-level rate limiting is
@@ -663,7 +669,11 @@ export function publicArtist(r) {
   const record = resolveGenre(storedClaims(data, r.genre));
   const shown = displayGenre(record);
   return {
-    ...data, name: r.name, photo: r.photo, bio: r.bio, mbid: r.mbid, spotifyId: r.spotify_id,
+    // `key` is the catalog's stable identity. The composer sends it back when a
+    // suggestion is picked, so a review binds to this artist rather than to
+    // whatever string was typed.
+    ...data, key: r.norm, name: r.name, photo: r.photo, bio: r.bio, mbid: r.mbid, spotifyId: r.spotify_id,
+    formed: r.formed || null,
     country: r.country, popularity: r.popularity,
     genre: shown,
     genreHint: shown ? null : (record?.value || null),

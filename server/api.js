@@ -187,8 +187,26 @@ function cleanPostRatingDims(value) {
   return out;
 }
 
-const postRow = db.prepare(`INSERT INTO posts (id,user_id,artist,venue,city,date,overall,band,room,dims,review,photos,photos_public,setlist,tour,tags,kind,song,playlist,created_at)
-                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+const postRow = db.prepare(`INSERT INTO posts (id,user_id,artist,venue,city,date,overall,band,room,dims,review,photos,photos_public,setlist,tour,tags,kind,song,playlist,artist_key,artist_mbid,venue_key,created_at)
+                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+
+// A review binds to a catalog entity, not to whatever the user typed. The client
+// sends the key it picked from the suggestion list; the server only accepts it
+// when it resolves to a real artist AND still matches the submitted name, so a
+// stale or forged key cannot silently attach a review to the wrong act. Free
+// text stays allowed, it just does not earn an entity binding.
+function resolveArtistBinding(name, claimedKey) {
+  const key = normName(clean(claimedKey, { max: 120 }) || name);
+  if (!key) return { artist_key: null, artist_mbid: null };
+  const row = artistStmts.byNorm.get(key);
+  if (!row || normName(row.name) !== normName(name)) return { artist_key: null, artist_mbid: null };
+  return { artist_key: row.norm, artist_mbid: row.mbid || null };
+}
+
+// Venues live in the bundled catalog rather than a table, so the normalized name
+// is the stable key. Recording it means a same-named room in another city is a
+// different venue the moment the catalog can tell them apart.
+const venueBinding = (name) => normName(clean(name, { max: LIMITS.venue })) || null;
 
 // A tagged YouTube video on a post. Only the canonical video id is authoritative.
 // Build the thumbnail URL ourselves so a post cannot persist an arbitrary remote
@@ -374,6 +392,7 @@ function postJson(p, viewerId) {
     kind: p.kind || "review",
     user: { name: p.u_name, handle: p.u_handle, initials: p.u_initials, avatarUri: p.u_avatar, avatarColor: p.u_color },
     artist: p.artist, venue: p.venue, city: p.city, date: p.date,
+    artistKey: p.artist_key || null, artistMbid: p.artist_mbid || null, venueKey: p.venue_key || null,
     overall: p.overall, band: p.band, room: p.room, dims: JSON.parse(p.dims || "{}"), review: p.review,
     photos: JSON.parse(p.photos || "[]"), photosPublic: !!p.photos_public,
     setlist: JSON.parse(p.setlist || "[]"),
@@ -1378,7 +1397,7 @@ export const routes = {
       const id = uid("p");
       postRow.run(id, u.id, "", "", "", "", 0, null, null,
         "{}", text, JSON.stringify(photos), v.photosPublic ?? 1, "[]", null,
-        "[]", "status", v.song ? JSON.stringify(v.song) : null, playlist ? JSON.stringify(playlist) : null, now());
+        "[]", "status", v.song ? JSON.stringify(v.song) : null, playlist ? JSON.stringify(playlist) : null, null, null, null, now());
       return { id, post: postJson(feedPostById.get(id), u.id) };
     }
 
@@ -1401,9 +1420,11 @@ export const routes = {
     });
     if (errs.length) throw new ApiError(400, errs[0]);
     const id = uid("p");
+    const binding = resolveArtistBinding(v.artist, ctx.body?.artistKey);
     postRow.run(id, u.id, v.artist, v.venue, v.city || "", v.date || "", v.overall, v.band ?? null, v.room ?? null,
       JSON.stringify(v.dims || {}), v.review || "", JSON.stringify(v.photos || []), v.photosPublic ?? 0, JSON.stringify(v.setlist || []), v.tour || null,
-      JSON.stringify(v.tags || []), "review", v.song ? JSON.stringify(v.song) : null, null, now());
+      JSON.stringify(v.tags || []), "review", v.song ? JSON.stringify(v.song) : null, null,
+      binding.artist_key, binding.artist_mbid, venueBinding(v.venue), now());
     return { id, post: postJson(feedPostById.get(id), u.id) };
   },
 
@@ -1520,8 +1541,15 @@ export const routes = {
     }
 
     const editedAt = Math.max(now(), currentVersion + 1);
-    db.prepare(`UPDATE posts SET artist=?,venue=?,city=?,date=?,overall=?,band=?,room=?,dims=?,review=?,photos=?,photos_public=?,setlist=?,tour=?,tags=?,song=?,playlist=?,updated_at=? WHERE id=?`)
-      .run(next.artist, next.venue, next.city, next.date, next.overall, next.band, next.room, next.dims, next.review, next.photos, next.photos_public, next.setlist, next.tour, next.tags, next.song, next.playlist, editedAt, current.id);
+    // Re-resolve the binding on every edit: renaming the artist must move the
+    // review to that artist's page, and retyping it as free text must drop the
+    // binding rather than leave the post pointing at the previous entity.
+    const editBinding = current.kind === "status"
+      ? { artist_key: null, artist_mbid: null }
+      : resolveArtistBinding(next.artist, has("artistKey") ? body.artistKey : current.artist_key);
+    db.prepare(`UPDATE posts SET artist=?,venue=?,city=?,date=?,overall=?,band=?,room=?,dims=?,review=?,photos=?,photos_public=?,setlist=?,tour=?,tags=?,song=?,playlist=?,artist_key=?,artist_mbid=?,venue_key=?,updated_at=? WHERE id=?`)
+      .run(next.artist, next.venue, next.city, next.date, next.overall, next.band, next.room, next.dims, next.review, next.photos, next.photos_public, next.setlist, next.tour, next.tags, next.song, next.playlist,
+        editBinding.artist_key, editBinding.artist_mbid, current.kind === "status" ? null : venueBinding(next.venue), editedAt, current.id);
     return { post: postJson(feedPostById.get(current.id), u.id) };
   },
 
