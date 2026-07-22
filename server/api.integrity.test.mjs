@@ -73,6 +73,57 @@ test("PATCH /api/me rejects oversized extras and keeps trusted fields authoritat
   assert.equal(result.user.consentAt, 123);
 });
 
+test("analytics is consented, allow-listed, IP-free, aggregated, and admin-only", () => {
+  addUser("u_analytics_member", "analytics-member@example.com", "analyticsmember");
+  db.prepare("UPDATE users SET extras=? WHERE id=?").run(JSON.stringify({ consentAt: Date.now(), termsVersion: "2026-07" }), "u_analytics_member");
+  const member = q.userById.get("u_analytics_member");
+  const ingest = routes["POST /api/events"];
+  const result = ingest({
+    user: member,
+    ip: "203.0.113.44",
+    body: { events: [
+      { name: "search", props: { q: "shoegaze", secret: "must disappear" } },
+      { name: "search", props: { q: "shoegaze" } },
+      { name: "search", props: { q: "shoegaze" } },
+      { name: "search", props: { q: "person@example.com" } },
+      { name: "play", props: { artist: "The Artist", title: "The Song", token: "private" } },
+      { name: "arbitrary_client_event", props: { anything: "no" } },
+    ] },
+  });
+  assert.equal(result.stored, 5);
+  const rows = db.prepare("SELECT name,props,ip FROM events WHERE user_id=? ORDER BY created_at,id").all(member.id);
+  assert.equal(rows.every((row) => row.ip == null), true);
+  assert.deepEqual(JSON.parse(rows.find((row) => row.name === "play").props), { artist: "The Artist", title: "The Song" });
+  assert.equal(rows.some((row) => row.name === "arbitrary_client_event"), false);
+  assert.equal(rows.some((row) => row.props.includes("example.com")), false);
+  assert.equal(ingest({ user: null, ip: "203.0.113.45", body: { events: [{ name: "search", props: { q: "guest" } }] } }).stored, 0);
+
+  addUser("u_analytics_admin", "analytics-admin@example.com", "analyticsadmin");
+  db.prepare("UPDATE users SET role='admin' WHERE id=?").run("u_analytics_admin");
+  const admin = q.userById.get("u_analytics_admin");
+  const dashboard = routes["GET /api/admin/analytics"]({ user: admin });
+  assert.ok(dashboard.topSearches.some((entry) => entry.label === "shoegaze" && entry.count === 3));
+  assert.equal(dashboard.growth.length, 30);
+  assert.equal(dashboard.retentionDays >= 30, true);
+  const detail = routes["GET /api/admin/analytics/users/:id"]({ user: admin, params: { id: member.id } });
+  assert.equal(detail.totals.events, 5);
+  assert.equal(detail.recent.find((event) => event.name === "search").props.q, undefined);
+  assert.throws(() => routes["GET /api/admin/analytics"]({ user: member }), (error) => error.status === 403);
+
+  const updated = routes["PATCH /api/me"]({
+    user: member,
+    ip: "profile-test",
+    body: { extras: { consentAt: Date.now(), termsVersion: "2026-07", analyticsOptOut: true } },
+  });
+  assert.equal(updated.user.analyticsOptOut, true);
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM events WHERE user_id=?").get(member.id).count, 0);
+  assert.equal(ingest({
+    user: q.userById.get(member.id),
+    ip: "203.0.113.46",
+    body: { events: [{ name: "play", props: { artist: "No", title: "Tracking" } }] },
+  }).stored, 0);
+});
+
 test("capped social endpoints return the newest window in chronological order", () => {
   const userA = addUser("u_a", "a@example.com", "usera");
   addUser("u_b", "b@example.com", "userb");
@@ -92,6 +143,9 @@ test("capped social endpoints return the newest window in chronological order", 
   const threads = routes["GET /api/me/threads"]({ user: userA });
   assert.equal(threads.threads[0].messages[0].createdAt, 6);
   assert.equal(threads.threads[0].messages.at(-1).createdAt, 505);
+  const threadSummary = routes["GET /api/me/threads"]({ user: userA, query: { summary: "1" } });
+  assert.equal(threadSummary.threads.length, 1);
+  assert.deepEqual(threadSummary.threads[0].messages.map((message) => message.createdAt), [505]);
 
   for (let i = 506; i <= 508; i++) insertDm.run(`dm_${String(i).padStart(4, "0")}`, "u_a", "u_b", `dm ${i}`, i);
   const newerDirect = routes["GET /api/dms/:otherId"]({ user: userA, params: { otherId: "u_b" }, query: { after: direct.syncCursor, limit: 2 } });
@@ -297,6 +351,77 @@ test("blocking closes direct profile, content, interaction, and community read p
   assert.equal(routes["GET /api/going/:key/attendees"]({ user: blocker, params: { key: "show-block-matrix" } }).attendees.length, 0);
   assert.equal(routes["GET /api/venues/:key/reviews"]({ user: blocker, params: { key: "venue" } }).reviews.length, 0);
   assert.equal(routes["GET /api/me/notifications"]({ user: blocker }).unread, 0);
+});
+
+test("comment reads and author deletion preserve thread integrity and post visibility", () => {
+  const owner = addUser("u_comment_owner", "comment-owner@example.com", "commentowner");
+  const replier = addUser("u_comment_replier", "comment-replier@example.com", "commentreplier");
+  const stranger = addUser("u_comment_stranger", "comment-stranger@example.com", "commentstranger");
+  db.prepare("INSERT INTO posts (id,user_id,artist,venue,overall,created_at) VALUES (?,?,?,?,?,?)")
+    .run("post_comment_integrity", owner.id, "Artist", "Venue", 4, 100);
+  const insert = db.prepare("INSERT INTO comments (id,post_id,user_id,text,parent_id,created_at) VALUES (?,?,?,?,?,?)");
+  insert.run("comment_leaf", "post_comment_integrity", owner.id, "leaf", null, 101);
+  insert.run("comment_parent", "post_comment_integrity", owner.id, "parent", null, 102);
+  insert.run("comment_child", "post_comment_integrity", replier.id, "child", "comment_parent", 103);
+
+  const remove = routes["DELETE /api/posts/:postId/comments/:id"];
+  const ownerContext = (id) => ({ user: owner, ip: `comment-delete-${id}`, params: { postId: "post_comment_integrity", id } });
+  assert.equal(remove(ownerContext("comment_leaf")).tombstone, false);
+  assert.equal(remove(ownerContext("comment_leaf")).tombstone, false); // desired-state/idempotent
+  assert.throws(
+    () => remove({ user: stranger, ip: "comment-delete-stranger", params: { postId: "post_comment_integrity", id: "comment_parent" } }),
+    (error) => error.status === 404,
+  );
+  assert.equal(remove(ownerContext("comment_parent")).tombstone, true);
+
+  const thread = routes["GET /api/posts/:id/comments"]({ user: stranger, params: { id: "post_comment_integrity" } });
+  assert.equal(thread.comments.some((comment) => comment.id === "comment_leaf"), false);
+  const parent = thread.comments.find((comment) => comment.id === "comment_parent");
+  assert.equal(parent.deleted, true);
+  assert.equal(parent.text, "");
+  assert.equal(thread.comments.find((comment) => comment.id === "comment_child").parentId, "comment_parent");
+  assert.ok(thread.removedIds.includes("comment_leaf"));
+
+  db.prepare("INSERT INTO posts (id,user_id,artist,venue,overall,created_at) VALUES (?,?,?,?,?,?)")
+    .run("post_comment_blocked", owner.id, "Artist", "Venue", 4, 200);
+  routes["POST /api/users/:id/block"]({ user: stranger, ip: "comment-block", params: { id: owner.id }, body: { blocked: true } });
+  assert.throws(
+    () => routes["GET /api/posts/:id/comments"]({ user: stranger, params: { id: "post_comment_blocked" } }),
+    (error) => error.status === 403,
+  );
+  db.prepare("UPDATE posts SET removed=1 WHERE id=?").run("post_comment_integrity");
+  assert.throws(
+    () => routes["GET /api/posts/:id/comments"]({ user: owner, params: { id: "post_comment_integrity" } }),
+    (error) => error.status === 404,
+  );
+});
+
+test("track reports preserve a constrained playback category and replacement candidate", () => {
+  const listener = addUser("u_track_report", "track-report@example.com", "trackreport");
+  const handler = routes["POST /api/tracks/report"];
+  const result = handler({
+    user: listener,
+    ip: "track-report",
+    body: {
+      title: "The Song",
+      artist: "The Artist",
+      category: "wont_play",
+      url: "https://youtu.be/dQw4w9WgXcQ",
+      note: "Player showed an unavailable message",
+    },
+  });
+  const stored = db.prepare("SELECT reason FROM reports WHERE id=?").get(result.id);
+  assert.deepEqual(JSON.parse(stored.reason), {
+    title: "The Song",
+    artist: "The Artist",
+    category: "wont_play",
+    suggestedVideoId: "dQw4w9WgXcQ",
+    note: "Player showed an unavailable message",
+  });
+  assert.throws(
+    () => handler({ user: listener, ip: "track-report-invalid", body: { title: "Another Song", category: "database_is_broken" } }),
+    (error) => error.code === "VALIDATION_FAILED",
+  );
 });
 
 test("moderators have real bounded actions and every content change is audited", () => {

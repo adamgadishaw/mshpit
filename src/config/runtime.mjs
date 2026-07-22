@@ -13,3 +13,8 @@ export const ENABLE_DEMO_DATA = demoDataEnabled(
   IS_DEVELOPMENT,
   process.env.EXPO_PUBLIC_ENABLE_DEMO_DATA,
 );
+
+// Clips remains in the source tree and API contract for a later media-pipeline
+// pass, but is deliberately absent from navigation during ALPHA. Keeping this a
+// named gate avoids deleting the work or scattering temporary booleans in UI.
+export const ENABLE_CLIPS = false;

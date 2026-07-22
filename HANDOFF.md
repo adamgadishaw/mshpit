@@ -2,7 +2,7 @@
 
 > **Living doc.** Whoever works on this next: read this first, and UPDATE it before you end a session (move things between "Done" and "Backlog", note anything running). Point a fresh Claude Code chat at this file to get up to speed without re-explaining.
 >
-> Last updated: **2026-07-21** (recovered vanished Claude requests; see `CLAUDE_SESSION_RECOVERY_2026-07-21.md`)
+> Last updated: **2026-07-22** (recovered-backlog batch 1 verified + committed; see `TODO.md`)
 
 > **Working agreement (owner's standing instruction):** ALWAYS `git commit` **and** `git push` after a verified batch. Stabilization work uses a review branch; do not merge/push directly to `master` until the branch checks pass. A master push auto-deploys and briefly restarts Render.
 
@@ -40,6 +40,63 @@ verified live (`git log origin/master..HEAD` is empty; tree clean).
 | `MAIL_FROM` | ❌ **THE LAST GAP.** Two parts: (1) set `MAIL_FROM = Pit <noreply@mshpit.com>` on Render (health shows `mailConfigured: false`, so this or the key is still missing there); (2) **verify `mshpit.com` in Resend** (the account has **zero verified domains**, so any send from `@mshpit.com` is rejected regardless). Add Resend's DNS records in **Cloudflare** (DNS now lives there), set the mail records to **DNS-only / grey cloud**, then click Verify. | Resend dashboard (Cloudflare DNS) + Render env | Reset email silently fails; links keep getting logged instead. |
 
 `YOUTUBE_API_KEY` is already set (`youtubeConfigured: true`). Nothing to do.
+
+## Recovered-backlog batch 1 verified and committed (2026-07-22, Claude)
+
+Branch: `codex/recovered-backlog-batch-1`. The previous session wrote this batch
+but ran out of budget before running a single check, so nothing was committed and
+no gate had been executed. This session verified it and fixed what verification
+found. `TODO.md` is the item-by-item status list; this is the evidence record.
+
+**Automated gates (all green on the working tree):** `npm run test` 67/67,
+`npm run check:syntax` 51 files, `npm run build:web` exports clean.
+
+**Local browser run** (dev API on `:3000` serving the fresh `dist`, Chromium at
+1280x720 and 375x812, two throwaway accounts created through `/api/signup`):
+
+- `/api/health` returns the new capacity block: `youtubeLookup.search`
+  `{used:0, limit:90, remaining:90}`, `circuitOpen:false`, `inFlight:0`.
+- Comments: parent + reply + owner delete round-trips. The delete response
+  returns `tombstone:true`, the parent comes back with empty text, and the child
+  reply keeps its `parentId`. Nested replies render on the feed card.
+- Messages: `GET /api/people?q=` searches members, `POST /api/dms/:otherId`
+  sends, `GET /api/me/threads?summary=1` returns one latest message per thread
+  ordered by recency. The Inbox **New message** panel finds members by name and
+  correctly excludes the signed-in account.
+- Theme: choosing Lavender writes `pit_theme` + `pit_theme_owner` (the account
+  id) and persists to the server (`/api/me` → `theme: "lavender"`). Log out
+  clears **both** keys and returns to the default. All 12 themes are listed.
+- Clips: no nav entry, no aria-label, no text match anywhere in the signed-in or
+  guest shell.
+- Desktop scrubber: with a track playing, the track element measures 231px inside
+  a 331px row in a 355px column, so it stretches instead of collapsing. Clicking
+  at 75% of a 30s preview seeks to 0:23.
+- Playback falls back to a Deezer preview labeled `PREVIEW AUDIO` when
+  `YOUTUBE_API_KEY` is unset locally, which is the intended honest fallback.
+- Mobile (375px): the compact bar's play control measures 54x54.
+
+**Fixed during verification:** `src/components/AfterpartyPreview.jsx` rendered a
+deleted-parent tombstone in the feed card as an empty bubble with a `?` avatar.
+The card preview now filters tombstones out; `PostScreen` and `AfterpartySection`
+still render them as "Comment deleted" so replies keep their context.
+
+**Also added:** an `api` entry in `.claude/launch.json` so the next session can
+start the local API without a shell.
+
+**Not verified, still open:**
+
+- Real iOS/Android devices for item 13. On web the player's minimize control is
+  34x34 and the nav Menu button is 40x40, both under the 44pt target the item
+  asks for. The album shuffle/play rows (34x34) and the wrong-video report button
+  (30x30) are the same story but predate this batch.
+- Two-device realtime: an out-of-band DM did not appear in an already-open Inbox
+  until reload. The in-app send path updates locally, so this needs a real
+  two-client check before item 5 can be accepted.
+- Items 1, 2, 7, 10, 15 stay PARTIAL/OPEN for the reasons in `TODO.md`. Nothing
+  here changes the Resend configuration gap above.
+- Artist screen shows `2026 � 06 � 21` on one seeded performance row and a
+  leftover `Spotify` label in the gallery strip. Both are data/copy issues that
+  predate this batch and are not tracked in `TODO.md` yet.
 
 ## Song sourcing rebuilt around the artist's own channel (2026-07-18)
 

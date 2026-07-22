@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { View, Text, StyleSheet, Pressable, Image, ScrollView, Platform, useWindowDimensions } from "react-native";
+import { Modal, View, Text, StyleSheet, Pressable, Image, ScrollView, Platform, useWindowDimensions } from "react-native";
 import { colors, radius, mono, shadow } from "../theme";
 import { useStore } from "../store";
 import { useYouTubePlayer } from "../lib/youtubePlayer";
@@ -137,6 +137,7 @@ export default function PlayerBar({
   const { resolveYouTube, invalidateYouTube, resolveDeezerPreview } = useStore();
   const column = layout === "column";
   const { width: winWidth } = useWindowDimensions();
+  const compactMobile = !column && winWidth < 700;
   const list = player && Array.isArray(player.list) ? player.list : [];
   const index = Math.max(0, Math.min(player?.index || 0, list.length - 1));
   const cur = list[index];
@@ -628,7 +629,7 @@ export default function PlayerBar({
               })}
               {history.length > 0 && <Text style={styles.groupLabel}>RECENTLY PLAYED</Text>}
               {history.slice(0, 8).map((t, j) => (
-                <Pressable key={`history:${j}:${trackKey(t) || "track"}`} style={styles.qRow} onPress={() => onPlayTrack?.({ kind: "track", url: t.url, id: t.id, preview: t.preview, title: t.title, artist: t.artist, art: t.art })} accessibilityRole="button" accessibilityLabel={`Play ${t.title} again`}>
+                <Pressable key={`history:${j}:${trackKey(t) || "track"}`} style={styles.qRow} onPress={() => onPlayTrack?.(playlistTrack(t))} accessibilityRole="button" accessibilityLabel={`Play ${t.title} again`}>
                   {t.art ? <Image source={{ uri: t.art }} style={styles.qArt} /> : <View style={[styles.qArt, styles.artEmpty]}><Icon name="music" size={12} color={colors.textFaint} /></View>}
                   <View style={{ flex: 1 }}><Text style={styles.qTitle} numberOfLines={1}>{t.title}</Text><Text style={styles.qArtist} numberOfLines={1}>{t.artist}</Text></View>
                   {onAddToPlaylist && <Pressable style={styles.qAct} onPress={() => onAddToPlaylist(playlistTrack(t))} accessibilityRole="button" accessibilityLabel={`Add ${t.title} to a playlist`}><Icon name="plus" size={14} color={colors.textDim} /></Pressable>}
@@ -664,28 +665,43 @@ export default function PlayerBar({
             : <Text style={styles.sub} numberOfLines={1}>{statusLine}</Text>}
         </Pressable>
 
-        <Ctrl icon="chevron-left" onPress={goPrev} disabled={index <= 0} />
-        <Pressable style={[styles.ctrl, styles.play, !scrubbable && styles.ctrlOff]} onPress={playPause} hitSlop={6} disabled={!scrubbable}>
-          {(connecting || resolving) && !scrubbable
-            ? <View style={styles.dots}><View style={styles.dotDark} /><View style={styles.dotDark} /><View style={styles.dotDark} /></View>
-            : playing ? <View style={styles.pauseGlyph}><View style={styles.pauseBar} /><View style={styles.pauseBar} /></View> : <Icon name="play" size={16} color="#1A1206" />}
-        </Pressable>
-        <Ctrl icon="chevron-right" onPress={goNext} disabled={index >= list.length - 1} />
+        {compactMobile ? (
+          <>
+            <Pressable style={[styles.mobilePlay, !scrubbable && styles.ctrlOff]} onPress={playPause} disabled={!scrubbable} accessibilityRole="button" accessibilityLabel={playing ? "Pause" : "Play"}>
+              {(connecting || resolving) && !scrubbable
+                ? <View style={styles.dots}><View style={styles.dotDark} /><View style={styles.dotDark} /><View style={styles.dotDark} /></View>
+                : playing ? <View style={styles.pauseGlyph}><View style={styles.pauseBar} /><View style={styles.pauseBar} /></View> : <Icon name="play" size={19} color="#1A1206" />}
+            </Pressable>
+            <Pressable style={[styles.mobileMenu, panelOpen && styles.queueBtnOn]} onPress={togglePanel} accessibilityRole="button" accessibilityState={{ expanded: panelOpen }} accessibilityLabel={`Open player controls, ${upNext.length} up next`}>
+              <Icon name="feed" size={18} color={panelOpen ? colors.amber : colors.textDim} />
+            </Pressable>
+          </>
+        ) : (
+          <>
+            <Ctrl icon="chevron-left" onPress={goPrev} disabled={index <= 0} />
+            <Pressable style={[styles.ctrl, styles.play, !scrubbable && styles.ctrlOff]} onPress={playPause} hitSlop={6} disabled={!scrubbable}>
+              {(connecting || resolving) && !scrubbable
+                ? <View style={styles.dots}><View style={styles.dotDark} /><View style={styles.dotDark} /><View style={styles.dotDark} /></View>
+                : playing ? <View style={styles.pauseGlyph}><View style={styles.pauseBar} /><View style={styles.pauseBar} /></View> : <Icon name="play" size={16} color="#1A1206" />}
+            </Pressable>
+            <Ctrl icon="chevron-right" onPress={goNext} disabled={index >= list.length - 1} />
 
-        {(multi || history.length > 0) && (
-          <Pressable style={[styles.queueBtn, panelOpen && styles.queueBtnOn]} onPress={togglePanel} hitSlop={6} accessibilityRole="button" accessibilityState={{ expanded: panelOpen }} accessibilityLabel={`${panelOpen ? "Hide" : "Show"} listening session, ${upNext.length} up next`}>
-            <Icon name="feed" size={13} color={panelOpen ? colors.amber : colors.textDim} />
-            <Text style={[styles.queueTxt, panelOpen && { color: colors.amber }]}>{upNext.length}</Text>
-          </Pressable>
+            {(multi || history.length > 0) && (
+              <Pressable style={[styles.queueBtn, panelOpen && styles.queueBtnOn]} onPress={togglePanel} hitSlop={6} accessibilityRole="button" accessibilityState={{ expanded: panelOpen }} accessibilityLabel={`${panelOpen ? "Hide" : "Show"} listening session, ${upNext.length} up next`}>
+                <Icon name="feed" size={13} color={panelOpen ? colors.amber : colors.textDim} />
+                <Text style={[styles.queueTxt, panelOpen && { color: colors.amber }]}>{upNext.length}</Text>
+              </Pressable>
+            )}
+            {ytActive && (
+              <Pressable style={[styles.queueBtn, showVideo && styles.queueBtnOn]} onPress={() => setShowVideo((v) => { if (v) yt.pause(); return !v; })} hitSlop={6} accessibilityRole="button" accessibilityState={{ selected: showVideo }} accessibilityLabel={showVideo ? "Hide video" : "Show video"}>
+                <Icon name="play" size={12} color={showVideo ? colors.amber : colors.textDim} />
+                <Text style={[styles.queueTxt, showVideo && { color: colors.amber }]}>Video</Text>
+              </Pressable>
+            )}
+            <Ctrl icon="chevron-down" onPress={minimizePlayer} />
+            <Ctrl icon="x" onPress={closePlayer} />
+          </>
         )}
-        {ytActive && (
-          <Pressable style={[styles.queueBtn, showVideo && styles.queueBtnOn]} onPress={() => setShowVideo((v) => { if (v) yt.pause(); return !v; })} hitSlop={6} accessibilityRole="button" accessibilityState={{ selected: showVideo }} accessibilityLabel={showVideo ? "Hide video" : "Show video"}>
-            <Icon name="play" size={12} color={showVideo ? colors.amber : colors.textDim} />
-            <Text style={[styles.queueTxt, showVideo && { color: colors.amber }]}>{showVideo ? "Video" : "Video"}</Text>
-          </Pressable>
-        )}
-        <Ctrl icon="chevron-down" onPress={minimizePlayer} />
-        <Ctrl icon="x" onPress={closePlayer} />
       </View>
 
       {scrubbable && (
@@ -697,7 +713,7 @@ export default function PlayerBar({
         </View>
       )}
 
-      {panelOpen && (multi || history.length > 0) && (
+      {!compactMobile && panelOpen && (multi || history.length > 0) && (
         <View style={styles.panel}>
           <View style={styles.panelHead}>
             <Text style={styles.panelTitle}>LISTENING SESSION</Text>
@@ -735,7 +751,7 @@ export default function PlayerBar({
 
             {history.length > 0 && <Text style={styles.groupLabel}>RECENTLY PLAYED</Text>}
             {history.slice(0, 8).map((t, j) => (
-              <Pressable key={"h" + j + (t.url || t.title)} style={styles.qRow} onPress={() => onPlayTrack?.({ kind: "track", url: t.url, id: t.id, preview: t.preview, title: t.title, artist: t.artist, art: t.art })}>
+              <Pressable key={"h" + j + (t.url || t.title)} style={styles.qRow} onPress={() => onPlayTrack?.(playlistTrack(t))}>
                 {t.art ? <Image source={{ uri: t.art }} style={styles.qArt} /> : <View style={[styles.qArt, styles.artEmpty]}><Icon name="music" size={12} color={colors.textFaint} /></View>}
                 <View style={{ flex: 1 }}>
                   <Text style={styles.qTitle} numberOfLines={1}>{t.title}</Text>
@@ -748,6 +764,64 @@ export default function PlayerBar({
           </ScrollView>
         </View>
       )}
+
+      <Modal visible={compactMobile && panelOpen} transparent animationType="slide" onRequestClose={() => setOpen(false)} statusBarTranslucent>
+        <View style={styles.mobileSheetBackdrop}>
+          <Pressable style={StyleSheet.absoluteFillObject} onPress={() => setOpen(false)} accessibilityRole="button" accessibilityLabel="Close player controls" />
+          <View style={styles.mobileSheet}>
+            <View style={styles.mobileSheetHandle} />
+            <View style={styles.mobileSheetHead}>
+              <Text style={styles.mobileSheetKicker}>NOW PLAYING</Text>
+              <Pressable style={styles.mobileSheetClose} onPress={() => setOpen(false)} accessibilityRole="button" accessibilityLabel="Close player controls"><Icon name="x" size={19} color={colors.textDim} /></Pressable>
+            </View>
+            <View style={styles.mobileNowPlaying}>
+              {art ? <Image source={{ uri: art }} style={styles.mobileSheetArt} /> : <View style={[styles.mobileSheetArt, styles.artEmpty]}><Icon name="music" size={24} color={colors.textFaint} /></View>}
+              <Pressable style={{ flex: 1, minWidth: 0 }} onPress={() => { setOpen(false); if (cur?.artist) onOpenArtist?.(cur.artist); }} accessibilityRole={cur?.artist ? "button" : undefined}>
+                <Text style={styles.mobileSheetTitle} numberOfLines={2}>{title}</Text>
+                <Text style={styles.mobileSheetArtist} numberOfLines={1}>{cur?.artist || statusLine}</Text>
+              </Pressable>
+            </View>
+            {scrubbable && <View style={styles.mobileSheetScrub}><Scrubber posMs={posMs} durMs={durMs} onSeek={onSeek} live /></View>}
+            <View style={styles.mobileTransport}>
+              <Pressable style={[styles.mobileTransportBtn, index <= 0 && styles.ctrlOff]} onPress={goPrev} disabled={index <= 0} accessibilityRole="button" accessibilityLabel="Previous song"><Icon name="chevron-left" size={25} color={colors.text} /></Pressable>
+              <Pressable style={[styles.mobileTransportPlay, !scrubbable && styles.ctrlOff]} onPress={playPause} disabled={!scrubbable} accessibilityRole="button" accessibilityLabel={playing ? "Pause" : "Play"}>
+                {playing ? <View style={styles.pauseGlyph}><View style={[styles.pauseBar, styles.mobilePauseBar]} /><View style={[styles.pauseBar, styles.mobilePauseBar]} /></View> : <Icon name="play" size={25} color="#1A1206" />}
+              </Pressable>
+              <Pressable style={[styles.mobileTransportBtn, index >= list.length - 1 && styles.ctrlOff]} onPress={goNext} disabled={index >= list.length - 1} accessibilityRole="button" accessibilityLabel="Next song"><Icon name="chevron-right" size={25} color={colors.text} /></Pressable>
+            </View>
+            <View style={styles.mobileQuickActions}>
+              {onAddToPlaylist && <Pressable style={styles.mobileQuickBtn} onPress={() => onAddToPlaylist(playlistTrack(cur, forThis ? resolved.videoId : null))}><Icon name="plus" size={16} color={colors.amber} /><Text style={styles.mobileQuickTxt}>Playlist</Text></Pressable>}
+              <Pressable style={styles.mobileQuickBtn} onPress={doSave} disabled={saving}><Icon name={saved ? "check" : "star"} size={16} color={saved ? colors.good : colors.amber} /><Text style={styles.mobileQuickTxt}>{saved ? "Saved" : "Save mix"}</Text></Pressable>
+              {ytActive && <Pressable style={styles.mobileQuickBtn} onPress={() => { setOpen(false); setShowVideo(true); }}><Icon name="play" size={16} color={colors.amber} /><Text style={styles.mobileQuickTxt}>Video</Text></Pressable>}
+              <Pressable style={styles.mobileQuickBtn} onPress={() => { setOpen(false); closePlayer(); }}><Icon name="x" size={16} color={colors.danger} /><Text style={[styles.mobileQuickTxt, { color: colors.danger }]}>Stop</Text></Pressable>
+            </View>
+
+            <ScrollView style={styles.mobileQueueScroll} contentContainerStyle={styles.mobileQueueContent} showsVerticalScrollIndicator={false}>
+              {upNext.length > 0 && <Text style={styles.groupLabel}>UP NEXT Â· {upNext.length}</Text>}
+              {upNext.map((track, queueIndex) => {
+                const realIndex = index + 1 + queueIndex;
+                return (
+                  <View key={`mobile-up-next:${realIndex}:${trackKey(track) || track.title}`} style={styles.mobileQueueRow}>
+                    <Pressable style={styles.mobileQueueMain} onPress={() => { onPlayAt?.(realIndex); setOpen(false); }} accessibilityRole="button" accessibilityLabel={`Play ${track.title}`}>
+                      {track.art ? <Image source={{ uri: track.art }} style={styles.qArt} /> : <View style={[styles.qArt, styles.artEmpty]}><Icon name="music" size={12} color={colors.textFaint} /></View>}
+                      <View style={{ flex: 1, minWidth: 0 }}><Text style={styles.qTitle} numberOfLines={1}>{track.title}</Text><Text style={styles.qArtist} numberOfLines={1}>{track.artist}</Text></View>
+                    </Pressable>
+                    <Pressable style={styles.mobileQueueAction} onPress={() => onRemove?.(realIndex)} accessibilityRole="button" accessibilityLabel={`Remove ${track.title} from queue`}><Icon name="x" size={16} color={colors.textDim} /></Pressable>
+                  </View>
+                );
+              })}
+              {history.length > 0 && <Text style={styles.groupLabel}>RECENTLY PLAYED</Text>}
+              {history.slice(0, 8).map((track, historyIndex) => (
+                <Pressable key={`mobile-history:${historyIndex}:${trackKey(track) || track.title}`} style={styles.mobileQueueMain} onPress={() => { onPlayTrack?.(playlistTrack(track)); setOpen(false); }} accessibilityRole="button" accessibilityLabel={`Play ${track.title} again`}>
+                  {track.art ? <Image source={{ uri: track.art }} style={styles.qArt} /> : <View style={[styles.qArt, styles.artEmpty]}><Icon name="music" size={12} color={colors.textFaint} /></View>}
+                  <View style={{ flex: 1, minWidth: 0 }}><Text style={styles.qTitle} numberOfLines={1}>{track.title}</Text><Text style={styles.qArtist} numberOfLines={1}>{track.artist}</Text></View>
+                  <Icon name="play" size={15} color={colors.amber} />
+                </Pressable>
+              ))}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -784,7 +858,7 @@ const styles = StyleSheet.create({
   columnTransport: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 18, paddingHorizontal: 18, paddingVertical: 8 },
   columnCtrl: { width: 42, height: 42, borderRadius: 21, alignItems: "center", justifyContent: "center", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line },
   columnPlay: { width: 54, height: 54, borderRadius: 27, alignItems: "center", justifyContent: "center", backgroundColor: colors.amberStrong, borderWidth: 1, borderColor: colors.amber, ...shadow.control },
-  columnScrub: { paddingHorizontal: 12, paddingTop: 2, paddingBottom: 7, alignItems: "flex-end" },
+  columnScrub: { width: "100%", paddingHorizontal: 12, paddingTop: 2, paddingBottom: 7, alignItems: "stretch" },
   columnActions: { flexDirection: "row", flexWrap: "wrap", gap: 7, paddingHorizontal: 14, paddingTop: 4, paddingBottom: 12 },
   columnAction: { minWidth: 94, flexGrow: 1, height: 34, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingHorizontal: 9, borderRadius: radius.pill, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line },
   columnActionOn: { borderColor: colors.amber, backgroundColor: "rgba(242,166,90,0.08)" },
@@ -819,8 +893,8 @@ const styles = StyleSheet.create({
   peekNext: { color: colors.amber, fontSize: 11, marginTop: 1, fontFamily: mono, fontWeight: "700" },
   embedWrap: { flex: 1, minWidth: 0, borderRadius: radius.sm, overflow: "hidden" },
   scrubRow: { backgroundColor: colors.bgElev, borderBottomWidth: 1, borderBottomColor: colors.line, paddingHorizontal: 12, paddingBottom: 8, paddingTop: 2 },
-  scrub: { flexDirection: "row", alignItems: "center", gap: 10 },
-  vol: { flexDirection: "row", alignItems: "center", gap: 7, marginLeft: 12, ...(web ? { width: 110 } : { width: 90 }) },
+  scrub: { width: "100%", flexDirection: "row", alignItems: "center", gap: 10 },
+  vol: { alignSelf: "flex-end", flexDirection: "row", alignItems: "center", gap: 7, marginLeft: 12, ...(web ? { width: 110 } : { width: 90 }) },
   volTrack: { flex: 1, height: 16, justifyContent: "center", ...(web ? { cursor: "pointer" } : null) },
   time: { color: colors.textDim, fontSize: 11, fontFamily: mono, width: 40, textAlign: "center" },
   track: { flex: 1, height: 16, justifyContent: "center", ...(web ? { cursor: "pointer" } : null) },
@@ -828,6 +902,8 @@ const styles = StyleSheet.create({
   trackFill: { position: "absolute", left: 0, height: 4, borderRadius: 2, backgroundColor: colors.amber },
   thumb: { position: "absolute", width: 11, height: 11, borderRadius: 6, backgroundColor: colors.amber, marginLeft: -5.5, ...shadow.card },
   ctrl: { width: 36, height: 36, borderRadius: 18, alignItems: "center", justifyContent: "center", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line },
+  mobilePlay: { width: 48, height: 48, borderRadius: 24, alignItems: "center", justifyContent: "center", backgroundColor: colors.amberStrong, borderWidth: 1, borderColor: colors.amber, ...shadow.control },
+  mobileMenu: { width: 48, height: 48, borderRadius: 24, alignItems: "center", justifyContent: "center", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line },
   ctrlOff: { opacity: 0.4 },
   play: { backgroundColor: colors.amberStrong, borderColor: colors.amberStrong },
   pauseGlyph: { flexDirection: "row", gap: 3 },
@@ -852,6 +928,29 @@ const styles = StyleSheet.create({
   addBtn: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 11, paddingVertical: 6, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
   addTxt: { color: colors.textDim, fontSize: 12, fontWeight: "800" },
   panelScroll: { maxHeight: 300 },
+  mobileSheetBackdrop: { flex: 1, justifyContent: "flex-end", backgroundColor: "rgba(0,0,0,0.58)" },
+  mobileSheet: { maxHeight: "86%", minHeight: "62%", backgroundColor: colors.bgElev, borderTopLeftRadius: radius.lg, borderTopRightRadius: radius.lg, borderWidth: 1, borderBottomWidth: 0, borderColor: colors.line, paddingHorizontal: 16, paddingTop: 8, paddingBottom: Platform.OS === "ios" ? 28 : 18, ...shadow.sheet },
+  mobileSheetHandle: { alignSelf: "center", width: 42, height: 5, borderRadius: 3, backgroundColor: colors.line, marginBottom: 7 },
+  mobileSheetHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", minHeight: 42 },
+  mobileSheetKicker: { color: colors.amber, fontFamily: mono, fontSize: 10, fontWeight: "900", letterSpacing: 1.6 },
+  mobileSheetClose: { width: 44, height: 44, borderRadius: 22, alignItems: "center", justifyContent: "center", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line },
+  mobileNowPlaying: { flexDirection: "row", alignItems: "center", gap: 14, paddingVertical: 10 },
+  mobileSheetArt: { width: 76, height: 76, borderRadius: radius.sm, backgroundColor: colors.surfaceAlt },
+  mobileSheetTitle: { color: colors.text, fontSize: 18, lineHeight: 23, fontWeight: "900" },
+  mobileSheetArtist: { color: colors.textDim, fontSize: 13.5, lineHeight: 19, marginTop: 3 },
+  mobileSheetScrub: { width: "100%", paddingVertical: 7 },
+  mobileTransport: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 28, paddingVertical: 9 },
+  mobileTransportBtn: { width: 52, height: 52, borderRadius: 26, alignItems: "center", justifyContent: "center", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line },
+  mobileTransportPlay: { width: 64, height: 64, borderRadius: 32, alignItems: "center", justifyContent: "center", backgroundColor: colors.amberStrong, borderWidth: 1, borderColor: colors.amber, ...shadow.control },
+  mobilePauseBar: { width: 5, height: 20 },
+  mobileQuickActions: { flexDirection: "row", flexWrap: "wrap", gap: 8, paddingVertical: 9, borderBottomWidth: 1, borderBottomColor: colors.lineSoft },
+  mobileQuickBtn: { minHeight: 44, flexGrow: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingHorizontal: 12, borderRadius: radius.pill, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line },
+  mobileQuickTxt: { color: colors.text, fontSize: 12.5, fontWeight: "800" },
+  mobileQueueScroll: { flexShrink: 1, minHeight: 120 },
+  mobileQueueContent: { paddingBottom: 18 },
+  mobileQueueRow: { flexDirection: "row", alignItems: "center", borderBottomWidth: 1, borderBottomColor: colors.lineSoft },
+  mobileQueueMain: { minHeight: 58, flex: 1, flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 7 },
+  mobileQueueAction: { width: 46, height: 46, borderRadius: 23, alignItems: "center", justifyContent: "center" },
   groupLabel: { color: colors.textFaint, fontSize: 10, letterSpacing: 1.2, fontWeight: "800", marginTop: 8, marginBottom: 4 },
   qRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 6 },
   qArt: { width: 34, height: 34, borderRadius: 6, backgroundColor: colors.surfaceAlt },

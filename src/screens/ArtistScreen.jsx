@@ -24,6 +24,13 @@ const compactCount = (value) => {
   return String(count);
 };
 const releaseType = (album) => String(album?.type || "album").toLowerCase() === "ep" ? "EP" : "ALBUM";
+const TRACK_REPORT_TYPES = [
+  { key: "wrong_video", label: "Wrong video" },
+  { key: "wont_play", label: "Won't play" },
+  { key: "preview_only", label: "Preview only" },
+  { key: "missing", label: "Missing song" },
+  { key: "other", label: "Other" },
+];
 
 // Album cover from the Cover Art Archive, served via the wsrv.nl image CDN -
 // the archive rate-limits direct traffic, while the CDN fetches once and
@@ -87,10 +94,16 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
   // wrong version and optionally paste the correct YouTube link.
   const [reportingSong, setReportingSong] = useState(null);
   const [reportUrl, setReportUrl] = useState("");
+  const [reportCategory, setReportCategory] = useState("wrong_video");
+  const [reportNote, setReportNote] = useState("");
+  const [reportingBusy, setReportingBusy] = useState(false);
   const [reportedSongs, setReportedSongs] = useState({});
   const submitSongReport = async (title) => {
-    const r = await reportTrack({ title, artist: a.name, url: reportUrl.trim() || undefined });
-    if (r.ok) { setReportedSongs((m) => ({ ...m, [title]: true })); setReportingSong(null); setReportUrl(""); }
+    if (reportingBusy) return;
+    setReportingBusy(true);
+    const r = await reportTrack({ title, artist: a.name, category: reportCategory, url: reportUrl.trim() || undefined, note: reportNote.trim() || undefined });
+    setReportingBusy(false);
+    if (r.ok) { setReportedSongs((m) => ({ ...m, [title]: true })); setReportingSong(null); setReportUrl(""); setReportNote(""); setReportCategory("wrong_video"); }
   };
   // One report box shared by EVERY song row on the page (popular songs and
   // album tracklists alike), keyed by title.
@@ -100,7 +113,14 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
         <Text style={styles.songReportDone}>Reported. A moderator will pin the right video.</Text>
       ) : (
         <>
-          <Text style={styles.songReportLabel}>Wrong version playing? Paste the correct YouTube link if you have it, or just send the report.</Text>
+          <Text style={styles.songReportLabel}>What went wrong? A clear category helps moderators fix the right failure point.</Text>
+          <View style={styles.songReportTypes}>
+            {TRACK_REPORT_TYPES.map((type) => (
+              <Pressable key={type.key} style={[styles.songReportType, reportCategory === type.key && styles.songReportTypeOn]} onPress={() => setReportCategory(type.key)}>
+                <Text style={[styles.songReportTypeTxt, reportCategory === type.key && styles.songReportTypeTxtOn]}>{type.label}</Text>
+              </Pressable>
+            ))}
+          </View>
           <TextInput
             style={styles.songReportInput}
             placeholder="https://youtube.com/watch?v=... (optional)"
@@ -110,9 +130,18 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
             autoCapitalize="none"
             autoCorrect={false}
           />
+          <TextInput
+            style={[styles.songReportInput, styles.songReportNote]}
+            placeholder="What happened? (optional)"
+            placeholderTextColor={colors.textFaint}
+            value={reportNote}
+            onChangeText={setReportNote}
+            maxLength={500}
+            multiline
+          />
           <View style={styles.songReportActions}>
-            <Pressable style={styles.songReportBtn} onPress={() => submitSongReport(title)} accessibilityRole="button">
-              <Text style={styles.songReportBtnTxt}>Send report</Text>
+            <Pressable style={[styles.songReportBtn, reportingBusy && { opacity: 0.55 }]} onPress={() => submitSongReport(title)} disabled={reportingBusy} accessibilityRole="button">
+              <Text style={styles.songReportBtnTxt}>{reportingBusy ? "Sending..." : "Send report"}</Text>
             </Pressable>
             <Pressable onPress={() => setReportingSong(null)} hitSlop={8}><Text style={styles.songReportCancel}>Cancel</Text></Pressable>
           </View>
@@ -120,7 +149,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
       )}
     </View>
   );
-  const toggleReportBox = (title) => { setReportingSong((cur) => (cur === title ? null : title)); setReportUrl(""); };
+  const toggleReportBox = (title) => { setReportingSong((cur) => (cur === title ? null : title)); setReportUrl(""); setReportNote(""); setReportCategory("wrong_video"); };
 
   const [disco, setDisco] = useState(null);
   const [openAlbum, setOpenAlbum] = useState(null);
@@ -899,7 +928,13 @@ const styles = StyleSheet.create({
   seenChipTxt: { color: colors.good, fontSize: 12, fontWeight: "700" },
   songReportBox: { backgroundColor: colors.bgElev, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 12, marginTop: -4, marginBottom: 8 },
   songReportLabel: { color: colors.textDim, fontSize: 12, lineHeight: 17, marginBottom: 8 },
+  songReportTypes: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginBottom: 9 },
+  songReportType: { paddingHorizontal: 10, paddingVertical: 6, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
+  songReportTypeOn: { borderColor: colors.amber, backgroundColor: colors.surfaceAlt },
+  songReportTypeTxt: { color: colors.textDim, fontSize: 11.5, fontWeight: "700" },
+  songReportTypeTxtOn: { color: colors.amber },
   songReportInput: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: radius.sm, color: colors.text, fontSize: 13, paddingHorizontal: 10, paddingVertical: 8 },
+  songReportNote: { minHeight: 58, marginTop: 8, textAlignVertical: "top" },
   songReportActions: { flexDirection: "row", alignItems: "center", gap: 14, marginTop: 10 },
   showAllBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 12, marginTop: 4, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface },
   showAllTxt: { color: colors.amber, fontSize: 13, fontWeight: "800" },

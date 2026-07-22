@@ -18,8 +18,12 @@ export default function AfterpartyPreview({ log, onOpen, max = 2 }) {
 
   useEffect(() => { loadComments(log.id, { limit: max }); }, [log.id, max]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const total = comments.length || log.comments || 0;
-  const latest = comments.slice(-max);
+  // Deleted parents come back as tombstones so their replies keep their place in
+  // the full thread. A two-line card preview has no room for that context, so it
+  // shows only real comments; PostScreen and the Afterparty still render them.
+  const visible = comments.filter((c) => !c.deleted);
+  const total = visible.length || log.comments || 0;
+  const latest = visible.slice(-max);
   const send = () => {
     const value = text.trim();
     if (!value) return;

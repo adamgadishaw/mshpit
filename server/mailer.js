@@ -8,12 +8,17 @@ export function mailConfigured() {
   return !!process.env.RESEND_API_KEY && !!(process.env.MAIL_FROM || "").trim();
 }
 
-export async function sendEmail({ to, subject, html, text }) {
+export async function sendEmail({ to, subject, html, text, idempotencyKey }) {
   if (!mailConfigured()) return { ok: false, sent: false, reason: "not-configured" };
   try {
     const r = await fetch("https://api.resend.com/emails", {
       method: "POST",
-      headers: { Authorization: "Bearer " + process.env.RESEND_API_KEY, "Content-Type": "application/json" },
+      headers: {
+        Authorization: "Bearer " + process.env.RESEND_API_KEY,
+        "Content-Type": "application/json",
+        "User-Agent": "PitConcertApp/1.0 (https://mshpit.com)",
+        ...(idempotencyKey ? { "Idempotency-Key": String(idempotencyKey).slice(0, 256) } : {}),
+      },
       body: JSON.stringify({ from: process.env.MAIL_FROM, to: [to], subject, html, text }),
       signal: AbortSignal.timeout(10000),
     });

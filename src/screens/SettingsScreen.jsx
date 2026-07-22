@@ -6,9 +6,14 @@ import SheetHeader from "../components/SheetHeader";
 import Icon from "../components/Icon";
 import Avatar from "../components/Avatar";
 
-function Row({ icon, label, sub, onPress, danger, right }) {
+function Row({ icon, label, sub, onPress, danger, right, disabled = false, accessibilityRole }) {
   return (
-    <Pressable style={styles.row} onPress={onPress}>
+    <Pressable
+      style={[styles.row, disabled && styles.rowDisabled]}
+      onPress={disabled ? undefined : onPress}
+      disabled={disabled}
+      accessibilityRole={accessibilityRole}
+    >
       <View style={[styles.rowIcon, danger && { borderColor: colors.danger }]}>
         <Icon name={icon} size={17} color={danger ? colors.danger : colors.amber} />
       </View>
@@ -18,6 +23,18 @@ function Row({ icon, label, sub, onPress, danger, right }) {
       </View>
       {right || (!danger && <Icon name="chevron-right" size={18} color={colors.textDim} />)}
     </Pressable>
+  );
+}
+
+function Toggle({ value, busy = false }) {
+  return (
+    <View
+      style={[styles.toggle, value && styles.toggleOn, busy && styles.toggleBusy]}
+      accessibilityElementsHidden
+      importantForAccessibility="no-hide-descendants"
+    >
+      <View style={[styles.toggleKnob, value && styles.toggleKnobOn]} />
+    </View>
   );
 }
 
@@ -39,10 +56,12 @@ function Swatch({ theme, active, onPress }) {
 }
 
 export default function SettingsScreen({ onClose, onEditProfile, onOpenProfile, onOpenPrivacy, onOpenTerms, onOpenDiagnostics, onOpenDeleteAccount, onLogout }) {
-  const { session, chooseTheme, blockedUsers, unblockUser, exportMyData } = useStore();
+  const { session, chooseTheme, blockedUsers, unblockUser, exportMyData, updateProfile } = useStore();
   const blocked = session ? blockedUsers() : [];
   const [exporting, setExporting] = useState(false);
   const [exportResult, setExportResult] = useState(null);
+  const [savingAnalytics, setSavingAnalytics] = useState(false);
+  const [analyticsResult, setAnalyticsResult] = useState(null);
   const doExport = async () => {
     if (exporting) return;
     setExporting(true);
@@ -50,6 +69,17 @@ export default function SettingsScreen({ onClose, onEditProfile, onOpenProfile, 
     const result = await exportMyData();
     setExportResult(result);
     setExporting(false);
+  };
+  const toggleAnalytics = async () => {
+    if (!session || savingAnalytics) return;
+    setSavingAnalytics(true);
+    setAnalyticsResult(null);
+    const optingOut = !session.analyticsOptOut;
+    const result = await updateProfile({ analyticsOptOut: optingOut });
+    setAnalyticsResult(result?.ok
+      ? (optingOut ? "Product analytics are off and your prior product events were deleted." : "Product analytics are on for this account.")
+      : "That preference did not save. Please try again.");
+    setSavingAnalytics(false);
   };
 
   return (
@@ -75,6 +105,22 @@ export default function SettingsScreen({ onClose, onEditProfile, onOpenProfile, 
         {session && (
           <>
             <Text style={styles.section}>PRIVACY & SAFETY</Text>
+            <Row
+              icon="activity"
+              label="Product analytics"
+              sub={session.analyticsOptOut
+                ? "Off. Pit will not record product-usage events for this account."
+                : "On. Helps improve Pit using a limited set of account activity events."}
+              onPress={toggleAnalytics}
+              disabled={savingAnalytics}
+              accessibilityRole="switch"
+              right={<Toggle value={!session.analyticsOptOut} busy={savingAnalytics} />}
+            />
+            {!!analyticsResult && (
+              <Text style={[styles.exportStatus, analyticsResult.startsWith("That preference") && styles.exportError]} accessibilityRole="alert">
+                {analyticsResult}
+              </Text>
+            )}
             <Row
               icon="share"
               label={exporting ? "Preparing your backup..." : "Download your data"}
@@ -136,6 +182,7 @@ const styles = StyleSheet.create({
   swatchSub: { fontSize: 11, marginTop: 2 },
   swatchCheck: { position: "absolute", top: 10, right: 10, width: 20, height: 20, borderRadius: 10, backgroundColor: colors.amber, alignItems: "center", justifyContent: "center" },
   row: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 14, marginBottom: 8 },
+  rowDisabled: { opacity: 0.62 },
   rowIcon: { width: 36, height: 36, borderRadius: 10, backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
   rowLabel: { color: colors.text, fontSize: 15, fontWeight: "700" },
   rowSub: { color: colors.textDim, fontSize: 12, marginTop: 2 },
@@ -146,4 +193,9 @@ const styles = StyleSheet.create({
   exportError: { color: colors.danger },
   unblockBtn: { borderRadius: radius.pill, borderWidth: 1, borderColor: colors.danger, paddingHorizontal: 14, paddingVertical: 7 },
   unblockTxt: { color: colors.danger, fontSize: 12.5, fontWeight: "800" },
+  toggle: { width: 48, height: 28, borderRadius: 14, padding: 3, backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line, justifyContent: "center" },
+  toggleOn: { backgroundColor: colors.amberStrong, borderColor: colors.amberStrong },
+  toggleBusy: { opacity: 0.65 },
+  toggleKnob: { width: 20, height: 20, borderRadius: 10, backgroundColor: colors.textDim },
+  toggleKnobOn: { alignSelf: "flex-end", backgroundColor: colors.bg },
 });

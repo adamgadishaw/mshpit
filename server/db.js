@@ -223,6 +223,7 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS idx_events_name ON events(name, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_events_user ON events(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at DESC);
 
 -- ---- Notifications / activity (server-backed, cross-device) -----------------
 -- Addressed to a recipient (user_id) when someone (actor_id) acts on their stuff.
@@ -481,6 +482,21 @@ for (const stmt of [
   "ALTER TABLE yt_cache ADD COLUMN rejected_ids TEXT NOT NULL DEFAULT '[]'",
 ]) { try { db.exec(stmt); } catch {} }
 
+// Analytics never needs a network address once request-level rate limiting is
+// complete. Purge the legacy raw-IP column once and keep new rows null.
+const eventIpPurgeMarker = "privacy:events-ip-purged:v1";
+if (!db.prepare("SELECT 1 FROM app_meta WHERE key=?").get(eventIpPurgeMarker)) {
+  db.exec("BEGIN");
+  try {
+    db.prepare("UPDATE events SET ip=NULL WHERE ip IS NOT NULL").run();
+    db.prepare("INSERT INTO app_meta (key,value) VALUES (?,?)").run(eventIpPurgeMarker, String(Date.now()));
+    db.exec("COMMIT");
+  } catch (error) {
+    try { db.exec("ROLLBACK"); } catch {}
+    throw error;
+  }
+}
+
 // --- tiny helpers ------------------------------------------------------------
 export const q = {
   userByEmail: db.prepare("SELECT * FROM users WHERE email = ?"),
@@ -713,9 +729,14 @@ export function publicUser(u, { self = false } = {}) {
     "artistName", "home", "bio", "avatarUri", "avatarColor", "banner",
     "initials", "genres", "favoriteArtists",
   ]) delete extras[key];
+  const publicExtras = Object.fromEntries(["theme", "nowPlaying"].filter((key) => extras[key] !== undefined).map((key) => [key, extras[key]]));
+  const selfExtras = self
+    ? Object.fromEntries(["consentAt", "termsVersion", "analyticsOptOut", "treble", "bass", "playlists"].filter((key) => extras[key] !== undefined).map((key) => [key, extras[key]]))
+    : {};
 
   return {
-    ...extras,
+    ...publicExtras,
+    ...selfExtras,
     id: u.id,
     name: u.name,
     handle: u.handle,

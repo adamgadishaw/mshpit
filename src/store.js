@@ -5,7 +5,7 @@ import { catalogVenues, catalogTourDates, catalogArtists } from "./seed/catalog"
 import { clean, cleanEmail, isEmail, cleanName, isName, cleanHandle, isPassword, clampRating, LIMITS } from "./lib/validate";
 import { load, save } from "./lib/persist";
 import { api, captureAppError } from "./lib/api";
-import { setTheme as applyTheme, syncThemeFromAccount } from "./theme";
+import { clearStoredTheme, setTheme as applyTheme, storedThemeSelection, syncThemeFromAccount } from "./theme";
 import { artistMeta } from "./seed/ingested";
 import { ACHIEVEMENTS } from "./lib/badges";
 import { ENABLE_DEMO_DATA } from "./config/runtime.mjs";
@@ -282,20 +282,17 @@ export function StoreProvider({ children }) {
   useEffect(() => save("pit.feed", feed), [feed]);
   useEffect(() => save("pit.follows", follows), [follows]);
 
-  // Theme reconciliation. A DEVICE choice (localStorage `pit_theme`, written when
-  // you pick a theme) always wins over the account, so hydrating /api/me can never
-  // yank the theme you just set out from under you and reload-loop back to it (the
-  // old "can't switch off Forest" bug). If the account is stale, we heal it up to
-  // the server instead of reloading. Only a device with NO local choice (a fresh
-  // login) adopts the account's theme.
+  // A local theme only wins when it belongs to THIS account. The previous global
+  // device choice leaked one member's appearance into the next member's session
+  // on a shared browser. Account ownership keeps reload-loop protection without
+  // treating the computer itself as the user.
   useEffect(() => {
     if (!session?.theme) return;
-    let localTheme = null;
-    try { localTheme = typeof window !== "undefined" && window.localStorage ? window.localStorage.getItem("pit_theme") : null; } catch {}
-    if (localTheme) {
+    const { theme: localTheme, ownerId } = storedThemeSelection();
+    if (localTheme && ownerId === session.id) {
       if (session.theme !== localTheme) api("/api/me", { method: "PATCH", body: { theme: localTheme } }).catch(() => {});
     } else {
-      syncThemeFromAccount(session.theme);
+      syncThemeFromAccount(session.theme, session.id);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.theme]);
@@ -497,12 +494,12 @@ export function StoreProvider({ children }) {
   }, [session?.id, session?.home?.city, session?.home?.lat, session?.home?.lng]);
 
   // --- Activity tracking (data collection for personalization + ads) ---------
-  // Every meaningful action queues an event; a background flush batches them to
-  // the server. This is the behavioral data disclosed in the Privacy policy and
-  // consented to at sign-up. Best-effort: failures are dropped, never surfaced.
+  // Every meaningful action queues a constrained event only for an authenticated
+  // member with a recorded Terms/Privacy consent. Guests are not silently
+  // profiled; a future cookie-consent flow can opt them in explicitly.
   const eventQueue = useRef([]);
   const track = (name, props = {}) => {
-    if (!name) return;
+    if (!name || !session?.id || !session?.consentAt || session?.analyticsOptOut) return;
     eventQueue.current.push({ name, props });
     if (eventQueue.current.length >= 25) flushEvents();
   };
@@ -673,8 +670,17 @@ export function StoreProvider({ children }) {
     try {
       const query = new URLSearchParams({ title, artist: artist || "" });
       if (Number(duration) > 0) query.set("duration", String(Math.round(Number(duration))));
-      const { videoId } = await api(`/api/youtube/track?${query.toString()}`);
-      ytCache.current[k] = { videoId: videoId || null, expiresAt: Date.now() + (videoId ? 30 * 60 * 1000 : 5 * 60 * 1000) };
+      const { videoId, status, retryable } = await api(`/api/youtube/track?${query.toString()}`);
+      ytCache.current[k] = { videoId: videoId || null, status: status || null, retryable: !!retryable, expiresAt: Date.now() + (videoId ? 30 * 60 * 1000 : 5 * 60 * 1000) };
+      if (["search_budget_exhausted", "provider_paused", "quota_or_forbidden", "rate_limited"].includes(status)) {
+        captureAppError(new Error("YouTube lookup capacity is temporarily unavailable"), {
+          code: "PIT-MEDIA-002",
+          context: `Resolving ${artist || "artist"} - ${title}`,
+          source: "youtube-resolver",
+          severity: "warning",
+          toast: false,
+        });
+      }
       return videoId || null;
     } catch { return null; }
   };
@@ -731,8 +737,8 @@ export function StoreProvider({ children }) {
     } catch { return null; }
   };
 
-  // Flag a song whose in-app video is the wrong version; optionally carry the
-  // correct YouTube link so an admin can pin it in one tap.
+  // Flag a playback failure or identity problem; optionally carry the correct
+  // YouTube link so a moderator can validate and pin it in one action.
   // --- Per-photo reactions (full-screen media viewer) ---
   // Cached by URL so the viewer, feed thumbnails, and artist galleries all read
   // one truth. Server-authoritative; optimistic flip reconciled on response.
@@ -765,9 +771,9 @@ export function StoreProvider({ children }) {
     }
   };
 
-  const reportTrack = async ({ title, artist, url, note }) => {
+  const reportTrack = async ({ title, artist, category = "wrong_video", url, note }) => {
     try {
-      const r = await api("/api/tracks/report", { method: "POST", context: "Reporting a wrong song version", body: { title, artist, url: url || undefined, note: note || undefined } });
+      const r = await api("/api/tracks/report", { method: "POST", context: "Reporting a song playback issue", body: { title, artist, category, url: url || undefined, note: note || undefined } });
       return { ok: true, duplicate: !!r?.duplicate };
     } catch (error) { return { ok: false, error }; }
   };
@@ -841,11 +847,14 @@ export function StoreProvider({ children }) {
       const query = `?limit=50${before ? `&before=${encodeURIComponent(before)}` : ""}`;
       const { plays, nextCursor } = await api(`/api/me/plays${query}`, { context: more ? "Loading more listening history" : "Loading listening history", silent: true });
       if (playHistoryRequestRef.current.sequence !== sequence || playHistoryRequestRef.current.accountId !== accountId) return [];
-      const rows = Array.isArray(plays) ? plays.map((p) => ({ id: p.id, title: p.title, artist: p.artist, url: p.url, videoId: p.videoId || null, art: p.art, at: p.at })) : [];
+      // `p.id` identifies the play EVENT, not the track. Keeping it in `id`
+      // made the same song look different on every device and defeated recent-
+      // history exclusion. Preserve it separately and let trackKey use media/meta.
+      const rows = Array.isArray(plays) ? plays.map((p) => ({ playId: p.id, title: p.title, artist: p.artist, url: p.url, videoId: p.videoId || null, art: p.art, at: p.at })) : [];
       setPlayHistory((current) => {
         if (!more) return rows.length || !Array.isArray(cachedFallback) ? rows : cachedFallback;
-        const seen = new Set(current.map((item) => item.id || `${item.at}:${trackKey(item)}`));
-        const fresh = rows.filter((item) => !seen.has(item.id || `${item.at}:${trackKey(item)}`));
+        const seen = new Set(current.map((item) => item.playId || `${item.at}:${trackKey(item)}`));
+        const fresh = rows.filter((item) => !seen.has(item.playId || `${item.at}:${trackKey(item)}`));
         return fresh.length ? [...current, ...fresh].slice(0, 300) : current;
       });
       setPlayHistoryNextCursor(nextCursor || null);
@@ -881,44 +890,65 @@ export function StoreProvider({ children }) {
 
   // --- Listening algorithm (drives autoplay "up next") -----------------------
   // Favorite genre = the genre you play most (falls back to your picked genres).
-  const genreOfArtist = (name) => catalogArtists[norm(name)]?.genre || artistMeta(name)?.genre || null;
+  const genreOfArtist = (name) => remoteArtists[norm(name)]?.genre || catalogArtists[norm(name)]?.genre || artistMeta(name)?.genre || null;
   const favoriteGenre = () => {
     const counts = {};
     (playHistory || []).slice(0, 60).forEach((t) => { const g = genreOfArtist(t.artist); if (g) counts[g] = (counts[g] || 0) + 1; });
     const top = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
     return top ? top[0] : (session?.genres?.[0] || null);
   };
-  // Recommend the next tracks to keep the player going: same genre as what you're
-  // playing (or your favorite genre) first, then the rest of the catalog, ranked by
-  // popularity, capped at ~2 per artist so one band never hogs the queue. Skips the
-  // seed and anything you just heard. Works even when Spotify popularity is missing.
-  const recommendTracks = (seed, n = 24) => {
-    const keyOf = (t) => String(t?.url || t?.id || t?.preview || `${t?.artist || ""}|${t?.title || ""}`).toLowerCase();
+  const autoplayRotationRef = useRef(0);
+  // Recommend a diverse tail: three taste-matched artists, then one discovery
+  // artist, with one song per artist before any artist gets a second turn. A
+  // session rotation prevents every listener from receiving the same popularity-
+  // sorted sequence while recent tracks and artists are deferred.
+  const recommendTracks = (seed, n = 24, rotation = 0) => {
+    const metaKey = (t) => `${norm(t?.artist)}|${norm(t?.title)}`;
+    const identities = (t) => [trackKey(t), `meta:${metaKey(t)}`].filter(Boolean);
     const seen = new Set();
-    if (seed) seen.add(keyOf(seed));
-    (playHistory || []).slice(0, 25).forEach((t) => seen.add(keyOf(t)));
+    const remember = (t) => identities(t).forEach((key) => seen.add(key));
+    const heard = (t) => identities(t).some((key) => seen.has(key));
+    if (seed) remember(seed);
+    (playHistory || []).slice(0, 25).forEach(remember);
+    const recentArtists = new Set((playHistory || []).slice(0, 10).map((t) => norm(t.artist)).filter(Boolean));
     const seedGenre = (seed && genreOfArtist(seed.artist)) || favoriteGenre();
     const g = seedGenre ? norm(seedGenre) : null;
-    const withTracks = Object.values(catalogArtists || {})
-      .map((a) => ({ a, meta: artistMeta(a.name) || a }))
+    const mergedArtists = new Map();
+    for (const artist of [...Object.values(catalogArtists || {}), ...Object.values(remoteArtists || {})]) {
+      if (artist?.name) mergedArtists.set(norm(artist.name), { ...(mergedArtists.get(norm(artist.name)) || {}), ...artist });
+    }
+    const withTracks = [...mergedArtists.values()]
+      .map((a) => ({ a, meta: remoteArtists[norm(a.name)] || artistMeta(a.name) || a }))
       .filter((x) => (x.meta.topTracks || []).length);
-    const score = (x) => (x.a.popularity ?? 0);
-    const inGenre = withTracks.filter((x) => g && norm(x.a.genre) === g).sort((p, q) => score(q) - score(p));
-    const rest = withTracks.filter((x) => !(g && norm(x.a.genre) === g)).sort((p, q) => score(q) - score(p));
+    const score = (x) => Number(x.meta.popularity ?? x.a.popularity) || 0;
+    const ordered = (list) => list.sort((p, q) => Number(recentArtists.has(norm(p.a.name))) - Number(recentArtists.has(norm(q.a.name))) || score(q) - score(p) || p.a.name.localeCompare(q.a.name));
+    const rotate = (list, offset) => list.length ? [...list.slice(offset % list.length), ...list.slice(0, offset % list.length)] : [];
+    const inGenre = rotate(ordered(withTracks.filter((x) => g && norm(genreOfArtist(x.a.name)) === g)), rotation * 7);
+    const rest = rotate(ordered(withTracks.filter((x) => !(g && norm(genreOfArtist(x.a.name)) === g))), rotation * 11);
+    const artists = [];
+    let gi = 0; let ri = 0;
+    while (gi < inGenre.length || ri < rest.length) {
+      for (let i = 0; i < 3 && gi < inGenre.length; i++) artists.push(inGenre[gi++]);
+      if (ri < rest.length) artists.push(rest[ri++]);
+      if (!inGenre.length && ri < rest.length) artists.push(rest[ri++]);
+    }
     const out = [];
-    for (const x of [...inGenre, ...rest]) {
-      let taken = 0;
-      for (const t of x.meta.topTracks || []) {
+    const maxTracksPerArtist = 2;
+    for (let pass = 0; pass < maxTracksPerArtist && out.length < n; pass++) {
+      for (const x of artists) {
+        const available = x.meta.topTracks || [];
+        for (let index = pass; index < available.length; index++) {
+          const t = available[index];
         // Artist + title is a complete track reference. Provider URLs are optional
         // enrichments that the player resolves only when this track becomes current.
-        if (!t.title) continue;
-        const track = { kind: "track", title: t.title, artist: x.a.name, id: t.id || null, url: t.url || null, preview: t.preview || null, art: x.meta.photo || x.a.photo || null };
-        const k = keyOf(track);
-        if (seen.has(k)) continue;
-        seen.add(k); out.push(track); taken++;
-        if (taken >= 2 || out.length >= n) break;
+          if (!t.title) continue;
+          const track = { kind: "track", title: t.title, artist: x.a.name, id: t.id || null, sourceId: t.sourceId || t.id || null, provider: t.provider || null, url: t.url || null, videoId: t.videoId || null, duration: t.duration || null, preview: t.preview || null, art: x.meta.photo || x.a.photo || null };
+          if (heard(track)) continue;
+          remember(track); out.push(track);
+          break;
+        }
+        if (out.length >= n) break;
       }
-      if (out.length >= n) break;
     }
     return out;
   };
@@ -926,11 +956,17 @@ export function StoreProvider({ children }) {
   // recommended tail so "up next" is always populated and playback never dead-ends
   // after one song.
   const autoplayQueue = (seed, baseList) => {
-    const keyOf = (t) => String(t?.url || t?.id || t?.preview || `${t?.artist || ""}|${t?.title || ""}`).toLowerCase();
     const isTrackRef = (t) => !!(t && (t.url || t.id || t.preview || (t.title && t.artist)));
     const base = ((Array.isArray(baseList) && baseList.length ? baseList : (seed ? [seed] : [])) || []).filter(isTrackRef);
-    const seen = new Set(base.map(keyOf));
-    const recs = recommendTracks(seed || base[0], 30).filter((t) => { const k = keyOf(t); if (seen.has(k)) return false; seen.add(k); return true; });
+    const keys = (t) => [trackKey(t), `meta:${norm(t?.artist)}|${norm(t?.title)}`].filter(Boolean);
+    const seen = new Set(base.flatMap(keys));
+    const rotation = autoplayRotationRef.current++;
+    const recs = recommendTracks(seed || base[0], 30, rotation).filter((t) => {
+      const trackKeys = keys(t);
+      if (trackKeys.some((key) => seen.has(key))) return false;
+      trackKeys.forEach((key) => seen.add(key));
+      return true;
+    });
     return [...base, ...recs].slice(0, 60);
   };
 
@@ -1063,7 +1099,7 @@ export function StoreProvider({ children }) {
         });
         setDms((d) => {
           const n = { ...d };
-          threads.forEach((t) => { n[dmKey(su.id, t.otherId)] = t.messages.map((m) => ({ id: m.id, from: m.from, text: m.text, ts: ago(m.createdAt) })); });
+          threads.forEach((t) => { n[dmKey(su.id, t.otherId)] = t.messages.map((m) => ({ id: m.id, from: m.from, text: m.text, at: m.createdAt, ts: ago(m.createdAt), server: true })); });
           return n;
         });
       })
@@ -1229,7 +1265,7 @@ export function StoreProvider({ children }) {
   };
 
   const logout = () => {
-    api("/api/logout", { method: "POST" }).catch(() => {}); // best-effort server-side
+    const request = api("/api/logout", { method: "POST" }).catch(() => {}); // best-effort server-side
     playHistoryRequestRef.current = { sequence: playHistoryRequestRef.current.sequence + 1, accountId: null };
     playlistRequestRef.current = { sequence: playlistRequestRef.current.sequence + 1, accountId: null };
     setPlayHistory([]);
@@ -1240,7 +1276,11 @@ export function StoreProvider({ children }) {
     setMyPlaylistsStatus("ready");
     setSnapshots([]);
     setFriendsListening([]);
+    // Clear identity synchronously before a theme-triggered reload can occur.
+    save("pit.session", null);
+    clearStoredTheme();
     setSession(null);
+    return request;
   };
 
   // Permanent deletion is deliberately server-first. Nothing is cleared from
@@ -1352,7 +1392,7 @@ export function StoreProvider({ children }) {
       save("pit.session", updated); // synchronous, the reload below would race the effect
       try { await api("/api/me", { method: "PATCH", body: { theme: next, ...extra } }); } catch {}
     }
-    applyTheme(next);
+    applyTheme(next, session?.id || null);
   };
 
   const updateProfile = (patch) => {
@@ -1384,8 +1424,8 @@ export function StoreProvider({ children }) {
     // Music picks live in the bounded profile extras object on the server. Send
     // the complete known set whenever one changes so saving a song cannot erase
     // the account theme or its recorded Terms consent.
-    const extraKeys = ["theme", "consentAt", "termsVersion", "nowPlaying", "treble", "bass", "playlists"];
-    if (["nowPlaying", "treble", "bass", "playlists"].some((key) => key in safe)) {
+    const extraKeys = ["theme", "consentAt", "termsVersion", "analyticsOptOut", "nowPlaying", "treble", "bass", "playlists"];
+    if (["analyticsOptOut", "nowPlaying", "treble", "bass", "playlists"].some((key) => key in safe)) {
       const merged = { ...previousSession, ...safe };
       body.extras = Object.fromEntries(extraKeys.filter((key) => merged[key] !== undefined).map((key) => [key, merged[key]]));
     }
@@ -1764,19 +1804,23 @@ export function StoreProvider({ children }) {
     if (!force && Date.now() - (commentsLoadedAt.current.get(requestKey) || 0) < 30_000) return;
     commentsInflight.current.add(requestKey);
     api(`/api/posts/${id}/comments?limit=${safeLimit}`)
-      .then(({ comments: rows }) => {
+      .then(({ comments: rows, removedIds = [] }) => {
         if (!Array.isArray(rows)) return;
         commentsLoadedAt.current.set(requestKey, Date.now());
         setComments((m) => {
           const existing = m[id] || [];
           const byId = new Map(existing.map((c) => [c.id, c]));
+          const incomingIds = new Set(rows.map((comment) => comment.id));
+          // Leaf deletions disappear. Deleted parents returned as tombstones stay
+          // long enough to hold their replies in the right place.
+          for (const removedId of removedIds) if (!incomingIds.has(removedId)) byId.delete(removedId);
           // Merge server rows over local (adopt parentId/avatar/role), keep any
           // optimistic locals not yet on the server. Sorted oldest→newest.
-          for (const c of rows) byId.set(c.id, { id: c.id, userId: c.userId, name: c.name, initials: c.initials, avatarUri: c.avatarUri, avatarColor: c.avatarColor, role: c.role, verified: c.verified, text: c.text, parentId: c.parentId || null, at: c.createdAt, likes: 0 });
+          for (const c of rows) byId.set(c.id, { id: c.id, userId: c.userId, name: c.name, initials: c.initials, avatarUri: c.avatarUri, avatarColor: c.avatarColor, role: c.role, verified: c.verified, text: c.text, deleted: !!c.deleted, parentId: c.parentId || null, at: c.createdAt, likes: 0 });
           const merged = [...byId.values()].sort((a, b) => (a.at || 0) - (b.at || 0));
           const unchanged = merged.length === existing.length && merged.every((comment, index) => {
             const previous = existing[index];
-            return previous?.id === comment.id && previous.text === comment.text && previous.parentId === comment.parentId && previous.at === comment.at;
+            return previous?.id === comment.id && previous.text === comment.text && previous.deleted === comment.deleted && previous.parentId === comment.parentId && previous.at === comment.at;
           });
           return unchanged ? m : { ...m, [id]: merged };
         });
@@ -1786,19 +1830,41 @@ export function StoreProvider({ children }) {
   };
   const addComment = (id, text, parentId = null) => {
     const t = clean(text, { max: LIMITS.message, newlines: true });
-    if (!session || !t) return;
+    if (!session || !t) return Promise.resolve({ ok: false });
     const localId = "c_" + Date.now();
     const c = { id: localId, userId: session.id, name: session.name, initials: session.initials, avatarUri: session.avatarUri, avatarColor: session.avatarColor, role: session.role, text: t, parentId: parentId || null, at: Date.now(), likes: 0 };
     setComments((m) => ({ ...m, [id]: [...(m[id] || []), c] }));
     // Write-through + adopt the server id so a later loadComments() dedupes it
     // instead of showing my comment twice.
-    api(`/api/posts/${id}/comments`, { method: "POST", body: { text: t, parentId: parentId || null }, context: "Adding your afterparty comment" })
+    return api(`/api/posts/${id}/comments`, { method: "POST", body: { text: t, parentId: parentId || null }, context: "Adding your afterparty comment" })
       .then(({ id: sid }) => {
         if (sid) setComments((m) => ({ ...m, [id]: (m[id] || []).map((x) => (x.id === localId ? { ...x, id: sid } : x)) }));
         const owner = postOwner(id);
         if (owner) notify(owner, "comment", { postId: id, artist: feed.find((l) => l.id === id)?.artist, text: t.slice(0, 60) });
+        return { ok: true, id: sid || localId };
       })
-      .catch(() => setComments((m) => ({ ...m, [id]: (m[id] || []).filter((x) => x.id !== localId) })));
+      .catch((error) => {
+        setComments((m) => ({ ...m, [id]: (m[id] || []).filter((x) => x.id !== localId) }));
+        return { ok: false, error };
+      });
+  };
+  const deleteOwnComment = (postId, commentId) => {
+    if (!session || !postId || !commentId) return Promise.resolve({ ok: false });
+    return api(`/api/posts/${postId}/comments/${commentId}`, {
+      method: "DELETE",
+      context: "Deleting your comment",
+    }).then(({ tombstone }) => {
+      setComments((all) => {
+        const current = all[postId] || [];
+        const next = tombstone
+          ? current.map((comment) => (comment.id === commentId
+            ? { ...comment, userId: null, name: null, initials: null, avatarUri: null, text: "", deleted: true }
+            : comment))
+          : current.filter((comment) => comment.id !== commentId);
+        return { ...all, [postId]: next };
+      });
+      return { ok: true, tombstone: !!tombstone };
+    }).catch((error) => ({ ok: false, error }));
   };
   const likeInfo = (id, base = 0) => ({ count: (likes[id] ?? base) + (myLikes[id] ? 1 : 0), liked: !!myLikes[id] });
   const toggleLike = (id, base = 0) => {
@@ -2305,6 +2371,36 @@ export function StoreProvider({ children }) {
 
   // --- Direct messages + inbox ---
   const dmKey = (a, b) => [a, b].sort().join("__");
+  const loadInboxThreads = ({ signal } = {}) => {
+    if (!session?.id) return Promise.resolve([]);
+    const accountId = session.id;
+    return api("/api/me/threads?summary=1", { signal, silent: true, context: "Refreshing your inbox" })
+      .then(({ threads }) => {
+        if (!Array.isArray(threads) || session?.id !== accountId) return [];
+        absorbUsers(threads.map((thread) => thread.otherUser).filter(Boolean));
+        setDms((all) => {
+          const next = { ...all };
+          for (const thread of threads) {
+            const key = dmKey(accountId, thread.otherId);
+            const incoming = (thread.messages || []).map((message) => ({
+              id: message.id,
+              from: message.from,
+              text: message.text,
+              at: message.createdAt,
+              ts: ago(message.createdAt),
+              server: true,
+            }));
+            next[key] = mergeChatMessages(next[key] || [], incoming, [], 750);
+          }
+          return next;
+        });
+        return threads;
+      })
+      .catch((error) => {
+        if (signal?.aborted) throw error;
+        return [];
+      });
+  };
   const threadMessages = (otherId) => (session ? dms[dmKey(session.id, otherId)] || [] : []);
   // Slice 4: pull a thread's messages from the server and merge them (dedupe by
   // id, keeping any optimistic local-only message not yet echoed back).
@@ -2372,9 +2468,10 @@ export function StoreProvider({ children }) {
         // single reply promotes it to the main inbox (Instagram-style gating).
         const iReplied = msgs.some((m) => m.from === session.id);
         const bucket = (isFollowing(otherId) || iReplied) ? "main" : "requests";
-        return { otherId, otherUser: userById(otherId), last, unread, count: msgs.length, bucket };
+        const lastAt = Number(last?.at || last?.createdAt) || 0;
+        return { otherId, otherUser: userById(otherId), last, lastAt, unread, count: msgs.length, bucket };
       })
-      .sort((a, b) => b.count - a.count);
+      .sort((a, b) => b.lastAt - a.lastAt);
   };
   const mainThreads = () => inboxThreads().filter((t) => t.bucket === "main");
   const requestThreads = () => inboxThreads().filter((t) => t.bucket === "requests");
@@ -2933,7 +3030,7 @@ export function StoreProvider({ children }) {
     isVerifiedArtist, isTop100, artistRank, artistBadges, userBadges,
     activityStats, userAchievements, userPoints, loadRewards,
     chartTop, chartInfo, catalogCountries, topGenres, topPhotos, discoverStats, topArtistsBy, topSongsBy,
-    commentsFor, addComment, loadComments, likeInfo, toggleLike,
+    commentsFor, addComment, deleteOwnComment, loadComments, likeInfo, toggleLike,
     concertKey, loungeFor, enterLounge, addLoungeMessage, loadLounge,
     albumRating, songRating, rateAlbum, rateSong, loadRating,
     fanClubFor, loadFanClub, addFanClubMessage, isFanClubMember, joinFanClub, fanClubCount, fanClubsDirectory,
@@ -2944,7 +3041,7 @@ export function StoreProvider({ children }) {
     goingFor, isGoing, toggleGoing, attendeesFor,
     venueReviewsFor, loadVenueReviews, addVenueReview, venueRating, venueTopPhotos, venuePhotos, artistFanPhotos, loadArtistPhotos,
     artistGallery, isPhotoRemoved, removePhoto, restorePhoto,
-    threadMessages, sendDM, loadThread, markThreadRead, inboxThreads, mainThreads, requestThreads, inboxUnread, requestCount,
+    threadMessages, sendDM, loadThread, loadInboxThreads, markThreadRead, inboxThreads, mainThreads, requestThreads, inboxUnread, requestCount,
     track,
     myNotifications, unreadNotifications, markNotificationsRead,
   };

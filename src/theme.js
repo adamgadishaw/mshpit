@@ -1,6 +1,6 @@
 import { Platform } from "react-native";
 
-// Pit - "stage-light" design system. Four on-brand presets the user can switch
+// Pit - "stage-light" design system. On-brand presets the user can switch
 // between in Settings. Every screen imports `colors` (resolved once at module
 // load), so switching a theme saves the choice and reloads - the least invasive
 // way to re-theme a StyleSheet-based app.
@@ -60,6 +60,35 @@ const MINT = {
   amber: "#14A06A", amberStrong: "#0E9160", accentEdge: "#075D3E", gold: "#C08A2E", magenta: "#C05CE0", cool: "#2E9ED6", good: "#0E9160", danger: "#E0457B",
 };
 
+// Backstage: cool production-blue, inspired by flight cases, lanyards, and the
+// light leaking out from behind a stage curtain.
+const BACKSTAGE = {
+  bg: "#071018", bgElev: "#0D1824", surface: "#132234", surfaceAlt: "#1B3046",
+  line: "#294761", lineSoft: "#1E354A", text: "#F3F8FC", textDim: "#A2B7C7", textFaint: "#668096",
+  amber: "#49C6E5", amberStrong: "#22B5D6", accentEdge: "#0B7189", gold: "#F6C85F", magenta: "#FF6B8A", cool: "#7B8CFF", good: "#48D597", danger: "#FF6B7D",
+};
+
+// Vinyl: near-black wax, warm sleeve paper, and a restrained red label.
+const VINYL = {
+  bg: "#0B0A09", bgElev: "#12100E", surface: "#1B1815", surfaceAlt: "#29241F",
+  line: "#3D352E", lineSoft: "#2D2823", text: "#FFF8E8", textDim: "#C8BBA5", textFaint: "#847769",
+  amber: "#F6C453", amberStrong: "#E9A820", accentEdge: "#9A6512", gold: "#FFD76A", magenta: "#E84A5F", cool: "#63A4FF", good: "#63CE8B", danger: "#F45B69",
+};
+
+// Sunset: a bright festival-poster palette that stays readable in daylight.
+const SUNSET = {
+  bg: "#FFF4EA", bgElev: "#FFFDFB", surface: "#FFFFFF", surfaceAlt: "#FCE4D5",
+  line: "#EBCDBB", lineSoft: "#F4DED0", text: "#321B17", textDim: "#795A50", textFaint: "#AA8577",
+  amber: "#F06C4E", amberStrong: "#E8543F", accentEdge: "#A63527", gold: "#C98A22", magenta: "#A94FD8", cool: "#4979D1", good: "#25865A", danger: "#C83C54",
+};
+
+// Lavender: soft album-art pastels with a strong indigo control color.
+const LAVENDER = {
+  bg: "#F5F1FF", bgElev: "#FFFFFF", surface: "#FFFFFF", surfaceAlt: "#E9E1F8",
+  line: "#D8CDEE", lineSoft: "#E7DFF4", text: "#21152F", textDim: "#665779", textFaint: "#9687AA",
+  amber: "#7657D6", amberStrong: "#6845CF", accentEdge: "#3E258F", gold: "#AE7B17", magenta: "#D14F93", cool: "#3389C8", good: "#1F8A63", danger: "#CF4265",
+};
+
 const PRESETS = {
   stage: { name: "Stage", sub: "Tungsten amber · dark", dark: true, colors: STAGE },
   neon: { name: "Neon", sub: "Synthwave violet · dark", dark: true, colors: NEON },
@@ -71,12 +100,22 @@ const PRESETS = {
   mint: { name: "Mint", sub: "Fresh emerald · light", dark: false, colors: MINT },
 };
 
+Object.assign(PRESETS, {
+  backstage: { name: "Backstage", sub: "Production blue / dark", dark: true, colors: BACKSTAGE },
+  vinyl: { name: "Vinyl", sub: "Black wax & gold / dark", dark: true, colors: VINYL },
+  sunset: { name: "Sunset", sub: "Festival coral / light", dark: false, colors: SUNSET },
+  lavender: { name: "Lavender", sub: "Album pastel / light", dark: false, colors: LAVENDER },
+});
+
+const THEME_STORAGE_KEY = "pit_theme";
+const THEME_OWNER_KEY = "pit_theme_owner";
+
 // Read the saved theme synchronously at load (web localStorage). Back-compat: the
 // old key stored "dark"/"light" - map those onto the new preset keys.
 let key = "stage";
 try {
   if (typeof window !== "undefined" && window.localStorage) {
-    const saved = window.localStorage.getItem("pit_theme");
+    const saved = window.localStorage.getItem(THEME_STORAGE_KEY);
     if (saved === "light") key = "daylight";
     else if (saved === "dark") key = "stage";
     else if (saved && PRESETS[saved]) key = saved;
@@ -84,7 +123,9 @@ try {
 } catch {}
 
 export const themeKey = key;
-export const colors = (PRESETS[key] || PRESETS.stage).colors;
+const activeTheme = PRESETS[key] || PRESETS.stage;
+export const colors = activeTheme.colors;
+export const themeIsDark = activeTheme.dark;
 
 // Swatch metadata for the theme picker.
 export const THEMES = Object.entries(PRESETS).map(([k, v]) => ({
@@ -92,22 +133,47 @@ export const THEMES = Object.entries(PRESETS).map(([k, v]) => ({
   swatch: { bg: v.colors.bg, surface: v.colors.surface, accent: v.colors.amberStrong, accent2: v.colors.magenta, text: v.colors.text },
 }));
 
-export function setTheme(next) {
-  if (!PRESETS[next]) return;
+function persistTheme(next, ownerId = null) {
+  if (!PRESETS[next]) return false;
+  if (typeof window === "undefined" || !window.localStorage) return false;
+  window.localStorage.setItem(THEME_STORAGE_KEY, next);
+  window.localStorage.setItem(THEME_OWNER_KEY, ownerId || "guest");
+  return true;
+}
+
+export function storedThemeSelection() {
+  try {
+    if (typeof window === "undefined" || !window.localStorage) return { theme: null, ownerId: null };
+    return {
+      theme: window.localStorage.getItem(THEME_STORAGE_KEY),
+      ownerId: window.localStorage.getItem(THEME_OWNER_KEY),
+    };
+  } catch { return { theme: null, ownerId: null }; }
+}
+
+export function clearStoredTheme() {
   try {
     if (typeof window !== "undefined" && window.localStorage) {
-      window.localStorage.setItem("pit_theme", next);
-      window.location.reload();
+      window.localStorage.removeItem(THEME_STORAGE_KEY);
+      window.localStorage.removeItem(THEME_OWNER_KEY);
     }
   } catch {}
+}
+
+export function setTheme(next, ownerId = null) {
+  if (!PRESETS[next]) return;
+  try { if (persistTheme(next, ownerId)) window.location.reload(); } catch {}
 }
 
 // Apply a theme that came from the signed-in account (login / a new device).
 // No-op when it already matches what's rendered, so it never loops on the
 // reload it triggers: after the reload themeKey === next and this returns early.
-export function syncThemeFromAccount(next) {
-  if (!next || !PRESETS[next] || next === key) return;
-  setTheme(next);
+export function syncThemeFromAccount(next, ownerId) {
+  if (!next || !PRESETS[next]) return;
+  try { persistTheme(next, ownerId); } catch {}
+  if (next !== key) {
+    try { if (typeof window !== "undefined") window.location.reload(); } catch {}
+  }
 }
 
 // Official positions get a colored @handle so they're unmistakable (Discord-
