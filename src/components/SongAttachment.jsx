@@ -13,7 +13,7 @@ export function songToTrack(song) {
   };
 }
 
-// A compact, playable song share that still reads as part of the post. The
+// A compact, playable YouTube share that still reads as part of the post. The
 // validated YouTube id goes directly to the player, so it never searches for a
 // similarly named song and accidentally swaps in karaoke or lyric uploads.
 export default function SongAttachment({ song, onPlay, compact = false }) {
@@ -24,11 +24,11 @@ export default function SongAttachment({ song, onPlay, compact = false }) {
       style={[styles.card, compact && styles.compact]}
       onPress={onPlay ? () => onPlay(track) : undefined}
       accessibilityRole={onPlay ? "button" : undefined}
-      accessibilityLabel={`Play ${track.title} by ${track.artist}`}
+      accessibilityLabel={`Play YouTube video ${track.title}`}
     >
       <SmartImage uri={track.art} style={[styles.art, compact && styles.artCompact]} contain={false} />
       <View style={styles.copy}>
-        <Text style={styles.kicker}>SONG ON REPEAT</Text>
+        <Text style={styles.kicker}>WATCH ON PIT</Text>
         <Text style={styles.title} numberOfLines={2}>{track.title}</Text>
         <Text style={styles.artist} numberOfLines={1}>{track.artist}</Text>
       </View>

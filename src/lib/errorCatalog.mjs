@@ -173,6 +173,15 @@ export const ERROR_CATALOG = Object.freeze({
     guidance: "Try again or choose another track.",
     retryable: true,
   }),
+  "PIT-MEDIA-002": Object.freeze({
+    category: "playback",
+    severity: "warning",
+    title: "The full track is between sets",
+    message: "Pit reached a temporary YouTube lookup limit and kept the safer fallback instead of guessing a video.",
+    failurePoint: "YouTube resolver capacity",
+    guidance: "Try again later. A moderator can also pin the correct YouTube link for this song.",
+    retryable: true,
+  }),
   "PIT-STORE-001": Object.freeze({
     category: "storage",
     severity: "warning",

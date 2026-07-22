@@ -7,6 +7,7 @@ import Icon from "../components/Icon";
 import ConcertMap from "../components/ConcertMap";
 import LocationPicker from "../components/LocationPicker";
 import ScreenHeader from "../components/ScreenHeader";
+import { formatDate } from "../domain/dates.mjs";
 
 const RADII = [25, 50, 75, 150];
 
@@ -125,7 +126,7 @@ export default function NearbyScreen({ onClose, onOpenVenue, onOpenArtist }) {
                 <Pressable onPress={() => onOpenVenue?.(s.venue)}>
                   <Text style={styles.sub}>{s.venue} · {s.distanceKm.toFixed(0)} km</Text>
                 </Pressable>
-                <Text style={styles.date}>{s.date}{s.genre ? `  · ${s.genre}` : ""}</Text>
+                <Text style={styles.date}>{formatDate(s.date, s.date)}{s.genre ? `  · ${s.genre}` : ""}</Text>
               </Pressable>
               <TicketAction show={s} />
             </View>

@@ -12,6 +12,7 @@ import { BadgeRow } from "../components/Badge";
 import { ACHIEVEMENTS } from "../lib/badges";
 import { showDateMs, fmtCountdown } from "../lib/showTime";
 import { trackKey } from "../lib/playback";
+import { formatDate } from "../domain/dates.mjs";
 
 function Stat({ value, label, onPress }) {
   return (
@@ -294,7 +295,7 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtis
               <View style={styles.goingDot}><Icon name="calendar" size={15} color={colors.amber} /></View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.showArtist}>{p.artist}</Text>
-                <Text style={styles.showVenue}>{p.venue} · {p.date}</Text>
+                <Text style={styles.showVenue}>{p.venue} · {formatDate(p.date, p.date)}</Text>
               </View>
               {left != null && left > -86400000 && (
                 <View style={styles.countdownBox}>

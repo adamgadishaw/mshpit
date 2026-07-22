@@ -24,6 +24,7 @@ const {
   selectDeezerTrack,
   trackOverrideKey,
   youtubeOEmbed,
+  youtubeProviderStatus,
 } = await import("./musicProviders.js");
 
 after(() => {
@@ -217,8 +218,8 @@ test("catalogue matching picks the studio track over decorated and live variants
 });
 
 test("the catalogue path resolves songs without burning a keyword search", async () => {
-  // Each keyword search costs 100 quota units and only ~99 fit in a day, which is
-  // why songs kept falling back to previews. channels/playlistItems cost 1 unit.
+  // YouTube now gives search.list its own small daily call bucket. Catalogue
+  // reads use the ordinary low-cost API pool and are shared across every listener.
   const calls = [];
   const fetchImpl = async (url) => {
     const u = String(url);
@@ -238,7 +239,28 @@ test("the catalogue path resolves songs without burning a keyword search", async
   assert.equal(result.status, "artist_catalogue");
   // Only the one-off channel lookup may use search; the song itself must not.
   const songSearches = calls.filter((u) => u.includes("/search?") && !u.includes("type=channel"));
-  assert.equal(songSearches.length, 0, "the song resolved without a 100-unit search");
+  assert.equal(songSearches.length, 0, "the song resolved without a keyword search call");
+});
+
+test("concurrent listeners share one cold YouTube resolution", async () => {
+  let requests = 0;
+  const fetchImpl = async (url) => {
+    requests += 1;
+    await new Promise((resolve) => setTimeout(resolve, 2));
+    const value = String(url);
+    if (value.includes("type=channel")) return { ok: true, status: 200, json: async () => ({ items: [{ id: { channelId: "UC_shared" }, snippet: { title: "Shared Artist - Topic" } }] }) };
+    if (value.includes("/channels?")) return { ok: true, status: 200, json: async () => ({ items: [{ contentDetails: { relatedPlaylists: { uploads: "UU_shared" } } }] }) };
+    if (value.includes("/playlistItems?")) return { ok: true, status: 200, json: async () => ({ items: [{ snippet: { title: "Shared Song", resourceId: { videoId: "sharedtrack" } } }] }) };
+    return { ok: true, status: 200, json: async () => ({ items: [youtubeCandidate("sharedtrack", "Shared Song", "Shared Artist - Topic")] }) };
+  };
+  const [first, second] = await Promise.all([
+    resolveYouTubeTrack("Shared Song", "Shared Artist", { apiKey: "test-key", fetchImpl }),
+    resolveYouTubeTrack("Shared Song", "Shared Artist", { apiKey: "test-key", fetchImpl }),
+  ]);
+  assert.equal(first.videoId, "sharedtrack");
+  assert.deepEqual(second, first);
+  assert.equal(requests, 4, "one shared channel/catalogue/video request chain");
+  assert.equal(youtubeProviderStatus().inFlight, 0);
 });
 
 test("resolver searches the artist's channel first, so reactions can never win", async () => {

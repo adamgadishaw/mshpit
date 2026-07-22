@@ -9,7 +9,7 @@ import { mailConfigured, sendEmail } from "./mailer.js";
 import { db, q, publicUser, artistStmts, publicArtist, artistRow, normName } from "./db.js";
 import { hashPassword, verifyPassword, createSession, destroySession, rateLimit } from "./auth.js";
 import { startCatalogSeed, catalogSeedStatus, stopCatalogSeed, deezerEnrich } from "./catalogSeed.js";
-import { clean, cleanEmail, isEmail, cleanName, isName, cleanHandle, isPassword, clampRating, cleanStringArray, shape, LIMITS } from "./validate.js";
+import { clean, cleanEmail, isEmail, cleanName, isName, cleanHandle, isPassword, clampRating, cleanStringArray, cleanDate, shape, LIMITS } from "./validate.js";
 import { ApiError } from "./errors.js";
 import { createMediaPresign, mediaConfigured } from "./media.js";
 import { discoverySidebar } from "./discovery.js";
@@ -24,6 +24,7 @@ import {
   resolveYouTubeTrack,
   trackOverrideKey,
   youtubeOEmbed,
+  youtubeProviderStatus,
 } from "./musicProviders.js";
 
 export { ApiError } from "./errors.js";
@@ -60,6 +61,35 @@ function addBusinessDays(ts, n) {
   return d.getTime();
 }
 const HANDLE_COOLDOWN_DAYS = 10; // business days between username changes
+const ANALYTICS_RETENTION_DAYS = Math.max(30, Math.min(730, Number(process.env.ANALYTICS_RETENTION_DAYS) || 180));
+let lastAnalyticsPruneAt = 0;
+const ANALYTICS_EVENT_PROPS = Object.freeze({
+  view_artist: ["artist", "genre"],
+  view_venue: ["venue"],
+  search: ["q"],
+  play: ["artist", "title"],
+  login: [],
+  signup: ["city"],
+  post: ["kind", "artist", "venue"],
+  follow: [],
+  block: [],
+  like: [],
+  join_fanclub: ["artist"],
+});
+
+function privacySafeSearchTerm(value) {
+  const term = clean(value, { max: 80 }).toLowerCase();
+  if (!term || /(?:https?:\/\/|www\.|\S+@\S+|@\w+)/i.test(term)) return null;
+  const safe = term.replace(/[^\p{L}\p{N}'&+ -]/gu, " ").replace(/\s+/g, " ").trim().slice(0, 60);
+  return safe.length >= 2 ? safe : null;
+}
+
+function jsonObject(value) {
+  try {
+    const parsed = JSON.parse(value || "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch { return {}; }
+}
 // Staff must carry their role in their @ (moderator → "mod", admin → "admin").
 function handleAllowedForRole(handle, role) {
   if (role === "admin") return handle.includes("admin");
@@ -159,17 +189,16 @@ function cleanPostRatingDims(value) {
 const postRow = db.prepare(`INSERT INTO posts (id,user_id,artist,venue,city,date,overall,band,room,dims,review,photos,photos_public,setlist,tour,tags,kind,song,playlist,created_at)
                             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
 
-// A tagged YouTube song on a post. Only a real YouTube video id is trusted; the
-// title/artist/thumb are stored as given (already cleaned) so the feed can render
-// the song card and hand the id straight to the player. Returns null for anything
-// that isn't a valid YouTube link, so a bad paste never becomes a dead card.
+// A tagged YouTube video on a post. Only the canonical video id is authoritative.
+// Build the thumbnail URL ourselves so a post cannot persist an arbitrary remote
+// image URL while still preserving the provider-supplied title/channel metadata.
 function cleanSong(value) {
   if (value == null) return null;
   if (typeof value !== "object" || Array.isArray(value)) return undefined;
   const videoId = parseYouTubeVideoId(value.videoId || value.url || "");
   if (!videoId) return undefined;
   const str = (v, max) => { const s = clean(String(v ?? ""), { max }); return s || null; };
-  const thumb = typeof value.thumb === "string" && /^https:\/\//.test(value.thumb) ? value.thumb.slice(0, 400) : `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+  const thumb = `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
   return { videoId, url: `https://www.youtube.com/watch?v=${videoId}`, title: str(value.title, 200), artist: str(value.artist, 120), thumb };
 }
 
@@ -481,6 +510,7 @@ export const routes = {
       services: {
         database,
         youtubeConfigured: !!process.env.YOUTUBE_API_KEY,
+        youtubeLookup: youtubeProviderStatus(),
         tourProviderConfigured: !!(process.env.TICKETMASTER_KEY || process.env.BANDSINTOWN_APP_ID),
         tourDates: db.prepare("SELECT COUNT(*) c FROM tour_dates").get().c,
         mailConfigured: mailConfigured(),
@@ -675,9 +705,9 @@ export const routes = {
     requireUser(ctx);
     limit(ctx, "yt-oembed", 60, 10 * 60 * 1000);
     const url = clean(ctx.query.url, { max: 500 });
-    if (!url) throw new ApiError(400, "Paste a YouTube link to tag a song.", "VALIDATION_FAILED");
+    if (!url) throw new ApiError(400, "Paste a YouTube link to attach a video.", "VALIDATION_FAILED");
     const song = await youtubeOEmbed(url);
-    if (!song) throw new ApiError(400, "That link is not a valid YouTube song or video.", "VALIDATION_FAILED");
+    if (!song) throw new ApiError(400, "That link is not a playable YouTube video.", "VALIDATION_FAILED");
     return { song };
   },
 
@@ -914,6 +944,7 @@ export const routes = {
     const r = await sendEmail({
       to: email,
       subject: "Reset your Pit password",
+      idempotencyKey: `password-reset-${hash.slice(0, 32)}`,
       text: `Reset your Pit password with this link (valid 1 hour):\n${link}\n\nIf you didn't request this, ignore this email.`,
       html: `<div style="font-family:system-ui,sans-serif;max-width:480px;margin:0 auto"><h2 style="color:#FF8C42">Reset your Pit password</h2><p>Tap the button to set a new password. This link is valid for 1 hour.</p><p><a href="${link}" style="display:inline-block;background:#FF8C42;color:#1A1206;font-weight:700;text-decoration:none;padding:12px 22px;border-radius:999px">Reset password</a></p><p style="color:#888;font-size:13px">If you didn't request this, you can safely ignore this email.</p></div>`,
     });
@@ -972,10 +1003,10 @@ export const routes = {
       lng: { parse: (x) => (Number.isFinite(Number(x)) ? Number(x) : undefined) },
       genres: { parse: (x) => cleanStringArray(x, { maxItems: 12, maxLen: 30 }) },
       favoriteArtists: { parse: (x) => cleanStringArray(x, { maxItems: 50, maxLen: 80 }) },
-      // All 8 themes (4 dark + 4 light). If this list falls behind theme.js, the
+      // Keep this server allow-list aligned with theme.js. If it falls behind,
       // newer themes get silently rejected here, the server then re-hydrates the
       // stale theme on /api/me and the client "snaps back" to a previous theme.
-      theme: { parse: (x) => (["stage", "neon", "forest", "ember", "daylight", "ice", "rose", "mint"].includes(x) ? x : undefined) },
+      theme: { parse: (x) => (["stage", "neon", "forest", "ember", "backstage", "vinyl", "daylight", "ice", "rose", "mint", "sunset", "lavender"].includes(x) ? x : undefined) },
       extras: { parse: () => serializedExtras },
     });
     const sets = [];
@@ -1013,7 +1044,9 @@ export const routes = {
       sets.push("extras = ?"); args.push(encoded);
     } else if (v.extras !== undefined) { sets.push("extras = ?"); args.push(v.extras); }
     if (sets.length) db.prepare(`UPDATE users SET ${sets.join(", ")} WHERE id = ?`).run(...args, u.id);
-    return { user: publicUser(q.userById.get(u.id), { self: true }) };
+    const updatedUser = q.userById.get(u.id);
+    if (parseStoredProfileExtras(updatedUser.extras).analyticsOptOut) db.prepare("DELETE FROM events WHERE user_id=?").run(u.id);
+    return { user: publicUser(updatedUser, { self: true }) };
   },
 
   // People search + member directory (find friends), cross-device.
@@ -1352,7 +1385,7 @@ export const routes = {
       artist: { required: true, parse: (x) => clean(x, { max: LIMITS.artist }) || undefined },
       venue: { required: true, parse: (x) => clean(x, { max: LIMITS.venue }) || undefined },
       city: { parse: (x) => clean(x, { max: LIMITS.city }) },
-      date: { parse: (x) => clean(x, { max: LIMITS.date }) },
+      date: { parse: cleanDate },
       overall: { required: true, parse: (x) => { const r = clampRating(x); return r > 0 ? r : undefined; } },
       band: { parse: (x) => clampRating(x) },
       room: { parse: (x) => clampRating(x) },
@@ -1420,7 +1453,17 @@ export const routes = {
     textField("artist", LIMITS.artist, { required: true });
     textField("venue", LIMITS.venue, { required: true });
     textField("city", LIMITS.city);
-    textField("date", LIMITS.date);
+    // Stored ISO, same as create. A post still holding a legacy display-format
+    // or mangled date is repaired by this rather than rejected, since the value
+    // canonicalizes to the night it always meant. "" clears the field, which is
+    // a normal edit.
+    if (has("date")) {
+      if (typeof body.date !== "string") throw new ApiError(400, "date is invalid", "VALIDATION_FAILED");
+      const raw = clean(body.date, { max: LIMITS.date });
+      const value = raw ? cleanDate(raw) : "";
+      if (raw && !value) throw new ApiError(400, "date is invalid", "VALIDATION_FAILED");
+      next.date = value;
+    }
     textField("review", LIMITS.review, { newlines: true });
     ratingField("overall", { required: true });
     ratingField("band");
@@ -1498,14 +1541,62 @@ export const routes = {
   },
 
   "GET /api/posts/:id/comments": (ctx) => {
-    const hidden = blockedIdSet(ctx.user?.id);
+    const post = db.prepare("SELECT user_id,removed FROM posts WHERE id=?").get(ctx.params.id);
+    if (!post || post.removed) throw new ApiError(404, "That post is no longer available.", "NOT_FOUND");
+    if (ctx.user?.id && blockedEitherWay(ctx.user.id, post.user_id)) {
+      throw new ApiError(403, "This conversation isn't available.", "FORBIDDEN");
+    }
     const { cursor, limit } = pageRequest(ctx, 400, 400);
+    const viewerId = ctx.user?.id || null;
+    const blockSql = viewerId
+      ? `AND NOT EXISTS (SELECT 1 FROM blocks b WHERE
+           (b.blocker_id=? AND b.blocked_id=c.user_id) OR
+           (b.blocker_id=c.user_id AND b.blocked_id=?))`
+      : "";
     const cursorSql = cursor ? "AND (c.created_at < ? OR (c.created_at = ? AND c.id < ?))" : "";
-    const args = cursor ? [ctx.params.id, cursor.createdAt, cursor.createdAt, cursor.id, limit + 1] : [ctx.params.id, limit + 1];
+    const args = [ctx.params.id];
+    if (viewerId) args.push(viewerId, viewerId);
+    if (cursor) args.push(cursor.createdAt, cursor.createdAt, cursor.id);
+    args.push(limit + 1);
     const found = db.prepare(`SELECT c.*, u.name, u.initials, u.avatar_uri, u.avatar_color, u.role, u.verified FROM comments c JOIN users u ON u.id=c.user_id
-                             WHERE c.post_id=? AND c.removed=0 ${cursorSql} ORDER BY c.created_at DESC, c.id DESC LIMIT ?`).all(...args);
+                             WHERE c.post_id=? AND c.removed=0 ${blockSql} ${cursorSql} ORDER BY c.created_at DESC, c.id DESC LIMIT ?`).all(...args);
     const { rows, nextCursor } = finishPage(found, limit);
-    return { comments: rows.reverse().filter((c) => !hidden.has(c.user_id)).map((c) => ({ id: c.id, userId: c.user_id, name: c.name, initials: c.initials, avatarUri: c.avatar_uri, avatarColor: c.avatar_color, role: c.role, verified: !!c.verified, text: c.text, parentId: c.parent_id || null, createdAt: c.created_at })), nextCursor };
+    // A page can contain a reply whose parent is older than the page. Pull a
+    // bounded ancestor chain so the client never promotes that reply to a fake
+    // top-level comment. Removed ancestors are projected as content-free
+    // tombstones; leaf deletions disappear entirely.
+    const hidden = blockedIdSet(viewerId);
+    const byId = new Map(rows.map((comment) => [comment.id, comment]));
+    let pending = rows.map((comment) => comment.parent_id).filter(Boolean);
+    for (let depth = 0; depth < 6 && pending.length; depth++) {
+      const ids = [...new Set(pending.filter((id) => !byId.has(id)))].slice(0, 100);
+      if (!ids.length) break;
+      const placeholders = ids.map(() => "?").join(",");
+      const parents = db.prepare(`SELECT c.*,u.name,u.initials,u.avatar_uri,u.avatar_color,u.role,u.verified
+        FROM comments c JOIN users u ON u.id=c.user_id
+        WHERE c.post_id=? AND c.id IN (${placeholders})`).all(ctx.params.id, ...ids);
+      pending = [];
+      for (const parent of parents) {
+        if (hidden.has(parent.user_id)) continue;
+        byId.set(parent.id, parent);
+        if (parent.parent_id) pending.push(parent.parent_id);
+      }
+    }
+    const comments = [...byId.values()]
+      .sort((a, b) => a.created_at - b.created_at || String(a.id).localeCompare(String(b.id)))
+      .map((c) => c.removed ? {
+        id: c.id, userId: null, name: null, initials: null, avatarUri: null,
+        avatarColor: null, role: null, verified: false, text: "", deleted: true,
+        parentId: c.parent_id || null, createdAt: c.created_at,
+      } : {
+        id: c.id, userId: c.user_id, name: c.name, initials: c.initials,
+        avatarUri: c.avatar_uri, avatarColor: c.avatar_color, role: c.role,
+        verified: !!c.verified, text: c.text, deleted: false,
+        parentId: c.parent_id || null, createdAt: c.created_at,
+      });
+    const removedIds = db.prepare("SELECT id FROM comments WHERE post_id=? AND removed=1 ORDER BY created_at DESC LIMIT 500")
+      .all(ctx.params.id).map((row) => row.id);
+    return { comments, nextCursor, removedIds };
   },
 
   "POST /api/posts/:id/comments": (ctx) => {
@@ -1530,15 +1621,52 @@ export const routes = {
     return { id, parentId };
   },
 
+  // Members can retract only their own comment. Keep replies from other people:
+  // the read route emits a blank tombstone when children still need this parent.
+  // A mismatched owner is deliberately indistinguishable from a missing row.
+  "DELETE /api/posts/:postId/comments/:id": (ctx) => {
+    const u = requireUser(ctx);
+    limit(ctx, "comment-delete", 60, 60 * 60 * 1000);
+    const comment = db.prepare("SELECT id,post_id,user_id,removed FROM comments WHERE id=? AND post_id=?")
+      .get(ctx.params.id, ctx.params.postId);
+    if (!comment || comment.user_id !== u.id) throw new ApiError(404, "That comment is no longer available.", "NOT_FOUND");
+    if (!comment.removed) db.prepare("UPDATE comments SET removed=1 WHERE id=? AND post_id=? AND user_id=?").run(comment.id, comment.post_id, u.id);
+    const hasReplies = !!db.prepare("SELECT 1 FROM comments WHERE post_id=? AND parent_id=? AND removed=0 LIMIT 1")
+      .get(comment.post_id, comment.id);
+    return { ok: true, id: comment.id, postId: comment.post_id, tombstone: hasReplies };
+  },
+
   // ---- direct messages (SQLite migration slice 4) ----
   // Every user I've DM'd + that thread's messages. At prototype scale returning
   // all messages is cheap and lets the client compute the Requests/Friends split
   // and unread exactly as it does locally (read markers stay client-side).
   "GET /api/me/threads": (ctx) => {
     const u = requireUser(ctx);
+    const hidden = blockedIdSet(u.id);
+    // Inbox refreshes need only one latest message per conversation. A windowed
+    // query avoids downloading up to 500 messages for every thread every time the
+    // inbox is opened or refreshed, while the full route remains for hydration.
+    if (String(ctx.query?.summary || "") === "1") {
+      const latest = db.prepare(`SELECT id,from_id,to_id,text,created_at,other_id FROM (
+        SELECT id,from_id,to_id,text,created_at,
+          CASE WHEN from_id=? THEN to_id ELSE from_id END AS other_id,
+          ROW_NUMBER() OVER (
+            PARTITION BY CASE WHEN from_id=? THEN to_id ELSE from_id END
+            ORDER BY created_at DESC,id DESC
+          ) AS row_number
+        FROM dms WHERE from_id=? OR to_id=?
+      ) WHERE row_number=1 ORDER BY created_at DESC,id DESC LIMIT 200`).all(u.id, u.id, u.id, u.id);
+      return { threads: latest.filter((message) => !hidden.has(message.other_id)).map((message) => {
+        const other = q.userById.get(message.other_id);
+        return other ? {
+          otherId: message.other_id,
+          otherUser: publicUser(other),
+          messages: [{ id: message.id, from: message.from_id, text: message.text, createdAt: message.created_at }],
+        } : null;
+      }).filter(Boolean) };
+    }
     const others = db.prepare(`SELECT DISTINCT CASE WHEN from_id = ? THEN to_id ELSE from_id END AS other
                                FROM dms WHERE from_id = ? OR to_id = ?`).all(u.id, u.id, u.id);
-    const hidden = blockedIdSet(u.id);
     const threads = others.map((o) => {
       if (hidden.has(o.other)) return null; // blocked conversations disappear
       const other = q.userById.get(o.other);
@@ -1761,21 +1889,32 @@ export const routes = {
   // the behavioral data disclosed in the Privacy policy + consented at sign-up.
   "POST /api/events": (ctx) => {
     limit(ctx, "events", 240, 10 * 60 * 1000);
+    const analyticsProfile = ctx.user ? parseStoredProfileExtras(ctx.user.extras) : {};
+    if (!ctx.user || !analyticsProfile.consentAt || analyticsProfile.analyticsOptOut) return { ok: true, stored: 0 };
     const list = Array.isArray(ctx.body?.events) ? ctx.body.events.slice(0, 50) : [];
     if (!list.length) return { ok: true, stored: 0 };
+    if (now() - lastAnalyticsPruneAt > 60 * 60 * 1000) {
+      db.prepare("DELETE FROM events WHERE created_at < ?").run(now() - ANALYTICS_RETENTION_DAYS * 24 * 60 * 60 * 1000);
+      lastAnalyticsPruneAt = now();
+    }
     const ins = db.prepare("INSERT INTO events (id,user_id,name,props,ip,created_at) VALUES (?,?,?,?,?,?)");
     let stored = 0;
     for (const e of list) {
       const name = clean(e?.name, { max: 40 });
-      if (!name) continue;
+      const allowedProps = ANALYTICS_EVENT_PROPS[name];
+      if (!allowedProps) continue;
       let props = {};
       if (e && typeof e.props === "object" && e.props) {
-        for (const [k, v] of Object.entries(e.props).slice(0, 12)) {
-          if (typeof v === "string") props[clean(k, { max: 24 })] = clean(v, { max: 120 });
-          else if (typeof v === "number" || typeof v === "boolean") props[clean(k, { max: 24 })] = v;
+        for (const key of allowedProps) {
+          const value = e.props[key];
+          if (typeof value === "string") {
+            const safe = key === "q" ? privacySafeSearchTerm(value) : clean(value, { max: 120 });
+            if (safe) props[key] = safe;
+          } else if (typeof value === "number" && Number.isFinite(value)) props[key] = value;
+          else if (typeof value === "boolean") props[key] = value;
         }
       }
-      ins.run(uid("e"), ctx.user?.id ?? null, name, JSON.stringify(props), ctx.ip, now());
+      ins.run(uid("e"), ctx.user.id, name, JSON.stringify(props), null, now());
       stored++;
     }
     return { ok: true, stored };
@@ -1786,6 +1925,8 @@ export const routes = {
   "GET /api/admin/analytics": (ctx) => {
     requireAdmin(ctx);
     const dayAgo = now() - 24 * 60 * 60 * 1000;
+    const weekAgo = now() - 7 * 24 * 60 * 60 * 1000;
+    const monthAgo = now() - 30 * 24 * 60 * 60 * 1000;
     const one = (sql, ...a) => db.prepare(sql).get(...a);
     const all = (sql, ...a) => db.prepare(sql).all(...a);
     const totals = {
@@ -1794,27 +1935,79 @@ export const routes = {
       knownUsers: one("SELECT COUNT(DISTINCT user_id) c FROM events WHERE user_id IS NOT NULL").c,
       guestHits: one("SELECT COUNT(*) c FROM events WHERE user_id IS NULL").c,
       users: one("SELECT COUNT(*) c FROM users").c,
+      newUsers7d: one("SELECT COUNT(*) c FROM users WHERE created_at >= ?", weekAgo).c,
+      activeUsers7d: one("SELECT COUNT(DISTINCT user_id) c FROM events WHERE user_id IS NOT NULL AND created_at >= ?", weekAgo).c,
       posts: one("SELECT COUNT(*) c FROM posts WHERE removed=0").c,
+      posts30d: one("SELECT COUNT(*) c FROM posts WHERE removed=0 AND created_at >= ?", monthAgo).c,
     };
-    const topBy = (json, name, n = 12) =>
+    const topBy = (json, name, n = 12, minimum = 1) =>
       all(
         `SELECT json_extract(props, '$.${json}') AS k, COUNT(*) c
          FROM events WHERE name = ? AND json_extract(props, '$.${json}') IS NOT NULL
-         GROUP BY k ORDER BY c DESC LIMIT ?`,
-        name, n
+         GROUP BY k HAVING COUNT(*) >= ? ORDER BY c DESC LIMIT ?`,
+        name, minimum, n
       ).map((r) => ({ label: r.k, count: r.c }));
+
+    const signupDays = new Map(all("SELECT date(created_at/1000,'unixepoch') day,COUNT(*) c FROM users WHERE created_at >= ? GROUP BY day", monthAgo).map((row) => [row.day, row.c]));
+    const activeDays = new Map(all("SELECT date(created_at/1000,'unixepoch') day,COUNT(DISTINCT user_id) c FROM events WHERE user_id IS NOT NULL AND created_at >= ? GROUP BY day", monthAgo).map((row) => [row.day, row.c]));
+    const postDays = new Map(all("SELECT date(created_at/1000,'unixepoch') day,COUNT(*) c FROM posts WHERE removed=0 AND created_at >= ? GROUP BY day", monthAgo).map((row) => [row.day, row.c]));
+    const growth = [];
+    for (let offset = 29; offset >= 0; offset--) {
+      const date = new Date();
+      date.setUTCHours(0, 0, 0, 0);
+      date.setUTCDate(date.getUTCDate() - offset);
+      const day = date.toISOString().slice(0, 10);
+      growth.push({ day, signups: signupDays.get(day) || 0, activeUsers: activeDays.get(day) || 0, posts: postDays.get(day) || 0 });
+    }
+
+    // Aggregate words across recent PUBLIC posts. Count a term at most once per
+    // post and return only k-anonymous trends, never a post/user association.
+    const stopWords = new Set(["the", "and", "for", "that", "this", "with", "was", "were", "are", "but", "not", "you", "your", "they", "their", "from", "have", "has", "had", "just", "show", "concert", "really", "very", "into", "out", "all", "our", "its", "it's"]);
+    const wordCounts = new Map();
+    for (const row of all("SELECT review FROM posts WHERE removed=0 AND created_at >= ? AND length(review) > 0 ORDER BY created_at DESC LIMIT 5000", now() - 90 * 24 * 60 * 60 * 1000)) {
+      const words = new Set(String(row.review || "").toLowerCase().match(/[\p{L}\p{N}']{3,24}/gu) || []);
+      for (const word of words) if (!stopWords.has(word) && !/^\d+$/.test(word)) wordCounts.set(word, (wordCounts.get(word) || 0) + 1);
+    }
+    const postKeywords = [...wordCounts.entries()].filter(([, count]) => count >= 3).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 20).map(([label, count]) => ({ label, count }));
     return {
       totals,
+      retentionDays: ANALYTICS_RETENTION_DAYS,
+      growth,
       byName: all("SELECT name, COUNT(*) c FROM events GROUP BY name ORDER BY c DESC LIMIT 20").map((r) => ({ label: r.name, count: r.c })),
       topArtists: topBy("artist", "view_artist"),
       topVenues: topBy("venue", "view_venue"),
       topGenres: topBy("genre", "view_artist"),
-      topSearches: topBy("q", "search"),
+      topSearches: topBy("q", "search", 12, 3),
+      postKeywords,
       recent: all(
         `SELECT e.name, e.props, e.created_at, u.handle
          FROM events e LEFT JOIN users u ON u.id = e.user_id
          ORDER BY e.created_at DESC LIMIT 30`
-      ).map((r) => ({ name: r.name, props: JSON.parse(r.props || "{}"), at: r.created_at, handle: r.handle || "guest" })),
+      ).map((r) => ({ name: r.name, props: r.name === "search" ? {} : jsonObject(r.props), at: r.created_at, handle: r.handle || "deleted-user" })),
+    };
+  },
+
+  "GET /api/admin/analytics/users/:id": (ctx) => {
+    requireAdmin(ctx);
+    const member = q.userById.get(ctx.params.id);
+    if (!member) throw new ApiError(404, "That member is no longer available.", "NOT_FOUND");
+    const eventRows = db.prepare("SELECT name,props,created_at FROM events WHERE user_id=? ORDER BY created_at DESC LIMIT 100").all(member.id);
+    const breakdown = db.prepare("SELECT name,COUNT(*) count FROM events WHERE user_id=? GROUP BY name ORDER BY count DESC LIMIT 30").all(member.id);
+    return {
+      user: publicUser(member),
+      totals: {
+        events: db.prepare("SELECT COUNT(*) c FROM events WHERE user_id=?").get(member.id).c,
+        posts: db.prepare("SELECT COUNT(*) c FROM posts WHERE user_id=? AND removed=0").get(member.id).c,
+        comments: db.prepare("SELECT COUNT(*) c FROM comments WHERE user_id=? AND removed=0").get(member.id).c,
+        plays: db.prepare("SELECT COUNT(*) c FROM plays WHERE user_id=?").get(member.id).c,
+        messagesSent: db.prepare("SELECT COUNT(*) c FROM dms WHERE from_id=?").get(member.id).c,
+      },
+      byName: breakdown.map((row) => ({ label: row.name, count: row.count })),
+      recent: eventRows.map((row) => ({
+        name: row.name,
+        props: row.name === "search" ? {} : jsonObject(row.props),
+        at: row.created_at,
+      })),
     };
   },
 
@@ -1838,15 +2031,16 @@ export const routes = {
     return { id };
   },
 
-  // Report a song whose in-app video is the wrong version (lyrics/karaoke/
-  // remix/other artist). Optionally carries the CORRECT link, which an admin
-  // can pin with one action. Lands in the normal moderation queue.
+  // Report a song identity or playback failure. Optionally carries the CORRECT
+  // link, which a moderator can validate and pin in one action. Lands in the
+  // normal moderation queue with a constrained category for useful triage.
   "POST /api/tracks/report": (ctx) => {
     const u = requireUser(ctx);
     limit(ctx, "track-report", 15, 60 * 60 * 1000);
     const [errs, v] = shape(ctx.body, {
       title: { required: true, parse: (x) => clean(x, { max: 200 }) || undefined },
       artist: { parse: (x) => clean(x, { max: 120 }) },
+      category: { parse: (x) => (["wrong_video", "wont_play", "preview_only", "missing", "other"].includes(x) ? x : undefined) },
       url: { parse: (x) => clean(x, { max: 400 }) },
       note: { parse: (x) => clean(x, { max: LIMITS.note }) },
     });
@@ -1856,7 +2050,7 @@ export const routes = {
     const key = trackOverrideKey(v.title, v.artist);
     const existing = db.prepare("SELECT id FROM reports WHERE reporter_id=? AND target_type='track' AND target_id=? AND status='open'").get(u.id, key);
     if (existing) return { id: existing.id, duplicate: true };
-    const reason = JSON.stringify({ title: v.title, artist: v.artist || "", suggestedVideoId: suggestedId, note: v.note || "" });
+    const reason = JSON.stringify({ title: v.title, artist: v.artist || "", category: v.category || "wrong_video", suggestedVideoId: suggestedId, note: v.note || "" });
     const id = uid("r");
     db.prepare("INSERT INTO reports (id,target_type,target_id,reason,reporter_id,created_at) VALUES (?,?,?,?,?,?)")
       .run(id, "track", key, reason, u.id, now());
@@ -2149,7 +2343,9 @@ export const routes = {
     if (!going && has) db.prepare("DELETE FROM going WHERE user_id=? AND concert_key=?").run(u.id, key);
     else if (going && !has) db.prepare("INSERT INTO going (user_id,concert_key,artist,venue,city,date) VALUES (?,?,?,?,?,?)")
       .run(u.id, key, clean(ctx.body?.artist, { max: LIMITS.artist }) || "", clean(ctx.body?.venue, { max: LIMITS.venue }) || "",
-        clean(ctx.body?.city, { max: LIMITS.city }) || "", clean(ctx.body?.date, { max: LIMITS.date }) || "");
+        // Denormalized display copy only (the key is what identifies the night),
+        // so an unparseable date is dropped rather than refused.
+        clean(ctx.body?.city, { max: LIMITS.city }) || "", cleanDate(ctx.body?.date) || "");
     return { going };
   },
   "GET /api/going/:key/attendees": (ctx) => {

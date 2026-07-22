@@ -17,6 +17,7 @@ import SheetHeader from "../components/SheetHeader";
 import DatePicker from "../components/DatePicker";
 import { isDurableMediaUrl, reportMediaPickerError, uploadMediaAsset } from "../lib/mediaUpload";
 import { api } from "../lib/api";
+import { formatDate, toIsoDate, todayIso } from "../domain/dates.mjs";
 
 const GROUP_COLOR = { "THE BAND": colors.amber, "THE ROOM": colors.cool, "THE NIGHT": colors.magenta };
 const GROUPS = ["THE BAND", "THE ROOM", "THE NIGHT"];
@@ -69,7 +70,7 @@ function postDims(post) {
 }
 
 export default function LogScreen({ onPost, onCancel, user, prefill, editing = null, defaultMode = "show" }) {
-  const { searchArtistsApi, drafts, saveDraft, deleteDraft, myPlaylists, loadMyPlaylists } = useStore();
+  const { searchArtistsApi, searchVenues, drafts, saveDraft, deleteDraft, myPlaylists, loadMyPlaylists } = useStore();
   // Two kinds of post share this composer: a full show review, or a plain
   // status update ("post whatever": text and/or photos, no artist/rating).
   const [postType, setPostType] = useState(
@@ -91,6 +92,14 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
     const id = setTimeout(() => searchArtistsApi(q).then((list) => setArtistHits((list || []).slice(0, 6))), 220);
     return () => clearTimeout(id);
   }, [artist, artistPicked]);
+  const [venueHits, setVenueHits] = useState([]);
+  const [venuePicked, setVenuePicked] = useState(!!editing?.venue || !!prefill?.venue);
+  useEffect(() => {
+    const q = venue.trim();
+    if (venuePicked || q.length < 2) { setVenueHits([]); return; }
+    const id = setTimeout(() => setVenueHits(searchVenues(q, 6)), 120);
+    return () => clearTimeout(id);
+  }, [venue, venuePicked]);
   const [dims, setDims] = useState(() => editing ? postDims(editing) : { performance: 0, setlist: 0, sound: 0, venue: 0, crowd: 0, experience: 0 });
   const [ratingsDirty, setRatingsDirty] = useState(false);
   const [review, setReview] = useState(editing?.review || "");
@@ -125,9 +134,12 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
   // Show date, defaults to today so logging stays one-tap, but you can set the
   // real date of a past show. Years run from this year back to 2000, descending.
   const today = new Date();
-  const todayStr = `${today.getFullYear()} · ${String(today.getMonth() + 1).padStart(2, "0")} · ${String(today.getDate()).padStart(2, "0")}`;
+  // Held and submitted as canonical ISO; rendered through formatDate below.
+  const todayStr = todayIso(today);
   const PAST_YEARS = Array.from({ length: today.getFullYear() - 1999 }, (_, i) => today.getFullYear() - i);
-  const [date, setDate] = useState(editing?.date || todayStr);
+  // An existing post may still hold a legacy display-format date, so normalize
+  // on open: editing a show must not rewrite which performance it belongs to.
+  const [date, setDate] = useState(toIsoDate(editing?.date) || editing?.date || todayStr);
   const [showDate, setShowDate] = useState(false);
 
   const addPhoto = async () => {
@@ -167,7 +179,7 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
     setSongError("");
     try {
       const result = await api(`/api/youtube/oembed?url=${encodeURIComponent(url)}`, {
-        context: "Checking a YouTube song link",
+        context: "Checking a YouTube link",
         silent: true,
       });
       if (!result?.song?.videoId) throw new Error("No playable YouTube video was found.");
@@ -175,7 +187,7 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
       setSongUrl(result.song.url || url);
     } catch {
       setSong(null);
-      setSongError("That link missed the cue. Paste a full YouTube watch, Shorts, or youtu.be link.");
+      setSongError("That link missed the cue. Paste a YouTube watch, Shorts, or youtu.be link.");
     } finally {
       setResolvingSong(false);
     }
@@ -191,7 +203,7 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
       }
     : computed;
   const canPostStatus = !!(review.trim() || photos.filter(isDurableMediaUrl).length || song?.videoId || playlist);
-  const canPost = isStatus ? canPostStatus : (artist.trim() && computed.overall > 0);
+  const canPost = isStatus ? canPostStatus : (artist.trim() && venue.trim() && computed.overall > 0);
   const submitBusy = uploadingPhotos || resolvingSong || posting;
 
   const stash = () => {
@@ -203,8 +215,8 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
   };
   const resume = (d) => {
     setDraftId(d.id);
-    setArtist(d.artist || ""); setArtistPicked(!!d.artist); setVenue(d.venue || ""); setCity(d.city || "");
-    setTour(d.tour || ""); setDate(d.date || todayStr); setDims(d.dims || dims); setReview(d.review || ""); setTags(Array.isArray(d.tags) ? d.tags.slice(0, 5) : []); setSong(d.song || null); setSongUrl(d.song?.url || ""); setPhotos((d.photos || []).filter(isDurableMediaUrl));
+    setArtist(d.artist || ""); setArtistPicked(!!d.artist); setVenue(d.venue || ""); setVenuePicked(!!d.venue); setCity(d.city || "");
+    setTour(d.tour || ""); setDate(toIsoDate(d.date) || d.date || todayStr); setDims(d.dims || dims); setReview(d.review || ""); setTags(Array.isArray(d.tags) ? d.tags.slice(0, 5) : []); setSong(d.song || null); setSongUrl(d.song?.url || ""); setPhotos((d.photos || []).filter(isDurableMediaUrl));
   };
   const hasContent = artist.trim() || venue.trim() || review.trim() || photos.length || song?.videoId;
 
@@ -241,8 +253,8 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
           : { name: "You", handle: "you", initials: "YOU" }),
         timeAgo: editing?.timeAgo || "now",
         artist: artist.trim(),
-        venue: venue.trim() || "Unknown venue",
-        city: editing ? city.trim() : city.trim() || "-",
+        venue: venue.trim(),
+        city: city.trim(),
         tour: tour.trim() || null,
         date,
         media: durablePhotos.length,
@@ -352,7 +364,30 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
           )}
         </View>
         <View style={{ flexDirection: "row", gap: 10 }}>
-          <TextInput style={[styles.input, { flex: 1.4 }]} placeholder="Venue" placeholderTextColor={colors.textFaint} value={venue} onChangeText={setVenue} />
+          <View style={{ flex: 1.4 }}>
+            <TextInput style={styles.input} placeholder="Venue" placeholderTextColor={colors.textFaint} value={venue} onChangeText={(text) => { setVenue(text); setVenuePicked(false); }} />
+            {venueHits.length > 0 && (
+              <View style={styles.hits}>
+                {venueHits.map((hit) => (
+                  <Pressable key={`${hit.name}|${hit.place}`} style={styles.hit} onPress={() => {
+                    setVenue(hit.name);
+                    setCity((hit.place || "").split(",")[0]?.trim() || "");
+                    setVenuePicked(true);
+                    setVenueHits([]);
+                  }}>
+                    <Icon name="pin" size={13} color={colors.cool} />
+                    <View style={{ flex: 1, minWidth: 0 }}>
+                      <Text style={styles.hitName} numberOfLines={1}>{hit.name}</Text>
+                      {!!hit.place && <Text style={styles.venuePlace} numberOfLines={1}>{hit.place}</Text>}
+                    </View>
+                  </Pressable>
+                ))}
+              </View>
+            )}
+            {venuePicked && !!venue.trim() && (
+              <View style={styles.linked}><Icon name="check" size={12} color={colors.good} /><Text style={styles.linkedTxt}>Linked to {venue.trim()}</Text></View>
+            )}
+          </View>
           <TextInput style={[styles.input, { flex: 1 }]} placeholder="City" placeholderTextColor={colors.textFaint} value={city} onChangeText={setCity} />
         </View>
 
@@ -372,7 +407,7 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
         <Text style={[styles.fieldLabel, { marginTop: 18 }]}>WHEN?</Text>
         <Pressable style={styles.dateBtn} onPress={() => setShowDate((s) => !s)}>
           <Icon name="calendar" size={16} color={colors.amber} />
-          <Text style={styles.dateTxt}>{date === todayStr ? "Today" : date}</Text>
+          <Text style={styles.dateTxt}>{date === todayStr ? "Today" : formatDate(date, date)}</Text>
           <Icon name={showDate ? "chevron-down" : "chevron-right"} size={16} color={colors.textDim} />
         </Pressable>
         {showDate && (
@@ -448,22 +483,22 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
         <Text style={styles.attachLabel}>ADD TO YOUR POST</Text>
         <View style={styles.attachBar}>
           <AttachChip icon="camera" label="Photo / video" active={showPhotos || photos.length > 0} count={photos.length} onPress={() => setShowPhotos((v) => !v)} disabled={submitBusy} />
-          <AttachChip icon="music" label="Song" active={showSong || !!song?.videoId} onPress={() => setShowSong((v) => !v)} disabled={submitBusy} />
+          <AttachChip icon="play" label="YouTube" active={showSong || !!song?.videoId} onPress={() => setShowSong((v) => !v)} disabled={submitBusy} />
           {isStatus && <AttachChip icon="feed" label="Playlist" active={showPlaylist || !!playlist} count={playlist ? (playlist.tracks?.length || 0) : 0} onPress={() => setShowPlaylist((v) => !v)} disabled={submitBusy} />}
         </View>
 
         {(showSong || song?.videoId) && (
         <View style={styles.attachPanel}>
-        <Text style={styles.attachHint}>Paste a YouTube link. It plays in the Pit player, exactly the video you chose.</Text>
+        <Text style={styles.attachHint}>Attach a song, review, breakdown, lesson, or performance. Pit plays exactly the YouTube video you chose.</Text>
         {song?.videoId ? (
           <View style={styles.songPreview}>
             <SmartImage uri={song.thumb} style={styles.songArt} contain={false} />
             <View style={{ flex: 1, minWidth: 0 }}>
-              <Text style={styles.songReady}>READY TO PLAY</Text>
-              <Text style={styles.songTitle} numberOfLines={2}>{song.title || "YouTube song"}</Text>
+              <Text style={styles.songReady}>YOUTUBE ATTACHED</Text>
+              <Text style={styles.songTitle} numberOfLines={2}>{song.title || "YouTube video"}</Text>
               {!!song.artist && <Text style={styles.songArtist} numberOfLines={1}>{song.artist}</Text>}
             </View>
-            <Pressable onPress={() => { setSong(null); setSongUrl(""); setSongError(""); }} hitSlop={8} disabled={submitBusy} accessibilityRole="button" accessibilityLabel="Remove tagged song">
+            <Pressable onPress={() => { setSong(null); setSongUrl(""); setSongError(""); }} hitSlop={8} disabled={submitBusy} accessibilityRole="button" accessibilityLabel="Remove YouTube video">
               <Icon name="x" size={17} color={colors.textDim} />
             </Pressable>
           </View>
@@ -550,7 +585,7 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
         </View>
         )}
 
-        <Button title={posting ? (editing ? "Saving changes..." : "Posting...") : uploadingPhotos ? "Uploading media..." : resolvingSong ? "Checking song..." : editing ? "Save changes" : isStatus ? "Post" : "Post to feed"} icon="check" onPress={submit} disabled={!canPost || submitBusy} style={{ marginTop: 28 }} />
+        <Button title={posting ? (editing ? "Saving changes..." : "Posting...") : uploadingPhotos ? "Uploading media..." : resolvingSong ? "Checking video..." : editing ? "Save changes" : isStatus ? "Post" : "Post to feed"} icon="check" onPress={submit} disabled={!canPost || submitBusy} style={{ marginTop: 28 }} />
         {!editing && !isStatus && hasContent && (
           <Pressable style={styles.saveDraft} onPress={stash} disabled={submitBusy}>
             <Icon name="edit" size={14} color={colors.textDim} />
@@ -623,6 +658,7 @@ const styles = StyleSheet.create({
   hit: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, paddingVertical: 10, borderTopWidth: 1, borderTopColor: colors.lineSoft },
   hitName: { color: colors.text, fontSize: 14, fontWeight: "700", flexShrink: 1 },
   hitGenre: { color: colors.textDim, fontSize: 11, fontFamily: mono, marginLeft: "auto" },
+  venuePlace: { color: colors.textDim, fontSize: 11, marginTop: 2 },
   linked: { flexDirection: "row", alignItems: "center", gap: 5, marginTop: -4, marginBottom: 10 },
   linkedTxt: { color: colors.good, fontSize: 11.5, fontWeight: "700" },
   presets: { flexDirection: "row", gap: 8, paddingBottom: 12, paddingTop: 2 },

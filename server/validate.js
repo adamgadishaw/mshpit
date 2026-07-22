@@ -2,6 +2,8 @@
 // The client copy is UX; THIS is the trust boundary. Every route cleans and
 // validates through these before anything touches the database.
 
+import { toIsoDate, isValidDate } from "../src/domain/dates.mjs";
+
 export function clean(s, { max = 500, newlines = false } = {}) {
   if (typeof s !== "string") return "";
   let out = "";
@@ -40,6 +42,15 @@ export const isHandle = (s) => /^[a-z0-9_]{3,20}$/.test(cleanHandle(s));
 
 export const isPassword = (s) =>
   typeof s === "string" && s.length >= 8 && s.length <= 100 && /[a-zA-Z]/.test(s) && /[0-9]/.test(s);
+
+// Performance dates are stored ISO and formatted at display time; see
+// src/domain/dates.mjs for why that identity matters. Accepts any shape the
+// product has ever written and canonicalizes it, so the same night always
+// produces the same performance no matter which client wrote it.
+export const isDate = isValidDate;
+
+// Returns the canonical ISO date, or undefined so `shape()` reports it invalid.
+export const cleanDate = (s) => toIsoDate(clean(s, { max: LIMITS.date })) || undefined;
 
 export const clampRating = (n) => {
   const v = Number(n);

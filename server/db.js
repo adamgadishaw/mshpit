@@ -3,6 +3,7 @@
 // survives crashes mid-write (WAL journal replays), and the whole DB is one
 // file you can back up by copying.
 import { DatabaseSync } from "node:sqlite";
+import { toIsoDate } from "../src/domain/dates.mjs";
 import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -223,6 +224,7 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS idx_events_name ON events(name, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_events_user ON events(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at DESC);
 
 -- ---- Notifications / activity (server-backed, cross-device) -----------------
 -- Addressed to a recipient (user_id) when someone (actor_id) acts on their stuff.
@@ -481,6 +483,81 @@ for (const stmt of [
   "ALTER TABLE yt_cache ADD COLUMN rejected_ids TEXT NOT NULL DEFAULT '[]'",
 ]) { try { db.exec(stmt); } catch {} }
 
+// Analytics never needs a network address once request-level rate limiting is
+// complete. Purge the legacy raw-IP column once and keep new rows null.
+const eventIpPurgeMarker = "privacy:events-ip-purged:v1";
+if (!db.prepare("SELECT 1 FROM app_meta WHERE key=?").get(eventIpPurgeMarker)) {
+  db.exec("BEGIN");
+  try {
+    db.prepare("UPDATE events SET ip=NULL WHERE ip IS NOT NULL").run();
+    db.prepare("INSERT INTO app_meta (key,value) VALUES (?,?)").run(eventIpPurgeMarker, String(Date.now()));
+    db.exec("COMMIT");
+  } catch (error) {
+    try { db.exec("ROLLBACK"); } catch {}
+    throw error;
+  }
+}
+
+// Performance dates move to canonical ISO storage, with display formatting done
+// at render time. Until this ran, the stored date WAS the display string, so a
+// different separator forked one night into two performances and split its
+// lounge, attendance and score aggregation. Canonicalizing merges those back.
+//
+// `concert_key` and `lounge_id` embed the date, so they are rebuilt in the same
+// transaction as the columns they are derived from, or attendance and chat
+// would point at performances that no longer exist. The rebuild mirrors the
+// client's `concertKey` exactly: `artist|venue|date`, trimmed and lowercased.
+const isoDateMigration = "dates:canonical-iso:v1";
+if (!db.prepare("SELECT 1 FROM app_meta WHERE key=?").get(isoDateMigration)) {
+  const keyFor = (artist, venue, date) => `${(artist || "").trim()}|${(venue || "").trim()}|${date || ""}`.toLowerCase();
+  db.exec("BEGIN");
+  try {
+    for (const table of ["posts", "tour_dates"]) {
+      const rows = db.prepare(`SELECT id,date FROM ${table} WHERE date IS NOT NULL AND date <> ''`).all();
+      const update = db.prepare(`UPDATE ${table} SET date=? WHERE id=?`);
+      for (const row of rows) {
+        const iso = toIsoDate(row.date);
+        // A date too broken to parse is left exactly as it is. Blanking it would
+        // destroy the only record of when someone's night happened, and the
+        // display layer already falls back rather than rendering mojibake.
+        if (iso && iso !== row.date) update.run(iso, row.id);
+      }
+    }
+
+    // OR REPLACE performs the merge: if a user was going to both the forked and
+    // the canonical spelling of one night, they end up with the single row that
+    // was always intended. PRIMARY KEY (user_id, concert_key) makes that safe.
+    for (const row of db.prepare("SELECT user_id,concert_key,artist,venue,date FROM going").all()) {
+      const iso = toIsoDate(row.date);
+      if (!iso) continue;
+      const key = keyFor(row.artist, row.venue, iso);
+      if (key === row.concert_key && iso === row.date) continue;
+      db.prepare("UPDATE OR REPLACE going SET concert_key=?, date=? WHERE user_id=? AND concert_key=?")
+        .run(key, iso, row.user_id, row.concert_key);
+    }
+
+    // Lounge ids are opaque strings built by the client, so they are rewritten
+    // by canonicalizing the date segment in place rather than by re-deriving
+    // the whole key from data the messages table does not carry. Two lounges
+    // that collapse to one id simply become one room, which is correct: they
+    // were always the same night.
+    for (const row of db.prepare("SELECT DISTINCT lounge_id FROM lounge_messages").all()) {
+      const parts = String(row.lounge_id || "").split("|");
+      if (parts.length !== 3) continue;
+      const iso = toIsoDate(parts[2]);
+      if (!iso || iso === parts[2]) continue;
+      const next = `${parts[0]}|${parts[1]}|${iso}`;
+      db.prepare("UPDATE lounge_messages SET lounge_id=? WHERE lounge_id=?").run(next, row.lounge_id);
+    }
+
+    db.prepare("INSERT INTO app_meta (key,value) VALUES (?,?)").run(isoDateMigration, String(Date.now()));
+    db.exec("COMMIT");
+  } catch (error) {
+    try { db.exec("ROLLBACK"); } catch {}
+    throw error;
+  }
+}
+
 // --- tiny helpers ------------------------------------------------------------
 export const q = {
   userByEmail: db.prepare("SELECT * FROM users WHERE email = ?"),
@@ -713,9 +790,14 @@ export function publicUser(u, { self = false } = {}) {
     "artistName", "home", "bio", "avatarUri", "avatarColor", "banner",
     "initials", "genres", "favoriteArtists",
   ]) delete extras[key];
+  const publicExtras = Object.fromEntries(["theme", "nowPlaying"].filter((key) => extras[key] !== undefined).map((key) => [key, extras[key]]));
+  const selfExtras = self
+    ? Object.fromEntries(["consentAt", "termsVersion", "analyticsOptOut", "treble", "bass", "playlists"].filter((key) => extras[key] !== undefined).map((key) => [key, extras[key]]))
+    : {};
 
   return {
-    ...extras,
+    ...publicExtras,
+    ...selfExtras,
     id: u.id,
     name: u.name,
     handle: u.handle,

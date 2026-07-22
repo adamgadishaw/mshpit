@@ -2,7 +2,7 @@
 
 > **Living doc.** Whoever works on this next: read this first, and UPDATE it before you end a session (move things between "Done" and "Backlog", note anything running). Point a fresh Claude Code chat at this file to get up to speed without re-explaining.
 >
-> Last updated: **2026-07-21** (recovered vanished Claude requests; see `CLAUDE_SESSION_RECOVERY_2026-07-21.md`)
+> Last updated: **2026-07-22** (recovered-backlog batch 1 verified + committed; see `TODO.md`)
 
 > **Working agreement (owner's standing instruction):** ALWAYS `git commit` **and** `git push` after a verified batch. Stabilization work uses a review branch; do not merge/push directly to `master` until the branch checks pass. A master push auto-deploys and briefly restarts Render.
 
@@ -40,6 +40,164 @@ verified live (`git log origin/master..HEAD` is empty; tree clean).
 | `MAIL_FROM` | ❌ **THE LAST GAP.** Two parts: (1) set `MAIL_FROM = Pit <noreply@mshpit.com>` on Render (health shows `mailConfigured: false`, so this or the key is still missing there); (2) **verify `mshpit.com` in Resend** (the account has **zero verified domains**, so any send from `@mshpit.com` is rejected regardless). Add Resend's DNS records in **Cloudflare** (DNS now lives there), set the mail records to **DNS-only / grey cloud**, then click Verify. | Resend dashboard (Cloudflare DNS) + Render env | Reset email silently fails; links keep getting logged instead. |
 
 `YOUTUBE_API_KEY` is already set (`youtubeConfigured: true`). Nothing to do.
+
+## Recovered-backlog batch 1 verified and committed (2026-07-22, Claude)
+
+Branch: `codex/recovered-backlog-batch-1`. The previous session wrote this batch
+but ran out of budget before running a single check, so nothing was committed and
+no gate had been executed. This session verified it and fixed what verification
+found. `TODO.md` is the item-by-item status list; this is the evidence record.
+
+**Automated gates (all green on the working tree):** `npm run test` 67/67,
+`npm run check:syntax` 51 files, `npm run build:web` exports clean.
+
+**Local browser run** (dev API on `:3000` serving the fresh `dist`, Chromium at
+1280x720 and 375x812, two throwaway accounts created through `/api/signup`):
+
+- `/api/health` returns the new capacity block: `youtubeLookup.search`
+  `{used:0, limit:90, remaining:90}`, `circuitOpen:false`, `inFlight:0`.
+- Comments: parent + reply + owner delete round-trips. The delete response
+  returns `tombstone:true`, the parent comes back with empty text, and the child
+  reply keeps its `parentId`. Nested replies render on the feed card.
+- Messages: `GET /api/people?q=` searches members, `POST /api/dms/:otherId`
+  sends, `GET /api/me/threads?summary=1` returns one latest message per thread
+  ordered by recency. The Inbox **New message** panel finds members by name and
+  correctly excludes the signed-in account.
+- Theme: choosing Lavender writes `pit_theme` + `pit_theme_owner` (the account
+  id) and persists to the server (`/api/me` → `theme: "lavender"`). Log out
+  clears **both** keys and returns to the default. All 12 themes are listed.
+- Clips: no nav entry, no aria-label, no text match anywhere in the signed-in or
+  guest shell.
+- Desktop scrubber: with a track playing, the track element measures 231px inside
+  a 331px row in a 355px column, so it stretches instead of collapsing. Clicking
+  at 75% of a 30s preview seeks to 0:23.
+- Playback falls back to a Deezer preview labeled `PREVIEW AUDIO` when
+  `YOUTUBE_API_KEY` is unset locally, which is the intended honest fallback.
+- Mobile (375px): the compact bar's play control measures 54x54.
+
+**Fixed during verification:** `src/components/AfterpartyPreview.jsx` rendered a
+deleted-parent tombstone in the feed card as an empty bubble with a `?` avatar.
+The card preview now filters tombstones out; `PostScreen` and `AfterpartySection`
+still render them as "Comment deleted" so replies keep their context.
+
+**Also added:** an `api` entry in `.claude/launch.json` so the next session can
+start the local API without a shell.
+
+**Not verified, still open:**
+
+- Real iOS/Android devices for item 13. On web the player's minimize control is
+  34x34 and the nav Menu button is 40x40, both under the 44pt target the item
+  asks for. The album shuffle/play rows (34x34) and the wrong-video report button
+  (30x30) are the same story but predate this batch.
+- Two-device realtime: an out-of-band DM did not appear in an already-open Inbox
+  until reload. The in-app send path updates locally, so this needs a real
+  two-client check before item 5 can be accepted.
+- Items 1, 2, 7, 10, 15 stay PARTIAL/OPEN for the reasons in `TODO.md`. Nothing
+  here changes the Resend configuration gap above.
+## Performance dates are now validated (2026-07-22, Claude)
+
+Chasing the `2026 � 06 � 21` row from the verification pass turned up a real
+spine bug rather than a display glitch.
+
+**Root cause.** `POST /api/posts` and `PATCH /api/posts/:id` only length-clamped
+`date` (`clean(x, { max: LIMITS.date })`), so any string up to 20 characters
+became a performance date. `concertKey` in `src/store.js` is
+`artist|venue|date`, so a mangled date forks one night into two performances and
+permanently splits its lounge, attendance and score aggregation. That is exactly
+what happened: The Fillmore shows twice on the Turnstile page, once as
+`2026-06-21` and once as `2026 <U+FFFD> 06 <U+FFFD> 21`. The stored bytes are
+`EF BF BD`, so the corruption happened before insertion, on a write path that
+lost the encoding. The row dates from 2026-07-05, long before this batch.
+
+**Careful bit.** The app does **not** store ISO dates. `DatePicker` and
+`LogScreen`'s `todayStr` both emit `YYYY · MM · DD` with U+00B7, so enforcing
+ISO would have rejected every concert log. `server/validate.js` now has `isDate`
+/ `cleanDate`, which accept the separators the product actually writes, require
+a real calendar day (so `2026-02-31` and `2026-13-01` are out), bound the year
+to 1900..next year, and **return the input unchanged**. Normalizing the
+separator here would give new posts a different identity than existing rows,
+which is the same fork the guard exists to prevent.
+
+Edit is guarded too, but only when the date changes, so a post already holding a
+legacy bad date stays editable by its owner. Clearing the date (`""`) remains a
+normal edit. Two regression tests in `server/post.edit.test.mjs` cover accepted
+formats, the mangled separator, impossible days, and the legacy-row path.
+
+Verified live: the picker's own format posts and round-trips unchanged, the
+mangled date is refused with 400, clearing works.
+
+**The real fix landed next; see the section below.** The guard above only stopped
+new damage.
+
+## Performance dates are canonical ISO now (2026-07-22, Claude)
+
+Storing a display-formatted date inside the identity key was fragile by
+construction, so storage and display are now separate concerns.
+
+**`src/domain/dates.mjs` is the single authority.** `toIsoDate` accepts every
+shape the product has ever written (ISO, the DatePicker's `YYYY · MM · DD`, the
+mangled `U+FFFD` variant, `/` and `.` separators) and returns `YYYY-MM-DD`, or
+`""` for anything that is not a real calendar day. `formatDate` renders the
+display form, so **nothing users see changed**. `todayIso` is the composer's
+default. Both server and client import it; `server/rewards.js` already set the
+precedent for sharing a pure module across that boundary.
+
+**What changed together, because it all had to move at once:**
+
+- `server/validate.js` `cleanDate` canonicalizes instead of preserving input, so
+  create and edit both store ISO. Editing a post now *repairs* a legacy date
+  rather than rejecting its owner.
+- `server/db.js` runs a one-time migration behind the `dates:canonical-iso:v1`
+  marker, in a transaction, following the events-IP-purge pattern. It rewrites
+  `posts.date`, `tour_dates.date`, `going.date` **and** `going.concert_key`, and
+  the date segment of `lounge_messages.lounge_id`. `going` uses
+  `UPDATE OR REPLACE` because `PRIMARY KEY (user_id, concert_key)` collides
+  exactly when a merge is correct: one fan, two spellings, one night.
+- `src/store.js` `concertKey` canonicalizes the date, so bundled seed data and
+  legacy local posts key onto the same performance as migrated server rows.
+- `DatePicker` emits ISO and previews the display form. `LogScreen` holds ISO.
+- Ten render sites moved to `formatDate`.
+- The Ticketmaster ingest (`server/tourdates.js`, `scripts/ingest.mjs`,
+  `scripts/enrich-tourdates.mjs`) stops converting the provider's ISO date into
+  the display form, which is where all 797 middot tour dates came from.
+- **`server/discovery.js` was the trap.** It string-compares
+  `tour_dates.date >= today`, so its `today` had to move to ISO in the same
+  change or upcoming shows would silently vanish. Verified after: 685 future
+  dates, sidebar returns 8 upcoming events.
+
+**A date too broken to parse is left exactly as it is.** Blanking it would
+destroy the only record of when someone's night happened, and `formatDate` falls
+back rather than rendering mojibake.
+
+**Verified.** 77 tests pass, including `src/domain/dates.test.mjs` (parser,
+leap years, idempotence) and `server/dates.migration.test.mjs`, which seeds a
+database with all three real-world date shapes and asserts the merge: two
+`going` rows collapse to one, two lounges become one room with both messages
+kept, unparseable rows untouched.
+
+Then run against the real dev database: the mangled row became `2026-06-21`, all
+797 tour dates are ISO, and the two Turnstile reviews that used to produce
+`...|2026 � 06 � 21` and `...|2026-06-21` now both key to
+`turnstile|the fillmore|2026-06-21`. **The Fillmore fork is healed.** In the
+browser: no mojibake anywhere, no raw ISO leaking into the UI, feed and composer
+render `2026 · 07 · 09` as before, "Today" still resolves, no console errors.
+
+**Deploying this:** the migration runs automatically on boot and is idempotent.
+Back up `server/data/pit.db` first anyway, since it rewrites primary-key
+material. The bundled seed catalog still holds 156 display-format dates; they
+canonicalize on read, and the ingest scripts now emit ISO, so it converges
+whenever the catalog is regenerated. There is no need to force that.
+
+**Touch targets.** Re-measured rather than trusted: the nav buttons, album
+controls and report buttons already carried `hitSlop` putting them past 44pt.
+Genuinely short were the player's own `headIcon` controls (34pt, no `hitSlop`)
+and the queue row actions (28pt + 6). Both now reach 44pt via `hitSlop`, with
+the visual design unchanged per CLAUDE.md.
+
+**Still open from the verification pass:** 698 of 2657 artists (26%) have photos
+hotlinked from Spotify's CDN (`i.scdn.co`) with `"photoCredit":"Spotify"`, left
+over from the removed Spotify integration. That is a licensing and reliability
+problem needing an ingest change, tracked separately.
 
 ## Song sourcing rebuilt around the artist's own channel (2026-07-18)
 

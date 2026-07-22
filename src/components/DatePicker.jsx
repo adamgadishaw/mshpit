@@ -33,8 +33,11 @@ export default function DatePicker({ onChange, years = YEARS, defaultYear }) {
   const days = Array.from({ length: dim }, (_, i) => i + 1);
   const clampedDay = Math.min(day, dim);
 
+  // Emits the canonical stored form (ISO); the preview below shows the display
+  // form. Keeping those two apart is what stops a separator change from forking
+  // a performance. See src/domain/dates.mjs.
   useEffect(() => {
-    onChange?.(`${year} · ${pad(month)} · ${pad(clampedDay)}`);
+    onChange?.(`${year}-${pad(month)}-${pad(clampedDay)}`);
   }, [year, month, clampedDay]);
 
   const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];

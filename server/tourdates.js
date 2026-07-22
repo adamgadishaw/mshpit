@@ -39,7 +39,7 @@ async function tmDates(name) {
   for (const e of data._embedded?.events || []) {
     const v = e._embedded?.venues?.[0];
     const isRequestedArtist = (e._embedded?.attractions || []).some((a) => norm(a.name) === norm(name));
-    const date = e.dates?.start?.localDate?.replace(/-/g, " · ");
+    const date = e.dates?.start?.localDate;
     if (!v?.name || !date || !isRequestedArtist) continue;
     out.push({
       id: e.id ? `tm_${e.id}` : slugId("tm", name, v.name, date), artist: name, venue: v.name,
@@ -65,7 +65,7 @@ async function tmCityDates(city) {
   for (const e of data._embedded?.events || []) {
     const v = e._embedded?.venues?.[0];
     const artist = e._embedded?.attractions?.[0]?.name || e.name;
-    const date = e.dates?.start?.localDate?.replace(/-/g, " · ");
+    const date = e.dates?.start?.localDate;
     if (!artist || !v?.name || !date) continue;
     out.push({
       id: e.id ? `tm_${e.id}` : slugId("tm", artist, v.name, date), artist, venue: v.name,
@@ -85,7 +85,7 @@ async function bitDates(name) {
   const out = [];
   for (const e of Array.isArray(data) ? data : []) {
     const v = e.venue || {};
-    const date = (e.datetime || "").slice(0, 10).replace(/-/g, " · ");
+    const date = (e.datetime || "").slice(0, 10);
     if (!v.name || !date) continue;
     out.push({
       id: e.id ? `bit_${e.id}` : slugId("bit", name, v.name, date), artist: name, venue: v.name,

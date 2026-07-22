@@ -39,7 +39,7 @@ export default class ErrorBoundary extends Component {
   reset = () => {
     try {
       if (typeof window !== "undefined" && window.localStorage) {
-        ["pit_theme", "pit.session", "pit.users", "pit.feed", "pit.follows", "pit.entered"].forEach((k) => window.localStorage.removeItem(k));
+        ["pit_theme", "pit_theme_owner", "pit.session", "pit.users", "pit.feed", "pit.follows", "pit.entered"].forEach((k) => window.localStorage.removeItem(k));
       }
     } catch {}
     this.reload();

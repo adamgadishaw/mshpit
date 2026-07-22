@@ -8,6 +8,7 @@ import SoundDonut, { DONUT_PALETTE } from "../components/SoundDonut";
 import { BadgeRow } from "../components/Badge";
 import { useStore, isStaff, isMod, isArtist } from "../store";
 import { showDateMs, fmtCountdown } from "../lib/showTime";
+import { formatDate } from "../domain/dates.mjs";
 
 const web = Platform.OS === "web";
 
@@ -328,7 +329,7 @@ export default function YouScreen({ feed, onLogin, onLogout, onAdmin, onAddTourD
                     <View style={styles.rowIcon}><Icon name="calendar" size={15} color={colors.amber} /></View>
                     <View style={{ flex: 1 }}>
                       <Text style={styles.rowLabel} numberOfLines={1}>{p.artist}</Text>
-                      <Text style={styles.rowSub} numberOfLines={1}>{p.venue}{p.date ? ` · ${p.date}` : ""}</Text>
+                      <Text style={styles.rowSub} numberOfLines={1}>{p.venue}{p.date ? ` · ${formatDate(p.date, p.date)}` : ""}</Text>
                     </View>
                     <Text style={styles.goingT}>{left <= 0 ? "TONIGHT" : fmtCountdown(left)}</Text>
                   </Pressable>

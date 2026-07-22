@@ -1,11 +1,15 @@
-import { artistRow, artistStmts, normName, providerCacheStmts, ytStmts } from "./db.js";
+import { artistRow, artistStmts, db, normName, providerCacheStmts, ytStmts } from "./db.js";
 
 const DEEZER_DISCOGRAPHY_TTL_MS = 24 * 60 * 60 * 1000;
 const DEEZER_PREVIEW_MAX_TTL_MS = 5 * 60 * 1000;
 const YOUTUBE_MATCH_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 const YOUTUBE_MISS_TTL_MS = 6 * 60 * 60 * 1000;
 const YOUTUBE_SCORE_MIN = 65;
+const YOUTUBE_SEARCH_DAILY_BUDGET = Math.max(1, Math.min(100, Number(process.env.YOUTUBE_SEARCH_DAILY_BUDGET) || 90));
+const YOUTUBE_CATALOGUE_MAX_PAGES = Math.max(2, Math.min(20, Number(process.env.YOUTUBE_CATALOGUE_MAX_PAGES) || 12));
 const previewCache = new Map();
+const youtubeInflight = new Map();
+const youtubeCircuit = { until: 0, code: null };
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -18,6 +22,52 @@ export class ProviderError extends Error {
     this.retryable = retryable;
     this.code = code;
   }
+}
+
+function pacificDay(value = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Los_Angeles",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(value);
+  const part = (type) => parts.find((entry) => entry.type === type)?.value || "00";
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
+
+function youtubeSearchUsage() {
+  const day = pacificDay();
+  const key = `youtube_search_calls:${day}`;
+  const used = Math.max(0, Number(db.prepare("SELECT value FROM app_meta WHERE key=?").get(key)?.value) || 0);
+  return { day, key, used, limit: YOUTUBE_SEARCH_DAILY_BUDGET, remaining: Math.max(0, YOUTUBE_SEARCH_DAILY_BUDGET - used) };
+}
+
+function reserveYouTubeSearch() {
+  const usage = youtubeSearchUsage();
+  if (usage.used >= usage.limit) {
+    throw new ProviderError("YouTube", 429, "Pit reserved the remaining YouTube search capacity for later.", {
+      code: "search_budget_exhausted",
+      retryable: true,
+    });
+  }
+  db.prepare(`INSERT INTO app_meta (key,value) VALUES (?,?)
+    ON CONFLICT(key) DO UPDATE SET value=CAST(value AS INTEGER)+1`).run(usage.key, String(usage.used + 1));
+  return { ...usage, used: usage.used + 1, remaining: Math.max(0, usage.limit - usage.used - 1) };
+}
+
+export function youtubeProviderStatus() {
+  const usage = youtubeSearchUsage();
+  return {
+    search: usage,
+    circuitOpen: youtubeCircuit.until > Date.now(),
+    circuitCode: youtubeCircuit.until > Date.now() ? youtubeCircuit.code : null,
+    retryAt: youtubeCircuit.until > Date.now() ? youtubeCircuit.until : null,
+    inFlight: youtubeInflight.size,
+  };
+}
+
+function providerPaused(error) {
+  return error instanceof ProviderError && ["search_budget_exhausted", "provider_paused", "quota_or_forbidden", "rate_limited"].includes(error.code);
 }
 
 export function normalizeMusicText(value) {
@@ -546,14 +596,15 @@ async function resolveArtistChannelId(artist, apiKey, fetchImpl) {
   const cached = readProviderCache(key);
   if (cached?.fresh) return cached.data?.channelId || null;
   try {
-    const data = await providerJson("YouTube", youtubeUrl("search", {
+    const data = await youtubeJson("search", {
       part: "snippet", type: "channel", maxResults: "5", q: `${artist} - Topic`,
-    }, apiKey), { fetchImpl, timeoutMs: 8_000 });
+    }, apiKey, fetchImpl);
     const best = selectArtistChannel(artist, data?.items || []);
     writeProviderCache(key, { channelId: best?.channelId || null, title: best?.title || null },
       best ? YOUTUBE_CHANNEL_TTL_MS : YOUTUBE_CHANNEL_MISS_TTL_MS);
     return best?.channelId || null;
-  } catch {
+  } catch (error) {
+    if (providerPaused(error)) throw error;
     return cached?.data?.channelId || null;
   }
 }
@@ -596,17 +647,17 @@ async function getArtistCatalogue(artist, channelId, apiKey, fetchImpl) {
   const cached = readProviderCache(key);
   if (cached?.fresh) return cached.data?.items || [];
   try {
-    const channelData = await providerJson("YouTube", youtubeUrl("channels", {
+    const channelData = await youtubeJson("channels", {
       part: "contentDetails", id: channelId,
-    }, apiKey), { fetchImpl, timeoutMs: 8_000 });
+    }, apiKey, fetchImpl);
     const uploads = channelData?.items?.[0]?.contentDetails?.relatedPlaylists?.uploads;
     if (!uploads) return [];
     const items = [];
     let pageToken = "";
-    for (let page = 0; page < 4; page++) {
+    for (let page = 0; page < YOUTUBE_CATALOGUE_MAX_PAGES; page++) {
       const params = { part: "snippet", playlistId: uploads, maxResults: "50" };
       if (pageToken) params.pageToken = pageToken;
-      const data = await providerJson("YouTube", youtubeUrl("playlistItems", params, apiKey), { fetchImpl, timeoutMs: 8_000 });
+      const data = await youtubeJson("playlistItems", params, apiKey, fetchImpl);
       for (const item of data?.items || []) {
         const videoId = item?.snippet?.resourceId?.videoId;
         const videoTitle = item?.snippet?.title;
@@ -652,16 +703,35 @@ function youtubeUrl(path, params, apiKey) {
   return `https://www.googleapis.com/youtube/v3/${path}?${query.toString()}`;
 }
 
+async function youtubeJson(path, params, apiKey, fetchImpl, timeoutMs = 8_000) {
+  if (youtubeCircuit.until > Date.now()) {
+    throw new ProviderError("YouTube", 503, "YouTube lookups are cooling down after a provider limit.", {
+      code: "provider_paused",
+      retryable: true,
+    });
+  }
+  if (path === "search") reserveYouTubeSearch();
+  try {
+    return await providerJson("YouTube", youtubeUrl(path, params, apiKey), { fetchImpl, timeoutMs });
+  } catch (error) {
+    if (error instanceof ProviderError && ["quota_or_forbidden", "rate_limited"].includes(error.code)) {
+      youtubeCircuit.until = Date.now() + (error.code === "rate_limited" ? 60_000 : 15 * 60_000);
+      youtubeCircuit.code = error.code;
+    }
+    throw error;
+  }
+}
+
 async function youtubeVideos(ids, apiKey, fetchImpl) {
   if (!ids.length) return [];
-  const data = await providerJson("YouTube", youtubeUrl("videos", {
+  const data = await youtubeJson("videos", {
     part: "snippet,contentDetails,status,statistics",
     id: ids.join(","),
-  }, apiKey), { fetchImpl, timeoutMs: 8_000 });
+  }, apiKey, fetchImpl);
   return data?.items || [];
 }
 
-export async function resolveYouTubeTrack(title, artist, { expectedDurationSec = 0, fetchImpl = fetch, apiKey = process.env.YOUTUBE_API_KEY } = {}) {
+async function resolveYouTubeTrackUnshared(title, artist, { expectedDurationSec = 0, fetchImpl = fetch, apiKey = process.env.YOUTUBE_API_KEY } = {}) {
   const key = youtubeCacheKey(title, artist);
   const hit = ytStmts.get.get(key);
   const rejected = rejectedSet(hit);
@@ -720,7 +790,7 @@ export async function resolveYouTubeTrack(title, artist, { expectedDurationSec =
       } catch { /* fall through to the channel search below */ }
 
       try {
-        const inChannel = await providerJson("YouTube", youtubeUrl("search", {
+        const inChannel = await youtubeJson("search", {
           part: "snippet",
           type: "video",
           channelId,
@@ -728,7 +798,7 @@ export async function resolveYouTubeTrack(title, artist, { expectedDurationSec =
           videoSyndicated: "true",
           maxResults: "10",
           q: title,
-        }, apiKey), { fetchImpl, timeoutMs: 8_000 });
+        }, apiKey, fetchImpl);
         const channelIds = (inChannel?.items || []).map((item) => item?.id?.videoId).filter((id) => id && !rejected.has(id));
         const channelRanked = (await youtubeVideos(channelIds, apiKey, fetchImpl))
           .map((candidate) => ({ candidate, assessment: scoreYouTubeCandidate(candidate, { title, artist, expectedDurationSec, trustedChannel: true }) }))
@@ -745,7 +815,10 @@ export async function resolveYouTubeTrack(title, artist, { expectedDurationSec =
           setYouTubeCache({ key, videoId: bestInChannel.candidate.id, metadata, score: bestInChannel.assessment.score, expiresAt: currentTime + YOUTUBE_MATCH_TTL_MS, rejected });
           return { videoId: bestInChannel.candidate.id, status: "artist_channel", confidence: bestInChannel.assessment.score };
         }
-      } catch { /* fall through to the global search below */ }
+      } catch (error) {
+        if (providerPaused(error)) throw error;
+        // A normal channel miss can still use the creator-gated global search.
+      }
     }
   }
 
@@ -753,7 +826,7 @@ export async function resolveYouTubeTrack(title, artist, { expectedDurationSec =
   // A wider candidate pool (search quota is flat regardless of maxResults, and
   // videos.list is one cheap unit per batch) so the correct official upload is
   // in the set even when it ranks below noise on YouTube's own relevance sort.
-  const search = await providerJson("YouTube", youtubeUrl("search", {
+  const search = await youtubeJson("search", {
     part: "snippet",
     type: "video",
     videoCategoryId: "10",
@@ -761,7 +834,7 @@ export async function resolveYouTubeTrack(title, artist, { expectedDurationSec =
     videoSyndicated: "true",
     maxResults: "10",
     q: query,
-  }, apiKey), { fetchImpl, timeoutMs: 8_000 });
+  }, apiKey, fetchImpl);
   const ids = (search?.items || []).map((item) => item?.id?.videoId).filter((id) => id && !rejected.has(id));
   const candidates = await youtubeVideos(ids, apiKey, fetchImpl);
   const ranked = candidates.map((candidate) => ({ candidate, assessment: scoreYouTubeCandidate(candidate, { title, artist, expectedDurationSec }) }))
@@ -780,6 +853,20 @@ export async function resolveYouTubeTrack(title, artist, { expectedDurationSec =
   };
   setYouTubeCache({ key, videoId: best.candidate.id, metadata, score: best.assessment.score, expiresAt: currentTime + YOUTUBE_MATCH_TTL_MS, rejected });
   return { videoId: best.candidate.id, status: "resolved", confidence: best.assessment.score };
+}
+
+// Collapse a cold-start stampede for the same song into one provider request.
+// The database cache handles later requests and this map handles the vulnerable
+// gap while the first request is still in flight.
+export function resolveYouTubeTrack(title, artist, options = {}) {
+  const durationBucket = Math.round((Number(options.expectedDurationSec) || 0) / 5) * 5;
+  const key = `${youtubeCacheKey(title, artist)}|${durationBucket}`;
+  const existing = youtubeInflight.get(key);
+  if (existing) return existing;
+  const pending = resolveYouTubeTrackUnshared(title, artist, options)
+    .finally(() => { if (youtubeInflight.get(key) === pending) youtubeInflight.delete(key); });
+  youtubeInflight.set(key, pending);
+  return pending;
 }
 
 export function invalidateYouTubeTrack(title, artist, videoId) {

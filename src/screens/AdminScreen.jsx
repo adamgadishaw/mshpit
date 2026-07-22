@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from "react";
-import { View, Text, StyleSheet, ScrollView, Pressable, TextInput } from "react-native";
+import { Linking, View, Text, StyleSheet, ScrollView, Pressable, TextInput } from "react-native";
 import { colors, mono, radius } from "../theme";
 import { useStore, isStaff, isMod } from "../store";
 import { api } from "../lib/api";
@@ -11,15 +11,26 @@ import Badge from "../components/Badge";
 // Audience & ads: the activity data we collect (see Privacy policy) surfaced for
 // the operator, top artists/venues/searches are the ad-interest signals you'd
 // target campaigns against, plus raw volume and a live activity tail.
-function AdInsights() {
+function AdInsights({ users = [] }) {
   const [data, setData] = useState(null);
   const [err, setErr] = useState(false);
+  const [memberQuery, setMemberQuery] = useState("");
+  const [memberData, setMemberData] = useState(null);
+  const [memberLoading, setMemberLoading] = useState(false);
   useEffect(() => { api("/api/admin/analytics").then(setData).catch(() => setErr(true)); }, []);
 
   if (err) return <Text style={styles.empty}>Audience data needs the backend running.</Text>;
   if (!data) return <Text style={styles.empty}>Loading audience data…</Text>;
 
   const t = data.totals || {};
+  const memberMatches = memberQuery.trim().length < 2 ? [] : users.filter((user) => `${user.name} ${user.handle}`.toLowerCase().includes(memberQuery.trim().toLowerCase())).slice(0, 6);
+  const inspectMember = async (user) => {
+    setMemberQuery(`@${user.handle}`);
+    setMemberLoading(true);
+    try { setMemberData(await api(`/api/admin/analytics/users/${user.id}`)); }
+    catch { setMemberData(null); }
+    setMemberLoading(false);
+  };
   const Stat = ({ n, label }) => (
     <View style={styles.stat}><Text style={styles.statN}>{n ?? 0}</Text><Text style={styles.statL}>{label}</Text></View>
   );
@@ -41,15 +52,65 @@ function AdInsights() {
       <View style={styles.statRow}>
         <Stat n={t.events} label="events" />
         <Stat n={t.events24h} label="last 24h" />
-        <Stat n={t.knownUsers} label="tracked" />
-        <Stat n={t.guestHits} label="guest hits" />
+        <Stat n={t.activeUsers7d} label="active 7d" />
+        <Stat n={t.newUsers7d} label="new 7d" />
+        <Stat n={t.posts30d} label="posts 30d" />
+      </View>
+      <Text style={styles.analyticsPrivacy}>Account-consented events only. Raw IP addresses are never retained; search trends require at least three occurrences and search text is never shown beside a member.</Text>
+      <Text style={styles.insightH}>30-DAY GROWTH</Text>
+      <View style={styles.growthCard}>
+        {(data.growth || []).slice(-14).map((day) => {
+          const max = Math.max(1, ...(data.growth || []).slice(-14).map((row) => Math.max(row.activeUsers, row.signups, row.posts)));
+          return (
+            <View key={day.day} style={styles.growthRow}>
+              <Text style={styles.growthDay}>{day.day.slice(5)}</Text>
+              <View style={styles.growthTracks}>
+                <View style={[styles.growthBar, styles.growthActive, { width: `${Math.max(2, day.activeUsers / max * 100)}%` }]} />
+                <View style={[styles.growthBar, styles.growthSignup, { width: `${Math.max(2, day.signups / max * 100)}%` }]} />
+                <View style={[styles.growthBar, styles.growthPosts, { width: `${Math.max(2, day.posts / max * 100)}%` }]} />
+              </View>
+              <Text style={styles.growthNumbers}>{day.activeUsers}/{day.signups}/{day.posts}</Text>
+            </View>
+          );
+        })}
+        <Text style={styles.growthLegend}>active / signups / posts</Text>
       </View>
       <View style={styles.insightGrid}>
-        <List title="TOP ARTISTS (AD INTEREST)" rows={data.topArtists} />
+        <List title="TOP ARTISTS" rows={data.topArtists} />
         <List title="TOP VENUES" rows={data.topVenues} />
+        <List title="TOP GENRES" rows={data.topGenres} />
         <List title="TOP SEARCHES" rows={data.topSearches} />
+        <List title="POST KEYWORDS" rows={data.postKeywords} />
         <List title="EVENTS BY TYPE" rows={data.byName} />
       </View>
+      <Text style={styles.insightH}>MEMBER ACTIVITY INSPECTION</Text>
+      <Text style={styles.analyticsPrivacy}>Use for support, abuse investigations, and product diagnosis. This view is restricted to administrators.</Text>
+      <View style={styles.search}>
+        <Icon name="search" size={16} color={colors.textDim} />
+        <TextInput style={styles.searchInput} value={memberQuery} onChangeText={(value) => { setMemberQuery(value); setMemberData(null); }} placeholder="Find a member by name or @handle" placeholderTextColor={colors.textFaint} autoCapitalize="none" />
+      </View>
+      {memberMatches.map((user) => (
+        <Pressable key={user.id} style={styles.analyticsMemberRow} onPress={() => inspectMember(user)}>
+          <Avatar user={user} size={34} />
+          <View style={{ flex: 1 }}><Text style={styles.memberName}>{user.name}</Text><Text style={styles.memberSub}>@{user.handle}</Text></View>
+          <Icon name="chevron-right" size={16} color={colors.textFaint} />
+        </Pressable>
+      ))}
+      {memberLoading && <Text style={styles.empty}>Loading member activity...</Text>}
+      {memberData && (
+        <View style={styles.memberAnalyticsCard}>
+          <Text style={styles.artist}>{memberData.user?.name} <Text style={styles.sub}>@{memberData.user?.handle}</Text></Text>
+          <View style={styles.statRow}>
+            <Stat n={memberData.totals?.events} label="events" />
+            <Stat n={memberData.totals?.posts} label="posts" />
+            <Stat n={memberData.totals?.comments} label="comments" />
+            <Stat n={memberData.totals?.plays} label="plays" />
+            <Stat n={memberData.totals?.messagesSent} label="DMs sent" />
+          </View>
+          <List title="ACTIVITY BY TYPE" rows={memberData.byName} />
+          {(memberData.recent || []).slice(0, 12).map((event, index) => <Text key={`${event.at}:${index}`} style={styles.activityLine}>{new Date(event.at).toLocaleString()} · {event.name}</Text>)}
+        </View>
+      )}
       {data.recent && data.recent.length > 0 && (
         <>
           <Text style={styles.insightH}>LIVE ACTIVITY</Text>
@@ -251,6 +312,7 @@ export default function AdminScreen({ onClose }) {
 
   const TABS = [
     { key: "overview", label: "Overview", icon: "discover", admin: true },
+    { key: "analytics", label: "Analytics", icon: "trophy", admin: true },
     { key: "reports", label: "Reports", icon: "flag", badge: contentReports.length },
     { key: "songs", label: "Songs", icon: "music", badge: trackReports.length || undefined },
     { key: "members", label: "Members", icon: "you", badge: bannedCount || undefined },
@@ -301,10 +363,11 @@ export default function AdminScreen({ onClose }) {
               <View style={styles.stat}><Text style={[styles.statN, openReports.length ? { color: colors.danger } : null]}>{openReports.length}</Text><Text style={styles.statL}>reports</Text></View>
               <View style={styles.stat}><Text style={[styles.statN, bannedCount ? { color: colors.danger } : null]}>{bannedCount}</Text><Text style={styles.statL}>banned</Text></View>
             </View>
-            <Text style={styles.sectionLabel}>AUDIENCE &amp; ADS</Text>
-            <AdInsights />
           </>
         )}
+
+        {/* ---- PRIVACY-BOUNDED PRODUCT ANALYTICS ---- */}
+        {tab === "analytics" && <AdInsights users={users} />}
 
         {/* ---- REPORTS ---- */}
         {tab === "reports" && (
@@ -349,19 +412,20 @@ export default function AdminScreen({ onClose }) {
         {/* ---- SONGS: wrong-version reports + every pinned video ---- */}
         {tab === "songs" && (
           <>
-            <Text style={styles.policy}>Listeners flag songs whose video is the wrong version (lyrics, karaoke, remix, wrong artist). Pin the correct YouTube link and every future play uses it; pins beat the search resolver permanently.</Text>
+            <Text style={styles.policy}>Listeners can flag wrong videos, playback failures, preview-only fallbacks, and missing songs. Verify a candidate on YouTube, then pin its link; a human pin beats the automatic resolver for every future play.</Text>
 
             <Text style={styles.catTitle}>WRONG-VERSION REPORTS · {trackReports.length}</Text>
             {trackReports.length === 0 && <Text style={styles.empty}>No open song reports.</Text>}
             {trackReports.map((r) => {
               let t = {}; try { t = JSON.parse(r.reason || "{}"); } catch {}
               const reporter = userFor(r.reporterId);
+              const issueLabel = ({ wrong_video: "wrong video", wont_play: "won't play", preview_only: "preview only", missing: "missing song", other: "other playback issue" })[t.category] || "wrong video";
               const draft = trackFix[r.id] ?? (t.suggestedVideoId ? `https://www.youtube.com/watch?v=${t.suggestedVideoId}` : "");
               return (
                 <View key={r.id} style={styles.card}>
                   <View style={styles.reasonRow}>
                     <Icon name="music" size={14} color={colors.gold} />
-                    <Text style={styles.reason}>wrong song version</Text>
+                    <Text style={styles.reason}>{issueLabel}</Text>
                   </View>
                   <Text style={styles.artist}>{t.title || r.targetId}{t.artist ? ` · ${t.artist}` : ""}</Text>
                   <Text style={styles.sub}>reported by {reporter ? `@${reporter.handle}` : "a user"}{t.note ? ` · "${t.note}"` : ""}{t.suggestedVideoId ? " · suggested a link" : ""}</Text>
@@ -375,6 +439,9 @@ export default function AdminScreen({ onClose }) {
                     autoCorrect={false}
                   />
                   <View style={styles.actions}>
+                    <Pressable style={styles.btn} onPress={() => Linking.openURL(`https://www.youtube.com/results?search_query=${encodeURIComponent(`${t.artist || ""} ${t.title || r.targetId} official audio`)}`)}>
+                      <Icon name="search" size={14} color={colors.cool} /><Text style={[styles.dismissTxt, { color: colors.cool }]}>Search candidates</Text>
+                    </Pressable>
                     <Pressable style={[styles.btn, styles.trackPin]} onPress={async () => { const res = await adminSetTrackVideo({ title: t.title || r.targetId, artist: t.artist || "", url: draft }); if (res.ok) { dismissReport(r.id); refreshPins(); } }}>
                       <Icon name="check" size={15} color={colors.good} /><Text style={[styles.dismissTxt, { color: colors.good }]}>Pin this video</Text>
                     </Pressable>
@@ -713,6 +780,19 @@ const styles = StyleSheet.create({
   insightCount: { color: colors.amber, fontFamily: mono, fontSize: 13, fontWeight: "700" },
   activityLine: { color: colors.textDim, fontSize: 12, fontFamily: mono, paddingVertical: 2 },
   activityWho: { color: colors.cool },
+  analyticsPrivacy: { color: colors.textDim, fontSize: 12.5, lineHeight: 18, marginTop: 8, marginBottom: 8 },
+  growthCard: { backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 12, marginBottom: 12 },
+  growthRow: { flexDirection: "row", alignItems: "center", gap: 8, minHeight: 20 },
+  growthDay: { width: 36, color: colors.textFaint, fontFamily: mono, fontSize: 9.5 },
+  growthTracks: { flex: 1, gap: 2 },
+  growthBar: { minHeight: 3, borderRadius: 2 },
+  growthActive: { backgroundColor: colors.cool },
+  growthSignup: { backgroundColor: colors.good },
+  growthPosts: { backgroundColor: colors.amber },
+  growthNumbers: { width: 56, color: colors.textDim, fontFamily: mono, fontSize: 9.5, textAlign: "right" },
+  growthLegend: { color: colors.textFaint, fontSize: 10.5, textAlign: "right", marginTop: 7 },
+  analyticsMemberRow: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft, borderRadius: radius.sm, padding: 10, marginTop: 7 },
+  memberAnalyticsCard: { backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line, borderRadius: radius.md, padding: 14, marginTop: 12 },
 
   // cards + report/request actions
   card: { backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 14, marginBottom: 10 },

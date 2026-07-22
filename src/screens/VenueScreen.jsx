@@ -8,6 +8,7 @@ import VenuePhotoWidget from "../components/VenuePhotoWidget";
 import ScreenHeader from "../components/ScreenHeader";
 import Avatar from "../components/Avatar";
 import MentionText from "../components/MentionText";
+import { formatDate } from "../domain/dates.mjs";
 
 // Venue page - the room's reputation. Sound, views and crowd live with the
 // building, so they aggregate here rather than dragging down the touring band.
@@ -114,7 +115,7 @@ export default function VenueScreen({ venueName, onClose, onOpenShow, onOpenArti
               <View key={t.id} style={styles.upRow}>
                 <Pressable style={{ flex: 1 }} onPress={() => onOpenArtist?.(t.artist)}>
                   <Text style={styles.upArtist}>{t.artist}</Text>
-                  <Text style={styles.upDate}>{t.date}{t.scheduled ? "  · scheduled" : ""}</Text>
+                  <Text style={styles.upDate}>{formatDate(t.date, t.date)}{t.scheduled ? "  · scheduled" : ""}</Text>
                 </Pressable>
                 {t.soldOut ? (
                   <View style={styles.soldOut}><Text style={styles.soldOutTxt}>SOLD OUT</Text></View>

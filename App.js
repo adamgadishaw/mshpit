@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, Pressable, SafeAreaView, Platform, StatusBar as
 import { StatusBar } from "expo-status-bar";
 import "./src/lib/safeArea"; // reserves iOS notch / toolbar safe areas (web)
 import "./src/lib/webInputFix"; // strips the harsh browser focus box from inputs (web)
-import { colors, mono, radius } from "./src/theme";
+import { colors, mono, radius, themeIsDark } from "./src/theme";
 import { StoreProvider, useStore, isStaff } from "./src/store";
 import Icon from "./src/components/Icon";
 import ErrorBoundary from "./src/components/ErrorBoundary";
@@ -57,6 +57,7 @@ import FollowListScreen from "./src/screens/FollowListScreen";
 import LandingScreen from "./src/screens/LandingScreen";
 import { load, save } from "./src/lib/persist";
 import { trackKey } from "./src/lib/playback";
+import { ENABLE_CLIPS } from "./src/config/runtime.mjs";
 
 const LEFT = [
   { key: "feed", label: "Feed", icon: "feed" },
@@ -98,7 +99,7 @@ function Root() {
   // { artistName } or { profileId }; the top frame is what's showing. An empty
   // base frame ({}) means "just the tab screens." Opening a screen PUSHES a
   // frame; Back POPS one — so you retrace your steps instead of always being
-  // dumped back to the feed. (Before this, nav was a single flat object and
+    // dumped back to the feed. (Before this, nav was a single flat object and
   // every close reset it to {}, which is why Back only ever went to the feed.)
   // The whole stack is PERSISTED, so a refresh restores the exact screen you were
   // on (and its back-stack) instead of flashing the feed then jumping around.
@@ -111,6 +112,7 @@ function Root() {
     // so Back walked through a string of half-remembered screens ("jumps to a
     // random back page"). Now: refresh lands you here; Back goes straight to the tab.
     const top = saved[saved.length - 1];
+    if (!ENABLE_CLIPS && top?.clips) return [{}];
     return top && Object.keys(top).length ? [{}, top] : [{}];
   });
   const nav = stack[stack.length - 1];
@@ -342,7 +344,7 @@ function Root() {
   else if (nav.inbox) overlay = <InboxScreen onClose={back} onOpenThread={openThread} />;
   else if (nav.notifications) overlay = <NotificationsScreen onClose={back} onOpenProfile={openProfile} onOpenThread={openThread} onOpen={openShow} onOpenPost={openPost} />;
   else if (nav.calendar) overlay = <CalendarScreen onClose={back} onOpen={openShow} onOpenArtist={openArtist} />;
-  else if (nav.clips) overlay = <ClipsScreen onClose={back} onOpenPost={openPost} onOpenProfile={openProfile} onOpenArtist={openArtist} onRequireAuth={() => go({ auth: true })} />;
+  else if (ENABLE_CLIPS && nav.clips) overlay = <ClipsScreen onClose={back} onOpenPost={openPost} onOpenProfile={openProfile} onOpenArtist={openArtist} onRequireAuth={() => go({ auth: true })} />;
   else if (nav.profileId) overlay = <ProfileScreen userId={nav.profileId} onClose={back} onOpenShow={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onEditProfile={() => go({ editProfile: true })} onPreview={showPreview} onMessage={openThread} onReport={(log) => requireAuth(() => go({ reporting: log }))} onEditPost={openPostEditor} onOpenPhotos={openPhotos} onPlay={openPlayer} onOpenFollowList={openFollowList} onOpenBadges={openBadges} />;
   else if (nav.fanClub) overlay = <FanClubScreen artist={nav.fanClub} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} />;
   else if (nav.editArtist) overlay = <EditArtistProfileScreen artistName={nav.editArtist} onClose={back} />;
@@ -414,7 +416,7 @@ function Root() {
                   onOpenVenue={openVenue}
                   onOpenNearby={() => requireAuth(() => go({ nearby: true }))}
                   onOpenMenu={() => go({ menu: true })}
-                  onOpenClips={() => go({ clips: true })}
+                  onOpenClips={ENABLE_CLIPS ? () => go({ clips: true }) : undefined}
                   onReport={(log) => requireAuth(() => go({ reporting: log }))}
                   onEdit={openPostEditor}
                   onOpenPhotos={openPhotos}
@@ -462,7 +464,7 @@ function Root() {
         onLog={() => requireAuth(() => go({ logging: true, postMode: "status" }))}
         onActivity={openNotifications}
         onInbox={openInbox}
-        onClips={() => go({ clips: true })}
+        onClips={ENABLE_CLIPS ? () => go({ clips: true }) : undefined}
         onMenu={() => go({ menu: true })}
         onAccount={() => setAcctOpen(true)}
         onIntro={exitToLanding}
@@ -478,12 +480,12 @@ function Root() {
   const playerColumnWidth = playerMinimized ? 82 : Math.max(356, Math.min(460, Math.round(width * 0.25)));
   // Clips mode has its own audio; obscuring pauses the music player so the two
   // don't talk over each other (the clip drives sound while you're in there).
-  const playerObscured = !!resetToken || !!welcome || !!nav.clips;
+  const playerObscured = !!resetToken || !!welcome || (ENABLE_CLIPS && !!nav.clips);
 
   return (
     <View style={styles.root}>
       <SafeAreaView style={styles.safe}>
-        <StatusBar style="light" />
+        <StatusBar style={themeIsDark ? "light" : "dark"} />
 
         {landing && !session ? (
           <LandingScreen

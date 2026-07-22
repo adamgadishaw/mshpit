@@ -12,6 +12,7 @@ import SongAttachment from "./SongAttachment";
 import PlaylistAttachment from "./PlaylistAttachment";
 import { useStore } from "../store";
 import { BadgeRow } from "./Badge";
+import { formatDate } from "../domain/dates.mjs";
 
 // "3rd time in the pit" needs a real ordinal, not "3th".
 const ordinal = (n) => {
@@ -225,7 +226,7 @@ export default function TicketStub({ log, onOpen, onComment, onPreview, onOpenPr
             </Text>
             <Text style={styles.factors}>{factors}</Text>
           </View>
-          <Text style={styles.date}>{log.date}</Text>
+          <Text style={styles.date}>{formatDate(log.date, log.date)}</Text>
         </View>
       </Pressable>
 
