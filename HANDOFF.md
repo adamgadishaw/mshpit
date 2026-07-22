@@ -129,6 +129,53 @@ mangled date is refused with 400, clearing works.
 **The real fix landed next; see the section below.** The guard above only stopped
 new damage.
 
+## Backlog sweep: items 5, 6, 7, 11, 12, 15, 18 (2026-07-22, Claude)
+
+Worked down the rest of `TODO.md`. What changed, and what was only confirmed:
+
+**Item 6, autoplay.** The selection algorithm lived inside the `useStore` hook,
+so none of its criteria could be tested. Extracted to `src/domain/recommend.mjs`
+as a pure function; the store still gathers the candidate pool. Nine tests cover
+the two-per-artist cap, rotations opening differently, recently-played deferral
+by provider id *and* artist+title, just-heard artists sinking without a ban, the
+seed never recurring, and empty accounts returning `[]`. Live: a fresh Listen
+built a 52-track queue, no console errors.
+
+**Item 5, messages.** Verified with two genuinely separate clients (the browser
+session plus a Node session with its own cookie): a DM reached the other's open
+thread and updated the inbox preview and ordering within a second, no refresh.
+An earlier attempt looked like a failure only because the headless tab was
+hidden and the poller correctly pauses on `AppState` background. Polling is
+still the scale limit.
+
+**Item 7, preview-only playback.** Added `scripts/sample-playback.mjs`, the
+before/after instrument the criteria asked for. It keeps **capacity** (budget or
+circuit refusal) separate from **missing**, which is the distinction that made
+the old impression unreliable. Locally it honestly reports 100% preview because
+`YOUTUBE_API_KEY` is unset. The production run is still outstanding.
+
+**Items 11, 12, 18, verified live rather than assumed.** Watch/`youtu.be`/shorts
+links all canonicalize to one id with a server-derived thumbnail, other hosts
+refused. Duplicate track reports are bounded, invalid categories and links
+refused, non-admin pin 403; an admin pin stored the override, closed the open
+reports, left no stale `yt_cache` row, and a later report was treated as fresh.
+Playlist sharing keeps an immutable snapshot: renaming the playlist and
+replacing every track left the published post unchanged.
+
+**One real gap fixed on the way:** a playlist track supplying only a YouTube
+watch `url` never captured its video id, so a snapshot held weaker evidence than
+it could. `cleanPlaylistTracks` now derives the id from the link.
+
+**Item 15, analytics.** Non-admin gets 403 on both the dashboard and per-user
+inspection; export returns the full account; opt-out deletes existing rows and
+blocks new ones; guests are never stored; retention is capped at 180 days.
+What remains is a legal review of the policy copy and moving analytics off the
+primary database, neither of which is code I can finish here.
+
+**Still blocked on you, not on code:** item 4 needs the Resend domain verified in
+DNS, and item 13 needs real iOS/Android hardware. Items 1 and 7 need a production
+run with the real key.
+
 ## Genre authority: Discover was reading crawl buckets (2026-07-22, Claude)
 
 TODO item 2, and the cause of the "Discover looks broken" complaint.

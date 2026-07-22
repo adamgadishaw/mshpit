@@ -189,7 +189,18 @@ Acceptance criteria:
 
 ### 7. Reduce preview-only playback
 
-**Status: PARTIAL; lookup amplification reduced, production sampling required.**
+**Status: PARTIAL; measurement harness now exists, production run still required.**
+
+`scripts/sample-playback.mjs` is the before/after instrument the criteria below
+ask for. It samples the catalogue (`--deep` targets the back catalogue, where
+preview-only concentrates) and reports official / preview / missing / capacity /
+rejected rates, keeping **capacity** separate from **missing** so a refused
+lookup is never misread as an absent song. It also prints how much search budget
+the run consumed.
+
+Locally it reports 100% preview and says why: `YOUTUBE_API_KEY` is unset, so the
+number is not meaningful. Run it on Render before and after a deploy and keep
+both outputs; a single number is not the acceptance criterion.
 
 The larger official-channel catalogue scan, persistent search budget, shared
 cold lookups, preserved exact history IDs, and explicit capacity diagnostics
@@ -347,7 +358,16 @@ Acceptance criteria:
 
 ### 15. Privacy-safe site analytics and per-user admin inspection
 
-**Status: PARTIAL / IMPLEMENTED FOR REVIEW.**
+**Status: IMPLEMENTED; legal review and pipeline work remain.**
+
+Verified live (2026-07-22): the analytics dashboard and per-user inspection both
+return 403 for a non-admin; account export returns profile, posts, comments,
+likes, follows, blocks, playlists, listening history and going; opting out
+deletes that account's event rows and blocks new collection; guests are never
+stored. Retention is capped at 180 days by default and enforced on ingest.
+
+Remaining is not code I can finish here: a legal review of the policy copy, and
+moving high-volume analytics off the primary database before collection scales.
 
 The current batch adds a dedicated admin Analytics area, growth/activity/product
 aggregates, k-thresholded search/post keyword trends, and admin-only member
