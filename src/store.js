@@ -6,7 +6,7 @@ import { clean, cleanEmail, isEmail, cleanName, isName, cleanHandle, isPassword,
 import { load, save } from "./lib/persist";
 import { api, captureAppError } from "./lib/api";
 import { clearStoredTheme, setTheme as applyTheme, storedThemeSelection, syncThemeFromAccount } from "./theme";
-import { artistMeta } from "./seed/ingested";
+import { artistMeta, venuePhotoPool } from "./seed/ingested";
 import { ACHIEVEMENTS } from "./lib/badges";
 import { ENABLE_DEMO_DATA } from "./config/runtime.mjs";
 import { isUpcomingEventDate, sanitizePersistedStoreValue, sanitizeTourDates } from "./domain/dataPolicy.mjs";
@@ -2321,25 +2321,36 @@ export function StoreProvider({ children }) {
   // Relaxed catalog lookup: exact key first, then a punctuation/"the"-insensitive
   // match so "Fillmore Detroit" still finds "The Fillmore Detroit" instead of
   // rendering a blank hero.
-  const venueCatalogEntry = (venueName) => {
+  const venueCatalogKey = (venueName) => {
     const k = norm(venueName);
-    if (catalogVenues[k]) return catalogVenues[k];
+    if (catalogVenues[k]) return k;
     const loose = (s) => s.replace(/^the\s+/, "").replace(/[^a-z0-9]/g, "");
     const lk = loose(k);
-    if (!lk) return {};
+    if (!lk) return null;
     for (const key of Object.keys(catalogVenues)) {
-      if (loose(key) === lk) return catalogVenues[key];
+      if (loose(key) === lk) return key;
     }
-    return {};
+    return null;
+  };
+  const venueCatalogEntry = (venueName) => {
+    const key = venueCatalogKey(venueName);
+    return key ? catalogVenues[key] : {};
+  };
+  // Photo pools live in a lazily required module, so the 2.1 MB of venue imagery
+  // is allocated the first time a venue gallery is opened rather than at launch.
+  const venueCatalogPhotos = (venueName) => {
+    const key = venueCatalogKey(venueName);
+    return (key && venuePhotoPool(key)) || {};
   };
 
   const venuePhotos = (venueName) => {
     const cat = venueCatalogEntry(venueName);
-    const commons = (cat.photos || []).map((uri) => ({ uri, by: cat.photoCredit || "Wikimedia Commons", source: "commons" }));
+    const pool = venueCatalogPhotos(venueName);
+    const commons = (pool.photos || []).map((uri) => ({ uri, by: cat.photoCredit || "Wikimedia Commons", source: "commons" }));
     const fan = venueTopPhotos(venueName, 12).map((p) => ({ uri: p.uri, by: p.by, source: "fan" }));
     // Backfill = everything in the pool that isn't a Commons dupe (Openverse +
     // Google). Commons is already laid down above; google is takedown-on-request.
-    const backfill = (cat.galleryPool || [])
+    const backfill = (pool.galleryPool || [])
       .filter((p) => p.source !== "commons")
       .map((p) => ({ uri: p.uri, by: p.credit, source: p.source || "openverse" }));
     const out = [];

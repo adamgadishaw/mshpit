@@ -129,6 +129,65 @@ mangled date is refused with 400, clearing works.
 **The real fix landed next; see the section below.** The guard above only stopped
 new damage.
 
+## Startup performance: the bundled catalogue was the mobile lag (2026-07-22, Claude)
+
+Audited for mobile lag and measured before optimizing. The result was not where
+it was assumed to be.
+
+**Not the problem.** The feed already uses `FlatList`, and driving a 30-step
+scroll produced **zero** long tasks and zero blocking time. Discover's chart is
+capped at 24 rows, so it does not need virtualizing. Player position lives in
+`PlayerBar`'s own state, not the store, so ticking does not re-render the app.
+
+**The problem.** `src/seed/catalog.generated.json` is **9.9 MB** and was a static
+import, reached from `src/data.js`, `LandingScreen` and `store.js`. Every launch
+downloaded it, parsed it and allocated it. Breakdown: artist `albums` 3.71 MB,
+venue `galleryPool` 1.45 MB, venue `photos` 0.59 MB — 5.75 MB of the payload
+served two screens, neither of which needs it at launch.
+
+**What changed.** `scripts/split-catalog.mjs` derives a startup core from the
+scraper output (which is untouched, an automated job owns it):
+
+| | before | after |
+| --- | --- | --- |
+| web bundle | 8.28 MB | **4.8 MB** |
+| catalogue allocated at startup | 9.65 MB | **1.24 MB** |
+| catalogue parse (desktop / est. mid-range phone) | 33ms / ~167ms | **12ms / ~62ms** |
+| DOMContentLoaded, warm localhost | 277ms | **126ms** |
+
+Two different mechanisms, deliberately:
+
+- **Artist discographies are dropped from the bundle.** The artist page already
+  prefers `GET /api/artists/discography`, so a second stale copy on every device
+  bought nothing. Nothing imports them, so Metro leaves them out.
+- **Venue photo pools are deferred, not dropped.** They have no server
+  equivalent, so removing them would have cost real function. They stay in the
+  bundle behind a lazy `require` in `src/seed/ingested.js`; Metro only runs a
+  module's factory on first require, so the 2.1 MB is allocated when a venue
+  gallery is first opened instead of at launch.
+
+**The trade, stated plainly:** offline, on an artist page whose discography has
+never loaded, the RELEASES strip is empty rather than showing stale bundled
+releases. Nothing else changes. Verified after the change: artist pages still
+show genre, songs and discography; Red Rocks still renders its gallery photo
+from the lazily loaded pool; no console errors.
+
+**Guardrails.** `npm run check` and `npm run build:web` regenerate the split
+first, so the scraper rewriting `catalog.generated.json` can never stall a
+deploy — this was checked by simulating a scraper commit. Four tests in
+`src/seed/catalog.split.test.mjs` assert the core stays under 1.8 MB, that the
+heavy fields never leak back in, that nothing imports the 9.9 MB source, and
+that the venue pool is reached only through the one lazy require.
+
+**Not done, and the honest next step:** the store is a single provider with 51
+state slots, no `useMemo`/`useCallback`, and a fresh object literal as its
+context value, consumed by 44 files — so any state change re-renders every
+consumer. Measurement did not show that hurting yet on desktop, and fixing it
+properly means splitting the context (stable actions vs volatile data), which is
+a large refactor across those 44 files. Memoizing the value alone would create
+stale-closure bugs. It should be done deliberately, with a profiler on a real
+device, not bolted onto this pass.
+
 ## Backlog sweep: items 5, 6, 7, 11, 12, 15, 18 (2026-07-22, Claude)
 
 Worked down the rest of `TODO.md`. What changed, and what was only confirmed:

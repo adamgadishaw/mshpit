@@ -62,6 +62,11 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
   // Metadata: bundled catalog first, else the DB catalog (resolved from
   // MusicBrainz on demand if we've never seen this artist, no empty pages).
   const meta = artistMeta(a.name) || remoteArtistMeta(a.name);
+  // Releases come from the live discography endpoint. Bundled releases are no
+  // longer shipped (see src/seed/ingested.js), so this is empty for a remote
+  // artist until that request lands, which is the state the branch below already
+  // handled.
+  const bundledAlbums = meta?.albums || [];
   useEffect(() => { if (!artistMeta(a.name) && !remoteArtistMeta(a.name)) resolveArtist(a.name); }, [a.name]);
   // Pull the artist's fan photos from the server so the rolling gallery shows
   // every public post photo ever, not just posts sitting in this device's feed.
@@ -323,7 +328,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
   // aggregates for each album/song rating shown on the page.
   useEffect(() => { loadArtistPage(a.name); }, [a.name]);
   useEffect(() => {
-    (meta?.albums || []).forEach((al) => loadRating("album", a.name, al.title));
+    (bundledAlbums || []).forEach((al) => loadRating("album", a.name, al.title));
     songs.forEach((s) => loadRating("song", a.name, s.title));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [a.name]);
@@ -741,11 +746,11 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
               );
             })}
           </>
-        ) : meta?.albums?.length > 0 ? (
+        ) : bundledAlbums.length > 0 ? (
           <>
-            <Text style={styles.sectionLabel}>RELEASES · {meta.albums.length}</Text>
+            <Text style={styles.sectionLabel}>RELEASES · {bundledAlbums.length}</Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.albumRow}>
-              {meta.albums.map((al, i) => {
+              {bundledAlbums.map((al, i) => {
                 const ar = albumRating(a.name, al.title);
                 const kind = al.type === "Album" && /^live\s+(at|in|from|on)\b/i.test(al.title) ? "Live album" : al.type;
                 return (

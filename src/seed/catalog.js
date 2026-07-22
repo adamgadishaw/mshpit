@@ -5,7 +5,11 @@
 // Wikimedia Commons (P18) with attribution - null until then, and the UI falls
 // back to a drawn banner so nothing ever looks empty.
 
-import generated from "./catalog.generated.json";
+// The slim core, derived from catalog.generated.json by scripts/split-catalog.mjs.
+// The discography half is split out and deliberately not imported anywhere, so
+// Metro keeps 3.9 MB of releases out of the bundle; the artist page reads live
+// discography from the server instead. See src/seed/ingested.js.
+import generated from "./catalog.core.json";
 import { arenaVenues } from "./arenas";
 
 // Hand-curated anchors (capacities etc.) - merged with the live-scraped catalog

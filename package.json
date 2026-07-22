@@ -31,10 +31,11 @@
     "ingest:all": "node scripts/ingest-venues.mjs && node scripts/ingest-famous-venue-photos.mjs && node scripts/ingest-venue-photos.mjs && node scripts/ingest-artist-details.mjs && node scripts/fix-bios.mjs",
     "pipeline": "node --env-file=.env scripts/pipeline.mjs",
     "server": "node server/index.js",
-    "build:web": "expo export -p web",
+    "build:web": "npm run split:catalog && expo export -p web",
     "test": "node scripts/run-tests.mjs",
     "check:syntax": "node scripts/check-syntax.mjs",
-    "check": "npm run test && npm run check:syntax && npm run build:web"
+    "check": "npm run split:catalog && npm run test && npm run check:syntax && npm run build:web",
+    "split:catalog": "node scripts/split-catalog.mjs"
   },
   "private": true,
   "engines": {
