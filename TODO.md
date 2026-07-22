@@ -134,7 +134,14 @@ Acceptance criteria:
 
 ### 5. Start a conversation from Messages
 
-**Status: IMPLEMENTED / VERIFY; realtime remains polling plus cursor catch-up.**
+**Status: VERIFIED two-client (2026-07-22); realtime remains polling plus cursor
+catch-up, which is still the scale limit.**
+
+Two genuinely separate clients (browser session + a Node session with its own
+cookie): a DM sent by one appeared in the other's **open thread** and updated the
+inbox preview and ordering within a second, with no page refresh. Polling
+correctly pauses while the tab is hidden, which is battery-sane and was what made
+an earlier headless attempt look like a failure.
 
 Inbox now has a New message flow with member search and thread creation/opening.
 Thread summaries fetch only the newest message and refresh periodically; summary
@@ -152,7 +159,18 @@ Acceptance criteria:
 
 ### 6. Less repetitive autoplay
 
-**Status: IMPLEMENTED / VERIFY; server-scale recommendations remain future work.**
+**Status: VERIFIED by extraction + tests (2026-07-22); server-scale
+recommendations remain future work.**
+
+The selection algorithm was trapped inside the `useStore` hook, so none of the
+criteria below could actually be checked. It now lives in
+`src/domain/recommend.mjs` as a pure function (the store still gathers the
+candidate pool), covered by 9 tests: the per-artist cap, three rotations opening
+differently, recently-played deferral by provider id *and* by artist+title,
+just-heard artists sinking without being banned, the seed never recurring,
+discovery outside the seed genre, exact recording identity surviving, and empty
+or sparse accounts returning `[]` rather than crashing. Live: a fresh Listen
+built a 52-track queue with no console errors.
 
 Autoplay now mixes taste-matched and discovery artists, defers recently played
 tracks/artists, round-robins artists before taking a second song, and rotates the

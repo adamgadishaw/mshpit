@@ -11,6 +11,7 @@ import { ACHIEVEMENTS } from "./lib/badges";
 import { ENABLE_DEMO_DATA } from "./config/runtime.mjs";
 import { isUpcomingEventDate, sanitizePersistedStoreValue, sanitizeTourDates } from "./domain/dataPolicy.mjs";
 import { toIsoDate } from "./domain/dates.mjs";
+import { recommendTracks as recommendFromCandidates } from "./domain/recommend.mjs";
 import { trackKey } from "./lib/playback";
 
 // Legacy client facade: combines server hydration, small persisted caches, social
@@ -903,55 +904,32 @@ export function StoreProvider({ children }) {
   // artist, with one song per artist before any artist gets a second turn. A
   // session rotation prevents every listener from receiving the same popularity-
   // sorted sequence while recent tracks and artists are deferred.
+  // Gathers the candidate pool; `recommendTracks` in src/domain/recommend.mjs
+  // does the selection, so the anti-repetition rules are testable outside React.
   const recommendTracks = (seed, n = 24, rotation = 0) => {
-    const metaKey = (t) => `${norm(t?.artist)}|${norm(t?.title)}`;
-    const identities = (t) => [trackKey(t), `meta:${metaKey(t)}`].filter(Boolean);
-    const seen = new Set();
-    const remember = (t) => identities(t).forEach((key) => seen.add(key));
-    const heard = (t) => identities(t).some((key) => seen.has(key));
-    if (seed) remember(seed);
-    (playHistory || []).slice(0, 25).forEach(remember);
-    const recentArtists = new Set((playHistory || []).slice(0, 10).map((t) => norm(t.artist)).filter(Boolean));
-    const seedGenre = (seed && genreOfArtist(seed.artist)) || favoriteGenre();
-    const g = seedGenre ? norm(seedGenre) : null;
     const mergedArtists = new Map();
     for (const artist of [...Object.values(catalogArtists || {}), ...Object.values(remoteArtists || {})]) {
       if (artist?.name) mergedArtists.set(norm(artist.name), { ...(mergedArtists.get(norm(artist.name)) || {}), ...artist });
     }
-    const withTracks = [...mergedArtists.values()]
-      .map((a) => ({ a, meta: remoteArtists[norm(a.name)] || artistMeta(a.name) || a }))
-      .filter((x) => (x.meta.topTracks || []).length);
-    const score = (x) => Number(x.meta.popularity ?? x.a.popularity) || 0;
-    const ordered = (list) => list.sort((p, q) => Number(recentArtists.has(norm(p.a.name))) - Number(recentArtists.has(norm(q.a.name))) || score(q) - score(p) || p.a.name.localeCompare(q.a.name));
-    const rotate = (list, offset) => list.length ? [...list.slice(offset % list.length), ...list.slice(0, offset % list.length)] : [];
-    const inGenre = rotate(ordered(withTracks.filter((x) => g && norm(genreOfArtist(x.a.name)) === g)), rotation * 7);
-    const rest = rotate(ordered(withTracks.filter((x) => !(g && norm(genreOfArtist(x.a.name)) === g))), rotation * 11);
-    const artists = [];
-    let gi = 0; let ri = 0;
-    while (gi < inGenre.length || ri < rest.length) {
-      for (let i = 0; i < 3 && gi < inGenre.length; i++) artists.push(inGenre[gi++]);
-      if (ri < rest.length) artists.push(rest[ri++]);
-      if (!inGenre.length && ri < rest.length) artists.push(rest[ri++]);
-    }
-    const out = [];
-    const maxTracksPerArtist = 2;
-    for (let pass = 0; pass < maxTracksPerArtist && out.length < n; pass++) {
-      for (const x of artists) {
-        const available = x.meta.topTracks || [];
-        for (let index = pass; index < available.length; index++) {
-          const t = available[index];
-        // Artist + title is a complete track reference. Provider URLs are optional
-        // enrichments that the player resolves only when this track becomes current.
-          if (!t.title) continue;
-          const track = { kind: "track", title: t.title, artist: x.a.name, id: t.id || null, sourceId: t.sourceId || t.id || null, provider: t.provider || null, url: t.url || null, videoId: t.videoId || null, duration: t.duration || null, preview: t.preview || null, art: x.meta.photo || x.a.photo || null };
-          if (heard(track)) continue;
-          remember(track); out.push(track);
-          break;
-        }
-        if (out.length >= n) break;
-      }
-    }
-    return out;
+    const candidates = [...mergedArtists.values()].map((a) => {
+      const meta = remoteArtists[norm(a.name)] || artistMeta(a.name) || a;
+      return {
+        name: a.name,
+        genre: genreOfArtist(a.name),
+        popularity: meta.popularity ?? a.popularity,
+        art: meta.photo || a.photo || null,
+        tracks: meta.topTracks || [],
+      };
+    });
+    return recommendFromCandidates({
+      candidates,
+      history: playHistory || [],
+      seed,
+      genre: (seed && genreOfArtist(seed.artist)) || favoriteGenre(),
+      count: n,
+      rotation,
+      trackKey,
+    });
   };
   // Build the queue the top player runs: whatever was explicitly queued, then a
   // recommended tail so "up next" is always populated and playback never dead-ends
