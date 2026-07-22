@@ -126,13 +126,67 @@ formats, the mangled separator, impossible days, and the legacy-row path.
 Verified live: the picker's own format posts and round-trips unchanged, the
 mangled date is refused with 400, clearing works.
 
-**The real fix is still open.** Storing a display-formatted date inside the
-identity key is fragile by construction. Moving stored dates to ISO with
-display-time formatting needs a migration that rewrites posts, `going`, and
-lounge keys together; until then this guard only stops new damage. The one
-corrupted row is still in the local dev DB and may exist in production; repairing
-it means merging two performances, so it needs an owner decision, not a silent
-`UPDATE`.
+**The real fix landed next; see the section below.** The guard above only stopped
+new damage.
+
+## Performance dates are canonical ISO now (2026-07-22, Claude)
+
+Storing a display-formatted date inside the identity key was fragile by
+construction, so storage and display are now separate concerns.
+
+**`src/domain/dates.mjs` is the single authority.** `toIsoDate` accepts every
+shape the product has ever written (ISO, the DatePicker's `YYYY · MM · DD`, the
+mangled `U+FFFD` variant, `/` and `.` separators) and returns `YYYY-MM-DD`, or
+`""` for anything that is not a real calendar day. `formatDate` renders the
+display form, so **nothing users see changed**. `todayIso` is the composer's
+default. Both server and client import it; `server/rewards.js` already set the
+precedent for sharing a pure module across that boundary.
+
+**What changed together, because it all had to move at once:**
+
+- `server/validate.js` `cleanDate` canonicalizes instead of preserving input, so
+  create and edit both store ISO. Editing a post now *repairs* a legacy date
+  rather than rejecting its owner.
+- `server/db.js` runs a one-time migration behind the `dates:canonical-iso:v1`
+  marker, in a transaction, following the events-IP-purge pattern. It rewrites
+  `posts.date`, `tour_dates.date`, `going.date` **and** `going.concert_key`, and
+  the date segment of `lounge_messages.lounge_id`. `going` uses
+  `UPDATE OR REPLACE` because `PRIMARY KEY (user_id, concert_key)` collides
+  exactly when a merge is correct: one fan, two spellings, one night.
+- `src/store.js` `concertKey` canonicalizes the date, so bundled seed data and
+  legacy local posts key onto the same performance as migrated server rows.
+- `DatePicker` emits ISO and previews the display form. `LogScreen` holds ISO.
+- Ten render sites moved to `formatDate`.
+- The Ticketmaster ingest (`server/tourdates.js`, `scripts/ingest.mjs`,
+  `scripts/enrich-tourdates.mjs`) stops converting the provider's ISO date into
+  the display form, which is where all 797 middot tour dates came from.
+- **`server/discovery.js` was the trap.** It string-compares
+  `tour_dates.date >= today`, so its `today` had to move to ISO in the same
+  change or upcoming shows would silently vanish. Verified after: 685 future
+  dates, sidebar returns 8 upcoming events.
+
+**A date too broken to parse is left exactly as it is.** Blanking it would
+destroy the only record of when someone's night happened, and `formatDate` falls
+back rather than rendering mojibake.
+
+**Verified.** 77 tests pass, including `src/domain/dates.test.mjs` (parser,
+leap years, idempotence) and `server/dates.migration.test.mjs`, which seeds a
+database with all three real-world date shapes and asserts the merge: two
+`going` rows collapse to one, two lounges become one room with both messages
+kept, unparseable rows untouched.
+
+Then run against the real dev database: the mangled row became `2026-06-21`, all
+797 tour dates are ISO, and the two Turnstile reviews that used to produce
+`...|2026 � 06 � 21` and `...|2026-06-21` now both key to
+`turnstile|the fillmore|2026-06-21`. **The Fillmore fork is healed.** In the
+browser: no mojibake anywhere, no raw ISO leaking into the UI, feed and composer
+render `2026 · 07 · 09` as before, "Today" still resolves, no console errors.
+
+**Deploying this:** the migration runs automatically on boot and is idempotent.
+Back up `server/data/pit.db` first anyway, since it rewrites primary-key
+material. The bundled seed catalog still holds 156 display-format dates; they
+canonicalize on read, and the ingest scripts now emit ISO, so it converges
+whenever the catalog is regenerated. There is no need to force that.
 
 **Touch targets.** Re-measured rather than trusted: the nav buttons, album
 controls and report buttons already carried `hitSlop` putting them past 44pt.

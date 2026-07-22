@@ -97,7 +97,7 @@ async function upcomingDates(name) {
     );
     return (data._embedded?.events || []).map((e) => {
       const v = e._embedded?.venues?.[0];
-      const d = e.dates?.start?.localDate?.replace(/-/g, " · ");
+      const d = e.dates?.start?.localDate;
       return {
         artist: name,
         venue: v?.name,

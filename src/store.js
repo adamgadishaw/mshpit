@@ -10,6 +10,7 @@ import { artistMeta } from "./seed/ingested";
 import { ACHIEVEMENTS } from "./lib/badges";
 import { ENABLE_DEMO_DATA } from "./config/runtime.mjs";
 import { isUpcomingEventDate, sanitizePersistedStoreValue, sanitizeTourDates } from "./domain/dataPolicy.mjs";
+import { toIsoDate } from "./domain/dates.mjs";
 import { trackKey } from "./lib/playback";
 
 // Legacy client facade: combines server hydration, small persisted caches, social
@@ -1901,8 +1902,12 @@ export function StoreProvider({ children }) {
   const norm = (s) => (s || "").trim().toLowerCase();
 
   // A stable id for a concert (artist + venue + date) so the lounge, the going
-  // list, and attendees all key off the same thing.
-  const concertKey = (log) => `${norm(log.artist)}|${norm(log.venue)}|${log.date || ""}`.toLowerCase();
+  // list, and attendees all key off the same thing. The date is canonicalized
+  // first: bundled seed data, legacy local posts and server rows have all been
+  // written in different date formats, and without this they would key as
+  // different performances. An unparseable date falls back to the raw value so
+  // such a log still gets a consistent key of its own.
+  const concertKey = (log) => `${norm(log.artist)}|${norm(log.venue)}|${toIsoDate(log.date) || log.date || ""}`.toLowerCase();
 
   // --- Concert Lounge (gated attendee chat, now server-backed + live) ---
   const loungeFor = (key) => lounge[key] || [];

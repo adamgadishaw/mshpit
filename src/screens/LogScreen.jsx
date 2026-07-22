@@ -17,6 +17,7 @@ import SheetHeader from "../components/SheetHeader";
 import DatePicker from "../components/DatePicker";
 import { isDurableMediaUrl, reportMediaPickerError, uploadMediaAsset } from "../lib/mediaUpload";
 import { api } from "../lib/api";
+import { formatDate, toIsoDate, todayIso } from "../domain/dates.mjs";
 
 const GROUP_COLOR = { "THE BAND": colors.amber, "THE ROOM": colors.cool, "THE NIGHT": colors.magenta };
 const GROUPS = ["THE BAND", "THE ROOM", "THE NIGHT"];
@@ -133,9 +134,12 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
   // Show date, defaults to today so logging stays one-tap, but you can set the
   // real date of a past show. Years run from this year back to 2000, descending.
   const today = new Date();
-  const todayStr = `${today.getFullYear()} · ${String(today.getMonth() + 1).padStart(2, "0")} · ${String(today.getDate()).padStart(2, "0")}`;
+  // Held and submitted as canonical ISO; rendered through formatDate below.
+  const todayStr = todayIso(today);
   const PAST_YEARS = Array.from({ length: today.getFullYear() - 1999 }, (_, i) => today.getFullYear() - i);
-  const [date, setDate] = useState(editing?.date || todayStr);
+  // An existing post may still hold a legacy display-format date, so normalize
+  // on open: editing a show must not rewrite which performance it belongs to.
+  const [date, setDate] = useState(toIsoDate(editing?.date) || editing?.date || todayStr);
   const [showDate, setShowDate] = useState(false);
 
   const addPhoto = async () => {
@@ -212,7 +216,7 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
   const resume = (d) => {
     setDraftId(d.id);
     setArtist(d.artist || ""); setArtistPicked(!!d.artist); setVenue(d.venue || ""); setVenuePicked(!!d.venue); setCity(d.city || "");
-    setTour(d.tour || ""); setDate(d.date || todayStr); setDims(d.dims || dims); setReview(d.review || ""); setTags(Array.isArray(d.tags) ? d.tags.slice(0, 5) : []); setSong(d.song || null); setSongUrl(d.song?.url || ""); setPhotos((d.photos || []).filter(isDurableMediaUrl));
+    setTour(d.tour || ""); setDate(toIsoDate(d.date) || d.date || todayStr); setDims(d.dims || dims); setReview(d.review || ""); setTags(Array.isArray(d.tags) ? d.tags.slice(0, 5) : []); setSong(d.song || null); setSongUrl(d.song?.url || ""); setPhotos((d.photos || []).filter(isDurableMediaUrl));
   };
   const hasContent = artist.trim() || venue.trim() || review.trim() || photos.length || song?.videoId;
 
@@ -403,7 +407,7 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
         <Text style={[styles.fieldLabel, { marginTop: 18 }]}>WHEN?</Text>
         <Pressable style={styles.dateBtn} onPress={() => setShowDate((s) => !s)}>
           <Icon name="calendar" size={16} color={colors.amber} />
-          <Text style={styles.dateTxt}>{date === todayStr ? "Today" : date}</Text>
+          <Text style={styles.dateTxt}>{date === todayStr ? "Today" : formatDate(date, date)}</Text>
           <Icon name={showDate ? "chevron-down" : "chevron-right"} size={16} color={colors.textDim} />
         </Pressable>
         {showDate && (

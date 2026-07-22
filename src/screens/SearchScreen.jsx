@@ -7,6 +7,7 @@ import { useStore } from "../store";
 import Icon from "../components/Icon";
 import Avatar from "../components/Avatar";
 import Badge from "../components/Badge";
+import { formatDate } from "../domain/dates.mjs";
 
 // ---- result rows (shared by every section of the unified dropdown) ----
 function PersonRow({ u, following, canFollow, onFollow, onOpen }) {
@@ -60,7 +61,7 @@ function EventRow({ t, onOpenArtist, onOpenVenue }) {
       <Pressable style={{ flex: 1 }} onPress={() => onOpenArtist?.(t.artist)}>
         <Text style={styles.rowName} numberOfLines={1}>{t.artist}</Text>
         <Text style={styles.rowSub} numberOfLines={1}>
-          <Text style={styles.link} onPress={() => onOpenVenue?.(t.venue)}>{t.venue}</Text> · {t.date}
+          <Text style={styles.link} onPress={() => onOpenVenue?.(t.venue)}>{t.venue}</Text> · {formatDate(t.date, t.date)}
         </Text>
       </Pressable>
       {t.soldOut

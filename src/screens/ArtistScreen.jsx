@@ -15,6 +15,7 @@ import Badge, { BadgeRow, BadgeChip } from "../components/Badge";
 import { proxied, isHttp } from "../lib/img";
 import { api } from "../lib/api";
 import Svg, { Defs, LinearGradient, Stop, Rect } from "react-native-svg";
+import { formatDate } from "../domain/dates.mjs";
 
 const cap = (s) => (s ? s.replace(/\b\w/g, (c) => c.toUpperCase()) : s);
 const compactCount = (value) => {
@@ -584,7 +585,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
                 <View style={{ flex: 1 }}>
                   <Text style={styles.upVenue}>{t.venue}</Text>
                   <Text style={styles.upPlace}>{t.place}</Text>
-                  <Text style={styles.upDate}>{t.date}{t.scheduled ? "  · scheduled" : ""}</Text>
+                  <Text style={styles.upDate}>{formatDate(t.date, t.date)}{t.scheduled ? "  · scheduled" : ""}</Text>
                 </View>
                 {t.soldOut ? (
                   <View style={styles.soldOut}><Text style={styles.soldOutTxt}>SOLD OUT</Text></View>
@@ -607,7 +608,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
             <View style={{ flex: 1 }}>
               <Text style={styles.nightVenue}>{n.venue}</Text>
               <Text style={styles.nightMeta}>
-                {n.city}{n.date !== "aggregate" ? ` · ${n.date}` : " · community avg"}
+                {n.city}{n.date !== "aggregate" ? ` · ${formatDate(n.date, n.date)}` : " · community avg"}
               </Text>
             </View>
             <View style={styles.scorePill}>

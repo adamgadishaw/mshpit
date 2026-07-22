@@ -41,7 +41,7 @@ function publicEvent(row) {
 // the wrong city. When a city has no dates, results widen to nearby/region/global
 // instead of presenting three blank cards.
 export function discoverySidebar(viewer, { artistLimit = 8, eventLimit = 8, venueLimit = 8 } = {}) {
-  const today = new Date().toISOString().slice(0, 10).replace(/-/g, " · ");
+  const today = new Date().toISOString().slice(0, 10);
   const rows = db.prepare("SELECT * FROM tour_dates WHERE date >= ? ORDER BY date ASC LIMIT 5000").all(today);
   const home = viewer?.home_city
     ? { city: viewer.home_city, lat: finite(viewer.home_lat), lng: finite(viewer.home_lng) }

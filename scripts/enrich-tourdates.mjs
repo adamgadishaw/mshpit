@@ -45,7 +45,7 @@ async function tmDates(name) {
   for (const e of data._embedded?.events || []) {
     const v = e._embedded?.venues?.[0];
     const isRequestedArtist = (e._embedded?.attractions || []).some((a) => norm(a.name) === norm(name));
-    const date = e.dates?.start?.localDate?.replace(/-/g, " · ");
+    const date = e.dates?.start?.localDate;
     if (!v?.name || !date || !isRequestedArtist) continue;
     out.push({
       id: e.id ? `tm_${e.id}` : slugId("tm", name, v.name, date),
@@ -68,7 +68,7 @@ async function bitDates(name) {
   const out = [];
   for (const e of Array.isArray(data) ? data : []) {
     const v = e.venue || {};
-    const date = (e.datetime || "").slice(0, 10).replace(/-/g, " · ");
+    const date = (e.datetime || "").slice(0, 10);
     if (!v.name || !date) continue;
     const ticket = (e.offers || []).find((o) => o.type === "Tickets")?.url;
     out.push({

@@ -4,6 +4,7 @@ import { colors, displayFont, focusRing, font, mono, radius, roleColor, shadow }
 import { useStore } from "../store";
 import Avatar from "./Avatar";
 import Icon from "./Icon";
+import { formatDate } from "../domain/dates.mjs";
 
 const NAV = [
   { key: "feed", label: "Feed", icon: "feed" },
@@ -332,7 +333,7 @@ export function RightRail({ onOpenArtist, onOpenVenue, onFindVenues, onOpenEvent
             <View style={styles.eDate}><Icon name="calendar" size={13} color={colors.amber} /></View>
             <View style={{ flex: 1 }}>
               <Text style={styles.aName} numberOfLines={1}>{t.artist}</Text>
-              <Text style={styles.aSub} numberOfLines={1}>{t.venue}{t.place ? ` · ${t.place.split(",")[0]}` : ""} · {t.date}</Text>
+              <Text style={styles.aSub} numberOfLines={1}>{t.venue}{t.place ? ` · ${t.place.split(",")[0]}` : ""} · {formatDate(t.date, t.date)}</Text>
             </View>
           </Pressable>
         ))}

@@ -1453,15 +1453,15 @@ export const routes = {
     textField("artist", LIMITS.artist, { required: true });
     textField("venue", LIMITS.venue, { required: true });
     textField("city", LIMITS.city);
-    // Same performance-identity guard as create. Validated only when the date
-    // actually changes, so a post already holding a legacy malformed date stays
-    // editable (its owner can still fix the review) while no edit can introduce
-    // or preserve-by-rewrite a date that forks the night into a new performance.
+    // Stored ISO, same as create. A post still holding a legacy display-format
+    // or mangled date is repaired by this rather than rejected, since the value
+    // canonicalizes to the night it always meant. "" clears the field, which is
+    // a normal edit.
     if (has("date")) {
       if (typeof body.date !== "string") throw new ApiError(400, "date is invalid", "VALIDATION_FAILED");
-      const value = clean(body.date, { max: LIMITS.date });
-      // "" clears the field, which is a normal edit and not a forked identity.
-      if (value && value !== (current.date || "") && !cleanDate(value)) throw new ApiError(400, "date is invalid", "VALIDATION_FAILED");
+      const raw = clean(body.date, { max: LIMITS.date });
+      const value = raw ? cleanDate(raw) : "";
+      if (raw && !value) throw new ApiError(400, "date is invalid", "VALIDATION_FAILED");
       next.date = value;
     }
     textField("review", LIMITS.review, { newlines: true });

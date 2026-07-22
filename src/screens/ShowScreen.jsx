@@ -10,6 +10,7 @@ import VenuePhotoWidget from "../components/VenuePhotoWidget";
 import ScreenHeader from "../components/ScreenHeader";
 import { useStore } from "../store";
 import { showDateMs, fmtCountdown } from "../lib/showTime";
+import { formatDate } from "../domain/dates.mjs";
 
 // The "performance page" - ONE artist, ONE venue, ONE date. This is the night
 // itself, not the room (that's the venue page): a ticket-style hero owns the
@@ -79,7 +80,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
             <View style={styles.stubDivider} />
             <View style={{ alignItems: "flex-end" }}>
               <Text style={styles.stubLabel}>THE DATE</Text>
-              <Text style={styles.date}>{log.date || "TBA"}</Text>
+              <Text style={styles.date}>{formatDate(log.date, log.date || "TBA")}</Text>
               {log.soldOut ? <Text style={styles.soldOut}>SOLD OUT</Text> : null}
             </View>
           </View>
