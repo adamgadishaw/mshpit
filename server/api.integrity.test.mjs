@@ -562,3 +562,32 @@ test("an admin genre correction outranks the crawl, is audited, and is reversibl
   assert.equal(undone.artist.genre, null);
   assert.equal(undone.artist.genreHint, "House");
 });
+
+// A playlist snapshot has to replay the same recording later, so the exact
+// video id is preserved however the client supplied it: as a bare id, inside a
+// watch URL, or as another provider's track id.
+test("playlist tracks keep their exact recording identity", () => {
+  const owner = addUser("u_playlistid", "playlistid@example.com", "playlistid");
+  const create = routes["POST /api/playlists"];
+  const made = create({
+    user: owner, ip: "playlist-id",
+    body: { name: "Identity", visibility: "public", tracks: [
+      { title: "Bare", artist: "A", videoId: "dQw4w9WgXcQ" },
+      { title: "FromUrl", artist: "A", url: "https://www.youtube.com/watch?v=oHg5SJYRHA0" },
+      { title: "Deezer", artist: "A", sourceId: "12345", provider: "deezer" },
+      { title: "NoIdentity", artist: "A" },
+    ] },
+  });
+  const id = made.playlist?.id || made.id;
+  const tracks = routes["GET /api/playlists/:id"]({ user: owner, params: { id } }).playlist.tracks;
+  const byTitle = Object.fromEntries(tracks.map((t) => [t.title, t]));
+
+  assert.equal(byTitle.Bare.videoId, "dQw4w9WgXcQ");
+  assert.equal(byTitle.FromUrl.videoId, "oHg5SJYRHA0", "the id must be recovered from a watch link");
+  assert.equal(byTitle.Deezer.sourceId, "12345");
+  assert.equal(byTitle.Deezer.provider, "deezer");
+  // A track with only title/artist is still a complete reference; the player
+  // resolves it when it becomes current.
+  assert.equal(byTitle.NoIdentity.videoId, null);
+  assert.equal(byTitle.NoIdentity.title, "NoIdentity");
+});

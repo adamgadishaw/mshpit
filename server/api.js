@@ -237,7 +237,10 @@ function cleanPlaylistTracks(value, { allowEmpty = true } = {}) {
     if (!title) continue;
     const artist = clean(raw.artist, { max: 120 }) || null;
     const url = clean(raw.url, { max: 400 }) || null;
-    const videoId = parseYouTubeVideoId(raw.videoId || "") || null;
+    // Fall back to the link so a track that only carries a watch URL still
+    // records its exact video id. A playlist snapshot is supposed to replay the
+    // same recording later, and a bare URL is weaker evidence than the id.
+    const videoId = parseYouTubeVideoId(raw.videoId || "") || parseYouTubeVideoId(url || "") || null;
     const sourceId = clean(String(raw.sourceId ?? raw.id ?? ""), { max: 120 }) || null;
     const provider = clean(raw.provider, { max: 40 })?.toLowerCase() || null;
     const art = typeof raw.art === "string" && /^https?:\/\//i.test(raw.art) ? raw.art.slice(0, 500) : null;

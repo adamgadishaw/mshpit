@@ -270,7 +270,11 @@ Remaining:
 
 ### 11. General YouTube attachments in posts
 
-**Status: IMPLEMENTED / VERIFY.**
+**Status: VERIFIED (2026-07-22).**
+
+Live check: `watch?v=`, `youtu.be/` and `/shorts/` links all canonicalize to the
+same video id with a server-derived `i.ytimg.com` thumbnail; a non-YouTube host
+and free text are both refused with 400.
 
 The composer and feed language now treat the existing backward-compatible `song`
 payload as a general YouTube music attachment: song, review, breakdown, lesson,
@@ -289,7 +293,14 @@ Acceptance criteria:
 
 ### 12. Playback/wrong-song reports and admin correction
 
-**Status: IMPLEMENTED / VERIFY.**
+**Status: VERIFIED (2026-07-22).**
+
+Live check: a report is accepted, a second from the same account returns
+`duplicate: true` without a new row, an invalid category and a non-YouTube
+suggested link are both refused with 400, and a non-admin pin attempt is 403.
+An admin pin stored `turnstile|birds -> dQw4w9WgXcQ`, closed the 2 open reports
+on that song, left no stale `yt_cache` row, and a report filed after the fix was
+treated as fresh rather than deduped against the closed ones.
 
 Reports now distinguish wrong video, will not play, preview only, missing, and
 other; a user may suggest a YouTube replacement. Admin triage can search candidate
@@ -390,7 +401,17 @@ Acceptance criteria:
 
 ### 18. Publish playlists as feed posts
 
-**Status: FOUNDATION COMPLETE; keep in regression suite.**
+**Status: VERIFIED after this batch (2026-07-22).**
+
+Re-ran live: create, share on a status post, private playlist refused with 400,
+and the snapshot proved immutable (renaming the playlist and replacing all its
+tracks left the published post showing the original name and songs). Exact
+recording identity round-trips for bare video ids and other providers'
+`sourceId`; a duplicate recording is correctly collapsed.
+
+One gap found and fixed: a track supplying only a YouTube watch `url` never
+captured its video id, so the snapshot held weaker evidence than it could.
+`cleanPlaylistTracks` now derives the id from the link, covered by a test.
 
 Regular posts can attach a public/unlisted owned playlist as an immutable
 snapshot. The feed card shows the playlist and starts the exact stored queue; API
