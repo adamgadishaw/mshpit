@@ -7,7 +7,8 @@ import SmartImage from "../components/SmartImage";
 import SoundDonut, { DONUT_PALETTE } from "../components/SoundDonut";
 import { BadgeRow } from "../components/Badge";
 import { useStore, isStaff, isMod, isArtist } from "../store";
-import { showDateMs, fmtCountdown } from "../lib/showTime";
+import { showDateMs } from "../lib/showTime";
+import Countdown from "../components/Countdown";
 import { formatDate } from "../domain/dates.mjs";
 
 const web = Platform.OS === "web";
@@ -109,12 +110,6 @@ export default function YouScreen({ feed, onLogin, onLogout, onAdmin, onAddTourD
 
   const planned = session ? goingFor(session.id) : [];
   const upcoming = planned.filter((p) => { const t = showDateMs(p.date); return t != null && t - Date.now() > -86400000; });
-  const [nowTick, setNowTick] = useState(() => Date.now());
-  useEffect(() => {
-    if (!upcoming.length) return;
-    const id = setInterval(() => setNowTick(Date.now()), 1000);
-    return () => clearInterval(id);
-  }, [upcoming.length]);
 
   const playlists = myPlaylists || [];
   const playTrack = (t) => onPlay?.({ kind: "track", title: t.title, artist: t.artist, art: t.art || null });
@@ -323,7 +318,6 @@ export default function YouScreen({ feed, onLogin, onLogout, onAdmin, onAddTourD
             <>
               <Text style={styles.sectionLabel}>GOING TO · {upcoming.length}</Text>
               {upcoming.map((p) => {
-                const left = showDateMs(p.date) - nowTick;
                 return (
                   <Pressable key={p.key} style={styles.row} onPress={() => onOpen?.(p)}>
                     <View style={styles.rowIcon}><Icon name="calendar" size={15} color={colors.amber} /></View>
@@ -331,7 +325,7 @@ export default function YouScreen({ feed, onLogin, onLogout, onAdmin, onAddTourD
                       <Text style={styles.rowLabel} numberOfLines={1}>{p.artist}</Text>
                       <Text style={styles.rowSub} numberOfLines={1}>{p.venue}{p.date ? ` · ${formatDate(p.date, p.date)}` : ""}</Text>
                     </View>
-                    <Text style={styles.goingT}>{left <= 0 ? "TONIGHT" : fmtCountdown(left)}</Text>
+                    <Countdown target={showDateMs(p.date)} style={styles.goingT} />
                   </Pressable>
                 );
               })}

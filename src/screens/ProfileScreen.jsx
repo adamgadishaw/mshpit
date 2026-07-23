@@ -10,7 +10,8 @@ import SpinningRecord from "../components/SpinningRecord";
 import TicketStub from "../components/TicketStub";
 import { BadgeRow } from "../components/Badge";
 import { ACHIEVEMENTS } from "../lib/badges";
-import { showDateMs, fmtCountdown } from "../lib/showTime";
+import { showDateMs } from "../lib/showTime";
+import Countdown from "../components/Countdown";
 import { trackKey } from "../lib/playback";
 import { formatDate } from "../domain/dates.mjs";
 
@@ -72,13 +73,6 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtis
   // Lives above the loading early-return so the hook order never changes; only
   // runs while a planned show actually has a parseable date.
   const planned = user ? goingFor(user.id) : [];
-  const [nowTick, setNowTick] = useState(() => Date.now());
-  const hasCountdown = planned.some((p) => showDateMs(p.date) != null);
-  useEffect(() => {
-    if (!hasCountdown) return;
-    const id = setInterval(() => setNowTick(Date.now()), 1000);
-    return () => clearInterval(id);
-  }, [hasCountdown]);
   if (!user) {
     return (
       <View style={styles.wrap}>
@@ -289,7 +283,6 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtis
         {planned.length === 0 && <Text style={styles.empty}>No planned shows yet.</Text>}
         {planned.map((p) => {
           const target = showDateMs(p.date);
-          const left = target != null ? target - nowTick : null;
           return (
             <Pressable key={p.key} style={styles.showRow} onPress={() => onOpenArtist?.(p.artist)}>
               <View style={styles.goingDot}><Icon name="calendar" size={15} color={colors.amber} /></View>
@@ -297,10 +290,10 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtis
                 <Text style={styles.showArtist}>{p.artist}</Text>
                 <Text style={styles.showVenue}>{p.venue} · {formatDate(p.date, p.date)}</Text>
               </View>
-              {left != null && left > -86400000 && (
+              {target != null && target - Date.now() > -86400000 && (
                 <View style={styles.countdownBox}>
-                  <Text style={styles.countdownT}>{left <= 0 ? "TONIGHT" : fmtCountdown(left)}</Text>
-                  {left > 0 && <Text style={styles.countdownLabel}>until doors</Text>}
+                  <Countdown target={target} style={styles.countdownT} />
+                  {target - Date.now() > 0 && <Text style={styles.countdownLabel}>until doors</Text>}
                 </View>
               )}
             </Pressable>
