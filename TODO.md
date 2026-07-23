@@ -500,8 +500,18 @@ Acceptance criteria:
 
 ### 20. Popular songs still resolve to previews, not the real video
 
-**Status: DIAGNOSED (2026-07-22), not yet fixed. The likely cause is capacity,
-not matching.**
+**Status: FIXED (2026-07-23), verified in the browser with the resolve endpoint
+stubbed.** Five separate paths turned a playable song into a preview: one-shot
+resolution, transient failures cached for five minutes as if definitive, no
+mid-play recovery, the background retry defeated by its own cache, and a
+12-second resolve budget shorter than a cold catalogue lookup. See HANDOFF.md
+"Playback deep dive" and `src/domain/playback.mjs`. Measured: healthy provider
+makes 1 call and plays the video; forced 429s give 3 attempts at 422/1405ms; a
+sustained outage adds only 3 calls across 20s.
+
+The capacity ceiling below is still real and still item 1's work.
+
+Original diagnosis follows.
 
 YouTube search costs 100 quota units per call against a default 10,000/day, so
 the server caps itself at **90 searches per day** (`/api/health` reports

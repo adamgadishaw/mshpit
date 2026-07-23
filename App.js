@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, lazy, Suspense } from "react";
 import { View, Text, StyleSheet, Pressable, SafeAreaView, Platform, StatusBar as RNStatusBar, Animated, useWindowDimensions, BackHandler } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import "./src/lib/safeArea"; // reserves iOS notch / toolbar safe areas (web)
@@ -13,47 +13,47 @@ import FeedScreen from "./src/screens/FeedScreen";
 import SearchScreen from "./src/screens/SearchScreen";
 import DiscoverScreen from "./src/screens/DiscoverScreen";
 import YouScreen from "./src/screens/YouScreen";
-import ShowScreen from "./src/screens/ShowScreen";
-import LoungeScreen from "./src/screens/LoungeScreen";
-import InboxScreen from "./src/screens/InboxScreen";
-import NotificationsScreen from "./src/screens/NotificationsScreen";
-import CalendarScreen from "./src/screens/CalendarScreen";
-import ClipsScreen from "./src/screens/ClipsScreen";
-import ThreadScreen from "./src/screens/ThreadScreen";
-import VenueReviewScreen from "./src/screens/VenueReviewScreen";
-import FanClubScreen from "./src/screens/FanClubScreen";
+const ShowScreen = lazy(() => import("./src/screens/ShowScreen"));
+const LoungeScreen = lazy(() => import("./src/screens/LoungeScreen"));
+const InboxScreen = lazy(() => import("./src/screens/InboxScreen"));
+const NotificationsScreen = lazy(() => import("./src/screens/NotificationsScreen"));
+const CalendarScreen = lazy(() => import("./src/screens/CalendarScreen"));
+const ClipsScreen = lazy(() => import("./src/screens/ClipsScreen"));
+const ThreadScreen = lazy(() => import("./src/screens/ThreadScreen"));
+const VenueReviewScreen = lazy(() => import("./src/screens/VenueReviewScreen"));
+const FanClubScreen = lazy(() => import("./src/screens/FanClubScreen"));
 import AccountGate from "./src/screens/AccountGate";
-import MenuScreen from "./src/screens/MenuScreen";
+const MenuScreen = lazy(() => import("./src/screens/MenuScreen"));
 import PhotoViewer from "./src/components/PhotoViewer";
-import LogScreen from "./src/screens/LogScreen";
-import TopRatedScreen from "./src/screens/TopRatedScreen";
+const LogScreen = lazy(() => import("./src/screens/LogScreen"));
+const TopRatedScreen = lazy(() => import("./src/screens/TopRatedScreen"));
 import AuthScreen from "./src/screens/AuthScreen";
-import AdminScreen from "./src/screens/AdminScreen";
-import BulkTourDatesScreen from "./src/screens/BulkTourDatesScreen";
-import RequestArtistScreen from "./src/screens/RequestArtistScreen";
-import ProfileScreen from "./src/screens/ProfileScreen";
-import EditProfileScreen from "./src/screens/EditProfileScreen";
-import ReportScreen from "./src/screens/ReportScreen";
-import ArtistScreen from "./src/screens/ArtistScreen";
-import EditArtistProfileScreen from "./src/screens/EditArtistProfileScreen";
-import VenueScreen from "./src/screens/VenueScreen";
-import VenuesScreen from "./src/screens/VenuesScreen";
-import PickArtistsScreen from "./src/screens/PickArtistsScreen";
-import FanClubsScreen from "./src/screens/FanClubsScreen";
-import NearbyScreen from "./src/screens/NearbyScreen";
-import SettingsScreen from "./src/screens/SettingsScreen";
-import DeleteAccountScreen from "./src/screens/DeleteAccountScreen";
-import DiagnosticsScreen from "./src/screens/DiagnosticsScreen";
-import PrivacyScreen from "./src/screens/PrivacyScreen";
-import TermsScreen from "./src/screens/TermsScreen";
+const AdminScreen = lazy(() => import("./src/screens/AdminScreen"));
+const BulkTourDatesScreen = lazy(() => import("./src/screens/BulkTourDatesScreen"));
+const RequestArtistScreen = lazy(() => import("./src/screens/RequestArtistScreen"));
+const ProfileScreen = lazy(() => import("./src/screens/ProfileScreen"));
+const EditProfileScreen = lazy(() => import("./src/screens/EditProfileScreen"));
+const ReportScreen = lazy(() => import("./src/screens/ReportScreen"));
+const ArtistScreen = lazy(() => import("./src/screens/ArtistScreen"));
+const EditArtistProfileScreen = lazy(() => import("./src/screens/EditArtistProfileScreen"));
+const VenueScreen = lazy(() => import("./src/screens/VenueScreen"));
+const VenuesScreen = lazy(() => import("./src/screens/VenuesScreen"));
+const PickArtistsScreen = lazy(() => import("./src/screens/PickArtistsScreen"));
+const FanClubsScreen = lazy(() => import("./src/screens/FanClubsScreen"));
+const NearbyScreen = lazy(() => import("./src/screens/NearbyScreen"));
+const SettingsScreen = lazy(() => import("./src/screens/SettingsScreen"));
+const DeleteAccountScreen = lazy(() => import("./src/screens/DeleteAccountScreen"));
+const DiagnosticsScreen = lazy(() => import("./src/screens/DiagnosticsScreen"));
+const PrivacyScreen = lazy(() => import("./src/screens/PrivacyScreen"));
+const TermsScreen = lazy(() => import("./src/screens/TermsScreen"));
 import AccountMenu from "./src/components/AccountMenu";
 import PlayerBar from "./src/components/PlayerBar";
-import PlaylistPickerScreen from "./src/screens/PlaylistPickerScreen";
-import PostScreen from "./src/screens/PostScreen";
-import ResetPasswordScreen from "./src/screens/ResetPasswordScreen";
-import BadgeLegendScreen from "./src/screens/BadgeLegendScreen";
-import WelcomeScreen from "./src/screens/WelcomeScreen";
-import FollowListScreen from "./src/screens/FollowListScreen";
+const PlaylistPickerScreen = lazy(() => import("./src/screens/PlaylistPickerScreen"));
+const PostScreen = lazy(() => import("./src/screens/PostScreen"));
+const ResetPasswordScreen = lazy(() => import("./src/screens/ResetPasswordScreen"));
+const BadgeLegendScreen = lazy(() => import("./src/screens/BadgeLegendScreen"));
+const WelcomeScreen = lazy(() => import("./src/screens/WelcomeScreen"));
+const FollowListScreen = lazy(() => import("./src/screens/FollowListScreen"));
 import LandingScreen from "./src/screens/LandingScreen";
 import { load, save } from "./src/lib/persist";
 import { trackKey } from "./src/lib/playback";
@@ -472,7 +472,7 @@ function Root() {
         onSignup={() => go({ auth: true, authMode: "signup" })}
       />
       <View style={styles.deskWrap}>
-        <View style={styles.deskCenter}>{overlay || tabScreens}</View>
+        <View style={styles.deskCenter}><Suspense fallback={null}>{overlay || tabScreens}</Suspense></View>
         {showRightRail && <RightRail onOpenArtist={openArtist} onOpenVenue={openVenue} onFindVenues={() => go({ venues: true })} onOpenEvent={(t) => openArtist(t.artist)} />}
       </View>
     </View>
@@ -523,7 +523,7 @@ function Root() {
             )}
             <View style={styles.appContent}>
               {wide ? desktop : (
-                overlay || (
+                overlay ? <Suspense fallback={null}>{overlay}</Suspense> : (
                   <>
                     {tabScreens}
                     <View style={styles.tabbar}>
