@@ -1832,3 +1832,14 @@ state them as fact, and `catalogSeed.js` writes provenance via `genreFields`, so
 running enrichment replaces buckets with provider evidence over time. The client
 still counts raw `catalogArtists` genres in `topGenres`, which is the remaining
 inconsistency.
+
+**Donut overlap now verified** (closing the gap flagged above). Measured on
+Discover at two widths: at 760px the donut ends at x=221 and the legend starts
+at x=677, side by side with no overlap; at 375px the donut stays inside its card
+(right edge 274 vs card 288) and the legend wraps *below* it (top 2243 vs donut
+bottom 2201). No card or viewport overflow at either size. Item 23 is closed.
+
+Getting Discover on screen needs the persisted nav cleared first: the app
+restores `pit.tab` / `pit.stack` from localStorage, which is why earlier
+attempts kept landing on the menu. Clear those two keys, reload, then click the
+Discover tab.

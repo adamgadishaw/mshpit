@@ -533,8 +533,9 @@ stays left-aligned instead of stretching.
 
 ### 23. Inconsistent spacing across the site
 
-**Status: PARTIAL (2026-07-22). Chips, tools grid and history duplicates fixed
-and verified; donut overlap fixed in code but NOT visually confirmed.**
+**Status: FIXED (2026-07-22), all parts verified in the running app.** Chips,
+tools grid, history duplicates and the donut overlap are done. Remaining spacing
+work is ordinary scrub, not a known defect: report specific screens as found.
 
 Reported as everywhere, with two specific cases: list rows in the player's
 recently-played panel, and Discover's pie chart, which overlaps the genre label
