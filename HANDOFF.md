@@ -2091,3 +2091,44 @@ restart loop.
 Verified: 60 rapid health checks all 200; two different forwarded addresses get
 independent buckets; one address doing 330 requests gets 300 through and 30
 throttled while another address is unaffected.
+
+### Playback deep dive: every path from "playable song" to "preview" (2026-07-23)
+
+The owner asked for this to be made bulletproof because previews kept appearing
+on songs that were obviously available. There was no single cause — there were
+five, and each one independently turned a good song into a 30-second clip.
+
+1. **One-shot resolution.** `resolveYouTube` tried once. A timeout, a 429, a
+   spent search budget, a paused provider — all returned `null`, identical to
+   "this song has no upload", and the player had no way to tell them apart. Now
+   three attempts with 400ms/1400ms backoff.
+2. **Temporary failures cached as lasting answers.** A transient null was cached
+   for five minutes, so a single bad moment downgraded that song for everyone
+   who played it in that window. Transient answers are now held 15 seconds; a
+   real "no video" is held ten minutes; a hit thirty.
+3. **No mid-play recovery.** Once a song fell back, it stayed fallen for the
+   whole play. The player now retries in the background and swaps the video in.
+4. **The retry defeated by its own cache.** The background upgrade called the
+   resolver, which returned the cached transient null without asking the server —
+   0 network calls, no recovery. Only caught by driving it in the browser. The
+   upgrade now passes `{ force: true }`.
+5. **A 12-second resolve budget.** A cold artist-catalogue lookup legitimately
+   takes longer, and expiry meant a guaranteed preview. Now 25 seconds, which
+   costs nothing when the answer is fast.
+
+Policy lives in `src/domain/playback.mjs` (`classifyResolve`) with 8 unit tests,
+so the transient/definitive distinction is testable rather than scattered
+through conditionals. An unrecognised status is treated as temporary on purpose:
+being wrong that way costs one extra request, being wrong the other way silently
+downgrades a song.
+
+Measured in the browser, with the resolve endpoint stubbed:
+- healthy provider: **1 call**, plays "Oasis · YouTube" with a real iframe
+- forced 429s: **3 attempts**, gaps of 422ms and 1405ms
+- sustained outage: bounded, only **3 further calls across 20 seconds**, no
+  retry storm
+
+Note this file's history of temporal-dead-zone bugs: an effect placed above the
+`forThis` binding crashed the whole app into the error boundary with "Cannot
+access 'fe' before initialization", the same shape as the earlier `ytRetryRef`
+mistake. `npm run check` does not catch these — only loading the app does.

@@ -11,6 +11,7 @@ import { ACHIEVEMENTS } from "./lib/badges";
 import { ENABLE_DEMO_DATA } from "./config/runtime.mjs";
 import { isUpcomingEventDate, sanitizePersistedStoreValue, sanitizeTourDates } from "./domain/dataPolicy.mjs";
 import { toIsoDate } from "./domain/dates.mjs";
+import { classifyResolve, backoffFor, RESOLVE_ATTEMPTS, CACHE_MS } from "./domain/playback.mjs";
 import { recommendTracks as recommendFromCandidates } from "./domain/recommend.mjs";
 import { trackKey } from "./lib/playback";
 
@@ -673,27 +674,61 @@ export function StoreProvider({ children }) {
   // streams the full song/video for everyone. The server performs identity and
   // quality scoring; this small client cache never outlives the session for long.
   const ytCache = useRef({});
-  const resolveYouTube = async (title, artist, duration = 0) => {
+  // Resolve a song to a YouTube video, retrying the failures that deserve it.
+  //
+  // This used to be one attempt, and any failure — a timeout, a 429 from our own
+  // rate limiter, the daily search budget being spent — returned null and was
+  // cached as "no video" for five minutes. The player has no way to tell that
+  // apart from "this song genuinely has no upload", so it played a 30-second
+  // preview and never tried again. That is why obviously-available songs kept
+  // coming out as previews. See src/domain/playback.mjs for the policy.
+  const resolveYouTube = async (title, artist, duration = 0, { force = false } = {}) => {
     if (!title) return null;
     const k = (artist || "") + "|" + title;
     const hit = ytCache.current[k];
-    if (hit && hit.expiresAt > Date.now()) return hit.videoId;
-    try {
-      const query = new URLSearchParams({ title, artist: artist || "" });
-      if (Number(duration) > 0) query.set("duration", String(Math.round(Number(duration))));
-      const { videoId, status, retryable } = await api(`/api/youtube/track?${query.toString()}`);
-      ytCache.current[k] = { videoId: videoId || null, status: status || null, retryable: !!retryable, expiresAt: Date.now() + (videoId ? 30 * 60 * 1000 : 5 * 60 * 1000) };
-      if (["search_budget_exhausted", "provider_paused", "quota_or_forbidden", "rate_limited"].includes(status)) {
-        captureAppError(new Error("YouTube lookup capacity is temporarily unavailable"), {
-          code: "PIT-MEDIA-002",
-          context: `Resolving ${artist || "artist"} - ${title}`,
-          source: "youtube-resolver",
-          severity: "warning",
-          toast: false,
-        });
+    // `force` is for the player's background upgrade: it is retrying precisely
+    // because the cached answer is a temporary failure, so honouring that cache
+    // would make the retry a no-op.
+    if (!force && hit && hit.expiresAt > Date.now()) return hit.videoId;
+
+    let last = null;
+    for (let attempt = 0; attempt < RESOLVE_ATTEMPTS; attempt++) {
+      let outcome;
+      try {
+        const query = new URLSearchParams({ title, artist: artist || "" });
+        if (Number(duration) > 0) query.set("duration", String(Math.round(Number(duration))));
+        outcome = classifyResolve(await api(`/api/youtube/track?${query.toString()}`));
+      } catch (error) {
+        outcome = classifyResolve({ error });
       }
-      return videoId || null;
-    } catch { return null; }
+      last = outcome;
+      if (outcome.videoId || !outcome.retry) break;
+      // Keep the preview playing while this happens; nothing here blocks audio.
+      if (attempt < RESOLVE_ATTEMPTS - 1) await new Promise((r) => setTimeout(r, backoffFor(attempt)));
+    }
+
+    ytCache.current[k] = {
+      videoId: last?.videoId || null,
+      status: last?.status || null,
+      retryable: !!last?.transient,
+      expiresAt: Date.now() + (last?.cacheMs || CACHE_MS.transient),
+    };
+    if (last && !last.videoId && last.transient) {
+      captureAppError(new Error("YouTube lookup capacity is temporarily unavailable"), {
+        code: "PIT-MEDIA-002",
+        context: `Resolving ${artist || "artist"} - ${title} (${last.status})`,
+        source: "youtube-resolver",
+        severity: "warning",
+        toast: false,
+      });
+    }
+    return last?.videoId || null;
+  };
+  // Whether the last answer for a track was a temporary failure, so the player
+  // can quietly try again and upgrade a preview to the real video mid-play.
+  const youtubeLookupWasTransient = (title, artist) => {
+    const entry = ytCache.current[(artist || "") + "|" + title];
+    return !!(entry && !entry.videoId && entry.retryable);
   };
   const invalidateYouTube = async (title, artist, videoId) => {
     if (!title || !videoId) return { ok: false };
@@ -3019,7 +3054,7 @@ export function StoreProvider({ children }) {
     recentSearches, addRecentSearch, removeRecentSearch, clearRecentSearches,
     loadUser, followersOf, followingOf,
     isBlocked, blockUser, unblockUser, blockedUsers, exportMyData,
-    searchArtistsApi, resolveArtist, remoteArtistMeta, artistDiscography, resolveYouTube, invalidateYouTube, resolveDeezerPreview,
+    searchArtistsApi, resolveArtist, remoteArtistMeta, artistDiscography, resolveYouTube, invalidateYouTube, youtubeLookupWasTransient, resolveDeezerPreview,
     discoverChart, discoverGenres, discoverCountries, serverTime,
     artistSeenCount, reportTrack, adminSetTrackVideo, trackOverridesList, removeTrackOverride, loadModerationQueue,
     mediaReactions, loadMediaReactions, toggleMediaReaction,

@@ -16,6 +16,9 @@ const web = Platform.OS === "web";
 // transient and retried before the player falls back to a preview.
 const TERMINAL_YT_CODES = [100, 101, 150];
 const MAX_YT_RETRIES = 2;
+// Long enough that the preview has started and the transient cause has likely
+// cleared, short enough that most of the song is still ahead.
+const PREVIEW_UPGRADE_DELAY_MS = 6000;
 
 const fmtTime = (ms) => {
   if (!isFinite(ms) || ms < 0) ms = 0;
@@ -145,7 +148,7 @@ export default function PlayerBar({
   // every play so the You screen can count them, but showing the same song
   // three times in a row is just noise.
   const recentPlays = useMemo(() => uniqueTracks(history, trackKey), [history]);
-  const { resolveYouTube, invalidateYouTube, resolveDeezerPreview } = useStore();
+  const { resolveYouTube, invalidateYouTube, resolveDeezerPreview, youtubeLookupWasTransient } = useStore();
   const column = layout === "column";
   const { width: winWidth } = useWindowDimensions();
   const compactMobile = !column && winWidth < 700;
@@ -171,7 +174,7 @@ export default function PlayerBar({
     // A stalled provider request must settle so the player can show its existing
     // unavailable state instead of spinning forever. The underlying fetch may
     // still finish, but its result is ignored after this track changes.
-    const within = (promise, ms = 12000) => new Promise((resolve) => {
+    const within = (promise, ms = 25000) => new Promise((resolve) => {
       const timer = setTimeout(() => { timers.delete(timer); resolve(null); }, ms);
       timers.add(timer);
       Promise.resolve(promise).then((value) => {
@@ -192,6 +195,26 @@ export default function PlayerBar({
     return () => { cancelled = true; timers.forEach(clearTimeout); timers.clear(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [curKey]);
+
+  // A song playing its preview because the lookup hit a temporary failure is
+  // not a settled outcome. Try again quietly in the background and swap the
+  // video in when it arrives, rather than leaving someone on a 30-second clip
+  // for the whole song because of one bad moment.
+  useEffect(() => {
+    // `resolved.key === curKey` inline rather than the `forThis` binding below:
+    // this effect sits above that declaration, and reading it here is a
+    // temporal-dead-zone crash.
+    if (!cur || resolved.key !== curKey || resolved.videoId) return;
+    if (!youtubeLookupWasTransient?.(cur.title, cur.artist)) return;
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      const videoId = await resolveYouTube(cur.title, cur.artist, cur.duration || 0, { force: true });
+      // Guard against the track having changed while this was in flight.
+      if (!cancelled && videoId) setResolved((prev) => (prev.key === curKey ? { ...prev, videoId } : prev));
+    }, PREVIEW_UPGRADE_DELAY_MS);
+    return () => { cancelled = true; clearTimeout(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [curKey, resolved.key, resolved.videoId]);
 
   // Mount YouTube only after a real video ID resolves. Preview-only tracks keep
   // the same visible player surface without creating a hidden cross-origin frame.
