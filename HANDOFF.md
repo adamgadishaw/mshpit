@@ -2209,3 +2209,41 @@ playing. A full page load would unmount it, restart audio, and re-parse 4.17 MB
 of JavaScript. So the client router must only ever push/replace history state.
 Any `<a href>` that the browser follows, or any `location.href` assignment, is a
 regression. Worth an explicit test when the router lands.
+
+### Client router (2026-07-23) — the app now responds to its own URLs
+
+Completes the SEO work. Opening `/turnstile` directly resolves the entity and
+opens that page, navigation writes real addresses, and Back restores both the
+URL and the screen.
+
+**The whole design turns on one line.** `go()` now calls
+`history.pushState(state, "", pathForFrame(frame))`. That third argument changes
+the address bar *without a navigation*, so `PlayerBar` — mounted as a sibling of
+the content area, not inside it — is never unmounted. **Never use
+`location.href` or a plain `<a href>` for in-app navigation**: that is a real
+page load, which stops playback mid-song and re-parses 4.17 MB of JavaScript,
+which on mobile is seconds of blank screen. This was the owner's concern before
+the work started and it is the thing to protect in review.
+
+Verified in the browser, and these are the checks worth repeating after any nav
+change:
+- `/turnstile` direct load → lands on the artist page, title correct
+- artist → show navigation → **page instance unchanged, audio still playing**
+  (elapsed counter kept running across the URL change)
+- Back → URL and screen both restored, still same instance, still playing
+- unresolvable slug → app opens normally, no crash, no dead end
+
+**Only shareable pages get URLs.** Artists, venues, shows and profiles. Sheets
+(the composer, settings, moderation) deliberately stay at whatever URL they were
+opened from: they are overlays on a page, not destinations, and giving them
+addresses would put half-finished drafts in someone's history.
+
+**Resolution is server-side** (`GET /api/resolve`) because a root slug is
+ambiguous between a handle, an artist and a venue, and the client cannot settle
+that without the catalogue. Doing it in one place also guarantees a crawler and
+a visitor are sent to the same page.
+
+**Known rough edge:** an unresolvable URL restores the previously persisted nav
+stack (`pit.stack`) rather than the feed, so a broken link can show your last
+screen while the address bar says something else. It does not strand anyone, so
+it is logged rather than fixed.

@@ -603,7 +603,18 @@ Acceptance criteria:
 
 ### 25. SEO so new people can find mshpit.com
 
-**Status: OPEN; needs research before implementation.**
+**Status: LARGELY DONE (2026-07-23).** The blocker was not meta tags: the app
+had no URLs at all, so there was nothing to index. Public pages now have
+Facebook-style addresses (`/turnstile`, `/superfingerbusiness_`, `/show/<id>`),
+the server injects per-URL title/description/canonical/Open Graph/JSON-LD, and
+robots.txt and sitemap.xml are served properly (sitemap.xml had been returning
+HTML). The client router opens those URLs without a page load, so playback
+survives navigation.
+
+Remaining: submit the sitemap to Google Search Console, and confirm Cloudflare
+is not overriding the origin robots.txt with its managed default. Full server
+rendering is still the ceiling on how well this can score, but crawlers now get
+real titles and descriptions instead of an empty shell.
 
 The app is a client-rendered Expo web export, which is close to worst-case for
 indexing: crawlers see an empty shell. Real SEO here likely means server-rendered

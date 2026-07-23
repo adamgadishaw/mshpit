@@ -14,6 +14,7 @@ import { clean, cleanEmail, isEmail, cleanName, isName, cleanHandle, isPassword,
 import { ApiError } from "./errors.js";
 import { createMediaPresign, mediaConfigured } from "./media.js";
 import { discoverySidebar } from "./discovery.js";
+import { resolveEntity } from "./seo.js";
 import { userRewards } from "./rewards.js";
 import {
   ProviderError,
@@ -604,6 +605,15 @@ export const routes = {
       ? artistStmts.search.all(`%${term.replace(/[%_\\]/g, "")}%`, term, lim)
       : artistStmts.top.all(lim);
     return { artists: rows.map(publicArtist), total: artistStmts.count.get().c };
+  },
+
+  // Resolve a public URL to the thing it names, so the client router can open
+  // /turnstile without shipping the whole catalogue to guess with. Uses the same
+  // lookup as the page metadata, so a shared link and a crawler agree.
+  "GET /api/resolve": (ctx) => {
+    const path = clean(ctx.query.path, { max: 300 });
+    if (!path.startsWith("/")) throw new ApiError(400, "Missing path.");
+    return { entity: resolveEntity(path) };
   },
 
   // Song search, so the search box works for someone who remembers the song but

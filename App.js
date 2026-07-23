@@ -56,6 +56,8 @@ const WelcomeScreen = lazy(() => import("./src/screens/WelcomeScreen"));
 const FollowListScreen = lazy(() => import("./src/screens/FollowListScreen"));
 import LandingScreen from "./src/screens/LandingScreen";
 import { load, save } from "./src/lib/persist";
+import { api } from "./src/lib/api";
+import { artistPath, venuePath, showPath, profilePath, isPublicEntityPath } from "./src/domain/urls.mjs";
 import { trackKey } from "./src/lib/playback";
 import { ENABLE_CLIPS } from "./src/config/runtime.mjs";
 
@@ -79,7 +81,7 @@ export default function App() {
 }
 
 function Root() {
-  const { session, addLog, editLog, visibleFeed, followingFeed, localFeed, loadMoreFeed, feedHasMore, feedLoadingMore, logout, exportMyData, userByHandle, searchPeople, inboxUnread, accountStatus, track, unreadNotifications, recordPlay, playHistory, loadPlayHistory, saveSnapshot, autoplayQueue, followingCount } = useStore();
+  const { session, addLog, editLog, userById, visibleFeed, followingFeed, localFeed, loadMoreFeed, feedHasMore, feedLoadingMore, logout, exportMyData, userByHandle, searchPeople, inboxUnread, accountStatus, track, unreadNotifications, recordPlay, playHistory, loadPlayHistory, saveSnapshot, autoplayQueue, followingCount } = useStore();
   const staff = isStaff(session?.role);
   const feed = visibleFeed(staff);
   const following = followingFeed(staff);
@@ -152,12 +154,38 @@ function Root() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.id, !!nav.pickArtists, !!nav.auth]);
 
+  // Which nav frames are public, shareable pages. Everything else (composer,
+  // settings, moderation) deliberately has no URL: those are sheets over the
+  // page you were on, not destinations, and giving them addresses would put
+  // half-finished drafts in someone's history.
+  const pathForFrame = (frame) => {
+    if (!frame) return null;
+    if (frame.artistName) return artistPath(frame.artistName);
+    if (frame.venueName) return venuePath(frame.venueName);
+    if (frame.post?.id) return showPath(frame.post.id);
+    if (frame.openLog?.id) return showPath(frame.openLog.id);
+    if (frame.profileId) {
+      const user = userById?.(frame.profileId);
+      return user?.handle ? profilePath(user.handle) : null;
+    }
+    return null;
+  };
+
   // Push a fresh screen onto the stack. On web we mirror it into browser history
   // so the hardware/browser Back button pops the same stack the in-app back
   // buttons do (both funnel through popstate below).
   const go = (frame) => {
     setStack((s) => [...s, frame]);
-    if (web) { try { window.history.pushState({ pit: "nav" }, ""); } catch {} }
+    if (web) {
+      try {
+        // The third argument is the whole point: it changes the address bar
+        // without a navigation, so PlayerBar (a sibling of the content area)
+        // is never unmounted and audio does not restart. Never use
+        // location.href or a plain anchor here - that is a full page load,
+        // which stops playback and re-parses the entire bundle.
+        window.history.pushState({ pit: "nav" }, "", pathForFrame(frame) || undefined);
+      } catch {}
+    }
   };
   // Swap the top screen without growing the stack — for lateral moves where the
   // previous screen shouldn't come back (menu → target, signup → pick-artists).
@@ -167,7 +195,10 @@ function Root() {
   // button and in-app back share one code path (the popstate handler pops).
   const back = () => { if (web) { try { window.history.back(); return; } catch {} } popStack(); };
   // Jump straight to the tab screens (after posting, tab switches, brand tap).
-  const clear = () => setStack([{}]);
+  const clear = () => {
+    setStack([{}]);
+    if (web) { try { window.history.replaceState({ pit: "root" }, "", "/"); } catch {} }
+  };
 
   const enter = () => {
     setLanding(false);
@@ -222,6 +253,46 @@ function Root() {
     };
     window.addEventListener("popstate", onPop);
     return () => window.removeEventListener("popstate", onPop);
+  }, []);
+
+  // Open whatever URL the visitor arrived on. Runs once: a shared link, a search
+  // result, or a refresh must land on the page it names rather than the home
+  // feed. The server already served the right metadata for this path; this is
+  // what makes the app agree with it.
+  //
+  // Resolution is server-side (`/api/resolve`) because a root slug like
+  // "/turnstile" is ambiguous between a handle, an artist and a venue, and the
+  // client has no way to settle that without the catalogue. Doing it in one
+  // place also guarantees a crawler and a visitor get the same page.
+  useEffect(() => {
+    if (!web) return;
+    let cancelled = false;
+    const path = window.location.pathname;
+    if (!path || path === "/" || !isPublicEntityPath(path)) return;
+    (async () => {
+      try {
+        const { entity } = await api(`/api/resolve?path=${encodeURIComponent(path)}`);
+        if (cancelled || !entity) return;
+        // Land inside the app, not on the marketing page: someone following a
+        // link to a band wants the band.
+        setLanding(false);
+        if (entity.kind === "artist") setStack([{}, { artistName: entity.name }]);
+        else if (entity.kind === "venue") setStack([{}, { venueName: entity.name }]);
+        else if (entity.kind === "profile") setStack([{}, { profileId: entity.id }]);
+        else if (entity.kind === "show") {
+          const post = await api(`/api/posts/${encodeURIComponent(entity.id)}`).then((r) => r.post).catch(() => null);
+          if (!cancelled && post) setStack([{}, post.kind === "status" ? { post } : { openLog: post }]);
+        }
+        // One history entry for the opened screen, so Back returns to the feed
+        // rather than leaving the site.
+        if (!cancelled) { try { window.history.pushState({ pit: "nav" }, "", path); } catch {} }
+      } catch {
+        // An unresolvable link just opens the app; the URL is left alone so it
+        // can be read or corrected rather than silently rewritten.
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Android hardware back: pop the stack when we have somewhere to go.

@@ -55,6 +55,8 @@ function findByHandle(slug) {
     description: summarize(row.bio || `${row.name} reviews live music on ${SITE_NAME}. See the gigs they've been to and what they thought.`),
     image: row.avatar_uri || null,
     path: profilePath(row.handle),
+    handle: row.handle,
+    id: row.id,
   };
 }
 
@@ -122,6 +124,15 @@ export function metadataFor(pathname) {
     // Metadata must never take the page down; the shell still renders.
     return null;
   }
+}
+
+// What the client router needs to open a URL: which kind of thing this is and
+// its canonical name. Same lookup and same collision order as the metadata, so
+// the page a crawler is told about is the page a visitor gets.
+export function resolveEntity(pathname) {
+  const meta = metadataFor(pathname);
+  if (!meta) return null;
+  return { kind: meta.kind, name: meta.name || null, path: meta.path, id: meta.id || meta.show?.id || null, handle: meta.handle || null };
 }
 
 // --- structured data --------------------------------------------------------
