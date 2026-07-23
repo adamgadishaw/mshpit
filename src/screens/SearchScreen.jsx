@@ -42,7 +42,7 @@ function ArtistRow({ name, genre, onPress }) {
     </Pressable>
   );
 }
-function SongRow({ song, onPress }) {
+function SongRow({ song, onPress, onAdd }) {
   const mins = song.duration ? `${Math.floor(song.duration / 60)}:${String(song.duration % 60).padStart(2, "0")}` : null;
   return (
     <Pressable style={styles.row} onPress={onPress} accessibilityRole="button" accessibilityLabel={`Play ${song.title} by ${song.artist}`}>
@@ -53,6 +53,11 @@ function SongRow({ song, onPress }) {
         <Text style={styles.rowName} numberOfLines={1}>{song.title}</Text>
         <Text style={styles.rowSub} numberOfLines={1}>{song.artist}{mins ? ` · ${mins}` : ""}</Text>
       </View>
+      {onAdd && (
+        <Pressable onPress={onAdd} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Add ${song.title} to a playlist`}>
+          <Icon name="plus" size={16} color={colors.textDim} />
+        </Pressable>
+      )}
       <Icon name="play" size={14} color={colors.amber} />
     </Pressable>
   );
@@ -101,7 +106,7 @@ function Section({ icon, tint, title, count, rows }) {
   );
 }
 
-export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpenFanClub, onOpenProfile, onPlay }) {
+export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpenFanClub, onOpenProfile, onPlay, onAddToPlaylist }) {
   const { tourDates, searchVenues, artistsAlphabetical, venuesByCity, upcomingEvents, fanClubsDirectory, commentsFor, track,
     users, session, isFollowing, follow, unfollow, searchPeople, loadMembers, memberCount, searchArtistsApi, resolveArtist,
     recentSearches, addRecentSearch, removeRecentSearch, clearRecentSearches, searchSongsApi } = useStore();
@@ -278,6 +283,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
             <SongRow
               key={`${song.id || song.title}|${song.artist}`}
               song={song}
+              onAdd={onAddToPlaylist ? () => onAddToPlaylist({ kind: "track", title: song.title, artist: song.artist, art: song.art || null, id: song.id || null, duration: song.duration || null }) : null}
               onPress={() => {
                 addRecentSearch?.({ type: "song", label: `${song.title} - ${song.artist}` });
                 // Artist + title is a complete track reference; the player

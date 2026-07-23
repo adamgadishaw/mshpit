@@ -21,8 +21,10 @@ import {
   getDeezerDiscography,
   getFreshDeezerPreview,
   invalidateYouTubeTrack,
+  normalizeMusicText,
   parseYouTubeVideoId,
   resolveYouTubeTrack,
+  searchCatalogSongs,
   searchDeezerTracks,
   trackOverrideKey,
   youtubeOEmbed,
@@ -612,14 +614,51 @@ export const routes = {
     const term = clean(ctx.query.q, { max: 80 });
     if (term.length < 2) return { songs: [] };
     limit(ctx, "song-search", 120, 10 * 60 * 1000);
+    const want = Math.min(20, Math.max(1, Number(ctx.query.limit) || 12));
+
+    // The catalogue answers first: it is in memory, needs no network, and only
+    // contains acts we already know are real, so results appear instantly and
+    // still work when a provider is down.
+    const catalog = searchCatalogSongs(term, { limit: want });
+    const seen = new Set(catalog.map((s) => `${normalizeMusicText(s.artist)}|${normalizeMusicText(s.title)}`));
+
+    let remote = [];
     try {
-      const songs = await searchDeezerTracks(term, { limit: Math.min(20, Math.max(1, Number(ctx.query.limit) || 12)) });
-      return { songs };
+      remote = await searchDeezerTracks(term, { limit: want });
     } catch {
-      // A provider outage must not take the whole search box down; the other
-      // sections (people, artists, venues, events) still answer.
-      return { songs: [] };
+      // A provider outage must not take the whole search box down. The
+      // catalogue results above still stand, and the other sections (people,
+      // artists, venues, events) are unaffected.
+      remote = [];
     }
+
+    const merged = [...catalog];
+    for (const song of remote) {
+      const identity = `${normalizeMusicText(song.artist)}|${normalizeMusicText(song.title)}`;
+      if (seen.has(identity)) continue;
+      seen.add(identity);
+      merged.push({ ...song, source: "provider" });
+    }
+
+    // Match quality outranks where the result came from. Listing the whole
+    // catalogue first put its partial match ("This Photograph Is Proof") above
+    // the songs actually called "Photograph", which is not what someone typing
+    // that word wants. The catalogue only breaks ties, where it is preferred
+    // because it is instant and already known to be a real touring act.
+    const q = normalizeMusicText(term);
+    const quality = (song) => {
+      const title = normalizeMusicText(song.title);
+      if (title === q) return 4;
+      if (title.startsWith(q)) return 3;
+      if (title.includes(q)) return 2;
+      return 1;
+    };
+    merged.sort((a, b) =>
+      quality(b) - quality(a)
+      || (a.source === b.source ? 0 : a.source === "catalog" ? -1 : 1)
+      || (Number(b.popularity) || 0) - (Number(a.popularity) || 0)
+    );
+    return { songs: merged.slice(0, want) };
   },
 
   // Resolve one artist by name. If it's not in the catalog yet, fetch it live from

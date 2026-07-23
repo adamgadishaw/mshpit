@@ -970,3 +970,67 @@ export async function searchDeezerTracks(query, { limit = 12, fetchImpl = fetch 
   writeProviderCache(key, { items }, DEEZER_DISCOGRAPHY_TTL_MS);
   return items;
 }
+
+// ---- catalogue song index -------------------------------------------------
+// The catalogue already holds ~2,500 songs on artists we know are real touring
+// acts. Searching those in memory answers instantly, works with no network, and
+// costs nothing, so it runs before the provider call rather than after it.
+//
+// Rebuilt lazily: the catalogue only changes when a seed or enrichment run
+// writes, which is rare compared to how often people search.
+let songIndex = null;
+let songIndexBuiltAt = 0;
+const SONG_INDEX_TTL_MS = 10 * 60 * 1000;
+
+function buildSongIndex() {
+  const out = [];
+  for (const row of db.prepare("SELECT name, popularity, data FROM artists").all()) {
+    let data = {};
+    try { data = JSON.parse(row.data || "{}"); } catch { continue; }
+    const art = data.photo || null;
+    for (const t of data.topTracks || []) {
+      if (!t?.title) continue;
+      out.push({
+        title: t.title,
+        artist: row.name,
+        id: t.id ? String(t.id) : null,
+        album: t.album || null,
+        art: t.art || art,
+        duration: Number(t.duration) || null,
+        popularity: Number(row.popularity) || 0,
+      });
+    }
+  }
+  return out;
+}
+
+function getSongIndex() {
+  if (!songIndex || Date.now() - songIndexBuiltAt > SONG_INDEX_TTL_MS) {
+    songIndex = buildSongIndex();
+    songIndexBuiltAt = Date.now();
+  }
+  return songIndex;
+}
+
+export function invalidateSongIndex() { songIndex = null; }
+
+// Title matches rank above artist matches: someone typing a song title wants
+// that song, not everything by a band whose name contains the words.
+export function searchCatalogSongs(query, { limit = 12 } = {}) {
+  const q = normalizeMusicText(query);
+  if (q.length < 2) return [];
+  const hits = [];
+  for (const song of getSongIndex()) {
+    const title = normalizeMusicText(song.title);
+    const artist = normalizeMusicText(song.artist);
+    let weight = 0;
+    if (title === q) weight = 4;
+    else if (title.startsWith(q)) weight = 3;
+    else if (title.includes(q)) weight = 2;
+    else if (artist.includes(q)) weight = 1;
+    else continue;
+    hits.push({ ...song, source: "catalog", weight });
+  }
+  hits.sort((a, b) => b.weight - a.weight || b.popularity - a.popularity || a.title.localeCompare(b.title));
+  return hits.slice(0, limit);
+}

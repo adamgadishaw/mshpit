@@ -2004,3 +2004,36 @@ with Nirvana first, and clicking it starts playback with a 30-track queue. It
 plays as PREVIEW AUDIO locally because there is no `YOUTUBE_API_KEY` in this
 environment — that is the documented fallback, not the transient-error bug fixed
 earlier. Production has the key and will resolve a video.
+
+### Song feature completed end to end (2026-07-23)
+
+The owner's framing was that song search is worthless unless you can also listen,
+find a song without knowing the artist, add it to a playlist, and pin it to your
+profile. All four now work.
+
+**Catalogue index.** `searchCatalogSongs` in `server/musicProviders.js` builds an
+in-memory index of the ~2,484 songs already sitting in `artists.data.topTracks`
+(329 artists), rebuilt lazily on a 10-minute TTL. It answers with no network and
+no quota, so results appear instantly and still work when a provider is down.
+`GET /api/songs/search` runs it before the Deezer call and merges the two.
+
+**Ranking is by match quality, not by source.** Listing the whole catalogue first
+put its partial match "This Photograph Is Proof" above the songs actually called
+"Photograph". Exact title beats prefix beats substring; the catalogue only breaks
+ties, where it is preferred for being instant and a known touring act.
+
+**SongPicker was the real blocker for profile tagging.** It filtered a hardcoded
+list of **50 songs** in `src/seed/songs.js`, so anything else literally could not
+be pinned to a profile. It now uses `searchSongsApi`, the same index as search.
+The bundled list survives only as the idle suggestion before typing.
+
+**Add to playlist from search.** `SongRow` takes an `onAdd`, and `App.js` passes
+`openAddToPlaylist` into `SearchScreen`.
+
+Verified in the running app, signed in: searching "holiday" returns 12 songs with
+Green Day first; the add button opens the playlist sheet; choosing "ID Probe"
+took it from 2 tracks to 3 with "Holiday - Green Day" stored. In Edit profile,
+the song picker searching "bohemian rhapsody" returns Queen first.
+
+Note: `GET /api/me/playlists` does not exist — the route is
+`GET /api/users/:id/playlists`. Cost a couple of confused checks.
