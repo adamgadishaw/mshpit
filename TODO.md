@@ -469,3 +469,93 @@ These are platform dependencies, not optional polish:
    and cost/capacity forecasts for YouTube, Deezer, Ticketmaster, Resend, and R2.
 
 See `SCALING.md` for the staged technical path and `SECURITY.md` for launch gates.
+
+---
+
+## Round 2 (owner, 2026-07-22)
+
+### 19. Discover shows only 8 genres
+
+**Status: OPEN; root cause identified, tied to item 2.**
+
+Discover's stat tile reads "8 GENRES" against a 2,657-artist catalogue. The
+catalogue holds ~80 distinct genre values, but most are MusicBrainz crawl
+buckets rather than evidence (see item 2), and the new genre authority in
+`src/domain/genre.mjs` now withholds those from display. Fixing the count means
+fixing the classification, not widening the slice: a bigger number made of
+"Justin Bieber / Metal" is worse than a small honest one.
+
+Acceptance criteria:
+- The genre count reflects genres actually backed by provider evidence.
+- Discover's donut does not silently drop artists whose genre is unverified;
+  they are grouped honestly rather than mislabelled.
+
+### 20. Popular songs still resolve to previews, not the real video
+
+**Status: OPEN.** Reported example: K-Ci & JoJo "All My Life" plays a preview
+even though the official video is prominent on YouTube, including on the
+artist's own channel. Related to item 7 but reported as still live, so the
+lookup is missing obvious, high-signal matches rather than only long-tail ones.
+
+Acceptance criteria:
+- A named set of obviously-available songs (starting with the reported example)
+  resolves to the full video, verified against the live lookup, not a fixture.
+- Where a full video genuinely cannot be found, the reason is recorded so the
+  gap is diagnosable instead of silently degrading to a 30-second preview.
+
+### 21. Themes are still not what the owner asked for
+
+**Status: OPEN; needs the owner's actual intent before any code.**
+
+Twelve presets exist and switching them works, but the owner has repeatedly
+asked for "my themes", which suggests the delivered set is not the requested
+one. Do not add more presets on a guess. Ask which specific themes were wanted
+and what is wrong with the current ones (palette, coverage, or where they apply).
+
+### 22. The You screen tools grid is ragged
+
+**Status: OPEN; screenshot supplied.**
+
+The TOOLS section wraps seven tiles across two rows and lets them flex to fill,
+so the second row renders three tiles at three different widths (Moderation
+narrow, Tour dates medium, Log out wide). It reads as broken rather than
+designed. Needs a fixed column grid so tiles keep one width and a short row
+stays left-aligned instead of stretching.
+
+### 23. Inconsistent spacing across the site
+
+**Status: OPEN; screenshot supplied. Prevalent, not local.**
+
+Reported as everywhere, with two specific cases: list rows in the player's
+recently-played panel, and Discover's pie chart, which overlaps the genre label
+and tucks behind its tile for lack of room. Needs a systematic scrub against the
+spacing scale in `src/theme.js` rather than per-screen patches.
+
+Also visible in the same screenshot and worth fixing with it: the recently-played
+list repeats entries ("Animals", "Burn It to the Ground" each appear twice), so
+history is not de-duplicated for display.
+
+### 24. Events are modelled as artists, and festivals are missing
+
+**Status: OPEN; needs a data-model decision, the largest item here.**
+
+"Emo Night at Sneaky Dee's" loads as an artist page. The Performance spine is
+artist + venue + date, which cannot express a multi-artist event: OVO Fest,
+Lollapalooza, Veld, Sound of Music. These are a different entity, not a badly
+named artist.
+
+Acceptance criteria:
+- An Event entity distinct from Artist, able to hold a lineup, a date range and
+  a venue or grounds, without breaking the existing Performance identity.
+- Club nights and festivals both fit the same model.
+- Existing rows that are really events stop rendering as artists.
+
+### 25. SEO so new people can find mshpit.com
+
+**Status: OPEN; needs research before implementation.**
+
+The app is a client-rendered Expo web export, which is close to worst-case for
+indexing: crawlers see an empty shell. Real SEO here likely means server-rendered
+or pre-rendered pages for the public surfaces (artist, venue, show), canonical
+URLs, structured data for events, and a sitemap. Scope the rendering change
+before writing meta tags, since tags on an empty shell achieve nothing.
