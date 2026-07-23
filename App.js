@@ -24,7 +24,7 @@ const VenueReviewScreen = lazy(() => import("./src/screens/VenueReviewScreen"));
 const FanClubScreen = lazy(() => import("./src/screens/FanClubScreen"));
 import AccountGate from "./src/screens/AccountGate";
 const MenuScreen = lazy(() => import("./src/screens/MenuScreen"));
-import PhotoViewer from "./src/components/PhotoViewer";
+const PhotoViewer = lazy(() => import("./src/components/PhotoViewer"));
 const LogScreen = lazy(() => import("./src/screens/LogScreen"));
 const TopRatedScreen = lazy(() => import("./src/screens/TopRatedScreen"));
 import AuthScreen from "./src/screens/AuthScreen";

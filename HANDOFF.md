@@ -2132,3 +2132,37 @@ Note this file's history of temporal-dead-zone bugs: an effect placed above the
 `forThis` binding crashed the whole app into the error boundary with "Cannot
 access 'fe' before initialization", the same shape as the earlier `ytRetryRef`
 mistake. `npm run check` does not catch these — only loading the app does.
+
+### Mobile Safari investigation (2026-07-23)
+
+Owner reported mobile had become unusable: slow to load and not smooth. Measured
+rather than guessed, and the results split into a real fix, a real improvement,
+and an honest limit.
+
+**Measured on production:** 1.08 MB brotli transfer (fine) but **4.6 MB
+uncompressed JavaScript**. Transfer is not the problem; parse and execute is,
+and mobile Safari is far slower at that than desktop. Deps are already lean (12,
+no reanimated or gesture-handler), the bundle is genuinely minified, the feed is
+a properly windowed FlatList, DOM is ~1,200 nodes, and there are no long tasks
+while idle. So the usual suspects were all already fine.
+
+**Real layout bug, now fixed.** The generated `index.html` used `height: 100%`
+with `overflow: hidden` and no `viewport-fit`. iOS Safari resolves `height:
+100%` against the *large* viewport (address bar hidden), so the app was taller
+than the visible area and **the bottom tab bar sat under Safari's toolbar**.
+There is now a `public/index.html` (Expo picks it up; verified in the export)
+using `100dvh` with a `100%` fallback, `viewport-fit=cover`, and
+`overscroll-behavior: none` to stop rubber-band drag.
+
+**Real improvement.** All 45 screens were statically imported, so a phone parsed
+AdminScreen, BulkTourDates and 42 others before painting the feed. 36 screens
+plus PhotoViewer (which pulls `expo-video`) are now lazy: 4.60 → 4.17 MB across
+38 chunks, verified on a 375px viewport that opening an artist page fetches its
+own chunk and renders.
+
+**Honest limit.** The remaining ~4.17 MB is React Native Web, React DOM and the
+Expo runtime. That is the floor for this stack; getting meaningfully below it is
+an architectural change, not a tuning exercise. I also could not verify scroll
+smoothness or real device behaviour here: the browser pane does not composite
+frames, so `requestAnimationFrame` never fires and any FPS number from this
+environment is meaningless. **The `dvh` fix needs confirming on a real iPhone.**

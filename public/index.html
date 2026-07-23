@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta httpEquiv="X-UA-Compatible" content="IE=edge" />
+    <!-- viewport-fit=cover lets the app paint into the safe areas; without it
+         iOS letterboxes the page on notched devices. -->
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no, viewport-fit=cover" />
+    <title>Pit</title>
+    <style id="expo-reset">
+      /* iOS Safari resolves `height: 100%` against the LARGE viewport, the one
+         with the address bar hidden. Combined with `overflow: hidden` that made
+         the app taller than the visible area, so the bottom tab bar sat under
+         Safari's toolbar and could not be tapped. `dvh` tracks the viewport as
+         the toolbar shows and hides; the `100%` line stays first as the
+         fallback for browsers that do not support it. */
+      html,
+      body {
+        height: 100%;
+        height: 100dvh;
+      }
+      body {
+        overflow: hidden;
+        /* Stop the rubber-band scroll from dragging the whole app around. */
+        overscroll-behavior: none;
+        /* iOS bumps font sizes in landscape unless this is pinned. */
+        -webkit-text-size-adjust: 100%;
+      }
+      #root {
+        display: flex;
+        height: 100%;
+        height: 100dvh;
+        flex: 1;
+      }
+    </style>
+  <link rel="icon" href="/favicon.ico" /></head>
+
+  <body>
+    <noscript>
+      You need to enable JavaScript to run this app.
+    </noscript>
+    <div id="root"></div>
+</body>
+</html>
