@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { Linking, View, Text, StyleSheet, ScrollView, Pressable, TextInput } from "react-native";
-import { colors, mono, radius } from "../theme";
+import { colors, mono, radius, space } from "../theme";
 import { useStore, isStaff, isMod } from "../store";
 import { api } from "../lib/api";
 import Icon from "../components/Icon";
@@ -814,7 +814,7 @@ const styles = StyleSheet.create({
   tabBadge: { minWidth: 18, height: 18, borderRadius: 9, paddingHorizontal: 5, backgroundColor: colors.danger, alignItems: "center", justifyContent: "center" },
   tabBadgeTxt: { color: "#fff", fontSize: 10, fontWeight: "800" },
   content: { paddingHorizontal: 16, paddingBottom: 60 },
-  sectionLabel: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "700", marginTop: 22, marginBottom: 8 },
+  sectionLabel: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "700", marginTop: space(6), marginBottom: space(2) },
   policy: { color: colors.textDim, fontSize: 12, lineHeight: 18, marginBottom: 12, marginTop: 4, fontStyle: "italic" },
   empty: { color: colors.textDim, fontSize: 13, fontStyle: "italic", marginTop: 4 },
 

@@ -558,8 +558,12 @@ stays left-aligned instead of stretching.
 **Status: PARTIAL (2026-07-23).** The three specific defects are fixed (theme
 chips, tools grid, donut overlap) and verified. The broad "scrub the whole site"
 part of this request is **not** done, which is why it can still look unchanged:
-only those three surfaces were touched. Needs a systematic pass over remaining
-screens against the shared `space()` scale. Chips,
+only those three surfaces were touched. Pass 1 (structure) is done: header/content alignment on 34 screens, four
+container gutters, and section-heading rhythm. Measured with
+`node scripts/audit-spacing.mjs .` — 1,850 hardcoded values, 53% off-scale
+before; the structural layer is now consistent. Pass 2 is the ~959 remaining
+inner offsets (chip padding, icon gaps), which must be done per component with
+visual checks rather than by regex. Chips,
 tools grid, history duplicates and the donut overlap are done. Remaining spacing
 work is ordinary scrub, not a known defect: report specific screens as found.
 

@@ -410,7 +410,7 @@ const styles = StyleSheet.create({
   nearIcon: { width: 40, height: 40, borderRadius: 20, alignItems: "center", justifyContent: "center", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line },
   nearTitle: { color: colors.text, fontSize: 14.5, fontWeight: "800" },
   nearSub: { color: colors.textDim, fontSize: 12, marginTop: 1 },
-  sectionLabel: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "800", marginTop: 24, marginBottom: 10 },
+  sectionLabel: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "800", marginTop: space(6), marginBottom: space(2) },
   subLabel: { color: colors.textFaint, fontSize: 10, letterSpacing: 1.5, fontWeight: "800", marginTop: 18, marginBottom: 8 },
   card: { backgroundColor: colors.surface, borderRadius: radius.lg, borderCurve: "continuous", borderWidth: 1, borderColor: colors.lineSoft, padding: 16, ...shadow.card },
   emptyHint: { color: colors.textDim, fontSize: 13, fontStyle: "italic" },

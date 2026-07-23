@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { View, Text, StyleSheet, ScrollView, Pressable } from "react-native";
-import { colors, radius } from "../theme";
+import { colors, radius, space } from "../theme";
 import { useStore } from "../store";
 import ScreenHeader from "../components/ScreenHeader";
 import Avatar from "../components/Avatar";
@@ -63,7 +63,7 @@ export default function FollowListScreen({ userId, mode = "followers", onClose, 
 
 const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: colors.bg },
-  content: { padding: 12, paddingBottom: 40 },
+  content: { padding: space(4), paddingBottom: space(10) },
   hint: { color: colors.textDim, fontSize: 13, textAlign: "center", paddingTop: 40 },
   row: { flexDirection: "row", alignItems: "center", gap: 10, padding: 10, borderRadius: radius.md, marginBottom: 4 },
   rowMain: { flex: 1, flexDirection: "row", alignItems: "center", gap: 12 },

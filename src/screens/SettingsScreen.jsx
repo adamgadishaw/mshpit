@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { View, Text, StyleSheet, ScrollView, Pressable } from "react-native";
-import { colors, radius, mono, THEMES, themeKey } from "../theme";
+import { colors, radius, mono, THEMES, themeKey, space } from "../theme";
 import { useStore } from "../store";
 import SheetHeader from "../components/SheetHeader";
 import Icon from "../components/Icon";
@@ -171,7 +171,7 @@ export default function SettingsScreen({ onClose, onEditProfile, onOpenProfile, 
 const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: colors.bg },
   content: { padding: 16, paddingBottom: 48 },
-  section: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "700", marginTop: 22, marginBottom: 8 },
+  section: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "700", marginTop: space(6), marginBottom: space(2) },
   hint: { color: colors.textDim, fontSize: 13, marginBottom: 12 },
   swatchGrid: { flexDirection: "row", flexWrap: "wrap", gap: 12 },
   swatch: { width: "47.5%", borderWidth: 2, borderRadius: radius.md, padding: 14, minHeight: 96 },

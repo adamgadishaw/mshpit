@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { View, Text, StyleSheet, ScrollView, Pressable, Linking, Image, TextInput, ActivityIndicator } from "react-native";
-import { colors, mono, radius } from "../theme";
+import { colors, mono, radius, space } from "../theme";
 import { useStore, isStaff } from "../store";
 import { artistMeta } from "../seed/ingested";
 import { SONGS } from "../seed/songs";
@@ -851,7 +851,7 @@ const styles = StyleSheet.create({
   repSub: { color: colors.textFaint, fontSize: 12, marginTop: 6 },
   note: { color: colors.textFaint, fontSize: 12, lineHeight: 17, marginTop: 12, fontStyle: "italic" },
 
-  sectionLabel: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "700", marginTop: 24, marginBottom: 10 },
+  sectionLabel: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "700", marginTop: space(6), marginBottom: space(2) },
   feedHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   feedOff: { color: colors.textFaint, fontSize: 11, fontStyle: "italic", marginTop: 14 },
   composer: { flexDirection: "row", alignItems: "flex-end", gap: 10, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, padding: 10, marginBottom: 10 },

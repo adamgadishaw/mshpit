@@ -1923,3 +1923,32 @@ Lesson for the log: every fix so far was verified against localhost only.
 Verifying against production is a separate step, and "is the deploy live" is
 answered by fetching the deployed bundle and grepping it for a marker string
 from the change, not by reasoning about cache headers.
+
+### Spacing scrub, pass 1 — structure (2026-07-23)
+
+Measured before guessing. `scripts/audit-spacing.mjs` (kept in the repo, run it
+with `node scripts/audit-spacing.mjs .`) reports **1,850 hardcoded spacing values
+across 52 distinct numbers, 53% of them off the 4pt `space()` scale**. `marginTop`
+alone used 36 different values, `gap` 17. Only 31 of 110 files imported `space()`.
+
+Blindly rounding 976 values would change layout on every screen at once, so this
+pass fixed the layer that actually reads as sloppy: **things that should line up
+and did not.**
+
+- `ScreenHeader` and `SheetHeader` padded horizontally by **14** while screen
+  content pads by **16**, so on **34 screens** the header title sat 2pt off the
+  content beneath it. Both now 16.
+- `FollowListScreen`, `NotificationsScreen` (12) and `CalendarScreen` (14)
+  disagreed with the 16pt gutter the other 30 containers use, so content shifted
+  sideways as you navigated between them. All now 16.
+- 13 section headings used 20/22/24 above and 8/10 below for the same intent.
+  Normalised to `space(6)` / `space(2)` so vertical rhythm repeats.
+
+Verified in the running app: no container wider than 120pt is left on 14px
+horizontal padding.
+
+**Not done, and deliberately so.** The remaining ~959 off-scale values are mostly
+small inner offsets (chip padding, icon gaps, badge nudges) where the number is
+often load-bearing for a specific composition. Converting those needs to be done
+per component with eyes on the result, not by a regex. Item 23 stays PARTIAL.
+The audit script is the way to track progress; re-run it after each pass.

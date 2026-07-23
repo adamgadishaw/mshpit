@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { View, Text, StyleSheet, ScrollView, TextInput, Pressable } from "react-native";
-import { colors, mono, radius } from "../theme";
+import { colors, mono, radius, space } from "../theme";
 import { useStore } from "../store";
 import ScreenHeader from "../components/ScreenHeader";
 import Icon from "../components/Icon";
@@ -118,7 +118,7 @@ const styles = StyleSheet.create({
   input: { flex: 1, color: colors.text, fontSize: 15, paddingVertical: 12 },
   content: { padding: 16, paddingTop: 10, paddingBottom: 48 },
   hint: { color: colors.textDim, fontSize: 13, lineHeight: 19, marginBottom: 4 },
-  sectionLabel: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "700", marginTop: 14, marginBottom: 10 },
+  sectionLabel: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "700", marginTop: 14, marginBottom: space(2) },
   empty: { color: colors.textDim, fontSize: 13, fontStyle: "italic" },
   cityRow: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 14, marginBottom: 8 },
   cIcon: { width: 38, height: 38, borderRadius: 10, backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },

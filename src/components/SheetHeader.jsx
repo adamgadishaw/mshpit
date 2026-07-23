@@ -1,5 +1,5 @@
 import { View, Text, StyleSheet, Pressable } from "react-native";
-import { colors, displayFont, focusRing, radius, shadow } from "../theme";
+import { colors, displayFont, focusRing, radius, shadow, space } from "../theme";
 import Icon from "./Icon";
 
 // One consistent modal/detail header with REAL buttons instead of stray text.
@@ -42,7 +42,7 @@ export default function SheetHeader({ title, onClose, onBack, action }) {
 }
 
 const styles = StyleSheet.create({
-  wrap: { flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 14, paddingTop: 6, paddingBottom: 12, borderBottomWidth: 1, borderBottomColor: colors.lineSoft },
+  wrap: { flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: space(4), paddingTop: space(1.5), paddingBottom: space(3), borderBottomWidth: 1, borderBottomColor: colors.lineSoft },
   lead: { width: 42, height: 42, borderRadius: radius.sm, borderCurve: "continuous", backgroundColor: colors.surfaceAlt, borderWidth: 1, borderBottomWidth: 3, borderColor: colors.line, alignItems: "center", justifyContent: "center", ...shadow.control },
   controlPressed: { transform: [{ translateY: 2 }], boxShadow: "inset 0 1px 3px rgba(0,0,0,0.18)" },
   title: { flex: 1, color: colors.text, fontFamily: displayFont, fontSize: 17, fontWeight: "800", letterSpacing: -0.25, textAlign: "center" },

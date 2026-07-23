@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, KeyboardAvoidingView, Platform } from "react-native";
 import * as ImagePicker from "expo-image-picker";
-import { colors, mono, radius, font, displayFont, shadow } from "../theme";
+import { colors, mono, radius, font, displayFont, shadow, space } from "../theme";
 import { useStore } from "../store";
 import { newId, RATING_DIMS, computeReview } from "../data";
 
@@ -696,7 +696,7 @@ const styles = StyleSheet.create({
   overallNum: { color: colors.gold, fontFamily: mono, fontSize: 40, fontWeight: "800", minWidth: 56 },
   overallSub: { color: colors.textFaint, fontSize: 12, marginTop: 6 },
   group: { marginTop: 18 },
-  groupLabel: { fontSize: 10, letterSpacing: 1.5, fontWeight: "800", marginBottom: 10 },
+  groupLabel: { fontSize: 10, letterSpacing: 1.5, fontWeight: "800", marginBottom: space(2) },
   factorRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 14 },
   factorLabel: { color: colors.text, fontSize: 14, flex: 1 },
   stepperRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 12 },

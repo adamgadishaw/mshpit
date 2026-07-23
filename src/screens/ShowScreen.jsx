@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { View, Text, StyleSheet, ScrollView, Pressable, Linking } from "react-native";
-import { colors, displayFont, mono, radius, shadow } from "../theme";
+import { colors, displayFont, mono, radius, shadow, space } from "../theme";
 import Stars from "../components/Stars";
 import RatingSplit from "../components/RatingSplit";
 import RatingBreakdown from "../components/RatingBreakdown";
@@ -286,7 +286,7 @@ const styles = StyleSheet.create({
   scoreSub: { color: colors.textFaint, fontSize: 12, marginTop: 8 },
   note: { color: colors.textFaint, fontSize: 12, marginTop: 14, lineHeight: 17, fontStyle: "italic" },
 
-  sectionLabel: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "700", marginTop: 24, marginBottom: 8 },
+  sectionLabel: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "700", marginTop: space(6), marginBottom: space(2) },
   reviewCard: {
     backgroundColor: colors.surface,
     borderRadius: radius.md,

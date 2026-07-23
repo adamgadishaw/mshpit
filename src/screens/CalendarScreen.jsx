@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { View, Text, StyleSheet, Pressable, ScrollView, Linking, Platform } from "react-native";
-import { colors, mono, radius, shadow } from "../theme";
+import { colors, mono, radius, shadow, space } from "../theme";
 import { useStore } from "../store";
 import ScreenHeader from "../components/ScreenHeader";
 import Icon from "./../components/Icon";
@@ -185,7 +185,7 @@ export default function CalendarScreen({ onClose, onOpen, onOpenArtist }) {
 
 const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: colors.bg },
-  scroll: { padding: 14, paddingTop: 8 },
+  scroll: { padding: space(4), paddingTop: 8 },
   todayBtn: { color: colors.amber, fontSize: 13, fontWeight: "800" },
 
   monthBar: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 6, marginBottom: 12 },

@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { View, Text, StyleSheet, ScrollView, Pressable, Linking, Image } from "react-native";
-import { colors, mono, radius } from "../theme";
+import { colors, mono, radius, space } from "../theme";
 import { useStore } from "../store";
 import Stars from "../components/Stars";
 import Icon from "../components/Icon";
@@ -186,7 +186,7 @@ const styles = StyleSheet.create({
   repSub: { color: colors.textFaint, fontSize: 12, marginTop: 6 },
   note: { color: colors.textFaint, fontSize: 12, lineHeight: 17, marginTop: 12, fontStyle: "italic" },
 
-  sectionLabel: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "700", marginTop: 24, marginBottom: 10 },
+  sectionLabel: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "700", marginTop: space(6), marginBottom: space(2) },
   empty: { color: colors.textDim, fontSize: 13, fontStyle: "italic" },
 
   upRow: { flexDirection: "row", alignItems: "center", backgroundColor: colors.bgElev, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 14, marginBottom: 8, gap: 12 },

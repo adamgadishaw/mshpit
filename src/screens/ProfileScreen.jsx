@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { View, Text, StyleSheet, ScrollView, Pressable, Image, Linking } from "react-native";
-import { colors, mono, radius, roleColor } from "../theme";
+import { colors, mono, radius, roleColor, space } from "../theme";
 import { useStore } from "../store";
 import { listenUrl } from "../seed/songs";
 import { artistMeta } from "../seed/ingested";
@@ -405,7 +405,7 @@ const styles = StyleSheet.create({
   nowTxt: { color: colors.text, fontSize: 13, marginTop: 3 },
   listenBtn: { borderWidth: 1, borderColor: colors.good, borderRadius: radius.pill, paddingHorizontal: 14, paddingVertical: 7 },
   listenTxt: { color: colors.good, fontSize: 12, fontWeight: "800" },
-  sectionLabel: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "700", marginTop: 22, marginBottom: 10, marginHorizontal: 16 },
+  sectionLabel: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "700", marginTop: space(6), marginBottom: space(2), marginHorizontal: 16 },
   countdownBox: { alignItems: "flex-end" },
   countdownT: { color: colors.amber, fontFamily: mono, fontSize: 15, fontWeight: "800", letterSpacing: 0.5, fontVariant: ["tabular-nums"] },
   countdownLabel: { color: colors.textFaint, fontSize: 9.5, letterSpacing: 1, marginTop: 1, textTransform: "uppercase" },

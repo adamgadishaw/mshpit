@@ -98,7 +98,7 @@ const styles = StyleSheet.create({
   meHandle: { color: colors.textDim, fontSize: 12, marginTop: 2 },
   loginBtn: { backgroundColor: colors.amberStrong, borderRadius: radius.md, paddingVertical: 14, alignItems: "center" },
   loginTxt: { color: "#1A1206", fontSize: 15, fontWeight: "800", letterSpacing: 1 },
-  section: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "700", marginTop: 22, marginBottom: 10 },
+  section: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "700", marginTop: space(6), marginBottom: space(2) },
   row: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 14, marginBottom: 8 },
   rowIcon: { width: 38, height: 38, borderRadius: 10, backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
   rowLabel: { color: colors.text, fontSize: 15, fontWeight: "700" },

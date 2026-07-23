@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 import { View, Text, StyleSheet, ScrollView } from "react-native";
-import { colors, mono, radius } from "../theme";
+import { colors, mono, radius, space } from "../theme";
 import { useStore } from "../store";
 import ScreenHeader from "../components/ScreenHeader";
 import Badge from "../components/Badge";
@@ -98,7 +98,7 @@ const styles = StyleSheet.create({
   bar: { height: 8, borderRadius: 4, backgroundColor: colors.surfaceAlt, marginTop: 14, overflow: "hidden" },
   barFill: { height: 8, borderRadius: 4, backgroundColor: colors.amberStrong },
   heroSub: { color: colors.textDim, fontSize: 12.5, marginTop: 8 },
-  section: { color: colors.textFaint, fontFamily: mono, fontSize: 11, letterSpacing: 1.5, fontWeight: "800", marginTop: 8, marginBottom: 10 },
+  section: { color: colors.textFaint, fontFamily: mono, fontSize: 11, letterSpacing: 1.5, fontWeight: "800", marginTop: 8, marginBottom: space(2) },
   ach: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 12, marginBottom: 8 },
   achIcon: { width: 42, height: 42, borderRadius: 21, borderWidth: 1, alignItems: "center", justifyContent: "center" },
   achHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },

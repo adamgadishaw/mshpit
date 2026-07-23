@@ -1,5 +1,5 @@
 import { View, Text, StyleSheet, ScrollView, Pressable, Image } from "react-native";
-import { colors, mono, radius, shadow } from "../theme";
+import { colors, mono, radius, shadow, space } from "../theme";
 import { useStore } from "../store";
 import Icon from "../components/Icon";
 import { artistMeta } from "../seed/ingested";
@@ -104,7 +104,7 @@ const styles = StyleSheet.create({
   cardSub: { color: colors.textDim, fontSize: 13, lineHeight: 19, marginTop: 3 },
   primary: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, borderRadius: radius.md, paddingVertical: 13, marginTop: 14 },
   primaryTxt: { color: "#08120D", fontSize: 15, fontWeight: "800" },
-  groupLabel: { color: colors.textFaint, fontFamily: mono, fontSize: 10, letterSpacing: 1.4, fontWeight: "800", marginTop: 14, marginBottom: 8 },
+  groupLabel: { color: colors.textFaint, fontFamily: mono, fontSize: 10, letterSpacing: 1.4, fontWeight: "800", marginTop: 14, marginBottom: space(2) },
   row: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 7 },
   rowImg: { width: 42, height: 42, borderRadius: 10, backgroundColor: colors.surfaceAlt },
   rowImgEmpty: { alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.line },
