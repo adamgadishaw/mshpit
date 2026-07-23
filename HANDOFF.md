@@ -1897,3 +1897,29 @@ artists before traffic arrives, roughly 2,657 artists x ~13 units, a few days of
 quota spent once; (2) request a quota increase from Google via the YouTube API
 Services audit form, which is free but takes weeks, so start before it is needed;
 (3) watch Admin > Overview > PLAYBACK LOOKUP for budget-spent days.
+
+### Menu appearance regression, and why "it isn't live" (2026-07-23)
+
+Owner reported the spacing and You-tab fixes were not live after multiple
+refreshes. Checked production rather than assuming: the deploy **had** landed.
+The live bundle
+(`index-a6e2ffb59853b26efeabdcdd5e583499.js`) contains the ThemeSwatch, the
+`uniqueTracks` de-duplication and the admin PLAYBACK LOOKUP panel, and cache
+headers are correct (`index.html` is `no-cache`, the content-hashed bundle is
+`immutable`). So this was not a caching or deploy problem.
+
+It was a real regression I introduced in a233180. Moving APPEARANCE "under Edit
+profile" put the swatch grid *between* the account rows, so Moderation, Post
+tour dates and Claim an artist rendered **below** the theme grid, splitting the
+Account section in half. It also moved the picker inside the `{session && ...}`
+block, so **logged-out visitors lost theming entirely**, which used to work.
+
+Fixed by giving the setting one home. Edit profile already had a dedicated
+APPEARANCE section, so the menu now links to it ("Appearance & profile") instead
+of carrying a second copy, and the account rows stay together. Guests, who have
+no Edit profile to open, keep the picker in the menu.
+
+Lesson for the log: every fix so far was verified against localhost only.
+Verifying against production is a separate step, and "is the deploy live" is
+answered by fetching the deployed bundle and grepping it for a marker string
+from the change, not by reasoning about cache headers.

@@ -60,18 +60,27 @@ export default function MenuScreen({ onClose, onNear, onVenues, onFanClubs, onTo
         {session && (
           <>
             <Text style={styles.section}>ACCOUNT</Text>
-            <Row icon="edit" label="Edit profile" sub="Photo, music, banner" onPress={onEditProfile} />
+            {/* Themes live in Edit profile, which has a dedicated Appearance
+                section. Keeping a second copy here split the account rows in
+                half and gave the same setting two homes. */}
+            <Row icon="edit" label="Appearance & profile" sub="Theme, photo, music, banner" onPress={onEditProfile} />
+            {isMod(session.role) && <Row icon="shield" label="Moderation" sub="Reports, members, content" onPress={onAdmin} />}
+            {isArtist(session.role) && <Row icon="calendar" label="Post tour dates" sub="Bulk + scheduled" onPress={onTourDates} />}
+            {session.role === "fan" && <Row icon="shield" label="Claim an artist profile" sub="Verify with your label / KYC" onPress={onRequestArtist} />}
+          </>
+        )}
 
-            <Text style={styles.subSection}>APPEARANCE</Text>
-            <Text style={styles.themeHint}>Saved to your account, follows you to any device.</Text>
+        {/* Guests have no Edit profile to go to, so they keep the picker here.
+            Losing this was a regression: the theme used to work signed out. */}
+        {!session && (
+          <>
+            <Text style={styles.section}>APPEARANCE</Text>
+            <Text style={styles.themeHint}>Applies across the app. Log in to save it to your account.</Text>
             <View style={styles.themeGrid}>
               {THEMES.map((t) => (
                 <ThemeSwatch key={t.key} theme={t} active={t.key === themeKey} onPress={() => chooseTheme(t.key)} />
               ))}
             </View>
-            {isMod(session.role) && <Row icon="shield" label="Moderation" sub="Reports, members, content" onPress={onAdmin} />}
-            {isArtist(session.role) && <Row icon="calendar" label="Post tour dates" sub="Bulk + scheduled" onPress={onTourDates} />}
-            {session.role === "fan" && <Row icon="shield" label="Claim an artist profile" sub="Verify with your label / KYC" onPress={onRequestArtist} />}
           </>
         )}
 

@@ -210,6 +210,7 @@ export default function EditProfileScreen({ onClose, onPickArtists }) {
         </View>
 
         <Text style={styles.label}>APPEARANCE · {THEMES.length} THEMES</Text>
+        <Text style={styles.themeHint}>Saved to your account, so it follows you to any device.</Text>
         <View style={styles.themeGrid}>
           {THEMES.map((t) => (
             <ThemeSwatch key={t.key} theme={t} active={t.key === themeKey} onPress={() => chooseTheme(t.key)} showMode />
@@ -278,6 +279,7 @@ const styles = StyleSheet.create({
   songFieldTxt: { flex: 1, color: colors.text, fontSize: 14 },
   songFieldEmpty: { color: colors.textFaint },
   themeGrid: themeGridStyle,
+  themeHint: { color: colors.textDim, fontSize: 12, marginTop: -4, marginBottom: 10 },
   themeRow: { flexDirection: "row", gap: 10 },
   themeBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 12, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
   themeOn: { borderColor: colors.amber, backgroundColor: colors.bgElev },

@@ -555,7 +555,11 @@ stays left-aligned instead of stretching.
 
 ### 23. Inconsistent spacing across the site
 
-**Status: FIXED (2026-07-22), all parts verified in the running app.** Chips,
+**Status: PARTIAL (2026-07-23).** The three specific defects are fixed (theme
+chips, tools grid, donut overlap) and verified. The broad "scrub the whole site"
+part of this request is **not** done, which is why it can still look unchanged:
+only those three surfaces were touched. Needs a systematic pass over remaining
+screens against the shared `space()` scale. Chips,
 tools grid, history duplicates and the donut overlap are done. Remaining spacing
 work is ordinary scrub, not a known defect: report specific screens as found.
 
