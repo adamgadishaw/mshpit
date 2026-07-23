@@ -231,7 +231,9 @@ export default function YouScreen({ feed, onLogin, onLogout, onAdmin, onAddTourD
         ) : (
           <View style={styles.card}>
             <View style={styles.donutRow}>
-              <SoundDonut data={sound.genres.length ? sound.genres : [{ label: "Unsorted", count: sound.totalPlays }]} size={172} centerTop={String(sound.totalPlays)} centerSub="plays" />
+              <View style={styles.donutSlot}>
+                <SoundDonut data={sound.genres.length ? sound.genres : [{ label: "Unsorted", count: sound.totalPlays }]} size={172} centerTop={String(sound.totalPlays)} centerSub="plays" />
+              </View>
               <View style={styles.legend}>
                 {(sound.genres.length ? sound.genres : [{ label: "Unsorted", count: sound.totalPlays }]).map((g, i) => (
                   <View key={g.label} style={styles.legendRow}>
@@ -414,7 +416,10 @@ const styles = StyleSheet.create({
   emptyHint: { color: colors.textDim, fontSize: 13, fontStyle: "italic" },
 
   donutRow: { flexDirection: "row", alignItems: "center", gap: 18, flexWrap: "wrap" },
-  legend: { flex: 1, minWidth: 150, gap: 8 },
+  // Same fix as Discover's chart: flex-basis 0 prevented the wrap and let the
+  // fixed-size donut overflow instead.
+  legend: { flexGrow: 1, flexBasis: 150, minWidth: 150, gap: space(2) },
+  donutSlot: { flexShrink: 0 },
   legendRow: { flexDirection: "row", alignItems: "center", gap: 8 },
   legendDot: { width: 10, height: 10, borderRadius: 5 },
   legendTxt: { color: colors.text, fontSize: 13, fontWeight: "600", flex: 1 },

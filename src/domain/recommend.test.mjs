@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { recommendTracks } from "./recommend.mjs";
+import { recommendTracks, uniqueTracks } from "./recommend.mjs";
 
 const artist = (name, genre, popularity, songs) => ({
   name, genre, popularity, art: `${name}.jpg`,
@@ -100,4 +100,26 @@ test("a custom trackKey participates in de-duplication", () => {
   const history = [{ artist: "Anything", title: "Anything", id: "Pop One-0" }];
   const out = recommendTracks({ candidates: CATALOG, genre: "pop", count: 20, history, trackKey });
   assert.equal(out.some((t) => t.id === "Pop One-0"), false, "the provider id should have been recognised");
+});
+
+test("recent listening collapses repeats without touching the underlying history", () => {
+  // The exact shape from the owner's screenshot: two plays each of two songs.
+  const history = [
+    { artist: "Nickelback", title: "Animals", id: "n-1" },
+    { artist: "Nickelback", title: "Burn It to the Ground", id: "n-2" },
+    { artist: "Nickelback", title: "Animals", id: "n-1" },
+    { artist: "Nickelback", title: "Someday", id: "n-3" },
+    { artist: "Nickelback", title: "Burn It to the Ground", id: "n-2" },
+  ];
+  const shown = uniqueTracks(history);
+  assert.deepEqual(shown.map((t) => t.title), ["Animals", "Burn It to the Ground", "Someday"]);
+  assert.equal(history.length, 5, "the source history is untouched, so play counts still work");
+});
+
+test("the same recording under two provider ids collapses to one row", () => {
+  const shown = uniqueTracks([
+    { artist: "K-Ci & JoJo", title: "All My Life", id: "dz-1" },
+    { artist: "K-Ci & JoJo", title: "All My Life", id: "yt-2" },
+  ]);
+  assert.equal(shown.length, 1);
 });

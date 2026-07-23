@@ -127,3 +127,22 @@ export function recommendTracks({
   }
   return out;
 }
+
+// Collapse repeats for display. Play history deliberately records every play,
+// because the You screen counts them to build "your sound", so the duplication
+// belongs in the data and must not be removed there. What it must not do is
+// render "Animals, Animals, Burn It to the Ground, Burn It to the Ground" back
+// at someone as their recent listening. History arrives most-recent-first, so
+// keeping the first occurrence keeps the latest play of each track.
+export function uniqueTracks(list, trackKey = null) {
+  const seen = new Set();
+  const out = [];
+  for (const track of list || []) {
+    if (!track) continue;
+    const ids = trackIdentities(track, trackKey);
+    if (ids.some((id) => seen.has(id))) continue;
+    ids.forEach((id) => seen.add(id));
+    out.push(track);
+  }
+  return out;
+}

@@ -514,7 +514,8 @@ and what is wrong with the current ones (palette, coverage, or where they apply)
 
 ### 22. The You screen tools grid is ragged
 
-**Status: OPEN; screenshot supplied.**
+**Status: FIXED (2026-07-22), verified: all tiles now render at a single 274pt
+width. Cause was `flexGrow: 1` on the tile style in `YouScreen`.**
 
 The TOOLS section wraps seven tiles across two rows and lets them flex to fill,
 so the second row renders three tiles at three different widths (Moderation
@@ -524,7 +525,8 @@ stays left-aligned instead of stretching.
 
 ### 23. Inconsistent spacing across the site
 
-**Status: OPEN; screenshot supplied. Prevalent, not local.**
+**Status: PARTIAL (2026-07-22). Chips, tools grid and history duplicates fixed
+and verified; donut overlap fixed in code but NOT visually confirmed.**
 
 Reported as everywhere, with two specific cases: list rows in the player's
 recently-played panel, and Discover's pie chart, which overlaps the genre label

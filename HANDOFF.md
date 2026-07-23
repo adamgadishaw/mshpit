@@ -1745,3 +1745,71 @@ older requests that are not duplicates of that list:
 - Git shows harmless `LF will be replaced by CRLF` on Windows — ignore.
 - `node:sqlite` needs Node ≥ 24. Background processes started in a chat die when the session ends — restart `npm run server` / `npm run pipeline`.
 - Don't bulk-edit `.jsx` with PowerShell Get/Set-Content (mangles UTF-8) — use editor tools.
+
+---
+
+## Action log — 2026-07-22 (Claude, session 2)
+
+Standing instruction from the owner this session: **log every batch here and in
+`TODO.md` as work happens**, because multiple agents (ChatGPT/Codex included)
+work this repo and a previous session's chat was lost outright. In-repo docs are
+the only reliable handoff. Never renumber `TODO.md` items: the numbers are the
+owner's shared reference across sessions.
+
+### Landed and verified
+
+**Performance dates are canonical ISO** (`src/domain/dates.mjs`). Storage is
+`YYYY-MM-DD`, display formatting happens at render. Prior to this the stored
+date *was* the display string, so a separator change forked one night into two
+performances; a row reached the DB as `2026 <U+FFFD> 06 <U+FFFD> 21` and split
+The Fillmore in two. The boot migration in `server/db.js`
+(`dates:canonical-iso:v1`) rewrites `posts`, `tour_dates`, `going.concert_key`
+and `lounge_messages.lounge_id` in one transaction, merging what the fork split.
+Verified on the real DB: 797 tour dates converted, the forked Fillmore rows now
+resolve to one performance key.
+
+**Countdowns no longer re-render whole screens** (`src/components/Countdown.jsx`).
+The You and profile screens each held a `nowTick` state on a 1s interval to
+render one label, re-rendering playlists, going-to, the tools grid and the diary
+every second. Verified: countdown still ticks with **1 text node changing and 0
+structural mutations** over 3.2s.
+
+**Theme palette is four accents, one shared swatch** (`src/components/ThemeSwatch.jsx`).
+The chip was implemented three times (menu, edit profile, onboarding) and had
+drifted in every dimension: 96/104/flex widths, 12 or 14pt dots, 4 or 5pt gaps,
+`sm` vs `md` corners, and one variant changed border width when selected so
+picking a theme resized the chip. Appearance moved out from above the Log out
+button into its own section under Edit profile. Verified: 12 chips at a single
+104pt width, 4 dots each, Appearance between Edit profile and Log out.
+
+**Tools grid no longer ragged** (`YouScreen`). `flexGrow: 1` made leftover tiles
+stretch to fill the last row. Verified: all tiles a single 274pt width.
+
+**Recently-played de-duplicated for display** (`uniqueTracks` in
+`src/domain/recommend.mjs`). Play history intentionally records every play (the
+You screen counts them), so the fix is at render only.
+
+**Autoplay selection extracted** to `src/domain/recommend.mjs` and **genre
+authority** added in `src/domain/genre.mjs`, so a MusicBrainz crawl bucket is no
+longer published as an artist's genre.
+
+### Landed, NOT visually verified
+
+**Donut overlap** (item 23) in `DiscoverScreen` and `YouScreen`. Root cause is
+real and specific: the legend used `flex: 1`, which means `flex-basis: 0`, so
+under `flexWrap` it never reached a wrap threshold and instead shrank past its
+`minWidth`, pushing the fixed-size donut SVG outside the card. Changed to
+`flexGrow: 1, flexBasis: <minWidth>` plus a non-shrinking donut slot. The fix is
+sound in code and all checks pass, but the running app kept restoring to the
+menu screen and **the chart was never put on screen to confirm it**. Next agent:
+open Discover at a narrow width and confirm the legend wraps below the donut
+instead of colliding.
+
+### Not done, and why
+
+- **Store context re-render storm.** `src/store.js` has 33 `useState` and builds
+  a fresh ~150-key context value every render, consumed by **44 components**, so
+  any state change re-renders all of them. This is the largest remaining cause
+  of mobile lag. It needs a split into a stable actions context and a data
+  context, which is too large to start at the end of a session.
+- **Items 21 and 24** are blocked on owner decisions, not effort. See `TODO.md`.

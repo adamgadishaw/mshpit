@@ -338,7 +338,9 @@ export default function DiscoverScreen({ onOpenTopRated, onOpenArtist, onOpenNea
           </ScrollView>
 
           <View style={styles.chartRow}>
-            <GenreDonut data={genres} centerTop={regionCount.toLocaleString()} centerSub="artists" activeGenre={genre} onSlice={selectGenre} />
+            <View style={styles.donutSlot}>
+              <GenreDonut data={genres} centerTop={regionCount.toLocaleString()} centerSub="artists" activeGenre={genre} onSlice={selectGenre} />
+            </View>
             <View style={styles.legend}>
               {genres.map((g, i) => {
                 const on = g.genre === genre;
@@ -500,10 +502,16 @@ const styles = StyleSheet.create({
   regionMeta: { color: colors.textDim, fontSize: 12.5, fontWeight: "600" },
 
   chartRow: { flexDirection: "row", alignItems: "center", gap: 20, flexWrap: "wrap", justifyContent: "center", marginTop: 8 },
+  // The donut is a fixed-size SVG, so it must never be handed to flex to shrink.
+  donutSlot: { flexShrink: 0 },
   donutCenter: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center" },
   donutNum: { color: colors.text, fontSize: 24, fontWeight: "900", fontFamily: mono, letterSpacing: -0.5 },
   donutSub: { color: colors.textDim, fontSize: 11, fontWeight: "700", marginTop: -1, textTransform: "uppercase", letterSpacing: 1 },
-  legend: { flex: 1, minWidth: 170, gap: 4 },
+  // `flex: 1` here was the pie-chart overlap: it means flex-basis 0, so with
+  // flexWrap the legend never reached its wrap threshold and simply shrank,
+  // pushing the fixed-width donut past the card edge and behind the next tile.
+  // A real flex-basis lets the row exceed its container and wrap properly.
+  legend: { flexGrow: 1, flexBasis: 170, minWidth: 170, gap: 4 },
   legendRow: { flexDirection: "row", alignItems: "center", gap: 9, paddingVertical: 6, paddingHorizontal: 8, borderRadius: radius.sm, ...(Platform.OS === "web" ? { cursor: "pointer" } : null) },
   legendRowOn: { backgroundColor: colors.bgElev },
   swatch: { width: 12, height: 12, borderRadius: 3 },

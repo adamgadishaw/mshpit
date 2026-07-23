@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Modal, View, Text, StyleSheet, Pressable, Image, ScrollView, Platform, useWindowDimensions } from "react-native";
 import { colors, radius, mono, shadow } from "../theme";
 import { useStore } from "../store";
@@ -6,6 +6,7 @@ import { useYouTubePlayer } from "../lib/youtubePlayer";
 import { useAudioPreview } from "../lib/audioPreview";
 import { captureAppError } from "../lib/diagnostics";
 import { trackKey } from "../lib/playback";
+import { uniqueTracks } from "../domain/recommend.mjs";
 import Icon from "./Icon";
 
 const web = Platform.OS === "web";
@@ -134,6 +135,10 @@ export default function PlayerBar({
   onOpenArtist,
   onAddToPlaylist,
 }) {
+  // Recent listening is de-duplicated for display only: play history keeps
+  // every play so the You screen can count them, but showing the same song
+  // three times in a row is just noise.
+  const recentPlays = useMemo(() => uniqueTracks(history, trackKey), [history]);
   const { resolveYouTube, invalidateYouTube, resolveDeezerPreview } = useStore();
   const column = layout === "column";
   const { width: winWidth } = useWindowDimensions();
@@ -401,7 +406,7 @@ export default function PlayerBar({
         {history.length ? (
           <ScrollView style={styles.columnQueueScroll} contentContainerStyle={styles.columnQueueContent} showsVerticalScrollIndicator={false}>
             <Text style={styles.groupLabel}>RECENTLY PLAYED</Text>
-            {history.slice(0, 12).map((track, historyIndex) => (
+            {recentPlays.slice(0, 12).map((track, historyIndex) => (
               <View key={`idle-history:${track.id || historyIndex}:${trackKey(track) || "track"}`} style={styles.qRow}>
                 {track.art ? <Image source={{ uri: track.art }} style={styles.qArt} /> : <View style={[styles.qArt, styles.artEmpty]}><Icon name="music" size={12} color={colors.textFaint} /></View>}
                 <Pressable style={{ flex: 1 }} onPress={() => onPlayTrack?.(playlistTrack(track))} accessibilityRole="button" accessibilityLabel={`Play ${track.title} again`}>
@@ -629,7 +634,7 @@ export default function PlayerBar({
                 );
               })}
               {history.length > 0 && <Text style={styles.groupLabel}>RECENTLY PLAYED</Text>}
-              {history.slice(0, 8).map((t, j) => (
+              {recentPlays.slice(0, 8).map((t, j) => (
                 <Pressable key={`history:${j}:${trackKey(t) || "track"}`} style={styles.qRow} onPress={() => onPlayTrack?.(playlistTrack(t))} accessibilityRole="button" accessibilityLabel={`Play ${t.title} again`}>
                   {t.art ? <Image source={{ uri: t.art }} style={styles.qArt} /> : <View style={[styles.qArt, styles.artEmpty]}><Icon name="music" size={12} color={colors.textFaint} /></View>}
                   <View style={{ flex: 1 }}><Text style={styles.qTitle} numberOfLines={1}>{t.title}</Text><Text style={styles.qArtist} numberOfLines={1}>{t.artist}</Text></View>
