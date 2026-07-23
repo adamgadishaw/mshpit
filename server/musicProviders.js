@@ -2,10 +2,24 @@ import { artistRow, artistStmts, db, normName, providerCacheStmts, ytStmts } fro
 
 const DEEZER_DISCOGRAPHY_TTL_MS = 24 * 60 * 60 * 1000;
 const DEEZER_PREVIEW_MAX_TTL_MS = 5 * 60 * 1000;
-const YOUTUBE_MATCH_TTL_MS = 14 * 24 * 60 * 60 * 1000;
-const YOUTUBE_MISS_TTL_MS = 6 * 60 * 60 * 1000;
+const days = (n) => n * 24 * 60 * 60 * 1000;
+// A resolved videoId is stable for months, and a stale one is caught cheaply:
+// the lookup revalidates a cached row with videos.list (1 quota unit) before
+// trusting it, and remembers bad IDs so it never picks them again. A short TTL
+// therefore buys nothing and costs a full re-resolve of the entire catalogue on
+// expiry, which is a recurring bill that grows with the catalogue rather than
+// with traffic. 14 days meant re-resolving everything twice a month.
+const YOUTUBE_MATCH_TTL_MS = days(Math.max(1, Number(process.env.YOUTUBE_MATCH_TTL_DAYS) || 90));
+// A miss is usually structural (no official upload exists), not transient, so
+// retrying every 6 hours spent 4 searches a day per unmatched song for nothing.
+const YOUTUBE_MISS_TTL_MS = days(Math.max(0.25, Number(process.env.YOUTUBE_MISS_TTL_DAYS) || 3));
 const YOUTUBE_SCORE_MIN = 65;
-const YOUTUBE_SEARCH_DAILY_BUDGET = Math.max(1, Math.min(100, Number(process.env.YOUTUBE_SEARCH_DAILY_BUDGET) || 90));
+// Not capped at 100 any more. search.list costs 100 units against a default
+// 10,000/day allowance, so 90 is the right default, but a project with an
+// approved quota increase must be able to configure past it without a redeploy
+// of this file. The floor of 1 keeps a misconfigured value from disabling
+// lookup entirely.
+const YOUTUBE_SEARCH_DAILY_BUDGET = Math.max(1, Number(process.env.YOUTUBE_SEARCH_DAILY_BUDGET) || 90);
 const YOUTUBE_CATALOGUE_MAX_PAGES = Math.max(2, Math.min(20, Number(process.env.YOUTUBE_CATALOGUE_MAX_PAGES) || 12));
 const previewCache = new Map();
 const youtubeInflight = new Map();

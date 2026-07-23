@@ -1866,3 +1866,34 @@ it against the live endpoint.
 
 Not fixed: the capacity problem itself. That is item 1's work, and it should be
 done before anyone concludes the matcher is picking wrong videos.
+
+### YouTube quota capacity (owner question, 2026-07-22)
+
+Owner confirmed `YOUTUBE_API_KEY` **is** set on Render, and asked what happens at
+hundreds of users. Recording the analysis so nobody re-derives it.
+
+**Quota does not scale with users.** The 10,000 units/day allowance is per Google
+Cloud project. A second play of a song is a cache hit, so 500 listeners cost what
+1 listener costs. What spends quota is *distinct artists never resolved before*,
+so the bill tracks catalogue coverage, not traffic.
+
+Costs: `search.list` 100 units; `playlistItems.list`, `channels.list` and
+`videos.list` 1 unit each. `getArtistCatalogue` already takes the cheap path,
+pulling a whole discography through the uploads playlist for ~13 units and
+caching it, which is roughly **760 new artists per day** inside the default
+quota. Search is only the fallback for artists with no resolvable channel, and
+the 90/day cap exists to stop that path draining everything.
+
+Changed here: match TTL 14 days → 90 (`YOUTUBE_MATCH_TTL_DAYS`), miss TTL 6h → 3
+days (`YOUTUBE_MISS_TTL_DAYS`), and the search budget is no longer hard-capped at
+100 (`YOUTUBE_SEARCH_DAILY_BUDGET`). The old 14-day match TTL re-resolved the
+entire catalogue twice a month for no benefit, since a cached row is already
+revalidated with `videos.list` (1 unit) before it is trusted and bad IDs are
+remembered. The 6-hour miss TTL retried each unmatched song four times a day,
+and a miss is usually structural rather than transient.
+
+Still to do, in order: (1) warm the cache with a background job over the top
+artists before traffic arrives, roughly 2,657 artists x ~13 units, a few days of
+quota spent once; (2) request a quota increase from Google via the YouTube API
+Services audit form, which is free but takes weeks, so start before it is needed;
+(3) watch Admin > Overview > PLAYBACK LOOKUP for budget-spent days.
