@@ -891,3 +891,82 @@ export function invalidateYouTubeTrack(title, artist, videoId) {
   ytStmts.invalidate.run(JSON.stringify([...rejected].slice(-25)), key);
   return { ok: true, invalidated: !!row, rejected: rejected.size };
 }
+
+// Song search for the app's search box, so someone who remembers a song but not
+// the act can still find it. Deezer's search is keyless and costs no YouTube
+// quota, which matters because YouTube search is 100 units a call and capped
+// per day; a video is only resolved later, if and when the song is played.
+export async function searchDeezerTracks(query, { limit = 12, fetchImpl = fetch } = {}) {
+  const q = String(query || "").trim();
+  if (q.length < 2) return [];
+  const key = `dz:tracksearch:v1:${q.toLowerCase()}:${limit}`;
+  const cached = readProviderCache(key);
+  if (cached?.fresh) return cached.data?.items || [];
+
+  // Two queries, because Deezer's plain relevance search drops the recording
+  // most people mean: `q=bohemian rhapsody` returns 36 rows without Queen in
+  // them at all, while the field-qualified `track:"bohemian rhapsody"` returns
+  // Queen with the highest rank of any result. Plain search gives recall
+  // (partial titles, artist names); the qualified one guarantees the canonical
+  // version is in the pool. Both are keyless, and the result is cached.
+  const urls = [
+    `https://api.deezer.com/search?q=${encodeURIComponent(`track:"${q}"`)}&limit=25`,
+    `https://api.deezer.com/search?q=${encodeURIComponent(q)}&limit=25`,
+  ];
+  const responses = await Promise.allSettled(urls.map((url) => providerJson("Deezer", url, { fetchImpl })));
+  const rows = responses.flatMap((r) => (r.status === "fulfilled" ? r.value?.data || [] : []));
+  if (!rows.length) return [];
+
+  const seen = new Map();
+  const items = [];
+  for (const t of rows) {
+    const title = t?.title_short || t?.title;
+    const artist = t?.artist?.name;
+    if (!title || !artist) continue;
+    // One row per recording: Deezer lists the same song across many
+    // compilations, which would otherwise fill the results with itself. When a
+    // recording appears more than once, keep the highest-ranked copy rather
+    // than the first seen — Nirvana's "Smells Like Teen Spirit" comes back at
+    // both rank 636,897 and 349,751, and keeping the weaker copy pushed the
+    // original below covers that outranked it.
+    const identity = `${normalizeMusicText(artist)}|${normalizeMusicText(title)}`;
+    const candidate = {
+      title,
+      artist,
+      id: t.id ? String(t.id) : null,
+      album: t?.album?.title || null,
+      art: t?.album?.cover_medium || t?.album?.cover || null,
+      duration: Number(t.duration) || null,
+      // Not stored: preview URLs expire, so they are fetched at play time.
+      rank: Number(t.rank) || 0,
+    };
+    const existing = seen.get(identity);
+    if (existing) {
+      if (candidate.rank > existing.rank) Object.assign(existing, candidate);
+      continue;
+    }
+    seen.set(identity, candidate);
+    items.push(candidate);
+  }
+  // Rank alone is not enough. Deezer's `rank` tracks *current* streaming, so a
+  // trending cover outranks the record everyone actually means: Shaka Ponk's
+  // "Smells Like Teen Spirit" scores 729k against Nirvana's 637k. Our own
+  // catalogue knows which acts are real touring artists — Nirvana and Queen are
+  // in it with popularity 88 and 89, the cover acts are not in it at all — so a
+  // catalogue hit breaks the tie in favour of the original.
+  const known = db.prepare("SELECT popularity FROM artists WHERE norm = ?");
+  for (const item of items) {
+    let popularity = 0;
+    try { popularity = Number(known.get(normName(item.artist))?.popularity) || 0; } catch { popularity = 0; }
+    item.catalogPopularity = popularity;
+    // Popularity is 0-100, so this lifts a catalogue artist by up to ~2x rank
+    // without letting an obscure catalogue entry leapfrog a genuine hit.
+    item.score = item.rank * (1 + popularity / 100);
+  }
+  // Sort BEFORE truncating: truncating first kept whatever order Deezer
+  // returned, and "bohemian rhapsody" came back without Queen in it at all.
+  items.sort((a, b) => b.score - a.score);
+  items.length = Math.min(items.length, limit);
+  writeProviderCache(key, { items }, DEEZER_DISCOGRAPHY_TTL_MS);
+  return items;
+}

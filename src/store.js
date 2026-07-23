@@ -647,6 +647,15 @@ export function StoreProvider({ children }) {
     try { const { artists } = await api(`/api/artists?q=${encodeURIComponent(query || "")}`); cacheArtists(artists); return artists || []; }
     catch { return []; }
   };
+  // Song search for the search box, so not knowing the artist is no longer a
+  // dead end. Server-side this is Deezer (keyless), so it costs no YouTube
+  // quota; playback resolves a video only when a result is actually played.
+  const searchSongsApi = async (query) => {
+    const q = String(query || "").trim();
+    if (q.length < 2) return [];
+    try { const { songs } = await api(`/api/songs/search?q=${encodeURIComponent(q)}`); return songs || []; }
+    catch { return []; }
+  };
   // Resolve one artist by name, creates it from MusicBrainz on the server if it's
   // not in the catalog yet, so no artist page is ever empty. Cached client-side.
   const resolveArtist = async (name) => {
@@ -3015,7 +3024,7 @@ export function StoreProvider({ children }) {
     artistSeenCount, reportTrack, adminSetTrackVideo, trackOverridesList, removeTrackOverride, loadModerationQueue,
     mediaReactions, loadMediaReactions, toggleMediaReaction,
     playHistory, playHistoryStatus, playHistoryNextCursor, loadPlayHistory, recordPlay, snapshots, saveSnapshot, removeSnapshot, friendsListening, loadFriendsListening, userPlaylists,
-    favoriteGenre, genreOfArtist, recommendTracks, autoplayQueue, myPlaylists, myPlaylistsStatus, loadMyPlaylists, loadPlaylist, createPlaylist, addToPlaylist, updatePlaylist, deletePlaylist,
+    favoriteGenre, genreOfArtist, recommendTracks, autoplayQueue, searchSongsApi, myPlaylists, myPlaylistsStatus, loadMyPlaylists, loadPlaylist, createPlaylist, addToPlaylist, updatePlaylist, deletePlaylist,
     drafts, saveDraft, deleteDraft,
     visibleFeed, followingFeed, loadMoreFeed, feedHasMore, feedLoadingMore, loadClips, visibleTourDates, artistSummary, venueSummary,
     localVenues, regionShows, localFeed, recommendedShows, venueCoord,

@@ -1952,3 +1952,39 @@ small inner offsets (chip padding, icon gaps, badge nudges) where the number is
 often load-bearing for a specific composition. Converting those needs to be done
 per component with eyes on the result, not by a regex. Item 23 stays PARTIAL.
 The audit script is the way to track progress; re-run it after each pass.
+
+### Song search, and a transient-error preview bug (2026-07-23)
+
+**Song search** (`GET /api/songs/search?q=`, `searchSongsApi` in the store) so
+someone who remembers a song but not the act can find it. Deezer-backed and
+keyless, so it costs **no YouTube quota**; a video is resolved only if a result
+is actually played. Three real defects surfaced while building it:
+
+1. Results were truncated to the limit *before* sorting by popularity, so the
+   order was whatever Deezer happened to return.
+2. Deezer's plain relevance search **omits the canonical recording**:
+   `q=bohemian rhapsody` returns 36 rows with no Queen at all, while
+   `track:"bohemian rhapsody"` returns Queen ranked highest. Both queries now
+   run and merge.
+3. Dedupe kept the first copy of a recording, not the best. Nirvana's "Smells
+   Like Teen Spirit" comes back at rank 636,897 *and* 349,751; keeping the
+   weaker copy pushed the original below covers.
+
+Even then, Deezer's `rank` measures *current* streaming, so trending covers beat
+originals (Shaka Ponk 729k vs Nirvana 637k). The tie-break uses our own
+catalogue: Nirvana and Queen are in it (popularity 88, 89), the cover acts are
+not, so `score = rank * (1 + popularity/100)`. Verified: "smells like teen
+spirit", "bohemian rhapsody", "all my life" and "wonderwall" all return the
+original first.
+
+**Transient playback errors were forcing previews.** Owner hit YouTube's "An
+error occurred. Please try again later." and suspected it was causing extra
+previews. Correct. `PlayerBar` treated *any* IFrame error as terminal, so one
+transient blip dropped that track to a 30-second preview for the rest of the
+session and never retried the video. Only codes 100/101/150 (removed, embedding
+disallowed) are genuinely terminal — cache invalidation was already correctly
+scoped to those, but the *fallback* was not. Non-terminal errors now retry the
+same video twice with backoff, resuming position, before falling back.
+
+Note for the next agent: `youtubePlayer.load(videoId, { startSec })` — it does
+not take an `autoplay` option.

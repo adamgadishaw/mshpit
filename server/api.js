@@ -23,6 +23,7 @@ import {
   invalidateYouTubeTrack,
   parseYouTubeVideoId,
   resolveYouTubeTrack,
+  searchDeezerTracks,
   trackOverrideKey,
   youtubeOEmbed,
   youtubeProviderStatus,
@@ -601,6 +602,24 @@ export const routes = {
       ? artistStmts.search.all(`%${term.replace(/[%_\\]/g, "")}%`, term, lim)
       : artistStmts.top.all(lim);
     return { artists: rows.map(publicArtist), total: artistStmts.count.get().c };
+  },
+
+  // Song search, so the search box works for someone who remembers the song but
+  // not who made it. Deliberately Deezer-backed: it is keyless, so this costs no
+  // YouTube quota. A playable video is resolved later, only if the song is
+  // actually played.
+  "GET /api/songs/search": async (ctx) => {
+    const term = clean(ctx.query.q, { max: 80 });
+    if (term.length < 2) return { songs: [] };
+    limit(ctx, "song-search", 120, 10 * 60 * 1000);
+    try {
+      const songs = await searchDeezerTracks(term, { limit: Math.min(20, Math.max(1, Number(ctx.query.limit) || 12)) });
+      return { songs };
+    } catch {
+      // A provider outage must not take the whole search box down; the other
+      // sections (people, artists, venues, events) still answer.
+      return { songs: [] };
+    }
   },
 
   // Resolve one artist by name. If it's not in the catalog yet, fetch it live from

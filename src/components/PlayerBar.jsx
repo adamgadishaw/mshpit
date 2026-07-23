@@ -11,6 +11,12 @@ import Icon from "./Icon";
 
 const web = Platform.OS === "web";
 
+// IFrame API errors that mean the video itself is unusable: 100 removed,
+// 101/150 embedding disallowed by the owner. Anything else is treated as
+// transient and retried before the player falls back to a preview.
+const TERMINAL_YT_CODES = [100, 101, 150];
+const MAX_YT_RETRIES = 2;
+
 const fmtTime = (ms) => {
   if (!isFinite(ms) || ms < 0) ms = 0;
   const s = Math.floor(ms / 1000);
@@ -198,7 +204,25 @@ export default function PlayerBar({
   // Initialization errors are terminal for this player instance too. Without
   // this, an API-load failure leaves `hasVideo` true and "Loading video..."
   // visible forever instead of selecting the already-resolved preview fallback.
-  const ytFailed = yt.error?.kind === "init" || (!!yt.error?.videoId && yt.error.videoId === resolved.videoId);
+  // Retry bookkeeping for transient YouTube failures, declared before the
+  // failure calculation below reads it.
+  const ytRetryRef = useRef({ key: "", count: 0 });
+  // Which YouTube failures are actually terminal. 100 is a removed video and
+  // 101/150 mean the owner disallowed embedding, so the id is genuinely unusable
+  // and falling back is right. Everything else — code 5's HTML5 player error, a
+  // network blip, YouTube's own "An error occurred, please try again later" — is
+  // transient, and the video plays fine on a second attempt.
+  //
+  // Treating those as terminal is why previews turned up so often on songs that
+  // were perfectly playable: one hiccup dropped the track to a 30-second preview
+  // for the rest of the session and never tried the video again.
+  const terminalYt = yt.error?.kind === "init" || TERMINAL_YT_CODES.includes(Number(yt.error?.code));
+  const transientYt = !!yt.error && !terminalYt && !!yt.error.videoId;
+  const retryKey = `${curKey}|${yt.error?.videoId || ""}`;
+  const retriesUsed = ytRetryRef.current.key === retryKey ? ytRetryRef.current.count : 0;
+  const ytFailed = yt.error?.kind === "init"
+    || (!!yt.error?.videoId && yt.error.videoId === resolved.videoId
+        && (terminalYt || retriesUsed >= MAX_YT_RETRIES));
   // Native has no YouTube iframe host in this component. Treat the resolved id
   // as metadata there and use the preview engine instead of hanging "connecting".
   const hasVideo = web && forThis && !!resolved.videoId && !ytFailed;
@@ -210,6 +234,20 @@ export default function PlayerBar({
   // Removed and non-embeddable videos (IFrame errors 100/101/150) must not stay
   // pinned in either cache. The next play excludes this ID and selects a newly
   // scored candidate while this play immediately falls back to a fresh preview.
+  useEffect(() => {
+    if (!transientYt || !forThis) return;
+    const failedId = yt.error?.videoId;
+    if (!failedId || failedId !== resolved.videoId) return;
+    const current = ytRetryRef.current;
+    const count = current.key === retryKey ? current.count : 0;
+    if (count >= MAX_YT_RETRIES) return;
+    ytRetryRef.current = { key: retryKey, count: count + 1 };
+    // Back off a little: an immediate reload tends to hit the same blip.
+    const resumeMs = yt.state?.position || 0;
+    const timer = setTimeout(() => yt.load(failedId, { startSec: Math.floor(resumeMs / 1000) }), 600 * (count + 1));
+    return () => clearTimeout(timer);
+  }, [transientYt, yt.error?.videoId, retryKey, forThis]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const invalidatedRef = useRef("");
   useEffect(() => {
     const failedId = yt.error?.videoId;
