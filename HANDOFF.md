@@ -1843,3 +1843,26 @@ Getting Discover on screen needs the persisted nav cleared first: the app
 restores `pit.tab` / `pit.stack` from localStorage, which is why earlier
 attempts kept landing on the menu. Clear those two keys, reload, then click the
 Discover tab.
+
+### Item 20 (preview-only playback) — diagnosed
+
+Chased the K-Ci & JoJo report. The local `yt_cache` table is **empty (0 rows)**,
+and `/api/health` reports `youtubeConfigured: false` locally, so nothing here
+ever resolved a video. More importantly, the health payload shows the real
+constraint: `search: { used: 0, limit: 90, remaining: 90 }`.
+
+**90 searches per day, site-wide.** YouTube search costs 100 quota units against
+a default 10,000/day allowance. Once that budget is gone, every unresolved song
+degrades to a 30-second preview, and that is indistinguishable from "no video
+exists" — which is why an obvious, popular song looks like a matching failure. A
+missing API key gives the identical symptom.
+
+All of this was already computed by `youtubeProviderStatus()` and returned on
+`/api/health`, and **no screen consumed it**. Admin > Overview now shows a
+PLAYBACK LOOKUP panel covering the three states: no key, circuit paused, and
+budget spent, with searches used/remaining. Note the payload field names are
+`limit`/`remaining`, not `budget` — got that wrong on the first pass and caught
+it against the live endpoint.
+
+Not fixed: the capacity problem itself. That is item 1's work, and it should be
+done before anyone concludes the matcher is picking wrong videos.

@@ -310,6 +310,19 @@ export default function AdminScreen({ onClose }) {
   const allFanMsgs = useMemo(() => Object.entries(fanClubMsgs).flatMap(([artist, arr]) => arr.map((m) => ({ artist, ...m }))), [fanClubMsgs]);
   const allLounge = useMemo(() => Object.entries(lounge).flatMap(([key, arr]) => arr.map((m) => ({ key, ...m }))), [lounge]);
 
+  // Playback health. When YOUTUBE_API_KEY is missing or its quota is spent,
+  // every lookup returns "unconfigured"/paused and playback silently falls back
+  // to a 30-second preview. From the outside that is indistinguishable from "we
+  // could not find the video", which is why obvious songs looked unmatched. The
+  // server already reports this on /api/health; nothing displayed it.
+  const [health, setHealth] = useState(null);
+  useEffect(() => {
+    if (tab !== "overview") return;
+    let live = true;
+    api("/api/health").then((h) => { if (live) setHealth(h); }).catch(() => {});
+    return () => { live = false; };
+  }, [tab]);
+
   const TABS = [
     { key: "overview", label: "Overview", icon: "discover", admin: true },
     { key: "analytics", label: "Analytics", icon: "trophy", admin: true },
@@ -363,6 +376,41 @@ export default function AdminScreen({ onClose }) {
               <View style={styles.stat}><Text style={[styles.statN, openReports.length ? { color: colors.danger } : null]}>{openReports.length}</Text><Text style={styles.statL}>reports</Text></View>
               <View style={styles.stat}><Text style={[styles.statN, bannedCount ? { color: colors.danger } : null]}>{bannedCount}</Text><Text style={styles.statL}>banned</Text></View>
             </View>
+
+            {health && (() => {
+              const yt = health.services?.youtubeLookup || {};
+              const configured = !!health.services?.youtubeConfigured;
+              const paused = !!yt.circuitOpen;
+              const used = yt.search?.used ?? null;
+              const limit = yt.search?.limit ?? null;
+              const remaining = yt.search?.remaining ?? null;
+              // A spent daily budget degrades playback exactly like a missing
+              // key, so it has to read as a problem, not as a healthy number.
+              const spent = configured && remaining != null && remaining <= 0;
+              const bad = !configured || paused || spent;
+              return (
+                <View style={[styles.healthCard, bad && styles.healthCardBad]}>
+                  <Text style={styles.healthTitle}>PLAYBACK LOOKUP</Text>
+                  <Text style={[styles.healthState, { color: bad ? colors.danger : colors.good }]}>
+                    {!configured
+                      ? "No YouTube API key. Every song falls back to a 30-second preview."
+                      : paused
+                        ? `Lookup paused (${yt.circuitCode || "provider error"}). Songs fall back to previews until it resumes.`
+                        : spent
+                          ? "Today's search budget is spent. New songs fall back to previews until it resets."
+                          : "Configured and running."}
+                  </Text>
+                  {configured && used != null && (
+                    <Text style={styles.healthSub}>
+                      {used}{limit != null ? ` of ${limit}` : ""} searches used today{remaining != null ? ` · ${remaining} left` : ""}{yt.inFlight ? ` · ${yt.inFlight} in flight` : ""}
+                    </Text>
+                  )}
+                  {!configured && (
+                    <Text style={styles.healthSub}>Set YOUTUBE_API_KEY in the server environment, then redeploy.</Text>
+                  )}
+                </View>
+              );
+            })()}
           </>
         )}
 
@@ -750,6 +798,11 @@ export default function AdminScreen({ onClose }) {
 }
 
 const styles = StyleSheet.create({
+  healthCard: { backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 14, gap: 4, marginTop: 12 },
+  healthCardBad: { borderColor: colors.danger },
+  healthTitle: { color: colors.textDim, fontSize: 11, fontWeight: "800", letterSpacing: 1, fontFamily: mono },
+  healthState: { fontSize: 13.5, fontWeight: "700" },
+  healthSub: { color: colors.textDim, fontSize: 12 },
   wrap: { flex: 1, backgroundColor: colors.bg },
   h1Row: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 16, paddingTop: 6 },
   h1: { color: colors.text, fontSize: 20, fontWeight: "800" },

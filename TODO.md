@@ -500,7 +500,29 @@ Acceptance criteria:
 
 ### 20. Popular songs still resolve to previews, not the real video
 
-**Status: OPEN.** Reported example: K-Ci & JoJo "All My Life" plays a preview
+**Status: DIAGNOSED (2026-07-22), not yet fixed. The likely cause is capacity,
+not matching.**
+
+YouTube search costs 100 quota units per call against a default 10,000/day, so
+the server caps itself at **90 searches per day** (`/api/health` reports
+`limit: 90`). That is a whole-site budget. Once it is spent, every unresolved
+song falls back to a 30-second preview, which is indistinguishable from "no
+video found" — so a song as prominent as the reported one looks unmatched when
+it was never searched for. A missing `YOUTUBE_API_KEY` produces exactly the same
+symptom (`status: "unconfigured"`).
+
+The server already reported all of this on `/api/health` and **nothing in the
+app displayed it**. Admin > Overview now shows a PLAYBACK LOOKUP panel with the
+three states that matter: no key, paused (circuit open), and budget spent,
+including searches used and remaining. Check it first before treating this as a
+matching bug.
+
+Next step is capacity, tied to item 1: raise the quota, or cut searches per
+resolved song (cache negative results harder, resolve by channel first, batch
+`videos.list` validation which costs 1 unit against search's 100). Only after
+that is the budget healthy should the matcher itself be suspected.
+
+Original report: K-Ci & JoJo "All My Life" plays a preview
 even though the official video is prominent on YouTube, including on the
 artist's own channel. Related to item 7 but reported as still live, so the
 lookup is missing obvious, high-signal matches rather than only long-tail ones.
