@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { View, Text, StyleSheet, ScrollView, Pressable, Animated, Easing, Platform } from "react-native";
-import { colors, mono, radius, shadow, displayFont } from "../theme";
+import { colors, mono, radius, shadow, displayFont, space } from "../theme";
 import Icon from "../components/Icon";
 import Avatar from "../components/Avatar";
 import SmartImage from "../components/SmartImage";
@@ -453,8 +453,12 @@ const styles = StyleSheet.create({
   rowSub: { color: colors.textDim, fontSize: 12, marginTop: 2 },
   goingT: { color: colors.amber, fontFamily: mono, fontSize: 13, fontWeight: "800", fontVariant: ["tabular-nums"] },
 
-  toolGrid: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
-  tool: { width: "23.5%", minWidth: 86, flexGrow: 1, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, paddingVertical: 12, alignItems: "center", gap: 6 },
+  toolGrid: { flexDirection: "row", flexWrap: "wrap", gap: space(2) },
+  // No `flexGrow`. With it, the tiles left over on the final row stretched to
+  // fill the space, so seven tools rendered as four even ones above three of
+  // three different widths. A fixed column keeps every tile the same size and
+  // lets a short last row simply end early, which is what a grid should do.
+  tool: { width: "23.5%", minWidth: 86, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, paddingVertical: space(3), alignItems: "center", gap: space(1.5) },
   toolIcon: { width: 36, height: 36, borderRadius: 18, backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
   toolBadge: { position: "absolute", top: -4, right: -6, backgroundColor: colors.magenta, borderRadius: 9, minWidth: 17, height: 17, alignItems: "center", justifyContent: "center", paddingHorizontal: 4 },
   toolBadgeTxt: { color: "#fff", fontSize: 10, fontWeight: "800", fontFamily: mono },

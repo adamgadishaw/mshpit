@@ -2,6 +2,7 @@ import { useState } from "react";
 import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, Image } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import { colors, radius, themeKey, THEMES } from "../theme";
+import ThemeSwatch, { themeGridStyle } from "../components/ThemeSwatch";
 import { useStore } from "../store";
 import { GENRES, cityCoords } from "../data";
 import Avatar from "../components/Avatar";
@@ -210,24 +211,9 @@ export default function EditProfileScreen({ onClose, onPickArtists }) {
 
         <Text style={styles.label}>APPEARANCE · {THEMES.length} THEMES</Text>
         <View style={styles.themeGrid}>
-          {THEMES.map((t) => {
-            const on = t.key === themeKey;
-            return (
-              <Pressable
-                key={t.key}
-                style={[styles.themeChip, { backgroundColor: t.swatch.bg, borderColor: on ? t.swatch.accent : colors.line, borderWidth: on ? 2 : 1 }]}
-                onPress={() => !on && chooseTheme(t.key)}
-              >
-                <View style={styles.themeDots}>
-                  <View style={[styles.themeDot, { backgroundColor: t.swatch.accent }]} />
-                  <View style={[styles.themeDot, { backgroundColor: t.swatch.accent2 }]} />
-                  {on && <Icon name="check" size={12} color={t.swatch.accent} strokeWidth={3} />}
-                </View>
-                <Text style={[styles.themeName2, { color: t.swatch.text }]} numberOfLines={1}>{t.name}</Text>
-                <Text style={[styles.themeSub, { color: t.swatch.text }]} numberOfLines={1}>{t.dark ? "Dark" : "Light"}</Text>
-              </Pressable>
-            );
-          })}
+          {THEMES.map((t) => (
+            <ThemeSwatch key={t.key} theme={t} active={t.key === themeKey} onPress={() => chooseTheme(t.key)} showMode />
+          ))}
         </View>
 
         <Text style={styles.label}>YOUR ARTISTS</Text>
@@ -291,12 +277,7 @@ const styles = StyleSheet.create({
   songField: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: colors.surface, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 14, paddingVertical: 13 },
   songFieldTxt: { flex: 1, color: colors.text, fontSize: 14 },
   songFieldEmpty: { color: colors.textFaint },
-  themeGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
-  themeChip: { width: 96, borderRadius: radius.md, padding: 12, gap: 8 },
-  themeDots: { flexDirection: "row", alignItems: "center", gap: 5, height: 16 },
-  themeDot: { width: 14, height: 14, borderRadius: 7 },
-  themeName2: { fontSize: 13, fontWeight: "800" },
-  themeSub: { fontSize: 10, fontWeight: "700", opacity: 0.6, letterSpacing: 0.5 },
+  themeGrid: themeGridStyle,
   themeRow: { flexDirection: "row", gap: 10 },
   themeBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 12, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
   themeOn: { borderColor: colors.amber, backgroundColor: colors.bgElev },

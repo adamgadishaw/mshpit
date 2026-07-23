@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, Image } from "react-native";
 import { colors, mono, radius, THEMES, themeKey } from "../theme";
+import ThemeSwatch from "../components/ThemeSwatch";
 import { useStore } from "../store";
 import { ingestedArtists } from "../seed/ingested";
 import Icon from "../components/Icon";
@@ -107,19 +108,9 @@ export default function PickArtistsScreen({ onDone, onSkip }) {
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
         <Text style={styles.themeLabel}>PICK A THEME</Text>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.themeRow}>
-          {THEMES.map((t) => {
-            const on = t.key === theme;
-            return (
-              <Pressable key={t.key} style={[styles.themeChip, { backgroundColor: t.swatch.bg, borderColor: on ? t.swatch.accent : colors.line }]} onPress={() => setThemeChoice(t.key)}>
-                <View style={styles.themeDots}>
-                  <View style={[styles.themeDot, { backgroundColor: t.swatch.accent }]} />
-                  <View style={[styles.themeDot, { backgroundColor: t.swatch.accent2 }]} />
-                </View>
-                <Text style={[styles.themeName, { color: t.swatch.text }]}>{t.name}</Text>
-                {on && <View style={[styles.themeCheck, { backgroundColor: t.swatch.accent }]}><Icon name="check" size={11} color={t.swatch.bg} strokeWidth={3} /></View>}
-              </Pressable>
-            );
-          })}
+          {THEMES.map((t) => (
+            <ThemeSwatch key={t.key} theme={t} active={t.key === themeKey} onPress={() => chooseTheme(t.key)} />
+          ))}
         </ScrollView>
 
         {shown.length === 0 && <Text style={styles.empty}>No artists match "{q}".</Text>}
@@ -144,11 +135,7 @@ const styles = StyleSheet.create({
   content: { padding: 16, paddingBottom: 48 },
   themeLabel: { color: colors.textFaint, fontFamily: mono, fontSize: 11, letterSpacing: 1.5, fontWeight: "800", marginBottom: 10 },
   themeRow: { gap: 10, paddingBottom: 4 },
-  themeChip: { width: 104, borderRadius: radius.md, borderWidth: 1.5, padding: 12, gap: 10 },
-  themeDots: { flexDirection: "row", gap: 5 },
-  themeDot: { width: 14, height: 14, borderRadius: 7 },
-  themeName: { fontSize: 13, fontWeight: "800" },
-  themeCheck: { position: "absolute", top: 8, right: 8, width: 18, height: 18, borderRadius: 9, alignItems: "center", justifyContent: "center" },
+
   empty: { color: colors.textDim, fontSize: 13, fontStyle: "italic", marginTop: 16 },
   moreHint: { color: colors.textFaint, fontFamily: mono, fontSize: 11, textAlign: "center", marginTop: 16 },
   spotify: { flexDirection: "row", alignItems: "center", gap: 12, marginTop: 20, padding: 14, borderRadius: radius.md, borderWidth: 1, borderColor: colors.good, backgroundColor: "rgba(111,207,151,0.08)" },

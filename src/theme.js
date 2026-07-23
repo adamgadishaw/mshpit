@@ -128,9 +128,24 @@ export const colors = activeTheme.colors;
 export const themeIsDark = activeTheme.dark;
 
 // Swatch metadata for the theme picker.
+//
+// Four accents, not two. A preset carries a full accent set (warm, pink, cool,
+// gold) but the picker only ever showed the first two, so themes that differ
+// mainly in their cool and gold tones looked nearly identical on the chip.
+// `accents` is the ordered palette every picker renders; the individual keys
+// stay for callers that want one specific colour (the active border, a check).
 export const THEMES = Object.entries(PRESETS).map(([k, v]) => ({
   key: k, name: v.name, sub: v.sub, dark: v.dark,
-  swatch: { bg: v.colors.bg, surface: v.colors.surface, accent: v.colors.amberStrong, accent2: v.colors.magenta, text: v.colors.text },
+  swatch: {
+    bg: v.colors.bg,
+    surface: v.colors.surface,
+    accent: v.colors.amberStrong,
+    accent2: v.colors.magenta,
+    accent3: v.colors.cool,
+    accent4: v.colors.gold,
+    accents: [v.colors.amberStrong, v.colors.magenta, v.colors.cool, v.colors.gold],
+    text: v.colors.text,
+  },
 }));
 
 function persistTheme(next, ownerId = null) {

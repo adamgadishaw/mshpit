@@ -1,5 +1,6 @@
 import { View, Text, StyleSheet, ScrollView, Pressable } from "react-native";
-import { colors, radius, THEMES, themeKey } from "../theme";
+import { colors, radius, space, THEMES, themeKey } from "../theme";
+import ThemeSwatch, { themeGridStyle } from "../components/ThemeSwatch";
 import { useStore, isStaff, isMod, isArtist } from "../store";
 import ScreenHeader from "../components/ScreenHeader";
 import Avatar from "../components/Avatar";
@@ -59,30 +60,20 @@ export default function MenuScreen({ onClose, onNear, onVenues, onFanClubs, onTo
         {session && (
           <>
             <Text style={styles.section}>ACCOUNT</Text>
-            <Row icon="edit" label="Edit profile" sub="Photo, music, banner, theme" onPress={onEditProfile} />
+            <Row icon="edit" label="Edit profile" sub="Photo, music, banner" onPress={onEditProfile} />
+
+            <Text style={styles.subSection}>APPEARANCE</Text>
+            <Text style={styles.themeHint}>Saved to your account, follows you to any device.</Text>
+            <View style={styles.themeGrid}>
+              {THEMES.map((t) => (
+                <ThemeSwatch key={t.key} theme={t} active={t.key === themeKey} onPress={() => chooseTheme(t.key)} />
+              ))}
+            </View>
             {isMod(session.role) && <Row icon="shield" label="Moderation" sub="Reports, members, content" onPress={onAdmin} />}
             {isArtist(session.role) && <Row icon="calendar" label="Post tour dates" sub="Bulk + scheduled" onPress={onTourDates} />}
             {session.role === "fan" && <Row icon="shield" label="Claim an artist profile" sub="Verify with your label / KYC" onPress={onRequestArtist} />}
           </>
         )}
-
-        <Text style={styles.section}>APPEARANCE</Text>
-        {session && <Text style={styles.themeHint}>Saved to your account, follows you to any device.</Text>}
-        <View style={styles.themeRow}>
-          {THEMES.map((t) => {
-            const on = t.key === themeKey;
-            return (
-              <Pressable key={t.key} style={[styles.themeChip, { backgroundColor: t.swatch.bg, borderColor: on ? t.swatch.accent : colors.line }]} onPress={() => !on && chooseTheme(t.key)}>
-                <View style={styles.themeDots}>
-                  <View style={[styles.themeDot, { backgroundColor: t.swatch.accent }]} />
-                  <View style={[styles.themeDot, { backgroundColor: t.swatch.accent2 }]} />
-                </View>
-                <Text style={[styles.themeName, { color: t.swatch.text }]} numberOfLines={1}>{t.name}</Text>
-                {on && <View style={[styles.themeCheck, { backgroundColor: t.swatch.accent }]}><Icon name="check" size={10} color={t.swatch.bg} strokeWidth={3} /></View>}
-              </Pressable>
-            );
-          })}
-        </View>
 
         {session && <Row icon="logout" label="Log out" onPress={onLogout} danger />}
       </ScrollView>
@@ -103,11 +94,9 @@ const styles = StyleSheet.create({
   rowIcon: { width: 38, height: 38, borderRadius: 10, backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
   rowLabel: { color: colors.text, fontSize: 15, fontWeight: "700" },
   rowSub: { color: colors.textDim, fontSize: 12, marginTop: 2 },
-  themeHint: { color: colors.textDim, fontSize: 12, marginTop: -4, marginBottom: 10 },
-  themeRow: { flexDirection: "row", gap: 8 },
-  themeChip: { flex: 1, borderRadius: radius.sm, borderWidth: 1.5, paddingVertical: 12, paddingHorizontal: 8, gap: 8 },
-  themeDots: { flexDirection: "row", gap: 4 },
-  themeDot: { width: 12, height: 12, borderRadius: 6 },
-  themeName: { fontSize: 12.5, fontWeight: "800" },
-  themeCheck: { position: "absolute", top: 6, right: 6, width: 16, height: 16, borderRadius: 8, alignItems: "center", justifyContent: "center" },
+  // A quieter label than `section`, so Appearance reads as part of Account
+  // rather than as a peer of it.
+  subSection: { color: colors.textDim, fontSize: 11, fontWeight: "800", letterSpacing: 1, marginTop: space(4), marginBottom: space(1) },
+  themeHint: { color: colors.textDim, fontSize: 12, marginBottom: space(2.5) },
+  themeGrid: themeGridStyle,
 });
