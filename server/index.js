@@ -8,12 +8,13 @@
 // Truly uncaught process errors trigger a graceful restart; continuing after an
 // unknown fatal state can corrupt later requests or database work.
 import { createServer } from "node:http";
-import { createReadStream, existsSync, statSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { join, extname, normalize, dirname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { db, q, publicUser } from "./db.js";
 import { routes } from "./api.js";
 import { ApiError, errorEnvelope } from "./errors.js";
+import { injectHead, robotsTxt, sitemapXml } from "./seo.js";
 import { getSession, sweepExpiredSessions, sessionCookie, clearCookie, parseCookies, COOKIE, hashPassword, rateLimit } from "./auth.js";
 import { startTourDateScheduler } from "./tourdates.js";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -162,6 +163,24 @@ function matchRoute(method, pathname) {
   return null;
 }
 
+// robots.txt and sitemap.xml must be answered BEFORE the SPA fallback, which
+// was quietly serving the app shell for both: sitemap.xml returned HTML, so no
+// search engine could read it, and robots.txt fell through to Cloudflare's
+// managed default rather than ours.
+function serveCrawlerFile(req, res, pathname) {
+  const body = pathname === "/robots.txt" ? robotsTxt() : sitemapXml();
+  const type = pathname === "/robots.txt" ? "text/plain; charset=utf-8" : "application/xml; charset=utf-8";
+  res.writeHead(200, {
+    ...HEADERS,
+    "Content-Type": type,
+    "Content-Length": Buffer.byteLength(body),
+    // Short cache: the sitemap changes whenever anyone posts a review.
+    "Cache-Control": "public, max-age=3600",
+  });
+  if (req.method === "HEAD") return res.end();
+  res.end(body);
+}
+
 function serveStatic(req, res, pathname) {
   if (!existsSync(DIST)) {
     return send(res, 503, { error: "Web build not found. Run: npx expo export -p web" });
@@ -172,6 +191,18 @@ function serveStatic(req, res, pathname) {
   if (!file.startsWith(distRoot)) return send(res, 403, { error: "Forbidden" });
   if (!existsSync(file) || statSync(file).isDirectory()) file = join(DIST, "index.html"); // SPA fallback
   const ext = extname(file).toLowerCase();
+
+  // The shell is one file for every URL, so per-page metadata has to be injected
+  // per request. Without this a shared artist link previews as a blank card
+  // titled "Pit", and a crawler that does not run JavaScript sees nothing at
+  // all. Only the HTML entry point is rewritten; assets stream untouched.
+  if (ext === ".html") {
+    let html = readFileSync(file, "utf8");
+    try { html = injectHead(html, pathname); } catch { /* never fail the page over metadata */ }
+    res.writeHead(200, { ...HEADERS, "Content-Type": "text/html; charset=utf-8", "Content-Length": Buffer.byteLength(html), "Cache-Control": "no-cache" });
+    if (req.method === "HEAD") return res.end();
+    return res.end(html);
+  }
   const cache = ext === ".html" ? "no-cache" : "public, max-age=31536000, immutable";
   const size = statSync(file).size;
   res.writeHead(200, {
@@ -228,6 +259,8 @@ const server = createServer(async (req, res) => {
   if (req.method === "OPTIONS") return send(res, 204, "", cors);
 
   try {
+    if (pathname === "/robots.txt" || pathname === "/sitemap.xml") return serveCrawlerFile(req, res, pathname);
+
     if (pathname.startsWith("/api/")) {
       // Global flood guard on top of per-route limits.
       //

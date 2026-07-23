@@ -2166,3 +2166,46 @@ an architectural change, not a tuning exercise. I also could not verify scroll
 smoothness or real device behaviour here: the browser pane does not composite
 frames, so `requestAnimationFrame` never fires and any FPS number from this
 environment is meaningless. **The `dvh` fix needs confirming on a real iPhone.**
+
+### SEO groundwork: real URLs, metadata, robots and sitemap (2026-07-23)
+
+Found the root problem before writing any meta tags: **the app had no URLs.**
+Navigation called `pushState({ pit: "nav" }, "")` — an empty history entry that
+never changes the address. Every artist, venue and show lived at `mshpit.com/`.
+So a band link could not be shared, refresh lost your place, and there was
+nothing to index except the home page. Meta tags on a single URL achieve
+nothing, which is why this had to come first.
+
+**Scheme is Facebook's** (owner's call): vanity names at the root
+(`/turnstile`, `/superfingerbusiness_`) and only opaque ids under a prefix
+(`/show/<id>`, like `facebook.com/events/<id>`). One global namespace means
+`src/domain/urls.mjs` needs a reserved list and a fixed collision order: handle
+first (unique and user-owned), then artist, then venue.
+
+Real data caught a bug immediately: a band called "Artist" built `/artist`,
+which `parsePath` reads as a prefix with no value and rejects — a dead link in
+the sitemap. `artist`, `venue`, `u` and `show` are now reserved as root slugs
+and such names fall back to the prefixed form (`/artist/artist`). There is a
+round-trip test asserting every built path parses back.
+
+**Server** (`server/seo.js`) injects per-URL `<title>`, description, canonical,
+Open Graph, Twitter card and schema.org JSON-LD into the shell. This is not full
+SSR, but it fixes link previews everywhere (Facebook, iMessage, Slack, Discord
+never run JavaScript, so they were all showing a blank card titled "Pit") and
+gives crawlers real content. `/robots.txt` and `/sitemap.xml` are now served
+before the SPA fallback — sitemap.xml was previously returning **HTML**, so no
+search engine could read it, and robots.txt fell through to Cloudflare's managed
+default rather than ours.
+
+**Still to do:** the client does not yet respond to these URLs. Opening
+`/turnstile` directly serves correct metadata but boots the app at the home
+screen. That is the next step, and it MUST use `history.pushState`, never
+`location.href` or plain anchors — see the note below.
+
+**Sticky player constraint (owner raised this, and it is the real risk).**
+`PlayerBar` is a sibling of the content area in `App.js`, not inside it, so
+client-side navigation swaps the overlay beneath it and the player keeps
+playing. A full page load would unmount it, restart audio, and re-parse 4.17 MB
+of JavaScript. So the client router must only ever push/replace history state.
+Any `<a href>` that the browser follows, or any `location.href` assignment, is a
+regression. Worth an explicit test when the router lands.
