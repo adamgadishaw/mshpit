@@ -2067,3 +2067,27 @@ a second attempt succeeds, which is exactly the "works the next time" symptom.
 It now waits for the host: 20 attempts at 100ms, so 2s, comfortably longer than
 a mount or transition and still short enough that a genuinely missing host does
 not hang playback. The init timeout was already 12s and was never the problem.
+
+### The whole site shared one rate-limit bucket (2026-07-23) — critical
+
+Answering "what happens at 5000 users" found a hard blocker. The global flood
+guard keyed on `req.socket.remoteAddress`, with no `x-forwarded-for` handling.
+In production the app sits behind Cloudflare **and** Render's proxy, so that
+address is the proxy for every visitor: **all users shared a single bucket of
+300 requests per minute for the entire site.**
+
+This is not only a scale problem. A 429 on the playback resolve endpoint makes a
+song fall back to a preview, so this was very likely contributing to the
+preview complaints already.
+
+Fixed in `server/index.js`: `clientIp()` prefers `cf-connecting-ip` (Cloudflare
+sets it and strips client-supplied copies), then the leftmost `x-forwarded-for`,
+then the socket. Signed-in members are now bucketed per account like the
+per-route limiter, so a carrier NAT or office network cannot make its own users
+throttle each other. `/api/health` is exempt, because letting a traffic spike
+throttle the endpoint Render uses for liveness turns a busy minute into a
+restart loop.
+
+Verified: 60 rapid health checks all 200; two different forwarded addresses get
+independent buckets; one address doing 330 requests gets 300 through and 30
+throttled while another address is unaffected.

@@ -189,6 +189,24 @@ function serveStatic(req, res, pathname) {
   stream.pipe(res);
 }
 
+// The real client address behind Cloudflare and Render.
+//
+// `cf-connecting-ip` is set by Cloudflare and it strips any client-supplied
+// copy, so it is trustworthy whenever traffic must pass through Cloudflare.
+// `x-forwarded-for` is a chain, client first; a client that reaches the origin
+// directly could forge it, which is a rate-limit-evasion risk rather than an
+// auth one, and the alternative (one shared bucket for everybody) is worse.
+function clientIp(req) {
+  const cf = req.headers["cf-connecting-ip"];
+  if (typeof cf === "string" && cf.trim()) return cf.trim();
+  const forwarded = req.headers["x-forwarded-for"];
+  if (typeof forwarded === "string" && forwarded.trim()) {
+    const first = forwarded.split(",")[0].trim();
+    if (first) return first;
+  }
+  return req.socket.remoteAddress || "?";
+}
+
 const server = createServer(async (req, res) => {
   const started = Date.now();
   const requestId = randomUUID();
@@ -211,9 +229,25 @@ const server = createServer(async (req, res) => {
 
   try {
     if (pathname.startsWith("/api/")) {
-      // global flood guard on top of per-route limits
-      const ip = req.socket.remoteAddress || "?";
-      if (!rateLimit(`global:${ip}`, 300, 60 * 1000)) return sendApiError(res, new ApiError(429, "Too many requests.", "RATE_LIMITED"), requestId, cors);
+      // Global flood guard on top of per-route limits.
+      //
+      // This must use the CLIENT's address, not the socket's. In production the
+      // app sits behind Cloudflare and Render's proxy, so `socket.remoteAddress`
+      // is the proxy — every visitor collapsed into one bucket and the whole
+      // site shared a single 300/minute allowance. That is a self-inflicted
+      // outage waiting for the first busy day.
+      const ip = clientIp(req);
+      // Health checks are exempt: Render polls /api/health to decide whether the
+      // service is alive, so letting a traffic spike rate-limit it would turn a
+      // busy minute into a restart loop.
+      if (pathname !== "/api/health") {
+        // Signed-in members are limited per account, like the per-route limiter,
+        // so a carrier NAT or office network cannot make its users throttle each
+        // other. Guests still share by address, which is the best available key.
+        const sessionToken = parseCookies(req.headers.cookie)[COOKIE];
+        const flooder = getSession(sessionToken)?.user_id || `ip:${ip}`;
+        if (!rateLimit(`global:${flooder}`, 300, 60 * 1000)) return sendApiError(res, new ApiError(429, "Too many requests.", "RATE_LIMITED"), requestId, cors);
+      }
 
       const match = matchRoute(req.method, pathname);
       if (!match) return sendApiError(res, new ApiError(404, "Not found.", "NOT_FOUND"), requestId, cors);
