@@ -2037,3 +2037,33 @@ the song picker searching "bohemian rhapsody" returns Queen first.
 
 Note: `GET /api/me/playlists` does not exist — the route is
 `GET /api/users/:id/playlists`. Cost a couple of confused checks.
+
+### Cache warming, and the "flash then preview" bug (2026-07-23)
+
+**`scripts/warm-youtube-cache.mjs`.** Resolves the catalogue's top tracks ahead
+of traffic, most-popular-first, through the normal lookup so it fills the same
+cache the app reads. Budget is in **quota units, not songs** (an artist
+catalogue is ~13 units and covers their discography; a fallback search is 100).
+Resumable: cached songs are skipped and progress is stored in `app_meta` under
+`warm:youtube:v1`, so a stopped run continues where it left off. It also aborts
+the moment the server's circuit breaker trips, rather than burning the day's
+budget on errors.
+
+    node scripts/warm-youtube-cache.mjs --dry-run --artists 25   # estimate first
+    node scripts/warm-youtube-cache.mjs --budget 8000
+
+Dry run measured ~21 units per artist, so ~400 artists is roughly 8,400 units —
+one day's default allowance. Run it overnight before any launch push.
+
+**The "flash then nah" bug the owner reported** (video visibly starts, then
+drops to a 30-second preview; Calvin Harris "Summer", Ne-Yo "Closer", both fine
+on a later attempt) was a mount race, not a timeout. `useYouTubePlayer` looked
+for its host element and, if it was not there *at that instant*, immediately set
+an `init` error — which makes `ytFailed` true, which selects the preview. No
+wait, no retry. The host is often not mounted yet because the effect can run in
+the same commit that renders it, or while the player panel is animating in, and
+a second attempt succeeds, which is exactly the "works the next time" symptom.
+
+It now waits for the host: 20 attempts at 100ms, so 2s, comfortably longer than
+a mount or transition and still short enough that a genuinely missing host does
+not hang playback. The init timeout was already 12s and was never the problem.

@@ -6,6 +6,8 @@ import { Platform } from "react-native";
 // not append a second window to document.body or render competing controls.
 const web = Platform.OS === "web" && typeof window !== "undefined";
 const DEFAULT_HOST_ID = "pit-youtube-player-host";
+const HOST_WAIT_ATTEMPTS = 20;
+const HOST_WAIT_INTERVAL_MS = 100;
 const MIN_PLAYER_PX = 200;
 const MIN_VISIBLE_RATIO = 0.5;
 
@@ -99,6 +101,10 @@ export function useYouTubePlayer(enabled, options = {}) {
   const [state, setState] = useState({ position: 0, duration: 0, playing: false });
   const [error, setError] = useState(null);
   const [engineGeneration, setEngineGeneration] = useState(0);
+  // How long to wait for the player host to appear before calling it a failure:
+  // 20 x 100ms = 2s, comfortably longer than a mount or panel transition, and
+  // still short enough that a genuinely missing host does not hang playback.
+  const hostWaitRef = useRef(0);
 
   const hostId = typeof options === "string"
     ? options
@@ -199,10 +205,24 @@ export function useYouTubePlayer(enabled, options = {}) {
     const host = resolveHost(typeof options === "string" ? { hostId: options } : options);
 
     if (!host) {
+      // The host may simply not be in the DOM yet: this effect can run in the
+      // same commit that renders it, or while the player panel is still
+      // animating in. Failing instantly here is what made a video appear to
+      // start and then get dropped for a 30-second preview a moment later —
+      // the "flash, then nah" the owner reported. Wait for the host to show up
+      // before treating it as a real failure.
       setReady(false);
-      setError({ kind: "init", message: `YouTube player host #${hostId} was not found.` });
-      return;
+      if (hostWaitRef.current >= HOST_WAIT_ATTEMPTS) {
+        setError({ kind: "init", message: `YouTube player host #${hostId} was not found.` });
+        return;
+      }
+      const attempt = hostWaitRef.current + 1;
+      hostWaitRef.current = attempt;
+      const retry = setTimeout(() => setEngineGeneration((n) => n + 1), HOST_WAIT_INTERVAL_MS);
+      return () => clearTimeout(retry);
     }
+    // Found it, so a later remount starts its own patience budget.
+    hostWaitRef.current = 0;
 
     hostRef.current = host;
     intersectionRatioRef.current = visibleViewportRatio(host);
