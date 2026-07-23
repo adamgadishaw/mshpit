@@ -782,7 +782,11 @@ export const routes = {
     const out = sorted.slice(0, n).map(([genre, count]) => ({ genre, count, pct: count / total }));
     const rest = sorted.slice(n).reduce((s, [, v]) => s + v, 0);
     if (rest > 0) out.push({ genre: "Other", count: rest, pct: rest / total });
-    return { total: rows.length, catalogTotal: artistStmts.count.get().c, genres: out };
+    // `total` counts artists; `distinctGenres` counts genres. Discover's stat
+    // tile used to display the length of the charted slice, so a catalogue
+    // spanning dozens of genres advertised "8 GENRES" -- the chart's own limit,
+    // reported as a fact about the catalogue.
+    return { total: rows.length, distinctGenres: sorted.length, catalogTotal: artistStmts.count.get().c, genres: out };
   },
   // Country distribution for the region chips (biggest scenes first).
   "GET /api/discover/countries": (ctx) => {

@@ -2756,7 +2756,7 @@ export function StoreProvider({ children }) {
     Object.values(catalogArtists || {}).forEach((a) => { if (a.country) c[a.country] = (c[a.country] || 0) + 1; });
     return Object.entries(c).filter(([, v]) => v >= min).sort((a, b) => b[1] - a[1]).map(([country, count]) => ({ country, count }));
   };
-  const topGenres = (country, n = 6) => {
+  const topGenres = (country, n = 10) => {
     const g = {};
     Object.values(catalogArtists || {}).forEach((a) => {
       if (country && a.country !== country) return;

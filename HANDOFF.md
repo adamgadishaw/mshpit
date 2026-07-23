@@ -1813,3 +1813,22 @@ instead of colliding.
   of mobile lag. It needs a split into a stable actions context and a data
   context, which is too large to start at the end of a session.
 - **Items 21 and 24** are blocked on owner decisions, not effort. See `TODO.md`.
+
+### Follow-up batch, same day
+
+**Discover's genre count (item 19).** The "8 GENRES" tile was rendering the
+length of the chart's own slice array. `/api/discover/genres` caps the donut at
+8 slices plus "Other" for readability, and the tile treated that as the
+catalogue's genre count. The catalogue holds **68 distinct genres** across 2,658
+artists. The endpoint now returns `distinctGenres` alongside `total`, and
+Discover keeps the two in separate state: `genreTotal` (artists in region, feeds
+the donut's centre number) and `genreKinds` (distinct genres, feeds the tile).
+Nearly shipped a bug here by reusing `genreTotal` for both, which would have
+corrupted the donut's centre count.
+
+Note for whoever continues: 68 is honest but the *labels* are still mostly
+MusicBrainz crawl buckets (item 2). The server-side authority already refuses to
+state them as fact, and `catalogSeed.js` writes provenance via `genreFields`, so
+running enrichment replaces buckets with provider evidence over time. The client
+still counts raw `catalogArtists` genres in `topGenres`, which is the remaining
+inconsistency.

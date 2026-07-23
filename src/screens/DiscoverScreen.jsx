@@ -150,6 +150,9 @@ export default function DiscoverScreen({ onOpenTopRated, onOpenArtist, onOpenNea
   const [countries, setCountries] = useState([{ country: "Worldwide" }]);
   const [genres, setGenres] = useState([]);
   const [genreTotal, setGenreTotal] = useState(0);
+  // Distinct genres in the catalogue, which is NOT the same as the number of
+  // slices the chart draws, and not the artist count `genreTotal` holds.
+  const [genreKinds, setGenreKinds] = useState(0);
   const [catalogTotal, setCatalogTotal] = useState(0);
   const [genre, setGenre] = useState(null);       // selected genre (pie slice / legend)
   const [genreRows, setGenreRows] = useState([]); // top artists in that genre (+ topTrack)
@@ -185,7 +188,7 @@ export default function DiscoverScreen({ onOpenTopRated, onOpenArtist, onOpenNea
   // Genre share reloads on region change; reset the selected genre.
   useEffect(() => {
     let live = true;
-    discoverGenres({ country: region, n: 8 }).then((g) => { if (live) { setGenres(g.genres || []); setGenreTotal(g.total || 0); setCatalogTotal(g.catalogTotal || 0); setGenre((cur) => (g.genres || []).some((x) => x.genre === cur && x.genre !== "Other") ? cur : ((g.genres || []).find((x) => x.genre !== "Other")?.genre || null)); } });
+    discoverGenres({ country: region, n: 8 }).then((g) => { if (live) { setGenres(g.genres || []); setGenreTotal(g.total || 0); setGenreKinds(g.distinctGenres || 0); setCatalogTotal(g.catalogTotal || 0); setGenre((cur) => (g.genres || []).some((x) => x.genre === cur && x.genre !== "Other") ? cur : ((g.genres || []).find((x) => x.genre !== "Other")?.genre || null)); } });
     return () => { live = false; };
   }, [region]);
 
@@ -212,7 +215,7 @@ export default function DiscoverScreen({ onOpenTopRated, onOpenArtist, onOpenNea
     { k: "members", label: "MEMBERS", icon: "you", tint: colors.gold, val: memberCount || stats.members },
     { k: "artists", label: "ARTISTS", icon: "music", tint: colors.amber, val: catalogTotal || stats.artists },
     { k: "venues", label: "VENUES", icon: "pin", tint: colors.cool, val: stats.venues },
-    { k: "genres", label: "GENRES", icon: "discover", tint: colors.magenta, val: genres.filter((g) => g.genre !== "Other").length || stats.genres },
+    { k: "genres", label: "GENRES", icon: "discover", tint: colors.magenta, val: genreKinds || stats.genres },
   ];
 
   return (

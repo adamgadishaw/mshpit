@@ -476,7 +476,15 @@ See `SCALING.md` for the staged technical path and `SECURITY.md` for launch gate
 
 ### 19. Discover shows only 8 genres
 
-**Status: OPEN; root cause identified, tied to item 2.**
+**Status: PARTIAL (2026-07-22). The count is fixed and honest; the underlying
+labels still need the enrichment backfill.**
+
+The stat tile was displaying the *chart's slice limit* as a fact about the
+catalogue: `/api/discover/genres` returns the top 8 plus "Other", and the tile
+rendered that array's length. The catalogue actually holds **68 distinct
+genres** across 2,658 artists. The endpoint now returns `distinctGenres` and the
+tile shows it, kept separate from `total` (artists in region), which feeds the
+donut's centre number. Chart slices stay capped so the donut is readable.
 
 Discover's stat tile reads "8 GENRES" against a 2,657-artist catalogue. The
 catalogue holds ~80 distinct genre values, but most are MusicBrainz crawl
