@@ -600,3 +600,24 @@ indexing: crawlers see an empty shell. Real SEO here likely means server-rendere
 or pre-rendered pages for the public surfaces (artist, venue, show), canonical
 URLs, structured data for events, and a sitemap. Scope the rendering change
 before writing meta tags, since tags on an empty shell achieve nothing.
+
+### 26. Search songs when you don't know the artist
+
+**Status: DONE (2026-07-23), verified in the running app.**
+
+`GET /api/songs/search?q=` (Deezer-backed, keyless, costs no YouTube quota) plus
+a SONGS section in the search screen. Tapping a result plays it and seeds the
+queue.
+
+Ranking took three fixes to return the recording people actually mean: results
+were truncated before sorting; Deezer's plain relevance search omits the
+canonical version entirely (`q=bohemian rhapsody` returns 36 rows with no Queen,
+while `track:"bohemian rhapsody"` returns Queen ranked highest), so both queries
+run and merge; and dedupe kept the first copy of a recording rather than the
+highest-ranked one. Deezer's rank still tracks current streaming, so trending
+covers beat originals — the catalogue breaks the tie via
+`score = rank * (1 + popularity/100)`.
+
+Possible follow-up: the search box could match songs the catalogue already knows
+(`artists.data.topTracks`) before calling out, which would make common searches
+instant and offline-capable.

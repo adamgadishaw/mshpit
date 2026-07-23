@@ -1,5 +1,5 @@
 import { useMemo, useState, useEffect } from "react";
-import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, Linking } from "react-native";
+import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, Linking, Image } from "react-native";
 import { colors, mono, radius, roleColor } from "../theme";
 import { ratedShows } from "../data";
 import { ingestedArtists } from "../seed/ingested";
@@ -39,6 +39,21 @@ function ArtistRow({ name, genre, onPress }) {
         {!!genre && <Text style={styles.rowSub} numberOfLines={1}>{genre}</Text>}
       </View>
       <Icon name="chevron-right" size={16} color={colors.textDim} />
+    </Pressable>
+  );
+}
+function SongRow({ song, onPress }) {
+  const mins = song.duration ? `${Math.floor(song.duration / 60)}:${String(song.duration % 60).padStart(2, "0")}` : null;
+  return (
+    <Pressable style={styles.row} onPress={onPress} accessibilityRole="button" accessibilityLabel={`Play ${song.title} by ${song.artist}`}>
+      {song.art
+        ? <Image source={{ uri: song.art }} style={styles.songArt} />
+        : <View style={[styles.dot, { borderColor: colors.good }]}><Icon name="music" size={14} color={colors.good} /></View>}
+      <View style={{ flex: 1 }}>
+        <Text style={styles.rowName} numberOfLines={1}>{song.title}</Text>
+        <Text style={styles.rowSub} numberOfLines={1}>{song.artist}{mins ? ` · ${mins}` : ""}</Text>
+      </View>
+      <Icon name="play" size={14} color={colors.amber} />
     </Pressable>
   );
 }
@@ -86,13 +101,14 @@ function Section({ icon, tint, title, count, rows }) {
   );
 }
 
-export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpenFanClub, onOpenProfile }) {
+export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpenFanClub, onOpenProfile, onPlay }) {
   const { tourDates, searchVenues, artistsAlphabetical, venuesByCity, upcomingEvents, fanClubsDirectory, commentsFor, track,
     users, session, isFollowing, follow, unfollow, searchPeople, loadMembers, memberCount, searchArtistsApi, resolveArtist,
-    recentSearches, addRecentSearch, removeRecentSearch, clearRecentSearches } = useStore();
+    recentSearches, addRecentSearch, removeRecentSearch, clearRecentSearches, searchSongsApi } = useStore();
   const [q, setQ] = useState("");
   const [focused, setFocused] = useState(false);
   const [dbArtists, setDbArtists] = useState([]); // from the DB catalog API (scales past the bundle)
+  const [songs, setSongs] = useState([]);
   const query = q.trim().toLowerCase();
 
   // Pull the member directory on open + whenever the box is cleared, so people are
@@ -100,13 +116,18 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
   // char) keeps cross-device results fresh; a short debounce avoids spamming it.
   useEffect(() => { searchArtistsApi("").then(setDbArtists); }, []);
   useEffect(() => {
-    if (!query) { searchArtistsApi("").then(setDbArtists); return; }
+    if (!query) { searchArtistsApi("").then(setDbArtists); setSongs([]); return; }
+    let live = true;
     const id = setTimeout(() => {
       searchPeople(query); // type-ahead: people only ever surface as you type
       searchArtistsApi(query).then(setDbArtists); // pulls the full DB catalog, not just the bundle
+      // Songs come from the server (Deezer-backed, no YouTube quota). `live`
+      // guards against a slow response for an old query landing after a newer
+      // one and showing results for something the user already typed past.
+      searchSongsApi(query).then((list) => { if (live) setSongs(list || []); });
       track("search", { q: query });
     }, 250);
-    return () => clearTimeout(id);
+    return () => { live = false; clearTimeout(id); };
   }, [query]);
 
   const mine = session?.id;
@@ -250,6 +271,22 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
           ].filter(Boolean)}
         />
 
+        <Section
+          icon="music" tint={colors.good}
+          title="SONGS" count={songs.length}
+          rows={songs.map((song) => (
+            <SongRow
+              key={`${song.id || song.title}|${song.artist}`}
+              song={song}
+              onPress={() => {
+                addRecentSearch?.({ type: "song", label: `${song.title} - ${song.artist}` });
+                // Artist + title is a complete track reference; the player
+                // resolves a video or preview when it becomes current.
+                onPlay?.({ kind: "track", title: song.title, artist: song.artist, art: song.art || null, id: song.id || null, duration: song.duration || null });
+              }}
+            />
+          ))} />
+
         <Section icon="pin" tint={colors.cool} title="VENUES" count={venues.length}
           rows={venues.map((v) => <VenueRow key={v.name} v={v} onPress={() => openVenue(v.name)} />)} />
 
@@ -278,6 +315,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
 }
 
 const styles = StyleSheet.create({
+  songArt: { width: 36, height: 36, borderRadius: radius.sm, backgroundColor: colors.surfaceAlt },
   wrap: { flex: 1, backgroundColor: colors.bg },
   header: { padding: 16, paddingBottom: 12 },
   field: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 14 },

@@ -1988,3 +1988,19 @@ same video twice with backoff, resuming position, before falling back.
 
 Note for the next agent: `youtubePlayer.load(videoId, { startSec })` — it does
 not take an `autoplay` option.
+
+**Song results are wired into the search screen** (2026-07-23). `SearchScreen`
+now takes `onPlay` (passed from `App.js`) and renders a SONGS section between
+ARTISTS and VENUES, with album art, artist and duration. Tapping a row plays it
+through `openPlayer`, which also builds the recommendation tail, and records a
+`{ type: "song" }` recent search.
+
+The lookup is debounced with the existing 250ms search timer and guarded with a
+`live` flag, so a slow response for an older query cannot land after a newer one
+and show results for something the user has already typed past.
+
+Verified in the running app: typing "smells like teen spirit" returns 12 songs
+with Nirvana first, and clicking it starts playback with a 30-track queue. It
+plays as PREVIEW AUDIO locally because there is no `YOUTUBE_API_KEY` in this
+environment — that is the documented fallback, not the transient-error bug fixed
+earlier. Production has the key and will resolve a video.
