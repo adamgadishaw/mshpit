@@ -2247,3 +2247,33 @@ a visitor are sent to the same page.
 stack (`pit.stack`) rather than the feed, so a broken link can show your last
 screen while the address bar says something else. It does not strand anyone, so
 it is logged rather than fixed.
+
+### "YouTube post didn't go through" was a silent failure, plus live comments (2026-07-23)
+
+The YouTube attach and post path is fine end to end — verified via API and
+through the full UI (oembed resolves watch/share/shorts/live URLs, the post
+saves with the song, the composer closes). What the owner hit was a **failure
+with no feedback**: when the post write-through failed, `store.js` removed the
+optimistic feed row and returned `{ ok: false, error }`, but `LogScreen.submit`
+only ever checked `ok !== false` to clear the draft. **Nothing displayed the
+error.** The composer stayed open looking unchanged and the post just vanished —
+exactly "it didn't go through" with no reason.
+
+Now `submit` reads the failure and shows a message keyed to the cause:
+rate-limited ("posting quickly, your post is still here"), offline ("couldn't
+reach Pit, nothing was lost"), or generic. The message box lives at the top of
+the composer body, not inside the collapsible song panel where I first
+mis-placed it — a text-only post never opens that panel, so it never showed.
+Verified by stubbing a 429: the message appears and the draft is kept.
+
+The most likely trigger in production was the shared-bucket rate limiter (fixed
+earlier same day): a 429 on POST /api/posts would have produced precisely this
+silent failure.
+
+**Live comments (FB-style).** The feed already polls every ~12s and the feed
+endpoint returns a live `comment_count` per post, so counts and likes were
+already live; the open post view polls comments every 15s. The gap was the feed
+card preview (`AfterpartyPreview`), which loaded its two shown comments once on
+mount and never again. It now reloads when `log.comments` changes, so a new
+comment on a post in your feed appears without opening it — and only the handful
+of cards whose count actually moved re-fetch, rather than every card polling.

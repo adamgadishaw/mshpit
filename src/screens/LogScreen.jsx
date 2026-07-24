@@ -53,6 +53,17 @@ function Stepper({ label, value, onChange, color }) {
   );
 }
 
+// A failed post used to vanish with no explanation. This turns the error into
+// something that tells the person what to do: the two common causes are being
+// offline and hitting the hourly post limit, and both are recoverable.
+function postErrorMessage(error) {
+  const code = error?.code || error?.body?.code;
+  const status = Number(error?.status || error?.body?.status);
+  if (code === "RATE_LIMITED" || status === 429) return "You're posting quickly. Wait a moment and try again — your post is still here.";
+  if (error?.offline || status === 0 || (!status && error?.message)) return "Couldn't reach Pit. Check your connection and try again — nothing was lost.";
+  return "That didn't post. Your review is still here, give it another try.";
+}
+
 function postDims(post) {
   const stored = post?.dims && typeof post.dims === "object" ? post.dims : {};
   const value = (candidate, fallback = 0) => Number.isFinite(Number(candidate)) ? Number(candidate) : Number(fallback) || 0;
@@ -123,6 +134,7 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
   const shareablePlaylists = (myPlaylists || []).filter((pl) => pl?.visibility !== "private" && (pl?.tracks?.length || 0) > 0);
   useEffect(() => { loadMyPlaylists?.(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
   const [songError, setSongError] = useState("");
+  const [postError, setPostError] = useState("");
   const [tags, setTags] = useState(() => (Array.isArray(editing?.tags) ? editing.tags.slice(0, 5) : []));
   const [tagDraft, setTagDraft] = useState("");
   const commitTag = (raw) => {
@@ -227,6 +239,7 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
   const submit = async () => {
     if (!canPost || submitBusy) return;
     setPosting(true);
+    setPostError("");
     try {
       const durablePhotos = photos.filter(isDurableMediaUrl);
       if (isStatus) {
@@ -247,7 +260,11 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
           likes: editing?.likes || 0,
           comments: editing?.comments || 0,
         });
-        if (result?.ok !== false && draftId) deleteDraft(draftId);
+        if (result?.ok === false) {
+          setPostError(postErrorMessage(result.error));
+          return;
+        }
+        if (draftId) deleteDraft(draftId);
         return;
       }
       const result = await onPost?.({
@@ -277,10 +294,13 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
         comments: editing?.comments || 0,
         inTourWindow: editing?.inTourWindow || false,
       });
-      // Failed posts stay fully editable and retain any saved draft.
-      if (result?.ok !== false && draftId) deleteDraft(draftId);
-    } catch {
-      // The store/API layer presents the themed failure; do not clear the form.
+      // Failed posts stay fully editable and retain any saved draft, and now say
+      // WHY: previously a rejected post silently left the composer open with no
+      // message, which read as "it didn't go through" for no visible reason.
+      if (result?.ok === false) { setPostError(postErrorMessage(result.error)); return; }
+      if (draftId) deleteDraft(draftId);
+    } catch (error) {
+      setPostError(postErrorMessage(error));
     } finally {
       setPosting(false);
     }
@@ -291,6 +311,7 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
       <SheetHeader title={editing ? "Edit post" : isStatus ? "New post" : "Log a show"} onClose={onCancel} action={{ label: posting ? (editing ? "Saving..." : "Posting...") : uploadingPhotos ? "Uploading..." : resolvingSong ? "Checking..." : editing ? "Save" : "Post", onPress: submit, disabled: !canPost || submitBusy }} />
 
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+        {!!postError && <View style={styles.postErrorBox}><Icon name="flag" size={14} color={colors.danger} /><Text style={styles.postErrorTxt}>{postError}</Text></View>}
         {!editing && (
           <View style={styles.modeRow}>
             <Pressable style={[styles.modeBtn, isStatus && styles.modeBtnOn]} onPress={() => setPostType("status")} accessibilityRole="button" accessibilityState={{ selected: isStatus }} accessibilityLabel="Share a status update">
@@ -642,6 +663,8 @@ const styles = StyleSheet.create({
   songTitle: { color: colors.text, fontSize: 14, lineHeight: 18, fontWeight: "800", marginTop: 2 },
   songArtist: { color: colors.textDim, fontSize: 11.5, marginTop: 2 },
   songError: { color: colors.danger, fontSize: 12.5, lineHeight: 18, marginTop: 7 },
+  postErrorBox: { flexDirection: "row", alignItems: "center", gap: space(1.5), backgroundColor: colors.surface, borderColor: colors.danger, borderWidth: 1, borderRadius: radius.md, padding: space(2.5), marginTop: space(3) },
+  postErrorTxt: { flex: 1, color: colors.danger, fontSize: 13, lineHeight: 18, fontWeight: "600" },
   playlistArt: { alignItems: "center", justifyContent: "center", backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.line },
   plList: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   plChip: { flexDirection: "row", alignItems: "center", gap: 7, maxWidth: "100%", paddingHorizontal: 12, paddingVertical: 9, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },

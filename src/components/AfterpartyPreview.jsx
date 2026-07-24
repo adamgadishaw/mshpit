@@ -16,7 +16,12 @@ export default function AfterpartyPreview({ log, onOpen, max = 2 }) {
   const comments = commentsFor(log.id);
   const [text, setText] = useState("");
 
-  useEffect(() => { loadComments(log.id, { limit: max }); }, [log.id, max]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Load the preview once, then reload whenever the feed poll reports a changed
+  // comment count for this post. That gives Facebook-style live comments without
+  // every card in the feed polling on its own: the feed already refreshes counts
+  // every ~12s, and this only re-fetches the two shown comments for the handful
+  // of posts whose count actually moved.
+  useEffect(() => { loadComments(log.id, { limit: max }); }, [log.id, max, log.comments]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Deleted parents come back as tombstones so their replies keep their place in
   // the full thread. A two-line card preview has no room for that context, so it
