@@ -2325,3 +2325,26 @@ react-native-web writes font-size inline. Verified the rule is installed.
 
 No horizontal overflow was found at 375px with the player active, so the skew
 was the input zoom, not a layout overflow.
+
+### Cache warming is now a real job (2026-07-23, item 1)
+
+The warm-cache script existed but was a manual, unwired one-off. It is now a
+proper job. `server/cacheWarmer.js` holds the shared logic; the CLI
+(`npm run warm:youtube`) and a new in-process daily scheduler both call
+`warmYouTubeCache`. `startCacheWarmScheduler()` is wired into server boot next to
+the tour-date scheduler: idle without `YOUTUBE_API_KEY`, otherwise a bounded pass
+(~1500 units/day default, override with `YOUTUBE_WARM_BUDGET`) a minute after
+boot and every 24h, guarded by a per-day `app_meta` marker so a redeploy does not
+re-warm.
+
+Key design points: warming uses the artist-catalogue lookup (~13 units for a
+whole discography) not search (100 units, capped 90/day for users), so it is
+cheap AND never starves user playback. Most-popular-first, so a cut-short run
+still bought the most benefit. Resumable via a `done` set in app_meta. Stops
+immediately if the circuit breaker trips. `--dry-run` estimates coverage/cost
+with no key and records nothing. Seven unit tests inject a fake resolver so the
+accounting is covered without a real key or network.
+
+To warm the whole popular catalogue before a launch:
+`node scripts/warm-youtube-cache.mjs --budget 8000` on the server (needs the
+production key). The daily scheduler keeps it warm after that.

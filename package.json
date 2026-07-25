@@ -28,6 +28,7 @@
     "ingest:famous-photos": "node scripts/ingest-famous-venue-photos.mjs",
     "ingest:details": "node scripts/ingest-artist-details.mjs",
     "ingest:fix-bios": "node scripts/fix-bios.mjs",
+    "warm:youtube": "node scripts/warm-youtube-cache.mjs",
     "ingest:all": "node scripts/ingest-venues.mjs && node scripts/ingest-famous-venue-photos.mjs && node scripts/ingest-venue-photos.mjs && node scripts/ingest-artist-details.mjs && node scripts/fix-bios.mjs",
     "pipeline": "node --env-file=.env scripts/pipeline.mjs",
     "server": "node server/index.js",

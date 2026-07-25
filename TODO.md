@@ -30,7 +30,23 @@ exists. Record the test/device/production evidence in `HANDOFF.md` first.
 
 ### 1. Sustainable YouTube lookup at large-user scale
 
-**Status: PARTIAL; capacity controls implemented, production capacity work remains.**
+**Status: IMPLEMENTED (2026-07-23). Cache warming now runs as a real job.**
+
+The lever that matters at scale is a warm cache: quota is per project, so a
+resolved song is free for everyone after, and a cold cache is what degrades
+first listens to previews and burns the daily search budget. `server/cacheWarmer.js`
+walks the catalogue most-popular-first and resolves top tracks through the
+artist-catalogue path (~13 quota units per discography, and it does NOT touch
+the 90/day user search budget). `startCacheWarmScheduler()` runs it in-process
+daily (guarded by a per-day marker so a redeploy does not re-warm), idle without
+a key like the tour scheduler. `npm run warm:youtube` is the manual runner, with
+`--dry-run` estimating coverage and cost with no key (30 artists ≈ 90 songs ≈
+378 units). Seven unit tests cover budget accounting, resume, skip-cached, the
+circuit-breaker stop and the dry run.
+
+Remaining production capacity work: if daily active users exceed what one
+project's 10k units can serve, raise the quota in Google Cloud or add a second
+key. The admin PLAYBACK LOOKUP panel shows when the budget is the bottleneck.
 
 Current batch adds a persistent Pacific-day budget for `search.list` (90 calls by
 default, configurable), single-flight collapse for concurrent identical song

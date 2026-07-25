@@ -17,6 +17,7 @@ import { ApiError, errorEnvelope } from "./errors.js";
 import { injectHead, robotsTxt, sitemapXml } from "./seo.js";
 import { getSession, sweepExpiredSessions, sessionCookie, clearCookie, parseCookies, COOKIE, hashPassword, rateLimit } from "./auth.js";
 import { startTourDateScheduler } from "./tourdates.js";
+import { startCacheWarmScheduler } from "./cacheWarmer.js";
 import { randomBytes, randomUUID } from "node:crypto";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -349,4 +350,5 @@ process.on("SIGTERM", () => shutdown(0));
 server.listen(PORT, () => {
   console.log(`[pit] up on http://localhost:${PORT} ${PROD ? "(production)" : "(dev)"}, serving API${existsSync(DIST) ? " + web build" : " (no dist/ yet)"}`);
   startTourDateScheduler(); // scrapes tour dates into the DB on a timer (no cron/redeploy)
+  startCacheWarmScheduler(); // warms popular YouTube lookups daily so first listens play the video, not a preview
 });
