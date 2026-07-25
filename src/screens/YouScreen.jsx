@@ -9,7 +9,7 @@ import { BadgeRow } from "../components/Badge";
 import { useStore, isStaff, isMod, isArtist } from "../store";
 import { showDateMs } from "../lib/showTime";
 import Countdown from "../components/Countdown";
-import { formatDate } from "../domain/dates.mjs";
+import { formatDate, toIsoDate, relativeTime } from "../domain/dates.mjs";
 
 const web = Platform.OS === "web";
 
@@ -357,21 +357,46 @@ export default function YouScreen({ feed, onLogin, onLogout, onAdmin, onAddTourD
         <Text style={styles.sectionLabel}>YOUR DIARY · {mine.length}</Text>
         {mine.length === 0 && <Text style={styles.emptyHint}>No shows yet. Tap the + to log your first one.</Text>}
         {mine.map((l) => {
-          const parts = (l.date || "").split(" · ");
+          // A status post is not a concert review: it has no artist, venue or
+          // score, so rendering it with the review layout produced the empty
+          // "." rows with a fake ★0.0. It shows its text and a date badge only.
+          const isStatus = l.kind === "status";
+          // Dates are stored ISO now; the old code split on " · " and so the
+          // month/day badge came up blank for every migrated entry.
+          const iso = toIsoDate(l.date);
+          const [, mon, day] = iso ? iso.split("-") : [];
+          const statusText = (l.review || "").trim();
           return (
             <Pressable key={l.id} style={styles.row} onPress={() => onOpen?.(l)}>
               <View style={styles.diaryStub}>
-                <Text style={styles.diaryStubMon}>{parts[1] || ""}</Text>
-                <Text style={styles.diaryStubDay}>{parts[2] || ""}</Text>
+                {isStatus ? (
+                  <Icon name="feed" size={16} color={colors.textDim} />
+                ) : (
+                  <>
+                    <Text style={styles.diaryStubMon}>{mon || ""}</Text>
+                    <Text style={styles.diaryStubDay}>{day || ""}</Text>
+                  </>
+                )}
               </View>
               <View style={{ flex: 1 }}>
-                <Text style={styles.rowLabel} numberOfLines={1}>{l.artist}</Text>
-                <Text style={styles.rowSub} numberOfLines={1}>{l.venue} · {l.city}</Text>
+                {isStatus ? (
+                  <>
+                    <Text style={styles.rowLabel} numberOfLines={1}>{statusText || (l.photos?.length ? "Shared a photo" : l.song ? "Shared a song" : "Posted an update")}</Text>
+                    <Text style={styles.rowSub} numberOfLines={1}>{relativeTime(l.createdAt)}</Text>
+                  </>
+                ) : (
+                  <>
+                    <Text style={styles.rowLabel} numberOfLines={1}>{l.artist}</Text>
+                    <Text style={styles.rowSub} numberOfLines={1}>{[l.venue, l.city].filter(Boolean).join(" · ")}</Text>
+                  </>
+                )}
               </View>
-              <View style={styles.diaryScorePill}>
-                <Icon name="star" size={11} color={colors.gold} />
-                <Text style={styles.diaryScore}>{(l.overall || 0).toFixed(1)}</Text>
-              </View>
+              {!isStatus && (
+                <View style={styles.diaryScorePill}>
+                  <Icon name="star" size={11} color={colors.gold} />
+                  <Text style={styles.diaryScore}>{(l.overall || 0).toFixed(1)}</Text>
+                </View>
+              )}
             </Pressable>
           );
         })}

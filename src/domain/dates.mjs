@@ -55,3 +55,18 @@ export function formatDate(value, fallback = "") {
 export function todayIso(now = new Date()) {
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
 }
+
+// A short "how long ago" label ("now", "5m", "3h", "2d", "4mo") for post
+// timestamps. Extracted so the feed card and the You-screen diary render time
+// the same way instead of each keeping their own copy.
+export function relativeTime(timestamp) {
+  if (!timestamp) return "now";
+  const seconds = Math.max(0, Math.floor((Date.now() - Number(timestamp)) / 1000));
+  if (seconds < 60) return "now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  return days < 30 ? `${days}d` : `${Math.floor(days / 30)}mo`;
+}

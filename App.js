@@ -129,6 +129,23 @@ function Root() {
   // The player starts COLLAPSED (a slim rail on desktop, hidden on mobile) and
   // opens itself the moment something plays; collapsing pauses (YouTube terms).
   const [playerMinimized, setPlayerMinimized] = useState(true);
+  // iOS Safari zooms the whole page in when you focus a text field smaller than
+  // 16px, and does not cleanly zoom back out. Many of the app's inputs are 13-15px
+  // by design, so every search/compose box was jerking the viewport on a phone,
+  // which is the "zoom skewing" that got much worse with the player taking space.
+  // The fix every site uses: force a 16px minimum on TOUCH devices only, so the
+  // desktop keeps its designed sizes. `!important` is required because
+  // react-native-web writes font-size as an inline style.
+  useEffect(() => {
+    if (!web || typeof document === "undefined") return;
+    const id = "pit-ios-input-zoom-guard";
+    if (document.getElementById(id)) return;
+    const style = document.createElement("style");
+    style.id = id;
+    style.textContent = "@media (pointer: coarse) { input, textarea, select { font-size: 16px !important; } }";
+    document.head.appendChild(style);
+  }, [web]);
+
   useEffect(() => { if (web) save("pit.player", player); }, [player]);
   const [acctOpen, setAcctOpen] = useState(false);
   // First-run welcome (Spotify + find-your-people). Armed at signup, shown once the

@@ -2300,3 +2300,28 @@ card with an onPlay handler.
 Verified in the browser: DELETE fires the right id, the post leaves the feed and
 does not come back on the 12s poll, the delete button renders only on own posts
 (8 posts → 8 buttons), and the hint text is present.
+
+### You-screen diary, and mobile Safari input zoom (2026-07-23)
+
+**Diary "." rows.** The You-screen diary rendered every entry with the review
+layout: a status post has no artist/venue/score, so it came up as an empty title
+with a fake ★0.0. Compounding it, the date badge still split on " · " even
+though dates are stored ISO now (my own migration), so the month/day badge was
+blank for every entry. Fixed: status posts render their text (or "Shared a
+photo/song", "Posted an update") with a relative timestamp and no score pill;
+reviews keep artist/venue/score with the ISO date parsed via toIsoDate. Verified
+in the browser — status posts show text, reviews show scores, no "." rows.
+Extracted `relativeTime` to src/domain/dates.mjs (was duplicated in TicketStub)
+so both render time identically.
+
+**Mobile "zoom skewing" with the player up.** iOS Safari zooms the page in when
+a focused text field is smaller than 16px and does not cleanly zoom back. Many
+inputs are 13-15px by design, so every search/compose box jerked the viewport,
+and it read as worst when the player was up because the layout was already tight.
+App.js now injects a web-only global style: `@media (pointer: coarse) { input,
+textarea, select { font-size: 16px !important } }` — touch devices only, so the
+desktop keeps its designed sizes. `!important` is required because
+react-native-web writes font-size inline. Verified the rule is installed.
+
+No horizontal overflow was found at 375px with the player active, so the skew
+was the input zoom, not a layout overflow.

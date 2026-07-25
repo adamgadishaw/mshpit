@@ -12,7 +12,7 @@ import SongAttachment from "./SongAttachment";
 import PlaylistAttachment from "./PlaylistAttachment";
 import { useStore } from "../store";
 import { BadgeRow } from "./Badge";
-import { formatDate } from "../domain/dates.mjs";
+import { formatDate, relativeTime } from "../domain/dates.mjs";
 
 // "3rd time in the pit" needs a real ordinal, not "3th".
 const ordinal = (n) => {
@@ -39,15 +39,6 @@ function TagRow({ tags, center = false }) {
     </View>
   );
 }
-
-const relativeTime = (timestamp) => {
-  if (!timestamp) return "now";
-  const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
-  if (seconds < 60) return "now";
-  const minutes = Math.floor(seconds / 60); if (minutes < 60) return `${minutes}m`;
-  const hours = Math.floor(minutes / 60); if (hours < 24) return `${hours}h`;
-  const days = Math.floor(hours / 24); return days < 30 ? `${days}d` : `${Math.floor(days / 30)}mo`;
-};
 
 // Review-forward feed card: the review is the centerpiece. Artist / venue / date
 // sit on a ticket-stub line below, the score reads at a glance, and the footer
