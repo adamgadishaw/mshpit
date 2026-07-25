@@ -2277,3 +2277,26 @@ card preview (`AfterpartyPreview`), which loaded its two shown comments once on
 mount and never again. It now reloads when `log.comments` changes, so a new
 comment on a post in your feed appears without opening it — and only the handful
 of cards whose count actually moved re-fetch, rather than every card polling.
+
+### Delete your own posts, plus embed clarity (2026-07-23)
+
+**Post delete** did not exist at all (comment delete already did). Added
+`DELETE /api/posts/:id`: author-only, soft delete (`removed=1`, same mechanism
+moderation uses so comments keep their FK and the row survives for audit),
+idempotent, and a non-owner gets a 404 rather than a 403 so it is not a probe
+for who posted what. Every delete writes a `moderation_actions` record with
+action `delete`. Client `deleteOwnPost` is optimistic and restores the post at
+its original index if the request fails. A trash button now sits next to the
+existing edit button on both the status card and the review stub, author-only,
+with a confirm dialog (window.confirm on web, Alert on native). Deleting from
+the open PostScreen also closes it. Server test covers ownership, soft delete,
+idempotency and the single audit record.
+
+**Embed clarity** (owner asked): `SongAttachment` now shows a small amber "Tap
+to play in your Pit player" hint under the title, so it is clear the card feeds
+the sidebar player rather than opening YouTube. Only on the full (non-compact)
+card with an onPlay handler.
+
+Verified in the browser: DELETE fires the right id, the post leaves the feed and
+does not come back on the 12s poll, the delete button renders only on own posts
+(8 posts → 8 buttons), and the hint text is present.

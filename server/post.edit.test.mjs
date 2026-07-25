@@ -338,3 +338,29 @@ test("editing re-resolves the binding instead of leaving it on the old artist", 
   assert.equal(renamed.post.artistKey, null);
   assert.equal(renamed.post.venueKey, "room a");
 });
+
+test("post delete is author-only, soft, and idempotent", () => {
+  const owner = addUser("postdeleter");
+  const stranger = addUser("postdelstranger");
+  const create = routes["POST /api/posts"];
+  const del = routes["DELETE /api/posts/:id"];
+  const made = create({ user: owner, ip: "pd-create", body: { kind: "status", review: "delete me" } });
+  const id = made.post.id;
+
+  // A stranger cannot delete it, and the error is a 404, not a 403, so deletion
+  // is not a probe for whether a post exists or who owns it.
+  assert.throws(
+    () => del({ user: stranger, ip: "pd-stranger", params: { id } }),
+    (e) => e instanceof ApiError && e.status === 404,
+  );
+  assert.equal(db.prepare("SELECT removed FROM posts WHERE id=?").get(id).removed, 0, "still present after a failed delete");
+
+  // The owner deletes it: soft delete, and it drops out of the feed.
+  assert.deepEqual(del({ user: owner, ip: "pd-own", params: { id } }), { ok: true, id });
+  assert.equal(db.prepare("SELECT removed FROM posts WHERE id=?").get(id).removed, 1);
+
+  // Deleting again is harmless (idempotent), and the audit trail recorded it.
+  assert.deepEqual(del({ user: owner, ip: "pd-again", params: { id } }), { ok: true, id });
+  const audit = db.prepare("SELECT COUNT(*) c FROM moderation_actions WHERE target_type='post' AND target_id=? AND action='delete'").get(id);
+  assert.equal(audit.c, 1, "one audit record, not one per idempotent call");
+});

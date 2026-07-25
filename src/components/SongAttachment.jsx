@@ -31,6 +31,12 @@ export default function SongAttachment({ song, onPlay, compact = false }) {
         <Text style={styles.kicker}>WATCH ON PIT</Text>
         <Text style={styles.title} numberOfLines={2}>{track.title}</Text>
         <Text style={styles.artist} numberOfLines={1}>{track.artist}</Text>
+        {!!onPlay && !compact && (
+          <View style={styles.hintRow}>
+            <Icon name="play" size={10} color={colors.amber} />
+            <Text style={styles.hint} numberOfLines={1}>Tap to play in your Pit player</Text>
+          </View>
+        )}
       </View>
       <View style={styles.play}><Icon name="play" size={17} color="#1A1206" /></View>
     </Pressable>
@@ -46,5 +52,7 @@ const styles = StyleSheet.create({
   kicker: { color: colors.amber, fontFamily: mono, fontSize: 9, fontWeight: "900", letterSpacing: 1.3, marginBottom: 3 },
   title: { color: colors.text, fontFamily: displayFont, fontSize: 14.5, fontWeight: "800", lineHeight: 19 },
   artist: { color: colors.textDim, fontFamily: font, fontSize: 12, marginTop: 2 },
+  hintRow: { flexDirection: "row", alignItems: "center", gap: 4, marginTop: 5 },
+  hint: { color: colors.amber, fontFamily: mono, fontSize: 9.5, fontWeight: "700", letterSpacing: 0.3 },
   play: { width: 38, height: 38, borderRadius: 19, alignItems: "center", justifyContent: "center", backgroundColor: colors.amberStrong, paddingLeft: 2 },
 });

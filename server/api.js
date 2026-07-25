@@ -1644,6 +1644,24 @@ export const routes = {
     return { liked };
   },
 
+  // Delete your own post. Soft delete (removed=1), the same mechanism moderation
+  // uses, so the row survives for audit and its comments keep their foreign key.
+  // Author-only: an admin removing content goes through the moderation route,
+  // which records a different action. A mismatched owner is deliberately
+  // indistinguishable from a missing row, so deletion is not a probe for who
+  // posted what.
+  "DELETE /api/posts/:id": (ctx) => {
+    const u = requireUser(ctx);
+    limit(ctx, "post-delete", 60, 60 * 60 * 1000);
+    const post = db.prepare("SELECT id,user_id,removed FROM posts WHERE id=?").get(ctx.params.id);
+    if (!post || post.user_id !== u.id) throw new ApiError(404, "That post is no longer available.", "NOT_FOUND");
+    if (!post.removed) {
+      db.prepare("UPDATE posts SET removed=1 WHERE id=? AND user_id=?").run(post.id, u.id);
+      moderationRecord(ctx, "delete", "post", post.id, "author deleted", { removed: false }, { removed: true });
+    }
+    return { ok: true, id: post.id };
+  },
+
   "GET /api/posts/:id/comments": (ctx) => {
     const post = db.prepare("SELECT user_id,removed FROM posts WHERE id=?").get(ctx.params.id);
     if (!post || post.removed) throw new ApiError(404, "That post is no longer available.", "NOT_FOUND");

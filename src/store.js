@@ -1889,6 +1889,35 @@ export function StoreProvider({ children }) {
       return { ok: true, tombstone: !!tombstone };
     }).catch((error) => ({ ok: false, error }));
   };
+  // Delete your own post. Optimistic: drop it from the feed immediately, and if
+  // the write fails put it back exactly where it was so nothing is silently
+  // lost. The server soft-deletes, so a failed request never orphans comments.
+  const deleteOwnPost = (postId) => {
+    if (!session || !postId) return Promise.resolve({ ok: false });
+    let removed = null;
+    let removedIndex = -1;
+    feedMutationRevisionRef.current += 1;
+    setFeed((f) => {
+      removedIndex = f.findIndex((l) => l.id === postId);
+      removed = removedIndex >= 0 ? f[removedIndex] : null;
+      return f.filter((l) => l.id !== postId);
+    });
+    return api(`/api/posts/${postId}`, { method: "DELETE", context: "Deleting your post" })
+      .then(() => { track("delete_post", { post: postId }); return { ok: true }; })
+      .catch((error) => {
+        // Restore at the original position, not just at the top of the feed.
+        if (removed) {
+          feedMutationRevisionRef.current += 1;
+          setFeed((f) => {
+            if (f.some((l) => l.id === postId)) return f;
+            const next = [...f];
+            next.splice(Math.max(0, Math.min(removedIndex, next.length)), 0, removed);
+            return next;
+          });
+        }
+        return { ok: false, error };
+      });
+  };
   const likeInfo = (id, base = 0) => ({ count: (likes[id] ?? base) + (myLikes[id] ? 1 : 0), liked: !!myLikes[id] });
   const toggleLike = (id, base = 0) => {
     const previous = !!myLikes[id];
@@ -3068,7 +3097,7 @@ export function StoreProvider({ children }) {
     isVerifiedArtist, isTop100, artistRank, artistBadges, userBadges,
     activityStats, userAchievements, userPoints, loadRewards,
     chartTop, chartInfo, catalogCountries, topGenres, topPhotos, discoverStats, topArtistsBy, topSongsBy,
-    commentsFor, addComment, deleteOwnComment, loadComments, likeInfo, toggleLike,
+    commentsFor, addComment, deleteOwnComment, deleteOwnPost, loadComments, likeInfo, toggleLike,
     concertKey, loungeFor, enterLounge, addLoungeMessage, loadLounge,
     albumRating, songRating, rateAlbum, rateSong, loadRating,
     fanClubFor, loadFanClub, addFanClubMessage, isFanClubMember, joinFanClub, fanClubCount, fanClubsDirectory,

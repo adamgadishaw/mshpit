@@ -54,7 +54,7 @@ function CommentNode({ c, replies, depth, onReply, onDelete, sessionId, onOpenPr
 // Post detail — the actual post + its comment thread. This is where like/comment
 // notifications land (not the performance page), and where forum-style replies live.
 export default function PostScreen({ log, onClose, onOpenProfile, onOpenArtist, onOpenVenue, onOpenShow, onReport, onEdit, onOpenPhotos, onPlay }) {
-  const { session, feed, commentsFor, addComment, deleteOwnComment, loadComments, userById, userBadges } = useStore();
+  const { session, feed, commentsFor, addComment, deleteOwnComment, deleteOwnPost, loadComments, userById, userBadges } = useStore();
   // Navigation keeps the post that was originally opened. Resolve it against
   // live feed state so an edit made on this screen appears immediately.
   const activeLog = feed.find((post) => post.id === log.id) || log;
@@ -106,11 +106,14 @@ export default function PostScreen({ log, onClose, onOpenProfile, onOpenArtist, 
     ]);
   };
 
+  // Deleting the post you're viewing must also leave this now-empty screen.
+  const removePost = (postId) => { deleteOwnPost(postId); onClose?.(); };
+
   return (
     <View style={styles.wrap}>
       <ScreenHeader kicker="POST" title="Comments" onBack={onClose} />
       <ScrollView ref={scrollRef} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-        <TicketStub log={activeLog} showComments={false} onOpen={() => onOpenShow?.(activeLog)} onOpenProfile={onOpenProfile} onOpenArtist={onOpenArtist} onOpenVenue={onOpenVenue} onReport={onReport} onEdit={onEdit} onOpenPhotos={onOpenPhotos} onPlay={onPlay} />
+        <TicketStub log={activeLog} showComments={false} onOpen={() => onOpenShow?.(activeLog)} onOpenProfile={onOpenProfile} onOpenArtist={onOpenArtist} onOpenVenue={onOpenVenue} onReport={onReport} onEdit={onEdit} onDelete={removePost} onOpenPhotos={onOpenPhotos} onPlay={onPlay} />
 
         <Text style={styles.sectionLabel}>{flat.length} COMMENT{flat.length === 1 ? "" : "S"}</Text>
         {tree.length === 0 && <Text style={styles.empty}>No comments yet. Start the conversation.</Text>}

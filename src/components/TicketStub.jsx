@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { View, Text, StyleSheet, Pressable } from "react-native";
+import { View, Text, StyleSheet, Pressable, Alert, Platform } from "react-native";
 import { colors, displayFont, font, mono, radius, shadow, roleColor } from "../theme";
 import Stars from "./Stars";
 import Icon from "./Icon";
@@ -52,14 +52,28 @@ const relativeTime = (timestamp) => {
 // Review-forward feed card: the review is the centerpiece. Artist / venue / date
 // sit on a ticket-stub line below, the score reads at a glance, and the footer
 // opens the Afterparty (like + comments) for that concert.
-export default function TicketStub({ log, onOpen, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenVenue, onReport, onEdit, onOpenPhotos, onPlay, showComments = true }) {
+export default function TicketStub({ log, onOpen, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenVenue, onReport, onEdit, onDelete, onOpenPhotos, onPlay, showComments = true }) {
   const openComments = () => (onComment || onOpen)?.(log);
-  const { userById, likeInfo, toggleLike, commentsFor, session, userBadges } = useStore();
+  const { userById, likeInfo, toggleLike, commentsFor, session, userBadges, deleteOwnPost } = useStore();
   const author = userById?.(log.userId) || { initials: log.user?.initials, name: log.user?.name, handle: log.user?.handle };
   const [revealed, setRevealed] = useState(!log.inTourWindow);
   // Editing is the author's alone. Admins moderate (remove/mute/ban); they
   // never rewrite someone's review, so no admin bypass here.
   const canEdit = !!onEdit && !!session && session.id === log.userId;
+  // Delete is the author's own. Like edit, admins moderate through their own
+  // route rather than this button, so there is no staff bypass here.
+  const canDelete = !!session && session.id === log.userId;
+  const confirmDelete = () => {
+    const run = () => { (onDelete || deleteOwnPost)?.(log.id); };
+    if (Platform.OS === "web") {
+      if (typeof window === "undefined" || window.confirm("Delete this post? This can't be undone.")) run();
+      return;
+    }
+    Alert.alert("Delete post?", "This can't be undone.", [
+      { text: "Cancel", style: "cancel" },
+      { text: "Delete", style: "destructive", onPress: run },
+    ]);
+  };
   const isStaffViewer = session && (session.role === "admin" || session.role === "moderator");
   const setlist = Array.isArray(log.setlist) ? log.setlist : [];
   const timeLabel = log.timeAgo || relativeTime(log.createdAt);
@@ -94,6 +108,11 @@ export default function TicketStub({ log, onOpen, onComment, onPreview, onOpenPr
           {canEdit && (
             <Pressable style={styles.iconBtn} hitSlop={8} onPress={() => onEdit?.(log)} accessibilityRole="button" accessibilityLabel="Edit post">
               <Icon name="edit" size={16} color={colors.amber} />
+            </Pressable>
+          )}
+          {canDelete && (
+            <Pressable style={styles.iconBtn} hitSlop={8} onPress={confirmDelete} accessibilityRole="button" accessibilityLabel="Delete post">
+              <Icon name="trash" size={16} color={colors.danger} />
             </Pressable>
           )}
           <Pressable style={styles.iconBtn} hitSlop={8} onPress={() => onReport?.(log)} accessibilityRole="button" accessibilityLabel="Report post">
@@ -260,6 +279,11 @@ export default function TicketStub({ log, onOpen, onComment, onPreview, onOpenPr
         {canEdit && (
           <Pressable style={({ pressed }) => [styles.fBtn, pressed && styles.controlPressed]} hitSlop={8} onPress={() => onEdit?.(log)} accessibilityRole="button" accessibilityLabel="Edit post">
             <Icon name="edit" size={16} color={colors.amber} />
+          </Pressable>
+        )}
+        {canDelete && (
+          <Pressable style={({ pressed }) => [styles.fBtn, pressed && styles.controlPressed]} hitSlop={8} onPress={confirmDelete} accessibilityRole="button" accessibilityLabel="Delete post">
+            <Icon name="trash" size={16} color={colors.danger} />
           </Pressable>
         )}
         <Pressable style={({ pressed }) => [styles.fBtn, pressed && styles.controlPressed]} hitSlop={8} onPress={() => onReport?.(log)} accessibilityRole="button" accessibilityLabel="Report post">
