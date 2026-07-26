@@ -2382,3 +2382,38 @@ search, and complete-catalogue-skips-in-channel-search. Full suite 142 green.
 NOTE for whoever runs the warmer: previews shrink as channels get discovered.
 The first warm spends search budget on discovery (≈90 artists/day cap); after a
 few days of warming the popular catalogue resolves search-free.
+
+### Music keeps playing across browser tab switches (2026-07-25)
+
+Owner: switching browser tabs paused the music, which a normal YouTube embed
+does not do. Correct — it was OUR code force-pausing, not a browser limit. A
+backgrounded tab (not closed) keeps its JS and its iframe alive, and youtube.com
+itself keeps playing when you tab away.
+
+Removed the tab-visibility pause in src/lib/youtubePlayer.js, narrowly:
+- `canPlayNow()` no longer disqualifies on `!documentVisibleRef`; when the tab
+  is hidden it returns true after the size/shown checks, so onStateChange stops
+  re-pausing a backgrounded player.
+- `onVisibilityChange` no longer calls `pauseImmediately()` on hide (still
+  flushes/resumes on show).
+- The IntersectionObserver callback ignores ratio changes while the tab is
+  hidden (a hidden tab reports ratio 0, which would otherwise re-create the
+  pause through that path).
+
+Deliberately UNCHANGED, so this stays in the defensible ToS zone the owner
+described (no ad interference, no audio-only/Premium-style feature):
+- `pagehide` still pauses on a real unload/navigation-away.
+- Minimize still pauses (shownRef / validPlayerSize) — the video element and its
+  ads are never hidden to play audio-only.
+- Scrolling the player off-screen WITHIN a visible tab still pauses.
+
+Scope reality the owner should know: the preview-audio engine
+(src/lib/audioPreview.js) never had a tab-hide pause, so previews already
+persisted; this only affects the YouTube-video path, which needs YOUTUBE_API_KEY
+(production). Mobile browsers still suspend backgrounded iframes at the OS level
+regardless — unchanged by this.
+
+Verified locally: 142 tests green, app healthy, no remaining pause-on-hidden
+path. NOT verifiable locally (no key): actual cross-tab YT audio. Production
+spot-check: play a song, switch to another tab, confirm audio continues; switch
+back, confirm the video is still going.

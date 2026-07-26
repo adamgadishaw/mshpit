@@ -123,8 +123,14 @@ export function useYouTubePlayer(enabled, options = {}) {
 
   const canPlayNow = useCallback(() => {
     const host = hostRef.current;
-    if (!web || !host || !shownRef.current || !documentVisibleRef.current) return false;
+    if (!web || !host || !shownRef.current) return false;
     if (!validPlayerSize(host)) return false;
+    // A backgrounded browser tab keeps playing, exactly like youtube.com: the
+    // tab is not closed, the player still exists, and its ads still run. We only
+    // require the player be genuinely on-screen when the tab IS visible; a hidden
+    // tab reports no intersection, so demanding it here would force the pause the
+    // owner is removing. The minimize case (shownRef / size) still pauses.
+    if (!documentVisibleRef.current) return true;
     const observerState = intersectionObserverRef.current;
     const ratio = observerState.enabled
       ? (observerState.observed ? intersectionRatioRef.current : 0)
@@ -230,8 +236,10 @@ export function useYouTubePlayer(enabled, options = {}) {
 
     const onVisibilityChange = () => {
       documentVisibleRef.current = document.visibilityState === "visible";
-      if (!documentVisibleRef.current) pauseImmediately();
-      else flushRef.current();
+      // Switching browser tabs no longer pauses: a hidden tab keeps playing like
+      // youtube.com. Coming back re-evaluates and resumes any pending intent.
+      // (pagehide below still pauses on a real unload/navigation-away.)
+      if (documentVisibleRef.current) flushRef.current();
     };
     const onPageHide = () => {
       documentVisibleRef.current = false;
@@ -252,6 +260,11 @@ export function useYouTubePlayer(enabled, options = {}) {
         const entry = entries[0];
         intersectionObserverRef.current.observed = true;
         intersectionRatioRef.current = entry?.intersectionRatio || 0;
+        // A backgrounded tab reports ratio 0. That is not the player being
+        // scrolled off-screen, so ignore it here — otherwise it would re-create
+        // the tab-switch pause we just removed. Real off-screen scrolling only
+        // happens while the tab is visible.
+        if (!documentVisibleRef.current) return;
         if (entry && entry.intersectionRatio <= MIN_VISIBLE_RATIO) pauseImmediately();
         else flushRef.current();
       }, { threshold: [0, MIN_VISIBLE_RATIO, 1] });
