@@ -8,6 +8,7 @@ process.env.PIT_DATA_DIR = mkdtempSync(join(tmpdir(), "pit-warm-"));
 
 const { db } = await import("./db.js");
 const { warmYouTubeCache, COST_FIRST_TRACK, COST_CACHED_ARTIST, resetWarmProgress } = await import("./cacheWarmer.js");
+const { youtubeCacheKey } = await import("./musicProviders.js");
 
 // Seed a few artists with top tracks, most-popular first, and clear the resume
 // cursor between tests so each starts fresh.
@@ -26,15 +27,17 @@ function seed(artists) {
 // told to fail a specific title.
 function fakeResolver({ fail = new Set() } = {}) {
   const calls = [];
-  const resolve = async (title, artist) => {
+  const options = [];
+  const resolve = async (title, artist, resolverOptions = {}) => {
     calls.push(`${artist}|${title}`);
+    options.push(resolverOptions);
     return fail.has(title) ? { videoId: null, status: "not_found" } : { videoId: "vid_" + calls.length };
   };
-  return { resolve, calls };
+  return { resolve, calls, options };
 }
 
 const noSleep = { sleepMs: 0 };
-const noCircuit = () => ({ circuitOpen: false });
+const noCircuit = () => ({ dataCircuitOpen: false });
 
 test("a dry run estimates cost and coverage without resolving or recording anything", async () => {
   seed([{ name: "A", popularity: 90, tracks: ["a1", "a2"] }, { name: "B", popularity: 80, tracks: ["b1"] }]);
@@ -66,18 +69,30 @@ test("a budget stops the run early and marks it, leaving the rest for next time"
   const stats = await warmYouTubeCache({ budget: 13, resolve, providerStatus: noCircuit, ...noSleep });
   assert.equal(stats.stoppedEarly, true);
   assert.ok(calls.length >= 1 && calls.length <= 2, "stops within a track of the budget");
+
+  const resumed = fakeResolver();
+  await warmYouTubeCache({ budget: 13, resolve: resumed.resolve, providerStatus: noCircuit, ...noSleep });
+  assert.equal(resumed.calls[0], "A|a1", "a partially visited artist is not permanently marked complete");
 });
 
 test("already-cached songs are skipped, not re-resolved", async () => {
   seed([{ name: "A", popularity: 90, tracks: ["a1", "a2"] }]);
   // Pretend a1 is already cached and fresh.
   db.prepare("INSERT INTO yt_cache (key,video_id,updated_at,expires_at,rejected_ids) VALUES (?,?,?,?,?)")
-    .run("a|a1", "already", Date.now(), Date.now() + 60_000, "[]");
+    .run(youtubeCacheKey("a1", "A"), "already", Date.now(), Date.now() + 60_000, "[]");
   const { resolve, calls } = fakeResolver();
   const stats = await warmYouTubeCache({ resolve, providerStatus: noCircuit, ...noSleep });
   assert.equal(calls.includes("A|a1"), false, "the cached song is not resolved again");
   assert.equal(stats.skipped, 1);
   assert.equal(stats.resolved, 1);
+});
+
+test("background warming always disables search for every resolver call", async () => {
+  seed([{ name: "Catalogue Only", popularity: 90, tracks: ["first", "second"] }]);
+  const { resolve, options } = fakeResolver();
+  await warmYouTubeCache({ resolve, providerStatus: noCircuit, ...noSleep });
+  assert.equal(options.length, 2);
+  assert.ok(options.every((entry) => entry.allowSearch === false), "the warmer must preserve interactive search capacity");
 });
 
 test("a resume run skips artists already done in a previous pass", async () => {
@@ -107,7 +122,7 @@ test("a tripped circuit breaker stops the run instead of hammering the provider"
   seed([{ name: "A", popularity: 90, tracks: ["a1", "a2", "a3"] }, { name: "B", popularity: 80, tracks: ["b1"] }]);
   const { resolve, calls } = fakeResolver();
   let open = false;
-  const providerStatus = () => ({ circuitOpen: open });
+  const providerStatus = () => ({ dataCircuitOpen: open });
   // Trip the breaker after the first resolve.
   const trippingResolve = async (t, a, o) => { const r = await resolve(t, a, o); open = true; return r; };
   const stats = await warmYouTubeCache({ resolve: trippingResolve, providerStatus, ...noSleep });

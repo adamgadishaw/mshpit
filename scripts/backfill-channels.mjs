@@ -20,11 +20,20 @@ const arg = (name, fallback) => {
 const before = db.prepare("SELECT COUNT(*) c FROM artists WHERE youtube_channel_id IS NOT NULL").get().c;
 console.log(`Starting: ${before} artists already have a channel. Querying Wikidata (free)…`);
 
+let lastError = null;
+
 const stats = await backfillChannelsFromWikidata({
   limit: Math.max(1, Number(arg("limit", 5000))),
-  onProgress: (s) => process.stdout.write(`\r  batch ${s.batches}: ${s.stored} stored / ${s.matched} matched  `),
+  onProgress: (s) => {
+    if (s.error) lastError = `${s.code || "wikidata_error"}: ${s.error}`;
+    process.stdout.write(`\r  batch ${s.batches}: ${s.stored} artist rows stored / ${s.matched} identities matched / ${s.failedBatches} failed  `);
+  },
 });
 
 const after = db.prepare("SELECT COUNT(*) c FROM artists WHERE youtube_channel_id IS NOT NULL").get().c;
 console.log(`\nDone. Considered ${stats.considered}, matched ${stats.matched}, stored ${stats.stored}.`);
 console.log(`Catalogue channel coverage: ${before} -> ${after} (+${after - before}). Zero search quota spent.`);
+if (stats.failedBatches) {
+  console.error(`Backfill incomplete: ${stats.failedBatches} batch(es) failed and ${stats.deferred} identities remain eligible.${lastError ? ` Last error: ${lastError}` : ""}`);
+  process.exitCode = 1;
+}

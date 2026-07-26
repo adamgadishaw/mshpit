@@ -2,9 +2,133 @@
 
 > **Living doc.** Whoever works on this next: read this first, and UPDATE it before you end a session (move things between "Done" and "Backlog", note anything running). Point a fresh Claude Code chat at this file to get up to speed without re-explaining.
 >
-> Last updated: **2026-07-22** (batch 1 verified, ISO date migration, merged to master)
+> Last updated: **2026-07-26** (Alpha backlog and provider-policy reconciliation)
 
 > **Working agreement (owner's standing instruction, updated 2026-07-22):** ALWAYS `git commit`, **merge to `master`**, and `git push` after a verified batch. Do not stop to ask whether to merge; the owner does not want to be asked. A review branch is still the right place to build a large or risky change, but finishing the work means landing it on `master`. The one hard gate is `npm run check` (tests + syntax + web export) passing on the branch **and** again on `master` after the merge, because a master push auto-deploys and briefly restarts Render. If the gate fails, report it instead of pushing.
+
+## CURRENT ALPHA HANDOFF (2026-07-26, read this before historical entries)
+
+`TODO.md` is now the concise source of truth for remaining work. The older
+sections below preserve chronology and debugging evidence; where their quota,
+cache-lifetime, deployment, or “next task” statements conflict with this section
+or `TODO.md`, they are historical and superseded.
+
+The current hardening is still a working-tree batch until it is committed,
+merged, deployed, and production-smoked. Do not describe it as live merely
+because the focused tests pass. Run `npm run check`, inspect the final diff,
+land it with the owner's normal workflow, and then record production evidence.
+
+### YouTube and Wikidata: current operating contract
+
+Commits `f85f050` and `6f42771` established the useful base: MusicBrainz P434
+identities can discover Wikidata P2397 YouTube channels without a YouTube search,
+and a known-channel recording resolves through catalogue/list endpoints when
+Pit's search budget is zero.
+
+The first implementation still needed policy and reliability corrections. The
+current batch supplies them:
+
+- **June 2026 quota model:** `search.list` has its own default 100-call/day
+  Search Queries bucket and costs one call from that bucket. `channels.list`,
+  `playlistItems.list`, and `videos.list` use the separate default
+  10,000-unit/day general bucket. Pit's default `YOUTUBE_SEARCH_DAILY_BUDGET=90`
+  is an application reserve, not “10,000 divided by 100.” IFrame playback does
+  not spend Data API search calls. Official references:
+  [quota overview](https://developers.google.com/youtube/v3/getting-started#quota),
+  [`search.list`](https://developers.google.com/youtube/v3/docs/search/list), and
+  [June 2026 revision](https://developers.google.com/youtube/v3/revision_history#june-2026).
+- **30-day storage boundary:** non-authorized YouTube API data is deleted or
+  refreshed within 30 calendar days. Match TTL is capped at 30 days, expired
+  cache/provider rows are pruned, and API-derived channel mappings are
+  revalidated. Wikidata's CC0 channel pointer has separate provenance, but an
+  unvalidated pointer is not treated as a trusted artist channel. See YouTube
+  Developer Policy
+  [III.E.4](https://developers.google.com/youtube/terms/developer-policies#e.-handling-youtube-data-and-content).
+- **Provenance:** artist rows carry `youtube_channel_id`,
+  `youtube_channel_at`, and `youtube_channel_source` (`youtube`,
+  `youtube_unverified`, `wikidata`, or `wikidata_unverified`; old rows may be
+  legacy until refreshed). The resolver uses provenance when deciding
+  trusted-channel scoring.
+- **Durable discovery state:** `wikidata_channel_checks` stores one row per MBID
+  with channel, validation, and check time. SQL chooses eligible work before
+  `LIMIT`; aliases sharing an MBID update together; bounded misses become
+  eligible later; transient failures remain retryable and visible.
+- **Provider manners:** live WDQS work is single-flight per MBID, concurrency
+  bounded, deadline bounded, negative cached, and 429-aware. Search and general
+  YouTube circuits are separate so a search limit does not disable known-channel
+  catalogue playback.
+- **Warmer:** Wikidata discovery and expired-data pruning run even without a
+  YouTube key. With a key, normal warming passes `allowSearch:false`; background
+  work cannot consume the interactive Search Queries bucket. Progress resets by
+  day and a partially visited artist is not marked complete.
+
+Claude's 2026-07-25 local backfill found 1,146 channel mappings among 2,618
+artists and raised local stored coverage from 37 to 1,182. This is historical
+local evidence, not proof of production coverage. After deployment, run
+`node scripts/backfill-channels.mjs` against the production DB (or observe the
+daily scheduler), preserve before/after plus validated/unverified/failed/deferred
+counts, and sample actual playback. Public WDQS remains an Alpha enrichment
+source; at scale it belongs in an offline/durable worker or bulk import, not the
+synchronous listener path.
+
+### Integrity fixes in the current batch
+
+- **Badge definition v2.** Only nonremoved `kind='review'` posts advance First
+  Pit, Regular, Road Warrior, Critic, Photographer, Globetrotter, and Explorer.
+  Status-post likes still count toward Tastemaker; Superfan and Connector remain
+  social achievements. The server ledger and client fallback agree. Existing
+  definition-v1 awards are grandfathered: the append-only row cannot distinguish
+  a false status-derived award from a legitimate concert award whose source post
+  was later deleted/moderated. Do not mass-revoke without an explicit owner
+  policy and an auditable migration.
+- **Group-chat read gates.** Fan-club and lounge message bodies now require an
+  authenticated active club membership or Going record for the exact show.
+  Public `/meta` routes return aggregate gate counts only and omit removed
+  messages. Polling starts only after the server confirms entry. Blocking and
+  authorized removed-ID reconciliation remain active; there is no staff bypass.
+- **Recording identity.** Artist top tracks and album tracks now carry durable
+  provider/source ID and duration into the player, playlist additions, play
+  history, and duration-aware YouTube resolution. This strengthens studio vs
+  live/lyric/karaoke matching. It does not make the release catalogue complete:
+  Deezer pagination, singles/compilations, and the current release cap remain
+  explicit backlog.
+
+### Remaining Alpha sequence
+
+1. **DM/read state and realtime:** server-side per-thread read cursors,
+   summary-first login, paged history, then shared pub/sub + WebSocket/SSE with
+   the existing cursor contract retained for catchup.
+2. **Feed tombstones:** versioned/delta removal events for cross-device post
+   deletion/moderation, applied across feed/profile/open-post/count surfaces;
+   batch comment previews rather than merge-only first-page polling.
+3. **Playlist lifecycle:** expose rename, remove, reorder, privacy, delete, stable
+   detail/deep links, unavailable-track feedback, and true play-history totals.
+4. **Discography completeness:** page release groups and include singles/
+   compilations without blocking initial render; migrate same-name artists away
+   from normalized display name as identity.
+5. **Durable 10k+ enrichment:** the audited local DB is around 2,658 artists.
+   Move roster growth, Deezer/genre enrichment, Wikidata work, and cache warming
+   out of web-process closures into leased/retryable jobs, then record a real
+   production 10k+ outcome.
+6. **Native playback/device gate:** the full YouTube IFrame path is web-only.
+   Define the Expo SDK 56 native audio/video contract and pass real iOS/Android
+   playback, background/interruption, orientation, safe-area, and target-size
+   tests.
+7. **Bundle/runtime performance:** catalog splitting and lazy screens helped,
+   but the entry remains bounded by React Native Web/Expo and the broad store
+   context still rerenders unrelated consumers. Reduce startup catalog data,
+   page server state, split store domains behind the existing API, and profile on
+   real low/mid-range phones.
+
+### Production actions still owned outside code
+
+- Rotate any key pasted into chat. Keep all provider credentials server-side.
+- Finish Resend domain verification and `MAIL_FROM`, then test password reset at
+  two inbox providers. Do not log reset links/tokens as a fallback.
+- Run/observe the production Wikidata channel backfill and retain its outcome.
+- Complete physical iOS/Android playback and upload smoke tests.
+- Submit `sitemap.xml` to Search Console and confirm Cloudflare does not replace
+  the origin `robots.txt`.
 
 ## RECOVERED OWNER REQUESTS (2026-07-21)
 
@@ -371,13 +495,13 @@ back to 30s previews. Three genuinely separate root causes, all now fixed:
    so a reaction video or another act's song is structurally impossible. When no
    channel resolves, the global search runs behind a hard creator gate: the
    channel must carry the artist's name, or the title must LEAD with it.
-3. **Previews everywhere: YouTube quota exhaustion.** Every song burned a
-   `search.list` at **100 quota units**, and the default daily quota is 10,000,
-   so roughly 99 songs a day then everything silently fell back to previews. The
-   resolver now pulls the artist's upload catalogue once via
-   `channels.list` + `playlistItems.list` (**1 unit per 50 videos**, ~5 units per
-   artist, cached 7 days) and matches titles locally, so a song costs ~1 unit
-   instead of 101. That is roughly 80x more songs per day.
+3. **Previews everywhere: YouTube search exhaustion.** At the time, every cold
+   song could spend a `search.list` call and Pit did not distinguish provider
+   capacity from “no video.” Since June 2026, search has its own default
+   100-call/day bucket; catalogue/list endpoints use the separate general quota.
+   The resolver pulls an artist's uploads catalogue and matches titles locally,
+   so known channels avoid the scarce Search Queries bucket. Current quota and
+   30-day refresh rules are recorded at the top of this file.
 
 Order of attempts: artist catalogue (cheap, exact) -> search within the artist's
 channel -> global search behind the creator gate -> Deezer preview. Every step
@@ -1418,7 +1542,7 @@ calendar -> show page, API cycle above on the running server.
 4. **Messages are visible as they arrive.** Fan clubs, concert lounges, and DMs start at the newest message and follow new content while the reader remains near the bottom. Scrolling up to read history disables that automatic movement until the reader returns near the bottom. The lounge gate also hydrates its real message count before entry.
 5. **Truthful retry behavior.** Chat inputs clear only after the server confirms the write. Failed sends remove the optimistic bubble but keep the typed draft for a retry; the existing feedback host presents the corresponding themed diagnostic. Send buttons prevent duplicate submissions while a write is in flight.
 6. **Fan-club membership is enforced.** Joining/leaving waits for server confirmation, closing the former join/send race. `POST /api/fanclubs/:artist/messages` rejects non-members with `FAN_CLUB_MEMBERSHIP_REQUIRED`, mapped to `PIT-CHAT-001` ("Join the crowd first"). Direct API calls can no longer bypass the Join gate.
-7. **Lounge attendance is enforced.** Entering a lounge idempotently saves `going: true` before opening the composer and never toggles an existing attendee off during retry. `POST /api/lounges/:key/messages` rejects accounts outside that show's Going list with `LOUNGE_ATTENDANCE_REQUIRED`, mapped to `PIT-CHAT-002` ("Save your spot first"). Guests may still inspect the public lounge after entering but cannot post.
+7. **Lounge attendance is enforced.** Entering a lounge idempotently saves `going: true` before opening the composer and never toggles an existing attendee off during retry. `POST /api/lounges/:key/messages` rejects accounts outside that show's Going list with `LOUNGE_ATTENDANCE_REQUIRED`, mapped to `PIT-CHAT-002` ("Save your spot first"). At this 2026-07-15 stage, reads were still public; the 2026-07-26 hardening now requires the same exact-show attendance for message bodies and exposes aggregate gate metadata separately.
 8. **Regression coverage.** `server/api.integrity.test.mjs` covers forward pagination/catch-up, `before`/`after` conflict rejection, moderation tombstones, membership and attendance rejection, idempotent gate writes, and a successful retry after satisfying each gate. Focused API, error-catalogue, request-control, and syntax checks pass.
 
 ### Scale follow-up
@@ -1851,11 +1975,11 @@ and `/api/health` reports `youtubeConfigured: false` locally, so nothing here
 ever resolved a video. More importantly, the health payload shows the real
 constraint: `search: { used: 0, limit: 90, remaining: 90 }`.
 
-**90 searches per day, site-wide.** YouTube search costs 100 quota units against
-a default 10,000/day allowance. Once that budget is gone, every unresolved song
-degrades to a 30-second preview, and that is indistinguishable from "no video
-exists" — which is why an obvious, popular song looks like a matching failure. A
-missing API key gives the identical symptom.
+**90 application-reserved searches per day, site-wide.** Since June 2026,
+`search.list` has a separate default 100-call/day bucket and each call spends one
+from that bucket. Pit defaults to 90 so ten remain in reserve. Once Pit's limit
+is gone, unresolved cold songs degrade to a preview; a missing API key produces
+a similar symptom. The general 10,000-unit bucket is separate.
 
 All of this was already computed by `youtubeProviderStatus()` and returned on
 `/api/health`, and **no screen consumed it**. Admin > Overview now shows a
@@ -1872,25 +1996,18 @@ done before anyone concludes the matcher is picking wrong videos.
 Owner confirmed `YOUTUBE_API_KEY` **is** set on Render, and asked what happens at
 hundreds of users. Recording the analysis so nobody re-derives it.
 
-**Quota does not scale with users.** The 10,000 units/day allowance is per Google
-Cloud project. A second play of a song is a cache hit, so 500 listeners cost what
-1 listener costs. What spends quota is *distinct artists never resolved before*,
-so the bill tracks catalogue coverage, not traffic.
+**Quota does not scale linearly with users.** A shared fresh match can serve many
+listeners, so capacity tracks cold identities and catalogue coverage more than
+raw plays. Since June 2026 the relevant limits are separate: `search.list` has a
+default 100-call/day Search Queries bucket, while catalogue/list calls use the
+default 10,000-unit/day general bucket. Pit's 90-search default is a reserve, not
+old “100 units per call” arithmetic.
 
-Costs: `search.list` 100 units; `playlistItems.list`, `channels.list` and
-`videos.list` 1 unit each. `getArtistCatalogue` already takes the cheap path,
-pulling a whole discography through the uploads playlist for ~13 units and
-caching it, which is roughly **760 new artists per day** inside the default
-quota. Search is only the fallback for artists with no resolvable channel, and
-the 90/day cap exists to stop that path draining everything.
-
-Changed here: match TTL 14 days → 90 (`YOUTUBE_MATCH_TTL_DAYS`), miss TTL 6h → 3
-days (`YOUTUBE_MISS_TTL_DAYS`), and the search budget is no longer hard-capped at
-100 (`YOUTUBE_SEARCH_DAILY_BUDGET`). The old 14-day match TTL re-resolved the
-entire catalogue twice a month for no benefit, since a cached row is already
-revalidated with `videos.list` (1 unit) before it is trusted and bad IDs are
-remembered. The 6-hour miss TTL retried each unmatched song four times a day,
-and a miss is usually structural rather than transient.
+Current policy correction: non-authorized YouTube API data may not be held for
+90 days. Match TTL is now capped at 30 days, expired rows are pruned, and
+API-derived channel mappings are refreshed or deleted within 30 calendar days.
+Wikidata identities retain separate provenance and unverified mappings do not
+receive trusted-channel scoring.
 
 Still to do, in order: (1) warm the cache with a background job over the top
 artists before traffic arrives, roughly 2,657 artists x ~13 units, a few days of
@@ -2042,8 +2159,8 @@ Note: `GET /api/me/playlists` does not exist — the route is
 
 **`scripts/warm-youtube-cache.mjs`.** Resolves the catalogue's top tracks ahead
 of traffic, most-popular-first, through the normal lookup so it fills the same
-cache the app reads. Budget is in **quota units, not songs** (an artist
-catalogue is ~13 units and covers their discography; a fallback search is 100).
+cache the app reads. Its work budget estimates general catalogue/list units;
+`search.list` is a separate call bucket and normal warming now disables it.
 Resumable: cached songs are skipped and progress is stored in `app_meta` under
 `warm:youtube:v1`, so a stopped run continues where it left off. It also aborts
 the moment the server's circuit breaker trips, rather than burning the day's
@@ -2337,13 +2454,12 @@ the tour-date scheduler: idle without `YOUTUBE_API_KEY`, otherwise a bounded pas
 boot and every 24h, guarded by a per-day `app_meta` marker so a redeploy does not
 re-warm.
 
-Key design points: warming uses the artist-catalogue lookup (~13 units for a
-whole discography) not search (100 units, capped 90/day for users), so it is
-cheap AND never starves user playback. Most-popular-first, so a cut-short run
-still bought the most benefit. Resumable via a `done` set in app_meta. Stops
-immediately if the circuit breaker trips. `--dry-run` estimates coverage/cost
-with no key and records nothing. Seven unit tests inject a fake resolver so the
-accounting is covered without a real key or network.
+Key design points after the 2026-07-26 hardening: normal warming explicitly sets
+`allowSearch:false`, so it cannot spend the interactive Search Queries bucket.
+Wikidata discovery and expiry pruning still run keylessly. General catalogue
+work remains bounded, progress is day-scoped, partially visited artists remain
+eligible, and provider circuits stop a failing pass. `--dry-run` estimates
+coverage/cost without recording anything.
 
 To warm the whole popular catalogue before a launch:
 `node scripts/warm-youtube-cache.mjs --budget 8000` on the server (needs the
@@ -2353,23 +2469,23 @@ production key). The daily scheduler keeps it warm after that.
 
 The owner kept seeing previews on obviously-available songs and asked, reasonably,
 why it is hard to pull from Topic channels when YouTube has everything. It is not
-the playback — it is the DISCOVERY. YouTube search costs 100 quota units, capped
-at ~90/day, and finding each artist's "<Artist> - Topic" channel required a
-search. Channels were cached only 30 days, so the budget was spent over and over
-re-finding channels already known, and any artist whose channel was not currently
-cached fell through to global search (also capped) → preview.
+the playback — it is the DISCOVERY. `search.list` has a separate 100-call/day
+default bucket and Pit reserves ten calls, so repeatedly discovering channels
+consumed scarce interactive capacity. The initial “permanent channel” fix is now
+superseded by source-aware storage and mandatory refresh of API-derived data
+within 30 days.
 
 Fixes (server/musicProviders.js, server/db.js migration):
-1. Permanent Topic-channel storage on the artist row (youtube_channel_id +
-   youtube_channel_at). Discovered once, reused forever; kept OUT of the artist
-   upsert column list so a catalogue re-seed can't wipe it; a null result is a
-   recorded miss retried after 30 days.
+1. Channel storage on the artist row (`youtube_channel_id`,
+   `youtube_channel_at`, and now `youtube_channel_source`). Catalogue re-seeds do
+   not wipe it. API-derived mappings are refreshed within 30 days; bounded misses
+   become eligible again; Wikidata mappings retain explicit provenance.
 2. resolveArtistChannelId checks that row first (0 quota) before any search, and
    persists whatever it discovers.
 3. getArtistCatalogue now returns { items, complete }. The in-channel search is
    skipped when the catalogue was complete and lacked the song — a complete
    Topic catalogue that doesn't contain it proves the channel doesn't have it,
-   so the redundant 100-unit in-channel search is pure waste. "No readable
+   so the redundant Search Queries call is pure waste. "No readable
    uploads playlist" is treated as incomplete so that fallback still runs.
 
 A cold artist could previously cost up to THREE searches (channel + in-channel +
@@ -2424,30 +2540,29 @@ Owner's Diagnostics were almost all PIT-MEDIA-002 `search_budget_exhausted`,
 including the SAME artists repeatedly (R. Kelly, Ne-Yo, Gala, Gigi D'Agostino).
 That repetition is the tell: it is a deadlock, not just a spent cap.
 
-Chain: YouTube search is 100 quota units, capped at ~90 calls/day (10,000 unit
-default ÷ 100). Finding a cold artist's Topic channel needs one search. Once the
-day's 90 are gone, a cold artist's discovery search fails with
+Chain, corrected for June 2026: `search.list` has a separate default
+100-call/day bucket and Pit reserves ten by default. Finding a cold artist's
+Topic channel may need one search. Once Pit's 90 are gone, discovery fails with
 search_budget_exhausted, so the channel is never found, never stored, and the
 artist is cold again tomorrow — it can never self-heal through normal play.
 
 Compounding it: the cache warmer walked artists popularity-first, so its 90
 daily discoveries went to famous artists and never reached the older/niche
-tracks the owner actually queues. Those previewed forever.
+tracks the owner actually queues. Those previewed indefinitely.
 
 Fix (server/cacheWarmer.js): the warmer now leads with artists that have real
 plays but no discovered channel yet (youtube_channel_at=0), most-played first,
 then falls back to the popularity walk. So the songs producing previews right
-now are the ones discovered first, and once discovered they are stored
-permanently (the earlier youtube_channel_id fix) and play free forever. Test:
+now are discovered first. Their mapping persists across plays and reseeds, while
+API-derived data is revalidated within the current 30-day policy boundary. Test:
 "artists people actually play are warmed before more-popular ones nobody
 played." Full suite 143 green.
 
-REMAINING HARD CEILING (owner action, cannot be fixed in code): 90 discoveries/
-day is a Google quota, not a Pit setting. Warming ~2,600 artists at 90/day is
-weeks, and any day the owner plays >90 brand-new artists, some preview. The real
-lever is requesting a YouTube Data API quota increase in Google Cloud Console
-(APIs & Services → YouTube Data API v3 → Quotas → request higher
-queries/searches). YOUTUBE_SEARCH_DAILY_BUDGET can then be raised past 90.
+REMAINING CEILING: the provider's default is 100 `search.list` calls/day, while
+90 is Pit's configurable reserve. Wikidata removes many discoveries from that
+bucket; the long tail still needs interactive search, a verified admin pin, or
+an approved Search Queries quota increase. Background warming no longer spends
+search calls.
 
 STILL OPEN, separate from previews (seen in the same Diagnostics, not addressed
 here): frequent PIT-API-001 "response it could not safely read" on /api/feed
@@ -2482,15 +2597,16 @@ discriminator against a Cloudflare "Just a moment…" page, HTML with/without a
 content-type, and truncated JSON.
 
 IMPORTANT: this is diagnostic hygiene, NOT the preview fix. The previews are
-`search_budget_exhausted` (the 90/day YouTube search cap), a separate issue — see
+`search_budget_exhausted` (Pit's 90/day application reserve inside the provider's
+separate 100-call Search Queries bucket), a separate issue — see
 the channel-persistence work and the cache warmer. If these proxy-HTML responses
 become frequent (not just noise), the real remedy is a Cloudflare WAF rule to
 skip Bot Fight Mode / challenges for `/api/*` (owner action).
 
 ### Free channel discovery via Wikidata — the real preview fix (2026-07-25)
 
-The previews are `search_budget_exhausted`: discovering an artist's YouTube
-channel costs a Data API `search` (100 units vs a ~90/day cap), so a cold
+The previews were `search_budget_exhausted`: discovering an artist's YouTube
+channel spends a call from the separate Search Queries bucket, so a cold
 catalogue takes weeks to warm and a listener playing deep cuts outruns the
 budget daily. Persisting discovered channels (done earlier) only helped after a
 search paid for each one.
@@ -2504,18 +2620,18 @@ notable head is ~92% covered (40-artist sample: 37 hits). R. Kelly, Calvin
 Harris, Nickelback, The Weeknd, Drake all now resolve search-free.
 
 Wired three ways:
-- `backfillChannelsFromWikidata()` runs as the warmer's free phase 0, before the
-  search-based warm (server/cacheWarmer.js). Resumable via an app_meta marker.
+- `backfillChannelsFromWikidata()` runs as the warmer's free phase 0. Durable
+  per-MBID state now lives in `wikidata_channel_checks`, not one growing
+  `app_meta` JSON marker.
 - `resolveArtistChannelId` (server/musicProviders.js) tries a single free
   Wikidata lookup by mbid BEFORE spending a search — so an on-demand artist that
   was never in the catalogue (the deep cuts that preview most) also avoids the
   search. Dynamic import breaks the module cycle.
 - CLI: `node scripts/backfill-channels.mjs [--limit N]` for an on-demand run.
 
-With a YOUTUBE_API_KEY the backfill prefers each artist's "- Topic" channel
-(whole discography, best match rate) via a cheap channels.list (1 unit, not a
-search); without a key it stores the primary channel. Pure functions
-(buildSparql, parseWikidataChannels, pickChannel) are unit-tested.
+With a `YOUTUBE_API_KEY`, `channels.list` titles validate and rank Topic,
+official, and VEVO-like candidates. Without a key, a Wikidata pointer may be
+stored as `wikidata_unverified`; it is not trusted blindly by the matcher.
 
 OWNER ACTION: run `node scripts/backfill-channels.mjs` once against the
 production DB (or just let the daily warmer's phase 0 do it) to populate the live

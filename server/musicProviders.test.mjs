@@ -26,6 +26,7 @@ const {
   selectDeezerTrack,
   trackOverrideKey,
   youtubeOEmbed,
+  youtubeCacheKey,
   youtubeProviderStatus,
 } = await import("./musicProviders.js");
 
@@ -242,6 +243,27 @@ test("the catalogue path resolves songs without burning a keyword search", async
   // Only the one-off channel lookup may use search; the song itself must not.
   const songSearches = calls.filter((u) => u.includes("/search?") && !u.includes("type=channel"));
   assert.equal(songSearches.length, 0, "the song resolved without a keyword search call");
+  const cached = db.prepare("SELECT updated_at,expires_at FROM yt_cache WHERE key=?")
+    .get(youtubeCacheKey("Say It Right", "Nelly Furtado"));
+  assert.ok(cached.expires_at > cached.updated_at);
+  assert.ok(cached.expires_at - cached.updated_at <= 30 * 24 * 60 * 60 * 1000,
+    "non-authorized YouTube data is never cached beyond 30 days");
+});
+
+test("catalogue-only resolution defers a miss without touching search or any provider", async () => {
+  const before = youtubeProviderStatus().search.used;
+  let requests = 0;
+  const result = await resolveYouTubeTrack("Deferred Deep Cut", "Catalogue Only Artist", {
+    apiKey: "test-key",
+    allowSearch: false,
+    fetchImpl: async () => {
+      requests += 1;
+      throw new Error("allowSearch:false must return before provider discovery for an unmapped artist");
+    },
+  });
+  assert.deepEqual(result, { videoId: null, status: "search_deferred" });
+  assert.equal(requests, 0);
+  assert.equal(youtubeProviderStatus().search.used, before);
 });
 
 test("concurrent listeners share one cold YouTube resolution", async () => {
@@ -379,16 +401,43 @@ test("a discovered Topic channel is stored on the artist and never re-searched",
   assert.equal(first.status, "artist_catalogue");
   assert.equal(channelSearches, 1, "discovery searches once");
 
-  // The channel id is now on the artist row, permanently.
+  // The channel id is now on the artist row with YouTube provenance and a
+  // refresh timestamp, so it is reused without another discovery search.
   const stored = artistStmts.getChannel.get("channel keeper");
   assert.equal(stored.channelId, "UC_keeper");
   assert.ok(stored.at >= now);
+  assert.equal(stored.source, "youtube");
 
   // A DIFFERENT song by the same artist resolves from the cached catalogue with
   // no further channel discovery search.
   const second = await resolveYouTubeTrack("Second Single", "Channel Keeper", { apiKey: "test-key", fetchImpl });
   assert.equal(second.videoId, "keeper_b");
   assert.equal(channelSearches, 1, "the stored channel is reused, so no second discovery search");
+});
+
+test("a stale channel whose current title no longer matches is cleared instead of trusted forever", async () => {
+  artistStmts.upsert.run(artistRow("Correct Artist", { name: "Correct Artist", popularity: 35 }, "test"));
+  const wrongChannel = "UCxxxxxxxxxxxxxxxxxxxxxx";
+  artistStmts.setChannel.run(wrongChannel, Date.now() - 31 * 24 * 60 * 60 * 1000, "youtube", "correct artist");
+
+  let requests = 0;
+  const result = await resolveYouTubeTrack("Only Song", "Correct Artist", {
+    apiKey: "test-key",
+    allowSearch: false,
+    fetchImpl: async (url) => {
+      requests += 1;
+      assert.match(String(url), /\/channels\?/);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ items: [{ id: wrongChannel, snippet: { title: "Completely Different Band" } }] }),
+      };
+    },
+  });
+
+  assert.deepEqual(result, { videoId: null, status: "search_deferred" });
+  assert.equal(requests, 1, "only the bounded channel revalidation ran");
+  assert.equal(artistStmts.getChannel.get("correct artist").channelId, null);
 });
 
 test("a complete catalogue that lacks the song skips the in-channel search", async () => {

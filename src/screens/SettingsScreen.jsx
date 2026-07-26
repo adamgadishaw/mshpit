@@ -153,7 +153,7 @@ export default function SettingsScreen({ onClose, onEditProfile, onOpenProfile, 
         <Row icon="discover" label="Diagnostics" sub="Recent errors, request references, and failure points" onPress={onOpenDiagnostics} />
         <Row icon="lock" label="Privacy policy" onPress={onOpenPrivacy} />
         <Row icon="shield" label="Terms & conditions" onPress={onOpenTerms} />
-        <Row icon="globe" label="Version" sub="Pit · prototype build" onPress={undefined} right={<Text style={styles.ver}>0.1</Text>} />
+        <Row icon="globe" label="Version" sub="Pit · Alpha build" onPress={undefined} right={<Text style={styles.ver}>0.1</Text>} />
 
         {session && (
           <>

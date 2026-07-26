@@ -5,7 +5,7 @@ import SheetHeader from "../components/SheetHeader";
 // Shared layout for static legal/policy pages so Privacy + Terms stay consistent
 // and on-brand.
 const DEFAULT_NOTE =
-  "Pit is an early prototype. This document describes how the product is intended to work and will be finalized before public launch. Questions? Reach the team from your profile.";
+  "Pit is currently in Alpha. This document describes how the product works during Alpha and may be updated before public launch. Questions? Reach the team from your profile.";
 
 export default function PolicyScreen({ title, updated, intro, sections = [], onClose, note = DEFAULT_NOTE }) {
   return (

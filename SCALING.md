@@ -1,77 +1,138 @@
-# Scaling Pit — keeping servers and phones light
+# Scaling Pit from Alpha to millions
 
-How the big apps (YouTube, TikTok, Spotify, Facebook) avoid melting servers and
-phone storage, mapped to Pit. The rule: **never move or store more bytes than the
-moment needs.**
+Last reconciled: **2026-07-26**.
 
-## 1. Media is the whole game (photos & video)
+Pit's current single Node process, SQLite database, bounded polling, and
+in-process schedulers are reasonable for Alpha validation. They are not a
+million-user architecture. The goal is to preserve the current product and
+screen contracts while replacing stateful single-instance internals in measured
+stages.
 
-Originals are huge; never serve them to a feed.
+## Stage 0: finish authoritative Alpha behavior
 
-- **Images** → an image CDN with on-the-fly resizing (Cloudflare Images, imgix,
-  Cloudinary, or S3 + Lambda@Edge). Upload once; request `?w=400` for a feed
-  thumb, full-res only when a user taps. Serve modern formats (AVIF/WebP).
-  *Pit today:* selected user images upload directly to configured S3-compatible
-  object storage through short-lived signed PUT URLs; only the public object URL
-  is saved. This is durable storage, but not yet a complete media pipeline. Next:
-  verify stored bytes, strip metadata, generate bounded feed/avatar derivatives,
-  moderate/quarantine content, and deliver those derivatives through a CDN.
-- **Video** (clips of shows) → **never store/stream raw MP4.** Transcode to
-  **HLS / adaptive bitrate** (multiple renditions) like TikTok/YouTube; the
-  player pulls the rendition that fits the network. Store in object storage (S3),
-  deliver via CDN, show a poster thumbnail in the feed and only fetch video on
-  tap/scroll-into-view. Use signed, expiring URLs.
+Do this before adding distributed infrastructure; scaling inconsistent state
+only makes it harder to repair.
 
-## 2. Phone storage stays tiny
+1. **DM read cursors and history:** persist each user's last-read message/cursor
+   per thread, hydrate thread summaries at login, and page history on demand.
+2. **Feed tombstones:** expose a durable version/delta stream of post upserts and
+   removals so deletion/moderation propagates to already-hydrated clients. Apply
+   the same event across feed, profile, open-post, count, media, and notification
+   views. Batch comment previews/counts.
+3. **Shared-chat gates:** keep fan-club membership and exact-performance Going
+   checks on both read and write. Public gate endpoints return aggregate-only
+   counts. Preserve forward cursors and authorized removal reconciliation.
+4. **Playlist lifecycle:** finish rename/reorder/remove/privacy/delete/detail,
+   unavailable-track handling, and authoritative history totals.
+5. **Music identity:** carry provider/source ID and duration end to end; page
+   discographies instead of truncating or blocking initial render.
+6. **Native acceptance:** define the Expo SDK 56 playback contract and test real
+   iOS/Android interruption, backgrounding, safe areas, orientation, and media.
+7. **Client profiling:** measure real low/mid-range phones before splitting the
+   broad store context and reducing the initial catalogue/core bundle further.
 
-- **Cache thumbnails, not originals.** Use `expo-image` (disk + memory cache,
-  blurhash placeholders, automatic eviction) instead of raw `<Image>`. It caps
-  disk use and reuses bytes across screens.
-- **Virtualize lists.** The feed is a `FlatList`, so off-screen cards are
-  unmounted — memory stays flat no matter how long the feed is. Tune
-  `windowSize` / `removeClippedSubviews`.
-- **Don't persist heavy state.** Keep only ids + small JSON locally
-  (AsyncStorage / MMKV); re-fetch media from CDN on demand.
+## Stage 1: durable data and job foundation
 
-## 3. Feed delivery without fanout pain
+- **Postgres:** move normalized writes to managed Postgres with connection
+  pooling, online migrations, read/index plans, point-in-time recovery, and
+  tested restore drills. Keep stable IDs/cursors during migration.
+- **Shared coordination:** use Redis-compatible storage for distributed rate
+  limits, short-lived caches, session coordination, pub/sub, idempotency locks,
+  and hot counters. Never depend on process memory for a global quota/circuit.
+- **Durable workers:** catalog growth, MusicBrainz/Deezer enrichment, Wikidata
+  discovery, YouTube refresh/warming, tour dates, mail, notifications, media,
+  exports, and deletion need leased jobs with persisted steps, retries, dead
+  letters, cancellation, and dashboards. A resumable inner cursor does not make
+  a web-process closure durable.
+- **10k+ roster:** keep core artist identity in the DB and enrich/page heavy
+  releases, tracks, and photos separately. Record added/updated/failed/exhausted
+  outcomes; never infer success from the requested target or a stale client
+  counter.
 
-- **Cursor pagination**, not offset — `?after=<cursor>&limit=20`. Stable under
-  inserts, cheap on the DB. *Pit today:* the main feed uses a server
-  `(created_at,id)` cursor and the client requests later pages. DMs, comments,
-  fan-club messages, lounges, notifications, and venue reviews expose cursors,
-  but their screens still need incremental load-more wiring. Remove the temporary
-  feed offset path after old clients no longer use it.
-- **Pull + cache** for most users; precomputed fan-out only for high-follow
-  accounts (the Twitter/IG hybrid). Cache hot pages in Redis/edge.
-- **Counters** (likes/comments) live in Redis and flush to Postgres in batches —
-  never `COUNT(*)` on read.
+## Stage 2: realtime social delivery
 
-## 4. Recommendations & search = embeddings
+- Use WebSocket or SSE gateways backed by shared pub/sub for DMs, fan clubs,
+  lounges, feed deltas, notifications, presence, and typing where appropriate.
+- The database/event log remains authoritative. Existing `(created_at,id)` or
+  equivalent cursors stay as reconnect/catch-up fallback, so realtime loss never
+  loses data.
+- Store per-user read/delivery cursors server-side. Add push fan-out through a
+  durable queue; do not make push delivery the source of truth.
+- Use backoff, jitter, heartbeats, bounded catchup, explicit reconnect UI, and
+  observability. Stop no-op polling state updates during the Alpha transition.
+- Model deletions/moderation as events/tombstones, not an ever-growing client
+  deny list or a bounded recent-removals array.
 
-This is the Spotify/TikTok core and what "embedding features" means:
+## Stage 3: feed, search, recommendations, and analytics
 
-- Represent each **artist, show, and user** as a vector (from genres, who-saw-
-  what co-occurrence, audio features, review text). Store in a **vector DB**
-  (pgvector, Pinecone, Qdrant).
-- "For You" and "similar artists" = **approximate nearest-neighbor** lookups —
-  precomputed nightly, cached per user. Cheap at read time.
-- **Semantic search** ("dreamy shoegaze near me") embeds the query and ANN-
-  searches the same space, instead of `LIKE '%...%'`.
-- *Pit today:* `recommendedShows()` scores by genre affinity + proximity + follow
-  graph — the same idea, hand-weighted. Drop-in upgrade: replace the score with a
-  vector similarity once the embedding job exists.
+- **Feed:** start with pull + cached pages; introduce selective fan-out read
+  models only where follower scale justifies it. Page by stable cursor, not
+  offset. Precompute/copy hot counters rather than `COUNT(*)` on every card.
+- **Search:** move artist/venue/user/event text search to a dedicated index once
+  Postgres indexed search no longer meets latency. Keep authorization/block
+  filters in the query path.
+- **Recommendations:** build offline features from follows, genres, location,
+  plays, and reviews, then cache candidate sets. Add vector search only when a
+  measured use case beats the current explainable scorer.
+- **Analytics:** send allow-listed, consented events through a queue to a
+  separate aggregate/warehouse path. Do not run unbounded product-analysis scans
+  on the transactional DB.
 
-## 5. Data store layout
+## Media pipeline
 
-- **Hot path:** Postgres (normalized writes) + denormalized read models / cache
-  for feeds and profiles.
-- **Blobs:** object storage (S3/R2) + CDN for all media; DB only holds URLs.
-- **Cold:** archive old media to cheaper tiers; keep thumbnails hot.
-- **Search/recs:** vector DB + a text index (Elastic/Meilisearch).
+Originals are too large and unsafe to serve directly in feeds.
 
-## 6. Client manners
+- Finalize presigned uploads by verifying object existence, owner key, MIME,
+  size, and checksum; expire abandoned reservations.
+- Strip image metadata and create bounded avatar/feed/viewer derivatives in
+  AVIF/WebP where supported. Serve through a CDN with immutable versioned keys.
+- Quarantine/moderate uploads before public promotion. Preserve audit and
+  takedown state.
+- Transcode user video to adaptive HLS/DASH renditions with poster frames; do not
+  make every client download raw 100 MB MP4 files.
+- Use signed access where privacy requires it and lifecycle policies for
+  replaced/deleted originals and derivatives.
 
-Optimistic UI may acknowledge input immediately, but the server must remain
-authoritative: show pending state and roll back/reconcile on failure. Debounce
-search, prefetch the next feed page, lazy-load images near the viewport, and
-compress uploads on-device before they reach the network.
+## YouTube and external-provider capacity
+
+- Since June 2026, `search.list` has its own default 100-call/day bucket; normal
+  catalogue/list endpoints use the separate default 10,000-unit/day bucket.
+  Model and alert on them separately.
+- Non-authorized YouTube API data is refreshed or deleted within 30 calendar
+  days. Keep provenance so CC0 Wikidata identity is distinguishable from
+  YouTube-derived validation/metadata.
+- Normal background warming must keep `allowSearch:false`; use Wikidata,
+  known-channel catalogue reads, interactive fallback, and admin pins in that
+  order. Request approved quota rather than sharding keys/projects to evade it.
+- Public WDQS is an enrichment source, not a high-QPS playback dependency. Move
+  channel discovery to bounded offline workers/bulk imports as the roster grows.
+- Define provider SLOs, retry/circuit policy, cache lifetime, compliance review,
+  outage behavior, and monthly cost before broad marketing.
+
+## Client performance budget
+
+- Keep IDs and small account-scoped caches locally; media stays in object
+  storage/CDN and server state is paged.
+- Keep list virtualization and bounded windows. Prefetch one useful page, not an
+  entire social graph or 10k catalogue.
+- Continue screen/media lazy loading, but measure uncompressed JavaScript parse
+  and execution, first useful paint, interaction latency, list memory, and
+  player continuity on physical low/mid-range devices.
+- Split `src/store.js` by domain behind its current consumer API. Stabilize action
+  references and selectors; introduce a server-state query cache incrementally.
+  A blind provider rewrite risks stale closures and broad regressions.
+- Preserve optimistic UI only where every mutation has pending/error state,
+  idempotency, rollback, and authoritative reconciliation.
+
+## Readiness gates
+
+“Millions ready” requires evidence, not a technology checklist:
+
+- load and soak tests for hot songs, cold artists, celebrity accounts, chat
+  bursts, provider outages, media upload spikes, deploys, and region failure;
+- privacy-safe logs, metrics, traces, SLOs, alerts, incident runbooks, and staffed
+  moderation/abuse response;
+- backup/restore and disaster-recovery exercises with measured recovery time and
+  data-loss objectives;
+- provider quota/compliance/cost forecasts and graceful degraded behavior;
+- canary/rollback-safe schema and application deployment.

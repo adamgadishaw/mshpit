@@ -152,6 +152,21 @@ function usePersisted(key, seed) {
   return [value, setValue];
 }
 
+const RECENT_SEARCH_LEGACY_KEY = "pit.recentSearches";
+const recentSearchStorageKey = (accountId) => accountId
+  ? `pit.recentSearches.user.${encodeURIComponent(String(accountId))}`
+  : "pit.recentSearches.guest";
+const cleanRecentSearches = (stored) => Array.isArray(stored)
+  ? stored.filter((entry) => entry && typeof entry.label === "string" && entry.label.trim()).slice(0, 8)
+  : [];
+const loadRecentSearches = (accountId) => {
+  const scoped = load(recentSearchStorageKey(accountId), null);
+  if (Array.isArray(scoped)) return cleanRecentSearches(scoped);
+  // One-way compatibility migration: only a guest can inherit the legacy
+  // device-global list. The provider's persistence effect writes the guest key.
+  return accountId ? [] : cleanRecentSearches(load(RECENT_SEARCH_LEGACY_KEY, []));
+};
+
 export function StoreProvider({ children }) {
   // Hydrate the identity-critical state from storage so a refresh / new page keeps
   // you logged in and keeps your data. (See src/lib/persist.js.)
@@ -594,14 +609,35 @@ export function StoreProvider({ children }) {
       return su;
     } catch { return null; }
   };
-  // Recent searches: the last few things the user opened from Search, so the
-  // empty state is useful instead of blank (like every big app). Kept small,
-  // deduped by type+label, newest first, and persisted on-device.
-  const [recentSearches, setRecentSearches] = useState(() => {
-    const stored = load("pit.recentSearches", []);
-    return Array.isArray(stored) ? stored.filter((e) => e && e.label).slice(0, 8) : [];
-  });
-  useEffect(() => { save("pit.recentSearches", recentSearches); }, [recentSearches]);
+  // Recent searches are device-local but identity-scoped. The old global key is
+  // eligible to seed the guest bucket only; a signed-in account must never see
+  // searches left by a guest or another account on this browser.
+  const recentSearchAccountId = session?.id || null;
+  const recentSearchScope = recentSearchAccountId ? `user:${recentSearchAccountId}` : "guest";
+  const [recentSearchState, setRecentSearchState] = useState(() => ({
+    scope: recentSearchScope,
+    entries: loadRecentSearches(recentSearchAccountId),
+  }));
+  const recentSearches = recentSearchState.scope === recentSearchScope ? recentSearchState.entries : [];
+  const setRecentSearches = (updater) => {
+    setRecentSearchState((current) => {
+      const entries = current.scope === recentSearchScope
+        ? current.entries
+        : loadRecentSearches(recentSearchAccountId);
+      const next = typeof updater === "function" ? updater(entries) : updater;
+      return { scope: recentSearchScope, entries: cleanRecentSearches(next) };
+    });
+  };
+  useEffect(() => {
+    setRecentSearchState((current) => current.scope === recentSearchScope
+      ? current
+      : { scope: recentSearchScope, entries: loadRecentSearches(recentSearchAccountId) });
+  }, [recentSearchScope]);
+  useEffect(() => {
+    if (recentSearchState.scope === recentSearchScope) {
+      save(recentSearchStorageKey(recentSearchAccountId), recentSearchState.entries);
+    }
+  }, [recentSearchAccountId, recentSearchScope, recentSearchState]);
   const addRecentSearch = (entry) => {
     if (!entry || !entry.label) return;
     const type = entry.type || "query";
@@ -1385,6 +1421,10 @@ export function StoreProvider({ children }) {
     setFanClubMeta({});
     setFeedNextCursor(null);
     setFeedHasMore(true);
+
+    // Account deletion also clears this account's device-local search bucket;
+    // the guest and other account buckets remain isolated and untouched.
+    save(recentSearchStorageKey(deleted.id), []);
 
     // Artist-owned client caches do not retain author IDs on every legacy row;
     // remove the deleted artist's own page cache while preserving unrelated
@@ -2773,13 +2813,16 @@ export function StoreProvider({ children }) {
     if (!u) return { shows: 0, reviews: 0, likes: 0, photos: 0, cities: 0, artists: 0, follows: 0, fanClubs: 0 };
     if (rewardProfiles[u.id]?.stats) return rewardProfiles[u.id].stats;
     const logs = logsByUser(u.id);
+    // Legacy concert logs predate `kind`, so a missing value remains a review.
+    // Plain status posts can earn social likes, but never concert achievements.
+    const concertLogs = logs.filter((log) => (log.kind || "review") === "review");
     return {
-      shows: logs.length,
-      reviews: logs.filter((l) => (l.review || "").trim().length > 0).length,
+      shows: concertLogs.length,
+      reviews: concertLogs.filter((l) => (l.review || "").trim().length > 0).length,
       likes: logs.reduce((s, l) => s + (l.likes || 0), 0),
-      photos: logs.reduce((s, l) => s + (l.photos?.length || 0), 0),
-      cities: new Set(logs.map((l) => l.city).filter(Boolean)).size,
-      artists: new Set(logs.map((l) => norm(l.artist)).filter(Boolean)).size,
+      photos: concertLogs.reduce((s, l) => s + (l.photos?.length || 0), 0),
+      cities: new Set(concertLogs.map((l) => l.city).filter(Boolean)).size,
+      artists: new Set(concertLogs.map((l) => norm(l.artist)).filter(Boolean)).size,
       follows: followingCount(u.id),
       fanClubs: (fanClubs[u.id] || []).length,
     };

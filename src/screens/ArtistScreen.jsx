@@ -25,6 +25,11 @@ const compactCount = (value) => {
   return String(count);
 };
 const releaseType = (album) => String(album?.type || "album").toLowerCase() === "ep" ? "EP" : "ALBUM";
+const spotifyTrackId = (track) => {
+  if (track?.id) return String(track.id);
+  const match = String(track?.url || "").match(/open\.spotify\.com\/track\/([A-Za-z0-9]+)/i);
+  return match?.[1] || null;
+};
 const TRACK_REPORT_TYPES = [
   { key: "wrong_video", label: "Wrong video" },
   { key: "wont_play", label: "Won't play" },
@@ -74,7 +79,20 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
   const gallery = artistGallery(a.name, 12);
   const canModerate = isStaff(session?.role);
   const genre = a.genre !== "-" ? a.genre : cap(meta?.genre) || "-";
-  const spotTracks = (meta?.topTracks || []).map((t, i) => ({ id: "sp_" + i, title: t.title, artist: a.name, album: t.album, url: t.url, preview: t.preview }));
+  const spotTracks = (meta?.topTracks || []).map((t, i) => {
+    const sourceId = spotifyTrackId(t);
+    return {
+      id: "sp_" + (sourceId || i),
+      sourceId,
+      provider: sourceId ? "spotify" : null,
+      title: t.title,
+      artist: a.name,
+      album: t.album,
+      duration: Number(t.duration) || 0,
+      url: t.url,
+      preview: t.preview,
+    };
+  });
   const seedSongs = spotTracks.length ? spotTracks : SONGS.filter((s) => s.artist.toLowerCase() === a.name.toLowerCase());
   // Artist-owned profile: the band's account can edit its header + post updates.
   const isOwner = isArtistOwner(a.name);
@@ -254,7 +272,15 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
   // The deep chart: the discography's 25-track list once it loads (fixes the
   // "cut off at ~10" complaint), else the seed list. Collapsed to 10 with a
   // "Show all N" toggle so the page doesn't open as a wall of songs.
-  const discoTop = Array.isArray(disco?.topTracks) ? disco.topTracks.map((t, i) => ({ id: "dz_" + (t.id || i), title: t.title, artist: a.name, album: t.album || null })) : [];
+  const discoTop = Array.isArray(disco?.topTracks) ? disco.topTracks.map((t, i) => ({
+    id: "dz_" + (t.id || i),
+    sourceId: t.id || null,
+    provider: "deezer",
+    title: t.title,
+    artist: a.name,
+    album: t.album || null,
+    duration: Number(t.duration) || 0,
+  })) : [];
   const allSongs = discoTop.length ? discoTop : seedSongs;
   // Keep next/previous tied to the selected Deezer identity too. Without this,
   // choosing a same-named act changed the visible list but left the old act in
@@ -265,6 +291,9 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
     preview: s.preview || null,
     title: s.title,
     artist: a.name,
+    sourceId: s.sourceId || null,
+    provider: s.provider || null,
+    duration: Number(s.duration) || 0,
     art: disco?.artist?.photo || a.photo || meta?.photo || null,
   }));
   const songs = showAllSongs ? allSongs : allSongs.slice(0, 10);
@@ -277,7 +306,17 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
     // title/artist, or a Deezer 30s preview mp3 when there's no match.
     const known = songQueue.find((s) => s.title === t.title);
     const preview = t.preview || known?.preview || null;
-    onPlay?.({ kind: "track", title: t.title, artist: a.name, url: null, preview, art: cover || disco?.artist?.photo || a.photo || meta?.photo || null }, songQueue.length ? songQueue : undefined);
+    onPlay?.({
+      kind: "track",
+      title: t.title,
+      artist: a.name,
+      url: null,
+      preview,
+      sourceId: t.sourceId || known?.sourceId || null,
+      provider: t.provider || known?.provider || null,
+      duration: Number(t.duration || known?.duration) || 0,
+      art: cover || disco?.artist?.photo || a.photo || meta?.photo || null,
+    }, songQueue.length ? songQueue : undefined);
   };
   // Listen = play a random song from this artist's catalog, with the rest queued up
   // (the player then keeps going with genre-matched recommendations).
@@ -290,15 +329,44 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
       onPlay?.({ kind: "track", title: a.name, artist: a.name, art: disco?.artist?.photo || a.photo || meta?.photo || null });
     }
   };
-  const addSong = (t) => onAddToPlaylist?.({ title: t.title, artist: a.name, url: t.url || null, preview: t.preview || null, art: t.art || disco?.artist?.photo || a.photo || meta?.photo || null });
+  const addSong = (t) => onAddToPlaylist?.({
+    title: t.title,
+    artist: a.name,
+    url: t.url || null,
+    preview: t.preview || null,
+    sourceId: t.sourceId || null,
+    provider: t.provider || null,
+    duration: Number(t.duration) || 0,
+    art: t.art || disco?.artist?.photo || a.photo || meta?.photo || null,
+  });
 
   // Play a single top-track (its own song, then genre-matched recs continue).
   const playSingle = (s) => {
-    onPlay?.({ kind: "track", url: null, preview: s.preview || null, title: s.title, artist: a.name, art: disco?.artist?.photo || a.photo || meta?.photo || null }, songQueue);
+    onPlay?.({
+      kind: "track",
+      url: null,
+      preview: s.preview || null,
+      title: s.title,
+      artist: a.name,
+      sourceId: s.sourceId || null,
+      provider: s.provider || null,
+      duration: Number(s.duration) || 0,
+      art: disco?.artist?.photo || a.photo || meta?.photo || null,
+    }, songQueue);
   };
   // Play an album AS AN ALBUM: in track order (optionally starting mid-album), or
   // shuffled. Recs append after the last track, so shuffle "kicks in" when it ends.
-  const albumTrack = (t, al) => ({ kind: "track", title: t.title, artist: a.name, preview: t.preview || null, art: al.cover || disco?.artist?.photo || a.photo || meta?.photo || null });
+  const albumTrack = (t, al) => ({
+    kind: "track",
+    id: t.id ? `dz_${t.id}` : undefined,
+    sourceId: t.id || null,
+    provider: "deezer",
+    title: t.title,
+    artist: a.name,
+    duration: Number(t.duration) || 0,
+    preview: t.preview || null,
+    art: al.cover || disco?.artist?.photo || a.photo || meta?.photo || null,
+  });
   const playAlbum = (al, startTitle = null, shuffle = false) => {
     let tracks = (al.tracks || []).map((t) => albumTrack(t, al)).filter((t) => t.title);
     if (!tracks.length) return;

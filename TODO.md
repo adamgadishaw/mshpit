@@ -1,688 +1,279 @@
-# Pit product backlog
-
-This is the authoritative execution list for the 18 owner requests recovered on
-2026-07-21. `CLAUDE_SESSION_RECOVERY_2026-07-21.md` preserves the original
-wording; `HANDOFF.md` preserves implementation history. When another note
-conflicts with this file, use this file and the current code/tests.
-
-The owner has authorized clean structural and creative changes. That authority
-does not remove the verification gates below or make the current single-server
-deployment "millions ready."
-
-## Status key and acceptance gate
-
-- **IMPLEMENTED / VERIFY:** code exists in the current recovery batch, but it is
-  not accepted until focused tests, `npm run check`, desktop and narrow-web smoke
-  tests, and any provider/device-specific production checks pass.
-- **PARTIAL:** a useful vertical slice exists, but a named dependency or
-  end-to-end behavior remains.
-- **CONFIGURATION:** the application work exists; a private dashboard, DNS, or
-  production action remains.
-- **FOUNDATION COMPLETE:** the recovered request is implemented and has prior
-  automated/browser evidence, though normal production regression monitoring
-  still applies.
-- **OPEN:** investigation or implementation is still required.
-
-Do not mark an item **ACCEPTED** because a component renders or an endpoint
-exists. Record the test/device/production evidence in `HANDOFF.md` first.
-
-## Current execution list
-
-### 1. Sustainable YouTube lookup at large-user scale
-
-**Status: IMPLEMENTED (2026-07-23). Cache warming now runs as a real job.**
-
-The lever that matters at scale is a warm cache: quota is per project, so a
-resolved song is free for everyone after, and a cold cache is what degrades
-first listens to previews and burns the daily search budget. `server/cacheWarmer.js`
-walks the catalogue most-popular-first and resolves top tracks through the
-artist-catalogue path (~13 quota units per discography, and it does NOT touch
-the 90/day user search budget). `startCacheWarmScheduler()` runs it in-process
-daily (guarded by a per-day marker so a redeploy does not re-warm), idle without
-a key like the tour scheduler. `npm run warm:youtube` is the manual runner, with
-`--dry-run` estimating coverage and cost with no key (30 artists ≈ 90 songs ≈
-378 units). Seven unit tests cover budget accounting, resume, skip-cached, the
-circuit-breaker stop and the dry run.
-
-Remaining production capacity work: if daily active users exceed what one
-project's 10k units can serve, raise the quota in Google Cloud or add a second
-key. The admin PLAYBACK LOOKUP panel shows when the budget is the bottleneck.
-
-Current batch adds a persistent Pacific-day budget for `search.list` (90 calls by
-default, configurable), single-flight collapse for concurrent identical song
-lookups, a provider circuit breaker, health/capacity reporting, and a configurable
-artist-upload scan of up to 600 videos by default. Cached/pinned matches still
-avoid a new search.
-
-Acceptance criteria:
-
-- Concurrent cold requests for the same recording produce one provider lookup,
-  and restarts cannot reset the daily search allowance.
-- The search cap produces an explicit, retryable capacity state; it never quietly
-  substitutes an unrelated video. Alerts show usage, circuit state, cache hit
-  rate, fallback rate, and correct-video report rate.
-- Load tests model cold artists, hot songs, and a provider outage. A documented
-  stale-cache/pinned-result path continues to play known-good tracks.
-- Before a large launch, move catalogue warming/refresh into durable workers,
-  maintain a first-class artist/channel identity mapping, and obtain/plan provider
-  quota or licensed-catalogue capacity. Do not shard API keys to evade limits.
-
-Important correction: YouTube's current documentation gives `search.list` a
-separate default allocation of 100 calls per day, with one search allocation per
-call. This is distinct from the normal 10,000-unit Data API quota. IFrame player
-playback does not consume Data API search capacity. Older handoff math saying a
-search costs 100 quota units and permits about 99 songs/day is obsolete.
-
-### 2. Trustworthy artist genre authority
-
-**Status: IMPLEMENTED; catalogue backfill partially run.**
-
-Root cause found: the catalogue seeder crawls MusicBrainz *tag pages* to discover
-artists and published the crawl bucket as the artist's genre. Those pages return
-loosely related artists, so Justin Bieber came back under "Metal", Eminem under
-"Hardcore", Rihanna under "House", Nirvana under "Punk". CLAUDE.md already said
-MusicBrainz search tags are discovery hints, not canonical genres; the data
-violated its own rule. Enrichment then made it permanent with
-`genre: row.genre || e.genre`, so a stale bucket outranked Deezer knowing better.
-
-`src/domain/genre.mjs` is now the authority. A genre is a claim with a source,
-never a bare string. Hierarchy: `staff` > `provider` > `consensus` > `tag_hint`,
-with confidence attached; only claims backed by evidence are stated as fact.
-Every source keeps its own claim on the record, so a staff correction is
-reversible and the provider evidence underneath survives it. `publicArtist`
-returns an unverified bucket as `genreHint` rather than `genre`, so review still
-has the signal but the interface stops asserting it.
-
-`POST /api/admin/artists/genre` is the staff override: audited through
-`moderation_actions`, admin-only, reversible by passing an empty genre.
-`scripts/backfill-genres.mjs` asks Deezer what each artist actually is and
-records it as provider evidence, most-popular first and resumable.
-
-Verified: the top 200 ranked artists went from 37 to 180 evidence-backed genres,
-and Discover now reads Rihanna POP, Eminem HIP-HOP, Nirvana Rock, Michael
-Jackson Pop. 12 unit tests plus 2 API tests cover the hierarchy, the named
-mislabelled artists, empty-provider protection, staff precedence and undo.
-
-Remaining:
-
-- Only ~150 of 2657 artists have been backfilled so far. Run
-  `node scripts/backfill-genres.mjs 500` repeatedly (keyless, rate-limited,
-  resumable) until the pending count reaches zero. Until then most of the long
-  tail shows no genre rather than a wrong one, which is the intended failure.
-- `consensus` is defined and ranked but nothing emits it yet; a second provider
-  is needed before cross-provider agreement means anything.
-- Same-name artists still bind by display name in places; that overlaps item 10.
-- The bundled seed catalog still carries bucket genres. They are classified as
-  hints on read, so they cannot assert anything, and regenerating the catalog
-  converges it.
-
-### 3. Account-scoped theme persistence
-
-**Status: VERIFIED on desktop web (2026-07-22); cross-device unverified.**
-
-Theme storage is now tagged with its owning account, synchronized from the signed-
-in profile, and cleared on logout so one account's choice does not become another
-account's anonymous/device default.
-
-Acceptance criteria:
-
-- On one browser: choose a theme as account A, log out, sign in as account B, and
-  verify no flash or leak from A; B's server-backed choice then hydrates.
-- Logout, expired sessions, account deletion, and anonymous launch return to the
-  intended default without interrupting playback during an in-session switch.
-
-### 4. Resend password-reset email
-
-**Status: CONFIGURATION; code/runbook ready, production delivery unverified.**
-
-`RESEND_SETUP.md` is the authoritative setup and acceptance runbook. The mailer
-now supplies an idempotency key and a descriptive user agent. Reset tokens, reset
-URLs, and recipient addresses are never logged as a fallback.
-
-Acceptance criteria:
-
-- Rotate the previously exposed key, verify `mail.mshpit.com` (or deliberately
-  choose the root domain), and set matching `RESEND_API_KEY`, `MAIL_FROM`, and
-  `PUBLIC_ORIGIN` values on Render.
-- `/api/health` reports `mailConfigured: true`, then an end-to-end reset reaches
-  two inbox providers, expires after one hour, is single-use, and revokes old
-  sessions. Resend/server logs must contain no reset secret.
-
-### 5. Start a conversation from Messages
-
-**Status: VERIFIED two-client (2026-07-22); realtime remains polling plus cursor
-catch-up, which is still the scale limit.**
-
-Two genuinely separate clients (browser session + a Node session with its own
-cookie): a DM sent by one appeared in the other's **open thread** and updated the
-inbox preview and ordering within a second, with no page refresh. Polling
-correctly pauses while the tab is hidden, which is battery-sane and was what made
-an earlier headless attempt look like a failure.
-
-Inbox now has a New message flow with member search and thread creation/opening.
-Thread summaries fetch only the newest message and refresh periodically; summary
-ordering uses latest message time rather than message count. Open DMs and group
-chats retain cursor-based catch-up.
-
-Acceptance criteria:
-
-- Start a first conversation and reopen an existing one from Messages on desktop
-  and phone; blocked/private/deleted members cannot be bypassed.
-- New messages update inbox order/preview and the open one-to-one or group thread
-  without a manual page refresh. Reconnect fills any gap exactly once.
-- Before high scale, replace short polling with managed realtime fan-out while
-  retaining cursors as the recovery source of truth.
-
-### 6. Less repetitive autoplay
-
-**Status: VERIFIED by extraction + tests (2026-07-22); server-scale
-recommendations remain future work.**
-
-The selection algorithm was trapped inside the `useStore` hook, so none of the
-criteria below could actually be checked. It now lives in
-`src/domain/recommend.mjs` as a pure function (the store still gathers the
-candidate pool), covered by 9 tests: the per-artist cap, three rotations opening
-differently, recently-played deferral by provider id *and* by artist+title,
-just-heard artists sinking without being banned, the seed never recurring,
-discovery outside the seed genre, exact recording identity surviving, and empty
-or sparse accounts returning `[]` rather than crashing. Live: a fresh Listen
-built a 52-track queue with no console errors.
-
-Autoplay now mixes taste-matched and discovery artists, defers recently played
-tracks/artists, round-robins artists before taking a second song, and rotates the
-candidate start between sessions. Exact history identity no longer uses a play-
-event ID as the track ID.
-
-Acceptance criteria:
-
-- Repeated sessions over representative accounts do not begin with the same
-  short sequence, recently played tracks are deferred, and one prolific artist
-  cannot dominate the queue.
-- Exact recordings/video IDs survive history replay. Empty/sparse accounts get a
-  useful, truthful fallback.
-- Move candidate generation to a paged/server recommendation service before the
-  catalogue and user graph are too large to hydrate on the client.
-
-### 7. Reduce preview-only playback
-
-**Status: STRUCTURALLY FIXED (2026-07-25). The remaining previews were a quota
-problem, and the quota was being spent re-finding channels we already knew.**
-
-Root cause the owner kept hitting: YouTube search is 100 quota units and capped
-at ~90/day, and finding each artist's "<Artist> - Topic" channel needed a
-search. Channels were only cached with a 30-day TTL, so the budget was
-repeatedly spent re-discovering channels — and until an artist's channel was
-(re)found, their songs fell to global search (also capped) → preview.
-
-Two fixes in server/musicProviders.js + a migration:
-- Topic channel IDs are now stored PERMANENTLY on the artist row
-  (`youtube_channel_id`), discovered once and reused forever. Kept out of the
-  catalogue upsert so a re-seed cannot wipe it. A recorded miss is retried after
-  30 days.
-- The in-channel search (another 100 units) is skipped when the local upload
-  catalogue was COMPLETE and simply did not contain the song — the Topic channel
-  demonstrably doesn't have it, so the global search is the right next step, not
-  a redundant in-channel one. Only a truncated catalogue (very prolific artist
-  past the page cap) still justifies the in-channel search.
-
-Net effect: after each artist is discovered once, all their songs resolve with
-cheap 1-unit calls (channels/playlistItems/videos.list) and never touch the
-search budget. The cache warmer (server/cacheWarmer.js) does the one-time
-discovery in the background within the daily budget. Tests cover permanent
-storage, no-repeat-search, and the skipped-in-channel-search case.
-
-### 7. Reduce preview-only playback
-
-**Status: PARTIAL; measurement harness now exists, production run still required.**
-
-`scripts/sample-playback.mjs` is the before/after instrument the criteria below
-ask for. It samples the catalogue (`--deep` targets the back catalogue, where
-preview-only concentrates) and reports official / preview / missing / capacity /
-rejected rates, keeping **capacity** separate from **missing** so a refused
-lookup is never misread as an absent song. It also prints how much search budget
-the run consumed.
-
-Locally it reports 100% preview and says why: `YOUTUBE_API_KEY` is unset, so the
-number is not meaningful. Run it on Render before and after a deploy and keep
-both outputs; a single number is not the acceptance criterion.
-
-The larger official-channel catalogue scan, persistent search budget, shared
-cold lookups, preserved exact history IDs, and explicit capacity diagnostics
-reduce avoidable preview fallbacks. Deezer preview remains the honest fallback
-when no acceptable YouTube recording is available.
-
-Acceptance criteria:
-
-- On a documented sample of deep catalogues, record official-video, preview,
-  missing, and rejected-wrong-version rates before/after deployment.
-- Quota/provider failures show a useful themed diagnostic and never masquerade
-  as "song missing." Known pinned/cache results remain usable during an outage.
-- A preview is labeled as such and must never auto-upgrade to a low-confidence
-  lyric, karaoke, reaction, live, or wrong-artist video.
-
-### 8. Replies to comments
-
-**Status: VERIFIED (2026-07-22), including deleted-parent tombstones.**
-
-Post detail and Afterparty comments now support replies. Server reads preserve a
-bounded ancestor chain, enforce post/block visibility, and return deleted-parent
-tombstones so valid child replies do not become orphaned.
-
-Acceptance criteria:
-
-- Reply, refresh, and render a three-level thread on both surfaces; indentation is
-  bounded on a narrow phone.
-- Deleted ancestors remain a neutral tombstone only while children exist.
-  Blocked/private/removed content cannot leak through ancestor hydration.
-
-### 9. Hide Clips while retaining its framework
-
-**Status: VERIFIED (2026-07-22); no entry point on desktop or narrow web.**
-
-Clips navigation and persisted deep-route restoration are gated off through
-`ENABLE_CLIPS=false`; implementation files remain available for a future launch.
-
-Acceptance criteria:
-
-- Clips has no visible entry point on desktop or phone, and a saved/reloaded
-  `nav.clips` state safely returns to the base route.
-- Re-enabling the flag restores the feature without a data migration or rebuild
-  of the underlying framework.
-
-### 10. Venue and artist preselection
-
-**Status: PARTIAL; entity binding shipped, same-name artists still blocked on the
-catalog's primary key.**
-
-Posts now carry `artist_key`, `artist_mbid` and `venue_key` alongside the display
-strings. Picking a suggestion binds the review to that catalog entity and its
-MusicBrainz identity; typing over the field drops the binding, so free text can
-never inherit the page of the artist that was there before. The server re-resolves
-the key and refuses one that does not match the submitted name, so a stale or
-forged key cannot attach a review to the wrong act. Editing re-resolves too, and
-drafts round-trip the binding. Suggestions now show genre/country/formed year as
-disambiguating evidence.
-
-Verified by API tests (bind, free text, forged key, edit re-bind) and live:
-picking Turnstile stored `turnstile` + mbid `7b748dac…`, free text stored no
-artist key.
-
-Remaining:
-
-- **Same-name artists genuinely cannot coexist**: `artists.norm` (the normalized
-  display name) is the table's PRIMARY KEY, so two different acts called "Nirvana"
-  collapse to one row. The stored `artist_mbid` is the identity that would tell
-  them apart, so the fix is to key the catalog on a surrogate id with `norm` as a
-  lookup index, then let suggestions offer both. That is a catalog migration and
-  is not done; until then the same-name fixture in the acceptance criteria cannot
-  pass and should not be claimed.
-- Venues are still bundled catalog data rather than a table, so `venue_key` is the
-  normalized name. Two same-named rooms in different cities remain one key.
-- Missing venues still have no moderated suggestion flow; the composer requires an
-  existing venue instead of fabricating a placeholder, which was the urgent half.
-- Existing posts have null bindings. They resolve by name as before, so nothing
-  regresses; a backfill could bind them where the name is unambiguous.
-
-### 11. General YouTube attachments in posts
-
-**Status: VERIFIED (2026-07-22).**
-
-Live check: `watch?v=`, `youtu.be/` and `/shorts/` links all canonicalize to the
-same video id with a server-derived `i.ytimg.com` thumbnail; a non-YouTube host
-and free text are both refused with 400.
-
-The composer and feed language now treat the existing backward-compatible `song`
-payload as a general YouTube music attachment: song, review, breakdown, lesson,
-or performance. Server-owned thumbnails are derived from the validated video ID,
-not an arbitrary client URL.
-
-Acceptance criteria:
-
-- Supported watch, short, and Shorts links preview and publish on regular and
-  concert posts; invalid hosts/IDs are rejected with themed errors.
-- Clicking the card uses the exact validated video ID in the one visible Pit
-  player, with compliant sizing/controls and no competing hidden audio engine.
-- Create, edit, replace, remove, deleted/unavailable video, and mobile rendering
-  have regression coverage. A future schema migration may rename `song` only
-  with backward-compatible reads.
-
-### 12. Playback/wrong-song reports and admin correction
-
-**Status: VERIFIED (2026-07-22).**
-
-Live check: a report is accepted, a second from the same account returns
-`duplicate: true` without a new row, an invalid category and a non-YouTube
-suggested link are both refused with 400, and a non-admin pin attempt is 403.
-An admin pin stored `turnstile|birds -> dQw4w9WgXcQ`, closed the 2 open reports
-on that song, left no stale `yt_cache` row, and a report filed after the fix was
-treated as fresh rather than deduped against the closed ones.
-
-Reports now distinguish wrong video, will not play, preview only, missing, and
-other; a user may suggest a YouTube replacement. Admin triage can search candidate
-videos and pin the validated link through the existing override path.
-
-Acceptance criteria:
-
-- Duplicate reports are bounded, invalid categories/links fail safely, and
-  ordinary users cannot pin or overwrite a resolution.
-- Admin correction is audited, immediately invalidates the bad cache, and all
-  subsequent clients receive the exact approved ID. Rejection/undo is possible.
-- Reporting works from every player surface and includes enough non-sensitive
-  context to reproduce the failure.
-
-### 13. Mobile player controls and navigation
-
-**Status: IMPLEMENTED / VERIFY on physical devices.**
-
-The compact bar now exposes large play/menu targets and opens a mobile sheet with
-artwork, scrubber, transport, save/video/stop actions, queue controls, and recent
-history. Desktop keeps its existing column layout.
-
-Acceptance criteria:
-
-- Test narrow web plus real iOS/Android: targets are at least 44 points, safe
-  areas/keyboard/orientation do not cover controls, and opening/closing the sheet
-  does not stop or duplicate playback.
-- Scrub, previous/next, queue removal, replay history, video toggle, minimize, and
-  stop all preserve correct state and accessibility labels.
-
-### 14. Delete one's own comments
-
-**Status: VERIFIED (2026-07-22); owner-only, idempotent, tombstones kept.**
-
-An author-only, idempotent delete endpoint is wired to post and Afterparty UI.
-Leaf comments disappear; parents with replies become tombstones.
-
-Acceptance criteria:
-
-- The owner can delete on both surfaces; a second user and signed-out request get
-  no existence/authorization bypass. Repeat delete is harmless.
-- Counts, pagination, notifications, replies, and reload reconcile to server
-  state without exposing removed text.
-
-### 15. Privacy-safe site analytics and per-user admin inspection
-
-**Status: IMPLEMENTED; legal review and pipeline work remain.**
-
-Verified live (2026-07-22): the analytics dashboard and per-user inspection both
-return 403 for a non-admin; account export returns profile, posts, comments,
-likes, follows, blocks, playlists, listening history and going; opting out
-deletes that account's event rows and blocks new collection; guests are never
-stored. Retention is capped at 180 days by default and enforced on ingest.
-
-Remaining is not code I can finish here: a legal review of the policy copy, and
-moving high-volume analytics off the primary database before collection scales.
-
-The current batch adds a dedicated admin Analytics area, growth/activity/product
-aggregates, k-thresholded search/post keyword trends, and admin-only member
-inspection. Collection is restricted to allow-listed events/properties for
-consenting signed-in accounts; raw analytics IPs are purged/not stored, search
-values that look like emails, handles, or URLs are discarded, and default event
-retention is 180 days. An account opt-out and historical-event deletion path is
-being completed in this batch.
-
-Acceptance criteria:
-
-- Consent/opt-out behavior is explicit and tested; opt-out deletes the account's
-  product-event rows and prevents new collection. Guests are not silently
-  profiled. Rate-limit/security processing remains separate from analytics.
-- Only admins can inspect a user. Search terms are never shown in per-user event
-  history, and trend values appear only above the documented anonymity threshold.
-- Retention pruning, export/deletion behavior, role tests, audit logs, and a legal
-  review of policy copy pass before broad collection. Move high-volume analytics
-  to a dedicated pipeline/warehouse; do not run unbounded scans on the primary DB.
-
-### 16. Add four themes and repair theme consistency
-
-**Status: VERIFIED present (2026-07-22); all 12 listed. Full state audit still open.**
-
-With the owner's creative authorization, four new semantic-token themes are in
-the batch: Backstage, Vinyl, Sunset, and Lavender. Existing theme persistence and
-system status-bar classification were updated with them.
-
-Acceptance criteria:
-
-- Audit all 12 themes across core desktop/phone surfaces and every normal,
-  pressed, disabled, focus, error, chart, modal, and media-overlay state.
-- Automated contrast/screenshot checks cover representative light/dark themes.
-  There are no hard-coded colors that make a control unreadable or invisible.
-- Confirm the four creative replacements with the owner after deployment; rename
-  or retune them without changing the theme storage contract if requested.
-
-### 17. Desktop progress bar
-
-**Status: VERIFIED (2026-07-22); stretches full width, seeks accurately.**
-
-The column scrubber now explicitly stretches to full available width rather than
-collapsing around its thumb.
-
-Acceptance criteria:
-
-- At supported desktop breakpoints the full track is visible, elapsed/remaining
-  labels align, clicking/dragging seeks accurately, and resize/minimize/restore
-  does not collapse it back to a dot.
-- Keyboard and pointer seeking remain accessible for YouTube and preview sources.
-
-### 18. Publish playlists as feed posts
-
-**Status: VERIFIED after this batch (2026-07-22).**
-
-Re-ran live: create, share on a status post, private playlist refused with 400,
-and the snapshot proved immutable (renaming the playlist and replacing all its
-tracks left the published post showing the original name and songs). Exact
-recording identity round-trips for bare video ids and other providers'
-`sourceId`; a duplicate recording is correctly collapsed.
-
-One gap found and fixed: a track supplying only a YouTube watch `url` never
-captured its video id, so the snapshot held weaker evidence than it could.
-`cleanPlaylistTracks` now derives the id from the link, covered by a test.
-
-Regular posts can attach a public/unlisted owned playlist as an immutable
-snapshot. The feed card shows the playlist and starts the exact stored queue; API
-tests and a prior browser walkthrough cover ownership/privacy/preserve/clear
-behavior.
-
-Acceptance criteria:
-
-- Re-run create/edit/delete/private/empty and cross-account checks after this
-  batch. The tapped row starts first and exact recording/video IDs survive.
-- Finish general playlist management (rename, remove, reorder, deep links, mixed
-  unavailable tracks) under the wider playlist backlog; that is separate from
-  this recovered sharing request.
-
-## Cross-cutting work before "millions ready"
-
-These are platform dependencies, not optional polish:
-
-1. managed Postgres with pooling, online migrations, tested backups/restores, and
-   read/connection capacity planning;
-2. shared Redis-compatible cache/rate limits/session coordination and realtime
-   pub/sub, so horizontally scaled API processes agree;
-3. durable queues/workers with idempotency, retries, dead-letter handling, and
-   dashboards for mail, provider ingestion, media, notifications, fan-out,
-   exports, and deletion;
-4. verified media finalization, derivatives/posters/transcoding, moderation, CDN
-   delivery, lifecycle cleanup, and signed access where appropriate;
-5. realtime DM/group/activity delivery with cursor catch-up and push notification
-   fan-out;
-6. dedicated search/recommendation indexes and an aggregate analytics pipeline,
-   rather than large scans or catalogues in the client/API process;
-7. centralized privacy-safe logs, metrics, traces, SLOs/alerts, load/soak tests,
-   disaster recovery, abuse controls, and staffed incident/moderation operations;
-8. documented provider contracts, quotas, cache-policy compliance, outage modes,
-   and cost/capacity forecasts for YouTube, Deezer, Ticketmaster, Resend, and R2.
-
-See `SCALING.md` for the staged technical path and `SECURITY.md` for launch gates.
-
----
-
-## Round 2 (owner, 2026-07-22)
-
-### 19. Discover shows only 8 genres
-
-**Status: PARTIAL (2026-07-22). The count is fixed and honest; the underlying
-labels still need the enrichment backfill.**
-
-The stat tile was displaying the *chart's slice limit* as a fact about the
-catalogue: `/api/discover/genres` returns the top 8 plus "Other", and the tile
-rendered that array's length. The catalogue actually holds **68 distinct
-genres** across 2,658 artists. The endpoint now returns `distinctGenres` and the
-tile shows it, kept separate from `total` (artists in region), which feeds the
-donut's centre number. Chart slices stay capped so the donut is readable.
-
-Discover's stat tile reads "8 GENRES" against a 2,657-artist catalogue. The
-catalogue holds ~80 distinct genre values, but most are MusicBrainz crawl
-buckets rather than evidence (see item 2), and the new genre authority in
-`src/domain/genre.mjs` now withholds those from display. Fixing the count means
-fixing the classification, not widening the slice: a bigger number made of
-"Justin Bieber / Metal" is worse than a small honest one.
-
-Acceptance criteria:
-- The genre count reflects genres actually backed by provider evidence.
-- Discover's donut does not silently drop artists whose genre is unverified;
-  they are grouped honestly rather than mislabelled.
-
-### 20. Popular songs still resolve to previews, not the real video
-
-**Status: FIXED (2026-07-23), verified in the browser with the resolve endpoint
-stubbed.** Five separate paths turned a playable song into a preview: one-shot
-resolution, transient failures cached for five minutes as if definitive, no
-mid-play recovery, the background retry defeated by its own cache, and a
-12-second resolve budget shorter than a cold catalogue lookup. See HANDOFF.md
-"Playback deep dive" and `src/domain/playback.mjs`. Measured: healthy provider
-makes 1 call and plays the video; forced 429s give 3 attempts at 422/1405ms; a
-sustained outage adds only 3 calls across 20s.
-
-The capacity ceiling below is still real and still item 1's work.
-
-Original diagnosis follows.
-
-YouTube search costs 100 quota units per call against a default 10,000/day, so
-the server caps itself at **90 searches per day** (`/api/health` reports
-`limit: 90`). That is a whole-site budget. Once it is spent, every unresolved
-song falls back to a 30-second preview, which is indistinguishable from "no
-video found" — so a song as prominent as the reported one looks unmatched when
-it was never searched for. A missing `YOUTUBE_API_KEY` produces exactly the same
-symptom (`status: "unconfigured"`).
-
-The server already reported all of this on `/api/health` and **nothing in the
-app displayed it**. Admin > Overview now shows a PLAYBACK LOOKUP panel with the
-three states that matter: no key, paused (circuit open), and budget spent,
-including searches used and remaining. Check it first before treating this as a
-matching bug.
-
-Next step is capacity, tied to item 1: raise the quota, or cut searches per
-resolved song (cache negative results harder, resolve by channel first, batch
-`videos.list` validation which costs 1 unit against search's 100). Only after
-that is the budget healthy should the matcher itself be suspected.
-
-Original report: K-Ci & JoJo "All My Life" plays a preview
-even though the official video is prominent on YouTube, including on the
-artist's own channel. Related to item 7 but reported as still live, so the
-lookup is missing obvious, high-signal matches rather than only long-tail ones.
-
-Acceptance criteria:
-- A named set of obviously-available songs (starting with the reported example)
-  resolves to the full video, verified against the live lookup, not a fixture.
-- Where a full video genuinely cannot be found, the reason is recorded so the
-  gap is diagnosable instead of silently degrading to a 30-second preview.
-
-### 21. Themes are still not what the owner asked for
-
-**Status: OPEN; needs the owner's actual intent before any code.**
-
-Twelve presets exist and switching them works, but the owner has repeatedly
-asked for "my themes", which suggests the delivered set is not the requested
-one. Do not add more presets on a guess. Ask which specific themes were wanted
-and what is wrong with the current ones (palette, coverage, or where they apply).
-
-### 22. The You screen tools grid is ragged
-
-**Status: FIXED (2026-07-22), verified: all tiles now render at a single 274pt
-width. Cause was `flexGrow: 1` on the tile style in `YouScreen`.**
-
-The TOOLS section wraps seven tiles across two rows and lets them flex to fill,
-so the second row renders three tiles at three different widths (Moderation
-narrow, Tour dates medium, Log out wide). It reads as broken rather than
-designed. Needs a fixed column grid so tiles keep one width and a short row
-stays left-aligned instead of stretching.
-
-### 23. Inconsistent spacing across the site
-
-**Status: PARTIAL (2026-07-23).** The three specific defects are fixed (theme
-chips, tools grid, donut overlap) and verified. The broad "scrub the whole site"
-part of this request is **not** done, which is why it can still look unchanged:
-only those three surfaces were touched. Pass 1 (structure) is done: header/content alignment on 34 screens, four
-container gutters, and section-heading rhythm. Measured with
-`node scripts/audit-spacing.mjs .` — 1,850 hardcoded values, 53% off-scale
-before; the structural layer is now consistent. Pass 2 is the ~959 remaining
-inner offsets (chip padding, icon gaps), which must be done per component with
-visual checks rather than by regex. Chips,
-tools grid, history duplicates and the donut overlap are done. Remaining spacing
-work is ordinary scrub, not a known defect: report specific screens as found.
-
-Reported as everywhere, with two specific cases: list rows in the player's
-recently-played panel, and Discover's pie chart, which overlaps the genre label
-and tucks behind its tile for lack of room. Needs a systematic scrub against the
-spacing scale in `src/theme.js` rather than per-screen patches.
-
-Also visible in the same screenshot and worth fixing with it: the recently-played
-list repeats entries ("Animals", "Burn It to the Ground" each appear twice), so
-history is not de-duplicated for display.
-
-### 24. Events are modelled as artists, and festivals are missing
-
-**Status: OPEN; needs a data-model decision, the largest item here.**
-
-"Emo Night at Sneaky Dee's" loads as an artist page. The Performance spine is
-artist + venue + date, which cannot express a multi-artist event: OVO Fest,
-Lollapalooza, Veld, Sound of Music. These are a different entity, not a badly
-named artist.
-
-Acceptance criteria:
-- An Event entity distinct from Artist, able to hold a lineup, a date range and
-  a venue or grounds, without breaking the existing Performance identity.
-- Club nights and festivals both fit the same model.
-- Existing rows that are really events stop rendering as artists.
-
-### 25. SEO so new people can find mshpit.com
-
-**Status: LARGELY DONE (2026-07-23).** The blocker was not meta tags: the app
-had no URLs at all, so there was nothing to index. Public pages now have
-Facebook-style addresses (`/turnstile`, `/superfingerbusiness_`, `/show/<id>`),
-the server injects per-URL title/description/canonical/Open Graph/JSON-LD, and
-robots.txt and sitemap.xml are served properly (sitemap.xml had been returning
-HTML). The client router opens those URLs without a page load, so playback
-survives navigation.
-
-Remaining: submit the sitemap to Google Search Console, and confirm Cloudflare
-is not overriding the origin robots.txt with its managed default. Full server
-rendering is still the ceiling on how well this can score, but crawlers now get
-real titles and descriptions instead of an empty shell.
-
-The app is a client-rendered Expo web export, which is close to worst-case for
-indexing: crawlers see an empty shell. Real SEO here likely means server-rendered
-or pre-rendered pages for the public surfaces (artist, venue, show), canonical
-URLs, structured data for events, and a sitemap. Scope the rendering change
-before writing meta tags, since tags on an empty shell achieve nothing.
-
-### 26. Search songs when you don't know the artist
-
-**Status: DONE (2026-07-23), verified in the running app.**
-
-`GET /api/songs/search?q=` (Deezer-backed, keyless, costs no YouTube quota) plus
-a SONGS section in the search screen. Tapping a result plays it and seeds the
-queue.
-
-Ranking took three fixes to return the recording people actually mean: results
-were truncated before sorting; Deezer's plain relevance search omits the
-canonical version entirely (`q=bohemian rhapsody` returns 36 rows with no Queen,
-while `track:"bohemian rhapsody"` returns Queen ranked highest), so both queries
-run and merge; and dedupe kept the first copy of a recording rather than the
-highest-ranked one. Deezer's rank still tracks current streaming, so trending
-covers beat originals — the catalogue breaks the tie via
-`score = rank * (1 + popularity/100)`.
-
-Possible follow-up: the search box could match songs the catalogue already knows
-(`artists.data.topTracks`) before calling out, which would make common searches
-instant and offline-capable.
+# Pit Alpha product backlog
+
+Last reconciled: **2026-07-26** against the current code, tests, commits
+`f85f050` and `6f42771`, and the active hardening batch.
+
+This is the authoritative execution list. The recovered owner wording remains in
+`CLAUDE_SESSION_RECOVERY_2026-07-21.md`; implementation history remains in
+`HANDOFF.md`. Those historical files explain why work happened, but this file
+decides what is still open.
+
+## Status and acceptance rules
+
+- **HARDENED / VERIFY**: implemented in the current working batch, but not done
+  until the full gate, merge, deployment, and production checks pass.
+- **PARTIAL**: a useful Alpha path exists, but a named user-visible or operating
+  requirement remains.
+- **CONFIGURATION**: code exists; a private dashboard, DNS, provider, or device
+  action remains.
+- **FOUNDATION COMPLETE**: the requested Alpha behavior is implemented and has
+  focused evidence. It can still have a separate scale follow-up.
+- **OPEN**: implementation or a product decision remains.
+
+Do not mark work complete because an endpoint or component exists. Record the
+test, device, and production evidence in `HANDOFF.md`. `npm run check` must pass
+before merging to `master`.
+
+## Alpha release order
+
+### P0.1 Music lookup correctness, capacity, and YouTube compliance
+
+**Status: HARDENED / VERIFY.**
+
+The foundation from `f85f050` maps MusicBrainz IDs to YouTube channel IDs through
+Wikidata P434 -> P2397 without consuming YouTube search. Commit `6f42771` proves
+that a known-channel song can resolve through `channels.list`,
+`playlistItems.list`, and `videos.list` when Pit's search budget is zero.
+
+The current hardening batch corrects the first implementation:
+
+- Since June 2026, `search.list` has a separate default **100-call/day Search
+  Queries bucket** and one request costs one call from that bucket. The normal
+  default **10,000-unit/day bucket** is separate and covers the catalogue/list
+  endpoints. Pit reserves ten search calls by default, so its application limit
+  remains 90 unless `YOUTUBE_SEARCH_DAILY_BUDGET` is changed. The old “100 quota
+  units per search” arithmetic is retired. See the official
+  [quota overview](https://developers.google.com/youtube/v3/getting-started#quota)
+  and [`search.list` reference](https://developers.google.com/youtube/v3/docs/search/list).
+- Non-authorized YouTube API data is refreshed or deleted within 30 calendar
+  days. Match TTL is capped at 30 days, expired rows are pruned, and old
+  API-derived channel mappings are revalidated. See YouTube Developer Policy
+  [III.E.4](https://developers.google.com/youtube/terms/developer-policies#e.-handling-youtube-data-and-content).
+- Artist channel rows carry `youtube_channel_source`: `youtube`,
+  `youtube_unverified`, `wikidata`, or `wikidata_unverified`. Low-confidence
+  search and keyless Wikidata pointers are retained with provenance but are not
+  granted trusted-channel scoring until validated.
+- `wikidata_channel_checks` stores one durable result per MBID. SQL filters
+  eligible identities before `LIMIT`, same-MBID aliases update together, misses
+  have a bounded retry time, transient batches retry, and failed/deferred counts
+  are visible to the CLI and health endpoint.
+- Live WDQS lookups are single-flight per MBID, concurrency bounded, short
+  deadline, negative cached, and honor a 429 `Retry-After` cooldown.
+- Search and general-data circuits are separate. A spent Search Queries bucket
+  cannot disable known-channel catalogue playback.
+- The daily warmer runs Wikidata discovery and expiry pruning without a YouTube
+  key. With a key it uses `allowSearch:false`, so background work never consumes
+  interactive search calls. Progress is day-scoped and partial artists are not
+  falsely marked complete.
+
+**Production acceptance:**
+
+1. Run the full automated gate, merge, and deploy the migrations and hardening.
+2. Run `node scripts/backfill-channels.mjs` against the production database, or
+   observe the scheduler complete it. Keep the before/after coverage plus
+   validated/unverified and failed/deferred counts. Claude's local 2026-07-25
+   run found 1,146 mappings among 2,618 artists; that is useful evidence, not
+   proof that production was backfilled.
+3. Sample popular and deep-catalogue songs in production. Report official,
+   preview, missing, rejected-version, and capacity rates separately.
+4. Verify a known channel still resolves with search usage at its application
+   limit, and verify expired API-derived matches/channels refresh within policy.
+5. Before large traffic, move WDQS/backfill/warming out of the web process into a
+   durable enrichment worker or bulk-source pipeline. Public WDQS must not be a
+   synchronous dependency for a million-user playback path.
+
+### P0.2 Messaging, group-chat authorization, and realtime state
+
+**Status: PARTIAL; group gates hardened, DM state still Alpha.**
+
+Fan-club and concert-lounge writes were already gated. The current batch also
+gates **reads**: message bodies require an authenticated active club membership
+or Going record for the exact performance. Public gate endpoints expose only
+aggregate member/attendee and nonremoved-message counts. Client polling begins
+only after the server confirms the gate. Blocking filters and authorized
+removed-message reconciliation remain active; there is no staff read bypass.
+
+DMs and shared chats use stable forward cursors and bounded polling, so new
+messages appear without a manual refresh and reconnect can catch up. This is an
+Alpha bridge, not the final delivery system.
+
+**Remaining:**
+
+- Persist per-user/per-thread DM read cursors on the server. The current global
+  device key can produce wrong unread counts after account switching or on a new
+  device.
+- Make login hydrate thread summaries, then page history on demand instead of
+  loading large recent windows for every conversation.
+- Add realtime WebSocket/SSE delivery through shared pub/sub, with cursor catchup
+  as the recovery source of truth; add backoff/jitter, delivery acknowledgement,
+  explicit reconnect/loading states, and push fan-out.
+- Add a durable message deletion/event cursor. The current bounded `removedIds`
+  list cannot represent an indefinitely active room.
+- Add older-history controls, attachments, typing, receipts, and group-DM
+  creation only after the authoritative cursor/read model is in place.
+
+### P0.3 Feed deletion/moderation reconciliation
+
+**Status: OPEN scale/cross-device gap.**
+
+Create/edit and first-page refresh are server-backed, owner deletion is a soft
+delete, comments have parent tombstones, and the feed is cursor paged. However,
+a merge-only refresh cannot reliably remove a post that was already hydrated and
+then deleted or moderated on another client.
+
+**Acceptance:**
+
+- Return feed upserts and removal tombstones from a durable delta cursor, or use
+  an equivalent versioned/ETag contract. Apply each event idempotently across
+  feed, profile walls, open post, counts, photos, and notifications.
+- Batch comment-preview/count reads instead of issuing work per card. Keep full
+  threaded comments paged on the post screen.
+- Preserve the existing local-mutation sequence guards so an older network
+  response cannot undo a fresh local create/edit/delete.
+
+### P0.4 Complete playlist management and listening history
+
+**Status: PARTIAL.**
+
+The backend supports create, read, patch, visibility, and delete. Users can add
+individual tracks, save a session, and share an immutable public/unlisted
+playlist snapshot in a status post. Exact recording identity survives the feed
+card and play-history replay.
+
+The missing product slice is a playlist manager: rename, remove, reorder, set
+privacy, delete, open a stable detail/deep link, and explain unavailable tracks.
+The existing store actions are not exposed by a complete management screen.
+Listening history needs server-authoritative totals and visible pagination past
+the initial window; a loaded-array length must not be presented as lifetime
+plays.
+
+### P0.5 Full discographies and recording identity
+
+**Status: PARTIAL; identity handoff hardened, release coverage still open.**
+
+The current batch carries Deezer `sourceId`, provider, duration, and album-track
+identity from the artist page into the player, playlists, history, and YouTube's
+duration-aware matcher. This closes a major path where the UI discarded the
+evidence needed to distinguish official/studio recordings from live, lyric, or
+karaoke variants.
+
+Discography loading is not complete: it requests a large Deezer page but keeps
+only a capped set of albums/EPs. Singles, compilations, provider pagination,
+release-group dedupe, and an explicit load-more/detail strategy remain. Do not
+fetch an unlimited catalogue synchronously on initial page open; page releases
+and cache provider identities separately. Same-name artists still need a
+surrogate catalog identity rather than normalized display name as primary key.
+
+### P0.6 Durable 10k+ artist and enrichment jobs
+
+**Status: PARTIAL.**
+
+The DB-backed roster, MusicBrainz cursors, on-demand artist resolve, and provider
+enrichment exist. The audited local snapshot contains roughly 2,658 artists, not
+10,000. A prior attempt or UI counter is not proof that a 10k seed completed.
+
+Move catalog growth, genre backfill, Deezer enrichment, Wikidata channel work,
+and cache warming into durable jobs with persisted run/step state, leases,
+idempotency, retries, dead letters, and operator-visible outcomes. A web-process
+closure can disappear on deploy even when its inner crawl cursor is resumable.
+Before treating the MusicBrainz tag crawl as a commercial-scale source, review
+its supplementary-data CC BY-NC-SA terms; core artist/MBID data is CC0, tags are
+not. Keep crawl buckets as nonpublished discovery hints.
+Run a verified 10k+ production job, record added/updated/failed/exhausted counts,
+and keep songs/releases on demand rather than rebundling full discographies.
+
+### P0.7 Native playback and physical-device acceptance
+
+**Status: OPEN/PARTIAL.**
+
+The compliant YouTube IFrame path is web-only. Native currently relies on honest
+preview/open behavior rather than feature-equivalent full playback. Decide and
+implement the Expo SDK 56 native contract: preview/audio through the supported
+native audio path and a focused, visible YouTube web surface where policy and
+platform behavior permit it. Never hide the video to simulate an audio-only
+YouTube service.
+
+Test real iOS and Android devices for play/pause/seek, queue/history, app
+backgrounding, interruptions, orientation, keyboard/safe areas, 44-point targets,
+uploaded video, and failure recovery. Browser emulation is not acceptance.
+
+### P0.8 Bundle, render, and client-state performance
+
+**Status: PARTIAL; measured improvements landed, structural work remains.**
+
+Catalog splitting reduced startup catalogue allocation and screen-level lazy
+loading reduced the web entry bundle, but React Native Web/Expo still leaves a
+large parse/execute floor. `src/store.js` remains a broad context whose changing
+value can rerender many unrelated consumers.
+
+**Next:**
+
+- Reduce the initial catalogue core further and load server-paged artist/venue
+  data per surface. Never put a 10k enriched catalogue or discographies back in
+  the startup bundle.
+- Profile on real low/mid-range iOS and Android hardware. Track entry transfer,
+  uncompressed JS, parse/execute, first useful paint, interaction latency, list
+  memory, and player continuity.
+- Split store state by domain behind the current screen-facing API, stabilize
+  actions/selectors, and adopt a server-state query cache incrementally. Do this
+  with profiler evidence rather than a blind context rewrite.
+- Keep feed/list virtualization, lazy media, bounded windows, and abortable
+  requests as regression gates.
+
+## P1 product and operations backlog
+
+1. **Notifications:** refresh on screen focus/realtime delivery, persist read
+   state server-side, and load a notification's target by ID rather than relying
+   on the current feed window.
+2. **Genres:** finish evidence-backed provider enrichment. MusicBrainz crawl tags
+   stay hints, never asserted genres.
+3. **Events/festivals:** introduce an Event entity with lineup, date range, and
+   one or more venues; stop representing club nights/festivals as artists.
+4. **Artist/venue identity:** migrate same-name entities to surrogate IDs and
+   backfill unambiguous post bindings.
+5. **Themes and spacing:** confirm the owner's intended themes; run contrast and
+   interaction-state checks across all themes and finish component-level spacing
+   only with visual regression evidence.
+6. **Admin/moderation:** page/search members and reports server-side, await an
+   enforcement action before resolving its report, capture reasons, and provide
+   confirmation/failure feedback.
+7. **Media:** verify uploads after direct PUT, strip metadata, create bounded
+   derivatives/posters, transcode video, moderate/quarantine, and clean abandoned
+   objects through durable jobs/CDN lifecycle.
+8. **Analytics/privacy:** complete legal review and move high-volume events off
+   the primary relational database before broad collection.
+9. **SEO:** submit the sitemap in Search Console, confirm Cloudflare serves the
+   origin robots file, and plan pre-render/server rendering for important public
+   entity pages.
+10. **Resend:** rotate exposed credentials, verify the sending domain, configure
+    `MAIL_FROM`, and complete two-provider reset delivery tests.
+
+## Foundation complete for Alpha
+
+- Separate regular status and concert-review composers/cards.
+- Facebook-style post media grid, fullscreen photo/video viewer, direct object
+  upload, and per-media hearts.
+- Blocking across follows, profiles, feed, interactions, playlists, rewards,
+  DMs, group chats, notifications, venues, and attendees.
+- Comment replies, author deletion, and deleted-parent tombstones.
+- YouTube attachments and audited wrong-track reports/admin pins.
+- Account-scoped recent listening with exact recording/video identity.
+- Playlist snapshots in feed posts.
+- Near You entry points and account-location discovery.
+- Search's last-five UI, song search, public entity routes, metadata, sitemap,
+  and robots groundwork.
+- Badge **definition v2**: only `kind='review'` posts advance shows, written
+  concert reviews, show photos, cities, and artists. Likes on status posts still
+  count toward Tastemaker; Superfan and Connector remain social achievements.
+  Version-1 awards are grandfathered because the append-only ledger cannot tell
+  a falsely status-earned award from a legitimate concert badge whose source was
+  later removed. Any revocation requires an explicit product policy/manual audit.
+
+## Platform gates before “millions ready”
+
+Alpha completion is not the same as millions-ready. The latter requires managed
+Postgres and online migrations, shared cache/rate limits/session/pub-sub,
+durable workers, CDN media processing, realtime delivery, dedicated search and
+recommendation indexes, an analytics pipeline, privacy-safe observability,
+load/soak/DR testing, abuse operations, and provider cost/compliance forecasts.
+See `SCALING.md`.
