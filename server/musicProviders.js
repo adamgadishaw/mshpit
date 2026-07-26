@@ -604,22 +604,39 @@ export function selectArtistChannel(artist, items = []) {
 
 // One cheap, long-lived lookup per artist. Channels do not move, so this is
 // cached for a month and amortized across every song on the artist's page.
+// How long a fruitless discovery is trusted before we spend another search
+// looking for a channel that may since have been created.
+const YOUTUBE_CHANNEL_NEGATIVE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
 async function resolveArtistChannelId(artist, apiKey, fetchImpl) {
   if (!artist) return null;
-  const key = `yt:channel:v1:${normName(artist)}`;
-  const cached = readProviderCache(key);
-  if (cached?.fresh) return cached.data?.channelId || null;
+  const norm = normName(artist);
+
+  // Permanent store first: a channel discovered on any previous play is reused
+  // forever, for free. This is the whole point of the youtube_channel_id column
+  // — without it, every artist's channel was re-searched on a 30-day TTL and the
+  // daily search budget was spent re-finding channels we already knew. A found
+  // id is trusted indefinitely (Topic channels do not move); a recorded miss is
+  // trusted for a month before we try again.
+  const stored = artistStmts.getChannel.get(norm);
+  if (stored?.channelId) return stored.channelId;
+  if (stored && stored.at && Date.now() - stored.at < YOUTUBE_CHANNEL_NEGATIVE_TTL_MS) return null;
+
   try {
     const data = await youtubeJson("search", {
       part: "snippet", type: "channel", maxResults: "5", q: `${artist} - Topic`,
     }, apiKey, fetchImpl);
     const best = selectArtistChannel(artist, data?.items || []);
-    writeProviderCache(key, { channelId: best?.channelId || null, title: best?.title || null },
+    // Persist to the artist row when we know this artist; the provider cache is
+    // still written as a fallback for names not in the catalogue.
+    if (artistStmts.byNorm.get(norm)) artistStmts.setChannel.run(best?.channelId || null, Date.now(), norm);
+    writeProviderCache(`yt:channel:v1:${norm}`, { channelId: best?.channelId || null, title: best?.title || null },
       best ? YOUTUBE_CHANNEL_TTL_MS : YOUTUBE_CHANNEL_MISS_TTL_MS);
     return best?.channelId || null;
   } catch (error) {
     if (providerPaused(error)) throw error;
-    return cached?.data?.channelId || null;
+    // Fall back to any provider-cache hit for artists not in the catalogue.
+    return readProviderCache(`yt:channel:v1:${norm}`)?.data?.channelId || null;
   }
 }
 
@@ -656,18 +673,27 @@ export function selectCatalogueTrack(title, catalogue = []) {
 // channels.list + playlistItems.list cost 1 unit per call (50 videos each),
 // versus 100 units for a single keyword search. This is what stops the daily
 // quota running out and dropping every song back to a 30 second preview.
+// Returns { items, complete }. `complete` means we walked the whole uploads
+// playlist within the page cap, so the local scan has seen every video the
+// Topic channel holds — and a subsequent in-channel API search would be pure
+// wasted quota. Only a truncated catalogue (a very prolific artist past the
+// page cap) can justify spending a search to look deeper.
 async function getArtistCatalogue(artist, channelId, apiKey, fetchImpl) {
   const key = `yt:catalogue:v1:${normName(artist)}`;
   const cached = readProviderCache(key);
-  if (cached?.fresh) return cached.data?.items || [];
+  if (cached?.fresh) return { items: cached.data?.items || [], complete: cached.data?.complete !== false };
   try {
     const channelData = await youtubeJson("channels", {
       part: "contentDetails", id: channelId,
     }, apiKey, fetchImpl);
     const uploads = channelData?.items?.[0]?.contentDetails?.relatedPlaylists?.uploads;
-    if (!uploads) return [];
+    // No readable uploads playlist means we learned nothing about the channel's
+    // contents, which is NOT the same as a complete catalogue missing the song.
+    // Mark it incomplete so the in-channel search still runs as the fallback.
+    if (!uploads) return { items: [], complete: false };
     const items = [];
     let pageToken = "";
+    let complete = true;
     for (let page = 0; page < YOUTUBE_CATALOGUE_MAX_PAGES; page++) {
       const params = { part: "snippet", playlistId: uploads, maxResults: "50" };
       if (pageToken) params.pageToken = pageToken;
@@ -679,11 +705,13 @@ async function getArtistCatalogue(artist, channelId, apiKey, fetchImpl) {
       }
       pageToken = data?.nextPageToken || "";
       if (!pageToken) break;
+      // More pages remained when we hit the cap: the catalogue is truncated.
+      if (page === YOUTUBE_CATALOGUE_MAX_PAGES - 1) complete = false;
     }
-    if (items.length) writeProviderCache(key, { items }, YOUTUBE_CATALOGUE_TTL_MS);
-    return items;
+    if (items.length) writeProviderCache(key, { items, complete }, YOUTUBE_CATALOGUE_TTL_MS);
+    return { items, complete };
   } catch {
-    return cached?.data?.items || [];
+    return { items: cached?.data?.items || [], complete: cached?.data?.complete !== false };
   }
 }
 
@@ -782,8 +810,10 @@ async function resolveYouTubeTrackUnshared(title, artist, { expectedDurationSec 
     if (channelId) {
       // Cheapest and most accurate: match against the artist's own catalogue,
       // pulled once per artist for ~5 quota units and reused for every song.
+      let catalogueComplete = true;
       try {
-        const catalogue = await getArtistCatalogue(artist, channelId, apiKey, fetchImpl);
+        const { items: catalogue, complete } = await getArtistCatalogue(artist, channelId, apiKey, fetchImpl);
+        catalogueComplete = complete;
         const picked = selectCatalogueTrack(title, catalogue.filter((item) => !rejected.has(item.videoId)));
         if (picked) {
           const verified = (await youtubeVideos([picked.videoId], apiKey, fetchImpl))[0];
@@ -803,7 +833,11 @@ async function resolveYouTubeTrackUnshared(title, artist, { expectedDurationSec 
         }
       } catch { /* fall through to the channel search below */ }
 
-      try {
+      // Only spend a search inside the channel if the local catalogue was
+      // truncated and might be hiding the song. A complete catalogue that did
+      // not contain it means the Topic channel does not have it, so the global
+      // search below is the right next step, not a redundant in-channel one.
+      if (!catalogueComplete) try {
         const inChannel = await youtubeJson("search", {
           part: "snippet",
           type: "video",

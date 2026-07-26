@@ -205,6 +205,34 @@ Acceptance criteria:
 
 ### 7. Reduce preview-only playback
 
+**Status: STRUCTURALLY FIXED (2026-07-25). The remaining previews were a quota
+problem, and the quota was being spent re-finding channels we already knew.**
+
+Root cause the owner kept hitting: YouTube search is 100 quota units and capped
+at ~90/day, and finding each artist's "<Artist> - Topic" channel needed a
+search. Channels were only cached with a 30-day TTL, so the budget was
+repeatedly spent re-discovering channels — and until an artist's channel was
+(re)found, their songs fell to global search (also capped) → preview.
+
+Two fixes in server/musicProviders.js + a migration:
+- Topic channel IDs are now stored PERMANENTLY on the artist row
+  (`youtube_channel_id`), discovered once and reused forever. Kept out of the
+  catalogue upsert so a re-seed cannot wipe it. A recorded miss is retried after
+  30 days.
+- The in-channel search (another 100 units) is skipped when the local upload
+  catalogue was COMPLETE and simply did not contain the song — the Topic channel
+  demonstrably doesn't have it, so the global search is the right next step, not
+  a redundant in-channel one. Only a truncated catalogue (very prolific artist
+  past the page cap) still justifies the in-channel search.
+
+Net effect: after each artist is discovered once, all their songs resolve with
+cheap 1-unit calls (channels/playlistItems/videos.list) and never touch the
+search budget. The cache warmer (server/cacheWarmer.js) does the one-time
+discovery in the background within the daily budget. Tests cover permanent
+storage, no-repeat-search, and the skipped-in-channel-search case.
+
+### 7. Reduce preview-only playback
+
 **Status: PARTIAL; measurement harness now exists, production run still required.**
 
 `scripts/sample-playback.mjs` is the before/after instrument the criteria below

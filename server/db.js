@@ -467,6 +467,15 @@ for (const stmt of [
   "ALTER TABLE posts ADD COLUMN updated_at INTEGER",
   "ALTER TABLE posts ADD COLUMN dims TEXT NOT NULL DEFAULT '{}'",
   "ALTER TABLE artists ADD COLUMN searches INTEGER NOT NULL DEFAULT 0",
+  // The artist's YouTube "<Artist> - Topic" channel, discovered once and kept
+  // forever. Finding it costs a search (100 quota units, capped ~90/day), but
+  // resolving songs FROM it is cheap (playlistItems/videos.list, 1 unit each).
+  // Storing it permanently turns discovery into a one-time cost per artist, so
+  // the catalogue stops re-spending the daily search budget to re-find channels
+  // it already knew. Kept out of the upsert column list on purpose: a catalogue
+  // re-seed rewrites the row, and this must survive that.
+  "ALTER TABLE artists ADD COLUMN youtube_channel_id TEXT",
+  "ALTER TABLE artists ADD COLUMN youtube_channel_at INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE comments ADD COLUMN parent_id TEXT", // forum-style reply threading
   "ALTER TABLE users ADD COLUMN sponsor INTEGER NOT NULL DEFAULT 0", // admin-granted partner mark
   "ALTER TABLE users ADD COLUMN reset_hash TEXT", // sha256 of a password-reset token
@@ -605,6 +614,11 @@ export const artistStmts = {
   search: db.prepare("SELECT * FROM artists WHERE norm LIKE ? ORDER BY (norm = ?) DESC, rank_score DESC, name LIMIT ?"),
   top: db.prepare("SELECT * FROM artists ORDER BY rank_score DESC, name LIMIT ?"),
   bumpSearches: db.prepare("UPDATE artists SET searches = searches + 1 WHERE norm = ?"),
+  // Permanent Topic-channel storage: read what we already know, and record a
+  // discovery so it is never searched for again. A null id is stored too, with
+  // its timestamp, so a fruitless discovery is not retried on every play.
+  getChannel: db.prepare("SELECT youtube_channel_id AS channelId, youtube_channel_at AS at FROM artists WHERE norm = ?"),
+  setChannel: db.prepare("UPDATE artists SET youtube_channel_id = ?, youtube_channel_at = ? WHERE norm = ?"),
   thin: db.prepare("SELECT * FROM artists WHERE photo IS NULL ORDER BY searches DESC, updated_at DESC LIMIT ?"),
   thinCount: db.prepare("SELECT COUNT(*) c FROM artists WHERE photo IS NULL"),
   purge: db.prepare("DELETE FROM artists WHERE norm = ?"),

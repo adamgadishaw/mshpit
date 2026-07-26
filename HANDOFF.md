@@ -2348,3 +2348,37 @@ accounting is covered without a real key or network.
 To warm the whole popular catalogue before a launch:
 `node scripts/warm-youtube-cache.mjs --budget 8000` on the server (needs the
 production key). The daily scheduler keeps it warm after that.
+
+### Previews were a channel-discovery quota leak (2026-07-25)
+
+The owner kept seeing previews on obviously-available songs and asked, reasonably,
+why it is hard to pull from Topic channels when YouTube has everything. It is not
+the playback — it is the DISCOVERY. YouTube search costs 100 quota units, capped
+at ~90/day, and finding each artist's "<Artist> - Topic" channel required a
+search. Channels were cached only 30 days, so the budget was spent over and over
+re-finding channels already known, and any artist whose channel was not currently
+cached fell through to global search (also capped) → preview.
+
+Fixes (server/musicProviders.js, server/db.js migration):
+1. Permanent Topic-channel storage on the artist row (youtube_channel_id +
+   youtube_channel_at). Discovered once, reused forever; kept OUT of the artist
+   upsert column list so a catalogue re-seed can't wipe it; a null result is a
+   recorded miss retried after 30 days.
+2. resolveArtistChannelId checks that row first (0 quota) before any search, and
+   persists whatever it discovers.
+3. getArtistCatalogue now returns { items, complete }. The in-channel search is
+   skipped when the catalogue was complete and lacked the song — a complete
+   Topic catalogue that doesn't contain it proves the channel doesn't have it,
+   so the redundant 100-unit in-channel search is pure waste. "No readable
+   uploads playlist" is treated as incomplete so that fallback still runs.
+
+A cold artist could previously cost up to THREE searches (channel + in-channel +
+global) for one song; now discovery is one search ever, and subsequent songs are
+all 1-unit calls. The cache warmer does the one-time discovery in the background.
+
+Tests: server/musicProviders.test.mjs — permanent storage + no second discovery
+search, and complete-catalogue-skips-in-channel-search. Full suite 142 green.
+
+NOTE for whoever runs the warmer: previews shrink as channels get discovered.
+The first warm spends search budget on discovery (≈90 artists/day cap); after a
+few days of warming the popular catalogue resolves search-free.

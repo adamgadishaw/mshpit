@@ -10,6 +10,8 @@ process.env.PIT_DATA_DIR = dataDir;
 const {
   mergeBundledArtist,
   stripEphemeralPreviews,
+  artistRow,
+  artistStmts,
   db,
 } = await import("./db.js");
 const {
@@ -349,4 +351,63 @@ test("YouTube post attachments canonicalize links and keep provider metadata", a
   assert.equal(song.title, "Never Gonna Give You Up");
   assert.equal(song.artist, "Rick Astley");
   assert.equal(await youtubeOEmbed("https://example.com/not-youtube", { fetchImpl: async () => { throw new Error("must not fetch"); } }), null);
+});
+
+test("a discovered Topic channel is stored on the artist and never re-searched", async () => {
+  // Put the artist in the catalogue so discovery can persist to their row.
+  const now = Date.now();
+  artistStmts.upsert.run(artistRow("Channel Keeper", { name: "Channel Keeper", popularity: 50 }, "test"));
+
+  let channelSearches = 0;
+  const fetchImpl = async (url) => {
+    const u = String(url);
+    let data = {};
+    if (u.includes("type=channel")) { channelSearches += 1; data = { items: [{ id: { channelId: "UC_keeper" }, snippet: { title: "Channel Keeper - Topic" } }] }; }
+    else if (u.includes("/channels?")) data = { items: [{ contentDetails: { relatedPlaylists: { uploads: "UU_keeper" } } }] };
+    else if (u.includes("/playlistItems?")) data = { items: [
+      { snippet: { title: "First Single", resourceId: { videoId: "keeper_a" } } },
+      { snippet: { title: "Second Single", resourceId: { videoId: "keeper_b" } } },
+    ] };
+    else data = { items: [
+      youtubeCandidate("keeper_a", "First Single", "Channel Keeper - Topic"),
+      youtubeCandidate("keeper_b", "Second Single", "Channel Keeper - Topic"),
+    ].filter((item) => u.includes(item.id)) };
+    return { ok: true, status: 200, json: async () => data };
+  };
+
+  const first = await resolveYouTubeTrack("First Single", "Channel Keeper", { apiKey: "test-key", fetchImpl });
+  assert.equal(first.status, "artist_catalogue");
+  assert.equal(channelSearches, 1, "discovery searches once");
+
+  // The channel id is now on the artist row, permanently.
+  const stored = artistStmts.getChannel.get("channel keeper");
+  assert.equal(stored.channelId, "UC_keeper");
+  assert.ok(stored.at >= now);
+
+  // A DIFFERENT song by the same artist resolves from the cached catalogue with
+  // no further channel discovery search.
+  const second = await resolveYouTubeTrack("Second Single", "Channel Keeper", { apiKey: "test-key", fetchImpl });
+  assert.equal(second.videoId, "keeper_b");
+  assert.equal(channelSearches, 1, "the stored channel is reused, so no second discovery search");
+});
+
+test("a complete catalogue that lacks the song skips the in-channel search", async () => {
+  artistStmts.upsert.run(artistRow("Complete Cat", { name: "Complete Cat", popularity: 40 }, "test"));
+  let songSearches = 0;
+  const fetchImpl = async (url) => {
+    const u = String(url);
+    let data = {};
+    if (u.includes("type=channel")) data = { items: [{ id: { channelId: "UC_complete" }, snippet: { title: "Complete Cat - Topic" } }] };
+    else if (u.includes("/channels?")) data = { items: [{ contentDetails: { relatedPlaylists: { uploads: "UU_complete" } } }] };
+    // A single page with no nextPageToken: the catalogue is complete.
+    else if (u.includes("/playlistItems?")) data = { items: [{ snippet: { title: "Only Song They Have", resourceId: { videoId: "onlyone" } } }] };
+    else { if (u.includes("/search?")) songSearches += 1; data = { items: [youtubeCandidate("globalfallback", "Missing Song", "Someone Else")] }; }
+    return { ok: true, status: 200, json: async () => data };
+  };
+  // Ask for a song the complete catalogue does not contain.
+  await resolveYouTubeTrack("Missing Song", "Complete Cat", { apiKey: "test-key", fetchImpl });
+  // Exactly one search may fire — the global fallback — never an in-channel one
+  // on top of it, because the complete catalogue already proved the Topic
+  // channel does not hold the song.
+  assert.equal(songSearches, 1, "one global search, no redundant in-channel search");
 });
