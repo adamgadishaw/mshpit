@@ -2417,3 +2417,40 @@ Verified locally: 142 tests green, app healthy, no remaining pause-on-hidden
 path. NOT verifiable locally (no key): actual cross-tab YT audio. Production
 spot-check: play a song, switch to another tab, confirm audio continues; switch
 back, confirm the video is still going.
+
+### The previews are search_budget_exhausted + a warming deadlock (2026-07-25)
+
+Owner's Diagnostics were almost all PIT-MEDIA-002 `search_budget_exhausted`,
+including the SAME artists repeatedly (R. Kelly, Ne-Yo, Gala, Gigi D'Agostino).
+That repetition is the tell: it is a deadlock, not just a spent cap.
+
+Chain: YouTube search is 100 quota units, capped at ~90 calls/day (10,000 unit
+default ÷ 100). Finding a cold artist's Topic channel needs one search. Once the
+day's 90 are gone, a cold artist's discovery search fails with
+search_budget_exhausted, so the channel is never found, never stored, and the
+artist is cold again tomorrow — it can never self-heal through normal play.
+
+Compounding it: the cache warmer walked artists popularity-first, so its 90
+daily discoveries went to famous artists and never reached the older/niche
+tracks the owner actually queues. Those previewed forever.
+
+Fix (server/cacheWarmer.js): the warmer now leads with artists that have real
+plays but no discovered channel yet (youtube_channel_at=0), most-played first,
+then falls back to the popularity walk. So the songs producing previews right
+now are the ones discovered first, and once discovered they are stored
+permanently (the earlier youtube_channel_id fix) and play free forever. Test:
+"artists people actually play are warmed before more-popular ones nobody
+played." Full suite 143 green.
+
+REMAINING HARD CEILING (owner action, cannot be fixed in code): 90 discoveries/
+day is a Google quota, not a Pit setting. Warming ~2,600 artists at 90/day is
+weeks, and any day the owner plays >90 brand-new artists, some preview. The real
+lever is requesting a YouTube Data API quota increase in Google Cloud Console
+(APIs & Services → YouTube Data API v3 → Quotas → request higher
+queries/searches). YOUTUBE_SEARCH_DAILY_BUDGET can then be raised past 90.
+
+STILL OPEN, separate from previews (seen in the same Diagnostics, not addressed
+here): frequent PIT-API-001 "response it could not safely read" on /api/feed
+(and /api/youtube/track, /api/deezer/track), plus PIT-APP-001 render crashes on
+the moderation screen. These are reliability bugs to chase next, not the preview
+cause.

@@ -114,3 +114,25 @@ test("a tripped circuit breaker stops the run instead of hammering the provider"
   assert.equal(calls.length, 1, "stops after the breaker opens");
   assert.equal(stats.stoppedEarly, true);
 });
+
+test("artists people actually play are warmed before more-popular ones nobody played", async () => {
+  // The deadlock the owner hit: the warmer walked popularity-first and never
+  // reached the older tracks a listener was actually queuing, so those previewed
+  // forever. A niche artist with real plays must now jump the queue.
+  seed([
+    { name: "FamousUnplayed", popularity: 99, tracks: ["f1"] },
+    { name: "NichePlayed", popularity: 5, tracks: ["n1"] },
+  ]);
+  db.prepare("DELETE FROM plays").run();
+  db.prepare("INSERT INTO users (id,email,name,handle,pass_hash,created_at) VALUES (?,?,?,?,?,?)")
+    .run("u_warm", "warm@example.com", "Warm", "warm", "x", 1);
+  for (let i = 0; i < 3; i++) {
+    db.prepare("INSERT INTO plays (id,user_id,title,artist,created_at) VALUES (?,?,?,?,?)")
+      .run("pl_" + i, "u_warm", "n1", "NichePlayed", 100 + i);
+  }
+  const { resolve, calls } = fakeResolver();
+  await warmYouTubeCache({ resolve, providerStatus: noCircuit, ...noSleep });
+  assert.equal(calls[0], "NichePlayed|n1", "the played niche artist is discovered before the unplayed famous one");
+  // The famous one still gets warmed after, just not first.
+  assert.ok(calls.includes("FamousUnplayed|f1"));
+});

@@ -72,13 +72,43 @@ export async function warmYouTubeCache({
   const progress = readProgress();
   const done = new Set(progress.done || []);
 
-  // Most popular first, so a run that is cut short still bought the most benefit.
-  const artists = db.prepare(`
+  // What people ACTUALLY play comes first. The daily search budget is tiny (~90
+  // discoveries), so a popularity-only walk spends it on famous artists and
+  // never reaches the older/niche tracks a listener is actually queuing — which
+  // then preview forever, because once the budget is gone their channel can
+  // never be discovered or stored. So the warmer leads with artists that have
+  // been played but whose Topic channel was never found (youtube_channel_at=0),
+  // most-played first. Those are precisely the songs producing previews now.
+  const played = db.prepare(`
+    SELECT a.name, a.popularity, a.data
+    FROM artists a
+    JOIN (
+      SELECT lower(artist) AS k, COUNT(*) AS c, MAX(created_at) AS recent
+      FROM plays WHERE artist IS NOT NULL AND artist <> ''
+      GROUP BY lower(artist)
+    ) p ON lower(a.name) = p.k
+    WHERE a.data IS NOT NULL AND a.youtube_channel_at = 0
+    ORDER BY p.c DESC, p.recent DESC
+    LIMIT ?
+  `).all(artistLimit);
+
+  // Then the popularity walk fills the rest of the budget, so a fresh install
+  // with no play history still warms the obvious catalogue.
+  const popular = db.prepare(`
     SELECT name, popularity, data FROM artists
     WHERE data IS NOT NULL
     ORDER BY COALESCE(popularity, 0) DESC, rank_score DESC
     LIMIT ?
   `).all(artistLimit);
+
+  const seen = new Set();
+  const artists = [];
+  for (const row of [...played, ...popular]) {
+    const key = normName(row.name);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    artists.push(row);
+  }
 
   const stats = { artistsTouched: 0, resolved: 0, skipped: 0, failed: 0, spent: 0, stoppedEarly: false };
 
