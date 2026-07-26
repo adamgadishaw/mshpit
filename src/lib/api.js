@@ -95,15 +95,24 @@ export async function api(path, { method = "GET", body, context, silent = false,
       data = JSON.parse(text);
     } catch (error) {
       const requestId = res.headers?.get?.("x-request-id") || res.headers?.get?.("x-render-request-id");
-      const malformed = new AppError(undefined, {
-        kind: "invalid_response",
+      // Distinguish an intermediary from genuinely corrupt data. When a CDN,
+      // proxy, or captive portal intercepts an API call it returns an HTML page
+      // (a challenge, an "always online" cache, an error interstitial) with a
+      // 200. That is not our server sending bad JSON — it is the request never
+      // reaching us — so it is a retryable network condition, not the alarming
+      // "response we could not safely read". Our API only ever emits JSON, which
+      // starts with { or [; anything leading with < is someone else's HTML.
+      const contentType = res.headers?.get?.("content-type") || "";
+      const looksHtml = /^\s*</.test(text) || /text\/html/i.test(contentType);
+      const failure = new AppError(undefined, {
+        kind: looksHtml ? "network" : "invalid_response",
         status: res.status,
         requestId,
         context: operation,
         source: "api",
         cause: error,
       });
-      throw apiFailure(malformed, { path, method: verb, context: operation, silent });
+      throw apiFailure(failure, { path, method: verb, context: operation, silent });
     }
   }
 

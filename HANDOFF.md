@@ -2454,3 +2454,35 @@ here): frequent PIT-API-001 "response it could not safely read" on /api/feed
 (and /api/youtube/track, /api/deezer/track), plus PIT-APP-001 render crashes on
 the moderation screen. These are reliability bugs to chase next, not the preview
 cause.
+
+### Feed "PIT-API-001 / response it could not safely read" investigated (2026-07-25)
+
+Owner saw many `PIT-API-001` on `/api/feed` (and some on `/api/youtube/track`,
+`/api/deezer/track`) in Diagnostics. Ran it down:
+
+- The feed HANDLER is healthy: fast (~9ms local), returns valid JSON, and
+  production returned clean JSON with `content-type: application/json` on 15/15
+  probes. So it is NOT the server emitting bad data.
+- `PIT-API-001` = the client's `JSON.parse` threw on a non-empty body. The most
+  likely production cause is an INTERMEDIARY (Cloudflare/Render) occasionally
+  returning an HTML page — a challenge, an "always online" cache, an error
+  interstitial — with a 200, for the most-frequently-polled endpoint. Low-rate
+  and intermittent (a couple dozen over 3 days vs ~300 polls/hour).
+- The feed poll is `silent:true`, catches the error, backs off and retries next
+  cycle (`hydrateFeed` → `false` → exponential backoff). So the feed itself
+  never breaks; these are logged noise, not a functional failure.
+
+Fix (src/lib/api.js): on a parse failure, if the body looks like an intermediary
+HTML page (`/^\s*</` on the text, or a `text/html` content-type) it is now
+classified as a retryable `network` error (PIT-NET-001, "signal dropped") instead
+of the alarming `invalid_response` (PIT-API-001, "could not safely read"). A
+genuinely truncated JSON body (starts with `{`/`[`) still reports
+`invalid_response`, so a real server-data bug stays visible. Verified the
+discriminator against a Cloudflare "Just a moment…" page, HTML with/without a
+content-type, and truncated JSON.
+
+IMPORTANT: this is diagnostic hygiene, NOT the preview fix. The previews are
+`search_budget_exhausted` (the 90/day YouTube search cap), a separate issue — see
+the channel-persistence work and the cache warmer. If these proxy-HTML responses
+become frequent (not just noise), the real remedy is a Cloudflare WAF rule to
+skip Bot Fight Mode / challenges for `/api/*` (owner action).
