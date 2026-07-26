@@ -18,6 +18,7 @@
 
 import { db, ytStmts, normName } from "./db.js";
 import { resolveYouTubeTrack, youtubeProviderStatus } from "./musicProviders.js";
+import { backfillChannelsFromWikidata } from "./wikidataChannels.js";
 
 const PROGRESS_KEY = "warm:youtube:v1";
 const DAILY_MARKER_KEY = "warm:youtube:lastRun";
@@ -201,6 +202,16 @@ export function startCacheWarmScheduler({
 
   const runOnce = async () => {
     if (ranToday()) return;
+    // Phase 0, free: pull channel ids from Wikidata (keyless, zero search quota)
+    // so most notable artists are discovered without spending the daily search
+    // budget. Only what Wikidata cannot cover falls through to the search-based
+    // warm below. Best-effort — a Wikidata outage must not stop the warm.
+    try {
+      const wd = await backfillChannelsFromWikidata({});
+      if (wd.stored) console.log(`[pit] wikidata channels: ${wd.stored} discovered free (of ${wd.considered} considered).`);
+    } catch (error) {
+      console.log(`[pit] wikidata channel backfill skipped: ${error?.message || error}`);
+    }
     try {
       const stats = await warmYouTubeCache({ budget });
       markRanToday();

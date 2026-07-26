@@ -622,6 +622,25 @@ async function resolveArtistChannelId(artist, apiKey, fetchImpl) {
   if (stored?.channelId) return stored.channelId;
   if (stored && stored.at && Date.now() - stored.at < YOUTUBE_CHANNEL_NEGATIVE_TTL_MS) return null;
 
+  // Before spending a search, try Wikidata for free. Every catalogue artist and
+  // every on-demand artist created from MusicBrainz carries an mbid, and
+  // Wikidata maps mbid -> YouTube channel. This is what lets a deep cut that was
+  // never in the catalogue (the ones that preview most) resolve without touching
+  // the tiny daily search budget. Dynamic import avoids a static import cycle
+  // (wikidataChannels imports youtubeJson from here).
+  const row = artistStmts.byNorm.get(norm);
+  if (row?.mbid) {
+    try {
+      const { lookupChannelByMbid } = await import("./wikidataChannels.js");
+      const fromWikidata = await lookupChannelByMbid(row.mbid, { apiKey, fetchImpl });
+      if (fromWikidata) {
+        artistStmts.setChannel.run(fromWikidata, Date.now(), norm);
+        writeProviderCache(`yt:channel:v1:${norm}`, { channelId: fromWikidata, title: null }, YOUTUBE_CHANNEL_TTL_MS);
+        return fromWikidata;
+      }
+    } catch { /* fall through to the search below */ }
+  }
+
   try {
     const data = await youtubeJson("search", {
       part: "snippet", type: "channel", maxResults: "5", q: `${artist} - Topic`,
@@ -745,7 +764,7 @@ function youtubeUrl(path, params, apiKey) {
   return `https://www.googleapis.com/youtube/v3/${path}?${query.toString()}`;
 }
 
-async function youtubeJson(path, params, apiKey, fetchImpl, timeoutMs = 8_000) {
+export async function youtubeJson(path, params, apiKey, fetchImpl, timeoutMs = 8_000) {
   if (youtubeCircuit.until > Date.now()) {
     throw new ProviderError("YouTube", 503, "YouTube lookups are cooling down after a provider limit.", {
       code: "provider_paused",

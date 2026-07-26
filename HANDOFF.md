@@ -2486,3 +2486,39 @@ IMPORTANT: this is diagnostic hygiene, NOT the preview fix. The previews are
 the channel-persistence work and the cache warmer. If these proxy-HTML responses
 become frequent (not just noise), the real remedy is a Cloudflare WAF rule to
 skip Bot Fight Mode / challenges for `/api/*` (owner action).
+
+### Free channel discovery via Wikidata — the real preview fix (2026-07-25)
+
+The previews are `search_budget_exhausted`: discovering an artist's YouTube
+channel costs a Data API `search` (100 units vs a ~90/day cap), so a cold
+catalogue takes weeks to warm and a listener playing deep cuts outruns the
+budget daily. Persisting discovered channels (done earlier) only helped after a
+search paid for each one.
+
+New: `server/wikidataChannels.js`. Every catalogue artist carries a MusicBrainz
+id, and Wikidata maps MusicBrainz (P434) -> YouTube channel (P2397), keyless and
+free. So channels resolve at ZERO search quota. Measured on the full local
+catalogue: 1,146 of 2,618 artists (44%) matched and were stored in one run,
+coverage 37 -> 1,182 — about 13 days of search budget saved for nothing. The
+notable head is ~92% covered (40-artist sample: 37 hits). R. Kelly, Calvin
+Harris, Nickelback, The Weeknd, Drake all now resolve search-free.
+
+Wired three ways:
+- `backfillChannelsFromWikidata()` runs as the warmer's free phase 0, before the
+  search-based warm (server/cacheWarmer.js). Resumable via an app_meta marker.
+- `resolveArtistChannelId` (server/musicProviders.js) tries a single free
+  Wikidata lookup by mbid BEFORE spending a search — so an on-demand artist that
+  was never in the catalogue (the deep cuts that preview most) also avoids the
+  search. Dynamic import breaks the module cycle.
+- CLI: `node scripts/backfill-channels.mjs [--limit N]` for an on-demand run.
+
+With a YOUTUBE_API_KEY the backfill prefers each artist's "- Topic" channel
+(whole discography, best match rate) via a cheap channels.list (1 unit, not a
+search); without a key it stores the primary channel. Pure functions
+(buildSparql, parseWikidataChannels, pickChannel) are unit-tested.
+
+OWNER ACTION: run `node scripts/backfill-channels.mjs` once against the
+production DB (or just let the daily warmer's phase 0 do it) to populate the live
+catalogue. The long tail (~56%) that Wikidata lacks still needs search discovery,
+which the warmer handles over time; a Google quota increase remains the lever for
+the tail.
