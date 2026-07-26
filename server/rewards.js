@@ -2,6 +2,7 @@ import { db } from "./db.js";
 import { ACHIEVEMENTS } from "../src/lib/badges.js";
 
 const emptyStats = () => ({ shows: 0, reviews: 0, likes: 0, photos: 0, cities: 0, artists: 0, follows: 0, fanClubs: 0 });
+const REWARD_DEFINITION_VERSION = 2;
 
 export function rewardStats(userId) {
   if (!userId) return emptyStats();
@@ -11,8 +12,12 @@ export function rewardStats(userId) {
       SUM(CASE WHEN length(trim(review)) > 0 THEN 1 ELSE 0 END) reviews,
       COALESCE(SUM(json_array_length(photos)), 0) photos,
       COUNT(DISTINCT CASE WHEN trim(city) <> '' THEN lower(trim(city)) END) cities,
-      COUNT(DISTINCT lower(trim(artist))) artists
-    FROM posts WHERE user_id=? AND removed=0`).get(userId);
+      COUNT(DISTINCT CASE WHEN trim(artist) <> '' THEN lower(trim(artist)) END) artists
+    FROM posts
+    WHERE user_id=? AND removed=0 AND kind='review'`).get(userId);
+  // Tastemaker deliberately counts appreciation across every kind of post. The
+  // remaining post-derived stats above describe logged concerts specifically;
+  // `review` is also the status-text column, so `kind` is the authority.
   const likes = db.prepare(`SELECT COUNT(*) likes FROM likes l JOIN posts p ON p.id=l.post_id WHERE p.user_id=? AND p.removed=0`).get(userId).likes;
   const follows = db.prepare("SELECT COUNT(*) follows FROM follows WHERE follower_id=?").get(userId).follows;
   const fanClubs = db.prepare("SELECT COUNT(*) fanClubs FROM fan_club_members WHERE user_id=?").get(userId).fanClubs;
@@ -29,7 +34,10 @@ export function rewardStats(userId) {
 }
 
 // Awards are append-only: later moderation/deletion can lower live progress but
-// does not take away a badge someone legitimately earned. The UNIQUE primary key
+// does not take away a badge someone legitimately earned. Definition v2 fixes
+// v1's status-post counting bug. Existing v1 rows are deliberately grandfathered:
+// the ledger cannot distinguish a false status award from a legitimate concert
+// award whose source post was later deleted or moderated. The UNIQUE primary key
 // makes repeated reads and concurrent requests idempotent.
 export function userRewards(userId) {
   const stats = rewardStats(userId);
@@ -40,7 +48,7 @@ export function userRewards(userId) {
   db.exec("BEGIN IMMEDIATE");
   try {
     for (const achievement of ACHIEVEMENTS) {
-      if (achievement.test(stats)) insert.run(userId, achievement.id, 1, achievement.points, now, JSON.stringify(stats));
+      if (achievement.test(stats)) insert.run(userId, achievement.id, REWARD_DEFINITION_VERSION, achievement.points, now, JSON.stringify(stats));
     }
     db.exec("COMMIT");
   } catch (error) {

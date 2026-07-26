@@ -31,6 +31,7 @@ import {
   youtubeOEmbed,
   youtubeProviderStatus,
 } from "./musicProviders.js";
+import { wikidataProviderStatus } from "./wikidataChannels.js";
 
 export { ApiError } from "./errors.js";
 
@@ -538,6 +539,7 @@ export const routes = {
         database,
         youtubeConfigured: !!process.env.YOUTUBE_API_KEY,
         youtubeLookup: youtubeProviderStatus(),
+        wikidataLookup: wikidataProviderStatus(),
         tourProviderConfigured: !!(process.env.TICKETMASTER_KEY || process.env.BANDSINTOWN_APP_ID),
         tourDates: db.prepare("SELECT COUNT(*) c FROM tour_dates").get().c,
         mailConfigured: mailConfigured(),
@@ -1908,9 +1910,23 @@ export const routes = {
     return { member: joined, joined };
   },
 
-  "GET /api/fanclubs/:artist/messages": (ctx) => {
+  // The gate only needs aggregate counts. Keep that lightweight metadata public
+  // without exposing message bodies to people who have not joined the club.
+  "GET /api/fanclubs/:artist/meta": (ctx) => {
     const artist = clean(decodeURIComponent(ctx.params.artist), { max: LIMITS.artist }).toLowerCase();
-    const hidden = blockedIdSet(ctx.user?.id);
+    if (!artist) throw new ApiError(400, "Bad artist.", "VALIDATION_FAILED");
+    const members = db.prepare("SELECT COUNT(*) c FROM fan_club_members WHERE artist=?").get(artist).c;
+    const messageCount = db.prepare("SELECT COUNT(*) c FROM fan_club_messages WHERE artist=? AND removed=0").get(artist).c;
+    return { members, messageCount };
+  },
+
+  "GET /api/fanclubs/:artist/messages": (ctx) => {
+    const u = requireUser(ctx);
+    const artist = clean(decodeURIComponent(ctx.params.artist), { max: LIMITS.artist }).toLowerCase();
+    if (!artist) throw new ApiError(400, "Bad artist.", "VALIDATION_FAILED");
+    const member = db.prepare("SELECT 1 FROM fan_club_members WHERE artist=? AND user_id=?").get(artist, u.id);
+    if (!member) throw new ApiError(403, "Join this fan club before opening its conversation.", "FAN_CLUB_MEMBERSHIP_REQUIRED");
+    const hidden = blockedIdSet(u.id);
     const { cursor, limit } = pageRequest(ctx, 300, 300);
     const after = decodeCursor(ctx.query?.after);
     if (cursor && after) throw new ApiError(400, "Use either before or after, not both.", "VALIDATION_FAILED");
@@ -1959,9 +1975,22 @@ export const routes = {
   },
 
   // ---- concert lounge (shared attendee chat, keyed by concertKey) ----
-  "GET /api/lounges/:key/messages": (ctx) => {
+  // The room gate can show activity without making the conversation public.
+  "GET /api/lounges/:key/meta": (ctx) => {
     const key = clean(decodeURIComponent(ctx.params.key), { max: 300 }).toLowerCase();
-    const hidden = blockedIdSet(ctx.user?.id);
+    if (!key) throw new ApiError(400, "Bad lounge.", "VALIDATION_FAILED");
+    const attendeeCount = db.prepare("SELECT COUNT(*) c FROM going WHERE concert_key=?").get(key).c;
+    const messageCount = db.prepare("SELECT COUNT(*) c FROM lounge_messages WHERE lounge_id=? AND removed=0").get(key).c;
+    return { attendeeCount, messageCount };
+  },
+
+  "GET /api/lounges/:key/messages": (ctx) => {
+    const u = requireUser(ctx);
+    const key = clean(decodeURIComponent(ctx.params.key), { max: 300 }).toLowerCase();
+    if (!key) throw new ApiError(400, "Bad lounge.", "VALIDATION_FAILED");
+    const attendee = db.prepare("SELECT 1 FROM going WHERE user_id=? AND concert_key=?").get(u.id, key);
+    if (!attendee) throw new ApiError(403, "Join this show's Going list before opening the lounge.", "LOUNGE_ATTENDANCE_REQUIRED");
+    const hidden = blockedIdSet(u.id);
     const { cursor, limit } = pageRequest(ctx, 300, 300);
     const after = decodeCursor(ctx.query?.after);
     if (cursor && after) throw new ApiError(400, "Use either before or after, not both.", "VALIDATION_FAILED");

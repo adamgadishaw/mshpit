@@ -424,6 +424,19 @@ CREATE TABLE IF NOT EXISTS app_meta (
   value TEXT NOT NULL
 );
 
+-- Durable, indexed Wikidata discovery state. The original implementation kept
+-- every processed MBID in one ever-growing app_meta JSON array, then applied a
+-- SQL LIMIT before filtering it. That both rewrote the whole array per batch
+-- and permanently stranded artists beyond the limit. One row per identity lets
+-- SQL select the next eligible batch and gives misses a bounded retry date.
+CREATE TABLE IF NOT EXISTS wikidata_channel_checks (
+  mbid       TEXT PRIMARY KEY,
+  channel_id TEXT,
+  validated  INTEGER NOT NULL DEFAULT 0,
+  checked_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_wikidata_channel_checks_at ON wikidata_channel_checks(checked_at);
+
 -- Human-curated song -> YouTube video pins. Checked BEFORE the search resolver,
 -- so a wrong match fixed by an admin stays fixed. video_id NULL means an admin
 -- confirmed no correct embeddable video exists (the player then uses the Deezer
@@ -467,15 +480,15 @@ for (const stmt of [
   "ALTER TABLE posts ADD COLUMN updated_at INTEGER",
   "ALTER TABLE posts ADD COLUMN dims TEXT NOT NULL DEFAULT '{}'",
   "ALTER TABLE artists ADD COLUMN searches INTEGER NOT NULL DEFAULT 0",
-  // The artist's YouTube "<Artist> - Topic" channel, discovered once and kept
-  // forever. Finding it costs a search (100 quota units, capped ~90/day), but
-  // resolving songs FROM it is cheap (playlistItems/videos.list, 1 unit each).
-  // Storing it permanently turns discovery into a one-time cost per artist, so
-  // the catalogue stops re-spending the daily search budget to re-find channels
-  // it already knew. Kept out of the upsert column list on purpose: a catalogue
-  // re-seed rewrites the row, and this must survive that.
+  // The artist's YouTube channel. Since June 2026 search.list has its own
+  // 100-call/day bucket; catalogue endpoints use the separate general bucket.
+  // Provenance distinguishes a CC0 Wikidata identity from YouTube API data, and
+  // youtube_channel_at supplies the mandatory refresh/validation timestamp.
+  // These fields stay out of the catalogue upsert so a re-seed cannot wipe them.
   "ALTER TABLE artists ADD COLUMN youtube_channel_id TEXT",
   "ALTER TABLE artists ADD COLUMN youtube_channel_at INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE artists ADD COLUMN youtube_channel_source TEXT",
+  "ALTER TABLE wikidata_channel_checks ADD COLUMN validated INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE comments ADD COLUMN parent_id TEXT", // forum-style reply threading
   "ALTER TABLE users ADD COLUMN sponsor INTEGER NOT NULL DEFAULT 0", // admin-granted partner mark
   "ALTER TABLE users ADD COLUMN reset_hash TEXT", // sha256 of a password-reset token
@@ -596,7 +609,15 @@ export const ytStmts = {
     VALUES (@key,@video_id,@updated_at,@metadata,@score,@expires_at,@rejected_ids)
     ON CONFLICT(key) DO UPDATE SET video_id=excluded.video_id,updated_at=excluded.updated_at,
       metadata=excluded.metadata,score=excluded.score,expires_at=excluded.expires_at,rejected_ids=excluded.rejected_ids`),
-  invalidate: db.prepare("UPDATE yt_cache SET video_id=NULL, metadata=NULL, score=NULL, expires_at=0, rejected_ids=? WHERE key=?"),
+  // Keep a bounded rejection tombstone so the next resolution cannot select
+  // the exact video a listener just reported. It is still expired/deleted
+  // within the same 30-day policy window as other YouTube API-derived data.
+  invalidate: db.prepare(`UPDATE yt_cache SET video_id=NULL,
+    metadata='{"invalidated":true}',score=NULL,updated_at=?,expires_at=?,rejected_ids=?
+    WHERE key=?`),
+  deleteExpired: db.prepare(`DELETE FROM yt_cache
+    WHERE (expires_at IS NOT NULL AND expires_at <= ?)
+       OR (expires_at IS NULL AND updated_at <= ?)`),
 };
 
 export const providerCacheStmts = {
@@ -614,11 +635,15 @@ export const artistStmts = {
   search: db.prepare("SELECT * FROM artists WHERE norm LIKE ? ORDER BY (norm = ?) DESC, rank_score DESC, name LIMIT ?"),
   top: db.prepare("SELECT * FROM artists ORDER BY rank_score DESC, name LIMIT ?"),
   bumpSearches: db.prepare("UPDATE artists SET searches = searches + 1 WHERE norm = ?"),
-  // Permanent Topic-channel storage: read what we already know, and record a
-  // discovery so it is never searched for again. A null id is stored too, with
-  // its timestamp, so a fruitless discovery is not retried on every play.
-  getChannel: db.prepare("SELECT youtube_channel_id AS channelId, youtube_channel_at AS at FROM artists WHERE norm = ?"),
-  setChannel: db.prepare("UPDATE artists SET youtube_channel_id = ?, youtube_channel_at = ? WHERE norm = ?"),
+  // Channel identity is reusable, but API-derived values are refreshed within
+  // 30 days. A null id records a bounded miss so a fruitless discovery is not
+  // retried on every play.
+  getChannel: db.prepare(`SELECT youtube_channel_id AS channelId,
+    youtube_channel_at AS at, youtube_channel_source AS source FROM artists WHERE norm = ?`),
+  setChannel: db.prepare("UPDATE artists SET youtube_channel_id = ?, youtube_channel_at = ?, youtube_channel_source = ? WHERE norm = ?"),
+  setWikidataChannel: db.prepare("UPDATE artists SET youtube_channel_id = ?, youtube_channel_at = ?, youtube_channel_source = ? WHERE norm = ?"),
+  clearChannel: db.prepare("UPDATE artists SET youtube_channel_id = NULL, youtube_channel_at = 0, youtube_channel_source = NULL WHERE norm = ?"),
+  refreshChannel: db.prepare("UPDATE artists SET youtube_channel_at = ? WHERE norm = ?"),
   thin: db.prepare("SELECT * FROM artists WHERE photo IS NULL ORDER BY searches DESC, updated_at DESC LIMIT ?"),
   thinCount: db.prepare("SELECT COUNT(*) c FROM artists WHERE photo IS NULL"),
   purge: db.prepare("DELETE FROM artists WHERE norm = ?"),

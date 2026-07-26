@@ -7,17 +7,22 @@
 // first listen into the real video and keeps a launch day from spending the
 // whole daily search budget on songs that could have been warmed for nothing.
 //
-// The warm path uses the artist-catalogue lookup (channels + uploads, ~13 quota
-// units for a whole discography) rather than search (100 units each, and capped
-// at 90/day for users). So warming is cheap AND it does not touch the search
-// budget real users depend on.
+// The warm path uses the artist catalogue (channels + uploads, from the general
+// API quota bucket) and explicitly disables search.list. Since June 2026 search
+// has its own small default 100-call/day bucket; background work must leave it
+// for real listeners.
 //
 // This module is the shared core: the CLI (scripts/warm-youtube-cache.mjs) and
 // the in-process daily scheduler both call warmYouTubeCache. The resolver and
 // clock are injectable so the accounting is testable without a real key.
 
 import { db, ytStmts, normName } from "./db.js";
-import { resolveYouTubeTrack, youtubeProviderStatus } from "./musicProviders.js";
+import {
+  pruneExpiredProviderData,
+  resolveYouTubeTrack,
+  youtubeCacheKey,
+  youtubeProviderStatus,
+} from "./musicProviders.js";
 import { backfillChannelsFromWikidata } from "./wikidataChannels.js";
 
 const PROGRESS_KEY = "warm:youtube:v1";
@@ -42,8 +47,8 @@ const writeProgress = (progress) => {
 
 const isCached = (title, artist) => {
   try {
-    const hit = ytStmts.get.get(`${normName(artist)}|${normName(title)}`);
-    return !!(hit && hit.video_id && Number(hit.expires_at) > Date.now());
+    const hit = ytStmts.get.get(youtubeCacheKey(title, artist));
+    return !!(hit && Number(hit.expires_at) > Date.now());
   } catch { return false; }
 };
 
@@ -71,7 +76,11 @@ export async function warmYouTubeCache({
   sleepMs = 120,
 } = {}) {
   const progress = readProgress();
-  const done = new Set(progress.done || []);
+  // Progress prevents duplicate work within one day's pass, not forever. A new
+  // day reconsiders failures, newly-enriched tracks, and expired cache entries;
+  // fresh cache rows are skipped cheaply before any provider call.
+  const pass = dayStamp(Date.now());
+  const done = new Set(progress.day === pass ? (progress.done || []) : []);
 
   // What people ACTUALLY play comes first. The daily search budget is tiny (~90
   // discoveries), so a popularity-only walk spends it on famous artists and
@@ -124,9 +133,10 @@ export async function warmYouTubeCache({
 
     stats.artistsTouched++;
     let firstForArtist = true;
+    let fullyVisited = true;
 
     for (const track of tracks) {
-      if (stats.spent >= budget) { stats.stoppedEarly = true; break; }
+      if (stats.spent >= budget) { stats.stoppedEarly = true; fullyVisited = false; break; }
       if (isCached(track.title, row.name)) { stats.skipped++; continue; }
 
       if (dryRun) {
@@ -137,7 +147,10 @@ export async function warmYouTubeCache({
       }
 
       try {
-        const result = await resolve(track.title, row.name, { expectedDurationSec: Number(track.duration) || 0 });
+        const result = await resolve(track.title, row.name, {
+          expectedDurationSec: Number(track.duration) || 0,
+          allowSearch: false,
+        });
         stats.spent += firstForArtist ? COST_FIRST_TRACK : COST_CACHED_ARTIST;
         firstForArtist = false;
         if (result?.videoId) stats.resolved++; else stats.failed++;
@@ -145,21 +158,30 @@ export async function warmYouTubeCache({
         // Stop the moment the server's own circuit breaker trips: do not keep
         // hammering a provider that has already said no, and do not burn the
         // day's budget on errors.
-        if (providerStatus()?.circuitOpen) { stats.stoppedEarly = true; stats.spent = budget; break; }
+        const provider = providerStatus?.() || {};
+        // Current status separates general-data and search circuits. Older or
+        // injected probes may expose only a single circuit; support those while
+        // ensuring a search-only throttle never stops catalogue warming.
+        if (provider.dataCircuitOpen || (provider.dataCircuitOpen == null && provider.circuitOpen)) {
+          stats.stoppedEarly = true;
+          stats.spent = budget;
+          fullyVisited = false;
+          break;
+        }
       } catch {
         stats.failed++;
       }
       if (sleepMs) await sleep(sleepMs);
     }
 
-    done.add(normName(row.name));
+    if (fullyVisited) done.add(normName(row.name));
     if (!dryRun && stats.artistsTouched % 10 === 0) {
-      writeProgress({ done: [...done], at: Date.now() });
+      writeProgress({ day: pass, done: [...done], at: Date.now() });
       onProgress?.(stats);
     }
   }
 
-  if (!dryRun) writeProgress({ done: [...done], at: Date.now() });
+  if (!dryRun) writeProgress({ day: pass, done: [...done], at: Date.now() });
   return stats;
 }
 
@@ -167,7 +189,7 @@ export async function warmYouTubeCache({
 // by the daily scheduler once every artist has been walked, so newly enriched
 // tracks and expired cache entries get picked up on the next pass.
 export function resetWarmProgress() {
-  writeProgress({ done: [], at: Date.now() });
+  writeProgress({ day: null, done: [], at: Date.now() });
 }
 
 const dayStamp = (now) => new Date(now).toISOString().slice(0, 10);
@@ -185,23 +207,22 @@ function markRanToday(now = Date.now()) {
     .run(DAILY_MARKER_KEY, dayStamp(now));
 }
 
-// The in-process daily job. Mirrors startTourDateScheduler: idle without a key,
-// runs a bounded pass shortly after boot, then every 24h. The per-day marker
-// keeps a deploy from re-warming, and the small default budget spends catalogue
-// units (not the user-facing search budget), so this never starves real
-// playback.
+// The in-process daily job. Wikidata discovery and expired-data pruning are
+// keyless; catalogue warming additionally needs YouTube configuration. The
+// per-day marker prevents deploy loops and search is disabled inside the warm.
 export function startCacheWarmScheduler({
   budget = Number(process.env.YOUTUBE_WARM_BUDGET) || 1500,
   intervalMs = 24 * 60 * 60 * 1000,
 } = {}) {
-  if (!process.env.YOUTUBE_API_KEY) {
-    console.log("[pit] cache warmer idle, set YOUTUBE_API_KEY to enable.");
-    return;
-  }
-  console.log(`[pit] cache warmer on (daily, ~${budget} quota units/day via artist catalogues).`);
+  const youtubeConfigured = !!process.env.YOUTUBE_API_KEY;
+  console.log(youtubeConfigured
+    ? `[pit] catalogue enrichment on (daily, ~${budget} general quota units; search disabled).`
+    : "[pit] Wikidata channel enrichment on; YouTube catalogue warming is idle until a key is configured.");
 
   const runOnce = async () => {
     if (ranToday()) return;
+    const pruned = pruneExpiredProviderData(Date.now(), { force: true });
+    if (pruned.youtube || pruned.provider) console.log(`[pit] provider cache prune: ${pruned.youtube + pruned.provider} expired rows removed.`);
     // Phase 0, free: pull channel ids from Wikidata (keyless, zero search quota)
     // so most notable artists are discovered without spending the daily search
     // budget. Only what Wikidata cannot cover falls through to the search-based
@@ -212,13 +233,15 @@ export function startCacheWarmScheduler({
     } catch (error) {
       console.log(`[pit] wikidata channel backfill skipped: ${error?.message || error}`);
     }
-    try {
-      const stats = await warmYouTubeCache({ budget });
-      markRanToday();
-      console.log(`[pit] cache warm: ${stats.resolved} resolved, ${stats.skipped} already cached, ${stats.failed} unmatched, ~${stats.spent} units.`);
-    } catch (error) {
-      console.log(`[pit] cache warm failed: ${error?.message || error}`);
+    if (youtubeConfigured) {
+      try {
+        const stats = await warmYouTubeCache({ budget });
+        console.log(`[pit] cache warm: ${stats.resolved} resolved, ${stats.skipped} fresh cache rows, ${stats.failed} deferred/unmatched, ~${stats.spent} general units.`);
+      } catch (error) {
+        console.log(`[pit] cache warm failed: ${error?.message || error}`);
+      }
     }
+    markRanToday();
   };
 
   // A minute after boot, not immediately: let the server settle and serve

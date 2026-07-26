@@ -176,28 +176,32 @@ test("capped social endpoints return the newest window in chronological order", 
     insertFanMessage.run(`fc_${String(i).padStart(4, "0")}`, "artist", "u_a", `fan ${i}`, i);
     insertLoungeMessage.run(`lm_${String(i).padStart(4, "0")}`, "show", "u_a", `lounge ${i}`, i);
   }
+  db.prepare("INSERT INTO fan_club_members (artist,user_id) VALUES (?,?)").run("artist", userA.id);
+  db.prepare("INSERT INTO going (user_id,concert_key,artist,venue) VALUES (?,?,?,?)").run(userA.id, "show", "Artist", "Venue");
+  const readFan = (query = {}) => routes["GET /api/fanclubs/:artist/messages"]({ user: userA, params: { artist: "artist" }, query });
+  const readLounge = (query = {}) => routes["GET /api/lounges/:key/messages"]({ user: userA, params: { key: "show" }, query });
 
-  const fan = routes["GET /api/fanclubs/:artist/messages"]({ params: { artist: "artist" } });
+  const fan = readFan();
   assert.equal(fan.messages.length, 300);
   assert.equal(fan.messages[0].createdAt, 6);
   assert.equal(fan.messages.at(-1).createdAt, 305);
-  assert.deepEqual(routes["GET /api/fanclubs/:artist/messages"]({ params: { artist: "artist" }, query: { before: fan.nextCursor } }).messages.map((m) => m.createdAt), [1, 2, 3, 4, 5]);
+  assert.deepEqual(readFan({ before: fan.nextCursor }).messages.map((m) => m.createdAt), [1, 2, 3, 4, 5]);
   insertFanMessage.run("fc_0306", "artist", "u_a", "fan 306", 306);
-  const newerFan = routes["GET /api/fanclubs/:artist/messages"]({ params: { artist: "artist" }, query: { after: fan.syncCursor } });
+  const newerFan = readFan({ after: fan.syncCursor });
   assert.deepEqual(newerFan.messages.map((m) => m.createdAt), [306]);
   db.prepare("UPDATE fan_club_messages SET removed=1 WHERE id=?").run("fc_0306");
-  assert.ok(routes["GET /api/fanclubs/:artist/messages"]({ params: { artist: "artist" }, query: { after: newerFan.syncCursor } }).removedIds.includes("fc_0306"));
+  assert.ok(readFan({ after: newerFan.syncCursor }).removedIds.includes("fc_0306"));
 
-  const lounge = routes["GET /api/lounges/:key/messages"]({ user: null, params: { key: "show" } });
+  const lounge = readLounge();
   assert.equal(lounge.messages.length, 300);
   assert.equal(lounge.messages[0].createdAt, 6);
   assert.equal(lounge.messages.at(-1).createdAt, 305);
-  assert.deepEqual(routes["GET /api/lounges/:key/messages"]({ user: null, params: { key: "show" }, query: { before: lounge.nextCursor } }).messages.map((m) => m.createdAt), [1, 2, 3, 4, 5]);
+  assert.deepEqual(readLounge({ before: lounge.nextCursor }).messages.map((m) => m.createdAt), [1, 2, 3, 4, 5]);
   insertLoungeMessage.run("lm_0306", "show", "u_a", "lounge 306", 306);
-  const newerLounge = routes["GET /api/lounges/:key/messages"]({ user: null, params: { key: "show" }, query: { after: lounge.syncCursor } });
+  const newerLounge = readLounge({ after: lounge.syncCursor });
   assert.deepEqual(newerLounge.messages.map((m) => m.createdAt), [306]);
   db.prepare("UPDATE lounge_messages SET removed=1 WHERE id=?").run("lm_0306");
-  assert.ok(routes["GET /api/lounges/:key/messages"]({ user: null, params: { key: "show" }, query: { after: newerLounge.syncCursor } }).removedIds.includes("lm_0306"));
+  assert.ok(readLounge({ after: newerLounge.syncCursor }).removedIds.includes("lm_0306"));
 });
 
 test("group-chat writes require membership and attendance, then succeed on retry", () => {
@@ -232,6 +236,56 @@ test("group-chat writes require membership and attendance, then succeed on retry
   assert.equal(db.prepare("SELECT COUNT(*) c FROM going WHERE user_id=? AND concert_key=?").get(user.id, "artist|venue|2026-07-15").c, 1);
   assert.ok(loungeMessage(loungeContext("in the room")).id);
   assert.equal(db.prepare("SELECT COUNT(*) c FROM lounge_messages WHERE user_id=?").get(user.id).c, 1);
+});
+
+test("group-chat reads require membership or attendance while gate metadata stays public", () => {
+  const member = addUser("u_chat_reader", "chat-reader@example.com", "chatreader");
+  const outsider = addUser("u_chat_outsider", "chat-outsider@example.com", "chatoutsider");
+  const blockedAuthor = addUser("u_chat_blocked", "chat-blocked@example.com", "chatblocked");
+  const artist = "gate artist";
+  const loungeKey = "gate artist|gate venue|2026-08-01";
+
+  db.prepare("INSERT INTO fan_club_members (artist,user_id) VALUES (?,?)").run(artist, member.id);
+  db.prepare("INSERT INTO going (user_id,concert_key,artist,venue,date) VALUES (?,?,?,?,?)")
+    .run(member.id, loungeKey, "Gate Artist", "Gate Venue", "2026-08-01");
+  db.prepare("INSERT INTO fan_club_messages (id,artist,user_id,text,created_at) VALUES (?,?,?,?,?)")
+    .run("fc_gate_visible", artist, member.id, "member-only", 100);
+  db.prepare("INSERT INTO fan_club_messages (id,artist,user_id,text,created_at) VALUES (?,?,?,?,?)")
+    .run("fc_gate_blocked", artist, blockedAuthor.id, "blocked", 99);
+  db.prepare("INSERT INTO fan_club_messages (id,artist,user_id,text,removed,created_at) VALUES (?,?,?,?,?,?)")
+    .run("fc_gate_removed", artist, member.id, "removed", 1, 101);
+  db.prepare("INSERT INTO lounge_messages (id,lounge_id,user_id,text,created_at) VALUES (?,?,?,?,?)")
+    .run("lm_gate_visible", loungeKey, member.id, "attendees-only", 100);
+  db.prepare("INSERT INTO lounge_messages (id,lounge_id,user_id,text,created_at) VALUES (?,?,?,?,?)")
+    .run("lm_gate_blocked", loungeKey, blockedAuthor.id, "blocked", 99);
+  db.prepare("INSERT INTO lounge_messages (id,lounge_id,user_id,text,removed,created_at) VALUES (?,?,?,?,?,?)")
+    .run("lm_gate_removed", loungeKey, member.id, "removed", 1, 101);
+  db.prepare("INSERT INTO blocks (blocker_id,blocked_id,created_at) VALUES (?,?,?)")
+    .run(member.id, blockedAuthor.id, 102);
+
+  const fanMeta = routes["GET /api/fanclubs/:artist/meta"]({ params: { artist: "Gate%20Artist" } });
+  assert.deepEqual(fanMeta, { members: 1, messageCount: 2 });
+  const loungeMeta = routes["GET /api/lounges/:key/meta"]({ params: { key: encodeURIComponent(loungeKey) } });
+  assert.deepEqual(loungeMeta, { attendeeCount: 1, messageCount: 2 });
+
+  const fanRead = (user) => routes["GET /api/fanclubs/:artist/messages"]({ user, params: { artist: "Gate%20Artist" } });
+  const loungeRead = (user) => routes["GET /api/lounges/:key/messages"]({ user, params: { key: encodeURIComponent(loungeKey) } });
+  assert.throws(() => fanRead(null), (error) => error.code === "AUTH_REQUIRED");
+  assert.throws(() => fanRead(outsider), (error) => error.code === "FAN_CLUB_MEMBERSHIP_REQUIRED");
+  assert.throws(() => loungeRead(null), (error) => error.code === "AUTH_REQUIRED");
+  assert.throws(() => loungeRead(outsider), (error) => error.code === "LOUNGE_ATTENDANCE_REQUIRED");
+
+  const fan = fanRead(member);
+  assert.deepEqual(fan.messages.map((message) => message.id), ["fc_gate_visible"]);
+  assert.ok(fan.removedIds.includes("fc_gate_removed"));
+  const lounge = loungeRead(member);
+  assert.deepEqual(lounge.messages.map((message) => message.id), ["lm_gate_visible"]);
+  assert.ok(lounge.removedIds.includes("lm_gate_removed"));
+
+  db.prepare("DELETE FROM fan_club_members WHERE artist=? AND user_id=?").run(artist, member.id);
+  db.prepare("DELETE FROM going WHERE concert_key=? AND user_id=?").run(loungeKey, member.id);
+  assert.throws(() => fanRead(member), (error) => error.code === "FAN_CLUB_MEMBERSHIP_REQUIRED");
+  assert.throws(() => loungeRead(member), (error) => error.code === "LOUNGE_ATTENDANCE_REQUIRED");
 });
 
 test("desired-state social mutations are idempotent and old toggle calls still work", () => {
@@ -328,12 +382,91 @@ test("rewards use authoritative server activity and persist each award once", ()
   assert.equal(db.prepare("SELECT COUNT(*) c FROM user_achievements WHERE user_id=? AND badge_id='first_show'").get(user.id).c, 1);
 });
 
+test("status posts earn social rewards but never concert achievements", () => {
+  const user = addUser("u_status_rewards", "status-rewards@example.com", "statusrewards");
+  const fans = Array.from({ length: 4 }, (_, i) =>
+    addUser(`u_status_rewards_fan_${i}`, `status-rewards-fan-${i}@example.com`, `statusfan${i}`));
+  const insertStatus = db.prepare(`INSERT INTO posts
+    (id,user_id,kind,artist,venue,city,overall,review,photos,created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?)`);
+  const like = db.prepare("INSERT INTO likes (post_id,user_id) VALUES (?,?)");
+
+  for (let i = 0; i < 25; i += 1) {
+    const postId = `post_status_rewards_${i}`;
+    insertStatus.run(
+      postId, user.id, "status", `Status Artist ${i}`, "", `Status City ${i}`,
+      0, `Ordinary update ${i}`, JSON.stringify([`https://cdn.example/status-${i}.jpg`]), 100 + i
+    );
+    for (const fan of fans) like.run(postId, fan.id);
+  }
+  for (let i = 0; i < 3; i += 1) {
+    db.prepare("INSERT INTO fan_club_members (artist,user_id) VALUES (?,?)").run(`status rewards club ${i}`, user.id);
+  }
+
+  const handler = routes["GET /api/users/:id/rewards"];
+  const socialOnly = handler({ user, params: { id: user.id } });
+  assert.deepEqual(
+    {
+      shows: socialOnly.stats.shows,
+      reviews: socialOnly.stats.reviews,
+      photos: socialOnly.stats.photos,
+      cities: socialOnly.stats.cities,
+      artists: socialOnly.stats.artists,
+    },
+    { shows: 0, reviews: 0, photos: 0, cities: 0, artists: 0 }
+  );
+  assert.equal(socialOnly.stats.likes, 100);
+  assert.equal(socialOnly.stats.fanClubs, 3);
+  assert.ok(socialOnly.earnedIds.includes("tastemaker"));
+  assert.ok(socialOnly.earnedIds.includes("superfan"));
+  for (const id of ["first_show", "regular", "road_warrior", "critic", "photographer", "globetrotter", "explorer"]) {
+    assert.ok(!socialOnly.earnedIds.includes(id), `${id} must ignore status posts`);
+  }
+
+  db.prepare(`INSERT INTO posts
+    (id,user_id,kind,artist,venue,city,overall,review,photos,created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?)`)
+    .run("post_status_rewards_real_show", user.id, "review", "Real Artist", "Real Venue", "Toronto", 4.5, "A real show review", '["https://cdn.example/show.jpg"]', 200);
+
+  const withShow = handler({ user, params: { id: user.id } });
+  assert.equal(withShow.stats.shows, 1);
+  assert.equal(withShow.stats.reviews, 1);
+  assert.equal(withShow.stats.photos, 1);
+  assert.equal(withShow.stats.cities, 1);
+  assert.equal(withShow.stats.artists, 1);
+  assert.ok(withShow.earnedIds.includes("first_show"));
+  assert.ok(withShow.earnedIds.includes("tastemaker"));
+  assert.ok(withShow.earnedIds.includes("superfan"));
+  assert.equal(
+    db.prepare("SELECT definition_version FROM user_achievements WHERE user_id=? AND badge_id='first_show'").get(user.id).definition_version,
+    2
+  );
+});
+
+test("reward rule v2 preserves ambiguous legacy awards instead of revoking legitimate history", () => {
+  const user = addUser("u_legacy_rewards", "legacy-rewards@example.com", "legacyrewards");
+  db.prepare(`INSERT INTO user_achievements
+    (user_id,badge_id,definition_version,points,earned_at,progress_snapshot)
+    VALUES (?,?,?,?,?,?)`)
+    .run(user.id, "first_show", 1, 25, 100, JSON.stringify({ shows: 1 }));
+
+  const rewards = routes["GET /api/users/:id/rewards"]({ user, params: { id: user.id } });
+  assert.equal(rewards.stats.shows, 0);
+  assert.ok(rewards.earnedIds.includes("first_show"));
+  assert.equal(rewards.points, 25);
+  assert.equal(
+    db.prepare("SELECT definition_version FROM user_achievements WHERE user_id=? AND badge_id='first_show'").get(user.id).definition_version,
+    1
+  );
+});
+
 test("blocking closes direct profile, content, interaction, and community read paths", () => {
   const blocker = addUser("u_block_matrix_a", "block-matrix-a@example.com", "blockmatrixa");
   const blocked = addUser("u_block_matrix_b", "block-matrix-b@example.com", "blockmatrixb");
   db.prepare("INSERT INTO posts (id,user_id,artist,venue,overall,created_at) VALUES (?,?,?,?,?,?)").run("post_block_matrix", blocked.id, "Artist", "Venue", 4, 100);
   db.prepare("INSERT INTO playlists (id,user_id,name,tracks,created_at) VALUES (?,?,?,?,?)").run("playlist_block_matrix", blocked.id, "List", '[{"title":"Song"}]', 100);
   db.prepare("INSERT INTO fan_club_messages (id,artist,user_id,text,created_at) VALUES (?,?,?,?,?)").run("fan_block_matrix", "artist", blocked.id, "hidden", 100);
+  db.prepare("INSERT INTO fan_club_members (artist,user_id) VALUES (?,?)").run("artist", blocker.id);
   db.prepare("INSERT INTO going (user_id,concert_key,artist,venue) VALUES (?,?,?,?)").run(blocked.id, "show-block-matrix", "Artist", "Venue");
   db.prepare("INSERT INTO venue_reviews (id,venue_key,user_id,rating,text,created_at) VALUES (?,?,?,?,?,?)").run("venue_block_matrix", "venue", blocked.id, 4, "hidden", 100);
   db.prepare("INSERT INTO notifications (id,user_id,actor_id,type,created_at) VALUES (?,?,?,?,?)").run("notif_block_matrix", blocker.id, blocked.id, "follow", 100);

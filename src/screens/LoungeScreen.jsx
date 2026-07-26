@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, KeyboardAvoidingView, Platform } from "react-native";
 import { colors, mono, radius } from "../theme";
 import { useStore, isStaff } from "../store";
@@ -8,6 +8,7 @@ import Icon from "../components/Icon";
 import MentionText from "../components/MentionText";
 import useLiveChat from "../lib/useLiveChat";
 import useChatScroll from "../lib/useChatScroll";
+import { api } from "../lib/api";
 
 // The Concert Lounge - a Discord/YouTube-style chat for everyone at a show.
 // Gated: you have to tap in, so it feels like a room you enter.
@@ -15,25 +16,46 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
   const { session, concertKey, loungeFor, enterLounge, addLoungeMessage, loadLounge, attendeesFor, userById, removeLoungeMessage } = useStore();
   const staff = isStaff(session?.role);
   const key = concertKey(log);
-  const [entered, setEntered] = useState(false);
+  const roomIdentity = session && key ? `${session.id}:${key}` : null;
+  const [enteredRoom, setEnteredRoom] = useState(null);
+  const entered = !!roomIdentity && enteredRoom === roomIdentity;
   const [entering, setEntering] = useState(false);
   const [sending, setSending] = useState(false);
   const [text, setText] = useState("");
+  const [gateMeta, setGateMeta] = useState(null);
   const { scrollRef, onScroll, onContentSizeChange } = useChatScroll();
 
   useLiveChat(
     ({ after, signal }) => loadLounge(key, { after, signal }),
-    { channelKey: `lounge:${key}`, enabled: !!key },
+    { channelKey: `lounge:${key}`, enabled: !!key && entered },
   );
 
   const messages = loungeFor(key);
   const attendees = attendeesFor(key);
+  const currentGateMeta = gateMeta?.key === key ? gateMeta : null;
+
+  // The gate reads aggregate-only metadata. Conversation polling remains off
+  // until this account's attendance write has been confirmed by the server.
+  useEffect(() => {
+    if (!key || entered) return undefined;
+    const controller = new AbortController();
+    api(`/api/lounges/${encodeURIComponent(key)}/meta`, {
+      signal: controller.signal,
+      silent: true,
+      context: "Loading concert-lounge details",
+    })
+      .then(({ attendeeCount, messageCount }) => {
+        if (!controller.signal.aborted) setGateMeta({ key, attendeeCount, messageCount });
+      })
+      .catch(() => {});
+    return () => controller.abort();
+  }, [key, entered]);
 
   const enter = async () => {
-    if (entering) return;
+    if (entering || !session || !roomIdentity) return;
     setEntering(true);
     const result = await enterLounge(log);
-    if (result?.ok) setEntered(true);
+    if (result?.ok && !result?.guest) setEnteredRoom(roomIdentity);
     setEntering(false);
   };
 
@@ -58,9 +80,9 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
             A live chat for everyone at{"\n"}
             <Text style={{ color: colors.text, fontWeight: "700" }}>{log.artist}</Text> · {log.venue}
           </Text>
-          <Text style={styles.gateMeta}>{messages.length} messages · {attendees.length} going</Text>
-          <Pressable style={[styles.enterBtn, entering && { opacity: 0.65 }]} onPress={enter} disabled={entering}>
-            <Text style={styles.enterTxt}>{entering ? "Saving your spotâ€¦" : "I'm going - enter the lounge"}</Text>
+          <Text style={styles.gateMeta}>{currentGateMeta?.messageCount ?? messages.length} messages · {currentGateMeta?.attendeeCount ?? attendees.length} going</Text>
+          <Pressable style={[styles.enterBtn, (entering || !session) && { opacity: 0.65 }]} onPress={enter} disabled={entering || !session}>
+            <Text style={styles.enterTxt}>{!session ? "Log in to enter the lounge" : entering ? "Saving your spotâ€¦" : "I'm going - enter the lounge"}</Text>
           </Pressable>
           <Text style={styles.gateNote}>Be decent. Mods can remove anyone.</Text>
         </View>

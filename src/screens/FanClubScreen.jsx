@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, KeyboardAvoidingView, Platform } from "react-native";
 import { colors, mono, radius } from "../theme";
 import { useStore } from "../store";
@@ -10,6 +10,7 @@ import MentionText from "../components/MentionText";
 import SpinningRecord from "../components/SpinningRecord";
 import useLiveChat from "../lib/useLiveChat";
 import useChatScroll from "../lib/useChatScroll";
+import { api } from "../lib/api";
 
 // The artist Fan Club - a permanent chat for fans, even with no show coming up.
 export default function FanClubScreen({ artist, onClose, onOpenProfile, onOpenProfileByHandle }) {
@@ -17,13 +18,34 @@ export default function FanClubScreen({ artist, onClose, onOpenProfile, onOpenPr
   const [text, setText] = useState("");
   const [joining, setJoining] = useState(false);
   const [sending, setSending] = useState(false);
+  const [gateMeta, setGateMeta] = useState(null);
   const { scrollRef, onScroll, onContentSizeChange } = useChatScroll();
   const messages = fanClubFor(artist);
+  const member = isFanClubMember(artist);
   useLiveChat(
     ({ after, signal }) => loadFanClub(artist, { after, signal }),
-    { channelKey: `fan-club:${artist}`, enabled: !!artist },
+    { channelKey: `fan-club:${artist}`, enabled: !!artist && member },
   );
-  const member = isFanClubMember(artist);
+  const artistKey = String(artist || "").trim().toLowerCase();
+  const currentGateMeta = gateMeta?.key === artistKey ? gateMeta : null;
+
+  // Non-members only receive aggregate gate metadata; message polling starts
+  // after the server-confirmed join updates membership in the store.
+  useEffect(() => {
+    if (!artistKey || member) return undefined;
+    const controller = new AbortController();
+    api(`/api/fanclubs/${encodeURIComponent(artistKey)}/meta`, {
+      signal: controller.signal,
+      silent: true,
+      context: "Loading fan-club details",
+    })
+      .then(({ members, messageCount }) => {
+        if (!controller.signal.aborted) setGateMeta({ key: artistKey, members, messageCount });
+      })
+      .catch(() => {});
+    return () => controller.abort();
+  }, [artistKey, member]);
+
   const art = artistMeta(artist)?.photo;
 
   const toggleMembership = async () => {
@@ -51,7 +73,7 @@ export default function FanClubScreen({ artist, onClose, onOpenProfile, onOpenPr
           <SpinningRecord size={92} playing color={colors.amberStrong} art={art} />
           <Text style={styles.gateTitle}>{artist} Fan Club</Text>
           <Text style={styles.gateSub}>Talk to other fans, swap shows, plan trips. No ticket needed.</Text>
-          <Text style={styles.gateMeta}>{fanClubCount(artist)} members · {messages.length} messages</Text>
+          <Text style={styles.gateMeta}>{currentGateMeta?.members ?? fanClubCount(artist)} members · {currentGateMeta?.messageCount ?? messages.length} messages</Text>
           {session ? (
             <Pressable style={[styles.joinBtn, joining && { opacity: 0.65 }]} onPress={toggleMembership} disabled={joining}>
               <Icon name="user-plus" size={16} color="#1A1206" />

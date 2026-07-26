@@ -3,27 +3,29 @@ import { artistRow, artistStmts, db, normName, providerCacheStmts, ytStmts } fro
 const DEEZER_DISCOGRAPHY_TTL_MS = 24 * 60 * 60 * 1000;
 const DEEZER_PREVIEW_MAX_TTL_MS = 5 * 60 * 1000;
 const days = (n) => n * 24 * 60 * 60 * 1000;
-// A resolved videoId is stable for months, and a stale one is caught cheaply:
-// the lookup revalidates a cached row with videos.list (1 quota unit) before
-// trusting it, and remembers bad IDs so it never picks them again. A short TTL
-// therefore buys nothing and costs a full re-resolve of the entire catalogue on
-// expiry, which is a recurring bill that grows with the catalogue rather than
-// with traffic. 14 days meant re-resolving everything twice a month.
-const YOUTUBE_MATCH_TTL_MS = days(Math.max(1, Number(process.env.YOUTUBE_MATCH_TTL_DAYS) || 90));
+// Non-authorized YouTube API data must be deleted or refreshed within 30 days.
+// Keep the knob for a shorter operational TTL, but never allow configuration to
+// exceed the policy ceiling. Expired rows are pruned as well as ignored.
+const YOUTUBE_MATCH_TTL_MS = days(Math.max(1, Math.min(30,
+  Number(process.env.YOUTUBE_MATCH_TTL_DAYS) || 30)));
 // A miss is usually structural (no official upload exists), not transient, so
 // retrying every 6 hours spent 4 searches a day per unmatched song for nothing.
 const YOUTUBE_MISS_TTL_MS = days(Math.max(0.25, Number(process.env.YOUTUBE_MISS_TTL_DAYS) || 3));
 const YOUTUBE_SCORE_MIN = 65;
-// Not capped at 100 any more. search.list costs 100 units against a default
-// 10,000/day allowance, so 90 is the right default, but a project with an
-// approved quota increase must be able to configure past it without a redeploy
-// of this file. The floor of 1 keeps a misconfigured value from disabling
-// lookup entirely.
+// Since June 2026, search.list has a separate default bucket of 100 calls/day
+// and costs one call from that bucket. Keep ten calls in reserve by default for
+// operational checks; an approved increase remains configurable.
 const YOUTUBE_SEARCH_DAILY_BUDGET = Math.max(1, Number(process.env.YOUTUBE_SEARCH_DAILY_BUDGET) || 90);
 const YOUTUBE_CATALOGUE_MAX_PAGES = Math.max(2, Math.min(20, Number(process.env.YOUTUBE_CATALOGUE_MAX_PAGES) || 12));
 const previewCache = new Map();
 const youtubeInflight = new Map();
-const youtubeCircuit = { until: 0, code: null };
+// Search and catalogue calls now have separate provider quota buckets. A search
+// limit must not disable channels/playlistItems/videos calls that can still play
+// already-known artists at budget zero.
+const youtubeCircuits = {
+  search: { until: 0, code: null },
+  data: { until: 0, code: null },
+};
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -71,11 +73,19 @@ function reserveYouTubeSearch() {
 
 export function youtubeProviderStatus() {
   const usage = youtubeSearchUsage();
+  const searchOpen = youtubeCircuits.search.until > Date.now();
+  const dataOpen = youtubeCircuits.data.until > Date.now();
   return {
     search: usage,
-    circuitOpen: youtubeCircuit.until > Date.now(),
-    circuitCode: youtubeCircuit.until > Date.now() ? youtubeCircuit.code : null,
-    retryAt: youtubeCircuit.until > Date.now() ? youtubeCircuit.until : null,
+    circuitOpen: searchOpen || dataOpen,
+    circuitCode: searchOpen ? youtubeCircuits.search.code : dataOpen ? youtubeCircuits.data.code : null,
+    retryAt: Math.max(searchOpen ? youtubeCircuits.search.until : 0, dataOpen ? youtubeCircuits.data.until : 0) || null,
+    searchCircuitOpen: searchOpen,
+    dataCircuitOpen: dataOpen,
+    circuits: {
+      search: { open: searchOpen, code: searchOpen ? youtubeCircuits.search.code : null, retryAt: searchOpen ? youtubeCircuits.search.until : null },
+      data: { open: dataOpen, code: dataOpen ? youtubeCircuits.data.code : null, retryAt: dataOpen ? youtubeCircuits.data.until : null },
+    },
     inFlight: youtubeInflight.size,
   };
 }
@@ -602,25 +612,62 @@ export function selectArtistChannel(artist, items = []) {
   return best && best.rank >= 40 ? best : null;
 }
 
-// One cheap, long-lived lookup per artist. Channels do not move, so this is
-// cached for a month and amortized across every song on the artist's page.
-// How long a fruitless discovery is trusted before we spend another search
-// looking for a channel that may since have been created.
+// Channel identities are amortized across an artist, but API-derived mappings
+// are refreshed within YouTube's 30-day storage window. Fruitless discoveries
+// also expire so a newly-created Topic channel can eventually be found.
 const YOUTUBE_CHANNEL_NEGATIVE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
-async function resolveArtistChannelId(artist, apiKey, fetchImpl) {
+const channelSourceTrusted = (source) => source === "youtube" || source === "wikidata";
+
+async function resolveArtistChannel(artist, apiKey, fetchImpl, { allowSearch = true } = {}) {
   if (!artist) return null;
   const norm = normName(artist);
+  const currentTime = Date.now();
+  const row = artistStmts.byNorm.get(norm);
 
-  // Permanent store first: a channel discovered on any previous play is reused
-  // forever, for free. This is the whole point of the youtube_channel_id column
-  // — without it, every artist's channel was re-searched on a 30-day TTL and the
-  // daily search budget was spent re-finding channels we already knew. A found
-  // id is trusted indefinitely (Topic channels do not move); a recorded miss is
-  // trusted for a month before we try again.
+  // Reuse a fresh stored mapping first. It survives catalogue reseeds, but is
+  // never trusted forever: API-derived identity is refreshed within 30 days.
+  // A bounded recorded miss prevents repeated cold requests while still
+  // allowing newly-created channels to be discovered later.
   const stored = artistStmts.getChannel.get(norm);
-  if (stored?.channelId) return stored.channelId;
-  if (stored && stored.at && Date.now() - stored.at < YOUTUBE_CHANNEL_NEGATIVE_TTL_MS) return null;
+  if (stored?.channelId && currentTime - Number(stored.at) < YOUTUBE_CHANNEL_TTL_MS) {
+    return { channelId: stored.channelId, trusted: channelSourceTrusted(stored.source), source: stored.source || "legacy" };
+  }
+  if (!stored?.channelId && stored?.at && currentTime - Number(stored.at) < YOUTUBE_CHANNEL_NEGATIVE_TTL_MS) return null;
+
+  // Refresh old mappings with a cheap channels.list call. A Wikidata identity
+  // is CC0 rather than YouTube API data, so it can remain a pointer during a
+  // transient outage, but it stays untrusted unless the channel title agrees.
+  if (stored?.channelId) {
+    try {
+      const data = await youtubeJson("channels", { part: "snippet", id: stored.channelId, maxResults: "1" }, apiKey, fetchImpl);
+      const item = data?.items?.[0];
+      if (item?.id === stored.channelId) {
+        const ranked = selectArtistChannel(artist, [{ id: { channelId: item.id }, snippet: item.snippet }]);
+        const trusted = Number(ranked?.rank) >= 80;
+        if (String(stored.source || "").startsWith("wikidata")) {
+          artistStmts.setWikidataChannel.run(stored.channelId, currentTime, trusted ? "wikidata" : "wikidata_unverified", norm);
+          return { channelId: stored.channelId, trusted, source: trusted ? "wikidata" : "wikidata_unverified" };
+        }
+        if (trusted) {
+          artistStmts.refreshChannel.run(currentTime, norm);
+          return { channelId: stored.channelId, trusted: true, source: stored.source || "legacy" };
+        }
+        // The current channel title no longer agrees with this artist. Clear
+        // the stale search/legacy mapping and continue through discovery rather
+        // than perpetuating a poisoned channel because it was once stored.
+        artistStmts.clearChannel.run(norm);
+      } else {
+        artistStmts.clearChannel.run(norm);
+      }
+    } catch (error) {
+      if (String(stored.source || "").startsWith("wikidata")) {
+        return { channelId: stored.channelId, trusted: stored.source === "wikidata", source: stored.source };
+      }
+      artistStmts.clearChannel.run(norm);
+      if (providerPaused(error)) throw error;
+    }
+  }
 
   // Before spending a search, try Wikidata for free. Every catalogue artist and
   // every on-demand artist created from MusicBrainz carries an mbid, and
@@ -628,18 +675,20 @@ async function resolveArtistChannelId(artist, apiKey, fetchImpl) {
   // never in the catalogue (the ones that preview most) resolve without touching
   // the tiny daily search budget. Dynamic import avoids a static import cycle
   // (wikidataChannels imports youtubeJson from here).
-  const row = artistStmts.byNorm.get(norm);
   if (row?.mbid) {
     try {
       const { lookupChannelByMbid } = await import("./wikidataChannels.js");
-      const fromWikidata = await lookupChannelByMbid(row.mbid, { apiKey, fetchImpl });
-      if (fromWikidata) {
-        artistStmts.setChannel.run(fromWikidata, Date.now(), norm);
-        writeProviderCache(`yt:channel:v1:${norm}`, { channelId: fromWikidata, title: null }, YOUTUBE_CHANNEL_TTL_MS);
-        return fromWikidata;
+      const fromWikidata = await lookupChannelByMbid(row.mbid, { artist, apiKey, fetchImpl });
+      if (fromWikidata?.channelId) {
+        const source = fromWikidata.validated ? "wikidata" : "wikidata_unverified";
+        artistStmts.setWikidataChannel.run(fromWikidata.channelId, Date.now(), source, norm);
+        return { channelId: fromWikidata.channelId, trusted: !!fromWikidata.validated, source };
       }
     } catch { /* fall through to the search below */ }
   }
+
+  // Normal cache warming must not consume the scarce interactive search bucket.
+  if (!allowSearch) return null;
 
   try {
     const data = await youtubeJson("search", {
@@ -648,14 +697,26 @@ async function resolveArtistChannelId(artist, apiKey, fetchImpl) {
     const best = selectArtistChannel(artist, data?.items || []);
     // Persist to the artist row when we know this artist; the provider cache is
     // still written as a fallback for names not in the catalogue.
-    if (artistStmts.byNorm.get(norm)) artistStmts.setChannel.run(best?.channelId || null, Date.now(), norm);
-    writeProviderCache(`yt:channel:v1:${norm}`, { channelId: best?.channelId || null, title: best?.title || null },
+    const trusted = Number(best?.rank) >= 80;
+    if (artistStmts.byNorm.get(norm)) {
+      artistStmts.setChannel.run(best?.channelId || null, Date.now(), best?.channelId && !trusted ? "youtube_unverified" : "youtube", norm);
+    }
+    writeProviderCache(`yt:channel:v1:${norm}`, {
+      channelId: best?.channelId || null,
+      title: best?.title || null,
+      rank: Number(best?.rank) || 0,
+    },
       best ? YOUTUBE_CHANNEL_TTL_MS : YOUTUBE_CHANNEL_MISS_TTL_MS);
-    return best?.channelId || null;
+    return best?.channelId
+      ? { channelId: best.channelId, trusted, source: trusted ? "youtube" : "youtube_unverified" }
+      : null;
   } catch (error) {
     if (providerPaused(error)) throw error;
     // Fall back to any provider-cache hit for artists not in the catalogue.
-    return readProviderCache(`yt:channel:v1:${norm}`)?.data?.channelId || null;
+    const fallback = readProviderCache(`yt:channel:v1:${norm}`);
+    return fallback?.fresh && fallback.data?.channelId
+      ? { channelId: fallback.data.channelId, trusted: Number(fallback.data.rank) >= 80, source: "provider_cache" }
+      : null;
   }
 }
 
@@ -689,16 +750,18 @@ export function selectCatalogueTrack(title, catalogue = []) {
 }
 
 // The artist's entire upload catalogue, fetched with the CHEAP endpoints:
-// channels.list + playlistItems.list cost 1 unit per call (50 videos each),
-// versus 100 units for a single keyword search. This is what stops the daily
-// quota running out and dropping every song back to a 30 second preview.
+// channels.list + playlistItems.list draw from the general API quota bucket;
+// search.list has its own small call bucket. This preserves interactive search
+// capacity and stops songs dropping back to a 30-second preview.
 // Returns { items, complete }. `complete` means we walked the whole uploads
 // playlist within the page cap, so the local scan has seen every video the
 // Topic channel holds — and a subsequent in-channel API search would be pure
 // wasted quota. Only a truncated catalogue (a very prolific artist past the
 // page cap) can justify spending a search to look deeper.
 async function getArtistCatalogue(artist, channelId, apiKey, fetchImpl) {
-  const key = `yt:catalogue:v1:${normName(artist)}`;
+  // Channel identity is part of the key: correcting a poisoned mapping must not
+  // serve the previous channel's uploads for another seven days.
+  const key = `yt:catalogue:v2:${normName(artist)}:${channelId}`;
   const cached = readProviderCache(key);
   if (cached?.fresh) return { items: cached.data?.items || [], complete: cached.data?.complete !== false };
   try {
@@ -738,7 +801,7 @@ async function getArtistCatalogue(artist, channelId, apiKey, fetchImpl) {
 // search. Those rows are served straight from cache for 14 days without
 // re-scoring, so without this bump the previously chosen wrong videos (reaction
 // uploads, other acts' songs) would keep playing long after the fix shipped.
-function youtubeCacheKey(title, artist) {
+export function youtubeCacheKey(title, artist) {
   return (`yt:v2:${artist || ""}|${title}`).toLowerCase().slice(0, 300);
 }
 
@@ -759,14 +822,29 @@ function setYouTubeCache({ key, videoId, metadata = null, score = null, expiresA
   });
 }
 
+let lastProviderPruneAt = 0;
+export function pruneExpiredProviderData(at = Date.now(), { force = false } = {}) {
+  if (!force && at - lastProviderPruneAt < 60 * 60 * 1000) return { youtube: 0, provider: 0, skipped: true };
+  lastProviderPruneAt = at;
+  const youtube = ytStmts.deleteExpired.run(at, at - days(30)).changes;
+  const provider = providerCacheStmts.deleteExpired.run(at).changes;
+  return { youtube, provider, skipped: false };
+}
+
+// A restart is an inexpensive opportunity to remove dormant expired API data;
+// the daily warmer also calls this for long-running processes.
+pruneExpiredProviderData(Date.now(), { force: true });
+
 function youtubeUrl(path, params, apiKey) {
   const query = new URLSearchParams({ ...params, key: apiKey });
   return `https://www.googleapis.com/youtube/v3/${path}?${query.toString()}`;
 }
 
 export async function youtubeJson(path, params, apiKey, fetchImpl, timeoutMs = 8_000) {
-  if (youtubeCircuit.until > Date.now()) {
-    throw new ProviderError("YouTube", 503, "YouTube lookups are cooling down after a provider limit.", {
+  const bucket = path === "search" ? "search" : "data";
+  const circuit = youtubeCircuits[bucket];
+  if (circuit.until > Date.now()) {
+    throw new ProviderError("YouTube", 503, `${bucket === "search" ? "YouTube search" : "YouTube catalogue lookups"} are cooling down after a provider limit.`, {
       code: "provider_paused",
       retryable: true,
     });
@@ -776,8 +854,8 @@ export async function youtubeJson(path, params, apiKey, fetchImpl, timeoutMs = 8
     return await providerJson("YouTube", youtubeUrl(path, params, apiKey), { fetchImpl, timeoutMs });
   } catch (error) {
     if (error instanceof ProviderError && ["quota_or_forbidden", "rate_limited"].includes(error.code)) {
-      youtubeCircuit.until = Date.now() + (error.code === "rate_limited" ? 60_000 : 15 * 60_000);
-      youtubeCircuit.code = error.code;
+      circuit.until = Date.now() + (error.code === "rate_limited" ? 60_000 : 15 * 60_000);
+      circuit.code = error.code;
     }
     throw error;
   }
@@ -792,15 +870,25 @@ async function youtubeVideos(ids, apiKey, fetchImpl) {
   return data?.items || [];
 }
 
-async function resolveYouTubeTrackUnshared(title, artist, { expectedDurationSec = 0, fetchImpl = fetch, apiKey = process.env.YOUTUBE_API_KEY } = {}) {
+async function resolveYouTubeTrackUnshared(title, artist, {
+  expectedDurationSec = 0,
+  fetchImpl = fetch,
+  apiKey = process.env.YOUTUBE_API_KEY,
+  allowSearch = true,
+} = {}) {
+  const currentTime = Date.now();
+  pruneExpiredProviderData(currentTime);
   const key = youtubeCacheKey(title, artist);
   const hit = ytStmts.get.get(key);
-  const rejected = rejectedSet(hit);
-  const currentTime = Date.now();
+  const rejected = Number(hit?.expires_at) > currentTime ? rejectedSet(hit) : new Set();
   if (hit?.video_id && hit.metadata && Number(hit.expires_at) > currentTime) {
     return { videoId: hit.video_id, status: "cached", confidence: hit.score ?? null };
   }
-  if (!hit?.video_id && hit && Number(hit.expires_at) > currentTime) return { videoId: null, status: "not_found" };
+  let cachedMetadata = null;
+  try { cachedMetadata = hit?.metadata ? JSON.parse(hit.metadata) : null; } catch {}
+  if (!hit?.video_id && hit && Number(hit.expires_at) > currentTime && !cachedMetadata?.invalidated) {
+    return { videoId: null, status: "not_found" };
+  }
   if (!apiKey) return { videoId: null, status: "unconfigured" };
 
   // Validate legacy cache rows cheaply with videos.list before trusting them.
@@ -818,15 +906,19 @@ async function resolveYouTubeTrackUnshared(title, artist, { expectedDurationSec 
     } else rejected.add(hit.video_id);
   }
 
-  // PRIMARY PATH: search inside the artist's OWN channel. YouTube's
+  // PRIMARY PATH: inspect the mapped artist channel. A verified Topic/official
+  // channel is the strongest identity signal; an unverified Wikidata mapping
+  // still uses normal artist/title scoring so a bad public-data claim cannot
+  // silently become a trusted wrong recording.
   // auto-generated "<Artist> - Topic" channel holds the official audio for their
   // whole catalogue, so a hit here cannot be a reaction video, a cover, or a
   // different act's song. This is what a blind keyword search could never
   // guarantee. Falls through to the global search when the artist has no
   // resolvable channel.
   if (artist) {
-    const channelId = await resolveArtistChannelId(artist, apiKey, fetchImpl);
-    if (channelId) {
+    const channel = await resolveArtistChannel(artist, apiKey, fetchImpl, { allowSearch });
+    if (channel?.channelId) {
+      const channelId = channel.channelId;
       // Cheapest and most accurate: match against the artist's own catalogue,
       // pulled once per artist for ~5 quota units and reused for every song.
       let catalogueComplete = true;
@@ -837,7 +929,7 @@ async function resolveYouTubeTrackUnshared(title, artist, { expectedDurationSec 
         if (picked) {
           const verified = (await youtubeVideos([picked.videoId], apiKey, fetchImpl))[0];
           const assessment = verified
-            ? scoreYouTubeCandidate(verified, { title, artist, expectedDurationSec, trustedChannel: true })
+            ? scoreYouTubeCandidate(verified, { title, artist, expectedDurationSec, trustedChannel: channel.trusted })
             : null;
           if (verified && assessment && !assessment.rejected) {
             const metadata = {
@@ -856,7 +948,7 @@ async function resolveYouTubeTrackUnshared(title, artist, { expectedDurationSec 
       // truncated and might be hiding the song. A complete catalogue that did
       // not contain it means the Topic channel does not have it, so the global
       // search below is the right next step, not a redundant in-channel one.
-      if (!catalogueComplete) try {
+      if (allowSearch && !catalogueComplete) try {
         const inChannel = await youtubeJson("search", {
           part: "snippet",
           type: "video",
@@ -868,7 +960,7 @@ async function resolveYouTubeTrackUnshared(title, artist, { expectedDurationSec 
         }, apiKey, fetchImpl);
         const channelIds = (inChannel?.items || []).map((item) => item?.id?.videoId).filter((id) => id && !rejected.has(id));
         const channelRanked = (await youtubeVideos(channelIds, apiKey, fetchImpl))
-          .map((candidate) => ({ candidate, assessment: scoreYouTubeCandidate(candidate, { title, artist, expectedDurationSec, trustedChannel: true }) }))
+          .map((candidate) => ({ candidate, assessment: scoreYouTubeCandidate(candidate, { title, artist, expectedDurationSec, trustedChannel: channel.trusted }) }))
           .filter(({ assessment }) => !assessment.rejected)
           .sort((a, b) => b.assessment.score - a.assessment.score);
         const bestInChannel = channelRanked[0];
@@ -888,6 +980,8 @@ async function resolveYouTubeTrackUnshared(title, artist, { expectedDurationSec 
       }
     }
   }
+
+  if (!allowSearch) return { videoId: null, status: "search_deferred" };
 
   const query = `${artist ? `${artist} ` : ""}${title} official audio -karaoke -cover -reaction -nightcore`;
   // A wider candidate pool (search quota is flat regardless of maxResults, and
@@ -927,7 +1021,7 @@ async function resolveYouTubeTrackUnshared(title, artist, { expectedDurationSec 
 // gap while the first request is still in flight.
 export function resolveYouTubeTrack(title, artist, options = {}) {
   const durationBucket = Math.round((Number(options.expectedDurationSec) || 0) / 5) * 5;
-  const key = `${youtubeCacheKey(title, artist)}|${durationBucket}`;
+  const key = `${youtubeCacheKey(title, artist)}|${durationBucket}|${options.allowSearch === false ? "catalogue-only" : "interactive"}`;
   const existing = youtubeInflight.get(key);
   if (existing) return existing;
   const pending = resolveYouTubeTrackUnshared(title, artist, options)
@@ -941,14 +1035,15 @@ export function invalidateYouTubeTrack(title, artist, videoId) {
   const row = ytStmts.get.get(key);
   const rejected = rejectedSet(row);
   if (videoId) rejected.add(String(videoId));
-  ytStmts.invalidate.run(JSON.stringify([...rejected].slice(-25)), key);
+  const now = Date.now();
+  ytStmts.invalidate.run(now, now + YOUTUBE_MATCH_TTL_MS, JSON.stringify([...rejected].slice(-25)), key);
   return { ok: true, invalidated: !!row, rejected: rejected.size };
 }
 
 // Song search for the app's search box, so someone who remembers a song but not
 // the act can still find it. Deezer's search is keyless and costs no YouTube
-// quota, which matters because YouTube search is 100 units a call and capped
-// per day; a video is only resolved later, if and when the song is played.
+// quota, which matters because YouTube search has a small separate daily call
+// bucket; a video is only resolved later, if and when the song is played.
 export async function searchDeezerTracks(query, { limit = 12, fetchImpl = fetch } = {}) {
   const q = String(query || "").trim();
   if (q.length < 2) return [];
@@ -987,6 +1082,8 @@ export async function searchDeezerTracks(query, { limit = 12, fetchImpl = fetch 
       title,
       artist,
       id: t.id ? String(t.id) : null,
+      sourceId: t.id ? String(t.id) : null,
+      provider: "deezer",
       album: t?.album?.title || null,
       art: t?.album?.cover_medium || t?.album?.cover || null,
       duration: Number(t.duration) || null,
@@ -1043,10 +1140,15 @@ function buildSongIndex() {
     const art = data.photo || null;
     for (const t of data.topTracks || []) {
       if (!t?.title) continue;
+      const spotifyId = String(t.url || "").match(/open\.spotify\.com\/track\/([A-Za-z0-9]+)/i)?.[1] || null;
+      const sourceId = t.sourceId ? String(t.sourceId) : spotifyId || (t.id ? String(t.id) : null);
+      const provider = t.provider || (spotifyId ? "spotify" : null);
       out.push({
         title: t.title,
         artist: row.name,
         id: t.id ? String(t.id) : null,
+        sourceId,
+        provider,
         album: t.album || null,
         art: t.art || art,
         duration: Number(t.duration) || null,
