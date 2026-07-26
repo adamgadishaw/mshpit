@@ -2522,3 +2522,23 @@ production DB (or just let the daily warmer's phase 0 do it) to populate the liv
 catalogue. The long tail (~56%) that Wikidata lacks still needs search discovery,
 which the warmer handles over time; a Google quota increase remains the lever for
 the tail.
+
+### Confirmed: auto-lookup works at budget=0 like a manual pin (2026-07-25)
+
+Owner asked why a manually-pasted video is accepted even when the search budget
+is spent, but auto-lookup would not "just look it up." Answer: manual entry only
+needs the video id (parse + free oEmbed, no search), while auto-lookup had to
+DISCOVER the channel, which cost a search. The Wikidata work removes that.
+
+Verified the crux in a test (server/resolve.budget.test.mjs): with the daily
+search budget exhausted AND the mock throwing on any `search` URL, a known-
+channel song still resolves to the real video via the catalogue path
+(channels + playlistItems + videos.list — none of which reserve search) and
+returns status `artist_catalogue`. So once a channel is known (free, via
+Wikidata), automatic resolution behaves exactly like a manual pin: no search,
+works at budget=0.
+
+The remaining preview cases are therefore only: (1) artists whose channel is not
+yet known (Wikidata miss + budget spent) — the long tail; (2) a song genuinely
+absent from the channel's uploads or a title-match miss. A manual pin
+(track_overrides) remains the escape hatch for those and is reused for everyone.
