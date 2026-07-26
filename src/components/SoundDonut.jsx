@@ -18,7 +18,12 @@ const arcPath = (cx, cy, rad, start, end) => {
 // tapping a slice highlights it (glow + center label) like the Discover pie.
 export default memo(function SoundDonut({ data = [], size = 180, centerTop, centerSub }) {
   const cx = size / 2, cy = size / 2;
-  const STROKE = 22, R = size / 2 - STROKE / 2 - 6;
+  // Reserve enough margin that an ACTIVE slice — its widened stroke plus the
+  // soft glow — still fits inside the size×size SVG box. SVG does not clip, so
+  // too little margin here is exactly what let a lit slice bleed over the
+  // neighbouring tile. margin = active-stroke/2 + glow.
+  const STROKE = 22, ACTIVE_STROKE = STROKE + 4, GLOW = 6;
+  const R = size / 2 - ACTIVE_STROKE / 2 - GLOW;
   const GAP = 0.06;
   const total = data.reduce((s, d) => s + (d.count || 0), 0) || 1;
   const [active, setActive] = useState(null);
@@ -76,12 +81,15 @@ export default memo(function SoundDonut({ data = [], size = 180, centerTop, cent
               key={s.label + i}
               d={s.d}
               stroke={s.color}
-              strokeWidth={on ? STROKE + 6 : STROKE}
+              strokeWidth={on ? ACTIVE_STROKE : STROKE}
               strokeLinecap="round"
               fill="none"
               opacity={dim ? 0.35 : 1}
               onPress={() => setActive((cur) => (cur === s.label ? null : s.label))}
-              style={web ? { cursor: "pointer", transformOrigin: "50% 50%", transform: on ? "scale(1.08)" : "scale(1)", transition: "transform .32s cubic-bezier(.34,1.56,.64,1), stroke-width .22s, opacity .22s", filter: on ? `drop-shadow(0 0 7px ${s.color})` : "none" } : null}
+              // The lift is stroke width + a contained glow only. The old
+              // scale(1.08) grew the arc geometry outward past the SVG box and
+              // over adjacent content; the reserved margin above holds this in.
+              style={web ? { cursor: "pointer", transition: "stroke-width .22s, opacity .22s, filter .22s", filter: on ? `drop-shadow(0 0 ${GLOW}px ${s.color})` : "none" } : null}
             />
           );
         })}

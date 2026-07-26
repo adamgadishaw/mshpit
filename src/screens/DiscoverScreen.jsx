@@ -33,7 +33,10 @@ const arcPath = (cx, cy, rad, start, end) => {
 };
 const GenreDonut = memo(function GenreDonut({ data, size = 200, centerTop, centerSub, activeGenre, onSlice }) {
   const cx = size / 2, cy = size / 2;
-  const STROKE = 24, R = size / 2 - STROKE / 2 - 6;
+  // Reserve margin for the active slice's widened stroke + glow so a lit segment
+  // never draws past the SVG box onto the surrounding layout (SVG does not clip).
+  const STROKE = 24, ACTIVE_STROKE = STROKE + 4, GLOW = 6;
+  const R = size / 2 - ACTIVE_STROKE / 2 - GLOW;
   const GAP = 0.055; // radians of breathing room between segments
 
   // Gentle scale + fade entrance whenever the dataset changes (region switch).
@@ -92,12 +95,15 @@ const GenreDonut = memo(function GenreDonut({ data, size = 200, centerTop, cente
               key={s.genre + i}
               d={s.d}
               stroke={s.color}
-              strokeWidth={on ? STROKE + 7 : STROKE}
+              strokeWidth={on ? ACTIVE_STROKE : STROKE}
               strokeLinecap="round"
               fill="none"
               opacity={dim ? 0.4 : 1}
               onPress={() => onSlice?.(s.genre)}
-              style={web ? { cursor: "pointer", transformOrigin: "50% 50%", transform: on ? "scale(1.09)" : "scale(1)", transition: "transform .32s cubic-bezier(.34,1.56,.64,1), stroke-width .22s, opacity .22s", filter: on ? `drop-shadow(0 0 7px ${s.color})` : "none" } : null}
+              // Contained lift: stroke width + glow only, no geometry scale. The
+              // old scale(1.09) pushed the lit arc outside the SVG and over the
+              // genre tile beside it — the reserved margin above prevents that.
+              style={web ? { cursor: "pointer", transition: "stroke-width .22s, opacity .22s, filter .22s", filter: on ? `drop-shadow(0 0 ${GLOW}px ${s.color})` : "none" } : null}
             />
           );
         })}
@@ -224,11 +230,13 @@ export default function DiscoverScreen({ onOpenTopRated, onOpenArtist, onOpenNea
       <Text style={styles.title}>Discover</Text>
       <Text style={styles.tagline}>The live-music charts, mapped.</Text>
 
+      {/* One unified stat strip instead of four cramped bordered boxes: a single
+          card with hairline dividers, matching the You tab's hero stats so the
+          two screens read as one design. */}
       <View style={styles.tiles}>
-        {STAT_TILES.map((t) => (
-          <View key={t.k} style={styles.tile}>
-            <View style={[styles.tileIcon, { borderColor: t.tint }]}><Icon name={t.icon} size={15} color={t.tint} /></View>
-            <Text style={styles.tileNum}>{(t.val || 0).toLocaleString()}</Text>
+        {STAT_TILES.map((t, i) => (
+          <View key={t.k} style={[styles.tile, i > 0 && styles.tileDivider]}>
+            <Text style={[styles.tileNum, { color: t.tint }]}>{(t.val || 0).toLocaleString()}</Text>
             <Text style={styles.tileLabel}>{t.label}</Text>
           </View>
         ))}
@@ -429,11 +437,11 @@ const styles = StyleSheet.create({
   title: { color: colors.text, fontSize: 30, fontWeight: "900", letterSpacing: -0.6, marginTop: 4 },
   tagline: { color: colors.textDim, fontSize: 13.5, marginTop: 3 },
 
-  tiles: { flexDirection: "row", gap: 10, marginTop: 18 },
-  tile: { flex: 1, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, paddingVertical: 14, paddingHorizontal: 12, ...shadow.card },
-  tileIcon: { width: 28, height: 28, borderRadius: 14, borderWidth: 1, alignItems: "center", justifyContent: "center", marginBottom: 10 },
-  tileNum: { color: colors.text, fontSize: 22, fontWeight: "900", fontFamily: mono, letterSpacing: -0.5 },
-  tileLabel: { color: colors.textFaint, fontSize: 9.5, letterSpacing: 1.2, fontWeight: "800", marginTop: 3 },
+  tiles: { flexDirection: "row", marginTop: 18, backgroundColor: colors.bgElev, borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: colors.lineSoft, paddingVertical: 14, ...shadow.card },
+  tile: { flex: 1, alignItems: "center", justifyContent: "center", paddingHorizontal: 4 },
+  tileDivider: { borderLeftWidth: 1, borderLeftColor: colors.lineSoft },
+  tileNum: { fontSize: 21, fontWeight: "900", fontFamily: mono, letterSpacing: -0.5 },
+  tileLabel: { color: colors.textFaint, fontSize: 9.5, letterSpacing: 1.2, fontWeight: "800", marginTop: 4 },
 
   panel: { backgroundColor: colors.surface, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.lineSoft, padding: 18, marginTop: 16, ...shadow.card },
   panelHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 8 },
