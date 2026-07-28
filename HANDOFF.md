@@ -2752,3 +2752,31 @@ The remaining preview cases are therefore only: (1) artists whose channel is not
 yet known (Wikidata miss + budget spent) — the long tail; (2) a song genuinely
 absent from the channel's uploads or a title-match miss. A manual pin
 (track_overrides) remains the escape hatch for those and is reused for everyone.
+
+### Production outage triage (2026-07-28, Claude) — it is Render-side, not code
+
+Independently verified the 502 rather than trusting the prior conclusion:
+- Both `www.mshpit.com/api/health` AND the Render origin `mshpit.onrender.com`
+  return 502 in ~0.2s. The origin header is `x-render-routing: dynamic-paid-error`,
+  which is Render saying the paid service has NO healthy instance (failed build,
+  crashed/OOM instance failing health checks, or a billing/plan problem). This is
+  not Cloudflare and not a code response.
+- The committed code is healthy: it boots to health 200 in production mode on
+  BOTH a fresh disk and the existing migrated DB. All additive migrations are
+  `try { db.exec } catch {}`; the two transactional data migrations are marker-
+  guarded and already ran. The cache warmer's crash path is contained
+  (`runCacheWarmJobSafely` + `void`), and index.js has global
+  uncaughtException/unhandledRejection handlers that keep serving. `npm ci
+  --dry-run` is "up to date" (lockfile in sync) and `npm run build:web` exports.
+
+Conclusion: the code cannot be the cause of a sustained origin 502, and it
+cannot be fixed from code. OWNER ACTION in the Render dashboard for the `mshpit`
+service: (1) Events tab — did the latest deploy build SUCCEED or fail? (2) Logs —
+is the instance OOM-killed on the 512MB starter plan or failing the
+`/api/health` check? (3) Billing — is the paid plan active? A manual redeploy
+(Clear build cache + Deploy) is the first thing to try; if the build fails there,
+paste the build log.
+
+Also fixed this pass: the two mojibake strings the audit flagged —
+`UP NEXT Â·` → `UP NEXT ·` in PlayerBar, and `Saving your spotâ€¦` → `Saving your
+spot…` in LoungeScreen.

@@ -867,7 +867,7 @@ export default function PlayerBar({
             </View>
 
             <ScrollView style={styles.mobileQueueScroll} contentContainerStyle={styles.mobileQueueContent} showsVerticalScrollIndicator={false}>
-              {upNext.length > 0 && <Text style={styles.groupLabel}>UP NEXT Â· {upNext.length}</Text>}
+              {upNext.length > 0 && <Text style={styles.groupLabel}>UP NEXT · {upNext.length}</Text>}
               {upNext.map((track, queueIndex) => {
                 const realIndex = index + 1 + queueIndex;
                 return (

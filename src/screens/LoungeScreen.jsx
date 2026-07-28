@@ -82,7 +82,7 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
           </Text>
           <Text style={styles.gateMeta}>{currentGateMeta?.messageCount ?? messages.length} messages · {currentGateMeta?.attendeeCount ?? attendees.length} going</Text>
           <Pressable style={[styles.enterBtn, (entering || !session) && { opacity: 0.65 }]} onPress={enter} disabled={entering || !session}>
-            <Text style={styles.enterTxt}>{!session ? "Log in to enter the lounge" : entering ? "Saving your spotâ€¦" : "I'm going - enter the lounge"}</Text>
+            <Text style={styles.enterTxt}>{!session ? "Log in to enter the lounge" : entering ? "Saving your spot…" : "I'm going - enter the lounge"}</Text>
           </Pressable>
           <Text style={styles.gateNote}>Be decent. Mods can remove anyone.</Text>
         </View>
