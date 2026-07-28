@@ -327,10 +327,29 @@ const server = createServer(async (req, res) => {
   }
 });
 
-// Unknown process-level failures are not safe to recover from. Log once, drain
-// active requests, close SQLite, and let Render restart a clean process.
-process.on("uncaughtException", (e) => { console.error("[pit] uncaughtException:", e); shutdown(1); });
-process.on("unhandledRejection", (e) => { console.error("[pit] unhandledRejection:", e); shutdown(1); });
+// Process-level errors are LOGGED, not fatal. The previous handler called
+// shutdown(1) on ANY unhandled rejection or exception, which turned a single
+// stray background rejection — a provider fetch that rejected without a catch, a
+// scheduled job, a live Wikidata lookup off a play request — into a full-site
+// outage: the process exited, Render restarted it, the same background promise
+// rejected again, and the origin sat in a 502 crash loop. A public web server
+// must keep serving requests when a background promise fails; the per-request
+// router already isolates and reports errors for the request that caused them.
+//
+// A genuine STORM of exceptions (a wedged process throwing on every tick) is
+// different from a transient one, so only a sustained burst triggers a graceful
+// restart — never a single event.
+let exceptionBurst = 0;
+setInterval(() => { exceptionBurst = 0; }, 60_000).unref();
+const notePotentialCrashLoop = () => {
+  exceptionBurst += 1;
+  if (exceptionBurst >= 25) {
+    console.error(`[pit] ${exceptionBurst} process errors in under a minute — restarting a clean process.`);
+    shutdown(1);
+  }
+};
+process.on("uncaughtException", (e) => { console.error("[pit] uncaughtException (kept serving):", e); notePotentialCrashLoop(); });
+process.on("unhandledRejection", (e) => { console.error("[pit] unhandledRejection (kept serving):", e); notePotentialCrashLoop(); });
 
 // hourly session sweep
 setInterval(sweepExpiredSessions, 60 * 60 * 1000).unref();
