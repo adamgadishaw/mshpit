@@ -27,6 +27,31 @@ import { backfillChannelsFromWikidata } from "./wikidataChannels.js";
 
 const PROGRESS_KEY = "warm:youtube:v1";
 const DAILY_MARKER_KEY = "warm:youtube:lastRun";
+const DISABLED_ENV_VALUES = new Set(["0", "false", "no", "off", "disabled"]);
+
+// Emergency production kill switch. Missing/blank values intentionally keep the
+// existing behavior, so operators only disable the scheduler by setting an
+// explicit false-like CACHE_WARM_ENABLED value.
+export function isCacheWarmSchedulerEnabled(env = process.env) {
+  const value = String(env?.CACHE_WARM_ENABLED ?? "").trim().toLowerCase();
+  return !value || !DISABLED_ENV_VALUES.has(value);
+}
+
+// Timer callbacks do not observe returned promises. Keep this wrapper as the
+// single boundary around every scheduled run so a synchronous throw, rejected
+// promise, or even a broken error reporter can never become an unhandled
+// rejection that takes down the web process.
+export async function runCacheWarmJobSafely(job, report = (error) => {
+  console.error("[pit] scheduled catalogue enrichment failed safely:", error);
+}) {
+  try {
+    await job();
+    return true;
+  } catch (error) {
+    try { report(error); } catch {}
+    return false;
+  }
+}
 
 // Rough quota accounting that matches what the resolver actually spends: the
 // first song for an artist pulls their channel + uploads catalogue, later songs
@@ -214,6 +239,10 @@ export function startCacheWarmScheduler({
   budget = Number(process.env.YOUTUBE_WARM_BUDGET) || 1500,
   intervalMs = 24 * 60 * 60 * 1000,
 } = {}) {
+  if (!isCacheWarmSchedulerEnabled()) {
+    console.log("[pit] catalogue enrichment disabled by CACHE_WARM_ENABLED.");
+    return;
+  }
   const youtubeConfigured = !!process.env.YOUTUBE_API_KEY;
   console.log(youtubeConfigured
     ? `[pit] catalogue enrichment on (daily, ~${budget} general quota units; search disabled).`
@@ -244,8 +273,12 @@ export function startCacheWarmScheduler({
     markRanToday();
   };
 
+  const triggerRun = () => {
+    void runCacheWarmJobSafely(runOnce);
+  };
+
   // A minute after boot, not immediately: let the server settle and serve
   // traffic first. This job is never in a hurry.
-  setTimeout(runOnce, 60 * 1000).unref();
-  setInterval(runOnce, intervalMs).unref();
+  setTimeout(triggerRun, 60 * 1000).unref();
+  setInterval(triggerRun, intervalMs).unref();
 }

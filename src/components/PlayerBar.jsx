@@ -832,10 +832,13 @@ export default function PlayerBar({
         </View>
       )}
 
-      <Modal visible={compactMobile && panelOpen} transparent animationType="slide" onRequestClose={() => setOpen(false)} statusBarTranslucent>
-        <View style={styles.mobileSheetBackdrop}>
-          <Pressable style={StyleSheet.absoluteFillObject} onPress={() => setOpen(false)} accessibilityRole="button" accessibilityLabel="Close player controls" />
-          <View style={styles.mobileSheet}>
+      {/* The queue can hold 60 tracks. Do not even construct its rows while the
+          phone sheet is closed; playback position updates arrive twice a second. */}
+      {compactMobile && panelOpen && (
+        <Modal visible transparent animationType="slide" onRequestClose={() => setOpen(false)} statusBarTranslucent>
+          <View style={styles.mobileSheetBackdrop}>
+            <Pressable style={StyleSheet.absoluteFillObject} onPress={() => setOpen(false)} accessibilityRole="button" accessibilityLabel="Close player controls" />
+            <View style={styles.mobileSheet}>
             <View style={styles.mobileSheetHandle} />
             <View style={styles.mobileSheetHead}>
               <Text style={styles.mobileSheetKicker}>NOW PLAYING</Text>
@@ -886,9 +889,10 @@ export default function PlayerBar({
                 </Pressable>
               ))}
             </ScrollView>
+            </View>
           </View>
-        </View>
-      </Modal>
+        </Modal>
+      )}
     </View>
   );
 }

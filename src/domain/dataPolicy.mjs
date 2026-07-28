@@ -3,6 +3,7 @@
 
 const DEMO_USER_IDS = new Set(["u_demo", "u_artist", "u_mara", "u_devon", "u_priya"]);
 const DEMO_FEED_IDS = new Set(["log_1", "log_2", "log_3"]);
+export const PERSISTED_FEED_LIMIT = 80;
 
 const isObject = (value) => value != null && typeof value === "object" && !Array.isArray(value);
 const asArray = (value) => (Array.isArray(value) ? value : []);
@@ -71,7 +72,7 @@ export function sanitizePersistedStoreValue(key, value, demoEnabled = false) {
     case "pit.users":
       return withoutDemoUsers(value);
     case "pit.feed":
-      return withoutIds(value, DEMO_FEED_IDS);
+      return withoutIds(value, DEMO_FEED_IDS).slice(0, PERSISTED_FEED_LIMIT);
     case "pit.tourDates":
       return sanitizeTourDates(value, false);
     case "pit.requests":

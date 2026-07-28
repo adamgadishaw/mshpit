@@ -192,8 +192,17 @@ function cleanPostRatingDims(value) {
   return out;
 }
 
-const postRow = db.prepare(`INSERT INTO posts (id,user_id,artist,venue,city,date,overall,band,room,dims,review,photos,photos_public,setlist,tour,tags,kind,song,playlist,artist_key,artist_mbid,venue_key,created_at)
-                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+const postRow = db.prepare(`INSERT INTO posts (id,user_id,artist,venue,city,date,overall,band,room,dims,review,photos,photos_public,setlist,tour,tags,kind,song,playlist,artist_key,artist_mbid,venue_key,client_mutation_id,created_at)
+                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+const postByClientMutation = db.prepare("SELECT id FROM posts WHERE user_id=? AND client_mutation_id=? LIMIT 1");
+
+function clientMutationId(value) {
+  if (value == null || value === "") return null;
+  if (typeof value !== "string") throw new ApiError(400, "That post retry token is invalid.", "VALIDATION_FAILED");
+  const id = value.trim();
+  if (!/^[A-Za-z0-9._:-]{8,120}$/.test(id)) throw new ApiError(400, "That post retry token is invalid.", "VALIDATION_FAILED");
+  return id;
+}
 
 // A review binds to a catalog entity, not to whatever the user typed. The client
 // sends the key it picked from the suggestion list; the server only accepts it
@@ -1453,6 +1462,9 @@ export const routes = {
 
   "POST /api/posts": (ctx) => {
     const u = requireUser(ctx);
+    const mutationId = clientMutationId(ctx.body?.clientMutationId);
+    const existing = mutationId ? postByClientMutation.get(u.id, mutationId) : null;
+    if (existing) return { id: existing.id, post: postJson(feedPostById.get(existing.id), u.id), duplicate: true };
     limit(ctx, "post", 20, 60 * 60 * 1000);
 
     // A plain status/update post ("post whatever", not a concert review): just
@@ -1474,7 +1486,7 @@ export const routes = {
       const id = uid("p");
       postRow.run(id, u.id, "", "", "", "", 0, null, null,
         "{}", text, JSON.stringify(photos), v.photosPublic ?? 1, "[]", null,
-        "[]", "status", v.song ? JSON.stringify(v.song) : null, playlist ? JSON.stringify(playlist) : null, null, null, null, now());
+        "[]", "status", v.song ? JSON.stringify(v.song) : null, playlist ? JSON.stringify(playlist) : null, null, null, null, mutationId, now());
       return { id, post: postJson(feedPostById.get(id), u.id) };
     }
 
@@ -1501,7 +1513,7 @@ export const routes = {
     postRow.run(id, u.id, v.artist, v.venue, v.city || "", v.date || "", v.overall, v.band ?? null, v.room ?? null,
       JSON.stringify(v.dims || {}), v.review || "", JSON.stringify(v.photos || []), v.photosPublic ?? 0, JSON.stringify(v.setlist || []), v.tour || null,
       JSON.stringify(v.tags || []), "review", v.song ? JSON.stringify(v.song) : null, null,
-      binding.artist_key, binding.artist_mbid, venueBinding(v.venue), now());
+      binding.artist_key, binding.artist_mbid, venueBinding(v.venue), mutationId, now());
     return { id, post: postJson(feedPostById.get(id), u.id) };
   },
 
@@ -1518,7 +1530,7 @@ export const routes = {
 
     const body = ctx.body && typeof ctx.body === "object" && !Array.isArray(ctx.body) ? ctx.body : {};
     const has = (key) => Object.prototype.hasOwnProperty.call(body, key);
-    const editable = ["artist", "venue", "city", "date", "overall", "band", "room", "dims", "review", "photos", "photosPublic", "setlist", "tour", "tags", "song", "playlistId"];
+    const editable = ["artist", "artistKey", "venue", "city", "date", "overall", "band", "room", "dims", "review", "photos", "photosPublic", "setlist", "tour", "tags", "song", "playlistId"];
     if (!editable.some(has)) throw new ApiError(400, "Make a change before saving this post.", "VALIDATION_FAILED");
 
     // Optimistic concurrency prevents two devices (or an old open edit sheet)

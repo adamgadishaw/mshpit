@@ -23,30 +23,32 @@ function addUser(id, role = "fan") {
 test("post creation returns the canonical post and persists detailed ratings", () => {
   const user = addUser("postcreator");
   const create = routes["POST /api/posts"];
-  const result = create({
-    user,
-    ip: "post-create",
-    body: {
-      artist: "Artist",
-      venue: "Venue",
-      city: "Toronto",
-      date: "2026 · 07 · 15",
-      overall: 4.5,
-      band: 5,
-      room: 4,
-      dims: { performance: 5, setlist: 4.5, sound: 4, venue: 4, crowd: 5, experience: 4.5 },
-      review: "A real night",
-      photos: [],
-      photosPublic: false,
-      setlist: ["Opener"],
-    },
-  });
+  const body = {
+    clientMutationId: "post_create_retry_001",
+    artist: "Artist",
+    venue: "Venue",
+    city: "Toronto",
+    date: "2026 · 07 · 15",
+    overall: 4.5,
+    band: 5,
+    room: 4,
+    dims: { performance: 5, setlist: 4.5, sound: 4, venue: 4, crowd: 5, experience: 4.5 },
+    review: "A real night",
+    photos: [],
+    photosPublic: false,
+    setlist: ["Opener"],
+  };
+  const result = create({ user, ip: "post-create", body });
   assert.equal(result.id, result.post.id);
   assert.equal(result.post.userId, user.id);
   assert.equal(result.post.dims.crowd, 5);
   assert.deepEqual(result.post.setlist, ["Opener"]);
   assert.equal(result.post.photosPublic, false);
   assert.equal(result.post.version, result.post.createdAt);
+  const retry = create({ user, ip: "post-create-retry", body: { ...body, review: "a retry must not duplicate" } });
+  assert.equal(retry.id, result.id);
+  assert.equal(retry.duplicate, true);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM posts WHERE user_id=? AND client_mutation_id=?").get(user.id, body.clientMutationId).c, 1);
   assert.throws(
     () => create({ user, ip: "post-create-invalid", body: { artist: "Artist", venue: "Venue", overall: 4, photosPublic: "false" } }),
     (error) => error instanceof ApiError && error.status === 400
@@ -337,6 +339,24 @@ test("editing re-resolves the binding instead of leaving it on the old artist", 
   assert.equal(renamed.post.artist, "A Different Band");
   assert.equal(renamed.post.artistKey, null);
   assert.equal(renamed.post.venueKey, "room a");
+
+  db.prepare("INSERT OR REPLACE INTO artists (norm,name,mbid,rank_score,source,created_at,updated_at) VALUES (?,?,?,?,?,?,?)")
+    .run("j. cole", "J. Cole", "875203e1-8e58-4b86-8dcb-7190faf411c5", 100, "test", 1, 1);
+  const rebound = edit({
+    user, ip: "rebind-j-cole", params: { id: made.id },
+    body: {
+      artist: "J. Cole",
+      artistKey: "j. cole",
+      venue: "Scotiabank Arena",
+      city: "Toronto",
+      date: "2026-07-27",
+      overall: 5,
+      version: renamed.post.version,
+    },
+  });
+  assert.equal(rebound.post.artist, "J. Cole");
+  assert.equal(rebound.post.artistKey, "j. cole");
+  assert.equal(rebound.post.artistMbid, "875203e1-8e58-4b86-8dcb-7190faf411c5");
 });
 
 test("post delete is author-only, soft, and idempotent", () => {

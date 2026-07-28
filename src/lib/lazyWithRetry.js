@@ -55,5 +55,15 @@ export async function loadChunk(factory, {
 }
 
 export function lazyWithRetry(factory, name = "chunk") {
-  return lazy(() => loadChunk(factory, { name }));
+  let pending = null;
+  const load = () => {
+    if (!pending) pending = loadChunk(factory, { name }).catch((error) => { pending = null; throw error; });
+    return pending;
+  };
+  const component = lazy(load);
+  // Critical actions (notably the phone composer) can warm their tiny chunk
+  // after the first screen settles, instead of making the first tap wait on a
+  // cellular round trip. Rejections stay owned by the caller.
+  component.preload = load;
+  return component;
 }

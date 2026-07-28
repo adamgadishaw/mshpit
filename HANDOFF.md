@@ -2,9 +2,103 @@
 
 > **Living doc.** Whoever works on this next: read this first, and UPDATE it before you end a session (move things between "Done" and "Backlog", note anything running). Point a fresh Claude Code chat at this file to get up to speed without re-explaining.
 >
-> Last updated: **2026-07-26** (Alpha backlog and provider-policy reconciliation)
+> Last updated: **2026-07-28** (mobile posting and production recovery)
 
 > **Working agreement (owner's standing instruction, updated 2026-07-22):** ALWAYS `git commit`, **merge to `master`**, and `git push` after a verified batch. Do not stop to ask whether to merge; the owner does not want to be asked. A review branch is still the right place to build a large or risky change, but finishing the work means landing it on `master`. The one hard gate is `npm run check` (tests + syntax + web export) passing on the branch **and** again on `master` after the merge, because a master push auto-deploys and briefly restarts Render. If the gate fails, report it instead of pushing.
+
+## MOBILE POSTING / PRODUCTION RECOVERY (2026-07-28)
+
+The owner reported that the phone site became laggy and effectively unusable
+while trying to publish a J. Cole concert review. The investigation reproduced
+the complete phone composer locally and also found a separate production
+availability incident.
+
+### What was observed
+
+- `www.mshpit.com` and the direct `mshpit.onrender.com` origin repeatedly
+  returned `502` before this release. At 19:55 UTC the origin included
+  `x-render-routing: dynamic-paid-error`, so Cloudflare was relaying an origin
+  failure rather than causing it. One earlier probe briefly returned `200`, then
+  the origin stopped responding again.
+- The strongest code-level crash-loop candidate was scheduled work: the cache
+  warmer and tour refresher passed async functions directly to timers. A throw
+  or rejected promise could escape to the server's fatal `unhandledRejection`
+  handler. This is a supported mitigation hypothesis, **not a confirmed root
+  cause** until the Render logs and disk/resource charts are inspected.
+- On phones, the closed player still constructed as many as 60 queue rows every
+  half-second playback tick. Feed cards mounted in batches of eight, feed polling
+  fetched 50 rows every 12 seconds, and every feed change synchronously rewrote
+  an unbounded `localStorage` payload.
+- Feed photos could begin with full camera originals. Web uploads also sent
+  multi-megabyte phone photos without resizing, while the composer showed no
+  per-file progress, cancellation, or partial-success state.
+- The first composer tap paid a lazy-chunk round trip; slow artist searches could
+  arrive out of order. Selected `artistKey` identity was lost at create/edit
+  boundaries, the date picker could replace a historical edit with today's date
+  on mount, and a lost successful POST response could create a duplicate review
+  on retry.
+- Review drafts were device-global instead of account-scoped. The five-star
+  control used ten narrow half-star targets; the phone acceptance pass exposed a
+  coordinate bug that selected `0.5` regardless of where an automated tap landed.
+
+### Changes in this recovery batch
+
+- Scheduled cache/tour jobs now cross a tested rejection boundary and have
+  default-on emergency switches: `CACHE_WARM_ENABLED` and
+  `TOURDATE_REFRESH_ENABLED` accept `0`, `false`, `no`, `off`, or `disabled`.
+- The compact phone player constructs its modal/queue only while open. Feed
+  virtualization now uses a three-card initial window and two-card batches on
+  phones. Server feed pages are 20 rows, quiet refresh is 45 seconds, and only
+  the newest 80 posts are persisted locally.
+- Feed images request a 1200px derivative. Large JPEG/PNG/WebP uploads on web are
+  resized to a 2048px maximum edge and re-encoded to WebP when that actually
+  saves bytes. GIF/video behavior is unchanged. Uploads are sequential, visible,
+  cancellable, and retain each file that already completed.
+- The authenticated shell preloads the composer after 1.2 seconds and renders a
+  real loading state for any lazy screen. Artist lookup now cancels stale work.
+- Create/edit payloads preserve the selected artist key. POSTs carry a stable
+  per-composer mutation token; the database adds nullable
+  `posts.client_mutation_id` plus a per-user unique partial index, so retrying a
+  committed request returns the original post.
+- The date picker is controlled by the stored ISO date and emits only after an
+  explicit selection. Draft reads/writes/deletes are account-scoped. Post
+  analytics records only successful server writes. The rating control is one
+  44px adjustable target with half-star pointer and accessibility actions.
+- Expo, Metro runtime, Image Picker, and Sharing were moved to the exact current
+  SDK 56 patch versions. Compatible `brace-expansion` and `shell-quote` security
+  updates were applied; the remaining audit result is 11 moderate advisories in
+  Expo's `xcode -> uuid` tooling chain. Do not use the forced fix because it
+  proposes an incompatible Expo/Sharing downgrade.
+
+### Verification and release requirements
+
+- Automated gate before release: 168 tests, syntax checks for 64 Node files, and
+  an Expo SDK 56 production web export. Run `npm run check` once more immediately
+  before the commit/push.
+- A local 390x844 browser pass created a real account, linked J. Cole and
+  Scotiabank Arena, set all six ratings, published the review, edited its date to
+  `2025-06-15`, reopened it, and preserved that date and both canonical keys.
+  There were no browser warnings/errors. SQLite contained exactly one row with
+  a non-null mutation token.
+- The schema/index migration is automatic on process start. No Blueprint change
+  is required. After pushing `master`, monitor health beyond the cache warmer's
+  60-second startup delay; a brief deploy restart alone is not sufficient proof.
+- If production does not remain healthy, inspect Render around 19:28-19:33 UTC
+  and 19:55 UTC for SQLite full/I/O/lock/corruption errors, OOM/SIGKILL,
+  suspension/billing, health-check restarts, and `/data` disk saturation. The
+  switches above can isolate scheduled work without another code change.
+
+### Remaining performance/operations risk
+
+- The startup bundle is still about 4.4 MB uncompressed and the broad store
+  context still rerenders unrelated consumers. This batch removes measured hot
+  work; it does not replace the planned store/catalog split.
+- The 1200px feed proxy is an interim derivative path. Production still needs
+  owned CDN derivatives, upload finalization/byte sniffing, metadata stripping,
+  moderation, and lifecycle deletion.
+- Run one real R2 camera-photo/video upload on physical iOS and Android after the
+  service is stable. Long term, move scheduled enrichment/tour work out of the
+  web process and SQLite to durable workers and managed data infrastructure.
 
 ## CURRENT ALPHA HANDOFF (2026-07-26, read this before historical entries)
 

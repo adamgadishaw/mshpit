@@ -5,6 +5,7 @@ import { demoDataEnabled } from "../config/runtime.mjs";
 import {
   calendarDateKey,
   isUpcomingEventDate,
+  PERSISTED_FEED_LIMIT,
   sanitizePersistedStoreValue,
   sanitizeTourDates,
 } from "./dataPolicy.mjs";
@@ -46,6 +47,13 @@ test("persisted demo cleanup keeps server-created records", () => {
       real: [{ id: "msg_real", text: "keep too" }],
     },
   );
+});
+
+test("persisted feed cache stays bounded for phone startup and localStorage writes", () => {
+  const rows = Array.from({ length: PERSISTED_FEED_LIMIT + 25 }, (_, index) => ({ id: `p_${index}` }));
+  const saved = sanitizePersistedStoreValue("pit.feed", rows);
+  assert.equal(saved.length, PERSISTED_FEED_LIMIT);
+  assert.equal(saved[0].id, "p_0");
 });
 
 test("calendar filtering includes today and excludes past or invalid dates", () => {

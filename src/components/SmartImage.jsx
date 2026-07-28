@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { View, Text, Image, StyleSheet, Pressable } from "react-native";
 import { colors, mono } from "../theme";
 import Icon from "./Icon";
@@ -12,10 +12,13 @@ import { proxied, isHttp, displaySrc, isVideoUrl } from "../lib/img";
 // Clip URLs (post media mixes photos and videos) render a play tile instead of
 // a broken image, in every grid/wall/strip that uses this component; tapping
 // still opens the viewer, which actually plays them.
-export default function SmartImage({ uri, style, contain = true, onPress }) {
-  const [stage, setStage] = useState(0); // 0 direct (HEIC pre-transcoded), 1 proxy, 2 dead
+export default function SmartImage({ uri, style, contain = true, onPress, previewWidth = 0 }) {
+  const [stage, setStage] = useState(0); // 0 preferred source, 1 fallback, 2 dead
+  useEffect(() => setStage(0), [uri, previewWidth]);
   const fail = () => setStage((s) => s + 1);
-  const src = stage === 1 && isHttp(uri) ? proxied(uri) : displaySrc(uri);
+  const original = displaySrc(uri);
+  const preview = previewWidth > 0 && isHttp(uri) ? proxied(uri, previewWidth) : original;
+  const src = stage === 1 ? (preview === original && isHttp(uri) ? proxied(uri) : original) : preview;
   if (isVideoUrl(uri)) {
     const clip = (
       <View style={[StyleSheet.absoluteFill, styles.clipTile]}>

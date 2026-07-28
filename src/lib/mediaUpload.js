@@ -1,8 +1,9 @@
 import { Platform } from "react-native";
 import { fetch as expoFetch } from "expo/fetch";
-import { File } from "expo-file-system";
+import { File as ExpoFile } from "expo-file-system";
 import { api } from "./api";
 import { AppError, captureAppError } from "./diagnostics";
+import { webImageOptimizationPlan } from "./mediaImagePolicy.mjs";
 
 const UPLOAD_TIMEOUT_MS = 45_000;
 const MIME_BY_EXTENSION = Object.freeze({
@@ -48,7 +49,7 @@ function extensionOf(value) {
 }
 
 function contentTypeFor(asset, body) {
-  const declared = String(asset?.mimeType || body?.type || "").split(";", 1)[0].trim().toLowerCase();
+  const declared = String(body?.type || asset?.mimeType || "").split(";", 1)[0].trim().toLowerCase();
   if (EXTENSION_BY_MIME[declared]) return declared;
   return MIME_BY_EXTENSION[extensionOf(asset?.fileName || asset?.uri)] || "";
 }
@@ -57,17 +58,50 @@ function safeFileName(asset, contentType) {
   const extension = EXTENSION_BY_MIME[contentType] || "jpg";
   const provided = String(asset?.fileName || "").split(/[\\/]/).pop()
     .replace(/[\u0000-\u001f\u007f]/g, " ").trim();
-  const withExtension = extensionOf(provided) ? provided : `${provided || "pit-photo"}.${extension}`;
+  const stem = provided.replace(/\.[a-z0-9]+$/i, "") || "pit-photo";
+  const withExtension = `${stem}.${extension}`;
   return withExtension.slice(0, 180);
+}
+
+async function optimizedWebImage(file) {
+  const type = String(file?.type || "").toLowerCase();
+  if (!file || !type.startsWith("image/") || typeof document === "undefined" || typeof createImageBitmap !== "function") return file;
+
+  let bitmap;
+  try {
+    try { bitmap = await createImageBitmap(file, { imageOrientation: "from-image" }); }
+    catch { bitmap = await createImageBitmap(file); }
+    const plan = webImageOptimizationPlan({ type, size: file.size, width: bitmap.width, height: bitmap.height });
+    if (!plan.optimize) return file;
+
+    const canvas = document.createElement("canvas");
+    canvas.width = plan.width;
+    canvas.height = plan.height;
+    const context = canvas.getContext("2d", { alpha: true });
+    if (!context) return file;
+    context.drawImage(bitmap, 0, 0, plan.width, plan.height);
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, plan.outputType, plan.quality));
+    if (!blob || !blob.size || blob.size >= file.size) return file;
+    const stem = String(file.name || "pit-photo").replace(/\.[a-z0-9]+$/i, "");
+    return typeof globalThis.File === "function"
+      ? new globalThis.File([blob], `${stem}.webp`, { type: blob.type || plan.outputType, lastModified: file.lastModified || Date.now() })
+      : blob;
+  } catch {
+    // Optimization is an acceleration, never a reason to reject someone's
+    // photo. Older Safari versions fall back to the original upload here.
+    return file;
+  } finally {
+    bitmap?.close?.();
+  }
 }
 
 async function bodyFor(asset) {
   // SDK 56 exposes the browser's original File on web. On native, pass an Expo
   // File directly to expo/fetch: this streams the local URI and avoids expanding
   // a large clip into a JS Blob (the source of intermittent mobile upload stalls).
-  if (Platform.OS === "web" && asset?.file && typeof asset.file.size === "number") return asset.file;
+  if (Platform.OS === "web" && asset?.file && typeof asset.file.size === "number") return optimizedWebImage(asset.file);
   if (!asset?.uri) throw new Error("The selected media did not include a readable file.");
-  const file = new File(asset.uri);
+  const file = new ExpoFile(asset.uri);
   if (!Number.isFinite(Number(file.size)) || Number(file.size) < 1) {
     throw new Error("The selected media could not be read from this device.");
   }
@@ -161,6 +195,9 @@ export async function uploadMediaAsset(asset, purpose, { signal, timeoutMs } = {
     if (!response.ok) throw new Error(`Media storage rejected the upload (${response.status}).`);
     return ticket.publicUrl;
   } catch (error) {
+    // Closing the composer or tapping Cancel is intentional lifecycle cleanup,
+    // not an upload failure that should create a diagnostic/toast.
+    if (signal?.aborted && !timedOut) throw error;
     throw capturedUploadError(error, { timedOut, context });
   } finally {
     clearTimeout(timeout);

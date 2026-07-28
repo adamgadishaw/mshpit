@@ -12,7 +12,9 @@ function Tile({ uri, index, onOpen, style, more = 0 }) {
       accessibilityRole={onOpen ? "button" : undefined}
       accessibilityLabel={`${video ? "Play video" : "Open photo"}${more ? `, ${more} more items` : ""}`}
     >
-      <SmartImage uri={uri} style={StyleSheet.absoluteFill} contain={false} />
+      {/* Feed cards need a screen-sized derivative, not a 12 MP original. The
+          full durable object remains untouched for PhotoViewer. */}
+      <SmartImage uri={uri} style={StyleSheet.absoluteFill} contain={false} previewWidth={1200} />
       {!!more && (
         <View style={styles.moreScrim} pointerEvents="none">
           <Text style={styles.moreText}>+{more}</Text>

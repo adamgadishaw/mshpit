@@ -75,6 +75,7 @@ CREATE TABLE IF NOT EXISTS posts (
   photos        TEXT NOT NULL DEFAULT '[]',
   photos_public INTEGER NOT NULL DEFAULT 0,
   setlist       TEXT NOT NULL DEFAULT '[]',
+  client_mutation_id TEXT,
   removed       INTEGER NOT NULL DEFAULT 0,
   updated_at    INTEGER,
   created_at    INTEGER NOT NULL
@@ -510,7 +511,12 @@ for (const stmt of [
   "ALTER TABLE posts ADD COLUMN artist_key TEXT",
   "ALTER TABLE posts ADD COLUMN artist_mbid TEXT",
   "ALTER TABLE posts ADD COLUMN venue_key TEXT",
+  // Stable per-composer token. If a write commits but its response is lost,
+  // retrying returns that row instead of publishing a duplicate review.
+  "ALTER TABLE posts ADD COLUMN client_mutation_id TEXT",
 ]) { try { db.exec(stmt); } catch {} }
+
+db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_posts_client_mutation ON posts(user_id, client_mutation_id) WHERE client_mutation_id IS NOT NULL");
 
 // Analytics never needs a network address once request-level rate limiting is
 // complete. Purge the legacy raw-IP column once and keep new rows null.

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { View, Text, StyleSheet, FlatList, Pressable } from "react-native";
+import { View, Text, StyleSheet, FlatList, Pressable, useWindowDimensions } from "react-native";
 import { colors, mono, radius, shadow } from "../theme";
 import { load, save } from "../lib/persist";
 import TicketStub from "../components/TicketStub";
@@ -8,6 +8,8 @@ import Icon from "../components/Icon";
 const PAGE = 8; // load the feed in pages, like the big apps - never all at once
 
 export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, homeCity, unread = 0, notifUnread = 0, newUser = false, hideHeaderActions = false, onLoadMore, hasMore = false, loadingMore = false, onOpen, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onOpenClips, onReport, onEdit, onOpenPhotos, onPlay, onLogShow, onEditProfile }) {
+  const { width } = useWindowDimensions();
+  const phone = width < 700;
   const [filter, setFilter] = useState("everyone"); // following | local | everyone
   const [count, setCount] = useState(PAGE);
   const [gsDone, setGsDone] = useState(() => load("pit.gsDismissed", false));
@@ -24,6 +26,8 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, h
     }
   };
 
+  // Concert cards are tall and media-heavy. Stage them gently on phones so
+  // image decoding and comment-preview mounts do not all hit one frame.
   return (
     <FlatList
       data={data}
@@ -33,7 +37,10 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, h
       onEndReached={loadMore}
       onEndReachedThreshold={0.6}
       removeClippedSubviews
-      windowSize={7}
+      initialNumToRender={phone ? 3 : PAGE}
+      maxToRenderPerBatch={phone ? 2 : PAGE}
+      updateCellsBatchingPeriod={phone ? 75 : 50}
+      windowSize={phone ? 3 : 7}
       ListHeaderComponent={
         <View style={styles.head}>
           <View style={styles.wordmarkRow}>

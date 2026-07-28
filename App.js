@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, Suspense } from "react";
-import { View, Text, StyleSheet, Pressable, SafeAreaView, Platform, StatusBar as RNStatusBar, Animated, useWindowDimensions, BackHandler } from "react-native";
+import { View, Text, StyleSheet, Pressable, SafeAreaView, Platform, StatusBar as RNStatusBar, Animated, ActivityIndicator, useWindowDimensions, BackHandler } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import "./src/lib/safeArea"; // reserves iOS notch / toolbar safe areas (web)
 import "./src/lib/webInputFix"; // strips the harsh browser focus box from inputs (web)
@@ -95,6 +95,14 @@ function Root() {
   const showRightRail = wide && width >= 1480;
 
   const web = Platform.OS === "web" && typeof window !== "undefined";
+
+  // Posting is the primary write action. Warm its small lazy chunk once the
+  // signed-in shell has settled so the first phone tap opens immediately.
+  useEffect(() => {
+    if (!session?.id) return undefined;
+    const timer = setTimeout(() => { LogScreen.preload?.().catch(() => {}); }, 1200);
+    return () => clearTimeout(timer);
+  }, [session?.id]);
 
   // Restore the last tab on reload so a refresh doesn't dump you back on the feed.
   const [tab, setTab] = useState(() => (web ? load("pit.tab", "feed") : "feed"));
@@ -561,7 +569,7 @@ function Root() {
         onSignup={() => go({ auth: true, authMode: "signup" })}
       />
       <View style={styles.deskWrap}>
-        <View style={styles.deskCenter}><Suspense fallback={null}>{overlay || tabScreens}</Suspense></View>
+        <View style={styles.deskCenter}><Suspense fallback={<ScreenLoading />}>{overlay || tabScreens}</Suspense></View>
         {showRightRail && <RightRail onOpenArtist={openArtist} onOpenVenue={openVenue} onFindVenues={() => go({ venues: true })} onOpenEvent={(t) => openArtist(t.artist)} />}
       </View>
     </View>
@@ -612,7 +620,7 @@ function Root() {
             )}
             <View style={styles.appContent}>
               {wide ? desktop : (
-                overlay ? <Suspense fallback={null}>{overlay}</Suspense> : (
+                overlay ? <Suspense fallback={<ScreenLoading />}>{overlay}</Suspense> : (
                   <>
                     {tabScreens}
                     <View style={styles.tabbar}>
@@ -684,6 +692,15 @@ function Root() {
   );
 }
 
+function ScreenLoading() {
+  return (
+    <View style={styles.screenLoading} accessibilityRole="progressbar" accessibilityLabel="Loading screen">
+      <ActivityIndicator size="small" color={colors.amber} />
+      <Text style={styles.screenLoadingTxt}>Loading...</Text>
+    </View>
+  );
+}
+
 function TabButton({ tab, active, onPress }) {
   const on = active === tab.key;
   return (
@@ -706,6 +723,8 @@ const styles = StyleSheet.create({
   deskOuter: { flex: 1, minWidth: 0, width: "100%", borderRightWidth: 1, borderRightColor: colors.lineSoft },
   deskWrap: { flex: 1, minHeight: 0, flexDirection: "row", width: "100%" },
   deskCenter: { flex: 1, minWidth: 0, borderRightWidth: 1, borderRightColor: colors.lineSoft },
+  screenLoading: { flex: 1, minHeight: 180, alignItems: "center", justifyContent: "center", gap: 10, backgroundColor: colors.bg },
+  screenLoadingTxt: { color: colors.textDim, fontFamily: mono, fontSize: 12 },
   tabbar: {
     flexDirection: "row",
     alignItems: "flex-start",

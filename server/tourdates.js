@@ -19,6 +19,29 @@ const DAY = 86400000;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const slugId = (p, n, v, d) => `${p}_${n}_${v}_${d}`.toLowerCase().replace(/[^a-z0-9]+/g, "_").slice(0, 120);
 const norm = (value) => String(value || "").trim().toLowerCase();
+const DISABLED_ENV_VALUES = new Set(["0", "false", "no", "off", "disabled"]);
+
+// Emergency production kill switch. It is enabled by default for backwards
+// compatibility and turns off only for an explicit false-like value.
+export function isTourDateSchedulerEnabled(env = process.env) {
+  const value = String(env?.TOURDATE_REFRESH_ENABLED ?? "").trim().toLowerCase();
+  return !value || !DISABLED_ENV_VALUES.has(value);
+}
+
+// A timer ignores the promise returned by an async callback. Always cross this
+// boundary before starting scheduled work so no future refactor can leak a
+// rejection into the process-level fatal handler.
+export async function runTourDateJobSafely(job, report = (error) => {
+  console.error("[pit] scheduled tour-date refresh failed safely:", error);
+}) {
+  try {
+    await job();
+    return true;
+  } catch (error) {
+    try { report(error); } catch {}
+    return false;
+  }
+}
 
 async function getJSON(url) {
   const ctrl = new AbortController();
@@ -159,11 +182,18 @@ async function refresh() {
 }
 
 export function startTourDateScheduler() {
+  if (!isTourDateSchedulerEnabled()) {
+    console.log("[pit] tour-date scheduler disabled by TOURDATE_REFRESH_ENABLED.");
+    return;
+  }
   if (!KEY && !BIT) {
     console.log("[pit] tour-date scheduler idle, set TICKETMASTER_KEY and/or BANDSINTOWN_APP_ID to enable.");
     return;
   }
   console.log(`[pit] tour-date scheduler on (${[KEY && "Ticketmaster", BIT && "Bandsintown"].filter(Boolean).join(" + ")}, every ${REFRESH_H}h).`);
-  setTimeout(refresh, 5000).unref(); // populate local discovery shortly after deploy
-  setInterval(refresh, REFRESH_H * 3600 * 1000).unref();
+  const triggerRefresh = () => {
+    void runTourDateJobSafely(refresh);
+  };
+  setTimeout(triggerRefresh, 5000).unref(); // populate local discovery shortly after deploy
+  setInterval(triggerRefresh, REFRESH_H * 3600 * 1000).unref();
 }

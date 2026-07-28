@@ -7,6 +7,14 @@ const YEARS = [2026, 2027, 2028, 2029];
 const MONTHS = Array.from({ length: 12 }, (_, i) => i + 1);
 const daysIn = (y, m) => new Date(y, m, 0).getDate();
 const pad = (n) => String(n).padStart(2, "0");
+const partsFor = (value, fallbackYear, today = new Date()) => {
+  const match = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const year = match ? Number(match[1]) : fallbackYear;
+  const month = match ? Number(match[2]) : today.getMonth() + 1;
+  const day = match ? Number(match[3]) : today.getDate();
+  const validMonth = Math.max(1, Math.min(12, month));
+  return { year, month: validMonth, day: Math.max(1, Math.min(daysIn(year, validMonth), day)) };
+};
 
 function Column({ values, selected, onSelect, render }) {
   return (
@@ -23,22 +31,38 @@ function Column({ values, selected, onSelect, render }) {
   );
 }
 
-export default function DatePicker({ onChange, years = YEARS, defaultYear }) {
+export default function DatePicker({ value, onChange, years = YEARS, defaultYear }) {
   const today = new Date();
-  const [year, setYear] = useState(defaultYear || years[0]);
-  const [month, setMonth] = useState(today.getMonth() + 1);
-  const [day, setDay] = useState(today.getDate());
+  const fallbackYear = defaultYear || years[0];
+  const initial = partsFor(value, fallbackYear, today);
+  const [year, setYear] = useState(initial.year);
+  const [month, setMonth] = useState(initial.month);
+  const [day, setDay] = useState(initial.day);
 
   const dim = daysIn(year, month);
   const days = Array.from({ length: dim }, (_, i) => i + 1);
   const clampedDay = Math.min(day, dim);
 
-  // Emits the canonical stored form (ISO); the preview below shows the display
-  // form. Keeping those two apart is what stops a separator change from forking
-  // a performance. See src/domain/dates.mjs.
+  // Stay in sync when a saved draft is resumed while this picker is open, but
+  // do not emit on mount. The old mount effect replaced an edited concert's
+  // historical date with today before the person tapped a single control.
   useEffect(() => {
-    onChange?.(`${year}-${pad(month)}-${pad(clampedDay)}`);
-  }, [year, month, clampedDay]);
+    const next = partsFor(value, fallbackYear, today);
+    setYear(next.year);
+    setMonth(next.month);
+    setDay(next.day);
+    // `today` is a render-local fallback; canonical `value` drives normal use.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [value, fallbackYear]);
+
+  const select = (nextYear, nextMonth, nextDay) => {
+    const safeDay = Math.max(1, Math.min(daysIn(nextYear, nextMonth), nextDay));
+    setYear(nextYear);
+    setMonth(nextMonth);
+    setDay(safeDay);
+    // Canonical storage stays separate from the formatted preview.
+    onChange?.(`${nextYear}-${pad(nextMonth)}-${pad(safeDay)}`);
+  };
 
   const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -50,9 +74,9 @@ export default function DatePicker({ onChange, years = YEARS, defaultYear }) {
         <Text style={styles.head}>DAY</Text>
       </View>
       <View style={styles.cols}>
-        <Column values={years} selected={year} onSelect={setYear} render={(v) => String(v)} />
-        <Column values={MONTHS} selected={month} onSelect={setMonth} render={(v) => `${pad(v)} ${MONTH_NAMES[v - 1]}`} />
-        <Column values={days} selected={clampedDay} onSelect={setDay} />
+        <Column values={years} selected={year} onSelect={(next) => select(next, month, clampedDay)} render={(v) => String(v)} />
+        <Column values={MONTHS} selected={month} onSelect={(next) => select(year, next, clampedDay)} render={(v) => `${pad(v)} ${MONTH_NAMES[v - 1]}`} />
+        <Column values={days} selected={clampedDay} onSelect={(next) => select(year, month, next)} />
       </View>
       <Text style={styles.preview}>{`${year} · ${pad(month)} · ${pad(clampedDay)}`}</Text>
     </View>

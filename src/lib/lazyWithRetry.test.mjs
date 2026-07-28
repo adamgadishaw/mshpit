@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { loadChunk } from "./lazyWithRetry.js";
+import { lazyWithRetry, loadChunk } from "./lazyWithRetry.js";
 
 // A fake sessionStorage and reload spy, so the recovery path is testable without
 // a browser.
@@ -73,4 +73,16 @@ test("a later success clears the guard so a future failure can recover again", a
   assert.equal(h.store.get("pit.chunkReload.Screen"), "1");
   await loadChunk(async () => ({ default: "ok" }), { name: "Screen", ...h }); // recovers
   assert.equal(h.store.has("pit.chunkReload.Screen"), false, "guard cleared on success");
+});
+
+test("preloading a lazy screen shares one import with React's later render", async () => {
+  let imports = 0;
+  const Screen = lazyWithRetry(async () => {
+    imports += 1;
+    return { default: () => null };
+  }, "Preloaded");
+
+  const [first, second] = await Promise.all([Screen.preload(), Screen.preload()]);
+  assert.equal(first, second);
+  assert.equal(imports, 1, "concurrent warmups must not request the chunk twice");
 });

@@ -85,12 +85,17 @@ Until that pipeline exists, uploads should remain limited to trusted testers.
 
 ## Dependency note
 
-`npm audit --omit=dev` currently traces a moderate UUID advisory through Expo's
-build tooling: `expo -> @expo/config-plugins -> xcode@3.0.1 -> uuid@7.0.3`.
-The project does not import `uuid`; the installed `xcode` package uses `uuid.v4()`
-rather than the affected buffer-writing APIs. The proposed forced npm fix would
-downgrade Expo to 46 and violate the SDK 56 requirement. Track the Expo upstream
-update and rerun the audit regularly; do not apply the breaking forced downgrade.
+After aligning the project with the current Expo SDK 56 patch set on 2026-07-28,
+`npm audit fix --omit=dev` safely updated transitive `brace-expansion` and
+`shell-quote` releases and removed both high-severity advisories. The remaining
+result is 11 moderate advisories tracing the same UUID issue through Expo's build
+tooling: `expo -> @expo/config-plugins -> xcode@3.0.1 -> uuid@7.0.3`.
+
+The project does not import `uuid`; the installed `xcode` package uses
+`uuid.v4()` rather than the advisory's affected buffer-writing APIs. npm's forced
+proposal would install an incompatible Expo/Sharing version and violate the SDK
+56 requirement. Track the Expo upstream update and rerun the audit regularly;
+do not apply the breaking forced downgrade.
 
 ## Launch decision
 

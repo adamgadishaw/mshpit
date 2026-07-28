@@ -9,8 +9,10 @@ import { clearStoredTheme, setTheme as applyTheme, storedThemeSelection, syncThe
 import { artistMeta, venuePhotoPool } from "./seed/ingested";
 import { ACHIEVEMENTS } from "./lib/badges";
 import { ENABLE_DEMO_DATA } from "./config/runtime.mjs";
-import { isUpcomingEventDate, sanitizePersistedStoreValue, sanitizeTourDates } from "./domain/dataPolicy.mjs";
+import { isUpcomingEventDate, PERSISTED_FEED_LIMIT, sanitizePersistedStoreValue, sanitizeTourDates } from "./domain/dataPolicy.mjs";
 import { toIsoDate } from "./domain/dates.mjs";
+import { deleteAccountDraft, draftsForAccount, migrateLegacyDrafts, upsertAccountDraft } from "./domain/draftPolicy.mjs";
+import { buildReviewCreateBody, buildReviewEditBody, cleanArtistKey } from "./domain/post-payload.mjs";
 import { classifyResolve, backoffFor, RESOLVE_ATTEMPTS, CACHE_MS } from "./domain/playback.mjs";
 import { recommendTracks as recommendFromCandidates } from "./domain/recommend.mjs";
 import { trackKey } from "./lib/playback";
@@ -61,7 +63,8 @@ const adoptChatMessageId = (messages, localId, serverId, max) => mergeChatMessag
   max,
 );
 
-const FEED_REFRESH_MS = 12_000;
+const FEED_PAGE_LIMIT = 20;
+const FEED_REFRESH_MS = 45_000;
 const FEED_REFRESH_MAX_BACKOFF_MS = 120_000;
 const normalizeServerPost = (post) => ({
   ...post,
@@ -186,7 +189,8 @@ export function StoreProvider({ children }) {
   const [playHistoryNextCursor, setPlayHistoryNextCursor] = useState(null);
   const playHistoryRequestRef = useRef({ sequence: 0, accountId: session?.id || null });
   const [snapshots, setSnapshots] = useState(() => load("pit.snapshots", [])); // saved listening sessions (playlist seeds)
-  const [drafts, setDrafts] = useState(() => load("pit.drafts", [])); // unfinished reviews, saved locally
+  const [drafts, setDrafts] = useState(() =>
+    migrateLegacyDrafts(load("pit.drafts", []), session?.id)); // unfinished reviews, account-scoped on this device
   useEffect(() => {
     if ((session?.id || null) === playHistoryAccountId) save(historyStorageKey(playHistoryAccountId), playHistory);
   }, [session?.id, playHistoryAccountId, playHistory]);
@@ -196,10 +200,10 @@ export function StoreProvider({ children }) {
   const saveDraft = (d) => {
     const id = d.id || "draft_" + Date.now();
     const entry = { ...d, id, at: Date.now() };
-    setDrafts((all) => [entry, ...all.filter((x) => x.id !== id)].slice(0, 30));
+    setDrafts((all) => upsertAccountDraft(all, entry, session?.id));
     return id;
   };
-  const deleteDraft = (id) => setDrafts((all) => all.filter((x) => x.id !== id));
+  const deleteDraft = (id) => setDrafts((all) => deleteAccountDraft(all, id, session?.id));
   const [adminStats, setAdminStats] = useState({ total: 0, banned: 0, verified: 0, regions: [] }); // admin member console stats
   const [feed, setFeed] = useState(() =>
     sanitizePersistedStoreValue("pit.feed", load("pit.feed", demoSeed(seedFeed, [])), ENABLE_DEMO_DATA));
@@ -297,7 +301,10 @@ export function StoreProvider({ children }) {
   // account, posts, or follows.
   useEffect(() => save("pit.session", session), [session]);
   useEffect(() => save("pit.users", users), [users]);
-  useEffect(() => save("pit.feed", feed), [feed]);
+  // localStorage is synchronous on browsers. Persist only a bounded continuity
+  // window so a long scrolling session cannot turn every like/poll into a large
+  // main-thread JSON serialization on a phone.
+  useEffect(() => save("pit.feed", feed.slice(0, PERSISTED_FEED_LIMIT)), [feed]);
   useEffect(() => save("pit.follows", follows), [follows]);
 
   // A local theme only wins when it belongs to THIS account. The previous global
@@ -373,7 +380,7 @@ export function StoreProvider({ children }) {
     const mutationRevision = feedMutationRevisionRef.current;
     refresh.inFlight = true;
     try {
-      const { posts, nextCursor } = await api("/api/feed?limit=50", {
+      const { posts, nextCursor } = await api(`/api/feed?limit=${FEED_PAGE_LIMIT}`, {
         context: "Refreshing the concert feed",
         silent: true,
         signal,
@@ -397,7 +404,7 @@ export function StoreProvider({ children }) {
     if (feedLoadingMore || !feedHasMore || !feedNextCursor) return false;
     setFeedLoadingMore(true);
     try {
-      const { posts, nextCursor } = await api(`/api/feed?limit=50&before=${encodeURIComponent(feedNextCursor)}`, {
+      const { posts, nextCursor } = await api(`/api/feed?limit=${FEED_PAGE_LIMIT}&before=${encodeURIComponent(feedNextCursor)}`, {
         context: "Loading more concert reviews",
         silent: true,
       });
@@ -680,8 +687,8 @@ export function StoreProvider({ children }) {
   };
   // Search the DB catalog (notable-first). Powers Search so ANY catalog artist is
   // findable, not just the ~1.6k bundled ones.
-  const searchArtistsApi = async (query) => {
-    try { const { artists } = await api(`/api/artists?q=${encodeURIComponent(query || "")}`); cacheArtists(artists); return artists || []; }
+  const searchArtistsApi = async (query, { signal } = {}) => {
+    try { const { artists } = await api(`/api/artists?q=${encodeURIComponent(query || "")}`, { signal, silent: true, context: "Searching artists" }); cacheArtists(artists); return artists || []; }
     catch { return []; }
   };
   // Song search for the search box, so not knowing the artist is no longer a
@@ -1414,7 +1421,7 @@ export function StoreProvider({ children }) {
     setUserStats((all) => { const next = { ...all }; delete next[deleted.id]; return next; });
     setPlayHistory([]);
     setSnapshots([]);
-    setDrafts([]);
+    setDrafts((all) => all.filter((draft) => String(draft?.ownerId || "") !== String(deleted.id)));
     setMyPlaylists([]);
     setFriendsListening([]);
     setRatingAgg({});
@@ -1521,6 +1528,7 @@ export function StoreProvider({ children }) {
       id: localId,
       kind,
       artist: clean(log.artist, { max: 80 }),
+      artistKey: cleanArtistKey(log.artistKey),
       venue: clean(log.venue, { max: 80 }),
       review: clean(log.review, { max: LIMITS.review, newlines: true }),
       overall: clampRating(log.overall),
@@ -1530,18 +1538,12 @@ export function StoreProvider({ children }) {
     };
     feedMutationRevisionRef.current += 1;
     setFeed((f) => [safe, ...f]);
-    track("post", kind === "status" ? { kind: "status" } : { artist: safe.artist, venue: safe.venue });
     // Slice 2 write-through: persist the post server-side, then adopt the server
     // id so likes/comments on it key correctly. Best-effort (offline keeps local).
     if (session) {
       const body = kind === "status"
-        ? { kind: "status", review: safe.review, song: safe.song || null, photos: safe.photos || [], photosPublic: safe.photosPublic === false ? 0 : 1, ...(log.playlistId ? { playlistId: log.playlistId } : {}) }
-        : {
-            artist: safe.artist, venue: safe.venue, city: safe.city, date: safe.date,
-            overall: safe.overall, band: safe.band, room: safe.room, dims: safe.dims, review: safe.review,
-            photos: safe.photos, photosPublic: safe.photosPublic ? 1 : 0, setlist: safe.setlist, tour: safe.tour || null,
-            tags: Array.isArray(safe.tags) ? safe.tags : [], song: safe.song || null,
-          };
+        ? { clientMutationId: localId, kind: "status", review: safe.review, song: safe.song || null, photos: safe.photos || [], photosPublic: safe.photosPublic === false ? 0 : 1, ...(log.playlistId ? { playlistId: log.playlistId } : {}) }
+        : buildReviewCreateBody(safe);
       return api("/api/posts", {
         method: "POST",
         context: kind === "status" ? "Posting your update" : "Posting your concert review",
@@ -1555,6 +1557,7 @@ export function StoreProvider({ children }) {
           } else if (id && id !== localId) {
             setFeed((f) => f.map((l) => (l.id === localId ? { ...l, id } : l)));
           }
+          track("post", kind === "status" ? { kind: "status" } : { artist: safe.artist, venue: safe.venue });
           return { ok: true, id: id || localId };
         })
         .catch((error) => {
@@ -1564,6 +1567,7 @@ export function StoreProvider({ children }) {
           return { ok: false, error };
         });
     }
+    track("post", kind === "status" ? { kind: "status" } : { artist: safe.artist, venue: safe.venue });
     return Promise.resolve({ ok: true, localOnly: true });
   };
 
@@ -1600,23 +1604,7 @@ export function StoreProvider({ children }) {
       }
     }
 
-    const safe = {
-      artist: clean(changes.artist, { max: 80 }),
-      venue: clean(changes.venue, { max: 80 }),
-      city: clean(changes.city, { max: 60 }),
-      date: clean(changes.date, { max: 20 }),
-      overall: clampRating(changes.overall),
-      band: changes.band == null ? null : clampRating(changes.band),
-      room: changes.room == null ? null : clampRating(changes.room),
-      dims: changes.dims && typeof changes.dims === "object" ? changes.dims : {},
-      review: clean(changes.review, { max: LIMITS.review, newlines: true }),
-      photos: Array.isArray(changes.photos) ? changes.photos.filter((item) => typeof item === "string").slice(0, 8) : [],
-      photosPublic: !!changes.photosPublic,
-      setlist: Array.isArray(changes.setlist) ? changes.setlist.filter((item) => typeof item === "string").slice(0, 40) : [],
-      tour: clean(changes.tour, { max: 80 }) || null,
-      tags: Array.isArray(changes.tags) ? changes.tags.filter((item) => typeof item === "string").slice(0, 5) : [],
-      song: changes.song?.videoId ? changes.song : null,
-    };
+    const safe = buildReviewEditBody(changes);
     if (!safe.artist || !safe.venue || safe.overall <= 0) return { ok: false };
     const version = previous.version ?? previous.editedAt ?? previous.createdAt;
     feedMutationRevisionRef.current += 1;
@@ -3132,7 +3120,7 @@ export function StoreProvider({ children }) {
     mediaReactions, loadMediaReactions, toggleMediaReaction,
     playHistory, playHistoryStatus, playHistoryNextCursor, loadPlayHistory, recordPlay, snapshots, saveSnapshot, removeSnapshot, friendsListening, loadFriendsListening, userPlaylists,
     favoriteGenre, genreOfArtist, recommendTracks, autoplayQueue, searchSongsApi, myPlaylists, myPlaylistsStatus, loadMyPlaylists, loadPlaylist, createPlaylist, addToPlaylist, updatePlaylist, deletePlaylist,
-    drafts, saveDraft, deleteDraft,
+    drafts: draftsForAccount(drafts, session?.id), saveDraft, deleteDraft,
     visibleFeed, followingFeed, loadMoreFeed, feedHasMore, feedLoadingMore, loadClips, visibleTourDates, artistSummary, venueSummary,
     localVenues, regionShows, localFeed, recommendedShows, venueCoord,
     searchVenues, venuesByCity, venueUpcomingCount,

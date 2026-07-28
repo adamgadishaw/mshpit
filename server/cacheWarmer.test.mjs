@@ -7,7 +7,15 @@ import test from "node:test";
 process.env.PIT_DATA_DIR = mkdtempSync(join(tmpdir(), "pit-warm-"));
 
 const { db } = await import("./db.js");
-const { warmYouTubeCache, COST_FIRST_TRACK, COST_CACHED_ARTIST, resetWarmProgress } = await import("./cacheWarmer.js");
+const {
+  warmYouTubeCache,
+  COST_FIRST_TRACK,
+  COST_CACHED_ARTIST,
+  resetWarmProgress,
+  isCacheWarmSchedulerEnabled,
+  runCacheWarmJobSafely,
+} = await import("./cacheWarmer.js");
+const { isTourDateSchedulerEnabled, runTourDateJobSafely } = await import("./tourdates.js");
 const { youtubeCacheKey } = await import("./musicProviders.js");
 
 // Seed a few artists with top tracks, most-popular first, and clear the resume
@@ -38,6 +46,29 @@ function fakeResolver({ fail = new Set() } = {}) {
 
 const noSleep = { sleepMs: 0 };
 const noCircuit = () => ({ dataCircuitOpen: false });
+
+test("background schedulers default on and honor explicit false-like kill switches", () => {
+  assert.equal(isCacheWarmSchedulerEnabled({}), true);
+  assert.equal(isCacheWarmSchedulerEnabled({ CACHE_WARM_ENABLED: "true" }), true);
+  assert.equal(isTourDateSchedulerEnabled({}), true);
+  assert.equal(isTourDateSchedulerEnabled({ TOURDATE_REFRESH_ENABLED: "1" }), true);
+
+  for (const value of ["0", "false", "FALSE", "no", "off", "disabled"]) {
+    assert.equal(isCacheWarmSchedulerEnabled({ CACHE_WARM_ENABLED: value }), false, `cache switch accepts ${value}`);
+    assert.equal(isTourDateSchedulerEnabled({ TOURDATE_REFRESH_ENABLED: value }), false, `tour switch accepts ${value}`);
+  }
+});
+
+test("scheduled-job boundaries contain synchronous throws and async rejections", async () => {
+  for (const runSafely of [runCacheWarmJobSafely, runTourDateJobSafely]) {
+    const reported = [];
+    assert.equal(await runSafely(() => { throw new Error("sync"); }, (error) => reported.push(error.message)), false);
+    assert.equal(await runSafely(async () => { throw new Error("async"); }, (error) => reported.push(error.message)), false);
+    assert.deepEqual(reported, ["sync", "async"]);
+    assert.equal(await runSafely(async () => {}, () => { throw new Error("reporter must not matter"); }), true);
+    assert.equal(await runSafely(async () => { throw new Error("job"); }, () => { throw new Error("reporter"); }), false);
+  }
+});
 
 test("a dry run estimates cost and coverage without resolving or recording anything", async () => {
   seed([{ name: "A", popularity: 90, tracks: ["a1", "a2"] }, { name: "B", popularity: 80, tracks: ["b1"] }]);

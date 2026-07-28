@@ -1,9 +1,9 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, KeyboardAvoidingView, Platform } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import { colors, mono, radius, font, displayFont, shadow, space } from "../theme";
 import { useStore } from "../store";
-import { newId, RATING_DIMS, computeReview } from "../data";
+import { RATING_DIMS, computeReview } from "../data";
 
 // Tour presets: pick one to attach the show to the artist without an album/tour.
 const TOUR_PRESETS = ["One-off show", "Reunion tour", "Festival set", "Anniversary tour", "Surprise show"];
@@ -21,6 +21,7 @@ import { formatDate, toIsoDate, todayIso } from "../domain/dates.mjs";
 
 const GROUP_COLOR = { "THE BAND": colors.amber, "THE ROOM": colors.cool, "THE NIGHT": colors.magenta };
 const GROUPS = ["THE BAND", "THE ROOM", "THE NIGHT"];
+const submissionId = () => `post_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 
 // A rounded "add to your post" action, like the Facebook/Instagram composer:
 // tap to reveal that attachment's input. Shows a filled state (and count) once
@@ -101,11 +102,16 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
   // catalog entity; typing over it drops the binding, so free text can never
   // inherit the last artist's page. The server re-checks this before storing.
   const [artistKey, setArtistKey] = useState(editing?.artistKey || null);
+  const artistRequestRef = useRef(0);
   useEffect(() => {
     const q = artist.trim();
-    if (artistPicked || q.length < 2) { setArtistHits([]); return; }
-    const id = setTimeout(() => searchArtistsApi(q).then((list) => setArtistHits((list || []).slice(0, 6))), 220);
-    return () => clearTimeout(id);
+    const sequence = ++artistRequestRef.current;
+    const controller = new AbortController();
+    if (artistPicked || q.length < 2) { setArtistHits([]); return () => controller.abort(); }
+    const id = setTimeout(() => searchArtistsApi(q, { signal: controller.signal }).then((list) => {
+      if (!controller.signal.aborted && sequence === artistRequestRef.current) setArtistHits((list || []).slice(0, 6));
+    }), 220);
+    return () => { clearTimeout(id); controller.abort(); };
   }, [artist, artistPicked]);
   const [venueHits, setVenueHits] = useState([]);
   const [venuePicked, setVenuePicked] = useState(!!editing?.venue || !!prefill?.venue);
@@ -146,6 +152,11 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
   const [photos, setPhotos] = useState(() => (editing?.photos || []).filter(isDurableMediaUrl));
   const [photosPublic, setPhotosPublic] = useState(editing ? editing.photosPublic !== false : true);
   const [uploadingPhotos, setUploadingPhotos] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(null);
+  const [mediaError, setMediaError] = useState("");
+  const uploadControllerRef = useRef(null);
+  const submissionIdRef = useRef(editing?.id || submissionId());
+  useEffect(() => () => uploadControllerRef.current?.abort(), []);
   const [posting, setPosting] = useState(false);
   // Show date, defaults to today so logging stays one-tap, but you can set the
   // real date of a past show. Years run from this year back to 2000, descending.
@@ -170,22 +181,46 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
       return;
     }
     if (!res || res.canceled || !res.assets?.length) return;
+    const selected = res.assets.slice(0, remaining);
+    const controller = new AbortController();
+    uploadControllerRef.current?.abort();
+    uploadControllerRef.current = controller;
     setUploadingPhotos(true);
-    const uploaded = [];
+    setMediaError("");
+    setUploadProgress({ current: 1, total: selected.length, completed: 0 });
+    let completed = 0;
     try {
       // Upload sequentially to keep mobile memory predictable. Successful
       // objects remain available even if a later selection fails.
-      for (const asset of res.assets.slice(0, remaining)) {
+      for (let index = 0; index < selected.length; index++) {
+        const asset = selected[index];
+        setUploadProgress({ current: index + 1, total: selected.length, completed });
         try {
-          uploaded.push(await uploadMediaAsset(asset, "post"));
-        } catch {
+          const uploaded = await uploadMediaAsset(asset, "post", { signal: controller.signal });
+          completed += 1;
+          setPhotos((current) => [...current, uploaded].filter(isDurableMediaUrl).slice(0, 8));
+          setUploadProgress({ current: Math.min(index + 2, selected.length), total: selected.length, completed });
+        } catch (error) {
+          if (!controller.signal.aborted) {
+            setMediaError(completed
+              ? `${completed} of ${selected.length} uploads finished. Add the remaining media again to retry.`
+              : "That media didn't upload. Check your connection or try a shorter clip.");
+          }
           break;
         }
       }
     } finally {
-      if (uploaded.length) setPhotos((current) => [...current, ...uploaded].filter(isDurableMediaUrl).slice(0, 8));
-      setUploadingPhotos(false);
+      if (uploadControllerRef.current === controller) {
+        uploadControllerRef.current = null;
+        setUploadingPhotos(false);
+        setUploadProgress(null);
+      }
     }
+  };
+
+  const cancelUpload = () => {
+    uploadControllerRef.current?.abort();
+    setMediaError("Upload stopped. Media that already finished is still attached.");
   };
 
   const attachSong = async () => {
@@ -231,7 +266,7 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
   };
   const resume = (d) => {
     setDraftId(d.id);
-    setArtist(d.artist || ""); setArtistPicked(!!d.artist); setArtistKey(d.artistKey || null); setVenue(d.venue || ""); setVenuePicked(!!d.venue); setCity(d.city || "");
+    setArtist(d.artist || ""); setArtistPicked(!!d.artistKey); setArtistKey(d.artistKey || null); setVenue(d.venue || ""); setVenuePicked(!!d.venue); setCity(d.city || "");
     setTour(d.tour || ""); setDate(toIsoDate(d.date) || d.date || todayStr); setDims(d.dims || dims); setReview(d.review || ""); setTags(Array.isArray(d.tags) ? d.tags.slice(0, 5) : []); setSong(d.song || null); setSongUrl(d.song?.url || ""); setPhotos((d.photos || []).filter(isDurableMediaUrl));
   };
   const hasContent = artist.trim() || venue.trim() || review.trim() || photos.length || song?.videoId;
@@ -244,7 +279,7 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
       const durablePhotos = photos.filter(isDurableMediaUrl);
       if (isStatus) {
         const result = await onPost?.({
-          id: editing?.id || newId(),
+          id: submissionIdRef.current,
           kind: "status",
           user: editing?.user || (user
             ? { name: user.name, handle: user.handle, initials: user.initials }
@@ -268,7 +303,7 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
         return;
       }
       const result = await onPost?.({
-        id: editing?.id || newId(),
+        id: submissionIdRef.current,
         user: editing?.user || (user
           ? { name: user.name, handle: user.handle, initials: user.initials }
           : { name: "You", handle: "you", initials: "YOU" }),
@@ -444,7 +479,7 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
         </Pressable>
         {showDate && (
           <View style={styles.datePickerWrap}>
-            <DatePicker years={PAST_YEARS} defaultYear={today.getFullYear()} onChange={setDate} />
+            <DatePicker value={date} years={PAST_YEARS} defaultYear={today.getFullYear()} onChange={setDate} />
           </View>
         )}
 
@@ -603,10 +638,20 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
           {photos.length < 8 && (
             <Pressable style={styles.addThumb} onPress={addPhoto} disabled={submitBusy}>
               <Icon name="camera" size={20} color={colors.amber} />
-              <Text style={styles.addThumbTxt}>{uploadingPhotos ? "Uploading" : "Add media"}</Text>
+              <Text style={styles.addThumbTxt}>{uploadProgress ? `${uploadProgress.current}/${uploadProgress.total}` : "Add media"}</Text>
             </Pressable>
           )}
         </View>
+
+        {uploadProgress && (
+          <View style={styles.uploadStatus}>
+            <Text style={styles.uploadStatusTxt}>Optimizing and uploading {uploadProgress.current} of {uploadProgress.total}</Text>
+            <Pressable onPress={cancelUpload} hitSlop={8} accessibilityRole="button" accessibilityLabel="Cancel media upload">
+              <Text style={styles.uploadCancel}>Cancel</Text>
+            </Pressable>
+          </View>
+        )}
+        {!!mediaError && <Text style={styles.songError}>{mediaError}</Text>}
 
         {!isStatus && photos.length > 0 && (
           <Pressable style={styles.consent} onPress={() => setPhotosPublic((v) => !v)}>
@@ -711,6 +756,9 @@ const styles = StyleSheet.create({
   removeThumb: { position: "absolute", top: 3, right: 3, width: 20, height: 20, borderRadius: 10, backgroundColor: "rgba(0,0,0,0.6)", alignItems: "center", justifyContent: "center" },
   addThumb: { width: 76, height: 76, borderRadius: 10, borderWidth: 1, borderColor: colors.line, borderStyle: "dashed", alignItems: "center", justifyContent: "center", gap: 4, backgroundColor: colors.surface },
   addThumbTxt: { color: colors.amber, fontSize: 12 },
+  uploadStatus: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12, marginTop: 10 },
+  uploadStatusTxt: { flex: 1, color: colors.textDim, fontSize: 12.5, lineHeight: 18 },
+  uploadCancel: { color: colors.danger, fontSize: 12.5, fontWeight: "800" },
   consent: { flexDirection: "row", alignItems: "flex-start", gap: 10, marginTop: 12 },
   check: { width: 22, height: 22, borderRadius: 6, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center", marginTop: 1 },
   checkOn: { backgroundColor: colors.amber, borderColor: colors.amber },
