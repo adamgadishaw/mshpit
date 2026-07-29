@@ -6,6 +6,28 @@
 
 > **Working agreement (owner's standing instruction, updated 2026-07-22):** ALWAYS `git commit`, **merge to `master`**, and `git push` after a verified batch. Do not stop to ask whether to merge; the owner does not want to be asked. A review branch is still the right place to build a large or risky change, but finishing the work means landing it on `master`. The one hard gate is `npm run check` (tests + syntax + web export) passing on the branch **and** again on `master` after the merge, because a master push auto-deploys and briefly restarts Render. If the gate fails, report it instead of pushing.
 
+---
+
+## ▶ NEXT SESSION — START HERE (2026-07-28, verified by Claude)
+
+**Repo is healthy. The production outage is a HOSTING problem, not a code bug — do not chase it in code.**
+
+**Verified state of `master` @ `a212407`:**
+- `npm run check` green: **168 tests pass**, syntax clean (64 files), web export succeeds. Tree clean, synced with origin.
+- The code boots cleanly in production mode on both a fresh disk and the existing DB (health 200). It is NOT crash-looping from a code fault.
+- Crash guards are solid: `server/index.js` catches `uncaughtException`/`unhandledRejection` and keeps serving; a 25-errors-in-60s valve does one clean restart; the burst counter resets every 60s. Background jobs (cache warmer, Wikidata enrichment) can no longer take the process down.
+- Post idempotency is correct: the client sends `clientMutationId = local post id` (`src/domain/post-payload.mjs`), so an automatic network retry dedups server-side (`POST /api/posts` in `server/api.js`) — this is the double-post fix.
+
+**THE PRODUCTION 502 — root cause (owner must act, cannot be fixed from code):**
+- The owner is on **Render's FREE tier** (owner confirmed "I don't pay for Render"). Evidence: origin returns `x-render-routing: dynamic-paid-error`; deploy logs show the service repeatedly restarting and re-seeding `1633 bundled artists` on every boot.
+- Free tier has **two fatal consequences for this app:**
+  1. **Spin-down:** the service sleeps after ~15 min idle and returns 502 until a request wakes it (30–60s cold start). That is the intermittent outage — it "recovers then fails again" because it is sleeping, not crashing.
+  2. **No persistent disk:** free tier silently ignores the `disk:` block in `render.yaml`, so the filesystem is ephemeral. **`server/data/pit.db` is wiped on every restart.** This is the real cause of data "resetting", the artist count dropping, and the J. Cole post vanishing.
+- `render.yaml` is already CORRECT — it declares `plan: starter` ($7/mo, which has a persistent disk and no spin-down). The running service just does not match the blueprint.
+- **The fix (owner, in the Render dashboard):** upgrade the mshpit web service to the **Starter** plan (or recreate it from the blueprint), and attach the 1 GB disk at `/data` with `PIT_DATA_DIR=/data`. Until then, expect intermittent 502s and periodic data loss no matter what the code does. Also worth rotating the YouTube API key (it appeared in an old transcript) and confirming Cloudflare is not overriding the origin `robots.txt`.
+
+**Good next code work (all on the owner's backlog, none blocked by the outage):** DMs → Messenger-style; notifications → IG/FB polish; playlist manager (P0.4); full discographies with paging (P0.5); the You-tab/Discover visual polish is largely done (donut overlap + song card + stat strip all fixed). See `TODO.md` for the ordered P0 list and `PROJECT_AUDIT_2026-07-28.md` for the deep-dive findings.
+
 ## MOBILE POSTING / PRODUCTION RECOVERY (2026-07-28)
 
 The owner reported that the phone site became laggy and effectively unusable
