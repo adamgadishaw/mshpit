@@ -32,6 +32,34 @@ Function density (refactor pressure):
 
 ---
 
+## Progress
+
+| Item | Status |
+|---|---|
+| **B1** genre query | ✅ **FIXED** `1c05a98` — 32× fewer rows, + fixed a latent nondeterminism bug it exposed |
+| **B2** theme atomicity | ✅ **FIXED** `1c05a98` — `src/domain/themeStorage.mjs`, 8 tests |
+| **B3** rating race | ✅ **FIXED** `f25fd99` — `src/domain/latestWins.mjs`, 7 tests |
+| **S4** upload latency | ⏸ **DEFERRED** — sequential is a *documented* mobile-memory decision; see below |
+| **S2** player empty catches | ⬜ open |
+| **S3** write-path async audit | ⬜ open |
+| **S1** split `store.js` | ⬜ open (largest; do last) |
+
+Test count: 185 → **201**.
+
+### Note on S4 (photo upload latency)
+The sequential loop in `addPhoto()` carries the comment *"Upload sequentially to
+keep mobile memory predictable."* That is a deliberate tradeoff, and each upload
+also resizes the image, so concurrency multiplies peak memory on exactly the old
+phones most at risk. **I could not measure device memory from here**, so
+overriding it would be a guess.
+
+Recommended shape if pursued: bounded concurrency (2), not unbounded — it
+recovers most of the latency while keeping peak memory to two buffers. Note it
+weakens `shouldContinueMediaBatch`'s early-abort slightly, since one extra
+request is already in flight when a systemic failure is detected.
+
+---
+
 ## ✅ CONFIRMED BUGS — verified by reading the code
 
 ### B1 — `GET /api/discover/genres` loads the entire artist table per request
