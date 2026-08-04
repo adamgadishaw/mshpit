@@ -11,6 +11,7 @@ import { ACHIEVEMENTS } from "./lib/badges";
 import { ENABLE_DEMO_DATA } from "./config/runtime.mjs";
 import { isUpcomingEventDate, PERSISTED_FEED_LIMIT, sanitizePersistedStoreValue, sanitizeTourDates } from "./domain/dataPolicy.mjs";
 import { toIsoDate } from "./domain/dates.mjs";
+import { createTicketRegistry } from "./domain/latestWins.mjs";
 import { deleteAccountDraft, draftsForAccount, migrateLegacyDrafts, upsertAccountDraft } from "./domain/draftPolicy.mjs";
 import { buildReviewCreateBody, buildReviewEditBody, cleanArtistKey } from "./domain/post-payload.mjs";
 import { classifyResolve, backoffFor, RESOLVE_ATTEMPTS, CACHE_MS } from "./domain/playback.mjs";
@@ -1430,6 +1431,9 @@ export function StoreProvider({ children }) {
     setMyPlaylists([]);
     setFriendsListening([]);
     setRatingAgg({});
+    // Drop rating request ordering with the data it ordered, so a request still
+    // in flight from the deleted account cannot write into the fresh state.
+    ratingTicketsRef.current?.clear();
     setFanClubMeta({});
     setFeedNextCursor(null);
     setFeedHasMore(true);
@@ -2073,9 +2077,26 @@ export function StoreProvider({ children }) {
     const vals = Object.values(r);
     return { avg: vals.reduce((a, b) => a + b, 0) / vals.length, count: vals.length, mine: (session && r[session.id]) || 0 };
   };
+  // Two independent requests write the same aggregate key: the GET below and
+  // the POST in `rate`. Without ordering, a GET issued before a rating could
+  // land after it and overwrite the fresh value with the pre-rating one, so the
+  // star visibly reverted. Likewise a failed OLD rating could roll back a newer
+  // successful one. Every request claims a ticket for its key; only the newest
+  // ticket is allowed to write.
+  // Ordering lives in src/domain/latestWins.mjs so the invariant is unit-tested.
+  const ratingTicketsRef = useRef(null);
+  if (!ratingTicketsRef.current) ratingTicketsRef.current = createTicketRegistry();
+  const claimRatingTicket = (key) => ratingTicketsRef.current.claim(key);
+  const ratingTicketIsCurrent = (key, ticket) => ratingTicketsRef.current.isCurrent(key, ticket);
+
   const loadRating = (kind, artist, title) => {
+    const aggregateKey = aggKey(kind, artist, title);
+    const ticket = claimRatingTicket(aggregateKey);
     api(`/api/ratings?kind=${kind}&ref=${encodeURIComponent(rKey(artist, title))}`)
-      .then((r) => setRatingAgg((m) => ({ ...m, [aggKey(kind, artist, title)]: { avg: r.avg, count: r.count, mine: r.mine } })))
+      .then((r) => {
+        if (!ratingTicketIsCurrent(aggregateKey, ticket)) return; // a newer rating won
+        setRatingAgg((m) => ({ ...m, [aggregateKey]: { avg: r.avg, count: r.count, mine: r.mine } }));
+      })
       .catch(() => {});
   };
   const albumRating = (artist, title) => ratingAgg[aggKey("album", artist, title)] || aggRate(albumRatings, artist, title);
@@ -2088,11 +2109,18 @@ export function StoreProvider({ children }) {
     const sourceMap = kind === "album" ? albumRatings : songRatings;
     const previous = sourceMap[key]?.[session.id];
     const previousAggregate = ratingAgg[aggregateKey];
+    const ticket = claimRatingTicket(aggregateKey);
     setMap((m) => ({ ...m, [key]: { ...(m[key] || {}), [session.id]: nn } }));
     setRatingAgg((m) => { const cur = m[aggregateKey]; return cur ? { ...m, [aggregateKey]: { ...cur, mine: nn } } : m; });
     api("/api/ratings", { method: "POST", body: { kind, ref: key, rating: nn }, context: `Rating this ${kind}` })
-      .then((r) => setRatingAgg((m) => ({ ...m, [aggKey(kind, artist, title)]: { avg: r.avg, count: r.count, mine: r.mine } })))
+      .then((r) => {
+        if (!ratingTicketIsCurrent(aggregateKey, ticket)) return; // superseded
+        setRatingAgg((m) => ({ ...m, [aggregateKey]: { avg: r.avg, count: r.count, mine: r.mine } }));
+      })
       .catch(() => {
+        // Only the newest attempt may roll back. Otherwise rating twice quickly
+        // and having the FIRST request fail would undo the second, successful one.
+        if (!ratingTicketIsCurrent(aggregateKey, ticket)) return;
         setMap((m) => {
           const ratings = { ...(m[key] || {}) };
           if (previous == null) delete ratings[session.id]; else ratings[session.id] = previous;
