@@ -1,4 +1,5 @@
 import { Platform } from "react-native";
+import { writeThemePair } from "./domain/themeStorage.mjs";
 
 // Pit - "stage-light" design system. On-brand presets the user can switch
 // between in Settings. Every screen imports `colors` (resolved once at module
@@ -150,10 +151,12 @@ export const THEMES = Object.entries(PRESETS).map(([k, v]) => ({
 
 function persistTheme(next, ownerId = null) {
   if (!PRESETS[next]) return false;
-  if (typeof window === "undefined" || !window.localStorage) return false;
-  window.localStorage.setItem(THEME_STORAGE_KEY, next);
-  window.localStorage.setItem(THEME_OWNER_KEY, ownerId || "guest");
-  return true;
+  if (typeof window === "undefined") return false;
+  // The atomic write lives in src/domain/themeStorage.mjs so the invariant
+  // ("never store a theme without its owner") is unit-tested. Checking that
+  // localStorage exists is not enough: Safari private mode provides the object
+  // and throws on setItem.
+  return writeThemePair(window.localStorage, { themeKey: THEME_STORAGE_KEY, ownerKey: THEME_OWNER_KEY }, next, ownerId);
 }
 
 export function storedThemeSelection() {

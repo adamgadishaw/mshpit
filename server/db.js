@@ -5,13 +5,19 @@
 import { DatabaseSync } from "node:sqlite";
 import { toIsoDate } from "../src/domain/dates.mjs";
 import { displayGenre, resolveGenre, storedClaims } from "../src/domain/genre.mjs";
-import { mkdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { prepareDataDirectory } from "./dataDirectory.js";
+
+export const artistSearchKey = (value) => String(value || "")
+  .normalize("NFKD")
+  .replace(/[\u0300-\u036f]/g, "")
+  .toLowerCase()
+  .replace(/[^\p{L}\p{N}]+/gu, "");
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = process.env.PIT_DATA_DIR || join(HERE, "data");
-mkdirSync(DATA_DIR, { recursive: true });
+const DATA_DIR = prepareDataDirectory({ fallbackDir: join(HERE, "data") });
 
 export const db = new DatabaseSync(join(DATA_DIR, "pit.db"));
 
@@ -76,6 +82,7 @@ CREATE TABLE IF NOT EXISTS posts (
   photos_public INTEGER NOT NULL DEFAULT 0,
   setlist       TEXT NOT NULL DEFAULT '[]',
   client_mutation_id TEXT,
+  client_mutation_hash TEXT,
   removed       INTEGER NOT NULL DEFAULT 0,
   updated_at    INTEGER,
   created_at    INTEGER NOT NULL
@@ -271,6 +278,7 @@ CREATE INDEX IF NOT EXISTS idx_tourdates_artist ON tour_dates(artist);
 CREATE TABLE IF NOT EXISTS artists (
   norm        TEXT PRIMARY KEY,
   name        TEXT NOT NULL,
+  search_key  TEXT,
   genre       TEXT,
   photo       TEXT,
   bio         TEXT,
@@ -287,6 +295,10 @@ CREATE TABLE IF NOT EXISTS artists (
 );
 CREATE INDEX IF NOT EXISTS idx_artists_rank ON artists(rank_score DESC);
 CREATE INDEX IF NOT EXISTS idx_artists_name ON artists(name);
+-- Wikidata enrichment groups aliases by canonical MBID. Without this
+-- expression index its startup CTE performs nested full-table scans and blocks
+-- the single Node event loop long enough to fail hosted health checks.
+CREATE INDEX IF NOT EXISTS idx_artists_mbid_lower ON artists(lower(mbid));
 
 -- Names people searched that returned nothing from MusicBrainz. The admin catalog
 -- queue reads this to seed on demand (info + photos) instead of a blind bulk dump.
@@ -469,8 +481,9 @@ CREATE TABLE IF NOT EXISTS track_overrides (
 const ver = db.prepare("SELECT version FROM schema_version LIMIT 1").get();
 if (!ver) db.prepare("INSERT INTO schema_version (version) VALUES (1)").run();
 
-// Additive migrations for DBs created before a column existed. ADD COLUMN throws
-// if it's already there, so each is best-effort, safe to run on every boot.
+// Additive migrations for DBs created before a column existed. Inspect the
+// actual table before altering it: a real migration failure must stop startup,
+// while an already-present column is safely skipped on every boot.
 for (const stmt of [
   "ALTER TABLE users ADD COLUMN handle_changed_at INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE users ADD COLUMN verified INTEGER NOT NULL DEFAULT 0",
@@ -481,6 +494,7 @@ for (const stmt of [
   "ALTER TABLE posts ADD COLUMN updated_at INTEGER",
   "ALTER TABLE posts ADD COLUMN dims TEXT NOT NULL DEFAULT '{}'",
   "ALTER TABLE artists ADD COLUMN searches INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE artists ADD COLUMN search_key TEXT",
   // The artist's YouTube channel. Since June 2026 search.list has its own
   // 100-call/day bucket; catalogue endpoints use the separate general bucket.
   // Provenance distinguishes a CC0 Wikidata identity from YouTube API data, and
@@ -514,9 +528,32 @@ for (const stmt of [
   // Stable per-composer token. If a write commits but its response is lost,
   // retrying returns that row instead of publishing a duplicate review.
   "ALTER TABLE posts ADD COLUMN client_mutation_id TEXT",
-]) { try { db.exec(stmt); } catch {} }
+  // Bind that token to the exact create request. Reusing a restored draft token
+  // after changing its text must never silently return the earlier payload.
+  "ALTER TABLE posts ADD COLUMN client_mutation_hash TEXT",
+]) {
+  const match = /^ALTER TABLE ([a-z_]+) ADD COLUMN ([a-z_]+)/i.exec(stmt);
+  if (!match) throw new Error(`Unsupported additive migration: ${stmt}`);
+  const [, table, column] = match;
+  const present = db.prepare(`PRAGMA table_info(${table})`).all()
+    .some((entry) => String(entry.name).toLowerCase() === column.toLowerCase());
+  if (!present) db.exec(stmt);
+}
 
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_posts_client_mutation ON posts(user_id, client_mutation_id) WHERE client_mutation_id IS NOT NULL");
+db.exec("CREATE INDEX IF NOT EXISTS idx_artists_search_key ON artists(search_key)");
+const artistSearchKeyRows = db.prepare("SELECT norm,name FROM artists WHERE search_key IS NULL OR search_key='' ").all();
+if (artistSearchKeyRows.length) {
+  const setArtistSearchKey = db.prepare("UPDATE artists SET search_key=? WHERE norm=?");
+  db.exec("BEGIN");
+  try {
+    for (const row of artistSearchKeyRows) setArtistSearchKey.run(artistSearchKey(row.name), row.norm);
+    db.exec("COMMIT");
+  } catch (error) {
+    try { db.exec("ROLLBACK"); } catch {}
+    throw error;
+  }
+}
 
 // Analytics never needs a network address once request-level rate limiting is
 // complete. Purge the legacy raw-IP column once and keep new rows null.
@@ -634,11 +671,12 @@ export const providerCacheStmts = {
 };
 
 // --- Artist catalog statements + helpers -------------------------------------
-const ARTIST_COLS = "norm,name,genre,photo,bio,mbid,spotify_id,country,formed,popularity,rank_score,data,source,created_at,updated_at";
+const ARTIST_COLS = "norm,name,search_key,genre,photo,bio,mbid,spotify_id,country,formed,popularity,rank_score,data,source,created_at,updated_at";
 export const artistStmts = {
   byNorm: db.prepare("SELECT * FROM artists WHERE norm = ?"),
   count: db.prepare("SELECT COUNT(*) c FROM artists"),
-  search: db.prepare("SELECT * FROM artists WHERE norm LIKE ? ORDER BY (norm = ?) DESC, rank_score DESC, name LIMIT ?"),
+  search: db.prepare(`SELECT * FROM artists WHERE norm LIKE ? OR search_key LIKE ?
+    ORDER BY (norm = ?) DESC, (search_key = ?) DESC, rank_score DESC, name LIMIT ?`),
   top: db.prepare("SELECT * FROM artists ORDER BY rank_score DESC, name LIMIT ?"),
   bumpSearches: db.prepare("UPDATE artists SET searches = searches + 1 WHERE norm = ?"),
   // Channel identity is reusable, but API-derived values are refreshed within
@@ -657,9 +695,10 @@ export const artistStmts = {
   listMissing: db.prepare("SELECT * FROM missing_artists ORDER BY searches DESC, last_at DESC LIMIT ?"),
   clearMissing: db.prepare("DELETE FROM missing_artists WHERE norm = ?"),
   upsert: db.prepare(`INSERT INTO artists (${ARTIST_COLS})
-    VALUES (@norm,@name,@genre,@photo,@bio,@mbid,@spotify_id,@country,@formed,@popularity,@rank_score,@data,@source,@created_at,@updated_at)
+    VALUES (@norm,@name,@search_key,@genre,@photo,@bio,@mbid,@spotify_id,@country,@formed,@popularity,@rank_score,@data,@source,@created_at,@updated_at)
     ON CONFLICT(norm) DO UPDATE SET
       name=excluded.name,
+      search_key=excluded.search_key,
       genre=COALESCE(excluded.genre,artists.genre),
       photo=COALESCE(excluded.photo,artists.photo),
       bio=COALESCE(excluded.bio,artists.bio),
@@ -682,6 +721,7 @@ export function artistRow(key, a, source = "musicbrainz") {
   return {
     norm: normName(key || a.name),
     name: a.name || key,
+    search_key: artistSearchKey(a.name || key),
     genre: a.genre || null,
     photo: a.photo || null,
     bio: a.bio || null,

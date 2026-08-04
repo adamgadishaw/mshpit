@@ -15,7 +15,7 @@ const {
   isCacheWarmSchedulerEnabled,
   runCacheWarmJobSafely,
 } = await import("./cacheWarmer.js");
-const { isTourDateSchedulerEnabled, runTourDateJobSafely } = await import("./tourdates.js");
+const { collectTourProviderResults, isTourDateSchedulerEnabled, runTourDateJobSafely, shouldRefreshTourDates } = await import("./tourdates.js");
 const { youtubeCacheKey } = await import("./musicProviders.js");
 
 // Seed a few artists with top tracks, most-popular first, and clear the resume
@@ -47,11 +47,15 @@ function fakeResolver({ fail = new Set() } = {}) {
 const noSleep = { sleepMs: 0 };
 const noCircuit = () => ({ dataCircuitOpen: false });
 
-test("background schedulers default on and honor explicit false-like kill switches", () => {
+test("background schedulers stay local-default-on but require hosted opt-in", () => {
   assert.equal(isCacheWarmSchedulerEnabled({}), true);
   assert.equal(isCacheWarmSchedulerEnabled({ CACHE_WARM_ENABLED: "true" }), true);
   assert.equal(isTourDateSchedulerEnabled({}), true);
   assert.equal(isTourDateSchedulerEnabled({ TOURDATE_REFRESH_ENABLED: "1" }), true);
+  assert.equal(isCacheWarmSchedulerEnabled({ RENDER: "true" }), false);
+  assert.equal(isTourDateSchedulerEnabled({ RENDER: "true" }), false);
+  assert.equal(isCacheWarmSchedulerEnabled({ RENDER: "true", CACHE_WARM_ENABLED: "true" }), true);
+  assert.equal(isTourDateSchedulerEnabled({ RENDER: "true", TOURDATE_REFRESH_ENABLED: "yes" }), true);
 
   for (const value of ["0", "false", "FALSE", "no", "off", "disabled"]) {
     assert.equal(isCacheWarmSchedulerEnabled({ CACHE_WARM_ENABLED: value }), false, `cache switch accepts ${value}`);
@@ -68,6 +72,27 @@ test("scheduled-job boundaries contain synchronous throws and async rejections",
     assert.equal(await runSafely(async () => {}, () => { throw new Error("reporter must not matter"); }), true);
     assert.equal(await runSafely(async () => { throw new Error("job"); }, () => { throw new Error("reporter"); }), false);
   }
+});
+
+test("tour-date restarts skip provider fan-out while the persisted refresh is fresh", () => {
+  const now = Date.UTC(2026, 6, 29, 12);
+  assert.equal(shouldRefreshTourDates(0, now, 12), true);
+  assert.equal(shouldRefreshTourDates(now - 60 * 60 * 1000, now, 12), false);
+  assert.equal(shouldRefreshTourDates(now - 13 * 60 * 60 * 1000, now, 12), true);
+});
+
+test("tour refresh can distinguish an empty success from total provider failure", async () => {
+  const partial = await collectTourProviderResults([
+    async () => [],
+    async () => { throw new Error("provider down"); },
+  ]);
+  assert.deepEqual(partial, { rows: [], successes: 1, failures: 1 });
+
+  const failed = await collectTourProviderResults([
+    async () => { throw new Error("first down"); },
+    async () => { throw new Error("second down"); },
+  ]);
+  assert.deepEqual(failed, { rows: [], successes: 0, failures: 2 });
 });
 
 test("a dry run estimates cost and coverage without resolving or recording anything", async () => {

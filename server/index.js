@@ -5,8 +5,8 @@
 //   PORT=3000 NODE_ENV=production ADMIN_PASSWORD=... node server/index.js
 //
 // Crash posture: request errors are isolated and JSON bodies are size-capped.
-// Truly uncaught process errors trigger a graceful restart; continuing after an
-// unknown fatal state can corrupt later requests or database work.
+// Truly uncaught process errors retain Node's fail-fast exit; continuing after
+// an unknown fatal state can corrupt later requests or database work.
 import { createServer } from "node:http";
 import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { join, extname, normalize, dirname, sep } from "node:path";
@@ -190,7 +190,13 @@ function serveStatic(req, res, pathname) {
   let file = normalize(join(DIST, pathname === "/" ? "index.html" : pathname));
   const distRoot = normalize(DIST) + sep;
   if (!file.startsWith(distRoot)) return send(res, 403, { error: "Forbidden" });
-  if (!existsSync(file) || statSync(file).isDirectory()) file = join(DIST, "index.html"); // SPA fallback
+  if (!existsSync(file) || statSync(file).isDirectory()) {
+    // A stale hashed chunk must be a real 404. Returning the SPA HTML with 200
+    // makes browsers report an opaque module error and defeats safe deploy
+    // recovery. Extensionless application routes still receive the shell.
+    if (pathname.startsWith("/_expo/") || extname(pathname)) return send(res, 404, { error: "Asset not found." });
+    file = join(DIST, "index.html");
+  }
   const ext = extname(file).toLowerCase();
 
   // The shell is one file for every URL, so per-page metadata has to be injected
@@ -327,32 +333,21 @@ const server = createServer(async (req, res) => {
   }
 });
 
-// Process-level errors are LOGGED, not fatal. The previous handler called
-// shutdown(1) on ANY unhandled rejection or exception, which turned a single
-// stray background rejection — a provider fetch that rejected without a catch, a
-// scheduled job, a live Wikidata lookup off a play request — into a full-site
-// outage: the process exited, Render restarted it, the same background promise
-// rejected again, and the origin sat in a 502 crash loop. A public web server
-// must keep serving requests when a background promise fails; the per-request
-// router already isolates and reports errors for the request that caused them.
-//
-// A genuine STORM of exceptions (a wedged process throwing on every tick) is
-// different from a transient one, so only a sustained burst triggers a graceful
-// restart — never a single event.
-let exceptionBurst = 0;
-setInterval(() => { exceptionBurst = 0; }, 60_000).unref();
-const notePotentialCrashLoop = () => {
-  exceptionBurst += 1;
-  if (exceptionBurst >= 25) {
-    console.error(`[pit] ${exceptionBurst} process errors in under a minute — restarting a clean process.`);
-    shutdown(1);
-  }
-};
-process.on("uncaughtException", (e) => { console.error("[pit] uncaughtException (kept serving):", e); notePotentialCrashLoop(); });
-process.on("unhandledRejection", (e) => { console.error("[pit] unhandledRejection (kept serving):", e); notePotentialCrashLoop(); });
+// Observe fatal errors without installing an `uncaughtException` handler. Node
+// explicitly warns that resuming after an uncaught exception is unsafe because
+// application state may be corrupted. Under the Node 24 runtime an unhandled
+// rejection is thrown by default too, so both paths are logged here and then
+// retain Node's fail-fast exit semantics for Render to restart cleanly.
+process.on("uncaughtExceptionMonitor", (error, origin) => {
+  console.error(`[pit] fatal process error (${origin}):`, error);
+});
 
-// hourly session sweep
-setInterval(sweepExpiredSessions, 60 * 60 * 1000).unref();
+// Hourly maintenance owns its failure at the timer boundary. A transient
+// cleanup error should be visible, but it is not an unknown process-level bug.
+setInterval(() => {
+  try { sweepExpiredSessions(); }
+  catch (error) { console.error("[pit] expired-session sweep failed safely:", error); }
+}, 60 * 60 * 1000).unref();
 
 // graceful shutdown, finish in-flight requests, close the DB cleanly
 let shuttingDown = false;

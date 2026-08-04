@@ -1,6 +1,6 @@
 import { Platform } from "react-native";
 import { fetch as expoFetch } from "expo/fetch";
-import { File as ExpoFile } from "expo-file-system";
+import { File as ExpoFile, UploadType } from "expo-file-system";
 import { api } from "./api";
 import { AppError, captureAppError } from "./diagnostics";
 import { webImageOptimizationPlan } from "./mediaImagePolicy.mjs";
@@ -108,10 +108,10 @@ async function bodyFor(asset) {
   return file;
 }
 
-function capturedUploadError(error, { timedOut = false, context } = {}) {
+function capturedUploadError(error, { timedOut = false, context, code } = {}) {
   if (error instanceof AppError && error.diagnosticId) return error;
   return captureAppError(error, {
-    ...(timedOut ? { kind: "timeout" } : { code: "PIT-UPLOAD-004" }),
+    ...(timedOut ? { kind: "timeout" } : { code: code || "PIT-UPLOAD-004" }),
     context,
     source: "media",
     toast: true,
@@ -130,7 +130,7 @@ export async function uploadMediaAsset(asset, purpose, { signal, timeoutMs } = {
   try {
     body = await bodyFor(asset);
   } catch (error) {
-    throw capturedUploadError(error, { context });
+    throw capturedUploadError(error, { context, code: "PIT-UPLOAD-002" });
   }
 
   const contentType = contentTypeFor(asset, body);
@@ -186,13 +186,29 @@ export async function uploadMediaAsset(asset, purpose, { signal, timeoutMs } = {
   }, Math.max(1_000, Number(timeoutMs) || UPLOAD_TIMEOUT_MS));
 
   try {
-    const response = await expoFetch(ticket.uploadUrl, {
-      method: ticket.method || "PUT",
-      headers: ticket.requiredHeaders,
-      body,
-      signal: controller.signal,
-    });
-    if (!response.ok) throw new Error(`Media storage rejected the upload (${response.status}).`);
+    let status;
+    if (Platform.OS === "web") {
+      const response = await expoFetch(ticket.uploadUrl, {
+        method: ticket.method || "PUT",
+        headers: ticket.requiredHeaders,
+        body,
+        signal: controller.signal,
+      });
+      status = response.status;
+    } else {
+      // SDK 56's expo/fetch currently materializes an Expo File as an
+      // ArrayBuffer. File.upload delegates to URLSession/OkHttp instead, so a
+      // large concert clip streams from disk and its real byte length is sent.
+      const response = await body.upload(ticket.uploadUrl, {
+        httpMethod: ticket.method || "PUT",
+        uploadType: UploadType.BINARY_CONTENT,
+        headers: ticket.requiredHeaders,
+        signal: controller.signal,
+        sessionType: "foreground",
+      });
+      status = response.status;
+    }
+    if (status < 200 || status >= 300) throw new Error(`Media storage rejected the upload (${status}).`);
     return ticket.publicUrl;
   } catch (error) {
     // Closing the composer or tapping Cancel is intentional lifecycle cleanup,

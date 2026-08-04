@@ -17,7 +17,8 @@ import SheetHeader from "../components/SheetHeader";
 import DatePicker from "../components/DatePicker";
 import { isDurableMediaUrl, reportMediaPickerError, uploadMediaAsset } from "../lib/mediaUpload";
 import { api } from "../lib/api";
-import { formatDate, toIsoDate, todayIso } from "../domain/dates.mjs";
+import { formatDate, initialComposerDate, toIsoDate, todayIso } from "../domain/dates.mjs";
+import { shouldContinueMediaBatch } from "../domain/mediaBatchPolicy.mjs";
 
 const GROUP_COLOR = { "THE BAND": colors.amber, "THE ROOM": colors.cool, "THE NIGHT": colors.magenta };
 const GROUPS = ["THE BAND", "THE ROOM", "THE NIGHT"];
@@ -58,8 +59,10 @@ function Stepper({ label, value, onChange, color }) {
 // something that tells the person what to do: the two common causes are being
 // offline and hitting the hourly post limit, and both are recoverable.
 function postErrorMessage(error) {
-  const code = error?.code || error?.body?.code;
+  const code = error?.serverCode || error?.body?.code || error?.code;
   const status = Number(error?.status || error?.body?.status);
+  if (code === "POST_REMOVED") return "That post was removed on another device. Close this composer and start a new post.";
+  if (status === 409) return "That post changed on another device. Close this composer, reopen the latest version, and apply your changes again.";
   if (code === "RATE_LIMITED" || status === 429) return "You're posting quickly. Wait a moment and try again — your post is still here.";
   if (error?.offline || status === 0 || (!status && error?.message)) return "Couldn't reach Pit. Check your connection and try again — nothing was lost.";
   return "That didn't post. Your review is still here, give it another try.";
@@ -82,7 +85,7 @@ function postDims(post) {
 }
 
 export default function LogScreen({ onPost, onCancel, user, prefill, editing = null, defaultMode = "show" }) {
-  const { searchArtistsApi, searchVenues, drafts, saveDraft, deleteDraft, myPlaylists, loadMyPlaylists } = useStore();
+  const { searchArtistsApi, searchVenues, drafts, saveDraft, deleteDraft, myPlaylists, myPlaylistsStatus, loadMyPlaylists } = useStore();
   // Two kinds of post share this composer: a full show review, or a plain
   // status update ("post whatever": text and/or photos, no artist/rating).
   const [postType, setPostType] = useState(
@@ -97,11 +100,11 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
   // Artist autocomplete: bind the review to a REAL catalog artist so it links to
   // the artist page, instead of free text that may match nothing.
   const [artistHits, setArtistHits] = useState([]);
-  const [artistPicked, setArtistPicked] = useState(!!editing?.artist || !!prefill?.artist);
+  const [artistPicked, setArtistPicked] = useState(!!editing?.artistKey || !!prefill?.artistKey);
   // The identity behind the name. Picking a suggestion binds the review to that
   // catalog entity; typing over it drops the binding, so free text can never
   // inherit the last artist's page. The server re-checks this before storing.
-  const [artistKey, setArtistKey] = useState(editing?.artistKey || null);
+  const [artistKey, setArtistKey] = useState(editing?.artistKey || prefill?.artistKey || null);
   const artistRequestRef = useRef(0);
   useEffect(() => {
     const q = artist.trim();
@@ -138,7 +141,11 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
   const [showPlaylist, setShowPlaylist] = useState(!!editing?.playlist);
   // Only shareable playlists (public/unlisted, with songs) can be attached.
   const shareablePlaylists = (myPlaylists || []).filter((pl) => pl?.visibility !== "private" && (pl?.tracks?.length || 0) > 0);
-  useEffect(() => { loadMyPlaylists?.(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
+  const togglePlaylistPanel = () => {
+    const opening = !showPlaylist;
+    setShowPlaylist(opening);
+    if (opening && (myPlaylistsStatus === "error" || myPlaylistsStatus === "idle")) void loadMyPlaylists?.();
+  };
   const [songError, setSongError] = useState("");
   const [postError, setPostError] = useState("");
   const [tags, setTags] = useState(() => (Array.isArray(editing?.tags) ? editing.tags.slice(0, 5) : []));
@@ -166,7 +173,12 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
   const PAST_YEARS = Array.from({ length: today.getFullYear() - 1999 }, (_, i) => today.getFullYear() - i);
   // An existing post may still hold a legacy display-format date, so normalize
   // on open: editing a show must not rewrite which performance it belongs to.
-  const [date, setDate] = useState(toIsoDate(editing?.date) || editing?.date || todayStr);
+  const [date, setDate] = useState(initialComposerDate({
+    editing: !!editing,
+    editingDate: editing?.date,
+    prefillDate: prefill?.date,
+    today: todayStr,
+  }));
   const [showDate, setShowDate] = useState(false);
 
   const addPhoto = async () => {
@@ -189,6 +201,9 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
     setMediaError("");
     setUploadProgress({ current: 1, total: selected.length, completed: 0 });
     let completed = 0;
+    let failed = 0;
+    let cancelled = false;
+    let stoppedEarly = false;
     try {
       // Upload sequentially to keep mobile memory predictable. Successful
       // objects remain available even if a later selection fails.
@@ -201,13 +216,22 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
           setPhotos((current) => [...current, uploaded].filter(isDurableMediaUrl).slice(0, 8));
           setUploadProgress({ current: Math.min(index + 2, selected.length), total: selected.length, completed });
         } catch (error) {
-          if (!controller.signal.aborted) {
-            setMediaError(completed
-              ? `${completed} of ${selected.length} uploads finished. Add the remaining media again to retry.`
-              : "That media didn't upload. Check your connection or try a shorter clip.");
-          }
-          break;
+          if (controller.signal.aborted) { cancelled = true; break; }
+          failed += 1;
+          // One unsupported or oversized clip must not prevent later valid
+          // photos in the same picker selection from uploading. A connection,
+          // auth, rate-limit, timeout, or storage failure stops immediately.
+          if (!shouldContinueMediaBatch(error)) { stoppedEarly = true; break; }
         }
+      }
+      if (failed && !cancelled) {
+        setMediaError(stoppedEarly
+          ? (completed
+              ? `${completed} of ${selected.length} uploads finished. Uploading stopped after a connection or storage error; try the remaining media again.`
+              : "Uploading stopped after a connection or storage error. Check your connection and try again.")
+          : (completed
+              ? `${completed} of ${selected.length} uploads finished. ${failed} item${failed === 1 ? "" : "s"} couldn't be added.`
+              : "That media didn't upload. Try a supported file or a shorter clip."));
       }
     } finally {
       if (uploadControllerRef.current === controller) {
@@ -260,14 +284,30 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
   const stash = () => {
     if (editing) return;
     if (submitBusy) return;
-    const id = saveDraft({ id: draftId, artist, artistKey, venue, city, tour, date, dims, review, tags, song, photos: photos.filter(isDurableMediaUrl) });
+    const id = saveDraft({
+      id: draftId,
+      submissionId: submissionIdRef.current,
+      artist,
+      artistKey,
+      venue,
+      city,
+      tour,
+      date,
+      dims,
+      review,
+      tags,
+      song,
+      photos: photos.filter(isDurableMediaUrl),
+      photosPublic,
+    });
     setDraftId(id);
     onCancel?.();
   };
   const resume = (d) => {
     setDraftId(d.id);
+    submissionIdRef.current = d.submissionId || submissionIdRef.current;
     setArtist(d.artist || ""); setArtistPicked(!!d.artistKey); setArtistKey(d.artistKey || null); setVenue(d.venue || ""); setVenuePicked(!!d.venue); setCity(d.city || "");
-    setTour(d.tour || ""); setDate(toIsoDate(d.date) || d.date || todayStr); setDims(d.dims || dims); setReview(d.review || ""); setTags(Array.isArray(d.tags) ? d.tags.slice(0, 5) : []); setSong(d.song || null); setSongUrl(d.song?.url || ""); setPhotos((d.photos || []).filter(isDurableMediaUrl));
+    setTour(d.tour || ""); setDate(toIsoDate(d.date) || d.date || todayStr); setDims(d.dims || dims); setReview(d.review || ""); setTags(Array.isArray(d.tags) ? d.tags.slice(0, 5) : []); setSong(d.song || null); setSongUrl(d.song?.url || ""); setPhotos((d.photos || []).filter(isDurableMediaUrl)); setPhotosPublic(d.photosPublic !== false);
   };
   const hasContent = artist.trim() || venue.trim() || review.trim() || photos.length || song?.videoId;
 
@@ -343,7 +383,7 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
 
   return (
     <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-      <SheetHeader title={editing ? "Edit post" : isStatus ? "New post" : "Log a show"} onClose={onCancel} action={{ label: posting ? (editing ? "Saving..." : "Posting...") : uploadingPhotos ? "Uploading..." : resolvingSong ? "Checking..." : editing ? "Save" : "Post", onPress: submit, disabled: !canPost || submitBusy }} />
+      <SheetHeader title={editing ? "Edit post" : isStatus ? "New post" : "Log a show"} onClose={onCancel} leadDisabled={submitBusy} action={{ label: posting ? (editing ? "Saving..." : "Posting...") : uploadingPhotos ? "Uploading..." : resolvingSong ? "Checking..." : editing ? "Save" : "Post", onPress: submit, disabled: !canPost || submitBusy }} />
 
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         {!!postError && <View style={styles.postErrorBox}><Icon name="flag" size={14} color={colors.danger} /><Text style={styles.postErrorTxt}>{postError}</Text></View>}
@@ -551,7 +591,7 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
         <View style={styles.attachBar}>
           <AttachChip icon="camera" label="Photo / video" active={showPhotos || photos.length > 0} count={photos.length} onPress={() => setShowPhotos((v) => !v)} disabled={submitBusy} />
           <AttachChip icon="play" label="YouTube" active={showSong || !!song?.videoId} onPress={() => setShowSong((v) => !v)} disabled={submitBusy} />
-          {isStatus && <AttachChip icon="feed" label="Playlist" active={showPlaylist || !!playlist} count={playlist ? (playlist.tracks?.length || 0) : 0} onPress={() => setShowPlaylist((v) => !v)} disabled={submitBusy} />}
+          {isStatus && <AttachChip icon="feed" label="Playlist" active={showPlaylist || !!playlist} count={playlist ? (playlist.tracks?.length || 0) : 0} onPress={togglePlaylistPanel} disabled={submitBusy} />}
         </View>
 
         {(showSong || song?.videoId) && (
@@ -607,6 +647,12 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
                   <Icon name="x" size={17} color={colors.textDim} />
                 </Pressable>
               </View>
+            ) : myPlaylistsStatus === "loading" ? (
+              <Text style={styles.plEmpty}>Loading your playlists...</Text>
+            ) : myPlaylistsStatus === "error" ? (
+              <Pressable onPress={() => void loadMyPlaylists?.()} accessibilityRole="button" accessibilityLabel="Retry loading playlists">
+                <Text style={[styles.plEmpty, styles.plRetry]}>Couldn't load playlists. Tap to retry.</Text>
+              </Pressable>
             ) : shareablePlaylists.length ? (
               <View style={styles.plList}>
                 {shareablePlaylists.slice(0, 8).map((pl) => (
@@ -711,6 +757,7 @@ const styles = StyleSheet.create({
   postErrorBox: { flexDirection: "row", alignItems: "center", gap: space(1.5), backgroundColor: colors.surface, borderColor: colors.danger, borderWidth: 1, borderRadius: radius.md, padding: space(2.5), marginTop: space(3) },
   postErrorTxt: { flex: 1, color: colors.danger, fontSize: 13, lineHeight: 18, fontWeight: "600" },
   playlistArt: { alignItems: "center", justifyContent: "center", backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.line },
+  plRetry: { color: colors.amber, fontWeight: "800" },
   plList: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   plChip: { flexDirection: "row", alignItems: "center", gap: 7, maxWidth: "100%", paddingHorizontal: 12, paddingVertical: 9, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
   plChipTxt: { color: colors.text, fontSize: 13, fontWeight: "700", flexShrink: 1 },

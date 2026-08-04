@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { lazyWithRetry, loadChunk } from "./lazyWithRetry.js";
+import { confirmMissingDynamicChunk, dynamicChunkUrl, lazyWithRetry, loadChunk } from "./lazyWithRetry.js";
 
 // A fake sessionStorage and reload spy, so the recovery path is testable without
 // a browser.
@@ -44,6 +44,51 @@ test("a stale chunk after a deploy reloads exactly once", async () => {
   assert.equal(h.reloadCount(), 1, "reloads to get fresh HTML");
   assert.equal(typeof mod.default, "function", "renders nothing while the reload happens");
   assert.equal(mod.default(), null);
+});
+
+test("repeated cellular fetch failures never hard-reload the app", async () => {
+  const h = harness();
+  const offline = async () => { throw new TypeError("Failed to fetch"); };
+  await assert.rejects(() => loadChunk(offline, { name: "Composer", ...h }), /Failed to fetch/);
+  assert.equal(h.reloadCount(), 0, "a network outage must preserve unsaved composer state");
+  assert.equal(h.store.size, 0);
+});
+
+test("Expo's real AsyncRequireError reloads only after the hashed asset is confirmed missing", async () => {
+  const h = harness();
+  const stale = new Error("Loading module https://www.mshpit.com/_expo/static/js/web/LogScreen-deadbeef.js failed.\n(error: https://www.mshpit.com/_expo/static/js/web/LogScreen-deadbeef.js)");
+  stale.name = "AsyncRequireError";
+  const factory = async () => { throw stale; };
+  await loadChunk(factory, {
+    name: "Composer",
+    ...h,
+    online: true,
+    baseUrl: "https://www.mshpit.com/feed",
+    probe: async () => ({ status: 404, headers: { get: () => "application/json" } }),
+  });
+  assert.equal(h.reloadCount(), 1);
+});
+
+test("a dynamic import failure during a network outage preserves the page", async () => {
+  const h = harness();
+  const transient = new Error("Failed to fetch dynamically imported module: https://www.mshpit.com/_expo/static/js/web/LogScreen-deadbeef.js");
+  await assert.rejects(() => loadChunk(async () => { throw transient; }, {
+    name: "Composer",
+    ...h,
+    online: true,
+    baseUrl: "https://www.mshpit.com/feed",
+    probe: async () => { throw new TypeError("Failed to fetch"); },
+  }), /dynamically imported module/);
+  assert.equal(h.reloadCount(), 0);
+});
+
+test("dynamic chunk verification is same-origin and recognizes an HTML SPA fallback", async () => {
+  const error = Object.assign(new Error("Loading module /_expo/static/js/web/Old.js failed. (error: /_expo/static/js/web/Old.js)"), { name: "AsyncRequireError" });
+  assert.equal(dynamicChunkUrl(error, "https://www.mshpit.com/feed"), "https://www.mshpit.com/_expo/static/js/web/Old.js");
+  assert.equal(await confirmMissingDynamicChunk(error, {
+    baseUrl: "https://www.mshpit.com/feed",
+    probe: async () => ({ status: 200, headers: { get: () => "text/html; charset=utf-8" } }),
+  }), true);
 });
 
 test("it never loops: a second failure after the reload throws instead", async () => {

@@ -24,17 +24,16 @@ import {
   youtubeProviderStatus,
 } from "./musicProviders.js";
 import { backfillChannelsFromWikidata } from "./wikidataChannels.js";
+import { backgroundJobEnabled } from "./backgroundJobs.js";
 
 const PROGRESS_KEY = "warm:youtube:v1";
 const DAILY_MARKER_KEY = "warm:youtube:lastRun";
-const DISABLED_ENV_VALUES = new Set(["0", "false", "no", "off", "disabled"]);
 
-// Emergency production kill switch. Missing/blank values intentionally keep the
-// existing behavior, so operators only disable the scheduler by setting an
-// explicit false-like CACHE_WARM_ENABLED value.
+// Hosted instances opt in explicitly. This prevents a cold-start/restart loop
+// from immediately repeating thousands of provider lookups. Local development
+// remains enabled by default for backwards compatibility.
 export function isCacheWarmSchedulerEnabled(env = process.env) {
-  const value = String(env?.CACHE_WARM_ENABLED ?? "").trim().toLowerCase();
-  return !value || !DISABLED_ENV_VALUES.has(value);
+  return backgroundJobEnabled(env, "CACHE_WARM_ENABLED");
 }
 
 // Timer callbacks do not observe returned promises. Keep this wrapper as the
@@ -240,7 +239,7 @@ export function startCacheWarmScheduler({
   intervalMs = 24 * 60 * 60 * 1000,
 } = {}) {
   if (!isCacheWarmSchedulerEnabled()) {
-    console.log("[pit] catalogue enrichment disabled by CACHE_WARM_ENABLED.");
+    console.log("[pit] catalogue enrichment disabled; set CACHE_WARM_ENABLED=true to opt in on Render.");
     return;
   }
   const youtubeConfigured = !!process.env.YOUTUBE_API_KEY;

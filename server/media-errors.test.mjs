@@ -94,9 +94,19 @@ test("media presigns a short-lived user-owned key without exposing credentials",
   assert.equal(result.publicUrl, "https://media.example.com/users/u_owner/post/fixed-object.jpg");
   assert.deepEqual(result.requiredHeaders, { "Content-Type": "image/jpeg" });
   assert.match(result.uploadUrl, /^https:\/\/objects\.example\.com\/pit-media\/users\/u_owner\/post\/fixed-object\.jpg\?/);
-  assert.match(result.uploadUrl, /X-Amz-SignedHeaders=content-type%3Bhost/);
+  assert.match(result.uploadUrl, /X-Amz-SignedHeaders=content-length%3Bcontent-type%3Bhost/);
+  assert.equal(Object.hasOwn(result.requiredHeaders, "Content-Length"), false, "browser code must not set a forbidden header");
   assert.equal(result.uploadUrl.includes(configuredEnv.MEDIA_SECRET_ACCESS_KEY), false);
   assert.equal(result.expiresAt, new Date("2026-07-12T20:40:40Z").getTime());
+
+  const otherSize = createMediaPresign({
+    userId: "u_owner",
+    body: { purpose: "post", contentType: "image/jpeg", fileSize: 3457, name: "concert.jpg" },
+    env: configuredEnv,
+    now: new Date("2026-07-12T20:30:40Z"),
+    objectId: "fixed-object",
+  });
+  assert.notEqual(otherSize.uploadUrl, result.uploadUrl, "the signed request must be bound to the measured byte count");
 });
 
 test("media storage fails closed when server credentials are incomplete", () => {

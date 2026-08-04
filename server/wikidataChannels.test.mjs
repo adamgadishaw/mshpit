@@ -47,6 +47,23 @@ after(() => {
   rmSync(dataDir, { recursive: true, force: true });
 });
 
+test("artist aliases have an expression index for the startup MBID join", () => {
+  const indexes = db.prepare("PRAGMA index_list('artists')").all().map((row) => row.name);
+  assert.ok(indexes.includes("idx_artists_mbid_lower"));
+  seedArtist("Alias A", MBID_A, 10);
+  seedArtist("Alias B", MBID_A, 9);
+  const plan = db.prepare(`EXPLAIN QUERY PLAN
+    WITH eligible AS (
+      SELECT lower(a.mbid) AS mbid FROM artists a
+      WHERE a.mbid IS NOT NULL GROUP BY lower(a.mbid) LIMIT 100
+    )
+    SELECT a.norm FROM eligible e JOIN artists a ON lower(a.mbid)=e.mbid`).all();
+  assert.ok(
+    plan.some((row) => /idx_artists_mbid_lower/.test(String(row.detail))),
+    `startup join must use the MBID index: ${plan.map((row) => row.detail).join(" | ")}`,
+  );
+});
+
 test("SPARQL accepts only canonical MBIDs, lowercases and deduplicates them", () => {
   const q = buildSparql([
     MBID_A.toUpperCase(),

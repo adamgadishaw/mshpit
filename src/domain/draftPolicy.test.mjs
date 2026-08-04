@@ -3,8 +3,11 @@ import assert from "node:assert/strict";
 
 import { deleteAccountDraft, draftsForAccount, migrateLegacyDrafts, upsertAccountDraft } from "./draftPolicy.mjs";
 
-test("legacy drafts are assigned once to the currently restored account", () => {
-  assert.deepEqual(migrateLegacyDrafts([{ id: "old" }], "u_adam"), [{ id: "old", ownerId: "u_adam" }]);
+test("an ownerless legacy draft is recovered by the persisted account", () => {
+  const migrated = migrateLegacyDrafts([{ id: "old", review: "private" }], "u_adam");
+  assert.deepEqual(migrated, [{ id: "old", review: "private", ownerId: "u_adam" }]);
+  assert.equal(draftsForAccount(migrated, "u_adam").length, 1);
+  assert.deepEqual(draftsForAccount(migrated, "u_other"), []);
 });
 
 test("draft reads, updates, and deletes cannot cross account boundaries", () => {
@@ -20,4 +23,14 @@ test("draft reads, updates, and deletes cannot cross account boundaries", () => 
 
   const attemptedCrossDelete = deleteAccountDraft(updated, "b", "u_a");
   assert.equal(draftsForAccount(attemptedCrossDelete, "u_b").length, 1);
+});
+
+test("draft updates preserve posting identity and photo-gallery consent", () => {
+  const updated = upsertAccountDraft([], {
+    id: "draft",
+    submissionId: "post_retry_identity",
+    photosPublic: false,
+  }, "u_a");
+  assert.equal(updated[0].submissionId, "post_retry_identity");
+  assert.equal(updated[0].photosPublic, false);
 });

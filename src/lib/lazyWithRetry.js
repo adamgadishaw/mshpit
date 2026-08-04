@@ -15,12 +15,69 @@ import { lazy } from "react";
 //
 // It is separated from lazy() and takes its side effects (reload, storage,
 // delay) as arguments purely so it can be tested without a browser.
+export function isStaleChunkError(error) {
+  const name = String(error?.name || "");
+  const code = String(error?.code || "");
+  const message = String(error?.message || error || "");
+  return name === "ChunkLoadError"
+    || /chunkloaderror/i.test(code)
+    || /loading (?:css )?chunk .+ failed/i.test(message)
+    || /\b404\b/i.test(message);
+}
+
+export function dynamicChunkUrl(error, baseUrl = null) {
+  const message = String(error?.message || error || "");
+  const candidate = message.match(/https?:\/\/[^\s)]+?\.js(?:\?[^\s)]*)?/i)?.[0]
+    || message.match(/\(error:\s*([^)]+\.js(?:\?[^)]*)?)\)/i)?.[1];
+  if (!candidate) return null;
+  try {
+    const url = new URL(candidate, baseUrl || undefined);
+    if (!/^https?:$/.test(url.protocol)) return null;
+    if (baseUrl && url.origin !== new URL(baseUrl).origin) return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+export async function confirmMissingDynamicChunk(error, {
+  online = (typeof navigator === "undefined" ? true : navigator.onLine !== false),
+  baseUrl = (typeof window !== "undefined" ? window.location?.href : null),
+  probe = (typeof fetch === "function"
+    ? (url) => fetch(url, { method: "HEAD", cache: "no-store", credentials: "same-origin" })
+    : null),
+} = {}) {
+  const name = String(error?.name || "");
+  const message = String(error?.message || error || "");
+  const looksDynamic = name === "AsyncRequireError"
+    || /failed to fetch dynamically imported module/i.test(message)
+    || /importing a module script failed/i.test(message)
+    || /error loading dynamically imported module/i.test(message)
+    || /loading module .+ failed/i.test(message);
+  if (!looksDynamic || !online || !probe) return false;
+  const url = dynamicChunkUrl(error, baseUrl);
+  if (!url) return false;
+  try {
+    const response = await probe(url);
+    const status = Number(response?.status) || 0;
+    const contentType = String(response?.headers?.get?.("content-type") || response?.contentType || "");
+    return status === 404 || status === 410 || (status >= 200 && status < 300 && /text\/html/i.test(contentType));
+  } catch {
+    // A failed verification is indistinguishable from the cellular outage that
+    // may have caused the import error. Preserve the current page and draft.
+    return false;
+  }
+}
+
 export async function loadChunk(factory, {
   name = "chunk",
   storage = (typeof window !== "undefined" ? window.sessionStorage : null),
   reload = (typeof window !== "undefined" && window.location ? () => window.location.reload() : null),
   delay = (ms) => new Promise((r) => setTimeout(r, ms)),
   retryDelayMs = 350,
+  probe,
+  online,
+  baseUrl,
 } = {}) {
   const key = `pit.chunkReload.${name}`;
   const read = () => { try { return storage?.getItem(key); } catch { return null; } };
@@ -39,11 +96,12 @@ export async function loadChunk(factory, {
       clear();
       return mod;
     } catch (secondError) {
-      // Still failing. If we have not already reloaded for this chunk in this
-      // tab, reload once to get fresh HTML with current hashes. The guard makes
-      // this at-most-once, so a truly missing file surfaces the error boundary
-      // rather than a reload loop.
-      if (read() !== "1" && reload) {
+      // Only a recognized stale/missing asset earns a hard reload. A generic
+      // cellular "Failed to fetch" can reject twice while someone is writing a
+      // post; reloading in that case destroys unsaved composer state.
+      const stale = isStaleChunkError(secondError)
+        || await confirmMissingDynamicChunk(secondError, { probe, online, baseUrl });
+      if (stale && read() !== "1" && reload) {
         write("1");
         reload();
         // Render nothing during the sliver before unload.

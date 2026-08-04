@@ -7,6 +7,7 @@ import { db } from "./db.js";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { backgroundJobEnabled } from "./backgroundJobs.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CATALOG = join(HERE, "..", "src", "seed", "catalog.generated.json");
@@ -16,16 +17,16 @@ const LIMIT = Number(process.env.TOURDATE_LIMIT) || 150;
 const CITY_LIMIT = Number(process.env.TOURDATE_CITY_LIMIT) || 50;
 const REFRESH_H = Number(process.env.TOURDATE_REFRESH_H) || 12;
 const DAY = 86400000;
+const LAST_REFRESH_KEY = "tourdates:last-refresh:v1";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const slugId = (p, n, v, d) => `${p}_${n}_${v}_${d}`.toLowerCase().replace(/[^a-z0-9]+/g, "_").slice(0, 120);
 const norm = (value) => String(value || "").trim().toLowerCase();
-const DISABLED_ENV_VALUES = new Set(["0", "false", "no", "off", "disabled"]);
 
-// Emergency production kill switch. It is enabled by default for backwards
-// compatibility and turns off only for an explicit false-like value.
+// Hosted instances opt in explicitly. The full refresh performs one provider
+// request per artist, so replaying it after every ephemeral cold start can make
+// the web process unavailable and can trip Render's outbound-traffic limits.
 export function isTourDateSchedulerEnabled(env = process.env) {
-  const value = String(env?.TOURDATE_REFRESH_ENABLED ?? "").trim().toLowerCase();
-  return !value || !DISABLED_ENV_VALUES.has(value);
+  return backgroundJobEnabled(env, "TOURDATE_REFRESH_ENABLED");
 }
 
 // A timer ignores the promise returned by an async callback. Always cross this
@@ -41,6 +42,21 @@ export async function runTourDateJobSafely(job, report = (error) => {
     try { report(error); } catch {}
     return false;
   }
+}
+
+export function shouldRefreshTourDates(lastRefreshAt, now = Date.now(), refreshHours = REFRESH_H) {
+  const last = Number(lastRefreshAt) || 0;
+  const interval = Math.max(1, Number(refreshHours) || REFRESH_H) * 60 * 60 * 1000;
+  return !last || now - last >= interval;
+}
+
+function storedLastRefreshAt() {
+  return db.prepare("SELECT value FROM app_meta WHERE key=?").get(LAST_REFRESH_KEY)?.value || 0;
+}
+
+function markRefreshed(at = Date.now()) {
+  db.prepare("INSERT INTO app_meta (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+    .run(LAST_REFRESH_KEY, String(at));
 }
 
 async function getJSON(url) {
@@ -121,14 +137,27 @@ async function bitDates(name) {
   return out;
 }
 
+export async function collectTourProviderResults(providers) {
+  const active = (providers || []).filter((provider) => typeof provider === "function");
+  const settled = await Promise.allSettled(active.map((provider) => provider()));
+  return {
+    rows: settled.filter((result) => result.status === "fulfilled").flatMap((result) => Array.isArray(result.value) ? result.value : []),
+    successes: settled.filter((result) => result.status === "fulfilled").length,
+    failures: settled.filter((result) => result.status === "rejected").length,
+  };
+}
+
 async function fetchDates(name) {
-  const results = await Promise.all([tmDates(name).catch(() => []), bitDates(name).catch(() => [])]);
+  const result = await collectTourProviderResults([
+    KEY ? () => tmDates(name) : null,
+    BIT ? () => bitDates(name) : null,
+  ]);
   const byGig = new Map();
-  for (const row of results.flat()) {
+  for (const row of result.rows) {
     const k = `${(row.venue || "").toLowerCase()}|${row.date}`;
     if (!byGig.has(k)) byGig.set(k, row);
   }
-  return [...byGig.values()];
+  return { ...result, rows: [...byGig.values()] };
 }
 
 const upsert = db.prepare(`
@@ -147,16 +176,21 @@ async function refresh() {
       .filter((a) => a.name)
       .sort((x, y) => (y.popularity || 0) - (x.popularity || 0))
       .slice(0, LIMIT);
-    let total = 0;
+    let total = 0, providerSuccesses = 0, providerFailures = 0;
     for (const a of artists) {
       try {
-        const rows = await fetchDates(a.name);
+        const result = await fetchDates(a.name);
+        providerSuccesses += result.successes;
+        providerFailures += result.failures;
         const now = Date.now();
         db.exec("BEGIN");
-        for (const r of rows) upsert.run({ lat: null, lng: null, ...r, updated_at: now });
+        for (const r of result.rows) upsert.run({ lat: null, lng: null, ...r, updated_at: now });
         db.exec("COMMIT");
-        total += rows.length;
-      } catch (e) { try { db.exec("ROLLBACK"); } catch {} }
+        total += result.rows.length;
+      } catch (e) {
+        try { db.exec("ROLLBACK"); } catch {}
+        throw e;
+      }
       await sleep(250); // stay gentle on the APIs (and our event loop)
     }
     const cities = db.prepare(`SELECT home_city city, COUNT(*) members FROM users
@@ -164,26 +198,36 @@ async function refresh() {
       GROUP BY lower(trim(home_city)) ORDER BY members DESC LIMIT ?`).all(CITY_LIMIT);
     for (const { city } of cities) {
       try {
-        const rows = await tmCityDates(city);
+        const result = await collectTourProviderResults([KEY ? () => tmCityDates(city) : null]);
+        providerSuccesses += result.successes;
+        providerFailures += result.failures;
         const now = Date.now();
         db.exec("BEGIN");
-        for (const r of rows) upsert.run({ lat: null, lng: null, ...r, updated_at: now });
+        for (const r of result.rows) upsert.run({ lat: null, lng: null, ...r, updated_at: now });
         db.exec("COMMIT");
-        total += rows.length;
-      } catch { try { db.exec("ROLLBACK"); } catch {} }
+        total += result.rows.length;
+      } catch (e) {
+        try { db.exec("ROLLBACK"); } catch {}
+        throw e;
+      }
       await sleep(250);
+    }
+    if (!providerSuccesses) {
+      throw new Error(`Every configured tour provider request failed (${providerFailures} failures); existing dates were kept and the refresh remains due.`);
     }
     // Drop dates we haven't seen in a month (past shows / cancellations).
     db.prepare("DELETE FROM tour_dates WHERE updated_at < ?").run(Date.now() - 30 * DAY);
-    console.log(`[pit] tour dates refreshed: ${total} dates / ${artists.length} artists + ${cities.length} member cities in ${Math.round((Date.now() - t0) / 1000)}s`);
+    markRefreshed();
+    console.log(`[pit] tour dates refreshed: ${total} dates / ${artists.length} artists + ${cities.length} member cities (${providerSuccesses} provider calls ok, ${providerFailures} failed) in ${Math.round((Date.now() - t0) / 1000)}s`);
   } catch (e) {
     console.error("[pit] tour-date refresh failed:", e.message);
+    throw e;
   } finally { running = false; }
 }
 
 export function startTourDateScheduler() {
   if (!isTourDateSchedulerEnabled()) {
-    console.log("[pit] tour-date scheduler disabled by TOURDATE_REFRESH_ENABLED.");
+    console.log("[pit] tour-date scheduler disabled; set TOURDATE_REFRESH_ENABLED=true to opt in on Render.");
     return;
   }
   if (!KEY && !BIT) {
@@ -192,8 +236,14 @@ export function startTourDateScheduler() {
   }
   console.log(`[pit] tour-date scheduler on (${[KEY && "Ticketmaster", BIT && "Bandsintown"].filter(Boolean).join(" + ")}, every ${REFRESH_H}h).`);
   const triggerRefresh = () => {
-    void runTourDateJobSafely(refresh);
+    void runTourDateJobSafely(async () => {
+      if (!shouldRefreshTourDates(storedLastRefreshAt())) return;
+      await refresh();
+    });
   };
-  setTimeout(triggerRefresh, 5000).unref(); // populate local discovery shortly after deploy
+  // Let health checks and real traffic win the cold-start window. The freshness
+  // read itself stays inside the safe job boundary in case SQLite is transiently
+  // unavailable during maintenance.
+  setTimeout(triggerRefresh, 30_000).unref();
   setInterval(triggerRefresh, REFRESH_H * 3600 * 1000).unref();
 }

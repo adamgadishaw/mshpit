@@ -7,6 +7,9 @@ export function migrateLegacyDrafts(value, currentAccountId) {
     .filter((draft) => draft && typeof draft === "object" && !Array.isArray(draft))
     .map((draft) => Object.prototype.hasOwnProperty.call(draft, "ownerId")
       ? { ...draft, ownerId: ownerKey(draft.ownerId) }
+      // Legacy drafts predate account scoping. The persisted session restored
+      // alongside them is the only recovery identity available; claim once so
+      // an in-progress concert review is not permanently orphaned.
       : { ...draft, ownerId });
 }
 
