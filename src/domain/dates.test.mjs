@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { toIsoDate, isValidDate, formatDate, todayIso } from "./dates.mjs";
+import { toIsoDate, isValidDate, formatDate, todayIso, initialComposerDate } from "./dates.mjs";
 
 test("every stored date shape in the wild collapses to one ISO identity", () => {
   // The formats actually found in the database: ISO, the DatePicker's display
@@ -52,4 +52,10 @@ test("canonicalizing is idempotent, so re-running the migration cannot drift", (
   const once = toIsoDate("2026 · 06 · 21");
   assert.equal(toIsoDate(once), once);
   assert.equal(toIsoDate(formatDate(once)), once);
+});
+
+test("the composer preserves a show's night and never dates a missing legacy edit as today", () => {
+  assert.equal(initialComposerDate({ prefillDate: "2026 · 07 · 28", today: "2026-07-29" }), "2026-07-28");
+  assert.equal(initialComposerDate({ today: "2026-07-29" }), "2026-07-29");
+  assert.equal(initialComposerDate({ editing: true, editingDate: "", today: "2026-07-29" }), "");
 });

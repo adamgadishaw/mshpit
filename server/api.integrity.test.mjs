@@ -53,9 +53,22 @@ test("health reflects database readiness without exposing configuration values",
   const health = routes["GET /api/health"]({});
   assert.equal(health.ok, true);
   assert.equal(health.services.database, true);
+  assert.equal(typeof health.uptimeSeconds, "number");
+  assert.equal(typeof health.services.storageConfigured, "boolean");
+  assert.equal(typeof health.services.backgroundJobs.cacheWarmEnabled, "boolean");
+  assert.equal(typeof health.services.backgroundJobs.tourDateRefreshEnabled, "boolean");
   assert.equal(typeof health.services.youtubeConfigured, "boolean");
   assert.equal(typeof health.services.mailConfigured, "boolean");
   assert.equal(typeof health.services.mediaStorageConfigured, "boolean");
+});
+
+test("artist search ignores punctuation and spacing for phone-friendly lookup", () => {
+  artistStmts.upsert.run(artistRow("j. cole search test", {
+    name: "J. Cole Search Test",
+    popularity: 99,
+  }, "test"));
+  const result = routes["GET /api/artists"]({ query: { q: "jcolesearchtest", limit: 5 } });
+  assert.equal(result.artists[0]?.name, "J. Cole Search Test");
 });
 
 test("PATCH /api/me rejects oversized extras and keeps trusted fields authoritative", () => {

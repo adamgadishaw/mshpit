@@ -296,6 +296,7 @@ export function StoreProvider({ children }) {
   const [feedNextCursor, setFeedNextCursor] = useState(null);
   const [feedLoadingMore, setFeedLoadingMore] = useState(false);
   const [feedHasMore, setFeedHasMore] = useState(true);
+  const feedLoadMoreRef = useRef(false);
 
   // Persist identity + continuity state so a refresh doesn't wipe your session,
   // account, posts, or follows.
@@ -401,7 +402,10 @@ export function StoreProvider({ children }) {
     }
   };
   const loadMoreFeed = async () => {
-    if (feedLoadingMore || !feedHasMore || !feedNextCursor) return false;
+    // React state does not update until the next render. FlatList may fire
+    // onEndReached more than once in that window, so use an immediate lock too.
+    if (feedLoadMoreRef.current || feedLoadingMore || !feedHasMore || !feedNextCursor) return false;
+    feedLoadMoreRef.current = true;
     setFeedLoadingMore(true);
     try {
       const { posts, nextCursor } = await api(`/api/feed?limit=${FEED_PAGE_LIMIT}&before=${encodeURIComponent(feedNextCursor)}`, {
@@ -415,6 +419,7 @@ export function StoreProvider({ children }) {
     } catch {
       return false;
     } finally {
+      feedLoadMoreRef.current = false;
       setFeedLoadingMore(false);
     }
   };
@@ -1553,9 +1558,12 @@ export function StoreProvider({ children }) {
           feedMutationRevisionRef.current += 1;
           if (post) {
             const published = { ...normalizeServerPost(post), dims: post.dims || safe.dims };
-            setFeed((f) => f.map((l) => (l.id === localId ? published : l)));
+            // The canonical row may already have arrived through feed polling
+            // while the original POST response was lost. Collapse both IDs so
+            // an idempotent retry cannot render the same post twice.
+            setFeed((f) => [published, ...f.filter((l) => l.id !== localId && l.id !== published.id)]);
           } else if (id && id !== localId) {
-            setFeed((f) => f.map((l) => (l.id === localId ? { ...l, id } : l)));
+            setFeed((f) => [{ ...safe, id }, ...f.filter((l) => l.id !== localId && l.id !== id)]);
           }
           track("post", kind === "status" ? { kind: "status" } : { artist: safe.artist, venue: safe.venue });
           return { ok: true, id: id || localId };

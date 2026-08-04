@@ -186,6 +186,11 @@ export function createMediaPresign({ userId, body, env = process.env, now = new 
   const objectUrl = joinObjectUrl(config.endpoint, [config.bucket, ...key.split("/")]);
   const publicUrl = joinObjectUrl(config.publicBase, key.split("/"));
   const requiredHeaders = { "Content-Type": file.contentType };
+  // Content-Length is a forbidden browser-authored header, so it is not
+  // returned to the client. Fetch/URLSession/OkHttp compute it from the actual
+  // Blob/file. Signing that transport header binds the ticket to the measured
+  // byte count instead of trusting the JSON declaration alone.
+  const signingHeaders = { ...requiredHeaders, "Content-Length": String(file.fileSize) };
   const expiresIn = 600;
   let uploadUrl;
   try {
@@ -195,7 +200,7 @@ export function createMediaPresign({ userId, body, env = process.env, now = new 
       region: config.region,
       accessKeyId: config.accessKeyId,
       secretAccessKey: config.secretAccessKey,
-      headers: requiredHeaders,
+      headers: signingHeaders,
       expiresIn,
       now,
     });

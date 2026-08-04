@@ -7,16 +7,18 @@ import Icon from "./Icon";
 // - centered title
 // - optional trailing action pill (e.g. Save), or a matching spacer to keep the
 //   title centered.
-export default function SheetHeader({ title, onClose, onBack, action }) {
+export default function SheetHeader({ title, onClose, onBack, action, leadDisabled = false }) {
   const lead = onBack || onClose;
   return (
     <View style={styles.wrap}>
       <Pressable
-        style={({ pressed, focused }) => [styles.lead, pressed && styles.controlPressed, focused && focusRing]}
-        onPress={lead}
+        style={({ pressed, focused }) => [styles.lead, leadDisabled && styles.leadOff, pressed && !leadDisabled && styles.controlPressed, focused && focusRing]}
+        onPress={leadDisabled ? undefined : lead}
+        disabled={leadDisabled}
         hitSlop={8}
         accessibilityRole="button"
         accessibilityLabel={onBack ? "Back" : "Close"}
+        accessibilityState={{ disabled: leadDisabled }}
       >
         <Icon name={onBack ? "chevron-left" : "x"} size={20} color={colors.text} strokeWidth={2.4} />
       </Pressable>
@@ -44,6 +46,7 @@ export default function SheetHeader({ title, onClose, onBack, action }) {
 const styles = StyleSheet.create({
   wrap: { flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: space(4), paddingTop: space(1.5), paddingBottom: space(3), borderBottomWidth: 1, borderBottomColor: colors.lineSoft },
   lead: { width: 42, height: 42, borderRadius: radius.sm, borderCurve: "continuous", backgroundColor: colors.surfaceAlt, borderWidth: 1, borderBottomWidth: 3, borderColor: colors.line, alignItems: "center", justifyContent: "center", ...shadow.control },
+  leadOff: { opacity: 0.5 },
   controlPressed: { transform: [{ translateY: 2 }], boxShadow: "inset 0 1px 3px rgba(0,0,0,0.18)" },
   title: { flex: 1, color: colors.text, fontFamily: displayFont, fontSize: 17, fontWeight: "800", letterSpacing: -0.25, textAlign: "center" },
   spacer: { minWidth: 42 },

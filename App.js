@@ -418,7 +418,7 @@ function Root() {
   const openPhotos = (images, index = 0, postId = null) => go({ photos: { images, index, postId } });
   const openAddToPlaylist = (track) => requireAuth(() => go({ addToPlaylist: track }));
   const openFollowList = (userId, mode) => go({ followList: { userId, mode } });
-  const reviewShow = (log) => requireAuth(() => go({ logging: true, prefill: { artist: log.artist, venue: log.venue, city: log.city } }));
+  const reviewShow = (log) => requireAuth(() => go({ logging: true, prefill: { artist: log.artist, artistKey: log.artistKey || null, venue: log.venue, city: log.city, date: log.date || null } }));
   const openInbox = () => requireAuth(() => go({ inbox: true }));
   const openNotifications = () => requireAuth(() => go({ notifications: true }));
   const openThread = (otherId) => requireAuth(() => go({ thread: otherId }));

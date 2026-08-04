@@ -20,10 +20,18 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, h
   const pick = (f) => { setFilter(f); setCount(PAGE); };
   const loadMore = async () => {
     if (count < full.length) setCount((c) => c + PAGE);
-    else if (hasMore && !loadingMore) {
+    // Following/Local are projections of the pages already loaded. Letting an
+    // empty projection paginate the global feed can cascade through every page
+    // without a user scroll, especially on a slow phone connection.
+    else if (filter === "everyone" && hasMore && !loadingMore) {
       const loaded = await onLoadMore?.();
       if (loaded) setCount((c) => c + PAGE);
     }
+  };
+  const loadOlderFiltered = async () => {
+    if (filter === "everyone" || !hasMore || loadingMore) return;
+    const loaded = await onLoadMore?.();
+    if (loaded) setCount((c) => c + PAGE);
   };
 
   // Concert cards are tall and media-heavy. Stage them gently on phones so
@@ -36,6 +44,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, h
       showsVerticalScrollIndicator={false}
       onEndReached={loadMore}
       onEndReachedThreshold={0.6}
+      keyboardShouldPersistTaps="handled"
       removeClippedSubviews
       initialNumToRender={phone ? 3 : PAGE}
       maxToRenderPerBatch={phone ? 2 : PAGE}
@@ -105,17 +114,33 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, h
             <Icon name={filter === "following" ? "you" : filter === "local" ? "pin" : "feed"} size={26} color={colors.textFaint} />
           </View>
           <Text style={styles.emptyTitle}>
-            {filter === "following" ? "Your Following feed is quiet" : filter === "local" ? `Nothing in ${homeCity || "your city"} yet` : "No shows logged yet"}
+            {filter === "following"
+              ? (hasMore ? "No followed posts in the newest batch" : "Your Following feed is quiet")
+              : filter === "local"
+              ? (hasMore ? `No recent posts from ${homeCity || "your city"}` : `Nothing in ${homeCity || "your city"} yet`)
+              : "No shows logged yet"}
           </Text>
           <Text style={styles.emptySub}>
             {filter === "following"
-              ? "Follow people whose taste matches yours, tap any reviewer's name to see their profile and follow."
+              ? (hasMore ? "Load one older page at a time to keep looking without hammering your phone connection." : "Follow people whose taste matches yours, tap any reviewer's name to see their profile and follow.")
               : filter === "local"
-              ? "Be the first to log a show in your city, tap the + to post one."
+              ? (hasMore ? "Load one older page at a time to look for nearby concert posts." : "Be the first to log a show in your city, tap the + to post one.")
               : "Log the first show, tap the + to rate the band and the room."}
           </Text>
         </View>
       }
+      ListFooterComponent={filter !== "everyone" && hasMore ? (
+        <Pressable
+          style={[styles.olderBtn, loadingMore && styles.olderBtnOff]}
+          onPress={loadOlderFiltered}
+          disabled={loadingMore}
+          accessibilityRole="button"
+          accessibilityLabel="Load older posts"
+          accessibilityState={{ disabled: loadingMore }}
+        >
+          <Text style={styles.olderTxt}>{loadingMore ? "Loading older posts..." : "Load older posts"}</Text>
+        </Pressable>
+      ) : null}
       renderItem={({ item }) => (
         <TicketStub log={item} onOpen={onOpen} onComment={onComment} onPreview={onPreview} onOpenProfile={onOpenProfile} onOpenArtist={onOpenArtist} onOpenVenue={onOpenVenue} onReport={onReport} onEdit={onEdit} onOpenPhotos={onOpenPhotos} onPlay={onPlay} />
       )}
@@ -157,6 +182,9 @@ const styles = StyleSheet.create({
   emptyIcon: { width: 56, height: 56, borderRadius: 28, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center", marginBottom: 6 },
   emptyTitle: { color: colors.text, fontSize: 17, fontWeight: "800", textAlign: "center" },
   emptySub: { color: colors.textDim, fontSize: 14, lineHeight: 20, textAlign: "center" },
+  olderBtn: { alignSelf: "center", marginTop: 18, paddingHorizontal: 18, paddingVertical: 11, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
+  olderBtnOff: { opacity: 0.55 },
+  olderTxt: { color: colors.text, fontSize: 14, fontWeight: "800" },
   head: { marginBottom: 18, marginTop: 4 },
   wordmarkRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   headerBtns: { flexDirection: "row", gap: 8, alignItems: "center" },

@@ -15,11 +15,12 @@ export default function AfterpartyPreview({ log, onOpen, max = 2 }) {
   const { session, commentsFor, loadComments, addComment, userById, userBadges } = useStore();
   const comments = commentsFor(log.id);
   const [text, setText] = useState("");
+  const [sending, setSending] = useState(false);
 
   // Load the preview once, then reload whenever the feed poll reports a changed
   // comment count for this post. That gives Facebook-style live comments without
   // every card in the feed polling on its own: the feed already refreshes counts
-  // every ~12s, and this only re-fetches the two shown comments for the handful
+  // every ~45s, and this only re-fetches the two shown comments for the handful
   // of posts whose count actually moved.
   useEffect(() => { loadComments(log.id, { limit: max }); }, [log.id, max, log.comments]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -27,13 +28,18 @@ export default function AfterpartyPreview({ log, onOpen, max = 2 }) {
   // the full thread. A two-line card preview has no room for that context, so it
   // shows only real comments; PostScreen and the Afterparty still render them.
   const visible = comments.filter((c) => !c.deleted);
-  const total = visible.length || log.comments || 0;
+  const total = Math.max(visible.length, Number(log.comments) || 0);
   const latest = visible.slice(-max);
-  const send = () => {
+  const send = async () => {
     const value = text.trim();
-    if (!value) return;
-    addComment(log.id, value);
-    setText("");
+    if (!value || sending) return;
+    setSending(true);
+    try {
+      const result = await addComment(log.id, value);
+      if (result?.ok !== false) setText("");
+    } finally {
+      setSending(false);
+    }
   };
 
   return (
@@ -67,10 +73,11 @@ export default function AfterpartyPreview({ log, onOpen, max = 2 }) {
             value={text}
             onChangeText={setText}
             onSubmitEditing={send}
+            editable={!sending}
             returnKeyType="send"
             blurOnSubmit={!web}
           />
-          <Pressable style={[styles.send, !text.trim() && styles.sendOff]} onPress={send} disabled={!text.trim()} hitSlop={6} accessibilityRole="button" accessibilityLabel="Post comment">
+          <Pressable style={[styles.send, (!text.trim() || sending) && styles.sendOff]} onPress={send} disabled={!text.trim() || sending} hitSlop={6} accessibilityRole="button" accessibilityLabel="Post comment">
             <Icon name="chevron-right" size={16} color={text.trim() ? "#1A1206" : colors.textFaint} />
           </Pressable>
         </View>

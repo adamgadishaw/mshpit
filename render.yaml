@@ -40,6 +40,11 @@ services:
       # key. Without it, playback falls back to Deezer 30s previews for everyone.
       - key: YOUTUBE_API_KEY
         sync: false
+      # Keep provider fan-out out of the web process during incident recovery.
+      # Re-enable deliberately only after /api/health stays stable through a
+      # cold start and the service has durable storage/headroom.
+      - key: CACHE_WARM_ENABLED
+        value: "false"
       # Password recovery is disabled gracefully until both values are set. Never
       # log or expose reset links as a substitute for transactional email.
       - key: RESEND_API_KEY
@@ -75,6 +80,8 @@ services:
         sync: false                    # free: developer.ticketmaster.com (Consumer Key only)
       - key: BANDSINTOWN_APP_ID
         sync: false                    # self-assigned string; developer.bandsintown.com
+      - key: TOURDATE_REFRESH_ENABLED
+        value: "false"
       - key: TOURDATE_LIMIT
         value: "150"                   # top artists polled per refresh
       - key: TOURDATE_REFRESH_H

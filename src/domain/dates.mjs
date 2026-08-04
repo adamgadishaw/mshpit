@@ -56,6 +56,17 @@ export function todayIso(now = new Date()) {
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
 }
 
+// A new review opened from an existing Show must inherit that performance's
+// night; an edit with a missing legacy date stays visibly empty instead of
+// silently becoming today. Ordinary new posts still default to today.
+export function initialComposerDate({ editing = false, editingDate, prefillDate, today = todayIso() } = {}) {
+  const candidate = editing ? editingDate : prefillDate;
+  const normalized = toIsoDate(candidate);
+  if (normalized) return normalized;
+  if (editing) return String(candidate || "");
+  return String(candidate || today);
+}
+
 // A short "how long ago" label ("now", "5m", "3h", "2d", "4mo") for post
 // timestamps. Extracted so the feed card and the You-screen diary render time
 // the same way instead of each keeping their own copy.

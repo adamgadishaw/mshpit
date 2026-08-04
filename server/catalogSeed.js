@@ -287,6 +287,17 @@ export const shouldEnrichAfterCrawl = ({ enrich, added, stopRequested }) => !!en
 
 let state = { runId: null, running: false, stopRequested: false, mode: "grow", phase: "idle", add: 0, target: 0, startTotal: 0, added: 0, ranked: 0, total: 0, startedAt: 0, finishedAt: 0, error: null, errorCode: null, note: "" };
 
+const reportDetachedSeedFailure = (error, runId) => {
+  console.error(`[pit] catalog seed task ${runId} failed outside its provider boundary:`, error);
+  if (state.runId !== runId) return;
+  state.running = false;
+  state.stopRequested = false;
+  state.phase = "error";
+  state.error = String(error?.message || error);
+  state.errorCode = "CATALOG_JOB_FAILED";
+  state.finishedAt = Date.now();
+};
+
 export function catalogSeedStatus() {
   return { ...state, total: artistStmts.count.get().c };
 }
@@ -309,7 +320,7 @@ export function startCatalogSeed({ add = 2000, perTag = null, enrich = false, mo
     const runId = `seed_${randomUUID().slice(0, 12)}`;
     state = { runId, running: true, stopRequested: false, mode, phase: "songs", add: 0, target: startTotal, startTotal, added: 0, ranked: 0, total: startTotal, startedAt: Date.now(), finishedAt: 0, error: null, errorCode: null, note: "songs & genres" };
     seedRunInsert.run(runId, mode, "running", startTotal, startTotal, 0, 0, null, state.note, state.startedAt, null);
-    (async () => {
+    void (async () => {
       try {
         await enrichSongs({ shouldStop, tick: ({ ranked, done, of }) => { state.ranked = ranked; state.added = done; state.target = of; } });
         state.phase = state.stopRequested ? "stopped" : "done"; state.finishedAt = Date.now();
@@ -321,7 +332,7 @@ export function startCatalogSeed({ add = 2000, perTag = null, enrich = false, mo
         state.running = false; state.stopRequested = false;
         seedRunUpdate.run(state.phase, state.added, state.ranked, state.errorCode, state.note, state.finishedAt || Date.now(), runId);
       }
-    })();
+    })().catch((error) => reportDetachedSeedFailure(error, runId));
     return { started: true, status: catalogSeedStatus() };
   }
 
@@ -332,7 +343,7 @@ export function startCatalogSeed({ add = 2000, perTag = null, enrich = false, mo
   const runId = `seed_${randomUUID().slice(0, 12)}`;
   state = { runId, running: true, stopRequested: false, mode: "grow", phase: "crawl", add, target, startTotal, added: 0, ranked: 0, total: startTotal, startedAt: Date.now(), finishedAt: 0, error: null, errorCode: null, note: `crawl depth ${crawlDepth}` };
   seedRunInsert.run(runId, mode, "running", startTotal, target, 0, 0, null, state.note, state.startedAt, null);
-  (async () => {
+  void (async () => {
     try {
       const result = await crawlArtists({ target, perTag: crawlDepth, shouldStop, tick: ({ added, total, note }) => { state.added = added; state.total = total; if (note) state.note = note; } });
       state.added = result.added; state.total = result.total;
@@ -353,6 +364,6 @@ export function startCatalogSeed({ add = 2000, perTag = null, enrich = false, mo
       state.running = false; state.stopRequested = false;
       seedRunUpdate.run(state.phase, state.added, state.ranked, state.errorCode, state.note, state.finishedAt || Date.now(), runId);
     }
-  })();
+  })().catch((error) => reportDetachedSeedFailure(error, runId));
   return { started: true, status: catalogSeedStatus() };
 }

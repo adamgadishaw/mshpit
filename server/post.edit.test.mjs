@@ -45,10 +45,22 @@ test("post creation returns the canonical post and persists detailed ratings", (
   assert.deepEqual(result.post.setlist, ["Opener"]);
   assert.equal(result.post.photosPublic, false);
   assert.equal(result.post.version, result.post.createdAt);
-  const retry = create({ user, ip: "post-create-retry", body: { ...body, review: "a retry must not duplicate" } });
+  const retry = create({ user, ip: "post-create-retry", body });
   assert.equal(retry.id, result.id);
   assert.equal(retry.duplicate, true);
   assert.equal(db.prepare("SELECT COUNT(*) c FROM posts WHERE user_id=? AND client_mutation_id=?").get(user.id, body.clientMutationId).c, 1);
+  assert.throws(
+    () => create({ user, ip: "post-create-changed-retry", body: { ...body, review: "new writing after the response was lost" } }),
+    (error) => error instanceof ApiError && error.status === 409 && error.code === "POST_MUTATION_CONFLICT",
+    "one retry token must never silently discard a changed payload",
+  );
+  assert.equal(db.prepare("SELECT review FROM posts WHERE id=?").get(result.id).review, body.review);
+  db.prepare("UPDATE posts SET removed=1 WHERE id=?").run(result.id);
+  assert.throws(
+    () => create({ user, ip: "post-create-removed-retry", body }),
+    (error) => error instanceof ApiError && error.status === 409 && error.code === "POST_REMOVED",
+    "a retry must not surface a soft-deleted post as published again",
+  );
   assert.throws(
     () => create({ user, ip: "post-create-invalid", body: { artist: "Artist", venue: "Venue", overall: 4, photosPublic: "false" } }),
     (error) => error instanceof ApiError && error.status === 400
@@ -307,6 +319,12 @@ test("a review binds to the catalog entity it picked, and free text does not", (
   assert.equal(bound.post.artistKey, "the binding test band");
   assert.equal(bound.post.artistMbid, "mb-binding-test");
   assert.equal(bound.post.venueKey, "the fillmore");
+
+  const typedWithoutPicking = create({ user, ip: "bind-explicit-null", body: { ...base, artist: "The Binding Test Band", artistKey: null } });
+  assert.equal(typedWithoutPicking.post.artistKey, null, "explicit free text must not auto-bind by display name");
+
+  const legacyWithoutField = create({ user, ip: "bind-legacy", body: { ...base, artist: "The Binding Test Band" } });
+  assert.equal(legacyWithoutField.post.artistKey, "the binding test band", "legacy clients that omit the field remain compatible");
 
   // Free text for an artist that is not in the catalog stays unbound: the post
   // is still saved, it just does not claim an entity.

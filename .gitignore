@@ -47,3 +47,6 @@ server/data/
 # Never let a secret backup/copy slip in (.env.bak, .env.local, ...)
 .env*
 !.env.example
+
+# Local scratch from smoke tests / background servers (never commit databases)
+.tmp/

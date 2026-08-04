@@ -22,7 +22,7 @@
 import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
 import { join } from "node:path";
-import { artistStmts, db } from "../server/db.js";
+import { artistRow, artistStmts, db } from "../server/db.js";
 
 const args = process.argv.slice(2);
 const dir = args.find((a) => !a.startsWith("--"));
@@ -77,13 +77,12 @@ async function main() {
     const name = c[ART.name];
     if (!name) return;
     const beginYear = c[ART.beginYear] && c[ART.beginYear] !== "\\N" ? c[ART.beginYear] : null;
-    artistStmts.upsert.run({
-      norm: name.trim().toLowerCase(),
-      name, genre: null, photo: null, bio: null,
-      mbid: c[ART.gid] || null, spotify_id: null, country: null, formed: beginYear,
-      popularity: null, rank_score: releases, data: JSON.stringify({ name, mbid: c[ART.gid], beginYear }),
-      source: "mb-dump", created_at: Date.now(), updated_at: Date.now(),
-    });
+    artistStmts.upsert.run(artistRow(name, {
+      name,
+      mbid: c[ART.gid] || null,
+      beginYear,
+      rank_score: releases,
+    }, "mb-dump"));
     inserted++;
     if (inserted % 20000 === 0) { db.exec("COMMIT"); db.exec("BEGIN"); console.log(`  …inserted ${inserted}`); }
   });

@@ -6,7 +6,7 @@
 // - responses only ever contain public projections (publicUser), never raw rows
 import { randomUUID, randomBytes, createHash } from "node:crypto";
 import { mailConfigured, sendEmail } from "./mailer.js";
-import { db, q, publicUser, artistStmts, publicArtist, artistRow, normName } from "./db.js";
+import { db, q, publicUser, artistStmts, publicArtist, artistRow, artistSearchKey, normName } from "./db.js";
 import { genreClaim, resolveGenre, storedClaims, upsertClaim, withoutSource } from "../src/domain/genre.mjs";
 import { hashPassword, verifyPassword, createSession, destroySession, rateLimit } from "./auth.js";
 import { startCatalogSeed, catalogSeedStatus, stopCatalogSeed, deezerEnrich } from "./catalogSeed.js";
@@ -32,6 +32,7 @@ import {
   youtubeProviderStatus,
 } from "./musicProviders.js";
 import { wikidataProviderStatus } from "./wikidataChannels.js";
+import { backgroundJobEnabled } from "./backgroundJobs.js";
 
 export { ApiError } from "./errors.js";
 
@@ -192,9 +193,9 @@ function cleanPostRatingDims(value) {
   return out;
 }
 
-const postRow = db.prepare(`INSERT INTO posts (id,user_id,artist,venue,city,date,overall,band,room,dims,review,photos,photos_public,setlist,tour,tags,kind,song,playlist,artist_key,artist_mbid,venue_key,client_mutation_id,created_at)
-                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
-const postByClientMutation = db.prepare("SELECT id FROM posts WHERE user_id=? AND client_mutation_id=? LIMIT 1");
+const postRow = db.prepare(`INSERT INTO posts (id,user_id,artist,venue,city,date,overall,band,room,dims,review,photos,photos_public,setlist,tour,tags,kind,song,playlist,artist_key,artist_mbid,venue_key,client_mutation_id,client_mutation_hash,created_at)
+                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+const postByClientMutation = db.prepare("SELECT id,removed,client_mutation_hash FROM posts WHERE user_id=? AND client_mutation_id=? LIMIT 1");
 
 function clientMutationId(value) {
   if (value == null || value === "") return null;
@@ -204,13 +205,39 @@ function clientMutationId(value) {
   return id;
 }
 
+const POST_MUTATION_FIELDS = [
+  "kind", "artist", "artistKey", "venue", "city", "date", "overall", "band", "room", "dims",
+  "review", "photos", "photosPublic", "setlist", "tour", "tags", "song", "playlistId",
+];
+
+function stableMutationValue(value) {
+  if (Array.isArray(value)) return value.map(stableMutationValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, stableMutationValue(value[key])]));
+  }
+  return value;
+}
+
+function postMutationHash(body) {
+  const source = body && typeof body === "object" && !Array.isArray(body) ? body : {};
+  const payload = {};
+  for (const key of POST_MUTATION_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(source, key)) payload[key] = stableMutationValue(source[key]);
+  }
+  return createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+}
+
 // A review binds to a catalog entity, not to whatever the user typed. The client
 // sends the key it picked from the suggestion list; the server only accepts it
 // when it resolves to a real artist AND still matches the submitted name, so a
 // stale or forged key cannot silently attach a review to the wrong act. Free
 // text stays allowed, it just does not earn an entity binding.
 function resolveArtistBinding(name, claimedKey) {
-  const key = normName(clean(claimedKey, { max: 120 }) || name);
+  // Current clients explicitly send null when someone typed a name without
+  // choosing a suggestion. Preserve name fallback only for legacy callers that
+  // omit the field entirely; explicit null must stay unbound.
+  if (claimedKey === null) return { artist_key: null, artist_mbid: null };
+  const key = normName(clean(claimedKey, { max: 120 }) || (claimedKey === undefined ? name : ""));
   if (!key) return { artist_key: null, artist_mbid: null };
   const row = artistStmts.byNorm.get(key);
   if (!row || normName(row.name) !== normName(name)) return { artist_key: null, artist_mbid: null };
@@ -540,17 +567,25 @@ export const routes = {
   "GET /api/health": () => {
     let database = false;
     try { database = db.prepare("SELECT 1 AS ok").get()?.ok === 1; } catch {}
+    if (!database) throw new ApiError(503, "The database is not ready.", "DATABASE_UNAVAILABLE");
     return {
       ok: database,
       ts: now(),
+      uptimeSeconds: Math.round(process.uptime()),
+      commit: String(process.env.RENDER_GIT_COMMIT || "").slice(0, 12) || null,
       youtube: !!process.env.YOUTUBE_API_KEY,
       services: {
         database,
+        storageConfigured: process.env.NODE_ENV !== "production" || !!process.env.PIT_DATA_DIR,
         youtubeConfigured: !!process.env.YOUTUBE_API_KEY,
         youtubeLookup: youtubeProviderStatus(),
         wikidataLookup: wikidataProviderStatus(),
         tourProviderConfigured: !!(process.env.TICKETMASTER_KEY || process.env.BANDSINTOWN_APP_ID),
         tourDates: db.prepare("SELECT COUNT(*) c FROM tour_dates").get().c,
+        backgroundJobs: {
+          cacheWarmEnabled: backgroundJobEnabled(process.env, "CACHE_WARM_ENABLED"),
+          tourDateRefreshEnabled: backgroundJobEnabled(process.env, "TOURDATE_REFRESH_ENABLED"),
+        },
         mailConfigured: mailConfigured(),
         mediaStorageConfigured: mediaConfigured(),
       },
@@ -612,8 +647,10 @@ export const routes = {
   "GET /api/artists": (ctx) => {
     const term = clean(ctx.query.q, { max: 80 }).toLowerCase();
     const lim = Math.min(40, Math.max(1, Number(ctx.query.limit) || 20));
+    const literal = term.replace(/[%_\\]/g, "");
+    const folded = artistSearchKey(term);
     const rows = term.length >= 1
-      ? artistStmts.search.all(`%${term.replace(/[%_\\]/g, "")}%`, term, lim)
+      ? artistStmts.search.all(`%${literal}%`, folded ? `%${folded}%` : "\u0000", term, folded, lim)
       : artistStmts.top.all(lim);
     return { artists: rows.map(publicArtist), total: artistStmts.count.get().c };
   },
@@ -851,13 +888,26 @@ export const routes = {
   "GET /api/discover/genres": (ctx) => {
     const country = clean(ctx.query.country, { max: 60 });
     const n = Math.min(12, Math.max(4, Number(ctx.query.n) || 8));
+    // Count in SQL, not in JS. This used to pull one row PER ARTIST (2.6k today,
+    // 10k+ at target) on every request just to tally them. Grouping by the raw
+    // genre returns one row per distinct genre (~83) and canonGenre — a pure
+    // function of that string — collapses those into the canonical buckets, so
+    // the result is identical for ~32x less data.
     const rows = country && country !== "Worldwide"
-      ? db.prepare("SELECT genre FROM artists WHERE genre IS NOT NULL AND country = ?").all(country)
-      : db.prepare("SELECT genre FROM artists WHERE genre IS NOT NULL").all();
+      ? db.prepare("SELECT genre, COUNT(*) AS c FROM artists WHERE genre IS NOT NULL AND country = ? GROUP BY genre").all(country)
+      : db.prepare("SELECT genre, COUNT(*) AS c FROM artists WHERE genre IS NOT NULL GROUP BY genre").all();
     const counts = {};
-    for (const r of rows) { const c = canonGenre(r.genre); if (c) counts[c] = (counts[c] || 0) + 1; }
-    const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
-    const total = rows.length || 1;
+    let artistsWithGenre = 0;
+    for (const r of rows) {
+      const c = canonGenre(r.genre);
+      artistsWithGenre += r.c;          // `total` counts ARTISTS, not genre rows
+      if (c) counts[c] = (counts[c] || 0) + r.c;
+    }
+    // Ties broken by name so the pie is deterministic. Without this the order of
+    // equal-count genres followed insertion order — arbitrary DB row order — so
+    // which genre landed in the top-N could change between identical requests.
+    const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+    const total = artistsWithGenre || 1;
     const out = sorted.slice(0, n).map(([genre, count]) => ({ genre, count, pct: count / total }));
     const rest = sorted.slice(n).reduce((s, [, v]) => s + v, 0);
     if (rest > 0) out.push({ genre: "Other", count: rest, pct: rest / total });
@@ -865,7 +915,7 @@ export const routes = {
     // tile used to display the length of the charted slice, so a catalogue
     // spanning dozens of genres advertised "8 GENRES" -- the chart's own limit,
     // reported as a fact about the catalogue.
-    return { total: rows.length, distinctGenres: sorted.length, catalogTotal: artistStmts.count.get().c, genres: out };
+    return { total: artistsWithGenre, distinctGenres: sorted.length, catalogTotal: artistStmts.count.get().c, genres: out };
   },
   // Country distribution for the region chips (biggest scenes first).
   "GET /api/discover/countries": (ctx) => {
@@ -1463,7 +1513,17 @@ export const routes = {
   "POST /api/posts": (ctx) => {
     const u = requireUser(ctx);
     const mutationId = clientMutationId(ctx.body?.clientMutationId);
+    const mutationHash = mutationId ? postMutationHash(ctx.body) : null;
     const existing = mutationId ? postByClientMutation.get(u.id, mutationId) : null;
+    if (existing?.removed) {
+      // A retry token identifies one logical create forever. Returning its
+      // soft-deleted payload makes removed or moderated content appear to have
+      // published again on the originating device.
+      throw new ApiError(409, "That post was already removed. Start a new post to publish again.", "POST_REMOVED");
+    }
+    if (existing?.client_mutation_hash && existing.client_mutation_hash !== mutationHash) {
+      throw new ApiError(409, "That retry belongs to an earlier version of this post. Reopen it before publishing your new changes.", "POST_MUTATION_CONFLICT");
+    }
     if (existing) return { id: existing.id, post: postJson(feedPostById.get(existing.id), u.id), duplicate: true };
     limit(ctx, "post", 20, 60 * 60 * 1000);
 
@@ -1486,7 +1546,7 @@ export const routes = {
       const id = uid("p");
       postRow.run(id, u.id, "", "", "", "", 0, null, null,
         "{}", text, JSON.stringify(photos), v.photosPublic ?? 1, "[]", null,
-        "[]", "status", v.song ? JSON.stringify(v.song) : null, playlist ? JSON.stringify(playlist) : null, null, null, null, mutationId, now());
+        "[]", "status", v.song ? JSON.stringify(v.song) : null, playlist ? JSON.stringify(playlist) : null, null, null, null, mutationId, mutationHash, now());
       return { id, post: postJson(feedPostById.get(id), u.id) };
     }
 
@@ -1513,7 +1573,7 @@ export const routes = {
     postRow.run(id, u.id, v.artist, v.venue, v.city || "", v.date || "", v.overall, v.band ?? null, v.room ?? null,
       JSON.stringify(v.dims || {}), v.review || "", JSON.stringify(v.photos || []), v.photosPublic ?? 0, JSON.stringify(v.setlist || []), v.tour || null,
       JSON.stringify(v.tags || []), "review", v.song ? JSON.stringify(v.song) : null, null,
-      binding.artist_key, binding.artist_mbid, venueBinding(v.venue), mutationId, now());
+      binding.artist_key, binding.artist_mbid, venueBinding(v.venue), mutationId, mutationHash, now());
     return { id, post: postJson(feedPostById.get(id), u.id) };
   },
 
