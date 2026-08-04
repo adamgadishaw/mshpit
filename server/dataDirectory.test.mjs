@@ -3,15 +3,30 @@ import test from "node:test";
 
 import { prepareDataDirectory } from "./dataDirectory.js";
 
-test("production refuses an implicit or missing database directory", () => {
+test("production refuses an implicit database directory", () => {
   assert.throws(
     () => prepareDataDirectory({ env: { NODE_ENV: "production" }, fallbackDir: "fallback", exists: () => true }),
     /PIT_DATA_DIR is required/,
   );
-  assert.throws(
-    () => prepareDataDirectory({ env: { NODE_ENV: "production", PIT_DATA_DIR: "missing" }, exists: () => false }),
-    /not mounted/,
-  );
+});
+
+test("an unmounted disk warns loudly but still serves", () => {
+  // Free tier never attaches the disk. Refusing here would turn an intermittent
+  // outage into a permanent one, so the site stays up and the ephemerality is
+  // made unmissable instead.
+  const warnings = [];
+  let made = null;
+  const directory = prepareDataDirectory({
+    env: { NODE_ENV: "production", PIT_DATA_DIR: "missing" },
+    exists: () => false,
+    mkdir: (path) => { made = path; },
+    warn: (message) => warnings.push(message),
+  });
+  assert.match(directory, /missing$/);
+  assert.equal(made, directory, "it falls back to a usable directory rather than dying");
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /EPHEMERAL/);
+  assert.match(warnings[0], /persistent disk/i, "the warning must say how to fix it");
 });
 
 test("production accepts an existing explicit path and development creates its fallback", () => {
