@@ -476,6 +476,73 @@ CREATE TABLE IF NOT EXISTS track_overrides (
   set_by     TEXT,
   updated_at INTEGER NOT NULL
 );
+
+-- Owner-editable copy for the mail the app sends on its own (welcome, password
+-- reset). A missing row is not an error: server/emails.js falls back to the
+-- built-in default, so a bad edit can be undone by deleting the row.
+CREATE TABLE IF NOT EXISTS email_templates (
+  key        TEXT PRIMARY KEY,
+  subject    TEXT NOT NULL,
+  body       TEXT NOT NULL,
+  cta_label  TEXT,
+  cta_url    TEXT,
+  updated_at INTEGER NOT NULL,
+  updated_by TEXT
+);
+
+-- One admin-composed broadcast. Counters are the durable progress record: a
+-- restart mid-send resumes from email_queue rather than starting over.
+CREATE TABLE IF NOT EXISTS email_campaigns (
+  id            TEXT PRIMARY KEY,
+  name          TEXT NOT NULL,
+  subject       TEXT NOT NULL,
+  body          TEXT NOT NULL,
+  cta_label     TEXT,
+  cta_url       TEXT,
+  audience      TEXT NOT NULL DEFAULT 'all',
+  status        TEXT NOT NULL DEFAULT 'draft',
+  created_by    TEXT,
+  created_at    INTEGER NOT NULL,
+  updated_at    INTEGER NOT NULL,
+  started_at    INTEGER,
+  finished_at   INTEGER,
+  test_sent_at  INTEGER,
+  total         INTEGER NOT NULL DEFAULT 0,
+  sent_count    INTEGER NOT NULL DEFAULT 0,
+  failed_count  INTEGER NOT NULL DEFAULT 0,
+  skipped_count INTEGER NOT NULL DEFAULT 0
+);
+
+-- Per-recipient work list. Rows are claimed one at a time and marked terminal
+-- immediately, so a crash re-sends at most the single in-flight address.
+CREATE TABLE IF NOT EXISTS email_queue (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  campaign_id TEXT NOT NULL REFERENCES email_campaigns(id) ON DELETE CASCADE,
+  user_id     TEXT,
+  to_email    TEXT NOT NULL,
+  status      TEXT NOT NULL DEFAULT 'pending',
+  attempts    INTEGER NOT NULL DEFAULT 0,
+  last_error  TEXT,
+  created_at  INTEGER NOT NULL,
+  sent_at     INTEGER
+);
+
+-- Every message the platform attempts, transactional and campaign alike, lands
+-- here exactly once including the ones that were never sent. Skips and failures
+-- are the entries that matter: a send that silently vanished is the thing this
+-- table exists to make impossible.
+CREATE TABLE IF NOT EXISTS email_log (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_at   INTEGER NOT NULL,
+  kind         TEXT NOT NULL,
+  template_key TEXT,
+  campaign_id  TEXT,
+  user_id      TEXT,
+  to_email     TEXT NOT NULL,
+  subject      TEXT NOT NULL,
+  status       TEXT NOT NULL,
+  reason       TEXT
+);
 `);
 
 const ver = db.prepare("SELECT version FROM schema_version LIMIT 1").get();
@@ -531,6 +598,13 @@ for (const stmt of [
   // Bind that token to the exact create request. Reusing a restored draft token
   // after changing its text must never silently return the earlier payload.
   "ALTER TABLE posts ADD COLUMN client_mutation_hash TEXT",
+  // Marketing consent. Broadcasts must honour this; password resets must not,
+  // since a user who opted out of announcements still needs to reach their
+  // account. server/emailService.js is where that distinction is enforced.
+  "ALTER TABLE users ADD COLUMN marketing_opt_out INTEGER NOT NULL DEFAULT 0",
+  // Per-user unsubscribe secret, minted lazily. A link must not be forgeable
+  // from the address alone, or anyone could opt out anybody.
+  "ALTER TABLE users ADD COLUMN unsub_token TEXT",
 ]) {
   const match = /^ALTER TABLE ([a-z_]+) ADD COLUMN ([a-z_]+)/i.exec(stmt);
   if (!match) throw new Error(`Unsupported additive migration: ${stmt}`);
@@ -541,6 +615,13 @@ for (const stmt of [
 }
 
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_posts_client_mutation ON posts(user_id, client_mutation_id) WHERE client_mutation_id IS NOT NULL");
+// The queue is drained by "next pending for this campaign" on every iteration,
+// and the log is read newest-first, so both need their own covering order.
+db.exec("CREATE INDEX IF NOT EXISTS idx_email_queue_campaign ON email_queue(campaign_id, status, id)");
+db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_email_queue_recipient ON email_queue(campaign_id, to_email)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_email_log_created ON email_log(created_at DESC, id DESC)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_email_log_campaign ON email_log(campaign_id, created_at DESC)");
+db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_unsub_token ON users(unsub_token) WHERE unsub_token IS NOT NULL");
 db.exec("CREATE INDEX IF NOT EXISTS idx_artists_search_key ON artists(search_key)");
 const artistSearchKeyRows = db.prepare("SELECT norm,name FROM artists WHERE search_key IS NULL OR search_key='' ").all();
 if (artistSearchKeyRows.length) {
@@ -641,6 +722,54 @@ export const q = {
   sessionByHash: db.prepare("SELECT * FROM sessions WHERE token_hash = ?"),
   deleteSession: db.prepare("DELETE FROM sessions WHERE token_hash = ?"),
   deleteExpiredSessions: db.prepare("DELETE FROM sessions WHERE expires_at < ?"),
+};
+
+// Email management: owner-editable templates, broadcasts, the per-recipient
+// queue, and the log of every attempt. Audience selection lives in
+// server/emailQueue.js because it needs the opt-out rules alongside it.
+export const emailStmts = {
+  templateByKey: db.prepare("SELECT * FROM email_templates WHERE key = ?"),
+  allTemplates: db.prepare("SELECT * FROM email_templates"),
+  upsertTemplate: db.prepare(`INSERT INTO email_templates (key,subject,body,cta_label,cta_url,updated_at,updated_by)
+    VALUES (@key,@subject,@body,@cta_label,@cta_url,@updated_at,@updated_by)
+    ON CONFLICT(key) DO UPDATE SET subject=excluded.subject,body=excluded.body,
+      cta_label=excluded.cta_label,cta_url=excluded.cta_url,
+      updated_at=excluded.updated_at,updated_by=excluded.updated_by`),
+  deleteTemplate: db.prepare("DELETE FROM email_templates WHERE key = ?"),
+
+  campaignById: db.prepare("SELECT * FROM email_campaigns WHERE id = ?"),
+  listCampaigns: db.prepare("SELECT * FROM email_campaigns ORDER BY created_at DESC LIMIT ?"),
+  insertCampaign: db.prepare(`INSERT INTO email_campaigns (id,name,subject,body,cta_label,cta_url,audience,status,created_by,created_at,updated_at)
+    VALUES (@id,@name,@subject,@body,@cta_label,@cta_url,@audience,'draft',@created_by,@created_at,@created_at)`),
+  updateCampaign: db.prepare(`UPDATE email_campaigns SET name=@name,subject=@subject,body=@body,
+    cta_label=@cta_label,cta_url=@cta_url,audience=@audience,updated_at=@updated_at WHERE id=@id AND status='draft'`),
+  setCampaignStatus: db.prepare("UPDATE email_campaigns SET status=?, updated_at=? WHERE id=?"),
+  markCampaignTested: db.prepare("UPDATE email_campaigns SET test_sent_at=?, updated_at=? WHERE id=?"),
+  startCampaign: db.prepare("UPDATE email_campaigns SET status='sending', started_at=?, total=?, updated_at=? WHERE id=?"),
+  finishCampaign: db.prepare("UPDATE email_campaigns SET status=?, finished_at=?, updated_at=? WHERE id=?"),
+  bumpCampaignCounts: db.prepare(`UPDATE email_campaigns SET
+    sent_count=(SELECT COUNT(*) FROM email_queue WHERE campaign_id=@id AND status='sent'),
+    failed_count=(SELECT COUNT(*) FROM email_queue WHERE campaign_id=@id AND status='failed'),
+    skipped_count=(SELECT COUNT(*) FROM email_queue WHERE campaign_id=@id AND status='skipped'),
+    updated_at=@updated_at WHERE id=@id`),
+
+  enqueue: db.prepare(`INSERT OR IGNORE INTO email_queue (campaign_id,user_id,to_email,status,created_at)
+    VALUES (?,?,?,'pending',?)`),
+  nextPending: db.prepare("SELECT * FROM email_queue WHERE campaign_id=? AND status='pending' ORDER BY id LIMIT 1"),
+  countPending: db.prepare("SELECT COUNT(*) c FROM email_queue WHERE campaign_id=? AND status='pending'"),
+  countQueued: db.prepare("SELECT COUNT(*) c FROM email_queue WHERE campaign_id=?"),
+  settleQueueRow: db.prepare("UPDATE email_queue SET status=?, attempts=attempts+1, last_error=?, sent_at=? WHERE id=? AND status='pending'"),
+  clearQueue: db.prepare("DELETE FROM email_queue WHERE campaign_id=?"),
+
+  insertLog: db.prepare(`INSERT INTO email_log (created_at,kind,template_key,campaign_id,user_id,to_email,subject,status,reason)
+    VALUES (@created_at,@kind,@template_key,@campaign_id,@user_id,@to_email,@subject,@status,@reason)`),
+  countSentSince: db.prepare("SELECT COUNT(*) c FROM email_log WHERE status='sent' AND created_at >= ?"),
+  logStats: db.prepare(`SELECT status, COUNT(*) c FROM email_log WHERE created_at >= ? GROUP BY status`),
+
+  userUnsubToken: db.prepare("SELECT unsub_token FROM users WHERE id = ?"),
+  setUnsubToken: db.prepare("UPDATE users SET unsub_token=? WHERE id=?"),
+  userByUnsubToken: db.prepare("SELECT * FROM users WHERE unsub_token = ?"),
+  setMarketingOptOut: db.prepare("UPDATE users SET marketing_opt_out=? WHERE id=?"),
 };
 
 // YouTube video-ID cache statements. Positive entries are periodically

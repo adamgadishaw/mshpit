@@ -7,6 +7,7 @@ import Icon from "../components/Icon";
 import Avatar from "../components/Avatar";
 import SheetHeader from "../components/SheetHeader";
 import Badge from "../components/Badge";
+import EmailConsole from "../components/EmailConsole";
 
 // Audience & ads: the activity data we collect (see Privacy policy) surfaced for
 // the operator, top artists/venues/searches are the ad-interest signals you'd
@@ -331,6 +332,7 @@ export default function AdminScreen({ onClose }) {
     { key: "members", label: "Members", icon: "you", badge: bannedCount || undefined },
     { key: "content", label: "Content", icon: "feed" },
     { key: "catalog", label: "Catalog", icon: "music", admin: true },
+    { key: "email", label: "Email", icon: "feed", admin: true },
     { key: "requests", label: "Requests", icon: "shield", badge: pending.length, admin: true },
   ].filter((t) => iAmAdmin || !t.admin);
 
@@ -766,6 +768,9 @@ export default function AdminScreen({ onClose }) {
             ))}
           </>
         )}
+
+        {/* ---- EMAIL ---- */}
+        {tab === "email" && <EmailConsole />}
 
         {/* ---- REQUESTS ---- */}
         {tab === "requests" && (

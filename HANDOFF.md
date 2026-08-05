@@ -14,6 +14,21 @@
 
 **State:** `master` pushed, tree clean. `npm run check` green — **207 tests**, syntax, web export. Production **UP** (`/api/health` 200, database healthy).
 
+**Email management console (2026-08-05):** new admin tab (**Moderation → Email**)
+with three sections. *Templates* edits the welcome and password-reset copy;
+copy lives in `email_templates` and deleting the row restores the built-in
+default in `server/emails.js`. *Broadcasts* composes a campaign, requires a test
+send to the acting admin, then a typed confirmation, then drains a resumable
+`email_queue` in batches against a daily budget (`EMAIL_DAILY_LIMIT`, default 100
+for Resend's free tier). *Log* shows every attempt including the ones that never
+sent, with the reason. **A welcome email now fires on signup** (not awaited, so
+signup never blocks on the provider). Everything routes through the one logged
+path in `server/emailService.js`; nothing else may call `sendEmail` directly.
+Marketing opt-out (`users.marketing_opt_out` + token unsubscribe) is honoured by
+broadcasts and deliberately ignored by password resets. Verified end to end
+locally: a signup fired the welcome, Resend rejected it (domain unverified), and
+the failure appeared in the admin log rather than vanishing.
+
 **Email (2026-08-05, second half of session):** health now reports a `services.mail`
 block naming *which* half of the setup is missing (`missing-api-key`,
 `missing-from`, `invalid-from`) plus the public `fromDomain`, instead of one

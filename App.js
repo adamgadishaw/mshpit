@@ -51,6 +51,7 @@ import PlayerBar from "./src/components/PlayerBar";
 const PlaylistPickerScreen = lazyWithRetry(() => import("./src/screens/PlaylistPickerScreen"), "PlaylistPickerScreen");
 const PostScreen = lazyWithRetry(() => import("./src/screens/PostScreen"), "PostScreen");
 const ResetPasswordScreen = lazyWithRetry(() => import("./src/screens/ResetPasswordScreen"), "ResetPasswordScreen");
+const UnsubscribeScreen = lazyWithRetry(() => import("./src/screens/UnsubscribeScreen"), "UnsubscribeScreen");
 const BadgeLegendScreen = lazyWithRetry(() => import("./src/screens/BadgeLegendScreen"), "BadgeLegendScreen");
 const WelcomeScreen = lazyWithRetry(() => import("./src/screens/WelcomeScreen"), "WelcomeScreen");
 const FollowListScreen = lazyWithRetry(() => import("./src/screens/FollowListScreen"), "FollowListScreen");
@@ -163,6 +164,11 @@ function Root() {
   // password screen over everything until it's completed or cancelled.
   const [resetToken, setResetToken] = useState(() => { try { return web ? new URLSearchParams(window.location.search).get("reset") : null; } catch { return null; } });
   const clearResetUrl = () => { try { if (web) window.history.replaceState({}, "", window.location.pathname); } catch {} setResetToken(null); };
+  // Unsubscribe: the emailed link only carries the token here. Opting out is the
+  // explicit tap below, so a mail scanner following the link cannot silently
+  // unsubscribe someone.
+  const [unsubToken, setUnsubToken] = useState(() => { try { return web ? new URLSearchParams(window.location.search).get("unsubscribe") : null; } catch { return null; } });
+  const clearUnsubUrl = () => { try { if (web) window.history.replaceState({}, "", window.location.pathname); } catch {} setUnsubToken(null); };
   // The concert opening screen: fresh visitors (and anyone who logs out) see it;
   // "browse as guest" or logging in dismisses it. Guest choice persists.
   const [landing, setLanding] = useState(() => !load("pit.session", null) && !load("pit.entered", false));
@@ -673,6 +679,12 @@ function Root() {
         {resetToken && (
           <View style={styles.welcomeModal}>
             <ResetPasswordScreen token={resetToken} onDone={clearResetUrl} onCancel={clearResetUrl} />
+          </View>
+        )}
+
+        {unsubToken && (
+          <View style={styles.welcomeModal}>
+            <UnsubscribeScreen token={unsubToken} onDone={clearUnsubUrl} />
           </View>
         )}
 

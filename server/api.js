@@ -5,8 +5,14 @@
 //   clean INTERNAL_ERROR with a request ID and no internal details
 // - responses only ever contain public projections (publicUser), never raw rows
 import { randomUUID, randomBytes, createHash } from "node:crypto";
-import { mailConfigured, mailDiagnostics, sendEmail } from "./mailer.js";
-import { db, q, publicUser, artistStmts, publicArtist, artistRow, artistSearchKey, normName } from "./db.js";
+import { mailConfigured, mailDiagnostics } from "./mailer.js";
+import { DEFAULT_TEMPLATES, availableTokens, renderEmail, safeUrl } from "./emails.js";
+import {
+  dailySendLimit, deliver, logStatsSince, publicOrigin, recentLog, remainingToday,
+  sendTemplate, sendTemplateInBackground, sentToday, templateFor, unsubscribeUrl,
+} from "./emailService.js";
+import { AUDIENCES, audienceSize, campaignProgress, drainCampaign, pauseCampaign, startCampaign } from "./emailQueue.js";
+import { db, q, emailStmts, publicUser, artistStmts, publicArtist, artistRow, artistSearchKey, normName } from "./db.js";
 import { genreClaim, resolveGenre, storedClaims, upsertClaim, withoutSource } from "../src/domain/genre.mjs";
 import { hashPassword, verifyPassword, createSession, destroySession, rateLimit } from "./auth.js";
 import { startCatalogSeed, catalogSeedStatus, stopCatalogSeed, deezerEnrich } from "./catalogSeed.js";
@@ -1058,7 +1064,12 @@ export const routes = {
       "fan", v.city ?? null, v.lat ?? null, v.lng ?? null, initials, colors[Math.floor(Math.random() * colors.length)], now());
     const sess = createSession(id, ctx.ip, ctx.ua);
     ctx.setSession(sess);
-    return { user: publicUser(q.userById.get(id), { self: true }) };
+    const created = q.userById.get(id);
+    // Not awaited: signup must not block on the mail provider, and nothing on
+    // screen claims an email was sent. The attempt is recorded in email_log
+    // either way, so a silently un-sent welcome is still visible in admin.
+    sendTemplateInBackground("welcome", { user: created });
+    return { user: publicUser(created, { self: true }) };
   },
 
   "POST /api/login": (ctx) => {
@@ -1098,12 +1109,12 @@ export const routes = {
     const configuredOrigin = (process.env.PUBLIC_ORIGIN || "").replace(/\/+$/, "");
     const publicOrigin = configuredOrigin || (process.env.NODE_ENV === "production" ? "https://www.mshpit.com" : ctx.origin);
     const link = `${publicOrigin}/?reset=${token}`;
-    const r = await sendEmail({
-      to: email,
-      subject: "Reset your Pit password",
+    // Transactional: goes out regardless of marketing opt-out, since a user who
+    // muted announcements still has to be able to get back into their account.
+    const r = await sendTemplate("password_reset", {
+      user: u,
+      vars: { link },
       idempotencyKey: `password-reset-${hash.slice(0, 32)}`,
-      text: `Reset your Pit password with this link (valid 1 hour):\n${link}\n\nIf you didn't request this, ignore this email.`,
-      html: `<div style="font-family:system-ui,sans-serif;max-width:480px;margin:0 auto"><h2 style="color:#FF8C42">Reset your Pit password</h2><p>Tap the button to set a new password. This link is valid for 1 hour.</p><p><a href="${link}" style="display:inline-block;background:#FF8C42;color:#1A1206;font-weight:700;text-decoration:none;padding:12px 22px;border-radius:999px">Reset password</a></p><p style="color:#888;font-size:13px">If you didn't request this, you can safely ignore this email.</p></div>`,
     });
     if (!r.sent) console.warn(`[reset] email delivery unavailable (${r.reason}); no reset secret was logged.`);
     return generic;
@@ -2348,6 +2359,233 @@ export const routes = {
       try { db.exec("ROLLBACK"); } catch {}
       throw error;
     }
+  },
+
+  // ---- Email management -------------------------------------------------
+  // Templates are the app's own mail (welcome, password reset); campaigns are
+  // admin-composed broadcasts. Both render through server/emails.js and send
+  // through the one logged path in server/emailService.js.
+
+  "GET /api/admin/email/overview": (ctx) => {
+    requireAdmin(ctx);
+    const templates = Object.keys(DEFAULT_TEMPLATES).map((key) => {
+      const t = templateFor(key);
+      return { key, subject: t.subject, customized: t.customized, updatedAt: t.updated_at, updatedBy: t.updated_by };
+    });
+    return {
+      mail: mailDiagnostics(),
+      budget: { dailyLimit: dailySendLimit(), sentToday: sentToday(), remainingToday: remainingToday() },
+      last7Days: logStatsSince(Date.now() - 7 * 24 * 60 * 60 * 1000),
+      audiences: Object.entries(AUDIENCES).map(([key, a]) => ({ key, label: a.label, size: audienceSize(key) })),
+      templates,
+      campaigns: emailStmts.listCampaigns.all(50),
+      tokens: availableTokens(),
+    };
+  },
+
+  "GET /api/admin/email/templates/:key": (ctx) => {
+    requireAdmin(ctx);
+    const t = templateFor(ctx.params.key);
+    if (!t || !DEFAULT_TEMPLATES[ctx.params.key]) throw new ApiError(404, "No such template.", "NOT_FOUND");
+    return { template: t, default: DEFAULT_TEMPLATES[ctx.params.key], tokens: availableTokens() };
+  },
+
+  "PUT /api/admin/email/templates/:key": (ctx) => {
+    const actor = requireAdmin(ctx);
+    const key = ctx.params.key;
+    if (!DEFAULT_TEMPLATES[key]) throw new ApiError(404, "No such template.", "NOT_FOUND");
+    const subject = clean(ctx.body?.subject, { max: 200 });
+    const body = clean(ctx.body?.body, { max: 8000 });
+    if (!subject) throw new ApiError(400, "A subject is required.", "VALIDATION_FAILED");
+    if (!body) throw new ApiError(400, "A body is required.", "VALIDATION_FAILED");
+    const ctaUrl = clean(ctx.body?.ctaUrl, { max: 500 }) || null;
+    // A token-bearing CTA can only be checked once it is filled in, so validate
+    // the literal form here and let renderEmail drop anything that resolves to a
+    // non-http target at send time.
+    if (ctaUrl && !ctaUrl.includes("{{") && !safeUrl(ctaUrl)) {
+      throw new ApiError(400, "The button link must be a full http or https URL.", "VALIDATION_FAILED");
+    }
+    emailStmts.upsertTemplate.run({
+      key, subject, body,
+      cta_label: clean(ctx.body?.ctaLabel, { max: 60 }) || null,
+      cta_url: ctaUrl,
+      updated_at: now(), updated_by: actor.id,
+    });
+    return { template: templateFor(key) };
+  },
+
+  // Restores the built-in copy by dropping the override row.
+  "DELETE /api/admin/email/templates/:key": (ctx) => {
+    requireAdmin(ctx);
+    if (!DEFAULT_TEMPLATES[ctx.params.key]) throw new ApiError(404, "No such template.", "NOT_FOUND");
+    emailStmts.deleteTemplate.run(ctx.params.key);
+    return { template: templateFor(ctx.params.key) };
+  },
+
+  // Renders without sending, so copy can be checked before anyone is mailed.
+  "POST /api/admin/email/preview": (ctx) => {
+    const actor = requireAdmin(ctx);
+    const kind = ctx.body?.kind === "campaign" ? "campaign" : "transactional";
+    return {
+      preview: renderEmail({
+        subject: clean(ctx.body?.subject, { max: 200 }) || "(no subject)",
+        body: clean(ctx.body?.body, { max: 8000 }) || "",
+        ctaLabel: clean(ctx.body?.ctaLabel, { max: 60 }),
+        ctaUrl: clean(ctx.body?.ctaUrl, { max: 500 }),
+        kind,
+        vars: {
+          name: actor.name, handle: actor.handle, origin: publicOrigin(),
+          link: `${publicOrigin()}/?reset=EXAMPLE-TOKEN`,
+          unsubscribeUrl: `${publicOrigin()}/api/unsubscribe?token=EXAMPLE-TOKEN`,
+        },
+      }),
+    };
+  },
+
+  // Test sends always go to the acting admin's own address. Accepting an
+  // arbitrary recipient here would turn the admin panel into a relay for
+  // sending attacker-authored mail from a verified domain.
+  "POST /api/admin/email/templates/:key/test": async (ctx) => {
+    const actor = requireAdmin(ctx);
+    if (!DEFAULT_TEMPLATES[ctx.params.key]) throw new ApiError(404, "No such template.", "NOT_FOUND");
+    limit(ctx, "email-test", 20, 60 * 60 * 1000);
+    const result = await sendTemplate(ctx.params.key, {
+      user: actor,
+      vars: { link: `${publicOrigin()}/?reset=EXAMPLE-TOKEN` },
+      idempotencyKey: `test-${ctx.params.key}-${Date.now()}`,
+    });
+    return { sent: result.sent, reason: result.reason, to: actor.email };
+  },
+
+  "GET /api/admin/email/campaigns/:id": (ctx) => {
+    requireAdmin(ctx);
+    const campaign = campaignProgress(ctx.params.id);
+    if (!campaign) throw new ApiError(404, "No such campaign.", "NOT_FOUND");
+    return { campaign };
+  },
+
+  "POST /api/admin/email/campaigns": (ctx) => {
+    const actor = requireAdmin(ctx);
+    const name = clean(ctx.body?.name, { max: 120 });
+    const subject = clean(ctx.body?.subject, { max: 200 });
+    const body = clean(ctx.body?.body, { max: 8000 });
+    if (!name) throw new ApiError(400, "Give the campaign a name.", "VALIDATION_FAILED");
+    if (!subject) throw new ApiError(400, "A subject is required.", "VALIDATION_FAILED");
+    if (!body) throw new ApiError(400, "A body is required.", "VALIDATION_FAILED");
+    const audience = AUDIENCES[ctx.body?.audience] ? ctx.body.audience : "all";
+    const id = uid("cmp");
+    emailStmts.insertCampaign.run({
+      id, name, subject, body,
+      cta_label: clean(ctx.body?.ctaLabel, { max: 60 }) || null,
+      cta_url: clean(ctx.body?.ctaUrl, { max: 500 }) || null,
+      audience, created_by: actor.id, created_at: now(),
+    });
+    return { campaign: campaignProgress(id) };
+  },
+
+  "PATCH /api/admin/email/campaigns/:id": (ctx) => {
+    requireAdmin(ctx);
+    const existing = emailStmts.campaignById.get(ctx.params.id);
+    if (!existing) throw new ApiError(404, "No such campaign.", "NOT_FOUND");
+    if (existing.status !== "draft") throw new ApiError(409, "This campaign has already started sending and can no longer be edited.", "VALIDATION_FAILED");
+    const subject = clean(ctx.body?.subject, { max: 200 }) || existing.subject;
+    const body = clean(ctx.body?.body, { max: 8000 }) || existing.body;
+    emailStmts.updateCampaign.run({
+      id: existing.id,
+      name: clean(ctx.body?.name, { max: 120 }) || existing.name,
+      subject, body,
+      cta_label: clean(ctx.body?.ctaLabel, { max: 60 }) || null,
+      cta_url: clean(ctx.body?.ctaUrl, { max: 500 }) || null,
+      audience: AUDIENCES[ctx.body?.audience] ? ctx.body.audience : existing.audience,
+      updated_at: now(),
+    });
+    return { campaign: campaignProgress(existing.id) };
+  },
+
+  "POST /api/admin/email/campaigns/:id/test": async (ctx) => {
+    const actor = requireAdmin(ctx);
+    const campaign = emailStmts.campaignById.get(ctx.params.id);
+    if (!campaign) throw new ApiError(404, "No such campaign.", "NOT_FOUND");
+    limit(ctx, "email-test", 20, 60 * 60 * 1000);
+    const rendered = renderEmail({
+      subject: campaign.subject, body: campaign.body,
+      ctaLabel: campaign.cta_label, ctaUrl: campaign.cta_url, kind: "campaign",
+      vars: { name: actor.name, handle: actor.handle, origin: publicOrigin(), unsubscribeUrl: unsubscribeUrl(actor.id) },
+    });
+    // force:true so an admin who has opted out of announcements can still test.
+    const result = await deliver({
+      to: actor.email, userId: actor.id, kind: "campaign", campaignId: campaign.id,
+      subject: `[TEST] ${rendered.subject}`, html: rendered.html, text: rendered.text,
+      idempotencyKey: `test-${campaign.id}-${Date.now()}`, force: true,
+    });
+    if (result.sent) emailStmts.markCampaignTested.run(now(), now(), campaign.id);
+    return { sent: result.sent, reason: result.reason, to: actor.email };
+  },
+
+  // Broadcast. Gated on a successful test send and an explicit confirmation,
+  // because there is no recalling this once it leaves.
+  "POST /api/admin/email/campaigns/:id/send": async (ctx) => {
+    requireAdmin(ctx);
+    const campaign = emailStmts.campaignById.get(ctx.params.id);
+    if (!campaign) throw new ApiError(404, "No such campaign.", "NOT_FOUND");
+    if (campaign.status === "sent") throw new ApiError(409, "This campaign has already been sent.", "VALIDATION_FAILED");
+    if (!campaign.test_sent_at) throw new ApiError(422, "Send yourself a test first so you can see exactly what everyone else will get.", "VALIDATION_FAILED");
+    if (ctx.body?.confirm !== true) throw new ApiError(422, "Confirmation is required before a broadcast goes out.", "VALIDATION_FAILED");
+    const started = startCampaign(campaign.id);
+    if (!started.ok) throw new ApiError(409, `Could not start this campaign (${started.reason}).`, "VALIDATION_FAILED");
+    const drained = await drainCampaign(campaign.id, { max: Number(ctx.body?.batch) > 0 ? Math.min(Number(ctx.body.batch), 50) : 25 });
+    return { started, drained, campaign: campaignProgress(campaign.id) };
+  },
+
+  // Continue a campaign that stopped at the daily cap, a provider error, or a
+  // restart. Safe to call repeatedly; already-sent recipients are never redone.
+  "POST /api/admin/email/campaigns/:id/resume": async (ctx) => {
+    requireAdmin(ctx);
+    const campaign = emailStmts.campaignById.get(ctx.params.id);
+    if (!campaign) throw new ApiError(404, "No such campaign.", "NOT_FOUND");
+    if (campaign.status === "paused") emailStmts.setCampaignStatus.run("sending", now(), campaign.id);
+    const drained = await drainCampaign(campaign.id, { max: Number(ctx.body?.batch) > 0 ? Math.min(Number(ctx.body.batch), 50) : 25 });
+    return { drained, campaign: campaignProgress(campaign.id) };
+  },
+
+  "POST /api/admin/email/campaigns/:id/pause": (ctx) => {
+    requireAdmin(ctx);
+    const result = pauseCampaign(ctx.params.id);
+    if (!result.ok) throw new ApiError(409, `Could not pause this campaign (${result.reason}).`, "VALIDATION_FAILED");
+    return { campaign: campaignProgress(ctx.params.id) };
+  },
+
+  "GET /api/admin/email/log": (ctx) => {
+    requireAdmin(ctx);
+    return {
+      entries: recentLog({
+        limit: ctx.query?.limit,
+        status: ["sent", "failed", "skipped"].includes(ctx.query?.status) ? ctx.query.status : null,
+        kind: ["transactional", "campaign"].includes(ctx.query?.kind) ? ctx.query.kind : null,
+        campaignId: clean(ctx.query?.campaignId, { max: 40 }) || null,
+      }),
+    };
+  },
+
+  // Unsubscribe. The emailed link is a GET, and mail scanners follow those, so
+  // this only carries the token to a confirmation step. The opt-out itself is
+  // the POST below, which a scanner will not issue.
+  "GET /api/unsubscribe": (ctx) => {
+    const token = clean(ctx.query?.token, { max: 100 });
+    return { redirect: `${publicOrigin()}/?unsubscribe=${encodeURIComponent(token || "")}` };
+  },
+
+  "POST /api/unsubscribe": (ctx) => {
+    limit(ctx, "unsubscribe", 20, 60 * 60 * 1000);
+    const token = clean(ctx.body?.token, { max: 100 });
+    // Deliberately identical whether or not the token resolves, so this endpoint
+    // cannot be used to test which tokens are live.
+    const done = { ok: true };
+    if (!token) return done;
+    const user = emailStmts.userByUnsubToken.get(token);
+    if (!user) return done;
+    emailStmts.setMarketingOptOut.run(ctx.body?.resubscribe === true ? 0 : 1, user.id);
+    return done;
   },
 
   "POST /api/admin/reports/:id/dismiss": (ctx) => {
