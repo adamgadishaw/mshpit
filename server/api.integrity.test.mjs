@@ -59,6 +59,9 @@ test("health reflects database readiness without exposing configuration values",
   assert.equal(typeof health.services.backgroundJobs.tourDateRefreshEnabled, "boolean");
   assert.equal(typeof health.services.youtubeConfigured, "boolean");
   assert.equal(typeof health.services.mailConfigured, "boolean");
+  assert.equal(typeof health.services.mail.apiKeyPresent, "boolean");
+  assert.equal(typeof health.services.mail.fromValid, "boolean");
+  assert.equal(health.services.mail.configured, health.services.mailConfigured);
   assert.equal(typeof health.services.mediaStorageConfigured, "boolean");
 });
 

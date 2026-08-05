@@ -12,7 +12,15 @@
 
 **Full session log: `SESSION_LOG_2026-08-05.md`. Audits: `PROJECT_AUDIT_2026-08-04.md` (repo/prod/security) and `FUNCTION_AUDIT_2026-08-04.md` (the working bug list).**
 
-**State:** `master` @ `2953f36`, pushed, tree clean. `npm run check` green — **201 tests**, syntax 68 files, web export. Production **UP** (`/api/health` 200, database healthy).
+**State:** `master` pushed, tree clean. `npm run check` green — **207 tests**, syntax, web export. Production **UP** (`/api/health` 200, database healthy).
+
+**Email (2026-08-05, second half of session):** health now reports a `services.mail`
+block naming *which* half of the setup is missing (`missing-api-key`,
+`missing-from`, `invalid-from`) plus the public `fromDomain`, instead of one
+opaque `mailConfigured: false`. `MAIL_FROM` is now validated, so an unparseable
+value fails as a named reason rather than an opaque Resend `403`. DNS lookups
+confirmed **no Resend records exist on any subdomain** — domain verification was
+never started. Owner walkthrough: `RESEND_SETUP.md`.
 
 **Shipped this session (all verified, not just tested):**
 - Build was **broken on arrival** — mojibake in the date test; parser was correct, test file was corrupt.
@@ -304,8 +312,8 @@ verified live (`git log origin/master..HEAD` is empty; tree clean).
 | --- | --- | --- | --- |
 | `TICKETMASTER_KEY` | ✅ **DONE.** Set on Render and live; `tourProviderConfigured: true`, 672 tour dates scraped. Only the Consumer key is used (the Secret is for OAuth, unused). | Render web service env (`sync:false`) | Was: real tour dates empty. Never backfill fabricated `g_t_*`/`ca_t_*`/`ct*`/`t1`-`t4` rows to fill cards. |
 | `MEDIA_*` (all six: `MEDIA_ENDPOINT`, `MEDIA_BUCKET`, `MEDIA_REGION`, `MEDIA_ACCESS_KEY_ID`, `MEDIA_SECRET_ACCESS_KEY`, `MEDIA_PUBLIC_BASE_URL`) | ✅ **DONE.** Cloudflare R2 bucket `pit-media`. Set on Render; `mediaStorageConfigured: true`. Verified end to end: keys authenticate (S3 PUT 200), public read via r2.dev 200, and a browser CORS preflight from `https://www.mshpit.com` returns `Access-Control-Allow-Methods: PUT, GET, HEAD`. Uploads work. `MEDIA_REGION` is literally `auto` for R2. | Render web service env | Was: photo/video uploads failed closed. |
-| `RESEND_API_KEY` | ⚠️ **Set on Render, key valid**, but see MAIL_FROM. | Render web service env | Reset links logged server-side, not emailed. |
-| `MAIL_FROM` | ❌ **THE LAST GAP.** Two parts: (1) set `MAIL_FROM = Pit <noreply@mshpit.com>` on Render (health shows `mailConfigured: false`, so this or the key is still missing there); (2) **verify `mshpit.com` in Resend** (the account has **zero verified domains**, so any send from `@mshpit.com` is rejected regardless). Add Resend's DNS records in **Cloudflare** (DNS now lives there), set the mail records to **DNS-only / grey cloud**, then click Verify. | Resend dashboard (Cloudflare DNS) + Render env | Reset email silently fails; links keep getting logged instead. |
+| `RESEND_API_KEY` | ⚠️ **Set on Render, key valid**, but was exposed in chat and must be rotated. Cannot send on its own until the domain is verified. | Render web service env | Reset links logged server-side, not emailed. |
+| `MAIL_FROM` | ❌ **THE LAST GAP.** Two parts: (1) set `MAIL_FROM = Pit <noreply@mail.mshpit.com>` on Render; (2) **verify the domain in Resend**. Re-checked by DNS lookup 2026-08-05: **no Resend SPF, MX, or DKIM record exists on the root or any subdomain**, so verification was never started, not merely left pending. Nameservers are confirmed Cloudflare. Full walkthrough in `RESEND_SETUP.md`. | Resend dashboard (Cloudflare DNS) + Render env | Reset email silently fails; links keep getting logged instead. |
 
 `YOUTUBE_API_KEY` is already set (`youtubeConfigured: true`). Nothing to do.
 

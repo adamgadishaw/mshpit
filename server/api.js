@@ -5,7 +5,7 @@
 //   clean INTERNAL_ERROR with a request ID and no internal details
 // - responses only ever contain public projections (publicUser), never raw rows
 import { randomUUID, randomBytes, createHash } from "node:crypto";
-import { mailConfigured, sendEmail } from "./mailer.js";
+import { mailConfigured, mailDiagnostics, sendEmail } from "./mailer.js";
 import { db, q, publicUser, artistStmts, publicArtist, artistRow, artistSearchKey, normName } from "./db.js";
 import { genreClaim, resolveGenre, storedClaims, upsertClaim, withoutSource } from "../src/domain/genre.mjs";
 import { hashPassword, verifyPassword, createSession, destroySession, rateLimit } from "./auth.js";
@@ -587,6 +587,7 @@ export const routes = {
           tourDateRefreshEnabled: backgroundJobEnabled(process.env, "TOURDATE_REFRESH_ENABLED"),
         },
         mailConfigured: mailConfigured(),
+        mail: mailDiagnostics(),
         mediaStorageConfigured: mediaConfigured(),
       },
     };
