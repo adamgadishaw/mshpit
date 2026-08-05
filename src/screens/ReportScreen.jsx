@@ -9,11 +9,21 @@ const REASONS = ["Copyright infringement", "Illegal content", "Inappropriate / N
 
 export default function ReportScreen({ log, onClose }) {
   const { reportContent } = useStore();
-  const [done, setDone] = useState(false);
+  // null = choosing · "sending" · "sent" · any other string = the failure to show.
+  // Deliberately not a boolean: this screen used to claim the report reached the
+  // moderators the instant you tapped, even when the request failed and nobody
+  // ever saw it. Telling someone their harassment report was filed when it was
+  // not is the worst lie this app could tell, so the state has to distinguish.
+  const [status, setStatus] = useState(null);
+  const sending = status === "sending";
+  const sent = status === "sent";
+  const failure = status && !sending && !sent ? status : null;
 
-  const submit = (reason) => {
-    reportContent(log.id, reason);
-    setDone(true);
+  const submit = async (reason) => {
+    if (sending) return;
+    setStatus("sending");
+    const result = await reportContent(log.id, reason);
+    setStatus(result?.ok ? "sent" : (result?.error || "That report didn't send. Try again."));
   };
 
   return (
@@ -21,7 +31,7 @@ export default function ReportScreen({ log, onClose }) {
       <SheetHeader title="Report post" onClose={onClose} />
 
       <View style={styles.content}>
-        {done ? (
+        {sent ? (
           <View style={styles.doneBox}>
             <Icon name="check" size={30} color={colors.good} />
             <Text style={styles.doneTxt}>Thanks - this post was sent to the admin report queue. We act on reports as they come in.</Text>
@@ -33,12 +43,27 @@ export default function ReportScreen({ log, onClose }) {
           <>
             <Text style={styles.target}>{log.artist} · by {log.user?.name}</Text>
             <Text style={styles.prompt}>Why are you reporting this?</Text>
+            {!!failure && (
+              <View style={styles.failBox}>
+                <Icon name="flag" size={15} color={colors.danger} />
+                <Text style={styles.failTxt}>{failure}</Text>
+              </View>
+            )}
             {REASONS.map((r) => (
-              <Pressable key={r} style={styles.row} onPress={() => submit(r)}>
+              <Pressable
+                key={r}
+                style={[styles.row, sending && styles.rowBusy]}
+                onPress={() => submit(r)}
+                disabled={sending}
+                accessibilityRole="button"
+                accessibilityState={{ disabled: sending }}
+                accessibilityLabel={`Report for ${r}`}
+              >
                 <Icon name="flag" size={16} color={colors.danger} />
                 <Text style={styles.rowTxt}>{r}</Text>
               </Pressable>
             ))}
+            {sending && <Text style={styles.sendingTxt}>Sending your report…</Text>}
           </>
         )}
       </View>
@@ -55,6 +80,10 @@ const styles = StyleSheet.create({
   target: { color: colors.textDim, fontSize: 13, marginBottom: 4 },
   prompt: { color: colors.text, fontSize: 20, fontWeight: "800", marginBottom: 18 },
   row: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 16, marginBottom: 10 },
+  rowBusy: { opacity: 0.5 },
+  failBox: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.danger, padding: 14, marginBottom: 14 },
+  failTxt: { flex: 1, color: colors.danger, fontSize: 13.5, lineHeight: 19, fontWeight: "600" },
+  sendingTxt: { color: colors.textDim, fontSize: 13, textAlign: "center", marginTop: 4 },
   rowTxt: { color: colors.text, fontSize: 15 },
   doneBox: { alignItems: "center", marginTop: 40, gap: 16 },
   doneTxt: { color: colors.text, fontSize: 15, lineHeight: 22, textAlign: "center" },

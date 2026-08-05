@@ -1640,11 +1640,30 @@ export function StoreProvider({ children }) {
   // Slice 6: reports write through to the server so an admin on any device sees
   // them; admins hydrate the open queue on login (see absorbServerUser). Reports
   // are always on a post here. Best-effort/offline-safe.
-  const reportContent = (targetId, reason, targetType = "post") => {
+  const reportContent = async (targetId, reason, targetType = "post") => {
     const r = clean(reason, { max: LIMITS.note });
     setReports((rs) => [{ id: "rep_" + Date.now(), targetId, reason: r, reporterId: session?.id, status: "open" }, ...rs]);
-    if (session) api("/api/reports", { method: "POST", body: { targetType, targetId, reason: r } }).catch(() => {});
-    return { ok: true };
+    // This used to fire-and-forget and return { ok: true } before the request
+    // even resolved, so a failed POST still told the reporter their report had
+    // reached the moderators. It had not, and nobody would ever see it. Of every
+    // write in the app this is the one where a false success costs the most
+    // trust, so it now reports honestly and lets the reporter retry.
+    if (!session) return { ok: false, error: "Log in to send this to the moderators." };
+    try {
+      await api("/api/reports", {
+        method: "POST",
+        body: { targetType, targetId, reason: r },
+        context: "Sending your report",
+        silent: true, // the screen shows a specific message, not a generic toast
+      });
+      return { ok: true };
+    } catch (error) {
+      // Deliberately NOT the generic transport message ("Pit could not finish
+      // that action"), which never says the report was not filed. For this one
+      // action the outcome matters more than the HTTP reason, and `appError`
+      // still carries the reference for diagnostics.
+      return { ok: false, error: "Your report wasn't sent, so no moderator has seen it yet. Tap a reason to try again.", appError: error };
+    }
   };
   const actionReport = (repId) => {
     const r = reports.find((x) => x.id === repId);

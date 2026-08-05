@@ -41,7 +41,7 @@ Function density (refactor pressure):
 | **B3** rating race | ✅ **FIXED** `f25fd99` — `src/domain/latestWins.mjs`, 7 tests |
 | **S4** upload latency | ⏸ **DEFERRED** — sequential is a *documented* mobile-memory decision; see below |
 | **S2** player empty catches | ✅ **FIXED** — 3 user-initiated failures now traced; the other 11 stay silent *on purpose* |
-| **S3** write-path async audit | ⬜ open |
+| **S3** write-path async audit | ✅ **DONE** — found & fixed one real trust bug (abuse reports); the rest verified correct |
 | **S1** split `store.js` | ⬜ open (largest; do last) |
 
 Test count: 185 → **201**.
@@ -155,7 +155,38 @@ races), but 13 of them means a real failure is indistinguishable from a benign
 one. Recommend a tiny `swallow(reason)` helper that records to diagnostics at
 debug level, so the intent stays explicit and failures stay visible.
 
-### S3 — 110 `async` functions with no `try/catch`
+### Note on S3 (what the audit got right, and what it got wrong)
+My own framing — "~20 unguarded write paths" — was **mostly wrong**, and worth
+recording. `api()` already toasts mutations by default, so a missing `try` is
+not itself a bug. Of **68 writes**, only 7 suppress the toast, and all 7 do it
+correctly because the *form* shows a better, specific error. Two are exemplary:
+
+- **Account deletion** distinguishes an ambiguous network failure from a real
+  server verdict, then **re-verifies the session** before claiming success —
+  it refuses to say "deleted" unless it confirmed the account is gone.
+- **`/api/forgot`** always returns `ok` on purpose: revealing whether an email
+  exists would be account enumeration.
+
+The genuine risk class was different: **fire-and-forget writes**. Most are
+correctly best-effort (analytics, play history, logout, mark-notifications-read
+— all self-correcting). But one was not:
+
+**`reportContent()` — abuse reports were silently discarded.** It fired the POST
+with `.catch(() => {})` and returned `{ ok: true }` *before the request even
+resolved*. The screen then told the reporter **"this post was sent to the admin
+report queue"** unconditionally. If the request failed, no moderator ever saw
+it, and the only trace was a local entry on that one device.
+
+Of every write in the app this is the one where a false success costs the most —
+someone reporting harassment being told it was filed when it was not. Now:
+awaits the write, returns honestly, the screen distinguishes
+sending/sent/failed, and the failure says *"Your report wasn't sent, so no
+moderator has seen it yet"* rather than the generic transport message, which
+never conveyed that the report was lost. **Verified both paths in-browser:**
+forced 503 → no false confirmation, explicit failure, retry available; real
+request → confirmation still shown.
+
+### S3 (original framing) — 110 `async` functions with no `try/catch`
 Most are UI handlers where a rejection surfaces via the shared `api()` error
 path, so this is not 110 bugs. But it is worth auditing the ~20 that perform
 **writes** (`submit`, `doExport`, `toggleMembership`, `saveSnapshot`), where a
