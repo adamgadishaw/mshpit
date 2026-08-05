@@ -40,11 +40,26 @@ Function density (refactor pressure):
 | **B2** theme atomicity | ✅ **FIXED** `1c05a98` — `src/domain/themeStorage.mjs`, 8 tests |
 | **B3** rating race | ✅ **FIXED** `f25fd99` — `src/domain/latestWins.mjs`, 7 tests |
 | **S4** upload latency | ⏸ **DEFERRED** — sequential is a *documented* mobile-memory decision; see below |
-| **S2** player empty catches | ⬜ open |
+| **S2** player empty catches | ✅ **FIXED** — 3 user-initiated failures now traced; the other 11 stay silent *on purpose* |
 | **S3** write-path async audit | ⬜ open |
 | **S1** split `store.js` | ⬜ open (largest; do last) |
 
 Test count: 185 → **201**.
+
+### Note on S2 (what changed, and what deliberately did not)
+The 14 `catch {}` in `useYouTubePlayer` are **not** one problem. Classified:
+
+| Kind | Sites | Decision |
+|---|---|---|
+| **User-initiated** — `playVideo`, `toggle`, `seekTo` | 3 | ✅ recorded as `PIT-MEDIA-001` |
+| Teardown — destroy/remove/pause on unmount | 5 | silent (the object is already going away) |
+| Cosmetic — `setSize`, `setVolume` | 3 | silent (degradation is invisible) |
+| 500 ms position poll | 1 | silent — **recording here would bury the real signal** |
+| Automatic pause (visibility/observers) | 2 | silent (fires on benign lifecycle paths) |
+
+Only the three a *person* just did are reported, because those are the ones that
+otherwise show nothing happening with no trace — the un-diagnosable "it just
+won't play". Blanket-logging all 14 would have produced noise, not signal.
 
 ### Note on S4 (photo upload latency)
 The sequential loop in `addPhoto()` carries the comment *"Upload sequentially to

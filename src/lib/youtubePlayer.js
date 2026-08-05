@@ -1,9 +1,25 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Platform } from "react-native";
+import { captureAppError } from "./diagnostics";
 
 // Web-only YouTube IFrame Player adapter. The React player surface owns the host
 // element and this hook owns exactly one iframe inside it. It deliberately does
 // not append a second window to document.body or render competing controls.
+//
+// On swallowed errors: the IFrame API throws on ordinary races (calling a method
+// on a player that is mid-teardown, resizing an element that just unmounted), so
+// most `catch {}` here are correct and stay silent on purpose. The exception is
+// anything the PERSON just did — pressing play, toggling, dragging the scrubber.
+// If one of those throws we would otherwise show them nothing happening, with no
+// trace anywhere, which is exactly the "it just won't play" report that cannot be
+// diagnosed after the fact. Those three are recorded; the rest are not, so the
+// signal stays readable.
+function noteMediaFailure(error, context) {
+  // Diagnostics must never be the reason playback breaks.
+  try {
+    captureAppError(error, { code: "PIT-MEDIA-001", context, source: "youtube-player", toast: false });
+  } catch { /* ignore */ }
+}
 const web = Platform.OS === "web" && typeof window !== "undefined";
 const DEFAULT_HOST_ID = "pit-youtube-player-host";
 const HOST_WAIT_ATTEMPTS = 20;
@@ -175,7 +191,7 @@ export function useYouTubePlayer(enabled, options = {}) {
 
     if (pendingPlayRef.current) {
       pendingPlayRef.current = false;
-      try { player.playVideo?.(); } catch {}
+      try { player.playVideo?.(); } catch (error) { noteMediaFailure(error, "Starting the selected track"); }
     }
   }, [canPlayNow]);
 
@@ -422,7 +438,7 @@ export function useYouTubePlayer(enabled, options = {}) {
           duration: (player.getDuration() || 0) * 1000,
           playing: playerState === 1 || playerState === 3,
         });
-      } catch {}
+      } catch { /* polls twice a second; recording here would bury the real signal */ }
     }, 500);
     return () => clearInterval(timer);
   }, [enabled, canPlayNow, pauseImmediately]);
@@ -455,11 +471,11 @@ export function useYouTubePlayer(enabled, options = {}) {
         pendingPlayRef.current = true;
         flushRef.current();
       }
-    } catch {}
+    } catch (error) { noteMediaFailure(error, "Play/pause from the player controls"); }
   }, [pauseImmediately]);
 
   const seek = useCallback((ms) => {
-    try { playerRef.current?.seekTo?.(Math.max(0, Number(ms) || 0) / 1000, true); } catch {}
+    try { playerRef.current?.seekTo?.(Math.max(0, Number(ms) || 0) / 1000, true); } catch (error) { noteMediaFailure(error, "Seeking within the track"); }
   }, []);
 
   const setVolume = useCallback((value) => {
