@@ -8,7 +8,35 @@
 
 ---
 
-## ▶ NEXT SESSION — START HERE (2026-07-28, verified by Claude)
+## ▶ NEXT SESSION — START HERE (2026-08-05, verified by Claude)
+
+**Full session log: `SESSION_LOG_2026-08-05.md`. Audits: `PROJECT_AUDIT_2026-08-04.md` (repo/prod/security) and `FUNCTION_AUDIT_2026-08-04.md` (the working bug list).**
+
+**State:** `master` @ `2953f36`, pushed, tree clean. `npm run check` green — **201 tests**, syntax 68 files, web export. Production **UP** (`/api/health` 200, database healthy).
+
+**Shipped this session (all verified, not just tested):**
+- Build was **broken on arrival** — mojibake in the date test; parser was correct, test file was corrupt.
+- **Discover genre query**: whole-table scan → `GROUP BY` (2,658 → 83 rows, **32×**). Proving equivalence first exposed a *pre-existing* nondeterminism bug — ties resolved by arbitrary row order, so the pie could reshuffle between identical requests. Fixed too.
+- **Theme storage**: could half-write and leave a theme without its owner key, letting the next account on that browser inherit it (Safari private mode throws on `setItem`).
+- **Rating race**: a slow GET could undo a newer rating.
+- **Player diagnostics**: 3 user-initiated failures (play/toggle/seek) now traced as `PIT-MEDIA-001`; the other 11 `catch {}` stay silent *deliberately* — logging the 500 ms poll would bury the signal.
+- **Abuse reports were silently discarded** — fire-and-forget POST returned `{ ok: true }` before resolving, so the screen claimed "sent to the admin report queue" even when no moderator ever saw it. Now honest, both paths browser-verified.
+
+**Open, in order:**
+1. **Bundle size** — the 4.19 MB main chunk carries **17,818 photo URLs + 1,009 venue gallery pools**, parsed before first paint. Moving them behind the existing API is the single biggest mobile-lag win (~2–3 MB).
+2. **S1** — split `src/store.js` (269 functions, 170 KB). Largest/riskiest; do deliberately.
+3. Pre-commit **encoding guard** (mojibake has now recurred 3×).
+4. Non-breaking `brace-expansion` lockfile fix. **Never** `npm audit fix --force` — it downgrades Expo to 46.
+
+**Owner actions (cannot be done in code):**
+- **Render**: production is on the **free tier** — sleeps after ~15 min (intermittent 502s) and has **no persistent disk**, so `pit.db` is wiped on restart. That is the real cause of data "resetting". It is UP right now, but a 200 may just mean it woke. *Test:* note the artist/post count, recheck after a restart — if it resets, the disk is still ephemeral. Fix = upgrade to Starter + mount the disk at `/data`.
+- **Google Cloud Console**: the public Maps key is API-restricted (good) but **not referrer-restricted** — geocoding worked from an arbitrary machine. Add `https://www.mshpit.com/*`.
+
+**Deferred with reasons (not skipped):** sequential photo upload is a *documented* mobile-memory tradeoff and device memory could not be measured from here — see the log before overriding it.
+
+---
+
+## Previous entry (2026-07-28)
 
 **Repo is healthy. The production outage is a HOSTING problem, not a code bug — do not chase it in code.**
 
