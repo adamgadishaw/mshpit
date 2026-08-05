@@ -45,6 +45,24 @@ never started. Owner walkthrough: `RESEND_SETUP.md`.
 - **Player diagnostics**: 3 user-initiated failures (play/toggle/seek) now traced as `PIT-MEDIA-001`; the other 11 `catch {}` stay silent *deliberately* — logging the 500 ms poll would bury the signal.
 - **Abuse reports were silently discarded** — fire-and-forget POST returned `{ ok: true }` before resolving, so the screen claimed "sent to the admin report queue" even when no moderator ever saw it. Now honest, both paths browser-verified.
 
+**Security audit vs. the "vibe-coded app" failure classes (2026-08-05):** checked
+against real code, not assumed. **Clean:** no SQL injection (every interpolated
+identifier is a code literal or an allowlisted map lookup; all values are bound
+parameters), no mass assignment (`role`/`verified`/`is_banned`/`sponsor` are
+absent from every client-writable set list), no client-side-only auth, no XSS
+sink (zero `dangerouslySetInnerHTML`/`innerHTML`/`WebView` in the app), private
+playlists enforce visibility, ownership is checked on post/comment edit+delete,
+cookies are HttpOnly + SameSite=Lax + Secure in prod, passwords are scrypt with
+per-user salt and `timingSafeEqual`, session tokens are stored hashed, CORS is
+**disabled entirely in production** (dev-only allowlist), and an unset
+`ADMIN_PASSWORD` generates a random one rather than a default. **The one real
+finding is the already-known Maps key**: confirmed extractable from the built
+web bundle (`dist/_expo/static/js/web/__common-*.js`). That is normal for a
+browser Maps key, so the fix is the referrer restriction in the owner-actions
+list below, not removing it from the bundle. Minor: `script-src 'unsafe-inline'`
+is required by the Expo web bootstrap and is low risk given no HTML injection
+sink exists; do not "fix" it by breaking the bootstrap.
+
 **Open, in order:**
 1. **Bundle size** — the 4.19 MB main chunk carries **17,818 photo URLs + 1,009 venue gallery pools**, parsed before first paint. Moving them behind the existing API is the single biggest mobile-lag win (~2–3 MB).
 2. **S1** — split `src/store.js` (269 functions, 170 KB). Largest/riskiest; do deliberately.
