@@ -35,8 +35,31 @@ attached disk). Confirm `/api/health` reports database readiness after every
 deploy.
 
 Do not treat copying only `pit.db` from a live WAL database as a complete backup.
-Use a SQLite-consistent backup/checkpoint or a provider disk snapshot, copy it
-off-host, and regularly prove that it restores into a separate environment.
+Committed transactions live in `pit.db-wal` until a checkpoint, so a bare copy can
+be torn or stale.
+
+`npm run backup` implements this correctly. It takes a consistent snapshot with
+`VACUUM INTO` (no downtime, no lock held on the live database), then opens the
+snapshot as a separate database and runs `PRAGMA integrity_check` plus row counts
+against the source before calling it good. Retention defaults to 7, override with
+`BACKUP_KEEP`. Snapshots land in `backups/`, which is gitignored because they
+contain every user email and password hash.
+
+Prove a restore rather than assuming one:
+
+```bash
+npm run backup:verify -- backups/pit-YYYYMMDD-HHMMSS.db
+```
+
+For the full proof, copy a snapshot to an empty directory as `pit.db`, start the
+server with `PIT_DATA_DIR` pointed at it, and confirm `/api/health` reports
+`database: true` and real rows come back. This was last exercised on 2026-08-05.
+
+Off-host copies use `npm run backup -- --upload` with its own private
+`BACKUP_S3_*` credentials. It deliberately refuses to write into the `MEDIA_*`
+bucket: that bucket is public-read so photos can be served from it, and a
+database dump there would publish every account on the internet.
+
 Before broad traffic, migrate to managed Postgres with point-in-time recovery.
 
 ## 3. Required production configuration

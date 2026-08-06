@@ -1,7 +1,10 @@
 // SQLite database layer, Node's built-in node:sqlite, zero dependencies.
-// WAL mode + foreign keys + busy timeout: safe under concurrent requests,
-// survives crashes mid-write (WAL journal replays), and the whole DB is one
-// file you can back up by copying.
+// WAL mode + foreign keys + busy timeout: safe under concurrent requests and
+// survives crashes mid-write (the WAL journal replays).
+//
+// WAL is also why copying pit.db is NOT a backup: committed transactions live in
+// pit.db-wal until a checkpoint, so a bare copy can be torn or stale. Use
+// `npm run backup` (VACUUM INTO), which asks SQLite for a consistent snapshot.
 import { DatabaseSync } from "node:sqlite";
 import { toIsoDate } from "../src/domain/dates.mjs";
 import { displayGenre, resolveGenre, storedClaims } from "../src/domain/genre.mjs";

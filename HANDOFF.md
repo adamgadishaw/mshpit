@@ -69,7 +69,34 @@ sink exists; do not "fix" it by breaking the bootstrap.
 3. Pre-commit **encoding guard** (mojibake has now recurred 3×).
 4. Non-breaking `brace-expansion` lockfile fix. **Never** `npm audit fix --force` — it downgrades Expo to 46.
 
+**Production-readiness pass (2026-08-05, against the owner's 6-point checklist):**
+- **Email is fully live.** DKIM/SPF/MX verified in DNS for `mail.mshpit.com`;
+  prod reports `mail.configured: true`. The admin email console is usable.
+- **HTTPS verified end to end**: HTTP→HTTPS 301 on apex and www, apex→www 301,
+  HSTS with `includeSubDomains`.
+- **Upload + CSRF now regression-locked** in `server/security.boundaries.test.mjs`
+  (10 tests): SVG/HTML refused a ticket, filename traversal refused, the object
+  key is bound to the session not the body, Content-Type *and* Content-Length are
+  signed, cookie flags asserted, and a source scan proves **no GET route mutates**
+  (which is what makes `SameSite=Lax` sufficient). R2 keys use `randomUUID`, so
+  they are not guessable.
+- **Backups now exist**: `npm run backup` (VACUUM INTO, not a file copy), which
+  self-verifies with `integrity_check` + row counts. **Restore was proven**, not
+  assumed: snapshot → clean dir → server booted → real rows served. `backups/`
+  and `*.db` are gitignored. Off-host upload refuses the public MEDIA bucket.
+- **Dependabot added.** All 12 npm advisories are Expo build-tooling; none is
+  reachable from the server, which imports only `node:` builtins. Still never run
+  `npm audit fix --force`.
+- **Still missing from that checklist:** no staging environment, no log
+  aggregation or alerting, and rollback (git revert + redeploy) is untested.
+
 **Owner actions (cannot be done in code):**
+- **Rotate the Ticketmaster and Cloudflare R2 keys.** Both were pasted into AI
+  chat. Resend was rotated during the domain setup.
+- **Confirm the live Render plan.** `render.yaml` declares `plan: starter` with a
+  1GB disk at `/data`, but the data-loss symptoms match free tier, which
+  `server/dataDirectory.js` notes *ignores* the `disk:` block. Backups and
+  rollback both depend on which is actually true.
 - **Render**: production is on the **free tier** — sleeps after ~15 min (intermittent 502s) and has **no persistent disk**, so `pit.db` is wiped on restart. That is the real cause of data "resetting". It is UP right now, but a 200 may just mean it woke. *Test:* note the artist/post count, recheck after a restart — if it resets, the disk is still ephemeral. Fix = upgrade to Starter + mount the disk at `/data`.
 - **Google Cloud Console**: the public Maps key is API-restricted (good) but **not referrer-restricted** — geocoding worked from an arbitrary machine. Add `https://www.mshpit.com/*`.
 

@@ -1,0 +1,35 @@
+version: 2
+updates:
+  # Dependency scanning for the checklist item that "a green scanner is not
+  # proof" is aimed at. This surfaces advisories; it does not replace the manual
+  # boundary tests in server/security.boundaries.test.mjs.
+  #
+  # The known-noisy case here is the Expo toolchain: today's 12 advisories are
+  # all build-time (@expo/config-plugins, brace-expansion via glob) and none is
+  # reachable from the server, which imports only node: builtins. Majors are
+  # ignored for expo/react-native because bumping them out of SDK lockstep
+  # breaks the app; SDK upgrades are a deliberate, tested piece of work.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      expo-toolchain:
+        patterns: ["expo", "expo-*", "@expo/*"]
+        update-types: [minor, patch]
+      dev-tooling:
+        dependency-type: development
+        update-types: [minor, patch]
+    ignore:
+      - dependency-name: expo
+        update-types: [version-update:semver-major]
+      - dependency-name: react-native
+        update-types: [version-update:semver-major]
+      - dependency-name: react
+        update-types: [version-update:semver-major]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly

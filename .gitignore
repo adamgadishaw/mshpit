@@ -50,3 +50,10 @@ server/data/
 
 # Local scratch from smoke tests / background servers (never commit databases)
 .tmp/
+
+# Database snapshots from scripts/backup-db.mjs. These contain every user email
+# and password hash, so they must never reach the repo.
+backups/
+*.db
+*.db-wal
+*.db-shm
