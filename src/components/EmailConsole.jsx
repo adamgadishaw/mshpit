@@ -37,7 +37,7 @@ function timeAgo(ms) {
 
 function Field({ label, hint, ...props }) {
   return (
-    <View style={{ marginBottom: space.sm }}>
+    <View style={{ marginBottom: space(3) }}>
       <Text style={styles.label}>{label}</Text>
       <TextInput
         placeholderTextColor={colors.textFaint}
@@ -94,7 +94,11 @@ export default function EmailConsole() {
   const budget = overview.budget || {};
 
   return (
-    <View>
+    // Console-style screens in this app cap their width and centre (see
+    // DiagnosticsScreen/DeleteAccountScreen). Without it, a desktop stretches
+    // every row to ~1300px and strands each card's title and its badge at
+    // opposite ends of the window.
+    <View style={styles.wrap}>
       {/* Configuration state first: nothing else here works until this is green. */}
       <View style={[styles.statusCard, mail.configured ? styles.statusOk : styles.statusBad]}>
         <View style={styles.statusRow}>
@@ -350,44 +354,47 @@ function LogView() {
 }
 
 const styles = StyleSheet.create({
-  empty: { color: colors.textDim, fontSize: 13, padding: space.md, textAlign: "center" },
-  sectionHint: { color: colors.textDim, fontSize: 12, marginBottom: space.sm, lineHeight: 17 },
-  statusCard: { borderWidth: 1, borderRadius: radius.md, padding: space.sm, marginBottom: space.sm },
+  wrap: { width: "100%", maxWidth: 820, alignSelf: "center" },
+  empty: { color: colors.textDim, fontSize: 13, padding: space(4), textAlign: "center" },
+  sectionHint: { color: colors.textDim, fontSize: 12, marginBottom: space(3), lineHeight: 17 },
+  statusCard: { borderWidth: 1, borderRadius: radius.md, padding: space(3), marginBottom: space(3) },
   statusOk: { borderColor: colors.good, backgroundColor: colors.surface },
   statusBad: { borderColor: colors.danger, backgroundColor: colors.surface },
   statusRow: { flexDirection: "row", alignItems: "center", gap: 8 },
   statusTitle: { color: colors.text, fontWeight: "700", fontSize: 13, flex: 1 },
   statusBody: { color: colors.textDim, fontSize: 12, marginTop: 4, lineHeight: 17 },
   statusMeta: { color: colors.textFaint, fontSize: 11, marginTop: 6, fontFamily: mono, lineHeight: 16 },
-  notice: { fontSize: 12, padding: space.sm, borderRadius: radius.sm, marginBottom: space.sm, overflow: "hidden" },
+  notice: { fontSize: 12, padding: space(3), borderRadius: radius.sm, marginBottom: space(3), overflow: "hidden" },
   noticeOk: { color: colors.good, backgroundColor: colors.surfaceAlt },
   noticeBad: { color: colors.danger, backgroundColor: colors.surfaceAlt },
-  segment: { flexDirection: "row", gap: 6, marginBottom: space.sm },
+  segment: { flexDirection: "row", gap: 6, marginBottom: space(3) },
   segBtn: { paddingVertical: 7, paddingHorizontal: 12, borderRadius: 999, borderWidth: 1, borderColor: colors.line },
   segOn: { backgroundColor: colors.amberStrong, borderColor: colors.amberStrong },
   segTxt: { color: colors.textDim, fontSize: 12, fontWeight: "600" },
   segTxtOn: { color: "#1A1206" },
-  card: { borderWidth: 1, borderColor: colors.line, borderRadius: radius.md, marginBottom: space.sm, backgroundColor: colors.surface },
-  cardHead: { flexDirection: "row", alignItems: "center", padding: space.sm, gap: 8 },
+  card: { borderWidth: 1, borderColor: colors.line, borderRadius: radius.md, marginBottom: space(3), backgroundColor: colors.surface },
+  cardHead: { flexDirection: "row", alignItems: "center", padding: space(3), gap: 8 },
   cardTitle: { color: colors.text, fontWeight: "700", fontSize: 13 },
   cardSub: { color: colors.textDim, fontSize: 12, marginTop: 2 },
-  cardBody: { padding: space.sm, borderTopWidth: 1, borderTopColor: colors.lineSoft },
-  tag: { color: colors.textFaint, fontSize: 10, fontFamily: mono, textTransform: "uppercase" },
-  tagOk: { color: colors.good },
-  tagWarn: { color: colors.gold },
+  cardBody: { padding: space(3), borderTopWidth: 1, borderTopColor: colors.lineSoft },
+  // Matches AdminScreen's roleTag so a status here reads as the same kind of
+  // badge it does on the Members tab, rather than as stray uppercase text.
+  tag: { color: colors.textFaint, fontSize: 10, fontFamily: mono, textTransform: "uppercase", borderWidth: 1, borderColor: colors.line, borderRadius: radius.pill, paddingHorizontal: 8, paddingVertical: 2, overflow: "hidden" },
+  tagOk: { color: colors.good, borderColor: colors.good },
+  tagWarn: { color: colors.gold, borderColor: colors.gold },
   meta: { color: colors.textDim, fontSize: 12, marginBottom: 4 },
   label: { color: colors.textDim, fontSize: 11, fontWeight: "700", marginBottom: 4, textTransform: "uppercase" },
   hint: { color: colors.textFaint, fontSize: 11, marginTop: 4, lineHeight: 15 },
   input: { borderWidth: 1, borderColor: colors.line, borderRadius: radius.sm, color: colors.text, padding: 10, fontSize: 13, backgroundColor: colors.bgElev },
   inputTall: { minHeight: 120, textAlignVertical: "top" },
-  btnRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: space.sm },
+  btnRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: space(3) },
   btn: { paddingVertical: 9, paddingHorizontal: 14, borderRadius: 999, borderWidth: 1, borderColor: colors.line },
   btnPrimary: { backgroundColor: colors.amberStrong, borderColor: colors.amberStrong },
   btnDanger: { borderColor: colors.danger },
   btnOff: { opacity: 0.5 },
   btnTxt: { color: colors.text, fontSize: 12, fontWeight: "700" },
   btnTxtPrimary: { color: "#1A1206" },
-  chipRow: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginBottom: space.sm },
+  chipRow: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginBottom: space(3) },
   chip: { paddingVertical: 6, paddingHorizontal: 10, borderRadius: 999, borderWidth: 1, borderColor: colors.line },
   chipOn: { backgroundColor: colors.surfaceAlt, borderColor: colors.amberStrong },
   chipTxt: { color: colors.textDim, fontSize: 11 },

@@ -107,6 +107,18 @@ Verified live, not just unit tested: booted with `PIT_ENV=staging`, signed up
 `real.person@gmail.com` and the welcome mail was blocked and logged; re-ran with
 an allowlist and the listed address passed the guard and stopped at the next check.
 
+**Email console layout fix (2026-08-05):** the console shipped with **no padding,
+margins or gaps at all**. Cause: `space` in `src/theme.js` is a FUNCTION
+(`space(n) => n * 4`), not an object of named sizes. `space.sm` is valid JS that
+evaluates to `undefined`, and StyleSheet drops undefined silently, so 13 spacing
+values in `EmailConsole.jsx` and 4 in `UnsubscribeScreen.jsx` did nothing and
+nothing failed. Both files were mine; nothing else in the repo had it.
+Also added the missing `maxWidth: 820, alignSelf: "center"` (the convention in
+DiagnosticsScreen/DeleteAccountScreen) — without it a desktop stretched each row
+to ~1300px and stranded every card title and its badge at opposite ends.
+`src/theme.usage.test.mjs` now fails on any `space.<name>`; verified it catches
+the original code.
+
 **Owner actions (cannot be done in code):**
 - **Create the `staging` branch in Render** (New ▸ Blueprint picks it up) and set
   its dashboard values. Three MUST differ from production: `MEDIA_BUCKET` (a

@@ -76,10 +76,10 @@ export default function UnsubscribeScreen({ token, onDone }) {
 }
 
 const styles = StyleSheet.create({
-  wrap: { flex: 1, alignItems: "center", justifyContent: "center", padding: space.md, backgroundColor: colors.bg },
-  card: { width: "100%", maxWidth: 380, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: radius.md, padding: space.md },
-  h: { color: colors.text, fontSize: 18, fontWeight: "800", marginBottom: space.sm },
-  p: { color: colors.textDim, fontSize: 13, lineHeight: 19, marginBottom: space.md },
+  wrap: { flex: 1, alignItems: "center", justifyContent: "center", padding: space(4), backgroundColor: colors.bg },
+  card: { width: "100%", maxWidth: 380, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: radius.md, padding: space(4) },
+  h: { color: colors.text, fontSize: 18, fontWeight: "800", marginBottom: space(3) },
+  p: { color: colors.textDim, fontSize: 13, lineHeight: 19, marginBottom: space(4) },
   btn: { paddingVertical: 12, borderRadius: 999, borderWidth: 1, borderColor: colors.line, alignItems: "center", marginTop: 8 },
   btnPrimary: { backgroundColor: colors.amberStrong, borderColor: colors.amberStrong },
   btnTxt: { color: colors.text, fontWeight: "700", fontSize: 13 },
