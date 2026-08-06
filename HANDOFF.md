@@ -90,7 +90,28 @@ sink exists; do not "fix" it by breaking the bootstrap.
 - **Still missing from that checklist:** no staging environment, no log
   aggregation or alerting, and rollback (git revert + redeploy) is untested.
 
+**Staging (2026-08-05):** `render.yaml` now defines `mshpit-staging`, deploying
+from the **`staging` branch** with its own disk (`pit-staging-data`). Flow is
+merge to `staging`, watch it, then fast-forward `master`.
+
+It runs `NODE_ENV=production` deliberately (otherwise Secure cookies, CORS and the
+data-dir guard all change and it stops being a rehearsal). Deployment identity is
+carried by **`PIT_ENV`** instead, defaulting to `production` so an unset value can
+never half-mute the real site. `PIT_ENV=staging` drives two guards:
+- **Email fails CLOSED**: delivery only to `EMAIL_ALLOWED_RECIPIENTS`; everything
+  else is logged `skipped / non-production-recipient`. Unset means send nothing.
+  This matters because staging restored from a prod snapshot holds real addresses.
+- **`robots.txt` returns `Disallow: /`** with no sitemap.
+
+Verified live, not just unit tested: booted with `PIT_ENV=staging`, signed up
+`real.person@gmail.com` and the welcome mail was blocked and logged; re-ran with
+an allowlist and the listed address passed the guard and stopped at the next check.
+
 **Owner actions (cannot be done in code):**
+- **Create the `staging` branch in Render** (New ▸ Blueprint picks it up) and set
+  its dashboard values. Three MUST differ from production: `MEDIA_BUCKET` (a
+  separate bucket), `ADMIN_PASSWORD`, and ideally `RESEND_API_KEY`. Drop
+  `PIT_ALLOW_EMPTY_DB_BOOTSTRAP` after the first successful boot.
 - **Rotate the Ticketmaster and Cloudflare R2 keys.** Both were pasted into AI
   chat. Resend was rotated during the domain setup.
 - **Confirm the live Render plan.** `render.yaml` declares `plan: starter` with a

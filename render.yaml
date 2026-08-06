@@ -89,6 +89,93 @@ services:
       - key: TOURDATE_CITY_LIMIT
         value: "50"                    # most-used member cities refreshed per pass
 
+  # ---------------------------------------------------------------------------
+  # STAGING. Deploys from the `staging` branch so `master` stops being both the
+  # integration and the production environment. Merge to `staging` first, watch
+  # it, then fast-forward `master`.
+  #
+  # Staging runs NODE_ENV=production on purpose: with NODE_ENV=development the
+  # cookie loses Secure, CORS opens to the dev allowlist, and the data-directory
+  # guard changes behaviour — at which point it is no longer a rehearsal. The
+  # deployment identity is carried by PIT_ENV instead, which drives:
+  #   - email: delivery is restricted to EMAIL_ALLOWED_RECIPIENTS and fails
+  #     CLOSED, so an unset allowlist sends nothing (see server/emailService.js)
+  #   - robots.txt: Disallow: / so staging is never indexed
+  #
+  # THREE THINGS MUST BE DIFFERENT FROM PRODUCTION, set in the dashboard:
+  #   1. MEDIA_BUCKET — a separate bucket. Sharing production's means staging
+  #      test uploads land in the bucket real users' photos are served from.
+  #   2. RESEND_API_KEY — ideally a separate key so staging sends are
+  #      attributable, and its own quota cannot eat production's.
+  #   3. ADMIN_PASSWORD — never reuse production's.
+  - type: web
+    name: mshpit-staging
+    runtime: node
+    plan: starter
+    branch: staging
+    buildCommand: npm ci && npm run build:web
+    startCommand: node server/index.js
+    healthCheckPath: /api/health
+    autoDeploy: true
+    disk:
+      name: pit-staging-data           # a DIFFERENT disk; never point at pit-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: NODE_VERSION
+        value: "24"
+      - key: NODE_ENV
+        value: production              # see note above — deliberate
+      - key: PIT_ENV
+        value: staging                 # the isolation switch
+      - key: PIT_DATA_DIR
+        value: /data
+      # First boot only. server/dataDirectory.js REFUSES to start when a disk is
+      # mounted but pit.db is absent, because in production that means the data
+      # vanished. On a brand-new staging disk it just means "new", so this allows
+      # the first boot. Remove it once staging has a database, or staging loses
+      # the same protection production has.
+      - key: PIT_ALLOW_EMPTY_DB_BOOTSTRAP
+        value: "true"
+      - key: PUBLIC_ORIGIN
+        sync: false                    # the onrender.com URL Render assigns
+      - key: ADMIN_EMAIL
+        value: adamgadishaw@gmail.com
+      - key: ADMIN_PASSWORD
+        sync: false                    # must NOT match production
+      # Comma-separated. Anything not listed is logged as skipped, never sent.
+      # Empty means staging sends no email at all, which is the safe default.
+      - key: EMAIL_ALLOWED_RECIPIENTS
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: MAIL_FROM
+        sync: false
+      - key: MEDIA_ENDPOINT
+        sync: false
+      - key: MEDIA_BUCKET
+        sync: false                    # a SEPARATE bucket from production
+      - key: MEDIA_REGION
+        sync: false
+      - key: MEDIA_ACCESS_KEY_ID
+        sync: false
+      - key: MEDIA_SECRET_ACCESS_KEY
+        sync: false
+      - key: MEDIA_PUBLIC_BASE_URL
+        sync: false
+      # Provider fan-out stays off on staging: it would burn production's shared
+      # YouTube and Ticketmaster quotas for data nobody looks at.
+      - key: CACHE_WARM_ENABLED
+        value: "false"
+      - key: TOURDATE_REFRESH_ENABLED
+        value: "false"
+      - key: YOUTUBE_API_KEY
+        sync: false
+      - key: TICKETMASTER_KEY
+        sync: false
+      - key: EXPO_PUBLIC_GOOGLE_MAPS_KEY
+        sync: false
+
   # NOTE: the old git-push cron ("pit-catalog-refresh") is retired — the in-process
   # scheduler above replaces it for tour dates (no token, no redeploy, live instantly).
   # To grow the ARTIST roster (a bundled file), run `npm run pipeline` locally and

@@ -10,6 +10,7 @@
 // what a crawler indexes, which is the part that actually matters here.
 
 import { db, normName } from "./db.js";
+import { isProduction } from "./environment.js";
 import { parsePath, slugify, artistPath, venuePath, showPath, profilePath } from "../src/domain/urls.mjs";
 
 const SITE_NAME = "Pit";
@@ -194,6 +195,11 @@ export function injectHead(html, pathname) {
 
 // --- robots.txt -------------------------------------------------------------
 export function robotsTxt() {
+  // A staging copy serving the same pages is duplicate content at best and a
+  // public preview of unreleased work at worst. Keep it out of every index.
+  if (!isProduction()) {
+    return ["# staging — not for indexing", "User-agent: *", "Disallow: /", ""].join("\n");
+  }
   return [
     "# mshpit.com",
     "User-agent: *",

@@ -5,10 +5,32 @@
 // entries worth having.
 import { randomBytes } from "node:crypto";
 import { db, emailStmts, q } from "./db.js";
+import { isProduction } from "./environment.js";
 import { mailConfigured, mailDiagnostics, sendEmail } from "./mailer.js";
 import { DEFAULT_TEMPLATES, renderEmail } from "./emails.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Staging carries real Resend credentials on purpose, because an environment
+ * that cannot send is not a rehearsal of one that can. That also means a
+ * broadcast composed on staging would reach real people, and a restored
+ * production snapshot on staging holds every real address.
+ *
+ * So outside production, delivery is restricted to an explicit allowlist.
+ * This fails CLOSED: an unset allowlist sends nothing at all. Blocked messages
+ * are written to the log as skipped, so staging still exercises the full
+ * compose/queue/log path and you can see exactly who would have been mailed.
+ *
+ * Returns a skip reason, or null when the message may proceed.
+ */
+export function nonProductionBlock(to, env = process.env) {
+  if (isProduction(env)) return null;
+  const allowed = String(env?.EMAIL_ALLOWED_RECIPIENTS || "")
+    .split(",").map((entry) => entry.trim().toLowerCase()).filter(Boolean);
+  if (allowed.includes(String(to || "").trim().toLowerCase())) return null;
+  return "non-production-recipient";
+}
 
 export function publicOrigin() {
   const configured = String(process.env.PUBLIC_ORIGIN || "").replace(/\/+$/, "");
@@ -96,6 +118,12 @@ export async function deliver({ to, userId = null, kind = "transactional", templ
     if (user.marketing_opt_out) { writeLog({ ...base, status: "skipped", reason: "opted-out" }); return { sent: false, reason: "opted-out" }; }
     if (user.is_banned) { writeLog({ ...base, status: "skipped", reason: "banned" }); return { sent: false, reason: "banned" }; }
   }
+
+  // Checked before configuration: "this deployment may not mail this person" is
+  // a stronger reason than "this deployment is missing a key", and `force` must
+  // not be able to punch through it the way it bypasses opt-out for transactional.
+  const blocked = nonProductionBlock(to);
+  if (blocked) { writeLog({ ...base, status: "skipped", reason: blocked }); return { sent: false, reason: blocked }; }
 
   if (!mailConfigured()) {
     const reason = mailDiagnostics().reason || "not-configured";
