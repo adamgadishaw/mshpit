@@ -349,7 +349,7 @@ export default function AdminScreen({ onClose }) {
     <View style={styles.wrap}>
       <SheetHeader title="Moderation" onBack={onClose} />
 
-      <View style={styles.h1Row}>
+      <View style={[styles.column, styles.h1Row]}>
         <Icon name="shield" size={20} color={colors.amber} />
         <Text style={styles.h1}>Moderation console</Text>
         <View style={[styles.roleTag, { borderColor: roleColor(session?.role) }]}>
@@ -358,7 +358,7 @@ export default function AdminScreen({ onClose }) {
       </View>
 
       {/* tab bar, a clean segmented control (no more stretched ovals) */}
-      <View style={styles.tabbar}>
+      <View style={[styles.column, styles.tabbar]}>
         {TABS.map((t) => (
           <Pressable key={t.key} style={[styles.tab, tab === t.key && styles.tabOn]} onPress={() => setTab(t.key)}>
             <Icon name={t.icon} size={15} color={tab === t.key ? "#1A1206" : colors.textDim} />
@@ -368,7 +368,7 @@ export default function AdminScreen({ onClose }) {
         ))}
       </View>
 
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView contentContainerStyle={[styles.column, styles.content]} showsVerticalScrollIndicator={false}>
         {/* ---- OVERVIEW ---- */}
         {tab === "overview" && (
           <>
@@ -809,6 +809,12 @@ const styles = StyleSheet.create({
   healthState: { fontSize: 13.5, fontWeight: "700" },
   healthSub: { color: colors.textDim, fontSize: 12 },
   wrap: { flex: 1, backgroundColor: colors.bg },
+  // One readable column for the whole console. Applied to the title row, the tab
+  // bar and the scroll content together: capping only the content would leave the
+  // tabs stretched across the window and the two would visibly disagree. The
+  // SheetHeader above stays full width because it is page chrome, not content.
+  // 900 matches DiscoverScreen, the widest existing cap in the app.
+  column: { width: "100%", maxWidth: 900, alignSelf: "center" },
   h1Row: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 16, paddingTop: 6 },
   h1: { color: colors.text, fontSize: 20, fontWeight: "800" },
   tabbar: { flexDirection: "row", flexWrap: "wrap", gap: 8, paddingHorizontal: 16, paddingTop: 12, paddingBottom: 4 },

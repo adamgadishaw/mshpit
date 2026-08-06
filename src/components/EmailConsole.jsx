@@ -94,11 +94,10 @@ export default function EmailConsole() {
   const budget = overview.budget || {};
 
   return (
-    // Console-style screens in this app cap their width and centre (see
-    // DiagnosticsScreen/DeleteAccountScreen). Without it, a desktop stretches
-    // every row to ~1300px and strands each card's title and its badge at
-    // opposite ends of the window.
-    <View style={styles.wrap}>
+    // Width is capped by AdminScreen's `column`, which constrains the whole
+    // console as one unit. Nesting a second cap here would make this tab
+    // narrower than its own tab bar.
+    <View>
       {/* Configuration state first: nothing else here works until this is green. */}
       <View style={[styles.statusCard, mail.configured ? styles.statusOk : styles.statusBad]}>
         <View style={styles.statusRow}>
@@ -354,7 +353,6 @@ function LogView() {
 }
 
 const styles = StyleSheet.create({
-  wrap: { width: "100%", maxWidth: 820, alignSelf: "center" },
   empty: { color: colors.textDim, fontSize: 13, padding: space(4), textAlign: "center" },
   sectionHint: { color: colors.textDim, fontSize: 12, marginBottom: space(3), lineHeight: 17 },
   statusCard: { borderWidth: 1, borderRadius: radius.md, padding: space(3), marginBottom: space(3) },
