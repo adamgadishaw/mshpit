@@ -119,6 +119,16 @@ to ~1300px and stranded every card title and its badge at opposite ends.
 `src/theme.usage.test.mjs` now fails on any `space.<name>`; verified it catches
 the original code.
 
+**Rollback rehearsed (2026-08-05):** the real risk in a rollback is not the code,
+it is that the **schema does not roll back with it**. Tested rather than assumed:
+a worktree at the pre-email-schema commit (`49dd378`) was booted against a
+database migrated by current code. It served `/api/health` 200, read catalogue
+rows, and completed a signup; rows it wrote stayed readable by the new schema.
+Safe because migrations are additive-only and `unsub_token` is minted lazily, so
+accounts created mid-rollback are not left broken. `server/migrations.test.mjs`
+guards both properties. Procedure in `LAUNCH.md` section 5b, including the case
+where a destructive migration means restore-then-roll-back, not roll-back-first.
+
 **Owner actions (cannot be done in code):**
 - **Create the `staging` branch in Render** (New ▸ Blueprint picks it up) and set
   its dashboard values. Three MUST differ from production: `MEDIA_BUCKET` (a

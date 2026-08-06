@@ -119,6 +119,40 @@ are `youtube_unverified`; keyless Wikidata mappings are
 `wikidata_unverified`. Neither receives blind trusted-channel scoring until
 validated. Wikidata's structured identity itself is CC0 enrichment.
 
+## 5b. Rollback
+
+Rolling back code is easy. The question that decides whether a rollback actually
+works is whether the **old code can run against a database the new code already
+migrated**, because the schema does not roll back with the deploy.
+
+For Pit the answer is yes, and it was rehearsed on 2026-08-05 rather than assumed:
+a worktree at the pre-email-schema commit was booted against a database migrated
+by current code. It started, served `/api/health` 200, read catalogue rows, and
+completed a signup. Rows it wrote were readable by the new schema afterwards.
+
+Two properties make that safe, and both need to hold for it to stay true:
+
+- **Migrations are additive only.** Every entry in `server/db.js` is
+  `ALTER TABLE ... ADD COLUMN` with a default, guarded by a `PRAGMA table_info`
+  check. Old code ignores columns it does not know about. A destructive migration
+  (dropping or renaming a column, changing a type, backfilling in place) breaks
+  this and makes rollback a restore-from-backup instead.
+- **New nullable state is minted lazily.** `unsub_token` is created on first use,
+  not at signup, so accounts created during a rollback window are not left broken.
+
+### Procedure
+
+1. In the Render dashboard, use **Rollback to this deploy** on the last known-good
+   deploy. That is faster than a revert and does not need a build.
+2. If the dashboard route is unavailable, `git revert <bad-sha>` and push to
+   `master`. That triggers a normal build, so it is slower.
+3. Confirm `/api/health` returns 200 with `database: true`.
+4. Only then investigate. Do not fix forward on a broken production.
+
+**If the bad deploy contained a destructive migration**, do not roll back the code
+first. Restore the database from a snapshot (section 2), then roll back the code,
+because the old code cannot read the changed schema.
+
 ## 6. Post-deploy Alpha smoke test
 
 Run this sequence after a schema/provider/social batch:
