@@ -131,7 +131,7 @@ const ROLES = ["fan", "artist", "moderator", "admin"];
 const roleColor = (r) => (r === "admin" ? colors.magenta : r === "moderator" ? colors.good : r === "artist" ? colors.amber : colors.textDim);
 
 // A single member row with inline Discord-style moderation: role, timeout, ban.
-function MemberRow({ u, self, status, canRole, canBan, onRole, onTimeout, onLift, onBan, onUnban, onVerify, onSponsor }) {
+function MemberRow({ u, self, status, canRole, canBan, onRole, onTimeout, onLift, onBan, onUnban, onVerify, onVerifyEmail, onSponsor }) {
   const banned = status === "banned";
   const timed = status === "suspended";
   return (
@@ -185,6 +185,23 @@ function MemberRow({ u, self, status, canRole, canBan, onRole, onTimeout, onLift
         </View>
       )}
 
+      {/* Email confirmation. PRIVATE account state, and deliberately not the
+          blue check above: confirming an address grants no public badge. Use it
+          when someone's mail bounces or you know who they are. */}
+      {canRole && (
+        <View style={styles.pillRow}>
+          <Text style={styles.pillLabel}>Email</Text>
+          {u.emailVerified ? (
+            <Text style={styles.emailVerifiedTxt}>Confirmed</Text>
+          ) : (
+            <Pressable style={styles.verifyBtn} onPress={onVerifyEmail}>
+              <Icon name="mail" size={14} color={colors.textDim} />
+              <Text style={styles.verifyTxt}>Not confirmed, mark it confirmed</Text>
+            </Pressable>
+          )}
+        </View>
+      )}
+
       {/* sponsor / partner mark, admin-granted */}
       {canRole && (
         <View style={styles.pillRow}>
@@ -228,7 +245,7 @@ export default function AdminScreen({ onClose }) {
     requests, users, feed, removedIds, reports, session,
     comments, fanClubMsgs, lounge,
     approveArtist, rejectArtist, removeContent, restoreContent, actionReport, dismissReport,
-    suspendUser, liftSuspension, banUser, unbanUser, setUserRole, setVerified, setSponsor, accountStatus,
+    suspendUser, liftSuspension, banUser, unbanUser, setUserRole, setVerified, markEmailVerified, setSponsor, accountStatus,
     removeComment, removeFanClubMessage, removeLoungeMessage,
     loadAdminMembers, adminStats, adminArtistQueue, enrichArtists, purgeArtist, startCatalogSeed, catalogSeedStatus, stopCatalogSeed, catalogSeedRuns,
     adminSetTrackVideo, trackOverridesList, removeTrackOverride, loadModerationQueue,
@@ -569,6 +586,7 @@ export default function AdminScreen({ onClose }) {
                 onBan={() => banUser(u.id)}
                 onUnban={() => unbanUser(u.id)}
                 onVerify={(val) => setVerified(u.id, val)}
+                onVerifyEmail={() => markEmailVerified(u.id)}
                 onSponsor={(val) => setSponsor(u.id, val)}
               />
             ))}
@@ -952,6 +970,7 @@ const styles = StyleSheet.create({
   rolePillTxt: { color: colors.textDim, fontSize: 12, fontWeight: "700", textTransform: "capitalize" },
   verifyBtn: { flexDirection: "row", alignItems: "center", gap: 7, paddingHorizontal: 12, paddingVertical: 7, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line },
   verifyBtnOn: { borderColor: colors.cool, backgroundColor: colors.surfaceAlt },
+  emailVerifiedTxt: { color: colors.good, fontSize: 12, fontWeight: "700" },
   verifyTxt: { color: colors.textDim, fontSize: 12, fontWeight: "700" },
   verifyTxtOn: { color: colors.cool },
   rolePillTxtOn: { color: colors.amber },

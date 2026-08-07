@@ -8,6 +8,7 @@ import { StoreProvider, useStore, isStaff } from "./src/store";
 import Icon from "./src/components/Icon";
 import ErrorBoundary from "./src/components/ErrorBoundary";
 import FeedbackHost from "./src/components/FeedbackHost";
+import VerifyEmailBanner from "./src/components/VerifyEmailBanner";
 import { DesktopTopNav, RightRail } from "./src/components/Rails";
 import FeedScreen from "./src/screens/FeedScreen";
 import SearchScreen from "./src/screens/SearchScreen";
@@ -52,6 +53,7 @@ const PlaylistPickerScreen = lazyWithRetry(() => import("./src/screens/PlaylistP
 const PostScreen = lazyWithRetry(() => import("./src/screens/PostScreen"), "PostScreen");
 const ResetPasswordScreen = lazyWithRetry(() => import("./src/screens/ResetPasswordScreen"), "ResetPasswordScreen");
 const UnsubscribeScreen = lazyWithRetry(() => import("./src/screens/UnsubscribeScreen"), "UnsubscribeScreen");
+const VerifyEmailScreen = lazyWithRetry(() => import("./src/screens/VerifyEmailScreen"), "VerifyEmailScreen");
 const BadgeLegendScreen = lazyWithRetry(() => import("./src/screens/BadgeLegendScreen"), "BadgeLegendScreen");
 const WelcomeScreen = lazyWithRetry(() => import("./src/screens/WelcomeScreen"), "WelcomeScreen");
 const FollowListScreen = lazyWithRetry(() => import("./src/screens/FollowListScreen"), "FollowListScreen");
@@ -169,6 +171,11 @@ function Root() {
   // unsubscribe someone.
   const [unsubToken, setUnsubToken] = useState(() => { try { return web ? new URLSearchParams(window.location.search).get("unsubscribe") : null; } catch { return null; } });
   const clearUnsubUrl = () => { try { if (web) window.history.replaceState({}, "", window.location.pathname); } catch {} setUnsubToken(null); };
+  // Email verification: same shape as unsubscribe, and for the same reason. The
+  // emailed link only delivers the token; confirming is the explicit tap, so a
+  // scanner that follows the link cannot verify an address for its owner.
+  const [verifyToken, setVerifyToken] = useState(() => { try { return web ? new URLSearchParams(window.location.search).get("verify") : null; } catch { return null; } });
+  const clearVerifyUrl = () => { try { if (web) window.history.replaceState({}, "", window.location.pathname); } catch {} setVerifyToken(null); };
   // The concert opening screen: fresh visitors (and anyone who logs out) see it;
   // "browse as guest" or logging in dismisses it. Guest choice persists.
   const [landing, setLanding] = useState(() => !load("pit.session", null) && !load("pit.entered", false));
@@ -646,6 +653,13 @@ function Root() {
           </View>
         )}
 
+        {/* Non-blocking: the account works unverified, this only asks. Rendered
+            as a sibling so it does not have to be threaded through both the wide
+            and mobile branches of the frame above. */}
+        {status === "ok" && session && session.emailVerified === false && (
+          <VerifyEmailBanner email={session.email} />
+        )}
+
         <FeedbackHost onOpenDiagnostics={() => go({ diagnostics: true })} />
 
         {status === "ok" && preview && (
@@ -685,6 +699,12 @@ function Root() {
         {unsubToken && (
           <View style={styles.welcomeModal}>
             <UnsubscribeScreen token={unsubToken} onDone={clearUnsubUrl} />
+          </View>
+        )}
+
+        {verifyToken && (
+          <View style={styles.welcomeModal}>
+            <VerifyEmailScreen token={verifyToken} onDone={clearVerifyUrl} />
           </View>
         )}
 

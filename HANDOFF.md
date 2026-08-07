@@ -129,6 +129,28 @@ accounts created mid-rollback are not left broken. `server/migrations.test.mjs`
 guards both properties. Procedure in `LAUNCH.md` section 5b, including the case
 where a destructive migration means restore-then-roll-back, not roll-back-first.
 
+**Email verification (2026-08-05, non-blocking):** signup now sends a **verify**
+mail and the **welcome is held until the address is confirmed**, so a typo never
+becomes mail to a stranger. `sendWelcomeOnce` claims the flag before sending, so
+double-verify, admin-confirm and resend cannot produce a second welcome.
+
+The important distinction: `users.verified` is the **public admin-granted check**
+rendered beside names in feeds. Email verification is separate private state
+(`email_verified_at`) that grants **no badge** and is withheld from `publicUser`
+for everyone but the account owner. Do not merge them.
+
+Non-blocking by choice: unverified accounts work fully and see a dismissable
+banner with a resend action. Kill switch `EMAIL_VERIFICATION_ENABLED=false`
+auto-verifies new signups and welcomes them directly; it defaults **on**, so a
+missing variable cannot silently disable verification. Admins can confirm an
+address per-user from Members. Verified/unverified counts and the switch state
+show in the Email console.
+
+Verified end to end locally: signup logged `verify_email` and no welcome; a bogus
+token returned `verified:false`; the real token verified and released the welcome;
+the response showed public `verified` still false. Banner and resend confirmed in
+the browser. 12 unit tests in `server/verification.test.mjs`.
+
 **Owner actions (cannot be done in code):**
 - **Create the `staging` branch in Render** (New ▸ Blueprint picks it up) and set
   its dashboard values. Three MUST differ from production: `MEDIA_BUCKET` (a

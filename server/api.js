@@ -22,6 +22,7 @@ import { createMediaPresign, mediaConfigured } from "./media.js";
 import { discoverySidebar } from "./discovery.js";
 import { resolveEntity } from "./seo.js";
 import { userRewards } from "./rewards.js";
+import { beginVerification, completeVerification, forceVerify, resendVerification, verificationEnabled } from "./verification.js";
 import {
   ProviderError,
   findDeezerArtistCandidates,
@@ -1065,11 +1066,15 @@ export const routes = {
     const sess = createSession(id, ctx.ip, ctx.ua);
     ctx.setSession(sess);
     const created = q.userById.get(id);
+    // Verification mail now; the WELCOME mail is held until the address is
+    // confirmed, so a typo never becomes mail to a stranger. With verification
+    // switched off this auto-verifies and welcomes immediately instead.
+    //
     // Not awaited: signup must not block on the mail provider, and nothing on
     // screen claims an email was sent. The attempt is recorded in email_log
-    // either way, so a silently un-sent welcome is still visible in admin.
-    sendTemplateInBackground("welcome", { user: created });
-    return { user: publicUser(created, { self: true }) };
+    // either way, so a silently un-sent message is still visible in admin.
+    beginVerification(created);
+    return { user: publicUser(q.userById.get(id), { self: true }) };
   },
 
   "POST /api/login": (ctx) => {
@@ -2380,6 +2385,14 @@ export const routes = {
       templates,
       campaigns: emailStmts.listCampaigns.all(50),
       tokens: availableTokens(),
+      // Whether new signups are being asked to confirm, and how many have. An
+      // admin needs to see the kill switch state somewhere, or "verification
+      // stopped working" and "verification is switched off" look identical.
+      verification: {
+        enabled: verificationEnabled(),
+        verified: db.prepare("SELECT COUNT(*) c FROM users WHERE email_verified_at > 0").get().c,
+        unverified: db.prepare("SELECT COUNT(*) c FROM users WHERE email_verified_at = 0").get().c,
+      },
     };
   },
 
@@ -2570,6 +2583,29 @@ export const routes = {
   // Unsubscribe. The emailed link is a GET, and mail scanners follow those, so
   // this only carries the token to a confirmation step. The opt-out itself is
   // the POST below, which a scanner will not issue.
+  // A link in an inbox is a GET, and mail scanners follow links. So this only
+  // hands the token to a confirmation screen; the POST below is what verifies.
+  "GET /api/verify-email": (ctx) => {
+    const token = clean(ctx.query?.token, { max: 100 });
+    return { redirect: `${publicOrigin()}/?verify=${encodeURIComponent(token || "")}` };
+  },
+
+  "POST /api/verify-email": (ctx) => {
+    limit(ctx, "verify-email", 20, 60 * 60 * 1000);
+    const token = clean(ctx.body?.token, { max: 100 });
+    const user = completeVerification(token);
+    // Identical either way: this must not reveal which tokens are live.
+    if (!user) return { ok: true, verified: false };
+    return { ok: true, verified: true, user: publicUser(user, { self: true }) };
+  },
+
+  "POST /api/verify-email/resend": (ctx) => {
+    const u = requireUser(ctx);
+    limit(ctx, "verify-resend", 5, 60 * 60 * 1000);
+    const result = resendVerification(u);
+    return { ok: true, sent: result.sent, reason: result.reason };
+  },
+
   "GET /api/unsubscribe": (ctx) => {
     const token = clean(ctx.query?.token, { max: 100 });
     return { redirect: `${publicOrigin()}/?unsubscribe=${encodeURIComponent(token || "")}` };
@@ -2617,6 +2653,19 @@ export const routes = {
 
   // Admin-granted verification (the blue check), independent of role. Persisted so
   // it survives reload + shows cross-device.
+  // Confirm an address on someone's behalf. Distinct from /verified below, which
+  // grants the PUBLIC verification check; this one is private account state and
+  // shows no badge. Also releases the welcome mail, exactly once.
+  "POST /api/admin/users/:id/verify-email": (ctx) => {
+    const actor = requireAdmin(ctx);
+    const before = q.userById.get(ctx.params.id);
+    if (!before) throw new ApiError(404, "No such member.", "NOT_FOUND");
+    const target = forceVerify(ctx.params.id);
+    moderationRecord(ctx, "verify-email", "user", target.id, ctx.body?.reason || "",
+      { emailVerified: !!before.email_verified_at }, { emailVerified: true, by: actor.id });
+    return { user: publicUser(target, { self: false }), emailVerified: !!target.email_verified_at };
+  },
+
   "POST /api/admin/users/:id/verified": (ctx) => {
     requireAdmin(ctx);
     const target = q.userById.get(ctx.params.id);
@@ -2642,9 +2691,12 @@ export const routes = {
   "GET /api/admin/members": (ctx) => {
     requireModerator(ctx);
     const rows = db.prepare(
-      "SELECT id,name,handle,initials,avatar_uri,avatar_color,verified,sponsor,role,home_city,is_banned,suspended_until,created_at FROM users ORDER BY created_at DESC LIMIT 500"
+      "SELECT id,name,handle,initials,avatar_uri,avatar_color,verified,sponsor,role,home_city,is_banned,suspended_until,created_at,email_verified_at FROM users ORDER BY created_at DESC LIMIT 500"
     ).all();
-    const users = rows.map((r) => ({ id: r.id, name: r.name, handle: r.handle, initials: r.initials, avatarUri: r.avatar_uri, avatarColor: r.avatar_color, verified: !!r.verified, sponsor: !!r.sponsor, role: r.role, home: { city: r.home_city }, isBanned: !!r.is_banned, suspendedUntil: r.suspended_until || null, createdAt: r.created_at }));
+    // `emailVerified` is private state that publicUser withholds from everyone but
+    // the account owner. It is included here because this route is staff-only and
+    // an admin needs it to answer "did my mail reach them".
+    const users = rows.map((r) => ({ id: r.id, name: r.name, handle: r.handle, initials: r.initials, avatarUri: r.avatar_uri, avatarColor: r.avatar_color, verified: !!r.verified, sponsor: !!r.sponsor, role: r.role, home: { city: r.home_city }, isBanned: !!r.is_banned, suspendedUntil: r.suspended_until || null, createdAt: r.created_at, emailVerified: !!r.email_verified_at }));
     const total = db.prepare("SELECT COUNT(*) c FROM users").get().c;
     const banned = db.prepare("SELECT COUNT(*) c FROM users WHERE is_banned=1").get().c;
     const verified = db.prepare("SELECT COUNT(*) c FROM users WHERE verified=1").get().c;

@@ -59,6 +59,18 @@ ${blocks}${cta}
 // Built-in copy. A row in email_templates overrides these; deleting that row
 // restores exactly this, which is the escape hatch for a bad edit.
 export const DEFAULT_TEMPLATES = {
+  verify_email: {
+    subject: "Confirm your email for Pit",
+    body: `Hey {{name}}, one quick thing before you get going.
+
+Tap the button to confirm this is your email address. The link is good for 24 hours.
+
+You can use Pit straight away either way. Confirming just means we can reach you about your account, and it keeps someone else from signing up with your address.
+
+If you didn't create a Pit account, ignore this and nothing happens.`,
+    cta_label: "Confirm my email",
+    cta_url: "{{link}}",
+  },
   welcome: {
     subject: "Welcome to Pit",
     body: `Hey {{name}}, welcome to Pit.

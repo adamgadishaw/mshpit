@@ -2391,6 +2391,18 @@ export function StoreProvider({ children }) {
       return true;
     } catch { return false; }
   };
+  // Confirm someone's address for them. Distinct from setVerified above: this is
+  // private account state and grants no public badge, so it only ever moves to
+  // true and there is no "unconfirm".
+  const markEmailVerified = async (id) => {
+    if (!isStaff(session?.role)) return false;
+    try {
+      await api(`/api/admin/users/${id}/verify-email`, { method: "POST", body: {}, context: "Confirming a member's email" });
+      setUsers((all) => all.map((u) => (u.id === id ? { ...u, emailVerified: true } : u)));
+      setSession((s) => (s && s.id === id ? { ...s, emailVerified: true } : s));
+      return true;
+    } catch { return false; }
+  };
   const setSponsor = async (id, val) => {
     if (!isStaff(session?.role)) return;
     const sponsor = !!val;
@@ -3189,7 +3201,7 @@ export function StoreProvider({ children }) {
     fanClubFor, loadFanClub, addFanClubMessage, isFanClubMember, joinFanClub, fanClubCount, fanClubsDirectory,
     isArtistOwner, artistProfile, loadArtistPage, updateArtistProfile, artistFeedEnabled,
     artistPostsFor, addArtistPost, removeArtistPost,
-    accountStatus, banUser, unbanUser, suspendUser, liftSuspension, setUserRole, setVerified, setSponsor, loadAdminMembers, adminStats, adminArtistQueue, enrichArtists, purgeArtist, startCatalogSeed, catalogSeedStatus, stopCatalogSeed, catalogSeedRuns, removeLoungeMessage, removeComment, removeFanClubMessage,
+    accountStatus, banUser, unbanUser, suspendUser, liftSuspension, setUserRole, setVerified, markEmailVerified, setSponsor, loadAdminMembers, adminStats, adminArtistQueue, enrichArtists, purgeArtist, startCatalogSeed, catalogSeedStatus, stopCatalogSeed, catalogSeedRuns, removeLoungeMessage, removeComment, removeFanClubMessage,
     comments, fanClubMsgs, lounge,
     goingFor, isGoing, toggleGoing, attendeesFor,
     venueReviewsFor, loadVenueReviews, addVenueReview, venueRating, venueTopPhotos, venuePhotos, artistFanPhotos, loadArtistPhotos,

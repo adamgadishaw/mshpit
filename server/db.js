@@ -608,6 +608,16 @@ for (const stmt of [
   // Per-user unsubscribe secret, minted lazily. A link must not be forgeable
   // from the address alone, or anyone could opt out anybody.
   "ALTER TABLE users ADD COLUMN unsub_token TEXT",
+  // Email verification. Deliberately NOT the existing `verified` column: that is
+  // the public, admin-granted check rendered beside a name in feeds and comments.
+  // Reusing it would hand a public verification mark to anyone who clicked a link
+  // in their own inbox. These are private account state.
+  "ALTER TABLE users ADD COLUMN email_verified_at INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE users ADD COLUMN email_verify_hash TEXT",
+  "ALTER TABLE users ADD COLUMN email_verify_expires INTEGER NOT NULL DEFAULT 0",
+  // Set when the welcome mail goes out, so verifying twice, an admin marking an
+  // already-verified account, or a resend cannot send it again.
+  "ALTER TABLE users ADD COLUMN welcome_sent_at INTEGER NOT NULL DEFAULT 0",
 ]) {
   const match = /^ALTER TABLE ([a-z_]+) ADD COLUMN ([a-z_]+)/i.exec(stmt);
   if (!match) throw new Error(`Unsupported additive migration: ${stmt}`);
@@ -731,6 +741,13 @@ export const q = {
 // queue, and the log of every attempt. Audience selection lives in
 // server/emailQueue.js because it needs the opt-out rules alongside it.
 export const emailStmts = {
+  // Email verification. Lookup is by HASH of the token, never the token itself,
+  // so a database read cannot be replayed to verify somebody else's address.
+  setVerifyToken: db.prepare("UPDATE users SET email_verify_hash=?, email_verify_expires=? WHERE id=?"),
+  userByVerifyHash: db.prepare("SELECT * FROM users WHERE email_verify_hash=? AND email_verify_expires > ?"),
+  markEmailVerified: db.prepare("UPDATE users SET email_verified_at=?, email_verify_hash=NULL, email_verify_expires=0 WHERE id=?"),
+  markWelcomeSent: db.prepare("UPDATE users SET welcome_sent_at=? WHERE id=?"),
+
   templateByKey: db.prepare("SELECT * FROM email_templates WHERE key = ?"),
   allTemplates: db.prepare("SELECT * FROM email_templates"),
   upsertTemplate: db.prepare(`INSERT INTO email_templates (key,subject,body,cta_label,cta_url,updated_at,updated_by)
@@ -1058,6 +1075,10 @@ export function publicUser(u, { self = false } = {}) {
     initials: u.initials,
     genres: parseJsonArray(u.genres),
     favoriteArtists: parseJsonArray(u.favorite_artists),
-    ...(self ? { email: u.email } : {}),
+    // Email verification is PRIVATE account state, unlike `verified` above which
+    // is the public admin-granted check. Exposing it publicly would leak whether
+    // a stranger has confirmed their address, and invite it being read as a
+    // trust signal it is not.
+    ...(self ? { email: u.email, emailVerified: !!u.email_verified_at } : {}),
   };
 }

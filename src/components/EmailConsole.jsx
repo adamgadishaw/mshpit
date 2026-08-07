@@ -111,6 +111,13 @@ export default function EmailConsole() {
             {REASON_COPY[mail.reason] || mail.reason || "Mail is not configured."} See RESEND_SETUP.md.
           </Text>
         )}
+        {overview.verification && (
+          <Text style={styles.statusBody}>
+            {overview.verification.enabled
+              ? `New signups are asked to confirm their email. ${overview.verification.verified} confirmed, ${overview.verification.unverified} not yet.`
+              : `Verification is SWITCHED OFF (EMAIL_VERIFICATION_ENABLED). New accounts are treated as confirmed. ${overview.verification.unverified} accounts were never confirmed.`}
+          </Text>
+        )}
         <Text style={styles.statusMeta}>
           {budget.sentToday ?? 0} of {budget.dailyLimit ?? 0} sent in the last 24h, {budget.remainingToday ?? 0} left.
           {"  "}Last 7 days: {overview.last7Days?.sent ?? 0} sent, {overview.last7Days?.failed ?? 0} failed, {overview.last7Days?.skipped ?? 0} skipped.
