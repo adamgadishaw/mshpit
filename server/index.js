@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { db, q, publicUser } from "./db.js";
 import { routes } from "./api.js";
 import { ApiError, errorEnvelope } from "./errors.js";
+import { maybeAlert, pruneErrors, recordError } from "./errorLog.js";
 import { injectHead, robotsTxt, sitemapXml } from "./seo.js";
 import { getSession, sweepExpiredSessions, sessionCookie, clearCookie, parseCookies, COOKIE, hashPassword, rateLimit } from "./auth.js";
 import { startTourDateScheduler } from "./tourdates.js";
@@ -145,8 +146,11 @@ function readBody(req) {
 
 // Match "METHOD /api/x/:param/y" patterns against the route table.
 function matchRoute(method, pathname) {
+  // `route` is the PATTERN, not the path. Error grouping keys on it, so
+  // /api/users/u_abc/badges and /api/users/u_xyz/badges are one problem rather
+  // than one row per user id.
   const direct = routes[`${method} ${pathname}`];
-  if (direct) return { handler: direct, params: {} };
+  if (direct) return { handler: direct, params: {}, route: pathname };
   const segs = pathname.split("/");
   for (const [key, handler] of Object.entries(routes)) {
     const [m, pattern] = key.split(" ");
@@ -159,7 +163,7 @@ function matchRoute(method, pathname) {
       if (pSegs[i].startsWith(":")) params[pSegs[i].slice(1)] = segs[i];
       else if (pSegs[i] !== segs[i]) { ok = false; break; }
     }
-    if (ok) return { handler, params };
+    if (ok) return { handler, params, route: pattern };
   }
   return null;
 }
@@ -249,7 +253,7 @@ const server = createServer(async (req, res) => {
   const started = Date.now();
   const requestId = randomUUID();
   res.setHeader("X-Request-Id", requestId);
-  let pathname = "/", query = {};
+  let pathname = "/", query = {}, routePattern = "";
   try {
     const u = new URL(req.url, "http://x");
     pathname = u.pathname;
@@ -291,6 +295,7 @@ const server = createServer(async (req, res) => {
 
       const match = matchRoute(req.method, pathname);
       if (!match) return sendApiError(res, new ApiError(404, "Not found.", "NOT_FOUND"), requestId, cors);
+      routePattern = match.route || "";
 
       const token = parseCookies(req.headers.cookie)[COOKIE];
       const sess = getSession(token);
@@ -320,15 +325,22 @@ const server = createServer(async (req, res) => {
     if (req.method !== "GET" && req.method !== "HEAD") return send(res, 405, { error: "Method not allowed." });
     return serveStatic(req, res, pathname);
   } catch (e) {
+    // `routePattern` is set once the router matched, so aggregation groups by
+    // pattern. Before that it stays empty rather than falling back to the raw
+    // path, which would carry ids and search terms into storage.
     if (e instanceof ApiError) {
       if (e.status >= 500) {
         const causeName = String(e.cause?.name || "none").replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 40);
         const causeCode = String(e.cause?.code || "").replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 40);
         console.error(`[pit] ${e.status} ${requestId} on ${req.method} ${pathname} (${Date.now() - started}ms): code=${e.code} cause=${causeName}${causeCode ? `/${causeCode}` : ""}`);
+        recordError({ level: "error", code: e.code, status: e.status, method: req.method, route: routePattern, cause: `${causeName}${causeCode ? `/${causeCode}` : ""}` });
+        scheduleAlert();
       }
       return sendApiError(res, e, requestId, cors);
     }
     console.error(`[pit] 500 ${requestId} on ${req.method} ${pathname} (${Date.now() - started}ms):`, e);
+    recordError({ level: "error", code: "UNHANDLED", status: 500, method: req.method, route: routePattern, cause: String(e?.name || "Error") });
+    scheduleAlert();
     return sendApiError(res, e, requestId, cors);
   }
 });
@@ -340,6 +352,10 @@ const server = createServer(async (req, res) => {
 // retain Node's fail-fast exit semantics for Render to restart cleanly.
 process.on("uncaughtExceptionMonitor", (error, origin) => {
   console.error(`[pit] fatal process error (${origin}):`, error);
+  // Recorded synchronously because the process is about to exit. No alert is
+  // scheduled here: a timer would never fire, and Render restarting the service
+  // is what surfaces this. The next request after the restart sends the digest.
+  recordError({ level: "fatal", code: "PROCESS", status: 0, method: "", route: String(origin || ""), cause: String(error?.name || "Error") });
 });
 
 // Hourly maintenance owns its failure at the timer boundary. A transient
@@ -347,7 +363,17 @@ process.on("uncaughtExceptionMonitor", (error, origin) => {
 setInterval(() => {
   try { sweepExpiredSessions(); }
   catch (error) { console.error("[pit] expired-session sweep failed safely:", error); }
+  try { pruneErrors(); }
+  catch (error) { console.error("[pit] error-log prune failed safely:", error); }
 }, 60 * 60 * 1000).unref();
+
+// Alerting is deferred off the request path so a slow mail provider can never
+// add latency to the response that triggered it. maybeAlert owns its own
+// cooldown, so calling this on every 500 still sends at most one digest per
+// window; that is the whole point of the digest shape.
+function scheduleAlert() {
+  setTimeout(() => { maybeAlert().catch(() => {}); }, 0).unref?.();
+}
 
 // graceful shutdown, finish in-flight requests, close the DB cleanly
 let shuttingDown = false;

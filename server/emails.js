@@ -34,7 +34,7 @@ export function fillTokens(body, vars) {
 }
 
 export function availableTokens() {
-  return ["name", "handle", "origin", "link", "unsubscribeUrl", "year"];
+  return ["name", "handle", "origin", "link", "unsubscribeUrl", "year", "summary", "detail"];
 }
 
 function paragraphs(text) {
@@ -59,6 +59,16 @@ ${blocks}${cta}
 // Built-in copy. A row in email_templates overrides these; deleting that row
 // restores exactly this, which is the escape hatch for a bad edit.
 export const DEFAULT_TEMPLATES = {
+  error_alert: {
+    subject: "Pit: errors on the server",
+    body: `{{summary}} since the last alert.
+
+{{detail}}
+
+This is a digest, not one mail per error, so an outage sends one message per cooldown window rather than thousands. Full list and counts are in Moderation, Overview.`,
+    cta_label: "Open moderation",
+    cta_url: "{{origin}}",
+  },
   verify_email: {
     subject: "Confirm your email for Pit",
     body: `Hey {{name}}, one quick thing before you get going.

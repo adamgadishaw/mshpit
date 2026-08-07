@@ -174,6 +174,35 @@ Verified through the live API: create 200, reserved slug 400, arbitrary colour
 `verified` flag stayed false throughout. Tab renders with no overflow.
 9 tests in `server/badges.test.mjs`.
 
+**Error aggregation + alerting (2026-08-06):** the last checklist gap. Server
+errors are now deduplicated into `error_events` (one row per distinct problem,
+`count` carries volume) and surfaced on the Overview tab. Alerts email a
+**digest** to `ADMIN_EMAIL` through the existing mail path, rate-limited to one
+per cooldown window (`ERROR_ALERT_COOLDOWN_MIN`, default 30) — deliberately
+global and time-based, since an outage produces many fingerprints at once and a
+per-error rule would still storm. `ERROR_ALERTS_ENABLED=false` switches it off;
+defaults on. Only `>=500` and `fatal` alert, so a 404 storm is not news.
+
+Storage rule: fields are matched against an expected SHAPE and replaced wholesale
+when they do not fit, not filtered per character. Filtering was tried first and
+was wrong — stripping punctuation from `password=hunter2` leaves
+`passwordhunter2`. Route PATTERNS only, never paths.
+
+Verified live: 24 real 503s produced **one row with count 24** and **one** alert
+email; 404s produced nothing. 14 tests in `server/errorLog.test.mjs`.
+
+**Bug sweep (2026-08-06), two real findings fixed:**
+1. **The feed could 500 for everyone from one bad row.** `dims`, `photos`,
+   `setlist` and `tags` used bare `JSON.parse` in the post projection, while
+   `song` beside them and `publicUser` were both already guarded. One malformed
+   column threw while building the page and took the whole feed down, not just
+   that post. Now uses the exported `parseJsonArray`/`parseJsonObject`.
+   `server/feed.resilience.test.mjs` fails against the pre-fix code.
+2. **Unbounded content writes.** `POST/PATCH /api/playlists` and
+   `POST /api/artists/:key/posts` had no per-route rate limit, so one account
+   could add rows to a 1GB disk as fast as it could post, bounded only by the
+   global per-IP flood guard. Limits added, matching neighbouring routes.
+
 **Owner actions (cannot be done in code):**
 - **Create the `staging` branch in Render** (New ▸ Blueprint picks it up) and set
   its dashboard values. Three MUST differ from production: `MEDIA_BUCKET` (a

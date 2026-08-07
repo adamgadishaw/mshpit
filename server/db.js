@@ -471,6 +471,28 @@ CREATE TABLE IF NOT EXISTS media_reactions (
 );
 CREATE INDEX IF NOT EXISTS idx_media_reactions_url ON media_reactions(media_url);
 
+-- Aggregated server errors. One row per DISTINCT problem, not per occurrence:
+-- a 500 in a loop would otherwise write thousands of rows onto a 1GB disk and
+-- bury the signal. The count column carries the volume instead.
+--
+-- Nothing user-authored is stored. No request bodies, query values, stack traces,
+-- file paths or raw URLs — only the route PATTERN, the stable error code, and a
+-- sanitized cause name, which is the same information the console line already
+-- prints. See CLAUDE.md on never surfacing internals.
+CREATE TABLE IF NOT EXISTS error_events (
+  fingerprint TEXT PRIMARY KEY,
+  level       TEXT NOT NULL DEFAULT 'error',
+  code        TEXT NOT NULL DEFAULT '',
+  status      INTEGER NOT NULL DEFAULT 0,
+  method      TEXT NOT NULL DEFAULT '',
+  route       TEXT NOT NULL DEFAULT '',
+  cause       TEXT NOT NULL DEFAULT '',
+  count       INTEGER NOT NULL DEFAULT 0,
+  first_seen  INTEGER NOT NULL,
+  last_seen   INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_error_events_last ON error_events(last_seen DESC);
+
 -- Admin-created badges: tiers, event marks, ad-hoc status. Art is chosen from the
 -- named palette in src/domain/badgeArt.mjs rather than free-form, so a badge can
 -- never carry an arbitrary colour string into an SVG attribute.
@@ -772,6 +794,21 @@ export const q = {
 // Email management: owner-editable templates, broadcasts, the per-recipient
 // queue, and the log of every attempt. Audience selection lives in
 // server/emailQueue.js because it needs the opt-out rules alongside it.
+export const errorStmts = {
+  record: db.prepare(`INSERT INTO error_events (fingerprint,level,code,status,method,route,cause,count,first_seen,last_seen)
+    VALUES (@fingerprint,@level,@code,@status,@method,@route,@cause,1,@at,@at)
+    ON CONFLICT(fingerprint) DO UPDATE SET count=count+1, last_seen=excluded.last_seen`),
+  recent: db.prepare("SELECT * FROM error_events ORDER BY last_seen DESC LIMIT ?"),
+  since: db.prepare("SELECT * FROM error_events WHERE last_seen >= ? ORDER BY count DESC, last_seen DESC LIMIT ?"),
+  totalSince: db.prepare("SELECT COALESCE(SUM(count),0) c, COUNT(*) kinds FROM error_events WHERE last_seen >= ?"),
+  // Anything not seen recently is noise once it stops happening. Pruning by age
+  // keeps the table bounded without a background job.
+  prune: db.prepare("DELETE FROM error_events WHERE last_seen < ?"),
+  countRows: db.prepare("SELECT COUNT(*) c FROM error_events"),
+  oldest: db.prepare("SELECT last_seen FROM error_events ORDER BY last_seen ASC LIMIT ?"),
+  pruneBelow: db.prepare("DELETE FROM error_events WHERE last_seen <= ?"),
+};
+
 export const badgeStmts = {
   all: db.prepare("SELECT * FROM custom_badges ORDER BY archived_at, kind, label"),
   active: db.prepare("SELECT * FROM custom_badges WHERE archived_at = 0 ORDER BY kind, label"),
@@ -1076,7 +1113,10 @@ export function sanitizeStoredArtistPreviews() {
 }
 sanitizeStoredArtistPreviews();
 
-function parseJsonObject(value) {
+// Exported because the post projection in api.js needs the same tolerance the
+// user projection has. A single malformed column would otherwise throw while
+// building a feed page and 500 the whole feed for everyone, not just that row.
+export function parseJsonObject(value) {
   try {
     const parsed = JSON.parse(value || "{}");
     return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
@@ -1085,7 +1125,7 @@ function parseJsonObject(value) {
   }
 }
 
-function parseJsonArray(value) {
+export function parseJsonArray(value) {
   try {
     const parsed = JSON.parse(value || "[]");
     return Array.isArray(parsed) ? parsed : [];

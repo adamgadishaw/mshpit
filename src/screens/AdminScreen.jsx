@@ -280,6 +280,7 @@ export default function AdminScreen({ onClose }) {
   // Per-user badge overrides after a grant/revoke. The member list comes from the
   // store, so this holds the fresher server answer without refetching all 500.
   const [memberBadges, setMemberBadges] = useState({});
+  const [errorLog, setErrorLog] = useState(null);
   // Draft "correct link" per wrong-version track report.
   const [trackFix, setTrackFix] = useState({});
   // Current song pins, live from the server (never trusts a login-time cache).
@@ -317,6 +318,24 @@ export default function AdminScreen({ onClose }) {
       .catch(() => {});
     return () => { cancelled = true; };
   }, [tab, iAmAdmin]);
+
+  useEffect(() => {
+    if (tab !== "overview" || !iAmAdmin) return;
+    let cancelled = false;
+    api("/api/admin/errors")
+      .then((r) => { if (!cancelled) setErrorLog(r); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [tab, iAmAdmin]);
+
+  // Proves the alert path without waiting for an incident. It cannot invent
+  // errors, so a clean window correctly sends nothing and says so.
+  const sendTestAlert = async () => {
+    try {
+      const r = await api("/api/admin/errors/test-alert", { method: "POST", body: {}, context: "Sending a test alert" });
+      setErrorLog((prev) => ({ ...prev, testResult: r.sent ? "Sent." : `Not sent: ${r.reason}` }));
+    } catch { setErrorLog((prev) => ({ ...prev, testResult: "That didn't work." })); }
+  };
 
   const toggleMemberBadge = async (userId, slug, held) => {
     try {
@@ -475,6 +494,37 @@ export default function AdminScreen({ onClose }) {
                 </View>
               );
             })()}
+
+            {/* Aggregated server errors. One row per distinct problem, so the
+                count is the volume and the list is the work. */}
+            {errorLog && (
+              <View style={[styles.healthCard, errorLog.last24h?.occurrences > 0 && styles.healthCardBad]}>
+                <Text style={styles.healthTitle}>ERRORS</Text>
+                <Text style={[styles.healthState, { color: errorLog.last24h?.occurrences > 0 ? colors.danger : colors.good }]}>
+                  {errorLog.last24h?.occurrences
+                    ? `${errorLog.last24h.occurrences} in the last 24h across ${errorLog.last24h.kinds} kind${errorLog.last24h.kinds === 1 ? "" : "s"}.`
+                    : "Nothing in the last 24 hours."}
+                </Text>
+                <Text style={styles.healthSub}>
+                  {errorLog.last7Days?.occurrences || 0} in 7 days ·{" "}
+                  {errorLog.alerts?.enabled
+                    ? `alerts to ${errorLog.alerts.to || "(no ADMIN_EMAIL)"}, at most one digest every ${errorLog.alerts.cooldownMinutes}m`
+                    : "alerts are switched off (ERROR_ALERTS_ENABLED)"}
+                </Text>
+                {(errorLog.errors || []).slice(0, 8).map((e) => (
+                  <Text key={e.fingerprint} style={styles.errRow} numberOfLines={1}>
+                    {e.count}× {e.level === "fatal" ? "FATAL" : e.status} {e.method} {e.route || "(no route)"} · {e.code}
+                    {e.cause && e.cause !== "unclassified" ? ` (${e.cause})` : ""}
+                  </Text>
+                ))}
+                <View style={styles.errActions}>
+                  <Pressable style={styles.errTestBtn} onPress={sendTestAlert}>
+                    <Text style={styles.errTestTxt}>Send a test alert</Text>
+                  </Pressable>
+                  {errorLog.testResult ? <Text style={styles.healthSub}>{errorLog.testResult}</Text> : null}
+                </View>
+              </View>
+            )}
           </>
         )}
 
@@ -875,6 +925,10 @@ const styles = StyleSheet.create({
   healthTitle: { color: colors.textDim, fontSize: 11, fontWeight: "800", letterSpacing: 1, fontFamily: mono },
   healthState: { fontSize: 13.5, fontWeight: "700" },
   healthSub: { color: colors.textDim, fontSize: 12 },
+  errRow: { color: colors.textFaint, fontSize: 11, fontFamily: mono, marginTop: 3 },
+  errActions: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: 10 },
+  errTestBtn: { alignSelf: "flex-start", paddingHorizontal: 12, paddingVertical: 7, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line },
+  errTestTxt: { color: colors.text, fontSize: 11, fontWeight: "700" },
   wrap: { flex: 1, backgroundColor: colors.bg },
   // One readable column for the whole console. Applied to the title row, the tab
   // bar and the scroll content together: capping only the content would leave the

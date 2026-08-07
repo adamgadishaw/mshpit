@@ -12,8 +12,9 @@ import {
   sendTemplate, sendTemplateInBackground, sentToday, templateFor, unsubscribeUrl,
 } from "./emailService.js";
 import { AUDIENCES, audienceSize, campaignProgress, drainCampaign, pauseCampaign, startCampaign } from "./emailQueue.js";
-import { db, q, emailStmts, badgeStmts, customBadgesFor, publicUser, artistStmts, publicArtist, artistRow, artistSearchKey, normName } from "./db.js";
+import { db, q, emailStmts, badgeStmts, customBadgesFor, publicUser, parseJsonArray, parseJsonObject, artistStmts, publicArtist, artistRow, artistSearchKey, normName } from "./db.js";
 import { BADGE_COLORS, BADGE_GLYPHS, BADGE_KINDS, validateBadge } from "../src/domain/badgeArt.mjs";
+import { alertCooldownMs, alertsEnabled, errorStats, maybeAlert, recentErrors } from "./errorLog.js";
 import { genreClaim, resolveGenre, storedClaims, upsertClaim, withoutSource } from "../src/domain/genre.mjs";
 import { hashPassword, verifyPassword, createSession, destroySession, rateLimit } from "./auth.js";
 import { startCatalogSeed, catalogSeedStatus, stopCatalogSeed, deezerEnrich } from "./catalogSeed.js";
@@ -445,11 +446,14 @@ function postJson(p, viewerId) {
     user: { name: p.u_name, handle: p.u_handle, initials: p.u_initials, avatarUri: p.u_avatar, avatarColor: p.u_color },
     artist: p.artist, venue: p.venue, city: p.city, date: p.date,
     artistKey: p.artist_key || null, artistMbid: p.artist_mbid || null, venueKey: p.venue_key || null,
-    overall: p.overall, band: p.band, room: p.room, dims: JSON.parse(p.dims || "{}"), review: p.review,
-    photos: JSON.parse(p.photos || "[]"), photosPublic: !!p.photos_public,
-    setlist: JSON.parse(p.setlist || "[]"),
+    // Guarded, like `song` below and like publicUser: one malformed column must
+    // degrade that field, not throw while building the page and take the whole
+    // feed down with it.
+    overall: p.overall, band: p.band, room: p.room, dims: parseJsonObject(p.dims), review: p.review,
+    photos: parseJsonArray(p.photos), photosPublic: !!p.photos_public,
+    setlist: parseJsonArray(p.setlist),
     tour: p.tour || null,
-    tags: JSON.parse(p.tags || "[]"),
+    tags: parseJsonArray(p.tags),
     song: p.song ? (() => { try { return JSON.parse(p.song); } catch { return null; } })() : null,
     // Feed pages receive a bounded preview. The full immutable song list is
     // loaded only when somebody presses Play, keeping 50-card feeds lightweight.
@@ -979,6 +983,10 @@ export const routes = {
   // ---- Playlists (saved sessions, shareable, on the profile) ----
   "POST /api/playlists": (ctx) => {
     const u = requireUser(ctx);
+    // Every other content-creating route is capped. Without this, one account can
+    // add rows to a 1GB disk as fast as it can post, bounded only by the global
+    // per-IP flood guard.
+    limit(ctx, "playlist-write", 60, 60 * 60 * 1000);
     const name = clean(ctx.body?.name, { max: 80 }) || "Untitled";
     const tracks = cleanPlaylistTracks(ctx.body?.tracks, { allowEmpty: false });
     if (!tracks) throw new ApiError(400, "A playlist needs at least one song.", "VALIDATION_FAILED");
@@ -1005,6 +1013,7 @@ export const routes = {
   // playlist one song at a time instead of only snapshotting a whole session.
   "PATCH /api/playlists/:id": (ctx) => {
     const u = requireUser(ctx);
+    limit(ctx, "playlist-write", 60, 60 * 60 * 1000);
     const row = db.prepare("SELECT * FROM playlists WHERE id=? AND user_id=?").get(ctx.params.id, u.id);
     if (!row) throw new ApiError(404, "That playlist left the set.", "NOT_FOUND");
     let storedTracks = [];
@@ -2696,6 +2705,34 @@ export const routes = {
   // Full member directory for the admin console (includes banned) + live counts and
   // a per-region (home city) breakdown. This is what makes every real signup show
   // up in the Members tab so it can be verified / moderated.
+  // Aggregated server errors. Deduplicated by problem, so `count` is the volume
+  // and each row is one thing to fix.
+  "GET /api/admin/errors": (ctx) => {
+    requireAdmin(ctx);
+    const dayAgo = Date.now() - 24 * 60 * 60 * 1000;
+    const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+    return {
+      errors: recentErrors(50).map((e) => ({
+        fingerprint: e.fingerprint, level: e.level, code: e.code, status: e.status,
+        method: e.method, route: e.route, cause: e.cause, count: e.count,
+        firstSeen: e.first_seen, lastSeen: e.last_seen,
+      })),
+      last24h: errorStats(dayAgo),
+      last7Days: errorStats(weekAgo),
+      alerts: { enabled: alertsEnabled(), cooldownMinutes: Math.round(alertCooldownMs() / 60000), to: process.env.ADMIN_EMAIL || null },
+    };
+  },
+
+  // Prove the alert path end to end without waiting for a real incident. Bypasses
+  // the cooldown only; it cannot invent errors, so an empty window still sends
+  // nothing and says so.
+  "POST /api/admin/errors/test-alert": async (ctx) => {
+    requireAdmin(ctx);
+    limit(ctx, "error-alert-test", 5, 60 * 60 * 1000);
+    const result = await maybeAlert({ force: true });
+    return { ok: true, ...result };
+  },
+
   // ---- admin-created badges (tiers, events, ad-hoc status) ----
   "GET /api/admin/badges": (ctx) => {
     requireAdmin(ctx);
@@ -3105,6 +3142,9 @@ export const routes = {
   },
   "POST /api/artists/:key/posts": (ctx) => {
     const u = requireUser(ctx);
+    // Ownership is already checked below, so abuse is bounded to your own page.
+    // This bounds the volume as well, matching the other post routes.
+    limit(ctx, "artist-post", 40, 60 * 60 * 1000);
     const key = clean(decodeURIComponent(ctx.params.key), { max: 200 }).toLowerCase();
     if (!ownsArtist(u, key)) throw new ApiError(403, "Not your page.");
     const text = clean(ctx.body?.text, { max: LIMITS.message, newlines: true });
