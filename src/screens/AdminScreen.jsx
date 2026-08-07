@@ -8,6 +8,7 @@ import Avatar from "../components/Avatar";
 import SheetHeader from "../components/SheetHeader";
 import Badge from "../components/Badge";
 import EmailConsole from "../components/EmailConsole";
+import BadgeConsole from "../components/BadgeConsole";
 
 // Audience & ads: the activity data we collect (see Privacy policy) surfaced for
 // the operator, top artists/venues/searches are the ad-interest signals you'd
@@ -131,7 +132,7 @@ const ROLES = ["fan", "artist", "moderator", "admin"];
 const roleColor = (r) => (r === "admin" ? colors.magenta : r === "moderator" ? colors.good : r === "artist" ? colors.amber : colors.textDim);
 
 // A single member row with inline Discord-style moderation: role, timeout, ban.
-function MemberRow({ u, self, status, canRole, canBan, onRole, onTimeout, onLift, onBan, onUnban, onVerify, onVerifyEmail, onSponsor }) {
+function MemberRow({ u, self, status, canRole, canBan, onRole, onTimeout, onLift, onBan, onUnban, onVerify, onVerifyEmail, onSponsor, grantableBadges = [], onToggleBadge }) {
   const banned = status === "banned";
   const timed = status === "suspended";
   return (
@@ -202,6 +203,26 @@ function MemberRow({ u, self, status, canRole, canBan, onRole, onTimeout, onLift
         </View>
       )}
 
+      {/* Admin-created badges: tiers and event marks. Retired badges are not
+          offered, but any already granted still show so they can be revoked. */}
+      {canRole && (grantableBadges.length > 0 || (u.badges || []).length > 0) && (
+        <View style={styles.pillRow}>
+          <Text style={styles.pillLabel}>Badges</Text>
+          <View style={styles.badgeGrantRow}>
+            {grantableBadges.map((b) => {
+              const held = (u.badges || []).some((x) => x.slug === b.slug);
+              return (
+                <Pressable key={b.slug} style={[styles.badgeChip, held && styles.badgeChipOn]}
+                  onPress={() => onToggleBadge(b.slug, held)}>
+                  <Badge badge={b} size={14} tooltip={false} />
+                  <Text style={[styles.badgeChipTxt, held && styles.badgeChipTxtOn]}>{b.label}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        </View>
+      )}
+
       {/* sponsor / partner mark, admin-granted */}
       {canRole && (
         <View style={styles.pillRow}>
@@ -253,6 +274,12 @@ export default function AdminScreen({ onClose }) {
 
   const iAmAdmin = isStaff(session?.role); // full access; mods get a subset
   const [tab, setTab] = useState(iAmAdmin ? "overview" : "reports");
+  // Admin-created badges available to grant. Retired ones are excluded here but
+  // still render on anyone holding them, so they stay revocable.
+  const [grantableBadges, setGrantableBadges] = useState([]);
+  // Per-user badge overrides after a grant/revoke. The member list comes from the
+  // store, so this holds the fresher server answer without refetching all 500.
+  const [memberBadges, setMemberBadges] = useState({});
   // Draft "correct link" per wrong-version track report.
   const [trackFix, setTrackFix] = useState({});
   // Current song pins, live from the server (never trusts a login-time cache).
@@ -282,6 +309,23 @@ export default function AdminScreen({ onClose }) {
   const refreshSeed = () => catalogSeedStatus().then((s) => s && setSeedJob(s));
   const refreshRuns = () => catalogSeedRuns().then(setSeedRuns);
   useEffect(() => { if (tab === "catalog") { refreshCatalog(); refreshSeed(); refreshRuns(); } }, [tab]);
+  useEffect(() => {
+    if (tab !== "members" || !iAmAdmin) return;
+    let cancelled = false;
+    api("/api/admin/badges")
+      .then((r) => { if (!cancelled) setGrantableBadges((r.badges || []).filter((b) => !b.archived)); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [tab, iAmAdmin]);
+
+  const toggleMemberBadge = async (userId, slug, held) => {
+    try {
+      const r = await api(`/api/admin/users/${userId}/badges`, {
+        method: "POST", body: { slug, revoke: held }, context: held ? "Removing a badge" : "Granting a badge",
+      });
+      setMemberBadges((prev) => ({ ...prev, [userId]: r.badges || [] }));
+    } catch {}
+  };
   useEffect(() => {
     if (tab !== "catalog" || !seedJob?.running) return;
     const id = setInterval(refreshSeed, 3000);
@@ -350,6 +394,7 @@ export default function AdminScreen({ onClose }) {
     { key: "content", label: "Content", icon: "feed" },
     { key: "catalog", label: "Catalog", icon: "music", admin: true },
     { key: "email", label: "Email", icon: "feed", admin: true },
+    { key: "badges", label: "Badges", icon: "star", admin: true },
     { key: "requests", label: "Requests", icon: "shield", badge: pending.length, admin: true },
   ].filter((t) => iAmAdmin || !t.admin);
 
@@ -575,7 +620,7 @@ export default function AdminScreen({ onClose }) {
             {members.map((u) => (
               <MemberRow
                 key={u.id}
-                u={u}
+                u={memberBadges[u.id] ? { ...u, badges: memberBadges[u.id] } : u}
                 self={u.id === session?.id}
                 status={accountStatus(u)}
                 canRole={iAmAdmin}
@@ -587,6 +632,8 @@ export default function AdminScreen({ onClose }) {
                 onUnban={() => unbanUser(u.id)}
                 onVerify={(val) => setVerified(u.id, val)}
                 onVerifyEmail={() => markEmailVerified(u.id)}
+                grantableBadges={grantableBadges}
+                onToggleBadge={(slug, held) => toggleMemberBadge(u.id, slug, held)}
                 onSponsor={(val) => setSponsor(u.id, val)}
               />
             ))}
@@ -790,6 +837,8 @@ export default function AdminScreen({ onClose }) {
         {/* ---- EMAIL ---- */}
         {tab === "email" && <EmailConsole />}
 
+        {tab === "badges" && <BadgeConsole />}
+
         {/* ---- REQUESTS ---- */}
         {tab === "requests" && (
           <>
@@ -971,6 +1020,11 @@ const styles = StyleSheet.create({
   verifyBtn: { flexDirection: "row", alignItems: "center", gap: 7, paddingHorizontal: 12, paddingVertical: 7, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line },
   verifyBtnOn: { borderColor: colors.cool, backgroundColor: colors.surfaceAlt },
   emailVerifiedTxt: { color: colors.good, fontSize: 12, fontWeight: "700" },
+  badgeGrantRow: { flexDirection: "row", flexWrap: "wrap", gap: 6, flex: 1 },
+  badgeChip: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 9, paddingVertical: 5, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line },
+  badgeChipOn: { borderColor: colors.amberStrong, backgroundColor: colors.surfaceAlt },
+  badgeChipTxt: { color: colors.textDim, fontSize: 11 },
+  badgeChipTxtOn: { color: colors.text, fontWeight: "700" },
   verifyTxt: { color: colors.textDim, fontSize: 12, fontWeight: "700" },
   verifyTxtOn: { color: colors.cool },
   rolePillTxtOn: { color: colors.amber },

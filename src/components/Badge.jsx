@@ -3,6 +3,7 @@ import Svg, { Path, Polyline, Polygon, G, Defs, RadialGradient, Stop, Text as Sv
 import { View, Text, StyleSheet, Pressable, Platform } from "react-native";
 import { colors, mono, radius } from "../theme";
 import { STATUS_BADGES } from "../lib/badges";
+import { badgeArt } from "../domain/badgeArt.mjs";
 
 const web = Platform.OS === "web";
 
@@ -60,14 +61,18 @@ function config(type) {
 function Glyph({ c }) {
   if (c.glyph === "check")
     return <Polyline points="7.6 12.4 10.6 15.3 16.4 8.9" fill="none" stroke="#ffffff" strokeWidth="2.3" strokeLinecap="round" strokeLinejoin="round" />;
-  if (c.glyph === "num")
-    return <SvgText x="12" y="16.3" fontSize="12" fontWeight="900" fill="#ffffff" textAnchor="middle">{c.num}</SvgText>;
+  // "num" is the built-in rank glyph; "char" is the admin-created equivalent and
+  // renders exactly one character, so a long label cannot overflow the seal.
+  if (c.glyph === "num" || c.glyph === "char")
+    return <SvgText x="12" y="16.3" fontSize="12" fontWeight="900" fill="#ffffff" textAnchor="middle">{c.num || c.char || "?"}</SvgText>;
   return <Polygon points={STAR} fill="#ffffff" />;
 }
 
-function Seal({ type, size }) {
-  const c = config(type);
-  const gid = `bg_${type}`;
+function Seal({ type, size, custom }) {
+  // A custom badge supplies its art from the shared palette in
+  // domain/badgeArt.mjs. Nothing here accepts a caller-authored colour.
+  const c = custom || config(type);
+  const gid = `bg_${custom ? `c_${custom.fill.replace("#", "")}_${custom.glyph}${custom.char || ""}` : type}`;
   return (
     <Svg width={size} height={size} viewBox="0 0 24 24">
       <Defs>
@@ -87,10 +92,13 @@ function Seal({ type, size }) {
 
 // A badge, with an on-theme hover tooltip (web) that explains what it means +
 // how it's earned — so people aren't staring at a mystery seal.
-export default function Badge({ type = "verified", size = 18, tooltip = true }) {
+export default function Badge({ type = "verified", size = 18, tooltip = true, badge = null }) {
   const [hover, setHover] = useState(false);
-  const info = STATUS_BADGES[type];
-  const seal = <Seal type={type} size={size} />;
+  // `badge` is an admin-created one: {slug,label,description,color,glyph,glyphChar}.
+  // Its words come with it rather than from the built-in STATUS_BADGES table.
+  const custom = badge ? badgeArt({ color: badge.color, glyph: badge.glyph, glyphChar: badge.glyphChar }) : null;
+  const info = badge ? { label: badge.label, desc: badge.description || "", how: "" } : STATUS_BADGES[type];
+  const seal = <Seal type={type} size={size} custom={custom} />;
   if (!web || !tooltip || !info) return seal;
   return (
     <View style={styles.tipWrap}>

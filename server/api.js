@@ -12,7 +12,8 @@ import {
   sendTemplate, sendTemplateInBackground, sentToday, templateFor, unsubscribeUrl,
 } from "./emailService.js";
 import { AUDIENCES, audienceSize, campaignProgress, drainCampaign, pauseCampaign, startCampaign } from "./emailQueue.js";
-import { db, q, emailStmts, publicUser, artistStmts, publicArtist, artistRow, artistSearchKey, normName } from "./db.js";
+import { db, q, emailStmts, badgeStmts, customBadgesFor, publicUser, artistStmts, publicArtist, artistRow, artistSearchKey, normName } from "./db.js";
+import { BADGE_COLORS, BADGE_GLYPHS, BADGE_KINDS, validateBadge } from "../src/domain/badgeArt.mjs";
 import { genreClaim, resolveGenre, storedClaims, upsertClaim, withoutSource } from "../src/domain/genre.mjs";
 import { hashPassword, verifyPassword, createSession, destroySession, rateLimit } from "./auth.js";
 import { startCatalogSeed, catalogSeedStatus, stopCatalogSeed, deezerEnrich } from "./catalogSeed.js";
@@ -1142,7 +1143,14 @@ export const routes = {
     return { user: publicUser(q.userById.get(u.id), { self: true }) };
   },
 
-  "GET /api/me": (ctx) => ({ user: ctx.user ? publicUser(ctx.user, { self: true }) : null }),
+  "GET /api/me": (ctx) => ({ user: ctx.user ? publicUser(ctx.user, { self: true, badges: true }) : null }),
+
+  // Standalone so profiles can show badges without widening the bulk user list,
+  // where one query per row would be an N+1 on every feed render.
+  "GET /api/users/:id/badges": (ctx) => {
+    if (!q.userById.get(ctx.params.id)) throw new ApiError(404, "No such member.", "NOT_FOUND");
+    return { badges: customBadgesFor(ctx.params.id) };
+  },
 
   // The ids this account follows, lets the client hydrate its follow graph on
   // login / a new device (SQLite migration slice 1, see MIGRATION.md).
@@ -2688,6 +2696,101 @@ export const routes = {
   // Full member directory for the admin console (includes banned) + live counts and
   // a per-region (home city) breakdown. This is what makes every real signup show
   // up in the Members tab so it can be verified / moderated.
+  // ---- admin-created badges (tiers, events, ad-hoc status) ----
+  "GET /api/admin/badges": (ctx) => {
+    requireAdmin(ctx);
+    return {
+      badges: badgeStmts.all.all().map((b) => ({
+        id: b.id, slug: b.slug, label: b.label, description: b.description, kind: b.kind,
+        color: b.color, glyph: b.glyph, glyphChar: b.glyph_char,
+        archived: !!b.archived_at, createdAt: b.created_at,
+        holders: badgeStmts.holderCount.get(b.id).c,
+      })),
+      palette: { colors: BADGE_COLORS, glyphs: BADGE_GLYPHS, kinds: BADGE_KINDS },
+    };
+  },
+
+  "POST /api/admin/badges": (ctx) => {
+    const actor = requireAdmin(ctx);
+    const draft = {
+      slug: String(ctx.body?.slug || "").trim().toLowerCase(),
+      label: clean(ctx.body?.label, { max: 40 }),
+      description: clean(ctx.body?.description, { max: 200 }) || "",
+      kind: String(ctx.body?.kind || "event"),
+      color: String(ctx.body?.color || "cool"),
+      glyph: String(ctx.body?.glyph || "check"),
+      glyphChar: String(ctx.body?.glyphChar || "").trim().slice(0, 1),
+    };
+    const problems = validateBadge(draft);
+    if (problems.length) throw new ApiError(400, problems[0], "VALIDATION_FAILED");
+    if (badgeStmts.bySlug.get(draft.slug)) throw new ApiError(409, "A badge with that slug already exists.", "VALIDATION_FAILED");
+    const id = uid("bdg");
+    badgeStmts.insert.run({
+      id, slug: draft.slug, label: draft.label, description: draft.description, kind: draft.kind,
+      color: draft.color, glyph: draft.glyph, glyph_char: draft.glyphChar || null,
+      created_by: actor.id, created_at: now(),
+    });
+    moderationRecord(ctx, "badge-create", "badge", id, draft.label, {}, { slug: draft.slug });
+    return { badge: badgeStmts.byId.get(id) };
+  },
+
+  "PUT /api/admin/badges/:id": (ctx) => {
+    requireAdmin(ctx);
+    const existing = badgeStmts.byId.get(ctx.params.id);
+    if (!existing) throw new ApiError(404, "No such badge.", "NOT_FOUND");
+    // The slug is identity and is deliberately not editable: changing it would
+    // rename a badge out from under everyone already holding it.
+    const draft = {
+      slug: existing.slug,
+      label: clean(ctx.body?.label, { max: 40 }),
+      description: clean(ctx.body?.description, { max: 200 }) || "",
+      kind: String(ctx.body?.kind || existing.kind),
+      color: String(ctx.body?.color || existing.color),
+      glyph: String(ctx.body?.glyph || existing.glyph),
+      glyphChar: String(ctx.body?.glyphChar ?? existing.glyph_char ?? "").trim().slice(0, 1),
+    };
+    const problems = validateBadge(draft);
+    if (problems.length) throw new ApiError(400, problems[0], "VALIDATION_FAILED");
+    badgeStmts.update.run({
+      id: existing.id, label: draft.label, description: draft.description, kind: draft.kind,
+      color: draft.color, glyph: draft.glyph, glyph_char: draft.glyphChar || null, updated_at: now(),
+    });
+    return { badge: badgeStmts.byId.get(existing.id) };
+  },
+
+  // Retire, never delete. People keep badges they were granted.
+  "POST /api/admin/badges/:id/archive": (ctx) => {
+    requireAdmin(ctx);
+    const existing = badgeStmts.byId.get(ctx.params.id);
+    if (!existing) throw new ApiError(404, "No such badge.", "NOT_FOUND");
+    const archived = ctx.body?.archived === false ? 0 : now();
+    badgeStmts.setArchived.run(archived, now(), existing.id);
+    return { badge: badgeStmts.byId.get(existing.id) };
+  },
+
+  "GET /api/admin/badges/:id/holders": (ctx) => {
+    requireAdmin(ctx);
+    if (!badgeStmts.byId.get(ctx.params.id)) throw new ApiError(404, "No such badge.", "NOT_FOUND");
+    return { holders: badgeStmts.holders.all(ctx.params.id) };
+  },
+
+  "POST /api/admin/users/:id/badges": (ctx) => {
+    const actor = requireAdmin(ctx);
+    const target = q.userById.get(ctx.params.id);
+    if (!target) throw new ApiError(404, "No such member.", "NOT_FOUND");
+    const badge = badgeStmts.bySlug.get(String(ctx.body?.slug || "").trim().toLowerCase());
+    if (!badge) throw new ApiError(404, "No such badge.", "NOT_FOUND");
+    if (ctx.body?.revoke === true) {
+      badgeStmts.revoke.run(target.id, badge.id);
+      moderationRecord(ctx, "badge-revoke", "user", target.id, badge.slug, { had: true }, { by: actor.id });
+    } else {
+      if (badge.archived_at) throw new ApiError(400, "That badge is retired. Restore it before granting.", "VALIDATION_FAILED");
+      badgeStmts.grant.run(target.id, badge.id, actor.id, now(), clean(ctx.body?.note, { max: 140 }) || "");
+      moderationRecord(ctx, "badge-grant", "user", target.id, badge.slug, { had: false }, { by: actor.id });
+    }
+    return { badges: customBadgesFor(target.id) };
+  },
+
   "GET /api/admin/members": (ctx) => {
     requireModerator(ctx);
     const rows = db.prepare(
@@ -2696,7 +2799,15 @@ export const routes = {
     // `emailVerified` is private state that publicUser withholds from everyone but
     // the account owner. It is included here because this route is staff-only and
     // an admin needs it to answer "did my mail reach them".
-    const users = rows.map((r) => ({ id: r.id, name: r.name, handle: r.handle, initials: r.initials, avatarUri: r.avatar_uri, avatarColor: r.avatar_color, verified: !!r.verified, sponsor: !!r.sponsor, role: r.role, home: { city: r.home_city }, isBanned: !!r.is_banned, suspendedUntil: r.suspended_until || null, createdAt: r.created_at, emailVerified: !!r.email_verified_at }));
+    // One grouped read for every row's badges. Calling customBadgesFor per user
+    // here would be 500 queries to render one screen.
+    const badgesByUser = new Map();
+    for (const row of db.prepare(`SELECT ub.user_id, b.slug, b.label, b.color, b.glyph, b.glyph_char
+      FROM user_badges ub JOIN custom_badges b ON b.id = ub.badge_id`).all()) {
+      if (!badgesByUser.has(row.user_id)) badgesByUser.set(row.user_id, []);
+      badgesByUser.get(row.user_id).push({ slug: row.slug, label: row.label, color: row.color, glyph: row.glyph, glyphChar: row.glyph_char });
+    }
+    const users = rows.map((r) => ({ id: r.id, name: r.name, handle: r.handle, initials: r.initials, avatarUri: r.avatar_uri, avatarColor: r.avatar_color, verified: !!r.verified, sponsor: !!r.sponsor, role: r.role, home: { city: r.home_city }, isBanned: !!r.is_banned, suspendedUntil: r.suspended_until || null, createdAt: r.created_at, emailVerified: !!r.email_verified_at, badges: badgesByUser.get(r.id) || [] }));
     const total = db.prepare("SELECT COUNT(*) c FROM users").get().c;
     const banned = db.prepare("SELECT COUNT(*) c FROM users WHERE is_banned=1").get().c;
     const verified = db.prepare("SELECT COUNT(*) c FROM users WHERE verified=1").get().c;

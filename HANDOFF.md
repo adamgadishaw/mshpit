@@ -151,6 +151,29 @@ token returned `verified:false`; the real token verified and released the welcom
 the response showed public `verified` still false. Banner and resend confirmed in
 the browser. 12 unit tests in `server/verification.test.mjs`.
 
+**Admin-created badges + event tiers (2026-08-05):** new **Badges** tab in
+moderation. Create a badge (slug, label, description, kind, colour, glyph),
+edit it, retire it; grant/revoke per member from the Members tab.
+
+Tiers ARE badges of `kind: 'tier'`, admin-assigned. That is deliberately separate
+from the existing `pointsTier()` in `src/lib/badges.js` (Newcomer→Legend, driven
+by achievement points), which is untouched. Earned and granted never fight.
+
+Art comes from a **named palette** in `src/domain/badgeArt.mjs`, shared by server
+validation and `Badge.jsx`, rather than uploads or free-form colour. An admin
+picks a name; no admin-authored string reaches an SVG attribute. Built-in slugs
+(`verified`, `sponsor`, `staff`, …) are **reserved**, so a custom badge cannot
+impersonate the identity check. Retiring archives rather than deletes: holders
+keep the badge, it just leaves the grantable list. Slugs are immutable.
+
+Badges are **opt-in** on `publicUser` (`{ badges: true }`) because it runs per row
+in feeds; the admin member list uses one grouped query, not 500.
+
+Verified through the live API: create 200, reserved slug 400, arbitrary colour
+400, duplicate slug 409, grant idempotent, revoke clean, and the public
+`verified` flag stayed false throughout. Tab renders with no overflow.
+9 tests in `server/badges.test.mjs`.
+
 **Owner actions (cannot be done in code):**
 - **Create the `staging` branch in Render** (New ▸ Blueprint picks it up) and set
   its dashboard values. Three MUST differ from production: `MEDIA_BUCKET` (a

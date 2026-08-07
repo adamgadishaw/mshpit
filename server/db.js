@@ -471,6 +471,38 @@ CREATE TABLE IF NOT EXISTS media_reactions (
 );
 CREATE INDEX IF NOT EXISTS idx_media_reactions_url ON media_reactions(media_url);
 
+-- Admin-created badges: tiers, event marks, ad-hoc status. Art is chosen from the
+-- named palette in src/domain/badgeArt.mjs rather than free-form, so a badge can
+-- never carry an arbitrary colour string into an SVG attribute.
+CREATE TABLE IF NOT EXISTS custom_badges (
+  id          TEXT PRIMARY KEY,
+  slug        TEXT NOT NULL UNIQUE,
+  label       TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  kind        TEXT NOT NULL DEFAULT 'event',
+  color       TEXT NOT NULL DEFAULT 'cool',
+  glyph       TEXT NOT NULL DEFAULT 'check',
+  glyph_char  TEXT,
+  created_by  TEXT,
+  created_at  INTEGER NOT NULL,
+  updated_at  INTEGER,
+  -- Archived rather than deleted: a badge someone was granted must keep meaning
+  -- something, so retiring it hides it from the grant list without erasing it
+  -- from the profiles that already show it.
+  archived_at INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS user_badges (
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  badge_id   TEXT NOT NULL REFERENCES custom_badges(id) ON DELETE CASCADE,
+  granted_by TEXT,
+  granted_at INTEGER NOT NULL,
+  note       TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (user_id, badge_id)
+);
+CREATE INDEX IF NOT EXISTS idx_user_badges_user ON user_badges(user_id, granted_at);
+CREATE INDEX IF NOT EXISTS idx_user_badges_badge ON user_badges(badge_id);
+
 CREATE TABLE IF NOT EXISTS track_overrides (
   key        TEXT PRIMARY KEY,
   title      TEXT NOT NULL,
@@ -740,6 +772,30 @@ export const q = {
 // Email management: owner-editable templates, broadcasts, the per-recipient
 // queue, and the log of every attempt. Audience selection lives in
 // server/emailQueue.js because it needs the opt-out rules alongside it.
+export const badgeStmts = {
+  all: db.prepare("SELECT * FROM custom_badges ORDER BY archived_at, kind, label"),
+  active: db.prepare("SELECT * FROM custom_badges WHERE archived_at = 0 ORDER BY kind, label"),
+  byId: db.prepare("SELECT * FROM custom_badges WHERE id = ?"),
+  bySlug: db.prepare("SELECT * FROM custom_badges WHERE slug = ?"),
+  insert: db.prepare(`INSERT INTO custom_badges (id,slug,label,description,kind,color,glyph,glyph_char,created_by,created_at,updated_at)
+    VALUES (@id,@slug,@label,@description,@kind,@color,@glyph,@glyph_char,@created_by,@created_at,@created_at)`),
+  update: db.prepare(`UPDATE custom_badges SET label=@label,description=@description,kind=@kind,
+    color=@color,glyph=@glyph,glyph_char=@glyph_char,updated_at=@updated_at WHERE id=@id`),
+  setArchived: db.prepare("UPDATE custom_badges SET archived_at=?, updated_at=? WHERE id=?"),
+  holderCount: db.prepare("SELECT COUNT(*) c FROM user_badges WHERE badge_id = ?"),
+
+  grant: db.prepare(`INSERT INTO user_badges (user_id,badge_id,granted_by,granted_at,note)
+    VALUES (?,?,?,?,?) ON CONFLICT(user_id,badge_id) DO NOTHING`),
+  revoke: db.prepare("DELETE FROM user_badges WHERE user_id=? AND badge_id=?"),
+  // Archived badges still render on the profiles that hold them; retiring a badge
+  // must not silently strip it from people who earned it.
+  forUser: db.prepare(`SELECT b.slug,b.label,b.description,b.kind,b.color,b.glyph,b.glyph_char,ub.granted_at
+    FROM user_badges ub JOIN custom_badges b ON b.id = ub.badge_id
+    WHERE ub.user_id = ? ORDER BY ub.granted_at`),
+  holders: db.prepare(`SELECT u.id,u.name,u.handle,ub.granted_at FROM user_badges ub
+    JOIN users u ON u.id = ub.user_id WHERE ub.badge_id = ? ORDER BY ub.granted_at DESC LIMIT 200`),
+};
+
 export const emailStmts = {
   // Email verification. Lookup is by HASH of the token, never the token itself,
   // so a database read cannot be replayed to verify somebody else's address.
@@ -1039,7 +1095,20 @@ function parseJsonArray(value) {
 }
 
 // Public projection, NEVER include pass_hash or email in list responses.
-export function publicUser(u, { self = false } = {}) {
+/**
+ * Admin-granted badges for one account. Deliberately NOT folded into publicUser:
+ * that runs once per row when rendering a feed or a comment thread, and a query
+ * per row there is an N+1. Callers that show a profile opt in with
+ * `publicUser(u, { badges: true })`.
+ */
+export function customBadgesFor(userId) {
+  return badgeStmts.forUser.all(userId).map((b) => ({
+    slug: b.slug, label: b.label, description: b.description, kind: b.kind,
+    color: b.color, glyph: b.glyph, glyphChar: b.glyph_char, grantedAt: b.granted_at,
+  }));
+}
+
+export function publicUser(u, { self = false, badges = false } = {}) {
   if (!u) return null;
 
   // Extras hold optional client profile fields (theme, consent record, music
@@ -1079,6 +1148,7 @@ export function publicUser(u, { self = false } = {}) {
     // is the public admin-granted check. Exposing it publicly would leak whether
     // a stranger has confirmed their address, and invite it being read as a
     // trust signal it is not.
+    ...(badges ? { badges: customBadgesFor(u.id) } : {}),
     ...(self ? { email: u.email, emailVerified: !!u.email_verified_at } : {}),
   };
 }
