@@ -33,7 +33,7 @@
     "pipeline": "node --env-file=.env scripts/pipeline.mjs",
     "server": "node server/index.js",
   "integrity": "node scripts/integrity-check.mjs",
-  "stress": "node scripts/stress-test.mjs",
+  "stress": "node scripts/stress.mjs",
   "backup": "node scripts/backup-db.mjs",
   "backup:verify": "node scripts/backup-db.mjs --verify",
     "build:web": "npm run split:catalog && expo export -p web",

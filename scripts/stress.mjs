@@ -1,7 +1,7 @@
 // Load and concurrency probe against a RUNNING server.
 //
-//   node scripts/stress-test.mjs                    http://localhost:3000
-//   node scripts/stress-test.mjs --url http://... --users 20 --rounds 40
+//   node scripts/stress.mjs                    http://localhost:3000
+//   node scripts/stress.mjs --url http://... --users 20 --rounds 40
 //
 // This is not a benchmark. It exists to answer three questions that unit tests
 // cannot, because they need real concurrency against one shared database:
