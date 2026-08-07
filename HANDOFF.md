@@ -203,6 +203,36 @@ email; 404s produced nothing. 14 tests in `server/errorLog.test.mjs`.
    could add rows to a 1GB disk as fast as it could post, bounded only by the
    global per-IP flood guard. Limits added, matching neighbouring routes.
 
+**Integrity + stress harness (2026-08-06):** two runnable scripts.
+- `npm run integrity` — read-only audit of what SQLite was NOT told to enforce:
+  cross-table orphans, case-insensitive duplicate emails/handles/slugs,
+  unparseable JSON columns, impossible values, `file:`/`blob:` URIs persisted as
+  media. Exits 1 on failure so it can gate a deploy. Dev DB: **all clean**.
+- `npm run stress -- --url <base> --data-dir <server data dir>` — refuses to run
+  against mshpit.com. Signup is limited to 5/15min PER IP (correct), which a
+  single-machine test always hits, so `--data-dir` mints sessions directly
+  instead of measuring the limiter.
+
+Results on a fresh isolated server (12 users, 25 rounds, 399 requests):
+duplicate-email race produced **exactly 1** account with 4 × 409; 300 concurrent
+reads all 200; **10 concurrent likes recorded as exactly 10** (no lost updates);
+80 rapid writes → 60 accepted, 20 × 429, **zero 5xx**; p50 13ms / p95 56ms.
+Integrity re-run against the stressed database: clean. **Pair them — stress then
+integrity is the real test.**
+
+**Video zoom on desktop: NOT reproduced, needs owner input.** Measured all three
+surfaces at 1440 and 1920 with a seeded playable post:
+- YouTube player (PlayerBar): host and iframe both exactly 16:9 (359×202, then
+  459×258), iframe width/height attributes matching the CSS box. Correct.
+- `expo-video` clips (PhotoViewer/ClipsScreen): `object-fit: contain` confirmed
+  on the real `<video>` element.
+- Feed tiles never render video at all; `SmartImage` shows a CLIP placeholder.
+Ruled out: the `videoStage` `minHeight:200`/`maxHeight:270` clamps never bind,
+because `playerColumnWidth` is clamped to 356–460. One unexplained observation:
+after a LIVE window resize the column did not re-measure (stayed 359 at a 1920
+viewport) and only corrected on reload — possibly an emulated-resize artifact,
+worth a second look if the report is about resizing.
+
 **Owner actions (cannot be done in code):**
 - **Create the `staging` branch in Render** (New ▸ Blueprint picks it up) and set
   its dashboard values. Three MUST differ from production: `MEDIA_BUCKET` (a

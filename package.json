@@ -32,6 +32,8 @@
     "ingest:all": "node scripts/ingest-venues.mjs && node scripts/ingest-famous-venue-photos.mjs && node scripts/ingest-venue-photos.mjs && node scripts/ingest-artist-details.mjs && node scripts/fix-bios.mjs",
     "pipeline": "node --env-file=.env scripts/pipeline.mjs",
     "server": "node server/index.js",
+  "integrity": "node scripts/integrity-check.mjs",
+  "stress": "node scripts/stress-test.mjs",
   "backup": "node scripts/backup-db.mjs",
   "backup:verify": "node scripts/backup-db.mjs --verify",
     "build:web": "npm run split:catalog && expo export -p web",
