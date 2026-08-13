@@ -8,8 +8,10 @@ production status.
 
 "Fixed in this batch" means implemented, exercised on
 `codex/audit-hardening-20260813`, fast-forwarded to `master`, and deployed from
-runtime commit `1e2ba65` on 2026-08-13. The verification table distinguishes
-local proof, release proof, and the physical-device work that remains.
+runtime commit `1e2ba65` on 2026-08-13. The subsequent Render build-gate fix
+`2ec2679` was also deployed successfully; this audit update is a
+documentation-only descendant. The verification table distinguishes local
+proof, release proof, and the physical-device work that remains.
 
 ## Executive summary
 
@@ -26,7 +28,10 @@ through checks at 23 and 79/80 seconds. Both feeds still returned the same 13
 IDs and all four J. Cole-related posts. The exact J. Cole/Bas image remained HTTP
 200 at 3,909,908 bytes. The live entry is now 2,253,157 bytes raw, contains no
 venue-gallery arrays or split-file reference, and the independent GitHub Quality
-run for the release commit succeeded.
+run for the release commit succeeded. After isolating the Render test child
+environment, GitHub Quality run `31742684092` and the Render deployment for
+`2ec2679` both succeeded. Both domains reported `2ec267978e37`, identical
+13-post feeds, all four J. Cole posts, and matching healthy uptime at 106 seconds.
 
 The phone experience nevertheless had several real, compounding defects:
 
@@ -378,7 +383,8 @@ not a verified fix.
 | Exported bundle measurement and gallery-marker scan | PASS — 2,253,157 raw / 615,705 gzip / 504,824 Brotli; zero gallery arrays or split-file refs |
 | Full `npm run check` on merged `master` | PASS — initial release 350/350; follow-up Render-environment gate 351/351, syntax, split, and web export |
 | Independent GitHub Quality workflow | PASS — release commit `1e2ba65`, run 31741191910 |
-| Post-deploy custom/origin health and data parity | PASS — exact commit on both, durable DB present/bootstrap false, identical 13 IDs, four J. Cole posts and media intact, stable beyond 60 seconds |
+| Render build-gate follow-up | PASS — `2ec2679`, GitHub Quality run 31742684092, Render deployment success |
+| Post-deploy custom/origin health and data parity | PASS — both reported `2ec267978e37`, durable DB present/bootstrap false, backups enabled, identical 13 IDs, four J. Cole posts and media intact, matching uptime at 106 seconds |
 | Live HTTP/cache and bundle smoke | PASS — 2,253,157-byte immutable entry, zero gallery arrays/split refs, venue endpoint cache, missing chunk 404/no-store |
 | Authenticated physical-device create/edit/retry | OPEN — no public production test content was written during this read-only smoke |
 

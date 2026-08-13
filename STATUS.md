@@ -11,10 +11,11 @@ audit/session log are historical journals, not current status.
   deployed through the explicitly recorded direct-master path on 2026-08-13.
   The declared staging hostname still had no service, so this was not a staging
   rehearsal.
-- The custom domain and Render origin both reported commit `1e2ba657bc11`, HTTP
-  200, the configured database file present, bootstrap disabled, and matching
-  uptime through checks at 23 and 79/80 seconds. GitHub Quality also completed
-  successfully for the exact release commit.
+- Render build-gate fix `2ec2679` was then pushed and deployed successfully; this
+  status update is its documentation-only descendant. GitHub Quality run
+  `31742684092` passed. The custom domain and Render origin both reported commit
+  `2ec267978e37`, HTTP 200, the configured database file present, bootstrap
+  disabled, backups enabled, and matching uptime at 106 seconds.
 - Both public endpoints returned the same 13 post IDs. The J. Cole/Bas post,
   three other J. Cole posts, and the attached 3,909,908-byte R2 image remain
   intact. The earlier claim that a free-tier restart erased that content was not
@@ -23,6 +24,10 @@ audit/session log are historical journals, not current status.
   the Render-environment follow-up now runs **351/351**, plus the
   100-file syntax scan, fresh web and Android exports, Expo dependency alignment,
   and Expo Doctor **21/21**. Physical-device acceptance remains open below.
+- Final live checks retained the 2,253,157-byte immutable entry with zero venue
+  gallery arrays/server split references, a 12-photo bounded venue response,
+  and a missing-chunk 404 with `Cache-Control: no-store`. The J. Cole/Bas image
+  remained HTTP 200 at 3,909,908 bytes.
 
 ## What this batch changes
 

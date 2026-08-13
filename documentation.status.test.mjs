@@ -20,6 +20,8 @@ test("current status has one explicit source of truth and historical reports are
   assert.match(status, /source of truth for current code/i);
   assert.match(status, /deployed.*2026-08-13/i);
   assert.match(status, /1e2ba65/);
+  assert.match(status, /2ec2679/);
+  assert.match(status, /31742684092/);
   assert.match(handoff.slice(0, 900), /HISTORICAL IMPLEMENTATION JOURNAL - NOT CURRENT STATUS/);
   assert.match(oldAudit.slice(0, 900), /HISTORICAL SNAPSHOT - SUPERSEDED/);
   assert.match(oldSession.slice(0, 900), /HISTORICAL SESSION RECORD - SUPERSEDED/);
