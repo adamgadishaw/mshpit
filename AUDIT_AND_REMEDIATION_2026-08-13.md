@@ -6,10 +6,10 @@ session log where those conclusions conflict with the live checks recorded here.
 Those older files remain useful implementation history; they are not current
 production status.
 
-"Fixed in this batch" means implemented and locally exercised on
-`codex/audit-hardening-20260813`. At this release-candidate checkpoint the batch
-is not deployed; production still runs the `1c6d91f` pre-change baseline. The
-verification table distinguishes local proof from release and production proof.
+"Fixed in this batch" means implemented, exercised on
+`codex/audit-hardening-20260813`, fast-forwarded to `master`, and deployed from
+runtime commit `1e2ba65` on 2026-08-13. The verification table distinguishes
+local proof, release proof, and the physical-device work that remains.
 
 ## Executive summary
 
@@ -19,6 +19,14 @@ reported the same commit (`1c6d91f` at the pre-change baseline). The public feed
 contained the exact July 28 post beginning “Jcole opening is really cool. Bas
 made an appearance…”, three other J. Cole posts, and the attached R2 image
 returned HTTP 200.
+
+After release, the custom domain and Render origin both reported
+`1e2ba657bc11`, the expected persistent database identity, and matching uptime
+through checks at 23 and 79/80 seconds. Both feeds still returned the same 13
+IDs and all four J. Cole-related posts. The exact J. Cole/Bas image remained HTTP
+200 at 3,909,908 bytes. The live entry is now 2,253,157 bytes raw, contains no
+venue-gallery arrays or split-file reference, and the independent GitHub Quality
+run for the release commit succeeded.
 
 The phone experience nevertheless had several real, compounding defects:
 
@@ -354,8 +362,11 @@ not a verified fix.
 | Legacy production-database upgrade replay | PASS — unmarked 18-user/21-post/2,658-artist copy stamped `PIT1`, preserved counts, survived restart and WAL recovery |
 | Fresh Android export | PASS — Expo SDK 56, 891 modules |
 | Exported bundle measurement and gallery-marker scan | PASS — 2,253,157 raw / 615,705 gzip / 504,824 Brotli; zero gallery arrays or split-file refs |
-| Full `npm run check` on merged `master` | Pending |
-| Post-deploy custom/origin health and data parity | Pending |
+| Full `npm run check` on merged `master` | PASS — 350/350, syntax, split, and web export before push |
+| Independent GitHub Quality workflow | PASS — release commit `1e2ba65`, run 31741191910 |
+| Post-deploy custom/origin health and data parity | PASS — exact commit on both, durable DB present/bootstrap false, identical 13 IDs, four J. Cole posts and media intact, stable beyond 60 seconds |
+| Live HTTP/cache and bundle smoke | PASS — 2,253,157-byte immutable entry, zero gallery arrays/split refs, venue endpoint cache, missing chunk 404/no-store |
+| Authenticated physical-device create/edit/retry | OPEN — no public production test content was written during this read-only smoke |
 
 ## Release and rollback principles
 

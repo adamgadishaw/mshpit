@@ -7,19 +7,21 @@ audit/session log are historical journals, not current status.
 
 ## Release state
 
-- Work is on `codex/audit-hardening-20260813`, based on production baseline
-  `1c6d91f`. The release candidate is locally complete but **not deployed** as of
-  this checkpoint; production still represents the pre-change baseline.
-- Baseline read-only checks found the J. Cole/Bas post, three other J. Cole
-  posts, and the attached R2 image intact. The earlier claim that a free-tier
-  restart erased that content was not supported by current evidence.
-- Local tests pass: `npm test` **350/350**. Expo SDK 56 dependency validation
-  passes, and Expo Doctor passes **21/21** checks.
-- The complete feature-branch gate, post-change SQLite integrity check, isolated
-  production boot, web/Android exports, and adversarial legacy-database upgrade
-  replay pass. Merge-to-master gate, deploy, physical-device acceptance, and
-  post-deploy smoke are still required. Do not describe this batch as live until
-  the production checks pass.
+- Remediation commit `1e2ba65` was fast-forwarded to `master`, pushed, and
+  deployed through the explicitly recorded direct-master path on 2026-08-13.
+  The declared staging hostname still had no service, so this was not a staging
+  rehearsal.
+- The custom domain and Render origin both reported commit `1e2ba657bc11`, HTTP
+  200, the configured database file present, bootstrap disabled, and matching
+  uptime through checks at 23 and 79/80 seconds. GitHub Quality also completed
+  successfully for the exact release commit.
+- Both public endpoints returned the same 13 post IDs. The J. Cole/Bas post,
+  three other J. Cole posts, and the attached 3,909,908-byte R2 image remain
+  intact. The earlier claim that a free-tier restart erased that content was not
+  supported by the evidence.
+- Feature-branch and merged-`master` gates pass: `npm test` **350/350**, the
+  100-file syntax scan, fresh web and Android exports, Expo dependency alignment,
+  and Expo Doctor **21/21**. Physical-device acceptance remains open below.
 
 ## What this batch changes
 
@@ -34,7 +36,7 @@ audit/session log are historical journals, not current status.
   arrays or server split-file reference occur in client JavaScript.
 - Feed responses embed the latest two visible comments per post, removing the
   one-comments-request-per-card mount fan-out. Full threads still load on demand.
-- The branch implements account-scoped native draft durability, dirty/busy Back
+- The release implements account-scoped native draft durability, dirty/busy Back
   guards, late-response ownership, Android picker-result recovery, and iOS media
   permission preflight. Fresh web and Android exports pass; physical-device proof
   remains a release-acceptance gap.
@@ -42,10 +44,9 @@ audit/session log are historical journals, not current status.
   healed only after equivalence, and ambiguous edits read canonical server state.
 - Filtered feed paging reveals loaded matches before fetching; hosted job flags
   fail closed; heavy jobs serialize; missing hashed chunks return `no-store`.
-- Once deployed from the Blueprint, Render builds run the full
-  test/syntax/export gate in isolated temporary storage instead of exporting web
-  only.
-- The production-mode branch schedules a verified daily SQLite snapshot under `/data/backups`
+- Render builds now run the full test/syntax/export gate in isolated temporary
+  storage instead of exporting web only.
+- Production now schedules a verified daily SQLite snapshot under `/data/backups`
   and retains seven by default. A complete, separate private `BACKUP_S3_*`
   configuration additionally uploads off-host; without it, backups remain on the
   same persistent disk and are not disaster recovery. A snapshot remains under
@@ -59,10 +60,11 @@ audit/session log are historical journals, not current status.
   `x-render-routing: no-server` on 2026-08-13. The `staging` branch and Blueprint
   entry exist, but a usable Render staging service was not verified. Do not claim
   a staging rehearsal until the actual service URL is healthy and tested.
-- No post-change production snapshot, off-host upload, restore, or rollback has
-  been exercised. Configure private backup credentials, observe a scheduled
-  snapshot/upload, verify it independently, and rehearse restore before relying
-  on it.
+- Health confirms the production backup scheduler is enabled, but no post-change
+  snapshot, off-host upload, restore, or rollback has been independently
+  observed. Off-host configuration is currently false. Configure private backup
+  credentials, observe a scheduled snapshot/upload, and rehearse restore before
+  relying on it for disaster recovery.
 - Real Android/iOS acceptance remains mandatory for activity recreation,
   permissions, poor-network publish/retry, browser/hardware Back, memory, and
   interaction latency.
@@ -78,14 +80,15 @@ audit/session log are historical journals, not current status.
 
 ## Release checklist
 
-1. Keep the passing feature-branch evidence (`npm run check`, `npm run integrity`,
-   isolated production boot, web/Android exports) attached to the release.
+1. Keep the passing feature-branch and merged-master evidence (`npm run check`,
+   `npm run integrity`, isolated production boot, web/Android exports) attached
+   to the release.
 2. Confirm a verified production backup/restore point and keep the last-known-good commit
    (`1c6d91f`) available for code rollback.
-3. Provision and smoke the real staging service, or explicitly record that the
-   release is using the direct-master path without a staging rehearsal.
-4. Merge only after the branch gate passes; rerun `npm run check` on `master`
-   before pushing the auto-deploy.
-5. After deploy, verify custom-domain/origin commit parity, durable-storage
-   health, J. Cole post/photo presence, create/edit/retry, missing-chunk behavior,
-   entry bundle size, and health beyond the delayed-job startup window.
+3. Provision and smoke the real staging service before calling future releases
+   staged; this release is explicitly recorded as direct-master.
+4. Post-deploy read-only proof covers custom/origin commit and data parity,
+   durable-storage health, J. Cole post/photo presence, missing-chunk behavior,
+   venue-cache behavior, exact live bundle size, and health beyond 60 seconds.
+5. Complete a real-device authenticated create/edit/poor-network retry pass. The
+   production smoke deliberately made no public test post or other data write.
