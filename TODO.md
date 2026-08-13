@@ -1,12 +1,12 @@
 # Pit Alpha product backlog
 
-Last reconciled: **2026-07-26** against the current code, tests, commits
-`f85f050` and `6f42771`, and the active hardening batch.
+Last reconciled: **2026-08-13** against baseline `1c6d91f` and the active
+`codex/audit-hardening-20260813` remediation batch.
 
-This is the authoritative execution list. The recovered owner wording remains in
-`CLAUDE_SESSION_RECOVERY_2026-07-21.md`; implementation history remains in
-`HANDOFF.md`. Those historical files explain why work happened, but this file
-decides what is still open.
+This is the authoritative backlog. `STATUS.md` is the source of truth for current
+release/production state, and `AUDIT_AND_REMEDIATION_2026-08-13.md` holds the
+incident evidence. The recovered owner wording remains in
+`CLAUDE_SESSION_RECOVERY_2026-07-21.md`; `HANDOFF.md` is historical only.
 
 ## Status and acceptance rules
 
@@ -20,9 +20,9 @@ decides what is still open.
   focused evidence. It can still have a separate scale follow-up.
 - **OPEN**: implementation or a product decision remains.
 
-Do not mark work complete because an endpoint or component exists. Record the
-test, device, and production evidence in `HANDOFF.md`. `npm run check` must pass
-before merging to `master`.
+Do not mark work complete because an endpoint or component exists. Record test,
+device, and production evidence in `STATUS.md` and the current audit. `npm run
+check` must pass before merging to `master`.
 
 ## Alpha release order
 
@@ -121,13 +121,16 @@ delete, comments have parent tombstones, and the feed is cursor paged. However,
 a merge-only refresh cannot reliably remove a post that was already hydrated and
 then deleted or moderated on another client.
 
+The August 13 batch now embeds the latest two visible comments in each feed page,
+so mounting cards no longer starts one comments request per post. Full threaded
+comments remain on the post screen. This closes the comment-preview fan-out; it
+does not close cross-device removal reconciliation.
+
 **Acceptance:**
 
 - Return feed upserts and removal tombstones from a durable delta cursor, or use
   an equivalent versioned/ETag contract. Apply each event idempotently across
   feed, profile walls, open post, counts, photos, and notifications.
-- Batch comment-preview/count reads instead of issuing work per card. Keep full
-  threaded comments paged on the post screen.
 - Preserve the existing local-mutation sequence guards so an older network
   response cannot undo a fresh local create/edit/delete.
 
@@ -199,12 +202,14 @@ uploaded video, and failure recovery. Browser emulation is not acceptance.
 
 ### P0.8 Bundle, render, and client-state performance
 
-**Status: PARTIAL; measured improvements landed, structural work remains.**
+**Status: PARTIAL; measured improvements are release-ready, structural work remains.**
 
-Catalog splitting reduced startup catalogue allocation and screen-level lazy
-loading reduced the web entry bundle, but React Native Web/Expo still leaves a
-large parse/execute floor. `src/store.js` remains a broad context whose changing
-value can rerender many unrelated consumers.
+Catalog splitting plus the August 13 server-only venue-gallery boundary reduced
+the release-candidate web entry from the 4,402,225-byte live baseline to
+2,253,157 bytes raw (615,705 gzip / 504,824 Brotli). An executable export test rejects gallery
+arrays in any client chunk and enforces raw and compressed budgets. React Native
+Web/Expo still leaves a substantial parse/execute floor, and `src/store.js`
+remains a broad context whose changing value can rerender unrelated consumers.
 
 **Next:**
 
@@ -247,6 +252,10 @@ value can rerender many unrelated consumers.
    entity pages.
 10. **Resend:** rotate exposed credentials, verify the sending domain, configure
     `MAIL_FROM`, and complete two-provider reset delivery tests.
+11. **Release operations:** provision and verify the declared Render staging
+    service (the default hostname returned `no-server` on 2026-08-13); configure
+    separate private `BACKUP_S3_*` credentials, observe a scheduled production
+    snapshot/upload, and rehearse restore from that current recovery point.
 
 ## Foundation complete for Alpha
 

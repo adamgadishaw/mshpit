@@ -13,13 +13,20 @@ import { formatDate } from "../domain/dates.mjs";
 // Venue page - the room's reputation. Sound, views and crowd live with the
 // building, so they aggregate here rather than dragging down the touring band.
 export default function VenueScreen({ venueName, onClose, onOpenShow, onOpenArtist, onOpenVenue, onReviewVenue, onOpenProfile, onOpenPhotos }) {
-  const { venueSummary, venueCoord, venueReviewsFor, loadVenueReviews, venueRating, venueTopPhotos, venuePhotos, userByHandle } = useStore();
+  const {
+    venueSummary, venueCoord, venueReviewsFor, loadVenueReviews, venueRating, venueTopPhotos,
+    venuePhotos, venuePhotoState, loadVenuePhotos, userByHandle,
+  } = useStore();
   const v = venueSummary(venueName);
   const coord = venueCoord(v.name);
   const photos = venuePhotos(v.name);
+  const photoState = venuePhotoState(v.name);
   const reviews = venueReviewsFor(v.name);
   // Slice 7: pull this venue's reviews from the server on open.
-  useEffect(() => { loadVenueReviews(v.name); }, [v.name]);
+  useEffect(() => {
+    loadVenueReviews(v.name);
+    void loadVenuePhotos(v.name).catch(() => {});
+  }, [v.name]);
   const userRating = venueRating(v.name);
   const gridPhotos = venueTopPhotos(v.name, 20);
   const onMention = (h) => { const u = userByHandle(h); if (u) onOpenProfile?.(u.id); };
@@ -37,7 +44,15 @@ export default function VenueScreen({ venueName, onClose, onOpenShow, onOpenArti
         {v.capacity ? <Text style={styles.cap}>Capacity ~{v.capacity.toLocaleString()}</Text> : null}
 
         <View style={{ marginTop: 16 }}>
-          <VenuePhotoWidget photos={photos} venueName={v.name} city={v.place} coord={coord} />
+          <VenuePhotoWidget
+            photos={photos}
+            venueName={v.name}
+            city={v.place}
+            coord={coord}
+            loading={photoState.status === "idle" || photoState.status === "loading"}
+            error={photoState.status === "error"}
+            onRetry={() => { void loadVenuePhotos(v.name, { force: true }).catch(() => {}); }}
+          />
         </View>
 
         <View style={styles.repCard}>

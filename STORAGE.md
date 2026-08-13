@@ -1,5 +1,12 @@
 # Efficient storage — moving to on-device SQLite
 
+> **HISTORICAL PROPOSAL — NOT CURRENT ARCHITECTURE.** This document predates the
+> server-authoritative SQLite API, split startup catalogue, server-only venue
+> photo pools, and SDK 56 native SQLite key-value persistence for critical
+> session/draft keys. Do not execute the installation/migration steps below.
+> Use `STATUS.md`, `AUDIT_AND_REMEDIATION_2026-08-13.md`, and `CLAUDE.md` for the
+> current architecture and backlog.
+
 Today the catalog lives in `src/seed/catalog.generated.json` and is loaded whole
 into memory (via `store.js`). That's fine at prototype size but won't scale to the
 artist/venue/event/photo volume we're heading toward — every launch parses one

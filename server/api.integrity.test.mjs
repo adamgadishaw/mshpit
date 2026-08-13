@@ -55,6 +55,11 @@ test("health reflects database readiness without exposing configuration values",
   assert.equal(health.services.database, true);
   assert.equal(typeof health.uptimeSeconds, "number");
   assert.equal(typeof health.services.storageConfigured, "boolean");
+  assert.deepEqual(health.services.storage, {
+    configured: true,
+    databaseFilePresent: true,
+    bootstrapAllowed: false,
+  });
   assert.equal(typeof health.services.backgroundJobs.cacheWarmEnabled, "boolean");
   assert.equal(typeof health.services.backgroundJobs.tourDateRefreshEnabled, "boolean");
   assert.equal(typeof health.services.youtubeConfigured, "boolean");

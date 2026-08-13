@@ -4,7 +4,8 @@ Read these files before editing:
 
 1. `AGENTS.md` — requires the exact Expo SDK 56 documentation.
 2. `BRIEF.md` — product vision and the Performance/Artist/Venue data spine.
-3. `HANDOFF.md` — current branch, completed work, validation, and blockers.
+3. `STATUS.md` — current branch/release/production truth and remaining blockers.
+   `HANDOFF.md` is a historical implementation journal only.
 4. `SCALING.md`, `SECURITY.md`, and `MIGRATION.md` for longer-term constraints.
 5. `ERROR_CATALOG.md` before changing API, upload, playback, persistence, or error handling.
 
@@ -91,12 +92,15 @@ React Native rendering. Never commit `dist`, `.env`, secrets, or `server/data`.
 
 ## Publishing and handoff
 
-- Update `HANDOFF.md` in the same commit as every behavior, schema, deployment,
-  or provider change.
+- Update `STATUS.md` and the current dated audit in the same commit as material
+  behavior, schema, deployment, or provider changes. Do not append current
+  instructions to the historical `HANDOFF.md` journal.
 - State root cause, files changed, validation performed, migration/deployment
   requirements, and remaining risks.
 - Build large or risky changes on a review branch, then merge to `master` and
   push without asking; that is the owner's standing instruction. `npm run check`
   must pass on the branch and again on `master` after the merge, since a master
   push auto-deploys. Do not silently mix unrelated user work into one branch.
-- Current stabilization work is on `codex/stabilize-core`.
+- Current remediation work is on `codex/audit-hardening-20260813`; verify
+  `STATUS.md` and `git branch --show-current` rather than trusting this line after
+  the release.

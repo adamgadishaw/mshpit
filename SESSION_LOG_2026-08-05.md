@@ -1,5 +1,10 @@
 # Session Log — 2026-08-05 (Claude)
 
+> [!CAUTION]
+> **HISTORICAL SESSION RECORD - SUPERSEDED.** Do not use its production,
+> hosting-tier, J. Cole data-loss, test-count, dependency, or next-step claims as
+> current facts. Use `STATUS.md` and `AUDIT_AND_REMEDIATION_2026-08-13.md`.
+
 Cold-start audit → verified fixes. Every claim here was checked against the
 actual repo, build, or live production; nothing is carried over on trust.
 

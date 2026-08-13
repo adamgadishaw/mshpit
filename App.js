@@ -60,8 +60,21 @@ const FollowListScreen = lazyWithRetry(() => import("./src/screens/FollowListScr
 import LandingScreen from "./src/screens/LandingScreen";
 import { load, save } from "./src/lib/persist";
 import { api } from "./src/lib/api";
+import { getPendingImagePickerResult } from "./src/lib/imagePickerRecovery";
 import { lazyWithRetry } from "./src/lib/lazyWithRetry";
 import { artistPath, venuePath, showPath, profilePath, isPublicEntityPath } from "./src/domain/urls.mjs";
+import {
+  composerNavigationTransition,
+  isActiveComposer,
+  isComposerFrame,
+  prepareNavigationFrame,
+} from "./src/domain/composerNavigation.mjs";
+import {
+  ACTIVE_COMPOSER_KEY,
+  PENDING_COMPOSER_PICKER_KEY,
+  pickerOwnerMatchesComposer,
+  restoreComposerFrame,
+} from "./src/domain/composerRecovery.mjs";
 import { trackKey } from "./src/lib/playback";
 import { ENABLE_CLIPS } from "./src/config/runtime.mjs";
 
@@ -118,20 +131,86 @@ function Root() {
   // The whole stack is PERSISTED, so a refresh restores the exact screen you were
   // on (and its back-stack) instead of flashing the feed then jumping around.
   const [stack, setStack] = useState(() => {
-    if (!web) return [{}];
+    if (!web) {
+      const restored = restoreComposerFrame(
+        load(ACTIVE_COMPOSER_KEY, null),
+        load(PENDING_COMPOSER_PICKER_KEY, null),
+      );
+      return restored ? [{}, restored] : [{}];
+    }
     const saved = load("pit.stack", null);
     if (!Array.isArray(saved) || !saved.length) return [{}];
     // Restore the exact screen you were on, but COLLAPSE the back-stack to a single
     // step. Before, a refresh resurrected the whole chain of pages you'd visited,
     // so Back walked through a string of half-remembered screens ("jumps to a
     // random back page"). Now: refresh lands you here; Back goes straight to the tab.
-    const top = saved[saved.length - 1];
+    const top = prepareNavigationFrame(saved[saved.length - 1]);
     if (!ENABLE_CLIPS && top?.clips) return [{}];
     return top && Object.keys(top).length ? [{}, top] : [{}];
   });
   const nav = stack[stack.length - 1];
   const stackRef = useRef(stack);
   stackRef.current = stack;
+  // The composer owns its dirty/busy close policy. Keeping the handler in a ref
+  // lets browser and Android Back consult the latest form state without forcing
+  // the entire shell to rerender on every keystroke.
+  const composerCloseGuardRef = useRef(null);
+  const bypassNextPopRef = useRef(null);
+  const [pendingComposerPicker, setPendingComposerPicker] = useState(null);
+
+  // Keep enough route identity to rebuild an interrupted native composer. This
+  // is intentionally one frame rather than the whole navigation history.
+  useEffect(() => {
+    if (web) return;
+    const top = stack[stack.length - 1];
+    save(ACTIVE_COMPOSER_KEY, isComposerFrame(top) ? top : null);
+  }, [web, stack]);
+
+  // SDK 56 documents that Android may destroy MainActivity while the system
+  // picker is open. The shell is always mounted, so it owns recovery and hands
+  // the result only to the exact composer that launched that picker.
+  useEffect(() => {
+    if (Platform.OS !== "android") return undefined;
+    const owner = load(PENDING_COMPOSER_PICKER_KEY, null);
+    if (!owner?.composerId || !owner?.requestId) return undefined;
+    let active = true;
+    let retryTimer = null;
+    getPendingImagePickerResult()
+      .then((result) => {
+        if (!active) return;
+        const frame = stackRef.current[stackRef.current.length - 1];
+        if (!pickerOwnerMatchesComposer(owner, frame)) {
+          save(PENDING_COMPOSER_PICKER_KEY, null);
+          return;
+        }
+        // Android may restore the activity before it has published the picker
+        // result. Keep ownership durable and retry briefly instead of clearing a
+        // valid in-flight selection on the first null read.
+        if (!result) {
+          retryTimer = setTimeout(() => {
+            if (!active) return;
+            getPendingImagePickerResult()
+              .then((retry) => {
+                if (!active) return;
+                if (retry) setPendingComposerPicker({ ...owner, result: retry });
+                else save(PENDING_COMPOSER_PICKER_KEY, null);
+              })
+              .catch((error) => {
+                if (active) setPendingComposerPicker({ ...owner, result: { code: "PICKER_RECOVERY_FAILED", message: error?.message } });
+              });
+          }, 250);
+          return;
+        }
+        setPendingComposerPicker({ ...owner, result });
+      })
+      .catch((error) => {
+        if (!active) return;
+        const frame = stackRef.current[stackRef.current.length - 1];
+        if (pickerOwnerMatchesComposer(owner, frame)) setPendingComposerPicker({ ...owner, result: { code: "PICKER_RECOVERY_FAILED", message: error?.message } });
+        else save(PENDING_COMPOSER_PICKER_KEY, null);
+      });
+    return () => { active = false; if (retryTimer) clearTimeout(retryTimer); };
+  }, []);
 
   const [preview, setPreview] = useState(null);
   // Persisted so the player survives a reload (switching themes reloads the page):
@@ -213,7 +292,13 @@ function Root() {
   // Push a fresh screen onto the stack. On web we mirror it into browser history
   // so the hardware/browser Back button pops the same stack the in-app back
   // buttons do (both funnel through popstate below).
-  const go = (frame) => {
+  const runAfterComposerClose = (action, cancel = () => {}) => {
+    const guard = composerCloseGuardRef.current;
+    if (guard) { guard({ proceed: action, cancel }); return; }
+    action();
+  };
+  const commitGo = (candidate) => {
+    const frame = prepareNavigationFrame(candidate);
     setStack((s) => [...s, frame]);
     if (web) {
       try {
@@ -228,15 +313,64 @@ function Root() {
   };
   // Swap the top screen without growing the stack — for lateral moves where the
   // previous screen shouldn't come back (menu → target, signup → pick-artists).
-  const replace = (frame) => setStack((s) => [...s.slice(0, -1), frame]);
+  const commitReplace = (candidate) => {
+    const frame = prepareNavigationFrame(candidate);
+    setStack((s) => [...s.slice(0, -1), frame]);
+    if (web) { try { window.history.replaceState({ pit: "nav" }, "", pathForFrame(frame) || undefined); } catch {} }
+  };
+  const go = (candidate) => {
+    const current = stackRef.current[stackRef.current.length - 1];
+    if (isComposerFrame(current) && isComposerFrame(candidate)) return;
+    const transition = composerNavigationTransition(current);
+    runAfterComposerClose(() => (transition === "replace" ? commitReplace(candidate) : commitGo(candidate)));
+  };
+  const replace = (frame) => runAfterComposerClose(() => commitReplace(frame));
   const popStack = () => setStack((s) => (s.length > 1 ? s.slice(0, -1) : s));
+  const requestComposerPop = (onCancel = () => {}) => {
+    runAfterComposerClose(popStack, onCancel);
+  };
   // Back one screen. On web, route through history.back() so the browser Back
   // button and in-app back share one code path (the popstate handler pops).
-  const back = () => { if (web) { try { window.history.back(); return; } catch {} } popStack(); };
+  const back = () => { if (web) { try { window.history.back(); return; } catch {} } requestComposerPop(); };
+  // Successful mutations must close without re-running the dirty form prompt,
+  // but still mirror the pop into browser history.
+  const finishComposerBack = () => {
+    if (web) {
+      try {
+        const marker = {};
+        bypassNextPopRef.current = marker;
+        window.history.back();
+        setTimeout(() => { if (bypassNextPopRef.current === marker) bypassNextPopRef.current = null; }, 1000);
+        return;
+      } catch {
+        bypassNextPopRef.current = null;
+      }
+    }
+    popStack();
+  };
   // Jump straight to the tab screens (after posting, tab switches, brand tap).
-  const clear = () => {
+  const commitClear = () => {
     setStack([{}]);
     if (web) { try { window.history.replaceState({ pit: "root" }, "", "/"); } catch {} }
+  };
+  const clear = () => runAfterComposerClose(commitClear);
+  const switchTab = (key) => runAfterComposerClose(() => { setTab(key); commitClear(); });
+
+  const updateComposerDraftIdentity = (composerId, draftId) => {
+    if (!composerId) return;
+    setStack((current) => {
+      if (!isActiveComposer(current, composerId)) return current;
+      const top = current[current.length - 1];
+      const frame = { ...top, draftId: draftId || null };
+      if (!web) save(ACTIVE_COMPOSER_KEY, frame);
+      return [...current.slice(0, -1), frame];
+    });
+  };
+
+  const consumePendingComposerPicker = (requestId) => {
+    setPendingComposerPicker((current) => (current?.requestId === requestId ? null : current));
+    const stored = load(PENDING_COMPOSER_PICKER_KEY, null);
+    if (!requestId || stored?.requestId === requestId) save(PENDING_COMPOSER_PICKER_KEY, null);
   };
 
   const enter = () => {
@@ -254,16 +388,17 @@ function Root() {
       try { window.localStorage.removeItem("pit.playpos"); } catch {}
     }
   };
-  const exitToLanding = () => {
+  const commitExitToLanding = () => {
     stopAndClearPlayback();
     save("pit.entered", false);
     setTab("feed");
     setStack([{}]);
     setLanding(true);
   };
-  const signOut = () => { logout(); exitToLanding(); };
+  const exitToLanding = () => runAfterComposerClose(commitExitToLanding);
+  const signOut = () => runAfterComposerClose(() => { logout(); commitExitToLanding(); });
   const onAccountDeleted = () => {
-    exitToLanding();
+    commitExitToLanding();
   };
 
   // Persist tab + nav stack so a reload lands exactly where you were.
@@ -286,7 +421,18 @@ function Root() {
       for (let i = 0; i < stackRef.current.length - 1; i++) window.history.pushState({ pit: "nav" }, "");
     } catch {}
     const onPop = () => {
-      if (stackRef.current.length > 1) popStack();
+      if (stackRef.current.length > 1) {
+        if (bypassNextPopRef.current) {
+          bypassNextPopRef.current = null;
+          popStack();
+        } else {
+          // The browser already moved back one history entry. If the composer
+          // declines, restore the entry so the stack and browser stay aligned.
+          requestComposerPop(() => {
+            try { window.history.pushState({ pit: "nav" }, ""); } catch {}
+          });
+        }
+      }
       else if (!sessionRef.current) setLanding(true);
       else { try { window.history.pushState({ pit: "root" }, ""); } catch {} }
     };
@@ -305,6 +451,9 @@ function Root() {
   // place also guarantees a crawler and a visitor get the same page.
   useEffect(() => {
     if (!web) return;
+    // A restored composer is already the user's chosen destination. Resolving
+    // its underlying public URL must never replace that recoverable work.
+    if (isComposerFrame(stackRef.current[stackRef.current.length - 1])) return;
     let cancelled = false;
     const path = window.location.pathname;
     if (!path || path === "/" || !isPublicEntityPath(path)) return;
@@ -338,7 +487,7 @@ function Root() {
   useEffect(() => {
     if (Platform.OS !== "android") return;
     const sub = BackHandler.addEventListener("hardwareBackPress", () => {
-      if (stackRef.current.length > 1) { popStack(); return true; }
+      if (stackRef.current.length > 1) { requestComposerPop(); return true; }
       return false;
     });
     return () => sub.remove();
@@ -360,17 +509,24 @@ function Root() {
   const requireAuth = (fn) => (session ? fn() : go({ auth: true }));
 
   const onAddLog = async (log) => {
+    const composerId = nav.composerId;
     const result = await addLog(log);
     if (result?.ok === false) return result;
-    clear();
-    setTab("feed");
+    // A response can arrive after the user has left or another composer has
+    // opened. Publish still succeeded, but that stale operation no longer owns
+    // navigation and must not pull the user away from their current screen.
+    if (isActiveComposer(stackRef.current, composerId)) {
+      commitClear();
+      setTab("feed");
+    }
     return result;
   };
   const onEditLog = async (log) => {
     const target = nav.editingPost;
+    const composerId = nav.composerId;
     if (!target?.id) return { ok: false };
-    const result = await editLog(target.id, log);
-    if (result?.ok) back();
+    const result = await editLog(target, log);
+    if (result?.ok && isActiveComposer(stackRef.current, composerId)) finishComposerBack();
     return result;
   };
 
@@ -445,8 +601,8 @@ function Root() {
   else if (nav.followList) overlay = <FollowListScreen userId={nav.followList.userId} mode={nav.followList.mode} onClose={back} onOpenProfile={openProfile} />;
   else if (nav.auth) overlay = <AuthScreen initialMode={nav.authMode} onDone={(mode) => { if (mode === "signup") { if (web) save("pit.welcomePending", true); replace({ pickArtists: true }); } else back(); }} onCancel={back} />;
   else if (nav.pickArtists) overlay = <PickArtistsScreen onDone={clear} onSkip={clear} />;
-  else if (nav.editingPost) overlay = <LogScreen user={session} editing={nav.editingPost} onPost={onEditLog} onCancel={back} />;
-  else if (nav.logging) overlay = <LogScreen user={session} prefill={nav.prefill} defaultMode={nav.postMode || "show"} onPost={onAddLog} onCancel={back} />;
+  else if (nav.editingPost) overlay = <LogScreen user={session} editing={nav.editingPost} composerId={nav.composerId} initialDraftId={nav.draftId} onDraftIdentity={updateComposerDraftIdentity} pendingMedia={pendingComposerPicker?.composerId === nav.composerId ? pendingComposerPicker : null} onPendingMediaConsumed={consumePendingComposerPicker} onPost={onEditLog} onCancel={back} closeGuardRef={composerCloseGuardRef} />;
+  else if (nav.logging) overlay = <LogScreen user={session} prefill={nav.prefill} defaultMode={nav.postMode || "show"} composerId={nav.composerId} initialDraftId={nav.draftId} onDraftIdentity={updateComposerDraftIdentity} pendingMedia={pendingComposerPicker?.composerId === nav.composerId ? pendingComposerPicker : null} onPendingMediaConsumed={consumePendingComposerPicker} onPost={onAddLog} onCancel={back} closeGuardRef={composerCloseGuardRef} />;
   else if (nav.reporting) overlay = <ReportScreen log={nav.reporting} onClose={back} />;
   else if (nav.editProfile) overlay = <EditProfileScreen onClose={back} onPickArtists={() => replace({ pickArtists: true })} />;
   else if (nav.venueReview) overlay = <VenueReviewScreen venueName={nav.venueReview} onClose={back} />;
@@ -492,7 +648,7 @@ function Root() {
       onRequestArtist={() => replace({ reqArtist: true })}
       onLogin={() => replace({ auth: true })}
       onLogout={signOut}
-      onBackToLanding={() => { clear(); exitToLanding(); }}
+      onBackToLanding={exitToLanding}
     />
   );
 
@@ -565,12 +721,12 @@ function Root() {
     <View style={styles.deskOuter}>
       <DesktopTopNav
         tab={tab}
-        setTab={(key) => { setTab(key); clear(); }}
+        setTab={switchTab}
         session={session}
         unread={session ? inboxUnread() : 0}
         notifUnread={session ? unreadNotifications() : 0}
         compact={width < 1500}
-        onHome={() => { setTab("feed"); clear(); }}
+        onHome={() => switchTab("feed")}
         onLog={() => requireAuth(() => go({ logging: true, postMode: "status" }))}
         onActivity={openNotifications}
         onInbox={openInbox}
@@ -637,14 +793,14 @@ function Root() {
                   <>
                     {tabScreens}
                     <View style={styles.tabbar}>
-                      {LEFT.map((t) => <TabButton key={t.key} tab={t} active={tab} onPress={setTab} />)}
+                      {LEFT.map((t) => <TabButton key={t.key} tab={t} active={tab} onPress={switchTab} />)}
                       <View style={styles.fabCol}>
                         <Pressable style={styles.fab} onPress={() => requireAuth(() => go({ logging: true, postMode: "status" }))} accessibilityLabel="Make a post">
                           <Icon name="plus" size={26} color="#1A1206" strokeWidth={2.6} />
                         </Pressable>
                         <Text style={styles.fabLabel}>Post</Text>
                       </View>
-                      {RIGHT.map((t) => <TabButton key={t.key} tab={t} active={tab} onPress={setTab} />)}
+                      {RIGHT.map((t) => <TabButton key={t.key} tab={t} active={tab} onPress={switchTab} />)}
                     </View>
                   </>
                 )

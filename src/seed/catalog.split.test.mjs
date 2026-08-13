@@ -55,17 +55,12 @@ test("nothing imports the full scraper output at startup", () => {
   }
 });
 
-test("venue photo pools are reached only through the lazy accessor", () => {
-  // Metro bundles whatever is required but only runs a module's factory on
-  // first require, so one lazy require keeps 2.1 MB out of startup. A static
-  // import anywhere, or a second consumer, would defeat that.
-  const pulls = /(?:from\s*|require\s*\(\s*)["'][^"']*catalog\.venue-photos\.json["']/;
-  const offenders = walk("src")
-    .filter((file) => pulls.test(readFileSync(file, "utf8")))
-    .filter((file) => !/ingested\.js$/.test(file));
-  assert.deepEqual(offenders, [], "only src/seed/ingested.js may require the venue photo pool");
+test("venue photo pools are server-only and unreachable from client modules", () => {
+  const pulls = /(?:from\s*|(?:require|import)\s*\(\s*)["'][^"']*catalog\.venue-photos\.json["']/;
+  const offenders = walk("src").filter((file) => pulls.test(readFileSync(file, "utf8")));
+  assert.deepEqual(offenders, [], "no client module may import the complete venue photo pool");
 
-  const accessor = readFileSync("src/seed/ingested.js", "utf8");
-  const staticImport = /^\s*import[^\n]*catalog\.venue-photos/m;
-  assert.equal(staticImport.test(accessor), false, "a static import would defeat the whole split");
+  const serverApi = readFileSync("server/api.js", "utf8");
+  assert.match(serverApi, /readFileSync\(VENUE_PHOTO_SOURCE/, "the server must own the split file");
+  assert.match(serverApi, /GET \/api\/venues\/:key\/photos/, "clients need a per-venue replacement endpoint");
 });

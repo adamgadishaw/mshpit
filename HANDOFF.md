@@ -1,8 +1,12 @@
 # PIT / mshpit.com — Handoff
 
-> **Living doc.** Whoever works on this next: read this first, and UPDATE it before you end a session (move things between "Done" and "Backlog", note anything running). Point a fresh Claude Code chat at this file to get up to speed without re-explaining.
->
-> Last updated: **2026-07-28** (mobile posting and production recovery)
+> [!CAUTION]
+> **HISTORICAL IMPLEMENTATION JOURNAL - NOT CURRENT STATUS.** This long-form
+> handoff contains dated observations that now contradict the repository and
+> production, including the old free-tier/J. Cole data-loss theory and obsolete
+> test counts. Use `STATUS.md` for current release state,
+> `AUDIT_AND_REMEDIATION_2026-08-13.md` for the incident audit, and `TODO.md` for
+> the backlog. Keep this file only as implementation history.
 
 > **Working agreement (owner's standing instruction, updated 2026-07-22):** ALWAYS `git commit`, **merge to `master`**, and `git push` after a verified batch. Do not stop to ask whether to merge; the owner does not want to be asked. A review branch is still the right place to build a large or risky change, but finishing the work means landing it on `master`. The one hard gate is `npm run check` (tests + syntax + web export) passing on the branch **and** again on `master` after the merge, because a master push auto-deploys and briefly restarts Render. If the gate fails, report it instead of pushing.
 

@@ -1,5 +1,12 @@
 # SQLite migration plan — `src/store.js` → backend API
 
+> **HISTORICAL MIGRATION JOURNAL — NOT CURRENT ARCHITECTURE.** The "Today" and
+> recommended-pattern sections below describe the pre-migration client-local
+> system and are retained only as implementation history. The Node/SQLite API is
+> now authoritative for social data; server responses, retry identity, and
+> reconciliation govern writes. Use `STATUS.md`, the current dated audit, and
+> `CLAUDE.md` for present behavior and open work.
+
 > Status: **COMPLETE (slices 1–7).** Every dynamic data type now writes through to
 > the server and hydrates back, best-effort/offline-safe. Kept as the reference for
 > how the write-through + hydrate pattern works. Prereqs remain for prod scale

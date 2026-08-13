@@ -1,5 +1,12 @@
 # Pit / mshpit.com — Independent Audit, 2026-08-04
 
+> [!CAUTION]
+> **HISTORICAL SNAPSHOT - SUPERSEDED.** Its production-down/free-tier,
+> missing-disk, J. Cole data-loss, dependency-count, and release conclusions are
+> not current. Use `STATUS.md` and `AUDIT_AND_REMEDIATION_2026-08-13.md` for
+> current evidence. This file is retained only to explain what was believed and
+> changed on 2026-08-04.
+
 Audited by Claude from a cold start (no assumptions from prior handoffs; every
 claim below was re-verified against the actual repo, build, and live production).
 

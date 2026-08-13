@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { View, Text, StyleSheet, Pressable, TextInput, Platform } from "react-native";
 import { colors, font, mono, radius } from "../theme";
 import { useStore } from "../store";
 import Avatar from "./Avatar";
 import Icon from "./Icon";
+import { inlineCommentPreview } from "../domain/commentPreview.mjs";
 
 const web = Platform.OS === "web";
 
@@ -12,17 +13,24 @@ const web = Platform.OS === "web";
 // composer under them. Tapping "View all" opens the full Afterparty (PostScreen).
 // Comments are lazy-pulled once per card via the store's in-flight-guarded load.
 export default function AfterpartyPreview({ log, onOpen, max = 2 }) {
-  const { session, commentsFor, loadComments, addComment, userById, userBadges } = useStore();
-  const comments = commentsFor(log.id);
+  const { session, commentsFor, loadComments, addComment, userById, blockedIds } = useStore();
+  const localComments = commentsFor(log.id);
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
 
-  // Load the preview once, then reload whenever the feed poll reports a changed
-  // comment count for this post. That gives Facebook-style live comments without
-  // every card in the feed polling on its own: the feed already refreshes counts
-  // every ~45s, and this only re-fetches the two shown comments for the handful
-  // of posts whose count actually moved.
-  useEffect(() => { loadComments(log.id, { limit: max }); }, [log.id, max, log.comments]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Current feed/profile responses carry the latest two comments in the same
+  // request. Only legacy/local post shapes without that field use the old lazy
+  // read; this removes the one-request-per-card mount storm on phones.
+  useEffect(() => {
+    if (!Array.isArray(log.commentPreview) && Number(log.comments) > 0) loadComments(log.id, { limit: max });
+    // Store actions are intentionally not dependencies: the legacy monolithic
+    // context recreates them on each render and would restart this effect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [log.id, max, log.comments, log.commentPreview]);
+  const comments = useMemo(
+    () => inlineCommentPreview(log.commentPreview, localComments, { isBlocked: (id) => blockedIds.includes(id) }),
+    [log.commentPreview, localComments, blockedIds],
+  );
 
   // Deleted parents come back as tombstones so their replies keep their place in
   // the full thread. A two-line card preview has no room for that context, so it

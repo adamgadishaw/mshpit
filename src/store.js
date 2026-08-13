@@ -6,7 +6,7 @@ import { clean, cleanEmail, isEmail, cleanName, isName, cleanHandle, isPassword,
 import { load, save } from "./lib/persist";
 import { api, captureAppError } from "./lib/api";
 import { clearStoredTheme, setTheme as applyTheme, storedThemeSelection, syncThemeFromAccount } from "./theme";
-import { artistMeta, venuePhotoPool } from "./seed/ingested";
+import { artistMeta } from "./seed/ingested";
 import { ACHIEVEMENTS } from "./lib/badges";
 import { ENABLE_DEMO_DATA } from "./config/runtime.mjs";
 import { isUpcomingEventDate, PERSISTED_FEED_LIMIT, sanitizePersistedStoreValue, sanitizeTourDates } from "./domain/dataPolicy.mjs";
@@ -14,9 +14,18 @@ import { toIsoDate } from "./domain/dates.mjs";
 import { createTicketRegistry } from "./domain/latestWins.mjs";
 import { deleteAccountDraft, draftsForAccount, migrateLegacyDrafts, upsertAccountDraft } from "./domain/draftPolicy.mjs";
 import { buildReviewCreateBody, buildReviewEditBody, cleanArtistKey } from "./domain/post-payload.mjs";
+import { mergeEditedPost, resolvePostEditTarget } from "./domain/postEditTarget.mjs";
+import { postMatchesEditIntent, shouldReconcileEditFailure } from "./domain/postReconciliation.mjs";
 import { classifyResolve, backoffFor, RESOLVE_ATTEMPTS, CACHE_MS } from "./domain/playback.mjs";
 import { recommendTracks as recommendFromCandidates } from "./domain/recommend.mjs";
 import { trackKey } from "./lib/playback";
+import {
+  cleanVenuePhotoResponse,
+  isFreshVenuePhotoEntry,
+  mergeVenuePhotoSources,
+  venuePhotoStateFor,
+  withBoundedVenuePhotoCache,
+} from "./domain/venuePhotos.mjs";
 
 // Legacy client facade: combines server hydration, small persisted caches, social
 // state, and compatibility data behind one screen-facing shape. Server responses
@@ -84,6 +93,7 @@ const sameServerPost = (a, b) => !!a && !!b
   && a.comments === b.comments
   && a.liked === b.liked
   && a.flags === b.flags
+  && JSON.stringify(a.commentPreview || null) === JSON.stringify(b.commentPreview || null)
   && JSON.stringify(a.user || null) === JSON.stringify(b.user || null);
 
 const demoUsers = [
@@ -192,19 +202,30 @@ export function StoreProvider({ children }) {
   const [snapshots, setSnapshots] = useState(() => load("pit.snapshots", [])); // saved listening sessions (playlist seeds)
   const [drafts, setDrafts] = useState(() =>
     migrateLegacyDrafts(load("pit.drafts", []), session?.id)); // unfinished reviews, account-scoped on this device
+  const draftsRef = useRef(drafts);
+  draftsRef.current = drafts;
   useEffect(() => {
     if ((session?.id || null) === playHistoryAccountId) save(historyStorageKey(playHistoryAccountId), playHistory);
   }, [session?.id, playHistoryAccountId, playHistory]);
   useEffect(() => { save("pit.snapshots", snapshots); }, [snapshots]);
-  useEffect(() => { save("pit.drafts", drafts); }, [drafts]);
+  const commitDrafts = (updater) => {
+    const current = draftsRef.current;
+    const next = typeof updater === "function" ? updater(current) : updater;
+    draftsRef.current = next;
+    // Composer backgrounding is a process-lifecycle boundary. Persist before
+    // returning instead of waiting for React's post-render effect.
+    save("pit.drafts", next);
+    setDrafts(next);
+    return next;
+  };
   // Review drafts: save an unfinished log to resume later.
   const saveDraft = (d) => {
     const id = d.id || "draft_" + Date.now();
     const entry = { ...d, id, at: Date.now() };
-    setDrafts((all) => upsertAccountDraft(all, entry, session?.id));
+    commitDrafts((all) => upsertAccountDraft(all, entry, session?.id));
     return id;
   };
-  const deleteDraft = (id) => setDrafts((all) => deleteAccountDraft(all, id, session?.id));
+  const deleteDraft = (id) => commitDrafts((all) => deleteAccountDraft(all, id, session?.id));
   const [adminStats, setAdminStats] = useState({ total: 0, banned: 0, verified: 0, regions: [] }); // admin member console stats
   const [feed, setFeed] = useState(() =>
     sanitizePersistedStoreValue("pit.feed", load("pit.feed", demoSeed(seedFeed, [])), ENABLE_DEMO_DATA));
@@ -268,6 +289,11 @@ export function StoreProvider({ children }) {
   }, {}));
   // Venue reviews (rating + text + photos), keyed by venue name
   const [venueReviews, setVenueReviews] = usePersisted("pit.venueReviews", {});
+  // Only pools for venues this session actually opens. The 2.1 MB seed stays on
+  // the server; this LRU is capped at 32 normalized pools and expires after 15m.
+  const [venuePhotoPools, setVenuePhotoPools] = useState({});
+  const venuePhotoCacheRef = useRef(new Map());
+  const venuePhotoInflightRef = useRef(new Map());
   // Direct messages - keyed by the sorted pair of user ids; plus read markers.
   const [dms, setDms] = usePersisted("pit.dms", demoSeed({
     u_demo__u_mara: [
@@ -308,6 +334,10 @@ export function StoreProvider({ children }) {
   // main-thread JSON serialization on a phone.
   useEffect(() => save("pit.feed", feed.slice(0, PERSISTED_FEED_LIMIT)), [feed]);
   useEffect(() => save("pit.follows", follows), [follows]);
+  useEffect(() => () => {
+    for (const request of venuePhotoInflightRef.current.values()) request.controller.abort();
+    venuePhotoInflightRef.current.clear();
+  }, []);
 
   // A local theme only wins when it belongs to THIS account. The previous global
   // device choice leaked one member's appearance into the next member's session
@@ -1427,7 +1457,7 @@ export function StoreProvider({ children }) {
     setUserStats((all) => { const next = { ...all }; delete next[deleted.id]; return next; });
     setPlayHistory([]);
     setSnapshots([]);
-    setDrafts((all) => all.filter((draft) => String(draft?.ownerId || "") !== String(deleted.id)));
+    commitDrafts((all) => all.filter((draft) => String(draft?.ownerId || "") !== String(deleted.id)));
     setMyPlaylists([]);
     setFriendsListening([]);
     setRatingAgg({});
@@ -1583,10 +1613,27 @@ export function StoreProvider({ children }) {
     return Promise.resolve({ ok: true, localOnly: true });
   };
 
-  const editLog = async (id, changes) => {
+  const reconcileEditedPost = async (id, body, error) => {
+    if (!shouldReconcileEditFailure(error)) return null;
+    try {
+      const { post } = await api(`/api/posts/${encodeURIComponent(id)}`, {
+        context: "Confirming whether your update saved",
+        silent: true,
+      });
+      if (!postMatchesEditIntent(post, body)) return null;
+      const updated = normalizeServerPost(post);
+      setFeed((all) => mergeEditedPost(all, updated));
+      return updated;
+    } catch {
+      return null;
+    }
+  };
+
+  const editLog = async (target, changes) => {
+    const id = typeof target === "string" ? target : target?.id;
     if (!session || !id) return { ok: false };
     // Author-only, admins included: moderation removes content, never rewrites it.
-    const previous = feed.find((post) => post.id === id) || changes;
+    const previous = resolvePostEditTarget(feed, target);
     if (!previous || previous.userId !== session.id) return { ok: false };
 
     // A status post has no artist/venue/rating, so it only sends the fields it
@@ -1605,13 +1652,15 @@ export function StoreProvider({ children }) {
       if (!body.review && !body.photos.length && !body.song && !playlistId) return { ok: false };
       feedMutationRevisionRef.current += 1;
       try {
-        const { post } = await api(`/api/posts/${encodeURIComponent(id)}`, { method: "PATCH", context: "Saving your update", body });
+        const { post } = await api(`/api/posts/${encodeURIComponent(id)}`, { method: "PATCH", context: "Saving your update", body, silent: true });
         feedMutationRevisionRef.current += 1;
         const updated = normalizeServerPost(post);
-        setFeed((all) => all.map((item) => (item.id === id ? updated : item)));
+        setFeed((all) => mergeEditedPost(all, updated));
         return { ok: true, post: updated };
       } catch (error) {
         feedMutationRevisionRef.current += 1;
+        const reconciled = await reconcileEditedPost(id, body, error);
+        if (reconciled) return { ok: true, post: reconciled, reconciled: true };
         return { ok: false, error };
       }
     }
@@ -1625,13 +1674,17 @@ export function StoreProvider({ children }) {
         method: "PATCH",
         context: "Saving your concert review",
         body: { ...safe, ...(Number.isSafeInteger(version) ? { version } : {}) },
+        silent: true,
       });
       feedMutationRevisionRef.current += 1;
       const updated = normalizeServerPost(post);
-      setFeed((all) => all.map((item) => (item.id === id ? updated : item)));
+      setFeed((all) => mergeEditedPost(all, updated));
       return { ok: true, post: updated };
     } catch (error) {
       feedMutationRevisionRef.current += 1;
+      const body = { ...safe, ...(Number.isSafeInteger(version) ? { version } : {}) };
+      const reconciled = await reconcileEditedPost(id, body, error);
+      if (reconciled) return { ok: true, post: reconciled, reconciled: true };
       return { ok: false, error };
     }
   };
@@ -1914,13 +1967,26 @@ export function StoreProvider({ children }) {
     const t = clean(text, { max: LIMITS.message, newlines: true });
     if (!session || !t) return Promise.resolve({ ok: false });
     const localId = "c_" + Date.now();
-    const c = { id: localId, userId: session.id, name: session.name, initials: session.initials, avatarUri: session.avatarUri, avatarColor: session.avatarColor, role: session.role, text: t, parentId: parentId || null, at: Date.now(), likes: 0 };
+    const c = { id: localId, userId: session.id, name: session.name, initials: session.initials, avatarUri: session.avatarUri, avatarColor: session.avatarColor, role: session.role, text: t, parentId: parentId || null, at: Date.now(), likes: 0, pending: true };
     setComments((m) => ({ ...m, [id]: [...(m[id] || []), c] }));
     // Write-through + adopt the server id so a later loadComments() dedupes it
     // instead of showing my comment twice.
     return api(`/api/posts/${id}/comments`, { method: "POST", body: { text: t, parentId: parentId || null }, context: "Adding your afterparty comment" })
       .then(({ id: sid }) => {
-        if (sid) setComments((m) => ({ ...m, [id]: (m[id] || []).map((x) => (x.id === localId ? { ...x, id: sid } : x)) }));
+        const published = { ...c, id: sid || localId, pending: false, createdAt: c.at };
+        setComments((m) => ({ ...m, [id]: (m[id] || []).map((x) => (x.id === localId ? published : x)) }));
+        feedMutationRevisionRef.current += 1;
+        setFeed((posts) => posts.map((post) => {
+          if (post.id !== id) return post;
+          const preview = [...(Array.isArray(post.commentPreview) ? post.commentPreview : []), published]
+            .filter((comment, index, all) => all.findIndex((candidate) => candidate.id === comment.id) === index)
+            .slice(-2);
+          return {
+            ...post,
+            ...(Array.isArray(post.commentPreview) ? { commentPreview: preview } : {}),
+            comments: (Number(post.comments) || 0) + 1,
+          };
+        }));
         const owner = postOwner(id);
         if (owner) notify(owner, "comment", { postId: id, artist: feed.find((l) => l.id === id)?.artist, text: t.slice(0, 60) });
         return { ok: true, id: sid || localId };
@@ -2500,35 +2566,59 @@ export function StoreProvider({ children }) {
     }
     return null;
   };
-  const venueCatalogEntry = (venueName) => {
+  const venuePhotoState = (venueName) => {
     const key = venueCatalogKey(venueName);
-    return key ? catalogVenues[key] : {};
+    return venuePhotoStateFor(key, venuePhotoPools);
   };
-  // Photo pools live in a lazily required module, so the 2.1 MB of venue imagery
-  // is allocated the first time a venue gallery is opened rather than at launch.
-  const venueCatalogPhotos = (venueName) => {
+
+  const commitVenuePhotoEntry = (key, entry) => {
+    const next = withBoundedVenuePhotoCache(venuePhotoCacheRef.current, key, entry);
+    venuePhotoCacheRef.current = next;
+    setVenuePhotoPools(Object.fromEntries(next));
+  };
+
+  // Concurrent VenueScreen/ShowScreen opens share one request. Results live in a
+  // small session LRU; the browser/CDN also observes the endpoint's HTTP cache.
+  const loadVenuePhotos = (venueName, { force = false } = {}) => {
     const key = venueCatalogKey(venueName);
-    return (key && venuePhotoPool(key)) || {};
+    if (!key) return Promise.resolve([]);
+    const cached = venuePhotoCacheRef.current.get(key);
+    if (!force && isFreshVenuePhotoEntry(cached)) {
+      commitVenuePhotoEntry(key, cached); // touch its LRU position
+      return Promise.resolve(cached.photos);
+    }
+    const active = venuePhotoInflightRef.current.get(key);
+    if (active) return active.promise;
+
+    const controller = new AbortController();
+    commitVenuePhotoEntry(key, { status: "loading", photos: cached?.photos || [], error: null, loadedAt: cached?.loadedAt || 0 });
+    const promise = api(`/api/venues/${encodeURIComponent(key)}/photos`, {
+      signal: controller.signal,
+      silent: true,
+      context: "Loading venue photos",
+    })
+      .then(({ photos }) => {
+        const cleanPhotos = cleanVenuePhotoResponse(photos);
+        commitVenuePhotoEntry(key, { status: "ready", photos: cleanPhotos, error: null, loadedAt: Date.now() });
+        return cleanPhotos;
+      })
+      .catch((error) => {
+        if (!controller.signal.aborted) {
+          commitVenuePhotoEntry(key, { status: "error", photos: cached?.photos || [], error, loadedAt: cached?.loadedAt || 0 });
+        }
+        throw error;
+      })
+      .finally(() => {
+        if (venuePhotoInflightRef.current.get(key)?.promise === promise) venuePhotoInflightRef.current.delete(key);
+      });
+    venuePhotoInflightRef.current.set(key, { controller, promise });
+    return promise;
   };
 
   const venuePhotos = (venueName) => {
-    const cat = venueCatalogEntry(venueName);
-    const pool = venueCatalogPhotos(venueName);
-    const commons = (pool.photos || []).map((uri) => ({ uri, by: cat.photoCredit || "Wikimedia Commons", source: "commons" }));
+    const remote = venuePhotoState(venueName).photos;
     const fan = venueTopPhotos(venueName, 12).map((p) => ({ uri: p.uri, by: p.by, source: "fan" }));
-    // Backfill = everything in the pool that isn't a Commons dupe (Openverse +
-    // Google). Commons is already laid down above; google is takedown-on-request.
-    const backfill = (pool.galleryPool || [])
-      .filter((p) => p.source !== "commons")
-      .map((p) => ({ uri: p.uri, by: p.credit, source: p.source || "openverse" }));
-    const out = [];
-    const seen = new Set();
-    for (const p of [...commons, ...fan, ...backfill]) {
-      if (!p.uri || seen.has(p.uri) || isPhotoRemoved(p.uri)) continue;
-      seen.add(p.uri);
-      out.push(p);
-    }
-    return out;
+    return mergeVenuePhotoSources(remote, fan, isPhotoRemoved);
   };
 
   // --- Direct messages + inbox ---
@@ -3171,7 +3261,7 @@ export function StoreProvider({ children }) {
   };
 
   const value = {
-    users, session, feed, removedIds, requests, tourDates, reports, follows, discoverySidebar, discoverySidebarStatus,
+    users, session, feed, removedIds, blockedIds, requests, tourDates, reports, follows, discoverySidebar, discoverySidebarStatus,
     userById, userByHandle, logsByUser, sharedShows,
     login, signup, logout, deleteAccount, forgotPassword, resetPassword, updateProfile, chooseTheme,
     addLog, editLog, reportContent, actionReport, dismissReport, removeContent, restoreContent,
@@ -3204,7 +3294,8 @@ export function StoreProvider({ children }) {
     accountStatus, banUser, unbanUser, suspendUser, liftSuspension, setUserRole, setVerified, markEmailVerified, setSponsor, loadAdminMembers, adminStats, adminArtistQueue, enrichArtists, purgeArtist, startCatalogSeed, catalogSeedStatus, stopCatalogSeed, catalogSeedRuns, removeLoungeMessage, removeComment, removeFanClubMessage,
     comments, fanClubMsgs, lounge,
     goingFor, isGoing, toggleGoing, attendeesFor,
-    venueReviewsFor, loadVenueReviews, addVenueReview, venueRating, venueTopPhotos, venuePhotos, artistFanPhotos, loadArtistPhotos,
+    venueReviewsFor, loadVenueReviews, addVenueReview, venueRating, venueTopPhotos,
+    venuePhotos, venuePhotoState, loadVenuePhotos, artistFanPhotos, loadArtistPhotos,
     artistGallery, isPhotoRemoved, removePhoto, restorePhoto,
     threadMessages, sendDM, loadThread, loadInboxThreads, markThreadRead, inboxThreads, mainThreads, requestThreads, inboxUnread, requestCount,
     track,

@@ -4,6 +4,7 @@ import { colors, mono, radius, shadow } from "../theme";
 import { load, save } from "../lib/persist";
 import TicketStub from "../components/TicketStub";
 import Icon from "../components/Icon";
+import { filteredFeedNextAction } from "../domain/feedPagination.mjs";
 
 const PAGE = 8; // load the feed in pages, like the big apps - never all at once
 
@@ -16,6 +17,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, h
   const dismissGs = () => { setGsDone(true); save("pit.gsDismissed", true); };
   const full = filter === "following" ? followingFeed : filter === "local" ? localFeed : feed;
   const data = full.slice(0, count);
+  const filteredPageLoading = loadingMore && count >= full.length;
 
   const pick = (f) => { setFilter(f); setCount(PAGE); };
   const loadMore = async () => {
@@ -29,7 +31,22 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, h
     }
   };
   const loadOlderFiltered = async () => {
-    if (filter === "everyone" || !hasMore || loadingMore) return;
+    const action = filteredFeedNextAction({
+      filter,
+      visibleCount: count,
+      loadedMatchCount: full.length,
+      hasMore,
+      loadingMore,
+    });
+    // Following and Local are projections of every global page already in
+    // memory. Reveal those matches before spending another request (and before
+    // showing a spinner on a slow phone). The old path always fetched first,
+    // even when dozens of matching posts were sitting just beyond `count`.
+    if (action === "reveal") {
+      setCount((c) => c + PAGE);
+      return;
+    }
+    if (action !== "fetch") return;
     const loaded = await onLoadMore?.();
     if (loaded) setCount((c) => c + PAGE);
   };
@@ -129,16 +146,18 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, h
           </Text>
         </View>
       }
-      ListFooterComponent={filter !== "everyone" && hasMore ? (
+      ListFooterComponent={filter !== "everyone" && (count < full.length || hasMore) ? (
         <Pressable
-          style={[styles.olderBtn, loadingMore && styles.olderBtnOff]}
+          style={[styles.olderBtn, filteredPageLoading && styles.olderBtnOff]}
           onPress={loadOlderFiltered}
-          disabled={loadingMore}
+          disabled={filteredPageLoading}
           accessibilityRole="button"
           accessibilityLabel="Load older posts"
-          accessibilityState={{ disabled: loadingMore }}
+          accessibilityState={{ disabled: filteredPageLoading }}
         >
-          <Text style={styles.olderTxt}>{loadingMore ? "Loading older posts..." : "Load older posts"}</Text>
+          <Text style={styles.olderTxt}>
+            {filteredPageLoading ? "Loading older posts..." : count < full.length ? "Show more posts" : "Load older posts"}
+          </Text>
         </Pressable>
       ) : null}
       renderItem={({ item }) => (

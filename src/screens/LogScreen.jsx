@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef } from "react";
-import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, KeyboardAvoidingView, Platform } from "react-native";
+import { useState, useEffect, useMemo, useRef } from "react";
+import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, KeyboardAvoidingView, Platform, Alert, AppState } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import { colors, mono, radius, font, displayFont, shadow, space } from "../theme";
 import { useStore } from "../store";
@@ -19,6 +19,17 @@ import { isDurableMediaUrl, reportMediaPickerError, uploadMediaAsset } from "../
 import { api } from "../lib/api";
 import { formatDate, initialComposerDate, toIsoDate, todayIso } from "../domain/dates.mjs";
 import { shouldContinueMediaBatch } from "../domain/mediaBatchPolicy.mjs";
+import {
+  composerDraftFingerprint,
+  composerDraftHasContent,
+  composerDraftTitle,
+  normalizeComposerDraft,
+  shouldFlushComposerDraft,
+  shouldScheduleComposerDraftPersistence,
+} from "../domain/composerDraft.mjs";
+import { composerCloseDecision } from "../domain/composerClosePolicy.mjs";
+import { PENDING_COMPOSER_PICKER_KEY } from "../domain/composerRecovery.mjs";
+import { save } from "../lib/persist";
 
 const GROUP_COLOR = { "THE BAND": colors.amber, "THE ROOM": colors.cool, "THE NIGHT": colors.magenta };
 const GROUPS = ["THE BAND", "THE ROOM", "THE NIGHT"];
@@ -84,8 +95,25 @@ function postDims(post) {
   };
 }
 
-export default function LogScreen({ onPost, onCancel, user, prefill, editing = null, defaultMode = "show" }) {
+export default function LogScreen({
+  onPost,
+  onCancel,
+  user,
+  prefill,
+  editing = null,
+  defaultMode = "show",
+  closeGuardRef,
+  composerId,
+  initialDraftId,
+  onDraftIdentity,
+  pendingMedia,
+  onPendingMediaConsumed,
+}) {
   const { searchArtistsApi, searchVenues, drafts, saveDraft, deleteDraft, myPlaylists, myPlaylistsStatus, loadMyPlaylists } = useStore();
+  const initialRecoveryDraftRef = useRef(!editing && initialDraftId
+    ? drafts.find((draft) => draft?.id === initialDraftId) || null
+    : null);
+  const [draftRestoreReady, setDraftRestoreReady] = useState(!initialRecoveryDraftRef.current);
   // Two kinds of post share this composer: a full show review, or a plain
   // status update ("post whatever": text and/or photos, no artist/rating).
   const [postType, setPostType] = useState(
@@ -93,6 +121,7 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
   );
   const isStatus = postType === "status";
   const [draftId, setDraftId] = useState(null);
+  const [savedDraftFingerprint, setSavedDraftFingerprint] = useState(null);
   const [artist, setArtist] = useState(editing?.artist || prefill?.artist || "");
   const [venue, setVenue] = useState(editing?.venue || prefill?.venue || "");
   const [city, setCity] = useState(editing?.city || prefill?.city || "");
@@ -181,19 +210,11 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
   }));
   const [showDate, setShowDate] = useState(false);
 
-  const addPhoto = async () => {
-    if (uploadingPhotos || posting) return;
+  async function uploadSelectedAssets(assets) {
+    if (uploadingPhotos || posting || !Array.isArray(assets) || !assets.length) return;
     const remaining = Math.max(0, 8 - photos.length);
     if (!remaining) return;
-    let res;
-    try {
-      res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images", "videos"], quality: 0.6, videoQuality: 1, allowsMultipleSelection: true, selectionLimit: Math.min(6, remaining) });
-    } catch (error) {
-      reportMediaPickerError(error, "Opening the media library");
-      return;
-    }
-    if (!res || res.canceled || !res.assets?.length) return;
-    const selected = res.assets.slice(0, remaining);
+    const selected = assets.slice(0, remaining);
     const controller = new AbortController();
     uploadControllerRef.current?.abort();
     uploadControllerRef.current = controller;
@@ -240,6 +261,44 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
         setUploadProgress(null);
       }
     }
+  }
+
+  const addPhoto = async () => {
+    if (uploadingPhotos || posting) return;
+    const remaining = Math.max(0, 8 - photos.length);
+    if (!remaining) return;
+    let res;
+    let pickerRequestId = null;
+    try {
+      // SDK 56 returns original iOS videos with Passthrough by default. Asking
+      // before launch avoids surprising people with the permission dialog only
+      // after they already selected a concert clip.
+      if (Platform.OS === "ios") {
+        const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (!permission.granted) {
+          setMediaError("Pit needs photo-library access before it can attach that concert video.");
+          return;
+        }
+      }
+      if (Platform.OS === "android" && composerId) {
+        // Persist both the latest draft and exact picker owner before handing
+        // control to Android's external activity. MainActivity can be destroyed
+        // before launchImageLibraryAsync returns.
+        const durableDraftId = composerDraftHasContent(currentDraft)
+          ? persistDraftSnapshot(currentDraft)
+          : draftIdRef.current;
+        pickerRequestId = `picker_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+        save(PENDING_COMPOSER_PICKER_KEY, { composerId, draftId: durableDraftId || null, requestId: pickerRequestId });
+      }
+      res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images", "videos"], quality: 0.6, videoQuality: 1, allowsMultipleSelection: true, selectionLimit: Math.min(6, remaining) });
+    } catch (error) {
+      if (pickerRequestId) save(PENDING_COMPOSER_PICKER_KEY, null);
+      reportMediaPickerError(error, "Opening the media library");
+      return;
+    }
+    if (pickerRequestId) save(PENDING_COMPOSER_PICKER_KEY, null);
+    if (!res || res.canceled || !res.assets?.length) return;
+    await uploadSelectedAssets(res.assets);
   };
 
   const cancelUpload = () => {
@@ -281,35 +340,225 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
   const canPost = isStatus ? canPostStatus : (artist.trim() && venue.trim() && computed.overall > 0);
   const submitBusy = uploadingPhotos || resolvingSong || posting;
 
-  const stash = () => {
-    if (editing) return;
-    if (submitBusy) return;
-    const id = saveDraft({
-      id: draftId,
-      submissionId: submissionIdRef.current,
-      artist,
-      artistKey,
-      venue,
-      city,
-      tour,
-      date,
-      dims,
-      review,
-      tags,
-      song,
-      photos: photos.filter(isDurableMediaUrl),
-      photosPublic,
-    });
+  const currentDraft = useMemo(() => normalizeComposerDraft({
+    id: draftId,
+    submissionId: submissionIdRef.current,
+    postType,
+    artist,
+    artistKey: artistPicked ? artistKey : null,
+    venue,
+    city,
+    tour,
+    date,
+    dims,
+    review,
+    tags,
+    tagDraft,
+    song,
+    songUrl,
+    playlist,
+    photos: photos.filter(isDurableMediaUrl),
+    photosPublic,
+    panels: { song: showSong, photos: showPhotos, playlist: showPlaylist },
+  }), [draftId, postType, artist, artistPicked, artistKey, venue, city, tour, date, dims, review, tags, tagDraft, song, songUrl, playlist, photos, photosPublic, showSong, showPhotos, showPlaylist]);
+  const draftFingerprint = useMemo(() => composerDraftFingerprint(currentDraft), [currentDraft]);
+  const hasContent = useMemo(() => composerDraftHasContent(currentDraft), [currentDraft]);
+  const initialFingerprintRef = useRef(null);
+  if (initialFingerprintRef.current === null) initialFingerprintRef.current = draftFingerprint;
+  const composerDirty = draftFingerprint !== initialFingerprintRef.current;
+  const draftIdRef = useRef(draftId);
+  draftIdRef.current = draftId;
+  const allowNextCloseRef = useRef(false);
+  const closePromptOpenRef = useRef(false);
+
+  const persistDraftSnapshot = (candidate = currentDraft) => {
+    if (editing) return null;
+    const snapshot = normalizeComposerDraft({ ...candidate, id: draftIdRef.current || candidate.id });
+    if (!composerDraftHasContent(snapshot)) {
+      if (draftIdRef.current) deleteDraft(draftIdRef.current);
+      draftIdRef.current = null;
+      setDraftId(null);
+      setSavedDraftFingerprint(null);
+      onDraftIdentity?.(composerId, null);
+      return null;
+    }
+    const id = saveDraft(snapshot);
+    draftIdRef.current = id;
     setDraftId(id);
+    setSavedDraftFingerprint(composerDraftFingerprint(snapshot));
+    onDraftIdentity?.(composerId, id);
+    return id;
+  };
+  const flushDraftRef = useRef(null);
+  flushDraftRef.current = () => persistDraftSnapshot(currentDraft);
+
+  // Autosave both composer modes after a short quiet period. The initial prefill
+  // alone does not create a draft; the first user-visible change does.
+  useEffect(() => {
+    if (!shouldScheduleComposerDraftPersistence({
+      editing: !!editing,
+      dirty: composerDirty,
+      hasDraft: !!draftIdRef.current,
+      hasContent,
+      fingerprint: draftFingerprint,
+      savedFingerprint: savedDraftFingerprint,
+    })) return undefined;
+    const timer = setTimeout(() => persistDraftSnapshot(currentDraft), 500);
+    return () => clearTimeout(timer);
+    // Fingerprints are the stable dependency; store actions intentionally are
+    // omitted because the monolithic Store context recreates them every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editing, composerDirty, hasContent, draftFingerprint, savedDraftFingerprint]);
+
+  // Flush a pending native autosave before the app is backgrounded. Combined
+  // with persist.native.js, this survives Android/iOS process termination.
+  useEffect(() => {
+    if (editing) return undefined;
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state !== "active" && shouldFlushComposerDraft({ editing: !!editing, dirty: composerDirty, hasDraft: !!draftIdRef.current })) flushDraftRef.current?.();
+    });
+    return () => subscription.remove();
+  }, [editing, composerDirty]);
+
+  // A tab close/reload cannot show our in-app confirmation. Ask the browser only
+  // while work is still unsaved or a mutation is active; fully autosaved drafts
+  // can leave without an unnecessary warning.
+  useEffect(() => {
+    if (Platform.OS !== "web" || typeof window === "undefined") return undefined;
+    const shouldProtect = submitBusy || (editing ? composerDirty : (composerDirty && hasContent && draftFingerprint !== savedDraftFingerprint));
+    if (!shouldProtect) return undefined;
+    const beforeUnload = (event) => { event.preventDefault(); event.returnValue = ""; };
+    window.addEventListener("beforeunload", beforeUnload);
+    return () => window.removeEventListener("beforeunload", beforeUnload);
+  }, [submitBusy, editing, composerDirty, hasContent, draftFingerprint, savedDraftFingerprint]);
+
+  const stash = () => {
+    if (editing || submitBusy || !hasContent) return;
+    persistDraftSnapshot(currentDraft);
+    allowNextCloseRef.current = true;
     onCancel?.();
   };
   const resume = (d) => {
-    setDraftId(d.id);
-    submissionIdRef.current = d.submissionId || submissionIdRef.current;
-    setArtist(d.artist || ""); setArtistPicked(!!d.artistKey); setArtistKey(d.artistKey || null); setVenue(d.venue || ""); setVenuePicked(!!d.venue); setCity(d.city || "");
-    setTour(d.tour || ""); setDate(toIsoDate(d.date) || d.date || todayStr); setDims(d.dims || dims); setReview(d.review || ""); setTags(Array.isArray(d.tags) ? d.tags.slice(0, 5) : []); setSong(d.song || null); setSongUrl(d.song?.url || ""); setPhotos((d.photos || []).filter(isDurableMediaUrl)); setPhotosPublic(d.photosPublic !== false);
+    const restored = normalizeComposerDraft(d);
+    const restoredFingerprint = composerDraftFingerprint(restored);
+    draftIdRef.current = restored.id;
+    setDraftId(restored.id);
+    setSavedDraftFingerprint(restoredFingerprint);
+    initialFingerprintRef.current = restoredFingerprint;
+    onDraftIdentity?.(composerId, restored.id);
+    submissionIdRef.current = restored.submissionId || submissionIdRef.current;
+    setPostType(restored.postType);
+    setArtist(restored.artist); setArtistPicked(!!restored.artistKey); setArtistKey(restored.artistKey); setVenue(restored.venue); setVenuePicked(!!restored.venue); setCity(restored.city);
+    setTour(restored.tour); setDate(toIsoDate(restored.date) || restored.date || todayStr); setDims(restored.dims); setReview(restored.review); setTags(restored.tags); setTagDraft(restored.tagDraft); setSong(restored.song); setSongUrl(restored.songUrl); setPlaylist(restored.playlist); setPhotos(restored.photos.filter(isDurableMediaUrl)); setPhotosPublic(restored.photosPublic);
+    setShowSong(restored.panels.song); setShowPhotos(restored.panels.photos); setShowPlaylist(restored.panels.playlist);
   };
-  const hasContent = artist.trim() || venue.trim() || review.trim() || photos.length || song?.videoId;
+
+  useEffect(() => {
+    const recovered = initialRecoveryDraftRef.current;
+    if (!recovered) return;
+    initialRecoveryDraftRef.current = null;
+    resume(recovered);
+    setDraftRestoreReady(true);
+    // Recovery is a one-time mount action tied to the frame's durable draft id.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const pendingMediaHandledRef = useRef(null);
+  useEffect(() => {
+    if (!draftRestoreReady || !pendingMedia?.requestId || pendingMedia.composerId !== composerId) return;
+    if (pendingMediaHandledRef.current === pendingMedia.requestId) return;
+    pendingMediaHandledRef.current = pendingMedia.requestId;
+    const result = pendingMedia.result;
+    if (result?.code) {
+      reportMediaPickerError(new Error(result.message || result.code), "Recovering the media selection");
+      onPendingMediaConsumed?.(pendingMedia.requestId);
+      return;
+    }
+    if (!result || result.canceled || !result.assets?.length) {
+      onPendingMediaConsumed?.(pendingMedia.requestId);
+      return;
+    }
+    void uploadSelectedAssets(result.assets).finally(() => onPendingMediaConsumed?.(pendingMedia.requestId));
+    // The request id is the ownership boundary. Other state changes during a
+    // recovered upload must not enqueue the same Android selection twice.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draftRestoreReady, pendingMedia?.requestId, composerId]);
+
+  const discardCurrentDraft = () => {
+    if (draftIdRef.current) deleteDraft(draftIdRef.current);
+    draftIdRef.current = null;
+    setDraftId(null);
+    setSavedDraftFingerprint(null);
+    onDraftIdentity?.(composerId, null);
+  };
+
+  const requestCloseRef = useRef(null);
+  requestCloseRef.current = ({ proceed, cancel }) => {
+    const allow = typeof proceed === "function" ? proceed : () => {};
+    const stay = typeof cancel === "function" ? cancel : () => {};
+    if (allowNextCloseRef.current) {
+      allowNextCloseRef.current = false;
+      allow();
+      return;
+    }
+    if (closePromptOpenRef.current) { stay(); return; }
+    const closeDecision = composerCloseDecision({ busy: submitBusy, editing: !!editing, dirty: composerDirty, hasContent, hasDraft: !!draftIdRef.current });
+    if (closeDecision === "block") {
+      stay();
+      Alert.alert(
+        posting ? "Posting in progress" : uploadingPhotos ? "Media is still uploading" : "Checking your video",
+        posting ? "Keep Pit open until the post finishes." : "Wait for this step to finish, or cancel the upload before leaving.",
+      );
+      return;
+    }
+    if (closeDecision === "confirm-edit-discard") {
+      closePromptOpenRef.current = true;
+      const finish = (action) => {
+        if (!closePromptOpenRef.current) return;
+        closePromptOpenRef.current = false;
+        action();
+      };
+      if (Platform.OS === "web" && typeof window !== "undefined") {
+        finish(window.confirm("Discard your unsaved changes to this post?") ? allow : stay);
+        return;
+      }
+      Alert.alert("Discard changes?", "Your edits have not been saved.", [
+        { text: "Keep editing", style: "cancel", onPress: () => finish(stay) },
+        { text: "Discard", style: "destructive", onPress: () => finish(allow) },
+      ], { cancelable: true, onDismiss: () => finish(stay) });
+      return;
+    }
+    if (closeDecision === "confirm-draft-close") {
+      // Save before prompting so even an OS interruption while the prompt is on
+      // screen cannot erase the current status or show review.
+      persistDraftSnapshot(currentDraft);
+      closePromptOpenRef.current = true;
+      const finish = (action) => {
+        if (!closePromptOpenRef.current) return;
+        closePromptOpenRef.current = false;
+        action();
+      };
+      if (Platform.OS === "web" && typeof window !== "undefined") {
+        finish(window.confirm("Your draft is saved. Close this composer?") ? allow : stay);
+        return;
+      }
+      Alert.alert("Close composer?", "Your post is saved as a draft on this device.", [
+        { text: "Keep editing", style: "cancel", onPress: () => finish(stay) },
+        { text: "Discard draft", style: "destructive", onPress: () => finish(() => { discardCurrentDraft(); allow(); }) },
+        { text: "Save & close", onPress: () => finish(allow) },
+      ], { cancelable: true, onDismiss: () => finish(stay) });
+      return;
+    }
+    if (closeDecision === "delete-empty-draft") discardCurrentDraft();
+    allow();
+  };
+
+  useEffect(() => {
+    if (!closeGuardRef) return undefined;
+    const guard = (callbacks) => requestCloseRef.current?.(callbacks);
+    closeGuardRef.current = guard;
+    return () => { if (closeGuardRef.current === guard) closeGuardRef.current = null; };
+  }, [closeGuardRef]);
 
   const submit = async () => {
     if (!canPost || submitBusy) return;
@@ -339,7 +588,11 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
           setPostError(postErrorMessage(result.error));
           return;
         }
-        if (draftId) deleteDraft(draftId);
+        if (draftIdRef.current) deleteDraft(draftIdRef.current);
+        draftIdRef.current = null;
+        setDraftId(null);
+        setSavedDraftFingerprint(null);
+        onDraftIdentity?.(composerId, null);
         return;
       }
       const result = await onPost?.({
@@ -373,7 +626,11 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
       // WHY: previously a rejected post silently left the composer open with no
       // message, which read as "it didn't go through" for no visible reason.
       if (result?.ok === false) { setPostError(postErrorMessage(result.error)); return; }
-      if (draftId) deleteDraft(draftId);
+      if (draftIdRef.current) deleteDraft(draftIdRef.current);
+      draftIdRef.current = null;
+      setDraftId(null);
+      setSavedDraftFingerprint(null);
+      onDraftIdentity?.(composerId, null);
     } catch (error) {
       setPostError(postErrorMessage(error));
     } finally {
@@ -397,6 +654,25 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
               <Icon name="star" size={15} color={!isStatus ? "#1A1206" : colors.textDim} />
               <Text style={[styles.modeTxt, !isStatus && styles.modeTxtOn]}>Log a show</Text>
             </Pressable>
+          </View>
+        )}
+
+        {!editing && !draftId && drafts.length > 0 && !hasContent && (
+          <View style={styles.drafts}>
+            <Text style={styles.draftsLabel}>RESUME A DRAFT</Text>
+            {drafts.slice(0, 5).map((d) => {
+              const stored = normalizeComposerDraft(d);
+              return (
+                <View key={d.id} style={styles.draftRow}>
+                  <Icon name={stored.postType === "status" ? "feed" : "edit"} size={14} color={colors.amber} />
+                  <Pressable style={{ flex: 1 }} onPress={() => resume(d)} accessibilityRole="button" accessibilityLabel={`Resume ${composerDraftTitle(stored)}`}>
+                    <Text style={styles.draftName} numberOfLines={1}>{composerDraftTitle(stored)}</Text>
+                    <Text style={styles.draftSub} numberOfLines={1}>{stored.postType === "status" ? "Status update" : [stored.city, formatDate(stored.date, "")].filter(Boolean).join(" · ") || "Concert review"}</Text>
+                  </Pressable>
+                  <Pressable onPress={() => deleteDraft(d.id)} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Delete ${composerDraftTitle(stored)}`}><Icon name="x" size={14} color={colors.textFaint} /></Pressable>
+                </View>
+              );
+            })}
           </View>
         )}
 
@@ -424,21 +700,6 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
           </View>
         ) : (
           <>
-        {!editing && !draftId && drafts.length > 0 && !hasContent && (
-          <View style={styles.drafts}>
-            <Text style={styles.draftsLabel}>RESUME A DRAFT</Text>
-            {drafts.slice(0, 5).map((d) => (
-              <Pressable key={d.id} style={styles.draftRow} onPress={() => resume(d)}>
-                <Icon name="edit" size={14} color={colors.amber} />
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.draftName} numberOfLines={1}>{d.artist || "Untitled"}{d.venue ? ` · ${d.venue}` : ""}</Text>
-                  {!!d.review && <Text style={styles.draftSub} numberOfLines={1}>{d.review}</Text>}
-                </View>
-                <Pressable onPress={() => deleteDraft(d.id)} hitSlop={8}><Icon name="x" size={14} color={colors.textFaint} /></Pressable>
-              </Pressable>
-            ))}
-          </View>
-        )}
         <Text style={styles.fieldLabel}>WHO DID YOU SEE?</Text>
         <View>
           <TextInput
@@ -709,10 +970,10 @@ export default function LogScreen({ onPost, onCancel, user, prefill, editing = n
         )}
 
         <Button title={posting ? (editing ? "Saving changes..." : "Posting...") : uploadingPhotos ? "Uploading media..." : resolvingSong ? "Checking video..." : editing ? "Save changes" : isStatus ? "Post" : "Post to feed"} icon="check" onPress={submit} disabled={!canPost || submitBusy} style={{ marginTop: 28 }} />
-        {!editing && !isStatus && hasContent && (
+        {!editing && hasContent && (
           <Pressable style={styles.saveDraft} onPress={stash} disabled={submitBusy}>
             <Icon name="edit" size={14} color={colors.textDim} />
-            <Text style={styles.saveDraftTxt}>{draftId ? "Update draft" : "Save as draft"}</Text>
+            <Text style={styles.saveDraftTxt}>{draftId ? "Save draft & close" : "Save as draft"}</Text>
           </Pressable>
         )}
       </ScrollView>

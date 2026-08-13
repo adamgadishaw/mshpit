@@ -1,6 +1,6 @@
 # Pit Alpha launch and deployment runbook
 
-Last reconciled: **2026-07-26**. Production is a single Node process that serves
+Last reconciled: **2026-08-13**. Production is a single Node process that serves
 the Expo web export and `/api/*` from one origin, with a persistent SQLite disk.
 This is the current Alpha deployment shape, not the millions-user target in
 `SCALING.md`.
@@ -28,6 +28,11 @@ The server runs additive SQLite migrations on boot, serves `dist/`, and exposes
 the same-origin API. A push to `master` auto-deploys on Render, so a brief restart
 is expected; failed gates must stop the push.
 
+The Blueprint also declares `mshpit-staging`, but its default hostname returned
+404 with `x-render-routing: no-server` on 2026-08-13. The branch/configuration is
+not a staging gate until the real service is provisioned, isolated, healthy, and
+smoke-tested. Record any direct-master release as having skipped staging.
+
 ## 2. Persistent storage and backups
 
 Set `PIT_DATA_DIR` to the mounted persistent disk (Render currently uses its
@@ -39,11 +44,21 @@ Committed transactions live in `pit.db-wal` until a checkpoint, so a bare copy c
 be torn or stale.
 
 `npm run backup` implements this correctly. It takes a consistent snapshot with
-`VACUUM INTO` (no downtime, no lock held on the live database), then opens the
-snapshot as a separate database and runs `PRAGMA integrity_check` plus row counts
-against the source before calling it good. Retention defaults to 7, override with
-`BACKUP_KEEP`. Snapshots land in `backups/`, which is gitignored because they
-contain every user email and password hash.
+`VACUUM INTO` (no downtime; a consistent read lock, not an exclusive/write
+lock), then opens the snapshot as a separate database and runs
+`PRAGMA integrity_check` plus row counts against the source before calling it
+good. Retention defaults to 7, override with `BACKUP_KEEP`. Local CLI snapshots
+land in the gitignored `backups/`; production snapshots default to
+`$PIT_DATA_DIR/backups` on the persistent disk.
+
+The production server schedules this verified snapshot daily when
+`BACKUP_ENABLED=true` (also the production default). It serializes with the other
+heavy maintenance work and skips a run when a fresh snapshot already exists.
+This protects against a bad live database file, not loss of the whole disk.
+Each run stays under a `.partial-*` name until verification and any requested
+off-host upload succeed, then publishes atomically; partial files never count as
+fresh. Bounded process/upload deadlines keep a wedged provider or SQLite child
+from owning the maintenance queue indefinitely.
 
 Prove a restore rather than assuming one:
 
@@ -53,12 +68,19 @@ npm run backup:verify -- backups/pit-YYYYMMDD-HHMMSS.db
 
 For the full proof, copy a snapshot to an empty directory as `pit.db`, start the
 server with `PIT_DATA_DIR` pointed at it, and confirm `/api/health` reports
-`database: true` and real rows come back. This was last exercised on 2026-08-05.
+`database: true` and real rows come back. A historical restore was exercised on
+2026-08-05; the August 13 scheduler's production output still needs a current
+snapshot/upload/restore proof.
 
 Off-host copies use `npm run backup -- --upload` with its own private
 `BACKUP_S3_*` credentials. It deliberately refuses to write into the `MEDIA_*`
 bucket: that bucket is public-read so photos can be served from it, and a
 database dump there would publish every account on the internet.
+
+The scheduler adds `--upload` only when the private endpoint, bucket, access key,
+and secret are all present and the bucket differs from `MEDIA_BUCKET`. If that
+configuration is incomplete, the run succeeds on the persistent disk only and
+logs that no off-host copy was made. Treat that state as a release gap.
 
 Before broad traffic, migrate to managed Postgres with point-in-time recovery.
 
@@ -77,6 +99,9 @@ Secrets belong in the Render web-service environment, never tracked files or
 | `YOUTUBE_WARM_BUDGET` | Optional bounded general catalogue/list work; normal warming does not use `search.list`. |
 | `TICKETMASTER_KEY` | Production tour dates/ticket links. `BANDSINTOWN_APP_ID` is optional if still used. |
 | `MEDIA_ENDPOINT`, `MEDIA_BUCKET`, `MEDIA_REGION`, `MEDIA_ACCESS_KEY_ID`, `MEDIA_SECRET_ACCESS_KEY`, `MEDIA_PUBLIC_BASE_URL` | Complete Cloudflare R2/S3-compatible upload configuration. Partial configuration fails closed. |
+| `BACKUP_ENABLED`, `BACKUP_KEEP` | Daily verified snapshot switch and retained-count limit. Production defaults on with seven copies. |
+| `BACKUP_S3_ENDPOINT`, `BACKUP_S3_BUCKET`, `BACKUP_S3_ACCESS_KEY_ID`, `BACKUP_S3_SECRET_ACCESS_KEY` | Optional private off-host backup target. All four are required and the bucket must not reuse the public media bucket. |
+| `BACKUP_S3_REGION` | Optional for off-host backups; defaults to `auto` for R2-compatible endpoints. |
 | `RESEND_API_KEY`, `MAIL_FROM` | Both required for delivery. `MAIL_FROM` must use a verified Resend domain. |
 
 Optional job/provider timeout and retention knobs should remain at reviewed

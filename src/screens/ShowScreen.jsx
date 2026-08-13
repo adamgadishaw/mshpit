@@ -20,7 +20,10 @@ import { formatDate } from "../domain/dates.mjs";
 // logged review, a bare tour date from the calendar, a lounge link - so every
 // field is guarded; a tour date has no score and that's a mode, not a crash.
 export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenProfile, onOpenArtist, onOpenVenue, onOpenLounge, onRequireAuth }) {
-  const { venueCoord, venuePhotos, session, concertKey, isGoing, toggleGoing, attendeesFor, loungeFor } = useStore();
+  const {
+    venueCoord, venuePhotos, venuePhotoState, loadVenuePhotos,
+    session, concertKey, isGoing, toggleGoing, attendeesFor, loungeFor,
+  } = useStore();
   // Normalize the shapes this page can be handed: calendar/tour rows carry
   // `place` instead of `venue`, and often no city, score, or setlist.
   const venue = log.venue || log.place || "Venue TBA";
@@ -31,10 +34,14 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
   const norm = { ...log, artist, venue, city };
   const coord = venueCoord(venue);
   const photos = venuePhotos(venue);
+  const photoState = venuePhotoState(venue);
   const key = concertKey(norm);
   const going = isGoing(key);
   const attendees = attendeesFor(key);
   const loungeCount = loungeFor(key).length;
+  useEffect(() => {
+    void loadVenuePhotos(venue).catch(() => {});
+  }, [venue]);
 
   // Upcoming vs happened decides the whole page. A show with no parseable date
   // but a score is treated as happened; no date and no score reads as upcoming.
@@ -93,9 +100,18 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
           )}
         </View>
 
-        <Pressable style={{ marginTop: 16 }} onPress={() => onOpenVenue?.(venue)}>
-          <VenuePhotoWidget photos={photos} venueName={venue} city={city} coord={coord} />
-        </Pressable>
+        <View style={{ marginTop: 16 }}>
+          <VenuePhotoWidget
+            photos={photos}
+            venueName={venue}
+            city={city}
+            coord={coord}
+            loading={photoState.status === "idle" || photoState.status === "loading"}
+            error={photoState.status === "error"}
+            onRetry={() => { void loadVenuePhotos(venue, { force: true }).catch(() => {}); }}
+            onPress={() => onOpenVenue?.(venue)}
+          />
+        </View>
 
         {/* A night that happened gets its community score. An upcoming night
             gets tickets instead: never a fabricated 0.0. */}

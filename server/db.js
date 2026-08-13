@@ -11,7 +11,7 @@ import { displayGenre, resolveGenre, storedClaims } from "../src/domain/genre.mj
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { prepareDataDirectory } from "./dataDirectory.js";
+import { PIT_SQLITE_APPLICATION_ID, prepareDataDirectory } from "./dataDirectory.js";
 
 export const artistSearchKey = (value) => String(value || "")
   .normalize("NFKD")
@@ -20,9 +20,10 @@ export const artistSearchKey = (value) => String(value || "")
   .replace(/[^\p{L}\p{N}]+/gu, "");
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = prepareDataDirectory({ fallbackDir: join(HERE, "data") });
+export const DATABASE_DIRECTORY = prepareDataDirectory({ fallbackDir: join(HERE, "data") });
+export const DATABASE_PATH = join(DATABASE_DIRECTORY, "pit.db");
 
-export const db = new DatabaseSync(join(DATA_DIR, "pit.db"));
+export const db = new DatabaseSync(DATABASE_PATH);
 
 db.exec(`
   PRAGMA journal_mode = WAL;
@@ -604,6 +605,10 @@ CREATE TABLE IF NOT EXISTS email_log (
 
 const ver = db.prepare("SELECT version FROM schema_version LIMIT 1").get();
 if (!ver) db.prepare("INSERT INTO schema_version (version) VALUES (1)").run();
+// Stamp the file after the complete Pit schema exists. Future production boots
+// can distinguish an intentional Pit database from an unrelated SQLite file;
+// the pre-marker live database is admitted once by the stricter legacy checks.
+db.exec(`PRAGMA application_id = ${PIT_SQLITE_APPLICATION_ID}`);
 
 // Additive migrations for DBs created before a column existed. Inspect the
 // actual table before altering it: a real migration failure must stop startup,

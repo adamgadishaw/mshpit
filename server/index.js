@@ -19,7 +19,10 @@ import { injectHead, robotsTxt, sitemapXml } from "./seo.js";
 import { getSession, sweepExpiredSessions, sessionCookie, clearCookie, parseCookies, COOKIE, hashPassword, rateLimit } from "./auth.js";
 import { startTourDateScheduler } from "./tourdates.js";
 import { startCacheWarmScheduler } from "./cacheWarmer.js";
+import { startBackupScheduler } from "./backupScheduler.js";
+import { missingStaticAssetResponse } from "./staticPolicy.js";
 import { randomBytes, randomUUID } from "node:crypto";
+import { createApiResponseHeaderSetter } from "./responseHeaders.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 3000;
@@ -198,7 +201,8 @@ function serveStatic(req, res, pathname) {
     // A stale hashed chunk must be a real 404. Returning the SPA HTML with 200
     // makes browsers report an opaque module error and defeats safe deploy
     // recovery. Extensionless application routes still receive the shell.
-    if (pathname.startsWith("/_expo/") || extname(pathname)) return send(res, 404, { error: "Asset not found." });
+    const missingAsset = missingStaticAssetResponse(pathname);
+    if (missingAsset) return send(res, missingAsset.status, missingAsset.body, missingAsset.headers);
     file = join(DIST, "index.html");
   }
   const ext = extname(file).toLowerCase();
@@ -302,6 +306,7 @@ const server = createServer(async (req, res) => {
       const user = sess ? q.userById.get(sess.user_id) : null;
 
       const setCookies = [];
+      const responseHeaders = {};
       const proto = (req.headers["x-forwarded-proto"] || "").split(",")[0] || (req.socket.encrypted ? "https" : "http");
       const ctx = {
         // DELETE /api/me requires the current password. Parse JSON on DELETE as
@@ -312,9 +317,10 @@ const server = createServer(async (req, res) => {
         setCookie: (c) => setCookies.push(c),
         setSession: (s) => setCookies.push(sessionCookie(s.token, s.expiresAt, PROD)),
         clearSession: () => setCookies.push(clearCookie(PROD)),
+        setHeader: createApiResponseHeaderSetter(responseHeaders),
       };
       const result = await match.handler(ctx);
-      const extra = { ...cors };
+      const extra = { ...cors, ...responseHeaders };
       if (setCookies.length) extra["Set-Cookie"] = setCookies;
       // A handler can 302-redirect (OAuth handoff) by returning { redirect: url }.
       if (result && result.redirect) { res.writeHead(302, { Location: result.redirect, ...extra }); return res.end(); }
@@ -391,4 +397,5 @@ server.listen(PORT, () => {
   console.log(`[pit] up on http://localhost:${PORT} ${PROD ? "(production)" : "(dev)"}, serving API${existsSync(DIST) ? " + web build" : " (no dist/ yet)"}`);
   startTourDateScheduler(); // scrapes tour dates into the DB on a timer (no cron/redeploy)
   startCacheWarmScheduler(); // warms popular YouTube lookups daily so first listens play the video, not a preview
+  startBackupScheduler(); // verified daily SQLite snapshot on /data; private off-host copy when configured
 });

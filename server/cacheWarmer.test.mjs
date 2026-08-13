@@ -49,17 +49,23 @@ const noCircuit = () => ({ dataCircuitOpen: false });
 
 test("background schedulers stay local-default-on but require hosted opt-in", () => {
   assert.equal(isCacheWarmSchedulerEnabled({}), true);
-  assert.equal(isCacheWarmSchedulerEnabled({ CACHE_WARM_ENABLED: "true" }), true);
   assert.equal(isTourDateSchedulerEnabled({}), true);
-  assert.equal(isTourDateSchedulerEnabled({ TOURDATE_REFRESH_ENABLED: "1" }), true);
   assert.equal(isCacheWarmSchedulerEnabled({ RENDER: "true" }), false);
   assert.equal(isTourDateSchedulerEnabled({ RENDER: "true" }), false);
-  assert.equal(isCacheWarmSchedulerEnabled({ RENDER: "true", CACHE_WARM_ENABLED: "true" }), true);
-  assert.equal(isTourDateSchedulerEnabled({ RENDER: "true", TOURDATE_REFRESH_ENABLED: "yes" }), true);
+
+  for (const value of ["1", "true", "TRUE", "yes", "on", "enabled"]) {
+    assert.equal(isCacheWarmSchedulerEnabled({ RENDER: "true", CACHE_WARM_ENABLED: value }), true, `cache switch accepts ${value}`);
+    assert.equal(isTourDateSchedulerEnabled({ RENDER: "true", TOURDATE_REFRESH_ENABLED: value }), true, `tour switch accepts ${value}`);
+  }
 
   for (const value of ["0", "false", "FALSE", "no", "off", "disabled"]) {
     assert.equal(isCacheWarmSchedulerEnabled({ CACHE_WARM_ENABLED: value }), false, `cache switch accepts ${value}`);
     assert.equal(isTourDateSchedulerEnabled({ TOURDATE_REFRESH_ENABLED: value }), false, `tour switch accepts ${value}`);
+  }
+
+  for (const typo of ["flase", "tru", "2", "maybe"]) {
+    assert.equal(isCacheWarmSchedulerEnabled({ CACHE_WARM_ENABLED: typo }), false, `cache switch fails closed for ${typo}`);
+    assert.equal(isTourDateSchedulerEnabled({ TOURDATE_REFRESH_ENABLED: typo }), false, `tour switch fails closed for ${typo}`);
   }
 });
 

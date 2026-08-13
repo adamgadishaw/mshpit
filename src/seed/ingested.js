@@ -36,20 +36,6 @@ export function artistMeta(name) {
 // RELEASES strip is empty instead of showing stale bundled releases. Everything
 // else is unchanged.
 
-// Venue photo pools are 2.1 MB across 1008 venues and only a venue page reads
-// them. Unlike artist discographies there is no server endpoint serving them,
-// so they stay in the bundle but are required on first use: Metro only runs a
-// module's factory when it is required, which keeps the allocation out of app
-// startup. Function is unchanged, the cost just moves to the screen that needs it.
-let venuePhotoData = null;
-export function venuePhotoPool(key) {
-  if (venuePhotoData === null) {
-    try {
-      // eslint-disable-next-line
-      venuePhotoData = require("./catalog.venue-photos.json") || {};
-    } catch {
-      venuePhotoData = {};
-    }
-  }
-  return venuePhotoData[key] || null;
-}
+// Venue photo pools are also deliberately absent here. They are served one
+// venue at a time by GET /api/venues/:key/photos; importing their split JSON from
+// any client module would put all 2.1 MB back into Metro's main web entry.

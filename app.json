@@ -11,13 +11,14 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "Allow Pit to choose concert and profile photos you want to share.",
+          "photosPermission": "Allow Pit to choose concert photos, videos, and profile photos you want to share.",
           "cameraPermission": false,
           "microphonePermission": false
         }
       ],
       "expo-sharing",
-      "expo-video"
+      "expo-video",
+      "expo-sqlite"
     ],
     "ios": {
       "supportsTablet": true

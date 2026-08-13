@@ -5,12 +5,21 @@ testing, but it is not yet engineered or operated for millions of users. This
 document separates controls already present from work still required before a
 broad public launch.
 
+Release and production truth lives in `STATUS.md`. Controls added by the active
+August 13 remediation branch are not production controls until that batch is
+merged, deployed, and smoke-tested.
+
 ## Controls present now
 
 - **Server-owned authentication and authorization.** Passwords are hashed,
   sessions use `HttpOnly` cookies, `/api/me` is authoritative, and protected
   routes resolve the signed-in account server-side. Production cannot enable the
   bundled development identities or demo feed.
+- **Fail-closed durable database boot.** Before migrations, production opens the
+  configured SQLite file read-only and refuses a missing mount/file, zero-byte
+  file, wrong schema, or structurally empty legacy Pit database. A deliberate
+  one-time bootstrap is the only initialization bypass, and health reports
+  storage identity/readiness rather than treating any open SQLite handle as good.
 - **Safe public failures.** API errors return stable codes, status, retryability,
   and request IDs. Raw server stacks, SQL/provider details, request bodies,
   credentials, and internal 5xx messages are not returned to users. Client
@@ -39,8 +48,17 @@ broad public launch.
   graph in one transaction; an ambiguous lost response is verified before local
   cleanup. Banned and suspended accounts retain export/delete access while social
   use stays locked.
+- **Backup correctness.** The current branch creates SQLite-consistent snapshots,
+  independently opens them, runs `integrity_check`, rejects lost critical rows,
+  publishes atomically only after verification/requested upload, ignores failed
+  partials for freshness, bounds child/upload time, and schedules a daily retained
+  copy on the mounted data disk. A complete, separate private `BACKUP_S3_*`
+  configuration adds off-host upload and refuses the public media bucket.
+  Production snapshot/upload/restore evidence is still required before treating
+  this as disaster recovery.
 - **Build gates.** Tests, Node syntax checks, and the Expo production export run
-  through `npm run check` before deploy.
+  through `npm run check`; the current Render Blueprint runs that full gate in
+  isolated build storage rather than racing a web-only auto-deploy against CI.
 
 ## Required before broad public uploads
 
@@ -85,17 +103,18 @@ Until that pipeline exists, uploads should remain limited to trusted testers.
 
 ## Dependency note
 
-After aligning the project with the current Expo SDK 56 patch set on 2026-07-28,
-`npm audit fix --omit=dev` safely updated transitive `brace-expansion` and
-`shell-quote` releases and removed both high-severity advisories. The remaining
-result is 11 moderate advisories tracing the same UUID issue through Expo's build
-tooling: `expo -> @expo/config-plugins -> xcode@3.0.1 -> uuid@7.0.3`.
+The 2026-08-13 SDK 56 alignment passes `npx expo install --check` and Expo Doctor
+21/21. The installed versions include Expo 56.0.19, React Native 0.85.3, and
+React 19.2.3, matching the exact SDK 56 line.
 
-The project does not import `uuid`; the installed `xcode` package uses
-`uuid.v4()` rather than the advisory's affected buffer-writing APIs. npm's forced
-proposal would install an incompatible Expo/Sharing version and violate the SDK
-56 requirement. Track the Expo upstream update and rerun the audit regularly;
-do not apply the breaking forced downgrade.
+`npm audit --omit=dev` currently reports **19 advisories: 8 moderate and 11
+high**. They are concentrated in the Expo/Metro/React Native/Xcode dependency
+graph, including Metro's `image-size` denial-of-service advisories and Xcode's
+UUID chain. This replaces the obsolete claim that only 11 moderate UUID
+advisories remain. npm's automatic remediation proposes incompatible downgrades
+to Expo 53, React Native 0.72, and older Expo modules; it is not a safe SDK 56
+fix. Do not run `npm audit fix --force`. Track compatible SDK 56 patches or plan
+a deliberate SDK upgrade with full native-device testing.
 
 ## Launch decision
 

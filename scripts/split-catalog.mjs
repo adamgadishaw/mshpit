@@ -10,9 +10,8 @@
 //   catalog.core.json    name/genre/photo/topTracks/popularity/country/mbid …
 //                        everything the store touches to boot: search, the
 //                        recommendation pool, Discover's stats, venue lookup.
-//   catalog.venue-photos.json  venue photo pools, required on demand by the
-//                        venue screen, so they ship but are not allocated at
-//                        launch. There is no server source for these.
+//   catalog.venue-photos.json  server-side venue photo pools. The public API
+//                        reads one venue on demand; no client module imports it.
 //
 // Artist discographies (3.9 MB) are simply DROPPED: the artist page already
 // prefers the live server discography, so a second stale copy in every bundle
@@ -33,9 +32,8 @@ const CORE = join(SEED, "catalog.core.json");
 const VENUE_PHOTOS = join(SEED, "catalog.venue-photos.json");
 
 // Fields no screen needs until it is opened. Artist discographies are dropped
-// from the bundle entirely (the server serves them); venue photo pools have no
-// server equivalent, so they are split into a file the venue screen requires on
-// demand — bundled, but not allocated during startup.
+// from the bundle entirely (the server serves them); venue photo pools are split
+// into a server-only file and returned by the API one normalized venue at a time.
 const DEFERRED = ["albums", "galleryPool", "photos"];
 
 function build() {
@@ -85,4 +83,4 @@ const mb = (s) => (Buffer.byteLength(s) / 1048576).toFixed(2);
 console.log(`source              ${mb(readFileSync(SOURCE, "utf8"))} MB`);
 console.log(`discographies dropped from the bundle`);
 console.log(`core (startup)      ${mb(coreText)} MB`);
-console.log(`venue photos (lazy) ${mb(venuePhotosText)} MB`);
+console.log(`venue photos (server) ${mb(venuePhotosText)} MB`);

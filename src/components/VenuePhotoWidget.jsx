@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { View, Text, StyleSheet, Image, Pressable, Linking, Platform } from "react-native";
+import { View, Text, StyleSheet, Image, Pressable, Linking, Platform, ActivityIndicator } from "react-native";
 import Svg, { Defs, LinearGradient, Stop, Rect } from "react-native-svg";
 import { colors, mono, radius } from "../theme";
 import Icon from "../components/Icon";
@@ -36,7 +36,7 @@ function Slide({ photo, idx, viaProxy, onError }) {
   );
 }
 
-export default function VenuePhotoWidget({ photos = [], venueName, city, coord }) {
+export default function VenuePhotoWidget({ photos = [], venueName, city, coord, loading = false, error = false, onRetry, onPress }) {
   // Some hosts block browser loads (hotlink/CORS) even when the URL is alive.
   // Retry ladder per URL: direct -> wsrv.nl proxy -> drop. Only when every photo
   // exhausts both attempts does the themed gradient card show.
@@ -54,10 +54,20 @@ export default function VenuePhotoWidget({ photos = [], venueName, city, coord }
 
   const realCount = real.length;
   const cur = i % slides.length;
+  const emptyMessage = loading
+    ? "Loading venue photos..."
+    : error
+      ? "Photos unavailable - tap to retry"
+      : "No venue photos yet";
 
   return (
     <View>
-      <Pressable style={styles.frame} onPress={() => setI((x) => (x + 1) % slides.length)}>
+      <Pressable
+        style={styles.frame}
+        onPress={() => (error && !realCount ? onRetry?.() : onPress ? onPress() : setI((x) => (x + 1) % slides.length))}
+        accessibilityRole="button"
+        accessibilityLabel={error && !realCount ? "Retry loading venue photos" : `Photos of ${venueName}`}
+      >
         <Slide photo={slides[cur]} idx={cur} viaProxy={attempt[slides[cur]?.uri] === "proxy"} onError={() => failCur(slides[cur]?.uri)} />
         {/* legibility scrim */}
         <View style={styles.scrim} />
@@ -75,6 +85,12 @@ export default function VenuePhotoWidget({ photos = [], venueName, city, coord }
         {/* attribution for licensed (non-fan) photos */}
         {slides[cur]?.uri && slides[cur]?.source && slides[cur].source !== "fan" && !!slides[cur].by && (
           <View style={styles.credit}><Text style={styles.creditTxt} numberOfLines={1}>{slides[cur].by}</Text></View>
+        )}
+        {!realCount && (
+          <View style={styles.photoStatus} pointerEvents="none">
+            {loading && <ActivityIndicator size="small" color={colors.amber} />}
+            <Text style={styles.photoStatusText}>{emptyMessage}</Text>
+          </View>
         )}
       </Pressable>
 
@@ -106,6 +122,8 @@ const styles = StyleSheet.create({
   dots: { position: "absolute", top: 12, right: 12, flexDirection: "row", gap: 5 },
   dot: { width: 6, height: 6, borderRadius: 3, backgroundColor: "rgba(255,255,255,0.4)" },
   dotOn: { backgroundColor: colors.amber, width: 16 },
+  photoStatus: { position: "absolute", top: 12, left: 12, maxWidth: "75%", flexDirection: "row", alignItems: "center", gap: 7, backgroundColor: "rgba(5,6,10,0.72)", borderRadius: radius.pill, paddingHorizontal: 10, paddingVertical: 6 },
+  photoStatusText: { color: "rgba(255,255,255,0.9)", fontFamily: mono, fontSize: 10, fontWeight: "700" },
   placeholderTag: { position: "absolute", top: 12, left: 12, backgroundColor: "rgba(0,0,0,0.45)", borderRadius: 999, paddingHorizontal: 10, paddingVertical: 4 },
   placeholderTxt: { color: "rgba(255,255,255,0.85)", fontSize: 10, fontFamily: mono, letterSpacing: 0.5 },
   dir: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, marginTop: 10, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, paddingVertical: 12 },

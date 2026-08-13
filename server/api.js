@@ -5,6 +5,7 @@
 //   clean INTERNAL_ERROR with a request ID and no internal details
 // - responses only ever contain public projections (publicUser), never raw rows
 import { randomUUID, randomBytes, createHash } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import { mailConfigured, mailDiagnostics } from "./mailer.js";
 import { DEFAULT_TEMPLATES, availableTokens, renderEmail, safeUrl } from "./emails.js";
 import {
@@ -12,7 +13,7 @@ import {
   sendTemplate, sendTemplateInBackground, sentToday, templateFor, unsubscribeUrl,
 } from "./emailService.js";
 import { AUDIENCES, audienceSize, campaignProgress, drainCampaign, pauseCampaign, startCampaign } from "./emailQueue.js";
-import { db, q, emailStmts, badgeStmts, customBadgesFor, publicUser, parseJsonArray, parseJsonObject, artistStmts, publicArtist, artistRow, artistSearchKey, normName } from "./db.js";
+import { db, DATABASE_PATH, q, emailStmts, badgeStmts, customBadgesFor, publicUser, parseJsonArray, parseJsonObject, artistStmts, publicArtist, artistRow, artistSearchKey, normName } from "./db.js";
 import { BADGE_COLORS, BADGE_GLYPHS, BADGE_KINDS, validateBadge } from "../src/domain/badgeArt.mjs";
 import { alertCooldownMs, alertsEnabled, errorStats, maybeAlert, recentErrors } from "./errorLog.js";
 import { genreClaim, resolveGenre, storedClaims, upsertClaim, withoutSource } from "../src/domain/genre.mjs";
@@ -42,12 +43,59 @@ import {
 } from "./musicProviders.js";
 import { wikidataProviderStatus } from "./wikidataChannels.js";
 import { backgroundJobEnabled } from "./backgroundJobs.js";
+import { backupSchedulerEnabled, offhostBackupConfigured } from "./backupScheduler.js";
 
 export { ApiError } from "./errors.js";
 
 const now = () => Date.now();
 const uid = (p) => `${p}_${randomUUID().slice(0, 12)}`;
 const PROFILE_EXTRAS_MAX_BYTES = 8000;
+const VENUE_PHOTO_CACHE_CONTROL = "public, max-age=3600, stale-while-revalidate=86400";
+const VENUE_PHOTO_LIMIT = 24;
+const VENUE_PHOTO_SOURCE = new URL("../src/seed/catalog.venue-photos.json", import.meta.url);
+let venuePhotoCatalog;
+
+function venuePhotoSeed() {
+  if (venuePhotoCatalog) return venuePhotoCatalog;
+  try {
+    const parsed = JSON.parse(readFileSync(VENUE_PHOTO_SOURCE, "utf8"));
+    venuePhotoCatalog = parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    return venuePhotoCatalog;
+  } catch (error) {
+    throw new ApiError(500, "Venue photos are temporarily unavailable.", "INTERNAL_ERROR", error);
+  }
+}
+
+function safePublicPhotoUrl(value) {
+  const text = typeof value === "string" ? value.trim().slice(0, 2000) : "";
+  if (!text) return null;
+  try {
+    const url = new URL(text);
+    return url.protocol === "https:" || url.protocol === "http:" ? url.toString() : null;
+  } catch { return null; }
+}
+
+function normalizedVenuePhotoPool(key) {
+  const raw = venuePhotoSeed()[key];
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
+  const gallery = Array.isArray(raw.galleryPool) ? raw.galleryPool : [];
+  const byUrl = new Map(gallery.map((entry) => [safePublicPhotoUrl(entry?.uri), entry]).filter(([uri]) => uri));
+  const preferred = Array.isArray(raw.photos)
+    ? raw.photos.map((uri) => byUrl.get(safePublicPhotoUrl(uri)) || { uri, source: "commons" })
+    : [];
+  const out = [];
+  const seen = new Set();
+  for (const entry of [...preferred, ...gallery]) {
+    const uri = safePublicPhotoUrl(typeof entry === "string" ? entry : entry?.uri);
+    if (!uri || seen.has(uri)) continue;
+    seen.add(uri);
+    const source = ["commons", "openverse", "web"].includes(entry?.source) ? entry.source : "web";
+    const by = clean(entry?.credit, { max: 240 }) || (source === "commons" ? "Wikimedia Commons" : "Source: web");
+    out.push({ uri, by, source });
+    if (out.length >= VENUE_PHOTO_LIMIT) break;
+  }
+  return out;
+}
 
 function serializeProfileExtras(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -214,11 +262,6 @@ function clientMutationId(value) {
   return id;
 }
 
-const POST_MUTATION_FIELDS = [
-  "kind", "artist", "artistKey", "venue", "city", "date", "overall", "band", "room", "dims",
-  "review", "photos", "photosPublic", "setlist", "tour", "tags", "song", "playlistId",
-];
-
 function stableMutationValue(value) {
   if (Array.isArray(value)) return value.map(stableMutationValue);
   if (value && typeof value === "object") {
@@ -227,13 +270,8 @@ function stableMutationValue(value) {
   return value;
 }
 
-function postMutationHash(body) {
-  const source = body && typeof body === "object" && !Array.isArray(body) ? body : {};
-  const payload = {};
-  for (const key of POST_MUTATION_FIELDS) {
-    if (Object.prototype.hasOwnProperty.call(source, key)) payload[key] = stableMutationValue(source[key]);
-  }
-  return createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+function postMutationHash(canonicalPost) {
+  return createHash("sha256").update(JSON.stringify(stableMutationValue(canonicalPost))).digest("hex");
 }
 
 // A review binds to a catalog entity, not to whatever the user typed. The client
@@ -391,6 +429,159 @@ function cleanPostTags(value) {
   }
   return out;
 }
+
+// Idempotency compares the canonical user-authored post, not the incidental JSON
+// spelling a particular client version used. Server enrichment that can evolve
+// independently (notably an artist's MBID) is deliberately excluded: changing a
+// catalog identifier after the write must not make an identical retry conflict.
+// Harmless normalization changes (`false` vs `0`, display date vs ISO, numeric
+// strings vs numbers, trimmed text) are likewise stable, while a real authored
+// content change still conflicts.
+function canonicalCreateRequest(user, body, storedPost = null) {
+  const source = body && typeof body === "object" && !Array.isArray(body) ? body : {};
+  if (source.kind === "status") {
+    const [errs, v] = shape(source, {
+      review: { parse: (x) => clean(x, { max: LIMITS.review, newlines: true }) },
+      photos: { parse: (x) => cleanStringArray(x, { maxItems: 8, maxLen: 2000 }) },
+      photosPublic: { parse: (x) => typeof x === "boolean" ? (x ? 1 : 0) : x === 0 || x === 1 ? x : undefined },
+      song: { parse: cleanSong },
+    });
+    if (errs.length) throw new ApiError(400, errs[0]);
+    const playlist = playlistSnapshotForPost(user, source.playlistId, parsedStoredObject(storedPost?.playlist));
+    const values = {
+      review: v.review || "",
+      photos: v.photos || [],
+      photosPublic: v.photosPublic ?? 1,
+      song: v.song || null,
+      playlist,
+    };
+    if (!values.review && !values.photos.length && !values.song && !playlist) {
+      throw new ApiError(400, "Write something, add media, tag a song, or share a playlist to post.", "VALIDATION_FAILED");
+    }
+    return {
+      kind: "status",
+      values,
+      canonical: {
+        kind: "status",
+        artist: "",
+        artistKey: null,
+        venue: "",
+        venueKey: null,
+        city: "",
+        date: "",
+        overall: 0,
+        band: null,
+        room: null,
+        dims: {},
+        review: values.review,
+        photos: values.photos,
+        photosPublic: values.photosPublic,
+        setlist: [],
+        tour: null,
+        tags: [],
+        song: values.song,
+        playlistId: playlist?.id || null,
+      },
+    };
+  }
+
+  const [errs, v] = shape(source, {
+    artist: { required: true, parse: (x) => clean(x, { max: LIMITS.artist }) || undefined },
+    venue: { required: true, parse: (x) => clean(x, { max: LIMITS.venue }) || undefined },
+    city: { parse: (x) => clean(x, { max: LIMITS.city }) },
+    date: { parse: cleanDate },
+    overall: { required: true, parse: (x) => { const r = clampRating(x); return r > 0 ? r : undefined; } },
+    band: { parse: (x) => clampRating(x) },
+    room: { parse: (x) => clampRating(x) },
+    dims: { parse: cleanPostRatingDims },
+    review: { parse: (x) => clean(x, { max: LIMITS.review, newlines: true }) },
+    photos: { parse: (x) => cleanStringArray(x, { maxItems: 8, maxLen: 2000 }) },
+    photosPublic: { parse: (x) => typeof x === "boolean" ? (x ? 1 : 0) : x === 0 || x === 1 ? x : undefined },
+    setlist: { parse: (x) => cleanStringArray(x, { maxItems: 40, maxLen: 120 }) },
+    tour: { parse: (x) => clean(x, { max: 80 }) || null },
+    tags: { parse: cleanPostTags },
+    song: { parse: cleanSong },
+  });
+  if (errs.length) throw new ApiError(400, errs[0]);
+  const binding = resolveArtistBinding(v.artist, source.artistKey);
+  const values = {
+    ...v,
+    city: v.city || "",
+    date: v.date || "",
+    band: v.band ?? null,
+    room: v.room ?? null,
+    dims: v.dims || {},
+    review: v.review || "",
+    photos: v.photos || [],
+    photosPublic: v.photosPublic ?? 0,
+    setlist: v.setlist || [],
+    tour: v.tour || null,
+    tags: v.tags || [],
+    song: v.song || null,
+    binding,
+  };
+  return {
+    kind: "review",
+    values,
+    canonical: {
+      kind: "review",
+      artist: values.artist,
+      artistKey: binding.artist_key || null,
+      venue: values.venue,
+      venueKey: venueBinding(values.venue),
+      city: values.city,
+      date: values.date,
+      overall: values.overall,
+      band: values.band,
+      room: values.room,
+      dims: values.dims,
+      review: values.review,
+      photos: values.photos,
+      photosPublic: values.photosPublic,
+      setlist: values.setlist,
+      tour: values.tour,
+      tags: values.tags,
+      song: values.song,
+      playlistId: null,
+    },
+  };
+}
+
+function parsedStoredObject(value) {
+  if (!value) return null;
+  try {
+    const parsed = typeof value === "string" ? JSON.parse(value) : value;
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch { return null; }
+}
+
+function canonicalStoredPost(row) {
+  const kind = row?.kind === "status" ? "status" : "review";
+  const song = cleanSong(parsedStoredObject(row?.song));
+  const playlist = parsedStoredObject(row?.playlist);
+  const dims = cleanPostRatingDims(parsedStoredObject(row?.dims) || {}) || {};
+  return {
+    kind,
+    artist: kind === "status" ? "" : clean(row?.artist, { max: LIMITS.artist }),
+    artistKey: kind === "status" ? null : row?.artist_key || null,
+    venue: kind === "status" ? "" : clean(row?.venue, { max: LIMITS.venue }),
+    venueKey: kind === "status" ? null : row?.venue_key || venueBinding(row?.venue),
+    city: kind === "status" ? "" : clean(row?.city, { max: LIMITS.city }),
+    date: kind === "status" ? "" : cleanDate(row?.date) || "",
+    overall: kind === "status" ? 0 : clampRating(row?.overall),
+    band: kind === "status" || row?.band == null ? null : clampRating(row.band),
+    room: kind === "status" || row?.room == null ? null : clampRating(row.room),
+    dims: kind === "status" ? {} : dims,
+    review: clean(row?.review, { max: LIMITS.review, newlines: true }),
+    photos: cleanStringArray(parseJsonArray(row?.photos), { maxItems: 8, maxLen: 2000 }),
+    photosPublic: row?.photos_public ? 1 : 0,
+    setlist: kind === "status" ? [] : cleanStringArray(parseJsonArray(row?.setlist), { maxItems: 40, maxLen: 120 }),
+    tour: kind === "status" ? null : clean(row?.tour, { max: 80 }) || null,
+    tags: kind === "status" ? [] : cleanPostTags(parseJsonArray(row?.tags)) || [],
+    song: song || null,
+    playlistId: kind === "status" ? playlist?.id || null : null,
+  };
+}
 // Insert a notification for a recipient (never notify yourself).
 const notifRow = db.prepare("INSERT INTO notifications (id,user_id,actor_id,type,post_id,artist,text,created_at) VALUES (?,?,?,?,?,?,?,?)");
 function addNotif(recipientId, actorId, type, extra = {}) {
@@ -461,11 +652,59 @@ function postJson(p, viewerId) {
     seen: p.seen_ordinal ?? null,
     ...(p.open_reports != null ? { flags: p.open_reports } : {}),
     likes: p.like_count ?? 0, comments: p.comment_count ?? 0,
+    ...(p.comment_preview != null ? { commentPreview: parseJsonArray(p.comment_preview) } : {}),
     liked: viewerId ? !!db.prepare("SELECT 1 FROM likes WHERE post_id=? AND user_id=?").get(p.id, viewerId) : false,
     createdAt: p.created_at,
     editedAt: p.updated_at || null,
     version: p.updated_at || p.created_at,
   };
+}
+
+// Feed cards need only the latest two comments. Fetch them for the whole page in
+// one indexed/windowed query instead of mounting N cards that each issue their
+// own HTTP request. Full threads (including ancestor tombstones) remain on the
+// dedicated comments endpoint and load only when somebody opens Afterparty.
+function withCommentPreviews(posts, viewerId) {
+  if (!Array.isArray(posts) || !posts.length) return posts || [];
+  const ids = posts.map((post) => post.id).filter(Boolean);
+  if (!ids.length) return posts;
+  const placeholders = ids.map(() => "?").join(",");
+  const blockSql = viewerId ? `AND NOT EXISTS (SELECT 1 FROM blocks b WHERE
+    (b.blocker_id=? AND b.blocked_id=c.user_id) OR
+    (b.blocker_id=c.user_id AND b.blocked_id=?))` : "";
+  const args = [...ids];
+  if (viewerId) args.push(viewerId, viewerId);
+  const rows = db.prepare(`
+    SELECT * FROM (
+      SELECT c.post_id,c.id,c.user_id,c.text,c.parent_id,c.created_at,
+        u.name,u.initials,u.avatar_uri,u.avatar_color,u.role,u.verified,
+        ROW_NUMBER() OVER (PARTITION BY c.post_id ORDER BY c.created_at DESC,c.id DESC) AS preview_rank
+      FROM comments c JOIN users u ON u.id=c.user_id
+      WHERE c.post_id IN (${placeholders}) AND c.removed=0 ${blockSql}
+    ) ranked
+    WHERE preview_rank<=2
+    ORDER BY post_id,created_at,id`).all(...args);
+  const byPost = new Map();
+  for (const comment of rows) {
+    const projected = {
+      id: comment.id,
+      userId: comment.user_id,
+      name: comment.name,
+      initials: comment.initials,
+      avatarUri: comment.avatar_uri,
+      avatarColor: comment.avatar_color,
+      role: comment.role,
+      verified: !!comment.verified,
+      text: comment.text,
+      deleted: false,
+      parentId: comment.parent_id || null,
+      createdAt: comment.created_at,
+    };
+    const list = byPost.get(comment.post_id) || [];
+    list.push(projected);
+    byPost.set(comment.post_id, list);
+  }
+  return posts.map((post) => ({ ...post, comment_preview: JSON.stringify(byPost.get(post.id) || []) }));
 }
 
 // Resolve an artist by name from MusicBrainz (CC0, keyless). One request per
@@ -580,6 +819,18 @@ export const routes = {
     let database = false;
     try { database = db.prepare("SELECT 1 AS ok").get()?.ok === 1; } catch {}
     if (!database) throw new ApiError(503, "The database is not ready.", "DATABASE_UNAVAILABLE");
+    const production = process.env.NODE_ENV === "production";
+    const storageConfigured = !production || !!String(process.env.PIT_DATA_DIR || "").trim();
+    const databaseFilePresent = existsSync(DATABASE_PATH);
+    if (!storageConfigured || !databaseFilePresent) {
+      // The open SQLite handle may keep answering briefly after a mount/path is
+      // lost. Do not let the platform call that healthy and route traffic to a
+      // process whose next restart would show an empty or missing site.
+      throw new ApiError(503, "Durable storage is not ready.", "STORAGE_UNAVAILABLE");
+    }
+    const bootstrapAllowed = production && ["1", "true", "yes", "on"].includes(
+      String(process.env.PIT_ALLOW_EMPTY_DB_BOOTSTRAP || "").trim().toLowerCase(),
+    );
     return {
       ok: database,
       ts: now(),
@@ -588,7 +839,8 @@ export const routes = {
       youtube: !!process.env.YOUTUBE_API_KEY,
       services: {
         database,
-        storageConfigured: process.env.NODE_ENV !== "production" || !!process.env.PIT_DATA_DIR,
+        storageConfigured,
+        storage: { configured: storageConfigured, databaseFilePresent, bootstrapAllowed },
         youtubeConfigured: !!process.env.YOUTUBE_API_KEY,
         youtubeLookup: youtubeProviderStatus(),
         wikidataLookup: wikidataProviderStatus(),
@@ -597,6 +849,8 @@ export const routes = {
         backgroundJobs: {
           cacheWarmEnabled: backgroundJobEnabled(process.env, "CACHE_WARM_ENABLED"),
           tourDateRefreshEnabled: backgroundJobEnabled(process.env, "TOURDATE_REFRESH_ENABLED"),
+          backupEnabled: backupSchedulerEnabled(process.env),
+          offhostBackupConfigured: offhostBackupConfigured(process.env),
         },
         mailConfigured: mailConfigured(),
         mail: mailDiagnostics(),
@@ -1480,7 +1734,20 @@ export const routes = {
       WHERE p.removed = 0 ${cursorSql} ${blockSql}
       ORDER BY p.created_at DESC, p.id DESC LIMIT ?${cursor ? "" : " OFFSET ?"}`).all(...args);
     const { rows, nextCursor } = finishPage(found, lim);
-    return { posts: rows.map((p) => postJson(p, viewer)), nextCursor };
+    return { posts: withCommentPreviews(rows, viewer).map((p) => postJson(p, viewer)), nextCursor };
+  },
+
+  // Canonical single-post read. Besides powering direct links, this is the
+  // authority a client can consult after an ambiguous PATCH response: if every
+  // intended field is already present, the save committed even though the
+  // response was lost. Removed and blocked content stays indistinguishable from
+  // a missing post.
+  "GET /api/posts/:id": (ctx) => {
+    const row = feedPostById.get(ctx.params.id);
+    if (!row || row.removed || blockedEitherWay(ctx.user?.id, row.user_id)) {
+      throw new ApiError(404, "That post left the stage.", "NOT_FOUND");
+    }
+    return { post: postJson(withCommentPreviews([row], ctx.user?.id)[0], ctx.user?.id) };
   },
 
   "GET /api/posts/:id/playlist": (ctx) => {
@@ -1523,7 +1790,7 @@ export const routes = {
       ORDER BY p.created_at DESC, p.id DESC LIMIT ?`).all(...args);
     const { rows, nextCursor } = finishPage(found, lim);
     const isClip = (u) => typeof u === "string" && /\.(mp4|webm|mov|m4v)(\?|#|$)/i.test(u) && /^https?:\/\//i.test(u);
-    const clips = rows
+    const clips = withCommentPreviews(rows, viewer)
       .map((p) => {
         const projected = postJson(p, viewer); // photos already parsed here
         return { ...projected, clips: (projected.photos || []).filter(isClip) };
@@ -1541,13 +1808,12 @@ export const routes = {
         ${SEEN_ORDINAL_SQL}
       FROM posts p JOIN users u ON u.id = p.user_id
       WHERE p.removed = 0 AND p.user_id = ? ORDER BY p.created_at DESC LIMIT 100`).all(ctx.params.id);
-    return { posts: rows.map((p) => postJson(p, ctx.user?.id)) };
+    return { posts: withCommentPreviews(rows, ctx.user?.id).map((p) => postJson(p, ctx.user?.id)) };
   },
 
   "POST /api/posts": (ctx) => {
     const u = requireUser(ctx);
     const mutationId = clientMutationId(ctx.body?.clientMutationId);
-    const mutationHash = mutationId ? postMutationHash(ctx.body) : null;
     const existing = mutationId ? postByClientMutation.get(u.id, mutationId) : null;
     if (existing?.removed) {
       // A retry token identifies one logical create forever. Returning its
@@ -1555,59 +1821,41 @@ export const routes = {
       // published again on the originating device.
       throw new ApiError(409, "That post was already removed. Start a new post to publish again.", "POST_REMOVED");
     }
-    if (existing?.client_mutation_hash && existing.client_mutation_hash !== mutationHash) {
-      throw new ApiError(409, "That retry belongs to an earlier version of this post. Reopen it before publishing your new changes.", "POST_MUTATION_CONFLICT");
+    const stored = existing ? feedPostById.get(existing.id) : null;
+    const request = canonicalCreateRequest(u, ctx.body, stored);
+    const mutationHash = mutationId ? postMutationHash(request.canonical) : null;
+    if (existing) {
+      const storedHash = stored ? postMutationHash(canonicalStoredPost(stored)) : null;
+      if (!storedHash || storedHash !== mutationHash) {
+        throw new ApiError(409, "That retry belongs to an earlier version of this post. Reopen it before publishing your new changes.", "POST_MUTATION_CONFLICT");
+      }
+      // Rows created before canonical hashing may contain a raw-payload hash or
+      // NULL. Heal only after proving the stored post means exactly the same
+      // thing as this request; never guess that a missing hash implies success.
+      if (existing.client_mutation_hash !== mutationHash) {
+        db.prepare("UPDATE posts SET client_mutation_hash=? WHERE id=? AND user_id=?").run(mutationHash, existing.id, u.id);
+      }
+      return { id: existing.id, post: postJson(feedPostById.get(existing.id), u.id), duplicate: true };
     }
-    if (existing) return { id: existing.id, post: postJson(feedPostById.get(existing.id), u.id), duplicate: true };
     limit(ctx, "post", 20, 60 * 60 * 1000);
 
-    // A plain status/update post ("post whatever", not a concert review): just
-    // text and/or photos, no artist/venue/rating. It shares the posts table so
-    // it flows through the same feed, likes, comments, and moderation, and the
-    // rating/show columns stay empty (overall 0 so it never inflates any chart).
-    if (ctx.body?.kind === "status") {
-      const [errs, v] = shape(ctx.body, {
-        review: { parse: (x) => clean(x, { max: LIMITS.review, newlines: true }) },
-        photos: { parse: (x) => cleanStringArray(x, { maxItems: 8, maxLen: 2000 }) },
-        photosPublic: { parse: (x) => typeof x === "boolean" ? (x ? 1 : 0) : x === 0 || x === 1 ? x : undefined },
-        song: { parse: cleanSong },
-      });
-      if (errs.length) throw new ApiError(400, errs[0]);
-      const text = v.review || "";
-      const photos = v.photos || [];
-      const playlist = playlistSnapshotForPost(u, ctx.body?.playlistId);
-      if (!text && !photos.length && !v.song && !playlist) throw new ApiError(400, "Write something, add media, tag a song, or share a playlist to post.", "VALIDATION_FAILED");
+    // A plain status/update ("post whatever", not a concert review) shares the
+    // posts table so it keeps the same feed, likes, comments, and moderation.
+    if (request.kind === "status") {
+      const v = request.values;
       const id = uid("p");
       postRow.run(id, u.id, "", "", "", "", 0, null, null,
-        "{}", text, JSON.stringify(photos), v.photosPublic ?? 1, "[]", null,
-        "[]", "status", v.song ? JSON.stringify(v.song) : null, playlist ? JSON.stringify(playlist) : null, null, null, null, mutationId, mutationHash, now());
+        "{}", v.review, JSON.stringify(v.photos), v.photosPublic, "[]", null,
+        "[]", "status", v.song ? JSON.stringify(v.song) : null, v.playlist ? JSON.stringify(v.playlist) : null, null, null, null, mutationId, mutationHash, now());
       return { id, post: postJson(feedPostById.get(id), u.id) };
     }
 
-    const [errs, v] = shape(ctx.body, {
-      artist: { required: true, parse: (x) => clean(x, { max: LIMITS.artist }) || undefined },
-      venue: { required: true, parse: (x) => clean(x, { max: LIMITS.venue }) || undefined },
-      city: { parse: (x) => clean(x, { max: LIMITS.city }) },
-      date: { parse: cleanDate },
-      overall: { required: true, parse: (x) => { const r = clampRating(x); return r > 0 ? r : undefined; } },
-      band: { parse: (x) => clampRating(x) },
-      room: { parse: (x) => clampRating(x) },
-      dims: { parse: cleanPostRatingDims },
-      review: { parse: (x) => clean(x, { max: LIMITS.review, newlines: true }) },
-      photos: { parse: (x) => cleanStringArray(x, { maxItems: 8, maxLen: 2000 }) },
-      photosPublic: { parse: (x) => typeof x === "boolean" ? (x ? 1 : 0) : x === 0 || x === 1 ? x : undefined },
-      setlist: { parse: (x) => cleanStringArray(x, { maxItems: 40, maxLen: 120 }) },
-      tour: { parse: (x) => clean(x, { max: 80 }) || null },
-      tags: { parse: cleanPostTags },
-      song: { parse: cleanSong },
-    });
-    if (errs.length) throw new ApiError(400, errs[0]);
+    const v = request.values;
     const id = uid("p");
-    const binding = resolveArtistBinding(v.artist, ctx.body?.artistKey);
-    postRow.run(id, u.id, v.artist, v.venue, v.city || "", v.date || "", v.overall, v.band ?? null, v.room ?? null,
-      JSON.stringify(v.dims || {}), v.review || "", JSON.stringify(v.photos || []), v.photosPublic ?? 0, JSON.stringify(v.setlist || []), v.tour || null,
-      JSON.stringify(v.tags || []), "review", v.song ? JSON.stringify(v.song) : null, null,
-      binding.artist_key, binding.artist_mbid, venueBinding(v.venue), mutationId, mutationHash, now());
+    postRow.run(id, u.id, v.artist, v.venue, v.city, v.date, v.overall, v.band, v.room,
+      JSON.stringify(v.dims), v.review, JSON.stringify(v.photos), v.photosPublic, JSON.stringify(v.setlist), v.tour,
+      JSON.stringify(v.tags), "review", v.song ? JSON.stringify(v.song) : null, null,
+      v.binding.artist_key, v.binding.artist_mbid, venueBinding(v.venue), mutationId, mutationHash, now());
     return { id, post: postJson(feedPostById.get(id), u.id) };
   },
 
@@ -3053,6 +3301,18 @@ export const routes = {
     const rows = db.prepare("SELECT user_id FROM going WHERE concert_key=? LIMIT 200").all(key);
     const hidden = blockedIdSet(ctx.user?.id);
     return { attendees: rows.filter((r) => !hidden.has(r.user_id)).map((r) => publicUser(q.userById.get(r.user_id))).filter(Boolean) };
+  },
+
+  // One bounded venue pool at a time. The 2.1 MB source stays server-side so a
+  // phone opening the app no longer downloads every venue's gallery.
+  "GET /api/venues/:key/photos": (ctx) => {
+    let decoded;
+    try { decoded = decodeURIComponent(ctx.params.key); }
+    catch { throw new ApiError(400, "That venue link is invalid.", "VALIDATION_FAILED"); }
+    const key = clean(decoded, { max: 200 }).toLowerCase();
+    if (!key) throw new ApiError(400, "Choose a venue first.", "VALIDATION_FAILED");
+    ctx.setHeader?.("Cache-Control", VENUE_PHOTO_CACHE_CONTROL);
+    return { key, photos: normalizedVenuePhotoPool(key) };
   },
 
   // ---- venue reviews (slice 7) ----

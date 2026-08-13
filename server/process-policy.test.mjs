@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
+import { missingStaticAssetResponse } from "./staticPolicy.js";
+
 test("fatal process errors retain Node's fail-fast behavior", async () => {
   const source = await readFile(new URL("./index.js", import.meta.url), "utf8");
   assert.match(source, /process\.on\("uncaughtExceptionMonitor"/);
@@ -9,7 +11,20 @@ test("fatal process errors retain Node's fail-fast behavior", async () => {
   assert.doesNotMatch(source, /process\.on\(["']unhandledRejection["']\s*,/);
 });
 
-test("missing hashed assets return 404 instead of the SPA shell", async () => {
+test("index delegates missing static files to the executable no-store policy", async () => {
   const source = await readFile(new URL("./index.js", import.meta.url), "utf8");
-  assert.match(source, /pathname\.startsWith\("\/_expo\/"\).*return send\(res, 404/);
+  assert.match(source, /missingStaticAssetResponse\(pathname\)/);
+  assert.match(source, /send\(res, missingAsset\.status, missingAsset\.body, missingAsset\.headers\)/);
+
+  assert.deepEqual(missingStaticAssetResponse("/_expo/static/js/app-deadbeef.js"), {
+    status: 404,
+    body: { error: "Asset not found." },
+    headers: { "Cache-Control": "no-store" },
+  });
+  assert.deepEqual(missingStaticAssetResponse("/assets/app-deadbeef.css"), {
+    status: 404,
+    body: { error: "Asset not found." },
+    headers: { "Cache-Control": "no-store" },
+  });
+  assert.equal(missingStaticAssetResponse("/concert/j-cole"), null, "extensionless app routes keep the SPA fallback");
 });

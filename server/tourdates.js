@@ -8,6 +8,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { backgroundJobEnabled } from "./backgroundJobs.js";
+import { runProviderBackgroundJob } from "./backgroundJobCoordinator.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CATALOG = join(HERE, "..", "src", "seed", "catalog.generated.json");
@@ -236,10 +237,12 @@ export function startTourDateScheduler() {
   }
   console.log(`[pit] tour-date scheduler on (${[KEY && "Ticketmaster", BIT && "Bandsintown"].filter(Boolean).join(" + ")}, every ${REFRESH_H}h).`);
   const triggerRefresh = () => {
-    void runTourDateJobSafely(async () => {
+    // Freshness is checked only after this job owns the shared slot. That way a
+    // queued timer can cheaply skip work made unnecessary while it was waiting.
+    void runTourDateJobSafely(() => runProviderBackgroundJob(async () => {
       if (!shouldRefreshTourDates(storedLastRefreshAt())) return;
       await refresh();
-    });
+    }));
   };
   // Let health checks and real traffic win the cold-start window. The freshness
   // read itself stays inside the safe job boundary in case SQLite is transiently

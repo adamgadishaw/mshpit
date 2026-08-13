@@ -8,11 +8,10 @@ services:
     name: mshpit
     runtime: node
     plan: starter                      # $7/mo; has persistent disk support
-    # Build must NOT run the test suite: the persistent disk is not mounted during
-    # Render builds, so anything importing server/db.js (which opens SQLite at
-    # PIT_DATA_DIR=/data) dies instantly and the deploy fails in under a minute.
-    # Tests run locally / pre-commit via `npm run check`.
-    buildCommand: npm ci && npm run build:web
+    # The persistent disk is not mounted during builds. Give the quality gate a
+    # throwaway, explicitly bootstrapped database; these command-scoped values do
+    # not reach the runtime process or weaken the /data startup guard.
+    buildCommand: npm ci && mkdir -p /tmp/pit-build-data && PIT_DATA_DIR=/tmp/pit-build-data PIT_ALLOW_EMPTY_DB_BOOTSTRAP=true npm run check
     startCommand: node server/index.js
     healthCheckPath: /api/health
     autoDeploy: true
@@ -27,6 +26,25 @@ services:
         value: production
       - key: PIT_DATA_DIR
         value: /data
+      - key: PIT_ALLOW_EMPTY_DB_BOOTSTRAP
+        value: "false"                 # one-time first boot only; never leave enabled
+      # Daily verified snapshots stay under /data/backups (7 retained). Dedicated
+      # private S3/R2 credentials additionally copy each snapshot off-host; never
+      # reuse the public MEDIA_BUCKET for database backups.
+      - key: BACKUP_ENABLED
+        value: "true"
+      - key: BACKUP_KEEP
+        value: "7"
+      - key: BACKUP_S3_ENDPOINT
+        sync: false
+      - key: BACKUP_S3_BUCKET
+        sync: false
+      - key: BACKUP_S3_REGION
+        sync: false
+      - key: BACKUP_S3_ACCESS_KEY_ID
+        sync: false
+      - key: BACKUP_S3_SECRET_ACCESS_KEY
+        sync: false
       - key: PUBLIC_ORIGIN
         value: https://www.mshpit.com
       - key: ADMIN_EMAIL
@@ -34,7 +52,8 @@ services:
       - key: ADMIN_PASSWORD
         sync: false                    # you enter this in the Render dashboard
       # In-app playback resolves each song to a YouTube video via the YouTube Data
-      # API and caches the id in SQLite forever (the free quota is ~100 searches/day,
+      # API and caches the id in SQLite within the reviewed 30-day provider-data
+      # ceiling (the free quota is ~100 searches/day,
       # so the cache fills gradually — top artists first). Get a key at
       # console.cloud.google.com → enable "YouTube Data API v3" → Credentials → API
       # key. Without it, playback falls back to Deezer 30s previews for everyone.
@@ -113,7 +132,7 @@ services:
     runtime: node
     plan: starter
     branch: staging
-    buildCommand: npm ci && npm run build:web
+    buildCommand: npm ci && mkdir -p /tmp/pit-build-data && PIT_DATA_DIR=/tmp/pit-build-data PIT_ALLOW_EMPTY_DB_BOOTSTRAP=true npm run check
     startCommand: node server/index.js
     healthCheckPath: /api/health
     autoDeploy: true
@@ -130,13 +149,25 @@ services:
         value: staging                 # the isolation switch
       - key: PIT_DATA_DIR
         value: /data
-      # First boot only. server/dataDirectory.js REFUSES to start when a disk is
-      # mounted but pit.db is absent, because in production that means the data
-      # vanished. On a brand-new staging disk it just means "new", so this allows
-      # the first boot. Remove it once staging has a database, or staging loses
-      # the same protection production has.
+      # Fail closed by default. For a genuinely new disk, change this to true for
+      # one dashboard deployment only, confirm pit.db exists, then restore false.
       - key: PIT_ALLOW_EMPTY_DB_BOOTSTRAP
+        value: "false"
+      - key: BACKUP_ENABLED
         value: "true"
+      - key: BACKUP_KEEP
+        value: "7"
+      # Use a private staging backup bucket if off-host copies are configured.
+      - key: BACKUP_S3_ENDPOINT
+        sync: false
+      - key: BACKUP_S3_BUCKET
+        sync: false
+      - key: BACKUP_S3_REGION
+        sync: false
+      - key: BACKUP_S3_ACCESS_KEY_ID
+        sync: false
+      - key: BACKUP_S3_SECRET_ACCESS_KEY
+        sync: false
       - key: PUBLIC_ORIGIN
         sync: false                    # the onrender.com URL Render assigns
       - key: ADMIN_EMAIL
