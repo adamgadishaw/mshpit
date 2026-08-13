@@ -99,6 +99,7 @@ Severity used below:
 | PIT-AUD-016 | P2 | Store context is monolithic and feed previews fanned out comment requests | ~150 context fields / ~45 consumers; one comments GET per mounted card | Comment fan-out fixed; Store split remains open |
 | PIT-AUD-017 | P3 | Operational docs contradicted current code and live data | Old files still claimed a free-tier wipe, vanished J. Cole content, and obsolete crash behavior | Reconciled in this batch |
 | PIT-AUD-018 | P1 | The documented staging gate was not provisioned at its declared hostname | Read-only `mshpit-staging.onrender.com/api/health` probe returned 404 and `x-render-routing: no-server` | Open external release-control action |
+| PIT-AUD-019 | P1 | Render's full build gate inherited deployment-only bootstrap/staging policy into the test subprocess | Exact production reproduction failed the health assertion (`bootstrapAllowed:true`); exact staging reproduction also suppressed campaign recipients | Fixed by making the hermetic test runner pin test/application policy and bootstrap disabled; both Render environments regression-tested |
 
 ## Detailed evidence and reasoning
 
@@ -245,6 +246,18 @@ The release invariant is that the same required gate—tests, syntax, and web
 export—must succeed in the deployment build itself. CI remains valuable, but it
 is not a gate if the deployment platform does not wait for it.
 
+The first Blueprint-controlled build then exposed a second boundary: its
+command-scoped `PIT_ALLOW_EMPTY_DB_BOOTSTRAP=true` correctly permitted a
+throwaway build database, but leaked into `node --test`. The health test saw
+bootstrap enabled and failed, so Render rejected the deployment while the
+previous healthy runtime stayed live. Reproducing the exact production build
+environment produced 349/350 and the same assertion. The test runner now owns a
+fresh `NODE_ENV=test`, `PIT_ENV=production` child environment with bootstrap
+explicitly disabled; this also prevents a staging build's recipient-suppression
+policy from muting campaign tests. The same production- and staging-like Render
+commands subsequently passed 351/351, syntax, split, and web export. Runtime
+startup still receives the fail-closed deployment values.
+
 ### 8. Background job flags and overlap were unsafe when re-enabled (P2)
 
 The jobs are currently disabled, which prevents immediate overlap but also means
@@ -346,7 +359,7 @@ not a verified fix.
 | Check | Result |
 |---|---|
 | Focused pagination unit tests | PASS — 3/3 |
-| Full unit/integration/export-test run | PASS — `npm test`, 350/350 |
+| Full unit/integration/export-test run | PASS — release `npm test` 350/350; Render-environment follow-up 351/351 |
 | Focused storage/health tests | PASS — missing mount/database, invalid file, explicit bootstrap, and health invariants covered |
 | Focused backup/scheduler tests | PASS — 12/12 snapshot, atomic publication, row-floor, retention, deadlines, schedule, and private-upload controls |
 | Focused composer/draft/navigation/persistence tests | PASS — policy, ownership, recovery, and persistence paths; real picker/device lifecycle remains below |
@@ -356,13 +369,14 @@ not a verified fix.
 | Expo SDK 56 alignment | PASS — `expo install --check`; Expo Doctor 21/21 |
 | Dependency audit | REPORTED — 19 advisories (8 moderate, 11 high); forced downgrade rejected |
 | Render/GitHub YAML parse and deployment-policy tests | PASS locally; staging service itself is not provisioned at the declared hostname |
+| Exact Render production/staging build environments | PASS — reproduced the inherited bootstrap and staging-policy failures, then passed 351/351 plus syntax, split, and web export after isolating the test child environment |
 | Full `npm run check` on feature branch | PASS — tests, 100-file syntax scan, catalogue split, and fresh Expo web export |
 | SQLite integrity check | PASS — 0 failures; one harmless expired verification-token warning |
 | Production-mode isolated boot | PASS — copied DB, durable-storage health, deep route, venue endpoint/cache, and missing-chunk 404/no-store |
 | Legacy production-database upgrade replay | PASS — unmarked 18-user/21-post/2,658-artist copy stamped `PIT1`, preserved counts, survived restart and WAL recovery |
 | Fresh Android export | PASS — Expo SDK 56, 891 modules |
 | Exported bundle measurement and gallery-marker scan | PASS — 2,253,157 raw / 615,705 gzip / 504,824 Brotli; zero gallery arrays or split-file refs |
-| Full `npm run check` on merged `master` | PASS — 350/350, syntax, split, and web export before push |
+| Full `npm run check` on merged `master` | PASS — initial release 350/350; follow-up Render-environment gate 351/351, syntax, split, and web export |
 | Independent GitHub Quality workflow | PASS — release commit `1e2ba65`, run 31741191910 |
 | Post-deploy custom/origin health and data parity | PASS — exact commit on both, durable DB present/bootstrap false, identical 13 IDs, four J. Cole posts and media intact, stable beyond 60 seconds |
 | Live HTTP/cache and bundle smoke | PASS — 2,253,157-byte immutable entry, zero gallery arrays/split refs, venue endpoint cache, missing chunk 404/no-store |

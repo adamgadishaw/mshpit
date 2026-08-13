@@ -25,6 +25,13 @@ test("both Render services gate deployment on the full check in isolated build s
   }
 });
 
+test("the test runner cannot inherit Render's production bootstrap approval", async () => {
+  const source = await readFile(new URL("scripts/run-tests.mjs", ROOT), "utf8");
+  assert.match(source, /NODE_ENV:\s*["']test["']/);
+  assert.match(source, /PIT_ENV:\s*["']production["']/);
+  assert.match(source, /PIT_ALLOW_EMPTY_DB_BOOTSTRAP:\s*["']false["']/);
+});
+
 test("runtime bootstrap and high-cost background jobs fail closed on both Render services", async () => {
   const source = await readFile(new URL("render.yaml", ROOT), "utf8");
   assert.equal(configuredFalseCount(source, "PIT_ALLOW_EMPTY_DB_BOOTSTRAP"), 2);

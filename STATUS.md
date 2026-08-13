@@ -19,7 +19,8 @@ audit/session log are historical journals, not current status.
   three other J. Cole posts, and the attached 3,909,908-byte R2 image remain
   intact. The earlier claim that a free-tier restart erased that content was not
   supported by the evidence.
-- Feature-branch and merged-`master` gates pass: `npm test` **350/350**, the
+- Feature-branch and merged-`master` gates pass. The release ran **350/350**;
+  the Render-environment follow-up now runs **351/351**, plus the
   100-file syntax scan, fresh web and Android exports, Expo dependency alignment,
   and Expo Doctor **21/21**. Physical-device acceptance remains open below.
 
@@ -45,7 +46,13 @@ audit/session log are historical journals, not current status.
 - Filtered feed paging reveals loaded matches before fetching; hosted job flags
   fail closed; heavy jobs serialize; missing hashed chunks return `no-store`.
 - Render builds now run the full test/syntax/export gate in isolated temporary
-  storage instead of exporting web only.
+  storage instead of exporting web only. The first Blueprint-controlled build
+  exposed that the test subprocess inherited Render's one-build bootstrap flag,
+  which made the health-policy assertion fail. It also isolates staging's
+  recipient-suppression policy from campaign tests. The runner now pins its own
+  test/runtime-policy environment and bootstrap-disabled policy; the exact
+  production- and staging-like Render commands pass the complete **351/351**
+  gate.
 - Production now schedules a verified daily SQLite snapshot under `/data/backups`
   and retains seven by default. A complete, separate private `BACKUP_S3_*`
   configuration additionally uploads off-host; without it, backups remain on the

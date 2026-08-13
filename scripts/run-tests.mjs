@@ -12,7 +12,21 @@ import { join } from "node:path";
 const dataDir = mkdtempSync(join(tmpdir(), "pit-tests-"));
 const result = spawnSync(process.execPath, ["--test"], {
   stdio: "inherit",
-  env: { ...process.env, PIT_DATA_DIR: dataDir },
+  // Render's build command deliberately carries production bootstrap approval
+  // so modules used outside the test runner can open its throwaway database.
+  // Never let those runtime values leak into assertions about the deployed
+  // health policy: the test process owns a fresh non-production database and
+  // must observe bootstrap as disabled unless a test opts in explicitly.
+  env: {
+    ...process.env,
+    NODE_ENV: "test",
+    // The suite's established default is the production application policy.
+    // A staging Blueprint build must not mute campaign test recipients merely
+    // because its eventual runtime uses PIT_ENV=staging.
+    PIT_ENV: "production",
+    PIT_DATA_DIR: dataDir,
+    PIT_ALLOW_EMPTY_DB_BOOTSTRAP: "false",
+  },
 });
 try { rmSync(dataDir, { recursive: true, force: true }); } catch {}
 process.exit(result.status ?? 1);
