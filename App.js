@@ -12,8 +12,8 @@ import VerifyEmailBanner from "./src/components/VerifyEmailBanner";
 import { DesktopTopNav, RightRail } from "./src/components/Rails";
 import FeedScreen from "./src/screens/FeedScreen";
 import SearchScreen from "./src/screens/SearchScreen";
-import DiscoverScreen from "./src/screens/DiscoverScreen";
 import YouScreen from "./src/screens/YouScreen";
+const DiscoverScreen = lazyWithRetry(() => import("./src/screens/DiscoverScreen"), "DiscoverScreen");
 const ShowScreen = lazyWithRetry(() => import("./src/screens/ShowScreen"), "ShowScreen");
 const LoungeScreen = lazyWithRetry(() => import("./src/screens/LoungeScreen"), "LoungeScreen");
 const InboxScreen = lazyWithRetry(() => import("./src/screens/InboxScreen"), "InboxScreen");
@@ -76,7 +76,9 @@ import {
   restoreComposerFrame,
 } from "./src/domain/composerRecovery.mjs";
 import { trackKey } from "./src/lib/playback";
-import { ENABLE_CLIPS } from "./src/config/runtime.mjs";
+import { ENABLE_CLIPS, ENABLE_DEMO_DATA } from "./src/config/runtime.mjs";
+import { analyticsDwellBucket } from "./src/domain/analyticsPolicy.mjs";
+import { ownedPlayerEnvelope, restoreOwnedPlayerState } from "./src/domain/player-session.mjs";
 
 const LEFT = [
   { key: "feed", label: "Feed", icon: "feed" },
@@ -86,6 +88,24 @@ const RIGHT = [
   { key: "discover", label: "Discover", icon: "discover" },
   { key: "you", label: "You", icon: "you" },
 ];
+
+const ANALYTICS_OVERLAY_KEYS = [
+  ["photos", "media_viewer"], ["addToPlaylist", "playlist_picker"], ["followList", "follow_list"],
+  ["auth", "auth"], ["pickArtists", "pick_artists"], ["editingPost", "post_edit"], ["logging", "post_create"],
+  ["reporting", "report"], ["editProfile", "profile_edit"], ["venueReview", "venue_review"], ["thread", "message_thread"],
+  ["inbox", "inbox"], ["notifications", "activity"], ["calendar", "calendar"], ["clips", "clips"],
+  ["profileId", "profile"], ["fanClub", "fan_club"], ["editArtist", "artist_edit"], ["artistName", "artist"],
+  ["venueName", "venue"], ["nearby", "nearby"], ["venues", "venues"], ["fanClubs", "fan_clubs"],
+  ["settings", "settings"], ["deleteAccount", "account_delete"], ["diagnostics", "diagnostics"], ["privacy", "privacy"],
+  ["terms", "terms"], ["lounge", "lounge"], ["openLog", "show"], ["post", "post"], ["badges", "badges"],
+  ["topRated", "top_rated"], ["admin", "admin"], ["bulk", "tour_dates"], ["reqArtist", "request_artist"], ["menu", "menu"],
+];
+
+function analyticsScreenKey({ landing, tab, nav }) {
+  if (landing) return "landing";
+  const overlay = ANALYTICS_OVERLAY_KEYS.find(([key]) => nav?.[key]);
+  return overlay?.[1] || `tab_${["feed", "search", "discover", "you"].includes(tab) ? tab : "feed"}`;
+}
 
 export default function App() {
   return (
@@ -98,7 +118,7 @@ export default function App() {
 }
 
 function Root() {
-  const { session, addLog, editLog, userById, visibleFeed, followingFeed, localFeed, loadMoreFeed, feedHasMore, feedLoadingMore, logout, exportMyData, userByHandle, searchPeople, inboxUnread, accountStatus, track, unreadNotifications, recordPlay, playHistory, loadPlayHistory, saveSnapshot, autoplayQueue, followingCount } = useStore();
+  const { session, authReady, addLog, editLog, userById, visibleFeed, followingFeed, localFeed, loadMoreFeed, feedHasMore, feedLoadingMore, notInterested, logout, exportMyData, userByHandle, searchPeople, inboxUnread, accountStatus, track, unreadNotifications, recordPlay, playHistory, loadPlayHistory, saveSnapshot, autoplayQueue, followingCount } = useStore();
   const staff = isStaff(session?.role);
   const feed = visibleFeed(staff);
   const following = followingFeed(staff);
@@ -215,7 +235,11 @@ function Root() {
   const [preview, setPreview] = useState(null);
   // Persisted so the player survives a reload (switching themes reloads the page):
   // the bar comes back with its queue instead of vanishing mid-listen.
-  const [player, setPlayer] = useState(() => (web ? load("pit.player", null) : null));
+  const playerAccountId = session?.id || null;
+  const [player, setPlayer] = useState(() => {
+    if (!web || !session?.id) return null;
+    return restoreOwnedPlayerState(load("pit.player.v2", null), session.id);
+  });
   // The player starts COLLAPSED (a slim rail on desktop, hidden on mobile) and
   // opens itself the moment something plays; collapsing pauses (YouTube terms).
   const [playerMinimized, setPlayerMinimized] = useState(true);
@@ -236,7 +260,21 @@ function Root() {
     document.head.appendChild(style);
   }, [web]);
 
-  useEffect(() => { if (web) save("pit.player", player); }, [player]);
+  const previousPlayerAccountRef = useRef(playerAccountId);
+  useEffect(() => {
+    if (!authReady) return;
+    if (previousPlayerAccountRef.current !== playerAccountId) {
+      previousPlayerAccountRef.current = playerAccountId;
+      const stored = web && playerAccountId ? load("pit.player.v2", null) : null;
+      setPlayer(restoreOwnedPlayerState(stored, playerAccountId));
+      setPlayerMinimized(true);
+    }
+  }, [authReady, playerAccountId, web]);
+  useEffect(() => {
+    if (!web || !authReady) return;
+    save("pit.player", null); // scrub the legacy device-global queue
+    save("pit.player.v2", ownedPlayerEnvelope(playerAccountId, player));
+  }, [authReady, player, playerAccountId, web]);
   const [acctOpen, setAcctOpen] = useState(false);
   // First-run welcome (Spotify + find-your-people). Armed at signup, shown once the
   // taste picker is closed so it survives the theme reload PickArtists can trigger.
@@ -254,10 +292,23 @@ function Root() {
   // emailed link only delivers the token; confirming is the explicit tap, so a
   // scanner that follows the link cannot verify an address for its owner.
   const [verifyToken, setVerifyToken] = useState(() => { try { return web ? new URLSearchParams(window.location.search).get("verify") : null; } catch { return null; } });
-  const clearVerifyUrl = () => { try { if (web) window.history.replaceState({}, "", window.location.pathname); } catch {} setVerifyToken(null); };
+  const scrubVerifyUrl = () => { try { if (web) window.history.replaceState({}, "", window.location.pathname); } catch {} };
+  const clearVerifyUrl = () => { scrubVerifyUrl(); setVerifyToken(null); };
   // The concert opening screen: fresh visitors (and anyone who logs out) see it;
   // "browse as guest" or logging in dismisses it. Guest choice persists.
-  const [landing, setLanding] = useState(() => !load("pit.session", null) && !load("pit.entered", false));
+  const [landing, setLanding] = useState(() => (
+    !load("pit.entered", false)
+    && (ENABLE_DEMO_DATA ? !load("pit.session", null) : true)
+  ));
+  const lastAnalyticsScreenRef = useRef({ accountId: null, screen: null });
+  useEffect(() => {
+    const screen = analyticsScreenKey({ landing, tab, nav });
+    const accountId = session?.id || null;
+    const previous = lastAnalyticsScreenRef.current;
+    if (screen === previous.screen && accountId === previous.accountId) return;
+    track("screen_view", { screen, referrer: accountId === previous.accountId ? previous.screen || undefined : undefined });
+    lastAnalyticsScreenRef.current = { accountId, screen };
+  }, [landing, tab, nav, session?.id, track]);
 
   // Fire the welcome once signup's taste picker is closed (survives a theme reload
   // because the "pending" flag is on disk). Consume the flag so it shows only once.
@@ -354,7 +405,15 @@ function Root() {
     if (web) { try { window.history.replaceState({ pit: "root" }, "", "/"); } catch {} }
   };
   const clear = () => runAfterComposerClose(commitClear);
-  const switchTab = (key) => runAfterComposerClose(() => { setTab(key); commitClear(); });
+  const switchTab = (key) => runAfterComposerClose(() => {
+    // Discover is a secondary, comparatively rich surface. Keep it out of the
+    // first-load bundle, but start its guarded chunk request in the same user
+    // gesture that selects the tab so the suspense state is as short as the
+    // connection allows.
+    if (key === "discover") DiscoverScreen.preload?.().catch(() => {});
+    setTab(key);
+    commitClear();
+  });
 
   const updateComposerDraftIdentity = (composerId, draftId) => {
     if (!composerId) return;
@@ -385,6 +444,7 @@ function Root() {
     setPlayerMinimized(true);
     if (web) {
       save("pit.player", null);
+      save("pit.player.v2", ownedPlayerEnvelope(playerAccountId, null));
       try { window.localStorage.removeItem("pit.playpos"); } catch {}
     }
   };
@@ -540,13 +600,31 @@ function Root() {
     const hit = (found || []).find((x) => x.handle === h);
     if (hit) openProfile(hit.id);
   };
-  const openPost = (log) => { if (log) go({ post: log }); };
+  const openPost = (log, analytics = {}) => {
+    if (!log) return;
+    track("content_open", {
+      postId: log.id,
+      surface: analytics.surface || "direct",
+      ...(Number.isSafeInteger(analytics.position) ? { position: analytics.position } : {}),
+    });
+    go({ post: log });
+  };
   // A status update has no performance page, so "open" it as its own post detail.
-  const openShow = (log) => { if (log?.kind === "status") return openPost(log); track("view_show", { artist: log?.artist, venue: log?.venue }); go({ openLog: log }); };
+  const openShow = (log, analytics = {}) => {
+    if (!log) return;
+    if (log.kind === "status") return openPost(log, analytics);
+    track("content_open", {
+      postId: log.id,
+      surface: analytics.surface || "direct",
+      ...(Number.isSafeInteger(analytics.position) ? { position: analytics.position } : {}),
+    });
+    track("view_show", { postId: log.id });
+    go({ openLog: log });
+  };
   const openPostEditor = (log) => requireAuth(() => { if (log?.id) go({ editingPost: log }); });
   const openBadges = (userId) => go({ badges: { userId } });
-  const openArtist = (name) => { track("view_artist", { artist: name }); go({ artistName: name }); };
-  const openVenue = (name) => { track("view_venue", { venue: name }); go({ venueName: name }); };
+  const openArtist = (name) => { track("view_artist"); go({ artistName: name }); };
+  const openVenue = (name) => { track("view_venue"); go({ venueName: name }); };
   const openFanClub = (artist) => go({ fanClub: artist });
   // Open the persistent top player. `queue` (optional) is a list of tracks so the
   // bar can skip prev/next; without it, a single track. player = { list, index }.
@@ -635,7 +713,7 @@ function Root() {
   else if (nav.menu) overlay = (
     <MenuScreen
       onClose={back}
-      onNear={() => requireAuth(() => replace({ nearby: true }))}
+      onNear={() => replace({ nearby: true })}
       onVenues={() => replace({ venues: true })}
       onFanClubs={() => replace({ fanClubs: true })}
       onTopRated={() => replace({ topRated: true })}
@@ -675,12 +753,24 @@ function Root() {
                   onOpenInbox={openInbox}
                   onOpenNotifications={openNotifications}
                   onOpen={openShow}
+                  onImpression={(log, position, surface) => track("feed_impression", {
+                    postId: log?.id,
+                    position,
+                    surface,
+                    algorithm: log?.recommendation?.algorithm || "chronological-v1",
+                  })}
+                  onDwell={(log, milliseconds, surface) => track("content_dwell", {
+                    postId: log?.id,
+                    durationBucket: analyticsDwellBucket(milliseconds),
+                    surface,
+                  })}
+                  onNotInterested={(log) => requireAuth(() => notInterested(log?.id))}
                   onComment={openPost}
                   onPreview={showPreview}
                   onOpenProfile={openProfile}
                   onOpenArtist={openArtist}
                   onOpenVenue={openVenue}
-                  onOpenNearby={() => requireAuth(() => go({ nearby: true }))}
+                  onOpenNearby={() => go({ nearby: true })}
                   onOpenMenu={() => go({ menu: true })}
                   onOpenClips={ENABLE_CLIPS ? () => go({ clips: true }) : undefined}
                   onReport={(log) => requireAuth(() => go({ reporting: log }))}
@@ -690,7 +780,7 @@ function Root() {
                 />
               )}
               {tab === "search" && <SearchScreen onOpen={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenProfile={openProfile} onPlay={openPlayer} onAddToPlaylist={openAddToPlaylist} />}
-              {tab === "discover" && <DiscoverScreen onOpenTopRated={() => go({ topRated: true })} onOpen={openShow} onOpenArtist={openArtist} onOpenNearby={() => requireAuth(() => go({ nearby: true }))} onOpenFanClubs={() => go({ fanClubs: true })} onOpenVenues={() => go({ venues: true })} onOpenPhotos={openPhotos} onPlay={openPlayer} onOpenProfile={openProfile} />}
+              {tab === "discover" && <DiscoverScreen onOpenTopRated={() => go({ topRated: true })} onOpen={openShow} onOpenArtist={openArtist} onOpenNearby={() => go({ nearby: true })} onOpenFanClubs={() => go({ fanClubs: true })} onOpenVenues={() => go({ venues: true })} onOpenPhotos={openPhotos} onPlay={openPlayer} onOpenProfile={openProfile} />}
               {tab === "you" && (
                 <YouScreen
                   feed={feed}
@@ -705,7 +795,7 @@ function Root() {
                   onActivity={openNotifications}
                   onInbox={openInbox}
                   onCalendar={() => go({ calendar: true })}
-                  onOpenNearby={() => requireAuth(() => go({ nearby: true }))}
+                  onOpenNearby={() => go({ nearby: true })}
                   homeCity={session?.home?.city}
                   onPlay={openPlayer}
                   onOpenPhotos={openPhotos}
@@ -753,7 +843,9 @@ function Root() {
       <SafeAreaView style={styles.safe}>
         <StatusBar style={themeIsDark ? "light" : "dark"} />
 
-        {landing && !session ? (
+        {!authReady ? (
+          <ScreenLoading />
+        ) : landing && !session ? (
           <LandingScreen
             onLogin={() => { enter(); go({ auth: true, authMode: "login" }); }}
             onSignup={() => { enter(); go({ auth: true, authMode: "signup" }); }}
@@ -791,7 +883,7 @@ function Root() {
               {wide ? desktop : (
                 overlay ? <Suspense fallback={<ScreenLoading />}>{overlay}</Suspense> : (
                   <>
-                    {tabScreens}
+                    <Suspense fallback={<ScreenLoading />}>{tabScreens}</Suspense>
                     <View style={styles.tabbar}>
                       {LEFT.map((t) => <TabButton key={t.key} tab={t} active={tab} onPress={switchTab} />)}
                       <View style={styles.fabCol}>
@@ -813,7 +905,7 @@ function Root() {
             as a sibling so it does not have to be threaded through both the wide
             and mobile branches of the frame above. */}
         {status === "ok" && session && session.emailVerified === false && (
-          <VerifyEmailBanner email={session.email} />
+          <VerifyEmailBanner email={session.email} topOffset={!wide && player ? 72 : undefined} />
         )}
 
         <FeedbackHost onOpenDiagnostics={() => go({ diagnostics: true })} />
@@ -860,7 +952,7 @@ function Root() {
 
         {verifyToken && (
           <View style={styles.welcomeModal}>
-            <VerifyEmailScreen token={verifyToken} onDone={clearVerifyUrl} />
+            <VerifyEmailScreen token={verifyToken} onConsumed={scrubVerifyUrl} onDone={clearVerifyUrl} />
           </View>
         )}
 
@@ -871,7 +963,7 @@ function Root() {
               onOpenFanClub={(a) => { setWelcome(false); openFanClub(a); }}
               onOpenShow={(s) => { setWelcome(false); openShow(s); }}
               onOpenFanClubs={() => { setWelcome(false); go({ fanClubs: true }); }}
-              onOpenNearby={() => { setWelcome(false); requireAuth(() => go({ nearby: true })); }}
+              onOpenNearby={() => { setWelcome(false); go({ nearby: true }); }}
             />
           </View>
         )}

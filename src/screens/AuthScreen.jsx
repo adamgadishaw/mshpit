@@ -15,9 +15,10 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) 
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [city, setCity] = useState(null); // { city, label }
+  const [city, setCity] = useState(null); // complete LocationPicker place identity
   const [pickingCity, setPickingCity] = useState(false);
   const [agreed, setAgreed] = useState(false); // signup: consent to Terms + Privacy
+  const [analyticsConsent, setAnalyticsConsent] = useState(false); // optional, default off
   const [viewing, setViewing] = useState(null); // "terms" | "privacy", inline reader
   const [error, setError] = useState("");
 
@@ -28,7 +29,7 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) 
     }
     const res = mode === "login"
       ? await login(email, password)
-      : await signup({ name, email, password, city: city?.city, agreedToTerms: true });
+      : await signup({ name, email, password, city: city?.city, location: city, agreedToTerms: true, analyticsConsent });
     if (res.ok) onDone?.(mode); // signup flows into the artist taste picker
     else setError(res.error);
   };
@@ -37,7 +38,7 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) 
     return (
       <LocationPicker
         onClose={() => setPickingCity(false)}
-        onSelect={(place) => { setCity({ city: place.city, label: place.label }); setPickingCity(false); }}
+        onSelect={(place) => { setCity(place); setPickingCity(false); }}
       />
     );
   }
@@ -127,16 +128,32 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) 
         />
 
         {mode === "signup" && (
-          <Pressable style={styles.consent} onPress={() => { setAgreed((v) => !v); setError(""); }}>
-            <View style={[styles.box, agreed && styles.boxOn]}>
-              {agreed ? <Icon name="check" size={14} color="#1A1206" strokeWidth={3} /> : null}
-            </View>
-            <Text style={styles.consentTxt}>
+          <View style={styles.consent}>
+            <Pressable style={styles.checkboxTarget} onPress={() => { setAgreed((v) => !v); setError(""); }} accessibilityRole="checkbox" accessibilityState={{ checked: agreed }} accessibilityLabel="I am 13 or older and agree to the Terms and Privacy policy">
+              <View style={[styles.box, agreed && styles.boxOn]}>
+                {agreed ? <Icon name="check" size={14} color="#1A1206" strokeWidth={3} /> : null}
+              </View>
+            </Pressable>
+            <Text style={styles.consentTxt} onPress={() => { setAgreed((v) => !v); setError(""); }}>
               I'm 13+ and agree to the{" "}
-              <Text style={styles.link} onPress={() => setViewing("terms")}>Terms & Conditions</Text> and{" "}
-              <Text style={styles.link} onPress={() => setViewing("privacy")}>Privacy policy</Text>, including
-              collection of my activity to personalize content and show relevant ads.
+              <Text style={styles.link}>Terms & Conditions</Text> and Privacy policy. Use the links below to review them first.
             </Text>
+          </View>
+        )}
+
+        {mode === "signup" && (
+          <View style={styles.policyLinks}>
+            <Pressable onPress={() => setViewing("terms")} accessibilityRole="link"><Text style={styles.link}>Read Terms</Text></Pressable>
+            <Pressable onPress={() => setViewing("privacy")} accessibilityRole="link"><Text style={styles.link}>Read Privacy policy</Text></Pressable>
+          </View>
+        )}
+
+        {mode === "signup" && (
+          <Pressable style={styles.consent} onPress={() => setAnalyticsConsent((value) => !value)} accessibilityRole="checkbox" accessibilityState={{ checked: analyticsConsent }} accessibilityLabel="Share optional privacy-filtered product analytics">
+            <View style={[styles.box, analyticsConsent && styles.boxOn]}>
+              {analyticsConsent ? <Icon name="check" size={14} color="#1A1206" strokeWidth={3} /> : null}
+            </View>
+            <Text style={styles.consentTxt}>Optional: share privacy-filtered product analytics so Pit can improve reliability and recommendations. You can change this any time in Settings.</Text>
           </Pressable>
         )}
 
@@ -194,6 +211,8 @@ const styles = StyleSheet.create({
   cityPlaceholder: { color: colors.textFaint },
   error: { color: colors.danger, fontSize: 13, marginBottom: 8 },
   consent: { flexDirection: "row", alignItems: "flex-start", gap: 10, marginTop: 14, marginBottom: 4 },
+  checkboxTarget: { width: 44, height: 44, marginTop: -10, marginBottom: -10, marginLeft: -11, alignItems: "center", justifyContent: "center" },
+  policyLinks: { flexDirection: "row", flexWrap: "wrap", gap: 18, marginLeft: 44, marginTop: 3, marginBottom: 4 },
   box: { width: 22, height: 22, borderRadius: 6, borderWidth: 1.5, borderColor: colors.line, backgroundColor: colors.surface, alignItems: "center", justifyContent: "center", marginTop: 1 },
   boxOn: { backgroundColor: colors.amberStrong, borderColor: colors.amberStrong },
   consentTxt: { flex: 1, color: colors.textDim, fontSize: 12.5, lineHeight: 18 },

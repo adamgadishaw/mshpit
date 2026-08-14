@@ -34,11 +34,15 @@ test("the exported web entry does not contain the venue photo catalogue", { time
       .filter((path) => /[\\/]index-[^\\/]+\.js$/.test(path))
       .sort((a, b) => statSync(b).size - statSync(a).size)[0];
     assert.ok(main, "Expo export must contain a hashed web index entry");
+    const discoverChunk = scripts.find((path) => /[\\/]DiscoverScreen-[^\\/]+\.js$/.test(path));
+    assert.ok(discoverChunk, "Discover must remain an on-demand screen chunk instead of inflating first load");
     const allClientJavaScript = scripts.map((path) => readFileSync(path, "utf8")).join("\n");
+    const mainJavaScript = readFileSync(main, "utf8");
 
     assert.doesNotMatch(allClientJavaScript, /galleryPool:\[/, "literal venue gallery arrays leaked into a web chunk");
     assert.doesNotMatch(allClientJavaScript, /catalog\.venue-photos/, "the server-only split file leaked into a web chunk");
-    const mainBytes = readFileSync(main);
+    assert.doesNotMatch(mainJavaScript, /FIND YOUR NEXT OBSESSION/, "Discover UI leaked back into the entry bundle");
+    const mainBytes = Buffer.from(mainJavaScript);
     const rawBytes = mainBytes.byteLength;
     const gzipBytes = gzipSync(mainBytes).byteLength;
     const brotliBytes = brotliCompressSync(mainBytes).byteLength;

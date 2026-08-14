@@ -9,8 +9,19 @@ const isObject = (value) => value != null && typeof value === "object" && !Array
 const asArray = (value) => (Array.isArray(value) ? value : []);
 const withoutIds = (value, ids) => asArray(value).filter((item) => !ids.has(String(item?.id || "")));
 
+export function publicProfileCacheEntry(user) {
+  if (!isObject(user) || !user.id) return null;
+  const keys = ["id", "name", "handle", "role", "verified", "sponsor", "artistName", "bio", "avatarUri", "avatarColor", "banner", "initials", "nowPlaying"];
+  const projected = Object.fromEntries(keys.filter((key) => user[key] !== undefined).map((key) => [key, user[key]]));
+  if (typeof user.home?.city === "string" && user.home.city) projected.home = { city: user.home.city };
+  return projected;
+}
+
 function withoutDemoUsers(value) {
-  return asArray(value).filter((user) => !DEMO_USER_IDS.has(String(user?.id || "")));
+  return asArray(value)
+    .filter((user) => !DEMO_USER_IDS.has(String(user?.id || "")))
+    .map(publicProfileCacheEntry)
+    .filter(Boolean);
 }
 
 function withoutDemoUserKeys(value, { filterValues = false } = {}) {

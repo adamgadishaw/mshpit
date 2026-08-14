@@ -106,6 +106,13 @@ function Section({ icon, tint, title, count, rows }) {
   );
 }
 
+function searchResultBucket(count) {
+  if (count <= 0) return "zero";
+  if (count <= 5) return "one_to_five";
+  if (count <= 20) return "six_to_twenty";
+  return "over_twenty";
+}
+
 export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpenFanClub, onOpenProfile, onPlay, onAddToPlaylist }) {
   const { tourDates, searchVenues, artistsAlphabetical, venuesByCity, upcomingEvents, fanClubsDirectory, commentsFor, track,
     users, session, isFollowing, follow, unfollow, searchPeople, loadMembers, memberCount, searchArtistsApi, resolveArtist,
@@ -123,16 +130,27 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
   useEffect(() => {
     if (!query) { searchArtistsApi("").then(setDbArtists); setSongs([]); return; }
     let live = true;
-    const id = setTimeout(() => {
-      searchPeople(query); // type-ahead: people only ever surface as you type
-      searchArtistsApi(query).then(setDbArtists); // pulls the full DB catalog, not just the bundle
-      // Songs come from the server (Deezer-backed, no YouTube quota). `live`
-      // guards against a slow response for an old query landing after a newer
-      // one and showing results for something the user already typed past.
-      searchSongsApi(query).then((list) => { if (live) setSongs(list || []); });
-      track("search", { q: query });
+    const controller = new AbortController();
+    const id = setTimeout(async () => {
+      const [peopleRows, artistRows, songRows] = await Promise.all([
+        searchPeople(query, { signal: controller.signal }),
+        searchArtistsApi(query, { signal: controller.signal }),
+        searchSongsApi(query, { signal: controller.signal }),
+      ]);
+      if (!live) return;
+      setDbArtists(artistRows || []);
+      setSongs(songRows || []);
+
+      // Search text stays inside the search requests. Analytics receives only a
+      // coarse result-count bucket, computed after this query's remote and local
+      // result sets settle, so stale requests cannot emit a misleading funnel.
+      const venueCount = searchVenues(query, 24).length;
+      const eventCount = tourDates.filter((t) => `${t.artist} ${t.venue} ${t.place || t.city || ""}`.toLowerCase().includes(query)).slice(0, 24).length;
+      const clubCount = fanClubsDirectory().filter((c) => c.artist.toLowerCase().includes(query)).slice(0, 12).length;
+      const resultCount = (peopleRows?.length || 0) + (artistRows?.length || 0) + (songRows?.length || 0) + venueCount + eventCount + clubCount;
+      track("search", { kind: "all", resultBucket: searchResultBucket(resultCount) });
     }, 250);
-    return () => { live = false; clearTimeout(id); };
+    return () => { live = false; clearTimeout(id); controller.abort(); };
   }, [query]);
 
   const mine = session?.id;

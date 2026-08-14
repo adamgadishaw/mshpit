@@ -15,6 +15,7 @@ const {
   beginVerification, completeVerification, forceVerify, hashToken,
   mintVerifyToken, resendVerification, sendWelcomeOnce, verificationEnabled,
 } = await import("./verification.js");
+const { routes } = await import("./api.js");
 
 after(() => {
   db.close();
@@ -75,15 +76,25 @@ test("confirming marks the account and releases the welcome exactly once", async
   const user = addUser();
   const token = mintVerifyToken(user.id);
 
-  const verified = completeVerification(token);
+  const completion = completeVerification(token);
+  const verified = completion?.user;
   assert.ok(verified, "a live token should verify");
+  assert.equal(completion.replayed, false);
   assert.ok(verified.email_verified_at > 0);
   assert.equal(verified.email_verify_hash, null, "the token must be spent");
+  const receipt = db.prepare("SELECT * FROM email_verification_receipts WHERE token_hash=?").get(hashToken(token));
+  assert.equal(receipt.user_id, user.id);
+  assert.notEqual(receipt.token_hash, token, "the raw token must never enter the retry receipt");
+  assert.equal(receipt.email_hash, hashToken(user.email));
+  assert.equal(Object.hasOwn(receipt, "email"), false, "the retry receipt must not duplicate the raw address");
   await flush();
   assert.equal(welcomeCount(user.id), 1);
 
-  // Replaying the same token must not verify again or re-send the welcome.
-  assert.equal(completeVerification(token), null);
+  // Replaying after a lost response reports the committed result honestly,
+  // without re-running verification or sending another welcome.
+  const replay = completeVerification(token);
+  assert.equal(replay?.user?.id, user.id);
+  assert.equal(replay?.replayed, true);
   await flush();
   assert.equal(welcomeCount(user.id), 1);
 });
@@ -101,12 +112,27 @@ test("an unknown or expired token is refused, and reveals nothing either way", (
   assert.equal(q.userById.get(user.id).email_verified_at, 0);
 });
 
+test("a replay receipt expires and stops matching after an email-account change", () => {
+  const user = addUser();
+  const token = mintVerifyToken(user.id);
+  assert.equal(completeVerification(token)?.replayed, false);
+  const receipt = db.prepare("SELECT * FROM email_verification_receipts WHERE token_hash=?").get(hashToken(token));
+
+  db.prepare("UPDATE users SET email=?, email_verified_at=0 WHERE id=?")
+    .run(`changed-${user.email}`, user.id);
+  assert.equal(completeVerification(token), null, "an old address receipt must not confirm a replacement address");
+
+  db.prepare("UPDATE users SET email=?, email_verified_at=? WHERE id=?")
+    .run(user.email, receipt.verified_at, user.id);
+  assert.equal(completeVerification(token, receipt.expires_at), null, "a receipt is invalid at its expiry boundary");
+});
+
 test("one user's token cannot verify another account", () => {
   const a = addUser();
   const b = addUser();
   mintVerifyToken(a.id);
   const tokenB = mintVerifyToken(b.id);
-  const verified = completeVerification(tokenB);
+  const verified = completeVerification(tokenB)?.user;
   assert.equal(verified.id, b.id);
   assert.equal(q.userById.get(a.id).email_verified_at, 0, "A must be untouched");
 });
@@ -162,6 +188,78 @@ test("sendWelcomeOnce is the single guard against a duplicate welcome", async ()
   assert.equal(second.sent, false);
   assert.equal(second.reason, "already-sent");
   assert.equal(welcomeCount(user.id), 1);
+});
+
+test("concurrent welcome attempts claim the one-time send atomically", async () => {
+  const user = addUser();
+  const [first, second] = await Promise.all([sendWelcomeOnce(user), sendWelcomeOnce(user)]);
+  assert.equal([first, second].filter((result) => result.reason !== "already-sent").length, 1);
+  assert.equal(welcomeCount(user.id), 1);
+});
+
+test("verification routes are no-store and only return private self data to the matching session", () => {
+  const owner = addUser();
+  const other = addUser();
+  const token = mintVerifyToken(owner.id);
+  const guestHeaders = new Map();
+  const guestResult = routes["POST /api/verify-email"]({
+    body: { token },
+    user: null,
+    ip: `verify-route-guest-${owner.id}`,
+    setHeader: (name, value) => guestHeaders.set(name, value),
+  });
+  assert.equal(guestResult.verified, true);
+  assert.equal(Object.hasOwn(guestResult, "user"), false);
+  assert.equal(guestHeaders.get("Cache-Control"), "no-store");
+
+  const ownerReplay = routes["POST /api/verify-email"]({
+    body: { token },
+    user: q.userById.get(owner.id),
+    ip: `verify-route-owner-${owner.id}`,
+    setHeader: () => {},
+  });
+  assert.equal(ownerReplay.verified, true);
+  assert.equal(ownerReplay.alreadyVerified, true);
+  assert.equal(ownerReplay.user.id, owner.id);
+  assert.equal(ownerReplay.user.emailVerified, true);
+  assert.equal(ownerReplay.user.verified, false, "email confirmation must not grant the public badge");
+
+  const otherOwner = addUser();
+  const otherToken = mintVerifyToken(otherOwner.id);
+  const mismatched = routes["POST /api/verify-email"]({
+    body: { token: otherToken },
+    user: other,
+    ip: `verify-route-other-${other.id}`,
+    setHeader: () => {},
+  });
+  assert.equal(mismatched.verified, true);
+  assert.equal(Object.hasOwn(mismatched, "user"), false);
+
+  const meHeaders = new Map();
+  const me = routes["GET /api/me"]({
+    user: q.userById.get(owner.id),
+    setHeader: (name, value) => meHeaders.set(name, value),
+  });
+  assert.equal(me.user.emailVerified, true);
+  assert.equal(meHeaders.get("Cache-Control"), "no-store");
+});
+
+test("already-verified resend self-heals with a fresh no-store self projection", () => {
+  const user = addUser();
+  forceVerify(user.id);
+  const headers = new Map();
+  const result = routes["POST /api/verify-email/resend"]({
+    user: q.userById.get(user.id),
+    body: {},
+    ip: `verify-resend-${user.id}`,
+    setHeader: (name, value) => headers.set(name, value),
+  });
+  assert.equal(result.sent, false);
+  assert.equal(result.reason, "already-verified");
+  assert.equal(result.verified, true);
+  assert.equal(result.user.id, user.id);
+  assert.equal(result.user.emailVerified, true);
+  assert.equal(headers.get("Cache-Control"), "no-store");
 });
 
 test("email verification never appears as the public verified check", () => {

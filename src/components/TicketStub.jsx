@@ -43,7 +43,7 @@ function TagRow({ tags, center = false }) {
 // Review-forward feed card: the review is the centerpiece. Artist / venue / date
 // sit on a ticket-stub line below, the score reads at a glance, and the footer
 // opens the Afterparty (like + comments) for that concert.
-export default function TicketStub({ log, onOpen, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenVenue, onReport, onEdit, onDelete, onOpenPhotos, onPlay, showComments = true }) {
+export default function TicketStub({ log, onOpen, onNotInterested, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenVenue, onReport, onEdit, onDelete, onOpenPhotos, onPlay, showComments = true }) {
   const openComments = () => (onComment || onOpen)?.(log);
   const { userById, likeInfo, toggleLike, commentsFor, session, userBadges, deleteOwnPost } = useStore();
   const author = userById?.(log.userId) || { initials: log.user?.initials, name: log.user?.name, handle: log.user?.handle };
@@ -254,6 +254,12 @@ export default function TicketStub({ log, onOpen, onComment, onPreview, onOpenPr
 
       {/* footer → the Afterparty */}
       <View style={styles.footer}>
+        {onNotInterested && (
+          <Pressable style={({ pressed }) => [styles.notForMe, pressed && styles.controlPressed]} hitSlop={8} onPress={() => onNotInterested(log)} accessibilityRole="button" accessibilityLabel="Not for me. Hide this recommendation.">
+            <Icon name="minus" size={14} color={colors.textDim} />
+            <Text style={styles.notForMeTxt}>Not for me</Text>
+          </Pressable>
+        )}
         <Pressable style={({ pressed }) => [styles.fBtn, pressed && styles.controlPressed]} onPress={() => (session ? toggleLike(log.id, log.likes || 0) : onOpen?.(log))} hitSlop={8} accessibilityRole="button" accessibilityLabel={`${liked ? "Unlike" : "Like"}, ${likeCount} likes`}>
           <Icon name="heart" size={18} color={liked ? colors.magenta : colors.textDim} filled={liked} />
           <Text style={[styles.fCount, liked && { color: colors.magenta }]}>{likeCount}</Text>
@@ -343,6 +349,8 @@ const styles = StyleSheet.create({
   footer: { flexDirection: "row", alignItems: "center", gap: 12, marginTop: 16 },
   fBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, minWidth: 32, minHeight: 32, paddingHorizontal: 4, borderRadius: radius.sm },
   fCount: { color: colors.textDim, fontSize: 13, fontFamily: mono },
+  notForMe: { flexDirection: "row", alignItems: "center", gap: 4, minHeight: 32, paddingHorizontal: 6, borderRadius: radius.sm },
+  notForMeTxt: { color: colors.textDim, fontSize: 11, fontWeight: "700" },
   controlPressed: { backgroundColor: colors.surfaceAlt, transform: [{ scale: 0.96 }] },
   afterLink: { flexDirection: "row", alignItems: "center", gap: 2, backgroundColor: colors.surfaceAlt, borderRadius: radius.pill, borderWidth: 1, borderBottomWidth: 2, borderColor: colors.line, paddingHorizontal: 10, minHeight: 32, ...shadow.control },
   afterPressed: { transform: [{ translateY: 1 }], boxShadow: "inset 0 1px 2px rgba(0,0,0,0.16)" },

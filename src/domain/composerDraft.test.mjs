@@ -41,6 +41,7 @@ test("show drafts preserve posting identity, entity binding, ratings, consent, a
     dims: { performance: 5, crowd: 4.5 },
     tagDraft: "no skips",
     photosPublic: false,
+    landingShowcase: true,
   });
 
   assert.equal(draft.submissionId, "post_retry_identity");
@@ -49,8 +50,14 @@ test("show drafts preserve posting identity, entity binding, ratings, consent, a
   assert.equal(draft.dims.crowd, 4.5);
   assert.equal(draft.tagDraft, "no skips");
   assert.equal(draft.photosPublic, false);
+  assert.equal(draft.landingShowcase, false);
   assert.equal(composerDraftHasContent(draft), true);
   assert.equal(composerDraftTitle(draft), "J. Cole \u00b7 Scotiabank Arena");
+});
+
+test("homepage showcase consent defaults off for legacy and new drafts", () => {
+  assert.equal(normalizeComposerDraft({}).landingShowcase, false);
+  assert.equal(normalizeComposerDraft({ photosPublic: true, landingShowcase: true }).landingShowcase, true);
 });
 
 test("draft fingerprints ignore storage metadata but include user-visible changes", () => {

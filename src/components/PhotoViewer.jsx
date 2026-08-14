@@ -1,21 +1,127 @@
-import { useEffect, useState } from "react";
-import { View, Text, StyleSheet, Pressable, Platform, Modal } from "react-native";
+import { useEffect, useRef, useState } from "react";
+import { ActivityIndicator, Linking, View, Text, StyleSheet, Pressable, Platform, Modal } from "react-native";
+import { useEvent } from "expo";
 import { useVideoPlayer, VideoView } from "expo-video";
 import { colors, mono, radius } from "../theme";
 import Icon from "./Icon";
 import SmartImage from "./SmartImage";
 import { isVideoUrl } from "../lib/img";
+import { galleryKeyAction, videoViewerPhase } from "../domain/mediaViewer.mjs";
+import { analyticsDurationBucket } from "../domain/analyticsPolicy.mjs";
+import { pendingVideoMilestones } from "../domain/mediaAnalytics.mjs";
 import { useStore } from "../store";
 
 const web = Platform.OS === "web";
 
-// A clip inside the viewer: expo-video with the platform's own controls (a
-// <video> element on web). Mounted keyed by URL, so moving through the set
-// releases the old player and the audio stops with it. No autoplay: browsers
-// block un-gestured sound, so the user's tap on the controls starts it.
-function ClipStage({ uri }) {
+function ClipPlayer({ uri, postId, onRetry, onTrack }) {
   const player = useVideoPlayer(uri);
-  return <VideoView player={player} style={styles.img} contentFit="contain" accessibilityLabel="Video clip player" />;
+  const { status, error } = useEvent(player, "statusChange", {
+    status: player.status,
+    error: null,
+  });
+  const [hasFirstFrame, setHasFirstFrame] = useState(false);
+  const mountedAt = useRef(Date.now());
+  const trackedError = useRef(false);
+  const trackedFirstFrame = useRef(false);
+  const trackRef = useRef(onTrack);
+  trackRef.current = onTrack;
+  const phase = videoViewerPhase({ status, error, hasFirstFrame });
+
+  useEffect(() => {
+    if (!player || !postId) return;
+    const milestones = new Set();
+    let started = false;
+    try { player.timeUpdateEventInterval = 1; } catch {}
+    const recordStart = (isPlaying) => {
+      if (!isPlaying || started) return;
+      started = true;
+      trackRef.current?.("video_start", { postId, surface: "media_viewer", muted: !!player.muted });
+    };
+    const recordMilestone = (milestone) => {
+      if (milestones.has(milestone)) return;
+      milestones.add(milestone);
+      trackRef.current?.("video_progress", { postId, surface: "media_viewer", milestone });
+    };
+    const playingSubscription = player.addListener?.("playingChange", ({ isPlaying }) => recordStart(isPlaying));
+    const timeSubscription = player.addListener?.("timeUpdate", ({ currentTime }) => {
+      for (const milestone of pendingVideoMilestones({ currentTime, duration: player.duration, seen: milestones })) recordMilestone(milestone);
+    });
+    const endSubscription = player.addListener?.("playToEnd", () => {
+      for (const milestone of pendingVideoMilestones({ seen: milestones, ended: true })) recordMilestone(milestone);
+    });
+    recordStart(player.playing);
+    return () => {
+      playingSubscription?.remove?.();
+      timeSubscription?.remove?.();
+      endSubscription?.remove?.();
+    };
+  }, [player, postId]);
+
+  useEffect(() => {
+    if (phase !== "error" || trackedError.current) return;
+    trackedError.current = true;
+    trackRef.current?.("product_error", { code: "video_load_failed", surface: "media_viewer", retryable: true });
+  }, [phase]);
+
+  const recordFirstFrame = () => {
+    if (trackedFirstFrame.current) return;
+    trackedFirstFrame.current = true;
+    setHasFirstFrame(true);
+    trackRef.current?.("performance", {
+      metric: "video_first_frame",
+      durationBucket: analyticsDurationBucket(Date.now() - mountedAt.current),
+      surface: "media_viewer",
+      outcome: "ok",
+    });
+  };
+
+  return (
+    <>
+      <VideoView
+        player={player}
+        style={web ? styles.webVideo : styles.img}
+        contentFit="contain"
+        nativeControls
+        playsInline
+        onFirstFrameRender={recordFirstFrame}
+        accessibilityLabel="Video clip player"
+      />
+      {phase === "loading" && (
+        <View style={styles.videoStatus} pointerEvents="none" accessibilityLiveRegion="polite">
+          <ActivityIndicator color="#fff" />
+          <Text style={styles.videoStatusText}>Loading video…</Text>
+        </View>
+      )}
+      {phase === "error" && (
+        <View style={styles.videoError} accessibilityLiveRegion="assertive">
+          <Text style={styles.videoErrorTitle}>This video could not play</Text>
+          <Text style={styles.videoErrorText}>The browser may not support its format, or the connection was interrupted.</Text>
+          <View style={styles.videoErrorActions}>
+            <Pressable style={styles.videoAction} onPress={onRetry} accessibilityRole="button">
+              <Text style={styles.videoActionText}>Try again</Text>
+            </Pressable>
+            <Pressable style={styles.videoAction} onPress={() => Linking.openURL(uri).catch(() => {})} accessibilityRole="link">
+              <Text style={styles.videoActionText}>Open video</Text>
+            </Pressable>
+          </View>
+        </View>
+      )}
+    </>
+  );
+}
+
+// A clip inside the viewer: expo-video with the platform's own controls (a
+// <video> element on web). The web element must be absolutely bounded: a
+// portrait video's intrinsic height otherwise expands React Native Web's flex
+// child beyond the modal viewport and pushes its picture/controls off-screen.
+// Remounting on retry also releases the failed player cleanly.
+function ClipStage({ uri, postId, onTrack }) {
+  const [attempt, setAttempt] = useState(0);
+  return (
+    <View style={styles.clipViewport}>
+      <ClipPlayer key={`${uri}:${attempt}`} uri={uri} postId={postId} onTrack={onTrack} onRetry={() => setAttempt((value) => value + 1)} />
+    </View>
+  );
 }
 
 // Facebook-style full-screen media viewer: every photo set on the app (review
@@ -24,7 +130,7 @@ function ClipStage({ uri }) {
 // key on the photo's durable URL, so a like given from a post follows the same
 // photo into the artist's rolling gallery.
 export default function PhotoViewer({ photos = [], index = 0, postId = null, onClose }) {
-  const { session, mediaReactions, loadMediaReactions, toggleMediaReaction } = useStore();
+  const { session, mediaReactions, loadMediaReactions, toggleMediaReaction, track } = useStore();
   const [i, setI] = useState(index);
   const p = photos[i] || photos[0];
   const uri = typeof p === "string" ? p : p?.uri;
@@ -40,9 +146,14 @@ export default function PhotoViewer({ photos = [], index = 0, postId = null, onC
   useEffect(() => {
     if (!web || typeof window === "undefined") return;
     const onKey = (e) => {
-      if (e.key === "Escape") onClose?.();
-      else if (e.key === "ArrowLeft" && photos.length > 1) prev();
-      else if (e.key === "ArrowRight" && photos.length > 1) next();
+      const action = galleryKeyAction({
+        key: e.key,
+        tagName: e.target?.tagName,
+        isContentEditable: !!e.target?.isContentEditable,
+      });
+      if (action === "close") onClose?.();
+      else if (action === "previous" && photos.length > 1) prev();
+      else if (action === "next" && photos.length > 1) next();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -65,7 +176,7 @@ export default function PhotoViewer({ photos = [], index = 0, postId = null, onC
     >
     <View style={styles.wrap} accessibilityViewIsModal>
       {/* Backdrop closes, like every photo lightbox people already know. */}
-      <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityLabel="Close photo viewer" />
+      <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityLabel="Close media viewer" />
 
       <View style={styles.top} pointerEvents="box-none">
         <Text style={styles.count}>{i + 1} / {photos.length}</Text>
@@ -77,13 +188,13 @@ export default function PhotoViewer({ photos = [], index = 0, postId = null, onC
       <View style={styles.stage} pointerEvents="box-none">
         {/* SmartImage = HEIC transcode + proxy-rescue ladder, so an iPhone photo
             renders here instead of a black void. Clips get a real player. */}
-        {video ? <ClipStage key={uri} uri={uri} /> : <SmartImage uri={uri} style={styles.img} contain />}
+        {video ? <ClipStage key={uri} uri={uri} postId={postId} onTrack={track} /> : <SmartImage uri={uri} style={styles.img} contain />}
         {photos.length > 1 && (
           <>
-            <Pressable style={[styles.arrow, { left: 10 }]} onPress={prev} hitSlop={10} accessibilityRole="button" accessibilityLabel="Previous photo">
+            <Pressable style={[styles.arrow, { left: 10 }]} onPress={prev} hitSlop={10} accessibilityRole="button" accessibilityLabel="Previous media">
               <Icon name="chevron-left" size={26} color="#fff" />
             </Pressable>
-            <Pressable style={[styles.arrow, { right: 10 }]} onPress={next} hitSlop={10} accessibilityRole="button" accessibilityLabel="Next photo">
+            <Pressable style={[styles.arrow, { right: 10 }]} onPress={next} hitSlop={10} accessibilityRole="button" accessibilityLabel="Next media">
               <Icon name="chevron-right" size={26} color="#fff" />
             </Pressable>
           </>
@@ -99,7 +210,7 @@ export default function PhotoViewer({ photos = [], index = 0, postId = null, onC
           disabled={!session}
           hitSlop={8}
           accessibilityRole="button"
-          accessibilityLabel={`${r.mine ? "Unlike" : "Like"} this photo, ${r.count} ${r.count === 1 ? "like" : "likes"}`}
+          accessibilityLabel={`${r.mine ? "Unlike" : "Like"} this ${video ? "video" : "photo"}, ${r.count} ${r.count === 1 ? "like" : "likes"}`}
         >
           <Icon name="heart" size={18} color={r.mine ? colors.magenta : "#fff"} filled={r.mine} />
           <Text style={[styles.likeTxt, r.mine && { color: colors.magenta }]}>{r.count}</Text>
@@ -122,8 +233,18 @@ const styles = StyleSheet.create({
   top: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingTop: 14, paddingBottom: 8 },
   count: { color: "#fff", fontFamily: mono, fontSize: 13, opacity: 0.85 },
   closeBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: "rgba(255,255,255,0.1)", alignItems: "center", justifyContent: "center" },
-  stage: { flex: 1 },
+  stage: { flex: 1, minWidth: 0, minHeight: 0, overflow: "hidden" },
   img: { flex: 1, backgroundColor: "transparent" },
+  clipViewport: { flex: 1, width: "100%", height: "100%", minWidth: 0, minHeight: 0, overflow: "hidden", backgroundColor: "#06070b" },
+  webVideo: { ...StyleSheet.absoluteFillObject, width: "100%", height: "100%", maxWidth: "100%", maxHeight: "100%", backgroundColor: "transparent" },
+  videoStatus: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center", gap: 10 },
+  videoStatusText: { color: "rgba(255,255,255,0.8)", fontSize: 13 },
+  videoError: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center", gap: 10, paddingHorizontal: 24, backgroundColor: "rgba(6,7,11,0.9)" },
+  videoErrorTitle: { color: "#fff", fontSize: 17, fontWeight: "800", textAlign: "center" },
+  videoErrorText: { color: "rgba(255,255,255,0.72)", fontSize: 13, lineHeight: 19, textAlign: "center", maxWidth: 380 },
+  videoErrorActions: { flexDirection: "row", flexWrap: "wrap", justifyContent: "center", gap: 8, marginTop: 2 },
+  videoAction: { minHeight: 44, justifyContent: "center", borderRadius: radius.pill, paddingHorizontal: 16, backgroundColor: "rgba(255,255,255,0.12)" },
+  videoActionText: { color: "#fff", fontSize: 13, fontWeight: "800" },
   arrow: { position: "absolute", top: "50%", marginTop: -24, width: 48, height: 48, borderRadius: 24, backgroundColor: "rgba(255,255,255,0.12)", alignItems: "center", justifyContent: "center" },
   footer: { alignItems: "center", gap: 8, paddingBottom: 22, paddingTop: 8 },
   by: { color: "rgba(255,255,255,0.7)", fontSize: 13, textAlign: "center" },

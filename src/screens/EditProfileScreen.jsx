@@ -4,7 +4,7 @@ import * as ImagePicker from "expo-image-picker";
 import { colors, radius, themeKey, THEMES } from "../theme";
 import ThemeSwatch, { themeGridStyle } from "../components/ThemeSwatch";
 import { useStore } from "../store";
-import { GENRES, cityCoords } from "../data";
+import { GENRES } from "../data";
 import Avatar from "../components/Avatar";
 import Icon from "../components/Icon";
 import LocationPicker from "../components/LocationPicker";
@@ -30,7 +30,7 @@ function SongField({ song, color, onPress, onClear }) {
 }
 
 export default function EditProfileScreen({ onClose, onPickArtists }) {
-  const { session, users, updateProfile, chooseTheme } = useStore();
+  const { session, users, updateProfile, chooseTheme, locationCenter } = useStore();
   const isDark = (THEMES.find((t) => t.key === themeKey) || {}).dark;
   const [name, setName] = useState(session?.name || "");
   const [handle, setHandle] = useState(session?.handle || "");
@@ -57,8 +57,7 @@ export default function EditProfileScreen({ onClose, onPickArtists }) {
       <LocationPicker
         onClose={() => setPickingCity(false)}
         onSelect={(place) => {
-          const c = cityCoords[place.city] || {};
-          setHome({ city: place.city, lat: c.lat ?? null, lng: c.lng ?? null });
+          setHome(locationCenter(place));
           setPickingCity(false);
         }}
       />

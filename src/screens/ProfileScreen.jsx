@@ -56,7 +56,11 @@ function TrebleBass({ kind, song, playing, onPlay, onOpenArtist }) {
 // artists, planned shows, reviews. Built to make people findable and followable.
 export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtist, onOpenVenue, onEditProfile, onPreview, onMessage, onReport, onEditPost, onOpenPhotos, onPlay, onOpenFollowList, onOpenBadges }) {
   const { session, userById, logsByUser, isFollowing, follow, unfollow, followerCount, followingCount, goingFor, userBadges, sharedShows, userPlaylists, loadUser, isBlocked, blockUser, unblockUser, userPoints, userAchievements, loadRewards } = useStore();
-  const user = userById(userId);
+  const cachedUser = userById(userId);
+  // The shared public-profile cache deliberately excludes private taste picks,
+  // consent fields, and precise home data. The signed-in member can still see
+  // their own complete server-authoritative session projection.
+  const user = session?.id === userId ? { ...cachedUser, ...session } : cachedUser;
   const [playlists, setPlaylists] = useState([]);
   const [missing, setMissing] = useState(false);
   const [playing, setPlaying] = useState(null);

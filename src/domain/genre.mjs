@@ -112,12 +112,43 @@ export function withoutSource(claims, source) {
 // Normalizes whatever is on a stored row into a claims array: the modern list,
 // a single legacy record, or a bare pre-provenance genre string.
 export function storedClaims(data, columnGenre) {
-  if (Array.isArray(data?.genreClaims) && data.genreClaims.length) {
+  // Presence is authoritative, including an intentional empty array. An admin
+  // can withdraw the only staff claim while the typed column still contains
+  // its old value (the additive artist upsert preserves null columns). Falling
+  // through here would reclassify that withdrawn value as provider evidence.
+  if (Array.isArray(data?.genreClaims)) {
     return data.genreClaims.filter((c) => c && c.value && GENRE_SOURCES[c.source]);
   }
   if (data?.genreRecord?.value) return [data.genreRecord];
+  // Early versions of the crawler stored its discovery bucket only as
+  // `genreHint`. Retain that context for staff review, but explicitly mark it
+  // as a non-displayable tag hint instead of promoting it through the legacy
+  // column classifier.
+  const hint = genreClaim(data?.genreHint, "tag_hint");
   const legacy = classifyStoredGenre(columnGenre);
-  return legacy ? [legacy] : [];
+  // The structured blob is newer than the typed legacy column. When both are
+  // crawl hints, keep the explicit `genreHint`; when the column is provider
+  // evidence, retain both and let the normal authority ranking resolve them.
+  return hint ? upsertClaim(legacy ? [legacy] : [], hint) : (legacy ? [legacy] : []);
+}
+
+// One writer boundary for provider/staff/hint updates. Every source keeps its
+// own claim, automated evidence cannot displace a staff decision, and callers
+// persist both the resolved column value and the complete reversible history.
+export function genreFieldsForClaim(data, columnGenre, value, source, at = Date.now()) {
+  const claims = upsertClaim(storedClaims(data, columnGenre), genreClaim(value, source, at));
+  const record = resolveGenre(claims);
+  return {
+    genre: record?.value || null,
+    genreClaims: claims,
+    // Retire the old single-record representation when a writer advances the
+    // claim set. JSON.stringify omits undefined, so it cannot compete later.
+    genreRecord: undefined,
+  };
+}
+
+export function providerGenreFields(data, columnGenre, value, at = Date.now()) {
+  return genreFieldsForClaim(data, columnGenre, value, "provider", at);
 }
 
 // What the interface is allowed to state as the artist's genre. Below the

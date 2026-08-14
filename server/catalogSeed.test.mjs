@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { growOutcome, shouldEnrichAfterCrawl } from "./catalogSeed.js";
+import { crawlerGenreFields, growOutcome, shouldEnrichAfterCrawl } from "./catalogSeed.js";
+import { displayGenre, resolveGenre, storedClaims } from "../src/domain/genre.mjs";
 
 // Regression cover for the 2026-07-14 incident. "Grow by 10k" added zero artists
 // (every genre cursor had reached the end of its results) yet reported success and
@@ -46,4 +47,13 @@ test("enrichment runs only for artists this crawl actually added", () => {
   assert.equal(shouldEnrichAfterCrawl({ enrich: true, added: 12, stopRequested: false }), true);
   assert.equal(shouldEnrichAfterCrawl({ enrich: false, added: 12, stopRequested: false }), false);
   assert.equal(shouldEnrichAfterCrawl({ enrich: true, added: 12, stopRequested: true }), false);
+});
+
+test("crawler buckets persist as review hints, never as factual genres", () => {
+  const fields = crawlerGenreFields("Hardcore");
+  assert.equal(fields.genre, null);
+  assert.equal(fields.genreHint, "Hardcore");
+  const claims = storedClaims(fields, fields.genre);
+  assert.equal(claims[0]?.source, "tag_hint");
+  assert.equal(displayGenre(resolveGenre(claims)), null);
 });

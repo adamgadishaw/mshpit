@@ -4,7 +4,7 @@ import { colors, displayFont, focusRing, font, mono, radius, roleColor, shadow }
 import { useStore } from "../store";
 import Avatar from "./Avatar";
 import Icon from "./Icon";
-import { formatDate } from "../domain/dates.mjs";
+import { UpcomingEventCard } from "./VenueDiscoveryCards";
 
 const NAV = [
   { key: "feed", label: "Feed", icon: "feed" },
@@ -326,17 +326,27 @@ export function RightRail({ onOpenArtist, onOpenVenue, onFindVenues, onOpenEvent
 
       {/* Upcoming events */}
       <View style={styles.card}>
-        <Text style={styles.cardTitle}>UPCOMING EVENTS</Text>
+        <View style={styles.eventCardHead}>
+          <View>
+            <Text style={styles.cardTitle}>UPCOMING EVENTS</Text>
+            <Text style={styles.eventCardSub}>Soonest released dates</Text>
+          </View>
+          <View style={styles.eventCalendarMark}><Icon name="calendar" size={15} color={colors.amber} /></View>
+        </View>
         {events.length === 0 && <Text style={styles.empty}>{listingEmpty}</Text>}
-        {events.map((t) => (
-          <Pressable key={t.id} style={({ pressed, hovered, focused }) => [styles.eRow, hovered && styles.rowHover, pressed && styles.rowPressed, focused && focusRing]} onPress={() => (onOpenEvent ? onOpenEvent(t) : onOpenArtist?.(t.artist))} accessibilityRole="button">
-            <View style={styles.eDate}><Icon name="calendar" size={13} color={colors.amber} /></View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.aName} numberOfLines={1}>{t.artist}</Text>
-              <Text style={styles.aSub} numberOfLines={1}>{t.venue}{t.place ? ` · ${t.place.split(",")[0]}` : ""} · {formatDate(t.date, t.date)}</Text>
-            </View>
-          </Pressable>
-        ))}
+        <View style={styles.eventList}>
+          {events.map((event) => (
+            <Pressable
+              key={event.id}
+              style={({ pressed, hovered, focused }) => [styles.eventPressable, hovered && styles.eventHover, pressed && styles.rowPressed, focused && focusRing]}
+              onPress={() => (onOpenEvent ? onOpenEvent(event) : onOpenArtist?.(event.artist))}
+              accessibilityRole="button"
+              accessibilityLabel={`Open ${event.artist} at ${event.venue}`}
+            >
+              <UpcomingEventCard event={event} compact />
+            </Pressable>
+          ))}
+        </View>
       </View>
     </ScrollView>
   );
@@ -480,8 +490,12 @@ const styles = StyleSheet.create({
   scoreTxt: { color: colors.gold, fontFamily: mono, fontSize: 12, fontWeight: "700" },
   upPill: { backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.amber, borderRadius: radius.pill, minWidth: 24, paddingHorizontal: 7, paddingVertical: 2, alignItems: "center" },
   upTxt: { color: colors.amber, fontSize: 12, fontWeight: "800" },
-  eRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 7, paddingHorizontal: 6, marginHorizontal: -6, borderRadius: radius.sm, borderCurve: "continuous" },
-  eDate: { width: 26, height: 26, borderRadius: 8, backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
+  eventCardHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 10 },
+  eventCardSub: { color: colors.textDim, fontSize: 10, marginTop: 3 },
+  eventCalendarMark: { width: 32, height: 32, alignItems: "center", justifyContent: "center", borderRadius: 11, backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line },
+  eventList: { gap: 8 },
+  eventPressable: { borderRadius: radius.md, borderCurve: "continuous", ...Platform.select({ web: { cursor: "pointer", transitionDuration: "110ms", transitionProperty: "transform, filter" } }) },
+  eventHover: { ...Platform.select({ web: { filter: "brightness(1.06)" } }) },
   empty: { color: colors.textDim, fontSize: 12, fontStyle: "italic" },
   itemHover: { backgroundColor: colors.surface },
   itemPressed: { transform: [{ scale: 0.98 }], opacity: 0.88 },

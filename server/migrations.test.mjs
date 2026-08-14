@@ -39,7 +39,7 @@ test("the additive-migration guard is still enforced at runtime", () => {
 test("every additive migration carries a default or is nullable", () => {
   // NOT NULL without a default fails on a table that already has rows, which
   // turns a routine deploy into an outage on the first boot after it.
-  const block = /for \(const stmt of \[([\s\S]*?)\n\]\) \{/.exec(source);
+  const block = /const additiveMigrations = \[([\s\S]*?)\n\];/.exec(source);
   assert.ok(block, "could not find the migration list; update this test");
   const statements = block[1].split("\n")
     .map((line) => line.trim())
@@ -47,4 +47,24 @@ test("every additive migration carries a default or is nullable", () => {
   assert.ok(statements.length > 10, `expected the real migration list, found ${statements.length}`);
   const unsafe = statements.filter((s) => /NOT NULL/i.test(s) && !/DEFAULT/i.test(s));
   assert.deepEqual(unsafe, [], "NOT NULL without DEFAULT fails on a table with existing rows");
+});
+
+test("landing showcase consent migrates historical posts as opted out", () => {
+  assert.match(
+    source,
+    /ALTER TABLE posts ADD COLUMN landing_showcase INTEGER NOT NULL DEFAULT 0/,
+    "historical artist-page consent must not become homepage consent during migration",
+  );
+});
+
+test("verification retry receipts are additive, bounded, and avoid raw email", () => {
+  assert.match(source, /CREATE TABLE IF NOT EXISTS email_verification_receipts/);
+  assert.match(source, /email_hash\s+TEXT NOT NULL/);
+  assert.doesNotMatch(source, /email_verification_receipts[\s\S]{0,300}\n\s*email\s+TEXT/i);
+  assert.match(source, /idx_email_verification_receipts_expiry/);
+
+  const emailColumnMigration = source.indexOf("ALTER TABLE users ADD COLUMN email_verify_hash");
+  const lookupIndex = source.indexOf("idx_users_email_verify_hash");
+  assert.ok(emailColumnMigration >= 0 && lookupIndex > emailColumnMigration,
+    "the lookup index must be created only after legacy databases gain the column");
 });

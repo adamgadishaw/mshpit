@@ -9,17 +9,24 @@
 import { randomUUID } from "node:crypto";
 import { artistStmts, artistRow, normName, db } from "./db.js";
 import { findDeezerArtist, providerJson, ProviderError } from "./musicProviders.js";
-import { genreClaim, resolveGenre, storedClaims, upsertClaim } from "../src/domain/genre.mjs";
+import { genreFieldsForClaim, providerGenreFields, resolveGenre, storedClaims } from "../src/domain/genre.mjs";
 
 // Enrichment used to do `row.genre || e.genre`, which let a stale crawl-bucket
 // label outrank real provider evidence: Deezer knew Justin Bieber was pop, but
 // "Metal" from the tag crawl kept winning. Resolving through the provenance
 // hierarchy instead means evidence beats a hint, a staff decision beats both,
 // and a provider returning nothing leaves the record alone.
-function genreFields(data, columnGenre, providerGenre) {
-  const claims = upsertClaim(storedClaims(data, columnGenre), genreClaim(providerGenre, "provider"));
-  const record = resolveGenre(claims);
-  return record ? { genre: record.value, genreClaims: claims } : {};
+const genreFields = providerGenreFields;
+
+export function crawlerGenreFields(genre) {
+  const fields = genreFieldsForClaim({}, null, genre, "tag_hint");
+  return {
+    ...fields,
+    // Keep the discovery bucket in the claim history and review hint only. The
+    // typed column remains null until provider/staff evidence exists.
+    genre: null,
+    genreHint: fields.genre || null,
+  };
 }
 
 const PAGE = 100; // MusicBrainz hard max per request
@@ -118,10 +125,12 @@ const cursorSet = db.prepare(`INSERT INTO seed_cursor (tag, next_off, exhausted,
 function reopenLegacyCursors() {
   const marker = "repair-musicbrainz-cursors-v1";
   if (db.prepare("SELECT 1 FROM app_meta WHERE key=?").get(marker)) return;
-  db.exec("BEGIN");
+  db.exec("BEGIN IMMEDIATE");
   try {
-    db.prepare("UPDATE seed_cursor SET exhausted=0 WHERE exhausted=1").run();
-    db.prepare("INSERT INTO app_meta (key,value) VALUES (?,?)").run(marker, String(Date.now()));
+    if (!db.prepare("SELECT 1 FROM app_meta WHERE key=?").get(marker)) {
+      db.prepare("UPDATE seed_cursor SET exhausted=0 WHERE exhausted=1").run();
+      db.prepare("INSERT OR IGNORE INTO app_meta (key,value) VALUES (?,?)").run(marker, String(Date.now()));
+    }
     db.exec("COMMIT");
   } catch (error) {
     try { db.exec("ROLLBACK"); } catch {}
@@ -150,7 +159,7 @@ export async function crawlArtists({ target = 10000, perTag = 600, shouldStop = 
         if (artistStmts.byNorm.get(norm)) continue; // additive: never re-add
         // Search tags are useful for discovery, but not authoritative enough to
         // publish as the artist's primary genre. Enrichment can verify it later.
-        artistStmts.upsert.run(artistRow(norm, { name: x.name, genre: null, genreHint: genre, mbid: x.mbid, country: x.country, beginYear: x.beginYear }, "musicbrainz"));
+        artistStmts.upsert.run(artistRow(norm, { name: x.name, ...crawlerGenreFields(genre), mbid: x.mbid, country: x.country, beginYear: x.beginYear }, "musicbrainz"));
         added++;
       }
       const done = page.total != null ? offset + PAGE >= page.total : page.rawCount < PAGE;

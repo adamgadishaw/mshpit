@@ -12,12 +12,16 @@ const DURABLE_KEYS = new Set([
   "pit.entered",
   "pit.activeComposer",
   "pit.pendingComposerPicker",
+  // Privacy-safe, account-scoped analytics retry batches contain only the
+  // approved taxonomy and internal ids; keeping them durable makes intermittent
+  // phone connectivity observable without retaining authored content.
+  "pit.analytics.v2",
 ]);
 const volatile = new Map();
 const persistence = createJsonPersistence({
-  getItem: (key) => DURABLE_KEYS.has(key) ? Storage.getItemSync(key) : (volatile.get(key) ?? null),
+  getItem: (key) => (DURABLE_KEYS.has(key) || key.startsWith("pit.analytics.v2.")) ? Storage.getItemSync(key) : (volatile.get(key) ?? null),
   setItem: (key, value) => {
-    if (DURABLE_KEYS.has(key)) Storage.setItemSync(key, value);
+    if (DURABLE_KEYS.has(key) || key.startsWith("pit.analytics.v2.")) Storage.setItemSync(key, value);
     else volatile.set(key, value);
   },
 });

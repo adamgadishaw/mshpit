@@ -84,6 +84,7 @@ export default function ConcertMap({ points = [], highlight, focalName, label, o
 }
 
 function Pin({ pos, name, focal, show, onPress, onHoverIn, onHoverOut }) {
+  const Dot = onPress ? Pressable : View;
   return (
     <View style={[styles.anchor, pos, focal ? styles.anchorFocal : styles.anchorOther, styles.boxNonePointerEvents]}>
       {show && name ? (
@@ -91,9 +92,16 @@ function Pin({ pos, name, focal, show, onPress, onHoverIn, onHoverOut }) {
           <Text style={styles.tipTxt} numberOfLines={1}>{name}</Text>
         </View>
       ) : null}
-      <Pressable onPress={onPress} onHoverIn={onHoverIn} onHoverOut={onHoverOut} hitSlop={8} style={[styles.dot, focal ? styles.dotFocal : styles.dotOther]}>
+      <Dot
+        onPress={onPress}
+        onHoverIn={onHoverIn}
+        onHoverOut={onHoverOut}
+        hitSlop={onPress ? 8 : undefined}
+        style={[styles.dot, focal ? styles.dotFocal : styles.dotOther]}
+        {...(onPress ? { accessibilityRole: "button", accessibilityLabel: `Open ${name || "venue"}` } : { accessible: false })}
+      >
         {focal ? <View style={styles.focalCore} /> : null}
-      </Pressable>
+      </Dot>
     </View>
   );
 }

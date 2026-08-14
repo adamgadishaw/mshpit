@@ -1,25 +1,70 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { View, Text, StyleSheet, FlatList, Pressable, useWindowDimensions } from "react-native";
 import { colors, mono, radius, shadow } from "../theme";
 import { load, save } from "../lib/persist";
 import TicketStub from "../components/TicketStub";
 import Icon from "../components/Icon";
 import { filteredFeedNextAction } from "../domain/feedPagination.mjs";
+import { JOURNEY_TAGLINE } from "../domain/menuJourney.mjs";
 
 const PAGE = 8; // load the feed in pages, like the big apps - never all at once
 
-export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, homeCity, unread = 0, notifUnread = 0, newUser = false, hideHeaderActions = false, onLoadMore, hasMore = false, loadingMore = false, onOpen, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onOpenClips, onReport, onEdit, onOpenPhotos, onPlay, onLogShow, onEditProfile }) {
+export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, homeCity, unread = 0, notifUnread = 0, newUser = false, hideHeaderActions = false, onLoadMore, hasMore = false, loadingMore = false, onOpen, onImpression, onDwell, onNotInterested, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onOpenClips, onReport, onEdit, onOpenPhotos, onPlay, onLogShow, onEditProfile }) {
   const { width } = useWindowDimensions();
   const phone = width < 700;
   const [filter, setFilter] = useState("everyone"); // following | local | everyone
   const [count, setCount] = useState(PAGE);
   const [gsDone, setGsDone] = useState(() => load("pit.gsDismissed", false));
+  const visibleSince = useRef(new Map());
+  const seenImpressions = useRef(new Set());
   const dismissGs = () => { setGsDone(true); save("pit.gsDismissed", true); };
   const full = filter === "following" ? followingFeed : filter === "local" ? localFeed : feed;
   const data = full.slice(0, count);
   const filteredPageLoading = loadingMore && count >= full.length;
+  const surface = filter === "following" ? "following" : filter === "local" ? "local" : "everyone";
+  const analyticsRef = useRef({ surface, onImpression, onDwell });
+  const viewabilityConfig = useRef({ itemVisiblePercentThreshold: 60, minimumViewTime: 750 }).current;
+  analyticsRef.current = { surface, onImpression, onDwell };
 
-  const pick = (f) => { setFilter(f); setCount(PAGE); };
+  const onViewableItemsChanged = useRef(({ changed }) => {
+    const at = Date.now();
+    for (const token of changed || []) {
+      const item = token?.item;
+      if (!item?.id) continue;
+      if (token.isViewable) {
+        const viewedSurface = analyticsRef.current.surface;
+        visibleSince.current.set(item.id, { item, startedAt: at, surface: viewedSurface });
+        const impressionKey = `${viewedSurface}:${item.id}`;
+        if (!seenImpressions.current.has(impressionKey)) {
+          seenImpressions.current.add(impressionKey);
+          analyticsRef.current.onImpression?.(item, Number.isSafeInteger(token.index) ? token.index : 0, viewedSurface);
+        }
+      } else {
+        const visible = visibleSince.current.get(item.id);
+        visibleSince.current.delete(item.id);
+        if (visible) analyticsRef.current.onDwell?.(item, at - visible.startedAt, visible.surface);
+      }
+    }
+  }).current;
+
+  useEffect(() => () => {
+    const at = Date.now();
+    for (const { item, startedAt, surface: viewedSurface } of visibleSince.current.values()) {
+      analyticsRef.current.onDwell?.(item, at - startedAt, viewedSurface);
+    }
+    visibleSince.current.clear();
+  }, []);
+
+  const pick = (f) => {
+    if (f === filter) return;
+    const at = Date.now();
+    for (const { item, startedAt, surface: viewedSurface } of visibleSince.current.values()) {
+      analyticsRef.current.onDwell?.(item, at - startedAt, viewedSurface);
+    }
+    visibleSince.current.clear();
+    setFilter(f);
+    setCount(PAGE);
+  };
   const loadMore = async () => {
     if (count < full.length) setCount((c) => c + PAGE);
     // Following/Local are projections of the pages already loaded. Letting an
@@ -67,6 +112,8 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, h
       maxToRenderPerBatch={phone ? 2 : PAGE}
       updateCellsBatchingPeriod={phone ? 75 : 50}
       windowSize={phone ? 3 : 7}
+      viewabilityConfig={viewabilityConfig}
+      onViewableItemsChanged={onViewableItemsChanged}
       ListHeaderComponent={
         <View style={styles.head}>
           <View style={styles.wordmarkRow}>
@@ -91,7 +138,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, h
               </Pressable>
             </View>}
           </View>
-          <Text style={styles.tag}>shows worth seeing, from people you trust</Text>
+          <Text style={styles.tag}>{JOURNEY_TAGLINE}</Text>
 
           {loggedIn && (
             <Pressable style={styles.nearBtn} onPress={onOpenNearby}>
@@ -120,7 +167,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, h
             <View style={styles.segment}>
               <Seg label="Following" on={filter === "following"} onPress={() => pick("following")} />
               <Seg label="Local" on={filter === "local"} onPress={() => pick("local")} />
-              <Seg label="Everyone" on={filter === "everyone"} onPress={() => pick("everyone")} />
+              <Seg label="For you" on={filter === "everyone"} onPress={() => pick("everyone")} />
             </View>
           )}
         </View>
@@ -160,8 +207,8 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, h
           </Text>
         </Pressable>
       ) : null}
-      renderItem={({ item }) => (
-        <TicketStub log={item} onOpen={onOpen} onComment={onComment} onPreview={onPreview} onOpenProfile={onOpenProfile} onOpenArtist={onOpenArtist} onOpenVenue={onOpenVenue} onReport={onReport} onEdit={onEdit} onOpenPhotos={onOpenPhotos} onPlay={onPlay} />
+      renderItem={({ item, index: itemIndex }) => (
+        <TicketStub log={item} onOpen={(_unused) => onOpen?.(item, { surface, position: itemIndex })} onNotInterested={surface === "everyone" && item.recommendation ? onNotInterested : undefined} onComment={onComment} onPreview={onPreview} onOpenProfile={onOpenProfile} onOpenArtist={onOpenArtist} onOpenVenue={onOpenVenue} onReport={onReport} onEdit={onEdit} onOpenPhotos={onOpenPhotos} onPlay={onPlay} />
       )}
     />
   );

@@ -26,9 +26,9 @@ export const DATABASE_PATH = join(DATABASE_DIRECTORY, "pit.db");
 export const db = new DatabaseSync(DATABASE_PATH);
 
 db.exec(`
+  PRAGMA busy_timeout = 5000;
   PRAGMA journal_mode = WAL;
   PRAGMA foreign_keys = ON;
-  PRAGMA busy_timeout = 5000;
 `);
 
 // Schema, created idempotently. Migrations append below with schema_version.
@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS users (
   handle_changed_at INTEGER NOT NULL DEFAULT 0,
   created_at      INTEGER NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_users_created ON users(created_at DESC, id DESC);
 
 CREATE TABLE IF NOT EXISTS sessions (
   token_hash TEXT PRIMARY KEY,
@@ -69,6 +70,19 @@ CREATE TABLE IF NOT EXISTS sessions (
   ua         TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+
+-- Short-lived receipts make a successfully consumed verification token safely
+-- retryable after a response is lost. They contain only token/address hashes and
+-- the account they confirmed; expiry keeps the replay window bounded.
+CREATE TABLE IF NOT EXISTS email_verification_receipts (
+  token_hash  TEXT PRIMARY KEY,
+  user_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  email_hash  TEXT NOT NULL,
+  verified_at INTEGER NOT NULL,
+  expires_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_email_verification_receipts_expiry
+  ON email_verification_receipts(expires_at);
 
 CREATE TABLE IF NOT EXISTS posts (
   id            TEXT PRIMARY KEY,
@@ -84,6 +98,7 @@ CREATE TABLE IF NOT EXISTS posts (
   review        TEXT NOT NULL DEFAULT '',
   photos        TEXT NOT NULL DEFAULT '[]',
   photos_public INTEGER NOT NULL DEFAULT 0,
+  landing_showcase INTEGER NOT NULL DEFAULT 0,
   setlist       TEXT NOT NULL DEFAULT '[]',
   client_mutation_id TEXT,
   client_mutation_hash TEXT,
@@ -94,12 +109,14 @@ CREATE TABLE IF NOT EXISTS posts (
 CREATE INDEX IF NOT EXISTS idx_posts_user ON posts(user_id);
 CREATE INDEX IF NOT EXISTS idx_posts_created ON posts(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_posts_cursor ON posts(created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_posts_recommendation_candidates ON posts(removed, created_at DESC, id DESC);
 
 CREATE TABLE IF NOT EXISTS likes (
   post_id TEXT NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   PRIMARY KEY (post_id, user_id)
 );
+CREATE INDEX IF NOT EXISTS idx_likes_user_post ON likes(user_id, post_id);
 
 CREATE TABLE IF NOT EXISTS comments (
   id         TEXT PRIMARY KEY,
@@ -111,6 +128,8 @@ CREATE TABLE IF NOT EXISTS comments (
 );
 CREATE INDEX IF NOT EXISTS idx_comments_post ON comments(post_id);
 CREATE INDEX IF NOT EXISTS idx_comments_cursor ON comments(post_id, removed, created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_comments_user_recent ON comments(user_id, removed, created_at DESC, post_id);
+CREATE INDEX IF NOT EXISTS idx_comments_post_distinct_users ON comments(post_id, removed, user_id);
 
 CREATE TABLE IF NOT EXISTS follows (
   follower_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -123,6 +142,7 @@ CREATE TABLE IF NOT EXISTS fan_club_members (
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   PRIMARY KEY (artist, user_id)
 );
+CREATE INDEX IF NOT EXISTS idx_fan_club_members_user_artist ON fan_club_members(user_id, artist);
 
 CREATE TABLE IF NOT EXISTS fan_club_messages (
   id         TEXT PRIMARY KEY,
@@ -154,6 +174,8 @@ CREATE TABLE IF NOT EXISTS reports (
   status      TEXT NOT NULL DEFAULT 'open',
   created_at  INTEGER NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_reports_status_created ON reports(status, created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_reports_created ON reports(created_at DESC);
 
 -- ---- SQLite migration slice 7 (ratings, going, venue reviews, artist pages) ----
 
@@ -224,9 +246,10 @@ CREATE TABLE IF NOT EXISTS artist_posts (
 );
 CREATE INDEX IF NOT EXISTS idx_artist_posts_artist ON artist_posts(artist_key);
 
--- ---- Analytics / ad-targeting events ---------------------------------------
--- The activity we collect to personalize content and advertising (disclosed in
--- the Privacy policy and consented to at sign-up). user_id is null for guests.
+-- ---- Privacy-safe first-party product analytics -----------------------------
+-- Approved categorical behavior and internal content ids only. Raw IPs,
+-- searches, messages, reviews, and media URLs are never written. Guests are not
+-- recorded; raw rows have both age and count ceilings in analyticsService.js.
 CREATE TABLE IF NOT EXISTS events (
   id         TEXT PRIMARY KEY,
   user_id    TEXT REFERENCES users(id) ON DELETE SET NULL,
@@ -238,6 +261,20 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS idx_events_name ON events(name, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_events_user ON events(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_events_user_name_created ON events(user_id, name, created_at DESC);
+
+-- Core recommendation preference, independent of optional analytics. A member
+-- who says "Not for me" must keep that post suppressed even when product
+-- measurement is disabled or raw analytics is compacted.
+CREATE TABLE IF NOT EXISTS recommendation_preferences (
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  post_id    TEXT NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+  action     TEXT NOT NULL CHECK (action IN ('not_interested','hide')),
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (user_id, post_id)
+);
+CREATE INDEX IF NOT EXISTS idx_recommendation_preferences_user_created
+  ON recommendation_preferences(user_id, created_at DESC, post_id);
 
 -- ---- Notifications / activity (server-backed, cross-device) -----------------
 -- Addressed to a recipient (user_id) when someone (actor_id) acts on their stuff.
@@ -299,6 +336,28 @@ CREATE TABLE IF NOT EXISTS artists (
 );
 CREATE INDEX IF NOT EXISTS idx_artists_rank ON artists(rank_score DESC);
 CREATE INDEX IF NOT EXISTS idx_artists_name ON artists(name);
+-- A single cheap revision lets Discover cache the evidence-aware projection
+-- without rescanning/parsing every rich artist blob on every request. Triggers
+-- advance it only when a field that can change public genre membership changes.
+CREATE TABLE IF NOT EXISTS artist_projection_revision (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  revision  INTEGER NOT NULL DEFAULT 0
+);
+INSERT OR IGNORE INTO artist_projection_revision (singleton, revision) VALUES (1, 0);
+CREATE TRIGGER IF NOT EXISTS trg_artist_projection_insert
+AFTER INSERT ON artists BEGIN
+  UPDATE artist_projection_revision SET revision = revision + 1 WHERE singleton = 1;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_artist_projection_update
+AFTER UPDATE OF genre, data, country ON artists
+WHEN NOT (NEW.genre IS OLD.genre AND NEW.data IS OLD.data AND NEW.country IS OLD.country)
+BEGIN
+  UPDATE artist_projection_revision SET revision = revision + 1 WHERE singleton = 1;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_artist_projection_delete
+AFTER DELETE ON artists BEGIN
+  UPDATE artist_projection_revision SET revision = revision + 1 WHERE singleton = 1;
+END;
 -- Wikidata enrichment groups aliases by canonical MBID. Without this
 -- expression index its startup CTE performs nested full-table scans and blocks
 -- the single Node event loop long enough to fail hosted health checks.
@@ -603,8 +662,6 @@ CREATE TABLE IF NOT EXISTS email_log (
 );
 `);
 
-const ver = db.prepare("SELECT version FROM schema_version LIMIT 1").get();
-if (!ver) db.prepare("INSERT INTO schema_version (version) VALUES (1)").run();
 // Stamp the file after the complete Pit schema exists. Future production boots
 // can distinguish an intentional Pit database from an unrelated SQLite file;
 // the pre-marker live database is admitted once by the stricter legacy checks.
@@ -613,7 +670,7 @@ db.exec(`PRAGMA application_id = ${PIT_SQLITE_APPLICATION_ID}`);
 // Additive migrations for DBs created before a column existed. Inspect the
 // actual table before altering it: a real migration failure must stop startup,
 // while an already-present column is safely skipped on every boot.
-for (const stmt of [
+const additiveMigrations = [
   "ALTER TABLE users ADD COLUMN handle_changed_at INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE users ADD COLUMN verified INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE users ADD COLUMN spotify_access_token TEXT",
@@ -639,6 +696,10 @@ for (const stmt of [
   "ALTER TABLE users ADD COLUMN reset_expires INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE posts ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'", // short word-art descriptors on a review
   "ALTER TABLE posts ADD COLUMN kind TEXT NOT NULL DEFAULT 'review'", // 'review' = a logged show, 'status' = a plain post
+  // Separate, default-off consent for marketing-surface community imagery.
+  // Existing artist-page photo consent must never silently become permission
+  // to feature an old upload as the full-screen logged-out homepage.
+  "ALTER TABLE posts ADD COLUMN landing_showcase INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE posts ADD COLUMN song TEXT", // JSON of a tagged YouTube song {videoId,title,artist,url,thumb}
   "ALTER TABLE posts ADD COLUMN playlist TEXT", // immutable playlist snapshot attached to a post
   "ALTER TABLE plays ADD COLUMN video_id TEXT", // exact YouTube identity for cross-device replay
@@ -677,16 +738,33 @@ for (const stmt of [
   // Set when the welcome mail goes out, so verifying twice, an admin marking an
   // already-verified account, or a resend cannot send it again.
   "ALTER TABLE users ADD COLUMN welcome_sent_at INTEGER NOT NULL DEFAULT 0",
-]) {
-  const match = /^ALTER TABLE ([a-z_]+) ADD COLUMN ([a-z_]+)/i.exec(stmt);
-  if (!match) throw new Error(`Unsupported additive migration: ${stmt}`);
-  const [, table, column] = match;
-  const present = db.prepare(`PRAGMA table_info(${table})`).all()
-    .some((entry) => String(entry.name).toLowerCase() === column.toLowerCase());
-  if (!present) db.exec(stmt);
+];
+db.exec("BEGIN IMMEDIATE");
+try {
+  // Keep the initial version row under the same cross-process write lock as the
+  // additive migrations. Parallel test workers and multi-process boots must not
+  // both observe an empty table and silently insert duplicate version rows.
+  const ver = db.prepare("SELECT version FROM schema_version LIMIT 1").get();
+  if (!ver) db.prepare("INSERT INTO schema_version (version) VALUES (1)").run();
+  for (const stmt of additiveMigrations) {
+    const match = /^ALTER TABLE ([a-z_]+) ADD COLUMN ([a-z_]+)/i.exec(stmt);
+    if (!match) throw new Error(`Unsupported additive migration: ${stmt}`);
+    const [, table, column] = match;
+    // This check intentionally runs after the write lock is held. A second
+    // process that waited for the first boot's migration now observes the new
+    // column instead of racing into a duplicate ALTER TABLE.
+    const present = db.prepare(`PRAGMA table_info(${table})`).all()
+      .some((entry) => String(entry.name).toLowerCase() === column.toLowerCase());
+    if (!present) db.exec(stmt);
+  }
+  db.exec("COMMIT");
+} catch (error) {
+  try { db.exec("ROLLBACK"); } catch {}
+  throw error;
 }
 
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_posts_client_mutation ON posts(user_id, client_mutation_id) WHERE client_mutation_id IS NOT NULL");
+db.exec("CREATE INDEX IF NOT EXISTS idx_posts_landing_media ON posts(landing_showcase, photos_public, removed, kind, created_at DESC, id DESC)");
 // The queue is drained by "next pending for this campaign" on every iteration,
 // and the log is read newest-first, so both need their own covering order.
 db.exec("CREATE INDEX IF NOT EXISTS idx_email_queue_campaign ON email_queue(campaign_id, status, id)");
@@ -694,12 +772,13 @@ db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_email_queue_recipient ON email_qu
 db.exec("CREATE INDEX IF NOT EXISTS idx_email_log_created ON email_log(created_at DESC, id DESC)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_email_log_campaign ON email_log(campaign_id, created_at DESC)");
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_unsub_token ON users(unsub_token) WHERE unsub_token IS NOT NULL");
+db.exec("CREATE INDEX IF NOT EXISTS idx_users_email_verify_hash ON users(email_verify_hash) WHERE email_verify_hash IS NOT NULL");
 db.exec("CREATE INDEX IF NOT EXISTS idx_artists_search_key ON artists(search_key)");
-const artistSearchKeyRows = db.prepare("SELECT norm,name FROM artists WHERE search_key IS NULL OR search_key='' ").all();
-if (artistSearchKeyRows.length) {
-  const setArtistSearchKey = db.prepare("UPDATE artists SET search_key=? WHERE norm=?");
-  db.exec("BEGIN");
+if (db.prepare("SELECT 1 FROM artists WHERE search_key IS NULL OR search_key='' LIMIT 1").get()) {
+  db.exec("BEGIN IMMEDIATE");
   try {
+    const artistSearchKeyRows = db.prepare("SELECT norm,name FROM artists WHERE search_key IS NULL OR search_key='' ").all();
+    const setArtistSearchKey = db.prepare("UPDATE artists SET search_key=? WHERE norm=?");
     for (const row of artistSearchKeyRows) setArtistSearchKey.run(artistSearchKey(row.name), row.norm);
     db.exec("COMMIT");
   } catch (error) {
@@ -712,10 +791,36 @@ if (artistSearchKeyRows.length) {
 // complete. Purge the legacy raw-IP column once and keep new rows null.
 const eventIpPurgeMarker = "privacy:events-ip-purged:v1";
 if (!db.prepare("SELECT 1 FROM app_meta WHERE key=?").get(eventIpPurgeMarker)) {
-  db.exec("BEGIN");
+  db.exec("BEGIN IMMEDIATE");
   try {
-    db.prepare("UPDATE events SET ip=NULL WHERE ip IS NOT NULL").run();
-    db.prepare("INSERT INTO app_meta (key,value) VALUES (?,?)").run(eventIpPurgeMarker, String(Date.now()));
+    if (!db.prepare("SELECT 1 FROM app_meta WHERE key=?").get(eventIpPurgeMarker)) {
+      db.prepare("UPDATE events SET ip=NULL WHERE ip IS NOT NULL").run();
+      db.prepare("INSERT OR IGNORE INTO app_meta (key,value) VALUES (?,?)").run(eventIpPurgeMarker, String(Date.now()));
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    try { db.exec("ROLLBACK"); } catch {}
+    throw error;
+  }
+}
+
+// v1 admitted navigation/search/music display strings. They cannot be made
+// categorical after the fact, so delete those legacy rows once rather than
+// retaining typed terms or artist/title/venue history under the stricter policy.
+const eventPropsV2Marker = "privacy:events-props-v2:v1";
+if (!db.prepare("SELECT 1 FROM app_meta WHERE key=?").get(eventPropsV2Marker)) {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    if (!db.prepare("SELECT 1 FROM app_meta WHERE key=?").get(eventPropsV2Marker)) {
+      db.prepare(`DELETE FROM events WHERE NOT json_valid(props) OR CASE WHEN json_valid(props) THEN (
+        json_extract(props,'$.q') IS NOT NULL OR json_extract(props,'$.artist') IS NOT NULL OR
+        json_extract(props,'$.title') IS NOT NULL OR json_extract(props,'$.venue') IS NOT NULL OR
+        json_extract(props,'$.city') IS NOT NULL OR json_extract(props,'$.target') IS NOT NULL OR
+        json_extract(props,'$.post') IS NOT NULL OR json_extract(props,'$.url') IS NOT NULL OR
+        json_extract(props,'$.mediaUrl') IS NOT NULL OR json_extract(props,'$.message') IS NOT NULL OR
+        json_extract(props,'$.review') IS NOT NULL) ELSE 0 END`).run();
+      db.prepare("INSERT OR IGNORE INTO app_meta (key,value) VALUES (?,?)").run(eventPropsV2Marker, String(Date.now()));
+    }
     db.exec("COMMIT");
   } catch (error) {
     try { db.exec("ROLLBACK"); } catch {}
@@ -735,47 +840,49 @@ if (!db.prepare("SELECT 1 FROM app_meta WHERE key=?").get(eventIpPurgeMarker)) {
 const isoDateMigration = "dates:canonical-iso:v1";
 if (!db.prepare("SELECT 1 FROM app_meta WHERE key=?").get(isoDateMigration)) {
   const keyFor = (artist, venue, date) => `${(artist || "").trim()}|${(venue || "").trim()}|${date || ""}`.toLowerCase();
-  db.exec("BEGIN");
+  db.exec("BEGIN IMMEDIATE");
   try {
-    for (const table of ["posts", "tour_dates"]) {
-      const rows = db.prepare(`SELECT id,date FROM ${table} WHERE date IS NOT NULL AND date <> ''`).all();
-      const update = db.prepare(`UPDATE ${table} SET date=? WHERE id=?`);
-      for (const row of rows) {
-        const iso = toIsoDate(row.date);
-        // A date too broken to parse is left exactly as it is. Blanking it would
-        // destroy the only record of when someone's night happened, and the
-        // display layer already falls back rather than rendering mojibake.
-        if (iso && iso !== row.date) update.run(iso, row.id);
+    if (!db.prepare("SELECT 1 FROM app_meta WHERE key=?").get(isoDateMigration)) {
+      for (const table of ["posts", "tour_dates"]) {
+        const rows = db.prepare(`SELECT id,date FROM ${table} WHERE date IS NOT NULL AND date <> ''`).all();
+        const update = db.prepare(`UPDATE ${table} SET date=? WHERE id=?`);
+        for (const row of rows) {
+          const iso = toIsoDate(row.date);
+          // A date too broken to parse is left exactly as it is. Blanking it would
+          // destroy the only record of when someone's night happened, and the
+          // display layer already falls back rather than rendering mojibake.
+          if (iso && iso !== row.date) update.run(iso, row.id);
+        }
       }
-    }
 
-    // OR REPLACE performs the merge: if a user was going to both the forked and
-    // the canonical spelling of one night, they end up with the single row that
-    // was always intended. PRIMARY KEY (user_id, concert_key) makes that safe.
-    for (const row of db.prepare("SELECT user_id,concert_key,artist,venue,date FROM going").all()) {
-      const iso = toIsoDate(row.date);
-      if (!iso) continue;
-      const key = keyFor(row.artist, row.venue, iso);
-      if (key === row.concert_key && iso === row.date) continue;
-      db.prepare("UPDATE OR REPLACE going SET concert_key=?, date=? WHERE user_id=? AND concert_key=?")
-        .run(key, iso, row.user_id, row.concert_key);
-    }
+      // OR REPLACE performs the merge: if a user was going to both the forked and
+      // the canonical spelling of one night, they end up with the single row that
+      // was always intended. PRIMARY KEY (user_id, concert_key) makes that safe.
+      for (const row of db.prepare("SELECT user_id,concert_key,artist,venue,date FROM going").all()) {
+        const iso = toIsoDate(row.date);
+        if (!iso) continue;
+        const key = keyFor(row.artist, row.venue, iso);
+        if (key === row.concert_key && iso === row.date) continue;
+        db.prepare("UPDATE OR REPLACE going SET concert_key=?, date=? WHERE user_id=? AND concert_key=?")
+          .run(key, iso, row.user_id, row.concert_key);
+      }
 
-    // Lounge ids are opaque strings built by the client, so they are rewritten
-    // by canonicalizing the date segment in place rather than by re-deriving
-    // the whole key from data the messages table does not carry. Two lounges
-    // that collapse to one id simply become one room, which is correct: they
-    // were always the same night.
-    for (const row of db.prepare("SELECT DISTINCT lounge_id FROM lounge_messages").all()) {
-      const parts = String(row.lounge_id || "").split("|");
-      if (parts.length !== 3) continue;
-      const iso = toIsoDate(parts[2]);
-      if (!iso || iso === parts[2]) continue;
-      const next = `${parts[0]}|${parts[1]}|${iso}`;
-      db.prepare("UPDATE lounge_messages SET lounge_id=? WHERE lounge_id=?").run(next, row.lounge_id);
-    }
+      // Lounge ids are opaque strings built by the client, so they are rewritten
+      // by canonicalizing the date segment in place rather than by re-deriving
+      // the whole key from data the messages table does not carry. Two lounges
+      // that collapse to one id simply become one room, which is correct: they
+      // were always the same night.
+      for (const row of db.prepare("SELECT DISTINCT lounge_id FROM lounge_messages").all()) {
+        const parts = String(row.lounge_id || "").split("|");
+        if (parts.length !== 3) continue;
+        const iso = toIsoDate(parts[2]);
+        if (!iso || iso === parts[2]) continue;
+        const next = `${parts[0]}|${parts[1]}|${iso}`;
+        db.prepare("UPDATE lounge_messages SET lounge_id=? WHERE lounge_id=?").run(next, row.lounge_id);
+      }
 
-    db.prepare("INSERT INTO app_meta (key,value) VALUES (?,?)").run(isoDateMigration, String(Date.now()));
+      db.prepare("INSERT OR IGNORE INTO app_meta (key,value) VALUES (?,?)").run(isoDateMigration, String(Date.now()));
+    }
     db.exec("COMMIT");
   } catch (error) {
     try { db.exec("ROLLBACK"); } catch {}
@@ -844,7 +951,12 @@ export const emailStmts = {
   setVerifyToken: db.prepare("UPDATE users SET email_verify_hash=?, email_verify_expires=? WHERE id=?"),
   userByVerifyHash: db.prepare("SELECT * FROM users WHERE email_verify_hash=? AND email_verify_expires > ?"),
   markEmailVerified: db.prepare("UPDATE users SET email_verified_at=?, email_verify_hash=NULL, email_verify_expires=0 WHERE id=?"),
-  markWelcomeSent: db.prepare("UPDATE users SET welcome_sent_at=? WHERE id=?"),
+  verificationReceiptByHash: db.prepare("SELECT * FROM email_verification_receipts WHERE token_hash=? AND expires_at>?"),
+  recordVerificationReceipt: db.prepare(`INSERT INTO email_verification_receipts
+    (token_hash,user_id,email_hash,verified_at,expires_at) VALUES (?,?,?,?,?)
+    ON CONFLICT(token_hash) DO NOTHING`),
+  pruneVerificationReceipts: db.prepare("DELETE FROM email_verification_receipts WHERE expires_at<=?"),
+  markWelcomeSent: db.prepare("UPDATE users SET welcome_sent_at=? WHERE id=? AND welcome_sent_at=0"),
 
   templateByKey: db.prepare("SELECT * FROM email_templates WHERE key = ?"),
   allTemplates: db.prepare("SELECT * FROM email_templates"),
@@ -1096,18 +1208,27 @@ seedArtistsFromBundle();
 export function sanitizeStoredArtistPreviews() {
   const marker = "strip-ephemeral-artist-previews-v1";
   if (db.prepare("SELECT 1 FROM app_meta WHERE key=?").get(marker)) return 0;
-  const rows = db.prepare(`SELECT norm,data FROM artists WHERE data LIKE '%"preview"%'`).all();
-  const update = db.prepare("UPDATE artists SET data=? WHERE norm=?");
   let changed = 0;
-  db.exec("BEGIN");
+  // Test workers and multiple Render processes can open the same SQLite file at
+  // once. The optimistic check above is only a fast path; acquire the write lock
+  // and recheck inside it before touching rows. Without that second check two
+  // booters can both observe a missing marker and the loser crashes on the
+  // unique app_meta key after the winner commits.
+  db.exec("BEGIN IMMEDIATE");
   try {
+    if (db.prepare("SELECT 1 FROM app_meta WHERE key=?").get(marker)) {
+      db.exec("COMMIT");
+      return 0;
+    }
+    const rows = db.prepare(`SELECT norm,data FROM artists WHERE data LIKE '%"preview"%'`).all();
+    const update = db.prepare("UPDATE artists SET data=? WHERE norm=?");
     for (const row of rows) {
       let parsed;
       try { parsed = JSON.parse(row.data || "{}"); } catch { continue; }
       const cleaned = JSON.stringify(stripEphemeralPreviews(parsed));
       if (cleaned !== row.data) { update.run(cleaned, row.norm); changed++; }
     }
-    db.prepare("INSERT INTO app_meta (key,value) VALUES (?,?)").run(marker, String(Date.now()));
+    db.prepare("INSERT OR IGNORE INTO app_meta (key,value) VALUES (?,?)").run(marker, String(Date.now()));
     db.exec("COMMIT");
   } catch (error) {
     try { db.exec("ROLLBACK"); } catch {}
@@ -1168,7 +1289,7 @@ export function publicUser(u, { self = false, badges = false } = {}) {
   ]) delete extras[key];
   const publicExtras = Object.fromEntries(["theme", "nowPlaying"].filter((key) => extras[key] !== undefined).map((key) => [key, extras[key]]));
   const selfExtras = self
-    ? Object.fromEntries(["consentAt", "termsVersion", "analyticsOptOut", "treble", "bass", "playlists"].filter((key) => extras[key] !== undefined).map((key) => [key, extras[key]]))
+    ? Object.fromEntries(["consentAt", "analyticsConsentAt", "termsAcceptedAt", "termsVersion", "analyticsOptOut", "treble", "bass", "playlists"].filter((key) => extras[key] !== undefined).map((key) => [key, extras[key]]))
     : {};
 
   return {

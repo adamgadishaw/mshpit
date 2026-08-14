@@ -29,6 +29,8 @@ import {
 } from "../domain/composerDraft.mjs";
 import { composerCloseDecision } from "../domain/composerClosePolicy.mjs";
 import { PENDING_COMPOSER_PICKER_KEY } from "../domain/composerRecovery.mjs";
+import { postMediaPickerOptions } from "../domain/mediaPickerOptions.mjs";
+import { hasLandingCompatibleImage } from "../domain/landingShowcase.mjs";
 import { save } from "../lib/persist";
 
 const GROUP_COLOR = { "THE BAND": colors.amber, "THE ROOM": colors.cool, "THE NIGHT": colors.magenta };
@@ -187,6 +189,11 @@ export default function LogScreen({
   };
   const [photos, setPhotos] = useState(() => (editing?.photos || []).filter(isDurableMediaUrl));
   const [photosPublic, setPhotosPublic] = useState(editing ? editing.photosPublic !== false : true);
+  const [landingShowcase, setLandingShowcase] = useState(editing?.landingShowcase === true && hasLandingCompatibleImage(editing?.photos));
+  const hasLandingCompatiblePhoto = useMemo(() => hasLandingCompatibleImage(photos), [photos]);
+  useEffect(() => {
+    if (!hasLandingCompatiblePhoto) setLandingShowcase(false);
+  }, [hasLandingCompatiblePhoto]);
   const [uploadingPhotos, setUploadingPhotos] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(null);
   const [mediaError, setMediaError] = useState("");
@@ -290,7 +297,11 @@ export default function LogScreen({
         pickerRequestId = `picker_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
         save(PENDING_COMPOSER_PICKER_KEY, { composerId, draftId: durableDraftId || null, requestId: pickerRequestId });
       }
-      res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images", "videos"], quality: 0.6, videoQuality: 1, allowsMultipleSelection: true, selectionLimit: Math.min(6, remaining) });
+      res = await ImagePicker.launchImageLibraryAsync(postMediaPickerOptions({
+        platform: Platform.OS,
+        remaining,
+        iosH264Preset: ImagePicker.VideoExportPreset.H264_1920x1080,
+      }));
     } catch (error) {
       if (pickerRequestId) save(PENDING_COMPOSER_PICKER_KEY, null);
       reportMediaPickerError(error, "Opening the media library");
@@ -359,8 +370,9 @@ export default function LogScreen({
     playlist,
     photos: photos.filter(isDurableMediaUrl),
     photosPublic,
+    landingShowcase: photosPublic && landingShowcase && hasLandingCompatiblePhoto,
     panels: { song: showSong, photos: showPhotos, playlist: showPlaylist },
-  }), [draftId, postType, artist, artistPicked, artistKey, venue, city, tour, date, dims, review, tags, tagDraft, song, songUrl, playlist, photos, photosPublic, showSong, showPhotos, showPlaylist]);
+  }), [draftId, postType, artist, artistPicked, artistKey, venue, city, tour, date, dims, review, tags, tagDraft, song, songUrl, playlist, photos, photosPublic, landingShowcase, hasLandingCompatiblePhoto, showSong, showPhotos, showPlaylist]);
   const draftFingerprint = useMemo(() => composerDraftFingerprint(currentDraft), [currentDraft]);
   const hasContent = useMemo(() => composerDraftHasContent(currentDraft), [currentDraft]);
   const initialFingerprintRef = useRef(null);
@@ -449,7 +461,8 @@ export default function LogScreen({
     submissionIdRef.current = restored.submissionId || submissionIdRef.current;
     setPostType(restored.postType);
     setArtist(restored.artist); setArtistPicked(!!restored.artistKey); setArtistKey(restored.artistKey); setVenue(restored.venue); setVenuePicked(!!restored.venue); setCity(restored.city);
-    setTour(restored.tour); setDate(toIsoDate(restored.date) || restored.date || todayStr); setDims(restored.dims); setReview(restored.review); setTags(restored.tags); setTagDraft(restored.tagDraft); setSong(restored.song); setSongUrl(restored.songUrl); setPlaylist(restored.playlist); setPhotos(restored.photos.filter(isDurableMediaUrl)); setPhotosPublic(restored.photosPublic);
+    const restoredPhotos = restored.photos.filter(isDurableMediaUrl);
+    setTour(restored.tour); setDate(toIsoDate(restored.date) || restored.date || todayStr); setDims(restored.dims); setReview(restored.review); setTags(restored.tags); setTagDraft(restored.tagDraft); setSong(restored.song); setSongUrl(restored.songUrl); setPlaylist(restored.playlist); setPhotos(restoredPhotos); setPhotosPublic(restored.photosPublic); setLandingShowcase(restored.landingShowcase && hasLandingCompatibleImage(restoredPhotos));
     setShowSong(restored.panels.song); setShowPhotos(restored.panels.photos); setShowPlaylist(restored.panels.playlist);
   };
 
@@ -610,6 +623,7 @@ export default function LogScreen({
         media: durablePhotos.length,
         photos: durablePhotos,
         photosPublic,
+        landingShowcase: photosPublic && landingShowcase && hasLandingCompatibleImage(durablePhotos),
         overall: submittedRatings.overall,
         band: submittedRatings.band || submittedRatings.overall,
         room: submittedRatings.room || submittedRatings.overall,
@@ -937,7 +951,11 @@ export default function LogScreen({
             <View key={i} style={styles.thumb}>
               {/* SmartImage renders clips as a play tile and HEIC via transcode. */}
               <SmartImage uri={uri} style={StyleSheet.absoluteFill} contain={false} />
-              <Pressable style={styles.removeThumb} onPress={() => setPhotos((p) => p.filter((_, idx) => idx !== i))} disabled={submitBusy}>
+              <Pressable style={styles.removeThumb} onPress={() => setPhotos((p) => {
+                const next = p.filter((_, idx) => idx !== i);
+                if (!hasLandingCompatibleImage(next)) setLandingShowcase(false);
+                return next;
+              })} disabled={submitBusy}>
                 <Icon name="x" size={12} color="#fff" />
               </Pressable>
             </View>
@@ -961,9 +979,35 @@ export default function LogScreen({
         {!!mediaError && <Text style={styles.songError}>{mediaError}</Text>}
 
         {!isStatus && photos.length > 0 && (
-          <Pressable style={styles.consent} onPress={() => setPhotosPublic((v) => !v)}>
+          <Pressable
+            style={styles.consent}
+            accessibilityRole="checkbox"
+            accessibilityState={{ checked: photosPublic }}
+            accessibilityLabel={`Share my photos on ${artist || "the artist"}'s public page`}
+            accessibilityHint="Turning this off also removes permission to feature a photo in PIT community spotlights."
+            onPress={() => setPhotosPublic((value) => {
+            const next = !value;
+            if (!next) setLandingShowcase(false);
+            return next;
+          })}>
             <View style={[styles.check, photosPublic && styles.checkOn]}>{photosPublic && <Icon name="check" size={13} color="#1A1206" />}</View>
             <Text style={styles.consentTxt}>Let my photos show on the {artist || "artist"}'s page (top ones, by likes). You can change this later.</Text>
+          </Pressable>
+        )}
+        {!isStatus && hasLandingCompatiblePhoto && (
+          <Pressable
+            style={styles.consent}
+            accessibilityRole="checkbox"
+            accessibilityState={{ checked: landingShowcase }}
+            accessibilityLabel="Feature one public artist-page photo in PIT community spotlights and on the homepage"
+            accessibilityHint="The spotlight credits your handle and the concert's artist and venue. Photos are eligible after email confirmation and safety checks. You can turn this off later."
+            onPress={() => setLandingShowcase((value) => {
+            const next = !value;
+            if (next) setPhotosPublic(true);
+            return next;
+          })}>
+            <View style={[styles.check, landingShowcase && styles.checkOn]}>{landingShowcase && <Icon name="check" size={13} color="#1A1206" />}</View>
+            <Text style={styles.consentTxt}>Feature one of these public artist-page photos in PIT community spotlights, including the homepage, after email confirmation and safety checks. Turning this on also enables public artist-page sharing and credits my handle, the artist, and the venue.</Text>
           </Pressable>
         )}
         </View>

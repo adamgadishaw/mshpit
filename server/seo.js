@@ -14,9 +14,9 @@ import { isProduction } from "./environment.js";
 import { parsePath, slugify, artistPath, venuePath, showPath, profilePath } from "../src/domain/urls.mjs";
 
 const SITE_NAME = "Pit";
-const DEFAULT_TITLE = "Pit — find out if a band is worth seeing live";
+const DEFAULT_TITLE = "PIT - Your life's musical journey";
 const DEFAULT_DESCRIPTION =
-  "Real reviews of real gigs, from the people who were there. Rate the band, the room and the night, find who else is going, and never buy a ticket blind again.";
+  "Log the concerts that shape your story, remember every band and room, and discover your next unforgettable night through people whose taste you trust.";
 
 export const origin = () => (process.env.PUBLIC_ORIGIN || "https://www.mshpit.com").replace(/\/+$/, "");
 

@@ -1,23 +1,37 @@
 // Confirmation step for an emailed verification link. The link only carries the
 // token here; confirming happens on the tap below, so a mail scanner prefetching
 // the URL cannot mark an address verified on the owner's behalf.
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { View, Text, StyleSheet, Pressable } from "react-native";
 import { colors, radius, space } from "../theme";
-import { api } from "../lib/api";
+import { useStore } from "../store";
 
-export default function VerifyEmailScreen({ token, onDone }) {
+export default function VerifyEmailScreen({ token, onConsumed, onDone }) {
+  const { confirmEmailVerification } = useStore();
   const [state, setState] = useState("asking");
+  const requestRef = useRef(null);
+
+  useEffect(() => () => requestRef.current?.abort(), []);
 
   const submit = async () => {
+    if (state === "working") return;
+    requestRef.current?.abort();
+    const controller = new AbortController();
+    requestRef.current = controller;
     setState("working");
     try {
-      const r = await api("/api/verify-email", { method: "POST", body: { token }, context: "Confirming your email" });
-      // The endpoint answers the same shape for a live and a dead token so it
-      // cannot be used to probe which are valid; `verified` is what separates them.
-      setState(r?.verified ? "done" : "expired");
+      const result = await confirmEmailVerification(token, { signal: controller.signal });
+      if (controller.signal.aborted) return;
+      if (result?.verified) {
+        onConsumed?.();
+        setState(result.sessionUpdated ? "done" : "doneExternal");
+      } else {
+        setState("expired");
+      }
     } catch {
-      setState("failed");
+      if (!controller.signal.aborted) setState("failed");
+    } finally {
+      if (requestRef.current === controller) requestRef.current = null;
     }
   };
 
@@ -30,22 +44,32 @@ export default function VerifyEmailScreen({ token, onDone }) {
             <Text style={styles.p}>
               Tap below to confirm this address belongs to you. Your account already works either way.
             </Text>
-            <Pressable style={[styles.btn, styles.btnPrimary]} onPress={submit}>
+            <Pressable style={[styles.btn, styles.btnPrimary]} onPress={submit} accessibilityRole="button">
               <Text style={styles.btnTxtPrimary}>Confirm my email</Text>
             </Pressable>
-            <Pressable style={styles.btn} onPress={onDone}>
+            <Pressable style={styles.btn} onPress={onDone} accessibilityRole="button">
               <Text style={styles.btnTxt}>Not now</Text>
             </Pressable>
           </>
         )}
 
-        {state === "working" && <Text style={styles.p}>Confirming…</Text>}
+        {state === "working" && <Text style={styles.p}>Confirming...</Text>}
 
         {state === "done" && (
           <>
-            <Text style={styles.h}>That's confirmed.</Text>
-            <Text style={styles.p}>Thanks. We can reach you about your account now.</Text>
-            <Pressable style={[styles.btn, styles.btnPrimary]} onPress={onDone}>
+            <Text style={styles.h}>Your email is confirmed.</Text>
+            <Text style={styles.p}>Your account is now email-confirmed. This private account check does not add the public verified badge.</Text>
+            <Pressable style={[styles.btn, styles.btnPrimary]} onPress={onDone} accessibilityRole="button">
+              <Text style={styles.btnTxtPrimary}>Back to Pit</Text>
+            </Pressable>
+          </>
+        )}
+
+        {state === "doneExternal" && (
+          <>
+            <Text style={styles.h}>That email is confirmed.</Text>
+            <Text style={styles.p}>The address is confirmed. Sign in to its Pit account to see the updated account status.</Text>
+            <Pressable style={[styles.btn, styles.btnPrimary]} onPress={onDone} accessibilityRole="button">
               <Text style={styles.btnTxtPrimary}>Back to Pit</Text>
             </Pressable>
           </>
@@ -57,7 +81,7 @@ export default function VerifyEmailScreen({ token, onDone }) {
             <Text style={styles.p}>
               Verification links last 24 hours. Sign in and you can send yourself a fresh one.
             </Text>
-            <Pressable style={[styles.btn, styles.btnPrimary]} onPress={onDone}>
+            <Pressable style={[styles.btn, styles.btnPrimary]} onPress={onDone} accessibilityRole="button">
               <Text style={styles.btnTxtPrimary}>Back to Pit</Text>
             </Pressable>
           </>
@@ -66,9 +90,12 @@ export default function VerifyEmailScreen({ token, onDone }) {
         {state === "failed" && (
           <>
             <Text style={styles.h}>That didn't go through.</Text>
-            <Text style={styles.p}>Sign in and you can send yourself a new link.</Text>
-            <Pressable style={[styles.btn, styles.btnPrimary]} onPress={onDone}>
-              <Text style={styles.btnTxtPrimary}>Back to Pit</Text>
+            <Text style={styles.p}>Your connection may have dropped after confirmation. It is safe to try this link again.</Text>
+            <Pressable style={[styles.btn, styles.btnPrimary]} onPress={submit} accessibilityRole="button">
+              <Text style={styles.btnTxtPrimary}>Try again</Text>
+            </Pressable>
+            <Pressable style={styles.btn} onPress={onDone} accessibilityRole="button">
+              <Text style={styles.btnTxt}>Back to Pit</Text>
             </Pressable>
           </>
         )}

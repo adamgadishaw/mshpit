@@ -1,9 +1,70 @@
 # Pit current status
 
-Last reconciled: **2026-08-13**. This is the source of truth for current code,
-release, and production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the
-evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the August 4/5
-audit/session log are historical journals, not current status.
+Last production reconciliation: **2026-08-13**. Local working-tree review:
+**2026-08-14**. This is the source of truth for current code, release, and
+production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
+remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
+August 4/5 audit/session log are historical journals, not current status.
+
+## 2026-08-14 release candidate
+
+- This section records the exact candidate verified before the direct-master
+  rollout. At that checkpoint production remained on `c9d86eb9b8b2`; the
+  release is complete only when both the custom domain and Render origin report
+  the resulting release commit and preserve the public-data baseline below.
+- Mobile now has an independent 44-by-44 Stop/Close control plus a dedicated
+  `SWIPE UP TO CLOSE` rail on both expanded and minimized player surfaces. The
+  gesture belongs to the player rail only--never the feed, transport controls,
+  title, queue, or scrubber--and requires a deliberate dominant upward motion.
+  The 44-dp rail claims its single touch at touch-down so React Native cannot
+  discard the opening movement when responder ownership is granted.
+  Closing pauses playback, clears the account-owned queue and resume position,
+  unmounts the playback engine, and restores the feed's full height. The
+  verification banner moves below an active mobile player instead of covering
+  either close path.
+- Email verification now adopts the confirmed state immediately for the exact
+  matching signed-in account instead of leaving `session.emailVerified` stale
+  until reload. Confirmation and resend are no-store, ambiguous responses use
+  bounded idempotent receipts and identity-bound reconciliation, an already
+  verified stale banner self-heals, and guest/different-account tokens cannot
+  disclose or adopt the token owner's private self projection. A consumed token
+  is removed from the visible URL while the completion state remains on screen.
+- The logged-out hero remains stock-first but can now rotate in separately
+  opted-in community review photos. Homepage consent defaults off, is owner-only,
+  survives drafts/edits/export/idempotent retries, and never inherits the older
+  artist-page photo toggle. Eligibility requires a confirmed active account, a
+  PIT-owned HTTPS JPG/PNG/WebP under that author, public photos, no open post
+  report, and no relevant block. The response exposes only a bounded credit,
+  artist, venue, post id, and media URL; per-author SQL and projection caps keep
+  one account from monopolizing the reel.
+- The hero renders one bundled stock frame immediately, mounts at most the
+  current/outgoing layers, prefetches the exact first community frame before an
+  early transition, preserves deterministic stock fallback, resets the full
+  seven-second deadline after every transition, and honors reduced motion.
+  Existing rows migrate opted out, so production will remain stock-only until
+  verified owners explicitly enable the new control on eligible reviews.
+- Final local gates: **514/514** tests, **118** Node files in the syntax scan,
+  Expo dependency alignment, Expo Doctor **21/21**, fresh SDK 56 web export,
+  fresh Android export (**926 modules**, approximately **4.5 MB** Hermes), and
+  fresh iOS export (**930 modules**, approximately **4.5 MB**).
+  The web entry is **2,348,998 bytes raw, 641,523 gzip, and 529,579 Brotli**;
+  it remains inside the executable raw/compressed budgets. Isolated browser QA
+  passed at 390-by-844 and 1440-by-1000 with community and stock-only paths,
+  two or fewer mounted hero images, no horizontal overflow, and no console errors.
+- Credential-free App Store preparation now pins `com.mshpit.app`, version
+  `1.0.0`/build `1`, phone-only initial scope, export-compliance and
+  required-reason privacy declarations, EAS preview/production profiles, and a
+  real native version label in Settings. No Apple/Expo credential, cloud build,
+  TestFlight upload, or App Store Connect write occurred. Final Pit-owned icon
+  and splash artwork, public support/privacy URLs, non-post UGC report controls,
+  physical iPhone acceptance, reviewer access, and owner store metadata remain
+  explicit blockers in `APP_STORE_READINESS.md`.
+- Before broad traffic, add owned responsive image derivatives/CDN transforms:
+  prefetch prevents a blank transition but a community hero can still be an
+  original upload up to 12 MB. Durable per-photo suppression or a curated
+  homepage approval workflow is also still needed; current safety filters are
+  reactive, and whole-post moderation is the durable removal path. Real-device
+  acceptance of the player stop/release lifecycle remains required.
 
 ## Release state
 

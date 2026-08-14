@@ -12,7 +12,7 @@ import { proxied, isHttp, displaySrc, isVideoUrl } from "../lib/img";
 // Clip URLs (post media mixes photos and videos) render a play tile instead of
 // a broken image, in every grid/wall/strip that uses this component; tapping
 // still opens the viewer, which actually plays them.
-export default function SmartImage({ uri, style, contain = true, onPress, previewWidth = 0 }) {
+export default function SmartImage({ uri, style, contain = true, onPress, previewWidth = 0, accessibilityLabel = "Open image" }) {
   const [stage, setStage] = useState(0); // 0 preferred source, 1 fallback, 2 dead
   useEffect(() => setStage(0), [uri, previewWidth]);
   const fail = () => setStage((s) => s + 1);
@@ -26,7 +26,7 @@ export default function SmartImage({ uri, style, contain = true, onPress, previe
         <Text style={styles.clipTag}>CLIP</Text>
       </View>
     );
-    if (onPress) return <Pressable style={[styles.base, style]} onPress={onPress} accessibilityRole="button" accessibilityLabel="Play video clip">{clip}</Pressable>;
+    if (onPress) return <Pressable style={[styles.base, style]} onPress={onPress} accessibilityRole="button" accessibilityLabel={accessibilityLabel === "Open image" ? "Play video clip" : accessibilityLabel}>{clip}</Pressable>;
     return <View style={[styles.base, style]}>{clip}</View>;
   }
   const inner = stage > 1 || !uri ? (
@@ -40,7 +40,7 @@ export default function SmartImage({ uri, style, contain = true, onPress, previe
       <Image source={{ uri: src }} style={StyleSheet.absoluteFill} resizeMode={contain ? "contain" : "cover"} onError={fail} />
     </>
   );
-  if (onPress) return <Pressable style={[styles.base, style]} onPress={onPress}>{inner}</Pressable>;
+  if (onPress) return <Pressable style={[styles.base, style]} onPress={onPress} accessibilityRole="button" accessibilityLabel={accessibilityLabel}>{inner}</Pressable>;
   return <View style={[styles.base, style]}>{inner}</View>;
 }
 

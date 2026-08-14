@@ -8,7 +8,7 @@
 // mail is held until the address is actually confirmed. Welcoming an address
 // nobody has proven they own is how a typo becomes mail to a stranger.
 import { createHash, randomBytes } from "node:crypto";
-import { emailStmts, q } from "./db.js";
+import { db, emailStmts, q } from "./db.js";
 import { publicOrigin, sendTemplate, sendTemplateInBackground } from "./emailService.js";
 
 const TTL_MS = 24 * 60 * 60 * 1000;
@@ -48,7 +48,9 @@ export async function sendWelcomeOnce(user, { background = false } = {}) {
   if (!fresh || fresh.welcome_sent_at) return { sent: false, reason: "already-sent" };
   // Claim it BEFORE sending. A duplicate welcome is worse than a missing one,
   // and two concurrent verifies would otherwise both see zero and both send.
-  emailStmts.markWelcomeSent.run(Date.now(), user.id);
+  if (!emailStmts.markWelcomeSent.run(Date.now(), user.id).changes) {
+    return { sent: false, reason: "already-sent" };
+  }
   const options = { user: fresh, vars: { name: fresh.name } };
   if (background) { sendTemplateInBackground("welcome", options); return { sent: true, reason: null }; }
   return sendTemplate("welcome", options);
@@ -76,17 +78,44 @@ export function beginVerification(user, { background = true } = {}) {
 }
 
 /**
- * Complete verification from a token. Returns null when the token is unknown or
- * expired; the caller answers identically either way so this cannot be used to
- * probe which tokens are live.
+ * Complete verification from a token. A short-lived hashed receipt makes the
+ * operation idempotent when the write commits but its response is lost. Returns
+ * null when neither a live token nor a valid receipt exists.
  */
 export function completeVerification(token, now = Date.now()) {
   if (!token) return null;
-  const user = emailStmts.userByVerifyHash.get(hashToken(token), now);
-  if (!user) return null;
-  emailStmts.markEmailVerified.run(now, user.id);
-  sendWelcomeOnce(user, { background: true });
-  return q.userById.get(user.id);
+  const tokenHash = hashToken(token);
+  let completion = null;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    emailStmts.pruneVerificationReceipts.run(now);
+    const user = emailStmts.userByVerifyHash.get(tokenHash, now);
+    if (user) {
+      emailStmts.recordVerificationReceipt.run(tokenHash, user.id, hashToken(user.email), now, user.email_verify_expires);
+      emailStmts.markEmailVerified.run(now, user.id);
+      completion = { user: q.userById.get(user.id), replayed: false };
+    } else {
+      const receipt = emailStmts.verificationReceiptByHash.get(tokenHash, now);
+      const replayUser = receipt ? q.userById.get(receipt.user_id) : null;
+      // If a future email-change flow replaces the address or clears its private
+      // confirmation flag, an old receipt must stop matching immediately.
+      if (receipt
+        && replayUser
+        && hashToken(replayUser.email) === receipt.email_hash
+        && replayUser.email_verified_at >= receipt.verified_at) {
+        completion = { user: replayUser, replayed: true };
+      }
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    try { db.exec("ROLLBACK"); } catch {}
+    throw error;
+  }
+  if (!completion) return null;
+  // Also run for a replay: if the process stopped after committing verification
+  // but before claiming the welcome, the retry finishes that one-time side effect.
+  sendWelcomeOnce(completion.user, { background: true });
+  return completion;
 }
 
 /** Admin action: confirm an address without the round trip. */

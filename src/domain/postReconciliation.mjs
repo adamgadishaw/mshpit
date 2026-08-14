@@ -4,7 +4,7 @@ import { clean, clampRating, LIMITS } from "../lib/validate.js";
 const DIMENSION_KEYS = ["performance", "setlist", "sound", "venue", "crowd", "experience"];
 const EDITABLE_KEYS = new Set([
   "artist", "artistKey", "venue", "city", "date", "overall", "band", "room", "dims",
-  "review", "photos", "photosPublic", "setlist", "tour", "tags", "song", "playlistId",
+  "review", "photos", "photosPublic", "landingShowcase", "setlist", "tour", "tags", "song", "playlistId",
 ]);
 const INVALID_STORED_VALUE = Symbol("invalid-stored-post-value");
 
@@ -64,7 +64,8 @@ function intendedValue(key, value) {
     case "dims": return cleanDimensions(value);
     case "review": return clean(value, { max: LIMITS.review, newlines: true });
     case "photos": return cleanArray(value, { maxItems: 8, maxLen: 2000 });
-    case "photosPublic": return !!value;
+    case "photosPublic":
+    case "landingShowcase": return !!value;
     case "setlist": return cleanArray(value, { maxItems: 40, maxLen: 120 });
     case "tour": return clean(value, { max: 80 }) || null;
     case "tags": return cleanTags(value);
@@ -112,6 +113,7 @@ function storedValue(post, key) {
       if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) return INVALID_STORED_VALUE;
       break;
     case "photosPublic":
+    case "landingShowcase":
       if (typeof value !== "boolean" && value !== 0 && value !== 1) return INVALID_STORED_VALUE;
       break;
     case "song":

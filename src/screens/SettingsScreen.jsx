@@ -1,4 +1,5 @@
 import { useState } from "react";
+import Constants from "expo-constants";
 import { View, Text, StyleSheet, ScrollView, Pressable } from "react-native";
 import { colors, radius, mono, THEMES, themeKey, space } from "../theme";
 import { useStore } from "../store";
@@ -6,13 +7,16 @@ import SheetHeader from "../components/SheetHeader";
 import Icon from "../components/Icon";
 import Avatar from "../components/Avatar";
 
-function Row({ icon, label, sub, onPress, danger, right, disabled = false, accessibilityRole }) {
+const versionLabel = Constants.expoConfig?.version || "Unavailable";
+
+function Row({ icon, label, sub, onPress, danger, right, disabled = false, accessibilityRole, accessibilityState }) {
   return (
     <Pressable
       style={[styles.row, disabled && styles.rowDisabled]}
       onPress={disabled ? undefined : onPress}
       disabled={disabled}
       accessibilityRole={accessibilityRole}
+      accessibilityState={{ ...accessibilityState, disabled }}
     >
       <View style={[styles.rowIcon, danger && { borderColor: colors.danger }]}>
         <Icon name={icon} size={17} color={danger ? colors.danger : colors.amber} />
@@ -56,12 +60,13 @@ function Swatch({ theme, active, onPress }) {
 }
 
 export default function SettingsScreen({ onClose, onEditProfile, onOpenProfile, onOpenPrivacy, onOpenTerms, onOpenDiagnostics, onOpenDeleteAccount, onLogout }) {
-  const { session, chooseTheme, blockedUsers, unblockUser, exportMyData, updateProfile } = useStore();
+  const { session, chooseTheme, blockedUsers, unblockUser, exportMyData, setAnalyticsEnabled } = useStore();
   const blocked = session ? blockedUsers() : [];
   const [exporting, setExporting] = useState(false);
   const [exportResult, setExportResult] = useState(null);
   const [savingAnalytics, setSavingAnalytics] = useState(false);
   const [analyticsResult, setAnalyticsResult] = useState(null);
+  const analyticsEnabled = !!(session?.analyticsConsentAt || session?.consentAt) && !session?.analyticsOptOut;
   const doExport = async () => {
     if (exporting) return;
     setExporting(true);
@@ -74,8 +79,8 @@ export default function SettingsScreen({ onClose, onEditProfile, onOpenProfile, 
     if (!session || savingAnalytics) return;
     setSavingAnalytics(true);
     setAnalyticsResult(null);
-    const optingOut = !session.analyticsOptOut;
-    const result = await updateProfile({ analyticsOptOut: optingOut });
+    const optingOut = analyticsEnabled;
+    const result = await setAnalyticsEnabled(!optingOut);
     setAnalyticsResult(result?.ok
       ? (optingOut ? "Product analytics are off and your prior product events were deleted." : "Product analytics are on for this account.")
       : "That preference did not save. Please try again.");
@@ -108,13 +113,14 @@ export default function SettingsScreen({ onClose, onEditProfile, onOpenProfile, 
             <Row
               icon="activity"
               label="Product analytics"
-              sub={session.analyticsOptOut
+              sub={!analyticsEnabled
                 ? "Off. Pit will not record product-usage events for this account."
                 : "On. Helps improve Pit using a limited set of account activity events."}
               onPress={toggleAnalytics}
               disabled={savingAnalytics}
               accessibilityRole="switch"
-              right={<Toggle value={!session.analyticsOptOut} busy={savingAnalytics} />}
+              accessibilityState={{ checked: analyticsEnabled, busy: savingAnalytics }}
+              right={<Toggle value={analyticsEnabled} busy={savingAnalytics} />}
             />
             {!!analyticsResult && (
               <Text style={[styles.exportStatus, analyticsResult.startsWith("That preference") && styles.exportError]} accessibilityRole="alert">
@@ -153,7 +159,7 @@ export default function SettingsScreen({ onClose, onEditProfile, onOpenProfile, 
         <Row icon="discover" label="Diagnostics" sub="Recent errors, request references, and failure points" onPress={onOpenDiagnostics} />
         <Row icon="lock" label="Privacy policy" onPress={onOpenPrivacy} />
         <Row icon="shield" label="Terms & conditions" onPress={onOpenTerms} />
-        <Row icon="globe" label="Version" sub="Pit · Alpha build" onPress={undefined} right={<Text style={styles.ver}>0.1</Text>} />
+        <Row icon="globe" label="Version" sub="Pit mobile" onPress={undefined} right={<Text style={styles.ver}>{versionLabel}</Text>} />
 
         {session && (
           <>

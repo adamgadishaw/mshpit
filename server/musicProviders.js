@@ -1,4 +1,5 @@
 import { artistRow, artistStmts, db, normName, providerCacheStmts, ytStmts } from "./db.js";
+import { providerGenreFields } from "../src/domain/genre.mjs";
 
 const DEEZER_DISCOGRAPHY_TTL_MS = 24 * 60 * 60 * 1000;
 const DEEZER_PREVIEW_MAX_TTL_MS = 5 * 60 * 1000;
@@ -263,7 +264,7 @@ function storedDeezerId(name) {
   try { return JSON.parse(row.data)?.deezerId || null; } catch { return null; }
 }
 
-function persistDeezerIdentity(name, deezerId, derivedGenre = null) {
+export function persistDeezerIdentity(name, deezerId, derivedGenre = null) {
   const existing = artistStmts.byNorm.get(normName(name));
   if (!existing || !deezerId) return;
   let data = {};
@@ -271,13 +272,17 @@ function persistDeezerIdentity(name, deezerId, derivedGenre = null) {
   // Deezer's album genre is a clean canonical label, so it corrects the noisy
   // MusicBrainz tag that got written into `genre` (e.g. Justin Bieber -> "Metal").
   const genre = derivedGenre && String(derivedGenre).trim() ? String(derivedGenre).trim() : null;
+  const genreFields = providerGenreFields(data, existing.genre, genre);
+  const priorProvider = Array.isArray(data.genreClaims)
+    ? data.genreClaims.find((claim) => claim?.source === "provider")?.value || null
+    : null;
   const idUnchanged = String(data.deezerId || "") === String(deezerId);
-  const genreChanged = genre && genre !== existing.genre;
+  const genreChanged = !!genre && genre !== priorProvider;
   if (idUnchanged && !genreChanged) return;
   const merged = {
     ...data,
     name: existing.name,
-    genre: genre || existing.genre || data.genre || null,
+    ...genreFields,
     photo: existing.photo || data.photo || null,
     bio: existing.bio || data.bio || null,
     mbid: existing.mbid || data.mbid || null,

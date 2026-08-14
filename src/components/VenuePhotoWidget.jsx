@@ -95,7 +95,12 @@ export default function VenuePhotoWidget({ photos = [], venueName, city, coord, 
       </Pressable>
 
       {coord && coord.lat != null && (
-        <Pressable style={styles.dir} onPress={() => Linking.openURL(mapsDir(coord.lat, coord.lng))}>
+        <Pressable
+          style={styles.dir}
+          onPress={() => { void Linking.openURL(mapsDir(coord.lat, coord.lng)).catch(() => {}); }}
+          accessibilityRole="link"
+          accessibilityLabel={`Get directions to ${venueName}`}
+        >
           <Icon name="pin" size={15} color={colors.amber} />
           <Text style={styles.dirTxt}>Get directions</Text>
           <Icon name="external" size={14} color={colors.textDim} />

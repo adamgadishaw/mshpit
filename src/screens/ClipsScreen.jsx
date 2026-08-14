@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { View, Text, StyleSheet, Pressable, Platform, useWindowDimensions } from "react-native";
 import { useVideoPlayer, VideoView } from "expo-video";
 import { colors, mono, radius, shadow } from "../theme";
+import { pendingVideoMilestones } from "../domain/mediaAnalytics.mjs";
 import Icon from "../components/Icon";
 import Avatar from "../components/Avatar";
 import { useStore } from "../store";
@@ -12,18 +13,52 @@ const web = Platform.OS === "web";
 // centered vertically, with its own play/pause + mute. Only the ACTIVE page
 // mounts a real player (mounting every video at once would hammer the network
 // and the decoder), so `active` gates the heavy VideoView.
-function ClipPage({ post, uri, height, active, muted, onToggleMute, onLike, onOpenPost, onOpenProfile, onOpenArtist }) {
+function ClipPage({ post, uri, height, active, muted, onToggleMute, onLike, onOpenPost, onOpenProfile, onOpenArtist, onTrack }) {
   const player = useVideoPlayer(active ? uri : null, (p) => {
     if (!p) return;
     p.loop = true;
     p.muted = muted;
   });
   const [paused, setPaused] = useState(false);
+  const trackRef = useRef(onTrack);
+  trackRef.current = onTrack;
 
   useEffect(() => {
     if (!player) return;
     try { player.muted = muted; } catch {}
   }, [muted, player]);
+
+  // Record actual playback, not merely that the reel rendered. Milestones are
+  // emitted once per active viewing session and carry only the internal post id.
+  useEffect(() => {
+    if (!active || !player || !post?.id) return;
+    const milestones = new Set();
+    let started = false;
+    try { player.timeUpdateEventInterval = 1; } catch {}
+    const recordStart = (isPlaying) => {
+      if (!isPlaying || started) return;
+      started = true;
+      trackRef.current?.("video_start", { postId: post.id, surface: "clips", muted: !!player.muted });
+    };
+    const recordMilestone = (milestone) => {
+      if (milestones.has(milestone)) return;
+      milestones.add(milestone);
+      trackRef.current?.("video_progress", { postId: post.id, surface: "clips", milestone });
+    };
+    const playingSubscription = player.addListener?.("playingChange", ({ isPlaying }) => recordStart(isPlaying));
+    const timeSubscription = player.addListener?.("timeUpdate", ({ currentTime }) => {
+      for (const milestone of pendingVideoMilestones({ currentTime, duration: player.duration, seen: milestones })) recordMilestone(milestone);
+    });
+    const endSubscription = player.addListener?.("playToEnd", () => {
+      for (const milestone of pendingVideoMilestones({ seen: milestones, ended: true })) recordMilestone(milestone);
+    });
+    recordStart(player.playing);
+    return () => {
+      playingSubscription?.remove?.();
+      timeSubscription?.remove?.();
+      endSubscription?.remove?.();
+    };
+  }, [active, player, post?.id]);
 
   useEffect(() => {
     if (!player) return;
@@ -101,7 +136,7 @@ function RailBtn({ icon, filled, tint, label, onPress, a11y }) {
 // app's music player (App handles that via onEnter/onExit) rather than fighting
 // it for audio. One clip per post (its first video); the rest live on the post.
 export default function ClipsScreen({ onClose, onOpenPost, onOpenProfile, onOpenArtist, onRequireAuth }) {
-  const { session, loadClips, toggleLike } = useStore();
+  const { session, loadClips, toggleLike, track } = useStore();
   const { height: winH } = useWindowDimensions();
   const [pages, setPages] = useState([]);
   const [cursor, setCursor] = useState(null);
@@ -193,6 +228,7 @@ export default function ClipsScreen({ onClose, onOpenPost, onOpenProfile, onOpen
           onOpenPost={onOpenPost}
           onOpenProfile={onOpenProfile}
           onOpenArtist={onOpenArtist}
+          onTrack={track}
         />
       )}
     </View>
@@ -202,7 +238,7 @@ export default function ClipsScreen({ onClose, onOpenPost, onOpenProfile, onOpen
 // Web reel: a native scroll container with scroll-snap so each swipe/scroll
 // lands on one clip. (Native paging would use a ScrollView with pagingEnabled;
 // this app is web-first, and expo-video's web player is a real <video>.)
-function WebReel({ reelRef, pages, pageH, active, muted, onScroll, onToggleMute, onLike, onOpenPost, onOpenProfile, onOpenArtist }) {
+function WebReel({ reelRef, pages, pageH, active, muted, onScroll, onToggleMute, onLike, onOpenPost, onOpenProfile, onOpenArtist, onTrack }) {
   const localRef = useRef(null);
   const ref = reelRef || localRef;
   useEffect(() => {
@@ -233,6 +269,7 @@ function WebReel({ reelRef, pages, pageH, active, muted, onScroll, onToggleMute,
             onOpenPost={onOpenPost}
             onOpenProfile={onOpenProfile}
             onOpenArtist={onOpenArtist}
+            onTrack={onTrack}
           />
         </View>
       ))}

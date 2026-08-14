@@ -1,24 +1,49 @@
 import { createContext, useContext, useState, useEffect, useRef } from "react";
 import { AppState, Platform } from "react-native";
-import { seedFeed, ratedShows, cityCoords, haversineKm } from "./data";
+import { seedFeed, ratedShows, haversineKm } from "./data";
 import { catalogVenues, catalogTourDates, catalogArtists } from "./seed/catalog";
 import { clean, cleanEmail, isEmail, cleanName, isName, cleanHandle, isPassword, clampRating, LIMITS } from "./lib/validate";
 import { load, save } from "./lib/persist";
-import { api, captureAppError } from "./lib/api";
+import { api, captureAppError, configureApiIdentity } from "./lib/api";
 import { clearStoredTheme, setTheme as applyTheme, storedThemeSelection, syncThemeFromAccount } from "./theme";
 import { artistMeta } from "./seed/ingested";
 import { ACHIEVEMENTS } from "./lib/badges";
 import { ENABLE_DEMO_DATA } from "./config/runtime.mjs";
-import { isUpcomingEventDate, PERSISTED_FEED_LIMIT, sanitizePersistedStoreValue, sanitizeTourDates } from "./domain/dataPolicy.mjs";
+import { isUpcomingEventDate, PERSISTED_FEED_LIMIT, publicProfileCacheEntry, sanitizePersistedStoreValue, sanitizeTourDates } from "./domain/dataPolicy.mjs";
 import { toIsoDate } from "./domain/dates.mjs";
 import { createTicketRegistry } from "./domain/latestWins.mjs";
-import { deleteAccountDraft, draftsForAccount, migrateLegacyDrafts, upsertAccountDraft } from "./domain/draftPolicy.mjs";
+import { createAccountReadCoordinator } from "./domain/accountReadCoordinator.mjs";
+import { createDiscoverCache, discoverGenreCacheKey, discoverOverviewCacheKey } from "./domain/discoverCache.mjs";
+import { mergeUniquePage, reconcileMemberMutationPage } from "./domain/pageMerge.mjs";
+import { createStaffReadCoordinator, staffScopeFor } from "./domain/staffReadCoordinator.mjs";
+import { patchModerationMemberContext } from "./domain/moderationConsole.mjs";
+import {
+  deleteAccountDraft,
+  draftsForAccount,
+  migrateLegacyDrafts,
+  resolveQuarantinedLegacyDrafts,
+  upsertAccountDraft,
+} from "./domain/draftPolicy.mjs";
 import { buildReviewCreateBody, buildReviewEditBody, cleanArtistKey } from "./domain/post-payload.mjs";
 import { mergeEditedPost, resolvePostEditTarget } from "./domain/postEditTarget.mjs";
 import { postMatchesEditIntent, shouldReconcileEditFailure } from "./domain/postReconciliation.mjs";
 import { classifyResolve, backoffFor, RESOLVE_ATTEMPTS, CACHE_MS } from "./domain/playback.mjs";
 import { recommendTracks as recommendFromCandidates } from "./domain/recommend.mjs";
 import { trackKey } from "./lib/playback";
+import {
+  configureProductAnalytics,
+  installProductAnalyticsLifecycle,
+  productAnalyticsPlatform,
+  purgeProductAnalyticsAccount,
+  trackProductEvent,
+} from "./lib/productAnalytics";
+import { analyticsDurationBucket } from "./domain/analyticsPolicy.mjs";
+import { isVenuePlaceActionable, locationCenterFromVenues, venuePlaceIdentity } from "./domain/venueDiscovery.mjs";
+import {
+  confirmEmailWithReconciliation,
+  matchingEmailVerifiedSessionUser,
+  verificationResendState,
+} from "./domain/emailVerification.mjs";
 import {
   cleanVenuePhotoResponse,
   isFreshVenuePhotoEntry,
@@ -37,6 +62,34 @@ const AV = ["#F2A65A", "#E0457B", "#5B8DEF", "#6FCF97", "#B98AE0", "#E8B65A"];
 // network failure as a successful local authentication or signup.
 const LOCAL_AUTH_FALLBACK = ENABLE_DEMO_DATA;
 const demoSeed = (value, emptyValue) => (ENABLE_DEMO_DATA ? value : emptyValue);
+
+// One-way upgrade migration. Production identity is cookie-owned, so retaining
+// the old full local session (email, precise home, consent metadata) serves no
+// authentication purpose. Preserve only its account id in memory long enough
+// to safely recover an ownerless legacy draft after /api/me confirms the same
+// account, then erase the device copy before App renders.
+const migrateLegacyProductionSession = () => {
+  if (ENABLE_DEMO_DATA) return null;
+  const legacy = load("pit.session", null);
+  const legacyAccountId = legacy?.id == null || legacy.id === "" ? null : String(legacy.id);
+  save("pit.session", null);
+  return legacyAccountId;
+};
+const LEGACY_PRODUCTION_SESSION_ACCOUNT_ID = migrateLegacyProductionSession();
+const emptyAdminStats = () => ({ total: 0, banned: 0, verified: 0, regions: [] });
+const emptyAdminMemberDirectory = () => ({
+  query: "",
+  role: "",
+  status: "",
+  matchingTotal: 0,
+  nextCursor: null,
+});
+const emptyModerationConsole = () => ({
+  summary: { open: 0, actioned: 0, dismissed: 0, totalRecent: 0, byType: {}, queueTruncated: false },
+  reports: [],
+  recentActions: [],
+  nextCursor: null,
+});
 
 // Compact relative time ("now" / "5m" / "3h" / "2d") for server timestamps that
 // arrive as epoch ms, so hydrated DMs/comments read like the seed ones.
@@ -76,6 +129,25 @@ const adoptChatMessageId = (messages, localId, serverId, max) => mergeChatMessag
 const FEED_PAGE_LIMIT = 20;
 const FEED_REFRESH_MS = 45_000;
 const FEED_REFRESH_MAX_BACKOFF_MS = 120_000;
+const feedStorageKey = (accountId) => `pit.feed.v2.${accountId || "guest"}`;
+const recommendationPreferenceStorageKey = (accountId) => `pit.feed.preferences.v1.${accountId}`;
+const AUTH_EPOCH_STORAGE_KEY = "pit.auth.epoch.v1";
+const broadcastAuthEpoch = () => {
+  if (Platform.OS !== "web" || typeof window === "undefined") return;
+  // This key is a one-way notification only. Validation never writes it, so two
+  // tabs cannot trigger each other in a lock/revalidate loop.
+  save(AUTH_EPOCH_STORAGE_KEY, { at: Date.now(), nonce: Math.random().toString(36).slice(2) });
+};
+const loadRecommendationHiddenIds = (accountId) => new Set(accountId ? load(recommendationPreferenceStorageKey(accountId), []) : []);
+const loadScopedFeed = (accountId) => {
+  const scoped = load(feedStorageKey(accountId), null);
+  if (Array.isArray(scoped)) return sanitizePersistedStoreValue("pit.feed", scoped, ENABLE_DEMO_DATA);
+  // The legacy cache was device-global. Only a guest may migrate its public
+  // cards, and personalization metadata is stripped during that one-way move.
+  if (accountId) return [];
+  const legacy = sanitizePersistedStoreValue("pit.feed", load("pit.feed", demoSeed(seedFeed, [])), ENABLE_DEMO_DATA);
+  return legacy.map(({ recommendation: _recommendation, liked: _liked, ...post }) => ({ ...post, liked: false }));
+};
 const normalizeServerPost = (post) => ({
   ...post,
   photos: Array.isArray(post?.photos) ? post.photos : [],
@@ -93,6 +165,7 @@ const sameServerPost = (a, b) => !!a && !!b
   && a.comments === b.comments
   && a.liked === b.liked
   && a.flags === b.flags
+  && JSON.stringify(a.recommendation || null) === JSON.stringify(b.recommendation || null)
   && JSON.stringify(a.commentPreview || null) === JSON.stringify(b.commentPreview || null)
   && JSON.stringify(a.user || null) === JSON.stringify(b.user || null);
 
@@ -150,7 +223,7 @@ export const roleBadge = (role) =>
 
 // Bump when the Terms/Privacy change materially, so we can tell who consented to
 // which version (recorded on the account at sign-up).
-export const TERMS_VERSION = "2026-07";
+export const TERMS_VERSION = "2026-08";
 
 const StoreContext = createContext(null);
 export const useStore = () => useContext(StoreContext);
@@ -163,6 +236,22 @@ function usePersisted(key, seed) {
   const [value, setValue] = useState(() =>
     sanitizePersistedStoreValue(key, load(key, seed), ENABLE_DEMO_DATA));
   useEffect(() => { save(key, value); }, [key, value]);
+  return [value, setValue];
+}
+
+// Message bodies, private requests, notifications, and taste memberships must
+// not survive an account handoff in device-global storage. Production hydrates
+// these from authenticated endpoints into memory; demo mode alone keeps its
+// prototype continuity behavior. The mount scrub migrates legacy plaintext keys.
+function usePrivateEphemeral(key, seed) {
+  const empty = Array.isArray(seed) ? [] : {};
+  const [value, setValue] = useState(() => ENABLE_DEMO_DATA
+    ? sanitizePersistedStoreValue(key, load(key, seed), true)
+    : empty);
+  useEffect(() => {
+    if (ENABLE_DEMO_DATA) save(key, value);
+    else save(key, empty);
+  }, [key, value]);
   return [value, setValue];
 }
 
@@ -191,23 +280,34 @@ export function StoreProvider({ children }) {
   const [discoverySidebar, setDiscoverySidebar] = useState({ topArtists: [], trendingVenues: [], upcomingEvents: [], location: null, source: null });
   const [discoverySidebarStatus, setDiscoverySidebarStatus] = useState("loading");
   const [rewardProfiles, setRewardProfiles] = useState({}); // user id -> authoritative server rewards
-  const [session, setSession] = useState(() =>
-    sanitizePersistedStoreValue("pit.session", load("pit.session", null), ENABLE_DEMO_DATA));
+  // The HttpOnly cookie, not local storage, owns identity. Production starts
+  // locked until /api/me confirms it; otherwise a stale local account B and a
+  // cookie for A can attribute B's personalized analytics/actions to A.
+  const [session, setSession] = useState(() => ENABLE_DEMO_DATA
+    ? sanitizePersistedStoreValue("pit.session", load("pit.session", null), true)
+    : null);
+  const sessionRef = useRef(session);
+  const [authReady, setAuthReady] = useState(ENABLE_DEMO_DATA);
+  const authReadyRef = useRef(ENABLE_DEMO_DATA);
+  const authValidationSequenceRef = useRef(0);
+  sessionRef.current = session;
+  authReadyRef.current = authReady;
   const historyStorageKey = (userId = session?.id) => `pit.playhistory.${userId || "guest"}`;
   const [playHistory, setPlayHistory] = useState(() => load(historyStorageKey(), [])); // every song played, newest first
   const [playHistoryAccountId, setPlayHistoryAccountId] = useState(session?.id || null);
   const [playHistoryStatus, setPlayHistoryStatus] = useState(session?.id ? "loading" : "ready");
   const [playHistoryNextCursor, setPlayHistoryNextCursor] = useState(null);
   const playHistoryRequestRef = useRef({ sequence: 0, accountId: session?.id || null });
-  const [snapshots, setSnapshots] = useState(() => load("pit.snapshots", [])); // saved listening sessions (playlist seeds)
+  const [snapshots, setSnapshots] = useState(() => ENABLE_DEMO_DATA ? load("pit.snapshots", []) : []); // private listening sessions stay memory-only in production
   const [drafts, setDrafts] = useState(() =>
     migrateLegacyDrafts(load("pit.drafts", []), session?.id)); // unfinished reviews, account-scoped on this device
   const draftsRef = useRef(drafts);
+  const legacyDraftMigrationHandledRef = useRef(ENABLE_DEMO_DATA);
   draftsRef.current = drafts;
   useEffect(() => {
     if ((session?.id || null) === playHistoryAccountId) save(historyStorageKey(playHistoryAccountId), playHistory);
   }, [session?.id, playHistoryAccountId, playHistory]);
-  useEffect(() => { save("pit.snapshots", snapshots); }, [snapshots]);
+  useEffect(() => { save("pit.snapshots", ENABLE_DEMO_DATA ? snapshots : []); }, [snapshots]);
   const commitDrafts = (updater) => {
     const current = draftsRef.current;
     const next = typeof updater === "function" ? updater(current) : updater;
@@ -218,6 +318,15 @@ export function StoreProvider({ children }) {
     setDrafts(next);
     return next;
   };
+  const resolveLegacyDraftsForIdentity = (accountId) => {
+    if (legacyDraftMigrationHandledRef.current) return;
+    legacyDraftMigrationHandledRef.current = true;
+    commitDrafts((all) => resolveQuarantinedLegacyDrafts(
+      all,
+      accountId,
+      LEGACY_PRODUCTION_SESSION_ACCOUNT_ID,
+    ));
+  };
   // Review drafts: save an unfinished log to resume later.
   const saveDraft = (d) => {
     const id = d.id || "draft_" + Date.now();
@@ -226,22 +335,74 @@ export function StoreProvider({ children }) {
     return id;
   };
   const deleteDraft = (id) => commitDrafts((all) => deleteAccountDraft(all, id, session?.id));
-  const [adminStats, setAdminStats] = useState({ total: 0, banned: 0, verified: 0, regions: [] }); // admin member console stats
-  const [feed, setFeed] = useState(() =>
-    sanitizePersistedStoreValue("pit.feed", load("pit.feed", demoSeed(seedFeed, [])), ENABLE_DEMO_DATA));
+  // Staff-only member fields never enter the device-wide, persisted `users`
+  // profile cache. This collection is intentionally process-memory only and is
+  // cleared whenever the staff identity or role changes.
+  const [adminMembers, setAdminMembers] = useState([]);
+  const adminMembersRef = useRef(adminMembers);
+  adminMembersRef.current = adminMembers;
+  const [adminStats, setAdminStats] = useState(emptyAdminStats); // admin member console stats
+  const adminStatsRef = useRef(adminStats);
+  adminStatsRef.current = adminStats;
+  const [adminMemberDirectory, setAdminMemberDirectory] = useState(emptyAdminMemberDirectory);
+  const adminMemberDirectoryRef = useRef(adminMemberDirectory);
+  adminMemberDirectoryRef.current = adminMemberDirectory;
+  // Production does not render a persisted personalized cache until the cookie
+  // identity and server safety rules have been revalidated. This prevents a
+  // removed/blocked card (or account A's taste reasons) flashing for account B.
+  const [feed, setFeed] = useState(() => ENABLE_DEMO_DATA ? loadScopedFeed(session?.id) : []);
+  const feedRef = useRef(feed);
+  feedRef.current = feed;
+  const feedAccountIdRef = useRef(session?.id || null);
   // Polling and mutations can finish out of order. A revision invalidates a
   // response that started before a local create/edit/like, while the request
   // state prevents overlapping refreshes from racing each other.
   const feedMutationRevisionRef = useRef(0);
   const feedRefreshRef = useRef({ inFlight: false, sequence: 0 });
+  const feedModeRef = useRef("for-you");
+  const feedAlgorithmRef = useRef("global-personal-v1");
+  const feedPageRef = useRef(1);
+  const feedRevalidationOffsetRef = useRef(0);
+  const [recommendationHiddenIds, setRecommendationHiddenIds] = useState(() => loadRecommendationHiddenIds(session?.id));
+  const recommendationPreferenceRevisionRef = useRef(0);
   const [removedIds, setRemovedIds] = useState([]);
   // Per-image moderation: individual photo URLs pulled from galleries. Reactive,
   // like the rest of moderation, but removing one photo backfills the gallery
   // from the next available source instead of leaving a hole.
   const [removedPhotos, setRemovedPhotos] = useState([]);
-  const [requests, setRequests] = usePersisted("pit.requests", seedRequests);
+  const [requests, setRequests] = usePrivateEphemeral("pit.requests", seedRequests);
   const [tourDates, setTourDates] = usePersisted("pit.tourDates", seedTourDates);
   const [reports, setReports] = useState([]);
+  const [moderationConsole, setModerationConsole] = useState(emptyModerationConsole);
+  const moderationConsoleRef = useRef(moderationConsole);
+  moderationConsoleRef.current = moderationConsole;
+  const staffReadsRef = useRef(null);
+  if (!staffReadsRef.current) staffReadsRef.current = createStaffReadCoordinator();
+  const staffStateScopeRef = useRef(staffScopeFor(session));
+
+  const resetStaffState = () => {
+    staffReadsRef.current.reset();
+    adminMembersRef.current = [];
+    adminStatsRef.current = emptyAdminStats();
+    adminMemberDirectoryRef.current = emptyAdminMemberDirectory();
+    moderationConsoleRef.current = emptyModerationConsole();
+    setAdminMembers([]);
+    setAdminStats(adminStatsRef.current);
+    setAdminMemberDirectory(adminMemberDirectoryRef.current);
+    setModerationConsole(moderationConsoleRef.current);
+    setReports([]);
+  };
+
+  // A role change is a privacy boundary even when the account id stays the
+  // same (admin -> moderator must drop admin-only email-confirmation state).
+  useEffect(() => {
+    const nextScope = staffScopeFor(session);
+    if (staffStateScopeRef.current !== nextScope) {
+      resetStaffState();
+      staffStateScopeRef.current = nextScope;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.id, session?.role]);
   const [follows, setFollows] = useState(() =>
     sanitizePersistedStoreValue("pit.follows", load("pit.follows", demoSeed({ u_demo: ["u_mara", "u_devon"] }, {})), ENABLE_DEMO_DATA));
   const [blockedIds, setBlockedIds] = useState(() =>
@@ -258,24 +419,24 @@ export function StoreProvider({ children }) {
   const [myLikes, setMyLikes] = usePersisted("pit.myLikes", {});
 
   // Concert Lounge: a gated, Discord-style chat per concert (keyed by concertKey)
-  const [lounge, setLounge] = usePersisted("pit.lounge", demoSeed({
+  const [lounge, setLounge] = usePrivateEphemeral("pit.lounge", demoSeed({
     "turnstile|the fillmore|2026 · 06 · 21": [
       { id: "m1", userId: "u_devon", name: "Devon Ash", initials: "DA", text: "anyone else lose a shoe in the pit lol", ts: "2h" },
       { id: "m2", userId: "u_priya", name: "Priya N.", initials: "PN", text: "the HEALING singalong gave me chills", ts: "2h" },
     ],
   }, {}));
   // Planned attendance ("Going") - per user, list of concert refs
-  const [going, setGoing] = usePersisted("pit.going", demoSeed({
+  const [going, setGoing] = usePrivateEphemeral("pit.going", demoSeed({
     u_mara: [{ key: "geese|the independent|2026 · 08 · 26", artist: "Geese", venue: "The Independent", city: "San Francisco", date: "2026 · 08 · 26" }],
   }, {}));
   // Artist fan clubs: permanent chat per artist + membership
-  const [fanClubMsgs, setFanClubMsgs] = usePersisted("pit.fanClubMsgs", demoSeed({
+  const [fanClubMsgs, setFanClubMsgs] = usePrivateEphemeral("pit.fanClubMsgs", demoSeed({
     turnstile: [
       { id: "fc1", userId: "u_mara", name: "Mara Quinn", initials: "MQ", text: "GLOW ON changed my life, no notes", ts: "3h" },
       { id: "fc2", userId: "u_devon", name: "Devon Ash", initials: "DA", text: "who's getting the MSG tickets??", ts: "1h" },
     ],
   }, {}));
-  const [fanClubs, setFanClubs] = usePersisted("pit.fanClubs", demoSeed({ u_demo: ["Turnstile"], u_mara: ["Turnstile", "Militarie Gun"] }, {}));
+  const [fanClubs, setFanClubs] = usePrivateEphemeral("pit.fanClubs", demoSeed({ u_demo: ["Turnstile"], u_mara: ["Turnstile", "Militarie Gun"] }, {}));
   // Server-truth member counts per fan club (slice 5), keyed by fcKey. Preferred
   // over the local-graph count when present so totals reflect everyone, not just
   // the users this browser happens to know about.
@@ -295,7 +456,7 @@ export function StoreProvider({ children }) {
   const venuePhotoCacheRef = useRef(new Map());
   const venuePhotoInflightRef = useRef(new Map());
   // Direct messages - keyed by the sorted pair of user ids; plus read markers.
-  const [dms, setDms] = usePersisted("pit.dms", demoSeed({
+  const [dms, setDms] = usePrivateEphemeral("pit.dms", demoSeed({
     u_demo__u_mara: [
       { id: "dm1", from: "u_mara", text: "yo are you going to the Geese show?", ts: "1d" },
       { id: "dm2", from: "u_demo", text: "trying to get tickets! you?", ts: "1d" },
@@ -307,10 +468,10 @@ export function StoreProvider({ children }) {
       { id: "dm4", from: "u_priya", text: "hey! saw you were at the Fillmore show too, small world", ts: "3h" },
     ],
   }, {}));
-  const [dmRead, setDmRead] = usePersisted("pit.dmRead", {});
+  const [dmRead, setDmRead] = usePrivateEphemeral("pit.dmRead", {});
   // Notifications / activity, the social heartbeat. Each item is addressed to a
   // recipient (userId) and generated when someone acts on their content/graph.
-  const [notifications, setNotifications] = usePersisted("pit.notifications", demoSeed([
+  const [notifications, setNotifications] = usePrivateEphemeral("pit.notifications", demoSeed([
     { id: "nf1", userId: "u_demo", type: "follow", actorId: "u_mara", actorName: "Mara Quinn", actorInitials: "MQ", ts: Date.now() - 3600000, read: false },
     { id: "nf2", userId: "u_demo", type: "like", actorId: "u_devon", actorName: "Devon Ash", actorInitials: "DA", postId: "log_1", artist: "Turnstile", ts: Date.now() - 7200000, read: false },
     { id: "nf3", userId: "u_demo", type: "comment", actorId: "u_priya", actorName: "Priya N.", actorInitials: "PN", postId: "log_1", artist: "Turnstile", ts: Date.now() - 10800000, read: true },
@@ -327,12 +488,72 @@ export function StoreProvider({ children }) {
 
   // Persist identity + continuity state so a refresh doesn't wipe your session,
   // account, posts, or follows.
-  useEffect(() => save("pit.session", session), [session]);
-  useEffect(() => save("pit.users", users), [users]);
+  // A production identity is owned by the HttpOnly cookie. Persisting transient
+  // validation state under the same key used for cross-tab signalling created a
+  // two-tab null/user ping-pong. Demo mode alone keeps the local prototype key.
+  useEffect(() => { if (ENABLE_DEMO_DATA) save("pit.session", session); }, [session]);
+  useEffect(() => save("pit.users", ENABLE_DEMO_DATA
+    ? users
+    : users.map(publicProfileCacheEntry).filter(Boolean)), [users]);
   // localStorage is synchronous on browsers. Persist only a bounded continuity
   // window so a long scrolling session cannot turn every like/poll into a large
   // main-thread JSON serialization on a phone.
-  useEffect(() => save("pit.feed", feed.slice(0, PERSISTED_FEED_LIMIT)), [feed]);
+  useEffect(() => save(feedStorageKey(feedAccountIdRef.current), feed.slice(0, PERSISTED_FEED_LIMIT)), [feed]);
+  const adoptFeedAccount = (nextAccountId) => {
+    if (nextAccountId === feedAccountIdRef.current) return;
+    feedAccountIdRef.current = nextAccountId;
+    feedRefreshRef.current.sequence += 1;
+    feedRefreshRef.current.inFlight = false;
+    feedLoadMoreRef.current = false;
+    feedModeRef.current = "for-you";
+    feedAlgorithmRef.current = "global-personal-v1";
+    feedPageRef.current = 1;
+    feedRevalidationOffsetRef.current = 0;
+    recommendationPreferenceRevisionRef.current += 1;
+    setRecommendationHiddenIds(loadRecommendationHiddenIds(nextAccountId));
+    setFeed(ENABLE_DEMO_DATA ? loadScopedFeed(nextAccountId) : []);
+    setFeedNextCursor(null);
+    setFeedHasMore(true);
+    setFeedLoadingMore(false);
+    setMyLikes({});
+    setBlockedIds([]);
+    if (!ENABLE_DEMO_DATA) {
+      setRequests([]);
+      setLounge({});
+      setGoing({});
+      setFanClubMsgs({});
+      setFanClubs({});
+      setDms({});
+      setDmRead({});
+      setNotifications([]);
+      setSnapshots([]);
+    }
+    if (!ENABLE_DEMO_DATA) setUsers((current) => current.map(publicProfileCacheEntry).filter(Boolean));
+  };
+  useEffect(() => {
+    const nextAccountId = session?.id || null;
+    adoptFeedAccount(nextAccountId);
+  }, [session?.id]);
+  useEffect(() => {
+    const accountId = session?.id;
+    if (!accountId) {
+      setRecommendationHiddenIds(new Set());
+      return undefined;
+    }
+    const preferenceRevision = recommendationPreferenceRevisionRef.current;
+    const controller = new AbortController();
+    api("/api/feed/preferences", { signal: controller.signal, silent: true, context: "Loading your feed preferences" })
+      .then(({ hiddenPostIds }) => {
+        if (!controller.signal.aborted && sessionRef.current?.id === accountId
+          && recommendationPreferenceRevisionRef.current === preferenceRevision) {
+          const ids = (hiddenPostIds || []).filter((id) => typeof id === "string");
+          save(recommendationPreferenceStorageKey(accountId), ids);
+          setRecommendationHiddenIds(new Set(ids));
+        }
+      })
+      .catch(() => {});
+    return () => controller.abort();
+  }, [session?.id]);
   useEffect(() => save("pit.follows", follows), [follows]);
   useEffect(() => () => {
     for (const request of venuePhotoInflightRef.current.values()) request.controller.abort();
@@ -360,7 +581,7 @@ export function StoreProvider({ children }) {
   // Pull server posts (with current counts and viewer-like state) and upsert them
   // into the local cache. Existing IDs must be replaced, not skipped, otherwise
   // edits and cross-device likes/comments remain stale forever.
-  const mergeServerFeed = (posts, { prepend = true, preserveOrder = false } = {}) => {
+  const mergeServerFeed = (posts, { prepend = true, preserveOrder = false, authoritative = false } = {}) => {
     if (!Array.isArray(posts) || !posts.length) return;
     const incoming = posts.map(normalizeServerPost);
     setFeed((current) => {
@@ -370,7 +591,8 @@ export function StoreProvider({ children }) {
         return sameServerPost(previous, post) ? previous : post;
       });
       const serverIds = new Set(normalized.map((post) => post.id));
-      const remaining = current.filter((post) => !serverIds.has(post.id));
+      const remaining = current.filter((post) => !serverIds.has(post.id)
+        && (!authoritative || post.pending || String(post.id || "").startsWith("p_local_")));
       let next;
       if (preserveOrder) {
         const byId = new Map(normalized.map((post) => [post.id, post]));
@@ -412,21 +634,56 @@ export function StoreProvider({ children }) {
     const mutationRevision = feedMutationRevisionRef.current;
     refresh.inFlight = true;
     try {
-      const { posts, nextCursor } = await api(`/api/feed?limit=${FEED_PAGE_LIMIT}`, {
-        context: "Refreshing the concert feed",
-        silent: true,
-        signal,
-      });
+      const startedAt = Date.now();
+      let payload;
+      let fallback = false;
+      try {
+        payload = await api(`/api/feed/for-you?limit=${FEED_PAGE_LIMIT}`, {
+          context: "Refreshing your recommended concert feed",
+          silent: true,
+          signal,
+        });
+        feedModeRef.current = "for-you";
+        feedAlgorithmRef.current = payload?.algorithm?.id || "global-personal-v1";
+      } catch (error) {
+        if (signal?.aborted) throw error;
+        fallback = true;
+        payload = await api(`/api/feed?limit=${FEED_PAGE_LIMIT}`, {
+          context: "Loading the chronological concert feed",
+          silent: true,
+          signal,
+        });
+        feedModeRef.current = "legacy";
+        feedAlgorithmRef.current = "chronological-v1";
+      }
+      const { posts, nextCursor } = payload || {};
       // A create/edit/like that happened after this read began is newer than the
       // response. Ignore the response and let the next poll reconcile it.
       if (signal?.aborted || sequence !== refresh.sequence || mutationRevision !== feedMutationRevisionRef.current) return null;
-      mergeServerFeed(posts, { prepend: true });
-      if (resetPagination) {
-        setFeedNextCursor(nextCursor || null);
-        setFeedHasMore(!!nextCursor);
-      }
+      // The initial server page is authoritative for a production cache. Demo
+      // mode keeps its bundled cards alongside the live page for prototyping.
+      mergeServerFeed(posts, { prepend: true, authoritative: resetPagination && !ENABLE_DEMO_DATA });
+      // A first-page response and its cursor are one immutable recommendation
+      // snapshot. Always adopt them together; retaining a 20-minute-old cursor
+      // after a background refresh makes the next page expire or drift.
+      setFeedNextCursor(nextCursor || null);
+      setFeedHasMore(!!nextCursor);
+      feedPageRef.current = 1;
+      trackProductEvent("feed_request", { surface: "everyone", algorithm: feedAlgorithmRef.current, page: 1, fallback });
+      trackProductEvent("performance", {
+        metric: "feed_load",
+        durationBucket: analyticsDurationBucket(Date.now() - startedAt),
+        surface: "everyone",
+        outcome: "ok",
+      });
       return true;
     } catch {
+      if (!signal?.aborted) trackProductEvent("performance", {
+        metric: "feed_load",
+        durationBucket: "over_5s",
+        surface: "everyone",
+        outcome: "error",
+      });
       return signal?.aborted ? null : false;
     } finally {
       if (sequence === refresh.sequence) refresh.inFlight = false;
@@ -438,22 +695,91 @@ export function StoreProvider({ children }) {
     if (feedLoadMoreRef.current || feedLoadingMore || !feedHasMore || !feedNextCursor) return false;
     feedLoadMoreRef.current = true;
     setFeedLoadingMore(true);
+    const startedAt = Date.now();
     try {
-      const { posts, nextCursor } = await api(`/api/feed?limit=${FEED_PAGE_LIMIT}&before=${encodeURIComponent(feedNextCursor)}`, {
-        context: "Loading more concert reviews",
-        silent: true,
-      });
-      mergeServerFeed(posts, { prepend: false });
+      let payload;
+      let fallback = false;
+      if (feedModeRef.current === "for-you") {
+        try {
+          payload = await api(`/api/feed/for-you?limit=${FEED_PAGE_LIMIT}&cursor=${encodeURIComponent(feedNextCursor)}`, {
+            context: "Loading more recommended concert posts",
+            silent: true,
+          });
+          feedAlgorithmRef.current = payload?.algorithm?.id || feedAlgorithmRef.current;
+        } catch {
+          // Recommendation cursors are intentionally incompatible with the
+          // chronological endpoint. Preserve existing card positions while a
+          // legacy first page establishes a compatible cursor.
+          fallback = true;
+          payload = await api(`/api/feed?limit=${FEED_PAGE_LIMIT}`, {
+            context: "Loading the chronological concert feed",
+            silent: true,
+          });
+          feedModeRef.current = "legacy";
+          feedAlgorithmRef.current = "chronological-v1";
+        }
+      } else {
+        payload = await api(`/api/feed?limit=${FEED_PAGE_LIMIT}&before=${encodeURIComponent(feedNextCursor)}`, {
+          context: "Loading more concert reviews",
+          silent: true,
+        });
+      }
+      const { posts, nextCursor } = payload || {};
+      mergeServerFeed(posts, { prepend: false, preserveOrder: fallback });
       setFeedNextCursor(nextCursor || null);
       setFeedHasMore(!!nextCursor);
+      feedPageRef.current += 1;
+      trackProductEvent("feed_request", { surface: "everyone", algorithm: feedAlgorithmRef.current, page: feedPageRef.current, fallback });
+      trackProductEvent("performance", {
+        metric: "feed_next_page",
+        durationBucket: analyticsDurationBucket(Date.now() - startedAt),
+        surface: "everyone",
+        outcome: "ok",
+      });
       return true;
     } catch {
+      trackProductEvent("performance", {
+        metric: "feed_next_page",
+        durationBucket: analyticsDurationBucket(Date.now() - startedAt),
+        surface: "everyone",
+        outcome: "error",
+      });
       return false;
     } finally {
       feedLoadMoreRef.current = false;
       setFeedLoadingMore(false);
     }
   };
+  const revalidateCachedFeed = async ({ signal } = {}) => {
+    const accountId = sessionRef.current?.id || null;
+    const allIds = feedRef.current.map((post) => post?.id)
+      .filter((id) => typeof id === "string" && /^p_[A-Za-z0-9_-]{1,77}$/.test(id));
+    const start = allIds.length ? feedRevalidationOffsetRef.current % allIds.length : 0;
+    const ids = [...allIds.slice(start), ...allIds.slice(0, start)].slice(0, 200);
+    feedRevalidationOffsetRef.current = allIds.length ? (start + ids.length) % allIds.length : 0;
+    if (!ids.length) return true;
+    try {
+      const { invalidPostIds } = await api("/api/feed/revalidate", {
+        method: "POST",
+        body: { postIds: ids },
+        expectedAccountId: accountId,
+        context: "Checking feed safety updates",
+        silent: true,
+        signal,
+      });
+      if (signal?.aborted || (sessionRef.current?.id || null) !== accountId) return null;
+      const invalid = new Set(Array.isArray(invalidPostIds) ? invalidPostIds : []);
+      if (invalid.size) {
+        feedMutationRevisionRef.current += 1;
+        setFeed((current) => current.filter((post) => !invalid.has(post.id)));
+        setRemovedIds((current) => [...new Set([...current, ...invalid])]);
+      }
+      return true;
+    } catch {
+      return signal?.aborted ? null : false;
+    }
+  };
+
   // Clips reel (the vertical swipe-through of posted videos). Cursor-paginated
   // off the same feed ordering; `reset` reloads from the top, otherwise it
   // appends the next page. Returns the merged list so the screen can swap in
@@ -486,7 +812,9 @@ export function StoreProvider({ children }) {
     const run = async (initial) => {
       if (stopped) return;
       if (!canRefresh()) return;
-      const result = await hydrateFeed({ resetPagination: initial, signal: controller.signal });
+      const result = !initial && feedModeRef.current === "for-you"
+        ? await revalidateCachedFeed({ signal: controller.signal })
+        : await hydrateFeed({ resetPagination: initial, signal: controller.signal });
       if (stopped) return;
       if (result === true) delay = FEED_REFRESH_MS;
       else if (result === false) delay = Math.min(delay * 2, FEED_REFRESH_MAX_BACKOFF_MS);
@@ -494,7 +822,6 @@ export function StoreProvider({ children }) {
     };
     const wake = () => schedule(0);
     const appStateSubscription = AppState.addEventListener("change", (state) => { if (state === "active") wake(); });
-    if (Platform.OS === "web" && typeof document !== "undefined") document.addEventListener("visibilitychange", wake);
     run(true);
     return () => {
       stopped = true;
@@ -503,11 +830,11 @@ export function StoreProvider({ children }) {
       feedRefreshRef.current.sequence += 1;
       feedRefreshRef.current.inFlight = false;
       appStateSubscription?.remove?.();
-      if (Platform.OS === "web" && typeof document !== "undefined") document.removeEventListener("visibilitychange", wake);
     };
-    // This lifecycle intentionally owns one polling loop for the provider.
+    // Restart immediately when account scope changes. The cleanup aborts the old
+    // viewer's request before the new personalized cache can accept a response.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [session?.id]);
 
   // Live provider-backed tour dates from the DB. Production also rejects legacy
   // generated IDs so an old server/cache cannot reintroduce prototype concerts.
@@ -554,37 +881,30 @@ export function StoreProvider({ children }) {
     return () => { active = false; };
   }, [session?.id, session?.home?.city, session?.home?.lat, session?.home?.lng]);
 
-  // --- Activity tracking (data collection for personalization + ads) ---------
-  // Every meaningful action queues a constrained event only for an authenticated
-  // member with a recorded Terms/Privacy consent. Guests are not silently
-  // profiled; a future cookie-consent flow can opt them in explicitly.
-  const eventQueue = useRef([]);
-  const track = (name, props = {}) => {
-    if (!name || !session?.id || !session?.consentAt || session?.analyticsOptOut) return;
-    eventQueue.current.push({ name, props });
-    if (eventQueue.current.length >= 25) flushEvents();
+  // --- Privacy-safe first-party product analytics ----------------------------
+  // The facade sanitizes before a durable retry batch is written, while the API
+  // independently applies the same allow-list. Authored text, searches, DMs and
+  // media URLs therefore never enter either queue. Guests and opted-out accounts
+  // are not profiled.
+  const track = (name, props = {}, options = {}) => {
+    // Child screen effects can run before this provider's passive effect on a
+    // persisted session. Configure synchronously at the facade boundary so the
+    // first screen_view is not marked seen and then silently dropped.
+    configureProductAnalytics(sessionRef.current);
+    return trackProductEvent(name, props, options);
   };
-  const flushEvents = () => {
-    if (!eventQueue.current.length) return;
-    const batch = eventQueue.current.splice(0, 50);
-    api("/api/events", { method: "POST", body: { events: batch } }).catch(() => {});
-  };
+  const analyticsAccountRef = useRef(null);
   useEffect(() => {
-    const id = setInterval(flushEvents, 8000);
-    const onHide = () => flushEvents();
-    if (typeof window !== "undefined") {
-      window.addEventListener("beforeunload", onHide);
-      window.addEventListener("visibilitychange", onHide);
+    configureProductAnalytics(session);
+    if (session?.id && (session?.analyticsConsentAt || session?.consentAt) && !session?.analyticsOptOut && analyticsAccountRef.current !== session.id) {
+      trackProductEvent("app_open", {
+        platform: productAnalyticsPlatform(),
+        entry: analyticsAccountRef.current == null ? "launch" : "login",
+      });
     }
-    return () => {
-      clearInterval(id);
-      if (typeof window !== "undefined") {
-        window.removeEventListener("beforeunload", onHide);
-        window.removeEventListener("visibilitychange", onHide);
-      }
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    analyticsAccountRef.current = session?.id || null;
+  }, [session?.id, session?.analyticsConsentAt, session?.consentAt, session?.analyticsOptOut]);
+  useEffect(() => installProductAnalyticsLifecycle(), []);
 
   const userById = (id) => users.find((u) => u.id === id);
   const userByHandle = (h) => users.find((u) => u.handle === h);
@@ -620,9 +940,10 @@ export function StoreProvider({ children }) {
       let next = all;
       for (const su of list) {
         if (!su?.id) continue;
+        const publicSu = ENABLE_DEMO_DATA ? { playlists: [], genres: [], favoriteArtists: [], ...su } : publicProfileCacheEntry(su);
         const i = next.findIndex((x) => x.id === su.id);
-        if (i === -1) next = [...next, { playlists: [], genres: [], favoriteArtists: [], ...su }];
-        else next = next.map((x, j) => (j === i ? { ...x, ...su } : x)); // refresh stale profile data
+        if (i === -1) next = [...next, publicSu];
+        else next = next.map((x, j) => (j === i ? { ...x, ...publicSu } : x)); // refresh stale public profile data
       }
       return next;
     });
@@ -697,9 +1018,9 @@ export function StoreProvider({ children }) {
   const clearRecentSearches = () => setRecentSearches([]);
   // Search users by name/handle on the server (cross-device friend finding).
   // Also captures the member count (`total`) so the app can show a real stat.
-  const searchPeople = async (q) => {
+  const searchPeople = async (q, { signal } = {}) => {
     try {
-      const { users: found, total } = await api(`/api/people?q=${encodeURIComponent(q || "")}`);
+      const { users: found, total } = await api(`/api/people?q=${encodeURIComponent(q || "")}`, { signal, silent: true, context: "Searching people" });
       absorbUsers(found);
       if (typeof total === "number") setMemberCount(total);
       // Belt-and-suspenders: hide anyone I've blocked immediately, even before the
@@ -730,10 +1051,10 @@ export function StoreProvider({ children }) {
   // Song search for the search box, so not knowing the artist is no longer a
   // dead end. Server-side this is Deezer (keyless), so it costs no YouTube
   // quota; playback resolves a video only when a result is actually played.
-  const searchSongsApi = async (query) => {
+  const searchSongsApi = async (query, { signal } = {}) => {
     const q = String(query || "").trim();
     if (q.length < 2) return [];
-    try { const { songs } = await api(`/api/songs/search?q=${encodeURIComponent(q)}`); return songs || []; }
+    try { const { songs } = await api(`/api/songs/search?q=${encodeURIComponent(q)}`, { signal, silent: true, context: "Searching songs" }); return songs || []; }
     catch { return []; }
   };
   // Resolve one artist by name, creates it from MusicBrainz on the server if it's
@@ -844,6 +1165,51 @@ export function StoreProvider({ children }) {
   const discoverCountries = async ({ min = 5 } = {}) => {
     try { return await api("/api/discover/countries?min=" + min); } catch { return { countries: [] }; }
   };
+  // One authoritative, cancellable read for Discover's first paint. Keeping the
+  // chart, genre totals, and region list in one response prevents three loading
+  // states from racing and lets the screen distinguish a real empty catalogue
+  // from a network failure. Unlike the legacy compatibility helpers above,
+  // errors intentionally reject so the page can offer an honest retry.
+  const discoverOverviewCacheRef = useRef(null);
+  if (!discoverOverviewCacheRef.current) discoverOverviewCacheRef.current = createDiscoverCache({ maxEntries: 12, ttlMs: 60_000 });
+  const discoverGenreCacheRef = useRef(null);
+  if (!discoverGenreCacheRef.current) discoverGenreCacheRef.current = createDiscoverCache({ maxEntries: 24, ttlMs: 120_000 });
+  const loadDiscoverOverview = async ({ by = "popularity", country = "Worldwide", signal, force = false } = {}) => {
+    const params = new URLSearchParams({ by });
+    if (country && country !== "Worldwide") params.set("country", country);
+    const key = discoverOverviewCacheKey({ by, country });
+    const cache = discoverOverviewCacheRef.current;
+    if (!force) {
+      const cached = cache.get(key);
+      if (cached) return cached;
+    }
+    const revision = cache.claim(key);
+    const result = await api(`/api/discover/overview?${params.toString()}`, {
+      signal,
+      silent: true,
+      context: "Loading Discover",
+    });
+    if (!signal?.aborted) cache.commit(key, revision, result);
+    return result;
+  };
+  const loadDiscoverGenre = async ({ genre, country = "Worldwide", limit = 12, signal, force = false } = {}) => {
+    const params = new URLSearchParams({ genre: genre || "", limit: String(limit) });
+    if (country && country !== "Worldwide") params.set("country", country);
+    const key = discoverGenreCacheKey({ genre, country, limit });
+    const cache = discoverGenreCacheRef.current;
+    if (!force) {
+      const cached = cache.get(key);
+      if (cached) return cached;
+    }
+    const revision = cache.claim(key);
+    const result = await api(`/api/discover/chart?${params.toString()}`, {
+      signal,
+      silent: true,
+      context: `Loading ${genre || "genre"} artists`,
+    });
+    if (!signal?.aborted) cache.commit(key, revision, result);
+    return result;
+  };
   // Authoritative server clock (so the calendar marks "today" without trusting the
   // device clock). Returns { now, iso, tz, offsetMinutes } or null when offline.
   const serverTime = async () => { try { return await api("/api/time"); } catch { return null; } };
@@ -885,6 +1251,7 @@ export function StoreProvider({ children }) {
     try {
       const r = await api("/api/media/react", { method: "POST", context: "Liking a photo", body: { url, postId } });
       setMediaReactions((m) => ({ ...m, [url]: { count: r.count, mine: r.liked } }));
+      if (postId) track("interaction", { postId, action: r.liked ? "like" : "unlike", surface: "media_viewer" });
       return { ok: true };
     } catch (error) {
       // Roll back the optimistic flip; the server said no.
@@ -905,8 +1272,13 @@ export function StoreProvider({ children }) {
 
   // Admin: pin the correct video for a song (or confirm none exists).
   const adminSetTrackVideo = async ({ title, artist, url, none }) => {
+    const scope = staffScopeFor(sessionRef.current);
     try {
       const r = await api("/api/admin/tracks/override", { method: "POST", context: "Pinning the correct song video", body: { title, artist, url: url || undefined, none: !!none } });
+      if (scope && scope === staffScopeFor(sessionRef.current)) {
+        staffReadsRef.current.invalidate("moderation", sessionRef.current);
+        loadModerationConsole().catch(() => {});
+      }
       return { ok: true, ...r };
     } catch (error) { return { ok: false, error }; }
   };
@@ -917,21 +1289,91 @@ export function StoreProvider({ children }) {
   const removeTrackOverride = async ({ title, artist }) => {
     try { await api("/api/admin/tracks/override", { method: "DELETE", context: "Removing a song video pin", body: { title, artist } }); return { ok: true }; } catch (error) { return { ok: false, error }; }
   };
-  // Re-pull the open moderation queue from the server. The login-time absorb
-  // only merges NEW ids into local state; this makes the console authoritative
-  // every time it opens, so reports survive refreshes and devices.
-  const loadModerationQueue = async () => {
+  // Staff first paint comes from one privacy-projected server response. The
+  // strict loader rejects on failure so the console can distinguish offline or
+  // unauthorized from a genuinely empty queue. The legacy wrapper below keeps
+  // older callers' boolean contract until the remaining admin tabs are split.
+  const loadModerationConsole = async ({ signal, append = false } = {}) => {
+    const previous = moderationConsoleRef.current;
+    const cursor = append ? previous.nextCursor : null;
+    if (append && !cursor) return previous;
+    const read = staffReadsRef.current.claim("moderation", sessionRef.current);
+    const params = new URLSearchParams({ limit: "50" });
+    if (cursor) params.set("before", cursor);
+    const payload = await api(`/api/admin/moderation?${params.toString()}`, {
+      signal,
+      silent: true,
+      context: append ? "Loading older moderation reports" : "Loading the moderation queue",
+    });
+    // A newer refresh/mutation, logout, account switch, or role change owns the
+    // Store now. Resolve harmlessly for the old caller without committing its
+    // private snapshot or making lifecycle cancellation look like an error.
+    if (signal?.aborted || !staffReadsRef.current.isCurrent(read, sessionRef.current)) {
+      return moderationConsoleRef.current;
+    }
+    const fresh = Array.isArray(payload?.reports) ? payload.reports : [];
+    const mergedReports = append
+      ? mergeUniquePage(previous.reports, fresh)
+      : fresh;
+    const normalized = {
+      summary: payload?.summary && typeof payload.summary === "object"
+        ? payload.summary
+        : { open: fresh.length, actioned: 0, dismissed: 0, totalRecent: fresh.length, byType: {}, queueTruncated: false },
+      reports: mergedReports,
+      recentActions: Array.isArray(payload?.recentActions) ? payload.recentActions : [],
+      nextCursor: typeof payload?.nextCursor === "string" && payload.nextCursor ? payload.nextCursor : null,
+    };
+    moderationConsoleRef.current = normalized;
+    setModerationConsole(normalized);
+    setReports((current) => {
+      const freshIds = new Set(mergedReports.map((report) => report.id));
+      return [...mergedReports, ...current.filter((report) => report.status !== "open" && !freshIds.has(report.id))];
+    });
+    return normalized;
+  };
+  const loadMoreModerationConsole = (options = {}) => loadModerationConsole({ ...options, append: true });
+  const loadModerationQueue = async (options) => {
     try {
-      const { reports: rows } = await api("/api/admin/reports", { silent: true });
-      if (!Array.isArray(rows)) return false;
-      const fresh = rows.map((r) => ({ id: r.id, targetType: r.target_type, targetId: r.target_id, reason: r.reason, reporterId: r.reporter_id, status: "open" }));
-      setReports((rs) => {
-        const freshIds = new Set(fresh.map((x) => x.id));
-        // Server list IS the open queue; keep local non-open rows for history.
-        return [...fresh, ...rs.filter((x) => x.status !== "open" && !freshIds.has(x.id))];
-      });
+      await loadModerationConsole(options);
       return true;
-    } catch { return false; }
+    } catch {
+      return false;
+    }
+  };
+
+  const moderateReport = async ({ action, reportId, reason = "" } = {}) => {
+    const actionScope = staffScopeFor(sessionRef.current);
+    const result = await api("/api/admin/moderation/actions", {
+      method: "POST",
+      body: { action, reportId, ...(reason ? { reason } : {}) },
+      context: action === "dismiss" ? "Dismissing this report" : "Removing reported content",
+    });
+    // The server may have committed just before this account signed out. Do not
+    // repopulate the next session with the previous staff member's result.
+    if (!actionScope || actionScope !== staffScopeFor(sessionRef.current)) return result;
+    staffReadsRef.current.invalidate("moderation", sessionRef.current);
+    const status = action === "dismiss" ? "dismissed" : "actioned";
+    setReports((current) => current.map((report) => report.id === reportId ? { ...report, status } : report));
+    setModerationConsole((current) => {
+      const handled = current.reports.find((report) => report.id === reportId);
+      if (!handled) return current;
+      const byType = { ...(current.summary?.byType || {}) };
+      if (handled.targetType && Number(byType[handled.targetType]) > 0) byType[handled.targetType] -= 1;
+      return {
+        ...current,
+        summary: {
+          ...current.summary,
+          open: Math.max(0, Number(current.summary?.open || 0) - 1),
+          [status]: Number(current.summary?.[status] || 0) + 1,
+          byType,
+        },
+        reports: current.reports.filter((report) => report.id !== reportId),
+      };
+    });
+    // Refresh audit history/counts without making a completed write look failed
+    // if this follow-up read is interrupted or the connection drops afterward.
+    loadModerationConsole().catch(() => {});
+    return result;
   };
 
   const resolveDeezerPreview = async (title, artist) => {
@@ -952,7 +1394,8 @@ export function StoreProvider({ children }) {
     if (!key) return;
     const played = { title: t.title, artist: t.artist, url: t.url, id: t.id, videoId: t.videoId || null, provider: t.provider || null, sourceId: t.sourceId || t.id || null, preview: t.preview || null, art: t.art || null, at: Date.now() };
     setPlayHistory((h) => (h[0] && trackKey(h[0]) === key ? h : [played, ...h].slice(0, 300)));
-    track("play", { artist: t.artist, title: t.title }); // analytics signal
+    const analyticsSource = String(t.provider || t.source || "player").trim().toLowerCase();
+    track("play", { source: ["player", "catalog", "provider", "deezer", "youtube", "spotify", "playlist", "profile", "discover"].includes(analyticsSource) ? analyticsSource : "player" });
     // Cross-device history + "friends listening" (best-effort, offline keeps local).
     if (session) api("/api/plays", { method: "POST", body: { title: t.title, artist: t.artist, url: t.url || null, videoId: t.videoId || null, art: t.art || null } }).catch(() => {});
   };
@@ -1007,10 +1450,29 @@ export function StoreProvider({ children }) {
 
   // The latest track each person you follow played (for the "friends listening" rail).
   const [friendsListening, setFriendsListening] = useState([]);
-  const loadFriendsListening = async () => {
-    if (!session) return [];
-    try { const { listening } = await api("/api/plays/friends"); setFriendsListening(listening || []); return listening || []; } catch { return []; }
+  const friendsReadsRef = useRef(null);
+  if (!friendsReadsRef.current) friendsReadsRef.current = createAccountReadCoordinator();
+  const loadFriendsListeningStrict = async ({ signal } = {}) => {
+    const read = friendsReadsRef.current.claim("friends", sessionRef.current);
+    if (!read) return [];
+    const { listening } = await api("/api/plays/friends", {
+      signal,
+      silent: true,
+      context: "Loading friends listening",
+    });
+    const rows = Array.isArray(listening) ? listening : [];
+    if (!signal?.aborted && friendsReadsRef.current.isCurrent(read, sessionRef.current)) {
+      setFriendsListening(rows);
+    }
+    return rows;
   };
+  const loadFriendsListening = async (options) => {
+    try { return await loadFriendsListeningStrict(options); } catch { return []; }
+  };
+  useEffect(() => {
+    friendsReadsRef.current.reset();
+    setFriendsListening([]);
+  }, [session?.id]);
   const userPlaylists = async (id, { signal } = {}) => { try { const { playlists } = await api(`/api/users/${id}/playlists`, { signal, context: "Loading playlists", silent: true }); return playlists || []; } catch { return []; } };
 
   // --- Listening algorithm (drives autoplay "up next") -----------------------
@@ -1170,32 +1632,51 @@ export function StoreProvider({ children }) {
   const removeSnapshot = (id) => setSnapshots((s) => s.filter((x) => x.id !== id));
 
   // Fold a server user into local state so profiles/avatars resolve everywhere.
-  const absorbServerUser = (su) => {
+  const absorbServerUser = (su, { announce = false } = {}) => {
     const merged = { playlists: [], genres: [], favoriteArtists: [], ...su };
-    setUsers((all) => (all.some((x) => x.id === su.id) ? all.map((x) => (x.id === su.id ? { ...x, ...merged } : x)) : [...all, merged]));
+    resolveLegacyDraftsForIdentity(merged.id);
+    authValidationSequenceRef.current += 1;
+    adoptFeedAccount(merged.id);
+    const nextStaffScope = staffScopeFor(merged);
+    if (staffStateScopeRef.current !== nextStaffScope) {
+      resetStaffState();
+      staffStateScopeRef.current = nextStaffScope;
+    }
+    const publicMerged = ENABLE_DEMO_DATA ? merged : publicProfileCacheEntry(merged);
+    setUsers((all) => (all.some((x) => x.id === su.id) ? all.map((x) => (x.id === su.id ? { ...x, ...publicMerged } : x)) : [...all, publicMerged]));
+    configureApiIdentity(merged.id, { ready: true });
+    authReadyRef.current = true;
+    setAuthReady(true);
+    configureProductAnalytics(merged);
+    sessionRef.current = merged;
     setSession(merged);
+    if (announce) broadcastAuthEpoch();
     // Hydrate the follow graph for this account from the server (see MIGRATION.md,
     // slice 1). Best-effort: if the endpoint/back-end isn't there we keep whatever
     // is cached locally.
     api("/api/me/following")
-      .then(({ following }) => { if (Array.isArray(following)) setFollows((f) => ({ ...f, [su.id]: following })); })
+      .then(({ following }) => { if (sessionRef.current?.id === su.id && Array.isArray(following)) setFollows((f) => ({ ...f, [su.id]: following })); })
       .catch(() => {});
     // Hydrate who this account has blocked (drives feed/DM/profile filtering).
     api("/api/me/blocked")
-      .then(({ users: list }) => { if (Array.isArray(list)) { setBlockedIds(list.map((x) => x.id)); absorbUsers(list); } })
+      .then(({ users: list }) => {
+        if (sessionRef.current?.id !== su.id || !Array.isArray(list)) return;
+        setBlockedIds(list.map((x) => x.id));
+        absorbUsers(list);
+      })
       .catch(() => {});
-    // Re-hydrate the feed now that we're authenticated, so `liked` reflects THIS
-    // account (a guest hydrate always reports liked:false).
-    hydrateFeed();
+    // The account-scoped feed effect restarts after setSession and owns the one
+    // initial hydrate. Avoid a second request racing that immutable snapshot.
     // Slice 4: hydrate my DM threads (+ absorb the people I've messaged so their
     // names/avatars resolve in the inbox). Bucket/unread stay computed client-side.
     api("/api/me/threads")
       .then(({ threads }) => {
-        if (!Array.isArray(threads) || !threads.length) return;
+        if (sessionRef.current?.id !== su.id || !Array.isArray(threads) || !threads.length) return;
         setUsers((all) => {
           let next = all;
           threads.forEach((t) => {
-            if (t.otherUser && !next.some((x) => x.id === t.otherUser.id)) next = [...next, { playlists: [], genres: [], favoriteArtists: [], ...t.otherUser }];
+            if (t.otherUser && !next.some((x) => x.id === t.otherUser.id)) next = [...next,
+              ENABLE_DEMO_DATA ? { playlists: [], genres: [], favoriteArtists: [], ...t.otherUser } : publicProfileCacheEntry(t.otherUser)];
           });
           return next;
         });
@@ -1208,39 +1689,29 @@ export function StoreProvider({ children }) {
       .catch(() => {});
     // Slice 5: hydrate the fan clubs I've joined (drives the join button + counts).
     api("/api/me/fanclubs")
-      .then(({ artists }) => { if (Array.isArray(artists)) setFanClubs((f) => ({ ...f, [su.id]: artists })); })
+      .then(({ artists }) => { if (sessionRef.current?.id === su.id && Array.isArray(artists)) setFanClubs((f) => ({ ...f, [su.id]: artists })); })
       .catch(() => {});
     // Slice 7: hydrate my "going" list so planned attendance survives a new device.
     api("/api/me/going")
-      .then(({ going: rows }) => { if (Array.isArray(rows)) setGoing((G) => ({ ...G, [su.id]: rows })); })
+      .then(({ going: rows }) => { if (sessionRef.current?.id === su.id && Array.isArray(rows)) setGoing((G) => ({ ...G, [su.id]: rows })); })
       .catch(() => {});
     // Server-backed notifications: replace MY notifications with the authoritative
     // server list (keep local welcome/system ones), so activity is real cross-device.
     api("/api/me/notifications")
       .then(({ notifications: rows }) => {
-        if (!Array.isArray(rows)) return;
+        if (sessionRef.current?.id !== su.id || !Array.isArray(rows)) return;
         const mine = rows.map((r) => ({ ...r, userId: su.id }));
         setNotifications((all) => [...mine, ...all.filter((n) => n.userId !== su.id || n.type === "welcome")]);
       })
       .catch(() => {});
-    // Slice 6: admins hydrate the open report queue (server rows → client shape).
+    // Staff queue hydration uses the same normalized, account-scoped loader as
+    // the console. The legacy endpoint remains on the server for old clients.
     if (isMod(su.role)) {
-      api("/api/admin/reports")
-        .then(({ reports: rows }) => {
-          if (!Array.isArray(rows) || !rows.length) return;
-          setReports((rs) => {
-            const have = new Set(rs.map((x) => x.id));
-            const fresh = rows
-              .filter((r) => !have.has(r.id))
-              .map((r) => ({ id: r.id, targetType: r.target_type, targetId: r.target_id, reason: r.reason, reporterId: r.reporter_id, status: "open" }));
-            return fresh.length ? [...fresh, ...rs] : rs;
-          });
-        })
-        .catch(() => {});
+      loadModerationConsole().catch(() => {});
       // Slice 7: admins hydrate pending artist-account requests.
       if (su.role === "admin") api("/api/admin/artist-requests")
         .then(({ requests: rows }) => {
-          if (!Array.isArray(rows) || !rows.length) return;
+          if (sessionRef.current?.id !== su.id || !Array.isArray(rows) || !rows.length) return;
           setRequests((rs) => {
             const have = new Set(rs.map((x) => x.id));
             const fresh = rows.filter((r) => !have.has(r.id));
@@ -1257,9 +1728,72 @@ export function StoreProvider({ children }) {
   // a refresh skipped hydration entirely, so server-only state looked like it
   // "didn't save." No-op for guests / offline (returns null / rejects).
   useEffect(() => {
-    api("/api/me")
-      .then(({ user }) => { if (user) absorbServerUser(user); else setSession(null); })
-      .catch((e) => { if (e?.status === 401) setSession(null); });
+    let stopped = false;
+    let retryTimer = null;
+    let lastValidationAt = 0;
+    const validate = ({ force = false } = {}) => {
+      if (stopped || (!force && Date.now() - lastValidationAt < 1_000)) return;
+      lastValidationAt = Date.now();
+      if (retryTimer) clearTimeout(retryTimer);
+      const sequence = ++authValidationSequenceRef.current;
+      configureProductAnalytics(null);
+      configureApiIdentity(sessionRef.current?.id || null, { ready: false });
+      authReadyRef.current = false;
+      setAuthReady(false);
+      if (!ENABLE_DEMO_DATA) {
+        sessionRef.current = null;
+        adoptFeedAccount(null);
+        setSession(null);
+      }
+      api("/api/me", { silent: true, context: "Validating your account", skipIdentityCheck: true })
+        .then(({ user }) => {
+          if (stopped || sequence !== authValidationSequenceRef.current) return;
+          if (user) absorbServerUser(user);
+          else {
+            resolveLegacyDraftsForIdentity(null);
+            configureApiIdentity(null, { ready: true });
+            authReadyRef.current = true;
+            setAuthReady(true);
+            sessionRef.current = null;
+            adoptFeedAccount(null);
+            setSession(null);
+          }
+        })
+        .catch((error) => {
+          if (stopped || sequence !== authValidationSequenceRef.current) return;
+          if (error?.status === 401) {
+            resolveLegacyDraftsForIdentity(null);
+            configureApiIdentity(null, { ready: true });
+            authReadyRef.current = true;
+            setAuthReady(true);
+            sessionRef.current = null;
+            adoptFeedAccount(null);
+            setSession(null);
+            return;
+          }
+          // Render cold starts and transient mobile failures keep private state
+          // locked, then retry. A focus/resume also forces an immediate retry.
+          retryTimer = setTimeout(() => validate({ force: true }), 5_000);
+        });
+    };
+    validate({ force: true });
+    const appStateSubscription = AppState.addEventListener("change", (state) => {
+      if (state === "active") validate();
+    });
+    const onStorage = (event) => {
+      if (event.key !== AUTH_EPOCH_STORAGE_KEY) return;
+      // Cookies are origin-wide. Another tab may have replaced the authenticated
+      // account, so immediately lock this tab and ask /api/me before any further
+      // account-scoped analytics or personalized requests.
+      validate({ force: true });
+    };
+    if (Platform.OS === "web" && typeof window !== "undefined") window.addEventListener("storage", onStorage);
+    return () => {
+      stopped = true;
+      if (retryTimer) clearTimeout(retryTimer);
+      appStateSubscription?.remove?.();
+      if (Platform.OS === "web" && typeof window !== "undefined") window.removeEventListener("storage", onStorage);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1268,9 +1802,9 @@ export function StoreProvider({ children }) {
   // A production network failure must never authenticate a bundled plaintext user.
   const login = async (email, password) => {
     try {
-      const { user } = await api("/api/login", { method: "POST", body: { email, password }, context: "Signing in", silent: true });
-      absorbServerUser(user);
-      track("login");
+      const { user } = await api("/api/login", { method: "POST", body: { email, password }, context: "Signing in", silent: true, skipIdentityCheck: true });
+      absorbServerUser(user, { announce: true });
+      track("login", { method: "password" });
       return { ok: true };
     } catch (e) {
       if (e.status) return { ok: false, error: e.message }; // real server verdict
@@ -1282,8 +1816,86 @@ export function StoreProvider({ children }) {
     const u = users.find((x) => x.email.toLowerCase() === em);
     if (!u || !u.password || u.password !== pw) return { ok: false, error: "Wrong email or password." };
     if (u.isBanned) return { ok: false, error: "This account is banned." };
+    configureApiIdentity(u.id, { ready: true });
+    authReadyRef.current = true;
+    setAuthReady(true);
+    sessionRef.current = u;
+    adoptFeedAccount(u.id);
+    configureProductAnalytics(u);
     setSession(u);
     return { ok: true };
+  };
+
+  const adoptEmailVerifiedSession = (candidate) => {
+    const current = sessionRef.current;
+    const verified = matchingEmailVerifiedSessionUser(candidate, current?.id);
+    if (!current || !verified) return false;
+    const merged = { ...current, ...verified, emailVerified: true };
+    sessionRef.current = merged;
+    setSession(merged);
+    const publicMerged = ENABLE_DEMO_DATA ? merged : publicProfileCacheEntry(merged);
+    setUsers((all) => all.some((user) => user.id === merged.id)
+      ? all.map((user) => user.id === merged.id ? { ...user, ...publicMerged } : user)
+      : [...all, publicMerged]);
+    return true;
+  };
+
+  const confirmEmailVerification = async (token, { signal } = {}) => {
+    const accountIdAtStart = sessionRef.current?.id || null;
+    const emailVerifiedAtStart = sessionRef.current?.emailVerified;
+    const result = await confirmEmailWithReconciliation({
+      token,
+      signal,
+      accountIdAtStart,
+      emailVerifiedAtStart,
+      getCurrentAccountId: () => sessionRef.current?.id || null,
+      requestConfirmation: (value, options) => api("/api/verify-email", {
+        method: "POST",
+        body: { token: value },
+        signal: options?.signal,
+        context: "Confirming your email",
+        silent: true,
+      }),
+      readCurrentSession: (expectedAccountId, options) => api("/api/me", {
+        signal: options?.signal,
+        expectedAccountId,
+        headers: { "Cache-Control": "no-cache", Pragma: "no-cache" },
+        context: "Checking email confirmation",
+        silent: true,
+      }),
+    });
+    const sessionUpdated = adoptEmailVerifiedSession(result.user);
+    return { ...result, sessionUpdated };
+  };
+
+  const resendEmailVerification = async ({ signal } = {}) => {
+    const expectedAccountId = sessionRef.current?.id || null;
+    let result = await api("/api/verify-email/resend", {
+      method: "POST",
+      body: {},
+      signal,
+      context: "Resending the confirmation email",
+      silent: true,
+    });
+    let candidate = matchingEmailVerifiedSessionUser(result?.user, sessionRef.current?.id);
+    // Rolling deployments and a previously stale client may return the older
+    // already-verified shape without `user`. Re-read only this same account.
+    if (!candidate && result?.reason === "already-verified" && expectedAccountId
+      && sessionRef.current?.id === expectedAccountId && !signal?.aborted) {
+      try {
+        const fresh = await api("/api/me", {
+          signal,
+          expectedAccountId,
+          headers: { "Cache-Control": "no-cache", Pragma: "no-cache" },
+          context: "Refreshing email confirmation",
+          silent: true,
+        });
+        candidate = matchingEmailVerifiedSessionUser(fresh?.user, expectedAccountId);
+        if (candidate) result = { ...result, verified: true, user: candidate };
+      } catch {}
+    }
+    const sessionUpdated = adoptEmailVerifiedSession(candidate);
+    return { ...result, state: verificationResendState(result), sessionUpdated };
   };
 
   // Request a password-reset email. Always resolves ok (never leaks which emails
@@ -1295,8 +1907,8 @@ export function StoreProvider({ children }) {
   // Complete a reset from the emailed token; on success we're signed in.
   const resetPassword = async (token, password) => {
     try {
-      const { user } = await api("/api/reset", { method: "POST", body: { token, password }, context: "Resetting your password", silent: true });
-      absorbServerUser(user);
+      const { user } = await api("/api/reset", { method: "POST", body: { token, password }, context: "Resetting your password", silent: true, skipIdentityCheck: true });
+      absorbServerUser(user, { announce: true });
       return { ok: true };
     } catch (e) { return { ok: false, error: e.status ? e.message : "Couldn't reset. Try requesting a new link." }; }
   };
@@ -1310,7 +1922,7 @@ export function StoreProvider({ children }) {
     return candidate;
   };
 
-  const signup = async ({ name, email, password, city, agreedToTerms }) => {
+  const signup = async ({ name, email, password, city, location = null, agreedToTerms, analyticsConsent = false }) => {
     const nm = cleanName(name);
     const em = cleanEmail(email);
     if (!isName(nm)) return { ok: false, error: "Enter a name (letters or numbers, up to 40 chars)." };
@@ -1319,21 +1931,24 @@ export function StoreProvider({ children }) {
     if (!city) return { ok: false, error: "Pick your city - it powers your local feed." };
     if (!agreedToTerms) return { ok: false, error: "Please agree to the Terms & Conditions and Privacy policy." };
     // Record consent to the current Terms/Privacy at the moment of sign-up.
-    const consent = { consentAt: Date.now(), termsVersion: TERMS_VERSION };
-    const srvCoords = cityCoords[city] || null;
+    const acceptedAt = Date.now();
+    const consent = { termsAcceptedAt: acceptedAt, termsVersion: TERMS_VERSION, ...(analyticsConsent ? { analyticsConsentAt: acceptedAt } : {}) };
+    const pickedLocation = location?.city ? location : { city };
+    const srvCoords = locationCenter(pickedLocation);
     try {
       const { user } = await api("/api/signup", {
         method: "POST",
-        body: { name: nm, email: em, password, city, lat: srvCoords?.lat, lng: srvCoords?.lng },
+        body: { name: nm, email: em, password, city, lat: srvCoords?.lat, lng: srvCoords?.lng, analyticsConsent: !!analyticsConsent, termsVersion: TERMS_VERSION },
         context: "Creating your Pit account",
         silent: true,
+        skipIdentityCheck: true,
       });
-      absorbServerUser(user);
-      // Persist the consent record on the account (client + best-effort server).
-      setSession((s) => (s ? { ...s, ...consent } : s));
-      setUsers((all) => all.map((x) => (x.id === user.id ? { ...x, ...consent } : x)));
-      api("/api/me", { method: "PATCH", body: { extras: consent } }).catch(() => {});
-      track("signup", { city });
+      absorbServerUser(user, { announce: true });
+      // Signup persists consent in the same server transaction as the account;
+      // configure only from the authoritative response so the first batch cannot
+      // race a fire-and-forget profile PATCH and disappear.
+      configureProductAnalytics(user);
+      track("signup", { method: "password" });
       pushWelcome(user.id);
       return { ok: true };
     } catch (e) {
@@ -1342,7 +1957,7 @@ export function StoreProvider({ children }) {
     if (!LOCAL_AUTH_FALLBACK) return { ok: false, error: "Couldn't connect. Check your connection and try again." };
     // offline/dev fallback
     if (users.some((x) => x.email.toLowerCase() === em)) return { ok: false, error: "That email is already registered." };
-    const coords = cityCoords[city] || null;
+    const coords = locationCenter(pickedLocation);
     const u = {
       id: "u_" + Date.now(),
       name: nm,
@@ -1357,17 +1972,27 @@ export function StoreProvider({ children }) {
       genres: [],
       favoriteArtists: [],
       playlists: [],
-      home: { city, lat: coords?.lat ?? null, lng: coords?.lng ?? null },
+      home: { ...pickedLocation, city, lat: coords?.lat ?? null, lng: coords?.lng ?? null },
       ...consent,
     };
-    setUsers((all) => [...all, u]);
+    setUsers((all) => [...all, ENABLE_DEMO_DATA ? u : publicProfileCacheEntry(u)]);
+    configureApiIdentity(u.id, { ready: true });
+    authReadyRef.current = true;
+    setAuthReady(true);
+    sessionRef.current = u;
+    adoptFeedAccount(u.id);
+    configureProductAnalytics(u);
     setSession(u);
     pushWelcome(u.id);
     return { ok: true };
   };
 
   const logout = () => {
-    const request = api("/api/logout", { method: "POST" }).catch(() => {}); // best-effort server-side
+    authValidationSequenceRef.current += 1;
+    const departingAccountId = sessionRef.current?.id || null;
+    const request = api("/api/logout", { method: "POST", expectedAccountId: departingAccountId })
+      .catch(() => {}) // best-effort server-side
+      .finally(() => broadcastAuthEpoch());
     playHistoryRequestRef.current = { sequence: playHistoryRequestRef.current.sequence + 1, accountId: null };
     playlistRequestRef.current = { sequence: playlistRequestRef.current.sequence + 1, accountId: null };
     setPlayHistory([]);
@@ -1378,11 +2003,43 @@ export function StoreProvider({ children }) {
     setMyPlaylistsStatus("ready");
     setSnapshots([]);
     setFriendsListening([]);
+    resetStaffState();
+    staffStateScopeRef.current = null;
     // Clear identity synchronously before a theme-triggered reload can occur.
     save("pit.session", null);
     clearStoredTheme();
+    sessionRef.current = null;
+    configureProductAnalytics(null);
+    configureApiIdentity(null, { ready: true });
+    authReadyRef.current = true;
+    setAuthReady(true);
+    adoptFeedAccount(null);
     setSession(null);
     return request;
+  };
+
+  const setAnalyticsEnabled = async (enabled) => {
+    if (!session?.id) return { ok: false };
+    const accountId = session.id;
+    try {
+      const { user } = await api("/api/me/analytics-consent", {
+        method: "POST",
+        body: { enabled: !!enabled },
+        context: enabled ? "Enabling product analytics" : "Turning off product analytics",
+        silent: true,
+      });
+      if (!user || sessionRef.current?.id !== accountId) return { ok: false };
+      const merged = { ...sessionRef.current, ...user };
+      setUsers((all) => all.map((entry) => entry.id === accountId
+        ? (ENABLE_DEMO_DATA ? { ...entry, ...user } : publicProfileCacheEntry({ ...entry, ...user }))
+        : entry));
+      sessionRef.current = merged;
+      setSession(merged);
+      configureProductAnalytics(merged);
+      return { ok: true, user: merged };
+    } catch (error) {
+      return { ok: false, error };
+    }
   };
 
   // Permanent deletion is deliberately server-first. Nothing is cleared from
@@ -1406,7 +2063,7 @@ export function StoreProvider({ children }) {
       try {
         // The DELETE may have committed even if its response was lost. Confirm
         // the authoritative session before inviting a destructive retry.
-        const check = await api("/api/me", { context: "Confirming account deletion", silent: true });
+        const check = await api("/api/me", { context: "Confirming account deletion", silent: true, skipIdentityCheck: true });
         confirmedDeleted = !check?.user;
         if (!confirmedDeleted) return { ok: false, error: "Pit did not delete the account. Your account is still active.", appError: error };
       } catch (verificationError) {
@@ -1420,6 +2077,13 @@ export function StoreProvider({ children }) {
     }
 
     if (!confirmedDeleted) return { ok: false, unknown: true, error: "Pit could not confirm account deletion." };
+
+    purgeProductAnalyticsAccount(deleted.id);
+    save(feedStorageKey(deleted.id), []);
+    save(recommendationPreferenceStorageKey(deleted.id), []);
+    save(historyStorageKey(deleted.id), []);
+    save("pit.snapshots", []);
+    save("pit.session", null);
 
     const withoutUserEntries = (map) => Object.fromEntries(
       Object.entries(map || {}).map(([key, rows]) => [key, Array.isArray(rows) ? rows.filter((row) => row?.userId !== deleted.id && row?.user_id !== deleted.id) : rows])
@@ -1482,7 +2146,16 @@ export function StoreProvider({ children }) {
     }
 
     save("pit.session", null);
+    resetStaffState();
+    staffStateScopeRef.current = null;
+    sessionRef.current = null;
+    configureProductAnalytics(null);
+    configureApiIdentity(null, { ready: true });
+    authReadyRef.current = true;
+    setAuthReady(true);
+    adoptFeedAccount(null);
     setSession(null);
+    broadcastAuthEpoch();
     setMemberCount((count) => Math.max(0, count - 1));
     return { ok: true };
   };
@@ -1496,9 +2169,11 @@ export function StoreProvider({ children }) {
     if (session) {
       const extra = mergePatch || {};
       const updated = { ...session, ...extra, theme: next };
-      setUsers((all) => all.map((u) => (u.id === session.id ? { ...u, ...extra, theme: next } : u)));
+      setUsers((all) => all.map((u) => (u.id === session.id
+        ? (ENABLE_DEMO_DATA ? { ...u, ...extra, theme: next } : publicProfileCacheEntry({ ...u, ...extra, theme: next }))
+        : u)));
       setSession(updated);
-      save("pit.session", updated); // synchronous, the reload below would race the effect
+      if (ENABLE_DEMO_DATA) save("pit.session", updated); // demo-only local identity
       try { await api("/api/me", { method: "PATCH", body: { theme: next, ...extra } }); } catch {}
     }
     applyTheme(next, session?.id || null);
@@ -1519,7 +2194,9 @@ export function StoreProvider({ children }) {
     if (Array.isArray(safe.genres)) safe.genres = safe.genres.map((g) => clean(g, { max: 30 })).filter(Boolean).slice(0, 12);
     if (Array.isArray(safe.favoriteArtists)) safe.favoriteArtists = safe.favoriteArtists.map((n) => clean(n, { max: 80 })).filter(Boolean).slice(0, 50);
     if ("name" in safe) safe.initials = (safe.name.match(/\p{L}|\p{N}/gu) || ["?"]).slice(0, 2).join("").toUpperCase();
-    setUsers((all) => all.map((u) => (u.id === session.id ? { ...u, ...safe } : u)));
+    setUsers((all) => all.map((u) => (u.id === session.id
+      ? (ENABLE_DEMO_DATA ? { ...u, ...safe } : publicProfileCacheEntry({ ...u, ...safe }))
+      : u)));
     setSession((s) => ({ ...s, ...safe }));
     // Persist to the server so profile edits (incl. your @handle) survive sign-out
     // and follow you to a new device. The server is the authority on handle
@@ -1533,7 +2210,7 @@ export function StoreProvider({ children }) {
     // Music picks live in the bounded profile extras object on the server. Send
     // the complete known set whenever one changes so saving a song cannot erase
     // the account theme or its recorded Terms consent.
-    const extraKeys = ["theme", "consentAt", "termsVersion", "analyticsOptOut", "nowPlaying", "treble", "bass", "playlists"];
+    const extraKeys = ["theme", "consentAt", "analyticsConsentAt", "termsAcceptedAt", "termsVersion", "analyticsOptOut", "nowPlaying", "treble", "bass", "playlists"];
     if (["analyticsOptOut", "nowPlaying", "treble", "bass", "playlists"].some((key) => key in safe)) {
       const merged = { ...previousSession, ...safe };
       body.extras = Object.fromEntries(extraKeys.filter((key) => merged[key] !== undefined).map((key) => [key, merged[key]]));
@@ -1543,7 +2220,9 @@ export function StoreProvider({ children }) {
     return api("/api/me", { method: "PATCH", body, context: "Saving your profile" })
       .then(({ user }) => {
         if (user) {
-          setUsers((all) => all.map((u) => (u.id === user.id ? { ...u, ...user } : u)));
+          setUsers((all) => all.map((u) => (u.id === user.id
+            ? (ENABLE_DEMO_DATA ? { ...u, ...user } : publicProfileCacheEntry({ ...u, ...user }))
+            : u)));
           setSession((s) => ({ ...s, ...user }));
         }
         return { ok: true, user, patch: safe };
@@ -1551,7 +2230,9 @@ export function StoreProvider({ children }) {
       .catch((error) => {
         // Server rejected something (e.g. handle taken / cooldown / role tag).
         // Restore the last server-backed snapshot instead of leaving a false save.
-        setUsers((all) => all.map((u) => (u.id === previousSession.id ? previousSession : u)));
+        setUsers((all) => all.map((u) => (u.id === previousSession.id
+          ? (ENABLE_DEMO_DATA ? previousSession : publicProfileCacheEntry(previousSession))
+          : u)));
         setSession(previousSession);
         return { ok: false, error };
       });
@@ -1599,7 +2280,7 @@ export function StoreProvider({ children }) {
           } else if (id && id !== localId) {
             setFeed((f) => [{ ...safe, id }, ...f.filter((l) => l.id !== localId && l.id !== id)]);
           }
-          track("post", kind === "status" ? { kind: "status" } : { artist: safe.artist, venue: safe.venue });
+          track("post", { kind: kind === "status" ? "status" : "review", mediaCount: Array.isArray(safe.photos) ? safe.photos.length : 0 });
           return { ok: true, id: id || localId };
         })
         .catch((error) => {
@@ -1609,7 +2290,7 @@ export function StoreProvider({ children }) {
           return { ok: false, error };
         });
     }
-    track("post", kind === "status" ? { kind: "status" } : { artist: safe.artist, venue: safe.venue });
+    track("post", { kind: kind === "status" ? "status" : "review", mediaCount: Array.isArray(safe.photos) ? safe.photos.length : 0 });
     return Promise.resolve({ ok: true, localOnly: true });
   };
 
@@ -1709,6 +2390,7 @@ export function StoreProvider({ children }) {
         context: "Sending your report",
         silent: true, // the screen shows a specific message, not a generic toast
       });
+      if (targetType === "post") track("interaction", { postId: targetId, action: "report", surface: "post_detail" });
       return { ok: true };
     } catch (error) {
       // Deliberately NOT the generic transport message ("Pit could not finish
@@ -1720,7 +2402,7 @@ export function StoreProvider({ children }) {
   };
   const actionReport = (repId) => {
     const r = reports.find((x) => x.id === repId);
-    return api(`/api/admin/reports/${repId}/action`, { method: "POST", context: "Removing reported content" })
+    return moderateReport({ action: "remove", reportId: repId })
       .then(() => {
         if (r?.targetType === "post" || !r?.targetType) setRemovedIds((ids) => (ids.includes(r.targetId) ? ids : [...ids, r.targetId]));
         setReports((rs) => rs.map((x) => (x.id === repId ? { ...x, status: "actioned" } : x)));
@@ -1729,15 +2411,23 @@ export function StoreProvider({ children }) {
       .catch(() => false);
   };
   const dismissReport = (repId) => {
-    return api(`/api/admin/reports/${repId}/dismiss`, { method: "POST", context: "Dismissing this report" })
+    return moderateReport({ action: "dismiss", reportId: repId })
       .then(() => { setReports((rs) => rs.map((x) => (x.id === repId ? { ...x, status: "dismissed" } : x))); return true; })
       .catch(() => false);
   };
-  const moderateContent = (type, id, removed) => api(`/api/admin/content/${type}/${id}`, {
-    method: "POST",
-    body: { removed },
-    context: removed ? "Removing community content" : "Restoring community content",
-  });
+  const moderateContent = async (type, id, removed) => {
+    const scope = staffScopeFor(sessionRef.current);
+    const result = await api(`/api/admin/content/${type}/${id}`, {
+      method: "POST",
+      body: { removed },
+      context: removed ? "Removing community content" : "Restoring community content",
+    });
+    if (scope && scope === staffScopeFor(sessionRef.current)) {
+      staffReadsRef.current.invalidate("moderation", sessionRef.current);
+      loadModerationConsole().catch(() => {});
+    }
+    return result;
+  };
   const removeContent = (id) => moderateContent("post", id, true)
     .then(() => { setRemovedIds((rows) => (rows.includes(id) ? rows : [...rows, id])); return true; })
     .catch(() => false);
@@ -1822,7 +2512,7 @@ export function StoreProvider({ children }) {
     setFollows((f) => ({ ...f, [session.id]: [...new Set([...(f[session.id] || []), id])] }));
     bumpFollowers(id, 1);
     api(`/api/users/${id}/follow`, { method: "POST", body: { following: true }, context: "Following this fan" })
-      .then(() => { track("follow", { target: id }); notify(id, "follow"); })
+      .then(() => { track("follow"); notify(id, "follow"); })
       .catch(() => {
         setFollows((f) => ({ ...f, [session.id]: (f[session.id] || []).filter((x) => x !== id) }));
         bumpFollowers(id, -1);
@@ -1873,7 +2563,7 @@ export function StoreProvider({ children }) {
         setBlockedIds((b) => b.filter((x) => x !== id));
         setFollows((f) => ({ ...f, [session.id]: mineBefore, [id]: theirsBefore }));
       });
-    track("block", { target: id });
+    track("block");
   };
   const unblockUser = (id) => {
     if (!session || !isBlocked(id)) return;
@@ -1988,6 +2678,7 @@ export function StoreProvider({ children }) {
           };
         }));
         const owner = postOwner(id);
+        track("interaction", { postId: id, action: "comment", surface: "afterparty" });
         if (owner) notify(owner, "comment", { postId: id, artist: feed.find((l) => l.id === id)?.artist, text: t.slice(0, 60) });
         return { ok: true, id: sid || localId };
       })
@@ -2028,7 +2719,7 @@ export function StoreProvider({ children }) {
       return f.filter((l) => l.id !== postId);
     });
     return api(`/api/posts/${postId}`, { method: "DELETE", context: "Deleting your post" })
-      .then(() => { track("delete_post", { post: postId }); return { ok: true }; })
+      .then(() => { track("delete_post", { postId }); return { ok: true }; })
       .catch((error) => {
         // Restore at the original position, not just at the top of the feed.
         if (removed) {
@@ -2054,7 +2745,8 @@ export function StoreProvider({ children }) {
       .then((result) => {
         feedMutationRevisionRef.current += 1;
         if (typeof result?.liked === "boolean") setMyLikes((m) => ({ ...m, [id]: result.liked }));
-        if (liked) { track("like", { post: id }); const o = postOwner(id); if (o) notify(o, "like", { postId: id, artist: feed.find((l) => l.id === id)?.artist }); }
+        track("interaction", { postId: id, action: liked ? "like" : "unlike", surface: "feed" });
+        if (liked) { track("like", { postId: id }); const o = postOwner(id); if (o) notify(o, "like", { postId: id, artist: feed.find((l) => l.id === id)?.artist }); }
       })
       .catch(() => {
         feedMutationRevisionRef.current += 1;
@@ -2062,9 +2754,71 @@ export function StoreProvider({ children }) {
       });
   };
 
+  const notInterested = (postId) => {
+    if (!session?.id || !postId) return Promise.resolve({ ok: false });
+    const accountId = session.id;
+    recommendationPreferenceRevisionRef.current += 1;
+    setRecommendationHiddenIds((current) => {
+      const next = new Set([...current, postId]);
+      save(recommendationPreferenceStorageKey(accountId), [...next]);
+      return next;
+    });
+    return api(`/api/feed/preferences/${encodeURIComponent(postId)}`, {
+      method: "POST",
+      body: { action: "not_interested" },
+      context: "Tuning your recommendations",
+      silent: true,
+    }).then((result) => {
+      track("recommendation_feedback", { postId, action: "not_interested", surface: "everyone" }, { expectedAccountId: accountId });
+      return result;
+    }).catch((error) => {
+      const persisted = loadRecommendationHiddenIds(accountId);
+      persisted.delete(postId);
+      save(recommendationPreferenceStorageKey(accountId), [...persisted]);
+      if (sessionRef.current?.id === accountId) {
+        setRecommendationHiddenIds((current) => {
+          const next = new Set(current);
+          next.delete(postId);
+          save(recommendationPreferenceStorageKey(accountId), [...next]);
+          return next;
+        });
+      }
+      throw error;
+    });
+  };
+  const undoNotInterested = (postId) => {
+    if (!session?.id || !postId) return Promise.resolve({ ok: false });
+    const accountId = session.id;
+    recommendationPreferenceRevisionRef.current += 1;
+    setRecommendationHiddenIds((current) => {
+      const next = new Set(current);
+      next.delete(postId);
+      save(recommendationPreferenceStorageKey(accountId), [...next]);
+      return next;
+    });
+    return api(`/api/feed/preferences/${encodeURIComponent(postId)}`, {
+      method: "DELETE",
+      context: "Restoring this recommendation",
+      silent: true,
+    }).catch((error) => {
+      const persisted = loadRecommendationHiddenIds(accountId);
+      persisted.add(postId);
+      save(recommendationPreferenceStorageKey(accountId), [...persisted]);
+      if (sessionRef.current?.id === accountId) {
+        setRecommendationHiddenIds((current) => {
+          const next = new Set([...current, postId]);
+          save(recommendationPreferenceStorageKey(accountId), [...next]);
+          return next;
+        });
+      }
+      throw error;
+    });
+  };
+
   const visibleFeed = (staff) =>
     (staff ? feed : feed.filter((l) => !removedIds.includes(l.id)))
-      .filter((l) => !l.userId || !blockedIds.includes(l.userId));
+      .filter((l) => !l.userId || !blockedIds.includes(l.userId))
+      .filter((l) => staff || !recommendationHiddenIds.has(l.id));
 
   // Feed of only the people you follow (plus yourself).
   const followingFeed = (staff) => {
@@ -2283,7 +3037,7 @@ export function StoreProvider({ children }) {
           const cur = meta[fcKey(artist)];
           return cur ? { ...meta, [fcKey(artist)]: { members: Math.max(0, cur.members + (confirmed ? 1 : -1)) } } : meta;
         });
-        if (confirmed && !has) track("join_fanclub", { artist });
+        if (confirmed && !has) track("join_fanclub");
         return { ok: true, joined: confirmed };
       })
       .catch(() => ({ ok: false, joined: has }));
@@ -2369,36 +3123,167 @@ export function StoreProvider({ children }) {
     api(`/api/artists/${enc}/posts/${id}`, { method: "DELETE" }).catch(() => {});
   };
 
-  // --- Ban / suspend (admin) ---
+  // --- Ban / suspend (staff) ---
+  const patchStaffMember = (id, patch, { publicPatch = null } = {}) => {
+    const previous = adminMembersRef.current.find((member) => member.id === id);
+    const reconciled = reconcileMemberMutationPage(
+      adminMembersRef.current,
+      adminMemberDirectoryRef.current,
+      id,
+      patch,
+    );
+    adminMembersRef.current = reconciled.members;
+    setAdminMembers(reconciled.members);
+    if (reconciled.directory !== adminMemberDirectoryRef.current) {
+      adminMemberDirectoryRef.current = reconciled.directory;
+      setAdminMemberDirectory(reconciled.directory);
+    }
+    if (previous && Object.hasOwn(patch, "isBanned") && !!previous.isBanned !== !!patch.isBanned) {
+      setAdminStats((current) => {
+        const next = { ...current, banned: Math.max(0, Number(current.banned || 0) + (patch.isBanned ? 1 : -1)) };
+        adminStatsRef.current = next;
+        return next;
+      });
+    }
+    if (previous && Object.hasOwn(patch, "verified") && !!previous.verified !== !!patch.verified) {
+      setAdminStats((current) => {
+        const next = { ...current, verified: Math.max(0, Number(current.verified || 0) + (patch.verified ? 1 : -1)) };
+        adminStatsRef.current = next;
+        return next;
+      });
+    }
+    setModerationConsole((current) => {
+      const next = patchModerationMemberContext(current, id, patch);
+      moderationConsoleRef.current = next;
+      return next;
+    });
+    setReports((current) => patchModerationMemberContext({ reports: current }, id, patch).reports);
+    if (publicPatch) {
+      setUsers((current) => current.map((user) => user.id === id ? { ...user, ...publicPatch } : user));
+    }
+  };
+  const staffMutationStillOwned = (scope) => !!scope && scope === staffScopeFor(sessionRef.current);
+  const invalidateStaffMemberReads = () => {
+    staffReadsRef.current.invalidate("members", sessionRef.current);
+    staffReadsRef.current.invalidate("moderation", sessionRef.current);
+  };
+
   const accountStatus = (u) => {
     if (!u) return "ok";
     if (u.isBanned) return "banned";
     if (u.suspendedUntil && u.suspendedUntil > Date.now()) return "suspended";
     return "ok";
   };
-  const banUser = (id) => api(`/api/admin/users/${id}/ban`, { method: "POST", context: "Banning this account" })
-    .then(() => { setUsers((all) => all.map((u) => (u.id === id ? { ...u, isBanned: true } : u))); return true; }).catch(() => false);
-  const unbanUser = (id) => api(`/api/admin/users/${id}/unban`, { method: "POST", context: "Unbanning this account" })
-    .then(() => { setUsers((all) => all.map((u) => (u.id === id ? { ...u, isBanned: false, suspendedUntil: null } : u))); return true; }).catch(() => false);
-  const suspendUser = (id, days = 7) => api(`/api/admin/users/${id}/suspend`, { method: "POST", body: { days }, context: "Timing out this account" })
-    .then(({ suspendedUntil }) => { setUsers((all) => all.map((u) => (u.id === id ? { ...u, suspendedUntil } : u))); return true; }).catch(() => false);
-  const liftSuspension = (id) => api(`/api/admin/users/${id}/unsuspend`, { method: "POST", context: "Lifting this timeout" })
-    .then(() => { setUsers((all) => all.map((u) => (u.id === id ? { ...u, suspendedUntil: null } : u))); return true; }).catch(() => false);
-  // Full member directory for the admin console (all signups, incl. banned) + live
-  // counts and a per-region breakdown. Absorbs everyone into `users` so they're
-  // visible/moderatable, and stores the stats for the Members header.
-  const loadAdminMembers = async () => {
+  const banUser = async (id) => {
+    const scope = staffScopeFor(sessionRef.current);
     try {
-      const { users: list, total, banned, verified, regions } = await api("/api/admin/members");
-      if (Array.isArray(list)) setUsers((all) => {
-        const byId = new Map(all.map((u) => [u.id, u]));
-        list.forEach((su) => byId.set(su.id, { playlists: [], genres: [], favoriteArtists: [], ...(byId.get(su.id) || {}), ...su }));
-        return [...byId.values()];
-      });
-      setAdminStats({ total: total || 0, banned: banned || 0, verified: verified || 0, regions: regions || [] });
-      if (typeof total === "number") setMemberCount(total);
-      return list || [];
-    } catch { return []; }
+      await api(`/api/admin/users/${id}/ban`, { method: "POST", context: "Banning this account" });
+      if (staffMutationStillOwned(scope)) {
+        invalidateStaffMemberReads();
+        patchStaffMember(id, { isBanned: true });
+      }
+      return true;
+    } catch { return false; }
+  };
+  const unbanUser = async (id) => {
+    const scope = staffScopeFor(sessionRef.current);
+    try {
+      await api(`/api/admin/users/${id}/unban`, { method: "POST", context: "Unbanning this account" });
+      if (staffMutationStillOwned(scope)) {
+        invalidateStaffMemberReads();
+        patchStaffMember(id, { isBanned: false, suspendedUntil: null });
+      }
+      return true;
+    } catch { return false; }
+  };
+  const suspendUser = async (id, days = 7) => {
+    const scope = staffScopeFor(sessionRef.current);
+    try {
+      const { suspendedUntil } = await api(`/api/admin/users/${id}/suspend`, { method: "POST", body: { days }, context: "Timing out this account" });
+      if (staffMutationStillOwned(scope)) {
+        invalidateStaffMemberReads();
+        patchStaffMember(id, { suspendedUntil });
+      }
+      return true;
+    } catch { return false; }
+  };
+  const liftSuspension = async (id) => {
+    const scope = staffScopeFor(sessionRef.current);
+    try {
+      await api(`/api/admin/users/${id}/unsuspend`, { method: "POST", context: "Lifting this timeout" });
+      if (staffMutationStillOwned(scope)) {
+        invalidateStaffMemberReads();
+        patchStaffMember(id, { suspendedUntil: null });
+      }
+      return true;
+    } catch { return false; }
+  };
+  // Full member directory for the admin console (all signups, incl. banned) + live
+  // counts and a per-region breakdown. Rows stay in an ephemeral staff-only
+  // collection; they never flow through the persisted public profile cache.
+  const loadAdminMembersStrict = async ({ signal, query = "", role = "", status = "", append = false } = {}) => {
+    const normalizedQuery = String(query || "").trim().slice(0, 80);
+    const normalizedRole = ["fan", "artist", "moderator", "admin"].includes(role) ? role : "";
+    const normalizedStatus = ["active", "banned", "suspended"].includes(status) ? status : "";
+    const previousDirectory = adminMemberDirectoryRef.current;
+    const sameScope = previousDirectory.query === normalizedQuery
+      && previousDirectory.role === normalizedRole
+      && previousDirectory.status === normalizedStatus;
+    const cursor = append && sameScope ? previousDirectory.nextCursor : null;
+    if (append && !cursor) return {
+      users: adminMembersRef.current,
+      ...adminStatsRef.current,
+      ...previousDirectory,
+    };
+    const read = staffReadsRef.current.claim("members", sessionRef.current);
+    const params = new URLSearchParams({ limit: "50" });
+    if (normalizedQuery) params.set("q", normalizedQuery);
+    if (normalizedRole) params.set("role", normalizedRole);
+    if (normalizedStatus) params.set("status", normalizedStatus);
+    if (cursor) params.set("before", cursor);
+    const payload = await api(`/api/admin/members?${params.toString()}`, {
+      signal,
+      silent: true,
+      context: append ? "Loading more members" : "Loading the member directory",
+    });
+    const list = Array.isArray(payload?.users) ? payload.users : [];
+    const total = Number.isFinite(Number(payload?.total)) ? Number(payload.total) : list.length;
+    const banned = Number.isFinite(Number(payload?.banned)) ? Number(payload.banned) : 0;
+    const verified = Number.isFinite(Number(payload?.verified)) ? Number(payload.verified) : 0;
+    const regions = Array.isArray(payload?.regions) ? payload.regions : [];
+    if (signal?.aborted || !staffReadsRef.current.isCurrent(read, sessionRef.current)) {
+      return { users: adminMembersRef.current, ...adminStatsRef.current, ...adminMemberDirectoryRef.current };
+    }
+    const stats = { total, banned, verified, regions };
+    const users = append && sameScope
+      ? mergeUniquePage(adminMembersRef.current, list)
+      : list;
+    const directory = {
+      query: normalizedQuery,
+      role: normalizedRole,
+      status: normalizedStatus,
+      matchingTotal: Number.isFinite(Number(payload?.matchingTotal)) ? Number(payload.matchingTotal) : users.length,
+      nextCursor: typeof payload?.nextCursor === "string" && payload.nextCursor ? payload.nextCursor : null,
+    };
+    adminMembersRef.current = users;
+    adminStatsRef.current = stats;
+    adminMemberDirectoryRef.current = directory;
+    setAdminMembers(users);
+    setAdminStats(stats);
+    setAdminMemberDirectory(directory);
+    setMemberCount(total);
+    return { users, total, banned, verified, regions, ...directory };
+  };
+  const loadMoreAdminMembersStrict = (options = {}) => loadAdminMembersStrict({
+    ...options,
+    query: adminMemberDirectoryRef.current.query,
+    role: adminMemberDirectoryRef.current.role,
+    status: adminMemberDirectoryRef.current.status,
+    append: true,
+  });
+  const loadAdminMembers = async (options) => {
+    try { return (await loadAdminMembersStrict(options)).users; }
+    catch { return []; }
   };
   // Catalog queue (admin): thin/blank artists + searched-but-not-found names, and
   // the on-demand seed + purge actions.
@@ -2428,18 +3313,27 @@ export function StoreProvider({ children }) {
     if (!["fan", "artist", "moderator", "admin"].includes(role)) return;
     // Staff carry their role in their @ (admin → "admin", moderator → "mod"); on
     // promotion, tag the handle if it isn't already, keeping it unique.
-    const target = users.find((u) => u.id === id);
+    const directory = adminMembersRef.current;
+    const target = directory.find((u) => u.id === id);
     let handle = target?.handle;
     const tag = role === "admin" ? "admin" : role === "moderator" ? "mod" : null;
     if (target && tag && handle && !handle.includes(tag)) {
       let cand = `${handle}_${tag}`.slice(0, 20), i = 1;
-      while (users.some((x) => x.id !== id && x.handle === cand)) cand = `${handle}_${tag}${i++}`.slice(0, 20);
+      while (directory.some((x) => x.id !== id && x.handle === cand)) cand = `${handle}_${tag}${i++}`.slice(0, 20);
       handle = cand;
     }
+    const scope = staffScopeFor(sessionRef.current);
     try {
-      await api(`/api/admin/users/${id}/role`, { method: "POST", body: { role, handle }, context: "Changing this account role" });
-      setUsers((all) => all.map((u) => (u.id === id ? { ...u, role, handle: handle || u.handle } : u)));
-      setSession((s) => (s && s.id === id ? { ...s, role, handle: handle || s.handle } : s));
+      const result = await api(`/api/admin/users/${id}/role`, { method: "POST", body: { role, handle }, context: "Changing this account role" });
+      if (staffMutationStillOwned(scope)) {
+        // The server allocates against the complete directory, not merely this
+        // loaded page, so its collision-safe handle is authoritative.
+        const authoritativeHandle = result?.handle || handle || target?.handle;
+        invalidateStaffMemberReads();
+        patchStaffMember(id, { role, handle: authoritativeHandle }, {
+          publicPatch: { role, handle: authoritativeHandle },
+        });
+      }
       return true;
     } catch { return false; }
   };
@@ -2448,12 +3342,16 @@ export function StoreProvider({ children }) {
   // account can be verified. (Groundwork for a paid tier later; not surfaced as
   // paid yet.) Admin-only.
   const setVerified = async (id, val) => {
-    if (!isStaff(session?.role)) return;
+    if (!isStaff(sessionRef.current?.role)) return;
     const verified = !!val;
+    const scope = staffScopeFor(sessionRef.current);
     try {
       await api(`/api/admin/users/${id}/verified`, { method: "POST", body: { verified }, context: "Updating verification" });
-      setUsers((all) => all.map((u) => (u.id === id ? { ...u, verified } : u)));
-      setSession((s) => (s && s.id === id ? { ...s, verified } : s));
+      if (staffMutationStillOwned(scope)) {
+        invalidateStaffMemberReads();
+        patchStaffMember(id, { verified }, { publicPatch: { verified } });
+        setSession((s) => (s && s.id === id ? { ...s, verified } : s));
+      }
       return true;
     } catch { return false; }
   };
@@ -2461,21 +3359,29 @@ export function StoreProvider({ children }) {
   // private account state and grants no public badge, so it only ever moves to
   // true and there is no "unconfirm".
   const markEmailVerified = async (id) => {
-    if (!isStaff(session?.role)) return false;
+    if (!isStaff(sessionRef.current?.role)) return false;
+    const scope = staffScopeFor(sessionRef.current);
     try {
       await api(`/api/admin/users/${id}/verify-email`, { method: "POST", body: {}, context: "Confirming a member's email" });
-      setUsers((all) => all.map((u) => (u.id === id ? { ...u, emailVerified: true } : u)));
-      setSession((s) => (s && s.id === id ? { ...s, emailVerified: true } : s));
+      if (staffMutationStillOwned(scope)) {
+        invalidateStaffMemberReads();
+        patchStaffMember(id, { emailVerified: true });
+        setSession((s) => (s && s.id === id ? { ...s, emailVerified: true } : s));
+      }
       return true;
     } catch { return false; }
   };
   const setSponsor = async (id, val) => {
-    if (!isStaff(session?.role)) return;
+    if (!isStaff(sessionRef.current?.role)) return;
     const sponsor = !!val;
+    const scope = staffScopeFor(sessionRef.current);
     try {
       await api(`/api/admin/users/${id}/sponsor`, { method: "POST", body: { sponsor }, context: "Updating sponsorship" });
-      setUsers((all) => all.map((u) => (u.id === id ? { ...u, sponsor } : u)));
-      setSession((s) => (s && s.id === id ? { ...s, sponsor } : s));
+      if (staffMutationStillOwned(scope)) {
+        invalidateStaffMemberReads();
+        patchStaffMember(id, { sponsor }, { publicPatch: { sponsor } });
+        setSession((s) => (s && s.id === id ? { ...s, sponsor } : s));
+      }
       return true;
     } catch { return false; }
   };
@@ -2871,6 +3777,8 @@ export function StoreProvider({ children }) {
     return Object.values(map);
   };
 
+  const locationCenter = (place) => locationCenterFromVenues(place, allVenues());
+
   // # of public upcoming dates at a venue (released only).
   const venueUpcomingCount = (name) =>
     tourDates.filter((t) => isUpcomingEventDate(t)
@@ -3122,10 +4030,9 @@ export function StoreProvider({ children }) {
   const venuesByCity = () => {
     const groups = {};
     allVenues().forEach((v) => {
-      const parts = (v.place || "").split(",").map((s) => s.trim());
-      const city = parts[0] || "Unknown";
-      const region = parts.slice(1).join(", ");
-      (groups[city] ||= { city, region, venues: [] }).venues.push({ ...v, upcoming: venueUpcomingCount(v.name) });
+      if (!isVenuePlaceActionable(v.place)) return;
+      const place = venuePlaceIdentity(v.place);
+      (groups[place.id] ||= { ...place, venues: [] }).venues.push({ ...v, upcoming: venueUpcomingCount(v.name) });
     });
     return Object.values(groups)
       .map((g) => ({
@@ -3261,9 +4168,9 @@ export function StoreProvider({ children }) {
   };
 
   const value = {
-    users, session, feed, removedIds, blockedIds, requests, tourDates, reports, follows, discoverySidebar, discoverySidebarStatus,
+    users, adminMembers, adminMemberDirectory, session, authReady, feed, removedIds, blockedIds, requests, tourDates, reports, moderationConsole, follows, discoverySidebar, discoverySidebarStatus,
     userById, userByHandle, logsByUser, sharedShows,
-    login, signup, logout, deleteAccount, forgotPassword, resetPassword, updateProfile, chooseTheme,
+    login, signup, logout, deleteAccount, forgotPassword, resetPassword, confirmEmailVerification, resendEmailVerification, updateProfile, setAnalyticsEnabled, chooseTheme,
     addLog, editLog, reportContent, actionReport, dismissReport, removeContent, restoreContent,
     requestArtist, approveArtist, rejectArtist,
     addTourDatesBatch,
@@ -3272,14 +4179,14 @@ export function StoreProvider({ children }) {
     loadUser, followersOf, followingOf,
     isBlocked, blockUser, unblockUser, blockedUsers, exportMyData,
     searchArtistsApi, resolveArtist, remoteArtistMeta, artistDiscography, resolveYouTube, invalidateYouTube, youtubeLookupWasTransient, resolveDeezerPreview,
-    discoverChart, discoverGenres, discoverCountries, serverTime,
-    artistSeenCount, reportTrack, adminSetTrackVideo, trackOverridesList, removeTrackOverride, loadModerationQueue,
+    discoverChart, discoverGenres, discoverCountries, loadDiscoverOverview, loadDiscoverGenre, serverTime,
+    artistSeenCount, reportTrack, adminSetTrackVideo, trackOverridesList, removeTrackOverride, loadModerationQueue, loadModerationConsole, loadMoreModerationConsole, moderateReport,
     mediaReactions, loadMediaReactions, toggleMediaReaction,
-    playHistory, playHistoryStatus, playHistoryNextCursor, loadPlayHistory, recordPlay, snapshots, saveSnapshot, removeSnapshot, friendsListening, loadFriendsListening, userPlaylists,
+    playHistory, playHistoryStatus, playHistoryNextCursor, loadPlayHistory, recordPlay, snapshots, saveSnapshot, removeSnapshot, friendsListening, loadFriendsListening, loadFriendsListeningStrict, userPlaylists,
     favoriteGenre, genreOfArtist, recommendTracks, autoplayQueue, searchSongsApi, myPlaylists, myPlaylistsStatus, loadMyPlaylists, loadPlaylist, createPlaylist, addToPlaylist, updatePlaylist, deletePlaylist,
     drafts: draftsForAccount(drafts, session?.id), saveDraft, deleteDraft,
-    visibleFeed, followingFeed, loadMoreFeed, feedHasMore, feedLoadingMore, loadClips, visibleTourDates, artistSummary, venueSummary,
-    localVenues, regionShows, localFeed, recommendedShows, venueCoord,
+    visibleFeed, followingFeed, loadMoreFeed, feedHasMore, feedLoadingMore, loadClips, notInterested, undoNotInterested, visibleTourDates, artistSummary, venueSummary,
+    localVenues, regionShows, localFeed, recommendedShows, venueCoord, locationCenter,
     searchVenues, venuesByCity, venueUpcomingCount,
     allArtists, topArtists, artistsAlphabetical, upcomingEvents, trendingVenues,
     isVerifiedArtist, isTop100, artistRank, artistBadges, userBadges,
@@ -3291,7 +4198,7 @@ export function StoreProvider({ children }) {
     fanClubFor, loadFanClub, addFanClubMessage, isFanClubMember, joinFanClub, fanClubCount, fanClubsDirectory,
     isArtistOwner, artistProfile, loadArtistPage, updateArtistProfile, artistFeedEnabled,
     artistPostsFor, addArtistPost, removeArtistPost,
-    accountStatus, banUser, unbanUser, suspendUser, liftSuspension, setUserRole, setVerified, markEmailVerified, setSponsor, loadAdminMembers, adminStats, adminArtistQueue, enrichArtists, purgeArtist, startCatalogSeed, catalogSeedStatus, stopCatalogSeed, catalogSeedRuns, removeLoungeMessage, removeComment, removeFanClubMessage,
+    accountStatus, banUser, unbanUser, suspendUser, liftSuspension, setUserRole, setVerified, markEmailVerified, setSponsor, loadAdminMembers, loadAdminMembersStrict, loadMoreAdminMembersStrict, adminStats, adminArtistQueue, enrichArtists, purgeArtist, startCatalogSeed, catalogSeedStatus, stopCatalogSeed, catalogSeedRuns, removeLoungeMessage, removeComment, removeFanClubMessage,
     comments, fanClubMsgs, lounge,
     goingFor, isGoing, toggleGoing, attendeesFor,
     venueReviewsFor, loadVenueReviews, addVenueReview, venueRating, venueTopPhotos,

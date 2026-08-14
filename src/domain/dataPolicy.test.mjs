@@ -6,6 +6,7 @@ import {
   calendarDateKey,
   isUpcomingEventDate,
   PERSISTED_FEED_LIMIT,
+  publicProfileCacheEntry,
   sanitizePersistedStoreValue,
   sanitizeTourDates,
 } from "./dataPolicy.mjs";
@@ -47,6 +48,35 @@ test("persisted demo cleanup keeps server-created records", () => {
       real: [{ id: "msg_real", text: "keep too" }],
     },
   );
+});
+
+test("persisted public users use an exact privacy allowlist", () => {
+  const [user] = sanitizePersistedStoreValue("pit.users", [{
+    id: "u_real",
+    name: "Real Member",
+    role: "fan",
+    verified: true,
+    emailVerified: true,
+    isBanned: true,
+    suspendedUntil: 123,
+    createdAt: 100,
+    email: "private@example.com",
+    analyticsConsentAt: 99,
+    termsAcceptedAt: 88,
+    treble: { title: "Private taste" },
+    playlists: [{ id: "private" }],
+    home: { city: "Toronto", lat: 43.6, lng: -79.3 },
+  }]);
+  assert.deepEqual(user, {
+    id: "u_real",
+    name: "Real Member",
+    role: "fan",
+    verified: true,
+    home: { city: "Toronto" },
+  });
+  assert.deepEqual(publicProfileCacheEntry({ id: "u_x", name: "X", email: "secret", home: { city: "Ottawa", lat: 1 } }), {
+    id: "u_x", name: "X", home: { city: "Ottawa" },
+  });
 });
 
 test("persisted feed cache stays bounded for phone startup and localStorage writes", () => {

@@ -1,34 +1,19 @@
 import { useState } from "react";
-import { View, Text, StyleSheet, ScrollView, Pressable, Linking } from "react-native";
-import { colors, mono, radius as rad } from "../theme";
+import { FlatList, Linking, Platform, Pressable, StyleSheet, Text, View } from "react-native";
+import { colors, displayFont, focusRing, mono, radius, shadow } from "../theme";
 import { useStore } from "../store";
-import { cityCoords } from "../data";
 import Icon from "../components/Icon";
 import ConcertMap from "../components/ConcertMap";
 import LocationPicker from "../components/LocationPicker";
 import ScreenHeader from "../components/ScreenHeader";
-import { formatDate } from "../domain/dates.mjs";
+import { UpcomingEventCard, VenueDiscoveryCard } from "../components/VenueDiscoveryCards";
+import { nearestMapPoints } from "../domain/venueDiscovery.mjs";
 
 const RADII = [25, 50, 75, 150];
-
-function TicketAction({ show }) {
-  if (show.soldOut) {
-    return (
-      <View style={styles.soldOut}>
-        <Text style={styles.soldOutTxt}>SOLD OUT</Text>
-      </View>
-    );
-  }
-  return (
-    <Pressable style={styles.ticketBtn} onPress={() => Linking.openURL(show.ticketUrl)}>
-      <Icon name="ticket" size={14} color="#1A1206" />
-      <Text style={styles.ticketTxt}>Tickets</Text>
-    </Pressable>
-  );
-}
+const MAP_POINT_LIMIT = 60;
 
 export default function NearbyScreen({ onClose, onOpenVenue, onOpenArtist }) {
-  const { session, localVenues, regionShows, venueSummary } = useStore();
+  const { session, localVenues, regionShows, venueSummary, locationCenter } = useStore();
   const [center, setCenter] = useState(session?.home || null);
   const [km, setKm] = useState(75);
   const [tab, setTab] = useState("venues");
@@ -39,144 +24,232 @@ export default function NearbyScreen({ onClose, onOpenVenue, onOpenArtist }) {
       <LocationPicker
         onClose={() => setPickingCity(false)}
         onSelect={(place) => {
-          const c = cityCoords[place.city];
-          setCenter({ city: place.city, lat: c?.lat ?? null, lng: c?.lng ?? null });
+          setCenter(locationCenter(place));
           setPickingCity(false);
         }}
       />
     );
   }
 
-  const hasCoords = center && center.lat != null;
-  const venues = localVenues(km, center);
-  const shows = regionShows(km, center);
-  // Enrich each pin with the data the hover card shows (photo / rating / cap).
-  const mapPoints = venues.map((v) => {
-    const s = venueSummary(v.name);
+  const hasCoords = center?.lat != null && center?.lng != null;
+  const venues = hasCoords ? localVenues(km, center) : [];
+  const shows = hasCoords ? regionShows(km, center) : [];
+  const mapPoints = nearestMapPoints(venues.map((venue) => {
+    const summary = venueSummary(venue.name);
     return {
-      name: v.name, lat: v.coord.lat, lng: v.coord.lng,
-      photo: s.photo || null,
-      sub: v.place || center?.city || "",
-      rating: s.avgOverall || 0,
-      reviews: s.totalShows || 0,
-      capacity: s.capacity || null,
+      name: venue.name,
+      lat: venue.coord.lat,
+      lng: venue.coord.lng,
+      distanceKm: venue.distanceKm,
+      photo: summary.photo || null,
+      sub: venue.place || center?.city || "",
+      rating: summary.avgOverall || 0,
+      reviews: summary.totalShows || 0,
+      capacity: summary.capacity || null,
     };
-  });
+  }), MAP_POINT_LIMIT);
+  const data = tab === "venues" ? venues : shows;
+
+  const renderItem = ({ item }) => {
+    if (tab === "venues") {
+      const summary = venueSummary(item.name);
+      return (
+        <VenueDiscoveryCard
+          venue={{ ...item, rating: summary.avgRoom, capacity: summary.capacity }}
+          onPress={() => onOpenVenue?.(item.name)}
+        />
+      );
+    }
+    return (
+      <UpcomingEventCard
+        event={item}
+        onOpenArtist={() => onOpenArtist?.(item.artist)}
+        onOpenVenue={() => onOpenVenue?.(item.venue)}
+        onTickets={() => { if (item.ticketUrl) void Linking.openURL(item.ticketUrl).catch(() => {}); }}
+      />
+    );
+  };
 
   return (
     <View style={styles.wrap}>
-      <ScreenHeader kicker="DISCOVER" title="Near you" onBack={onClose} />
-
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-        {/* choose which city to browse */}
-        <Pressable style={styles.cityBtn} onPress={() => setPickingCity(true)}>
-          <Icon name="pin" size={16} color={colors.amber} />
-          <Text style={styles.cityTxt}>{center?.city || "Pick a city"}</Text>
-          <Text style={styles.cityChange}>change</Text>
-          <Icon name="chevron-right" size={16} color={colors.textDim} />
-        </Pressable>
-
-        {/* radius toggle */}
-        <View style={styles.radii}>
-          {RADII.map((r) => (
-            <Pressable key={r} style={[styles.radChip, km === r && styles.radChipOn]} onPress={() => setKm(r)}>
-              <Text style={[styles.radTxt, km === r && styles.radTxtOn]}>{r} km</Text>
-            </Pressable>
-          ))}
-        </View>
-
-        {!hasCoords && <Text style={styles.empty}>No coordinates for {center?.city || "this city"} yet - pick a major city.</Text>}
-
-        {hasCoords && (
-          <View style={styles.mapWrap}>
-            <ConcertMap points={mapPoints} highlight={{ lat: center.lat, lng: center.lng }} label={center.city} onOpenVenue={onOpenVenue} />
-            <Text style={styles.mapCaption}>{venues.length} venues · {shows.length} shows within {km} km</Text>
-          </View>
-        )}
-
-        {hasCoords && (
-          <View style={styles.segment}>
-            <Seg label={`Venues · ${venues.length}`} on={tab === "venues"} onPress={() => setTab("venues")} />
-            <Seg label={`Shows · ${shows.length}`} on={tab === "shows"} onPress={() => setTab("shows")} />
-          </View>
-        )}
-
-        {hasCoords && tab === "venues" &&
-          venues.map((v) => (
-            <Pressable key={v.name} style={styles.row} onPress={() => onOpenVenue?.(v.name)}>
-              <View style={styles.venueIcon}>
-                <Icon name="pin" size={18} color={colors.amber} />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.title}>{v.name}</Text>
-                <Text style={styles.sub}>{v.place}</Text>
-                {v.upcoming > 0 && <Text style={styles.upcoming}>{v.upcoming} upcoming</Text>}
-              </View>
-              <Text style={styles.dist}>{v.distanceKm.toFixed(0)} km</Text>
-              <Icon name="chevron-right" size={18} color={colors.textDim} />
-            </Pressable>
-          ))}
-        {hasCoords && tab === "venues" && venues.length === 0 && <Text style={styles.empty}>No venues within {km} km.</Text>}
-
-        {hasCoords && tab === "shows" &&
-          shows.map((s) => (
-            <View key={s.id} style={styles.row}>
-              <Pressable style={{ flex: 1 }} onPress={() => onOpenArtist?.(s.artist)}>
-                <Text style={styles.title}>{s.artist}</Text>
-                <Pressable onPress={() => onOpenVenue?.(s.venue)}>
-                  <Text style={styles.sub}>{s.venue} · {s.distanceKm.toFixed(0)} km</Text>
-                </Pressable>
-                <Text style={styles.date}>{formatDate(s.date, s.date)}{s.genre ? `  · ${s.genre}` : ""}</Text>
+      <ScreenHeader kicker="LOCAL LINEUP" title="Near you" onBack={onClose} />
+      <FlatList
+        key={tab}
+        data={data}
+        renderItem={renderItem}
+        keyExtractor={(item) => String(item.id || item.name)}
+        ItemSeparatorComponent={ListGap}
+        contentContainerStyle={styles.content}
+        contentInsetAdjustmentBehavior="automatic"
+        showsVerticalScrollIndicator={false}
+        initialNumToRender={8}
+        maxToRenderPerBatch={8}
+        windowSize={7}
+        ListHeaderComponent={(
+          <View style={styles.headerContent}>
+            <View style={styles.locationHero}>
+              <View style={styles.heroGlow} />
+              <Text style={styles.eyebrow}>EXPLORE AROUND YOU</Text>
+              <Text style={styles.heroTitle}>{center?.city ? `What’s playing near ${center.city}?` : "Put live music on the map."}</Text>
+              <Text style={styles.heroBody}>Move the radius from neighbourhood rooms to road-trip shows. Results use the city and distance you choose.</Text>
+              <Pressable
+                style={({ pressed, focused }) => [styles.cityButton, pressed && styles.controlPressed, focused && focusRing]}
+                onPress={() => setPickingCity(true)}
+                accessibilityRole="button"
+                accessibilityLabel={`Change location${center?.city ? `, currently ${center.city}` : ""}`}
+              >
+                <View style={styles.cityIcon}><Icon name="pin" size={17} color={colors.amber} /></View>
+                <View style={styles.cityCopy}>
+                  <Text style={styles.cityLabel}>BROWSING FROM</Text>
+                  <Text style={styles.cityName}>{center?.label || center?.city || "Choose a city"}</Text>
+                </View>
+                <Text style={styles.changeText}>Change</Text>
+                <Icon name="chevron-right" size={17} color={colors.textFaint} />
               </Pressable>
-              <TicketAction show={s} />
             </View>
-          ))}
-        {hasCoords && tab === "shows" && shows.length === 0 && <Text style={styles.empty}>No upcoming shows within {km} km.</Text>}
-      </ScrollView>
+
+            <View accessibilityRole="radiogroup" accessibilityLabel="Search radius" style={styles.radii}>
+              {RADII.map((radiusKm) => (
+                <Pressable
+                  key={radiusKm}
+                  style={({ pressed, focused }) => [styles.radiusChip, km === radiusKm && styles.radiusChipOn, pressed && styles.controlPressed, focused && focusRing]}
+                  onPress={() => setKm(radiusKm)}
+                  accessibilityRole="radio"
+                  accessibilityState={{ checked: km === radiusKm }}
+                  accessibilityLabel={`${radiusKm} kilometre radius`}
+                >
+                  <Text style={[styles.radiusText, km === radiusKm && styles.radiusTextOn]}>{radiusKm}</Text>
+                  <Text style={[styles.radiusUnit, km === radiusKm && styles.radiusTextOn]}>KM</Text>
+                </Pressable>
+              ))}
+            </View>
+
+            {!hasCoords ? (
+              <View style={styles.emptyLocation}>
+                <View style={styles.emptyLocationIcon}><Icon name="map" size={25} color={colors.textFaint} /></View>
+                <Text style={styles.emptyTitle}>This city is not mapped yet</Text>
+                <Text style={styles.emptyBody}>Choose another major city to see nearby venues and shows.</Text>
+                <Pressable style={styles.chooseButton} onPress={() => setPickingCity(true)}><Text style={styles.chooseText}>Choose a city</Text></Pressable>
+              </View>
+            ) : (
+              <>
+                <View style={styles.statsRow}>
+                  <LocalStat value={venues.length} label="VENUES" icon="pin" />
+                  <LocalStat value={shows.length} label="UPCOMING" icon="calendar" accent />
+                  <LocalStat value={km} label="KM RADIUS" icon="map" />
+                </View>
+                <View style={styles.mapCard}>
+                  <ConcertMap points={mapPoints} highlight={{ lat: center.lat, lng: center.lng }} label={center.city} onOpenVenue={onOpenVenue} />
+                  <View style={styles.mapFooter}>
+                    <Icon name="map" size={14} color={colors.cool} />
+                    <Text style={styles.mapCaption}>
+                      {venues.length > MAP_POINT_LIMIT ? `Nearest ${MAP_POINT_LIMIT} of ${venues.length} venues shown` : `${venues.length} venue${venues.length === 1 ? "" : "s"} mapped`} · {shows.length} show{shows.length === 1 ? "" : "s"} within {km} km
+                    </Text>
+                  </View>
+                </View>
+                <View style={styles.segment} accessibilityRole="tablist">
+                  <Segment label="Venues" count={venues.length} selected={tab === "venues"} onPress={() => setTab("venues")} />
+                  <Segment label="Upcoming" count={shows.length} selected={tab === "shows"} onPress={() => setTab("shows")} />
+                </View>
+                <View style={styles.sectionHead}>
+                  <Text style={styles.sectionKicker}>{tab === "venues" ? "ROOMS IN RANGE" : "YOUR LOCAL LINEUP"}</Text>
+                  <Text style={styles.sectionTitle}>{tab === "venues" ? "Closest stages first" : "Shows worth leaving home for"}</Text>
+                </View>
+              </>
+            )}
+          </View>
+        )}
+        ListEmptyComponent={hasCoords ? (
+          <View style={styles.resultsEmpty}>
+            <Icon name={tab === "venues" ? "pin" : "calendar"} size={25} color={colors.textFaint} />
+            <Text style={styles.emptyTitle}>{tab === "venues" ? "No venues in this radius" : "No upcoming shows in this radius"}</Text>
+            <Text style={styles.emptyBody}>Try widening the search or browsing another city.</Text>
+          </View>
+        ) : null}
+      />
     </View>
   );
 }
 
-function Seg({ label, on, onPress }) {
+function Segment({ label, count, selected, onPress }) {
   return (
-    <Pressable style={[styles.seg, on && styles.segOn]} onPress={onPress}>
-      <Text style={[styles.segTxt, on && styles.segTxtOn]}>{label}</Text>
+    <Pressable
+      style={({ pressed, focused }) => [styles.segmentButton, selected && styles.segmentButtonOn, pressed && styles.controlPressed, focused && focusRing]}
+      onPress={onPress}
+      accessibilityRole="tab"
+      accessibilityState={{ selected }}
+      accessibilityLabel={`${label}, ${count}`}
+    >
+      <Text style={[styles.segmentText, selected && styles.segmentTextOn]}>{label}</Text>
+      <View style={[styles.segmentCount, selected && styles.segmentCountOn]}><Text style={[styles.segmentCountText, selected && styles.segmentCountTextOn]}>{count}</Text></View>
     </Pressable>
   );
 }
 
+function LocalStat({ value, label, icon, accent = false }) {
+  return (
+    <View style={styles.stat}>
+      <Icon name={icon} size={15} color={accent ? colors.amber : colors.textFaint} />
+      <View>
+        <Text style={[styles.statValue, accent && styles.statValueAccent]}>{Number(value || 0).toLocaleString()}</Text>
+        <Text style={styles.statLabel}>{label}</Text>
+      </View>
+    </View>
+  );
+}
+
+function ListGap() {
+  return <View style={styles.listGap} />;
+}
+
 const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: colors.bg },
-  topbar: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingBottom: 8 },
-  backBtn: { flexDirection: "row", alignItems: "center", width: 56 },
-  back: { color: colors.amber, fontSize: 15 },
-  topTitle: { color: colors.textFaint, fontSize: 11, letterSpacing: 2, fontWeight: "700" },
-  content: { padding: 16, paddingBottom: 40 },
-  cityBtn: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: colors.surface, borderRadius: rad.md, borderWidth: 1, borderColor: colors.amber, paddingHorizontal: 14, paddingVertical: 13 },
-  cityTxt: { flex: 1, color: colors.text, fontSize: 16, fontWeight: "700" },
-  cityChange: { color: colors.amber, fontSize: 12, fontWeight: "600" },
-  radii: { flexDirection: "row", gap: 8, marginTop: 12 },
-  radChip: { flex: 1, alignItems: "center", paddingVertical: 8, borderRadius: 999, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
-  radChipOn: { borderColor: colors.amber, backgroundColor: colors.bgElev },
-  radTxt: { color: colors.textDim, fontSize: 12, fontFamily: mono },
-  radTxtOn: { color: colors.amber, fontWeight: "800" },
-  mapWrap: { marginTop: 16 },
-  mapCaption: { color: colors.textFaint, fontSize: 12, marginTop: 8, textAlign: "center", fontFamily: mono },
-  segment: { flexDirection: "row", gap: 8, marginTop: 18, marginBottom: 6 },
-  seg: { flex: 1, alignItems: "center", paddingVertical: 9, borderRadius: 999, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
-  segOn: { borderColor: colors.amber, backgroundColor: colors.bgElev },
-  segTxt: { color: colors.textDim, fontSize: 13, fontWeight: "600" },
-  segTxtOn: { color: colors.amber, fontWeight: "700" },
-  empty: { color: colors.textDim, fontSize: 13, fontStyle: "italic", marginTop: 14 },
-  row: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: colors.surface, borderRadius: rad.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 14, marginTop: 10 },
-  venueIcon: { width: 40, height: 40, borderRadius: 20, backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
-  title: { color: colors.text, fontSize: 16, fontWeight: "700" },
-  sub: { color: colors.textDim, fontSize: 13, marginTop: 2 },
-  upcoming: { color: colors.amber, fontSize: 12, marginTop: 4 },
-  date: { color: colors.amber, fontFamily: mono, fontSize: 12, marginTop: 6 },
-  dist: { color: colors.textFaint, fontFamily: mono, fontSize: 12 },
-  ticketBtn: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: colors.amberStrong, borderRadius: rad.pill, paddingHorizontal: 14, paddingVertical: 9 },
-  ticketTxt: { color: "#1A1206", fontSize: 13, fontWeight: "800" },
-  soldOut: { borderWidth: 1, borderColor: colors.danger, borderRadius: rad.pill, paddingHorizontal: 12, paddingVertical: 8 },
-  soldOutTxt: { color: colors.danger, fontSize: 11, fontWeight: "800", letterSpacing: 1 },
+  content: { width: "100%", maxWidth: 980, alignSelf: "center", paddingHorizontal: 16, paddingBottom: 56 },
+  headerContent: { gap: 14, paddingTop: 12, paddingBottom: 14 },
+  locationHero: { overflow: "hidden", padding: 22, borderRadius: radius.lg, borderCurve: "continuous", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, ...shadow.card },
+  heroGlow: { position: "absolute", width: 270, height: 270, borderRadius: 135, top: -160, right: -50, backgroundColor: colors.cool, opacity: 0.14, ...Platform.select({ web: { filter: "blur(12px)" } }) },
+  eyebrow: { color: colors.cool, fontFamily: mono, fontSize: 9, fontWeight: "900", letterSpacing: 1.7 },
+  heroTitle: { maxWidth: 630, color: colors.text, fontFamily: displayFont, fontSize: 28, lineHeight: 33, fontWeight: "900", letterSpacing: -0.75, marginTop: 7 },
+  heroBody: { maxWidth: 640, color: colors.textDim, fontSize: 13, lineHeight: 20, marginTop: 7 },
+  cityButton: { minHeight: 66, flexDirection: "row", alignItems: "center", gap: 10, padding: 10, marginTop: 18, borderRadius: radius.md, borderCurve: "continuous", backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line, ...shadow.control },
+  cityIcon: { width: 42, height: 42, alignItems: "center", justifyContent: "center", borderRadius: 14, backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.amber },
+  cityCopy: { flex: 1, minWidth: 0 },
+  cityLabel: { color: colors.textFaint, fontFamily: mono, fontSize: 8, fontWeight: "900", letterSpacing: 1 },
+  cityName: { color: colors.text, fontFamily: displayFont, fontSize: 16, fontWeight: "900", marginTop: 2 },
+  changeText: { color: colors.amber, fontSize: 12, fontWeight: "800" },
+  controlPressed: { transform: [{ scale: 0.98 }], opacity: 0.9 },
+  radii: { flexDirection: "row", gap: 8 },
+  radiusChip: { flex: 1, minWidth: 0, minHeight: 48, flexDirection: "row", alignItems: "baseline", justifyContent: "center", gap: 3, borderRadius: radius.md, borderCurve: "continuous", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft },
+  radiusChipOn: { backgroundColor: colors.surfaceAlt, borderColor: colors.amber },
+  radiusText: { color: colors.textDim, fontFamily: mono, fontSize: 14, fontWeight: "800", fontVariant: ["tabular-nums"] },
+  radiusUnit: { color: colors.textFaint, fontFamily: mono, fontSize: 8, fontWeight: "800" },
+  radiusTextOn: { color: colors.amber },
+  statsRow: { flexDirection: "row", gap: 8 },
+  stat: { flex: 1, minWidth: 0, minHeight: 66, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 9, padding: 9, borderRadius: radius.md, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft },
+  statValue: { color: colors.text, fontFamily: mono, fontSize: 17, fontWeight: "900", fontVariant: ["tabular-nums"] },
+  statValueAccent: { color: colors.amber },
+  statLabel: { color: colors.textFaint, fontFamily: mono, fontSize: 7, fontWeight: "900", letterSpacing: 0.6 },
+  mapCard: { overflow: "hidden", padding: 8, borderRadius: radius.lg, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, ...shadow.card },
+  mapFooter: { minHeight: 38, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, paddingHorizontal: 8 },
+  mapCaption: { flexShrink: 1, color: colors.textFaint, fontFamily: mono, fontSize: 10, textAlign: "center" },
+  segment: { flexDirection: "row", gap: 8, padding: 4, borderRadius: radius.md, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft },
+  segmentButton: { flex: 1, minHeight: 46, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, borderRadius: 14 },
+  segmentButtonOn: { backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.line },
+  segmentText: { color: colors.textDim, fontFamily: displayFont, fontSize: 13, fontWeight: "800" },
+  segmentTextOn: { color: colors.amber },
+  segmentCount: { minWidth: 24, height: 22, alignItems: "center", justifyContent: "center", paddingHorizontal: 6, borderRadius: 11, backgroundColor: colors.bgElev },
+  segmentCountOn: { backgroundColor: colors.amberStrong },
+  segmentCountText: { color: colors.textFaint, fontFamily: mono, fontSize: 9, fontWeight: "900", fontVariant: ["tabular-nums"] },
+  segmentCountTextOn: { color: "#1A1206" },
+  sectionHead: { paddingTop: 3 },
+  sectionKicker: { color: colors.textFaint, fontFamily: mono, fontSize: 9, fontWeight: "900", letterSpacing: 1.5 },
+  sectionTitle: { color: colors.text, fontFamily: displayFont, fontSize: 18, fontWeight: "900", marginTop: 3 },
+  listGap: { height: 10 },
+  emptyLocation: { alignItems: "center", padding: 28, borderRadius: radius.lg, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft },
+  emptyLocationIcon: { width: 54, height: 54, alignItems: "center", justifyContent: "center", borderRadius: 18, backgroundColor: colors.bgElev, marginBottom: 12 },
+  resultsEmpty: { alignItems: "center", padding: 28, borderRadius: radius.md, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft },
+  emptyTitle: { color: colors.text, fontFamily: displayFont, fontSize: 17, fontWeight: "900", textAlign: "center", marginTop: 9 },
+  emptyBody: { maxWidth: 440, color: colors.textDim, fontSize: 13, lineHeight: 19, textAlign: "center", marginTop: 5 },
+  chooseButton: { minHeight: 44, justifyContent: "center", paddingHorizontal: 17, borderRadius: radius.pill, backgroundColor: colors.amberStrong, marginTop: 15 },
+  chooseText: { color: "#1A1206", fontFamily: displayFont, fontSize: 13, fontWeight: "900" },
 });

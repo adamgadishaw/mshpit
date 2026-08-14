@@ -5,10 +5,32 @@
 import { Platform } from "react-native";
 import { AppError, captureAppError } from "./diagnostics";
 import { createRequestControl } from "./requestControl.mjs";
+import { apiIdentityBarrierDecision } from "../domain/apiIdentityState.mjs";
 
 const DEV_WEB = Platform.OS === "web" && typeof window !== "undefined" && window.location.port === "8081";
 const CONFIGURED_ORIGIN = (process.env.EXPO_PUBLIC_API_URL || "").replace(/\/+$/, "");
 const BASE = CONFIGURED_ORIGIN || (DEV_WEB ? "http://localhost:3000" : Platform.OS === "web" ? "" : "https://www.mshpit.com");
+
+// Cookies are origin-wide on the web, while React state is tab-local. Bind every
+// account-scoped request to the identity the tab believes it owns so a login in
+// another tab cannot silently turn an old tab's action into the new account's
+// action. `/api/me` is the sole identity-discovery call and opts out explicitly.
+let apiIdentity = { accountId: null, ready: false, generation: 0 };
+let resolveIdentityReady;
+let identityReady = new Promise((resolve) => { resolveIdentityReady = resolve; });
+
+export function configureApiIdentity(accountId, { ready = true } = {}) {
+  const normalized = accountId ? String(accountId) : null;
+  if (apiIdentity.accountId !== normalized || apiIdentity.ready !== !!ready) {
+    apiIdentity = { accountId: normalized, ready: !!ready, generation: apiIdentity.generation + 1 };
+    if (apiIdentity.ready) {
+      resolveIdentityReady?.();
+    } else {
+      identityReady = new Promise((resolve) => { resolveIdentityReady = resolve; });
+    }
+  }
+  return apiIdentity.generation;
+}
 
 // Absolute URL for routes that leave the app shell. Web production intentionally
 // stays same-origin; native uses EXPO_PUBLIC_API_URL or the production origin.
@@ -43,9 +65,29 @@ function apiFailure(error, { path, method, context, silent, kind, status, reques
 // `context` is a short operation label for Diagnostics. `silent` suppresses the
 // toast only; the failure is still recorded. Existing { method, body } calls are
 // fully backward compatible.
-export async function api(path, { method = "GET", body, context, silent = false, signal, headers, timeoutMs } = {}) {
+export async function api(path, { method = "GET", body, context, silent = false, signal, headers, timeoutMs, expectedAccountId, skipIdentityCheck = false } = {}) {
   const verb = String(method || "GET").toUpperCase();
   const operation = context || operationContext(verb);
+  const identityAtInvocation = apiIdentity;
+  // Calls mounted during cold boot wait behind the authoritative `/api/me`
+  // handshake. This avoids accidentally sending a cookie-authenticated A request
+  // while the tab still renders guest/B state, without dropping one-shot loads.
+  const barrierDecision = apiIdentityBarrierDecision(identityAtInvocation, { skipIdentityCheck, expectedAccountId });
+  if (barrierDecision === "reject") {
+    // A previously-authenticated tab must never queue A's click and replay it as
+    // B after cross-tab validation adopts the new shared cookie identity.
+    const err = new AppError("Your account is being revalidated. Try again in a moment.", {
+      status: 409, serverCode: "IDENTITY_CHANGED", context: operation, source: "api",
+    });
+    throw apiFailure(err, { path, method: verb, context: operation, silent });
+  }
+  if (barrierDecision === "wait") {
+    if (signal?.aborted) throw signal.reason || new DOMException("Aborted", "AbortError");
+    await Promise.race([
+      identityReady,
+      signal ? new Promise((_, reject) => signal.addEventListener("abort", () => reject(signal.reason || new DOMException("Aborted", "AbortError")), { once: true })) : new Promise(() => {}),
+    ]);
+  }
   let payload;
   try {
     payload = body === undefined ? undefined : JSON.stringify(body);
@@ -55,12 +97,22 @@ export async function api(path, { method = "GET", body, context, silent = false,
   }
 
   const control = createRequestControl({ method: verb, timeoutMs, callerSignal: signal });
+  const identityAtStart = apiIdentity;
+  const explicitExpected = expectedAccountId !== undefined ? (expectedAccountId ? String(expectedAccountId) : null) : undefined;
+  const requestIdentity = explicitExpected !== undefined
+    ? { accountId: explicitExpected, ready: true, generation: identityAtStart.generation }
+    : identityAtStart;
+  const identityHeaders = !skipIdentityCheck && requestIdentity.ready
+    ? { "X-Pit-Expected-Account": requestIdentity.accountId || "guest" }
+    : {};
   let res;
   try {
     res = await fetch(BASE + path, {
       method: verb,
       credentials: "include",
-      headers: payload !== undefined ? { "Content-Type": "application/json", ...headers } : headers,
+      headers: payload !== undefined
+        ? { "Content-Type": "application/json", ...identityHeaders, ...headers }
+        : { ...identityHeaders, ...headers },
       body: payload,
       signal: control.signal,
     });
@@ -127,6 +179,18 @@ export async function api(path, { method = "GET", body, context, silent = false,
       requestId,
       serverCode,
       retryable: typeof data?.retryable === "boolean" ? data.retryable : undefined,
+      context: operation,
+      source: "api",
+    });
+    throw apiFailure(err, { path, method: verb, context: operation, silent });
+  }
+  // Even a correctly bound response can finish after this tab deliberately
+  // adopted another account. Never hand that stale success to a Store callback
+  // that would mutate the new account's local state.
+  if (!skipIdentityCheck && expectedAccountId === undefined && identityAtStart.generation !== apiIdentity.generation) {
+    const err = new AppError("Your account changed while that request was running. Try again.", {
+      status: 409,
+      serverCode: "IDENTITY_CHANGED",
       context: operation,
       source: "api",
     });

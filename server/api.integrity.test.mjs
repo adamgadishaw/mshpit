@@ -9,6 +9,7 @@ process.env.PIT_DATA_DIR = dataDir;
 
 const { db, q, publicUser, artistStmts, artistRow, publicArtist } = await import("./db.js");
 const { ApiError, routes } = await import("./api.js");
+const { clearRecommendationSnapshotsForTests } = await import("./recommendationService.js");
 const { hashPassword } = await import("./auth.js");
 
 after(() => {
@@ -79,6 +80,48 @@ test("artist search ignores punctuation and spacing for phone-friendly lookup", 
   assert.equal(result.artists[0]?.name, "J. Cole Search Test");
 });
 
+test("Discover legacy routes share one service and overview opts into a bounded public cache", () => {
+  artistStmts.upsert.run(artistRow("discover route alpha", {
+    name: "Discover Route Alpha", genre: "rap", country: "Route Test Country", popularity: 99,
+  }, "test"));
+  artistStmts.upsert.run(artistRow("discover route bravo", {
+    name: "Discover Route Bravo", genre: "indie rock", country: "Route Test Country", popularity: 98,
+  }, "test"));
+
+  const chartHeaders = {};
+  const chart = routes["GET /api/discover/chart"]({
+    query: { country: "Route Test Country", limit: "24" },
+    setHeader: (name, value) => { chartHeaders[name] = value; },
+  });
+  assert.deepEqual(chart.rows.map((row) => row.name), ["Discover Route Alpha", "Discover Route Bravo"]);
+  const genreHeaders = {};
+  const genres = routes["GET /api/discover/genres"]({
+    query: { country: "Route Test Country", n: "8" },
+    setHeader: (name, value) => { genreHeaders[name] = value; },
+  });
+  assert.equal(genres.total, 2);
+  assert.deepEqual(genres.genres.map((row) => row.genre).sort(), ["Hip-Hop", "Indie"]);
+  assert.equal(chartHeaders["Cache-Control"], "public, max-age=60, stale-while-revalidate=300");
+  assert.equal(genreHeaders["Cache-Control"], "public, max-age=60, stale-while-revalidate=300");
+
+  const countryHeaders = {};
+  routes["GET /api/discover/countries"]({
+    query: { min: "1" },
+    setHeader: (name, value) => { countryHeaders[name] = value; },
+  });
+  assert.equal(countryHeaders["Cache-Control"], "public, max-age=60, stale-while-revalidate=300");
+
+  const responseHeaders = {};
+  const overview = routes["GET /api/discover/overview"]({
+    query: { country: "Route Test Country" },
+    setHeader: (name, value) => { responseHeaders[name] = value; },
+  });
+  assert.deepEqual(overview.chart.rows.map((row) => row.name), chart.rows.map((row) => row.name));
+  assert.equal(overview.genreTotal, genres.total);
+  assert.equal(overview.memberTotal, db.prepare("SELECT COUNT(*) count FROM users WHERE is_banned=0").get().count);
+  assert.equal(responseHeaders["Cache-Control"], "public, max-age=60, stale-while-revalidate=300");
+});
+
 test("PATCH /api/me rejects oversized extras and keeps trusted fields authoritative", () => {
   const user = addUser("u_profile", "profile@example.com", "profile");
   const handler = routes["PATCH /api/me"];
@@ -88,61 +131,106 @@ test("PATCH /api/me rejects oversized extras and keeps trusted fields authoritat
     (error) => error instanceof ApiError && error.status === 400
   );
 
-  const result = handler({ user, ip: "profile-test", body: { extras: { role: "admin", verified: true, consentAt: 123 } } });
+  const result = handler({ user, ip: "profile-test", body: { extras: { role: "admin", verified: true, consentAt: 123, termsAcceptedAt: 123 } } });
   assert.equal(result.user.role, "fan");
   assert.equal(result.user.verified, false);
-  assert.equal(result.user.consentAt, 123);
+  assert.equal(result.user.consentAt, undefined, "generic profile extras cannot forge analytics consent");
+  assert.equal(result.user.termsAcceptedAt, undefined, "generic profile extras cannot forge Terms acceptance");
+});
+
+test("signup records Terms separately while optional analytics defaults off", () => {
+  let sessionCookie;
+  const result = routes["POST /api/signup"]({
+    ip: "signup-consent-test",
+    ua: "integrity-test",
+    body: {
+      name: "Default Private",
+      email: "default-private@example.com",
+      password: "privatepass123",
+      city: "Toronto",
+      termsVersion: "2026-08",
+      analyticsConsent: false,
+    },
+    setSession: (value) => { sessionCookie = value; },
+  });
+  assert.ok(sessionCookie?.token);
+  assert.ok(result.user.termsAcceptedAt);
+  assert.equal(result.user.termsVersion, "2026-08");
+  assert.equal(result.user.analyticsConsentAt, undefined);
+  assert.equal(result.user.consentAt, undefined);
+  assert.throws(() => routes["POST /api/signup"]({
+    ip: "signup-consent-test-2", ua: "integrity-test", body: {
+      name: "No Terms", email: "no-terms@example.com", password: "privatepass123", city: "Toronto",
+    }, setSession: () => {},
+  }), (error) => error.status === 400);
 });
 
 test("analytics is consented, allow-listed, IP-free, aggregated, and admin-only", () => {
   addUser("u_analytics_member", "analytics-member@example.com", "analyticsmember");
   db.prepare("UPDATE users SET extras=? WHERE id=?").run(JSON.stringify({ consentAt: Date.now(), termsVersion: "2026-07" }), "u_analytics_member");
   const member = q.userById.get("u_analytics_member");
-  const ingest = routes["POST /api/events"];
+  db.prepare("INSERT INTO posts (id,user_id,artist,venue,overall,review,created_at) VALUES (?,?,?,?,?,?,?)")
+    .run("p_internal_001", member.id, "Analytics Artist", "Analytics Venue", 4, "Public fixture", Date.now());
+  const ingest = routes["POST /api/events/batch"];
+  const events = [
+    { id: "evt_search_0001", name: "search", props: { q: "shoegaze", kind: "all", resultBucket: "one_to_five", secret: "must disappear" } },
+    { id: "evt_play_000001", name: "play", props: { source: "player", artist: "The Artist", title: "The Song", token: "private" } },
+    { id: "evt_impression1", name: "feed_impression", props: { postId: "p_internal_001", position: 2, surface: "everyone", algorithm: "global-personal-v1", review: "must disappear" } },
+    { id: "evt_unknown_001", name: "arbitrary_client_event", props: { anything: "no" } },
+  ];
   const result = ingest({
     user: member,
     ip: "203.0.113.44",
-    body: { events: [
-      { name: "search", props: { q: "shoegaze", secret: "must disappear" } },
-      { name: "search", props: { q: "shoegaze" } },
-      { name: "search", props: { q: "shoegaze" } },
-      { name: "search", props: { q: "person@example.com" } },
-      { name: "play", props: { artist: "The Artist", title: "The Song", token: "private" } },
-      { name: "arbitrary_client_event", props: { anything: "no" } },
-    ] },
+    body: { events },
   });
-  assert.equal(result.stored, 5);
+  assert.equal(result.stored, 3);
+  assert.equal(result.rejected, 1);
+  const retry = ingest({ user: member, ip: "203.0.113.44", body: { events } });
+  assert.equal(retry.stored, 0);
+  assert.equal(retry.duplicates, 3);
   const rows = db.prepare("SELECT name,props,ip FROM events WHERE user_id=? ORDER BY created_at,id").all(member.id);
   assert.equal(rows.every((row) => row.ip == null), true);
-  assert.deepEqual(JSON.parse(rows.find((row) => row.name === "play").props), { artist: "The Artist", title: "The Song" });
+  assert.deepEqual(JSON.parse(rows.find((row) => row.name === "play").props), { source: "player" });
+  assert.deepEqual(JSON.parse(rows.find((row) => row.name === "search").props), { kind: "all", resultBucket: "one_to_five" });
   assert.equal(rows.some((row) => row.name === "arbitrary_client_event"), false);
-  assert.equal(rows.some((row) => row.props.includes("example.com")), false);
-  assert.equal(ingest({ user: null, ip: "203.0.113.45", body: { events: [{ name: "search", props: { q: "guest" } }] } }).stored, 0);
+  assert.equal(rows.some((row) => /shoegaze|The Artist|The Song|must disappear/.test(row.props)), false);
+  assert.equal(ingest({ user: null, ip: "203.0.113.45", body: { events } }).stored, 0);
 
   addUser("u_analytics_admin", "analytics-admin@example.com", "analyticsadmin");
   db.prepare("UPDATE users SET role='admin' WHERE id=?").run("u_analytics_admin");
   const admin = q.userById.get("u_analytics_admin");
   const dashboard = routes["GET /api/admin/analytics"]({ user: admin });
-  assert.ok(dashboard.topSearches.some((entry) => entry.label === "shoegaze" && entry.count === 3));
+  assert.deepEqual(dashboard.topSearches, []);
   assert.equal(dashboard.growth.length, 30);
-  assert.equal(dashboard.retentionDays >= 30, true);
+  assert.equal(dashboard.retentionDays, 30);
+  assert.equal(dashboard.rawEventLimit, 40_000);
+  assert.equal(dashboard.rawEventLimitPerAccount, 5_000);
+  assert.equal(dashboard.rawWindow.count, 3);
   const detail = routes["GET /api/admin/analytics/users/:id"]({ user: admin, params: { id: member.id } });
-  assert.equal(detail.totals.events, 5);
-  assert.equal(detail.recent.find((event) => event.name === "search").props.q, undefined);
+  assert.equal(detail.totals.events, 3);
+  assert.equal("recent" in detail, false, "admin analytics exposes aggregates, not a named event timeline");
+  assert.equal("recent" in dashboard, false, "the global dashboard has no per-handle event tail");
   assert.throws(() => routes["GET /api/admin/analytics"]({ user: member }), (error) => error.status === 403);
 
-  const updated = routes["PATCH /api/me"]({
-    user: member,
-    ip: "profile-test",
-    body: { extras: { consentAt: Date.now(), termsVersion: "2026-07", analyticsOptOut: true } },
-  });
+  const updated = routes["POST /api/me/analytics-consent"]({ user: member, ip: "profile-test", body: { enabled: false } });
   assert.equal(updated.user.analyticsOptOut, true);
+  assert.ok(updated.user.termsAcceptedAt, "legacy combined consent is migrated to a durable Terms acceptance record");
+  assert.equal(updated.user.consentAt, undefined);
   assert.equal(db.prepare("SELECT COUNT(*) count FROM events WHERE user_id=?").get(member.id).count, 0);
   assert.equal(ingest({
     user: q.userById.get(member.id),
     ip: "203.0.113.46",
-    body: { events: [{ name: "play", props: { artist: "No", title: "Tracking" } }] },
+    body: { events: [{ id: "evt_optout_001", name: "play", props: { source: "player" } }] },
   }).stored, 0);
+
+  const legacyEnable = addUser("u_analytics_legacy_enable", "analytics-legacy-enable@example.com", "analyticslegacyenable");
+  db.prepare("UPDATE users SET extras=? WHERE id=?").run(JSON.stringify({ consentAt: 12345, termsVersion: "2026-07" }), legacyEnable.id);
+  const enabled = routes["POST /api/me/analytics-consent"]({
+    user: q.userById.get(legacyEnable.id), ip: "profile-test", body: { enabled: true },
+  });
+  assert.equal(enabled.user.termsAcceptedAt, 12345);
+  assert.ok(enabled.user.analyticsConsentAt >= 12345);
+  assert.equal(enabled.user.consentAt, undefined);
 });
 
 test("capped social endpoints return the newest window in chronological order", () => {
@@ -352,6 +440,7 @@ test("desired-state social mutations are idempotent and old toggle calls still w
 });
 
 test("feed cursor pagination is stable while offset remains compatible", () => {
+  db.prepare("DELETE FROM posts").run();
   const user = addUser("u_feed_cursor", "feed-cursor@example.com", "feedcursor");
   for (let i = 1; i <= 7; i++) {
     db.prepare("INSERT INTO posts (id,user_id,artist,venue,overall,created_at) VALUES (?,?,?,?,?,?)")
@@ -592,7 +681,12 @@ test("moderators have real bounded actions and every content change is audited",
   assert.equal(audit.actor_id, moderator.id);
   assert.equal(audit.action, "remove");
   assert.equal(audit.request_id, "request-mod-actions");
-  assert.doesNotThrow(() => routes["GET /api/admin/members"]({ user: moderator }));
+  const memberHeaders = {};
+  assert.doesNotThrow(() => routes["GET /api/admin/members"]({
+    user: moderator,
+    setHeader: (name, value) => { memberHeaders[name] = value; },
+  }));
+  assert.equal(memberHeaders["Cache-Control"], "no-store");
   assert.throws(() => routes["POST /api/admin/users/:id/ban"]({ user: moderator, params: { id: target.id }, body: {} }), (error) => error.status === 403);
   assert.equal(routes["POST /api/admin/users/:id/suspend"]({ user: moderator, params: { id: target.id }, body: { days: 1 } }).ok, true);
 });
@@ -715,6 +809,133 @@ test("an admin genre correction outranks the crawl, is audited, and is reversibl
   const undone = setGenre({ user: staff, ip: "genre-undo", body: { name: "Rihanna", genre: "" } });
   assert.equal(undone.artist.genre, null);
   assert.equal(undone.artist.genreHint, "House");
+});
+
+test("For You is global-first, cursor-stable, and an allegation alone cannot suppress a post", () => {
+  const author = addUser("u_for_you_author", "for-you-author@example.com", "foryouauthor");
+  const reporter = addUser("u_for_you_reporter", "for-you-reporter@example.com", "foryoureporter");
+  for (let index = 1; index <= 6; index++) {
+    db.prepare("INSERT INTO posts (id,user_id,artist,venue,city,overall,review,photos,created_at) VALUES (?,?,?,?,?,?,?,?,?)")
+      .run(`p_for_you_${index}`, author.id, `Global Artist ${index}`, "Global Venue", "Toronto", 4, "A complete public concert review that gives the ranking useful quality context.", "[]", Date.now() - (7 - index) * 1000);
+  }
+  db.prepare("INSERT INTO reports (id,target_type,target_id,reason,reporter_id,status,created_at) VALUES (?,?,?,?,?,?,?)")
+    .run("rep_for_you_open", "post", "p_for_you_6", "Unadjudicated report", reporter.id, "open", Date.now());
+
+  clearRecommendationSnapshotsForTests();
+  const first = routes["GET /api/feed/for-you"]({ user: null, ip: "for-you-test", query: { limit: "3" } });
+  const second = routes["GET /api/feed/for-you"]({ user: null, ip: "for-you-test", query: { limit: "3", cursor: first.nextCursor } });
+  const ids = [...first.posts, ...second.posts].map((post) => post.id);
+  assert.equal(new Set(ids).size, ids.length, "snapshot pages never duplicate a post");
+  assert.equal(first.algorithm.candidateSource, "global");
+  assert.equal(first.posts.every((post) => post.recommendation?.algorithm === first.algorithm.id), true);
+
+  const repeated = routes["GET /api/feed/for-you"]({ user: null, ip: "for-you-test", query: { limit: "3" } });
+  assert.deepEqual(repeated.posts.map((post) => post.id), first.posts.map((post) => post.id), "unexpired guest snapshot is reused");
+  assert.equal(repeated.nextCursor, first.nextCursor);
+
+  // Traverse the snapshot instead of assuming a reported post must rank in the
+  // first six among unrelated test fixtures. The policy under test is
+  // eligibility: an allegation alone must not erase otherwise-live content.
+  const snapshotIds = [...first.posts.map((post) => post.id)];
+  let cursor = first.nextCursor;
+  while (cursor) {
+    const page = routes["GET /api/feed/for-you"]({ user: null, ip: "for-you-test", query: { limit: "50", cursor } });
+    snapshotIds.push(...page.posts.map((post) => post.id));
+    cursor = page.nextCursor;
+  }
+  assert.ok(snapshotIds.includes("p_for_you_6"), "an open report is an allegation, not a moderation state");
+});
+
+test("feed cache revalidation returns authoritative moderation, block, and preference tombstones", () => {
+  const viewer = addUser("u_revalidate_viewer", "revalidate-viewer@example.com", "revalidateviewer");
+  const author = addUser("u_revalidate_author", "revalidate-author@example.com", "revalidateauthor");
+  const insert = db.prepare("INSERT INTO posts (id,user_id,artist,venue,overall,review,created_at) VALUES (?,?,?,?,?,?,?)");
+  insert.run("p_revalidate_live", author.id, "Live Artist", "Live Venue", 4, "Still live", Date.now());
+  insert.run("p_revalidate_removed", author.id, "Removed Artist", "Removed Venue", 4, "Removed", Date.now());
+  db.prepare("UPDATE posts SET removed=1 WHERE id=?").run("p_revalidate_removed");
+
+  const revalidate = routes["POST /api/feed/revalidate"];
+  let result = revalidate({
+    user: viewer, ip: "revalidate-test", body: { postIds: ["p_revalidate_live", "p_revalidate_removed", "not_an_id"] },
+  });
+  assert.deepEqual(result.invalidPostIds, ["p_revalidate_removed"]);
+
+  db.prepare("INSERT INTO recommendation_preferences (user_id,post_id,action,created_at) VALUES (?,?,?,?)")
+    .run(viewer.id, "p_revalidate_live", "not_interested", Date.now());
+  result = revalidate({ user: viewer, ip: "revalidate-test", body: { postIds: ["p_revalidate_live"] } });
+  assert.deepEqual(result.invalidPostIds, ["p_revalidate_live"]);
+
+  db.prepare("DELETE FROM recommendation_preferences WHERE user_id=?").run(viewer.id);
+  db.prepare("INSERT INTO blocks (blocker_id,blocked_id,created_at) VALUES (?,?,?)").run(author.id, viewer.id, Date.now());
+  result = revalidate({ user: viewer, ip: "revalidate-test", body: { postIds: ["p_revalidate_live"] } });
+  assert.deepEqual(result.invalidPostIds, ["p_revalidate_live"], "an incoming author block invalidates an already-cached card");
+});
+
+test("admin Deezer enrichment records provider evidence and preserves staff authority", async () => {
+  artistStmts.upsert.run(artistRow("provider exact label", { name: "Provider Exact Label", genre: "Metal" }, "musicbrainz"));
+  artistStmts.upsert.run(artistRow("staff genre keeper", {
+    name: "Staff Genre Keeper",
+    genre: "r&b",
+    genreClaims: [{ value: "r&b", source: "staff", at: 1 }],
+  }, "staff"));
+  const admin = addUser("u_provider_enrich_admin", "provider-enrich-admin@example.com", "providerenrichadmin");
+  db.prepare("UPDATE users SET role='admin' WHERE id=?").run(admin.id);
+  const staff = q.userById.get(admin.id);
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const value = String(url);
+    let payload;
+    if (value.includes("/search/artist")) {
+      const name = decodeURIComponent(value).includes("Staff Genre Keeper") ? "Staff Genre Keeper" : "Provider Exact Label";
+      payload = { data: [{ id: name.startsWith("Staff") ? 202 : 101, name, nb_fan: 1000 }] };
+    } else if (value.includes("/artist/202/top")) payload = { data: [{ id: 2, title: "Staff Song", album: { id: 2002 } }] };
+    else if (value.includes("/artist/101/top")) payload = { data: [{ id: 1, title: "Provider Song", album: { id: 1001 } }] };
+    else if (value.includes("/album/2002")) payload = { genres: { data: [{ name: "Pop" }] } };
+    else if (value.includes("/album/1001")) payload = { genres: { data: [{ name: "Pop" }] } };
+    else throw new Error(`unexpected provider request: ${value}`);
+    return { ok: true, status: 200, json: async () => payload };
+  };
+  try {
+    const result = await routes["POST /api/admin/artists/enrich"]({
+      user: staff,
+      body: { names: ["Provider Exact Label", "Staff Genre Keeper"] },
+      requestId: "provider-enrich-test",
+    });
+    assert.equal(result.enriched, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  const provider = publicArtist(artistStmts.byNorm.get("provider exact label"));
+  assert.equal(provider.genre, "Pop", "an exact-title provider label must not be demoted to a crawl hint");
+  assert.equal(provider.genreSource, "provider");
+  const preserved = publicArtist(artistStmts.byNorm.get("staff genre keeper"));
+  assert.equal(preserved.genre, "r&b");
+  assert.equal(preserved.genreSource, "staff");
+  const stored = JSON.parse(artistStmts.byNorm.get("staff genre keeper").data);
+  assert.equal(stored.genreClaims.find((claim) => claim.source === "provider")?.value, "Pop");
+});
+
+test("withdrawing a sole staff genre cannot resurrect the stale column as provider evidence", () => {
+  artistStmts.upsert.run(artistRow("sole staff genre", {
+    name: "Sole Staff Genre",
+    genre: "r&b",
+    genreClaims: [{ value: "r&b", source: "staff", at: 1 }],
+  }, "staff"));
+  const admin = addUser("u_sole_genre_admin", "sole-genre-admin@example.com", "solegenreadmin");
+  db.prepare("UPDATE users SET role='admin' WHERE id=?").run(admin.id);
+  const result = routes["POST /api/admin/artists/genre"]({
+    user: q.userById.get(admin.id),
+    body: { name: "Sole Staff Genre", genre: "", reason: "withdraw unsupported claim" },
+    requestId: "sole-genre-undo",
+  });
+  assert.equal(result.artist.genre, null);
+  assert.equal(result.artist.genreHint, null);
+  const row = artistStmts.byNorm.get("sole staff genre");
+  assert.equal(row.genre, "r&b", "the additive upsert may retain the typed column");
+  assert.deepEqual(JSON.parse(row.data).genreClaims, [], "the explicit empty claim set remains authoritative");
+  assert.equal(publicArtist(row).genre, null);
 });
 
 // A playlist snapshot has to replay the same recording later, so the exact

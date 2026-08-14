@@ -1,0 +1,267 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import test from "node:test";
+import {
+  buildModerationReportRows,
+  canRemoveReportTarget,
+  filterModerationMembers,
+  filterModerationReports,
+  formatModerationTimestamp,
+  moderationMemberStatus,
+  moderationTargetLabel,
+  nextVisibleLimit,
+  normalizeAdminMemberQuery,
+  patchModerationMemberContext,
+  reconcileSelectedMemberId,
+  staffActionStillOwned,
+  summarizeModerationMembers,
+  summarizeModerationReports,
+  trackReportDetails,
+} from "./moderationConsole.mjs";
+
+const NOW = 1_000_000;
+
+test("member status gives bans priority and ignores expired timeouts", () => {
+  assert.equal(moderationMemberStatus({ isBanned: true, suspendedUntil: NOW + 1 }, NOW), "banned");
+  assert.equal(moderationMemberStatus({ suspendedUntil: NOW + 1 }, NOW), "suspended");
+  assert.equal(moderationMemberStatus({ suspendedUntil: NOW - 1 }, NOW), "active");
+  assert.equal(moderationMemberStatus({}, NOW), "active");
+});
+
+test("moderation timestamps never render invalid dates and include timezone for actions", () => {
+  assert.equal(formatModerationTimestamp(null), "Unknown time");
+  assert.equal(formatModerationTimestamp("not-a-date"), "Unknown time");
+  assert.equal(formatModerationTimestamp("", { fallback: "" }), "");
+  const rendered = formatModerationTimestamp("2026-08-13T22:15:00.000Z", { locale: "en-CA" });
+  assert.match(rendered, /2026/);
+  assert.match(rendered, /:15/);
+  assert.doesNotMatch(rendered, /Invalid/);
+});
+
+test("visible limits are bounded and selected members reconcile across filters and layouts", () => {
+  assert.equal(nextVisibleLimit(30, 95, 30), 60);
+  assert.equal(nextVisibleLimit(90, 95, 30), 95);
+  assert.equal(nextVisibleLimit(-4, 5, 0), 1);
+  const filtered = [{ id: "first" }, { id: "selected" }];
+  assert.equal(reconcileSelectedMemberId("selected", filtered, { wide: true }), "selected");
+  assert.equal(reconcileSelectedMemberId("gone", filtered, { wide: true }), "first");
+  assert.equal(reconcileSelectedMemberId("gone", filtered, { wide: false }), null);
+  assert.equal(reconcileSelectedMemberId(null, [], { wide: true }), null);
+});
+
+test("staff member queries normalize handles without widening private search scope", () => {
+  assert.equal(normalizeAdminMemberQuery("  @jcolefan  "), "jcolefan");
+  assert.equal(normalizeAdminMemberQuery("@@moderator"), "moderator");
+  assert.equal(normalizeAdminMemberQuery("member-id", 6), "member");
+  assert.equal(normalizeAdminMemberQuery(null), "");
+});
+
+test("a multi-write staff action cannot continue after account or role changes", () => {
+  const initiatingScope = "staff-a\u0000admin";
+  assert.equal(staffActionStillOwned(initiatingScope, { id: "staff-a", role: "admin" }), true);
+  assert.equal(staffActionStillOwned(initiatingScope, { id: "staff-b", role: "admin" }), false);
+  assert.equal(staffActionStillOwned(initiatingScope, { id: "staff-a", role: "moderator" }), false);
+  assert.equal(staffActionStillOwned(initiatingScope, { id: "staff-a", role: "fan" }), false);
+  assert.equal(staffActionStillOwned(initiatingScope, null), false);
+});
+
+test("report rows include reporter, author, and target context for triage", () => {
+  const rows = buildModerationReportRows(
+    [{ id: "r1", targetType: "post", targetId: "p1", reporterId: "reporter", reason: "Harassment", status: "open" }],
+    {
+      users: [
+        { id: "author", name: "Post Author", handle: "author" },
+        { id: "reporter", name: "Concerned Fan", handle: "fan" },
+      ],
+      posts: [{ id: "p1", userId: "author", artist: "J. Cole", venue: "Scotiabank Arena", review: "Target preview" }],
+    },
+  );
+
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].target.title, "J. Cole");
+  assert.equal(rows[0].target.excerpt, "Target preview");
+  assert.equal(rows[0].author.handle, "author");
+  assert.equal(rows[0].reporter.handle, "fan");
+  assert.equal(rows[0].target.missing, false);
+  assert.equal(rows[0].createdAt, null);
+  assert.match(rows[0].searchText, /scotiabank arena/);
+});
+
+test("comment context is resolved from grouped comment state", () => {
+  const [row] = buildModerationReportRows(
+    [{ id: "r2", targetType: "comment", targetId: "c1", reporterId: "u2", reason: "spam", status: "open" }],
+    {
+      users: [{ id: "u1", name: "Commenter", handle: "commenter" }],
+      comments: { p9: [{ id: "c1", userId: "u1", text: "Buy fake tickets" }] },
+    },
+  );
+  assert.equal(row.target.title, "Comment by Commenter");
+  assert.equal(row.target.metadata, "On post p9");
+  assert.equal(row.target.missing, false);
+});
+
+test("authoritative server context and reporter take priority over stale local cache", () => {
+  const [row] = buildModerationReportRows([{
+    id: "server-report",
+    targetType: "post",
+    targetId: "p1",
+    reason: "abuse",
+    status: "open",
+    reporter: { id: "r1", name: "Server Reporter", handle: "server-reporter" },
+    content: {
+      type: "post",
+      exists: true,
+      removed: false,
+      artist: "J. Cole",
+      venue: "Scotiabank Arena",
+      excerpt: "Authoritative excerpt",
+      author: { id: "a1", name: "Server Author", handle: "server-author", isBanned: true, suspendedUntil: NOW + 10, avatarUri: "https://example.com/avatar.jpg" },
+    },
+  }], {
+    users: [{ id: "r1", name: "Stale Reporter", handle: "stale" }],
+    posts: [{ id: "p1", artist: "Stale artist", review: "Stale excerpt" }],
+  });
+
+  assert.equal(row.reporter.name, "Server Reporter");
+  assert.equal(row.author.name, "Server Author");
+  assert.equal(row.author.isBanned, true);
+  assert.equal(row.author.suspendedUntil, NOW + 10);
+  assert.equal(row.author.avatarUri, "https://example.com/avatar.jpg");
+  assert.equal(row.target.title, "J. Cole");
+  assert.equal(row.target.excerpt, "Authoritative excerpt");
+});
+
+test("server-declared missing content stays missing even when a stale local row exists", () => {
+  const [row] = buildModerationReportRows([{
+    id: "gone",
+    targetType: "post",
+    targetId: "p1",
+    reason: "spam",
+    status: "open",
+    content: { type: "post", exists: false },
+  }], { posts: [{ id: "p1", artist: "Stale local post" }] });
+
+  assert.equal(row.target.missing, true);
+  assert.match(row.target.excerpt, /could not find/i);
+});
+
+test("an arbitrary cached user cannot override authoritative embedded author state", () => {
+  const [row] = buildModerationReportRows([{
+    id: "stale-author",
+    targetType: "post",
+    targetId: "p1",
+    reason: "abuse",
+    status: "open",
+    content: { type: "post", exists: true, excerpt: "target", author: { id: "a1", name: "Server Author", handle: "server-author", role: "moderator", isBanned: true, suspendedUntil: NOW + 10 } },
+  }], { users: [{ id: "a1", name: "Cached Author", handle: "cached-author", role: "fan", isBanned: false, suspendedUntil: null }] });
+
+  assert.equal(row.author.name, "Server Author");
+  assert.equal(row.author.handle, "server-author");
+  assert.equal(row.author.role, "moderator");
+  assert.equal(row.author.isBanned, true);
+  assert.equal(row.author.suspendedUntil, NOW + 10);
+  assert.equal(moderationMemberStatus(row.author, NOW), "banned");
+});
+
+test("a completed member mutation explicitly advances embedded queue context", () => {
+  const current = {
+    reports: [{
+      id: "r1",
+      reporter: { id: "reporter", isBanned: false },
+      content: { author: { id: "author", isBanned: false, suspendedUntil: null } },
+    }],
+    recentActions: [{ id: "a1", actor: { id: "author", role: "moderator" } }],
+  };
+  const next = patchModerationMemberContext(current, "author", { isBanned: true });
+  assert.equal(next.reports[0].content.author.isBanned, true);
+  assert.equal(next.reports[0].reporter.isBanned, false);
+  assert.equal(next.recentActions[0].actor.isBanned, true);
+  assert.equal(current.reports[0].content.author.isBanned, false, "the server snapshot stays immutable");
+});
+
+test("report filters search resolved context and preserve missing-target warnings", () => {
+  const rows = buildModerationReportRows([
+    { id: "r1", targetType: "post", targetId: "gone", reason: "spam", status: "open" },
+    { id: "r2", targetType: "user", targetId: "u1", reason: "impersonation", status: "open" },
+    { id: "closed", targetType: "post", targetId: "p2", status: "dismissed" },
+  ], { users: [{ id: "u1", name: "Fake Artist", handle: "fake" }] });
+
+  assert.deepEqual(filterModerationReports(rows, { targetType: "user" }).map((row) => row.id), ["r2"]);
+  assert.deepEqual(filterModerationReports(rows, { query: "fake artist" }).map((row) => row.id), ["r2"]);
+  assert.deepEqual(summarizeModerationReports(rows), {
+    total: 2,
+    missingContext: 1,
+    byType: { post: 1, user: 1 },
+  });
+});
+
+test("member filters put restricted accounts first without mutating input", () => {
+  const members = [
+    { id: "active", name: "Active Fan", handle: "active", role: "fan" },
+    { id: "mod", name: "Mod", handle: "mod", role: "moderator" },
+    { id: "timed", name: "Timed Artist", handle: "timed", role: "artist", suspendedUntil: NOW + 10 },
+    { id: "banned", name: "Banned Fan", handle: "banned", role: "fan", isBanned: true, verified: true },
+  ];
+  const originalOrder = members.map((member) => member.id);
+
+  assert.deepEqual(filterModerationMembers(members, { status: "restricted", now: NOW }).map((member) => member.id), ["banned", "timed"]);
+  assert.deepEqual(filterModerationMembers(members, { role: "moderator", now: NOW }).map((member) => member.id), ["mod"]);
+  assert.deepEqual(filterModerationMembers(members, { query: "artist", now: NOW }).map((member) => member.id), ["timed"]);
+  assert.deepEqual(members.map((member) => member.id), originalOrder);
+
+  assert.deepEqual(summarizeModerationMembers(members, NOW), {
+    total: 4,
+    active: 2,
+    suspended: 1,
+    banned: 1,
+    restricted: 2,
+    verified: 1,
+    byRole: { fan: 2, moderator: 1, artist: 1 },
+  });
+});
+
+test("target labels and removal capability match the existing server actions", () => {
+  assert.equal(moderationTargetLabel("fan_message"), "Fan club message");
+  assert.equal(moderationTargetLabel("future_target"), "Future Target");
+  assert.equal(canRemoveReportTarget("post"), true);
+  assert.equal(canRemoveReportTarget("message"), false);
+  assert.equal(canRemoveReportTarget("user"), false);
+});
+
+test("song workflow accepts authoritative track content and legacy JSON reports", () => {
+  assert.deepEqual(trackReportDetails({
+    targetId: "song-key",
+    reason: "playback issue",
+    content: { type: "track", title: "No Role Modelz", artist: "J. Cole", category: "wrong_video", note: "live version", suggestedVideoId: "abcdefghijk" },
+  }), {
+    title: "No Role Modelz", artist: "J. Cole", category: "wrong_video", note: "live version", suggestedVideoId: "abcdefghijk",
+  });
+  assert.equal(trackReportDetails({ targetId: "legacy", reason: JSON.stringify({ title: "Legacy song", category: "missing" }) }).title, "Legacy song");
+});
+
+test("moderation sources keep visible punctuation ASCII-safe", () => {
+  const paths = [
+    new URL("./moderationConsole.mjs", import.meta.url),
+    new URL("../components/moderation/ModerationConsole.jsx", import.meta.url),
+    new URL("../screens/AdminScreen.jsx", import.meta.url),
+  ];
+  for (const path of paths) {
+    const source = fs.readFileSync(path, "utf8");
+    assert.doesNotMatch(source, /[^\x00-\x7F]/u);
+  }
+});
+
+test("console source keeps bounded rendering, cursor reachability, and atomic action guards", () => {
+  const consoleSource = fs.readFileSync(new URL("../components/moderation/ModerationConsole.jsx", import.meta.url), "utf8");
+  const adminSource = fs.readFileSync(new URL("../screens/AdminScreen.jsx", import.meta.url), "utf8");
+
+  assert.match(consoleSource, /const REPORT_PAGE_SIZE = 30/);
+  assert.match(consoleSource, /const MEMBER_PAGE_SIZE = 40/);
+  assert.match(consoleSource, /loadMoreModerationConsole/);
+  assert.match(consoleSource, /loadMoreAdminMembersStrict/);
+  assert.match(consoleSource, /actionInFlight\.current/);
+  assert.match(consoleSource, /new AbortController\(\)/);
+  assert.match(consoleSource, /accessibilityRole="search"/);
+  assert.match(consoleSource, /minHeight: 44/);
+  assert.match(adminSource, /adminMemberDirectory=\{adminMemberDirectory\}/);
+});

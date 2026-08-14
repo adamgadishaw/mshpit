@@ -3,7 +3,7 @@ import test from "node:test";
 
 import {
   classifyStoredGenre, displayGenre, genreClaim, isCrawlLabel,
-  isUnverifiedGenre, mergeGenre, resolveGenre,
+  isUnverifiedGenre, mergeGenre, providerGenreFields, resolveGenre,
   storedClaims, upsertClaim, withoutSource,
 } from "./genre.mjs";
 
@@ -111,6 +111,34 @@ test("provider evidence overtakes a crawl bucket, which is what enrichment was f
   // A later run where the provider returns nothing must not undo that.
   claims = upsertClaim(claims, genreClaim(null, "provider"));
   assert.equal(displayGenre(resolveGenre(claims)), "pop");
+});
+
+test("an explicitly empty claim list is authoritative over a stale typed column", () => {
+  assert.deepEqual(storedClaims({ genreClaims: [] }, "r&b"), []);
+  assert.equal(displayGenre(resolveGenre(storedClaims({ genreClaims: [] }, "r&b"))), null);
+});
+
+test("legacy crawler genreHint is retained only as a non-displayable hint", () => {
+  const claims = storedClaims({ genreHint: "Hardcore" }, null);
+  assert.equal(claims.length, 1);
+  assert.equal(claims[0].source, "tag_hint");
+  assert.equal(claims[0].value, "Hardcore");
+  assert.equal(displayGenre(resolveGenre(claims)), null);
+  assert.equal(storedClaims({ genreHint: "Hardcore" }, "Metal")[0]?.value, "Hardcore",
+    "the structured crawler hint is newer than a stale legacy hint column");
+});
+
+test("the centralized provider writer records exact labels without displacing staff", () => {
+  const fromHint = providerGenreFields({ genreHint: "Metal" }, null, "Pop", 200);
+  assert.equal(fromHint.genre, "Pop");
+  assert.equal(fromHint.genreClaims.find((claim) => claim.source === "provider")?.value, "Pop");
+  assert.equal(displayGenre(resolveGenre(fromHint.genreClaims)), "Pop");
+
+  const data = { genreClaims: [genreClaim("r&b", "staff", 100)] };
+  const underStaff = providerGenreFields(data, "r&b", "Pop", 300);
+  assert.equal(underStaff.genre, "r&b");
+  assert.equal(underStaff.genreClaims.find((claim) => claim.source === "provider")?.value, "Pop");
+  assert.equal(resolveGenre(underStaff.genreClaims)?.source, "staff");
 });
 
 test("withdrawing a staff correction falls back to evidence, not to nothing", () => {

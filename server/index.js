@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { db, q, publicUser } from "./db.js";
 import { routes } from "./api.js";
 import { ApiError, errorEnvelope } from "./errors.js";
+import { assertExpectedAccount } from "./identityBinding.js";
 import { maybeAlert, pruneErrors, recordError } from "./errorLog.js";
 import { injectHead, robotsTxt, sitemapXml } from "./seo.js";
 import { getSession, sweepExpiredSessions, sessionCookie, clearCookie, parseCookies, COOKIE, hashPassword, rateLimit } from "./auth.js";
@@ -269,7 +270,7 @@ const server = createServer(async (req, res) => {
   const cors = !PROD && origin && DEV_ORIGINS.has(origin)
     ? { "Access-Control-Allow-Origin": origin, "Access-Control-Allow-Credentials": "true",
         "Access-Control-Allow-Methods": "GET,POST,PATCH,DELETE,OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type, X-Request-Id", "Access-Control-Expose-Headers": "X-Request-Id" }
+        "Access-Control-Allow-Headers": "Content-Type, X-Request-Id, X-Pit-Expected-Account", "Access-Control-Expose-Headers": "X-Request-Id" }
     : {};
   if (req.method === "OPTIONS") return send(res, 204, "", cors);
 
@@ -304,6 +305,9 @@ const server = createServer(async (req, res) => {
       const token = parseCookies(req.headers.cookie)[COOKIE];
       const sess = getSession(token);
       const user = sess ? q.userById.get(sess.user_id) : null;
+      const expectedAccountHeader = req.headers["x-pit-expected-account"];
+      const expectedAccount = Array.isArray(expectedAccountHeader) ? expectedAccountHeader[0] : expectedAccountHeader;
+      assertExpectedAccount(expectedAccount, user);
 
       const setCookies = [];
       const responseHeaders = {};

@@ -5,43 +5,54 @@
 // Dismissal is per-session on purpose: it should come back next visit, but
 // nagging someone who just closed it within the same session is how a prompt
 // gets ignored permanently.
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { View, Text, StyleSheet, Pressable, Platform } from "react-native";
 import { colors, radius, space } from "../theme";
-import { api } from "../lib/api";
+import { useStore } from "../store";
 import Icon from "./Icon";
 
-export default function VerifyEmailBanner({ email }) {
+export default function VerifyEmailBanner({ email, topOffset }) {
+  const { resendEmailVerification } = useStore();
   const [state, setState] = useState("idle");
+  const requestRef = useRef(null);
+  useEffect(() => () => requestRef.current?.abort(), []);
   if (state === "dismissed") return null;
 
   const resend = async () => {
+    if (state === "sending") return;
+    requestRef.current?.abort();
+    const controller = new AbortController();
+    requestRef.current = controller;
     setState("sending");
     try {
-      const r = await api("/api/verify-email/resend", { method: "POST", body: {}, context: "Resending the confirmation email" });
-      setState(r?.sent ? "sent" : "unavailable");
+      const result = await resendEmailVerification({ signal: controller.signal });
+      if (!controller.signal.aborted) setState(result?.state || "unavailable");
     } catch {
-      setState("unavailable");
+      if (!controller.signal.aborted) setState("unavailable");
+    } finally {
+      if (requestRef.current === controller) requestRef.current = null;
     }
   };
 
   const copy = {
     idle: email ? `Confirm your email (${email}) so we can reach you about your account.` : "Confirm your email so we can reach you about your account.",
-    sending: "Sending…",
-    sent: "Sent. Check your inbox, and your spam folder.",
+    sending: "Requesting...",
+    sent: "Requested. Check your inbox and spam folder.",
+    recent: "A confirmation was recently requested. Check your inbox and spam folder.",
+    confirmed: "Your email is already confirmed. Refreshing your account status...",
     unavailable: "Couldn't send that right now. Try again in a bit.",
   }[state];
 
   return (
-    <View style={styles.wrap} accessibilityRole="alert">
+    <View style={[styles.wrap, Number.isFinite(topOffset) && { top: topOffset }]} accessibilityRole="alert">
       <Icon name="mail" size={15} color={colors.gold} />
       <Text style={styles.txt} numberOfLines={2}>{copy}</Text>
-      {state === "idle" && (
-        <Pressable style={styles.action} onPress={resend} accessibilityLabel="Resend the confirmation email">
-          <Text style={styles.actionTxt}>Resend</Text>
+      {(state === "idle" || state === "unavailable") && (
+        <Pressable style={styles.action} hitSlop={4} onPress={resend} accessibilityRole="button" accessibilityLabel={state === "idle" ? "Resend the confirmation email" : "Try resending the confirmation email"}>
+          <Text style={styles.actionTxt}>{state === "idle" ? "Resend" : "Try again"}</Text>
         </Pressable>
       )}
-      <Pressable style={styles.close} onPress={() => setState("dismissed")} accessibilityLabel="Dismiss">
+      <Pressable style={styles.close} hitSlop={4} onPress={() => setState("dismissed")} accessibilityRole="button" accessibilityLabel="Dismiss email confirmation reminder">
         <Icon name="x" size={14} color={colors.textDim} />
       </Pressable>
     </View>
@@ -69,7 +80,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: space(3),
   },
   txt: { flex: 1, color: colors.text, fontSize: 12, lineHeight: 17 },
-  action: { paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999, borderWidth: 1, borderColor: colors.gold },
+  action: { minHeight: 36, justifyContent: "center", paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999, borderWidth: 1, borderColor: colors.gold },
   actionTxt: { color: colors.gold, fontSize: 11, fontWeight: "700" },
-  close: { padding: 4 },
+  close: { width: 36, height: 36, alignItems: "center", justifyContent: "center" },
 });

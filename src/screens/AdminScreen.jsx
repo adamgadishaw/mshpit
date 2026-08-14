@@ -1,42 +1,116 @@
 import { useState, useEffect, useMemo, useRef } from "react";
-import { Linking, View, Text, StyleSheet, ScrollView, Pressable, TextInput } from "react-native";
+import { ActivityIndicator, Alert, Linking, View, Text, StyleSheet, ScrollView, Pressable, TextInput } from "react-native";
 import { colors, mono, radius, space } from "../theme";
 import { useStore, isStaff, isMod } from "../store";
 import { api } from "../lib/api";
 import Icon from "../components/Icon";
 import Avatar from "../components/Avatar";
 import SheetHeader from "../components/SheetHeader";
-import Badge from "../components/Badge";
 import EmailConsole from "../components/EmailConsole";
 import BadgeConsole from "../components/BadgeConsole";
+import ModerationConsole from "../components/moderation/ModerationConsole";
+import { normalizeAdminMemberQuery, staffActionStillOwned, trackReportDetails } from "../domain/moderationConsole.mjs";
+import { staffScopeFor } from "../domain/staffReadCoordinator.mjs";
 
-// Audience & ads: the activity data we collect (see Privacy policy) surfaced for
-// the operator, top artists/venues/searches are the ad-interest signals you'd
-// target campaigns against, plus raw volume and a live activity tail.
-function AdInsights({ users = [] }) {
-  const [data, setData] = useState(null);
-  const [err, setErr] = useState(false);
+// Privacy-bounded first-party product analytics for operator diagnosis. Public
+// content trends are kept separate from consented raw interaction counters.
+function AdInsights({ adminMembers = [], adminMemberDirectory = {}, loadAdminMembersStrict, session }) {
+  const sessionScope = staffScopeFor(session);
+  const [analyticsState, setAnalyticsState] = useState({ scope: null, data: null, error: "" });
   const [memberQuery, setMemberQuery] = useState("");
-  const [memberData, setMemberData] = useState(null);
+  const [memberSearchState, setMemberSearchState] = useState({ scope: null, query: "", status: "idle", error: "" });
+  const [memberDataState, setMemberDataState] = useState({ scope: null, data: null, error: "" });
   const [memberLoading, setMemberLoading] = useState(false);
-  useEffect(() => { api("/api/admin/analytics").then(setData).catch(() => setErr(true)); }, []);
+  const memberSearchController = useRef(null);
+  const memberInspectController = useRef(null);
+  const memberLoaderRef = useRef(loadAdminMembersStrict);
+  memberLoaderRef.current = loadAdminMembersStrict;
+  const normalizedMemberQuery = normalizeAdminMemberQuery(memberQuery);
 
-  if (err) return <Text style={styles.empty}>Audience data needs the backend running.</Text>;
-  if (!data) return <Text style={styles.empty}>Loading audience data…</Text>;
+  useEffect(() => {
+    if (!sessionScope) return undefined;
+    const controller = new AbortController();
+    setAnalyticsState({ scope: sessionScope, data: null, error: "" });
+    api("/api/admin/analytics", { signal: controller.signal, silent: true, context: "Loading audience analytics" })
+      .then((data) => { if (!controller.signal.aborted) setAnalyticsState({ scope: sessionScope, data, error: "" }); })
+      .catch((error) => { if (!controller.signal.aborted && error?.name !== "AbortError") setAnalyticsState({ scope: sessionScope, data: null, error: error?.message || "Audience data could not be loaded." }); });
+    return () => controller.abort();
+  }, [sessionScope]);
 
-  const t = data.totals || {};
-  const memberMatches = memberQuery.trim().length < 2 ? [] : users.filter((user) => `${user.name} ${user.handle}`.toLowerCase().includes(memberQuery.trim().toLowerCase())).slice(0, 6);
+  useEffect(() => {
+    memberSearchController.current?.abort();
+    if (!sessionScope || normalizedMemberQuery.length < 2) {
+      setMemberSearchState({ scope: sessionScope, query: normalizedMemberQuery, status: "idle", error: "" });
+      return undefined;
+    }
+    const controller = new AbortController();
+    memberSearchController.current = controller;
+    setMemberSearchState({ scope: sessionScope, query: normalizedMemberQuery, status: "pending", error: "" });
+    const timer = setTimeout(async () => {
+      setMemberSearchState({ scope: sessionScope, query: normalizedMemberQuery, status: "loading", error: "" });
+      try {
+        await memberLoaderRef.current({ signal: controller.signal, query: normalizedMemberQuery });
+        if (!controller.signal.aborted && memberSearchController.current === controller) {
+          setMemberSearchState({ scope: sessionScope, query: normalizedMemberQuery, status: "ready", error: "" });
+        }
+      } catch (error) {
+        if (!controller.signal.aborted && error?.name !== "AbortError" && memberSearchController.current === controller) {
+          setMemberSearchState({ scope: sessionScope, query: normalizedMemberQuery, status: "error", error: error?.message || "Member search could not be completed." });
+        }
+      }
+    }, 300);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+      if (memberSearchController.current === controller) memberSearchController.current = null;
+    };
+  }, [normalizedMemberQuery, sessionScope]);
+
+  useEffect(() => () => memberInspectController.current?.abort(), [sessionScope]);
+
+  const analyticsCurrent = analyticsState.scope === sessionScope;
+  const data = analyticsCurrent ? analyticsState.data : null;
+  const err = analyticsCurrent ? analyticsState.error : "";
+  const searchCurrent = memberSearchState.scope === sessionScope && memberSearchState.query === normalizedMemberQuery;
+  const directoryCurrent = searchCurrent
+    && memberSearchState.status === "ready"
+    && (adminMemberDirectory.query || "") === normalizedMemberQuery
+    && !(adminMemberDirectory.role || adminMemberDirectory.status);
+  const memberMatches = directoryCurrent ? adminMembers.slice(0, 6) : [];
+  const matchingMemberTotal = directoryCurrent && Number.isFinite(Number(adminMemberDirectory.matchingTotal))
+    ? Number(adminMemberDirectory.matchingTotal)
+    : memberMatches.length;
+  const memberData = memberDataState.scope === sessionScope ? memberDataState.data : null;
+  const memberInspectError = memberDataState.scope === sessionScope ? memberDataState.error : "";
   const inspectMember = async (user) => {
+    memberInspectController.current?.abort();
+    const controller = new AbortController();
+    memberInspectController.current = controller;
     setMemberQuery(`@${user.handle}`);
     setMemberLoading(true);
-    try { setMemberData(await api(`/api/admin/analytics/users/${user.id}`)); }
-    catch { setMemberData(null); }
-    setMemberLoading(false);
+    setMemberDataState({ scope: sessionScope, data: null, error: "" });
+    try {
+      const memberData = await api(`/api/admin/analytics/users/${user.id}`, { signal: controller.signal, silent: true, context: "Loading member activity" });
+      if (!controller.signal.aborted && memberInspectController.current === controller) setMemberDataState({ scope: sessionScope, data: memberData, error: "" });
+    } catch (error) {
+      if (!controller.signal.aborted && error?.name !== "AbortError" && memberInspectController.current === controller) setMemberDataState({ scope: sessionScope, data: null, error: error?.message || "Member activity could not be loaded." });
+    } finally {
+      if (memberInspectController.current === controller) {
+        memberInspectController.current = null;
+        setMemberLoading(false);
+      }
+    }
   };
+
+  if (err) return <Text selectable style={styles.empty}>{err}</Text>;
+  if (!data) return <Text style={styles.empty}>Loading audience data...</Text>;
+
+  const t = data.totals || {};
+  const oldestRaw = data.rawWindow?.oldestAt ? new Date(data.rawWindow.oldestAt).toLocaleString() : "none";
   const Stat = ({ n, label }) => (
     <View style={styles.stat}><Text style={styles.statN}>{n ?? 0}</Text><Text style={styles.statL}>{label}</Text></View>
   );
-  const List = ({ title, rows }) =>
+  const List = ({ title, rows, empty = null }) =>
     rows && rows.length ? (
       <View style={styles.insightCol}>
         <Text style={styles.insightH}>{title}</Text>
@@ -47,18 +121,24 @@ function AdInsights({ users = [] }) {
           </View>
         ))}
       </View>
+    ) : empty ? (
+      <View style={styles.insightCol}>
+        <Text style={styles.insightH}>{title}</Text>
+        <Text style={styles.analyticsPrivacy}>{empty}</Text>
+      </View>
     ) : null;
 
   return (
     <View>
       <View style={styles.statRow}>
         <Stat n={t.events} label="events" />
-        <Stat n={t.events24h} label="last 24h" />
-        <Stat n={t.activeUsers7d} label="active 7d" />
+        <Stat n={t.events24h} label="events in last 24h*" />
+        <Stat n={t.activeUsers7d} label="active in 7d window*" />
         <Stat n={t.newUsers7d} label="new 7d" />
         <Stat n={t.posts30d} label="posts 30d" />
       </View>
-      <Text style={styles.analyticsPrivacy}>Account-consented events only. Raw IP addresses are never retained; search trends require at least three occurrences and search text is never shown beside a member.</Text>
+      <Text style={styles.analyticsPrivacy}>Account-consented product events only. Raw IP addresses, typed searches, messages, reviews, and media URLs are never retained in analytics. Artist, venue, and genre panels below are aggregate public-post trends.</Text>
+      <Text style={styles.analyticsPrivacy}>* Raw-event metrics are bounded to {data.retentionDays || 30} days, {Number(data.rawEventLimit || 0).toLocaleString()} rows globally, and {Number(data.rawEventLimitPerAccount || 0).toLocaleString()} per account; under heavy traffic the actual window is shorter. Current oldest retained event: {oldestRaw}. Signups and posts remain authoritative domain totals.</Text>
       <Text style={styles.insightH}>30-DAY GROWTH</Text>
       <View style={styles.growthCard}>
         {(data.growth || []).slice(-14).map((day) => {
@@ -75,13 +155,13 @@ function AdInsights({ users = [] }) {
             </View>
           );
         })}
-        <Text style={styles.growthLegend}>active / signups / posts</Text>
+        <Text style={styles.growthLegend}>active events in retained raw window / signups / posts</Text>
       </View>
       <View style={styles.insightGrid}>
         <List title="TOP ARTISTS" rows={data.topArtists} />
         <List title="TOP VENUES" rows={data.topVenues} />
         <List title="TOP GENRES" rows={data.topGenres} />
-        <List title="TOP SEARCHES" rows={data.topSearches} />
+        <List title="SEARCH TEXT" rows={data.topSearches} empty="Not collected by product analytics" />
         <List title="POST KEYWORDS" rows={data.postKeywords} />
         <List title="EVENTS BY TYPE" rows={data.byName} />
       </View>
@@ -89,16 +169,22 @@ function AdInsights({ users = [] }) {
       <Text style={styles.analyticsPrivacy}>Use for support, abuse investigations, and product diagnosis. This view is restricted to administrators.</Text>
       <View style={styles.search}>
         <Icon name="search" size={16} color={colors.textDim} />
-        <TextInput style={styles.searchInput} value={memberQuery} onChangeText={(value) => { setMemberQuery(value); setMemberData(null); }} placeholder="Find a member by name or @handle" placeholderTextColor={colors.textFaint} autoCapitalize="none" />
+        <TextInput accessibilityRole="search" accessibilityLabel="Find a member for activity inspection" accessibilityHint="Searches the private staff directory by name, handle, or member ID" style={styles.searchInput} value={memberQuery} onChangeText={(value) => { memberInspectController.current?.abort(); setMemberLoading(false); setMemberQuery(value); setMemberDataState({ scope: sessionScope, data: null, error: "" }); }} placeholder="Find by name, @handle, or member ID" placeholderTextColor={colors.textFaint} autoCapitalize="none" autoCorrect={false} returnKeyType="search" />
       </View>
+      {normalizedMemberQuery.length < 2 ? <Text style={styles.analyticsPrivacy}>Enter at least two characters. Results come from the ephemeral staff directory and are not saved to the public profile cache.</Text> : null}
+      {searchCurrent && (memberSearchState.status === "pending" || memberSearchState.status === "loading") ? <View accessibilityLiveRegion="polite" style={styles.trackQueueStatus}><ActivityIndicator color={colors.amber} /><Text style={styles.catHint}>Searching the staff directory...</Text></View> : null}
+      {searchCurrent && memberSearchState.error ? <Text accessibilityLiveRegion="assertive" selectable style={styles.growErr}>{memberSearchState.error}</Text> : null}
       {memberMatches.map((user) => (
-        <Pressable key={user.id} style={styles.analyticsMemberRow} onPress={() => inspectMember(user)}>
+        <Pressable key={user.id} accessibilityRole="button" accessibilityLabel={`Inspect activity for ${user.name}, @${user.handle}`} style={({ pressed }) => [styles.analyticsMemberRow, pressed && styles.pressed]} onPress={() => inspectMember(user)}>
           <Avatar user={user} size={34} />
           <View style={{ flex: 1 }}><Text style={styles.memberName}>{user.name}</Text><Text style={styles.memberSub}>@{user.handle}</Text></View>
           <Icon name="chevron-right" size={16} color={colors.textFaint} />
         </Pressable>
       ))}
+      {directoryCurrent && matchingMemberTotal > memberMatches.length ? <Text style={styles.analyticsPrivacy}>Showing the first {memberMatches.length} of {matchingMemberTotal.toLocaleString()} matches. Refine the search to reach a specific account.</Text> : null}
+      {directoryCurrent && !memberMatches.length ? <Text style={styles.empty}>No members matched this server search.</Text> : null}
       {memberLoading && <Text style={styles.empty}>Loading member activity...</Text>}
+      {memberInspectError ? <Text accessibilityLiveRegion="assertive" selectable style={styles.growErr}>{memberInspectError}</Text> : null}
       {memberData && (
         <View style={styles.memberAnalyticsCard}>
           <Text style={styles.artist}>{memberData.user?.name} <Text style={styles.sub}>@{memberData.user?.handle}</Text></Text>
@@ -110,166 +196,34 @@ function AdInsights({ users = [] }) {
             <Stat n={memberData.totals?.messagesSent} label="DMs sent" />
           </View>
           <List title="ACTIVITY BY TYPE" rows={memberData.byName} />
-          {(memberData.recent || []).slice(0, 12).map((event, index) => <Text key={`${event.at}:${index}`} style={styles.activityLine}>{new Date(event.at).toLocaleString()} · {event.name}</Text>)}
         </View>
-      )}
-      {data.recent && data.recent.length > 0 && (
-        <>
-          <Text style={styles.insightH}>LIVE ACTIVITY</Text>
-          {data.recent.slice(0, 12).map((e, i) => (
-            <Text key={i} style={styles.activityLine} numberOfLines={1}>
-              <Text style={styles.activityWho}>@{e.handle}</Text> {e.name}
-              {e.props && Object.keys(e.props).length ? ` · ${Object.values(e.props).join(" ")}` : ""}
-            </Text>
-          ))}
-        </>
       )}
     </View>
   );
 }
 
-const ROLES = ["fan", "artist", "moderator", "admin"];
 const roleColor = (r) => (r === "admin" ? colors.magenta : r === "moderator" ? colors.good : r === "artist" ? colors.amber : colors.textDim);
 
-// A single member row with inline Discord-style moderation: role, timeout, ban.
-function MemberRow({ u, self, status, canRole, canBan, onRole, onTimeout, onLift, onBan, onUnban, onVerify, onVerifyEmail, onSponsor, grantableBadges = [], onToggleBadge }) {
-  const banned = status === "banned";
-  const timed = status === "suspended";
-  return (
-    <View style={[styles.member, banned && styles.removedCard]}>
-      <View style={styles.memberTop}>
-        <Avatar user={u} size={38} />
-        <View style={{ flex: 1 }}>
-          <View style={styles.memberNameRow}>
-            <Text style={styles.memberName} numberOfLines={1}>{u.name}</Text>
-            {u.verified && <Badge type="verified" size={16} />}
-            <View style={[styles.roleTag, { borderColor: roleColor(u.role) }]}>
-              <Text style={[styles.roleTagTxt, { color: roleColor(u.role) }]}>{u.role}</Text>
-            </View>
-            {self && <Text style={styles.youTag}>you</Text>}
-          </View>
-          <Text style={styles.memberSub} numberOfLines={1}>
-            @{u.handle}{u.home?.city ? ` · ${u.home.city}` : ""}
-            {banned ? " · BANNED" : timed ? " · TIMED OUT" : ""}
-          </Text>
-        </View>
-      </View>
-
-      {/* role pills, admins only (Discord-style role administration) */}
-      {canRole && (
-        <View style={styles.pillRow}>
-          <Text style={styles.pillLabel}>Role</Text>
-          {ROLES.map((r) => (
-            <Pressable
-              key={r}
-              style={[styles.rolePill, u.role === r && styles.rolePillOn, self && styles.pillDisabled]}
-              onPress={() => !self && onRole(r)}
-              disabled={self}
-            >
-              <Text style={[styles.rolePillTxt, u.role === r && { color: roleColor(r) }]}>{r}</Text>
-            </Pressable>
-          ))}
-        </View>
-      )}
-
-      {/* verification, admin-granted blue check, independent of role */}
-      {canRole && (
-        <View style={styles.pillRow}>
-          <Text style={styles.pillLabel}>Verify</Text>
-          <Pressable
-            style={[styles.verifyBtn, u.verified && styles.verifyBtnOn]}
-            onPress={() => onVerify(!u.verified)}
-          >
-            <Badge type="verified" size={15} tooltip={false} />
-            <Text style={[styles.verifyTxt, u.verified && styles.verifyTxtOn]}>{u.verified ? "Verified, tap to remove" : "Grant verification"}</Text>
-          </Pressable>
-        </View>
-      )}
-
-      {/* Email confirmation. PRIVATE account state, and deliberately not the
-          blue check above: confirming an address grants no public badge. Use it
-          when someone's mail bounces or you know who they are. */}
-      {canRole && (
-        <View style={styles.pillRow}>
-          <Text style={styles.pillLabel}>Email</Text>
-          {u.emailVerified ? (
-            <Text style={styles.emailVerifiedTxt}>Confirmed</Text>
-          ) : (
-            <Pressable style={styles.verifyBtn} onPress={onVerifyEmail}>
-              <Icon name="mail" size={14} color={colors.textDim} />
-              <Text style={styles.verifyTxt}>Not confirmed, mark it confirmed</Text>
-            </Pressable>
-          )}
-        </View>
-      )}
-
-      {/* Admin-created badges: tiers and event marks. Retired badges are not
-          offered, but any already granted still show so they can be revoked. */}
-      {canRole && (grantableBadges.length > 0 || (u.badges || []).length > 0) && (
-        <View style={styles.pillRow}>
-          <Text style={styles.pillLabel}>Badges</Text>
-          <View style={styles.badgeGrantRow}>
-            {grantableBadges.map((b) => {
-              const held = (u.badges || []).some((x) => x.slug === b.slug);
-              return (
-                <Pressable key={b.slug} style={[styles.badgeChip, held && styles.badgeChipOn]}
-                  onPress={() => onToggleBadge(b.slug, held)}>
-                  <Badge badge={b} size={14} tooltip={false} />
-                  <Text style={[styles.badgeChipTxt, held && styles.badgeChipTxtOn]}>{b.label}</Text>
-                </Pressable>
-              );
-            })}
-          </View>
-        </View>
-      )}
-
-      {/* sponsor / partner mark, admin-granted */}
-      {canRole && (
-        <View style={styles.pillRow}>
-          <Text style={styles.pillLabel}>Sponsor</Text>
-          <Pressable
-            style={[styles.verifyBtn, u.sponsor && styles.verifyBtnOn]}
-            onPress={() => onSponsor(!u.sponsor)}
-          >
-            <Badge type="sponsor" size={15} tooltip={false} />
-            <Text style={[styles.verifyTxt, u.sponsor && styles.verifyTxtOn]}>{u.sponsor ? "Sponsor, tap to remove" : "Grant sponsor"}</Text>
-          </Pressable>
-        </View>
-      )}
-
-      {/* moderation actions */}
-      {!self && (
-        <View style={styles.pillRow}>
-          <Text style={styles.pillLabel}>Mod</Text>
-          {!banned && !timed && (
-            <>
-              <Pressable style={[styles.modBtn, styles.warn]} onPress={() => onTimeout(1)}><Icon name="clock" size={13} color={colors.gold} /><Text style={styles.warnTxt}>1d</Text></Pressable>
-              <Pressable style={[styles.modBtn, styles.warn]} onPress={() => onTimeout(7)}><Icon name="clock" size={13} color={colors.gold} /><Text style={styles.warnTxt}>7d</Text></Pressable>
-            </>
-          )}
-          {timed && (
-            <Pressable style={[styles.modBtn, styles.ok]} onPress={onLift}><Icon name="check" size={13} color={colors.good} /><Text style={styles.okTxt}>Lift timeout</Text></Pressable>
-          )}
-          {canBan && (banned ? (
-            <Pressable style={[styles.modBtn, styles.ok]} onPress={onUnban}><Icon name="check" size={13} color={colors.good} /><Text style={styles.okTxt}>Unban</Text></Pressable>
-          ) : (
-            <Pressable style={[styles.modBtn, styles.danger]} onPress={onBan}><Icon name="x" size={13} color={colors.danger} /><Text style={styles.dangerTxt}>Ban</Text></Pressable>
-          ))}
-        </View>
-      )}
-    </View>
-  );
-}
+const confirmStaffAction = (title, detail) => new Promise((resolve) => {
+  if (typeof window !== "undefined" && typeof window.confirm === "function") {
+    resolve(window.confirm(`${title}\n\n${detail}`));
+    return;
+  }
+  Alert.alert(title, detail, [
+    { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
+    { text: "Confirm", style: "destructive", onPress: () => resolve(true) },
+  ], { cancelable: true, onDismiss: () => resolve(false) });
+});
 
 export default function AdminScreen({ onClose }) {
   const {
-    requests, users, feed, removedIds, reports, session,
+    requests, users, adminMembers, adminMemberDirectory, feed, removedIds, reports, moderationConsole, session,
     comments, fanClubMsgs, lounge,
-    approveArtist, rejectArtist, removeContent, restoreContent, actionReport, dismissReport,
-    suspendUser, liftSuspension, banUser, unbanUser, setUserRole, setVerified, markEmailVerified, setSponsor, accountStatus,
+    approveArtist, rejectArtist, removeContent, restoreContent, dismissReport,
+    suspendUser, liftSuspension, banUser, unbanUser, setUserRole, setVerified, markEmailVerified, setSponsor,
     removeComment, removeFanClubMessage, removeLoungeMessage,
-    loadAdminMembers, adminStats, adminArtistQueue, enrichArtists, purgeArtist, startCatalogSeed, catalogSeedStatus, stopCatalogSeed, catalogSeedRuns,
-    adminSetTrackVideo, trackOverridesList, removeTrackOverride, loadModerationQueue,
+    loadAdminMembersStrict, loadMoreAdminMembersStrict, adminStats, adminArtistQueue, enrichArtists, purgeArtist, startCatalogSeed, catalogSeedStatus, stopCatalogSeed, catalogSeedRuns,
+    adminSetTrackVideo, trackOverridesList, removeTrackOverride, loadModerationConsole, loadMoreModerationConsole, moderateReport,
   } = useStore();
 
   const iAmAdmin = isStaff(session?.role); // full access; mods get a subset
@@ -283,22 +237,77 @@ export default function AdminScreen({ onClose }) {
   const [errorLog, setErrorLog] = useState(null);
   // Draft "correct link" per wrong-version track report.
   const [trackFix, setTrackFix] = useState({});
+  const [trackQueueState, setTrackQueueState] = useState({ loading: false, error: "" });
+  const [trackActionState, setTrackActionState] = useState({ key: null, tone: "", message: "" });
+  const trackActionInFlight = useRef(null);
+  const activeStaffSession = useRef(session);
+  activeStaffSession.current = session;
+  useEffect(() => {
+    trackActionInFlight.current = null;
+    setTrackActionState({ key: null, tone: "", message: "" });
+  }, [session?.id, session?.role]);
   // Current song pins, live from the server (never trusts a login-time cache).
   const [pins, setPins] = useState([]);
   const refreshPins = () => trackOverridesList().then(setPins);
   // The moderation queue is server-authoritative: re-pull it whenever a
   // moderation tab opens so reports survive refreshes and other devices' work.
   useEffect(() => {
-    if (tab === "reports" || tab === "songs") loadModerationQueue();
-    if (tab === "songs") refreshPins();
+    if (tab !== "songs") return undefined;
+    let live = true;
+    setTrackQueueState({ loading: true, error: "" });
+    loadModerationConsole()
+      .then(() => { if (live) setTrackQueueState({ loading: false, error: "" }); })
+      .catch((error) => { if (live) setTrackQueueState({ loading: false, error: error?.message || "Song reports could not be refreshed." }); });
+    refreshPins();
+    return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
-  const [q, setQ] = useState("");
-
-  // Pull EVERY signup (incl. banned) from the server so the console shows real
-  // members, not just the seed + whoever happens to be cached locally.
-  useEffect(() => { loadAdminMembers(); }, []);
-
+  const loadOlderTrackReports = async () => {
+    if (trackQueueState.loading || !moderationConsole.nextCursor) return;
+    setTrackQueueState({ loading: true, error: "" });
+    try {
+      await loadMoreModerationConsole();
+      setTrackQueueState({ loading: false, error: "" });
+    } catch (error) {
+      setTrackQueueState({ loading: false, error: error?.message || "Older song reports could not be loaded." });
+    }
+  };
+  const runTrackAction = async ({ key, title, detail, success, run }) => {
+    if (trackActionInFlight.current) return false;
+    const initiatingScope = staffScopeFor(activeStaffSession.current);
+    if (!initiatingScope) {
+      setTrackActionState({ key: null, tone: "error", message: "Your staff session is no longer active. Sign in again before changing song moderation state." });
+      return false;
+    }
+    const operation = { key, initiatingScope };
+    trackActionInFlight.current = operation;
+    setTrackActionState({ key, tone: "", message: "" });
+    const approved = await confirmStaffAction(title, detail);
+    if (trackActionInFlight.current !== operation) return false;
+    if (!approved) {
+      trackActionInFlight.current = null;
+      setTrackActionState({ key: null, tone: "", message: "" });
+      return false;
+    }
+    if (!staffActionStillOwned(initiatingScope, activeStaffSession.current)) {
+      trackActionInFlight.current = null;
+      setTrackActionState({ key: null, tone: "error", message: "Your staff session changed before this action started. No song moderation write was attempted." });
+      return false;
+    }
+    try {
+      const result = await run({ initiatingScope });
+      if (trackActionInFlight.current !== operation) return false;
+      if (result === false || result?.ok === false) throw result?.error || new Error("The server did not apply this song moderation change.");
+      setTrackActionState({ key: null, tone: result?.partial ? "warning" : "success", message: result?.message || success });
+      return true;
+    } catch (error) {
+      if (trackActionInFlight.current !== operation) return false;
+      setTrackActionState({ key: null, tone: "error", message: error?.message || "That song moderation change was not applied." });
+      return false;
+    } finally {
+      if (trackActionInFlight.current === operation) trackActionInFlight.current = null;
+    }
+  };
   // Catalog queue: thin artists + searched-but-not-found names, seed on demand.
   const [catalog, setCatalog] = useState({ thin: [], missing: [], thinTotal: 0 });
   const [seeding, setSeeding] = useState(false);
@@ -343,7 +352,8 @@ export default function AdminScreen({ onClose }) {
         method: "POST", body: { slug, revoke: held }, context: held ? "Removing a badge" : "Granting a badge",
       });
       setMemberBadges((prev) => ({ ...prev, [userId]: r.badges || [] }));
-    } catch {}
+      return true;
+    } catch { return false; }
   };
   useEffect(() => {
     if (tab !== "catalog" || !seedJob?.running) return;
@@ -373,19 +383,17 @@ export default function AdminScreen({ onClose }) {
   // Song reports get their own tab; content reports keep the classic queue.
   const trackReports = openReports.filter((r) => r.targetType === "track");
   const contentReports = openReports.filter((r) => r.targetType !== "track");
+  const serverOpenReportCount = Number(moderationConsole.summary?.open);
+  const openReportCount = Number.isFinite(serverOpenReportCount) ? Math.max(openReports.length, serverOpenReportCount) : openReports.length;
+  const serverTrackReportCount = Number(moderationConsole.summary?.byType?.track);
+  const trackReportCount = Number.isFinite(serverTrackReportCount) ? Math.max(trackReports.length, serverTrackReportCount) : trackReports.length;
+  const contentReportCount = Math.max(contentReports.length, openReportCount - trackReportCount);
+  const trackActionBusy = !!trackActionState.key;
   const userFor = (id) => users.find((u) => u.id === id);
-  const logFor = (id) => feed.find((l) => l.id === id);
-  const bannedCount = users.filter((u) => u.isBanned).length;
-
-  const query = q.trim().toLowerCase();
-  const members = useMemo(() => {
-    const list = query
-      ? users.filter((u) => u.name.toLowerCase().includes(query) || u.handle.toLowerCase().includes(query))
-      : users;
-    // Staff first, then flagged (banned/suspended), then everyone.
-    const rank = (u) => (u.role === "admin" ? 0 : u.isBanned || u.suspendedUntil ? 1 : u.role === "artist" ? 2 : 3);
-    return [...list].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
-  }, [users, query]);
+  const adminMemberTotal = Number.isFinite(adminStats?.total) ? adminStats.total : adminMembers.length;
+  const bannedCount = Number.isFinite(adminStats?.banned)
+    ? adminStats.banned
+    : adminMembers.filter((u) => u.isBanned).length;
 
   const allComments = useMemo(() => Object.entries(comments).flatMap(([logId, arr]) => arr.map((c) => ({ logId, ...c }))), [comments]);
   const allFanMsgs = useMemo(() => Object.entries(fanClubMsgs).flatMap(([artist, arr]) => arr.map((m) => ({ artist, ...m }))), [fanClubMsgs]);
@@ -407,8 +415,8 @@ export default function AdminScreen({ onClose }) {
   const TABS = [
     { key: "overview", label: "Overview", icon: "discover", admin: true },
     { key: "analytics", label: "Analytics", icon: "trophy", admin: true },
-    { key: "reports", label: "Reports", icon: "flag", badge: contentReports.length },
-    { key: "songs", label: "Songs", icon: "music", badge: trackReports.length || undefined },
+    { key: "reports", label: "Reports", icon: "flag", badge: contentReportCount || undefined },
+    { key: "songs", label: "Songs", icon: "music", badge: trackReportCount || undefined },
     { key: "members", label: "Members", icon: "you", badge: bannedCount || undefined },
     { key: "content", label: "Content", icon: "feed" },
     { key: "catalog", label: "Catalog", icon: "music", admin: true },
@@ -439,9 +447,16 @@ export default function AdminScreen({ onClose }) {
       </View>
 
       {/* tab bar, a clean segmented control (no more stretched ovals) */}
-      <View style={[styles.column, styles.tabbar]}>
+      <View accessibilityRole="tablist" accessibilityLabel="Moderation sections" style={[styles.column, styles.tabbar]}>
         {TABS.map((t) => (
-          <Pressable key={t.key} style={[styles.tab, tab === t.key && styles.tabOn]} onPress={() => setTab(t.key)}>
+          <Pressable
+            key={t.key}
+            accessibilityRole="tab"
+            accessibilityLabel={`${t.label}${t.badge ? `, ${t.badge} open` : ""}`}
+            accessibilityState={{ selected: tab === t.key }}
+            style={[styles.tab, tab === t.key && styles.tabOn]}
+            onPress={() => setTab(t.key)}
+          >
             <Icon name={t.icon} size={15} color={tab === t.key ? "#1A1206" : colors.textDim} />
             <Text style={[styles.tabTxt, tab === t.key && styles.tabTxtOn]}>{t.label}</Text>
             {t.badge ? <View style={styles.tabBadge}><Text style={styles.tabBadgeTxt}>{t.badge}</Text></View> : null}
@@ -449,14 +464,53 @@ export default function AdminScreen({ onClose }) {
         ))}
       </View>
 
-      <ScrollView contentContainerStyle={[styles.column, styles.content]} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        automaticallyAdjustKeyboardInsets
+        contentContainerStyle={[styles.column, styles.content]}
+        contentInsetAdjustmentBehavior="automatic"
+        keyboardDismissMode="on-drag"
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+      >
         {/* ---- OVERVIEW ---- */}
         {tab === "overview" && (
           <>
+            <ModerationConsole
+              mode="overview"
+              session={session}
+              isAdmin={iAmAdmin}
+              reports={reports}
+              moderationConsole={moderationConsole}
+              users={users}
+              adminMembers={adminMembers}
+              adminMemberDirectory={adminMemberDirectory}
+              feed={feed}
+              comments={comments}
+              fanClubMessages={fanClubMsgs}
+              loungeMessages={lounge}
+              adminStats={adminStats}
+              loadModerationConsole={loadModerationConsole}
+              loadMoreModerationConsole={loadMoreModerationConsole}
+              loadAdminMembersStrict={loadAdminMembersStrict}
+              loadMoreAdminMembersStrict={loadMoreAdminMembersStrict}
+              moderateReport={moderateReport}
+              suspendUser={suspendUser}
+              liftSuspension={liftSuspension}
+              banUser={banUser}
+              unbanUser={unbanUser}
+              setUserRole={setUserRole}
+              setVerified={setVerified}
+              markEmailVerified={markEmailVerified}
+              setSponsor={setSponsor}
+              toggleMemberBadge={toggleMemberBadge}
+              onOpenReports={() => setTab("reports")}
+              onOpenMembers={() => setTab("members")}
+              onOpenSongs={() => setTab("songs")}
+            />
             <View style={styles.statRow}>
-              <View style={styles.stat}><Text style={styles.statN}>{users.length}</Text><Text style={styles.statL}>members</Text></View>
+              <View style={styles.stat}><Text style={styles.statN}>{adminMemberTotal}</Text><Text style={styles.statL}>members</Text></View>
               <View style={styles.stat}><Text style={styles.statN}>{feed.length}</Text><Text style={styles.statL}>posts</Text></View>
-              <View style={styles.stat}><Text style={[styles.statN, openReports.length ? { color: colors.danger } : null]}>{openReports.length}</Text><Text style={styles.statL}>reports</Text></View>
+              <View style={styles.stat}><Text style={[styles.statN, openReportCount ? { color: colors.danger } : null]}>{openReportCount}</Text><Text style={styles.statL}>reports</Text></View>
               <View style={styles.stat}><Text style={[styles.statN, bannedCount ? { color: colors.danger } : null]}>{bannedCount}</Text><Text style={styles.statL}>banned</Text></View>
             </View>
 
@@ -485,7 +539,7 @@ export default function AdminScreen({ onClose }) {
                   </Text>
                   {configured && used != null && (
                     <Text style={styles.healthSub}>
-                      {used}{limit != null ? ` of ${limit}` : ""} searches used today{remaining != null ? ` · ${remaining} left` : ""}{yt.inFlight ? ` · ${yt.inFlight} in flight` : ""}
+                      {used}{limit != null ? ` of ${limit}` : ""} searches used today{remaining != null ? ` / ${remaining} left` : ""}{yt.inFlight ? ` / ${yt.inFlight} in flight` : ""}
                     </Text>
                   )}
                   {!configured && (
@@ -506,14 +560,14 @@ export default function AdminScreen({ onClose }) {
                     : "Nothing in the last 24 hours."}
                 </Text>
                 <Text style={styles.healthSub}>
-                  {errorLog.last7Days?.occurrences || 0} in 7 days ·{" "}
+                  {errorLog.last7Days?.occurrences || 0} in 7 days /{" "}
                   {errorLog.alerts?.enabled
                     ? `alerts to ${errorLog.alerts.to || "(no ADMIN_EMAIL)"}, at most one digest every ${errorLog.alerts.cooldownMinutes}m`
                     : "alerts are switched off (ERROR_ALERTS_ENABLED)"}
                 </Text>
                 {(errorLog.errors || []).slice(0, 8).map((e) => (
                   <Text key={e.fingerprint} style={styles.errRow} numberOfLines={1}>
-                    {e.count}× {e.level === "fatal" ? "FATAL" : e.status} {e.method} {e.route || "(no route)"} · {e.code}
+                    {e.count}x {e.level === "fatal" ? "FATAL" : e.status} {e.method} {e.route || "(no route)"} / {e.code}
                     {e.cause && e.cause !== "unclassified" ? ` (${e.cause})` : ""}
                   </Text>
                 ))}
@@ -529,58 +583,54 @@ export default function AdminScreen({ onClose }) {
         )}
 
         {/* ---- PRIVACY-BOUNDED PRODUCT ANALYTICS ---- */}
-        {tab === "analytics" && <AdInsights users={users} />}
+        {tab === "analytics" && <AdInsights adminMembers={adminMembers} adminMemberDirectory={adminMemberDirectory} loadAdminMembersStrict={loadAdminMembersStrict} session={session} />}
 
         {/* ---- REPORTS ---- */}
         {tab === "reports" && (
-          <>
-            <Text style={styles.policy}>Content is public on post; the community reports it and you act here. Removing hides it from everyone but staff.</Text>
-            {contentReports.length === 0 && <Text style={styles.empty}>No open reports.</Text>}
-            {contentReports.map((r) => {
-              const log = logFor(r.targetId);
-              const reporter = userFor(r.reporterId);
-              return (
-                <View key={r.id} style={styles.card}>
-                  <View style={styles.reasonRow}>
-                    <Icon name="flag" size={14} color={colors.danger} />
-                    <Text style={styles.reason}>{r.reason || "reported"}</Text>
-                  </View>
-                  <Text style={styles.artist}>{log ? `${log.artist}, by ${log.user?.name}` : "content removed"}</Text>
-                  <Text style={styles.sub}>reported by {reporter ? `@${reporter.handle}` : "a user"}</Text>
-                  <View style={styles.actions}>
-                    <Pressable style={[styles.btn, styles.remove]} onPress={() => actionReport(r.id)}>
-                      <Icon name="trash" size={15} color={colors.danger} /><Text style={styles.rejectTxt}>Remove content</Text>
-                    </Pressable>
-                    <Pressable style={[styles.btn, styles.reject]} onPress={() => dismissReport(r.id)}>
-                      <Icon name="check" size={15} color={colors.textDim} /><Text style={styles.dismissTxt}>Dismiss</Text>
-                    </Pressable>
-                  </View>
-                  {log?.userId && log.userId !== session?.id && (
-                    <View style={styles.actions}>
-                      <Pressable style={[styles.btn, styles.suspend]} onPress={() => { suspendUser(log.userId, 7); dismissReport(r.id); }}>
-                        <Icon name="clock" size={14} color={colors.gold} /><Text style={[styles.dismissTxt, { color: colors.gold }]}>Timeout 7d</Text>
-                      </Pressable>
-                      {iAmAdmin && <Pressable style={[styles.btn, styles.remove]} onPress={() => { banUser(log.userId); actionReport(r.id); }}>
-                        <Icon name="x" size={14} color={colors.danger} /><Text style={styles.rejectTxt}>Ban user</Text>
-                      </Pressable>}
-                    </View>
-                  )}
-                </View>
-              );
-            })}
-          </>
+          <ModerationConsole
+            mode="reports"
+            session={session}
+            isAdmin={iAmAdmin}
+            reports={reports}
+            moderationConsole={moderationConsole}
+            users={users}
+            adminMembers={adminMembers}
+            adminMemberDirectory={adminMemberDirectory}
+            feed={feed}
+            comments={comments}
+            fanClubMessages={fanClubMsgs}
+            loungeMessages={lounge}
+            adminStats={adminStats}
+            loadModerationConsole={loadModerationConsole}
+            loadMoreModerationConsole={loadMoreModerationConsole}
+            loadAdminMembersStrict={loadAdminMembersStrict}
+            loadMoreAdminMembersStrict={loadMoreAdminMembersStrict}
+            moderateReport={moderateReport}
+            suspendUser={suspendUser}
+            liftSuspension={liftSuspension}
+            banUser={banUser}
+            unbanUser={unbanUser}
+            setUserRole={setUserRole}
+            setVerified={setVerified}
+            markEmailVerified={markEmailVerified}
+            setSponsor={setSponsor}
+            toggleMemberBadge={toggleMemberBadge}
+          />
         )}
 
         {/* ---- SONGS: wrong-version reports + every pinned video ---- */}
         {tab === "songs" && (
           <>
             <Text style={styles.policy}>Listeners can flag wrong videos, playback failures, preview-only fallbacks, and missing songs. Verify a candidate on YouTube, then pin its link; a human pin beats the automatic resolver for every future play.</Text>
+            {trackActionState.message ? <Text accessibilityLiveRegion={trackActionState.tone === "error" ? "assertive" : "polite"} selectable style={[styles.trackActionFeedback, trackActionState.tone === "error" ? styles.trackActionError : trackActionState.tone === "warning" ? styles.trackActionWarning : styles.trackActionSuccess]}>{trackActionState.message}</Text> : null}
 
-            <Text style={styles.catTitle}>WRONG-VERSION REPORTS · {trackReports.length}</Text>
-            {trackReports.length === 0 && <Text style={styles.empty}>No open song reports.</Text>}
+            <Text style={styles.catTitle}>WRONG-VERSION REPORTS / {trackReports.length} LOADED / {trackReportCount} OPEN</Text>
+            {trackQueueState.loading && !trackReports.length ? <View accessibilityLiveRegion="polite" style={styles.trackQueueStatus}><ActivityIndicator color={colors.amber} /><Text style={styles.catHint}>Loading song reports...</Text></View> : null}
+            {trackQueueState.error ? <Text accessibilityLiveRegion="assertive" selectable style={styles.growErr}>{trackQueueState.error}</Text> : null}
+            {trackReports.length === 0 && !trackQueueState.loading && <Text style={styles.empty}>{trackReportCount ? "No song reports are in the loaded page yet. Load older reports to continue." : "No open song reports."}</Text>}
             {trackReports.map((r) => {
-              let t = {}; try { t = JSON.parse(r.reason || "{}"); } catch {}
-              const reporter = userFor(r.reporterId);
+              const t = trackReportDetails(r);
+              const reporter = r.reporter || userFor(r.reporterId);
               const issueLabel = ({ wrong_video: "wrong video", wont_play: "won't play", preview_only: "preview only", missing: "missing song", other: "other playback issue" })[t.category] || "wrong video";
               const draft = trackFix[r.id] ?? (t.suggestedVideoId ? `https://www.youtube.com/watch?v=${t.suggestedVideoId}` : "");
               return (
@@ -589,8 +639,8 @@ export default function AdminScreen({ onClose }) {
                     <Icon name="music" size={14} color={colors.gold} />
                     <Text style={styles.reason}>{issueLabel}</Text>
                   </View>
-                  <Text style={styles.artist}>{t.title || r.targetId}{t.artist ? ` · ${t.artist}` : ""}</Text>
-                  <Text style={styles.sub}>reported by {reporter ? `@${reporter.handle}` : "a user"}{t.note ? ` · "${t.note}"` : ""}{t.suggestedVideoId ? " · suggested a link" : ""}</Text>
+                  <Text style={styles.artist}>{t.title || r.targetId}{t.artist ? ` / ${t.artist}` : ""}</Text>
+                  <Text style={styles.sub}>reported by {reporter ? `@${reporter.handle}` : "a user"}{t.note ? ` / "${t.note}"` : ""}{t.suggestedVideoId ? " / suggested a link" : ""}</Text>
                   <TextInput
                     style={styles.trackFixInput}
                     placeholder="Correct YouTube link"
@@ -599,36 +649,73 @@ export default function AdminScreen({ onClose }) {
                     onChangeText={(v) => setTrackFix((m) => ({ ...m, [r.id]: v }))}
                     autoCapitalize="none"
                     autoCorrect={false}
+                    accessibilityLabel={`Correct YouTube link for ${t.title || r.targetId}`}
+                    returnKeyType="done"
                   />
                   <View style={styles.actions}>
-                    <Pressable style={styles.btn} onPress={() => Linking.openURL(`https://www.youtube.com/results?search_query=${encodeURIComponent(`${t.artist || ""} ${t.title || r.targetId} official audio`)}`)}>
+                    <Pressable accessibilityRole="link" accessibilityLabel={`Search YouTube candidates for ${t.title || r.targetId}`} disabled={trackActionBusy} style={[styles.btn, trackActionBusy && styles.pillDisabled]} onPress={() => Linking.openURL(`https://www.youtube.com/results?search_query=${encodeURIComponent(`${t.artist || ""} ${t.title || r.targetId} official audio`)}`).catch(() => setTrackActionState({ key: null, tone: "error", message: "YouTube search could not be opened on this device." }))}>
                       <Icon name="search" size={14} color={colors.cool} /><Text style={[styles.dismissTxt, { color: colors.cool }]}>Search candidates</Text>
                     </Pressable>
-                    <Pressable style={[styles.btn, styles.trackPin]} onPress={async () => { const res = await adminSetTrackVideo({ title: t.title || r.targetId, artist: t.artist || "", url: draft }); if (res.ok) { dismissReport(r.id); refreshPins(); } }}>
-                      <Icon name="check" size={15} color={colors.good} /><Text style={[styles.dismissTxt, { color: colors.good }]}>Pin this video</Text>
+                    <Pressable accessibilityRole="button" accessibilityLabel={`Pin video for ${t.title || r.targetId}`} accessibilityState={{ busy: trackActionState.key === `${r.id}:pin`, disabled: trackActionBusy || !draft.trim() }} disabled={trackActionBusy || !draft.trim()} style={[styles.btn, styles.trackPin, (trackActionBusy || !draft.trim()) && styles.pillDisabled]} onPress={() => runTrackAction({
+                      key: `${r.id}:pin`, title: `Pin this video for ${t.title || r.targetId}?`, detail: "The pinned video replaces automatic playback resolution for everyone and closes this report.", success: "Video pinned and song report closed.", run: async ({ initiatingScope }) => {
+                        const result = await adminSetTrackVideo({ title: t.title || r.targetId, artist: t.artist || "", url: draft.trim() });
+                        if (!result?.ok) return result;
+                        if (!staffActionStillOwned(initiatingScope, activeStaffSession.current)) return { ok: true, partial: true, message: "Video pin saved, but the report was not closed because your staff session changed." };
+                        const dismissed = await dismissReport(r.id);
+                        refreshPins();
+                        if (!dismissed) return { ok: true, partial: true, message: "Video pin saved, but the report could not be closed. It remains in the queue for retry." };
+                        setTrackFix((current) => { const next = { ...current }; delete next[r.id]; return next; });
+                        return true;
+                      },
+                    })}>
+                      {trackActionState.key === `${r.id}:pin` ? <ActivityIndicator color={colors.good} size="small" /> : <Icon name="check" size={15} color={colors.good} />}<Text style={[styles.dismissTxt, { color: colors.good }]}>Pin this video</Text>
                     </Pressable>
-                    <Pressable style={[styles.btn, styles.suspend]} onPress={async () => { const res = await adminSetTrackVideo({ title: t.title || r.targetId, artist: t.artist || "", none: true }); if (res.ok) { dismissReport(r.id); refreshPins(); } }}>
-                      <Icon name="x" size={14} color={colors.gold} /><Text style={[styles.dismissTxt, { color: colors.gold }]}>No correct video</Text>
+                    <Pressable accessibilityRole="button" accessibilityLabel={`Mark no correct video for ${t.title || r.targetId}`} accessibilityState={{ busy: trackActionState.key === `${r.id}:none`, disabled: trackActionBusy }} disabled={trackActionBusy} style={[styles.btn, styles.suspend, trackActionBusy && styles.pillDisabled]} onPress={() => runTrackAction({
+                      key: `${r.id}:none`, title: `Confirm no correct video for ${t.title || r.targetId}?`, detail: "Listeners will receive the fallback preview and this report will close. Staff can remove the override later.", success: "No-video fallback saved and song report closed.", run: async ({ initiatingScope }) => {
+                        const result = await adminSetTrackVideo({ title: t.title || r.targetId, artist: t.artist || "", none: true });
+                        if (!result?.ok) return result;
+                        if (!staffActionStillOwned(initiatingScope, activeStaffSession.current)) return { ok: true, partial: true, message: "The no-video fallback was saved, but the report was not closed because your staff session changed." };
+                        const dismissed = await dismissReport(r.id);
+                        refreshPins();
+                        if (!dismissed) return { ok: true, partial: true, message: "The no-video fallback was saved, but the report could not be closed. It remains in the queue for retry." };
+                        return true;
+                      },
+                    })}>
+                      {trackActionState.key === `${r.id}:none` ? <ActivityIndicator color={colors.gold} size="small" /> : <Icon name="x" size={14} color={colors.gold} />}<Text style={[styles.dismissTxt, { color: colors.gold }]}>No correct video</Text>
                     </Pressable>
-                    <Pressable style={[styles.btn, styles.reject]} onPress={() => dismissReport(r.id)}>
-                      <Text style={styles.dismissTxt}>Dismiss</Text>
+                    <Pressable accessibilityRole="button" accessibilityLabel={`Dismiss report for ${t.title || r.targetId}`} accessibilityState={{ busy: trackActionState.key === `${r.id}:dismiss`, disabled: trackActionBusy }} disabled={trackActionBusy} style={[styles.btn, styles.reject, trackActionBusy && styles.pillDisabled]} onPress={() => runTrackAction({ key: `${r.id}:dismiss`, title: `Dismiss this report for ${t.title || r.targetId}?`, detail: "Playback behavior will not change and the report will leave the open queue.", success: "Song report dismissed.", run: () => dismissReport(r.id) })}>
+                      {trackActionState.key === `${r.id}:dismiss` ? <ActivityIndicator color={colors.textDim} size="small" /> : null}<Text style={styles.dismissTxt}>Dismiss</Text>
                     </Pressable>
                   </View>
                 </View>
               );
             })}
+            {moderationConsole.nextCursor ? (
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Load older report page"
+                accessibilityHint="Loads older reports from the server, including any older song reports"
+                accessibilityState={{ busy: trackQueueState.loading, disabled: trackQueueState.loading }}
+                disabled={trackQueueState.loading}
+                style={({ pressed }) => [styles.refreshBtn, pressed && !trackQueueState.loading && styles.pressed, trackQueueState.loading && styles.pillDisabled]}
+                onPress={loadOlderTrackReports}
+              >
+                {trackQueueState.loading ? <ActivityIndicator color={colors.amber} size="small" /> : <Icon name="chevron-down" size={14} color={colors.amber} />}
+                <Text style={styles.refreshTxt}>{trackQueueState.loading ? "Loading older reports..." : "Load older report page"}</Text>
+              </Pressable>
+            ) : null}
 
-            <Text style={styles.catTitle}>PINNED LINKS · {pins.length}</Text>
+            <Text style={styles.catTitle}>PINNED LINKS / {pins.length}</Text>
             <Text style={styles.catHint}>Every song with a human-verified video (or a confirmed "no correct video"). Unpinning hands the song back to the search resolver.</Text>
             {pins.length === 0 && <Text style={styles.empty}>Nothing pinned yet.</Text>}
             {pins.map((p) => (
               <View key={p.key} style={styles.pinRow}>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.pinTitle} numberOfLines={1}>{p.title}{p.artist ? ` · ${p.artist}` : ""}</Text>
+                  <Text style={styles.pinTitle} numberOfLines={1}>{p.title}{p.artist ? ` / ${p.artist}` : ""}</Text>
                   <Text style={styles.pinSub} numberOfLines={1}>{p.videoId ? `youtube.com/watch?v=${p.videoId}` : "confirmed: no correct video (plays preview)"}</Text>
                 </View>
-                <Pressable style={styles.pinRemove} onPress={async () => { const res = await removeTrackOverride({ title: p.title, artist: p.artist }); if (res.ok) refreshPins(); }} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Unpin ${p.title}`}>
-                  <Icon name="x" size={13} color={colors.textDim} />
+                <Pressable style={[styles.pinRemove, trackActionBusy && styles.pillDisabled]} disabled={trackActionBusy} onPress={() => runTrackAction({ key: `${p.key}:unpin`, title: `Remove the playback override for ${p.title}?`, detail: "The automatic resolver will choose playback again for future listeners.", success: "Playback override removed.", run: async () => { const result = await removeTrackOverride({ title: p.title, artist: p.artist }); if (result?.ok) refreshPins(); return result; } })} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Unpin ${p.title}`} accessibilityState={{ busy: trackActionState.key === `${p.key}:unpin`, disabled: trackActionBusy }}>
+                  {trackActionState.key === `${p.key}:unpin` ? <ActivityIndicator color={colors.textDim} size="small" /> : <Icon name="x" size={13} color={colors.textDim} />}
                 </Pressable>
               </View>
             ))}
@@ -637,64 +724,43 @@ export default function AdminScreen({ onClose }) {
 
         {/* ---- MEMBERS ---- */}
         {tab === "members" && (
-          <>
-            <View style={styles.memberStats}>
-              <View style={styles.mStat}><Text style={styles.mStatN}>{(adminStats.total || users.length).toLocaleString()}</Text><Text style={styles.mStatL}>members</Text></View>
-              <View style={styles.mStatDiv} />
-              <View style={styles.mStat}><Text style={[styles.mStatN, { color: colors.gold }]}>{adminStats.verified || users.filter((u) => u.verified).length}</Text><Text style={styles.mStatL}>verified</Text></View>
-              <View style={styles.mStatDiv} />
-              <View style={styles.mStat}><Text style={[styles.mStatN, { color: colors.danger }]}>{adminStats.banned || bannedCount}</Text><Text style={styles.mStatL}>banned</Text></View>
-            </View>
-            {adminStats.regions?.length > 0 && (
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.regionRow}>
-                {adminStats.regions.map((r) => (
-                  <View key={r.city} style={styles.regionChip}>
-                    <Icon name="pin" size={11} color={colors.cool} />
-                    <Text style={styles.regionCity} numberOfLines={1}>{r.city}</Text>
-                    <Text style={styles.regionN}>{r.count}</Text>
-                  </View>
-                ))}
-              </ScrollView>
-            )}
-            <View style={styles.search}>
-              <Icon name="search" size={16} color={colors.textDim} />
-              <TextInput
-                style={styles.searchInput}
-                placeholder={`Search ${(adminStats.total || users.length)} members…`}
-                placeholderTextColor={colors.textFaint}
-                value={q}
-                onChangeText={setQ}
-                autoCapitalize="none"
-              />
-            </View>
-            {members.map((u) => (
-              <MemberRow
-                key={u.id}
-                u={memberBadges[u.id] ? { ...u, badges: memberBadges[u.id] } : u}
-                self={u.id === session?.id}
-                status={accountStatus(u)}
-                canRole={iAmAdmin}
-                canBan={iAmAdmin}
-                onRole={(r) => setUserRole(u.id, r)}
-                onTimeout={(days) => suspendUser(u.id, days)}
-                onLift={() => liftSuspension(u.id)}
-                onBan={() => banUser(u.id)}
-                onUnban={() => unbanUser(u.id)}
-                onVerify={(val) => setVerified(u.id, val)}
-                onVerifyEmail={() => markEmailVerified(u.id)}
-                grantableBadges={grantableBadges}
-                onToggleBadge={(slug, held) => toggleMemberBadge(u.id, slug, held)}
-                onSponsor={(val) => setSponsor(u.id, val)}
-              />
-            ))}
-            {members.length === 0 && <Text style={styles.empty}>No members match “{q}”.</Text>}
-          </>
+          <ModerationConsole
+            mode="members"
+            session={session}
+            isAdmin={iAmAdmin}
+            reports={reports}
+            moderationConsole={moderationConsole}
+            users={users}
+            adminMembers={adminMembers}
+            adminMemberDirectory={adminMemberDirectory}
+            feed={feed}
+            comments={comments}
+            fanClubMessages={fanClubMsgs}
+            loungeMessages={lounge}
+            adminStats={adminStats}
+            grantableBadges={grantableBadges}
+            memberBadges={memberBadges}
+            loadModerationConsole={loadModerationConsole}
+            loadMoreModerationConsole={loadMoreModerationConsole}
+            loadAdminMembersStrict={loadAdminMembersStrict}
+            loadMoreAdminMembersStrict={loadMoreAdminMembersStrict}
+            moderateReport={moderateReport}
+            suspendUser={suspendUser}
+            liftSuspension={liftSuspension}
+            banUser={banUser}
+            unbanUser={unbanUser}
+            setUserRole={setUserRole}
+            setVerified={setVerified}
+            markEmailVerified={markEmailVerified}
+            setSponsor={setSponsor}
+            toggleMemberBadge={toggleMemberBadge}
+          />
         )}
 
         {/* ---- CONTENT ---- */}
         {tab === "content" && (
           <>
-            <Text style={styles.sectionLabel}>POSTS · {feed.length}</Text>
+            <Text style={styles.sectionLabel}>POSTS / {feed.length}</Text>
             {feed.map((l) => {
               const removed = removedIds.includes(l.id);
               return (
@@ -702,7 +768,7 @@ export default function AdminScreen({ onClose }) {
                   <View style={styles.contentRow}>
                     <View style={{ flex: 1 }}>
                       <Text style={styles.artist}>{l.artist}</Text>
-                      <Text style={styles.sub}>by {l.user?.name || "a fan"} · {l.venue}</Text>
+                      <Text style={styles.sub}>by {l.user?.name || "a fan"} / {l.venue}</Text>
                       {removed && <Text style={styles.removedTag}>REMOVED, hidden from public</Text>}
                     </View>
                     {removed ? (
@@ -715,7 +781,7 @@ export default function AdminScreen({ onClose }) {
               );
             })}
 
-            <Text style={styles.sectionLabel}>AFTERPARTY COMMENTS · {allComments.length}</Text>
+            <Text style={styles.sectionLabel}>AFTERPARTY COMMENTS / {allComments.length}</Text>
             {allComments.length === 0 && <Text style={styles.empty}>No comments.</Text>}
             {allComments.map((c) => (
               <View key={c.id} style={styles.msgRow}>
@@ -727,19 +793,19 @@ export default function AdminScreen({ onClose }) {
               </View>
             ))}
 
-            <Text style={styles.sectionLabel}>FAN CLUB MESSAGES · {allFanMsgs.length}</Text>
+            <Text style={styles.sectionLabel}>FAN CLUB MESSAGES / {allFanMsgs.length}</Text>
             {allFanMsgs.length === 0 && <Text style={styles.empty}>No messages.</Text>}
             {allFanMsgs.map((m) => (
               <View key={m.id} style={styles.msgRow}>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.msgWho}>{m.name} <Text style={styles.msgWhere}>· {m.artist}</Text></Text>
+                  <Text style={styles.msgWho}>{m.name} <Text style={styles.msgWhere}>/ {m.artist}</Text></Text>
                   <Text style={styles.msgTxt}>{m.text}</Text>
                 </View>
                 <Pressable style={styles.msgDel} onPress={() => removeFanClubMessage(m.artist, m.id)} hitSlop={8}><Icon name="trash" size={14} color={colors.danger} /></Pressable>
               </View>
             ))}
 
-            <Text style={styles.sectionLabel}>CONCERT LOUNGE · {allLounge.length}</Text>
+            <Text style={styles.sectionLabel}>CONCERT LOUNGE / {allLounge.length}</Text>
             {allLounge.length === 0 && <Text style={styles.empty}>No messages.</Text>}
             {allLounge.map((m) => (
               <View key={m.id} style={styles.msgRow}>
@@ -772,12 +838,12 @@ export default function AdminScreen({ onClose }) {
                     <View style={styles.liveDot} />
                     <Text style={styles.seedRunTxt}>
                       {seedJob.note === "stopping"
-                        ? "Stopping…"
+                        ? "Stopping..."
                         : seedJob.phase === "songs"
-                        ? `Filling songs & genres… ${seedJob.ranked.toLocaleString()} done`
+                        ? `Filling songs & genres... ${seedJob.ranked.toLocaleString()} done`
                         : seedJob.phase === "enrich"
-                        ? `Ranking with Deezer… ${seedJob.ranked.toLocaleString()} enriched`
-                        : `Crawling ${seedJob.note || ""}… +${seedJob.added.toLocaleString()} added`}
+                        ? `Ranking with Deezer... ${seedJob.ranked.toLocaleString()} enriched`
+                        : `Crawling ${seedJob.note || ""}... +${seedJob.added.toLocaleString()} added`}
                     </Text>
                     <Pressable style={styles.stopBtn} onPress={stopSeed} disabled={seedJob.note === "stopping"}>
                       <Icon name="x" size={12} color={colors.danger} />
@@ -827,9 +893,9 @@ export default function AdminScreen({ onClose }) {
                         <View key={r.id} style={styles.runRow}>
                           <View style={[styles.runDot, { backgroundColor: r.status === "done" ? colors.good : r.status === "exhausted" ? colors.gold : r.status === "error" || r.status === "interrupted" ? colors.danger : colors.textFaint }]} />
                           <Text style={styles.runTxt} numberOfLines={1}>
-                            {r.mode === "refresh" ? "Songs & genres" : "Grow"} · {r.status}
-                            {r.mode === "refresh" ? ` · ${(r.enriched || 0).toLocaleString()} filled` : ` · +${(r.added || 0).toLocaleString()} added`}
-                            {r.errorCode ? ` · ${r.errorCode}` : ""}
+                            {r.mode === "refresh" ? "Songs & genres" : "Grow"} / {r.status}
+                            {r.mode === "refresh" ? ` / ${(r.enriched || 0).toLocaleString()} filled` : ` / +${(r.added || 0).toLocaleString()} added`}
+                            {r.errorCode ? ` / ${r.errorCode}` : ""}
                           </Text>
                           <Text style={styles.runWhen}>{r.startedAt ? new Date(r.startedAt).toLocaleDateString(undefined, { month: "short", day: "numeric" }) : ""}</Text>
                         </View>
@@ -841,7 +907,7 @@ export default function AdminScreen({ onClose }) {
             </View>
 
             <View style={styles.catHead}>
-              <Text style={styles.catTitle}>NOT FOUND · {catalog.missing.length}</Text>
+              <Text style={styles.catTitle}>NOT FOUND / {catalog.missing.length}</Text>
               {catalog.missing.length > 0 && (
                 <Pressable style={[styles.seedBtn, seeding && styles.pillDisabled]} disabled={seeding} onPress={() => seedNames(catalog.missing.map((m) => m.name))}>
                   <Icon name="music" size={13} color="#1A1206" /><Text style={styles.seedTxt}>{seeding ? "Seeding..." : "Seed all"}</Text>
@@ -862,7 +928,7 @@ export default function AdminScreen({ onClose }) {
             ))}
 
             <View style={styles.catHead}>
-              <Text style={styles.catTitle}>THIN PROFILES · {catalog.thinTotal}</Text>
+              <Text style={styles.catTitle}>THIN PROFILES / {catalog.thinTotal}</Text>
               {catalog.thin.length > 0 && (
                 <Pressable style={[styles.seedBtn, seeding && styles.pillDisabled]} disabled={seeding} onPress={() => seedNames(catalog.thin.map((t) => t.name))}>
                   <Icon name="music" size={13} color="#1A1206" /><Text style={styles.seedTxt}>{seeding ? "Seeding..." : "Seed top"}</Text>
@@ -875,7 +941,7 @@ export default function AdminScreen({ onClose }) {
               <View key={t.norm} style={styles.catRow}>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.catName} numberOfLines={1}>{t.name}</Text>
-                  <Text style={styles.catSub}>{t.genre ? t.genre + " · " : ""}{t.searches} search{t.searches === 1 ? "" : "es"}</Text>
+                  <Text style={styles.catSub}>{t.genre ? t.genre + " / " : ""}{t.searches} search{t.searches === 1 ? "" : "es"}</Text>
                 </View>
                 <Pressable style={styles.catAction} onPress={() => seedNames([t.name])}><Icon name="music" size={13} color={colors.good} /><Text style={[styles.catActionTxt, { color: colors.good }]}>Seed</Text></Pressable>
                 <Pressable style={styles.catAction} onPress={() => purge(t.norm)}><Icon name="trash" size={13} color={colors.danger} /></Pressable>
@@ -939,7 +1005,7 @@ const styles = StyleSheet.create({
   h1Row: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 16, paddingTop: 6 },
   h1: { color: colors.text, fontSize: 20, fontWeight: "800" },
   tabbar: { flexDirection: "row", flexWrap: "wrap", gap: 8, paddingHorizontal: 16, paddingTop: 12, paddingBottom: 4 },
-  tab: { flexDirection: "row", alignItems: "center", gap: 7, height: 38, paddingHorizontal: 15, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
+  tab: { flexDirection: "row", alignItems: "center", gap: 7, minHeight: 44, paddingHorizontal: 15, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
   tabOn: { backgroundColor: colors.amberStrong, borderColor: colors.amberStrong },
   tabTxt: { color: colors.textDim, fontSize: 13, fontWeight: "700" },
   tabTxtOn: { color: "#1A1206" },
@@ -989,8 +1055,8 @@ const styles = StyleSheet.create({
   note: { color: colors.textDim, fontSize: 13, fontStyle: "italic", marginTop: 6 },
   removedTag: { color: colors.danger, fontSize: 10, letterSpacing: 1, fontWeight: "700", marginTop: 4 },
   contentRow: { flexDirection: "row", alignItems: "center", gap: 10 },
-  actions: { flexDirection: "row", gap: 8, marginTop: 10 },
-  btn: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 12, paddingVertical: 9, borderRadius: radius.sm, borderWidth: 1 },
+  actions: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 10 },
+  btn: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingHorizontal: 12, paddingVertical: 9, borderRadius: radius.sm, borderWidth: 1 },
   remove: { borderColor: colors.danger, backgroundColor: "rgba(224,69,123,0.08)" },
   reject: { borderColor: colors.line },
   suspend: { borderColor: colors.gold, backgroundColor: "rgba(232,182,90,0.08)" },
@@ -999,7 +1065,7 @@ const styles = StyleSheet.create({
   pinRow: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: colors.surface, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.lineSoft, paddingHorizontal: 12, paddingVertical: 10, marginBottom: 7 },
   pinTitle: { color: colors.text, fontSize: 13, fontWeight: "700" },
   pinSub: { color: colors.textDim, fontFamily: mono, fontSize: 11, marginTop: 2 },
-  pinRemove: { width: 30, height: 30, borderRadius: 15, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
+  pinRemove: { width: 44, height: 44, borderRadius: 22, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
   approve: { borderColor: colors.good, backgroundColor: colors.good },
   approveTxt: { color: "#0C1A0F", fontSize: 13, fontWeight: "800" },
   rejectTxt: { color: colors.danger, fontSize: 13, fontWeight: "700" },
@@ -1021,8 +1087,14 @@ const styles = StyleSheet.create({
   growBtn: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: colors.amberStrong, borderRadius: radius.pill, paddingHorizontal: 14, paddingVertical: 8, marginLeft: "auto" },
   growDone: { color: colors.good, fontSize: 11.5, marginTop: 8, fontFamily: mono },
   growErr: { color: colors.danger, fontSize: 11.5, marginTop: 8 },
-  refreshBtn: { flexDirection: "row", alignItems: "center", gap: 6, alignSelf: "flex-start", marginTop: 12, paddingHorizontal: 12, paddingVertical: 8, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.amber, backgroundColor: "rgba(242,166,90,0.08)" },
+  refreshBtn: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 6, alignSelf: "flex-start", marginTop: 12, paddingHorizontal: 12, paddingVertical: 8, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.amber, backgroundColor: "rgba(242,166,90,0.08)" },
   refreshTxt: { color: colors.amber, fontSize: 12.5, fontWeight: "800" },
+  trackQueueStatus: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 8 },
+  trackActionFeedback: { borderWidth: 1, borderRadius: radius.sm, paddingHorizontal: 12, paddingVertical: 10, fontSize: 12, lineHeight: 18, fontWeight: "700", marginBottom: 12 },
+  trackActionError: { color: colors.danger, borderColor: colors.danger },
+  trackActionWarning: { color: colors.gold, borderColor: colors.gold },
+  trackActionSuccess: { color: colors.good, borderColor: colors.good },
+  pressed: { opacity: 0.72 },
   growNotice: { marginTop: 10, padding: 11, borderRadius: radius.md, borderWidth: 1, borderColor: colors.gold, backgroundColor: "rgba(232,182,90,0.08)" },
   growNoticeTitle: { color: colors.gold, fontSize: 12, fontWeight: "900", letterSpacing: 0.3, marginBottom: 4, fontFamily: mono },
   growNoticeTxt: { color: colors.textDim, fontSize: 11.5, lineHeight: 16 },
@@ -1046,50 +1118,13 @@ const styles = StyleSheet.create({
   catAction: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 10, paddingVertical: 7, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.line },
   catActionTxt: { fontSize: 12, fontWeight: "800" },
 
-  // members
-  memberStats: { flexDirection: "row", alignItems: "center", backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, paddingVertical: 12, marginTop: 4, marginBottom: 10 },
-  mStat: { flex: 1, alignItems: "center" },
-  mStatN: { color: colors.text, fontSize: 20, fontWeight: "900", fontFamily: mono },
-  mStatL: { color: colors.textFaint, fontSize: 10, letterSpacing: 1, fontWeight: "800", marginTop: 2, textTransform: "uppercase" },
-  mStatDiv: { width: 1, alignSelf: "stretch", backgroundColor: colors.lineSoft, marginVertical: 4 },
-  regionRow: { flexDirection: "row", gap: 8, paddingBottom: 12 },
-  regionChip: { flexDirection: "row", alignItems: "center", gap: 5, backgroundColor: colors.bgElev, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.lineSoft, paddingHorizontal: 11, paddingVertical: 6 },
-  regionCity: { color: colors.text, fontSize: 12, fontWeight: "700" },
-  regionN: { color: colors.cool, fontSize: 11, fontFamily: mono, fontWeight: "800" },
   search: { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 12, paddingVertical: 10, marginTop: 6, marginBottom: 12 },
   searchInput: { flex: 1, color: colors.text, fontSize: 14 },
-  member: { backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 12, marginBottom: 10 },
-  memberTop: { flexDirection: "row", alignItems: "center", gap: 10 },
-  memberNameRow: { flexDirection: "row", alignItems: "center", gap: 8 },
   memberName: { color: colors.text, fontSize: 15, fontWeight: "800", flexShrink: 1 },
   roleTag: { borderWidth: 1, borderRadius: radius.pill, paddingHorizontal: 8, paddingVertical: 1 },
   roleTagTxt: { fontSize: 10, fontWeight: "800", letterSpacing: 0.5, textTransform: "uppercase" },
-  youTag: { color: colors.textFaint, fontSize: 11, fontStyle: "italic" },
   memberSub: { color: colors.textDim, fontSize: 12, marginTop: 2 },
-  pillRow: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 6, marginTop: 10 },
-  pillLabel: { color: colors.textFaint, fontSize: 10, letterSpacing: 1, fontWeight: "700", width: 34 },
-  rolePill: { paddingHorizontal: 12, paddingVertical: 6, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line },
-  rolePillOn: { backgroundColor: colors.surfaceAlt, borderColor: colors.amber },
-  rolePillTxt: { color: colors.textDim, fontSize: 12, fontWeight: "700", textTransform: "capitalize" },
-  verifyBtn: { flexDirection: "row", alignItems: "center", gap: 7, paddingHorizontal: 12, paddingVertical: 7, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line },
-  verifyBtnOn: { borderColor: colors.cool, backgroundColor: colors.surfaceAlt },
-  emailVerifiedTxt: { color: colors.good, fontSize: 12, fontWeight: "700" },
-  badgeGrantRow: { flexDirection: "row", flexWrap: "wrap", gap: 6, flex: 1 },
-  badgeChip: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 9, paddingVertical: 5, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line },
-  badgeChipOn: { borderColor: colors.amberStrong, backgroundColor: colors.surfaceAlt },
-  badgeChipTxt: { color: colors.textDim, fontSize: 11 },
-  badgeChipTxtOn: { color: colors.text, fontWeight: "700" },
-  verifyTxt: { color: colors.textDim, fontSize: 12, fontWeight: "700" },
-  verifyTxtOn: { color: colors.cool },
-  rolePillTxtOn: { color: colors.amber },
   pillDisabled: { opacity: 0.4 },
-  modBtn: { flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 11, paddingVertical: 6, borderRadius: radius.pill, borderWidth: 1 },
-  warn: { borderColor: colors.gold },
-  warnTxt: { color: colors.gold, fontSize: 12, fontWeight: "700" },
-  danger: { borderColor: colors.danger },
-  dangerTxt: { color: colors.danger, fontSize: 12, fontWeight: "700" },
-  ok: { borderColor: colors.good },
-  okTxt: { color: colors.good, fontSize: 12, fontWeight: "700" },
 
   // content messages
   msgRow: { flexDirection: "row", alignItems: "flex-start", gap: 10, backgroundColor: colors.surface, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.lineSoft, padding: 11, marginBottom: 7 },

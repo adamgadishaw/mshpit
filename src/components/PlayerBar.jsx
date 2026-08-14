@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Modal, View, Text, StyleSheet, Pressable, Image, ScrollView, Platform, useWindowDimensions } from "react-native";
+import { Modal, View, Text, StyleSheet, Pressable, Image, ScrollView, Platform, PanResponder, useWindowDimensions } from "react-native";
 import { colors, radius, mono, shadow } from "../theme";
 import { useStore } from "../store";
 import { useYouTubePlayer } from "../lib/youtubePlayer";
@@ -7,6 +7,13 @@ import { useAudioPreview } from "../lib/audioPreview";
 import { captureAppError } from "../lib/diagnostics";
 import { trackKey } from "../lib/playback";
 import { uniqueTracks } from "../domain/recommend.mjs";
+import {
+  PLAYER_CLOSE_RAIL_MIN_HEIGHT,
+  canUsePlayerCloseSwipe,
+  nativeTouchCount,
+  shouldClosePlayerFromSwipe,
+  shouldStartPlayerCloseResponder,
+} from "../domain/player-gesture.mjs";
 import Icon from "./Icon";
 
 const web = Platform.OS === "web";
@@ -19,6 +26,78 @@ const MAX_YT_RETRIES = 2;
 // Long enough that the preview has started and the transient cause has likely
 // cleared, short enough that most of the song is still ahead.
 const PREVIEW_UPGRADE_DELAY_MS = 6000;
+
+function hasCoarsePointer() {
+  if (!web || typeof window === "undefined") return false;
+  try {
+    return !!window.matchMedia?.("(pointer: coarse)")?.matches
+      || Number(window.navigator?.maxTouchPoints || 0) > 0;
+  } catch {
+    return false;
+  }
+}
+
+function useMobilePlayerCloseGesture({ enabled, onClose }) {
+  const enabledRef = useRef(enabled);
+  const closeRef = useRef(onClose);
+  const multiTouchRef = useRef(false);
+  enabledRef.current = enabled;
+  closeRef.current = onClose;
+
+  const responderRef = useRef(null);
+  if (!responderRef.current) {
+    const shouldStart = (event) => shouldStartPlayerCloseResponder({
+      enabled: enabledRef.current,
+      touchCount: nativeTouchCount(event),
+    });
+    const noteTouches = (event, gesture) => {
+      const count = nativeTouchCount(event) ?? Number(gesture?.numberActiveTouches || 0);
+      if (count > 1) multiTouchRef.current = true;
+    };
+    responderRef.current = PanResponder.create({
+      // This responder exists only on the non-control close rail. Claiming that
+      // rail on touch-down is deliberate: RN resets dx/dy at responder grant, so
+      // a move-to-claim responder loses the first part (or all) of a fast swipe.
+      onStartShouldSetPanResponder: shouldStart,
+      onStartShouldSetPanResponderCapture: shouldStart,
+      onMoveShouldSetPanResponder: () => false,
+      onMoveShouldSetPanResponderCapture: () => false,
+      onPanResponderGrant: (event, gesture) => {
+        multiTouchRef.current = false;
+        noteTouches(event, gesture);
+      },
+      onPanResponderStart: noteTouches,
+      onPanResponderMove: noteTouches,
+      onPanResponderTerminationRequest: () => true,
+      onShouldBlockNativeResponder: () => true,
+      onPanResponderRelease: (_, gesture) => {
+        if (!multiTouchRef.current && enabledRef.current && shouldClosePlayerFromSwipe(gesture)) closeRef.current?.();
+        multiTouchRef.current = false;
+      },
+      onPanResponderTerminate: () => { multiTouchRef.current = false; },
+    });
+  }
+
+  return enabled ? responderRef.current.panHandlers : {};
+}
+
+function MobilePlayerCloseRail({ enabled, gesture }) {
+  if (!enabled) return null;
+  return (
+    <View
+      style={styles.swipeCloseRail}
+      pointerEvents="box-only"
+      collapsable={false}
+      accessible={false}
+      accessibilityElementsHidden
+      importantForAccessibility="no-hide-descendants"
+      {...gesture}
+    >
+      <View style={styles.swipeCloseRailIcon}><Icon name="chevron-down" size={11} color={colors.amber} /></View>
+      <Text style={styles.swipeCloseRailText}>SWIPE UP TO CLOSE</Text>
+    </View>
+  );
+}
 
 const fmtTime = (ms) => {
   if (!isFinite(ms) || ms < 0) ms = 0;
@@ -152,6 +231,11 @@ export default function PlayerBar({
   const column = layout === "column";
   const { width: winWidth } = useWindowDimensions();
   const compactMobile = !column && winWidth < 700;
+  const mobileCloseGestureEnabled = canUsePlayerCloseSwipe({
+    compactMobile,
+    native: !web,
+    coarsePointer: hasCoarsePointer(),
+  });
   const list = player && Array.isArray(player.list) ? player.list : [];
   const index = Math.max(0, Math.min(player?.index || 0, list.length - 1));
   const cur = list[index];
@@ -425,6 +509,20 @@ export default function PlayerBar({
     });
   }, [audio.error?.kind, curKey, unplayable, yt.error?.kind]);
 
+  const closePlayer = () => {
+    // Close an open phone sheet first, then let App clear the account-owned queue.
+    // Clearing the queue unmounts this component, whose engine cleanup destroys
+    // the YouTube iframe and releases the HTML audio element.
+    setOpen(false);
+    yt.pause();
+    audio.pause?.();
+    onClose?.();
+  };
+  const mobileCloseGesture = useMobilePlayerCloseGesture({
+    enabled: mobileCloseGestureEnabled && !!cur,
+    onClose: closePlayer,
+  });
+
   const playlistTrack = (track, exactVideoId = null) => ({
     title: track?.title || track?.artist,
     artist: track?.artist,
@@ -521,8 +619,6 @@ export default function PlayerBar({
     audio.pause?.();
     onMinimize?.();
   };
-  const closePlayer = () => { yt.pause(); audio.pause?.(); onClose?.(); };
-
   const doSave = async () => {
     if (saving) return;
     setSaving(true);
@@ -587,14 +683,28 @@ export default function PlayerBar({
   // the row honestly reads PAUSED; tapping it restores and you resume from there.
   if (minimized) {
     return (
-      <Pressable style={styles.miniRowShell} onPress={onRestore} accessibilityRole="button" accessibilityLabel={`Open player. ${title} is paused.`}>
-        {art ? <Image source={{ uri: art }} style={styles.miniRowArt} /> : <View style={[styles.miniRowArt, styles.artEmpty]}><Icon name="music" size={14} color={colors.textFaint} /></View>}
-        <View style={{ flex: 1, minWidth: 0 }}>
-          <Text style={styles.title} numberOfLines={1}>{title}</Text>
-          <Text style={styles.sub} numberOfLines={1}>{artist ? artist + "  ·  " : ""}PAUSED</Text>
+      <View style={styles.mobileMiniShell}>
+        <View style={styles.miniRowShell}>
+          <Pressable style={styles.miniRowOpen} onPress={onRestore} accessibilityRole="button" accessibilityLabel={`Open player. ${title} is paused.`}>
+            {art ? <Image source={{ uri: art }} style={styles.miniRowArt} /> : <View style={[styles.miniRowArt, styles.artEmpty]}><Icon name="music" size={14} color={colors.textFaint} /></View>}
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text style={styles.title} numberOfLines={1}>{title}</Text>
+              <Text style={styles.sub} numberOfLines={1}>{artist ? artist + "  ·  " : ""}PAUSED</Text>
+            </View>
+            <View style={styles.miniRowBtn}><Icon name="chevron-down" size={16} color={colors.amber} /></View>
+          </Pressable>
+          <Pressable
+            style={styles.mobileClose}
+            onPress={closePlayer}
+            accessibilityRole="button"
+            accessibilityLabel="Stop playback and close player"
+            accessibilityHint="Returns to the full feed"
+          >
+            <Icon name="x" size={17} color={colors.danger} />
+          </Pressable>
         </View>
-        <View style={styles.miniRowBtn}><Icon name="chevron-down" size={16} color={colors.amber} /></View>
-      </Pressable>
+        <MobilePlayerCloseRail enabled={mobileCloseGestureEnabled} gesture={mobileCloseGesture} />
+      </View>
     );
   }
 
@@ -742,6 +852,15 @@ export default function PlayerBar({
             <Pressable style={[styles.mobileMenu, panelOpen && styles.queueBtnOn]} onPress={togglePanel} accessibilityRole="button" accessibilityState={{ expanded: panelOpen }} accessibilityLabel={`Open player controls, ${upNext.length} up next`}>
               <Icon name="feed" size={18} color={panelOpen ? colors.amber : colors.textDim} />
             </Pressable>
+            <Pressable
+              style={styles.mobileClose}
+              onPress={closePlayer}
+              accessibilityRole="button"
+              accessibilityLabel="Stop playback and close player"
+              accessibilityHint="Returns to the full feed"
+            >
+              <Icon name="x" size={17} color={colors.danger} />
+            </Pressable>
           </>
         ) : (
           <>
@@ -770,6 +889,8 @@ export default function PlayerBar({
           </>
         )}
       </View>
+
+      <MobilePlayerCloseRail enabled={mobileCloseGestureEnabled} gesture={mobileCloseGesture} />
 
       {scrubbable && (
         <View style={styles.scrubRow}>
@@ -863,7 +984,7 @@ export default function PlayerBar({
               {onAddToPlaylist && <Pressable style={styles.mobileQuickBtn} onPress={() => onAddToPlaylist(playlistTrack(cur, forThis ? resolved.videoId : null))}><Icon name="plus" size={16} color={colors.amber} /><Text style={styles.mobileQuickTxt}>Playlist</Text></Pressable>}
               <Pressable style={styles.mobileQuickBtn} onPress={doSave} disabled={saving}><Icon name={saved ? "check" : "star"} size={16} color={saved ? colors.good : colors.amber} /><Text style={styles.mobileQuickTxt}>{saved ? "Saved" : "Save mix"}</Text></Pressable>
               {ytActive && <Pressable style={styles.mobileQuickBtn} onPress={() => { setOpen(false); setShowVideo(true); }}><Icon name="play" size={16} color={colors.amber} /><Text style={styles.mobileQuickTxt}>Video</Text></Pressable>}
-              <Pressable style={styles.mobileQuickBtn} onPress={() => { setOpen(false); closePlayer(); }}><Icon name="x" size={16} color={colors.danger} /><Text style={[styles.mobileQuickTxt, { color: colors.danger }]}>Stop</Text></Pressable>
+              <Pressable style={styles.mobileQuickBtn} onPress={closePlayer} accessibilityRole="button" accessibilityLabel="Stop playback and close player"><Icon name="x" size={16} color={colors.danger} /><Text style={[styles.mobileQuickTxt, { color: colors.danger }]}>Stop</Text></Pressable>
             </View>
 
             <ScrollView style={styles.mobileQueueScroll} contentContainerStyle={styles.mobileQueueContent} showsVerticalScrollIndicator={false}>
@@ -946,7 +1067,9 @@ const styles = StyleSheet.create({
   miniArt: { width: 48, height: 48, borderRadius: 10, backgroundColor: colors.surfaceAlt },
   miniTitle: { color: colors.text, fontSize: 11, lineHeight: 15, fontWeight: "800", textAlign: "center", paddingHorizontal: 8 },
   miniPaused: { color: colors.textFaint, fontFamily: mono, fontSize: 8, letterSpacing: 1.2 },
-  miniRowShell: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: colors.bgElev, borderBottomWidth: 1, borderBottomColor: colors.line, paddingHorizontal: 12, paddingVertical: 7, minHeight: 52 },
+  mobileMiniShell: { backgroundColor: colors.bgElev, borderBottomWidth: 1, borderBottomColor: colors.line },
+  miniRowShell: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: colors.bgElev, paddingHorizontal: 10, paddingVertical: 7, minHeight: 58 },
+  miniRowOpen: { flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: 10 },
   miniRowArt: { width: 36, height: 36, borderRadius: 7, backgroundColor: colors.surfaceAlt },
   miniRowBtn: { width: 32, height: 32, borderRadius: 16, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.amber, backgroundColor: colors.surface },
   shell: { ...(web ? { position: "sticky", top: 0, zIndex: 60 } : null) },
@@ -975,6 +1098,12 @@ const styles = StyleSheet.create({
   ctrl: { width: 36, height: 36, borderRadius: 18, alignItems: "center", justifyContent: "center", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line },
   mobilePlay: { width: 48, height: 48, borderRadius: 24, alignItems: "center", justifyContent: "center", backgroundColor: colors.amberStrong, borderWidth: 1, borderColor: colors.amber, ...shadow.control },
   mobileMenu: { width: 48, height: 48, borderRadius: 24, alignItems: "center", justifyContent: "center", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line },
+  mobileClose: { width: 44, height: 44, flexShrink: 0, borderRadius: 22, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(235, 87, 87, 0.08)", borderWidth: 1, borderColor: "rgba(235, 87, 87, 0.42)" },
+  // This is the only gesture target. Controls and the feed never own these
+  // handlers, so a normal tap or page scroll cannot clear a listening session.
+  swipeCloseRail: { minHeight: PLAYER_CLOSE_RAIL_MIN_HEIGHT, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, backgroundColor: colors.bgElev, borderTopWidth: 1, borderTopColor: colors.lineSoft, ...(web ? { touchAction: "none", cursor: "ns-resize", userSelect: "none" } : null) },
+  swipeCloseRailIcon: { transform: [{ rotate: "180deg" }] },
+  swipeCloseRailText: { color: colors.textFaint, fontFamily: mono, fontSize: 8, fontWeight: "800", letterSpacing: 1.2 },
   ctrlOff: { opacity: 0.4 },
   play: { backgroundColor: colors.amberStrong, borderColor: colors.amberStrong },
   pauseGlyph: { flexDirection: "row", gap: 3 },

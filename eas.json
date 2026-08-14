@@ -1,0 +1,18 @@
+{
+  "cli": {
+    "version": ">= 16.18.0",
+    "appVersionSource": "remote",
+    "requireCommit": true
+  },
+  "build": {
+    "preview": {
+      "distribution": "internal"
+    },
+    "production": {
+      "autoIncrement": true
+    }
+  },
+  "submit": {
+    "production": {}
+  }
+}

@@ -21,7 +21,7 @@ export default function ScreenHeader({ title, kicker, onBack, right }) {
 
 const styles = StyleSheet.create({
   wrap: { flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: space(4), paddingTop: space(1), paddingBottom: space(3), borderBottomWidth: 1, borderBottomColor: colors.lineSoft },
-  back: { width: 42, height: 42, borderRadius: radius.sm, borderCurve: "continuous", backgroundColor: colors.surfaceAlt, borderWidth: 1, borderBottomWidth: 3, borderColor: colors.line, alignItems: "center", justifyContent: "center", ...shadow.control },
+  back: { width: 44, height: 44, borderRadius: radius.sm, borderCurve: "continuous", backgroundColor: colors.surfaceAlt, borderWidth: 1, borderBottomWidth: 3, borderColor: colors.line, alignItems: "center", justifyContent: "center", ...shadow.control },
   backPressed: { transform: [{ translateY: 2 }], boxShadow: "inset 0 1px 3px rgba(0,0,0,0.18)" },
   titleBox: { flex: 1 },
   kicker: { color: colors.amber, fontSize: 10, letterSpacing: 1.5, fontWeight: "800", fontFamily: mono, marginBottom: 1 },

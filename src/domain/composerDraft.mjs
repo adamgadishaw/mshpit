@@ -38,6 +38,9 @@ export function normalizeComposerDraft(value = {}) {
     playlist: value.playlist && typeof value.playlist === "object" ? value.playlist : null,
     photos: Array.isArray(value.photos) ? value.photos.filter((uri) => typeof uri === "string").slice(0, 8) : [],
     photosPublic: value.photosPublic !== false,
+    // Marketing-surface permission is deliberately separate from artist-page
+    // sharing and defaults off for every historical or newly opened draft.
+    landingShowcase: value.photosPublic !== false && value.landingShowcase === true,
     panels: {
       song: !!(panels.song ?? value.showSong ?? value.song),
       photos: !!(panels.photos ?? value.showPhotos ?? (Array.isArray(value.photos) && value.photos.length)),

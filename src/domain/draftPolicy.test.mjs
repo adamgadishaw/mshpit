@@ -1,13 +1,36 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { deleteAccountDraft, draftsForAccount, migrateLegacyDrafts, upsertAccountDraft } from "./draftPolicy.mjs";
+import {
+  deleteAccountDraft,
+  draftsForAccount,
+  migrateLegacyDrafts,
+  QUARANTINED_LEGACY_DRAFT_OWNER,
+  resolveQuarantinedLegacyDrafts,
+  upsertAccountDraft,
+} from "./draftPolicy.mjs";
 
 test("an ownerless legacy draft is recovered by the persisted account", () => {
   const migrated = migrateLegacyDrafts([{ id: "old", review: "private" }], "u_adam");
   assert.deepEqual(migrated, [{ id: "old", review: "private", ownerId: "u_adam" }]);
   assert.equal(draftsForAccount(migrated, "u_adam").length, 1);
   assert.deepEqual(draftsForAccount(migrated, "u_other"), []);
+});
+
+test("ownerless legacy drafts stay quarantined while production identity is locked", () => {
+  const migrated = migrateLegacyDrafts([{ id: "old", review: "private", photos: ["private.jpg"] }], null);
+  assert.equal(migrated[0].ownerId, QUARANTINED_LEGACY_DRAFT_OWNER);
+  assert.deepEqual(draftsForAccount(migrated, null), []);
+  assert.deepEqual(draftsForAccount(migrated, "u_other"), []);
+});
+
+test("a quarantined draft is claimed only by the matching authoritative legacy account", () => {
+  const quarantined = migrateLegacyDrafts([{ id: "old", review: "private" }], null);
+  const restored = resolveQuarantinedLegacyDrafts(quarantined, "u_adam", "u_adam");
+  assert.deepEqual(draftsForAccount(restored, "u_adam").map((draft) => draft.id), ["old"]);
+
+  const rejected = resolveQuarantinedLegacyDrafts(quarantined, "u_other", "u_adam");
+  assert.deepEqual(rejected, []);
 });
 
 test("draft reads, updates, and deletes cannot cross account boundaries", () => {

@@ -18,6 +18,7 @@ const {
   invalidateYouTubeTrack,
   parseYouTubeVideoId,
   playbackUrlExpiry,
+  persistDeezerIdentity,
   resolveYouTubeTrack,
   scoreYouTubeCandidate,
   selectArtistChannel,
@@ -103,6 +104,27 @@ test("bundle merge fills gaps but keeps richer production identity and tracks", 
   assert.equal(merged.deezerId, 42);
   assert.deepEqual(merged.topTracks, [{ title: "Current song" }]);
   assert.deepEqual(merged.albums, [{ title: "Useful gap" }]);
+});
+
+test("discography persistence writes provider claims while preserving staff genres", () => {
+  artistStmts.upsert.run(artistRow("Provider Claim Writer", { name: "Provider Claim Writer", genre: "Metal" }, "musicbrainz"));
+  persistDeezerIdentity("Provider Claim Writer", 501, "Pop");
+  const providerRow = artistStmts.byNorm.get("provider claim writer");
+  const providerData = JSON.parse(providerRow.data);
+  assert.equal(providerRow.genre, "Pop");
+  assert.equal(providerData.genreClaims.find((claim) => claim.source === "provider")?.value, "Pop");
+
+  artistStmts.upsert.run(artistRow("Staff Claim Writer", {
+    name: "Staff Claim Writer",
+    genre: "r&b",
+    genreClaims: [{ value: "r&b", source: "staff", at: 1 }],
+  }, "staff"));
+  persistDeezerIdentity("Staff Claim Writer", 502, "Pop");
+  const staffRow = artistStmts.byNorm.get("staff claim writer");
+  const staffData = JSON.parse(staffRow.data);
+  assert.equal(staffRow.genre, "r&b");
+  assert.equal(staffData.genreClaims.find((claim) => claim.source === "provider")?.value, "Pop");
+  assert.equal(staffData.genreClaims.find((claim) => claim.source === "staff")?.value, "r&b");
 });
 
 test("Deezer track matching rejects karaoke and mismatched artists", () => {

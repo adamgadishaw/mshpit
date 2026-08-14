@@ -1,89 +1,168 @@
 import { useEffect, useRef, useState } from "react";
-import { View, Text, StyleSheet, Pressable, Animated, Easing, useWindowDimensions, Platform, ScrollView } from "react-native";
+import { View, Text, StyleSheet, Pressable, Animated, Easing, useWindowDimensions, Platform, ScrollView, AccessibilityInfo } from "react-native";
+import { Image as ExpoImage } from "expo-image";
 import Svg, { Defs, LinearGradient, Stop, Rect } from "react-native-svg";
 import { mono, radius } from "../theme";
 import Icon from "../components/Icon";
 import { catalogVenues, catalogArtists } from "../seed/catalog";
 import { api } from "../lib/api";
+import { JOURNEY_TAGLINE, landingSlideUri, landingVisibleSlideIndices } from "../domain/menuJourney.mjs";
+import {
+  buildLandingSlideDeck,
+  landingCommunityAdvanceDelay,
+  landingCommunityFrameReady,
+  landingSlideFrame,
+  landingStockStartIndex,
+  rotateLandingFallbacks,
+} from "../domain/landingShowcase.mjs";
 
 // ----------------------------------------------------------------------------
 // The opening act, the way real music apps do it: full-bleed live-show
 // photography with a slow cinematic drift, layered scrims for legibility, and
-// editorial type. Photos are Unsplash-licensed (free commercial use), served
-// from Unsplash's CDN, credited on-screen, and crossfaded on a loop.
+// editorial type. Explicitly opted-in, safety-filtered community photos join the reel
+// after a dependable credited Unsplash first frame and fallback set.
 // ----------------------------------------------------------------------------
 
-const SLIDES = [
+const STOCK_SLIDES = [
   {
+    id: "danny-howe-crowd",
     uri: "https://images.unsplash.com/photo-1501386761578-eac5c94b800a?auto=format&fit=crop&w=2000&q=85",
     credit: "Danny Howe · Unsplash",
   },
   {
+    id: "anthony-delanoix-stage",
     uri: "https://images.unsplash.com/photo-1429962714451-bb934ecdc4ec?auto=format&fit=crop&w=2000&q=85",
     credit: "Anthony Delanoix · Unsplash",
   },
   {
+    id: "yvette-de-wit-festival",
     uri: "https://images.unsplash.com/photo-1470229722913-7c0e2dbbafd3?auto=format&fit=crop&w=2000&q=85",
     credit: "Yvette de Wit · Unsplash",
   },
   {
+    id: "nicholas-green-concert",
     uri: "https://images.unsplash.com/photo-1459749411175-04bf5292ceea?auto=format&fit=crop&w=1920&q=80",
     credit: "Nicholas Green · Unsplash",
   },
   {
+    id: "aditya-chinchure-lights",
     uri: "https://images.unsplash.com/photo-1516450360452-9312f5e86fc7?auto=format&fit=crop&w=1920&q=80",
     credit: "Aditya Chinchure · Unsplash",
   },
   {
+    id: "vishnu-nair-stage",
     uri: "https://images.unsplash.com/photo-1533174072545-7a4b6ad7a6c3?auto=format&fit=crop&w=1920&q=80",
     credit: "Vishnu R Nair · Unsplash",
   },
   {
+    id: "aranxa-esteve-crowd",
     uri: "https://images.unsplash.com/photo-1524368535928-5b5e00ddc76b?auto=format&fit=crop&w=1920&q=80",
     credit: "Aranxa Esteve · Unsplash",
   },
   {
+    id: "yvette-de-wit-arena",
     uri: "https://images.unsplash.com/photo-1540039155733-5bb30b53aa14?auto=format&fit=crop&w=1920&q=80",
     credit: "Yvette de Wit · Unsplash",
   },
 ];
+const LANDING_SLIDE_COUNT = 8;
+const LANDING_SESSION_SEED = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+const SESSION_STOCK_SLIDES = rotateLandingFallbacks(STOCK_SLIDES, landingStockStartIndex({
+  at: Date.now(),
+  sessionSeed: LANDING_SESSION_SEED,
+  total: STOCK_SLIDES.length,
+}));
 const SLIDE_MS = 7000;
 const FADE_MS = 1600;
+const AnimatedExpoImage = Animated.createAnimatedComponent(ExpoImage);
 // Web-only GPU hints so the zoom is buttery (no-op on native).
 const WEB_SMOOTH = Platform.OS === "web" ? { willChange: "transform, opacity", backfaceVisibility: "hidden" } : null;
 
 export default function LandingScreen({ onLogin, onSignup, onBrowse }) {
   const { width } = useWindowDimensions();
   const wide = width >= 900;
+  const [reduceMotion, setReduceMotion] = useState(false);
+  const reduceMotionRef = useRef(reduceMotion);
+  const mountedAtRef = useRef(Date.now());
+  reduceMotionRef.current = reduceMotion;
+
+  useEffect(() => {
+    let mounted = true;
+    const preference = AccessibilityInfo.isReduceMotionEnabled?.();
+    if (preference?.then) void preference.then((enabled) => {
+      if (mounted) setReduceMotion(!!enabled);
+    }).catch(() => {});
+    const subscription = AccessibilityInfo.addEventListener?.("reduceMotionChanged", (enabled) => setReduceMotion(!!enabled));
+    return () => { mounted = false; subscription?.remove?.(); };
+  }, []);
 
   // ---- slideshow: crossfade + Ken Burns drift ----
   const [idx, setIdx] = useState(0);
-  const fades = useRef(SLIDES.map((_, i) => new Animated.Value(i === 0 ? 1 : 0))).current;
-  const zooms = useRef(SLIDES.map(() => new Animated.Value(0))).current;
+  const [hasAdvanced, setHasAdvanced] = useState(false);
+  const [slides, setSlides] = useState(() => buildLandingSlideDeck([], SESSION_STOCK_SLIDES, LANDING_SLIDE_COUNT));
+  const [failedCommunityIds, setFailedCommunityIds] = useState(() => new Set());
+  const idxRef = useRef(idx);
+  const hasAdvancedRef = useRef(hasAdvanced);
+  idxRef.current = idx;
+  hasAdvancedRef.current = hasAdvanced;
+  const fades = useRef(Array.from({ length: LANDING_SLIDE_COUNT }, (_, i) => new Animated.Value(i === 0 ? 1 : 0))).current;
+  const zooms = useRef(Array.from({ length: LANDING_SLIDE_COUNT }, () => new Animated.Value(0))).current;
   const pulse = useRef(new Animated.Value(0)).current;
 
-  // Advance the slide + run the glow loop. Just the timers here; the crossfade
-  // animations live in the effect below so no Animated side effects run inside the
-  // setIdx updater (that would fire setState mid-render).
+  // Advance one full interval after whichever frame became current. A recursive
+  // timeout (rather than a mount-anchored interval) means an early, prefetched
+  // community frame cannot be replaced again a few hundred milliseconds later.
   useEffect(() => {
-    const t = setInterval(() => setIdx((cur) => (cur + 1) % SLIDES.length), SLIDE_MS);
+    if (reduceMotion) return undefined;
+    const timer = setTimeout(() => {
+      setHasAdvanced(true);
+      setIdx((cur) => (cur + 1) % LANDING_SLIDE_COUNT);
+    }, SLIDE_MS);
+    return () => clearTimeout(timer);
+  }, [idx, reduceMotion]);
+
+  // The headline glow is independent of slide timing, so resetting a slide's
+  // deadline never tears down and recreates this animation.
+  useEffect(() => {
+    if (reduceMotion) {
+      pulse.stopAnimation();
+      pulse.setValue(1);
+      return undefined;
+    }
     const glow = Animated.loop(Animated.sequence([
       Animated.timing(pulse, { toValue: 1, duration: 2600, easing: Easing.inOut(Easing.sin), useNativeDriver: Platform.OS !== "web" }),
       Animated.timing(pulse, { toValue: 0, duration: 2600, easing: Easing.inOut(Easing.sin), useNativeDriver: Platform.OS !== "web" }),
     ]));
     glow.start();
-    return () => { clearInterval(t); glow.stop(); };
-  }, []);
+    return () => glow.stop();
+  }, [pulse, reduceMotion]);
 
   // Crossfade to the current slide (and slow push-in), reacting to idx AFTER render.
   useEffect(() => {
+    if (reduceMotion) {
+      zooms[idx].setValue(0);
+      fades.forEach((fade, index) => fade.setValue(index === idx ? 1 : 0));
+      return;
+    }
     zooms[idx].setValue(0);
     Animated.timing(zooms[idx], { toValue: 1, duration: SLIDE_MS + FADE_MS + 600, easing: Easing.linear, useNativeDriver: Platform.OS !== "web" }).start();
     fades.forEach((f, i) => {
       Animated.timing(f, { toValue: i === idx ? 1 : 0, duration: FADE_MS + (i === idx ? 0 : 300), useNativeDriver: Platform.OS !== "web" }).start();
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [idx]);
+  }, [idx, reduceMotion]);
+
+  // Keep only the visible crossfade layers mounted. Once the current frame is
+  // settled, warm one correctly-sized next image rather than decoding the
+  // entire eight-photo reel on a phone's first render.
+  useEffect(() => {
+    const next = (idx + 1) % slides.length;
+    const frame = landingSlideFrame(slides[next], failedCommunityIds);
+    const timer = setTimeout(() => {
+      if (frame?.uri) void ExpoImage.prefetch(landingSlideUri(frame.uri, width), "disk").catch(() => {});
+    }, 900);
+    return () => clearTimeout(timer);
+  }, [failedCommunityIds, idx, slides, width]);
 
   const glowOp = pulse.interpolate({ inputRange: [0, 1], outputRange: [0.72, 1] });
   // Live counts from the DB so the stats reflect real, saved catalog growth (the
@@ -91,8 +170,59 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse }) {
   const [liveArtists, setLiveArtists] = useState(null);
   const [liveMembers, setLiveMembers] = useState(null);
   useEffect(() => {
-    api("/api/artists?q=").then(({ total }) => { if (typeof total === "number") setLiveArtists(total); }).catch(() => {});
-    api("/api/people?q=").then(({ total }) => { if (typeof total === "number") setLiveMembers(total); }).catch(() => {});
+    const controller = new AbortController();
+    let earlyAdvanceTimer = null;
+    api("/api/landing/media?limit=7", { signal: controller.signal, silent: true, context: "Loading the community spotlight" })
+      .then(async ({ media, totals }) => {
+        if (controller.signal.aborted) return;
+        const nextDeck = buildLandingSlideDeck(media, SESSION_STOCK_SLIDES, LANDING_SLIDE_COUNT);
+        setSlides((current) => {
+          if (!hasAdvancedRef.current) return nextDeck;
+          // A very slow response must not replace the full-screen frame someone
+          // is already looking at. Preserve that slot and update the rest.
+          const visible = idxRef.current;
+          return nextDeck.map((slide, index) => index === visible ? (current[index] || slide) : slide);
+        });
+        const hasCommunity = nextDeck[1]?.source === "community";
+        if (typeof totals?.artists === "number") setLiveArtists(totals.artists);
+        if (typeof totals?.members === "number") setLiveMembers(totals.members);
+
+        const delay = landingCommunityAdvanceDelay({
+          mountedAt: mountedAtRef.current,
+          hasAdvanced: hasAdvancedRef.current,
+          hasCommunity,
+        });
+        if (delay == null) return;
+
+        const frame = nextDeck[1];
+        const minimumWindow = new Promise((resolve) => {
+          earlyAdvanceTimer = setTimeout(resolve, delay);
+          controller.signal.addEventListener("abort", resolve, { once: true });
+        });
+        const prefetchSucceeded = await ExpoImage
+          .prefetch(landingSlideUri(frame.uri, width), "disk")
+          .then(Boolean)
+          .catch(() => false);
+        if (controller.signal.aborted) return;
+        if (!prefetchSucceeded) {
+          setFailedCommunityIds((current) => current.has(frame.id) ? current : new Set([...current, frame.id]));
+          return;
+        }
+        await minimumWindow;
+        if (!landingCommunityFrameReady({
+          frame,
+          prefetchSucceeded,
+          aborted: controller.signal.aborted,
+          hasAdvanced: hasAdvancedRef.current,
+        })) return;
+        if (!reduceMotionRef.current) setHasAdvanced(true);
+        setIdx(1);
+      })
+      .catch(() => {});
+    return () => {
+      controller.abort();
+      if (earlyAdvanceTimer) clearTimeout(earlyAdvanceTimer);
+    };
   }, []);
   const venueCount = Object.keys(catalogVenues).length;
   const artistCount = liveArtists ?? Object.keys(catalogArtists).length;
@@ -104,18 +234,34 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse }) {
   const pitchProps = wide
     ? { style: [styles.content, styles.contentWide] }
     : { style: styles.content, contentContainerStyle: styles.scrollNarrow, showsVerticalScrollIndicator: false, keyboardShouldPersistTaps: "handled" };
+  const currentFrame = landingSlideFrame(slides[idx], failedCommunityIds);
+  const currentCaption = currentFrame?.source === "community"
+    ? [currentFrame.artist, currentFrame.venue].filter(Boolean).join(" · ")
+    : "";
 
   return (
     <View style={styles.wrap}>
       {/* ---- photography ---- */}
-      {SLIDES.map((s, i) => {
-        const scale = zooms[i].interpolate({ inputRange: [0, 1], outputRange: [1.02, 1.12] });
-        const drift = zooms[i].interpolate({ inputRange: [0, 1], outputRange: [0, i % 2 ? -18 : 18] });
+      {landingVisibleSlideIndices(idx, slides.length, hasAdvanced).map((i) => {
+        const slot = slides[i];
+        const s = landingSlideFrame(slot, failedCommunityIds);
+        if (!s) return null;
+        const scale = reduceMotion ? 1 : zooms[i].interpolate({ inputRange: [0, 1], outputRange: [1.02, 1.12] });
+        const drift = reduceMotion ? 0 : zooms[i].interpolate({ inputRange: [0, 1], outputRange: [0, i % 2 ? -18 : 18] });
         return (
-          <Animated.Image
+          <AnimatedExpoImage
             key={i}
-            source={{ uri: s.uri }}
-            resizeMode="cover"
+            source={{ uri: landingSlideUri(s.uri, width) }}
+            contentFit="cover"
+            cachePolicy="memory-disk"
+            priority={i === idx ? "high" : "low"}
+            recyclingKey={s.id}
+            transition={reduceMotion ? 0 : 180}
+            accessible={false}
+            onError={() => {
+              if (slot?.source !== "community") return;
+              setFailedCommunityIds((current) => current.has(slot.id) ? current : new Set([...current, slot.id]));
+            }}
             // willChange/backfaceVisibility promote the layer to the GPU so the
             // Ken Burns zoom composites smoothly instead of repainting each frame.
             style={[StyleSheet.absoluteFill, WEB_SMOOTH, { opacity: fades[i], transform: [{ perspective: 1000 }, { scale }, { translateX: drift }] }]}
@@ -153,14 +299,17 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse }) {
       {/* ---- the pitch ---- */}
       <Pitch {...pitchProps} style={[pitchProps.style, styles.boxNonePointerEvents]}>
         <View style={wide ? styles.blockWide : styles.blockNarrow}>
-          <Text style={styles.kicker}>THE CROWD KEEPS THE SCORE</Text>
-          <Animated.Text style={[styles.headline, { opacity: glowOp }, !wide && styles.headlineNarrow]}>
-            Every show.{"\n"}Every night.{"\n"}
-            <Text style={styles.headlineAccent}>Rated by the crowd.</Text>
+          <Text style={styles.kicker}>EVERY SHOW BECOMES PART OF YOUR STORY</Text>
+          <Animated.Text
+            style={[styles.headline, { opacity: glowOp }, !wide && styles.headlineNarrow]}
+            accessibilityRole="header"
+            accessibilityLabel={JOURNEY_TAGLINE}
+          >
+            Your life's{"\n"}<Text style={styles.headlineAccent}>musical journey.</Text>
           </Animated.Text>
           <Text style={[styles.sub, !wide && { textAlign: "center" }]}>
-            Log the shows you go to, rate the band and the room, and find the nights worth
-            leaving the house for, from people whose taste you trust.
+            Log the concerts that shape your story, remember every band and room, and find
+            your next unforgettable night through people whose taste you trust.
           </Text>
 
           <View style={[styles.ctas, !wide && { justifyContent: "center" }]}>
@@ -184,8 +333,8 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse }) {
             </View>
             {liveMembers != null && liveMembers > 0 && (
               <View style={styles.statChip}>
-                <Text style={styles.statNum}>{liveMembers.toLocaleString()}</Text>
-                <Text style={styles.statLbl}>MEMBERS</Text>
+              <Text style={styles.statNum}>{liveMembers.toLocaleString()}</Text>
+              <Text style={styles.statLbl}>FOUNDING MEMBERS</Text>
               </View>
             )}
             <View style={styles.statChip}>
@@ -199,7 +348,10 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse }) {
       {/* ---- footer strip ---- */}
       <View style={[styles.foot, styles.noPointerEvents]}>
         <Text style={styles.footTxt}>BAND VS ROOM · SPOILER-SAFE SETLISTS · YOUR CITY&apos;S ROOMS</Text>
-        <Text style={styles.credit}>{SLIDES[idx].credit}</Text>
+        <View style={styles.creditBlock}>
+          {!!currentCaption && <Text style={styles.communityCaption} numberOfLines={1}>{currentCaption}</Text>}
+          <Text style={styles.credit}>{currentFrame?.credit || "PIT"}</Text>
+        </View>
       </View>
     </View>
   );
@@ -274,5 +426,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 28, paddingBottom: 16,
   },
   footTxt: { color: "rgba(154,160,182,0.5)", fontFamily: mono, fontSize: 10, letterSpacing: 2.5 },
+  creditBlock: { alignItems: "flex-end", maxWidth: "48%", gap: 2 },
+  communityCaption: { color: "rgba(244,239,231,0.78)", fontSize: 11, fontWeight: "700" },
   credit: { color: "rgba(154,160,182,0.45)", fontFamily: mono, fontSize: 10, letterSpacing: 0.5 },
 });
