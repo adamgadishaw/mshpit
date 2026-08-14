@@ -27,7 +27,7 @@ test("a root slug is ambiguous and defers to the resolver", () => {
 });
 
 test("the app's own screens cannot be taken over by a band name", () => {
-  for (const reserved of ["/search", "/discover", "/admin", "/settings", "/api", "/robots.txt"]) {
+  for (const reserved of ["/search", "/discover", "/admin", "/settings", "/api", "/robots.txt", "/account-deletion"]) {
     assert.equal(parsePath(reserved), null, `${reserved} must stay the app's`);
   }
   assert.equal(isReservedSlug("Search"), true, "reserved matching is case-insensitive");

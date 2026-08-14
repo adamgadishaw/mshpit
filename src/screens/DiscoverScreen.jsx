@@ -114,7 +114,12 @@ export default function DiscoverScreen({
   if (!localStatsRef.current) localStatsRef.current = discoverStats();
   const localStats = localStatsRef.current;
   const photos = useMemo(() => selectDiscoverPhotos(feed, { removedIds, blockedIds, limit: 10 }), [blockedIds, feed, removedIds]);
-  const photoUris = useMemo(() => photos.map((photo) => photo.uri), [photos]);
+  const photoUris = useMemo(() => photos.map((photo) => ({
+    uri: photo.uri,
+    by: photo.by,
+    postId: photo.logId,
+    ownerId: photo.ownerId,
+  })), [photos]);
 
   const requestOverview = useCallback(({ preserve = false, force = false } = {}) => {
     overviewRequestRef.current.controller?.abort();

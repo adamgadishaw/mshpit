@@ -1,3 +1,5 @@
+import { licensedVenuePhoto } from "./venuePhotoProvenance.mjs";
+
 export const VENUE_PHOTO_CLIENT_CACHE_MAX = 32;
 export const VENUE_PHOTO_CLIENT_TTL_MS = 15 * 60 * 1000;
 export const VENUE_PHOTO_RESPONSE_MAX = 24;
@@ -14,14 +16,10 @@ export function cleanVenuePhotoResponse(value) {
   const out = [];
   const seen = new Set();
   for (const photo of value) {
-    const uri = typeof photo?.uri === "string" && /^https?:\/\//i.test(photo.uri) ? photo.uri : null;
-    if (!uri || seen.has(uri)) continue;
-    seen.add(uri);
-    out.push({
-      uri,
-      by: typeof photo.by === "string" && photo.by.trim() ? photo.by.trim().slice(0, 240) : "Source: web",
-      source: ["commons", "openverse", "web"].includes(photo.source) ? photo.source : "web",
-    });
+    const normalized = licensedVenuePhoto(photo);
+    if (!normalized || seen.has(normalized.uri)) continue;
+    seen.add(normalized.uri);
+    out.push(normalized);
     if (out.length >= VENUE_PHOTO_RESPONSE_MAX) break;
   }
   return out;

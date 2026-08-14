@@ -13,7 +13,7 @@ import useChatScroll from "../lib/useChatScroll";
 import { api } from "../lib/api";
 
 // The artist Fan Club - a permanent chat for fans, even with no show coming up.
-export default function FanClubScreen({ artist, onClose, onOpenProfile, onOpenProfileByHandle }) {
+export default function FanClubScreen({ artist, onClose, onOpenProfile, onOpenProfileByHandle, onReport }) {
   const { session, userById, fanClubFor, loadFanClub, addFanClubMessage, isFanClubMember, joinFanClub, fanClubCount } = useStore();
   const [text, setText] = useState("");
   const [joining, setJoining] = useState(false);
@@ -103,7 +103,27 @@ export default function FanClubScreen({ artist, onClose, onOpenProfile, onOpenPr
               <View style={[styles.bubble, mine && styles.bubbleMine]}>
                 {!mine && <Text style={styles.msgName}>{m.name}</Text>}
                 <MentionText text={m.text} style={[styles.msgText, mine && { color: "#1A1206" }]} onMention={onOpenProfileByHandle} />
-                <Text style={[styles.msgTs, mine && { color: "rgba(26,18,6,0.6)" }]}>{m.ts}</Text>
+                <View style={styles.msgFoot}>
+                  <Text style={[styles.msgTs, mine && { color: "rgba(26,18,6,0.6)" }]}>{m.ts}</Text>
+                  {!mine && onReport ? (
+                    <Pressable
+                      style={styles.reportBtn}
+                      onPress={() => onReport({
+                        targetType: "fan_message",
+                        targetId: m.id,
+                        ownerId: m.userId,
+                        targetName: "fan-club message",
+                        title: `${m.name || "A member"} in the ${artist} fan club`,
+                        summary: m.text,
+                      })}
+                      hitSlop={8}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Report ${m.name || "this member"}'s fan-club message`}
+                    >
+                      <Icon name="flag" size={12} color={colors.textFaint} />
+                    </Pressable>
+                  ) : null}
+                </View>
               </View>
             </View>
           );
@@ -137,7 +157,9 @@ const styles = StyleSheet.create({
   bubbleMine: { backgroundColor: colors.amber, borderColor: colors.amber, borderTopLeftRadius: 14, borderTopRightRadius: 4 },
   msgName: { color: colors.amber, fontSize: 11, fontWeight: "800", marginBottom: 2 },
   msgText: { color: colors.text, fontSize: 14, lineHeight: 19 },
-  msgTs: { color: colors.textFaint, fontSize: 10, fontFamily: mono, marginTop: 3, alignSelf: "flex-end" },
+  msgFoot: { minHeight: 24, flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: 8, marginTop: 3 },
+  msgTs: { color: colors.textFaint, fontSize: 10, fontFamily: mono },
+  reportBtn: { minWidth: 28, minHeight: 28, alignItems: "center", justifyContent: "center", marginVertical: -4, marginRight: -5 },
   inputBar: { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 16, paddingTop: 8, paddingBottom: Platform.OS === "ios" ? 24 : 12, borderTopWidth: 1, borderTopColor: colors.lineSoft, backgroundColor: colors.bgElev },
   input: { flex: 1, backgroundColor: colors.surface, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, color: colors.text, paddingHorizontal: 16, paddingVertical: 11, fontSize: 15 },
   sendBtn: { width: 42, height: 42, borderRadius: 21, backgroundColor: colors.amberStrong, alignItems: "center", justifyContent: "center" },

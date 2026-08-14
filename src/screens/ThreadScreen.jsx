@@ -9,7 +9,7 @@ import MentionText from "../components/MentionText";
 import useLiveChat from "../lib/useLiveChat";
 import useChatScroll from "../lib/useChatScroll";
 
-export default function ThreadScreen({ otherId, onClose, onOpenProfile, onOpenProfileByHandle }) {
+export default function ThreadScreen({ otherId, onClose, onOpenProfile, onOpenProfileByHandle, onReport }) {
   const { session, userById, threadMessages, sendDM, loadThread, markThreadRead, loadUser } = useStore();
   const other = userById(otherId);
   const [text, setText] = useState("");
@@ -51,7 +51,27 @@ export default function ThreadScreen({ otherId, onClose, onOpenProfile, onOpenPr
             <View key={m.id} style={[styles.row, mine && styles.rowMine]}>
               <View style={[styles.bubble, mine && styles.bubbleMine]}>
                 <MentionText text={m.text} style={[styles.msgText, mine && { color: "#1A1206" }]} onMention={onMention} />
-                <Text style={[styles.ts, mine && { color: "rgba(26,18,6,0.6)" }]}>{m.ts}</Text>
+                <View style={styles.msgFoot}>
+                  <Text style={[styles.ts, mine && { color: "rgba(26,18,6,0.6)" }]}>{m.ts}</Text>
+                  {!mine && onReport ? (
+                    <Pressable
+                      style={styles.reportBtn}
+                      onPress={() => onReport({
+                        targetType: "message",
+                        targetId: m.id,
+                        ownerId: m.from,
+                        targetName: "direct message",
+                        title: `Message from ${other?.name || "a member"}`,
+                        summary: "The message stays private and is reviewed only by the moderation team.",
+                      })}
+                      hitSlop={8}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Report message from ${other?.name || "this member"}`}
+                    >
+                      <Icon name="flag" size={12} color={colors.textFaint} />
+                    </Pressable>
+                  ) : null}
+                </View>
               </View>
             </View>
           );
@@ -81,7 +101,9 @@ const styles = StyleSheet.create({
   bubble: { backgroundColor: colors.surface, borderRadius: 16, borderTopLeftRadius: 4, borderWidth: 1, borderColor: colors.lineSoft, paddingHorizontal: 13, paddingVertical: 9 },
   bubbleMine: { backgroundColor: colors.amber, borderColor: colors.amber, borderTopLeftRadius: 16, borderTopRightRadius: 4 },
   msgText: { color: colors.text, fontSize: 15, lineHeight: 20 },
-  ts: { color: colors.textFaint, fontSize: 10, fontFamily: mono, marginTop: 3, alignSelf: "flex-end" },
+  msgFoot: { minHeight: 24, flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: 8, marginTop: 3 },
+  ts: { color: colors.textFaint, fontSize: 10, fontFamily: mono },
+  reportBtn: { minWidth: 28, minHeight: 28, alignItems: "center", justifyContent: "center", marginVertical: -4, marginRight: -5 },
   inputBar: { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 16, paddingTop: 8, paddingBottom: Platform.OS === "ios" ? 24 : 12, borderTopWidth: 1, borderTopColor: colors.lineSoft, backgroundColor: colors.bgElev },
   input: { flex: 1, backgroundColor: colors.surface, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, color: colors.text, paddingHorizontal: 16, paddingVertical: 11, fontSize: 15 },
   sendBtn: { width: 42, height: 42, borderRadius: 21, backgroundColor: colors.amberStrong, alignItems: "center", justifyContent: "center" },

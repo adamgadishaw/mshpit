@@ -1,9 +1,7 @@
-// Seed catalog - legally sourceable data only (venue facts, tour dates, setlists
-// are factual / open-licensed; NOT copyrighted photos). This file is what
-// `scripts/ingest.mjs` regenerates and extends from MusicBrainz / Setlist.fm /
-// Ticketmaster Discovery / Wikidata. `photo` is filled by the ingest run from
-// Wikimedia Commons (P18) with attribution - null until then, and the UI falls
-// back to a drawn banner so nothing ever looks empty.
+// Seed catalog. Venue photos are now filtered by the machine-verifiable licence
+// policy before display, but the legacy artist rows still contain Spotify and
+// Deezer artwork. Do not describe that artwork as open-licensed or cleared; it
+// remains an explicit release-rights gate in APP_STORE_READINESS.md.
 
 // The slim core, derived from catalog.generated.json by scripts/split-catalog.mjs.
 // The discography half is split out and deliberately not imported anywhere, so
@@ -89,4 +87,4 @@ export const catalogVenues = (() => {
 })();
 export const catalogShows = [...baseShows, ...(generated.shows || [])];
 export const catalogTourDates = [...baseTourDates, ...(generated.tourDates || [])];
-export const catalogArtists = generated.artists || {}; // keyed by lowercase name, carries Commons photo
+export const catalogArtists = generated.artists || {}; // keyed by lowercase name; photo rights are not implied

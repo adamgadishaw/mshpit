@@ -1,24 +1,46 @@
 // One bounded boundary for the staff moderation queue and its state changes.
 // api.js owns HTTP authentication/validation; this module owns the database
 // reads, transactions, desired-state semantics, and append-only audit history.
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import { db } from "./db.js";
 import { ApiError } from "./errors.js";
+import { enqueueOwnedMediaUrls, trustedOwnedMediaKey } from "./mediaDeletion.js";
 import { clean, LIMITS } from "./validate.js";
 
 export const MODERATABLE_CONTENT = Object.freeze({
-  post: "posts",
-  comment: "comments",
-  fan_message: "fan_club_messages",
-  lounge_message: "lounge_messages",
-  venue_review: "venue_reviews",
+  post: { table: "posts", key: "id" },
+  comment: { table: "comments", key: "id" },
+  message: { table: "dms", key: "id" },
+  fan_message: { table: "fan_club_messages", key: "id" },
+  lounge_message: { table: "lounge_messages", key: "id" },
+  venue_review: { table: "venue_reviews", key: "id" },
+  artist_post: { table: "artist_posts", key: "id" },
+  artist_profile: { table: "artist_profiles", key: "artist_key" },
 });
 
 const RECENT_ACTION_LIMIT = 20;
 const LEGACY_QUEUE_LIMIT = 200;
 const RECENT_REPORT_DAYS = 30;
 const RECENT_REPORT_MS = RECENT_REPORT_DAYS * 24 * 60 * 60 * 1000;
+
+const IRREVERSIBLE_MEDIA_REMOVAL = Object.freeze({
+  post: {
+    select: "user_id media_owner_id,photos media_json,photos_public,landing_showcase",
+    scrub: "photos='[]',photos_public=0,landing_showcase=0",
+    hasNonUrlAssociation: (row) => !!row.photos_public || !!row.landing_showcase,
+  },
+  venue_review: {
+    select: "user_id media_owner_id,photos media_json",
+    scrub: "photos='[]'",
+    hasNonUrlAssociation: () => false,
+  },
+  artist_profile: {
+    select: "owner_id media_owner_id,banner media_banner,avatar_uri media_avatar",
+    scrub: "banner=NULL,avatar_uri=NULL",
+    hasNonUrlAssociation: () => false,
+  },
+});
 
 const reportById = db.prepare("SELECT * FROM reports WHERE id=?");
 const updateOpenReport = db.prepare("UPDATE reports SET status=? WHERE id=? AND status='open'");
@@ -67,6 +89,20 @@ function parseArrayLength(value, max) {
   }
 }
 
+function attachedMediaUris(targetType, row) {
+  if (targetType === "artist_profile") {
+    return [...new Set([row?.media_banner, row?.media_avatar].filter((value) => typeof value === "string" && value))];
+  }
+  try {
+    const parsed = JSON.parse(row?.media_json || "[]");
+    return Array.isArray(parsed)
+      ? [...new Set(parsed.filter((value) => typeof value === "string" && value))]
+      : [];
+  } catch {
+    return [];
+  }
+}
+
 function trackDetails(report) {
   let parsed = {};
   try {
@@ -89,7 +125,9 @@ function trackDetails(report) {
 
 // At most one query per content type, never one query per queue row. Besides
 // keeping a 200-report queue cheap, these projections deliberately exclude
-// emails, private profile fields, media URLs, and direct-message bodies.
+// emails, private profile fields, unrelated media, and message history. The
+// sole DM exception is the bounded body and participants of the exact reported
+// message, which staff need to adjudicate that report.
 function contextsFor(reports) {
   const contexts = new Map();
   const queries = {
@@ -118,15 +156,31 @@ function contextsFor(reports) {
         u.avatar_uri author_avatar_uri,u.avatar_color author_avatar_color,u.role author_role,
         u.is_banned author_is_banned,u.suspended_until author_suspended_until
       FROM venue_reviews v LEFT JOIN users u ON u.id=v.user_id WHERE v.id IN (${placeholders(ids)})`).all(...ids),
-    user: (ids) => db.prepare(`SELECT id,name,handle,initials,avatar_uri,avatar_color,role,is_banned,suspended_until
-      FROM users WHERE id IN (${placeholders(ids)})`).all(...ids),
-    // A DM report may confirm that the target still exists and identify its
-    // author to staff. Its recipient and body stay out of every queue payload.
-    message: (ids) => db.prepare(`SELECT d.id,d.created_at,
+    artist_post: (ids) => db.prepare(`SELECT p.id,p.artist_key,p.text,p.removed,p.created_at,
         u.id author_id,u.name author_name,u.handle author_handle,u.initials author_initials,
         u.avatar_uri author_avatar_uri,u.avatar_color author_avatar_color,u.role author_role,
         u.is_banned author_is_banned,u.suspended_until author_suspended_until
-      FROM dms d LEFT JOIN users u ON u.id=d.from_id WHERE d.id IN (${placeholders(ids)})`).all(...ids),
+      FROM artist_posts p LEFT JOIN users u ON u.id=p.user_id WHERE p.id IN (${placeholders(ids)})`).all(...ids),
+    artist_profile: (ids) => db.prepare(`SELECT p.artist_key id,p.bio,p.banner,p.avatar_uri,p.feed_enabled,p.removed,p.updated_at created_at,
+        u.id author_id,u.name author_name,u.handle author_handle,u.initials author_initials,
+        u.avatar_uri author_avatar_uri,u.avatar_color author_avatar_color,u.role author_role,
+        u.is_banned author_is_banned,u.suspended_until author_suspended_until
+      FROM artist_profiles p LEFT JOIN users u ON u.id=p.owner_id WHERE p.artist_key IN (${placeholders(ids)})`).all(...ids),
+    user: (ids) => db.prepare(`SELECT id,name,handle,initials,avatar_uri,avatar_color,role,is_banned,suspended_until
+      FROM users WHERE id IN (${placeholders(ids)})`).all(...ids),
+    // Only exact ids already present in the report queue are selected. This is
+    // the least-privilege exception that makes a private-message report
+    // actionable without exposing the rest of either participant's history.
+    message: (ids) => db.prepare(`SELECT d.id,d.text,d.removed,d.created_at,
+        u.id author_id,u.name author_name,u.handle author_handle,u.initials author_initials,
+        u.avatar_uri author_avatar_uri,u.avatar_color author_avatar_color,u.role author_role,
+        u.is_banned author_is_banned,u.suspended_until author_suspended_until,
+        recipient.id recipient_id,recipient.name recipient_name,recipient.handle recipient_handle,
+        recipient.initials recipient_initials,recipient.avatar_uri recipient_avatar_uri,
+        recipient.avatar_color recipient_avatar_color,recipient.role recipient_role,
+        recipient.is_banned recipient_is_banned,recipient.suspended_until recipient_suspended_until
+      FROM dms d LEFT JOIN users u ON u.id=d.from_id LEFT JOIN users recipient ON recipient.id=d.to_id
+      WHERE d.id IN (${placeholders(ids)})`).all(...ids),
   };
 
   for (const [type, query] of Object.entries(queries)) {
@@ -137,7 +191,7 @@ function contextsFor(reports) {
       if (type === "post") context = {
         type, exists: true, removed: !!row.removed, postKind: row.kind || "review",
         author: publicPerson(row), artist: boundedText(row.artist, LIMITS.artist), venue: boundedText(row.venue, LIMITS.venue),
-        excerpt: boundedText(row.review), mediaCount: parseArrayLength(row.photos, 8), createdAt: row.created_at,
+        excerpt: boundedText(row.review), mediaCount: parseArrayLength(row.photos, 8), _mediaUris: (() => { try { const values = JSON.parse(row.photos || "[]"); return Array.isArray(values) ? values.slice(0, 8).filter((value) => typeof value === "string") : []; } catch { return []; } })(), createdAt: row.created_at,
       };
       else if (type === "comment") context = {
         type, exists: true, removed: !!row.removed, author: publicPerson(row), postId: row.post_id,
@@ -153,7 +207,16 @@ function contextsFor(reports) {
       };
       else if (type === "venue_review") context = {
         type, exists: true, removed: !!row.removed, author: publicPerson(row), venueKey: boundedText(row.venue_key, 200),
-        rating: Number(row.rating) || 0, excerpt: boundedText(row.text), mediaCount: parseArrayLength(row.photos, 8), createdAt: row.created_at,
+        rating: Number(row.rating) || 0, excerpt: boundedText(row.text), mediaCount: parseArrayLength(row.photos, 8), _mediaUris: (() => { try { const values = JSON.parse(row.photos || "[]"); return Array.isArray(values) ? values.slice(0, 8).filter((value) => typeof value === "string") : []; } catch { return []; } })(), createdAt: row.created_at,
+      };
+      else if (type === "artist_post") context = {
+        type, exists: true, removed: !!row.removed, author: publicPerson(row), artistKey: boundedText(row.artist_key, 200),
+        excerpt: boundedText(row.text), createdAt: row.created_at,
+      };
+      else if (type === "artist_profile") context = {
+        type, exists: true, removed: !!row.removed, author: publicPerson(row), artistKey: boundedText(row.id, 200),
+        excerpt: boundedText(row.bio), mediaCount: [row.banner, row.avatar_uri].filter(Boolean).length,
+        _mediaUris: [row.banner, row.avatar_uri].filter((value) => typeof value === "string" && value), createdAt: row.created_at,
       };
       else if (type === "user") context = {
         type, exists: true,
@@ -165,7 +228,14 @@ function contextsFor(reports) {
         restricted: !!row.is_banned || Number(row.suspended_until || 0) > Date.now(),
       };
       else context = {
-        type, exists: true, private: true, author: publicPerson(row), createdAt: row.created_at,
+        type,
+        exists: true,
+        private: true,
+        removed: !!row.removed,
+        author: publicPerson(row),
+        recipient: publicPerson(row, "recipient"),
+        excerpt: boundedText(row.text, LIMITS.note),
+        createdAt: row.created_at,
       };
       contexts.set(contentMapKey(type, row.id), context);
     }
@@ -179,6 +249,19 @@ function contextsFor(reports) {
 
 function normalizedReport(report, context) {
   const track = report.target_type === "track" ? trackDetails(report) : null;
+  const { _mediaUris = [], ...publicContext } = context || { type: report.target_type, exists: false };
+  const fingerprint = /^[a-f0-9]{64}$/u.test(report.media_fingerprint || "") ? report.media_fingerprint : null;
+  const matchedMedia = fingerprint
+    ? _mediaUris.find((uri) => createHash("sha256").update(uri, "utf8").digest("hex") === fingerprint) || null
+    : null;
+  // Never make a moderator's device fetch attacker-controlled media. A report
+  // can only project the exact still-attached object when its canonical PIT
+  // media key belongs to the target author. The fingerprint remains the stable
+  // identity if attachments are reordered; replacement at the old position is
+  // deliberately treated as unavailable.
+  const reportedMedia = matchedMedia && trustedOwnedMediaKey(matchedMedia, { ownerId: publicContext.author?.id })
+    ? matchedMedia
+    : null;
   return {
     id: report.id,
     targetType: report.target_type,
@@ -188,7 +271,11 @@ function normalizedReport(report, context) {
     reporter: publicPerson(report, "reporter"),
     status: report.status,
     createdAt: report.created_at,
-    content: context || { type: report.target_type, exists: false },
+    content: {
+      ...publicContext,
+      ...(reportedMedia ? { reportedMedia, reportedMediaTrusted: true } : {}),
+      ...(fingerprint && !reportedMedia ? { reportedMediaUnavailable: true } : {}),
+    },
   };
 }
 
@@ -280,23 +367,67 @@ function transaction(work) {
 }
 
 function contentRemovedState(targetType, targetId) {
-  const table = MODERATABLE_CONTENT[targetType];
-  if (!table) throw new ApiError(400, "That content type cannot be moderated here.", "VALIDATION_FAILED");
-  const row = db.prepare(`SELECT removed FROM ${table} WHERE id=?`).get(targetId);
+  const target = MODERATABLE_CONTENT[targetType];
+  if (!target) throw new ApiError(400, "That content type cannot be moderated here.", "VALIDATION_FAILED");
+  const row = db.prepare(`SELECT removed FROM ${target.table} WHERE ${target.key}=?`).get(targetId);
   return row ? !!row.removed : null;
 }
 
+function deleteDirectMessageNotifications(message, targetId) {
+  if (!message?.from_id || !message?.to_id) return;
+  // New notifications carry the exact DM id in post_id. The narrow legacy
+  // fallback covers rows created before that linkage without touching another
+  // conversation or another body, and removal never re-alerts on restore.
+  const excerpt = String(message.text || "").slice(0, 80);
+  db.prepare(`DELETE FROM notifications
+    WHERE type='dm' AND actor_id=? AND user_id=?
+      AND (post_id=? OR (post_id IS NULL AND text=? AND created_at>=? AND created_at<=?))`)
+    .run(message.from_id, message.to_id, targetId, excerpt, message.created_at, Number(message.created_at) + 100);
+}
+
 function setContentRemoved(ctx, targetType, targetId, removed, reason) {
-  const table = MODERATABLE_CONTENT[targetType];
-  if (!table) throw new ApiError(400, "That content type cannot be moderated here.", "VALIDATION_FAILED");
-  const current = db.prepare(`SELECT removed FROM ${table} WHERE id=?`).get(targetId);
+  const target = MODERATABLE_CONTENT[targetType];
+  if (!target) throw new ApiError(400, "That content type cannot be moderated here.", "VALIDATION_FAILED");
+  const mediaDefinition = IRREVERSIBLE_MEDIA_REMOVAL[targetType] || null;
+  const messageSelect = targetType === "message" ? ",from_id,to_id,text,created_at" : "";
+  const current = db.prepare(`SELECT removed${mediaDefinition ? `,${mediaDefinition.select}` : ""}${messageSelect} FROM ${target.table} WHERE ${target.key}=?`).get(targetId);
   if (!current) throw new ApiError(404, "That content is no longer available.", "NOT_FOUND");
   const desired = removed ? 1 : 0;
-  if (Number(current.removed) === desired) return { changed: false, removed: !!desired };
-  const updated = db.prepare(`UPDATE ${table} SET removed=? WHERE id=? AND removed=?`).run(desired, targetId, current.removed);
+  // A real removal always enforces the destructive policy. A restore enforces
+  // it only while transitioning from hidden -> visible, which purges any
+  // legacy/raced attachment without making a duplicate restore on already-live
+  // content unexpectedly destructive.
+  const mediaPolicy = mediaDefinition && (removed || !!current.removed) ? mediaDefinition : null;
+  const mediaUris = mediaPolicy ? attachedMediaUris(targetType, current) : [];
+  const needsMediaScrub = !!mediaPolicy && (mediaUris.length > 0 || mediaPolicy.hasNonUrlAssociation(current));
+  const stateChanged = Number(current.removed) !== desired;
+  if (!stateChanged && !needsMediaScrub) {
+    if (targetType === "message" && removed) deleteDirectMessageNotifications(current, targetId);
+    return { changed: false, removed: !!desired };
+  }
+
+  // Media removal is intentionally irreversible. Queue trusted objects before
+  // clearing every public association; the helper is transaction-neutral, so a
+  // queue failure rolls the row update and audit back with this outer action.
+  const queued = mediaPolicy
+    ? enqueueOwnedMediaUrls(db, { ownerId: current.media_owner_id, urls: mediaUris, at: Date.now() })
+    : { accepted: 0 };
+  if (mediaPolicy) {
+    const deleteReaction = db.prepare("DELETE FROM media_reactions WHERE media_url=?");
+    for (const mediaUri of mediaUris) deleteReaction.run(mediaUri);
+  }
+  const assignments = ["removed=?", ...(mediaPolicy ? [mediaPolicy.scrub] : [])].join(",");
+  const updated = db.prepare(`UPDATE ${target.table} SET ${assignments} WHERE ${target.key}=? AND removed=?`).run(desired, targetId, current.removed);
   if (updated.changes !== 1) throw new ApiError(409, "That content changed while you were reviewing it. Refresh the moderation queue.", "CONFLICT");
+  if (targetType === "message" && removed) deleteDirectMessageNotifications(current, targetId);
   recordModerationAction(ctx, removed ? "remove" : "restore", targetType, targetId, reason,
-    { removed: !!current.removed }, { removed: !!desired });
+    {
+      removed: !!current.removed,
+      ...(mediaPolicy ? { attachmentCount: mediaUris.length } : {}),
+    }, {
+      removed: !!desired,
+      ...(mediaPolicy ? { attachmentCount: 0, mediaDeletionQueued: Number(queued.accepted || 0) } : {}),
+    });
   return { changed: true, removed: !!desired };
 }
 

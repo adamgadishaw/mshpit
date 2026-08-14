@@ -11,7 +11,7 @@ import { createServer } from "node:http";
 import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { join, extname, normalize, dirname, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { db, q, publicUser } from "./db.js";
+import { db, q, publicUser, pruneMissingArtists } from "./db.js";
 import { routes } from "./api.js";
 import { ApiError, errorEnvelope } from "./errors.js";
 import { assertExpectedAccount } from "./identityBinding.js";
@@ -21,7 +21,9 @@ import { getSession, sweepExpiredSessions, sessionCookie, clearCookie, parseCook
 import { startTourDateScheduler } from "./tourdates.js";
 import { startCacheWarmScheduler } from "./cacheWarmer.js";
 import { startBackupScheduler } from "./backupScheduler.js";
+import { startMediaDeletionScheduler } from "./mediaDeletion.js";
 import { missingStaticAssetResponse } from "./staticPolicy.js";
+import { renderPublicPage } from "./publicPages.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import { createApiResponseHeaderSetter } from "./responseHeaders.js";
 
@@ -190,6 +192,23 @@ function serveCrawlerFile(req, res, pathname) {
   res.end(body);
 }
 
+// App stores, search engines, and signed-out people need legal/support pages
+// that do not depend on the client bundle or an API session. Keep this before
+// the SPA fallback, while leaving every non-document route on the existing app.
+function servePublicPage(req, res, pathname) {
+  const body = renderPublicPage(pathname);
+  if (!body) return false;
+  res.writeHead(200, {
+    ...HEADERS,
+    "Content-Type": "text/html; charset=utf-8",
+    "Content-Length": Buffer.byteLength(body),
+    "Cache-Control": "public, max-age=3600",
+  });
+  if (req.method === "HEAD") res.end();
+  else res.end(body);
+  return true;
+}
+
 function serveStatic(req, res, pathname) {
   if (!existsSync(DIST)) {
     return send(res, 503, { error: "Web build not found. Run: npx expo export -p web" });
@@ -333,6 +352,7 @@ const server = createServer(async (req, res) => {
 
     // everything else = the web app
     if (req.method !== "GET" && req.method !== "HEAD") return send(res, 405, { error: "Method not allowed." });
+    if (servePublicPage(req, res, pathname)) return;
     return serveStatic(req, res, pathname);
   } catch (e) {
     // `routePattern` is set once the router matched, so aggregation groups by
@@ -375,6 +395,8 @@ setInterval(() => {
   catch (error) { console.error("[pit] expired-session sweep failed safely:", error); }
   try { pruneErrors(); }
   catch (error) { console.error("[pit] error-log prune failed safely:", error); }
+  try { pruneMissingArtists(); }
+  catch (error) { console.error("[pit] missing-artist retention sweep failed safely:", error); }
 }, 60 * 60 * 1000).unref();
 
 // Alerting is deferred off the request path so a slow mail provider can never
@@ -402,4 +424,5 @@ server.listen(PORT, () => {
   startTourDateScheduler(); // scrapes tour dates into the DB on a timer (no cron/redeploy)
   startCacheWarmScheduler(); // warms popular YouTube lookups daily so first listens play the video, not a preview
   startBackupScheduler(); // verified daily SQLite snapshot on /data; private off-host copy when configured
+  startMediaDeletionScheduler({ database: db }); // bounded, durable cleanup of active user-media objects only
 });

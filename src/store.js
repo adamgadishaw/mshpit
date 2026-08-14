@@ -15,6 +15,7 @@ import { createTicketRegistry } from "./domain/latestWins.mjs";
 import { createAccountReadCoordinator } from "./domain/accountReadCoordinator.mjs";
 import { createDiscoverCache, discoverGenreCacheKey, discoverOverviewCacheKey } from "./domain/discoverCache.mjs";
 import { mergeUniquePage, reconcileMemberMutationPage } from "./domain/pageMerge.mjs";
+import { mergeChatMessages, reconcileRemovedDirectMessages } from "./domain/chatMessages.mjs";
 import { createStaffReadCoordinator, staffScopeFor } from "./domain/staffReadCoordinator.mjs";
 import { patchModerationMemberContext } from "./domain/moderationConsole.mjs";
 import {
@@ -51,6 +52,7 @@ import {
   venuePhotoStateFor,
   withBoundedVenuePhotoCache,
 } from "./domain/venuePhotos.mjs";
+import { venueCatalogPhotoFields } from "./domain/venuePhotoProvenance.mjs";
 
 // Legacy client facade: combines server hydration, small persisted caches, social
 // state, and compatibility data behind one screen-facing shape. Server responses
@@ -104,19 +106,6 @@ const ago = (ms) => {
   return Math.floor(d / 30) + "mo";
 };
 
-const chatTime = (message) => Number.isFinite(message?.at) ? message.at : 0;
-const mergeChatMessages = (existing, incoming, removedIds = [], max = 600) => {
-  const removed = new Set(removedIds);
-  const byId = new Map();
-  for (const message of existing || []) {
-    if (message?.id && !removed.has(message.id)) byId.set(message.id, message);
-  }
-  for (const message of incoming || []) {
-    if (message?.id && !removed.has(message.id)) byId.set(message.id, { ...byId.get(message.id), ...message });
-  }
-  const ordered = [...byId.values()].sort((a, b) => chatTime(a) - chatTime(b) || String(a.id).localeCompare(String(b.id)));
-  return ordered.length > max ? ordered.slice(-max) : ordered;
-};
 const adoptChatMessageId = (messages, localId, serverId, max) => mergeChatMessages(
   [],
   (messages || []).map((message) => message.id === localId
@@ -1670,8 +1659,8 @@ export function StoreProvider({ children }) {
     // Slice 4: hydrate my DM threads (+ absorb the people I've messaged so their
     // names/avatars resolve in the inbox). Bucket/unread stay computed client-side.
     api("/api/me/threads")
-      .then(({ threads }) => {
-        if (sessionRef.current?.id !== su.id || !Array.isArray(threads) || !threads.length) return;
+      .then(({ threads, removedIds = [] }) => {
+        if (sessionRef.current?.id !== su.id || !Array.isArray(threads)) return;
         setUsers((all) => {
           let next = all;
           threads.forEach((t) => {
@@ -1681,7 +1670,7 @@ export function StoreProvider({ children }) {
           return next;
         });
         setDms((d) => {
-          const n = { ...d };
+          const n = { ...reconcileRemovedDirectMessages(d, su.id, removedIds) };
           threads.forEach((t) => { n[dmKey(su.id, t.otherId)] = t.messages.map((m) => ({ id: m.id, from: m.from, text: m.text, at: m.createdAt, ts: ago(m.createdAt), server: true })); });
           return n;
         });
@@ -2370,28 +2359,31 @@ export function StoreProvider({ children }) {
     }
   };
 
-  // Per-report moderation: content is public on post; reports drive action.
-  // Slice 6: reports write through to the server so an admin on any device sees
-  // them; admins hydrate the open queue on login (see absorbServerUser). Reports
-  // are always on a post here. Best-effort/offline-safe.
-  const reportContent = async (targetId, reason, targetType = "post") => {
+  // Reports write through before appearing locally: a safety report must never
+  // look filed when the server did not receive it. The same boundary handles
+  // posts, people, comments, private messages and gated community messages.
+  const reportContent = async (targetId, reason, targetType = "post", { mediaUri = null } = {}) => {
     const r = clean(reason, { max: LIMITS.note });
-    setReports((rs) => [{ id: "rep_" + Date.now(), targetId, reason: r, reporterId: session?.id, status: "open" }, ...rs]);
-    // This used to fire-and-forget and return { ok: true } before the request
-    // even resolved, so a failed POST still told the reporter their report had
-    // reached the moderators. It had not, and nobody would ever see it. Of every
-    // write in the app this is the one where a false success costs the most
-    // trust, so it now reports honestly and lets the reporter retry.
     if (!session) return { ok: false, error: "Log in to send this to the moderators." };
     try {
-      await api("/api/reports", {
+      const result = await api("/api/reports", {
         method: "POST",
-        body: { targetType, targetId, reason: r },
+        body: { targetType, targetId, reason: r, ...(mediaUri ? { mediaUri } : {}) },
         context: "Sending your report",
         silent: true, // the screen shows a specific message, not a generic toast
       });
+      setReports((current) => current.some((entry) => entry.id === result.id)
+        ? current
+        : [{
+            id: result.id,
+            targetType,
+            targetId,
+            reason: r,
+            reporterId: session.id,
+            status: "open",
+          }, ...current]);
       if (targetType === "post") track("interaction", { postId: targetId, action: "report", surface: "post_detail" });
-      return { ok: true };
+      return { ok: true, id: result.id, duplicate: !!result.duplicate };
     } catch (error) {
       // Deliberately NOT the generic transport message ("Pit could not finish
       // that action"), which never says the report was not filed. For this one
@@ -3076,14 +3068,14 @@ export function StoreProvider({ children }) {
     const enc = encodeURIComponent(norm(name));
     api(`/api/artists/${enc}/profile`)
       .then(({ profile, posts }) => {
-        if (profile) setArtistProfiles((m) => ({ ...m, [norm(name)]: { ...(m[norm(name)] || {}), ...profile } }));
-        if (Array.isArray(posts) && posts.length) {
-          setArtistPosts((m) => {
-            const existing = m[norm(name)] || [];
-            const have = new Set(existing.map((p) => p.id));
-            const fresh = posts.filter((p) => !have.has(p.id)).map((p) => ({ id: p.id, text: p.text, ts: ago(p.createdAt) }));
-            return fresh.length ? { ...m, [norm(name)]: [...fresh, ...existing] } : m;
-          });
+        setArtistProfiles((m) => ({ ...m, [norm(name)]: profile ? { ...(m[norm(name)] || {}), ...profile } : {} }));
+        if (Array.isArray(posts)) {
+          // This is an authoritative moderation-aware snapshot. Replacing it also
+          // removes a post that staff hid since this device last opened the page.
+          setArtistPosts((m) => ({
+            ...m,
+            [norm(name)]: posts.map((p) => ({ id: p.id, userId: p.userId, text: p.text, ts: ago(p.createdAt) })),
+          }));
         }
       })
       .catch(() => {});
@@ -3109,12 +3101,12 @@ export function StoreProvider({ children }) {
     const t = clean(text, { max: LIMITS.message, newlines: true });
     if (!isArtistOwner(name) || !t) return;
     const localId = "ap_" + Date.now();
-    const p = { id: localId, text: t, ts: "now" };
+    const p = { id: localId, userId: session.id, text: t, ts: "now" };
     setArtistPosts((m) => ({ ...m, [norm(name)]: [p, ...(m[norm(name)] || [])] }));
     const enc = encodeURIComponent(norm(name));
     api(`/api/artists/${enc}/posts`, { method: "POST", body: { text: t } })
       .then(({ id }) => { if (id) setArtistPosts((m) => ({ ...m, [norm(name)]: (m[norm(name)] || []).map((x) => (x.id === localId ? { ...x, id } : x)) })); })
-      .catch(() => {});
+      .catch(() => setArtistPosts((m) => ({ ...m, [norm(name)]: (m[norm(name)] || []).filter((x) => x.id !== localId) })));
   };
   const removeArtistPost = (name, id) => {
     if (!isArtistOwner(name)) return;
@@ -3452,7 +3444,9 @@ export function StoreProvider({ children }) {
       });
   };
   const venueRating = (venueName) => { const rs = venueReviewsFor(venueName); return rs.length ? rs.reduce((s, r) => s + r.rating, 0) / rs.length : 0; };
-  const venueTopPhotos = (venueName, n = 20) => venueReviewsFor(venueName).flatMap((r) => r.photos.map((p) => ({ uri: p, by: r.name }))).slice(0, n);
+  const venueTopPhotos = (venueName, n = 20) => venueReviewsFor(venueName)
+    .flatMap((r) => r.photos.map((p) => ({ uri: p, by: r.name, venueReviewId: r.id, ownerId: r.userId })))
+    .slice(0, n);
   // All photos for a venue's widget, self-healing like the artist gallery:
   //   1. official Commons building photo(s)  2. fan-uploaded review photos
   //   3. the Openverse backfill pool (licensed, attributed)
@@ -3523,7 +3517,7 @@ export function StoreProvider({ children }) {
 
   const venuePhotos = (venueName) => {
     const remote = venuePhotoState(venueName).photos;
-    const fan = venueTopPhotos(venueName, 12).map((p) => ({ uri: p.uri, by: p.by, source: "fan" }));
+    const fan = venueTopPhotos(venueName, 12).map((p) => ({ ...p, source: "fan" }));
     return mergeVenuePhotoSources(remote, fan, isPhotoRemoved);
   };
 
@@ -3533,11 +3527,11 @@ export function StoreProvider({ children }) {
     if (!session?.id) return Promise.resolve([]);
     const accountId = session.id;
     return api("/api/me/threads?summary=1", { signal, silent: true, context: "Refreshing your inbox" })
-      .then(({ threads }) => {
+      .then(({ threads, removedIds = [] }) => {
         if (!Array.isArray(threads) || session?.id !== accountId) return [];
         absorbUsers(threads.map((thread) => thread.otherUser).filter(Boolean));
         setDms((all) => {
-          const next = { ...all };
+          const next = { ...reconcileRemovedDirectMessages(all, accountId, removedIds) };
           for (const thread of threads) {
             const key = dmKey(accountId, thread.otherId);
             const incoming = (thread.messages || []).map((message) => ({
@@ -3548,7 +3542,7 @@ export function StoreProvider({ children }) {
               ts: ago(message.createdAt),
               server: true,
             }));
-            next[key] = mergeChatMessages(next[key] || [], incoming, [], 750);
+            next[key] = mergeChatMessages(next[key] || [], incoming, removedIds, 750);
           }
           return next;
         });
@@ -3571,12 +3565,15 @@ export function StoreProvider({ children }) {
       silent: true,
       context: "Refreshing direct messages",
     })
-      .then(({ messages, syncCursor, hasMore }) => {
+      .then(({ messages, removedIds = [], syncCursor, hasMore }) => {
         if (!Array.isArray(messages)) return;
-        if (!messages.length) return { syncCursor: syncCursor || after || null, hasMore: !!hasMore };
         setDms((d) => {
           const incoming = messages.map((m) => ({ id: m.id, from: m.from, text: m.text, at: m.createdAt, ts: ago(m.createdAt), server: true }));
-          return { ...d, [key]: mergeChatMessages(d[key] || [], incoming, [], 750) };
+          const live = mergeChatMessages(d[key] || [], incoming, removedIds, 750);
+          const next = { ...d };
+          if (live.length) next[key] = live;
+          else delete next[key];
+          return next;
         });
         return { syncCursor: syncCursor || after || null, hasMore: !!hasMore };
       })
@@ -3616,6 +3613,7 @@ export function StoreProvider({ children }) {
     return Object.keys(dms)
       .filter((k) => k.split("__").includes(session.id))
       .filter((k) => !k.split("__").some((id) => blockedIds.includes(id)))
+      .filter((k) => Array.isArray(dms[k]) && dms[k].length > 0)
       .map((k) => {
         const msgs = dms[k];
         const otherId = k.split("__").find((id) => id !== session.id);
@@ -3677,9 +3675,12 @@ export function StoreProvider({ children }) {
       name,
       genre: nights.find((n) => n.genre)?.genre || cat?.genre || "-",
       photo: prof.avatarUri || cat?.photo || null,
+      profileAvatarUri: prof.avatarUri || null,
       photoCredit: prof.avatarUri ? null : cat?.photoCredit || null,
       banner: prof.banner || null,
       ownerBio: prof.bio || null,
+      ownerId: prof.ownerId || null,
+      profileKey: key,
       feedEnabled: !!prof.feedEnabled,
       nights,
       upcoming,
@@ -3733,11 +3734,12 @@ export function StoreProvider({ children }) {
       .map((t) => ({ ...t, scheduled: t.releaseAt > Date.now() }));
     const cat = catalogVenues[key];
     const place = (cat && cat.place) || nights.find((n) => n.city)?.city || upcoming.find((u) => u.place)?.place || "";
+    const catalogPhoto = venueCatalogPhotoFields(cat);
     return {
       name: (cat && cat.name) || name,
       place,
-      photo: (cat && cat.photo) || null,
-      photoCredit: (cat && cat.photoCredit) || null,
+      photo: catalogPhoto.photo,
+      photoCredit: catalogPhoto.photoCredit,
       capacity: (cat && cat.capacity) || null,
       nights,
       upcoming,
@@ -4125,14 +4127,14 @@ export function StoreProvider({ children }) {
     if (!k) return;
     try {
       const { photos } = await api(`/api/artists/photos?name=${encodeURIComponent(name)}`, { silent: true });
-      if (Array.isArray(photos)) setArtistPhotosSrv((m) => ({ ...m, [k]: photos.map((p) => ({ uri: p.uri, by: p.by, postId: p.postId, source: "fan" })) }));
+      if (Array.isArray(photos)) setArtistPhotosSrv((m) => ({ ...m, [k]: photos.map((p) => ({ uri: p.uri, by: p.by, postId: p.postId, ownerId: p.userId, source: "fan" })) }));
     } catch {}
   };
   const artistFanPhotos = (name) => {
     const k = norm(name);
     const local = feed
       .filter((l) => !removedIds.includes(l.id) && norm(l.artist) === k && l.photosPublic && l.photos?.length)
-      .flatMap((l) => l.photos.map((uri) => ({ uri, by: l.user?.name, source: "fan" })));
+      .flatMap((l) => l.photos.map((uri) => ({ uri, by: l.user?.name, postId: l.id, ownerId: l.userId, source: "fan" })));
     const srv = artistPhotosSrv[k] || [];
     const seen = new Set();
     return [...local, ...srv].filter((p) => {
@@ -4144,7 +4146,7 @@ export function StoreProvider({ children }) {
 
   // The self-healing 5-pick gallery. Pools, in priority order:
   //   1. fan photos from the feed (best on-site shots, by likes)
-  //   2. the artist's licensed photo gallery (Commons portraits/live shots)
+  //   2. the artist's explicitly attributed catalogue gallery
   //   3. the Openverse backfill pool (CC-licensed web photos, with attribution)
   // Moderated URLs are filtered at every layer, so pulling one photo simply
   // promotes the next available image to keep the gallery full (up to n).
@@ -4153,8 +4155,8 @@ export function StoreProvider({ children }) {
     const fan = artistFanPhotos(name);
     const pool = (meta.galleryPool && meta.galleryPool.length
       ? meta.galleryPool
-      : (meta.photos || []).map((uri) => ({ uri, credit: meta.photoCredit || "Wikimedia Commons", source: "commons" })))
-      .map((p) => ({ uri: p.uri, by: p.credit, source: p.source || "commons" }));
+      : (meta.photos || []).map((uri) => ({ uri, credit: meta.photoCredit || null, source: "catalog" })))
+      .map((p) => ({ uri: p.uri, by: p.credit || null, source: p.source || "catalog" }));
 
     const out = [];
     const seen = new Set();

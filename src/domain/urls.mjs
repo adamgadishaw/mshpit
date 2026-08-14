@@ -38,7 +38,7 @@ export const RESERVED_SLUGS = new Set([
   "nearby", "new", "notifications", "playlist", "playlists", "post", "press",
   "privacy", "profile", "public", "robots.txt", "search", "settings", "show",
   "signup", "sitemap.xml", "static", "support", "terms", "tour", "venues",
-  "you", "_expo",
+  "you", "account-deletion", "_expo",
 ]);
 
 export const isReservedSlug = (slug) => RESERVED_SLUGS.has(String(slug || "").toLowerCase());

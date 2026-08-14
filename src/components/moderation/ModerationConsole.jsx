@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Keyboard, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from "react-native";
+import { ActivityIndicator, Keyboard, Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from "react-native";
 
 import Avatar from "../Avatar";
 import Badge from "../Badge";
 import Icon from "../Icon";
+import SmartImage from "../SmartImage";
+import { isVideoUrl } from "../../lib/img";
 import { colors, mono, radius, space } from "../../theme";
 import {
   buildModerationReportRows,
@@ -21,6 +23,7 @@ import {
 const ROLES = ["fan", "artist", "moderator", "admin"];
 const MEMBER_PAGE_SIZE = 40;
 const REPORT_PAGE_SIZE = 30;
+const IRREVERSIBLE_MEDIA_TARGETS = new Set(["post", "venue_review", "artist_profile"]);
 
 const roleColor = (role) => (
   role === "admin" ? colors.magenta
@@ -211,6 +214,12 @@ function ReportCard({ row, selfId, canBan, busy, confirmation, onRequest, onConf
   const authorIsAdmin = row.author?.role === "admin";
   const removable = canRemoveReportTarget(row.type) && !row.target.missing;
   const alreadyRemoved = removable && row.target.removed;
+  const irreversibleMediaRemoval = IRREVERSIBLE_MEDIA_TARGETS.has(row.type);
+  const privateMessageRemoval = row.type === "message";
+  const reportedMedia = row.target.reportedMediaTrusted === true && /^https?:\/\//i.test(row.target.reportedMedia || "")
+    ? row.target.reportedMedia
+    : null;
+  const reportedVideo = isVideoUrl(reportedMedia);
   return (
     <View style={[styles.reportCard, row.target.missing && styles.cardWarning]}>
       <View style={styles.reportHeader}>
@@ -230,6 +239,27 @@ function ReportCard({ row, selfId, canBan, busy, confirmation, onRequest, onConf
         <Text selectable style={styles.targetTitle}>{row.target.title}</Text>
         {row.target.metadata ? <Text selectable style={styles.targetMeta}>{row.target.metadata}</Text> : null}
         <Text selectable style={styles.targetExcerpt}>{row.target.excerpt}</Text>
+        {reportedMedia ? (
+          <View style={styles.reportedMediaCard}>
+            {reportedVideo ? (
+              <View style={styles.reportedVideoPreview}><Icon name="play" size={24} color={colors.amber} /></View>
+            ) : (
+              <SmartImage uri={reportedMedia} style={styles.reportedMediaPreview} contain={false} accessibilityLabel="Reported attachment preview" />
+            )}
+            <Pressable
+              accessibilityRole="link"
+              accessibilityLabel="Open exact reported attachment"
+              style={styles.reportedMediaLink}
+              onPress={() => Linking.openURL(reportedMedia).catch(() => {})}
+            >
+              <Icon name="external" size={14} color={colors.amber} />
+              <Text style={styles.reportedMediaLinkText}>Open exact reported attachment</Text>
+            </Pressable>
+          </View>
+        ) : null}
+        {row.target.reportedMediaUnavailable ? (
+          <Text style={styles.reportedMediaUnavailable}>The exact reported attachment is no longer attached or cannot be safely previewed. No replacement media was substituted.</Text>
+        ) : null}
         <Text selectable style={styles.targetId}>Target ID: {row.targetId || "unavailable"}</Text>
       </View>
       <View style={styles.peopleRow}>
@@ -251,7 +281,17 @@ function ReportCard({ row, selfId, canBan, busy, confirmation, onRequest, onConf
         {removable ? (
           <ActionButton label={alreadyRemoved ? "Resolve as removed" : "Remove target"} icon={alreadyRemoved ? "check" : "trash"} tone={alreadyRemoved ? "success" : "danger"} disabled={busy} onPress={() => onRequest({
             key: `report:${row.id}:remove`, scope: `report:${row.id}`, title: alreadyRemoved ? "Resolve this report as already removed?" : `Remove this ${row.typeLabel.toLowerCase()}?`,
-            detail: alreadyRemoved ? "The target is already hidden. This marks the open report actioned without changing visibility." : "It will be hidden from the community and this report will be marked actioned. The moderation audit records the change.",
+            detail: alreadyRemoved
+              ? (irreversibleMediaRemoval
+                ? "The target is already hidden. Resolving also detaches and permanently queues any legacy attached PIT media for deletion. A later restore can return text only."
+                : privateMessageRemoval
+                  ? "The exact message is already hidden from both participants. This resolves the report without exposing any other message in the conversation."
+                  : "The target is already hidden. This marks the open report actioned without changing visibility.")
+              : (irreversibleMediaRemoval
+                ? "It will be hidden and all attached PIT media will be detached and permanently queued for deletion. A later restore can return text only, never the deleted media."
+                : privateMessageRemoval
+                  ? "Only this exact message will be hidden from both participants and its notification preview removed. The body stays restricted as adjudication evidence; a staff restore can re-open it but will not send another notification."
+                  : "It will be hidden from the community and this report will be marked actioned. The moderation audit records the change."),
             confirmLabel: alreadyRemoved ? "Resolve report" : "Remove target", icon: alreadyRemoved ? "check" : "trash", tone: alreadyRemoved ? "success" : "danger", success: alreadyRemoved ? "Report resolved; target remains removed." : "Target removed and report actioned.",
             run: () => row.actions.moderateReport({ action: "remove", reportId: row.id }),
           })} />
@@ -319,7 +359,7 @@ function ReportsWorkspace({ rows, queueSummary, nextCursor, loadingState, loadEr
           <Text style={styles.eyebrow}>REPORT QUEUE</Text>
           <Text accessibilityRole="header" style={styles.sectionTitle}>{globalContentCount.toLocaleString()} open content report{globalContentCount === 1 ? "" : "s"}</Text>
           <Text style={styles.loadedCount}>{summary.total.toLocaleString()} loaded on this device</Text>
-          <Text style={styles.sectionIntro}>Review the reason, server-projected target, reporter, and author before acting. Removing hides the target; dismissing leaves it visible.</Text>
+          <Text style={styles.sectionIntro}>Review the reason, server-projected target, reporter, and author before acting. Removing a direct message hides only that exact message from both participants; attached media on posts, venue reviews, and artist profiles is permanently detached and cannot return on restore.</Text>
         </View>
         <ActionButton label="Refresh queue" icon="discover" compact busy={loadingState === "loading"} disabled={loadingState === "loading" || busy} onPress={onRetry} />
       </View>
@@ -860,6 +900,12 @@ const styles = StyleSheet.create({
   targetTitle: { color: colors.text, fontSize: 16, lineHeight: 21, fontWeight: "900" },
   targetMeta: { color: colors.amber, fontSize: 11, lineHeight: 16 },
   targetExcerpt: { color: colors.textDim, fontSize: 13, lineHeight: 20, marginTop: space(1) },
+  reportedMediaCard: { marginTop: space(2), gap: space(2), overflow: "hidden", borderWidth: 1, borderColor: colors.line, borderRadius: radius.sm, backgroundColor: colors.surface },
+  reportedMediaPreview: { width: "100%", height: 180, backgroundColor: colors.bg },
+  reportedVideoPreview: { width: "100%", height: 120, alignItems: "center", justifyContent: "center", backgroundColor: colors.bg },
+  reportedMediaLink: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: space(2), paddingHorizontal: space(3), paddingBottom: space(2) },
+  reportedMediaLinkText: { color: colors.amber, fontSize: 11, fontWeight: "900" },
+  reportedMediaUnavailable: { color: colors.gold, fontSize: 11, lineHeight: 17, marginTop: space(2) },
   targetId: { color: colors.textFaint, fontFamily: mono, fontSize: 9, marginTop: space(1) },
   peopleRow: { flexDirection: "row", flexWrap: "wrap", gap: space(2) },
   personBlock: { flexGrow: 1, flexBasis: 180, gap: 3 },

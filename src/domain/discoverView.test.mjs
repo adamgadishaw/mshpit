@@ -78,8 +78,8 @@ test("photo selection excludes removed and blocked posts while keeping bounded t
     { id: "visible-b", venue: "History", photos: ["c.jpg"], likes: 8 },
   ], { removedIds: ["removed"], blockedIds: ["fan-2"], limit: 2 });
   assert.deepEqual(photos, [
-    { uri: "c.jpg", artist: null, venue: "History", by: "", likes: 8, logId: "visible-b" },
-    { uri: "a.jpg", artist: "SZA", venue: null, by: "", likes: 5, logId: "visible-a" },
+    { uri: "c.jpg", artist: null, venue: "History", by: "", likes: 8, logId: "visible-b", ownerId: null },
+    { uri: "a.jpg", artist: "SZA", venue: null, by: "", likes: 5, logId: "visible-a", ownerId: null },
   ]);
 });
 

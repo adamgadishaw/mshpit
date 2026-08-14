@@ -56,7 +56,7 @@ function AlbumArt({ uri }) {
 
 // Artist page - the rollup of a band's live reputation across every night,
 // plus where to catch them next. Answers "is this band worth seeing?"
-export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFanClub, onOpenPhotos, onEditArtist, onPlay, onAddToPlaylist }) {
+export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFanClub, onOpenPhotos, onEditArtist, onPlay, onAddToPlaylist, onReport }) {
   const { session, artistSummary, albumRating, songRating, rateAlbum, rateSong, loadRating,
     isArtistOwner, artistPostsFor, loadArtistPage, addArtistPost, removeArtistPost,
     artistGallery, loadArtistPhotos, removePhoto, artistBadges, artistRank, remoteArtistMeta, resolveArtist,
@@ -98,6 +98,12 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
   const isOwner = isArtistOwner(a.name);
   const bio = a.ownerBio || meta?.bio;
   const bannerUri = a.banner || meta?.photo || null;
+  const profileBannerPhotos = a.banner && a.ownerId
+    ? [{ uri: a.banner, ownerId: a.ownerId, artistProfileKey: a.profileKey, by: a.name }]
+    : null;
+  const profileAvatarPhotos = a.profileAvatarUri && a.ownerId
+    ? [{ uri: a.profileAvatarUri, ownerId: a.ownerId, artistProfileKey: a.profileKey, by: a.name }]
+    : null;
   const avatarUser = { avatarUri: a.photo || meta?.photo || null, initials: a.name.slice(0, 2).toUpperCase(), avatarColor: colors.amber };
   const posts = artistPostsFor(a.name);
   const [draft, setDraft] = useState("");
@@ -411,7 +417,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
             bottom edge inside a bg-colored ring (the "box"), action on the right. */}
         <View style={styles.banner}>
           {bannerUri ? (
-            <SmartImage uri={bannerUri} style={StyleSheet.absoluteFill} contain={false} onPress={() => onOpenPhotos?.(meta?.photos?.length ? meta.photos : bannerUri ? [bannerUri] : [], 0)} />
+            <SmartImage uri={bannerUri} style={StyleSheet.absoluteFill} contain={false} onPress={() => onOpenPhotos?.(profileBannerPhotos || (meta?.photos?.length ? meta.photos : bannerUri ? [bannerUri] : []), 0)} />
           ) : (
             <View style={styles.bannerFallback} />
           )}
@@ -428,19 +434,39 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
 
         <View style={styles.headRow}>
           <View style={styles.avatarWrap}>
-            <Avatar user={avatarUser} size={84} onPress={() => onOpenPhotos?.(meta?.photos?.length ? meta.photos : a.photo ? [a.photo] : [], 0)} />
+            <Avatar user={avatarUser} size={84} onPress={() => onOpenPhotos?.(profileAvatarPhotos || (meta?.photos?.length ? meta.photos : a.photo ? [a.photo] : []), 0)} />
           </View>
-          {isOwner ? (
-            <Pressable style={styles.editBtn} onPress={() => onEditArtist?.(a.name)}>
-              <Icon name="edit" size={14} color={colors.amber} />
-              <Text style={styles.editTxt}>Edit profile</Text>
-            </Pressable>
-          ) : badges.length ? (
-            <View style={styles.badgeChips}>
-              {badges.includes("verified") && <BadgeChip type="verified" label="VERIFIED" />}
-              {badges.includes("top100") && <BadgeChip type="top100" label={rank && rank <= 100 ? `TOP 100 · #${rank}` : "TOP 100"} />}
-            </View>
-          ) : null}
+          <View style={styles.profileActions}>
+            {isOwner ? (
+              <Pressable style={styles.editBtn} onPress={() => onEditArtist?.(a.name)}>
+                <Icon name="edit" size={14} color={colors.amber} />
+                <Text style={styles.editTxt}>Edit profile</Text>
+              </Pressable>
+            ) : badges.length ? (
+              <View style={styles.badgeChips}>
+                {badges.includes("verified") && <BadgeChip type="verified" label="VERIFIED" />}
+                {badges.includes("top100") && <BadgeChip type="top100" label={rank && rank <= 100 ? `TOP 100 · #${rank}` : "TOP 100"} />}
+              </View>
+            ) : null}
+            {!isOwner && a.ownerId && onReport ? (
+              <Pressable
+                style={styles.reportProfileBtn}
+                onPress={() => onReport({
+                  targetType: "artist_profile",
+                  targetId: a.profileKey,
+                  ownerId: a.ownerId,
+                  targetName: "artist profile",
+                  title: `${a.name} artist profile`,
+                  summary: "Report this artist-owned bio or profile imagery to the moderation team.",
+                })}
+                accessibilityRole="button"
+                accessibilityLabel={`Report ${a.name} artist profile`}
+              >
+                <Icon name="flag" size={14} color={colors.textDim} />
+                <Text style={styles.reportProfileText}>Report profile</Text>
+              </Pressable>
+            ) : null}
+          </View>
         </View>
 
         <View style={styles.headInfo}>
@@ -642,6 +668,24 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
                       <Icon name="x" size={15} color={colors.textFaint} />
                     </Pressable>
                   )}
+                  {!isOwner && onReport ? (
+                    <Pressable
+                      style={styles.artistPostReport}
+                      hitSlop={8}
+                      onPress={() => onReport({
+                        targetType: "artist_post",
+                        targetId: p.id,
+                        ownerId: p.userId,
+                        targetName: "artist update",
+                        title: `${a.name} artist-page update`,
+                        summary: p.text,
+                      })}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Report ${a.name} artist-page update`}
+                    >
+                      <Icon name="flag" size={14} color={colors.textFaint} />
+                    </Pressable>
+                  ) : null}
                 </View>
                 <Text style={styles.postText}>{p.text}</Text>
               </View>
@@ -702,7 +746,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
                   {/* SmartImage: proxies HEIC (iPhone shots) to JPEG so no tile
                       ever renders blank, and taps open the full-screen viewer. */}
                   <SmartImage uri={p.uri} style={StyleSheet.absoluteFill} contain={false}
-                    onPress={() => onOpenPhotos?.(gallery.map((x) => ({ uri: x.uri, by: x.by })), i)} />
+                    onPress={() => onOpenPhotos?.(gallery.map((x) => ({ uri: x.uri, by: x.by, postId: x.postId, ownerId: x.ownerId })), i, p.postId || null)} />
                   {p.source !== "fan" && !!p.by && (
                     <View style={styles.creditTag} pointerEvents="none"><Text style={styles.creditTxt} numberOfLines={1}>{p.by}</Text></View>
                   )}
@@ -899,9 +943,12 @@ const styles = StyleSheet.create({
   bannerFallback: { ...StyleSheet.absoluteFillObject, backgroundColor: colors.surfaceAlt },
   headRow: { flexDirection: "row", alignItems: "flex-end", justifyContent: "space-between", marginTop: -42, paddingLeft: 4 },
   avatarWrap: { borderWidth: 3, borderColor: colors.bg, borderRadius: 48, backgroundColor: colors.bg },
+  profileActions: { alignItems: "flex-end", gap: 6, marginBottom: 4 },
   editBtn: { flexDirection: "row", alignItems: "center", gap: 7, borderWidth: 1, borderColor: colors.amber, borderRadius: radius.pill, paddingHorizontal: 16, paddingVertical: 8, marginBottom: 4 },
   editTxt: { color: colors.amber, fontSize: 13, fontWeight: "700" },
   badgeChips: { alignItems: "flex-end", gap: 6, marginBottom: 4 },
+  reportProfileBtn: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 7, borderWidth: 1, borderColor: colors.line, borderRadius: radius.pill, paddingHorizontal: 14 },
+  reportProfileText: { color: colors.textDim, fontSize: 12, fontWeight: "700" },
   headInfo: { marginTop: 12 },
   nameRow: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 4 },
   nameBadges: { marginTop: 4 },
@@ -930,6 +977,7 @@ const styles = StyleSheet.create({
   postTop: { flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 8 },
   postName: { color: colors.text, fontSize: 14, fontWeight: "800" },
   postTs: { color: colors.textFaint, fontFamily: mono, fontSize: 11, marginTop: 1 },
+  artistPostReport: { width: 36, height: 36, borderRadius: 18, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.lineSoft },
   postText: { color: colors.textDim, fontSize: 14, lineHeight: 20 },
   artistActions: { flexDirection: "row", gap: 10, marginTop: 16 },
   fcBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, backgroundColor: colors.amberStrong, borderRadius: radius.md, paddingVertical: 13, borderBottomWidth: 3, borderBottomColor: "#B65E1F" },

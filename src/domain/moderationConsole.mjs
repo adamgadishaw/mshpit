@@ -8,14 +8,19 @@ const TARGET_LABELS = {
   fan_message: "Fan club message",
   lounge_message: "Lounge message",
   venue_review: "Venue review",
+  artist_post: "Artist update",
+  artist_profile: "Artist profile",
 };
 
 const DIRECTLY_REMOVABLE_TARGETS = new Set([
   "post",
   "comment",
+  "message",
   "fan_message",
   "lounge_message",
   "venue_review",
+  "artist_post",
+  "artist_profile",
 ]);
 
 const safeText = (value) => (typeof value === "string" ? value.trim() : "");
@@ -124,10 +129,21 @@ function embeddedTargetContext(report, type) {
     title = `Venue review by ${author?.name || "a member"}`;
     excerpt = safeText(content.excerpt) || excerpt;
     metadata = [content.venueKey, content.rating ? `${content.rating}/5` : "", content.mediaCount ? `${content.mediaCount} photos` : ""].map(safeText).filter(Boolean).join(" / ");
+  } else if (type === "artist_post") {
+    title = `Artist update by ${author?.name || "a member"}`;
+    excerpt = safeText(content.excerpt) || excerpt;
+    metadata = safeText(content.artistKey);
+  } else if (type === "artist_profile") {
+    title = `${safeText(content.artistKey) || "Artist"} profile`;
+    excerpt = safeText(content.excerpt) || (content.mediaCount ? `${content.mediaCount} profile image${content.mediaCount === 1 ? "" : "s"}` : excerpt);
+    metadata = [author?.handle ? `Owned by @${author.handle}` : "", content.mediaCount ? `${content.mediaCount} images` : ""].filter(Boolean).join(" / ");
   } else if (type === "message") {
     title = `Private message by ${author?.name || "a member"}`;
-    excerpt = "Message text stays private in this queue. Review the report reason and author context.";
-    metadata = content.createdAt ? formatModerationTimestamp(content.createdAt, { includeTime: false, fallback: "" }) : "";
+    excerpt = safeText(content.excerpt) || "The reported message has no text preview.";
+    metadata = [
+      content.recipient?.handle ? `To @${content.recipient.handle}` : "",
+      content.createdAt ? formatModerationTimestamp(content.createdAt, { includeTime: false, fallback: "" }) : "",
+    ].filter(Boolean).join(" / ");
   } else if (type === "track") {
     title = safeText(content.title) || report.targetId || "Song report";
     excerpt = [content.artist, content.note].map(safeText).filter(Boolean).join(" / ") || "Open the Songs workflow to review playback evidence.";
@@ -140,7 +156,16 @@ function embeddedTargetContext(report, type) {
   } else if (content.removed) {
     metadata = [metadata, "Already removed"].filter(Boolean).join(" / ");
   }
-  return { target: { title, excerpt, metadata, missing: !exists, removed: !!content.removed }, author };
+  return { target: {
+    title,
+    excerpt,
+    metadata,
+    reportedMedia: content.reportedMediaTrusted === true ? (safeText(content.reportedMedia) || null) : null,
+    reportedMediaTrusted: content.reportedMediaTrusted === true,
+    reportedMediaUnavailable: !!content.reportedMediaUnavailable,
+    missing: !exists,
+    removed: !!content.removed,
+  }, author };
 }
 
 export function moderationTargetLabel(targetType) {

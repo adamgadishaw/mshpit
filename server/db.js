@@ -12,6 +12,8 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PIT_SQLITE_APPLICATION_ID, prepareDataDirectory } from "./dataDirectory.js";
+import { contentSafetyDecision } from "./contentSafety.js";
+import { canonicalProfileExtras } from "./profileExtras.js";
 
 export const artistSearchKey = (value) => String(value || "")
   .normalize("NFKD")
@@ -160,6 +162,7 @@ CREATE TABLE IF NOT EXISTS dms (
   from_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   to_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   text       TEXT NOT NULL,
+  removed    INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_dms_pair ON dms(from_id, to_id);
@@ -171,6 +174,8 @@ CREATE TABLE IF NOT EXISTS reports (
   target_id   TEXT NOT NULL,
   reason      TEXT NOT NULL DEFAULT '',
   reporter_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+  media_index INTEGER,
+  media_fingerprint TEXT,
   status      TEXT NOT NULL DEFAULT 'open',
   created_at  INTEGER NOT NULL
 );
@@ -233,6 +238,7 @@ CREATE TABLE IF NOT EXISTS artist_profiles (
   avatar_uri   TEXT,
   feed_enabled INTEGER NOT NULL DEFAULT 0,
   owner_id     TEXT REFERENCES users(id) ON DELETE SET NULL,
+  removed      INTEGER NOT NULL DEFAULT 0,
   updated_at   INTEGER
 );
 
@@ -242,6 +248,7 @@ CREATE TABLE IF NOT EXISTS artist_posts (
   artist_key TEXT NOT NULL,
   user_id    TEXT REFERENCES users(id) ON DELETE SET NULL,
   text       TEXT NOT NULL,
+  removed    INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_artist_posts_artist ON artist_posts(artist_key);
@@ -531,6 +538,69 @@ CREATE TABLE IF NOT EXISTS media_reactions (
 );
 CREATE INDEX IF NOT EXISTS idx_media_reactions_url ON media_reactions(media_url);
 
+-- Every direct-upload ticket is recorded before it is returned to the client.
+-- This is intentionally not tied to users by a foreign key: account deletion
+-- must leave the exact owner/key work list alive until object storage confirms
+-- deletion, including uploads that were never attached to a database record.
+CREATE TABLE IF NOT EXISTS media_objects (
+  object_key    TEXT PRIMARY KEY,
+  owner_id      TEXT NOT NULL,
+  purpose       TEXT NOT NULL,
+  status        TEXT NOT NULL DEFAULT 'issued'
+                  CHECK (status IN ('issued','associated','delete_queued','deletion_dead')),
+  created_at    INTEGER NOT NULL,
+  upload_expires_at INTEGER,
+  associated_at INTEGER,
+  updated_at    INTEGER NOT NULL,
+  UNIQUE (owner_id, object_key)
+);
+CREATE INDEX IF NOT EXISTS idx_media_objects_owner ON media_objects(owner_id, status, created_at);
+
+-- Durable active-object cleanup. Backups use separate BACKUP_S3_* credentials
+-- and never enter this table; the worker signs only MEDIA_* object keys.
+CREATE TABLE IF NOT EXISTS media_deletion_queue (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  owner_id        TEXT NOT NULL,
+  object_key      TEXT NOT NULL UNIQUE,
+  status          TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending','retry','processing','dead')),
+  attempts        INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  next_attempt_at INTEGER NOT NULL,
+  last_error_code TEXT,
+  created_at      INTEGER NOT NULL,
+  updated_at      INTEGER NOT NULL,
+  dead_at         INTEGER,
+  FOREIGN KEY (owner_id, object_key) REFERENCES media_objects(owner_id, object_key)
+);
+CREATE INDEX IF NOT EXISTS idx_media_deletion_due
+  ON media_deletion_queue(status, next_attempt_at, id);
+CREATE INDEX IF NOT EXISTS idx_media_deletion_owner
+  ON media_deletion_queue(owner_id, status, created_at);
+
+-- A per-owner ListObjectsV2 cursor closes the one pre-ledger blind spot: an old
+-- direct upload that succeeded but was never attached to a row. Account deletion
+-- creates this durable prefix job without waiting on object storage; the worker
+-- paginates only users/{exact owner}/ and validates every returned key before it
+-- can enter the object queue.
+CREATE TABLE IF NOT EXISTS media_owner_sweeps (
+  owner_id          TEXT PRIMARY KEY,
+  status            TEXT NOT NULL DEFAULT 'pending'
+                      CHECK (status IN ('pending','retry','processing','dead')),
+  attempts          INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  continuation_token TEXT,
+  not_before_at     INTEGER NOT NULL DEFAULT 0,
+  finalize_after_at INTEGER NOT NULL DEFAULT 0,
+  verification_passes INTEGER NOT NULL DEFAULT 0 CHECK (verification_passes >= 0),
+  next_attempt_at   INTEGER NOT NULL,
+  discovered_count INTEGER NOT NULL DEFAULT 0,
+  last_error_code   TEXT,
+  created_at        INTEGER NOT NULL,
+  updated_at        INTEGER NOT NULL,
+  dead_at           INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_media_owner_sweeps_due
+  ON media_owner_sweeps(status, next_attempt_at, owner_id);
+
 -- Aggregated server errors. One row per DISTINCT problem, not per occurrence:
 -- a 500 in a loop would otherwise write thousands of rows onto a 1GB disk and
 -- bury the signal. The count column carries the volume instead.
@@ -691,6 +761,9 @@ const additiveMigrations = [
   "ALTER TABLE artists ADD COLUMN youtube_channel_source TEXT",
   "ALTER TABLE wikidata_channel_checks ADD COLUMN validated INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE comments ADD COLUMN parent_id TEXT", // forum-style reply threading
+  // Exact-message moderation keeps the private body as bounded adjudication
+  // evidence while this flag hides it from both participants' read surfaces.
+  "ALTER TABLE dms ADD COLUMN removed INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE users ADD COLUMN sponsor INTEGER NOT NULL DEFAULT 0", // admin-granted partner mark
   "ALTER TABLE users ADD COLUMN reset_hash TEXT", // sha256 of a password-reset token
   "ALTER TABLE users ADD COLUMN reset_expires INTEGER NOT NULL DEFAULT 0",
@@ -738,6 +811,25 @@ const additiveMigrations = [
   // Set when the welcome mail goes out, so verifying twice, an admin marking an
   // already-verified account, or a resend cannot send it again.
   "ALTER TABLE users ADD COLUMN welcome_sent_at INTEGER NOT NULL DEFAULT 0",
+  // Artist-page updates are UGC too. Soft removal lets the shared moderation
+  // workflow hide them atomically while preserving an audit trail.
+  "ALTER TABLE artist_posts ADD COLUMN removed INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE artist_profiles ADD COLUMN removed INTEGER NOT NULL DEFAULT 0",
+  // A report stores only a verified positional selector. The attachment URL is
+  // resolved from the still-current target for authorized, no-store staff reads.
+  "ALTER TABLE reports ADD COLUMN media_index INTEGER",
+  "ALTER TABLE reports ADD COLUMN media_fingerprint TEXT",
+  // A deletion sweep cannot finish while a previously issued PUT can still
+  // create an object after an early 404. Existing rows safely use NULL/0;
+  // newly issued tickets persist their exact expiry and set the sweep barrier.
+  "ALTER TABLE media_objects ADD COLUMN upload_expires_at INTEGER",
+  "ALTER TABLE media_owner_sweeps ADD COLUMN not_before_at INTEGER NOT NULL DEFAULT 0",
+  // Keep exact-prefix verification alive after the first empty listing. S3
+  // validates a presigned PUT when the request starts, so a slow transfer may
+  // complete after its URL expires. Existing sweep rows get an immediate final
+  // pass; newly created account-erasure sweeps receive the bounded quiet window.
+  "ALTER TABLE media_owner_sweeps ADD COLUMN finalize_after_at INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE media_owner_sweeps ADD COLUMN verification_passes INTEGER NOT NULL DEFAULT 0",
 ];
 db.exec("BEGIN IMMEDIATE");
 try {
@@ -765,6 +857,7 @@ try {
 
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_posts_client_mutation ON posts(user_id, client_mutation_id) WHERE client_mutation_id IS NOT NULL");
 db.exec("CREATE INDEX IF NOT EXISTS idx_posts_landing_media ON posts(landing_showcase, photos_public, removed, kind, created_at DESC, id DESC)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_dms_visible_cursor ON dms(from_id, to_id, removed, created_at DESC, id DESC)");
 // The queue is drained by "next pending for this campaign" on every iteration,
 // and the log is read newest-first, so both need their own covering order.
 db.exec("CREATE INDEX IF NOT EXISTS idx_email_queue_campaign ON email_queue(campaign_id, status, id)");
@@ -1031,6 +1124,8 @@ export const providerCacheStmts = {
 
 // --- Artist catalog statements + helpers -------------------------------------
 const ARTIST_COLS = "norm,name,search_key,genre,photo,bio,mbid,spotify_id,country,formed,popularity,rank_score,data,source,created_at,updated_at";
+export const MISSING_ARTIST_RETENTION_DAYS = 30;
+export const MISSING_ARTIST_MAX_ROWS = 5000;
 export const artistStmts = {
   byNorm: db.prepare("SELECT * FROM artists WHERE norm = ?"),
   count: db.prepare("SELECT COUNT(*) c FROM artists"),
@@ -1053,6 +1148,10 @@ export const artistStmts = {
   recordMissing: db.prepare("INSERT INTO missing_artists (norm,name,searches,last_at) VALUES (?,?,1,?) ON CONFLICT(norm) DO UPDATE SET searches = searches + 1, last_at = excluded.last_at"),
   listMissing: db.prepare("SELECT * FROM missing_artists ORDER BY searches DESC, last_at DESC LIMIT ?"),
   clearMissing: db.prepare("DELETE FROM missing_artists WHERE norm = ?"),
+  pruneMissingBefore: db.prepare("DELETE FROM missing_artists WHERE last_at < ?"),
+  trimMissingAfter: db.prepare(`DELETE FROM missing_artists WHERE norm IN (
+    SELECT norm FROM missing_artists ORDER BY last_at DESC,norm DESC LIMIT -1 OFFSET ?
+  )`),
   upsert: db.prepare(`INSERT INTO artists (${ARTIST_COLS})
     VALUES (@norm,@name,@search_key,@genre,@photo,@bio,@mbid,@spotify_id,@country,@formed,@popularity,@rank_score,@data,@source,@created_at,@updated_at)
     ON CONFLICT(norm) DO UPDATE SET
@@ -1070,6 +1169,23 @@ export const artistStmts = {
       data=COALESCE(excluded.data,artists.data),
       updated_at=excluded.updated_at`),
 };
+
+// Failed artist lookups are user-supplied search text, not permanent catalog
+// evidence. Keep only a short, bounded admin enrichment queue. This function is
+// run at boot, hourly, after a miss, and before staff read the queue.
+export function pruneMissingArtists(at = Date.now(), {
+  retentionDays = MISSING_ARTIST_RETENTION_DAYS,
+  maxRows = MISSING_ARTIST_MAX_ROWS,
+} = {}) {
+  const clock = Number.isFinite(Number(at)) ? Number(at) : Date.now();
+  const days = Math.max(1, Math.min(365, Math.floor(Number(retentionDays) || MISSING_ARTIST_RETENTION_DAYS)));
+  const ceiling = Math.max(1, Math.min(MISSING_ARTIST_MAX_ROWS, Math.floor(Number(maxRows) || MISSING_ARTIST_MAX_ROWS)));
+  const expired = Number(artistStmts.pruneMissingBefore.run(clock - days * 24 * 60 * 60 * 1000).changes || 0);
+  const overflow = Number(artistStmts.trimMissingAfter.run(ceiling).changes || 0);
+  return { expired, overflow };
+}
+
+pruneMissingArtists();
 
 export const normName = (s) => (s || "").trim().toLowerCase();
 
@@ -1280,13 +1396,16 @@ export function publicUser(u, { self = false, badges = false } = {}) {
   // Extras hold optional client profile fields (theme, consent record, music
   // picks). They are user-controlled, so they must never replace typed/trusted
   // DB columns or expose a raw column under its database or public name.
-  const extras = parseJsonObject(u.extras);
+  const extras = canonicalProfileExtras(parseJsonObject(u.extras)).value;
   for (const key of Object.keys(u)) delete extras[key];
   for (const key of [
     "id", "email", "name", "handle", "role", "verified", "sponsor",
     "artistName", "home", "bio", "avatarUri", "avatarColor", "banner",
     "initials", "genres", "favoriteArtists",
   ]) delete extras[key];
+  if (extras.nowPlaying && (!contentSafetyDecision(extras.nowPlaying.title).safe || !contentSafetyDecision(extras.nowPlaying.artist).safe)) {
+    delete extras.nowPlaying;
+  }
   const publicExtras = Object.fromEntries(["theme", "nowPlaying"].filter((key) => extras[key] !== undefined).map((key) => [key, extras[key]]));
   const selfExtras = self
     ? Object.fromEntries(["consentAt", "analyticsConsentAt", "termsAcceptedAt", "termsVersion", "analyticsOptOut", "treble", "bass", "playlists"].filter((key) => extras[key] !== undefined).map((key) => [key, extras[key]]))

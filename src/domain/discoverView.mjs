@@ -83,6 +83,7 @@ export function selectDiscoverPhotos(feed, { removedIds = [], blockedIds = [], l
         by: text(post.user?.name).slice(0, 120),
         likes: finiteCount(post.likes),
         logId: post.id || null,
+        ownerId: post.userId || null,
         _order: order++,
       });
     }

@@ -58,7 +58,7 @@ export default function VenuePhotoWidget({ photos = [], venueName, city, coord, 
     ? "Loading venue photos..."
     : error
       ? "Photos unavailable - tap to retry"
-      : "No venue photos yet";
+      : "No verified venue photos yet";
 
   return (
     <View>

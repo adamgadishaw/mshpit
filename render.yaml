@@ -12,7 +12,11 @@ services:
     # throwaway, explicitly bootstrapped database; these command-scoped values do
     # not reach the runtime process or weaken the /data startup guard.
     buildCommand: npm ci && mkdir -p /tmp/pit-build-data && PIT_DATA_DIR=/tmp/pit-build-data PIT_ALLOW_EMPTY_DB_BOOTSTRAP=true npm run check
-    startCommand: node server/index.js
+    # The runtime disk is finally mounted here. Snapshot + verify the existing
+    # database before importing db.js applies this release's migrations; a
+    # failed snapshot stops startup before migration (persistent-disk deploys
+    # can be unavailable until the operator fixes the backup or rolls back).
+    startCommand: node scripts/start-production.mjs
     healthCheckPath: /api/health
     autoDeploy: true
     disk:
@@ -30,7 +34,9 @@ services:
         value: "false"                 # one-time first boot only; never leave enabled
       # Daily verified snapshots stay under /data/backups (7 retained). Dedicated
       # private S3/R2 credentials additionally copy each snapshot off-host; never
-      # reuse the public MEDIA_BUCKET for database backups.
+      # reuse the public MEDIA_BUCKET for database backups. BACKUP_KEEP controls
+      # local files only: configure and evidence a provider lifecycle rule on the
+      # private bucket that matches the counsel-approved backup retention period.
       - key: BACKUP_ENABLED
         value: "true"
       - key: BACKUP_KEEP
@@ -71,8 +77,11 @@ services:
       - key: MAIL_FROM
         sync: false
       # Durable photos upload directly to an S3-compatible bucket using a
-      # short-lived signed PUT. Keep credentials server-side; MEDIA_PUBLIC_BASE_URL
-      # is the CDN/public bucket base where an uploaded object key is readable.
+      # short-lived signed PUT. The same active-media credential must be limited
+      # to this bucket and permit PutObject, DeleteObject, and ListBucket: account
+      # cleanup deletes ledger keys and performs an exact users/{owner}/ legacy
+      # sweep. Keep credentials server-side; MEDIA_PUBLIC_BASE_URL is the
+      # CDN/public bucket base where an uploaded object key is readable.
       # Example R2 endpoint: https://<account-id>.r2.cloudflarestorage.com
       - key: MEDIA_ENDPOINT
         sync: false
@@ -86,6 +95,10 @@ services:
         sync: false
       - key: MEDIA_PUBLIC_BASE_URL
         sync: false
+      - key: MEDIA_CLEANUP_ENABLED
+        value: "true"
+      - key: MEDIA_ORPHAN_TTL_MS
+        value: "604800000"             # 7 days; code bounds this to 1-30 days
       - key: EXPO_PUBLIC_GOOGLE_MAPS_KEY
         # Referrer-locked (mshpit.com/*) + Maps Static API only. Safe to commit:
         # EXPO_PUBLIC_* vars are inlined into the public web bundle on every build,
@@ -133,7 +146,7 @@ services:
     plan: starter
     branch: staging
     buildCommand: npm ci && mkdir -p /tmp/pit-build-data && PIT_DATA_DIR=/tmp/pit-build-data PIT_ALLOW_EMPTY_DB_BOOTSTRAP=true npm run check
-    startCommand: node server/index.js
+    startCommand: node scripts/start-production.mjs
     healthCheckPath: /api/health
     autoDeploy: true
     disk:
@@ -194,6 +207,10 @@ services:
         sync: false
       - key: MEDIA_PUBLIC_BASE_URL
         sync: false
+      - key: MEDIA_CLEANUP_ENABLED
+        value: "true"
+      - key: MEDIA_ORPHAN_TTL_MS
+        value: "604800000"
       # Provider fan-out stays off on staging: it would burn production's shared
       # YouTube and Ticketmaster quotas for data nobody looks at.
       - key: CACHE_WARM_ENABLED

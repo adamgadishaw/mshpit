@@ -1,6 +1,6 @@
 import { useState } from "react";
 import Constants from "expo-constants";
-import { View, Text, StyleSheet, ScrollView, Pressable } from "react-native";
+import { Linking, View, Text, StyleSheet, ScrollView, Pressable } from "react-native";
 import { colors, radius, mono, THEMES, themeKey, space } from "../theme";
 import { useStore } from "../store";
 import SheetHeader from "../components/SheetHeader";
@@ -8,6 +8,7 @@ import Icon from "../components/Icon";
 import Avatar from "../components/Avatar";
 
 const versionLabel = Constants.expoConfig?.version || "Unavailable";
+const SUPPORT_URL = "https://www.mshpit.com/support";
 
 function Row({ icon, label, sub, onPress, danger, right, disabled = false, accessibilityRole, accessibilityState }) {
   return (
@@ -66,6 +67,7 @@ export default function SettingsScreen({ onClose, onEditProfile, onOpenProfile, 
   const [exportResult, setExportResult] = useState(null);
   const [savingAnalytics, setSavingAnalytics] = useState(false);
   const [analyticsResult, setAnalyticsResult] = useState(null);
+  const [supportError, setSupportError] = useState(null);
   const analyticsEnabled = !!(session?.analyticsConsentAt || session?.consentAt) && !session?.analyticsOptOut;
   const doExport = async () => {
     if (exporting) return;
@@ -156,6 +158,19 @@ export default function SettingsScreen({ onClose, onEditProfile, onOpenProfile, 
         )}
 
         <Text style={styles.section}>ABOUT</Text>
+        <Row
+          icon="mail"
+          label="Help & support"
+          sub="Account help, safety, privacy, and technical support"
+          accessibilityRole="link"
+          onPress={() => {
+            setSupportError(null);
+            void Linking.openURL(SUPPORT_URL).catch(() => {
+              setSupportError("Support could not be opened. Email support@mshpit.com.");
+            });
+          }}
+        />
+        {!!supportError && <Text style={[styles.exportStatus, styles.exportError]} accessibilityRole="alert">{supportError}</Text>}
         <Row icon="discover" label="Diagnostics" sub="Recent errors, request references, and failure points" onPress={onOpenDiagnostics} />
         <Row icon="lock" label="Privacy policy" onPress={onOpenPrivacy} />
         <Row icon="shield" label="Terms & conditions" onPress={onOpenTerms} />

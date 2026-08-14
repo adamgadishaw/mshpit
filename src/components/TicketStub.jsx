@@ -54,6 +54,7 @@ export default function TicketStub({ log, onOpen, onNotInterested, onComment, on
   // Delete is the author's own. Like edit, admins moderate through their own
   // route rather than this button, so there is no staff bypass here.
   const canDelete = !!session && session.id === log.userId;
+  const canReport = !!onReport && (!session || session.id !== log.userId);
   const confirmDelete = () => {
     const run = () => { (onDelete || deleteOwnPost)?.(log.id); };
     if (Platform.OS === "web") {
@@ -106,9 +107,11 @@ export default function TicketStub({ log, onOpen, onNotInterested, onComment, on
               <Icon name="trash" size={16} color={colors.danger} />
             </Pressable>
           )}
-          <Pressable style={styles.iconBtn} hitSlop={8} onPress={() => onReport?.(log)} accessibilityRole="button" accessibilityLabel="Report post">
-            <Icon name="flag" size={15} color={colors.textFaint} />
-          </Pressable>
+          {canReport && (
+            <Pressable style={styles.iconBtn} hitSlop={8} onPress={() => onReport(log)} accessibilityRole="button" accessibilityLabel="Report post">
+              <Icon name="flag" size={15} color={colors.textFaint} />
+            </Pressable>
+          )}
         </View>
 
         {isStaffViewer && log.flags > 0 && (
@@ -124,7 +127,7 @@ export default function TicketStub({ log, onOpen, onNotInterested, onComment, on
         {!!log.song && <SongAttachment song={log.song} onPlay={onPlay} />}
         {!!log.playlist && <PlaylistAttachment playlist={log.playlist} onPlay={onPlay} />}
         {log.photos?.length > 0 && (
-          <PostMediaGrid media={log.photos} onOpen={onOpenPhotos ? (i) => onOpenPhotos(log.photos.map((uri) => ({ uri, by: log.user?.name, postId: log.id })), i, log.id) : undefined} />
+          <PostMediaGrid media={log.photos} onOpen={onOpenPhotos ? (i) => onOpenPhotos(log.photos.map((uri) => ({ uri, by: log.user?.name, postId: log.id, ownerId: log.userId })), i, log.id) : undefined} />
         )}
 
         <View style={styles.statusFooter}>
@@ -217,7 +220,7 @@ export default function TicketStub({ log, onOpen, onNotInterested, onComment, on
       </Pressable>
       {!!log.song && <SongAttachment song={log.song} onPlay={onPlay} />}
       {log.photos?.length > 0 && (
-        <PostMediaGrid media={log.photos} onOpen={onOpenPhotos ? (i) => onOpenPhotos(log.photos.map((uri) => ({ uri, by: log.user?.name, postId: log.id })), i, log.id) : undefined} />
+        <PostMediaGrid media={log.photos} onOpen={onOpenPhotos ? (i) => onOpenPhotos(log.photos.map((uri) => ({ uri, by: log.user?.name, postId: log.id, ownerId: log.userId })), i, log.id) : undefined} />
       )}
 
       {/* perforated ticket-stub line */}
@@ -283,9 +286,11 @@ export default function TicketStub({ log, onOpen, onNotInterested, onComment, on
             <Icon name="trash" size={16} color={colors.danger} />
           </Pressable>
         )}
-        <Pressable style={({ pressed }) => [styles.fBtn, pressed && styles.controlPressed]} hitSlop={8} onPress={() => onReport?.(log)} accessibilityRole="button" accessibilityLabel="Report post">
-          <Icon name="flag" size={15} color={colors.textFaint} />
-        </Pressable>
+        {canReport && (
+          <Pressable style={({ pressed }) => [styles.fBtn, pressed && styles.controlPressed]} hitSlop={8} onPress={() => onReport(log)} accessibilityRole="button" accessibilityLabel="Report post">
+            <Icon name="flag" size={15} color={colors.textFaint} />
+          </Pressable>
+        )}
       </View>
 
       {showComments && <AfterpartyPreview log={log} onOpen={onOpen} />}

@@ -129,7 +129,7 @@ function ClipStage({ uri, postId, onTrack }) {
 // backdrop or Esc to close, and each photo carries its OWN like - reactions
 // key on the photo's durable URL, so a like given from a post follows the same
 // photo into the artist's rolling gallery.
-export default function PhotoViewer({ photos = [], index = 0, postId = null, onClose }) {
+export default function PhotoViewer({ photos = [], index = 0, postId = null, onReport, onClose }) {
   const { session, mediaReactions, loadMediaReactions, toggleMediaReaction, track } = useStore();
   const [i, setI] = useState(index);
   const p = photos[i] || photos[0];
@@ -163,6 +163,15 @@ export default function PhotoViewer({ photos = [], index = 0, postId = null, onC
   if (!photos.length) return null;
   const r = (uri && mediaReactions[uri]) || { count: 0, mine: false };
   const video = isVideoUrl(uri);
+  const ownerId = typeof p === "object" && p ? p.ownerId : null;
+  const parentTarget = typeof p === "object" && p?.artistProfileKey
+    ? { targetType: "artist_profile", targetId: p.artistProfileKey, targetName: video ? "artist profile video" : "artist profile photo" }
+    : typeof p === "object" && p?.venueReviewId
+    ? { targetType: "venue_review", targetId: p.venueReviewId, targetName: video ? "video" : "photo" }
+    : (typeof p === "object" && p?.postId) || postId
+      ? { targetType: "post", targetId: (typeof p === "object" && p?.postId) || postId, targetName: video ? "video" : "photo" }
+      : null;
+  const canReport = !!onReport && !!parentTarget?.targetId && (!session || !ownerId || session.id !== ownerId);
 
   return (
     <Modal
@@ -180,9 +189,29 @@ export default function PhotoViewer({ photos = [], index = 0, postId = null, onC
 
       <View style={styles.top} pointerEvents="box-none">
         <Text style={styles.count}>{i + 1} / {photos.length}</Text>
-        <Pressable onPress={onClose} hitSlop={12} style={styles.closeBtn} accessibilityRole="button" accessibilityLabel="Close">
-          <Icon name="x" size={22} color="#fff" />
-        </Pressable>
+        <View style={styles.topActions}>
+          {canReport ? (
+            <Pressable
+              onPress={() => onReport({
+                ...parentTarget,
+                ownerId,
+                mediaUri: uri,
+                mediaLabel: `Specific ${video ? "video" : "photo"} ${i + 1} of ${photos.length}`,
+                title: `${video ? "Video" : "Photo"}${by ? ` by ${by}` : " from a community post"}`,
+                summary: "Only this attachment is identified in the report sent to moderators.",
+              })}
+              hitSlop={8}
+              style={styles.reportBtn}
+              accessibilityRole="button"
+              accessibilityLabel={`Report this ${video ? "video" : "photo"}`}
+            >
+              <Icon name="flag" size={17} color="#fff" />
+            </Pressable>
+          ) : null}
+          <Pressable onPress={onClose} hitSlop={12} style={styles.closeBtn} accessibilityRole="button" accessibilityLabel="Close">
+            <Icon name="x" size={22} color="#fff" />
+          </Pressable>
+        </View>
       </View>
 
       <View style={styles.stage} pointerEvents="box-none">
@@ -232,6 +261,8 @@ const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: "rgba(6,7,11,0.98)" },
   top: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingTop: 14, paddingBottom: 8 },
   count: { color: "#fff", fontFamily: mono, fontSize: 13, opacity: 0.85 },
+  topActions: { flexDirection: "row", alignItems: "center", gap: 8 },
+  reportBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: "rgba(255,255,255,0.1)", alignItems: "center", justifyContent: "center" },
   closeBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: "rgba(255,255,255,0.1)", alignItems: "center", justifyContent: "center" },
   stage: { flex: 1, minWidth: 0, minHeight: 0, overflow: "hidden" },
   img: { flex: 1, backgroundColor: "transparent" },

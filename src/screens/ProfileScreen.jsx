@@ -130,7 +130,24 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtis
           <View style={styles.backCircle}><Icon name="chevron-left" size={20} color={colors.text} /></View>
         </Pressable>
         <Text style={styles.topTitle}>@{user.handle}</Text>
-        <View style={{ width: 40 }} />
+        {!isSelf && onReport ? (
+          <Pressable
+            style={styles.profileReportBtn}
+            onPress={() => onReport({
+              targetType: "user",
+              targetId: user.id,
+              ownerId: user.id,
+              targetName: "profile",
+              title: `${user.name} (@${user.handle})`,
+              summary: "Report this account and its public profile to the moderation team.",
+            })}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel={`Report ${user.name}'s profile`}
+          >
+            <Icon name="flag" size={16} color={colors.danger} />
+          </Pressable>
+        ) : <View style={{ width: 40 }} />}
       </View>
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
@@ -248,7 +265,7 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtis
             <Text style={styles.sectionLabel}>PHOTOS · {gallery.length}</Text>
             <View style={styles.gallery}>
               {gallery.map((g, i) => (
-                <Pressable key={i} style={styles.galleryCell} onPress={() => onOpenPhotos?.(gallery.map((x) => ({ uri: x.uri, by: user.name })), i)}>
+                <Pressable key={i} style={styles.galleryCell} onPress={() => onOpenPhotos?.(gallery.map((x) => ({ uri: x.uri, by: user.name, postId: x.log.id, ownerId: user.id })), i, g.log.id)}>
                   <Image source={{ uri: g.uri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
                 </Pressable>
               ))}
@@ -358,6 +375,7 @@ const styles = StyleSheet.create({
   backBtn: { width: 40 },
   backCircle: { width: 36, height: 36, borderRadius: 18, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
   topTitle: { color: colors.text, fontSize: 14, fontWeight: "800" },
+  profileReportBtn: { width: 40, height: 40, borderRadius: 20, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
   missingBox: { alignItems: "center", gap: 8, paddingTop: 80, paddingHorizontal: 40 },
   missingTitle: { color: colors.text, fontSize: 17, fontWeight: "800", marginTop: 6 },
   missingSub: { color: colors.textDim, fontSize: 14, textAlign: "center", lineHeight: 20 },

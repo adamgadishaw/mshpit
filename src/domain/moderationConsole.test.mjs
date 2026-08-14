@@ -131,6 +131,42 @@ test("authoritative server context and reporter take priority over stale local c
   assert.equal(row.target.excerpt, "Authoritative excerpt");
 });
 
+test("only server-attested exact media reaches the moderation preview model", () => {
+  const [trusted] = buildModerationReportRows([{
+    id: "trusted-media",
+    targetType: "artist_profile",
+    targetId: "j. cole",
+    reason: "unsafe image",
+    content: {
+      type: "artist_profile",
+      exists: true,
+      artistKey: "j. cole",
+      author: { id: "artist-owner", name: "Artist owner", handle: "artist-owner" },
+      reportedMedia: "https://media.example/assets/users/artist-owner/avatar/exact.jpg",
+      reportedMediaTrusted: true,
+    },
+  }]);
+  assert.equal(trusted.target.reportedMedia, "https://media.example/assets/users/artist-owner/avatar/exact.jpg");
+  assert.equal(trusted.target.reportedMediaTrusted, true);
+
+  const [untrusted] = buildModerationReportRows([{
+    id: "untrusted-media",
+    targetType: "post",
+    targetId: "p1",
+    reason: "unsafe image",
+    content: {
+      type: "post",
+      exists: true,
+      reportedMedia: "https://attacker.example/moderator-tracker.gif",
+      reportedMediaTrusted: false,
+      reportedMediaUnavailable: true,
+    },
+  }]);
+  assert.equal(untrusted.target.reportedMedia, null);
+  assert.equal(untrusted.target.reportedMediaTrusted, false);
+  assert.equal(untrusted.target.reportedMediaUnavailable, true);
+});
+
 test("server-declared missing content stays missing even when a stale local row exists", () => {
   const [row] = buildModerationReportRows([{
     id: "gone",
@@ -222,9 +258,11 @@ test("member filters put restricted accounts first without mutating input", () =
 
 test("target labels and removal capability match the existing server actions", () => {
   assert.equal(moderationTargetLabel("fan_message"), "Fan club message");
+  assert.equal(moderationTargetLabel("artist_profile"), "Artist profile");
   assert.equal(moderationTargetLabel("future_target"), "Future Target");
   assert.equal(canRemoveReportTarget("post"), true);
-  assert.equal(canRemoveReportTarget("message"), false);
+  assert.equal(canRemoveReportTarget("artist_profile"), true);
+  assert.equal(canRemoveReportTarget("message"), true);
   assert.equal(canRemoveReportTarget("user"), false);
 });
 
@@ -263,5 +301,9 @@ test("console source keeps bounded rendering, cursor reachability, and atomic ac
   assert.match(consoleSource, /new AbortController\(\)/);
   assert.match(consoleSource, /accessibilityRole="search"/);
   assert.match(consoleSource, /minHeight: 44/);
+  assert.match(consoleSource, /permanently queued for deletion/);
+  assert.match(consoleSource, /never the deleted media/);
+  assert.match(consoleSource, /Only this exact message will be hidden from both participants/);
+  assert.match(consoleSource, /will not send another notification/);
   assert.match(adminSource, /adminMemberDirectory=\{adminMemberDirectory\}/);
 });

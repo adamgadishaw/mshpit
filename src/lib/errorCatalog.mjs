@@ -65,6 +65,15 @@ export const ERROR_CATALOG = Object.freeze({
     guidance: "Enter the lounge again, then resend the message.",
     retryable: true,
   }),
+  "PIT-SAFE-001": Object.freeze({
+    category: "content_safety",
+    severity: "warning",
+    title: "That needs a quick edit",
+    message: "Pit could not publish this because it appears to contain a threat, exploitation, or spam.",
+    failurePoint: "Submitted content",
+    guidance: "Remove the unsafe wording or repeated links, then try again.",
+    retryable: false,
+  }),
   "PIT-REQ-001": Object.freeze({
     category: "validation",
     severity: "warning",
@@ -217,6 +226,7 @@ export const SERVER_CODE_MAP = Object.freeze({
   FORBIDDEN: "PIT-AUTH-002",
   FAN_CLUB_MEMBERSHIP_REQUIRED: "PIT-CHAT-001",
   LOUNGE_ATTENDANCE_REQUIRED: "PIT-CHAT-002",
+  CONTENT_REJECTED: "PIT-SAFE-001",
   VALIDATION_FAILED: "PIT-REQ-001",
   NOT_FOUND: "PIT-REQ-002",
   CONFLICT: "PIT-REQ-003",

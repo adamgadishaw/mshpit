@@ -6,9 +6,9 @@
     "version": "1.0.0",
     "scheme": "mshpit",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
+    "icon": "./assets/pit-icon-v1.png",
     "userInterfaceStyle": "dark",
-    "backgroundColor": "#0B0E16",
+    "backgroundColor": "#0d0b09",
     "plugins": [
       [
         "expo-image-picker",
@@ -21,7 +21,27 @@
       "expo-sharing",
       "expo-video",
       "expo-sqlite",
-      "expo-image"
+      "expo-image",
+      "expo-system-ui",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": false,
+          "recordAudioAndroid": false,
+          "enableBackgroundRecording": false,
+          "enableBackgroundPlayback": false
+        }
+      ],
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#0d0b09",
+          "image": "./assets/pit-splash-icon-v1.png",
+          "imageWidth": 220,
+          "resizeMode": "contain"
+        }
+      ],
+      "expo-asset"
     ],
     "ios": {
       "bundleIdentifier": "com.mshpit.app",
@@ -76,14 +96,14 @@
       "package": "com.mshpit.app",
       "versionCode": 1,
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/android-icon-foreground.png",
-        "backgroundImage": "./assets/android-icon-background.png",
-        "monochromeImage": "./assets/android-icon-monochrome.png"
+        "backgroundColor": "#0d0b09",
+        "foregroundImage": "./assets/pit-android-foreground-v1.png",
+        "backgroundImage": "./assets/pit-android-background-v1.png",
+        "monochromeImage": "./assets/pit-android-monochrome-v1.png"
       }
     },
     "web": {
-      "favicon": "./assets/favicon.png"
+      "favicon": "./assets/pit-favicon-v1.png"
     }
   }
 }

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
@@ -7,8 +7,9 @@ import test, { after } from "node:test";
 const dataDir = mkdtempSync(join(tmpdir(), "pit-api-integrity-"));
 process.env.PIT_DATA_DIR = dataDir;
 
-const { db, q, publicUser, artistStmts, artistRow, publicArtist } = await import("./db.js");
+const { db, q, publicUser, artistStmts, artistRow, publicArtist, pruneMissingArtists } = await import("./db.js");
 const { ApiError, routes } = await import("./api.js");
+const { renderPublicPage } = await import("./publicPages.js");
 const { clearRecommendationSnapshotsForTests } = await import("./recommendationService.js");
 const { hashPassword } = await import("./auth.js");
 
@@ -33,7 +34,10 @@ test("publicUser treats extras as untrusted and tolerates malformed stored JSON"
     sponsor: 0,
     genres: "not-json",
     favorite_artists: "null",
-    extras: JSON.stringify({ id: "spoofed", email: "leak@example.com", role: "admin", verified: true, home: { city: "Spoofed" }, theme: "stage" }),
+    extras: JSON.stringify({
+      id: "spoofed", email: "leak@example.com", role: "admin", verified: true, home: { city: "Spoofed" }, theme: "stage",
+      nowPlaying: { title: { nested: "crash" }, artist: ["not", "a", "string"] },
+    }),
   };
 
   const publicProjection = publicUser(base);
@@ -43,6 +47,7 @@ test("publicUser treats extras as untrusted and tolerates malformed stored JSON"
   assert.equal(publicProjection.email, undefined);
   assert.equal(publicProjection.home, null);
   assert.equal(publicProjection.theme, "stage");
+  assert.equal(publicProjection.nowPlaying, undefined);
   assert.deepEqual(publicProjection.genres, []);
   assert.deepEqual(publicProjection.favoriteArtists, []);
 
@@ -78,6 +83,49 @@ test("artist search ignores punctuation and spacing for phone-friendly lookup", 
   }, "test"));
   const result = routes["GET /api/artists"]({ query: { q: "jcolesearchtest", limit: 5 } });
   assert.equal(result.artists[0]?.name, "J. Cole Search Test");
+});
+
+test("artist-owned profile UGC honors blocks in both directions without hiding catalog metadata", () => {
+  const owner = addUser("u_artist_block_owner", "artist-block-owner@example.com", "artistblockowner");
+  const viewer = addUser("u_artist_block_viewer", "artist-block-viewer@example.com", "artistblockviewer");
+  const key = "block-safe catalog artist";
+  artistStmts.upsert.run(artistRow(key, { name: "Block-safe Catalog Artist", genre: "Rap" }, "test"));
+  db.prepare("INSERT INTO artist_profiles (artist_key,owner_id,bio,banner,avatar_uri,feed_enabled,updated_at) VALUES (?,?,?,?,?,?,?)")
+    .run(key, owner.id, "OWNER_BIO_MUST_HIDE", "https://owner.example/banner.jpg", "https://owner.example/avatar.jpg", 1, Date.now());
+  db.prepare("INSERT INTO artist_posts (id,artist_key,user_id,text,created_at) VALUES (?,?,?,?,?)")
+    .run("artist_block_post", key, owner.id, "OWNER_UPDATE_MUST_HIDE", Date.now());
+  const getProfile = () => routes["GET /api/artists/:key/profile"]({ user: viewer, params: { key } });
+
+  assert.equal(getProfile().profile.bio, "OWNER_BIO_MUST_HIDE");
+  assert.equal(getProfile().posts[0].text, "OWNER_UPDATE_MUST_HIDE");
+  db.prepare("INSERT INTO blocks (blocker_id,blocked_id,created_at) VALUES (?,?,?)").run(owner.id, viewer.id, Date.now());
+  assert.deepEqual(getProfile(), { profile: null, posts: [] }, "an incoming block hides the complete owner-authored overlay");
+  db.prepare("DELETE FROM blocks WHERE blocker_id=? AND blocked_id=?").run(owner.id, viewer.id);
+  db.prepare("INSERT INTO blocks (blocker_id,blocked_id,created_at) VALUES (?,?,?)").run(viewer.id, owner.id, Date.now());
+  assert.deepEqual(getProfile(), { profile: null, posts: [] }, "an outgoing block hides the same overlay");
+
+  const catalog = routes["GET /api/artists"]({ user: viewer, query: { q: "blocksafecatalogartist", limit: 5 } });
+  assert.equal(catalog.artists[0]?.name, "Block-safe Catalog Artist", "provider/catalog identity remains available without owner UGC");
+});
+
+test("unresolved artist search names expire after 30 days and the enrichment queue stays bounded", () => {
+  const at = 2_000_000_000_000;
+  artistStmts.recordMissing.run("privacy-old-miss", "Privacy Old Miss", at - 31 * 24 * 60 * 60 * 1000);
+  artistStmts.recordMissing.run("privacy-recent-a", "Privacy Recent A", at - 3);
+  artistStmts.recordMissing.run("privacy-recent-b", "Privacy Recent B", at - 2);
+  artistStmts.recordMissing.run("privacy-recent-c", "Privacy Recent C", at - 1);
+
+  const result = pruneMissingArtists(at, { maxRows: 2 });
+  assert.equal(result.expired, 1);
+  assert.equal(result.overflow >= 1, true);
+  assert.deepEqual(
+    db.prepare("SELECT norm FROM missing_artists ORDER BY last_at DESC,norm DESC").all().map((row) => row.norm),
+    ["privacy-recent-c", "privacy-recent-b"],
+  );
+
+  const disclosure = /submitted artist name may remain in a bounded staff enrichment queue for up to 30 days/;
+  assert.match(renderPublicPage("/privacy"), disclosure);
+  assert.match(readFileSync(new URL("../src/screens/PrivacyScreen.jsx", import.meta.url), "utf8"), disclosure);
 });
 
 test("Discover legacy routes share one service and overview opts into a bounded public cache", () => {
@@ -122,7 +170,7 @@ test("Discover legacy routes share one service and overview opts into a bounded 
   assert.equal(responseHeaders["Cache-Control"], "public, max-age=60, stale-while-revalidate=300");
 });
 
-test("PATCH /api/me rejects oversized extras and keeps trusted fields authoritative", () => {
+test("PATCH /api/me schemas extras, filters public song text, and keeps trusted fields authoritative", () => {
   const user = addUser("u_profile", "profile@example.com", "profile");
   const handler = routes["PATCH /api/me"];
 
@@ -131,11 +179,28 @@ test("PATCH /api/me rejects oversized extras and keeps trusted fields authoritat
     (error) => error instanceof ApiError && error.status === 400
   );
 
-  const result = handler({ user, ip: "profile-test", body: { extras: { role: "admin", verified: true, consentAt: 123, termsAcceptedAt: 123 } } });
+  assert.throws(
+    () => handler({ user, ip: "profile-test", body: { extras: { role: "admin", verified: true } } }),
+    (error) => error instanceof ApiError && error.status === 400 && error.code === "VALIDATION_FAILED",
+  );
+  assert.throws(
+    () => handler({ user, ip: "profile-test", body: { extras: { nowPlaying: { title: { nested: true }, artist: [] } } } }),
+    (error) => error instanceof ApiError && error.status === 400 && error.code === "VALIDATION_FAILED",
+  );
+  assert.throws(
+    () => handler({ user, ip: "profile-test", body: { extras: { nowPlaying: { title: "white power", artist: "Unsafe" } } } }),
+    (error) => error instanceof ApiError && error.status === 422 && error.code === "CONTENT_REJECTED",
+  );
+
+  const result = handler({ user, ip: "profile-test", body: {
+    extras: { theme: "stage", nowPlaying: { title: "  Safe Song  ", artist: " Safe Artist " }, consentAt: 123, termsAcceptedAt: 123 },
+  } });
   assert.equal(result.user.role, "fan");
   assert.equal(result.user.verified, false);
   assert.equal(result.user.consentAt, undefined, "generic profile extras cannot forge analytics consent");
   assert.equal(result.user.termsAcceptedAt, undefined, "generic profile extras cannot forge Terms acceptance");
+  assert.deepEqual(result.user.nowPlaying, { title: "Safe Song", artist: "Safe Artist" });
+  assert.deepEqual(JSON.parse(q.userById.get(user.id).extras), { theme: "stage", nowPlaying: { title: "Safe Song", artist: "Safe Artist" } });
 });
 
 test("signup records Terms separately while optional analytics defaults off", () => {

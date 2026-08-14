@@ -247,9 +247,9 @@ export default function PlayerBar({
   const [volume, setVol] = useState(() => { try { return web && typeof localStorage !== "undefined" ? Math.max(0, Math.min(1, JSON.parse(localStorage.getItem("pit.volume") ?? "0.8"))) : 0.8; } catch { return 0.8; } });
   useEffect(() => { try { if (web) localStorage.setItem("pit.volume", String(volume)); } catch {} }, [volume]);
 
-  // Resolve the CURRENT track: a YouTube video ID for full playback AND a Deezer
-  // preview mp3 in parallel, so the preview is ready as a fallback if YouTube has
-  // no match or the video turns out to be un-embeddable. One track at a time.
+  // Resolve the CURRENT track: web prepares YouTube and the Deezer fallback in
+  // parallel. Native intentionally skips the unused YouTube lookup so a ready
+  // preview never waits up to 25 seconds for an iframe-only playback path.
   const [resolved, setResolved] = useState({ key: null, videoId: null, preview: null });
   useEffect(() => {
     if (!cur) { setResolved({ key: null, videoId: null, preview: null }); return; }
@@ -269,7 +269,9 @@ export default function PlayerBar({
     });
     (async () => {
       const [videoId, preview] = await Promise.all([
-        directVideoId ? Promise.resolve(directVideoId) : within(resolveYouTube(cur.title, cur.artist, cur.duration || 0)),
+        web
+          ? (directVideoId ? Promise.resolve(directVideoId) : within(resolveYouTube(cur.title, cur.artist, cur.duration || 0)))
+          : Promise.resolve(null),
         // Stored provider previews are short-lived signed URLs. Always ask the
         // resolver for a fresh one; its bounded cache avoids duplicate requests.
         within(resolveDeezerPreview(cur.title, cur.artist)),
@@ -288,7 +290,7 @@ export default function PlayerBar({
     // `resolved.key === curKey` inline rather than the `forThis` binding below:
     // this effect sits above that declaration, and reading it here is a
     // temporal-dead-zone crash.
-    if (!cur || resolved.key !== curKey || resolved.videoId) return;
+    if (!web || !cur || resolved.key !== curKey || resolved.videoId) return;
     if (!youtubeLookupWasTransient?.(cur.title, cur.artist)) return;
     let cancelled = false;
     const timer = setTimeout(async () => {

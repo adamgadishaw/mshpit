@@ -568,6 +568,24 @@ function Root() {
 
   const requireAuth = (fn) => (session ? fn() : go({ auth: true }));
 
+  const openReport = (candidate) => requireAuth(() => {
+    if (!candidate) return;
+    const target = candidate.targetType && candidate.targetId
+      ? candidate
+      : candidate.id
+        ? {
+            targetType: "post",
+            targetId: candidate.id,
+            ownerId: candidate.userId || null,
+            targetName: "post",
+            title: [candidate.artist, candidate.user?.name ? `by ${candidate.user.name}` : ""].filter(Boolean).join(" - ") || "Selected post",
+            summary: candidate.review || "This report covers the selected post and its attachments.",
+          }
+        : null;
+    if (!target?.targetId || (target.ownerId && target.ownerId === session?.id)) return;
+    go({ reporting: target });
+  });
+
   const onAddLog = async (log) => {
     const composerId = nav.composerId;
     const result = await addLog(log);
@@ -674,26 +692,26 @@ function Root() {
   let overlay = null;
   // Auth is a modal that must win over any page overlay — requireAuth() can fire
   // from inside a venue/show/profile page, and the login sheet has to surface.
-  if (nav.photos) overlay = <PhotoViewer photos={nav.photos.images} index={nav.photos.index} postId={nav.photos.postId} onClose={back} />;
+  if (nav.photos) overlay = <PhotoViewer photos={nav.photos.images} index={nav.photos.index} postId={nav.photos.postId} onReport={openReport} onClose={back} />;
   else if (nav.addToPlaylist) overlay = <PlaylistPickerScreen track={nav.addToPlaylist} onClose={back} />;
   else if (nav.followList) overlay = <FollowListScreen userId={nav.followList.userId} mode={nav.followList.mode} onClose={back} onOpenProfile={openProfile} />;
   else if (nav.auth) overlay = <AuthScreen initialMode={nav.authMode} onDone={(mode) => { if (mode === "signup") { if (web) save("pit.welcomePending", true); replace({ pickArtists: true }); } else back(); }} onCancel={back} />;
   else if (nav.pickArtists) overlay = <PickArtistsScreen onDone={clear} onSkip={clear} />;
   else if (nav.editingPost) overlay = <LogScreen user={session} editing={nav.editingPost} composerId={nav.composerId} initialDraftId={nav.draftId} onDraftIdentity={updateComposerDraftIdentity} pendingMedia={pendingComposerPicker?.composerId === nav.composerId ? pendingComposerPicker : null} onPendingMediaConsumed={consumePendingComposerPicker} onPost={onEditLog} onCancel={back} closeGuardRef={composerCloseGuardRef} />;
   else if (nav.logging) overlay = <LogScreen user={session} prefill={nav.prefill} defaultMode={nav.postMode || "show"} composerId={nav.composerId} initialDraftId={nav.draftId} onDraftIdentity={updateComposerDraftIdentity} pendingMedia={pendingComposerPicker?.composerId === nav.composerId ? pendingComposerPicker : null} onPendingMediaConsumed={consumePendingComposerPicker} onPost={onAddLog} onCancel={back} closeGuardRef={composerCloseGuardRef} />;
-  else if (nav.reporting) overlay = <ReportScreen log={nav.reporting} onClose={back} />;
+  else if (nav.reporting) overlay = <ReportScreen target={nav.reporting} onClose={back} />;
   else if (nav.editProfile) overlay = <EditProfileScreen onClose={back} onPickArtists={() => replace({ pickArtists: true })} />;
   else if (nav.venueReview) overlay = <VenueReviewScreen venueName={nav.venueReview} onClose={back} />;
-  else if (nav.thread) overlay = <ThreadScreen otherId={nav.thread} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} />;
+  else if (nav.thread) overlay = <ThreadScreen otherId={nav.thread} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} onReport={openReport} />;
   else if (nav.inbox) overlay = <InboxScreen onClose={back} onOpenThread={openThread} />;
   else if (nav.notifications) overlay = <NotificationsScreen onClose={back} onOpenProfile={openProfile} onOpenThread={openThread} onOpen={openShow} onOpenPost={openPost} />;
   else if (nav.calendar) overlay = <CalendarScreen onClose={back} onOpen={openShow} onOpenArtist={openArtist} />;
   else if (ENABLE_CLIPS && nav.clips) overlay = <ClipsScreen onClose={back} onOpenPost={openPost} onOpenProfile={openProfile} onOpenArtist={openArtist} onRequireAuth={() => go({ auth: true })} />;
-  else if (nav.profileId) overlay = <ProfileScreen userId={nav.profileId} onClose={back} onOpenShow={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onEditProfile={() => go({ editProfile: true })} onPreview={showPreview} onMessage={openThread} onReport={(log) => requireAuth(() => go({ reporting: log }))} onEditPost={openPostEditor} onOpenPhotos={openPhotos} onPlay={openPlayer} onOpenFollowList={openFollowList} onOpenBadges={openBadges} />;
-  else if (nav.fanClub) overlay = <FanClubScreen artist={nav.fanClub} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} />;
+  else if (nav.profileId) overlay = <ProfileScreen userId={nav.profileId} onClose={back} onOpenShow={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onEditProfile={() => go({ editProfile: true })} onPreview={showPreview} onMessage={openThread} onReport={openReport} onEditPost={openPostEditor} onOpenPhotos={openPhotos} onPlay={openPlayer} onOpenFollowList={openFollowList} onOpenBadges={openBadges} />;
+  else if (nav.fanClub) overlay = <FanClubScreen artist={nav.fanClub} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} onReport={openReport} />;
   else if (nav.editArtist) overlay = <EditArtistProfileScreen artistName={nav.editArtist} onClose={back} />;
-  else if (nav.artistName) overlay = <ArtistScreen artistName={nav.artistName} onClose={back} onOpenShow={openShow} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenPhotos={openPhotos} onEditArtist={(name) => go({ editArtist: name })} onPlay={openPlayer} onAddToPlaylist={openAddToPlaylist} />;
-  else if (nav.venueName) overlay = <VenueScreen venueName={nav.venueName} onClose={back} onOpenShow={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onReviewVenue={openVenueReview} onOpenProfile={openProfile} onOpenPhotos={openPhotos} />;
+  else if (nav.artistName) overlay = <ArtistScreen artistName={nav.artistName} onClose={back} onOpenShow={openShow} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenPhotos={openPhotos} onEditArtist={(name) => go({ editArtist: name })} onPlay={openPlayer} onAddToPlaylist={openAddToPlaylist} onReport={openReport} />;
+  else if (nav.venueName) overlay = <VenueScreen venueName={nav.venueName} onClose={back} onOpenShow={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onReviewVenue={openVenueReview} onOpenProfile={openProfile} onOpenPhotos={openPhotos} onReport={openReport} />;
   else if (nav.nearby) overlay = <NearbyScreen onClose={back} onOpenVenue={openVenue} onOpenArtist={openArtist} />;
   else if (nav.venues) overlay = <VenuesScreen onClose={back} onOpenVenue={openVenue} />;
   else if (nav.fanClubs) overlay = <FanClubsScreen onClose={back} onOpenFanClub={openFanClub} />;
@@ -702,9 +720,9 @@ function Root() {
   else if (nav.diagnostics) overlay = <DiagnosticsScreen onClose={back} />;
   else if (nav.privacy) overlay = <PrivacyScreen onClose={back} />;
   else if (nav.terms) overlay = <TermsScreen onClose={back} />;
-  else if (nav.lounge) overlay = <LoungeScreen log={nav.lounge} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} />;
+  else if (nav.lounge) overlay = <LoungeScreen log={nav.lounge} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} onReport={openReport} />;
   else if (nav.openLog) overlay = <ShowScreen log={nav.openLog} onClose={back} onPreview={showPreview} onReview={reviewShow} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenLounge={(log) => go({ lounge: log })} onRequireAuth={() => go({ auth: true })} />;
-  else if (nav.post) overlay = <PostScreen log={nav.post} onClose={back} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenShow={openShow} onReport={(log) => requireAuth(() => go({ reporting: log }))} onEdit={openPostEditor} onOpenPhotos={openPhotos} onPlay={openPlayer} />;
+  else if (nav.post) overlay = <PostScreen log={nav.post} onClose={back} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenShow={openShow} onReport={openReport} onEdit={openPostEditor} onOpenPhotos={openPhotos} onPlay={openPlayer} />;
   else if (nav.badges) overlay = <BadgeLegendScreen userId={nav.badges.userId} onClose={back} />;
   else if (nav.topRated) overlay = <TopRatedScreen onClose={back} onOpen={openShow} />;
   else if (nav.admin) overlay = <AdminScreen onClose={back} />;
@@ -773,7 +791,7 @@ function Root() {
                   onOpenNearby={() => go({ nearby: true })}
                   onOpenMenu={() => go({ menu: true })}
                   onOpenClips={ENABLE_CLIPS ? () => go({ clips: true }) : undefined}
-                  onReport={(log) => requireAuth(() => go({ reporting: log }))}
+                  onReport={openReport}
                   onEdit={openPostEditor}
                   onOpenPhotos={openPhotos}
                   onPlay={openPlayer}

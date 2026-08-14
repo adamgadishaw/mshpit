@@ -12,6 +12,7 @@
 import { db, normName } from "./db.js";
 import { isProduction } from "./environment.js";
 import { parsePath, slugify, artistPath, venuePath, showPath, profilePath } from "../src/domain/urls.mjs";
+import { publicPageSitemapEntries } from "./publicPages.js";
 
 const SITE_NAME = "Pit";
 const DEFAULT_TITLE = "PIT - Your life's musical journey";
@@ -221,6 +222,10 @@ export function robotsTxt() {
 export function sitemapXml() {
   const base = origin();
   const urls = [{ loc: `${base}/`, priority: "1.0", changefreq: "daily" }];
+
+  for (const page of publicPageSitemapEntries()) {
+    urls.push({ loc: `${base}${page.path}`, priority: page.priority, changefreq: page.changefreq });
+  }
 
   for (const row of db.prepare(`SELECT artist, COUNT(*) c, MAX(created_at) latest FROM posts
                                 WHERE removed=0 AND artist<>'' GROUP BY lower(artist)`).all()) {

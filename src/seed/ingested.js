@@ -13,8 +13,10 @@ export const ingestedTourDates = data.tourDates || [];
 
 const norm = (s) => (s || "").trim().toLowerCase();
 
-// Real artist metadata (genre + Wikimedia Commons photo) by name, with a
-// flexible match so "King Gizzard" finds "King Gizzard & the Lizard Wizard".
+// Bundled artist metadata by name, with a flexible match so "King Gizzard"
+// finds "King Gizzard & the Lizard Wizard". Do not infer photo rights from this
+// lookup: the legacy seed still contains provider artwork and is an explicit
+// release-rights gate in APP_STORE_READINESS.md.
 export function artistMeta(name) {
   const k = norm(name);
   if (!k) return null;

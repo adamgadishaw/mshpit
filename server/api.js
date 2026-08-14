@@ -13,7 +13,7 @@ import {
   sendTemplate, sendTemplateInBackground, sentToday, templateFor, unsubscribeUrl,
 } from "./emailService.js";
 import { AUDIENCES, audienceSize, campaignProgress, drainCampaign, pauseCampaign, startCampaign } from "./emailQueue.js";
-import { db, DATABASE_PATH, q, emailStmts, badgeStmts, customBadgesFor, publicUser, parseJsonArray, parseJsonObject, artistStmts, publicArtist, artistRow, artistSearchKey, normName } from "./db.js";
+import { db, DATABASE_PATH, q, emailStmts, badgeStmts, customBadgesFor, publicUser, parseJsonArray, parseJsonObject, artistStmts, publicArtist, artistRow, artistSearchKey, normName, pruneMissingArtists } from "./db.js";
 import { BADGE_COLORS, BADGE_GLYPHS, BADGE_KINDS, validateBadge } from "../src/domain/badgeArt.mjs";
 import { alertCooldownMs, alertsEnabled, errorStats, maybeAlert, recentErrors } from "./errorLog.js";
 import { genreClaim, providerGenreFields, resolveGenre, storedClaims, upsertClaim, withoutSource } from "../src/domain/genre.mjs";
@@ -22,6 +22,15 @@ import { startCatalogSeed, catalogSeedStatus, stopCatalogSeed, deezerEnrich } fr
 import { clean, cleanEmail, isEmail, cleanName, isName, cleanHandle, isPassword, clampRating, cleanStringArray, cleanDate, shape, LIMITS } from "./validate.js";
 import { ApiError } from "./errors.js";
 import { createMediaPresign, mediaConfigured } from "./media.js";
+import {
+  enqueueAllOwnedMedia,
+  enqueueOwnedMediaUrls,
+  enqueueOwnerMediaSweep,
+  markOwnedMediaAssociated,
+  mediaDeletionHealth,
+  recordMediaObjectTicket,
+  unreferencedOwnedMediaUrls,
+} from "./mediaDeletion.js";
 import { discoverySidebar } from "./discovery.js";
 import { resolveEntity } from "./seo.js";
 import { userRewards } from "./rewards.js";
@@ -54,6 +63,9 @@ import {
 import { ANALYTICS_MAX_RAW_ROWS, ANALYTICS_MAX_ROWS_PER_ACCOUNT, ANALYTICS_RETENTION_DAYS, ingestAnalyticsBatch } from "./analyticsService.js";
 import { recommendedFeedPage } from "./recommendationService.js";
 import { hasTrustedLandingImage, landingCommunityMedia, landingTotals } from "./landingMedia.js";
+import { assertSafeAuthoredFields, assertSafeAuthoredText } from "./contentSafety.js";
+import { canonicalProfileExtras } from "./profileExtras.js";
+import { licensedVenuePhoto, verifiedHttpsUrl } from "../src/domain/venuePhotoProvenance.mjs";
 
 export { ApiError } from "./errors.js";
 
@@ -77,32 +89,21 @@ function venuePhotoSeed() {
   }
 }
 
-function safePublicPhotoUrl(value) {
-  const text = typeof value === "string" ? value.trim().slice(0, 2000) : "";
-  if (!text) return null;
-  try {
-    const url = new URL(text);
-    return url.protocol === "https:" || url.protocol === "http:" ? url.toString() : null;
-  } catch { return null; }
-}
-
 function normalizedVenuePhotoPool(key) {
   const raw = venuePhotoSeed()[key];
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
   const gallery = Array.isArray(raw.galleryPool) ? raw.galleryPool : [];
-  const byUrl = new Map(gallery.map((entry) => [safePublicPhotoUrl(entry?.uri), entry]).filter(([uri]) => uri));
+  const licensed = gallery.map(licensedVenuePhoto).filter(Boolean);
+  const byUrl = new Map(licensed.map((entry) => [entry.uri, entry]));
   const preferred = Array.isArray(raw.photos)
-    ? raw.photos.map((uri) => byUrl.get(safePublicPhotoUrl(uri)) || { uri, source: "commons" })
+    ? raw.photos.map((uri) => byUrl.get(verifiedHttpsUrl(uri))).filter(Boolean)
     : [];
   const out = [];
   const seen = new Set();
-  for (const entry of [...preferred, ...gallery]) {
-    const uri = safePublicPhotoUrl(typeof entry === "string" ? entry : entry?.uri);
-    if (!uri || seen.has(uri)) continue;
-    seen.add(uri);
-    const source = ["commons", "openverse", "web"].includes(entry?.source) ? entry.source : "web";
-    const by = clean(entry?.credit, { max: 240 }) || (source === "commons" ? "Wikimedia Commons" : "Source: web");
-    out.push({ uri, by, source });
+  for (const entry of [...preferred, ...licensed]) {
+    if (seen.has(entry.uri)) continue;
+    seen.add(entry.uri);
+    out.push(entry);
     if (out.length >= VENUE_PHOTO_LIMIT) break;
   }
   return out;
@@ -390,6 +391,13 @@ function cleanPlaylistTracks(value, { allowEmpty = true } = {}) {
   if (!allowEmpty && !tracks.length) return undefined;
   return tracks;
 }
+function assertSafePlaylistContent(name, tracks) {
+  assertSafeAuthoredFields({
+    "playlist name": name,
+    "track title": (tracks || []).map((track) => track.title),
+    "track artist": (tracks || []).map((track) => track.artist).filter(Boolean),
+  });
+}
 function playlistProjection(row) {
   if (!row) return null;
   let stored = [];
@@ -417,6 +425,7 @@ function playlistSnapshotForPost(user, playlistId, currentSnapshot = null) {
   const row = ownedPlaylistForPost.get(playlistId, user.id);
   if (!row) throw new ApiError(404, "That playlist left the set. Refresh and choose another.", "NOT_FOUND");
   const playlist = playlistProjection(row);
+  assertSafePlaylistContent(playlist.name, playlist.tracks);
   if (playlist.visibility === "private") throw new ApiError(400, "Make this playlist public or unlisted before sharing it.", "VALIDATION_FAILED");
   if (!playlist.tracks.length) throw new ApiError(400, "Add at least one song before sharing this playlist.", "VALIDATION_FAILED");
   return {
@@ -498,6 +507,11 @@ function canonicalCreateRequest(user, body, storedPost = null) {
       song: v.song || null,
       playlist,
     };
+    assertSafeAuthoredFields({
+      post: values.review,
+      "tagged song title": values.song?.title,
+      "tagged song artist": values.song?.artist,
+    });
     if (!values.review && !values.photos.length && !values.song && !playlist) {
       throw new ApiError(400, "Write something, add media, tag a song, or share a playlist to post.", "VALIDATION_FAILED");
     }
@@ -575,6 +589,17 @@ function canonicalCreateRequest(user, body, storedPost = null) {
     song: v.song || null,
     binding,
   };
+  assertSafeAuthoredFields({
+    artist: values.artist,
+    venue: values.venue,
+    city: values.city,
+    review: values.review,
+    "setlist entry": values.setlist,
+    tour: values.tour,
+    tag: values.tags,
+    "tagged song title": values.song?.title,
+    "tagged song artist": values.song?.artist,
+  });
   return {
     kind: "review",
     values,
@@ -658,6 +683,120 @@ const blockedIdsStmt = db.prepare("SELECT blocked_id id FROM blocks WHERE blocke
 function blockedIdSet(userId) {
   if (!userId) return new Set();
   return new Set(blockedIdsStmt.all(userId, userId).map((r) => r.id));
+}
+
+const DM_TOMBSTONE_LIMIT = 750;
+function removedDmIdsFor(userId, otherId = null) {
+  if (otherId) {
+    return db.prepare(`SELECT id FROM dms WHERE removed=1
+      AND ((from_id=? AND to_id=?) OR (from_id=? AND to_id=?))
+      ORDER BY created_at DESC,id DESC LIMIT ?`)
+      .all(userId, otherId, otherId, userId, DM_TOMBSTONE_LIMIT).map((row) => row.id);
+  }
+  return db.prepare(`SELECT id FROM dms WHERE removed=1 AND (from_id=? OR to_id=?)
+    ORDER BY created_at DESC,id DESC LIMIT ?`)
+    .all(userId, userId, DM_TOMBSTONE_LIMIT).map((row) => row.id);
+}
+
+const REPORTABLE_TARGET_TYPES = new Set([
+  "post",
+  "comment",
+  "user",
+  "message",
+  "fan_message",
+  "lounge_message",
+  "venue_review",
+  "artist_post",
+  "artist_profile",
+]);
+
+function unavailableReportTarget() {
+  throw new ApiError(404, "That item is no longer available.", "NOT_FOUND");
+}
+
+function preventSelfReport(authorId, reporterId) {
+  if (authorId && authorId === reporterId) {
+    throw new ApiError(400, "You can't report your own content.", "VALIDATION_FAILED");
+  }
+}
+
+// Reporting must prove that the caller can actually see the target. Besides
+// stopping guessed ids from becoming a private-content oracle, this keeps the
+// report queue aligned with each surface's own membership/blocking rules.
+function reportableTargetFor(user, targetType, targetId) {
+  if (targetType === "post") {
+    const row = db.prepare("SELECT id,user_id,photos,removed FROM posts WHERE id=?").get(targetId);
+    if (!row || row.removed || blockedEitherWay(user.id, row.user_id)) unavailableReportTarget();
+    preventSelfReport(row.user_id, user.id);
+    return { authorId: row.user_id, photos: parseJsonArray(row.photos) };
+  }
+
+  if (targetType === "comment") {
+    const row = db.prepare(`SELECT c.user_id,c.removed,p.user_id post_user_id,p.removed post_removed
+      FROM comments c JOIN posts p ON p.id=c.post_id WHERE c.id=?`).get(targetId);
+    if (!row || row.removed || row.post_removed
+      || blockedEitherWay(user.id, row.user_id)
+      || blockedEitherWay(user.id, row.post_user_id)) unavailableReportTarget();
+    preventSelfReport(row.user_id, user.id);
+    return { authorId: row.user_id, photos: [] };
+  }
+
+  if (targetType === "user") {
+    const row = q.userById.get(targetId);
+    if (!row) unavailableReportTarget();
+    preventSelfReport(row.id, user.id);
+    return { authorId: row.id, photos: [] };
+  }
+
+  if (targetType === "message") {
+    const row = db.prepare("SELECT from_id,to_id,removed FROM dms WHERE id=?").get(targetId);
+    // Only an incoming message's recipient can report it. A participant cannot
+    // report their own outbound message, and outsiders learn nothing from ids.
+    if (!row || row.removed || row.to_id !== user.id) unavailableReportTarget();
+    preventSelfReport(row.from_id, user.id);
+    return { authorId: row.from_id, photos: [] };
+  }
+
+  if (targetType === "fan_message") {
+    const row = db.prepare("SELECT artist,user_id,removed FROM fan_club_messages WHERE id=?").get(targetId);
+    const member = row && db.prepare("SELECT 1 FROM fan_club_members WHERE artist=? AND user_id=?").get(row.artist, user.id);
+    if (!row || row.removed || !member || blockedEitherWay(user.id, row.user_id)) unavailableReportTarget();
+    preventSelfReport(row.user_id, user.id);
+    return { authorId: row.user_id, photos: [] };
+  }
+
+  if (targetType === "lounge_message") {
+    const row = db.prepare("SELECT lounge_id,user_id,removed FROM lounge_messages WHERE id=?").get(targetId);
+    const attendee = row && db.prepare("SELECT 1 FROM going WHERE concert_key=? AND user_id=?").get(row.lounge_id, user.id);
+    if (!row || row.removed || !attendee || blockedEitherWay(user.id, row.user_id)) unavailableReportTarget();
+    preventSelfReport(row.user_id, user.id);
+    return { authorId: row.user_id, photos: [] };
+  }
+
+  if (targetType === "venue_review") {
+    const row = db.prepare("SELECT user_id,photos,removed FROM venue_reviews WHERE id=?").get(targetId);
+    if (!row || row.removed || blockedEitherWay(user.id, row.user_id)) unavailableReportTarget();
+    preventSelfReport(row.user_id, user.id);
+    return { authorId: row.user_id, photos: parseJsonArray(row.photos) };
+  }
+
+  if (targetType === "artist_post") {
+    const row = db.prepare(`SELECT p.user_id,p.removed,COALESCE(profile.feed_enabled,0) feed_enabled,COALESCE(profile.removed,0) profile_removed
+      FROM artist_posts p LEFT JOIN artist_profiles profile ON profile.artist_key=p.artist_key
+      WHERE p.id=?`).get(targetId);
+    if (!row || !row.user_id || row.removed || row.profile_removed || !row.feed_enabled || blockedEitherWay(user.id, row.user_id)) unavailableReportTarget();
+    preventSelfReport(row.user_id, user.id);
+    return { authorId: row.user_id, photos: [] };
+  }
+
+  if (targetType === "artist_profile") {
+    const row = db.prepare("SELECT owner_id,bio,banner,avatar_uri,removed FROM artist_profiles WHERE artist_key=?").get(targetId);
+    if (!row || !row.owner_id || row.removed || blockedEitherWay(user.id, row.owner_id)) unavailableReportTarget();
+    preventSelfReport(row.owner_id, user.id);
+    return { authorId: row.owner_id, photos: [row.banner, row.avatar_uri].filter(Boolean) };
+  }
+
+  unavailableReportTarget();
 }
 
 function postJson(p, viewerId) {
@@ -844,6 +983,7 @@ export const routes = {
         mailConfigured: mailConfigured(),
         mail: mailDiagnostics(),
         mediaStorageConfigured: mediaConfigured(),
+        mediaDeletion: mediaDeletionHealth(db),
       },
     };
   },
@@ -854,7 +994,14 @@ export const routes = {
   "POST /api/media/presign": (ctx) => {
     const u = requireUser(ctx);
     limit(ctx, "media-presign", 30, 10 * 60 * 1000);
-    return createMediaPresign({ userId: u.id, body: ctx.body });
+    const ticket = createMediaPresign({ userId: u.id, body: ctx.body });
+    // Record the exact owner/key before the client can upload. An object that is
+    // uploaded but never attached to a post/profile is then still erasable with
+    // the account, without listing the bucket or trusting a client URL.
+    if (!recordMediaObjectTicket(db, { ownerId: u.id, objectKey: ticket.key, at: now(), expiresAt: ticket.expiresAt })) {
+      throw new ApiError(502, "Photo upload could not be prepared. Try again.", "MEDIA_UPLOAD_FAILED");
+    }
+    return ticket;
   },
 
   // ---- per-photo reactions (the full-screen media viewer) ----
@@ -987,7 +1134,9 @@ export const routes = {
     const mb = await resolveFromMusicBrainz(name);
     if (!mb) {
       // Nothing found: log it for the admin catalog queue instead of a blind dump.
-      artistStmts.recordMissing.run(normName(name), name, Date.now());
+      const at = Date.now();
+      artistStmts.recordMissing.run(normName(name), name, at);
+      pruneMissingArtists(at);
       return { artist: null, created: false };
     }
     artistStmts.upsert.run(artistRow(mb.name, mb, "musicbrainz"));
@@ -1050,14 +1199,14 @@ export const routes = {
   "GET /api/artists/photos": (ctx) => {
     const name = clean(ctx.query.name, { max: 120 });
     if (!name) throw new ApiError(400, "Missing name.");
-    const rows = db.prepare(`SELECT p.id, p.photos, p.created_at, u.name AS by FROM posts p JOIN users u ON u.id = p.user_id
+    const rows = db.prepare(`SELECT p.id, p.user_id, p.photos, p.created_at, u.name AS by FROM posts p JOIN users u ON u.id = p.user_id
       WHERE LOWER(p.artist) = LOWER(?) AND p.removed = 0 AND p.photos_public = 1 AND p.photos != '[]'
       ORDER BY p.created_at DESC LIMIT 40`).all(name);
     const photos = [];
     for (const r of rows) {
       let list = []; try { list = JSON.parse(r.photos || "[]"); } catch {}
       for (const uri of list) {
-        if (typeof uri === "string" && /^https?:\/\//i.test(uri)) photos.push({ uri, by: r.by, postId: r.id, at: r.created_at });
+        if (typeof uri === "string" && /^https?:\/\//i.test(uri)) photos.push({ uri, by: r.by, postId: r.id, userId: r.user_id, at: r.created_at });
         if (photos.length >= 30) break;
       }
       if (photos.length >= 30) break;
@@ -1175,14 +1324,16 @@ export const routes = {
     const u = requireUser(ctx);
     const title = clean(ctx.body?.title, { max: 200 });
     if (!title) return { ok: false };
+    const artist = clean(ctx.body?.artist, { max: 120 }) || null;
+    assertSafeAuthoredFields({ "track title": title, "track artist": artist });
     limit(ctx, "play", 300, 60 * 60 * 1000);
     const id = uid("play");
     const createdAt = now();
     const videoId = parseYouTubeVideoId(ctx.body?.videoId || "") || null;
     db.prepare("INSERT INTO plays (id,user_id,title,artist,url,video_id,art,created_at) VALUES (?,?,?,?,?,?,?,?)")
-      .run(id, u.id, title, clean(ctx.body?.artist, { max: 120 }) || null, clean(ctx.body?.url, { max: 400 }) || null, videoId, clean(ctx.body?.art, { max: 500 }) || null, createdAt);
+      .run(id, u.id, title, artist, clean(ctx.body?.url, { max: 400 }) || null, videoId, clean(ctx.body?.art, { max: 500 }) || null, createdAt);
     db.prepare("DELETE FROM plays WHERE user_id=? AND id NOT IN (SELECT id FROM plays WHERE user_id=? ORDER BY created_at DESC LIMIT 300)").run(u.id, u.id);
-    return { ok: true, play: { id, title, artist: clean(ctx.body?.artist, { max: 120 }) || null, url: clean(ctx.body?.url, { max: 400 }) || null, videoId, art: clean(ctx.body?.art, { max: 500 }) || null, at: createdAt } };
+    return { ok: true, play: { id, title, artist, url: clean(ctx.body?.url, { max: 400 }) || null, videoId, art: clean(ctx.body?.art, { max: 500 }) || null, at: createdAt } };
   },
   "GET /api/me/plays": (ctx) => {
     const u = requireUser(ctx);
@@ -1223,6 +1374,7 @@ export const routes = {
     const name = clean(ctx.body?.name, { max: 80 }) || "Untitled";
     const tracks = cleanPlaylistTracks(ctx.body?.tracks, { allowEmpty: false });
     if (!tracks) throw new ApiError(400, "A playlist needs at least one song.", "VALIDATION_FAILED");
+    assertSafePlaylistContent(name, tracks);
     const visibility = cleanPlaylistVisibility(ctx.body?.visibility);
     const id = uid("pls");
     const createdAt = now();
@@ -1271,6 +1423,7 @@ export const routes = {
     if (tracks.length > 100) throw new ApiError(400, "This playlist is full at 100 songs.", "VALIDATION_FAILED");
     const name = Object.prototype.hasOwnProperty.call(ctx.body || {}, "name") ? clean(ctx.body.name, { max: 80 }) : row.name;
     if (!name) throw new ApiError(400, "Give this playlist a name.", "VALIDATION_FAILED");
+    assertSafePlaylistContent(name, tracks);
     let visibility = row.visibility || "public";
     if (Object.prototype.hasOwnProperty.call(ctx.body || {}, "visibility")) {
       const requested = clean(ctx.body.visibility, { max: 20 });
@@ -1302,6 +1455,7 @@ export const routes = {
       termsVersion: { required: false, parse: (x) => clean(x, { max: 32 }) || undefined },
     });
     if (errs.length) throw new ApiError(400, errs[0]);
+    assertSafeAuthoredFields({ "profile name": v.name, city: v.city });
     if (v.termsVersion !== CURRENT_TERMS_VERSION) {
       throw new ApiError(400, "Accept the current Terms & Conditions and Privacy policy to create an account.", "VALIDATION_FAILED");
     }
@@ -1450,20 +1604,25 @@ export const routes = {
     // Reject invalid/oversized metadata atomically. Truncating serialized JSON
     // can leave an account with malformed data that breaks every projection.
     const hasExtras = Object.prototype.hasOwnProperty.call(ctx.body || {}, "extras");
-    let serializedExtras = hasExtras ? serializeProfileExtras(ctx.body.extras) : undefined;
-    if (hasExtras && serializedExtras === null) {
+    const incomingExtras = hasExtras ? canonicalProfileExtras(ctx.body.extras, { strict: true }) : null;
+    let serializedExtras = hasExtras && incomingExtras.valid ? serializeProfileExtras(incomingExtras.value) : undefined;
+    if (hasExtras && (!incomingExtras.valid || serializedExtras === null)) {
       throw new ApiError(400, `extras must be a JSON object no larger than ${PROFILE_EXTRAS_MAX_BYTES} bytes.`);
     }
     if (hasExtras) {
       // Consent and terms timestamps are server-authored account records. A
       // generic profile metadata patch may neither forge nor erase them.
-      const requested = parseStoredProfileExtras(serializedExtras);
-      const current = parseStoredProfileExtras(u.extras);
+      const requested = incomingExtras.value;
+      const current = canonicalProfileExtras(parseStoredProfileExtras(u.extras)).value;
       for (const key of ["consentAt", "analyticsConsentAt", "termsAcceptedAt", "termsVersion", "analyticsOptOut"]) {
         if (current[key] === undefined) delete requested[key];
         else requested[key] = current[key];
       }
       serializedExtras = serializeProfileExtras(requested);
+      assertSafeAuthoredFields({
+        "now-playing title": requested.nowPlaying?.title,
+        "now-playing artist": requested.nowPlaying?.artist,
+      });
     }
 
     const [, v] = shape(ctx.body, {
@@ -1482,6 +1641,14 @@ export const routes = {
       // stale theme on /api/me and the client "snaps back" to a previous theme.
       theme: { parse: (x) => (["stage", "neon", "forest", "ember", "backstage", "vinyl", "daylight", "ice", "rose", "mint", "sunset", "lavender"].includes(x) ? x : undefined) },
       extras: { parse: () => serializedExtras },
+    });
+    assertSafeAuthoredFields({
+      "profile name": v.name,
+      username: v.handle,
+      bio: v.bio,
+      city: v.city,
+      genre: v.genres,
+      "favorite artist": v.favoriteArtists,
     });
     const sets = [];
     const args = [];
@@ -1517,9 +1684,19 @@ export const routes = {
       if (!encoded) throw new ApiError(400, `profile metadata must be no larger than ${PROFILE_EXTRAS_MAX_BYTES} bytes.`);
       sets.push("extras = ?"); args.push(encoded);
     } else if (v.extras !== undefined) { sets.push("extras = ?"); args.push(v.extras); }
-    if (sets.length) db.prepare(`UPDATE users SET ${sets.join(", ")} WHERE id = ?`).run(...args, u.id);
+    const replacedProfileMedia = [
+      ...(v.banner !== undefined && v.banner !== u.banner ? [u.banner] : []),
+      ...(v.avatarUri !== undefined && v.avatarUri !== u.avatar_uri ? [u.avatar_uri] : []),
+    ].filter(Boolean);
+    atomicWrite(() => {
+      if (sets.length) db.prepare(`UPDATE users SET ${sets.join(", ")} WHERE id = ?`).run(...args, u.id);
+      markOwnedMediaAssociated(db, { ownerId: u.id, urls: [v.banner, v.avatarUri], at: now() });
+      const deletable = unreferencedOwnedMediaUrls(db, { ownerId: u.id, urls: replacedProfileMedia });
+      enqueueOwnedMediaUrls(db, { ownerId: u.id, urls: deletable, at: now() });
+      const inside = q.userById.get(u.id);
+      if (parseStoredProfileExtras(inside.extras).analyticsOptOut) db.prepare("DELETE FROM events WHERE user_id=?").run(u.id);
+    });
     const updatedUser = q.userById.get(u.id);
-    if (parseStoredProfileExtras(updatedUser.extras).analyticsOptOut) db.prepare("DELETE FROM events WHERE user_id=?").run(u.id);
     return { user: publicUser(updatedUser, { self: true }) };
   },
 
@@ -1666,10 +1843,10 @@ export const routes = {
       },
       loungeMessages: db.prepare("SELECT id,lounge_id,text,removed,created_at FROM lounge_messages WHERE user_id=? ORDER BY created_at DESC").all(u.id)
         .map((r) => ({ id: r.id, loungeId: r.lounge_id, text: r.text, removed: !!r.removed, createdAt: r.created_at })),
-      messagesSent: db.prepare("SELECT to_id, text, created_at FROM dms WHERE from_id=? ORDER BY created_at DESC LIMIT 1000").all(u.id)
-        .map((m) => ({ to: name(m.to_id), text: m.text, createdAt: m.created_at })),
-      messagesReceived: db.prepare("SELECT from_id, text, created_at FROM dms WHERE to_id=? ORDER BY created_at DESC LIMIT 1000").all(u.id)
-        .map((m) => ({ from: name(m.from_id), text: m.text, createdAt: m.created_at })),
+      messagesSent: db.prepare("SELECT to_id, text, removed, created_at FROM dms WHERE from_id=? ORDER BY created_at DESC LIMIT 1000").all(u.id)
+        .map((m) => ({ to: name(m.to_id), text: m.text, removed: !!m.removed, createdAt: m.created_at })),
+      messagesReceived: db.prepare("SELECT from_id, text, removed, created_at FROM dms WHERE to_id=? ORDER BY created_at DESC LIMIT 1000").all(u.id)
+        .map((m) => ({ from: name(m.from_id), text: m.text, removed: !!m.removed, createdAt: m.created_at })),
       artistAccount: {
         requests: db.prepare("SELECT id,artist_name,note,status,created_at FROM artist_requests WHERE user_id=? ORDER BY created_at DESC").all(u.id)
           .map((r) => ({ id: r.id, artistName: r.artist_name, note: r.note, status: r.status, createdAt: r.created_at })),
@@ -1701,17 +1878,85 @@ export const routes = {
 
     db.exec("BEGIN IMMEDIATE");
     try {
+      const accountReportWhere = `reporter_id=?
+        OR (target_type='user' AND target_id=?)
+        OR (target_type='post' AND target_id IN (SELECT id FROM posts WHERE user_id=?))
+        OR (target_type='comment' AND target_id IN (SELECT id FROM comments WHERE user_id=?))
+        OR (target_type='message' AND target_id IN (SELECT id FROM dms WHERE from_id=? OR to_id=?))
+        OR (target_type='fan_message' AND target_id IN (SELECT id FROM fan_club_messages WHERE user_id=?))
+        OR (target_type='lounge_message' AND target_id IN (SELECT id FROM lounge_messages WHERE user_id=?))
+        OR (target_type='venue_review' AND target_id IN (SELECT id FROM venue_reviews WHERE user_id=?))
+        OR (target_type='artist_post' AND target_id IN (SELECT id FROM artist_posts WHERE user_id=?))
+        OR (target_type='artist_profile' AND target_id IN (SELECT artist_key FROM artist_profiles WHERE owner_id=?))`;
+      const accountReportParams = [u.id, u.id, u.id, u.id, u.id, u.id, u.id, u.id, u.id, u.id, u.id];
+
+      // Reactions are keyed by durable media URL rather than a post FK. Remove
+      // both exact attachments and every canonical object path owned by this
+      // account so another person's like cannot keep the deleted user id alive.
+      const authoredMediaUrls = [
+        u.avatar_uri,
+        u.banner,
+        ...db.prepare("SELECT photos FROM posts WHERE user_id=?").all(u.id),
+        ...db.prepare("SELECT photos FROM venue_reviews WHERE user_id=?").all(u.id),
+        ...db.prepare("SELECT avatar_uri,banner FROM artist_profiles WHERE owner_id=?").all(u.id),
+      ].flatMap((value) => {
+        if (typeof value === "string") return [value];
+        if (value && Object.hasOwn(value, "photos")) return parseJsonArray(value.photos);
+        return [value?.avatar_uri, value?.banner].filter(Boolean);
+      });
+
+      // Bootstrap any trusted pre-ledger associations, then queue the complete
+      // owner ledger. That second step is what catches a successful direct
+      // upload that never became a post/profile after a lost response or an
+      // abandoned composer. Both writes are inside this account transaction and
+      // survive the user/content cascades below.
+      enqueueOwnedMediaUrls(db, { ownerId: u.id, urls: authoredMediaUrls, at: now() });
+      enqueueAllOwnedMedia(db, { ownerId: u.id, at: now() });
+      enqueueOwnerMediaSweep(db, { ownerId: u.id, at: now() });
+      db.prepare(`DELETE FROM media_reactions
+        WHERE post_id IN (SELECT id FROM posts WHERE user_id=?) OR instr(media_url, ?) > 0`)
+        .run(u.id, `users/${encodeURIComponent(u.id)}/`);
+      const deleteReactionForUrl = db.prepare("DELETE FROM media_reactions WHERE media_url=?");
+      for (const mediaUrl of new Set(authoredMediaUrls)) deleteReactionForUrl.run(mediaUrl);
+
+      // The moderation ledger intentionally contains ids and bounded state JSON.
+      // There is no documented retention basis after account erasure, so delete
+      // actions performed by this account and actions about its reports/content.
+      db.prepare(`DELETE FROM moderation_actions WHERE target_type='report'
+        AND target_id IN (SELECT id FROM reports WHERE ${accountReportWhere})`).run(...accountReportParams);
+      db.prepare(`DELETE FROM moderation_actions WHERE actor_id=?
+        OR (target_type='user' AND target_id=?)
+        OR (target_type='post' AND target_id IN (SELECT id FROM posts WHERE user_id=?))
+        OR (target_type='comment' AND target_id IN (SELECT id FROM comments WHERE user_id=?))
+        OR (target_type='message' AND target_id IN (SELECT id FROM dms WHERE from_id=? OR to_id=?))
+        OR (target_type='fan_message' AND target_id IN (SELECT id FROM fan_club_messages WHERE user_id=?))
+        OR (target_type='lounge_message' AND target_id IN (SELECT id FROM lounge_messages WHERE user_id=?))
+        OR (target_type='venue_review' AND target_id IN (SELECT id FROM venue_reviews WHERE user_id=?))
+        OR (target_type='artist_post' AND target_id IN (SELECT id FROM artist_posts WHERE user_id=?))
+        OR (target_type='artist_profile' AND target_id IN (SELECT artist_key FROM artist_profiles WHERE owner_id=?))`)
+        .run(u.id, u.id, u.id, u.id, u.id, u.id, u.id, u.id, u.id, u.id, u.id);
+
+      // Campaign queues/logs deliberately have no user FK. Clear both identity
+      // columns because old rows may have only one of them populated, and ensure
+      // no already-queued campaign can send after the account is gone.
+      db.prepare("DELETE FROM email_queue WHERE user_id=? OR lower(to_email)=lower(?)").run(u.id, u.email);
+      db.prepare("DELETE FROM email_log WHERE user_id=? OR lower(to_email)=lower(?)").run(u.id, u.email);
+
+      // Durable staff-created artifacts survive their creator, but must no longer
+      // identify the erased account. Badge grant notes are author-entered, so the
+      // attribution and note are removed together.
+      db.prepare("UPDATE custom_badges SET created_by=NULL WHERE created_by=?").run(u.id);
+      db.prepare("UPDATE user_badges SET granted_by=NULL,note='' WHERE granted_by=?").run(u.id);
+      db.prepare("UPDATE track_overrides SET set_by=NULL WHERE set_by=?").run(u.id);
+      db.prepare("UPDATE email_templates SET updated_by=NULL WHERE updated_by=?").run(u.id);
+      db.prepare("UPDATE email_campaigns SET created_by=NULL WHERE created_by=?").run(u.id);
+
       // These relationships use ON DELETE SET NULL so shared rows can normally
       // survive account changes. Deletion is a privacy erasure, so remove the
       // account's authored/attributable records instead of leaving them behind.
       db.prepare("DELETE FROM notifications WHERE actor_id=?").run(u.id);
       db.prepare("DELETE FROM events WHERE user_id=?").run(u.id);
-      db.prepare(`DELETE FROM reports WHERE reporter_id=?
-        OR (target_type='user' AND target_id=?)
-        OR (target_type='post' AND target_id IN (SELECT id FROM posts WHERE user_id=?))
-        OR (target_type='comment' AND target_id IN (SELECT id FROM comments WHERE user_id=?))
-        OR (target_type='message' AND target_id IN (SELECT id FROM dms WHERE from_id=? OR to_id=?))`
-      ).run(u.id, u.id, u.id, u.id, u.id, u.id);
+      db.prepare(`DELETE FROM reports WHERE ${accountReportWhere}`).run(...accountReportParams);
       db.prepare("DELETE FROM artist_posts WHERE user_id=?").run(u.id);
       db.prepare("DELETE FROM artist_profiles WHERE owner_id=?").run(u.id);
       db.prepare("DELETE FROM users WHERE id=?").run(u.id);
@@ -1960,18 +2205,24 @@ export const routes = {
     if (request.kind === "status") {
       const v = request.values;
       const id = uid("p");
-      postRow.run(id, u.id, "", "", "", "", 0, null, null,
-        "{}", v.review, JSON.stringify(v.photos), v.photosPublic, 0, "[]", null,
-        "[]", "status", v.song ? JSON.stringify(v.song) : null, v.playlist ? JSON.stringify(v.playlist) : null, null, null, null, mutationId, mutationHash, now());
+      atomicWrite(() => {
+        postRow.run(id, u.id, "", "", "", "", 0, null, null,
+          "{}", v.review, JSON.stringify(v.photos), v.photosPublic, 0, "[]", null,
+          "[]", "status", v.song ? JSON.stringify(v.song) : null, v.playlist ? JSON.stringify(v.playlist) : null, null, null, null, mutationId, mutationHash, now());
+        markOwnedMediaAssociated(db, { ownerId: u.id, urls: v.photos, at: now() });
+      });
       return { id, post: postJson(feedPostById.get(id), u.id) };
     }
 
     const v = request.values;
     const id = uid("p");
-    postRow.run(id, u.id, v.artist, v.venue, v.city, v.date, v.overall, v.band, v.room,
-      JSON.stringify(v.dims), v.review, JSON.stringify(v.photos), v.photosPublic, v.landingShowcase, JSON.stringify(v.setlist), v.tour,
-      JSON.stringify(v.tags), "review", v.song ? JSON.stringify(v.song) : null, null,
-      v.binding.artist_key, v.binding.artist_mbid, venueBinding(v.venue), mutationId, mutationHash, now());
+    atomicWrite(() => {
+      postRow.run(id, u.id, v.artist, v.venue, v.city, v.date, v.overall, v.band, v.room,
+        JSON.stringify(v.dims), v.review, JSON.stringify(v.photos), v.photosPublic, v.landingShowcase, JSON.stringify(v.setlist), v.tour,
+        JSON.stringify(v.tags), "review", v.song ? JSON.stringify(v.song) : null, null,
+        v.binding.artist_key, v.binding.artist_mbid, venueBinding(v.venue), mutationId, mutationHash, now());
+      markOwnedMediaAssociated(db, { ownerId: u.id, urls: v.photos, at: now() });
+    });
     return { id, post: postJson(feedPostById.get(id), u.id) };
   },
 
@@ -2034,6 +2285,7 @@ export const routes = {
       next.date = value;
     }
     textField("review", LIMITS.review, { newlines: true });
+    if (has("review")) assertSafeAuthoredText(next.review, { field: current.kind === "status" ? "post" : "review" });
     ratingField("overall", { required: true });
     ratingField("band");
     ratingField("room");
@@ -2084,6 +2336,22 @@ export const routes = {
       next.playlist = playlist ? JSON.stringify(playlist) : null;
     }
 
+    let editedSong = null;
+    if (has("song") && next.song) {
+      try { editedSong = JSON.parse(next.song); } catch {}
+    }
+    assertSafeAuthoredFields({
+      artist: has("artist") ? next.artist : undefined,
+      venue: has("venue") ? next.venue : undefined,
+      city: has("city") ? next.city : undefined,
+      review: has("review") ? next.review : undefined,
+      "setlist entry": has("setlist") ? cleanStringArray(body.setlist, { maxItems: 40, maxLen: 120 }) : undefined,
+      tour: has("tour") ? next.tour : undefined,
+      tag: has("tags") ? cleanPostTags(body.tags) : undefined,
+      "tagged song title": editedSong?.title,
+      "tagged song artist": editedSong?.artist,
+    });
+
     let storedPhotos = [];
     try { storedPhotos = JSON.parse(next.photos || "[]"); } catch {}
     // Privacy wins if a forged/older client submits contradictory toggles. A
@@ -2108,15 +2376,24 @@ export const routes = {
     }
 
     const editedAt = Math.max(now(), currentVersion + 1);
+    const previousPhotos = parseJsonArray(current.photos);
+    const removedPhotos = previousPhotos.filter((value) => !storedPhotos.includes(value));
     // Re-resolve the binding on every edit: renaming the artist must move the
     // review to that artist's page, and retyping it as free text must drop the
     // binding rather than leave the post pointing at the previous entity.
     const editBinding = current.kind === "status"
       ? { artist_key: null, artist_mbid: null }
       : resolveArtistBinding(next.artist, has("artistKey") ? body.artistKey : current.artist_key);
-    db.prepare(`UPDATE posts SET artist=?,venue=?,city=?,date=?,overall=?,band=?,room=?,dims=?,review=?,photos=?,photos_public=?,landing_showcase=?,setlist=?,tour=?,tags=?,song=?,playlist=?,artist_key=?,artist_mbid=?,venue_key=?,updated_at=? WHERE id=?`)
-      .run(next.artist, next.venue, next.city, next.date, next.overall, next.band, next.room, next.dims, next.review, next.photos, next.photos_public, next.landing_showcase, next.setlist, next.tour, next.tags, next.song, next.playlist,
-        editBinding.artist_key, editBinding.artist_mbid, current.kind === "status" ? null : venueBinding(next.venue), editedAt, current.id);
+    atomicWrite(() => {
+      db.prepare(`UPDATE posts SET artist=?,venue=?,city=?,date=?,overall=?,band=?,room=?,dims=?,review=?,photos=?,photos_public=?,landing_showcase=?,setlist=?,tour=?,tags=?,song=?,playlist=?,artist_key=?,artist_mbid=?,venue_key=?,updated_at=? WHERE id=?`)
+        .run(next.artist, next.venue, next.city, next.date, next.overall, next.band, next.room, next.dims, next.review, next.photos, next.photos_public, next.landing_showcase, next.setlist, next.tour, next.tags, next.song, next.playlist,
+          editBinding.artist_key, editBinding.artist_mbid, current.kind === "status" ? null : venueBinding(next.venue), editedAt, current.id);
+      markOwnedMediaAssociated(db, { ownerId: u.id, urls: storedPhotos, at: now() });
+      const deletable = unreferencedOwnedMediaUrls(db, { ownerId: u.id, urls: removedPhotos });
+      enqueueOwnedMediaUrls(db, { ownerId: u.id, urls: deletable, at: now() });
+      const deleteReaction = db.prepare("DELETE FROM media_reactions WHERE media_url=?");
+      for (const mediaUrl of deletable) deleteReaction.run(mediaUrl);
+    });
     return { post: postJson(feedPostById.get(current.id), u.id) };
   },
 
@@ -2145,11 +2422,22 @@ export const routes = {
   "DELETE /api/posts/:id": (ctx) => {
     const u = requireUser(ctx);
     limit(ctx, "post-delete", 60, 60 * 60 * 1000);
-    const post = db.prepare("SELECT id,user_id,removed FROM posts WHERE id=?").get(ctx.params.id);
+    const post = db.prepare("SELECT id,user_id,photos,removed FROM posts WHERE id=?").get(ctx.params.id);
     if (!post || post.user_id !== u.id) throw new ApiError(404, "That post is no longer available.", "NOT_FOUND");
-    if (!post.removed) {
-      db.prepare("UPDATE posts SET removed=1 WHERE id=? AND user_id=?").run(post.id, u.id);
-      moderationRecord(ctx, "delete", "post", post.id, "author deleted", { removed: false }, { removed: true });
+    const attached = parseJsonArray(post.photos);
+    if (!post.removed || attached.length) {
+      atomicWrite(() => {
+        // Author deletion is irreversible content deletion, unlike a moderator's
+        // reversible soft hide. Scrub the media association in the same commit
+        // that durably queues any now-unreferenced owned object.
+        db.prepare(`UPDATE posts SET removed=1,photos='[]',photos_public=0,landing_showcase=0
+          WHERE id=? AND user_id=?`).run(post.id, u.id);
+        const deletable = unreferencedOwnedMediaUrls(db, { ownerId: u.id, urls: attached });
+        enqueueOwnedMediaUrls(db, { ownerId: u.id, urls: deletable, at: now() });
+        const deleteReaction = db.prepare("DELETE FROM media_reactions WHERE media_url=?");
+        for (const mediaUrl of deletable) deleteReaction.run(mediaUrl);
+        if (!post.removed) moderationRecord(ctx, "delete", "post", post.id, "author deleted", { removed: false }, { removed: true });
+      });
     }
     return { ok: true, id: post.id };
   },
@@ -2218,6 +2506,7 @@ export const routes = {
     limit(ctx, "comment", 60, 60 * 60 * 1000);
     const text = clean(ctx.body?.text, { max: LIMITS.message, newlines: true });
     if (!text) throw new ApiError(400, "Say something first.");
+    assertSafeAuthoredText(text, { field: "comment" });
     const targetPost = db.prepare("SELECT user_id,artist FROM posts WHERE id=? AND removed=0").get(ctx.params.id);
     if (!targetPost) throw new ApiError(404, "No such post.");
     if (blockedEitherWay(u.id, targetPost.user_id)) throw new ApiError(403, "This interaction isn't available.", "FORBIDDEN");
@@ -2268,7 +2557,7 @@ export const routes = {
             PARTITION BY CASE WHEN from_id=? THEN to_id ELSE from_id END
             ORDER BY created_at DESC,id DESC
           ) AS row_number
-        FROM dms WHERE from_id=? OR to_id=?
+        FROM dms WHERE removed=0 AND (from_id=? OR to_id=?)
       ) WHERE row_number=1 ORDER BY created_at DESC,id DESC LIMIT 200`).all(u.id, u.id, u.id, u.id);
       return { threads: latest.filter((message) => !hidden.has(message.other_id)).map((message) => {
         const other = q.userById.get(message.other_id);
@@ -2277,20 +2566,20 @@ export const routes = {
           otherUser: publicUser(other),
           messages: [{ id: message.id, from: message.from_id, text: message.text, createdAt: message.created_at }],
         } : null;
-      }).filter(Boolean) };
+      }).filter(Boolean), removedIds: removedDmIdsFor(u.id) };
     }
     const others = db.prepare(`SELECT DISTINCT CASE WHEN from_id = ? THEN to_id ELSE from_id END AS other
-                               FROM dms WHERE from_id = ? OR to_id = ?`).all(u.id, u.id, u.id);
+                               FROM dms WHERE removed=0 AND (from_id = ? OR to_id = ?)`).all(u.id, u.id, u.id);
     const threads = others.map((o) => {
       if (hidden.has(o.other)) return null; // blocked conversations disappear
       const other = q.userById.get(o.other);
       if (!other) return null;
       const msgs = db.prepare(`SELECT id, from_id, text, created_at FROM dms
-        WHERE (from_id=? AND to_id=?) OR (from_id=? AND to_id=?) ORDER BY created_at DESC, id DESC LIMIT 500`)
+        WHERE removed=0 AND ((from_id=? AND to_id=?) OR (from_id=? AND to_id=?)) ORDER BY created_at DESC, id DESC LIMIT 500`)
         .all(u.id, o.other, o.other, u.id);
       return { otherId: o.other, otherUser: publicUser(other), messages: msgs.reverse().map((m) => ({ id: m.id, from: m.from_id, text: m.text, createdAt: m.created_at })) };
     }).filter(Boolean);
-    return { threads };
+    return { threads, removedIds: removedDmIdsFor(u.id) };
   },
 
   "GET /api/dms/:otherId": (ctx) => {
@@ -2305,7 +2594,7 @@ export const routes = {
     // Keep the existing `before` cursor untouched for loading older history.
     if (after) {
       const found = db.prepare(`SELECT id, from_id, text, created_at FROM dms
-        WHERE ((from_id=? AND to_id=?) OR (from_id=? AND to_id=?))
+        WHERE removed=0 AND ((from_id=? AND to_id=?) OR (from_id=? AND to_id=?))
           AND (created_at > ? OR (created_at = ? AND id > ?))
         ORDER BY created_at ASC, id ASC LIMIT ?`)
         .all(u.id, other, other, u.id, after.createdAt, after.createdAt, after.id, limit + 1);
@@ -2316,6 +2605,7 @@ export const routes = {
         nextCursor: null,
         syncCursor: rows.length ? encodeCursor(rows.at(-1)) : String(ctx.query.after),
         hasMore,
+        removedIds: removedDmIdsFor(u.id, other),
       };
     }
 
@@ -2324,10 +2614,10 @@ export const routes = {
     if (cursor) args.push(cursor.createdAt, cursor.createdAt, cursor.id);
     args.push(limit + 1);
     const found = db.prepare(`SELECT id, from_id, text, created_at FROM dms
-      WHERE ((from_id=? AND to_id=?) OR (from_id=? AND to_id=?)) ${cursorSql} ORDER BY created_at DESC, id DESC LIMIT ?`).all(...args);
+      WHERE removed=0 AND ((from_id=? AND to_id=?) OR (from_id=? AND to_id=?)) ${cursorSql} ORDER BY created_at DESC, id DESC LIMIT ?`).all(...args);
     const { rows, nextCursor } = finishPage(found, limit);
     const syncCursor = !cursor && rows.length ? encodeCursor(rows[0]) : null;
-    return { messages: rows.reverse().map((m) => ({ id: m.id, from: m.from_id, text: m.text, createdAt: m.created_at })), nextCursor, syncCursor, hasMore: false };
+    return { messages: rows.reverse().map((m) => ({ id: m.id, from: m.from_id, text: m.text, createdAt: m.created_at })), nextCursor, syncCursor, hasMore: false, removedIds: removedDmIdsFor(u.id, other) };
   },
 
   "POST /api/dms/:otherId": (ctx) => {
@@ -2339,9 +2629,10 @@ export const routes = {
     if (blockedEitherWay(u.id, other)) throw new ApiError(403, "You can't message this account.");
     const text = clean(ctx.body?.text, { max: LIMITS.message, newlines: true });
     if (!text) throw new ApiError(400, "Say something first.");
+    assertSafeAuthoredText(text, { field: "message" });
     const id = uid("dm");
     db.prepare("INSERT INTO dms (id,from_id,to_id,text,created_at) VALUES (?,?,?,?,?)").run(id, u.id, other, text, now());
-    addNotif(other, u.id, "dm", { text: text.slice(0, 80) });
+    addNotif(other, u.id, "dm", { postId: id, text: text.slice(0, 80) });
     return { id };
   },
 
@@ -2457,6 +2748,7 @@ export const routes = {
     const artist = clean(decodeURIComponent(ctx.params.artist), { max: LIMITS.artist }).toLowerCase();
     const text = clean(ctx.body?.text, { max: LIMITS.message, newlines: true });
     if (!artist || !text) throw new ApiError(400, "Say something first.");
+    assertSafeAuthoredText(text, { field: "fan-club message" });
     const member = db.prepare("SELECT 1 FROM fan_club_members WHERE artist=? AND user_id=?").get(artist, u.id);
     if (!member) throw new ApiError(403, "Join this fan club before jumping into the conversation.", "FAN_CLUB_MEMBERSHIP_REQUIRED");
     const id = uid("fc");
@@ -2518,6 +2810,7 @@ export const routes = {
     const key = clean(decodeURIComponent(ctx.params.key), { max: 300 }).toLowerCase();
     const text = clean(ctx.body?.text, { max: LIMITS.message, newlines: true });
     if (!key || !text) throw new ApiError(400, "Say something first.");
+    assertSafeAuthoredText(text, { field: "lounge message" });
     const attendee = db.prepare("SELECT 1 FROM going WHERE user_id=? AND concert_key=?").get(u.id, key);
     if (!attendee) throw new ApiError(403, "Join this show's Going list before posting in the lounge.", "LOUNGE_ATTENDANCE_REQUIRED");
     const id = uid("lm");
@@ -2629,19 +2922,39 @@ export const routes = {
     const u = requireUser(ctx);
     limit(ctx, "report", 20, 60 * 60 * 1000);
     const [errs, v] = shape(ctx.body, {
-      targetType: { required: true, parse: (x) => (["post", "comment", "user", "message"].includes(x) ? x : undefined) },
-      targetId: { required: true, parse: (x) => clean(x, { max: 60 }) || undefined },
+      targetType: { required: true, parse: (x) => (REPORTABLE_TARGET_TYPES.has(x) ? x : undefined) },
+      targetId: { required: true, parse: (x) => clean(x, { max: 240 }) || undefined },
       reason: { parse: (x) => clean(x, { max: LIMITS.note }) },
+      // Optional exact attachment identity. It is verified against the target's
+      // stored media. A one-based human hint and a stable SHA-256 fingerprint
+      // are persisted; the URL itself is not. Authorized no-store moderation
+      // reads project only the exact still-attached, PIT-owned object.
+      mediaUri: { parse: (x) => clean(x, { max: 2000 }) || undefined },
     });
     if (errs.length) throw new ApiError(400, errs[0]);
-    const table = { post: "posts", comment: "comments", user: "users", message: "dms" }[v.targetType];
-    if (!db.prepare(`SELECT 1 FROM ${table} WHERE id=?`).get(v.targetId)) throw new ApiError(404, "That item is no longer available.", "NOT_FOUND");
+    const target = reportableTargetFor(u, v.targetType, v.targetId);
+    let reason = v.reason || "";
+    let mediaIndex = null;
+    let mediaFingerprint = null;
+    if (v.mediaUri) {
+      if (!["post", "venue_review", "artist_profile"].includes(v.targetType)) {
+        throw new ApiError(400, "This item does not support attached-media reports.", "VALIDATION_FAILED");
+      }
+      const media = (Array.isArray(target.photos) ? target.photos : [])
+        .map((uri) => clean(uri, { max: 2000 }))
+        .filter(Boolean);
+      const matchedIndex = media.indexOf(v.mediaUri);
+      if (matchedIndex < 0) unavailableReportTarget();
+      mediaIndex = matchedIndex + 1;
+      mediaFingerprint = createHash("sha256").update(v.mediaUri, "utf8").digest("hex");
+      reason = clean(`Specific attached media ${mediaIndex} of ${media.length}. ${reason}`, { max: LIMITS.note });
+    }
     const existing = db.prepare("SELECT id FROM reports WHERE reporter_id=? AND target_type=? AND target_id=? AND status='open'").get(u.id, v.targetType, v.targetId);
-    if (existing) return { id: existing.id, duplicate: true };
+    if (existing) return { id: existing.id, targetType: v.targetType, targetId: v.targetId, duplicate: true };
     const id = uid("r");
-    db.prepare("INSERT INTO reports (id,target_type,target_id,reason,reporter_id,created_at) VALUES (?,?,?,?,?,?)")
-      .run(id, v.targetType, v.targetId, v.reason || "", u.id, now());
-    return { id };
+    db.prepare("INSERT INTO reports (id,target_type,target_id,reason,reporter_id,media_index,media_fingerprint,created_at) VALUES (?,?,?,?,?,?,?,?)")
+      .run(id, v.targetType, v.targetId, reason, u.id, mediaIndex, mediaFingerprint, now());
+    return { id, targetType: v.targetType, targetId: v.targetId, duplicate: false };
   },
 
   // Report a song identity or playback failure. Optionally carries the CORRECT
@@ -3369,6 +3682,7 @@ export const routes = {
   // searched that MusicBrainz had nothing for. Admin seeds these on demand.
   "GET /api/admin/artist-queue": (ctx) => {
     requireAdmin(ctx);
+    pruneMissingArtists();
     return {
       thin: artistStmts.thin.all(60).map((r) => ({ norm: r.norm, name: r.name, searches: r.searches, genre: r.genre })),
       missing: artistStmts.listMissing.all(60).map((r) => ({ norm: r.norm, name: r.name, searches: r.searches })),
@@ -3546,14 +3860,18 @@ export const routes = {
     limit(ctx, "going", 120, 10 * 60 * 1000);
     const key = clean(ctx.body?.key, { max: 300 });
     if (!key) throw new ApiError(400, "Missing key.");
+    const displayArtist = clean(ctx.body?.artist, { max: LIMITS.artist }) || "";
+    const displayVenue = clean(ctx.body?.venue, { max: LIMITS.venue }) || "";
+    const displayCity = clean(ctx.body?.city, { max: LIMITS.city }) || "";
+    assertSafeAuthoredFields({ artist: displayArtist, venue: displayVenue, city: displayCity });
     const has = !!db.prepare("SELECT 1 FROM going WHERE user_id=? AND concert_key=?").get(u.id, key);
     const going = desiredState(ctx.body, "going", has);
     if (!going && has) db.prepare("DELETE FROM going WHERE user_id=? AND concert_key=?").run(u.id, key);
     else if (going && !has) db.prepare("INSERT INTO going (user_id,concert_key,artist,venue,city,date) VALUES (?,?,?,?,?,?)")
-      .run(u.id, key, clean(ctx.body?.artist, { max: LIMITS.artist }) || "", clean(ctx.body?.venue, { max: LIMITS.venue }) || "",
+      .run(u.id, key, displayArtist, displayVenue,
         // Denormalized display copy only (the key is what identifies the night),
         // so an unparseable date is dropped rather than refused.
-        clean(ctx.body?.city, { max: LIMITS.city }) || "", cleanDate(ctx.body?.date) || "");
+        displayCity, cleanDate(ctx.body?.date) || "");
     return { going };
   },
   "GET /api/going/:key/attendees": (ctx) => {
@@ -3594,10 +3912,14 @@ export const routes = {
     const rating = clampRating(ctx.body?.rating);
     if (!key || !rating) throw new ApiError(400, "Bad review.");
     const text = clean(ctx.body?.text, { max: LIMITS.review, newlines: true });
+    assertSafeAuthoredText(text, { field: "venue review" });
     const photos = cleanStringArray(ctx.body?.photos, { maxItems: 8, maxLen: 2000 });
     const id = uid("vr");
-    db.prepare("INSERT INTO venue_reviews (id,venue_key,user_id,rating,text,photos,created_at) VALUES (?,?,?,?,?,?,?)")
-      .run(id, key, u.id, rating, text || "", JSON.stringify(photos || []), now());
+    atomicWrite(() => {
+      db.prepare("INSERT INTO venue_reviews (id,venue_key,user_id,rating,text,photos,created_at) VALUES (?,?,?,?,?,?,?)")
+        .run(id, key, u.id, rating, text || "", JSON.stringify(photos || []), now());
+      markOwnedMediaAssociated(db, { ownerId: u.id, urls: photos, at: now() });
+    });
     return { id };
   },
 
@@ -3607,9 +3929,11 @@ export const routes = {
     limit(ctx, "artistreq", 5, 60 * 60 * 1000);
     const artistName = clean(ctx.body?.artistName, { max: LIMITS.artist });
     if (!artistName || artistName.length < 2) throw new ApiError(400, "Enter the artist name.");
+    const note = clean(ctx.body?.note, { max: LIMITS.note, newlines: true }) || "";
+    assertSafeAuthoredFields({ "artist name": artistName, "request note": note });
     const id = uid("ar");
     db.prepare("INSERT INTO artist_requests (id,user_id,artist_name,note,status,created_at) VALUES (?,?,?,?,'pending',?)")
-      .run(id, u.id, artistName, clean(ctx.body?.note, { max: LIMITS.note, newlines: true }) || "", now());
+      .run(id, u.id, artistName, note, now());
     return { id };
   },
   "GET /api/admin/artist-requests": (ctx) => {
@@ -3633,10 +3957,16 @@ export const routes = {
   "GET /api/artists/:key/profile": (ctx) => {
     const key = clean(decodeURIComponent(ctx.params.key), { max: 200 }).toLowerCase();
     const p = db.prepare("SELECT * FROM artist_profiles WHERE artist_key=?").get(key);
-    const posts = db.prepare("SELECT id, text, created_at FROM artist_posts WHERE artist_key=? ORDER BY created_at DESC LIMIT 100").all(key);
+    const blocked = blockedIdSet(ctx.user?.id);
+    // Owner overrides are ordinary user-authored UGC. A block must hide them in
+    // both directions just like profiles and posts elsewhere; the client can
+    // still render provider/catalog metadata beneath this null overlay.
+    if (p?.owner_id && blocked.has(p.owner_id)) return { profile: null, posts: [] };
+    const posts = p?.removed ? [] : db.prepare("SELECT id,user_id,text,created_at FROM artist_posts WHERE artist_key=? AND removed=0 ORDER BY created_at DESC LIMIT 100").all(key)
+      .filter((post) => !blocked.has(post.user_id));
     return {
-      profile: p ? { bio: p.bio, banner: p.banner, avatarUri: p.avatar_uri, feedEnabled: !!p.feed_enabled } : null,
-      posts: posts.map((x) => ({ id: x.id, text: x.text, createdAt: x.created_at })),
+      profile: p && !p.removed ? { ownerId: p.owner_id || null, bio: p.bio, banner: p.banner, avatarUri: p.avatar_uri, feedEnabled: !!p.feed_enabled } : null,
+      posts: posts.map((x) => ({ id: x.id, userId: x.user_id, text: x.text, createdAt: x.created_at })),
     };
   },
   "PATCH /api/artists/:key/profile": (ctx) => {
@@ -3649,15 +3979,25 @@ export const routes = {
       avatarUri: { parse: (x) => clean(x, { max: 2000 }) },
       feedEnabled: { parse: (x) => (x ? 1 : 0) },
     });
-    if (!db.prepare("SELECT 1 FROM artist_profiles WHERE artist_key=?").get(key))
-      db.prepare("INSERT INTO artist_profiles (artist_key,owner_id,updated_at) VALUES (?,?,?)").run(key, u.id, now());
+    assertSafeAuthoredText(v.bio, { field: "artist bio" });
+    const existing = db.prepare("SELECT owner_id,banner,avatar_uri FROM artist_profiles WHERE artist_key=?").get(key);
     const sets = [], args = [];
     if (v.bio !== undefined) { sets.push("bio=?"); args.push(v.bio); }
     if (v.banner !== undefined) { sets.push("banner=?"); args.push(v.banner); }
     if (v.avatarUri !== undefined) { sets.push("avatar_uri=?"); args.push(v.avatarUri); }
     if (v.feedEnabled !== undefined) { sets.push("feed_enabled=?"); args.push(v.feedEnabled); }
     sets.push("updated_at=?"); args.push(now());
-    db.prepare(`UPDATE artist_profiles SET ${sets.join(", ")} WHERE artist_key=?`).run(...args, key);
+    const replacedProfileMedia = [
+      ...(v.banner !== undefined && v.banner !== existing?.banner ? [existing?.banner] : []),
+      ...(v.avatarUri !== undefined && v.avatarUri !== existing?.avatar_uri ? [existing?.avatar_uri] : []),
+    ].filter(Boolean);
+    atomicWrite(() => {
+      if (!existing) db.prepare("INSERT INTO artist_profiles (artist_key,owner_id,updated_at) VALUES (?,?,?)").run(key, u.id, now());
+      db.prepare(`UPDATE artist_profiles SET ${sets.join(", ")} WHERE artist_key=?`).run(...args, key);
+      markOwnedMediaAssociated(db, { ownerId: u.id, urls: [v.banner, v.avatarUri], at: now() });
+      const deletable = unreferencedOwnedMediaUrls(db, { ownerId: u.id, urls: replacedProfileMedia });
+      enqueueOwnedMediaUrls(db, { ownerId: u.id, urls: deletable, at: now() });
+    });
     return { ok: true };
   },
   "POST /api/artists/:key/posts": (ctx) => {
@@ -3669,6 +4009,7 @@ export const routes = {
     if (!ownsArtist(u, key)) throw new ApiError(403, "Not your page.");
     const text = clean(ctx.body?.text, { max: LIMITS.message, newlines: true });
     if (!text) throw new ApiError(400, "Say something first.");
+    assertSafeAuthoredText(text, { field: "artist update" });
     const id = uid("ap");
     db.prepare("INSERT INTO artist_posts (id,artist_key,user_id,text,created_at) VALUES (?,?,?,?,?)").run(id, key, u.id, text, now());
     return { id };

@@ -5,7 +5,7 @@ import { createApiResponseHeaderSetter } from "./responseHeaders.js";
 
 const getPhotos = routes["GET /api/venues/:key/photos"];
 
-test("venue photo endpoint returns one normalized, bounded, cacheable pool", () => {
+test("venue photo endpoint fails closed for the legacy unverified catalog", () => {
   const headers = {};
   const result = getPhotos({
     params: { key: encodeURIComponent("Wollman Auditorium") },
@@ -13,12 +13,7 @@ test("venue photo endpoint returns one normalized, bounded, cacheable pool", () 
   });
 
   assert.equal(result.key, "wollman auditorium");
-  assert.ok(result.photos.length > 0);
-  assert.ok(result.photos.length <= 24);
-  assert.equal(new Set(result.photos.map((photo) => photo.uri)).size, result.photos.length);
-  assert.ok(result.photos.every((photo) => /^https?:\/\//.test(photo.uri)));
-  assert.ok(result.photos.every((photo) => typeof photo.by === "string" && photo.by.length > 0));
-  assert.ok(result.photos.every((photo) => ["commons", "openverse", "web"].includes(photo.source)));
+  assert.deepEqual(result.photos, []);
   assert.equal(headers["Cache-Control"], "public, max-age=3600, stale-while-revalidate=86400");
 });
 

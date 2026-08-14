@@ -20,7 +20,7 @@ const ago = (ts) => {
 
 // One comment row + its nested replies. A reply-to-comment is indented and shows
 // who it answers, so the thread reads like a forum, not a flat list.
-function CommentNode({ c, replies, depth, onReply, onDelete, sessionId, onOpenProfile, userById, userBadges }) {
+function CommentNode({ c, replies, depth, onReply, onDelete, onReport, sessionId, onOpenProfile, userById, userBadges }) {
   const author = userById?.(c.userId) || { name: c.name, initials: c.initials, avatarUri: c.avatarUri, avatarColor: c.avatarColor, role: c.role, verified: c.verified };
   const own = !c.deleted && !!sessionId && c.userId === sessionId;
   return (
@@ -41,11 +41,28 @@ function CommentNode({ c, replies, depth, onReply, onDelete, sessionId, onOpenPr
           {!c.deleted && <View style={styles.commentActions}>
             <Pressable onPress={() => onReply(c)} hitSlop={6}><Text style={styles.replyBtn}>Reply</Text></Pressable>
             {own && <Pressable onPress={() => onDelete(c)} hitSlop={6}><Text style={styles.deleteBtn}>Delete</Text></Pressable>}
+            {!own && c.userId && onReport ? (
+              <Pressable
+                onPress={() => onReport({
+                  targetType: "comment",
+                  targetId: c.id,
+                  ownerId: c.userId,
+                  targetName: "comment",
+                  title: `Comment by ${author.name || c.name || "a member"}`,
+                  summary: c.text,
+                })}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel={`Report comment by ${author.name || c.name || "this member"}`}
+              >
+                <Text style={styles.reportBtn}>Report</Text>
+              </Pressable>
+            ) : null}
           </View>}
         </View>
       </View>
       {replies.map((r) => (
-        <CommentNode key={r.c.id} c={r.c} replies={r.replies} depth={depth + 1} onReply={onReply} onDelete={onDelete} sessionId={sessionId} onOpenProfile={onOpenProfile} userById={userById} userBadges={userBadges} />
+        <CommentNode key={r.c.id} c={r.c} replies={r.replies} depth={depth + 1} onReply={onReply} onDelete={onDelete} onReport={onReport} sessionId={sessionId} onOpenProfile={onOpenProfile} userById={userById} userBadges={userBadges} />
       ))}
     </View>
   );
@@ -118,7 +135,7 @@ export default function PostScreen({ log, onClose, onOpenProfile, onOpenArtist, 
         <Text style={styles.sectionLabel}>{flat.length} COMMENT{flat.length === 1 ? "" : "S"}</Text>
         {tree.length === 0 && <Text style={styles.empty}>No comments yet. Start the conversation.</Text>}
         {tree.map((node) => (
-          <CommentNode key={node.c.id} c={node.c} replies={node.replies} depth={0} onReply={(c) => setReplyTo({ id: c.id, name: c.name || userById?.(c.userId)?.name })} onDelete={removeComment} sessionId={session?.id} onOpenProfile={onOpenProfile} userById={userById} userBadges={userBadges} />
+          <CommentNode key={node.c.id} c={node.c} replies={node.replies} depth={0} onReply={(c) => setReplyTo({ id: c.id, name: c.name || userById?.(c.userId)?.name })} onDelete={removeComment} onReport={onReport} sessionId={session?.id} onOpenProfile={onOpenProfile} userById={userById} userBadges={userBadges} />
         ))}
         <View style={{ height: 20 }} />
       </ScrollView>
@@ -172,6 +189,7 @@ const styles = StyleSheet.create({
   commentActions: { flexDirection: "row", alignItems: "center", gap: 16, marginTop: 6 },
   replyBtn: { color: colors.amber, fontSize: 12.5, fontWeight: "700", marginTop: 6 },
   deleteBtn: { color: colors.danger, fontSize: 12.5, fontWeight: "700", marginTop: 6 },
+  reportBtn: { color: colors.textDim, fontSize: 12.5, fontWeight: "700", marginTop: 6 },
   composerWrap: { borderTopWidth: 1, borderTopColor: colors.line, backgroundColor: colors.bgElev, paddingHorizontal: 12, paddingTop: 8, paddingBottom: 12 },
   replyingTo: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8, paddingHorizontal: 6, paddingBottom: 8 },
   replyingTxt: { color: colors.amber, fontSize: 12.5, fontWeight: "700", flex: 1 },

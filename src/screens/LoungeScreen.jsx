@@ -12,7 +12,7 @@ import { api } from "../lib/api";
 
 // The Concert Lounge - a Discord/YouTube-style chat for everyone at a show.
 // Gated: you have to tap in, so it feels like a room you enter.
-export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfileByHandle }) {
+export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfileByHandle, onReport }) {
   const { session, concertKey, loungeFor, enterLounge, addLoungeMessage, loadLounge, attendeesFor, userById, removeLoungeMessage } = useStore();
   const staff = isStaff(session?.role);
   const key = concertKey(log);
@@ -107,6 +107,24 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
                 <MentionText text={m.text} style={[styles.msgText, mine && { color: "#1A1206" }]} onMention={onOpenProfileByHandle} />
                 <View style={styles.msgFoot}>
                   <Text style={[styles.msgTs, mine && { color: "rgba(26,18,6,0.6)" }]}>{m.ts}</Text>
+                  {!mine && onReport ? (
+                    <Pressable
+                      style={styles.reportBtn}
+                      onPress={() => onReport({
+                        targetType: "lounge_message",
+                        targetId: m.id,
+                        ownerId: m.userId,
+                        targetName: "lounge message",
+                        title: `${m.name || "A member"} in the ${log.artist} lounge`,
+                        summary: m.text,
+                      })}
+                      hitSlop={8}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Report ${m.name || "this member"}'s lounge message`}
+                    >
+                      <Icon name="flag" size={12} color={mine ? "rgba(26,18,6,0.6)" : colors.textFaint} />
+                    </Pressable>
+                  ) : null}
                   {staff && (
                     <Pressable onPress={() => removeLoungeMessage(key, m.id)} hitSlop={8}>
                       <Icon name="trash" size={12} color={mine ? "rgba(26,18,6,0.6)" : colors.textFaint} />
@@ -154,6 +172,7 @@ const styles = StyleSheet.create({
   msgText: { color: colors.text, fontSize: 14, lineHeight: 19 },
   msgFoot: { flexDirection: "row", alignItems: "center", gap: 8, alignSelf: "flex-end", marginTop: 3 },
   msgTs: { color: colors.textFaint, fontSize: 10, fontFamily: mono },
+  reportBtn: { minWidth: 28, minHeight: 28, alignItems: "center", justifyContent: "center", marginVertical: -4 },
   inputBar: { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 16, paddingTop: 8, paddingBottom: Platform.OS === "ios" ? 24 : 12, borderTopWidth: 1, borderTopColor: colors.lineSoft, backgroundColor: colors.bgElev },
   input: { flex: 1, backgroundColor: colors.surface, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, color: colors.text, paddingHorizontal: 16, paddingVertical: 11, fontSize: 15 },
   sendBtn: { width: 42, height: 42, borderRadius: 21, backgroundColor: colors.amberStrong, alignItems: "center", justifyContent: "center" },

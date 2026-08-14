@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,6 +7,7 @@ import test, { after } from "node:test";
 
 const dataDir = mkdtempSync(join(tmpdir(), "pit-moderation-"));
 process.env.PIT_DATA_DIR = dataDir;
+process.env.MEDIA_PUBLIC_BASE_URL = "https://media.example/assets";
 
 const { db, q } = await import("./db.js");
 const { ApiError, routes } = await import("./api.js");
@@ -49,7 +51,12 @@ test("staff overview returns bounded summaries, camelCase queue rows, and privac
   insertReport("moderation_overview_report", "post", "moderation_overview_post", "harassment");
   db.prepare("INSERT INTO dms (id,from_id,to_id,text,created_at) VALUES (?,?,?,?,?)")
     .run("moderation_private_dm", author.id, fan.id, "private message must never leave the server", Date.now());
+  db.prepare("INSERT INTO dms (id,from_id,to_id,text,created_at) VALUES (?,?,?,?,?)")
+    .run("moderation_unreported_dm", author.id, admin.id, "UNRELATED_PRIVATE_DM_MUST_NOT_LEAK", Date.now());
   insertReport("moderation_private_report", "message", "moderation_private_dm", "abuse");
+  db.prepare("INSERT INTO artist_posts (id,artist_key,user_id,text,created_at) VALUES (?,?,?,?,?)")
+    .run("moderation_artist_post", "j. cole", author.id, "An exact artist update", Date.now());
+  insertReport("moderation_artist_report", "artist_post", "moderation_artist_post", "harassment");
 
   const responseHeaders = {};
   const result = routes["GET /api/admin/moderation"](staffCtx(moderator, {
@@ -85,8 +92,229 @@ test("staff overview returns bounded summaries, camelCase queue rows, and privac
   assert.equal(post.reporter.role, "fan");
   const message = result.reports.find((report) => report.id === "moderation_private_report");
   assert.equal(message.content.private, true);
-  assert.equal(JSON.stringify(message).includes("private message must never leave"), false);
+  assert.equal(message.content.excerpt, "private message must never leave the server");
+  assert.equal(message.content.author.id, author.id);
+  assert.equal(message.content.recipient.id, fan.id);
+  assert.equal(JSON.stringify(result).includes("UNRELATED_PRIVATE_DM_MUST_NOT_LEAK"), false, "unreported messages never enter the moderation snapshot");
+  const artistPost = result.reports.find((report) => report.id === "moderation_artist_report");
+  assert.equal(artistPost.content.type, "artist_post");
+  assert.equal(artistPost.content.excerpt, "An exact artist update");
+  assert.equal(artistPost.content.author.id, author.id);
   assert.equal(JSON.stringify(result).includes(`${author.id}@example.com`), false, "staff queue must not expose account emails");
+});
+
+test("reported media keeps a stable identity and only projects the exact canonical owned object", () => {
+  const one = `https://media.example/assets/users/${author.id}/post/one.jpg`;
+  const two = `https://media.example/assets/users/${author.id}/post/two.jpg`;
+  const replacement = `https://media.example/assets/users/${author.id}/post/replacement.jpg`;
+  const fingerprint = createHash("sha256").update(two, "utf8").digest("hex");
+  db.prepare(`INSERT INTO posts (id,user_id,artist,venue,overall,review,photos,created_at)
+    VALUES (?,?,?,?,?,?,?,?)`).run(
+    "moderation_exact_media_post", author.id, "J. Cole", "Scotiabank Arena", 4.5,
+    "Exact attachment report", JSON.stringify([one, two]), Date.now(),
+  );
+  db.prepare(`INSERT INTO reports
+    (id,target_type,target_id,reason,reporter_id,status,media_index,media_fingerprint,created_at)
+    VALUES (?,?,?,?,?,'open',?,?,?)`).run(
+    "moderation_exact_media_report", "post", "moderation_exact_media_post", "Unsafe image",
+    fan.id, 2, fingerprint, Date.now(),
+  );
+
+  db.prepare("UPDATE posts SET photos=? WHERE id=?").run(JSON.stringify([two, one]), "moderation_exact_media_post");
+  let report = routes["GET /api/admin/moderation"](staffCtx(moderator)).reports
+    .find((row) => row.id === "moderation_exact_media_report");
+  assert.equal(report.content.reportedMedia, two, "reordering cannot change the reported attachment identity");
+  assert.equal(report.content.reportedMediaTrusted, true);
+  assert.equal(JSON.stringify(report).includes(one), false, "unrelated attachments are never projected");
+
+  db.prepare("UPDATE posts SET photos=? WHERE id=?").run(JSON.stringify([replacement]), "moderation_exact_media_post");
+  report = routes["GET /api/admin/moderation"](staffCtx(moderator)).reports
+    .find((row) => row.id === "moderation_exact_media_report");
+  assert.equal(report.content.reportedMedia, undefined);
+  assert.equal(report.content.reportedMediaUnavailable, true);
+  assert.equal(JSON.stringify(report).includes(replacement), false, "replacement media at the old position is not substituted");
+});
+
+test("moderation never projects an attacker-controlled external reported-media URL", () => {
+  const hostile = "https://attacker.example/moderator-tracker.gif";
+  db.prepare(`INSERT INTO posts (id,user_id,artist,venue,overall,review,photos,created_at)
+    VALUES (?,?,?,?,?,?,?,?)`).run(
+    "moderation_external_media_post", author.id, "J. Cole", "Scotiabank Arena", 4,
+    "External attachment", JSON.stringify([hostile]), Date.now(),
+  );
+  db.prepare(`INSERT INTO reports
+    (id,target_type,target_id,reason,reporter_id,status,media_index,media_fingerprint,created_at)
+    VALUES (?,?,?,?,?,'open',?,?,?)`).run(
+    "moderation_external_media_report", "post", "moderation_external_media_post", "Unsafe image",
+    fan.id, 1, createHash("sha256").update(hostile, "utf8").digest("hex"), Date.now(),
+  );
+
+  const report = routes["GET /api/admin/moderation"](staffCtx(moderator)).reports
+    .find((row) => row.id === "moderation_external_media_report");
+  assert.equal(report.content.reportedMedia, undefined);
+  assert.equal(report.content.reportedMediaTrusted, undefined);
+  assert.equal(report.content.reportedMediaUnavailable, true);
+  assert.equal(JSON.stringify(report).includes("attacker.example"), false);
+});
+
+test("artist profiles are actionable report targets with exact private-by-default media context", () => {
+  const artistKey = "moderation artist";
+  const banner = `https://media.example/assets/users/${author.id}/banner/artist-banner.jpg`;
+  const avatar = `https://media.example/assets/users/${author.id}/avatar/artist-avatar.jpg`;
+  db.prepare(`INSERT INTO artist_profiles
+    (artist_key,owner_id,bio,banner,avatar_uri,feed_enabled,removed,updated_at)
+    VALUES (?,?,?,?,?,?,0,?)`).run(artistKey, author.id, "Official artist biography", banner, avatar, 1, Date.now());
+  db.prepare(`INSERT INTO reports
+    (id,target_type,target_id,reason,reporter_id,status,media_index,media_fingerprint,created_at)
+    VALUES (?,?,?,?,?,'open',?,?,?)`).run(
+    "moderation_artist_profile_report", "artist_profile", artistKey, "Unsafe profile image", fan.id,
+    2, createHash("sha256").update(avatar, "utf8").digest("hex"), Date.now(),
+  );
+
+  const report = routes["GET /api/admin/moderation"](staffCtx(moderator)).reports
+    .find((row) => row.id === "moderation_artist_profile_report");
+  assert.equal(report.content.type, "artist_profile");
+  assert.equal(report.content.author.id, author.id);
+  assert.equal(report.content.excerpt, "Official artist biography");
+  assert.equal(report.content.reportedMedia, avatar);
+  assert.equal(report.content.reportedMediaTrusted, true);
+  assert.equal(JSON.stringify(report).includes(banner), false, "the other profile attachment remains private from this report");
+
+  const action = routes["POST /api/admin/moderation/actions"];
+  const removed = action(staffCtx(moderator, { body: { action: "remove", reportId: report.id } }));
+  assert.equal(removed.removed, true);
+  assert.equal(routes["GET /api/artists/:key/profile"]({ params: { key: artistKey } }).profile, null);
+  const restored = action(staffCtx(moderator, { body: {
+    action: "restore", targetType: "artist_profile", targetId: artistKey, reason: "Appeal accepted",
+  } }));
+  assert.equal(restored.removed, false);
+  assert.equal(routes["GET /api/artists/:key/profile"]({ params: { key: artistKey } }).profile.ownerId, author.id);
+});
+
+test("moderator removal permanently detaches media while retries stay idempotent and restore returns text only", () => {
+  const urls = {
+    post: `https://media.example/assets/users/${author.id}/post/moderation-irreversible-post.jpg`,
+    venue: `https://media.example/assets/users/${author.id}/review/moderation-irreversible-venue.jpg`,
+    banner: `https://media.example/assets/users/${author.id}/banner/moderation-irreversible-banner.jpg`,
+    avatar: `https://media.example/assets/users/${author.id}/avatar/moderation-irreversible-avatar.jpg`,
+    reattached: `https://media.example/assets/users/${author.id}/post/moderation-irreversible-reattached.jpg`,
+    external: "https://attacker.example/not-owned.jpg",
+  };
+  db.prepare(`INSERT INTO posts
+    (id,user_id,artist,venue,overall,review,photos,photos_public,landing_showcase,created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
+    "moderation_irreversible_post", author.id, "J. Cole", "Scotiabank Arena", 4,
+    "Post text survives restore", JSON.stringify([urls.post, urls.external]), 1, 1, Date.now(),
+  );
+  db.prepare(`INSERT INTO venue_reviews (id,venue_key,user_id,rating,text,photos,created_at)
+    VALUES (?,?,?,?,?,?,?)`).run(
+    "moderation_irreversible_venue", "scotiabank arena", author.id, 4,
+    "Venue text survives restore", JSON.stringify([urls.venue]), Date.now(),
+  );
+  db.prepare(`INSERT INTO artist_profiles
+    (artist_key,owner_id,bio,banner,avatar_uri,feed_enabled,updated_at)
+    VALUES (?,?,?,?,?,?,?)`).run(
+    "moderation irreversible artist", author.id, "Artist bio survives restore",
+    urls.banner, urls.avatar, 1, Date.now(),
+  );
+  const insertReaction = db.prepare("INSERT INTO media_reactions (media_url,user_id,post_id,created_at) VALUES (?,?,?,?)");
+  for (const mediaUrl of Object.values(urls)) insertReaction.run(mediaUrl, fan.id, null, Date.now());
+  const action = routes["POST /api/admin/moderation/actions"];
+  const targets = [
+    ["post", "moderation_irreversible_post"],
+    ["venue_review", "moderation_irreversible_venue"],
+    ["artist_profile", "moderation irreversible artist"],
+  ];
+
+  for (const [targetType, targetId] of targets) {
+    const remove = action(staffCtx(moderator, { body: { action: "remove", targetType, targetId, reason: "unsafe attachment" } }));
+    assert.equal(remove.removed, true);
+    assert.equal(remove.changed, true);
+    const queueCount = db.prepare("SELECT COUNT(*) count FROM media_deletion_queue WHERE owner_id=?").get(author.id).count;
+    const removeAuditCount = db.prepare("SELECT COUNT(*) count FROM moderation_actions WHERE target_type=? AND target_id=? AND action='remove'")
+      .get(targetType, targetId).count;
+
+    const retry = action(staffCtx(moderator, { body: { action: "remove", targetType, targetId, reason: "lost response retry" } }));
+    assert.equal(retry.duplicate, true);
+    assert.equal(db.prepare("SELECT COUNT(*) count FROM media_deletion_queue WHERE owner_id=?").get(author.id).count, queueCount);
+    assert.equal(db.prepare("SELECT COUNT(*) count FROM moderation_actions WHERE target_type=? AND target_id=? AND action='remove'")
+      .get(targetType, targetId).count, removeAuditCount);
+
+    if (targetType === "post") {
+      // Even a legacy/raced attachment added while hidden cannot ride a text
+      // restoration back into public view.
+      db.prepare("UPDATE posts SET photos=?,photos_public=1,landing_showcase=1 WHERE id=?")
+        .run(JSON.stringify([urls.reattached]), targetId);
+    }
+
+    const restore = action(staffCtx(moderator, { body: { action: "restore", targetType, targetId, reason: "text appeal accepted" } }));
+    assert.equal(restore.removed, false);
+    assert.equal(restore.changed, true);
+  }
+
+  assert.deepEqual(
+    { ...db.prepare("SELECT removed,review,photos,photos_public,landing_showcase FROM posts WHERE id=?").get("moderation_irreversible_post") },
+    { removed: 0, review: "Post text survives restore", photos: "[]", photos_public: 0, landing_showcase: 0 },
+  );
+  assert.deepEqual(
+    { ...db.prepare("SELECT removed,text,photos FROM venue_reviews WHERE id=?").get("moderation_irreversible_venue") },
+    { removed: 0, text: "Venue text survives restore", photos: "[]" },
+  );
+  assert.deepEqual(
+    { ...db.prepare("SELECT removed,bio,banner,avatar_uri FROM artist_profiles WHERE artist_key=?").get("moderation irreversible artist") },
+    { removed: 0, bio: "Artist bio survives restore", banner: null, avatar_uri: null },
+  );
+
+  const queuedKeys = new Set(db.prepare("SELECT object_key FROM media_deletion_queue WHERE owner_id=?").all(author.id).map((row) => row.object_key));
+  for (const key of [
+    `users/${author.id}/post/moderation-irreversible-post.jpg`,
+    `users/${author.id}/review/moderation-irreversible-venue.jpg`,
+    `users/${author.id}/banner/moderation-irreversible-banner.jpg`,
+    `users/${author.id}/avatar/moderation-irreversible-avatar.jpg`,
+    `users/${author.id}/post/moderation-irreversible-reattached.jpg`,
+  ]) assert.equal(queuedKeys.has(key), true, `${key} was not durably queued`);
+  assert.equal(JSON.stringify([...queuedKeys]).includes("attacker.example"), false, "foreign media never becomes deletion work");
+  assert.equal(
+    db.prepare("SELECT COUNT(*) count FROM media_reactions WHERE user_id=? AND media_url IN (?,?,?,?,?,?)")
+      .get(fan.id, urls.post, urls.venue, urls.banner, urls.avatar, urls.reattached, urls.external).count,
+    0,
+    "detached media URLs are also erased from the reaction index",
+  );
+
+  const auditStates = db.prepare(`SELECT prior_state,next_state FROM moderation_actions
+    WHERE target_id IN ('moderation_irreversible_post','moderation_irreversible_venue','moderation irreversible artist')`).all();
+  assert.equal(auditStates.length, 6);
+  assert.equal(JSON.stringify(auditStates).includes("media.example"), false, "moderation audit state never retains media URLs");
+  assert.equal(JSON.stringify(auditStates).includes("attacker.example"), false);
+});
+
+test("media queue failure rolls moderation visibility, URL scrubbing, ledger, and audit back together", () => {
+  const media = `https://media.example/assets/users/${author.id}/post/moderation-atomic-failure.jpg`;
+  db.prepare(`INSERT INTO posts (id,user_id,artist,venue,overall,review,photos,photos_public,created_at)
+    VALUES (?,?,?,?,?,?,?,?,?)`).run(
+    "moderation_atomic_media_post", author.id, "J. Cole", "Scotiabank Arena", 4,
+    "Must remain if durable queueing fails", JSON.stringify([media]), 1, Date.now(),
+  );
+  db.exec(`CREATE TEMP TRIGGER fail_moderation_media_queue
+    BEFORE INSERT ON media_deletion_queue
+    WHEN NEW.object_key LIKE '%moderation-atomic-failure%'
+    BEGIN SELECT RAISE(ABORT, 'forced moderation media queue failure'); END`);
+  try {
+    assert.throws(
+      () => routes["POST /api/admin/moderation/actions"](staffCtx(moderator, { body: {
+        action: "remove", targetType: "post", targetId: "moderation_atomic_media_post", reason: "unsafe attachment",
+      } })),
+      /forced moderation media queue failure/,
+    );
+  } finally {
+    db.exec("DROP TRIGGER fail_moderation_media_queue");
+  }
+
+  const row = db.prepare("SELECT removed,photos,photos_public FROM posts WHERE id=?").get("moderation_atomic_media_post");
+  assert.deepEqual({ ...row }, { removed: 0, photos: JSON.stringify([media]), photos_public: 1 });
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM media_objects WHERE object_key LIKE '%moderation-atomic-failure%'").get().count, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM media_deletion_queue WHERE object_key LIKE '%moderation-atomic-failure%'").get().count, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM moderation_actions WHERE target_id='moderation_atomic_media_post'").get().count, 0);
 });
 
 test("the normalized queue keyset reaches older reports and rejects malformed cursors", () => {
@@ -166,6 +394,101 @@ test("direct remove and restore stay atomic and record only real state changes",
     remove: "policy violation",
     restore: "appeal accepted",
   });
+});
+
+test("reported direct messages are tombstoned exactly, evicted from participant reads, and restore without re-alerting", () => {
+  const sender = addUser("moderation_dm_sender");
+  const recipient = addUser("moderation_dm_recipient");
+  const send = routes["POST /api/dms/:otherId"];
+  const target = send({
+    user: sender, ip: "moderation-dm-sender", params: { otherId: recipient.id },
+    body: { text: "Exact reported private message" },
+  });
+  const neighbor = send({
+    user: sender, ip: "moderation-dm-sender", params: { otherId: recipient.id },
+    body: { text: "Unrelated message in the same conversation" },
+  });
+  insertReport("moderation_dm_report", "message", target.id, "targeted harassment", recipient.id);
+
+  const context = routes["GET /api/admin/moderation"](staffCtx(moderator)).reports
+    .find((report) => report.id === "moderation_dm_report");
+  assert.equal(context.content.excerpt, "Exact reported private message");
+  assert.equal(context.content.removed, false);
+  assert.equal(JSON.stringify(context).includes("Unrelated message in the same conversation"), false);
+
+  const action = routes["POST /api/admin/moderation/actions"];
+  const removed = action(staffCtx(moderator, { body: { action: "remove", reportId: context.id } }));
+  assert.deepEqual(
+    { removed: removed.removed, changed: removed.changed, duplicate: removed.duplicate },
+    { removed: true, changed: true, duplicate: false },
+  );
+  assert.deepEqual({ ...db.prepare("SELECT text,removed FROM dms WHERE id=?").get(target.id) }, {
+    text: "Exact reported private message", removed: 1,
+  }, "the restricted body remains available as evidence while participants lose access");
+  assert.equal(db.prepare("SELECT removed FROM dms WHERE id=?").get(neighbor.id).removed, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM notifications WHERE type='dm' AND post_id=?").get(target.id).count, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM notifications WHERE type='dm' AND post_id=?").get(neighbor.id).count, 1);
+
+  for (const [viewer, otherId] of [[sender, recipient.id], [recipient, sender.id]]) {
+    const thread = routes["GET /api/dms/:otherId"]({ user: viewer, params: { otherId }, query: {} });
+    assert.deepEqual(thread.messages.map((message) => message.id), [neighbor.id]);
+    assert.ok(thread.removedIds.includes(target.id));
+    const inbox = routes["GET /api/me/threads"]({ user: viewer, query: {} });
+    assert.equal(JSON.stringify(inbox).includes("Exact reported private message"), false);
+    assert.ok(inbox.removedIds.includes(target.id));
+  }
+
+  const retriedRemove = action(staffCtx(moderator, { body: { action: "remove", reportId: context.id } }));
+  assert.equal(retriedRemove.duplicate, true);
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM moderation_actions WHERE target_type='message' AND target_id=?").get(target.id).count, 1);
+
+  const restored = action(staffCtx(moderator, { body: {
+    action: "restore", targetType: "message", targetId: target.id, reason: "Appeal accepted",
+  } }));
+  assert.deepEqual(
+    { removed: restored.removed, changed: restored.changed, duplicate: restored.duplicate },
+    { removed: false, changed: true, duplicate: false },
+  );
+  assert.deepEqual(
+    routes["GET /api/dms/:otherId"]({ user: recipient, params: { otherId: sender.id }, query: {} }).messages.map((message) => message.id),
+    [target.id, neighbor.id],
+  );
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM notifications WHERE type='dm' AND post_id=?").get(target.id).count, 0,
+    "restore must not send or recreate a private-message notification");
+  const duplicateRestore = action(staffCtx(moderator, { body: {
+    action: "restore", targetType: "message", targetId: target.id, reason: "retry",
+  } }));
+  assert.equal(duplicateRestore.duplicate, true);
+  assert.deepEqual(
+    db.prepare("SELECT action FROM moderation_actions WHERE target_type='message' AND target_id=? ORDER BY created_at,id").all(target.id).map((row) => row.action),
+    ["remove", "restore"],
+  );
+});
+
+test("direct-message tombstone and notification scrub roll back if its audit cannot commit", () => {
+  const sender = addUser("moderation_dm_atomic_sender");
+  const recipient = addUser("moderation_dm_atomic_recipient");
+  const target = routes["POST /api/dms/:otherId"]({
+    user: sender, ip: "moderation-dm-atomic", params: { otherId: recipient.id },
+    body: { text: "Atomic moderation evidence" },
+  });
+  db.exec(`CREATE TEMP TRIGGER fail_dm_moderation_audit
+    BEFORE INSERT ON moderation_actions
+    WHEN NEW.target_type='message' AND NEW.target_id='${target.id}'
+    BEGIN SELECT RAISE(ABORT, 'forced DM moderation audit failure'); END`);
+  try {
+    assert.throws(
+      () => routes["POST /api/admin/moderation/actions"](staffCtx(moderator, { body: {
+        action: "remove", targetType: "message", targetId: target.id,
+      } })),
+      /forced DM moderation audit failure/,
+    );
+  } finally {
+    db.exec("DROP TRIGGER fail_dm_moderation_audit");
+  }
+  assert.equal(db.prepare("SELECT removed FROM dms WHERE id=?").get(target.id).removed, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM notifications WHERE type='dm' AND post_id=?").get(target.id).count, 1);
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM moderation_actions WHERE target_type='message' AND target_id=?").get(target.id).count, 0);
 });
 
 test("recent actions are bounded and omit internal audit state", () => {

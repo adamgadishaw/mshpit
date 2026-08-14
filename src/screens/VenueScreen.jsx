@@ -16,12 +16,12 @@ import { venueRowWindow } from "../domain/venueDiscovery.mjs";
 const REVIEW_BATCH = 8;
 const HISTORY_BATCH = 12;
 
-export default function VenueScreen({ venueName, onClose, onOpenShow, onOpenArtist, onReviewVenue, onOpenProfile, onOpenPhotos }) {
+export default function VenueScreen({ venueName, onClose, onOpenShow, onOpenArtist, onReviewVenue, onOpenProfile, onOpenPhotos, onReport }) {
   const { width } = useWindowDimensions();
   const wide = width >= 760;
   const {
     venueSummary, venueCoord, venueReviewsFor, loadVenueReviews, venueRating, venueTopPhotos,
-    venuePhotos, venuePhotoState, loadVenuePhotos, userByHandle,
+    session, venuePhotos, venuePhotoState, loadVenuePhotos, userByHandle,
   } = useStore();
   const venue = venueSummary(venueName);
   const coord = venueCoord(venue.name);
@@ -164,6 +164,24 @@ export default function VenueScreen({ venueName, onClose, onOpenShow, onOpenArti
                       <Text style={styles.reviewName}>{review.name}</Text>
                       <Text style={styles.reviewTime}>{review.ts || "Community review"}</Text>
                     </View>
+                    {review.userId !== session?.id && onReport ? (
+                      <Pressable
+                        style={styles.reviewReportBtn}
+                        onPress={() => onReport({
+                          targetType: "venue_review",
+                          targetId: review.id,
+                          ownerId: review.userId,
+                          targetName: "venue review",
+                          title: `${review.name || "A member"}'s review of ${venue.name}`,
+                          summary: review.text || `${Number(review.rating || 0).toFixed(1)} star venue review`,
+                        })}
+                        hitSlop={8}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Report ${review.name || "this member"}'s venue review`}
+                      >
+                        <Icon name="flag" size={14} color={colors.textFaint} />
+                      </Pressable>
+                    ) : null}
                     <View style={styles.scorePill}>
                       <Icon name="star" size={11} color={colors.gold} />
                       <Text style={styles.scorePillText}>{Number(review.rating || 0).toFixed(1)}</Text>
@@ -180,7 +198,7 @@ export default function VenueScreen({ venueName, onClose, onOpenShow, onOpenArti
                           contain={false}
                           previewWidth={240}
                           accessibilityLabel={`Open photo ${index + 1} from ${review.name}'s review of ${venue.name}`}
-                          onPress={() => onOpenPhotos?.(review.photos.map((photoUri) => ({ uri: photoUri, by: review.name })), index)}
+                          onPress={() => onOpenPhotos?.(review.photos.map((photoUri) => ({ uri: photoUri, by: review.name, venueReviewId: review.id, ownerId: review.userId })), index)}
                         />
                       ))}
                     </View>
@@ -327,6 +345,7 @@ const styles = StyleSheet.create({
   flexCopy: { flex: 1, minWidth: 0 },
   reviewName: { color: colors.text, fontFamily: displayFont, fontSize: 14, fontWeight: "900" },
   reviewTime: { color: colors.textFaint, fontSize: 10, marginTop: 2 },
+  reviewReportBtn: { width: 40, height: 40, alignItems: "center", justifyContent: "center", borderRadius: 20, borderWidth: 1, borderColor: colors.lineSoft },
   scorePill: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 9, paddingVertical: 5, borderRadius: radius.pill, backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line },
   scorePillText: { color: colors.gold, fontFamily: mono, fontSize: 12, fontWeight: "900", fontVariant: ["tabular-nums"] },
   reviewText: { color: colors.text, fontSize: 14, lineHeight: 21, marginTop: 12 },

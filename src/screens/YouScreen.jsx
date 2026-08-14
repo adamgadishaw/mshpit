@@ -282,16 +282,16 @@ export default function YouScreen({ feed, onLogin, onLogout, onAdmin, onAddTourD
           <Text style={styles.sectionLabel}>YOUR PHOTO WALL · {gallery.length}</Text>
           <View style={styles.wall}>
             <SmartImage uri={gallery[0].uri} style={styles.wallFeature} contain={false}
-              onPress={onOpenPhotos ? () => onOpenPhotos(gallery.map((x) => ({ uri: x.uri, by: session.name })), 0, gallery[0].postId) : undefined} />
+              onPress={onOpenPhotos ? () => onOpenPhotos(gallery.map((x) => ({ uri: x.uri, by: session.name, postId: x.postId, ownerId: session.id })), 0, gallery[0].postId) : undefined} />
             <View style={styles.wallSide}>
               {gallery.slice(1, 5).map((p, i) => (
                 <SmartImage key={p.uri + i} uri={p.uri} style={styles.wallCell} contain={false}
-                  onPress={onOpenPhotos ? () => onOpenPhotos(gallery.map((x) => ({ uri: x.uri, by: session.name })), i + 1, p.postId) : undefined} />
+                  onPress={onOpenPhotos ? () => onOpenPhotos(gallery.map((x) => ({ uri: x.uri, by: session.name, postId: x.postId, ownerId: session.id })), i + 1, p.postId) : undefined} />
               ))}
             </View>
           </View>
           {gallery.length > 5 && (
-            <Pressable onPress={onOpenPhotos ? () => onOpenPhotos(gallery.map((x) => ({ uri: x.uri, by: session.name })), 0, gallery[0].postId) : undefined}>
+            <Pressable onPress={onOpenPhotos ? () => onOpenPhotos(gallery.map((x) => ({ uri: x.uri, by: session.name, postId: x.postId, ownerId: session.id })), 0, gallery[0].postId) : undefined}>
               <Text style={styles.wallMore}>See all {gallery.length} photos ›</Text>
             </Pressable>
           )}

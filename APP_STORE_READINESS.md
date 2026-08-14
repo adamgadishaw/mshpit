@@ -2,8 +2,8 @@
 
 Reviewed: **2026-08-14** against Expo SDK **56**. This document describes the
 repository state only. No EAS cloud build, Apple credential operation,
-TestFlight upload, App Store Connect mutation, commit, push, or store claim was
-made during this preparation pass.
+TestFlight upload, App Store Connect mutation, or store-readiness claim was made
+during this preparation pass.
 
 ## Prepared in the repository
 
@@ -36,14 +36,42 @@ made during this preparation pass.
 - The photo-library permission explains the concert/profile media use. Camera
   and microphone permissions are disabled because Pit selects existing media
   and does not expose capture/recording controls.
+- Native preview playback uses the SDK 56 `expo-audio` package on iOS/Android;
+  the config disables microphone, recording, and background-audio capabilities.
+  Web playback keeps its existing YouTube/HTML-audio path.
+- PIT-branded gold/black icon, splash, Android adaptive, monochrome, and favicon
+  assets are wired through the SDK 56 splash plugin. The generated v1 artwork
+  has provenance notes in `assets/PIT_BRAND_ASSETS.md` and still needs the
+  owner's final brand/trademark approval before a store upload.
+- Standalone, crawler-readable, unauthenticated HTML is implemented for
+  `/privacy`, `/terms`, `/support`, and `/account-deletion`, including canonical
+  metadata, sitemap entries, and matching in-app policy decisions.
 - The account uses email/password authentication only. Sign in with Apple is not
   currently required. If Google, Facebook, Spotify, or another third-party login
   becomes an account-authentication option, add an equivalent Sign in with Apple
   option before review.
 - In-app account deletion exists under Settings, confirms the current password,
-  deletes account-owned database records, and clears the session. Blocking,
-  post reporting, a server-backed moderation queue, Terms, Privacy, and optional
-  analytics controls also exist.
+  deletes account-owned database records, and clears the session. In the same
+  transaction it durably queues ledger, associated legacy, and exact-owner-prefix
+  active-media cleanup; storage work retries asynchronously and dead-letters are
+  count-visible in `/api/health`. Blocking, reporting, a server-backed moderation
+  queue, Terms, Privacy, and optional analytics controls also exist.
+- Reporting is reachable on profiles, posts and exact attachments, comments,
+  direct messages, fan-club/lounge messages, venue reviews, and artist-owned
+  posts/profiles. Reports are visibility-checked server-side; exact media is
+  fingerprint-stable and only a verified PIT-owned object may be previewed by
+  staff. A conservative first-line authored-text safety filter covers the write
+  routes, with report/block and the normalized moderation queue as backstops.
+- Seeded venue photography now fails closed unless each item carries approved,
+  machine-verifiable HTTPS provenance and licence fields. The current legacy
+  seed yields no accepted venue images rather than shipping unclear rights or
+  ATS-incompatible HTTP hotlinks; community review media is separate.
+- Render startup is configured to create and verify a persistent-disk SQLite
+  snapshot before importing the migration-bearing server module. A failed
+  snapshot stops startup before migration; because Render persistent disks do
+  not provide zero-downtime deploys, operator intervention or rollback may be
+  required to restore service. This is migration rollback protection, not
+  off-host disaster recovery.
 - `scripts/app-store-config.test.mjs` guards identifiers, versions, export
   compliance, required-reason APIs, media permission scope, EAS profiles, and
   the mechanical 1024-by-1024 opaque PNG icon requirement.
@@ -53,51 +81,92 @@ made during this preparation pass.
 These must be completed before the first external TestFlight review or App
 Store submission.
 
-1. **Replace the stock Expo artwork.** `assets/icon.png`, the splash artwork,
-   favicon, and Android adaptive artwork are technically valid files but are the
-   starter Expo brand, not Pit. Supply final owned Pit artwork. The App Store icon
-   must remain a square, opaque 1024-by-1024 PNG with no pre-rounded corners.
-   Configure and visually verify the SDK 56 `expo-splash-screen` plugin after the
-   final splash asset exists.
+1. **Approve or replace the v1 PIT artwork.** The repository no longer ships the
+   Expo starter art: generated PIT icon/splash/adaptive assets are configured and
+   mechanically tested. The owner must approve the design and confirm brand and
+   trademark rights, or replace it with final owned artwork before the first
+   store upload. Keep the App Store icon square, opaque, 1024-by-1024, and without
+   pre-rounded corners; visually inspect the signed build's icon and splash.
 2. **Create the owner-controlled accounts and records.** Enroll in the Apple
    Developer Program, create or select the Expo organization, run EAS project
    initialization, reserve `com.mshpit.app`, and create the matching App Store
    Connect app. Let that process write the real Expo project ID. Do not place
    Apple passwords or private `.p8` keys in the repository.
-3. **Publish dedicated legal and support URLs.** The app contains readable
-   in-app Terms and Privacy screens, but `https://www.mshpit.com/privacy` and
-   `/support` currently resolve to the general SPA shell instead of dedicated,
-   crawler-readable documents. Publish a counsel-reviewed privacy policy and a
-   support page with a monitored owner-approved contact method. Add their final
-   URLs to App Store Connect only after they return the intended content without
-   login. Also publish a web account-deletion explanation if the selected store
-   or jurisdiction requires it.
-4. **Finish the user-generated-content safety surface.** Users can block
-   accounts and report posts, and staff can process reports. The backend accepts
-   reports for users, comments, and messages, but the current user interface does
-   not expose reporting controls on all of those surfaces. Add reachable report
-   actions for profiles, comments, direct messages, fan-club/lounge content, and
-   any uploaded media; define a monitored escalation path and moderation response
-   procedure; and decide what proactive objectionable-content filtering is
-   appropriate. This is a review risk for a social/UGC app, not merely polish.
-5. **Resolve deletion and export retention disclosures.** The deletion screen
-   truthfully says the object-storage cleanup worker is not deployed and media or
-   backups can remain. The synchronous export is intentionally bounded. Decide
-   and implement the production retention/deletion process, align it with the
-   public policy, and have counsel approve the final disclosure.
-6. **Complete physical-device acceptance.** Test account creation, email
+3. **Approve and operate the legal/support surfaces.** Dedicated pages are
+   implemented in this release. Verify all four live URLs without login, confirm that
+   `support@mshpit.com` exists and is actively monitored, and have counsel approve
+   operator identity, jurisdiction, retention wording, Terms, and Privacy before
+   entering the URLs in App Store Connect.
+4. **Staff and rehearse UGC safety operations.** The report/filter/block/moderation
+   code surface is implemented. Before external TestFlight, name a primary and
+   backup moderator, adopt the response targets in
+   `APP_STORE_MODERATION_OPERATIONS.md`, rehearse reports on every surface, and
+   confirm escalation/contact coverage. Text screening is deliberately
+   conservative rather than a claim of perfect automated moderation. Arbitrary
+   uploaded image/video bytes are not yet scanned by a dedicated safety vendor,
+   and several authored surfaces still accept remote HTTPS media URLs. Before
+   App Store submission, require canonical owner-ledger media for user uploads,
+   derive provider artwork from an allowlist instead of caller-supplied URLs, and
+   quarantine or scan media before it becomes public.
+5. **Verify deletion and backup operations in production.** Active-media cleanup
+   is implemented without blocking account deletion: new upload tickets have a
+   durable ledger, seven-day stale tickets are queued, historical account
+   deletion performs a paginated exact `users/{owner}/` inventory, object DELETE
+   uses bounded retries, and failures dead-letter. Because S3-style providers
+   authorize a PUT when its request begins, owner-prefix verification repeats
+   every six hours through a 72-hour quiet window after the upload-ticket barrier;
+   this catches uploads that complete after an early DELETE returned 404. Before
+   public App Store submission, obtain provider evidence for the maximum accepted
+   request duration (or enforce an equivalent storage-side lifecycle/tombstone
+   control); R2's public documentation does not establish that upper bound, so
+   the 72-hour control is strong bounded mitigation rather than proof against an
+   arbitrarily slow hostile stream. Before release, scope the
+   active-media credential to the correct bucket with `PutObject`, `DeleteObject`,
+   and `ListBucket`, exercise this on staging, and prove `/api/health` drains both
+   object and owner-sweep queues without dead letters. `BACKUP_KEEP` prunes only
+   local snapshots; configure and evidence a lifecycle rule on the separate,
+   private off-host backup bucket for the counsel-approved retention period. Have
+   counsel approve the final active-storage versus backup disclosure. The current
+   1 GB persistent disk also holds the live SQLite database, WAL, seven local
+   snapshots, and the next partial snapshot; monitor free space and enlarge the
+   disk, reduce local retention, or offload backups before growth makes a
+   fail-closed deploy backup run out of space.
+6. **Clear third-party catalogue, artwork, and playback rights.** The current
+   catalogue contains 932 artist images credited to Deezer and 698 credited to
+   Spotify, without per-item licence/source-page provenance. Runtime enrichment,
+   rankings, top tracks, and native 30-second preview audio also use Deezer.
+   [Deezer's current public developer terms](https://developers.deezer.com/termsofuse)
+   say no content rights are granted and limit the Services to non-commercial
+   use. [Spotify's current developer policy](https://developer.spotify.com/policy)
+   requires its artwork/metadata to carry Spotify branding and a link back, which
+   Pit's generic artist-image surfaces do not consistently provide. This
+   repository contains no written exception or approval. Before any public App
+   Store submission, obtain written
+   provider/rightsholder approval for Pit's exact use or replace/fail-close every
+   affected asset, datum, and playback path. Store screenshots must use only
+   independently cleared content. This is an owner/legal rights gate, not a fact
+   that a passing build or short-preview duration can establish.
+7. **Resolve the SDK 56 Hermes V1 memory-regression gate.** Current Expo Doctor
+   reports 21/22 checks because Expo 56.0.19 / React Native 0.85.3 contains the
+   known Hermes V1 memory regression; its suggested fixed line begins with Expo
+   57.0.9 / React Native 0.86.2. Do not ship a native distribution on the strength
+   of a JavaScript export alone. Treat a separately planned SDK 57 upgrade (with
+   exact versioned-doc review and full regression/device testing) or an upstream
+   SDK 56 resolution as the engineering gate. The current web release does not
+   need to wait on that native-runtime upgrade.
+8. **Complete physical-device acceptance.** Test account creation, email
    verification, login/session persistence, password reset, account deletion,
    media selection/upload (including long concert clips), feed/player lifecycle,
    swipe-to-close, external links, poor/offline network states, memory pressure,
    VoiceOver, Dynamic Type, safe areas, interruptions, and background/foreground
    restoration on supported iPhones. Test iPads before enabling tablet support.
    A JavaScript export is not evidence that a signed iOS binary behaves correctly.
-7. **Decide deep-link behavior.** The custom `mshpit` scheme is reserved, but
+9. **Decide deep-link behavior.** The custom `mshpit` scheme is reserved, but
    verification/reset links currently target the website and the native app has
    no associated-domain/universal-link configuration. Either keep those flows
    explicitly web-based with reliable app reconciliation, or implement and test
    native deep links and associated-domain files before advertising that ability.
-8. **Prepare reviewer access.** Create a stable non-privileged demo account,
+10. **Prepare reviewer access.** Create a stable non-privileged demo account,
     provide review steps for media/player/moderation-sensitive flows, keep the
     backend online throughout review, and never put demo credentials in Git.
 
@@ -115,7 +184,7 @@ submitted binary and production services.
 | User content | Reviews, ratings, photos, clips, comments, playlists, messages, and community posts. | Declare linked user content and all operational/moderation purposes. |
 | Usage data | Optional, account-consented first-party product events plus plays and recommendations. | Declare linked product-interaction/usage data. Validate every retained event against the shipped schema. |
 | Diagnostics/security | Request metadata and transient IP processing support security/rate limiting; diagnostic references are retained. | Determine the exact diagnostics and "other data" answers from production logging/retention. |
-| Third parties | YouTube playback can send device/request/player interaction data to Google/YouTube; hosting, email, media storage, ticket links, and catalogue providers also participate. | Reconcile each provider's submitted-SDK privacy details and the public Privacy policy. |
+| Third parties | YouTube playback can send device/request/player interaction data to Google/YouTube; native preview playback streams from a music-preview/catalogue provider; hosting, email, media storage, ticket links, and other catalogue providers also participate. | Reconcile each provider's submitted-SDK privacy details, ordinary CDN request data, App Privacy answers, and the public Privacy policy. |
 | Tracking | No ad-network SDK or cross-company tracking is implemented today; optional analytics are first-party. | Answer "tracking" only after counsel/provider review. Add ATT only if a future implementation meets Apple's tracking definition. |
 | Purchases | Pit does not currently sell digital features in the app. Ticket links are for real-world events and leave Pit. | Keep store copy and reviewer notes precise; reassess before adding subscriptions, boosts, or other digital goods. |
 
@@ -154,8 +223,11 @@ npx.cmd expo config --type introspect
 npx.cmd expo export -p ios --output-dir .tmp\ios-store-export
 ```
 
-This preparation pass verified Expo dependencies as aligned and Expo Doctor at
-21/21. The iOS JavaScript export is a bundle/config gate only. The first signed
-candidate should go to internal TestFlight testers, then external TestFlight
-review, and only then to App Store review. EAS builds/submissions consume service
-capacity and require the owner's Expo/Apple authorization, so none were run here.
+This preparation pass verified Expo dependencies as aligned. Expo Doctor is
+21/22 solely because of the SDK 56 Hermes V1 memory-regression warning described
+above; do not waive it as a store-readiness check. The iOS JavaScript export
+produced a 4.5 MB Hermes bundle and is a bundle/config gate only. After the
+native-distribution blockers above are resolved, the first signed candidate
+should go to internal TestFlight testers, then external TestFlight review, and
+only then to App Store review. EAS builds/submissions consume service capacity
+and require the owner's Expo/Apple authorization, so none were run here.
