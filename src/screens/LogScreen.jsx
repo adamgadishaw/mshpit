@@ -18,6 +18,7 @@ import DatePicker from "../components/DatePicker";
 import { isDurableMediaUrl, reportMediaPickerError } from "../lib/mediaUpload";
 import { api } from "../lib/api";
 import { formatDate, initialComposerDate, toIsoDate, todayIso } from "../domain/dates.mjs";
+import { mediaDisplayKind, mediaPosterUri } from "../domain/postMediaDisplay.mjs";
 import {
   composerDraftFingerprint,
   composerDraftHasContent,
@@ -1377,7 +1378,7 @@ export default function LogScreen({
             return (
             <View key={`${uri}:${i}`} style={styles.thumb}>
               {/* SmartImage renders clips as a play tile and HEIC via transcode. */}
-              <SmartImage uri={uri} posterUri={descriptor?.posterUrl || descriptor?.posterUri || null} style={StyleSheet.absoluteFill} contain={false} accessibilityLabel={descriptor?.altText || `Media ${i + 1}`} />
+              <SmartImage uri={uri} posterUri={mediaPosterUri(descriptor)} mediaKind={mediaDisplayKind(descriptor || uri)} style={StyleSheet.absoluteFill} contain={false} accessibilityLabel={descriptor?.altText || `Media ${i + 1}`} />
               <Pressable style={styles.removeThumb} onPress={() => removeAttachedMedia(i)} disabled={submitBusy} accessibilityRole="button" accessibilityLabel={`Remove media ${i + 1}`}>
                 <Icon name="x" size={12} color="#fff" />
               </Pressable>

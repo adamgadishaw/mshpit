@@ -19,9 +19,9 @@ const DURABLE_KEYS = new Set([
 ]);
 const volatile = new Map();
 const persistence = createJsonPersistence({
-  getItem: (key) => (DURABLE_KEYS.has(key) || key.startsWith("pit.analytics.v2.")) ? Storage.getItemSync(key) : (volatile.get(key) ?? null),
+  getItem: (key) => (DURABLE_KEYS.has(key) || key.startsWith("pit.analytics.v2.") || key.startsWith("pit.youtubeRejected.v1.")) ? Storage.getItemSync(key) : (volatile.get(key) ?? null),
   setItem: (key, value) => {
-    if (DURABLE_KEYS.has(key) || key.startsWith("pit.analytics.v2.")) Storage.setItemSync(key, value);
+    if (DURABLE_KEYS.has(key) || key.startsWith("pit.analytics.v2.") || key.startsWith("pit.youtubeRejected.v1.")) Storage.setItemSync(key, value);
     else volatile.set(key, value);
   },
 });

@@ -1,5 +1,10 @@
 import { artistRow, artistStmts, db, normName, providerCacheStmts, ytStmts } from "./db.js";
 import { providerGenreFields } from "../src/domain/genre.mjs";
+import {
+  legacyTrackOverrideIdentityKey,
+  normalizeTrackIdentityText,
+  trackOverrideIdentityKey,
+} from "./trackIdentity.js";
 
 const DEEZER_DISCOGRAPHY_TTL_MS = 24 * 60 * 60 * 1000;
 const DEEZER_PREVIEW_MAX_TTL_MS = 5 * 60 * 1000;
@@ -17,6 +22,12 @@ const YOUTUBE_MATCH_REFRESH_TTL_MS = days(Math.max(1, Math.min(29,
 const YOUTUBE_MISS_TTL_MS = days(Math.max(0.25, Math.min(30,
   Number(process.env.YOUTUBE_MISS_TTL_DAYS) || 3)));
 const YOUTUBE_SCORE_MIN = 65;
+// Bump this whenever a previously accepted recording becomes unsafe under new
+// identity rules. The version is carried in both the cache key and positive
+// metadata, so an older result must pass videos.list + the current scorer before
+// it can be served again. This specifically retires v3 matches that allowed an
+// unrelated uploader when its title merely started with "Artist - Song".
+export const YOUTUBE_MATCH_CACHE_VERSION = 5;
 // Since June 2026, search.list has a separate default bucket of 100 calls/day
 // and costs one call from that bucket. Use the full default allocation; an
 // approved Cloud Console increase remains configurable without code changes.
@@ -167,19 +178,34 @@ export function normalizeMusicText(value) {
 // decomposed Unicode, and the punctuation folding covers keyboard variants;
 // letters/diacritics/symbols remain intact so "Si" and "Sí" never alias.
 export function normalizeYouTubeCacheText(value) {
-  return String(value || "")
-    .normalize("NFKC")
-    .toLocaleLowerCase("en-US")
-    .replace(/[‘’‛ʼ`´]/g, "'")
-    .replace(/[‐‑‒–—―]/g, "-")
-    .trim()
-    .replace(/\s+/g, " ");
+  return normalizeTrackIdentityText(value);
 }
 
 // Stable identity for one song across the override table, reports, and the
 // resolver cache, so a pin set from one spelling matches every other spelling.
 export function trackOverrideKey(title, artist) {
-  return `${normalizeMusicText(artist)}|${normalizeMusicText(title)}`;
+  return trackOverrideIdentityKey(title, artist);
+}
+
+export function legacyTrackOverrideKey(title, artist) {
+  return legacyTrackOverrideIdentityKey(title, artist);
+}
+
+// Resolver/cache recording identity is narrower than generic playback or
+// moderation persistence: today only Deezer exposes the authoritative
+// title/artist/credit proof needed to distinguish omitted feature credits.
+export function youtubeRecordingIdentity(sourceProvider, sourceId) {
+  const provider = String(sourceProvider || "").trim().toLowerCase();
+  const id = String(sourceId || "").trim();
+  return provider === "deezer" && /^\d{1,20}$/.test(id) ? `deezer:${id}` : "";
+}
+
+export function trackSourceOverrideKey(sourceProvider, sourceId) {
+  const provider = String(sourceProvider || "").trim().toLowerCase();
+  const id = String(sourceId || "").trim();
+  if (provider === "deezer" && /^\d{1,20}$/.test(id)) return `track:source:v1:deezer:${id}`;
+  if (provider === "spotify" && /^[A-Za-z0-9]{1,64}$/.test(id)) return `track:source:v1:spotify:${id}`;
+  return "";
 }
 
 // Accept the ways people actually paste a YouTube link (watch?v=, youtu.be,
@@ -212,6 +238,132 @@ function coverage(wanted, actual) {
   return matched / need.size;
 }
 
+// YouTube titles and channel names are global. The catalogue-wide fuzzy
+// normalizer above is intentionally ASCII-oriented, but using it as a playback
+// identity made every non-Latin title collapse to an empty string. Preserve all
+// Unicode letters/digits here so a trusted artist channel still has to contain
+// the requested SONG, not merely any upload by that artist.
+function normalizeYouTubeMatchText(value) {
+  return String(value || "")
+    // NFKC folds compatibility spellings without decomposing kana. Removing
+    // combining marks here made semantically different Japanese titles such as
+    // "がみ" and "かみ" compare equal (dakuten carries meaning, not styling).
+    .normalize("NFKC")
+    .replace(/&/g, " and ")
+    .toLocaleLowerCase("en-US")
+    // Marks are part of the grapheme in many scripts (for example the Devanagari
+    // vowel sign in "कि"). Treating every mark as punctuation aliases distinct
+    // song and artist names even after NFKC.
+    .replace(/[^\p{L}\p{N}\p{M}]+/gu, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+function youtubeMatchCoverage(wanted, actual) {
+  const need = new Set(normalizeYouTubeMatchText(wanted).split(" ").filter(Boolean));
+  const has = new Set(normalizeYouTubeMatchText(actual).split(" ").filter(Boolean));
+  if (!need.size) return 0;
+  let matched = 0;
+  for (const token of need) if (has.has(token)) matched += 1;
+  return matched / need.size;
+}
+
+function youtubeDecorationGroup(value) {
+  const group = normalizeYouTubeMatchText(value);
+  return /^(?:(?:official|original) )?(?:music )?(?:audio|video|visualizer)$/.test(group)
+    || /^(?:official )?(?:lyric|lyrics)(?: video)?$/.test(group)
+    || /^(?:official|original|hd|hq|4k|full|explicit)$/.test(group)
+    || /^from .*(?:soundtrack|motion picture)$/.test(group);
+}
+
+function stripYouTubePresentationDecorations(value) {
+  let raw = String(value || "");
+  raw = raw.replace(/\(([^)]+)\)|\[([^\]]+)\]/g, (whole, round, square) => {
+    const group = round || square || "";
+    return youtubeDecorationGroup(group) ? " " : whole;
+  });
+  return raw.replace(/\s+[-|:]\s+(?:(?:official|original)\s+)?(?:music\s+)?(?:audio|video|visualizer|lyric(?:s)?(?:\s+video)?|official|original|hd|hq|4k|full|explicit)\s*$/i, " ");
+}
+
+// Remove only presentation/credit wrappers, never arbitrary words following the
+// requested title. This is deliberately stricter than prefix matching: "One
+// (Official Audio)" is One, while "One Tree Hill" remains a different song.
+function canonicalYouTubeSongTitle(value, artist = "") {
+  let raw = stripYouTubePresentationDecorations(value);
+  raw = raw.replace(/\(([^)]+)\)|\[([^\]]+)\]/g, (whole, round, square) => {
+    const group = round || square || "";
+    return youtubeDecorationGroup(group) ? " " : ` ${group} `;
+  });
+  let normalized = normalizeYouTubeMatchText(raw);
+  const artistIdentity = normalizeYouTubeMatchText(artist);
+  if (artistIdentity && normalized.startsWith(`${artistIdentity} `)) {
+    normalized = normalized.slice(artistIdentity.length + 1).trim();
+  }
+  normalized = normalized.trim();
+  // Some legitimate catalogue titles are symbol-only. The word matcher has no
+  // tokens for them, so retain an exact normalized-display identity rather than
+  // treating every such title as empty/unresolvable.
+  return normalized || normalizeYouTubeCacheText(raw);
+}
+
+function normalizeYouTubeCreditSet(value) {
+  const parts = String(value || "")
+    .split(/\s*(?:&|,|×)\s*|\s+(?:and|x)\s+/iu)
+    .map((part) => normalizeYouTubeMatchText(part))
+    .filter(Boolean);
+  return [...new Set(parts)].sort().join("|");
+}
+
+function youtubeTitleCreditIdentity(value, artist = "") {
+  const raw = stripYouTubePresentationDecorations(value).trim();
+  const bracketed = /\s*[\[(]\s*(?:feat(?:uring)?|ft)\.?\s+([^\])]+)\s*[\])]\s*$/iu.exec(raw);
+  const suffixed = bracketed ? null : /\s+(?:feat(?:uring)?|ft)\.?\s+(.+?)\s*$/iu.exec(raw);
+  const match = bracketed || suffixed;
+  const baseRaw = match ? raw.slice(0, match.index) : raw;
+  return {
+    base: canonicalYouTubeSongTitle(baseRaw, artist),
+    credits: match ? normalizeYouTubeCreditSet(match[1]) : "",
+  };
+}
+
+function youtubeTitleCreditCandidates(value, artist = "") {
+  const raw = String(value || "");
+  // An artist name at the start can be either an uploader prefix ("U2 - One")
+  // or the song title itself (Black Sabbath's "Black Sabbath", Public Enemy's
+  // "Public Enemy No. 1"). Retain both identities and let exact matching decide.
+  const candidates = [youtubeTitleCreditIdentity(raw)];
+  if (artist) candidates.push(youtubeTitleCreditIdentity(raw, artist));
+  const separator = /\s+[-|:]\s+/.exec(raw);
+  if (separator) candidates.push(youtubeTitleCreditIdentity(raw.slice(separator.index + separator[0].length)));
+  return candidates.filter((entry, index, all) => entry.base
+    && all.findIndex((other) => other.base === entry.base && other.credits === entry.credits) === index);
+}
+
+function sameYouTubeRecordingIdentity(requested, candidate) {
+  return requested.base === candidate.base && requested.credits === candidate.credits;
+}
+
+function providerOmittedCreditMatch(title, rawTitle, artist, providerFeaturedCredits) {
+  const allowedCredits = normalizeYouTubeCreditSet((providerFeaturedCredits || []).join(" & "));
+  if (!allowedCredits) return false;
+  const requested = youtubeTitleCreditCandidates(title);
+  const candidates = youtubeTitleCreditCandidates(rawTitle, artist);
+  return requested.some((wanted) => !wanted.credits && candidates.some((candidate) => (
+    candidate.base === wanted.base && candidate.credits === allowedCredits
+  )));
+}
+
+function canonicalYouTubeTitleCandidates(value, artist = "") {
+  const raw = String(value || "");
+  const candidates = new Set([canonicalYouTubeSongTitle(raw, artist)]);
+  const separator = /\s+[-|:]\s+/.exec(raw);
+  if (separator) {
+    candidates.add(canonicalYouTubeSongTitle(raw.slice(separator.index + separator[0].length)));
+  }
+  candidates.delete("");
+  return candidates;
+}
+
 function fanWeight(value) {
   return Math.min(20, Math.log10(Math.max(0, Number(value) || 0) + 1) * 3);
 }
@@ -221,6 +373,59 @@ function fanWeight(value) {
 function looseKey(value) {
   return String(value || "").toLowerCase().normalize("NFKD")
     .replace(/[̀-ͯ]/g, "").replace(/[^\p{L}\p{N}]+/gu, "");
+}
+
+// Rank only exact creator-channel identities. Most names use the compact
+// letters/digits form; symbol-only acts such as the real band "!!!" need an
+// exact normalized-display fallback or they collapse to an empty identity.
+// The fallback intentionally enumerates suffixes rather than using contains(),
+// so "!!! Fan Uploads" can never impersonate "!!! - Topic".
+function creatorChannelRank(artist, channel) {
+  const creatorKey = (value) => normalizeYouTubeMatchText(value).replace(/[^\p{L}\p{N}\p{M}]+/gu, "");
+  const wantedKey = creatorKey(artist);
+  const channelKey = creatorKey(channel);
+  if (wantedKey) {
+    if (channelKey === `${wantedKey}topic`) return 100;
+    if (channelKey === `${wantedKey}vevo`) return 90;
+    if (channelKey === wantedKey) return 80;
+    if ([`${wantedKey}official`, `official${wantedKey}`, `${wantedKey}music`].includes(channelKey)) return 70;
+    return 0;
+  }
+
+  const wanted = normalizeYouTubeCacheText(artist);
+  const candidate = normalizeYouTubeCacheText(channel);
+  if (!wanted) return 0;
+  if ([`${wanted} - topic`, `${wanted} topic`].includes(candidate)) return 100;
+  if ([`${wanted}vevo`, `${wanted} vevo`].includes(candidate)) return 90;
+  if (candidate === wanted) return 80;
+  if ([`${wanted}official`, `${wanted} official`, `official${wanted}`, `official ${wanted}`, `${wanted} music`].includes(candidate)) return 70;
+  return 0;
+}
+
+function creditedArtistParts(value) {
+  return String(value || "")
+    .split(/\s+(?:&|and|x|×|feat\.?|ft\.?|featuring)\s+|,\s*/iu)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function collaboratorChannelRank(artist, channel, rawTitle, licensed) {
+  const direct = creatorChannelRank(artist, channel);
+  if (direct >= 70 || !licensed) return direct;
+  const parts = creditedArtistParts(artist);
+  const separator = /\s+[-|:]\s+/.exec(String(rawTitle || ""));
+  if (parts.length < 2 || !separator) return direct;
+  const leadKey = normalizeYouTubeMatchText(String(rawTitle).slice(0, separator.index))
+    .replace(/[^\p{L}\p{N}\p{M}]+/gu, "");
+  for (const part of parts) {
+    const rank = creatorChannelRank(part, channel);
+    if (rank < 70) continue;
+    const remainingCredited = parts
+      .filter((other) => other !== part)
+      .every((other) => leadKey.includes(normalizeYouTubeMatchText(other).replace(/[^\p{L}\p{N}\p{M}]+/gu, "")));
+    if (remainingCredited) return rank;
+  }
+  return direct;
 }
 
 function levenshtein(a, b) {
@@ -577,13 +782,52 @@ export async function getFreshDeezerPreview(title, artist, { fetchImpl = fetch }
   return { ...result, status: result.preview ? "fresh" : "not_found", expiresAt: result.preview ? expiresAt : null };
 }
 
+async function providerTrackCreditProof({ sourceProvider, sourceId, title, artist, fetchImpl }) {
+  if (String(sourceProvider || "").toLowerCase() !== "deezer" || !/^\d{1,20}$/.test(String(sourceId || ""))) return null;
+  const key = `deezer:track-credit:v2:${sourceId}:${JSON.stringify([
+    normalizeTrackIdentityText(artist),
+    normalizeTrackIdentityText(title),
+  ])}`;
+  const cached = readProviderCache(key);
+  if (cached?.fresh) return cached.data || null;
+  let data;
+  try {
+    data = await providerJson("Deezer", `https://api.deezer.com/track/${sourceId}`, { fetchImpl, timeoutMs: 6_000 });
+  } catch {
+    return null;
+  }
+  const requestedBase = youtubeTitleCreditCandidates(title)[0]?.base || "";
+  const providerBase = youtubeTitleCreditCandidates(data?.title || "")[0]?.base || "";
+  const requestedArtist = normalizeTrackIdentityText(artist);
+  const providerArtist = normalizeTrackIdentityText(data?.artist?.name);
+  if (!requestedBase || requestedBase !== providerBase || !requestedArtist || requestedArtist !== providerArtist) return null;
+  const featuredCredits = (Array.isArray(data?.contributors) ? data.contributors : [])
+    .filter((entry) => String(entry?.role || "").toLowerCase() === "featured" && entry?.name)
+    .map((entry) => String(entry.name));
+  const proof = {
+    verified: true,
+    featuredCredits,
+    durationSec: Math.max(0, Number(data?.duration) || 0),
+    provider: "deezer",
+    sourceId: String(sourceId),
+  };
+  writeProviderCache(key, proof, days(1));
+  return proof;
+}
+
 export function parseIsoDuration(value) {
   const match = String(value || "").match(/^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/);
   if (!match) return 0;
   return (Number(match[1]) || 0) * 3600 + (Number(match[2]) || 0) * 60 + (Number(match[3]) || 0);
 }
 
-export function scoreYouTubeCandidate(candidate, { title, artist, expectedDurationSec = 0, trustedChannel = false } = {}) {
+export function scoreYouTubeCandidate(candidate, {
+  title,
+  artist,
+  expectedDurationSec = 0,
+  trustedChannel = false,
+  providerFeaturedCredits = [],
+} = {}) {
   const snippet = candidate?.snippet || {};
   const status = candidate?.status || {};
   const rawTitle = String(snippet.title || "");
@@ -591,6 +835,7 @@ export function scoreYouTubeCandidate(candidate, { title, artist, expectedDurati
   const requested = `${artist || ""} ${title || ""}`;
   const combined = `${rawTitle} ${channel}`;
   const reasons = [];
+  const duration = parseIsoDuration(candidate?.contentDetails?.duration);
   if (status.madeForKids === true) {
     return { score: -Infinity, rejected: true, reasons: ["child-directed"] };
   }
@@ -599,59 +844,96 @@ export function scoreYouTubeCandidate(candidate, { title, artist, expectedDurati
   }
   const hardNoise = /\b(karaoke|tribute|reaction|tutorial|how to play|nightcore|8d audio)\b/i;
   if (hardNoise.test(combined) && !hardNoise.test(requested)) return { score: -Infinity, rejected: true, reasons: ["low-quality-variant"] };
-  if (/\bcover\b/i.test(rawTitle) && !/\bcover\b/i.test(title || "") && !/\bcover\b/i.test(artist || "")) {
-    return { score: -Infinity, rejected: true, reasons: ["cover"] };
+  // A requested studio song must never silently turn into a mashup, medley,
+  // cover, remix, fan edit, or tempo-altered upload. Check the requested TITLE
+  // (not the artist name) for an explicit variant request; an act called
+  // "Remix" or "Cover Drive" is not consent to play a different recording.
+  const candidateTitle = [...canonicalYouTubeTitleCandidates(rawTitle, artist)]
+    .sort((left, right) => left.length - right.length)[0] || normalizeYouTubeMatchText(rawTitle);
+  const candidateVersionText = canonicalYouTubeSongTitle(rawTitle, artist);
+  const requestedTitle = canonicalYouTubeSongTitle(title);
+  const variantRules = [
+    ["mashup", /\b(?:mashup|mash up)\b/],
+    ["medley", /\bmedley\b/],
+    ["cover", /\bcover\b/],
+    ["remix-variant", /\bremix\b/],
+    ["remix-variant", /\brework\b/],
+    ["remix-variant", /\bbootleg\b/],
+    ["remix-variant", /\bflip\b/],
+    ["remix-variant", /\bedit\b/],
+    ["alternate-recording", /\binstrumental\b/],
+    ["alternate-recording", /\bsped up\b/],
+    ["alternate-recording", /\bslowed\b/],
+    ["alternate-recording", /\breverb\b/],
+    ["alternate-recording", /\blive\b/],
+    ["alternate-recording", /\bacoustic\b/],
+    ["alternate-recording", /\bdemo\b/],
+    ["alternate-recording", /\bremaster(?:ed)?\b/],
+    ["alternate-recording", /\bclean\b/],
+  ];
+  for (const [reason, pattern] of variantRules) {
+    if (pattern.test(candidateVersionText) && !pattern.test(requestedTitle)) {
+      return { score: -Infinity, rejected: true, reasons: [reason] };
+    }
   }
 
-  const titleCoverage = coverage(title, rawTitle);
-  const artistCoverage = artist ? coverage(artist, combined) : 1;
+  const artistCoverage = artist ? youtubeMatchCoverage(artist, channel) : 1;
 
   // Hard CREATOR gate. The old gate accepted a video if the artist name appeared
   // ANYWHERE in the title or channel, so "Tory Lanez - X (feat. Nelly Furtado)"
   // or a random channel that just name-drops the artist passed, which put the
   // wrong act's songs on artist pages. Instead the uploader must credibly BE the
-  // artist: either the channel carries their name (official / "Artist - Topic" /
-  // VEVO all contain the name spaceless), or the title LEADS with their name
-  // (the standard "Artist - Song" official format). Everything else is rejected
-  // and playback falls back to the 30s preview, which is correct-artist audio.
+  // artist: the channel itself must be the exact artist, their Topic/VEVO
+  // channel, or a narrowly named official/music channel. A title that LEADS
+  // with the artist is not creator proof: any unrelated uploader can write
+  // "Artist - Song", which is how an HNM Magazine mashup was cached for J. Cole.
+  // Everything else is rejected and playback falls back to the correct-artist
+  // preview rather than guessing.
   let channelIsArtist = false;
   // The candidate came from the artist's OWN channel, so the creator is already
   // proven; only the song identity still has to be checked below.
   if (trustedChannel) {
     channelIsArtist = true;
-    reasons.push("artist-channel");
   } else if (artist) {
-    const artistKey = normalizeMusicText(artist).replace(/ /g, "");
-    const channelKey = normalizeMusicText(channel).replace(/ /g, "");
-    const titleNorm = normalizeMusicText(rawTitle);
-    // Only gate on the creator when the name is long enough to match reliably.
-    // Very short or non-latin names (normalize to <3 chars) can't be gated
-    // without rejecting everything, so they fall through to the title gate and
-    // scoring instead.
-    if (artistKey.length >= 3) {
-      channelIsArtist = channelKey.includes(artistKey)
-        || (artistKey.length >= 6 && channelKey.length >= 4 && artistKey.includes(channelKey));
-      const titleLeadsWithArtist = titleNorm.startsWith(normalizeMusicText(artist));
-      if (!channelIsArtist && !titleLeadsWithArtist) {
-        return { score: -Infinity, rejected: true, reasons: ["wrong-creator"] };
-      }
+    // One exact ranker handles short, Unicode, and symbol-only artist names;
+    // title formatting alone is never creator proof.
+    channelIsArtist = collaboratorChannelRank(
+      artist,
+      channel,
+      rawTitle,
+      !!candidate?.contentDetails?.licensedContent,
+    ) >= 70;
+    if (!channelIsArtist) {
+      return { score: -Infinity, rejected: true, reasons: ["wrong-creator"] };
     }
   }
 
-  // Hard title gate. The requested song's words must actually be in the video
-  // title; a completely different song by the right artist is still the wrong
-  // result. `titleIncluded` rescues exact matches whose token ratio dips only
-  // because the official title carries extra words (feat., remaster years).
+  // Hard title gate. Creator proof is not song proof: after stripping only
+  // recognized presentation/credit wrappers, the title must be exact. This
+  // prevents one-token songs such as U2's "One" from resolving to "One Tree
+  // Hill" merely because the latter starts with the same word.
+  let titleExact = true;
   if (title) {
-    const titleIncluded = normalizeMusicText(rawTitle).includes(normalizeMusicText(title));
-    if (titleCoverage < 0.5 && !titleIncluded) return { score: -Infinity, rejected: true, reasons: ["title-mismatch"] };
+    const requestedIdentities = youtubeTitleCreditCandidates(title);
+    const candidateIdentities = youtubeTitleCreditCandidates(rawTitle, artist);
+    titleExact = requestedIdentities.some((wanted) => candidateIdentities.some((found) => sameYouTubeRecordingIdentity(wanted, found)));
+    if (!titleExact) {
+      const providerProvesCredits = providerOmittedCreditMatch(title, rawTitle, artist, providerFeaturedCredits);
+      const expected = Number(expectedDurationSec) || 0;
+      const durationClose = expected > 0 && duration > 0 && Math.abs(duration - expected) / expected <= 0.12;
+      if (!providerProvesCredits || !candidate?.contentDetails?.licensedContent || !durationClose) {
+        return { score: -Infinity, rejected: true, reasons: ["title-mismatch"] };
+      }
+      titleExact = true;
+      reasons.push("provider-omitted-feature-credit");
+    }
   }
 
-  let score = titleCoverage * 45 + artistCoverage * 28;
+  let score = (titleExact ? 45 : 0) + artistCoverage * 28;
   // The uploader being the artist is the strongest correctness signal, so weight
   // it heavily above title-only matches.
   if (channelIsArtist) { score += 22; reasons.push("artist-channel"); }
-  if (normalizeMusicText(rawTitle).includes(normalizeMusicText(title))) { score += 18; reasons.push("title-match"); }
+  if (requestedTitle && candidateTitle.includes(requestedTitle)) { score += 18; reasons.push("title-match"); }
   if (/\bofficial (audio|music video|video|visualizer)\b/i.test(rawTitle)) { score += 24; reasons.push("official"); }
   if (/\bvevo\b/i.test(channel) || /\btopic\b/i.test(channel)) { score += 24; reasons.push("verified-channel-pattern"); }
   if (candidate?.contentDetails?.licensedContent) { score += 12; reasons.push("licensed"); }
@@ -663,7 +945,6 @@ export function scoreYouTubeCandidate(candidate, { title, artist, expectedDurati
   if (/\b(fan made|unofficial|sped up|slowed|reverb)\b/i.test(rawTitle)) { score -= 35; reasons.push("variant-penalty"); }
   score -= titleQualifierPenalty(title, rawTitle);
 
-  const duration = parseIsoDuration(candidate?.contentDetails?.duration);
   const expected = Number(expectedDurationSec) || 0;
   if (expected > 0 && duration > 0) {
     const difference = Math.abs(duration - expected) / expected;
@@ -676,6 +957,48 @@ export function scoreYouTubeCandidate(candidate, { title, artist, expectedDurati
   return { score: Math.round(score * 10) / 10, rejected: score < YOUTUBE_SCORE_MIN, reasons, duration };
 }
 
+function rankedYouTubeCandidates(candidates, options) {
+  return candidates
+    .map((candidate) => ({ candidate, assessment: scoreYouTubeCandidate(candidate, options) }))
+    .filter(({ assessment }) => !assessment.rejected)
+    .sort((left, right) => right.assessment.score - left.assessment.score);
+}
+
+// A provider-scoped display title can omit recording credits. `null` already
+// means "the candidates were inspected and none matched", so keep an unavailable
+// source-identity proof distinct: it is a temporary inability to decide, never a
+// structural YouTube miss that may be negative-cached for days.
+const YOUTUBE_CREDIT_PROOF_UNAVAILABLE = Symbol("youtube-credit-proof-unavailable");
+
+async function selectBestYouTubeCandidate(candidates, options, loadCreditProof, providerProofRequired = false) {
+  const strict = rankedYouTubeCandidates(candidates, options);
+  if (!providerProofRequired) return strict[0] || null;
+  const proof = await loadCreditProof?.();
+  if (!proof?.verified) return YOUTUBE_CREDIT_PROOF_UNAVAILABLE;
+  if (!proof.featuredCredits?.length) return strict[0] || null;
+  const provedRecording = candidates.filter((candidate) => providerOmittedCreditMatch(
+    options.title,
+    candidate?.snippet?.title,
+    options.artist,
+    proof.featuredCredits,
+  ));
+  return rankedYouTubeCandidates(provedRecording, {
+    ...options,
+    expectedDurationSec: proof.durationSec,
+    providerFeaturedCredits: proof.featuredCredits,
+  })[0] || null;
+}
+
+function creditProofUnavailable(selection) {
+  return selection === YOUTUBE_CREDIT_PROOF_UNAVAILABLE;
+}
+
+function creditProofUnavailableResult() {
+  // `provider_paused` is already a retryable client classification with a
+  // short local TTL. Most importantly, this path never reaches setYouTubeCache.
+  return { videoId: null, status: "provider_paused", retryable: true };
+}
+
 const YOUTUBE_CHANNEL_REFRESH_TTL_MS = days(14);
 const YOUTUBE_CHANNEL_MISS_TTL_MS = days(Math.max(1, Math.min(30,
   Number(process.env.YOUTUBE_CHANNEL_MISS_TTL_DAYS) || 7)));
@@ -685,25 +1008,16 @@ const YOUTUBE_CHANNEL_MISS_TTL_MS = days(Math.max(1, Math.min(30,
 // their entire catalogue; VEVO and the plain verified channel come next. Ranked
 // so an unrelated channel that merely contains the name can never win.
 export function selectArtistChannel(artist, items = []) {
-  const wanted = normalizeMusicText(artist);
-  const wantedKey = wanted.replace(/ /g, "");
-  if (!wantedKey) return null;
+  if (!normalizeYouTubeCacheText(artist)) return null;
   let best = null;
   for (const item of items) {
     const channelId = item?.id?.channelId || item?.snippet?.channelId;
     const title = String(item?.snippet?.title || item?.snippet?.channelTitle || "");
     if (!channelId || !title) continue;
-    const norm = normalizeMusicText(title);
-    const key = norm.replace(/ /g, "");
-    let rank = 0;
-    if (norm === `${wanted} topic`) rank = 100;
-    else if (key === `${wantedKey}vevo`) rank = 90;
-    else if (norm === wanted) rank = 80;
-    else if (key.startsWith(wantedKey) && key.length - wantedKey.length <= 6) rank = 60;
-    else if (key.includes(wantedKey)) rank = 40;
+    const rank = creatorChannelRank(artist, title);
     if (rank && (!best || rank > best.rank)) best = { channelId, title, rank };
   }
-  return best && best.rank >= 40 ? best : null;
+  return best && best.rank >= 70 ? best : null;
 }
 
 // Channel identities are amortized across an artist, but API-derived mappings
@@ -711,8 +1025,9 @@ export function selectArtistChannel(artist, items = []) {
 // also expire so a newly-created Topic channel can eventually be found.
 const YOUTUBE_CHANNEL_NEGATIVE_TTL_MS = YOUTUBE_POLICY_MAX_AGE_MS;
 
-const channelSourceTrusted = (source) => source === "youtube" || source === "wikidata";
-const youtubeChannelCacheKey = (artist) => `yt:channel:v2:${normalizeYouTubeCacheText(artist)}`;
+const channelSourceTrusted = (source) => source === "youtube_v4" || source === "wikidata_v4";
+const channelSourceCurrent = (source) => channelSourceTrusted(source) || source === "youtube_unverified" || source === "wikidata_unverified";
+const youtubeChannelCacheKey = (artist) => `yt:channel:v3:${normalizeYouTubeCacheText(artist)}`;
 
 async function resolveArtistChannelUnshared(artist, apiKey, fetchImpl, {
   allowSearch = true,
@@ -730,11 +1045,11 @@ async function resolveArtistChannelUnshared(artist, apiKey, fetchImpl, {
   // allowing newly-created channels to be discovered later.
   const stored = artistStmts.getChannel.get(norm);
   const storedAge = currentTime - Number(stored?.at || 0);
-  if (stored?.channelId && storedAge < YOUTUBE_CHANNEL_REFRESH_TTL_MS) {
+  if (stored?.channelId && storedAge < YOUTUBE_CHANNEL_REFRESH_TTL_MS && channelSourceCurrent(stored.source)) {
     youtubeMetrics.channelCacheHits += 1;
     return { channelId: stored.channelId, trusted: channelSourceTrusted(stored.source), source: stored.source || "legacy" };
   }
-  if (!stored?.channelId && stored?.at && storedAge < YOUTUBE_CHANNEL_NEGATIVE_TTL_MS) {
+  if (!stored?.channelId && stored?.at && storedAge < YOUTUBE_CHANNEL_NEGATIVE_TTL_MS && channelSourceCurrent(stored.source)) {
     youtubeMetrics.channelNegativeCacheHits += 1;
     return null;
   }
@@ -810,12 +1125,12 @@ async function resolveArtistChannelUnshared(artist, apiKey, fetchImpl, {
         const ranked = selectArtistChannel(artist, [{ id: { channelId: item.id }, snippet: item.snippet }]);
         const trusted = Number(ranked?.rank) >= 80;
         if (String(stored.source || "").startsWith("wikidata")) {
-          artistStmts.setWikidataChannel.run(stored.channelId, currentTime, trusted ? "wikidata" : "wikidata_unverified", norm);
-          return { channelId: stored.channelId, trusted, source: trusted ? "wikidata" : "wikidata_unverified" };
+          artistStmts.setWikidataChannel.run(stored.channelId, currentTime, trusted ? "wikidata_v4" : "wikidata_unverified", norm);
+          return { channelId: stored.channelId, trusted, source: trusted ? "wikidata_v4" : "wikidata_unverified" };
         }
         if (trusted) {
-          artistStmts.refreshChannel.run(currentTime, norm);
-          return { channelId: stored.channelId, trusted: true, source: stored.source || "legacy" };
+          artistStmts.setChannel.run(stored.channelId, currentTime, "youtube_v4", norm);
+          return { channelId: stored.channelId, trusted: true, source: "youtube_v4" };
         }
         // The current channel title no longer agrees with this artist. Clear
         // the stale search/legacy mapping and continue through discovery rather
@@ -832,7 +1147,7 @@ async function resolveArtistChannelUnshared(artist, apiKey, fetchImpl, {
         if (withinPolicy) youtubeMetrics.staleFallbacks += 1;
         return {
           channelId: stored.channelId,
-          trusted: withinPolicy && stored.source === "wikidata",
+          trusted: withinPolicy && stored.source === "wikidata_v4",
           source: withinPolicy ? stored.source : "wikidata_unverified",
         };
       }
@@ -856,7 +1171,7 @@ async function resolveArtistChannelUnshared(artist, apiKey, fetchImpl, {
       const { lookupChannelByMbid } = await import("./wikidataChannels.js");
       const fromWikidata = await lookupChannelByMbid(row.mbid, { artist, apiKey, fetchImpl });
       if (fromWikidata?.channelId) {
-        const source = fromWikidata.validated ? "wikidata" : "wikidata_unverified";
+        const source = fromWikidata.validated ? "wikidata_v4" : "wikidata_unverified";
         artistStmts.setWikidataChannel.run(fromWikidata.channelId, Date.now(), source, norm);
         return { channelId: fromWikidata.channelId, trusted: !!fromWikidata.validated, source };
       }
@@ -875,7 +1190,7 @@ async function resolveArtistChannelUnshared(artist, apiKey, fetchImpl, {
     // still written as a fallback for names not in the catalogue.
     const trusted = Number(best?.rank) >= 80;
     if (artistStmts.byNorm.get(norm)) {
-      artistStmts.setChannel.run(best?.channelId || null, Date.now(), best?.channelId && !trusted ? "youtube_unverified" : "youtube", norm);
+      artistStmts.setChannel.run(best?.channelId || null, Date.now(), best?.channelId && !trusted ? "youtube_unverified" : "youtube_v4", norm);
     }
     writeProviderCache(cacheKey, {
       channelId: best?.channelId || null,
@@ -885,7 +1200,7 @@ async function resolveArtistChannelUnshared(artist, apiKey, fetchImpl, {
     },
       best ? YOUTUBE_POLICY_MAX_AGE_MS : YOUTUBE_CHANNEL_MISS_TTL_MS);
     return best?.channelId
-      ? { channelId: best.channelId, trusted, source: trusted ? "youtube" : "youtube_unverified" }
+      ? { channelId: best.channelId, trusted, source: trusted ? "youtube_v4" : "youtube_unverified" }
       : null;
   } catch (error) {
     if (providerPaused(error)) throw error;
@@ -921,26 +1236,33 @@ const YOUTUBE_CATALOGUE_MISS_TTL_MS = days(1);
 // add "(Official Video)" and friends, so those words are stripped before
 // comparing. Live/remix/karaoke variants are pushed down, never silently used.
 export function selectCatalogueTrack(title, catalogue = []) {
-  const wanted = normalizeMusicText(title);
-  if (!wanted) return null;
-  const DECOR = /\b(official|music|video|audio|lyric|lyrics|visualizer|hd|hq|remaster|remastered|explicit|version|full)\b/g;
+  const wanted = youtubeTitleCreditCandidates(title);
+  if (!wanted.length) return null;
   let best = null;
   for (const item of catalogue) {
     const raw = String(item?.title || "");
     const videoId = item?.videoId;
     if (!raw || !videoId) continue;
-    const norm = normalizeMusicText(raw);
-    const stripped = norm.replace(DECOR, " ").replace(/\s+/g, " ").trim();
-    let score;
-    if (norm === wanted || stripped === wanted) score = 100;
-    else if (stripped.startsWith(`${wanted} `) || stripped === wanted) score = 88;
-    else if (norm.startsWith(`${wanted} `)) score = 84;
-    else score = Math.min(coverage(title, raw), coverage(raw, title)) * 80;
-    score -= titleQualifierPenalty(title, raw);
-    if (/\b(karaoke|cover|reaction|instrumental|tribute)\b/i.test(raw)) score -= 100;
-    if (!best || score > best.score) best = { videoId, title: raw, score: Math.round(score * 10) / 10 };
+    const found = youtubeTitleCreditCandidates(raw);
+    const score = wanted.some((requested) => found.some((candidate) => sameYouTubeRecordingIdentity(requested, candidate)))
+      ? 100
+      : Number.NEGATIVE_INFINITY;
+    const adjusted = score - titleQualifierPenalty(title, raw)
+      - (/\b(karaoke|cover|reaction|instrumental|tribute)\b/i.test(raw) ? 100 : 0);
+    if (!best || adjusted > best.score) best = { videoId, title: raw, score: Math.round(adjusted * 10) / 10 };
   }
   return best && best.score >= 70 ? best : null;
+}
+
+function catalogueCreditFallbackTracks(title, catalogue = []) {
+  const wanted = youtubeTitleCreditCandidates(title);
+  if (!wanted.length || wanted.some((entry) => entry.credits)) return [];
+  return catalogue.filter((item) => {
+    if (!item?.videoId || !item?.title) return false;
+    return youtubeTitleCreditCandidates(item.title).some((candidate) => (
+      !!candidate.credits && wanted.some((requested) => requested.base === candidate.base)
+    ));
+  }).slice(0, 10);
 }
 
 // The artist's entire upload catalogue, fetched with the CHEAP endpoints:
@@ -1034,11 +1356,22 @@ function getArtistCatalogue(artist, channelId, apiKey, fetchImpl) {
 // A JSON tuple keeps artist/title boundaries unambiguous. The earlier delimiter
 // key collided for pairs such as (artist="a|b", title="c") and
 // (artist="a", title="b|c"), which could replay another song's cached id.
-export function youtubeCacheKey(title, artist) {
-  return `yt:v3:${JSON.stringify([
+export function youtubeCacheKey(title, artist, recordingIdentity = "") {
+  const tuple = [
     normalizeYouTubeCacheText(artist),
     normalizeYouTubeCacheText(title),
-  ])}`;
+  ];
+  if (recordingIdentity) tuple.push(String(recordingIdentity));
+  return `yt:v${YOUTUBE_MATCH_CACHE_VERSION}:${JSON.stringify(tuple)}`;
+}
+
+function versionedYouTubeCacheKey(version, title, artist, recordingIdentity = "") {
+  const tuple = [
+    normalizeYouTubeCacheText(artist),
+    normalizeYouTubeCacheText(title),
+  ];
+  if (recordingIdentity) tuple.push(String(recordingIdentity));
+  return `yt:v${version}:${JSON.stringify(tuple)}`;
 }
 
 function legacyYouTubeCacheKey(title, artist) {
@@ -1048,17 +1381,40 @@ function legacyYouTubeCacheKey(title, artist) {
   return `yt:v2:${normalizedArtist}|${normalizedTitle}`;
 }
 
-// Migrate only provably unambiguous v2 rows, preserving their original update
-// and expiry timestamps so migration never extends YouTube API-data retention.
-// Ambiguous delimiter rows are ignored and age out through the normal prune.
-function readYouTubeCache(title, artist) {
-  const key = youtubeCacheKey(title, artist);
+// Move prior resolver rows under the current identity without extending their
+// retention. Their metadata deliberately has no current matchVersion, so a
+// positive v2/v3 ID is NOT a cache hit or stale fallback: videos.list and the
+// current scorer must validate it first. Ambiguous delimiter rows remain
+// ignored and age out through the normal prune.
+function readYouTubeCache(title, artist, recordingIdentity = "") {
+  const key = youtubeCacheKey(title, artist, recordingIdentity);
   const current = ytStmts.get.get(key);
   if (current) return { key, hit: current };
-  const legacyKey = legacyYouTubeCacheKey(title, artist);
-  if (!legacyKey) return { key, hit: null };
-  const legacy = ytStmts.get.get(legacyKey);
-  if (!legacy) return { key, hit: null };
+  const legacyKeys = recordingIdentity ? [] : [
+      versionedYouTubeCacheKey(YOUTUBE_MATCH_CACHE_VERSION - 1, title, artist),
+      versionedYouTubeCacheKey(YOUTUBE_MATCH_CACHE_VERSION - 2, title, artist),
+      legacyYouTubeCacheKey(title, artist),
+    ].filter(Boolean);
+  let legacyKey = null;
+  let legacy = null;
+  for (const candidateKey of legacyKeys) {
+    const candidate = ytStmts.get.get(candidateKey);
+    if (candidate) {
+      legacyKey = candidateKey;
+      legacy = candidate;
+      break;
+    }
+  }
+  if (!legacy || !legacyKey) return { key, hit: null };
+  // A miss is meaningful only under the matcher version that produced it.
+  // Promoting an older NULL row made songs rejected by the previous Unicode or
+  // recording policy remain unavailable without ever reaching the corrected
+  // catalogue/search path. Positives are retained solely for videos.list plus
+  // current-policy validation below; old negatives are retired immediately.
+  if (!legacy.video_id) {
+    db.prepare("DELETE FROM yt_cache WHERE key=?").run(legacyKey);
+    return { key, hit: null };
+  }
   ytStmts.set.run({
     key,
     video_id: legacy.video_id,
@@ -1078,13 +1434,35 @@ function rejectedSet(row) {
 }
 
 function setYouTubeCache({ key, videoId, metadata = null, score = null, expiresAt, rejected = [] }) {
+  const versionedMetadata = metadata
+    ? { ...metadata, matchVersion: YOUTUBE_MATCH_CACHE_VERSION }
+    : null;
   ytStmts.set.run({
     key,
     video_id: videoId || null,
     updated_at: Date.now(),
-    metadata: metadata ? JSON.stringify(metadata) : null,
+    metadata: versionedMetadata ? JSON.stringify(versionedMetadata) : null,
     score: Number.isFinite(score) ? score : null,
     expires_at: expiresAt,
+    rejected_ids: JSON.stringify([...rejected].slice(-25)),
+  });
+}
+
+// When a retired cache row fails the current scorer, retain its ID only as a
+// bounded exclusion and preserve the original timestamps. The public route
+// first attempts a catalogue-only resolution and then, for a verified user, an
+// interactive search; persisting here prevents those two phases from spending
+// two videos.list calls validating the same known-bad recording.
+function rememberRejectedCachedMatch(key, row, rejected) {
+  if (!row?.video_id) return;
+  const updatedAt = Number(row.updated_at) || Date.now();
+  ytStmts.set.run({
+    key,
+    video_id: row.video_id,
+    updated_at: updatedAt,
+    metadata: row.metadata || null,
+    score: Number.isFinite(row.score) ? row.score : null,
+    expires_at: Number(row.expires_at) || (updatedAt + YOUTUBE_POLICY_MAX_AGE_MS),
     rejected_ids: JSON.stringify([...rejected].slice(-25)),
   });
 }
@@ -1098,6 +1476,7 @@ export function pruneExpiredProviderData(at = Date.now(), { force = false } = {}
       artistChannels: 0,
       artistValidations: 0,
       wikidataValidations: 0,
+      playbackFailures: 0,
       skipped: true,
     };
   }
@@ -1124,12 +1503,15 @@ export function pruneExpiredProviderData(at = Date.now(), { force = false } = {}
   const wikidataValidations = db.prepare(`UPDATE wikidata_channel_checks
     SET validated=0,checked_at=0
     WHERE checked_at > 0 AND checked_at <= ?`).run(at - YOUTUBE_POLICY_MAX_AGE_MS).changes;
+  const playbackFailures = db.prepare("DELETE FROM youtube_playback_failures WHERE created_at <= ?")
+    .run(at - YOUTUBE_POLICY_MAX_AGE_MS).changes;
   return {
     youtube,
     provider,
     artistChannels,
     artistValidations,
     wikidataValidations,
+    playbackFailures,
     skipped: false,
   };
 }
@@ -1197,19 +1579,48 @@ async function resolveYouTubeTrackUnshared(title, artist, {
   apiKey = process.env.YOUTUBE_API_KEY,
   allowSearch = true,
   beforeSearch = null,
+  excludedVideoIds = [],
+  sourceProvider = "",
+  sourceId = "",
 } = {}) {
   const currentTime = Date.now();
   pruneExpiredProviderData(currentTime);
-  const { key, hit } = readYouTubeCache(title, artist);
+  const recordingIdentity = youtubeRecordingIdentity(sourceProvider, sourceId);
+  const providerProofRequired = !!recordingIdentity
+    && youtubeTitleCreditCandidates(title).every((entry) => !entry.credits);
+  const { key, hit } = readYouTubeCache(title, artist, recordingIdentity);
+  let creditProofPromise = null;
+  const loadCreditProof = () => {
+    if (!recordingIdentity) return Promise.resolve(null);
+    if (!creditProofPromise) {
+      creditProofPromise = providerTrackCreditProof({ sourceProvider, sourceId, title, artist, fetchImpl });
+    }
+    return creditProofPromise;
+  };
+  const positiveExpiry = (assessment) => currentTime + (
+    assessment?.reasons?.includes("provider-omitted-feature-credit") ? days(1) : YOUTUBE_POLICY_MAX_AGE_MS
+  );
   const updatedAt = Number(hit?.updated_at) || 0;
   const configuredDeadline = Number(hit?.expires_at) || (updatedAt + YOUTUBE_POLICY_MAX_AGE_MS);
   const policyDeadline = Math.min(configuredDeadline, updatedAt + YOUTUBE_POLICY_MAX_AGE_MS);
   const withinPolicy = !!hit && updatedAt > 0 && currentTime < policyDeadline;
-  const rejected = withinPolicy ? rejectedSet(hit) : new Set();
+  const globalRejected = withinPolicy ? rejectedSet(hit) : new Set();
+  const actorExcluded = new Set();
+  for (const id of excludedVideoIds) {
+    if (/^[A-Za-z0-9_-]{11}$/.test(String(id || ""))) actorExcluded.add(String(id));
+  }
+  const rejected = new Set([...globalRejected, ...actorExcluded]);
+  // Actor exclusions originate in an untrusted client report. They may shape
+  // only this listener's response; persisting any positive, negative, or
+  // rejected-id result would let one account rewrite global playback state.
+  const cacheResult = (value) => {
+    if (!actorExcluded.size) setYouTubeCache(value);
+  };
   let cachedMetadata = null;
   try { cachedMetadata = hit?.metadata ? JSON.parse(hit.metadata) : null; } catch {}
   const usableCachedMatch = !!hit?.video_id
     && !!cachedMetadata
+    && cachedMetadata.matchVersion === YOUTUBE_MATCH_CACHE_VERSION
     && !cachedMetadata.invalidated
     && !rejected.has(hit.video_id)
     && withinPolicy;
@@ -1240,14 +1651,27 @@ async function resolveYouTubeTrackUnshared(title, artist, {
       throw error;
     }
     if (legacy) {
-      const assessment = scoreYouTubeCandidate(legacy, { title, artist, expectedDurationSec });
-      if (!assessment.rejected) {
+      const selected = await selectBestYouTubeCandidate(
+        [legacy],
+        { title, artist, expectedDurationSec },
+        loadCreditProof,
+        providerProofRequired,
+      );
+      if (creditProofUnavailable(selected)) return creditProofUnavailableResult();
+      const assessment = selected?.assessment || null;
+      if (selected && assessment) {
         const metadata = { title: legacy.snippet?.title || null, channel: legacy.snippet?.channelTitle || null, reasons: assessment.reasons, duration: assessment.duration };
-        setYouTubeCache({ key, videoId: legacy.id, metadata, score: assessment.score, expiresAt: currentTime + YOUTUBE_POLICY_MAX_AGE_MS, rejected });
+        cacheResult({ key, videoId: legacy.id, metadata, score: assessment.score, expiresAt: positiveExpiry(assessment), rejected });
         return { videoId: legacy.id, status: "validated", confidence: assessment.score };
       }
+      globalRejected.add(hit.video_id);
       rejected.add(hit.video_id);
-    } else rejected.add(hit.video_id);
+      rememberRejectedCachedMatch(key, hit, globalRejected);
+    } else {
+      globalRejected.add(hit.video_id);
+      rejected.add(hit.video_id);
+      rememberRejectedCachedMatch(key, hit, globalRejected);
+    }
   }
 
   // PRIMARY PATH: inspect the mapped artist channel. A verified Topic/official
@@ -1269,22 +1693,32 @@ async function resolveYouTubeTrackUnshared(title, artist, {
       try {
         const { items: catalogue, complete } = await getArtistCatalogue(artist, channelId, apiKey, fetchImpl);
         catalogueComplete = complete;
-        const picked = selectCatalogueTrack(title, catalogue.filter((item) => !rejected.has(item.videoId)));
-        if (picked) {
-          youtubeMetrics.catalogueMatches += 1;
-          const verified = (await youtubeVideos([picked.videoId], apiKey, fetchImpl))[0];
-          const assessment = verified
-            ? scoreYouTubeCandidate(verified, { title, artist, expectedDurationSec, trustedChannel: channel.trusted })
-            : null;
-          if (verified && assessment && !assessment.rejected) {
+        const availableCatalogue = catalogue.filter((item) => !rejected.has(item.videoId));
+        const picked = selectCatalogueTrack(title, availableCatalogue);
+        const possible = [...new Map([
+          ...(picked ? [picked] : []),
+          ...catalogueCreditFallbackTracks(title, availableCatalogue),
+        ].map((entry) => [entry.videoId, entry])).values()];
+        if (possible.length) {
+          const verified = await youtubeVideos(possible.map((entry) => entry.videoId), apiKey, fetchImpl);
+          const bestCatalogue = await selectBestYouTubeCandidate(
+            verified,
+            { title, artist, expectedDurationSec, trustedChannel: channel.trusted },
+            loadCreditProof,
+            providerProofRequired,
+          );
+          if (creditProofUnavailable(bestCatalogue)) return creditProofUnavailableResult();
+          const assessment = bestCatalogue?.assessment || null;
+          if (bestCatalogue && assessment) {
+            youtubeMetrics.catalogueMatches += 1;
             const metadata = {
-              title: verified.snippet?.title || null,
-              channel: verified.snippet?.channelTitle || null,
+              title: bestCatalogue.candidate.snippet?.title || null,
+              channel: bestCatalogue.candidate.snippet?.channelTitle || null,
               reasons: [...assessment.reasons, "artist-catalogue"],
               duration: assessment.duration,
             };
-            setYouTubeCache({ key, videoId: verified.id, metadata, score: assessment.score, expiresAt: currentTime + YOUTUBE_POLICY_MAX_AGE_MS, rejected });
-            return { videoId: verified.id, status: "artist_catalogue", confidence: assessment.score };
+            cacheResult({ key, videoId: bestCatalogue.candidate.id, metadata, score: assessment.score, expiresAt: positiveExpiry(assessment), rejected });
+            return { videoId: bestCatalogue.candidate.id, status: "artist_catalogue", confidence: assessment.score };
           }
         }
       } catch { /* fall through to the channel search below */ }
@@ -1304,11 +1738,13 @@ async function resolveYouTubeTrackUnshared(title, artist, {
           q: title,
         }, apiKey, fetchImpl, beforeSearch);
         const channelIds = (inChannel?.items || []).map((item) => item?.id?.videoId).filter((id) => id && !rejected.has(id));
-        const channelRanked = (await youtubeVideos(channelIds, apiKey, fetchImpl))
-          .map((candidate) => ({ candidate, assessment: scoreYouTubeCandidate(candidate, { title, artist, expectedDurationSec, trustedChannel: channel.trusted }) }))
-          .filter(({ assessment }) => !assessment.rejected)
-          .sort((a, b) => b.assessment.score - a.assessment.score);
-        const bestInChannel = channelRanked[0];
+        const bestInChannel = await selectBestYouTubeCandidate(
+          await youtubeVideos(channelIds, apiKey, fetchImpl),
+          { title, artist, expectedDurationSec, trustedChannel: channel.trusted },
+          loadCreditProof,
+          providerProofRequired,
+        );
+        if (creditProofUnavailable(bestInChannel)) return creditProofUnavailableResult();
         if (bestInChannel) {
           const metadata = {
             title: bestInChannel.candidate.snippet?.title || null,
@@ -1316,7 +1752,7 @@ async function resolveYouTubeTrackUnshared(title, artist, {
             reasons: bestInChannel.assessment.reasons,
             duration: bestInChannel.assessment.duration,
           };
-          setYouTubeCache({ key, videoId: bestInChannel.candidate.id, metadata, score: bestInChannel.assessment.score, expiresAt: currentTime + YOUTUBE_POLICY_MAX_AGE_MS, rejected });
+          cacheResult({ key, videoId: bestInChannel.candidate.id, metadata, score: bestInChannel.assessment.score, expiresAt: positiveExpiry(bestInChannel.assessment), rejected });
           return { videoId: bestInChannel.candidate.id, status: "artist_channel", confidence: bestInChannel.assessment.score };
         }
       } catch (error) {
@@ -1343,12 +1779,15 @@ async function resolveYouTubeTrackUnshared(title, artist, {
   }, apiKey, fetchImpl, beforeSearch);
   const ids = (search?.items || []).map((item) => item?.id?.videoId).filter((id) => id && !rejected.has(id));
   const candidates = await youtubeVideos(ids, apiKey, fetchImpl);
-  const ranked = candidates.map((candidate) => ({ candidate, assessment: scoreYouTubeCandidate(candidate, { title, artist, expectedDurationSec }) }))
-    .filter(({ assessment }) => !assessment.rejected)
-    .sort((a, b) => b.assessment.score - a.assessment.score);
-  const best = ranked[0];
+  const best = await selectBestYouTubeCandidate(
+    candidates,
+    { title, artist, expectedDurationSec },
+    loadCreditProof,
+    providerProofRequired,
+  );
+  if (creditProofUnavailable(best)) return creditProofUnavailableResult();
   if (!best) {
-    setYouTubeCache({ key, videoId: null, expiresAt: currentTime + YOUTUBE_MISS_TTL_MS, rejected });
+    cacheResult({ key, videoId: null, expiresAt: currentTime + YOUTUBE_MISS_TTL_MS, rejected });
     return { videoId: null, status: "low_confidence" };
   }
   const metadata = {
@@ -1357,7 +1796,7 @@ async function resolveYouTubeTrackUnshared(title, artist, {
     reasons: best.assessment.reasons,
     duration: best.assessment.duration,
   };
-  setYouTubeCache({ key, videoId: best.candidate.id, metadata, score: best.assessment.score, expiresAt: currentTime + YOUTUBE_POLICY_MAX_AGE_MS, rejected });
+  cacheResult({ key, videoId: best.candidate.id, metadata, score: best.assessment.score, expiresAt: positiveExpiry(best.assessment), rejected });
   return { videoId: best.candidate.id, status: "resolved", confidence: best.assessment.score };
 }
 
@@ -1366,7 +1805,9 @@ async function resolveYouTubeTrackUnshared(title, artist, {
 // gap while the first request is still in flight.
 export function resolveYouTubeTrack(title, artist, options = {}) {
   const durationBucket = Math.round((Number(options.expectedDurationSec) || 0) / 5) * 5;
-  const key = `${youtubeCacheKey(title, artist)}|${durationBucket}|${options.allowSearch === false ? "catalogue-only" : "interactive"}`;
+  const excluded = [...new Set((options.excludedVideoIds || []).map(String))].sort().join(",");
+  const recordingIdentity = youtubeRecordingIdentity(options.sourceProvider, options.sourceId);
+  const key = `${youtubeCacheKey(title, artist, recordingIdentity)}|${durationBucket}|${options.allowSearch === false ? "catalogue-only" : "interactive"}|${excluded}`;
   const existing = youtubeInflight.get(key);
   if (existing) {
     youtubeMetrics.trackCoalesced += 1;
@@ -1378,13 +1819,40 @@ export function resolveYouTubeTrack(title, artist, options = {}) {
   return pending;
 }
 
-export function invalidateYouTubeTrack(title, artist, videoId) {
-  const { key, hit: row } = readYouTubeCache(title, artist);
+export function invalidateYouTubeTrack(title, artist, videoId, {
+  sourceProvider = "",
+  sourceId = "",
+} = {}) {
+  const recordingIdentity = youtubeRecordingIdentity(sourceProvider, sourceId);
+  const { key, hit: row } = readYouTubeCache(title, artist, recordingIdentity);
   const rejected = rejectedSet(row);
   if (videoId) rejected.add(String(videoId));
   const now = Date.now();
   ytStmts.invalidate.run(now, now + YOUTUBE_POLICY_MAX_AGE_MS, JSON.stringify([...rejected].slice(-25)), key);
   return { ok: true, invalidated: !!row, rejected: rejected.size };
+}
+
+// Trusted moderation writes do not need a rejection tombstone: the override is
+// the new authority, and removing it must immediately hand control back to a
+// fresh resolver pass. Delete every compatible tuple generation so an older
+// row cannot be promoted after a staff correction; provider identities never
+// had legacy cache formats and therefore clear only their exact current key.
+export function clearYouTubeTrackCache(title, artist, {
+  sourceProvider = "",
+  sourceId = "",
+} = {}) {
+  const recordingIdentity = youtubeRecordingIdentity(sourceProvider, sourceId);
+  const keys = [youtubeCacheKey(title, artist, recordingIdentity)];
+  if (!recordingIdentity) {
+    keys.push(
+      versionedYouTubeCacheKey(YOUTUBE_MATCH_CACHE_VERSION - 1, title, artist),
+      versionedYouTubeCacheKey(YOUTUBE_MATCH_CACHE_VERSION - 2, title, artist),
+      legacyYouTubeCacheKey(title, artist),
+    );
+  }
+  let cleared = 0;
+  for (const key of new Set(keys.filter(Boolean))) cleared += ytStmts.delete.run(key).changes;
+  return { ok: true, cleared };
 }
 
 // Song search for the app's search box, so someone who remembers a song but not

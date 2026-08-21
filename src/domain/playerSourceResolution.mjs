@@ -10,8 +10,8 @@ export function embeddedPlayerPreview(track) {
   return /^https?:\/\//i.test(value) ? value : null;
 }
 
-export function initialPlayerSources({ key, track } = {}) {
-  const videoId = directPlayerVideoId(track);
+export function initialPlayerSources({ key, track, directVideoId = undefined } = {}) {
+  const videoId = directVideoId === undefined ? directPlayerVideoId(track) : directVideoId;
   return {
     key: key || null,
     videoId,

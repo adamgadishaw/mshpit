@@ -113,6 +113,13 @@ function trackDetails(report) {
   const category = ["wrong_video", "wont_play", "preview_only", "missing", "other"].includes(parsed.category)
     ? parsed.category
     : "other";
+  const provider = String(parsed.provider || "").trim().toLowerCase();
+  const rawSourceId = String(parsed.sourceId || "").trim();
+  const sourceId = provider === "deezer" && /^\d{1,20}$/.test(rawSourceId)
+    ? rawSourceId
+    : provider === "spotify" && /^[A-Za-z0-9]{1,64}$/.test(rawSourceId)
+      ? rawSourceId
+      : null;
   return {
     type: "track",
     exists: true,
@@ -121,6 +128,8 @@ function trackDetails(report) {
     category,
     suggestedVideoId: /^[A-Za-z0-9_-]{11}$/.test(parsed.suggestedVideoId || "") ? parsed.suggestedVideoId : null,
     note: boundedText(parsed.note, LIMITS.note),
+    provider: sourceId ? provider : null,
+    sourceId,
   };
 }
 

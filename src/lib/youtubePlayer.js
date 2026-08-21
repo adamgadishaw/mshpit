@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Platform } from "react-native";
 import { captureAppError } from "./diagnostics";
-import { youtubePlayerCanReceiveCommands } from "../domain/youtubePlayerLifecycle.mjs";
+import { loadYouTubeIframeApi } from "./youtubeIframeApi.mjs";
+import {
+  createYouTubePlayerLoadLease,
+  createYouTubePlayerDisposer,
+  youtubePlayerCanReceiveCommands,
+  youtubePlayerEventBelongsToLoad,
+} from "../domain/youtubePlayerLifecycle.mjs";
 
 // Web-only YouTube IFrame Player adapter. The React player surface owns the host
 // element and this hook owns exactly one iframe inside it. It deliberately does
@@ -27,49 +33,7 @@ const HOST_WAIT_ATTEMPTS = 20;
 const HOST_WAIT_INTERVAL_MS = 100;
 const MIN_PLAYER_PX = 200;
 const MIN_VISIBLE_RATIO = 0.5;
-
-let apiPromise = null;
-
-function loadApi() {
-  if (!web) return Promise.reject(new Error("no-dom"));
-  if (window.YT?.Player) return Promise.resolve(window.YT);
-  if (apiPromise) return apiPromise;
-
-  apiPromise = new Promise((resolve, reject) => {
-    let settled = false;
-    let timeout = null;
-    const previousReady = window.onYouTubeIframeAPIReady;
-    const finish = (fn, value) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      fn(value);
-    };
-
-    window.onYouTubeIframeAPIReady = () => {
-      try { previousReady?.(); } catch {}
-      finish(resolve, window.YT);
-    };
-
-    let script = document.querySelector("script[data-pit-youtube-iframe-api]");
-    if (!script) {
-      script = document.createElement("script");
-      script.src = "https://www.youtube.com/iframe_api";
-      script.async = true;
-      script.dataset.pitYoutubeIframeApi = "true";
-      document.head.appendChild(script);
-    }
-    script.addEventListener("error", () => finish(reject, new Error("yt-api-load-failed")), { once: true });
-
-    timeout = setTimeout(() => finish(reject, new Error("yt-api-load-timeout")), 12_000);
-  }).catch((error) => {
-    // A later mount may retry after a temporary CDN or network failure.
-    apiPromise = null;
-    throw error;
-  });
-
-  return apiPromise;
-}
+const LOAD_START_TIMEOUT_MS = 15_000;
 
 function resolveHost(options) {
   const supplied = options?.hostRef?.current || options?.hostElement || null;
@@ -101,7 +65,11 @@ export function useYouTubePlayer(enabled, options = {}) {
   const playerRef = useRef(null);
   const hostRef = useRef(null);
   const mountRef = useRef(null);
-  const videoIdRef = useRef(null);
+  const activeLoadRef = useRef(null);
+  const rebuildLoadRef = useRef(null);
+  const loadSequenceRef = useRef(0);
+  const engineLoadCountRef = useRef(0);
+  const loadWatchdogRef = useRef(null);
   const readyRef = useRef(false);
   const shownRef = useRef(false);
   const documentVisibleRef = useRef(!web || document.visibilityState === "visible");
@@ -115,9 +83,12 @@ export function useYouTubePlayer(enabled, options = {}) {
   const flushRef = useRef(() => {});
   const lifecycleRef = useRef(0);
   const mediaKeyRef = useRef("");
+  const enabledRef = useRef(!!enabled);
+  const hostRecoveryRef = useRef(false);
 
   const [ready, setReady] = useState(false);
-  const [state, setState] = useState({ position: 0, duration: 0, playing: false });
+  const [state, setState] = useState({ position: 0, duration: 0, playing: false, mediaKey: "", videoId: null });
+  const stateRef = useRef(state);
   const [error, setError] = useState(null);
   const [engineGeneration, setEngineGeneration] = useState(0);
   // How long to wait for the player host to appear before calling it a failure:
@@ -129,17 +100,9 @@ export function useYouTubePlayer(enabled, options = {}) {
     ? options
     : (options?.hostId || DEFAULT_HOST_ID);
   const mediaKey = typeof options === "object" ? (options?.mediaKey || "") : "";
+  enabledRef.current = !!enabled;
   mediaKeyRef.current = mediaKey;
-  const retryMediaRef = useRef(mediaKey);
-
-  // A failed iframe bootstrap should not poison every later track. Reuse the
-  // healthy player across songs, but rebuild once when the media identity
-  // changes after an initialization failure.
-  useEffect(() => {
-    const changed = retryMediaRef.current !== mediaKey;
-    retryMediaRef.current = mediaKey;
-    if (changed && enabled && error?.kind === "init") setEngineGeneration((value) => value + 1);
-  }, [mediaKey, enabled, error?.kind]);
+  stateRef.current = state;
 
   const canPlayNow = useCallback(() => {
     const host = hostRef.current;
@@ -174,6 +137,18 @@ export function useYouTubePlayer(enabled, options = {}) {
     setState((current) => (current.playing ? { ...current, playing: false } : current));
   }, [commandPlayer]);
 
+  // Each track/account identity gets a fresh iframe generation. Pause the old
+  // lease before paint as well, so a rapid A -> B switch cannot flash, count,
+  // or report track A while React is still tearing that generation down.
+  useLayoutEffect(() => {
+    const active = activeLoadRef.current;
+    if (!active || active.mediaKey === mediaKey) return;
+    pendingLoadRef.current = null;
+    pendingPlayRef.current = false;
+    try { commandPlayer()?.pauseVideo?.(); } catch {}
+    setState({ position: 0, duration: 0, playing: false, mediaKey, videoId: null });
+  }, [mediaKey, commandPlayer]);
+
   const flushPlaybackIntent = useCallback(() => {
     const player = commandPlayer();
     if (!player || !canPlayNow()) return;
@@ -181,9 +156,32 @@ export function useYouTubePlayer(enabled, options = {}) {
     const pending = pendingLoadRef.current;
     if (pending) {
       pendingLoadRef.current = null;
-      videoIdRef.current = pending.videoId;
       setError(null);
       const shouldAutoplay = pending.autoplay || pendingPlayRef.current;
+      const activeLoad = createYouTubePlayerLoadLease({
+        token: ++loadSequenceRef.current,
+        videoId: pending.videoId,
+        mediaKey: pending.mediaKey,
+        loadNumber: ++engineLoadCountRef.current,
+      });
+      activeLoadRef.current = activeLoad;
+      clearTimeout(loadWatchdogRef.current);
+      loadWatchdogRef.current = setTimeout(() => {
+        if (activeLoadRef.current !== activeLoad || activeLoad.started) return;
+        setError({
+          kind: "playback",
+          videoId: activeLoad.videoId,
+          mediaKey: activeLoad.mediaKey,
+          message: "The video did not become ready. Retry the video or use the preview.",
+        });
+      }, LOAD_START_TIMEOUT_MS);
+      setState({
+        position: pending.startSec * 1000,
+        duration: 0,
+        playing: false,
+        mediaKey: pending.mediaKey,
+        videoId: pending.videoId,
+      });
       try {
         if (shouldAutoplay) {
           player.loadVideoById({ videoId: pending.videoId, startSeconds: pending.startSec });
@@ -194,7 +192,9 @@ export function useYouTubePlayer(enabled, options = {}) {
           player.pauseVideo?.();
         }
       } catch {
-        setError({ kind: "playback", videoId: pending.videoId, mediaKey: mediaKeyRef.current, message: "Video unavailable." });
+        clearTimeout(loadWatchdogRef.current);
+        loadWatchdogRef.current = null;
+        setError({ kind: "playback", videoId: pending.videoId, mediaKey: pending.mediaKey, message: "Video unavailable." });
       }
       pendingPlayRef.current = false;
       return;
@@ -221,6 +221,9 @@ export function useYouTubePlayer(enabled, options = {}) {
   useLayoutEffect(() => {
     if (!web || !enabled) {
       readyRef.current = false;
+      hostWaitRef.current = 0;
+      hostRecoveryRef.current = false;
+      rebuildLoadRef.current = null;
       setReady(false);
       return;
     }
@@ -230,14 +233,18 @@ export function useYouTubePlayer(enabled, options = {}) {
     const isCurrent = () => !cancelled && lifecycleRef.current === lifecycle;
 
     readyRef.current = false;
+    hostRecoveryRef.current = false;
+    engineLoadCountRef.current = 0;
     setReady(false);
     setState((current) => (current.playing ? { ...current, playing: false } : current));
     setError(null);
 
     let player = null;
+    let mount = null;
     let observer = null;
     let resizeObserver = null;
     let readyTimeout = null;
+    const disposePlayer = createYouTubePlayerDisposer();
     const host = resolveHost(typeof options === "string" ? { hostId: options } : options);
 
     if (!host) {
@@ -313,11 +320,17 @@ export function useYouTubePlayer(enabled, options = {}) {
       resizeObserver.observe(host);
     }
 
-    loadApi().then((YT) => {
+    loadYouTubeIframeApi().then((YT) => {
       if (!isCurrent()) return;
 
-      const mount = document.createElement("div");
+      // A prior host may have been detached before its cleanup ran. Remove only
+      // Pit-owned orphan mounts before claiming this host generation.
+      try {
+        host.querySelectorAll?.("[data-pit-youtube-player-mount]").forEach((node) => node.remove?.());
+      } catch {}
+      mount = document.createElement("div");
       mount.dataset.pitYoutubePlayerMount = "true";
+      mount.dataset.pitYoutubePlayerGeneration = String(lifecycle);
       mount.style.width = "100%";
       mount.style.height = "100%";
       host.appendChild(mount);
@@ -368,38 +381,92 @@ export function useYouTubePlayer(enabled, options = {}) {
                 }
               } catch {}
               readyRef.current = true;
+              hostRecoveryRef.current = false;
               try { player.setVolume(Math.round(volumeRef.current * 100)); } catch {}
               setReady(true);
               setError(null);
               if (metaRef.current.title) host.setAttribute("aria-label", `YouTube player: ${metaRef.current.title}`);
+              const rebuild = rebuildLoadRef.current;
+              if (rebuild?.mediaKey === mediaKeyRef.current) {
+                pendingLoadRef.current = rebuild;
+                rebuildLoadRef.current = null;
+              }
               flushRef.current();
             },
             onError: (event) => {
               clearTimeout(readyTimeout);
               if (!isCurrent() || initializationFailed) return;
+              const activeLoad = activeLoadRef.current;
+              if (!youtubePlayerEventBelongsToLoad({ event, player, load: activeLoad })) return;
+              // A load is armed by its documented UNSTARTED/CUED boundary. Any
+              // earlier callback can be residue from the superseded command.
+              if (!activeLoad.armed) return;
+              clearTimeout(loadWatchdogRef.current);
+              loadWatchdogRef.current = null;
               const code = Number(event?.data) || 0;
-              const kind = code === 101 || code === 150 ? "embed" : "playback";
+              const kind = code === 101 || code === 150 || code === 153 ? "embed" : "playback";
               pendingPlayRef.current = false;
               setError({
                 kind,
                 code,
-                videoId: videoIdRef.current,
-                mediaKey: mediaKeyRef.current,
+                videoId: activeLoad.videoId,
+                mediaKey: activeLoad.mediaKey,
                 message: kind === "embed" ? "This video cannot be embedded; playing a preview." : "Video unavailable.",
               });
             },
             onStateChange: (event) => {
               if (!isCurrent() || initializationFailed) return;
-              if (event.data === 0) endedCbRef.current?.();
+              const activeLoad = activeLoadRef.current;
+              if (!youtubePlayerEventBelongsToLoad({ event, player, load: activeLoad })) return;
+              if (event.data === -1 || event.data === 5) {
+                activeLoad.armed = true;
+                if (event.data === 5) {
+                  clearTimeout(loadWatchdogRef.current);
+                  loadWatchdogRef.current = null;
+                }
+                setState((current) => ({ ...current, playing: false, mediaKey: activeLoad.mediaKey }));
+                return;
+              }
+              if (!activeLoad.armed) return;
               if (event.data === 1) {
                 if (!canPlayNow()) {
                   pauseImmediately();
                   return;
                 }
+                activeLoad.started = true;
+                clearTimeout(loadWatchdogRef.current);
+                loadWatchdogRef.current = null;
                 pendingPlayRef.current = false;
                 setError(null);
               }
-              setState((current) => ({ ...current, playing: event.data === 1 || event.data === 3 }));
+              // ENDED from the superseded video can arrive immediately after a
+              // new load command. Only a lease that reached PLAYING may advance,
+              // and it may do so once.
+              if (event.data === 0 && activeLoad.started && !activeLoad.ended) {
+                activeLoad.ended = true;
+                endedCbRef.current?.({ mediaKey: activeLoad.mediaKey, videoId: activeLoad.videoId });
+              }
+              setState((current) => ({
+                ...current,
+                playing: event.data === 1,
+                mediaKey: activeLoad.mediaKey,
+              }));
+            },
+            onAutoplayBlocked: (event) => {
+              if (!isCurrent() || initializationFailed) return;
+              const activeLoad = activeLoadRef.current;
+              if (!youtubePlayerEventBelongsToLoad({ event, player, load: activeLoad })) return;
+              if (!activeLoad.armed) return;
+              clearTimeout(loadWatchdogRef.current);
+              loadWatchdogRef.current = null;
+              pendingPlayRef.current = false;
+              setState((current) => ({ ...current, playing: false, mediaKey: activeLoad.mediaKey }));
+              setError({
+                kind: "autoplay",
+                videoId: activeLoad.videoId,
+                mediaKey: activeLoad.mediaKey,
+                message: "Your browser paused autoplay. Press Play to start the video.",
+              });
             },
           },
         });
@@ -416,6 +483,8 @@ export function useYouTubePlayer(enabled, options = {}) {
       cancelled = true;
       if (lifecycleRef.current === lifecycle) lifecycleRef.current += 1;
       clearTimeout(readyTimeout);
+      clearTimeout(loadWatchdogRef.current);
+      loadWatchdogRef.current = null;
       observer?.disconnect();
       resizeObserver?.disconnect();
       document.removeEventListener("visibilitychange", onVisibilityChange);
@@ -423,17 +492,34 @@ export function useYouTubePlayer(enabled, options = {}) {
       window.removeEventListener("pageshow", onPageShow);
       readyRef.current = false;
       const ownedPlayer = player;
-      const ownedMount = mountRef.current;
-      let playerAttached = false;
-      try {
-        const iframe = ownedPlayer?.getIframe?.();
-        playerAttached = !!host.isConnected && (iframe ? !!iframe.isConnected : !!ownedMount?.isConnected);
-      } catch {}
-      if (playerAttached) {
-        try { ownedPlayer?.pauseVideo?.(); } catch {}
-        try { ownedPlayer?.destroy?.(); } catch {}
+      const ownedMount = mount;
+      const requestedRebuild = rebuildLoadRef.current;
+      const pendingLoad = pendingLoadRef.current;
+      const activeLoad = activeLoadRef.current;
+      if (enabledRef.current && requestedRebuild?.mediaKey === mediaKeyRef.current) {
+        // retry() supplied an explicit autoplay/resume intent; do not replace it
+        // with the paused state produced by teardown.
+      } else if (enabledRef.current && pendingLoad?.mediaKey === mediaKeyRef.current) {
+        rebuildLoadRef.current = { ...pendingLoad };
+      } else if (enabledRef.current && activeLoad?.mediaKey === mediaKeyRef.current) {
+        let startSec = Math.max(0, Number(stateRef.current.position || 0) / 1000);
+        let wasPlaying = !!stateRef.current.playing;
+        try { startSec = Math.max(startSec, Number(ownedPlayer?.getCurrentTime?.()) || 0); } catch {}
+        try { wasPlaying = ownedPlayer?.getPlayerState?.() === 1; } catch {}
+        rebuildLoadRef.current = {
+          videoId: activeLoad.videoId,
+          mediaKey: activeLoad.mediaKey,
+          startSec,
+          autoplay: wasPlaying && shownRef.current,
+        };
+      } else if (!enabledRef.current) {
+        rebuildLoadRef.current = null;
+        activeLoadRef.current = null;
+      } else if (activeLoad?.mediaKey !== mediaKeyRef.current) {
+        rebuildLoadRef.current = null;
+        activeLoadRef.current = null;
       }
-      try { ownedMount?.remove?.(); } catch {}
+      disposePlayer({ player: ownedPlayer, mount: ownedMount });
       if (playerRef.current === ownedPlayer) playerRef.current = null;
       if (mountRef.current === ownedMount) mountRef.current = null;
       if (hostRef.current === host) hostRef.current = null;
@@ -441,27 +527,43 @@ export function useYouTubePlayer(enabled, options = {}) {
       pendingPlayRef.current = false;
       intersectionObserverRef.current = { enabled: false, observed: false };
     };
-    // The host must be stable for the life of the player. Callers that need a
-    // different host should change hostId, which intentionally rebuilds it once.
+    // The host and media identity must be stable for one player generation.
+    // Changing either intentionally destroys that generation and builds one
+    // whose callbacks cannot be mistaken for the prior track/account.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, hostId, engineGeneration]);
+  }, [enabled, hostId, mediaKey, engineGeneration]);
 
   // Position and duration are polled because the iframe state events are discrete.
   useEffect(() => {
     if (!web || !enabled) return;
     const timer = setInterval(() => {
       const player = commandPlayer();
-      if (!player?.getCurrentTime) return;
+      if (!player?.getCurrentTime) {
+        if (readyRef.current && !hostRecoveryRef.current) {
+          // React can replace a host node without changing its id (responsive
+          // shell swaps, Fast Refresh, or error recovery). Rebuild once instead
+          // of leaving a ready-but-orphaned player that ignores every command.
+          hostRecoveryRef.current = true;
+          readyRef.current = false;
+          setReady(false);
+          setEngineGeneration((generation) => generation + 1);
+        }
+        return;
+      }
       try {
         const playerState = player.getPlayerState?.() ?? -1;
         if ((playerState === 1 || playerState === 3) && !canPlayNow()) {
           pauseImmediately();
           return;
         }
+        const activeLoad = activeLoadRef.current;
+        if (!activeLoad) return;
         setState({
           position: (player.getCurrentTime() || 0) * 1000,
           duration: (player.getDuration() || 0) * 1000,
-          playing: playerState === 1 || playerState === 3,
+          playing: playerState === 1,
+          mediaKey: activeLoad.mediaKey,
+          videoId: activeLoad.videoId,
         });
       } catch { /* polls twice a second; recording here would bury the real signal */ }
     }, 500);
@@ -470,9 +572,9 @@ export function useYouTubePlayer(enabled, options = {}) {
 
   const load = useCallback((videoId, { startSec = 0 } = {}) => {
     if (!videoId) return;
-    videoIdRef.current = videoId;
     pendingLoadRef.current = {
       videoId,
+      mediaKey: mediaKeyRef.current,
       startSec: Math.max(0, Number(startSec) || 0),
       autoplay: true,
     };
@@ -483,6 +585,7 @@ export function useYouTubePlayer(enabled, options = {}) {
 
   const play = useCallback(() => {
     pendingPlayRef.current = true;
+    setError((current) => (current?.kind === "autoplay" ? null : current));
     flushRef.current();
   }, []);
 
@@ -532,6 +635,25 @@ export function useYouTubePlayer(enabled, options = {}) {
   // while PlayerBar transitions without creating duplicate buttons.
   const setControls = useCallback(() => {}, []);
   const onEnded = useCallback((callback) => { endedCbRef.current = callback; }, []);
+  const retry = useCallback((options = {}) => {
+    if (!enabledRef.current) return;
+    const activeLoad = activeLoadRef.current;
+    const videoId = options.videoId || activeLoad?.videoId || null;
+    if (videoId) {
+      rebuildLoadRef.current = {
+        videoId,
+        mediaKey: mediaKeyRef.current,
+        startSec: Math.max(0, Number(options.startSec ?? (stateRef.current.position / 1000)) || 0),
+        autoplay: options.autoplay !== false,
+      };
+    }
+    hostWaitRef.current = 0;
+    hostRecoveryRef.current = false;
+    readyRef.current = false;
+    setReady(false);
+    setError(null);
+    setEngineGeneration((generation) => generation + 1);
+  }, []);
 
   return {
     ready,
@@ -547,5 +669,6 @@ export function useYouTubePlayer(enabled, options = {}) {
     setMeta,
     setControls,
     onEnded,
+    retry,
   };
 }

@@ -13,6 +13,7 @@ import {
   videoPosterFileName,
   videoPosterFrameMeetsAutoQuality,
   videoPosterFrameScore,
+  videoPosterSourceNeedsCorsProbe,
 } from "./videoPoster.mjs";
 
 test("poster options are bounded and preserve an explicit author cover time", () => {
@@ -46,6 +47,21 @@ test("poster dimensions preserve aspect ratio and never upscale", () => {
   assert.deepEqual(boundedPosterSize(3840, 2160, 1280), { width: 1280, height: 720 });
   assert.deepEqual(boundedPosterSize(720, 1280, 1280), { width: 720, height: 1280 });
   assert.deepEqual(boundedPosterSize(640, 360, 1280), { width: 640, height: 360 });
+});
+
+test("same-origin poster sources never receive a redundant CORS HEAD probe", () => {
+  assert.equal(videoPosterSourceNeedsCorsProbe(
+    "https://www.mshpit.com/media/legacy.mp4?token=1",
+    "https://www.mshpit.com/feed",
+  ), false);
+  assert.equal(videoPosterSourceNeedsCorsProbe(
+    "https://media.mshpit.com/media/legacy.mp4",
+    "https://www.mshpit.com/feed",
+  ), true);
+  assert.equal(videoPosterSourceNeedsCorsProbe(
+    "https://pub-example.r2.dev/media/legacy.mp4",
+    "https://www.mshpit.com/feed",
+  ), true);
 });
 
 test("frame scoring strongly prefers a detailed concert frame over black or blown white", () => {

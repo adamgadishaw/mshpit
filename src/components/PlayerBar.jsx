@@ -5,7 +5,7 @@ import { useStore } from "../store";
 import { useYouTubePlayer } from "../lib/youtubePlayer";
 import { useAudioPreview } from "../lib/audioPreview";
 import { captureAppError } from "../lib/diagnostics";
-import { trackKey } from "../lib/playback";
+import { playerResolutionKey, trackKey } from "../lib/playback";
 import { uniqueTracks } from "../domain/recommend.mjs";
 import { ownedPlayerPositionEnvelope, restoreOwnedPlayerPosition } from "../domain/player-session.mjs";
 import { playerYouTubeLookupNotice } from "../domain/playback.mjs";
@@ -29,10 +29,12 @@ import Icon from "./Icon";
 
 const web = Platform.OS === "web";
 
-// IFrame API errors that mean the video itself is unusable: 100 removed,
-// 101/150 embedding disallowed by the owner. Anything else is treated as
+// IFrame API errors that cannot be repaired by replaying this iframe: 2 invalid,
+// 100 removed,
+// 101/150 embedding disallowed by the owner, 153 missing client identity.
+// Anything else is treated as
 // transient and retried before the player falls back to a preview.
-const TERMINAL_YT_CODES = [100, 101, 150];
+const TERMINAL_YT_CODES = [2, 100, 101, 150, 153];
 const MAX_YT_RETRIES = 2;
 // Long enough that the preview has started and the transient cause has likely
 // cleared, short enough that most of the song is still ahead.
@@ -310,7 +312,7 @@ export default function PlayerBar({
   // every play so the You screen can count them, but showing the same song
   // three times in a row is just noise.
   const recentPlays = useMemo(() => uniqueTracks(history, trackKey), [history]);
-  const { session, resolveYouTube, invalidateYouTube, resolveDeezerPreview, youtubeLookupWasTransient, youtubeLookupStatus } = useStore();
+  const { session, resolveYouTube, invalidateYouTube, youtubeVideoRejected, resolveDeezerPreview, youtubeLookupWasTransient, youtubeLookupStatus } = useStore();
   const column = layout === "column";
   const { width: winWidth } = useWindowDimensions();
   const compactMobile = !column && winWidth < 700;
@@ -323,15 +325,19 @@ export default function PlayerBar({
   const index = Math.max(0, Math.min(player?.index || 0, list.length - 1));
   const cur = list[index];
   const curKey = trackKey(cur);
-  // Resolver denials depend on account + verification state. Keep that scope in
-  // the state identity itself so an account transition cannot display or report
-  // the previous listener's cached outcome during the effect hand-off.
-  const resolutionKey = JSON.stringify([
-    session?.id || "anonymous",
-    session?.id && session.emailVerified === true ? "verified" : "unverified",
-    curKey,
-  ]);
-  const directVideoId = directPlayerVideoId(cur);
+  const youtubeSource = {
+    provider: cur?.provider || "",
+    sourceId: cur?.sourceId || cur?.id || "",
+  };
+  // Resolver denials depend on account + verification state, and two adjacent
+  // copies of one recording still represent separate queue occurrences. Keeping
+  // both boundaries in the media identity makes occurrence two restart at zero
+  // and prevents a stale occurrence-one callback from advancing it.
+  const resolutionKey = playerResolutionKey({ track: cur, user: session });
+  const directVideoCandidate = directPlayerVideoId(cur);
+  const directVideoId = directVideoCandidate && youtubeVideoRejected?.(cur?.title, cur?.artist, directVideoCandidate, youtubeSource)
+    ? null
+    : directVideoCandidate;
   const youtubeHostId = column ? "pit-youtube-player-host-column" : "pit-youtube-player-host-compact";
 
   // Volume (0–1), persisted across sessions; applied to whichever engine is live.
@@ -340,13 +346,13 @@ export default function PlayerBar({
 
   // Resolve each provider independently. A preview can start without waiting on
   // YouTube, and a direct/stored video ID hydrates without any route call.
-  const [resolved, setResolved] = useState(() => initialPlayerSources({ key: resolutionKey, track: cur }));
+  const [resolved, setResolved] = useState(() => initialPlayerSources({ key: resolutionKey, track: cur, directVideoId }));
   const resolvedRef = useRef(resolved);
   const youtubeResolutionRef = useRef(null);
   resolvedRef.current = resolved;
 
   useEffect(() => {
-    setResolved(initialPlayerSources({ key: resolutionKey, track: cur }));
+    setResolved(initialPlayerSources({ key: resolutionKey, track: cur, directVideoId }));
     return () => {
       if (youtubeResolutionRef.current?.key !== resolutionKey) return;
       youtubeResolutionRef.current.cancel?.();
@@ -398,13 +404,13 @@ export default function PlayerBar({
     if (youtubeResolutionRef.current?.key === resolutionKey) return undefined;
     setResolved((current) => patchPlayerSources(current, resolutionKey, { youtubePending: true, youtubeSettled: false }));
     let task = null;
-    try { task = resolveYouTube(cur.title, cur.artist, cur.duration || 0); } catch {}
+    try { task = resolveYouTube(cur.title, cur.artist, cur.duration || 0, youtubeSource); } catch {}
     const request = { key: resolutionKey, cancel: null };
     request.cancel = subscribeToProvider(task, (videoId) => {
       if (youtubeResolutionRef.current === request) youtubeResolutionRef.current = null;
       setResolved((current) => patchPlayerSources(current, resolutionKey, {
         videoId,
-        youtubeStatus: youtubeLookupStatus?.(cur.title, cur.artist) || null,
+        youtubeStatus: youtubeLookupStatus?.(cur.title, cur.artist, youtubeSource) || null,
         youtubePending: false,
         youtubeSettled: true,
       }));
@@ -423,15 +429,15 @@ export default function PlayerBar({
     // this effect sits above that declaration, and reading it here is a
     // temporal-dead-zone crash.
     if (!web || minimized || !cur || resolved.key !== resolutionKey || resolved.videoId || resolved.youtubePending) return;
-    if (!youtubeLookupWasTransient?.(cur.title, cur.artist)) return;
+    if (!youtubeLookupWasTransient?.(cur.title, cur.artist, youtubeSource)) return;
     let cancelled = false;
     const timer = setTimeout(async () => {
-      const videoId = await resolveYouTube(cur.title, cur.artist, cur.duration || 0, { force: true });
+      const videoId = await resolveYouTube(cur.title, cur.artist, cur.duration || 0, { ...youtubeSource, force: true });
       // Guard against the track having changed while this was in flight.
       if (!cancelled) setResolved((prev) => (prev.key === resolutionKey ? {
         ...prev,
         ...(videoId ? { videoId } : null),
-        youtubeStatus: youtubeLookupStatus?.(cur.title, cur.artist) || null,
+        youtubeStatus: youtubeLookupStatus?.(cur.title, cur.artist, youtubeSource) || null,
       } : prev));
     }, PREVIEW_UPGRADE_DELAY_MS);
     return () => { cancelled = true; clearTimeout(timer); };
@@ -440,7 +446,10 @@ export default function PlayerBar({
 
   // Mount YouTube only after a real video ID resolves. Preview-only tracks keep
   // the same visible player surface without creating a hidden cross-origin frame.
-  const yt = useYouTubePlayer(web && !!cur && !!resolved.videoId && !minimized, { hostId: youtubeHostId, mediaKey: resolutionKey });
+  // Keep the iframe engine mounted while minimized. Visibility gates pause it
+  // and the keyed zero-height surface below keeps its host attached, so Restore
+  // resumes the same engine instead of racing teardown against a fresh iframe.
+  const yt = useYouTubePlayer(web && !!cur && !!resolved.videoId, { hostId: youtubeHostId, mediaKey: resolutionKey });
   useEffect(() => { yt.setVolume(volume); }, [volume, yt.ready]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const forThis = resolved.key === resolutionKey;
@@ -462,17 +471,21 @@ export default function PlayerBar({
   // were perfectly playable: one hiccup dropped the track to a 30-second preview
   // for the rest of the session and never tried the video again.
   const ytErrorForThis = yt.error?.mediaKey === resolutionKey ? yt.error : null;
+  const autoplayBlocked = ytErrorForThis?.kind === "autoplay";
   const terminalYt = ytErrorForThis?.kind === "init" || TERMINAL_YT_CODES.includes(Number(ytErrorForThis?.code));
-  const transientYt = !!ytErrorForThis && !terminalYt && !!ytErrorForThis.videoId;
+  const transientYt = !!ytErrorForThis && !terminalYt && !autoplayBlocked && !!ytErrorForThis.videoId;
   const retryKey = `${resolutionKey}|${ytErrorForThis?.videoId || ""}`;
   const retriesUsed = ytRetryRef.current.key === retryKey ? ytRetryRef.current.count : 0;
   const ytFailed = ytErrorForThis?.kind === "init"
     || (!!ytErrorForThis?.videoId && ytErrorForThis.videoId === resolved.videoId
         && (terminalYt || retriesUsed >= MAX_YT_RETRIES));
+  const canRetryVideo = !!resolved.videoId && !!ytFailed
+    && (ytErrorForThis?.kind === "init" || (!terminalYt && !autoplayBlocked));
   // Native has no YouTube iframe host in this component. Treat the resolved id
   // as metadata there and use the preview engine instead of hanging "connecting".
   const hasVideo = web && forThis && !!resolved.videoId && !ytFailed;
   const ytActive = hasVideo && yt.ready;
+  const ytStateForThis = yt.state.mediaKey === resolutionKey && yt.state.videoId === resolved.videoId;
   const connecting = hasVideo && !yt.ready;
   const previewSrc = forThis && !hasVideo ? resolved.preview : null;
   const hasNext = index < list.length - 1;
@@ -489,8 +502,12 @@ export default function PlayerBar({
     if (count >= MAX_YT_RETRIES) return;
     ytRetryRef.current = { key: retryKey, count: count + 1 };
     // Back off a little: an immediate reload tends to hit the same blip.
-    const resumeMs = yt.state?.position || 0;
-    const timer = setTimeout(() => yt.load(failedId, { startSec: Math.floor(resumeMs / 1000) }), 600 * (count + 1));
+    const resumeMs = ytStateForThis ? (yt.state?.position || 0) : 0;
+    const timer = setTimeout(() => yt.retry({
+      videoId: failedId,
+      startSec: Math.floor(resumeMs / 1000),
+      autoplay: true,
+    }), 600 * (count + 1));
     return () => clearTimeout(timer);
   }, [transientYt, ytErrorForThis?.videoId, retryKey, forThis]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -498,27 +515,27 @@ export default function PlayerBar({
   useEffect(() => {
     const failedId = ytErrorForThis?.videoId;
     if (!cur || !failedId || ![100, 101, 150].includes(Number(ytErrorForThis?.code))) return;
-    const signature = `${cur.artist || ""}|${cur.title || ""}|${failedId}`;
+    const signature = `${resolutionKey}|${cur.artist || ""}|${cur.title || ""}|${failedId}`;
     if (invalidatedRef.current === signature) return;
     invalidatedRef.current = signature;
-    invalidateYouTube(cur.title, cur.artist, failedId);
+    invalidateYouTube(cur.title, cur.artist, failedId, youtubeSource);
   }, [ytErrorForThis?.code, ytErrorForThis?.videoId, resolutionKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Rebuilding the iframe (minimize/restore or a responsive host swap) must not
-  // restart the song. Capture the live YouTube clock and consume it on the next
-  // engine load; clear it only when the actual track changes.
+  // Minimize keeps the same iframe; a responsive host swap still rebuilds it.
+  // Capture the live YouTube clock for either transition and consume it only if
+  // a new engine load is actually needed for this same track.
   const engineResumeRef = useRef(null);
   const previousHostRef = useRef(youtubeHostId);
   useEffect(() => {
     if (previousHostRef.current === youtubeHostId) return;
-    if (ytActive && forThis && yt.state.position > 0) engineResumeRef.current = { key: curKey, ms: yt.state.position };
+    if (ytActive && ytStateForThis && forThis && yt.state.position > 0) engineResumeRef.current = { key: resolutionKey, ms: yt.state.position };
     previousHostRef.current = youtubeHostId;
   }, [youtubeHostId]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
-    if (engineResumeRef.current && engineResumeRef.current.key !== curKey) engineResumeRef.current = null;
-  }, [curKey]);
+    if (engineResumeRef.current && engineResumeRef.current.key !== resolutionKey) engineResumeRef.current = null;
+  }, [resolutionKey]);
   useEffect(() => {
-    if (minimized && ytActive && forThis && yt.state.position > 0) engineResumeRef.current = { key: curKey, ms: yt.state.position };
+    if (minimized && ytActive && ytStateForThis && forThis && yt.state.position > 0) engineResumeRef.current = { key: resolutionKey, ms: yt.state.position };
   }, [minimized]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Resume across reloads (theme switch / F5): remember where we were and pick the
@@ -537,7 +554,7 @@ export default function PlayerBar({
     }
   }, [playerOwnerId]);
   const resumedRef = useRef(false);
-  const engineResumeMs = engineResumeRef.current?.key === curKey ? (engineResumeRef.current.ms || 0) : 0;
+  const engineResumeMs = engineResumeRef.current?.key === resolutionKey ? (engineResumeRef.current.ms || 0) : 0;
   const resumeMs = engineResumeMs || (!resumedRef.current && resume && resume.key === curKey ? (resume.ms || 0) : 0);
   const [showVideo, setShowVideo] = useState(true);
 
@@ -549,9 +566,18 @@ export default function PlayerBar({
   };
 
   const audio = useAudioPreview(previewSrc, {
-    enabled: !ytActive,
-    onEnded: () => { if (hasNext) onIndex?.(index + 1); },
-    onStarted: markPlaybackStarted,
+    enabled: !ytActive && !minimized && !obscured,
+    mediaKey: resolutionKey,
+    onEnded: (ended) => {
+      if (ended?.mediaKey !== resolutionKey) return;
+      if (hasNext) onIndex?.(index + 1);
+    },
+    onStarted: (started) => {
+      if (started?.mediaKey === resolutionKey) {
+        engineResumeRef.current = null;
+        markPlaybackStarted();
+      }
+    },
     startAt: resumeMs / 1000,
     volume,
   });
@@ -559,32 +585,58 @@ export default function PlayerBar({
   // Count YouTube only after its engine reports PLAYING. Preview audio reports
   // the same event through onStarted above.
   useEffect(() => {
-    if (ytActive && yt.state.playing) markPlaybackStarted();
+    if (ytActive && ytStateForThis && yt.state.playing) markPlaybackStarted();
   }, [ytActive, yt.state.playing, resolutionKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Load the resolved video into the YouTube player; our index (prev/next) drives
   // it. loadVideoById auto-plays, matching tap-to-play. Resume seeks on reload.
   const sigRef = useRef("");
-  useEffect(() => { if (minimized) sigRef.current = ""; }, [minimized]);
-  useEffect(() => { if (!yt.ready) sigRef.current = ""; }, [yt.ready]);
+  const retryVideo = () => {
+    ytRetryRef.current = { key: "", count: 0 };
+    yt.retry();
+  };
   useEffect(() => {
     if (!ytActive || minimized || obscured || !showVideo) return;
     const sig = `${resolved.videoId}@${index}@${youtubeHostId}@${resolutionKey}`;
     if (sig === sigRef.current) return;
     sigRef.current = sig;
-    const liveResumeMs = engineResumeRef.current?.key === curKey ? (engineResumeRef.current.ms || 0) : resumeMs;
+    // Host recovery and explicit retry preserve the load inside the hook. Mark
+    // the new host signature without issuing a duplicate in-place load.
+    if (yt.state.mediaKey === resolutionKey && yt.state.videoId === resolved.videoId) return;
+    const liveResumeMs = engineResumeRef.current?.key === resolutionKey ? (engineResumeRef.current.ms || 0) : resumeMs;
     yt.load(resolved.videoId, { startSec: liveResumeMs > 1000 ? liveResumeMs / 1000 : 0 });
     engineResumeRef.current = null;
     resumedRef.current = true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ytActive, resolved.videoId, index, minimized, obscured, showVideo, youtubeHostId, resolutionKey]);
+  const previousMinimizedRef = useRef(minimized);
+  useEffect(() => {
+    const wasMinimized = previousMinimizedRef.current;
+    previousMinimizedRef.current = minimized;
+    if (!wasMinimized || minimized || !ytActive || !sigRef.current) return;
+    const restoreMs = engineResumeRef.current?.key === resolutionKey ? (engineResumeRef.current.ms || 0) : 0;
+    if (restoreMs > 1000) yt.seek(restoreMs);
+    engineResumeRef.current = null;
+    yt.play();
+  }, [minimized, ytActive, resolutionKey]); // eslint-disable-line react-hooks/exhaustive-deps
   // When the preview engine is driving this track, stop any video still playing.
   useEffect(() => { if (forThis && !ytActive) yt.pause(); }, [forThis, ytActive, curKey]); // eslint-disable-line react-hooks/exhaustive-deps
   // Mark preview resume consumed once it's flowing, so later tracks start at 0.
   useEffect(() => { if (previewSrc && resumeMs > 0) resumedRef.current = true; }, [previewSrc, resumeMs]);
 
-  // Auto-advance when the YouTube track ends (fires once, via the player's state).
-  useEffect(() => { yt.onEnded(() => { if (hasNext) onIndex?.(index + 1); }); }); // eslint-disable-line react-hooks/exhaustive-deps
+  // Auto-advance when the current YouTube occurrence ends. The callback carries
+  // the load lease that emitted it, so a late ENDED from a prior queue index can
+  // never skip over the newly selected occurrence.
+  const youtubeEndedCursorRef = useRef(null);
+  youtubeEndedCursorRef.current = { resolutionKey, videoId: resolved.videoId, hasNext, index, onIndex };
+  useEffect(() => {
+    yt.onEnded((ended) => {
+      const current = youtubeEndedCursorRef.current;
+      if (ended?.mediaKey !== current?.resolutionKey || ended?.videoId !== current?.videoId) return;
+      if (current.hasNext) current.onIndex?.(current.index + 1);
+    });
+    return () => yt.onEnded(null);
+  }, [yt.onEnded]);
 
   // The React-owned player surface is the only iframe host. YouTube playback is
   // paused whenever that surface is hidden, undersized, covered, or the tab is
@@ -592,6 +644,9 @@ export default function PlayerBar({
   useEffect(() => { yt.setVisible(ytActive && showVideo && !minimized && !obscured); }, [ytActive, showVideo, minimized, obscured]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!minimized && !obscured) return;
+    if (!ytActive && previewSrc && audio.pos > 0) {
+      engineResumeRef.current = { key: resolutionKey, ms: audio.pos * 1000 };
+    }
     yt.pause();
     audio.pause?.();
   }, [minimized, obscured]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -785,13 +840,13 @@ export default function PlayerBar({
   // Unified transport across whichever engine is live (YouTube player or preview mp3).
   const scrubbable = ytActive || !!previewSrc;
   const resolving = !forThis || (!hasVideo && !previewSrc && !!(resolved.youtubePending || resolved.previewPending));
-  const posMs = ytActive ? (yt.state.position || 0) : audio.pos * 1000;
+  const posMs = ytActive && ytStateForThis ? (yt.state.position || 0) : audio.pos * 1000;
   const durMs = ytActive ? (yt.state.duration || 0) : audio.dur * 1000;
   posRef.current = posMs;
-  const playing = ytActive ? yt.state.playing : audio.playing;
+  const playing = ytActive && ytStateForThis ? yt.state.playing : audio.playing;
   const playPause = () => {
     if (ytActive) {
-      if (yt.state.playing) yt.pause();
+      if (ytStateForThis && yt.state.playing) yt.pause();
       else {
         if (!showVideo) setShowVideo(true);
         // The engine queues this request until the host is visibly rendered.
@@ -803,7 +858,8 @@ export default function PlayerBar({
   const goPrev = () => onIndex?.(index - 1);
   const goNext = () => onIndex?.(index + 1);
   const minimizePlayer = () => {
-    if (ytActive && yt.state.position > 0) engineResumeRef.current = { key: curKey, ms: yt.state.position };
+    if (ytActive && ytStateForThis && yt.state.position > 0) engineResumeRef.current = { key: resolutionKey, ms: yt.state.position };
+    else if (previewSrc && audio.pos > 0) engineResumeRef.current = { key: resolutionKey, ms: audio.pos * 1000 };
     yt.pause();
     audio.pause?.();
     onMinimize?.();
@@ -822,7 +878,9 @@ export default function PlayerBar({
     </Pressable>
   );
 
-  const statusLine = connecting ? "Loading video..."
+  const statusLine = autoplayBlocked ? ytErrorForThis.message
+    : canRetryVideo ? (ytErrorForThis?.message || "Video playback needs another try.")
+    : connecting ? "Loading video..."
     : resolving ? "Loading..."
     : unplayable && resolverNotice ? resolverNotice.message
     : unplayable ? "Not available to play"
@@ -833,13 +891,13 @@ export default function PlayerBar({
   // zero height (the host div stays mounted so the engine survives), which is
   // what keeps the phone layout usable. The desktop column always shows the
   // stage; it has the room and the placeholder art looks intentional there.
-  const compactStageCollapsed = !column && !(ytActive && showVideo);
+  const compactStageCollapsed = minimized || (!column && !(ytActive && showVideo));
   const mediaSurface = (
-    <View style={[styles.videoStage, !column && styles.compactVideoStage, compactStageCollapsed && styles.compactStageCollapsed]}>
+    <View key={`youtube-surface:${youtubeHostId}`} style={[styles.videoStage, !column && styles.compactVideoStage, compactStageCollapsed && styles.compactStageCollapsed]}>
       <View
         nativeID={youtubeHostId}
-        style={[styles.videoHost, { opacity: ytActive && showVideo ? 1 : 0 }]}
-        pointerEvents={ytActive && showVideo ? "auto" : "none"}
+        style={[styles.videoHost, { opacity: ytActive && showVideo && !minimized ? 1 : 0 }]}
+        pointerEvents={ytActive && showVideo && !minimized ? "auto" : "none"}
         accessibilityLabel={`YouTube player for ${title}`}
       />
       {(!ytActive || !showVideo) && !compactStageCollapsed && (
@@ -858,6 +916,7 @@ export default function PlayerBar({
   if (column && minimized) {
     return (
       <View style={styles.miniShell}>
+        {web && mediaSurface}
         <Pressable style={styles.miniRestore} onPress={onRestore} accessibilityRole="button" accessibilityLabel="Restore player">
           <Icon name="chevron-right" size={18} color={colors.amber} />
         </Pressable>
@@ -874,6 +933,7 @@ export default function PlayerBar({
   if (minimized) {
     return (
       <View style={styles.mobileMiniShell}>
+        {web && mediaSurface}
         <View style={styles.miniRowShell}>
           <Pressable style={styles.miniRowOpen} onPress={onRestore} accessibilityRole="button" accessibilityLabel={`Open player. ${title} is paused.`}>
             {art ? <Image source={{ uri: art }} style={styles.miniRowArt} /> : <View style={[styles.miniRowArt, styles.artEmpty]}><Icon name="music" size={14} color={colors.textFaint} /></View>}
@@ -924,7 +984,7 @@ export default function PlayerBar({
               <Text style={styles.columnArtist} numberOfLines={1}>{artist}</Text>
             </Pressable>
           ) : null}
-          <Text style={[styles.columnStatus, unplayable && { color: colors.gold }]} numberOfLines={1}>{statusLine}</Text>
+          <Text style={[styles.columnStatus, unplayable && { color: colors.gold }]} numberOfLines={1} accessibilityLiveRegion="polite">{statusLine}</Text>
         </View>
 
         <View style={styles.columnTransport}>
@@ -957,6 +1017,12 @@ export default function PlayerBar({
             <Pressable style={[styles.columnAction, showVideo && styles.columnActionOn]} onPress={() => setShowVideo((visible) => { if (visible) yt.pause(); return !visible; })} accessibilityRole="button" accessibilityLabel={showVideo ? "Hide video, pauses playback" : "Show video"}>
               <Icon name="play" size={13} color={showVideo ? colors.amber : colors.textDim} />
               <Text style={[styles.columnActionTxt, showVideo && { color: colors.amber }]}>Video</Text>
+            </Pressable>
+          )}
+          {canRetryVideo && (
+            <Pressable style={[styles.columnAction, styles.columnActionOn]} onPress={retryVideo} accessibilityRole="button" accessibilityLabel={`Retry video for ${title}`}>
+              <Icon name="play" size={13} color={colors.amber} />
+              <Text style={[styles.columnActionTxt, { color: colors.amber }]}>Retry video</Text>
             </Pressable>
           )}
           {onAddToPlaylist && (
@@ -1029,7 +1095,7 @@ export default function PlayerBar({
           <Text style={styles.title} numberOfLines={1}>{title}</Text>
           {peekNext && nextTitle
             ? <Text style={styles.peekNext} numberOfLines={1}>{"↑ Up next · " + nextTitle}</Text>
-            : <Text style={styles.sub} numberOfLines={1}>{statusLine}</Text>}
+            : <Text style={styles.sub} numberOfLines={1} accessibilityLiveRegion="polite">{statusLine}</Text>}
         </Pressable>
 
         {compactMobile ? (
@@ -1072,6 +1138,12 @@ export default function PlayerBar({
               <Pressable style={[styles.queueBtn, showVideo && styles.queueBtnOn]} onPress={() => setShowVideo((v) => { if (v) yt.pause(); return !v; })} hitSlop={6} accessibilityRole="button" accessibilityState={{ selected: showVideo }} accessibilityLabel={showVideo ? "Hide video" : "Show video"}>
                 <Icon name="play" size={12} color={showVideo ? colors.amber : colors.textDim} />
                 <Text style={[styles.queueTxt, showVideo && { color: colors.amber }]}>Video</Text>
+              </Pressable>
+            )}
+            {canRetryVideo && (
+              <Pressable style={[styles.queueBtn, styles.queueBtnOn]} onPress={retryVideo} hitSlop={6} accessibilityRole="button" accessibilityLabel={`Retry video for ${title}`}>
+                <Icon name="play" size={12} color={colors.amber} />
+                <Text style={[styles.queueTxt, { color: colors.amber }]}>Retry</Text>
               </Pressable>
             )}
             <Ctrl icon="chevron-down" label="Minimize player, pauses playback" onPress={minimizePlayer} />

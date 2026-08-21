@@ -17,7 +17,7 @@ import { db, DATABASE_PATH, q, emailStmts, badgeStmts, customBadgesFor, publicUs
 import { BADGE_COLORS, BADGE_GLYPHS, BADGE_KINDS, validateBadge } from "../src/domain/badgeArt.mjs";
 import { alertCooldownMs, alertsEnabled, errorStats, maybeAlert, recentErrors } from "./errorLog.js";
 import { genreClaim, providerGenreFields, resolveGenre, storedClaims, upsertClaim, withoutSource } from "../src/domain/genre.mjs";
-import { hashPassword, verifyPassword, createSession, destroySession, rateLimit } from "./auth.js";
+import { hashPassword, verifyPassword, createSession, destroySession, rateLimit, reserveRateLimits } from "./auth.js";
 import { startCatalogSeed, catalogSeedStatus, stopCatalogSeed, deezerEnrich } from "./catalogSeed.js";
 import { clean, cleanEmail, isEmail, cleanName, isName, cleanHandle, isPassword, clampRating, cleanStringArray, cleanDate, shape, LIMITS } from "./validate.js";
 import { ApiError } from "./errors.js";
@@ -56,20 +56,23 @@ import { resolveEntity } from "./seo.js";
 import { userRewards } from "./rewards.js";
 import { beginVerification, completeVerification, resendVerification, sendWelcomeOnce, verificationEnabled } from "./verification.js";
 import {
+  clearYouTubeTrackCache,
   ProviderError,
   findDeezerArtistCandidates,
   getDeezerDiscography,
   getFreshDeezerPreview,
-  invalidateYouTubeTrack,
+  legacyTrackOverrideKey,
   normalizeMusicText,
   parseYouTubeVideoId,
   resolveYouTubeTrack,
   searchCatalogSongs,
   searchDeezerTracks,
   trackOverrideKey,
+  trackSourceOverrideKey,
   youtubeOEmbed,
   youtubeProviderStatus,
 } from "./musicProviders.js";
+import { sameTrackOverrideIdentity } from "./trackIdentity.js";
 import { wikidataProviderStatus } from "./wikidataChannels.js";
 import { backgroundJobEnabled } from "./backgroundJobs.js";
 import { backupSchedulerEnabled, offhostBackupConfigured } from "./backupScheduler.js";
@@ -102,6 +105,7 @@ const VENUE_PHOTO_CACHE_CONTROL = "public, max-age=3600, stale-while-revalidate=
 const YOUTUBE_COLD_SEARCH_USER_DAILY_LIMIT = 5;
 const YOUTUBE_COLD_SEARCH_IP_DAILY_LIMIT = 20;
 const DAY_MS = 24 * 60 * 60 * 1000;
+const YOUTUBE_PLAYBACK_FAILURE_TTL_MS = 30 * DAY_MS;
 const VENUE_PHOTO_LIMIT = 24;
 const VENUE_PHOTO_SOURCE = new URL("../src/seed/catalog.venue-photos.json", import.meta.url);
 let venuePhotoCatalog;
@@ -276,24 +280,35 @@ function reserveYouTubeColdSearch(ctx, user) {
   // Fast process-local gates stop one account or network from hammering SQLite.
   // The account allowance is also persisted below so a restart cannot reset it;
   // raw IP addresses never enter SQLite.
-  if (!rateLimit(`yt-cold-user:${day}:${user.id}`, YOUTUBE_COLD_SEARCH_USER_DAILY_LIMIT, DAY_MS)
-      || !rateLimit(`yt-cold-ip:${day}:${ipHash}`, YOUTUBE_COLD_SEARCH_IP_DAILY_LIMIT, DAY_MS)) {
+  const localReservation = reserveRateLimits([
+    { key: `yt-cold-user:${day}:${user.id}`, max: YOUTUBE_COLD_SEARCH_USER_DAILY_LIMIT, windowMs: DAY_MS },
+    { key: `yt-cold-ip:${day}:${ipHash}`, max: YOUTUBE_COLD_SEARCH_IP_DAILY_LIMIT, windowMs: DAY_MS },
+  ]);
+  if (!localReservation) {
     throw new ProviderError("YouTube", 429, "Your daily YouTube search allowance is used.", {
       code: "search_actor_budget_exhausted",
       retryable: false,
     });
   }
-  const prefix = `youtube_cold_user:${day}:`;
-  db.prepare("DELETE FROM app_meta WHERE key GLOB 'youtube_cold_user:*' AND key NOT GLOB ?").run(`${prefix}*`);
-  const reserved = db.prepare(`INSERT INTO app_meta (key,value) VALUES (?,'1')
-    ON CONFLICT(key) DO UPDATE SET value=MAX(0,CAST(app_meta.value AS INTEGER))+1
-      WHERE MAX(0,CAST(app_meta.value AS INTEGER)) < ?
-    RETURNING CAST(value AS INTEGER) AS used`).get(`${prefix}${user.id}`, YOUTUBE_COLD_SEARCH_USER_DAILY_LIMIT);
-  if (!reserved) {
-    throw new ProviderError("YouTube", 429, "Your daily YouTube search allowance is used.", {
-      code: "search_actor_budget_exhausted",
-      retryable: false,
+  try {
+    const prefix = `youtube_cold_user:${day}:`;
+    atomicWrite(() => {
+      db.prepare("DELETE FROM app_meta WHERE key GLOB 'youtube_cold_user:*' AND key NOT GLOB ?").run(`${prefix}*`);
+      const reserved = db.prepare(`INSERT INTO app_meta (key,value) VALUES (?,'1')
+        ON CONFLICT(key) DO UPDATE SET value=MAX(0,CAST(app_meta.value AS INTEGER))+1
+          WHERE MAX(0,CAST(app_meta.value AS INTEGER)) < ?
+        RETURNING CAST(value AS INTEGER) AS used`).get(`${prefix}${user.id}`, YOUTUBE_COLD_SEARCH_USER_DAILY_LIMIT);
+      if (!reserved) {
+        throw new ProviderError("YouTube", 429, "Your daily YouTube search allowance is used.", {
+          code: "search_actor_budget_exhausted",
+          retryable: false,
+        });
+      }
     });
+    localReservation.commit();
+  } catch (error) {
+    localReservation.rollback();
+    throw error;
   }
 }
 
@@ -620,6 +635,31 @@ function cleanPlaylistTracks(value, { allowEmpty = true } = {}) {
   }
   if (!allowEmpty && !tracks.length) return undefined;
   return tracks;
+}
+
+function cleanPlaybackSource(providerValue, sourceIdValue) {
+  const provider = String(clean(providerValue, { max: 24 }) || "").toLowerCase();
+  const sourceId = clean(String(sourceIdValue ?? ""), { max: 64 }) || "";
+  if (provider === "deezer" && /^\d{1,20}$/.test(sourceId)) return { provider, sourceId };
+  if (provider === "spotify" && /^[A-Za-z0-9]{1,64}$/.test(sourceId)) return { provider, sourceId };
+  if (provider === "youtube") {
+    const videoId = parseYouTubeVideoId(sourceId);
+    if (videoId) return { provider, sourceId: videoId };
+  }
+  return { provider: null, sourceId: null };
+}
+
+function cleanTrackRecordingSource(providerValue, sourceIdValue, { strict = false } = {}) {
+  const provider = String(clean(providerValue, { max: 24 }) || "").toLowerCase();
+  const sourceId = clean(String(sourceIdValue ?? ""), { max: 64 }) || "";
+  const supplied = !!provider || !!sourceId;
+  if (!supplied) return null;
+  const key = trackSourceOverrideKey(provider, sourceId);
+  if (key) return { provider, sourceId, key };
+  if (strict) {
+    throw new ApiError(400, "That provider recording identity is invalid.", "VALIDATION_FAILED");
+  }
+  return null;
 }
 function assertSafePlaylistContent(name, tracks) {
   assertSafeAuthoredFields({
@@ -1285,6 +1325,123 @@ function staffHealthProjection() {
   };
 }
 
+// Build the playback decision from request data without registering or
+// migrating override identities. GET is intentionally allowed to read an exact
+// legacy-only pin created by a rolled-back instance, but startup/admin writes
+// are the only places that may create v2 shadows or compatibility provenance.
+function youtubeTrackPlaybackContext(ctx, input = {}) {
+  const title = clean(input.title, { max: 200 });
+  const artist = clean(input.artist, { max: 120 });
+  if (!title) throw new ApiError(400, "Missing title.");
+  const sourceProvider = String(clean(input.provider, { max: 24 }) || "").toLowerCase();
+  const sourceId = clean(input.sourceId, { max: 64 }) || "";
+  const recordingSource = cleanTrackRecordingSource(sourceProvider, sourceId);
+  const overrideKey = trackOverrideKey(title, artist);
+  const legacyOverrideKey = legacyTrackOverrideKey(title, artist);
+  const playbackFailureKey = recordingSource?.key || overrideKey;
+  const requestedExcluded = String(clean(input.exclude, { max: 256 }) || "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter((value) => /^[A-Za-z0-9_-]{11}$/.test(value))
+    .slice(0, 5);
+  const storedExcluded = ctx.user ? db.prepare(`SELECT video_id FROM youtube_playback_failures
+    WHERE track_key=? AND user_id=? AND created_at>? ORDER BY created_at DESC LIMIT 25`)
+    .all(playbackFailureKey, ctx.user.id, now() - YOUTUBE_PLAYBACK_FAILURE_TTL_MS)
+    .map((row) => row.video_id) : [];
+  // Query exclusions are response-local and untrusted. The resolver refuses
+  // shared cache writes whenever this set is non-empty.
+  const excludedVideoIds = [...new Set([...storedExcluded, ...requestedExcluded])].slice(0, 25);
+  const excludedSet = new Set(excludedVideoIds);
+
+  const currentPinned = db.prepare("SELECT key,title,artist,video_id,set_by,updated_at FROM track_overrides WHERE key=?")
+    .get(overrideKey);
+  let pinned = currentPinned && sameTrackOverrideIdentity(currentPinned, title, artist)
+    ? currentPinned
+    : null;
+  const legacy = db.prepare("SELECT key,title,artist,video_id,set_by,updated_at FROM track_overrides WHERE key=?")
+    .get(legacyOverrideKey);
+  const compatibilityLinks = db.prepare("SELECT current_key FROM track_override_compat_links WHERE legacy_key=? ORDER BY current_key")
+    .all(legacyOverrideKey);
+  if (!currentPinned && legacy && compatibilityLinks.length === 0 && sameTrackOverrideIdentity(legacy, title, artist)) {
+    // A rolled-back process can create a new legacy row after startup. Serving
+    // its exact title/artist match is safe; mutating provenance from a GET is
+    // not. The next boot reconciles it, while an ambiguous historical slot
+    // (one with any compatibility link) continues to fail closed.
+    pinned = legacy;
+  }
+
+  const sourcePinned = recordingSource
+    ? db.prepare(`SELECT provider,source_id,title,artist,video_id,set_by,updated_at
+        FROM track_source_overrides WHERE provider=? AND source_id=?`)
+      .get(recordingSource.provider, recordingSource.sourceId)
+    : null;
+  const exactSourcePinned = sourcePinned && sameTrackOverrideIdentity(sourcePinned, title, artist)
+    ? sourcePinned
+    : null;
+  // An exact staff decision is more precise than an older tuple decision.
+  // Without an exact source row, tuple-level NULL remains global moderation
+  // authority and cannot be bypassed by an arbitrary provider query.
+  if (exactSourcePinned && !exactSourcePinned.video_id) {
+    return { result: { videoId: null, status: "confirmed_unavailable" } };
+  }
+  if (exactSourcePinned?.video_id && !excludedSet.has(exactSourcePinned.video_id)) {
+    return { result: { videoId: exactSourcePinned.video_id, status: "pinned" } };
+  }
+  if (pinned && !pinned.video_id && !exactSourcePinned) {
+    return { result: { videoId: null, status: "confirmed_unavailable" } };
+  }
+  // A positive tuple pin is ambiguous for two source recordings with the same
+  // display metadata. Source-aware moderation above is exact; otherwise proof
+  // selection decides. Legacy/no-source playback keeps the original behavior.
+  if (pinned?.video_id && !recordingSource && !excludedSet.has(pinned.video_id)) {
+    return { result: { videoId: pinned.video_id, status: "pinned" } };
+  }
+  const duration = Math.max(0, Math.min(24 * 60 * 60, Number(input.duration) || 0));
+  return {
+    result: null,
+    title,
+    artist,
+    resolverOptions: {
+      expectedDurationSec: duration,
+      excludedVideoIds,
+      sourceProvider,
+      sourceId,
+    },
+  };
+}
+
+async function readYouTubeTrack(ctx, input) {
+  const playback = youtubeTrackPlaybackContext(ctx, input);
+  if (playback.result) return playback.result;
+  const withoutSearch = await resolveYouTubeTrack(playback.title, playback.artist, {
+    ...playback.resolverOptions,
+    allowSearch: false,
+  });
+  if (withoutSearch.status !== "search_deferred") return withoutSearch;
+  if (!ctx.user) return { videoId: null, status: "search_login_required", retryable: false };
+  const user = requireUser(ctx);
+  if (!user.email_verified_at) {
+    return { videoId: null, status: "search_verification_required", retryable: false };
+  }
+  // The safe read phase is exhausted. A current client follows this explicit
+  // boundary with the authenticated POST route; GET never reserves or spends a
+  // listener, network, or global YouTube search allowance.
+  return { videoId: null, status: "search_deferred", retryable: false, resolveMethod: "POST" };
+}
+
+async function searchYouTubeTrack(ctx, input) {
+  const user = requireUser(ctx);
+  if (!user.email_verified_at) {
+    return { videoId: null, status: "search_verification_required", retryable: false };
+  }
+  const playback = youtubeTrackPlaybackContext(ctx, input);
+  if (playback.result) return playback.result;
+  return resolveYouTubeTrack(playback.title, playback.artist, {
+    ...playback.resolverOptions,
+    beforeSearch: () => reserveYouTubeColdSearch(ctx, user),
+  });
+}
+
 // route table: "METHOD /path" -> handler(ctx) ; :params exposed as ctx.params
 export const routes = {
   // Render only needs liveness plus capability flags. Operational topology,
@@ -1652,36 +1809,23 @@ export const routes = {
   },
 
   "GET /api/youtube/track": async (ctx) => {
-    const title = clean(ctx.query.title, { max: 200 });
-    const artist = clean(ctx.query.artist, { max: 120 });
-    if (!title) throw new ApiError(400, "Missing title.");
-    limit(ctx, "yt", 120, 10 * 60 * 1000);
-    // A human-pinned link always beats the search resolver. video_id NULL is an
-    // admin-confirmed "no correct video exists": tell the player honestly so it
-    // uses the preview instead of guessing a wrong version.
-    const pinned = db.prepare("SELECT video_id FROM track_overrides WHERE key=?").get(trackOverrideKey(title, artist));
-    if (pinned) return { videoId: pinned.video_id || null, status: pinned.video_id ? "pinned" : "confirmed_unavailable" };
-    const duration = Math.max(0, Math.min(24 * 60 * 60, Number(ctx.query.duration) || 0));
     try {
-      // Anonymous listeners retain pinned, positive/negative cache, Wikidata,
-      // and artist-catalogue playback. Only a path that would actually reach
-      // search.list crosses the verified-account demand boundary below.
-      const withoutSearch = await resolveYouTubeTrack(title, artist, {
-        expectedDurationSec: duration,
-        allowSearch: false,
-      });
-      if (withoutSearch.status !== "search_deferred") return withoutSearch;
-      if (!ctx.user) return { videoId: null, status: "search_login_required", retryable: false };
-      const user = requireUser(ctx);
-      if (!user.email_verified_at) {
-        return { videoId: null, status: "search_verification_required", retryable: false };
-      }
-      return await resolveYouTubeTrack(title, artist, {
-        expectedDurationSec: duration,
-        beforeSearch: () => reserveYouTubeColdSearch(ctx, user),
-      });
+      limit(ctx, "yt-read", 120, 10 * 60 * 1000);
+      return await readYouTubeTrack(ctx, ctx.query || {});
+    } catch (error) {
+      if (error instanceof ProviderError) return { videoId: null, status: error.code, retryable: error.retryable };
+      throw error;
     }
-    catch (error) {
+  },
+
+  // A top-level cross-site navigation may carry a SameSite=Lax cookie, so the
+  // scarce listener/network/global search reservations live only behind POST.
+  // GET above remains the anonymous-safe pin/cache/catalogue read phase.
+  "POST /api/youtube/track/resolve": async (ctx) => {
+    try {
+      limit(ctx, "yt-search", 120, 10 * 60 * 1000);
+      return await searchYouTubeTrack(ctx, ctx.body || {});
+    } catch (error) {
       if (error instanceof ProviderError) return { videoId: null, status: error.code, retryable: error.retryable };
       throw error;
     }
@@ -1700,16 +1844,43 @@ export const routes = {
     return { song };
   },
 
-  // IFrame errors 100/101/150 mean a cached video is gone or cannot be embedded.
-  // Remember the failed ID and re-resolve next time instead of replaying it.
+  // IFrame errors 100/101/150 mean this listener could not use the served ID.
+  // Remember that fact per actor and re-resolve for them. A client assertion is
+  // never global authority: otherwise any account could suppress correct music
+  // site-wide by submitting arbitrary title/video pairs.
   "POST /api/youtube/invalidate": (ctx) => {
-    requireUser(ctx);
+    const user = requireUser(ctx);
     limit(ctx, "yt-invalidate", 60, 60 * 60 * 1000);
     const title = clean(ctx.body?.title, { max: 200 });
     const artist = clean(ctx.body?.artist, { max: 120 });
     const videoId = clean(ctx.body?.videoId, { max: 32 });
-    if (!title || !videoId || !/^[A-Za-z0-9_-]{6,20}$/.test(videoId)) throw new ApiError(400, "That failed video could not be identified.", "VALIDATION_FAILED");
-    return invalidateYouTubeTrack(title, artist, videoId);
+    if (!title || !videoId || !/^[A-Za-z0-9_-]{11}$/.test(videoId)) throw new ApiError(400, "That failed video could not be identified.", "VALIDATION_FAILED");
+    const source = cleanTrackRecordingSource(ctx.body?.provider, ctx.body?.sourceId, { strict: true });
+    const key = source?.key || trackOverrideKey(title, artist);
+    db.prepare(`INSERT INTO youtube_playback_failures (track_key,video_id,user_id,created_at)
+      VALUES (?,?,?,?) ON CONFLICT(track_key,video_id,user_id) DO UPDATE SET created_at=excluded.created_at`)
+      .run(key, videoId, user.id, now());
+    const pinned = source
+      ? db.prepare("SELECT title,artist,video_id FROM track_source_overrides WHERE provider=? AND source_id=?")
+        .get(source.provider, source.sourceId)
+      : db.prepare("SELECT title,artist,video_id FROM track_overrides WHERE key=?").get(key);
+    if (pinned?.video_id === videoId && sameTrackOverrideIdentity(pinned, title, artist)) {
+      const existing = db.prepare("SELECT id FROM reports WHERE reporter_id=? AND target_type='track' AND target_id=? AND status='open'")
+        .get(user.id, key);
+      if (!existing) {
+        const reason = JSON.stringify({
+          title,
+          artist: artist || "",
+          category: "wont_play",
+          suggestedVideoId: null,
+          note: "Pinned video failed to embed for this listener.",
+          ...(source ? { provider: source.provider, sourceId: source.sourceId } : {}),
+        });
+        db.prepare("INSERT INTO reports (id,target_type,target_id,reason,reporter_id,created_at) VALUES (?,?,?,?,?,?)")
+          .run(uid("r"), "track", key, reason, user.id, now());
+      }
+    }
+    return { ok: true, quarantined: true, globallyInvalidated: false };
   },
 
   // ---- Discover: DB-backed charts, genre share, explore-by-genre ----
@@ -1775,26 +1946,27 @@ export const routes = {
     const id = uid("play");
     const createdAt = now();
     const videoId = parseYouTubeVideoId(ctx.body?.videoId || "") || null;
-    db.prepare("INSERT INTO plays (id,user_id,title,artist,url,video_id,art,created_at) VALUES (?,?,?,?,?,?,?,?)")
-      .run(id, u.id, title, artist, clean(ctx.body?.url, { max: 400 }) || null, videoId, clean(ctx.body?.art, { max: 500 }) || null, createdAt);
+    const { provider, sourceId } = cleanPlaybackSource(ctx.body?.provider, ctx.body?.sourceId);
+    db.prepare("INSERT INTO plays (id,user_id,title,artist,url,video_id,provider,source_id,art,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)")
+      .run(id, u.id, title, artist, clean(ctx.body?.url, { max: 400 }) || null, videoId, provider, sourceId, clean(ctx.body?.art, { max: 500 }) || null, createdAt);
     db.prepare("DELETE FROM plays WHERE user_id=? AND id NOT IN (SELECT id FROM plays WHERE user_id=? ORDER BY created_at DESC LIMIT 300)").run(u.id, u.id);
-    return { ok: true, play: { id, title, artist, url: clean(ctx.body?.url, { max: 400 }) || null, videoId, art: clean(ctx.body?.art, { max: 500 }) || null, at: createdAt } };
+    return { ok: true, play: { id, title, artist, url: clean(ctx.body?.url, { max: 400 }) || null, videoId, provider, sourceId, art: clean(ctx.body?.art, { max: 500 }) || null, at: createdAt } };
   },
   "GET /api/me/plays": (ctx) => {
     const u = requireUser(ctx);
     const { cursor, limit: pageSize } = pageRequest(ctx, 50, 100);
     const cursorSql = cursor ? "AND (created_at < ? OR (created_at = ? AND id < ?))" : "";
     const args = cursor ? [u.id, cursor.createdAt, cursor.createdAt, cursor.id, pageSize + 1] : [u.id, pageSize + 1];
-    const found = db.prepare(`SELECT id,title,artist,url,video_id,art,created_at FROM plays WHERE user_id=? ${cursorSql} ORDER BY created_at DESC, id DESC LIMIT ?`).all(...args);
+    const found = db.prepare(`SELECT id,title,artist,url,video_id,provider,source_id,art,created_at FROM plays WHERE user_id=? ${cursorSql} ORDER BY created_at DESC, id DESC LIMIT ?`).all(...args);
     const { rows, nextCursor } = finishPage(found, pageSize);
-    return { plays: rows.map((r) => ({ id: r.id, title: r.title, artist: r.artist, url: r.url, videoId: r.video_id, art: r.art, at: r.created_at })), nextCursor };
+    return { plays: rows.map((r) => ({ id: r.id, title: r.title, artist: r.artist, url: r.url, videoId: r.video_id, provider: r.provider, sourceId: r.source_id, art: r.art, at: r.created_at })), nextCursor };
   },
   // The latest track from each person you follow, most recent first.
   "GET /api/plays/friends": (ctx) => {
     const u = requireUser(ctx);
     const at = now();
     const rows = db.prepare(`
-      SELECT p.user_id, p.title, p.artist, p.url, p.art, p.created_at,
+      SELECT p.user_id, p.title, p.artist, p.url, p.video_id, p.provider, p.source_id, p.art, p.created_at,
         us.name u_name, us.handle u_handle, us.initials u_initials, us.avatar_uri u_avatar, us.avatar_color u_color, us.verified u_verified, us.role u_role
       FROM plays p JOIN users us ON us.id = p.user_id
       WHERE p.user_id IN (SELECT followee_id FROM follows WHERE follower_id=?)
@@ -1806,7 +1978,7 @@ export const routes = {
     for (const r of rows) {
       if (seen.has(r.user_id)) continue;
       seen.add(r.user_id);
-      out.push({ user: { id: r.user_id, name: r.u_name, handle: r.u_handle, initials: r.u_initials, avatarUri: r.u_avatar, avatarColor: r.u_color, verified: !!r.u_verified, role: r.u_role }, track: { title: r.title, artist: r.artist, url: r.url, art: r.art, at: r.created_at } });
+      out.push({ user: { id: r.user_id, name: r.u_name, handle: r.u_handle, initials: r.u_initials, avatarUri: r.u_avatar, avatarColor: r.u_color, verified: !!r.u_verified, role: r.u_role }, track: { title: r.title, artist: r.artist, url: r.url, videoId: r.video_id, provider: r.provider, sourceId: r.source_id, art: r.art, at: r.created_at } });
       if (out.length >= 30) break;
     }
     return { listening: out };
@@ -2292,8 +2464,8 @@ export const routes = {
         .map((row) => ({ postId: row.post_id, action: row.action, createdAt: row.created_at })),
       playlists: db.prepare("SELECT id,name,tracks,visibility,created_at,updated_at FROM playlists WHERE user_id=? ORDER BY created_at DESC").all(u.id)
         .map((r) => ({ id: r.id, name: r.name, tracks: json(r.tracks, []), visibility: r.visibility || "public", createdAt: r.created_at, updatedAt: r.updated_at || null })),
-      listeningHistory: db.prepare("SELECT title,artist,url,video_id,created_at FROM plays WHERE user_id=? ORDER BY created_at DESC LIMIT 300").all(u.id)
-        .map((r) => ({ title: r.title, artist: r.artist, url: r.url, videoId: r.video_id, at: r.created_at })),
+      listeningHistory: db.prepare("SELECT title,artist,url,video_id,provider,source_id,created_at FROM plays WHERE user_id=? ORDER BY created_at DESC LIMIT 300").all(u.id)
+        .map((r) => ({ title: r.title, artist: r.artist, url: r.url, videoId: r.video_id, provider: r.provider, sourceId: r.source_id, at: r.created_at })),
       going: db.prepare("SELECT artist, venue, city, date FROM going WHERE user_id=?").all(u.id),
       ratings: db.prepare("SELECT kind, ref, rating FROM ratings WHERE user_id=?").all(u.id),
       venueReviews: db.prepare("SELECT id,venue_key,rating,text,photos,removed,created_at FROM venue_reviews WHERE user_id=? ORDER BY created_at DESC").all(u.id)
@@ -2642,32 +2814,61 @@ export const routes = {
     const blockSql = viewer ? `AND NOT EXISTS (
       SELECT 1 FROM blocks b WHERE (b.blocker_id=? AND b.blocked_id=p.user_id) OR (b.blocker_id=p.user_id AND b.blocked_id=?)
     )` : "";
-    const cursorSql = cursor ? "AND (p.created_at < ? OR (p.created_at = ? AND p.id < ?))" : "";
-    const args = [];
-    if (cursor) args.push(cursor.createdAt, cursor.createdAt, cursor.id);
-    if (viewer) args.push(viewer, viewer);
-    args.push(lim + 1);
     // A cheap prefilter in SQL (photos JSON mentions a video extension); the
-    // authoritative per-URL check happens in JS below.
-    const found = db.prepare(`
-      SELECT p.*, u.name AS u_name, u.handle AS u_handle, u.initials AS u_initials, u.avatar_uri AS u_avatar, u.avatar_color AS u_color,
-        (SELECT COUNT(*) FROM likes l JOIN users lu ON lu.id=l.user_id WHERE l.post_id=p.id AND ${activeAccountSql("lu")}) AS like_count,
-        (SELECT COUNT(*) FROM comments c JOIN users cu ON cu.id=c.user_id
-          WHERE c.post_id=p.id AND c.removed=0 AND ${activeAccountSql("cu")}) AS comment_count,
-        ${SEEN_ORDINAL_SQL}
-      FROM posts p JOIN users u ON u.id = p.user_id
-      WHERE p.removed=0 AND p.photos_public=1 AND ${activeAccountSql("u")}
-        AND (p.photos LIKE '%.mp4%' OR p.photos LIKE '%.webm%' OR p.photos LIKE '%.mov%' OR p.photos LIKE '%.m4v%')
-        ${cursorSql} ${blockSql}
-      ORDER BY p.created_at DESC, p.id DESC LIMIT ?`).all(...args);
-    const { rows, nextCursor } = finishPage(found, lim);
-    const isClip = (u) => typeof u === "string" && /\.(mp4|webm|mov|m4v)(\?|#|$)/i.test(u) && /^https?:\/\//i.test(u);
-    const clips = withCommentPreviews(rows, viewer)
-      .map((p) => {
+    // authoritative per-URL check happens in JS below. Because the prefilter can
+    // deliberately over-match (for example `photo.jpg?campaign=.mp4-bait`), it
+    // must never define the public page boundary. Continue through raw candidate
+    // batches until we have one extra real clip or have exhausted the reel.
+    const findCandidates = (before, batchLimit) => {
+      const cursorSql = before ? "AND (p.created_at < ? OR (p.created_at = ? AND p.id < ?))" : "";
+      const args = [];
+      if (before) args.push(before.createdAt, before.createdAt, before.id);
+      if (viewer) args.push(viewer, viewer);
+      args.push(batchLimit);
+      return db.prepare(`
+        SELECT p.*, u.name AS u_name, u.handle AS u_handle, u.initials AS u_initials, u.avatar_uri AS u_avatar, u.avatar_color AS u_color,
+          EXISTS (SELECT 1 FROM post_media pm JOIN media_assets ma ON ma.id=pm.asset_id
+            WHERE pm.post_id=p.id AND ma.kind='video') AS has_stable_video,
+          (SELECT COUNT(*) FROM likes l JOIN users lu ON lu.id=l.user_id WHERE l.post_id=p.id AND ${activeAccountSql("lu")}) AS like_count,
+          (SELECT COUNT(*) FROM comments c JOIN users cu ON cu.id=c.user_id
+            WHERE c.post_id=p.id AND c.removed=0 AND ${activeAccountSql("cu")}) AS comment_count,
+          ${SEEN_ORDINAL_SQL}
+        FROM posts p JOIN users u ON u.id = p.user_id
+        WHERE p.removed=0 AND p.photos_public=1 AND ${activeAccountSql("u")}
+          AND (p.photos LIKE '%.mp4%' OR p.photos LIKE '%.webm%' OR p.photos LIKE '%.mov%' OR p.photos LIKE '%.m4v%'
+            OR EXISTS (SELECT 1 FROM post_media pm JOIN media_assets ma ON ma.id=pm.asset_id
+              WHERE pm.post_id=p.id AND ma.kind='video'))
+          ${cursorSql} ${blockSql}
+        ORDER BY p.created_at DESC, p.id DESC LIMIT ?`).all(...args);
+    };
+    const candidatesPerScan = Math.max(lim + 1, 32);
+    const authoritative = [];
+    let scanCursor = cursor;
+    while (authoritative.length <= lim) {
+      const found = findCandidates(scanCursor, candidatesPerScan);
+      if (!found.length) break;
+      // Reject cheap SQL false positives before running comment/media/reaction
+      // projection. Otherwise a page of bait URLs can force several synchronous
+      // DB lookups per row even though none can ever enter the reel.
+      const plausible = found.filter((row) => row.has_stable_video
+        || parseJsonArray(row.photos).some((uri) => isLegacyVideoUrl(uri)));
+      for (const p of withCommentPreviews(plausible, viewer)) {
         const projected = postJson(p, viewer); // photos already parsed here
-        return { ...projected, clips: (projected.photos || []).filter(isClip) };
-      })
-      .filter((p) => p.clips.length > 0);
+        const descriptorClips = new Set((projected.media || [])
+          .filter((asset) => asset?.kind === "video" && typeof asset.url === "string")
+          .map((asset) => asset.url));
+        const clips = (projected.photos || []).filter((uri) => descriptorClips.has(uri) || isLegacyVideoUrl(uri));
+        if (clips.length) authoritative.push({ row: p, clip: { ...projected, clips } });
+        if (authoritative.length > lim) break;
+      }
+      if (authoritative.length > lim || found.length < candidatesPerScan) break;
+      const last = found.at(-1);
+      scanCursor = { createdAt: last.created_at, id: last.id };
+    }
+    const hasMore = authoritative.length > lim;
+    const page = hasMore ? authoritative.slice(0, lim) : authoritative;
+    const clips = page.map(({ clip }) => clip);
+    const nextCursor = hasMore && page.length ? encodeCursor(page.at(-1).row) : null;
     return { clips, nextCursor };
   },
 
@@ -3655,14 +3856,24 @@ export const routes = {
       category: { parse: (x) => (["wrong_video", "wont_play", "preview_only", "missing", "other"].includes(x) ? x : undefined) },
       url: { parse: (x) => clean(x, { max: 400 }) },
       note: { parse: (x) => clean(x, { max: LIMITS.note }) },
+      provider: { parse: (x) => clean(x, { max: 24 }) },
+      sourceId: { parse: (x) => clean(String(x ?? ""), { max: 64 }) },
     });
     if (errs.length) throw new ApiError(400, errs[0]);
     const suggestedId = v.url ? parseYouTubeVideoId(v.url) : null;
     if (v.url && !suggestedId) throw new ApiError(400, "That doesn't look like a YouTube link.", "VALIDATION_FAILED");
-    const key = trackOverrideKey(v.title, v.artist);
+    const source = cleanTrackRecordingSource(v.provider, v.sourceId, { strict: true });
+    const key = source?.key || trackOverrideKey(v.title, v.artist);
     const existing = db.prepare("SELECT id FROM reports WHERE reporter_id=? AND target_type='track' AND target_id=? AND status='open'").get(u.id, key);
     if (existing) return { id: existing.id, duplicate: true };
-    const reason = JSON.stringify({ title: v.title, artist: v.artist || "", category: v.category || "wrong_video", suggestedVideoId: suggestedId, note: v.note || "" });
+    const reason = JSON.stringify({
+      title: v.title,
+      artist: v.artist || "",
+      category: v.category || "wrong_video",
+      suggestedVideoId: suggestedId,
+      note: v.note || "",
+      ...(source ? { provider: source.provider, sourceId: source.sourceId } : {}),
+    });
     const id = uid("r");
     db.prepare("INSERT INTO reports (id,target_type,target_id,reason,reporter_id,created_at) VALUES (?,?,?,?,?,?)")
       .run(id, "track", key, reason, u.id, now());
@@ -3679,26 +3890,79 @@ export const routes = {
       artist: { parse: (x) => clean(x, { max: 120 }) },
       url: { parse: (x) => clean(x, { max: 400 }) },
       none: { parse: (x) => !!x },
+      provider: { parse: (x) => clean(x, { max: 24 }) },
+      sourceId: { parse: (x) => clean(String(x ?? ""), { max: 64 }) },
     });
     if (errs.length) throw new ApiError(400, errs[0]);
     const videoId = v.none ? null : parseYouTubeVideoId(v.url);
     if (!v.none && !videoId) throw new ApiError(400, "Paste a YouTube link (watch, youtu.be, or shorts).", "VALIDATION_FAILED");
+    const source = cleanTrackRecordingSource(v.provider, v.sourceId, { strict: true });
     const key = trackOverrideKey(v.title, v.artist);
-    db.prepare(`INSERT INTO track_overrides (key,title,artist,video_id,set_by,updated_at) VALUES (?,?,?,?,?,?)
-      ON CONFLICT(key) DO UPDATE SET video_id=excluded.video_id, set_by=excluded.set_by, updated_at=excluded.updated_at`)
-      .run(key, v.title, v.artist || "", videoId, ctx.user.id, now());
-    invalidateYouTubeTrack(v.title, v.artist || "");
-    db.prepare("UPDATE reports SET status='actioned' WHERE target_type='track' AND target_id=? AND status='open'").run(key);
-    moderationRecord(ctx, "track-override", "track", key, v.none ? "confirmed no correct video" : `pinned ${videoId}`);
-    return { ok: true, videoId, confirmedUnavailable: v.none };
+    const legacyKey = legacyTrackOverrideKey(v.title, v.artist);
+    const moderationKey = source?.key || key;
+    if (source) {
+      const changedAt = now();
+      const existingSource = db.prepare(`SELECT title,artist FROM track_source_overrides
+        WHERE provider=? AND source_id=?`).get(source.provider, source.sourceId);
+      if (existingSource && !sameTrackOverrideIdentity(existingSource, v.title, v.artist)) {
+        throw new ApiError(409, "That provider recording is already bound to different song metadata.", "CONFLICT");
+      }
+      db.prepare(`INSERT INTO track_source_overrides
+        (provider,source_id,title,artist,video_id,set_by,updated_at) VALUES (?,?,?,?,?,?,?)
+        ON CONFLICT(provider,source_id) DO UPDATE SET
+          title=excluded.title,artist=excluded.artist,video_id=excluded.video_id,
+          set_by=excluded.set_by,updated_at=excluded.updated_at`)
+        .run(source.provider, source.sourceId, v.title, v.artist || "", videoId, ctx.user.id, changedAt);
+    } else atomicWrite(() => {
+      const changedAt = now();
+      db.prepare(`INSERT INTO track_overrides (key,title,artist,video_id,set_by,updated_at) VALUES (?,?,?,?,?,?)
+        ON CONFLICT(key) DO UPDATE SET title=excluded.title,artist=excluded.artist,video_id=excluded.video_id,set_by=excluded.set_by,updated_at=excluded.updated_at`)
+        .run(key, v.title, v.artist || "", videoId, ctx.user.id, changedAt);
+      // Register every v2 identity, including ones that collide under the old
+      // ASCII key. More than one link deliberately disables legacy triggers so
+      // an old UPSERT that cannot preserve Unicode identity fails closed rather
+      // than writing one song's video into another song.
+      db.prepare(`INSERT INTO track_override_compat_links (legacy_key,current_key,title,artist)
+        VALUES (?,?,?,?) ON CONFLICT(legacy_key,current_key) DO UPDATE SET
+          title=excluded.title,artist=excluded.artist`)
+        .run(legacyKey, key, v.title, v.artist || "");
+      const legacyRow = db.prepare("SELECT key,title,artist FROM track_overrides WHERE key=?").get(legacyKey);
+      if (!legacyRow) {
+        db.prepare("INSERT INTO track_overrides (key,title,artist,video_id,set_by,updated_at) VALUES (?,?,?,?,?,?)")
+          .run(legacyKey, v.title, v.artist || "", videoId, ctx.user.id, changedAt);
+      } else if (sameTrackOverrideIdentity(legacyRow, v.title, v.artist)) {
+        db.prepare("UPDATE track_overrides SET title=?,artist=?,video_id=?,set_by=?,updated_at=? WHERE key=?")
+          .run(v.title, v.artist || "", videoId, ctx.user.id, changedAt, legacyKey);
+      }
+    });
+    clearYouTubeTrackCache(v.title, v.artist || "", {
+      sourceProvider: source?.provider || "",
+      sourceId: source?.sourceId || "",
+    });
+    if (source) {
+      db.prepare("UPDATE reports SET status='actioned' WHERE target_type='track' AND target_id=? AND status='open'")
+        .run(source.key);
+    } else {
+      db.prepare("UPDATE reports SET status='actioned' WHERE target_type='track' AND target_id IN (?,?) AND status='open'")
+        .run(key, legacyKey);
+    }
+    moderationRecord(ctx, "track-override", "track", moderationKey, v.none ? "confirmed no correct video" : `pinned ${videoId}`);
+    return { ok: true, videoId, confirmedUnavailable: v.none, provider: source?.provider || null, sourceId: source?.sourceId || null };
   },
 
   // Every pinned song video, newest first, so the Songs tab shows what's been
   // fixed (and lets a bad pin be removed).
   "GET /api/admin/tracks/overrides": (ctx) => {
     requireModerator(ctx);
-    const rows = db.prepare("SELECT key,title,artist,video_id,set_by,updated_at FROM track_overrides ORDER BY updated_at DESC LIMIT 200").all();
-    return { overrides: rows.map((r) => ({ key: r.key, title: r.title, artist: r.artist, videoId: r.video_id, setBy: r.set_by, updatedAt: r.updated_at })) };
+    const tupleRows = db.prepare("SELECT key,title,artist,video_id,set_by,updated_at FROM track_overrides WHERE key LIKE 'track:v2:%' ORDER BY updated_at DESC LIMIT 200").all()
+      .map((r) => ({ ...r, provider: null, source_id: null }));
+    const sourceRows = db.prepare(`SELECT provider,source_id,title,artist,video_id,set_by,updated_at
+      FROM track_source_overrides ORDER BY updated_at DESC LIMIT 200`).all()
+      .map((r) => ({ ...r, key: trackSourceOverrideKey(r.provider, r.source_id) }));
+    const rows = [...tupleRows, ...sourceRows]
+      .sort((a, b) => Number(b.updated_at) - Number(a.updated_at))
+      .slice(0, 200);
+    return { overrides: rows.map((r) => ({ key: r.key, title: r.title, artist: r.artist, videoId: r.video_id, provider: r.provider, sourceId: r.source_id, setBy: r.set_by, updatedAt: r.updated_at })) };
   },
 
   // Remove a pin: the search resolver takes over again on the next play.
@@ -3707,12 +3971,34 @@ export const routes = {
     const [errs, v] = shape(ctx.body, {
       title: { required: true, parse: (x) => clean(x, { max: 200 }) || undefined },
       artist: { parse: (x) => clean(x, { max: 120 }) },
+      provider: { parse: (x) => clean(x, { max: 24 }) },
+      sourceId: { parse: (x) => clean(String(x ?? ""), { max: 64 }) },
     });
     if (errs.length) throw new ApiError(400, errs[0]);
+    const source = cleanTrackRecordingSource(v.provider, v.sourceId, { strict: true });
     const key = trackOverrideKey(v.title, v.artist);
-    db.prepare("DELETE FROM track_overrides WHERE key=?").run(key);
-    invalidateYouTubeTrack(v.title, v.artist || "");
-    moderationRecord(ctx, "track-unpin", "track", key, "pin removed, resolver takes over");
+    const legacyKey = legacyTrackOverrideKey(v.title, v.artist);
+    const moderationKey = source?.key || key;
+    if (source) {
+      const existingSource = db.prepare(`SELECT title,artist FROM track_source_overrides
+        WHERE provider=? AND source_id=?`).get(source.provider, source.sourceId);
+      if (existingSource && !sameTrackOverrideIdentity(existingSource, v.title, v.artist)) {
+        throw new ApiError(409, "That provider recording is bound to different song metadata.", "CONFLICT");
+      }
+      db.prepare("DELETE FROM track_source_overrides WHERE provider=? AND source_id=?")
+        .run(source.provider, source.sourceId);
+    } else atomicWrite(() => {
+      db.prepare("DELETE FROM track_overrides WHERE key=?").run(key);
+      const legacyRow = db.prepare("SELECT key,title,artist FROM track_overrides WHERE key=?").get(legacyKey);
+      if (legacyRow && sameTrackOverrideIdentity(legacyRow, v.title, v.artist)) {
+        db.prepare("DELETE FROM track_overrides WHERE key=?").run(legacyKey);
+      }
+    });
+    clearYouTubeTrackCache(v.title, v.artist || "", {
+      sourceProvider: source?.provider || "",
+      sourceId: source?.sourceId || "",
+    });
+    moderationRecord(ctx, "track-unpin", "track", moderationKey, "pin removed, resolver takes over");
     return { ok: true };
   },
 

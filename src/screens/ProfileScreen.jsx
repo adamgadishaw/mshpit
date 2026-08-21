@@ -15,9 +15,9 @@ import Countdown from "../components/Countdown";
 import SmartImage from "../components/SmartImage";
 import ClipPoster from "../components/ClipPoster";
 import { trackKey } from "../lib/playback";
-import { isVideoUrl } from "../lib/img";
 import { formatDate } from "../domain/dates.mjs";
 import { profileMediaItems } from "../domain/profileMedia.mjs";
+import { mediaDisplayKind, mediaPosterUri } from "../domain/postMediaDisplay.mjs";
 import { accountTargetScope, scopedScreenValue } from "../domain/screenScope.mjs";
 import { tasteMatch } from "../domain/tasteMatch.mjs";
 
@@ -62,7 +62,7 @@ function TrebleBass({ kind, song, playing, onPlay, onOpenArtist }) {
 }
 
 function ProfileMediaTile({ item, index, onOpen }) {
-  const video = item.kind === "video" || item.type === "video" || isVideoUrl(item.uri);
+  const video = mediaDisplayKind(item) === "video";
   const authoredAlt = typeof item.altText === "string" ? item.altText.trim() : "";
   return (
     <Pressable
@@ -73,9 +73,9 @@ function ProfileMediaTile({ item, index, onOpen }) {
       accessibilityHint={video ? "Opens the video player" : "Opens the full-size photo"}
     >
       {video ? (
-        <ClipPoster uri={item.uri} posterUri={item.posterUrl || item.posterUri || null} style={StyleSheet.absoluteFill} compact accessibilityLabel={authoredAlt || "Concert video preview"} accessible={false} />
+        <ClipPoster uri={item.uri} posterUri={mediaPosterUri(item)} style={StyleSheet.absoluteFill} compact accessibilityLabel={authoredAlt || "Concert video preview"} accessible={false} />
       ) : (
-        <SmartImage uri={item.uri} posterUri={item.posterUrl || item.posterUri || null} style={StyleSheet.absoluteFill} contain={false} previewWidth={720} accessibilityLabel={authoredAlt || "Concert photo"} accessible={false} />
+        <SmartImage uri={item.uri} mediaKind="image" style={StyleSheet.absoluteFill} contain={false} previewWidth={720} accessibilityLabel={authoredAlt || "Concert photo"} accessible={false} />
       )}
     </Pressable>
   );

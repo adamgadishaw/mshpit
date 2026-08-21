@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   clampNativeAudioVolume,
   nativeAudioCompletion,
+  nativeAudioLeaseIsCurrent,
   nativeAudioOperationError,
   nativeAudioSnapshot,
   nativeAudioSource,
@@ -49,6 +50,42 @@ test("native preview completion advances a source only once", () => {
   assert.equal(nativeAudioCompletion({ id: "player-1", didJustFinish: true }, "preview-a", first.key).notify, false);
   assert.equal(nativeAudioCompletion({ id: "player-1", didJustFinish: false }, "preview-a").notify, false);
   assert.equal(nativeAudioCompletion({ id: "player-2", didJustFinish: true }, "preview-b", first.key).notify, true);
+});
+
+test("a same-source duplicate cannot inherit the previous occurrence completion", () => {
+  const status = { id: "player-1", didJustFinish: true };
+  const occurrenceA = '["preview-a","occurrence-a"]';
+  const occurrenceB = '["preview-a","occurrence-b"]';
+  const startedA = `player-1:${occurrenceA}`;
+  const startedB = `player-1:${occurrenceB}`;
+  assert.equal(
+    nativeAudioCompletion(status, occurrenceB, null, startedA).notify,
+    false,
+    "A's didJustFinish status cannot immediately skip unstarted occurrence B",
+  );
+  assert.equal(nativeAudioCompletion(status, occurrenceB, null, null).notify, false, "B stays disarmed during rewind");
+  assert.equal(nativeAudioCompletion(status, occurrenceB, null, startedB).notify, true, "B may end after its own PLAYING boundary");
+});
+
+test("deferred native setup cannot play after its occurrence is hidden", async () => {
+  let release;
+  const configured = new Promise((resolve) => { release = resolve; });
+  const current = { enabled: true, key: "occurrence-a" };
+  let plays = 0;
+  const setup = async () => {
+    await configured;
+    if (nativeAudioLeaseIsCurrent({
+      enabled: current.enabled,
+      currentKey: current.key,
+      leaseKey: "occurrence-a",
+    })) plays += 1;
+  };
+  const pending = setup();
+  current.enabled = false;
+  current.key = null;
+  release();
+  await pending;
+  assert.equal(plays, 0);
 });
 
 test("native preview operation failures cannot leak across source changes", () => {

@@ -78,7 +78,7 @@ import {
   venueReviewStorageKey,
   withoutVenueReviewsByUser,
 } from "./domain/accountMediaCache.mjs";
-import { mediaDisplayItems } from "./domain/postMediaDisplay.mjs";
+import { mediaDisplayItems, sameMediaDisplayItems } from "./domain/postMediaDisplay.mjs";
 import { artistGalleryIdentityKey, mergeArtistGalleryMedia, postMatchesArtistGallery } from "./domain/artistGalleryMedia.mjs";
 import { deleteMediaDraftsForOwner, releaseMediaDraftAssets } from "./lib/mediaDraftStaging";
 import {
@@ -106,6 +106,14 @@ import {
   accountScopedRows,
   favoriteGenreFromHistory,
 } from "./domain/accountPrivateProjection.mjs";
+import {
+  activeYouTubeVideoRejections,
+  withYouTubeVideoRejection,
+  youtubeRejectedVideoIds,
+  youtubeVideoRejectionStorageKey,
+  youtubeVideoRejectionSource,
+  youtubeVideoWasRejected,
+} from "./domain/youtubeVideoRejections.mjs";
 
 // Legacy client facade: combines server hydration, small persisted caches, social
 // state, and compatibility data behind one screen-facing shape. Server responses
@@ -202,7 +210,8 @@ const sameServerPost = (a, b) => !!a && !!b
   && a.flags === b.flags
   && JSON.stringify(a.recommendation || null) === JSON.stringify(b.recommendation || null)
   && JSON.stringify(a.commentPreview || null) === JSON.stringify(b.commentPreview || null)
-  && JSON.stringify(a.user || null) === JSON.stringify(b.user || null);
+  && JSON.stringify(a.user || null) === JSON.stringify(b.user || null)
+  && sameMediaDisplayItems(a, b);
 
 const demoUsers = [
   // NOTE: the real admin account lives ONLY on the server (server/index.js
@@ -1353,6 +1362,29 @@ export function StoreProvider({ children }) {
   // streams the full song/video for everyone. The server performs identity and
   // quality scoring; this small client cache never outlives the session for long.
   const ytCache = useRef({});
+  const youtubeRejectedRef = useRef({
+    accountId: session?.id || null,
+    entries: activeYouTubeVideoRejections(load(youtubeVideoRejectionStorageKey(session?.id), [])),
+  });
+  const currentYouTubeRejections = () => {
+    const accountId = sessionRef.current?.id || null;
+    if (youtubeRejectedRef.current.accountId !== accountId) {
+      youtubeRejectedRef.current = {
+        accountId,
+        entries: activeYouTubeVideoRejections(load(youtubeVideoRejectionStorageKey(accountId), [])),
+      };
+    } else {
+      youtubeRejectedRef.current.entries = activeYouTubeVideoRejections(youtubeRejectedRef.current.entries);
+    }
+    return youtubeRejectedRef.current;
+  };
+  const youtubeVideoRejected = (title, artist, videoId, source = null) => youtubeVideoWasRejected(
+    currentYouTubeRejections().entries,
+    title,
+    artist,
+    videoId,
+    source,
+  );
   // Resolve a song to a YouTube video, retrying the failures that deserve it.
   //
   // This used to be one attempt, and any failure — a timeout, a 429 from our own
@@ -1361,10 +1393,11 @@ export function StoreProvider({ children }) {
   // apart from "this song genuinely has no upload", so it played a 30-second
   // preview and never tried again. That is why obviously-available songs kept
   // coming out as previews. See src/domain/playback.mjs for the policy.
-  const resolveYouTube = async (title, artist, duration = 0, { force = false } = {}) => {
+  const resolveYouTube = async (title, artist, duration = 0, { force = false, provider = "", sourceId = "" } = {}) => {
     if (!title) return null;
     const tupleKey = trackTupleKey(title, artist);
-    const k = youtubeLookupCacheKey(title, artist, sessionRef.current);
+    const source = { provider, sourceId };
+    const k = youtubeLookupCacheKey(title, artist, sessionRef.current, source);
     const hit = ytCache.current[k];
     // `force` is for the player's background upgrade: it is retrying precisely
     // because the cached answer is a temporary failure, so honouring that cache
@@ -1376,10 +1409,40 @@ export function StoreProvider({ children }) {
       let outcome;
       try {
         const query = new URLSearchParams({ title, artist: artist || "" });
+        const coldSearchBody = { title, artist: artist || "" };
         if (Number(duration) > 0) query.set("duration", String(Math.round(Number(duration))));
-        outcome = classifyResolve(await api(`/api/youtube/track?${query.toString()}`));
+        if (Number(duration) > 0) coldSearchBody.duration = Math.round(Number(duration));
+        if (provider) {
+          query.set("provider", String(provider));
+          coldSearchBody.provider = String(provider);
+        }
+        if (sourceId != null && String(sourceId).trim()) {
+          query.set("sourceId", String(sourceId));
+          coldSearchBody.sourceId = String(sourceId);
+        }
+        const excluded = youtubeRejectedVideoIds(currentYouTubeRejections().entries, title, artist, source);
+        if (excluded.length) {
+          query.set("exclude", excluded.join(","));
+          coldSearchBody.exclude = excluded.join(",");
+        }
+        let response = await api(`/api/youtube/track?${query.toString()}`);
+        // Pins, cache and trusted artist catalogues remain available through the
+        // anonymous-safe GET. Only the phase that can spend scarce search quota
+        // crosses the authenticated SameSite-protected POST boundary.
+        if (response?.status === "search_deferred") {
+          response = await api("/api/youtube/track/resolve", {
+            method: "POST",
+            body: coldSearchBody,
+            context: "Finding the full track",
+            silent: true,
+          });
+        }
+        outcome = classifyResolve(response);
       } catch (error) {
         outcome = classifyResolve({ error });
+      }
+      if (outcome?.videoId && youtubeVideoRejected(title, artist, outcome.videoId, source)) {
+        outcome = { ...outcome, videoId: null, status: "rejected_for_listener", retry: false, transient: false };
       }
       last = outcome;
       if (outcome.videoId || !outcome.retry) break;
@@ -1407,26 +1470,32 @@ export function StoreProvider({ children }) {
   };
   // Whether the last answer for a track was a temporary failure, so the player
   // can quietly try again and upgrade a preview to the real video mid-play.
-  const youtubeLookupWasTransient = (title, artist) => {
-    const entry = ytCache.current[youtubeLookupCacheKey(title, artist, sessionRef.current)];
+  const youtubeLookupWasTransient = (title, artist, source = null) => {
+    const entry = ytCache.current[youtubeLookupCacheKey(title, artist, sessionRef.current, source)];
     return !!(entry && !entry.videoId && entry.retryable);
   };
   // PlayerBar reads the resolver reason in the same completion turn as the
   // video-id promise. The cache key is account + verification scoped, and an
   // expired denial is never allowed to describe the active listener's track.
-  const youtubeLookupStatus = (title, artist) => activeYouTubeLookupStatus(
-    ytCache.current[youtubeLookupCacheKey(title, artist, sessionRef.current)],
+  const youtubeLookupStatus = (title, artist, source = null) => activeYouTubeLookupStatus(
+    ytCache.current[youtubeLookupCacheKey(title, artist, sessionRef.current, source)],
   );
-  const invalidateYouTube = async (title, artist, videoId) => {
+  const invalidateYouTube = async (title, artist, videoId, source = null) => {
     if (!title || !videoId) return { ok: false };
-    const tupleKey = trackTupleKey(title, artist);
-    for (const [key, entry] of Object.entries(ytCache.current)) {
-      if (entry?.tupleKey === tupleKey) delete ytCache.current[key];
-    }
+    const ledger = currentYouTubeRejections();
+    ledger.entries = withYouTubeVideoRejection(ledger.entries, title, artist, videoId, source);
+    save(youtubeVideoRejectionStorageKey(ledger.accountId), ledger.entries);
+    delete ytCache.current[youtubeLookupCacheKey(title, artist, sessionRef.current, source)];
+    const scopedSource = youtubeVideoRejectionSource(source);
     try {
       return await api("/api/youtube/invalidate", {
         method: "POST",
-        body: { title, artist: artist || "", videoId },
+        body: {
+          title,
+          artist: artist || "",
+          videoId,
+          ...(scopedSource || null),
+        },
         context: "Replacing an unavailable video",
         silent: true,
       });
@@ -1559,21 +1628,24 @@ export function StoreProvider({ children }) {
     }
   };
 
-  const reportTrack = async ({ title, artist, category = "wrong_video", url, note }) => {
+  const reportTrack = async ({ title, artist, category = "wrong_video", url, note, provider, sourceId }) => {
     try {
-      const r = await api("/api/tracks/report", { method: "POST", context: "Reporting a song playback issue", body: { title, artist, category, url: url || undefined, note: note || undefined } });
+      const r = await api("/api/tracks/report", { method: "POST", context: "Reporting a song playback issue", body: { title, artist, category, url: url || undefined, note: note || undefined, provider: provider || undefined, sourceId: sourceId || undefined } });
       return { ok: true, duplicate: !!r?.duplicate };
     } catch (error) { return { ok: false, error }; }
   };
 
   // Admin: pin the correct video for a song (or confirm none exists).
-  const adminSetTrackVideo = async ({ title, artist, url, none }) => {
+  const adminSetTrackVideo = async ({ title, artist, url, none, provider, sourceId }) => {
     const scope = staffScopeFor(sessionRef.current);
     try {
-      const r = await api("/api/admin/tracks/override", { method: "POST", context: "Pinning the correct song video", body: { title, artist, url: url || undefined, none: !!none } });
+      const r = await api("/api/admin/tracks/override", { method: "POST", context: "Pinning the correct song video", body: { title, artist, url: url || undefined, none: !!none, provider: provider || undefined, sourceId: sourceId || undefined } });
       if (scope && scope === staffScopeFor(sessionRef.current)) {
         staffReadsRef.current.invalidate("moderation", sessionRef.current);
-        loadModerationConsole().catch(() => {});
+        // The override route atomically actions its matching report(s). Refresh
+        // that authoritative queue before resolving so the staff UI removes the
+        // row without issuing a conflicting second dismiss mutation.
+        try { await loadModerationConsole(); } catch {}
       }
       return { ok: true, ...r };
     } catch (error) { return { ok: false, error }; }
@@ -1582,8 +1654,8 @@ export function StoreProvider({ children }) {
   const trackOverridesList = async () => {
     try { const { overrides } = await api("/api/admin/tracks/overrides", { silent: true }); return overrides || []; } catch { return []; }
   };
-  const removeTrackOverride = async ({ title, artist }) => {
-    try { await api("/api/admin/tracks/override", { method: "DELETE", context: "Removing a song video pin", body: { title, artist } }); return { ok: true }; } catch (error) { return { ok: false, error }; }
+  const removeTrackOverride = async ({ title, artist, provider, sourceId }) => {
+    try { await api("/api/admin/tracks/override", { method: "DELETE", context: "Removing a song video pin", body: { title, artist, provider: provider || undefined, sourceId: sourceId || undefined } }); return { ok: true }; } catch (error) { return { ok: false, error }; }
   };
   // Staff first paint comes from one privacy-projected server response. The
   // strict loader rejects on failure so the console can distinguish offline or
@@ -1697,7 +1769,7 @@ export function StoreProvider({ children }) {
     const analyticsSource = String(t.provider || t.source || "player").trim().toLowerCase();
     track("play", { source: ["player", "catalog", "provider", "deezer", "youtube", "spotify", "playlist", "profile", "discover"].includes(analyticsSource) ? analyticsSource : "player" });
     // Cross-device history + "friends listening" (best-effort, offline keeps local).
-    if (session) api("/api/plays", { method: "POST", body: { title: t.title, artist: t.artist, url: t.url || null, videoId: t.videoId || null, art: t.art || null } }).catch(() => {});
+    if (session) api("/api/plays", { method: "POST", body: { title: played.title, artist: played.artist, url: played.url || null, videoId: played.videoId || null, provider: played.provider, sourceId: played.sourceId, art: played.art } }).catch(() => {});
   };
 
   const loadPlayHistory = async ({ more = false, accountId = session?.id || null, cachedFallback = null } = {}) => {
@@ -1720,7 +1792,7 @@ export function StoreProvider({ children }) {
       // `p.id` identifies the play EVENT, not the track. Keeping it in `id`
       // made the same song look different on every device and defeated recent-
       // history exclusion. Preserve it separately and let trackKey use media/meta.
-      const rows = Array.isArray(plays) ? plays.map((p) => ({ playId: p.id, title: p.title, artist: p.artist, url: p.url, videoId: p.videoId || null, art: p.art, at: p.at })) : [];
+      const rows = Array.isArray(plays) ? plays.map((p) => ({ playId: p.id, title: p.title, artist: p.artist, url: p.url, videoId: p.videoId || null, provider: p.provider || null, sourceId: p.sourceId || null, art: p.art, at: p.at })) : [];
       setPlayHistory((current) => {
         if (!more) return rows.length || !Array.isArray(cachedFallback) ? rows : cachedFallback;
         const seen = new Set(current.map((item) => item.playId || `${item.at}:${trackKey(item)}`));
@@ -4839,7 +4911,7 @@ export function StoreProvider({ children }) {
     recentSearches, addRecentSearch, removeRecentSearch, clearRecentSearches,
     loadUser, followersOf, followingOf,
     isBlocked, blockUser, unblockUser, blockedUsers, exportMyData,
-    searchArtistsApi, resolveArtist, remoteArtistMeta, artistDiscography, resolveYouTube, invalidateYouTube, youtubeLookupWasTransient, youtubeLookupStatus, resolveDeezerPreview,
+    searchArtistsApi, resolveArtist, remoteArtistMeta, artistDiscography, resolveYouTube, invalidateYouTube, youtubeVideoRejected, youtubeLookupWasTransient, youtubeLookupStatus, resolveDeezerPreview,
     discoverChart, discoverGenres, discoverCountries, loadDiscoverOverview, loadDiscoverGenre, serverTime,
     artistSeenCount, reportTrack, adminSetTrackVideo, trackOverridesList, removeTrackOverride, loadModerationQueue, loadModerationConsole, loadMoreModerationConsole, moderateReport,
     mediaReactions, loadMediaReactions, toggleMediaReaction,

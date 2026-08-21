@@ -75,6 +75,65 @@ export function rateLimit(key, max, windowMs) {
   return b.count <= max;
 }
 
+// Reserve several process-local buckets as one unit. Callers that still have a
+// later synchronous gate (for example a persisted daily account allowance) can
+// roll the whole group back instead of consuming the first bucket when a later
+// bucket denies the operation.
+export function reserveRateLimits(requests = []) {
+  const reservedAt = Date.now();
+  const grouped = new Map();
+  for (const request of Array.isArray(requests) ? requests : []) {
+    const key = String(request?.key || "");
+    const max = Math.floor(Number(request?.max));
+    const windowMs = Math.floor(Number(request?.windowMs));
+    const cost = Math.max(1, Math.floor(Number(request?.cost) || 1));
+    if (!key || !Number.isFinite(max) || max < 1 || !Number.isFinite(windowMs) || windowMs < 1) {
+      throw new TypeError("Invalid rate-limit reservation.");
+    }
+    const existing = grouped.get(key);
+    if (existing && (existing.max !== max || existing.windowMs !== windowMs)) {
+      throw new TypeError("Conflicting rate-limit reservation.");
+    }
+    grouped.set(key, existing ? { ...existing, cost: existing.cost + cost } : { key, max, windowMs, cost });
+  }
+
+  const plans = [];
+  for (const request of grouped.values()) {
+    const previous = buckets.get(request.key);
+    const activePrevious = previous && previous.resetAt >= reservedAt ? previous : null;
+    const count = activePrevious?.count || 0;
+    if (count + request.cost > request.max) return null;
+    plans.push({
+      key: request.key,
+      previous: activePrevious,
+      next: {
+        count: count + request.cost,
+        resetAt: activePrevious?.resetAt || (reservedAt + request.windowMs),
+      },
+    });
+  }
+
+  for (const plan of plans) buckets.set(plan.key, plan.next);
+  let open = true;
+  return Object.freeze({
+    commit() {
+      if (!open) return false;
+      open = false;
+      return true;
+    },
+    rollback() {
+      if (!open) return false;
+      open = false;
+      for (const plan of plans) {
+        if (buckets.get(plan.key) !== plan.next) continue;
+        if (plan.previous) buckets.set(plan.key, plan.previous);
+        else buckets.delete(plan.key);
+      }
+      return true;
+    },
+  });
+}
+
 // Bound the bucket map so it can't grow without limit (memory-safety).
 setInterval(() => {
   const now = Date.now();

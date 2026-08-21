@@ -2,6 +2,7 @@ export const VIDEO_POSTER_ERROR_CODES = Object.freeze({
   aborted: "PIT_POSTER_ABORTED",
   timeout: "PIT_POSTER_TIMEOUT",
   sourceInvalid: "PIT_POSTER_SOURCE_INVALID",
+  crossOriginBlocked: "PIT_POSTER_CROSS_ORIGIN_BLOCKED",
   loadFailed: "PIT_POSTER_LOAD_FAILED",
   frameFailed: "PIT_POSTER_FRAME_FAILED",
   lowQuality: "PIT_POSTER_LOW_QUALITY",
@@ -15,6 +16,7 @@ const ERROR_MESSAGES = Object.freeze({
   [VIDEO_POSTER_ERROR_CODES.aborted]: "Poster generation was cancelled.",
   [VIDEO_POSTER_ERROR_CODES.timeout]: "Poster generation took too long.",
   [VIDEO_POSTER_ERROR_CODES.sourceInvalid]: "The selected video could not be read.",
+  [VIDEO_POSTER_ERROR_CODES.crossOriginBlocked]: "This legacy video host does not allow a safe preview to be created.",
   [VIDEO_POSTER_ERROR_CODES.loadFailed]: "The selected video could not be loaded.",
   [VIDEO_POSTER_ERROR_CODES.frameFailed]: "A preview frame could not be extracted from the video.",
   [VIDEO_POSTER_ERROR_CODES.lowQuality]: "No clear automatic preview was found. Choose a cover frame in PIT Studio.",
@@ -32,6 +34,18 @@ export class VideoPosterError extends Error {
 export function videoPosterError(error, fallbackCode) {
   if (error instanceof VideoPosterError) return error;
   return new VideoPosterError(fallbackCode, ERROR_MESSAGES[fallbackCode], { cause: error });
+}
+
+export function videoPosterSourceNeedsCorsProbe(uri, pageHref = null) {
+  try {
+    const source = new URL(String(uri || ""), pageHref || undefined);
+    if (!pageHref) return true;
+    return source.origin !== new URL(String(pageHref)).origin;
+  } catch {
+    // An unparseable or context-free remote source never gets to bypass the
+    // safety probe. The caller's normal source validation supplies final copy.
+    return true;
+  }
 }
 
 const finite = (value, fallback) => Number.isFinite(Number(value)) ? Number(value) : fallback;

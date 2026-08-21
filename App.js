@@ -80,7 +80,7 @@ import {
 import { trackKey } from "./src/lib/playback";
 import { ENABLE_CLIPS, ENABLE_DEMO_DATA } from "./src/config/runtime.mjs";
 import { analyticsDwellBucket } from "./src/domain/analyticsPolicy.mjs";
-import { ownedPlayerEnvelope, restoreOwnedPlayerState } from "./src/domain/player-session.mjs";
+import { ownedPlayerEnvelope, playerQueueWithEntryIds, restoreOwnedPlayerState } from "./src/domain/player-session.mjs";
 
 const LEFT = [
   { key: "feed", label: "Feed", icon: "feed" },
@@ -703,7 +703,7 @@ function Root() {
     // The tapped track MUST be what plays: if it's not in the queue it was handed
     // (e.g. an album track played against the top-tracks queue), put it first.
     if (!base.some((m) => trackKey(m) === trackKey(media))) base = [media, ...base];
-    const list = autoplayQueue(media, base);
+    const list = playerQueueWithEntryIds(autoplayQueue(media, base));
     setPlayerMinimized(false);
     setPlayer({ list, explicitCount: Math.min(base.length, list.length), index: Math.max(0, list.findIndex((m) => trackKey(m) === trackKey(media))) });
   };

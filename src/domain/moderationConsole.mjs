@@ -178,18 +178,30 @@ export function canRemoveReportTarget(targetType) {
 }
 
 export function trackReportDetails(report) {
-  if (report?.content?.type === "track") return {
-    title: safeText(report.content.title) || report.targetId || "Song report",
-    artist: safeText(report.content.artist),
-    category: safeText(report.content.category) || "other",
-    note: safeText(report.content.note) || safeText(report.reason),
-    suggestedVideoId: safeText(report.content.suggestedVideoId),
+  const details = (value, fallbackReason = "") => {
+    const provider = lower(value?.provider);
+    const rawSourceId = safeText(value?.sourceId);
+    const sourceId = provider === "deezer" && /^\d{1,20}$/.test(rawSourceId)
+      ? rawSourceId
+      : provider === "spotify" && /^[A-Za-z0-9]{1,64}$/.test(rawSourceId)
+        ? rawSourceId
+        : null;
+    return {
+      title: safeText(value?.title) || report?.targetId || "Song report",
+      artist: safeText(value?.artist),
+      category: safeText(value?.category) || "other",
+      note: safeText(value?.note) || safeText(fallbackReason),
+      suggestedVideoId: safeText(value?.suggestedVideoId),
+      provider: sourceId ? provider : null,
+      sourceId,
+    };
   };
+  if (report?.content?.type === "track") return details(report.content, report.reason);
   try {
     const parsed = JSON.parse(report?.reason || "{}");
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return details(parsed);
   } catch {}
-  return { title: report?.targetId || "Song report", artist: "", category: "other", note: safeText(report?.reason), suggestedVideoId: "" };
+  return details({}, report?.reason);
 }
 
 export function moderationMemberStatus(member, now = Date.now()) {

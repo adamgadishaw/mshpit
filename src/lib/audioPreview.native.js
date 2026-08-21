@@ -4,6 +4,7 @@ import { setAudioModeAsync, useAudioPlayer, useAudioPlayerStatus } from "expo-au
 import {
   clampNativeAudioVolume,
   nativeAudioCompletion,
+  nativeAudioLeaseIsCurrent,
   nativeAudioOperationError,
   nativeAudioSnapshot,
   nativeAudioSource,
@@ -37,6 +38,7 @@ const controlError = (error) => ({
 // Android while web keeps the existing HTMLAudioElement implementation.
 export function useAudioPreview(src, {
   enabled = true,
+  mediaKey = "",
   onEnded,
   onStarted,
   startAt = 0,
@@ -44,6 +46,11 @@ export function useAudioPreview(src, {
 } = {}) {
   const source = nativeAudioSource(src, enabled);
   const sourceKey = source?.uri || null;
+  const playbackKey = sourceKey ? JSON.stringify([sourceKey, String(mediaKey || "")]) : null;
+  const enabledRef = useRef(!!enabled);
+  const playbackKeyRef = useRef(playbackKey);
+  enabledRef.current = !!enabled;
+  playbackKeyRef.current = playbackKey;
   const player = useAudioPlayer(source, { updateInterval: 280 });
   const status = useAudioPlayerStatus(player);
   const [operationError, setOperationError] = useState(null);
@@ -54,6 +61,7 @@ export function useAudioPreview(src, {
   const startedKeyRef = useRef(null);
   const endedKeyRef = useRef(null);
   const startKeyRef = useRef(null);
+  const preparedKeyRef = useRef(null);
 
   onEndedRef.current = onEnded;
   onStartedRef.current = onStarted;
@@ -79,24 +87,32 @@ export function useAudioPreview(src, {
     setOperationError(null);
     setForcedPaused(true);
     startKeyRef.current = null;
+    preparedKeyRef.current = null;
     startedKeyRef.current = null;
     endedKeyRef.current = null;
-  }, [sourceKey]);
+  }, [playbackKey]);
 
   // The SDK hook owns/replaces/releases the native player when source changes.
   // Wait until the source is loaded so an optional resume seek cannot race the
   // decoder, then autoplay only while this app is foreground-active.
   useEffect(() => {
-    const startKey = status?.id && sourceKey ? `${status.id}:${sourceKey}` : null;
+    const startKey = status?.id && playbackKey ? `${status.id}:${playbackKey}` : null;
     if (!startKey || !status?.isLoaded || startKeyRef.current === startKey) return undefined;
     startKeyRef.current = startKey;
     startedKeyRef.current = null;
     endedKeyRef.current = null;
     setOperationError(null);
     let cancelled = false;
+    const leaseIsCurrent = () => nativeAudioLeaseIsCurrent({
+      cancelled,
+      enabled: enabledRef.current,
+      currentKey: playbackKeyRef.current,
+      leaseKey: playbackKey,
+    });
     const begin = async () => {
       try {
         await configureNativeAudioMode();
+        if (!leaseIsCurrent()) return;
         const resumeAt = Number(startAt);
         if (Number.isFinite(resumeAt) && resumeAt > 0.5) {
           const duration = Number(status.duration);
@@ -104,33 +120,40 @@ export function useAudioPreview(src, {
             ? Math.min(resumeAt, duration - 0.3)
             : resumeAt;
           await player.seekTo(target);
+        } else {
+          // expo-audio retains the ended position when its source URI is
+          // unchanged. A new occurrence key must explicitly rewind it.
+          await player.seekTo(0);
         }
-        if (!cancelled && activeRef.current && enabled) {
-          setForcedPaused(false);
-          player.play();
+        if (leaseIsCurrent()) {
+          preparedKeyRef.current = playbackKey;
+          if (activeRef.current) {
+            setForcedPaused(false);
+            player.play();
+          }
         }
       } catch (error) {
-        if (!cancelled) setOperationError({ sourceKey, error: controlError(error) });
+        if (!cancelled) setOperationError({ sourceKey: playbackKey, error: controlError(error) });
       }
     };
     void begin();
     return () => { cancelled = true; };
-  }, [player, status?.id, status?.isLoaded, status?.duration, sourceKey, enabled, startAt]);
+  }, [player, status?.id, status?.isLoaded, playbackKey, enabled, startAt]);
 
   useEffect(() => {
-    const key = status?.id && sourceKey ? `${status.id}:${sourceKey}` : null;
-    if (!key || !status?.playing || forcedPaused || startedKeyRef.current === key) return;
+    const key = status?.id && playbackKey ? `${status.id}:${playbackKey}` : null;
+    if (!key || preparedKeyRef.current !== playbackKey || status?.didJustFinish || !status?.playing || forcedPaused || startedKeyRef.current === key) return;
     startedKeyRef.current = key;
     setOperationError(null);
-    onStartedRef.current?.();
-  }, [status?.id, status?.playing, sourceKey, forcedPaused]);
+    onStartedRef.current?.({ mediaKey, source: sourceKey });
+  }, [status?.id, status?.playing, status?.didJustFinish, playbackKey, forcedPaused, mediaKey, sourceKey]);
 
   useEffect(() => {
-    const completion = nativeAudioCompletion(status, sourceKey, endedKeyRef.current);
+    const completion = nativeAudioCompletion(status, playbackKey, endedKeyRef.current, startedKeyRef.current);
     if (!completion.notify) return;
     endedKeyRef.current = completion.key;
-    onEndedRef.current?.();
-  }, [status?.id, status?.didJustFinish, sourceKey]);
+    onEndedRef.current?.({ mediaKey, source: sourceKey });
+  }, [status?.id, status?.didJustFinish, playbackKey, mediaKey, sourceKey]);
 
   const toggle = () => {
     try {
@@ -141,14 +164,14 @@ export function useAudioPreview(src, {
       }
       void configureNativeAudioMode()
         .then(() => {
-          if (activeRef.current && enabled && sourceKey) {
+          if (activeRef.current && enabledRef.current && playbackKeyRef.current === playbackKey && sourceKey) {
             setForcedPaused(false);
             player.play();
           }
         })
-        .catch((error) => setOperationError({ sourceKey, error: controlError(error) }));
+        .catch((error) => setOperationError({ sourceKey: playbackKey, error: controlError(error) }));
     } catch (error) {
-      setOperationError({ sourceKey, error: controlError(error) });
+      setOperationError({ sourceKey: playbackKey, error: controlError(error) });
     }
   };
   const pause = () => {
@@ -160,14 +183,14 @@ export function useAudioPreview(src, {
     if (!Number.isFinite(target)) return;
     const duration = Number(status?.duration) || target;
     void player.seekTo(Math.max(0, Math.min(target, duration)))
-      .catch((error) => setOperationError({ sourceKey, error: controlError(error) }));
+      .catch((error) => setOperationError({ sourceKey: playbackKey, error: controlError(error) }));
   };
 
   const snapshot = nativeAudioSnapshot(status);
   return {
     ...snapshot,
     playing: snapshot.playing && !forcedPaused,
-    error: snapshot.error || nativeAudioOperationError(operationError, sourceKey),
+    error: snapshot.error || nativeAudioOperationError(operationError, playbackKey),
     toggle,
     pause,
     seek,

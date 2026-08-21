@@ -6,7 +6,7 @@ import { colors, mono, radius, shadow } from "../theme";
 import { analyticsDurationBucket } from "../domain/analyticsPolicy.mjs";
 import { shouldWarmClipPoster } from "../domain/clipPoster.mjs";
 import { clipKeyboardTarget, clipPageIndex, clipPageNeedsMore, clipRenderWindow } from "../domain/clipPaging.mjs";
-import { mediaDescriptorForUri } from "../domain/postMediaDisplay.mjs";
+import { mediaDescriptorForUri, mediaPosterUri } from "../domain/postMediaDisplay.mjs";
 import { pendingVideoMilestones } from "../domain/mediaAnalytics.mjs";
 import Icon from "../components/Icon";
 import Avatar from "../components/Avatar";
@@ -156,7 +156,7 @@ function ClipPage({ post, uri, posterUri, altText, height, active, posterEnabled
             accessible={false}
           />
           {phase !== "ready" ? (
-            <ClipPoster uri={uri} posterUri={posterUri} style={StyleSheet.absoluteFill} enabled={!!posterUri} contain showPlayBadge={false} accessibilityLabel={clipDescription} accessible={false} />
+            <ClipPoster uri={uri} posterUri={posterUri} style={StyleSheet.absoluteFill} enabled={posterEnabled} viewable={active} contain showPlayBadge={false} accessibilityLabel={clipDescription} accessible={false} />
           ) : null}
           {phase === "error" ? (
             <View style={styles.playbackError} accessibilityLiveRegion="assertive">
@@ -250,7 +250,7 @@ export default function ClipsScreen({ onClose, onOpenPost, onOpenProfile, onOpen
     return {
       post: p,
       uri,
-      posterUri: descriptor?.posterUrl || null,
+      posterUri: mediaPosterUri(descriptor),
       altText: descriptor?.altText || "",
     };
   }));

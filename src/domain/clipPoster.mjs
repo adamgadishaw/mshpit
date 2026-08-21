@@ -1,5 +1,6 @@
 const DEFAULT_POSTER_SECONDS = 0.35;
 const MAX_POSTER_SECONDS = 2;
+export const DURABLE_POSTER_RETRY_DELAY_MS = 700;
 
 // A video's first encoded frame is often a black camera start or export slate.
 // Pick a representative frame near the beginning without ever seeking past the
@@ -27,4 +28,18 @@ export function clipPosterPhase({ enabled = true, hasVisual = false, error = nul
   if (hasVisual) return "ready";
   if (error || status === "error") return "error";
   return "loading";
+}
+
+export function durablePosterFailurePlan(failures = 0) {
+  const nextFailures = Math.max(0, Math.floor(Number(failures) || 0)) + 1;
+  return nextFailures < 2
+    ? { failures: nextFailures, terminal: false, retryAfterMs: DURABLE_POSTER_RETRY_DELAY_MS }
+    : { failures: nextFailures, terminal: true, retryAfterMs: 0 };
+}
+
+export function durablePosterEventOwnsInstance(state, { uri = null, retryVersion = 0 } = {}) {
+  return !!state
+    && state.uri === uri
+    && state.retryVersion === retryVersion
+    && !state.retrying;
 }

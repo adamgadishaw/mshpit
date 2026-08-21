@@ -13,8 +13,10 @@ const {
   artistRow,
   artistStmts,
   db,
+  normName,
 } = await import("./db.js");
 const {
+  YOUTUBE_MATCH_CACHE_VERSION,
   invalidateYouTubeTrack,
   normalizeYouTubeCacheText,
   parseYouTubeVideoId,
@@ -237,13 +239,55 @@ test("YouTube scoring gates on the creator and the song, not the title alone", (
   assert.equal(vevo.rejected, false);
   assert.ok(vevo.reasons.includes("artist-channel"));
 
-  // A label upload that leads with the artist ("Artist - Song") also passes even
-  // when the channel is not the artist's.
+  // A label/fan upload cannot borrow creator identity merely by formatting the
+  // title as "Artist - Song". YouTube exposes the uploader in channelTitle, so
+  // an unrelated channel remains unproven even if it writes a perfect title.
   const labelLead = scoreYouTubeCandidate(
     youtubeCandidate("label00001", "Nelly Furtado - Say It Right (Official Music Video)", "GeffenVEVO"),
     { title: "Say It Right", artist: "Nelly Furtado" },
   );
-  assert.equal(labelLead.rejected, false);
+  assert.equal(labelLead.rejected, true);
+  assert.deepEqual(labelLead.reasons, ["wrong-creator"]);
+
+  const hnmTitleSpoof = scoreYouTubeCandidate(
+    youtubeCandidate("Bu5DMJ8LJnk", "J. Cole - MIDDLE CHILD (Official Audio)", "HNM Magazine"),
+    { title: "MIDDLE CHILD", artist: "J. Cole" },
+  );
+  assert.equal(hnmTitleSpoof.rejected, true, "the concrete wrong uploader cannot impersonate J. Cole through its title");
+  assert.deepEqual(hnmTitleSpoof.reasons, ["wrong-creator"]);
+
+  const shortNameSpoof = scoreYouTubeCandidate(
+    youtubeCandidate("u2spoof0001", "U2 - One (Official Audio)", "Unrelated Uploads"),
+    { title: "One", artist: "U2" },
+  );
+  const shortNameOfficial = scoreYouTubeCandidate(
+    youtubeCandidate("u2official1", "U2 - One (Official Audio)", "U2"),
+    { title: "One", artist: "U2" },
+  );
+  assert.deepEqual(shortNameSpoof.reasons, ["wrong-creator"], "short artist names remain creator-gated");
+  assert.equal(shortNameOfficial.rejected, false);
+
+  const unicodeSpoof = scoreYouTubeCandidate(
+    youtubeCandidate("unicodebad1", "宇多田ヒカル - First Love", "Unrelated Uploads"),
+    { title: "First Love", artist: "宇多田ヒカル" },
+  );
+  const unicodeTopic = scoreYouTubeCandidate(
+    youtubeCandidate("unicodegood", "宇多田ヒカル - First Love", "宇多田ヒカル - Topic"),
+    { title: "First Love", artist: "宇多田ヒカル" },
+  );
+  assert.deepEqual(unicodeSpoof.reasons, ["wrong-creator"], "non-Latin names remain creator-gated");
+  assert.equal(unicodeTopic.rejected, false);
+
+  const punctuationOfficial = scoreYouTubeCandidate(
+    youtubeCandidate("bangofficial", "!!! - Me and Giuliani Down by the School Yard", "!!! - Topic"),
+    { title: "Me and Giuliani Down by the School Yard", artist: "!!!" },
+  );
+  const punctuationSpoof = scoreYouTubeCandidate(
+    youtubeCandidate("bangspoof001", "!!! - Me and Giuliani Down by the School Yard", "!!! Fan Uploads"),
+    { title: "Me and Giuliani Down by the School Yard", artist: "!!!" },
+  );
+  assert.equal(punctuationOfficial.rejected, false, "symbol-only artist names retain an exact Topic identity");
+  assert.deepEqual(punctuationSpoof.reasons, ["wrong-creator"]);
 
   // Right creator, wrong song is still the wrong result.
   const wrongSong = scoreYouTubeCandidate(
@@ -252,6 +296,181 @@ test("YouTube scoring gates on the creator and the song, not the title alone", (
   );
   assert.equal(wrongSong.rejected, true);
   assert.deepEqual(wrongSong.reasons, ["title-mismatch"]);
+});
+
+test("YouTube scoring rejects unrequested alternate recordings but permits an explicitly requested version", () => {
+  for (const [suffix, expectedReason] of [
+    ["Mashup", "mashup"],
+    ["Medley", "medley"],
+    ["Cover", "cover"],
+    ["Remix", "remix-variant"],
+    ["Bootleg", "remix-variant"],
+    ["Sped Up", "alternate-recording"],
+  ]) {
+    const assessment = scoreYouTubeCandidate(
+      youtubeCandidate(`variant${suffix.length}`.padEnd(11, "0").slice(0, 11), `J. Cole - MIDDLE CHILD (${suffix})`, "J. Cole"),
+      { title: "MIDDLE CHILD", artist: "J. Cole" },
+    );
+    assert.equal(assessment.rejected, true, `${suffix} must not replace the requested studio recording`);
+    assert.deepEqual(assessment.reasons, [expectedReason]);
+  }
+
+  const requestedRemix = scoreYouTubeCandidate(
+    youtubeCandidate("remixokay1", "J. Cole - MIDDLE CHILD (Remix)", "J. Cole"),
+    { title: "MIDDLE CHILD Remix", artist: "J. Cole" },
+  );
+  assert.equal(requestedRemix.rejected, false, "an explicit remix request may resolve to that remix");
+
+  for (const prefix of ["Live at Slane Castle", "Acoustic", "Remix", "Cover"]) {
+    const prefixed = scoreYouTubeCandidate(
+      youtubeCandidate(`prefix${prefix.length}`.padEnd(11, "0").slice(0, 11), `${prefix} - One`, "U2 - Topic"),
+      { title: "One", artist: "U2" },
+    );
+    assert.equal(prefixed.rejected, true, `${prefix} before a separator cannot bypass the variant gate`);
+  }
+});
+
+test("YouTube recording identity keeps feature credits distinct", () => {
+  const solo = scoreYouTubeCandidate(
+    youtubeCandidate("levitating01", "Dua Lipa - Levitating (Official Audio)", "Dua Lipa - Topic"),
+    { title: "Levitating", artist: "Dua Lipa" },
+  );
+  const feature = scoreYouTubeCandidate(
+    youtubeCandidate("levitating02", "Dua Lipa - Levitating (feat. DaBaby)", "Dua Lipa - Topic"),
+    { title: "Levitating", artist: "Dua Lipa" },
+  );
+  const requestedFeature = scoreYouTubeCandidate(
+    youtubeCandidate("levitating02", "Dua Lipa - Levitating (feat. DaBaby)", "Dua Lipa - Topic"),
+    { title: "Levitating feat. DaBaby", artist: "Dua Lipa" },
+  );
+  assert.equal(solo.rejected, false);
+  assert.deepEqual(feature.reasons, ["title-mismatch"]);
+  assert.equal(requestedFeature.rejected, false);
+  assert.equal(selectCatalogueTrack("Levitating", [{ videoId: "levitating02", title: "Levitating (feat. DaBaby)" }]), null);
+  assert.equal(selectCatalogueTrack("Levitating feat. DaBaby", [{ videoId: "levitating02", title: "Levitating (feat. DaBaby)" }]).videoId, "levitating02");
+  assert.equal(scoreYouTubeCandidate(
+    youtubeCandidate("levitating02", "Dua Lipa - Levitating ft. DaBaby", "Dua Lipa - Topic"),
+    { title: "Levitating (featuring DaBaby)", artist: "Dua Lipa" },
+  ).rejected, false, "feat/ft/featuring markers share one exact credit identity");
+  assert.deepEqual(scoreYouTubeCandidate(
+    youtubeCandidate("levitating03", "Dua Lipa - Levitating (feat. Missy Elliott)", "Dua Lipa - Topic"),
+    { title: "Levitating feat. DaBaby", artist: "Dua Lipa" },
+  ).reasons, ["title-mismatch"]);
+
+  const providerProved = scoreYouTubeCandidate(
+    youtubeCandidate("beautybeat1", "Beauty And A Beat (feat. Nicki Minaj)", "Justin Bieber - Topic", { duration: "PT3M48S" }),
+    {
+      title: "Beauty And A Beat",
+      artist: "Justin Bieber",
+      expectedDurationSec: 228,
+      providerFeaturedCredits: ["Nicki Minaj"],
+    },
+  );
+  assert.equal(providerProved.rejected, false);
+  assert.ok(providerProved.reasons.includes("provider-omitted-feature-credit"));
+});
+
+test("licensed collaborations may resolve from an exact participating artist channel", () => {
+  const collaboration = scoreYouTubeCandidate(
+    youtubeCandidate("aptvideo001", "ROSÉ & Bruno Mars - APT. (Official Music Video)", "ROSÉ"),
+    { title: "APT.", artist: "ROSÉ & Bruno Mars" },
+  );
+  const unrelated = scoreYouTubeCandidate(
+    youtubeCandidate("aptvideo002", "ROSÉ & Bruno Mars - APT. (Official Music Video)", "Fan Uploads"),
+    { title: "APT.", artist: "ROSÉ & Bruno Mars" },
+  );
+  assert.equal(collaboration.rejected, false);
+  assert.deepEqual(unrelated.reasons, ["wrong-creator"]);
+});
+
+test("YouTube matching preserves non-Latin song identity on a trusted artist channel", () => {
+  const rightSong = scoreYouTubeCandidate(
+    youtubeCandidate("unicodehit1", "宇多田ヒカル - 初恋 (Official Audio)", "宇多田ヒカル - Topic"),
+    { title: "初恋", artist: "宇多田ヒカル", trustedChannel: true },
+  );
+  const wrongSong = scoreYouTubeCandidate(
+    youtubeCandidate("unicodemiss", "宇多田ヒカル - First Love (Official Audio)", "宇多田ヒカル - Topic"),
+    { title: "初恋", artist: "宇多田ヒカル", trustedChannel: true },
+  );
+  assert.equal(rightSong.rejected, false);
+  assert.equal(wrongSong.rejected, true, "a trusted channel proves the creator, never a different song");
+  assert.deepEqual(wrongSong.reasons, ["title-mismatch"]);
+
+  const picked = selectCatalogueTrack("初恋", [
+    { videoId: "wrongunicode", title: "First Love (Official Audio)" },
+    { videoId: "rightunicode", title: "初恋 (Official Audio)" },
+  ]);
+  assert.equal(picked.videoId, "rightunicode");
+});
+
+test("YouTube title identity rejects prefix-neighbor songs but keeps recognized decoration", () => {
+  const wrongNeighbor = scoreYouTubeCandidate(
+    youtubeCandidate("onetreehill", "U2 - One Tree Hill (Official Audio)", "U2 - Topic"),
+    { title: "One", artist: "U2" },
+  );
+  const exactDecorated = scoreYouTubeCandidate(
+    youtubeCandidate("oneofficial", "U2 - One (Official Audio)", "U2 - Topic"),
+    { title: "One", artist: "U2" },
+  );
+  assert.deepEqual(wrongNeighbor.reasons, ["title-mismatch"]);
+  assert.equal(exactDecorated.rejected, false);
+  assert.equal(selectCatalogueTrack("One", [{ videoId: "onetreehill", title: "One Tree Hill" }]), null);
+  assert.equal(selectCatalogueTrack("One", [{ videoId: "oneofficial", title: "One (Official Audio)" }]).videoId, "oneofficial");
+
+  const bandNamedLive = scoreYouTubeCandidate(
+    youtubeCandidate("liveband001", "Live - Lightning Crashes (Official Video)", "LiveVEVO"),
+    { title: "Lightning Crashes", artist: "Live" },
+  );
+  assert.equal(bandNamedLive.rejected, false, "an artist name is not mistaken for a live-recording qualifier");
+
+  const selfTitled = scoreYouTubeCandidate(
+    youtubeCandidate("4YbD40UMwHQ", "Black Sabbath (2014 Remaster)", "Black Sabbath - Topic"),
+    { title: "Black Sabbath - 2014 Remaster", artist: "Black Sabbath", trustedChannel: true },
+  );
+  const artistPrefixTitle = scoreYouTubeCandidate(
+    youtubeCandidate("publicenemy1", "Public Enemy No. 1", "Public Enemy - Topic"),
+    { title: "Public Enemy No. 1", artist: "Public Enemy", trustedChannel: true },
+  );
+  assert.equal(selfTitled.rejected, false, "a self-titled song retains the unstripped title identity");
+  assert.equal(artistPrefixTitle.rejected, false, "an artist-name prefix inside the real song title is retained");
+});
+
+test("YouTube title identity preserves semantic kana marks", () => {
+  const wrongKana = scoreYouTubeCandidate(
+    youtubeCandidate("kanawrong01", "架空バンド - かみ (Official Audio)", "架空バンド - Topic"),
+    { title: "がみ", artist: "架空バンド" },
+  );
+  const rightKana = scoreYouTubeCandidate(
+    youtubeCandidate("kanaright01", "架空バンド - がみ (Official Audio)", "架空バンド - Topic"),
+    { title: "がみ", artist: "架空バンド" },
+  );
+  assert.deepEqual(wrongKana.reasons, ["title-mismatch"], "dakuten is semantic and cannot be discarded");
+  assert.equal(rightKana.rejected, false);
+  assert.equal(selectCatalogueTrack("がみ", [{ videoId: "kanawrong01", title: "かみ" }]), null);
+  assert.equal(selectCatalogueTrack("がみ", [{ videoId: "kanaright01", title: "がみ (Official Audio)" }]).videoId, "kanaright01");
+
+  const wrongIndic = scoreYouTubeCandidate(
+    youtubeCandidate("indicwrong1", "कलाकार - क (Official Audio)", "कलाकार - Topic"),
+    { title: "कि", artist: "कलाकार" },
+  );
+  const rightIndic = scoreYouTubeCandidate(
+    youtubeCandidate("indicright1", "कलाकार - कि (Official Audio)", "कलाकार - Topic"),
+    { title: "कि", artist: "कलाकार" },
+  );
+  assert.deepEqual(wrongIndic.reasons, ["title-mismatch"], "Indic vowel marks remain part of the song identity");
+  assert.equal(rightIndic.rejected, false);
+  assert.equal(selectCatalogueTrack("कि", [{ videoId: "indicwrong1", title: "क" }]), null);
+  assert.equal(selectCatalogueTrack("कि", [{ videoId: "indicright1", title: "कि (Official Audio)" }]).videoId, "indicright1");
+});
+
+test("symbol-only song titles retain an exact identity", () => {
+  const exact = scoreYouTubeCandidate(
+    youtubeCandidate("symbolsong1", "Symbol Artist - !!! (Official Audio)", "Symbol Artist - Topic"),
+    { title: "!!!", artist: "Symbol Artist" },
+  );
+  assert.equal(exact.rejected, false);
+  assert.equal(selectCatalogueTrack("!!!", [{ videoId: "symbolsong1", title: "!!! (Official Audio)" }]).videoId, "symbolsong1");
+  assert.equal(selectCatalogueTrack("!!!", [{ videoId: "questions01", title: "??? (Official Audio)" }]), null);
 });
 
 test("the artist's own channel is picked over lookalike channels", () => {
@@ -263,6 +482,18 @@ test("the artist's own channel is picked over lookalike channels", () => {
   assert.equal(selectArtistChannel("Korn", items).channelId, "UC_topic", "the auto-generated Topic channel wins");
   assert.equal(selectArtistChannel("Korn", [items[0], items[2]]).channelId, "UC_vevo", "VEVO is next best");
   assert.equal(selectArtistChannel("Korn", [{ id: { channelId: "UC_x" }, snippet: { title: "Reaction Central" } }]), null);
+  assert.equal(selectArtistChannel("U2", [
+    { id: { channelId: "UC_u2_spoof" }, snippet: { title: "U2 Fan Uploads" } },
+    { id: { channelId: "UC_u2" }, snippet: { title: "U2" } },
+  ]).channelId, "UC_u2", "short names require an exact recognized channel identity");
+  assert.equal(selectArtistChannel("宇多田ヒカル", [
+    { id: { channelId: "UC_unicode_spoof" }, snippet: { title: "宇多田ヒカル Fans" } },
+    { id: { channelId: "UC_unicode_topic" }, snippet: { title: "宇多田ヒカル - Topic" } },
+  ]).channelId, "UC_unicode_topic", "Unicode creator names survive identity normalization");
+  assert.equal(selectArtistChannel("!!!", [
+    { id: { channelId: "UC_bang_spoof" }, snippet: { title: "!!! Fan Uploads" } },
+    { id: { channelId: "UC_bang_topic" }, snippet: { title: "!!! - Topic" } },
+  ]).channelId, "UC_bang_topic", "symbol-only names use exact display identity rather than collapsing empty");
 });
 
 test("catalogue matching picks the studio track over decorated and live variants", () => {
@@ -415,6 +646,185 @@ test("track pins parse real YouTube link shapes and share one identity per song"
   assert.equal(parseYouTubeVideoId("https://www.youtube.com/watch?v=short"), null, "malformed ids are rejected");
   assert.equal(trackOverrideKey("BIRDS", "Turnstile"), trackOverrideKey("Birds ", " TURNSTILE"), "spelling variants share a key");
   assert.notEqual(trackOverrideKey("Birds", "Turnstile"), trackOverrideKey("Birds", "Koyo"), "different artists never collide");
+  const nonLatinKeys = [
+    trackOverrideKey("初恋", "宇多田ヒカル"),
+    trackOverrideKey("群青", "ヨルシカ"),
+    trackOverrideKey("봄날", "방탄소년단"),
+  ];
+  assert.equal(new Set(nonLatinKeys).size, 3, "Unicode pins retain separate song/artist identities");
+});
+
+test("provider recording proof keeps omitted feature credits exact and fails closed when proof is unavailable", async () => {
+  const artist = "Proofed Pop Artist";
+  const title = "Shared Recording";
+  const norm = normName(artist);
+  const channelId = "UC_proofed_recording";
+  const featureSourceId = "1234638792";
+  const soloSourceId = "1124841682";
+  const outageSourceId = "9990001112";
+  const soloId = "solo1234567";
+  const featureId = "feat1234567";
+  const otherId = "other123456";
+  let proofOutage = true;
+  artistStmts.upsert.run(artistRow(norm, { name: artist }, "test"));
+  artistStmts.setChannel.run(channelId, Date.now(), "youtube_v4", norm);
+  const providerCalls = new Map();
+  const candidates = [
+    youtubeCandidate(soloId, title, `${artist} - Topic`, { duration: "PT3M23S", views: "900000000" }),
+    youtubeCandidate(featureId, `${title} (feat. Guest Rapper)`, `${artist} - Topic`, { duration: "PT3M23S", views: "1000" }),
+    youtubeCandidate(otherId, "Different Recording (feat. Guest Rapper)", `${artist} - Topic`, { duration: "PT3M23S" }),
+  ];
+  const fetchImpl = async (url) => {
+    const parsed = new URL(String(url));
+    if (parsed.hostname === "api.deezer.com") {
+      const sourceId = parsed.pathname.split("/").pop();
+      providerCalls.set(sourceId, (providerCalls.get(sourceId) || 0) + 1);
+      if (sourceId === outageSourceId && proofOutage) return { ok: false, status: 503, json: async () => ({}) };
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          id: Number(sourceId),
+          title,
+          duration: 203,
+          artist: { name: artist },
+          contributors: sourceId === featureSourceId || sourceId === outageSourceId
+            ? [{ name: artist, role: "Main" }, { name: "Guest Rapper", role: "Featured" }]
+            : [{ name: artist, role: "Main" }],
+        }),
+      };
+    }
+    if (parsed.pathname.endsWith("/channels")) {
+      return { ok: true, status: 200, json: async () => ({ items: [{ contentDetails: { relatedPlaylists: { uploads: "UU_proofed_recording" } } }] }) };
+    }
+    if (parsed.pathname.endsWith("/playlistItems")) {
+      return { ok: true, status: 200, json: async () => ({ items: candidates.map((item) => ({
+        snippet: { title: item.snippet.title, resourceId: { videoId: item.id } },
+      })) }) };
+    }
+    if (parsed.pathname.endsWith("/search")) {
+      return { ok: true, status: 200, json: async () => ({
+        items: candidates.map((item) => ({ id: { videoId: item.id } })),
+      }) };
+    }
+    if (parsed.pathname.endsWith("/videos")) {
+      const ids = new Set((parsed.searchParams.get("id") || "").split(","));
+      return { ok: true, status: 200, json: async () => ({ items: candidates.filter((item) => ids.has(item.id)) }) };
+    }
+    throw new Error(`unexpected proof fixture endpoint: ${parsed}`);
+  };
+
+  const feature = await resolveYouTubeTrack(title, artist, {
+    apiKey: "test-key",
+    allowSearch: false,
+    expectedDurationSec: 203,
+    sourceProvider: "deezer",
+    sourceId: featureSourceId,
+    fetchImpl,
+  });
+  assert.equal(feature.videoId, featureId,
+    "authoritative Featured metadata overrides the higher-view solo candidate for that exact provider recording");
+
+  const solo = await resolveYouTubeTrack(title, artist, {
+    apiKey: "test-key",
+    allowSearch: false,
+    expectedDurationSec: 203,
+    sourceProvider: "deezer",
+    sourceId: soloSourceId,
+    fetchImpl,
+  });
+  assert.equal(solo.videoId, soloId, "verified no-feature metadata preserves the solo recording");
+  assert.notEqual(
+    youtubeCacheKey(title, artist, `deezer:${featureSourceId}`),
+    youtubeCacheKey(title, artist, `deezer:${soloSourceId}`),
+    "provider recordings with the same display title have isolated shared cache keys",
+  );
+
+  const unavailable = await resolveYouTubeTrack(title, artist, {
+    apiKey: "test-key",
+    allowSearch: true,
+    expectedDurationSec: 203,
+    sourceProvider: "deezer",
+    sourceId: outageSourceId,
+    fetchImpl,
+  });
+  assert.equal(unavailable.videoId, null);
+  assert.deepEqual(unavailable, { videoId: null, status: "provider_paused", retryable: true },
+    "a proof outage is temporary and falls back to the preview, never a different recording");
+  assert.equal(
+    db.prepare("SELECT 1 FROM yt_cache WHERE key=?").get(youtubeCacheKey(title, artist, `deezer:${outageSourceId}`)),
+    undefined,
+    "an indeterminate provider identity must never become a shared three-day YouTube miss",
+  );
+
+  proofOutage = false;
+  const recovered = await resolveYouTubeTrack(title, artist, {
+    apiKey: "test-key",
+    allowSearch: false,
+    expectedDurationSec: 203,
+    sourceProvider: "deezer",
+    sourceId: outageSourceId,
+    fetchImpl,
+  });
+  assert.equal(recovered.videoId, featureId, "the next healthy request re-fetches proof and resolves the exact feature recording");
+  assert.equal(providerCalls.get(outageSourceId), 2, "proof recovery is not hidden behind a negative YouTube cache row");
+
+  const poisoned = await resolveYouTubeTrack("Different Recording", artist, {
+    apiKey: "test-key",
+    allowSearch: false,
+    expectedDurationSec: 203,
+    sourceProvider: "deezer",
+    sourceId: featureSourceId,
+    fetchImpl,
+  });
+  assert.equal(poisoned.videoId, null, "a proof cached for one title cannot authorize another title");
+  assert.equal(providerCalls.get(featureSourceId), 2, "the mismatched identity cannot reuse the first title's proof cache entry");
+});
+
+test("an actor-local exclusion can choose a catalogue alternate without rewriting the shared cache", async () => {
+  const title = "Guest Alternate Song";
+  const artist = "Guest Alternate Artist";
+  const failedId = "guestfail01";
+  const alternateId = "guestgood01";
+  const key = youtubeCacheKey(title, artist);
+  const at = Date.now();
+  artistStmts.upsert.run(artistRow(artist, { name: artist, popularity: 30 }, "test"));
+  artistStmts.setChannel.run("UC_guest_alternate", at, "youtube_v4", artist.toLowerCase());
+  db.prepare(`INSERT OR REPLACE INTO yt_cache
+    (key,video_id,updated_at,metadata,score,expires_at,rejected_ids) VALUES (?,?,?,?,?,?,?)`).run(
+    key,
+    failedId,
+    at,
+    JSON.stringify({ title, channel: `${artist} - Topic`, matchVersion: YOUTUBE_MATCH_CACHE_VERSION }),
+    99,
+    at + 24 * 60 * 60 * 1000,
+    "[]",
+  );
+  const result = await resolveYouTubeTrack(title, artist, {
+    apiKey: "test-key",
+    allowSearch: false,
+    excludedVideoIds: [failedId],
+    fetchImpl: async (url) => {
+      const value = String(url);
+      const parsed = new URL(value);
+      if (value.includes("/channels?") && parsed.searchParams.get("part") === "contentDetails") {
+        return { ok: true, status: 200, json: async () => ({ items: [{ contentDetails: { relatedPlaylists: { uploads: "UU_guest_alternate" } } }] }) };
+      }
+      if (value.includes("/playlistItems?")) {
+        return { ok: true, status: 200, json: async () => ({ items: [{ snippet: { title, resourceId: { videoId: alternateId } } }] }) };
+      }
+      if (value.includes("/videos?")) {
+        return { ok: true, status: 200, json: async () => ({ items: [youtubeCandidate(alternateId, `${artist} - ${title} (Official Audio)`, `${artist} - Topic`)] }) };
+      }
+      throw new Error(`guest catalogue recovery must not search: ${value}`);
+    },
+  });
+  assert.equal(result.videoId, alternateId);
+  assert.equal(result.status, "artist_catalogue");
+  assert.deepEqual({ ...db.prepare("SELECT video_id,rejected_ids FROM yt_cache WHERE key=?").get(key) }, {
+    video_id: failedId,
+    rejected_ids: "[]",
+  });
 });
 
 test("YouTube post attachments canonicalize links and keep provider metadata", async () => {
@@ -468,7 +878,7 @@ test("a discovered Topic channel is stored on the artist and never re-searched",
   const stored = artistStmts.getChannel.get("channel keeper");
   assert.equal(stored.channelId, "UC_keeper");
   assert.ok(stored.at >= now);
-  assert.equal(stored.source, "youtube");
+  assert.equal(stored.source, "youtube_v4");
 
   // A DIFFERENT song by the same artist resolves from the cached catalogue with
   // no further channel discovery search.
@@ -523,6 +933,32 @@ test("a complete catalogue that lacks the song skips the in-channel search", asy
   assert.equal(songSearches, 1, "one global search, no redundant in-channel search");
 });
 
+test("fresh legacy channel mappings are revalidated under the current Unicode creator policy", async () => {
+  artistStmts.upsert.run(artistRow("Si", { name: "Si", popularity: 35 }, "test"));
+  artistStmts.setChannel.run("UC_legacy_accent", Date.now(), "youtube", "si");
+  let snippetChecks = 0;
+  const result = await resolveYouTubeTrack("Home", "Si", {
+    apiKey: "test-key",
+    allowSearch: false,
+    fetchImpl: async (url) => {
+      const value = String(url);
+      if (value.includes("/channels?") && new URL(value).searchParams.get("part") === "snippet") {
+        snippetChecks += 1;
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ items: [{ id: "UC_legacy_accent", snippet: { title: "Sí - Topic" } }] }),
+        };
+      }
+      throw new Error(`wrong legacy channel must not reach catalogue/video reads: ${value}`);
+    },
+  });
+  assert.equal(result.videoId, null);
+  assert.equal(result.status, "search_deferred");
+  assert.equal(snippetChecks, 1);
+  assert.equal(artistStmts.getChannel.get("si").channelId, null);
+});
+
 test("YouTube cache identity normalizes harmless Unicode and spacing without collapsing distinct words", () => {
   assert.equal(normalizeYouTubeCacheText("  ARTIST\tName  "), "artist name");
   assert.equal(
@@ -546,7 +982,7 @@ test("YouTube cache identity normalizes harmless Unicode and spacing without col
   );
 });
 
-test("only unambiguous legacy YouTube cache rows migrate without extending retention", async () => {
+test("only unambiguous legacy YouTube cache rows migrate and must pass the current scorer", async () => {
   const now = Date.now();
   const title = "Legacy Cache Song";
   const artist = "Legacy Cache Artist";
@@ -564,16 +1000,27 @@ test("only unambiguous legacy YouTube cache rows migrate without extending reten
     expiresAt,
     "[]",
   );
+  let validations = 0;
   const result = await resolveYouTubeTrack(title, artist, {
     apiKey: "test-key",
-    fetchImpl: async () => { throw new Error("a fresh legacy row must not fetch"); },
+    fetchImpl: async (url) => {
+      validations += 1;
+      assert.match(String(url), /\/videos\?/);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ items: [youtubeCandidate("legacy00001", title, `${artist} - Topic`)] }),
+      };
+    },
   });
   assert.equal(result.videoId, "legacy00001");
-  assert.equal(result.status, "cached");
+  assert.equal(result.status, "validated");
+  assert.equal(validations, 1, "a pre-version cache ID is never replayed without current metadata validation");
   assert.equal(db.prepare("SELECT 1 FROM yt_cache WHERE key=?").get(legacyKey), undefined);
   const migrated = db.prepare("SELECT * FROM yt_cache WHERE key=?").get(youtubeCacheKey(title, artist));
-  assert.equal(migrated.updated_at, updatedAt);
-  assert.equal(migrated.expires_at, expiresAt);
+  assert.ok(migrated.updated_at >= updatedAt);
+  assert.ok(migrated.expires_at > expiresAt, "a successful fresh API validation may renew the policy-bounded row");
+  assert.equal(JSON.parse(migrated.metadata).matchVersion, YOUTUBE_MATCH_CACHE_VERSION);
 
   const ambiguousLegacyKey = "yt:v2:a|b|c";
   db.prepare(`INSERT OR REPLACE INTO yt_cache
@@ -592,6 +1039,115 @@ test("only unambiguous legacy YouTube cache rows migrate without extending reten
   assert.ok(db.prepare("SELECT 1 FROM yt_cache WHERE key=?").get(ambiguousLegacyKey),
     "an ambiguous v2 row is never guessed into either colliding v3 identity");
   assert.equal(db.prepare("SELECT 1 FROM yt_cache WHERE key=?").get(youtubeCacheKey("c", "a|b")), undefined);
+});
+
+test("a prior matcher miss is retired instead of suppressing the corrected resolver", async () => {
+  const title = "初恋";
+  const artist = "宇多田ヒカル";
+  const previousKey = `yt:v${YOUTUBE_MATCH_CACHE_VERSION - 1}:${JSON.stringify([
+    normalizeYouTubeCacheText(artist),
+    normalizeYouTubeCacheText(title),
+  ])}`;
+  const at = Date.now();
+  db.prepare(`INSERT OR REPLACE INTO yt_cache
+    (key,video_id,updated_at,metadata,score,expires_at,rejected_ids)
+    VALUES (?,NULL,?,NULL,NULL,?,?)`).run(previousKey, at, at + 60_000, "[]");
+  const result = await resolveYouTubeTrack(title, artist, { apiKey: "" });
+  assert.deepEqual(result, { videoId: null, status: "unconfigured" },
+    "the current matcher is allowed to resolve instead of replaying an obsolete not_found");
+  assert.equal(db.prepare("SELECT 1 FROM yt_cache WHERE key=?").get(previousKey), undefined);
+  assert.equal(db.prepare("SELECT 1 FROM yt_cache WHERE key=?").get(youtubeCacheKey(title, artist)), undefined,
+    "a prior-version negative is never copied under the current key");
+});
+
+test("the retired v3 J. Cole cache cannot replay the HNM recording and resolves the official upload", async () => {
+  const title = "MIDDLE CHILD";
+  const artist = "J. Cole";
+  const wrongId = "Bu5DMJ8LJnk";
+  const officialId = "e8CLsYzE5wk";
+  const currentTime = Date.now();
+  const oldKey = `yt:v3:${JSON.stringify([
+    normalizeYouTubeCacheText(artist),
+    normalizeYouTubeCacheText(title),
+  ])}`;
+  assert.ok(youtubeCacheKey(title, artist).startsWith(`yt:v${YOUTUBE_MATCH_CACHE_VERSION}:`));
+
+  // Reproduce the production failure: a fresh positive v3 row points at an
+  // unrelated HNM Magazine uploader whose title begins with the requested act.
+  db.prepare(`INSERT OR REPLACE INTO yt_cache
+    (key,video_id,updated_at,metadata,score,expires_at,rejected_ids)
+    VALUES (?,?,?,?,?,?,?)`).run(
+    oldKey,
+    wrongId,
+    currentTime,
+    JSON.stringify({ title: "J. Cole - MIDDLE CHILD", channel: "HNM Magazine", reasons: ["title-match"], duration: 213 }),
+    97,
+    currentTime + 7 * 24 * 60 * 60 * 1000,
+    "[]",
+  );
+
+  // Keep this regression on the global candidate path: a fresh structural
+  // channel miss skips Wikidata/catalogue discovery and lets the search result
+  // set prove that only the official/Topic candidate can win.
+  if (!artistStmts.byNorm.get("j. cole")) {
+    artistStmts.upsert.run(artistRow("J. Cole", { name: "J. Cole" }, "test"));
+  }
+  artistStmts.setChannel.run(null, currentTime, "youtube", "j. cole");
+
+  const withoutValidation = await resolveYouTubeTrack(title, artist, { apiKey: "" });
+  assert.deepEqual(withoutValidation, { videoId: null, status: "unconfigured" },
+    "a retired positive is never used as an offline/stale fallback before current validation");
+
+  const wrong = youtubeCandidate(wrongId, "J. Cole - MIDDLE CHILD", "HNM Magazine", { duration: "PT3M33S", views: "9000000" });
+  const official = youtubeCandidate(officialId, "J. Cole - MIDDLE CHILD (Official Audio)", "J. Cole - Topic", { duration: "PT3M34S", views: "200000000" });
+  const videoLookups = [];
+  let globalSearches = 0;
+  const fetchImpl = async (url) => {
+    const parsed = new URL(String(url));
+    if (parsed.pathname.endsWith("/search")) {
+      assert.equal(parsed.searchParams.get("type"), "video");
+      globalSearches += 1;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ items: [
+          { id: { videoId: wrongId } },
+          { id: { videoId: officialId } },
+        ] }),
+      };
+    }
+    if (parsed.pathname.endsWith("/videos")) {
+      const ids = (parsed.searchParams.get("id") || "").split(",").filter(Boolean);
+      videoLookups.push(ids);
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ items: [wrong, official].filter((item) => ids.includes(item.id)) }),
+      };
+    }
+    throw new Error(`unexpected YouTube endpoint: ${parsed.pathname}`);
+  };
+
+  const resolved = await resolveYouTubeTrack(title, artist, { apiKey: "test-key", fetchImpl });
+  assert.equal(resolved.videoId, officialId);
+  assert.equal(resolved.status, "resolved");
+  assert.equal(globalSearches, 1);
+  assert.deepEqual(videoLookups, [[wrongId], [officialId]],
+    "the retired ID is validated once, rejected, and excluded from the candidate details batch");
+
+  assert.equal(db.prepare("SELECT 1 FROM yt_cache WHERE key=?").get(oldKey), undefined, "the v3 positive row is evicted");
+  const cached = db.prepare("SELECT * FROM yt_cache WHERE key=?").get(youtubeCacheKey(title, artist));
+  const metadata = JSON.parse(cached.metadata);
+  assert.equal(cached.video_id, officialId);
+  assert.equal(metadata.channel, "J. Cole - Topic");
+  assert.equal(metadata.matchVersion, YOUTUBE_MATCH_CACHE_VERSION);
+  assert.ok(JSON.parse(cached.rejected_ids).includes(wrongId));
+
+  const replay = await resolveYouTubeTrack(title, artist, {
+    apiKey: "test-key",
+    fetchImpl: async () => { throw new Error("the current validated match should be a cache hit"); },
+  });
+  assert.deepEqual(replay, { videoId: officialId, status: "cached", confidence: resolved.confidence });
 });
 
 test("Deezer preview cache keys keep pipe-bearing artist/title tuples separate", async () => {
@@ -788,7 +1344,7 @@ test("an uncatalogued artist refreshes a known channel with channels.list instea
   const now = Date.now();
   db.prepare(`INSERT OR REPLACE INTO provider_cache (key,data,updated_at,expires_at)
     VALUES (?,?,?,?)`).run(
-    `yt:channel:v2:${normalizeYouTubeCacheText(artist)}`,
+    `yt:channel:v3:${normalizeYouTubeCacheText(artist)}`,
     JSON.stringify({
       channelId: "UC_cheap_refresh",
       title: `${artist} - Topic`,
@@ -837,7 +1393,7 @@ test("a positive match uses only policy-bounded stale fallback during transient 
     key,
     "staletrack01",
     now - 15 * 24 * 60 * 60 * 1000,
-    JSON.stringify({ title, channel: `${artist} - Topic`, reasons: ["official"], duration: 200 }),
+    JSON.stringify({ title, channel: `${artist} - Topic`, reasons: ["official"], duration: 200, matchVersion: YOUTUBE_MATCH_CACHE_VERSION }),
     100,
     now + 15 * 24 * 60 * 60 * 1000,
     "[]",
@@ -857,7 +1413,7 @@ test("a positive match uses only policy-bounded stale fallback during transient 
     youtubeCacheKey(expiredTitle, artist),
     "expiredtrk1",
     now - 31 * 24 * 60 * 60 * 1000,
-    JSON.stringify({ title: expiredTitle, channel: `${artist} - Topic`, reasons: ["official"], duration: 200 }),
+    JSON.stringify({ title: expiredTitle, channel: `${artist} - Topic`, reasons: ["official"], duration: 200, matchVersion: YOUTUBE_MATCH_CACHE_VERSION }),
     100,
     now + 24 * 60 * 60 * 1000,
     "[]",

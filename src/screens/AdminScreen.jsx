@@ -621,7 +621,7 @@ export default function AdminScreen({ onClose }) {
         {/* ---- SONGS: wrong-version reports + every pinned video ---- */}
         {tab === "songs" && (
           <>
-            <Text style={styles.policy}>Listeners can flag wrong videos, playback failures, preview-only fallbacks, and missing songs. Verify a candidate on YouTube, then pin its link; a human pin beats the automatic resolver for every future play.</Text>
+            <Text style={styles.policy}>Listeners can flag wrong videos, playback failures, preview-only fallbacks, and missing songs. Verify a candidate on YouTube, then pin its link to the exact provider recording when the report includes one.</Text>
             {trackActionState.message ? <Text accessibilityLiveRegion={trackActionState.tone === "error" ? "assertive" : "polite"} selectable style={[styles.trackActionFeedback, trackActionState.tone === "error" ? styles.trackActionError : trackActionState.tone === "warning" ? styles.trackActionWarning : styles.trackActionSuccess]}>{trackActionState.message}</Text> : null}
 
             <Text style={styles.catTitle}>WRONG-VERSION REPORTS / {trackReports.length} LOADED / {trackReportCount} OPEN</Text>
@@ -633,6 +633,7 @@ export default function AdminScreen({ onClose }) {
               const reporter = r.reporter || userFor(r.reporterId);
               const issueLabel = ({ wrong_video: "wrong video", wont_play: "won't play", preview_only: "preview only", missing: "missing song", other: "other playback issue" })[t.category] || "wrong video";
               const draft = trackFix[r.id] ?? (t.suggestedVideoId ? `https://www.youtube.com/watch?v=${t.suggestedVideoId}` : "");
+              const sourceLabel = t.provider && t.sourceId ? `${t.provider} recording ${t.sourceId}` : "legacy title/artist recording";
               return (
                 <View key={r.id} style={styles.card}>
                   <View style={styles.reasonRow}>
@@ -640,7 +641,7 @@ export default function AdminScreen({ onClose }) {
                     <Text style={styles.reason}>{issueLabel}</Text>
                   </View>
                   <Text style={styles.artist}>{t.title || r.targetId}{t.artist ? ` / ${t.artist}` : ""}</Text>
-                  <Text style={styles.sub}>reported by {reporter ? `@${reporter.handle}` : "a user"}{t.note ? ` / "${t.note}"` : ""}{t.suggestedVideoId ? " / suggested a link" : ""}</Text>
+                  <Text style={styles.sub}>reported by {reporter ? `@${reporter.handle}` : "a user"} / {sourceLabel}{t.note ? ` / "${t.note}"` : ""}{t.suggestedVideoId ? " / suggested a link" : ""}</Text>
                   <TextInput
                     style={styles.trackFixInput}
                     placeholder="Correct YouTube link"
@@ -657,13 +658,11 @@ export default function AdminScreen({ onClose }) {
                       <Icon name="search" size={14} color={colors.cool} /><Text style={[styles.dismissTxt, { color: colors.cool }]}>Search candidates</Text>
                     </Pressable>
                     <Pressable accessibilityRole="button" accessibilityLabel={`Pin video for ${t.title || r.targetId}`} accessibilityState={{ busy: trackActionState.key === `${r.id}:pin`, disabled: trackActionBusy || !draft.trim() }} disabled={trackActionBusy || !draft.trim()} style={[styles.btn, styles.trackPin, (trackActionBusy || !draft.trim()) && styles.pillDisabled]} onPress={() => runTrackAction({
-                      key: `${r.id}:pin`, title: `Pin this video for ${t.title || r.targetId}?`, detail: "The pinned video replaces automatic playback resolution for everyone and closes this report.", success: "Video pinned and song report closed.", run: async ({ initiatingScope }) => {
-                        const result = await adminSetTrackVideo({ title: t.title || r.targetId, artist: t.artist || "", url: draft.trim() });
+                      key: `${r.id}:pin`, title: `Pin this video for ${t.title || r.targetId}?`, detail: t.sourceId ? `The pin applies only to ${sourceLabel} and closes this report.` : "The pinned video replaces title/artist playback resolution and closes this report.", success: "Video pinned and song report closed.", run: async ({ initiatingScope }) => {
+                        const result = await adminSetTrackVideo({ title: t.title || r.targetId, artist: t.artist || "", url: draft.trim(), provider: t.provider, sourceId: t.sourceId });
                         if (!result?.ok) return result;
                         if (!staffActionStillOwned(initiatingScope, activeStaffSession.current)) return { ok: true, partial: true, message: "Video pin saved, but the report was not closed because your staff session changed." };
-                        const dismissed = await dismissReport(r.id);
                         refreshPins();
-                        if (!dismissed) return { ok: true, partial: true, message: "Video pin saved, but the report could not be closed. It remains in the queue for retry." };
                         setTrackFix((current) => { const next = { ...current }; delete next[r.id]; return next; });
                         return true;
                       },
@@ -671,13 +670,11 @@ export default function AdminScreen({ onClose }) {
                       {trackActionState.key === `${r.id}:pin` ? <ActivityIndicator color={colors.good} size="small" /> : <Icon name="check" size={15} color={colors.good} />}<Text style={[styles.dismissTxt, { color: colors.good }]}>Pin this video</Text>
                     </Pressable>
                     <Pressable accessibilityRole="button" accessibilityLabel={`Mark no correct video for ${t.title || r.targetId}`} accessibilityState={{ busy: trackActionState.key === `${r.id}:none`, disabled: trackActionBusy }} disabled={trackActionBusy} style={[styles.btn, styles.suspend, trackActionBusy && styles.pillDisabled]} onPress={() => runTrackAction({
-                      key: `${r.id}:none`, title: `Confirm no correct video for ${t.title || r.targetId}?`, detail: "Listeners will receive the fallback preview and this report will close. Staff can remove the override later.", success: "No-video fallback saved and song report closed.", run: async ({ initiatingScope }) => {
-                        const result = await adminSetTrackVideo({ title: t.title || r.targetId, artist: t.artist || "", none: true });
+                      key: `${r.id}:none`, title: `Confirm no correct video for ${t.title || r.targetId}?`, detail: t.sourceId ? `Only ${sourceLabel} will use the fallback preview, and this report will close.` : "Listeners will receive the fallback preview and this report will close. Staff can remove the override later.", success: "No-video fallback saved and song report closed.", run: async ({ initiatingScope }) => {
+                        const result = await adminSetTrackVideo({ title: t.title || r.targetId, artist: t.artist || "", none: true, provider: t.provider, sourceId: t.sourceId });
                         if (!result?.ok) return result;
                         if (!staffActionStillOwned(initiatingScope, activeStaffSession.current)) return { ok: true, partial: true, message: "The no-video fallback was saved, but the report was not closed because your staff session changed." };
-                        const dismissed = await dismissReport(r.id);
                         refreshPins();
-                        if (!dismissed) return { ok: true, partial: true, message: "The no-video fallback was saved, but the report could not be closed. It remains in the queue for retry." };
                         return true;
                       },
                     })}>
@@ -712,9 +709,9 @@ export default function AdminScreen({ onClose }) {
               <View key={p.key} style={styles.pinRow}>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.pinTitle} numberOfLines={1}>{p.title}{p.artist ? ` / ${p.artist}` : ""}</Text>
-                  <Text style={styles.pinSub} numberOfLines={1}>{p.videoId ? `youtube.com/watch?v=${p.videoId}` : "confirmed: no correct video (plays preview)"}</Text>
+                  <Text style={styles.pinSub} numberOfLines={1}>{p.provider && p.sourceId ? `${p.provider} ${p.sourceId} / ` : ""}{p.videoId ? `youtube.com/watch?v=${p.videoId}` : "confirmed: no correct video (plays preview)"}</Text>
                 </View>
-                <Pressable style={[styles.pinRemove, trackActionBusy && styles.pillDisabled]} disabled={trackActionBusy} onPress={() => runTrackAction({ key: `${p.key}:unpin`, title: `Remove the playback override for ${p.title}?`, detail: "The automatic resolver will choose playback again for future listeners.", success: "Playback override removed.", run: async () => { const result = await removeTrackOverride({ title: p.title, artist: p.artist }); if (result?.ok) refreshPins(); return result; } })} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Unpin ${p.title}`} accessibilityState={{ busy: trackActionState.key === `${p.key}:unpin`, disabled: trackActionBusy }}>
+                <Pressable style={[styles.pinRemove, trackActionBusy && styles.pillDisabled]} disabled={trackActionBusy} onPress={() => runTrackAction({ key: `${p.key}:unpin`, title: `Remove the playback override for ${p.title}?`, detail: "The automatic resolver will choose playback again for future listeners.", success: "Playback override removed.", run: async () => { const result = await removeTrackOverride({ title: p.title, artist: p.artist, provider: p.provider, sourceId: p.sourceId }); if (result?.ok) refreshPins(); return result; } })} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Unpin ${p.title}`} accessibilityState={{ busy: trackActionState.key === `${p.key}:unpin`, disabled: trackActionBusy }}>
                   {trackActionState.key === `${p.key}:unpin` ? <ActivityIndicator color={colors.textDim} size="small" /> : <Icon name="x" size={13} color={colors.textDim} />}
                 </Pressable>
               </View>

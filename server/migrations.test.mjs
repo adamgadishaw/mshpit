@@ -14,6 +14,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { trackOverrideIdentityKey } from "./trackIdentity.js";
 
 const source = readFileSync(new URL("./db.js", import.meta.url), "utf8");
 
@@ -82,6 +83,12 @@ test("legacy attendance, tour-date, and campaign tables gain safe additive colum
   previous.db.prepare(`INSERT INTO email_campaigns
     (id,name,subject,body,audience,status,created_at,updated_at,test_sent_at)
     VALUES ('legacy_tested_campaign','Legacy','Old approved copy','Body','staff','draft',1,1,1)`).run();
+  previous.db.prepare(`INSERT INTO track_overrides
+    (key,title,artist,video_id,set_by,updated_at)
+    VALUES ('|','初恋','宇多田ヒカル','legacyjp001',NULL,7)`).run();
+  previous.db.prepare(`INSERT INTO track_source_overrides
+    (provider,source_id,title,artist,video_id,set_by,updated_at)
+    VALUES ('deezer','1234638792','Shared Recording','Proofed Artist','sourcepin01',NULL,8)`).run();
   previous.db.exec(`
     DROP INDEX idx_going_cursor;
     DROP INDEX idx_tourdates_owner_show;
@@ -94,6 +101,8 @@ test("legacy attendance, tour-date, and campaign tables gain safe additive colum
     ALTER TABLE email_queue DROP COLUMN claimed_at;
     ALTER TABLE email_campaigns DROP COLUMN tested_revision;
     ALTER TABLE email_campaigns DROP COLUMN content_revision;
+    ALTER TABLE plays DROP COLUMN source_id;
+    ALTER TABLE plays DROP COLUMN provider;
   `);
 
   const upgraded = await import(`./db.js?index-migration-upgrade=${encodeURIComponent(dataDir)}`);
@@ -101,6 +110,7 @@ test("legacy attendance, tour-date, and campaign tables gain safe additive colum
   const tourColumns = new Set(upgraded.db.prepare("PRAGMA table_info(tour_dates)").all().map((row) => row.name));
   const emailQueueColumns = new Set(upgraded.db.prepare("PRAGMA table_info(email_queue)").all().map((row) => row.name));
   const campaignColumns = new Set(upgraded.db.prepare("PRAGMA table_info(email_campaigns)").all().map((row) => row.name));
+  const playColumns = new Set(upgraded.db.prepare("PRAGMA table_info(plays)").all().map((row) => row.name));
   const goingIndexes = new Set(upgraded.db.prepare("PRAGMA index_list(going)").all().map((row) => row.name));
   const tourIndexes = new Set(upgraded.db.prepare("PRAGMA index_list(tour_dates)").all().map((row) => row.name));
 
@@ -111,6 +121,8 @@ test("legacy attendance, tour-date, and campaign tables gain safe additive colum
   assert.ok(emailQueueColumns.has("claim_token"));
   assert.ok(campaignColumns.has("content_revision"));
   assert.ok(campaignColumns.has("tested_revision"));
+  assert.ok(playColumns.has("provider"));
+  assert.ok(playColumns.has("source_id"));
   const legacyCampaign = upgraded.emailStmts.campaignById.get("legacy_tested_campaign");
   assert.equal(legacyCampaign.content_revision, 1);
   assert.equal(legacyCampaign.tested_revision, null,
@@ -127,4 +139,14 @@ test("legacy attendance, tour-date, and campaign tables gain safe additive colum
   assert.ok(tourIndexes.has("idx_tourdates_visibility"));
   assert.ok(tourIndexes.has("idx_tourdates_owner"));
   assert.ok(tourIndexes.has("idx_tourdates_owner_show"));
+  const migratedOverride = upgraded.db.prepare("SELECT * FROM track_overrides WHERE key=?")
+    .get(trackOverrideIdentityKey("初恋", "宇多田ヒカル"));
+  assert.equal(migratedOverride.video_id, "legacyjp001");
+  assert.equal(migratedOverride.updated_at, 7, "identity migration must not refresh authoritative pin age");
+  assert.ok(upgraded.db.prepare("SELECT 1 FROM track_overrides WHERE key='|'").get(),
+    "legacy key stays available for a code rollback");
+  assert.equal(upgraded.db.prepare("SELECT video_id FROM track_source_overrides WHERE provider='deezer' AND source_id='1234638792'").get().video_id, "sourcepin01");
+  assert.equal(upgraded.db.prepare("SELECT 1 FROM track_overrides WHERE key=?")
+    .get(trackOverrideIdentityKey("Shared Recording", "Proofed Artist")), undefined,
+  "source overrides live outside legacy reconciliation and cannot corrupt a tuple pin during a rolling deploy");
 });

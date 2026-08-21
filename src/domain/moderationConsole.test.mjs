@@ -270,11 +270,13 @@ test("song workflow accepts authoritative track content and legacy JSON reports"
   assert.deepEqual(trackReportDetails({
     targetId: "song-key",
     reason: "playback issue",
-    content: { type: "track", title: "No Role Modelz", artist: "J. Cole", category: "wrong_video", note: "live version", suggestedVideoId: "abcdefghijk" },
+    content: { type: "track", title: "No Role Modelz", artist: "J. Cole", category: "wrong_video", note: "live version", suggestedVideoId: "abcdefghijk", provider: "deezer", sourceId: "1124841682" },
   }), {
-    title: "No Role Modelz", artist: "J. Cole", category: "wrong_video", note: "live version", suggestedVideoId: "abcdefghijk",
+    title: "No Role Modelz", artist: "J. Cole", category: "wrong_video", note: "live version", suggestedVideoId: "abcdefghijk", provider: "deezer", sourceId: "1124841682",
   });
-  assert.equal(trackReportDetails({ targetId: "legacy", reason: JSON.stringify({ title: "Legacy song", category: "missing" }) }).title, "Legacy song");
+  assert.deepEqual(trackReportDetails({ targetId: "legacy", reason: JSON.stringify({ title: "Legacy song", category: "missing" }) }), {
+    title: "Legacy song", artist: "", category: "missing", note: "", suggestedVideoId: "", provider: null, sourceId: null,
+  });
 });
 
 test("moderation sources keep visible punctuation ASCII-safe", () => {
@@ -306,4 +308,6 @@ test("console source keeps bounded rendering, cursor reachability, and atomic ac
   assert.match(consoleSource, /Only this exact message will be hidden from both participants/);
   assert.match(consoleSource, /will not send another notification/);
   assert.match(adminSource, /adminMemberDirectory=\{adminMemberDirectory\}/);
+  assert.equal((adminSource.match(/dismissReport\(r\.id\)/g) || []).length, 1,
+    "pin/no-video actions use the server's disposition; only the explicit Dismiss button writes dismiss");
 });

@@ -70,3 +70,74 @@ test("clips reel paginates newest-first with a stable cursor", () => {
   const ids = new Set(first.clips.map((c) => c.id));
   assert.ok(second.clips.every((c) => !ids.has(c.id)), "the next page never repeats the first");
 });
+
+test("stable extensionless clips keep their durable poster in the reel", () => {
+  const user = addUser("clipper_stable");
+  const now = 2_100_000_000_000;
+  const postId = "p_stable_extensionless_clip";
+  const assetId = "ma_stable_extensionless_clip";
+  const variantId = "mv_stable_extensionless_clip";
+  const clipUrl = "https://media.example/delivery/opaque-clip-token";
+  const posterUrl = "https://media.example/delivery/opaque-poster-token";
+  const sourceKey = "users/clipper_stable/post/source.mp4";
+  const posterKey = "users/clipper_stable/post/poster.jpg";
+
+  db.prepare(`INSERT INTO posts
+    (id,user_id,artist,venue,city,date,overall,review,photos,photos_public,created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(
+    postId, user.id, "Opaque CDN", "History", "Toronto", "2026-08-21", 5, "Extensionless delivery", JSON.stringify([clipUrl]), 1, now,
+  );
+  db.prepare(`INSERT INTO media_objects
+    (object_key,owner_id,purpose,byte_size,status,created_at,associated_at,updated_at)
+    VALUES (?,?,?,?,'associated',?,?,?)`).run(sourceKey, user.id, "post", 1_000_000, now, now, now);
+  db.prepare(`INSERT INTO media_objects
+    (object_key,owner_id,purpose,byte_size,status,created_at,associated_at,updated_at)
+    VALUES (?,?,?,?,'associated',?,?,?)`).run(posterKey, user.id, "post", 50_000, now, now, now);
+  db.prepare(`INSERT INTO media_assets
+    (id,owner_id,client_asset_id,create_hash,purpose,kind,source_key,source_url,original_name,mime_type,byte_size,
+     width,height,duration_ms,metadata_status,codec_status,codec_verified_at,status,edit_recipe,finalize_hash,source_verified_at,
+     render_state,poster_variant_id,poster_key,poster_url,poster_time_ms,created_at,updated_at)
+    VALUES (?,?,?,?,?,'video',?,?,?,?,?,?,?,?,'declared','verified',?,'ready','{}',?,?,
+      'not_required',?,?,?,?,?,?)`).run(
+    assetId, user.id, "client-stable-extensionless", "hash", "post", sourceKey, clipUrl, "clip.mp4", "video/mp4", 1_000_000,
+    1080, 1920, 15_000, now, "finalize-hash", now, variantId, posterKey, posterUrl, 2_400, now, now,
+  );
+  db.prepare(`INSERT INTO media_variants
+    (id,asset_id,client_variant_id,create_hash,role,object_key,public_url,mime_type,byte_size,width,height,time_ms,status,finalize_hash,verified_at,created_at,updated_at)
+    VALUES (?,?,?,?,'poster',?,?,?,?,?,?,?,'verified',?,?,?,?)`).run(
+    variantId, assetId, "client-stable-poster", "poster-hash", posterKey, posterUrl, "image/jpeg", 50_000, 720, 1280, 2_400,
+    "poster-finalize-hash", now, now, now,
+  );
+  db.prepare("INSERT INTO post_media (post_id,asset_id,position,created_at) VALUES (?,?,0,?)").run(postId, assetId, now);
+
+  const result = routes["GET /api/clips"]({ user, query: { limit: "30" } });
+  const clip = result.clips.find((entry) => entry.id === postId);
+  assert.ok(clip, "descriptor kind includes a stable video even when its delivery URL has no extension");
+  assert.deepEqual(clip.clips, [clipUrl]);
+  assert.equal(clip.media[0].kind, "video");
+  assert.equal(clip.media[0].posterUrl, posterUrl);
+  assert.equal(clip.media[0].posterTimeMs, 2_400);
+});
+
+test("false-positive photo URLs cannot consume a clips page before a real video", () => {
+  const user = addUser("clipper_page_filter");
+  const base = 2_200_000_000_000;
+  const real = post(user, {
+    photos: ["https://cdn.example/users/clipper_page_filter/post/real.mp4"],
+    artist: "Real clip below bait",
+  });
+  db.prepare("UPDATE posts SET created_at=? WHERE id=?").run(base, real.id);
+
+  for (let i = 1; i <= 13; i++) {
+    const bait = post(user, {
+      photos: [`https://cdn.example/users/clipper_page_filter/post/photo.jpg?campaign=.mp4-bait-${i}`],
+      artist: `Photo bait ${i}`,
+    });
+    db.prepare("UPDATE posts SET created_at=? WHERE id=?").run(base + i, bait.id);
+  }
+
+  const result = routes["GET /api/clips"]({ user, query: { limit: "12" } });
+  assert.ok(result.clips.length > 0, "the endpoint scans past a full raw page of false positives");
+  assert.equal(result.clips[0].id, real.id, "the first authoritative clip is not hidden below bait rows");
+  assert.ok(result.clips.every((clip) => !clip.artist.startsWith("Photo bait")), "photo bait never enters the reel");
+});

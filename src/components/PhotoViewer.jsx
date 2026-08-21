@@ -6,7 +6,7 @@ import { colors, mono, radius } from "../theme";
 import Icon from "./Icon";
 import ClipPoster from "./ClipPoster";
 import SmartImage from "./SmartImage";
-import { isVideoUrl } from "../lib/img";
+import { mediaDisplayKind, mediaDisplayUri, mediaPosterUri } from "../domain/postMediaDisplay.mjs";
 import { galleryItemPostId, galleryKeyAction, normalizedGalleryIndex, trappedGalleryFocusIndex, videoViewerPhase } from "../domain/mediaViewer.mjs";
 import { analyticsDurationBucket } from "../domain/analyticsPolicy.mjs";
 import { pendingVideoMilestones } from "../domain/mediaAnalytics.mjs";
@@ -107,7 +107,7 @@ function ClipPlayer({ uri, posterUri, postId, onRetry, onTrack, altText }) {
         importantForAccessibility={hasFirstFrame ? "auto" : "no-hide-descendants"}
       />
       {phase !== "error" && (!hasStarted || phase === "loading") && (
-        <ClipPoster uri={uri} posterUri={posterUri} style={styles.videoStatus} contain accessibilityLabel={altText || "Video preview; use the player controls to play"} accessible={false} />
+        <ClipPoster uri={uri} posterUri={posterUri} viewable style={styles.videoStatus} contain accessibilityLabel={altText || "Video preview; use the player controls to play"} accessible={false} />
       )}
       {phase !== "error" && !hasStarted ? (
         <Pressable
@@ -162,12 +162,12 @@ export default function PhotoViewer({ photos = [], index = 0, postId = null, ret
   const [i, setI] = useState(() => normalizedGalleryIndex(index, photos.length));
   const viewerRef = useRef(null);
   const p = photos[i] || photos[0];
-  const uri = typeof p === "string" ? p : p?.uri || p?.url || p?.sourceUrl;
-  const posterUri = typeof p === "object" && p ? p.posterUrl || p.posterUri || null : null;
+  const uri = mediaDisplayUri(p);
+  const posterUri = mediaPosterUri(p);
   const altText = typeof p === "object" && p ? p.altText || "" : "";
   const by = typeof p === "object" && p ? p.by : null;
   const currentPostId = galleryItemPostId(p, postId);
-  const urls = photos.map((x) => (typeof x === "string" ? x : x?.uri || x?.url || x?.sourceUrl)).filter(Boolean);
+  const urls = photos.map(mediaDisplayUri).filter(Boolean);
   const prev = () => setI((x) => (x - 1 + photos.length) % photos.length);
   const next = () => setI((x) => (x + 1) % photos.length);
 
@@ -253,7 +253,7 @@ export default function PhotoViewer({ photos = [], index = 0, postId = null, ret
 
   if (!photos.length) return null;
   const r = (uri && mediaReactions[uri]) || { count: 0, mine: false };
-  const video = (typeof p === "object" && p && (p.kind === "video" || p.type === "video")) || isVideoUrl(uri);
+  const video = mediaDisplayKind(p) === "video";
   const ownerId = typeof p === "object" && p ? p.ownerId : null;
   const parentTarget = typeof p === "object" && p?.artistProfileKey
     ? { targetType: "artist_profile", targetId: p.artistProfileKey, targetName: video ? "artist profile video" : "artist profile photo" }
@@ -318,7 +318,7 @@ export default function PhotoViewer({ photos = [], index = 0, postId = null, ret
             renders here instead of a black void. Clips get a real player. */}
         {video
           ? <ClipStage key={uri} uri={uri} posterUri={posterUri} postId={currentPostId} onTrack={track} altText={altText} />
-          : <SmartImage uri={uri} style={styles.img} contain accessibilityLabel={altText || "Full-size photo"} />}
+          : <SmartImage uri={uri} mediaKind="image" style={styles.img} contain accessibilityLabel={altText || "Full-size photo"} />}
         {photos.length > 1 && (
           <>
             <Pressable style={[styles.arrow, { left: 10 }]} onPress={prev} hitSlop={10} accessibilityRole="button" accessibilityLabel="Previous media">

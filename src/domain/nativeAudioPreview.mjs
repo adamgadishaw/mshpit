@@ -18,12 +18,19 @@ export function nativeAudioSnapshot(status) {
   };
 }
 
-export function nativeAudioCompletion(status, sourceKey, previousKey = null) {
+export function nativeAudioCompletion(status, sourceKey, previousKey = null, startedKey = undefined) {
   const key = status?.id && sourceKey ? `${status.id}:${sourceKey}` : null;
   return {
     key,
-    notify: !!key && status?.didJustFinish === true && key !== previousKey,
+    notify: !!key
+      && status?.didJustFinish === true
+      && key !== previousKey
+      && (startedKey === undefined || startedKey === key),
   };
+}
+
+export function nativeAudioLeaseIsCurrent({ cancelled = false, enabled = true, currentKey, leaseKey } = {}) {
+  return !cancelled && enabled === true && !!leaseKey && currentKey === leaseKey;
 }
 
 export function nativeAudioOperationError(operation, sourceKey) {

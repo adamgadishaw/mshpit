@@ -10,18 +10,18 @@ import { proxied, isHttp, displaySrc, isVideoUrl } from "../lib/img";
 // do exactly this for artist shots. Optional onPress opens it in the gallery.
 // Load ladder: direct -> wsrv.nl proxy (rescues hotlink/CORS-blocked hosts) ->
 // clean on-theme placeholder. Never a broken tile.
-// Clip URLs (post media mixes photos and videos) render a play tile instead of
-// a broken image, in every grid/wall/strip that uses this component; tapping
-// still opens the viewer, which actually plays them.
-export default function SmartImage({ uri, posterUri = null, style, contain = true, onPress, previewWidth = 0, accessibilityLabel = "Open image", accessible = true }) {
+// Descriptor-declared clips (plus URL-only historical videos) render a play
+// tile instead of a broken image in every grid/wall/strip; tapping still opens
+// the viewer, which actually plays them.
+export default function SmartImage({ uri, posterUri = null, mediaKind = null, viewable = null, style, contain = true, onPress, previewWidth = 0, accessibilityLabel = "Open image", accessible = true }) {
   const [stage, setStage] = useState(0); // 0 preferred source, 1 fallback, 2 dead
   useEffect(() => setStage(0), [uri, previewWidth]);
   const fail = () => setStage((s) => s + 1);
   const original = displaySrc(uri);
   const preview = previewWidth > 0 && isHttp(uri) ? proxied(uri, previewWidth) : original;
   const src = stage === 1 ? (preview === original && isHttp(uri) ? proxied(uri) : original) : preview;
-  if (isVideoUrl(uri)) {
-    const clip = <ClipPoster uri={uri} posterUri={posterUri} style={StyleSheet.absoluteFill} contain={contain} compact={!previewWidth} accessible={accessible} />;
+  if (mediaKind === "video" || (!mediaKind && isVideoUrl(uri))) {
+    const clip = <ClipPoster uri={uri} posterUri={posterUri} viewable={viewable} style={StyleSheet.absoluteFill} contain={contain} compact={!previewWidth} accessible={accessible} />;
     if (onPress) return <Pressable style={[styles.base, style]} onPress={onPress} accessibilityRole="button" accessibilityLabel={accessibilityLabel === "Open image" ? "Play video clip" : accessibilityLabel}>{clip}</Pressable>;
     return <View style={[styles.base, style]}>{clip}</View>;
   }

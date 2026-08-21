@@ -79,7 +79,7 @@ function NotForMeButton({ onPress }) {
 // Review-forward feed card: the review is the centerpiece. Artist / venue / date
 // sit on a ticket-stub line below, the score reads at a glance, and the footer
 // opens the Afterparty (like + comments) for that concert.
-export default function TicketStub({ log, onOpen, onNotInterested, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenVenue, onReport, onEdit, onDelete, onOpenPhotos, onPlay, showComments = true }) {
+export default function TicketStub({ log, mediaViewable = null, onOpen, onNotInterested, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenVenue, onReport, onEdit, onDelete, onOpenPhotos, onPlay, showComments = true }) {
   const openComments = () => (onComment || onOpen)?.(log);
   const { userById, likeInfo, toggleLike, commentsFor, session, userBadges, deleteOwnPost } = useStore();
   const author = userById?.(log.userId) || { initials: log.user?.initials, name: log.user?.name, handle: log.user?.handle };
@@ -171,7 +171,7 @@ export default function TicketStub({ log, onOpen, onNotInterested, onComment, on
         {!!log.song && <SongAttachment song={log.song} onPlay={onPlay} />}
         {!!log.playlist && <PlaylistAttachment playlist={log.playlist} onPlay={onPlay} />}
         {postMedia.length > 0 && (
-          <PostMediaGrid media={postMedia} openerScope={log.id} onOpen={onOpenPhotos ? (i, opener) => onOpenPhotos(postMedia, i, log.id, opener) : undefined} />
+          <PostMediaGrid media={postMedia} viewable={mediaViewable} openerScope={log.id} onOpen={onOpenPhotos ? (i, opener) => onOpenPhotos(postMedia, i, log.id, opener) : undefined} />
         )}
 
         <RecommendationWhy recommendation={recommendation} expanded={whyOpen} onToggle={() => setWhyOpen((current) => !current)} />
@@ -267,7 +267,7 @@ export default function TicketStub({ log, onOpen, onNotInterested, onComment, on
       </Pressable>
       {!!log.song && <SongAttachment song={log.song} onPlay={onPlay} />}
       {postMedia.length > 0 && (
-        <PostMediaGrid media={postMedia} openerScope={log.id} onOpen={onOpenPhotos ? (i, opener) => onOpenPhotos(postMedia, i, log.id, opener) : undefined} />
+        <PostMediaGrid media={postMedia} viewable={mediaViewable} openerScope={log.id} onOpen={onOpenPhotos ? (i, opener) => onOpenPhotos(postMedia, i, log.id, opener) : undefined} />
       )}
 
       {/* perforated ticket-stub line */}

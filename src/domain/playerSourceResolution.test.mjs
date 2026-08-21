@@ -25,6 +25,8 @@ test("stored player sources hydrate locally without a provider lookup", () => {
     youtubeSettled: true,
     previewPending: true,
   });
+  assert.equal(initialPlayerSources({ key: "track:1", track, directVideoId: null }).videoId, null,
+    "a terminally rejected embedded ID can be suppressed without mutating the saved track");
 });
 
 test("paused restored queues defer cold YouTube resolution until restore", () => {
@@ -149,6 +151,14 @@ test("PlayerBar publishes provider results independently instead of awaiting Pro
   const source = await readFile(new URL("../components/PlayerBar.jsx", import.meta.url), "utf8");
   assert.doesNotMatch(source, /\[videoId, preview\]\s*=\s*await Promise\.all/);
   assert.match(source, /shouldResolvePlayerYouTube/);
+  assert.match(source, /youtubeVideoRejected\?\.\(cur\?\.title,\s*cur\?\.artist,\s*directVideoCandidate,\s*youtubeSource\)/,
+    "persisted direct IDs must pass the account/track rejection gate before hydration");
+  assert.match(source, /initialPlayerSources\(\{\s*key:\s*resolutionKey,\s*track:\s*cur,\s*directVideoId\s*\}\)/,
+    "the suppressed ID must stay out of the active player source state");
+  assert.match(source, /signature\s*=\s*`\$\{resolutionKey\}\|/,
+    "terminal-error dedupe must reset at the account/verification media boundary");
+  assert.match(source, /invalidateYouTube\(cur\.title,\s*cur\.artist,\s*failedId,\s*youtubeSource\)/,
+    "terminal invalidation must stay scoped to the exact provider recording");
   assert.match(source, /playerSourcesUnavailable\(\{[\s\S]*youtubePending:\s*resolved\.youtubePending,[\s\S]*previewPending:\s*resolved\.previewPending/);
 });
 

@@ -6,6 +6,7 @@ import TicketStub from "../components/TicketStub";
 import Icon from "../components/Icon";
 import { filteredFeedNextAction } from "../domain/feedPagination.mjs";
 import { feedFilterStorageKey, feedFooterState, normalizeFeedFilter } from "../domain/feedExperience.mjs";
+import { nextVisibleMediaPostIds } from "../domain/posterVisibility.mjs";
 import { JOURNEY_TAGLINE } from "../domain/menuJourney.mjs";
 
 const PAGE = 8; // load the feed in pages, like the big apps - never all at once
@@ -18,6 +19,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
   const [undoItem, setUndoItem] = useState(null);
   const [undoBusy, setUndoBusy] = useState(false);
   const [undoError, setUndoError] = useState(null);
+  const [visibleMediaPostIds, setVisibleMediaPostIds] = useState(() => new Set());
   const [gsDone, setGsDone] = useState(() => load("pit.gsDismissed", false));
   const visibleSince = useRef(new Map());
   const seenImpressions = useRef(new Set());
@@ -35,10 +37,12 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
     setCount(PAGE);
     setUndoItem(null);
     setUndoError(null);
+    setVisibleMediaPostIds(new Set());
   }, [accountId, loggedIn]);
 
   const onViewableItemsChanged = useRef(({ changed }) => {
     const at = Date.now();
+    setVisibleMediaPostIds((current) => nextVisibleMediaPostIds(current, changed));
     for (const token of changed || []) {
       const item = token?.item;
       if (!item?.id) continue;
@@ -73,6 +77,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
       analyticsRef.current.onDwell?.(item, at - startedAt, viewedSurface);
     }
     visibleSince.current.clear();
+    setVisibleMediaPostIds(new Set());
     setFilter(f);
     save(feedFilterStorageKey(accountId), f);
     setCount(PAGE);
@@ -139,6 +144,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
   return (
     <FlatList
       data={data}
+      extraData={visibleMediaPostIds}
       keyExtractor={(item) => item.id}
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}
@@ -269,7 +275,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
         </View>
       ) : null}
       renderItem={({ item, index: itemIndex }) => (
-        <TicketStub log={item} onOpen={(_unused) => onOpen?.(item, { surface, position: itemIndex })} onNotInterested={surface === "everyone" && item.recommendation ? hideRecommendation : undefined} onComment={onComment} onPreview={onPreview} onOpenProfile={onOpenProfile} onOpenArtist={onOpenArtist} onOpenVenue={onOpenVenue} onReport={onReport} onEdit={onEdit} onOpenPhotos={onOpenPhotos} onPlay={onPlay} />
+        <TicketStub log={item} mediaViewable={visibleMediaPostIds.has(String(item.id)) ? true : null} onOpen={(_unused) => onOpen?.(item, { surface, position: itemIndex })} onNotInterested={surface === "everyone" && item.recommendation ? hideRecommendation : undefined} onComment={onComment} onPreview={onPreview} onOpenProfile={onOpenProfile} onOpenArtist={onOpenArtist} onOpenVenue={onOpenVenue} onReport={onReport} onEdit={onEdit} onOpenPhotos={onOpenPhotos} onPlay={onPlay} />
       )}
     />
   );

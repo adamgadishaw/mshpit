@@ -1,15 +1,15 @@
 import { useRef } from "react";
 import { Pressable, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { colors, mono, radius } from "../theme";
-import { isVideoUrl } from "../lib/img";
 import SmartImage from "./SmartImage";
-import { mediaDisplayItems, mediaDisplayUri } from "../domain/postMediaDisplay.mjs";
+import { mediaDisplayItems, mediaDisplayKind, mediaDisplayUri, mediaPosterUri } from "../domain/postMediaDisplay.mjs";
 import { postMediaGridLayout } from "../domain/postMediaGridLayout.mjs";
 
-function Tile({ item, index, onOpen, openerId, style, more = 0, contain = false }) {
+function Tile({ item, index, onOpen, openerId, style, more = 0, contain = false, viewable = null }) {
   const openerRef = useRef(null);
   const uri = mediaDisplayUri(item);
-  const video = isVideoUrl(uri);
+  const mediaKind = mediaDisplayKind(item);
+  const video = mediaKind === "video";
   const authoredAlt = typeof item?.altText === "string" ? item.altText.trim() : "";
   return (
     <Pressable
@@ -25,7 +25,9 @@ function Tile({ item, index, onOpen, openerId, style, more = 0, contain = false 
           full durable object remains untouched for PhotoViewer. */}
       <SmartImage
         uri={uri}
-        posterUri={item?.posterUrl || null}
+        posterUri={mediaPosterUri(item)}
+        mediaKind={mediaKind}
+        viewable={viewable}
         style={StyleSheet.absoluteFill}
         contain={contain}
         previewWidth={1200}
@@ -44,7 +46,7 @@ function Tile({ item, index, onOpen, openerId, style, more = 0, contain = false 
 // in the feed, while the full uncropped item remains one tap away in the viewer.
 // The component is shared by status and concert posts so neither falls back to
 // the old 64px thumbnail strip.
-export default function PostMediaGrid({ media = [], onOpen, openerScope = null }) {
+export default function PostMediaGrid({ media = [], onOpen, openerScope = null, viewable = null }) {
   const { width: viewportWidth } = useWindowDimensions();
   const items = mediaDisplayItems({ photos: Array.isArray(media) ? media : [] });
   if (!items.length) return null;
@@ -66,7 +68,7 @@ export default function PostMediaGrid({ media = [], onOpen, openerScope = null }
   if (items.length === 1) {
     return (
       <View style={[styles.grid, styles.one, desktopGridStyle, desktopLayout.aspectRatio ? { aspectRatio: desktopLayout.aspectRatio } : null]}>
-        <Tile item={items[0]} index={0} onOpen={onOpen} openerId={openerIdFor(0)} style={styles.fill} contain={desktopLayout.containSingle} />
+        <Tile item={items[0]} index={0} onOpen={onOpen} openerId={openerIdFor(0)} style={styles.fill} contain={desktopLayout.containSingle} viewable={viewable} />
       </View>
     );
   }
@@ -74,8 +76,8 @@ export default function PostMediaGrid({ media = [], onOpen, openerScope = null }
   if (items.length === 2) {
     return (
       <View style={[styles.grid, styles.two, styles.row, desktopGridStyle]}>
-        <Tile item={items[0]} index={0} onOpen={onOpen} openerId={openerIdFor(0)} style={styles.flex} />
-        <Tile item={items[1]} index={1} onOpen={onOpen} openerId={openerIdFor(1)} style={styles.flex} />
+        <Tile item={items[0]} index={0} onOpen={onOpen} openerId={openerIdFor(0)} style={styles.flex} viewable={viewable} />
+        <Tile item={items[1]} index={1} onOpen={onOpen} openerId={openerIdFor(1)} style={styles.flex} viewable={viewable} />
       </View>
     );
   }
@@ -83,10 +85,10 @@ export default function PostMediaGrid({ media = [], onOpen, openerScope = null }
   if (items.length === 3) {
     return (
       <View style={[styles.grid, styles.three, styles.row, desktopGridStyle]}>
-        <Tile item={items[0]} index={0} onOpen={onOpen} openerId={openerIdFor(0)} style={styles.hero} />
+        <Tile item={items[0]} index={0} onOpen={onOpen} openerId={openerIdFor(0)} style={styles.hero} viewable={viewable} />
         <View style={styles.stack}>
-          <Tile item={items[1]} index={1} onOpen={onOpen} openerId={openerIdFor(1)} style={styles.flex} />
-          <Tile item={items[2]} index={2} onOpen={onOpen} openerId={openerIdFor(2)} style={styles.flex} />
+          <Tile item={items[1]} index={1} onOpen={onOpen} openerId={openerIdFor(1)} style={styles.flex} viewable={viewable} />
+          <Tile item={items[2]} index={2} onOpen={onOpen} openerId={openerIdFor(2)} style={styles.flex} viewable={viewable} />
         </View>
       </View>
     );
@@ -95,12 +97,12 @@ export default function PostMediaGrid({ media = [], onOpen, openerScope = null }
   return (
     <View style={[styles.grid, styles.four, desktopGridStyle]}>
       <View style={styles.row}>
-        <Tile item={items[0]} index={0} onOpen={onOpen} openerId={openerIdFor(0)} style={styles.flex} />
-        <Tile item={items[1]} index={1} onOpen={onOpen} openerId={openerIdFor(1)} style={styles.flex} />
+        <Tile item={items[0]} index={0} onOpen={onOpen} openerId={openerIdFor(0)} style={styles.flex} viewable={viewable} />
+        <Tile item={items[1]} index={1} onOpen={onOpen} openerId={openerIdFor(1)} style={styles.flex} viewable={viewable} />
       </View>
       <View style={styles.row}>
-        <Tile item={items[2]} index={2} onOpen={onOpen} openerId={openerIdFor(2)} style={styles.flex} />
-        <Tile item={items[3]} index={3} onOpen={onOpen} openerId={openerIdFor(3)} style={styles.flex} more={Math.max(0, items.length - 4)} />
+        <Tile item={items[2]} index={2} onOpen={onOpen} openerId={openerIdFor(2)} style={styles.flex} viewable={viewable} />
+        <Tile item={items[3]} index={3} onOpen={onOpen} openerId={openerIdFor(3)} style={styles.flex} more={Math.max(0, items.length - 4)} viewable={viewable} />
       </View>
     </View>
   );

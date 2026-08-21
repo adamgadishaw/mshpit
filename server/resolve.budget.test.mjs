@@ -92,7 +92,7 @@ test("MBID -> Wikidata -> validated channel resolves at budget=0 without search"
 
   const stored = artistStmts.getChannel.get("r. kelly");
   assert.equal(stored.channelId, channelId);
-  assert.equal(stored.source, "wikidata");
+  assert.equal(stored.source, "wikidata_v4");
   const check = db.prepare("SELECT channel_id,validated FROM wikidata_channel_checks WHERE mbid=?").get(mbid);
   assert.equal(check.channel_id, channelId);
   assert.equal(check.validated, 1);

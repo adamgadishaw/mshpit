@@ -10,7 +10,7 @@ import { useStore, isStaff, isMod, isArtist } from "../store";
 import { showDateMs } from "../lib/showTime";
 import Countdown from "../components/Countdown";
 import { formatDate, toIsoDate, relativeTime } from "../domain/dates.mjs";
-import { mediaDisplayItems } from "../domain/postMediaDisplay.mjs";
+import { mediaDisplayItems, mediaDisplayKind, mediaPosterUri } from "../domain/postMediaDisplay.mjs";
 import { concertMemoryShareText, selectConcertMemories } from "../domain/concertMemories.mjs";
 import { selectRediscoverTracks } from "../domain/listeningRediscovery.mjs";
 
@@ -360,11 +360,11 @@ export default function YouScreen({ feed, onLogin, onLogout, onAdmin, onAddTourD
         <Reveal delay={160}>
           <Text style={styles.sectionLabel}>YOUR PHOTO WALL · {gallery.length}</Text>
           <View style={styles.wall}>
-            <SmartImage uri={gallery[0].uri} posterUri={gallery[0].posterUrl} accessibilityLabel={gallery[0].altText || "Open your media"} style={styles.wallFeature} contain={false}
+            <SmartImage uri={gallery[0].uri} posterUri={mediaPosterUri(gallery[0])} mediaKind={mediaDisplayKind(gallery[0])} accessibilityLabel={gallery[0].altText || "Open your media"} style={styles.wallFeature} contain={false}
               onPress={onOpenPhotos ? () => onOpenPhotos(gallery.map((x) => ({ ...x, uri: x.uri, by: session.name, postId: x.postId, ownerId: session.id })), 0, gallery[0].postId) : undefined} />
             <View style={styles.wallSide}>
               {gallery.slice(1, 5).map((p, i) => (
-                <SmartImage key={p.uri + i} uri={p.uri} posterUri={p.posterUrl} accessibilityLabel={p.altText || "Open your media"} style={styles.wallCell} contain={false}
+                <SmartImage key={p.uri + i} uri={p.uri} posterUri={mediaPosterUri(p)} mediaKind={mediaDisplayKind(p)} accessibilityLabel={p.altText || "Open your media"} style={styles.wallCell} contain={false}
                   onPress={onOpenPhotos ? () => onOpenPhotos(gallery.map((x) => ({ ...x, uri: x.uri, by: session.name, postId: x.postId, ownerId: session.id })), i + 1, p.postId) : undefined} />
               ))}
             </View>

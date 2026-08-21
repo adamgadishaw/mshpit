@@ -17,6 +17,8 @@ import { api } from "../lib/api";
 import Svg, { Defs, LinearGradient, Stop, Rect } from "react-native-svg";
 import { formatDate } from "../domain/dates.mjs";
 import { discographyIdentityCopy, discographyPresentation } from "../domain/discographyView.mjs";
+import { mediaDisplayKind, mediaPosterUri } from "../domain/postMediaDisplay.mjs";
+import { trackReportDescriptor, trackReportIdentityKey } from "../domain/trackReportIdentity.mjs";
 
 const cap = (s) => (s ? s.replace(/\b\w/g, (c) => c.toUpperCase()) : s);
 const compactCount = (value) => {
@@ -129,18 +131,24 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
   const [reportNote, setReportNote] = useState("");
   const [reportingBusy, setReportingBusy] = useState(false);
   const [reportedSongs, setReportedSongs] = useState({});
-  const submitSongReport = async (title) => {
+  const submitSongReport = async (track) => {
     if (reportingBusy) return;
+    const descriptor = trackReportDescriptor(track, a.name);
+    if (!descriptor.title) return;
+    const identityKey = trackReportIdentityKey(descriptor);
     setReportingBusy(true);
-    const r = await reportTrack({ title, artist: a.name, category: reportCategory, url: reportUrl.trim() || undefined, note: reportNote.trim() || undefined });
+    const r = await reportTrack({ ...descriptor, category: reportCategory, url: reportUrl.trim() || undefined, note: reportNote.trim() || undefined });
     setReportingBusy(false);
-    if (r.ok) { setReportedSongs((m) => ({ ...m, [title]: true })); setReportingSong(null); setReportUrl(""); setReportNote(""); setReportCategory("wrong_video"); }
+    if (r.ok) { setReportedSongs((m) => ({ ...m, [identityKey]: true })); setReportingSong(null); setReportUrl(""); setReportNote(""); setReportCategory("wrong_video"); }
   };
   // One report box shared by EVERY song row on the page (popular songs and
-  // album tracklists alike), keyed by title.
-  const renderReportBox = (title) => (
+  // album tracklists alike), keyed by exact provider recording when available.
+  const renderReportBox = (track) => {
+    const descriptor = trackReportDescriptor(track, a.name);
+    const identityKey = trackReportIdentityKey(descriptor);
+    return (
     <View style={styles.songReportBox}>
-      {reportedSongs[title] ? (
+      {reportedSongs[identityKey] ? (
         <Text style={styles.songReportDone}>Reported. A moderator will pin the right video.</Text>
       ) : (
         <>
@@ -171,7 +179,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
             multiline
           />
           <View style={styles.songReportActions}>
-            <Pressable style={[styles.songReportBtn, reportingBusy && { opacity: 0.55 }]} onPress={() => submitSongReport(title)} disabled={reportingBusy} accessibilityRole="button">
+            <Pressable style={[styles.songReportBtn, reportingBusy && { opacity: 0.55 }]} onPress={() => submitSongReport(descriptor)} disabled={reportingBusy} accessibilityRole="button">
               <Text style={styles.songReportBtnTxt}>{reportingBusy ? "Sending..." : "Send report"}</Text>
             </Pressable>
             <Pressable onPress={() => setReportingSong(null)} hitSlop={8}><Text style={styles.songReportCancel}>Cancel</Text></Pressable>
@@ -179,8 +187,16 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
         </>
       )}
     </View>
-  );
-  const toggleReportBox = (title) => { setReportingSong((cur) => (cur === title ? null : title)); setReportUrl(""); setReportNote(""); setReportCategory("wrong_video"); };
+    );
+  };
+  const toggleReportBox = (track) => {
+    const descriptor = trackReportDescriptor(track, a.name);
+    const key = trackReportIdentityKey(descriptor);
+    setReportingSong((current) => (current?.key === key ? null : { ...descriptor, key }));
+    setReportUrl("");
+    setReportNote("");
+    setReportCategory("wrong_video");
+  };
 
   const [disco, setDisco] = useState(null);
   const [discoOwner, setDiscoOwner] = useState(a.name);
@@ -792,7 +808,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
                 <View key={p.uri || i} style={styles.fanTile}>
                   {/* SmartImage: proxies HEIC (iPhone shots) to JPEG so no tile
                       ever renders blank, and taps open the full-screen viewer. */}
-                  <SmartImage uri={p.uri} posterUri={p.posterUrl} accessibilityLabel={p.altText || `Open media from ${a.name}`} style={StyleSheet.absoluteFill} contain={false}
+                  <SmartImage uri={p.uri} posterUri={mediaPosterUri(p)} mediaKind={mediaDisplayKind(p)} accessibilityLabel={p.altText || `Open media from ${a.name}`} style={StyleSheet.absoluteFill} contain={false}
                     onPress={() => onOpenPhotos?.(gallery.map((x) => ({ ...x, uri: x.uri, by: x.by, postId: x.postId, ownerId: x.ownerId })), i, p.postId || null)} />
                   {p.source !== "fan" && !!p.by && (
                     <View style={styles.creditTag} pointerEvents="none"><Text style={styles.creditTxt} numberOfLines={1}>{p.by}</Text></View>
@@ -869,6 +885,13 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
                   {open && (al.tracks || []).map((t, ti) => {
                     const sr = songRating(a.name, t.title);
                     const isTop = top && top.title === t.title;
+                    const reportDescriptor = trackReportDescriptor({
+                      title: t.title,
+                      artist: a.name,
+                      provider: t.id ? "deezer" : null,
+                      sourceId: t.id || null,
+                    });
+                    const reportIdentity = trackReportIdentityKey(reportDescriptor);
                     return (
                       <View key={ti}>
                         <View style={styles.discTrack}>
@@ -884,8 +907,8 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
                           </Pressable>
                           <TapStars value={sr.mine} onChange={(n) => rateSong(a.name, t.title, n)} size={15} gap={2} />
                           {session && (
-                            <Pressable style={styles.songAdd} onPress={() => toggleReportBox(t.title)} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Report the wrong video playing for ${t.title}`}>
-                              <Icon name="flag" size={12} color={reportedSongs[t.title] ? colors.good : colors.textFaint} />
+                            <Pressable style={styles.songAdd} onPress={() => toggleReportBox(reportDescriptor)} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Report the wrong video playing for ${t.title}`}>
+                              <Icon name="flag" size={12} color={reportedSongs[reportIdentity] ? colors.good : colors.textFaint} />
                             </Pressable>
                           )}
                           {onAddToPlaylist && (
@@ -897,7 +920,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
                             <Icon name="play" size={13} color={colors.amber} />
                           </Pressable>
                         </View>
-                        {reportingSong === t.title && renderReportBox(t.title)}
+                        {reportingSong?.key === reportIdentity && renderReportBox(reportDescriptor)}
                       </View>
                     );
                   })}
@@ -933,7 +956,9 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
             </Text>
             {songs.map((s) => {
               const sr = songRating(a.name, s.title);
-              const reported = !!reportedSongs[s.title];
+              const reportDescriptor = trackReportDescriptor(s, a.name);
+              const reportIdentity = trackReportIdentityKey(reportDescriptor);
+              const reported = !!reportedSongs[reportIdentity];
               return (
                 <View key={s.id}>
                   <View style={styles.songRow}>
@@ -947,7 +972,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
                     </Pressable>
                     <TapStars value={sr.mine} onChange={(n) => rateSong(a.name, s.title, n)} size={16} gap={3} />
                     {session && (
-                      <Pressable style={styles.songAdd} onPress={() => toggleReportBox(s.title)} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Report the wrong video playing for ${s.title}`}>
+                      <Pressable style={styles.songAdd} onPress={() => toggleReportBox(reportDescriptor)} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Report the wrong video playing for ${s.title}`}>
                         <Icon name="flag" size={12} color={reported ? colors.good : colors.textFaint} />
                       </Pressable>
                     )}
@@ -960,7 +985,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
                       <Icon name="play" size={13} color={colors.amber} />
                     </Pressable>
                   </View>
-                  {reportingSong === s.title && renderReportBox(s.title)}
+                  {reportingSong?.key === reportIdentity && renderReportBox(reportDescriptor)}
                 </View>
               );
             })}

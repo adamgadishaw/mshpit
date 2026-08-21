@@ -8,7 +8,7 @@ import { Platform } from "react-native";
 // tracks) still takes priority when a listener has linked a Premium account.
 const web = Platform.OS === "web" && typeof window !== "undefined";
 
-export function useAudioPreview(src, { enabled = true, onEnded, onStarted, startAt = 0, volume = 1 } = {}) {
+export function useAudioPreview(src, { enabled = true, mediaKey = "", onEnded, onStarted, startAt = 0, volume = 1 } = {}) {
   const audioRef = useRef(null);
   const endedRef = useRef(onEnded);
   endedRef.current = onEnded;
@@ -24,19 +24,21 @@ export function useAudioPreview(src, { enabled = true, onEnded, onStarted, start
   sourceRef.current = src;
   const lastPos = useRef(0); // throttle position state updates to cut re-renders (lag)
 
-  // One <audio> element per mount, wired to state.
+  // One <audio> element per queue occurrence, wired to state. Recreating it on
+  // mediaKey changes gives delayed DOM events an immutable occurrence lease.
   useEffect(() => {
     if (!web || !enabled) return;
     const a = new window.Audio();
+    const occurrence = { mediaKey, source: src || null };
     a.preload = "auto";
     audioRef.current = a;
     // timeupdate fires ~4x/sec; only push to state ~3x/sec so the whole player
     // bar isn't re-rendering on every tick (that was a real lag source).
     const onTime = () => { const t = a.currentTime || 0; if (Math.abs(t - lastPos.current) >= 0.28) { lastPos.current = t; setPos(t); } };
     const onMeta = () => setDur(isFinite(a.duration) ? a.duration : 0);
-    const onPlay = () => { setPlaying(true); setError(null); startedRef.current?.(); };
+    const onPlay = () => { setPlaying(true); setError(null); startedRef.current?.(occurrence); };
     const onPause = () => setPlaying(false);
-    const onEnd = () => { setPlaying(false); endedRef.current && endedRef.current(); };
+    const onEnd = () => { setPlaying(false); endedRef.current?.(occurrence); };
     const onError = () => { setPlaying(false); setError({ kind: "playback", code: a.error?.code || 0, source: sourceRef.current }); };
     a.addEventListener("timeupdate", onTime);
     a.addEventListener("loadedmetadata", onMeta);
@@ -61,7 +63,7 @@ export function useAudioPreview(src, { enabled = true, onEnded, onStarted, start
       try { a.pause(); a.removeAttribute("src"); a.load(); } catch {}
       audioRef.current = null;
     };
-  }, [enabled]);
+  }, [enabled, mediaKey]);
 
   // Load + auto-play whenever the track changes (autoplay is allowed because the
   // user has already tapped a play button = a page gesture).
@@ -70,6 +72,10 @@ export function useAudioPreview(src, { enabled = true, onEnded, onStarted, start
     if (!a) return;
     setPos(0); setDur(0); setError(null);
     if (!src) { try { a.pause(); a.removeAttribute("src"); a.load(); } catch {} return; }
+    // Explicitly reload even when the URI is unchanged. Adjacent queue entries
+    // can intentionally contain the same recording, and an ended media element
+    // otherwise stays ended instead of starting occurrence two from zero.
+    try { a.pause(); } catch {}
     a.src = src;
     try { a.volume = Math.max(0, Math.min(1, volume)); } catch {}
     // Resume where we left off before a reload (theme change / refresh), once.
@@ -78,13 +84,19 @@ export function useAudioPreview(src, { enabled = true, onEnded, onStarted, start
       const seekOnce = () => { try { a.currentTime = Math.min(resumeAt, (a.duration || resumeAt) - 0.3); } catch {}; a.removeEventListener("loadedmetadata", seekOnce); };
       a.addEventListener("loadedmetadata", seekOnce);
     }
-    a.play().catch((reason) => setError({ kind: reason?.name === "NotAllowedError" ? "permission" : "playback", source: src }));
-  }, [src, enabled]);
+    try { a.load(); } catch {}
+    a.play().catch((reason) => {
+      if (audioRef.current !== a) return;
+      setError({ kind: reason?.name === "NotAllowedError" ? "permission" : "playback", source: src });
+    });
+  }, [src, enabled, mediaKey]);
 
   const toggle = () => {
     const a = audioRef.current;
     if (!a) return;
-    if (a.paused) a.play().catch((reason) => setError({ kind: reason?.name === "NotAllowedError" ? "permission" : "playback", source: sourceRef.current })); else a.pause();
+    if (a.paused) a.play().catch((reason) => {
+      if (audioRef.current === a) setError({ kind: reason?.name === "NotAllowedError" ? "permission" : "playback", source: sourceRef.current });
+    }); else a.pause();
   };
   const pause = () => {
     const a = audioRef.current;

@@ -5,7 +5,7 @@ import Icon from "../Icon";
 import Avatar from "../Avatar";
 import SmartImage from "../SmartImage";
 import ClipPoster from "../ClipPoster";
-import { isVideoUrl } from "../../lib/img";
+import { mediaDisplayKind, mediaPosterUri } from "../../domain/postMediaDisplay.mjs";
 import { compactDiscoverNumber, discoverPlaybackTrack } from "../../domain/discoverView.mjs";
 import { presentFriendsListening } from "../../domain/listeningRediscovery.mjs";
 import { SectionHeading } from "./DiscoverPrimitives";
@@ -67,15 +67,15 @@ export const FriendsListening = memo(function FriendsListening({ rows, loading, 
 });
 
 function PhotoTile({ photo, index, onOpen, width }) {
-  const video = photo.kind === "video" || photo.type === "video" || isVideoUrl(photo.uri);
+  const video = mediaDisplayKind(photo) === "video";
   const authoredAlt = typeof photo.altText === "string" ? photo.altText.trim() : "";
   const mediaLabel = authoredAlt || `Open concert ${video ? "clip" : "photo"} ${index + 1}${photo.artist ? `, ${photo.artist}` : ""}`;
   return (
     <Pressable style={[styles.photoTile, { width }]} onPress={onOpen} accessibilityRole="button" accessibilityLabel={mediaLabel} accessibilityHint={video ? "Opens the video player" : "Opens the full-size photo"}>
       {video ? (
-        <ClipPoster uri={photo.uri} posterUri={photo.posterUrl || photo.posterUri || null} style={styles.photoImage} compact accessibilityLabel={authoredAlt || "Concert video preview"} accessible={false} />
+        <ClipPoster uri={photo.uri} posterUri={mediaPosterUri(photo)} style={styles.photoImage} compact accessibilityLabel={authoredAlt || "Concert video preview"} accessible={false} />
       ) : (
-        <SmartImage uri={photo.uri} posterUri={photo.posterUrl || photo.posterUri || null} style={styles.photoImage} contain={false} previewWidth={640} accessibilityLabel={authoredAlt || "Concert photo"} accessible={false} />
+        <SmartImage uri={photo.uri} mediaKind="image" style={styles.photoImage} contain={false} previewWidth={640} accessibilityLabel={authoredAlt || "Concert photo"} accessible={false} />
       )}
       <View style={styles.photoMeta}>
         <View style={styles.photoCopy}>

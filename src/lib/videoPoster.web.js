@@ -8,6 +8,7 @@ import {
   videoPosterFileName,
   videoPosterFrameMeetsAutoQuality,
   videoPosterFrameScore,
+  videoPosterSourceNeedsCorsProbe,
 } from "../domain/videoPoster.mjs";
 
 const ownedPosterUris = new Set();
@@ -63,8 +64,47 @@ function localVideoSource(asset) {
   }
   const uri = String(asset?.uri || "");
   if (/^(blob:|data:video\/)/i.test(uri)) return { uri, internal: false };
-  if (/^https:\/\/[^\s]+$/i.test(uri)) return { uri, internal: false, crossOrigin: true };
+  if (/^https:\/\/[^\s]+$/i.test(uri)) {
+    const pageHref = typeof location === "undefined" ? null : location.href;
+    return { uri, internal: false, crossOrigin: videoPosterSourceNeedsCorsProbe(uri, pageHref) };
+  }
   throw new VideoPosterError(VIDEO_POSTER_ERROR_CODES.sourceInvalid);
+}
+
+async function assertRemotePosterCors(source, guard, signal) {
+  if (!source?.crossOrigin) return;
+  if (typeof fetch !== "function") {
+    throw new VideoPosterError(VIDEO_POSTER_ERROR_CODES.crossOriginBlocked);
+  }
+  try {
+    // HEAD verifies an exposed CORS response without downloading or decoding the
+    // historical video. A 4xx/405 response is still proof that the browser was
+    // allowed to observe the response; an opaque/no-ACAO response is not.
+    const response = await guard.race(fetch(source.uri, {
+      method: "HEAD",
+      mode: "cors",
+      credentials: "omit",
+      cache: "force-cache",
+      signal,
+    }));
+    if (!response || response.type === "opaque") {
+      throw new VideoPosterError(VIDEO_POSTER_ERROR_CODES.crossOriginBlocked);
+    }
+  } catch (error) {
+    if (isCancellation(error)) throw error;
+    throw new VideoPosterError(VIDEO_POSTER_ERROR_CODES.crossOriginBlocked);
+  }
+}
+
+function assertCanvasReadable(operation) {
+  try {
+    return operation();
+  } catch (error) {
+    if (error?.name === "SecurityError" || /taint|cross[- ]origin|insecure/i.test(String(error?.message || ""))) {
+      throw new VideoPosterError(VIDEO_POSTER_ERROR_CODES.crossOriginBlocked);
+    }
+    throw error;
+  }
 }
 
 function waitForMedia(video, successEvent, guard, ready) {
@@ -121,8 +161,8 @@ function scoreCurrentFrame(video, canvas, context) {
   const height = Math.max(1, Math.round(width * (video.videoHeight / video.videoWidth)));
   canvas.width = width;
   canvas.height = height;
-  context.drawImage(video, 0, 0, width, height);
-  return videoPosterFrameScore(context.getImageData(0, 0, width, height).data);
+  assertCanvasReadable(() => context.drawImage(video, 0, 0, width, height));
+  return videoPosterFrameScore(assertCanvasReadable(() => context.getImageData(0, 0, width, height)).data);
 }
 
 function encodeJpeg(canvas, quality) {
@@ -158,6 +198,7 @@ export async function generateVideoPosterAsset(videoAsset, options = {}) {
   try {
     guard.assertActive();
     source = localVideoSource(videoAsset);
+    await assertRemotePosterCors(source, guard, normalized.signal);
     video = document.createElement("video");
     if (source.crossOrigin) video.crossOrigin = "anonymous";
     video.preload = "auto";
@@ -222,7 +263,7 @@ export async function generateVideoPosterAsset(videoAsset, options = {}) {
       if (!context) throw new VideoPosterError(VIDEO_POSTER_ERROR_CODES.frameFailed);
       context.fillStyle = "#000";
       context.fillRect(0, 0, size.width, size.height);
-      context.drawImage(video, 0, 0, size.width, size.height);
+      assertCanvasReadable(() => context.drawImage(video, 0, 0, size.width, size.height));
     } catch (error) {
       throw videoPosterError(error, VIDEO_POSTER_ERROR_CODES.frameFailed);
     }

@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 import { PIT_SQLITE_APPLICATION_ID, prepareDataDirectory } from "./dataDirectory.js";
 import { contentSafetyDecision } from "./contentSafety.js";
 import { canonicalProfileExtras } from "./profileExtras.js";
+import { legacyTrackOverrideIdentityKey, trackOverrideIdentityKey } from "./trackIdentity.js";
 
 export const artistSearchKey = (value) => String(value || "")
   .normalize("NFKD")
@@ -392,6 +393,8 @@ CREATE TABLE IF NOT EXISTS plays (
   artist     TEXT,
   url        TEXT,
   video_id   TEXT,
+  provider   TEXT,
+  source_id  TEXT,
   art        TEXT,
   created_at INTEGER NOT NULL
 );
@@ -480,6 +483,20 @@ CREATE TABLE IF NOT EXISTS yt_cache (
   video_id   TEXT,
   updated_at INTEGER NOT NULL
 );
+
+-- A listener who receives a genuine iframe 100/101/150 must not be handed the
+-- same dead ID again, including when it came from a staff pin. These tombstones
+-- are actor-scoped: an untrusted client can protect its own playback session but
+-- cannot globally destroy a verified cache result or staff decision.
+CREATE TABLE IF NOT EXISTS youtube_playback_failures (
+  track_key  TEXT NOT NULL,
+  video_id   TEXT NOT NULL,
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (track_key, video_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_youtube_playback_failures_expiry
+  ON youtube_playback_failures(created_at);
 
 -- Provider responses that are safe to keep across restarts. Only durable
 -- metadata belongs here: short-lived playback URLs are deliberately excluded.
@@ -807,6 +824,34 @@ CREATE TABLE IF NOT EXISTS track_overrides (
   updated_at INTEGER NOT NULL
 );
 
+-- Exact provider-recording pins live outside the rolling-compatible tuple
+-- table. An older binary safely ignores this additive table instead of
+-- misclassifying a new key as a legacy ASCII row during startup reconciliation.
+CREATE TABLE IF NOT EXISTS track_source_overrides (
+  provider   TEXT NOT NULL,
+  source_id  TEXT NOT NULL,
+  title      TEXT NOT NULL,
+  artist     TEXT NOT NULL DEFAULT '',
+  video_id   TEXT,
+  set_by     TEXT,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY (provider, source_id)
+);
+CREATE INDEX IF NOT EXISTS idx_track_source_overrides_updated
+  ON track_source_overrides(updated_at DESC);
+
+-- Permanent provenance for identities that share the former ASCII key. Old
+-- binaries cannot reveal their intended Unicode identity on an UPSERT conflict
+-- (they update only video_id), so current code uses this registry to detect
+-- ambiguity and fail closed instead of mirroring a video onto the wrong song.
+CREATE TABLE IF NOT EXISTS track_override_compat_links (
+  legacy_key  TEXT NOT NULL,
+  current_key TEXT NOT NULL,
+  title       TEXT NOT NULL,
+  artist      TEXT NOT NULL DEFAULT '',
+  PRIMARY KEY (legacy_key,current_key)
+);
+
 -- Owner-editable copy for the mail the app sends on its own (welcome, password
 -- reset). A missing row is not an error: server/emails.js falls back to the
 -- built-in default, so a bad edit can be undone by deleting the row.
@@ -923,6 +968,8 @@ const additiveMigrations = [
   "ALTER TABLE posts ADD COLUMN song TEXT", // JSON of a tagged YouTube song {videoId,title,artist,url,thumb}
   "ALTER TABLE posts ADD COLUMN playlist TEXT", // immutable playlist snapshot attached to a post
   "ALTER TABLE plays ADD COLUMN video_id TEXT", // exact YouTube identity for cross-device replay
+  "ALTER TABLE plays ADD COLUMN provider TEXT", // provider namespace for the exact source recording
+  "ALTER TABLE plays ADD COLUMN source_id TEXT", // opaque provider recording id for cross-device replay
   "ALTER TABLE playlists ADD COLUMN visibility TEXT NOT NULL DEFAULT 'public'",
   "ALTER TABLE playlists ADD COLUMN updated_at INTEGER",
   "ALTER TABLE yt_cache ADD COLUMN metadata TEXT",
@@ -1056,6 +1103,48 @@ db.exec("CREATE INDEX IF NOT EXISTS idx_email_log_campaign ON email_log(campaign
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_unsub_token ON users(unsub_token) WHERE unsub_token IS NOT NULL");
 db.exec("CREATE INDEX IF NOT EXISTS idx_users_email_verify_hash ON users(email_verify_hash) WHERE email_verify_hash IS NOT NULL");
 db.exec("CREATE INDEX IF NOT EXISTS idx_artists_search_key ON artists(search_key)");
+
+// These unsafe triggers existed only in an unreleased development build. An
+// old UPSERT cannot reveal which colliding Unicode identity it intended, so
+// mirroring UPDATE/DELETE is information-theoretically unsafe. Remove any local
+// intermediate copy before applying the fail-closed reconciliation below.
+for (const trigger of [
+  "trg_track_override_legacy_insert",
+  "trg_track_override_legacy_update",
+  "trg_track_override_legacy_delete",
+  "trg_track_override_legacy_insert_v2",
+  "trg_track_override_legacy_update_v2",
+  "trg_track_override_legacy_delete_v2",
+]) db.exec(`DROP TRIGGER IF EXISTS ${trigger}`);
+
+// Copy legacy ASCII/delimiter override identities to the Unicode-safe v2 key.
+// Keep the old row for code rollback, but never overwrite an existing v2 row:
+// a later legacy UPDATE may actually be a different Unicode song whose old key
+// collided. This boot transaction and current admin writes are the only places
+// that register provenance; playback GETs remain read-only.
+db.exec("BEGIN IMMEDIATE");
+try {
+  const legacyOverrides = db.prepare("SELECT key,title,artist,video_id,set_by,updated_at FROM track_overrides WHERE key NOT LIKE 'track:v2:%'").all();
+  const linkOverride = db.prepare(`INSERT INTO track_override_compat_links (legacy_key,current_key,title,artist)
+    VALUES (?,?,?,?) ON CONFLICT(legacy_key,current_key) DO UPDATE SET
+      title=excluded.title,artist=excluded.artist`);
+  const copyOverride = db.prepare(`INSERT OR IGNORE INTO track_overrides
+    (key,title,artist,video_id,set_by,updated_at) VALUES (?,?,?,?,?,?)`);
+  for (const row of legacyOverrides) {
+    const currentKey = trackOverrideIdentityKey(row.title, row.artist);
+    linkOverride.run(row.key, currentKey, row.title, row.artist);
+    copyOverride.run(currentKey, row.title, row.artist, row.video_id, row.set_by, row.updated_at);
+  }
+  const currentOverrides = db.prepare("SELECT key,title,artist FROM track_overrides WHERE key LIKE 'track:v2:%'").all();
+  for (const row of currentOverrides) {
+    linkOverride.run(legacyTrackOverrideIdentityKey(row.title, row.artist), row.key, row.title, row.artist);
+  }
+  db.exec("COMMIT");
+} catch (error) {
+  try { db.exec("ROLLBACK"); } catch {}
+  throw error;
+}
+
 if (db.prepare("SELECT 1 FROM artists WHERE search_key IS NULL OR search_key='' LIMIT 1").get()) {
   db.exec("BEGIN IMMEDIATE");
   try {
@@ -1314,6 +1403,7 @@ export const emailStmts = {
 // lookup does not select the same unavailable/karaoke result again.
 export const ytStmts = {
   get: db.prepare("SELECT key,video_id,updated_at,metadata,score,expires_at,rejected_ids FROM yt_cache WHERE key = ?"),
+  delete: db.prepare("DELETE FROM yt_cache WHERE key = ?"),
   set: db.prepare(`INSERT INTO yt_cache (key,video_id,updated_at,metadata,score,expires_at,rejected_ids)
     VALUES (@key,@video_id,@updated_at,@metadata,@score,@expires_at,@rejected_ids)
     ON CONFLICT(key) DO UPDATE SET video_id=excluded.video_id,updated_at=excluded.updated_at,
