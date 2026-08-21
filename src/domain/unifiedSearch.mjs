@@ -14,7 +14,55 @@ export function unifiedSearchState({ query, loading = false, ...sections } = {})
 // signal, including people search. This small helper makes that contract
 // explicit and independently testable.
 export function unifiedSearchRequestOptions(controller) {
-  return controller?.signal ? { signal: controller.signal } : {};
+  return controller?.signal ? { signal: controller.signal, throwOnError: true } : { throwOnError: true };
+}
+
+const boundedText = (value, maximum) => String(value || "").trim().slice(0, maximum);
+const boundedIdentity = (value) => {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  const normalized = boundedText(value, 240);
+  return normalized || null;
+};
+
+// Recent searches are durable navigation, not just labels. Keep a small,
+// provider-neutral playback descriptor so tapping a recent song reopens the
+// exact result instead of running a new fuzzy search that may resolve a
+// different recording. The allowlist also prevents arbitrary provider payloads
+// from growing local storage without bounds.
+export function recentSongTrack(value) {
+  const candidate = value?.track && typeof value.track === "object" ? value.track : value;
+  let title = boundedText(candidate?.title, 200);
+  let artist = boundedText(candidate?.artist, 120);
+  if ((!title || !artist) && value?.type === "song") {
+    const label = boundedText(value.label, 320);
+    const split = label.lastIndexOf(" - ");
+    if (split > 0) {
+      title ||= label.slice(0, split).trim().slice(0, 200);
+      artist ||= label.slice(split + 3).trim().slice(0, 120);
+    }
+  }
+  if (!title || !artist) return null;
+  const duration = Number(candidate?.duration);
+  return {
+    kind: "track",
+    title,
+    artist,
+    id: boundedIdentity(candidate?.id),
+    sourceId: boundedIdentity(candidate?.sourceId),
+    provider: boundedText(candidate?.provider, 40) || null,
+    source: boundedText(candidate?.source, 40) || null,
+    videoId: boundedText(candidate?.videoId, 160) || null,
+    url: boundedText(candidate?.url, 2048) || null,
+    preview: boundedText(candidate?.preview, 2048) || null,
+    art: boundedText(candidate?.art, 2048) || null,
+    album: boundedText(candidate?.album, 200) || null,
+    duration: Number.isFinite(duration) && duration > 0 ? Math.min(Math.trunc(duration), 24 * 60 * 60) : 0,
+  };
+}
+
+export function recentSongSearchEntry(song) {
+  const track = recentSongTrack(song);
+  return track ? { type: "song", label: `${track.title} - ${track.artist}`, track } : null;
 }
 
 const normalizedQuery = (value) => String(value || "").trim().toLowerCase();

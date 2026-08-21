@@ -20,6 +20,8 @@ export function useAudioPreview(src, { enabled = true, onEnded, onStarted, start
   const [dur, setDur] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [error, setError] = useState(null);
+  const sourceRef = useRef(src);
+  sourceRef.current = src;
   const lastPos = useRef(0); // throttle position state updates to cut re-renders (lag)
 
   // One <audio> element per mount, wired to state.
@@ -35,7 +37,7 @@ export function useAudioPreview(src, { enabled = true, onEnded, onStarted, start
     const onPlay = () => { setPlaying(true); setError(null); startedRef.current?.(); };
     const onPause = () => setPlaying(false);
     const onEnd = () => { setPlaying(false); endedRef.current && endedRef.current(); };
-    const onError = () => { setPlaying(false); setError({ kind: "playback", code: a.error?.code || 0 }); };
+    const onError = () => { setPlaying(false); setError({ kind: "playback", code: a.error?.code || 0, source: sourceRef.current }); };
     a.addEventListener("timeupdate", onTime);
     a.addEventListener("loadedmetadata", onMeta);
     a.addEventListener("durationchange", onMeta);
@@ -76,13 +78,13 @@ export function useAudioPreview(src, { enabled = true, onEnded, onStarted, start
       const seekOnce = () => { try { a.currentTime = Math.min(resumeAt, (a.duration || resumeAt) - 0.3); } catch {}; a.removeEventListener("loadedmetadata", seekOnce); };
       a.addEventListener("loadedmetadata", seekOnce);
     }
-    a.play().catch((reason) => setError({ kind: reason?.name === "NotAllowedError" ? "permission" : "playback" }));
+    a.play().catch((reason) => setError({ kind: reason?.name === "NotAllowedError" ? "permission" : "playback", source: src }));
   }, [src, enabled]);
 
   const toggle = () => {
     const a = audioRef.current;
     if (!a) return;
-    if (a.paused) a.play().catch((reason) => setError({ kind: reason?.name === "NotAllowedError" ? "permission" : "playback" })); else a.pause();
+    if (a.paused) a.play().catch((reason) => setError({ kind: reason?.name === "NotAllowedError" ? "permission" : "playback", source: sourceRef.current })); else a.pause();
   };
   const pause = () => {
     const a = audioRef.current;

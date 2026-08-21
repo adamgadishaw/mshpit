@@ -1,6 +1,6 @@
 import { Component } from "react";
 import { View, Text, StyleSheet, Pressable, Platform, ScrollView } from "react-native";
-import { colors, mono, radius } from "../theme";
+import { colors, focusRing, mono, radius } from "../theme";
 import { captureAppError } from "../lib/diagnostics";
 
 // App-wide crash net. React unmounts a subtree when a render throws; without this
@@ -9,7 +9,8 @@ import { captureAppError } from "../lib/diagnostics";
 // offers three escape hatches, retry, reload, and a hard reset that clears the
 // local data most likely to be the culprit, so a crash is never a dead end.
 export default class ErrorBoundary extends Component {
-  state = { error: null, appError: null };
+  state = { error: null, appError: null, resetArmed: false };
+  resetTimer = null;
 
   static getDerivedStateFromError(error) {
     return { error };
@@ -26,7 +27,11 @@ export default class ErrorBoundary extends Component {
     this.setState({ appError });
   }
 
-  retry = () => this.setState({ error: null, appError: null });
+  componentWillUnmount() {
+    if (this.resetTimer) clearTimeout(this.resetTimer);
+  }
+
+  retry = () => this.setState({ error: null, appError: null, resetArmed: false });
 
   reload = () => {
     if (Platform.OS === "web" && typeof window !== "undefined") window.location.reload();
@@ -37,6 +42,12 @@ export default class ErrorBoundary extends Component {
   // hydrated store), keeping nothing that can re-trigger it. Session included so a
   // corrupt user object can't wedge the app, worst case the user logs back in.
   reset = () => {
+    if (!this.state.resetArmed) {
+      this.setState({ resetArmed: true });
+      this.resetTimer = setTimeout(() => this.setState({ resetArmed: false }), 8000);
+      return;
+    }
+    if (this.resetTimer) clearTimeout(this.resetTimer);
     try {
       if (typeof window !== "undefined" && window.localStorage) {
         ["pit_theme", "pit_theme_owner", "pit.session", "pit.users", "pit.feed", "pit.follows", "pit.entered"].forEach((k) => window.localStorage.removeItem(k));
@@ -48,10 +59,10 @@ export default class ErrorBoundary extends Component {
   render() {
     if (!this.state.error) return this.props.children;
     return (
-      <View style={styles.wrap}>
+      <View style={styles.wrap} accessibilityRole="alert" accessibilityLiveRegion="assertive">
         <ScrollView contentContainerStyle={styles.content}>
           <Text style={styles.brand}>PIT</Text>
-          <Text style={styles.title}>The night hit a snag</Text>
+          <Text style={styles.title} accessibilityRole="header">The night hit a snag</Text>
           <Text style={styles.sub}>
             Something crashed on our end. Your data is safe, try again, and if it keeps
             happening, reset the app to get moving.
@@ -60,14 +71,14 @@ export default class ErrorBoundary extends Component {
             {this.state.appError?.code || "PIT-APP-001"}{this.state.appError?.requestId ? ` / ${this.state.appError.requestId}` : ""}
           </Text>
 
-          <Pressable style={styles.primary} onPress={this.retry}>
+          <Pressable style={({ focused, pressed }) => [styles.primary, focused && focusRing, pressed && styles.buttonPressed]} onPress={this.retry} accessibilityRole="button" accessibilityLabel="Try again">
             <Text style={styles.primaryTxt}>Try again</Text>
           </Pressable>
-          <Pressable style={styles.ghost} onPress={this.reload}>
+          <Pressable style={({ focused, pressed }) => [styles.ghost, focused && focusRing, pressed && styles.buttonPressed]} onPress={this.reload} accessibilityRole="button" accessibilityLabel="Reload the app">
             <Text style={styles.ghostTxt}>Reload the app</Text>
           </Pressable>
-          <Pressable style={styles.ghost} onPress={this.reset}>
-            <Text style={styles.ghostTxt}>Reset app data</Text>
+          <Pressable style={({ focused, pressed }) => [styles.ghost, this.state.resetArmed && styles.resetArmed, focused && focusRing, pressed && styles.buttonPressed]} onPress={this.reset} accessibilityRole="button" accessibilityLabel={this.state.resetArmed ? "Confirm reset app data" : "Reset app data"} accessibilityHint="Clears local app data and signs you out">
+            <Text style={styles.ghostTxt}>{this.state.resetArmed ? "Tap again to confirm reset" : "Reset app data"}</Text>
           </Pressable>
 
           {__DEV__ && this.state.error ? (
@@ -89,6 +100,8 @@ const styles = StyleSheet.create({
   primary: { backgroundColor: colors.amberStrong, borderRadius: radius.pill, paddingHorizontal: 34, paddingVertical: 15, marginTop: 4 },
   primaryTxt: { color: "#1A1206", fontSize: 16, fontWeight: "900" },
   ghost: { borderRadius: radius.pill, borderWidth: 1.5, borderColor: colors.line, paddingHorizontal: 26, paddingVertical: 13 },
+  buttonPressed: { opacity: 0.75 },
+  resetArmed: { borderColor: colors.danger, backgroundColor: `${colors.danger}1F` },
   ghostTxt: { color: colors.text, fontSize: 15, fontWeight: "700" },
   detail: { color: colors.textFaint, fontFamily: mono, fontSize: 11, marginTop: 18, maxWidth: 460, textAlign: "center" },
 });

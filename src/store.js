@@ -12,7 +12,7 @@ import { ENABLE_DEMO_DATA, remoteIdentityValidationEnabled } from "./config/runt
 import { isUpcomingEventDate, PERSISTED_FEED_LIMIT, publicProfileCacheEntry, sanitizePersistedStoreValue, sanitizeTourDates } from "./domain/dataPolicy.mjs";
 import { toIsoDate } from "./domain/dates.mjs";
 import { createTicketRegistry } from "./domain/latestWins.mjs";
-import { withoutBlockedPersonSearches } from "./domain/unifiedSearch.mjs";
+import { recentSongTrack, withoutBlockedPersonSearches } from "./domain/unifiedSearch.mjs";
 import {
   createRecommendationPreferenceCoordinator,
   recommendationPreferenceMutationKey,
@@ -47,7 +47,7 @@ import {
 import { buildReviewCreateBody, buildReviewEditBody, cleanArtistKey } from "./domain/post-payload.mjs";
 import { mergeEditedPost, resolvePostEditTarget } from "./domain/postEditTarget.mjs";
 import { postMatchesEditIntent, shouldReconcileEditFailure } from "./domain/postReconciliation.mjs";
-import { classifyResolve, backoffFor, RESOLVE_ATTEMPTS, CACHE_MS } from "./domain/playback.mjs";
+import { activeYouTubeLookupStatus, classifyResolve, backoffFor, RESOLVE_ATTEMPTS, CACHE_MS } from "./domain/playback.mjs";
 import { recommendTracks as recommendFromCandidates } from "./domain/recommend.mjs";
 import { trackKey, trackMetadataKey, trackTupleKey, youtubeLookupCacheKey } from "./lib/playback";
 import {
@@ -88,6 +88,24 @@ import {
 } from "./domain/privateListening.mjs";
 import { createGoingIntentCoordinator, goingIntentKey } from "./domain/goingIntent.mjs";
 import { accountMutationIsCurrent, captureAccountMutation } from "./domain/accountMutation.mjs";
+import {
+  ARTIST_REQUEST_CONFIRMATION_ERROR,
+  artistRequestFailureMessage,
+  confirmedArtistRequest,
+  mergeConfirmedArtistRequest,
+} from "./domain/artistRequestMutation.mjs";
+import {
+  profileFailureOutcome,
+  reconcileProfilePostSnapshot,
+  unavailableProfileOutcome,
+  withoutUnavailableProfile,
+  withoutUnavailableProfilePosts,
+} from "./domain/profileReadState.mjs";
+import {
+  accountScopeMatches,
+  accountScopedRows,
+  favoriteGenreFromHistory,
+} from "./domain/accountPrivateProjection.mjs";
 
 // Legacy client facade: combines server hydration, small persisted caches, social
 // state, and compatibility data behind one screen-facing shape. Server responses
@@ -284,7 +302,13 @@ const recentSearchStorageKey = (accountId) => accountId
   ? `pit.recentSearches.user.${encodeURIComponent(String(accountId))}`
   : "pit.recentSearches.guest";
 const cleanRecentSearches = (stored) => Array.isArray(stored)
-  ? stored.filter((entry) => entry && typeof entry.label === "string" && entry.label.trim()).slice(0, 8)
+  ? stored
+    .filter((entry) => entry && typeof entry.label === "string" && entry.label.trim())
+    .slice(0, 8)
+    .map((entry) => {
+      const track = entry.type === "song" ? recentSongTrack(entry) : null;
+      return track ? { ...entry, track } : entry;
+    })
   : [];
 const loadRecentSearches = (accountId) => {
   const scoped = load(recentSearchStorageKey(accountId), null);
@@ -321,8 +345,15 @@ export function StoreProvider({ children }) {
   const [playHistory, setPlayHistory] = useState(() => load(historyStorageKey(), [])); // every song played, newest first
   const [playHistoryAccountId, setPlayHistoryAccountId] = useState(session?.id || null);
   const [playHistoryStatus, setPlayHistoryStatus] = useState(session?.id ? "loading" : "ready");
+  const [playHistoryErrorMode, setPlayHistoryErrorMode] = useState(null);
   const [playHistoryNextCursor, setPlayHistoryNextCursor] = useState(null);
   const playHistoryRequestRef = useRef({ sequence: 0, accountId: session?.id || null });
+  const activeAccountId = session?.id || null;
+  const playHistoryIsScoped = accountScopeMatches(playHistoryAccountId, activeAccountId);
+  const scopedPlayHistory = accountScopedRows(playHistory, playHistoryAccountId, activeAccountId);
+  const scopedPlayHistoryStatus = playHistoryIsScoped ? playHistoryStatus : activeAccountId ? "loading" : "ready";
+  const scopedPlayHistoryErrorMode = playHistoryIsScoped ? playHistoryErrorMode : null;
+  const scopedPlayHistoryNextCursor = playHistoryIsScoped ? playHistoryNextCursor : null;
   const [privateListeningUntil, setPrivateListeningUntil] = useState(() => {
     const key = privateListeningStorageKey(session?.id);
     return key ? Number(load(key, 0)) || 0 : 0;
@@ -1129,27 +1160,84 @@ export function StoreProvider({ children }) {
   // Server-truth follower/following counts per user (the local follows map only
   // ever knows the graph this device has seen; these are the real numbers).
   const [userStats, setUserStats] = useState({});
-  // Fetch one user from the server and absorb them, so ANY profile can open (a
-  // follower from a notification, a handle in a comment) even if this device has
-  // never seen them. Returns the user or null (deleted / no such account).
-  const loadUser = async (id) => {
-    if (!id) return null;
+  // Fetch one user and their wall as a typed server-truth read. Authoritative
+  // access failures quarantine the persisted profile and media; transient
+  // failures keep an existing cache available only as explicitly stale data.
+  const loadUser = async (id, { signal } = {}) => {
+    if (!id) return unavailableProfileOutcome("missing-id");
+    const cachedAtStart = !!userById(id) || sessionRef.current?.id === id;
+    const quarantine = () => {
+      setUsers((current) => withoutUnavailableProfile(current, id));
+      setFeed((current) => withoutUnavailableProfilePosts(current, id));
+      setUserStats((current) => {
+        if (!Object.prototype.hasOwnProperty.call(current, id)) return current;
+        const next = { ...current };
+        delete next[id];
+        return next;
+      });
+    };
+    let su;
+    let followers;
+    let following;
+    let fol;
     try {
-      const { user: su, followers, following, isFollowing: fol } = await api(`/api/users/${id}`);
-      if (!su) return null;
+      ({ user: su, followers, following, isFollowing: fol } = await api(`/api/users/${encodeURIComponent(id)}`, {
+        signal,
+        silent: true,
+        context: "Loading this profile",
+      }));
+      if (!su?.id) {
+        const outcome = unavailableProfileOutcome("missing-response");
+        quarantine();
+        return outcome;
+      }
+    } catch (error) {
+      if (signal?.aborted || error?.name === "AbortError") throw error;
+      const outcome = profileFailureOutcome(error, { hasCachedProfile: cachedAtStart });
+      if (outcome.evict) quarantine();
+      return outcome;
+    }
+
+    let posts;
+    try {
+      ({ posts } = await api(`/api/users/${encodeURIComponent(id)}/posts`, {
+        signal,
+        context: "Loading profile posts",
+        silent: true,
+      }));
+    } catch (error) {
+      if (signal?.aborted || error?.name === "AbortError") throw error;
+      const outcome = profileFailureOutcome(error, { hasCachedProfile: true });
+      if (outcome.evict) {
+        quarantine();
+        return outcome;
+      }
       absorbUsers([su]);
       setUserStats((m) => ({ ...m, [su.id]: { followers: followers || 0, following: following || 0 } }));
-      // Sync my follow state for this person (another device may have followed).
       if (session && fol && !(follows[session.id] || []).includes(su.id)) {
         setFollows((f) => ({ ...f, [session.id]: [...new Set([...(f[session.id] || []), su.id])] }));
       }
-      // A profile is a user's complete wall, not merely the subset already in
-      // the first global feed page. Merge its bounded server-backed post list.
-      api(`/api/users/${encodeURIComponent(id)}/posts`, { context: "Loading profile posts", silent: true })
-        .then(({ posts }) => mergeServerFeed(posts, { preserveOrder: true }))
-        .catch(() => {});
-      return su;
-    } catch { return null; }
+      return { ...outcome, user: su };
+    }
+
+    if (!Array.isArray(posts)) {
+      const outcome = profileFailureOutcome(null, { hasCachedProfile: true });
+      absorbUsers([su]);
+      setUserStats((m) => ({ ...m, [su.id]: { followers: followers || 0, following: following || 0 } }));
+      return { ...outcome, user: su };
+    }
+
+    absorbUsers([su]);
+    setUserStats((m) => ({ ...m, [su.id]: { followers: followers || 0, following: following || 0 } }));
+    // Sync my follow state for this person (another device may have followed).
+    if (session && fol && !(follows[session.id] || []).includes(su.id)) {
+      setFollows((f) => ({ ...f, [session.id]: [...new Set([...(f[session.id] || []), su.id])] }));
+    }
+    // Replace this wall's confirmed cache projection, including an authoritative
+    // empty response, so removed profile media cannot survive a successful read.
+    mergeServerFeed(posts, { preserveOrder: true });
+    setFeed((current) => reconcileProfilePostSnapshot(current, id, posts));
+    return { status: "ready", reason: "confirmed", evict: false, user: su, error: "" };
   };
   // Recent searches are device-local but identity-scoped. The old global key is
   // eligible to seed the guest bucket only; a signed-in account must never see
@@ -1184,8 +1272,9 @@ export function StoreProvider({ children }) {
     if (!entry || !entry.label) return;
     const type = entry.type || "query";
     const key = `${type}:${String(entry.label).toLowerCase()}`;
+    const recentTrack = type === "song" ? recentSongTrack(entry) : null;
     setRecentSearches((list) => [
-      { type, label: String(entry.label).slice(0, 80), id: entry.id || null, sub: entry.sub || null, at: Date.now() },
+      { type, label: String(entry.label).slice(0, type === "song" ? 320 : 80), id: entry.id || null, sub: entry.sub || null, at: Date.now(), ...(recentTrack ? { track: recentTrack } : {}) },
       ...list.filter((e) => `${e.type || "query"}:${String(e.label).toLowerCase()}` !== key),
     ].slice(0, 8));
   };
@@ -1196,7 +1285,7 @@ export function StoreProvider({ children }) {
   const clearRecentSearches = () => setRecentSearches([]);
   // Search users by name/handle on the server (cross-device friend finding).
   // Also captures the member count (`total`) so the app can show a real stat.
-  const searchPeople = async (q, { signal } = {}) => {
+  const searchPeople = async (q, { signal, throwOnError = false } = {}) => {
     const accountId = sessionRef.current?.id || null;
     try {
       const { users: found, total } = await api(`/api/people?q=${encodeURIComponent(q || "")}`, { signal, silent: true, context: "Searching people" });
@@ -1208,7 +1297,10 @@ export function StoreProvider({ children }) {
       // Belt-and-suspenders: hide anyone I've blocked immediately, even before the
       // server's own block filter (which needs my block to have persisted).
       return visible;
-    } catch { return []; }
+    } catch (error) {
+      if (throwOnError) throw error;
+      return [];
+    }
   };
   // Browse the member directory (newest first), used when the search box is empty
   // so you can find people without knowing their exact handle.
@@ -1233,11 +1325,14 @@ export function StoreProvider({ children }) {
   // Song search for the search box, so not knowing the artist is no longer a
   // dead end. Server-side this is Deezer (keyless), so it costs no YouTube
   // quota; playback resolves a video only when a result is actually played.
-  const searchSongsApi = async (query, { signal } = {}) => {
+  const searchSongsApi = async (query, { signal, throwOnError = false } = {}) => {
     const q = String(query || "").trim();
     if (q.length < 2) return [];
     try { const { songs } = await api(`/api/songs/search?q=${encodeURIComponent(q)}`, { signal, silent: true, context: "Searching songs" }); return songs || []; }
-    catch { return []; }
+    catch (error) {
+      if (throwOnError) throw error;
+      return [];
+    }
   };
   // Resolve one artist by name, creates it from MusicBrainz on the server if it's
   // not in the catalog yet, so no artist page is ever empty. Cached client-side.
@@ -1249,9 +1344,11 @@ export function StoreProvider({ children }) {
   };
   const remoteArtistMeta = (name) => remoteArtists[norm(name)] || null;
   // Full discography (albums + tracklists) from the server (Deezer-backed).
-  const artistDiscography = async (name) => {
-    try { return await api(`/api/artists/discography?name=${encodeURIComponent(name)}`); } catch { return { albums: [] }; }
-  };
+  const artistDiscography = (name, { signal } = {}) => api(`/api/artists/discography?name=${encodeURIComponent(name)}`, {
+    signal,
+    silent: true,
+    context: "Loading discography",
+  });
   // Resolve a track title (+ artist) to a YouTube video ID, so the in-app player
   // streams the full song/video for everyone. The server performs identity and
   // quality scoring; this small client cache never outlives the session for long.
@@ -1314,6 +1411,12 @@ export function StoreProvider({ children }) {
     const entry = ytCache.current[youtubeLookupCacheKey(title, artist, sessionRef.current)];
     return !!(entry && !entry.videoId && entry.retryable);
   };
+  // PlayerBar reads the resolver reason in the same completion turn as the
+  // video-id promise. The cache key is account + verification scoped, and an
+  // expired denial is never allowed to describe the active listener's track.
+  const youtubeLookupStatus = (title, artist) => activeYouTubeLookupStatus(
+    ytCache.current[youtubeLookupCacheKey(title, artist, sessionRef.current)],
+  );
   const invalidateYouTube = async (title, artist, videoId) => {
     if (!title || !videoId) return { ok: false };
     const tupleKey = trackTupleKey(title, artist);
@@ -1600,6 +1703,7 @@ export function StoreProvider({ children }) {
   const loadPlayHistory = async ({ more = false, accountId = session?.id || null, cachedFallback = null } = {}) => {
     if (!accountId) {
       setPlayHistoryStatus("ready");
+      setPlayHistoryErrorMode(null);
       setPlayHistoryNextCursor(null);
       return load(historyStorageKey(null), []);
     }
@@ -1607,6 +1711,7 @@ export function StoreProvider({ children }) {
     if (more && !before) return [];
     const sequence = ++playHistoryRequestRef.current.sequence;
     playHistoryRequestRef.current.accountId = accountId;
+    setPlayHistoryErrorMode(null);
     setPlayHistoryStatus(more ? "loading-more" : "loading");
     try {
       const query = `?limit=50${before ? `&before=${encodeURIComponent(before)}` : ""}`;
@@ -1623,10 +1728,14 @@ export function StoreProvider({ children }) {
         return fresh.length ? [...current, ...fresh].slice(0, 300) : current;
       });
       setPlayHistoryNextCursor(nextCursor || null);
+      setPlayHistoryErrorMode(null);
       setPlayHistoryStatus("ready");
       return rows;
     } catch {
-      if (playHistoryRequestRef.current.sequence === sequence && playHistoryRequestRef.current.accountId === accountId) setPlayHistoryStatus("error");
+      if (playHistoryRequestRef.current.sequence === sequence && playHistoryRequestRef.current.accountId === accountId) {
+        setPlayHistoryErrorMode(more ? "more" : "refresh");
+        setPlayHistoryStatus("error");
+      }
       return [];
     }
   };
@@ -1640,6 +1749,7 @@ export function StoreProvider({ children }) {
     setPlayHistoryAccountId(accountId);
     setPlayHistory(Array.isArray(cached) ? cached : []);
     setPlayHistoryNextCursor(null);
+    setPlayHistoryErrorMode(null);
     if (accountId) loadPlayHistory({ accountId, cachedFallback: Array.isArray(cached) ? cached : [] });
     else setPlayHistoryStatus("ready");
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1670,16 +1780,21 @@ export function StoreProvider({ children }) {
     friendsReadsRef.current.reset();
     setFriendsListening([]);
   }, [session?.id]);
-  const userPlaylists = async (id, { signal } = {}) => { try { const { playlists } = await api(`/api/users/${id}/playlists`, { signal, context: "Loading playlists", silent: true }); return playlists || []; } catch { return []; } };
+  const userPlaylists = async (id, { signal, throwOnError = false } = {}) => {
+    try {
+      const { playlists } = await api(`/api/users/${id}/playlists`, { signal, context: "Loading playlists", silent: true });
+      return playlists || [];
+    } catch (error) {
+      if (throwOnError) throw error;
+      return [];
+    }
+  };
 
   // --- Listening algorithm (drives autoplay "up next") -----------------------
   // Favorite genre = the genre you play most (falls back to your picked genres).
   const genreOfArtist = (name) => remoteArtists[norm(name)]?.genre || catalogArtists[norm(name)]?.genre || artistMeta(name)?.genre || null;
   const favoriteGenre = () => {
-    const counts = {};
-    (playHistory || []).slice(0, 60).forEach((t) => { const g = genreOfArtist(t.artist); if (g) counts[g] = (counts[g] || 0) + 1; });
-    const top = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
-    return top ? top[0] : (session?.genres?.[0] || null);
+    return favoriteGenreFromHistory(scopedPlayHistory, genreOfArtist, session?.genres?.[0] || null);
   };
   const autoplayRotationRef = useRef(0);
   // Recommend a diverse tail: three taste-matched artists, then one discovery
@@ -1705,7 +1820,7 @@ export function StoreProvider({ children }) {
     });
     return recommendFromCandidates({
       candidates,
-      history: playHistory || [],
+      history: scopedPlayHistory,
       seed,
       genre: (seed && genreOfArtist(seed.artist)) || favoriteGenre(),
       count: n,
@@ -1732,22 +1847,32 @@ export function StoreProvider({ children }) {
   };
 
   // --- Playlists (build one song at a time, not just whole-session snapshots) --
-  const [myPlaylists, setMyPlaylists] = useState([]);
+  const [myPlaylistState, setMyPlaylistState] = useState(() => ({ accountId: session?.id || null, rows: [] }));
   const [myPlaylistsStatus, setMyPlaylistsStatus] = useState(session ? "loading" : "ready");
   const playlistRequestRef = useRef({ sequence: 0, accountId: session?.id || null });
+  const myPlaylistsAccountId = myPlaylistState.accountId;
+  const scopedMyPlaylists = accountScopedRows(myPlaylistState.rows, myPlaylistsAccountId, activeAccountId);
+  const scopedMyPlaylistsStatus = accountScopeMatches(myPlaylistsAccountId, activeAccountId)
+    ? myPlaylistsStatus
+    : activeAccountId ? "loading" : "ready";
+  const setMyPlaylistsForAccount = (accountId, updater) => setMyPlaylistState((current) => {
+    const base = accountScopeMatches(current.accountId, accountId) ? current.rows : [];
+    const rows = typeof updater === "function" ? updater(base) : updater;
+    return { accountId: accountId || null, rows: Array.isArray(rows) ? rows : [] };
+  });
   const loadMyPlaylists = async () => {
     const accountId = session?.id || null;
     const previousAccountId = playlistRequestRef.current.accountId;
     const sequence = ++playlistRequestRef.current.sequence;
     playlistRequestRef.current.accountId = accountId;
-    if (!accountId) { setMyPlaylists([]); setMyPlaylistsStatus("ready"); return []; }
-    if (previousAccountId !== accountId) setMyPlaylists([]); // never flash the previous account's private library
+    if (!accountId) { setMyPlaylistsForAccount(null, []); setMyPlaylistsStatus("ready"); return []; }
+    if (previousAccountId !== accountId) setMyPlaylistsForAccount(accountId, []); // never flash the previous account's private library
     setMyPlaylistsStatus("loading");
     try {
       const { playlists } = await api(`/api/users/${accountId}/playlists`, { context: "Loading your playlists", silent: true });
       if (playlistRequestRef.current.sequence !== sequence || playlistRequestRef.current.accountId !== accountId) return [];
       const rows = Array.isArray(playlists) ? playlists : [];
-      setMyPlaylists(rows);
+      setMyPlaylistsForAccount(accountId, rows);
       setMyPlaylistsStatus("ready");
       return rows;
     } catch {
@@ -1780,7 +1905,7 @@ export function StoreProvider({ children }) {
     try {
       const playlist = await api("/api/playlists", { method: "POST", context: "Creating your playlist", body: { name: name || "New playlist", tracks: list, visibility } });
       if (!accountMutationIsCurrent(accountMutation, sessionRef.current?.id, accountMutationEpochRef.current)) return null;
-      setMyPlaylists((current) => [playlist, ...current.filter((item) => item.id !== playlist.id)]);
+      setMyPlaylistsForAccount(actor.id, (current) => [playlist, ...current.filter((item) => item.id !== playlist.id)]);
       return playlist;
     } catch { return null; }
   };
@@ -1788,7 +1913,7 @@ export function StoreProvider({ children }) {
     if (!session || !track?.title) return false;
     try {
       const { playlist } = await api(`/api/playlists/${encodeURIComponent(id)}`, { method: "PATCH", context: "Adding this song to your playlist", body: { track: cleanTrack(track) } });
-      if (playlist) setMyPlaylists((current) => current.map((item) => (item.id === playlist.id ? playlist : item)));
+      if (playlist) setMyPlaylistsForAccount(sessionRef.current?.id, (current) => current.map((item) => (item.id === playlist.id ? playlist : item)));
       return true;
     } catch { return false; }
   };
@@ -1800,7 +1925,7 @@ export function StoreProvider({ children }) {
     if (Object.prototype.hasOwnProperty.call(changes || {}, "tracks")) body.tracks = (changes.tracks || []).map(cleanTrack);
     try {
       const { playlist } = await api(`/api/playlists/${encodeURIComponent(id)}`, { method: "PATCH", context: "Saving your playlist", body });
-      if (playlist) setMyPlaylists((current) => current.map((item) => (item.id === playlist.id ? playlist : item)));
+      if (playlist) setMyPlaylistsForAccount(sessionRef.current?.id, (current) => current.map((item) => (item.id === playlist.id ? playlist : item)));
       return playlist || null;
     } catch { return null; }
   };
@@ -1808,7 +1933,7 @@ export function StoreProvider({ children }) {
     if (!session || !id) return false;
     try {
       await api(`/api/playlists/${encodeURIComponent(id)}`, { method: "DELETE", context: "Deleting your playlist" });
-      setMyPlaylists((current) => current.filter((item) => item.id !== id));
+      setMyPlaylistsForAccount(sessionRef.current?.id, (current) => current.filter((item) => item.id !== id));
       return true;
     } catch { return false; }
   };
@@ -2229,8 +2354,9 @@ export function StoreProvider({ children }) {
     setPlayHistory([]);
     setPlayHistoryAccountId(null);
     setPlayHistoryNextCursor(null);
+    setPlayHistoryErrorMode(null);
     setPlayHistoryStatus("ready");
-    setMyPlaylists([]);
+    setMyPlaylistsForAccount(null, []);
     setMyPlaylistsStatus("ready");
     setSnapshots([]);
     setFriendsListening([]);
@@ -2353,9 +2479,10 @@ export function StoreProvider({ children }) {
     setSongRatings(withoutRating);
     setUserStats((all) => { const next = { ...all }; delete next[deleted.id]; return next; });
     setPlayHistory([]);
+    setPlayHistoryAccountId(null);
     setSnapshots([]);
     commitDrafts((all) => all.filter((draft) => String(draft?.ownerId || "") !== String(deleted.id)));
-    setMyPlaylists([]);
+    setMyPlaylistsForAccount(null, []);
     setFriendsListening([]);
     setRatingAgg({});
     // Drop rating request ordering with the data it ordered, so a request still
@@ -2673,13 +2800,30 @@ export function StoreProvider({ children }) {
     .catch(() => false);
 
   // Artist account requests
-  const requestArtist = (artistName, note) => {
-    if (!session) return { ok: false, error: "Log in first." };
+  const requestArtist = async (artistName, note) => {
+    const actor = sessionRef.current;
+    if (!actor) return { ok: false, error: "Log in first." };
     const an = clean(artistName, { max: LIMITS.artist });
     if (an.length < 2) return { ok: false, error: "Enter the artist name." };
-    setRequests((rs) => [...rs, { id: "r_" + Date.now(), userId: session.id, artistName: an, note: clean(note, { max: LIMITS.note, newlines: true }), status: "pending" }]);
-    api("/api/artist-requests", { method: "POST", body: { artistName: an, note } }).catch(() => {}); // slice 7
-    return { ok: true };
+    const cleanNote = clean(note, { max: LIMITS.note, newlines: true });
+    try {
+      const response = await api("/api/artist-requests", {
+        method: "POST",
+        body: { artistName: an, note: cleanNote },
+        context: "Requesting an artist account",
+        silent: true,
+      });
+      const request = confirmedArtistRequest(response, {
+        userId: actor.id,
+        artistName: an,
+        note: cleanNote,
+      });
+      if (!request) return { ok: false, error: ARTIST_REQUEST_CONFIRMATION_ERROR };
+      setRequests((current) => mergeConfirmedArtistRequest(current, request));
+      return { ok: true, request };
+    } catch (error) {
+      return { ok: false, error: artistRequestFailureMessage(error) };
+    }
   };
   const approveArtist = (reqId) => {
     setRequests((rs) => rs.map((r) => (r.id === reqId ? { ...r, status: "approved" } : r)));
@@ -4695,14 +4839,14 @@ export function StoreProvider({ children }) {
     recentSearches, addRecentSearch, removeRecentSearch, clearRecentSearches,
     loadUser, followersOf, followingOf,
     isBlocked, blockUser, unblockUser, blockedUsers, exportMyData,
-    searchArtistsApi, resolveArtist, remoteArtistMeta, artistDiscography, resolveYouTube, invalidateYouTube, youtubeLookupWasTransient, resolveDeezerPreview,
+    searchArtistsApi, resolveArtist, remoteArtistMeta, artistDiscography, resolveYouTube, invalidateYouTube, youtubeLookupWasTransient, youtubeLookupStatus, resolveDeezerPreview,
     discoverChart, discoverGenres, discoverCountries, loadDiscoverOverview, loadDiscoverGenre, serverTime,
     artistSeenCount, reportTrack, adminSetTrackVideo, trackOverridesList, removeTrackOverride, loadModerationQueue, loadModerationConsole, loadMoreModerationConsole, moderateReport,
     mediaReactions, loadMediaReactions, toggleMediaReaction,
-    playHistory, playHistoryStatus, playHistoryNextCursor, loadPlayHistory, recordPlay,
+    playHistory: scopedPlayHistory, playHistoryAccountId, playHistoryStatus: scopedPlayHistoryStatus, playHistoryErrorMode: scopedPlayHistoryErrorMode, playHistoryNextCursor: scopedPlayHistoryNextCursor, loadPlayHistory, recordPlay,
     privateListeningActive: isPrivateListeningActive(currentPrivateListeningUntil), privateListeningUntil: currentPrivateListeningUntil, setPrivateListening,
     snapshots, saveSnapshot, removeSnapshot, friendsListening, loadFriendsListening, loadFriendsListeningStrict, userPlaylists,
-    favoriteGenre, genreOfArtist, recommendTracks, autoplayQueue, searchSongsApi, myPlaylists, myPlaylistsStatus, loadMyPlaylists, loadPlaylist, createPlaylist, addToPlaylist, updatePlaylist, deletePlaylist,
+    favoriteGenre, genreOfArtist, recommendTracks, autoplayQueue, searchSongsApi, myPlaylists: scopedMyPlaylists, myPlaylistsAccountId, myPlaylistsStatus: scopedMyPlaylistsStatus, loadMyPlaylists, loadPlaylist, createPlaylist, addToPlaylist, updatePlaylist, deletePlaylist,
     drafts: draftsForAccount(drafts, session?.id), saveDraft, deleteDraft,
     visibleFeed, followingFeed, loadMoreFeed, feedHasMore, feedLoadingMore, loadClips, notInterested, undoNotInterested, visibleTourDates, artistSummary, venueSummary,
     localVenues, regionShows, localFeed, recommendedShows, venueCoord, locationCenter,

@@ -1,6 +1,6 @@
 import { View, Text, Pressable, StyleSheet } from "react-native";
 
-import { colors, radius, space } from "../theme";
+import { colors, focusRing, radius, space } from "../theme";
 import Icon from "./Icon";
 
 // One theme chip, rendered the same way everywhere.
@@ -19,15 +19,15 @@ export default function ThemeSwatch({ theme, active, onPress, showMode = false }
   const accents = theme.swatch.accents || [theme.swatch.accent, theme.swatch.accent2];
   return (
     <Pressable
-      style={[
+      style={({ focused }) => [
         styles.chip,
         { backgroundColor: theme.swatch.bg, borderColor: active ? theme.swatch.accent : colors.line },
         active && styles.chipActive,
+        focused && focusRing,
       ]}
       onPress={onPress}
-      disabled={active}
       accessibilityRole="radio"
-      accessibilityState={{ selected: !!active, disabled: !!active }}
+      accessibilityState={{ checked: !!active, selected: !!active }}
       accessibilityLabel={`${theme.name} theme, ${theme.dark ? "dark" : "light"}${active ? ", selected" : ""}`}
     >
       <View style={styles.dots}>

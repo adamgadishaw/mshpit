@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createApiResponseHeaderSetter } from "./responseHeaders.js";
+import { createApiResponseHeaders, createApiResponseHeaderSetter } from "./responseHeaders.js";
+
+test("API responses are private by default and explicit public policy can override", () => {
+  const headers = createApiResponseHeaders();
+  assert.deepEqual(headers, { "Cache-Control": "no-store" });
+
+  const setHeader = createApiResponseHeaderSetter(headers);
+  assert.equal(setHeader("Cache-Control", "public, max-age=60"), true);
+  assert.equal(headers["Cache-Control"], "public, max-age=60");
+});
 
 test("API response headers allow only a safe bounded Cache-Control value", () => {
   const headers = {};

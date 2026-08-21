@@ -4,15 +4,15 @@ import Icon from "./Icon";
 
 // Prominent, consistent header for detail screens: a round back button and a
 // bold title card. Optional `kicker` (small label above) and `right` slot.
-export default function ScreenHeader({ title, kicker, onBack, right }) {
+export default function ScreenHeader({ title, kicker, onBack, right, backLabel = "Go back", backHint }) {
   return (
     <View style={styles.wrap}>
-      <Pressable style={({ pressed, focused }) => [styles.back, pressed && styles.backPressed, focused && focusRing]} onPress={onBack} hitSlop={10} accessibilityRole="button" accessibilityLabel="Go back">
+      <Pressable style={({ pressed, focused }) => [styles.back, pressed && styles.backPressed, focused && focusRing]} onPress={onBack} hitSlop={10} accessibilityRole="button" accessibilityLabel={backLabel} accessibilityHint={backHint}>
         <Icon name="chevron-left" size={22} color={colors.text} strokeWidth={2.4} />
       </Pressable>
       <View style={styles.titleBox}>
         {kicker ? <Text style={styles.kicker}>{kicker}</Text> : null}
-        <Text style={styles.title} numberOfLines={1}>{title}</Text>
+        <Text style={styles.title} numberOfLines={1} accessibilityRole="header">{title}</Text>
       </View>
       <View style={styles.right}>{right}</View>
     </View>

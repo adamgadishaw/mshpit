@@ -16,6 +16,7 @@ import { proxied, isHttp } from "../lib/img";
 import { api } from "../lib/api";
 import Svg, { Defs, LinearGradient, Stop, Rect } from "react-native-svg";
 import { formatDate } from "../domain/dates.mjs";
+import { discographyIdentityCopy, discographyPresentation } from "../domain/discographyView.mjs";
 
 const cap = (s) => (s ? s.replace(/\b\w/g, (c) => c.toUpperCase()) : s);
 const compactCount = (value) => {
@@ -182,6 +183,9 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
   const toggleReportBox = (title) => { setReportingSong((cur) => (cur === title ? null : title)); setReportUrl(""); setReportNote(""); setReportCategory("wrong_video"); };
 
   const [disco, setDisco] = useState(null);
+  const [discoOwner, setDiscoOwner] = useState(a.name);
+  const [discoStatus, setDiscoStatus] = useState("loading");
+  const [discoError, setDiscoError] = useState("");
   const [openAlbum, setOpenAlbum] = useState(null);
   const [showAllSongs, setShowAllSongs] = useState(false);
   const [identityOpen, setIdentityOpen] = useState(false);
@@ -190,11 +194,36 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
   const [selectingCandidate, setSelectingCandidate] = useState(null);
   const [identityError, setIdentityError] = useState("");
   const identityRequestRef = useRef(null);
+  const catalogRequestRef = useRef(null);
   const catalogRequestVersionRef = useRef(0);
-  useEffect(() => {
-    let alive = true;
+  const loadDiscography = ({ preserve = false } = {}) => {
+    catalogRequestRef.current?.abort();
+    const controller = new AbortController();
+    catalogRequestRef.current = controller;
     const requestVersion = ++catalogRequestVersionRef.current;
-    setDisco(null);
+    setDiscoOwner(a.name);
+    if (!preserve) setDisco(null);
+    setDiscoStatus("loading");
+    setDiscoError("");
+    return artistDiscography(a.name, { signal: controller.signal })
+      .then((result) => {
+        if (controller.signal.aborted || catalogRequestVersionRef.current !== requestVersion) return null;
+        setDisco(result || { albums: [], status: "not_found", stale: false });
+        setDiscoStatus("ready");
+        return result;
+      })
+      .catch((error) => {
+        if (!controller.signal.aborted && error?.name !== "AbortError" && catalogRequestVersionRef.current === requestVersion) {
+          setDiscoStatus("error");
+          setDiscoError("The discography could not be loaded. Check your connection and try again.");
+        }
+        return null;
+      })
+      .finally(() => {
+        if (catalogRequestRef.current === controller) catalogRequestRef.current = null;
+      });
+  };
+  useEffect(() => {
     setOpenAlbum(null);
     setShowAllSongs(false);
     setIdentityOpen(false);
@@ -204,10 +233,14 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
     setIdentityError("");
     identityRequestRef.current?.abort();
     identityRequestRef.current = null;
-    artistDiscography(a.name).then((result) => {
-      if (alive && catalogRequestVersionRef.current === requestVersion) setDisco(result);
-    });
-    return () => { alive = false; identityRequestRef.current?.abort(); };
+    loadDiscography();
+    return () => {
+      catalogRequestRef.current?.abort();
+      identityRequestRef.current?.abort();
+    };
+    // The artist name and request version own this read; store action identity
+    // changes are intentionally excluded to avoid restarting a live request.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [a.name]);
 
   const loadCandidates = async () => {
@@ -235,7 +268,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
 
   const chooseCandidate = async (candidate) => {
     if (!candidate?.id || selectingCandidate) return;
-    const previousDisco = disco;
+    const previousDisco = discoOwner === a.name ? disco : null;
     const requestVersion = ++catalogRequestVersionRef.current;
     const controller = new AbortController();
     identityRequestRef.current?.abort();
@@ -249,7 +282,10 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
         signal: controller.signal,
       });
       if (controller.signal.aborted || catalogRequestVersionRef.current !== requestVersion) return;
+      setDiscoOwner(a.name);
       setDisco(result);
+      setDiscoStatus("ready");
+      setDiscoError("");
       setOpenAlbum(null);
       setShowAllSongs(false);
       setIdentityOpen(false);
@@ -258,12 +294,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
         setIdentityError(error?.message || "That catalog could not be loaded. Try another match.");
         // If the listener opened the picker before the default catalogue had
         // finished, restore that baseline request rather than leaving a blank page.
-        if (!previousDisco) {
-          const fallbackVersion = ++catalogRequestVersionRef.current;
-          artistDiscography(a.name).then((result) => {
-            if (catalogRequestVersionRef.current === fallbackVersion) setDisco(result);
-          });
-        }
+        if (!previousDisco) loadDiscography();
       }
     } finally {
       if (!controller.signal.aborted) setSelectingCandidate(null);
@@ -271,14 +302,18 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
     }
   };
 
-  const releases = Array.isArray(disco?.albums)
-    ? [...disco.albums].sort((left, right) => String(right?.year || "").localeCompare(String(left?.year || "")))
-    : [];
+  const scopedDisco = discoOwner === a.name ? disco : null;
+  const discographyView = discographyPresentation(scopedDisco, {
+    status: discoOwner === a.name ? discoStatus : "loading",
+    error: discoOwner === a.name ? discoError : "",
+  });
+  const releases = [...discographyView.albums]
+    .sort((left, right) => String(right?.year || "").localeCompare(String(left?.year || "")));
 
   // The deep chart: the discography's 25-track list once it loads (fixes the
   // "cut off at ~10" complaint), else the seed list. Collapsed to 10 with a
   // "Show all N" toggle so the page doesn't open as a wall of songs.
-  const discoTop = Array.isArray(disco?.topTracks) ? disco.topTracks.map((t, i) => ({
+  const discoTop = Array.isArray(scopedDisco?.topTracks) ? scopedDisco.topTracks.map((t, i) => ({
     id: "dz_" + (t.id || i),
     sourceId: t.id || null,
     provider: "deezer",
@@ -300,7 +335,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
     sourceId: s.sourceId || null,
     provider: s.provider || null,
     duration: Number(s.duration) || 0,
-    art: disco?.artist?.photo || a.photo || meta?.photo || null,
+    art: scopedDisco?.artist?.photo || a.photo || meta?.photo || null,
   }));
   const songs = showAllSongs ? allSongs : allSongs.slice(0, 10);
   const toggleAlbum = (id, tracks) => {
@@ -321,7 +356,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
       sourceId: t.sourceId || known?.sourceId || null,
       provider: t.provider || known?.provider || null,
       duration: Number(t.duration || known?.duration) || 0,
-      art: cover || disco?.artist?.photo || a.photo || meta?.photo || null,
+      art: cover || scopedDisco?.artist?.photo || a.photo || meta?.photo || null,
     }, songQueue.length ? songQueue : undefined);
   };
   // Listen = play a random song from this artist's catalog, with the rest queued up
@@ -332,7 +367,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
       onPlay?.(shuffled[0], shuffled);
     } else {
       // No listed songs yet: let the player find the artist on YouTube by name.
-      onPlay?.({ kind: "track", title: a.name, artist: a.name, art: disco?.artist?.photo || a.photo || meta?.photo || null });
+      onPlay?.({ kind: "track", title: a.name, artist: a.name, art: scopedDisco?.artist?.photo || a.photo || meta?.photo || null });
     }
   };
   const addSong = (t) => onAddToPlaylist?.({
@@ -343,7 +378,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
     sourceId: t.sourceId || null,
     provider: t.provider || null,
     duration: Number(t.duration) || 0,
-    art: t.art || disco?.artist?.photo || a.photo || meta?.photo || null,
+    art: t.art || scopedDisco?.artist?.photo || a.photo || meta?.photo || null,
   });
 
   // Play a single top-track (its own song, then genre-matched recs continue).
@@ -357,7 +392,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
       sourceId: s.sourceId || null,
       provider: s.provider || null,
       duration: Number(s.duration) || 0,
-      art: disco?.artist?.photo || a.photo || meta?.photo || null,
+      art: scopedDisco?.artist?.photo || a.photo || meta?.photo || null,
     }, songQueue);
   };
   // Play an album AS AN ALBUM: in track order (optionally starting mid-album), or
@@ -371,7 +406,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
     artist: a.name,
     duration: Number(t.duration) || 0,
     preview: t.preview || null,
-    art: al.cover || disco?.artist?.photo || a.photo || meta?.photo || null,
+    art: al.cover || scopedDisco?.artist?.photo || a.photo || meta?.photo || null,
   });
   const playAlbum = (al, startTitle = null, shuffle = false) => {
     let tracks = (al.tracks || []).map((t) => albumTrack(t, al)).filter((t) => t.title);
@@ -396,7 +431,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
   })();
   // A resolved-but-empty artist (no photo, no songs). Show a "coming soon" note
   // and log the interest so an admin can seed it (see the admin Catalog tab).
-  const thin = !!meta && !meta.photo && !(meta.topTracks && meta.topTracks.length) && !(disco && disco.albums && disco.albums.length);
+  const thin = !!meta && !meta.photo && !(meta.topTracks && meta.topTracks.length) && discographyView.state === "empty";
 
   // Slice 7: hydrate the artist's owner overrides + updates feed, and the server
   // aggregates for each album/song rating shown on the page.
@@ -515,7 +550,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
           <View style={{ flex: 1 }}>
             <Text style={styles.catalogIdentityLabel}>MUSIC CATALOG</Text>
             <Text style={styles.catalogIdentityName} numberOfLines={1}>
-              {disco?.artist?.name ? `Matched to ${disco.artist.name}` : `Finding ${a.name}'s releases`}
+              {discographyIdentityCopy(scopedDisco, a.name, discographyView)}
             </Text>
           </View>
           <Pressable
@@ -527,6 +562,18 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
             <Text style={styles.wrongArtistTxt}>{identityOpen ? "Close" : "Wrong artist?"}</Text>
           </Pressable>
         </View>
+
+        {discographyView.state !== "ready" && (
+          <View style={[styles.discographyNotice, discographyView.state === "error" && styles.discographyNoticeError]} accessibilityLiveRegion={discographyView.state === "error" ? "assertive" : "polite"}>
+            {discographyView.state === "loading" && <ActivityIndicator size="small" color={colors.amber} />}
+            <Text style={[styles.discographyNoticeText, discographyView.state === "error" && styles.discographyNoticeErrorText]} selectable={discographyView.state === "error"}>{discographyView.message}</Text>
+            {(discographyView.state === "error" || discographyView.state === "stale") && (
+              <Pressable style={styles.discographyRetry} onPress={() => loadDiscography({ preserve: discographyView.state === "stale" })} accessibilityRole="button" accessibilityLabel={`Retry loading ${a.name}'s discography`}>
+                <Text style={styles.discographyRetryText}>Try again</Text>
+              </Pressable>
+            )}
+          </View>
+        )}
 
         {identityOpen && (
           <View style={styles.identityPanel}>
@@ -540,7 +587,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
             ) : candidates?.length ? (
               <View style={styles.candidateGrid}>
                 {candidates.map((candidate) => {
-                  const active = String(disco?.artist?.id || "") === String(candidate.id);
+                  const active = String(scopedDisco?.artist?.id || "") === String(candidate.id);
                   const busy = String(selectingCandidate || "") === String(candidate.id);
                   return (
                     <Pressable
@@ -991,8 +1038,14 @@ const styles = StyleSheet.create({
   catalogIdentityIcon: { width: 32, height: 32, borderRadius: 16, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(242,166,90,0.10)" },
   catalogIdentityLabel: { color: colors.textFaint, fontFamily: mono, fontSize: 9, letterSpacing: 1.1, fontWeight: "800" },
   catalogIdentityName: { color: colors.textDim, fontSize: 12, fontWeight: "700", marginTop: 2 },
-  wrongArtistBtn: { borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 11, paddingVertical: 7 },
+  wrongArtistBtn: { minHeight: 44, justifyContent: "center", borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 11 },
   wrongArtistTxt: { color: colors.amber, fontSize: 11.5, fontWeight: "800" },
+  discographyNotice: { minHeight: 52, flexDirection: "row", alignItems: "center", gap: 9, marginTop: 8, paddingHorizontal: 12, paddingVertical: 8, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.bgElev },
+  discographyNoticeError: { borderColor: colors.danger },
+  discographyNoticeText: { flex: 1, color: colors.textDim, fontSize: 12, lineHeight: 17 },
+  discographyNoticeErrorText: { color: colors.danger },
+  discographyRetry: { minHeight: 44, justifyContent: "center", paddingHorizontal: 11, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.amber },
+  discographyRetryText: { color: colors.amber, fontSize: 11.5, fontWeight: "800" },
   identityPanel: { gap: 8, marginTop: 8, padding: 12, borderRadius: radius.md, borderWidth: 1, borderColor: colors.amber, backgroundColor: colors.bgElev },
   identityTitle: { color: colors.text, fontSize: 15, fontWeight: "900" },
   identityHelp: { color: colors.textDim, fontSize: 12, lineHeight: 17 },

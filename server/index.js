@@ -25,7 +25,7 @@ import { startMediaDeletionScheduler } from "./mediaDeletion.js";
 import { missingStaticAssetResponse } from "./staticPolicy.js";
 import { renderPublicPage } from "./publicPages.js";
 import { randomBytes, randomUUID } from "node:crypto";
-import { createApiResponseHeaderSetter } from "./responseHeaders.js";
+import { createApiResponseHeaders, createApiResponseHeaderSetter } from "./responseHeaders.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 3000;
@@ -116,7 +116,7 @@ function send(res, status, body, extra = {}) {
 
 function sendApiError(res, error, requestId, extra = {}) {
   const safe = error instanceof ApiError ? error : new ApiError(500, "Something broke on our end, it's been logged.", "INTERNAL_ERROR");
-  return send(res, safe.status, errorEnvelope(safe, requestId), extra);
+  return send(res, safe.status, errorEnvelope(safe, requestId), createApiResponseHeaders(extra));
 }
 
 function withRequestId(body, requestId) {
@@ -291,7 +291,7 @@ const server = createServer(async (req, res) => {
         "Access-Control-Allow-Methods": "GET,POST,PATCH,DELETE,OPTIONS",
         "Access-Control-Allow-Headers": "Content-Type, X-Request-Id, X-Pit-Expected-Account", "Access-Control-Expose-Headers": "X-Request-Id" }
     : {};
-  if (req.method === "OPTIONS") return send(res, 204, "", cors);
+  if (req.method === "OPTIONS") return send(res, 204, "", createApiResponseHeaders(cors));
 
   try {
     if (pathname === "/robots.txt" || pathname === "/sitemap.xml") return serveCrawlerFile(req, res, pathname);
@@ -329,7 +329,7 @@ const server = createServer(async (req, res) => {
       assertExpectedAccount(expectedAccount, user);
 
       const setCookies = [];
-      const responseHeaders = {};
+      const responseHeaders = createApiResponseHeaders();
       const proto = (req.headers["x-forwarded-proto"] || "").split(",")[0] || (req.socket.encrypted ? "https" : "http");
       const ctx = {
         // DELETE /api/me requires the current password. Parse JSON on DELETE as

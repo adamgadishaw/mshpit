@@ -1,4 +1,4 @@
-import { View, Text, StyleSheet, Pressable } from "react-native";
+import { ActivityIndicator, View, Text, StyleSheet, Pressable } from "react-native";
 import { colors, displayFont, focusRing, radius, shadow, space } from "../theme";
 import Icon from "./Icon";
 
@@ -7,8 +7,9 @@ import Icon from "./Icon";
 // - centered title
 // - optional trailing action pill (e.g. Save), or a matching spacer to keep the
 //   title centered.
-export default function SheetHeader({ title, onClose, onBack, action, leadDisabled = false }) {
+export default function SheetHeader({ title, onClose, onBack, action, leadDisabled = false, leadHint }) {
   const lead = onBack || onClose;
+  const actionBlocked = !!action?.disabled || !!action?.loading;
   return (
     <View style={styles.wrap}>
       <Pressable
@@ -18,23 +19,27 @@ export default function SheetHeader({ title, onClose, onBack, action, leadDisabl
         hitSlop={8}
         accessibilityRole="button"
         accessibilityLabel={onBack ? "Back" : "Close"}
+        accessibilityHint={leadHint}
         accessibilityState={{ disabled: leadDisabled }}
       >
         <Icon name={onBack ? "chevron-left" : "x"} size={20} color={colors.text} strokeWidth={2.4} />
       </Pressable>
 
-      <Text style={styles.title} numberOfLines={1}>{title}</Text>
+      <Text style={styles.title} numberOfLines={1} accessibilityRole="header">{title}</Text>
 
       {action ? (
         <Pressable
-          style={({ pressed, focused }) => [styles.action, action.disabled && styles.actionOff, pressed && !action.disabled && styles.actionPressed, focused && focusRing]}
-          onPress={action.disabled ? undefined : action.onPress}
+          style={({ pressed, focused }) => [styles.action, actionBlocked && styles.actionOff, pressed && !actionBlocked && styles.actionPressed, focused && focusRing]}
+          onPress={actionBlocked ? undefined : action.onPress}
+          disabled={actionBlocked}
           hitSlop={8}
           accessibilityRole="button"
           accessibilityLabel={action.label}
-          accessibilityState={{ disabled: !!action.disabled }}
+          accessibilityHint={action.hint}
+          accessibilityState={{ disabled: actionBlocked, busy: !!action.loading }}
         >
-          <Text style={[styles.actionTxt, action.disabled && styles.actionTxtOff]}>{action.label}</Text>
+          {action.loading ? <ActivityIndicator size="small" color={colors.textFaint} /> : null}
+          <Text style={[styles.actionTxt, actionBlocked && styles.actionTxtOff]}>{action.label}</Text>
         </Pressable>
       ) : (
         <View style={styles.spacer} />
@@ -45,12 +50,12 @@ export default function SheetHeader({ title, onClose, onBack, action, leadDisabl
 
 const styles = StyleSheet.create({
   wrap: { flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: space(4), paddingTop: space(1.5), paddingBottom: space(3), borderBottomWidth: 1, borderBottomColor: colors.lineSoft },
-  lead: { width: 42, height: 42, borderRadius: radius.sm, borderCurve: "continuous", backgroundColor: colors.surfaceAlt, borderWidth: 1, borderBottomWidth: 3, borderColor: colors.line, alignItems: "center", justifyContent: "center", ...shadow.control },
+  lead: { width: 44, height: 44, borderRadius: radius.sm, borderCurve: "continuous", backgroundColor: colors.surfaceAlt, borderWidth: 1, borderBottomWidth: 3, borderColor: colors.line, alignItems: "center", justifyContent: "center", ...shadow.control },
   leadOff: { opacity: 0.5 },
   controlPressed: { transform: [{ translateY: 2 }], boxShadow: "inset 0 1px 3px rgba(0,0,0,0.18)" },
   title: { flex: 1, color: colors.text, fontFamily: displayFont, fontSize: 17, fontWeight: "800", letterSpacing: -0.25, textAlign: "center" },
-  spacer: { minWidth: 42 },
-  action: { backgroundColor: colors.amberStrong, borderRadius: radius.pill, borderWidth: 1, borderBottomWidth: 3, borderColor: colors.amber, borderBottomColor: colors.accentEdge, paddingHorizontal: 16, paddingVertical: 9, ...shadow.control },
+  spacer: { minWidth: 44 },
+  action: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, backgroundColor: colors.amberStrong, borderRadius: radius.pill, borderWidth: 1, borderBottomWidth: 3, borderColor: colors.amber, borderBottomColor: colors.accentEdge, paddingHorizontal: 16, paddingVertical: 9, ...shadow.control },
   actionPressed: { transform: [{ translateY: 2 }], boxShadow: "inset 0 1px 3px rgba(0,0,0,0.18)" },
   actionOff: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line },
   actionTxt: { color: "#1A1206", fontFamily: displayFont, fontSize: 14, fontWeight: "800" },

@@ -380,13 +380,18 @@ test("editing re-resolves the binding instead of leaving it on the old artist", 
   assert.equal(rebound.post.artistMbid, "875203e1-8e58-4b86-8dcb-7190faf411c5");
 });
 
-test("post delete is author-only, soft, and idempotent", () => {
+test("post delete is author-only, content-scrubbing, and idempotent", () => {
   const owner = addUser("postdeleter");
   const stranger = addUser("postdelstranger");
   const create = routes["POST /api/posts"];
   const del = routes["DELETE /api/posts/:id"];
   const made = create({ user: owner, ip: "pd-create", body: { kind: "status", review: "delete me" } });
   const id = made.post.id;
+  db.prepare(`UPDATE posts SET artist='Private Artist',venue='Private Venue',city='Private City',date='2026-08-01',
+    overall=4.5,band=4,room=3.5,dims='{"sound":5}',review='private review',setlist='["private song"]',
+    tour='private tour',tags='["private tag"]',song='{"title":"private song"}',
+    playlist='{"id":"private playlist","tracks":[]}',artist_key='private artist',artist_mbid='private-mbid',
+    venue_key='private venue' WHERE id=?`).run(id);
 
   // A stranger cannot delete it, and the error is a 404, not a 403, so deletion
   // is not a probe for whether a post exists or who owns it.
@@ -396,9 +401,20 @@ test("post delete is author-only, soft, and idempotent", () => {
   );
   assert.equal(db.prepare("SELECT removed FROM posts WHERE id=?").get(id).removed, 0, "still present after a failed delete");
 
-  // The owner deletes it: soft delete, and it drops out of the feed.
+  // The owner deletes it: the tombstone remains for foreign keys/audit, while
+  // every authored field and entity binding is irreversibly scrubbed.
   assert.deepEqual(del({ user: owner, ip: "pd-own", params: { id } }), { ok: true, id });
-  assert.equal(db.prepare("SELECT removed FROM posts WHERE id=?").get(id).removed, 1);
+  const tombstone = db.prepare(`SELECT removed,artist,venue,city,date,overall,band,room,dims,review,photos,
+    photos_public,landing_showcase,setlist,tour,tags,song,playlist,artist_key,artist_mbid,venue_key,
+    client_mutation_id,client_mutation_hash FROM posts WHERE id=?`).get(id);
+  assert.deepEqual({ ...tombstone }, {
+    removed: 1,
+    artist: "", venue: "", city: "", date: "", overall: 0, band: null, room: null,
+    dims: "{}", review: "", photos: "[]", photos_public: 0, landing_showcase: 0,
+    setlist: "[]", tour: null, tags: "[]", song: null, playlist: null,
+    artist_key: null, artist_mbid: null, venue_key: null,
+    client_mutation_id: null, client_mutation_hash: null,
+  });
 
   // Deleting again is harmless (idempotent), and the audit trail recorded it.
   assert.deepEqual(del({ user: owner, ip: "pd-again", params: { id } }), { ok: true, id });

@@ -8,10 +8,14 @@ import { captureAppError } from "../lib/diagnostics";
 import { trackKey } from "../lib/playback";
 import { uniqueTracks } from "../domain/recommend.mjs";
 import { ownedPlayerPositionEnvelope, restoreOwnedPlayerPosition } from "../domain/player-session.mjs";
+import { playerYouTubeLookupNotice } from "../domain/playback.mjs";
 import {
   directPlayerVideoId,
   initialPlayerSources,
   patchPlayerSources,
+  playerPlaybackFailure,
+  playerProvidersSettled,
+  playerSourcesUnavailable,
   shouldResolvePlayerYouTube,
 } from "../domain/playerSourceResolution.mjs";
 import {
@@ -306,7 +310,7 @@ export default function PlayerBar({
   // every play so the You screen can count them, but showing the same song
   // three times in a row is just noise.
   const recentPlays = useMemo(() => uniqueTracks(history, trackKey), [history]);
-  const { session, resolveYouTube, invalidateYouTube, resolveDeezerPreview, youtubeLookupWasTransient } = useStore();
+  const { session, resolveYouTube, invalidateYouTube, resolveDeezerPreview, youtubeLookupWasTransient, youtubeLookupStatus } = useStore();
   const column = layout === "column";
   const { width: winWidth } = useWindowDimensions();
   const compactMobile = !column && winWidth < 700;
@@ -319,6 +323,14 @@ export default function PlayerBar({
   const index = Math.max(0, Math.min(player?.index || 0, list.length - 1));
   const cur = list[index];
   const curKey = trackKey(cur);
+  // Resolver denials depend on account + verification state. Keep that scope in
+  // the state identity itself so an account transition cannot display or report
+  // the previous listener's cached outcome during the effect hand-off.
+  const resolutionKey = JSON.stringify([
+    session?.id || "anonymous",
+    session?.id && session.emailVerified === true ? "verified" : "unverified",
+    curKey,
+  ]);
   const directVideoId = directPlayerVideoId(cur);
   const youtubeHostId = column ? "pit-youtube-player-host-column" : "pit-youtube-player-host-compact";
 
@@ -328,41 +340,41 @@ export default function PlayerBar({
 
   // Resolve each provider independently. A preview can start without waiting on
   // YouTube, and a direct/stored video ID hydrates without any route call.
-  const [resolved, setResolved] = useState(() => initialPlayerSources({ key: curKey, track: cur }));
+  const [resolved, setResolved] = useState(() => initialPlayerSources({ key: resolutionKey, track: cur }));
   const resolvedRef = useRef(resolved);
   const youtubeResolutionRef = useRef(null);
   resolvedRef.current = resolved;
 
   useEffect(() => {
-    setResolved(initialPlayerSources({ key: curKey, track: cur }));
+    setResolved(initialPlayerSources({ key: resolutionKey, track: cur }));
     return () => {
-      if (youtubeResolutionRef.current?.key !== curKey) return;
+      if (youtubeResolutionRef.current?.key !== resolutionKey) return;
       youtubeResolutionRef.current.cancel?.();
       youtubeResolutionRef.current = null;
     };
-  }, [curKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [resolutionKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Stored provider previews can expire, so refresh them once per selected
   // track. The embedded URL remains usable while that independent request runs.
   useEffect(() => {
     if (!cur || !curKey) return undefined;
-    setResolved((current) => patchPlayerSources(current, curKey, { previewPending: true }));
+    setResolved((current) => patchPlayerSources(current, resolutionKey, { previewPending: true }));
     let task = null;
     try { task = resolveDeezerPreview(cur.title, cur.artist); } catch {}
     return subscribeToProvider(task, (preview) => {
-      setResolved((current) => patchPlayerSources(current, curKey, {
+      setResolved((current) => patchPlayerSources(current, resolutionKey, {
         ...(preview ? { preview } : null),
         previewPending: false,
       }));
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [curKey]);
+  }, [resolutionKey]);
 
   // Restored queues mount minimized and paused. Defer a cold YouTube resolver
   // call until Restore/Play, while still accepting an exact stored video ID.
   useEffect(() => {
     if (!cur || !curKey) return undefined;
-    const existingVideoId = resolvedRef.current?.key === curKey ? resolvedRef.current.videoId : null;
+    const existingVideoId = resolvedRef.current?.key === resolutionKey ? resolvedRef.current.videoId : null;
     const shouldResolve = shouldResolvePlayerYouTube({
       web,
       minimized,
@@ -370,58 +382,68 @@ export default function PlayerBar({
       resolvedVideoId: existingVideoId,
     });
     if (!shouldResolve) {
-      if (directVideoId && youtubeResolutionRef.current?.key === curKey) {
+      if (directVideoId && youtubeResolutionRef.current?.key === resolutionKey) {
         youtubeResolutionRef.current.cancel?.();
         youtubeResolutionRef.current = null;
       }
-      setResolved((current) => patchPlayerSources(current, curKey, {
+      setResolved((current) => patchPlayerSources(current, resolutionKey, {
         ...(directVideoId ? { videoId: directVideoId } : null),
-        youtubePending: youtubeResolutionRef.current?.key === curKey,
+        ...(directVideoId ? { youtubeSettled: true } : null),
+        youtubePending: youtubeResolutionRef.current?.key === resolutionKey,
       }));
       return undefined;
     }
     // Minimizing a lookup that already began while expanded does not start a
     // duplicate request on restore. Let it settle into the same keyed state.
-    if (youtubeResolutionRef.current?.key === curKey) return undefined;
-    setResolved((current) => patchPlayerSources(current, curKey, { youtubePending: true }));
+    if (youtubeResolutionRef.current?.key === resolutionKey) return undefined;
+    setResolved((current) => patchPlayerSources(current, resolutionKey, { youtubePending: true, youtubeSettled: false }));
     let task = null;
     try { task = resolveYouTube(cur.title, cur.artist, cur.duration || 0); } catch {}
-    const request = { key: curKey, cancel: null };
+    const request = { key: resolutionKey, cancel: null };
     request.cancel = subscribeToProvider(task, (videoId) => {
       if (youtubeResolutionRef.current === request) youtubeResolutionRef.current = null;
-      setResolved((current) => patchPlayerSources(current, curKey, { videoId, youtubePending: false }));
+      setResolved((current) => patchPlayerSources(current, resolutionKey, {
+        videoId,
+        youtubeStatus: youtubeLookupStatus?.(cur.title, cur.artist) || null,
+        youtubePending: false,
+        youtubeSettled: true,
+      }));
     });
     youtubeResolutionRef.current = request;
     return undefined;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [curKey, minimized, directVideoId]);
+  }, [resolutionKey, minimized, directVideoId]);
 
   // A song playing its preview because the lookup hit a temporary failure is
   // not a settled outcome. Try again quietly in the background and swap the
   // video in when it arrives, rather than leaving someone on a 30-second clip
   // for the whole song because of one bad moment.
   useEffect(() => {
-    // `resolved.key === curKey` inline rather than the `forThis` binding below:
+    // `resolved.key === resolutionKey` inline rather than the `forThis` binding below:
     // this effect sits above that declaration, and reading it here is a
     // temporal-dead-zone crash.
-    if (!web || minimized || !cur || resolved.key !== curKey || resolved.videoId || resolved.youtubePending) return;
+    if (!web || minimized || !cur || resolved.key !== resolutionKey || resolved.videoId || resolved.youtubePending) return;
     if (!youtubeLookupWasTransient?.(cur.title, cur.artist)) return;
     let cancelled = false;
     const timer = setTimeout(async () => {
       const videoId = await resolveYouTube(cur.title, cur.artist, cur.duration || 0, { force: true });
       // Guard against the track having changed while this was in flight.
-      if (!cancelled && videoId) setResolved((prev) => (prev.key === curKey ? { ...prev, videoId } : prev));
+      if (!cancelled) setResolved((prev) => (prev.key === resolutionKey ? {
+        ...prev,
+        ...(videoId ? { videoId } : null),
+        youtubeStatus: youtubeLookupStatus?.(cur.title, cur.artist) || null,
+      } : prev));
     }, PREVIEW_UPGRADE_DELAY_MS);
     return () => { cancelled = true; clearTimeout(timer); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [curKey, minimized, resolved.key, resolved.videoId, resolved.youtubePending]);
+  }, [resolutionKey, minimized, resolved.key, resolved.videoId, resolved.youtubePending]);
 
   // Mount YouTube only after a real video ID resolves. Preview-only tracks keep
   // the same visible player surface without creating a hidden cross-origin frame.
-  const yt = useYouTubePlayer(web && !!cur && !!resolved.videoId && !minimized, { hostId: youtubeHostId, mediaKey: curKey });
+  const yt = useYouTubePlayer(web && !!cur && !!resolved.videoId && !minimized, { hostId: youtubeHostId, mediaKey: resolutionKey });
   useEffect(() => { yt.setVolume(volume); }, [volume, yt.ready]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const forThis = resolved.key === curKey;
+  const forThis = resolved.key === resolutionKey;
   // A video the current player errored on (embedding disabled / removed) is not
   // usable — drop to the preview instead of playing silence.
   // Initialization errors are terminal for this player instance too. Without
@@ -439,12 +461,13 @@ export default function PlayerBar({
   // Treating those as terminal is why previews turned up so often on songs that
   // were perfectly playable: one hiccup dropped the track to a 30-second preview
   // for the rest of the session and never tried the video again.
-  const terminalYt = yt.error?.kind === "init" || TERMINAL_YT_CODES.includes(Number(yt.error?.code));
-  const transientYt = !!yt.error && !terminalYt && !!yt.error.videoId;
-  const retryKey = `${curKey}|${yt.error?.videoId || ""}`;
+  const ytErrorForThis = yt.error?.mediaKey === resolutionKey ? yt.error : null;
+  const terminalYt = ytErrorForThis?.kind === "init" || TERMINAL_YT_CODES.includes(Number(ytErrorForThis?.code));
+  const transientYt = !!ytErrorForThis && !terminalYt && !!ytErrorForThis.videoId;
+  const retryKey = `${resolutionKey}|${ytErrorForThis?.videoId || ""}`;
   const retriesUsed = ytRetryRef.current.key === retryKey ? ytRetryRef.current.count : 0;
-  const ytFailed = yt.error?.kind === "init"
-    || (!!yt.error?.videoId && yt.error.videoId === resolved.videoId
+  const ytFailed = ytErrorForThis?.kind === "init"
+    || (!!ytErrorForThis?.videoId && ytErrorForThis.videoId === resolved.videoId
         && (terminalYt || retriesUsed >= MAX_YT_RETRIES));
   // Native has no YouTube iframe host in this component. Treat the resolved id
   // as metadata there and use the preview engine instead of hanging "connecting".
@@ -459,7 +482,7 @@ export default function PlayerBar({
   // scored candidate while this play immediately falls back to a fresh preview.
   useEffect(() => {
     if (!transientYt || !forThis) return;
-    const failedId = yt.error?.videoId;
+    const failedId = ytErrorForThis?.videoId;
     if (!failedId || failedId !== resolved.videoId) return;
     const current = ytRetryRef.current;
     const count = current.key === retryKey ? current.count : 0;
@@ -469,17 +492,17 @@ export default function PlayerBar({
     const resumeMs = yt.state?.position || 0;
     const timer = setTimeout(() => yt.load(failedId, { startSec: Math.floor(resumeMs / 1000) }), 600 * (count + 1));
     return () => clearTimeout(timer);
-  }, [transientYt, yt.error?.videoId, retryKey, forThis]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [transientYt, ytErrorForThis?.videoId, retryKey, forThis]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const invalidatedRef = useRef("");
   useEffect(() => {
-    const failedId = yt.error?.videoId;
-    if (!cur || !failedId || ![100, 101, 150].includes(Number(yt.error?.code))) return;
+    const failedId = ytErrorForThis?.videoId;
+    if (!cur || !failedId || ![100, 101, 150].includes(Number(ytErrorForThis?.code))) return;
     const signature = `${cur.artist || ""}|${cur.title || ""}|${failedId}`;
     if (invalidatedRef.current === signature) return;
     invalidatedRef.current = signature;
     invalidateYouTube(cur.title, cur.artist, failedId);
-  }, [yt.error?.code, yt.error?.videoId, curKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [ytErrorForThis?.code, ytErrorForThis?.videoId, resolutionKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Rebuilding the iframe (minimize/restore or a responsive host swap) must not
   // restart the song. Capture the live YouTube clock and consume it on the next
@@ -520,8 +543,8 @@ export default function PlayerBar({
 
   const recordedKeyRef = useRef(null);
   const markPlaybackStarted = () => {
-    if (!curKey || recordedKeyRef.current === curKey) return;
-    recordedKeyRef.current = curKey;
+    if (!curKey || recordedKeyRef.current === resolutionKey) return;
+    recordedKeyRef.current = resolutionKey;
     onPlaybackStarted?.({ ...cur, videoId: (forThis && resolved.videoId) || cur.videoId || null });
   };
 
@@ -537,7 +560,7 @@ export default function PlayerBar({
   // the same event through onStarted above.
   useEffect(() => {
     if (ytActive && yt.state.playing) markPlaybackStarted();
-  }, [ytActive, yt.state.playing, curKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [ytActive, yt.state.playing, resolutionKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Load the resolved video into the YouTube player; our index (prev/next) drives
   // it. loadVideoById auto-plays, matching tap-to-play. Resume seeks on reload.
@@ -546,7 +569,7 @@ export default function PlayerBar({
   useEffect(() => { if (!yt.ready) sigRef.current = ""; }, [yt.ready]);
   useEffect(() => {
     if (!ytActive || minimized || obscured || !showVideo) return;
-    const sig = `${resolved.videoId}@${index}@${youtubeHostId}`;
+    const sig = `${resolved.videoId}@${index}@${youtubeHostId}@${resolutionKey}`;
     if (sig === sigRef.current) return;
     sigRef.current = sig;
     const liveResumeMs = engineResumeRef.current?.key === curKey ? (engineResumeRef.current.ms || 0) : resumeMs;
@@ -554,7 +577,7 @@ export default function PlayerBar({
     engineResumeRef.current = null;
     resumedRef.current = true;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ytActive, resolved.videoId, index, minimized, obscured, showVideo, youtubeHostId]);
+  }, [ytActive, resolved.videoId, index, minimized, obscured, showVideo, youtubeHostId, resolutionKey]);
   // When the preview engine is driving this track, stop any video still playing.
   useEffect(() => { if (forThis && !ytActive) yt.pause(); }, [forThis, ytActive, curKey]); // eslint-disable-line react-hooks/exhaustive-deps
   // Mark preview resume consumed once it's flowing, so later tracks start at 0.
@@ -619,25 +642,61 @@ export default function PlayerBar({
 
   // Keep diagnostics hooks above the empty-player return. Persisted queues can
   // briefly resolve to an invalid index and later recover without remounting.
-  const unplayable = !!cur && forThis && !ytActive && !previewSrc && !connecting;
+  const unplayable = !!cur && playerSourcesUnavailable({
+    forCurrentTrack: forThis,
+    youtubeActive: ytActive,
+    youtubeConnecting: connecting,
+    preview: previewSrc,
+    youtubePending: resolved.youtubePending,
+    youtubeRequired: web && !directVideoId,
+    youtubeSettled: resolved.youtubeSettled,
+    previewPending: resolved.previewPending,
+  });
+  const resolverNotice = forThis ? playerYouTubeLookupNotice(resolved.youtubeStatus) : null;
+  const currentAudioError = audio.error
+    && previewSrc
+    && (!web || audio.error.source === previewSrc)
+    ? audio.error
+    : null;
+  const currentYoutubeError = ytFailed && ytErrorForThis
+    ? ytErrorForThis
+    : null;
+  const providersSettled = playerProvidersSettled({
+    web,
+    directVideoId,
+    youtubeSettled: resolved.youtubeSettled,
+    youtubePending: resolved.youtubePending,
+    youtubeConnecting: connecting,
+    previewPending: resolved.previewPending,
+  });
+  const playbackFailure = playerPlaybackFailure({
+    providersSettled,
+    audioErrorKind: currentAudioError?.kind,
+    youtubeErrorKind: currentYoutubeError?.kind,
+    unavailable: unplayable,
+    resolverNotice,
+  });
   const reportedFailure = useRef(null);
   useEffect(() => {
-    const failureKind = audio.error?.kind || yt.error?.kind || (unplayable ? "unavailable" : null);
+    // Access and provider-capacity decisions are not broken-song errors. Keep
+    // real engine errors first, but do not raise PIT-MEDIA-001 solely because a
+    // known resolver boundary left both source URLs empty.
+    const failureKind = playbackFailure?.kind;
     if (!failureKind || !curKey) return;
-    const key = `${curKey}:${failureKind}`;
+    const key = `${resolutionKey}:${playbackFailure.source}:${failureKind}:${playbackFailure.toast ? "toast" : "silent"}`;
     if (reportedFailure.current === key) return;
     reportedFailure.current = key;
     captureAppError(new Error("Playback source failed"), {
       code: "PIT-MEDIA-001",
       context: "Starting the selected track",
-      source: audio.error ? "audio-preview" : "youtube-player",
+      source: playbackFailure.source,
       severity: "warning",
       // Reload autoplay can be blocked until the next user gesture. Record that
       // diagnostic without alarming the listener; the visible Play button is the
       // expected recovery path, not a broken-track failure.
-      toast: unplayable || (!!audio.error && audio.error.kind !== "permission"),
+      toast: playbackFailure.toast,
     });
-  }, [audio.error?.kind, curKey, unplayable, yt.error?.kind]);
+  }, [resolutionKey, curKey, playbackFailure?.kind, playbackFailure?.source, playbackFailure?.toast]);
 
   const closePlayer = () => {
     // Close an open phone sheet first, then let App clear the account-owned queue.
@@ -765,6 +824,7 @@ export default function PlayerBar({
 
   const statusLine = connecting ? "Loading video..."
     : resolving ? "Loading..."
+    : unplayable && resolverNotice ? resolverNotice.message
     : unplayable ? "Not available to play"
     : artist + (ytActive ? "  ·  YouTube" : previewSrc ? "  ·  preview" : "");
 

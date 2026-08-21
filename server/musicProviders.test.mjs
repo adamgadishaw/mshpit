@@ -144,9 +144,45 @@ test("preview cache expiry never outlives the provider signature or five minutes
   const now = Date.parse("2026-07-15T12:00:00Z");
   const providerExpiry = Math.floor((now + 3 * 60_000) / 1000);
   assert.equal(playbackUrlExpiry(`https://preview.example/song.mp3?exp=${providerExpiry}`, now), now + 2 * 60_000);
+  const deezerSignedUrl = `https://cdnt-preview.dzcdn.net/api/1/1/0/b/9/0/song.mp3?hdnea=exp=${providerExpiry}~acl=/api/1/1/0/b/9/0/song.mp3*~data=user_id=0,application_id=42~hmac=abc123`;
+  assert.equal(playbackUrlExpiry(deezerSignedUrl, now), now + 2 * 60_000);
   const farExpiry = Math.floor((now + 30 * 60_000) / 1000);
   assert.equal(playbackUrlExpiry(`https://preview.example/song.mp3?exp=${farExpiry}`, now), now + 5 * 60_000);
   assert.equal(playbackUrlExpiry("https://preview.example/no-exp.mp3", now), now);
+});
+
+test("a Deezer hdnea preview is reused while its bounded signature remains fresh", async () => {
+  const requestedAt = Date.now();
+  const providerExpiry = Math.floor((requestedAt + 15 * 60_000) / 1000);
+  const preview = `https://cdnt-preview.dzcdn.net/api/1/1/0/b/9/0/cache.mp3?hdnea=exp=${providerExpiry}~acl=/api/1/1/0/b/9/0/cache.mp3*~data=user_id=0,application_id=42~hmac=cache123`;
+  let requests = 0;
+  const fetchImpl = async () => {
+    requests += 1;
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        data: [{
+          id: 9001,
+          title: "Signed Cache Song",
+          artist: { name: "Signed Cache Artist" },
+          preview,
+          link: "https://www.deezer.com/track/9001",
+        }],
+      }),
+    };
+  };
+
+  const first = await getFreshDeezerPreview("Signed Cache Song", "Signed Cache Artist", { fetchImpl });
+  const completedAt = Date.now();
+  const second = await getFreshDeezerPreview("Signed Cache Song", "Signed Cache Artist", { fetchImpl });
+
+  assert.equal(first.status, "fresh");
+  assert.equal(second.status, "cached");
+  assert.equal(second.preview, preview);
+  assert.equal(requests, 1, "the second resolution should not call Deezer again");
+  assert.ok(first.expiresAt > requestedAt);
+  assert.ok(first.expiresAt <= completedAt + 5 * 60_000);
 });
 
 function youtubeCandidate(id, title, channel, { embeddable = true, madeForKids = false, licensed = true, duration = "PT3M30S", views = "1000000" } = {}) {

@@ -1,11 +1,12 @@
 import { View, Text, Image, Pressable, StyleSheet } from "react-native";
-import { colors, mono } from "../theme";
+import { colors, focusRing, mono } from "../theme";
 
 // Shows the user's uploaded photo if set, else initials on their colour.
 // Tappable to open a profile.
 export default function Avatar({ user, size = 36, onPress }) {
+  const profileName = user?.name || user?.username || "member";
   const inner = user?.avatarUri ? (
-    <Image source={{ uri: user.avatarUri }} style={{ width: size, height: size, borderRadius: size / 2 }} />
+    <Image accessible={false} source={{ uri: user.avatarUri }} style={{ width: size, height: size, borderRadius: size / 2 }} />
   ) : (
     <View
       style={[
@@ -21,12 +22,12 @@ export default function Avatar({ user, size = 36, onPress }) {
 
   if (onPress) {
     return (
-      <Pressable onPress={onPress} hitSlop={6}>
+      <Pressable style={({ focused }) => focused && focusRing} onPress={onPress} hitSlop={6} accessibilityRole="button" accessibilityLabel={`Open ${profileName}'s profile`}>
         {inner}
       </Pressable>
     );
   }
-  return inner;
+  return <View accessible accessibilityRole="image" accessibilityLabel={`${profileName}'s profile photo`}>{inner}</View>;
 }
 
 const styles = StyleSheet.create({

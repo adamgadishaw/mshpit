@@ -148,10 +148,42 @@ export async function collectTourProviderResults(providers) {
   };
 }
 
+async function collectNamedTourProviderResults(providers) {
+  const active = (providers || []).filter((provider) => provider && typeof provider.run === "function");
+  const settled = await Promise.allSettled(active.map((provider) => provider.run()));
+  return {
+    rows: settled.filter((result) => result.status === "fulfilled").flatMap((result) => Array.isArray(result.value) ? result.value : []),
+    successes: settled.filter((result) => result.status === "fulfilled").length,
+    failures: settled.filter((result) => result.status === "rejected").length,
+    outcomes: settled.map((result, index) => ({ source: active[index].source, ok: result.status === "fulfilled" })),
+  };
+}
+
+export function reconcileStaleProviderTourDates(database, {
+  successfulSources,
+  staleBefore,
+} = {}) {
+  const sources = [...new Set((successfulSources || []).filter((source) => /^(ticketmaster|bandsintown)$/.test(source)))];
+  const cutoff = Number(staleBefore);
+  if (!Number.isSafeInteger(cutoff) || cutoff < 0 || !sources.length) return 0;
+  const remove = database.prepare(`DELETE FROM tour_dates
+    WHERE owner_id IS NULL AND source=? AND updated_at<?`);
+  let deleted = 0;
+  database.exec("BEGIN IMMEDIATE");
+  try {
+    for (const source of sources) deleted += Number(remove.run(source, cutoff).changes) || 0;
+    database.exec("COMMIT");
+    return deleted;
+  } catch (error) {
+    try { database.exec("ROLLBACK"); } catch {}
+    throw error;
+  }
+}
+
 async function fetchDates(name) {
-  const result = await collectTourProviderResults([
-    KEY ? () => tmDates(name) : null,
-    BIT ? () => bitDates(name) : null,
+  const result = await collectNamedTourProviderResults([
+    KEY ? { source: "ticketmaster", run: () => tmDates(name) } : null,
+    BIT ? { source: "bandsintown", run: () => bitDates(name) } : null,
   ]);
   const byGig = new Map();
   for (const row of result.rows) {
@@ -164,7 +196,10 @@ async function fetchDates(name) {
 const upsert = db.prepare(`
   INSERT INTO tour_dates (id,artist,venue,place,lat,lng,date,ticket_url,sold_out,source,updated_at)
   VALUES (@id,@artist,@venue,@place,@lat,@lng,@date,@ticket_url,@sold_out,@source,@updated_at)
-  ON CONFLICT(id) DO UPDATE SET sold_out=excluded.sold_out, ticket_url=excluded.ticket_url, place=excluded.place, updated_at=excluded.updated_at`);
+  ON CONFLICT(id) DO UPDATE SET artist=excluded.artist,venue=excluded.venue,place=excluded.place,
+    lat=excluded.lat,lng=excluded.lng,date=excluded.date,ticket_url=excluded.ticket_url,
+    sold_out=excluded.sold_out,source=excluded.source,updated_at=excluded.updated_at
+  WHERE tour_dates.owner_id IS NULL`);
 
 let running = false;
 async function refresh() {
@@ -178,11 +213,20 @@ async function refresh() {
       .sort((x, y) => (y.popularity || 0) - (x.popularity || 0))
       .slice(0, LIMIT);
     let total = 0, providerSuccesses = 0, providerFailures = 0;
+    const providerStats = new Map();
+    const recordOutcomes = (outcomes) => {
+      for (const outcome of outcomes || []) {
+        const stats = providerStats.get(outcome.source) || { successes: 0, failures: 0 };
+        stats[outcome.ok ? "successes" : "failures"] += 1;
+        providerStats.set(outcome.source, stats);
+      }
+    };
     for (const a of artists) {
       try {
         const result = await fetchDates(a.name);
         providerSuccesses += result.successes;
         providerFailures += result.failures;
+        recordOutcomes(result.outcomes);
         const now = Date.now();
         db.exec("BEGIN");
         for (const r of result.rows) upsert.run({ lat: null, lng: null, ...r, updated_at: now });
@@ -199,9 +243,10 @@ async function refresh() {
       GROUP BY lower(trim(home_city)) ORDER BY members DESC LIMIT ?`).all(CITY_LIMIT);
     for (const { city } of cities) {
       try {
-        const result = await collectTourProviderResults([KEY ? () => tmCityDates(city) : null]);
+        const result = await collectNamedTourProviderResults([KEY ? { source: "ticketmaster", run: () => tmCityDates(city) } : null]);
         providerSuccesses += result.successes;
         providerFailures += result.failures;
+        recordOutcomes(result.outcomes);
         const now = Date.now();
         db.exec("BEGIN");
         for (const r of result.rows) upsert.run({ lat: null, lng: null, ...r, updated_at: now });
@@ -216,9 +261,17 @@ async function refresh() {
     if (!providerSuccesses) {
       throw new Error(`Every configured tour provider request failed (${providerFailures} failures); existing dates were kept and the refresh remains due.`);
     }
-    // Drop dates we haven't seen in a month (past shows / cancellations).
-    db.prepare("DELETE FROM tour_dates WHERE updated_at < ?").run(Date.now() - 30 * DAY);
-    markRefreshed();
+    // Reconcile only a provider that completed EVERY attempted call. Never let
+    // one healthy API erase another provider's cache, and never touch member or
+    // staff-authored rows (`owner_id` is non-null).
+    const successfulSources = [...providerStats]
+      .filter(([, stats]) => stats.successes > 0 && stats.failures === 0)
+      .map(([source]) => source);
+    reconcileStaleProviderTourDates(db, {
+      successfulSources,
+      staleBefore: Date.now() - 30 * DAY,
+    });
+    if (providerFailures === 0) markRefreshed();
     console.log(`[pit] tour dates refreshed: ${total} dates / ${artists.length} artists + ${cities.length} member cities (${providerSuccesses} provider calls ok, ${providerFailures} failed) in ${Math.round((Date.now() - t0) / 1000)}s`);
   } catch (e) {
     console.error("[pit] tour-date refresh failed:", e.message);

@@ -90,6 +90,7 @@ import { hasTrustedLandingImage, landingCommunityMedia, landingTotals } from "./
 import { assertSafeAuthoredFields, assertSafeAuthoredText } from "./contentSafety.js";
 import { canonicalProfileExtras } from "./profileExtras.js";
 import { licensedVenuePhoto, verifiedHttpsUrl } from "../src/domain/venuePhotoProvenance.mjs";
+import { accountIsPublic, activeAccountSql } from "./accountVisibility.js";
 
 export { ApiError } from "./errors.js";
 
@@ -104,6 +105,23 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const VENUE_PHOTO_LIMIT = 24;
 const VENUE_PHOTO_SOURCE = new URL("../src/seed/catalog.venue-photos.json", import.meta.url);
 let venuePhotoCatalog;
+
+function decodedPathParam(ctx, name, { max, label = "link" }) {
+  const raw = ctx?.params?.[name];
+  if (typeof raw !== "string" || raw.length > max * 12 + 16) {
+    throw new ApiError(400, `That ${label} is invalid.`, "VALIDATION_FAILED");
+  }
+  let decoded;
+  try { decoded = decodeURIComponent(raw); }
+  catch { throw new ApiError(400, `That ${label} is invalid.`, "VALIDATION_FAILED"); }
+  // `clean` truncates ordinary authored text for UX. A route identity must never
+  // truncate: two distinct overlong URLs resolving to the same database key is
+  // an ambiguous authorization and pagination boundary.
+  if ([...decoded].length > max) {
+    throw new ApiError(400, `That ${label} is too long.`, "VALIDATION_FAILED");
+  }
+  return clean(decoded, { max });
+}
 
 function venuePhotoSeed() {
   if (venuePhotoCatalog) return venuePhotoCatalog;
@@ -186,6 +204,10 @@ function requireUser(ctx) {
   if (user.is_banned) throw new ApiError(403, "This account is banned.", "FORBIDDEN");
   if (user.suspended_until && user.suspended_until > now()) throw new ApiError(403, "This account is suspended.", "FORBIDDEN");
   return user;
+}
+function publicAccountOrNull(id) {
+  const user = q.userById.get(id);
+  return accountIsPublic(user) ? user : null;
 }
 function requireAdmin(ctx) {
   const u = requireUser(ctx);
@@ -330,19 +352,21 @@ function tourDateJson(row) {
 }
 
 function visibleTourDateRows(viewer, { today = null, limit: rowLimit = 5000 } = {}) {
-  const dateSql = today ? "date>=? AND " : "";
+  const dateSql = today ? "td.date>=? AND " : "";
   const prefix = today ? [today] : [];
-  if (viewer?.role === "admin") {
-    return db.prepare(`SELECT * FROM tour_dates WHERE ${dateSql}1=1 ORDER BY date ASC,id ASC LIMIT ?`)
+  if (viewer?.role === "admin" && accountIsPublic(viewer)) {
+    return db.prepare(`SELECT td.* FROM tour_dates td WHERE ${dateSql}1=1 ORDER BY td.date ASC,td.id ASC LIMIT ?`)
       .all(...prefix, rowLimit);
   }
   if (viewer?.id) {
-    return db.prepare(`SELECT * FROM tour_dates WHERE ${dateSql}
-      (owner_id IS NULL OR release_at<=? OR owner_id=?) ORDER BY date ASC,id ASC LIMIT ?`)
+    return db.prepare(`SELECT td.* FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id WHERE ${dateSql}
+      (td.owner_id IS NULL OR (${activeAccountSql("owner")} AND (td.release_at<=? OR td.owner_id=?)))
+      ORDER BY td.date ASC,td.id ASC LIMIT ?`)
       .all(...prefix, now(), viewer.id, rowLimit);
   }
-  return db.prepare(`SELECT * FROM tour_dates WHERE ${dateSql}
-    (owner_id IS NULL OR release_at<=?) ORDER BY date ASC,id ASC LIMIT ?`)
+  return db.prepare(`SELECT td.* FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id WHERE ${dateSql}
+    (td.owner_id IS NULL OR (${activeAccountSql("owner")} AND td.release_at<=?))
+    ORDER BY td.date ASC,td.id ASC LIMIT ?`)
     .all(...prefix, now(), rowLimit);
 }
 
@@ -667,11 +691,12 @@ const SEEN_ORDINAL_SQL = `(SELECT COUNT(*) FROM posts s
       AND (s.created_at < p.created_at OR (s.created_at = p.created_at AND s.id <= p.id))) AS seen_ordinal`;
 const feedPostById = db.prepare(`
   SELECT p.*, u.name AS u_name, u.handle AS u_handle, u.initials AS u_initials, u.avatar_uri AS u_avatar, u.avatar_color AS u_color,
-    (SELECT COUNT(*) FROM likes l WHERE l.post_id = p.id) AS like_count,
-    (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id AND c.removed = 0) AS comment_count,
+    (SELECT COUNT(*) FROM likes l JOIN users lu ON lu.id=l.user_id WHERE l.post_id=p.id AND ${activeAccountSql("lu")}) AS like_count,
+    (SELECT COUNT(*) FROM comments c JOIN users cu ON cu.id=c.user_id
+      WHERE c.post_id=p.id AND c.removed=0 AND ${activeAccountSql("cu")}) AS comment_count,
     ${SEEN_ORDINAL_SQL}
   FROM posts p JOIN users u ON u.id = p.user_id
-  WHERE p.id = ?`);
+  WHERE p.id = ? AND ${activeAccountSql("u")}`);
 // Short word-art descriptors on a review ("RAW", "wall of sound"). Word-ish
 // only, capped hard, so they can't become a second review or a slur vector for
 // markup injection.
@@ -1112,7 +1137,7 @@ function withCommentPreviews(posts, viewerId) {
         u.name,u.initials,u.avatar_uri,u.avatar_color,u.role,u.verified,
         ROW_NUMBER() OVER (PARTITION BY c.post_id ORDER BY c.created_at DESC,c.id DESC) AS preview_rank
       FROM comments c JOIN users u ON u.id=c.user_id
-      WHERE c.post_id IN (${placeholders}) AND c.removed=0 ${blockSql}
+      WHERE c.post_id IN (${placeholders}) AND c.removed=0 AND ${activeAccountSql("u")} ${blockSql}
     ) ranked
     WHERE preview_rank<=2
     ORDER BY post_id,created_at,id`).all(...args);
@@ -1200,64 +1225,75 @@ function cleanMediaReactionUrl(value) {
   } catch { return null; }
 }
 
+function runtimeReadiness() {
+  let database = false;
+  try { database = db.prepare("SELECT 1 AS ok").get()?.ok === 1; } catch {}
+  if (!database) throw new ApiError(503, "The database is not ready.", "DATABASE_UNAVAILABLE");
+  const production = process.env.NODE_ENV === "production";
+  const storageConfigured = !production || !!String(process.env.PIT_DATA_DIR || "").trim();
+  const databaseFilePresent = existsSync(DATABASE_PATH);
+  if (!storageConfigured || !databaseFilePresent) {
+    throw new ApiError(503, "Durable storage is not ready.", "STORAGE_UNAVAILABLE");
+  }
+  const bootstrapAllowed = production && ["1", "true", "yes", "on"].includes(
+    String(process.env.PIT_ALLOW_EMPTY_DB_BOOTSTRAP || "").trim().toLowerCase(),
+  );
+  return { database, storageConfigured, databaseFilePresent, bootstrapAllowed };
+}
+
+function publicHealthProjection() {
+  runtimeReadiness();
+  return {
+    ok: true,
+    ts: now(),
+    capabilities: { mediaPublishing: mediaPublishingCapabilitiesForRuntime(process.env) },
+  };
+}
+
+function staffHealthProjection() {
+  const readiness = runtimeReadiness();
+  return {
+    ok: true,
+    ts: now(),
+    uptimeSeconds: Math.round(process.uptime()),
+    commit: String(process.env.RENDER_GIT_COMMIT || "").slice(0, 12) || null,
+    capabilities: { mediaPublishing: mediaPublishingCapabilitiesForRuntime(process.env) },
+    services: {
+      database: readiness.database,
+      storageConfigured: readiness.storageConfigured,
+      storage: {
+        configured: readiness.storageConfigured,
+        databaseFilePresent: readiness.databaseFilePresent,
+        bootstrapAllowed: readiness.bootstrapAllowed,
+      },
+      youtubeConfigured: !!process.env.YOUTUBE_API_KEY,
+      youtubeLookup: youtubeProviderStatus(),
+      wikidataLookup: wikidataProviderStatus(),
+      tourProviderConfigured: !!(process.env.TICKETMASTER_KEY || process.env.BANDSINTOWN_APP_ID),
+      tourDates: db.prepare("SELECT COUNT(*) c FROM tour_dates").get().c,
+      backgroundJobs: {
+        cacheWarmEnabled: backgroundJobEnabled(process.env, "CACHE_WARM_ENABLED"),
+        tourDateRefreshEnabled: backgroundJobEnabled(process.env, "TOURDATE_REFRESH_ENABLED"),
+        backupEnabled: backupSchedulerEnabled(process.env),
+        offhostBackupConfigured: offhostBackupConfigured(process.env),
+      },
+      mailConfigured: mailConfigured(),
+      mail: mailDiagnostics(),
+      mediaStorageConfigured: mediaConfigured(),
+      mediaDeletion: mediaDeletionHealth(db),
+    },
+  };
+}
+
 // route table: "METHOD /path" -> handler(ctx) ; :params exposed as ctx.params
 export const routes = {
-  // ---- health ---- (youtube config flag is a safe diagnostic, no secrets)
-  "GET /api/health": (ctx = {}) => {
-    let database = false;
-    try { database = db.prepare("SELECT 1 AS ok").get()?.ok === 1; } catch {}
-    if (!database) throw new ApiError(503, "The database is not ready.", "DATABASE_UNAVAILABLE");
-    const production = process.env.NODE_ENV === "production";
-    const storageConfigured = !production || !!String(process.env.PIT_DATA_DIR || "").trim();
-    const databaseFilePresent = existsSync(DATABASE_PATH);
-    if (!storageConfigured || !databaseFilePresent) {
-      // The open SQLite handle may keep answering briefly after a mount/path is
-      // lost. Do not let the platform call that healthy and route traffic to a
-      // process whose next restart would show an empty or missing site.
-      throw new ApiError(503, "Durable storage is not ready.", "STORAGE_UNAVAILABLE");
-    }
-    const bootstrapAllowed = production && ["1", "true", "yes", "on"].includes(
-      String(process.env.PIT_ALLOW_EMPTY_DB_BOOTSTRAP || "").trim().toLowerCase(),
-    );
-    const staffHealth = !!ctx.user
-      && !ctx.user.is_banned
-      && !(ctx.user.suspended_until && ctx.user.suspended_until > now())
-      && (ctx.user.role === "admin" || ctx.user.role === "moderator");
-    return {
-      ok: database,
-      ts: now(),
-      uptimeSeconds: Math.round(process.uptime()),
-      commit: String(process.env.RENDER_GIT_COMMIT || "").slice(0, 12) || null,
-      youtube: !!process.env.YOUTUBE_API_KEY,
-      // Public booleans only: clients use this projection to hide publishing
-      // paths whose authoritative server-side renderer is not deployed yet.
-      capabilities: {
-        mediaPublishing: mediaPublishingCapabilitiesForRuntime(process.env),
-      },
-      services: {
-        database,
-        storageConfigured,
-        storage: { configured: storageConfigured, databaseFilePresent, bootstrapAllowed },
-        youtubeConfigured: !!process.env.YOUTUBE_API_KEY,
-        // Daily quota remaining, circuit state, and efficiency counters are
-        // operational intelligence. Public health keeps only the configured
-        // boolean above; active staff receive the detailed projection.
-        ...(staffHealth ? { youtubeLookup: youtubeProviderStatus() } : {}),
-        wikidataLookup: wikidataProviderStatus(),
-        tourProviderConfigured: !!(process.env.TICKETMASTER_KEY || process.env.BANDSINTOWN_APP_ID),
-        tourDates: db.prepare("SELECT COUNT(*) c FROM tour_dates").get().c,
-        backgroundJobs: {
-          cacheWarmEnabled: backgroundJobEnabled(process.env, "CACHE_WARM_ENABLED"),
-          tourDateRefreshEnabled: backgroundJobEnabled(process.env, "TOURDATE_REFRESH_ENABLED"),
-          backupEnabled: backupSchedulerEnabled(process.env),
-          offhostBackupConfigured: offhostBackupConfigured(process.env),
-        },
-        mailConfigured: mailConfigured(),
-        mail: mailDiagnostics(),
-        mediaStorageConfigured: mediaConfigured(),
-        mediaDeletion: mediaDeletionHealth(db),
-      },
-    };
+  // Render only needs liveness plus capability flags. Operational topology,
+  // commit ids, quota and mail diagnostics belong on the authenticated staff
+  // route so a public probe cannot inventory the deployment.
+  "GET /api/health": () => publicHealthProjection(),
+  "GET /api/admin/health": (ctx) => {
+    requireModerator(ctx);
+    return staffHealthProjection();
   },
 
   // Direct-to-object-storage photo uploads. The application server signs a
@@ -1801,6 +1837,7 @@ export const routes = {
   "GET /api/users/:id/playlists": (ctx) => {
     if (ctx.user?.id !== ctx.params.id && blockedEitherWay(ctx.user?.id, ctx.params.id)) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
     const self = ctx.user?.id === ctx.params.id;
+    if (!self && !publicAccountOrNull(ctx.params.id)) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
     const rows = db.prepare(`SELECT p.*, u.name AS u_name, u.handle AS u_handle FROM playlists p JOIN users u ON u.id=p.user_id
       WHERE p.user_id=? ${self ? "" : "AND p.visibility='public'"} ORDER BY COALESCE(p.updated_at,p.created_at) DESC, p.id DESC LIMIT 50`).all(ctx.params.id);
     return { playlists: rows.map(playlistProjection) };
@@ -1808,6 +1845,7 @@ export const routes = {
   "GET /api/playlists/:id": (ctx) => {
     const row = db.prepare(`SELECT p.*, u.name AS u_name, u.handle AS u_handle FROM playlists p JOIN users u ON u.id=p.user_id WHERE p.id=?`).get(ctx.params.id);
     if (!row || blockedEitherWay(ctx.user?.id, row.user_id)) throw new ApiError(404, "That playlist isn't available.", "NOT_FOUND");
+    if (ctx.user?.id !== row.user_id && !publicAccountOrNull(row.user_id)) throw new ApiError(404, "That playlist isn't available.", "NOT_FOUND");
     if (row.visibility === "private" && ctx.user?.id !== row.user_id) throw new ApiError(404, "That playlist isn't available.", "NOT_FOUND");
     return { playlist: playlistProjection(row) };
   },
@@ -2001,7 +2039,7 @@ export const routes = {
   // Standalone so profiles can show badges without widening the bulk user list,
   // where one query per row would be an N+1 on every feed render.
   "GET /api/users/:id/badges": (ctx) => {
-    if (!q.userById.get(ctx.params.id)) throw new ApiError(404, "No such member.", "NOT_FOUND");
+    if (!publicAccountOrNull(ctx.params.id)) throw new ApiError(404, "No such member.", "NOT_FOUND");
     return { badges: customBadgesFor(ctx.params.id) };
   },
 
@@ -2009,7 +2047,8 @@ export const routes = {
   // login / a new device (SQLite migration slice 1, see MIGRATION.md).
   "GET /api/me/following": (ctx) => {
     const u = requireUser(ctx);
-    const rows = db.prepare("SELECT followee_id FROM follows WHERE follower_id = ?").all(u.id);
+    const rows = db.prepare(`SELECT f.followee_id FROM follows f JOIN users target ON target.id=f.followee_id
+      WHERE f.follower_id=? AND ${activeAccountSql("target")} ORDER BY f.followee_id LIMIT 2000`).all(u.id);
     return { following: rows.map((r) => r.followee_id) };
   },
 
@@ -2124,28 +2163,30 @@ export const routes = {
   // Always returns `total` = member count, so the app can show a real stat.
   "GET /api/people": (ctx) => {
     const term = clean(ctx.query.q, { max: 60 }).toLowerCase();
-    const total = db.prepare("SELECT COUNT(*) c FROM users WHERE is_banned=0").get().c;
+    const total = db.prepare(`SELECT COUNT(*) c FROM users WHERE ${activeAccountSql("users")}`).get().c;
     const cols = "id,name,handle,initials,avatar_uri,avatar_color,verified,role,home_city";
     const map = (r) => ({ id: r.id, name: r.name, handle: r.handle, initials: r.initials, avatarUri: r.avatar_uri, avatarColor: r.avatar_color, verified: !!r.verified, role: r.role, home: { city: r.home_city } });
     // Never surface someone you've blocked (or who blocked you) in search.
     const hidden = blockedIdSet(ctx.user?.id);
     if (term.length < 1) {
-      const rows = db.prepare(`SELECT ${cols} FROM users WHERE is_banned=0 ORDER BY created_at DESC LIMIT 60`).all();
+      const rows = db.prepare(`SELECT ${cols} FROM users WHERE ${activeAccountSql("users")} ORDER BY created_at DESC LIMIT 60`).all();
       return { users: rows.filter((r) => !hidden.has(r.id)).map(map).slice(0, 40), total };
     }
     const like = `%${term.replace(/[%_\\]/g, "")}%`;
     const rows = db.prepare(
-      `SELECT ${cols} FROM users WHERE is_banned=0 AND (lower(name) LIKE ? OR lower(handle) LIKE ?) ORDER BY (lower(handle)=? OR lower(name)=?) DESC, name LIMIT 40`
+      `SELECT ${cols} FROM users WHERE ${activeAccountSql("users")} AND (lower(name) LIKE ? OR lower(handle) LIKE ?) ORDER BY (lower(handle)=? OR lower(name)=?) DESC, name LIMIT 40`
     ).all(like, like, term, term);
     return { users: rows.filter((r) => !hidden.has(r.id)).map(map).slice(0, 30), total };
   },
 
   "GET /api/users/:id": (ctx) => {
     if (ctx.user?.id !== ctx.params.id && blockedEitherWay(ctx.user?.id, ctx.params.id)) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
-    const u = q.userById.get(ctx.params.id);
+    const u = publicAccountOrNull(ctx.params.id);
     if (!u) throw new ApiError(404, "No such user.");
-    const followers = db.prepare("SELECT COUNT(*) c FROM follows WHERE followee_id = ?").get(u.id).c;
-    const following = db.prepare("SELECT COUNT(*) c FROM follows WHERE follower_id = ?").get(u.id).c;
+    const followers = db.prepare(`SELECT COUNT(*) c FROM follows f JOIN users actor ON actor.id=f.follower_id
+      WHERE f.followee_id=? AND ${activeAccountSql("actor")}`).get(u.id).c;
+    const following = db.prepare(`SELECT COUNT(*) c FROM follows f JOIN users target ON target.id=f.followee_id
+      WHERE f.follower_id=? AND ${activeAccountSql("target")}`).get(u.id).c;
     const isFollowing = ctx.user ? !!db.prepare("SELECT 1 FROM follows WHERE follower_id=? AND followee_id=?").get(ctx.user.id, u.id) : false;
     return { user: publicUser(u), followers, following, isFollowing };
   },
@@ -2154,23 +2195,25 @@ export const routes = {
   // clickable follow list like any social platform.
   "GET /api/users/:id/followers": (ctx) => {
     if (ctx.user?.id !== ctx.params.id && blockedEitherWay(ctx.user?.id, ctx.params.id)) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
+    if (!publicAccountOrNull(ctx.params.id)) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
     const hidden = blockedIdSet(ctx.user?.id);
     const rows = db.prepare(`
       SELECT u.* FROM follows f JOIN users u ON u.id = f.follower_id
-      WHERE f.followee_id = ? ORDER BY u.name COLLATE NOCASE LIMIT 500`).all(ctx.params.id);
+      WHERE f.followee_id = ? AND ${activeAccountSql("u")} ORDER BY u.name COLLATE NOCASE LIMIT 500`).all(ctx.params.id);
     return { users: rows.filter((r) => !hidden.has(r.id)).map((r) => publicUser(r)) };
   },
   "GET /api/users/:id/following": (ctx) => {
     if (ctx.user?.id !== ctx.params.id && blockedEitherWay(ctx.user?.id, ctx.params.id)) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
+    if (!publicAccountOrNull(ctx.params.id)) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
     const hidden = blockedIdSet(ctx.user?.id);
     const rows = db.prepare(`
       SELECT u.* FROM follows f JOIN users u ON u.id = f.followee_id
-      WHERE f.follower_id = ? ORDER BY u.name COLLATE NOCASE LIMIT 500`).all(ctx.params.id);
+      WHERE f.follower_id = ? AND ${activeAccountSql("u")} ORDER BY u.name COLLATE NOCASE LIMIT 500`).all(ctx.params.id);
     return { users: rows.filter((r) => !hidden.has(r.id)).map((r) => publicUser(r)) };
   },
 
   "GET /api/users/:id/rewards": (ctx) => {
-    if (!q.userById.get(ctx.params.id)) throw new ApiError(404, "No such user.", "NOT_FOUND");
+    if (!publicAccountOrNull(ctx.params.id)) throw new ApiError(404, "No such user.", "NOT_FOUND");
     if (ctx.user?.id !== ctx.params.id && blockedEitherWay(ctx.user?.id, ctx.params.id)) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
     return userRewards(ctx.params.id);
   },
@@ -2179,7 +2222,7 @@ export const routes = {
     const u = requireUser(ctx);
     limit(ctx, "follow", 60, 10 * 60 * 1000);
     if (u.id === ctx.params.id) throw new ApiError(400, "You can't follow yourself.");
-    if (!q.userById.get(ctx.params.id)) throw new ApiError(404, "No such user.");
+    if (!publicAccountOrNull(ctx.params.id)) throw new ApiError(404, "No such user.");
     if (blockedEitherWay(u.id, ctx.params.id)) throw new ApiError(403, "You can't follow this account.");
     const has = !!db.prepare("SELECT 1 FROM follows WHERE follower_id=? AND followee_id=?").get(u.id, ctx.params.id);
     const following = desiredState(ctx.body, "following", has);
@@ -2466,15 +2509,16 @@ export const routes = {
     if (!cursor) args.push(off);
     // Moderators see which cards carry open reports right on the feed, so
     // flagged content is visible in context instead of only in the queue.
-    const staff = ctx.user && (ctx.user.role === "admin" || ctx.user.role === "moderator");
+    const staff = accountIsPublic(ctx.user) && (ctx.user.role === "admin" || ctx.user.role === "moderator");
     const flagSql = staff ? `, (SELECT COUNT(*) FROM reports r WHERE r.target_type = 'post' AND r.target_id = p.id AND r.status = 'open') AS open_reports` : "";
     const found = db.prepare(`
       SELECT p.*, u.name AS u_name, u.handle AS u_handle, u.initials AS u_initials, u.avatar_uri AS u_avatar, u.avatar_color AS u_color,
-        (SELECT COUNT(*) FROM likes l WHERE l.post_id = p.id) AS like_count,
-        (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id AND c.removed = 0) AS comment_count,
+        (SELECT COUNT(*) FROM likes l JOIN users lu ON lu.id=l.user_id WHERE l.post_id=p.id AND ${activeAccountSql("lu")}) AS like_count,
+        (SELECT COUNT(*) FROM comments c JOIN users cu ON cu.id=c.user_id
+          WHERE c.post_id=p.id AND c.removed=0 AND ${activeAccountSql("cu")}) AS comment_count,
         ${SEEN_ORDINAL_SQL}${flagSql}
       FROM posts p JOIN users u ON u.id = p.user_id
-      WHERE p.removed = 0 ${cursorSql} ${blockSql}
+      WHERE p.removed=0 AND ${activeAccountSql("u")} ${cursorSql} ${blockSql}
       ORDER BY p.created_at DESC, p.id DESC LIMIT ?${cursor ? "" : " OFFSET ?"}`).all(...args);
     const { rows, nextCursor } = finishPage(found, lim);
     return { posts: withCommentPreviews(rows, viewer).map((p) => postJson(p, viewer)), nextCursor };
@@ -2579,7 +2623,7 @@ export const routes = {
 
   "GET /api/posts/:id/playlist": (ctx) => {
     const row = db.prepare("SELECT user_id,playlist,removed FROM posts WHERE id=?").get(ctx.params.id);
-    if (!row || row.removed || !row.playlist || blockedEitherWay(ctx.user?.id, row.user_id)) {
+    if (!row || row.removed || !row.playlist || !publicAccountOrNull(row.user_id) || blockedEitherWay(ctx.user?.id, row.user_id)) {
       throw new ApiError(404, "That shared playlist isn't available.", "NOT_FOUND");
     }
     let playlist = null;
@@ -2607,11 +2651,12 @@ export const routes = {
     // authoritative per-URL check happens in JS below.
     const found = db.prepare(`
       SELECT p.*, u.name AS u_name, u.handle AS u_handle, u.initials AS u_initials, u.avatar_uri AS u_avatar, u.avatar_color AS u_color,
-        (SELECT COUNT(*) FROM likes l WHERE l.post_id = p.id) AS like_count,
-        (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id AND c.removed = 0) AS comment_count,
+        (SELECT COUNT(*) FROM likes l JOIN users lu ON lu.id=l.user_id WHERE l.post_id=p.id AND ${activeAccountSql("lu")}) AS like_count,
+        (SELECT COUNT(*) FROM comments c JOIN users cu ON cu.id=c.user_id
+          WHERE c.post_id=p.id AND c.removed=0 AND ${activeAccountSql("cu")}) AS comment_count,
         ${SEEN_ORDINAL_SQL}
       FROM posts p JOIN users u ON u.id = p.user_id
-      WHERE p.removed = 0 AND p.photos_public = 1
+      WHERE p.removed=0 AND p.photos_public=1 AND ${activeAccountSql("u")}
         AND (p.photos LIKE '%.mp4%' OR p.photos LIKE '%.webm%' OR p.photos LIKE '%.mov%' OR p.photos LIKE '%.m4v%')
         ${cursorSql} ${blockSql}
       ORDER BY p.created_at DESC, p.id DESC LIMIT ?`).all(...args);
@@ -2628,10 +2673,12 @@ export const routes = {
 
   "GET /api/users/:id/posts": (ctx) => {
     if (ctx.user?.id !== ctx.params.id && blockedEitherWay(ctx.user?.id, ctx.params.id)) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
+    if (!publicAccountOrNull(ctx.params.id)) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
     const rows = db.prepare(`
       SELECT p.*, u.name AS u_name, u.handle AS u_handle, u.initials AS u_initials, u.avatar_uri AS u_avatar, u.avatar_color AS u_color,
-        (SELECT COUNT(*) FROM likes l WHERE l.post_id = p.id) AS like_count,
-        (SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id AND c.removed = 0) AS comment_count,
+        (SELECT COUNT(*) FROM likes l JOIN users lu ON lu.id=l.user_id WHERE l.post_id=p.id AND ${activeAccountSql("lu")}) AS like_count,
+        (SELECT COUNT(*) FROM comments c JOIN users cu ON cu.id=c.user_id
+          WHERE c.post_id=p.id AND c.removed=0 AND ${activeAccountSql("cu")}) AS comment_count,
         ${SEEN_ORDINAL_SQL}
       FROM posts p JOIN users u ON u.id = p.user_id
       WHERE p.removed = 0 AND p.user_id = ? ORDER BY p.created_at DESC LIMIT 100`).all(ctx.params.id);
@@ -2922,7 +2969,7 @@ export const routes = {
     const u = requireUser(ctx);
     limit(ctx, "like", 120, 10 * 60 * 1000);
     const targetPost = db.prepare("SELECT user_id,artist FROM posts WHERE id=? AND removed=0").get(ctx.params.id);
-    if (!targetPost) throw new ApiError(404, "No such post.");
+    if (!targetPost || !publicAccountOrNull(targetPost.user_id)) throw new ApiError(404, "No such post.");
     if (blockedEitherWay(u.id, targetPost.user_id)) throw new ApiError(403, "This interaction isn't available.", "FORBIDDEN");
     const has = !!db.prepare("SELECT 1 FROM likes WHERE post_id=? AND user_id=?").get(ctx.params.id, u.id);
     const liked = desiredState(ctx.body, "liked", has);
@@ -2949,13 +2996,16 @@ export const routes = {
     const stableAssetIds = postMediaAssetIds(db, post.id);
     const stableAssetObjects = assetObjectRecords(db, stableAssetIds);
     const stableAssetUrls = stableAssetObjects.map((object) => object.publicUrl);
-    if (!post.removed || attached.length || stableAssetIds.length) {
-      atomicWrite(() => {
+    atomicWrite(() => {
         // Author deletion is irreversible content deletion, unlike a moderator's
-        // reversible soft hide. Scrub the media association in the same commit
-        // that durably queues any now-unreferenced owned object.
-        db.prepare(`UPDATE posts SET removed=1,photos='[]',photos_public=0,landing_showcase=0
-          WHERE id=? AND user_id=?`).run(post.id, u.id);
+        // reversible soft hide. Keep only the row identity/ownership/timestamps
+        // required for foreign keys and the audit trail; authored copy, entity
+        // bindings, ratings, media and request fingerprints are scrubbed.
+        db.prepare(`UPDATE posts SET removed=1,artist='',venue='',city='',date='',overall=0,
+          band=NULL,room=NULL,dims='{}',review='',photos='[]',photos_public=0,landing_showcase=0,
+          setlist='[]',tour=NULL,tags='[]',song=NULL,playlist=NULL,artist_key=NULL,artist_mbid=NULL,
+          venue_key=NULL,client_mutation_id=NULL,client_mutation_hash=NULL,updated_at=?
+          WHERE id=? AND user_id=?`).run(now(), post.id, u.id);
         const deletable = unreferencedOwnedMediaUrls(db, { ownerId: u.id, urls: attached });
         enqueueOwnedMediaUrls(db, { ownerId: u.id, urls: deletable, at: now() });
         const deletableAssetUrls = unreferencedOwnedMediaUrls(db, { ownerId: u.id, urls: stableAssetUrls });
@@ -2975,14 +3025,13 @@ export const routes = {
         const deleteReaction = db.prepare("DELETE FROM media_reactions WHERE media_url=?");
         for (const mediaUrl of new Set([...deletable, ...deletableAssetUrls])) deleteReaction.run(mediaUrl);
         if (!post.removed) moderationRecord(ctx, "delete", "post", post.id, "author deleted", { removed: false }, { removed: true });
-      });
-    }
+    });
     return { ok: true, id: post.id };
   },
 
   "GET /api/posts/:id/comments": (ctx) => {
     const post = db.prepare("SELECT user_id,removed FROM posts WHERE id=?").get(ctx.params.id);
-    if (!post || post.removed) throw new ApiError(404, "That post is no longer available.", "NOT_FOUND");
+    if (!post || post.removed || !publicAccountOrNull(post.user_id)) throw new ApiError(404, "That post is no longer available.", "NOT_FOUND");
     if (ctx.user?.id && blockedEitherWay(ctx.user.id, post.user_id)) {
       throw new ApiError(403, "This conversation isn't available.", "FORBIDDEN");
     }
@@ -2999,7 +3048,8 @@ export const routes = {
     if (cursor) args.push(cursor.createdAt, cursor.createdAt, cursor.id);
     args.push(limit + 1);
     const found = db.prepare(`SELECT c.*, u.name, u.initials, u.avatar_uri, u.avatar_color, u.role, u.verified FROM comments c JOIN users u ON u.id=c.user_id
-                             WHERE c.post_id=? AND c.removed=0 ${blockSql} ${cursorSql} ORDER BY c.created_at DESC, c.id DESC LIMIT ?`).all(...args);
+                             WHERE c.post_id=? AND c.removed=0 AND ${activeAccountSql("u")} ${blockSql} ${cursorSql}
+                             ORDER BY c.created_at DESC, c.id DESC LIMIT ?`).all(...args);
     const { rows, nextCursor } = finishPage(found, limit);
     // A page can contain a reply whose parent is older than the page. Pull a
     // bounded ancestor chain so the client never promotes that reply to a fake
@@ -3012,12 +3062,13 @@ export const routes = {
       const ids = [...new Set(pending.filter((id) => !byId.has(id)))].slice(0, 100);
       if (!ids.length) break;
       const placeholders = ids.map(() => "?").join(",");
-      const parents = db.prepare(`SELECT c.*,u.name,u.initials,u.avatar_uri,u.avatar_color,u.role,u.verified
+      const parents = db.prepare(`SELECT c.*,u.name,u.initials,u.avatar_uri,u.avatar_color,u.role,u.verified,u.is_banned,u.suspended_until
         FROM comments c JOIN users u ON u.id=c.user_id
         WHERE c.post_id=? AND c.id IN (${placeholders})`).all(ctx.params.id, ...ids);
       pending = [];
       for (const parent of parents) {
         if (hidden.has(parent.user_id)) continue;
+        if (!accountIsPublic(parent)) parent.removed = 1;
         byId.set(parent.id, parent);
         if (parent.parent_id) pending.push(parent.parent_id);
       }
@@ -3046,7 +3097,7 @@ export const routes = {
     if (!text) throw new ApiError(400, "Say something first.");
     assertSafeAuthoredText(text, { field: "comment" });
     const targetPost = db.prepare("SELECT user_id,artist FROM posts WHERE id=? AND removed=0").get(ctx.params.id);
-    if (!targetPost) throw new ApiError(404, "No such post.");
+    if (!targetPost || !publicAccountOrNull(targetPost.user_id)) throw new ApiError(404, "No such post.");
     if (blockedEitherWay(u.id, targetPost.user_id)) throw new ApiError(403, "This interaction isn't available.", "FORBIDDEN");
     // A reply must point at a real comment on THIS post; ignore anything else.
     let parentId = clean(ctx.body?.parentId, { max: 60 }) || null;
@@ -3241,22 +3292,30 @@ export const routes = {
   // the authority; no client-local social graph is used for counts.
   "GET /api/fanclubs": (ctx) => {
     limit(ctx, "fanclub-directory", 120, 10 * 60 * 1000);
-    const clubs = db.prepare(`SELECT active.artist,
-      (SELECT COUNT(*) FROM fan_club_members members WHERE members.artist=active.artist) members,
-      (SELECT COUNT(*) FROM fan_club_messages messages WHERE messages.artist=active.artist AND messages.removed=0) messages
-      FROM (
-        SELECT artist FROM fan_club_members
+    const found = db.prepare(`WITH active_clubs AS (
+        SELECT members.artist FROM fan_club_members members JOIN users member_user ON member_user.id=members.user_id
+          WHERE ${activeAccountSql("member_user")}
         UNION
-        SELECT artist FROM fan_club_messages WHERE removed=0
-      ) active
-      ORDER BY members DESC, messages DESC, active.artist COLLATE NOCASE`).all();
-    return { clubs, total: clubs.length };
+        SELECT messages.artist FROM fan_club_messages messages JOIN users message_user ON message_user.id=messages.user_id
+          WHERE messages.removed=0 AND ${activeAccountSql("message_user")}
+      )
+      SELECT active_clubs.artist,
+        (SELECT COUNT(*) FROM fan_club_members members JOIN users member_user ON member_user.id=members.user_id
+          WHERE members.artist=active_clubs.artist AND ${activeAccountSql("member_user")}) members,
+        (SELECT COUNT(*) FROM fan_club_messages messages JOIN users message_user ON message_user.id=messages.user_id
+          WHERE messages.artist=active_clubs.artist AND messages.removed=0 AND ${activeAccountSql("message_user")}) messages,
+        COUNT(*) OVER() total_count
+      FROM active_clubs
+      ORDER BY members DESC,messages DESC,active_clubs.artist COLLATE NOCASE LIMIT 200`).all();
+    const total = Number(found[0]?.total_count) || 0;
+    const clubs = found.map(({ total_count: _totalCount, ...club }) => club);
+    return { clubs, total };
   },
 
   "POST /api/fanclubs/:artist/join": (ctx) => {
     const u = requireUser(ctx);
     limit(ctx, "fanclub", 60, 10 * 60 * 1000);
-    const artist = clean(decodeURIComponent(ctx.params.artist), { max: LIMITS.artist }).toLowerCase();
+    const artist = decodedPathParam(ctx, "artist", { max: LIMITS.artist, label: "artist link" }).toLowerCase();
     if (!artist) throw new ApiError(400, "Bad artist.");
     const has = !!db.prepare("SELECT 1 FROM fan_club_members WHERE artist=? AND user_id=?").get(artist, u.id);
     const joined = desiredState(ctx.body, "joined", has);
@@ -3268,38 +3327,42 @@ export const routes = {
   // The gate only needs aggregate counts. Keep that lightweight metadata public
   // without exposing message bodies to people who have not joined the club.
   "GET /api/fanclubs/:artist/meta": (ctx) => {
-    const artist = clean(decodeURIComponent(ctx.params.artist), { max: LIMITS.artist }).toLowerCase();
+    const artist = decodedPathParam(ctx, "artist", { max: LIMITS.artist, label: "artist link" }).toLowerCase();
     if (!artist) throw new ApiError(400, "Bad artist.", "VALIDATION_FAILED");
-    const members = db.prepare("SELECT COUNT(*) c FROM fan_club_members WHERE artist=?").get(artist).c;
-    const messageCount = db.prepare("SELECT COUNT(*) c FROM fan_club_messages WHERE artist=? AND removed=0").get(artist).c;
+    const members = db.prepare(`SELECT COUNT(*) c FROM fan_club_members m JOIN users u ON u.id=m.user_id
+      WHERE m.artist=? AND ${activeAccountSql("u")}`).get(artist).c;
+    const messageCount = db.prepare(`SELECT COUNT(*) c FROM fan_club_messages m JOIN users u ON u.id=m.user_id
+      WHERE m.artist=? AND m.removed=0 AND ${activeAccountSql("u")}`).get(artist).c;
     return { members, messageCount };
   },
 
   "GET /api/fanclubs/:artist/messages": (ctx) => {
     const u = requireUser(ctx);
-    const artist = clean(decodeURIComponent(ctx.params.artist), { max: LIMITS.artist }).toLowerCase();
+    const artist = decodedPathParam(ctx, "artist", { max: LIMITS.artist, label: "artist link" }).toLowerCase();
     if (!artist) throw new ApiError(400, "Bad artist.", "VALIDATION_FAILED");
     const member = db.prepare("SELECT 1 FROM fan_club_members WHERE artist=? AND user_id=?").get(artist, u.id);
     if (!member) throw new ApiError(403, "Join this fan club before opening its conversation.", "FAN_CLUB_MEMBERSHIP_REQUIRED");
-    const hidden = blockedIdSet(u.id);
     const { cursor, limit } = pageRequest(ctx, 300, 300);
     const after = decodeCursor(ctx.query?.after);
     if (cursor && after) throw new ApiError(400, "Use either before or after, not both.", "VALIDATION_FAILED");
-    const members = db.prepare("SELECT COUNT(*) c FROM fan_club_members WHERE artist=?").get(artist).c;
+    const members = db.prepare(`SELECT COUNT(*) c FROM fan_club_members m JOIN users member_user ON member_user.id=m.user_id
+      WHERE m.artist=? AND ${activeAccountSql("member_user")}`).get(artist).c;
     const removedIds = db.prepare("SELECT id FROM fan_club_messages WHERE artist=? AND removed=1 ORDER BY created_at DESC, id DESC LIMIT 300")
       .all(artist).map((row) => row.id);
 
     if (after) {
       const found = db.prepare(`SELECT m.*, u.name, u.initials FROM fan_club_messages m JOIN users u ON u.id=m.user_id
-                               WHERE m.artist=? AND m.removed=0
+                               WHERE m.artist=? AND m.removed=0 AND ${activeAccountSql("u")}
+                                 AND NOT EXISTS (SELECT 1 FROM blocks b WHERE
+                                   (b.blocker_id=? AND b.blocked_id=m.user_id) OR (b.blocker_id=m.user_id AND b.blocked_id=?))
                                  AND (m.created_at > ? OR (m.created_at = ? AND m.id > ?))
                                ORDER BY m.created_at ASC, m.id ASC LIMIT ?`)
-        .all(artist, after.createdAt, after.createdAt, after.id, limit + 1);
+        .all(artist, u.id, u.id, after.createdAt, after.createdAt, after.id, limit + 1);
       const hasMore = found.length > limit;
       const rows = hasMore ? found.slice(0, limit) : found;
       return {
         members,
-        messages: rows.filter((m) => !hidden.has(m.user_id)).map((m) => ({ id: m.id, userId: m.user_id, name: m.name, initials: m.initials, text: m.text, createdAt: m.created_at })),
+        messages: rows.map((m) => ({ id: m.id, userId: m.user_id, name: m.name, initials: m.initials, text: m.text, createdAt: m.created_at })),
         nextCursor: null,
         syncCursor: rows.length ? encodeCursor(rows.at(-1)) : String(ctx.query.after),
         hasMore,
@@ -3308,17 +3371,20 @@ export const routes = {
     }
 
     const cursorSql = cursor ? "AND (m.created_at < ? OR (m.created_at = ? AND m.id < ?))" : "";
-    const args = cursor ? [artist, cursor.createdAt, cursor.createdAt, cursor.id, limit + 1] : [artist, limit + 1];
+    const args = cursor ? [artist, u.id, u.id, cursor.createdAt, cursor.createdAt, cursor.id, limit + 1] : [artist, u.id, u.id, limit + 1];
     const found = db.prepare(`SELECT m.*, u.name, u.initials FROM fan_club_messages m JOIN users u ON u.id=m.user_id
-                             WHERE m.artist=? AND m.removed=0 ${cursorSql} ORDER BY m.created_at DESC, m.id DESC LIMIT ?`).all(...args);
+                             WHERE m.artist=? AND m.removed=0 AND ${activeAccountSql("u")}
+                               AND NOT EXISTS (SELECT 1 FROM blocks b WHERE
+                                 (b.blocker_id=? AND b.blocked_id=m.user_id) OR (b.blocker_id=m.user_id AND b.blocked_id=?))
+                               ${cursorSql} ORDER BY m.created_at DESC, m.id DESC LIMIT ?`).all(...args);
     const { rows, nextCursor } = finishPage(found, limit);
     const syncCursor = !cursor && rows.length ? encodeCursor(rows[0]) : null;
-    return { members, messages: rows.reverse().filter((m) => !hidden.has(m.user_id)).map((m) => ({ id: m.id, userId: m.user_id, name: m.name, initials: m.initials, text: m.text, createdAt: m.created_at })), nextCursor, syncCursor, hasMore: false, removedIds };
+    return { members, messages: rows.reverse().map((m) => ({ id: m.id, userId: m.user_id, name: m.name, initials: m.initials, text: m.text, createdAt: m.created_at })), nextCursor, syncCursor, hasMore: false, removedIds };
   },
 
   "POST /api/fanclubs/:artist/messages": (ctx) => {
     const u = requireUser(ctx);
-    const artist = clean(decodeURIComponent(ctx.params.artist), { max: LIMITS.artist }).toLowerCase();
+    const artist = decodedPathParam(ctx, "artist", { max: LIMITS.artist, label: "artist link" }).toLowerCase();
     const text = clean(ctx.body?.text, { max: LIMITS.message, newlines: true });
     if (!artist || !text) throw new ApiError(400, "Say something first.");
     assertSafeAuthoredText(text, { field: "fan-club message" });
@@ -3353,20 +3419,21 @@ export const routes = {
   // ---- concert lounge (shared attendee chat, keyed by concertKey) ----
   // The room gate can show activity without making the conversation public.
   "GET /api/lounges/:key/meta": (ctx) => {
-    const key = clean(decodeURIComponent(ctx.params.key), { max: 300 }).toLowerCase();
+    const key = decodedPathParam(ctx, "key", { max: 300, label: "lounge link" }).toLowerCase();
     if (!key) throw new ApiError(400, "Bad lounge.", "VALIDATION_FAILED");
-    const attendeeCount = db.prepare("SELECT COUNT(*) c FROM going WHERE concert_key=?").get(key).c;
-    const messageCount = db.prepare("SELECT COUNT(*) c FROM lounge_messages WHERE lounge_id=? AND removed=0").get(key).c;
+    const attendeeCount = db.prepare(`SELECT COUNT(*) c FROM going g JOIN users u ON u.id=g.user_id
+      WHERE g.concert_key=? AND ${activeAccountSql("u")}`).get(key).c;
+    const messageCount = db.prepare(`SELECT COUNT(*) c FROM lounge_messages m JOIN users u ON u.id=m.user_id
+      WHERE m.lounge_id=? AND m.removed=0 AND ${activeAccountSql("u")}`).get(key).c;
     return { attendeeCount, messageCount };
   },
 
   "GET /api/lounges/:key/messages": (ctx) => {
     const u = requireUser(ctx);
-    const key = clean(decodeURIComponent(ctx.params.key), { max: 300 }).toLowerCase();
+    const key = decodedPathParam(ctx, "key", { max: 300, label: "lounge link" }).toLowerCase();
     if (!key) throw new ApiError(400, "Bad lounge.", "VALIDATION_FAILED");
     const attendee = db.prepare("SELECT 1 FROM going WHERE user_id=? AND concert_key=?").get(u.id, key);
     if (!attendee) throw new ApiError(403, "Join this show's Going list before opening the lounge.", "LOUNGE_ATTENDANCE_REQUIRED");
-    const hidden = blockedIdSet(u.id);
     const { cursor, limit } = pageRequest(ctx, 300, 300);
     const after = decodeCursor(ctx.query?.after);
     if (cursor && after) throw new ApiError(400, "Use either before or after, not both.", "VALIDATION_FAILED");
@@ -3375,14 +3442,16 @@ export const routes = {
 
     if (after) {
       const found = db.prepare(`SELECT m.*, u.name, u.initials, u.avatar_uri, u.avatar_color, u.role FROM lounge_messages m JOIN users u ON u.id=m.user_id
-                               WHERE m.lounge_id=? AND m.removed=0
+                               WHERE m.lounge_id=? AND m.removed=0 AND ${activeAccountSql("u")}
+                                 AND NOT EXISTS (SELECT 1 FROM blocks b WHERE
+                                   (b.blocker_id=? AND b.blocked_id=m.user_id) OR (b.blocker_id=m.user_id AND b.blocked_id=?))
                                  AND (m.created_at > ? OR (m.created_at = ? AND m.id > ?))
                                ORDER BY m.created_at ASC, m.id ASC LIMIT ?`)
-        .all(key, after.createdAt, after.createdAt, after.id, limit + 1);
+        .all(key, u.id, u.id, after.createdAt, after.createdAt, after.id, limit + 1);
       const hasMore = found.length > limit;
       const rows = hasMore ? found.slice(0, limit) : found;
       return {
-        messages: rows.filter((m) => !hidden.has(m.user_id)).map((m) => ({ id: m.id, userId: m.user_id, name: m.name, initials: m.initials, avatarUri: m.avatar_uri, avatarColor: m.avatar_color, role: m.role, text: m.text, createdAt: m.created_at })),
+        messages: rows.map((m) => ({ id: m.id, userId: m.user_id, name: m.name, initials: m.initials, avatarUri: m.avatar_uri, avatarColor: m.avatar_color, role: m.role, text: m.text, createdAt: m.created_at })),
         nextCursor: null,
         syncCursor: rows.length ? encodeCursor(rows.at(-1)) : String(ctx.query.after),
         hasMore,
@@ -3391,16 +3460,19 @@ export const routes = {
     }
 
     const cursorSql = cursor ? "AND (m.created_at < ? OR (m.created_at = ? AND m.id < ?))" : "";
-    const args = cursor ? [key, cursor.createdAt, cursor.createdAt, cursor.id, limit + 1] : [key, limit + 1];
+    const args = cursor ? [key, u.id, u.id, cursor.createdAt, cursor.createdAt, cursor.id, limit + 1] : [key, u.id, u.id, limit + 1];
     const found = db.prepare(`SELECT m.*, u.name, u.initials, u.avatar_uri, u.avatar_color, u.role FROM lounge_messages m JOIN users u ON u.id=m.user_id
-                             WHERE m.lounge_id=? AND m.removed=0 ${cursorSql} ORDER BY m.created_at DESC, m.id DESC LIMIT ?`).all(...args);
+                             WHERE m.lounge_id=? AND m.removed=0 AND ${activeAccountSql("u")}
+                               AND NOT EXISTS (SELECT 1 FROM blocks b WHERE
+                                 (b.blocker_id=? AND b.blocked_id=m.user_id) OR (b.blocker_id=m.user_id AND b.blocked_id=?))
+                               ${cursorSql} ORDER BY m.created_at DESC, m.id DESC LIMIT ?`).all(...args);
     const { rows, nextCursor } = finishPage(found, limit);
     const syncCursor = !cursor && rows.length ? encodeCursor(rows[0]) : null;
-    return { messages: rows.reverse().filter((m) => !hidden.has(m.user_id)).map((m) => ({ id: m.id, userId: m.user_id, name: m.name, initials: m.initials, avatarUri: m.avatar_uri, avatarColor: m.avatar_color, role: m.role, text: m.text, createdAt: m.created_at })), nextCursor, syncCursor, hasMore: false, removedIds };
+    return { messages: rows.reverse().map((m) => ({ id: m.id, userId: m.user_id, name: m.name, initials: m.initials, avatarUri: m.avatar_uri, avatarColor: m.avatar_color, role: m.role, text: m.text, createdAt: m.created_at })), nextCursor, syncCursor, hasMore: false, removedIds };
   },
   "POST /api/lounges/:key/messages": (ctx) => {
     const u = requireUser(ctx);
-    const key = clean(decodeURIComponent(ctx.params.key), { max: 300 }).toLowerCase();
+    const key = decodedPathParam(ctx, "key", { max: 300, label: "lounge link" }).toLowerCase();
     const text = clean(ctx.body?.text, { max: LIMITS.message, newlines: true });
     if (!key || !text) throw new ApiError(400, "Say something first.");
     assertSafeAuthoredText(text, { field: "lounge message" });
@@ -3813,10 +3885,14 @@ export const routes = {
     if (!body) throw new ApiError(400, "A body is required.", "VALIDATION_FAILED");
     const audience = AUDIENCES[ctx.body?.audience] ? ctx.body.audience : "all";
     const id = uid("cmp");
+    const ctaUrl = clean(ctx.body?.ctaUrl, { max: 500 }) || null;
+    if (ctaUrl && !ctaUrl.includes("{{") && !safeUrl(ctaUrl)) {
+      throw new ApiError(400, "The button URL must be an http or https address.", "VALIDATION_FAILED");
+    }
     emailStmts.insertCampaign.run({
       id, name, subject, body,
       cta_label: clean(ctx.body?.ctaLabel, { max: 60 }) || null,
-      cta_url: clean(ctx.body?.ctaUrl, { max: 500 }) || null,
+      cta_url: ctaUrl,
       audience, created_by: actor.id, created_at: now(),
     });
     return { campaign: campaignProgress(id) };
@@ -3827,17 +3903,32 @@ export const routes = {
     const existing = emailStmts.campaignById.get(ctx.params.id);
     if (!existing) throw new ApiError(404, "No such campaign.", "NOT_FOUND");
     if (existing.status !== "draft") throw new ApiError(409, "This campaign has already started sending and can no longer be edited.", "VALIDATION_FAILED");
-    const subject = clean(ctx.body?.subject, { max: 200 }) || existing.subject;
-    const body = clean(ctx.body?.body, { max: 8000 }) || existing.body;
-    emailStmts.updateCampaign.run({
+    const source = ctx.body && typeof ctx.body === "object" && !Array.isArray(ctx.body) ? ctx.body : {};
+    const has = (field) => Object.prototype.hasOwnProperty.call(source, field);
+    const subject = has("subject") ? clean(source.subject, { max: 200 }) : existing.subject;
+    const body = has("body") ? clean(source.body, { max: 8000 }) : existing.body;
+    if (!subject) throw new ApiError(400, "A subject is required.", "VALIDATION_FAILED");
+    if (!body) throw new ApiError(400, "A body is required.", "VALIDATION_FAILED");
+    const ctaUrl = has("ctaUrl") ? (clean(source.ctaUrl, { max: 500 }) || null) : existing.cta_url;
+    if (ctaUrl && !ctaUrl.includes("{{") && !safeUrl(ctaUrl)) {
+      throw new ApiError(400, "The button URL must be an http or https address.", "VALIDATION_FAILED");
+    }
+    if (has("audience") && !AUDIENCES[source.audience]) {
+      throw new ApiError(400, "Choose a supported campaign audience.", "VALIDATION_FAILED");
+    }
+    const updated = emailStmts.updateCampaign.run({
       id: existing.id,
-      name: clean(ctx.body?.name, { max: 120 }) || existing.name,
+      expected_revision: existing.content_revision,
+      name: has("name") ? (clean(source.name, { max: 120 }) || existing.name) : existing.name,
       subject, body,
-      cta_label: clean(ctx.body?.ctaLabel, { max: 60 }) || null,
-      cta_url: clean(ctx.body?.ctaUrl, { max: 500 }) || null,
-      audience: AUDIENCES[ctx.body?.audience] ? ctx.body.audience : existing.audience,
+      cta_label: has("ctaLabel") ? (clean(source.ctaLabel, { max: 60 }) || null) : existing.cta_label,
+      cta_url: ctaUrl,
+      audience: has("audience") ? source.audience : existing.audience,
       updated_at: now(),
     });
+    if (updated.changes !== 1) {
+      throw new ApiError(409, "This campaign changed or started sending. Refresh it before editing again.", "VALIDATION_FAILED");
+    }
     return { campaign: campaignProgress(existing.id) };
   },
 
@@ -3855,9 +3946,18 @@ export const routes = {
     const result = await deliver({
       to: actor.email, userId: actor.id, kind: "campaign", campaignId: campaign.id,
       subject: `[TEST] ${rendered.subject}`, html: rendered.html, text: rendered.text,
-      idempotencyKey: `test-${campaign.id}-${Date.now()}`, force: true,
+      idempotencyKey: `test-${campaign.id}-r${campaign.content_revision}-${Date.now()}`, force: true,
     });
-    if (result.sent) emailStmts.markCampaignTested.run(now(), now(), campaign.id);
+    if (result.sent) {
+      const approved = emailStmts.markCampaignTested.run({
+        id: campaign.id,
+        revision: campaign.content_revision,
+        tested_at: now(),
+      });
+      if (approved.changes !== 1) {
+        throw new ApiError(409, "This campaign changed while the test was being delivered. Send a fresh test of the current version.", "VALIDATION_FAILED");
+      }
+    }
     return { sent: result.sent, reason: result.reason, to: actor.email };
   },
 
@@ -3868,10 +3968,17 @@ export const routes = {
     const campaign = emailStmts.campaignById.get(ctx.params.id);
     if (!campaign) throw new ApiError(404, "No such campaign.", "NOT_FOUND");
     if (campaign.status === "sent") throw new ApiError(409, "This campaign has already been sent.", "VALIDATION_FAILED");
-    if (!campaign.test_sent_at) throw new ApiError(422, "Send yourself a test first so you can see exactly what everyone else will get.", "VALIDATION_FAILED");
     if (ctx.body?.confirm !== true) throw new ApiError(422, "Confirmation is required before a broadcast goes out.", "VALIDATION_FAILED");
     const started = startCampaign(campaign.id);
-    if (!started.ok) throw new ApiError(409, `Could not start this campaign (${started.reason}).`, "VALIDATION_FAILED");
+    if (!started.ok) {
+      if (started.reason === "test-required") {
+        throw new ApiError(422, "Send yourself a test first—or retest the current campaign version—before broadcasting it.", "VALIDATION_FAILED");
+      }
+      if (started.reason === "revision-conflict") {
+        throw new ApiError(409, "This campaign changed while the broadcast was starting. Refresh it and send a fresh test.", "VALIDATION_FAILED");
+      }
+      throw new ApiError(409, `Could not start this campaign (${started.reason}).`, "VALIDATION_FAILED");
+    }
     const drained = await drainCampaign(campaign.id, { max: Number(ctx.body?.batch) > 0 ? Math.min(Number(ctx.body.batch), 50) : 25 });
     return { started, drained, campaign: campaignProgress(campaign.id) };
   },
@@ -4446,7 +4553,8 @@ export const routes = {
     const kind = ctx.query.kind === "song" ? "song" : "album";
     const ref = clean(ctx.query.ref, { max: 200 });
     if (!ref) throw new ApiError(400, "Missing ref.");
-    const agg = db.prepare("SELECT AVG(rating) avg, COUNT(*) count FROM ratings WHERE kind=? AND ref=?").get(kind, ref);
+    const agg = db.prepare(`SELECT AVG(r.rating) avg,COUNT(*) count FROM ratings r JOIN users u ON u.id=r.user_id
+      WHERE r.kind=? AND r.ref=? AND ${activeAccountSql("u")}`).get(kind, ref);
     const mine = ctx.user ? db.prepare("SELECT rating FROM ratings WHERE user_id=? AND kind=? AND ref=?").get(ctx.user.id, kind, ref) : null;
     return { avg: agg.avg || 0, count: agg.count || 0, mine: mine?.rating || 0 };
   },
@@ -4459,7 +4567,8 @@ export const routes = {
     if (!ref || !rating) throw new ApiError(400, "Bad rating.");
     db.prepare(`INSERT INTO ratings (user_id,kind,ref,rating) VALUES (?,?,?,?)
                 ON CONFLICT(user_id,kind,ref) DO UPDATE SET rating=excluded.rating`).run(u.id, kind, ref, rating);
-    const agg = db.prepare("SELECT AVG(rating) avg, COUNT(*) count FROM ratings WHERE kind=? AND ref=?").get(kind, ref);
+    const agg = db.prepare(`SELECT AVG(r.rating) avg,COUNT(*) count FROM ratings r JOIN users u ON u.id=r.user_id
+      WHERE r.kind=? AND r.ref=? AND ${activeAccountSql("u")}`).get(kind, ref);
     return { avg: agg.avg || 0, count: agg.count || 0, mine: rating };
   },
 
@@ -4489,10 +4598,7 @@ export const routes = {
     return { going };
   },
   "GET /api/going/:key/attendees": (ctx) => {
-    let decoded;
-    try { decoded = decodeURIComponent(ctx.params.key); }
-    catch { throw new ApiError(400, "That show link is invalid.", "VALIDATION_FAILED"); }
-    const key = clean(decoded, { max: 300 });
+    const key = decodedPathParam(ctx, "key", { max: 300, label: "show link" });
     if (!key) throw new ApiError(400, "That show link is invalid.", "VALIDATION_FAILED");
     const { cursor, limit: pageLimit } = pageRequest(ctx, 50, 100);
     const viewer = ctx.user?.id || null;
@@ -4522,10 +4628,7 @@ export const routes = {
   // One bounded venue pool at a time. The 2.1 MB source stays server-side so a
   // phone opening the app no longer downloads every venue's gallery.
   "GET /api/venues/:key/photos": (ctx) => {
-    let decoded;
-    try { decoded = decodeURIComponent(ctx.params.key); }
-    catch { throw new ApiError(400, "That venue link is invalid.", "VALIDATION_FAILED"); }
-    const key = clean(decoded, { max: 200 }).toLowerCase();
+    const key = decodedPathParam(ctx, "key", { max: 200, label: "venue link" }).toLowerCase();
     if (!key) throw new ApiError(400, "Choose a venue first.", "VALIDATION_FAILED");
     ctx.setHeader?.("Cache-Control", VENUE_PHOTO_CACHE_CONTROL);
     return { key, photos: normalizedVenuePhotoPool(key) };
@@ -4533,20 +4636,26 @@ export const routes = {
 
   // ---- venue reviews (slice 7) ----
   "GET /api/venues/:key/reviews": (ctx) => {
-    const key = clean(decodeURIComponent(ctx.params.key), { max: 200 }).toLowerCase();
-    const hidden = blockedIdSet(ctx.user?.id);
+    const key = decodedPathParam(ctx, "key", { max: 200, label: "venue link" }).toLowerCase();
+    const viewer = ctx.user?.id || null;
     const { cursor, limit } = pageRequest(ctx, 200, 200);
+    const blockSql = viewer ? `AND NOT EXISTS (SELECT 1 FROM blocks b WHERE
+      (b.blocker_id=? AND b.blocked_id=r.user_id) OR (b.blocker_id=r.user_id AND b.blocked_id=?))` : "";
     const cursorSql = cursor ? "AND (r.created_at < ? OR (r.created_at = ? AND r.id < ?))" : "";
-    const args = cursor ? [key, cursor.createdAt, cursor.createdAt, cursor.id, limit + 1] : [key, limit + 1];
+    const args = [key];
+    if (viewer) args.push(viewer, viewer);
+    if (cursor) args.push(cursor.createdAt, cursor.createdAt, cursor.id);
+    args.push(limit + 1);
     const found = db.prepare(`SELECT r.*, u.name, u.initials FROM venue_reviews r JOIN users u ON u.id=r.user_id
-                             WHERE r.venue_key=? AND r.removed=0 ${cursorSql} ORDER BY r.created_at DESC, r.id DESC LIMIT ?`).all(...args);
+                             WHERE r.venue_key=? AND r.removed=0 AND ${activeAccountSql("u")} ${blockSql} ${cursorSql}
+                             ORDER BY r.created_at DESC, r.id DESC LIMIT ?`).all(...args);
     const { rows, nextCursor } = finishPage(found, limit);
-    return { reviews: rows.filter((r) => !hidden.has(r.user_id)).map((r) => ({ id: r.id, userId: r.user_id, name: r.name, initials: r.initials, rating: r.rating, text: r.text, photos: JSON.parse(r.photos || "[]"), createdAt: r.created_at })), nextCursor };
+    return { reviews: rows.map((r) => ({ id: r.id, userId: r.user_id, name: r.name, initials: r.initials, rating: r.rating, text: r.text, photos: JSON.parse(r.photos || "[]"), createdAt: r.created_at })), nextCursor };
   },
   "POST /api/venues/:key/reviews": (ctx) => {
     const u = requireUser(ctx);
     limit(ctx, "venuereview", 30, 60 * 60 * 1000);
-    const key = clean(decodeURIComponent(ctx.params.key), { max: 200 }).toLowerCase();
+    const key = decodedPathParam(ctx, "key", { max: 200, label: "venue link" }).toLowerCase();
     const rating = clampRating(ctx.body?.rating);
     if (!key || !rating) throw new ApiError(400, "Bad review.");
     const text = clean(ctx.body?.text, { max: LIMITS.review, newlines: true });
@@ -4596,15 +4705,22 @@ export const routes = {
     return { ok: true };
   },
   "GET /api/artists/:key/profile": (ctx) => {
-    const key = clean(decodeURIComponent(ctx.params.key), { max: 200 }).toLowerCase();
+    const key = decodedPathParam(ctx, "key", { max: 200, label: "artist link" }).toLowerCase();
     const p = db.prepare("SELECT * FROM artist_profiles WHERE artist_key=?").get(key);
     const blocked = blockedIdSet(ctx.user?.id);
     // Owner overrides are ordinary user-authored UGC. A block must hide them in
     // both directions just like profiles and posts elsewhere; the client can
     // still render provider/catalog metadata beneath this null overlay.
-    if (p?.owner_id && blocked.has(p.owner_id)) return { profile: null, posts: [] };
-    const posts = p?.removed ? [] : db.prepare("SELECT id,user_id,text,created_at FROM artist_posts WHERE artist_key=? AND removed=0 ORDER BY created_at DESC LIMIT 100").all(key)
-      .filter((post) => !blocked.has(post.user_id));
+    if (p?.owner_id && (blocked.has(p.owner_id) || !publicAccountOrNull(p.owner_id))) return { profile: null, posts: [] };
+    const viewer = ctx.user?.id || null;
+    const blockSql = viewer ? `AND NOT EXISTS (SELECT 1 FROM blocks b WHERE
+      (b.blocker_id=? AND b.blocked_id=post.user_id) OR (b.blocker_id=post.user_id AND b.blocked_id=?))` : "";
+    const args = viewer ? [key, viewer, viewer] : [key];
+    const posts = p?.removed ? [] : db.prepare(`SELECT post.id,post.user_id,post.text,post.created_at
+      FROM artist_posts post JOIN users author ON author.id=post.user_id
+      WHERE post.artist_key=? AND post.removed=0 AND ${activeAccountSql("author")}
+        ${blockSql}
+      ORDER BY post.created_at DESC,post.id DESC LIMIT 100`).all(...args);
     return {
       profile: p && !p.removed ? { ownerId: p.owner_id || null, bio: p.bio, banner: p.banner, avatarUri: p.avatar_uri, feedEnabled: !!p.feed_enabled } : null,
       posts: posts.map((x) => ({ id: x.id, userId: x.user_id, text: x.text, createdAt: x.created_at })),
@@ -4612,7 +4728,7 @@ export const routes = {
   },
   "PATCH /api/artists/:key/profile": (ctx) => {
     const u = requireUser(ctx);
-    const key = clean(decodeURIComponent(ctx.params.key), { max: 200 }).toLowerCase();
+    const key = decodedPathParam(ctx, "key", { max: 200, label: "artist link" }).toLowerCase();
     if (!ownsArtist(u, key)) throw new ApiError(403, "Not your page.");
     const [, v] = shape(ctx.body, {
       bio: { parse: (x) => clean(x, { max: 600, newlines: true }) },
@@ -4646,7 +4762,7 @@ export const routes = {
     // Ownership is already checked below, so abuse is bounded to your own page.
     // This bounds the volume as well, matching the other post routes.
     limit(ctx, "artist-post", 40, 60 * 60 * 1000);
-    const key = clean(decodeURIComponent(ctx.params.key), { max: 200 }).toLowerCase();
+    const key = decodedPathParam(ctx, "key", { max: 200, label: "artist link" }).toLowerCase();
     if (!ownsArtist(u, key)) throw new ApiError(403, "Not your page.");
     const text = clean(ctx.body?.text, { max: LIMITS.message, newlines: true });
     if (!text) throw new ApiError(400, "Say something first.");
@@ -4657,7 +4773,7 @@ export const routes = {
   },
   "DELETE /api/artists/:key/posts/:id": (ctx) => {
     const u = requireUser(ctx);
-    const key = clean(decodeURIComponent(ctx.params.key), { max: 200 }).toLowerCase();
+    const key = decodedPathParam(ctx, "key", { max: 200, label: "artist link" }).toLowerCase();
     if (!ownsArtist(u, key)) throw new ApiError(403, "Not your page.");
     db.prepare("DELETE FROM artist_posts WHERE id=? AND artist_key=?").run(ctx.params.id, key);
     return { ok: true };

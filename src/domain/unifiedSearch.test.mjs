@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  recentSongSearchEntry,
+  recentSongTrack,
   unifiedPeopleSearchScope,
   unifiedSearchRequestOptions,
   unifiedSearchResultCount,
@@ -31,8 +33,51 @@ test("all unified search requests can share an abortable signal", () => {
   assert.equal(peopleOptions.signal, controller.signal);
   assert.equal(artistOptions.signal, controller.signal);
   assert.equal(songOptions.signal, controller.signal);
+  assert.equal(songOptions.throwOnError, true, "screen-level search owns truthful error presentation");
   controller.abort();
   assert.equal(peopleOptions.signal.aborted, true, "the people request is cancelled with the rest");
+});
+
+test("recent song searches reopen the exact bounded playback descriptor", () => {
+  const entry = recentSongSearchEntry({
+    id: 42,
+    sourceId: "deezer-42",
+    provider: "deezer",
+    videoId: "video-42",
+    title: "  Saturn  ",
+    artist: "  SZA  ",
+    album: "SOS",
+    duration: 999999,
+    art: "https://media.test/saturn.jpg",
+    url: "https://media.test/saturn.mp3",
+    ignored: "must not persist",
+  });
+  assert.equal(entry.label, "Saturn - SZA");
+  assert.equal(entry.track.id, 42);
+  assert.equal(entry.track.sourceId, "deezer-42");
+  assert.equal(entry.track.videoId, "video-42");
+  assert.equal(entry.track.duration, 86400);
+  assert.equal("ignored" in entry.track, false);
+  assert.deepEqual(recentSongTrack(entry), entry.track);
+});
+
+test("legacy label-only song recents remain playable after the storage migration", () => {
+  assert.deepEqual(recentSongTrack({ type: "song", label: "Nights - Frank Ocean" }), {
+    kind: "track",
+    title: "Nights",
+    artist: "Frank Ocean",
+    id: null,
+    sourceId: null,
+    provider: null,
+    source: null,
+    videoId: null,
+    url: null,
+    preview: null,
+    art: null,
+    album: null,
+    duration: 0,
+  });
+  assert.equal(recentSongTrack({ type: "song", label: "Malformed" }), null);
 });
 
 test("people-search cache is invalidated across accounts and new blocks", () => {

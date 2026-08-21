@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { View, Text, StyleSheet, ScrollView, Pressable, Linking } from "react-native";
+import { ActivityIndicator, View, Text, StyleSheet, ScrollView, Pressable, Linking } from "react-native";
 import { colors, mono, radius, roleColor, space } from "../theme";
 import { useStore } from "../store";
 import { listenUrl } from "../seed/songs";
@@ -20,6 +20,9 @@ import { formatDate } from "../domain/dates.mjs";
 import { profileMediaItems } from "../domain/profileMedia.mjs";
 import { accountTargetScope, scopedScreenValue } from "../domain/screenScope.mjs";
 import { tasteMatch } from "../domain/tasteMatch.mjs";
+
+const EMPTY_PLAYLIST_STATE = Object.freeze({ status: "loading", rows: [], error: "" });
+const EMPTY_PROFILE_STATE = Object.freeze({ status: "loading", user: null, error: "" });
 
 function Stat({ value, label, onPress }) {
   return (
@@ -82,52 +85,98 @@ function ProfileMediaTile({ item, index, onOpen }) {
 // artists, planned shows, reviews. Built to make people findable and followable.
 export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtist, onOpenVenue, onEditProfile, onPreview, onMessage, onReport, onEditPost, onOpenPhotos, onPlay, onOpenFollowList, onOpenBadges }) {
   const { session, userById, logsByUser, isFollowing, follow, unfollow, followerCount, followingCount, goingFor, userBadges, sharedShows, userPlaylists, loadUser, isBlocked, blockUser, unblockUser, userPoints, userAchievements, loadRewards } = useStore();
-  const cachedUser = userById(userId);
+  const profileScope = accountTargetScope(session?.id, `profile:${userId || ""}`);
+  const profileScopeRef = useRef(profileScope);
+  profileScopeRef.current = profileScope;
+  const [profileRevision, setProfileRevision] = useState(0);
+  const [profileState, setProfileState] = useState(() => ({ scope: profileScope, value: EMPTY_PROFILE_STATE }));
+  const profileView = scopedScreenValue(profileState, profileScope, EMPTY_PROFILE_STATE);
+  const confirmedUser = profileView.user?.id === userId ? profileView.user : null;
+  const cachedUser = confirmedUser || userById(userId);
   // The shared public-profile cache keeps only server-approved public profile
   // picks and excludes consent fields and precise home data. The signed-in
   // member can still see their complete server-authoritative session projection.
-  const user = session?.id === userId ? { ...cachedUser, ...session } : cachedUser;
+  // Other people's cached projections remain quarantined until the server either
+  // confirms access or a transient failure labels them as stale.
+  const mayRenderProfile = session?.id === userId || profileView.status === "ready" || profileView.status === "stale";
+  const user = profileView.status === "missing" || !mayRenderProfile
+    ? null
+    : session?.id === userId ? { ...cachedUser, ...session } : cachedUser;
   const playlistScope = accountTargetScope(session?.id, `profile:${userId || ""}`);
   const playlistScopeRef = useRef(playlistScope);
   playlistScopeRef.current = playlistScope;
-  const [playlistState, setPlaylistState] = useState(() => ({ scope: playlistScope, value: [] }));
-  const playlists = scopedScreenValue(playlistState, playlistScope, []);
-  const [missing, setMissing] = useState(false);
+  const [playlistRevision, setPlaylistRevision] = useState(0);
+  const [playlistState, setPlaylistState] = useState(() => ({ scope: playlistScope, value: EMPTY_PLAYLIST_STATE }));
+  const playlistView = scopedScreenValue(playlistState, playlistScope, EMPTY_PLAYLIST_STATE);
+  const playlists = playlistView.rows;
   const [playing, setPlaying] = useState(null);
   useEffect(() => {
     const requestScope = playlistScope;
     const controller = new AbortController();
-    setPlaylistState({ scope: requestScope, value: [] });
+    setPlaylistState({ scope: requestScope, value: { status: "loading", rows: [], error: "" } });
     if (!userId) return () => controller.abort();
-    userPlaylists(userId, { signal: controller.signal }).then((rows) => {
-      if (!controller.signal.aborted && playlistScopeRef.current === requestScope) {
-        setPlaylistState({ scope: requestScope, value: Array.isArray(rows) ? rows : [] });
-      }
-    });
+    userPlaylists(userId, { signal: controller.signal, throwOnError: true })
+      .then((rows) => {
+        if (!controller.signal.aborted && playlistScopeRef.current === requestScope) {
+          setPlaylistState({ scope: requestScope, value: { status: "ready", rows: Array.isArray(rows) ? rows : [], error: "" } });
+        }
+      })
+      .catch((error) => {
+        if (!controller.signal.aborted && error?.name !== "AbortError" && playlistScopeRef.current === requestScope) {
+          setPlaylistState({ scope: requestScope, value: { status: "error", rows: [], error: "Playlists could not be loaded. Check your connection and try again." } });
+        }
+      });
     return () => controller.abort();
     // userPlaylists is supplied by the store; the account+profile scope owns refreshes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [playlistScope, userId]);
+  }, [playlistScope, playlistRevision, userId]);
   useEffect(() => { if (userId) loadRewards(userId); }, [userId]);
   // Always refresh from the server: fills real follower counts, and makes profiles
   // we've never cached (a follower from a notification) open instead of blanking.
   useEffect(() => {
-    setMissing(false);
-    if (userId) loadUser(userId).then((u) => { if (!u && !userById(userId)) setMissing(true); });
+    const requestScope = profileScope;
+    const controller = new AbortController();
+    setProfileState({ scope: requestScope, value: EMPTY_PROFILE_STATE });
+    if (!userId) {
+      setProfileState({ scope: requestScope, value: { status: "missing", user: null, error: "" } });
+      return () => controller.abort();
+    }
+    loadUser(userId, { signal: controller.signal })
+      .then((outcome) => {
+        if (controller.signal.aborted || profileScopeRef.current !== requestScope) return;
+        setProfileState({
+          scope: requestScope,
+          value: {
+            status: outcome?.status || "error",
+            user: outcome?.user || null,
+            error: typeof outcome?.error === "string"
+              ? outcome.error
+              : "This profile could not be loaded. Check your connection and try again.",
+          },
+        });
+      })
+      .catch((error) => {
+        if (!controller.signal.aborted && error?.name !== "AbortError" && profileScopeRef.current === requestScope) {
+          setProfileState({ scope: requestScope, value: { status: "error", user: null, error: "This profile could not be loaded. Check your connection and try again." } });
+        }
+      });
+    return () => controller.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userId]);
+  }, [profileScope, profileRevision, userId]);
   // One shared 1s tick drives every GOING TO countdown row (no per-row timers).
   // Lives above the loading early-return so the hook order never changes; only
   // runs while a planned show actually has a parseable date.
   const planned = user ? goingFor(user.id) : [];
   if (!user) {
+    const missing = profileView.status === "missing";
+    const failed = profileView.status === "error";
     return (
       <View style={styles.wrap}>
         <View style={styles.topbar}>
           <Pressable style={styles.backBtn} onPress={onClose} hitSlop={12} accessibilityRole="button" accessibilityLabel="Go back">
             <View style={styles.backCircle}><Icon name="chevron-left" size={20} color={colors.text} /></View>
           </Pressable>
-          <Text style={styles.topTitle}>{missing ? "Not found" : "Profile"}</Text>
+          <Text style={styles.topTitle}>{missing ? "Unavailable" : "Profile"}</Text>
           <View style={{ width: 40 }} />
         </View>
         <View style={styles.missingBox}>
@@ -135,10 +184,21 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtis
             <>
               <Icon name="you" size={30} color={colors.textFaint} />
               <Text style={styles.missingTitle}>This account isn't available</Text>
-              <Text style={styles.missingSub}>It may have been deleted, or the link is broken.</Text>
+              <Text style={styles.missingSub}>It may be restricted, deleted, or no longer visible to you.</Text>
+            </>
+          ) : failed ? (
+            <>
+              <Text style={styles.missingTitle}>Profile could not be refreshed</Text>
+              <Text style={styles.missingSub}>{profileView.error}</Text>
+              <Pressable style={styles.profileRetry} onPress={() => setProfileRevision((value) => value + 1)} accessibilityRole="button" accessibilityLabel="Retry loading profile">
+                <Text style={styles.profileRetryText}>Try again</Text>
+              </Pressable>
             </>
           ) : (
-            <Text style={styles.missingSub}>Loading profile...</Text>
+            <>
+              <ActivityIndicator size="small" color={colors.amber} />
+              <Text style={styles.missingSub}>Checking profile access...</Text>
+            </>
           )}
         </View>
       </View>
@@ -194,6 +254,14 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtis
       </View>
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+        {profileView.status === "stale" && (
+          <View style={styles.staleProfile} accessibilityRole="alert" accessibilityLiveRegion="polite">
+            <Text style={styles.staleProfileText}>{profileView.error}</Text>
+            <Pressable style={styles.staleProfileRetry} onPress={() => setProfileRevision((value) => value + 1)} accessibilityRole="button" accessibilityLabel="Retry refreshing profile">
+              <Text style={styles.staleProfileRetryText}>Refresh</Text>
+            </Pressable>
+          </View>
+        )}
         {/* banner + avatar */}
         <View style={styles.banner}>
           {user.banner ? <SmartImage uri={user.banner} style={StyleSheet.absoluteFill} contain={false} accessibilityLabel={`${user.name}'s profile banner`} accessible={false} /> : <View style={styles.bannerFallback} />}
@@ -311,22 +379,34 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtis
           </View>
         )}
 
-        {/* playlists, saved listening sessions (tap to play the whole set) */}
-        {playlists.length > 0 && (
+        {/* One authoritative playlist section, loaded from the public profile API. */}
+        <Text style={styles.sectionLabel}>PLAYLISTS{playlistView.status === "ready" && playlists.length ? ` · ${playlists.length}` : ""}</Text>
+        {playlistView.status === "loading" ? (
+          <View style={styles.playlistState} accessibilityLiveRegion="polite">
+            <ActivityIndicator size="small" color={colors.amber} />
+            <Text style={styles.playlistStateText}>Loading playlists...</Text>
+          </View>
+        ) : playlistView.status === "error" ? (
+          <View style={styles.playlistState} accessibilityLiveRegion="assertive">
+            <Text style={styles.playlistError} selectable>{playlistView.error}</Text>
+            <Pressable style={styles.playlistRetry} onPress={() => setPlaylistRevision((value) => value + 1)} accessibilityRole="button" accessibilityLabel={`Retry loading ${user.name}'s playlists`}>
+              <Text style={styles.playlistRetryText}>Try again</Text>
+            </Pressable>
+          </View>
+        ) : playlists.length > 0 ? (
           <>
-            <Text style={styles.sectionLabel}>PLAYLISTS · {playlists.length}</Text>
             {playlists.map((pl) => (
-              <Pressable key={pl.id} style={styles.playlistRow} onPress={() => playPlaylist(pl)}>
+              <Pressable key={pl.id} style={styles.playlistRow} onPress={() => playPlaylist(pl)} accessibilityRole="button" accessibilityLabel={`Play playlist ${pl.name}, ${(pl.tracks || []).length} songs`}>
                 <View style={styles.playlistIcon}><Icon name="play" size={16} color={colors.amber} /></View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.playlistName} numberOfLines={1}>{pl.name}</Text>
-                  <Text style={styles.playlistSub} numberOfLines={1}>{pl.tracks.length} song{pl.tracks.length === 1 ? "" : "s"} · {pl.tracks.slice(0, 3).map((t) => t.artist).filter(Boolean).join(", ")}</Text>
+                  <Text style={styles.playlistSub} numberOfLines={1}>{(pl.tracks || []).length} song{(pl.tracks || []).length === 1 ? "" : "s"} · {(pl.tracks || []).slice(0, 3).map((t) => t.artist).filter(Boolean).join(", ")}</Text>
                 </View>
                 <Icon name="chevron-right" size={16} color={colors.textDim} />
               </Pressable>
             ))}
           </>
-        )}
+        ) : <Text style={styles.empty}>No playlists are shared here yet.</Text>}
 
         {/* Media gallery, using the same resilient descriptor pipeline as You. */}
         {gallery.length > 0 && (
@@ -412,22 +492,6 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtis
           ))}
         </View>
 
-        {/* playlists */}
-        {user.playlists?.length > 0 && <Text style={styles.sectionLabel}>PLAYLISTS</Text>}
-        {user.playlists?.map((pl) => (
-          <View key={pl.id} style={styles.playlistCard}>
-            <View style={styles.plHead}>
-              <Icon name="music" size={16} color={colors.amber} />
-              <Text style={styles.plName}>{pl.name}</Text>
-            </View>
-            {pl.tracks.map((t, i) => (
-              <Pressable key={i} style={styles.track} onPress={() => onPreview?.(t.title, t.artist)}>
-                <Text style={styles.trackTxt}>{t.title} <Text style={styles.trackArtist}>· {t.artist}</Text></Text>
-                <View style={styles.playBtn}><Icon name="play" size={11} color={colors.amber} /></View>
-              </Pressable>
-            ))}
-          </View>
-        ))}
       </ScrollView>
     </View>
   );
@@ -438,12 +502,18 @@ const styles = StyleSheet.create({
   missingBox: { flex: 1, alignItems: "center", justifyContent: "center", gap: 8, padding: 40 },
   missingTitle: { color: colors.text, fontSize: 17, fontWeight: "800", marginTop: 6 },
   missingSub: { color: colors.textDim, fontSize: 14, textAlign: "center", lineHeight: 20 },
+  profileRetry: { minHeight: 44, justifyContent: "center", marginTop: 10, paddingHorizontal: 18, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.amber },
+  profileRetryText: { color: colors.amber, fontSize: 13, fontWeight: "800" },
   topbar: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 12, paddingBottom: 8 },
   backBtn: { width: 40 },
   backCircle: { width: 36, height: 36, borderRadius: 18, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
   topTitle: { color: colors.text, fontSize: 14, fontWeight: "800" },
   profileReportBtn: { width: 40, height: 40, borderRadius: 20, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
   content: { paddingBottom: 48 },
+  staleProfile: { minHeight: 48, flexDirection: "row", alignItems: "center", gap: 10, marginHorizontal: 16, marginBottom: 10, paddingHorizontal: 12, paddingVertical: 8, borderRadius: radius.md, borderWidth: 1, borderColor: colors.amber, backgroundColor: colors.surface },
+  staleProfileText: { flex: 1, color: colors.textDim, fontSize: 12, lineHeight: 17 },
+  staleProfileRetry: { minHeight: 44, justifyContent: "center", paddingHorizontal: 12 },
+  staleProfileRetryText: { color: colors.amber, fontSize: 12, fontWeight: "800" },
   banner: { height: 120, overflow: "hidden", backgroundColor: colors.surfaceAlt },
   bannerFallback: { ...StyleSheet.absoluteFillObject, backgroundColor: colors.surfaceAlt },
   bannerShade: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(11,14,22,0.25)" },
@@ -494,6 +564,11 @@ const styles = StyleSheet.create({
   playlistIcon: { width: 40, height: 40, borderRadius: 20, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.amber, backgroundColor: colors.bgElev },
   playlistName: { color: colors.text, fontSize: 14.5, fontWeight: "800" },
   playlistSub: { color: colors.textDim, fontSize: 11.5, marginTop: 2 },
+  playlistState: { minHeight: 72, marginHorizontal: 16, padding: 12, gap: 9, alignItems: "center", justifyContent: "center", borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface },
+  playlistStateText: { color: colors.textDim, fontSize: 12.5 },
+  playlistError: { color: colors.danger, fontSize: 12.5, lineHeight: 18, textAlign: "center" },
+  playlistRetry: { minHeight: 44, justifyContent: "center", paddingHorizontal: 15, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.amber },
+  playlistRetryText: { color: colors.amber, fontSize: 12.5, fontWeight: "800" },
   stat: { flex: 1, alignItems: "center" },
   statVal: { color: colors.text, fontFamily: mono, fontSize: 20, fontWeight: "800" },
   statLabel: { color: colors.textFaint, fontSize: 9, letterSpacing: 1, marginTop: 4, fontWeight: "700" },
@@ -530,11 +605,4 @@ const styles = StyleSheet.create({
   reviewText: { color: colors.textDim, fontSize: 13, lineHeight: 19, marginTop: 8 },
   scorePill: { flexDirection: "row", alignItems: "center", gap: 4 },
   scoreTxt: { color: colors.gold, fontFamily: mono, fontSize: 14, fontWeight: "700" },
-  playlistCard: { backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 14, marginBottom: 10, marginHorizontal: 16 },
-  plHead: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10 },
-  plName: { color: colors.text, fontSize: 15, fontWeight: "700" },
-  track: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingVertical: 6 },
-  trackTxt: { color: colors.text, fontSize: 13, flex: 1 },
-  trackArtist: { color: colors.textDim },
-  playBtn: { width: 24, height: 24, borderRadius: 12, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center", paddingLeft: 2 },
 });

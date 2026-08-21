@@ -61,3 +61,9 @@ test("diagnostic routes discard query values and private identifiers", () => {
   assert.equal(safeRouteTemplate("/api/users/user-secret-123/followers"), "/api/users/:id/followers");
   assert.equal(safeRouteTemplate("/api/posts/998812/comments?token=secret"), "/api/posts/:id/comments");
 });
+
+test("resolver capacity copy does not claim an unavailable fallback played", () => {
+  const entry = ERROR_CATALOG["PIT-MEDIA-002"];
+  assert.doesNotMatch(entry.message, /kept|fallback|preview/i);
+  assert.match(entry.message, /will not guess/i);
+});

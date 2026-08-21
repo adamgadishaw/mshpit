@@ -10,7 +10,7 @@ const GENRE_COLORS = [colors.amber, colors.cool, colors.magenta, colors.good, co
 const initialsOf = (name = "") => name.split(/\s+/).filter(Boolean).slice(0, 2).map((word) => word[0]).join("").toUpperCase() || "?";
 const artistUser = (row) => ({ avatarUri: row?.photo && isHttp(row.photo) ? proxied(row.photo, 240) : row?.photo || null, initials: initialsOf(row?.name), avatarColor: colors.amber });
 
-function GenreArtist({ row, index, onOpen, onPlay }) {
+function GenreArtist({ row, index, onOpen, onPlay, onAdd }) {
   return (
     <View style={[styles.genreArtistRow, index > 0 && styles.genreArtistBorder]}>
       <Text style={styles.genreRank}>{index + 1}</Text>
@@ -19,12 +19,17 @@ function GenreArtist({ row, index, onOpen, onPlay }) {
         <Text style={styles.genreArtistName} numberOfLines={1}>{row.name}</Text>
         <Text style={styles.genreArtistTrack} numberOfLines={1}>{row.topTrack?.title || row.genre || "Artist"}</Text>
       </Pressable>
-      {!!row.topTrack && <Pressable style={styles.playButton} onPress={() => onPlay?.(row)} accessibilityRole="button" accessibilityLabel={`Play ${row.topTrack.title} by ${row.name}`} hitSlop={6}><Icon name="play" size={12} color={colors.amber} /></Pressable>}
+      {!!row.topTrack && (
+        <View style={styles.trackActions}>
+          <Pressable style={styles.trackButton} onPress={() => onAdd?.(row)} accessibilityRole="button" accessibilityLabel={`Add ${row.topTrack.title} by ${row.name} to a playlist`} hitSlop={4}><Icon name="plus" size={14} color={colors.textDim} /></Pressable>
+          <Pressable style={[styles.trackButton, styles.playButton]} onPress={() => onPlay?.(row)} accessibilityRole="button" accessibilityLabel={`Play ${row.topTrack.title} by ${row.name}`} hitSlop={4}><Icon name="play" size={12} color={colors.amber} /></Pressable>
+        </View>
+      )}
     </View>
   );
 }
 
-function DiscoverGenres({ genres, selected, onSelect, total, rows, status, region, onOpenArtist, onPlay, onRetry }) {
+function DiscoverGenres({ genres, selected, onSelect, total, rows, status, region, onOpenArtist, onPlay, onAdd, onRetry }) {
   const selectedData = genres.find((item) => item.genre === selected);
   const selectableGenres = genres.filter((item) => item.genre !== "Other");
   return (
@@ -71,7 +76,7 @@ function DiscoverGenres({ genres, selected, onSelect, total, rows, status, regio
               <Pressable style={styles.retryButton} onPress={onRetry} accessibilityRole="button" accessibilityLabel={`Retry loading ${selected}`}><Text style={styles.retryText}>Try again</Text></Pressable>
             </View>
           ) : rows.length ? (
-            rows.slice(0, 8).map((row, index) => <GenreArtist key={row.name} row={row} index={index} onOpen={onOpenArtist} onPlay={onPlay} />)
+            rows.slice(0, 8).map((row, index) => <GenreArtist key={row.name} row={row} index={index} onOpen={onOpenArtist} onPlay={onPlay} onAdd={onAdd} />)
           ) : (
             <Text style={styles.genreEmpty}>No ranked artists are available for this genre and region yet.</Text>
           )}
@@ -108,5 +113,7 @@ const styles = StyleSheet.create({
   genreArtistMain: { flex: 1, minWidth: 0, minHeight: 44, justifyContent: "center" },
   genreArtistName: { color: colors.text, fontFamily: font, fontSize: 13.5, fontWeight: "800" },
   genreArtistTrack: { color: colors.textDim, fontFamily: font, fontSize: 11, paddingTop: 2 },
-  playButton: { width: 44, height: 44, borderRadius: 22, borderWidth: 1, borderColor: colors.amber, alignItems: "center", justifyContent: "center", paddingLeft: 2, flexShrink: 0 },
+  trackActions: { flexDirection: "row", alignItems: "center", gap: 5, flexShrink: 0 },
+  trackButton: { width: 44, height: 44, borderRadius: 22, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center", flexShrink: 0 },
+  playButton: { borderColor: colors.amber, paddingLeft: 2 },
 });

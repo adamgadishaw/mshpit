@@ -31,6 +31,30 @@ const TRANSIENT = new Set([
   "network",
 ]);
 
+const LOOKUP_NOTICES = Object.freeze({
+  search_login_required: Object.freeze({
+    kind: "sign_in",
+    message: "Sign in for full-track YouTube lookup.",
+  }),
+  search_verification_required: Object.freeze({
+    kind: "verify_email",
+    message: "Verify your email for full-track YouTube lookup.",
+  }),
+  search_actor_budget_exhausted: Object.freeze({
+    kind: "account_limit",
+    message: "Your YouTube search allowance is used for now. Try again later.",
+  }),
+  unconfigured: Object.freeze({
+    kind: "configuration",
+    message: "Full-track YouTube lookup is unavailable right now.",
+  }),
+});
+
+const TEMPORARY_LOOKUP_NOTICE = Object.freeze({
+  kind: "temporary",
+  message: "YouTube lookup is temporarily busy. Try again shortly.",
+});
+
 export const RESOLVE_ATTEMPTS = 3;
 // Backoff between attempts within a single play. Deliberately short: someone is
 // waiting to hear a song, and the preview covers them meanwhile.
@@ -45,6 +69,25 @@ export const CACHE_MS = {
   definitive: 10 * 60 * 1000,
   transient: 15 * 1000,
 };
+
+// Empty playback results can mean either "this recording was not found" or
+// "the listener/provider cannot perform a cold search right now". Keep that
+// policy distinction pure so PlayerBar can show an actionable state without
+// misreporting an access/capacity decision as a broken song.
+export function playerYouTubeLookupNotice(status) {
+  const normalized = typeof status === "string" ? status.trim() : "";
+  if (!normalized) return null;
+  return LOOKUP_NOTICES[normalized] || (TRANSIENT.has(normalized) ? TEMPORARY_LOOKUP_NOTICE : null);
+}
+
+// A ref-backed cache does not trigger React renders by itself. PlayerBar reads
+// this immediately when its resolver promise settles. Never expose an expired or
+// malformed entry, and let the store's account-scoped cache key own isolation.
+export function activeYouTubeLookupStatus(entry, now = Date.now()) {
+  if (!entry || !Number.isFinite(entry.expiresAt) || entry.expiresAt <= now) return null;
+  const status = typeof entry.status === "string" ? entry.status.trim() : "";
+  return status || null;
+}
 
 /**
  * Classify one lookup result.

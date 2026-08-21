@@ -63,6 +63,7 @@ export default function DiscoverScreen({
   onOpenVenues,
   onOpenPhotos,
   onPlay,
+  onAddToPlaylist,
   onOpenProfile,
 }) {
   const {
@@ -110,6 +111,7 @@ export default function DiscoverScreen({
   const openProfile = useLatestCallback(onOpenProfile);
   const openPhotos = useLatestCallback(onOpenPhotos);
   const play = useLatestCallback(onPlay);
+  const addToPlaylist = useLatestCallback(onAddToPlaylist);
 
   const localStatsRef = useRef(null);
   if (!localStatsRef.current) localStatsRef.current = discoverStats();
@@ -248,6 +250,10 @@ export default function DiscoverScreen({
     const track = discoverPlaybackTrack(row);
     if (track) play(track);
   }, [play]);
+  const addArtistRow = useCallback((row) => {
+    const track = discoverPlaybackTrack(row);
+    if (track) addToPlaylist(track);
+  }, [addToPlaylist]);
   const retryGenre = useCallback(() => requestGenre({ force: true }), [requestGenre]);
 
   const overviewState = discoverSectionState({ status: overviewStatus, rows: overview.chart.rows });
@@ -336,12 +342,12 @@ export default function DiscoverScreen({
         <OverviewState state={overviewState} region={region} onRetry={() => requestOverview({ force: true })} onWorldwide={() => pickRegion("Worldwide")} />
       ) : (
         <>
-          <DiscoverChart rows={overview.chart.rows} source={overview.chart.source} info={overview.chart} query={query} onQuery={setQuery} onOpenArtist={openArtist} onPlay={playArtistRow} compact={compact} narrow={veryCompact} />
-          <DiscoverGenres genres={overview.genres} selected={selectedGenre} onSelect={setSelectedGenre} total={overview.genreTotal} rows={genreRows} status={genreStatus} region={region} onOpenArtist={openArtist} onPlay={playArtistRow} onRetry={retryGenre} />
+          <DiscoverChart rows={overview.chart.rows} source={overview.chart.source} info={overview.chart} query={query} onQuery={setQuery} onOpenArtist={openArtist} onPlay={playArtistRow} onAdd={addArtistRow} compact={compact} narrow={veryCompact} />
+          <DiscoverGenres genres={overview.genres} selected={selectedGenre} onSelect={setSelectedGenre} total={overview.genreTotal} rows={genreRows} status={genreStatus} region={region} onOpenArtist={openArtist} onPlay={playArtistRow} onAdd={addArtistRow} onRetry={retryGenre} />
         </>
       )}
 
-      <FriendsListening rows={friendRows} loading={friendsLoading} error={friendsError} signedIn={!!session} onRetry={requestFriends} onOpenProfile={openProfile} onPlay={play} />
+      <FriendsListening rows={friendRows} loading={friendsLoading} error={friendsError} signedIn={!!session} onRetry={requestFriends} onOpenProfile={openProfile} onPlay={play} onAdd={addToPlaylist} />
       <DiscoverPhotos photos={photos} photoUris={photoUris} compact={compact} width={width} onOpenPhotos={openPhotos} />
     </ScrollView>
   );

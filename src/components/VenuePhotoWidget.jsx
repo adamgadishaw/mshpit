@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { View, Text, StyleSheet, Image, Pressable, Linking, Platform, ActivityIndicator } from "react-native";
+import { View, Text, StyleSheet, Image, Pressable, Linking, Platform, ActivityIndicator, AccessibilityInfo } from "react-native";
 import Svg, { Defs, LinearGradient, Stop, Rect } from "react-native-svg";
 import { colors, mono, radius } from "../theme";
 import Icon from "../components/Icon";
@@ -20,7 +20,7 @@ const GELS = [
 function Slide({ photo, idx, viaProxy, onError }) {
   if (photo?.uri) {
     const src = viaProxy && isHttp(photo.uri) ? proxied(photo.uri) : photo.uri;
-    return <Image source={{ uri: src }} style={StyleSheet.absoluteFill} resizeMode="cover" onError={onError} />;
+    return <Image accessible={false} source={{ uri: src }} style={StyleSheet.absoluteFill} resizeMode="cover" onError={onError} />;
   }
   const [a, b] = GELS[idx % GELS.length];
   return (
@@ -44,60 +44,113 @@ export default function VenuePhotoWidget({ photos = [], venueName, city, coord, 
   const real = photos.filter((p) => p?.uri && attempt[p.uri] !== "dead").slice(0, 5);
   const slides = real.length ? real : [{ uri: null }];
   const [i, setI] = useState(0);
+  const [paused, setPaused] = useState(false);
+  const [reduceMotion, setReduceMotion] = useState(false);
+  const [directionError, setDirectionError] = useState("");
   const failCur = (uri) => uri && setAttempt((a) => ({ ...a, [uri]: a[uri] === "proxy" ? "dead" : "proxy" }));
 
   useEffect(() => {
-    if (slides.length < 2) return;
+    let mounted = true;
+    AccessibilityInfo.isReduceMotionEnabled().then((enabled) => { if (mounted) setReduceMotion(enabled); }).catch(() => {});
+    const subscription = AccessibilityInfo.addEventListener?.("reduceMotionChanged", setReduceMotion);
+    return () => {
+      mounted = false;
+      subscription?.remove?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    setI((current) => current % slides.length);
+  }, [slides.length]);
+
+  useEffect(() => {
+    if (slides.length < 2 || paused || reduceMotion) return undefined;
     const id = setInterval(() => setI((x) => (x + 1) % slides.length), 3600);
     return () => clearInterval(id);
-  }, [slides.length]);
+  }, [paused, reduceMotion, slides.length]);
 
   const realCount = real.length;
   const cur = i % slides.length;
+  const move = (delta) => {
+    setPaused(true);
+    setI((current) => (current + delta + slides.length) % slides.length);
+  };
+  const activatePhoto = () => {
+    if (error && !realCount) onRetry?.();
+    else if (onPress) onPress();
+    else if (slides.length > 1) move(1);
+  };
   const emptyMessage = loading
     ? "Loading venue photos..."
     : error
       ? "Photos unavailable - tap to retry"
       : "No verified venue photos yet";
+  const photoInteractive = !!(error && !realCount ? onRetry : onPress || slides.length > 1);
 
   return (
     <View>
-      <Pressable
-        style={styles.frame}
-        onPress={() => (error && !realCount ? onRetry?.() : onPress ? onPress() : setI((x) => (x + 1) % slides.length))}
-        accessibilityRole="button"
-        accessibilityLabel={error && !realCount ? "Retry loading venue photos" : `Photos of ${venueName}`}
-      >
-        <Slide photo={slides[cur]} idx={cur} viaProxy={attempt[slides[cur]?.uri] === "proxy"} onError={() => failCur(slides[cur]?.uri)} />
-        {/* legibility scrim */}
-        <View style={styles.scrim} />
-        {/* title card */}
-        <View style={styles.title}>
-          <Text style={styles.venue} numberOfLines={1}>{venueName}</Text>
-          {!!city && <Text style={styles.city}>{city}</Text>}
-        </View>
-        {/* dots */}
-        <View style={styles.dots}>
-          {slides.length > 1 && slides.map((_, d) => (
-            <View key={d} style={[styles.dot, d === cur && styles.dotOn]} />
-          ))}
-        </View>
-        {/* attribution for licensed (non-fan) photos */}
-        {slides[cur]?.uri && slides[cur]?.source && slides[cur].source !== "fan" && !!slides[cur].by && (
-          <View style={styles.credit}><Text style={styles.creditTxt} numberOfLines={1}>{slides[cur].by}</Text></View>
-        )}
+      <View style={styles.frame}>
+        <Pressable
+          style={StyleSheet.absoluteFill}
+          onPress={activatePhoto}
+          disabled={!photoInteractive}
+          accessibilityRole={photoInteractive ? "button" : "image"}
+          accessibilityLabel={error && !realCount ? "Retry loading venue photos" : `Photos of ${venueName}, photo ${cur + 1} of ${slides.length}`}
+          accessibilityHint={photoInteractive && slides.length > 1 && !onPress ? "Shows the next photo" : undefined}
+          accessibilityState={{ disabled: !photoInteractive }}
+          accessibilityValue={slides.length > 1 ? { text: `${cur + 1} of ${slides.length}` } : undefined}
+        >
+          <Slide photo={slides[cur]} idx={cur} viaProxy={attempt[slides[cur]?.uri] === "proxy"} onError={() => failCur(slides[cur]?.uri)} />
+          <View style={styles.scrim} />
+          <View style={styles.title}>
+            <Text style={styles.venue} numberOfLines={1}>{venueName}</Text>
+            {!!city && <Text style={styles.city}>{city}</Text>}
+          </View>
+          <View style={styles.dots} accessible={false}>
+            {slides.length > 1 && slides.map((_, d) => (
+              <View key={d} style={[styles.dot, d === cur && styles.dotOn]} />
+            ))}
+          </View>
+          {slides[cur]?.uri && slides[cur]?.source && slides[cur].source !== "fan" && !!slides[cur].by && (
+            <View style={styles.credit}><Text style={styles.creditTxt} numberOfLines={1}>{slides[cur].by}</Text></View>
+          )}
+        </Pressable>
         {!realCount && (
-          <View style={styles.photoStatus} pointerEvents="none">
+          <View style={styles.photoStatus} pointerEvents="none" accessibilityLiveRegion="polite" role="status">
             {loading && <ActivityIndicator size="small" color={colors.amber} />}
             <Text style={styles.photoStatusText}>{emptyMessage}</Text>
           </View>
         )}
-      </Pressable>
+      </View>
+
+      {slides.length > 1 && (
+        <View style={styles.carouselControls} accessibilityLabel="Venue photo controls">
+          <Pressable style={styles.carouselButton} onPress={() => move(-1)} accessibilityRole="button" accessibilityLabel="Previous venue photo">
+            <Icon name="chevron-left" size={17} color={colors.text} />
+          </Pressable>
+          <Pressable
+            style={[styles.autoplayButton, reduceMotion && styles.controlDisabled]}
+            onPress={() => setPaused((value) => !value)}
+            disabled={reduceMotion}
+            accessibilityRole="button"
+            accessibilityLabel={reduceMotion ? "Auto-play disabled by Reduce Motion" : paused ? "Play venue photo slideshow" : "Pause venue photo slideshow"}
+            accessibilityState={{ disabled: reduceMotion }}
+          >
+            <Text style={styles.autoplayText}>{reduceMotion ? "AUTO-PLAY OFF" : paused ? "PLAY" : "PAUSE"}</Text>
+          </Pressable>
+          <Pressable style={styles.carouselButton} onPress={() => move(1)} accessibilityRole="button" accessibilityLabel="Next venue photo">
+            <Icon name="chevron-right" size={17} color={colors.text} />
+          </Pressable>
+        </View>
+      )}
 
       {coord && coord.lat != null && (
         <Pressable
           style={styles.dir}
-          onPress={() => { void Linking.openURL(mapsDir(coord.lat, coord.lng)).catch(() => {}); }}
+          onPress={() => {
+            setDirectionError("");
+            void Linking.openURL(mapsDir(coord.lat, coord.lng)).catch(() => setDirectionError("Directions could not be opened on this device."));
+          }}
           accessibilityRole="link"
           accessibilityLabel={`Get directions to ${venueName}`}
         >
@@ -106,6 +159,7 @@ export default function VenuePhotoWidget({ photos = [], venueName, city, coord, 
           <Icon name="external" size={14} color={colors.textDim} />
         </Pressable>
       )}
+      {!!directionError && <Text style={styles.directionError} accessibilityRole="alert" accessibilityLiveRegion="assertive">{directionError}</Text>}
     </View>
   );
 }
@@ -129,8 +183,14 @@ const styles = StyleSheet.create({
   dotOn: { backgroundColor: colors.amber, width: 16 },
   photoStatus: { position: "absolute", top: 12, left: 12, maxWidth: "75%", flexDirection: "row", alignItems: "center", gap: 7, backgroundColor: "rgba(5,6,10,0.72)", borderRadius: radius.pill, paddingHorizontal: 10, paddingVertical: 6 },
   photoStatusText: { color: "rgba(255,255,255,0.9)", fontFamily: mono, fontSize: 10, fontWeight: "700" },
+  carouselControls: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, marginTop: 10 },
+  carouselButton: { width: 44, height: 44, borderRadius: 22, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface, alignItems: "center", justifyContent: "center" },
+  autoplayButton: { minWidth: 92, height: 44, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface, alignItems: "center", justifyContent: "center", paddingHorizontal: 14 },
+  autoplayText: { color: colors.text, fontFamily: mono, fontSize: 10, fontWeight: "800", letterSpacing: 0.7 },
+  controlDisabled: { opacity: 0.62 },
   placeholderTag: { position: "absolute", top: 12, left: 12, backgroundColor: "rgba(0,0,0,0.45)", borderRadius: 999, paddingHorizontal: 10, paddingVertical: 4 },
   placeholderTxt: { color: "rgba(255,255,255,0.85)", fontSize: 10, fontFamily: mono, letterSpacing: 0.5 },
   dir: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, marginTop: 10, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, paddingVertical: 12 },
   dirTxt: { color: colors.text, fontSize: 14, fontWeight: "700" },
+  directionError: { color: colors.danger, fontSize: 12.5, lineHeight: 18, marginTop: 8, textAlign: "center" },
 });

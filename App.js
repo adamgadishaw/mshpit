@@ -18,6 +18,7 @@ const DiscoverScreen = lazyWithRetry(() => import("./src/screens/DiscoverScreen"
 const ShowScreen = lazyWithRetry(() => import("./src/screens/ShowScreen"), "ShowScreen");
 const LoungeScreen = lazyWithRetry(() => import("./src/screens/LoungeScreen"), "LoungeScreen");
 const InboxScreen = lazyWithRetry(() => import("./src/screens/InboxScreen"), "InboxScreen");
+const ListeningHistoryScreen = lazyWithRetry(() => import("./src/screens/ListeningHistoryScreen"), "ListeningHistoryScreen");
 const NotificationsScreen = lazyWithRetry(() => import("./src/screens/NotificationsScreen"), "NotificationsScreen");
 const CalendarScreen = lazyWithRetry(() => import("./src/screens/CalendarScreen"), "CalendarScreen");
 const ClipsScreen = lazyWithRetry(() => import("./src/screens/ClipsScreen"), "ClipsScreen");
@@ -94,7 +95,7 @@ const ANALYTICS_OVERLAY_KEYS = [
   ["photos", "media_viewer"], ["addToPlaylist", "playlist_picker"], ["followList", "follow_list"],
   ["auth", "auth"], ["pickArtists", "pick_artists"], ["editingPost", "post_edit"], ["logging", "post_create"],
   ["reporting", "report"], ["editProfile", "profile_edit"], ["venueReview", "venue_review"], ["thread", "message_thread"],
-  ["inbox", "inbox"], ["notifications", "activity"], ["calendar", "calendar"], ["clips", "clips"],
+  ["inbox", "inbox"], ["listeningHistory", "listening_history"], ["notifications", "activity"], ["calendar", "calendar"], ["clips", "clips"],
   ["profileId", "profile"], ["fanClub", "fan_club"], ["editArtist", "artist_edit"], ["artistName", "artist"],
   ["venueName", "venue"], ["nearby", "nearby"], ["venues", "venues"], ["fanClubs", "fan_clubs"],
   ["settings", "settings"], ["deleteAccount", "account_delete"], ["diagnostics", "diagnostics"], ["privacy", "privacy"],
@@ -763,6 +764,7 @@ function Root() {
   else if (nav.venueReview) overlay = <VenueReviewScreen venueName={nav.venueReview} onClose={back} />;
   else if (nav.thread) overlay = <ThreadScreen otherId={nav.thread} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} onReport={openReport} />;
   else if (nav.inbox) overlay = <InboxScreen onClose={back} onOpenThread={openThread} />;
+  else if (nav.listeningHistory) overlay = <ListeningHistoryScreen onClose={back} onPlay={openPlayer} />;
   else if (nav.notifications) overlay = <NotificationsScreen onClose={back} onOpenProfile={openProfile} onOpenThread={openThread} onOpen={openShow} onOpenPost={openPost} />;
   else if (nav.calendar) overlay = <CalendarScreen onClose={back} onOpen={openShow} onOpenArtist={openArtist} />;
   else if (ENABLE_CLIPS && nav.clips) overlay = <ClipsScreen onClose={back} onOpenPost={openPost} onOpenProfile={openProfile} onOpenArtist={openArtist} onRequireAuth={() => go({ auth: true })} />;
@@ -861,7 +863,7 @@ function Root() {
                 />
               )}
               {tab === "search" && <SearchScreen onOpen={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenProfile={openProfile} onPlay={openPlayer} onAddToPlaylist={openAddToPlaylist} />}
-              {tab === "discover" && <DiscoverScreen onOpenTopRated={() => go({ topRated: true })} onOpen={openShow} onOpenArtist={openArtist} onOpenNearby={() => go({ nearby: true })} onOpenFanClubs={() => go({ fanClubs: true })} onOpenVenues={() => go({ venues: true })} onOpenPhotos={openPhotos} onPlay={openPlayer} onOpenProfile={openProfile} />}
+              {tab === "discover" && <DiscoverScreen onOpenTopRated={() => go({ topRated: true })} onOpen={openShow} onOpenArtist={openArtist} onOpenNearby={() => go({ nearby: true })} onOpenFanClubs={() => go({ fanClubs: true })} onOpenVenues={() => go({ venues: true })} onOpenPhotos={openPhotos} onPlay={openPlayer} onAddToPlaylist={openAddToPlaylist} onOpenProfile={openProfile} />}
               {tab === "you" && (
                 <YouScreen
                   feed={feed}
@@ -876,6 +878,7 @@ function Root() {
                   onActivity={openNotifications}
                   onInbox={openInbox}
                   onCalendar={() => go({ calendar: true })}
+                  onListeningHistory={() => go({ listeningHistory: true })}
                   onOpenNearby={() => go({ nearby: true })}
                   homeCity={session?.home?.city}
                   onPlay={openPlayer}

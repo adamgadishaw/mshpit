@@ -6,7 +6,7 @@ import test from "node:test";
 
 process.env.PIT_DATA_DIR = mkdtempSync(join(tmpdir(), "pit-warm-"));
 
-const { db } = await import("./db.js");
+const { db, q } = await import("./db.js");
 const {
   warmYouTubeCache,
   COST_FIRST_TRACK,
@@ -15,7 +15,13 @@ const {
   isCacheWarmSchedulerEnabled,
   runCacheWarmJobSafely,
 } = await import("./cacheWarmer.js");
-const { collectTourProviderResults, isTourDateSchedulerEnabled, runTourDateJobSafely, shouldRefreshTourDates } = await import("./tourdates.js");
+const {
+  collectTourProviderResults,
+  isTourDateSchedulerEnabled,
+  reconcileStaleProviderTourDates,
+  runTourDateJobSafely,
+  shouldRefreshTourDates,
+} = await import("./tourdates.js");
 const { youtubeCacheKey } = await import("./musicProviders.js");
 
 // Seed a few artists with top tracks, most-popular first, and clear the resume
@@ -99,6 +105,36 @@ test("tour refresh can distinguish an empty success from total provider failure"
     async () => { throw new Error("second down"); },
   ]);
   assert.deepEqual(failed, { rows: [], successes: 0, failures: 2 });
+});
+
+test("tour reconciliation is isolated by provider and never deletes owner rows", () => {
+  const ownerId = "u_tour_reconcile_owner";
+  if (!q.userById.get(ownerId)) {
+    q.insertUser.run(ownerId, "tour-reconcile@example.com", "Tour Owner", "tourreconcile", "hash",
+      "artist", null, null, null, "TR", "#111111", Date.now());
+  }
+  const insert = db.prepare(`INSERT OR REPLACE INTO tour_dates
+    (id,artist,source,updated_at,owner_id) VALUES (?,?,?,?,?)`);
+  insert.run("tour_reconcile_tm_stale", "A", "ticketmaster", 1000, null);
+  insert.run("tour_reconcile_bit_stale", "B", "bandsintown", 1000, null);
+  insert.run("tour_reconcile_owner_stale", "C", "ticketmaster", 1000, ownerId);
+  insert.run("tour_reconcile_tm_fresh", "D", "ticketmaster", 3000, null);
+  insert.run("tour_reconcile_unknown", "E", "legacy-import", 1000, null);
+
+  assert.equal(reconcileStaleProviderTourDates(db, {
+    successfulSources: ["ticketmaster"], staleBefore: 2000,
+  }), 1);
+  assert.equal(db.prepare("SELECT 1 FROM tour_dates WHERE id='tour_reconcile_tm_stale'").get(), undefined);
+  assert.ok(db.prepare("SELECT 1 FROM tour_dates WHERE id='tour_reconcile_bit_stale'").get(),
+    "one provider's success cannot erase another provider's cache");
+  assert.ok(db.prepare("SELECT 1 FROM tour_dates WHERE id='tour_reconcile_owner_stale'").get(),
+    "provider reconciliation cannot erase member-authored dates");
+  assert.ok(db.prepare("SELECT 1 FROM tour_dates WHERE id='tour_reconcile_tm_fresh'").get());
+  assert.ok(db.prepare("SELECT 1 FROM tour_dates WHERE id='tour_reconcile_unknown'").get());
+
+  assert.equal(reconcileStaleProviderTourDates(db, {
+    successfulSources: ["bandsintown"], staleBefore: 2000,
+  }), 1);
 });
 
 test("a dry run estimates cost and coverage without resolving or recording anything", async () => {

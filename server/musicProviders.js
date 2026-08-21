@@ -532,6 +532,17 @@ export function playbackUrlExpiry(url, now = Date.now()) {
   try {
     const parsed = new URL(raw);
     seconds = Number(parsed.searchParams.get("exp")) || 0;
+    // Deezer currently nests the expiry inside its signed `hdnea` token rather
+    // than exposing it as a top-level query parameter:
+    //   ?hdnea=exp=123~acl=/api/...*~data=...~hmac=...
+    // URLSearchParams decodes the token for us, so read only a bounded numeric
+    // `exp` field from that value. Without this, every fresh preview appeared
+    // expired immediately and neither the server nor client could reuse it.
+    if (!seconds) {
+      const signedToken = parsed.searchParams.get("hdnea") || "";
+      const signedExpiry = signedToken.match(/(?:^|[~&])exp=(\d{10,13})(?:[~&]|$)/i);
+      seconds = Number(signedExpiry?.[1]) || 0;
+    }
   } catch {}
   if (!seconds) {
     const match = raw.match(/(?:^|[?&~])exp(?:=|%3D)(\d{10,13})/i);

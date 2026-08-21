@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { classifyResolve, CACHE_MS, backoffFor, RESOLVE_ATTEMPTS } from "./playback.mjs";
+import {
+  activeYouTubeLookupStatus,
+  classifyResolve,
+  CACHE_MS,
+  backoffFor,
+  playerYouTubeLookupNotice,
+  RESOLVE_ATTEMPTS,
+} from "./playback.mjs";
 
 test("a resolved video is trusted and cached for a long time", () => {
   const r = classifyResolve({ videoId: "abc123", status: "artist_catalogue" });
@@ -81,4 +88,30 @@ test("missing or empty input never claims a video", () => {
   for (const outcome of [{}, { videoId: null }, { videoId: "" }, undefined]) {
     assert.equal(classifyResolve(outcome).videoId, null);
   }
+});
+
+test("access and capacity outcomes get truthful player notices", () => {
+  assert.deepEqual(playerYouTubeLookupNotice("search_login_required"), {
+    kind: "sign_in",
+    message: "Sign in for full-track YouTube lookup.",
+  });
+  assert.equal(playerYouTubeLookupNotice("search_verification_required")?.kind, "verify_email");
+  assert.equal(playerYouTubeLookupNotice("search_actor_budget_exhausted")?.kind, "account_limit");
+  assert.equal(playerYouTubeLookupNotice("search_budget_exhausted")?.kind, "temporary");
+  assert.equal(playerYouTubeLookupNotice("provider_paused")?.kind, "temporary");
+  assert.equal(playerYouTubeLookupNotice("unconfigured")?.kind, "configuration");
+});
+
+test("real misses and successful resolver states remain ordinary playback outcomes", () => {
+  for (const status of ["not_found", "confirmed_unavailable", "cached", "resolved", "artist_channel", "unknown_future_status", "", null]) {
+    assert.equal(playerYouTubeLookupNotice(status), null, `${status || "empty"} must not suppress a real unavailable-track report`);
+  }
+});
+
+test("only a fresh well-formed cached lookup status is exposed", () => {
+  assert.equal(activeYouTubeLookupStatus({ status: " search_login_required ", expiresAt: 2000 }, 1000), "search_login_required");
+  assert.equal(activeYouTubeLookupStatus({ status: "not_found", expiresAt: 1000 }, 1000), null);
+  assert.equal(activeYouTubeLookupStatus({ status: "not_found", expiresAt: Number.NaN }, 1000), null);
+  assert.equal(activeYouTubeLookupStatus({ status: {}, expiresAt: 2000 }, 1000), null);
+  assert.equal(activeYouTubeLookupStatus(null, 1000), null);
 });

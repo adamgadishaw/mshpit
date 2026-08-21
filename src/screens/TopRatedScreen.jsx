@@ -13,10 +13,15 @@ export default function TopRatedScreen({ onClose, onOpen }) {
   // Resolve the typed location to a known city (best prefix match).
   const resolved = useMemo(() => {
     const q = loc.trim().toLowerCase();
-    return cityNames.find((c) => c.toLowerCase().startsWith(q)) || cityNames.find((c) => c.toLowerCase().includes(q)) || "San Francisco";
+    if (!q) return null;
+    const exact = cityNames.find((city) => city.toLowerCase() === q);
+    if (exact) return exact;
+    const prefixMatches = cityNames.filter((city) => city.toLowerCase().startsWith(q));
+    return prefixMatches.length === 1 ? prefixMatches[0] : null;
   }, [loc]);
 
-  const ranked = useMemo(() => rankShows(cities[resolved]), [resolved]);
+  const ranked = useMemo(() => (resolved ? rankShows(cities[resolved]) : []), [resolved]);
+  const invalidCity = !!loc.trim() && !resolved;
 
   return (
     <View style={styles.wrap}>
@@ -33,20 +38,30 @@ export default function TopRatedScreen({ onClose, onOpen }) {
             onChangeText={setLoc}
             placeholder="Enter a city"
             placeholderTextColor={colors.textFaint}
+            autoCapitalize="words"
+            autoCorrect={false}
+            accessibilityLabel="City"
+            accessibilityHint="Enter or choose one of the listed cities"
+            aria-invalid={invalidCity}
           />
         </View>
-        <View style={styles.chips}>
+        <View style={styles.chips} accessibilityRole="radiogroup" accessibilityLabel="Available cities">
           {cityNames.map((c) => (
-            <Pressable key={c} style={[styles.chip, resolved === c && styles.chipOn]} onPress={() => setLoc(c)}>
+            <Pressable key={c} style={[styles.chip, resolved === c && styles.chipOn]} onPress={() => setLoc(c)} accessibilityRole="radio" accessibilityState={{ checked: resolved === c }}>
               <Text style={[styles.chipTxt, resolved === c && styles.chipTxtOn]}>{c}</Text>
             </Pressable>
           ))}
         </View>
 
+        {invalidCity && <Text style={styles.cityError} accessibilityRole="alert" accessibilityLiveRegion="polite">Choose a listed city. Pit will not substitute a different location.</Text>}
+        {!loc.trim() && <Text style={styles.cityHint} accessibilityLiveRegion="polite">Enter or choose a city to see its rankings.</Text>}
+
         {ranked.map((s, i) => (
           <Pressable
             key={s.id}
             style={styles.row}
+            accessibilityRole="button"
+            accessibilityLabel={`Number ${i + 1}, ${s.artist} at ${s.venue}, ${s.rating.toFixed(1)} stars from ${s.reviews} logs`}
             onPress={() =>
               onOpen?.({
                 id: s.id,
@@ -80,10 +95,12 @@ export default function TopRatedScreen({ onClose, onOpen }) {
           </Pressable>
         ))}
 
-        <Text style={styles.note}>
-          Ranked by rating quality (weighted by how many people logged it, so a 5.0 from a handful
-          doesn&apos;t beat a 4.7 from hundreds) combined with distance from {resolved}.
-        </Text>
+        {resolved && (
+          <Text style={styles.note}>
+            Ranked by rating quality (weighted by how many people logged it, so a 5.0 from a handful
+            doesn&apos;t beat a 4.7 from hundreds) combined with distance from {resolved}.
+          </Text>
+        )}
       </ScrollView>
     </View>
   );
@@ -111,10 +128,12 @@ const styles = StyleSheet.create({
   },
   locInput: { flex: 1, color: colors.text, fontSize: 15, paddingVertical: 12 },
   chips: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 12, marginBottom: 8 },
-  chip: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
+  chip: { minHeight: 44, justifyContent: "center", paddingHorizontal: 12, paddingVertical: 7, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
   chipOn: { borderColor: colors.amber, backgroundColor: colors.bgElev },
   chipTxt: { color: colors.textDim, fontSize: 12 },
   chipTxtOn: { color: colors.amber, fontWeight: "700" },
+  cityError: { color: colors.danger, fontSize: 12.5, lineHeight: 18, marginTop: 6 },
+  cityHint: { color: colors.textDim, fontSize: 12.5, lineHeight: 18, marginTop: 6 },
 
   row: {
     flexDirection: "row",

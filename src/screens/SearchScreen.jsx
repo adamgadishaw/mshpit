@@ -9,6 +9,8 @@ import Avatar from "../components/Avatar";
 import Badge from "../components/Badge";
 import { formatDate } from "../domain/dates.mjs";
 import {
+  recentSongSearchEntry,
+  recentSongTrack,
   unifiedPeopleSearchScope,
   unifiedSearchRequestOptions,
   unifiedSearchState,
@@ -279,6 +281,13 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
     if (e.type === "artist") openArtist(e.label);
     else if (e.type === "venue") openVenue(e.label);
     else if (e.type === "person" && e.id) openPerson({ id: e.id, name: e.label, handle: (e.sub || "").replace(/^@/, "") });
+    else if (e.type === "song") {
+      const recentTrack = recentSongTrack(e);
+      if (recentTrack) {
+        addRecentSearch?.(recentSongSearchEntry(recentTrack));
+        onPlay?.(recentTrack);
+      } else setQ(e.label);
+    }
     else setQ(e.label);
   };
   const recentIcon = (type) => (type === "venue" ? "pin" : type === "person" ? "you" : type === "query" ? "search" : "music");
@@ -429,12 +438,15 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
             <SongRow
               key={`${song.id || song.title}|${song.artist}`}
               song={song}
-              onAdd={onAddToPlaylist ? () => onAddToPlaylist({ kind: "track", title: song.title, artist: song.artist, art: song.art || null, id: song.id || null, duration: song.duration || null }) : null}
+              onAdd={onAddToPlaylist ? () => {
+                const selected = recentSongTrack(song);
+                if (selected) onAddToPlaylist(selected);
+              } : null}
               onPress={() => {
-                addRecentSearch?.({ type: "song", label: `${song.title} - ${song.artist}` });
-                // Artist + title is a complete track reference; the player
-                // resolves a video or preview when it becomes current.
-                onPlay?.({ kind: "track", title: song.title, artist: song.artist, art: song.art || null, id: song.id || null, duration: song.duration || null });
+                const selected = recentSongTrack(song);
+                if (!selected) return;
+                addRecentSearch?.(recentSongSearchEntry(selected));
+                onPlay?.(selected);
               }}
             />
           ))} />

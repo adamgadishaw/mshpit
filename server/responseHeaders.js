@@ -5,6 +5,13 @@ const ALLOWED_API_RESPONSE_HEADERS = new Map([
   ["cache-control", "Cache-Control"],
 ]);
 
+export function createApiResponseHeaders(initial = {}) {
+  // Private is the safe API default. A deliberately public handler must opt in
+  // through the bounded setter below; a newly added account route cannot forget
+  // this header and leak through a browser/proxy cache.
+  return { "Cache-Control": "no-store", ...initial };
+}
+
 export function createApiResponseHeaderSetter(target) {
   return (name, value) => {
     const canonical = ALLOWED_API_RESPONSE_HEADERS.get(String(name || "").trim().toLowerCase());

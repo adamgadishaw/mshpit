@@ -1,37 +1,52 @@
 import { useState } from "react";
-import { Platform, Pressable, Text, StyleSheet, View } from "react-native";
+import { ActivityIndicator, Platform, Pressable, Text, StyleSheet, View } from "react-native";
 import { colors, displayFont, focusRing, radius, shadow } from "../theme";
 import Icon from "./Icon";
 
 // Cleaner, slightly 3D buttons: a raised face with a darker bottom edge + soft
 // glow that presses in on tap. variant: primary | secondary | danger.
-export default function Button({ title, onPress, variant = "primary", icon, disabled, style, small }) {
+export default function Button({
+  title,
+  onPress,
+  variant = "primary",
+  icon,
+  disabled,
+  loading = false,
+  accessibilityLabel = title,
+  accessibilityHint,
+  style,
+  small,
+}) {
   const [hovered, setHovered] = useState(false);
   const [focused, setFocused] = useState(false);
   const v = VARIANTS[variant];
+  const blocked = !!disabled || loading;
   return (
     <Pressable
-      onPress={disabled ? null : onPress}
+      onPress={blocked ? null : onPress}
       onHoverIn={() => setHovered(true)}
       onHoverOut={() => setHovered(false)}
       onFocus={() => setFocused(true)}
       onBlur={() => setFocused(false)}
       accessibilityRole="button"
-      accessibilityState={{ disabled: !!disabled }}
+      accessibilityLabel={accessibilityLabel}
+      accessibilityHint={accessibilityHint}
+      accessibilityState={{ disabled: blocked, busy: loading }}
+      disabled={blocked}
       style={({ pressed }) => [
         styles.base,
         small && styles.small,
         { backgroundColor: v.bg, borderColor: v.border, borderBottomColor: v.edge },
         shadow.control,
-        hovered && !pressed && !disabled && styles.hovered,
+        hovered && !pressed && !blocked && styles.hovered,
         focused && focusRing,
-        pressed && !disabled && styles.pressed,
-        disabled && styles.disabled,
+        pressed && !blocked && styles.pressed,
+        blocked && styles.disabled,
         style,
       ]}
     >
       <View style={styles.inner}>
-        {icon ? <Icon name={icon} size={small ? 15 : 17} color={v.fg} strokeWidth={2.4} /> : null}
+        {loading ? <ActivityIndicator size="small" color={v.fg} /> : icon ? <Icon name={icon} size={small ? 15 : 17} color={v.fg} strokeWidth={2.4} /> : null}
         <Text style={[styles.txt, small && styles.txtSmall, { color: v.fg }]}>{title}</Text>
       </View>
     </Pressable>
@@ -57,7 +72,7 @@ const styles = StyleSheet.create({
     minHeight: 50,
     ...Platform.select({ web: { cursor: "pointer", transitionDuration: "120ms", transitionProperty: "filter, transform, box-shadow" } }),
   },
-  small: { paddingVertical: 9, paddingHorizontal: 14, borderRadius: radius.sm, borderBottomWidth: 3, minHeight: 40 },
+  small: { paddingVertical: 9, paddingHorizontal: 14, borderRadius: radius.sm, borderBottomWidth: 3, minHeight: 44 },
   hovered: { transform: [{ translateY: -1 }], ...Platform.select({ web: { filter: "brightness(1.06)" } }) },
   pressed: { transform: [{ translateY: 3 }], boxShadow: "inset 0 1px 3px rgba(0,0,0,0.18), 0 1px 2px rgba(0,0,0,0.14)" },
   disabled: { opacity: 0.42, ...Platform.select({ web: { cursor: "not-allowed" } }) },

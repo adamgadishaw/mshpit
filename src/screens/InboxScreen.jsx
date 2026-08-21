@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { View, Text, StyleSheet, ScrollView, Pressable, TextInput } from "react-native";
 import { colors, mono, radius } from "../theme";
 import { useStore } from "../store";
@@ -6,14 +6,24 @@ import ScreenHeader from "../components/ScreenHeader";
 import Avatar from "../components/Avatar";
 import Icon from "../components/Icon";
 import useLiveChat from "../lib/useLiveChat";
+import { unifiedSearchRequestOptions } from "../domain/unifiedSearch.mjs";
+import { accountTargetScope, scopedScreenValue } from "../domain/screenScope.mjs";
+
+const EMPTY_PEOPLE_SEARCH = Object.freeze({ status: "idle", rows: [], error: "" });
 
 export default function InboxScreen({ onClose, onOpenThread }) {
   const { mainThreads, requestThreads, searchPeople, loadInboxThreads, session, chatAuthEpoch } = useStore();
   const [tab, setTab] = useState("main");
   const [composing, setComposing] = useState(false);
   const [query, setQuery] = useState("");
-  const [people, setPeople] = useState([]);
-  const [searching, setSearching] = useState(false);
+  const [searchRevision, setSearchRevision] = useState(0);
+  const normalizedQuery = query.trim();
+  const peopleScope = accountTargetScope(session?.id, `inbox-people:${chatAuthEpoch}:${composing ? normalizedQuery.toLowerCase() : "closed"}`);
+  const peopleScopeRef = useRef(peopleScope);
+  peopleScopeRef.current = peopleScope;
+  const [peopleSearchState, setPeopleSearchState] = useState(() => ({ scope: peopleScope, value: EMPTY_PEOPLE_SEARCH }));
+  const peopleSearch = scopedScreenValue(peopleSearchState, peopleScope, EMPTY_PEOPLE_SEARCH);
+  const people = peopleSearch.rows;
   const main = session ? mainThreads() : [];
   const requests = session ? requestThreads() : [];
   const threads = tab === "requests" ? requests : main;
@@ -24,20 +34,34 @@ export default function InboxScreen({ onClose, onOpenThread }) {
   );
 
   useEffect(() => {
-    const q = query.trim();
-    if (!composing || !q) { setPeople([]); setSearching(false); return undefined; }
-    let current = true;
-    setSearching(true);
+    const controller = new AbortController();
+    const requestScope = peopleScope;
+    if (!composing || !normalizedQuery) {
+      setPeopleSearchState({ scope: requestScope, value: EMPTY_PEOPLE_SEARCH });
+      return () => controller.abort();
+    }
+    setPeopleSearchState({ scope: requestScope, value: { status: "loading", rows: [], error: "" } });
     const timer = setTimeout(async () => {
-      const found = await searchPeople(q);
-      if (!current) return;
-      setPeople((found || []).filter((person) => person.id !== session?.id).slice(0, 12));
-      setSearching(false);
+      try {
+        const found = await searchPeople(normalizedQuery, unifiedSearchRequestOptions(controller));
+        if (controller.signal.aborted || peopleScopeRef.current !== requestScope) return;
+        setPeopleSearchState({
+          scope: requestScope,
+          value: { status: "ready", rows: (found || []).filter((person) => person.id !== session?.id).slice(0, 12), error: "" },
+        });
+      } catch (error) {
+        if (!controller.signal.aborted && error?.name !== "AbortError" && peopleScopeRef.current === requestScope) {
+          setPeopleSearchState({ scope: requestScope, value: { status: "error", rows: [], error: "People search could not update. Check your connection and try again." } });
+        }
+      }
     }, 250);
-    return () => { current = false; clearTimeout(timer); };
-  }, [composing, query, session?.id]);
+    return () => { clearTimeout(timer); controller.abort(); };
+    // searchPeople is a store action whose identity changes with store state;
+    // the account/chat epoch/query scope is the durable request owner.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [composing, normalizedQuery, peopleScope, searchRevision, session?.id]);
 
-  const closeComposer = () => { setComposing(false); setQuery(""); setPeople([]); };
+  const closeComposer = () => { setComposing(false); setQuery(""); };
   const openPerson = (person) => { closeComposer(); onOpenThread?.(person.id); };
 
   const Row = (t) => (
@@ -83,11 +107,20 @@ export default function InboxScreen({ onClose, onOpenThread }) {
               autoCapitalize="none"
               autoCorrect={false}
               accessibilityLabel="Find someone to message"
+              accessibilityState={{ busy: peopleSearch.status === "loading" }}
             />
           </View>
-          {!query.trim() && <Text style={styles.searchHint}>Find a member, then start the conversation directly from here.</Text>}
-          {!!query.trim() && searching && <Text style={styles.searchHint}>Looking through the crowd...</Text>}
-          {!!query.trim() && !searching && people.length === 0 && <Text style={styles.searchHint}>No member matched that search.</Text>}
+          {!normalizedQuery && <Text style={styles.searchHint}>Find a member, then start the conversation directly from here.</Text>}
+          {!!normalizedQuery && peopleSearch.status === "loading" && <Text style={styles.searchHint} accessibilityLiveRegion="polite">Looking through the crowd...</Text>}
+          {!!normalizedQuery && peopleSearch.status === "ready" && people.length === 0 && <Text style={styles.searchHint} accessibilityLiveRegion="polite">No member matched that search.</Text>}
+          {peopleSearch.status === "error" && (
+            <View style={styles.searchError} accessibilityLiveRegion="assertive">
+              <Text style={styles.searchErrorText} selectable>{peopleSearch.error}</Text>
+              <Pressable style={styles.retrySearch} onPress={() => setSearchRevision((value) => value + 1)} accessibilityRole="button" accessibilityLabel={`Retry people search for ${normalizedQuery}`}>
+                <Text style={styles.retrySearchText}>Try again</Text>
+              </Pressable>
+            </View>
+          )}
           {people.map((person) => (
             <Pressable key={person.id} style={styles.personRow} onPress={() => openPerson(person)} accessibilityRole="button" accessibilityLabel={`Message ${person.name}`}>
               <Avatar user={person} size={40} />
@@ -145,6 +178,10 @@ const styles = StyleSheet.create({
   searchBox: { flexDirection: "row", alignItems: "center", gap: 9, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: radius.sm, paddingHorizontal: 12 },
   searchInput: { flex: 1, color: colors.text, fontSize: 14, paddingVertical: 11, outlineStyle: "none" },
   searchHint: { color: colors.textDim, fontSize: 12.5, lineHeight: 18, paddingHorizontal: 4, paddingTop: 10, paddingBottom: 2 },
+  searchError: { gap: 8, paddingHorizontal: 4, paddingTop: 10 },
+  searchErrorText: { color: colors.danger, fontSize: 12.5, lineHeight: 18 },
+  retrySearch: { minHeight: 44, alignSelf: "flex-start", justifyContent: "center", paddingHorizontal: 14, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.amber },
+  retrySearchText: { color: colors.amber, fontSize: 12.5, fontWeight: "800" },
   personRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 4, paddingVertical: 10, borderTopWidth: 1, borderTopColor: colors.lineSoft },
   personHandle: { color: colors.textDim, fontSize: 12, marginTop: 2 },
   tabs: { flexDirection: "row", gap: 8, paddingHorizontal: 16, paddingTop: 12 },

@@ -837,6 +837,8 @@ CREATE TABLE IF NOT EXISTS email_campaigns (
   started_at    INTEGER,
   finished_at   INTEGER,
   test_sent_at  INTEGER,
+  content_revision INTEGER NOT NULL DEFAULT 1,
+  tested_revision  INTEGER,
   total         INTEGER NOT NULL DEFAULT 0,
   sent_count    INTEGER NOT NULL DEFAULT 0,
   failed_count  INTEGER NOT NULL DEFAULT 0,
@@ -852,6 +854,8 @@ CREATE TABLE IF NOT EXISTS email_queue (
   to_email    TEXT NOT NULL,
   status      TEXT NOT NULL DEFAULT 'pending',
   attempts    INTEGER NOT NULL DEFAULT 0,
+  claimed_at  INTEGER,
+  claim_token TEXT,
   last_error  TEXT,
   created_at  INTEGER NOT NULL,
   sent_at     INTEGER
@@ -966,6 +970,15 @@ const additiveMigrations = [
   // Set when the welcome mail goes out, so verifying twice, an admin marking an
   // already-verified account, or a resend cannot send it again.
   "ALTER TABLE users ADD COLUMN welcome_sent_at INTEGER NOT NULL DEFAULT 0",
+  // Delivery claims are expiring leases. A unique token prevents a timed-out
+  // sender from settling a row after a later worker has reclaimed it.
+  "ALTER TABLE email_queue ADD COLUMN claimed_at INTEGER",
+  "ALTER TABLE email_queue ADD COLUMN claim_token TEXT",
+  // A test delivery approves exactly the campaign revision it rendered. Legacy
+  // tested drafts deliberately gain no tested_revision and therefore require a
+  // fresh test after this migration.
+  "ALTER TABLE email_campaigns ADD COLUMN content_revision INTEGER NOT NULL DEFAULT 1",
+  "ALTER TABLE email_campaigns ADD COLUMN tested_revision INTEGER",
   // Artist-page updates are UGC too. Soft removal lets the shared moderation
   // workflow hide them atomically while preserving an audit trail.
   "ALTER TABLE artist_posts ADD COLUMN removed INTEGER NOT NULL DEFAULT 0",
@@ -1241,11 +1254,26 @@ export const emailStmts = {
   insertCampaign: db.prepare(`INSERT INTO email_campaigns (id,name,subject,body,cta_label,cta_url,audience,status,created_by,created_at,updated_at)
     VALUES (@id,@name,@subject,@body,@cta_label,@cta_url,@audience,'draft',@created_by,@created_at,@created_at)`),
   updateCampaign: db.prepare(`UPDATE email_campaigns SET name=@name,subject=@subject,body=@body,
-    cta_label=@cta_label,cta_url=@cta_url,audience=@audience,updated_at=@updated_at WHERE id=@id AND status='draft'`),
+    content_revision=CASE WHEN name IS NOT @name OR subject IS NOT @subject OR body IS NOT @body
+      OR cta_label IS NOT @cta_label OR cta_url IS NOT @cta_url OR audience IS NOT @audience
+      THEN content_revision+1 ELSE content_revision END,
+    test_sent_at=CASE WHEN name IS NOT @name OR subject IS NOT @subject OR body IS NOT @body
+      OR cta_label IS NOT @cta_label OR cta_url IS NOT @cta_url OR audience IS NOT @audience
+      THEN NULL ELSE test_sent_at END,
+    tested_revision=CASE WHEN name IS NOT @name OR subject IS NOT @subject OR body IS NOT @body
+      OR cta_label IS NOT @cta_label OR cta_url IS NOT @cta_url OR audience IS NOT @audience
+      THEN NULL ELSE tested_revision END,
+    cta_label=@cta_label,cta_url=@cta_url,audience=@audience,updated_at=@updated_at
+    WHERE id=@id AND status='draft' AND content_revision=@expected_revision`),
   setCampaignStatus: db.prepare("UPDATE email_campaigns SET status=?, updated_at=? WHERE id=?"),
-  markCampaignTested: db.prepare("UPDATE email_campaigns SET test_sent_at=?, updated_at=? WHERE id=?"),
-  startCampaign: db.prepare("UPDATE email_campaigns SET status='sending', started_at=?, total=?, updated_at=? WHERE id=?"),
-  finishCampaign: db.prepare("UPDATE email_campaigns SET status=?, finished_at=?, updated_at=? WHERE id=?"),
+  pauseCampaign: db.prepare("UPDATE email_campaigns SET status='paused',updated_at=? WHERE id=? AND status='sending'"),
+  markCampaignTested: db.prepare(`UPDATE email_campaigns
+    SET test_sent_at=@tested_at,tested_revision=@revision,updated_at=@tested_at
+    WHERE id=@id AND status='draft' AND content_revision=@revision`),
+  startCampaign: db.prepare(`UPDATE email_campaigns SET status='sending',started_at=@started_at,total=@total,updated_at=@started_at
+    WHERE id=@id AND status IN ('draft','paused') AND content_revision=@revision
+      AND (@require_current_test=0 OR (test_sent_at IS NOT NULL AND tested_revision=content_revision))`),
+  finishCampaign: db.prepare("UPDATE email_campaigns SET status=?,finished_at=?,updated_at=? WHERE id=? AND status='sending'"),
   bumpCampaignCounts: db.prepare(`UPDATE email_campaigns SET
     sent_count=(SELECT COUNT(*) FROM email_queue WHERE campaign_id=@id AND status='sent'),
     failed_count=(SELECT COUNT(*) FROM email_queue WHERE campaign_id=@id AND status='failed'),
@@ -1256,8 +1284,18 @@ export const emailStmts = {
     VALUES (?,?,?,'pending',?)`),
   nextPending: db.prepare("SELECT * FROM email_queue WHERE campaign_id=? AND status='pending' ORDER BY id LIMIT 1"),
   countPending: db.prepare("SELECT COUNT(*) c FROM email_queue WHERE campaign_id=? AND status='pending'"),
+  countOpen: db.prepare("SELECT COUNT(*) c FROM email_queue WHERE campaign_id=? AND status IN ('pending','sending')"),
   countQueued: db.prepare("SELECT COUNT(*) c FROM email_queue WHERE campaign_id=?"),
-  settleQueueRow: db.prepare("UPDATE email_queue SET status=?, attempts=attempts+1, last_error=?, sent_at=? WHERE id=? AND status='pending'"),
+  claimQueueRow: db.prepare(`UPDATE email_queue
+    SET status='sending',attempts=attempts+1,claimed_at=@claimed_at,claim_token=@claim_token,last_error=NULL
+    WHERE id=(SELECT queue.id FROM email_queue queue JOIN email_campaigns campaign ON campaign.id=queue.campaign_id
+      WHERE queue.campaign_id=@campaign_id AND queue.status='pending' AND campaign.status='sending'
+      ORDER BY queue.id LIMIT 1)
+      AND status='pending'
+    RETURNING *`),
+  settleQueueRow: db.prepare(`UPDATE email_queue
+    SET status=@status,last_error=@last_error,sent_at=@sent_at,claimed_at=NULL,claim_token=NULL
+    WHERE id=@id AND status='sending' AND claim_token=@claim_token`),
   clearQueue: db.prepare("DELETE FROM email_queue WHERE campaign_id=?"),
 
   insertLog: db.prepare(`INSERT INTO email_log (created_at,kind,template_key,campaign_id,user_id,to_email,subject,status,reason)

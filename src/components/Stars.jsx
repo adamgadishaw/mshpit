@@ -14,10 +14,11 @@ function StarShape({ size, color }) {
 
 // Clipped half-star rating row, drawn (no ★ glyph).
 export default function Stars({ value = 0, size = 16, color = colors.gold, gap = 2 }) {
+  const rating = Math.max(0, Math.min(5, Number(value) || 0));
   return (
-    <View style={{ flexDirection: "row" }}>
+    <View style={{ flexDirection: "row" }} accessible accessibilityRole="image" accessibilityLabel={`${rating.toFixed(1)} out of 5 stars`}>
       {[0, 1, 2, 3, 4].map((i) => {
-        const fill = Math.max(0, Math.min(1, value - i));
+        const fill = Math.max(0, Math.min(1, rating - i));
         return (
           <View key={i} style={{ width: size, height: size, marginRight: gap }}>
             <StarShape size={size} color={colors.line} />

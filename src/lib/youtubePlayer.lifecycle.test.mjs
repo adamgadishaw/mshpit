@@ -20,3 +20,11 @@ test("the iframe lifecycle tears down before conditional host removal and destro
   assert.match(source, /readyRef\.current = false;[\s\S]*ownedPlayer\?\.destroy\?\.\(\)/);
   assert.equal((source.match(/destroy\?\.\(\)/g) || []).length, 1);
 });
+
+test("iframe failures carry the active media identity", async () => {
+  const source = await readFile(new URL("./youtubePlayer.js", import.meta.url), "utf8");
+  assert.match(source, /mediaKeyRef\.current = mediaKey/);
+  const errorWrites = source.match(/setError\(\{ kind: [^\n]+/g) || [];
+  assert.ok(errorWrites.length >= 5);
+  assert.ok(errorWrites.every((line) => line.includes("mediaKey:")), "every iframe error must be scoped to its track/account generation");
+});

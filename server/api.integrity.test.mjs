@@ -86,30 +86,15 @@ test("public profile and people search expose city only while self keeps coordin
   assert.equal(result.home.lng, undefined);
 });
 
-test("health reflects database readiness without exposing configuration values", () => {
+test("public health is minimal while detailed readiness requires active staff", () => {
   const previousVideoCapability = process.env.PIT_VIDEO_PUBLISHING_ENABLED;
   delete process.env.PIT_VIDEO_PUBLISHING_ENABLED;
   try {
     const health = routes["GET /api/health"]({});
     assert.equal(health.ok, true);
-    assert.equal(health.services.database, true);
-    assert.equal(typeof health.uptimeSeconds, "number");
-    assert.equal(typeof health.services.storageConfigured, "boolean");
-    assert.deepEqual(health.services.storage, {
-      configured: true,
-      databaseFilePresent: true,
-      bootstrapAllowed: false,
-    });
-    assert.equal(typeof health.services.backgroundJobs.cacheWarmEnabled, "boolean");
-    assert.equal(typeof health.services.backgroundJobs.tourDateRefreshEnabled, "boolean");
-    assert.equal(typeof health.services.youtubeConfigured, "boolean");
-    assert.equal(health.services.youtubeLookup, undefined,
-      "public health never exposes provider quota remaining or circuit counters");
-    assert.equal(typeof health.services.mailConfigured, "boolean");
-    assert.equal(typeof health.services.mail.apiKeyPresent, "boolean");
-    assert.equal(typeof health.services.mail.fromValid, "boolean");
-    assert.equal(health.services.mail.configured, health.services.mailConfigured);
-    assert.equal(typeof health.services.mediaStorageConfigured, "boolean");
+    assert.deepEqual(Object.keys(health).sort(), ["capabilities", "ok", "ts"]);
+    assert.equal(health.services, undefined);
+    assert.equal(health.commit, undefined);
     assert.deepEqual(health.capabilities.mediaPublishing, { photos: true, videos: false });
 
     process.env.PIT_VIDEO_PUBLISHING_ENABLED = "true";
@@ -117,9 +102,16 @@ test("health reflects database readiness without exposing configuration values",
 
     addUser("u_health_mod", "health-mod@example.com", "healthmod");
     db.prepare("UPDATE users SET role='moderator' WHERE id=?").run("u_health_mod");
-    const staffHealth = routes["GET /api/health"]({ user: q.userById.get("u_health_mod") });
+    const staffHealth = routes["GET /api/admin/health"]({ user: q.userById.get("u_health_mod") });
+    assert.equal(staffHealth.services.database, true);
+    assert.equal(typeof staffHealth.uptimeSeconds, "number");
+    assert.equal(typeof staffHealth.services.mail.apiKeyPresent, "boolean");
     assert.equal(typeof staffHealth.services.youtubeLookup?.search?.remaining, "number");
     assert.equal(typeof staffHealth.services.youtubeLookup?.efficiency?.searchCallsReserved, "number");
+    assert.throws(
+      () => routes["GET /api/admin/health"]({ user: addUser("u_health_fan", "health-fan@example.com", "healthfan") }),
+      (error) => error.status === 403,
+    );
   } finally {
     if (previousVideoCapability === undefined) delete process.env.PIT_VIDEO_PUBLISHING_ENABLED;
     else process.env.PIT_VIDEO_PUBLISHING_ENABLED = previousVideoCapability;
@@ -755,6 +747,39 @@ test("desired-state social mutations are idempotent and old toggle calls still w
   assert.equal(going(goingCtx(false)).going, false);
 });
 
+test("every encoded route parameter rejects malformed and overlong identities as 400", () => {
+  const user = addUser("u_encoded_path_guard", "encoded-path-guard@example.com", "encodedpathguard");
+  const malformed = "%E0%A4%A";
+  const cases = [
+    ["POST /api/fanclubs/:artist/join", { user, params: { artist: malformed }, body: {} }],
+    ["GET /api/fanclubs/:artist/meta", { params: { artist: malformed } }],
+    ["GET /api/fanclubs/:artist/messages", { user, params: { artist: malformed }, query: {} }],
+    ["POST /api/fanclubs/:artist/messages", { user, params: { artist: malformed }, body: {} }],
+    ["GET /api/lounges/:key/meta", { params: { key: malformed } }],
+    ["GET /api/lounges/:key/messages", { user, params: { key: malformed }, query: {} }],
+    ["POST /api/lounges/:key/messages", { user, params: { key: malformed }, body: {} }],
+    ["GET /api/going/:key/attendees", { params: { key: malformed }, query: {} }],
+    ["GET /api/venues/:key/photos", { params: { key: malformed } }],
+    ["GET /api/venues/:key/reviews", { params: { key: malformed }, query: {} }],
+    ["POST /api/venues/:key/reviews", { user, params: { key: malformed }, body: {} }],
+    ["GET /api/artists/:key/profile", { params: { key: malformed } }],
+    ["PATCH /api/artists/:key/profile", { user, params: { key: malformed }, body: {} }],
+    ["POST /api/artists/:key/posts", { user, params: { key: malformed }, body: {} }],
+    ["DELETE /api/artists/:key/posts/:id", { user, params: { key: malformed, id: "x" } }],
+  ];
+  for (const [route, context] of cases) {
+    assert.throws(
+      () => routes[route]({ ip: "encoded-path-test", body: {}, params: {}, query: {}, ...context }),
+      (error) => error instanceof ApiError && error.status === 400 && error.code === "VALIDATION_FAILED",
+      route,
+    );
+  }
+  assert.throws(
+    () => routes["GET /api/fanclubs/:artist/meta"]({ params: { artist: "a".repeat(81) } }),
+    (error) => error.status === 400 && error.code === "VALIDATION_FAILED",
+  );
+});
+
 test("tour-date batches are owner-authorized, atomic, canonical, and release-gated", () => {
   const artistSeed = addUser("u_tour_artist", "tour-artist@example.com", "tourartist");
   const other = addUser("u_tour_other", "tour-other@example.com", "tourother");
@@ -1303,6 +1328,84 @@ test("fan-club directory aggregates authoritative memberships and visible messag
     members: 0,
     messages: 1,
   });
+});
+
+test("public UGC surfaces share one banned and live-suspension visibility rule", () => {
+  const author = addUser("u_public_visibility_author", "public-visibility-author@example.com", "publicvisibilityauthor");
+  const viewer = addUser("u_public_visibility_viewer", "public-visibility-viewer@example.com", "publicvisibilityviewer");
+  const postId = "p_public_visibility";
+  const hostPostId = "p_public_visibility_host";
+  const artist = "public visibility club";
+  const lounge = "public-visibility-lounge";
+  const venue = "public-visibility-venue";
+  const artistKey = "public visibility artist";
+  const nowAt = Date.now();
+
+  db.prepare(`INSERT INTO posts (id,user_id,artist,venue,overall,review,photos,photos_public,created_at)
+    VALUES (?,?,?,?,?,?,?,?,?)`).run(postId, author.id, "Visibility Artist", "Visibility Venue", 4, "visible post", '["https://media.example/visible.mp4"]', 1, nowAt);
+  db.prepare("INSERT INTO posts (id,user_id,artist,venue,overall,review,created_at) VALUES (?,?,?,?,?,?,?)")
+    .run(hostPostId, viewer.id, "Host Artist", "Host Venue", 4, "host", nowAt - 1);
+  db.prepare("INSERT INTO comments (id,post_id,user_id,text,created_at) VALUES (?,?,?,?,?)")
+    .run("c_public_visibility", hostPostId, author.id, "visible comment", nowAt);
+  db.prepare("INSERT INTO playlists (id,user_id,name,tracks,visibility,created_at,updated_at) VALUES (?,?,?,?,?,?,?)")
+    .run("pls_public_visibility", author.id, "Visible playlist", "[]", "public", nowAt, nowAt);
+  db.prepare("INSERT INTO venue_reviews (id,venue_key,user_id,rating,text,photos,created_at) VALUES (?,?,?,?,?,?,?)")
+    .run("vr_public_visibility", venue, author.id, 4, "visible venue review", "[]", nowAt);
+  db.prepare("INSERT INTO fan_club_members (artist,user_id) VALUES (?,?)").run(artist, author.id);
+  db.prepare("INSERT INTO fan_club_members (artist,user_id) VALUES (?,?)").run(artist, viewer.id);
+  db.prepare("INSERT INTO fan_club_messages (id,artist,user_id,text,created_at) VALUES (?,?,?,?,?)")
+    .run("fc_public_visibility", artist, author.id, "visible fan message", nowAt);
+  db.prepare("INSERT INTO going (user_id,concert_key,artist,venue,created_at) VALUES (?,?,?,?,?)")
+    .run(viewer.id, lounge, "Visibility Artist", "Visibility Venue", nowAt);
+  db.prepare("INSERT INTO lounge_messages (id,lounge_id,user_id,text,created_at) VALUES (?,?,?,?,?)")
+    .run("lm_public_visibility", lounge, author.id, "visible lounge message", nowAt);
+  db.prepare(`INSERT INTO artist_profiles (artist_key,owner_id,bio,feed_enabled,updated_at)
+    VALUES (?,?,?,1,?)`).run(artistKey, author.id, "visible artist bio", nowAt);
+  db.prepare("INSERT INTO artist_posts (id,artist_key,user_id,text,created_at) VALUES (?,?,?,?,?)")
+    .run("ap_public_visibility", artistKey, author.id, "visible artist update", nowAt);
+  db.prepare(`INSERT INTO tour_dates (id,artist,venue,date,source,updated_at,owner_id,release_at)
+    VALUES (?,?,?,?,?,?,?,0)`).run("td_public_visibility", "Visibility Artist", "Visibility Venue", "2027-01-01", "artist-submitted", nowAt, author.id);
+  db.prepare("INSERT INTO ratings (user_id,kind,ref,rating) VALUES (?,?,?,?)")
+    .run(author.id, "album", "public-visibility-album", 5);
+
+  const read = () => ({
+    feed: routes["GET /api/feed"]({ user: viewer, query: {} }).posts.some((post) => post.id === postId),
+    clips: routes["GET /api/clips"]({ user: viewer, query: {} }).clips.some((post) => post.id === postId),
+    comments: routes["GET /api/posts/:id/comments"]({ user: viewer, params: { id: hostPostId }, query: {} }).comments.some((comment) => comment.id === "c_public_visibility"),
+    venue: routes["GET /api/venues/:key/reviews"]({ user: viewer, params: { key: venue }, query: {} }).reviews.some((review) => review.id === "vr_public_visibility"),
+    fan: routes["GET /api/fanclubs/:artist/messages"]({ user: viewer, params: { artist }, query: {} }).messages.some((message) => message.id === "fc_public_visibility"),
+    lounge: routes["GET /api/lounges/:key/messages"]({ user: viewer, params: { key: lounge }, query: {} }).messages.some((message) => message.id === "lm_public_visibility"),
+    artist: routes["GET /api/artists/:key/profile"]({ user: viewer, params: { key: artistKey } }),
+    tour: routes["GET /api/tourdates"]({ user: viewer }).tourDates.some((date) => date.id === "td_public_visibility"),
+    ratingCount: routes["GET /api/ratings"]({ user: viewer, query: { kind: "album", ref: "public-visibility-album" } }).count,
+    people: routes["GET /api/people"]({ user: viewer, query: { q: "publicvisibilityauthor" } }).users.some((user) => user.id === author.id),
+  });
+
+  const visible = read();
+  assert.deepEqual({ ...visible, artist: !!visible.artist.profile && visible.artist.posts.length === 1 }, {
+    feed: true, clips: true, comments: true, venue: true, fan: true, lounge: true,
+    artist: true, tour: true, ratingCount: 1, people: true,
+  });
+
+  db.prepare("UPDATE users SET suspended_until=? WHERE id=?").run(Date.now() + 60_000, author.id);
+  const suspended = read();
+  assert.deepEqual({ ...suspended, artist: suspended.artist.profile === null && suspended.artist.posts.length === 0 }, {
+    feed: false, clips: false, comments: false, venue: false, fan: false, lounge: false,
+    artist: true, tour: false, ratingCount: 0, people: false,
+  });
+  assert.throws(
+    () => routes["GET /api/posts/:id"]({ user: viewer, params: { id: postId } }),
+    (error) => error.status === 404,
+  );
+
+  db.prepare("UPDATE users SET suspended_until=? WHERE id=?").run(Date.now() - 1_000, author.id);
+  assert.equal(read().feed, true, "expired suspensions restore public content without a data rewrite");
+  db.prepare("UPDATE users SET is_banned=1 WHERE id=?").run(author.id);
+  const banned = read();
+  assert.equal(banned.feed, false);
+  assert.equal(banned.comments, false);
+  assert.equal(banned.tour, false);
+  assert.equal(banned.ratingCount, 0);
 });
 
 test("For You is global-first, cursor-stable, and an allegation alone cannot suppress a post", () => {

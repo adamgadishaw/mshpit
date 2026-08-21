@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { db, parseJsonArray } from "./db.js";
 import { ApiError } from "./errors.js";
 import { rankRecommendations, RECOMMENDATION_ALGORITHM, recommendationKey } from "./recommendationRanking.js";
+import { activeAccountSql } from "./accountVisibility.js";
 
 const CANDIDATE_LIMIT = Math.max(200, Math.min(1200, Number(process.env.RECOMMENDATION_CANDIDATE_LIMIT) || 600));
 const CANDIDATE_SCAN_LIMIT = Math.min(2400, CANDIDATE_LIMIT * 4);
@@ -25,9 +26,10 @@ export const RECOMMENDATION_CANDIDATE_SELECT = `
   SELECT p.id,p.user_id,p.artist,p.artist_key,p.city,p.created_at,p.kind,
     CASE WHEN json_valid(p.photos) THEN json_array_length(p.photos) ELSE 0 END AS media_count,
     length(p.review) AS review_length,a.genre AS artist_genre,
-    (SELECT COUNT(*) FROM likes l WHERE l.post_id=p.id) AS like_count,
-    (SELECT COUNT(DISTINCT c.user_id) FROM comments c
-      WHERE c.post_id=p.id AND c.removed=0 AND c.user_id<>p.user_id) AS comment_count
+    (SELECT COUNT(*) FROM likes l JOIN users lu ON lu.id=l.user_id
+      WHERE l.post_id=p.id AND ${activeAccountSql("lu")}) AS like_count,
+    (SELECT COUNT(DISTINCT c.user_id) FROM comments c JOIN users cu ON cu.id=c.user_id
+      WHERE c.post_id=p.id AND c.removed=0 AND c.user_id<>p.user_id AND ${activeAccountSql("cu")}) AS comment_count
   FROM posts p
   JOIN users u ON u.id=p.user_id
   LEFT JOIN artists a ON a.norm=p.artist_key
@@ -46,8 +48,10 @@ export const RECOMMENDATION_SIGNAL_SQL = Object.freeze({
 const POST_SELECT = `
   SELECT p.*, u.name AS u_name, u.handle AS u_handle, u.initials AS u_initials,
     u.avatar_uri AS u_avatar, u.avatar_color AS u_color,
-    (SELECT COUNT(*) FROM likes l WHERE l.post_id=p.id) AS like_count,
-    (SELECT COUNT(*) FROM comments c WHERE c.post_id=p.id AND c.removed=0) AS comment_count,
+    (SELECT COUNT(*) FROM likes l JOIN users lu ON lu.id=l.user_id
+      WHERE l.post_id=p.id AND ${activeAccountSql("lu")}) AS like_count,
+    (SELECT COUNT(*) FROM comments c JOIN users cu ON cu.id=c.user_id
+      WHERE c.post_id=p.id AND c.removed=0 AND ${activeAccountSql("cu")}) AS comment_count,
     (SELECT COUNT(*) FROM posts seen WHERE seen.user_id=p.user_id AND LOWER(seen.artist)=LOWER(p.artist)
       AND seen.removed=0 AND (seen.created_at<p.created_at OR (seen.created_at=p.created_at AND seen.id<=p.id))) AS seen_ordinal,
     a.genre AS artist_genre

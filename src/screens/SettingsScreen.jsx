@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import Constants from "expo-constants";
 import { Linking, View, Text, StyleSheet, ScrollView, Pressable } from "react-native";
-import { colors, radius, mono, THEMES, themeKey, space } from "../theme";
+import { colors, focusRing, radius, mono, THEMES, themeKey, space } from "../theme";
 import { useStore } from "../store";
 import SheetHeader from "../components/SheetHeader";
 import Icon from "../components/Icon";
@@ -12,14 +12,8 @@ const versionLabel = Constants.expoConfig?.version || "Unavailable";
 const SUPPORT_URL = "https://www.mshpit.com/support";
 
 function Row({ icon, label, sub, onPress, danger, right, disabled = false, accessibilityRole, accessibilityState }) {
-  return (
-    <Pressable
-      style={[styles.row, disabled && styles.rowDisabled]}
-      onPress={disabled ? undefined : onPress}
-      disabled={disabled}
-      accessibilityRole={accessibilityRole}
-      accessibilityState={{ ...accessibilityState, disabled }}
-    >
+  const body = (
+    <>
       <View style={[styles.rowIcon, danger && { borderColor: colors.danger }]}>
         <Icon name={icon} size={17} color={danger ? colors.danger : colors.amber} />
       </View>
@@ -27,7 +21,23 @@ function Row({ icon, label, sub, onPress, danger, right, disabled = false, acces
         <Text style={[styles.rowLabel, danger && { color: colors.danger }]}>{label}</Text>
         {!!sub && <Text style={styles.rowSub}>{sub}</Text>}
       </View>
-      {right || (!danger && <Icon name="chevron-right" size={18} color={colors.textDim} />)}
+      {right || (!danger && !!onPress && <Icon name="chevron-right" size={18} color={colors.textDim} />)}
+    </>
+  );
+
+  if (!onPress) {
+    return <View style={styles.row}>{body}</View>;
+  }
+
+  return (
+    <Pressable
+      style={({ focused }) => [styles.row, disabled && styles.rowDisabled, focused && focusRing]}
+      onPress={onPress}
+      disabled={disabled}
+      accessibilityRole={accessibilityRole || "button"}
+      accessibilityState={{ ...accessibilityState, disabled }}
+    >
+      {body}
     </Pressable>
   );
 }
@@ -48,7 +58,13 @@ function Toggle({ value, busy = false }) {
 function Swatch({ theme, active, onPress }) {
   const s = theme.swatch;
   return (
-    <Pressable style={[styles.swatch, { backgroundColor: s.bg, borderColor: active ? colors.amber : colors.line }]} onPress={onPress}>
+    <Pressable
+      style={({ focused }) => [styles.swatch, { backgroundColor: s.bg, borderColor: active ? colors.amber : colors.line }, focused && focusRing]}
+      onPress={onPress}
+      accessibilityRole="radio"
+      accessibilityLabel={`${theme.name} theme, ${theme.dark ? "dark" : "light"}`}
+      accessibilityState={{ checked: active }}
+    >
       <View style={styles.swatchDots}>
         <View style={[styles.chip, { backgroundColor: s.accent }]} />
         <View style={[styles.chip, { backgroundColor: s.accent2 }]} />
@@ -99,10 +115,10 @@ export default function SettingsScreen({ onClose, onEditProfile, onOpenProfile, 
   return (
     <View style={styles.wrap}>
       <SheetHeader title="Settings" onClose={onClose} />
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} contentInsetAdjustmentBehavior="automatic">
         <Text style={styles.section}>APPEARANCE</Text>
         <Text style={styles.hint}>{session ? "Pick a theme. It's saved to your account and follows you to any device." : "Pick a theme. It applies across the whole app."}</Text>
-        <View style={styles.swatchGrid}>
+        <View style={styles.swatchGrid} accessibilityRole="radiogroup" accessibilityLabel="Appearance theme">
           {THEMES.map((t) => (
             <Swatch key={t.key} theme={t} active={t.key === themeKey} onPress={() => t.key !== themeKey && chooseTheme(t.key)} />
           ))}
@@ -143,7 +159,7 @@ export default function SettingsScreen({ onClose, onEditProfile, onOpenProfile, 
               right={<Toggle value={analyticsEnabled} busy={savingAnalytics} />}
             />
             {!!analyticsResult && (
-              <Text style={[styles.exportStatus, analyticsResult.startsWith("That preference") && styles.exportError]} accessibilityRole="alert">
+              <Text style={[styles.exportStatus, analyticsResult.startsWith("That preference") && styles.exportError]} accessibilityRole="alert" accessibilityLiveRegion="polite">
                 {analyticsResult}
               </Text>
             )}
@@ -151,10 +167,12 @@ export default function SettingsScreen({ onClose, onEditProfile, onOpenProfile, 
               icon="share"
               label={exporting ? "Preparing your backup..." : "Download your data"}
               sub="A portable backup of your profile, reviews, playlists, and activity (JSON)"
-              onPress={exporting ? undefined : doExport}
+              onPress={doExport}
+              disabled={exporting}
+              accessibilityState={{ busy: exporting }}
             />
             {exportResult && (
-              <Text style={[styles.exportStatus, !exportResult.ok && styles.exportError]} accessibilityRole="alert">
+              <Text style={[styles.exportStatus, !exportResult.ok && styles.exportError]} accessibilityRole="alert" accessibilityLiveRegion="polite">
                 {exportResult.ok ? "Your Pit data file is ready." : exportResult.error}
               </Text>
             )}
@@ -167,7 +185,7 @@ export default function SettingsScreen({ onClose, onEditProfile, onOpenProfile, 
                   <Text style={styles.rowLabel} numberOfLines={1}>{u.name}</Text>
                   <Text style={styles.rowSub} numberOfLines={1}>@{u.handle}</Text>
                 </View>
-                <Pressable style={styles.unblockBtn} onPress={() => unblockUser(u.id)}>
+                <Pressable style={({ focused }) => [styles.unblockBtn, focused && focusRing]} onPress={() => unblockUser(u.id)} accessibilityRole="button" accessibilityLabel={`Unblock ${u.name}`}>
                   <Text style={styles.unblockTxt}>Unblock</Text>
                 </Pressable>
               </View>
@@ -188,7 +206,7 @@ export default function SettingsScreen({ onClose, onEditProfile, onOpenProfile, 
             });
           }}
         />
-        {!!supportError && <Text style={[styles.exportStatus, styles.exportError]} accessibilityRole="alert">{supportError}</Text>}
+        {!!supportError && <Text style={[styles.exportStatus, styles.exportError]} accessibilityRole="alert" accessibilityLiveRegion="assertive">{supportError}</Text>}
         <Row icon="discover" label="Diagnostics" sub="Recent errors, request references, and failure points" onPress={onOpenDiagnostics} />
         <Row icon="lock" label="Privacy policy" onPress={onOpenPrivacy} />
         <Row icon="shield" label="Terms & conditions" onPress={onOpenTerms} />
@@ -220,7 +238,7 @@ const styles = StyleSheet.create({
   swatchName: { fontSize: 15, fontWeight: "800" },
   swatchSub: { fontSize: 11, marginTop: 2 },
   swatchCheck: { position: "absolute", top: 10, right: 10, width: 20, height: 20, borderRadius: 10, backgroundColor: colors.amber, alignItems: "center", justifyContent: "center" },
-  row: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 14, marginBottom: 8 },
+  row: { minHeight: 64, flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 14, marginBottom: 8 },
   rowDisabled: { opacity: 0.62 },
   rowIcon: { width: 36, height: 36, borderRadius: 10, backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
   rowLabel: { color: colors.text, fontSize: 15, fontWeight: "700" },
@@ -230,7 +248,7 @@ const styles = StyleSheet.create({
   blockedEmpty: { color: colors.textFaint, fontSize: 12.5, lineHeight: 18, marginBottom: 8 },
   exportStatus: { color: colors.good, fontSize: 12.5, lineHeight: 18, marginTop: -1, marginBottom: 10, paddingHorizontal: 4 },
   exportError: { color: colors.danger },
-  unblockBtn: { borderRadius: radius.pill, borderWidth: 1, borderColor: colors.danger, paddingHorizontal: 14, paddingVertical: 7 },
+  unblockBtn: { minHeight: 44, minWidth: 76, alignItems: "center", justifyContent: "center", borderRadius: radius.pill, borderWidth: 1, borderColor: colors.danger, paddingHorizontal: 14, paddingVertical: 7 },
   unblockTxt: { color: colors.danger, fontSize: 12.5, fontWeight: "800" },
   toggle: { width: 48, height: 28, borderRadius: 14, padding: 3, backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line, justifyContent: "center" },
   toggleOn: { backgroundColor: colors.amberStrong, borderColor: colors.amberStrong },

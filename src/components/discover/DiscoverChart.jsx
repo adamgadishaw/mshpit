@@ -41,7 +41,7 @@ function ChartMetric({ row, source }) {
   );
 }
 
-function ArtistChartRow({ row, index, source, onOpen, onPlay, narrow }) {
+function ArtistChartRow({ row, index, source, onOpen, onPlay, onAdd, narrow }) {
   const rank = Number(row?.rank) || index + 1;
   const topThree = rank <= 3;
   return (
@@ -52,13 +52,18 @@ function ArtistChartRow({ row, index, source, onOpen, onPlay, narrow }) {
         <Text style={[styles.chartArtist, rank === 1 && styles.chartArtistLead]} numberOfLines={1}>{row.name}</Text>
         <Text style={styles.chartMeta} numberOfLines={1}>{[row.genre || "Artist", row.topTrack?.title].filter(Boolean).join(" · ")}</Text>
       </Pressable>
-      {!!row.topTrack && <Pressable style={styles.playButton} onPress={() => onPlay?.(row)} accessibilityRole="button" accessibilityLabel={`Play ${row.topTrack.title} by ${row.name}`} hitSlop={6}><Icon name="play" size={13} color={colors.amber} /></Pressable>}
+      {!!row.topTrack && (
+        <View style={styles.trackActions}>
+          <Pressable style={styles.trackButton} onPress={() => onAdd?.(row)} accessibilityRole="button" accessibilityLabel={`Add ${row.topTrack.title} by ${row.name} to a playlist`} hitSlop={4}><Icon name="plus" size={14} color={colors.textDim} /></Pressable>
+          <Pressable style={[styles.trackButton, styles.playButton]} onPress={() => onPlay?.(row)} accessibilityRole="button" accessibilityLabel={`Play ${row.topTrack.title} by ${row.name}`} hitSlop={4}><Icon name="play" size={13} color={colors.amber} /></Pressable>
+        </View>
+      )}
       {!narrow && <ChartMetric row={row} source={source} />}
     </View>
   );
 }
 
-function DiscoverChart({ rows, source, info, query, onQuery, onOpenArtist, onPlay, compact, narrow }) {
+function DiscoverChart({ rows, source, info, query, onQuery, onOpenArtist, onPlay, onAdd, compact, narrow }) {
   const [expanded, setExpanded] = useState(false);
   const filtered = useMemo(() => filterDiscoverRows(rows, query), [rows, query]);
   const state = discoverSectionState({ status: "ready", rows: filtered, query });
@@ -83,7 +88,7 @@ function DiscoverChart({ rows, source, info, query, onQuery, onOpenArtist, onPla
           <Text style={styles.inlineEmptyTitle}>{source === "plays" ? "No member plays are ranked in this scene yet." : "No artists are ranked in this scene yet."}</Text>
         </View>
       ) : (
-        <View style={styles.chartList}>{visible.map((row, index) => <ArtistChartRow key={`${row.name}_${row.rank || index}`} row={row} index={index} source={source} onOpen={onOpenArtist} onPlay={onPlay} narrow={narrow} />)}</View>
+        <View style={styles.chartList}>{visible.map((row, index) => <ArtistChartRow key={`${row.name}_${row.rank || index}`} row={row} index={index} source={source} onOpen={onOpenArtist} onPlay={onPlay} onAdd={onAdd} narrow={narrow} />)}</View>
       )}
       {!query && filtered.length > limit && (
         <Pressable style={styles.expandButton} onPress={() => setExpanded((value) => !value)} accessibilityRole="button" accessibilityState={{ expanded }} accessibilityLabel={expanded ? "Show fewer chart artists" : `Show all ${filtered.length} chart artists`}>
@@ -122,7 +127,9 @@ const styles = StyleSheet.create({
   chartArtist: { color: colors.text, fontFamily: font, fontSize: 14, fontWeight: "800" },
   chartArtistLead: { fontSize: 16, fontWeight: "900" },
   chartMeta: { color: colors.textDim, fontFamily: font, fontSize: 11.5, paddingTop: 2 },
-  playButton: { width: 44, height: 44, borderRadius: 22, borderWidth: 1, borderColor: colors.amber, alignItems: "center", justifyContent: "center", paddingLeft: 2, flexShrink: 0 },
+  trackActions: { flexDirection: "row", alignItems: "center", gap: 5, flexShrink: 0 },
+  trackButton: { width: 44, height: 44, borderRadius: 22, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center", flexShrink: 0 },
+  playButton: { borderColor: colors.amber, paddingLeft: 2 },
   chartMetric: { minWidth: 42, alignItems: "flex-end" },
   chartMetricValue: { color: colors.text, fontFamily: mono, fontSize: 13, fontWeight: "900", fontVariant: ["tabular-nums"] },
   chartMetricLabel: { color: colors.textFaint, fontFamily: mono, fontSize: 8, fontWeight: "900", letterSpacing: 0.7, textTransform: "uppercase", paddingTop: 1 },

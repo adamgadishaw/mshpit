@@ -11,11 +11,14 @@ export function embeddedPlayerPreview(track) {
 }
 
 export function initialPlayerSources({ key, track } = {}) {
+  const videoId = directPlayerVideoId(track);
   return {
     key: key || null,
-    videoId: directPlayerVideoId(track),
+    videoId,
     preview: embeddedPlayerPreview(track),
+    youtubeStatus: null,
     youtubePending: false,
+    youtubeSettled: !!videoId,
     previewPending: !!track,
   };
 }
@@ -32,4 +35,62 @@ export function shouldResolvePlayerYouTube({ web, minimized, directVideoId, reso
 export function patchPlayerSources(current, key, patch) {
   if (!current || !key || current.key !== key) return current;
   return { ...current, ...patch };
+}
+
+// A cold track deliberately starts with no resolved URL while its independent
+// YouTube and preview lookups run. That empty *pending* state is not a playback
+// failure. Only call the track unavailable once both providers have settled and
+// neither the YouTube engine nor preview fallback can play it.
+export function playerSourcesUnavailable({
+  forCurrentTrack,
+  youtubeActive,
+  youtubeConnecting,
+  preview,
+  youtubePending,
+  youtubeRequired,
+  youtubeSettled,
+  previewPending,
+} = {}) {
+  return !!forCurrentTrack
+    && !youtubeActive
+    && !youtubeConnecting
+    && !preview
+    && !youtubePending
+    && (!youtubeRequired || youtubeSettled)
+    && !previewPending;
+}
+
+export function playerProvidersSettled({
+  web,
+  directVideoId,
+  youtubeSettled,
+  youtubePending,
+  youtubeConnecting,
+  previewPending,
+} = {}) {
+  return !previewPending
+    && !youtubePending
+    && (!web || !!directVideoId || youtubeSettled)
+    && !youtubeConnecting;
+}
+
+// Do not alarm the listener for one failed fallback while another viable engine
+// is still resolving. Once every applicable provider has settled, preserve real
+// engine errors and genuine empty-source failures with the existing media code.
+export function playerPlaybackFailure({
+  providersSettled,
+  audioErrorKind,
+  youtubeErrorKind,
+  unavailable,
+  resolverNotice,
+} = {}) {
+  if (!providersSettled) return null;
+  const sourceUnavailable = !!unavailable && !resolverNotice;
+  const kind = audioErrorKind || youtubeErrorKind || (sourceUnavailable ? "unavailable" : null);
+  if (!kind) return null;
+  return {
+    kind,
+    source: audioErrorKind ? "audio-preview" : "youtube-player",
+    toast: sourceUnavailable || (!!audioErrorKind && audioErrorKind !== "permission"),
+  };
 }

@@ -13,6 +13,7 @@ import { db, normName } from "./db.js";
 import { isProduction } from "./environment.js";
 import { parsePath, slugify, artistPath, venuePath, showPath, profilePath } from "../src/domain/urls.mjs";
 import { publicPageSitemapEntries } from "./publicPages.js";
+import { activeAccountSql } from "./accountVisibility.js";
 
 const SITE_NAME = "Pit";
 const DEFAULT_TITLE = "PIT - Your life's musical journey";
@@ -49,7 +50,8 @@ const jsonField = (row, field, fallback) => {
 // One namespace, so the order here IS the collision policy: a person owns their
 // handle first, then artists, then venues. It must match the client's resolver.
 function findByHandle(slug) {
-  const row = db.prepare("SELECT id,name,handle,bio,avatar_uri,verified FROM users WHERE lower(handle)=? AND is_banned=0").get(String(slug).toLowerCase());
+  const row = db.prepare(`SELECT u.id,u.name,u.handle,u.bio,u.avatar_uri,u.verified FROM users u
+    WHERE lower(u.handle)=? AND ${activeAccountSql("u")}`).get(String(slug).toLowerCase());
   if (!row) return null;
   return {
     kind: "profile",
@@ -68,7 +70,8 @@ function findArtist(slug) {
   const row = db.prepare("SELECT name,genre,bio,photo,data FROM artists WHERE norm=?").get(normName(slug.replace(/-/g, " ")))
     || db.prepare("SELECT name,genre,bio,photo,data FROM artists").all().find((r) => slugify(r.name) === slug);
   if (!row) return null;
-  const stats = db.prepare("SELECT COUNT(*) c, AVG(overall) avg FROM posts WHERE removed=0 AND lower(artist)=?").get(String(row.name).toLowerCase());
+  const stats = db.prepare(`SELECT COUNT(*) c,AVG(p.overall) avg FROM posts p JOIN users u ON u.id=p.user_id
+    WHERE p.removed=0 AND lower(p.artist)=? AND ${activeAccountSql("u")}`).get(String(row.name).toLowerCase());
   const nights = stats?.c || 0;
   const rating = nights && stats.avg ? ` Rated ${Number(stats.avg).toFixed(1)}/5 across ${nights} logged ${nights === 1 ? "night" : "nights"}.` : "";
   return {
@@ -82,9 +85,11 @@ function findArtist(slug) {
 }
 
 function findVenue(slug) {
-  const row = db.prepare("SELECT DISTINCT venue, city FROM posts WHERE removed=0").all().find((r) => slugify(r.venue) === slug);
+  const row = db.prepare(`SELECT DISTINCT p.venue,p.city FROM posts p JOIN users u ON u.id=p.user_id
+    WHERE p.removed=0 AND ${activeAccountSql("u")}`).all().find((r) => slugify(r.venue) === slug);
   if (!row) return null;
-  const stats = db.prepare("SELECT COUNT(*) c, AVG(room) avg FROM posts WHERE removed=0 AND lower(venue)=?").get(String(row.venue).toLowerCase());
+  const stats = db.prepare(`SELECT COUNT(*) c,AVG(p.room) avg FROM posts p JOIN users u ON u.id=p.user_id
+    WHERE p.removed=0 AND lower(p.venue)=? AND ${activeAccountSql("u")}`).get(String(row.venue).toLowerCase());
   const room = stats?.avg ? ` Room rated ${Number(stats.avg).toFixed(1)}/5.` : "";
   return {
     kind: "venue",
@@ -97,7 +102,9 @@ function findVenue(slug) {
 }
 
 function findShow(id) {
-  const row = db.prepare("SELECT id,artist,venue,city,date,overall,review,photos FROM posts WHERE id=? AND removed=0").get(id);
+  const row = db.prepare(`SELECT p.id,p.artist,p.venue,p.city,p.date,p.overall,p.review,p.photos
+    FROM posts p JOIN users u ON u.id=p.user_id
+    WHERE p.id=? AND p.removed=0 AND ${activeAccountSql("u")}`).get(id);
   if (!row) return null;
   const photos = jsonField(row, "photos", []);
   return {
@@ -227,16 +234,17 @@ export function sitemapXml() {
     urls.push({ loc: `${base}${page.path}`, priority: page.priority, changefreq: page.changefreq });
   }
 
-  for (const row of db.prepare(`SELECT artist, COUNT(*) c, MAX(created_at) latest FROM posts
-                                WHERE removed=0 AND artist<>'' GROUP BY lower(artist)`).all()) {
+  for (const row of db.prepare(`SELECT p.artist,COUNT(*) c,MAX(p.created_at) latest FROM posts p JOIN users u ON u.id=p.user_id
+                                WHERE p.removed=0 AND p.artist<>'' AND ${activeAccountSql("u")} GROUP BY lower(p.artist)`).all()) {
     urls.push({ loc: base + artistPath(row.artist), priority: "0.8", changefreq: "weekly", lastmod: row.latest });
   }
-  for (const row of db.prepare(`SELECT venue, MAX(created_at) latest FROM posts
-                                WHERE removed=0 AND venue<>'' GROUP BY lower(venue)`).all()) {
+  for (const row of db.prepare(`SELECT p.venue,MAX(p.created_at) latest FROM posts p JOIN users u ON u.id=p.user_id
+                                WHERE p.removed=0 AND p.venue<>'' AND ${activeAccountSql("u")} GROUP BY lower(p.venue)`).all()) {
     urls.push({ loc: base + venuePath(row.venue), priority: "0.6", changefreq: "weekly", lastmod: row.latest });
   }
-  for (const row of db.prepare(`SELECT id, created_at, updated_at FROM posts
-                                WHERE removed=0 AND kind='review' ORDER BY created_at DESC LIMIT 5000`).all()) {
+  for (const row of db.prepare(`SELECT p.id,p.created_at,p.updated_at FROM posts p JOIN users u ON u.id=p.user_id
+                                WHERE p.removed=0 AND p.kind='review' AND ${activeAccountSql("u")}
+                                ORDER BY p.created_at DESC LIMIT 5000`).all()) {
     urls.push({ loc: base + showPath(row.id), priority: "0.5", changefreq: "monthly", lastmod: row.updated_at || row.created_at });
   }
   // Artists with a real catalogue presence but no reviews yet still deserve

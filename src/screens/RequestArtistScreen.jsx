@@ -10,11 +10,23 @@ export default function RequestArtistScreen({ onClose }) {
   const [artistName, setArtistName] = useState("");
   const [note, setNote] = useState("");
   const [done, setDone] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
 
-  const submit = () => {
-    if (!artistName.trim()) return;
-    requestArtist(artistName, note);
-    setDone(true);
+  const valid = artistName.trim().length >= 2;
+  const submit = async () => {
+    if (!valid || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      const result = await requestArtist(artistName.trim(), note.trim());
+      if (result?.ok) setDone(true);
+      else setError(result?.error || "That request did not save. Please try again.");
+    } catch {
+      setError("That request did not save. Please try again.");
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -30,8 +42,8 @@ export default function RequestArtistScreen({ onClose }) {
         {done ? (
           <View style={styles.doneBox}>
             <Icon name="check" size={28} color={colors.good} />
-            <Text style={styles.doneTxt}>Request submitted. An admin will review it before your account is verified.</Text>
-            <Pressable style={styles.primary} onPress={onClose}>
+            <Text style={styles.doneTxt} accessibilityLiveRegion="polite" role="status">Request saved for admin review. Your account is not verified until an admin approves it.</Text>
+            <Pressable style={styles.primary} onPress={onClose} accessibilityRole="button">
               <Text style={styles.primaryTxt}>DONE</Text>
             </Pressable>
           </View>
@@ -42,19 +54,41 @@ export default function RequestArtistScreen({ onClose }) {
               reviewed by an admin before approval.
             </Text>
             <Text style={styles.label}>ARTIST / BAND NAME</Text>
-            <TextInput style={styles.input} value={artistName} onChangeText={setArtistName} placeholder="e.g. Turnstile" placeholderTextColor={colors.textFaint} maxLength={60} />
+            <TextInput
+              style={styles.input}
+              value={artistName}
+              onChangeText={(value) => { setArtistName(value); setError(""); }}
+              placeholder="e.g. Turnstile"
+              placeholderTextColor={colors.textFaint}
+              maxLength={60}
+              editable={!busy}
+              returnKeyType="next"
+              accessibilityLabel="Artist or band name"
+              accessibilityState={{ disabled: busy }}
+            />
             <Text style={styles.label}>VERIFICATION NOTE</Text>
             <TextInput
               style={[styles.input, styles.multiline]}
               value={note}
-              onChangeText={setNote}
+              onChangeText={(value) => { setNote(value); setError(""); }}
               placeholder="How can we verify you represent this artist? (socials, label, etc.)"
               placeholderTextColor={colors.textFaint}
               maxLength={500}
               multiline
+              editable={!busy}
+              accessibilityLabel="Verification note"
+              accessibilityHint="Add official social, label, or management details that can verify your relationship to the artist"
+              accessibilityState={{ disabled: busy }}
             />
-            <Pressable style={[styles.primary, !artistName.trim() && { opacity: 0.4 }]} onPress={submit}>
-              <Text style={styles.primaryTxt}>SUBMIT REQUEST</Text>
+            {!!error && <Text style={styles.error} accessibilityRole="alert" accessibilityLiveRegion="assertive">{error}</Text>}
+            <Pressable
+              style={[styles.primary, (!valid || busy) && styles.disabled]}
+              onPress={submit}
+              disabled={!valid || busy}
+              accessibilityRole="button"
+              accessibilityState={{ disabled: !valid || busy, busy }}
+            >
+              <Text style={styles.primaryTxt}>{busy ? "SUBMITTING..." : "SUBMIT REQUEST"}</Text>
             </Pressable>
           </>
         )}
@@ -77,7 +111,9 @@ const styles = StyleSheet.create({
   input: { backgroundColor: colors.surface, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.line, color: colors.text, paddingHorizontal: 14, paddingVertical: 12, fontSize: 15 },
   multiline: { minHeight: 90, textAlignVertical: "top" },
   primary: { backgroundColor: colors.amberStrong, borderRadius: radius.md, paddingVertical: 15, alignItems: "center", marginTop: 24 },
+  disabled: { opacity: 0.4 },
   primaryTxt: { color: "#1A1206", fontSize: 15, fontWeight: "800", letterSpacing: 1 },
+  error: { color: colors.danger, fontSize: 13, lineHeight: 19, marginTop: 12 },
   doneBox: { alignItems: "center", marginTop: 40, gap: 16 },
   doneTxt: { color: colors.text, fontSize: 15, lineHeight: 22, textAlign: "center" },
 });

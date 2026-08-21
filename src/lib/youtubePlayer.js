@@ -114,6 +114,7 @@ export function useYouTubePlayer(enabled, options = {}) {
   const volumeRef = useRef(1);
   const flushRef = useRef(() => {});
   const lifecycleRef = useRef(0);
+  const mediaKeyRef = useRef("");
 
   const [ready, setReady] = useState(false);
   const [state, setState] = useState({ position: 0, duration: 0, playing: false });
@@ -128,6 +129,7 @@ export function useYouTubePlayer(enabled, options = {}) {
     ? options
     : (options?.hostId || DEFAULT_HOST_ID);
   const mediaKey = typeof options === "object" ? (options?.mediaKey || "") : "";
+  mediaKeyRef.current = mediaKey;
   const retryMediaRef = useRef(mediaKey);
 
   // A failed iframe bootstrap should not poison every later track. Reuse the
@@ -192,7 +194,7 @@ export function useYouTubePlayer(enabled, options = {}) {
           player.pauseVideo?.();
         }
       } catch {
-        setError({ kind: "playback", videoId: pending.videoId, message: "Video unavailable." });
+        setError({ kind: "playback", videoId: pending.videoId, mediaKey: mediaKeyRef.current, message: "Video unavailable." });
       }
       pendingPlayRef.current = false;
       return;
@@ -247,7 +249,7 @@ export function useYouTubePlayer(enabled, options = {}) {
       // before treating it as a real failure.
       setReady(false);
       if (hostWaitRef.current >= HOST_WAIT_ATTEMPTS) {
-        setError({ kind: "init", message: `YouTube player host #${hostId} was not found.` });
+        setError({ kind: "init", mediaKey: mediaKeyRef.current, message: `YouTube player host #${hostId} was not found.` });
         return;
       }
       const attempt = hostWaitRef.current + 1;
@@ -329,7 +331,7 @@ export function useYouTubePlayer(enabled, options = {}) {
       readyTimeout = setTimeout(() => {
         if (!isCurrent()) return;
         initializationFailed = true;
-        setError({ kind: "init", message: "YouTube player failed to initialize." });
+        setError({ kind: "init", mediaKey: mediaKeyRef.current, message: "YouTube player failed to initialize." });
       }, 12_000);
 
       try {
@@ -382,6 +384,7 @@ export function useYouTubePlayer(enabled, options = {}) {
                 kind,
                 code,
                 videoId: videoIdRef.current,
+                mediaKey: mediaKeyRef.current,
                 message: kind === "embed" ? "This video cannot be embedded; playing a preview." : "Video unavailable.",
               });
             },
@@ -403,10 +406,10 @@ export function useYouTubePlayer(enabled, options = {}) {
         if (isCurrent()) playerRef.current = player;
       } catch {
         clearTimeout(readyTimeout);
-        if (isCurrent()) setError({ kind: "init", message: "YouTube player failed to load." });
+        if (isCurrent()) setError({ kind: "init", mediaKey: mediaKeyRef.current, message: "YouTube player failed to load." });
       }
     }).catch(() => {
-      if (isCurrent()) setError({ kind: "init", message: "YouTube player failed to load." });
+      if (isCurrent()) setError({ kind: "init", mediaKey: mediaKeyRef.current, message: "YouTube player failed to load." });
     });
 
     return () => {

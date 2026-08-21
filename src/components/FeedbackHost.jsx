@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Platform, Pressable, StyleSheet, Text, View } from "react-native";
-import { colors, mono, radius } from "../theme";
+import { colors, focusRing, mono, radius } from "../theme";
 import { subscribeFeedback } from "../lib/diagnostics";
 import Icon from "./Icon";
 
@@ -25,7 +25,7 @@ export default function FeedbackHost({ onOpenDiagnostics }) {
 
   return (
     <View style={[styles.host, styles.hostPointerEvents]}>
-      <View style={[styles.card, { borderColor: accent }]} accessibilityRole="alert">
+      <View style={[styles.card, { borderColor: accent }]} accessibilityRole="alert" accessibilityLiveRegion={entry.severity === "info" ? "polite" : "assertive"}>
         <View style={[styles.signal, { backgroundColor: accent }]} />
         <View style={styles.icon}>
           <Icon name="music" size={18} color={accent} strokeWidth={2.2} />
@@ -37,6 +37,7 @@ export default function FeedbackHost({ onOpenDiagnostics }) {
           </View>
           <Text style={styles.message}>{entry.message}</Text>
           <Pressable
+            style={({ focused, pressed }) => [styles.detailsButton, focused && focusRing, pressed && styles.controlPressed]}
             onPress={() => { setEntry(null); onOpenDiagnostics?.(); }}
             accessibilityRole="button"
             accessibilityLabel={`View diagnostics for ${entry.code}`}
@@ -45,7 +46,7 @@ export default function FeedbackHost({ onOpenDiagnostics }) {
             <Text style={[styles.details, { color: accent }]}>View failure details</Text>
           </Pressable>
         </View>
-        <Pressable style={styles.close} onPress={() => setEntry(null)} accessibilityRole="button" accessibilityLabel="Dismiss error message" hitSlop={8}>
+        <Pressable style={({ focused, pressed }) => [styles.close, focused && focusRing, pressed && styles.controlPressed]} onPress={() => setEntry(null)} accessibilityRole="button" accessibilityLabel="Dismiss message" hitSlop={8}>
           <Icon name="x" size={16} color={colors.textDim} />
         </Pressable>
       </View>
@@ -89,5 +90,7 @@ const styles = StyleSheet.create({
   code: { fontFamily: mono, fontSize: 10.5, fontWeight: "800" },
   message: { color: colors.textDim, fontSize: 12.5, lineHeight: 18 },
   details: { fontSize: 12, fontWeight: "800", marginTop: 2 },
-  close: { width: 26, height: 26, alignItems: "center", justifyContent: "center", marginTop: -5, marginRight: -5 },
+  detailsButton: { minHeight: 44, alignSelf: "flex-start", justifyContent: "center" },
+  close: { width: 44, height: 44, alignItems: "center", justifyContent: "center", marginTop: -9, marginRight: -9 },
+  controlPressed: { opacity: 0.72 },
 });

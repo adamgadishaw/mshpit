@@ -60,7 +60,7 @@ function SongBar({ rank, title, sub, count, max, art, onPress, delay = 0 }) {
 // a hero identity card, then the sound (donut + podium + charts), the photo
 // wall, plans, and a compact toolbelt. Every number is DERIVED from real
 // activity; empty sections hide instead of padding the page.
-export default function YouScreen({ feed, onLogin, onLogout, onAdmin, onAddTourDate, onRequestArtist, onEditProfile, onOpenProfile, onOpen, onActivity, onInbox, onCalendar, onOpenNearby, homeCity, onPlay, onOpenPhotos, onOpenArtist }) {
+export default function YouScreen({ feed, onLogin, onLogout, onAdmin, onAddTourDate, onRequestArtist, onEditProfile, onOpenProfile, onOpen, onActivity, onInbox, onCalendar, onListeningHistory, onOpenNearby, homeCity, onPlay, onOpenPhotos, onOpenArtist }) {
   const { session, logsByUser, unreadNotifications, inboxUnread, playHistory, genreOfArtist, goingFor, myPlaylists, loadMyPlaylists, userBadges, userPoints } = useStore();
   const mine = session ? logsByUser(session.id) : [];
   const notif = session ? unreadNotifications() : 0;
@@ -280,6 +280,14 @@ export default function YouScreen({ feed, onLogin, onLogout, onAdmin, onAddTourD
       {/* ---- YOUR SOUND: donut + legend, podium, song chart ---- */}
       <Reveal delay={90}>
         <Text style={styles.sectionLabel}>YOUR SOUND</Text>
+        <Pressable style={styles.historyLink} onPress={onListeningHistory} disabled={!onListeningHistory} accessibilityRole="button" accessibilityLabel="Open listening history" accessibilityState={{ disabled: !onListeningHistory }}>
+          <View style={styles.historyLinkIcon}><Icon name="clock" size={17} color={colors.amber} /></View>
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={styles.historyLinkTitle}>Listening history</Text>
+            <Text style={styles.historyLinkSub}>Replay recent songs and load older plays</Text>
+          </View>
+          <Icon name="chevron-right" size={17} color={colors.textDim} />
+        </Pressable>
         {sound.totalPlays === 0 ? (
           <View style={styles.card}><Text style={styles.emptyHint}>Play songs from any artist page and your charts build themselves.</Text></View>
         ) : (
@@ -524,6 +532,10 @@ const styles = StyleSheet.create({
   memoryActionDisabled: { opacity: 0.45 },
   memoryActionText: { color: colors.amber, fontSize: 11.5, fontWeight: "800" },
   actionStatus: { color: colors.textDim, fontSize: 11.5, marginTop: 8 },
+  historyLink: { minHeight: 68, flexDirection: "row", alignItems: "center", gap: 11, marginBottom: 10, padding: 11, borderRadius: radius.md, borderWidth: 1, borderColor: colors.amber, backgroundColor: colors.bgElev },
+  historyLinkIcon: { width: 42, height: 42, borderRadius: 21, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
+  historyLinkTitle: { color: colors.text, fontSize: 14, fontWeight: "800" },
+  historyLinkSub: { color: colors.textDim, fontSize: 11.5, marginTop: 2 },
   rediscoverRail: { gap: 10, paddingRight: 8 },
   rediscoverCard: { width: 148, minHeight: 210, padding: 10, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface },
   rediscoverArt: { width: "100%", aspectRatio: 1, borderRadius: radius.sm, backgroundColor: colors.surfaceAlt },

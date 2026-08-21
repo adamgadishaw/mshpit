@@ -1,6 +1,6 @@
 import { View, Pressable } from "react-native";
 import Svg, { Polygon } from "react-native-svg";
-import { colors } from "../theme";
+import { colors, focusRing } from "../theme";
 
 const STAR = "12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2";
 
@@ -21,6 +21,7 @@ function OneStar({ size, fill, color }) {
 // Tap a star to rate. Tap the left half for a half-star, right half for a full
 // one. No plus/minus buttons. value is 0-5 in 0.5 steps.
 export default function TapStars({ value = 0, onChange, size = 40, gap = 8, color = colors.gold }) {
+  const rating = Math.max(0, Math.min(5, Number(value) || 0));
   const width = size * 5 + gap * 4;
   const choose = (event) => {
     const native = event?.nativeEvent || {};
@@ -34,26 +35,44 @@ export default function TapStars({ value = 0, onChange, size = 40, gap = 8, colo
     }
     // Keyboard/synthetic activation has no pointer coordinate. Keep its current
     // position; screen readers use the explicit increment/decrement actions.
-    if (!Number.isFinite(rawX)) rawX = (Math.max(0.5, value || 0.5) / 5) * width;
+    if (!Number.isFinite(rawX)) rawX = (Math.max(0.5, rating || 0.5) / 5) * width;
     const x = Math.max(0, Math.min(width - 1, rawX));
     const index = Math.min(4, Math.floor(x / (size + gap)));
     const within = x - index * (size + gap);
     onChange?.(index + (within < size / 2 ? 0.5 : 1));
   };
-  const adjust = (direction) => onChange?.(Math.max(0, Math.min(5, value + (direction === "increment" ? 0.5 : -0.5))));
+  const adjust = (direction) => onChange?.(Math.max(0, Math.min(5, rating + (direction === "increment" ? 0.5 : -0.5))));
+  const keyDown = (event) => {
+    const key = event?.nativeEvent?.key || event?.key;
+    if (key === "ArrowUp" || key === "ArrowRight") {
+      event.preventDefault?.();
+      adjust("increment");
+    } else if (key === "ArrowDown" || key === "ArrowLeft") {
+      event.preventDefault?.();
+      adjust("decrement");
+    } else if (key === "Home") {
+      event.preventDefault?.();
+      onChange?.(0);
+    } else if (key === "End") {
+      event.preventDefault?.();
+      onChange?.(5);
+    }
+  };
   return (
     <Pressable
-      style={{ width, minHeight: 44, justifyContent: "center" }}
+      style={({ focused }) => [{ width, minHeight: 44, justifyContent: "center" }, focused && focusRing]}
       onPress={choose}
       accessibilityRole="adjustable"
       accessibilityLabel="Rating"
-      accessibilityValue={{ min: 0, max: 5, now: value, text: `${value} out of 5 stars` }}
+      accessibilityHint="Swipe up or down to change the rating by half a star"
+      accessibilityValue={{ min: 0, max: 5, now: rating, text: `${rating} out of 5 stars` }}
       accessibilityActions={[{ name: "increment", label: "Increase rating" }, { name: "decrement", label: "Decrease rating" }]}
       onAccessibilityAction={(event) => adjust(event.nativeEvent.actionName)}
+      onKeyDown={keyDown}
     >
       <View pointerEvents="none" style={{ flexDirection: "row", gap }}>
         {[0, 1, 2, 3, 4].map((i) => {
-          const fill = value >= i + 1 ? 1 : value >= i + 0.5 ? 0.5 : 0;
+          const fill = rating >= i + 1 ? 1 : rating >= i + 0.5 ? 0.5 : 0;
           return <OneStar key={i} size={size} fill={fill} color={color} />;
         })}
       </View>

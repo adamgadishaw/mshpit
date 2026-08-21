@@ -71,7 +71,7 @@ test("verification retry receipts are additive, bounded, and avoid raw email", (
     "the lookup index must be created only after legacy databases gain the column");
 });
 
-test("legacy attendance and tour-date tables gain columns before their indexes", async () => {
+test("legacy attendance, tour-date, and campaign tables gain safe additive columns", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "pit-index-migration-order-"));
   process.env.PIT_DATA_DIR = dataDir;
 
@@ -79,6 +79,9 @@ test("legacy attendance and tour-date tables gain columns before their indexes",
   // columns and indexes absent from the previous release. This keeps the fixture
   // HEAD-shaped without duplicating hundreds of unrelated CREATE statements.
   const previous = await import(`./db.js?index-migration-fixture=${encodeURIComponent(dataDir)}`);
+  previous.db.prepare(`INSERT INTO email_campaigns
+    (id,name,subject,body,audience,status,created_at,updated_at,test_sent_at)
+    VALUES ('legacy_tested_campaign','Legacy','Old approved copy','Body','staff','draft',1,1,1)`).run();
   previous.db.exec(`
     DROP INDEX idx_going_cursor;
     DROP INDEX idx_tourdates_owner_show;
@@ -87,17 +90,39 @@ test("legacy attendance and tour-date tables gain columns before their indexes",
     ALTER TABLE going DROP COLUMN created_at;
     ALTER TABLE tour_dates DROP COLUMN release_at;
     ALTER TABLE tour_dates DROP COLUMN owner_id;
+    ALTER TABLE email_queue DROP COLUMN claim_token;
+    ALTER TABLE email_queue DROP COLUMN claimed_at;
+    ALTER TABLE email_campaigns DROP COLUMN tested_revision;
+    ALTER TABLE email_campaigns DROP COLUMN content_revision;
   `);
 
   const upgraded = await import(`./db.js?index-migration-upgrade=${encodeURIComponent(dataDir)}`);
   const goingColumns = new Set(upgraded.db.prepare("PRAGMA table_info(going)").all().map((row) => row.name));
   const tourColumns = new Set(upgraded.db.prepare("PRAGMA table_info(tour_dates)").all().map((row) => row.name));
+  const emailQueueColumns = new Set(upgraded.db.prepare("PRAGMA table_info(email_queue)").all().map((row) => row.name));
+  const campaignColumns = new Set(upgraded.db.prepare("PRAGMA table_info(email_campaigns)").all().map((row) => row.name));
   const goingIndexes = new Set(upgraded.db.prepare("PRAGMA index_list(going)").all().map((row) => row.name));
   const tourIndexes = new Set(upgraded.db.prepare("PRAGMA index_list(tour_dates)").all().map((row) => row.name));
 
   assert.ok(goingColumns.has("created_at"));
   assert.ok(tourColumns.has("owner_id"));
   assert.ok(tourColumns.has("release_at"));
+  assert.ok(emailQueueColumns.has("claimed_at"));
+  assert.ok(emailQueueColumns.has("claim_token"));
+  assert.ok(campaignColumns.has("content_revision"));
+  assert.ok(campaignColumns.has("tested_revision"));
+  const legacyCampaign = upgraded.emailStmts.campaignById.get("legacy_tested_campaign");
+  assert.equal(legacyCampaign.content_revision, 1);
+  assert.equal(legacyCampaign.tested_revision, null,
+    "a legacy test timestamp is not silently bound to unknown historical copy");
+  assert.equal(legacyCampaign.test_sent_at, 1);
+  assert.equal(upgraded.emailStmts.startCampaign.run({
+    id: legacyCampaign.id,
+    started_at: 2,
+    total: 0,
+    revision: legacyCampaign.content_revision,
+    require_current_test: 1,
+  }).changes, 0, "a migrated legacy approval cannot start a broadcast without a fresh revision-bound test");
   assert.ok(goingIndexes.has("idx_going_cursor"));
   assert.ok(tourIndexes.has("idx_tourdates_visibility"));
   assert.ok(tourIndexes.has("idx_tourdates_owner"));

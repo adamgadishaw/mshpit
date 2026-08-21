@@ -8,34 +8,34 @@ import { writeThemePair } from "./domain/themeStorage.mjs";
 
 const STAGE = {
   bg: "#07090F", bgElev: "#0C1018", surface: "#10151F", surfaceAlt: "#1A2030",
-  line: "#232B42", lineSoft: "#1A202F", text: "#F4EFE7", textDim: "#9AA0B6", textFaint: "#646B82",
-  amber: "#F2A65A", amberStrong: "#FF8C42", accentEdge: "#A94F1F", gold: "#E8B65A", magenta: "#E0457B", cool: "#5B8DEF", good: "#6FCF97", danger: "#E0457B",
+  line: "#232B42", lineSoft: "#1A202F", text: "#F4EFE7", textDim: "#9AA0B6", textFaint: "#8089A5",
+  amber: "#F2A65A", amberStrong: "#FF8C42", accentEdge: "#A94F1F", gold: "#E8B65A", magenta: "#ED5B8D", cool: "#5B8DEF", good: "#6FCF97", danger: "#ED5B8D",
 };
 
 const DAYLIGHT = {
   bg: "#FBF7F0", bgElev: "#FFFFFF", surface: "#FFFFFF", surfaceAlt: "#F3ECE1",
-  line: "#E4DACB", lineSoft: "#EFE8DC", text: "#1C140C", textDim: "#6E6355", textFaint: "#9C8F7C",
-  amber: "#C96A1C", amberStrong: "#E47A24", accentEdge: "#9B4710", gold: "#B5862A", magenta: "#C8356B", cool: "#3D6FD6", good: "#2E9E5B", danger: "#C8356B",
+  line: "#E4DACB", lineSoft: "#EFE8DC", text: "#1C140C", textDim: "#6E6355", textFaint: "#756958",
+  amber: "#9C4708", amberStrong: "#E47A24", accentEdge: "#9B4710", gold: "#825F10", magenta: "#B52B5C", cool: "#315FBC", good: "#19733F", danger: "#B52B5C",
 };
 
 // Synthwave: deep indigo with violet + magenta gels.
 const NEON = {
   bg: "#0C0A1A", bgElev: "#131029", surface: "#1B1636", surfaceAlt: "#251D48",
-  line: "#362B63", lineSoft: "#2A2150", text: "#F1ECFF", textDim: "#ADA2D6", textFaint: "#726699",
+  line: "#362B63", lineSoft: "#2A2150", text: "#F1ECFF", textDim: "#ADA2D6", textFaint: "#9285BD",
   amber: "#C084FC", amberStrong: "#A855F7", accentEdge: "#6824A8", gold: "#F0ABFC", magenta: "#F472B6", cool: "#38BDF8", good: "#34D399", danger: "#FB7185",
 };
 
 // Forest: near-black green with emerald + gold.
 const FOREST = {
   bg: "#08120D", bgElev: "#0D1A13", surface: "#12241A", surfaceAlt: "#1A3025",
-  line: "#274A38", lineSoft: "#1F3A2C", text: "#E9F5EC", textDim: "#90AE9C", textFaint: "#5E7A69",
+  line: "#274A38", lineSoft: "#1F3A2C", text: "#E9F5EC", textDim: "#90AE9C", textFaint: "#7F9D8A",
   amber: "#34D399", amberStrong: "#10B981", accentEdge: "#087557", gold: "#FBBF24", magenta: "#F472B6", cool: "#38BDF8", good: "#34D399", danger: "#FB7185",
 };
 
 // Ember: warm charcoal dark with a coral/pink primary + violet gel, a hot dark.
 const EMBER = {
   bg: "#150E11", bgElev: "#1D1318", surface: "#251820", surfaceAlt: "#33232C",
-  line: "#412C38", lineSoft: "#2D1E28", text: "#FCEEE9", textDim: "#CBA69F", textFaint: "#8C6A64",
+  line: "#412C38", lineSoft: "#2D1E28", text: "#FCEEE9", textDim: "#CBA69F", textFaint: "#AC8981",
   amber: "#FF8A73", amberStrong: "#FF6B5E", accentEdge: "#B63E38", gold: "#F4B45C", magenta: "#C86BFF", cool: "#5BD0EF", good: "#5FD08A", danger: "#FF5E7E",
 };
 
@@ -43,51 +43,51 @@ const EMBER = {
 // alternative to Daylight, not a near-twin.
 const ICE = {
   bg: "#F1F6FC", bgElev: "#FFFFFF", surface: "#FFFFFF", surfaceAlt: "#E6EEF8",
-  line: "#D2DEEE", lineSoft: "#E2EAF5", text: "#0F1B2A", textDim: "#566880", textFaint: "#8FA0B6",
-  amber: "#2E86DE", amberStrong: "#1B6FD1", accentEdge: "#114B91", gold: "#B5862A", magenta: "#7B5CF0", cool: "#0FA9C4", good: "#159E6B", danger: "#E0457B",
+  line: "#D2DEEE", lineSoft: "#E2EAF5", text: "#0F1B2A", textDim: "#566880", textFaint: "#586A81",
+  amber: "#1769AA", amberStrong: "#2E86DE", accentEdge: "#114B91", gold: "#76540D", magenta: "#6842D0", cool: "#087389", good: "#087249", danger: "#B4235A",
 };
 
 // Rose: soft blush LIGHT theme led by rose-pink + gold stars.
 const ROSE = {
   bg: "#FDF3F6", bgElev: "#FFFFFF", surface: "#FFFFFF", surfaceAlt: "#F8E6EC",
-  line: "#EFD2DC", lineSoft: "#F4E1E8", text: "#2A1420", textDim: "#7A5563", textFaint: "#B1899C",
-  amber: "#E04E86", amberStrong: "#D53A78", accentEdge: "#9A2453", gold: "#C79A2E", magenta: "#9B5CF0", cool: "#4A8FE0", good: "#2E9E5B", danger: "#D53A78",
+  line: "#EFD2DC", lineSoft: "#F4E1E8", text: "#2A1420", textDim: "#7A5563", textFaint: "#855C6E",
+  amber: "#B22B65", amberStrong: "#EA5C93", accentEdge: "#9A2453", gold: "#7C5A0A", magenta: "#7B3FB8", cool: "#2965AA", good: "#1C7642", danger: "#B4235A",
 };
 
 // Mint: pale green LIGHT theme led by emerald + a coral gel.
 const MINT = {
   bg: "#EFFAF4", bgElev: "#FFFFFF", surface: "#FFFFFF", surfaceAlt: "#E0F2E9",
-  line: "#CCE7D8", lineSoft: "#DDF0E6", text: "#0E241A", textDim: "#4E7060", textFaint: "#8DB0A0",
-  amber: "#14A06A", amberStrong: "#0E9160", accentEdge: "#075D3E", gold: "#C08A2E", magenta: "#C05CE0", cool: "#2E9ED6", good: "#0E9160", danger: "#E0457B",
+  line: "#CCE7D8", lineSoft: "#DDF0E6", text: "#0E241A", textDim: "#4E7060", textFaint: "#507160",
+  amber: "#08784C", amberStrong: "#0E9160", accentEdge: "#075D3E", gold: "#76540D", magenta: "#943CB0", cool: "#116C94", good: "#087249", danger: "#B4235A",
 };
 
 // Backstage: cool production-blue, inspired by flight cases, lanyards, and the
 // light leaking out from behind a stage curtain.
 const BACKSTAGE = {
   bg: "#071018", bgElev: "#0D1824", surface: "#132234", surfaceAlt: "#1B3046",
-  line: "#294761", lineSoft: "#1E354A", text: "#F3F8FC", textDim: "#A2B7C7", textFaint: "#668096",
+  line: "#294761", lineSoft: "#1E354A", text: "#F3F8FC", textDim: "#A2B7C7", textFaint: "#819CB3",
   amber: "#49C6E5", amberStrong: "#22B5D6", accentEdge: "#0B7189", gold: "#F6C85F", magenta: "#FF6B8A", cool: "#7B8CFF", good: "#48D597", danger: "#FF6B7D",
 };
 
 // Vinyl: near-black wax, warm sleeve paper, and a restrained red label.
 const VINYL = {
   bg: "#0B0A09", bgElev: "#12100E", surface: "#1B1815", surfaceAlt: "#29241F",
-  line: "#3D352E", lineSoft: "#2D2823", text: "#FFF8E8", textDim: "#C8BBA5", textFaint: "#847769",
-  amber: "#F6C453", amberStrong: "#E9A820", accentEdge: "#9A6512", gold: "#FFD76A", magenta: "#E84A5F", cool: "#63A4FF", good: "#63CE8B", danger: "#F45B69",
+  line: "#3D352E", lineSoft: "#2D2823", text: "#FFF8E8", textDim: "#C8BBA5", textFaint: "#9B8D7F",
+  amber: "#F6C453", amberStrong: "#E9A820", accentEdge: "#9A6512", gold: "#FFD76A", magenta: "#F46173", cool: "#63A4FF", good: "#63CE8B", danger: "#F45B69",
 };
 
 // Sunset: a bright festival-poster palette that stays readable in daylight.
 const SUNSET = {
   bg: "#FFF4EA", bgElev: "#FFFDFB", surface: "#FFFFFF", surfaceAlt: "#FCE4D5",
-  line: "#EBCDBB", lineSoft: "#F4DED0", text: "#321B17", textDim: "#795A50", textFaint: "#AA8577",
-  amber: "#F06C4E", amberStrong: "#E8543F", accentEdge: "#A63527", gold: "#C98A22", magenta: "#A94FD8", cool: "#4979D1", good: "#25865A", danger: "#C83C54",
+  line: "#EBCDBB", lineSoft: "#F4DED0", text: "#321B17", textDim: "#795A50", textFaint: "#805E4F",
+  amber: "#A53A24", amberStrong: "#E8543F", accentEdge: "#A63527", gold: "#8C5A0D", magenta: "#8435B0", cool: "#315FAE", good: "#1B744A", danger: "#B52C47",
 };
 
 // Lavender: soft album-art pastels with a strong indigo control color.
 const LAVENDER = {
   bg: "#F5F1FF", bgElev: "#FFFFFF", surface: "#FFFFFF", surfaceAlt: "#E9E1F8",
-  line: "#D8CDEE", lineSoft: "#E7DFF4", text: "#21152F", textDim: "#665779", textFaint: "#9687AA",
-  amber: "#7657D6", amberStrong: "#6845CF", accentEdge: "#3E258F", gold: "#AE7B17", magenta: "#D14F93", cool: "#3389C8", good: "#1F8A63", danger: "#CF4265",
+  line: "#D8CDEE", lineSoft: "#E7DFF4", text: "#21152F", textDim: "#665779", textFaint: "#6F5E80",
+  amber: "#6643C0", amberStrong: "#8B70E0", accentEdge: "#3E258F", gold: "#76540D", magenta: "#A52C73", cool: "#12658F", good: "#147151", danger: "#B52A55",
 };
 
 const PRESETS = {

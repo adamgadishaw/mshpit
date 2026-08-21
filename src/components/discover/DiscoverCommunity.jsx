@@ -10,7 +10,7 @@ import { compactDiscoverNumber, discoverPlaybackTrack } from "../../domain/disco
 import { presentFriendsListening } from "../../domain/listeningRediscovery.mjs";
 import { SectionHeading } from "./DiscoverPrimitives";
 
-function FriendTrack({ entry, onPlay }) {
+function FriendTrack({ entry, onPlay, onAdd }) {
   const track = discoverPlaybackTrack(entry);
   const copy = (
     <>
@@ -24,13 +24,18 @@ function FriendTrack({ entry, onPlay }) {
   );
   if (!track) return <View style={styles.friendTrack}>{copy}</View>;
   return (
-    <Pressable style={styles.friendTrack} onPress={() => onPlay?.(track)} accessibilityRole="button" accessibilityLabel={`Play ${track.title} by ${track.artist}. ${entry.recency.label}`}>
-      {copy}
-    </Pressable>
+    <View style={styles.friendTrackActions}>
+      <Pressable style={[styles.friendTrack, styles.friendTrackPlayable]} onPress={() => onPlay?.(track)} accessibilityRole="button" accessibilityLabel={`Play ${track.title} by ${track.artist}. ${entry.recency.label}`}>
+        {copy}
+      </Pressable>
+      <Pressable style={styles.friendTrackAdd} onPress={() => onAdd?.(track)} accessibilityRole="button" accessibilityLabel={`Add ${track.title} by ${track.artist} to a playlist`}>
+        <Icon name="plus" size={14} color={colors.textDim} />
+      </Pressable>
+    </View>
   );
 }
 
-export const FriendsListening = memo(function FriendsListening({ rows, loading, error, signedIn, onRetry, onOpenProfile, onPlay }) {
+export const FriendsListening = memo(function FriendsListening({ rows, loading, error, signedIn, onRetry, onOpenProfile, onPlay, onAdd }) {
   const visibleRows = presentFriendsListening(rows, { now: Date.now() });
   if (!signedIn || (!loading && !error && !visibleRows.length)) return null;
   const hasFreshPlay = visibleRows.some((entry) => entry.recency.state === "fresh");
@@ -52,7 +57,7 @@ export const FriendsListening = memo(function FriendsListening({ rows, loading, 
                 <Avatar user={entry.user} size={44} />
                 <Text style={styles.friendName} numberOfLines={1}>{entry.user.name}</Text>
               </Pressable>
-              <FriendTrack entry={entry} onPlay={onPlay} />
+              <FriendTrack entry={entry} onPlay={onPlay} onAdd={onAdd} />
             </View>
           ))}
         </ScrollView>
@@ -105,7 +110,10 @@ const styles = StyleSheet.create({
   friendCard: { width: 166, padding: 11, gap: 9, borderRadius: radius.md, borderCurve: "continuous", backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.lineSoft },
   friendPerson: { minHeight: 54, flexDirection: "row", alignItems: "center", gap: 8 },
   friendName: { flex: 1, color: colors.text, fontFamily: font, fontSize: 12, fontWeight: "800" },
+  friendTrackActions: { flexDirection: "row", alignItems: "stretch", gap: 5 },
   friendTrack: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 7, paddingHorizontal: 8, borderRadius: radius.sm, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line },
+  friendTrackPlayable: { flex: 1, minWidth: 0 },
+  friendTrackAdd: { width: 44, minHeight: 44, alignItems: "center", justifyContent: "center", borderRadius: radius.sm, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line },
   friendTrackCopy: { flex: 1, minWidth: 0 },
   friendTrackTitle: { color: colors.text, fontFamily: font, fontSize: 11, fontWeight: "800" },
   friendTrackArtist: { color: colors.textDim, fontFamily: font, fontSize: 9.5, paddingTop: 1 },
