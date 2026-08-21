@@ -4,7 +4,7 @@ import { clean, clampRating, LIMITS } from "../lib/validate.js";
 const DIMENSION_KEYS = ["performance", "setlist", "sound", "venue", "crowd", "experience"];
 const EDITABLE_KEYS = new Set([
   "artist", "artistKey", "venue", "city", "date", "overall", "band", "room", "dims",
-  "review", "photos", "photosPublic", "landingShowcase", "setlist", "tour", "tags", "song", "playlistId",
+  "review", "photos", "mediaAssetIds", "photosPublic", "landingShowcase", "setlist", "tour", "tags", "song", "playlistId",
 ]);
 const INVALID_STORED_VALUE = Symbol("invalid-stored-post-value");
 
@@ -64,6 +64,10 @@ function intendedValue(key, value) {
     case "dims": return cleanDimensions(value);
     case "review": return clean(value, { max: LIMITS.review, newlines: true });
     case "photos": return cleanArray(value, { maxItems: 8, maxLen: 2000 });
+    case "mediaAssetIds": {
+      if (!Array.isArray(value)) return [];
+      return value.filter((item) => typeof item === "string" && /^ma_[A-Za-z0-9_-]{8,80}$/.test(item)).slice(0, 8);
+    }
     case "photosPublic":
     case "landingShowcase": return !!value;
     case "setlist": return cleanArray(value, { maxItems: 40, maxLen: 120 });
@@ -108,6 +112,7 @@ function storedValue(post, key) {
       }
       break;
     case "photos":
+    case "mediaAssetIds":
     case "setlist":
     case "tags":
       if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) return INVALID_STORED_VALUE;

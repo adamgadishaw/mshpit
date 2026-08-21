@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { recommendTracks, uniqueTracks } from "./recommend.mjs";
+import { recommendTracks, trackIdentities, uniqueTracks } from "./recommend.mjs";
 
 const artist = (name, genre, popularity, songs) => ({
   name, genre, popularity, art: `${name}.jpg`,
@@ -22,6 +22,13 @@ const CATALOG = [
 ];
 
 const titles = (list) => list.map((t) => t.title);
+
+test("metadata identities keep pipe-bearing artist/title tuples separate", () => {
+  assert.notEqual(
+    trackIdentities({ artist: "a|b", title: "c" }, null)[0],
+    trackIdentities({ artist: "a", title: "b|c" }, null)[0],
+  );
+});
 
 test("one prolific artist cannot dominate the queue", () => {
   const out = recommendTracks({ candidates: CATALOG, genre: "punk", count: 20 });

@@ -17,6 +17,7 @@ test("a selected J. Cole catalog key survives the review create payload", () => 
     dims: { performance: 5 },
     review: "Toronto night one",
     photos: [],
+    mediaAssetIds: ["ma_abcdefgh12345678", "ma_abcdefgh12345678", "forged"],
     photosPublic: true,
     landingShowcase: true,
     setlist: [],
@@ -29,11 +30,17 @@ test("a selected J. Cole catalog key survives the review create payload", () => 
   assert.equal(body.venue, "Scotiabank Arena");
   assert.equal(body.date, "2026-07-27");
   assert.equal(body.landingShowcase, 1);
+  assert.deepEqual(body.mediaAssetIds, ["ma_abcdefgh12345678"]);
 });
 
 test("review payloads never feature photos that are not public", () => {
   assert.equal(buildReviewCreateBody({ id: "post_private_001", photosPublic: false, landingShowcase: true }).landingShowcase, 0);
   assert.equal(buildReviewEditBody({ photosPublic: false, landingShowcase: true }).landingShowcase, false);
+});
+
+test("an explicit empty stable-media selection clears post media on edit", () => {
+  const body = buildReviewEditBody({ photos: [], mediaAssetIds: [], photosPublic: true });
+  assert.deepEqual(body.mediaAssetIds, []);
 });
 
 test("review edits sanitize and explicitly send the selected artist key", () => {

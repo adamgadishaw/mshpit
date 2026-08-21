@@ -117,8 +117,12 @@ test("legacy retry rows without hashes are compared safely and healed", () => {
     photos: ["https://cdn.example/jcole.jpg"],
     photosPublic: true,
   };
-  const first = create({ user, ip: "legacy-retry-first", body });
-  db.prepare("UPDATE posts SET client_mutation_hash=NULL WHERE id=?").run(first.id);
+  const legacyPostId = "p_legacy_retry_without_hash";
+  db.prepare(`INSERT INTO posts
+    (id,user_id,artist,venue,overall,review,photos,photos_public,kind,client_mutation_id,client_mutation_hash,created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,NULL,?)`).run(
+    legacyPostId, user.id, "", "", 0, body.review, JSON.stringify(body.photos), 1, "status", clientMutationId, 1_000,
+  );
 
   const retry = create({
     user,
@@ -126,10 +130,10 @@ test("legacy retry rows without hashes are compared safely and healed", () => {
     body: { ...body, photosPublic: 1 },
   });
   assert.equal(retry.duplicate, true);
-  assert.equal(retry.id, first.id);
-  assert.match(db.prepare("SELECT client_mutation_hash AS hash FROM posts WHERE id=?").get(first.id).hash, /^[a-f0-9]{64}$/);
+  assert.equal(retry.id, legacyPostId);
+  assert.match(db.prepare("SELECT client_mutation_hash AS hash FROM posts WHERE id=?").get(legacyPostId).hash, /^[a-f0-9]{64}$/);
 
-  db.prepare("UPDATE posts SET client_mutation_hash=NULL WHERE id=?").run(first.id);
+  db.prepare("UPDATE posts SET client_mutation_hash=NULL WHERE id=?").run(legacyPostId);
   assert.throws(
     () => create({
       user,

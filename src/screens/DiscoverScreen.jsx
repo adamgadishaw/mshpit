@@ -11,6 +11,7 @@ import { MetricTile, OverviewState, QuickAction, SectionHeading } from "../compo
 import {
   cancelDiscoverRequest,
   compactDiscoverNumber,
+  discoverPlaybackTrack,
   discoverSectionState,
   hasDiscoverOverviewContent,
   isCurrentDiscoverAccountRequest,
@@ -115,6 +116,7 @@ export default function DiscoverScreen({
   const localStats = localStatsRef.current;
   const photos = useMemo(() => selectDiscoverPhotos(feed, { removedIds, blockedIds, limit: 10 }), [blockedIds, feed, removedIds]);
   const photoUris = useMemo(() => photos.map((photo) => ({
+    ...photo,
     uri: photo.uri,
     by: photo.by,
     postId: photo.logId,
@@ -243,15 +245,8 @@ export default function DiscoverScreen({
     setChartBy(source);
   };
   const playArtistRow = useCallback((row) => {
-    if (!row?.topTrack) return;
-    play({
-      kind: "track",
-      url: row.topTrack.url || null,
-      preview: row.topTrack.preview || null,
-      title: row.topTrack.title,
-      artist: row.name || row.topTrack.artist,
-      art: row.photo || row.topTrack.art || null,
-    });
+    const track = discoverPlaybackTrack(row);
+    if (track) play(track);
   }, [play]);
   const retryGenre = useCallback(() => requestGenre({ force: true }), [requestGenre]);
 
@@ -346,7 +341,7 @@ export default function DiscoverScreen({
         </>
       )}
 
-      <FriendsListening rows={friendRows} loading={friendsLoading} error={friendsError} signedIn={!!session} onRetry={requestFriends} onOpenProfile={openProfile} onPlay={playArtistRow} />
+      <FriendsListening rows={friendRows} loading={friendsLoading} error={friendsError} signedIn={!!session} onRetry={requestFriends} onOpenProfile={openProfile} onPlay={play} />
       <DiscoverPhotos photos={photos} photoUris={photoUris} compact={compact} width={width} onOpenPhotos={openPhotos} />
     </ScrollView>
   );

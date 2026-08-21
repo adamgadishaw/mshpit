@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Platform } from "react-native";
 import { captureAppError } from "./diagnostics";
+import { youtubePlayerCanReceiveCommands } from "../domain/youtubePlayerLifecycle.mjs";
 
 // Web-only YouTube IFrame Player adapter. The React player surface owns the host
 // element and this hook owns exactly one iframe inside it. It deliberately does
@@ -112,6 +113,7 @@ export function useYouTubePlayer(enabled, options = {}) {
   const metaRef = useRef({ title: "" });
   const volumeRef = useRef(1);
   const flushRef = useRef(() => {});
+  const lifecycleRef = useRef(0);
 
   const [ready, setReady] = useState(false);
   const [state, setState] = useState({ position: 0, duration: 0, playing: false });
@@ -154,18 +156,25 @@ export function useYouTubePlayer(enabled, options = {}) {
     return ratio > MIN_VISIBLE_RATIO;
   }, []);
 
+  const commandPlayer = useCallback(() => {
+    const player = playerRef.current;
+    return youtubePlayerCanReceiveCommands({ ready: readyRef.current, host: hostRef.current, player })
+      ? player
+      : null;
+  }, []);
+
   const pauseImmediately = useCallback(({ cancelPending = true } = {}) => {
     if (cancelPending) {
       pendingPlayRef.current = false;
       if (pendingLoadRef.current) pendingLoadRef.current.autoplay = false;
     }
-    try { playerRef.current?.pauseVideo?.(); } catch {}
+    try { commandPlayer()?.pauseVideo?.(); } catch {}
     setState((current) => (current.playing ? { ...current, playing: false } : current));
-  }, []);
+  }, [commandPlayer]);
 
   const flushPlaybackIntent = useCallback(() => {
-    const player = playerRef.current;
-    if (!readyRef.current || !player || !canPlayNow()) return;
+    const player = commandPlayer();
+    if (!player || !canPlayNow()) return;
 
     const pending = pendingLoadRef.current;
     if (pending) {
@@ -193,7 +202,7 @@ export function useYouTubePlayer(enabled, options = {}) {
       pendingPlayRef.current = false;
       try { player.playVideo?.(); } catch (error) { noteMediaFailure(error, "Starting the selected track"); }
     }
-  }, [canPlayNow]);
+  }, [canPlayNow, commandPlayer]);
 
   flushRef.current = flushPlaybackIntent;
 
@@ -207,19 +216,22 @@ export function useYouTubePlayer(enabled, options = {}) {
     if ("inert" in host) host.inert = !visible;
   }, []);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!web || !enabled) {
       readyRef.current = false;
       setReady(false);
       return;
     }
 
+    const lifecycle = ++lifecycleRef.current;
+    let cancelled = false;
+    const isCurrent = () => !cancelled && lifecycleRef.current === lifecycle;
+
     readyRef.current = false;
     setReady(false);
     setState((current) => (current.playing ? { ...current, playing: false } : current));
     setError(null);
 
-    let cancelled = false;
     let player = null;
     let observer = null;
     let resizeObserver = null;
@@ -300,7 +312,7 @@ export function useYouTubePlayer(enabled, options = {}) {
     }
 
     loadApi().then((YT) => {
-      if (cancelled) return;
+      if (!isCurrent()) return;
 
       const mount = document.createElement("div");
       mount.dataset.pitYoutubePlayerMount = "true";
@@ -315,6 +327,7 @@ export function useYouTubePlayer(enabled, options = {}) {
       let initializationFailed = false;
 
       readyTimeout = setTimeout(() => {
+        if (!isCurrent()) return;
         initializationFailed = true;
         setError({ kind: "init", message: "YouTube player failed to initialize." });
       }, 12_000);
@@ -333,7 +346,7 @@ export function useYouTubePlayer(enabled, options = {}) {
           events: {
             onReady: () => {
               clearTimeout(readyTimeout);
-              if (cancelled || initializationFailed) return;
+              if (!isCurrent() || initializationFailed) return;
               playerRef.current = player;
               // Let CSS, not the pixel setSize() dance, own the iframe's size.
               // YouTube writes width/height ATTRIBUTES on the iframe; if they ever
@@ -361,7 +374,7 @@ export function useYouTubePlayer(enabled, options = {}) {
             },
             onError: (event) => {
               clearTimeout(readyTimeout);
-              if (cancelled || initializationFailed) return;
+              if (!isCurrent() || initializationFailed) return;
               const code = Number(event?.data) || 0;
               const kind = code === 101 || code === 150 ? "embed" : "playback";
               pendingPlayRef.current = false;
@@ -373,7 +386,7 @@ export function useYouTubePlayer(enabled, options = {}) {
               });
             },
             onStateChange: (event) => {
-              if (cancelled || initializationFailed) return;
+              if (!isCurrent() || initializationFailed) return;
               if (event.data === 0) endedCbRef.current?.();
               if (event.data === 1) {
                 if (!canPlayNow()) {
@@ -387,31 +400,40 @@ export function useYouTubePlayer(enabled, options = {}) {
             },
           },
         });
-        playerRef.current = player;
+        if (isCurrent()) playerRef.current = player;
       } catch {
         clearTimeout(readyTimeout);
-        setError({ kind: "init", message: "YouTube player failed to load." });
+        if (isCurrent()) setError({ kind: "init", message: "YouTube player failed to load." });
       }
     }).catch(() => {
-      if (!cancelled) setError({ kind: "init", message: "YouTube player failed to load." });
+      if (isCurrent()) setError({ kind: "init", message: "YouTube player failed to load." });
     });
 
     return () => {
       cancelled = true;
+      if (lifecycleRef.current === lifecycle) lifecycleRef.current += 1;
       clearTimeout(readyTimeout);
       observer?.disconnect();
       resizeObserver?.disconnect();
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("pagehide", onPageHide);
       window.removeEventListener("pageshow", onPageShow);
-      try { playerRef.current?.pauseVideo?.(); } catch {}
-      try { playerRef.current?.destroy?.(); } catch {}
-      try { player?.destroy?.(); } catch {}
-      try { mountRef.current?.remove?.(); } catch {}
-      playerRef.current = null;
-      mountRef.current = null;
-      hostRef.current = null;
       readyRef.current = false;
+      const ownedPlayer = player;
+      const ownedMount = mountRef.current;
+      let playerAttached = false;
+      try {
+        const iframe = ownedPlayer?.getIframe?.();
+        playerAttached = !!host.isConnected && (iframe ? !!iframe.isConnected : !!ownedMount?.isConnected);
+      } catch {}
+      if (playerAttached) {
+        try { ownedPlayer?.pauseVideo?.(); } catch {}
+        try { ownedPlayer?.destroy?.(); } catch {}
+      }
+      try { ownedMount?.remove?.(); } catch {}
+      if (playerRef.current === ownedPlayer) playerRef.current = null;
+      if (mountRef.current === ownedMount) mountRef.current = null;
+      if (hostRef.current === host) hostRef.current = null;
       pendingLoadRef.current = null;
       pendingPlayRef.current = false;
       intersectionObserverRef.current = { enabled: false, observed: false };
@@ -425,7 +447,7 @@ export function useYouTubePlayer(enabled, options = {}) {
   useEffect(() => {
     if (!web || !enabled) return;
     const timer = setInterval(() => {
-      const player = playerRef.current;
+      const player = commandPlayer();
       if (!player?.getCurrentTime) return;
       try {
         const playerState = player.getPlayerState?.() ?? -1;
@@ -441,7 +463,7 @@ export function useYouTubePlayer(enabled, options = {}) {
       } catch { /* polls twice a second; recording here would bury the real signal */ }
     }, 500);
     return () => clearInterval(timer);
-  }, [enabled, canPlayNow, pauseImmediately]);
+  }, [enabled, canPlayNow, commandPlayer, pauseImmediately]);
 
   const load = useCallback((videoId, { startSec = 0 } = {}) => {
     if (!videoId) return;
@@ -464,7 +486,7 @@ export function useYouTubePlayer(enabled, options = {}) {
   const pause = useCallback(() => pauseImmediately(), [pauseImmediately]);
 
   const toggle = useCallback(() => {
-    const player = playerRef.current;
+    const player = commandPlayer();
     try {
       if (player?.getPlayerState?.() === 1) pauseImmediately();
       else {
@@ -472,17 +494,17 @@ export function useYouTubePlayer(enabled, options = {}) {
         flushRef.current();
       }
     } catch (error) { noteMediaFailure(error, "Play/pause from the player controls"); }
-  }, [pauseImmediately]);
+  }, [commandPlayer, pauseImmediately]);
 
   const seek = useCallback((ms) => {
-    try { playerRef.current?.seekTo?.(Math.max(0, Number(ms) || 0) / 1000, true); } catch (error) { noteMediaFailure(error, "Seeking within the track"); }
-  }, []);
+    try { commandPlayer()?.seekTo?.(Math.max(0, Number(ms) || 0) / 1000, true); } catch (error) { noteMediaFailure(error, "Seeking within the track"); }
+  }, [commandPlayer]);
 
   const setVolume = useCallback((value) => {
     const volume = Math.max(0, Math.min(1, Number(value) || 0));
     volumeRef.current = volume;
-    try { playerRef.current?.setVolume?.(Math.round(volume * 100)); } catch {}
-  }, []);
+    try { commandPlayer()?.setVolume?.(Math.round(volume * 100)); } catch {}
+  }, [commandPlayer]);
 
   const setVisible = useCallback((visible) => {
     shownRef.current = !!visible;

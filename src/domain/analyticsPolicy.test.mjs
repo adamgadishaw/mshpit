@@ -11,6 +11,8 @@ test("analytics policy keeps categorical fields and rejects authored or sensitiv
       position: 4,
       surface: "everyone",
       algorithm: "global-personal-v1",
+      algorithmVersion: 1,
+      reasonCode: "local",
       review: "a private review",
       message: "secret DM",
       mediaUrl: "https://cdn.example/private.mov",
@@ -18,7 +20,7 @@ test("analytics policy keeps categorical fields and rejects authored or sensitiv
   }, { requireId: true }), {
     id: "evt_12345678",
     name: "feed_impression",
-    props: { postId: "p_12345678", position: 4, surface: "everyone", algorithm: "global-personal-v1" },
+    props: { postId: "p_12345678", position: 4, surface: "everyone", algorithm: "global-personal-v1", algorithmVersion: 1, reasonCode: "local" },
   });
 
   assert.deepEqual(sanitizeAnalyticsEvent({ name: "search", props: { q: "person@example.com", kind: "all", resultBucket: "one_to_five" } }), {

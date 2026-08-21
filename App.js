@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, Suspense } from "react";
 import { View, Text, StyleSheet, Pressable, SafeAreaView, Platform, StatusBar as RNStatusBar, Animated, ActivityIndicator, useWindowDimensions, BackHandler } from "react-native";
 import { StatusBar } from "expo-status-bar";
+import { SafeAreaProvider } from "react-native-safe-area-context";
 import "./src/lib/safeArea"; // reserves iOS notch / toolbar safe areas (web)
 import "./src/lib/webInputFix"; // strips the harsh browser focus box from inputs (web)
 import { colors, mono, radius, themeIsDark } from "./src/theme";
@@ -109,16 +110,18 @@ function analyticsScreenKey({ landing, tab, nav }) {
 
 export default function App() {
   return (
-    <ErrorBoundary>
-      <StoreProvider>
-        <Root />
-      </StoreProvider>
-    </ErrorBoundary>
+    <SafeAreaProvider>
+      <ErrorBoundary>
+        <StoreProvider>
+          <Root />
+        </StoreProvider>
+      </ErrorBoundary>
+    </SafeAreaProvider>
   );
 }
 
 function Root() {
-  const { session, authReady, addLog, editLog, userById, visibleFeed, followingFeed, localFeed, loadMoreFeed, feedHasMore, feedLoadingMore, notInterested, logout, exportMyData, userByHandle, searchPeople, inboxUnread, accountStatus, track, unreadNotifications, recordPlay, playHistory, loadPlayHistory, saveSnapshot, autoplayQueue, followingCount } = useStore();
+  const { session, authReady, addLog, editLog, userById, visibleFeed, followingFeed, localFeed, loadMoreFeed, feedHasMore, feedLoadingMore, notInterested, undoNotInterested, logout, exportMyData, userByHandle, searchPeople, inboxUnread, accountStatus, track, unreadNotifications, recordPlay, playHistory, loadPlayHistory, saveSnapshot, autoplayQueue, followingCount } = useStore();
   const staff = isStaff(session?.role);
   const feed = visibleFeed(staff);
   const following = followingFeed(staff);
@@ -233,6 +236,48 @@ function Root() {
   }, []);
 
   const [preview, setPreview] = useState(null);
+  // Capture this before RN Web's Modal portal moves focus to <body>. The viewer
+  // receives the ref without putting a DOM node into persisted navigation state.
+  const mediaViewerOpenerRef = useRef(null);
+  const mediaViewerOpenerIdentityRef = useRef(null);
+  const mediaViewerFocusGenerationRef = useRef(0);
+  // RN Web tears down its Modal portal after child-effect cleanup. Restoring
+  // focus from inside PhotoViewer is therefore too early: the portal focuses
+  // <body> immediately afterwards. Wait until the close commit has painted,
+  // and cancel the hand-off if another viewer opens in the meantime.
+  useEffect(() => {
+    if (!web || nav.photos || !mediaViewerOpenerRef.current) return undefined;
+    const opener = mediaViewerOpenerRef.current;
+    const identity = mediaViewerOpenerIdentityRef.current;
+    const generation = mediaViewerFocusGenerationRef.current;
+    let settleFrame = null;
+    const teardownFrame = requestAnimationFrame(() => {
+      settleFrame = requestAnimationFrame(() => {
+        const top = stackRef.current[stackRef.current.length - 1];
+        if (generation !== mediaViewerFocusGenerationRef.current || top?.photos) return;
+        // The feed is remounted underneath RN Web's Modal, so the captured DOM
+        // node can be disconnected even though its logical media tile is back.
+        // Resolve the stable nativeID first, then fall back to the exact label.
+        let focusTarget = opener;
+        if (focusTarget?.isConnected === false && identity?.id) {
+          focusTarget = document.getElementById(identity.id);
+        }
+        if (focusTarget?.isConnected === false && identity?.label) {
+          focusTarget = Array.from(document.querySelectorAll('button,[role="button"]'))
+            .find((element) => element.getAttribute("aria-label") === identity.label) || null;
+        }
+        if (focusTarget?.isConnected !== false && typeof focusTarget?.focus === "function") focusTarget.focus();
+        if (mediaViewerOpenerRef.current === opener) {
+          mediaViewerOpenerRef.current = null;
+          mediaViewerOpenerIdentityRef.current = null;
+        }
+      });
+    });
+    return () => {
+      cancelAnimationFrame(teardownFrame);
+      if (settleFrame !== null) cancelAnimationFrame(settleFrame);
+    };
+  }, [nav.photos, web]);
   // Persisted so the player survives a reload (switching themes reloads the page):
   // the bar comes back with its queue instead of vanishing mid-listen.
   const playerAccountId = session?.id || null;
@@ -445,7 +490,10 @@ function Root() {
     if (web) {
       save("pit.player", null);
       save("pit.player.v2", ownedPlayerEnvelope(playerAccountId, null));
-      try { window.localStorage.removeItem("pit.playpos"); } catch {}
+      try {
+        window.localStorage.removeItem("pit.playpos");
+        window.localStorage.removeItem("pit.playpos.v2");
+      } catch {}
     }
   };
   const commitExitToLanding = () => {
@@ -680,7 +728,18 @@ function Root() {
     rest.splice(curPos + 1, 0, item);
     return { ...p, list: rest, index: curPos };
   });
-  const openPhotos = (images, index = 0, postId = null) => go({ photos: { images, index, postId } });
+  const openPhotos = (images, index = 0, postId = null, opener = null) => {
+    if (web && typeof document !== "undefined") {
+      mediaViewerFocusGenerationRef.current += 1;
+      const capturedOpener = opener?.focus ? opener : document.activeElement;
+      mediaViewerOpenerRef.current = capturedOpener;
+      mediaViewerOpenerIdentityRef.current = {
+        id: capturedOpener?.id || null,
+        label: capturedOpener?.getAttribute?.("aria-label") || null,
+      };
+    }
+    go({ photos: { images, index, postId } });
+  };
   const openAddToPlaylist = (track) => requireAuth(() => go({ addToPlaylist: track }));
   const openFollowList = (userId, mode) => go({ followList: { userId, mode } });
   const reviewShow = (log) => requireAuth(() => go({ logging: true, prefill: { artist: log.artist, artistKey: log.artistKey || null, venue: log.venue, city: log.city, date: log.date || null } }));
@@ -692,7 +751,7 @@ function Root() {
   let overlay = null;
   // Auth is a modal that must win over any page overlay — requireAuth() can fire
   // from inside a venue/show/profile page, and the login sheet has to surface.
-  if (nav.photos) overlay = <PhotoViewer photos={nav.photos.images} index={nav.photos.index} postId={nav.photos.postId} onReport={openReport} onClose={back} />;
+  if (nav.photos) overlay = <PhotoViewer photos={nav.photos.images} index={nav.photos.index} postId={nav.photos.postId} returnFocusRef={mediaViewerOpenerRef} onReport={openReport} onClose={back} />;
   else if (nav.addToPlaylist) overlay = <PlaylistPickerScreen track={nav.addToPlaylist} onClose={back} />;
   else if (nav.followList) overlay = <FollowListScreen userId={nav.followList.userId} mode={nav.followList.mode} onClose={back} onOpenProfile={openProfile} />;
   else if (nav.auth) overlay = <AuthScreen initialMode={nav.authMode} onDone={(mode) => { if (mode === "signup") { if (web) save("pit.welcomePending", true); replace({ pickArtists: true }); } else back(); }} onCancel={back} />;
@@ -758,6 +817,7 @@ function Root() {
                   followingFeed={following}
                   localFeed={local}
                   loggedIn={!!session}
+                  accountId={session?.id || null}
                   homeCity={session?.home?.city}
                   unread={inboxUnread()}
                   notifUnread={session ? unreadNotifications() : 0}
@@ -776,6 +836,8 @@ function Root() {
                     position,
                     surface,
                     algorithm: log?.recommendation?.algorithm || "chronological-v1",
+                    algorithmVersion: log?.recommendation?.algorithmVersion || 1,
+                    reasonCode: log?.recommendation?.reasonCode,
                   })}
                   onDwell={(log, milliseconds, surface) => track("content_dwell", {
                     postId: log?.id,
@@ -783,6 +845,7 @@ function Root() {
                     surface,
                   })}
                   onNotInterested={(log) => requireAuth(() => notInterested(log?.id))}
+                  onUndoNotInterested={(log) => requireAuth(() => undoNotInterested(log?.id))}
                   onComment={openPost}
                   onPreview={showPreview}
                   onOpenProfile={openProfile}
@@ -854,7 +917,10 @@ function Root() {
   const playerColumnWidth = playerMinimized ? 82 : Math.max(356, Math.min(460, Math.round(width * 0.25)));
   // Clips mode has its own audio; obscuring pauses the music player so the two
   // don't talk over each other (the clip drives sound while you're in there).
-  const playerObscured = !!resetToken || !!welcome || (ENABLE_CLIPS && !!nav.clips);
+  // Full-screen clips and gallery videos own audio while visible. Pause the
+  // music player at its current position and require an explicit Play afterward
+  // instead of auto-resuming two audio surfaces on viewer close.
+  const playerObscured = !!resetToken || !!welcome || !!nav.photos || (ENABLE_CLIPS && !!nav.clips);
 
   return (
     <View style={styles.root}>
@@ -873,7 +939,7 @@ function Root() {
           nav.deleteAccount ? overlay : <AccountGate status={status} until={session?.suspendedUntil} onLogout={signOut} onExport={exportMyData} onDelete={() => go({ deleteAccount: true })} />
         ) : (
           <View style={[styles.appFrame, wide && styles.appFrameWide]}>
-            {(wide || player) && (
+            {(wide || (player && !(ENABLE_CLIPS && nav.clips))) && (
               <View style={wide ? [styles.playerColumn, { width: playerColumnWidth }] : styles.mobilePlayerSlot}>
                 <PlayerBar
                   player={player}

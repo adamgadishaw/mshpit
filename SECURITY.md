@@ -103,11 +103,12 @@ Until that pipeline exists, uploads should remain limited to trusted testers.
 
 ## Dependency note
 
-The 2026-08-13 SDK 56 alignment passes `npx expo install --check` and Expo Doctor
-21/21. The installed versions include Expo 56.0.19, React Native 0.85.3, and
-React 19.2.3, matching the exact SDK 56 line.
+The 2026-08-21 SDK 56 alignment passes `npx expo install --check`. Expo Doctor
+is 21/22 solely because of the documented Hermes V1 memory regression. The
+installed versions include Expo 56.0.20, React Native 0.85.3, and React 19.2.3,
+matching the exact SDK 56 line.
 
-`npm audit --omit=dev` currently reports **19 advisories: 8 moderate and 11
+`npm audit --omit=dev` currently reports **17 advisories: 9 moderate and 8
 high**. They are concentrated in the Expo/Metro/React Native/Xcode dependency
 graph, including Metro's `image-size` denial-of-service advisories and Xcode's
 UUID chain. This replaces the obsolete claim that only 11 moderate UUID

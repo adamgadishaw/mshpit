@@ -36,6 +36,8 @@ export const ANALYTICS_EVENT_SPECS = Object.freeze({
     position: integer(0, 500),
     surface: enums("everyone", "following", "local", "clips"),
     algorithm: enums("global-personal-v1", "chronological-v1"),
+    algorithmVersion: integer(1, 100),
+    reasonCode: enums("followed_creator", "artist_affinity", "genre_affinity", "local", "global_momentum", "fresh_global"),
   },
   content_open: {
     postId: id,

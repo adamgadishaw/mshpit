@@ -22,12 +22,30 @@ test("capacity failures are temporary and must be retried, not cached as 'no vid
 });
 
 test("a real 'no video exists' answer is respected and not retried forever", () => {
-  for (const status of ["confirmed_unavailable", "not_found", "unconfigured"]) {
+  for (const status of [
+    "confirmed_unavailable",
+    "not_found",
+    "unconfigured",
+    "search_login_required",
+    "search_verification_required",
+    "search_actor_budget_exhausted",
+  ]) {
     const r = classifyResolve({ videoId: null, status });
     assert.equal(r.transient, false, `${status} is a real answer`);
     assert.equal(r.retry, false);
     assert.equal(r.cacheMs, CACHE_MS.definitive);
   }
+});
+
+test("an explicit non-retryable API result is authoritative even for a new status", () => {
+  const result = classifyResolve({ videoId: null, status: "future_access_boundary", retryable: false });
+  assert.deepEqual(result, {
+    videoId: null,
+    transient: false,
+    retry: false,
+    cacheMs: CACHE_MS.definitive,
+    status: "future_access_boundary",
+  });
 });
 
 test("a failed request is retried, including our own rate limiter's 429", () => {

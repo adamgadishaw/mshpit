@@ -1,6 +1,6 @@
 # Pit iOS App Store readiness
 
-Reviewed: **2026-08-14** against Expo SDK **56**. This document describes the
+Reviewed: **2026-08-21** against Expo SDK **56**. This document describes the
 repository state only. No EAS cloud build, Apple credential operation,
 TestFlight upload, App Store Connect mutation, or store-readiness claim was made
 during this preparation pass.
@@ -147,7 +147,7 @@ Store submission.
    independently cleared content. This is an owner/legal rights gate, not a fact
    that a passing build or short-preview duration can establish.
 7. **Resolve the SDK 56 Hermes V1 memory-regression gate.** Current Expo Doctor
-   reports 21/22 checks because Expo 56.0.19 / React Native 0.85.3 contains the
+   reports 21/22 checks because Expo 56.0.20 / React Native 0.85.3 contains the
    known Hermes V1 memory regression; its suggested fixed line begins with Expo
    57.0.9 / React Native 0.86.2. Do not ship a native distribution on the strength
    of a JavaScript export alone. Treat a separately planned SDK 57 upgrade (with
@@ -226,7 +226,7 @@ npx.cmd expo export -p ios --output-dir .tmp\ios-store-export
 This preparation pass verified Expo dependencies as aligned. Expo Doctor is
 21/22 solely because of the SDK 56 Hermes V1 memory-regression warning described
 above; do not waive it as a store-readiness check. The iOS JavaScript export
-produced a 4.5 MB Hermes bundle and is a bundle/config gate only. After the
+produced a 6.5 MB Hermes bundle and is a bundle/config gate only. After the
 native-distribution blockers above are resolved, the first signed candidate
 should go to internal TestFlight testers, then external TestFlight review, and
 only then to App Store review. EAS builds/submissions consume service capacity

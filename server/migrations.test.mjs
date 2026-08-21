@@ -10,7 +10,9 @@
 // cannot see is a destructive statement written outside the loop, which is what
 // this test covers.
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 const source = readFileSync(new URL("./db.js", import.meta.url), "utf8");
@@ -67,4 +69,37 @@ test("verification retry receipts are additive, bounded, and avoid raw email", (
   const lookupIndex = source.indexOf("idx_users_email_verify_hash");
   assert.ok(emailColumnMigration >= 0 && lookupIndex > emailColumnMigration,
     "the lookup index must be created only after legacy databases gain the column");
+});
+
+test("legacy attendance and tour-date tables gain columns before their indexes", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "pit-index-migration-order-"));
+  process.env.PIT_DATA_DIR = dataDir;
+
+  // Build the complete pre-existing application schema, then remove only the
+  // columns and indexes absent from the previous release. This keeps the fixture
+  // HEAD-shaped without duplicating hundreds of unrelated CREATE statements.
+  const previous = await import(`./db.js?index-migration-fixture=${encodeURIComponent(dataDir)}`);
+  previous.db.exec(`
+    DROP INDEX idx_going_cursor;
+    DROP INDEX idx_tourdates_owner_show;
+    DROP INDEX idx_tourdates_visibility;
+    DROP INDEX idx_tourdates_owner;
+    ALTER TABLE going DROP COLUMN created_at;
+    ALTER TABLE tour_dates DROP COLUMN release_at;
+    ALTER TABLE tour_dates DROP COLUMN owner_id;
+  `);
+
+  const upgraded = await import(`./db.js?index-migration-upgrade=${encodeURIComponent(dataDir)}`);
+  const goingColumns = new Set(upgraded.db.prepare("PRAGMA table_info(going)").all().map((row) => row.name));
+  const tourColumns = new Set(upgraded.db.prepare("PRAGMA table_info(tour_dates)").all().map((row) => row.name));
+  const goingIndexes = new Set(upgraded.db.prepare("PRAGMA index_list(going)").all().map((row) => row.name));
+  const tourIndexes = new Set(upgraded.db.prepare("PRAGMA index_list(tour_dates)").all().map((row) => row.name));
+
+  assert.ok(goingColumns.has("created_at"));
+  assert.ok(tourColumns.has("owner_id"));
+  assert.ok(tourColumns.has("release_at"));
+  assert.ok(goingIndexes.has("idx_going_cursor"));
+  assert.ok(tourIndexes.has("idx_tourdates_visibility"));
+  assert.ok(tourIndexes.has("idx_tourdates_owner"));
+  assert.ok(tourIndexes.has("idx_tourdates_owner_show"));
 });

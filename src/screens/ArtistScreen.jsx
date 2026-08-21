@@ -75,8 +75,8 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
   useEffect(() => { if (!artistMeta(a.name) && !remoteArtistMeta(a.name)) resolveArtist(a.name); }, [a.name]);
   // Pull the artist's fan photos from the server so the rolling gallery shows
   // every public post photo ever, not just posts sitting in this device's feed.
-  useEffect(() => { loadArtistPhotos(a.name); }, [a.name]); // eslint-disable-line react-hooks/exhaustive-deps
-  const gallery = artistGallery(a.name, 12);
+  useEffect(() => { loadArtistPhotos(a.name, a.profileKey); }, [a.name, a.profileKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const gallery = artistGallery(a.name, 12, a.profileKey);
   const canModerate = isStaff(session?.role);
   const genre = a.genre !== "-" ? a.genre : cap(meta?.genre) || "-";
   const spotTracks = (meta?.topTracks || []).map((t, i) => {
@@ -745,8 +745,8 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
                 <View key={p.uri || i} style={styles.fanTile}>
                   {/* SmartImage: proxies HEIC (iPhone shots) to JPEG so no tile
                       ever renders blank, and taps open the full-screen viewer. */}
-                  <SmartImage uri={p.uri} style={StyleSheet.absoluteFill} contain={false}
-                    onPress={() => onOpenPhotos?.(gallery.map((x) => ({ uri: x.uri, by: x.by, postId: x.postId, ownerId: x.ownerId })), i, p.postId || null)} />
+                  <SmartImage uri={p.uri} posterUri={p.posterUrl} accessibilityLabel={p.altText || `Open media from ${a.name}`} style={StyleSheet.absoluteFill} contain={false}
+                    onPress={() => onOpenPhotos?.(gallery.map((x) => ({ ...x, uri: x.uri, by: x.by, postId: x.postId, ownerId: x.ownerId })), i, p.postId || null)} />
                   {p.source !== "fan" && !!p.by && (
                     <View style={styles.creditTag} pointerEvents="none"><Text style={styles.creditTxt} numberOfLines={1}>{p.by}</Text></View>
                   )}

@@ -174,7 +174,7 @@ export default function PostScreen({ log, onClose, onOpenProfile, onOpenArtist, 
 
 const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: colors.bg },
-  content: { padding: 16, paddingBottom: 24 },
+  content: { padding: 16, paddingBottom: 24, ...(Platform.OS === "web" ? { width: "100%", maxWidth: 900, alignSelf: "center" } : null) },
   sectionLabel: { color: colors.textFaint, fontFamily: mono, fontSize: 11, letterSpacing: 1.5, fontWeight: "800", marginTop: 4, marginBottom: 12 },
   empty: { color: colors.textDim, fontSize: 14, fontStyle: "italic", marginBottom: 12 },
   cRow: { flexDirection: "row", gap: 10, marginBottom: 14 },

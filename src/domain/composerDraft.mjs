@@ -1,3 +1,10 @@
+import {
+  mediaProjectFromLegacyUrls,
+  mediaProjectPublishedMedia,
+  normalizeMediaProject,
+  serializableMediaProject,
+} from "./mediaProject.mjs";
+
 const text = (value) => value == null ? "" : String(value);
 
 const normalizedDims = (value) => {
@@ -19,6 +26,13 @@ const normalizedDims = (value) => {
  */
 export function normalizeComposerDraft(value = {}) {
   const panels = value.panels && typeof value.panels === "object" ? value.panels : {};
+  const legacyPhotos = Array.isArray(value.photos) ? value.photos.filter((uri) => typeof uri === "string").slice(0, 8) : [];
+  const normalizedProject = value.mediaProject
+    ? normalizeMediaProject(value.mediaProject)
+    : mediaProjectFromLegacyUrls(legacyPhotos);
+  const mediaProject = serializableMediaProject(normalizedProject);
+  const projectedPhotos = mediaProjectPublishedMedia(mediaProject).map((item) => item.url);
+  const photos = legacyPhotos.length ? legacyPhotos : projectedPhotos;
   return {
     id: value.id || null,
     submissionId: text(value.submissionId) || null,
@@ -36,14 +50,15 @@ export function normalizeComposerDraft(value = {}) {
     song: value.song && typeof value.song === "object" ? value.song : null,
     songUrl: text(value.songUrl || value.song?.url),
     playlist: value.playlist && typeof value.playlist === "object" ? value.playlist : null,
-    photos: Array.isArray(value.photos) ? value.photos.filter((uri) => typeof uri === "string").slice(0, 8) : [],
+    photos,
+    mediaProject,
     photosPublic: value.photosPublic !== false,
     // Marketing-surface permission is deliberately separate from artist-page
     // sharing and defaults off for every historical or newly opened draft.
     landingShowcase: value.photosPublic !== false && value.landingShowcase === true,
     panels: {
       song: !!(panels.song ?? value.showSong ?? value.song),
-      photos: !!(panels.photos ?? value.showPhotos ?? (Array.isArray(value.photos) && value.photos.length)),
+      photos: !!(panels.photos ?? value.showPhotos ?? (photos.length || mediaProject.assets.length)),
       playlist: !!(panels.playlist ?? value.showPlaylist ?? value.playlist),
     },
   };
@@ -68,6 +83,7 @@ export function composerDraftHasContent(value) {
     || draft.songUrl.trim()
     || draft.playlist
     || draft.photos.length
+    || draft.mediaProject.assets.length
     || Object.values(draft.dims).some((rating) => rating > 0)
   );
 }

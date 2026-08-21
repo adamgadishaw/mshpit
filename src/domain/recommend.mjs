@@ -1,3 +1,5 @@
+import { trackMetadataKey } from "../lib/playback.js";
+
 // Autoplay candidate selection.
 //
 // Extracted from src/store.js so the thing the owner actually complained about
@@ -20,7 +22,7 @@ const norm = (s) => String(s || "").trim().toLowerCase();
 // the metadata key catches the same recording arriving from another provider.
 export const trackIdentities = (track, trackKey) => [
   trackKey ? trackKey(track) : null,
-  `meta:${norm(track?.artist)}|${norm(track?.title)}`,
+  trackMetadataKey(track?.title, track?.artist),
 ].filter(Boolean);
 
 // How many of the most recent plays are held back, and how many artists are

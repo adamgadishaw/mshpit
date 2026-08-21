@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import { View, Text, Image, StyleSheet, Pressable } from "react-native";
+import { View, Image, StyleSheet, Pressable, Text } from "react-native";
 import { colors, mono } from "../theme";
 import Icon from "./Icon";
+import ClipPoster from "./ClipPoster";
 import { proxied, isHttp, displaySrc, isVideoUrl } from "../lib/img";
 
 // Fits any image (portrait or landscape) without ugly cropping: a blurred,
@@ -12,7 +13,7 @@ import { proxied, isHttp, displaySrc, isVideoUrl } from "../lib/img";
 // Clip URLs (post media mixes photos and videos) render a play tile instead of
 // a broken image, in every grid/wall/strip that uses this component; tapping
 // still opens the viewer, which actually plays them.
-export default function SmartImage({ uri, style, contain = true, onPress, previewWidth = 0, accessibilityLabel = "Open image" }) {
+export default function SmartImage({ uri, posterUri = null, style, contain = true, onPress, previewWidth = 0, accessibilityLabel = "Open image", accessible = true }) {
   const [stage, setStage] = useState(0); // 0 preferred source, 1 fallback, 2 dead
   useEffect(() => setStage(0), [uri, previewWidth]);
   const fail = () => setStage((s) => s + 1);
@@ -20,24 +21,25 @@ export default function SmartImage({ uri, style, contain = true, onPress, previe
   const preview = previewWidth > 0 && isHttp(uri) ? proxied(uri, previewWidth) : original;
   const src = stage === 1 ? (preview === original && isHttp(uri) ? proxied(uri) : original) : preview;
   if (isVideoUrl(uri)) {
-    const clip = (
-      <View style={[StyleSheet.absoluteFill, styles.clipTile]}>
-        <View style={styles.clipRing}><Icon name="play" size={16} color={colors.amber} /></View>
-        <Text style={styles.clipTag}>CLIP</Text>
-      </View>
-    );
+    const clip = <ClipPoster uri={uri} posterUri={posterUri} style={StyleSheet.absoluteFill} contain={contain} compact={!previewWidth} accessible={accessible} />;
     if (onPress) return <Pressable style={[styles.base, style]} onPress={onPress} accessibilityRole="button" accessibilityLabel={accessibilityLabel === "Open image" ? "Play video clip" : accessibilityLabel}>{clip}</Pressable>;
     return <View style={[styles.base, style]}>{clip}</View>;
   }
   const inner = stage > 1 || !uri ? (
-    <View style={[StyleSheet.absoluteFill, styles.fallback]}>
-      <Icon name="music" size={22} color={colors.textFaint} />
+    <View
+      style={[StyleSheet.absoluteFill, styles.fallback]}
+      accessible={accessible}
+      accessibilityRole={accessible ? "image" : undefined}
+      accessibilityLabel={accessible ? `${accessibilityLabel}. Photo unavailable.` : undefined}
+    >
+      <Icon name="photo" size={24} color={colors.textFaint} />
+      <Text style={styles.fallbackText}>PHOTO UNAVAILABLE</Text>
     </View>
   ) : (
     <>
-      {contain && <Image source={{ uri: src }} style={StyleSheet.absoluteFill} resizeMode="cover" blurRadius={28} />}
+      {contain && <Image source={{ uri: src }} style={StyleSheet.absoluteFill} resizeMode="cover" blurRadius={28} accessible={false} />}
       {contain && <View style={[StyleSheet.absoluteFill, styles.scrim]} />}
-      <Image source={{ uri: src }} style={StyleSheet.absoluteFill} resizeMode={contain ? "contain" : "cover"} onError={fail} />
+      <Image source={{ uri: src }} style={StyleSheet.absoluteFill} resizeMode={contain ? "contain" : "cover"} onError={fail} accessible={accessible} accessibilityLabel={accessible ? accessibilityLabel : undefined} />
     </>
   );
   if (onPress) return <Pressable style={[styles.base, style]} onPress={onPress} accessibilityRole="button" accessibilityLabel={accessibilityLabel}>{inner}</Pressable>;
@@ -47,8 +49,6 @@ export default function SmartImage({ uri, style, contain = true, onPress, previe
 const styles = StyleSheet.create({
   base: { overflow: "hidden", backgroundColor: colors.bgElev },
   scrim: { backgroundColor: "rgba(0,0,0,0.28)" },
-  fallback: { alignItems: "center", justifyContent: "center", backgroundColor: colors.bgElev },
-  clipTile: { alignItems: "center", justifyContent: "center", backgroundColor: "#0b0d13", gap: 6 },
-  clipRing: { width: 38, height: 38, borderRadius: 19, borderWidth: 1.5, borderColor: colors.amber, alignItems: "center", justifyContent: "center", paddingLeft: 3, backgroundColor: "rgba(242,166,90,0.10)" },
-  clipTag: { color: colors.textFaint, fontFamily: mono, fontSize: 9, letterSpacing: 1.6, fontWeight: "800" },
+  fallback: { alignItems: "center", justifyContent: "center", gap: 8, backgroundColor: colors.bgElev },
+  fallbackText: { color: colors.textFaint, fontFamily: mono, fontSize: 9, fontWeight: "800", letterSpacing: 1.2 },
 });

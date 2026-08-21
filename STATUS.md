@@ -1,10 +1,25 @@
 # Pit current status
 
 Last production reconciliation: **2026-08-13**. Local working-tree review:
-**2026-08-14**. This is the source of truth for current code, release, and
+**2026-08-21**. This is the source of truth for current code, release, and
 production state. See `AUDIT_AND_REMEDIATION_2026-08-13.md` for the deployed
 remediation evidence and `TODO.md` for the longer backlog. `HANDOFF.md` and the
 August 4/5 audit/session log are historical journals, not current status.
+
+## 2026-08-21 pre-push audit
+
+- The accumulated feature branch passes the exact `npm run check` gate:
+  **880/880 tests**, **135** Node files in the syntax sweep, and a fresh web
+  export with **43 chunks**. Fresh iOS and Android JavaScript exports are also
+  green at approximately **6.5 MB** each.
+- Expo SDK 56 dependencies pass `expo install --check`. Expo Doctor is **21/22**
+  only because Expo 56.0.20 / React Native 0.85.3 remains on the documented
+  Hermes V1 memory-regression line; that remains a native-distribution gate.
+- `npm audit --omit=dev` reports **17 advisories: 9 moderate and 8 high**, all in
+  the Expo/Metro/Xcode build graph. It reports no critical issue and proposes an
+  incompatible Expo 53 downgrade rather than a safe SDK 56 remediation.
+- This audit targets the feature branch. Production remains on the separately
+  reconciled release until an intentional merge/deploy and live smoke check.
 
 ## 2026-08-14 release candidate
 
@@ -145,7 +160,7 @@ August 4/5 audit/session log are historical journals, not current status.
   provider/selector splitting and profiler-based rerender work remain open.
 - Provider enrichment jobs remain deliberately disabled on hosted services until
   capacity and database pressure are observed one job at a time.
-- `npm audit --omit=dev` reports **19 advisories: 8 moderate and 11 high**, in the
+- `npm audit --omit=dev` reports **17 advisories: 9 moderate and 8 high**, in the
   Expo/Metro/React Native/Xcode dependency graph. npm's automated fix proposes
   incompatible Expo 53/React Native 0.72 changes. Do not use
   `npm audit fix --force`; track compatible SDK 56 patches or plan a deliberate,

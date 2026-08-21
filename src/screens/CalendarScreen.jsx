@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
-import { View, Text, StyleSheet, Pressable, ScrollView, Linking, Platform } from "react-native";
+import { View, Text, StyleSheet, Pressable, ScrollView, Linking } from "react-native";
 import { colors, mono, radius, shadow, space } from "../theme";
 import { useStore } from "../store";
 import ScreenHeader from "../components/ScreenHeader";
 import Icon from "./../components/Icon";
+import { exportCalendarEvents } from "../lib/calendarExport";
 
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const DOW = ["S", "M", "T", "W", "T", "F", "S"];
@@ -67,6 +68,8 @@ export default function CalendarScreen({ onClose, onOpen, onOpenArtist }) {
   const initial = byDay[todayKey] ? todayKey : firstEventKey || todayKey;
   const [cursor, setCursor] = useState(() => { const [y, m] = initial.split("-").map(Number); return { y, m: m - 1 }; });
   const [selected, setSelected] = useState(initial);
+  const [calendarNotice, setCalendarNotice] = useState(null);
+  const [exportingKey, setExportingKey] = useState("");
 
   const { y, m } = cursor;
   const daysInMonth = new Date(y, m + 1, 0).getDate();
@@ -85,6 +88,21 @@ export default function CalendarScreen({ onClose, onOpen, onOpenArtist }) {
 
   const monthEventCount = Object.keys(byDay).filter((k) => k.startsWith(`${y}-${pad(m + 1)}`)).reduce((s, k) => s + byDay[k].length, 0);
   const selectedEvents = byDay[selected] || [];
+  const goingEvents = useMemo(() => Object.values(byDay).flat().filter((event) => event.going), [byDay]);
+
+  const saveCalendar = async (events, key) => {
+    if (exportingKey) return;
+    setCalendarNotice(null);
+    setExportingKey(key);
+    try {
+      const result = await exportCalendarEvents(events);
+      setCalendarNotice({ ok: true, text: `${result.fileName} is ready for your calendar.` });
+    } catch (error) {
+      setCalendarNotice({ ok: false, text: error?.message || "PIT could not prepare that calendar file." });
+    } finally {
+      setExportingKey("");
+    }
+  };
 
   const openEvent = (ev) => {
     if (onOpen) onOpen({ artist: ev.artist, venue: ev.venue, city: ev.city || ev.place, date: ev.date, ...ev });
@@ -138,6 +156,29 @@ export default function CalendarScreen({ onClose, onOpen, onOpenArtist }) {
           {tz ? <Text style={styles.tzTxt}>{tz}</Text> : null}
         </View>
 
+        {goingEvents.length > 0 ? (
+          <Pressable
+            style={[styles.exportAllBtn, !!exportingKey && styles.disabled]}
+            onPress={() => saveCalendar(goingEvents, "all")}
+            disabled={!!exportingKey}
+            accessibilityRole="button"
+            accessibilityLabel={`Save ${goingEvents.length} going shows to calendar`}
+            accessibilityState={{ disabled: !!exportingKey, busy: exportingKey === "all" }}
+          >
+            <Icon name="calendar" size={16} color={colors.amber} />
+            <Text style={styles.exportAllTxt}>{exportingKey === "all" ? "Preparing calendar…" : `Save my Going shows (${goingEvents.length})`}</Text>
+          </Pressable>
+        ) : null}
+        {calendarNotice ? (
+          <Text
+            style={[styles.calendarNotice, calendarNotice.ok ? styles.calendarNoticeOk : styles.calendarNoticeBad]}
+            accessibilityLiveRegion="polite"
+            role="status"
+          >
+            {calendarNotice.text}
+          </Text>
+        ) : null}
+
         {/* selected-day events */}
         <Text style={styles.dayHeading}>{prettyDay(selected)}</Text>
         {Object.keys(byDay).length === 0 ? (
@@ -168,6 +209,17 @@ export default function CalendarScreen({ onClose, onOpen, onOpenArtist }) {
                 {onOpenArtist && ev.artist ? (
                   <Pressable style={styles.iconBtn} onPress={() => onOpenArtist(ev.artist)} hitSlop={6} accessibilityLabel={`Open ${ev.artist}`}><Icon name="music" size={15} color={colors.textDim} /></Pressable>
                 ) : null}
+                <Pressable
+                  style={styles.iconBtn}
+                  onPress={() => saveCalendar(ev, `event-${ev.dayKey}-${i}`)}
+                  disabled={!!exportingKey}
+                  hitSlop={6}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Save ${ev.artist || "show"} to calendar`}
+                  accessibilityState={{ disabled: !!exportingKey, busy: exportingKey === `event-${ev.dayKey}-${i}` }}
+                >
+                  <Icon name="calendar" size={15} color={colors.textDim} />
+                </Pressable>
                 {ev.ticketUrl ? (
                   <Pressable style={styles.ticketBtn} onPress={() => Linking.openURL(ev.ticketUrl)} hitSlop={6} accessibilityLabel="Tickets">
                     <Text style={styles.ticketTxt}>Tickets</Text>
@@ -211,6 +263,12 @@ const styles = StyleSheet.create({
   legendItem: { flexDirection: "row", alignItems: "center", gap: 6 },
   legendTxt: { color: colors.textDim, fontSize: 11 },
   tzTxt: { color: colors.textFaint, fontSize: 10, fontFamily: mono, marginLeft: "auto" },
+  exportAllBtn: { minHeight: 44, marginTop: 12, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingHorizontal: 14 },
+  exportAllTxt: { color: colors.text, fontSize: 12.5, fontWeight: "800" },
+  disabled: { opacity: 0.55 },
+  calendarNotice: { marginTop: 8, borderRadius: radius.sm, paddingHorizontal: 12, paddingVertical: 9, fontSize: 12, lineHeight: 17 },
+  calendarNoticeOk: { color: colors.good, backgroundColor: colors.surfaceAlt },
+  calendarNoticeBad: { color: colors.danger, backgroundColor: colors.surfaceAlt },
 
   dayHeading: { color: colors.text, fontSize: 15, fontWeight: "800", marginTop: 16, marginBottom: 10, letterSpacing: -0.2 },
   empty: { alignItems: "center", gap: 8, paddingVertical: 28 },

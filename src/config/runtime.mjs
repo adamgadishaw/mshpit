@@ -5,6 +5,10 @@ export function demoDataEnabled(isDevelopment, publicFlag) {
   return isDevelopment === true && publicFlag === "true";
 }
 
+export function remoteIdentityValidationEnabled(demoEnabled) {
+  return demoEnabled !== true;
+}
+
 const IS_DEVELOPMENT = typeof __DEV__ !== "undefined"
   ? __DEV__
   : process.env.NODE_ENV === "development";

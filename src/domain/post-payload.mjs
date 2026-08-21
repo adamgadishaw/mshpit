@@ -7,6 +7,17 @@ export function cleanArtistKey(value) {
   return clean(value, { max: 120 }) || null;
 }
 
+export function cleanMediaAssetIds(value) {
+  if (!Array.isArray(value)) return [];
+  const ids = [];
+  for (const item of value) {
+    if (typeof item !== "string" || !/^ma_[A-Za-z0-9_-]{8,80}$/.test(item) || ids.includes(item)) continue;
+    ids.push(item);
+    if (ids.length >= 8) break;
+  }
+  return ids;
+}
+
 export function buildReviewCreateBody(post) {
   return {
     clientMutationId: post.id,
@@ -21,6 +32,7 @@ export function buildReviewCreateBody(post) {
     dims: post.dims,
     review: post.review,
     photos: post.photos,
+    ...(Array.isArray(post.mediaAssetIds) ? { mediaAssetIds: cleanMediaAssetIds(post.mediaAssetIds) } : {}),
     photosPublic: post.photosPublic ? 1 : 0,
     landingShowcase: post.photosPublic && post.landingShowcase ? 1 : 0,
     setlist: post.setlist,
@@ -43,6 +55,7 @@ export function buildReviewEditBody(changes) {
     dims: changes.dims && typeof changes.dims === "object" ? changes.dims : {},
     review: clean(changes.review, { max: LIMITS.review, newlines: true }),
     photos: Array.isArray(changes.photos) ? changes.photos.filter((item) => typeof item === "string").slice(0, 8) : [],
+    ...(Array.isArray(changes.mediaAssetIds) ? { mediaAssetIds: cleanMediaAssetIds(changes.mediaAssetIds) } : {}),
     photosPublic: !!changes.photosPublic,
     landingShowcase: !!changes.photosPublic && !!changes.landingShowcase,
     setlist: Array.isArray(changes.setlist) ? changes.setlist.filter((item) => typeof item === "string").slice(0, 40) : [],

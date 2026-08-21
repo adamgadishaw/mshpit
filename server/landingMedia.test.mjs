@@ -7,10 +7,16 @@ import test, { after } from "node:test";
 const dataDir = mkdtempSync(join(tmpdir(), "pit-landing-media-"));
 process.env.PIT_DATA_DIR = dataDir;
 process.env.MEDIA_PUBLIC_BASE_URL = "https://media.example.com/assets";
+process.env.MEDIA_ENDPOINT = "https://storage.example.com";
+process.env.MEDIA_BUCKET = "pit-media";
+process.env.MEDIA_REGION = "auto";
+process.env.MEDIA_ACCESS_KEY_ID = "test-access";
+process.env.MEDIA_SECRET_ACCESS_KEY = "test-secret";
 
 const { db, q } = await import("./db.js");
 const { routes } = await import("./api.js");
 const { hasTrustedLandingImage, projectLandingMedia, trustedLandingImageUrl } = await import("./landingMedia.js");
+const { createMediaAsset, createMediaVariant, finalizeMediaAsset, finalizeMediaVariant } = await import("./mediaAssets.js");
 
 after(() => {
   db.close();
@@ -45,6 +51,56 @@ function insertPost(id, authorId, overrides = {}) {
     id, authorId, row.artist, row.venue, 4.5, row.photos,
     row.photosPublic, row.landingShowcase, row.kind, row.removed, row.createdAt,
   );
+}
+
+let stableImageSequence = 0;
+async function stablePostImage(owner) {
+  const sequence = String(++stableImageSequence).padStart(4, "0");
+  const sourceBytes = 12_000 + stableImageSequence;
+  const renderBytes = 8_000 + stableImageSequence;
+  const source = createMediaAsset(db, {
+    ownerId: owner.id,
+    body: {
+      clientAssetId: `landing-source-${sequence}`,
+      purpose: "post",
+      contentType: "image/jpeg",
+      fileSize: sourceBytes,
+      name: `landing-${sequence}.jpg`,
+    },
+    assetId: `ma_landingasset${sequence}xxxxxxxx`,
+  });
+  await finalizeMediaAsset(db, {
+    ownerId: owner.id,
+    assetId: source.asset.id,
+    body: { width: 1_200, height: 1_500, editRecipe: {} },
+    fetchImpl: async () => ({
+      status: 200,
+      headers: { get: (name) => String(name).toLowerCase() === "content-length" ? String(sourceBytes) : "image/jpeg" },
+    }),
+  });
+  const render = createMediaVariant(db, {
+    ownerId: owner.id,
+    assetId: source.asset.id,
+    body: {
+      clientVariantId: `landing-render-${sequence}`,
+      role: "render",
+      contentType: "image/webp",
+      fileSize: renderBytes,
+      name: `landing-${sequence}.webp`,
+    },
+    variantId: `mv_landingrender${sequence}xxxxxx`,
+  });
+  await finalizeMediaVariant(db, {
+    ownerId: owner.id,
+    assetId: source.asset.id,
+    variantId: render.variant.id,
+    body: { width: 1_080, height: 1_350 },
+    fetchImpl: async () => ({
+      status: 200,
+      headers: { get: (name) => String(name).toLowerCase() === "content-length" ? String(renderBytes) : "image/webp" },
+    }),
+  });
+  return { assetId: source.asset.id, url: render.upload.publicUrl };
 }
 
 test("landing image URLs are HTTPS, browser-compatible, PIT-owned author media", () => {
@@ -140,9 +196,11 @@ test("per-author candidate ranking prevents a 96-post flood from hiding other au
   assert.ok(postIds.includes("landing_other_author"));
 });
 
-test("homepage consent is default-off, owner-only, idempotent, and privacy-normalized on edit", () => {
+test("homepage consent is default-off, owner-only, idempotent, and privacy-normalized on edit", async () => {
   const owner = addUser("u_consent_owner");
   const viewer = addUser("u_consent_viewer");
+  const firstMedia = await stablePostImage(owner);
+  const replacementMedia = await stablePostImage(owner);
   const body = {
     clientMutationId: "landing-consent-retry-001",
     artist: "J. Cole",
@@ -151,7 +209,7 @@ test("homepage consent is default-off, owner-only, idempotent, and privacy-norma
     city: "Toronto",
     date: "2026-08-13",
     overall: 5,
-    photos: [image(owner.id, "consented.jpg")],
+    mediaAssetIds: [firstMedia.assetId],
     photosPublic: true,
     landingShowcase: true,
   };
@@ -161,18 +219,23 @@ test("homepage consent is default-off, owner-only, idempotent, and privacy-norma
   assert.equal(first.post.landingShowcase, true);
   assert.equal(db.prepare("SELECT landing_showcase FROM posts WHERE id=?").get(first.id).landing_showcase, 1);
 
-  const untrustedCreate = create({
-    user: owner,
-    ip: "landing-consent-untrusted",
-    body: {
-      ...body,
-      clientMutationId: "landing-consent-untrusted-001",
-      photos: ["https://tracker.example/forged.jpg"],
-    },
-  });
-  assert.equal(untrustedCreate.post.photosPublic, true);
-  assert.equal(untrustedCreate.post.landingShowcase, false);
-  assert.equal(db.prepare("SELECT landing_showcase FROM posts WHERE id=?").get(untrustedCreate.id).landing_showcase, 0);
+  assert.deepEqual(first.post.photos, [firstMedia.url]);
+  assert.throws(
+    () => create({
+      user: owner,
+      ip: "landing-consent-untrusted",
+      body: {
+        clientMutationId: "landing-consent-untrusted-001",
+        artist: body.artist,
+        venue: body.venue,
+        overall: body.overall,
+        photos: ["https://tracker.example/forged.jpg"],
+        photosPublic: true,
+        landingShowcase: true,
+      },
+    }),
+    (error) => error?.status === 400,
+  );
 
   const duplicate = create({ user: owner, ip: "landing-consent", body });
   assert.equal(duplicate.id, first.id);
@@ -204,27 +267,28 @@ test("homepage consent is default-off, owner-only, idempotent, and privacy-norma
   assert.equal(featureEdit.post.photosPublic, true);
   assert.equal(featureEdit.post.landingShowcase, true);
 
-  const untrustedEdit = edit({
-    user: owner,
-    ip: "landing-consent-edit",
-    params: { id: first.id },
-    body: {
-      photos: ["https://tracker.example/forged-edit.jpg"],
-      landingShowcase: true,
-      version: featureEdit.post.version,
-    },
-  });
-  assert.equal(untrustedEdit.post.photosPublic, true);
-  assert.equal(untrustedEdit.post.landingShowcase, false);
+  assert.throws(
+    () => edit({
+      user: owner,
+      ip: "landing-consent-edit",
+      params: { id: first.id },
+      body: {
+        photos: ["https://tracker.example/forged-edit.jpg"],
+        landingShowcase: true,
+        version: featureEdit.post.version,
+      },
+    }),
+    (error) => error?.status === 400,
+  );
 
   const restoredEdit = edit({
     user: owner,
     ip: "landing-consent-edit",
     params: { id: first.id },
     body: {
-      photos: [image(owner.id, "restored.jpg")],
+      mediaAssetIds: [replacementMedia.assetId],
       landingShowcase: true,
-      version: untrustedEdit.post.version,
+      version: featureEdit.post.version,
     },
   });
   assert.equal(restoredEdit.post.photosPublic, true);

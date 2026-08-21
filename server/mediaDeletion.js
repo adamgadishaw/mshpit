@@ -1,4 +1,5 @@
 import { getMediaConfig, mediaConfigured, presignS3Request } from "./media.js";
+import { ApiError } from "./errors.js";
 
 const OWNER = /^[A-Za-z0-9_-]{1,128}$/;
 const OBJECT_KEY = /^users\/([A-Za-z0-9_-]{1,128})\/(avatar|banner|post|review|venue)\/([A-Za-z0-9_-]{1,180})\.(jpg|png|webp|gif|heic|heif|mp4|webm|mov)$/;
@@ -6,7 +7,17 @@ const TRUE_VALUES = new Set(["1", "true", "yes", "on", "enabled"]);
 const FALSE_VALUES = new Set(["0", "false", "no", "off", "disabled"]);
 const RETRY_DELAYS_MS = Object.freeze([60_000, 5 * 60_000, 30 * 60_000, 2 * 60 * 60_000]);
 const DAY_MS = 24 * 60 * 60_000;
-const MEDIA_UPLOAD_TICKET_MS = 10 * 60_000;
+const MEBIBYTE = 1024 * 1024;
+
+export const MEDIA_UPLOAD_TICKET_MS = 10 * 60_000;
+export const MEDIA_UPLOAD_ROLLING_WINDOW_MS = DAY_MS;
+
+const DEFAULT_UPLOAD_QUOTAS = Object.freeze({
+  outstandingObjects: 32,
+  outstandingBytes: 1024 * MEBIBYTE,
+  rollingBytes: 4 * 1024 * MEBIBYTE,
+  rollingTickets: 128,
+});
 
 export const MEDIA_DELETION_MAX_ATTEMPTS = 5;
 export const MEDIA_DELETION_LEASE_MS = 2 * 60_000;
@@ -30,6 +41,36 @@ const schedulerState = {
   lastSuccessAt: 0,
   lastErrorCode: null,
 };
+
+function boundedQuota(value, fallback, minimum, maximum) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  return Math.max(minimum, Math.min(maximum, Math.trunc(numeric)));
+}
+
+export function mediaUploadQuotaLimits(env = process.env) {
+  return {
+    outstandingObjects: boundedQuota(env?.MEDIA_UPLOAD_OUTSTANDING_OBJECTS, DEFAULT_UPLOAD_QUOTAS.outstandingObjects, 1, 10_000),
+    outstandingBytes: boundedQuota(env?.MEDIA_UPLOAD_OUTSTANDING_BYTES, DEFAULT_UPLOAD_QUOTAS.outstandingBytes, MEBIBYTE, 1024 * 1024 * MEBIBYTE),
+    rollingBytes: boundedQuota(env?.MEDIA_UPLOAD_24H_BYTES, DEFAULT_UPLOAD_QUOTAS.rollingBytes, MEBIBYTE, 1024 * 1024 * MEBIBYTE),
+    rollingTickets: boundedQuota(env?.MEDIA_UPLOAD_24H_TICKETS, DEFAULT_UPLOAD_QUOTAS.rollingTickets, 1, 100_000),
+  };
+}
+
+function withWrite(database, action) {
+  const ownsTransaction = !database.isTransaction;
+  if (ownsTransaction) database.exec("BEGIN IMMEDIATE");
+  try {
+    const result = action();
+    if (ownsTransaction) database.exec("COMMIT");
+    return result;
+  } catch (error) {
+    if (ownsTransaction) {
+      try { database.exec("ROLLBACK"); } catch {}
+    }
+    throw error;
+  }
+}
 
 function safeOwnerId(value) {
   const owner = String(value || "");
@@ -84,6 +125,26 @@ export function trustedMediaQueueKey(value, ownerId) {
   return match && match[1] === owner ? value : null;
 }
 
+function storedOwnedMediaKey(database, value, owner) {
+  if (!database || typeof value !== "string" || value.length > 2000) return null;
+  const row = database.prepare(`SELECT object_key FROM (
+      SELECT source_key object_key FROM media_assets WHERE owner_id=? AND source_url=?
+      UNION ALL
+      SELECT v.object_key FROM media_variants v
+        JOIN media_assets a ON a.id=v.asset_id
+        WHERE a.owner_id=? AND v.public_url=?
+    ) LIMIT 1`).get(owner, value, owner, value);
+  return trustedMediaQueueKey(row?.object_key, owner);
+}
+
+function resolvedOwnedMediaKey(database, value, { ownerId, env = process.env } = {}) {
+  const owner = safeOwnerId(ownerId);
+  if (!owner) return { key: null, stable: false };
+  const stored = storedOwnedMediaKey(database, value, owner);
+  if (stored) return { key: stored, stable: true };
+  return { key: trustedOwnedMediaKey(value, { ownerId: owner, env }), stable: false };
+}
+
 export function ownedMediaKeys(values, options) {
   const keys = new Set();
   for (const value of Array.isArray(values) ? values : []) {
@@ -93,9 +154,18 @@ export function ownedMediaKeys(values, options) {
   return [...keys];
 }
 
+function normalizedTicketExpiry(expiresAt, at) {
+  if (expiresAt === null) return null;
+  const requested = Number(expiresAt);
+  return Number.isSafeInteger(requested) && requested >= at && requested <= at + 15 * 60_000
+    ? requested
+    : at + MEDIA_UPLOAD_TICKET_MS;
+}
+
 export function recordMediaObjectTicket(database, {
   ownerId,
   objectKey,
+  byteSize = 0,
   at = Date.now(),
   expiresAt,
 } = {}) {
@@ -103,16 +173,93 @@ export function recordMediaObjectTicket(database, {
   const key = trustedMediaQueueKey(objectKey, owner);
   const match = key ? OBJECT_KEY.exec(key) : null;
   if (!owner || !match) return false;
-  let uploadExpiresAt = null;
-  if (expiresAt !== null) {
-    const requested = Number(expiresAt);
-    uploadExpiresAt = Number.isSafeInteger(requested) && requested >= at && requested <= at + 15 * 60_000
-      ? requested
-      : at + MEDIA_UPLOAD_TICKET_MS;
-  }
+  const bytes = Number(byteSize);
+  if (!Number.isSafeInteger(bytes) || bytes < 0) return false;
+  const uploadExpiresAt = normalizedTicketExpiry(expiresAt, at);
   return Number(database.prepare(`INSERT OR IGNORE INTO media_objects
-    (object_key,owner_id,purpose,status,created_at,upload_expires_at,updated_at)
-    VALUES (?,?,?,'issued',?,?,?)`).run(key, owner, match[2], at, uploadExpiresAt, at).changes || 0) === 1;
+    (object_key,owner_id,purpose,byte_size,status,created_at,upload_expires_at,updated_at)
+    VALUES (?,?,?,?,'issued',?,?,?)`).run(key, owner, match[2], bytes, at, uploadExpiresAt, at).changes || 0) === 1;
+}
+
+/**
+ * Atomically reserve one returned PUT ticket against both outstanding storage
+ * and rolling 24-hour issuance budgets. Reissuing the same owner/key does not
+ * consume another outstanding object, but does consume rolling bytes because
+ * the client can upload the body again. Callers must not return/significantly
+ * expose a ticket unless this reservation commits.
+ */
+export function reserveMediaUploadTicket(database, {
+  ownerId,
+  objectKey,
+  byteSize,
+  at = Date.now(),
+  expiresAt = at + MEDIA_UPLOAD_TICKET_MS,
+  env = process.env,
+} = {}) {
+  const owner = safeOwnerId(ownerId);
+  const key = trustedMediaQueueKey(objectKey, owner);
+  const match = key ? OBJECT_KEY.exec(key) : null;
+  const bytes = Number(byteSize);
+  if (!owner || !match || !Number.isSafeInteger(bytes) || bytes < 1) {
+    throw new ApiError(400, "Media upload reservation is invalid.", "VALIDATION_FAILED");
+  }
+  const uploadExpiresAt = normalizedTicketExpiry(expiresAt, at);
+  const limits = mediaUploadQuotaLimits(env);
+  const rollingCutoff = at - MEDIA_UPLOAD_ROLLING_WINDOW_MS;
+
+  return withWrite(database, () => {
+    // Keep enough history for clock jitter/debugging while bounding table size.
+    database.prepare("DELETE FROM media_upload_issuances WHERE issued_at<=?")
+      .run(at - (2 * MEDIA_UPLOAD_ROLLING_WINDOW_MS));
+
+    const existing = database.prepare(`SELECT owner_id,purpose,byte_size,status
+      FROM media_objects WHERE object_key=?`).get(key);
+    if (existing && (existing.owner_id !== owner || existing.purpose !== match[2]
+        || (Number(existing.byte_size || 0) > 0 && Number(existing.byte_size) !== bytes))) {
+      throw new ApiError(409, "That media upload ticket belongs to different bytes.", "CONFLICT");
+    }
+
+    const outstanding = database.prepare(`SELECT COUNT(*) object_count,COALESCE(SUM(byte_size),0) byte_count
+      FROM media_objects WHERE owner_id=? AND status IN ('issued','delete_queued','deletion_dead')`).get(owner);
+    const rolling = database.prepare(`SELECT COUNT(*) ticket_count,COALESCE(SUM(byte_size),0) byte_count
+      FROM media_upload_issuances WHERE owner_id=? AND issued_at>?`).get(owner, rollingCutoff);
+    const newObject = !existing;
+    const existingOutstanding = !!existing && new Set(["issued", "delete_queued", "deletion_dead"]).has(existing.status);
+    const outstandingByteDelta = newObject
+      ? bytes
+      : existingOutstanding ? Math.max(0, bytes - Number(existing.byte_size || 0)) : 0;
+    const nextObjectCount = Number(outstanding?.object_count || 0) + (newObject ? 1 : 0);
+    const nextOutstandingBytes = Number(outstanding?.byte_count || 0) + outstandingByteDelta;
+    const nextRollingTickets = Number(rolling?.ticket_count || 0) + 1;
+    const nextRollingBytes = Number(rolling?.byte_count || 0) + bytes;
+    if (nextObjectCount > limits.outstandingObjects || nextOutstandingBytes > limits.outstandingBytes
+        || nextRollingTickets > limits.rollingTickets || nextRollingBytes > limits.rollingBytes) {
+      throw new ApiError(429, "Your media upload allowance is full. Finish or remove pending media, then try again.", "MEDIA_UPLOAD_QUOTA_EXCEEDED");
+    }
+
+    if (!existing) {
+      const inserted = recordMediaObjectTicket(database, {
+        ownerId: owner,
+        objectKey: key,
+        byteSize: bytes,
+        at,
+        expiresAt: uploadExpiresAt,
+      });
+      if (!inserted) throw new ApiError(409, "That media upload changed while it was being prepared.", "CONFLICT");
+    } else {
+      database.prepare(`UPDATE media_objects SET byte_size=CASE WHEN byte_size=0 THEN ? ELSE byte_size END,
+        upload_expires_at=CASE WHEN COALESCE(upload_expires_at,0)>? THEN upload_expires_at ELSE ? END,
+        updated_at=? WHERE owner_id=? AND object_key=? AND status IN ('issued','associated')`)
+        .run(bytes, uploadExpiresAt, uploadExpiresAt, at, owner, key);
+      const refreshed = database.prepare("SELECT status FROM media_objects WHERE owner_id=? AND object_key=?").get(owner, key);
+      if (!refreshed || !new Set(["issued", "associated"]).has(refreshed.status)) {
+        throw new ApiError(409, "That upload is already being removed. Start again.", "CONFLICT");
+      }
+    }
+    database.prepare(`INSERT INTO media_upload_issuances (owner_id,object_key,byte_size,issued_at)
+      VALUES (?,?,?,?)`).run(owner, key, bytes, at);
+    return { key, duplicate: !!existing, expiresAt: uploadExpiresAt };
+  });
 }
 
 export function markOwnedMediaAssociated(database, {
@@ -127,7 +274,12 @@ export function markOwnedMediaAssociated(database, {
     SET status='associated',associated_at=COALESCE(associated_at,?),updated_at=?
     WHERE owner_id=? AND object_key=? AND status IN ('issued','associated')`);
   let changed = 0;
-  for (const key of ownedMediaKeys(urls, { ownerId: owner, env })) {
+  const keys = new Set();
+  for (const value of Array.isArray(urls) ? urls : []) {
+    const { key } = resolvedOwnedMediaKey(database, value, { ownerId: owner, env });
+    if (key) keys.add(key);
+  }
+  for (const key of keys) {
     changed += Number(update.run(at, at, owner, key).changes || 0);
   }
   return changed;
@@ -142,7 +294,7 @@ export function unreferencedOwnedMediaUrls(database, {
   if (!owner) return [];
   const candidates = new Map();
   for (const value of Array.isArray(urls) ? urls : []) {
-    const key = trustedOwnedMediaKey(value, { ownerId: owner, env });
+    const { key } = resolvedOwnedMediaKey(database, value, { ownerId: owner, env });
     if (key && !candidates.has(key)) candidates.set(key, value);
   }
   if (!candidates.size) return [];
@@ -175,7 +327,9 @@ function ensureLegacyAssociation(database, owner, key, at) {
 function enqueueLedgerKeys(database, owner, keys, at) {
   const insert = database.prepare(`INSERT OR IGNORE INTO media_deletion_queue
     (owner_id,object_key,status,attempts,next_attempt_at,last_error_code,created_at,updated_at,dead_at)
-    SELECT owner_id,object_key,'pending',0,?,NULL,?,?,NULL FROM media_objects
+    SELECT owner_id,object_key,'pending',0,
+      CASE WHEN COALESCE(upload_expires_at,0)>? THEN upload_expires_at+? ELSE ? END,
+      NULL,?,?,NULL FROM media_objects
     WHERE owner_id=? AND object_key=?`);
   const queued = database.prepare(`UPDATE media_objects SET status='delete_queued',updated_at=?
     WHERE owner_id=? AND object_key=? AND EXISTS (
@@ -183,10 +337,29 @@ function enqueueLedgerKeys(database, owner, keys, at) {
     )`);
   let enqueued = 0;
   for (const key of keys) {
-    enqueued += Number(insert.run(at, at, at, owner, key).changes || 0);
+    enqueued += Number(insert.run(at, MEDIA_UPLOAD_SETTLE_BUFFER_MS, at, at, at, owner, key).changes || 0);
     queued.run(at, owner, key, owner);
   }
   return enqueued;
+}
+
+// Stable descriptors already store their authoritative object keys. This path
+// never reparses a public URL and therefore remains correct after a CDN origin
+// or base-path migration. Missing/foreign ledger keys fail closed.
+export function enqueueOwnedMediaKeys(database, {
+  ownerId,
+  keys,
+  at = Date.now(),
+} = {}) {
+  const owner = safeOwnerId(ownerId);
+  if (!owner) return { accepted: 0, enqueued: 0, keys: [] };
+  const accepted = [];
+  const exists = database.prepare("SELECT 1 FROM media_objects WHERE owner_id=? AND object_key=?");
+  for (const raw of Array.isArray(keys) ? keys : []) {
+    const key = trustedMediaQueueKey(raw, owner);
+    if (key && !accepted.includes(key) && exists.get(owner, key)) accepted.push(key);
+  }
+  return { accepted: accepted.length, enqueued: enqueueLedgerKeys(database, owner, accepted, at), keys: accepted };
 }
 
 // This helper deliberately does not open or commit a transaction. Destructive
@@ -200,8 +373,13 @@ export function enqueueOwnedMediaUrls(database, {
 } = {}) {
   const owner = safeOwnerId(ownerId);
   if (!owner) return { accepted: 0, enqueued: 0, keys: [] };
-  const keys = ownedMediaKeys(urls, { ownerId: owner, env });
-  for (const key of keys) ensureLegacyAssociation(database, owner, key, at);
+  const keys = [];
+  for (const value of Array.isArray(urls) ? urls : []) {
+    const resolved = resolvedOwnedMediaKey(database, value, { ownerId: owner, env });
+    if (!resolved.key || keys.includes(resolved.key)) continue;
+    if (!resolved.stable) ensureLegacyAssociation(database, owner, resolved.key, at);
+    keys.push(resolved.key);
+  }
   const enqueued = enqueueLedgerKeys(database, owner, keys, at);
   return { accepted: keys.length, enqueued, keys };
 }
@@ -244,13 +422,64 @@ export function enqueueExpiredMediaTickets(database, {
 } = {}) {
   const boundedLimit = Math.max(1, Math.min(500, Math.trunc(Number(limit) || 100)));
   const cutoff = at - mediaOrphanTtlMs(env);
+  const settledBefore = at - MEDIA_UPLOAD_SETTLE_BUFFER_MS;
   return atomic(database, () => {
     const rows = database.prepare(`SELECT owner_id,object_key FROM media_objects
-      WHERE status='issued' AND created_at<=? ORDER BY created_at ASC,object_key ASC LIMIT ?`).all(cutoff, boundedLimit);
+      WHERE status='issued' AND updated_at<=? AND COALESCE(upload_expires_at,0)<=?
+      ORDER BY updated_at ASC,object_key ASC LIMIT ?`).all(cutoff, settledBefore, boundedLimit);
     let enqueued = 0;
     for (const row of rows) {
       if (!trustedMediaQueueKey(row.object_key, row.owner_id)) continue;
-      enqueued += enqueueLedgerKeys(database, row.owner_id, [row.object_key], at);
+      // A stable descriptor may own several objects. Treat its most recent
+      // object activity/ticket as the draft's activity, so a stale poster can
+      // never delete a freshly retried source (or vice versa).
+      const asset = database.prepare(`SELECT a.id,
+          EXISTS (SELECT 1 FROM post_media pm WHERE pm.asset_id=a.id) attached
+        FROM media_assets a LEFT JOIN media_variants v ON v.asset_id=a.id
+        WHERE a.owner_id=? AND (a.source_key=? OR v.object_key=?) LIMIT 1`)
+        .get(row.owner_id, row.object_key, row.object_key);
+      if (!asset) {
+        enqueued += enqueueLedgerKeys(database, row.owner_id, [row.object_key], at);
+        continue;
+      }
+      const objectRows = database.prepare(`SELECT mo.object_key,mo.status,mo.updated_at,mo.upload_expires_at
+        FROM media_objects mo JOIN (
+          SELECT source_key object_key FROM media_assets WHERE id=?
+          UNION ALL SELECT object_key FROM media_variants WHERE asset_id=?
+        ) owned ON owned.object_key=mo.object_key
+        WHERE mo.owner_id=?`).all(asset.id, asset.id, row.owner_id);
+      const keys = objectRows.map((entry) => entry.object_key)
+        .filter((key) => trustedMediaQueueKey(key, row.owner_id));
+      if (asset.attached) {
+        if (keys.length) {
+          const placeholders = keys.map(() => "?").join(",");
+          database.prepare(`UPDATE media_objects SET status='associated',associated_at=COALESCE(associated_at,?),updated_at=?
+            WHERE owner_id=? AND status='issued' AND object_key IN (${placeholders})`)
+            .run(at, at, row.owner_id, ...keys);
+        }
+        continue;
+      }
+      const latestActivity = objectRows.reduce((latest, entry) => Math.max(latest, Number(entry.updated_at || 0)), 0);
+      const latestExpiry = objectRows.reduce((latest, entry) => Math.max(latest, Number(entry.upload_expires_at || 0)), 0);
+      const aggregateActivity = Math.max(latestActivity, latestExpiry ? latestExpiry - MEDIA_UPLOAD_TICKET_MS : 0);
+      if (aggregateActivity > cutoff || latestExpiry > settledBefore) {
+        // Keep every ledger in one active draft on the same activity horizon.
+        // Otherwise one old source can occupy the bounded candidate window on
+        // every pass while a freshly retried variant correctly keeps the asset.
+        if (keys.length && aggregateActivity > 0) {
+          const placeholders = keys.map(() => "?").join(",");
+          database.prepare(`UPDATE media_objects
+            SET updated_at=CASE WHEN updated_at>? THEN updated_at ELSE ? END
+            WHERE owner_id=? AND status='issued' AND object_key IN (${placeholders})`)
+            .run(aggregateActivity, aggregateActivity, row.owner_id, ...keys);
+        }
+        continue;
+      }
+      enqueued += enqueueLedgerKeys(database, row.owner_id, keys, at);
+      // Queue first, then invalidate identity and retry tokens in the same
+      // transaction. The object ledger deliberately survives the cascade until
+      // the worker confirms storage deletion.
+      database.prepare("DELETE FROM media_assets WHERE id=? AND owner_id=?").run(asset.id, row.owner_id);
     }
     return enqueued;
   });
@@ -618,7 +847,12 @@ export async function runMediaDeletionBatch({
     deadLettered: 0,
     lastErrorCode: null,
   };
-  if (database) result.orphanTicketsQueued = enqueueExpiredMediaTickets(database, { env, at: clock() });
+  if (database) {
+    const at = clock();
+    database.prepare("DELETE FROM media_upload_issuances WHERE issued_at<=?")
+      .run(at - (2 * MEDIA_UPLOAD_ROLLING_WINDOW_MS));
+    result.orphanTicketsQueued = enqueueExpiredMediaTickets(database, { env, at });
+  }
   if (!result.configured) {
     result.lastErrorCode = "storage_unconfigured";
     return result;

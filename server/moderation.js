@@ -5,7 +5,8 @@ import { createHash, randomUUID } from "node:crypto";
 
 import { db } from "./db.js";
 import { ApiError } from "./errors.js";
-import { enqueueOwnedMediaUrls, trustedOwnedMediaKey } from "./mediaDeletion.js";
+import { assetObjectRecords, deleteMediaAssets, postMediaAssetIds } from "./mediaAssets.js";
+import { enqueueOwnedMediaKeys, enqueueOwnedMediaUrls, trustedOwnedMediaKey } from "./mediaDeletion.js";
 import { clean, LIMITS } from "./validate.js";
 
 export const MODERATABLE_CONTENT = Object.freeze({
@@ -398,8 +399,12 @@ function setContentRemoved(ctx, targetType, targetId, removed, reason) {
   // legacy/raced attachment without making a duplicate restore on already-live
   // content unexpectedly destructive.
   const mediaPolicy = mediaDefinition && (removed || !!current.removed) ? mediaDefinition : null;
-  const mediaUris = mediaPolicy ? attachedMediaUris(targetType, current) : [];
-  const needsMediaScrub = !!mediaPolicy && (mediaUris.length > 0 || mediaPolicy.hasNonUrlAssociation(current));
+  const stableAssetIds = mediaPolicy && targetType === "post" ? postMediaAssetIds(db, targetId) : [];
+  const stableAssetObjects = assetObjectRecords(db, stableAssetIds);
+  const mediaUris = mediaPolicy
+    ? [...new Set([...attachedMediaUris(targetType, current), ...stableAssetObjects.map((object) => object.publicUrl)])]
+    : [];
+  const needsMediaScrub = !!mediaPolicy && (mediaUris.length > 0 || stableAssetIds.length > 0 || mediaPolicy.hasNonUrlAssociation(current));
   const stateChanged = Number(current.removed) !== desired;
   if (!stateChanged && !needsMediaScrub) {
     if (targetType === "message" && removed) deleteDirectMessageNotifications(current, targetId);
@@ -409,9 +414,19 @@ function setContentRemoved(ctx, targetType, targetId, removed, reason) {
   // Media removal is intentionally irreversible. Queue trusted objects before
   // clearing every public association; the helper is transaction-neutral, so a
   // queue failure rolls the row update and audit back with this outer action.
-  const queued = mediaPolicy
-    ? enqueueOwnedMediaUrls(db, { ownerId: current.media_owner_id, urls: mediaUris, at: Date.now() })
-    : { accepted: 0 };
+  const queued = mediaPolicy ? (() => {
+    const at = Date.now();
+    const byUrl = enqueueOwnedMediaUrls(db, { ownerId: current.media_owner_id, urls: mediaUris, at });
+    const byKey = enqueueOwnedMediaKeys(db, {
+      ownerId: current.media_owner_id,
+      keys: stableAssetObjects.map((object) => object.objectKey),
+      at,
+    });
+    if (byKey.accepted !== new Set(stableAssetObjects.map((object) => object.objectKey)).size) {
+      throw new ApiError(409, "That media changed while it was being removed. Refresh the moderation queue.", "CONFLICT");
+    }
+    return { accepted: new Set([...(byUrl.keys || []), ...(byKey.keys || [])]).size };
+  })() : { accepted: 0 };
   if (mediaPolicy) {
     const deleteReaction = db.prepare("DELETE FROM media_reactions WHERE media_url=?");
     for (const mediaUri of mediaUris) deleteReaction.run(mediaUri);
@@ -419,6 +434,11 @@ function setContentRemoved(ctx, targetType, targetId, removed, reason) {
   const assignments = ["removed=?", ...(mediaPolicy ? [mediaPolicy.scrub] : [])].join(",");
   const updated = db.prepare(`UPDATE ${target.table} SET ${assignments} WHERE ${target.key}=? AND removed=?`).run(desired, targetId, current.removed);
   if (updated.changes !== 1) throw new ApiError(409, "That content changed while you were reviewing it. Refresh the moderation queue.", "CONFLICT");
+  // Stable originals and renditions are irreversible moderation attachments too.
+  // Their object-ledger rows survive for the deletion worker; the descriptor and
+  // post link are removed in this same transaction so a later text-only restore
+  // cannot resurrect a cover, original, or edited rendition.
+  if (stableAssetIds.length) deleteMediaAssets(db, stableAssetIds);
   if (targetType === "message" && removed) deleteDirectMessageNotifications(current, targetId);
   recordModerationAction(ctx, removed ? "remove" : "restore", targetType, targetId, reason,
     {

@@ -11,6 +11,7 @@ const eas = readJson("eas.json");
 const pkg = readJson("package.json");
 const settingsSource = readFileSync(join(ROOT, "src", "screens", "SettingsScreen.jsx"), "utf8");
 const playerSource = readFileSync(join(ROOT, "src", "components", "PlayerBar.jsx"), "utf8");
+const playerResolutionSource = readFileSync(join(ROOT, "src", "domain", "playerSourceResolution.mjs"), "utf8");
 const nativeAudioSource = readFileSync(join(ROOT, "src", "lib", "audioPreview.native.js"), "utf8");
 const webAudioSource = readFileSync(join(ROOT, "src", "lib", "audioPreview.js"), "utf8");
 
@@ -119,7 +120,8 @@ test("native playback uses Expo audio without waiting for the web-only YouTube e
   assert.match(nativeAudioSource, /from "expo-audio"/);
   assert.doesNotMatch(nativeAudioSource, /from [^\n]*(?:youtube|react-native-webview)|useYouTube/i);
   assert.match(webAudioSource, /new window\.Audio\(\)/);
-  assert.match(playerSource, /web\s*\?\s*\(directVideoId[\s\S]{0,220}: Promise\.resolve\(null\)/);
+  assert.match(playerSource, /shouldResolvePlayerYouTube/);
+  assert.match(playerResolutionSource, /return !!web && !minimized && !directVideoId && !resolvedVideoId/);
   assert.match(playerSource, /const hasVideo = web &&/);
 });
 

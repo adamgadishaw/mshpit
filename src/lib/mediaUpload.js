@@ -4,6 +4,7 @@ import { File as ExpoFile, UploadType } from "expo-file-system";
 import { api } from "./api";
 import { AppError, captureAppError } from "./diagnostics";
 import { webImageOptimizationPlan } from "./mediaImagePolicy.mjs";
+import { mediaPutStatusAccepted } from "../domain/mediaUploadPolicy.mjs";
 
 const UPLOAD_TIMEOUT_MS = 45_000;
 const MIME_BY_EXTENSION = Object.freeze({
@@ -95,17 +96,107 @@ async function optimizedWebImage(file) {
   }
 }
 
-async function bodyFor(asset) {
+async function bodyFor(asset, { optimizeWeb = true } = {}) {
   // SDK 56 exposes the browser's original File on web. On native, pass an Expo
   // File directly to expo/fetch: this streams the local URI and avoids expanding
   // a large clip into a JS Blob (the source of intermittent mobile upload stalls).
-  if (Platform.OS === "web" && asset?.file && typeof asset.file.size === "number") return optimizedWebImage(asset.file);
+  if (Platform.OS === "web" && asset?.file && typeof asset.file.size === "number") {
+    return optimizeWeb ? optimizedWebImage(asset.file) : asset.file;
+  }
   if (!asset?.uri) throw new Error("The selected media did not include a readable file.");
   const file = new ExpoFile(asset.uri);
   if (!Number.isFinite(Number(file.size)) || Number(file.size) < 1) {
     throw new Error("The selected media could not be read from this device.");
   }
   return file;
+}
+
+// Prepare once, then use the same measured bytes for the API ticket and the
+// object PUT. New media-assets deliberately set optimizeWeb=false for immutable
+// originals; their edited display variant is rendered and uploaded separately.
+export async function prepareMediaUploadAsset(asset, { optimizeWeb = true, context = "Preparing media" } = {}) {
+  let body;
+  try {
+    body = await bodyFor(asset, { optimizeWeb });
+  } catch (error) {
+    throw capturedUploadError(error, { context, code: "PIT-UPLOAD-002" });
+  }
+  const contentType = contentTypeFor(asset, body);
+  if (!contentType) {
+    throw captureAppError(new AppError(undefined, { code: "PIT-UPLOAD-002", context, source: "media" }), {
+      context,
+      source: "media",
+      toast: true,
+      meta: { method: "PUT", route: "/media/object" },
+    });
+  }
+  const measuredSize = Number(body?.size);
+  const fileSize = Number.isFinite(measuredSize) ? measuredSize : Number(asset?.fileSize || 0);
+  if (!Number.isSafeInteger(fileSize) || fileSize < 1) {
+    throw capturedUploadError(new Error("The selected media had no readable file size."), { context });
+  }
+  return {
+    body,
+    contentType,
+    fileSize,
+    name: safeFileName(asset, contentType),
+    kind: contentType.startsWith("video/") ? "video" : "image",
+  };
+}
+
+export async function uploadPreparedMediaAsset(prepared, ticket, { signal, timeoutMs, context = "Uploading media" } = {}) {
+  if (!prepared?.body || !prepared?.contentType || !Number.isSafeInteger(prepared?.fileSize)) {
+    throw capturedUploadError(new Error("The prepared media upload is invalid."), { context, code: "PIT-UPLOAD-002" });
+  }
+  if (!ticket?.uploadUrl || !isDurableMediaUrl(ticket?.publicUrl) || !ticket?.requiredHeaders) {
+    throw captureAppError(new AppError(undefined, { code: "PIT-UPLOAD-004", context, source: "media" }), {
+      context,
+      source: "media",
+      toast: true,
+      meta: { method: "POST", route: "/api/media/presign" },
+    });
+  }
+  if (timeoutMs == null) timeoutMs = prepared.kind === "video" ? 300_000 : UPLOAD_TIMEOUT_MS;
+
+  const controller = new AbortController();
+  let timedOut = false;
+  const cancel = () => controller.abort();
+  if (signal?.aborted) cancel();
+  else signal?.addEventListener?.("abort", cancel, { once: true });
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, Math.max(1_000, Number(timeoutMs) || UPLOAD_TIMEOUT_MS));
+
+  try {
+    let status;
+    if (Platform.OS === "web") {
+      const response = await expoFetch(ticket.uploadUrl, {
+        method: ticket.method || "PUT",
+        headers: ticket.requiredHeaders,
+        body: prepared.body,
+        signal: controller.signal,
+      });
+      status = response.status;
+    } else {
+      const response = await prepared.body.upload(ticket.uploadUrl, {
+        httpMethod: ticket.method || "PUT",
+        uploadType: UploadType.BINARY_CONTENT,
+        headers: ticket.requiredHeaders,
+        signal: controller.signal,
+        sessionType: "foreground",
+      });
+      status = response.status;
+    }
+    if (!mediaPutStatusAccepted(status)) throw new Error(`Media storage rejected the upload (${status}).`);
+    return ticket.publicUrl;
+  } catch (error) {
+    if (signal?.aborted && !timedOut) throw error;
+    throw capturedUploadError(error, { timedOut, context });
+  } finally {
+    clearTimeout(timeout);
+    signal?.removeEventListener?.("abort", cancel);
+  }
 }
 
 function capturedUploadError(error, { timedOut = false, context, code } = {}) {
@@ -126,31 +217,7 @@ function capturedUploadError(error, { timedOut = false, context, code } = {}) {
  */
 export async function uploadMediaAsset(asset, purpose, { signal, timeoutMs } = {}) {
   const context = `Uploading ${purpose} media`;
-  let body;
-  try {
-    body = await bodyFor(asset);
-  } catch (error) {
-    throw capturedUploadError(error, { context, code: "PIT-UPLOAD-002" });
-  }
-
-  const contentType = contentTypeFor(asset, body);
-  // Clips are an order of magnitude bigger than photos; give the PUT room
-  // before declaring it dead on a normal uplink.
-  if (timeoutMs == null) timeoutMs = contentType.startsWith("video/") ? 300_000 : UPLOAD_TIMEOUT_MS;
-  if (!contentType) {
-    throw captureAppError(new AppError(undefined, { code: "PIT-UPLOAD-002", context, source: "media" }), {
-      context,
-      source: "media",
-      toast: true,
-      meta: { method: "PUT", route: "/media/object" },
-    });
-  }
-
-  const measuredSize = Number(body?.size);
-  const fileSize = Number.isFinite(measuredSize) ? measuredSize : Number(asset?.fileSize || 0);
-  if (!Number.isSafeInteger(fileSize) || fileSize < 1) {
-    throw capturedUploadError(new Error("The selected media had no readable file size."), { context });
-  }
+  const prepared = await prepareMediaUploadAsset(asset, { optimizeWeb: true, context });
 
   // The authenticated Pit API validates size/type and returns a short-lived URL;
   // storage credentials never enter the client bundle.
@@ -160,63 +227,10 @@ export async function uploadMediaAsset(asset, purpose, { signal, timeoutMs } = {
     signal,
     body: {
       purpose,
-      contentType,
-      fileSize,
-      name: safeFileName(asset, contentType),
+      contentType: prepared.contentType,
+      fileSize: prepared.fileSize,
+      name: prepared.name,
     },
   });
-
-  if (!ticket?.uploadUrl || !isDurableMediaUrl(ticket?.publicUrl) || !ticket?.requiredHeaders) {
-    throw captureAppError(new AppError(undefined, { code: "PIT-UPLOAD-004", context, source: "media" }), {
-      context,
-      source: "media",
-      toast: true,
-      meta: { method: "POST", route: "/api/media/presign" },
-    });
-  }
-
-  const controller = new AbortController();
-  let timedOut = false;
-  const cancel = () => controller.abort();
-  if (signal?.aborted) cancel();
-  else signal?.addEventListener?.("abort", cancel, { once: true });
-  const timeout = setTimeout(() => {
-    timedOut = true;
-    controller.abort();
-  }, Math.max(1_000, Number(timeoutMs) || UPLOAD_TIMEOUT_MS));
-
-  try {
-    let status;
-    if (Platform.OS === "web") {
-      const response = await expoFetch(ticket.uploadUrl, {
-        method: ticket.method || "PUT",
-        headers: ticket.requiredHeaders,
-        body,
-        signal: controller.signal,
-      });
-      status = response.status;
-    } else {
-      // SDK 56's expo/fetch currently materializes an Expo File as an
-      // ArrayBuffer. File.upload delegates to URLSession/OkHttp instead, so a
-      // large concert clip streams from disk and its real byte length is sent.
-      const response = await body.upload(ticket.uploadUrl, {
-        httpMethod: ticket.method || "PUT",
-        uploadType: UploadType.BINARY_CONTENT,
-        headers: ticket.requiredHeaders,
-        signal: controller.signal,
-        sessionType: "foreground",
-      });
-      status = response.status;
-    }
-    if (status < 200 || status >= 300) throw new Error(`Media storage rejected the upload (${status}).`);
-    return ticket.publicUrl;
-  } catch (error) {
-    // Closing the composer or tapping Cancel is intentional lifecycle cleanup,
-    // not an upload failure that should create a diagnostic/toast.
-    if (signal?.aborted && !timedOut) throw error;
-    throw capturedUploadError(error, { timedOut, context });
-  } finally {
-    clearTimeout(timeout);
-    signal?.removeEventListener?.("abort", cancel);
-  }
+  return uploadPreparedMediaAsset(prepared, ticket, { signal, timeoutMs, context });
 }

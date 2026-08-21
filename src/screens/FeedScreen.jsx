@@ -1,19 +1,23 @@
 import { useEffect, useRef, useState } from "react";
-import { View, Text, StyleSheet, FlatList, Pressable, useWindowDimensions } from "react-native";
+import { View, Text, StyleSheet, FlatList, Platform, Pressable, useWindowDimensions } from "react-native";
 import { colors, mono, radius, shadow } from "../theme";
 import { load, save } from "../lib/persist";
 import TicketStub from "../components/TicketStub";
 import Icon from "../components/Icon";
 import { filteredFeedNextAction } from "../domain/feedPagination.mjs";
+import { feedFilterStorageKey, feedFooterState, normalizeFeedFilter } from "../domain/feedExperience.mjs";
 import { JOURNEY_TAGLINE } from "../domain/menuJourney.mjs";
 
 const PAGE = 8; // load the feed in pages, like the big apps - never all at once
 
-export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, homeCity, unread = 0, notifUnread = 0, newUser = false, hideHeaderActions = false, onLoadMore, hasMore = false, loadingMore = false, onOpen, onImpression, onDwell, onNotInterested, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onOpenClips, onReport, onEdit, onOpenPhotos, onPlay, onLogShow, onEditProfile }) {
+export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, accountId = null, homeCity, unread = 0, notifUnread = 0, newUser = false, hideHeaderActions = false, onLoadMore, hasMore = false, loadingMore = false, onOpen, onImpression, onDwell, onNotInterested, onUndoNotInterested, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onOpenClips, onReport, onEdit, onOpenPhotos, onPlay, onLogShow, onEditProfile }) {
   const { width } = useWindowDimensions();
   const phone = width < 700;
-  const [filter, setFilter] = useState("everyone"); // following | local | everyone
+  const [filter, setFilter] = useState(() => normalizeFeedFilter(load(feedFilterStorageKey(accountId), "everyone"), { loggedIn })); // following | local | everyone
   const [count, setCount] = useState(PAGE);
+  const [undoItem, setUndoItem] = useState(null);
+  const [undoBusy, setUndoBusy] = useState(false);
+  const [undoError, setUndoError] = useState(null);
   const [gsDone, setGsDone] = useState(() => load("pit.gsDismissed", false));
   const visibleSince = useRef(new Map());
   const seenImpressions = useRef(new Set());
@@ -25,6 +29,13 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, h
   const analyticsRef = useRef({ surface, onImpression, onDwell });
   const viewabilityConfig = useRef({ itemVisiblePercentThreshold: 60, minimumViewTime: 750 }).current;
   analyticsRef.current = { surface, onImpression, onDwell };
+
+  useEffect(() => {
+    setFilter(normalizeFeedFilter(load(feedFilterStorageKey(accountId), "everyone"), { loggedIn }));
+    setCount(PAGE);
+    setUndoItem(null);
+    setUndoError(null);
+  }, [accountId, loggedIn]);
 
   const onViewableItemsChanged = useRef(({ changed }) => {
     const at = Date.now();
@@ -63,6 +74,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, h
     }
     visibleSince.current.clear();
     setFilter(f);
+    save(feedFilterStorageKey(accountId), f);
     setCount(PAGE);
   };
   const loadMore = async () => {
@@ -95,6 +107,32 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, h
     const loaded = await onLoadMore?.();
     if (loaded) setCount((c) => c + PAGE);
   };
+  const footer = feedFooterState({ visibleCount: count, loadedCount: full.length, hasMore, loading: filteredPageLoading });
+  const advanceFeed = filter === "everyone" ? loadMore : loadOlderFiltered;
+  const hideRecommendation = async (log) => {
+    if (!log?.id || !onNotInterested) return;
+    setUndoItem(log);
+    setUndoError(null);
+    try {
+      await onNotInterested(log);
+    } catch {
+      setUndoItem((current) => (current?.id === log.id ? null : current));
+    }
+  };
+  const undoRecommendation = async () => {
+    if (!undoItem?.id || !onUndoNotInterested || undoBusy) return;
+    const restoring = undoItem;
+    setUndoBusy(true);
+    setUndoError(null);
+    try {
+      await onUndoNotInterested(restoring);
+      setUndoItem((current) => (current?.id === restoring.id ? null : current));
+    } catch {
+      setUndoError({ postId: restoring.id, message: "Couldn't restore this yet. Try again." });
+    } finally {
+      setUndoBusy(false);
+    }
+  };
 
   // Concert cards are tall and media-heavy. Stage them gently on phones so
   // image decoding and comment-preview mounts do not all hit one frame.
@@ -104,8 +142,6 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, h
       keyExtractor={(item) => item.id}
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}
-      onEndReached={loadMore}
-      onEndReachedThreshold={0.6}
       keyboardShouldPersistTaps="handled"
       removeClippedSubviews
       initialNumToRender={phone ? 3 : PAGE}
@@ -167,7 +203,26 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, h
             <View style={styles.segment}>
               <Seg label="Following" on={filter === "following"} onPress={() => pick("following")} />
               <Seg label="Local" on={filter === "local"} onPress={() => pick("local")} />
-              <Seg label="For you" on={filter === "everyone"} onPress={() => pick("everyone")} />
+              <Seg label="Discover" on={filter === "everyone"} onPress={() => pick("everyone")} />
+            </View>
+          )}
+
+          {!!undoItem && (
+            <View style={styles.undoBar} accessibilityRole="alert">
+              <View style={{ flex: 1 }}>
+                <Text style={styles.undoTitle}>Recommendation hidden</Text>
+                <Text style={styles.undoSub} numberOfLines={1}>{undoError?.postId === undoItem.id ? undoError.message : undoItem.artist || undoItem.review || "That post"}</Text>
+              </View>
+              <Pressable
+                style={[styles.undoBtn, undoBusy && styles.olderBtnOff]}
+                onPress={undoRecommendation}
+                disabled={undoBusy}
+                accessibilityRole="button"
+                accessibilityLabel={undoError?.postId === undoItem.id ? "Retry restoring hidden recommendation" : "Undo hidden recommendation"}
+                accessibilityState={{ disabled: undoBusy, busy: undoBusy }}
+              >
+                <Text style={styles.undoBtnTxt}>{undoBusy ? "Restoring..." : undoError?.postId === undoItem.id ? "Try again" : "Undo"}</Text>
+              </Pressable>
             </View>
           )}
         </View>
@@ -193,22 +248,28 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, h
           </Text>
         </View>
       }
-      ListFooterComponent={filter !== "everyone" && (count < full.length || hasMore) ? (
+      ListFooterComponent={footer.kind === "reveal" || footer.kind === "fetch" || footer.kind === "loading" ? (
         <Pressable
           style={[styles.olderBtn, filteredPageLoading && styles.olderBtnOff]}
-          onPress={loadOlderFiltered}
+          onPress={advanceFeed}
           disabled={filteredPageLoading}
           accessibilityRole="button"
-          accessibilityLabel="Load older posts"
+          accessibilityLabel={footer.label}
           accessibilityState={{ disabled: filteredPageLoading }}
         >
-          <Text style={styles.olderTxt}>
-            {filteredPageLoading ? "Loading older posts..." : count < full.length ? "Show more posts" : "Load older posts"}
-          </Text>
+          <Text style={styles.olderTxt}>{footer.label}</Text>
         </Pressable>
+      ) : footer.kind === "caught-up" ? (
+        <View style={styles.caughtUp} accessibilityRole="summary">
+          <Icon name="check" size={17} color={colors.good} />
+          <View style={{ flex: 1 }}>
+            <Text style={styles.caughtTitle}>You're caught up</Text>
+            <Text style={styles.caughtSub}>Pit will keep your place. Come back when the community has something new.</Text>
+          </View>
+        </View>
       ) : null}
       renderItem={({ item, index: itemIndex }) => (
-        <TicketStub log={item} onOpen={(_unused) => onOpen?.(item, { surface, position: itemIndex })} onNotInterested={surface === "everyone" && item.recommendation ? onNotInterested : undefined} onComment={onComment} onPreview={onPreview} onOpenProfile={onOpenProfile} onOpenArtist={onOpenArtist} onOpenVenue={onOpenVenue} onReport={onReport} onEdit={onEdit} onOpenPhotos={onOpenPhotos} onPlay={onPlay} />
+        <TicketStub log={item} onOpen={(_unused) => onOpen?.(item, { surface, position: itemIndex })} onNotInterested={surface === "everyone" && item.recommendation ? hideRecommendation : undefined} onComment={onComment} onPreview={onPreview} onOpenProfile={onOpenProfile} onOpenArtist={onOpenArtist} onOpenVenue={onOpenVenue} onReport={onReport} onEdit={onEdit} onOpenPhotos={onOpenPhotos} onPlay={onPlay} />
       )}
     />
   );
@@ -216,7 +277,13 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, h
 
 function Seg({ label, on, onPress }) {
   return (
-    <Pressable style={[styles.seg, on && styles.segOn]} onPress={onPress}>
+    <Pressable
+      style={[styles.seg, on && styles.segOn]}
+      onPress={onPress}
+      accessibilityRole="tab"
+      accessibilityLabel={`${label} feed`}
+      accessibilityState={{ selected: on }}
+    >
       <Text style={[styles.segTxt, on && styles.segTxtOn]}>{label}</Text>
     </Pressable>
   );
@@ -236,7 +303,7 @@ function GsStep({ n, icon, label, sub, onPress }) {
 }
 
 const styles = StyleSheet.create({
-  content: { padding: 16, paddingBottom: 40 },
+  content: { padding: 16, paddingBottom: 40, ...(Platform.OS === "web" ? { width: "100%", maxWidth: 900, alignSelf: "center" } : null) },
   gs: { backgroundColor: colors.bgElev, borderRadius: radius.md, borderWidth: 1, borderColor: colors.amber, padding: 14, marginBottom: 14 },
   gsHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 10 },
   gsTitle: { color: colors.text, fontSize: 16, fontWeight: "800" },
@@ -251,6 +318,9 @@ const styles = StyleSheet.create({
   olderBtn: { alignSelf: "center", marginTop: 18, paddingHorizontal: 18, paddingVertical: 11, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
   olderBtnOff: { opacity: 0.55 },
   olderTxt: { color: colors.text, fontSize: 14, fontWeight: "800" },
+  caughtUp: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: 18, padding: 14, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.bgElev },
+  caughtTitle: { color: colors.text, fontSize: 14, fontWeight: "800" },
+  caughtSub: { color: colors.textDim, fontSize: 12, lineHeight: 17, marginTop: 2 },
   head: { marginBottom: 18, marginTop: 4 },
   wordmarkRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   headerBtns: { flexDirection: "row", gap: 8, alignItems: "center" },
@@ -271,5 +341,10 @@ const styles = StyleSheet.create({
   segOn: { backgroundColor: colors.surfaceAlt, ...shadow.card },
   segTxt: { color: colors.textDim, fontSize: 13, fontWeight: "600" },
   segTxtOn: { color: colors.text, fontWeight: "800" },
+  undoBar: { flexDirection: "row", alignItems: "center", gap: 12, marginTop: 10, padding: 12, borderRadius: radius.md, borderWidth: 1, borderColor: colors.good, backgroundColor: colors.bgElev },
+  undoTitle: { color: colors.text, fontSize: 13, fontWeight: "800" },
+  undoSub: { color: colors.textDim, fontSize: 11.5, marginTop: 2 },
+  undoBtn: { minHeight: 36, justifyContent: "center", paddingHorizontal: 14, borderRadius: radius.pill, backgroundColor: colors.good },
+  undoBtnTxt: { color: colors.bg, fontSize: 12.5, fontWeight: "900" },
   empty: { color: colors.textDim, fontSize: 14, lineHeight: 21, fontStyle: "italic", paddingHorizontal: 4 },
 });

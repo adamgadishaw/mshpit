@@ -19,11 +19,18 @@ function addUser(id, role = "fan") {
   q.insertUser.run(id, `${id}@example.com`, id, id.replace(/[^a-z0-9_]/g, "").slice(0, 20), "test-hash", role, "Toronto", 43.65, -79.38, id.slice(0, 2).toUpperCase(), "#123456", Date.now());
   return q.userById.get(id);
 }
+let legacyPostSequence = 0;
 function post(user, { photos, photosPublic = 1, artist = "Turnstile" }) {
-  return routes["POST /api/posts"]({
-    user, ip: "clip-" + user.id,
-    body: { artist, venue: "History", city: "Toronto", date: "2026-07-12", overall: 4.5, photos, photosPublic },
-  }).post;
+  // URL-only media is a historical read fixture now; every new API post uses
+  // stable media assets. Seed grandfathered rows directly so this suite tests
+  // reel compatibility rather than the upload boundary.
+  const id = `p_legacy_clip_${++legacyPostSequence}`;
+  db.prepare(`INSERT INTO posts
+    (id,user_id,artist,venue,city,date,overall,review,photos,photos_public,created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(
+    id, user.id, artist, "History", "Toronto", "2026-07-12", 4.5, "", JSON.stringify(photos), photosPublic ? 1 : 0, Date.now(),
+  );
+  return { id };
 }
 
 test("clips reel returns only public posts that carry a real video, with just the clip urls", () => {

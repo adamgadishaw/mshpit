@@ -92,9 +92,9 @@ test("media presigns a short-lived user-owned key without exposing credentials",
   assert.equal(result.method, "PUT");
   assert.equal(result.key, "users/u_owner/post/fixed-object.jpg");
   assert.equal(result.publicUrl, "https://media.example.com/users/u_owner/post/fixed-object.jpg");
-  assert.deepEqual(result.requiredHeaders, { "Content-Type": "image/jpeg" });
+  assert.deepEqual(result.requiredHeaders, { "Content-Type": "image/jpeg", "If-None-Match": "*" });
   assert.match(result.uploadUrl, /^https:\/\/objects\.example\.com\/pit-media\/users\/u_owner\/post\/fixed-object\.jpg\?/);
-  assert.match(result.uploadUrl, /X-Amz-SignedHeaders=content-length%3Bcontent-type%3Bhost/);
+  assert.match(result.uploadUrl, /X-Amz-SignedHeaders=content-length%3Bcontent-type%3Bhost%3Bif-none-match/);
   assert.equal(Object.hasOwn(result.requiredHeaders, "Content-Length"), false, "browser code must not set a forbidden header");
   assert.equal(result.uploadUrl.includes(configuredEnv.MEDIA_SECRET_ACCESS_KEY), false);
   assert.equal(result.expiresAt, new Date("2026-07-12T20:40:40Z").getTime());

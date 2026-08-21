@@ -16,9 +16,12 @@ const {
 } = await import("./db.js");
 const {
   invalidateYouTubeTrack,
+  normalizeYouTubeCacheText,
   parseYouTubeVideoId,
   playbackUrlExpiry,
   persistDeezerIdentity,
+  pruneExpiredProviderData,
+  getFreshDeezerPreview,
   resolveYouTubeTrack,
   scoreYouTubeCandidate,
   selectArtistChannel,
@@ -28,6 +31,7 @@ const {
   trackOverrideKey,
   youtubeOEmbed,
   youtubeCacheKey,
+  youtubeJson,
   youtubeProviderStatus,
 } = await import("./musicProviders.js");
 
@@ -481,4 +485,423 @@ test("a complete catalogue that lacks the song skips the in-channel search", asy
   // on top of it, because the complete catalogue already proved the Topic
   // channel does not hold the song.
   assert.equal(songSearches, 1, "one global search, no redundant in-channel search");
+});
+
+test("YouTube cache identity normalizes harmless Unicode and spacing without collapsing distinct words", () => {
+  assert.equal(normalizeYouTubeCacheText("  ARTIST\tName  "), "artist name");
+  assert.equal(
+    youtubeCacheKey("Song\u2014Name", "The  Artist"),
+    youtubeCacheKey("song-name", "  the artist "),
+    "dash, case, and whitespace variants share one resolver row",
+  );
+  assert.equal(
+    youtubeCacheKey("Cafe\u0301", "Composer"),
+    youtubeCacheKey("Café", "Composer"),
+    "canonically equivalent Unicode shares one row",
+  );
+  assert.notEqual(youtubeCacheKey("Si", "Singer"), youtubeCacheKey("Sí", "Singer"),
+    "meaningful diacritics remain distinct");
+  assert.notEqual(youtubeCacheKey("東京", "歌手"), youtubeCacheKey("京都", "歌手"),
+    "non-Latin titles never collapse to an empty ASCII key");
+  assert.notEqual(
+    youtubeCacheKey("c", "a|b"),
+    youtubeCacheKey("b|c", "a"),
+    "artist/title boundaries remain distinct even when either value contains the old delimiter",
+  );
+});
+
+test("only unambiguous legacy YouTube cache rows migrate without extending retention", async () => {
+  const now = Date.now();
+  const title = "Legacy Cache Song";
+  const artist = "Legacy Cache Artist";
+  const legacyKey = "yt:v2:legacy cache artist|legacy cache song";
+  const updatedAt = now - 2_000;
+  const expiresAt = now + 60_000;
+  db.prepare(`INSERT OR REPLACE INTO yt_cache
+    (key,video_id,updated_at,metadata,score,expires_at,rejected_ids)
+    VALUES (?,?,?,?,?,?,?)`).run(
+    legacyKey,
+    "legacy00001",
+    updatedAt,
+    JSON.stringify({ title, channel: `${artist} - Topic`, reasons: ["official"], duration: 180 }),
+    99,
+    expiresAt,
+    "[]",
+  );
+  const result = await resolveYouTubeTrack(title, artist, {
+    apiKey: "test-key",
+    fetchImpl: async () => { throw new Error("a fresh legacy row must not fetch"); },
+  });
+  assert.equal(result.videoId, "legacy00001");
+  assert.equal(result.status, "cached");
+  assert.equal(db.prepare("SELECT 1 FROM yt_cache WHERE key=?").get(legacyKey), undefined);
+  const migrated = db.prepare("SELECT * FROM yt_cache WHERE key=?").get(youtubeCacheKey(title, artist));
+  assert.equal(migrated.updated_at, updatedAt);
+  assert.equal(migrated.expires_at, expiresAt);
+
+  const ambiguousLegacyKey = "yt:v2:a|b|c";
+  db.prepare(`INSERT OR REPLACE INTO yt_cache
+    (key,video_id,updated_at,metadata,score,expires_at,rejected_ids)
+    VALUES (?,?,?,?,?,?,?)`).run(
+    ambiguousLegacyKey,
+    "ambiguous01",
+    updatedAt,
+    JSON.stringify({ title: "c", channel: "a|b", reasons: ["official"], duration: 180 }),
+    99,
+    expiresAt,
+    "[]",
+  );
+  const ignored = await resolveYouTubeTrack("c", "a|b", { apiKey: "" });
+  assert.deepEqual(ignored, { videoId: null, status: "unconfigured" });
+  assert.ok(db.prepare("SELECT 1 FROM yt_cache WHERE key=?").get(ambiguousLegacyKey),
+    "an ambiguous v2 row is never guessed into either colliding v3 identity");
+  assert.equal(db.prepare("SELECT 1 FROM yt_cache WHERE key=?").get(youtubeCacheKey("c", "a|b")), undefined);
+});
+
+test("Deezer preview cache keys keep pipe-bearing artist/title tuples separate", async () => {
+  let fetches = 0;
+  const fetchImpl = async (url) => {
+    fetches += 1;
+    const query = new URL(String(url)).searchParams.get("q") || "";
+    const second = query.includes('track:"b|c"');
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        data: [{
+          id: second ? 2 : 1,
+          title: second ? "b|c" : "c",
+          preview: second ? "https://preview.example/second" : "https://preview.example/first",
+          link: second ? "https://deezer.example/second" : "https://deezer.example/first",
+          artist: { id: second ? 20 : 10, name: second ? "a" : "a|b" },
+        }],
+      }),
+    };
+  };
+  const first = await getFreshDeezerPreview("c", "a|b", { fetchImpl });
+  const second = await getFreshDeezerPreview("b|c", "a", { fetchImpl });
+  assert.equal(first.preview, "https://preview.example/first");
+  assert.equal(second.preview, "https://preview.example/second");
+  assert.equal(fetches, 2);
+});
+
+test("provider pruning removes dormant YouTube mappings and downgrades CC0 pointers without retaining API trust", () => {
+  const at = Date.now();
+  const oldAt = at - 31 * 24 * 60 * 60 * 1000;
+  const freshAt = at - 24 * 60 * 60 * 1000;
+  const rows = [
+    ["Prune YouTube Positive", "UC_prune_positive", "youtube", oldAt],
+    ["Prune YouTube Miss", null, "youtube", oldAt],
+    ["Prune Legacy Positive", "UC_prune_legacy", null, oldAt],
+    ["Prune Wikidata Trusted", "UC_prune_wd_trusted", "wikidata", oldAt],
+    ["Prune Wikidata Unverified", "UC_prune_wd_unverified", "wikidata_unverified", oldAt],
+    ["Prune Fresh YouTube", "UC_prune_fresh", "youtube", freshAt],
+  ];
+  for (const [name, channelId, source, channelAt] of rows) {
+    const norm = name.toLowerCase();
+    artistStmts.upsert.run(artistRow(norm, { name }, "test"));
+    artistStmts.setChannel.run(channelId, channelAt, source, norm);
+  }
+  db.prepare(`INSERT OR REPLACE INTO wikidata_channel_checks
+    (mbid,channel_id,validated,checked_at) VALUES (?,?,?,?)`)
+    .run("prune-old-validated", "UC_prune_wd_trusted", 1, oldAt);
+  db.prepare(`INSERT OR REPLACE INTO wikidata_channel_checks
+    (mbid,channel_id,validated,checked_at) VALUES (?,?,?,?)`)
+    .run("prune-fresh-validated", "UC_prune_wd_fresh", 1, freshAt);
+
+  const pruned = pruneExpiredProviderData(at, { force: true });
+  assert.ok(pruned.artistChannels >= 3);
+  assert.ok(pruned.artistValidations >= 2);
+  assert.ok(pruned.wikidataValidations >= 1);
+  for (const name of ["Prune YouTube Positive", "Prune YouTube Miss", "Prune Legacy Positive"]) {
+    assert.deepEqual({ ...artistStmts.getChannel.get(name.toLowerCase()) }, {
+      channelId: null,
+      at: 0,
+      source: null,
+    });
+  }
+  for (const [name, channelId] of [
+    ["Prune Wikidata Trusted", "UC_prune_wd_trusted"],
+    ["Prune Wikidata Unverified", "UC_prune_wd_unverified"],
+  ]) {
+    assert.deepEqual({ ...artistStmts.getChannel.get(name.toLowerCase()) }, {
+      channelId,
+      at: 0,
+      source: "wikidata_unverified",
+    });
+  }
+  assert.deepEqual({ ...artistStmts.getChannel.get("prune fresh youtube") }, {
+    channelId: "UC_prune_fresh",
+    at: freshAt,
+    source: "youtube",
+  });
+  assert.deepEqual(
+    { ...db.prepare("SELECT channel_id,validated,checked_at FROM wikidata_channel_checks WHERE mbid=?")
+      .get("prune-old-validated") },
+    { channel_id: "UC_prune_wd_trusted", validated: 0, checked_at: 0 },
+  );
+  assert.deepEqual(
+    { ...db.prepare("SELECT channel_id,validated,checked_at FROM wikidata_channel_checks WHERE mbid=?")
+      .get("prune-fresh-validated") },
+    { channel_id: "UC_prune_wd_fresh", validated: 1, checked_at: freshAt },
+  );
+});
+
+test("uncatalogued artists reuse their durable channel and catalogue across spelling variants", async () => {
+  let channelSearches = 0;
+  let catalogueReads = 0;
+  const fetchImpl = async (url) => {
+    const value = String(url);
+    let data;
+    if (value.includes("type=channel")) {
+      channelSearches += 1;
+      data = { items: [{ id: { channelId: "UC_unknown_cache" }, snippet: { title: "Unknown Cache Act - Topic" } }] };
+    } else if (value.includes("/channels?")) {
+      data = { items: [{ contentDetails: { relatedPlaylists: { uploads: "UU_unknown_cache" } } }] };
+    } else if (value.includes("/playlistItems?")) {
+      catalogueReads += 1;
+      data = { items: [
+        { snippet: { title: "Cache Track One", resourceId: { videoId: "cachetrack1" } } },
+        { snippet: { title: "Cache Track Two", resourceId: { videoId: "cachetrack2" } } },
+      ] };
+    } else {
+      data = { items: [
+        youtubeCandidate("cachetrack1", "Cache Track One", "Unknown Cache Act - Topic"),
+        youtubeCandidate("cachetrack2", "Cache Track Two", "Unknown Cache Act - Topic"),
+      ].filter((item) => value.includes(item.id)) };
+    }
+    return { ok: true, status: 200, json: async () => data };
+  };
+
+  const first = await resolveYouTubeTrack("Cache Track One", "Unknown Cache Act", { apiKey: "test-key", fetchImpl });
+  const second = await resolveYouTubeTrack("Cache Track Two", "  UNKNOWN   CACHE ACT ", { apiKey: "test-key", fetchImpl });
+  assert.equal(first.videoId, "cachetrack1");
+  assert.equal(second.videoId, "cachetrack2");
+  assert.equal(channelSearches, 1, "the persisted provider channel avoids a second search.list call");
+  assert.equal(catalogueReads, 1, "one channel id maps to one normalized catalogue cache");
+});
+
+test("different songs cold-starting together coalesce artist channel and catalogue requests", async () => {
+  let channelSearches = 0;
+  let channelReads = 0;
+  let catalogueReads = 0;
+  const before = youtubeProviderStatus().efficiency;
+  const fetchImpl = async (url) => {
+    await new Promise((resolve) => setTimeout(resolve, 3));
+    const value = String(url);
+    let data;
+    if (value.includes("type=channel")) {
+      channelSearches += 1;
+      data = { items: [{ id: { channelId: "UC_coalesce" }, snippet: { title: "Coalesce Artist - Topic" } }] };
+    } else if (value.includes("/channels?")) {
+      channelReads += 1;
+      data = { items: [{ contentDetails: { relatedPlaylists: { uploads: "UU_coalesce" } } }] };
+    } else if (value.includes("/playlistItems?")) {
+      catalogueReads += 1;
+      data = { items: [
+        { snippet: { title: "Parallel One", resourceId: { videoId: "parallel001" } } },
+        { snippet: { title: "Parallel Two", resourceId: { videoId: "parallel002" } } },
+      ] };
+    } else {
+      data = { items: [
+        youtubeCandidate("parallel001", "Parallel One", "Coalesce Artist - Topic"),
+        youtubeCandidate("parallel002", "Parallel Two", "Coalesce Artist - Topic"),
+      ].filter((item) => value.includes(item.id)) };
+    }
+    return { ok: true, status: 200, json: async () => data };
+  };
+
+  const [one, two] = await Promise.all([
+    resolveYouTubeTrack("Parallel One", "Coalesce Artist", { apiKey: "test-key", fetchImpl }),
+    resolveYouTubeTrack("Parallel Two", "Coalesce Artist", { apiKey: "test-key", fetchImpl }),
+  ]);
+  assert.equal(one.videoId, "parallel001");
+  assert.equal(two.videoId, "parallel002");
+  assert.equal(channelSearches, 1);
+  assert.equal(channelReads, 1);
+  assert.equal(catalogueReads, 1);
+  const afterStatus = youtubeProviderStatus();
+  assert.ok(afterStatus.efficiency.channelCoalesced > before.channelCoalesced);
+  assert.ok(afterStatus.efficiency.catalogueCoalesced > before.catalogueCoalesced);
+  assert.deepEqual(afterStatus.inFlightByKind, { tracks: 0, channels: 0, catalogues: 0 });
+});
+
+test("an uncatalogued artist channel miss is negative-cached across different songs", async () => {
+  let channelSearches = 0;
+  let globalSearches = 0;
+  const fetchImpl = async (url) => {
+    const value = String(url);
+    if (value.includes("type=channel")) channelSearches += 1;
+    else if (value.includes("/search?")) {
+      globalSearches += 1;
+      assert.equal(new URL(value).searchParams.get("maxResults"), "25",
+        "one search call evaluates a wider first page without pagination");
+    }
+    return { ok: true, status: 200, json: async () => ({ items: [] }) };
+  };
+
+  await resolveYouTubeTrack("Negative One", "No Topic Cache Artist", { apiKey: "test-key", fetchImpl });
+  await resolveYouTubeTrack("Negative Two", "No Topic Cache Artist", { apiKey: "test-key", fetchImpl });
+  assert.equal(channelSearches, 1, "the structural channel miss is not searched twice");
+  assert.equal(globalSearches, 2, "each distinct song still receives one legitimate global attempt");
+});
+
+test("an uncatalogued artist refreshes a known channel with channels.list instead of search.list", async () => {
+  const artist = "Cheap Refresh Artist";
+  const title = "Cheap Refresh Song";
+  const now = Date.now();
+  db.prepare(`INSERT OR REPLACE INTO provider_cache (key,data,updated_at,expires_at)
+    VALUES (?,?,?,?)`).run(
+    `yt:channel:v2:${normalizeYouTubeCacheText(artist)}`,
+    JSON.stringify({
+      channelId: "UC_cheap_refresh",
+      title: `${artist} - Topic`,
+      rank: 100,
+      refreshAt: now - 1,
+    }),
+    now - 15 * 24 * 60 * 60 * 1000,
+    now + 15 * 24 * 60 * 60 * 1000,
+  );
+  let searches = 0;
+  let snippetRefreshes = 0;
+  const fetchImpl = async (url) => {
+    const value = String(url);
+    const parsed = new URL(value);
+    let data;
+    if (value.includes("/search?")) {
+      searches += 1;
+      data = { items: [] };
+    } else if (value.includes("/channels?") && parsed.searchParams.get("part") === "snippet") {
+      snippetRefreshes += 1;
+      data = { items: [{ id: "UC_cheap_refresh", snippet: { title: `${artist} - Topic` } }] };
+    } else if (value.includes("/channels?")) {
+      data = { items: [{ contentDetails: { relatedPlaylists: { uploads: "UU_cheap_refresh" } } }] };
+    } else if (value.includes("/playlistItems?")) {
+      data = { items: [{ snippet: { title, resourceId: { videoId: "cheaprefresh" } } }] };
+    } else {
+      data = { items: [youtubeCandidate("cheaprefresh", title, `${artist} - Topic`)] };
+    }
+    return { ok: true, status: 200, json: async () => data };
+  };
+
+  const result = await resolveYouTubeTrack(title, artist, { apiKey: "test-key", fetchImpl });
+  assert.equal(result.videoId, "cheaprefresh");
+  assert.equal(snippetRefreshes, 1);
+  assert.equal(searches, 0, "known channel identity refresh never spends search.list");
+});
+
+test("a positive match uses only policy-bounded stale fallback during transient refresh failure", async () => {
+  const now = Date.now();
+  const title = "Bounded Stale Song";
+  const artist = "Bounded Stale Artist";
+  const key = youtubeCacheKey(title, artist);
+  db.prepare(`INSERT OR REPLACE INTO yt_cache
+    (key,video_id,updated_at,metadata,score,expires_at,rejected_ids)
+    VALUES (?,?,?,?,?,?,?)`).run(
+    key,
+    "staletrack01",
+    now - 15 * 24 * 60 * 60 * 1000,
+    JSON.stringify({ title, channel: `${artist} - Topic`, reasons: ["official"], duration: 200 }),
+    100,
+    now + 15 * 24 * 60 * 60 * 1000,
+    "[]",
+  );
+  const before = youtubeProviderStatus().efficiency.staleFallbacks;
+  const stale = await resolveYouTubeTrack(title, artist, {
+    apiKey: "test-key",
+    fetchImpl: async () => { throw new Error("temporary network outage"); },
+  });
+  assert.deepEqual(stale, { videoId: "staletrack01", status: "stale", stale: true, confidence: 100 });
+  assert.equal(youtubeProviderStatus().efficiency.staleFallbacks, before + 1);
+
+  const expiredTitle = "Expired Stale Song";
+  db.prepare(`INSERT OR REPLACE INTO yt_cache
+    (key,video_id,updated_at,metadata,score,expires_at,rejected_ids)
+    VALUES (?,?,?,?,?,?,?)`).run(
+    youtubeCacheKey(expiredTitle, artist),
+    "expiredtrk1",
+    now - 31 * 24 * 60 * 60 * 1000,
+    JSON.stringify({ title: expiredTitle, channel: `${artist} - Topic`, reasons: ["official"], duration: 200 }),
+    100,
+    now + 24 * 60 * 60 * 1000,
+    "[]",
+  );
+  await assert.rejects(
+    resolveYouTubeTrack(expiredTitle, artist, {
+      apiKey: "test-key",
+      fetchImpl: async () => { throw new Error("temporary network outage"); },
+    }),
+    (error) => error?.code === "network",
+    "API data older than 30 days is never served as stale",
+  );
+});
+
+test("a successful normalized resolution and invalidation retain finite policy expiry", async () => {
+  const id = "success0001";
+  const title = "Success\u2014Track";
+  const fetchImpl = async (url) => {
+    const value = String(url);
+    const data = value.includes("/search?")
+      ? { items: [{ id: { videoId: id } }] }
+      : { items: [youtubeCandidate(id, "Success-Track (Official Audio)", "Success Label")] };
+    return { ok: true, status: 200, json: async () => data };
+  };
+  const resolved = await resolveYouTubeTrack(title, "", { apiKey: "test-key", fetchImpl });
+  assert.equal(resolved.videoId, id);
+  const normalizedKey = youtubeCacheKey(" success-track ", "");
+  const beforeInvalidation = db.prepare("SELECT * FROM yt_cache WHERE key=?").get(normalizedKey);
+  assert.equal(beforeInvalidation.video_id, id);
+  assert.ok(beforeInvalidation.expires_at - beforeInvalidation.updated_at <= 30 * 24 * 60 * 60 * 1000);
+
+  const invalidated = invalidateYouTubeTrack(" success-track ", "", id);
+  assert.equal(invalidated.invalidated, true);
+  const afterInvalidation = db.prepare("SELECT * FROM yt_cache WHERE key=?").get(normalizedKey);
+  assert.equal(afterInvalidation.video_id, null);
+  assert.deepEqual(JSON.parse(afterInvalidation.metadata), { invalidated: true });
+  assert.ok(JSON.parse(afterInvalidation.rejected_ids).includes(id));
+  assert.ok(afterInvalidation.expires_at - afterInvalidation.updated_at <= 30 * 24 * 60 * 60 * 1000);
+});
+
+test("the local daily reservation cannot overrun its configured search limit", async () => {
+  const status = youtubeProviderStatus();
+  db.prepare(`INSERT INTO app_meta (key,value) VALUES (?,?)
+    ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(status.search.key, String(status.search.limit));
+  let requested = false;
+  let actorPermits = 0;
+  await assert.rejects(
+    youtubeJson("search", { part: "snippet", q: "must not run" }, "test-key", async () => {
+      requested = true;
+      return { ok: true, status: 200, json: async () => ({ items: [] }) };
+    }, 8_000, { beforeRequest: () => { actorPermits += 1; } }),
+    (error) => error?.code === "search_budget_exhausted",
+  );
+  assert.equal(requested, false);
+  assert.equal(actorPermits, 0, "global exhaustion is rejected before an actor allowance is charged");
+  assert.equal(Number(db.prepare("SELECT value FROM app_meta WHERE key=?").get(status.search.key).value), status.search.limit);
+});
+
+test("an open provider circuit rejects before charging another actor allowance", async () => {
+  const status = youtubeProviderStatus();
+  db.prepare(`INSERT INTO app_meta (key,value) VALUES (?,?)
+    ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(status.search.key, "0");
+  let actorPermits = 0;
+  await assert.rejects(
+    youtubeJson("search", { part: "snippet", q: "opens circuit" }, "test-key", async () => ({
+      ok: false,
+      status: 403,
+      json: async () => ({}),
+    }), 8_000, { beforeRequest: () => { actorPermits += 1; } }),
+    (error) => error?.code === "quota_or_forbidden",
+  );
+  assert.equal(actorPermits, 1, "the provider request that opened the circuit consumed one legitimate actor permit");
+  let requested = false;
+  await assert.rejects(
+    youtubeJson("search", { part: "snippet", q: "must pause" }, "test-key", async () => {
+      requested = true;
+      return { ok: true, status: 200, json: async () => ({ items: [] }) };
+    }, 8_000, { beforeRequest: () => { actorPermits += 1; } }),
+    (error) => error?.code === "provider_paused",
+  );
+  assert.equal(requested, false);
+  assert.equal(actorPermits, 1, "the open circuit does not burn a permit for a request that cannot run");
 });

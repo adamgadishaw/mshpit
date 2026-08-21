@@ -185,7 +185,11 @@ export function createMediaPresign({ userId, body, env = process.env, now = new 
   const key = `users/${owner}/${file.purpose}/${safeId}.${file.extension}`;
   const objectUrl = joinObjectUrl(config.endpoint, [config.bucket, ...key.split("/")]);
   const publicUrl = joinObjectUrl(config.publicBase, key.split("/"));
-  const requiredHeaders = { "Content-Type": file.contentType };
+  // R2 implements conditional PutObject. Binding every public object key to a
+  // create-only PUT prevents a still-valid signed URL from overwriting bytes
+  // after finalization/moderation. The browser is allowed to author this header;
+  // the bucket CORS policy must list If-None-Match alongside Content-Type.
+  const requiredHeaders = { "Content-Type": file.contentType, "If-None-Match": "*" };
   // Content-Length is a forbidden browser-authored header, so it is not
   // returned to the client. Fetch/URLSession/OkHttp compute it from the actual
   // Blob/file. Signing that transport header binds the ticket to the measured

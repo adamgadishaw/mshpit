@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { View, Text, StyleSheet, ScrollView, Pressable, Linking } from "react-native";
+import { View, Text, StyleSheet, ScrollView, Pressable, Linking, ActivityIndicator } from "react-native";
 import { colors, displayFont, mono, radius, shadow, space } from "../theme";
 import Stars from "../components/Stars";
 import RatingSplit from "../components/RatingSplit";
@@ -8,9 +8,13 @@ import AfterpartySection from "../components/AfterpartySection";
 import Icon from "../components/Icon";
 import VenuePhotoWidget from "../components/VenuePhotoWidget";
 import ScreenHeader from "../components/ScreenHeader";
+import Avatar from "../components/Avatar";
 import { useStore } from "../store";
 import { showDateMs, fmtCountdown } from "../lib/showTime";
 import { formatDate } from "../domain/dates.mjs";
+import { api } from "../lib/api";
+import { normalizeLoungeMeta, normalizeShowAttendees, showSocialIdentity, showSocialView } from "../domain/showSocial.mjs";
+import { attendanceTotalForView, normalizeAttendanceSnapshot } from "../domain/showAttendance.mjs";
 
 // The "performance page" - ONE artist, ONE venue, ONE date. This is the night
 // itself, not the room (that's the venue page): a ticket-style hero owns the
@@ -22,7 +26,7 @@ import { formatDate } from "../domain/dates.mjs";
 export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenProfile, onOpenArtist, onOpenVenue, onOpenLounge, onRequireAuth }) {
   const {
     venueCoord, venuePhotos, venuePhotoState, loadVenuePhotos,
-    session, concertKey, isGoing, toggleGoing, attendeesFor, loungeFor,
+    session, concertKey, isGoing, isGoingBusy, toggleGoing, attendeesFor, loungeFor,
   } = useStore();
   // Normalize the shapes this page can be handed: calendar/tour rows carry
   // `place` instead of `venue`, and often no city, score, or setlist.
@@ -37,11 +41,69 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
   const photoState = venuePhotoState(venue);
   const key = concertKey(norm);
   const going = isGoing(key);
-  const attendees = attendeesFor(key);
-  const loungeCount = loungeFor(key).length;
+  const goingBusy = isGoingBusy(key);
+  const localAttendees = attendeesFor(key);
+  const localLoungeCount = loungeFor(key).length;
+  const accountId = session?.id || null;
+  const [socialRead, setSocialRead] = useState(null);
+  const social = showSocialView({
+    read: socialRead,
+    concertKey: key,
+    accountId,
+    localAttendees,
+    localMessageCount: localLoungeCount,
+    viewer: session,
+    viewerGoing: going,
+  });
+  const readMatches = socialRead?.identity === showSocialIdentity(key, accountId) && socialRead?.status === "ready";
+  const attendeeTotal = attendanceTotalForView({
+    total: readMatches ? socialRead.attendeeTotal : undefined,
+    serverViewerGoing: readMatches ? socialRead.serverViewerGoing : going,
+    viewerGoing: going,
+    visibleCount: social.attendees.length,
+  });
+  const renderedAttendeeCount = Math.min(30, social.attendees.length);
+  const hiddenAttendeeCount = Math.max(0, attendeeTotal - renderedAttendeeCount);
   useEffect(() => {
     void loadVenuePhotos(venue).catch(() => {});
   }, [venue]);
+
+  // The store contains only attendance this device already knows about. Read
+  // the server's authoritative attendee list and aggregate lounge metadata as
+  // soon as the show opens. Identity-keyed state plus abort teardown prevents a
+  // late response from a previous show or account from flashing on this one.
+  useEffect(() => {
+    if (!key) return undefined;
+    const controller = new AbortController();
+    const identity = showSocialIdentity(key, accountId);
+    setSocialRead({ identity, status: "loading", attendees: null, attendeeTotal: null, serverViewerGoing: false, loungeMeta: null });
+    Promise.allSettled([
+      api(`/api/going/${encodeURIComponent(key)}/attendees`, {
+        signal: controller.signal,
+        silent: true,
+        context: "Loading show attendees",
+      }),
+      api(`/api/lounges/${encodeURIComponent(key)}/meta`, {
+        signal: controller.signal,
+        silent: true,
+        context: "Loading concert-lounge details",
+      }),
+    ]).then(([attendeeResult, loungeResult]) => {
+      if (controller.signal.aborted) return;
+      const attendance = attendeeResult.status === "fulfilled"
+        ? normalizeAttendanceSnapshot(attendeeResult.value)
+        : null;
+      setSocialRead({
+        identity,
+        status: "ready",
+        attendees: attendance ? normalizeShowAttendees(attendance.attendees) : null,
+        attendeeTotal: attendance?.total ?? null,
+        serverViewerGoing: attendance?.viewerGoing ?? false,
+        loungeMeta: loungeResult.status === "fulfilled" ? normalizeLoungeMeta(loungeResult.value) : null,
+      });
+    });
+    return () => controller.abort();
+  }, [key, accountId]);
 
   // Upcoming vs happened decides the whole page. A show with no parseable date
   // but a score is treated as happened; no date and no score reads as upcoming.
@@ -144,20 +206,43 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
 
         {/* going + the concert lounge */}
         <View style={styles.socialRow}>
-          <Pressable style={[styles.goingBtn, going && styles.goingOn]} onPress={() => (session ? toggleGoing(norm) : onRequireAuth?.())}>
-            <Icon name={going ? "check" : "calendar"} size={16} color={going ? "#1A1206" : colors.amber} />
-            <Text style={[styles.goingTxt, going && { color: "#1A1206" }]}>{going ? "Going" : "I'm going"}</Text>
+          <Pressable
+            style={[styles.goingBtn, going && styles.goingOn, goingBusy && styles.goingBusy]}
+            onPress={() => (session ? toggleGoing(norm) : onRequireAuth?.())}
+            accessibilityRole="button"
+            accessibilityLabel={going ? "Remove this show from Going" : "Add this show to Going"}
+            accessibilityState={{ selected: going, busy: goingBusy }}
+          >
+            {goingBusy ? <ActivityIndicator size="small" color={going ? "#1A1206" : colors.amber} /> : (
+              <Icon name={going ? "check" : "calendar"} size={16} color={going ? "#1A1206" : colors.amber} />
+            )}
+            <Text style={[styles.goingTxt, going && { color: "#1A1206" }]}>{goingBusy ? "Saving…" : going ? "Going" : "I'm going"}</Text>
           </Pressable>
           <Pressable style={styles.loungeBtn} onPress={() => onOpenLounge?.(norm)}>
             <Icon name="comment" size={16} color={colors.amber} />
             <Text style={styles.loungeTxt}>Lounge</Text>
-            <View style={styles.loungeCount}><Text style={styles.loungeCountTxt}>{loungeCount}</Text></View>
+            <View style={styles.loungeCount}><Text style={styles.loungeCountTxt}>{social.messageCount}</Text></View>
           </Pressable>
         </View>
-        {attendees.length > 0 && (
-          <Text style={styles.attendees}>
-            {attendees.length} going · {attendees.slice(0, 3).map((u) => u.name).join(", ")}{attendees.length > 3 ? " +more" : ""}
-          </Text>
+        {attendeeTotal > 0 && (
+          <View style={styles.attendeesCard}>
+            <Text style={styles.attendeesTitle}>{attendeeTotal} going</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.attendeesList}>
+              {social.attendees.slice(0, 30).map((attendee) => (
+                <Pressable
+                  key={attendee.id}
+                  style={styles.attendeeChip}
+                  onPress={() => onOpenProfile?.(attendee.id)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Open ${attendee.name}'s profile`}
+                >
+                  <Avatar user={attendee} size={30} />
+                  <Text style={styles.attendeeName} numberOfLines={1}>{attendee.name}</Text>
+                </Pressable>
+              ))}
+              {hiddenAttendeeCount > 0 && <Text style={styles.attendeeMore}>+{hiddenAttendeeCount} more</Text>}
+            </ScrollView>
+          </View>
         )}
 
         {/* review-in-post: log/review this exact show. Only a night that has
@@ -249,12 +334,18 @@ const styles = StyleSheet.create({
   socialRow: { flexDirection: "row", gap: 10, marginTop: 16 },
   goingBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, borderRadius: radius.md, borderWidth: 1, borderColor: colors.amber, backgroundColor: colors.bgElev, paddingVertical: 14 },
   goingOn: { backgroundColor: colors.amberStrong, borderColor: colors.amberStrong },
+  goingBusy: { opacity: 0.78 },
   goingTxt: { color: colors.amber, fontSize: 14, fontWeight: "800" },
   loungeBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface, paddingVertical: 14 },
   loungeTxt: { color: colors.text, fontSize: 14, fontWeight: "700" },
   loungeCount: { backgroundColor: colors.amber, borderRadius: 999, minWidth: 20, paddingHorizontal: 6, paddingVertical: 1, alignItems: "center" },
   loungeCountTxt: { color: "#1A1206", fontSize: 11, fontWeight: "800", fontFamily: mono },
-  attendees: { color: colors.textDim, fontSize: 12, marginTop: 10, textAlign: "center" },
+  attendeesCard: { backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, marginTop: 10, padding: 11 },
+  attendeesTitle: { color: colors.textDim, fontFamily: mono, fontSize: 11, fontWeight: "800", letterSpacing: 0.5, marginBottom: 8 },
+  attendeesList: { alignItems: "center", gap: 8, paddingRight: 4 },
+  attendeeChip: { flexDirection: "row", alignItems: "center", gap: 7, maxWidth: 160, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.bgElev, paddingLeft: 3, paddingRight: 10, paddingVertical: 3 },
+  attendeeName: { color: colors.text, fontSize: 12, fontWeight: "700", maxWidth: 105 },
+  attendeeMore: { color: colors.textDim, fontFamily: mono, fontSize: 11, paddingHorizontal: 5 },
   reviewCta: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, backgroundColor: colors.amberStrong, borderRadius: radius.md, paddingVertical: 14, marginTop: 16 },
   reviewCtaTxt: { color: "#1A1206", fontSize: 15, fontWeight: "800", letterSpacing: 0.5 },
   spoiler: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.amber, borderStyle: "dashed", paddingHorizontal: 16, paddingVertical: 16, marginTop: 8 },

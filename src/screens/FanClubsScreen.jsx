@@ -1,35 +1,32 @@
-import { useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { View, Text, StyleSheet, ScrollView, TextInput, Pressable } from "react-native";
 import { colors, mono, radius, space } from "../theme";
 import { useStore } from "../store";
 import ScreenHeader from "../components/ScreenHeader";
 import Icon from "../components/Icon";
+import { fanClubSearchResults } from "../domain/fanClubDirectory.mjs";
 
 // Fan clubs, front and center: a browsable directory of every club (most members
 // first) plus type-to-find across ALL artists, so any club is one search away
 // instead of buried behind its artist page.
 export default function FanClubsScreen({ onClose, onOpenFanClub }) {
-  const { fanClubsDirectory, artistsAlphabetical, fanClubCount } = useStore();
+  const { session, fanClubsDirectory, fanClubDirectoryStatus, loadFanClubsDirectory, artistsAlphabetical } = useStore();
   const [q, setQ] = useState("");
   const query = q.trim().toLowerCase();
 
-  const active = useMemo(() => fanClubsDirectory(), []);
+  // Re-read on every store render so a completed join/leave updates the
+  // directory immediately instead of being frozen to the mount-time snapshot.
+  const active = fanClubsDirectory();
+
+  useEffect(() => {
+    const controller = new AbortController();
+    loadFanClubsDirectory({ signal: controller.signal }).catch(() => {});
+    return () => controller.abort();
+  }, [session?.id]);
 
   // Searching matches every artist in the catalog, so you can open (and be the
   // first member of) any club, not just the already-active ones.
-  const results = useMemo(() => {
-    if (!query) return [];
-    const seen = new Set();
-    const out = [];
-    active.forEach((c) => {
-      if (c.artist.toLowerCase().includes(query)) { seen.add(c.artist.toLowerCase()); out.push(c); }
-    });
-    artistsAlphabetical(1000).forEach((a) => {
-      const k = a.name.toLowerCase();
-      if (k.includes(query) && !seen.has(k)) out.push({ artist: a.name, members: 0, messages: 0 });
-    });
-    return out.slice(0, 40);
-  }, [query, active]);
+  const results = query ? fanClubSearchResults(active, artistsAlphabetical(1000), query, 40) : [];
 
   const Row = ({ c }) => (
     <Pressable style={styles.row} onPress={() => onOpenFanClub?.(c.artist)}>
@@ -76,7 +73,7 @@ export default function FanClubsScreen({ onClose, onOpenFanClub }) {
           <>
             <Text style={styles.hint}>Permanent chats for every artist, swap shows, plan trips, no ticket needed.</Text>
             <Text style={styles.sectionLabel}>ACTIVE CLUBS · {active.length}</Text>
-            {active.length === 0 && <Text style={styles.empty}>No clubs yet, search an artist to start one.</Text>}
+            {active.length === 0 && <Text style={styles.empty}>{fanClubDirectoryStatus === "loading" ? "Refreshing active clubs…" : "No clubs yet, search an artist to start one."}</Text>}
             {active.map((c) => <Row key={c.artist} c={c} />)}
           </>
         )}

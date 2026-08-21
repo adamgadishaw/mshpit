@@ -15,6 +15,9 @@ const DEFINITIVE = new Set([
   "confirmed_unavailable", // an admin pinned "no correct video exists"
   "not_found",             // searched, nothing matched
   "unconfigured",          // no API key; retrying cannot help until it is set
+  "search_login_required",        // preview is available; signing in unlocks cold search
+  "search_verification_required", // account must be verified before it can spend shared quota
+  "search_actor_budget_exhausted", // this actor's bounded daily allowance is spent
 ]);
 
 // Capacity and transport problems. The song is fine; we could not ask right now.
@@ -69,6 +72,13 @@ export function classifyResolve(outcome = {}) {
 
   if (status && DEFINITIVE.has(status)) {
     return { videoId: null, transient: false, retry: false, cacheMs: CACHE_MS.definitive, status };
+  }
+  // The API can introduce a new honest denial status without making older
+  // clients hammer it three times. An explicit `retryable: false` is an
+  // authoritative server decision; unknown/omitted statuses still fail open to
+  // a short retry below.
+  if (retryable === false) {
+    return { videoId: null, transient: false, retry: false, cacheMs: CACHE_MS.definitive, status: status || "rejected" };
   }
   if ((status && TRANSIENT.has(status)) || retryable) {
     return { videoId: null, transient: true, retry: true, cacheMs: CACHE_MS.transient, status: status || "transient" };

@@ -84,3 +84,48 @@ test("backgrounding flushes a saved draft even if no new keystroke is pending", 
   assert.equal(shouldFlushComposerDraft({ dirty: true }), true);
   assert.equal(shouldFlushComposerDraft({ editing: true, dirty: true, hasDraft: true }), false);
 });
+
+test("durable Studio assets persist recipes and accessibility copy without device-local files", () => {
+  const draft = normalizeComposerDraft({
+    postType: "status",
+    mediaProject: { assets: [{
+      id: "studio:1",
+      assetId: "ma_abcdefgh12345678",
+      kind: "image",
+      uri: "https://media.mshpit.com/users/u/post/render.webp",
+      sourceUrl: "https://media.mshpit.com/users/u/post/render.webp",
+      status: "ready",
+      width: 1080,
+      height: 1350,
+      altText: "Crowd under amber lights",
+      runtimeFile: { size: 99, secret: "not persistent" },
+    }] },
+  });
+  assert.deepEqual(draft.photos, ["https://media.mshpit.com/users/u/post/render.webp"]);
+  assert.equal(draft.mediaProject.assets[0].assetId, "ma_abcdefgh12345678");
+  assert.equal(draft.mediaProject.assets[0].altText, "Crowd under amber lights");
+  assert.equal(JSON.stringify(draft).includes("runtimeFile"), false);
+  assert.equal(JSON.stringify(draft).includes("not persistent"), false);
+});
+
+test("native PIT-managed selections make a recoverable media-only draft", () => {
+  const uri = "file:///data/user/0/com.mshpit.app/files/pit-studio/u_1/post_1/01-photo.jpg";
+  const draft = normalizeComposerDraft({
+    postType: "status",
+    mediaProject: { assets: [{
+      id: "local:photo",
+      kind: "image",
+      uri,
+      durableLocalUri: uri,
+      status: "editing",
+      width: 1200,
+      height: 900,
+      altText: "Singer in amber light",
+    }] },
+  });
+  assert.equal(composerDraftHasContent(draft), true);
+  assert.equal(draft.photos.length, 0);
+  assert.equal(draft.mediaProject.assets.length, 1);
+  assert.equal(draft.mediaProject.assets[0].durableLocalUri, uri);
+  assert.equal(draft.mediaProject.assets[0].altText, "Singer in amber light");
+});

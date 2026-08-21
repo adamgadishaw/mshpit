@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, KeyboardAvoidingView, Platform } from "react-native";
 import { colors, mono, radius } from "../theme";
 import { useStore, isStaff } from "../store";
@@ -9,30 +9,45 @@ import MentionText from "../components/MentionText";
 import useLiveChat from "../lib/useLiveChat";
 import useChatScroll from "../lib/useChatScroll";
 import { api } from "../lib/api";
+import { accountTargetScope, scopedScreenValue } from "../domain/screenScope.mjs";
+
+const EMPTY_LOUNGE_ACTIONS = Object.freeze({ enteredRoom: null, entering: false, sending: false, text: "" });
 
 // The Concert Lounge - a Discord/YouTube-style chat for everyone at a show.
 // Gated: you have to tap in, so it feels like a room you enter.
 export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfileByHandle, onReport }) {
-  const { session, concertKey, loungeFor, enterLounge, addLoungeMessage, loadLounge, attendeesFor, userById, removeLoungeMessage } = useStore();
+  const {
+    session, chatAuthEpoch, concertKey, loungeFor, enterLounge, addLoungeMessage,
+    retryChatMessage, cancelChatMessage, loadLounge, attendeesFor, userById, removeLoungeMessage,
+  } = useStore();
   const staff = isStaff(session?.role);
   const key = concertKey(log);
   const roomIdentity = session && key ? `${session.id}:${key}` : null;
-  const [enteredRoom, setEnteredRoom] = useState(null);
+  const actionScope = accountTargetScope(session?.id, `lounge:${key || ""}`);
+  const actionScopeRef = useRef(actionScope);
+  actionScopeRef.current = actionScope;
+  const [actionState, setActionState] = useState(() => ({ scope: actionScope, value: EMPTY_LOUNGE_ACTIONS }));
+  const { enteredRoom, entering, sending, text } = scopedScreenValue(actionState, actionScope, EMPTY_LOUNGE_ACTIONS);
+  const updateActions = (changes) => setActionState((current) => ({
+    scope: actionScope,
+    value: { ...scopedScreenValue(current, actionScope, EMPTY_LOUNGE_ACTIONS), ...changes },
+  }));
   const entered = !!roomIdentity && enteredRoom === roomIdentity;
-  const [entering, setEntering] = useState(false);
-  const [sending, setSending] = useState(false);
-  const [text, setText] = useState("");
   const [gateMeta, setGateMeta] = useState(null);
   const { scrollRef, onScroll, onContentSizeChange } = useChatScroll();
 
   useLiveChat(
     ({ after, signal }) => loadLounge(key, { after, signal }),
-    { channelKey: `lounge:${key}`, enabled: !!key && entered },
+    { channelKey: `lounge:${chatAuthEpoch}:${session?.id || "guest"}:${key}`, enabled: !!key && entered },
   );
 
   const messages = loungeFor(key);
   const attendees = attendeesFor(key);
   const currentGateMeta = gateMeta?.key === key ? gateMeta : null;
+
+  useEffect(() => {
+    setActionState({ scope: actionScope, value: EMPTY_LOUNGE_ACTIONS });
+  }, [actionScope]);
 
   // The gate reads aggregate-only metadata. Conversation polling remains off
   // until this account's attendance write has been confirmed by the server.
@@ -53,20 +68,35 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
 
   const enter = async () => {
     if (entering || !session || !roomIdentity) return;
-    setEntering(true);
+    const requestScope = actionScope;
+    updateActions({ entering: true });
     const result = await enterLounge(log);
-    if (result?.ok && !result?.guest) setEnteredRoom(roomIdentity);
-    setEntering(false);
+    if (actionScopeRef.current !== requestScope) return;
+    updateActions({ enteredRoom: result?.ok && !result?.guest ? roomIdentity : null, entering: false });
   };
 
   const send = async () => {
     const submitted = text;
     const draft = submitted.trim();
     if (!draft || sending) return;
-    setSending(true);
+    const requestScope = actionScope;
+    updateActions({ sending: true });
     const result = await addLoungeMessage(key, draft);
-    if (result?.ok) setText((current) => current === submitted ? "" : current);
-    setSending(false);
+    if (actionScopeRef.current !== requestScope) return;
+    setActionState((current) => {
+      const value = scopedScreenValue(current, requestScope, EMPTY_LOUNGE_ACTIONS);
+      return { scope: requestScope, value: { ...value, text: result?.ok && value.text === submitted ? "" : value.text, sending: false } };
+    });
+  };
+  const retry = async (message) => {
+    const requestScope = actionScope;
+    const result = await retryChatMessage(message.id);
+    if (result?.ok && actionScopeRef.current === requestScope) {
+      setActionState((current) => {
+        const value = scopedScreenValue(current, requestScope, EMPTY_LOUNGE_ACTIONS);
+        return { scope: requestScope, value: { ...value, text: value.text.trim() === message.text ? "" : value.text } };
+      });
+    }
   };
 
   if (!entered) {
@@ -81,7 +111,7 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
             <Text style={{ color: colors.text, fontWeight: "700" }}>{log.artist}</Text> · {log.venue}
           </Text>
           <Text style={styles.gateMeta}>{currentGateMeta?.messageCount ?? messages.length} messages · {currentGateMeta?.attendeeCount ?? attendees.length} going</Text>
-          <Pressable style={[styles.enterBtn, (entering || !session) && { opacity: 0.65 }]} onPress={enter} disabled={entering || !session}>
+          <Pressable style={[styles.enterBtn, (entering || !session) && { opacity: 0.65 }]} onPress={enter} disabled={entering || !session} accessibilityRole="button" accessibilityState={{ disabled: entering || !session, busy: entering }}>
             <Text style={styles.enterTxt}>{!session ? "Log in to enter the lounge" : entering ? "Saving your spot…" : "I'm going - enter the lounge"}</Text>
           </Pressable>
           <Text style={styles.gateNote}>Be decent. Mods can remove anyone.</Text>
@@ -102,11 +132,23 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
           return (
             <View key={m.id} style={[styles.msgRow, mine && styles.msgRowMine]}>
               {!mine && <Avatar user={u} size={30} onPress={() => onOpenProfile?.(m.userId)} />}
-              <View style={[styles.bubble, mine && styles.bubbleMine]}>
+              <View style={[styles.bubble, mine && styles.bubbleMine, m.failed && styles.bubbleFailed]}>
                 {!mine && <Text style={styles.msgName}>{m.name}</Text>}
                 <MentionText text={m.text} style={[styles.msgText, mine && { color: "#1A1206" }]} onMention={onOpenProfileByHandle} />
                 <View style={styles.msgFoot}>
                   <Text style={[styles.msgTs, mine && { color: "rgba(26,18,6,0.6)" }]}>{m.ts}</Text>
+                  {mine && m.pending ? <Text style={styles.deliveryMine} accessibilityLiveRegion="polite">sending…</Text> : null}
+                  {mine && m.failed ? (
+                    <View style={styles.deliveryActions}>
+                      <Text style={styles.deliveryFailed} accessibilityRole="alert" accessibilityLiveRegion="assertive" accessibilityLabel="Lounge message not sent">not sent</Text>
+                      <Pressable onPress={() => retry(m)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Retry lounge message">
+                        <Text style={styles.deliveryAction}>retry</Text>
+                      </Pressable>
+                      <Pressable onPress={() => cancelChatMessage(m.id)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Cancel failed lounge message">
+                        <Text style={styles.deliveryAction}>cancel</Text>
+                      </Pressable>
+                    </View>
+                  ) : null}
                   {!mine && onReport ? (
                     <Pressable
                       style={styles.reportBtn}
@@ -125,7 +167,7 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
                       <Icon name="flag" size={12} color={mine ? "rgba(26,18,6,0.6)" : colors.textFaint} />
                     </Pressable>
                   ) : null}
-                  {staff && (
+                  {staff && !m.pending && !m.failed && (
                     <Pressable onPress={() => removeLoungeMessage(key, m.id)} hitSlop={8}>
                       <Icon name="trash" size={12} color={mine ? "rgba(26,18,6,0.6)" : colors.textFaint} />
                     </Pressable>
@@ -139,8 +181,15 @@ export default function LoungeScreen({ log, onClose, onOpenProfile, onOpenProfil
 
       {session ? (
         <View style={styles.inputBar}>
-          <TextInput style={styles.input} placeholder="Message the lounge…" placeholderTextColor={colors.textFaint} value={text} onChangeText={setText} onSubmitEditing={send} returnKeyType="send" maxLength={1000} />
-          <Pressable style={[styles.sendBtn, sending && { opacity: 0.65 }]} onPress={send} disabled={sending}>
+          <TextInput style={styles.input} placeholder="Message the lounge…" placeholderTextColor={colors.textFaint} value={text} onChangeText={(value) => updateActions({ text: value })} onSubmitEditing={send} returnKeyType="send" maxLength={1000} />
+          <Pressable
+            style={[styles.sendBtn, sending && { opacity: 0.65 }]}
+            onPress={send}
+            disabled={sending || !text.trim()}
+            accessibilityRole="button"
+            accessibilityLabel={`Send message to the ${log.artist} lounge`}
+            accessibilityState={{ disabled: sending || !text.trim(), busy: sending }}
+          >
             <Icon name="chevron-right" size={20} color="#1A1206" />
           </Pressable>
         </View>
@@ -168,10 +217,15 @@ const styles = StyleSheet.create({
   msgRowMine: { alignSelf: "flex-end", flexDirection: "row-reverse" },
   bubble: { backgroundColor: colors.surface, borderRadius: 14, borderTopLeftRadius: 4, borderWidth: 1, borderColor: colors.lineSoft, paddingHorizontal: 12, paddingVertical: 8 },
   bubbleMine: { backgroundColor: colors.amber, borderColor: colors.amber, borderTopLeftRadius: 14, borderTopRightRadius: 4 },
+  bubbleFailed: { borderColor: colors.magenta, borderWidth: 1.5 },
   msgName: { color: colors.amber, fontSize: 11, fontWeight: "800", marginBottom: 2 },
   msgText: { color: colors.text, fontSize: 14, lineHeight: 19 },
   msgFoot: { flexDirection: "row", alignItems: "center", gap: 8, alignSelf: "flex-end", marginTop: 3 },
   msgTs: { color: colors.textFaint, fontSize: 10, fontFamily: mono },
+  deliveryMine: { color: "rgba(26,18,6,0.65)", fontSize: 10, fontFamily: mono },
+  deliveryActions: { flexDirection: "row", alignItems: "center", gap: 8 },
+  deliveryFailed: { color: "#7B1836", fontSize: 10, fontFamily: mono, fontWeight: "800" },
+  deliveryAction: { color: "#1A1206", fontSize: 11, fontWeight: "900", textDecorationLine: "underline" },
   reportBtn: { minWidth: 28, minHeight: 28, alignItems: "center", justifyContent: "center", marginVertical: -4 },
   inputBar: { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 16, paddingTop: 8, paddingBottom: Platform.OS === "ios" ? 24 : 12, borderTopWidth: 1, borderTopColor: colors.lineSoft, backgroundColor: colors.bgElev },
   input: { flex: 1, backgroundColor: colors.surface, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, color: colors.text, paddingHorizontal: 16, paddingVertical: 11, fontSize: 15 },

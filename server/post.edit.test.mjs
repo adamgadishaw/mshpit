@@ -67,20 +67,20 @@ test("post creation returns the canonical post and persists detailed ratings", (
   );
 });
 
-test("status posts carry text/photos with no artist, venue, or rating", () => {
+test("status posts carry text and songs without review fields while raw media is rejected", () => {
   const user = addUser("statusposter");
   const create = routes["POST /api/posts"];
   const status = create({
     user,
     ip: "status-create",
-    body: { kind: "status", review: "just left the best show of my life", photos: ["https://cdn.example/night.jpg"] },
+    body: { kind: "status", review: "just left the best show of my life" },
   });
   assert.equal(status.post.kind, "status");
   assert.equal(status.post.artist, "");
   assert.equal(status.post.venue, "");
   assert.equal(status.post.overall, 0);
   assert.equal(status.post.review, "just left the best show of my life");
-  assert.deepEqual(status.post.photos, ["https://cdn.example/night.jpg"]);
+  assert.deepEqual(status.post.photos, []);
 
   const songOnly = create({
     user,
@@ -90,9 +90,12 @@ test("status posts carry text/photos with no artist, venue, or rating", () => {
   assert.equal(songOnly.post.song.videoId, "dQw4w9WgXcQ");
   assert.equal(songOnly.post.song.url, "https://www.youtube.com/watch?v=dQw4w9WgXcQ");
 
-  // A photo-only status is fine; a status with neither text nor a photo is not.
-  const photoOnly = create({ user, ip: "status-photo", body: { kind: "status", photos: ["https://cdn.example/a.jpg"] } });
-  assert.equal(photoOnly.post.kind, "status");
+  // New post media must use stable asset ids; URL-only rows remain read-only
+  // compatibility data and cannot be minted through the current write route.
+  assert.throws(
+    () => create({ user, ip: "status-photo", body: { kind: "status", photos: ["https://cdn.example/a.jpg"] } }),
+    (error) => error instanceof ApiError && error.status === 400,
+  );
   assert.throws(
     () => create({ user, ip: "status-empty", body: { kind: "status", review: "   " } }),
     (error) => error instanceof ApiError && error.status === 400,
@@ -161,7 +164,7 @@ test("post edits enforce ownership, revisions, validation, and canonical fields"
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
     .run("post_edit", owner.id, "Artist", "Venue", "Toronto", "2026 · 07 · 15", 4, 4.5, 3.5,
       JSON.stringify({ performance: 4.5, setlist: 4, sound: 3.5, venue: 3, crowd: 5, experience: 4.5 }),
-      "Original", "[]", 0, "[]", "Summer Tour", 100);
+       "Original", JSON.stringify(["https://cdn.example/photo.jpg"]), 0, "[]", "Summer Tour", 100);
 
   const edit = routes["PATCH /api/posts/:id"];
   assert.throws(

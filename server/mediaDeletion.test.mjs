@@ -28,6 +28,7 @@ const {
   MEDIA_OWNER_SWEEP_RECHECK_MS,
   MEDIA_UPLOAD_SETTLE_BUFFER_MS,
   recordMediaObjectTicket,
+  reserveMediaUploadTicket,
   runMediaDeletionBatch,
   runMediaOwnerSweepOnce,
   trustedOwnedMediaKey,
@@ -47,13 +48,17 @@ function addUser(id, password = "delete-password") {
 }
 
 function clearMediaTables() {
+  db.prepare("DELETE FROM post_media").run();
+  db.prepare("DELETE FROM media_variants").run();
+  db.prepare("DELETE FROM media_assets").run();
   db.prepare("DELETE FROM media_deletion_queue").run();
   db.prepare("DELETE FROM media_objects").run();
+  db.prepare("DELETE FROM media_upload_issuances").run();
   db.prepare("DELETE FROM media_owner_sweeps").run();
 }
 
 function enqueueTicket(owner, key, at = Date.now()) {
-  assert.equal(recordMediaObjectTicket(db, { ownerId: owner, objectKey: key, at }), true);
+  assert.equal(recordMediaObjectTicket(db, { ownerId: owner, objectKey: key, at, expiresAt: null }), true);
   return enqueueAllOwnedMedia(db, { ownerId: owner, at });
 }
 
@@ -83,11 +88,155 @@ test("presign records a durable owner ledger before returning an upload ticket",
   const ticket = routes["POST /api/media/presign"]({
     user,
     ip: "ticket-owner",
-    body: { purpose: "post", contentType: "image/jpeg", fileSize: 1234, name: "show.jpg" },
+    body: { purpose: "avatar", contentType: "image/jpeg", fileSize: 1234, name: "show.jpg" },
   });
   const ledger = db.prepare("SELECT owner_id,purpose,status FROM media_objects WHERE object_key=?").get(ticket.key);
-  assert.deepEqual({ ...ledger }, { owner_id: user.id, purpose: "post", status: "issued" });
+  assert.deepEqual({ ...ledger }, { owner_id: user.id, purpose: "avatar", status: "issued" });
   assert.equal(ticket.publicUrl, `https://media.example.com/cdn/${ticket.key}`);
+});
+
+test("upload reservations enforce atomic outstanding and rolling owner budgets", () => {
+  clearMediaTables();
+  const owner = addUser("media_quota_owner");
+  const other = addUser("media_quota_other");
+  const halfMiB = 512 * 1024;
+  const env = {
+    ...process.env,
+    MEDIA_UPLOAD_OUTSTANDING_OBJECTS: "2",
+    MEDIA_UPLOAD_OUTSTANDING_BYTES: String(1024 * 1024),
+    MEDIA_UPLOAD_24H_TICKETS: "4",
+    MEDIA_UPLOAD_24H_BYTES: String(2 * 1024 * 1024),
+  };
+  const reserve = (ownerId, name, at, byteSize = halfMiB) => reserveMediaUploadTicket(db, {
+    ownerId,
+    objectKey: `users/${ownerId}/post/${name}.jpg`,
+    byteSize,
+    at,
+    env,
+  });
+
+  assert.equal(reserve(owner.id, "first", 1_000).duplicate, false);
+  assert.equal(reserve(owner.id, "second", 2_000).duplicate, false,
+    "the exact outstanding object/byte boundary is accepted");
+  assert.throws(
+    () => reserve(owner.id, "over-outstanding", 3_000, 1),
+    (error) => {
+      assert.equal(error.status, 429);
+      assert.equal(error.code, "MEDIA_UPLOAD_QUOTA_EXCEEDED");
+      assert.equal(error.message.includes(owner.id), false);
+      assert.equal(error.message.includes("over-outstanding"), false);
+      return true;
+    },
+  );
+
+  db.prepare("UPDATE media_objects SET status='associated' WHERE owner_id=? AND object_key=?")
+    .run(owner.id, `users/${owner.id}/post/first.jpg`);
+  assert.equal(reserve(owner.id, "third", 4_000).duplicate, false,
+    "association releases one unattached-object reservation");
+  assert.equal(reserve(owner.id, "second", 5_000).duplicate, true,
+    "a retry does not add an outstanding object but is charged to the rolling budget");
+  assert.throws(
+    () => reserve(owner.id, "second", 6_000),
+    (error) => error.status === 429 && error.code === "MEDIA_UPLOAD_QUOTA_EXCEEDED",
+    "the fifth ticket is rejected at the four-ticket rolling boundary",
+  );
+
+  db.prepare("DELETE FROM media_objects WHERE owner_id=?").run(owner.id);
+  assert.throws(
+    () => reserve(owner.id, "after-delete", 7_000),
+    (error) => error.status === 429 && error.code === "MEDIA_UPLOAD_QUOTA_EXCEEDED",
+    "deleting object ledgers cannot erase durable 24-hour issuance usage",
+  );
+  assert.equal(reserve(other.id, "isolated", 7_000).duplicate, false,
+    "one owner's budget never consumes another owner's allowance");
+
+  const migrated = addUser("media_quota_migrated_zero");
+  const migratedKey = `users/${migrated.id}/post/legacy-zero.jpg`;
+  assert.equal(recordMediaObjectTicket(db, {
+    ownerId: migrated.id,
+    objectKey: migratedKey,
+    byteSize: 0,
+    at: 1_000,
+    expiresAt: null,
+  }), true);
+  const migrationEnv = {
+    ...process.env,
+    MEDIA_UPLOAD_OUTSTANDING_OBJECTS: "4",
+    MEDIA_UPLOAD_OUTSTANDING_BYTES: String(1024 * 1024),
+    MEDIA_UPLOAD_24H_TICKETS: "10",
+    MEDIA_UPLOAD_24H_BYTES: String(10 * 1024 * 1024),
+  };
+  reserveMediaUploadTicket(db, {
+    ownerId: migrated.id,
+    objectKey: `users/${migrated.id}/post/filler.jpg`,
+    byteSize: 900 * 1024,
+    at: 2_000,
+    env: migrationEnv,
+  });
+  assert.throws(
+    () => reserveMediaUploadTicket(db, {
+      ownerId: migrated.id,
+      objectKey: migratedKey,
+      byteSize: 200 * 1024,
+      at: 3_000,
+      env: migrationEnv,
+    }),
+    (error) => error.status === 429 && error.code === "MEDIA_UPLOAD_QUOTA_EXCEEDED",
+    "migrated zero-byte rows charge their positive byte delta before retry",
+  );
+});
+
+test("legacy presign cannot bypass the shared owner byte quota", () => {
+  clearMediaTables();
+  const user = addUser("legacy_presign_quota_owner");
+  const previous = {
+    objects: process.env.MEDIA_UPLOAD_OUTSTANDING_OBJECTS,
+    bytes: process.env.MEDIA_UPLOAD_OUTSTANDING_BYTES,
+    tickets: process.env.MEDIA_UPLOAD_24H_TICKETS,
+    rollingBytes: process.env.MEDIA_UPLOAD_24H_BYTES,
+  };
+  Object.assign(process.env, {
+    MEDIA_UPLOAD_OUTSTANDING_OBJECTS: "2",
+    MEDIA_UPLOAD_OUTSTANDING_BYTES: String(1024 * 1024),
+    MEDIA_UPLOAD_24H_TICKETS: "10",
+    MEDIA_UPLOAD_24H_BYTES: String(10 * 1024 * 1024),
+  });
+  try {
+    routes["POST /api/media/presign"]({
+      user,
+      ip: "legacy-quota-first",
+      body: { purpose: "avatar", contentType: "image/jpeg", fileSize: 700 * 1024, name: "one.jpg" },
+    });
+    assert.throws(
+      () => routes["POST /api/media/presign"]({
+        user,
+        ip: "legacy-quota-second",
+        body: { purpose: "avatar", contentType: "image/jpeg", fileSize: 700 * 1024, name: "two.jpg" },
+      }),
+      (error) => error.status === 429 && error.code === "MEDIA_UPLOAD_QUOTA_EXCEEDED",
+    );
+    assert.equal(db.prepare("SELECT COUNT(*) count FROM media_upload_issuances WHERE owner_id=?").get(user.id).count, 1);
+  } finally {
+    const restore = (key, value) => value === undefined ? delete process.env[key] : (process.env[key] = value);
+    restore("MEDIA_UPLOAD_OUTSTANDING_OBJECTS", previous.objects);
+    restore("MEDIA_UPLOAD_OUTSTANDING_BYTES", previous.bytes);
+    restore("MEDIA_UPLOAD_24H_TICKETS", previous.tickets);
+    restore("MEDIA_UPLOAD_24H_BYTES", previous.rollingBytes);
+  }
+});
+
+test("legacy presign never mints a raw video ticket", () => {
+  clearMediaTables();
+  const user = addUser("legacy_video_presign_owner");
+  assert.throws(
+    () => routes["POST /api/media/presign"]({
+      user,
+      ip: "legacy-video-presign",
+      body: { purpose: "venue", contentType: "video/mp4", fileSize: 2 * 1024 * 1024, name: "walkthrough.mp4" },
+    }),
+    (error) => error.status === 415 && error.code === "MEDIA_TYPE_UNSUPPORTED",
+  );
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM media_upload_issuances WHERE owner_id=?").get(user.id).count, 0);
 });
 
 test("mixed association input queues only a ledger-backed owned key, never a foreign URL", () => {
@@ -109,13 +258,37 @@ test("mixed association input queues only a ledger-backed owned key, never a for
   }]);
 });
 
+test("stable deletion resolves its stored authoritative key after a public-base migration", () => {
+  clearMediaTables();
+  const user = addUser("stable_key_migration_owner");
+  const created = routes["POST /api/media/assets"]({
+    user,
+    ip: "stable-key-migration",
+    body: {
+      clientAssetId: "stable-key-migration-asset",
+      purpose: "post",
+      contentType: "image/jpeg",
+      fileSize: 2_048,
+      name: "old-origin.jpg",
+    },
+  });
+  const result = enqueueOwnedMediaUrls(db, {
+    ownerId: user.id,
+    urls: [created.asset.sourceUrl],
+    env: { ...process.env, MEDIA_PUBLIC_BASE_URL: "https://new-media.example.com/next" },
+    at: 2_000,
+  });
+  assert.deepEqual(result.keys, [created.upload.key]);
+  assert.equal(db.prepare("SELECT status FROM media_objects WHERE object_key=?").get(created.upload.key).status, "delete_queued");
+});
+
 test("worker signs DELETE, treats 204 and 404 as success, and never exposes credentials", async () => {
   clearMediaTables();
   const owner = "worker_owner";
   const first = `users/${owner}/post/first.jpg`;
   const second = `users/${owner}/venue/second.mp4`;
-  recordMediaObjectTicket(db, { ownerId: owner, objectKey: first, at: 1_000 });
-  recordMediaObjectTicket(db, { ownerId: owner, objectKey: second, at: 1_000 });
+  recordMediaObjectTicket(db, { ownerId: owner, objectKey: first, at: 1_000, expiresAt: null });
+  recordMediaObjectTicket(db, { ownerId: owner, objectKey: second, at: 1_000, expiresAt: null });
   enqueueAllOwnedMedia(db, { ownerId: owner, at: 2_000 });
   const requests = [];
   const statuses = [204, 404];
@@ -282,20 +455,17 @@ test("account cleanup waits out a live PUT ticket and catches an object created 
     next_attempt_at: barrier,
   });
 
-  // The object did not exist yet, so the first DELETE is a successful 404 and
-  // the per-object ledger can be erased. The owner sweep must remain durable.
+  // A returned PUT remains usable through its expiry. Neither the object worker
+  // nor the independent prefix sweep may race it with an optimistic early 404.
   const early = await runMediaDeletionBatch({
     database: db,
     env: process.env,
     clock: () => issuedAt + 2_000,
     batchSize: 1,
-    fetchImpl: async (_url, options) => {
-      assert.equal(options.method, "DELETE");
-      return { status: 404 };
-    },
+    fetchImpl: async () => { throw new Error("must not delete before the ticket barrier"); },
   });
-  assert.equal(early.deleted, 1);
-  assert.equal(db.prepare("SELECT 1 FROM media_objects WHERE object_key=?").get(key), undefined);
+  assert.equal(early.deleted, 0);
+  assert.ok(db.prepare("SELECT 1 FROM media_objects WHERE object_key=?").get(key));
   assert.ok(db.prepare("SELECT 1 FROM media_owner_sweeps WHERE owner_id=?").get(owner));
 
   let listCalls = 0;
@@ -308,29 +478,30 @@ test("account cleanup waits out a live PUT ticket and catches an object created 
   assert.deepEqual(beforeBarrier, { processed: 0, errorCode: null });
   assert.equal(listCalls, 0);
 
-  // The first mandatory pass is empty after the signing + normal-client settle
-  // barrier. It must not retire the sweep: an S3-style provider can authorize a
-  // PUT before expiration while its request body is still arriving.
-  const firstVerification = await runMediaOwnerSweepOnce({
+  const barrierDelete = await runMediaDeletionBatch({
     database: db,
     env: process.env,
     clock: () => barrier,
+    batchSize: 1,
     fetchImpl: async (_url, options) => {
-      listCalls += 1;
-      assert.equal(options.method, "GET");
-      return {
-        status: 200,
-        text: async () => "<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>",
-      };
+      if (options.method === "GET") {
+        listCalls += 1;
+        return {
+          status: 200,
+          text: async () => "<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>",
+        };
+      }
+      assert.equal(options.method, "DELETE");
+      return { status: 404 };
     },
   });
-  assert.deepEqual(firstVerification, {
-    processed: 1,
-    discovered: 0,
-    hasMore: false,
-    verificationPending: true,
-    errorCode: null,
-  });
+  assert.equal(barrierDelete.deleted, 1);
+  assert.equal(barrierDelete.sweepPages, 1);
+  assert.equal(db.prepare("SELECT 1 FROM media_objects WHERE object_key=?").get(key), undefined);
+  // The same worker pass performs the first mandatory empty prefix check after
+  // the signing + normal-client settle barrier. It must retain the sweep: an
+  // S3-style provider can authorize a PUT before expiration while its body is
+  // still arriving.
   assert.equal(db.prepare("SELECT verification_passes FROM media_owner_sweeps WHERE owner_id=?").get(owner).verification_passes, 1);
 
   // Model that deliberately slow PUT completing after the first empty pass.
@@ -397,7 +568,7 @@ test("post photo edits and author deletion queue only attachments that became un
   }
   const created = 20_000;
   db.prepare(`INSERT INTO posts (id,user_id,artist,venue,overall,review,photos,created_at)
-    VALUES (?,?,?,?,?,?,?,?)`).run("p_cleanup_edit", user.id, "Artist", "Venue", 4, "Review", JSON.stringify([oldUrl, keptUrl]), created);
+    VALUES (?,?,?,?,?,?,?,?)`).run("p_cleanup_edit", user.id, "Artist", "Venue", 4, "Review", JSON.stringify([oldUrl, keptUrl, newUrl]), created);
   routes["PATCH /api/posts/:id"]({
     user,
     ip: "content-edit",

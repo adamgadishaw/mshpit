@@ -1,31 +1,40 @@
 import { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Linking, View, Text, StyleSheet, Pressable, Platform, Modal } from "react-native";
+import { Linking, View, Text, StyleSheet, Pressable, Platform, Modal } from "react-native";
 import { useEvent } from "expo";
 import { useVideoPlayer, VideoView } from "expo-video";
 import { colors, mono, radius } from "../theme";
 import Icon from "./Icon";
+import ClipPoster from "./ClipPoster";
 import SmartImage from "./SmartImage";
 import { isVideoUrl } from "../lib/img";
-import { galleryKeyAction, videoViewerPhase } from "../domain/mediaViewer.mjs";
+import { galleryItemPostId, galleryKeyAction, normalizedGalleryIndex, trappedGalleryFocusIndex, videoViewerPhase } from "../domain/mediaViewer.mjs";
 import { analyticsDurationBucket } from "../domain/analyticsPolicy.mjs";
 import { pendingVideoMilestones } from "../domain/mediaAnalytics.mjs";
 import { useStore } from "../store";
 
 const web = Platform.OS === "web";
 
-function ClipPlayer({ uri, postId, onRetry, onTrack }) {
+function ClipPlayer({ uri, posterUri, postId, onRetry, onTrack, altText }) {
   const player = useVideoPlayer(uri);
   const { status, error } = useEvent(player, "statusChange", {
     status: player.status,
     error: null,
   });
   const [hasFirstFrame, setHasFirstFrame] = useState(false);
+  const [hasStarted, setHasStarted] = useState(false);
   const mountedAt = useRef(Date.now());
   const trackedError = useRef(false);
   const trackedFirstFrame = useRef(false);
   const trackRef = useRef(onTrack);
   trackRef.current = onTrack;
   const phase = videoViewerPhase({ status, error, hasFirstFrame });
+
+  useEffect(() => {
+    const subscription = player.addListener?.("playingChange", ({ isPlaying }) => {
+      if (isPlaying) setHasStarted(true);
+    });
+    return () => subscription?.remove?.();
+  }, [player]);
 
   useEffect(() => {
     if (!player || !postId) return;
@@ -75,6 +84,13 @@ function ClipPlayer({ uri, postId, onRetry, onTrack }) {
     });
   };
 
+  const startPlayback = () => {
+    try { player.play(); }
+    catch {
+      trackRef.current?.("product_error", { code: "video_play_failed", surface: "media_viewer", retryable: true });
+    }
+  };
+
   return (
     <>
       <VideoView
@@ -83,15 +99,27 @@ function ClipPlayer({ uri, postId, onRetry, onTrack }) {
         contentFit="contain"
         nativeControls
         playsInline
+        useExoShutter={false}
         onFirstFrameRender={recordFirstFrame}
-        accessibilityLabel="Video clip player"
+        accessibilityLabel={altText || "Video clip player"}
+        accessible={hasFirstFrame}
+        accessibilityElementsHidden={!hasFirstFrame}
+        importantForAccessibility={hasFirstFrame ? "auto" : "no-hide-descendants"}
       />
-      {phase === "loading" && (
-        <View style={styles.videoStatus} pointerEvents="none" accessibilityLiveRegion="polite">
-          <ActivityIndicator color="#fff" />
-          <Text style={styles.videoStatusText}>Loading video…</Text>
-        </View>
+      {phase !== "error" && (!hasStarted || phase === "loading") && (
+        <ClipPoster uri={uri} posterUri={posterUri} style={styles.videoStatus} contain accessibilityLabel={altText || "Video preview; use the player controls to play"} accessible={false} />
       )}
+      {phase !== "error" && !hasStarted ? (
+        <Pressable
+          style={({ pressed, focused }) => [styles.videoStart, pressed && styles.videoStartPressed, focused && styles.videoStartFocused]}
+          onPress={startPlayback}
+          accessibilityRole="button"
+          accessibilityLabel={`Play video${altText ? `. ${altText}` : ""}`}
+        >
+          <Icon name="play" size={18} color="#1A1206" />
+          <Text style={styles.videoStartText}>Play video</Text>
+        </Pressable>
+      ) : null}
       {phase === "error" && (
         <View style={styles.videoError} accessibilityLiveRegion="assertive">
           <Text style={styles.videoErrorTitle}>This video could not play</Text>
@@ -115,11 +143,11 @@ function ClipPlayer({ uri, postId, onRetry, onTrack }) {
 // portrait video's intrinsic height otherwise expands React Native Web's flex
 // child beyond the modal viewport and pushes its picture/controls off-screen.
 // Remounting on retry also releases the failed player cleanly.
-function ClipStage({ uri, postId, onTrack }) {
+function ClipStage({ uri, posterUri, postId, onTrack, altText }) {
   const [attempt, setAttempt] = useState(0);
   return (
-    <View style={styles.clipViewport}>
-      <ClipPlayer key={`${uri}:${attempt}`} uri={uri} postId={postId} onTrack={onTrack} onRetry={() => setAttempt((value) => value + 1)} />
+    <View style={[styles.clipViewport, web && styles.clipViewportWeb]}>
+      <ClipPlayer key={`${uri}:${attempt}`} uri={uri} posterUri={posterUri} postId={postId} onTrack={onTrack} altText={altText} onRetry={() => setAttempt((value) => value + 1)} />
     </View>
   );
 }
@@ -129,15 +157,23 @@ function ClipStage({ uri, postId, onTrack }) {
 // backdrop or Esc to close, and each photo carries its OWN like - reactions
 // key on the photo's durable URL, so a like given from a post follows the same
 // photo into the artist's rolling gallery.
-export default function PhotoViewer({ photos = [], index = 0, postId = null, onReport, onClose }) {
+export default function PhotoViewer({ photos = [], index = 0, postId = null, returnFocusRef = null, onReport, onClose }) {
   const { session, mediaReactions, loadMediaReactions, toggleMediaReaction, track } = useStore();
-  const [i, setI] = useState(index);
+  const [i, setI] = useState(() => normalizedGalleryIndex(index, photos.length));
+  const viewerRef = useRef(null);
   const p = photos[i] || photos[0];
-  const uri = typeof p === "string" ? p : p?.uri;
+  const uri = typeof p === "string" ? p : p?.uri || p?.url || p?.sourceUrl;
+  const posterUri = typeof p === "object" && p ? p.posterUrl || p.posterUri || null : null;
+  const altText = typeof p === "object" && p ? p.altText || "" : "";
   const by = typeof p === "object" && p ? p.by : null;
-  const urls = photos.map((x) => (typeof x === "string" ? x : x?.uri)).filter(Boolean);
+  const currentPostId = galleryItemPostId(p, postId);
+  const urls = photos.map((x) => (typeof x === "string" ? x : x?.uri || x?.url || x?.sourceUrl)).filter(Boolean);
   const prev = () => setI((x) => (x - 1 + photos.length) % photos.length);
   const next = () => setI((x) => (x + 1) % photos.length);
+
+  useEffect(() => {
+    setI(normalizedGalleryIndex(index, photos.length));
+  }, [index, photos.length]);
 
   // One batch read when the set opens; likes render instantly after.
   useEffect(() => { loadMediaReactions(urls); }, [urls.join("|")]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -154,22 +190,77 @@ export default function PhotoViewer({ photos = [], index = 0, postId = null, onR
       if (action === "close") onClose?.();
       else if (action === "previous" && photos.length > 1) prev();
       else if (action === "next" && photos.length > 1) next();
+      if (action) e.preventDefault?.();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [photos.length, onClose]);
 
+  // React Native's web Modal does not consistently trap focus or return it to
+  // the thumbnail that opened the viewer. Keep keyboard users inside the modal,
+  // focus the real close button first, and restore the opener on teardown.
+  useEffect(() => {
+    if (!web || typeof document === "undefined") return undefined;
+    const root = viewerRef.current;
+    if (!root?.querySelectorAll) return undefined;
+    // RN Web's Modal portal may already have focused <body> by this effect.
+    // App captures the real thumbnail synchronously in openPhotos and passes it
+    // through a ref that is deliberately excluded from persisted nav state.
+    const previous = returnFocusRef?.current || document.activeElement;
+    const focusable = () => Array.from(root.querySelectorAll(
+      'button,[href],[role="button"],[role="link"],video,[tabindex]:not([tabindex="-1"])',
+    )).filter((element) => (
+      !element.hasAttribute?.("disabled")
+      && element.getAttribute?.("aria-disabled") !== "true"
+      && element.getAttribute?.("aria-hidden") !== "true"
+      && !element.closest?.('[aria-hidden="true"]')
+      && element.getClientRects?.().length > 0
+      && (!!element.getAttribute?.("aria-label") || !!element.textContent?.trim() || element.tagName === "VIDEO")
+    ));
+    const focusElement = (element) => {
+      try { element?.focus?.({ preventScroll: true }); } catch { try { element?.focus?.(); } catch {} }
+    };
+    const frame = requestAnimationFrame(() => {
+      focusElement(root.querySelector?.('[aria-label="Close"]') || focusable()[0]);
+    });
+    const trapFocus = (event) => {
+      if (event.key !== "Tab") return;
+      const elements = focusable();
+      const target = trappedGalleryFocusIndex({
+        currentIndex: elements.indexOf(document.activeElement),
+        count: elements.length,
+        shiftKey: event.shiftKey,
+      });
+      if (target == null) return;
+      event.preventDefault();
+      focusElement(elements[target]);
+    };
+    root.addEventListener("keydown", trapFocus);
+    return () => {
+      cancelAnimationFrame(frame);
+      root.removeEventListener("keydown", trapFocus);
+      // The app shell owns focus restoration when it supplied an opener ref.
+      // RN Web's Modal portal is still tearing down during this cleanup and
+      // would overwrite a synchronous focus() call with <body>.
+      if (!returnFocusRef && previous?.isConnected) {
+        setTimeout(() => {
+          if (previous?.isConnected) focusElement(previous);
+        }, 0);
+      }
+    };
+  }, [returnFocusRef]);
+
   if (!photos.length) return null;
   const r = (uri && mediaReactions[uri]) || { count: 0, mine: false };
-  const video = isVideoUrl(uri);
+  const video = (typeof p === "object" && p && (p.kind === "video" || p.type === "video")) || isVideoUrl(uri);
   const ownerId = typeof p === "object" && p ? p.ownerId : null;
   const parentTarget = typeof p === "object" && p?.artistProfileKey
     ? { targetType: "artist_profile", targetId: p.artistProfileKey, targetName: video ? "artist profile video" : "artist profile photo" }
     : typeof p === "object" && p?.venueReviewId
     ? { targetType: "venue_review", targetId: p.venueReviewId, targetName: video ? "video" : "photo" }
-    : (typeof p === "object" && p?.postId) || postId
-      ? { targetType: "post", targetId: (typeof p === "object" && p?.postId) || postId, targetName: video ? "video" : "photo" }
+    : currentPostId
+      ? { targetType: "post", targetId: currentPostId, targetName: video ? "video" : "photo" }
       : null;
   const canReport = !!onReport && !!parentTarget?.targetId && (!session || !ownerId || session.id !== ownerId);
 
@@ -183,9 +274,17 @@ export default function PhotoViewer({ photos = [], index = 0, postId = null, onR
       hardwareAccelerated
       onRequestClose={onClose}
     >
-    <View style={styles.wrap} accessibilityViewIsModal>
+    <View ref={viewerRef} style={styles.wrap} accessibilityViewIsModal>
       {/* Backdrop closes, like every photo lightbox people already know. */}
-      <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityLabel="Close media viewer" />
+      <Pressable
+        style={StyleSheet.absoluteFill}
+        onPress={onClose}
+        accessible={false}
+        focusable={false}
+        accessibilityElementsHidden
+        importantForAccessibility="no-hide-descendants"
+        {...(web ? { tabIndex: -1, "aria-hidden": true } : null)}
+      />
 
       <View style={styles.top} pointerEvents="box-none">
         <Text style={styles.count}>{i + 1} / {photos.length}</Text>
@@ -217,7 +316,9 @@ export default function PhotoViewer({ photos = [], index = 0, postId = null, onR
       <View style={styles.stage} pointerEvents="box-none">
         {/* SmartImage = HEIC transcode + proxy-rescue ladder, so an iPhone photo
             renders here instead of a black void. Clips get a real player. */}
-        {video ? <ClipStage key={uri} uri={uri} postId={postId} onTrack={track} /> : <SmartImage uri={uri} style={styles.img} contain />}
+        {video
+          ? <ClipStage key={uri} uri={uri} posterUri={posterUri} postId={currentPostId} onTrack={track} altText={altText} />
+          : <SmartImage uri={uri} style={styles.img} contain accessibilityLabel={altText || "Full-size photo"} />}
         {photos.length > 1 && (
           <>
             <Pressable style={[styles.arrow, { left: 10 }]} onPress={prev} hitSlop={10} accessibilityRole="button" accessibilityLabel="Previous media">
@@ -235,7 +336,7 @@ export default function PhotoViewer({ photos = [], index = 0, postId = null, onR
         {!!by && <Text style={styles.by}>{video ? "Shared" : "Photo"} by {by}</Text>}
         <Pressable
           style={[styles.likeBtn, r.mine && styles.likeBtnOn, !session && styles.likeBtnDisabled]}
-          onPress={() => toggleMediaReaction(uri, postId)}
+          onPress={() => toggleMediaReaction(uri, currentPostId)}
           disabled={!session}
           hitSlop={8}
           accessibilityRole="button"
@@ -267,9 +368,13 @@ const styles = StyleSheet.create({
   stage: { flex: 1, minWidth: 0, minHeight: 0, overflow: "hidden" },
   img: { flex: 1, backgroundColor: "transparent" },
   clipViewport: { flex: 1, width: "100%", height: "100%", minWidth: 0, minHeight: 0, overflow: "hidden", backgroundColor: "#06070b" },
+  clipViewportWeb: { maxWidth: 1280, alignSelf: "center" },
   webVideo: { ...StyleSheet.absoluteFillObject, width: "100%", height: "100%", maxWidth: "100%", maxHeight: "100%", backgroundColor: "transparent" },
   videoStatus: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center", gap: 10 },
-  videoStatusText: { color: "rgba(255,255,255,0.8)", fontSize: 13 },
+  videoStart: { position: "absolute", left: "50%", top: "50%", zIndex: 4, minHeight: 46, transform: [{ translateX: -62 }, { translateY: -23 }], flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingHorizontal: 17, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.amber, backgroundColor: colors.amberStrong },
+  videoStartPressed: { opacity: 0.82, transform: [{ translateX: -62 }, { translateY: -21 }] },
+  videoStartFocused: { boxShadow: "0 0 0 3px rgba(242,166,90,0.42)" },
+  videoStartText: { color: "#1A1206", fontSize: 13, fontWeight: "900" },
   videoError: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center", gap: 10, paddingHorizontal: 24, backgroundColor: "rgba(6,7,11,0.9)" },
   videoErrorTitle: { color: "#fff", fontSize: 17, fontWeight: "800", textAlign: "center" },
   videoErrorText: { color: "rgba(255,255,255,0.72)", fontSize: 13, lineHeight: 19, textAlign: "center", maxWidth: 380 },

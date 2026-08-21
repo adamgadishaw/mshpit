@@ -8,7 +8,7 @@ import Icon from "../components/Icon";
 import useLiveChat from "../lib/useLiveChat";
 
 export default function InboxScreen({ onClose, onOpenThread }) {
-  const { mainThreads, requestThreads, searchPeople, loadInboxThreads, session } = useStore();
+  const { mainThreads, requestThreads, searchPeople, loadInboxThreads, session, chatAuthEpoch } = useStore();
   const [tab, setTab] = useState("main");
   const [composing, setComposing] = useState(false);
   const [query, setQuery] = useState("");
@@ -20,7 +20,7 @@ export default function InboxScreen({ onClose, onOpenThread }) {
 
   useLiveChat(
     ({ signal }) => loadInboxThreads({ signal }),
-    { channelKey: `inbox:${session?.id || "guest"}`, enabled: !!session, intervalMs: 8000 },
+    { channelKey: `inbox:${chatAuthEpoch}:${session?.id || "guest"}`, enabled: !!session, intervalMs: 8000 },
   );
 
   useEffect(() => {
@@ -46,7 +46,7 @@ export default function InboxScreen({ onClose, onOpenThread }) {
       <View style={{ flex: 1 }}>
         <Text style={styles.name}>{t.otherUser?.name}</Text>
         <Text style={[styles.snippet, t.unread > 0 && styles.snippetUnread]} numberOfLines={1}>
-          {t.last?.from === session.id ? "You: " : ""}{t.last?.text}
+          {t.last?.failed ? "Not sent: " : t.last?.from === session.id ? "You: " : ""}{t.last?.text}
         </Text>
       </View>
       <View style={{ alignItems: "flex-end", gap: 6 }}>

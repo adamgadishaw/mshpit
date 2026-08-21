@@ -1,3 +1,5 @@
+import { mediaDisplayItems } from "./postMediaDisplay.mjs";
+
 const text = (value) => typeof value === "string" ? value.trim() : "";
 const finiteCount = (value) => Number.isFinite(Number(value)) ? Math.max(0, Number(value)) : 0;
 const optionalCount = (value) => value == null || value === "" || !Number.isFinite(Number(value)) ? null : Math.max(0, Number(value));
@@ -61,6 +63,33 @@ export function normalizeFriendsListening(rows, limit = 20) {
   return normalized;
 }
 
+// One provider-neutral track contract for every Discover playback surface.
+// Keeping the original descriptor fields means provider/source IDs survive the
+// handoff to openPlayer, while the normalized identity prevents malformed
+// activity rows from creating a dead player action.
+export function discoverPlaybackTrack(value) {
+  const candidate = value?.track && typeof value.track === "object"
+    ? value.track
+    : value?.topTrack && typeof value.topTrack === "object"
+      ? value.topTrack
+      : value && typeof value === "object"
+        ? value
+        : null;
+  if (!candidate) return null;
+  const title = text(candidate.title).slice(0, 200);
+  const artist = (text(candidate.artist) || text(value?.name)).slice(0, 120);
+  if (!title || !artist) return null;
+  return {
+    ...candidate,
+    kind: "track",
+    title,
+    artist,
+    art: text(candidate.art) || text(value?.photo) || null,
+    url: text(candidate.url) || null,
+    preview: text(candidate.preview) || null,
+  };
+}
+
 export function selectDiscoverPhotos(feed, { removedIds = [], blockedIds = [], limit = 10 } = {}) {
   const maximum = boundedLimit(limit, 10, 30);
   if (!maximum) return [];
@@ -70,13 +99,14 @@ export function selectDiscoverPhotos(feed, { removedIds = [], blockedIds = [], l
   const seen = new Set();
   let order = 0;
   for (const post of (Array.isArray(feed) ? feed : []).slice(0, 1000)) {
-    if (!post || removed.has(String(post.id)) || (post.userId && blocked.has(String(post.userId)))) continue;
-    for (const candidate of (Array.isArray(post.photos) ? post.photos : []).slice(0, 20)) {
-      const uri = text(candidate);
-      const identity = `${String(post.id || "")}:${uri}`;
+    if (!post || post.photosPublic === false || removed.has(String(post.id)) || (post.userId && blocked.has(String(post.userId)))) continue;
+    for (const candidate of mediaDisplayItems(post).slice(0, 20)) {
+      const uri = text(candidate?.uri);
+      const identity = `${String(post.id || "")}:${text(candidate?.id) || uri}`;
       if (!uri || seen.has(identity)) continue;
       seen.add(identity);
       selected.push({
+        ...candidate,
         uri,
         artist: text(post.artist).slice(0, 120) || null,
         venue: text(post.venue).slice(0, 160) || null,

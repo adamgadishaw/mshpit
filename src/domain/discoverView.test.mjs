@@ -5,6 +5,7 @@ import {
   cancelDiscoverRequest,
   compactDiscoverNumber,
   discoverSectionState,
+  discoverPlaybackTrack,
   filterDiscoverRows,
   hasDiscoverOverviewContent,
   isCurrentDiscoverAccountRequest,
@@ -70,10 +71,39 @@ test("artist and friend normalizers reject malformed duplicates and cap render w
   assert.equal(friends[1].track.artist, "Unknown artist");
 });
 
+test("Discover playback normalizes friend and chart tracks without dropping provider identities", () => {
+  const friendTrack = discoverPlaybackTrack({
+    user: { id: "fan-1" },
+    track: {
+      id: "catalog-track-7",
+      sourceId: "source-track-9",
+      videoId: "video-11",
+      title: "  Saturn  ",
+      artist: "  SZA  ",
+      art: "https://media.test/saturn.jpg",
+      url: "https://media.test/saturn.mp3",
+    },
+  });
+  assert.equal(friendTrack.kind, "track");
+  assert.equal(friendTrack.title, "Saturn");
+  assert.equal(friendTrack.artist, "SZA");
+  assert.equal(friendTrack.id, "catalog-track-7");
+  assert.equal(friendTrack.sourceId, "source-track-9");
+  assert.equal(friendTrack.videoId, "video-11");
+
+  const chartTrack = discoverPlaybackTrack({ name: "Doechii", photo: "artist.jpg", topTrack: { id: "top-1", title: "Denial Is a River" } });
+  assert.equal(chartTrack.artist, "Doechii");
+  assert.equal(chartTrack.art, "artist.jpg");
+  assert.equal(chartTrack.id, "top-1");
+  assert.equal(discoverPlaybackTrack({ track: { title: "No artist" } }), null);
+  assert.equal(discoverPlaybackTrack({ track: { artist: "No title" } }), null);
+});
+
 test("photo selection excludes removed and blocked posts while keeping bounded top results", () => {
   const photos = selectDiscoverPhotos([
     { id: "removed", photos: ["removed.jpg"], likes: 100 },
     { id: "blocked", userId: "fan-2", photos: ["blocked.jpg"], likes: 90 },
+    { id: "private", photosPublic: false, photos: ["private.jpg"], likes: 80 },
     { id: "visible-a", artist: "SZA", photos: ["a.jpg", "b.jpg"], likes: 5 },
     { id: "visible-b", venue: "History", photos: ["c.jpg"], likes: 8 },
   ], { removedIds: ["removed"], blockedIds: ["fan-2"], limit: 2 });
@@ -81,6 +111,31 @@ test("photo selection excludes removed and blocked posts while keeping bounded t
     { uri: "c.jpg", artist: null, venue: "History", by: "", likes: 8, logId: "visible-b", ownerId: null },
     { uri: "a.jpg", artist: "SZA", venue: null, by: "", likes: 5, logId: "visible-a", ownerId: null },
   ]);
+});
+
+test("Discover media keeps stable video posters, edits, and alt text for the viewer", () => {
+  const [clip] = selectDiscoverPhotos([{
+    id: "clip-post",
+    userId: "fan-7",
+    user: { name: "Ada" },
+    artist: "Little Simz",
+    likes: 12,
+    photos: [],
+    media: [{
+      id: "ma_clip",
+      kind: "video",
+      url: "https://media.test/durable/ma_clip",
+      posterUrl: "https://media.test/durable/ma_clip-poster.jpg",
+      altText: "Little Simz under blue stage lights",
+      editRecipe: { kind: "video", coverMs: 2400 },
+    }],
+  }]);
+  assert.equal(clip.kind, "video");
+  assert.equal(clip.posterUrl, "https://media.test/durable/ma_clip-poster.jpg");
+  assert.equal(clip.altText, "Little Simz under blue stage lights");
+  assert.deepEqual(clip.editRecipe, { kind: "video", coverMs: 2400 });
+  assert.equal(clip.logId, "clip-post");
+  assert.equal(clip.ownerId, "fan-7");
 });
 
 test("regions put Worldwide first and the member home country second without duplicates", () => {

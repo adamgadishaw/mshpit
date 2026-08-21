@@ -11,6 +11,14 @@ const SNAPSHOT_LIMIT = 250;
 const snapshots = new Map();
 const activeSnapshotByViewer = new Map();
 
+// The posts table keeps an implicit monotonic rowid. Reading only its maximum
+// gives head refreshes a cheap content revision: quiet polls reuse the current
+// immutable recommendation snapshot, while a newly-created post causes the
+// next poll to rank a fresh head instead of remaining stale until reload.
+function postContentRevision() {
+  return Number(db.prepare("SELECT MAX(rowid) revision FROM posts").get()?.revision) || 0;
+}
+
 // Candidate ranking deliberately avoids p.* and the ordinal/gallery/playlist
 // projection. Only the selected 20-50 rows take the richer POST_SELECT path.
 export const RECOMMENDATION_CANDIDATE_SELECT = `
@@ -161,7 +169,12 @@ function createSnapshot(viewer, at, hiddenIds) {
   const viewerKey = viewer?.id || "guest";
   const activeId = activeSnapshotByViewer.get(viewerKey);
   const active = activeId ? snapshots.get(activeId) : null;
-  if (active && active.expiresAt > at) return active;
+  const contentRevision = postContentRevision();
+  if (active && active.expiresAt > at && active.contentRevision === contentRevision) return active;
+  // The requesting client will adopt the fresh snapshot's cursor. Retire its
+  // former active snapshot so routine publishing cannot exhaust the bounded
+  // in-memory pool with superseded heads.
+  if (activeId) snapshots.delete(activeId);
   const ranked = rankRecommendations(candidateRows(viewer, at, hiddenIds).map(rankingCandidate), recommendationSignals(viewer, at), {
     snapshotAt: at,
     seed: `${viewerKey}:${Math.floor(at / SNAPSHOT_TTL_MS)}`,
@@ -172,12 +185,15 @@ function createSnapshot(viewer, at, hiddenIds) {
     viewerKey,
     at,
     expiresAt: at + SNAPSHOT_TTL_MS,
+    contentRevision,
     ids: ranked.map((entry) => entry.candidate.id),
     recommendations: new Map(ranked.map((entry) => [entry.candidate.id, {
       algorithm: RECOMMENDATION_ALGORITHM,
+      algorithmVersion: 1,
       candidateSource: "global",
       reasonCode: entry.reason.code,
       reason: entry.reason.label,
+      feedContext: `discover:${entry.reason.code}`,
       personalized: !!viewer?.id && entry.personalScore !== 0,
     }])),
   };
@@ -253,6 +269,7 @@ export function recommendedFeedPage({ viewer = null, cursor = null, limit = 20, 
     nextCursor: consumed < snapshot.ids.length ? encodePageCursor(snapshot.id, consumed) : null,
     algorithm: {
       id: RECOMMENDATION_ALGORITHM,
+      version: 1,
       candidateSource: "global",
       personalized: !!viewer?.id,
       snapshotAt: snapshot.at,

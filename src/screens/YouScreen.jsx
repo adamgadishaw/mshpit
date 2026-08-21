@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { View, Text, StyleSheet, ScrollView, Pressable, Animated, Easing, Platform } from "react-native";
+import { View, Text, StyleSheet, ScrollView, Pressable, Animated, Easing, Platform, Share } from "react-native";
 import { colors, mono, radius, shadow, displayFont, space } from "../theme";
 import Icon from "../components/Icon";
 import Avatar from "../components/Avatar";
@@ -10,6 +10,9 @@ import { useStore, isStaff, isMod, isArtist } from "../store";
 import { showDateMs } from "../lib/showTime";
 import Countdown from "../components/Countdown";
 import { formatDate, toIsoDate, relativeTime } from "../domain/dates.mjs";
+import { mediaDisplayItems } from "../domain/postMediaDisplay.mjs";
+import { concertMemoryShareText, selectConcertMemories } from "../domain/concertMemories.mjs";
+import { selectRediscoverTracks } from "../domain/listeningRediscovery.mjs";
 
 const web = Platform.OS === "web";
 
@@ -62,6 +65,7 @@ export default function YouScreen({ feed, onLogin, onLogout, onAdmin, onAddTourD
   const mine = session ? logsByUser(session.id) : [];
   const notif = session ? unreadNotifications() : 0;
   const unread = session ? inboxUnread() : 0;
+  const [memoryStatus, setMemoryStatus] = useState("");
 
   useEffect(() => { if (session) loadMyPlaylists(); }, [session?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -106,7 +110,15 @@ export default function YouScreen({ feed, onLogin, onLogout, onAdmin, onAddTourD
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mine]);
 
-  const gallery = useMemo(() => mine.flatMap((l) => (l.photos || []).map((uri) => ({ uri, postId: l.id }))), [mine]);
+  const gallery = useMemo(() => mine.flatMap((l) => mediaDisplayItems(l).map((item) => ({ ...item, uri: item.uri, postId: l.id }))), [mine]);
+  const memories = useMemo(
+    () => selectConcertMemories(mine, { ownerId: session?.id, now: Date.now(), limit: 2 }),
+    [mine, session?.id],
+  );
+  const rediscover = useMemo(
+    () => selectRediscoverTracks(playHistory, { now: Date.now(), limit: 8 }),
+    [playHistory],
+  );
 
   const planned = session ? goingFor(session.id) : [];
   const upcoming = planned.filter((p) => { const t = showDateMs(p.date); return t != null && t - Date.now() > -86400000; });
@@ -114,6 +126,15 @@ export default function YouScreen({ feed, onLogin, onLogout, onAdmin, onAddTourD
   const playlists = myPlaylists || [];
   const playTrack = (t) => onPlay?.({ kind: "track", title: t.title, artist: t.artist, art: t.art || null });
   const playPlaylist = (pl) => { const q = (pl.tracks || []).filter((t) => t.title); if (q.length) onPlay?.(q[0], q); };
+  const shareMemory = async (memory) => {
+    try {
+      setMemoryStatus(`Opening share options for ${memory.artist}.`);
+      const result = await Share.share({ title: "Concert memory", message: concertMemoryShareText(memory) });
+      setMemoryStatus(result.action === Share.dismissedAction ? "Sharing canceled." : "Concert memory shared.");
+    } catch {
+      setMemoryStatus("That concert memory could not be shared. Please try again.");
+    }
+  };
 
   if (!session) {
     return (
@@ -223,6 +244,39 @@ export default function YouScreen({ feed, onLogin, onLogout, onAdmin, onAddTourD
         </Reveal>
       )}
 
+      {memories.length > 0 && (
+        <Reveal delay={70}>
+          <Text style={styles.sectionLabel}>CONCERT MEMORIES</Text>
+          <Text style={styles.scopeCopy}>From your still-visible concert diary. You choose whether to open or share each memory.</Text>
+          <View style={styles.memoryGrid}>
+            {memories.map((memory) => (
+              <View key={memory.id} style={styles.memoryCard}>
+                <View style={styles.memoryTop}>
+                  <View style={styles.memoryIcon}><Icon name="ticket" size={18} color={memory.kind === "anniversary" ? colors.magenta : colors.amber} /></View>
+                  <View style={{ flex: 1, minWidth: 0 }}>
+                    <Text style={styles.memoryKind}>{memory.kind === "anniversary" ? "ANNIVERSARY" : "REDISCOVER"}</Text>
+                    <Text style={styles.memoryDetail}>{memory.detail}</Text>
+                  </View>
+                </View>
+                <Text style={styles.memoryArtist} numberOfLines={1}>{memory.artist}</Text>
+                <Text style={styles.memoryVenue} numberOfLines={2}>{memory.venue}{memory.city ? ` · ${memory.city}` : ""} · {formatDate(memory.date, memory.date)}</Text>
+                <View style={styles.memoryActions}>
+                  <Pressable style={[styles.memoryAction, !onOpen && styles.memoryActionDisabled]} onPress={() => onOpen?.(memory.log)} disabled={!onOpen} accessibilityRole="button" accessibilityLabel={`Open memory for ${memory.artist}`} accessibilityState={{ disabled: !onOpen }}>
+                    <Icon name="external" size={13} color={colors.amber} />
+                    <Text style={styles.memoryActionText}>Open memory</Text>
+                  </Pressable>
+                  <Pressable style={styles.memoryAction} onPress={() => shareMemory(memory)} accessibilityRole="button" accessibilityLabel={`Share memory for ${memory.artist}`}>
+                    <Icon name="share" size={13} color={colors.amber} />
+                    <Text style={styles.memoryActionText}>Share memory</Text>
+                  </Pressable>
+                </View>
+              </View>
+            ))}
+          </View>
+          {!!memoryStatus && <Text style={styles.actionStatus} accessibilityLiveRegion="polite">{memoryStatus}</Text>}
+        </Reveal>
+      )}
+
       {/* ---- YOUR SOUND: donut + legend, podium, song chart ---- */}
       <Reveal delay={90}>
         <Text style={styles.sectionLabel}>YOUR SOUND</Text>
@@ -276,22 +330,39 @@ export default function YouScreen({ feed, onLogin, onLogout, onAdmin, onAddTourD
         )}
       </Reveal>
 
+      {rediscover.length > 0 && (
+        <Reveal delay={140}>
+          <Text style={styles.sectionLabel}>REDISCOVER</Text>
+          <Text style={styles.scopeCopy}>From the listening history available on Pit—not a lifetime total.</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.rediscoverRail} accessibilityLabel="Tracks to rediscover">
+            {rediscover.map((track) => (
+              <Pressable key={`${track.artist}|${track.title}`} style={styles.rediscoverCard} onPress={() => onPlay?.(track)} disabled={!onPlay} accessibilityRole="button" accessibilityLabel={`Play ${track.title} by ${track.artist}. ${track.ageLabel}`} accessibilityState={{ disabled: !onPlay }}>
+                {track.art ? <SmartImage uri={track.art} style={styles.rediscoverArt} contain={false} accessible={false} /> : <View style={[styles.rediscoverArt, styles.songArtEmpty]}><Icon name="music" size={20} color={colors.textFaint} /></View>}
+                <Text style={styles.rediscoverTitle} numberOfLines={1}>{track.title}</Text>
+                <Text style={styles.rediscoverArtist} numberOfLines={1}>{track.artist}</Text>
+                <Text style={styles.rediscoverAge} numberOfLines={1}>{track.ageLabel}</Text>
+              </Pressable>
+            ))}
+          </ScrollView>
+        </Reveal>
+      )}
+
       {/* ---- PHOTO WALL: feature-first, like an album preview ---- */}
       {gallery.length > 0 && (
         <Reveal delay={160}>
           <Text style={styles.sectionLabel}>YOUR PHOTO WALL · {gallery.length}</Text>
           <View style={styles.wall}>
-            <SmartImage uri={gallery[0].uri} style={styles.wallFeature} contain={false}
-              onPress={onOpenPhotos ? () => onOpenPhotos(gallery.map((x) => ({ uri: x.uri, by: session.name, postId: x.postId, ownerId: session.id })), 0, gallery[0].postId) : undefined} />
+            <SmartImage uri={gallery[0].uri} posterUri={gallery[0].posterUrl} accessibilityLabel={gallery[0].altText || "Open your media"} style={styles.wallFeature} contain={false}
+              onPress={onOpenPhotos ? () => onOpenPhotos(gallery.map((x) => ({ ...x, uri: x.uri, by: session.name, postId: x.postId, ownerId: session.id })), 0, gallery[0].postId) : undefined} />
             <View style={styles.wallSide}>
               {gallery.slice(1, 5).map((p, i) => (
-                <SmartImage key={p.uri + i} uri={p.uri} style={styles.wallCell} contain={false}
-                  onPress={onOpenPhotos ? () => onOpenPhotos(gallery.map((x) => ({ uri: x.uri, by: session.name, postId: x.postId, ownerId: session.id })), i + 1, p.postId) : undefined} />
+                <SmartImage key={p.uri + i} uri={p.uri} posterUri={p.posterUrl} accessibilityLabel={p.altText || "Open your media"} style={styles.wallCell} contain={false}
+                  onPress={onOpenPhotos ? () => onOpenPhotos(gallery.map((x) => ({ ...x, uri: x.uri, by: session.name, postId: x.postId, ownerId: session.id })), i + 1, p.postId) : undefined} />
               ))}
             </View>
           </View>
           {gallery.length > 5 && (
-            <Pressable onPress={onOpenPhotos ? () => onOpenPhotos(gallery.map((x) => ({ uri: x.uri, by: session.name, postId: x.postId, ownerId: session.id })), 0, gallery[0].postId) : undefined}>
+            <Pressable onPress={onOpenPhotos ? () => onOpenPhotos(gallery.map((x) => ({ ...x, uri: x.uri, by: session.name, postId: x.postId, ownerId: session.id })), 0, gallery[0].postId) : undefined}>
               <Text style={styles.wallMore}>See all {gallery.length} photos ›</Text>
             </Pressable>
           )}
@@ -439,6 +510,26 @@ const styles = StyleSheet.create({
   subLabel: { color: colors.textFaint, fontSize: 10, letterSpacing: 1.5, fontWeight: "800", marginTop: 18, marginBottom: 8 },
   card: { backgroundColor: colors.surface, borderRadius: radius.lg, borderCurve: "continuous", borderWidth: 1, borderColor: colors.lineSoft, padding: 16, ...shadow.card },
   emptyHint: { color: colors.textDim, fontSize: 13, fontStyle: "italic" },
+  scopeCopy: { color: colors.textDim, fontSize: 12, lineHeight: 17, marginTop: -5, marginBottom: 10 },
+  memoryGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
+  memoryCard: { flexGrow: 1, flexBasis: 260, minWidth: 0, gap: 8, padding: 14, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface, ...shadow.card },
+  memoryTop: { flexDirection: "row", alignItems: "center", gap: 10 },
+  memoryIcon: { width: 38, height: 38, borderRadius: 19, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.line, backgroundColor: colors.bgElev },
+  memoryKind: { color: colors.textFaint, fontSize: 9.5, letterSpacing: 1.3, fontWeight: "900" },
+  memoryDetail: { color: colors.magenta, fontSize: 11.5, fontWeight: "800", marginTop: 2 },
+  memoryArtist: { color: colors.text, fontSize: 16, fontWeight: "900" },
+  memoryVenue: { color: colors.textDim, fontSize: 11.5, lineHeight: 16 },
+  memoryActions: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 2 },
+  memoryAction: { minHeight: 44, flexGrow: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingHorizontal: 10, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.amber, backgroundColor: colors.bgElev },
+  memoryActionDisabled: { opacity: 0.45 },
+  memoryActionText: { color: colors.amber, fontSize: 11.5, fontWeight: "800" },
+  actionStatus: { color: colors.textDim, fontSize: 11.5, marginTop: 8 },
+  rediscoverRail: { gap: 10, paddingRight: 8 },
+  rediscoverCard: { width: 148, minHeight: 210, padding: 10, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface },
+  rediscoverArt: { width: "100%", aspectRatio: 1, borderRadius: radius.sm, backgroundColor: colors.surfaceAlt },
+  rediscoverTitle: { color: colors.text, fontSize: 12.5, fontWeight: "800", marginTop: 8 },
+  rediscoverArtist: { color: colors.textDim, fontSize: 11, marginTop: 2 },
+  rediscoverAge: { color: colors.amber, fontFamily: mono, fontSize: 9.5, marginTop: 6 },
 
   donutRow: { flexDirection: "row", alignItems: "center", gap: 18, flexWrap: "wrap" },
   // Same fix as Discover's chart: flex-basis 0 prevented the wrap and let the

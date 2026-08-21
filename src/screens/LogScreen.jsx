@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import { Component, Suspense, useState, useEffect, useMemo, useRef } from "react";
 import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, KeyboardAvoidingView, Platform, Alert, AppState } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import { colors, mono, radius, font, displayFont, shadow, space } from "../theme";
@@ -15,10 +15,9 @@ import TapStars from "../components/TapStars";
 import Button from "../components/Button";
 import SheetHeader from "../components/SheetHeader";
 import DatePicker from "../components/DatePicker";
-import { isDurableMediaUrl, reportMediaPickerError, uploadMediaAsset } from "../lib/mediaUpload";
+import { isDurableMediaUrl, reportMediaPickerError } from "../lib/mediaUpload";
 import { api } from "../lib/api";
 import { formatDate, initialComposerDate, toIsoDate, todayIso } from "../domain/dates.mjs";
-import { shouldContinueMediaBatch } from "../domain/mediaBatchPolicy.mjs";
 import {
   composerDraftFingerprint,
   composerDraftHasContent,
@@ -30,12 +29,95 @@ import {
 import { composerCloseDecision } from "../domain/composerClosePolicy.mjs";
 import { PENDING_COMPOSER_PICKER_KEY } from "../domain/composerRecovery.mjs";
 import { postMediaPickerOptions } from "../domain/mediaPickerOptions.mjs";
+import {
+  DEFAULT_MEDIA_PUBLISHING_CAPABILITIES,
+  VIDEO_PUBLISHING_PREPARING_COPY,
+  VIDEO_SELECTION_BLOCKED_COPY,
+  mediaPublishingCapabilitiesFromHealth,
+  mediaPublishingSelection,
+} from "../domain/mediaPublishingCapabilities.mjs";
 import { hasLandingCompatibleImage } from "../domain/landingShowcase.mjs";
 import { save } from "../lib/persist";
+import { uploadStudioMediaAsset } from "../lib/mediaAssetUpload";
+import {
+  recoverMediaDraftAssets,
+  releaseMediaDraftAsset,
+  releaseMediaDraftAssets,
+  stageMediaDraftAssets,
+} from "../lib/mediaDraftStaging";
+import { lazyWithRetry } from "../lib/lazyWithRetry";
+import { VIDEO_MAX_DURATION_MS, mediaImageAnimationUnsupported, mediaImageNeedsNativeDecode, mediaSourceSizeAllowed, mediaVideoDeliveryCompatible } from "../domain/mediaEdit.mjs";
+import {
+  mediaAssetIdsMatchingPhotos,
+  mediaProjectFromLegacyUrls,
+  mediaProjectFromPicker,
+  mediaProjectRequiresLegacyUpload,
+  moveMediaProjectAsset,
+  normalizeMediaProject,
+  normalizeMediaProjectAsset,
+  removeMediaProjectAsset,
+} from "../domain/mediaProject.mjs";
+
+const createMediaEditorWorkspace = (attempt) => lazyWithRetry(
+  () => import("../components/media-editor"),
+  `PITStudio:${attempt}`,
+);
+
+class StudioErrorBoundary extends Component {
+  state = { error: null };
+  static getDerivedStateFromError(error) { return { error }; }
+  componentDidUpdate(previous) {
+    if (previous.resetKey !== this.props.resetKey && this.state.error) this.setState({ error: null });
+  }
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <View style={styles.studioLoading} accessibilityRole="alert">
+        <Icon name="flag" size={22} color={colors.danger} />
+        <Text style={styles.studioLoadingTitle}>PIT Studio could not open</Text>
+        <Text style={styles.studioLoadingText}>Your selected media is still held in this composer.</Text>
+        <View style={styles.studioRecoveryRow}>
+          <Pressable style={styles.studioRecoveryButton} onPress={this.props.onRetry} accessibilityRole="button"><Text style={styles.studioRecoveryText}>Try again</Text></Pressable>
+          <Pressable style={styles.studioRecoveryButton} onPress={this.props.onExit} accessibilityRole="button"><Text style={styles.studioRecoveryText}>Back to composer</Text></Pressable>
+        </View>
+      </View>
+    );
+  }
+}
 
 const GROUP_COLOR = { "THE BAND": colors.amber, "THE ROOM": colors.cool, "THE NIGHT": colors.magenta };
 const GROUPS = ["THE BAND", "THE ROOM", "THE NIGHT"];
 const submissionId = () => `post_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
+
+function mediaProjectForPost(post) {
+  if (!Array.isArray(post?.media) || !post.media.length) return mediaProjectFromLegacyUrls(post?.photos || []);
+  return normalizeMediaProject({
+    assets: post.media.map((asset, index) => ({
+      id: `server:${asset.id || index + 1}`,
+      assetId: asset.id || null,
+      kind: asset.kind,
+      // Owners receive the immutable source for re-editing. The public URL is
+      // kept separately so post payload reconciliation never leaks/replaces it.
+      uri: asset.sourceUrl || asset.url,
+      sourceUrl: asset.url,
+      posterUri: asset.posterUrl || null,
+      posterUrl: asset.posterUrl || null,
+      posterTimeMs: asset.posterTimeMs,
+      width: asset.width,
+      height: asset.height,
+      durationMs: asset.durationMs,
+      mimeType: asset.mimeType,
+      edit: asset.editRecipe,
+      altText: asset.altText,
+      status: "ready",
+    })),
+  });
+}
+
+function releaseStudioArtifact(value) {
+  try { value?.dispose?.(); } catch {}
+  try { value?.release?.(); } catch {}
+}
 
 // A rounded "add to your post" action, like the Facebook/Instagram composer:
 // tap to reveal that attachment's input. Shows a filled state (and count) once
@@ -188,6 +270,49 @@ export default function LogScreen({
     setTags((all) => (all.length >= 5 || all.some((t) => t.toLowerCase() === tag.toLowerCase()) ? all : [...all, tag]));
   };
   const [photos, setPhotos] = useState(() => (editing?.photos || []).filter(isDurableMediaUrl));
+  const [mediaProject, setMediaProject] = useState(() => mediaProjectForPost(editing));
+  const [studioAssets, setStudioAssets] = useState([]);
+  const [studioOpen, setStudioOpen] = useState(false);
+  const [studioHydrating, setStudioHydrating] = useState(false);
+  const [studioLoadAttempt, setStudioLoadAttempt] = useState(0);
+  const studioReturnFocusRef = useRef(null);
+  const MediaEditorWorkspace = useMemo(() => createMediaEditorWorkspace(studioLoadAttempt), [studioLoadAttempt]);
+
+  const captureStudioOpener = () => {
+    if (Platform.OS !== "web" || typeof document === "undefined") return;
+    const element = document.activeElement;
+    studioReturnFocusRef.current = {
+      element,
+      id: element?.id || null,
+      label: element?.getAttribute?.("aria-label") || null,
+    };
+  };
+
+  // Full-screen RN Web Modals restore <body> after their children unmount.
+  // Hand focus back only after portal teardown; re-resolve the trigger if the
+  // composer remounted it, and cancel the task if Studio immediately reopens.
+  useEffect(() => {
+    if (Platform.OS !== "web" || studioOpen || !studioReturnFocusRef.current || typeof document === "undefined") return undefined;
+    const captured = studioReturnFocusRef.current;
+    let settleFrame = null;
+    const teardownFrame = requestAnimationFrame(() => {
+      settleFrame = requestAnimationFrame(() => {
+        if (studioReturnFocusRef.current !== captured) return;
+        let target = captured.element;
+        if (target?.isConnected === false && captured.id) target = document.getElementById(captured.id);
+        if (target?.isConnected === false && captured.label) {
+          target = Array.from(document.querySelectorAll('button,[role="button"]'))
+            .find((element) => element.getAttribute("aria-label") === captured.label) || null;
+        }
+        if (target?.isConnected !== false && typeof target?.focus === "function") target.focus();
+        if (studioReturnFocusRef.current === captured) studioReturnFocusRef.current = null;
+      });
+    });
+    return () => {
+      cancelAnimationFrame(teardownFrame);
+      if (settleFrame !== null) cancelAnimationFrame(settleFrame);
+    };
+  }, [studioOpen]);
   const [photosPublic, setPhotosPublic] = useState(editing ? editing.photosPublic !== false : true);
   const [landingShowcase, setLandingShowcase] = useState(editing?.landingShowcase === true && hasLandingCompatibleImage(editing?.photos));
   const hasLandingCompatiblePhoto = useMemo(() => hasLandingCompatibleImage(photos), [photos]);
@@ -197,9 +322,31 @@ export default function LogScreen({
   const [uploadingPhotos, setUploadingPhotos] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(null);
   const [mediaError, setMediaError] = useState("");
+  const [mediaPublishingCapabilities, setMediaPublishingCapabilities] = useState(DEFAULT_MEDIA_PUBLISHING_CAPABILITIES);
+  const [mediaPublishingCapabilitiesReady, setMediaPublishingCapabilitiesReady] = useState(false);
   const uploadControllerRef = useRef(null);
   const submissionIdRef = useRef(editing?.id || submissionId());
   useEffect(() => () => uploadControllerRef.current?.abort(), []);
+  useEffect(() => {
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const health = await api("/api/health", {
+          context: "Checking media publishing availability",
+          silent: true,
+          signal: controller.signal,
+          skipIdentityCheck: true,
+        });
+        if (!controller.signal.aborted) setMediaPublishingCapabilities(mediaPublishingCapabilitiesFromHealth(health));
+      } catch {
+        // A failed capability read keeps the default: photos work, videos stay
+        // fail-closed. The composer itself must remain usable while offline.
+      } finally {
+        if (!controller.signal.aborted) setMediaPublishingCapabilitiesReady(true);
+      }
+    })();
+    return () => controller.abort();
+  }, []);
   const [posting, setPosting] = useState(false);
   // Show date, defaults to today so logging stays one-tap, but you can set the
   // real date of a past show. Years run from this year back to 2000, descending.
@@ -217,51 +364,135 @@ export default function LogScreen({
   }));
   const [showDate, setShowDate] = useState(false);
 
-  async function uploadSelectedAssets(assets) {
+  async function stageSelectedAssets(assets) {
     if (uploadingPhotos || posting || !Array.isArray(assets) || !assets.length) return;
-    const remaining = Math.max(0, 8 - photos.length);
+    const remaining = Math.max(0, 8 - photos.length - studioAssets.length);
     if (!remaining) return;
-    const selected = assets.slice(0, remaining);
+    const candidateAssets = mediaProjectFromPicker(assets.slice(0, remaining), `${submissionIdRef.current}:${Date.now().toString(36)}`).assets;
+    const selection = mediaPublishingSelection(candidateAssets, mediaPublishingCapabilities);
+    const selected = selection.accepted;
+    if (selection.blockedVideos) setMediaError(VIDEO_SELECTION_BLOCKED_COPY);
+    if (!selected.length) return;
+    const oversized = selected.find((asset) => !mediaSourceSizeAllowed(asset));
+    if (oversized) {
+      setMediaError(oversized.kind === "video"
+        ? "That clip is over PIT's 100 MB limit. Export a shorter or smaller MP4 before opening it in PIT Studio."
+        : "That photo is over PIT's 12 MB limit. Export a smaller copy before opening it in PIT Studio.");
+      return;
+    }
+    const animatedImage = selected.find((asset) => asset.kind === "image" && mediaImageAnimationUnsupported(asset));
+    if (animatedImage) {
+      setMediaError("PIT will not silently flatten an animated GIF into one frame. Export it as a short MP4 clip, then choose its cover in PIT Studio.");
+      return;
+    }
+    const unsupportedWebImage = Platform.OS === "web" && selected.find((asset) => asset.kind === "image" && mediaImageNeedsNativeDecode(asset));
+    if (unsupportedWebImage) {
+      setMediaError("This browser cannot safely decode HEIC or HEIF for PIT Studio. Choose a JPEG, PNG, or WebP, or add the photo from the PIT mobile app so it can create a web-safe rendition.");
+      return;
+    }
+    const unsupportedVideo = selected.find((asset) => asset.kind === "video" && !mediaVideoDeliveryCompatible(asset));
+    if (unsupportedVideo) {
+      setMediaError("PIT currently accepts new clips only as MP4 files. MOV and WebM stay blocked until the authoritative codec probe and transcoder are live; PIT will not pretend a container alone guarantees playback.");
+      return;
+    }
+    const overlongVideo = selected.find((asset) => asset.kind === "video" && asset.durationMs > VIDEO_MAX_DURATION_MS);
+    if (overlongVideo) {
+      setMediaError("Clips are limited to 60 seconds until PIT's authoritative video trimmer is live. Choose a shorter MP4; PIT will not silently publish the full file.");
+      return;
+    }
+    if (mediaProjectRequiresLegacyUpload(mediaProject, photos)) {
+      setMediaError("This older post still uses legacy attachments. Remove all of its existing media before adding a new photo or clip, or publish the new media in a separate post.");
+      return;
+    }
+    try {
+      const staged = await stageMediaDraftAssets(selected, {
+        ownerId: user?.id,
+        projectId: submissionIdRef.current,
+      });
+      if (!selection.blockedVideos) setMediaError("");
+      setStudioAssets((current) => normalizeMediaProject({ assets: [...current, ...staged] }).assets);
+      setStudioOpen(true);
+    } catch (error) {
+      setMediaError(error?.message || "PIT could not make a private recovery copy of that selection. Choose the media again.");
+    }
+  }
+
+  async function applyStudioMedia(result) {
+    const selected = Array.isArray(result?.assets) ? result.assets.slice(0, 8) : [];
+    if (!selected.length || uploadingPhotos || posting) return;
+    const selection = mediaPublishingSelection(selected, mediaPublishingCapabilities);
+    if (selection.blockedVideos) {
+      setMediaError(VIDEO_SELECTION_BLOCKED_COPY);
+      throw new Error(VIDEO_SELECTION_BLOCKED_COPY);
+    }
     const controller = new AbortController();
     uploadControllerRef.current?.abort();
     uploadControllerRef.current = controller;
     setUploadingPhotos(true);
     setMediaError("");
     setUploadProgress({ current: 1, total: selected.length, completed: 0 });
-    let completed = 0;
-    let failed = 0;
-    let cancelled = false;
-    let stoppedEarly = false;
+    const completedAssets = [];
+    // A URL-only historical post cannot safely mix attachment identity models
+    // in one PATCH. New additions fail closed until the legacy attachments are
+    // removed; every accepted upload uses stable IDs and verified derivatives.
+    const legacyCompatibility = mediaProjectRequiresLegacyUpload(mediaProject, photos);
     try {
-      // Upload sequentially to keep mobile memory predictable. Successful
-      // objects remain available even if a later selection fails.
+      if (legacyCompatibility) {
+        throw new Error("This older post cannot safely mix new media with URL-only attachments. Remove all old media first, or publish the new media in a separate post.");
+      }
       for (let index = 0; index < selected.length; index++) {
         const asset = selected[index];
-        setUploadProgress({ current: index + 1, total: selected.length, completed });
-        try {
-          const uploaded = await uploadMediaAsset(asset, "post", { signal: controller.signal });
-          completed += 1;
-          setPhotos((current) => [...current, uploaded].filter(isDurableMediaUrl).slice(0, 8));
-          setUploadProgress({ current: Math.min(index + 2, selected.length), total: selected.length, completed });
-        } catch (error) {
-          if (controller.signal.aborted) { cancelled = true; break; }
-          failed += 1;
-          // One unsupported or oversized clip must not prevent later valid
-          // photos in the same picker selection from uploading. A connection,
-          // auth, rate-limit, timeout, or storage failure stops immediately.
-          if (!shouldContinueMediaBatch(error)) { stoppedEarly = true; break; }
-        }
+        const existing = mediaProject.assets.find((item) => item.id === asset.id || (asset.assetId && item.assetId === asset.assetId));
+        const previousSourceUrl = existing?.sourceUrl || null;
+        setUploadProgress({ current: index + 1, total: selected.length, completed: completedAssets.length, stage: "preparing" });
+        let ready;
+        ready = await uploadStudioMediaAsset({
+          asset,
+          renderedAsset: asset.renderedAsset || result?.renders?.[asset.id] || null,
+          posterAsset: asset.posterAsset || result?.renders?.[asset.id]?.cover || null,
+          signal: controller.signal,
+          onStage: (stage) => setUploadProgress({ current: index + 1, total: selected.length, completed: completedAssets.length, stage }),
+        });
+        completedAssets.push(ready);
+        // Commit each verified asset immediately. If a later item fails, a
+        // retry resumes with only the unfinished selections instead of
+        // orphaning completed uploads or uploading them twice.
+        setPhotos((current) => {
+          const priorIndex = previousSourceUrl ? current.indexOf(previousSourceUrl) : -1;
+          if (priorIndex >= 0) {
+            const next = current.slice();
+            next[priorIndex] = ready.sourceUrl;
+            return [...new Set(next.filter(isDurableMediaUrl))].slice(0, 8);
+          }
+          return current.includes(ready.sourceUrl)
+            ? current
+            : [...current, ready.sourceUrl].filter(isDurableMediaUrl).slice(0, 8);
+        });
+        setMediaProject((current) => {
+          const existingIndex = current.assets.findIndex((item) => item.id === asset.id || (ready.assetId && item.assetId === ready.assetId) || (previousSourceUrl && item.sourceUrl === previousSourceUrl));
+          if (existingIndex < 0) return normalizeMediaProject({ assets: [...current.assets, ready].slice(0, 8) });
+          const next = current.assets.slice();
+          next[existingIndex] = normalizeMediaProjectAsset({ ...ready, id: next[existingIndex].id }, existingIndex);
+          return normalizeMediaProject({ assets: next });
+        });
+        setStudioAssets((current) => current.filter((item) => item.id !== asset.id));
+        // The verified owner source is now recoverable from the server. Remove
+        // only PIT's private staged copy; the helper refuses arbitrary paths.
+        await releaseMediaDraftAsset(asset);
       }
-      if (failed && !cancelled) {
-        setMediaError(stoppedEarly
-          ? (completed
-              ? `${completed} of ${selected.length} uploads finished. Uploading stopped after a connection or storage error; try the remaining media again.`
-              : "Uploading stopped after a connection or storage error. Check your connection and try again.")
-          : (completed
-              ? `${completed} of ${selected.length} uploads finished. ${failed} item${failed === 1 ? "" : "s"} couldn't be added.`
-              : "That media didn't upload. Try a supported file or a shorter clip."));
-      }
+    } catch (error) {
+      const message = controller.signal.aborted
+        ? "Media upload stopped. Finished items are attached; unfinished edits remain open in PIT Studio."
+        : (error?.message || "PIT Studio could not finish that media. Finished items are attached and unfinished edits are still here.");
+      setMediaError(message);
+      throw error;
     } finally {
+      for (const asset of selected) {
+        releaseStudioArtifact(asset.renderedAsset);
+        releaseStudioArtifact(asset.posterAsset);
+        releaseStudioArtifact(result?.renders?.[asset.id]);
+        releaseStudioArtifact(result?.renders?.[asset.id]?.cover);
+      }
       if (uploadControllerRef.current === controller) {
         uploadControllerRef.current = null;
         setUploadingPhotos(false);
@@ -272,21 +503,19 @@ export default function LogScreen({
 
   const addPhoto = async () => {
     if (uploadingPhotos || posting) return;
-    const remaining = Math.max(0, 8 - photos.length);
+    if (mediaProjectRequiresLegacyUpload(mediaProject, photos)) {
+      setMediaError("Remove all existing media from this older post before adding a new photo or clip. This prevents an unsafe mix of legacy URLs and verified PIT media.");
+      return;
+    }
+    const remaining = Math.max(0, 8 - photos.length - studioAssets.length);
     if (!remaining) return;
+    captureStudioOpener();
     let res;
     let pickerRequestId = null;
     try {
-      // SDK 56 returns original iOS videos with Passthrough by default. Asking
-      // before launch avoids surprising people with the permission dialog only
-      // after they already selected a concert clip.
-      if (Platform.OS === "ios") {
-        const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-        if (!permission.granted) {
-          setMediaError("Pit needs photo-library access before it can attach that concert video.");
-          return;
-        }
-      }
+      // SDK 56's system library picker does not need a broad permission prompt
+      // for this H.264 export path. Ask only when a future feature truly needs
+      // full-library access; selection itself remains a direct user gesture.
       if (Platform.OS === "android" && composerId) {
         // Persist both the latest draft and exact picker owner before handing
         // control to Android's external activity. MainActivity can be destroyed
@@ -301,20 +530,115 @@ export default function LogScreen({
         platform: Platform.OS,
         remaining,
         iosH264Preset: ImagePicker.VideoExportPreset.H264_1920x1080,
+        allowVideos: mediaPublishingCapabilities.videos,
       }));
     } catch (error) {
       if (pickerRequestId) save(PENDING_COMPOSER_PICKER_KEY, null);
+      studioReturnFocusRef.current = null;
       reportMediaPickerError(error, "Opening the media library");
       return;
     }
     if (pickerRequestId) save(PENDING_COMPOSER_PICKER_KEY, null);
-    if (!res || res.canceled || !res.assets?.length) return;
-    await uploadSelectedAssets(res.assets);
+    if (!res || res.canceled || !res.assets?.length) {
+      studioReturnFocusRef.current = null;
+      return;
+    }
+    await stageSelectedAssets(res.assets);
   };
 
   const cancelUpload = () => {
     uploadControllerRef.current?.abort();
-    setMediaError("Upload stopped. Media that already finished is still attached.");
+    setMediaError("Upload stopped. Your edits remain open in PIT Studio so you can try again.");
+  };
+
+  const removeAttachedMedia = (index) => {
+    const removedUrl = photos[index];
+    const matching = mediaProject.assets.find((asset) => asset.sourceUrl === removedUrl);
+    setPhotos((current) => {
+      const next = current.filter((_, itemIndex) => itemIndex !== index);
+      if (!hasLandingCompatibleImage(next)) setLandingShowcase(false);
+      return next;
+    });
+    if (matching) setMediaProject((current) => removeMediaProjectAsset(current, matching.id));
+  };
+
+  const reopenReadyMedia = async () => {
+    const ready = mediaProject.assets.filter((asset) => asset.assetId && asset.status === "ready");
+    if (!ready.length || submitBusy || studioHydrating) return;
+    captureStudioOpener();
+    setStudioHydrating(true);
+    setMediaError("");
+    try {
+      const hydrated = await Promise.all(ready.map(async (asset) => {
+        const response = await api(`/api/media/assets/${encodeURIComponent(asset.assetId)}`, { context: "Reopening PIT Studio media" });
+        const ownerAsset = response?.asset;
+        if (!ownerAsset?.id || !ownerAsset.sourceUrl) throw new Error("That original media is no longer available for editing.");
+        return normalizeMediaProjectAsset({
+          ...asset,
+          uri: ownerAsset.sourceUrl,
+          sourceUrl: ownerAsset.url || asset.sourceUrl,
+          posterUri: ownerAsset.posterUrl || asset.posterUri,
+          posterUrl: ownerAsset.posterUrl || asset.posterUrl,
+          posterTimeMs: ownerAsset.posterTimeMs ?? asset.posterTimeMs,
+          edit: ownerAsset.editRecipe || asset.edit,
+          altText: ownerAsset.altText ?? asset.altText,
+          status: "editing",
+        });
+      }));
+      setStudioAssets(hydrated);
+      setStudioOpen(true);
+    } catch (error) {
+      studioReturnFocusRef.current = null;
+      setMediaError(error?.message || "PIT could not reopen that original media.");
+    } finally {
+      setStudioHydrating(false);
+    }
+  };
+
+  const openPendingStudio = async () => {
+    if (!studioAssets.length || studioHydrating || submitBusy) return;
+    captureStudioOpener();
+    setStudioHydrating(true);
+    setMediaError("");
+    try {
+      const recoverable = await recoverMediaDraftAssets(studioAssets);
+      if (recoverable.length !== studioAssets.length) {
+        throw new Error("A staged media file was removed by the device. Choose that item again before continuing.");
+      }
+      const hydrated = await Promise.all(recoverable.map(async (asset, index) => {
+        if (!asset.assetId || (asset.uri && asset.uri !== asset.sourceUrl)) return asset;
+        const response = await api(`/api/media/assets/${encodeURIComponent(asset.assetId)}`, { context: "Recovering PIT Studio media" });
+        const ownerAsset = response?.asset;
+        if (!ownerAsset?.id || !ownerAsset.sourceUrl) throw new Error("That original media is no longer available for editing.");
+        return normalizeMediaProjectAsset({
+          ...asset,
+          // Restore only the owner source/runtime metadata. The draft's recipe
+          // and alt text are newer than the last verified server rendition.
+          uri: ownerAsset.sourceUrl,
+          sourceUrl: asset.sourceUrl || ownerAsset.url,
+          posterUri: asset.posterUri || ownerAsset.posterUrl || null,
+          posterUrl: asset.posterUrl || ownerAsset.posterUrl || null,
+          status: "editing",
+        }, index);
+      }));
+      setStudioAssets(hydrated);
+      setStudioOpen(true);
+    } catch (error) {
+      studioReturnFocusRef.current = null;
+      setMediaError(error?.message || "PIT could not recover those Studio originals. Try again while connected.");
+    } finally {
+      setStudioHydrating(false);
+    }
+  };
+
+  const removeStudioAsset = (id) => {
+    const target = studioAssets.find((asset) => asset.id === id);
+    setStudioAssets((current) => current.filter((asset) => asset.id !== id));
+    void releaseMediaDraftAsset(target);
+    if (target?.sourceUrl) {
+      const attachedIndex = photos.indexOf(target.sourceUrl);
+      if (attachedIndex >= 0) removeAttachedMedia(attachedIndex);
+    }
   };
 
   const attachSong = async () => {
@@ -348,9 +672,18 @@ export default function LogScreen({
       }
     : computed;
   const canPostStatus = !!(review.trim() || photos.filter(isDurableMediaUrl).length || song?.videoId || playlist);
-  const canPost = isStatus ? canPostStatus : (artist.trim() && venue.trim() && computed.overall > 0);
+  const canPostBase = isStatus ? canPostStatus : (artist.trim() && venue.trim() && computed.overall > 0);
+  const canPost = !!canPostBase && studioAssets.length === 0;
   const submitBusy = uploadingPhotos || resolvingSong || posting;
 
+  const draftMediaProject = useMemo(() => normalizeMediaProject({
+    assets: [
+      ...mediaProject.assets.filter((saved) => !studioAssets.some((staged) => staged.id === saved.id
+        || (staged.assetId && staged.assetId === saved.assetId)
+        || (staged.sourceUrl && staged.sourceUrl === saved.sourceUrl))),
+      ...studioAssets,
+    ],
+  }), [mediaProject, studioAssets]);
   const currentDraft = useMemo(() => normalizeComposerDraft({
     id: draftId,
     submissionId: submissionIdRef.current,
@@ -369,15 +702,20 @@ export default function LogScreen({
     songUrl,
     playlist,
     photos: photos.filter(isDurableMediaUrl),
+    mediaProject: draftMediaProject,
     photosPublic,
     landingShowcase: photosPublic && landingShowcase && hasLandingCompatiblePhoto,
     panels: { song: showSong, photos: showPhotos, playlist: showPlaylist },
-  }), [draftId, postType, artist, artistPicked, artistKey, venue, city, tour, date, dims, review, tags, tagDraft, song, songUrl, playlist, photos, photosPublic, landingShowcase, hasLandingCompatiblePhoto, showSong, showPhotos, showPlaylist]);
+  }), [draftId, postType, artist, artistPicked, artistKey, venue, city, tour, date, dims, review, tags, tagDraft, song, songUrl, playlist, photos, draftMediaProject, photosPublic, landingShowcase, hasLandingCompatiblePhoto, showSong, showPhotos, showPlaylist]);
   const draftFingerprint = useMemo(() => composerDraftFingerprint(currentDraft), [currentDraft]);
   const hasContent = useMemo(() => composerDraftHasContent(currentDraft), [currentDraft]);
+  const hasUnappliedStudioMedia = studioAssets.length > 0;
+  const hasUnpersistableStudioMedia = studioAssets.some((asset) => !asset.sourceUrl && !asset.durableLocalUri);
   const initialFingerprintRef = useRef(null);
   if (initialFingerprintRef.current === null) initialFingerprintRef.current = draftFingerprint;
   const composerDirty = draftFingerprint !== initialFingerprintRef.current;
+  const effectiveComposerDirty = composerDirty || hasUnappliedStudioMedia;
+  const effectiveHasContent = hasContent || hasUnappliedStudioMedia;
   const draftIdRef = useRef(draftId);
   draftIdRef.current = draftId;
   const allowNextCloseRef = useRef(false);
@@ -427,25 +765,31 @@ export default function LogScreen({
   useEffect(() => {
     if (editing) return undefined;
     const subscription = AppState.addEventListener("change", (state) => {
-      if (state !== "active" && shouldFlushComposerDraft({ editing: !!editing, dirty: composerDirty, hasDraft: !!draftIdRef.current })) flushDraftRef.current?.();
+      if (state !== "active" && shouldFlushComposerDraft({ editing: !!editing, dirty: effectiveComposerDirty, hasDraft: !!draftIdRef.current })) flushDraftRef.current?.();
     });
     return () => subscription.remove();
-  }, [editing, composerDirty]);
+  }, [editing, effectiveComposerDirty]);
 
   // A tab close/reload cannot show our in-app confirmation. Ask the browser only
   // while work is still unsaved or a mutation is active; fully autosaved drafts
   // can leave without an unnecessary warning.
   useEffect(() => {
     if (Platform.OS !== "web" || typeof window === "undefined") return undefined;
-    const shouldProtect = submitBusy || (editing ? composerDirty : (composerDirty && hasContent && draftFingerprint !== savedDraftFingerprint));
+    const shouldProtect = submitBusy
+      || hasUnappliedStudioMedia
+      || (editing ? effectiveComposerDirty : (effectiveComposerDirty && effectiveHasContent && draftFingerprint !== savedDraftFingerprint));
     if (!shouldProtect) return undefined;
     const beforeUnload = (event) => { event.preventDefault(); event.returnValue = ""; };
     window.addEventListener("beforeunload", beforeUnload);
     return () => window.removeEventListener("beforeunload", beforeUnload);
-  }, [submitBusy, editing, composerDirty, hasContent, draftFingerprint, savedDraftFingerprint]);
+  }, [submitBusy, editing, effectiveComposerDirty, effectiveHasContent, hasUnappliedStudioMedia, draftFingerprint, savedDraftFingerprint]);
 
   const stash = () => {
-    if (editing || submitBusy || !hasContent) return;
+    if (editing || submitBusy || !effectiveHasContent) return;
+    if (hasUnpersistableStudioMedia) {
+      Alert.alert("Finish PIT Studio first", "This browser cannot preserve selected photo or video files across a restart. Apply the media, or reopen PIT Studio and discard it, before saving this draft.");
+      return;
+    }
     persistDraftSnapshot(currentDraft);
     allowNextCloseRef.current = true;
     onCancel?.();
@@ -462,7 +806,16 @@ export default function LogScreen({
     setPostType(restored.postType);
     setArtist(restored.artist); setArtistPicked(!!restored.artistKey); setArtistKey(restored.artistKey); setVenue(restored.venue); setVenuePicked(!!restored.venue); setCity(restored.city);
     const restoredPhotos = restored.photos.filter(isDurableMediaUrl);
-    setTour(restored.tour); setDate(toIsoDate(restored.date) || restored.date || todayStr); setDims(restored.dims); setReview(restored.review); setTags(restored.tags); setTagDraft(restored.tagDraft); setSong(restored.song); setSongUrl(restored.songUrl); setPlaylist(restored.playlist); setPhotos(restoredPhotos); setPhotosPublic(restored.photosPublic); setLandingShowcase(restored.landingShowcase && hasLandingCompatibleImage(restoredPhotos));
+    const restoredProject = normalizeMediaProject(restored.mediaProject);
+    const restoredPending = restoredProject.assets.filter((asset) => asset.status !== "ready" && (asset.durableLocalUri || asset.assetId));
+    const restoredReady = restoredProject.assets.filter((asset) => !!asset.sourceUrl && !restoredPending.some((pending) => pending.id === asset.id));
+    setTour(restored.tour); setDate(toIsoDate(restored.date) || restored.date || todayStr); setDims(restored.dims); setReview(restored.review); setTags(restored.tags); setTagDraft(restored.tagDraft); setSong(restored.song); setSongUrl(restored.songUrl); setPlaylist(restored.playlist); setPhotos(restoredPhotos); setMediaProject(normalizeMediaProject({ assets: restoredReady })); setStudioAssets(restoredPending); setPhotosPublic(restored.photosPublic); setLandingShowcase(restored.landingShowcase && hasLandingCompatibleImage(restoredPhotos));
+    if (restoredPending.length) {
+      void recoverMediaDraftAssets(restoredPending).then((recoverable) => {
+        setStudioAssets(recoverable);
+        if (recoverable.length < restoredPending.length) setMediaError("One staged media file was removed by the device. The rest of your draft is safe; choose that item again.");
+      });
+    }
     setShowSong(restored.panels.song); setShowPhotos(restored.panels.photos); setShowPlaylist(restored.panels.playlist);
   };
 
@@ -478,7 +831,7 @@ export default function LogScreen({
 
   const pendingMediaHandledRef = useRef(null);
   useEffect(() => {
-    if (!draftRestoreReady || !pendingMedia?.requestId || pendingMedia.composerId !== composerId) return;
+    if (!draftRestoreReady || !mediaPublishingCapabilitiesReady || !pendingMedia?.requestId || pendingMedia.composerId !== composerId) return;
     if (pendingMediaHandledRef.current === pendingMedia.requestId) return;
     pendingMediaHandledRef.current = pendingMedia.requestId;
     const result = pendingMedia.result;
@@ -491,13 +844,15 @@ export default function LogScreen({
       onPendingMediaConsumed?.(pendingMedia.requestId);
       return;
     }
-    void uploadSelectedAssets(result.assets).finally(() => onPendingMediaConsumed?.(pendingMedia.requestId));
+    void stageSelectedAssets(result.assets).finally(() => onPendingMediaConsumed?.(pendingMedia.requestId));
     // The request id is the ownership boundary. Other state changes during a
     // recovered upload must not enqueue the same Android selection twice.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draftRestoreReady, pendingMedia?.requestId, composerId]);
+  }, [draftRestoreReady, mediaPublishingCapabilitiesReady, pendingMedia?.requestId, composerId]);
 
   const discardCurrentDraft = () => {
+    void releaseMediaDraftAssets(studioAssets);
+    setStudioAssets([]);
     if (draftIdRef.current) deleteDraft(draftIdRef.current);
     draftIdRef.current = null;
     setDraftId(null);
@@ -515,7 +870,15 @@ export default function LogScreen({
       return;
     }
     if (closePromptOpenRef.current) { stay(); return; }
-    const closeDecision = composerCloseDecision({ busy: submitBusy, editing: !!editing, dirty: composerDirty, hasContent, hasDraft: !!draftIdRef.current });
+    if (hasUnpersistableStudioMedia) {
+      stay();
+      Alert.alert(
+        "Selected media is still in PIT Studio",
+        "Reopen PIT Studio and apply or discard that selection before closing. This browser cannot preserve the selected files across a restart.",
+      );
+      return;
+    }
+    const closeDecision = composerCloseDecision({ busy: submitBusy, editing: !!editing, dirty: effectiveComposerDirty, hasContent: effectiveHasContent, hasDraft: !!draftIdRef.current });
     if (closeDecision === "block") {
       stay();
       Alert.alert(
@@ -579,6 +942,7 @@ export default function LogScreen({
     setPostError("");
     try {
       const durablePhotos = photos.filter(isDurableMediaUrl);
+      const stableMediaAssetIds = mediaAssetIdsMatchingPhotos(mediaProject, durablePhotos);
       if (isStatus) {
         const result = await onPost?.({
           id: submissionIdRef.current,
@@ -592,6 +956,7 @@ export default function LogScreen({
           playlist,
           playlistId: playlist?.id || null,
           photos: durablePhotos,
+          ...(stableMediaAssetIds ? { mediaAssetIds: stableMediaAssetIds } : {}),
           media: durablePhotos.length,
           photosPublic: true,
           likes: editing?.likes || 0,
@@ -622,6 +987,7 @@ export default function LogScreen({
         date,
         media: durablePhotos.length,
         photos: durablePhotos,
+        ...(stableMediaAssetIds ? { mediaAssetIds: stableMediaAssetIds } : {}),
         photosPublic,
         landingShowcase: photosPublic && landingShowcase && hasLandingCompatibleImage(durablePhotos),
         overall: submittedRatings.overall,
@@ -655,6 +1021,41 @@ export default function LogScreen({
   return (
     <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
       <SheetHeader title={editing ? "Edit post" : isStatus ? "New post" : "Log a show"} onClose={onCancel} leadDisabled={submitBusy} action={{ label: posting ? (editing ? "Saving..." : "Posting...") : uploadingPhotos ? "Uploading..." : resolvingSong ? "Checking..." : editing ? "Save" : "Post", onPress: submit, disabled: !canPost || submitBusy }} />
+
+      {studioOpen ? (
+        <StudioErrorBoundary
+          resetKey={studioLoadAttempt}
+          onRetry={() => setStudioLoadAttempt((attempt) => attempt + 1)}
+          onExit={() => setStudioOpen(false)}
+        >
+          <Suspense fallback={(
+            <View style={styles.studioLoading} accessibilityLiveRegion="polite">
+              <Text style={styles.studioLoadingTitle}>Opening PIT Studio...</Text>
+              <Pressable style={styles.studioRecoveryButton} onPress={() => setStudioOpen(false)} accessibilityRole="button">
+                <Text style={styles.studioRecoveryText}>Back to composer</Text>
+              </Pressable>
+            </View>
+          )}>
+            <MediaEditorWorkspace
+              visible
+              returnFocusRef={studioReturnFocusRef}
+              assets={studioAssets}
+              onAssetChange={(id, patch) => setStudioAssets((current) => current.map((asset, index) => (
+                asset.id === id ? normalizeMediaProjectAsset({ ...asset, ...patch, id: asset.id }, index) : asset
+              )))}
+              onAssetMove={(id, toIndex) => setStudioAssets((current) => moveMediaProjectAsset({ assets: current }, id, toIndex).assets)}
+              onAssetRemove={removeStudioAsset}
+              onApply={applyStudioMedia}
+              onCancelProcessing={cancelUpload}
+              onClose={() => {
+                setStudioOpen(false);
+                void releaseMediaDraftAssets(studioAssets);
+                setStudioAssets([]);
+              }}
+            />
+          </Suspense>
+        </StudioErrorBoundary>
+      ) : null}
 
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         {!!postError && <View style={styles.postErrorBox}><Icon name="flag" size={14} color={colors.danger} /><Text style={styles.postErrorTxt}>{postError}</Text></View>}
@@ -864,10 +1265,16 @@ export default function LogScreen({
 
         <Text style={styles.attachLabel}>ADD TO YOUR POST</Text>
         <View style={styles.attachBar}>
-          <AttachChip icon="camera" label="Photo / video" active={showPhotos || photos.length > 0} count={photos.length} onPress={() => setShowPhotos((v) => !v)} disabled={submitBusy} />
+          <AttachChip icon="camera" label={mediaPublishingCapabilities.videos ? "Photo / video" : "Photos"} active={showPhotos || photos.length > 0 || studioAssets.length > 0} count={photos.length + studioAssets.length} onPress={() => setShowPhotos((v) => !v)} disabled={submitBusy} />
           <AttachChip icon="play" label="YouTube" active={showSong || !!song?.videoId} onPress={() => setShowSong((v) => !v)} disabled={submitBusy} />
           {isStatus && <AttachChip icon="feed" label="Playlist" active={showPlaylist || !!playlist} count={playlist ? (playlist.tracks?.length || 0) : 0} onPress={togglePlaylistPanel} disabled={submitBusy} />}
         </View>
+        {!mediaPublishingCapabilities.videos && (
+          <View style={styles.mediaCapabilityNotice} accessibilityRole="note">
+            <Icon name="camera" size={16} color={colors.amber} />
+            <Text style={styles.mediaCapabilityNoticeText}>{VIDEO_PUBLISHING_PREPARING_COPY}</Text>
+          </View>
+        )}
 
         {(showSong || song?.videoId) && (
         <View style={styles.attachPanel}>
@@ -946,24 +1353,40 @@ export default function LogScreen({
 
         {(showPhotos || photos.length > 0) && (
         <View style={styles.attachPanel}>
+        {!studioOpen && studioAssets.length > 0 ? (
+          <Pressable style={styles.resumeStudio} onPress={openPendingStudio} disabled={studioHydrating || submitBusy} accessibilityRole="button" accessibilityLabel="Resume editing selected media in PIT Studio" accessibilityState={{ busy: studioHydrating, disabled: studioHydrating || submitBusy }}>
+            <Icon name="edit" size={16} color={colors.amber} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.resumeStudioTitle}>{studioHydrating ? "Recovering originals..." : "Resume PIT Studio"}</Text>
+              <Text style={styles.resumeStudioCopy}>{studioAssets.length} selected {studioAssets.length === 1 ? "item is" : "items are"} waiting to be applied.</Text>
+            </View>
+          </Pressable>
+        ) : null}
+        {!editing && !studioOpen && studioAssets.length === 0 && mediaProject.assets.some((asset) => asset.assetId && asset.status === "ready") ? (
+          <Pressable style={styles.resumeStudio} onPress={reopenReadyMedia} disabled={submitBusy || studioHydrating} accessibilityRole="button" accessibilityLabel="Edit attached media again in PIT Studio" accessibilityState={{ busy: studioHydrating, disabled: submitBusy || studioHydrating }}>
+            <Icon name="edit" size={16} color={colors.amber} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.resumeStudioTitle}>{studioHydrating ? "Opening originals..." : "Edit attached media"}</Text>
+              <Text style={styles.resumeStudioCopy}>Reopen the original source and reversible recipe before this post is published.</Text>
+            </View>
+          </Pressable>
+        ) : null}
         <View style={styles.photoRow}>
-          {photos.map((uri, i) => (
-            <View key={i} style={styles.thumb}>
+          {photos.map((uri, i) => {
+            const descriptor = mediaProject.assets.find((asset) => asset.sourceUrl === uri);
+            return (
+            <View key={`${uri}:${i}`} style={styles.thumb}>
               {/* SmartImage renders clips as a play tile and HEIC via transcode. */}
-              <SmartImage uri={uri} style={StyleSheet.absoluteFill} contain={false} />
-              <Pressable style={styles.removeThumb} onPress={() => setPhotos((p) => {
-                const next = p.filter((_, idx) => idx !== i);
-                if (!hasLandingCompatibleImage(next)) setLandingShowcase(false);
-                return next;
-              })} disabled={submitBusy}>
+              <SmartImage uri={uri} posterUri={descriptor?.posterUrl || descriptor?.posterUri || null} style={StyleSheet.absoluteFill} contain={false} accessibilityLabel={descriptor?.altText || `Media ${i + 1}`} />
+              <Pressable style={styles.removeThumb} onPress={() => removeAttachedMedia(i)} disabled={submitBusy} accessibilityRole="button" accessibilityLabel={`Remove media ${i + 1}`}>
                 <Icon name="x" size={12} color="#fff" />
               </Pressable>
             </View>
-          ))}
-          {photos.length < 8 && (
-            <Pressable style={styles.addThumb} onPress={addPhoto} disabled={submitBusy}>
+          );})}
+          {photos.length + studioAssets.length < 8 && (
+            <Pressable style={styles.addThumb} onPress={addPhoto} disabled={submitBusy} accessibilityRole="button" accessibilityLabel={mediaPublishingCapabilities.videos ? "Add photos or videos" : "Add photos"}>
               <Icon name="camera" size={20} color={colors.amber} />
-              <Text style={styles.addThumbTxt}>{uploadProgress ? `${uploadProgress.current}/${uploadProgress.total}` : "Add media"}</Text>
+              <Text style={styles.addThumbTxt}>{uploadProgress ? `${uploadProgress.current}/${uploadProgress.total}` : mediaPublishingCapabilities.videos ? "Add media" : "Add photos"}</Text>
             </Pressable>
           )}
         </View>
@@ -1026,6 +1449,12 @@ export default function LogScreen({
 }
 
 const styles = StyleSheet.create({
+  studioLoading: { ...StyleSheet.absoluteFillObject, zIndex: 50, alignItems: "center", justifyContent: "center", gap: 12, padding: 24, backgroundColor: colors.bg },
+  studioLoadingTitle: { color: colors.text, fontFamily: displayFont, fontSize: 18, fontWeight: "900", textAlign: "center" },
+  studioLoadingText: { maxWidth: 380, color: colors.textDim, fontSize: 13, lineHeight: 19, textAlign: "center" },
+  studioRecoveryRow: { flexDirection: "row", flexWrap: "wrap", justifyContent: "center", gap: 10 },
+  studioRecoveryButton: { minHeight: 44, justifyContent: "center", paddingHorizontal: 16, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.amber, backgroundColor: colors.surface },
+  studioRecoveryText: { color: colors.amber, fontFamily: displayFont, fontSize: 12, fontWeight: "900" },
   modeRow: { flexDirection: "row", gap: 8, backgroundColor: colors.bgElev, borderRadius: radius.pill, padding: 4, borderWidth: 1, borderColor: colors.lineSoft, marginBottom: 18 },
   modeBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, paddingVertical: 10, borderRadius: radius.pill },
   modeBtnOn: { backgroundColor: colors.amberStrong },
@@ -1046,6 +1475,8 @@ const styles = StyleSheet.create({
   attachChipTxt: { color: colors.textDim, fontSize: 13, fontWeight: "700" },
   attachChipTxtOn: { color: colors.text },
   attachChipCount: { color: colors.amber, fontFamily: mono, fontSize: 11, fontWeight: "800", marginLeft: 1 },
+  mediaCapabilityNotice: { flexDirection: "row", alignItems: "flex-start", gap: 9, marginTop: 10, padding: 11, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface },
+  mediaCapabilityNoticeText: { flex: 1, color: colors.textDim, fontSize: 12, lineHeight: 18 },
   attachPanel: { marginTop: 12, backgroundColor: colors.bgElev, borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: colors.lineSoft, padding: 12 },
   attachHint: { color: colors.textFaint, fontSize: 11.5, lineHeight: 16, marginBottom: 10 },
   songInputRow: { flexDirection: "row", alignItems: "stretch", gap: 8 },
@@ -1104,6 +1535,9 @@ const styles = StyleSheet.create({
   datePickerWrap: { marginTop: 10, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 12 },
   multiline: { minHeight: 110, textAlignVertical: "top", fontSize: 16 },
   photoRow: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
+  resumeStudio: { minHeight: 58, flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 12, padding: 11, borderRadius: radius.md, borderWidth: 1, borderColor: colors.amber, backgroundColor: "rgba(242,166,90,0.08)" },
+  resumeStudioTitle: { color: colors.text, fontFamily: displayFont, fontSize: 13, fontWeight: "900" },
+  resumeStudioCopy: { color: colors.textDim, fontSize: 11.5, lineHeight: 16, marginTop: 2 },
   thumb: { width: 76, height: 76, borderRadius: 10, overflow: "hidden", borderWidth: 1, borderColor: colors.line },
   removeThumb: { position: "absolute", top: 3, right: 3, width: 20, height: 20, borderRadius: 10, backgroundColor: "rgba(0,0,0,0.6)", alignItems: "center", justifyContent: "center" },
   addThumb: { width: 76, height: 76, borderRadius: 10, borderWidth: 1, borderColor: colors.line, borderStyle: "dashed", alignItems: "center", justifyContent: "center", gap: 4, backgroundColor: colors.surface },

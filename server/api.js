@@ -23,12 +23,32 @@ import { clean, cleanEmail, isEmail, cleanName, isName, cleanHandle, isPassword,
 import { ApiError } from "./errors.js";
 import { createMediaPresign, mediaConfigured } from "./media.js";
 import {
+  assertPhotosMatchSelection,
+  assetIdsMatchingPostPhotos,
+  assetObjectRecords,
+  attachPostMedia,
+  cleanMediaAssetIds,
+  createMediaAsset,
+  createMediaVariant,
+  deleteMediaAssets,
+  finalizeMediaAsset,
+  finalizeMediaVariant,
+  mediaSelection,
+  ownedMediaAsset,
+  postMediaAssetIds,
+  postMediaState,
+  postMediaStateByPost,
+  replacePostMedia,
+  updateMediaAsset,
+} from "./mediaAssets.js";
+import {
   enqueueAllOwnedMedia,
+  enqueueOwnedMediaKeys,
   enqueueOwnedMediaUrls,
   enqueueOwnerMediaSweep,
   markOwnedMediaAssociated,
   mediaDeletionHealth,
-  recordMediaObjectTicket,
+  reserveMediaUploadTicket,
   unreferencedOwnedMediaUrls,
 } from "./mediaDeletion.js";
 import { discoverySidebar } from "./discovery.js";
@@ -53,6 +73,10 @@ import {
 import { wikidataProviderStatus } from "./wikidataChannels.js";
 import { backgroundJobEnabled } from "./backgroundJobs.js";
 import { backupSchedulerEnabled, offhostBackupConfigured } from "./backupScheduler.js";
+import {
+  mediaPublishingCapabilitiesForRuntime,
+  mediaPublishingSourceRequestAllowed,
+} from "../src/domain/mediaPublishingCapabilities.mjs";
 import { discoverChart, discoverCountries, discoverGenres, discoverOverview } from "./discoverService.js";
 import {
   applyModerationAction,
@@ -74,6 +98,9 @@ const uid = (p) => `${p}_${randomUUID().slice(0, 12)}`;
 const PROFILE_EXTRAS_MAX_BYTES = 8000;
 const CURRENT_TERMS_VERSION = "2026-08";
 const VENUE_PHOTO_CACHE_CONTROL = "public, max-age=3600, stale-while-revalidate=86400";
+const YOUTUBE_COLD_SEARCH_USER_DAILY_LIMIT = 5;
+const YOUTUBE_COLD_SEARCH_IP_DAILY_LIMIT = 20;
+const DAY_MS = 24 * 60 * 60 * 1000;
 const VENUE_PHOTO_LIMIT = 24;
 const VENUE_PHOTO_SOURCE = new URL("../src/seed/catalog.venue-photos.json", import.meta.url);
 let venuePhotoCatalog;
@@ -210,6 +237,44 @@ function finishPage(rows, limit) {
   return { rows: page, nextCursor: hasMore && page.length ? encodeCursor(page.at(-1)) : null };
 }
 
+function youtubeQuotaDay(value = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Los_Angeles",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(value);
+  const part = (type) => parts.find((entry) => entry.type === type)?.value || "00";
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
+
+function reserveYouTubeColdSearch(ctx, user) {
+  const day = youtubeQuotaDay();
+  const ipHash = createHash("sha256").update(String(ctx.ip || "unknown")).digest("hex").slice(0, 24);
+  // Fast process-local gates stop one account or network from hammering SQLite.
+  // The account allowance is also persisted below so a restart cannot reset it;
+  // raw IP addresses never enter SQLite.
+  if (!rateLimit(`yt-cold-user:${day}:${user.id}`, YOUTUBE_COLD_SEARCH_USER_DAILY_LIMIT, DAY_MS)
+      || !rateLimit(`yt-cold-ip:${day}:${ipHash}`, YOUTUBE_COLD_SEARCH_IP_DAILY_LIMIT, DAY_MS)) {
+    throw new ProviderError("YouTube", 429, "Your daily YouTube search allowance is used.", {
+      code: "search_actor_budget_exhausted",
+      retryable: false,
+    });
+  }
+  const prefix = `youtube_cold_user:${day}:`;
+  db.prepare("DELETE FROM app_meta WHERE key GLOB 'youtube_cold_user:*' AND key NOT GLOB ?").run(`${prefix}*`);
+  const reserved = db.prepare(`INSERT INTO app_meta (key,value) VALUES (?,'1')
+    ON CONFLICT(key) DO UPDATE SET value=MAX(0,CAST(app_meta.value AS INTEGER))+1
+      WHERE MAX(0,CAST(app_meta.value AS INTEGER)) < ?
+    RETURNING CAST(value AS INTEGER) AS used`).get(`${prefix}${user.id}`, YOUTUBE_COLD_SEARCH_USER_DAILY_LIMIT);
+  if (!reserved) {
+    throw new ProviderError("YouTube", 429, "Your daily YouTube search allowance is used.", {
+      code: "search_actor_budget_exhausted",
+      retryable: false,
+    });
+  }
+}
+
 function analyticsEventsRoute(ctx, { requireIds = false } = {}) {
   limit(ctx, "events-batch", 90, 10 * 60 * 1000);
   const events = Array.isArray(ctx.body?.events) ? ctx.body.events.slice(0, 40) : [];
@@ -241,6 +306,126 @@ function ownsArtist(u, key) {
   if (!u) return false;
   if (u.role === "admin") return true;
   return u.role === "artist" && (u.artist_name || "").trim().toLowerCase() === key;
+}
+
+const TOUR_DATE_BATCH_LIMIT = 50;
+const TOUR_DATE_PLACE_LIMIT = 180;
+const TOUR_DATE_RELEASE_HORIZON_MS = 3 * 366 * 24 * 60 * 60 * 1000;
+
+function tourDateJson(row) {
+  return {
+    id: row.id,
+    artist: row.artist,
+    venue: row.venue,
+    place: row.place,
+    lat: row.lat,
+    lng: row.lng,
+    date: row.date,
+    ticketUrl: row.ticket_url || "",
+    soldOut: !!row.sold_out,
+    source: row.source || null,
+    releaseAt: Number(row.release_at) || 0,
+    createdBy: row.owner_id || "import",
+  };
+}
+
+function visibleTourDateRows(viewer, { today = null, limit: rowLimit = 5000 } = {}) {
+  const dateSql = today ? "date>=? AND " : "";
+  const prefix = today ? [today] : [];
+  if (viewer?.role === "admin") {
+    return db.prepare(`SELECT * FROM tour_dates WHERE ${dateSql}1=1 ORDER BY date ASC,id ASC LIMIT ?`)
+      .all(...prefix, rowLimit);
+  }
+  if (viewer?.id) {
+    return db.prepare(`SELECT * FROM tour_dates WHERE ${dateSql}
+      (owner_id IS NULL OR release_at<=? OR owner_id=?) ORDER BY date ASC,id ASC LIMIT ?`)
+      .all(...prefix, now(), viewer.id, rowLimit);
+  }
+  return db.prepare(`SELECT * FROM tour_dates WHERE ${dateSql}
+    (owner_id IS NULL OR release_at<=?) ORDER BY date ASC,id ASC LIMIT ?`)
+    .all(...prefix, now(), rowLimit);
+}
+
+function cleanTourTicketUrl(value) {
+  if (value == null || value === "") return "";
+  if (typeof value !== "string") throw new ApiError(400, "Ticket URLs must be HTTPS links.", "VALIDATION_FAILED");
+  if ([...value].length > 1000) throw new ApiError(400, "That ticket URL is too long.", "VALIDATION_FAILED");
+  const cleaned = clean(value, { max: 1000 });
+  let parsed;
+  try { parsed = new URL(cleaned); }
+  catch { throw new ApiError(400, "Ticket URLs must be valid HTTPS links.", "VALIDATION_FAILED"); }
+  if (parsed.protocol !== "https:" || parsed.username || parsed.password || !parsed.hostname.includes(".")) {
+    throw new ApiError(400, "Ticket URLs must be safe HTTPS links.", "VALIDATION_FAILED");
+  }
+  parsed.hash = "";
+  const canonical = parsed.toString();
+  if (canonical.length > 1000) throw new ApiError(400, "That ticket URL is too long.", "VALIDATION_FAILED");
+  return canonical;
+}
+
+function cleanTourDateBatch(ctx, user) {
+  if (user.role !== "artist" && user.role !== "admin") {
+    throw new ApiError(403, "Approved artists or admins only.", "FORBIDDEN");
+  }
+  const input = ctx.body?.dates;
+  if (!Array.isArray(input) || !input.length || input.length > TOUR_DATE_BATCH_LIMIT) {
+    throw new ApiError(400, `Submit between 1 and ${TOUR_DATE_BATCH_LIMIT} tour dates.`, "VALIDATION_FAILED");
+  }
+  const requestedArtist = clean(ctx.body?.artist, { max: LIMITS.artist });
+  const ownedArtist = clean(user.artist_name, { max: LIMITS.artist });
+  const artist = user.role === "artist" ? ownedArtist : requestedArtist;
+  if (user.role === "admin" && (typeof ctx.body?.artist !== "string" || [...ctx.body.artist].length > LIMITS.artist)) {
+    throw new ApiError(400, "Choose a valid artist.", "VALIDATION_FAILED");
+  }
+  if (!artist || !/\p{L}|\p{N}/u.test(artist)) {
+    throw new ApiError(400, "Choose a valid artist.", "VALIDATION_FAILED");
+  }
+  if (user.role === "artist" && requestedArtist && normName(requestedArtist) !== normName(ownedArtist)) {
+    throw new ApiError(403, "Artist accounts can only publish their own tour dates.", "FORBIDDEN");
+  }
+  assertSafeAuthoredText(artist, { field: "artist name" });
+
+  const dates = input.map((entry, index) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new ApiError(400, `Tour date ${index + 1} is invalid.`, "VALIDATION_FAILED");
+    }
+    if (typeof entry.venue !== "string" || typeof entry.place !== "string"
+      || [...entry.venue].length > LIMITS.venue || [...entry.place].length > TOUR_DATE_PLACE_LIMIT) {
+      throw new ApiError(400, `Tour date ${index + 1} has an invalid venue or place.`, "VALIDATION_FAILED");
+    }
+    const venue = clean(entry.venue, { max: LIMITS.venue });
+    const place = clean(entry.place, { max: TOUR_DATE_PLACE_LIMIT });
+    const date = cleanDate(entry.date);
+    const ticketUrl = cleanTourTicketUrl(entry.ticketUrl);
+    if (!venue || !place || !date || !/\p{L}|\p{N}/u.test(venue) || !/\p{L}|\p{N}/u.test(place)) {
+      throw new ApiError(400, `Tour date ${index + 1} needs a valid venue, place, and date.`, "VALIDATION_FAILED");
+    }
+    assertSafeAuthoredFields({ venue, place });
+    return { venue, place, date, ticketUrl };
+  });
+  const naturalKeys = new Set();
+  for (const entry of dates) {
+    const key = `${normName(artist)}|${normName(entry.venue)}|${normName(entry.place)}|${entry.date}`;
+    if (naturalKeys.has(key)) throw new ApiError(400, "The batch contains the same show twice.", "VALIDATION_FAILED");
+    naturalKeys.add(key);
+  }
+
+  let releaseAt = 0;
+  if (ctx.body?.releaseAt != null && ctx.body.releaseAt !== "") {
+    const candidate = Number(ctx.body.releaseAt);
+    if (!Number.isSafeInteger(candidate) || candidate < 0) {
+      throw new ApiError(400, "Choose a valid release date.", "VALIDATION_FAILED");
+    }
+    if (candidate !== 0 && candidate <= now()) {
+      throw new ApiError(400, "Scheduled releases must be in the future.", "VALIDATION_FAILED");
+    }
+    if (candidate > 0) releaseAt = candidate;
+  }
+  const firstShowAt = Math.min(...dates.map((entry) => Date.parse(`${entry.date}T23:59:59.999Z`)));
+  if (releaseAt && (releaseAt > now() + TOUR_DATE_RELEASE_HORIZON_MS || releaseAt > firstShowAt)) {
+    throw new ApiError(400, "Release the dates before the first show and within three years.", "VALIDATION_FAILED");
+  }
+  return { artist, dates, releaseAt };
 }
 
 // Ensure a unique handle derived from a base string.
@@ -303,6 +488,27 @@ function clientMutationId(value) {
   const id = value.trim();
   if (!/^[A-Za-z0-9._:-]{8,120}$/.test(id)) throw new ApiError(400, "That post retry token is invalid.", "VALIDATION_FAILED");
   return id;
+}
+
+function chatClientMutationId(value) {
+  if (value == null || value === "") return null;
+  if (typeof value !== "string") throw new ApiError(400, "That message retry token is invalid.", "VALIDATION_FAILED");
+  const id = value.trim();
+  if (!/^[A-Za-z0-9_-]{8,100}$/.test(id)) {
+    throw new ApiError(400, "That message retry token is invalid.", "VALIDATION_FAILED");
+  }
+  return id;
+}
+
+function assertChatRetryMatches(existing, fields) {
+  if (!existing) return;
+  const samePayload = Object.entries(fields).every(([key, value]) => existing[key] === value);
+  if (!samePayload) {
+    throw new ApiError(409, "That retry token belongs to a different message.", "CONFLICT");
+  }
+  if (existing.removed) {
+    throw new ApiError(409, "That message was already removed. Send a new message instead.", "CONFLICT");
+  }
 }
 
 function stableMutationValue(value) {
@@ -488,8 +694,44 @@ function cleanPostTags(value) {
 // Harmless normalization changes (`false` vs `0`, display date vs ISO, numeric
 // strings vs numbers, trimmed text) are likewise stable, while a real authored
 // content change still conflicts.
+function requestedPostMediaSelection(user, source, storedPost = null) {
+  const assetIds = cleanMediaAssetIds(source?.mediaAssetIds);
+  if (assetIds === null) return null;
+  const selection = mediaSelection(db, {
+    ownerId: user.id,
+    assetIds,
+    currentPostId: storedPost?.id || null,
+  });
+  if (Object.prototype.hasOwnProperty.call(source || {}, "photos")) {
+    const supplied = cleanStringArray(source.photos, { maxItems: 8, maxLen: 2000 });
+    assertPhotosMatchSelection(supplied, selection);
+  }
+  return selection;
+}
+
+function isLegacyVideoUrl(value) {
+  if (typeof value !== "string" || !/^https?:\/\//i.test(value)) return false;
+  try {
+    // Match the same full-URI boundary used by feed/Clips display. Looking only
+    // at pathname lets `?format=.mp4` publish as a legacy image server-side and
+    // then mount as a video client-side without a durable poster.
+    new URL(value);
+    return /\.(mp4|webm|mov|m4v)(?:[?#]|$)/i.test(value);
+  } catch {
+    return false;
+  }
+}
+
+function rejectNewLegacyMediaUrls(nextPhotos, previousPhotos = []) {
+  const retained = new Set(Array.isArray(previousPhotos) ? previousPhotos : []);
+  if ((Array.isArray(nextPhotos) ? nextPhotos : []).some((url) => !retained.has(url))) {
+    throw new ApiError(400, "New post media must finish PIT's verified media upload and rendition flow before publishing.", "VALIDATION_FAILED");
+  }
+}
+
 function canonicalCreateRequest(user, body, storedPost = null) {
   const source = body && typeof body === "object" && !Array.isArray(body) ? body : {};
+  const stableMedia = requestedPostMediaSelection(user, source, storedPost);
   if (source.kind === "status") {
     const [errs, v] = shape(source, {
       review: { parse: (x) => clean(x, { max: LIMITS.review, newlines: true }) },
@@ -499,13 +741,15 @@ function canonicalCreateRequest(user, body, storedPost = null) {
     });
     if (errs.length) throw new ApiError(400, errs[0]);
     const playlist = playlistSnapshotForPost(user, source.playlistId, parsedStoredObject(storedPost?.playlist));
+    if (!stableMedia) rejectNewLegacyMediaUrls(v.photos || [], parseJsonArray(storedPost?.photos));
     const values = {
       review: v.review || "",
-      photos: v.photos || [],
+      photos: stableMedia ? stableMedia.photos : (v.photos || []),
       photosPublic: v.photosPublic ?? 1,
       landingShowcase: 0,
       song: v.song || null,
       playlist,
+      mediaSelection: stableMedia,
     };
     assertSafeAuthoredFields({
       post: values.review,
@@ -532,6 +776,7 @@ function canonicalCreateRequest(user, body, storedPost = null) {
         dims: {},
         review: values.review,
         photos: values.photos,
+        mediaAssetIds: stableMedia?.ids || [],
         photosPublic: values.photosPublic,
         landingShowcase: 0,
         setlist: [],
@@ -563,7 +808,8 @@ function canonicalCreateRequest(user, body, storedPost = null) {
   });
   if (errs.length) throw new ApiError(400, errs[0]);
   const binding = resolveArtistBinding(v.artist, source.artistKey);
-  const photos = v.photos || [];
+  if (!stableMedia) rejectNewLegacyMediaUrls(v.photos || [], parseJsonArray(storedPost?.photos));
+  const photos = stableMedia ? stableMedia.photos : (v.photos || []);
   const requestedLandingShowcase = v.photosPublic === 0 ? 0 : (v.landingShowcase ?? 0);
   const landingShowcase = requestedLandingShowcase && hasTrustedLandingImage(photos, {
     authorId: user.id,
@@ -588,6 +834,7 @@ function canonicalCreateRequest(user, body, storedPost = null) {
     tags: v.tags || [],
     song: v.song || null,
     binding,
+    mediaSelection: stableMedia,
   };
   assertSafeAuthoredFields({
     artist: values.artist,
@@ -617,6 +864,7 @@ function canonicalCreateRequest(user, body, storedPost = null) {
       dims: values.dims,
       review: values.review,
       photos: values.photos,
+      mediaAssetIds: stableMedia?.ids || [],
       photosPublic: values.photosPublic,
       landingShowcase: values.landingShowcase,
       setlist: values.setlist,
@@ -655,6 +903,7 @@ function canonicalStoredPost(row) {
     dims: kind === "status" ? {} : dims,
     review: clean(row?.review, { max: LIMITS.review, newlines: true }),
     photos: cleanStringArray(parseJsonArray(row?.photos), { maxItems: 8, maxLen: 2000 }),
+    mediaAssetIds: row?.id ? postMediaAssetIds(db, row.id) : [],
     photosPublic: row?.photos_public ? 1 : 0,
     landingShowcase: kind === "review" && row?.landing_showcase ? 1 : 0,
     setlist: kind === "status" ? [] : cleanStringArray(parseJsonArray(row?.setlist), { maxItems: 40, maxLen: 120 }),
@@ -800,6 +1049,8 @@ function reportableTargetFor(user, targetType, targetId) {
 }
 
 function postJson(p, viewerId) {
+  const stableMedia = postMediaState(db, p.id, { ownerId: viewerId || null });
+  const media = stableMedia.assets;
   return {
     id: p.id,
     userId: p.user_id,
@@ -811,7 +1062,16 @@ function postJson(p, viewerId) {
     // degrade that field, not throw while building the page and take the whole
     // feed down with it.
     overall: p.overall, band: p.band, room: p.room, dims: parseJsonObject(p.dims), review: p.review,
-    photos: parseJsonArray(p.photos), photosPublic: !!p.photos_public,
+    // A stable descriptor is the publication authority. If its verified
+    // rendition/source becomes unavailable, do not let the denormalized legacy
+    // URL column bypass that fail-closed state. Historical URL-only rows have no
+    // post_media links and continue to project exactly as before.
+    photos: stableMedia.linkedAssetIds.length ? media.map((asset) => asset.url) : parseJsonArray(p.photos),
+    photosPublic: !!p.photos_public,
+    // New clients get stable, poster-aware descriptors. Legacy posts simply
+    // return an empty list and continue to render from `photos` unchanged.
+    media,
+    mediaAssetIds: media.map((asset) => asset.id),
     // Separate homepage consent is owner-only account state, not social proof.
     ...(viewerId === p.user_id ? { landingShowcase: !!p.landing_showcase } : {}),
     setlist: parseJsonArray(p.setlist),
@@ -943,7 +1203,7 @@ function cleanMediaReactionUrl(value) {
 // route table: "METHOD /path" -> handler(ctx) ; :params exposed as ctx.params
 export const routes = {
   // ---- health ---- (youtube config flag is a safe diagnostic, no secrets)
-  "GET /api/health": () => {
+  "GET /api/health": (ctx = {}) => {
     let database = false;
     try { database = db.prepare("SELECT 1 AS ok").get()?.ok === 1; } catch {}
     if (!database) throw new ApiError(503, "The database is not ready.", "DATABASE_UNAVAILABLE");
@@ -959,18 +1219,30 @@ export const routes = {
     const bootstrapAllowed = production && ["1", "true", "yes", "on"].includes(
       String(process.env.PIT_ALLOW_EMPTY_DB_BOOTSTRAP || "").trim().toLowerCase(),
     );
+    const staffHealth = !!ctx.user
+      && !ctx.user.is_banned
+      && !(ctx.user.suspended_until && ctx.user.suspended_until > now())
+      && (ctx.user.role === "admin" || ctx.user.role === "moderator");
     return {
       ok: database,
       ts: now(),
       uptimeSeconds: Math.round(process.uptime()),
       commit: String(process.env.RENDER_GIT_COMMIT || "").slice(0, 12) || null,
       youtube: !!process.env.YOUTUBE_API_KEY,
+      // Public booleans only: clients use this projection to hide publishing
+      // paths whose authoritative server-side renderer is not deployed yet.
+      capabilities: {
+        mediaPublishing: mediaPublishingCapabilitiesForRuntime(process.env),
+      },
       services: {
         database,
         storageConfigured,
         storage: { configured: storageConfigured, databaseFilePresent, bootstrapAllowed },
         youtubeConfigured: !!process.env.YOUTUBE_API_KEY,
-        youtubeLookup: youtubeProviderStatus(),
+        // Daily quota remaining, circuit state, and efficiency counters are
+        // operational intelligence. Public health keeps only the configured
+        // boolean above; active staff receive the detailed projection.
+        ...(staffHealth ? { youtubeLookup: youtubeProviderStatus() } : {}),
         wikidataLookup: wikidataProviderStatus(),
         tourProviderConfigured: !!(process.env.TICKETMASTER_KEY || process.env.BANDSINTOWN_APP_ID),
         tourDates: db.prepare("SELECT COUNT(*) c FROM tour_dates").get().c,
@@ -994,14 +1266,103 @@ export const routes = {
   "POST /api/media/presign": (ctx) => {
     const u = requireUser(ctx);
     limit(ctx, "media-presign", 30, 10 * 60 * 1000);
+    const legacyPurpose = String(ctx.body?.purpose || "").trim().toLowerCase();
+    const legacyType = String(ctx.body?.contentType || "").split(";", 1)[0].trim().toLowerCase();
+    if (legacyPurpose === "post") {
+      throw new ApiError(400, "New post media must use PIT's verified media asset flow.", "VALIDATION_FAILED");
+    }
+    if (legacyType.startsWith("video/")) {
+      throw new ApiError(415, "New video must use PIT's verified clip and cover-frame flow.", "MEDIA_TYPE_UNSUPPORTED");
+    }
     const ticket = createMediaPresign({ userId: u.id, body: ctx.body });
     // Record the exact owner/key before the client can upload. An object that is
     // uploaded but never attached to a post/profile is then still erasable with
     // the account, without listing the bucket or trusting a client URL.
-    if (!recordMediaObjectTicket(db, { ownerId: u.id, objectKey: ticket.key, at: now(), expiresAt: ticket.expiresAt })) {
-      throw new ApiError(502, "Photo upload could not be prepared. Try again.", "MEDIA_UPLOAD_FAILED");
-    }
+    reserveMediaUploadTicket(db, {
+      ownerId: u.id,
+      objectKey: ticket.key,
+      byteSize: ticket.fileSize,
+      at: now(),
+      expiresAt: ticket.expiresAt,
+    });
     return ticket;
+  },
+
+  // Versioned media assets are additive to the legacy URL-only upload route.
+  // The server mints both the stable asset identity and its original source
+  // location; a caller can never register an arbitrary public URL as PIT media.
+  "POST /api/media/assets": (ctx) => {
+    const u = requireUser(ctx);
+    limit(ctx, "media-asset-create", 30, 10 * 60 * 1000);
+    if (!mediaPublishingSourceRequestAllowed(ctx.body, process.env)) {
+      // Enforce the runtime capability before createMediaAsset can reserve a
+      // ledger row or sign an R2 PUT. Stale/direct clients therefore receive
+      // the same fail-closed production boundary as the composer.
+      throw new ApiError(
+        415,
+        "New clip publishing is being prepared. Existing clips remain viewable; photos can still be published.",
+        "MEDIA_TYPE_UNSUPPORTED",
+      );
+    }
+    return createMediaAsset(db, { ownerId: u.id, body: ctx.body, at: now() });
+  },
+
+  // Finalization is intentionally asynchronous: a signed HEAD confirms the
+  // ticket MIME/length. Clips then receive bounded, generation-bound MP4 table
+  // and sample preflight, but remain unavailable because this runtime has no
+  // authoritative full decoder/transcoder. Image pixels/dimensions remain
+  // client-declared until an authoritative image probe exists.
+  "POST /api/media/assets/:id/finalize": async (ctx) => {
+    const u = requireUser(ctx);
+    limit(ctx, "media-asset-finalize", 60, 10 * 60 * 1000);
+    return finalizeMediaAsset(db, {
+      ownerId: u.id,
+      assetId: ctx.params.id,
+      body: ctx.body,
+      at: now(),
+    });
+  },
+
+  "GET /api/media/assets/:id": (ctx) => {
+    const u = requireUser(ctx);
+    limit(ctx, "media-asset-read", 240, 10 * 60 * 1000);
+    const asset = ownedMediaAsset(db, { ownerId: u.id, assetId: ctx.params.id, renew: true, at: now() });
+    if (!asset) throw new ApiError(404, "That media item was not found.", "NOT_FOUND");
+    return { asset };
+  },
+
+  "PATCH /api/media/assets/:id": (ctx) => {
+    const u = requireUser(ctx);
+    limit(ctx, "media-asset-update", 60, 10 * 60 * 1000);
+    return updateMediaAsset(db, {
+      ownerId: u.id,
+      assetId: ctx.params.id,
+      body: ctx.body,
+      at: now(),
+    });
+  },
+
+  "POST /api/media/assets/:id/variants": (ctx) => {
+    const u = requireUser(ctx);
+    limit(ctx, "media-variant-create", 30, 10 * 60 * 1000);
+    return createMediaVariant(db, {
+      ownerId: u.id,
+      assetId: ctx.params.id,
+      body: ctx.body,
+      at: now(),
+    });
+  },
+
+  "POST /api/media/assets/:id/variants/:variantId/finalize": async (ctx) => {
+    const u = requireUser(ctx);
+    limit(ctx, "media-variant-finalize", 60, 10 * 60 * 1000);
+    return finalizeMediaVariant(db, {
+      ownerId: u.id,
+      assetId: ctx.params.id,
+      variantId: ctx.params.variantId,
+      body: ctx.body,
+      at: now(),
+    });
   },
 
   // ---- per-photo reactions (the full-screen media viewer) ----
@@ -1199,14 +1560,44 @@ export const routes = {
   "GET /api/artists/photos": (ctx) => {
     const name = clean(ctx.query.name, { max: 120 });
     if (!name) throw new ApiError(400, "Missing name.");
-    const rows = db.prepare(`SELECT p.id, p.user_id, p.photos, p.created_at, u.name AS by FROM posts p JOIN users u ON u.id = p.user_id
-      WHERE LOWER(p.artist) = LOWER(?) AND p.removed = 0 AND p.photos_public = 1 AND p.photos != '[]'
-      ORDER BY p.created_at DESC LIMIT 40`).all(name);
+    limit(ctx, "artist-photos", 120, 10 * 60 * 1000);
+    const viewerId = ctx.user?.id || null;
+    const requestedArtistKey = normName(clean(ctx.query.artistKey, { max: 120 }));
+    const identitySql = requestedArtistKey ? "p.artist_key=?" : "LOWER(p.artist)=LOWER(?)";
+    const blockSql = viewerId ? `AND NOT EXISTS (SELECT 1 FROM blocks b WHERE
+      (b.blocker_id=? AND b.blocked_id=p.user_id) OR (b.blocker_id=p.user_id AND b.blocked_id=?))` : "";
+    const args = [requestedArtistKey || name, now()];
+    if (viewerId) args.push(viewerId, viewerId);
+    const rows = db.prepare(`SELECT p.id,p.user_id,p.photos,p.created_at,u.name AS by
+      FROM posts p JOIN users u ON u.id=p.user_id
+      WHERE ${identitySql} AND p.removed=0 AND p.photos_public=1 AND p.photos!='[]'
+        AND u.is_banned=0 AND (u.suspended_until IS NULL OR u.suspended_until<=?) ${blockSql}
+      ORDER BY p.created_at DESC,p.id DESC LIMIT 40`).all(...args);
+    const stableMedia = postMediaStateByPost(db, rows.map((row) => row.id));
     const photos = [];
     for (const r of rows) {
       let list = []; try { list = JSON.parse(r.photos || "[]"); } catch {}
-      for (const uri of list) {
-        if (typeof uri === "string" && /^https?:\/\//i.test(uri)) photos.push({ uri, by: r.by, postId: r.id, userId: r.user_id, at: r.created_at });
+      const projectedAssets = stableMedia.assetsByPost.get(r.id) || [];
+      const stableByUrl = new Map(projectedAssets
+        .map((asset) => [asset.url, asset]));
+      const publishableUris = stableMedia.linkedPostIds.has(r.id)
+        ? projectedAssets.map((asset) => asset.url)
+        : list;
+      for (const uri of publishableUris) {
+        if (typeof uri === "string" && /^https?:\/\//i.test(uri)) {
+          const asset = stableByUrl.get(uri);
+          photos.push({
+            uri,
+            posterUrl: asset?.posterUrl || null,
+            posterTimeMs: asset?.posterTimeMs ?? null,
+            kind: asset?.kind || (isLegacyVideoUrl(uri) ? "video" : "image"),
+            altText: asset?.altText || "",
+            by: r.by,
+            postId: r.id,
+            userId: r.user_id,
+            at: r.created_at,
+          });
+        }
         if (photos.length >= 30) break;
       }
       if (photos.length >= 30) break;
@@ -1235,7 +1626,25 @@ export const routes = {
     const pinned = db.prepare("SELECT video_id FROM track_overrides WHERE key=?").get(trackOverrideKey(title, artist));
     if (pinned) return { videoId: pinned.video_id || null, status: pinned.video_id ? "pinned" : "confirmed_unavailable" };
     const duration = Math.max(0, Math.min(24 * 60 * 60, Number(ctx.query.duration) || 0));
-    try { return await resolveYouTubeTrack(title, artist, { expectedDurationSec: duration }); }
+    try {
+      // Anonymous listeners retain pinned, positive/negative cache, Wikidata,
+      // and artist-catalogue playback. Only a path that would actually reach
+      // search.list crosses the verified-account demand boundary below.
+      const withoutSearch = await resolveYouTubeTrack(title, artist, {
+        expectedDurationSec: duration,
+        allowSearch: false,
+      });
+      if (withoutSearch.status !== "search_deferred") return withoutSearch;
+      if (!ctx.user) return { videoId: null, status: "search_login_required", retryable: false };
+      const user = requireUser(ctx);
+      if (!user.email_verified_at) {
+        return { videoId: null, status: "search_verification_required", retryable: false };
+      }
+      return await resolveYouTubeTrack(title, artist, {
+        expectedDurationSec: duration,
+        beforeSearch: () => reserveYouTubeColdSearch(ctx, user),
+      });
+    }
     catch (error) {
       if (error instanceof ProviderError) return { videoId: null, status: error.code, retryable: error.retryable };
       throw error;
@@ -1347,12 +1756,15 @@ export const routes = {
   // The latest track from each person you follow, most recent first.
   "GET /api/plays/friends": (ctx) => {
     const u = requireUser(ctx);
+    const at = now();
     const rows = db.prepare(`
       SELECT p.user_id, p.title, p.artist, p.url, p.art, p.created_at,
         us.name u_name, us.handle u_handle, us.initials u_initials, us.avatar_uri u_avatar, us.avatar_color u_color, us.verified u_verified, us.role u_role
       FROM plays p JOIN users us ON us.id = p.user_id
       WHERE p.user_id IN (SELECT followee_id FROM follows WHERE follower_id=?)
-      ORDER BY p.created_at DESC LIMIT 200`).all(u.id);
+        AND us.is_banned=0
+        AND (us.suspended_until IS NULL OR us.suspended_until<=?)
+      ORDER BY p.created_at DESC LIMIT 200`).all(u.id, at);
     const seen = new Set();
     const out = [];
     for (const r of rows) {
@@ -1375,7 +1787,12 @@ export const routes = {
     const tracks = cleanPlaylistTracks(ctx.body?.tracks, { allowEmpty: false });
     if (!tracks) throw new ApiError(400, "A playlist needs at least one song.", "VALIDATION_FAILED");
     assertSafePlaylistContent(name, tracks);
-    const visibility = cleanPlaylistVisibility(ctx.body?.visibility);
+    let visibility = "public";
+    if (Object.prototype.hasOwnProperty.call(ctx.body || {}, "visibility")) {
+      const requested = clean(ctx.body.visibility, { max: 20 });
+      if (!PLAYLIST_VISIBILITIES.has(requested)) throw new ApiError(400, "Choose public, unlisted, or private.", "VALIDATION_FAILED");
+      visibility = requested;
+    }
     const id = uid("pls");
     const createdAt = now();
     db.prepare("INSERT INTO playlists (id,user_id,name,tracks,visibility,created_at,updated_at) VALUES (?,?,?,?,?,?,?)").run(id, u.id, name, JSON.stringify(tracks), visibility, createdAt, createdAt);
@@ -1814,12 +2231,14 @@ export const routes = {
       exportedAt: new Date().toISOString(),
       exportNotes: [
         "Password hashes, reset credentials, provider tokens, session cookies, raw IP addresses, and user-agent strings are intentionally excluded.",
-        "Uploaded media files are represented by the URLs attached to exported records; storage-provider audit metadata is not part of the account export.",
+        "Uploaded media files are represented by attached URLs and stable media descriptors; storage-provider audit metadata is not part of the account export.",
         "This synchronous export includes all current feed preferences plus up to 300 plays, 1,000 sent and received messages, 200 notifications, and 5,000 activity events. A queued archive job is required before production-scale launch.",
       ],
       profile: publicUser(u, { self: true }),
       posts: db.prepare("SELECT * FROM posts WHERE user_id=? ORDER BY created_at DESC").all(u.id)
         .map((p) => ({ id: p.id, kind: p.kind || "review", artist: p.artist, venue: p.venue, city: p.city, date: p.date, overall: p.overall, band: p.band, room: p.room, review: p.review, tour: p.tour, setlist: json(p.setlist, []), photos: json(p.photos, []), photosPublic: !!p.photos_public, landingShowcase: !!p.landing_showcase, song: json(p.song, null), playlist: json(p.playlist, null), removed: !!p.removed, createdAt: p.created_at })),
+      mediaAssets: db.prepare("SELECT id FROM media_assets WHERE owner_id=? ORDER BY created_at DESC").all(u.id)
+        .map((row) => ownedMediaAsset(db, { ownerId: u.id, assetId: row.id })).filter(Boolean),
       comments: db.prepare("SELECT post_id, text, removed, created_at FROM comments WHERE user_id=? ORDER BY created_at DESC").all(u.id)
         .map((c) => ({ postId: c.post_id, text: c.text, removed: !!c.removed, createdAt: c.created_at })),
       likedPosts: db.prepare("SELECT post_id FROM likes WHERE user_id=?").all(u.id).map((r) => r.post_id),
@@ -1969,18 +2388,65 @@ export const routes = {
     return { ok: true };
   },
 
-  // ---- tour dates (scraped into the DB by server/tourdates.js) ----
-  "GET /api/discovery/sidebar": (ctx) => discoverySidebar(ctx.user),
-
-  "GET /api/tourdates": () => {
-    const rows = db.prepare("SELECT * FROM tour_dates ORDER BY date ASC LIMIT 5000").all();
+  // ---- authoritative tour dates (provider imports + artist/admin batches) ----
+  "GET /api/discovery/sidebar": (ctx) => {
+    const result = discoverySidebar(ctx.user);
+    const at = now();
+    const today = new Date(at).toISOString().slice(0, 10);
+    const visible = visibleTourDateRows(ctx.user, { today });
+    const visibleById = new Map(visible.map((row) => [row.id, row]));
+    const visibleVenues = new Map();
+    for (const row of visible) {
+      const key = `${normName(row.venue)}|${normName(row.place)}`;
+      visibleVenues.set(key, (visibleVenues.get(key) || 0) + 1);
+    }
     return {
-      tourDates: rows.map((r) => ({
-        id: r.id, artist: r.artist, venue: r.venue, place: r.place,
-        lat: r.lat, lng: r.lng, date: r.date, ticketUrl: r.ticket_url,
-        soldOut: !!r.sold_out, source: r.source, releaseAt: 0, createdBy: "import",
-      })),
+      ...result,
+      upcomingEvents: (result.upcomingEvents || []).flatMap((event) => {
+        const row = visibleById.get(event.id);
+        return row ? [{ ...event, ...tourDateJson(row) }] : [];
+      }),
+      trendingVenues: (result.trendingVenues || []).flatMap((venue) => {
+        const upcoming = visibleVenues.get(`${normName(venue.name)}|${normName(venue.place)}`);
+        return upcoming ? [{ ...venue, upcoming }] : [];
+      }),
+      source: { ...(result.source || {}), tourDates: visible.length },
     };
+  },
+
+  "GET /api/tourdates": (ctx) => {
+    const rows = visibleTourDateRows(ctx.user);
+    return {
+      tourDates: rows.map(tourDateJson),
+    };
+  },
+
+  "POST /api/tourdates": (ctx) => {
+    const user = requireUser(ctx);
+    limit(ctx, "tour-date-batch", 20, 60 * 60 * 1000);
+    const batch = cleanTourDateBatch(ctx, user);
+    const writtenAt = now();
+    const source = user.role === "artist" ? "artist-submitted" : "admin-submitted";
+    const rows = atomicWrite(() => batch.dates.map((entry) => {
+      const existing = db.prepare(`SELECT id FROM tour_dates
+        WHERE owner_id=? AND lower(artist)=lower(?) AND lower(venue)=lower(?)
+          AND lower(place)=lower(?) AND date=? LIMIT 1`)
+        .get(user.id, batch.artist, entry.venue, entry.place, entry.date);
+      const updatedAt = Math.max(writtenAt, Date.parse(`${entry.date}T00:00:00.000Z`) || writtenAt);
+      const id = existing?.id || uid("td");
+      if (existing) {
+        db.prepare(`UPDATE tour_dates SET artist=?,venue=?,place=?,lat=NULL,lng=NULL,ticket_url=?,sold_out=0,
+          source=?,updated_at=?,release_at=? WHERE id=? AND owner_id=?`)
+          .run(batch.artist, entry.venue, entry.place, entry.ticketUrl, source, updatedAt, batch.releaseAt, id, user.id);
+      } else {
+        db.prepare(`INSERT INTO tour_dates
+          (id,artist,venue,place,lat,lng,date,ticket_url,sold_out,source,updated_at,owner_id,release_at)
+          VALUES (?,?,?,?,NULL,NULL,?,?,0,?,?,?,?)`)
+          .run(id, batch.artist, entry.venue, entry.place, entry.date, entry.ticketUrl, source, updatedAt, user.id, batch.releaseAt);
+      }
+      return db.prepare("SELECT * FROM tour_dates WHERE id=?").get(id);
+    }));
+    return { tourDates: rows.map(tourDateJson) };
   },
 
   // ---- feed / posts ----
@@ -2210,6 +2676,7 @@ export const routes = {
           "{}", v.review, JSON.stringify(v.photos), v.photosPublic, 0, "[]", null,
           "[]", "status", v.song ? JSON.stringify(v.song) : null, v.playlist ? JSON.stringify(v.playlist) : null, null, null, null, mutationId, mutationHash, now());
         markOwnedMediaAssociated(db, { ownerId: u.id, urls: v.photos, at: now() });
+        if (v.mediaSelection) attachPostMedia(db, { postId: id, ownerId: u.id, selection: v.mediaSelection, at: now() });
       });
       return { id, post: postJson(feedPostById.get(id), u.id) };
     }
@@ -2222,6 +2689,7 @@ export const routes = {
         JSON.stringify(v.tags), "review", v.song ? JSON.stringify(v.song) : null, null,
         v.binding.artist_key, v.binding.artist_mbid, venueBinding(v.venue), mutationId, mutationHash, now());
       markOwnedMediaAssociated(db, { ownerId: u.id, urls: v.photos, at: now() });
+      if (v.mediaSelection) attachPostMedia(db, { postId: id, ownerId: u.id, selection: v.mediaSelection, at: now() });
     });
     return { id, post: postJson(feedPostById.get(id), u.id) };
   },
@@ -2239,7 +2707,7 @@ export const routes = {
 
     const body = ctx.body && typeof ctx.body === "object" && !Array.isArray(ctx.body) ? ctx.body : {};
     const has = (key) => Object.prototype.hasOwnProperty.call(body, key);
-    const editable = ["artist", "artistKey", "venue", "city", "date", "overall", "band", "room", "dims", "review", "photos", "photosPublic", "landingShowcase", "setlist", "tour", "tags", "song", "playlistId"];
+    const editable = ["artist", "artistKey", "venue", "city", "date", "overall", "band", "room", "dims", "review", "photos", "mediaAssetIds", "photosPublic", "landingShowcase", "setlist", "tour", "tags", "song", "playlistId"];
     if (!editable.some(has)) throw new ApiError(400, "Make a change before saving this post.", "VALIDATION_FAILED");
 
     // Optimistic concurrency prevents two devices (or an old open edit sheet)
@@ -2295,9 +2763,23 @@ export const routes = {
       next.dims = JSON.stringify(dims);
     }
 
-    if (has("photos")) {
+    let editedMediaSelection = null;
+    if (has("mediaAssetIds")) {
+      const ids = cleanMediaAssetIds(body.mediaAssetIds, { optional: false });
+      editedMediaSelection = mediaSelection(db, { ownerId: u.id, assetIds: ids, currentPostId: current.id });
+      if (has("photos")) {
+        if (!Array.isArray(body.photos) || body.photos.some((item) => typeof item !== "string")) {
+          throw new ApiError(400, "photos is invalid", "VALIDATION_FAILED");
+        }
+        assertPhotosMatchSelection(cleanStringArray(body.photos, { maxItems: 8, maxLen: 2000 }), editedMediaSelection);
+      }
+      next.photos = JSON.stringify(editedMediaSelection.photos);
+    }
+    if (has("photos") && !has("mediaAssetIds")) {
       if (!Array.isArray(body.photos) || body.photos.some((item) => typeof item !== "string")) throw new ApiError(400, "photos is invalid", "VALIDATION_FAILED");
-      next.photos = JSON.stringify(cleanStringArray(body.photos, { maxItems: 8, maxLen: 2000 }));
+      const legacyPhotos = cleanStringArray(body.photos, { maxItems: 8, maxLen: 2000 });
+      rejectNewLegacyMediaUrls(legacyPhotos, parseJsonArray(current.photos));
+      next.photos = JSON.stringify(legacyPhotos);
     }
     if (has("photosPublic")) {
       if (typeof body.photosPublic === "boolean") next.photos_public = body.photosPublic ? 1 : 0;
@@ -2378,6 +2860,13 @@ export const routes = {
     const editedAt = Math.max(now(), currentVersion + 1);
     const previousPhotos = parseJsonArray(current.photos);
     const removedPhotos = previousPhotos.filter((value) => !storedPhotos.includes(value));
+    // An older client may edit a post that already has stable media while only
+    // sending the legacy URL array. Preserve any linked assets whose publish URL
+    // is still present and detach only the ones it actually removed.
+    if (!has("mediaAssetIds") && has("photos") && postMediaAssetIds(db, current.id).length) {
+      const retainedIds = assetIdsMatchingPostPhotos(db, { postId: current.id, photos: storedPhotos });
+      editedMediaSelection = mediaSelection(db, { ownerId: u.id, assetIds: retainedIds, currentPostId: current.id });
+    }
     // Re-resolve the binding on every edit: renaming the artist must move the
     // review to that artist's page, and retyping it as free text must drop the
     // binding rather than leave the post pointing at the previous entity.
@@ -2385,14 +2874,46 @@ export const routes = {
       ? { artist_key: null, artist_mbid: null }
       : resolveArtistBinding(next.artist, has("artistKey") ? body.artistKey : current.artist_key);
     atomicWrite(() => {
-      db.prepare(`UPDATE posts SET artist=?,venue=?,city=?,date=?,overall=?,band=?,room=?,dims=?,review=?,photos=?,photos_public=?,landing_showcase=?,setlist=?,tour=?,tags=?,song=?,playlist=?,artist_key=?,artist_mbid=?,venue_key=?,updated_at=? WHERE id=?`)
+      const updated = db.prepare(`UPDATE posts SET artist=?,venue=?,city=?,date=?,overall=?,band=?,room=?,dims=?,review=?,photos=?,photos_public=?,landing_showcase=?,setlist=?,tour=?,tags=?,song=?,playlist=?,artist_key=?,artist_mbid=?,venue_key=?,updated_at=?
+        WHERE id=? AND user_id=? AND removed=0 AND COALESCE(updated_at,created_at)=?`)
         .run(next.artist, next.venue, next.city, next.date, next.overall, next.band, next.room, next.dims, next.review, next.photos, next.photos_public, next.landing_showcase, next.setlist, next.tour, next.tags, next.song, next.playlist,
-          editBinding.artist_key, editBinding.artist_mbid, current.kind === "status" ? null : venueBinding(next.venue), editedAt, current.id);
+          editBinding.artist_key, editBinding.artist_mbid, current.kind === "status" ? null : venueBinding(next.venue), editedAt, current.id, u.id, currentVersion);
+      if (Number(updated.changes || 0) !== 1) {
+        throw new ApiError(409, "This review changed on another screen. Refresh before saving again.", "CONFLICT");
+      }
       markOwnedMediaAssociated(db, { ownerId: u.id, urls: storedPhotos, at: now() });
+      let detachedAssetObjects = [];
+      let detachedAssetIds = [];
+      if (editedMediaSelection) {
+        detachedAssetIds = replacePostMedia(db, {
+          postId: current.id,
+          ownerId: u.id,
+          selection: editedMediaSelection,
+          at: now(),
+        });
+        detachedAssetObjects = assetObjectRecords(db, detachedAssetIds);
+      }
       const deletable = unreferencedOwnedMediaUrls(db, { ownerId: u.id, urls: removedPhotos });
       enqueueOwnedMediaUrls(db, { ownerId: u.id, urls: deletable, at: now() });
+      const detachedAssetUrls = detachedAssetObjects.map((object) => object.publicUrl);
+      const deletableAssetUrls = unreferencedOwnedMediaUrls(db, { ownerId: u.id, urls: detachedAssetUrls });
+      const deletableAssetUrlSet = new Set(deletableAssetUrls);
+      const detachedAssetKeys = detachedAssetObjects
+        .filter((object) => deletableAssetUrlSet.has(object.publicUrl)).map((object) => object.objectKey);
+      const queuedDetachedAssets = enqueueOwnedMediaKeys(db, {
+        ownerId: u.id,
+        keys: detachedAssetKeys,
+        at: now(),
+      });
+      if (queuedDetachedAssets.accepted !== new Set(detachedAssetKeys).size) {
+        throw new ApiError(409, "That media changed while it was being removed. Refresh and try again.", "CONFLICT");
+      }
+      // The stable descriptor no longer belongs to this post. Remove it even if
+      // an old URL-only post still references one rendition; the object ledger
+      // retains that still-referenced object while unused source/variants queue.
+      deleteMediaAssets(db, detachedAssetIds);
       const deleteReaction = db.prepare("DELETE FROM media_reactions WHERE media_url=?");
-      for (const mediaUrl of deletable) deleteReaction.run(mediaUrl);
+      for (const mediaUrl of new Set([...deletable, ...deletableAssetUrls])) deleteReaction.run(mediaUrl);
     });
     return { post: postJson(feedPostById.get(current.id), u.id) };
   },
@@ -2425,7 +2946,10 @@ export const routes = {
     const post = db.prepare("SELECT id,user_id,photos,removed FROM posts WHERE id=?").get(ctx.params.id);
     if (!post || post.user_id !== u.id) throw new ApiError(404, "That post is no longer available.", "NOT_FOUND");
     const attached = parseJsonArray(post.photos);
-    if (!post.removed || attached.length) {
+    const stableAssetIds = postMediaAssetIds(db, post.id);
+    const stableAssetObjects = assetObjectRecords(db, stableAssetIds);
+    const stableAssetUrls = stableAssetObjects.map((object) => object.publicUrl);
+    if (!post.removed || attached.length || stableAssetIds.length) {
       atomicWrite(() => {
         // Author deletion is irreversible content deletion, unlike a moderator's
         // reversible soft hide. Scrub the media association in the same commit
@@ -2434,8 +2958,22 @@ export const routes = {
           WHERE id=? AND user_id=?`).run(post.id, u.id);
         const deletable = unreferencedOwnedMediaUrls(db, { ownerId: u.id, urls: attached });
         enqueueOwnedMediaUrls(db, { ownerId: u.id, urls: deletable, at: now() });
+        const deletableAssetUrls = unreferencedOwnedMediaUrls(db, { ownerId: u.id, urls: stableAssetUrls });
+        const deletableAssetUrlSet = new Set(deletableAssetUrls);
+        const stableAssetKeys = stableAssetObjects
+          .filter((object) => deletableAssetUrlSet.has(object.publicUrl)).map((object) => object.objectKey);
+        const queuedStableAssets = enqueueOwnedMediaKeys(db, {
+          ownerId: u.id,
+          keys: stableAssetKeys,
+          at: now(),
+        });
+        if (queuedStableAssets.accepted !== new Set(stableAssetKeys).size) {
+          throw new ApiError(409, "That media changed while it was being removed. Refresh and try again.", "CONFLICT");
+        }
+        db.prepare("DELETE FROM post_media WHERE post_id=?").run(post.id);
+        deleteMediaAssets(db, stableAssetIds);
         const deleteReaction = db.prepare("DELETE FROM media_reactions WHERE media_url=?");
-        for (const mediaUrl of deletable) deleteReaction.run(mediaUrl);
+        for (const mediaUrl of new Set([...deletable, ...deletableAssetUrls])) deleteReaction.run(mediaUrl);
         if (!post.removed) moderationRecord(ctx, "delete", "post", post.id, "author deleted", { removed: false }, { removed: true });
       });
     }
@@ -2622,7 +3160,6 @@ export const routes = {
 
   "POST /api/dms/:otherId": (ctx) => {
     const u = requireUser(ctx);
-    limit(ctx, "dm", 120, 10 * 60 * 1000);
     const other = ctx.params.otherId;
     if (other === u.id) throw new ApiError(400, "You can't message yourself.");
     if (!q.userById.get(other)) throw new ApiError(404, "No such user.");
@@ -2630,8 +3167,29 @@ export const routes = {
     const text = clean(ctx.body?.text, { max: LIMITS.message, newlines: true });
     if (!text) throw new ApiError(400, "Say something first.");
     assertSafeAuthoredText(text, { field: "message" });
+    const mutationId = chatClientMutationId(ctx.body?.clientMutationId);
+    const existing = mutationId
+      ? db.prepare("SELECT id,to_id,text,removed FROM dms WHERE from_id=? AND client_mutation_id=? LIMIT 1").get(u.id, mutationId)
+      : null;
+    if (existing) {
+      assertChatRetryMatches(existing, { to_id: other, text });
+      return { id: existing.id, duplicate: true };
+    }
+    limit(ctx, "dm", 120, 10 * 60 * 1000);
     const id = uid("dm");
-    db.prepare("INSERT INTO dms (id,from_id,to_id,text,created_at) VALUES (?,?,?,?,?)").run(id, u.id, other, text, now());
+    if (mutationId) {
+      const inserted = db.prepare("INSERT OR IGNORE INTO dms (id,from_id,to_id,text,client_mutation_id,created_at) VALUES (?,?,?,?,?,?)")
+        .run(id, u.id, other, text, mutationId, now());
+      if (!inserted.changes) {
+        const raced = db.prepare("SELECT id,to_id,text,removed FROM dms WHERE from_id=? AND client_mutation_id=? LIMIT 1")
+          .get(u.id, mutationId);
+        assertChatRetryMatches(raced, { to_id: other, text });
+        if (raced) return { id: raced.id, duplicate: true };
+        throw new ApiError(409, "That message could not be reconciled. Refresh and try again.", "CONFLICT");
+      }
+    } else {
+      db.prepare("INSERT INTO dms (id,from_id,to_id,text,created_at) VALUES (?,?,?,?,?)").run(id, u.id, other, text, now());
+    }
     addNotif(other, u.id, "dm", { postId: id, text: text.slice(0, 80) });
     return { id };
   },
@@ -2677,6 +3235,22 @@ export const routes = {
     const u = requireUser(ctx);
     const rows = db.prepare("SELECT artist FROM fan_club_members WHERE user_id = ?").all(u.id);
     return { artists: rows.map((r) => r.artist) };
+  },
+
+  // Public aggregate directory. Membership rows and non-removed messages are
+  // the authority; no client-local social graph is used for counts.
+  "GET /api/fanclubs": (ctx) => {
+    limit(ctx, "fanclub-directory", 120, 10 * 60 * 1000);
+    const clubs = db.prepare(`SELECT active.artist,
+      (SELECT COUNT(*) FROM fan_club_members members WHERE members.artist=active.artist) members,
+      (SELECT COUNT(*) FROM fan_club_messages messages WHERE messages.artist=active.artist AND messages.removed=0) messages
+      FROM (
+        SELECT artist FROM fan_club_members
+        UNION
+        SELECT artist FROM fan_club_messages WHERE removed=0
+      ) active
+      ORDER BY members DESC, messages DESC, active.artist COLLATE NOCASE`).all();
+    return { clubs, total: clubs.length };
   },
 
   "POST /api/fanclubs/:artist/join": (ctx) => {
@@ -2744,15 +3318,35 @@ export const routes = {
 
   "POST /api/fanclubs/:artist/messages": (ctx) => {
     const u = requireUser(ctx);
-    limit(ctx, "fanmsg", 60, 60 * 60 * 1000);
     const artist = clean(decodeURIComponent(ctx.params.artist), { max: LIMITS.artist }).toLowerCase();
     const text = clean(ctx.body?.text, { max: LIMITS.message, newlines: true });
     if (!artist || !text) throw new ApiError(400, "Say something first.");
     assertSafeAuthoredText(text, { field: "fan-club message" });
     const member = db.prepare("SELECT 1 FROM fan_club_members WHERE artist=? AND user_id=?").get(artist, u.id);
     if (!member) throw new ApiError(403, "Join this fan club before jumping into the conversation.", "FAN_CLUB_MEMBERSHIP_REQUIRED");
+    const mutationId = chatClientMutationId(ctx.body?.clientMutationId);
+    const existing = mutationId
+      ? db.prepare("SELECT id,artist,text,removed FROM fan_club_messages WHERE user_id=? AND client_mutation_id=? LIMIT 1").get(u.id, mutationId)
+      : null;
+    if (existing) {
+      assertChatRetryMatches(existing, { artist, text });
+      return { id: existing.id, duplicate: true };
+    }
+    limit(ctx, "fanmsg", 60, 60 * 60 * 1000);
     const id = uid("fc");
-    db.prepare("INSERT INTO fan_club_messages (id,artist,user_id,text,created_at) VALUES (?,?,?,?,?)").run(id, artist, u.id, text, now());
+    if (mutationId) {
+      const inserted = db.prepare("INSERT OR IGNORE INTO fan_club_messages (id,artist,user_id,text,client_mutation_id,created_at) VALUES (?,?,?,?,?,?)")
+        .run(id, artist, u.id, text, mutationId, now());
+      if (!inserted.changes) {
+        const raced = db.prepare("SELECT id,artist,text,removed FROM fan_club_messages WHERE user_id=? AND client_mutation_id=? LIMIT 1")
+          .get(u.id, mutationId);
+        assertChatRetryMatches(raced, { artist, text });
+        if (raced) return { id: raced.id, duplicate: true };
+        throw new ApiError(409, "That message could not be reconciled. Refresh and try again.", "CONFLICT");
+      }
+    } else {
+      db.prepare("INSERT INTO fan_club_messages (id,artist,user_id,text,created_at) VALUES (?,?,?,?,?)").run(id, artist, u.id, text, now());
+    }
     return { id };
   },
 
@@ -2806,15 +3400,35 @@ export const routes = {
   },
   "POST /api/lounges/:key/messages": (ctx) => {
     const u = requireUser(ctx);
-    limit(ctx, "loungemsg", 90, 60 * 60 * 1000);
     const key = clean(decodeURIComponent(ctx.params.key), { max: 300 }).toLowerCase();
     const text = clean(ctx.body?.text, { max: LIMITS.message, newlines: true });
     if (!key || !text) throw new ApiError(400, "Say something first.");
     assertSafeAuthoredText(text, { field: "lounge message" });
     const attendee = db.prepare("SELECT 1 FROM going WHERE user_id=? AND concert_key=?").get(u.id, key);
     if (!attendee) throw new ApiError(403, "Join this show's Going list before posting in the lounge.", "LOUNGE_ATTENDANCE_REQUIRED");
+    const mutationId = chatClientMutationId(ctx.body?.clientMutationId);
+    const existing = mutationId
+      ? db.prepare("SELECT id,lounge_id,text,removed FROM lounge_messages WHERE user_id=? AND client_mutation_id=? LIMIT 1").get(u.id, mutationId)
+      : null;
+    if (existing) {
+      assertChatRetryMatches(existing, { lounge_id: key, text });
+      return { id: existing.id, duplicate: true };
+    }
+    limit(ctx, "loungemsg", 90, 60 * 60 * 1000);
     const id = uid("lm");
-    db.prepare("INSERT INTO lounge_messages (id,lounge_id,user_id,text,created_at) VALUES (?,?,?,?,?)").run(id, key, u.id, text, now());
+    if (mutationId) {
+      const inserted = db.prepare("INSERT OR IGNORE INTO lounge_messages (id,lounge_id,user_id,text,client_mutation_id,created_at) VALUES (?,?,?,?,?,?)")
+        .run(id, key, u.id, text, mutationId, now());
+      if (!inserted.changes) {
+        const raced = db.prepare("SELECT id,lounge_id,text,removed FROM lounge_messages WHERE user_id=? AND client_mutation_id=? LIMIT 1")
+          .get(u.id, mutationId);
+        assertChatRetryMatches(raced, { lounge_id: key, text });
+        if (raced) return { id: raced.id, duplicate: true };
+        throw new ApiError(409, "That message could not be reconciled. Refresh and try again.", "CONFLICT");
+      }
+    } else {
+      db.prepare("INSERT INTO lounge_messages (id,lounge_id,user_id,text,created_at) VALUES (?,?,?,?,?)").run(id, key, u.id, text, now());
+    }
     return { id };
   },
 
@@ -3867,18 +4481,42 @@ export const routes = {
     const has = !!db.prepare("SELECT 1 FROM going WHERE user_id=? AND concert_key=?").get(u.id, key);
     const going = desiredState(ctx.body, "going", has);
     if (!going && has) db.prepare("DELETE FROM going WHERE user_id=? AND concert_key=?").run(u.id, key);
-    else if (going && !has) db.prepare("INSERT INTO going (user_id,concert_key,artist,venue,city,date) VALUES (?,?,?,?,?,?)")
+    else if (going && !has) db.prepare("INSERT INTO going (user_id,concert_key,artist,venue,city,date,created_at) VALUES (?,?,?,?,?,?,?)")
       .run(u.id, key, displayArtist, displayVenue,
         // Denormalized display copy only (the key is what identifies the night),
         // so an unparseable date is dropped rather than refused.
-        displayCity, cleanDate(ctx.body?.date) || "");
+        displayCity, cleanDate(ctx.body?.date) || "", now());
     return { going };
   },
   "GET /api/going/:key/attendees": (ctx) => {
-    const key = decodeURIComponent(ctx.params.key);
-    const rows = db.prepare("SELECT user_id FROM going WHERE concert_key=? LIMIT 200").all(key);
-    const hidden = blockedIdSet(ctx.user?.id);
-    return { attendees: rows.filter((r) => !hidden.has(r.user_id)).map((r) => publicUser(q.userById.get(r.user_id))).filter(Boolean) };
+    let decoded;
+    try { decoded = decodeURIComponent(ctx.params.key); }
+    catch { throw new ApiError(400, "That show link is invalid.", "VALIDATION_FAILED"); }
+    const key = clean(decoded, { max: 300 });
+    if (!key) throw new ApiError(400, "That show link is invalid.", "VALIDATION_FAILED");
+    const { cursor, limit: pageLimit } = pageRequest(ctx, 50, 100);
+    const viewer = ctx.user?.id || null;
+    const activeAt = now();
+    const blockSql = viewer ? `AND NOT EXISTS (SELECT 1 FROM blocks b WHERE
+      (b.blocker_id=? AND b.blocked_id=g.user_id) OR (b.blocker_id=g.user_id AND b.blocked_id=?))` : "";
+    const baseArgs = viewer ? [key, activeAt, viewer, viewer] : [key, activeAt];
+    const activeSql = "AND u.is_banned=0 AND (u.suspended_until IS NULL OR u.suspended_until<=?)";
+    const total = db.prepare(`SELECT COUNT(*) c FROM going g JOIN users u ON u.id=g.user_id
+      WHERE g.concert_key=? ${activeSql} ${blockSql}`).get(...baseArgs).c;
+    const cursorSql = cursor ? "AND (g.created_at < ? OR (g.created_at = ? AND g.user_id < ?))" : "";
+    const pageArgs = [...baseArgs];
+    if (cursor) pageArgs.push(cursor.createdAt, cursor.createdAt, cursor.id);
+    pageArgs.push(pageLimit + 1);
+    const found = db.prepare(`SELECT g.user_id AS id,g.created_at FROM going g JOIN users u ON u.id=g.user_id
+      WHERE g.concert_key=? ${activeSql} ${blockSql} ${cursorSql}
+      ORDER BY g.created_at DESC,g.user_id DESC LIMIT ?`).all(...pageArgs);
+    const { rows, nextCursor } = finishPage(found, pageLimit);
+    return {
+      attendees: rows.map((row) => publicUser(q.userById.get(row.id))).filter(Boolean),
+      total,
+      nextCursor,
+      viewerGoing: !!(viewer && db.prepare("SELECT 1 FROM going WHERE user_id=? AND concert_key=?").get(viewer, key)),
+    };
   },
 
   // One bounded venue pool at a time. The 2.1 MB source stays server-side so a
@@ -3914,6 +4552,9 @@ export const routes = {
     const text = clean(ctx.body?.text, { max: LIMITS.review, newlines: true });
     assertSafeAuthoredText(text, { field: "venue review" });
     const photos = cleanStringArray(ctx.body?.photos, { maxItems: 8, maxLen: 2000 });
+    if ((photos || []).some(isLegacyVideoUrl)) {
+      throw new ApiError(400, "Venue reviews support photos only until verified venue clips are available.", "VALIDATION_FAILED");
+    }
     const id = uid("vr");
     atomicWrite(() => {
       db.prepare("INSERT INTO venue_reviews (id,venue_key,user_id,rating,text,photos,created_at) VALUES (?,?,?,?,?,?,?)")

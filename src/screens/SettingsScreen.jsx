@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Constants from "expo-constants";
 import { Linking, View, Text, StyleSheet, ScrollView, Pressable } from "react-native";
 import { colors, radius, mono, THEMES, themeKey, space } from "../theme";
@@ -6,6 +6,7 @@ import { useStore } from "../store";
 import SheetHeader from "../components/SheetHeader";
 import Icon from "../components/Icon";
 import Avatar from "../components/Avatar";
+import { privateListeningRemainingLabel } from "../domain/privateListening.mjs";
 
 const versionLabel = Constants.expoConfig?.version || "Unavailable";
 const SUPPORT_URL = "https://www.mshpit.com/support";
@@ -61,14 +62,20 @@ function Swatch({ theme, active, onPress }) {
 }
 
 export default function SettingsScreen({ onClose, onEditProfile, onOpenProfile, onOpenPrivacy, onOpenTerms, onOpenDiagnostics, onOpenDeleteAccount, onLogout }) {
-  const { session, chooseTheme, blockedUsers, unblockUser, exportMyData, setAnalyticsEnabled } = useStore();
+  const { session, chooseTheme, blockedUsers, unblockUser, exportMyData, setAnalyticsEnabled, privateListeningActive, privateListeningUntil, setPrivateListening } = useStore();
   const blocked = session ? blockedUsers() : [];
   const [exporting, setExporting] = useState(false);
   const [exportResult, setExportResult] = useState(null);
   const [savingAnalytics, setSavingAnalytics] = useState(false);
   const [analyticsResult, setAnalyticsResult] = useState(null);
   const [supportError, setSupportError] = useState(null);
+  const [, setPrivateClock] = useState(0);
   const analyticsEnabled = !!(session?.analyticsConsentAt || session?.consentAt) && !session?.analyticsOptOut;
+  useEffect(() => {
+    if (!privateListeningActive) return undefined;
+    const timer = setInterval(() => setPrivateClock((value) => value + 1), 60_000);
+    return () => clearInterval(timer);
+  }, [privateListeningActive]);
   const doExport = async () => {
     if (exporting) return;
     setExporting(true);
@@ -112,6 +119,17 @@ export default function SettingsScreen({ onClose, onEditProfile, onOpenProfile, 
         {session && (
           <>
             <Text style={styles.section}>PRIVACY & SAFETY</Text>
+            <Row
+              icon="lock"
+              label="Private listening"
+              sub={privateListeningActive
+                ? `${privateListeningRemainingLabel(privateListeningUntil)}. Plays stay out of history, activity, and recommendations.`
+                : "Off. Turn on a six-hour private session that records no plays, activity, or recommendation signals."}
+              onPress={() => setPrivateListening(!privateListeningActive)}
+              accessibilityRole="switch"
+              accessibilityState={{ checked: privateListeningActive }}
+              right={<Toggle value={privateListeningActive} />}
+            />
             <Row
               icon="activity"
               label="Product analytics"

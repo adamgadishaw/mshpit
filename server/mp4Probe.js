@@ -1,0 +1,1027 @@
+import { ApiError } from "./errors.js";
+import { getMediaConfig, presignS3Request } from "./media.js";
+
+const KIBIBYTE = 1024;
+const MEBIBYTE = 1024 * KIBIBYTE;
+
+const MAX_MOOV_BYTES = 4 * MEBIBYTE;
+const MAX_FTYP_BYTES = 64 * KIBIBYTE;
+const MAX_FIRST_SAMPLE_BYTES = 4 * MEBIBYTE;
+const MAX_TOTAL_RESPONSE_BYTES = MAX_MOOV_BYTES + MAX_FIRST_SAMPLE_BYTES + 256 * KIBIBYTE;
+const MAX_TOP_LEVEL_BOXES = 64;
+const MAX_PARSED_BOXES = 1_024;
+const MAX_SAMPLE_ENTRIES = 256;
+const MAX_MEDIA_SAMPLES = 250_000;
+const MAX_CHUNKS = 250_000;
+const MAX_TIMING_ENTRIES = 65_536;
+const MAX_RANGE_REQUESTS = 72;
+const MAX_WALL_MS = 12_000;
+const MAX_CLIP_DURATION_MS = 60_000;
+const MAX_VIDEO_WIDTH = 4_096;
+const MAX_VIDEO_HEIGHT = 2_160;
+
+const VIDEO_SAMPLE_ENTRIES = new Set(["avc1", "avc3"]);
+const AUDIO_SAMPLE_ENTRIES = new Set(["mp4a"]);
+const AVC_PROFILES = new Set([66, 77, 88, 100]);
+const AVC_LEVELS = new Set([9, 10, 11, 12, 13, 20, 21, 22, 30, 31, 32, 40, 41, 42, 50, 51, 52]);
+const AVC_LEVEL_MAX_FRAME_MBS = new Map([
+  [9, 99], [10, 99], [11, 396], [12, 396], [13, 396], [20, 396],
+  [21, 792], [22, 1_620], [30, 1_620], [31, 3_600], [32, 5_120],
+  [40, 8_192], [41, 8_192], [42, 8_704], [50, 22_080], [51, 36_864], [52, 36_864],
+]);
+const AAC_SAMPLE_RATES = Object.freeze([
+  96_000, 88_200, 64_000, 48_000, 44_100, 32_000, 24_000,
+  22_050, 16_000, 12_000, 11_025, 8_000, 7_350,
+]);
+
+function unsupported() {
+  return new ApiError(415, "That MP4 is not compatible with PIT clips.", "MEDIA_TYPE_UNSUPPORTED");
+}
+
+function unavailable() {
+  return new ApiError(503, "The clip could not be inspected in storage yet. Try again.", "MEDIA_STORAGE_UNAVAILABLE");
+}
+
+function changedDuringInspection() {
+  return new ApiError(409, "The uploaded clip changed while it was being inspected. Try again.", "CONFLICT");
+}
+
+function endpointObjectUrl(config, objectKey) {
+  const encode = (value) => encodeURIComponent(value)
+    .replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+  const prefix = config.endpoint.pathname.replace(/\/+$/, "");
+  const suffix = [config.bucket, ...objectKey.split("/")].map(encode).join("/");
+  return `${config.endpoint.origin}${prefix}/${suffix}`;
+}
+
+function normalizedObjectKey(value) {
+  const key = typeof value === "string" ? value.trim() : "";
+  if (!key || key.length > 1_024 || key.startsWith("/") || key.includes("\\")
+      || /[\u0000-\u001f\u007f]/u.test(key)
+      || key.split("/").some((segment) => !segment || segment === "." || segment === "..")) {
+    throw unavailable();
+  }
+  return key;
+}
+
+function normalizedIfMatch(value) {
+  if (value === undefined || value === null || value === "") return null;
+  if (typeof value !== "string" || value.length > 256 || /[\u0000-\u001f\u007f]/u.test(value)) {
+    throw unavailable();
+  }
+  return value;
+}
+
+function ensureWithinDeadline(state) {
+  if (Date.now() >= state.deadline) throw unavailable();
+}
+
+function parseContentRange(value) {
+  const match = /^bytes ([0-9]+)-([0-9]+)\/([0-9]+)$/u.exec(String(value || "").trim());
+  if (!match) return null;
+  const numbers = match.slice(1).map(Number);
+  return numbers.every(Number.isSafeInteger)
+    ? { start: numbers[0], end: numbers[1], total: numbers[2] }
+    : null;
+}
+
+async function readExactBody(response, expectedLength) {
+  const declaredLength = response.headers?.get?.("content-length");
+  if (declaredLength !== null && declaredLength !== undefined && declaredLength !== "") {
+    const parsedLength = Number(declaredLength);
+    if (!Number.isSafeInteger(parsedLength) || parsedLength !== expectedLength) throw unavailable();
+  }
+
+  if (response.body?.getReader) {
+    const reader = response.body.getReader();
+    const chunks = [];
+    let received = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = Buffer.from(value);
+        received += chunk.length;
+        if (received > expectedLength) {
+          try { await reader.cancel(); } catch {}
+          throw unavailable();
+        }
+        chunks.push(chunk);
+      }
+    } catch (error) {
+      if (error instanceof ApiError) throw error;
+      throw unavailable();
+    }
+    if (received !== expectedLength) throw unavailable();
+    return Buffer.concat(chunks, received);
+  }
+
+  let body;
+  try {
+    body = Buffer.from(await response.arrayBuffer());
+  } catch {
+    throw unavailable();
+  }
+  if (body.length !== expectedLength) throw unavailable();
+  return body;
+}
+
+async function getRange(state, start, end) {
+  ensureWithinDeadline(state);
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || end < start
+      || end >= state.expectedBytes) {
+    throw unsupported();
+  }
+  const expectedLength = end - start + 1;
+  if (state.requests >= MAX_RANGE_REQUESTS || state.responseBytes + expectedLength > MAX_TOTAL_RESPONSE_BYTES) {
+    throw unsupported();
+  }
+  state.requests += 1;
+
+  const range = `bytes=${start}-${end}`;
+  const signedHeaders = { Range: range };
+  if (state.ifMatch) signedHeaders["If-Match"] = state.ifMatch;
+
+  let signedUrl;
+  try {
+    signedUrl = presignS3Request({
+      method: "GET",
+      url: state.objectUrl,
+      region: state.config.region,
+      accessKeyId: state.config.accessKeyId,
+      secretAccessKey: state.config.secretAccessKey,
+      headers: signedHeaders,
+      expiresIn: 60,
+    });
+  } catch {
+    throw unavailable();
+  }
+
+  const remainingMs = Math.max(1, state.deadline - Date.now());
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), remainingMs);
+  timer.unref?.();
+  try {
+    let response;
+    try {
+      response = await state.fetchImpl(signedUrl, {
+        method: "GET",
+        headers: signedHeaders,
+        redirect: "error",
+        signal: controller.signal,
+      });
+    } catch {
+      throw unavailable();
+    }
+    if (response?.status === 412) throw changedDuringInspection();
+    if (!response || response.status !== 206) throw unavailable();
+
+    const contentEncoding = String(response.headers?.get?.("content-encoding") || "").trim().toLowerCase();
+    if (contentEncoding && contentEncoding !== "identity") throw unavailable();
+    const contentRange = parseContentRange(response.headers?.get?.("content-range"));
+    if (!contentRange || contentRange.start !== start || contentRange.end !== end
+        || contentRange.total !== state.expectedBytes) {
+      throw unavailable();
+    }
+
+    const body = await readExactBody(response, expectedLength);
+    state.responseBytes += body.length;
+    ensureWithinDeadline(state);
+    return body;
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+    throw unavailable();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function fourCc(buffer, offset) {
+  return buffer.toString("latin1", offset, offset + 4);
+}
+
+function uint64(buffer, offset) {
+  const value = buffer.readBigUInt64BE(offset);
+  if (value > BigInt(Number.MAX_SAFE_INTEGER)) throw unsupported();
+  return Number(value);
+}
+
+function parseBoxHeader(buffer, offset, end, parseState, { count = true } = {}) {
+  if (!Number.isSafeInteger(offset) || !Number.isSafeInteger(end) || offset < 0 || end < offset
+      || end > buffer.length || end - offset < 8) {
+    throw unsupported();
+  }
+  if (count) {
+    parseState.boxes += 1;
+    if (parseState.boxes > MAX_PARSED_BOXES) throw unsupported();
+  }
+
+  const size32 = buffer.readUInt32BE(offset);
+  const type = fourCc(buffer, offset + 4);
+  let headerSize = type === "uuid" ? 24 : 8;
+  let size;
+  let extendsToEnd = false;
+  if (size32 === 0) {
+    size = end - offset;
+    extendsToEnd = true;
+  } else if (size32 === 1) {
+    if (end - offset < 16) throw unsupported();
+    size = uint64(buffer, offset + 8);
+    headerSize += 8;
+  } else {
+    size = size32;
+  }
+  if (size < headerSize || size > end - offset) throw unsupported();
+  return {
+    type,
+    start: offset,
+    end: offset + size,
+    size,
+    headerSize,
+    payloadStart: offset + headerSize,
+    extendsToEnd,
+  };
+}
+
+function listBoxes(buffer, start, end, parseState) {
+  const boxes = [];
+  let cursor = start;
+  while (cursor < end) {
+    const box = parseBoxHeader(buffer, cursor, end, parseState);
+    boxes.push(box);
+    cursor = box.end;
+  }
+  if (cursor !== end) throw unsupported();
+  return boxes;
+}
+
+function onlyBox(boxes, type, { required = true } = {}) {
+  const matches = boxes.filter((box) => box.type === type);
+  if (matches.length > 1 || (required && matches.length !== 1)) throw unsupported();
+  return matches[0] || null;
+}
+
+function validateFtyp(buffer, parseState) {
+  const box = parseBoxHeader(buffer, 0, buffer.length, parseState);
+  if (box.type !== "ftyp" || box.end !== buffer.length || box.extendsToEnd) throw unsupported();
+  const payloadBytes = box.end - box.payloadStart;
+  if (payloadBytes < 8 || (payloadBytes - 8) % 4 !== 0) throw unsupported();
+  const majorBrand = buffer.subarray(box.payloadStart, box.payloadStart + 4);
+  if (majorBrand.every((byte) => byte === 0)) throw unsupported();
+}
+
+function parseMovieDuration(buffer, box) {
+  const payloadBytes = box.end - box.payloadStart;
+  if (payloadBytes < 20) throw unsupported();
+  const version = buffer[box.payloadStart];
+  if (buffer[box.payloadStart + 1] !== 0 || buffer[box.payloadStart + 2] !== 0
+      || buffer[box.payloadStart + 3] !== 0) {
+    throw unsupported();
+  }
+  let timescale;
+  let duration;
+  if (version === 0) {
+    timescale = buffer.readUInt32BE(box.payloadStart + 12);
+    const rawDuration = buffer.readUInt32BE(box.payloadStart + 16);
+    if (rawDuration === 0xffffffff) throw unsupported();
+    duration = BigInt(rawDuration);
+  } else if (version === 1) {
+    if (payloadBytes < 32) throw unsupported();
+    timescale = buffer.readUInt32BE(box.payloadStart + 20);
+    duration = buffer.readBigUInt64BE(box.payloadStart + 24);
+    if (duration === 0xffffffffffffffffn) throw unsupported();
+  } else {
+    throw unsupported();
+  }
+  if (!timescale || duration <= 0n) throw unsupported();
+  const durationMs = (duration * 1_000n + BigInt(timescale) - 1n) / BigInt(timescale);
+  if (durationMs <= 0n || durationMs > BigInt(Number.MAX_SAFE_INTEGER)) throw unsupported();
+  return { timescale, durationMs: Number(durationMs) };
+}
+
+function parseSampleTimeline(buffer, stts, timescale) {
+  const payloadBytes = stts.end - stts.payloadStart;
+  if (payloadBytes < 8 || buffer[stts.payloadStart] !== 0
+      || buffer[stts.payloadStart + 1] !== 0 || buffer[stts.payloadStart + 2] !== 0
+      || buffer[stts.payloadStart + 3] !== 0) {
+    throw unsupported();
+  }
+  const entryCount = buffer.readUInt32BE(stts.payloadStart + 4);
+  if (!entryCount || entryCount > MAX_TIMING_ENTRIES || payloadBytes !== 8 + entryCount * 8) {
+    throw unsupported();
+  }
+  let duration = 0n;
+  let totalSamples = 0n;
+  let cursor = stts.payloadStart + 8;
+  for (let index = 0; index < entryCount; index += 1) {
+    const sampleCount = buffer.readUInt32BE(cursor);
+    const sampleDelta = buffer.readUInt32BE(cursor + 4);
+    if (!sampleCount || !sampleDelta) throw unsupported();
+    duration += BigInt(sampleCount) * BigInt(sampleDelta);
+    totalSamples += BigInt(sampleCount);
+    cursor += 8;
+  }
+  const durationMs = (duration * 1_000n + BigInt(timescale) - 1n) / BigInt(timescale);
+  if (durationMs <= 0n || durationMs > BigInt(Number.MAX_SAFE_INTEGER)) throw unsupported();
+  if (totalSamples > BigInt(MAX_MEDIA_SAMPLES)) throw unsupported();
+  return { durationMs: Number(durationMs), sampleCount: Number(totalSamples) };
+}
+
+function parseSampleSizes(buffer, stsz) {
+  const payloadBytes = stsz.end - stsz.payloadStart;
+  if (payloadBytes < 12 || buffer[stsz.payloadStart] !== 0
+      || buffer[stsz.payloadStart + 1] !== 0 || buffer[stsz.payloadStart + 2] !== 0
+      || buffer[stsz.payloadStart + 3] !== 0) {
+    throw unsupported();
+  }
+  const constantSize = buffer.readUInt32BE(stsz.payloadStart + 4);
+  const sampleCount = buffer.readUInt32BE(stsz.payloadStart + 8);
+  if (!sampleCount || sampleCount > MAX_MEDIA_SAMPLES) throw unsupported();
+  if (constantSize) {
+    if (payloadBytes !== 12) throw unsupported();
+    return { sampleCount, constantSize, sizes: null, firstSize: constantSize };
+  }
+  if (payloadBytes !== 12 + sampleCount * 4) throw unsupported();
+  let firstSize = 0;
+  const sizes = [];
+  let cursor = stsz.payloadStart + 12;
+  for (let index = 0; index < sampleCount; index += 1) {
+    const size = buffer.readUInt32BE(cursor);
+    if (!size) throw unsupported();
+    if (index === 0) firstSize = size;
+    sizes.push(size);
+    cursor += 4;
+  }
+  return { sampleCount, constantSize: 0, sizes, firstSize };
+}
+
+function parseChunkOffsets(buffer, stco, co64) {
+  if (!!stco === !!co64) throw unsupported();
+  const box = stco || co64;
+  const entryBytes = stco ? 4 : 8;
+  const payloadBytes = box.end - box.payloadStart;
+  if (payloadBytes < 8 || buffer[box.payloadStart] !== 0
+      || buffer[box.payloadStart + 1] !== 0 || buffer[box.payloadStart + 2] !== 0
+      || buffer[box.payloadStart + 3] !== 0) {
+    throw unsupported();
+  }
+  const entryCount = buffer.readUInt32BE(box.payloadStart + 4);
+  if (!entryCount || entryCount > MAX_CHUNKS || payloadBytes !== 8 + entryCount * entryBytes) {
+    throw unsupported();
+  }
+  const offsets = [];
+  let cursor = box.payloadStart + 8;
+  for (let index = 0; index < entryCount; index += 1) {
+    const offset = stco ? buffer.readUInt32BE(cursor) : uint64(buffer, cursor);
+    if (!Number.isSafeInteger(offset) || offset < 0) throw unsupported();
+    offsets.push(offset);
+    cursor += entryBytes;
+  }
+  return offsets;
+}
+
+function parseSampleToChunk(buffer, stsc, offsets, sizes, descriptionCount, mdats) {
+  const payloadBytes = stsc.end - stsc.payloadStart;
+  if (payloadBytes < 20 || buffer[stsc.payloadStart] !== 0
+      || buffer[stsc.payloadStart + 1] !== 0 || buffer[stsc.payloadStart + 2] !== 0
+      || buffer[stsc.payloadStart + 3] !== 0) {
+    throw unsupported();
+  }
+  const entryCount = buffer.readUInt32BE(stsc.payloadStart + 4);
+  if (!entryCount || entryCount > MAX_CHUNKS || payloadBytes !== 8 + entryCount * 12) {
+    throw unsupported();
+  }
+  const entries = [];
+  let cursor = stsc.payloadStart + 8;
+  for (let index = 0; index < entryCount; index += 1) {
+    const firstChunk = buffer.readUInt32BE(cursor);
+    const samplesPerChunk = buffer.readUInt32BE(cursor + 4);
+    const descriptionIndex = buffer.readUInt32BE(cursor + 8);
+    if (!firstChunk || !samplesPerChunk || !descriptionIndex || descriptionIndex > descriptionCount
+        || (index === 0 && firstChunk !== 1)
+        || (entries.length && firstChunk <= entries.at(-1).firstChunk)) {
+      throw unsupported();
+    }
+    entries.push({ firstChunk, samplesPerChunk, descriptionIndex });
+    cursor += 12;
+  }
+  let sampleIndex = 0;
+  let firstSample = null;
+  for (let index = 0; index < entries.length; index += 1) {
+    const start = entries[index].firstChunk;
+    const end = index + 1 < entries.length ? entries[index + 1].firstChunk - 1 : offsets.length;
+    if (start > offsets.length || end < start) throw unsupported();
+    for (let chunkNumber = start; chunkNumber <= end; chunkNumber += 1) {
+      let sampleOffset = offsets[chunkNumber - 1];
+      const mdat = mdats.find((candidate) => (
+        sampleOffset >= candidate.payloadStart && sampleOffset < candidate.end
+      ));
+      if (!mdat) throw unsupported();
+      for (let chunkSample = 0; chunkSample < entries[index].samplesPerChunk; chunkSample += 1) {
+        if (sampleIndex >= sizes.sampleCount) throw unsupported();
+        const sampleSize = sizes.constantSize || sizes.sizes[sampleIndex];
+        const sampleEnd = sampleOffset + sampleSize;
+        if (!Number.isSafeInteger(sampleEnd) || sampleEnd > mdat.end) throw unsupported();
+        if (!firstSample) {
+          firstSample = {
+            offset: sampleOffset,
+            size: sampleSize,
+            descriptionIndex: entries[index].descriptionIndex,
+          };
+        }
+        sampleOffset = sampleEnd;
+        sampleIndex += 1;
+      }
+    }
+  }
+  if (sampleIndex !== sizes.sampleCount || !firstSample) throw unsupported();
+  return firstSample;
+}
+
+function firstSampleMapping(buffer, stblChildren, descriptionCount, mdats) {
+  const stsz = onlyBox(stblChildren, "stsz");
+  const stsc = onlyBox(stblChildren, "stsc");
+  const stco = onlyBox(stblChildren, "stco", { required: false });
+  const co64 = onlyBox(stblChildren, "co64", { required: false });
+  const sizes = parseSampleSizes(buffer, stsz);
+  const offsets = parseChunkOffsets(buffer, stco, co64);
+  const firstSample = parseSampleToChunk(buffer, stsc, offsets, sizes, descriptionCount, mdats);
+  return { ...firstSample, sampleCount: sizes.sampleCount };
+}
+
+class BitReader {
+  constructor(buffer) {
+    this.buffer = buffer;
+    this.bitOffset = 0;
+  }
+
+  read(bitCount) {
+    if (!Number.isSafeInteger(bitCount) || bitCount < 0 || bitCount > 32
+        || this.bitOffset + bitCount > this.buffer.length * 8) {
+      throw unsupported();
+    }
+    let value = 0;
+    for (let index = 0; index < bitCount; index += 1) {
+      const absolute = this.bitOffset + index;
+      value = value * 2 + ((this.buffer[Math.floor(absolute / 8)] >> (7 - (absolute % 8))) & 1);
+    }
+    this.bitOffset += bitCount;
+    return value;
+  }
+
+  unsignedExpGolomb() {
+    let leadingZeros = 0;
+    while (this.read(1) === 0) {
+      leadingZeros += 1;
+      if (leadingZeros > 30) throw unsupported();
+    }
+    return (2 ** leadingZeros) - 1 + (leadingZeros ? this.read(leadingZeros) : 0);
+  }
+
+  signedExpGolomb() {
+    const code = this.unsignedExpGolomb();
+    return code % 2 ? (code + 1) / 2 : -(code / 2);
+  }
+
+  remainingBitsAreZero() {
+    while (this.bitOffset < this.buffer.length * 8) {
+      if (this.read(1) !== 0) return false;
+    }
+    return true;
+  }
+}
+
+function rbsp(nalPayload) {
+  const output = [];
+  let zeroCount = 0;
+  for (const byte of nalPayload) {
+    if (zeroCount >= 2 && byte === 0x03) {
+      zeroCount = 0;
+      continue;
+    }
+    output.push(byte);
+    zeroCount = byte === 0 ? zeroCount + 1 : 0;
+  }
+  return Buffer.from(output);
+}
+
+function skipScalingList(reader, size) {
+  let lastScale = 8;
+  let nextScale = 8;
+  for (let index = 0; index < size; index += 1) {
+    if (nextScale !== 0) nextScale = (lastScale + reader.signedExpGolomb() + 256) % 256;
+    lastScale = nextScale === 0 ? lastScale : nextScale;
+  }
+}
+
+function parseSpsDimensions(sequence) {
+  if (sequence.length < 5) throw unsupported();
+  const profile = sequence[1];
+  const reader = new BitReader(rbsp(sequence.subarray(4)));
+  reader.unsignedExpGolomb(); // seq_parameter_set_id
+  let chromaFormat = 1;
+  let separateColourPlane = 0;
+  if (profile === 100) {
+    chromaFormat = reader.unsignedExpGolomb();
+    if (chromaFormat !== 1) throw unsupported();
+    if (chromaFormat === 3) separateColourPlane = reader.read(1);
+    if (reader.unsignedExpGolomb() !== 0 || reader.unsignedExpGolomb() !== 0) throw unsupported();
+    if (reader.read(1) !== 0) throw unsupported(); // qpprime_y_zero_transform_bypass_flag
+    if (reader.read(1)) {
+      const scalingListCount = chromaFormat === 3 ? 12 : 8;
+      for (let index = 0; index < scalingListCount; index += 1) {
+        if (reader.read(1)) skipScalingList(reader, index < 6 ? 16 : 64);
+      }
+    }
+  }
+  reader.unsignedExpGolomb(); // log2_max_frame_num_minus4
+  const pictureOrderCountType = reader.unsignedExpGolomb();
+  if (pictureOrderCountType === 0) {
+    reader.unsignedExpGolomb();
+  } else if (pictureOrderCountType === 1) {
+    reader.read(1);
+    reader.signedExpGolomb();
+    reader.signedExpGolomb();
+    const cycle = reader.unsignedExpGolomb();
+    if (cycle > 256) throw unsupported();
+    for (let index = 0; index < cycle; index += 1) reader.signedExpGolomb();
+  } else if (pictureOrderCountType !== 2) {
+    throw unsupported();
+  }
+  reader.unsignedExpGolomb(); // max_num_ref_frames
+  reader.read(1); // gaps_in_frame_num_value_allowed_flag
+  const pictureWidthInMbs = reader.unsignedExpGolomb() + 1;
+  const pictureHeightInMapUnits = reader.unsignedExpGolomb() + 1;
+  const frameMbsOnly = reader.read(1);
+  if (!frameMbsOnly) reader.read(1);
+  reader.read(1); // direct_8x8_inference_flag
+  let cropLeft = 0;
+  let cropRight = 0;
+  let cropTop = 0;
+  let cropBottom = 0;
+  if (reader.read(1)) {
+    cropLeft = reader.unsignedExpGolomb();
+    cropRight = reader.unsignedExpGolomb();
+    cropTop = reader.unsignedExpGolomb();
+    cropBottom = reader.unsignedExpGolomb();
+  }
+  const chromaArrayType = separateColourPlane ? 0 : chromaFormat;
+  const cropUnitX = chromaArrayType === 0 ? 1 : chromaArrayType === 3 ? 1 : 2;
+  const cropUnitY = chromaArrayType === 0
+    ? 2 - frameMbsOnly
+    : (chromaArrayType === 1 ? 2 : 1) * (2 - frameMbsOnly);
+  const width = pictureWidthInMbs * 16 - (cropLeft + cropRight) * cropUnitX;
+  const height = pictureHeightInMapUnits * 16 * (2 - frameMbsOnly)
+    - (cropTop + cropBottom) * cropUnitY;
+  const frameMacroblocks = pictureWidthInMbs * pictureHeightInMapUnits * (2 - frameMbsOnly);
+  if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1
+      || width > MAX_VIDEO_WIDTH || height > MAX_VIDEO_HEIGHT
+      || frameMacroblocks > (AVC_LEVEL_MAX_FRAME_MBS.get(sequence[3]) || 0)) {
+    throw unsupported();
+  }
+  return { width, height };
+}
+
+function validateAvcConfiguration(buffer, entry, fixedPayloadBytes, parseState) {
+  const childrenStart = entry.payloadStart + fixedPayloadBytes;
+  if (childrenStart >= entry.end) throw unsupported();
+  const children = listBoxes(buffer, childrenStart, entry.end, parseState);
+  if (children.some((child) => child.type === "sinf")) throw unsupported();
+  const configuration = onlyBox(children, "avcC");
+  const payload = buffer.subarray(configuration.payloadStart, configuration.end);
+  if (payload.length < 7 || payload[0] !== 1 || !payload[1] || !payload[3]
+      || (payload[4] & 0xfc) !== 0xfc || (payload[4] & 0x03) === 2
+      || (payload[5] & 0xe0) !== 0xe0) {
+    throw unsupported();
+  }
+  const profile = payload[1];
+  const level = payload[3];
+  if (!AVC_PROFILES.has(profile) || !AVC_LEVELS.has(level)) throw unsupported();
+  let cursor = 6;
+  const sequenceCount = payload[5] & 0x1f;
+  if (!sequenceCount) throw unsupported();
+  const sequenceDimensions = [];
+  for (let index = 0; index < sequenceCount; index += 1) {
+    if (cursor + 2 > payload.length) throw unsupported();
+    const length = payload.readUInt16BE(cursor);
+    cursor += 2;
+    if (length < 4 || cursor + length > payload.length) throw unsupported();
+    const sequence = payload.subarray(cursor, cursor + length);
+    if ((sequence[0] & 0x1f) !== 7 || sequence[1] !== profile || sequence[3] !== level) throw unsupported();
+    sequenceDimensions.push(parseSpsDimensions(sequence));
+    cursor += length;
+  }
+  if (cursor >= payload.length) throw unsupported();
+  const pictureCount = payload[cursor];
+  cursor += 1;
+  if (!pictureCount) throw unsupported();
+  for (let index = 0; index < pictureCount; index += 1) {
+    if (cursor + 2 > payload.length) throw unsupported();
+    const length = payload.readUInt16BE(cursor);
+    cursor += 2;
+    if (!length || cursor + length > payload.length || (payload[cursor] & 0x1f) !== 8) throw unsupported();
+    cursor += length;
+  }
+  if (sequenceDimensions.some(({ width, height }) => (
+    width !== sequenceDimensions[0].width || height !== sequenceDimensions[0].height
+  ))) {
+    throw unsupported();
+  }
+  return {
+    dimensions: sequenceDimensions[0],
+    nalLengthSize: (payload[4] & 0x03) + 1,
+  };
+}
+
+function validateVideoEntry(buffer, entry, parseState) {
+  if (!VIDEO_SAMPLE_ENTRIES.has(entry.type) || entry.type !== "avc1") throw unsupported();
+  const fixedPayloadBytes = 78;
+  if (entry.end - entry.payloadStart < fixedPayloadBytes) throw unsupported();
+  if (buffer.readUInt16BE(entry.payloadStart + 6) !== 1) throw unsupported();
+  const width = buffer.readUInt16BE(entry.payloadStart + 24);
+  const height = buffer.readUInt16BE(entry.payloadStart + 26);
+  if (!width || !height || width > MAX_VIDEO_WIDTH || height > MAX_VIDEO_HEIGHT) throw unsupported();
+  const configuration = validateAvcConfiguration(buffer, entry, fixedPayloadBytes, parseState);
+  if (configuration.dimensions.width !== width || configuration.dimensions.height !== height) throw unsupported();
+  return { width, height, nalLengthSize: configuration.nalLengthSize };
+}
+
+function readDescriptor(buffer, start, end) {
+  if (start >= end) throw unsupported();
+  const tag = buffer[start];
+  let cursor = start + 1;
+  let length = 0;
+  let complete = false;
+  for (let index = 0; index < 4; index += 1) {
+    if (cursor >= end) throw unsupported();
+    const value = buffer[cursor];
+    cursor += 1;
+    length = length * 128 + (value & 0x7f);
+    if ((value & 0x80) === 0) {
+      complete = true;
+      break;
+    }
+  }
+  if (!complete || length > end - cursor) throw unsupported();
+  return { tag, payloadStart: cursor, end: cursor + length, next: cursor + length };
+}
+
+function descriptorList(buffer, start, end) {
+  const descriptors = [];
+  let cursor = start;
+  while (cursor < end) {
+    const descriptor = readDescriptor(buffer, cursor, end);
+    descriptors.push(descriptor);
+    cursor = descriptor.next;
+    if (descriptors.length > 32) throw unsupported();
+  }
+  if (cursor !== end) throw unsupported();
+  return descriptors;
+}
+
+function onlyDescriptor(descriptors, tag) {
+  const matches = descriptors.filter((descriptor) => descriptor.tag === tag);
+  if (matches.length !== 1) throw unsupported();
+  return matches[0];
+}
+
+function readAudioObjectType(reader) {
+  const shortType = reader.read(5);
+  return shortType === 31 ? 32 + reader.read(6) : shortType;
+}
+
+function parseAacLcConfig(buffer) {
+  const reader = new BitReader(buffer);
+  if (readAudioObjectType(reader) !== 2) throw unsupported();
+  const frequencyIndex = reader.read(4);
+  let sampleRate;
+  if (frequencyIndex === 15) {
+    sampleRate = reader.read(24);
+    if (sampleRate < 8_000 || sampleRate > 96_000) throw unsupported();
+  } else {
+    sampleRate = AAC_SAMPLE_RATES[frequencyIndex];
+    if (!sampleRate) throw unsupported();
+  }
+  const channelConfiguration = reader.read(4);
+  if (channelConfiguration !== 1 && channelConfiguration !== 2) throw unsupported();
+
+  // AAC-LC's GASpecificConfig. Restrict to the ordinary 1024-sample frame,
+  // no core-coder dependency, and no extension syntax for consistent native
+  // hardware decoding across iOS, Android, and browsers.
+  if (reader.read(1) !== 0 || reader.read(1) !== 0 || reader.read(1) !== 0) throw unsupported();
+  if (!reader.remainingBitsAreZero()) throw unsupported();
+  return { sampleRate, channels: channelConfiguration };
+}
+
+function parseEsds(buffer, esds) {
+  if (esds.end - esds.payloadStart < 6 || buffer[esds.payloadStart] !== 0
+      || buffer[esds.payloadStart + 1] !== 0 || buffer[esds.payloadStart + 2] !== 0
+      || buffer[esds.payloadStart + 3] !== 0) {
+    throw unsupported();
+  }
+  const roots = descriptorList(buffer, esds.payloadStart + 4, esds.end);
+  const elementary = onlyDescriptor(roots, 0x03);
+  let cursor = elementary.payloadStart;
+  if (elementary.end - cursor < 3) throw unsupported();
+  cursor += 2; // ES_ID
+  const flags = buffer[cursor];
+  cursor += 1;
+  if (flags & 0x80) cursor += 2;
+  if (flags & 0x40) {
+    if (cursor >= elementary.end) throw unsupported();
+    const urlLength = buffer[cursor];
+    cursor += 1 + urlLength;
+  }
+  if (flags & 0x20) cursor += 2;
+  if (cursor > elementary.end) throw unsupported();
+
+  const elementaryChildren = descriptorList(buffer, cursor, elementary.end);
+  const decoder = onlyDescriptor(elementaryChildren, 0x04);
+  if (decoder.end - decoder.payloadStart < 13) throw unsupported();
+  const objectType = buffer[decoder.payloadStart];
+  const streamFlags = buffer[decoder.payloadStart + 1];
+  const streamType = (streamFlags >> 2) & 0x3f;
+  if (objectType !== 0x40 || streamType !== 5 || (streamFlags & 0x03) !== 1) throw unsupported();
+  const decoderChildren = descriptorList(buffer, decoder.payloadStart + 13, decoder.end);
+  const specific = onlyDescriptor(decoderChildren, 0x05);
+  return parseAacLcConfig(buffer.subarray(specific.payloadStart, specific.end));
+}
+
+function validateAudioEntry(buffer, entry, parseState) {
+  if (!AUDIO_SAMPLE_ENTRIES.has(entry.type)) throw unsupported();
+  if (entry.end - entry.payloadStart < 28) throw unsupported();
+  const version = buffer.readUInt16BE(entry.payloadStart + 8);
+  const fixedPayloadBytes = 28;
+  if (version !== 0 || buffer.readUInt16BE(entry.payloadStart + 6) !== 1) throw unsupported();
+  const channels = buffer.readUInt16BE(entry.payloadStart + 16);
+  const sampleSize = buffer.readUInt16BE(entry.payloadStart + 18);
+  const fixedSampleRate = buffer.readUInt32BE(entry.payloadStart + 24);
+  if ((channels !== 1 && channels !== 2) || sampleSize !== 16 || fixedSampleRate % 65_536 !== 0) {
+    throw unsupported();
+  }
+  const sampleRate = fixedSampleRate / 65_536;
+  const childrenStart = entry.payloadStart + fixedPayloadBytes;
+  if (childrenStart >= entry.end) throw unsupported();
+  const children = listBoxes(buffer, childrenStart, entry.end, parseState);
+  if (children.some((child) => child.type === "sinf")) throw unsupported();
+  const config = parseEsds(buffer, onlyBox(children, "esds"));
+  if (config.channels !== channels || config.sampleRate !== sampleRate) throw unsupported();
+}
+
+function parseSampleDescriptions(buffer, stsd, handlerType, parseState) {
+  const payloadBytes = stsd.end - stsd.payloadStart;
+  if (payloadBytes < 8 || buffer[stsd.payloadStart] !== 0
+      || buffer[stsd.payloadStart + 1] !== 0 || buffer[stsd.payloadStart + 2] !== 0
+      || buffer[stsd.payloadStart + 3] !== 0) {
+    throw unsupported();
+  }
+  const entryCount = buffer.readUInt32BE(stsd.payloadStart + 4);
+  if (!entryCount || entryCount > MAX_SAMPLE_ENTRIES) throw unsupported();
+  const entries = [];
+  let cursor = stsd.payloadStart + 8;
+  for (let index = 0; index < entryCount; index += 1) {
+    const entry = parseBoxHeader(buffer, cursor, stsd.end, parseState);
+    if (entry.extendsToEnd) throw unsupported();
+    entries.push(entry);
+    cursor = entry.end;
+  }
+  if (cursor !== stsd.end) throw unsupported();
+
+  if (handlerType === "vide") {
+    const descriptions = entries.map((entry) => validateVideoEntry(buffer, entry, parseState));
+    if (descriptions.some(({ width, height, nalLengthSize }) => (
+      width !== descriptions[0].width || height !== descriptions[0].height
+      || nalLengthSize !== descriptions[0].nalLengthSize
+    ))) {
+      throw unsupported();
+    }
+    return {
+      descriptionCount: entries.length,
+      dimensions: { width: descriptions[0].width, height: descriptions[0].height },
+      nalLengthSizes: descriptions.map(({ nalLengthSize }) => nalLengthSize),
+    };
+  }
+  if (handlerType === "soun") entries.forEach((entry) => validateAudioEntry(buffer, entry, parseState));
+  return { descriptionCount: entries.length, dimensions: null, nalLengthSizes: [] };
+}
+
+function parseTrack(buffer, trak, parseState, mdats) {
+  const trakChildren = listBoxes(buffer, trak.payloadStart, trak.end, parseState);
+  const mdia = onlyBox(trakChildren, "mdia");
+  const mdiaChildren = listBoxes(buffer, mdia.payloadStart, mdia.end, parseState);
+  const hdlr = onlyBox(mdiaChildren, "hdlr");
+  if (hdlr.end - hdlr.payloadStart < 12 || buffer[hdlr.payloadStart] !== 0
+      || buffer[hdlr.payloadStart + 1] !== 0 || buffer[hdlr.payloadStart + 2] !== 0
+      || buffer[hdlr.payloadStart + 3] !== 0) {
+    throw unsupported();
+  }
+  const handlerType = fourCc(buffer, hdlr.payloadStart + 8);
+  if (handlerType !== "vide" && handlerType !== "soun") return { handlerType, dimensions: null };
+
+  const mdhd = onlyBox(mdiaChildren, "mdhd");
+  const mediaDuration = parseMovieDuration(buffer, mdhd);
+
+  const minf = onlyBox(mdiaChildren, "minf");
+  const minfChildren = listBoxes(buffer, minf.payloadStart, minf.end, parseState);
+  const stbl = onlyBox(minfChildren, "stbl");
+  const stblChildren = listBoxes(buffer, stbl.payloadStart, stbl.end, parseState);
+  const stsd = onlyBox(stblChildren, "stsd");
+  const stts = onlyBox(stblChildren, "stts");
+  const descriptions = parseSampleDescriptions(buffer, stsd, handlerType, parseState);
+  const firstSample = firstSampleMapping(buffer, stblChildren, descriptions.descriptionCount, mdats);
+  const sampleTimeline = parseSampleTimeline(buffer, stts, mediaDuration.timescale);
+  if (sampleTimeline.sampleCount !== firstSample.sampleCount) throw unsupported();
+  return {
+    handlerType,
+    dimensions: descriptions.dimensions,
+    durationMs: Math.max(mediaDuration.durationMs, sampleTimeline.durationMs),
+    firstSample: handlerType === "vide" ? {
+      ...firstSample,
+      nalLengthSize: descriptions.nalLengthSizes[firstSample.descriptionIndex - 1],
+    } : firstSample,
+  };
+}
+
+function parseMoov(buffer, parseState, mdats) {
+  const moov = parseBoxHeader(buffer, 0, buffer.length, parseState);
+  if (moov.type !== "moov" || moov.end !== buffer.length || moov.extendsToEnd) throw unsupported();
+  const children = listBoxes(buffer, moov.payloadStart, moov.end, parseState);
+  const mvhd = onlyBox(children, "mvhd");
+  const movieDuration = parseMovieDuration(buffer, mvhd);
+  const tracks = children.filter((box) => box.type === "trak");
+  if (!tracks.length) throw unsupported();
+  const parsedTracks = tracks.map((track) => parseTrack(buffer, track, parseState, mdats));
+  const videoDimensions = parsedTracks
+    .filter(({ handlerType }) => handlerType === "vide")
+    .map(({ dimensions }) => dimensions);
+  if (!videoDimensions.length || videoDimensions.some(({ width, height }) => (
+    width !== videoDimensions[0].width || height !== videoDimensions[0].height
+  ))) {
+    throw unsupported();
+  }
+  const durationMs = Math.max(movieDuration.durationMs,
+    ...parsedTracks.map(({ durationMs: trackDuration = 0 }) => trackDuration));
+  if (durationMs > MAX_CLIP_DURATION_MS) throw unsupported();
+  return {
+    durationMs,
+    ...videoDimensions[0],
+    videoSamples: parsedTracks
+      .filter(({ handlerType }) => handlerType === "vide")
+      .map(({ firstSample }) => firstSample),
+  };
+}
+
+async function scanTopLevel(state) {
+  let offset = 0;
+  let boxes = 0;
+  let ftyp = null;
+  let moov = null;
+  const mdats = [];
+  while (offset < state.expectedBytes) {
+    ensureWithinDeadline(state);
+    boxes += 1;
+    if (boxes > MAX_TOP_LEVEL_BOXES || state.expectedBytes - offset < 8) throw unsupported();
+    const headerBytes = Math.min(16, state.expectedBytes - offset);
+    const header = await getRange(state, offset, offset + headerBytes - 1);
+
+    // The local buffer contains only the header. Resolve the declared size
+    // against the complete object instead of treating the range end as the box
+    // boundary.
+    const size32 = header.readUInt32BE(0);
+    const type = fourCc(header, 4);
+    let headerSize = type === "uuid" ? 24 : 8;
+    let size;
+    if (size32 === 0) {
+      size = state.expectedBytes - offset;
+    } else if (size32 === 1) {
+      if (header.length < 16) throw unsupported();
+      size = uint64(header, 8);
+      headerSize += 8;
+    } else {
+      size = size32;
+    }
+    if (size < headerSize || size > state.expectedBytes - offset) throw unsupported();
+    const descriptor = {
+      type,
+      start: offset,
+      end: offset + size,
+      size,
+      headerSize,
+      payloadStart: offset + headerSize,
+    };
+    if (type === "ftyp") {
+      if (ftyp) throw unsupported();
+      if (size > MAX_FTYP_BYTES) throw unsupported();
+      ftyp = descriptor;
+    }
+    if (type === "moov") {
+      if (moov) throw unsupported();
+      if (size > MAX_MOOV_BYTES) throw unsupported();
+      moov = descriptor;
+    }
+    if (type === "mdat") mdats.push(descriptor);
+    offset += size;
+  }
+  if (offset !== state.expectedBytes || !ftyp || !moov
+      || !mdats.length || mdats.every((mdat) => mdat.end <= mdat.payloadStart)) {
+    throw unsupported();
+  }
+  return { ftyp, moov, mdats };
+}
+
+function readNalLength(buffer, offset, lengthSize) {
+  let value = 0;
+  for (let index = 0; index < lengthSize; index += 1) value = value * 256 + buffer[offset + index];
+  return value;
+}
+
+async function verifyFirstAvcSample(state, sample) {
+  if (!sample || !Number.isSafeInteger(sample.size) || sample.size < 1
+      || sample.size > MAX_FIRST_SAMPLE_BYTES || ![1, 2, 4].includes(sample.nalLengthSize)) {
+    throw unsupported();
+  }
+  const bytes = await getRange(state, sample.offset, sample.offset + sample.size - 1);
+  let cursor = 0;
+  let units = 0;
+  let hasIdr = false;
+  while (cursor < bytes.length) {
+    units += 1;
+    if (units > 4_096 || cursor + sample.nalLengthSize > bytes.length) throw unsupported();
+    const length = readNalLength(bytes, cursor, sample.nalLengthSize);
+    cursor += sample.nalLengthSize;
+    if (!length || cursor + length > bytes.length) throw unsupported();
+    const header = bytes[cursor];
+    const type = header & 0x1f;
+    if ((header & 0x80) !== 0 || type < 1 || type > 23) throw unsupported();
+    if (type === 5) {
+      if (length < 2 || (header & 0x60) === 0) throw unsupported();
+      const slice = new BitReader(rbsp(bytes.subarray(cursor + 1, cursor + length)));
+      if (slice.unsignedExpGolomb() !== 0 || slice.unsignedExpGolomb() % 5 !== 2
+          || slice.unsignedExpGolomb() > 255) {
+        throw unsupported();
+      }
+      hasIdr = true;
+    }
+    cursor += length;
+  }
+  if (cursor !== bytes.length || !hasIdr) throw unsupported();
+}
+
+/**
+ * Inspect a stored MP4 using authenticated, exact byte ranges.
+ *
+ * The optional `ifMatch` value should be the strong ETag observed by the
+ * caller's HEAD request. When supplied, it is signed and sent on every GET so
+ * the probe cannot combine boxes from different object generations.
+ *
+ * This is deliberately a bounded structural preflight, not a software decode.
+ * Its result must never by itself set codec_status=verified or make a clip
+ * public: slice payloads and later access units can still fail to decode.
+ */
+export async function verifyMp4Compatibility({
+  objectKey,
+  expectedBytes,
+  ifMatch,
+  env = process.env,
+  fetchImpl = globalThis.fetch,
+} = {}) {
+  if (!Number.isSafeInteger(expectedBytes) || expectedBytes < 16) throw unsupported();
+  if (typeof fetchImpl !== "function") throw unavailable();
+
+  let config;
+  try {
+    config = getMediaConfig(env);
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 503) throw error;
+    throw unavailable();
+  }
+  if (!config.configured) throw unavailable();
+  const key = normalizedObjectKey(objectKey);
+  const etag = normalizedIfMatch(ifMatch);
+  const state = {
+    config,
+    objectUrl: endpointObjectUrl(config, key),
+    expectedBytes,
+    ifMatch: etag,
+    fetchImpl,
+    requests: 0,
+    responseBytes: 0,
+    deadline: Date.now() + MAX_WALL_MS,
+  };
+
+  const { ftyp, moov, mdats } = await scanTopLevel(state);
+  const ftypBytes = await getRange(state, ftyp.start, ftyp.end - 1);
+  const moovBytes = await getRange(state, moov.start, moov.end - 1);
+  const parseState = { boxes: 0 };
+  try {
+    validateFtyp(ftypBytes, parseState);
+    const parsed = parseMoov(moovBytes, parseState, mdats);
+    for (const sample of parsed.videoSamples) await verifyFirstAvcSample(state, sample);
+    const { videoSamples, ...projection } = parsed;
+    void videoSamples;
+    return projection;
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+    throw unsupported();
+  }
+}

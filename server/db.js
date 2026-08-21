@@ -151,6 +151,7 @@ CREATE TABLE IF NOT EXISTS fan_club_messages (
   artist     TEXT NOT NULL,
   user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   text       TEXT NOT NULL,
+  client_mutation_id TEXT,
   removed    INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL
 );
@@ -162,6 +163,7 @@ CREATE TABLE IF NOT EXISTS dms (
   from_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   to_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   text       TEXT NOT NULL,
+  client_mutation_id TEXT,
   removed    INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL
 );
@@ -202,6 +204,7 @@ CREATE TABLE IF NOT EXISTS going (
   venue       TEXT NOT NULL,
   city        TEXT NOT NULL DEFAULT '',
   date        TEXT NOT NULL DEFAULT '',
+  created_at  INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (user_id, concert_key)
 );
 CREATE INDEX IF NOT EXISTS idx_going_key ON going(concert_key);
@@ -299,10 +302,10 @@ CREATE TABLE IF NOT EXISTS notifications (
 CREATE INDEX IF NOT EXISTS idx_notifs_user ON notifications(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_notifs_cursor ON notifications(user_id, created_at DESC, id DESC);
 
--- ---- Tour dates (scraped live into the DB, not the bundled file) -------------
--- Written by the in-process scheduler (server/tourdates.js) from Ticketmaster /
--- Bandsintown; served via GET /api/tourdates and merged into the client catalog.
--- No git push, no redeploy, updates go live the moment the scheduler writes.
+-- ---- Tour dates (provider imports + authoritative artist/admin batches) -------
+-- Provider rows have no owner and remain immediately public. First-party rows
+-- carry owner/release attribution, so scheduled dates can be withheld without
+-- client-local state or a redeploy.
 CREATE TABLE IF NOT EXISTS tour_dates (
   id         TEXT PRIMARY KEY,
   artist     TEXT NOT NULL,
@@ -314,7 +317,9 @@ CREATE TABLE IF NOT EXISTS tour_dates (
   ticket_url TEXT,
   sold_out   INTEGER NOT NULL DEFAULT 0,
   source     TEXT,
-  updated_at INTEGER NOT NULL
+  updated_at INTEGER NOT NULL,
+  owner_id   TEXT REFERENCES users(id) ON DELETE CASCADE,
+  release_at INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_tourdates_artist ON tour_dates(artist);
 
@@ -450,6 +455,7 @@ CREATE TABLE IF NOT EXISTS lounge_messages (
   lounge_id  TEXT NOT NULL,
   user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   text       TEXT NOT NULL,
+  client_mutation_id TEXT,
   removed    INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL
 );
@@ -546,6 +552,7 @@ CREATE TABLE IF NOT EXISTS media_objects (
   object_key    TEXT PRIMARY KEY,
   owner_id      TEXT NOT NULL,
   purpose       TEXT NOT NULL,
+  byte_size     INTEGER NOT NULL DEFAULT 0 CHECK (byte_size >= 0),
   status        TEXT NOT NULL DEFAULT 'issued'
                   CHECK (status IN ('issued','associated','delete_queued','deletion_dead')),
   created_at    INTEGER NOT NULL,
@@ -555,6 +562,142 @@ CREATE TABLE IF NOT EXISTS media_objects (
   UNIQUE (owner_id, object_key)
 );
 CREATE INDEX IF NOT EXISTS idx_media_objects_owner ON media_objects(owner_id, status, created_at);
+
+-- Every returned upload ticket consumes the owner's rolling upload allowance.
+-- This history intentionally outlives media_objects deletion for 24 hours, so
+-- rapidly uploading and deleting cannot reset the bandwidth/storage budget.
+-- Account erasure removes it through the owner FK; old events are pruned by the
+-- media cleanup worker and opportunistically before each new reservation.
+CREATE TABLE IF NOT EXISTS media_upload_issuances (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  owner_id   TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  object_key TEXT NOT NULL,
+  byte_size  INTEGER NOT NULL CHECK (byte_size > 0),
+  issued_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_media_upload_issuances_owner_at
+  ON media_upload_issuances(owner_id, issued_at);
+CREATE INDEX IF NOT EXISTS idx_media_upload_issuances_at
+  ON media_upload_issuances(issued_at);
+
+-- Stable media identity sits above the object ledger. media_objects remains
+-- the deletion authority (and deliberately survives account erasure until the
+-- bucket confirms deletion); these rows describe how an owned source is used by
+-- the product. Source keys/URLs are minted by the server and never replaced by
+-- a client-supplied URL. HEAD verification observes the signed byte count and
+-- MIME transport metadata. Video publication additionally requires a bounded
+-- ISO-BMFF track/duration probe, recorded separately below. Pixel dimensions
+-- and image content remain declared, so the API does not overstate them.
+CREATE TABLE IF NOT EXISTS media_assets (
+  id                 TEXT PRIMARY KEY,
+  owner_id           TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  client_asset_id    TEXT NOT NULL,
+  create_hash        TEXT NOT NULL,
+  purpose            TEXT NOT NULL CHECK (purpose IN ('post','review','venue')),
+  kind               TEXT NOT NULL CHECK (kind IN ('image','video')),
+  source_key         TEXT NOT NULL UNIQUE,
+  source_url         TEXT NOT NULL UNIQUE,
+  original_name      TEXT NOT NULL,
+  mime_type          TEXT NOT NULL,
+  byte_size          INTEGER NOT NULL CHECK (byte_size > 0),
+  width              INTEGER,
+  height             INTEGER,
+  duration_ms        INTEGER,
+  orientation        INTEGER NOT NULL DEFAULT 0 CHECK (orientation IN (0,90,180,270)),
+  metadata_status    TEXT NOT NULL DEFAULT 'pending'
+                         CHECK (metadata_status IN ('pending','declared')),
+  codec_status       TEXT NOT NULL DEFAULT 'pending'
+                         CHECK (codec_status IN ('pending','verified','not_applicable')),
+  codec_verified_at  INTEGER,
+  alt_text           TEXT NOT NULL DEFAULT '' CHECK (length(alt_text) <= 1000),
+  status             TEXT NOT NULL DEFAULT 'upload_pending'
+                         CHECK (status IN ('upload_pending','ready','render_pending','render_unavailable','failed')),
+  edit_recipe        TEXT NOT NULL DEFAULT '{}',
+  recipe_version     INTEGER NOT NULL DEFAULT 1,
+  finalize_hash      TEXT,
+  source_verified_at INTEGER,
+  render_state       TEXT NOT NULL DEFAULT 'not_required'
+                         CHECK (render_state IN ('not_required','pending','unavailable','ready','failed')),
+  render_variant_id  TEXT,
+  poster_variant_id  TEXT,
+  poster_key         TEXT,
+  poster_url         TEXT,
+  poster_time_ms     INTEGER,
+  created_at         INTEGER NOT NULL,
+  updated_at         INTEGER NOT NULL,
+  UNIQUE (owner_id, client_asset_id)
+);
+CREATE INDEX IF NOT EXISTS idx_media_assets_owner_status
+  ON media_assets(owner_id, status, created_at DESC);
+
+-- Renditions are separate owned objects. Today PIT accepts a verified
+-- client-rendered image rendition and a verified still poster. Destructive
+-- video edits deliberately remain unavailable until an authoritative encoder
+-- is configured; no row is marked ready merely because a recipe exists.
+CREATE TABLE IF NOT EXISTS media_variants (
+  id                TEXT PRIMARY KEY,
+  asset_id          TEXT NOT NULL REFERENCES media_assets(id) ON DELETE CASCADE,
+  client_variant_id TEXT NOT NULL,
+  create_hash       TEXT NOT NULL,
+  role              TEXT NOT NULL CHECK (role IN ('render','poster')),
+  object_key        TEXT NOT NULL UNIQUE,
+  public_url        TEXT NOT NULL UNIQUE,
+  mime_type         TEXT NOT NULL,
+  byte_size         INTEGER NOT NULL CHECK (byte_size > 0),
+  width             INTEGER,
+  height            INTEGER,
+  time_ms           INTEGER,
+  status            TEXT NOT NULL DEFAULT 'upload_pending'
+                        CHECK (status IN ('upload_pending','verified','failed')),
+  finalize_hash     TEXT,
+  verified_at       INTEGER,
+  created_at        INTEGER NOT NULL,
+  updated_at        INTEGER NOT NULL,
+  UNIQUE (asset_id, client_variant_id),
+  UNIQUE (asset_id, role)
+);
+CREATE INDEX IF NOT EXISTS idx_media_variants_asset ON media_variants(asset_id, role);
+
+-- A photo re-edit is prepared beside the currently published rendition. The
+-- active media_variants row and media_assets.render_variant_id remain untouched
+-- until the replacement object has passed storage verification. Finalization
+-- then moves this row into media_variants and retires the previous object in one
+-- writer transaction, so a cancelled upload or failed HEAD can never blank the
+-- owner's ready media. There is one pending recipe/output per asset; changing
+-- the pending recipe retires only its unfinished object, never the active one.
+CREATE TABLE IF NOT EXISTS media_asset_revisions (
+  asset_id              TEXT PRIMARY KEY REFERENCES media_assets(id) ON DELETE CASCADE,
+  edit_recipe           TEXT NOT NULL,
+  recipe_version        INTEGER NOT NULL DEFAULT 1,
+  base_render_variant_id TEXT NOT NULL,
+  variant_id            TEXT UNIQUE,
+  client_variant_id     TEXT,
+  create_hash           TEXT,
+  object_key            TEXT UNIQUE,
+  public_url            TEXT UNIQUE,
+  mime_type             TEXT,
+  byte_size             INTEGER CHECK (byte_size IS NULL OR byte_size > 0),
+  status                TEXT NOT NULL DEFAULT 'recipe_pending'
+                           CHECK (status IN ('recipe_pending','upload_pending')),
+  created_at            INTEGER NOT NULL,
+  updated_at            INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_media_asset_revisions_variant
+  ON media_asset_revisions(variant_id);
+
+-- The old posts.photos URL array remains the compatibility/read fallback.
+-- New clients additionally attach up to eight stable assets in the same order.
+-- An asset belongs to at most one post so removing a post has unambiguous
+-- privacy/deletion semantics for its original and every rendition.
+CREATE TABLE IF NOT EXISTS post_media (
+  post_id    TEXT NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+  asset_id   TEXT NOT NULL REFERENCES media_assets(id) ON DELETE CASCADE,
+  position   INTEGER NOT NULL CHECK (position BETWEEN 0 AND 7),
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (post_id, position),
+  UNIQUE (asset_id)
+);
+CREATE INDEX IF NOT EXISTS idx_post_media_asset ON post_media(asset_id);
 
 -- Durable active-object cleanup. Backups use separate BACKUP_S3_* credentials
 -- and never enter this table; the worker signs only MEDIA_* object keys.
@@ -794,6 +937,18 @@ const additiveMigrations = [
   // Bind that token to the exact create request. Reusing a restored draft token
   // after changing its text must never silently return the earlier payload.
   "ALTER TABLE posts ADD COLUMN client_mutation_hash TEXT",
+  // Chat creates use the same one-logical-write retry contract as posts. The
+  // token is scoped to its author by a partial unique index below; old clients
+  // may continue to omit it and receive the legacy at-most-once-request path.
+  "ALTER TABLE dms ADD COLUMN client_mutation_id TEXT",
+  "ALTER TABLE fan_club_messages ADD COLUMN client_mutation_id TEXT",
+  "ALTER TABLE lounge_messages ADD COLUMN client_mutation_id TEXT",
+  // Provider dates remain public (NULL owner, immediate release). Artist/admin
+  // batches carry durable authorship and can be scheduled without leaking.
+  "ALTER TABLE tour_dates ADD COLUMN owner_id TEXT REFERENCES users(id) ON DELETE CASCADE",
+  "ALTER TABLE tour_dates ADD COLUMN release_at INTEGER NOT NULL DEFAULT 0",
+  // Stable attendee pagination for existing rows (0 + user id) and all new rows.
+  "ALTER TABLE going ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0",
   // Marketing consent. Broadcasts must honour this; password resets must not,
   // since a user who opted out of announcements still needs to reach their
   // account. server/emailService.js is where that distinction is enforced.
@@ -823,6 +978,9 @@ const additiveMigrations = [
   // create an object after an early 404. Existing rows safely use NULL/0;
   // newly issued tickets persist their exact expiry and set the sweep barrier.
   "ALTER TABLE media_objects ADD COLUMN upload_expires_at INTEGER",
+  // Existing ledger rows predate byte-accounting and are safely grandfathered
+  // at zero. Every newly returned ticket records its measured byte count.
+  "ALTER TABLE media_objects ADD COLUMN byte_size INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE media_owner_sweeps ADD COLUMN not_before_at INTEGER NOT NULL DEFAULT 0",
   // Keep exact-prefix verification alive after the first empty listing. S3
   // validates a presigned PUT when the request starts, so a slow transfer may
@@ -830,6 +988,14 @@ const additiveMigrations = [
   // pass; newly created account-erasure sweeps receive the bounded quiet window.
   "ALTER TABLE media_owner_sweeps ADD COLUMN finalize_after_at INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE media_owner_sweeps ADD COLUMN verification_passes INTEGER NOT NULL DEFAULT 0",
+  // Accessibility copy belongs to the stable asset rather than a visual edit
+  // recipe, so changing/reading it never implies a new raster/video render.
+  "ALTER TABLE media_assets ADD COLUMN alt_text TEXT NOT NULL DEFAULT ''",
+  // Transport MIME and structural MP4 inspection are not playable-codec proof.
+  // Video rows remain pending until an authoritative decoder/transcoder records
+  // verification; existing rows cannot be newly selected while still pending.
+  "ALTER TABLE media_assets ADD COLUMN codec_status TEXT NOT NULL DEFAULT 'pending'",
+  "ALTER TABLE media_assets ADD COLUMN codec_verified_at INTEGER",
 ];
 db.exec("BEGIN IMMEDIATE");
 try {
@@ -849,6 +1015,9 @@ try {
       .some((entry) => String(entry.name).toLowerCase() === column.toLowerCase());
     if (!present) db.exec(stmt);
   }
+  // Image codecs are outside the MP4 compatibility gate. This also gives image
+  // rows created before the codec columns an honest, non-pending state.
+  db.prepare("UPDATE media_assets SET codec_status='not_applicable' WHERE kind='image' AND codec_status='pending'").run();
   db.exec("COMMIT");
 } catch (error) {
   try { db.exec("ROLLBACK"); } catch {}
@@ -856,6 +1025,13 @@ try {
 }
 
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_posts_client_mutation ON posts(user_id, client_mutation_id) WHERE client_mutation_id IS NOT NULL");
+db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_dms_client_mutation ON dms(from_id, client_mutation_id) WHERE client_mutation_id IS NOT NULL");
+db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_fcm_client_mutation ON fan_club_messages(user_id, client_mutation_id) WHERE client_mutation_id IS NOT NULL");
+db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_lounge_client_mutation ON lounge_messages(user_id, client_mutation_id) WHERE client_mutation_id IS NOT NULL");
+db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_tourdates_owner_show ON tour_dates(owner_id, lower(artist), lower(venue), lower(place), date) WHERE owner_id IS NOT NULL");
+db.exec("CREATE INDEX IF NOT EXISTS idx_tourdates_visibility ON tour_dates(release_at, date)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_tourdates_owner ON tour_dates(owner_id, date)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_going_cursor ON going(concert_key, created_at DESC, user_id DESC)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_posts_landing_media ON posts(landing_showcase, photos_public, removed, kind, created_at DESC, id DESC)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_dms_visible_cursor ON dms(from_id, to_id, removed, created_at DESC, id DESC)");
 // The queue is drained by "next pending for this campaign" on every iteration,
@@ -1421,7 +1597,10 @@ export function publicUser(u, { self = false, badges = false } = {}) {
     verified: !!u.verified,
     sponsor: !!u.sponsor,
     artistName: u.artist_name || undefined,
-    home: u.home_city ? { city: u.home_city, lat: u.home_lat, lng: u.home_lng } : null,
+    home: u.home_city ? {
+      city: u.home_city,
+      ...(self ? { lat: u.home_lat, lng: u.home_lng } : {}),
+    } : null,
     bio: u.bio,
     avatarUri: u.avatar_uri,
     avatarColor: u.avatar_color,

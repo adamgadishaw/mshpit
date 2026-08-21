@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { demoDataEnabled } from "../config/runtime.mjs";
+import { demoDataEnabled, remoteIdentityValidationEnabled } from "../config/runtime.mjs";
 import {
   calendarDateKey,
   isUpcomingEventDate,
@@ -15,6 +15,8 @@ test("demo data needs both development mode and the explicit public flag", () =>
   assert.equal(demoDataEnabled(true, "true"), true);
   assert.equal(demoDataEnabled(true, "false"), false);
   assert.equal(demoDataEnabled(false, "true"), false);
+  assert.equal(remoteIdentityValidationEnabled(true), false);
+  assert.equal(remoteIdentityValidationEnabled(false), true);
 });
 
 test("production removes only known generated tour date IDs", () => {
@@ -61,6 +63,8 @@ test("persisted public users use an exact privacy allowlist", () => {
     suspendedUntil: 123,
     createdAt: 100,
     email: "private@example.com",
+    genres: ["Indie", "Jazz"],
+    favoriteArtists: ["Turnstile", "Beyoncé"],
     analyticsConsentAt: 99,
     termsAcceptedAt: 88,
     treble: { title: "Private taste" },
@@ -72,11 +76,22 @@ test("persisted public users use an exact privacy allowlist", () => {
     name: "Real Member",
     role: "fan",
     verified: true,
+    genres: ["Indie", "Jazz"],
+    favoriteArtists: ["Turnstile", "Beyoncé"],
     home: { city: "Toronto" },
   });
   assert.deepEqual(publicProfileCacheEntry({ id: "u_x", name: "X", email: "secret", home: { city: "Ottawa", lat: 1 } }), {
     id: "u_x", name: "X", home: { city: "Ottawa" },
   });
+  const bounded = publicProfileCacheEntry({
+    id: "u_many",
+    genres: Array.from({ length: 14 }, (_, index) => `Genre ${index}`),
+    favoriteArtists: Array.from({ length: 52 }, (_, index) => `Artist ${index}`),
+  });
+  assert.equal(bounded.genres.length, 12);
+  assert.equal(bounded.favoriteArtists.length, 50);
+  assert.deepEqual(bounded.genres.slice(0, 2), ["Genre 0", "Genre 1"]);
+  assert.deepEqual(bounded.favoriteArtists.slice(0, 2), ["Artist 0", "Artist 1"]);
 });
 
 test("persisted feed cache stays bounded for phone startup and localStorage writes", () => {

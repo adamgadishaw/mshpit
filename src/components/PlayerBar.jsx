@@ -7,6 +7,13 @@ import { useAudioPreview } from "../lib/audioPreview";
 import { captureAppError } from "../lib/diagnostics";
 import { trackKey } from "../lib/playback";
 import { uniqueTracks } from "../domain/recommend.mjs";
+import { ownedPlayerPositionEnvelope, restoreOwnedPlayerPosition } from "../domain/player-session.mjs";
+import {
+  directPlayerVideoId,
+  initialPlayerSources,
+  patchPlayerSources,
+  shouldResolvePlayerYouTube,
+} from "../domain/playerSourceResolution.mjs";
 import {
   PLAYER_CLOSE_RAIL_MIN_HEIGHT,
   canUsePlayerCloseSwipe,
@@ -26,6 +33,28 @@ const MAX_YT_RETRIES = 2;
 // Long enough that the preview has started and the transient cause has likely
 // cleared, short enough that most of the song is still ahead.
 const PREVIEW_UPGRADE_DELAY_MS = 6000;
+const PROVIDER_SETTLE_TIMEOUT_MS = 25000;
+
+// Provider fetches do not share a completion barrier: whichever source settles
+// first becomes playable immediately. Cleanup cancels the timer and ignores a
+// late result after a skip, account change, or unmount. A request that already
+// began while expanded may finish while minimized so Restore cannot duplicate it.
+function subscribeToProvider(promise, onSettled, timeoutMs = PROVIDER_SETTLE_TIMEOUT_MS) {
+  let active = true;
+  let settled = false;
+  const finish = (value) => {
+    if (!active || settled) return;
+    settled = true;
+    clearTimeout(timer);
+    onSettled(value ?? null);
+  };
+  const timer = setTimeout(() => finish(null), timeoutMs);
+  Promise.resolve(promise).then(finish).catch(() => finish(null));
+  return () => {
+    active = false;
+    clearTimeout(timer);
+  };
+}
 
 function hasCoarsePointer() {
   if (!web || typeof window === "undefined") return false;
@@ -112,7 +141,7 @@ function Scrubber({ posMs, durMs, onSeek, live }) {
   const [w, setW] = useState(0);
   const trackRef = useRef(null);
   const stRef = useRef({ onSeek, durMs });
-  stRef.current = { onSeek, durMs };
+  stRef.current = { onSeek, durMs, posMs };
 
   useEffect(() => {
     if (!web) return;
@@ -127,8 +156,21 @@ function Scrubber({ posMs, durMs, onSeek, live }) {
     const move = (ev) => seekTo(ev.clientX);
     const up = () => { window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); };
     const down = (ev) => { ev.preventDefault(); seekTo(ev.clientX); window.addEventListener("mousemove", move); window.addEventListener("mouseup", up); };
+    const keydown = (ev) => {
+      const { onSeek: cb, durMs: dur, posMs: pos } = stRef.current;
+      if (!dur) return;
+      const target = ev.key === "Home" ? 0
+        : ev.key === "End" ? dur
+        : ["ArrowRight", "ArrowUp"].includes(ev.key) ? Math.min(dur, pos + 10_000)
+        : ["ArrowLeft", "ArrowDown"].includes(ev.key) ? Math.max(0, pos - 10_000)
+        : null;
+      if (target == null) return;
+      ev.preventDefault();
+      cb(target);
+    };
     el.addEventListener("mousedown", down);
-    return () => { el.removeEventListener("mousedown", down); up(); };
+    el.addEventListener("keydown", keydown);
+    return () => { el.removeEventListener("mousedown", down); el.removeEventListener("keydown", keydown); up(); };
   }, []);
 
   const frac = durMs > 0 ? Math.max(0, Math.min(1, posMs / durMs)) : 0;
@@ -140,6 +182,10 @@ function Scrubber({ posMs, durMs, onSeek, live }) {
     onResponderGrant: (e) => seekAt(e.nativeEvent.locationX),
     onResponderMove: (e) => seekAt(e.nativeEvent.locationX),
   };
+  const accessibilitySeek = (direction) => {
+    if (durMs <= 0) return;
+    onSeek(Math.max(0, Math.min(durMs, posMs + direction * 10_000)));
+  };
   return (
     <View style={styles.scrub}>
       <Text style={styles.time}>{fmtTime(posMs)}</Text>
@@ -147,6 +193,14 @@ function Scrubber({ posMs, durMs, onSeek, live }) {
         ref={trackRef}
         style={styles.track}
         onLayout={(e) => setW(e.nativeEvent.layout.width)}
+        accessible={durMs > 0}
+        accessibilityRole="adjustable"
+        accessibilityLabel="Playback position"
+        accessibilityHint="Use arrow keys or accessibility actions to seek by 10 seconds"
+        accessibilityValue={{ min: 0, max: Math.max(0, Math.round(durMs / 1000)), now: Math.max(0, Math.min(Math.round(durMs / 1000), Math.round(posMs / 1000))), text: `${fmtTime(posMs)} of ${fmtTime(durMs)}` }}
+        accessibilityActions={[{ name: "increment", label: "Forward 10 seconds" }, { name: "decrement", label: "Back 10 seconds" }]}
+        onAccessibilityAction={(event) => accessibilitySeek(event.nativeEvent.actionName === "increment" ? 1 : -1)}
+        {...(web ? { tabIndex: durMs > 0 ? 0 : -1 } : null)}
         {...nativeResponder}
       >
         <View style={styles.trackBg} />
@@ -173,11 +227,24 @@ function VolumeControl({ volume, onChange }) {
     const move = (ev) => setAt(ev.clientX);
     const up = () => { window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); };
     const down = (ev) => { ev.preventDefault(); setAt(ev.clientX); window.addEventListener("mousemove", move); window.addEventListener("mouseup", up); };
+    const keydown = (ev) => {
+      const target = ev.key === "Home" ? 0
+        : ev.key === "End" ? 1
+        : ["ArrowRight", "ArrowUp"].includes(ev.key) ? Math.min(1, volumeRef.current + 0.05)
+        : ["ArrowLeft", "ArrowDown"].includes(ev.key) ? Math.max(0, volumeRef.current - 0.05)
+        : null;
+      if (target == null) return;
+      ev.preventDefault();
+      cbRef.current(target);
+    };
     el.addEventListener("mousedown", down);
-    return () => { el.removeEventListener("mousedown", down); up(); };
+    el.addEventListener("keydown", keydown);
+    return () => { el.removeEventListener("mousedown", down); el.removeEventListener("keydown", keydown); up(); };
   }, []);
   const setAtX = (x) => { if (w > 0) onChange(Math.max(0, Math.min(1, x / w))); };
   const muted = volume <= 0.001;
+  const volumeRef = useRef(volume);
+  volumeRef.current = volume;
   const toggleMute = () => { if (muted) onChange(prevRef.current || 0.8); else { prevRef.current = volume; onChange(0); } };
   const pct = `${(Math.max(0, Math.min(1, volume)) * 100).toFixed(1)}%`;
   const nativeResponder = web ? {} : {
@@ -189,7 +256,19 @@ function VolumeControl({ volume, onChange }) {
       <Pressable onPress={toggleMute} hitSlop={6} accessibilityRole="button" accessibilityLabel={muted ? "Unmute" : "Mute"}>
         <Icon name={muted ? "volume-x" : "volume"} size={16} color={colors.textDim} />
       </Pressable>
-      <View ref={trackRef} style={styles.volTrack} onLayout={(e) => setW(e.nativeEvent.layout.width)} {...nativeResponder}>
+      <View
+        ref={trackRef}
+        style={styles.volTrack}
+        onLayout={(e) => setW(e.nativeEvent.layout.width)}
+        accessible
+        accessibilityRole="adjustable"
+        accessibilityLabel="Volume"
+        accessibilityValue={{ min: 0, max: 100, now: Math.round(volume * 100), text: `${Math.round(volume * 100)} percent` }}
+        accessibilityActions={[{ name: "increment", label: "Increase volume" }, { name: "decrement", label: "Decrease volume" }]}
+        onAccessibilityAction={(event) => onChange(Math.max(0, Math.min(1, volume + (event.nativeEvent.actionName === "increment" ? 0.05 : -0.05))))}
+        {...(web ? { tabIndex: 0 } : null)}
+        {...nativeResponder}
+      >
         <View style={styles.trackBg} />
         <View style={[styles.trackFill, { width: pct }]} />
         <View style={[styles.thumb, { left: pct }]} />
@@ -227,7 +306,7 @@ export default function PlayerBar({
   // every play so the You screen can count them, but showing the same song
   // three times in a row is just noise.
   const recentPlays = useMemo(() => uniqueTracks(history, trackKey), [history]);
-  const { resolveYouTube, invalidateYouTube, resolveDeezerPreview, youtubeLookupWasTransient } = useStore();
+  const { session, resolveYouTube, invalidateYouTube, resolveDeezerPreview, youtubeLookupWasTransient } = useStore();
   const column = layout === "column";
   const { width: winWidth } = useWindowDimensions();
   const compactMobile = !column && winWidth < 700;
@@ -240,47 +319,82 @@ export default function PlayerBar({
   const index = Math.max(0, Math.min(player?.index || 0, list.length - 1));
   const cur = list[index];
   const curKey = trackKey(cur);
-  const directVideoId = /^[A-Za-z0-9_-]{11}$/.test(String(cur?.videoId || "")) ? String(cur.videoId) : null;
+  const directVideoId = directPlayerVideoId(cur);
   const youtubeHostId = column ? "pit-youtube-player-host-column" : "pit-youtube-player-host-compact";
 
   // Volume (0–1), persisted across sessions; applied to whichever engine is live.
   const [volume, setVol] = useState(() => { try { return web && typeof localStorage !== "undefined" ? Math.max(0, Math.min(1, JSON.parse(localStorage.getItem("pit.volume") ?? "0.8"))) : 0.8; } catch { return 0.8; } });
   useEffect(() => { try { if (web) localStorage.setItem("pit.volume", String(volume)); } catch {} }, [volume]);
 
-  // Resolve the CURRENT track: web prepares YouTube and the Deezer fallback in
-  // parallel. Native intentionally skips the unused YouTube lookup so a ready
-  // preview never waits up to 25 seconds for an iframe-only playback path.
-  const [resolved, setResolved] = useState({ key: null, videoId: null, preview: null });
+  // Resolve each provider independently. A preview can start without waiting on
+  // YouTube, and a direct/stored video ID hydrates without any route call.
+  const [resolved, setResolved] = useState(() => initialPlayerSources({ key: curKey, track: cur }));
+  const resolvedRef = useRef(resolved);
+  const youtubeResolutionRef = useRef(null);
+  resolvedRef.current = resolved;
+
   useEffect(() => {
-    if (!cur) { setResolved({ key: null, videoId: null, preview: null }); return; }
-    let cancelled = false;
-    const timers = new Set();
-    // A stalled provider request must settle so the player can show its existing
-    // unavailable state instead of spinning forever. The underlying fetch may
-    // still finish, but its result is ignored after this track changes.
-    const within = (promise, ms = 25000) => new Promise((resolve) => {
-      const timer = setTimeout(() => { timers.delete(timer); resolve(null); }, ms);
-      timers.add(timer);
-      Promise.resolve(promise).then((value) => {
-        clearTimeout(timer); timers.delete(timer); resolve(value ?? null);
-      }).catch(() => {
-        clearTimeout(timer); timers.delete(timer); resolve(null);
-      });
+    setResolved(initialPlayerSources({ key: curKey, track: cur }));
+    return () => {
+      if (youtubeResolutionRef.current?.key !== curKey) return;
+      youtubeResolutionRef.current.cancel?.();
+      youtubeResolutionRef.current = null;
+    };
+  }, [curKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Stored provider previews can expire, so refresh them once per selected
+  // track. The embedded URL remains usable while that independent request runs.
+  useEffect(() => {
+    if (!cur || !curKey) return undefined;
+    setResolved((current) => patchPlayerSources(current, curKey, { previewPending: true }));
+    let task = null;
+    try { task = resolveDeezerPreview(cur.title, cur.artist); } catch {}
+    return subscribeToProvider(task, (preview) => {
+      setResolved((current) => patchPlayerSources(current, curKey, {
+        ...(preview ? { preview } : null),
+        previewPending: false,
+      }));
     });
-    (async () => {
-      const [videoId, preview] = await Promise.all([
-        web
-          ? (directVideoId ? Promise.resolve(directVideoId) : within(resolveYouTube(cur.title, cur.artist, cur.duration || 0)))
-          : Promise.resolve(null),
-        // Stored provider previews are short-lived signed URLs. Always ask the
-        // resolver for a fresh one; its bounded cache avoids duplicate requests.
-        within(resolveDeezerPreview(cur.title, cur.artist)),
-      ]);
-      if (!cancelled) setResolved({ key: curKey, videoId, preview });
-    })();
-    return () => { cancelled = true; timers.forEach(clearTimeout); timers.clear(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [curKey]);
+
+  // Restored queues mount minimized and paused. Defer a cold YouTube resolver
+  // call until Restore/Play, while still accepting an exact stored video ID.
+  useEffect(() => {
+    if (!cur || !curKey) return undefined;
+    const existingVideoId = resolvedRef.current?.key === curKey ? resolvedRef.current.videoId : null;
+    const shouldResolve = shouldResolvePlayerYouTube({
+      web,
+      minimized,
+      directVideoId,
+      resolvedVideoId: existingVideoId,
+    });
+    if (!shouldResolve) {
+      if (directVideoId && youtubeResolutionRef.current?.key === curKey) {
+        youtubeResolutionRef.current.cancel?.();
+        youtubeResolutionRef.current = null;
+      }
+      setResolved((current) => patchPlayerSources(current, curKey, {
+        ...(directVideoId ? { videoId: directVideoId } : null),
+        youtubePending: youtubeResolutionRef.current?.key === curKey,
+      }));
+      return undefined;
+    }
+    // Minimizing a lookup that already began while expanded does not start a
+    // duplicate request on restore. Let it settle into the same keyed state.
+    if (youtubeResolutionRef.current?.key === curKey) return undefined;
+    setResolved((current) => patchPlayerSources(current, curKey, { youtubePending: true }));
+    let task = null;
+    try { task = resolveYouTube(cur.title, cur.artist, cur.duration || 0); } catch {}
+    const request = { key: curKey, cancel: null };
+    request.cancel = subscribeToProvider(task, (videoId) => {
+      if (youtubeResolutionRef.current === request) youtubeResolutionRef.current = null;
+      setResolved((current) => patchPlayerSources(current, curKey, { videoId, youtubePending: false }));
+    });
+    youtubeResolutionRef.current = request;
+    return undefined;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [curKey, minimized, directVideoId]);
 
   // A song playing its preview because the lookup hit a temporary failure is
   // not a settled outcome. Try again quietly in the background and swap the
@@ -290,7 +404,7 @@ export default function PlayerBar({
     // `resolved.key === curKey` inline rather than the `forThis` binding below:
     // this effect sits above that declaration, and reading it here is a
     // temporal-dead-zone crash.
-    if (!web || !cur || resolved.key !== curKey || resolved.videoId) return;
+    if (!web || minimized || !cur || resolved.key !== curKey || resolved.videoId || resolved.youtubePending) return;
     if (!youtubeLookupWasTransient?.(cur.title, cur.artist)) return;
     let cancelled = false;
     const timer = setTimeout(async () => {
@@ -300,7 +414,7 @@ export default function PlayerBar({
     }, PREVIEW_UPGRADE_DELAY_MS);
     return () => { cancelled = true; clearTimeout(timer); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [curKey, resolved.key, resolved.videoId]);
+  }, [curKey, minimized, resolved.key, resolved.videoId, resolved.youtubePending]);
 
   // Mount YouTube only after a real video ID resolves. Preview-only tracks keep
   // the same visible player surface without creating a hidden cross-origin frame.
@@ -387,7 +501,18 @@ export default function PlayerBar({
   // Resume across reloads (theme switch / F5): remember where we were and pick the
   // song back up instead of restarting it. Position is persisted every few seconds
   // to localStorage; on mount we seek to it once for the same track.
-  const [resume] = useState(() => { try { return web && typeof localStorage !== "undefined" ? JSON.parse(localStorage.getItem("pit.playpos") || "null") : null; } catch { return null; } });
+  const playerOwnerId = session?.id || null;
+  const resume = useMemo(() => {
+    if (!web || typeof localStorage === "undefined") return null;
+    try {
+      // The old key was device-global and could leak one account's position into
+      // another account's matching track. Read only the owner-scoped envelope.
+      localStorage.removeItem("pit.playpos");
+      return restoreOwnedPlayerPosition(JSON.parse(localStorage.getItem("pit.playpos.v2") || "null"), playerOwnerId);
+    } catch {
+      return null;
+    }
+  }, [playerOwnerId]);
   const resumedRef = useRef(false);
   const engineResumeMs = engineResumeRef.current?.key === curKey ? (engineResumeRef.current.ms || 0) : 0;
   const resumeMs = engineResumeMs || (!resumedRef.current && resume && resume.key === curKey ? (resume.ms || 0) : 0);
@@ -469,11 +594,14 @@ export default function PlayerBar({
   // can resume the song instead of restarting it.
   const posRef = useRef(0);
   const keyRef = useRef(curKey);
+  const playerOwnerRef = useRef(playerOwnerId);
   keyRef.current = curKey;
+  playerOwnerRef.current = playerOwnerId;
   useEffect(() => {
     if (!web) return;
     const id = setInterval(() => {
-      if (posRef.current > 1000 && keyRef.current) { try { localStorage.setItem("pit.playpos", JSON.stringify({ key: keyRef.current, ms: posRef.current })); } catch {} }
+      const envelope = ownedPlayerPositionEnvelope(playerOwnerRef.current, keyRef.current, posRef.current);
+      if (envelope) { try { localStorage.setItem("pit.playpos.v2", JSON.stringify(envelope)); } catch {} }
     }, 3000);
     return () => clearInterval(id);
   }, []);
@@ -597,7 +725,7 @@ export default function PlayerBar({
 
   // Unified transport across whichever engine is live (YouTube player or preview mp3).
   const scrubbable = ytActive || !!previewSrc;
-  const resolving = !forThis; // still fetching a source for this track
+  const resolving = !forThis || (!hasVideo && !previewSrc && !!(resolved.youtubePending || resolved.previewPending));
   const posMs = ytActive ? (yt.state.position || 0) : audio.pos * 1000;
   const durMs = ytActive ? (yt.state.duration || 0) : audio.dur * 1000;
   posRef.current = posMs;
@@ -629,8 +757,8 @@ export default function PlayerBar({
     setSaving(false);
     if (result) { setSaved(true); setTimeout(() => setSaved(false), 1800); }
   };
-  const Ctrl = ({ icon, onPress, disabled }) => (
-    <Pressable style={[styles.ctrl, disabled && styles.ctrlOff]} disabled={disabled} onPress={onPress} hitSlop={6}>
+  const Ctrl = ({ icon, label, onPress, disabled }) => (
+    <Pressable style={[styles.ctrl, disabled && styles.ctrlOff]} disabled={disabled} onPress={onPress} hitSlop={6} accessibilityRole="button" accessibilityLabel={label} accessibilityState={{ disabled: !!disabled }}>
       <Icon name={icon} size={17} color={disabled ? colors.textFaint : colors.text} />
     </Pressable>
   );
@@ -866,13 +994,13 @@ export default function PlayerBar({
           </>
         ) : (
           <>
-            <Ctrl icon="chevron-left" onPress={goPrev} disabled={index <= 0} />
-            <Pressable style={[styles.ctrl, styles.play, !scrubbable && styles.ctrlOff]} onPress={playPause} hitSlop={6} disabled={!scrubbable}>
+            <Ctrl icon="chevron-left" label="Previous track" onPress={goPrev} disabled={index <= 0} />
+            <Pressable style={[styles.ctrl, styles.play, !scrubbable && styles.ctrlOff]} onPress={playPause} hitSlop={6} disabled={!scrubbable} accessibilityRole="button" accessibilityLabel={playing ? "Pause" : "Play"} accessibilityState={{ disabled: !scrubbable }}>
               {(connecting || resolving) && !scrubbable
                 ? <View style={styles.dots}><View style={styles.dotDark} /><View style={styles.dotDark} /><View style={styles.dotDark} /></View>
                 : playing ? <View style={styles.pauseGlyph}><View style={styles.pauseBar} /><View style={styles.pauseBar} /></View> : <Icon name="play" size={16} color="#1A1206" />}
             </Pressable>
-            <Ctrl icon="chevron-right" onPress={goNext} disabled={index >= list.length - 1} />
+            <Ctrl icon="chevron-right" label="Next track" onPress={goNext} disabled={index >= list.length - 1} />
 
             {(multi || history.length > 0) && (
               <Pressable style={[styles.queueBtn, panelOpen && styles.queueBtnOn]} onPress={togglePanel} hitSlop={6} accessibilityRole="button" accessibilityState={{ expanded: panelOpen }} accessibilityLabel={`${panelOpen ? "Hide" : "Show"} listening session, ${upNext.length} up next`}>
@@ -886,8 +1014,8 @@ export default function PlayerBar({
                 <Text style={[styles.queueTxt, showVideo && { color: colors.amber }]}>Video</Text>
               </Pressable>
             )}
-            <Ctrl icon="chevron-down" onPress={minimizePlayer} />
-            <Ctrl icon="x" onPress={closePlayer} />
+            <Ctrl icon="chevron-down" label="Minimize player, pauses playback" onPress={minimizePlayer} />
+            <Ctrl icon="x" label="Stop playback and close player" onPress={closePlayer} />
           </>
         )}
       </View>

@@ -1,5 +1,5 @@
-import { useState, useEffect } from "react";
-import { View, Text, StyleSheet, ScrollView, Pressable, Image, Linking } from "react-native";
+import { useState, useEffect, useRef } from "react";
+import { View, Text, StyleSheet, ScrollView, Pressable, Linking } from "react-native";
 import { colors, mono, radius, roleColor, space } from "../theme";
 import { useStore } from "../store";
 import { listenUrl } from "../seed/songs";
@@ -12,8 +12,14 @@ import { BadgeRow } from "../components/Badge";
 import { ACHIEVEMENTS } from "../lib/badges";
 import { showDateMs } from "../lib/showTime";
 import Countdown from "../components/Countdown";
+import SmartImage from "../components/SmartImage";
+import ClipPoster from "../components/ClipPoster";
 import { trackKey } from "../lib/playback";
+import { isVideoUrl } from "../lib/img";
 import { formatDate } from "../domain/dates.mjs";
+import { profileMediaItems } from "../domain/profileMedia.mjs";
+import { accountTargetScope, scopedScreenValue } from "../domain/screenScope.mjs";
+import { tasteMatch } from "../domain/tasteMatch.mjs";
 
 function Stat({ value, label, onPress }) {
   return (
@@ -52,19 +58,56 @@ function TrebleBass({ kind, song, playing, onPlay, onOpenArtist }) {
   );
 }
 
+function ProfileMediaTile({ item, index, onOpen }) {
+  const video = item.kind === "video" || item.type === "video" || isVideoUrl(item.uri);
+  const authoredAlt = typeof item.altText === "string" ? item.altText.trim() : "";
+  return (
+    <Pressable
+      style={styles.galleryCell}
+      onPress={onOpen}
+      accessibilityRole="button"
+      accessibilityLabel={authoredAlt || `Open profile ${video ? "video" : "photo"} ${index + 1}`}
+      accessibilityHint={video ? "Opens the video player" : "Opens the full-size photo"}
+    >
+      {video ? (
+        <ClipPoster uri={item.uri} posterUri={item.posterUrl || item.posterUri || null} style={StyleSheet.absoluteFill} compact accessibilityLabel={authoredAlt || "Concert video preview"} accessible={false} />
+      ) : (
+        <SmartImage uri={item.uri} posterUri={item.posterUrl || item.posterUri || null} style={StyleSheet.absoluteFill} contain={false} previewWidth={720} accessibilityLabel={authoredAlt || "Concert photo"} accessible={false} />
+      )}
+    </Pressable>
+  );
+}
+
 // MySpace-style profile - banner, pfp, now-playing, theme song, Treble/Bass top
 // artists, planned shows, reviews. Built to make people findable and followable.
 export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtist, onOpenVenue, onEditProfile, onPreview, onMessage, onReport, onEditPost, onOpenPhotos, onPlay, onOpenFollowList, onOpenBadges }) {
   const { session, userById, logsByUser, isFollowing, follow, unfollow, followerCount, followingCount, goingFor, userBadges, sharedShows, userPlaylists, loadUser, isBlocked, blockUser, unblockUser, userPoints, userAchievements, loadRewards } = useStore();
   const cachedUser = userById(userId);
-  // The shared public-profile cache deliberately excludes private taste picks,
-  // consent fields, and precise home data. The signed-in member can still see
-  // their own complete server-authoritative session projection.
+  // The shared public-profile cache keeps only server-approved public profile
+  // picks and excludes consent fields and precise home data. The signed-in
+  // member can still see their complete server-authoritative session projection.
   const user = session?.id === userId ? { ...cachedUser, ...session } : cachedUser;
-  const [playlists, setPlaylists] = useState([]);
+  const playlistScope = accountTargetScope(session?.id, `profile:${userId || ""}`);
+  const playlistScopeRef = useRef(playlistScope);
+  playlistScopeRef.current = playlistScope;
+  const [playlistState, setPlaylistState] = useState(() => ({ scope: playlistScope, value: [] }));
+  const playlists = scopedScreenValue(playlistState, playlistScope, []);
   const [missing, setMissing] = useState(false);
   const [playing, setPlaying] = useState(null);
-  useEffect(() => { if (userId) userPlaylists(userId).then(setPlaylists); }, [userId]);
+  useEffect(() => {
+    const requestScope = playlistScope;
+    const controller = new AbortController();
+    setPlaylistState({ scope: requestScope, value: [] });
+    if (!userId) return () => controller.abort();
+    userPlaylists(userId, { signal: controller.signal }).then((rows) => {
+      if (!controller.signal.aborted && playlistScopeRef.current === requestScope) {
+        setPlaylistState({ scope: requestScope, value: Array.isArray(rows) ? rows : [] });
+      }
+    });
+    return () => controller.abort();
+    // userPlaylists is supplied by the store; the account+profile scope owns refreshes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playlistScope, userId]);
   useEffect(() => { if (userId) loadRewards(userId); }, [userId]);
   // Always refresh from the server: fills real follower counts, and makes profiles
   // we've never cached (a follower from a notification) open instead of blanking.
@@ -108,13 +151,13 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtis
   const playPlaylist = (pl) => { const q = (pl.tracks || []).filter((t) => !!trackKey(t)); if (q.length) onPlay?.(q[0], q); };
   // "Crossed paths", shows you've both been to (and artists you've both seen).
   const crossed = !isSelf && session ? sharedShows(user.id) : { shows: [], artists: [] };
+  const match = !isSelf && session ? tasteMatch(session, user) : null;
 
-  // Photo gallery, every photo this person attached to a post, newest first.
+  // Media gallery, every public photo or clip this person attached, newest first.
   // On someone else's profile we only show ones they marked public; you always
-  // see all of your own. Each remembers the show it came from.
-  const gallery = logs.flatMap((l) =>
-    (isSelf || l.photosPublic !== false ? (l.photos || []) : []).map((uri) => ({ uri, log: l }))
-  );
+  // see all of your own. Stable descriptors keep posters, edits, and alt text.
+  const gallery = profileMediaItems(logs, { isSelf });
+  const galleryViewerItems = gallery.map((item) => ({ ...item, by: user.name, ownerId: user.id }));
   const following = isFollowing(user.id);
   const roleLabel = user.role === "admin" ? "ADMIN" : user.role === "artist" ? "VERIFIED ARTIST" : "FAN";
   const playSong = (slot, song) => {
@@ -153,7 +196,7 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtis
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         {/* banner + avatar */}
         <View style={styles.banner}>
-          {user.banner ? <Image source={{ uri: user.banner }} style={StyleSheet.absoluteFill} resizeMode="cover" /> : <View style={styles.bannerFallback} />}
+          {user.banner ? <SmartImage uri={user.banner} style={StyleSheet.absoluteFill} contain={false} accessibilityLabel={`${user.name}'s profile banner`} accessible={false} /> : <View style={styles.bannerFallback} />}
           <View style={styles.bannerShade} />
         </View>
         <View style={styles.head}>
@@ -242,12 +285,38 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtis
           </Pressable>
         )}
 
+        {match && (
+          <View style={styles.tasteMatch}>
+            <View style={styles.tasteMatchHead}>
+              <View style={styles.tasteMatchIcon}><Icon name="music" size={16} color={colors.cool} /></View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.tasteMatchEyebrow}>TASTE MATCH</Text>
+                <Text style={styles.tasteMatchSummary}>{match.summary}</Text>
+              </View>
+            </View>
+            <View style={styles.tasteMatchChips} accessible={false}>
+              {match.sharedArtists.map((artist) => (
+                <Pressable key={`artist:${artist}`} style={styles.tasteMatchArtistChip} onPress={() => onOpenArtist?.(artist)} accessibilityRole="button" accessibilityLabel={`Open ${artist}`}>
+                  <Icon name="music" size={11} color={colors.amber} />
+                  <Text style={styles.tasteMatchArtistText}>{artist}</Text>
+                </Pressable>
+              ))}
+              {match.sharedGenres.map((genre) => (
+                <View key={`genre:${genre}`} style={styles.tasteMatchGenreChip}>
+                  <Text style={styles.tasteMatchGenreText}>{genre}</Text>
+                </View>
+              ))}
+            </View>
+            <Text style={styles.tasteMatchBasis}>Based only on artists and genres you both chose to share.</Text>
+          </View>
+        )}
+
         {/* playlists, saved listening sessions (tap to play the whole set) */}
         {playlists.length > 0 && (
           <>
             <Text style={styles.sectionLabel}>PLAYLISTS · {playlists.length}</Text>
             {playlists.map((pl) => (
-              <Pressable key={pl.id} style={styles.playlist} onPress={() => playPlaylist(pl)}>
+              <Pressable key={pl.id} style={styles.playlistRow} onPress={() => playPlaylist(pl)}>
                 <View style={styles.playlistIcon}><Icon name="play" size={16} color={colors.amber} /></View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.playlistName} numberOfLines={1}>{pl.name}</Text>
@@ -259,15 +328,13 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtis
           </>
         )}
 
-        {/* photo gallery, a wall of every shot from their nights */}
+        {/* Media gallery, using the same resilient descriptor pipeline as You. */}
         {gallery.length > 0 && (
           <>
-            <Text style={styles.sectionLabel}>PHOTOS · {gallery.length}</Text>
+            <Text style={styles.sectionLabel}>MEDIA · {gallery.length}</Text>
             <View style={styles.gallery}>
               {gallery.map((g, i) => (
-                <Pressable key={i} style={styles.galleryCell} onPress={() => onOpenPhotos?.(gallery.map((x) => ({ uri: x.uri, by: user.name, postId: x.log.id, ownerId: user.id })), i, g.log.id)}>
-                  <Image source={{ uri: g.uri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
-                </Pressable>
+                <ProfileMediaTile key={g.id || `${g.postId || "post"}:${g.uri}:${i}`} item={g} index={i} onOpen={() => onOpenPhotos?.(galleryViewerItems, i, g.postId)} />
               ))}
             </View>
           </>
@@ -348,7 +415,7 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtis
         {/* playlists */}
         {user.playlists?.length > 0 && <Text style={styles.sectionLabel}>PLAYLISTS</Text>}
         {user.playlists?.map((pl) => (
-          <View key={pl.id} style={styles.playlist}>
+          <View key={pl.id} style={styles.playlistCard}>
             <View style={styles.plHead}>
               <Icon name="music" size={16} color={colors.amber} />
               <Text style={styles.plName}>{pl.name}</Text>
@@ -368,7 +435,7 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtis
 
 const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: colors.bg },
-  missingBox: { flex: 1, alignItems: "center", justifyContent: "center", gap: 10, padding: 40 },
+  missingBox: { flex: 1, alignItems: "center", justifyContent: "center", gap: 8, padding: 40 },
   missingTitle: { color: colors.text, fontSize: 17, fontWeight: "800", marginTop: 6 },
   missingSub: { color: colors.textDim, fontSize: 14, textAlign: "center", lineHeight: 20 },
   topbar: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 12, paddingBottom: 8 },
@@ -376,9 +443,6 @@ const styles = StyleSheet.create({
   backCircle: { width: 36, height: 36, borderRadius: 18, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
   topTitle: { color: colors.text, fontSize: 14, fontWeight: "800" },
   profileReportBtn: { width: 40, height: 40, borderRadius: 20, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
-  missingBox: { alignItems: "center", gap: 8, paddingTop: 80, paddingHorizontal: 40 },
-  missingTitle: { color: colors.text, fontSize: 17, fontWeight: "800", marginTop: 6 },
-  missingSub: { color: colors.textDim, fontSize: 14, textAlign: "center", lineHeight: 20 },
   content: { paddingBottom: 48 },
   banner: { height: 120, overflow: "hidden", backgroundColor: colors.surfaceAlt },
   bannerFallback: { ...StyleSheet.absoluteFillObject, backgroundColor: colors.surfaceAlt },
@@ -415,7 +479,18 @@ const styles = StyleSheet.create({
   crossedTitle: { color: colors.text, fontSize: 14, fontWeight: "700" },
   crossedNum: { color: colors.magenta, fontWeight: "900", fontFamily: mono },
   crossedSub: { color: colors.textDim, fontSize: 11.5, marginTop: 2 },
-  playlist: { flexDirection: "row", alignItems: "center", gap: 12, marginHorizontal: 16, marginBottom: 8, padding: 12, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface },
+  tasteMatch: { gap: 10, marginTop: 12, marginHorizontal: 16, padding: 14, borderRadius: radius.md, borderWidth: 1, borderColor: colors.cool, backgroundColor: "rgba(65,184,213,0.07)" },
+  tasteMatchHead: { flexDirection: "row", alignItems: "center", gap: 11 },
+  tasteMatchIcon: { width: 34, height: 34, borderRadius: 17, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.cool, backgroundColor: colors.bgElev },
+  tasteMatchEyebrow: { color: colors.cool, fontSize: 10, letterSpacing: 1.4, fontWeight: "900" },
+  tasteMatchSummary: { color: colors.text, fontSize: 13.5, lineHeight: 19, fontWeight: "700", marginTop: 2 },
+  tasteMatchChips: { flexDirection: "row", flexWrap: "wrap", gap: 7 },
+  tasteMatchArtistChip: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 11, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.amber, backgroundColor: colors.bgElev },
+  tasteMatchArtistText: { color: colors.amber, fontSize: 11.5, fontWeight: "800" },
+  tasteMatchGenreChip: { minHeight: 32, justifyContent: "center", paddingHorizontal: 11, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
+  tasteMatchGenreText: { color: colors.textDim, fontSize: 11.5, fontWeight: "700" },
+  tasteMatchBasis: { color: colors.textFaint, fontSize: 10.5, lineHeight: 15 },
+  playlistRow: { flexDirection: "row", alignItems: "center", gap: 12, marginHorizontal: 16, marginBottom: 8, padding: 12, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface },
   playlistIcon: { width: 40, height: 40, borderRadius: 20, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.amber, backgroundColor: colors.bgElev },
   playlistName: { color: colors.text, fontSize: 14.5, fontWeight: "800" },
   playlistSub: { color: colors.textDim, fontSize: 11.5, marginTop: 2 },
@@ -455,7 +530,7 @@ const styles = StyleSheet.create({
   reviewText: { color: colors.textDim, fontSize: 13, lineHeight: 19, marginTop: 8 },
   scorePill: { flexDirection: "row", alignItems: "center", gap: 4 },
   scoreTxt: { color: colors.gold, fontFamily: mono, fontSize: 14, fontWeight: "700" },
-  playlist: { backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 14, marginBottom: 10, marginHorizontal: 16 },
+  playlistCard: { backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 14, marginBottom: 10, marginHorizontal: 16 },
   plHead: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10 },
   plName: { color: colors.text, fontSize: 15, fontWeight: "700" },
   track: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingVertical: 6 },

@@ -15,6 +15,7 @@ export const ERROR_CATALOG = Object.freeze({
   POST_REMOVED: { status: 409, retryable: false },
   POST_MUTATION_CONFLICT: { status: 409, retryable: false },
   RATE_LIMITED: { status: 429, retryable: true },
+  MEDIA_UPLOAD_QUOTA_EXCEEDED: { status: 429, retryable: true },
   DATABASE_UNAVAILABLE: { status: 503, retryable: true },
   MEDIA_STORAGE_UNAVAILABLE: { status: 503, retryable: true },
   MEDIA_TYPE_UNSUPPORTED: { status: 415, retryable: false },

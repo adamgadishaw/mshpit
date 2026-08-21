@@ -13,6 +13,8 @@ import PlaylistAttachment from "./PlaylistAttachment";
 import { useStore } from "../store";
 import { BadgeRow } from "./Badge";
 import { formatDate, relativeTime } from "../domain/dates.mjs";
+import { mediaDisplayItems } from "../domain/postMediaDisplay.mjs";
+import { recommendationDisclosure } from "../domain/feedExperience.mjs";
 
 // "3rd time in the pit" needs a real ordinal, not "3th".
 const ordinal = (n) => {
@@ -40,6 +42,40 @@ function TagRow({ tags, center = false }) {
   );
 }
 
+function RecommendationWhy({ recommendation, expanded, onToggle }) {
+  if (!recommendation) return null;
+  return (
+    <View style={styles.whyWrap}>
+      <Pressable
+        style={({ pressed }) => [styles.whyButton, pressed && styles.controlPressed]}
+        onPress={onToggle}
+        accessibilityRole="button"
+        accessibilityLabel={`${recommendation.label}. ${expanded ? "Hide" : "Show"} why this was recommended.`}
+        accessibilityState={{ expanded }}
+      >
+        <Icon name="discover" size={14} color={colors.amber} />
+        <Text style={styles.whyLabel} numberOfLines={1}>{recommendation.label}</Text>
+        <Text style={styles.whyAction}>{expanded ? "Hide why" : "Why this?"}</Text>
+      </Pressable>
+      {expanded && (
+        <Text style={styles.whyDetail} accessibilityLiveRegion="polite">
+          {recommendation.detail} {recommendation.personalized ? "This recommendation uses your Pit preferences." : "This recommendation is community-based."}
+        </Text>
+      )}
+    </View>
+  );
+}
+
+function NotForMeButton({ onPress }) {
+  if (!onPress) return null;
+  return (
+    <Pressable style={({ pressed }) => [styles.notForMe, pressed && styles.controlPressed]} hitSlop={8} onPress={onPress} accessibilityRole="button" accessibilityLabel="Not for me. Hide this recommendation.">
+      <Icon name="minus" size={14} color={colors.textDim} />
+      <Text style={styles.notForMeTxt}>Not for me</Text>
+    </Pressable>
+  );
+}
+
 // Review-forward feed card: the review is the centerpiece. Artist / venue / date
 // sit on a ticket-stub line below, the score reads at a glance, and the footer
 // opens the Afterparty (like + comments) for that concert.
@@ -48,6 +84,8 @@ export default function TicketStub({ log, onOpen, onNotInterested, onComment, on
   const { userById, likeInfo, toggleLike, commentsFor, session, userBadges, deleteOwnPost } = useStore();
   const author = userById?.(log.userId) || { initials: log.user?.initials, name: log.user?.name, handle: log.user?.handle };
   const [revealed, setRevealed] = useState(!log.inTourWindow);
+  const [whyOpen, setWhyOpen] = useState(false);
+  const recommendation = recommendationDisclosure(log.recommendation);
   // Editing is the author's alone. Admins moderate (remove/mute/ban); they
   // never rewrite someone's review, so no admin bypass here.
   const canEdit = !!onEdit && !!session && session.id === log.userId;
@@ -70,6 +108,12 @@ export default function TicketStub({ log, onOpen, onNotInterested, onComment, on
   const setlist = Array.isArray(log.setlist) ? log.setlist : [];
   const timeLabel = log.timeAgo || relativeTime(log.createdAt);
   const tags = Array.isArray(log.tags) ? log.tags : [];
+  const postMedia = mediaDisplayItems(log).map((item) => ({
+    ...item,
+    by: log.user?.name,
+    postId: log.id,
+    ownerId: log.userId,
+  }));
   // Score analytics: tap the star pill to see WHY the night got its score;
   // hovering it (web) previews the reviewer's tag words.
   const [statsOpen, setStatsOpen] = useState(false);
@@ -126,11 +170,14 @@ export default function TicketStub({ log, onOpen, onNotInterested, onComment, on
         )}
         {!!log.song && <SongAttachment song={log.song} onPlay={onPlay} />}
         {!!log.playlist && <PlaylistAttachment playlist={log.playlist} onPlay={onPlay} />}
-        {log.photos?.length > 0 && (
-          <PostMediaGrid media={log.photos} onOpen={onOpenPhotos ? (i) => onOpenPhotos(log.photos.map((uri) => ({ uri, by: log.user?.name, postId: log.id, ownerId: log.userId })), i, log.id) : undefined} />
+        {postMedia.length > 0 && (
+          <PostMediaGrid media={postMedia} openerScope={log.id} onOpen={onOpenPhotos ? (i, opener) => onOpenPhotos(postMedia, i, log.id, opener) : undefined} />
         )}
 
+        <RecommendationWhy recommendation={recommendation} expanded={whyOpen} onToggle={() => setWhyOpen((current) => !current)} />
+
         <View style={styles.statusFooter}>
+          <NotForMeButton onPress={onNotInterested ? () => onNotInterested(log) : undefined} />
           <Pressable style={({ pressed }) => [styles.fBtn, pressed && styles.controlPressed]} onPress={() => (session ? toggleLike(log.id, log.likes || 0) : onOpen?.(log))} hitSlop={8} accessibilityRole="button" accessibilityLabel={`${liked ? "Unlike" : "Like"}, ${likeCount} likes`}>
             <Icon name="heart" size={18} color={liked ? colors.magenta : colors.textDim} filled={liked} />
             <Text style={[styles.fCount, liked && { color: colors.magenta }]}>{likeCount}</Text>
@@ -219,8 +266,8 @@ export default function TicketStub({ log, onOpen, onNotInterested, onComment, on
         )}
       </Pressable>
       {!!log.song && <SongAttachment song={log.song} onPlay={onPlay} />}
-      {log.photos?.length > 0 && (
-        <PostMediaGrid media={log.photos} onOpen={onOpenPhotos ? (i) => onOpenPhotos(log.photos.map((uri) => ({ uri, by: log.user?.name, postId: log.id, ownerId: log.userId })), i, log.id) : undefined} />
+      {postMedia.length > 0 && (
+        <PostMediaGrid media={postMedia} openerScope={log.id} onOpen={onOpenPhotos ? (i, opener) => onOpenPhotos(postMedia, i, log.id, opener) : undefined} />
       )}
 
       {/* perforated ticket-stub line */}
@@ -255,14 +302,11 @@ export default function TicketStub({ log, onOpen, onNotInterested, onComment, on
         <Text style={styles.setBody}>{setlist.join("  ·  ")}</Text>
       )}
 
+      <RecommendationWhy recommendation={recommendation} expanded={whyOpen} onToggle={() => setWhyOpen((current) => !current)} />
+
       {/* footer → the Afterparty */}
       <View style={styles.footer}>
-        {onNotInterested && (
-          <Pressable style={({ pressed }) => [styles.notForMe, pressed && styles.controlPressed]} hitSlop={8} onPress={() => onNotInterested(log)} accessibilityRole="button" accessibilityLabel="Not for me. Hide this recommendation.">
-            <Icon name="minus" size={14} color={colors.textDim} />
-            <Text style={styles.notForMeTxt}>Not for me</Text>
-          </Pressable>
-        )}
+        <NotForMeButton onPress={onNotInterested ? () => onNotInterested(log) : undefined} />
         <Pressable style={({ pressed }) => [styles.fBtn, pressed && styles.controlPressed]} onPress={() => (session ? toggleLike(log.id, log.likes || 0) : onOpen?.(log))} hitSlop={8} accessibilityRole="button" accessibilityLabel={`${liked ? "Unlike" : "Like"}, ${likeCount} likes`}>
           <Icon name="heart" size={18} color={liked ? colors.magenta : colors.textDim} filled={liked} />
           <Text style={[styles.fCount, liked && { color: colors.magenta }]}>{likeCount}</Text>
@@ -356,6 +400,11 @@ const styles = StyleSheet.create({
   fCount: { color: colors.textDim, fontSize: 13, fontFamily: mono },
   notForMe: { flexDirection: "row", alignItems: "center", gap: 4, minHeight: 32, paddingHorizontal: 6, borderRadius: radius.sm },
   notForMeTxt: { color: colors.textDim, fontSize: 11, fontWeight: "700" },
+  whyWrap: { marginTop: 14, padding: 10, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.bgElev },
+  whyButton: { minHeight: 32, flexDirection: "row", alignItems: "center", gap: 7, borderRadius: radius.sm },
+  whyLabel: { flex: 1, color: colors.text, fontSize: 12.5, fontWeight: "800" },
+  whyAction: { color: colors.amber, fontSize: 11.5, fontWeight: "800" },
+  whyDetail: { color: colors.textDim, fontSize: 12, lineHeight: 17, marginTop: 7 },
   controlPressed: { backgroundColor: colors.surfaceAlt, transform: [{ scale: 0.96 }] },
   afterLink: { flexDirection: "row", alignItems: "center", gap: 2, backgroundColor: colors.surfaceAlt, borderRadius: radius.pill, borderWidth: 1, borderBottomWidth: 2, borderColor: colors.line, paddingHorizontal: 10, minHeight: 32, ...shadow.control },
   afterPressed: { transform: [{ translateY: 1 }], boxShadow: "inset 0 1px 2px rgba(0,0,0,0.16)" },

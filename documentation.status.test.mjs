@@ -46,9 +46,14 @@ test("current incident and security docs retain measured release caveats", async
     assert.match(source, /504,824/);
     assert.match(source, /x-render-routing: no-server/);
   }
-  for (const source of [status, audit, security]) {
-    assert.match(source, /19 advisories/);
-    assert.match(source, /8 moderate and 11\s+high/);
+  for (const source of [status, security]) {
+    assert.match(source, /17 advisories/);
+    assert.match(source, /9 moderate and 8\s+high/);
+    assert.match(source, /do not (?:use|run)\s+`npm audit fix --force`/i);
+  }
+  assert.match(audit, /19 advisories/);
+  assert.match(audit, /8 moderate and 11\s+high/);
+  for (const source of [audit]) {
     assert.match(source, /do not (?:use|run)\s+`npm audit fix --force`/i);
   }
   assert.match(launch, /consistent read lock, not an exclusive\/write/);
