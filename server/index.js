@@ -22,6 +22,7 @@ import { startTourDateScheduler } from "./tourdates.js";
 import { startCacheWarmScheduler } from "./cacheWarmer.js";
 import { startBackupScheduler } from "./backupScheduler.js";
 import { startMediaDeletionScheduler } from "./mediaDeletion.js";
+import { startEmailCampaignScheduler } from "./emailCampaignScheduler.js";
 import { missingStaticAssetResponse } from "./staticPolicy.js";
 import { renderPublicPage } from "./publicPages.js";
 import { randomBytes, randomUUID } from "node:crypto";
@@ -135,7 +136,7 @@ function readBody(req) {
       if (size > BODY_LIMIT) {
         tooLarge = true;
         chunks.length = 0;
-        reject(new ApiError(413, "Request too large.", "VALIDATION_FAILED"));
+        reject(new ApiError(413, "Request too large.", "REQUEST_TOO_LARGE"));
         return;
       }
       chunks.push(c);
@@ -363,13 +364,13 @@ const server = createServer(async (req, res) => {
         const causeName = String(e.cause?.name || "none").replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 40);
         const causeCode = String(e.cause?.code || "").replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 40);
         console.error(`[pit] ${e.status} ${requestId} on ${req.method} ${pathname} (${Date.now() - started}ms): code=${e.code} cause=${causeName}${causeCode ? `/${causeCode}` : ""}`);
-        recordError({ level: "error", code: e.code, status: e.status, method: req.method, route: routePattern, cause: `${causeName}${causeCode ? `/${causeCode}` : ""}` });
+        recordError({ level: "error", code: e.code, status: e.status, method: req.method, route: routePattern, cause: `${causeName}${causeCode ? `/${causeCode}` : ""}`, requestId });
         scheduleAlert();
       }
       return sendApiError(res, e, requestId, cors);
     }
     console.error(`[pit] 500 ${requestId} on ${req.method} ${pathname} (${Date.now() - started}ms):`, e);
-    recordError({ level: "error", code: "UNHANDLED", status: 500, method: req.method, route: routePattern, cause: String(e?.name || "Error") });
+    recordError({ level: "error", code: "UNHANDLED", status: 500, method: req.method, route: routePattern, cause: String(e?.name || "Error"), requestId });
     scheduleAlert();
     return sendApiError(res, e, requestId, cors);
   }
@@ -407,13 +408,23 @@ function scheduleAlert() {
   setTimeout(() => { maybeAlert().catch(() => {}); }, 0).unref?.();
 }
 
-// graceful shutdown, finish in-flight requests, close the DB cleanly
+// graceful shutdown, finish in-flight requests and campaign work, then close
+// the DB cleanly. Stopping the scheduler prevents a new tick from racing the
+// close; its current bounded drain is allowed to settle within the hard timeout.
 let shuttingDown = false;
+let emailCampaignScheduler = null;
 function shutdown(exitCode = 0) {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log("\n[pit] shutting down…");
-  server.close(() => { try { db.close(); } catch {} process.exit(exitCode); });
+  const campaignStop = emailCampaignScheduler?.stop() || Promise.resolve();
+  server.close(async () => {
+    try { await campaignStop; }
+    catch (error) { console.error(`[mail] campaign recovery shutdown failed safely: ${String(error?.name || "Error")}`); }
+    try { db.close(); }
+    catch (error) { console.error(`[pit] database close failed safely: ${String(error?.name || "Error")}`); }
+    process.exit(exitCode);
+  });
   setTimeout(() => process.exit(exitCode), 5000).unref();
 }
 process.on("SIGINT", () => shutdown(0));
@@ -421,6 +432,7 @@ process.on("SIGTERM", () => shutdown(0));
 
 server.listen(PORT, () => {
   console.log(`[pit] up on http://localhost:${PORT} ${PROD ? "(production)" : "(dev)"}, serving API${existsSync(DIST) ? " + web build" : " (no dist/ yet)"}`);
+  emailCampaignScheduler = startEmailCampaignScheduler(); // bounded recovery for durable campaigns already marked sending
   startTourDateScheduler(); // scrapes tour dates into the DB on a timer (no cron/redeploy)
   startCacheWarmScheduler(); // warms popular YouTube lookups daily so first listens play the video, not a preview
   startBackupScheduler(); // verified daily SQLite snapshot on /data; private off-host copy when configured

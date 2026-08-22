@@ -1,0 +1,600 @@
+{
+  "version": 3,
+  "legacyStore": {
+    "file": "src/store.js",
+    "maxUseStateCalls": 48,
+    "allowedStateHooks": [
+      "usePersisted:albumRatings:setAlbumRatings",
+      "usePersisted:artistPosts:setArtistPosts",
+      "usePersisted:artistProfiles:setArtistProfiles",
+      "usePersisted:comments:setComments",
+      "usePersisted:likes:setLikes",
+      "usePersisted:myLikes:setMyLikes",
+      "usePersisted:songRatings:setSongRatings",
+      "usePrivateEphemeral:dmRead:setDmRead",
+      "usePrivateEphemeral:dms:setDms",
+      "usePrivateEphemeral:fanClubMsgs:setFanClubMsgs",
+      "usePrivateEphemeral:fanClubs:setFanClubs",
+      "usePrivateEphemeral:going:setGoing",
+      "usePrivateEphemeral:lounge:setLounge",
+      "usePrivateEphemeral:notifications:setNotifications",
+      "usePrivateEphemeral:requests:setRequests",
+      "useState:adminMemberDirectory:setAdminMemberDirectory",
+      "useState:adminMembers:setAdminMembers",
+      "useState:adminStats:setAdminStats",
+      "useState:artistPhotosSrv:setArtistPhotosSrv",
+      "useState:authReady:setAuthReady",
+      "useState:blockedIds:setBlockedIds",
+      "useState:chatAuthEpoch:setChatAuthEpoch",
+      "useState:chatOutbox:setChatOutboxState",
+      "useState:discoverySidebarResource:setDiscoverySidebarResource",
+      "useState:drafts:setDrafts",
+      "useState:fanClubDirectorySnapshot:setFanClubDirectorySnapshot",
+      "useState:fanClubDirectoryStatus:setFanClubDirectoryStatus",
+      "useState:fanClubMeta:setFanClubMeta",
+      "useState:feed:setFeed",
+      "useState:feedHasMore:setFeedHasMore",
+      "useState:feedLoadingMore:setFeedLoadingMore",
+      "useState:feedNextCursor:setFeedNextCursor",
+      "useState:follows:setFollows",
+      "useState:friendsListening:setFriendsListening",
+      "useState:goingPending:setGoingPending",
+      "useState:mediaReactions:setMediaReactions",
+      "useState:memberCount:setMemberCount",
+      "useState:moderationConsole:setModerationConsole",
+      "useState:myPlaylistState:setMyPlaylistState",
+      "useState:myPlaylistsStatus:setMyPlaylistsStatus",
+      "useState:playHistory:setPlayHistory",
+      "useState:playHistoryAccountId:setPlayHistoryAccountId",
+      "useState:playHistoryErrorMode:setPlayHistoryErrorMode",
+      "useState:playHistoryNextCursor:setPlayHistoryNextCursor",
+      "useState:playHistoryStatus:setPlayHistoryStatus",
+      "useState:privateListeningUntil:setPrivateListeningUntil",
+      "useState:ratingAgg:setRatingAgg",
+      "useState:recentSearchState:setRecentSearchState",
+      "useState:recommendationHiddenIds:setRecommendationHiddenIds",
+      "useState:remoteArtists:setRemoteArtists",
+      "useState:removedIds:setRemovedIds",
+      "useState:removedPhotos:setRemovedPhotos",
+      "useState:reports:setReports",
+      "useState:rewardProfiles:setRewardProfiles",
+      "useState:session:setSession",
+      "useState:snapshots:setSnapshots",
+      "useState:tourDates:setTourDates",
+      "useState:userStats:setUserStats",
+      "useState:users:setUsers",
+      "useState:value:setValue",
+      "useState:value:setValue",
+      "useState:venuePhotoPools:setVenuePhotoPools",
+      "useState:venueReviews:setVenueReviews"
+    ],
+    "maxHookCalls": 149,
+    "allowedHookCalls": {
+      "useContext": 1,
+      "useEffect": 30,
+      "usePersisted": 7,
+      "usePrivateEphemeral": 8,
+      "useRef": 55,
+      "useState": 48
+    }
+  },
+  "legacyApi": {
+    "file": "server/api.js",
+    "maxInlineRoutes": 167,
+    "allowedInlineRoutes": [
+      "DELETE /api/admin/catalog/seed",
+      "DELETE /api/admin/email/templates/:key",
+      "DELETE /api/admin/tracks/override",
+      "DELETE /api/artists/:key/posts/:id",
+      "DELETE /api/feed/preferences/:postId",
+      "DELETE /api/me",
+      "DELETE /api/playlists/:id",
+      "DELETE /api/posts/:id",
+      "DELETE /api/posts/:postId/comments/:id",
+      "GET /api/admin/analytics",
+      "GET /api/admin/analytics/users/:id",
+      "GET /api/admin/artist-queue",
+      "GET /api/admin/artist-requests",
+      "GET /api/admin/badges",
+      "GET /api/admin/badges/:id/holders",
+      "GET /api/admin/catalog/runs",
+      "GET /api/admin/catalog/seed",
+      "GET /api/admin/email/campaigns/:id",
+      "GET /api/admin/email/log",
+      "GET /api/admin/email/overview",
+      "GET /api/admin/email/templates/:key",
+      "GET /api/admin/errors",
+      "GET /api/admin/health",
+      "GET /api/admin/members",
+      "GET /api/admin/moderation",
+      "GET /api/admin/reports",
+      "GET /api/admin/tracks/overrides",
+      "GET /api/artists",
+      "GET /api/artists/:key/profile",
+      "GET /api/artists/candidates",
+      "GET /api/artists/discography",
+      "GET /api/artists/photos",
+      "GET /api/artists/resolve",
+      "GET /api/artists/seen",
+      "GET /api/clips",
+      "GET /api/deezer/track",
+      "GET /api/discover/chart",
+      "GET /api/discover/countries",
+      "GET /api/discover/genres",
+      "GET /api/discover/overview",
+      "GET /api/discovery/sidebar",
+      "GET /api/dms/:otherId",
+      "GET /api/fanclubs",
+      "GET /api/fanclubs/:artist/messages",
+      "GET /api/fanclubs/:artist/meta",
+      "GET /api/feed",
+      "GET /api/feed/for-you",
+      "GET /api/feed/preferences",
+      "GET /api/going/:key/attendees",
+      "GET /api/health",
+      "GET /api/landing/media",
+      "GET /api/lounges/:key/messages",
+      "GET /api/lounges/:key/meta",
+      "GET /api/me",
+      "GET /api/me/blocked",
+      "GET /api/me/export",
+      "GET /api/me/fanclubs",
+      "GET /api/me/following",
+      "GET /api/me/going",
+      "GET /api/me/notifications",
+      "GET /api/me/plays",
+      "GET /api/me/threads",
+      "GET /api/media/assets/:id",
+      "GET /api/people",
+      "GET /api/playlists/:id",
+      "GET /api/plays/friends",
+      "GET /api/posts/:id",
+      "GET /api/posts/:id/comments",
+      "GET /api/posts/:id/playlist",
+      "GET /api/ratings",
+      "GET /api/resolve",
+      "GET /api/songs/search",
+      "GET /api/time",
+      "GET /api/tourdates",
+      "GET /api/unsubscribe",
+      "GET /api/users/:id",
+      "GET /api/users/:id/badges",
+      "GET /api/users/:id/followers",
+      "GET /api/users/:id/following",
+      "GET /api/users/:id/playlists",
+      "GET /api/users/:id/posts",
+      "GET /api/users/:id/rewards",
+      "GET /api/venues/:key/photos",
+      "GET /api/venues/:key/reviews",
+      "GET /api/verify-email",
+      "GET /api/youtube/oembed",
+      "GET /api/youtube/track",
+      "PATCH /api/admin/email/campaigns/:id",
+      "PATCH /api/artists/:key/profile",
+      "PATCH /api/me",
+      "PATCH /api/media/assets/:id",
+      "PATCH /api/playlists/:id",
+      "PATCH /api/posts/:id",
+      "POST /api/admin/artist-requests/:id/approve",
+      "POST /api/admin/artist-requests/:id/reject",
+      "POST /api/admin/artists/enrich",
+      "POST /api/admin/artists/genre",
+      "POST /api/admin/artists/purge",
+      "POST /api/admin/badges",
+      "POST /api/admin/badges/:id/archive",
+      "POST /api/admin/catalog/seed",
+      "POST /api/admin/content/:type/:id",
+      "POST /api/admin/email/campaigns",
+      "POST /api/admin/email/campaigns/:id/pause",
+      "POST /api/admin/email/campaigns/:id/resume",
+      "POST /api/admin/email/campaigns/:id/send",
+      "POST /api/admin/email/campaigns/:id/test",
+      "POST /api/admin/email/preview",
+      "POST /api/admin/email/templates/:key/test",
+      "POST /api/admin/errors/test-alert",
+      "POST /api/admin/moderation/actions",
+      "POST /api/admin/reports/:id/action",
+      "POST /api/admin/reports/:id/dismiss",
+      "POST /api/admin/tracks/override",
+      "POST /api/admin/users/:id/badges",
+      "POST /api/admin/users/:id/ban",
+      "POST /api/admin/users/:id/role",
+      "POST /api/admin/users/:id/sponsor",
+      "POST /api/admin/users/:id/suspend",
+      "POST /api/admin/users/:id/unban",
+      "POST /api/admin/users/:id/unsuspend",
+      "POST /api/admin/users/:id/verified",
+      "POST /api/admin/users/:id/verify-email",
+      "POST /api/artist-requests",
+      "POST /api/artists/:key/posts",
+      "POST /api/dms/:otherId",
+      "POST /api/events",
+      "POST /api/events/batch",
+      "POST /api/fanclubs/:artist/join",
+      "POST /api/fanclubs/:artist/messages",
+      "POST /api/feed/preferences/:postId",
+      "POST /api/feed/revalidate",
+      "POST /api/forgot",
+      "POST /api/going",
+      "POST /api/login",
+      "POST /api/logout",
+      "POST /api/lounges/:key/messages",
+      "POST /api/me/analytics-consent",
+      "POST /api/me/notifications/read",
+      "POST /api/media/assets",
+      "POST /api/media/assets/:id/finalize",
+      "POST /api/media/assets/:id/variants",
+      "POST /api/media/assets/:id/variants/:variantId/finalize",
+      "POST /api/media/presign",
+      "POST /api/media/react",
+      "POST /api/media/reactions",
+      "POST /api/playlists",
+      "POST /api/plays",
+      "POST /api/posts",
+      "POST /api/posts/:id/comments",
+      "POST /api/posts/:id/like",
+      "POST /api/ratings",
+      "POST /api/reports",
+      "POST /api/reset",
+      "POST /api/signup",
+      "POST /api/tourdates",
+      "POST /api/tracks/report",
+      "POST /api/unsubscribe",
+      "POST /api/users/:id/block",
+      "POST /api/users/:id/follow",
+      "POST /api/venues/:key/reviews",
+      "POST /api/verify-email",
+      "POST /api/verify-email/resend",
+      "POST /api/youtube/invalidate",
+      "POST /api/youtube/track/resolve",
+      "PUT /api/admin/badges/:id",
+      "PUT /api/admin/email/templates/:key"
+    ]
+  },
+  "allowedImportViolations": [
+    "src/components/AfterpartyPreview.jsx -> src/store",
+    "src/components/AfterpartySection.jsx -> src/store",
+    "src/components/TicketStub.jsx -> src/store"
+  ],
+  "allowedFileNameViolations": [
+    "src/domain/media-alt-text.mjs",
+    "src/domain/notification-bundles.mjs",
+    "src/domain/player-gesture.mjs",
+    "src/domain/player-session.mjs",
+    "src/domain/playlist-insights.mjs",
+    "src/domain/post-payload.mjs"
+  ],
+  "unexplainedEmptyCatchSignaturesByFile": {
+    "App.js": {
+      "count": 15,
+      "fingerprint": "bee488c0fc23350d21c5"
+    },
+    "server/analyticsService.js": {
+      "count": 1,
+      "fingerprint": "4d294d2c104ee633de31"
+    },
+    "server/api.js": {
+      "count": 13,
+      "fingerprint": "ffa7201fb04aaefe2652"
+    },
+    "server/backupScheduler.js": {
+      "count": 3,
+      "fingerprint": "aef2d1e668207a011d4a"
+    },
+    "server/cacheWarmer.js": {
+      "count": 1,
+      "fingerprint": "16decb03b99e283d549c"
+    },
+    "server/catalogSeed.js": {
+      "count": 5,
+      "fingerprint": "9c7aec1c80ff23d94da7"
+    },
+    "server/dataDirectory.js": {
+      "count": 1,
+      "fingerprint": "9c955b19e0848f2eae7a"
+    },
+    "server/db.js": {
+      "count": 10,
+      "fingerprint": "7808aeabbd5511dcb15f"
+    },
+    "server/emailQueue.js": {
+      "count": 2,
+      "fingerprint": "8854f47205573bead399"
+    },
+    "server/errorLog.js": {
+      "count": 1,
+      "fingerprint": "e8485f04df62b46f322a"
+    },
+    "server/index.js": {
+      "count": 1,
+      "fingerprint": "0ec1ae026137ff72fc6d"
+    },
+    "server/mediaDeletion.js": {
+      "count": 2,
+      "fingerprint": "37e1e014835b82d48555"
+    },
+    "server/moderation.js": {
+      "count": 2,
+      "fingerprint": "d21480b36641d837ab19"
+    },
+    "server/mp4Probe.js": {
+      "count": 1,
+      "fingerprint": "4d33ccc8d900df4e5739"
+    },
+    "server/musicProviders.js": {
+      "count": 3,
+      "fingerprint": "241ac51c662afb550f90"
+    },
+    "server/rewards.js": {
+      "count": 1,
+      "fingerprint": "4d294d2c104ee633de31"
+    },
+    "server/tourdates.js": {
+      "count": 4,
+      "fingerprint": "9b87d29e239149f0efdc"
+    },
+    "server/verification.js": {
+      "count": 1,
+      "fingerprint": "4d294d2c104ee633de31"
+    },
+    "server/wikidataChannels.js": {
+      "count": 1,
+      "fingerprint": "4d294d2c104ee633de31"
+    },
+    "src/components/AfterpartySection.jsx": {
+      "count": 1,
+      "fingerprint": "f24cf247b8b86e9a9275"
+    },
+    "src/components/ErrorBoundary.jsx": {
+      "count": 1,
+      "fingerprint": "ba56d867b8c79dc4fe90"
+    },
+    "src/components/PhotoViewer.jsx": {
+      "count": 3,
+      "fingerprint": "74663b09c290477a8de1"
+    },
+    "src/components/PlayerBar.jsx": {
+      "count": 4,
+      "fingerprint": "88ec27fc8f9bda0ac92b"
+    },
+    "src/components/VenuePhotoWidget.jsx": {
+      "count": 1,
+      "fingerprint": "96d79dad00e0b88777ec"
+    },
+    "src/components/media-editor/MediaEditorWorkspace.jsx": {
+      "count": 4,
+      "fingerprint": "d146935235c7292a1477"
+    },
+    "src/components/moderation/ModerationConsole.jsx": {
+      "count": 1,
+      "fingerprint": "0a5f448a102dd0534995"
+    },
+    "src/domain/moderationConsole.mjs": {
+      "count": 1,
+      "fingerprint": "8d6684cefe1aad585615"
+    },
+    "src/domain/youtubePlayerLifecycle.mjs": {
+      "count": 3,
+      "fingerprint": "ce174d78fb4cce6dcfa4"
+    },
+    "src/domain/youtubeVideoRejections.mjs": {
+      "count": 1,
+      "fingerprint": "90b50fe3ceb140860110"
+    },
+    "src/lib/audioPreview.js": {
+      "count": 9,
+      "fingerprint": "1cf01f70549cf905d1c0"
+    },
+    "src/lib/audioPreview.native.js": {
+      "count": 3,
+      "fingerprint": "a66e02d315335ac9d4b9"
+    },
+    "src/lib/diagnostics.js": {
+      "count": 2,
+      "fingerprint": "618bfa7a2eec9fe29e39"
+    },
+    "src/lib/mediaDraftStaging.native.js": {
+      "count": 1,
+      "fingerprint": "daff8334ee588254ba1e"
+    },
+    "src/lib/mediaEditImageEngine.native.js": {
+      "count": 1,
+      "fingerprint": "047d7615007363c07cc2"
+    },
+    "src/lib/mediaEditImageEngine.web.js": {
+      "count": 1,
+      "fingerprint": "242cdac2248711083a31"
+    },
+    "src/lib/persistenceAdapter.mjs": {
+      "count": 1,
+      "fingerprint": "458ef17f28e58cca95d4"
+    },
+    "src/lib/videoPoster.native.js": {
+      "count": 2,
+      "fingerprint": "4ed3b449f83870e53928"
+    },
+    "src/lib/videoPoster.web.js": {
+      "count": 5,
+      "fingerprint": "5086d58cf2e6458dcfba"
+    },
+    "src/lib/videoPosterAssetLease.mjs": {
+      "count": 1,
+      "fingerprint": "240a3f93878d70fba271"
+    },
+    "src/lib/youtubeIframeApi.mjs": {
+      "count": 2,
+      "fingerprint": "c6de41480559b131c81a"
+    },
+    "src/lib/youtubePlayer.js": {
+      "count": 10,
+      "fingerprint": "e2192c0aa04e191bbea1"
+    },
+    "src/screens/AdminScreen.jsx": {
+      "count": 3,
+      "fingerprint": "6680a6174631a7ee0a68"
+    },
+    "src/screens/ClipsScreen.jsx": {
+      "count": 4,
+      "fingerprint": "a95a9c366db7b96909f2"
+    },
+    "src/screens/FanClubScreen.jsx": {
+      "count": 1,
+      "fingerprint": "04da77a68c2704ec8842"
+    },
+    "src/screens/FanClubsScreen.jsx": {
+      "count": 1,
+      "fingerprint": "a417a5dee13d207d4348"
+    },
+    "src/screens/LandingScreen.jsx": {
+      "count": 3,
+      "fingerprint": "64b8c4beaff4f10c859c"
+    },
+    "src/screens/LogScreen.jsx": {
+      "count": 2,
+      "fingerprint": "081d06c475ad75a4382f"
+    },
+    "src/screens/LoungeScreen.jsx": {
+      "count": 1,
+      "fingerprint": "d92b8b82bec0ba614760"
+    },
+    "src/screens/NearbyScreen.jsx": {
+      "count": 1,
+      "fingerprint": "a28220c8557cecc463e1"
+    },
+    "src/screens/PolicyScreen.jsx": {
+      "count": 1,
+      "fingerprint": "a7d7591efd0f54f47090"
+    },
+    "src/screens/ShowScreen.jsx": {
+      "count": 2,
+      "fingerprint": "eebdbd0e789699cc4d12"
+    },
+    "src/screens/VenueScreen.jsx": {
+      "count": 3,
+      "fingerprint": "6235f9ef23733dad3094"
+    },
+    "src/seed/ingested.js": {
+      "count": 1,
+      "fingerprint": "40fd4f5f8d88c2c85d87"
+    },
+    "src/store.js": {
+      "count": 26,
+      "fingerprint": "69161d11273582b04c20"
+    },
+    "src/theme.js": {
+      "count": 5,
+      "fingerprint": "99a890fb99aed55833ee"
+    }
+  },
+  "legacyDirectApiCallsByFile": {
+    "App.js": {
+      "count": 2,
+      "fingerprint": "1260a8ea1cb87ee324c2"
+    },
+    "src/components/BadgeConsole.jsx": {
+      "count": 4,
+      "fingerprint": "c7ebca0b59658c196273"
+    },
+    "src/components/EmailConsole.jsx": {
+      "count": 11,
+      "fingerprint": "ba27e78ba749ad2976e0"
+    },
+    "src/screens/AdminScreen.jsx": {
+      "count": 7,
+      "fingerprint": "9d5d333df8891ea408bb"
+    },
+    "src/screens/ArtistScreen.jsx": {
+      "count": 2,
+      "fingerprint": "1e87054098510b8dd4dc"
+    },
+    "src/screens/FanClubScreen.jsx": {
+      "count": 1,
+      "fingerprint": "141b6604603e8da6b251"
+    },
+    "src/screens/LandingScreen.jsx": {
+      "count": 1,
+      "fingerprint": "08ed2f55e311cce2a9aa"
+    },
+    "src/screens/LogScreen.jsx": {
+      "count": 4,
+      "fingerprint": "65221131a067f7613e9e"
+    },
+    "src/screens/LoungeScreen.jsx": {
+      "count": 1,
+      "fingerprint": "bb6381b751cf61ea1a1b"
+    },
+    "src/screens/NotificationsScreen.jsx": {
+      "count": 1,
+      "fingerprint": "d3744694ee29d3ccd612"
+    },
+    "src/screens/ShowScreen.jsx": {
+      "count": 2,
+      "fingerprint": "c923239e8695f414f7b1"
+    },
+    "src/screens/UnsubscribeScreen.jsx": {
+      "count": 1,
+      "fingerprint": "01e0028f751a5ee02884"
+    },
+    "src/store.js": {
+      "count": 128,
+      "fingerprint": "04ade288667e3df7f33c"
+    }
+  },
+  "legacyClientContractShapesByFile": {
+    "src/domain/bulkTourSubmission.mjs": {
+      "count": 2,
+      "fingerprint": "51a0f1bcbb216e20c96c"
+    },
+    "src/domain/goingIntent.mjs": {
+      "count": 3,
+      "fingerprint": "a151d6ad04710d822a25"
+    },
+    "src/domain/recommendationPreferenceMutation.mjs": {
+      "count": 1,
+      "fingerprint": "2b232e3a2938c58ec0d0"
+    }
+  },
+  "ambiguousAsyncResultSignaturesByFile": {
+    "App.js": {
+      "count": 1,
+      "fingerprint": "3b9bc393e377e0c78f89"
+    },
+    "server/musicProviders.js": {
+      "count": 2,
+      "fingerprint": "73cfba822635039011a2"
+    },
+    "server/wikidataChannels.js": {
+      "count": 1,
+      "fingerprint": "73fcade72c0a0ebbb7ef"
+    },
+    "src/components/EmailConsole.jsx": {
+      "count": 1,
+      "fingerprint": "f7df5b1d6ea7f2ed8302"
+    },
+    "src/components/moderation/ModerationConsole.jsx": {
+      "count": 2,
+      "fingerprint": "7958f6f87d7988aacef7"
+    },
+    "src/lib/api.js": {
+      "count": 1,
+      "fingerprint": "039cbb3caffd0e821ab6"
+    },
+    "src/lib/mediaDraftStaging.native.js": {
+      "count": 3,
+      "fingerprint": "39b514a38dea7cafc475"
+    },
+    "src/screens/AdminScreen.jsx": {
+      "count": 2,
+      "fingerprint": "c3caa3ebf9f30b870b9a"
+    },
+    "src/screens/LandingScreen.jsx": {
+      "count": 1,
+      "fingerprint": "d24b0a7960ea22a7f0ec"
+    },
+    "src/store.js": {
+      "count": 42,
+      "fingerprint": "20e7215c1dfdd28df168"
+    }
+  },
+  "allowedUnusedCanonicalExports": []
+}

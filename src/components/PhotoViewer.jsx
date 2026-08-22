@@ -10,7 +10,6 @@ import { mediaDisplayKind, mediaDisplayUri, mediaPosterUri } from "../domain/pos
 import { galleryItemPostId, galleryKeyAction, normalizedGalleryIndex, trappedGalleryFocusIndex, videoViewerPhase } from "../domain/mediaViewer.mjs";
 import { analyticsDurationBucket } from "../domain/analyticsPolicy.mjs";
 import { pendingVideoMilestones } from "../domain/mediaAnalytics.mjs";
-import { useStore } from "../store";
 
 const web = Platform.OS === "web";
 
@@ -157,8 +156,19 @@ function ClipStage({ uri, posterUri, postId, onTrack, altText }) {
 // backdrop or Esc to close, and each photo carries its OWN like - reactions
 // key on the photo's durable URL, so a like given from a post follows the same
 // photo into the artist's rolling gallery.
-export default function PhotoViewer({ photos = [], index = 0, postId = null, returnFocusRef = null, onReport, onClose }) {
-  const { session, mediaReactions, loadMediaReactions, toggleMediaReaction, track } = useStore();
+export default function PhotoViewer({
+  photos = [],
+  index = 0,
+  postId = null,
+  returnFocusRef = null,
+  session,
+  mediaReactions = {},
+  loadMediaReactions,
+  toggleMediaReaction,
+  track,
+  onReport,
+  onClose,
+}) {
   const [i, setI] = useState(() => normalizedGalleryIndex(index, photos.length));
   const viewerRef = useRef(null);
   const p = photos[i] || photos[0];

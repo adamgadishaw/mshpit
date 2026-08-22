@@ -1,4 +1,4 @@
-import { clean, clampRating, LIMITS } from "../lib/validate.js";
+import { clean, clampRating, LIMITS } from "./validation.mjs";
 
 // Artist suggestions carry a catalog key that is distinct from the display
 // name. Keep that identity explicit at the client boundary so punctuation and

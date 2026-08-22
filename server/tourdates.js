@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { backgroundJobEnabled } from "./backgroundJobs.js";
-import { runProviderBackgroundJob } from "./backgroundJobCoordinator.js";
+import { runBackgroundJob } from "./backgroundJobCoordinator.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CATALOG = join(HERE, "..", "src", "seed", "catalog.generated.json");
@@ -292,7 +292,7 @@ export function startTourDateScheduler() {
   const triggerRefresh = () => {
     // Freshness is checked only after this job owns the shared slot. That way a
     // queued timer can cheaply skip work made unnecessary while it was waiting.
-    void runTourDateJobSafely(() => runProviderBackgroundJob(async () => {
+    void runTourDateJobSafely(() => runBackgroundJob(async () => {
       if (!shouldRefreshTourDates(storedLastRefreshAt())) return;
       await refresh();
     }));

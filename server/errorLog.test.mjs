@@ -43,6 +43,23 @@ test("repeat occurrences collapse into one row with a count", () => {
   assert.ok(rows[0].first_seen <= rows[0].last_seen);
 });
 
+test("the durable ledger keeps the latest safe request id without splitting a problem", () => {
+  const first = "123e4567-e89b-42d3-a456-426614174000";
+  const latest = "123e4567-e89b-42d3-a456-426614174001";
+  const shared = { code: "DB", status: 500, method: "GET", route: "/api/feed", cause: "SqliteError" };
+  recordError({ ...shared, requestId: first });
+  recordError({ ...shared, requestId: latest });
+  const rows = recentErrors();
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].count, 2);
+  assert.equal(rows[0].last_request_id, latest);
+});
+
+test("request-id correlation accepts only generated UUID shapes", () => {
+  recordError({ code: "DB", status: 500, route: "/api/feed", requestId: "token=user-secret" });
+  assert.equal(recentErrors()[0].last_request_id, null);
+});
+
 test("different problems stay separate", () => {
   recordError({ code: "DB", status: 500, method: "GET", route: "/api/feed", cause: "SqliteError" });
   recordError({ code: "DB", status: 500, method: "POST", route: "/api/feed", cause: "SqliteError" });

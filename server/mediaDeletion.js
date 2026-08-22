@@ -1,4 +1,5 @@
 import { getMediaConfig, mediaConfigured, presignS3Request } from "./media.js";
+import { withImmediateWrite as withWrite } from "./databaseTransaction.js";
 import { ApiError } from "./errors.js";
 
 const OWNER = /^[A-Za-z0-9_-]{1,128}$/;
@@ -55,21 +56,6 @@ export function mediaUploadQuotaLimits(env = process.env) {
     rollingBytes: boundedQuota(env?.MEDIA_UPLOAD_24H_BYTES, DEFAULT_UPLOAD_QUOTAS.rollingBytes, MEBIBYTE, 1024 * 1024 * MEBIBYTE),
     rollingTickets: boundedQuota(env?.MEDIA_UPLOAD_24H_TICKETS, DEFAULT_UPLOAD_QUOTAS.rollingTickets, 1, 100_000),
   };
-}
-
-function withWrite(database, action) {
-  const ownsTransaction = !database.isTransaction;
-  if (ownsTransaction) database.exec("BEGIN IMMEDIATE");
-  try {
-    const result = action();
-    if (ownsTransaction) database.exec("COMMIT");
-    return result;
-  } catch (error) {
-    if (ownsTransaction) {
-      try { database.exec("ROLLBACK"); } catch {}
-    }
-    throw error;
-  }
 }
 
 function safeOwnerId(value) {

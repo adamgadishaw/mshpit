@@ -1,6 +1,7 @@
-// Stable identity for provider-neutral tracks. Artist/profile songs often have no
-// URL until playback resolution, so a title-only fallback can merge two different
-// artists' songs and resume or select the wrong item.
+// Stable identities for provider-neutral tracks and player occurrences. This is
+// pure domain policy: networking and playback engines consume the keys, but do
+// not define them.
+
 export function trackTupleKey(title, artist) {
   return JSON.stringify([String(artist || ""), String(title || "")]);
 }
@@ -8,9 +9,9 @@ export function trackTupleKey(title, artist) {
 // Search-denial results depend on who is listening and whether that account is
 // verified. Scoping the short client cache prevents an anonymous/unverified
 // denial (or one account's daily cap) from following a newly signed-in user.
-export function youtubeLookupCacheKey(title, artist, user = null, source = null) {
-  const actor = user?.id ? String(user.id) : "anonymous";
-  const verification = user?.id && user.emailVerified === true ? "verified" : "unverified";
+export function youtubeLookupCacheKey(title, artist, account = null, source = null) {
+  const actor = account?.id ? String(account.id) : "anonymous";
+  const verification = account?.id && account.emailVerified === true ? "verified" : "unverified";
   const provider = String(source?.provider || "").trim().toLowerCase();
   const sourceId = String(source?.sourceId || "").trim();
   return JSON.stringify([actor, verification, String(artist || ""), String(title || ""), provider, sourceId]);
@@ -48,9 +49,9 @@ export function trackKey(track) {
 }
 
 // Player resolution is scoped to one queue occurrence, not only one recording.
-// Adjacent copies of the same song therefore get independent engine generations
-// and listening-history events instead of inheriting the first copy's ENDED state.
-export function playerResolutionKey({ track, user = null } = {}) {
+// Adjacent copies therefore get independent engine generations and listening
+// history events instead of inheriting the first copy's terminal state.
+export function playerResolutionKey({ track, account = null, user = account } = {}) {
   const actor = user?.id || "anonymous";
   const verification = user?.id && user.emailVerified === true ? "verified" : "unverified";
   const occurrence = typeof track?.queueEntryId === "string" && track.queueEntryId.trim()

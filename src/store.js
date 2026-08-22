@@ -2,12 +2,12 @@ import { createContext, useContext, useState, useEffect, useRef } from "react";
 import { AppState, Platform } from "react-native";
 import { seedFeed, ratedShows, haversineKm } from "./data";
 import { catalogVenues, catalogTourDates, catalogArtists } from "./seed/catalog";
-import { clean, cleanEmail, isEmail, cleanName, isName, cleanHandle, isPassword, clampRating, LIMITS } from "./lib/validate";
+import { clean, cleanEmail, isEmail, cleanName, isName, cleanHandle, isPassword, clampRating, LIMITS } from "./domain/validation.mjs";
 import { load, save } from "./lib/persist";
-import { api, captureAppError, configureApiIdentity } from "./lib/api";
+import { api, AppError, captureAppError, configureApiIdentity } from "./lib/api";
 import { clearStoredTheme, setTheme as applyTheme, storedThemeSelection, syncThemeFromAccount } from "./theme";
 import { artistMeta } from "./seed/ingested";
-import { ACHIEVEMENTS } from "./lib/badges";
+import { ACHIEVEMENTS } from "./domain/badges.mjs";
 import { ENABLE_DEMO_DATA, remoteIdentityValidationEnabled } from "./config/runtime.mjs";
 import { isUpcomingEventDate, PERSISTED_FEED_LIMIT, publicProfileCacheEntry, sanitizePersistedStoreValue, sanitizeTourDates } from "./domain/dataPolicy.mjs";
 import { toIsoDate } from "./domain/dates.mjs";
@@ -49,7 +49,7 @@ import { mergeEditedPost, resolvePostEditTarget } from "./domain/postEditTarget.
 import { postMatchesEditIntent, shouldReconcileEditFailure } from "./domain/postReconciliation.mjs";
 import { activeYouTubeLookupStatus, classifyResolve, backoffFor, RESOLVE_ATTEMPTS, CACHE_MS } from "./domain/playback.mjs";
 import { recommendTracks as recommendFromCandidates } from "./domain/recommend.mjs";
-import { trackKey, trackMetadataKey, trackTupleKey, youtubeLookupCacheKey } from "./lib/playback";
+import { trackKey, trackMetadataKey, trackTupleKey, youtubeLookupCacheKey } from "./domain/trackIdentity.mjs";
 import {
   configureProductAnalytics,
   installProductAnalyticsLifecycle,
@@ -88,12 +88,16 @@ import {
 } from "./domain/privateListening.mjs";
 import { createGoingIntentCoordinator, goingIntentKey } from "./domain/goingIntent.mjs";
 import { accountMutationIsCurrent, captureAccountMutation } from "./domain/accountMutation.mjs";
+import { commandFailure, commandSuccess } from "./domain/commandResult.mjs";
 import {
   ARTIST_REQUEST_CONFIRMATION_ERROR,
   artistRequestFailureMessage,
   confirmedArtistRequest,
   mergeConfirmedArtistRequest,
+  reconcileConfirmedArtistRequestDecision,
 } from "./domain/artistRequestMutation.mjs";
+import { reconcileConfirmedArtistPostRemoval } from "./domain/artistPostMutation.mjs";
+import { reconcileConfirmedNotificationReads } from "./domain/notificationReadMutation.mjs";
 import {
   profileFailureOutcome,
   reconcileProfilePostSnapshot,
@@ -106,6 +110,15 @@ import {
   accountScopedRows,
   favoriteGenreFromHistory,
 } from "./domain/accountPrivateProjection.mjs";
+import {
+  beginLoadState,
+  createLoadState,
+  isLoadCancellation,
+  projectLoadState,
+  rejectLoadState,
+  resolveLoadState,
+} from "./domain/loadState.mjs";
+import { accountTargetScope } from "./domain/screenScope.mjs";
 import {
   activeYouTubeVideoRejections,
   withYouTubeVideoRejection,
@@ -153,6 +166,31 @@ const emptyModerationConsole = () => ({
   recentActions: [],
   nextCursor: null,
 });
+const EMPTY_DISCOVERY_SIDEBAR = Object.freeze({
+  topArtists: Object.freeze([]),
+  trendingVenues: Object.freeze([]),
+  upcomingEvents: Object.freeze([]),
+  location: null,
+  source: null,
+});
+const discoverySidebarScopeFor = (candidate) => accountTargetScope(
+  candidate?.id || null,
+  `discovery-sidebar:${JSON.stringify([
+    candidate?.home?.city || "",
+    candidate?.home?.lat ?? null,
+    candidate?.home?.lng ?? null,
+  ])}`,
+);
+const commandError = (error, context) => commandFailure(
+  error instanceof AppError
+    ? error
+    : captureAppError(error, { context, source: "store-command", toast: false }),
+);
+const localCommandError = (code, context) => commandFailure(new AppError(undefined, {
+  code,
+  context,
+  source: "store-command",
+}));
 
 // Compact relative time ("now" / "5m" / "3h" / "2d") for server timestamps that
 // arrive as epoch ms, so hydrated DMs/comments read like the seed ones.
@@ -334,8 +372,10 @@ export function StoreProvider({ children }) {
     sanitizePersistedStoreValue("pit.users", load("pit.users", seedUsers), ENABLE_DEMO_DATA));
   const [memberCount, setMemberCount] = useState(0); // total signed-up members (from the server)
   const [remoteArtists, setRemoteArtists] = useState({}); // norm -> meta, from the DB artist catalog API
-  const [discoverySidebar, setDiscoverySidebar] = useState({ topArtists: [], trendingVenues: [], upcomingEvents: [], location: null, source: null });
-  const [discoverySidebarStatus, setDiscoverySidebarStatus] = useState("loading");
+  const [discoverySidebarResource, setDiscoverySidebarResource] = useState(() => createLoadState({
+    status: "loading",
+    data: EMPTY_DISCOVERY_SIDEBAR,
+  }));
   const [rewardProfiles, setRewardProfiles] = useState({}); // user id -> authoritative server rewards
   // The HttpOnly cookie, not local storage, owns identity. Production starts
   // locked until /api/me confirms it; otherwise a stale local account B and a
@@ -358,6 +398,19 @@ export function StoreProvider({ children }) {
   const [playHistoryNextCursor, setPlayHistoryNextCursor] = useState(null);
   const playHistoryRequestRef = useRef({ sequence: 0, accountId: session?.id || null });
   const activeAccountId = session?.id || null;
+  const activeDiscoverySidebarScope = discoverySidebarScopeFor(session);
+  const discoverySidebarScopeRef = useRef(activeDiscoverySidebarScope);
+  discoverySidebarScopeRef.current = activeDiscoverySidebarScope;
+  // Effects clear and reload the resource after a location/account transition,
+  // while this projection closes the preceding render so account B (or guest)
+  // can never receive account A's personalized rows or location label.
+  const scopedDiscoverySidebarResource = projectLoadState(
+    discoverySidebarResource,
+    activeDiscoverySidebarScope,
+    EMPTY_DISCOVERY_SIDEBAR,
+  );
+  const discoverySidebar = scopedDiscoverySidebarResource.data;
+  const discoverySidebarStatus = scopedDiscoverySidebarResource.status;
   const playHistoryIsScoped = accountScopeMatches(playHistoryAccountId, activeAccountId);
   const scopedPlayHistory = accountScopedRows(playHistory, playHistoryAccountId, activeAccountId);
   const scopedPlayHistoryStatus = playHistoryIsScoped ? playHistoryStatus : activeAccountId ? "loading" : "ready";
@@ -642,6 +695,9 @@ export function StoreProvider({ children }) {
   const [songRatings, setSongRatings] = usePersisted("pit.songRatings", demoSeed({ "turnstile|healing": { u_mara: 5, u_demo: 5 } }, {}));
   // Server-truth rating aggregates keyed by `${kind}|${ref}` (slice 7).
   const [ratingAgg, setRatingAgg] = useState({});
+  const ratingTicketsRef = useRef(null);
+  if (!ratingTicketsRef.current) ratingTicketsRef.current = createTicketRegistry();
+  const seenCountCache = useRef(new Map());
   const [feedNextCursor, setFeedNextCursor] = useState(null);
   const [feedLoadingMore, setFeedLoadingMore] = useState(false);
   const [feedHasMore, setFeedHasMore] = useState(true);
@@ -663,6 +719,12 @@ export function StoreProvider({ children }) {
   const adoptFeedAccount = (nextAccountId) => {
     if (nextAccountId === feedAccountIdRef.current) return;
     accountMutationEpochRef.current += 1;
+    // Rating aggregates include the viewer's `mine` field. Drop them at the
+    // synchronous identity boundary instead of waiting for a passive effect.
+    // Scoped keys and response guards below provide a second line of defense.
+    setRatingAgg({});
+    seenCountCache.current.clear();
+    setDiscoverySidebarResource(createLoadState({ status: "loading", data: EMPTY_DISCOVERY_SIDEBAR }));
     tourDateReadRef.current.sequence += 1;
     tourDateReadRef.current.accountId = nextAccountId;
     if (!ENABLE_DEMO_DATA) {
@@ -1072,10 +1134,15 @@ export function StoreProvider({ children }) {
   // location and widens gracefully if the exact city has no upcoming listings.
   useEffect(() => {
     let active = true;
-    setDiscoverySidebarStatus("loading");
+    const requestScope = activeDiscoverySidebarScope;
+    setDiscoverySidebarResource((current) => beginLoadState(current, {
+      scope: requestScope,
+      emptyData: EMPTY_DISCOVERY_SIDEBAR,
+      retainData: false,
+    }));
     api("/api/discovery/sidebar", { context: "Loading your local concert lineup", silent: true })
       .then((data) => {
-        if (!active) return;
+        if (!active || discoverySidebarScopeRef.current !== requestScope) return;
         const next = {
           topArtists: Array.isArray(data?.topArtists) ? data.topArtists : [],
           trendingVenues: Array.isArray(data?.trendingVenues) ? data.trendingVenues : [],
@@ -1083,21 +1150,18 @@ export function StoreProvider({ children }) {
           location: data?.location || null,
           source: data?.source || null,
         };
-        setDiscoverySidebar(next);
-        setDiscoverySidebarStatus("ready");
-        if (next.upcomingEvents.length) {
-          setTourDates((current) => {
-            const byId = new Map(current.map((event) => [event.id, event]));
-            next.upcomingEvents.forEach((event) => byId.set(event.id, { ...(byId.get(event.id) || {}), ...event }));
-            const merged = [...byId.values()];
-            tourDatesRef.current = merged;
-            return merged;
-          });
-        }
+        setDiscoverySidebarResource(resolveLoadState({ scope: requestScope, data: next }));
       })
-      .catch(() => { if (active) setDiscoverySidebarStatus("error"); });
+      .catch((error) => {
+        if (active && discoverySidebarScopeRef.current === requestScope) setDiscoverySidebarResource((current) => rejectLoadState(current, {
+          scope: requestScope,
+          error,
+          emptyData: EMPTY_DISCOVERY_SIDEBAR,
+          retainData: false,
+        }));
+      });
     return () => { active = false; };
-  }, [session?.id, session?.home?.city, session?.home?.lat, session?.home?.lng]);
+  }, [activeDiscoverySidebarScope]);
 
   // --- Privacy-safe first-party product analytics ----------------------------
   // The facade sanitizes before a durable retry batch is written, while the API
@@ -1201,7 +1265,7 @@ export function StoreProvider({ children }) {
         return outcome;
       }
     } catch (error) {
-      if (signal?.aborted || error?.name === "AbortError") throw error;
+      if (isLoadCancellation(error, signal)) throw error;
       const outcome = profileFailureOutcome(error, { hasCachedProfile: cachedAtStart });
       if (outcome.evict) quarantine();
       return outcome;
@@ -1215,7 +1279,7 @@ export function StoreProvider({ children }) {
         silent: true,
       }));
     } catch (error) {
-      if (signal?.aborted || error?.name === "AbortError") throw error;
+      if (isLoadCancellation(error, signal)) throw error;
       const outcome = profileFailureOutcome(error, { hasCachedProfile: true });
       if (outcome.evict) {
         quarantine();
@@ -1575,15 +1639,20 @@ export function StoreProvider({ children }) {
 
   // How many times the signed-in user has logged this artist (artist profile
   // "you've been in the pit with them" counter). Cached per session per artist.
-  const seenCountCache = useRef({});
   const artistSeenCount = async (name) => {
-    if (!session || !name) return null;
-    const key = name.toLowerCase();
-    if (seenCountCache.current[key] !== undefined) return seenCountCache.current[key];
+    const accountId = sessionRef.current?.id || null;
+    if (!accountId || !name) return null;
+    const key = accountTargetScope(accountId, `artist-seen:${norm(name)}`);
+    if (seenCountCache.current.has(key)) return seenCountCache.current.get(key);
     try {
       const r = await api(`/api/artists/seen?name=${encodeURIComponent(name)}`, { silent: true });
-      seenCountCache.current[key] = r || null;
-      return r || null;
+      // An account handoff can complete while the request is in flight. The key
+      // prevents cache reuse; this check also keeps the old promise from handing
+      // A's value to a screen now rendering B.
+      if ((sessionRef.current?.id || null) !== accountId) return null;
+      const value = r || null;
+      seenCountCache.current.set(key, value);
+      return value;
     } catch { return null; }
   };
 
@@ -2897,19 +2966,47 @@ export function StoreProvider({ children }) {
       return { ok: false, error: artistRequestFailureMessage(error) };
     }
   };
-  const approveArtist = (reqId) => {
-    setRequests((rs) => rs.map((r) => (r.id === reqId ? { ...r, status: "approved" } : r)));
-    const req = requests.find((r) => r.id === reqId);
-    if (req) {
-      setUsers((all) => all.map((u) => (u.id === req.userId ? { ...u, role: "artist", artistName: req.artistName } : u)));
-      setSession((s) => (s && s.id === req.userId ? { ...s, role: "artist", artistName: req.artistName } : s));
+  const reviewArtistRequest = async (reqId, decision, { signal } = {}) => {
+    const actor = sessionRef.current;
+    const context = decision === "approved" ? "Approving this artist request" : "Rejecting this artist request";
+    if (!actor) return localCommandError("PIT-AUTH-001", context);
+    if (actor.role !== "admin") return localCommandError("PIT-AUTH-002", context);
+    const request = requests.find((entry) => entry.id === reqId);
+    if (!request) return localCommandError("PIT-REQ-002", context);
+    if (request.status !== "pending") return localCommandError("PIT-REQ-003", context);
+    const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
+    const staffScope = staffScopeFor(actor);
+    try {
+      const response = await api(`/api/admin/artist-requests/${encodeURIComponent(reqId)}/${decision === "approved" ? "approve" : "reject"}`, {
+        method: "POST",
+        context,
+        silent: true,
+        signal,
+      });
+      if (response?.ok !== true) return localCommandError("PIT-API-001", context);
+      if (!accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current)
+        || staffScope !== staffScopeFor(sessionRef.current)) {
+        return localCommandError("PIT-AUTH-004", context);
+      }
+      setRequests((current) => reconcileConfirmedArtistRequestDecision(current, { requestId: reqId, status: decision }));
+      if (decision === "approved") {
+        setUsers((current) => current.map((account) => (account.id === request.userId
+          ? { ...account, role: "artist", artistName: request.artistName }
+          : account)));
+        if (sessionRef.current?.id === request.userId) {
+          const nextSession = { ...sessionRef.current, role: "artist", artistName: request.artistName };
+          sessionRef.current = nextSession;
+          setSession(nextSession);
+        }
+      }
+      return commandSuccess({ requestId: reqId, status: decision });
+    } catch (error) {
+      if (isLoadCancellation(error, signal)) throw error;
+      return commandError(error, context);
     }
-    api(`/api/admin/artist-requests/${reqId}/approve`, { method: "POST" }).catch(() => {}); // flips role server-side
   };
-  const rejectArtist = (reqId) => {
-    setRequests((rs) => rs.map((r) => (r.id === reqId ? { ...r, status: "rejected" } : r)));
-    api(`/api/admin/artist-requests/${reqId}/reject`, { method: "POST" }).catch(() => {});
-  };
+  const approveArtist = (reqId, options) => reviewArtistRequest(reqId, "approved", options);
+  const rejectArtist = (reqId, options) => reviewArtistRequest(reqId, "rejected", options);
 
   // Tour dates - bulk batch with a scheduled release time.
   const addTourDatesBatch = async (list, releaseAt) => {
@@ -2964,10 +3061,36 @@ export function StoreProvider({ children }) {
   ]);
   const myNotifications = () => (session ? notifications.filter((n) => n.userId === session.id).sort((a, b) => b.ts - a.ts) : []);
   const unreadNotifications = () => myNotifications().filter((n) => !n.read).length;
-  const markNotificationsRead = () => {
-    if (!session) return;
-    setNotifications((all) => all.map((n) => (n.userId === session.id ? { ...n, read: true } : n)));
-    api("/api/me/notifications/read", { method: "POST" }).catch(() => {});
+  const markNotificationsRead = async ({ signal } = {}) => {
+    const actor = sessionRef.current;
+    const context = "Marking activity as read";
+    if (!actor) return localCommandError("PIT-AUTH-001", context);
+    const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
+    // Only rows present when this command began are eligible for the confirmed
+    // local projection. A notification arriving concurrently must stay unread.
+    const notificationIds = notifications
+      .filter((notification) => notification.userId === actor.id && !notification.read)
+      .map((notification) => notification.id);
+    try {
+      const response = await api("/api/me/notifications/read", {
+        method: "POST",
+        context,
+        silent: true,
+        signal,
+      });
+      if (response?.ok !== true) return localCommandError("PIT-API-001", context);
+      if (!accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current)) {
+        return localCommandError("PIT-AUTH-004", context);
+      }
+      setNotifications((current) => reconcileConfirmedNotificationReads(current, {
+        accountId: actor.id,
+        notificationIds,
+      }));
+      return commandSuccess({ accountId: actor.id, notificationIds });
+    } catch (error) {
+      if (isLoadCancellation(error, signal)) throw error;
+      return commandError(error, context);
+    }
   };
   const postOwner = (postId) => feed.find((l) => l.id === postId)?.userId;
 
@@ -3539,7 +3662,11 @@ export function StoreProvider({ children }) {
   // ({ avg, count, mine }) once loaded, so counts reflect everyone, not just this
   // browser. Reads prefer the server aggregate when present.
   const rKey = (artist, title) => `${norm(artist)}|${norm(title)}`;
-  const aggKey = (kind, artist, title) => `${kind}|${rKey(artist, title)}`;
+  const ratingAggregateKey = (accountId, kind, artist, title) => accountTargetScope(
+    accountId,
+    `rating:${kind}|${rKey(artist, title)}`,
+  );
+  const aggKey = (kind, artist, title) => ratingAggregateKey(activeAccountId, kind, artist, title);
   const aggRate = (map, artist, title) => {
     const r = map[rKey(artist, title)];
     if (!r) return { avg: 0, count: 0, mine: 0 };
@@ -3553,17 +3680,17 @@ export function StoreProvider({ children }) {
   // successful one. Every request claims a ticket for its key; only the newest
   // ticket is allowed to write.
   // Ordering lives in src/domain/latestWins.mjs so the invariant is unit-tested.
-  const ratingTicketsRef = useRef(null);
-  if (!ratingTicketsRef.current) ratingTicketsRef.current = createTicketRegistry();
   const claimRatingTicket = (key) => ratingTicketsRef.current.claim(key);
   const ratingTicketIsCurrent = (key, ticket) => ratingTicketsRef.current.isCurrent(key, ticket);
 
   const loadRating = (kind, artist, title) => {
-    const aggregateKey = aggKey(kind, artist, title);
+    const accountId = sessionRef.current?.id || null;
+    const aggregateKey = ratingAggregateKey(accountId, kind, artist, title);
     const ticket = claimRatingTicket(aggregateKey);
     api(`/api/ratings?kind=${kind}&ref=${encodeURIComponent(rKey(artist, title))}`)
       .then((r) => {
-        if (!ratingTicketIsCurrent(aggregateKey, ticket)) return; // a newer rating won
+        if ((sessionRef.current?.id || null) !== accountId
+          || !ratingTicketIsCurrent(aggregateKey, ticket)) return; // account changed or a newer rating won
         setRatingAgg((m) => ({ ...m, [aggregateKey]: { avg: r.avg, count: r.count, mine: r.mine } }));
       })
       .catch(() => {});
@@ -3571,19 +3698,22 @@ export function StoreProvider({ children }) {
   const albumRating = (artist, title) => ratingAgg[aggKey("album", artist, title)] || aggRate(albumRatings, artist, title);
   const songRating = (artist, title) => ratingAgg[aggKey("song", artist, title)] || aggRate(songRatings, artist, title);
   const rate = (kind, setMap, artist, title, n) => {
-    if (!session) return;
+    const actor = sessionRef.current;
+    if (!actor) return;
+    const accountId = actor.id;
     const nn = clampRating(n);
     const key = rKey(artist, title);
-    const aggregateKey = aggKey(kind, artist, title);
+    const aggregateKey = ratingAggregateKey(accountId, kind, artist, title);
     const sourceMap = kind === "album" ? albumRatings : songRatings;
-    const previous = sourceMap[key]?.[session.id];
+    const previous = sourceMap[key]?.[accountId];
     const previousAggregate = ratingAgg[aggregateKey];
     const ticket = claimRatingTicket(aggregateKey);
-    setMap((m) => ({ ...m, [key]: { ...(m[key] || {}), [session.id]: nn } }));
+    setMap((m) => ({ ...m, [key]: { ...(m[key] || {}), [accountId]: nn } }));
     setRatingAgg((m) => { const cur = m[aggregateKey]; return cur ? { ...m, [aggregateKey]: { ...cur, mine: nn } } : m; });
     api("/api/ratings", { method: "POST", body: { kind, ref: key, rating: nn }, context: `Rating this ${kind}` })
       .then((r) => {
-        if (!ratingTicketIsCurrent(aggregateKey, ticket)) return; // superseded
+        if ((sessionRef.current?.id || null) !== accountId
+          || !ratingTicketIsCurrent(aggregateKey, ticket)) return; // account changed or superseded
         setRatingAgg((m) => ({ ...m, [aggregateKey]: { avg: r.avg, count: r.count, mine: r.mine } }));
       })
       .catch(() => {
@@ -3592,14 +3722,20 @@ export function StoreProvider({ children }) {
         if (!ratingTicketIsCurrent(aggregateKey, ticket)) return;
         setMap((m) => {
           const ratings = { ...(m[key] || {}) };
-          if (previous == null) delete ratings[session.id]; else ratings[session.id] = previous;
+          if (previous == null) delete ratings[accountId]; else ratings[accountId] = previous;
           const next = { ...m };
           if (Object.keys(ratings).length) next[key] = ratings; else delete next[key];
           return next;
         });
         setRatingAgg((m) => {
           const next = { ...m };
-          if (previousAggregate) next[aggregateKey] = previousAggregate; else delete next[aggregateKey];
+          // The local A rating still needs rollback after an A -> B handoff, but
+          // never restore A's viewer-specific aggregate into B's fresh cache.
+          if ((sessionRef.current?.id || null) === accountId && previousAggregate) {
+            next[aggregateKey] = previousAggregate;
+          } else {
+            delete next[aggregateKey];
+          }
           return next;
         });
       });
@@ -3813,11 +3949,40 @@ export function StoreProvider({ children }) {
       .then(({ id }) => { if (id) setArtistPosts((m) => ({ ...m, [norm(name)]: (m[norm(name)] || []).map((x) => (x.id === localId ? { ...x, id } : x)) })); })
       .catch(() => setArtistPosts((m) => ({ ...m, [norm(name)]: (m[norm(name)] || []).filter((x) => x.id !== localId) })));
   };
-  const removeArtistPost = (name, id) => {
-    if (!isArtistOwner(name)) return;
-    setArtistPosts((m) => ({ ...m, [norm(name)]: (m[norm(name)] || []).filter((p) => p.id !== id) }));
-    const enc = encodeURIComponent(norm(name));
-    api(`/api/artists/${enc}/posts/${id}`, { method: "DELETE" }).catch(() => {});
+  const removeArtistPost = async (name, id, { signal } = {}) => {
+    const actor = sessionRef.current;
+    const artistKey = norm(name);
+    const context = "Removing this artist update";
+    if (!actor) return localCommandError("PIT-AUTH-001", context);
+    const ownsTarget = isStaff(actor.role)
+      || (actor.role === "artist" && norm(actor.artistName) === artistKey);
+    if (!ownsTarget) return localCommandError("PIT-AUTH-002", context);
+    if (!(artistPosts[artistKey] || []).some((post) => post.id === id)) {
+      return localCommandError("PIT-REQ-002", context);
+    }
+    const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
+    const enc = encodeURIComponent(artistKey);
+    try {
+      const response = await api(`/api/artists/${enc}/posts/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        context,
+        silent: true,
+        signal,
+      });
+      if (response?.ok !== true) return localCommandError("PIT-API-001", context);
+      const currentActor = sessionRef.current;
+      const stillOwnsTarget = isStaff(currentActor?.role)
+        || (currentActor?.role === "artist" && norm(currentActor.artistName) === artistKey);
+      if (!accountMutationIsCurrent(mutation, currentActor?.id, accountMutationEpochRef.current)
+        || !stillOwnsTarget) {
+        return localCommandError("PIT-AUTH-004", context);
+      }
+      setArtistPosts((current) => reconcileConfirmedArtistPostRemoval(current, { artistKey, postId: id }));
+      return commandSuccess({ artistKey, postId: id });
+    } catch (error) {
+      if (isLoadCancellation(error, signal)) throw error;
+      return commandError(error, context);
+    }
   };
 
   // --- Ban / suspend (staff) ---

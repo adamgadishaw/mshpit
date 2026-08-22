@@ -1,7 +1,6 @@
 import { useState } from "react";
 import { Platform, View, Text, StyleSheet, Pressable, ScrollView } from "react-native";
 import { colors, displayFont, focusRing, font, mono, radius, roleColor, shadow } from "../theme";
-import { useStore } from "../store";
 import Avatar from "./Avatar";
 import Icon from "./Icon";
 import { UpcomingEventCard } from "./VenueDiscoveryCards";
@@ -255,8 +254,18 @@ export function LeftRail({ tab, setTab, session, unread = 0, notifUnread = 0, on
 
 // Right rail: contextual widgets, Top / A-Z artists, trending venues, upcoming
 // events. Read-only discovery surfaces that stay out of the feed's way.
-export function RightRail({ onOpenArtist, onOpenVenue, onFindVenues, onOpenEvent }) {
-  const { topArtists, artistsAlphabetical, trendingVenues, upcomingEvents, discoverySidebar, discoverySidebarStatus } = useStore();
+export function RightRail({
+  topArtists,
+  artistsAlphabetical,
+  trendingVenues,
+  upcomingEvents,
+  discoverySidebar = {},
+  discoverySidebarStatus = "idle",
+  onOpenArtist,
+  onOpenVenue,
+  onFindVenues,
+  onOpenEvent,
+}) {
   const [artistMode, setArtistMode] = useState("top"); // 'top' | 'az'
   const artists = artistMode === "top"
     ? (discoverySidebar.topArtists?.length ? discoverySidebar.topArtists.slice(0, 8) : topArtists(8))

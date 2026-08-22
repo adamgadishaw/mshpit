@@ -5,6 +5,7 @@ import {
   videoEditRequiresExport,
 } from "../src/domain/mediaEdit.mjs";
 import { assertSafeAuthoredText } from "./contentSafety.js";
+import { withImmediateWrite as withWrite } from "./databaseTransaction.js";
 import { ApiError } from "./errors.js";
 import {
   createMediaPresign,
@@ -101,21 +102,6 @@ function normalizedAltText(value) {
 
 function sameList(a, b) {
   return a.length === b.length && a.every((value, index) => value === b[index]);
-}
-
-function withWrite(database, action) {
-  const ownsTransaction = !database.isTransaction;
-  if (ownsTransaction) database.exec("BEGIN IMMEDIATE");
-  try {
-    const result = action();
-    if (ownsTransaction) database.exec("COMMIT");
-    return result;
-  } catch (error) {
-    if (ownsTransaction) {
-      try { database.exec("ROLLBACK"); } catch {}
-    }
-    throw error;
-  }
 }
 
 function storedUploadBody(row) {

@@ -23,6 +23,19 @@ export function mergeConfirmedArtistRequest(current, request) {
   return [request, ...rows.filter((row) => row?.id !== request.id)];
 }
 
+export function reconcileConfirmedArtistRequestDecision(rows, { requestId, status } = {}) {
+  const current = Array.isArray(rows) ? rows : [];
+  const id = typeof requestId === "string" ? requestId.trim() : "";
+  if (!id || (status !== "approved" && status !== "rejected")) return current;
+  let changed = false;
+  const next = current.map((request) => {
+    if (request?.id !== id || request.status !== "pending") return request;
+    changed = true;
+    return { ...request, status };
+  });
+  return changed ? next : current;
+}
+
 export function artistRequestFailureMessage(error) {
   const safeMessage = typeof error?.userMessage === "string" ? error.userMessage.trim() : "";
   return safeMessage || ARTIST_REQUEST_SAVE_ERROR;

@@ -1,11 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Modal, View, Text, StyleSheet, Pressable, Image, ScrollView, Platform, PanResponder, useWindowDimensions } from "react-native";
 import { colors, radius, mono, shadow } from "../theme";
-import { useStore } from "../store";
 import { useYouTubePlayer } from "../lib/youtubePlayer";
 import { useAudioPreview } from "../lib/audioPreview";
 import { captureAppError } from "../lib/diagnostics";
-import { playerResolutionKey, trackKey } from "../lib/playback";
+import { playerResolutionKey, trackKey } from "../domain/trackIdentity.mjs";
 import { uniqueTracks } from "../domain/recommend.mjs";
 import { ownedPlayerPositionEnvelope, restoreOwnedPlayerPosition } from "../domain/player-session.mjs";
 import { playerYouTubeLookupNotice } from "../domain/playback.mjs";
@@ -307,12 +306,18 @@ export default function PlayerBar({
   onPlaybackStarted,
   onOpenArtist,
   onAddToPlaylist,
+  session,
+  resolveYouTube,
+  invalidateYouTube,
+  youtubeVideoRejected,
+  resolveDeezerPreview,
+  youtubeLookupWasTransient,
+  youtubeLookupStatus,
 }) {
   // Recent listening is de-duplicated for display only: play history keeps
   // every play so the You screen can count them, but showing the same song
   // three times in a row is just noise.
   const recentPlays = useMemo(() => uniqueTracks(history, trackKey), [history]);
-  const { session, resolveYouTube, invalidateYouTube, youtubeVideoRejected, resolveDeezerPreview, youtubeLookupWasTransient, youtubeLookupStatus } = useStore();
   const column = layout === "column";
   const { width: winWidth } = useWindowDimensions();
   const compactMobile = !column && winWidth < 700;

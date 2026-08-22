@@ -4188,7 +4188,7 @@ export const routes = {
     requireAdmin(ctx);
     const existing = emailStmts.campaignById.get(ctx.params.id);
     if (!existing) throw new ApiError(404, "No such campaign.", "NOT_FOUND");
-    if (existing.status !== "draft") throw new ApiError(409, "This campaign has already started sending and can no longer be edited.", "VALIDATION_FAILED");
+    if (existing.status !== "draft") throw new ApiError(409, "This campaign has already started sending and can no longer be edited.", "CONFLICT");
     const source = ctx.body && typeof ctx.body === "object" && !Array.isArray(ctx.body) ? ctx.body : {};
     const has = (field) => Object.prototype.hasOwnProperty.call(source, field);
     const subject = has("subject") ? clean(source.subject, { max: 200 }) : existing.subject;
@@ -4213,7 +4213,7 @@ export const routes = {
       updated_at: now(),
     });
     if (updated.changes !== 1) {
-      throw new ApiError(409, "This campaign changed or started sending. Refresh it before editing again.", "VALIDATION_FAILED");
+      throw new ApiError(409, "This campaign changed or started sending. Refresh it before editing again.", "CONFLICT");
     }
     return { campaign: campaignProgress(existing.id) };
   },
@@ -4241,7 +4241,7 @@ export const routes = {
         tested_at: now(),
       });
       if (approved.changes !== 1) {
-        throw new ApiError(409, "This campaign changed while the test was being delivered. Send a fresh test of the current version.", "VALIDATION_FAILED");
+        throw new ApiError(409, "This campaign changed while the test was being delivered. Send a fresh test of the current version.", "CONFLICT");
       }
     }
     return { sent: result.sent, reason: result.reason, to: actor.email };
@@ -4253,17 +4253,17 @@ export const routes = {
     requireAdmin(ctx);
     const campaign = emailStmts.campaignById.get(ctx.params.id);
     if (!campaign) throw new ApiError(404, "No such campaign.", "NOT_FOUND");
-    if (campaign.status === "sent") throw new ApiError(409, "This campaign has already been sent.", "VALIDATION_FAILED");
-    if (ctx.body?.confirm !== true) throw new ApiError(422, "Confirmation is required before a broadcast goes out.", "VALIDATION_FAILED");
+    if (campaign.status === "sent") throw new ApiError(409, "This campaign has already been sent.", "CONFLICT");
+    if (ctx.body?.confirm !== true) throw new ApiError(422, "Confirmation is required before a broadcast goes out.", "ACTION_REQUIRED");
     const started = startCampaign(campaign.id);
     if (!started.ok) {
       if (started.reason === "test-required") {
-        throw new ApiError(422, "Send yourself a test first—or retest the current campaign version—before broadcasting it.", "VALIDATION_FAILED");
+        throw new ApiError(422, "Send yourself a test first—or retest the current campaign version—before broadcasting it.", "ACTION_REQUIRED");
       }
       if (started.reason === "revision-conflict") {
-        throw new ApiError(409, "This campaign changed while the broadcast was starting. Refresh it and send a fresh test.", "VALIDATION_FAILED");
+        throw new ApiError(409, "This campaign changed while the broadcast was starting. Refresh it and send a fresh test.", "CONFLICT");
       }
-      throw new ApiError(409, `Could not start this campaign (${started.reason}).`, "VALIDATION_FAILED");
+      throw new ApiError(409, `Could not start this campaign (${started.reason}).`, "CONFLICT");
     }
     const drained = await drainCampaign(campaign.id, { max: Number(ctx.body?.batch) > 0 ? Math.min(Number(ctx.body.batch), 50) : 25 });
     return { started, drained, campaign: campaignProgress(campaign.id) };
@@ -4283,7 +4283,7 @@ export const routes = {
   "POST /api/admin/email/campaigns/:id/pause": (ctx) => {
     requireAdmin(ctx);
     const result = pauseCampaign(ctx.params.id);
-    if (!result.ok) throw new ApiError(409, `Could not pause this campaign (${result.reason}).`, "VALIDATION_FAILED");
+    if (!result.ok) throw new ApiError(409, `Could not pause this campaign (${result.reason}).`, "CONFLICT");
     return { campaign: campaignProgress(ctx.params.id) };
   },
 
@@ -4500,7 +4500,7 @@ export const routes = {
     };
     const problems = validateBadge(draft);
     if (problems.length) throw new ApiError(400, problems[0], "VALIDATION_FAILED");
-    if (badgeStmts.bySlug.get(draft.slug)) throw new ApiError(409, "A badge with that slug already exists.", "VALIDATION_FAILED");
+    if (badgeStmts.bySlug.get(draft.slug)) throw new ApiError(409, "A badge with that slug already exists.", "CONFLICT");
     const id = uid("bdg");
     badgeStmts.insert.run({
       id, slug: draft.slug, label: draft.label, description: draft.description, kind: draft.kind,

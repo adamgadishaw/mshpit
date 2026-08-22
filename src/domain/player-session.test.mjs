@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { playerResolutionKey } from "../lib/playback.js";
+import { playerResolutionKey } from "./trackIdentity.mjs";
 import {
   ownedPlayerEnvelope,
   ownedPlayerPositionEnvelope,

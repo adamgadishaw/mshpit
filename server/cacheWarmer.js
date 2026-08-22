@@ -25,7 +25,7 @@ import {
 } from "./musicProviders.js";
 import { backfillChannelsFromWikidata } from "./wikidataChannels.js";
 import { backgroundJobEnabled } from "./backgroundJobs.js";
-import { runProviderBackgroundJob } from "./backgroundJobCoordinator.js";
+import { runBackgroundJob } from "./backgroundJobCoordinator.js";
 
 const PROGRESS_KEY = "warm:youtube:v1";
 const DAILY_MARKER_KEY = "warm:youtube:lastRun";
@@ -276,7 +276,7 @@ export function startCacheWarmScheduler({
   const triggerRun = () => {
     // Keep the safe timer boundary outermost so coordinator and job failures
     // retain the same contained/reportable behavior as before serialization.
-    void runCacheWarmJobSafely(() => runProviderBackgroundJob(runOnce));
+    void runCacheWarmJobSafely(() => runBackgroundJob(runOnce));
   };
 
   // A minute after boot, not immediately: let the server settle and serve

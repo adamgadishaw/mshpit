@@ -16,6 +16,3 @@ export function createBackgroundJobCoordinator() {
 }
 
 export const runBackgroundJob = createBackgroundJobCoordinator();
-// Backwards-compatible name for the two provider schedulers that originally
-// introduced this coordinator.
-export const runProviderBackgroundJob = runBackgroundJob;

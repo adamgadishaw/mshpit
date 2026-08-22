@@ -77,7 +77,7 @@ import {
   pickerOwnerMatchesComposer,
   restoreComposerFrame,
 } from "./src/domain/composerRecovery.mjs";
-import { trackKey } from "./src/lib/playback";
+import { trackKey } from "./src/domain/trackIdentity.mjs";
 import { ENABLE_CLIPS, ENABLE_DEMO_DATA } from "./src/config/runtime.mjs";
 import { analyticsDwellBucket } from "./src/domain/analyticsPolicy.mjs";
 import { ownedPlayerEnvelope, playerQueueWithEntryIds, restoreOwnedPlayerState } from "./src/domain/player-session.mjs";
@@ -122,7 +122,15 @@ export default function App() {
 }
 
 function Root() {
-  const { session, authReady, addLog, editLog, userById, visibleFeed, followingFeed, localFeed, loadMoreFeed, feedHasMore, feedLoadingMore, notInterested, undoNotInterested, logout, exportMyData, userByHandle, searchPeople, inboxUnread, accountStatus, track, unreadNotifications, recordPlay, playHistory, loadPlayHistory, saveSnapshot, autoplayQueue, followingCount } = useStore();
+  const {
+    session, authReady, addLog, editLog, userById, visibleFeed, followingFeed, localFeed, loadMoreFeed,
+    feedHasMore, feedLoadingMore, notInterested, undoNotInterested, logout, exportMyData, userByHandle,
+    searchPeople, inboxUnread, accountStatus, track, unreadNotifications, recordPlay, playHistory,
+    loadPlayHistory, saveSnapshot, autoplayQueue, followingCount, resendEmailVerification,
+    topArtists, artistsAlphabetical, trendingVenues, upcomingEvents, discoverySidebar, discoverySidebarStatus,
+    resolveYouTube, invalidateYouTube, youtubeVideoRejected, resolveDeezerPreview, youtubeLookupWasTransient,
+    youtubeLookupStatus, mediaReactions, loadMediaReactions, toggleMediaReaction,
+  } = useStore();
   const staff = isStaff(session?.role);
   const feed = visibleFeed(staff);
   const following = followingFeed(staff);
@@ -752,7 +760,7 @@ function Root() {
   let overlay = null;
   // Auth is a modal that must win over any page overlay — requireAuth() can fire
   // from inside a venue/show/profile page, and the login sheet has to surface.
-  if (nav.photos) overlay = <PhotoViewer photos={nav.photos.images} index={nav.photos.index} postId={nav.photos.postId} returnFocusRef={mediaViewerOpenerRef} onReport={openReport} onClose={back} />;
+  if (nav.photos) overlay = <PhotoViewer photos={nav.photos.images} index={nav.photos.index} postId={nav.photos.postId} returnFocusRef={mediaViewerOpenerRef} session={session} mediaReactions={mediaReactions} loadMediaReactions={loadMediaReactions} toggleMediaReaction={toggleMediaReaction} track={track} onReport={openReport} onClose={back} />;
   else if (nav.addToPlaylist) overlay = <PlaylistPickerScreen track={nav.addToPlaylist} onClose={back} />;
   else if (nav.followList) overlay = <FollowListScreen userId={nav.followList.userId} mode={nav.followList.mode} onClose={back} onOpenProfile={openProfile} />;
   else if (nav.auth) overlay = <AuthScreen initialMode={nav.authMode} onDone={(mode) => { if (mode === "signup") { if (web) save("pit.welcomePending", true); replace({ pickArtists: true }); } else back(); }} onCancel={back} />;
@@ -913,7 +921,7 @@ function Root() {
       />
       <View style={styles.deskWrap}>
         <View style={styles.deskCenter}><Suspense fallback={<ScreenLoading />}>{overlay || tabScreens}</Suspense></View>
-        {showRightRail && <RightRail onOpenArtist={openArtist} onOpenVenue={openVenue} onFindVenues={() => go({ venues: true })} onOpenEvent={(t) => openArtist(t.artist)} />}
+        {showRightRail && <RightRail topArtists={topArtists} artistsAlphabetical={artistsAlphabetical} trendingVenues={trendingVenues} upcomingEvents={upcomingEvents} discoverySidebar={discoverySidebar} discoverySidebarStatus={discoverySidebarStatus} onOpenArtist={openArtist} onOpenVenue={openVenue} onFindVenues={() => go({ venues: true })} onOpenEvent={(t) => openArtist(t.artist)} />}
       </View>
     </View>
   );
@@ -963,6 +971,13 @@ function Root() {
                   onPlaybackStarted={recordPlay}
                   onOpenArtist={openArtist}
                   onAddToPlaylist={openAddToPlaylist}
+                  session={session}
+                  resolveYouTube={resolveYouTube}
+                  invalidateYouTube={invalidateYouTube}
+                  youtubeVideoRejected={youtubeVideoRejected}
+                  resolveDeezerPreview={resolveDeezerPreview}
+                  youtubeLookupWasTransient={youtubeLookupWasTransient}
+                  youtubeLookupStatus={youtubeLookupStatus}
                 />
               </View>
             )}
@@ -992,7 +1007,7 @@ function Root() {
             as a sibling so it does not have to be threaded through both the wide
             and mobile branches of the frame above. */}
         {status === "ok" && session && session.emailVerified === false && (
-          <VerifyEmailBanner email={session.email} topOffset={!wide && player ? 72 : undefined} />
+          <VerifyEmailBanner email={session.email} topOffset={!wide && player ? 72 : undefined} onResend={resendEmailVerification} />
         )}
 
         <FeedbackHost onOpenDiagnostics={() => go({ diagnostics: true })} />

@@ -1,4 +1,4 @@
-import { trackMetadataKey } from "../lib/playback.js";
+import { trackMetadataKey } from "./trackIdentity.mjs";
 
 // Autoplay candidate selection.
 //

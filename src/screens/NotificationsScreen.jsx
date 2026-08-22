@@ -8,6 +8,7 @@ import Icon from "../components/Icon";
 import { api } from "../lib/api";
 import { isCurrentNotificationPostRequest, normalizeFetchedNotificationPost, notificationPostFailureNotice, resolveNotificationPost } from "../domain/notificationDeepLink.mjs";
 import { bundleNotifications } from "../domain/notification-bundles.mjs";
+import { accountTargetScope } from "../domain/screenScope.mjs";
 
 const ago = (ts) => {
   const s = Math.max(1, Math.floor((Date.now() - ts) / 1000));
@@ -46,13 +47,59 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
   const [openingNotificationId, setOpeningNotificationId] = useState(null);
   const [unavailableNotice, setUnavailableNotice] = useState(null);
   const [viewMode, setViewMode] = useState("recent");
+  const notificationReadScope = accountTargetScope(accountId, "notifications:read");
+  const notificationReadRequestRef = useRef({ sequence: 0, scope: notificationReadScope, controller: null });
+  const [notificationReadState, setNotificationReadState] = useState({ scope: notificationReadScope, status: "idle", error: null });
+  const scopedNotificationReadState = notificationReadState.scope === notificationReadScope
+    ? notificationReadState
+    : { scope: notificationReadScope, status: "idle", error: null };
   const bundles = useMemo(() => bundleNotifications(items), [items]);
   const activityRows = viewMode === "digest"
     ? bundles.map((bundle) => ({ key: bundle.id, notification: bundle.primary, bundle }))
     : items.map((notification) => ({ key: notification.id, notification, bundle: null }));
 
-  // Mark everything read when the screen opens (badge clears).
-  useEffect(() => { markNotificationsRead(); }, []);
+  const readCurrentNotifications = async () => {
+    if (!accountIdRef.current || notificationReadRequestRef.current.controller) return;
+    const scope = accountTargetScope(accountIdRef.current, "notifications:read");
+    const controller = new AbortController();
+    const operation = {
+      sequence: notificationReadRequestRef.current.sequence + 1,
+      scope,
+      controller,
+    };
+    notificationReadRequestRef.current = operation;
+    setNotificationReadState({ scope, status: "pending", error: null });
+    try {
+      const result = await markNotificationsRead({ signal: controller.signal });
+      if (notificationReadRequestRef.current !== operation
+        || accountTargetScope(accountIdRef.current, "notifications:read") !== scope) return;
+      setNotificationReadState(result.ok
+        ? { scope, status: "ready", error: null }
+        : { scope, status: "error", error: result.error });
+    } catch (error) {
+      if (!controller.signal.aborted && notificationReadRequestRef.current === operation
+        && accountTargetScope(accountIdRef.current, "notifications:read") === scope) {
+        setNotificationReadState({ scope, status: "error", error });
+      }
+    } finally {
+      if (notificationReadRequestRef.current === operation) {
+        notificationReadRequestRef.current = { ...operation, controller: null };
+      }
+    }
+  };
+  // Marking read is a server-first command. Account changes and unmounts abort
+  // the old scope so its completion cannot clear the next account's badge.
+  useEffect(() => {
+    const active = notificationReadRequestRef.current;
+    active.controller?.abort();
+    notificationReadRequestRef.current = { sequence: active.sequence + 1, scope: notificationReadScope, controller: null };
+    setNotificationReadState({ scope: notificationReadScope, status: "idle", error: null });
+    if (accountId) void readCurrentNotifications();
+    return () => notificationReadRequestRef.current.controller?.abort();
+    // The Store command is intentionally omitted: Context recreates its facade
+    // after reconciliation, but account scope alone owns this one-shot effect.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accountId, notificationReadScope]);
   useEffect(() => () => postRequestRef.current.controller?.abort(), []);
   useEffect(() => {
     const active = postRequestRef.current;
@@ -122,6 +169,19 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
     <View style={styles.wrap}>
       <ScreenHeader kicker="SOCIAL" title="Activity" onBack={onClose} />
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+        {scopedNotificationReadState.status === "error" && (
+          <View style={styles.readNotice} accessibilityRole="alert" accessibilityLiveRegion="assertive">
+            <Icon name="shield" size={16} color={colors.danger} />
+            <Text selectable style={styles.readNoticeText}>
+              Activity could not be marked read, so the unread badge is unchanged. {scopedNotificationReadState.error?.userMessage || scopedNotificationReadState.error?.message || "Try again."}
+            </Text>
+            {scopedNotificationReadState.error?.retryable ? (
+              <Pressable style={styles.readRetry} onPress={() => void readCurrentNotifications()} accessibilityRole="button" accessibilityLabel="Retry marking activity read">
+                <Text style={styles.readRetryText}>Try again</Text>
+              </Pressable>
+            ) : null}
+          </View>
+        )}
         {unavailableNotice && (
           <View style={styles.notice} accessibilityRole="alert" accessibilityLiveRegion="polite">
             <Icon name="lock" size={16} color={colors.amber} />
@@ -216,6 +276,10 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
 const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: colors.bg },
   content: { padding: space(4), paddingBottom: space(10) },
+  readNotice: { flexDirection: "row", alignItems: "center", gap: 9, backgroundColor: colors.bgElev, borderRadius: radius.md, borderWidth: 1, borderColor: colors.danger, padding: 11, marginBottom: 10 },
+  readNoticeText: { flex: 1, color: colors.text, fontSize: 12.5, lineHeight: 18 },
+  readRetry: { minHeight: 44, justifyContent: "center", paddingHorizontal: 11, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.amber },
+  readRetryText: { color: colors.amber, fontSize: 11.5, fontWeight: "800" },
   notice: { flexDirection: "row", alignItems: "center", gap: 9, backgroundColor: colors.bgElev, borderRadius: radius.md, borderWidth: 1, borderColor: colors.amber, padding: 11, marginBottom: 10 },
   noticeText: { flex: 1, color: colors.text, fontSize: 13, lineHeight: 18 },
   modePanel: { marginBottom: space(3), gap: 8 },

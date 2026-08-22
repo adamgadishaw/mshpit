@@ -265,8 +265,12 @@ export function drainCampaign(campaignId, options = {}) {
 }
 
 /** Campaigns left mid-flight, e.g. after a restart or a daily-cap stop. */
-export function resumableCampaigns() {
-  return db.prepare("SELECT id FROM email_campaigns WHERE status='sending' ORDER BY started_at").all().map((r) => r.id);
+export function resumableCampaigns(limit = 25) {
+  const parsed = Number(limit);
+  const bounded = Number.isFinite(parsed) && parsed > 0 ? Math.min(Math.floor(parsed), 25) : 25;
+  return db.prepare(
+    "SELECT id FROM email_campaigns WHERE status='sending' ORDER BY started_at,id LIMIT ?",
+  ).all(bounded).map((row) => row.id);
 }
 
 export function campaignProgress(campaignId) {

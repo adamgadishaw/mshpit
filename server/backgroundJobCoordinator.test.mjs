@@ -13,7 +13,7 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
-test("provider background jobs run FIFO and never overlap", async () => {
+test("maintenance background jobs run FIFO and never overlap", async () => {
   const run = createBackgroundJobCoordinator();
   const firstGate = deferred();
   const order = [];

@@ -7,7 +7,7 @@ import Avatar from "../components/Avatar";
 import Icon from "../components/Icon";
 import TicketStub from "../components/TicketStub";
 import { BadgeRow } from "../components/Badge";
-import { LIMITS } from "../lib/validate";
+import { LIMITS } from "../domain/validation.mjs";
 
 const ago = (ts) => {
   if (!ts) return "";

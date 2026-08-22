@@ -10,8 +10,9 @@
 //
 //   1. ONE ROW PER PROBLEM, not per occurrence. A 500 in a loop is one row with
 //      a count. Per-occurrence rows would fill a 1GB disk and bury the signal.
-//   2. NOTHING USER-AUTHORED IS STORED. Route patterns, stable codes and
-//      sanitized cause names only — the same shape the console line prints.
+//   2. NOTHING USER-AUTHORED IS STORED. Route patterns, stable codes, sanitized
+//      cause names and a server-generated request UUID only — the same safe
+//      diagnostic shape the console line prints.
 //   3. LOGGING MUST NEVER BREAK A REQUEST, and alerting must never storm. Every
 //      entry point swallows its own failure, and alerts are a rate-limited
 //      digest rather than one mail per error.
@@ -53,6 +54,7 @@ const CODE_RE = /^[A-Za-z][A-Za-z0-9_]{0,38}$/;
 // A route PATTERN. No query string, so no search terms or tokens can ride along.
 const ROUTE_RE = /^[A-Za-z0-9/:._-]{1,80}$/;
 const METHOD_RE = /^[A-Z]{3,7}$/;
+const REQUEST_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export function alertCooldownMs(env = process.env) {
   const raw = Number(env?.ERROR_ALERT_COOLDOWN_MIN);
@@ -75,7 +77,7 @@ export function fingerprintOf({ level, code, status, method, route, cause }) {
  * Record one occurrence. Safe to call from a catch block: it never throws, so a
  * logging failure cannot turn a handled 500 into an unhandled one.
  */
-export function recordError({ level = "error", code = "", status = 0, method = "", route = "", cause = "" } = {}) {
+export function recordError({ level = "error", code = "", status = 0, method = "", route = "", cause = "", requestId = "" } = {}) {
   try {
     const entry = {
       level: level === "fatal" ? "fatal" : "error",
@@ -85,6 +87,7 @@ export function recordError({ level = "error", code = "", status = 0, method = "
       // The PATTERN, never the path.
       route: shaped(route, ROUTE_RE, "", 80),
       cause: shaped(cause, CAUSE_RE, "unclassified", 80),
+      requestId: shaped(requestId, REQUEST_ID_RE, null, 36),
     };
     const fingerprint = fingerprintOf(entry);
     errorStmts.record.run({ ...entry, fingerprint, at: Date.now() });
@@ -151,7 +154,8 @@ export async function maybeAlert({ now = Date.now(), force = false } = {}) {
     const total = serious.reduce((sum, r) => sum + r.count, 0);
     const lines = serious.map((r) => {
       const where = `${r.method} ${r.route}`.trim() || "(no route)";
-      return `${r.count}x  ${r.level === "fatal" ? "FATAL" : r.status}  ${where}  ${r.code || "-"}${r.cause ? `  (${r.cause})` : ""}`;
+      const correlation = r.last_request_id ? `  request ${r.last_request_id}` : "";
+      return `${r.count}x  ${r.level === "fatal" ? "FATAL" : r.status}  ${where}  ${r.code || "-"}${r.cause ? `  (${r.cause})` : ""}${correlation}`;
     }).join("\n");
 
     const result = await sendTemplate("error_alert", {

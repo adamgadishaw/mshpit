@@ -1,5 +1,5 @@
 import { db } from "./db.js";
-import { ACHIEVEMENTS } from "../src/lib/badges.js";
+import { ACHIEVEMENTS } from "../src/domain/badges.mjs";
 
 const emptyStats = () => ({ shows: 0, reviews: 0, likes: 0, photos: 0, cities: 0, artists: 0, follows: 0, fanClubs: 0 });
 const REWARD_DEFINITION_VERSION = 2;

@@ -7,6 +7,7 @@ import {
   artistRequestFailureMessage,
   confirmedArtistRequest,
   mergeConfirmedArtistRequest,
+  reconcileConfirmedArtistRequestDecision,
 } from "./artistRequestMutation.mjs";
 
 test("artist request rows require the canonical ID returned by the server", () => {
@@ -44,6 +45,21 @@ test("only a confirmed request enters local state and duplicate responses stay u
 test("request failures expose only safe inline copy", () => {
   assert.equal(artistRequestFailureMessage({ userMessage: "Check your connection and try again." }), "Check your connection and try again.");
   assert.equal(artistRequestFailureMessage(new Error("database password leaked")), ARTIST_REQUEST_SAVE_ERROR);
+});
+
+test("artist request review state changes only after a confirmed decision", () => {
+  const current = [
+    { id: "ar-1", status: "pending", artistName: "Model/Actriz" },
+    { id: "ar-2", status: "approved", artistName: "Turnstile" },
+  ];
+  assert.equal(reconcileConfirmedArtistRequestDecision(current, { requestId: "ar-1", status: "invalid" }), current);
+  assert.equal(reconcileConfirmedArtistRequestDecision(current, { requestId: "missing", status: "rejected" }), current);
+  const next = reconcileConfirmedArtistRequestDecision(current, { requestId: "ar-1", status: "approved" });
+  assert.deepEqual(next, [
+    { id: "ar-1", status: "approved", artistName: "Model/Actriz" },
+    current[1],
+  ]);
+  assert.equal(reconcileConfirmedArtistRequestDecision(next, { requestId: "ar-1", status: "rejected" }), next);
 });
 
 test("the store awaits persistence before inserting or returning success", () => {

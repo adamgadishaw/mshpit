@@ -242,10 +242,58 @@ export default function AdminScreen({ onClose }) {
   const trackActionInFlight = useRef(null);
   const activeStaffSession = useRef(session);
   activeStaffSession.current = session;
+  const artistRequestScope = staffScopeFor(session);
+  const artistRequestActionRef = useRef({ sequence: 0, scope: artistRequestScope, requestId: null, action: null, controller: null });
+  const [artistRequestAction, setArtistRequestAction] = useState({ scope: artistRequestScope, requestId: null, action: null, status: "idle", error: null });
+  const scopedArtistRequestAction = artistRequestAction.scope === artistRequestScope
+    ? artistRequestAction
+    : { scope: artistRequestScope, requestId: null, action: null, status: "idle", error: null };
   useEffect(() => {
     trackActionInFlight.current = null;
     setTrackActionState({ key: null, tone: "", message: "" });
   }, [session?.id, session?.role]);
+  useEffect(() => {
+    const active = artistRequestActionRef.current;
+    active.controller?.abort();
+    artistRequestActionRef.current = { sequence: active.sequence + 1, scope: artistRequestScope, requestId: null, action: null, controller: null };
+    setArtistRequestAction({ scope: artistRequestScope, requestId: null, action: null, status: "idle", error: null });
+    return () => artistRequestActionRef.current.controller?.abort();
+  }, [artistRequestScope]);
+  const reviewArtistRequest = async (request, action) => {
+    const scope = staffScopeFor(activeStaffSession.current);
+    if (!scope || artistRequestActionRef.current.controller) return;
+    const controller = new AbortController();
+    const operation = {
+      sequence: artistRequestActionRef.current.sequence + 1,
+      scope,
+      requestId: request.id,
+      action,
+      controller,
+    };
+    artistRequestActionRef.current = operation;
+    setArtistRequestAction({ scope, requestId: request.id, action, status: "pending", error: null });
+    try {
+      const result = await (action === "approve"
+        ? approveArtist(request.id, { signal: controller.signal })
+        : rejectArtist(request.id, { signal: controller.signal }));
+      if (artistRequestActionRef.current !== operation
+        || staffScopeFor(activeStaffSession.current) !== scope) return;
+      if (result.ok) {
+        setArtistRequestAction({ scope, requestId: null, action: null, status: "idle", error: null });
+      } else {
+        setArtistRequestAction({ scope, requestId: request.id, action, status: "error", error: result.error });
+      }
+    } catch (error) {
+      if (!controller.signal.aborted && artistRequestActionRef.current === operation
+        && staffScopeFor(activeStaffSession.current) === scope) {
+        setArtistRequestAction({ scope, requestId: request.id, action, status: "error", error });
+      }
+    } finally {
+      if (artistRequestActionRef.current === operation) {
+        artistRequestActionRef.current = { ...operation, controller: null };
+      }
+    }
+  };
   // Current song pins, live from the server (never trusts a login-time cache).
   const [pins, setPins] = useState([]);
   const refreshPins = () => trackOverridesList().then(setPins);
@@ -956,20 +1004,53 @@ export default function AdminScreen({ onClose }) {
         {tab === "requests" && (
           <>
             <Text style={styles.policy}>Fans requesting an official artist account. Approve to let them post tour dates for their artist.</Text>
+            {scopedArtistRequestAction.status === "error" && (
+              <View style={styles.requestError} accessibilityRole="alert" accessibilityLiveRegion="assertive">
+                <Text selectable style={styles.requestErrorText}>
+                  That request was not {scopedArtistRequestAction.action === "approve" ? "approved" : "rejected"}. Nothing changed. {scopedArtistRequestAction.error?.userMessage || scopedArtistRequestAction.error?.message || "Try again."}
+                </Text>
+                <View style={styles.requestErrorActions}>
+                  {scopedArtistRequestAction.error?.retryable && pending.some((request) => request.id === scopedArtistRequestAction.requestId) ? (
+                    <Pressable
+                      style={styles.requestRetry}
+                      onPress={() => {
+                        const request = pending.find((entry) => entry.id === scopedArtistRequestAction.requestId);
+                        if (request) void reviewArtistRequest(request, scopedArtistRequestAction.action);
+                      }}
+                      accessibilityRole="button"
+                      accessibilityLabel="Retry artist request review"
+                    >
+                      <Text style={styles.requestRetryText}>Try again</Text>
+                    </Pressable>
+                  ) : null}
+                  <Pressable
+                    style={styles.requestDismiss}
+                    onPress={() => setArtistRequestAction({ scope: artistRequestScope, requestId: null, action: null, status: "idle", error: null })}
+                    accessibilityRole="button"
+                    accessibilityLabel="Dismiss artist request error"
+                  >
+                    <Text style={styles.requestDismissText}>Dismiss</Text>
+                  </Pressable>
+                </View>
+              </View>
+            )}
             {pending.length === 0 && <Text style={styles.empty}>No pending requests.</Text>}
             {pending.map((r) => {
               const u = userFor(r.userId);
+              const approveBusy = scopedArtistRequestAction.status === "pending" && scopedArtistRequestAction.requestId === r.id && scopedArtistRequestAction.action === "approve";
+              const rejectBusy = scopedArtistRequestAction.status === "pending" && scopedArtistRequestAction.requestId === r.id && scopedArtistRequestAction.action === "reject";
+              const reviewBusy = scopedArtistRequestAction.status === "pending";
               return (
                 <View key={r.id} style={styles.card}>
                   <Text style={styles.artist}>{r.artistName}</Text>
                   <Text style={styles.sub}>requested by {u ? `${u.name} (@${u.handle})` : "unknown"}</Text>
                   {!!r.note && <Text style={styles.note}>"{r.note}"</Text>}
                   <View style={styles.actions}>
-                    <Pressable style={[styles.btn, styles.approve]} onPress={() => approveArtist(r.id)}>
-                      <Icon name="check" size={15} color="#0C1A0F" /><Text style={styles.approveTxt}>Approve</Text>
+                    <Pressable style={[styles.btn, styles.approve, reviewBusy && styles.pillDisabled]} onPress={() => void reviewArtistRequest(r, "approve")} disabled={reviewBusy} accessibilityRole="button" accessibilityState={{ disabled: reviewBusy, busy: approveBusy }}>
+                      {approveBusy ? <ActivityIndicator size="small" color="#0C1A0F" /> : <Icon name="check" size={15} color="#0C1A0F" />}<Text style={styles.approveTxt}>{approveBusy ? "Approving..." : "Approve"}</Text>
                     </Pressable>
-                    <Pressable style={[styles.btn, styles.reject]} onPress={() => rejectArtist(r.id)}>
-                      <Icon name="x" size={15} color={colors.danger} /><Text style={styles.rejectTxt}>Reject</Text>
+                    <Pressable style={[styles.btn, styles.reject, reviewBusy && styles.pillDisabled]} onPress={() => void reviewArtistRequest(r, "reject")} disabled={reviewBusy} accessibilityRole="button" accessibilityState={{ disabled: reviewBusy, busy: rejectBusy }}>
+                      {rejectBusy ? <ActivityIndicator size="small" color={colors.danger} /> : <Icon name="x" size={15} color={colors.danger} />}<Text style={styles.rejectTxt}>{rejectBusy ? "Rejecting..." : "Reject"}</Text>
                     </Pressable>
                   </View>
                 </View>
@@ -1053,6 +1134,13 @@ const styles = StyleSheet.create({
   removedTag: { color: colors.danger, fontSize: 10, letterSpacing: 1, fontWeight: "700", marginTop: 4 },
   contentRow: { flexDirection: "row", alignItems: "center", gap: 10 },
   actions: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 10 },
+  requestError: { gap: 9, marginTop: 10, padding: 12, borderRadius: radius.md, borderWidth: 1, borderColor: colors.danger, backgroundColor: colors.surface },
+  requestErrorText: { color: colors.danger, fontSize: 12.5, lineHeight: 18 },
+  requestErrorActions: { flexDirection: "row", alignItems: "center", gap: 8 },
+  requestRetry: { minHeight: 44, justifyContent: "center", paddingHorizontal: 14, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.amber },
+  requestRetryText: { color: colors.amber, fontSize: 12, fontWeight: "800" },
+  requestDismiss: { minHeight: 44, justifyContent: "center", paddingHorizontal: 12 },
+  requestDismissText: { color: colors.textDim, fontSize: 12, fontWeight: "700" },
   btn: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingHorizontal: 12, paddingVertical: 9, borderRadius: radius.sm, borderWidth: 1 },
   remove: { borderColor: colors.danger, backgroundColor: "rgba(224,69,123,0.08)" },
   reject: { borderColor: colors.line },

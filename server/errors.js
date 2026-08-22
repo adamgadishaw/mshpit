@@ -8,7 +8,10 @@ export const ERROR_CATALOG = Object.freeze({
   FAN_CLUB_MEMBERSHIP_REQUIRED: { status: 403, retryable: false },
   LOUNGE_ATTENDANCE_REQUIRED: { status: 403, retryable: false },
   CONTENT_REJECTED: { status: 422, retryable: false },
+  ACTION_REQUIRED: { status: 422, retryable: false },
   VALIDATION_FAILED: { status: 400, retryable: false },
+  RECOMMENDATION_CURSOR_INVALID: { status: 400, retryable: false },
+  RECOMMENDATION_CURSOR_EXPIRED: { status: 400, retryable: false },
   NOT_FOUND: { status: 404, retryable: false },
   CONFLICT: { status: 409, retryable: false },
   IDENTITY_CHANGED: { status: 409, retryable: false },
@@ -17,7 +20,9 @@ export const ERROR_CATALOG = Object.freeze({
   RATE_LIMITED: { status: 429, retryable: true },
   MEDIA_UPLOAD_QUOTA_EXCEEDED: { status: 429, retryable: true },
   DATABASE_UNAVAILABLE: { status: 503, retryable: true },
+  STORAGE_UNAVAILABLE: { status: 503, retryable: true },
   MEDIA_STORAGE_UNAVAILABLE: { status: 503, retryable: true },
+  REQUEST_TOO_LARGE: { status: 413, retryable: false },
   MEDIA_TYPE_UNSUPPORTED: { status: 415, retryable: false },
   MEDIA_TOO_LARGE: { status: 413, retryable: false },
   MEDIA_UPLOAD_FAILED: { status: 502, retryable: true },
@@ -31,9 +36,9 @@ const STATUS_CODES = Object.freeze({
   403: "FORBIDDEN",
   404: "NOT_FOUND",
   409: "CONFLICT",
-  413: "MEDIA_TOO_LARGE",
+  413: "REQUEST_TOO_LARGE",
   415: "MEDIA_TYPE_UNSUPPORTED",
-  422: "CONTENT_REJECTED",
+  422: "ACTION_REQUIRED",
   429: "RATE_LIMITED",
   500: "INTERNAL_ERROR",
   502: "PROVIDER_UNAVAILABLE",
@@ -45,11 +50,23 @@ export function errorCodeForStatus(status) {
 }
 
 export class ApiError extends Error {
-  constructor(status, message, code = errorCodeForStatus(status), cause) {
+  constructor(status, message, code, cause) {
     super(message, cause ? { cause } : undefined);
+    const requestedStatus = Number(status) || 500;
+    const explicitCode = typeof code === "string" && code.length > 0;
+    const resolvedCode = explicitCode ? code : errorCodeForStatus(requestedStatus);
+    const definition = ERROR_CATALOG[resolvedCode];
+    if (!definition) {
+      throw new TypeError(`Unknown API error code: ${String(resolvedCode)}`);
+    }
+    if (explicitCode && requestedStatus !== definition.status) {
+      throw new TypeError(
+        `API error ${resolvedCode} requires status ${definition.status}, received ${requestedStatus}`,
+      );
+    }
     this.name = "ApiError";
-    this.status = Number(status) || 500;
-    this.code = ERROR_CATALOG[code] ? code : errorCodeForStatus(this.status);
+    this.status = definition.status;
+    this.code = resolvedCode;
   }
 }
 

@@ -5,7 +5,7 @@ import { useStore } from "../store";
 import ScreenHeader from "../components/ScreenHeader";
 import Badge from "../components/Badge";
 import Icon from "../components/Icon";
-import { STATUS_BADGES, ACHIEVEMENTS, pointsTier } from "../lib/badges";
+import { STATUS_BADGES, ACHIEVEMENTS, pointsTier } from "../domain/badges.mjs";
 
 const TINT = { amber: colors.amber, magenta: colors.magenta, cool: colors.cool, good: colors.good, gold: colors.gold };
 

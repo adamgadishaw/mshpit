@@ -1,5 +1,5 @@
 import { toIsoDate } from "./dates.mjs";
-import { clean, clampRating, LIMITS } from "../lib/validate.js";
+import { clean, clampRating, LIMITS } from "./validation.mjs";
 
 const DIMENSION_KEYS = ["performance", "setlist", "sound", "venue", "crowd", "experience"];
 const EDITABLE_KEYS = new Set([

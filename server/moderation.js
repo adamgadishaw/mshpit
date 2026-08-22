@@ -493,7 +493,7 @@ function moderateReport(ctx, reportId, action, reason) {
 
     if (action !== "remove") throw new ApiError(400, "A report can only be removed or dismissed.", "VALIDATION_FAILED");
     if (!MODERATABLE_CONTENT[report.target_type]) {
-      throw new ApiError(422, "This report needs manual review before it can be closed.", "VALIDATION_FAILED");
+      throw new ApiError(422, "This report needs manual review before it can be closed.", "ACTION_REQUIRED");
     }
     const content = setContentRemoved(ctx, report.target_type, report.target_id, true, reason || report.reason);
     const updated = updateOpenReport.run("actioned", report.id);

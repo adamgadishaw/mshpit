@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { accountMutationIsCurrent, captureAccountMutation } from "./accountMutation.mjs";
+import { reconcileConfirmedArtistPostRemoval } from "./artistPostMutation.mjs";
+import { reconcileConfirmedNotificationReads } from "./notificationReadMutation.mjs";
 
 test("a deferred account A mutation cannot be adopted after switching to B", async () => {
   const pending = captureAccountMutation("account-a", 4);
@@ -22,4 +24,27 @@ test("a deferred account A mutation cannot be adopted after switching to B", asy
   assert.deepEqual(await mutation, { ok: false, stale: true });
   assert.equal(adopted, null);
   assert.equal(accountMutationIsCurrent(pending, "account-a", 5), false);
+});
+
+test("stale account completion cannot delete an artist update or clear notifications", async () => {
+  let accountId = "account-a";
+  let epoch = 8;
+  const pending = captureAccountMutation(accountId, epoch);
+  let artistPosts = { slowdive: [{ id: "ap-a", text: "A-owned command" }] };
+  let notifications = [{ id: "n-a", userId: "account-a", read: false }];
+  let finish;
+  const response = new Promise((resolve) => { finish = resolve; });
+  const command = (async () => {
+    await response;
+    if (!accountMutationIsCurrent(pending, accountId, epoch)) return false;
+    artistPosts = reconcileConfirmedArtistPostRemoval(artistPosts, { artistKey: "slowdive", postId: "ap-a" });
+    notifications = reconcileConfirmedNotificationReads(notifications, { accountId: "account-a", notificationIds: ["n-a"] });
+    return true;
+  })();
+  accountId = "account-b";
+  epoch += 1;
+  finish({ ok: true });
+  assert.equal(await command, false);
+  assert.equal(artistPosts.slowdive.length, 1);
+  assert.equal(notifications[0].read, false);
 });

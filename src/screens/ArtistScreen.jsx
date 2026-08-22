@@ -19,6 +19,7 @@ import { formatDate } from "../domain/dates.mjs";
 import { discographyIdentityCopy, discographyPresentation } from "../domain/discographyView.mjs";
 import { mediaDisplayKind, mediaPosterUri } from "../domain/postMediaDisplay.mjs";
 import { trackReportDescriptor, trackReportIdentityKey } from "../domain/trackReportIdentity.mjs";
+import { accountTargetScope } from "../domain/screenScope.mjs";
 
 const cap = (s) => (s ? s.replace(/\b\w/g, (c) => c.toUpperCase()) : s);
 const compactCount = (value) => {
@@ -110,6 +111,49 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
   const avatarUser = { avatarUri: a.photo || meta?.photo || null, initials: a.name.slice(0, 2).toUpperCase(), avatarColor: colors.amber };
   const posts = artistPostsFor(a.name);
   const [draft, setDraft] = useState("");
+  const artistPostScope = accountTargetScope(session?.id || null, `artist-posts:${String(a.profileKey || a.name).toLowerCase()}`);
+  const artistPostMutationRef = useRef({ sequence: 0, scope: artistPostScope, postId: null, controller: null });
+  const [artistPostMutation, setArtistPostMutation] = useState({ scope: artistPostScope, postId: null, status: "idle", error: null });
+  const scopedArtistPostMutation = artistPostMutation.scope === artistPostScope
+    ? artistPostMutation
+    : { scope: artistPostScope, postId: null, status: "idle", error: null };
+  useEffect(() => {
+    const active = artistPostMutationRef.current;
+    active.controller?.abort();
+    artistPostMutationRef.current = { sequence: active.sequence + 1, scope: artistPostScope, postId: null, controller: null };
+    setArtistPostMutation({ scope: artistPostScope, postId: null, status: "idle", error: null });
+    return () => artistPostMutationRef.current.controller?.abort();
+  }, [artistPostScope]);
+  const deleteArtistPost = async (postId) => {
+    if (artistPostMutationRef.current.controller) return;
+    const controller = new AbortController();
+    const operation = {
+      sequence: artistPostMutationRef.current.sequence + 1,
+      scope: artistPostScope,
+      postId,
+      controller,
+    };
+    artistPostMutationRef.current = operation;
+    setArtistPostMutation({ scope: artistPostScope, postId, status: "pending", error: null });
+    try {
+      const result = await removeArtistPost(a.name, postId, { signal: controller.signal });
+      if (artistPostMutationRef.current !== operation || operation.scope !== artistPostScope) return;
+      if (result.ok) {
+        setArtistPostMutation({ scope: artistPostScope, postId: null, status: "idle", error: null });
+      } else {
+        setArtistPostMutation({ scope: artistPostScope, postId, status: "error", error: result.error });
+      }
+    } catch (error) {
+      if (!controller.signal.aborted && artistPostMutationRef.current === operation
+        && operation.scope === artistPostScope) {
+        setArtistPostMutation({ scope: artistPostScope, postId, status: "error", error });
+      }
+    } finally {
+      if (artistPostMutationRef.current === operation) {
+        artistPostMutationRef.current = { ...operation, controller: null };
+      }
+    }
+  };
 
   // Full discography (albums + tracklists) from Deezer, so the page has real depth:
   // open an album, see every song, rate them, play them in the top bar.
@@ -727,8 +771,21 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
                     <Text style={styles.postTs}>{p.ts}</Text>
                   </View>
                   {isOwner && (
-                    <Pressable hitSlop={8} onPress={() => removeArtistPost(a.name, p.id)}>
-                      <Icon name="x" size={15} color={colors.textFaint} />
+                    <Pressable
+                      style={styles.artistPostRemove}
+                      hitSlop={8}
+                      onPress={() => void deleteArtistPost(p.id)}
+                      disabled={scopedArtistPostMutation.status === "pending"}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Remove ${a.name} artist update`}
+                      accessibilityState={{
+                        disabled: scopedArtistPostMutation.status === "pending",
+                        busy: scopedArtistPostMutation.status === "pending" && scopedArtistPostMutation.postId === p.id,
+                      }}
+                    >
+                      {scopedArtistPostMutation.status === "pending" && scopedArtistPostMutation.postId === p.id
+                        ? <ActivityIndicator size="small" color={colors.amber} />
+                        : <Icon name="x" size={15} color={colors.textFaint} />}
                     </Pressable>
                   )}
                   {!isOwner && onReport ? (
@@ -751,6 +808,23 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
                   ) : null}
                 </View>
                 <Text style={styles.postText}>{p.text}</Text>
+                {scopedArtistPostMutation.status === "error" && scopedArtistPostMutation.postId === p.id ? (
+                  <View style={styles.artistPostError} accessibilityRole="alert" accessibilityLiveRegion="assertive">
+                    <Text selectable style={styles.artistPostErrorText}>
+                      This update was not removed, so it is still visible. {scopedArtistPostMutation.error?.userMessage || scopedArtistPostMutation.error?.message || "Try again."}
+                    </Text>
+                    <View style={styles.artistPostErrorActions}>
+                      {scopedArtistPostMutation.error?.retryable ? (
+                        <Pressable style={styles.artistPostRetry} onPress={() => void deleteArtistPost(p.id)} accessibilityRole="button" accessibilityLabel="Retry removing artist update">
+                          <Text style={styles.artistPostRetryText}>Try again</Text>
+                        </Pressable>
+                      ) : null}
+                      <Pressable style={styles.artistPostDismiss} onPress={() => setArtistPostMutation({ scope: artistPostScope, postId: null, status: "idle", error: null })} accessibilityRole="button" accessibilityLabel="Dismiss artist update error">
+                        <Text style={styles.artistPostDismissText}>Dismiss</Text>
+                      </Pressable>
+                    </View>
+                  </View>
+                ) : null}
               </View>
             ))}
           </>
@@ -1049,6 +1123,14 @@ const styles = StyleSheet.create({
   postTop: { flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 8 },
   postName: { color: colors.text, fontSize: 14, fontWeight: "800" },
   postTs: { color: colors.textFaint, fontFamily: mono, fontSize: 11, marginTop: 1 },
+  artistPostRemove: { width: 36, height: 36, alignItems: "center", justifyContent: "center", borderRadius: 18 },
+  artistPostError: { gap: 8, marginTop: 10, paddingTop: 10, borderTopWidth: 1, borderTopColor: colors.lineSoft },
+  artistPostErrorText: { color: colors.danger, fontSize: 12, lineHeight: 17 },
+  artistPostErrorActions: { flexDirection: "row", alignItems: "center", gap: 8 },
+  artistPostRetry: { minHeight: 44, justifyContent: "center", paddingHorizontal: 13, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.amber },
+  artistPostRetryText: { color: colors.amber, fontSize: 12, fontWeight: "800" },
+  artistPostDismiss: { minHeight: 44, justifyContent: "center", paddingHorizontal: 10 },
+  artistPostDismissText: { color: colors.textDim, fontSize: 12, fontWeight: "700" },
   artistPostReport: { width: 36, height: 36, borderRadius: 18, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.lineSoft },
   postText: { color: colors.textDim, fontSize: 14, lineHeight: 20 },
   artistActions: { flexDirection: "row", gap: 10, marginTop: 16 },

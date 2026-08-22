@@ -8,11 +8,9 @@
 import { useEffect, useRef, useState } from "react";
 import { View, Text, StyleSheet, Pressable, Platform } from "react-native";
 import { colors, radius, space } from "../theme";
-import { useStore } from "../store";
 import Icon from "./Icon";
 
-export default function VerifyEmailBanner({ email, topOffset }) {
-  const { resendEmailVerification } = useStore();
+export default function VerifyEmailBanner({ email, topOffset, onResend }) {
   const [state, setState] = useState("idle");
   const requestRef = useRef(null);
   useEffect(() => () => requestRef.current?.abort(), []);
@@ -25,7 +23,7 @@ export default function VerifyEmailBanner({ email, topOffset }) {
     requestRef.current = controller;
     setState("sending");
     try {
-      const result = await resendEmailVerification({ signal: controller.signal });
+      const result = await onResend?.({ signal: controller.signal });
       if (!controller.signal.aborted) setState(result?.state || "unavailable");
     } catch {
       if (!controller.signal.aborted) setState("unavailable");

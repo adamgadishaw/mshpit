@@ -5,7 +5,7 @@ import { useStore } from "../store";
 import { afterpartySearches } from "../lib/afterparty";
 import Icon from "./Icon";
 import Avatar from "./Avatar";
-import { LIMITS } from "../lib/validate";
+import { LIMITS } from "../domain/validation.mjs";
 
 const typeIcon = (t) => (t === "food" ? "food" : t === "activity" ? "star" : "drink");
 

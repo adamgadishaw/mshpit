@@ -56,7 +56,8 @@
     "build:web": "npm run split:catalog && expo export -p web",
     "test": "node scripts/run-tests.mjs",
     "check:syntax": "node scripts/check-syntax.mjs",
-    "check": "npm run split:catalog && npm run test && npm run check:syntax && npm run build:web",
+    "check:architecture": "node scripts/check-architecture.mjs",
+    "check": "npm run split:catalog && npm run test && npm run check:syntax && npm run check:architecture && npm run build:web",
     "split:catalog": "node scripts/split-catalog.mjs"
   },
   "private": true,
