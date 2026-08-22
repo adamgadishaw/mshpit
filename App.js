@@ -81,6 +81,7 @@ import { trackKey } from "./src/domain/trackIdentity.mjs";
 import { ENABLE_CLIPS, ENABLE_DEMO_DATA } from "./src/config/runtime.mjs";
 import { analyticsDwellBucket } from "./src/domain/analyticsPolicy.mjs";
 import { ownedPlayerEnvelope, playerQueueWithEntryIds, restoreOwnedPlayerState } from "./src/domain/player-session.mjs";
+import { playerLookupIntent } from "./src/domain/playback.mjs";
 
 const LEFT = [
   { key: "feed", label: "Feed", icon: "feed" },
@@ -128,7 +129,7 @@ function Root() {
     searchPeople, inboxUnread, accountStatus, track, unreadNotifications, recordPlay, playHistory,
     loadPlayHistory, saveSnapshot, autoplayQueue, followingCount, resendEmailVerification,
     topArtists, artistsAlphabetical, trendingVenues, upcomingEvents, discoverySidebar, discoverySidebarStatus,
-    resolveYouTube, invalidateYouTube, youtubeVideoRejected, resolveDeezerPreview, youtubeLookupWasTransient,
+    resolveYouTube, invalidateYouTube, youtubeVideoRejected, resolveDeezerPreview,
     youtubeLookupStatus, mediaReactions, loadMediaReactions, toggleMediaReaction,
   } = useStore();
   const staff = isStaff(session?.role);
@@ -712,13 +713,23 @@ function Root() {
     // (e.g. an album track played against the top-tracks queue), put it first.
     if (!base.some((m) => trackKey(m) === trackKey(media))) base = [media, ...base];
     const list = playerQueueWithEntryIds(autoplayQueue(media, base));
+    const index = Math.max(0, list.findIndex((m) => trackKey(m) === trackKey(media)));
     setPlayerMinimized(false);
-    setPlayer({ list, explicitCount: Math.min(base.length, list.length), index: Math.max(0, list.findIndex((m) => trackKey(m) === trackKey(media))) });
+    setPlayer({
+      list,
+      explicitCount: Math.min(base.length, list.length),
+      index,
+      playbackIntent: playerLookupIntent(list[index], "explicit"),
+    });
   };
-  const setPlayerIndex = (i) => setPlayer((p) => {
+  const setPlayerIndex = (i, { trigger = "explicit" } = {}) => setPlayer((p) => {
     if (!p) return p;
     const idx = Math.max(0, Math.min(i, p.list.length - 1));
-    return { ...p, index: idx };
+    return {
+      ...p,
+      index: idx,
+      playbackIntent: playerLookupIntent(p.list[idx], trigger),
+    };
   });
   // Queue edits from the up-next panel: jump to, remove, or move a track to next.
   const playAt = (i) => setPlayerIndex(i);
@@ -737,6 +748,16 @@ function Root() {
     rest.splice(curPos + 1, 0, item);
     return { ...p, list: rest, index: curPos };
   });
+  const restorePlayer = () => {
+    // Restoring is an explicit listener action. Upgrade legacy/restored player
+    // envelopes with an occurrence-bound intent before PlayerBar resolves it.
+    setPlayer((p) => {
+      if (!p?.list?.length) return p;
+      const idx = Math.max(0, Math.min(p.index || 0, p.list.length - 1));
+      return { ...p, playbackIntent: playerLookupIntent(p.list[idx], "explicit") };
+    });
+    setPlayerMinimized(false);
+  };
   const openPhotos = (images, index = 0, postId = null, opener = null) => {
     if (web && typeof document !== "undefined") {
       mediaViewerFocusGenerationRef.current += 1;
@@ -958,7 +979,7 @@ function Root() {
                   minimized={playerMinimized}
                   obscured={playerObscured}
                   onMinimize={() => setPlayerMinimized(true)}
-                  onRestore={() => setPlayerMinimized(false)}
+                  onRestore={restorePlayer}
                   onClose={stopAndClearPlayback}
                   onIndex={setPlayerIndex}
                   onPlayAt={playAt}
@@ -976,7 +997,6 @@ function Root() {
                   invalidateYouTube={invalidateYouTube}
                   youtubeVideoRejected={youtubeVideoRejected}
                   resolveDeezerPreview={resolveDeezerPreview}
-                  youtubeLookupWasTransient={youtubeLookupWasTransient}
                   youtubeLookupStatus={youtubeLookupStatus}
                 />
               </View>

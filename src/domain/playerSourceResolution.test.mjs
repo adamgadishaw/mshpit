@@ -34,6 +34,8 @@ test("paused restored queues defer cold YouTube resolution until restore", () =>
   assert.equal(shouldResolvePlayerYouTube({ web: true, minimized: false }), true);
   assert.equal(shouldResolvePlayerYouTube({ web: true, minimized: false, directVideoId: "dQw4w9WgXcQ" }), false);
   assert.equal(shouldResolvePlayerYouTube({ web: true, minimized: false, resolvedVideoId: "dQw4w9WgXcQ" }), false);
+  assert.equal(shouldResolvePlayerYouTube({ web: true, minimized: false, youtubeSettled: true }), false,
+    "restoring the same occurrence must not create a second cold attempt");
   assert.equal(shouldResolvePlayerYouTube({ web: false, minimized: false }), false);
 });
 
@@ -149,6 +151,7 @@ test("terminal and native engine failures preserve PIT media reporting semantics
 
 test("PlayerBar publishes provider results independently instead of awaiting Promise.all", async () => {
   const source = await readFile(new URL("../components/PlayerBar.jsx", import.meta.url), "utf8");
+  const appSource = await readFile(new URL("../../App.js", import.meta.url), "utf8");
   assert.doesNotMatch(source, /\[videoId, preview\]\s*=\s*await Promise\.all/);
   assert.match(source, /shouldResolvePlayerYouTube/);
   assert.match(source, /youtubeVideoRejected\?\.\(cur\?\.title,\s*cur\?\.artist,\s*directVideoCandidate,\s*youtubeSource\)/,
@@ -160,6 +163,22 @@ test("PlayerBar publishes provider results independently instead of awaiting Pro
   assert.match(source, /invalidateYouTube\(cur\.title,\s*cur\.artist,\s*failedId,\s*youtubeSource\)/,
     "terminal invalidation must stay scoped to the exact provider recording");
   assert.match(source, /playerSourcesUnavailable\(\{[\s\S]*youtubePending:\s*resolved\.youtubePending,[\s\S]*previewPending:\s*resolved\.previewPending/);
+  assert.match(source, /allowSearch:\s*allowSearch === true/,
+    "the player must pass an explicit cold-search decision to the resolver");
+  assert.match(source, /onIndex\?\.\(index \+ 1, \{ trigger: "automatic" \}\)/,
+    "preview completion must mark automatic advancement catalogue-only");
+  assert.match(source, /current\.onIndex\?\.\(current\.index \+ 1, \{ trigger: "automatic" \}\)/,
+    "YouTube completion must mark automatic advancement catalogue-only");
+  assert.doesNotMatch(source, /PREVIEW_UPGRADE_DELAY_MS|force:\s*true/,
+    "a preview must not launch a delayed quota-capable retry");
+  assert.match(source, />Find full track<\/Text>/,
+    "catalogue-only playback needs a clear explicit upgrade action");
+  assert.equal((source.match(/compactMobile && canFindFullTrack/g) || []).length, 1,
+    "compact playback renders one full-track opt-in, not duplicate controls");
+  assert.match(source, /mobileFindTrack:\s*\{\s*minHeight:\s*44/,
+    "the compact opt-in keeps a full-size touch target");
+  assert.match(appSource, /playbackIntent:\s*playerLookupIntent\(p\.list\[idx\], trigger\)/,
+    "transition intent must follow the target queue occurrence rather than its old index");
 });
 
 test("the full-screen media viewer owns audio instead of overlapping PlayerBar", async () => {

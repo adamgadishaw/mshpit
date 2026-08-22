@@ -26,6 +26,94 @@ const DIRECTLY_REMOVABLE_TARGETS = new Set([
 const safeText = (value) => (typeof value === "string" ? value.trim() : "");
 const lower = (value) => safeText(value).toLowerCase();
 
+export function adminPlaybackHealthPresentation(health) {
+  const services = health?.services;
+  if (!services || typeof services.youtubeConfigured !== "boolean") {
+    return {
+      status: "unknown",
+      bad: false,
+      configured: null,
+      message: "Playback diagnostics are unavailable.",
+      detail: "Refresh the moderation overview. This does not mean the YouTube key is missing.",
+    };
+  }
+
+  const lookup = services.youtubeLookup || {};
+  const configured = services.youtubeConfigured;
+  const paused = !!lookup.circuitOpen;
+  const used = lookup.search?.used ?? null;
+  const limit = lookup.search?.limit ?? null;
+  const remaining = lookup.search?.remaining ?? null;
+  const actor = lookup.actorAllowance || null;
+  const actorUsed = actor?.used ?? null;
+  const actorLimit = actor?.limit ?? null;
+  const actorRemaining = actor?.remaining ?? null;
+  const sharedSpent = configured && remaining != null && remaining <= 0;
+  const actorSpent = configured && actor?.eligible === true && actorRemaining != null && actorRemaining <= 0;
+  const sharedDetail = used == null
+    ? "Shared provider usage unavailable"
+    : `Shared provider searches: ${used}${limit != null ? ` of ${limit}` : ""}${remaining != null ? ` / ${remaining} left` : ""}`;
+  const actorDetail = !actor
+    ? "Current-account allowance unavailable"
+    : actor.eligible
+      ? `This account: ${actorUsed ?? 0}${actorLimit != null ? ` of ${actorLimit}` : ""} explicit new-track lookups${actorRemaining != null ? ` / ${actorRemaining} left` : ""}${actor.adminBypass ? " / admin verification bypass" : ""}`
+      : "This account cannot start a cold lookup until its email is verified";
+  const detail = `${sharedDetail} / ${actorDetail}${lookup.inFlight ? ` / ${lookup.inFlight} in flight` : ""}`;
+
+  if (!configured) {
+    return {
+      status: "unconfigured",
+      bad: true,
+      configured,
+      message: "No YouTube API key. Every song falls back to a 30-second preview.",
+      detail: "Set YOUTUBE_API_KEY in the server environment, then redeploy.",
+    };
+  }
+  if (paused) {
+    return {
+      status: "paused",
+      bad: true,
+      configured,
+      message: `Lookup paused (${lookup.circuitCode || "provider error"}). Songs fall back to previews until it resumes.`,
+      detail,
+    };
+  }
+  if (actor && actor.eligible === false) {
+    return {
+      status: "account_ineligible",
+      bad: true,
+      configured,
+      message: "This staff account is not eligible for new YouTube lookups.",
+      detail: `${sharedDetail} / Verify this account's email. Cached and catalogue tracks still play.`,
+    };
+  }
+  if (actorSpent) {
+    return {
+      status: "actor_spent",
+      bad: true,
+      configured,
+      message: "This account's explicit new-track allowance is used for today.",
+      detail: `${detail} / Resets at midnight Pacific; cached and catalogue tracks still play.`,
+    };
+  }
+  if (sharedSpent) {
+    return {
+      status: "shared_spent",
+      bad: true,
+      configured,
+      message: "Today's shared YouTube search allowance is used.",
+      detail: `${detail} / Resets at midnight Pacific; uncached songs use previews until then.`,
+    };
+  }
+  return {
+    status: "healthy",
+    bad: false,
+    configured,
+    message: "Configured and running.",
+    detail,
+  };
+}
+
 export function normalizeAdminMemberQuery(value, maxLength = 80) {
   const limit = Math.max(1, Number.isFinite(Number(maxLength)) ? Math.floor(Number(maxLength)) : 80);
   return safeText(value).replace(/^@+/, "").trim().slice(0, limit);

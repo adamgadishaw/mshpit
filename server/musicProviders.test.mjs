@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
@@ -17,6 +17,7 @@ const {
 } = await import("./db.js");
 const {
   YOUTUBE_MATCH_CACHE_VERSION,
+  invalidateSongIndex,
   invalidateYouTubeTrack,
   normalizeYouTubeCacheText,
   parseYouTubeVideoId,
@@ -30,16 +31,39 @@ const {
   selectCatalogueTrack,
   selectDeezerArtist,
   selectDeezerTrack,
+  spotifyCatalogueTrackProof,
   trackOverrideKey,
   youtubeOEmbed,
   youtubeCacheKey,
   youtubeJson,
+  youtubeRecordingIdentity,
   youtubeProviderStatus,
 } = await import("./musicProviders.js");
 
 after(() => {
   db.close();
   rmSync(dataDir, { recursive: true, force: true });
+});
+
+test("every bundled Spotify track has exact local recording proof without duration metadata", () => {
+  const bundled = JSON.parse(readFileSync(new URL("../src/seed/catalog.core.json", import.meta.url), "utf8"));
+  const tracks = Object.values(bundled.artists || {}).flatMap((artist) => (
+    (artist.topTracks || []).map((track) => ({
+      artist: artist.name,
+      title: track.title,
+      sourceId: String(track.url || "").match(/open\.spotify\.com\/track\/([A-Za-z0-9]+)/i)?.[1] || "",
+      duration: track.duration,
+    })).filter((track) => track.sourceId)
+  ));
+  assert.equal(tracks.length, 2484, "the regression covers the complete current production catalogue");
+  assert.equal(tracks.filter((track) => Number(track.duration) > 0).length, 0,
+    "the fixture mirrors production: exact Spotify identities currently have no stored duration");
+  const unsupported = tracks.filter((track) => !spotifyCatalogueTrackProof(track));
+  assert.deepEqual(unsupported, [], "source ID + artist + authoritative title proves every bundled recording");
+  assert.equal(youtubeRecordingIdentity("spotify", tracks[0].sourceId), `spotify:${tracks[0].sourceId}`);
+  assert.equal(youtubeRecordingIdentity("SPOTIFY", tracks[1].sourceId), `spotify:${tracks[1].sourceId}`);
+  assert.equal(youtubeRecordingIdentity("spotify", "open.spotify.com/track/not-an-id"), "",
+    "only a bounded bare Spotify ID becomes cache authority");
 });
 
 test("same-name Deezer artists prefer the established exact match or stored ID", () => {
@@ -516,13 +540,16 @@ test("catalogue matching picks the studio track over decorated and live variants
 test("the catalogue path resolves songs without burning a keyword search", async () => {
   // YouTube now gives search.list its own small daily call bucket. Catalogue
   // reads use the ordinary low-cost API pool and are shared across every listener.
+  const artist = "Nelly Furtado";
+  const norm = normName(artist);
+  if (!artistStmts.byNorm.get(norm)) artistStmts.upsert.run(artistRow(norm, { name: artist }, "test"));
+  artistStmts.setChannel.run("UC_topic", Date.now(), "youtube_v4", norm);
   const calls = [];
   const fetchImpl = async (url) => {
     const u = String(url);
     calls.push(u);
     let data = {};
-    if (u.includes("type=channel")) data = { items: [{ id: { channelId: "UC_topic" }, snippet: { title: "Nelly Furtado - Topic" } }] };
-    else if (u.includes("/channels?")) data = { items: [{ contentDetails: { relatedPlaylists: { uploads: "UU_topic" } } }] };
+    if (u.includes("/channels?")) data = { items: [{ contentDetails: { relatedPlaylists: { uploads: "UU_topic" } } }] };
     else if (u.includes("/playlistItems?")) data = { items: [
       { snippet: { title: "Say It Right", resourceId: { videoId: "studiotrack" } } },
       { snippet: { title: "Maneater", resourceId: { videoId: "maneater001" } } },
@@ -530,7 +557,7 @@ test("the catalogue path resolves songs without burning a keyword search", async
     else data = { items: [youtubeCandidate("studiotrack", "Say It Right", "Nelly Furtado - Topic")] };
     return { ok: true, status: 200, json: async () => data };
   };
-  const result = await resolveYouTubeTrack("Say It Right", "Nelly Furtado", { apiKey: "test-key", fetchImpl });
+  const result = await resolveYouTubeTrack("Say It Right", artist, { apiKey: "test-key", fetchImpl });
   assert.equal(result.videoId, "studiotrack");
   assert.equal(result.status, "artist_catalogue");
   // Only the one-off channel lookup may use search; the song itself must not.
@@ -560,23 +587,26 @@ test("catalogue-only resolution defers a miss without touching search or any pro
 });
 
 test("concurrent listeners share one cold YouTube resolution", async () => {
+  const artist = "Shared Artist";
+  const norm = normName(artist);
+  artistStmts.upsert.run(artistRow(norm, { name: artist }, "test"));
+  artistStmts.setChannel.run("UC_shared", Date.now(), "youtube_v4", norm);
   let requests = 0;
   const fetchImpl = async (url) => {
     requests += 1;
     await new Promise((resolve) => setTimeout(resolve, 2));
     const value = String(url);
-    if (value.includes("type=channel")) return { ok: true, status: 200, json: async () => ({ items: [{ id: { channelId: "UC_shared" }, snippet: { title: "Shared Artist - Topic" } }] }) };
     if (value.includes("/channels?")) return { ok: true, status: 200, json: async () => ({ items: [{ contentDetails: { relatedPlaylists: { uploads: "UU_shared" } } }] }) };
     if (value.includes("/playlistItems?")) return { ok: true, status: 200, json: async () => ({ items: [{ snippet: { title: "Shared Song", resourceId: { videoId: "sharedtrack" } } }] }) };
     return { ok: true, status: 200, json: async () => ({ items: [youtubeCandidate("sharedtrack", "Shared Song", "Shared Artist - Topic")] }) };
   };
   const [first, second] = await Promise.all([
-    resolveYouTubeTrack("Shared Song", "Shared Artist", { apiKey: "test-key", fetchImpl }),
-    resolveYouTubeTrack("Shared Song", "Shared Artist", { apiKey: "test-key", fetchImpl }),
+    resolveYouTubeTrack("Shared Song", artist, { apiKey: "test-key", fetchImpl }),
+    resolveYouTubeTrack("Shared Song", artist, { apiKey: "test-key", fetchImpl }),
   ]);
   assert.equal(first.videoId, "sharedtrack");
   assert.deepEqual(second, first);
-  assert.equal(requests, 4, "one shared channel/catalogue/video request chain");
+  assert.equal(requests, 3, "one shared data-only channel/catalogue/video request chain");
   assert.equal(youtubeProviderStatus().inFlight, 0);
 });
 
@@ -585,13 +615,16 @@ test("resolver searches the artist's channel first, so reactions can never win",
   // the search to the artist's Topic channel means it is never even a candidate.
   // A distinct artist from the catalogue test above: the provider cache is shared
   // across tests, so reusing a name would simply replay the cached catalogue.
+  const artist = "Feist";
+  const norm = normName(artist);
+  if (!artistStmts.byNorm.get(norm)) artistStmts.upsert.run(artistRow(norm, { name: artist }, "test"));
+  artistStmts.setChannel.run("UC_feist", Date.now(), "youtube_v4", norm);
   const fetchImpl = async (url) => {
     const u = String(url);
     let data = {};
-    if (u.includes("type=channel")) data = { items: [{ id: { channelId: "UC_feist" }, snippet: { title: "Feist - Topic" } }] };
     // No uploads playlist here, so the cheap catalogue path finds nothing and
     // the resolver falls back to searching inside the artist's channel.
-    else if (u.includes("/channels?")) data = { items: [] };
+    if (u.includes("/channels?")) data = { items: [] };
     else if (u.includes("/search?") && u.includes("channelId=UC_feist")) data = { items: [{ id: { videoId: "officialAud" } }] };
     else if (u.includes("/search?")) data = { items: [{ id: { videoId: "reactvid001" } }] };
     else data = {
@@ -602,7 +635,7 @@ test("resolver searches the artist's channel first, so reactions can never win",
     };
     return { ok: true, status: 200, json: async () => data };
   };
-  const result = await resolveYouTubeTrack("Mushaboom", "Feist", { apiKey: "test-key", fetchImpl });
+  const result = await resolveYouTubeTrack("Mushaboom", artist, { apiKey: "test-key", fetchImpl });
   assert.equal(result.videoId, "officialAud");
   assert.equal(result.status, "artist_channel");
 });
@@ -781,6 +814,334 @@ test("provider recording proof keeps omitted feature credits exact and fails clo
   assert.equal(providerCalls.get(featureSourceId), 2, "the mismatched identity cannot reuse the first title's proof cache entry");
 });
 
+test("fresh tuple positives promote only to the exact matching Deezer recording", async () => {
+  const artist = "Tuple Promotion Artist";
+  const featureTitle = "Feature Tuple Recording";
+  const soloTitle = "Solo Tuple Recording";
+  const featureVideoId = "tuplefeat01";
+  const soloVideoId = "tuplesolo01";
+  const featureSourceId = "7000000001";
+  const soloSourceId = "7000000002";
+  const mismatchedSoloSourceId = "7000000003";
+  const mismatchedFeatureSourceId = "7000000004";
+  const at = Date.now();
+  const seedTuplePositive = (title, videoId, videoTitle) => db.prepare(`INSERT OR REPLACE INTO yt_cache
+    (key,video_id,updated_at,metadata,score,expires_at,rejected_ids) VALUES (?,?,?,?,?,?,?)`).run(
+    youtubeCacheKey(title, artist),
+    videoId,
+    at,
+    JSON.stringify({
+      title: videoTitle,
+      channel: `${artist} - Topic`,
+      reasons: ["artist-channel", "licensed"],
+      duration: 203,
+      matchVersion: YOUTUBE_MATCH_CACHE_VERSION,
+    }),
+    100,
+    at + 24 * 60 * 60 * 1000,
+    "[]",
+  );
+  seedTuplePositive(featureTitle, featureVideoId, `${featureTitle} (feat. Guest Rapper)`);
+  seedTuplePositive(soloTitle, soloVideoId, soloTitle);
+
+  const candidates = new Map([
+    [featureVideoId, youtubeCandidate(featureVideoId, `${featureTitle} (feat. Guest Rapper)`, `${artist} - Topic`, { duration: "PT3M23S" })],
+    [soloVideoId, youtubeCandidate(soloVideoId, soloTitle, `${artist} - Topic`, { duration: "PT3M23S" })],
+  ]);
+  let searches = 0;
+  const fetchImpl = async (url) => {
+    const parsed = new URL(String(url));
+    if (parsed.hostname === "api.deezer.com") {
+      const sourceId = parsed.pathname.split("/").pop();
+      const title = sourceId === featureSourceId || sourceId === mismatchedSoloSourceId ? featureTitle : soloTitle;
+      const featured = sourceId === featureSourceId || sourceId === mismatchedFeatureSourceId;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          id: Number(sourceId),
+          title,
+          duration: 203,
+          artist: { name: artist },
+          contributors: featured
+            ? [{ name: artist, role: "Main" }, { name: "Guest Rapper", role: "Featured" }]
+            : [{ name: artist, role: "Main" }],
+        }),
+      };
+    }
+    if (parsed.pathname.endsWith("/videos")) {
+      const id = parsed.searchParams.get("id");
+      return { ok: true, status: 200, json: async () => ({ items: candidates.has(id) ? [candidates.get(id)] : [] }) };
+    }
+    if (parsed.pathname.endsWith("/search")) searches += 1;
+    throw new Error(`tuple promotion must remain data-only: ${parsed}`);
+  };
+
+  const matchingFeature = await resolveYouTubeTrack(featureTitle, artist, {
+    apiKey: "test-key",
+    allowSearch: false,
+    expectedDurationSec: 203,
+    sourceProvider: "deezer",
+    sourceId: featureSourceId,
+    fetchImpl,
+  });
+  assert.equal(matchingFeature.videoId, featureVideoId);
+  assert.equal(db.prepare("SELECT video_id FROM yt_cache WHERE key=?").get(
+    youtubeCacheKey(featureTitle, artist, `deezer:${featureSourceId}`),
+  )?.video_id, featureVideoId, "a revalidated feature tuple positive is promoted to that exact source key");
+
+  const featureMustNotLeakToSolo = await resolveYouTubeTrack(featureTitle, artist, {
+    apiKey: "test-key",
+    allowSearch: false,
+    expectedDurationSec: 203,
+    sourceProvider: "deezer",
+    sourceId: mismatchedSoloSourceId,
+    fetchImpl,
+  });
+  assert.deepEqual(featureMustNotLeakToSolo, { videoId: null, status: "search_deferred" });
+  assert.equal(db.prepare("SELECT 1 FROM yt_cache WHERE key=?").get(
+    youtubeCacheKey(featureTitle, artist, `deezer:${mismatchedSoloSourceId}`),
+  ), undefined, "a feature tuple positive never becomes authority for a solo provider recording");
+
+  const matchingSolo = await resolveYouTubeTrack(soloTitle, artist, {
+    apiKey: "test-key",
+    allowSearch: false,
+    expectedDurationSec: 203,
+    sourceProvider: "deezer",
+    sourceId: soloSourceId,
+    fetchImpl,
+  });
+  assert.equal(matchingSolo.videoId, soloVideoId);
+  assert.equal(db.prepare("SELECT video_id FROM yt_cache WHERE key=?").get(
+    youtubeCacheKey(soloTitle, artist, `deezer:${soloSourceId}`),
+  )?.video_id, soloVideoId, "a revalidated solo tuple positive is promoted to that exact source key");
+
+  const soloMustNotLeakToFeature = await resolveYouTubeTrack(soloTitle, artist, {
+    apiKey: "test-key",
+    allowSearch: false,
+    expectedDurationSec: 203,
+    sourceProvider: "deezer",
+    sourceId: mismatchedFeatureSourceId,
+    fetchImpl,
+  });
+  assert.deepEqual(soloMustNotLeakToFeature, { videoId: null, status: "search_deferred" });
+  assert.equal(db.prepare("SELECT 1 FROM yt_cache WHERE key=?").get(
+    youtubeCacheKey(soloTitle, artist, `deezer:${mismatchedFeatureSourceId}`),
+  ), undefined, "a solo tuple positive never becomes authority for a feature provider recording");
+  assert.equal(searches, 0);
+});
+
+test("bundled no-duration Spotify solo and feature titles resolve only into exact source keys", async () => {
+  const at = Date.now();
+  const fixtures = [
+    {
+      artist: "Turnstile",
+      title: "BIRDS",
+      sourceId: "0kshHISCRGn9MwpkbqafG4",
+      videoId: "spotsolo001",
+      videoTitle: "BIRDS",
+    },
+    {
+      artist: "Beyoncé",
+      title: "Crazy In Love (feat. JAY-Z)",
+      sourceId: "5IVuqXILoxVWvWEPm82Jxr",
+      videoId: "spotfeat001",
+      videoTitle: "Crazy In Love (feat. JAY-Z)",
+    },
+  ];
+  const candidates = new Map();
+  for (const fixture of fixtures) {
+    assert.equal(spotifyCatalogueTrackProof(fixture)?.durationSec, 0,
+      "the real bundled row proves identity without inventing duration");
+    candidates.set(fixture.videoId, youtubeCandidate(
+      fixture.videoId,
+      fixture.videoTitle,
+      `${fixture.artist} - Topic`,
+    ));
+    db.prepare(`INSERT OR REPLACE INTO yt_cache
+      (key,video_id,updated_at,metadata,score,expires_at,rejected_ids) VALUES (?,?,?,?,?,?,?)`).run(
+      youtubeCacheKey(fixture.title, fixture.artist),
+      fixture.videoId,
+      at,
+      JSON.stringify({
+        title: fixture.videoTitle,
+        channel: `${fixture.artist} - Topic`,
+        reasons: ["artist-channel", "licensed"],
+        matchVersion: YOUTUBE_MATCH_CACHE_VERSION,
+      }),
+      100,
+      at + 24 * 60 * 60 * 1000,
+      "[]",
+    );
+  }
+
+  let videoReads = 0;
+  const fetchImpl = async (url) => {
+    const parsed = new URL(String(url));
+    assert.ok(parsed.pathname.endsWith("/videos"), `Spotify tuple promotion stays data-only: ${parsed}`);
+    videoReads += 1;
+    const requested = (parsed.searchParams.get("id") || "").split(",");
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ items: requested.map((id) => candidates.get(id)).filter(Boolean) }),
+    };
+  };
+
+  for (const fixture of fixtures) {
+    const result = await resolveYouTubeTrack(fixture.title, fixture.artist, {
+      apiKey: "test-key",
+      allowSearch: false,
+      sourceProvider: "spotify",
+      sourceId: fixture.sourceId,
+      fetchImpl,
+    });
+    assert.equal(result.videoId, fixture.videoId);
+    assert.equal(db.prepare("SELECT video_id FROM yt_cache WHERE key=?").get(
+      youtubeCacheKey(fixture.title, fixture.artist, `spotify:${fixture.sourceId}`),
+    )?.video_id, fixture.videoId, "the validated recording is stored only under its Spotify source identity");
+  }
+  assert.equal(videoReads, fixtures.length);
+});
+
+test("Spotify catalogue proof prevents tuple solo/feature leaks and unknown-ID cache access", async () => {
+  const artist = "Spotify Recording Boundary";
+  const sharedTitle = "Parallel Signal";
+  const durationTitle = "Duration Boundary";
+  const soloSourceId = "SpSoloBoundary001";
+  const featureSourceId = "SpFeatureBoundary001";
+  const durationSourceId = "SpDurationBoundary001";
+  const unknownSourceId = "SpUnknownBoundary001";
+  const soloVideoId = "spsolo00001";
+  const featureVideoId = "spfeat00001";
+  const durationVideoId = "spdur000001";
+  artistStmts.upsert.run(artistRow(normName(artist), {
+    name: artist,
+    topTracks: [
+      { title: sharedTitle, url: `https://open.spotify.com/track/${soloSourceId}` },
+      { title: `${sharedTitle} (feat. Guest Rapper)`, url: `https://open.spotify.com/track/${featureSourceId}` },
+      { title: durationTitle, url: `https://open.spotify.com/track/${durationSourceId}` },
+    ],
+  }, "test"));
+  invalidateSongIndex();
+
+  const candidates = new Map([
+    [soloVideoId, youtubeCandidate(soloVideoId, sharedTitle, `${artist} - Topic`, { duration: "PT3M23S" })],
+    [featureVideoId, youtubeCandidate(featureVideoId, `${sharedTitle} (feat. Guest Rapper)`, `${artist} - Topic`, { duration: "PT3M23S" })],
+    [durationVideoId, youtubeCandidate(durationVideoId, durationTitle, `${artist} - Topic`, { duration: "PT4M20S" })],
+  ]);
+  const seedTuple = (title, videoId, videoTitle) => {
+    const at = Date.now();
+    db.prepare(`INSERT OR REPLACE INTO yt_cache
+      (key,video_id,updated_at,metadata,score,expires_at,rejected_ids) VALUES (?,?,?,?,?,?,?)`).run(
+      youtubeCacheKey(title, artist),
+      videoId,
+      at,
+      JSON.stringify({
+        title: videoTitle,
+        channel: `${artist} - Topic`,
+        reasons: ["artist-channel", "licensed"],
+        matchVersion: YOUTUBE_MATCH_CACHE_VERSION,
+      }),
+      100,
+      at + 24 * 60 * 60 * 1000,
+      "[]",
+    );
+  };
+  let fetches = 0;
+  const fetchImpl = async (url) => {
+    fetches += 1;
+    const parsed = new URL(String(url));
+    assert.ok(parsed.pathname.endsWith("/videos"), `source promotion must not search: ${parsed}`);
+    const requested = (parsed.searchParams.get("id") || "").split(",");
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ items: requested.map((id) => candidates.get(id)).filter(Boolean) }),
+    };
+  };
+
+  seedTuple(sharedTitle, featureVideoId, `${sharedTitle} (feat. Guest Rapper)`);
+  const featureIntoSolo = await resolveYouTubeTrack(sharedTitle, artist, {
+    apiKey: "test-key",
+    allowSearch: false,
+    sourceProvider: "spotify",
+    sourceId: soloSourceId,
+    fetchImpl,
+  });
+  assert.deepEqual(featureIntoSolo, { videoId: null, status: "search_deferred" });
+  assert.equal(db.prepare("SELECT 1 FROM yt_cache WHERE key=?").get(
+    youtubeCacheKey(sharedTitle, artist, `spotify:${soloSourceId}`),
+  ), undefined, "a feature tuple positive cannot become the Spotify solo source");
+
+  seedTuple(sharedTitle, soloVideoId, sharedTitle);
+  const soloIntoFeature = await resolveYouTubeTrack(sharedTitle, artist, {
+    apiKey: "test-key",
+    allowSearch: false,
+    sourceProvider: "spotify",
+    sourceId: featureSourceId,
+    fetchImpl,
+  });
+  assert.deepEqual(soloIntoFeature, { videoId: null, status: "search_deferred" });
+  assert.equal(db.prepare("SELECT 1 FROM yt_cache WHERE key=?").get(
+    youtubeCacheKey(sharedTitle, artist, `spotify:${featureSourceId}`),
+  ), undefined, "a solo tuple positive cannot become the Spotify feature source");
+
+  const beforeUnknown = fetches;
+  const unknown = await resolveYouTubeTrack(sharedTitle, artist, {
+    apiKey: "test-key",
+    allowSearch: true,
+    sourceProvider: "spotify",
+    sourceId: unknownSourceId,
+    fetchImpl,
+  });
+  assert.deepEqual(unknown, { videoId: null, status: "search_deferred" });
+  assert.equal(fetches, beforeUnknown, "an unproved Spotify ID returns before reading or validating the tuple positive");
+  assert.equal(db.prepare("SELECT 1 FROM yt_cache WHERE key=?").get(
+    youtubeCacheKey(sharedTitle, artist, `spotify:${unknownSourceId}`),
+  ), undefined);
+
+  seedTuple(durationTitle, durationVideoId, durationTitle);
+  const durationMismatch = await resolveYouTubeTrack(durationTitle, artist, {
+    apiKey: "test-key",
+    allowSearch: false,
+    expectedDurationSec: 203,
+    sourceProvider: "spotify",
+    sourceId: durationSourceId,
+    fetchImpl,
+  });
+  assert.deepEqual(durationMismatch, { videoId: null, status: "search_deferred" });
+  assert.equal(db.prepare("SELECT 1 FROM yt_cache WHERE key=?").get(
+    youtubeCacheKey(durationTitle, artist, `spotify:${durationSourceId}`),
+  ), undefined, "when request duration exists, a materially different recording is rejected");
+  assert.equal(fetches, beforeUnknown + 1, "the unknown-ID branch is the only case that skips even tuple validation");
+});
+
+test("tuple negatives never suppress a source-scoped recording", async () => {
+  const title = "Tuple Negative Isolation";
+  const artist = "Tuple Negative Artist";
+  const sourceId = "7111111111";
+  const at = Date.now();
+  db.prepare(`INSERT OR REPLACE INTO yt_cache
+    (key,video_id,updated_at,metadata,score,expires_at,rejected_ids) VALUES (?,NULL,?,NULL,NULL,?,?)`).run(
+    youtubeCacheKey(title, artist),
+    at,
+    at + 24 * 60 * 60 * 1000,
+    "[]",
+  );
+  const result = await resolveYouTubeTrack(title, artist, {
+    apiKey: "test-key",
+    allowSearch: false,
+    sourceProvider: "deezer",
+    sourceId,
+    fetchImpl: async () => { throw new Error("tuple negatives must not be fetched or promoted"); },
+  });
+  assert.deepEqual(result, { videoId: null, status: "search_deferred" });
+  assert.equal(db.prepare("SELECT 1 FROM yt_cache WHERE key=?").get(
+    youtubeCacheKey(title, artist, `deezer:${sourceId}`),
+  ), undefined);
+});
+
 test("an actor-local exclusion can choose a catalogue alternate without rewriting the shared cache", async () => {
   const title = "Guest Alternate Song";
   const artist = "Guest Alternate Artist";
@@ -847,16 +1208,18 @@ test("YouTube post attachments canonicalize links and keep provider metadata", a
   assert.equal(await youtubeOEmbed("https://example.com/not-youtube", { fetchImpl: async () => { throw new Error("must not fetch"); } }), null);
 });
 
-test("a discovered Topic channel is stored on the artist and never re-searched", async () => {
-  // Put the artist in the catalogue so discovery can persist to their row.
+test("a known Topic channel resolves multiple songs without any channel-discovery search", async () => {
+  // Channel identity is learned by catalogue/Wikidata jobs. Track resolution
+  // consumes no search.list request merely to rediscover that identity.
   const now = Date.now();
   artistStmts.upsert.run(artistRow("Channel Keeper", { name: "Channel Keeper", popularity: 50 }, "test"));
+  artistStmts.setChannel.run("UC_keeper", now, "youtube_v4", "channel keeper");
 
   let channelSearches = 0;
   const fetchImpl = async (url) => {
     const u = String(url);
     let data = {};
-    if (u.includes("type=channel")) { channelSearches += 1; data = { items: [{ id: { channelId: "UC_keeper" }, snippet: { title: "Channel Keeper - Topic" } }] }; }
+    if (u.includes("type=channel")) { channelSearches += 1; data = { items: [] }; }
     else if (u.includes("/channels?")) data = { items: [{ contentDetails: { relatedPlaylists: { uploads: "UU_keeper" } } }] };
     else if (u.includes("/playlistItems?")) data = { items: [
       { snippet: { title: "First Single", resourceId: { videoId: "keeper_a" } } },
@@ -871,7 +1234,7 @@ test("a discovered Topic channel is stored on the artist and never re-searched",
 
   const first = await resolveYouTubeTrack("First Single", "Channel Keeper", { apiKey: "test-key", fetchImpl });
   assert.equal(first.status, "artist_catalogue");
-  assert.equal(channelSearches, 1, "discovery searches once");
+  assert.equal(channelSearches, 0, "track resolution never searches for a channel identity");
 
   // The channel id is now on the artist row with YouTube provenance and a
   // refresh timestamp, so it is reused without another discovery search.
@@ -884,7 +1247,7 @@ test("a discovered Topic channel is stored on the artist and never re-searched",
   // no further channel discovery search.
   const second = await resolveYouTubeTrack("Second Single", "Channel Keeper", { apiKey: "test-key", fetchImpl });
   assert.equal(second.videoId, "keeper_b");
-  assert.equal(channelSearches, 1, "the stored channel is reused, so no second discovery search");
+  assert.equal(channelSearches, 0, "the stored channel is reused without any discovery search");
 });
 
 test("a stale channel whose current title no longer matches is cleared instead of trusted forever", async () => {
@@ -931,6 +1294,46 @@ test("a complete catalogue that lacks the song skips the in-channel search", asy
   // on top of it, because the complete catalogue already proved the Topic
   // channel does not hold the song.
   assert.equal(songSearches, 1, "one global search, no redundant in-channel search");
+});
+
+test("one cold miss spends one actor permit and at most one in-channel search", async () => {
+  const artist = "Single Search Artist";
+  const title = "Wanted Recording";
+  const norm = normName(artist);
+  artistStmts.upsert.run(artistRow(norm, { name: artist, popularity: 40 }, "test"));
+  artistStmts.setChannel.run("UC_single_search", Date.now(), "youtube_v4", norm);
+  let searchCalls = 0;
+  let actorCharges = 0;
+  const result = await resolveYouTubeTrack(title, artist, {
+    apiKey: "test-key",
+    beforeSearch: () => { actorCharges += 1; },
+    fetchImpl: async (url) => {
+      const parsed = new URL(String(url));
+      if (parsed.pathname.endsWith("/channels")) {
+        // No uploads playlist means the catalogue is incomplete and justifies
+        // exactly one in-channel search.
+        return { ok: true, status: 200, json: async () => ({ items: [] }) };
+      }
+      if (parsed.pathname.endsWith("/search")) {
+        searchCalls += 1;
+        assert.equal(parsed.searchParams.get("channelId"), "UC_single_search",
+          "the resolver chooses the safer known-channel search, never a second global search");
+        return { ok: true, status: 200, json: async () => ({ items: [{ id: { videoId: "wrongsong01" } }] }) };
+      }
+      if (parsed.pathname.endsWith("/videos")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ items: [youtubeCandidate("wrongsong01", "Completely Different Song", `${artist} - Topic`)] }),
+        };
+      }
+      throw new Error(`unexpected single-search endpoint: ${parsed.pathname}`);
+    },
+  });
+  assert.deepEqual(result, { videoId: null, status: "low_confidence" },
+    "a wrong recording remains rejected instead of triggering a broader guess");
+  assert.equal(searchCalls, 1);
+  assert.equal(actorCharges, 1, "one explicit cold track attempt charges the actor once");
 });
 
 test("fresh legacy channel mappings are revalidated under the current Unicode creator policy", async () => {
@@ -1240,6 +1643,20 @@ test("provider pruning removes dormant YouTube mappings and downgrades CC0 point
 });
 
 test("uncatalogued artists reuse their durable channel and catalogue across spelling variants", async () => {
+  const artist = "Unknown Cache Act";
+  const cachedAt = Date.now();
+  db.prepare(`INSERT OR REPLACE INTO provider_cache (key,data,updated_at,expires_at)
+    VALUES (?,?,?,?)`).run(
+    `yt:channel:v3:${normalizeYouTubeCacheText(artist)}`,
+    JSON.stringify({
+      channelId: "UC_unknown_cache",
+      title: `${artist} - Topic`,
+      rank: 100,
+      refreshAt: cachedAt + 7 * 24 * 60 * 60 * 1000,
+    }),
+    cachedAt,
+    cachedAt + 30 * 24 * 60 * 60 * 1000,
+  );
   let channelSearches = 0;
   let catalogueReads = 0;
   const fetchImpl = async (url) => {
@@ -1265,15 +1682,19 @@ test("uncatalogued artists reuse their durable channel and catalogue across spel
     return { ok: true, status: 200, json: async () => data };
   };
 
-  const first = await resolveYouTubeTrack("Cache Track One", "Unknown Cache Act", { apiKey: "test-key", fetchImpl });
+  const first = await resolveYouTubeTrack("Cache Track One", artist, { apiKey: "test-key", fetchImpl });
   const second = await resolveYouTubeTrack("Cache Track Two", "  UNKNOWN   CACHE ACT ", { apiKey: "test-key", fetchImpl });
   assert.equal(first.videoId, "cachetrack1");
   assert.equal(second.videoId, "cachetrack2");
-  assert.equal(channelSearches, 1, "the persisted provider channel avoids a second search.list call");
+  assert.equal(channelSearches, 0, "the persisted provider channel avoids channel-discovery search entirely");
   assert.equal(catalogueReads, 1, "one channel id maps to one normalized catalogue cache");
 });
 
 test("different songs cold-starting together coalesce artist channel and catalogue requests", async () => {
+  const artist = "Coalesce Artist";
+  const norm = normName(artist);
+  artistStmts.upsert.run(artistRow(norm, { name: artist }, "test"));
+  artistStmts.setChannel.run("UC_coalesce", Date.now(), "youtube_v4", norm);
   let channelSearches = 0;
   let channelReads = 0;
   let catalogueReads = 0;
@@ -1304,12 +1725,12 @@ test("different songs cold-starting together coalesce artist channel and catalog
   };
 
   const [one, two] = await Promise.all([
-    resolveYouTubeTrack("Parallel One", "Coalesce Artist", { apiKey: "test-key", fetchImpl }),
-    resolveYouTubeTrack("Parallel Two", "Coalesce Artist", { apiKey: "test-key", fetchImpl }),
+    resolveYouTubeTrack("Parallel One", artist, { apiKey: "test-key", fetchImpl }),
+    resolveYouTubeTrack("Parallel Two", artist, { apiKey: "test-key", fetchImpl }),
   ]);
   assert.equal(one.videoId, "parallel001");
   assert.equal(two.videoId, "parallel002");
-  assert.equal(channelSearches, 1);
+  assert.equal(channelSearches, 0);
   assert.equal(channelReads, 1);
   assert.equal(catalogueReads, 1);
   const afterStatus = youtubeProviderStatus();
@@ -1334,7 +1755,7 @@ test("an uncatalogued artist channel miss is negative-cached across different so
 
   await resolveYouTubeTrack("Negative One", "No Topic Cache Artist", { apiKey: "test-key", fetchImpl });
   await resolveYouTubeTrack("Negative Two", "No Topic Cache Artist", { apiKey: "test-key", fetchImpl });
-  assert.equal(channelSearches, 1, "the structural channel miss is not searched twice");
+  assert.equal(channelSearches, 0, "track resolution never spends search quota discovering a channel");
   assert.equal(globalSearches, 2, "each distinct song still receives one legitimate global attempt");
 });
 
@@ -1452,6 +1873,38 @@ test("a successful normalized resolution and invalidation retain finite policy e
   assert.deepEqual(JSON.parse(afterInvalidation.metadata), { invalidated: true });
   assert.ok(JSON.parse(afterInvalidation.rejected_ids).includes(id));
   assert.ok(afterInvalidation.expires_at - afterInvalidation.updated_at <= 30 * 24 * 60 * 60 * 1000);
+});
+
+test("an open data-validation circuit blocks search before global or actor reservation", async () => {
+  await assert.rejects(
+    youtubeJson("videos", { part: "snippet", id: "datacircuit1" }, "test-key", async () => ({
+      ok: false,
+      status: 403,
+      json: async () => ({}),
+    })),
+    (error) => error?.code === "quota_or_forbidden",
+  );
+  const before = youtubeProviderStatus();
+  assert.equal(before.dataCircuitOpen, true);
+  let actorPermits = 0;
+  let providerRequests = 0;
+  await assert.rejects(
+    resolveYouTubeTrack("Data Circuit Search Guard", "", {
+      apiKey: "test-key",
+      beforeSearch: () => { actorPermits += 1; },
+      fetchImpl: async () => {
+        providerRequests += 1;
+        return { ok: true, status: 200, json: async () => ({ items: [] }) };
+      },
+    }),
+    (error) => error?.code === "provider_paused",
+  );
+  const after = youtubeProviderStatus();
+  assert.equal(providerRequests, 0, "the known data outage prevents a doomed search.list fetch");
+  assert.equal(actorPermits, 0, "the actor is not charged for a search whose candidates cannot be validated");
+  assert.equal(after.search.used, before.search.used, "the shared search counter is unchanged");
+  assert.equal(after.efficiency.searchCallsReserved, before.efficiency.searchCallsReserved,
+    "no global search reservation is recorded");
 });
 
 test("the local daily reservation cannot overrun its configured search limit", async () => {

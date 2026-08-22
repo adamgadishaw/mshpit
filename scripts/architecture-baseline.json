@@ -322,8 +322,8 @@
       "fingerprint": "4d33ccc8d900df4e5739"
     },
     "server/musicProviders.js": {
-      "count": 3,
-      "fingerprint": "241ac51c662afb550f90"
+      "count": 2,
+      "fingerprint": "ada778a98a85bbefa1a2"
     },
     "server/rewards.js": {
       "count": 1,
@@ -354,8 +354,8 @@
       "fingerprint": "74663b09c290477a8de1"
     },
     "src/components/PlayerBar.jsx": {
-      "count": 4,
-      "fingerprint": "88ec27fc8f9bda0ac92b"
+      "count": 3,
+      "fingerprint": "0914ccdabd17c6c00f3b"
     },
     "src/components/VenuePhotoWidget.jsx": {
       "count": 1,
@@ -430,8 +430,8 @@
       "fingerprint": "e2192c0aa04e191bbea1"
     },
     "src/screens/AdminScreen.jsx": {
-      "count": 3,
-      "fingerprint": "6680a6174631a7ee0a68"
+      "count": 2,
+      "fingerprint": "c88e6350620482ddcc69"
     },
     "src/screens/ClipsScreen.jsx": {
       "count": 4,
@@ -500,8 +500,8 @@
       "fingerprint": "ba27e78ba749ad2976e0"
     },
     "src/screens/AdminScreen.jsx": {
-      "count": 7,
-      "fingerprint": "9d5d333df8891ea408bb"
+      "count": 6,
+      "fingerprint": "e24f99a3d8bd141abe21"
     },
     "src/screens/ArtistScreen.jsx": {
       "count": 2,
@@ -536,8 +536,8 @@
       "fingerprint": "01e0028f751a5ee02884"
     },
     "src/store.js": {
-      "count": 128,
-      "fingerprint": "04ade288667e3df7f33c"
+      "count": 126,
+      "fingerprint": "46b2c80929dd8bb13a45"
     }
   },
   "legacyClientContractShapesByFile": {

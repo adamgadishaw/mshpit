@@ -5,10 +5,14 @@ import {
   activeYouTubeLookupStatus,
   classifyResolve,
   CACHE_MS,
-  backoffFor,
+  playerColdSearchAllowed,
+  playerLookupIntent,
   playerYouTubeLookupNotice,
-  RESOLVE_ATTEMPTS,
+  playerYouTubeStatusMessage,
+  requestYouTubeTrackOnce,
+  shouldUseYouTubeLookupCache,
 } from "./playback.mjs";
+import { shouldResolvePlayerYouTube } from "./playerSourceResolution.mjs";
 
 test("a resolved video is trusted and cached for a long time", () => {
   const r = classifyResolve({ videoId: "abc123", status: "artist_catalogue" });
@@ -17,13 +21,13 @@ test("a resolved video is trusted and cached for a long time", () => {
   assert.equal(r.cacheMs, CACHE_MS.hit);
 });
 
-test("capacity failures are temporary and must be retried, not cached as 'no video'", () => {
+test("capacity failures stay temporary without amplifying one play into retries", () => {
   // These are the statuses that made popular songs play as previews: the song
   // was fine, we just could not ask at that moment.
   for (const status of ["search_budget_exhausted", "provider_paused", "quota_or_forbidden", "rate_limited"]) {
     const r = classifyResolve({ videoId: null, status, retryable: true });
     assert.equal(r.transient, true, `${status} should be temporary`);
-    assert.equal(r.retry, true, `${status} should be retried`);
+    assert.equal(r.retry, false, `${status} must require another explicit listener action`);
     assert.equal(r.cacheMs, CACHE_MS.transient, `${status} must not be cached as a lasting answer`);
   }
 });
@@ -55,10 +59,11 @@ test("an explicit non-retryable API result is authoritative even for a new statu
   });
 });
 
-test("a failed request is retried, including our own rate limiter's 429", () => {
+test("a failed request expires quickly but is not automatically retried", () => {
   for (const error of [{ status: 429 }, { status: 500 }, { status: 503 }, { status: 408 }, new Error("network down")]) {
     const r = classifyResolve({ error });
-    assert.equal(r.retry, true, `${error.status || "network"} should be retried`);
+    assert.equal(r.retry, false, `${error.status || "network"} must not amplify the selected play`);
+    assert.equal(r.transient, true);
     assert.equal(r.cacheMs, CACHE_MS.transient);
   }
 });
@@ -70,18 +75,100 @@ test("a genuine client mistake is not retried in a loop", () => {
   }
 });
 
-test("an unrecognised status errs toward retrying", () => {
-  // Getting this wrong one way costs one request; the other way silently
-  // downgrades a song to a preview.
+test("an unrecognised status expires quickly but waits for another action", () => {
   const r = classifyResolve({ videoId: null, status: "something_new" });
-  assert.equal(r.retry, true);
+  assert.equal(r.retry, false);
+  assert.equal(r.transient, true);
 });
 
-test("backoff is bounded and defined for every attempt", () => {
-  for (let i = 0; i < RESOLVE_ATTEMPTS + 2; i++) {
-    const ms = backoffFor(i);
-    assert.ok(Number.isFinite(ms) && ms > 0 && ms <= 5000, `attempt ${i} backoff should be sane, got ${ms}`);
+test("automatic playback is catalogue-only and performs no cold-search POST", async () => {
+  const calls = [];
+  const result = await requestYouTubeTrackOnce({
+    request: async (path, options) => {
+      calls.push({ path, options });
+      return { videoId: null, status: "search_deferred", retryable: false };
+    },
+    title: "Middle Child",
+    artist: "J. Cole",
+  });
+
+  assert.equal(result.status, "search_deferred");
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].path, /^\/api\/youtube\/track\?/);
+  assert.equal(calls[0].options, undefined);
+});
+
+test("one explicit cold attempt performs exactly one POST without quota retry amplification", async () => {
+  const calls = [];
+  const result = await requestYouTubeTrackOnce({
+    request: async (path, options) => {
+      calls.push({ path, options });
+      if (!options) return { videoId: null, status: "search_deferred", retryable: false };
+      return { videoId: null, status: "search_budget_exhausted", retryable: true };
+    },
+    title: "Middle Child",
+    artist: "J. Cole",
+    duration: 213,
+    provider: "deezer",
+    sourceId: "123",
+    allowSearch: true,
+  });
+
+  assert.equal(result.status, "search_budget_exhausted");
+  assert.equal(calls.length, 2, "one safe GET plus one explicit cold POST");
+  assert.equal(calls.filter(({ options }) => options?.method === "POST").length, 1);
+  assert.equal(calls[1].path, "/api/youtube/track/resolve");
+  assert.deepEqual(calls[1].options.body, {
+    title: "Middle Child",
+    artist: "J. Cole",
+    duration: 213,
+    provider: "deezer",
+    sourceId: "123",
+  });
+  assert.equal(classifyResolve(result).retry, false);
+});
+
+test("an explicit action upgrades a fresh catalogue-only result instead of inheriting it", () => {
+  const deferred = { videoId: null, status: "search_deferred", expiresAt: 2_000 };
+  assert.equal(shouldUseYouTubeLookupCache(deferred, { allowSearch: false, now: 1_000 }), true,
+    "automatic playback reuses its catalogue-only boundary");
+  assert.equal(shouldUseYouTubeLookupCache(deferred, { allowSearch: true, now: 1_000 }), false,
+    "Find full track may cross the cached deferred boundary once");
+  assert.equal(shouldUseYouTubeLookupCache({ ...deferred, status: "search_budget_exhausted" }, { allowSearch: true, now: 1_000 }), true,
+    "an explicit click cannot bypass a fresh capacity result into a retry loop");
+});
+
+test("native playback never invokes the YouTube resolver or spends search", async () => {
+  let calls = 0;
+  const shouldResolve = shouldResolvePlayerYouTube({
+    web: false,
+    minimized: false,
+    directVideoId: null,
+    resolvedVideoId: null,
+    youtubeSettled: false,
+  });
+  if (shouldResolve) {
+    await requestYouTubeTrackOnce({
+      request: async () => { calls += 1; return { status: "search_deferred" }; },
+      title: "Middle Child",
+      allowSearch: true,
+    });
   }
+  assert.equal(shouldResolve, false);
+  assert.equal(calls, 0);
+});
+
+test("lookup intent follows the exact queue occurrence through duplicates and reorders", () => {
+  const first = { title: "Repeat", artist: "Artist", queueEntryId: "occurrence-1" };
+  const second = { title: "Repeat", artist: "Artist", queueEntryId: "occurrence-2" };
+  const explicitSecond = playerLookupIntent(second, "explicit");
+  const reordered = [second, first];
+
+  assert.equal(playerColdSearchAllowed(reordered[0], explicitSecond), true);
+  assert.equal(playerColdSearchAllowed(reordered[1], explicitSecond), false, "a duplicate recording cannot inherit the other occurrence's click");
+  assert.equal(playerColdSearchAllowed(second, playerLookupIntent(second, "automatic")), false);
+  assert.equal(playerColdSearchAllowed(second, playerLookupIntent(second, "unknown-trigger")), false,
+    "new or malformed transition reasons fail closed to catalogue-only");
 });
 
 test("missing or empty input never claims a video", () => {
@@ -97,9 +184,22 @@ test("access and capacity outcomes get truthful player notices", () => {
   });
   assert.equal(playerYouTubeLookupNotice("search_verification_required")?.kind, "verify_email");
   assert.equal(playerYouTubeLookupNotice("search_actor_budget_exhausted")?.kind, "account_limit");
-  assert.equal(playerYouTubeLookupNotice("search_budget_exhausted")?.kind, "temporary");
-  assert.equal(playerYouTubeLookupNotice("provider_paused")?.kind, "temporary");
+  assert.equal(playerYouTubeLookupNotice("search_deferred")?.kind, "catalogue_only");
+  assert.equal(playerYouTubeLookupNotice("search_budget_exhausted")?.kind, "global_limit");
+  assert.equal(playerYouTubeLookupNotice("provider_paused")?.kind, "provider_unavailable");
   assert.equal(playerYouTubeLookupNotice("unconfigured")?.kind, "configuration");
+});
+
+test("a playing preview keeps the resolver reason visible", () => {
+  const verification = playerYouTubeLookupNotice("search_verification_required");
+  assert.equal(
+    playerYouTubeStatusMessage(verification, { preview: true }),
+    "Verify your email for full-track YouTube lookup. Preview playing.",
+  );
+  assert.equal(
+    playerYouTubeStatusMessage(playerYouTubeLookupNotice("search_deferred"), { preview: true }),
+    "Previewing without spending a YouTube search.",
+  );
 });
 
 test("real misses and successful resolver states remain ordinary playback outcomes", () => {

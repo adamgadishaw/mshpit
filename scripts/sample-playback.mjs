@@ -4,6 +4,12 @@
 //
 //   node --env-file=.env scripts/sample-playback.mjs [sampleSize] [--deep]
 //
+// The default is a no-search dry run: it measures cache/catalogue coverage and
+// cannot spend search.list quota. A bounded live sample requires both explicit
+// flags, for example:
+//
+//   node --env-file=.env scripts/sample-playback.mjs 20 --deep --allow-search --search-budget=5
+//
 // Draws a sample of songs from the catalogue, asks the resolver for each one,
 // and reports the rate of each outcome:
 //
@@ -24,6 +30,15 @@ import { resolveYouTubeTrack, youtubeProviderStatus, getFreshDeezerPreview } fro
 
 const sampleSize = Number(process.argv.find((a) => /^\d+$/.test(a))) || 40;
 const deep = process.argv.includes("--deep");
+const allowSearch = process.argv.includes("--allow-search");
+const searchBudgetArgument = process.argv.find((argument) => argument.startsWith("--search-budget="));
+const requestedSearchBudget = Number(searchBudgetArgument?.split("=", 2)[1]);
+if (allowSearch !== !!searchBudgetArgument
+  || (allowSearch && (!Number.isSafeInteger(requestedSearchBudget) || requestedSearchBudget < 1 || requestedSearchBudget > 20))) {
+  console.error("Search sampling requires both --allow-search and --search-budget=N, where N is 1-20.");
+  process.exit(2);
+}
+const searchBudget = allowSearch ? requestedSearchBudget : 0;
 
 const rows = db.prepare(`SELECT name, data FROM artists
   WHERE data LIKE '%"topTracks":[{%'
@@ -47,6 +62,9 @@ for (let i = 0; i < rows.length && songs.length < sampleSize; i += stride) {
 const status = youtubeProviderStatus();
 console.log(`sampling ${songs.length} songs (${deep ? "deep catalogue" : "top tracks"})`);
 console.log(`youtube configured: ${!!process.env.YOUTUBE_API_KEY} · search budget remaining: ${status.search.remaining}/${status.search.limit}`);
+console.log(allowSearch
+  ? `mode: bounded search opt-in (maximum ${searchBudget} search.list calls)`
+  : "mode: no-search dry run (search.list disabled)");
 if (!process.env.YOUTUBE_API_KEY) {
   console.log("NOTE: without YOUTUBE_API_KEY every song can only fall back to preview, so the");
   console.log("      official rate below is not meaningful. Run this where the key is set.");
@@ -59,7 +77,11 @@ for (const song of songs) {
   let result = null;
   let capacity = false;
   try {
-    result = await resolveYouTubeTrack(song.title, song.artist, { expectedDurationSec: song.duration });
+    const searchesUsed = youtubeProviderStatus().search.used - status.search.used;
+    result = await resolveYouTubeTrack(song.title, song.artist, {
+      expectedDurationSec: song.duration,
+      allowSearch: allowSearch && searchesUsed < searchBudget,
+    });
   } catch (error) {
     // A refused lookup is a capacity fact, not evidence about the song.
     capacity = true;

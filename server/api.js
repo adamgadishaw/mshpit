@@ -107,8 +107,12 @@ const uid = (p) => `${p}_${randomUUID().slice(0, 12)}`;
 const PROFILE_EXTRAS_MAX_BYTES = 8000;
 const CURRENT_TERMS_VERSION = "2026-08";
 const VENUE_PHOTO_CACHE_CONTROL = "public, max-age=3600, stale-while-revalidate=86400";
-const YOUTUBE_COLD_SEARCH_USER_DAILY_LIMIT = 5;
-const YOUTUBE_COLD_SEARCH_IP_DAILY_LIMIT = 20;
+const YOUTUBE_COLD_SEARCH_ACTOR_BUDGET_VERSION = 2;
+// v2 is charged once per explicit cold track attempt, not once per internal
+// provider request. Twenty listener attempts leaves useful room for discovery;
+// the shared provider ceiling remains the final hard stop at 100 searches/day.
+const YOUTUBE_COLD_SEARCH_USER_DAILY_LIMIT = 20;
+const YOUTUBE_COLD_SEARCH_IP_DAILY_LIMIT = 40;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const YOUTUBE_PLAYBACK_FAILURE_TTL_MS = 30 * DAY_MS;
 const VENUE_PHOTO_LIMIT = 24;
@@ -279,15 +283,37 @@ function youtubeQuotaDay(value = new Date()) {
   return `${part("year")}-${part("month")}-${part("day")}`;
 }
 
+function youtubeColdSearchActorAllowance(user, value = new Date()) {
+  const day = youtubeQuotaDay(value);
+  const key = `youtube_cold_user:v${YOUTUBE_COLD_SEARCH_ACTOR_BUDGET_VERSION}:${day}:${user?.id || ""}`;
+  const used = user?.id
+    ? Math.max(0, Number(db.prepare("SELECT value FROM app_meta WHERE key=?").get(key)?.value) || 0)
+    : 0;
+  const accountVerified = !!user?.email_verified_at;
+  const adminBypass = user?.role === "admin";
+  return {
+    version: YOUTUBE_COLD_SEARCH_ACTOR_BUDGET_VERSION,
+    day,
+    eligible: accountVerified || adminBypass,
+    accountVerified,
+    adminBypass,
+    used,
+    limit: YOUTUBE_COLD_SEARCH_USER_DAILY_LIMIT,
+    remaining: Math.max(0, YOUTUBE_COLD_SEARCH_USER_DAILY_LIMIT - used),
+    key,
+  };
+}
+
 function reserveYouTubeColdSearch(ctx, user) {
-  const day = youtubeQuotaDay();
+  const allowance = youtubeColdSearchActorAllowance(user);
+  const { day } = allowance;
   const ipHash = createHash("sha256").update(String(ctx.ip || "unknown")).digest("hex").slice(0, 24);
   // Fast process-local gates stop one account or network from hammering SQLite.
   // The account allowance is also persisted below so a restart cannot reset it;
   // raw IP addresses never enter SQLite.
   const localReservation = reserveRateLimits([
-    { key: `yt-cold-user:${day}:${user.id}`, max: YOUTUBE_COLD_SEARCH_USER_DAILY_LIMIT, windowMs: DAY_MS },
-    { key: `yt-cold-ip:${day}:${ipHash}`, max: YOUTUBE_COLD_SEARCH_IP_DAILY_LIMIT, windowMs: DAY_MS },
+    { key: `yt-cold-v${YOUTUBE_COLD_SEARCH_ACTOR_BUDGET_VERSION}-user:${day}:${user.id}`, max: YOUTUBE_COLD_SEARCH_USER_DAILY_LIMIT, windowMs: DAY_MS },
+    { key: `yt-cold-v${YOUTUBE_COLD_SEARCH_ACTOR_BUDGET_VERSION}-ip:${day}:${ipHash}`, max: YOUTUBE_COLD_SEARCH_IP_DAILY_LIMIT, windowMs: DAY_MS },
   ]);
   if (!localReservation) {
     throw new ProviderError("YouTube", 429, "Your daily YouTube search allowance is used.", {
@@ -296,13 +322,13 @@ function reserveYouTubeColdSearch(ctx, user) {
     });
   }
   try {
-    const prefix = `youtube_cold_user:${day}:`;
+    const prefix = `youtube_cold_user:v${YOUTUBE_COLD_SEARCH_ACTOR_BUDGET_VERSION}:${day}:`;
     atomicWrite(() => {
       db.prepare("DELETE FROM app_meta WHERE key GLOB 'youtube_cold_user:*' AND key NOT GLOB ?").run(`${prefix}*`);
       const reserved = db.prepare(`INSERT INTO app_meta (key,value) VALUES (?,'1')
         ON CONFLICT(key) DO UPDATE SET value=MAX(0,CAST(app_meta.value AS INTEGER))+1
           WHERE MAX(0,CAST(app_meta.value AS INTEGER)) < ?
-        RETURNING CAST(value AS INTEGER) AS used`).get(`${prefix}${user.id}`, YOUTUBE_COLD_SEARCH_USER_DAILY_LIMIT);
+        RETURNING CAST(value AS INTEGER) AS used`).get(allowance.key, YOUTUBE_COLD_SEARCH_USER_DAILY_LIMIT);
       if (!reserved) {
         throw new ProviderError("YouTube", 429, "Your daily YouTube search allowance is used.", {
           code: "search_actor_budget_exhausted",
@@ -1301,8 +1327,19 @@ function publicHealthProjection() {
   };
 }
 
-function staffHealthProjection() {
+function staffHealthProjection(actor) {
   const readiness = runtimeReadiness();
+  const allowance = youtubeColdSearchActorAllowance(actor);
+  const actorAllowance = {
+    version: allowance.version,
+    day: allowance.day,
+    eligible: allowance.eligible,
+    accountVerified: allowance.accountVerified,
+    adminBypass: allowance.adminBypass,
+    used: allowance.used,
+    limit: allowance.limit,
+    remaining: allowance.remaining,
+  };
   return {
     ok: true,
     ts: now(),
@@ -1318,7 +1355,10 @@ function staffHealthProjection() {
         bootstrapAllowed: readiness.bootstrapAllowed,
       },
       youtubeConfigured: !!process.env.YOUTUBE_API_KEY,
-      youtubeLookup: youtubeProviderStatus(),
+      youtubeLookup: {
+        ...youtubeProviderStatus(),
+        actorAllowance,
+      },
       wikidataLookup: wikidataProviderStatus(),
       tourProviderConfigured: !!(process.env.TICKETMASTER_KEY || process.env.BANDSINTOWN_APP_ID),
       tourDates: db.prepare("SELECT COUNT(*) c FROM tour_dates").get().c,
@@ -1427,11 +1467,12 @@ async function readYouTubeTrack(ctx, input) {
   const withoutSearch = await resolveYouTubeTrack(playback.title, playback.artist, {
     ...playback.resolverOptions,
     allowSearch: false,
+    readOnly: true,
   });
   if (withoutSearch.status !== "search_deferred") return withoutSearch;
   if (!ctx.user) return { videoId: null, status: "search_login_required", retryable: false };
   const user = requireUser(ctx);
-  if (!user.email_verified_at) {
+  if (!youtubeColdSearchActorAllowance(user).eligible) {
     return { videoId: null, status: "search_verification_required", retryable: false };
   }
   // The safe read phase is exhausted. A current client follows this explicit
@@ -1442,14 +1483,29 @@ async function readYouTubeTrack(ctx, input) {
 
 async function searchYouTubeTrack(ctx, input) {
   const user = requireUser(ctx);
-  if (!user.email_verified_at) {
+  if (!youtubeColdSearchActorAllowance(user).eligible) {
     return { videoId: null, status: "search_verification_required", retryable: false };
   }
   const playback = youtubeTrackPlaybackContext(ctx, input);
   if (playback.result) return playback.result;
+  // Keep the listener allowance lazy so cache/catalogue hits remain free, but
+  // make it idempotent: one explicit cold-track attempt can consume at most one
+  // actor permit even if provider internals change later.
+  let actorReserved = false;
+  const reserveActorOnce = () => {
+    if (actorReserved) return;
+    reserveYouTubeColdSearch(ctx, user);
+    actorReserved = true;
+  };
   return resolveYouTubeTrack(playback.title, playback.artist, {
     ...playback.resolverOptions,
-    beforeSearch: () => reserveYouTubeColdSearch(ctx, user),
+    beforeSearch: reserveActorOnce,
+    // Keep actor/IP demand failures out of another listener's in-flight result.
+    // The provider sees only this opaque process-local coalescing partition.
+    demandScope: createHash("sha256")
+      .update(`youtube-cold-v${YOUTUBE_COLD_SEARCH_ACTOR_BUDGET_VERSION}\0${user.id}\0${String(ctx.ip || "unknown")}`)
+      .digest("hex")
+      .slice(0, 24),
   });
 }
 
@@ -1460,8 +1516,8 @@ export const routes = {
   // route so a public probe cannot inventory the deployment.
   "GET /api/health": () => publicHealthProjection(),
   "GET /api/admin/health": (ctx) => {
-    requireModerator(ctx);
-    return staffHealthProjection();
+    const actor = requireModerator(ctx);
+    return staffHealthProjection(actor);
   },
 
   // Direct-to-object-storage photo uploads. The application server signs a

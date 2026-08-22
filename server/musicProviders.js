@@ -44,6 +44,8 @@ const previewCache = new Map();
 const youtubeInflight = new Map();
 const youtubeChannelInflight = new Map();
 const youtubeCatalogueInflight = new Map();
+const youtubeDemandCallbackScopes = new WeakMap();
+let youtubeDemandCallbackSequence = 0;
 const youtubeMetrics = {
   startedAt: Date.now(),
   searchCallsReserved: 0,
@@ -191,13 +193,16 @@ export function legacyTrackOverrideKey(title, artist) {
   return legacyTrackOverrideIdentityKey(title, artist);
 }
 
-// Resolver/cache recording identity is narrower than generic playback or
-// moderation persistence: today only Deezer exposes the authoritative
-// title/artist/credit proof needed to distinguish omitted feature credits.
+// Every provider recording accepted by playback/moderation receives its own
+// resolver cache key. Proof policy is handled separately: Deezer can be checked
+// live, while Spotify is trusted only when that exact track id already exists in
+// PIT's local catalogue.
 export function youtubeRecordingIdentity(sourceProvider, sourceId) {
   const provider = String(sourceProvider || "").trim().toLowerCase();
   const id = String(sourceId || "").trim();
-  return provider === "deezer" && /^\d{1,20}$/.test(id) ? `deezer:${id}` : "";
+  if (provider === "deezer" && /^\d{1,20}$/.test(id)) return `deezer:${id}`;
+  if (provider === "spotify" && /^[A-Za-z0-9]{1,64}$/.test(id)) return `spotify:${id}`;
+  return "";
 }
 
 export function trackSourceOverrideKey(sourceProvider, sourceId) {
@@ -782,8 +787,48 @@ export async function getFreshDeezerPreview(title, artist, { fetchImpl = fetch }
   return { ...result, status: result.preview ? "fresh" : "not_found", expiresAt: result.preview ? expiresAt : null };
 }
 
+export function spotifyCatalogueTrackProof({ sourceId, title, artist }) {
+  const id = String(sourceId || "").trim();
+  if (!/^[A-Za-z0-9]{1,64}$/.test(id)) return null;
+  const requestedArtist = normalizeTrackIdentityText(artist);
+  const requestedTitles = youtubeTitleCreditCandidates(title);
+  if (!requestedArtist || !requestedTitles.length) return null;
+  const compatible = [];
+  for (const song of getSongIndex()) {
+    if (String(song?.provider || "").toLowerCase() !== "spotify" || String(song?.sourceId || "") !== id) continue;
+    if (normalizeTrackIdentityText(song.artist) !== requestedArtist) continue;
+    const authoritativeTitles = youtubeTitleCreditCandidates(song.title, song.artist);
+    const shared = authoritativeTitles.find((candidate) => requestedTitles.some((requested) => requested.base === candidate.base));
+    if (!shared) continue;
+    const explicitRequestedCredits = requestedTitles.filter((entry) => entry.credits).map((entry) => entry.credits);
+    if (explicitRequestedCredits.length && !explicitRequestedCredits.includes(shared.credits)) continue;
+    // The bundled Spotify catalogue carries exact track IDs and authoritative
+    // titles, but currently no durations. Duration strengthens a proof when an
+    // enriched row has one; its absence must not invalidate the exact source
+    // identity shared by every production catalogue row.
+    const durationSec = Math.max(0, Number(song.duration) || 0);
+    compatible.push({
+      titleBase: shared.base,
+      credits: shared.credits,
+      durationSec,
+    });
+  }
+  const distinct = [...new Map(compatible.map((entry) => [JSON.stringify(entry), entry])).values()];
+  if (distinct.length !== 1) return null;
+  const match = distinct[0];
+  return {
+    verified: true,
+    featuredCredits: match.credits ? match.credits.split("|") : [],
+    durationSec: match.durationSec,
+    provider: "spotify",
+    sourceId: id,
+  };
+}
+
 async function providerTrackCreditProof({ sourceProvider, sourceId, title, artist, fetchImpl }) {
-  if (String(sourceProvider || "").toLowerCase() !== "deezer" || !/^\d{1,20}$/.test(String(sourceId || ""))) return null;
+  const provider = String(sourceProvider || "").toLowerCase();
+  if (provider === "spotify") return spotifyCatalogueTrackProof({ sourceId, title, artist });
+  if (provider !== "deezer" || !/^\d{1,20}$/.test(String(sourceId || ""))) return null;
   const key = `deezer:track-credit:v2:${sourceId}:${JSON.stringify([
     normalizeTrackIdentityText(artist),
     normalizeTrackIdentityText(title),
@@ -827,6 +872,7 @@ export function scoreYouTubeCandidate(candidate, {
   expectedDurationSec = 0,
   trustedChannel = false,
   providerFeaturedCredits = [],
+  requireDurationMatch = false,
 } = {}) {
   const snippet = candidate?.snippet || {};
   const status = candidate?.status || {};
@@ -929,6 +975,12 @@ export function scoreYouTubeCandidate(candidate, {
     }
   }
 
+  const expected = Number(expectedDurationSec) || 0;
+  if (requireDurationMatch && expected > 0
+    && (!duration || Math.abs(duration - expected) / expected > 0.12)) {
+    return { score: -Infinity, rejected: true, reasons: ["source-duration-mismatch"] };
+  }
+
   let score = (titleExact ? 45 : 0) + artistCoverage * 28;
   // The uploader being the artist is the strongest correctness signal, so weight
   // it heavily above title-only matches.
@@ -945,7 +997,6 @@ export function scoreYouTubeCandidate(candidate, {
   if (/\b(fan made|unofficial|sped up|slowed|reverb)\b/i.test(rawTitle)) { score -= 35; reasons.push("variant-penalty"); }
   score -= titleQualifierPenalty(title, rawTitle);
 
-  const expected = Number(expectedDurationSec) || 0;
   if (expected > 0 && duration > 0) {
     const difference = Math.abs(duration - expected) / expected;
     if (difference <= 0.12) { score += 15; reasons.push("duration-close"); }
@@ -975,17 +1026,40 @@ async function selectBestYouTubeCandidate(candidates, options, loadCreditProof, 
   if (!providerProofRequired) return strict[0] || null;
   const proof = await loadCreditProof?.();
   if (!proof?.verified) return YOUTUBE_CREDIT_PROOF_UNAVAILABLE;
-  if (!proof.featuredCredits?.length) return strict[0] || null;
-  const provedRecording = candidates.filter((candidate) => providerOmittedCreditMatch(
-    options.title,
+  const expectedCredits = normalizeYouTubeCreditSet((proof.featuredCredits || []).join(" & "));
+  const requestedIdentities = youtubeTitleCreditCandidates(options.title);
+  if (requestedIdentities.some((entry) => entry.credits)
+    && !requestedIdentities.some((entry) => entry.credits === expectedCredits)) return null;
+  const requestedBases = new Set(requestedIdentities.map((entry) => entry.base));
+  const provedRecording = candidates.filter((candidate) => youtubeTitleCreditCandidates(
     candidate?.snippet?.title,
     options.artist,
-    proof.featuredCredits,
-  ));
+  ).some((entry) => requestedBases.has(entry.base) && entry.credits === expectedCredits));
+  const proofDuration = Math.max(0, Number(proof.durationSec) || 0);
+  const expectedDurationSec = proofDuration || Math.max(0, Number(options.expectedDurationSec) || 0);
   return rankedYouTubeCandidates(provedRecording, {
     ...options,
-    expectedDurationSec: proof.durationSec,
+    expectedDurationSec,
     providerFeaturedCredits: proof.featuredCredits,
+    requireDurationMatch: expectedDurationSec > 0,
+  })[0] || null;
+}
+
+async function selectSourceScopedTupleCandidate(candidate, options, loadCreditProof) {
+  const proof = await loadCreditProof?.();
+  if (!proof?.verified) return YOUTUBE_CREDIT_PROOF_UNAVAILABLE;
+  const expectedCredits = normalizeYouTubeCreditSet((proof.featuredCredits || []).join(" & "));
+  const requestedBases = new Set(youtubeTitleCreditCandidates(options.title).map((entry) => entry.base));
+  const candidateMatchesSource = youtubeTitleCreditCandidates(candidate?.snippet?.title, options.artist)
+    .some((entry) => requestedBases.has(entry.base) && entry.credits === expectedCredits);
+  if (!candidateMatchesSource) return null;
+  const proofDuration = Math.max(0, Number(proof.durationSec) || 0);
+  const expectedDurationSec = proofDuration || Math.max(0, Number(options.expectedDurationSec) || 0);
+  return rankedYouTubeCandidates([candidate], {
+    ...options,
+    expectedDurationSec,
+    providerFeaturedCredits: proof.featuredCredits || [],
+    requireDurationMatch: expectedDurationSec > 0,
   })[0] || null;
 }
 
@@ -1561,6 +1635,12 @@ export async function youtubeJson(path, params, apiKey, fetchImpl, timeoutMs = 8
 async function youtubeSearchJson(params, apiKey, fetchImpl, beforeSearch = null) {
   // The route can attach an account/IP demand permit. It is evaluated lazily so
   // cached, catalogue, Wikidata, and coalesced requests consume no user budget.
+  if (youtubeCircuits.data.until > Date.now()) {
+    throw new ProviderError("YouTube", 503, "YouTube catalogue validation is cooling down after a provider limit.", {
+      code: "provider_paused",
+      retryable: true,
+    });
+  }
   return youtubeJson("search", params, apiKey, fetchImpl, 8_000, { beforeRequest: beforeSearch });
 }
 
@@ -1573,23 +1653,117 @@ async function youtubeVideos(ids, apiKey, fetchImpl) {
   return data?.items || [];
 }
 
-async function resolveYouTubeTrackUnshared(title, artist, {
-  expectedDurationSec = 0,
-  fetchImpl = fetch,
-  apiKey = process.env.YOUTUBE_API_KEY,
-  allowSearch = true,
-  beforeSearch = null,
+function resolveYouTubeTrackReadOnly(title, artist, {
   excludedVideoIds = [],
   sourceProvider = "",
   sourceId = "",
 } = {}) {
   const currentTime = Date.now();
+  const recordingIdentity = youtubeRecordingIdentity(sourceProvider, sourceId);
+  // Spotify has no public data endpoint in this service. Its exact local
+  // catalogue row is therefore the only recording proof. Unknown IDs must not
+  // inherit a same-display tuple cache entry (for example, a feature recording
+  // masquerading as the solo), even on the read-only phase.
+  if (recordingIdentity.startsWith("spotify:")
+    && !spotifyCatalogueTrackProof({ sourceId, title, artist })?.verified) {
+    return { videoId: null, status: "search_deferred" };
+  }
+  const key = youtubeCacheKey(title, artist, recordingIdentity);
+  const hit = ytStmts.get.get(key);
+  const excluded = new Set((excludedVideoIds || [])
+    .map(String)
+    .filter((id) => /^[A-Za-z0-9_-]{11}$/.test(id)));
+  let metadata = null;
+  try { metadata = hit?.metadata ? JSON.parse(hit.metadata) : null; }
+  catch { metadata = null; }
+  const updatedAt = Number(hit?.updated_at) || 0;
+  const configuredDeadline = Number(hit?.expires_at) || (updatedAt + YOUTUBE_POLICY_MAX_AGE_MS);
+  const policyDeadline = Math.min(configuredDeadline, updatedAt + YOUTUBE_POLICY_MAX_AGE_MS);
+  const withinPolicy = !!hit && updatedAt > 0 && currentTime < policyDeadline;
+  const rejected = rejectedSet(hit);
+  if (hit?.video_id
+    && withinPolicy
+    && metadata?.matchVersion === YOUTUBE_MATCH_CACHE_VERSION
+    && !metadata?.invalidated
+    && !excluded.has(hit.video_id)
+    && !rejected.has(hit.video_id)) {
+    const operationallyFresh = currentTime < updatedAt + YOUTUBE_MATCH_REFRESH_TTL_MS;
+    return operationallyFresh
+      ? { videoId: hit.video_id, status: "cached", confidence: hit.score ?? null }
+      : { videoId: hit.video_id, status: "stale", stale: true, confidence: hit.score ?? null };
+  }
+  if (hit && !hit.video_id && withinPolicy && !metadata?.invalidated) {
+    return { videoId: null, status: "not_found" };
+  }
+
+  // Source-scoped identities need provider credit proof, which belongs on the
+  // explicit POST phase. A plain tuple can still use a fresh local catalogue
+  // from a currently trusted artist channel without network or persistence.
+  if (!recordingIdentity && artist) {
+    const norm = normName(artist);
+    const stored = artistStmts.getChannel.get(norm);
+    const storedCurrent = stored?.channelId
+      && channelSourceTrusted(stored.source)
+      && currentTime - Number(stored.at || 0) < YOUTUBE_CHANNEL_REFRESH_TTL_MS;
+    const providerChannel = !storedCurrent ? readProviderCache(youtubeChannelCacheKey(artist)) : null;
+    const providerCurrent = providerChannel?.fresh
+      && providerChannel.data?.channelId
+      && Number(providerChannel.data.rank) >= 80
+      && (!providerChannel.data.refreshAt || Number(providerChannel.data.refreshAt) > currentTime);
+    const channelId = storedCurrent ? stored.channelId : providerCurrent ? providerChannel.data.channelId : null;
+    if (channelId) {
+      const catalogue = readProviderCache(`yt:catalogue:v3:${channelId}`);
+      const catalogueCurrent = catalogue?.fresh
+        && Number(catalogue.data?.freshUntil || 0) > currentTime;
+      if (catalogueCurrent) {
+        const picked = selectCatalogueTrack(title, catalogue.data?.items || []);
+        if (picked?.videoId
+          && /^[A-Za-z0-9_-]{11}$/.test(picked.videoId)
+          && !excluded.has(picked.videoId)) {
+          return { videoId: picked.videoId, status: "artist_catalogue_cached", confidence: picked.score };
+        }
+      }
+    }
+  }
+  return { videoId: null, status: "search_deferred" };
+}
+
+async function resolveYouTubeTrackUnshared(title, artist, {
+  expectedDurationSec = 0,
+  fetchImpl = fetch,
+  apiKey = process.env.YOUTUBE_API_KEY,
+  allowSearch = true,
+  readOnly = false,
+  beforeSearch = null,
+  excludedVideoIds = [],
+  sourceProvider = "",
+  sourceId = "",
+} = {}) {
+  if (readOnly) {
+    return resolveYouTubeTrackReadOnly(title, artist, {
+      excludedVideoIds,
+      sourceProvider,
+      sourceId,
+    });
+  }
+  const currentTime = Date.now();
   pruneExpiredProviderData(currentTime);
   const recordingIdentity = youtubeRecordingIdentity(sourceProvider, sourceId);
-  const providerProofRequired = !!recordingIdentity
-    && youtubeTitleCreditCandidates(title).every((entry) => !entry.credits);
-  const { key, hit } = readYouTubeCache(title, artist, recordingIdentity);
-  let creditProofPromise = null;
+  const spotifyProof = recordingIdentity.startsWith("spotify:")
+    ? spotifyCatalogueTrackProof({ sourceId, title, artist })
+    : null;
+  // A caller-provided Spotify ID is never proof by itself. Fail closed before
+  // any cache read so an unknown/ambiguous ID cannot observe, promote, or write
+  // a tuple-level positive for a different recording.
+  if (recordingIdentity.startsWith("spotify:") && !spotifyProof?.verified) {
+    return { videoId: null, status: "search_deferred" };
+  }
+  const providerProofRequired = recordingIdentity.startsWith("spotify:")
+    || (!!recordingIdentity && youtubeTitleCreditCandidates(title).every((entry) => !entry.credits));
+  const cacheRead = readYouTubeCache(title, artist, recordingIdentity);
+  const { key } = cacheRead;
+  let hit = cacheRead.hit;
+  let creditProofPromise = spotifyProof ? Promise.resolve(spotifyProof) : null;
   const loadCreditProof = () => {
     if (!recordingIdentity) return Promise.resolve(null);
     if (!creditProofPromise) {
@@ -1600,15 +1774,73 @@ async function resolveYouTubeTrackUnshared(title, artist, {
   const positiveExpiry = (assessment) => currentTime + (
     assessment?.reasons?.includes("provider-omitted-feature-credit") ? days(1) : YOUTUBE_POLICY_MAX_AGE_MS
   );
+  const actorExcluded = new Set();
+  for (const id of excludedVideoIds) {
+    if (/^[A-Za-z0-9_-]{11}$/.test(String(id || ""))) actorExcluded.add(String(id));
+  }
+
+  // Source-scoped provider identities were introduced after the tuple cache had
+  // already accumulated safe v5 positives. Do not make those tracks cold again:
+  // a current tuple positive may seed the exact recording key only after a fresh
+  // videos.list read passes today's scorer and the source-specific recording
+  // proof. Tuple negatives are never promoted, and a feature/solo mismatch
+  // simply falls through to exact catalogue/search resolution.
+  if (!hit && recordingIdentity && apiKey && !actorExcluded.size) {
+    const tupleHit = ytStmts.get.get(youtubeCacheKey(title, artist));
+    let tupleMetadata = null;
+    try { tupleMetadata = tupleHit?.metadata ? JSON.parse(tupleHit.metadata) : null; }
+    catch { tupleMetadata = null; }
+    const tupleUpdatedAt = Number(tupleHit?.updated_at) || 0;
+    const tupleConfiguredDeadline = Number(tupleHit?.expires_at) || (tupleUpdatedAt + YOUTUBE_POLICY_MAX_AGE_MS);
+    const tuplePolicyDeadline = Math.min(tupleConfiguredDeadline, tupleUpdatedAt + YOUTUBE_POLICY_MAX_AGE_MS);
+    const tupleRejected = rejectedSet(tupleHit);
+    const tuplePositiveIsCurrent = !!tupleHit?.video_id
+      && tupleMetadata?.matchVersion === YOUTUBE_MATCH_CACHE_VERSION
+      && !tupleMetadata?.invalidated
+      && tupleUpdatedAt > 0
+      && currentTime < tuplePolicyDeadline
+      && !tupleRejected.has(tupleHit.video_id);
+    if (tuplePositiveIsCurrent) {
+      try {
+        const candidate = (await youtubeVideos([tupleHit.video_id], apiKey, fetchImpl))[0];
+        const selected = candidate ? await selectSourceScopedTupleCandidate(
+          candidate,
+          { title, artist, expectedDurationSec },
+          loadCreditProof,
+        ) : null;
+        if (creditProofUnavailable(selected)) return creditProofUnavailableResult();
+        if (selected?.assessment) {
+          const assessment = selected.assessment;
+          setYouTubeCache({
+            key,
+            videoId: selected.candidate.id,
+            metadata: {
+              title: selected.candidate.snippet?.title || null,
+              channel: selected.candidate.snippet?.channelTitle || null,
+              reasons: [...assessment.reasons, "tuple-positive-promoted"],
+              duration: assessment.duration,
+            },
+            score: assessment.score,
+            expiresAt: positiveExpiry(assessment),
+            rejected: [],
+          });
+          hit = ytStmts.get.get(key);
+        }
+      } catch (error) {
+        // A tuple is only an optimization. Provider/data failures must not turn
+        // it into source authority; continue through the exact resolver paths.
+        if (providerPaused(error)) throw error;
+      }
+    }
+  }
+  let cachedMetadata = null;
+  try { cachedMetadata = hit?.metadata ? JSON.parse(hit.metadata) : null; }
+  catch { cachedMetadata = null; }
   const updatedAt = Number(hit?.updated_at) || 0;
   const configuredDeadline = Number(hit?.expires_at) || (updatedAt + YOUTUBE_POLICY_MAX_AGE_MS);
   const policyDeadline = Math.min(configuredDeadline, updatedAt + YOUTUBE_POLICY_MAX_AGE_MS);
   const withinPolicy = !!hit && updatedAt > 0 && currentTime < policyDeadline;
   const globalRejected = withinPolicy ? rejectedSet(hit) : new Set();
-  const actorExcluded = new Set();
-  for (const id of excludedVideoIds) {
-    if (/^[A-Za-z0-9_-]{11}$/.test(String(id || ""))) actorExcluded.add(String(id));
-  }
   const rejected = new Set([...globalRejected, ...actorExcluded]);
   // Actor exclusions originate in an untrusted client report. They may shape
   // only this listener's response; persisting any positive, negative, or
@@ -1616,8 +1848,6 @@ async function resolveYouTubeTrackUnshared(title, artist, {
   const cacheResult = (value) => {
     if (!actorExcluded.size) setYouTubeCache(value);
   };
-  let cachedMetadata = null;
-  try { cachedMetadata = hit?.metadata ? JSON.parse(hit.metadata) : null; } catch {}
   const usableCachedMatch = !!hit?.video_id
     && !!cachedMetadata
     && cachedMetadata.matchVersion === YOUTUBE_MATCH_CACHE_VERSION
@@ -1639,6 +1869,22 @@ async function resolveYouTubeTrackUnshared(title, artist, {
     return { videoId: hit.video_id, status: "stale", stale: true, confidence: hit.score ?? null };
   };
   if (!apiKey) return usableCachedMatch ? staleResult() : { videoId: null, status: "unconfigured" };
+
+  // A single listener resolution may spend at most one search.list request.
+  // All cache, source-proof, Wikidata, channel-validation and catalogue work is
+  // data-only. Once those paths are exhausted, the resolver deliberately picks
+  // either a known channel search or a global search, never both.
+  let searchUsed = false;
+  const searchOnce = async (params) => {
+    if (searchUsed) {
+      throw new ProviderError("YouTube", 429, "This track already used its one YouTube search attempt.", {
+        code: "search_resolution_budget_exhausted",
+        retryable: false,
+      });
+    }
+    searchUsed = true;
+    return youtubeSearchJson(params, apiKey, fetchImpl, beforeSearch);
+  };
 
   // Validate legacy cache rows cheaply with videos.list before trusting them.
   // Good IDs cost one quota unit to migrate; only a bad result burns a search.
@@ -1684,7 +1930,11 @@ async function resolveYouTubeTrackUnshared(title, artist, {
   // guarantee. Falls through to the global search when the artist has no
   // resolvable channel.
   if (artist) {
-    const channel = await resolveArtistChannel(artist, apiKey, fetchImpl, { allowSearch, beforeSearch });
+    // Channel discovery used to consume one search before the actual song
+    // lookup and could turn one click into two or three actor charges. Only
+    // cached/Wikidata/data-validated channel identities participate here; an
+    // unmapped artist proceeds to the one global video search below.
+    const channel = await resolveArtistChannel(artist, apiKey, fetchImpl, { allowSearch: false });
     if (channel?.channelId) {
       const channelId = channel.channelId;
       // Cheapest and most accurate: match against the artist's own catalogue,
@@ -1727,8 +1977,8 @@ async function resolveYouTubeTrackUnshared(title, artist, {
       // truncated and might be hiding the song. A complete catalogue that did
       // not contain it means the Topic channel does not have it, so the global
       // search below is the right next step, not a redundant in-channel one.
-      if (allowSearch && !catalogueComplete) try {
-        const inChannel = await youtubeSearchJson({
+      if (allowSearch && !catalogueComplete) {
+        const inChannel = await searchOnce({
           part: "snippet",
           type: "video",
           channelId,
@@ -1736,7 +1986,7 @@ async function resolveYouTubeTrackUnshared(title, artist, {
           videoSyndicated: "true",
           maxResults: String(YOUTUBE_SEARCH_MAX_RESULTS),
           q: title,
-        }, apiKey, fetchImpl, beforeSearch);
+        });
         const channelIds = (inChannel?.items || []).map((item) => item?.id?.videoId).filter((id) => id && !rejected.has(id));
         const bestInChannel = await selectBestYouTubeCandidate(
           await youtubeVideos(channelIds, apiKey, fetchImpl),
@@ -1755,9 +2005,8 @@ async function resolveYouTubeTrackUnshared(title, artist, {
           cacheResult({ key, videoId: bestInChannel.candidate.id, metadata, score: bestInChannel.assessment.score, expiresAt: positiveExpiry(bestInChannel.assessment), rejected });
           return { videoId: bestInChannel.candidate.id, status: "artist_channel", confidence: bestInChannel.assessment.score };
         }
-      } catch (error) {
-        if (providerPaused(error)) throw error;
-        // A normal channel miss can still use the creator-gated global search.
+        cacheResult({ key, videoId: null, expiresAt: currentTime + YOUTUBE_MISS_TTL_MS, rejected });
+        return { videoId: null, status: "low_confidence" };
       }
     }
   }
@@ -1768,7 +2017,7 @@ async function resolveYouTubeTrackUnshared(title, artist, {
   // A wider candidate pool (search quota is flat regardless of maxResults, and
   // videos.list is one cheap unit per batch) so the correct official upload is
   // in the set even when it ranks below noise on YouTube's own relevance sort.
-  const search = await youtubeSearchJson({
+  const search = await searchOnce({
     part: "snippet",
     type: "video",
     videoCategoryId: "10",
@@ -1776,7 +2025,7 @@ async function resolveYouTubeTrackUnshared(title, artist, {
     videoSyndicated: "true",
     maxResults: String(YOUTUBE_SEARCH_MAX_RESULTS),
     q: query,
-  }, apiKey, fetchImpl, beforeSearch);
+  });
   const ids = (search?.items || []).map((item) => item?.id?.videoId).filter((id) => id && !rejected.has(id));
   const candidates = await youtubeVideos(ids, apiKey, fetchImpl);
   const best = await selectBestYouTubeCandidate(
@@ -1807,7 +2056,26 @@ export function resolveYouTubeTrack(title, artist, options = {}) {
   const durationBucket = Math.round((Number(options.expectedDurationSec) || 0) / 5) * 5;
   const excluded = [...new Set((options.excludedVideoIds || []).map(String))].sort().join(",");
   const recordingIdentity = youtubeRecordingIdentity(options.sourceProvider, options.sourceId);
-  const key = `${youtubeCacheKey(title, artist, recordingIdentity)}|${durationBucket}|${options.allowSearch === false ? "catalogue-only" : "interactive"}|${excluded}`;
+  let demandScope = "shared";
+  if (typeof options.beforeSearch === "function") {
+    demandScope = String(options.demandScope || "").trim().slice(0, 120);
+    if (!demandScope) {
+      demandScope = youtubeDemandCallbackScopes.get(options.beforeSearch) || "";
+      if (!demandScope) {
+        youtubeDemandCallbackSequence += 1;
+        demandScope = `callback-${youtubeDemandCallbackSequence}`;
+        youtubeDemandCallbackScopes.set(options.beforeSearch, demandScope);
+      }
+    }
+  }
+  // Actor/IP denials are local demand decisions, not track facts. Partition
+  // interactive in-flight work by the opaque demand scope so a capped leader
+  // cannot make an eligible listener inherit its rejection. Calls without an
+  // actor gate retain the existing same-track stampede protection.
+  const resolutionMode = options.readOnly
+    ? "read-only"
+    : options.allowSearch === false ? "catalogue-only" : "interactive";
+  const key = `${youtubeCacheKey(title, artist, recordingIdentity)}|${durationBucket}|${resolutionMode}|${excluded}|${demandScope}`;
   const existing = youtubeInflight.get(key);
   if (existing) {
     youtubeMetrics.trackCoalesced += 1;

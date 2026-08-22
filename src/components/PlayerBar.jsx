@@ -7,7 +7,11 @@ import { captureAppError } from "../lib/diagnostics";
 import { playerResolutionKey, trackKey } from "../domain/trackIdentity.mjs";
 import { uniqueTracks } from "../domain/recommend.mjs";
 import { ownedPlayerPositionEnvelope, restoreOwnedPlayerPosition } from "../domain/player-session.mjs";
-import { playerYouTubeLookupNotice } from "../domain/playback.mjs";
+import {
+  playerColdSearchAllowed,
+  playerYouTubeLookupNotice,
+  playerYouTubeStatusMessage,
+} from "../domain/playback.mjs";
 import {
   directPlayerVideoId,
   initialPlayerSources,
@@ -35,9 +39,6 @@ const web = Platform.OS === "web";
 // transient and retried before the player falls back to a preview.
 const TERMINAL_YT_CODES = [2, 100, 101, 150, 153];
 const MAX_YT_RETRIES = 2;
-// Long enough that the preview has started and the transient cause has likely
-// cleared, short enough that most of the song is still ahead.
-const PREVIEW_UPGRADE_DELAY_MS = 6000;
 const PROVIDER_SETTLE_TIMEOUT_MS = 25000;
 
 // Provider fetches do not share a completion barrier: whichever source settles
@@ -311,7 +312,6 @@ export default function PlayerBar({
   invalidateYouTube,
   youtubeVideoRejected,
   resolveDeezerPreview,
-  youtubeLookupWasTransient,
   youtubeLookupStatus,
 }) {
   // Recent listening is de-duplicated for display only: play history keeps
@@ -339,6 +339,7 @@ export default function PlayerBar({
   // both boundaries in the media identity makes occurrence two restart at zero
   // and prevents a stale occurrence-one callback from advancing it.
   const resolutionKey = playerResolutionKey({ track: cur, user: session });
+  const coldSearchAllowed = playerColdSearchAllowed(cur, player?.playbackIntent);
   const directVideoCandidate = directPlayerVideoId(cur);
   const directVideoId = directVideoCandidate && youtubeVideoRejected?.(cur?.title, cur?.artist, directVideoCandidate, youtubeSource)
     ? null
@@ -381,16 +382,49 @@ export default function PlayerBar({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resolutionKey]);
 
-  // Restored queues mount minimized and paused. Defer a cold YouTube resolver
-  // call until Restore/Play, while still accepting an exact stored video ID.
+  const beginYouTubeResolution = ({ allowSearch }) => {
+    if (!cur || !curKey || youtubeResolutionRef.current?.key === resolutionKey) return false;
+    setResolved((current) => patchPlayerSources(current, resolutionKey, {
+      youtubeStatus: null,
+      youtubePending: true,
+      youtubeSettled: false,
+    }));
+    let task = null;
+    try {
+      task = resolveYouTube(cur.title, cur.artist, cur.duration || 0, {
+        ...youtubeSource,
+        allowSearch: allowSearch === true,
+      });
+    } catch (error) {
+      task = Promise.reject(error);
+    }
+    const request = { key: resolutionKey, cancel: null };
+    request.cancel = subscribeToProvider(task, (videoId) => {
+      if (youtubeResolutionRef.current === request) youtubeResolutionRef.current = null;
+      setResolved((current) => patchPlayerSources(current, resolutionKey, {
+        videoId,
+        youtubeStatus: youtubeLookupStatus?.(cur.title, cur.artist, youtubeSource) || null,
+        youtubePending: false,
+        youtubeSettled: true,
+      }));
+    });
+    youtubeResolutionRef.current = request;
+    return true;
+  };
+
+  // Restored queues mount minimized and paused. Defer all lookup work until
+  // Restore. Explicit selections may cross the cold-search boundary once;
+  // automatic queue advancement remains catalogue/cache-only.
   useEffect(() => {
     if (!cur || !curKey) return undefined;
-    const existingVideoId = resolvedRef.current?.key === resolutionKey ? resolvedRef.current.videoId : null;
+    const currentResolution = resolvedRef.current?.key === resolutionKey ? resolvedRef.current : null;
+    const existingVideoId = currentResolution?.videoId || null;
     const shouldResolve = shouldResolvePlayerYouTube({
       web,
       minimized,
       directVideoId,
       resolvedVideoId: existingVideoId,
+      youtubeSettled: currentResolution?.youtubeSettled === true,
     });
     if (!shouldResolve) {
       if (directVideoId && youtubeResolutionRef.current?.key === resolutionKey) {
@@ -407,47 +441,10 @@ export default function PlayerBar({
     // Minimizing a lookup that already began while expanded does not start a
     // duplicate request on restore. Let it settle into the same keyed state.
     if (youtubeResolutionRef.current?.key === resolutionKey) return undefined;
-    setResolved((current) => patchPlayerSources(current, resolutionKey, { youtubePending: true, youtubeSettled: false }));
-    let task = null;
-    try { task = resolveYouTube(cur.title, cur.artist, cur.duration || 0, youtubeSource); } catch {}
-    const request = { key: resolutionKey, cancel: null };
-    request.cancel = subscribeToProvider(task, (videoId) => {
-      if (youtubeResolutionRef.current === request) youtubeResolutionRef.current = null;
-      setResolved((current) => patchPlayerSources(current, resolutionKey, {
-        videoId,
-        youtubeStatus: youtubeLookupStatus?.(cur.title, cur.artist, youtubeSource) || null,
-        youtubePending: false,
-        youtubeSettled: true,
-      }));
-    });
-    youtubeResolutionRef.current = request;
+    beginYouTubeResolution({ allowSearch: coldSearchAllowed });
     return undefined;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resolutionKey, minimized, directVideoId]);
-
-  // A song playing its preview because the lookup hit a temporary failure is
-  // not a settled outcome. Try again quietly in the background and swap the
-  // video in when it arrives, rather than leaving someone on a 30-second clip
-  // for the whole song because of one bad moment.
-  useEffect(() => {
-    // `resolved.key === resolutionKey` inline rather than the `forThis` binding below:
-    // this effect sits above that declaration, and reading it here is a
-    // temporal-dead-zone crash.
-    if (!web || minimized || !cur || resolved.key !== resolutionKey || resolved.videoId || resolved.youtubePending) return;
-    if (!youtubeLookupWasTransient?.(cur.title, cur.artist, youtubeSource)) return;
-    let cancelled = false;
-    const timer = setTimeout(async () => {
-      const videoId = await resolveYouTube(cur.title, cur.artist, cur.duration || 0, { ...youtubeSource, force: true });
-      // Guard against the track having changed while this was in flight.
-      if (!cancelled) setResolved((prev) => (prev.key === resolutionKey ? {
-        ...prev,
-        ...(videoId ? { videoId } : null),
-        youtubeStatus: youtubeLookupStatus?.(cur.title, cur.artist, youtubeSource) || null,
-      } : prev));
-    }, PREVIEW_UPGRADE_DELAY_MS);
-    return () => { cancelled = true; clearTimeout(timer); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resolutionKey, minimized, resolved.key, resolved.videoId, resolved.youtubePending]);
+  }, [resolutionKey, minimized, directVideoId, coldSearchAllowed]);
 
   // Mount YouTube only after a real video ID resolves. Preview-only tracks keep
   // the same visible player surface without creating a hidden cross-origin frame.
@@ -575,7 +572,7 @@ export default function PlayerBar({
     mediaKey: resolutionKey,
     onEnded: (ended) => {
       if (ended?.mediaKey !== resolutionKey) return;
-      if (hasNext) onIndex?.(index + 1);
+      if (hasNext) onIndex?.(index + 1, { trigger: "automatic" });
     },
     onStarted: (started) => {
       if (started?.mediaKey === resolutionKey) {
@@ -638,7 +635,7 @@ export default function PlayerBar({
     yt.onEnded((ended) => {
       const current = youtubeEndedCursorRef.current;
       if (ended?.mediaKey !== current?.resolutionKey || ended?.videoId !== current?.videoId) return;
-      if (current.hasNext) current.onIndex?.(current.index + 1);
+      if (current.hasNext) current.onIndex?.(current.index + 1, { trigger: "automatic" });
     });
     return () => yt.onEnded(null);
   }, [yt.onEnded]);
@@ -713,6 +710,16 @@ export default function PlayerBar({
     previewPending: resolved.previewPending,
   });
   const resolverNotice = forThis ? playerYouTubeLookupNotice(resolved.youtubeStatus) : null;
+  const resolverNoticeMessage = playerYouTubeStatusMessage(resolverNotice, { preview: !!previewSrc });
+  const canFindFullTrack = !!(web
+    && forThis
+    && !resolved.videoId
+    && !resolved.youtubePending
+    && resolved.youtubeStatus === "search_deferred");
+  const findFullTrack = () => {
+    if (!canFindFullTrack) return;
+    beginYouTubeResolution({ allowSearch: true });
+  };
   const currentAudioError = audio.error
     && previewSrc
     && (!web || audio.error.source === previewSrc)
@@ -886,8 +893,9 @@ export default function PlayerBar({
   const statusLine = autoplayBlocked ? ytErrorForThis.message
     : canRetryVideo ? (ytErrorForThis?.message || "Video playback needs another try.")
     : connecting ? "Loading video..."
+    : resolved.youtubePending && previewSrc ? "Checking for full track... Preview playing."
     : resolving ? "Loading..."
-    : unplayable && resolverNotice ? resolverNotice.message
+    : resolverNoticeMessage ? resolverNoticeMessage
     : unplayable ? "Not available to play"
     : artist + (ytActive ? "  ·  YouTube" : previewSrc ? "  ·  preview" : "");
 
@@ -989,7 +997,7 @@ export default function PlayerBar({
               <Text style={styles.columnArtist} numberOfLines={1}>{artist}</Text>
             </Pressable>
           ) : null}
-          <Text style={[styles.columnStatus, unplayable && { color: colors.gold }]} numberOfLines={1} accessibilityLiveRegion="polite">{statusLine}</Text>
+          <Text style={[styles.columnStatus, (unplayable || resolverNotice) && { color: colors.gold }]} numberOfLines={2} accessibilityLiveRegion="polite">{statusLine}</Text>
         </View>
 
         <View style={styles.columnTransport}>
@@ -1022,6 +1030,12 @@ export default function PlayerBar({
             <Pressable style={[styles.columnAction, showVideo && styles.columnActionOn]} onPress={() => setShowVideo((visible) => { if (visible) yt.pause(); return !visible; })} accessibilityRole="button" accessibilityLabel={showVideo ? "Hide video, pauses playback" : "Show video"}>
               <Icon name="play" size={13} color={showVideo ? colors.amber : colors.textDim} />
               <Text style={[styles.columnActionTxt, showVideo && { color: colors.amber }]}>Video</Text>
+            </Pressable>
+          )}
+          {canFindFullTrack && (
+            <Pressable style={[styles.columnAction, styles.columnActionOn]} onPress={findFullTrack} accessibilityRole="button" accessibilityLabel={`Find the full track for ${title}`}>
+              <Icon name="search" size={13} color={colors.amber} />
+              <Text style={[styles.columnActionTxt, { color: colors.amber }]}>Find full track</Text>
             </Pressable>
           )}
           {canRetryVideo && (
@@ -1098,9 +1112,9 @@ export default function PlayerBar({
         {art ? <Image source={{ uri: art }} style={styles.art} /> : <View style={[styles.art, styles.artEmpty]}><Icon name="music" size={16} color={colors.textFaint} /></View>}
         <Pressable style={[styles.meta, styles.metaGrow]} onPress={(multi || history.length) ? togglePanel : undefined} accessibilityRole={(multi || history.length) ? "button" : undefined} accessibilityLabel={(multi || history.length) ? `Now playing ${title}. Open listening session.` : undefined}>
           <Text style={styles.title} numberOfLines={1}>{title}</Text>
-          {peekNext && nextTitle
+          {peekNext && nextTitle && !resolverNotice
             ? <Text style={styles.peekNext} numberOfLines={1}>{"↑ Up next · " + nextTitle}</Text>
-            : <Text style={styles.sub} numberOfLines={1} accessibilityLiveRegion="polite">{statusLine}</Text>}
+            : <Text style={styles.sub} numberOfLines={resolverNotice ? 2 : 1} accessibilityLiveRegion="polite">{statusLine}</Text>}
         </Pressable>
 
         {compactMobile ? (
@@ -1145,6 +1159,12 @@ export default function PlayerBar({
                 <Text style={[styles.queueTxt, showVideo && { color: colors.amber }]}>Video</Text>
               </Pressable>
             )}
+            {canFindFullTrack && (
+              <Pressable style={[styles.queueBtn, styles.queueBtnOn]} onPress={findFullTrack} hitSlop={6} accessibilityRole="button" accessibilityLabel={`Find the full track for ${title}`}>
+                <Icon name="search" size={12} color={colors.amber} />
+                <Text style={[styles.queueTxt, { color: colors.amber }]}>Full track</Text>
+              </Pressable>
+            )}
             {canRetryVideo && (
               <Pressable style={[styles.queueBtn, styles.queueBtnOn]} onPress={retryVideo} hitSlop={6} accessibilityRole="button" accessibilityLabel={`Retry video for ${title}`}>
                 <Icon name="play" size={12} color={colors.amber} />
@@ -1156,6 +1176,13 @@ export default function PlayerBar({
           </>
         )}
       </View>
+
+      {compactMobile && canFindFullTrack && (
+        <Pressable style={styles.mobileFindTrack} onPress={findFullTrack} accessibilityRole="button" accessibilityLabel={`Find the full track for ${title}`}>
+          <Icon name="search" size={13} color={colors.amber} />
+          <Text style={styles.mobileFindTrackText}>Find full track</Text>
+        </Pressable>
+      )}
 
       <MobilePlayerCloseRail enabled={mobileCloseGestureEnabled} gesture={mobileCloseGesture} />
 
@@ -1365,6 +1392,8 @@ const styles = StyleSheet.create({
   ctrl: { width: 36, height: 36, borderRadius: 18, alignItems: "center", justifyContent: "center", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line },
   mobilePlay: { width: 48, height: 48, borderRadius: 24, alignItems: "center", justifyContent: "center", backgroundColor: colors.amberStrong, borderWidth: 1, borderColor: colors.amber, ...shadow.control },
   mobileMenu: { width: 48, height: 48, borderRadius: 24, alignItems: "center", justifyContent: "center", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line },
+  mobileFindTrack: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, marginHorizontal: 10, marginBottom: 7, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.amber, backgroundColor: "rgba(242,166,90,0.08)" },
+  mobileFindTrackText: { color: colors.amber, fontSize: 12, fontWeight: "900", fontFamily: mono },
   mobileClose: { width: 44, height: 44, flexShrink: 0, borderRadius: 22, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(235, 87, 87, 0.08)", borderWidth: 1, borderColor: "rgba(235, 87, 87, 0.42)" },
   // This is the only gesture target. Controls and the feed never own these
   // handlers, so a normal tap or page scroll cannot clear a listening session.

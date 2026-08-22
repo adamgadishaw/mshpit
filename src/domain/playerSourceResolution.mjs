@@ -26,8 +26,8 @@ export function initialPlayerSources({ key, track, directVideoId = undefined } =
 // A restored queue is intentionally paused and minimized. Do not spend a cold
 // YouTube resolver request until the listener explicitly restores or plays it.
 // Exact IDs already stored on the track hydrate locally and need no route call.
-export function shouldResolvePlayerYouTube({ web, minimized, directVideoId, resolvedVideoId } = {}) {
-  return !!web && !minimized && !directVideoId && !resolvedVideoId;
+export function shouldResolvePlayerYouTube({ web, minimized, directVideoId, resolvedVideoId, youtubeSettled } = {}) {
+  return !!web && !minimized && !directVideoId && !resolvedVideoId && !youtubeSettled;
 }
 
 // Provider promises may settle after the listener has skipped to another song.

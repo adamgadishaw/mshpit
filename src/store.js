@@ -47,7 +47,7 @@ import {
 import { buildReviewCreateBody, buildReviewEditBody, cleanArtistKey } from "./domain/post-payload.mjs";
 import { mergeEditedPost, resolvePostEditTarget } from "./domain/postEditTarget.mjs";
 import { postMatchesEditIntent, shouldReconcileEditFailure } from "./domain/postReconciliation.mjs";
-import { activeYouTubeLookupStatus, classifyResolve, backoffFor, RESOLVE_ATTEMPTS, CACHE_MS } from "./domain/playback.mjs";
+import { activeYouTubeLookupStatus, classifyResolve, requestYouTubeTrackOnce, shouldUseYouTubeLookupCache, CACHE_MS } from "./domain/playback.mjs";
 import { recommendTracks as recommendFromCandidates } from "./domain/recommend.mjs";
 import { trackKey, trackMetadataKey, trackTupleKey, youtubeLookupCacheKey } from "./domain/trackIdentity.mjs";
 import {
@@ -1449,94 +1449,60 @@ export function StoreProvider({ children }) {
     videoId,
     source,
   );
-  // Resolve a song to a YouTube video, retrying the failures that deserve it.
-  //
-  // This used to be one attempt, and any failure — a timeout, a 429 from our own
-  // rate limiter, the daily search budget being spent — returned null and was
-  // cached as "no video" for five minutes. The player has no way to tell that
-  // apart from "this song genuinely has no upload", so it played a 30-second
-  // preview and never tried again. That is why obviously-available songs kept
-  // coming out as previews. See src/domain/playback.mjs for the policy.
-  const resolveYouTube = async (title, artist, duration = 0, { force = false, provider = "", sourceId = "" } = {}) => {
+  // Resolve one selected occurrence. Every call performs a catalogue/cache-safe
+  // GET; only an explicit player intent may follow `search_deferred` with one
+  // quota-spending POST. Capacity and transport outcomes are never replayed in a
+  // hidden retry loop, so one click cannot turn into several search attempts.
+  const resolveYouTube = async (title, artist, duration = 0, {
+    allowSearch = false,
+    provider = "",
+    sourceId = "",
+  } = {}) => {
     if (!title) return null;
     const tupleKey = trackTupleKey(title, artist);
     const source = { provider, sourceId };
     const k = youtubeLookupCacheKey(title, artist, sessionRef.current, source);
     const hit = ytCache.current[k];
-    // `force` is for the player's background upgrade: it is retrying precisely
-    // because the cached answer is a temporary failure, so honouring that cache
-    // would make the retry a no-op.
-    if (!force && hit && hit.expiresAt > Date.now()) return hit.videoId;
+    // A catalogue-only result must not block a later explicit opt-in, while all
+    // other fresh answers retain the account/source-scoped cache behavior.
+    if (shouldUseYouTubeLookupCache(hit, { allowSearch })) return hit.videoId;
 
-    let last = null;
-    for (let attempt = 0; attempt < RESOLVE_ATTEMPTS; attempt++) {
-      let outcome;
-      try {
-        const query = new URLSearchParams({ title, artist: artist || "" });
-        const coldSearchBody = { title, artist: artist || "" };
-        if (Number(duration) > 0) query.set("duration", String(Math.round(Number(duration))));
-        if (Number(duration) > 0) coldSearchBody.duration = Math.round(Number(duration));
-        if (provider) {
-          query.set("provider", String(provider));
-          coldSearchBody.provider = String(provider);
-        }
-        if (sourceId != null && String(sourceId).trim()) {
-          query.set("sourceId", String(sourceId));
-          coldSearchBody.sourceId = String(sourceId);
-        }
-        const excluded = youtubeRejectedVideoIds(currentYouTubeRejections().entries, title, artist, source);
-        if (excluded.length) {
-          query.set("exclude", excluded.join(","));
-          coldSearchBody.exclude = excluded.join(",");
-        }
-        let response = await api(`/api/youtube/track?${query.toString()}`);
-        // Pins, cache and trusted artist catalogues remain available through the
-        // anonymous-safe GET. Only the phase that can spend scarce search quota
-        // crosses the authenticated SameSite-protected POST boundary.
-        if (response?.status === "search_deferred") {
-          response = await api("/api/youtube/track/resolve", {
-            method: "POST",
-            body: coldSearchBody,
-            context: "Finding the full track",
-            silent: true,
-          });
-        }
-        outcome = classifyResolve(response);
-      } catch (error) {
-        outcome = classifyResolve({ error });
-      }
-      if (outcome?.videoId && youtubeVideoRejected(title, artist, outcome.videoId, source)) {
-        outcome = { ...outcome, videoId: null, status: "rejected_for_listener", retry: false, transient: false };
-      }
-      last = outcome;
-      if (outcome.videoId || !outcome.retry) break;
-      // Keep the preview playing while this happens; nothing here blocks audio.
-      if (attempt < RESOLVE_ATTEMPTS - 1) await new Promise((r) => setTimeout(r, backoffFor(attempt)));
+    let outcome;
+    try {
+      const response = await requestYouTubeTrackOnce({
+        request: api,
+        title,
+        artist: artist || "",
+        duration,
+        provider,
+        sourceId,
+        excludedVideoIds: youtubeRejectedVideoIds(currentYouTubeRejections().entries, title, artist, source),
+        allowSearch: allowSearch === true,
+      });
+      outcome = classifyResolve(response);
+    } catch (error) {
+      outcome = classifyResolve({ error });
+    }
+    if (outcome?.videoId && youtubeVideoRejected(title, artist, outcome.videoId, source)) {
+      outcome = { ...outcome, videoId: null, status: "rejected_for_listener", retry: false, transient: false };
     }
 
     ytCache.current[k] = {
       tupleKey,
-      videoId: last?.videoId || null,
-      status: last?.status || null,
-      retryable: !!last?.transient,
-      expiresAt: Date.now() + (last?.cacheMs || CACHE_MS.transient),
+      videoId: outcome?.videoId || null,
+      status: outcome?.status || null,
+      expiresAt: Date.now() + (outcome?.cacheMs || CACHE_MS.transient),
     };
-    if (last && !last.videoId && last.transient) {
+    if (outcome && !outcome.videoId && outcome.transient) {
       captureAppError(new Error("YouTube lookup capacity is temporarily unavailable"), {
         code: "PIT-MEDIA-002",
-        context: `Resolving ${artist || "artist"} - ${title} (${last.status})`,
+        context: `Resolving ${artist || "artist"} - ${title} (${outcome.status})`,
         source: "youtube-resolver",
         severity: "warning",
         toast: false,
       });
     }
-    return last?.videoId || null;
-  };
-  // Whether the last answer for a track was a temporary failure, so the player
-  // can quietly try again and upgrade a preview to the real video mid-play.
-  const youtubeLookupWasTransient = (title, artist, source = null) => {
-    const entry = ytCache.current[youtubeLookupCacheKey(title, artist, sessionRef.current, source)];
-    return !!(entry && !entry.videoId && entry.retryable);
+    return outcome?.videoId || null;
   };
   // PlayerBar reads the resolver reason in the same completion turn as the
   // video-id promise. The cache key is account + verification scoped, and an
@@ -5076,7 +5042,7 @@ export function StoreProvider({ children }) {
     recentSearches, addRecentSearch, removeRecentSearch, clearRecentSearches,
     loadUser, followersOf, followingOf,
     isBlocked, blockUser, unblockUser, blockedUsers, exportMyData,
-    searchArtistsApi, resolveArtist, remoteArtistMeta, artistDiscography, resolveYouTube, invalidateYouTube, youtubeVideoRejected, youtubeLookupWasTransient, youtubeLookupStatus, resolveDeezerPreview,
+    searchArtistsApi, resolveArtist, remoteArtistMeta, artistDiscography, resolveYouTube, invalidateYouTube, youtubeVideoRejected, youtubeLookupStatus, resolveDeezerPreview,
     discoverChart, discoverGenres, discoverCountries, loadDiscoverOverview, loadDiscoverGenre, serverTime,
     artistSeenCount, reportTrack, adminSetTrackVideo, trackOverridesList, removeTrackOverride, loadModerationQueue, loadModerationConsole, loadMoreModerationConsole, moderateReport,
     mediaReactions, loadMediaReactions, toggleMediaReaction,

@@ -9,7 +9,15 @@ process.env.PIT_DATA_DIR = dataDir;
 
 const { db, q, publicUser, artistStmts, artistRow, publicArtist, pruneMissingArtists } = await import("./db.js");
 const { ApiError, routes } = await import("./api.js");
-const { YOUTUBE_MATCH_CACHE_VERSION, legacyTrackOverrideKey, normalizeYouTubeCacheText, trackOverrideKey, trackSourceOverrideKey, youtubeCacheKey } = await import("./musicProviders.js");
+const {
+  YOUTUBE_MATCH_CACHE_VERSION,
+  invalidateSongIndex,
+  legacyTrackOverrideKey,
+  normalizeYouTubeCacheText,
+  trackOverrideKey,
+  trackSourceOverrideKey,
+  youtubeCacheKey,
+} = await import("./musicProviders.js");
 const { renderPublicPage } = await import("./publicPages.js");
 const { clearRecommendationSnapshotsForTests } = await import("./recommendationService.js");
 const { hashPassword } = await import("./auth.js");
@@ -111,9 +119,23 @@ test("public health is minimal while detailed readiness requires active staff", 
     const staffHealth = routes["GET /api/admin/health"]({ user: q.userById.get("u_health_mod") });
     assert.equal(staffHealth.services.database, true);
     assert.equal(typeof staffHealth.uptimeSeconds, "number");
+    assert.equal(typeof staffHealth.services.youtubeConfigured, "boolean");
     assert.equal(typeof staffHealth.services.mail.apiKeyPresent, "boolean");
     assert.equal(typeof staffHealth.services.youtubeLookup?.search?.remaining, "number");
     assert.equal(typeof staffHealth.services.youtubeLookup?.efficiency?.searchCallsReserved, "number");
+    assert.deepEqual(staffHealth.services.youtubeLookup?.actorAllowance, {
+      version: 2,
+      day: staffHealth.services.youtubeLookup.actorAllowance.day,
+      eligible: false,
+      accountVerified: false,
+      adminBypass: false,
+      used: 0,
+      limit: 20,
+      remaining: 20,
+    });
+    assert.match(staffHealth.services.youtubeLookup.actorAllowance.day, /^\d{4}-\d{2}-\d{2}$/);
+    assert.equal(JSON.stringify(staffHealth.services.youtubeLookup.actorAllowance).includes("u_health_mod"), false,
+      "staff diagnostics expose allowance state without account or network identifiers");
     assert.throws(
       () => routes["GET /api/admin/health"]({ user: addUser("u_health_fan", "health-fan@example.com", "healthfan") }),
       (error) => error.status === 403,
@@ -186,6 +208,18 @@ test("YouTube cold search preserves anonymous cache/pins but requires a verified
     assert.equal(searchCalls, 0);
 
     const bounded = verifiedUser("u_youtube_bounded", "youtube-bounded@example.com", "ytbounded");
+    const quotaParts = new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/Los_Angeles",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(new Date());
+    const quotaPart = (type) => quotaParts.find((entry) => entry.type === type)?.value;
+    const quotaDay = `${quotaPart("year")}-${quotaPart("month")}-${quotaPart("day")}`;
+    const boundedV2Key = `youtube_cold_user:v2:${quotaDay}:${bounded.id}`;
+    const boundedV1Key = `youtube_cold_user:${quotaDay}:${bounded.id}`;
+    db.prepare("INSERT OR REPLACE INTO app_meta (key,value) VALUES (?,'19')").run(boundedV2Key);
+    db.prepare("INSERT OR REPLACE INTO app_meta (key,value) VALUES (?,'20')").run(boundedV1Key);
     const budgetRowsBeforeGet = db.prepare(`SELECT key,value FROM app_meta
       WHERE key GLOB 'youtube_search_calls:*' OR key GLOB 'youtube_cold_user:*' ORDER BY key`).all();
     for (let index = 0; index < 3; index += 1) {
@@ -205,7 +239,7 @@ test("YouTube cold search preserves anonymous cache/pins but requires a verified
     "repeated GET reads must not reserve listener or global YouTube search budget");
     assert.equal(searchCalls, 0, "repeated GET reads must never call search.list");
 
-    for (let index = 0; index < 5; index += 1) {
+    for (let index = 0; index < 1; index += 1) {
       const result = await coldYouTubeResolve({
         user: bounded,
         query: { title: `Bounded Cold Boundary ${index}`, artist: "" },
@@ -213,7 +247,7 @@ test("YouTube cold search preserves anonymous cache/pins but requires a verified
       });
       assert.equal(result.status, "low_confidence");
     }
-    assert.equal(searchCalls, 5);
+    assert.equal(searchCalls, 1);
     const boundedDenied = await coldYouTubeResolve({
       user: bounded,
       query: { title: "Bounded Cold Boundary Exhausted", artist: "" },
@@ -224,20 +258,22 @@ test("YouTube cold search preserves anonymous cache/pins but requires a verified
       status: "search_actor_budget_exhausted",
       retryable: false,
     });
-    assert.equal(searchCalls, 5, "the account cap stops a provider request before it leaves PIT");
+    assert.equal(searchCalls, 1, "the account cap stops a provider request before it leaves PIT");
     assert.equal(Number(db.prepare("SELECT value FROM app_meta WHERE key GLOB ?")
-      .get(`youtube_cold_user:*:${bounded.id}`)?.value), 5,
+      .get(`youtube_cold_user:v2:*:${bounded.id}`)?.value), 20,
     "the per-account cap survives a process restart in SQLite");
+    assert.equal(db.prepare("SELECT 1 FROM app_meta WHERE key=?").get(boundedV1Key), undefined,
+      "the retired per-provider-call counter cannot strand an actor after the v2 rollout");
 
     const sharedIp = "youtube-shared-network";
-    const networkUsers = Array.from({ length: 5 }, (_, index) => verifiedUser(
+    const networkUsers = Array.from({ length: 3 }, (_, index) => verifiedUser(
       `u_youtube_network_${index}`,
       `youtube-network-${index}@example.com`,
       `ytnetwork${index}`,
     ));
     const beforeNetwork = searchCalls;
-    for (let userIndex = 0; userIndex < 4; userIndex += 1) {
-      for (let requestIndex = 0; requestIndex < 5; requestIndex += 1) {
+    for (let userIndex = 0; userIndex < 2; userIndex += 1) {
+      for (let requestIndex = 0; requestIndex < 20; requestIndex += 1) {
         const result = await coldYouTubeResolve({
           user: networkUsers[userIndex],
           query: { title: `Network Cold Boundary ${userIndex}-${requestIndex}`, artist: "" },
@@ -246,9 +282,9 @@ test("YouTube cold search preserves anonymous cache/pins but requires a verified
         assert.equal(result.status, "low_confidence");
       }
     }
-    assert.equal(searchCalls - beforeNetwork, 20);
+    assert.equal(searchCalls - beforeNetwork, 40);
     const networkDenied = await coldYouTubeResolve({
-      user: networkUsers[4],
+      user: networkUsers[2],
       query: { title: "Network Cold Boundary Exhausted", artist: "" },
       ip: sharedIp,
     });
@@ -257,21 +293,23 @@ test("YouTube cold search preserves anonymous cache/pins but requires a verified
       status: "search_actor_budget_exhausted",
       retryable: false,
     });
-    assert.equal(searchCalls - beforeNetwork, 20, "the hashed in-memory network cap remains below global capacity");
+    assert.equal(searchCalls - beforeNetwork, 40, "the hashed in-memory network cap remains below global capacity");
 
     // Denial at the later IP gate must roll back the earlier user reservation.
     // Otherwise this actor reaches a new network with only four searches left.
     const afterSaturatedIp = searchCalls;
-    for (let requestIndex = 0; requestIndex < 5; requestIndex += 1) {
+    db.prepare("INSERT OR REPLACE INTO app_meta (key,value) VALUES (?,'19')")
+      .run(`youtube_cold_user:v2:${quotaDay}:${networkUsers[2].id}`);
+    for (let requestIndex = 0; requestIndex < 1; requestIndex += 1) {
       const result = await coldYouTubeResolve({
-        user: networkUsers[4],
+        user: networkUsers[2],
         query: { title: `Network Rollover Boundary ${requestIndex}`, artist: "" },
         ip: "youtube-network-fresh-ip",
       });
       assert.equal(result.status, "low_confidence");
     }
-    assert.equal(searchCalls - afterSaturatedIp, 5,
-      "an IP-cap denial consumes none of the user's allowance on a fresh network");
+    assert.equal(searchCalls - afterSaturatedIp, 1,
+      "an IP-cap denial consumes none of the user's final allowance on a fresh network");
 
     // Seed only the restart-safe account cap. Its denial must also roll back the
     // fresh IP reservation so that 20 other legitimate actors retain all 20
@@ -285,7 +323,7 @@ test("YouTube cold search preserves anonymous cache/pins but requires a verified
       "youtube-persisted-cap@example.com",
       "ytpersistedcap",
     );
-    db.prepare("INSERT OR REPLACE INTO app_meta (key,value) VALUES (?,'5')")
+    db.prepare("INSERT OR REPLACE INTO app_meta (key,value) VALUES (?,'20')")
       .run(`${actorPrefix}${persistedCapped.id}`);
     const freshIp = "youtube-persisted-cap-fresh-ip";
     const persistedDenied = await coldYouTubeResolve({
@@ -299,14 +337,14 @@ test("YouTube cold search preserves anonymous cache/pins but requires a verified
       retryable: false,
     });
 
-    const freshIpUsers = Array.from({ length: 4 }, (_, index) => verifiedUser(
+    const freshIpUsers = Array.from({ length: 2 }, (_, index) => verifiedUser(
       `u_youtube_fresh_ip_${index}`,
       `youtube-fresh-ip-${index}@example.com`,
       `ytfreship${index}`,
     ));
     const beforeFreshIp = searchCalls;
     for (let userIndex = 0; userIndex < freshIpUsers.length; userIndex += 1) {
-      for (let requestIndex = 0; requestIndex < 5; requestIndex += 1) {
+      for (let requestIndex = 0; requestIndex < 20; requestIndex += 1) {
         const result = await coldYouTubeResolve({
           user: freshIpUsers[userIndex],
           query: { title: `Persisted Fresh IP Boundary ${userIndex}-${requestIndex}`, artist: "" },
@@ -315,10 +353,444 @@ test("YouTube cold search preserves anonymous cache/pins but requires a verified
         assert.equal(result.status, "low_confidence");
       }
     }
-    assert.equal(searchCalls - beforeFreshIp, 20,
+    assert.equal(searchCalls - beforeFreshIp, 40,
       "a persisted-account denial consumes none of a fresh IP's allowance");
   } finally {
     globalThis.fetch = previousFetch;
+    if (previousApiKey === undefined) delete process.env.YOUTUBE_API_KEY;
+    else process.env.YOUTUBE_API_KEY = previousApiKey;
+  }
+});
+
+test("YouTube v2 actor allowance admits legacy admins, gates fans, and isolates day and account counters", async () => {
+  const previousApiKey = process.env.YOUTUBE_API_KEY;
+  const previousFetch = globalThis.fetch;
+  process.env.YOUTUBE_API_KEY = "test-key";
+  let providerSearches = 0;
+  globalThis.fetch = async (url) => {
+    if (String(url).includes("/search?")) providerSearches += 1;
+    return { ok: true, status: 200, json: async () => ({ items: [] }) };
+  };
+  try {
+    const legacyAdminId = "u_youtube_legacy_admin";
+    addUser(legacyAdminId, "youtube-legacy-admin@example.com", "youtubelegacyadmin");
+    db.prepare("UPDATE users SET role='admin' WHERE id=?").run(legacyAdminId);
+    const legacyAdmin = q.userById.get(legacyAdminId);
+    assert.equal(legacyAdmin.email_verified_at, 0);
+    assert.deepEqual(await routes["GET /api/youtube/track"]({
+      user: legacyAdmin,
+      query: { title: "Legacy Admin Cold Read", artist: "" },
+      ip: "youtube-legacy-admin-read",
+    }), {
+      videoId: null,
+      status: "search_deferred",
+      retryable: false,
+      resolveMethod: "POST",
+    }, "an existing admin is eligible even before verification backfill");
+
+    const beforeHealth = routes["GET /api/admin/health"]({ user: legacyAdmin });
+    const day = beforeHealth.services.youtubeLookup.actorAllowance.day;
+    assert.deepEqual(beforeHealth.services.youtubeLookup.actorAllowance, {
+      version: 2,
+      day,
+      eligible: true,
+      accountVerified: false,
+      adminBypass: true,
+      used: 0,
+      limit: 20,
+      remaining: 20,
+    });
+    db.prepare("INSERT OR REPLACE INTO app_meta (key,value) VALUES (?,'20')")
+      .run(`youtube_cold_user:${day}:${legacyAdmin.id}`);
+    assert.equal((await coldYouTubeResolve({
+      user: legacyAdmin,
+      query: { title: "Legacy Admin Cold Resolve", artist: "" },
+      ip: "youtube-legacy-admin-resolve",
+    })).status, "low_confidence");
+    assert.equal(providerSearches, 1);
+    const afterHealth = routes["GET /api/admin/health"]({ user: legacyAdmin });
+    assert.equal(afterHealth.services.youtubeLookup.actorAllowance.used, 1,
+      "one explicit cold track consumes exactly one v2 actor permit");
+    assert.equal(afterHealth.services.youtubeLookup.actorAllowance.remaining, 19);
+    assert.equal(db.prepare("SELECT 1 FROM app_meta WHERE key=?").get(
+      `youtube_cold_user:${day}:${legacyAdmin.id}`,
+    ), undefined, "the retired v1 count is ignored and cleaned during the first v2 reservation");
+
+    const unverifiedFan = addUser("u_youtube_v2_unverified_fan", "youtube-v2-fan@example.com", "youtubev2fan");
+    assert.deepEqual(await coldYouTubeResolve({
+      user: unverifiedFan,
+      query: { title: "Unverified Fan Cold Resolve", artist: "" },
+      ip: "youtube-v2-unverified-fan",
+    }), { videoId: null, status: "search_verification_required", retryable: false });
+    assert.equal(providerSearches, 1, "an ordinary unverified account never reaches search.list");
+
+    const rolloverUser = verifiedUser("u_youtube_v2_rollover", "youtube-v2-rollover@example.com", "youtubev2rollover");
+    const yesterdayParts = new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/Los_Angeles",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(new Date(Date.now() - 36 * 60 * 60 * 1000));
+    const yesterdayPart = (type) => yesterdayParts.find((entry) => entry.type === type)?.value;
+    const yesterday = `${yesterdayPart("year")}-${yesterdayPart("month")}-${yesterdayPart("day")}`;
+    assert.notEqual(yesterday, day);
+    const yesterdayKey = `youtube_cold_user:v2:${yesterday}:${rolloverUser.id}`;
+    db.prepare("INSERT OR REPLACE INTO app_meta (key,value) VALUES (?,'20')").run(yesterdayKey);
+    assert.equal((await coldYouTubeResolve({
+      user: rolloverUser,
+      query: { title: "Rollover Cold Resolve", artist: "" },
+      ip: "youtube-v2-rollover",
+    })).status, "low_confidence");
+    assert.equal(Number(db.prepare("SELECT value FROM app_meta WHERE key=?").get(
+      `youtube_cold_user:v2:${day}:${rolloverUser.id}`,
+    )?.value), 1, "a prior Pacific-day counter cannot consume today's allowance");
+    assert.equal(db.prepare("SELECT 1 FROM app_meta WHERE key=?").get(yesterdayKey), undefined,
+      "stale actor counters are pruned on reservation");
+
+    const capped = verifiedUser("u_youtube_v2_capped", "youtube-v2-capped@example.com", "youtubev2capped");
+    const isolated = verifiedUser("u_youtube_v2_isolated", "youtube-v2-isolated@example.com", "youtubev2isolated");
+    db.prepare("INSERT OR REPLACE INTO app_meta (key,value) VALUES (?,'20')")
+      .run(`youtube_cold_user:v2:${day}:${capped.id}`);
+    assert.deepEqual(await coldYouTubeResolve({
+      user: capped,
+      query: { title: "Capped Actor Cold Resolve", artist: "" },
+      ip: "youtube-v2-capped",
+    }), { videoId: null, status: "search_actor_budget_exhausted", retryable: false });
+    assert.equal((await coldYouTubeResolve({
+      user: isolated,
+      query: { title: "Isolated Actor Cold Resolve", artist: "" },
+      ip: "youtube-v2-isolated",
+    })).status, "low_confidence");
+    assert.equal(Number(db.prepare("SELECT value FROM app_meta WHERE key=?").get(
+      `youtube_cold_user:v2:${day}:${isolated.id}`,
+    )?.value), 1, "one account's cap never bleeds into another account");
+
+    const cappedLeader = verifiedUser("u_youtube_v2_capped_leader", "youtube-v2-capped-leader@example.com", "youtubev2cappedlead");
+    const freshFollower = verifiedUser("u_youtube_v2_fresh_follower", "youtube-v2-fresh-follower@example.com", "youtubev2freshfollow");
+    db.prepare("INSERT OR REPLACE INTO app_meta (key,value) VALUES (?,'20')")
+      .run(`youtube_cold_user:v2:${day}:${cappedLeader.id}`);
+    const sharedTrack = { title: "Concurrent Actor Isolation Track", artist: "" };
+    const globalBeforeConcurrent = routes["GET /api/admin/health"]({ user: legacyAdmin })
+      .services.youtubeLookup.search.used;
+    const [leaderResult, followerResult] = await Promise.all([
+      coldYouTubeResolve({ user: cappedLeader, query: sharedTrack, ip: "youtube-v2-capped-leader" }),
+      coldYouTubeResolve({ user: freshFollower, query: sharedTrack, ip: "youtube-v2-fresh-follower" }),
+    ]);
+    assert.deepEqual(leaderResult, { videoId: null, status: "search_actor_budget_exhausted", retryable: false });
+    assert.equal(followerResult.status, "low_confidence",
+      "an actor-local denial cannot poison a concurrent eligible same-track listener");
+    assert.equal(Number(db.prepare("SELECT value FROM app_meta WHERE key=?").get(
+      `youtube_cold_user:v2:${day}:${freshFollower.id}`,
+    )?.value), 1, "the eligible follower independently reserves its own actor permit");
+    assert.equal(routes["GET /api/admin/health"]({ user: legacyAdmin })
+      .services.youtubeLookup.search.used, globalBeforeConcurrent + 1,
+    "the capped leader's rolled-back reservation does not consume shared provider capacity");
+    assert.equal(providerSearches, 4);
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousApiKey === undefined) delete process.env.YOUTUBE_API_KEY;
+    else process.env.YOUTUBE_API_KEY = previousApiKey;
+  }
+});
+
+test("YouTube GET is database-and-network read-only while POST can data-promote a source recording for free", async () => {
+  const previousApiKey = process.env.YOUTUBE_API_KEY;
+  const previousFetch = globalThis.fetch;
+  process.env.YOUTUBE_API_KEY = "test-key";
+  const title = "Read Only Source Promotion";
+  const artist = "Read Only Promotion Artist";
+  const videoId = "getpromote1";
+  const sourceId = "7333333333";
+  const at = Date.now();
+  const listener = verifiedUser("u_youtube_read_only", "youtube-read-only@example.com", "youtubereadonly");
+  db.prepare(`INSERT OR REPLACE INTO yt_cache
+    (key,video_id,updated_at,metadata,score,expires_at,rejected_ids) VALUES (?,?,?,?,?,?,?)`).run(
+    youtubeCacheKey(title, artist),
+    videoId,
+    at,
+    JSON.stringify({
+      title,
+      channel: `${artist} - Topic`,
+      reasons: ["artist-channel", "licensed"],
+      duration: 204,
+      matchVersion: YOUTUBE_MATCH_CACHE_VERSION,
+    }),
+    100,
+    at + 24 * 60 * 60 * 1000,
+    "[]",
+  );
+  let fetches = 0;
+  let searches = 0;
+  globalThis.fetch = async (url) => {
+    fetches += 1;
+    const parsed = new URL(String(url));
+    if (parsed.pathname.endsWith("/search")) searches += 1;
+    if (parsed.hostname === "api.deezer.com") {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          id: Number(sourceId),
+          title,
+          duration: 204,
+          artist: { name: artist },
+          contributors: [{ name: artist, role: "Main" }],
+        }),
+      };
+    }
+    if (parsed.pathname.endsWith("/videos")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ items: [{
+          id: videoId,
+          snippet: { title, channelTitle: `${artist} - Topic` },
+          contentDetails: { duration: "PT3M24S", licensedContent: true },
+          status: { embeddable: true, madeForKids: false, privacyStatus: "public" },
+          statistics: { viewCount: "1000000" },
+        }] }),
+      };
+    }
+    throw new Error(`unexpected read-only fixture endpoint: ${parsed}`);
+  };
+  const providerTables = ["yt_cache", "provider_cache", "artists", "wikidata_channel_checks", "app_meta"];
+  const snapshot = () => Object.fromEntries(providerTables.map((table) => [
+    table,
+    db.prepare(`SELECT * FROM ${table} ORDER BY 1`).all(),
+  ]));
+  try {
+    const before = snapshot();
+    const changesBefore = db.prepare("SELECT total_changes() changes").get().changes;
+    const read = await routes["GET /api/youtube/track"]({
+      user: listener,
+      query: { title, artist, provider: "deezer", sourceId, duration: "204" },
+      ip: "youtube-read-only",
+    });
+    assert.deepEqual(read, {
+      videoId: null,
+      status: "search_deferred",
+      retryable: false,
+      resolveMethod: "POST",
+    });
+    assert.equal(fetches, 0, "GET performs no YouTube, Deezer, or Wikidata request");
+    assert.equal(db.prepare("SELECT total_changes() changes").get().changes, changesBefore,
+      "GET executes no SQLite write even when a tuple row could be source-promoted");
+    assert.deepEqual(snapshot(), before, "GET leaves every provider/cache table byte-for-byte equivalent");
+
+    const resolved = await coldYouTubeResolve({
+      user: listener,
+      query: { title, artist, provider: "deezer", sourceId, duration: 204 },
+      ip: "youtube-read-only",
+    });
+    assert.equal(resolved.videoId, videoId);
+    assert.equal(fetches, 2, "POST validates YouTube metadata and exact Deezer credit proof");
+    assert.equal(searches, 0, "safe tuple promotion is data-only");
+    assert.equal(db.prepare("SELECT value FROM app_meta WHERE key GLOB ?").get(
+      `youtube_cold_user:v2:*:${listener.id}`,
+    ), undefined, "data-only POST promotion consumes no actor search allowance");
+    assert.equal(db.prepare("SELECT video_id FROM yt_cache WHERE key=?").get(
+      youtubeCacheKey(title, artist, `deezer:${sourceId}`),
+    )?.video_id, videoId);
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousApiKey === undefined) delete process.env.YOUTUBE_API_KEY;
+    else process.env.YOUTUBE_API_KEY = previousApiKey;
+  }
+});
+
+test("Spotify HTTP playback isolates solo and feature tuples while preserving exact staff overrides", async () => {
+  const previousApiKey = process.env.YOUTUBE_API_KEY;
+  const previousFetch = globalThis.fetch;
+  process.env.YOUTUBE_API_KEY = "test-key";
+  const artist = "Spotify Route Boundary";
+  const norm = artist.toLowerCase();
+  const title = "Route Parallel Signal";
+  const featureTitle = `${title} (feat. Guest Rapper)`;
+  const channelId = "UC_spotify_route_boundary";
+  const soloSourceId = "RouteSpotifySolo001";
+  const featureSourceId = "RouteSpotifyFeature001";
+  const unknownSourceId = "RouteSpotifyUnknown001";
+  const soloVideoId = "rtspsolo001";
+  const featureVideoId = "rtspfeat001";
+  const pinVideoId = "rtspin00001";
+  const listener = verifiedUser("u_spotify_route_boundary", "spotify-route-boundary@example.com", "spotifyroutebound");
+  addUser("u_spotify_route_moderator", "spotify-route-moderator@example.com", "spotifyroutemod");
+  db.prepare("UPDATE users SET role='moderator' WHERE id=?").run("u_spotify_route_moderator");
+  const moderator = q.userById.get("u_spotify_route_moderator");
+  artistStmts.upsert.run(artistRow(norm, {
+    name: artist,
+    topTracks: [
+      { title, url: `https://open.spotify.com/track/${soloSourceId}` },
+      { title: featureTitle, url: `https://open.spotify.com/track/${featureSourceId}` },
+    ],
+  }, "test"));
+  artistStmts.setChannel.run(channelId, Date.now(), "youtube_v4", norm);
+  invalidateSongIndex();
+
+  const seedTuple = (tupleTitle, videoId, videoTitle) => {
+    const at = Date.now();
+    db.prepare(`INSERT OR REPLACE INTO yt_cache
+      (key,video_id,updated_at,metadata,score,expires_at,rejected_ids) VALUES (?,?,?,?,?,?,?)`).run(
+      youtubeCacheKey(tupleTitle, artist),
+      videoId,
+      at,
+      JSON.stringify({
+        title: videoTitle,
+        channel: `${artist} - Topic`,
+        reasons: ["artist-channel", "licensed"],
+        matchVersion: YOUTUBE_MATCH_CACHE_VERSION,
+      }),
+      100,
+      at + 24 * 60 * 60 * 1000,
+      "[]",
+    );
+  };
+  let fetches = 0;
+  let searches = 0;
+  const candidates = new Map([
+    [soloVideoId, {
+      id: soloVideoId,
+      snippet: { title, channelTitle: `${artist} - Topic` },
+      contentDetails: { duration: "PT3M23S", licensedContent: true },
+      status: { embeddable: true, madeForKids: false, privacyStatus: "public" },
+      statistics: { viewCount: "900000000" },
+    }],
+    [featureVideoId, {
+      id: featureVideoId,
+      snippet: { title: featureTitle, channelTitle: `${artist} - Topic` },
+      contentDetails: { duration: "PT3M23S", licensedContent: true },
+      status: { embeddable: true, madeForKids: false, privacyStatus: "public" },
+      statistics: { viewCount: "1000" },
+    }],
+  ]);
+  globalThis.fetch = async (url) => {
+    fetches += 1;
+    const parsed = new URL(String(url));
+    if (parsed.pathname.endsWith("/channels")) {
+      return { ok: true, status: 200, json: async () => ({ items: [{ contentDetails: { relatedPlaylists: { uploads: "UU_spotify_route_boundary" } } }] }) };
+    }
+    if (parsed.pathname.endsWith("/playlistItems")) {
+      return { ok: true, status: 200, json: async () => ({ items: [
+        { snippet: { title, resourceId: { videoId: soloVideoId } } },
+        { snippet: { title: featureTitle, resourceId: { videoId: featureVideoId } } },
+      ] }) };
+    }
+    if (parsed.pathname.endsWith("/videos")) {
+      const ids = (parsed.searchParams.get("id") || "").split(",");
+      return { ok: true, status: 200, json: async () => ({ items: ids.map((id) => candidates.get(id)).filter(Boolean) }) };
+    }
+    if (parsed.pathname.endsWith("/search")) {
+      searches += 1;
+      return { ok: true, status: 200, json: async () => ({ items: [] }) };
+    }
+    throw new Error(`unexpected Spotify route fixture endpoint: ${parsed}`);
+  };
+
+  try {
+    const sharedBefore = routes["GET /api/admin/health"]({ user: moderator })
+      .services.youtubeLookup.search.used;
+    const actorRowsBefore = db.prepare("SELECT key,value FROM app_meta WHERE key GLOB ? ORDER BY key")
+      .all(`youtube_cold_user:v2:*:${listener.id}`);
+
+    seedTuple(title, featureVideoId, featureTitle);
+    assert.deepEqual(await routes["GET /api/youtube/track"]({
+      user: listener,
+      query: { title, artist, provider: "spotify", sourceId: soloSourceId },
+      ip: "spotify-route-feature-to-solo",
+    }), {
+      videoId: null,
+      status: "search_deferred",
+      retryable: false,
+      resolveMethod: "POST",
+    }, "a tuple feature positive is never returned for the Spotify solo source");
+    const solo = await coldYouTubeResolve({
+      user: listener,
+      query: { title, artist, provider: "spotify", sourceId: soloSourceId },
+      ip: "spotify-route-feature-to-solo-post",
+    });
+    assert.equal(solo.videoId, soloVideoId);
+    assert.notEqual(solo.videoId, featureVideoId,
+      "POST validates the cross-recording tuple then chooses only the exact Spotify solo from local catalogue data");
+
+    seedTuple(featureTitle, soloVideoId, title);
+    assert.deepEqual(await routes["GET /api/youtube/track"]({
+      user: listener,
+      query: { title: featureTitle, artist, provider: "spotify", sourceId: featureSourceId },
+      ip: "spotify-route-solo-to-feature",
+    }), {
+      videoId: null,
+      status: "search_deferred",
+      retryable: false,
+      resolveMethod: "POST",
+    }, "a tuple solo positive is never returned for the Spotify feature source");
+    const feature = await coldYouTubeResolve({
+      user: listener,
+      query: { title: featureTitle, artist, provider: "spotify", sourceId: featureSourceId },
+      ip: "spotify-route-solo-to-feature-post",
+    });
+    assert.equal(feature.videoId, featureVideoId);
+    assert.notEqual(feature.videoId, soloVideoId,
+      "POST validates the cross-recording tuple then chooses only the exact credited Spotify feature");
+    assert.equal(searches, 0, "both wrong-cross POST resolutions remain data-only");
+    assert.deepEqual(db.prepare("SELECT key,value FROM app_meta WHERE key GLOB ? ORDER BY key")
+      .all(`youtube_cold_user:v2:*:${listener.id}`), actorRowsBefore,
+    "data-only source correction consumes no listener allowance");
+    assert.equal(routes["GET /api/admin/health"]({ user: moderator })
+      .services.youtubeLookup.search.used, sharedBefore, "it consumes no shared search allowance");
+
+    const fetchesBeforeUnknown = fetches;
+    assert.deepEqual(await coldYouTubeResolve({
+      user: listener,
+      query: { title, artist, provider: "spotify", sourceId: unknownSourceId },
+      ip: "spotify-route-unknown-source",
+    }), { videoId: null, status: "search_deferred" });
+    assert.equal(fetches, fetchesBeforeUnknown, "an unknown Spotify ID fails before tuple validation or search");
+    assert.deepEqual(db.prepare("SELECT key,value FROM app_meta WHERE key GLOB ? ORDER BY key")
+      .all(`youtube_cold_user:v2:*:${listener.id}`), actorRowsBefore,
+    "a deferred unsupported identity consumes no listener allowance");
+    assert.equal(routes["GET /api/admin/health"]({ user: moderator })
+      .services.youtubeLookup.search.used, sharedBefore, "it consumes no shared search allowance");
+    assert.equal(db.prepare("SELECT 1 FROM yt_cache WHERE key=?").get(
+      youtubeCacheKey(title, artist, `spotify:${unknownSourceId}`),
+    ), undefined, "unsupported proof cannot create a source cache row");
+
+    const pinned = routes["POST /api/admin/tracks/override"]({
+      user: moderator,
+      requestId: "spotify-route-unknown-pin",
+      body: {
+        title,
+        artist,
+        provider: "spotify",
+        sourceId: unknownSourceId,
+        url: `https://youtu.be/${pinVideoId}`,
+      },
+    });
+    assert.deepEqual({ videoId: pinned.videoId, provider: pinned.provider, sourceId: pinned.sourceId }, {
+      videoId: pinVideoId,
+      provider: "spotify",
+      sourceId: unknownSourceId,
+    });
+    assert.deepEqual(await routes["GET /api/youtube/track"]({
+      user: listener,
+      query: { title, artist, provider: "spotify", sourceId: unknownSourceId },
+      ip: "spotify-route-unknown-pinned",
+    }), { videoId: pinVideoId, status: "pinned" },
+    "an exact staff decision remains authority even when automated Spotify proof is unavailable");
+    assert.equal(fetches, fetchesBeforeUnknown);
+  } finally {
+    globalThis.fetch = previousFetch;
+    db.prepare("DELETE FROM track_source_overrides WHERE provider='spotify' AND source_id IN (?,?,?)")
+      .run(soloSourceId, featureSourceId, unknownSourceId);
+    db.prepare("DELETE FROM yt_cache WHERE key IN (?,?,?,?,?)").run(
+      youtubeCacheKey(title, artist),
+      youtubeCacheKey(featureTitle, artist),
+      youtubeCacheKey(title, artist, `spotify:${soloSourceId}`),
+      youtubeCacheKey(featureTitle, artist, `spotify:${featureSourceId}`),
+      youtubeCacheKey(title, artist, `spotify:${unknownSourceId}`),
+    );
+    db.prepare("DELETE FROM provider_cache WHERE key LIKE ?").run(`%${channelId}%`);
+    db.prepare("DELETE FROM artists WHERE norm=?").run(norm);
+    invalidateSongIndex();
     if (previousApiKey === undefined) delete process.env.YOUTUBE_API_KEY;
     else process.env.YOUTUBE_API_KEY = previousApiKey;
   }
@@ -711,7 +1183,7 @@ test("source-scoped moderation repairs one exact recording without affecting its
   addUser(moderatorId, "source-override-mod@example.com", "sourceoverridemod");
   db.prepare("UPDATE users SET role='moderator' WHERE id=?").run(moderatorId);
   const moderator = q.userById.get(moderatorId);
-  const listener = addUser("u_source_override_listener", "source-override-listener@example.com", "sourceoverridelistener");
+  const listener = verifiedUser("u_source_override_listener", "source-override-listener@example.com", "sourceoverridelistener");
   db.prepare(`INSERT OR REPLACE INTO track_overrides
     (key,title,artist,video_id,set_by,updated_at) VALUES (?,?,?,?,NULL,?)`)
     .run(trackOverrideKey(title, artist), title, artist, tuplePinId, Date.now());
@@ -761,14 +1233,26 @@ test("source-scoped moderation repairs one exact recording without affecting its
       ip: "youtube-source-pin-legacy",
     }), { videoId: tuplePinId, status: "pinned" }, "a title/artist-only request keeps legacy moderation behavior");
 
-    const solo = await routes["GET /api/youtube/track"]({
+    assert.deepEqual(await routes["GET /api/youtube/track"]({
+      user: listener,
+      query: { title, artist, provider: "deezer", sourceId: soloSourceId },
+      ip: "youtube-source-pin-solo",
+    }), { videoId: null, status: "search_deferred", retryable: false, resolveMethod: "POST" });
+    const solo = await coldYouTubeResolve({
+      user: listener,
       query: { title, artist, provider: "deezer", sourceId: soloSourceId },
       ip: "youtube-source-pin-solo",
     });
     assert.equal(solo.videoId, soloId);
     assert.equal(solo.status, "artist_catalogue");
 
-    const feature = await routes["GET /api/youtube/track"]({
+    assert.deepEqual(await routes["GET /api/youtube/track"]({
+      user: listener,
+      query: { title, artist, provider: "deezer", sourceId: featureSourceId },
+      ip: "youtube-source-pin-feature",
+    }), { videoId: null, status: "search_deferred", retryable: false, resolveMethod: "POST" });
+    const feature = await coldYouTubeResolve({
+      user: listener,
       query: { title, artist, provider: "deezer", sourceId: featureSourceId },
       ip: "youtube-source-pin-feature",
     });
@@ -870,7 +1354,13 @@ test("source-scoped moderation repairs one exact recording without affecting its
     );
     db.prepare("UPDATE track_overrides SET video_id=NULL WHERE key=?")
       .run(trackOverrideKey(title, artist));
-    const repairedAfterTerminal = await routes["GET /api/youtube/track"]({
+    const repairedRead = await routes["GET /api/youtube/track"]({
+      user: listener,
+      query: { title, artist, provider: "deezer", sourceId: featureSourceId },
+      ip: "youtube-source-terminal-alternate",
+    });
+    assert.equal(repairedRead.status, "search_deferred");
+    const repairedAfterTerminal = await coldYouTubeResolve({
       user: listener,
       query: { title, artist, provider: "deezer", sourceId: featureSourceId },
       ip: "youtube-source-terminal-alternate",
@@ -892,7 +1382,8 @@ test("source-scoped moderation repairs one exact recording without affecting its
       body: { title, artist, provider: "deezer", sourceId: featureSourceId },
     });
     assert.equal(db.prepare("SELECT 1 FROM track_source_overrides WHERE provider='deezer' AND source_id=?").get(featureSourceId), undefined);
-    const afterUnpin = await routes["GET /api/youtube/track"]({
+    const afterUnpin = await coldYouTubeResolve({
+      user: listener,
       query: { title, artist, provider: "deezer", sourceId: featureSourceId },
       ip: "youtube-source-after-unpin",
     });

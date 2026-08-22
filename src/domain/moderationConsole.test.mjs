@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import test from "node:test";
 import {
+  adminPlaybackHealthPresentation,
   buildModerationReportRows,
   canRemoveReportTarget,
   filterModerationMembers,
@@ -20,6 +21,70 @@ import {
 } from "./moderationConsole.mjs";
 
 const NOW = 1_000_000;
+
+test("admin playback health never treats an undisclosed public field as a missing key", () => {
+  assert.deepEqual(adminPlaybackHealthPresentation({ ok: true, capabilities: {} }), {
+    status: "unknown",
+    bad: false,
+    configured: null,
+    message: "Playback diagnostics are unavailable.",
+    detail: "Refresh the moderation overview. This does not mean the YouTube key is missing.",
+  });
+  assert.equal(adminPlaybackHealthPresentation({ services: { youtubeConfigured: false } }).status, "unconfigured");
+  assert.equal(adminPlaybackHealthPresentation({
+    services: {
+      youtubeConfigured: true,
+      youtubeLookup: {
+        search: { used: 2, limit: 100, remaining: 98 },
+        actorAllowance: { eligible: true, used: 1, limit: 20, remaining: 19, adminBypass: true },
+      },
+    },
+  }).status, "healthy");
+});
+
+test("admin playback health distinguishes account and shared YouTube allowances", () => {
+  const projection = (youtubeLookup) => adminPlaybackHealthPresentation({
+    services: { youtubeConfigured: true, youtubeLookup },
+  });
+  const healthy = projection({
+    search: { used: 12, limit: 100, remaining: 88 },
+    actorAllowance: { eligible: true, used: 3, limit: 20, remaining: 17, adminBypass: true },
+  });
+  assert.equal(healthy.status, "healthy");
+  assert.match(healthy.detail, /Shared provider searches: 12 of 100 \/ 88 left/);
+  assert.match(healthy.detail, /This account: 3 of 20 explicit new-track lookups \/ 17 left/);
+  assert.match(healthy.detail, /admin verification bypass/);
+
+  const ineligible = projection({
+    search: { used: 12, limit: 100, remaining: 88 },
+    actorAllowance: { eligible: false, used: 0, limit: 20, remaining: 20 },
+  });
+  assert.equal(ineligible.status, "account_ineligible");
+  assert.match(ineligible.detail, /Verify this account's email/);
+
+  const actorSpent = projection({
+    search: { used: 12, limit: 100, remaining: 88 },
+    actorAllowance: { eligible: true, used: 20, limit: 20, remaining: 0 },
+  });
+  assert.equal(actorSpent.status, "actor_spent");
+  assert.match(actorSpent.detail, /midnight Pacific/);
+
+  const sharedSpent = projection({
+    search: { used: 100, limit: 100, remaining: 0 },
+    actorAllowance: { eligible: true, used: 4, limit: 20, remaining: 16 },
+  });
+  assert.equal(sharedSpent.status, "shared_spent");
+  assert.match(sharedSpent.message, /shared YouTube search allowance/);
+});
+
+test("AdminScreen reads playback diagnostics from the authenticated staff route", () => {
+  const screenSource = fs.readFileSync(new URL("../screens/AdminScreen.jsx", import.meta.url), "utf8");
+  const serviceSource = fs.readFileSync(new URL("../features/admin/services/adminHealthApi.mjs", import.meta.url), "utf8");
+  assert.match(screenSource, /readAdminHealth\(\{ signal: controller\.signal \}\)/);
+  assert.doesNotMatch(screenSource, /api\("\/api\/(?:admin\/)?health"/);
+  assert.match(serviceSource, /api\("\/api\/admin\/health"/);
+  assert.doesNotMatch(serviceSource, /api\("\/api\/health"/);
+});
 
 test("member status gives bans priority and ignores expired timeouts", () => {
   assert.equal(moderationMemberStatus({ isBanned: true, suspendedUntil: NOW + 1 }, NOW), "banned");
