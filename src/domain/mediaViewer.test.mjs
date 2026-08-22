@@ -1,7 +1,17 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { galleryItemPostId, galleryKeyAction, normalizedGalleryIndex, trappedGalleryFocusIndex, videoViewerPhase } from "./mediaViewer.mjs";
+import {
+  galleryItemPostId,
+  galleryKeyAction,
+  normalizedGalleryIndex,
+  trappedGalleryFocusIndex,
+  videoViewerDecodedSize,
+  videoViewerPhase,
+  videoViewerPosterVisible,
+  videoViewerViewportSize,
+  videoViewerWebFrameReady,
+} from "./mediaViewer.mjs";
 
 test("videoViewerPhase keeps idle and buffering players in a visible loading state", () => {
   assert.equal(videoViewerPhase({ status: "idle" }), "loading");
@@ -16,6 +26,63 @@ test("videoViewerPhase waits for a painted frame after metadata is ready", () =>
 test("videoViewerPhase gives playback errors precedence over stale ready state", () => {
   assert.equal(videoViewerPhase({ status: "error", hasFirstFrame: true }), "error");
   assert.equal(videoViewerPhase({ status: "readyToPlay", error: new Error("decode failed") }), "error");
+});
+
+test("a painted paused video replaces the poster before playback starts", () => {
+  assert.equal(videoViewerPosterVisible({ phase: "loading" }), true);
+  assert.equal(videoViewerPosterVisible({ phase: "ready" }), false);
+  assert.equal(videoViewerPosterVisible({ phase: "error" }), false);
+});
+
+test("the full-screen stage follows the decoded clip aspect ratio", () => {
+  assert.deepEqual(videoViewerViewportSize({
+    containerWidth: 1280,
+    containerHeight: 794,
+    videoWidth: 1080,
+    videoHeight: 1920,
+  }), { width: 447, height: 794 });
+  assert.deepEqual(videoViewerViewportSize({
+    containerWidth: 1280,
+    containerHeight: 794,
+    videoWidth: 1920,
+    videoHeight: 1080,
+  }), { width: 1280, height: 720 });
+  assert.deepEqual(videoViewerViewportSize({
+    containerWidth: 1280,
+    containerHeight: 794,
+  }), { width: 447, height: 794 });
+  assert.equal(videoViewerViewportSize({ containerWidth: 0, containerHeight: 794 }), null);
+});
+
+test("an unknown legacy descriptor adopts the decoded web video dimensions", async () => {
+  assert.deepEqual(videoViewerViewportSize({
+    containerWidth: 1280,
+    containerHeight: 794,
+    videoWidth: 0,
+    videoHeight: 0,
+  }), { width: 447, height: 794 });
+  const decoded = videoViewerDecodedSize({ videoWidth: 1080, videoHeight: 1920 });
+  assert.deepEqual(decoded, { width: 1080, height: 1920 });
+  assert.deepEqual(videoViewerViewportSize({
+    containerWidth: 1280,
+    containerHeight: 794,
+    videoWidth: decoded.width,
+    videoHeight: decoded.height,
+  }), { width: 447, height: 794 });
+  assert.equal(videoViewerDecodedSize({ videoWidth: 0, videoHeight: 0 }), null);
+  const viewer = await readFile(new URL("../components/PhotoViewer.jsx", import.meta.url), "utf8");
+  assert.match(viewer, /ref=\{videoViewRef\}/);
+  assert.match(viewer, /publishVideoSize\(videoViewRef\.current\?\.nativeRef\?\.current\)/);
+  assert.match(viewer, /flexGrow:\s*0,[\s\S]*flexShrink:\s*0,[\s\S]*flexBasis:\s*viewportSize\.height,[\s\S]*width:\s*viewportSize\.width,[\s\S]*height:\s*viewportSize\.height/);
+  assert.doesNotMatch(viewer, /viewportSize \? \{ flex:\s*0,/);
+});
+
+test("a paused web video with decoded current-frame data can retire its poster overlay", () => {
+  assert.equal(videoViewerWebFrameReady({ readyState: 4, videoWidth: 1080, videoHeight: 1920 }), true);
+  assert.equal(videoViewerWebFrameReady({ readyState: 2, videoWidth: 1920, videoHeight: 1080 }), true);
+  assert.equal(videoViewerWebFrameReady({ readyState: 1, videoWidth: 1080, videoHeight: 1920 }), false);
+  assert.equal(videoViewerWebFrameReady({ readyState: 4, videoWidth: 0, videoHeight: 0 }), false);
+  assert.equal(videoViewerWebFrameReady(null), false);
 });
 
 test("gallery arrows do not steal seeking keys from focused video controls", () => {

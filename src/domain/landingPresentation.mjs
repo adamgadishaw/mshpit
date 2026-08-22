@@ -3,6 +3,25 @@ const boundedCount = (value) => {
   return Number.isFinite(number) ? Math.max(0, Math.trunc(number)) : 0;
 };
 
+// PIT's landing voice should describe the actual product in a way another
+// music app could not borrow unchanged: remember the shows, express taste,
+// and find the next night through the people around them. Keep these lines in
+// one presentation contract so responsive variants and future redesigns do
+// not drift back into generic journal or social-network language.
+export const LANDING_IDENTITY_COPY = Object.freeze({
+  kicker: "REMEMBER THE NIGHT. FIND WHAT'S NEXT.",
+  compactKicker: "REMEMBER. RATE. DISCOVER.",
+  headline: "The shows you saw.",
+  headlineAccent: "The taste you built.",
+  body: "Remember every show with photos, ratings, and the people who were there. Discover your next night through fans whose taste you trust.",
+  signupAction: "Join the PIT",
+  browseAction: "Explore the PIT",
+});
+
+export function landingKicker(compact = false) {
+  return compact ? LANDING_IDENTITY_COPY.compactKicker : LANDING_IDENTITY_COPY.kicker;
+}
+
 // Keep the hero's layout decisions in one pure model. Width alone is not
 // enough: a landscape laptop window can be wide and still too short for a
 // bottom-anchored pitch once text scaling is applied.
@@ -30,19 +49,19 @@ export function landingProofItems({ venues, artists } = {}) {
       key: "venues",
       icon: "pin",
       title: "VENUES",
-      detail: `${boundedCount(venues).toLocaleString("en-US")} in the PIT catalogue`,
+      detail: `${boundedCount(venues).toLocaleString("en-US")} rooms in the PIT`,
     },
     {
       key: "artists",
       icon: "music",
       title: "ARTISTS",
-      detail: `${boundedCount(artists).toLocaleString("en-US")} in the PIT catalogue`,
+      detail: `${boundedCount(artists).toLocaleString("en-US")} artists in the PIT`,
     },
     {
       key: "ratings",
       icon: "star",
       title: "BAND + ROOM",
-      detail: "Rated separately",
+      detail: "Rate each separately",
     },
   ];
 }

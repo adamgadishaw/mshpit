@@ -6,8 +6,9 @@ import {
   videoPosterCandidateTimes,
   videoPosterError,
   videoPosterFileName,
-  videoPosterFrameMeetsAutoQuality,
-  videoPosterFrameScore,
+  videoPosterFrameIsStrong,
+  videoPosterFrameIsUsable,
+  videoPosterFrameProfile,
   videoPosterSourceNeedsCorsProbe,
 } from "../domain/videoPoster.mjs";
 
@@ -45,8 +46,11 @@ function createOperationGuard(signal, timeoutMs) {
       );
     });
   };
-  return { assertActive, race };
+  return { assertActive, race, remainingMs: () => Math.max(0, deadline - Date.now()) };
 }
+
+const REMOTE_POSTER_OUTPUT_RESERVE_MS = 4_000;
+const REMOTE_POSTER_SEEK_BUDGET_MS = 3_500;
 
 function validVideoAsset(asset) {
   if (!asset || typeof asset !== "object") return false;
@@ -162,7 +166,7 @@ function scoreCurrentFrame(video, canvas, context) {
   canvas.width = width;
   canvas.height = height;
   assertCanvasReadable(() => context.drawImage(video, 0, 0, width, height));
-  return videoPosterFrameScore(assertCanvasReadable(() => context.getImageData(0, 0, width, height)).data);
+  return videoPosterFrameProfile(assertCanvasReadable(() => context.getImageData(0, 0, width, height)).data);
 }
 
 function encodeJpeg(canvas, quality) {
@@ -239,17 +243,47 @@ export async function generateVideoPosterAsset(videoAsset, options = {}) {
     let lastFrameError = null;
     for (const candidate of candidates) {
       guard.assertActive();
+      let candidateGuard = guard;
+      if (source.crossOrigin) {
+        const remainingMs = guard.remainingMs();
+        const outputReserveMs = Math.min(
+          REMOTE_POSTER_OUTPUT_RESERVE_MS,
+          Math.max(750, Math.floor(remainingMs * 0.35)),
+        );
+        const availableScoringMs = remainingMs - outputReserveMs;
+        if (availableScoringMs <= 0) {
+          if (best) break;
+          throw new VideoPosterError(VIDEO_POSTER_ERROR_CODES.timeout);
+        }
+        candidateGuard = createOperationGuard(
+          normalized.signal,
+          Math.min(REMOTE_POSTER_SEEK_BUDGET_MS, availableScoringMs),
+        );
+      }
       try {
-        await seekVideo(video, candidate, guard);
-        const score = scoreCurrentFrame(video, scoringCanvas, scoringContext);
-        if (!best || score > best.score) best = { timeMs: candidate, score };
+        await seekVideo(video, candidate, candidateGuard);
+        const profile = scoreCurrentFrame(video, scoringCanvas, scoringContext);
+        if ((normalized.explicitTime || videoPosterFrameIsUsable(profile)) && (!best || profile.score > best.profile.score)) {
+          best = { timeMs: candidate, profile };
+        }
+        // Remote legacy clips can require a fresh byte-range request for every
+        // seek. A strong frame can be committed immediately, while local/blob
+        // Studio assets still score all candidates and keep their best cover.
+        if (source.crossOrigin && videoPosterFrameIsStrong(profile)) break;
       } catch (error) {
+        if (error?.code === VIDEO_POSTER_ERROR_CODES.aborted) throw error;
+        if (source.crossOrigin && error?.code === VIDEO_POSTER_ERROR_CODES.timeout && best) break;
         if (isCancellation(error)) throw error;
         lastFrameError = error;
       }
     }
-    if (!best) throw videoPosterError(lastFrameError, VIDEO_POSTER_ERROR_CODES.frameFailed);
-    if (!normalized.explicitTime && !videoPosterFrameMeetsAutoQuality(best.score)) {
+    if (!best) {
+      if (!normalized.explicitTime && !lastFrameError) {
+        throw new VideoPosterError(VIDEO_POSTER_ERROR_CODES.lowQuality);
+      }
+      throw videoPosterError(lastFrameError, VIDEO_POSTER_ERROR_CODES.frameFailed);
+    }
+    if (!normalized.explicitTime && !videoPosterFrameIsUsable(best.profile)) {
       throw new VideoPosterError(VIDEO_POSTER_ERROR_CODES.lowQuality);
     }
 

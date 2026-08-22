@@ -119,7 +119,9 @@ function storedOwnedMediaKey(database, value, owner) {
       SELECT v.object_key FROM media_variants v
         JOIN media_assets a ON a.id=v.asset_id
         WHERE a.owner_id=? AND v.public_url=?
-    ) LIMIT 1`).get(owner, value, owner, value);
+      UNION ALL
+      SELECT poster_key object_key FROM legacy_video_posters WHERE owner_id=? AND poster_url=?
+    ) LIMIT 1`).get(owner, value, owner, value, owner, value);
   return trustedMediaQueueKey(row?.object_key, owner);
 }
 
@@ -291,10 +293,11 @@ export function unreferencedOwnedMediaUrls(database, {
       UNION ALL SELECT banner FROM artist_profiles WHERE owner_id=?
       UNION ALL SELECT j.value FROM posts p, json_each(CASE WHEN json_valid(p.photos) THEN p.photos ELSE '[]' END) j WHERE p.user_id=?
       UNION ALL SELECT j.value FROM venue_reviews r, json_each(CASE WHEN json_valid(r.photos) THEN r.photos ELSE '[]' END) j WHERE r.user_id=?
+      UNION ALL SELECT poster_url FROM legacy_video_posters WHERE owner_id=?
     ) WHERE value=? LIMIT 1`);
   const result = [];
   for (const value of candidates.values()) {
-    if (!stillUsed.get(owner, owner, owner, owner, owner, owner, value)) result.push(value);
+    if (!stillUsed.get(owner, owner, owner, owner, owner, owner, owner, value)) result.push(value);
   }
   return result;
 }

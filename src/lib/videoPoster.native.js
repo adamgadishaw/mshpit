@@ -14,8 +14,8 @@ import {
   videoPosterCandidateTimes,
   videoPosterError,
   videoPosterFileName,
-  videoPosterFrameMeetsAutoQuality,
-  videoPosterFrameScore,
+  videoPosterFrameIsUsable,
+  videoPosterFrameProfile,
 } from "../domain/videoPoster.mjs";
 
 const ownedPosterUris = new Set();
@@ -132,7 +132,7 @@ async function scoreNativeThumbnail(thumbnail) {
     image = Skia.Image.MakeImageFromEncoded(data);
     const pixels = image?.readPixels?.();
     if (!pixels?.length) throw new Error("Thumbnail scoring could not read pixels.");
-    return videoPosterFrameScore(pixels);
+    return videoPosterFrameProfile(pixels);
   } finally {
     image?.dispose?.();
     data?.dispose?.();
@@ -199,19 +199,21 @@ async function generateVideoPosterAssetOperation(videoAsset, options, workTracke
             // The tiny scorer owns the thumbnail until its cleanup completes.
             // Check cancellation immediately before and after it instead of
             // releasing a SharedRef while ImageManipulator is still reading it.
-            const score = await scoreNativeThumbnail(thumbnail);
+            const profile = await scoreNativeThumbnail(thumbnail);
             guard.assertActive();
             const actualSeconds = Number(thumbnail.actualTime ?? thumbnail.requestedTime);
             const actualTimeMs = Number.isFinite(actualSeconds) && actualSeconds >= 0
               ? Math.round(actualSeconds * 1_000)
               : candidateTimes[index];
-            if (!best || score > best.score) best = { score, timeMs: actualTimeMs };
+            if (videoPosterFrameIsUsable(profile) && (!best || profile.score > best.profile.score)) {
+              best = { profile, timeMs: actualTimeMs };
+            }
           } catch (error) {
             if (isCancellation(error)) throw error;
           }
         }
-        if (!best) throw new VideoPosterError(VIDEO_POSTER_ERROR_CODES.frameFailed);
-        if (!videoPosterFrameMeetsAutoQuality(best.score)) {
+        if (!best) throw new VideoPosterError(VIDEO_POSTER_ERROR_CODES.lowQuality);
+        if (!videoPosterFrameIsUsable(best.profile)) {
           throw new VideoPosterError(VIDEO_POSTER_ERROR_CODES.lowQuality);
         }
         requestedTimeMs = best.timeMs;

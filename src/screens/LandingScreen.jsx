@@ -6,8 +6,13 @@ import { displayFont, focusRing, mono, radius } from "../theme";
 import Icon from "../components/Icon";
 import { catalogVenues, catalogArtists } from "../seed/catalog";
 import { api } from "../lib/api";
-import { JOURNEY_TAGLINE, landingSlideUri, landingVisibleSlideIndices } from "../domain/menuJourney.mjs";
-import { landingLayoutMode, landingProofItems } from "../domain/landingPresentation.mjs";
+import { landingSlideUri, landingVisibleSlideIndices } from "../domain/menuJourney.mjs";
+import {
+  LANDING_IDENTITY_COPY,
+  landingKicker,
+  landingLayoutMode,
+  landingProofItems,
+} from "../domain/landingPresentation.mjs";
 import {
   buildLandingSlideDeck,
   landingCommunityAdvanceDelay,
@@ -381,32 +386,31 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse }) {
           <View style={[styles.kickerRow, !wide && styles.kickerRowNarrow]}>
             <Animated.View style={[styles.kickerLine, { opacity: glowOp }]} />
             <Text style={[styles.kicker, compact && styles.kickerCompact]}>
-              {compact ? "EVERY SHOW. YOUR STORY." : "EVERY SHOW BECOMES PART OF YOUR STORY"}
+              {landingKicker(compact)}
             </Text>
           </View>
           <Text
             style={[styles.headline, !wide && styles.headlineNarrow, compact && styles.headlineCompact]}
             accessibilityRole="header"
-            accessibilityLabel={JOURNEY_TAGLINE}
+            accessibilityLabel={`${LANDING_IDENTITY_COPY.headline} ${LANDING_IDENTITY_COPY.headlineAccent}`}
           >
-            Your life's{"\n"}<Text style={styles.headlineAccent}>musical journey.</Text>
+            {LANDING_IDENTITY_COPY.headline}{"\n"}<Text style={styles.headlineAccent}>{LANDING_IDENTITY_COPY.headlineAccent}</Text>
           </Text>
           <Text style={[styles.sub, !wide && { textAlign: "center" }]}>
-            Log the concerts that shape your story, remember every band and room, and find
-            your next unforgettable night through people whose taste you trust.
+            {LANDING_IDENTITY_COPY.body}
           </Text>
 
           <View style={[styles.ctas, !wide && styles.ctasNarrow, compact && styles.ctasCompact]}>
             <LandingAction
               kind="primary"
-              title="Start your concert diary"
+              title={LANDING_IDENTITY_COPY.signupAction}
               icon="ticket"
               onPress={onSignup}
               fullWidth={compact}
               accessibilityHint="Creates a PIT account"
             />
             <LandingAction
-              title="Explore as guest"
+              title={LANDING_IDENTITY_COPY.browseAction}
               icon="discover"
               onPress={onBrowse}
               fullWidth={compact}

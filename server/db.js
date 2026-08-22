@@ -716,6 +716,39 @@ CREATE TABLE IF NOT EXISTS post_media (
 );
 CREATE INDEX IF NOT EXISTS idx_post_media_asset ON post_media(asset_id);
 
+-- Five URL-only clips predate stable media_assets. Their source remains on the
+-- grandfathered post URL path, but a trusted release backfill can attach one
+-- immutable, server-verified cover without claiming that the clip itself passed
+-- the newer codec publication gate. The poster stays in the ordinary owned
+-- object ledger so post moderation, author deletion, and account erasure use
+-- the same durable deletion queue as every other PIT upload.
+CREATE TABLE IF NOT EXISTS legacy_video_posters (
+  post_id          TEXT NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+  media_url        TEXT NOT NULL,
+  position         INTEGER NOT NULL CHECK (position BETWEEN 0 AND 7),
+  owner_id         TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  poster_key       TEXT NOT NULL UNIQUE,
+  poster_url       TEXT NOT NULL UNIQUE,
+  mime_type        TEXT NOT NULL CHECK (mime_type = 'image/jpeg'),
+  byte_size        INTEGER NOT NULL CHECK (byte_size BETWEEN 1024 AND 5242880),
+  width            INTEGER NOT NULL CHECK (width BETWEEN 1 AND 1920),
+  height           INTEGER NOT NULL CHECK (height BETWEEN 1 AND 1920),
+  time_ms          INTEGER NOT NULL CHECK (time_ms BETWEEN 0 AND 60000),
+  content_sha256   TEXT NOT NULL CHECK (length(content_sha256) = 64),
+  content_md5      TEXT NOT NULL CHECK (length(content_md5) = 32),
+  status           TEXT NOT NULL DEFAULT 'pending'
+                     CHECK (status IN ('pending','retry','verified','failed')),
+  attempts         INTEGER NOT NULL DEFAULT 0 CHECK (attempts BETWEEN 0 AND 5),
+  next_attempt_at  INTEGER NOT NULL DEFAULT 0,
+  last_error_code  TEXT,
+  verified_at      INTEGER,
+  created_at       INTEGER NOT NULL,
+  updated_at       INTEGER NOT NULL,
+  PRIMARY KEY (post_id, media_url)
+);
+CREATE INDEX IF NOT EXISTS idx_legacy_video_posters_due
+  ON legacy_video_posters(status, next_attempt_at, post_id);
+
 -- Durable active-object cleanup. Backups use separate BACKUP_S3_* credentials
 -- and never enter this table; the worker signs only MEDIA_* object keys.
 CREATE TABLE IF NOT EXISTS media_deletion_queue (
@@ -736,6 +769,100 @@ CREATE INDEX IF NOT EXISTS idx_media_deletion_due
   ON media_deletion_queue(status, next_attempt_at, id);
 CREATE INDEX IF NOT EXISTS idx_media_deletion_owner
   ON media_deletion_queue(owner_id, status, created_at);
+
+-- This cleanup deliberately lives in SQLite rather than only in the current
+-- API process. During a rolling deploy an older worker can still edit a post
+-- after the new worker registered these one-time mappings. The trigger keeps
+-- that old write from stranding or exposing a derivative: the exact ledger key
+-- is durably queued before its association is removed. Reordering an attached
+-- source merely refreshes its position.
+CREATE TRIGGER IF NOT EXISTS trg_legacy_video_posters_post_update_cleanup
+AFTER UPDATE OF photos, removed, user_id ON posts
+BEGIN
+  INSERT OR IGNORE INTO media_deletion_queue
+    (owner_id,object_key,status,attempts,next_attempt_at,last_error_code,created_at,updated_at,dead_at)
+  SELECT lp.owner_id,lp.poster_key,'pending',0,
+    CAST(strftime('%s','now') AS INTEGER) * 1000,
+    NULL,CAST(strftime('%s','now') AS INTEGER) * 1000,
+    CAST(strftime('%s','now') AS INTEGER) * 1000,NULL
+  FROM legacy_video_posters lp
+  JOIN media_objects mo ON mo.owner_id=lp.owner_id AND mo.object_key=lp.poster_key
+  WHERE lp.post_id=NEW.id AND (
+    NEW.removed<>0 OR NEW.user_id<>lp.owner_id OR NOT EXISTS (
+      SELECT 1
+      FROM json_each(CASE WHEN json_valid(NEW.photos) THEN NEW.photos ELSE '[]' END) photo
+      WHERE photo.type='text' AND photo.value=lp.media_url
+    )
+  );
+
+  UPDATE media_objects
+  SET status='delete_queued',updated_at=CAST(strftime('%s','now') AS INTEGER) * 1000
+  WHERE EXISTS (
+    SELECT 1
+    FROM legacy_video_posters lp
+    JOIN media_deletion_queue queue
+      ON queue.owner_id=lp.owner_id AND queue.object_key=lp.poster_key
+    WHERE lp.post_id=NEW.id
+      AND lp.owner_id=media_objects.owner_id
+      AND lp.poster_key=media_objects.object_key
+      AND (
+        NEW.removed<>0 OR NEW.user_id<>lp.owner_id OR NOT EXISTS (
+          SELECT 1
+          FROM json_each(CASE WHEN json_valid(NEW.photos) THEN NEW.photos ELSE '[]' END) photo
+          WHERE photo.type='text' AND photo.value=lp.media_url
+        )
+      )
+  );
+
+  DELETE FROM legacy_video_posters
+  WHERE post_id=NEW.id AND (
+    NEW.removed<>0 OR NEW.user_id<>owner_id OR NOT EXISTS (
+      SELECT 1
+      FROM json_each(CASE WHEN json_valid(NEW.photos) THEN NEW.photos ELSE '[]' END) photo
+      WHERE photo.type='text' AND photo.value=legacy_video_posters.media_url
+    )
+  );
+
+  UPDATE legacy_video_posters
+  SET position=(
+      SELECT CAST(photo.key AS INTEGER)
+      FROM json_each(CASE WHEN json_valid(NEW.photos) THEN NEW.photos ELSE '[]' END) photo
+      WHERE photo.type='text' AND photo.value=legacy_video_posters.media_url
+      ORDER BY CAST(photo.key AS INTEGER)
+      LIMIT 1
+    ),
+    updated_at=CAST(strftime('%s','now') AS INTEGER) * 1000
+  WHERE post_id=NEW.id;
+END;
+
+-- Posts are normally soft-deleted, but this companion protects maintenance or
+-- future hard-delete paths too. It runs before the FK cascade removes mapping
+-- rows, leaving the storage work list alive independently of the post/account.
+CREATE TRIGGER IF NOT EXISTS trg_legacy_video_posters_post_delete_cleanup
+BEFORE DELETE ON posts
+BEGIN
+  INSERT OR IGNORE INTO media_deletion_queue
+    (owner_id,object_key,status,attempts,next_attempt_at,last_error_code,created_at,updated_at,dead_at)
+  SELECT lp.owner_id,lp.poster_key,'pending',0,
+    CAST(strftime('%s','now') AS INTEGER) * 1000,
+    NULL,CAST(strftime('%s','now') AS INTEGER) * 1000,
+    CAST(strftime('%s','now') AS INTEGER) * 1000,NULL
+  FROM legacy_video_posters lp
+  JOIN media_objects mo ON mo.owner_id=lp.owner_id AND mo.object_key=lp.poster_key
+  WHERE lp.post_id=OLD.id;
+
+  UPDATE media_objects
+  SET status='delete_queued',updated_at=CAST(strftime('%s','now') AS INTEGER) * 1000
+  WHERE EXISTS (
+    SELECT 1
+    FROM legacy_video_posters lp
+    JOIN media_deletion_queue queue
+      ON queue.owner_id=lp.owner_id AND queue.object_key=lp.poster_key
+    WHERE lp.post_id=OLD.id
+      AND lp.owner_id=media_objects.owner_id
+      AND lp.poster_key=media_objects.object_key
+  );
+END;
 
 -- A per-owner ListObjectsV2 cursor closes the one pre-ledger blind spot: an old
 -- direct upload that succeeded but was never attached to a row. Account deletion

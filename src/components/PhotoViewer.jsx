@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Linking, View, Text, StyleSheet, Pressable, Platform, Modal } from "react-native";
 import { useEvent } from "expo";
 import { useVideoPlayer, VideoView } from "expo-video";
@@ -7,14 +7,25 @@ import Icon from "./Icon";
 import ClipPoster from "./ClipPoster";
 import SmartImage from "./SmartImage";
 import { mediaDisplayKind, mediaDisplayUri, mediaPosterUri } from "../domain/postMediaDisplay.mjs";
-import { galleryItemPostId, galleryKeyAction, normalizedGalleryIndex, trappedGalleryFocusIndex, videoViewerPhase } from "../domain/mediaViewer.mjs";
+import {
+  galleryItemPostId,
+  galleryKeyAction,
+  normalizedGalleryIndex,
+  trappedGalleryFocusIndex,
+  videoViewerDecodedSize,
+  videoViewerPhase,
+  videoViewerPosterVisible,
+  videoViewerViewportSize,
+  videoViewerWebFrameReady,
+} from "../domain/mediaViewer.mjs";
 import { analyticsDurationBucket } from "../domain/analyticsPolicy.mjs";
 import { pendingVideoMilestones } from "../domain/mediaAnalytics.mjs";
 
 const web = Platform.OS === "web";
 
-function ClipPlayer({ uri, posterUri, postId, onRetry, onTrack, altText }) {
+function ClipPlayer({ uri, posterUri, postId, onRetry, onTrack, onVideoSize, altText }) {
   const player = useVideoPlayer(uri);
+  const videoViewRef = useRef(null);
   const { status, error } = useEvent(player, "statusChange", {
     status: player.status,
     error: null,
@@ -27,6 +38,37 @@ function ClipPlayer({ uri, posterUri, postId, onRetry, onTrack, altText }) {
   const trackRef = useRef(onTrack);
   trackRef.current = onTrack;
   const phase = videoViewerPhase({ status, error, hasFirstFrame });
+  const posterVisible = videoViewerPosterVisible({ phase });
+  const publishedVideoSizeRef = useRef("");
+  const publishVideoSize = useCallback((size) => {
+    const decoded = videoViewerDecodedSize(size);
+    if (!decoded) return;
+    const key = `${decoded.width}:${decoded.height}`;
+    if (key === publishedVideoSizeRef.current) return;
+    publishedVideoSizeRef.current = key;
+    onVideoSize?.(decoded);
+  }, [onVideoSize]);
+
+  useEffect(() => {
+    // Expo 56's web track metadata APIs are stubs. Web publishes dimensions
+    // from VideoView's HTMLVideoElement in recordFirstFrame below; native keeps
+    // using the supported track events.
+    if (web) return undefined;
+    const currentTrackSize = () => player.videoTrack?.size || null;
+    publishVideoSize(currentTrackSize());
+    const sourceSubscription = player.addListener?.("sourceLoad", ({ availableVideoTracks }) => {
+      publishVideoSize(currentTrackSize() || availableVideoTracks?.find((track) => track?.size)?.size);
+    });
+    const trackSubscription = player.addListener?.("videoTrackChange", ({ videoTrack }) => {
+      publishVideoSize(videoTrack?.size || currentTrackSize());
+    });
+    const statusSubscription = player.addListener?.("statusChange", () => publishVideoSize(currentTrackSize()));
+    return () => {
+      sourceSubscription?.remove?.();
+      trackSubscription?.remove?.();
+      statusSubscription?.remove?.();
+    };
+  }, [player, publishVideoSize]);
 
   useEffect(() => {
     const subscription = player.addListener?.("playingChange", ({ isPlaying }) => {
@@ -71,9 +113,11 @@ function ClipPlayer({ uri, posterUri, postId, onRetry, onTrack, altText }) {
     trackRef.current?.("product_error", { code: "video_load_failed", surface: "media_viewer", retryable: true });
   }, [phase]);
 
-  const recordFirstFrame = () => {
+  const recordFirstFrame = useCallback(() => {
     if (trackedFirstFrame.current) return;
     trackedFirstFrame.current = true;
+    if (web) publishVideoSize(videoViewRef.current?.nativeRef?.current);
+    else publishVideoSize(player.videoTrack?.size);
     setHasFirstFrame(true);
     trackRef.current?.("performance", {
       metric: "video_first_frame",
@@ -81,7 +125,18 @@ function ClipPlayer({ uri, posterUri, postId, onRetry, onTrack, altText }) {
       surface: "media_viewer",
       outcome: "ok",
     });
-  };
+  }, [player, publishVideoSize]);
+
+  useEffect(() => {
+    if (!web || hasFirstFrame || phase === "error") return undefined;
+    const probe = () => {
+      const element = videoViewRef.current?.nativeRef?.current;
+      if (videoViewerWebFrameReady(element)) recordFirstFrame();
+    };
+    probe();
+    const timer = setInterval(probe, 125);
+    return () => clearInterval(timer);
+  }, [hasFirstFrame, phase, recordFirstFrame]);
 
   const startPlayback = () => {
     try { player.play(); }
@@ -93,6 +148,7 @@ function ClipPlayer({ uri, posterUri, postId, onRetry, onTrack, altText }) {
   return (
     <>
       <VideoView
+        ref={videoViewRef}
         player={player}
         style={web ? styles.webVideo : styles.img}
         contentFit="contain"
@@ -105,7 +161,7 @@ function ClipPlayer({ uri, posterUri, postId, onRetry, onTrack, altText }) {
         accessibilityElementsHidden={!hasFirstFrame}
         importantForAccessibility={hasFirstFrame ? "auto" : "no-hide-descendants"}
       />
-      {phase !== "error" && (!hasStarted || phase === "loading") && (
+      {posterVisible && (
         <ClipPoster uri={uri} posterUri={posterUri} viewable style={styles.videoStatus} contain accessibilityLabel={altText || "Video preview; use the player controls to play"} accessible={false} />
       )}
       {phase !== "error" && !hasStarted ? (
@@ -142,11 +198,42 @@ function ClipPlayer({ uri, posterUri, postId, onRetry, onTrack, altText }) {
 // portrait video's intrinsic height otherwise expands React Native Web's flex
 // child beyond the modal viewport and pushes its picture/controls off-screen.
 // Remounting on retry also releases the failed player cleanly.
-function ClipStage({ uri, posterUri, postId, onTrack, altText }) {
+function ClipStage({ uri, posterUri, postId, onTrack, altText, width = 0, height = 0 }) {
   const [attempt, setAttempt] = useState(0);
+  const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
+  const [videoSize, setVideoSize] = useState({ width: Number(width) || 0, height: Number(height) || 0 });
+  const handleVideoSize = useCallback((next) => {
+    setVideoSize((current) => current.width === next.width && current.height === next.height ? current : next);
+  }, []);
+  const viewportSize = web ? videoViewerViewportSize({
+    containerWidth: containerSize.width,
+    containerHeight: containerSize.height,
+    videoWidth: videoSize.width,
+    videoHeight: videoSize.height,
+  }) : null;
   return (
-    <View style={[styles.clipViewport, web && styles.clipViewportWeb]}>
-      <ClipPlayer key={`${uri}:${attempt}`} uri={uri} posterUri={posterUri} postId={postId} onTrack={onTrack} altText={altText} onRetry={() => setAttempt((value) => value + 1)} />
+    <View
+      style={styles.clipStageBounds}
+      onLayout={web ? (event) => {
+        const next = event.nativeEvent.layout;
+        setContainerSize((current) => current.width === next.width && current.height === next.height
+          ? current
+          : { width: next.width, height: next.height });
+      } : undefined}
+    >
+      <View style={[
+        styles.clipViewport,
+        web && styles.clipViewportWeb,
+        web && viewportSize ? {
+          flexGrow: 0,
+          flexShrink: 0,
+          flexBasis: viewportSize.height,
+          width: viewportSize.width,
+          height: viewportSize.height,
+        } : null,
+      ]}>
+        <ClipPlayer key={`${uri}:${attempt}`} uri={uri} posterUri={posterUri} postId={postId} onTrack={onTrack} onVideoSize={handleVideoSize} altText={altText} onRetry={() => setAttempt((value) => value + 1)} />
+      </View>
     </View>
   );
 }
@@ -174,6 +261,8 @@ export default function PhotoViewer({
   const p = photos[i] || photos[0];
   const uri = mediaDisplayUri(p);
   const posterUri = mediaPosterUri(p);
+  const mediaWidth = typeof p === "object" && p ? Number(p.width) || 0 : 0;
+  const mediaHeight = typeof p === "object" && p ? Number(p.height) || 0 : 0;
   const altText = typeof p === "object" && p ? p.altText || "" : "";
   const by = typeof p === "object" && p ? p.by : null;
   const currentPostId = galleryItemPostId(p, postId);
@@ -327,7 +416,7 @@ export default function PhotoViewer({
         {/* SmartImage = HEIC transcode + proxy-rescue ladder, so an iPhone photo
             renders here instead of a black void. Clips get a real player. */}
         {video
-          ? <ClipStage key={uri} uri={uri} posterUri={posterUri} postId={currentPostId} onTrack={track} altText={altText} />
+          ? <ClipStage key={uri} uri={uri} posterUri={posterUri} postId={currentPostId} onTrack={track} altText={altText} width={mediaWidth} height={mediaHeight} />
           : <SmartImage uri={uri} mediaKind="image" style={styles.img} contain accessibilityLabel={altText || "Full-size photo"} />}
         {photos.length > 1 && (
           <>
@@ -377,6 +466,7 @@ const styles = StyleSheet.create({
   closeBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: "rgba(255,255,255,0.1)", alignItems: "center", justifyContent: "center" },
   stage: { flex: 1, minWidth: 0, minHeight: 0, overflow: "hidden" },
   img: { flex: 1, backgroundColor: "transparent" },
+  clipStageBounds: { flex: 1, width: "100%", height: "100%", minWidth: 0, minHeight: 0, alignItems: "center", justifyContent: "center", overflow: "hidden" },
   clipViewport: { flex: 1, width: "100%", height: "100%", minWidth: 0, minHeight: 0, overflow: "hidden", backgroundColor: "#06070b" },
   clipViewportWeb: { maxWidth: 1280, alignSelf: "center" },
   webVideo: { ...StyleSheet.absoluteFillObject, width: "100%", height: "100%", maxWidth: "100%", maxHeight: "100%", backgroundColor: "transparent" },

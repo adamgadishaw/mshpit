@@ -56,6 +56,16 @@ test("runtime bootstrap and high-cost background jobs fail closed on both Render
   assert.match(source, /BACKUP_KEEP controls\s*\n\s*# local files only/);
 });
 
+test("only production carries the bounded legacy-poster release identity", async () => {
+  const source = await readFile(new URL("render.yaml", ROOT), "utf8");
+  const assignments = [...source.matchAll(/^\s*- key: PIT_LEGACY_VIDEO_POSTER_RELEASE\r?\n\s*value: ([^\s#]+)$/gm)];
+  assert.equal(assignments.length, 1);
+  assert.equal(assignments[0][1], "2026-08-22-v1");
+  const stagingStart = source.indexOf("name: mshpit-staging");
+  assert.ok(stagingStart > 0);
+  assert.ok(assignments[0].index < stagingStart, "staging must not inherit production deletion authority");
+});
+
 test("quality runs on both branches that Render auto-deploys", async () => {
   const source = await readFile(new URL(".github/workflows/quality.yml", ROOT), "utf8");
   assert.match(source, /branches:\s*\[master, staging\]/);

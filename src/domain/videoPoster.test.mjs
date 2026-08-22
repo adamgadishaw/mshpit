@@ -3,7 +3,6 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   MAX_AUTO_POSTER_CANDIDATES,
-  MIN_AUTO_POSTER_FRAME_SCORE,
   VIDEO_POSTER_ERROR_CODES,
   VideoPosterError,
   boundedPosterSize,
@@ -11,7 +10,9 @@ import {
   videoPosterCandidateTimes,
   videoPosterError,
   videoPosterFileName,
-  videoPosterFrameMeetsAutoQuality,
+  videoPosterFrameIsStrong,
+  videoPosterFrameIsUsable,
+  videoPosterFrameProfile,
   videoPosterFrameScore,
   videoPosterSourceNeedsCorsProbe,
 } from "./videoPoster.mjs";
@@ -64,10 +65,52 @@ test("same-origin poster sources never receive a redundant CORS HEAD probe", () 
   ), true);
 });
 
-test("frame scoring strongly prefers a detailed concert frame over black or blown white", () => {
+test("frame profiles accept detailed low light while rejecting near-black, blown, and flat frames", () => {
   const black = new Uint8ClampedArray(16).fill(0);
   const white = new Uint8ClampedArray(16).fill(255);
   const flatGrey = new Uint8ClampedArray(16).fill(80);
+  const solidDarkRed = new Uint8ClampedArray([
+    16, 0, 0, 255,
+    16, 0, 0, 255,
+    16, 0, 0, 255,
+    16, 0, 0, 255,
+  ]);
+  const solidRed = new Uint8ClampedArray([
+    120, 0, 0, 255,
+    120, 0, 0, 255,
+    120, 0, 0, 255,
+    120, 0, 0, 255,
+  ]);
+  const alexBlankCapture = new Uint8ClampedArray([
+    16, 17, 23, 255,
+    16, 17, 23, 255,
+    16, 17, 23, 255,
+    16, 17, 23, 255,
+  ]);
+  const compressedBlankIntro = new Uint8ClampedArray(Array.from({ length: 1_024 }, (_, index) => (
+    index % 2 ? [20, 21, 27, 255] : [12, 13, 19, 255]
+  )).flat());
+  const widerCompressedBlankIntro = new Uint8ClampedArray(Array.from({ length: 1_024 }, (_, index) => (
+    index % 2 ? [22, 23, 29, 255] : [10, 11, 17, 255]
+  )).flat());
+  const nearBlackGrey = new Uint8ClampedArray([
+    0, 0, 0, 255,
+    0, 0, 0, 255,
+    0, 0, 0, 255,
+    16, 16, 16, 255,
+  ]);
+  const blownStage = new Uint8ClampedArray([
+    255, 255, 255, 255,
+    255, 255, 255, 255,
+    255, 255, 255, 255,
+    180, 20, 10, 255,
+  ]);
+  const darkConcert = new Uint8ClampedArray([
+    0, 0, 0, 255,
+    12, 0, 0, 255,
+    0, 12, 0, 255,
+    0, 0, 12, 255,
+  ]);
   const concert = new Uint8ClampedArray([
     8, 5, 14, 255,
     240, 90, 35, 255,
@@ -76,12 +119,40 @@ test("frame scoring strongly prefers a detailed concert frame over black or blow
   ]);
   assert.ok(videoPosterFrameScore(concert) > videoPosterFrameScore(black));
   assert.ok(videoPosterFrameScore(concert) > videoPosterFrameScore(white));
-  assert.equal(videoPosterFrameMeetsAutoQuality(videoPosterFrameScore(black)), false);
-  assert.equal(videoPosterFrameMeetsAutoQuality(videoPosterFrameScore(white)), false);
-  assert.equal(videoPosterFrameMeetsAutoQuality(videoPosterFrameScore(flatGrey)), false);
-  assert.equal(videoPosterFrameMeetsAutoQuality(videoPosterFrameScore(concert)), true);
-  assert.equal(videoPosterFrameMeetsAutoQuality(MIN_AUTO_POSTER_FRAME_SCORE - 1), false);
-  assert.equal(videoPosterFrameMeetsAutoQuality(MIN_AUTO_POSTER_FRAME_SCORE), true);
+  const darkConcertProfile = videoPosterFrameProfile(darkConcert);
+  assert.ok(darkConcertProfile.mean < 12, "the valid regression fixture remains genuinely low light");
+  assert.ok(darkConcertProfile.spatialVariation >= 5, "real low-light detail varies across the sampled image");
+  assert.ok(darkConcertProfile.spatialRange >= 12, "real low-light detail has a meaningful channel range");
+  assert.equal(videoPosterFrameIsUsable(darkConcertProfile), true);
+  assert.equal(videoPosterFrameIsStrong(darkConcertProfile), false,
+    "a subtle usable frame must not stop remote sampling before a clearer stage frame");
+  assert.equal(videoPosterFrameIsUsable(videoPosterFrameProfile(concert)), true);
+  assert.equal(videoPosterFrameIsStrong(videoPosterFrameProfile(concert)), true);
+  assert.equal(videoPosterFrameIsUsable(videoPosterFrameProfile(nearBlackGrey)), false);
+  assert.equal(videoPosterFrameIsUsable(videoPosterFrameProfile(blownStage)), false);
+  assert.equal(videoPosterFrameIsUsable(videoPosterFrameProfile(solidDarkRed)), false);
+  assert.equal(videoPosterFrameIsStrong(videoPosterFrameProfile(solidDarkRed)), false);
+  assert.equal(videoPosterFrameIsUsable(videoPosterFrameProfile(solidRed)), false);
+  assert.equal(videoPosterFrameIsStrong(videoPosterFrameProfile(solidRed)), false);
+  const alexBlankProfile = videoPosterFrameProfile(alexBlankCapture);
+  assert.equal(alexBlankProfile.spatialVariation, 0);
+  assert.equal(videoPosterFrameIsUsable(alexBlankProfile), false);
+  const compressedBlankProfile = videoPosterFrameProfile(compressedBlankIntro);
+  assert.equal(compressedBlankProfile.spatialVariation, 4);
+  assert.equal(compressedBlankProfile.spatialRange, 8);
+  assert.equal(videoPosterFrameIsUsable(compressedBlankProfile), false);
+  assert.equal(videoPosterFrameIsStrong(compressedBlankProfile), false,
+    "remote generation must continue past a noisy blank 350ms frame");
+  const widerCompressedBlankProfile = videoPosterFrameProfile(widerCompressedBlankIntro);
+  assert.equal(widerCompressedBlankProfile.spatialVariation, 6);
+  assert.equal(widerCompressedBlankProfile.spatialRange, 12);
+  assert.equal(widerCompressedBlankProfile.paletteSize, 2);
+  assert.equal(videoPosterFrameIsUsable(widerCompressedBlankProfile), false);
+  assert.equal(videoPosterFrameIsStrong(widerCompressedBlankProfile), false);
+  assert.equal(videoPosterFrameIsUsable(videoPosterFrameProfile(black)), false);
+  assert.equal(videoPosterFrameIsUsable(videoPosterFrameProfile(white)), false);
+  assert.equal(videoPosterFrameIsUsable(videoPosterFrameProfile(flatGrey)), false);
+  assert.equal(videoPosterFrameIsUsable(videoPosterFrameProfile(null)), false);
   assert.equal(videoPosterFrameScore(null), Number.NEGATIVE_INFINITY);
 });
 
@@ -100,8 +171,9 @@ test("native automatic covers score multiple decoded frames before full-quality 
   const source = readFileSync(new URL("../lib/videoPoster.native.js", import.meta.url), "utf8");
   assert.match(source, /candidateTimes\.map\(\(time\) => time \/ 1_000\)/);
   assert.match(source, /scoreNativeThumbnail\(thumbnail\)/);
-  assert.match(source, /videoPosterFrameScore\(pixels\)/);
-  assert.match(source, /videoPosterFrameMeetsAutoQuality\(best\.score\)/);
+  assert.match(source, /videoPosterFrameProfile\(pixels\)/);
+  assert.match(source, /videoPosterFrameIsUsable\(profile\)/);
+  assert.match(source, /profile\.score > best\.profile\.score/);
   assert.match(source, /if \(!normalized\.explicitTime/);
   assert.match(source, /\[requestedTimeMs \/ 1_000\][\s\S]*maxWidth: normalized\.maxDimension/);
   assert.match(source, /const workTracker = createVideoPosterWorkTracker\(\)/);
@@ -111,4 +183,13 @@ test("native automatic covers score multiple decoded frames before full-quality 
     4,
     "every deferred native operation must retain its scheduler permit through cleanup",
   );
+});
+
+test("web legacy covers preserve output time without degrading local cover selection", () => {
+  const source = readFileSync(new URL("../lib/videoPoster.web.js", import.meta.url), "utf8");
+  assert.match(source, /const outputReserveMs = Math\.min\([\s\S]*REMOTE_POSTER_OUTPUT_RESERVE_MS[\s\S]*Math\.floor\(remainingMs \* 0\.35\)[\s\S]*const availableScoringMs = remainingMs - outputReserveMs/);
+  assert.match(source, /source\.crossOrigin && error\?\.code === VIDEO_POSTER_ERROR_CODES\.timeout && best\) break/);
+  assert.match(source, /if \(source\.crossOrigin && videoPosterFrameIsStrong\(profile\)\) break/);
+  assert.match(source, /normalized\.explicitTime \|\| videoPosterFrameIsUsable\(profile\)/);
+  assert.match(source, /profile\.score > best\.profile\.score/);
 });

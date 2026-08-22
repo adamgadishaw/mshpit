@@ -7,6 +7,10 @@ import { db } from "./db.js";
 import { ApiError } from "./errors.js";
 import { assetObjectRecords, deleteMediaAssets, postMediaAssetIds } from "./mediaAssets.js";
 import { enqueueOwnedMediaKeys, enqueueOwnedMediaUrls, trustedOwnedMediaKey } from "./mediaDeletion.js";
+import {
+  deleteLegacyVideoPosterMappings,
+  legacyVideoPosterObjectRecords,
+} from "./legacyVideoPosters.js";
 import { clean, LIMITS } from "./validate.js";
 
 export const MODERATABLE_CONTENT = Object.freeze({
@@ -410,10 +414,14 @@ function setContentRemoved(ctx, targetType, targetId, removed, reason) {
   const mediaPolicy = mediaDefinition && (removed || !!current.removed) ? mediaDefinition : null;
   const stableAssetIds = mediaPolicy && targetType === "post" ? postMediaAssetIds(db, targetId) : [];
   const stableAssetObjects = assetObjectRecords(db, stableAssetIds);
+  const legacyPosterObjects = mediaPolicy && targetType === "post"
+    ? legacyVideoPosterObjectRecords(db, targetId)
+    : [];
   const mediaUris = mediaPolicy
     ? [...new Set([...attachedMediaUris(targetType, current), ...stableAssetObjects.map((object) => object.publicUrl)])]
     : [];
-  const needsMediaScrub = !!mediaPolicy && (mediaUris.length > 0 || stableAssetIds.length > 0 || mediaPolicy.hasNonUrlAssociation(current));
+  const needsMediaScrub = !!mediaPolicy && (mediaUris.length > 0 || stableAssetIds.length > 0
+    || legacyPosterObjects.length > 0 || mediaPolicy.hasNonUrlAssociation(current));
   const stateChanged = Number(current.removed) !== desired;
   if (!stateChanged && !needsMediaScrub) {
     if (targetType === "message" && removed) deleteDirectMessageNotifications(current, targetId);
@@ -428,10 +436,11 @@ function setContentRemoved(ctx, targetType, targetId, removed, reason) {
     const byUrl = enqueueOwnedMediaUrls(db, { ownerId: current.media_owner_id, urls: mediaUris, at });
     const byKey = enqueueOwnedMediaKeys(db, {
       ownerId: current.media_owner_id,
-      keys: stableAssetObjects.map((object) => object.objectKey),
+      keys: [...stableAssetObjects, ...legacyPosterObjects].map((object) => object.objectKey),
       at,
     });
-    if (byKey.accepted !== new Set(stableAssetObjects.map((object) => object.objectKey)).size) {
+    if (byKey.accepted !== new Set([...stableAssetObjects, ...legacyPosterObjects]
+      .map((object) => object.objectKey)).size) {
       throw new ApiError(409, "That media changed while it was being removed. Refresh the moderation queue.", "CONFLICT");
     }
     return { accepted: new Set([...(byUrl.keys || []), ...(byKey.keys || [])]).size };
@@ -448,6 +457,7 @@ function setContentRemoved(ctx, targetType, targetId, removed, reason) {
   // post link are removed in this same transaction so a later text-only restore
   // cannot resurrect a cover, original, or edited rendition.
   if (stableAssetIds.length) deleteMediaAssets(db, stableAssetIds);
+  if (legacyPosterObjects.length) deleteLegacyVideoPosterMappings(db, targetId);
   if (targetType === "message" && removed) deleteDirectMessageNotifications(current, targetId);
   recordModerationAction(ctx, removed ? "remove" : "restore", targetType, targetId, reason,
     {

@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { landingLayoutMode, landingProofItems } from "./landingPresentation.mjs";
+import {
+  LANDING_IDENTITY_COPY,
+  landingKicker,
+  landingLayoutMode,
+  landingProofItems,
+} from "./landingPresentation.mjs";
 
 test("landing uses scrolling, inline attribution on short and narrow viewports", () => {
   assert.deepEqual(landingLayoutMode({ width: 320, height: 568 }), {
@@ -40,11 +45,26 @@ test("landing proof is truthful product context and never a member count", () =>
   const items = landingProofItems({ venues: 123.9, artists: 456 });
   assert.deepEqual(items.map(({ title }) => title), ["VENUES", "ARTISTS", "BAND + ROOM"]);
   assert.deepEqual(items.map(({ detail }) => detail), [
-    "123 in the PIT catalogue",
-    "456 in the PIT catalogue",
-    "Rated separately",
+    "123 rooms in the PIT",
+    "456 artists in the PIT",
+    "Rate each separately",
   ]);
   const copy = JSON.stringify(items).toLowerCase();
   assert.equal(/\bmembers?\b/.test(copy), false);
   assert.equal(/\busers?\b/.test(copy), false);
+});
+
+test("landing identity is PIT-native rather than generic diary copy", () => {
+  assert.equal(landingKicker(false), "REMEMBER THE NIGHT. FIND WHAT'S NEXT.");
+  assert.equal(landingKicker(true), "REMEMBER. RATE. DISCOVER.");
+  assert.equal(LANDING_IDENTITY_COPY.signupAction, "Join the PIT");
+  assert.equal(LANDING_IDENTITY_COPY.browseAction, "Explore the PIT");
+  assert.match(LANDING_IDENTITY_COPY.body, /remember every show/i);
+  assert.match(LANDING_IDENTITY_COPY.body, /photos, ratings/i);
+  assert.match(LANDING_IDENTITY_COPY.body, /fans whose taste you trust/i);
+  assert.match(LANDING_IDENTITY_COPY.headline, /shows/i);
+  assert.match(LANDING_IDENTITY_COPY.headlineAccent, /taste/i);
+
+  const identity = Object.values(LANDING_IDENTITY_COPY).join(" ");
+  assert.doesNotMatch(identity, /\b(?:diary|journal|social network|musical journey)\b/i);
 });

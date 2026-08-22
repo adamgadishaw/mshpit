@@ -50,7 +50,7 @@ import { lazyWithRetry } from "../lib/lazyWithRetry";
 import { VIDEO_MAX_DURATION_MS, mediaImageAnimationUnsupported, mediaImageNeedsNativeDecode, mediaSourceSizeAllowed, mediaVideoDeliveryCompatible } from "../domain/mediaEdit.mjs";
 import {
   mediaAssetIdsMatchingPhotos,
-  mediaProjectFromLegacyUrls,
+  mediaProjectFromPost,
   mediaProjectFromPicker,
   mediaProjectRequiresLegacyUpload,
   moveMediaProjectAsset,
@@ -91,28 +91,7 @@ const GROUPS = ["THE BAND", "THE ROOM", "THE NIGHT"];
 const submissionId = () => `post_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 
 function mediaProjectForPost(post) {
-  if (!Array.isArray(post?.media) || !post.media.length) return mediaProjectFromLegacyUrls(post?.photos || []);
-  return normalizeMediaProject({
-    assets: post.media.map((asset, index) => ({
-      id: `server:${asset.id || index + 1}`,
-      assetId: asset.id || null,
-      kind: asset.kind,
-      // Owners receive the immutable source for re-editing. The public URL is
-      // kept separately so post payload reconciliation never leaks/replaces it.
-      uri: asset.sourceUrl || asset.url,
-      sourceUrl: asset.url,
-      posterUri: asset.posterUrl || null,
-      posterUrl: asset.posterUrl || null,
-      posterTimeMs: asset.posterTimeMs,
-      width: asset.width,
-      height: asset.height,
-      durationMs: asset.durationMs,
-      mimeType: asset.mimeType,
-      edit: asset.editRecipe,
-      altText: asset.altText,
-      status: "ready",
-    })),
-  });
+  return mediaProjectFromPost(post);
 }
 
 function releaseStudioArtifact(value) {

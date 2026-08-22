@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   MEDIA_PROJECT_MAX_ASSETS,
   mediaProjectFromLegacyUrls,
+  mediaProjectFromPost,
   mediaAssetIdsMatchingPhotos,
   mediaProjectRequiresLegacyUpload,
   mediaProjectFromPicker,
@@ -33,6 +34,40 @@ test("legacy URL posts normalize into ready backward-compatible assets", () => {
   ]);
   assert.equal(mediaProjectReady(project), true);
   assert.deepEqual(project.assets.map((asset) => asset.kind), ["image", "video"]);
+});
+
+test("post edit projects preserve unenriched photos around a partial video descriptor", () => {
+  const still = "https://media.mshpit.com/users/u/post/still.jpg";
+  const clip = "https://media.mshpit.com/users/u/post/clip.mp4";
+  const encore = "https://media.mshpit.com/users/u/post/encore.jpg";
+  const project = mediaProjectFromPost({
+    photos: [still, clip, encore],
+    media: [{
+      id: "legacy_video_cover",
+      kind: "video",
+      url: clip,
+      sourceUrl: clip,
+      posterUrl: "https://media.mshpit.com/users/u/post/clip-poster.jpg",
+      posterTimeMs: 2_000,
+    }],
+  });
+
+  assert.deepEqual(project.assets.map((asset) => asset.sourceUrl), [still, clip, encore]);
+  assert.deepEqual(project.assets.map((asset) => asset.kind), ["image", "video", "image"]);
+  assert.equal(project.assets[1].posterUrl, "https://media.mshpit.com/users/u/post/clip-poster.jpg");
+  assert.equal(project.assets[1].assetId, null);
+  assert.equal(mediaAssetIdsMatchingPhotos(project, [still, clip, encore]), null);
+});
+
+test("post edit projects retain only server-authorized stable asset IDs", () => {
+  const url = "https://media.mshpit.com/users/u/post/stable.webp";
+  const project = mediaProjectFromPost({
+    photos: [url],
+    media: [{ id: "ma_abcdefgh12345678", kind: "image", url }],
+    mediaAssetIds: ["ma_abcdefgh12345678"],
+  });
+  assert.equal(project.assets[0].assetId, "ma_abcdefgh12345678");
+  assert.deepEqual(mediaAssetIdsMatchingPhotos(project, [url]), ["ma_abcdefgh12345678"]);
 });
 
 test("project identity is deduplicated and hostile fields are bounded", () => {

@@ -51,6 +51,11 @@ import {
   reserveMediaUploadTicket,
   unreferencedOwnedMediaUrls,
 } from "./mediaDeletion.js";
+import {
+  legacyVideoPosterDescriptors,
+  legacyVideoPosterDescriptorsByPost,
+  retireLegacyVideoPosters,
+} from "./legacyVideoPosters.js";
 import { discoverySidebar } from "./discovery.js";
 import { resolveEntity } from "./seo.js";
 import { userRewards } from "./rewards.js";
@@ -1115,7 +1120,10 @@ function reportableTargetFor(user, targetType, targetId) {
 
 function postJson(p, viewerId) {
   const stableMedia = postMediaState(db, p.id, { ownerId: viewerId || null });
-  const media = stableMedia.assets;
+  const legacyPhotos = parseJsonArray(p.photos);
+  const media = stableMedia.linkedAssetIds.length
+    ? stableMedia.assets
+    : legacyVideoPosterDescriptors(db, { postId: p.id, photos: legacyPhotos });
   return {
     id: p.id,
     userId: p.user_id,
@@ -1131,12 +1139,15 @@ function postJson(p, viewerId) {
     // rendition/source becomes unavailable, do not let the denormalized legacy
     // URL column bypass that fail-closed state. Historical URL-only rows have no
     // post_media links and continue to project exactly as before.
-    photos: stableMedia.linkedAssetIds.length ? media.map((asset) => asset.url) : parseJsonArray(p.photos),
+    photos: stableMedia.linkedAssetIds.length ? media.map((asset) => asset.url) : legacyPhotos,
     photosPublic: !!p.photos_public,
-    // New clients get stable, poster-aware descriptors. Legacy posts simply
-    // return an empty list and continue to render from `photos` unchanged.
+    // New clients get stable, poster-aware descriptors. The exact five audited
+    // URL-only clips also receive their verified release cover; every other
+    // legacy URL continues to render from `photos` unchanged.
     media,
-    mediaAssetIds: media.map((asset) => asset.id),
+    // Release-only legacy descriptors are presentation metadata, not stable
+    // composer assets and must never be sent back through mediaAssetIds.
+    mediaAssetIds: stableMedia.linkedAssetIds.length ? media.map((asset) => asset.id) : [],
     // Separate homepage consent is owner-only account state, not social proof.
     ...(viewerId === p.user_id ? { landingShowcase: !!p.landing_showcase } : {}),
     setlist: parseJsonArray(p.setlist),
@@ -1767,18 +1778,21 @@ export const routes = {
         AND u.is_banned=0 AND (u.suspended_until IS NULL OR u.suspended_until<=?) ${blockSql}
       ORDER BY p.created_at DESC,p.id DESC LIMIT 40`).all(...args);
     const stableMedia = postMediaStateByPost(db, rows.map((row) => row.id));
+    const legacyMedia = legacyVideoPosterDescriptorsByPost(db, rows.map((row) => row.id));
     const photos = [];
     for (const r of rows) {
       let list = []; try { list = JSON.parse(r.photos || "[]"); } catch {}
       const projectedAssets = stableMedia.assetsByPost.get(r.id) || [];
       const stableByUrl = new Map(projectedAssets
         .map((asset) => [asset.url, asset]));
+      const legacyByUrl = new Map((legacyMedia.get(r.id) || [])
+        .map((asset) => [asset.url, asset]));
       const publishableUris = stableMedia.linkedPostIds.has(r.id)
         ? projectedAssets.map((asset) => asset.url)
         : list;
       for (const uri of publishableUris) {
         if (typeof uri === "string" && /^https?:\/\//i.test(uri)) {
-          const asset = stableByUrl.get(uri);
+          const asset = stableByUrl.get(uri) || legacyByUrl.get(uri);
           photos.push({
             uri,
             posterUrl: asset?.posterUrl || null,
@@ -3129,6 +3143,12 @@ export const routes = {
       if (Number(updated.changes || 0) !== 1) {
         throw new ApiError(409, "This review changed on another screen. Refresh before saving again.", "CONFLICT");
       }
+      retireLegacyVideoPosters(db, {
+        postId: current.id,
+        ownerId: u.id,
+        mediaUrls: removedPhotos,
+        at: now(),
+      });
       markOwnedMediaAssociated(db, { ownerId: u.id, urls: storedPhotos, at: now() });
       let detachedAssetObjects = [];
       let detachedAssetIds = [];
@@ -3207,6 +3227,7 @@ export const routes = {
           setlist='[]',tour=NULL,tags='[]',song=NULL,playlist=NULL,artist_key=NULL,artist_mbid=NULL,
           venue_key=NULL,client_mutation_id=NULL,client_mutation_hash=NULL,updated_at=?
           WHERE id=? AND user_id=?`).run(now(), post.id, u.id);
+        retireLegacyVideoPosters(db, { postId: post.id, ownerId: u.id, at: now() });
         const deletable = unreferencedOwnedMediaUrls(db, { ownerId: u.id, urls: attached });
         enqueueOwnedMediaUrls(db, { ownerId: u.id, urls: deletable, at: now() });
         const deletableAssetUrls = unreferencedOwnedMediaUrls(db, { ownerId: u.id, urls: stableAssetUrls });

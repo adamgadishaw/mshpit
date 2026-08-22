@@ -1,5 +1,6 @@
 import { mediaDraftAssetFromPicker, normalizeMediaDraftAsset } from "./mediaEdit.mjs";
 import { isPersistableMediaDraftUri } from "./mediaDraftStaging.mjs";
+import { mediaDisplayItems, mediaDisplayKind } from "./postMediaDisplay.mjs";
 
 export const MEDIA_PROJECT_VERSION = 1;
 export const MEDIA_PROJECT_MAX_ASSETS = 8;
@@ -88,6 +89,41 @@ export function mediaProjectFromLegacyUrls(urls) {
     kind: /\.(mp4|webm|mov|m4v)(?:[?#]|$)/i.test(String(url)) ? "video" : "image",
     status: "ready",
   })));
+}
+
+// A post can carry a canonical legacy `photos` order plus only the descriptors
+// that enrich some of those URLs (for example, a durable poster for one
+// historical video). Treat the descriptor list as metadata, never as proof that
+// it is the complete edit project; otherwise opening and saving an old mixed-
+// media post can silently delete every unenriched image.
+export function mediaProjectFromPost(post) {
+  const items = mediaDisplayItems(post || {});
+  const stableAssetIds = new Set((Array.isArray(post?.mediaAssetIds) ? post.mediaAssetIds : [])
+    .filter((id) => typeof id === "string" && id));
+  return normalizeMediaProject({
+    assets: items.map((asset, index) => ({
+      id: `server:${asset.id || index + 1}`,
+      // Presentation-only legacy descriptors deliberately have IDs so cards
+      // can reconcile them, but only the explicit server asset-id projection
+      // authorizes a composer to send an ID back as a stable attachment.
+      assetId: stableAssetIds.has(asset.id) ? asset.id : null,
+      kind: mediaDisplayKind(asset),
+      // Owners receive the immutable source for re-editing. The public URL is
+      // kept separately so post payload reconciliation never leaks/replaces it.
+      uri: asset.sourceUrl || asset.url || asset.uri,
+      sourceUrl: asset.url || asset.uri,
+      posterUri: asset.posterUrl || asset.posterUri || null,
+      posterUrl: asset.posterUrl || asset.posterUri || null,
+      posterTimeMs: asset.posterTimeMs,
+      width: asset.width,
+      height: asset.height,
+      durationMs: asset.durationMs,
+      mimeType: asset.mimeType,
+      edit: asset.editRecipe,
+      altText: asset.altText,
+      status: "ready",
+    })),
+  });
 }
 
 export function patchMediaProjectAsset(project, assetId, patch) {

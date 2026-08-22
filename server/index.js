@@ -22,6 +22,10 @@ import { startTourDateScheduler } from "./tourdates.js";
 import { startCacheWarmScheduler } from "./cacheWarmer.js";
 import { startBackupScheduler } from "./backupScheduler.js";
 import { startMediaDeletionScheduler } from "./mediaDeletion.js";
+import {
+  registerLegacyVideoPosterRelease,
+  startLegacyVideoPosterVerificationScheduler,
+} from "./legacyVideoPosters.js";
 import { startEmailCampaignScheduler } from "./emailCampaignScheduler.js";
 import { missingStaticAssetResponse } from "./staticPolicy.js";
 import { renderPublicPage } from "./publicPages.js";
@@ -65,6 +69,10 @@ function seedAdmin() {
   }
 }
 seedAdmin();
+const legacyPosterRelease = registerLegacyVideoPosterRelease(db);
+if (legacyPosterRelease.active && (legacyPosterRelease.registered || legacyPosterRelease.retired)) {
+  console.log(`[media] legacy poster release registered=${legacyPosterRelease.registered} retired=${legacyPosterRelease.retired}`);
+}
 
 // ---- security headers --------------------------------------------------------
 // CSP: the app hotlinks images from many hosts (Commons/Openverse/web + wsrv.nl
@@ -413,11 +421,13 @@ function scheduleAlert() {
 // close; its current bounded drain is allowed to settle within the hard timeout.
 let shuttingDown = false;
 let emailCampaignScheduler = null;
+let legacyVideoPosterScheduler = null;
 function shutdown(exitCode = 0) {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log("\n[pit] shutting down…");
   const campaignStop = emailCampaignScheduler?.stop() || Promise.resolve();
+  legacyVideoPosterScheduler?.stop();
   server.close(async () => {
     try { await campaignStop; }
     catch (error) { console.error(`[mail] campaign recovery shutdown failed safely: ${String(error?.name || "Error")}`); }
@@ -437,4 +447,5 @@ server.listen(PORT, () => {
   startCacheWarmScheduler(); // warms popular YouTube lookups daily so first listens play the video, not a preview
   startBackupScheduler(); // verified daily SQLite snapshot on /data; private off-host copy when configured
   startMediaDeletionScheduler({ database: db }); // bounded, durable cleanup of active user-media objects only
+  legacyVideoPosterScheduler = startLegacyVideoPosterVerificationScheduler({ database: db });
 });

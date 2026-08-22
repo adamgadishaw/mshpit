@@ -28,6 +28,11 @@ services:
         value: "24"
       - key: NODE_ENV
         value: production
+      # Explicit, non-secret authority for the bounded five-object maintenance
+      # release. Staging intentionally omits this even if somebody mispoints its
+      # storage settings at production.
+      - key: PIT_LEGACY_VIDEO_POSTER_RELEASE
+        value: 2026-08-22-v1
       - key: PIT_DATA_DIR
         value: /data
       - key: PIT_ALLOW_EMPTY_DB_BOOTSTRAP
