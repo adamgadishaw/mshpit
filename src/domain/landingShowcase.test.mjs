@@ -104,4 +104,5 @@ test("early community advancement requires that exact frame to prefetch successf
   assert.equal(landingCommunityFrameReady({ frame: stock[0], prefetchSucceeded: true }), false);
   assert.equal(landingCommunityFrameReady({ frame, prefetchSucceeded: true, aborted: true }), false);
   assert.equal(landingCommunityFrameReady({ frame, prefetchSucceeded: true, hasAdvanced: true }), false);
+  assert.equal(landingCommunityFrameReady({ frame, prefetchSucceeded: true, reduceMotion: true }), false);
 });

@@ -133,9 +133,10 @@ export function landingCommunityAdvanceDelay({ mountedAt, now = Date.now(), mini
   return Math.max(0, Math.trunc(Number(minimumMs) || 0) - elapsed);
 }
 
-export function landingCommunityFrameReady({ frame, prefetchSucceeded = false, aborted = false, hasAdvanced = false } = {}) {
+export function landingCommunityFrameReady({ frame, prefetchSucceeded = false, aborted = false, hasAdvanced = false, reduceMotion = false } = {}) {
   return frame?.source === "community"
     && prefetchSucceeded === true
     && !aborted
-    && !hasAdvanced;
+    && !hasAdvanced
+    && !reduceMotion;
 }

@@ -1932,7 +1932,7 @@ export const routes = {
       limit: ctx.query?.limit,
       at: timestamp,
     });
-    return { media, totals: landingTotals({ at: timestamp }), source: media.length ? "community" : "fallback" };
+    return { media, totals: landingTotals(), source: media.length ? "community" : "fallback" };
   },
 
   // ---- Listening: cross-device play history + "friends listening" ----

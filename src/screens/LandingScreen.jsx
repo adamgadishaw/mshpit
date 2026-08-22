@@ -2,11 +2,12 @@ import { useEffect, useRef, useState } from "react";
 import { View, Text, StyleSheet, Pressable, Animated, Easing, useWindowDimensions, Platform, ScrollView, AccessibilityInfo } from "react-native";
 import { Image as ExpoImage } from "expo-image";
 import Svg, { Defs, LinearGradient, Stop, Rect } from "react-native-svg";
-import { mono, radius } from "../theme";
+import { displayFont, focusRing, mono, radius } from "../theme";
 import Icon from "../components/Icon";
 import { catalogVenues, catalogArtists } from "../seed/catalog";
 import { api } from "../lib/api";
 import { JOURNEY_TAGLINE, landingSlideUri, landingVisibleSlideIndices } from "../domain/menuJourney.mjs";
+import { landingLayoutMode, landingProofItems } from "../domain/landingPresentation.mjs";
 import {
   buildLandingSlideDeck,
   landingCommunityAdvanceDelay,
@@ -78,9 +79,60 @@ const AnimatedExpoImage = Animated.createAnimatedComponent(ExpoImage);
 // Web-only GPU hints so the zoom is buttery (no-op on native).
 const WEB_SMOOTH = Platform.OS === "web" ? { willChange: "transform, opacity", backfaceVisibility: "hidden" } : null;
 
+function LandingAction({ kind = "ghost", title, icon, onPress, accessibilityHint, fullWidth = false }) {
+  const [hovered, setHovered] = useState(false);
+  const [focused, setFocused] = useState(false);
+  const primary = kind === "primary";
+  const login = kind === "login";
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={title}
+      accessibilityHint={accessibilityHint}
+      onPress={onPress}
+      onHoverIn={() => setHovered(true)}
+      onHoverOut={() => setHovered(false)}
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
+      hitSlop={login ? 4 : 0}
+      style={({ pressed }) => [
+        styles.action,
+        primary ? styles.actionPrimary : login ? styles.actionLogin : styles.actionGhost,
+        fullWidth && styles.actionFull,
+        hovered && !pressed && styles.actionHovered,
+        focused && focusRing,
+        pressed && styles.actionPressed,
+      ]}
+    >
+      {!!icon && <Icon name={icon} size={login ? 15 : 18} color={primary ? "#1A1206" : "#F4EFE7"} strokeWidth={2.4} />}
+      <Text style={[
+        styles.actionText,
+        primary ? styles.actionPrimaryText : styles.actionGhostText,
+        login && styles.actionLoginText,
+      ]}>{title}</Text>
+    </Pressable>
+  );
+}
+
+function LandingAttribution({ frame, caption, inline = false }) {
+  const community = frame?.source === "community";
+  return (
+    <View style={[styles.creditBlock, inline && styles.creditBlockInline]}>
+      {community && (
+        <View style={styles.communitySource}>
+          <View style={styles.communitySourceDot} />
+          <Text style={styles.communitySourceText}>FROM THE PIT</Text>
+        </View>
+      )}
+      {!!caption && <Text style={[styles.communityCaption, inline && styles.communityCaptionInline]} numberOfLines={2}>{caption}</Text>}
+      <Text style={styles.credit}>{frame?.credit || "PIT"}</Text>
+    </View>
+  );
+}
+
 export default function LandingScreen({ onLogin, onSignup, onBrowse }) {
-  const { width } = useWindowDimensions();
-  const wide = width >= 900;
+  const { width, height, fontScale } = useWindowDimensions();
+  const { wide, compact, scrollPitch, overlayCredit } = landingLayoutMode({ width, height, fontScale });
   const [reduceMotion, setReduceMotion] = useState(false);
   const reduceMotionRef = useRef(reduceMotion);
   const mountedAtRef = useRef(Date.now());
@@ -164,11 +216,11 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse }) {
     return () => clearTimeout(timer);
   }, [failedCommunityIds, idx, slides, width]);
 
-  const glowOp = pulse.interpolate({ inputRange: [0, 1], outputRange: [0.72, 1] });
-  // Live counts from the DB so the stats reflect real, saved catalog growth (the
-  // bundled numbers are a frozen snapshot). Falls back to the bundle if offline.
+  const glowOp = pulse.interpolate({ inputRange: [0, 1], outputRange: [0.58, 1] });
+  // The live artist total reflects saved catalogue growth and falls back to the
+  // bundled catalogue offline. Account totals are intentionally not requested
+  // or presented as landing-page social proof.
   const [liveArtists, setLiveArtists] = useState(null);
-  const [liveMembers, setLiveMembers] = useState(null);
   useEffect(() => {
     const controller = new AbortController();
     let earlyAdvanceTimer = null;
@@ -185,7 +237,6 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse }) {
         });
         const hasCommunity = nextDeck[1]?.source === "community";
         if (typeof totals?.artists === "number") setLiveArtists(totals.artists);
-        if (typeof totals?.members === "number") setLiveMembers(totals.members);
 
         const delay = landingCommunityAdvanceDelay({
           mountedAt: mountedAtRef.current,
@@ -214,8 +265,9 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse }) {
           prefetchSucceeded,
           aborted: controller.signal.aborted,
           hasAdvanced: hasAdvancedRef.current,
+          reduceMotion: reduceMotionRef.current,
         })) return;
-        if (!reduceMotionRef.current) setHasAdvanced(true);
+        setHasAdvanced(true);
         setIdx(1);
       })
       .catch(() => {});
@@ -226,14 +278,20 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse }) {
   }, []);
   const venueCount = Object.keys(catalogVenues).length;
   const artistCount = liveArtists ?? Object.keys(catalogArtists).length;
+  const proofItems = landingProofItems({ venues: venueCount, artists: artistCount });
 
   // On phones the pitch SCROLLS (centered when it fits, scrollable when the user
   // has large text) so it can never overlap the top bar or get clipped. On desktop
   // it's a bottom-anchored hero.
-  const Pitch = wide ? View : ScrollView;
-  const pitchProps = wide
-    ? { style: [styles.content, styles.contentWide] }
-    : { style: styles.content, contentContainerStyle: styles.scrollNarrow, showsVerticalScrollIndicator: false, keyboardShouldPersistTaps: "handled" };
+  const Pitch = scrollPitch ? ScrollView : View;
+  const pitchProps = scrollPitch
+    ? {
+      style: styles.content,
+      contentContainerStyle: wide ? styles.scrollWideShort : styles.scrollNarrow,
+      showsVerticalScrollIndicator: false,
+      keyboardShouldPersistTaps: "handled",
+    }
+    : { style: [styles.content, styles.contentWide] };
   const currentFrame = landingSlideFrame(slides[idx], failedCommunityIds);
   const currentCaption = currentFrame?.source === "community"
     ? [currentFrame.artist, currentFrame.venue].filter(Boolean).join(" · ")
@@ -283,76 +341,121 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse }) {
             <Stop offset="0.4" stopColor="#E0457B" stopOpacity="0.05" />
             <Stop offset="1" stopColor="#000" stopOpacity="0" />
           </LinearGradient>
+          <LinearGradient id="scrimH" x1="0" y1="0" x2="1" y2="0">
+            <Stop offset="0" stopColor="#05060B" stopOpacity="0.88" />
+            <Stop offset="0.46" stopColor="#05060B" stopOpacity="0.52" />
+            <Stop offset="0.76" stopColor="#05060B" stopOpacity="0.12" />
+            <Stop offset="1" stopColor="#05060B" stopOpacity="0" />
+          </LinearGradient>
+          <LinearGradient id="scrimCenter" x1="0" y1="0" x2="1" y2="0">
+            <Stop offset="0" stopColor="#05060B" stopOpacity="0.3" />
+            <Stop offset="0.5" stopColor="#05060B" stopOpacity="0.7" />
+            <Stop offset="1" stopColor="#05060B" stopOpacity="0.3" />
+          </LinearGradient>
         </Defs>
         <Rect x="0" y="0" width="100%" height="100%" fill="url(#scrimV)" />
         <Rect x="0" y="0" width="100%" height="100%" fill="url(#scrimAmber)" />
+        <Rect x="0" y="0" width="100%" height="100%" fill={wide ? "url(#scrimH)" : "url(#scrimCenter)"} />
       </Svg>
 
       {/* ---- top bar: brand + login ---- */}
-      <View style={[styles.topbar, styles.boxNonePointerEvents]}>
-        <Text style={styles.brand}>PIT</Text>
-        <Pressable style={styles.topLogin} onPress={onLogin} hitSlop={8}>
-          <Text style={styles.topLoginTxt}>Log in</Text>
-        </Pressable>
+      <View style={[styles.topbar, scrollPitch && styles.topbarScrolled, compact && styles.topbarCompact, styles.boxNonePointerEvents]}>
+        <View style={styles.brandLockup} accessibilityRole="text" accessibilityLabel="PIT, live music remembered">
+          <ExpoImage source={require("../../assets/pit-favicon-v1.png")} style={styles.brandMark} contentFit="cover" accessible={false} />
+          <View>
+            <Text style={styles.brand}>PIT</Text>
+            {!compact && <Text style={styles.brandSub}>LIVE MUSIC, REMEMBERED</Text>}
+          </View>
+        </View>
+        <LandingAction
+          kind="login"
+          title="Log in"
+          onPress={onLogin}
+          accessibilityHint="Opens the PIT sign-in form"
+        />
       </View>
 
       {/* ---- the pitch ---- */}
       <Pitch {...pitchProps} style={[pitchProps.style, styles.boxNonePointerEvents]}>
         <View style={wide ? styles.blockWide : styles.blockNarrow}>
-          <Text style={styles.kicker}>EVERY SHOW BECOMES PART OF YOUR STORY</Text>
-          <Animated.Text
-            style={[styles.headline, { opacity: glowOp }, !wide && styles.headlineNarrow]}
+          <View style={[styles.kickerRow, !wide && styles.kickerRowNarrow]}>
+            <Animated.View style={[styles.kickerLine, { opacity: glowOp }]} />
+            <Text style={[styles.kicker, compact && styles.kickerCompact]}>
+              {compact ? "EVERY SHOW. YOUR STORY." : "EVERY SHOW BECOMES PART OF YOUR STORY"}
+            </Text>
+          </View>
+          <Text
+            style={[styles.headline, !wide && styles.headlineNarrow, compact && styles.headlineCompact]}
             accessibilityRole="header"
             accessibilityLabel={JOURNEY_TAGLINE}
           >
             Your life's{"\n"}<Text style={styles.headlineAccent}>musical journey.</Text>
-          </Animated.Text>
+          </Text>
           <Text style={[styles.sub, !wide && { textAlign: "center" }]}>
             Log the concerts that shape your story, remember every band and room, and find
             your next unforgettable night through people whose taste you trust.
           </Text>
 
-          <View style={[styles.ctas, !wide && { justifyContent: "center" }]}>
-            <Pressable style={styles.primary} onPress={onSignup}>
-              <Icon name="ticket" size={17} color="#1A1206" />
-              <Text style={styles.primaryTxt}>Join the pit</Text>
-            </Pressable>
-            <Pressable style={styles.ghost} onPress={onBrowse}>
-              <Text style={styles.ghostTxt}>Browse as guest</Text>
-            </Pressable>
+          <View style={[styles.ctas, !wide && styles.ctasNarrow, compact && styles.ctasCompact]}>
+            <LandingAction
+              kind="primary"
+              title="Start your concert diary"
+              icon="ticket"
+              onPress={onSignup}
+              fullWidth={compact}
+              accessibilityHint="Creates a PIT account"
+            />
+            <LandingAction
+              title="Explore as guest"
+              icon="discover"
+              onPress={onBrowse}
+              fullWidth={compact}
+              accessibilityHint="Opens PIT without creating an account"
+            />
           </View>
 
-          <View style={[styles.stats, !wide && { justifyContent: "center" }]}>
-            <View style={styles.statChip}>
-              <Text style={styles.statNum}>{venueCount.toLocaleString()}</Text>
-              <Text style={styles.statLbl}>VENUES</Text>
-            </View>
-            <View style={styles.statChip}>
-              <Text style={styles.statNum}>{artistCount.toLocaleString()}</Text>
-              <Text style={styles.statLbl}>ARTISTS</Text>
-            </View>
-            {liveMembers != null && liveMembers > 0 && (
-              <View style={styles.statChip}>
-              <Text style={styles.statNum}>{liveMembers.toLocaleString()}</Text>
-              <Text style={styles.statLbl}>FOUNDING MEMBERS</Text>
+          <View style={[styles.proofRail, compact && styles.proofRailCompact]} accessibilityLabel="PIT catalogue and rating features">
+            {proofItems.map((item, index) => (
+              <View
+                key={item.key}
+                style={[
+                  styles.proofItem,
+                  compact && styles.proofItemCompact,
+                  index > 0 && (compact ? styles.proofItemDividerCompact : styles.proofItemDivider),
+                ]}
+              >
+                <View style={styles.proofIcon}>
+                  <Icon name={item.icon} size={17} color="#F2A65A" strokeWidth={2.2} />
+                </View>
+                <View style={styles.proofCopy}>
+                  <Text style={styles.proofTitle}>{item.title}</Text>
+                  <Text style={styles.proofDetail}>{item.detail}</Text>
+                </View>
               </View>
-            )}
-            <View style={styles.statChip}>
-              <Text style={styles.statNum}>2</Text>
-              <Text style={styles.statLbl}>SCORES · BAND & ROOM</Text>
-            </View>
+            ))}
           </View>
+
+          {!overlayCredit && (
+            <View style={styles.inlineFoot}>
+              <View style={styles.slideRail} accessible={false}>
+                {slides.map((slide, index) => <View key={`${slide.id}:${index}`} style={[styles.slideDot, index === idx && styles.slideDotActive]} />)}
+              </View>
+              <LandingAttribution frame={currentFrame} caption={currentCaption} inline />
+            </View>
+          )}
         </View>
       </Pitch>
 
-      {/* ---- footer strip ---- */}
-      <View style={[styles.foot, styles.noPointerEvents]}>
-        <Text style={styles.footTxt}>BAND VS ROOM · SPOILER-SAFE SETLISTS · YOUR CITY&apos;S ROOMS</Text>
-        <View style={styles.creditBlock}>
-          {!!currentCaption && <Text style={styles.communityCaption} numberOfLines={1}>{currentCaption}</Text>}
-          <Text style={styles.credit}>{currentFrame?.credit || "PIT"}</Text>
+      {/* Desktop attribution stays cinematic; short and narrow screens keep it
+          in normal scroll flow so it can never cover a CTA. */}
+      {overlayCredit && (
+        <View style={[styles.foot, styles.noPointerEvents]}>
+          <View style={styles.slideRail} accessible={false}>
+            {slides.map((slide, index) => <View key={`${slide.id}:${index}`} style={[styles.slideDot, index === idx && styles.slideDotActive]} />)}
+          </View>
+          <LandingAttribution frame={currentFrame} caption={currentCaption} />
         </View>
-      </View>
+      )}
     </View>
   );
 }
@@ -365,68 +468,130 @@ const styles = StyleSheet.create({
     flexDirection: "row", alignItems: "center", justifyContent: "space-between",
     paddingHorizontal: 28, paddingTop: 22,
   },
+  topbarScrolled: {
+    paddingBottom: 12,
+    backgroundColor: "rgba(5,6,11,0.92)",
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(244,239,231,0.1)",
+    ...Platform.select({ web: { backdropFilter: "blur(14px)" } }),
+  },
+  topbarCompact: { paddingHorizontal: 16, paddingTop: 12 },
+  brandLockup: { flexDirection: "row", alignItems: "center", gap: 10 },
+  brandMark: { width: 34, height: 34, borderRadius: 9 },
   brand: {
-    color: "#F4EFE7", fontFamily: mono, fontSize: 24, fontWeight: "900", letterSpacing: 6,
+    color: "#F4EFE7", fontFamily: mono, fontSize: 22, lineHeight: 23, fontWeight: "900", letterSpacing: 5,
     ...(Platform.OS === "web" ? { textShadow: "0 1px 12px rgba(0,0,0,0.7)" } : { textShadowColor: "rgba(0,0,0,0.7)", textShadowRadius: 12 }),
   },
-  topLogin: {
-    borderRadius: radius.pill, borderWidth: 1.5, borderColor: "rgba(244,239,231,0.45)",
-    backgroundColor: "rgba(5,6,11,0.35)", paddingHorizontal: 20, paddingVertical: 9,
-  },
-  topLoginTxt: { color: "#F4EFE7", fontSize: 14, fontWeight: "700" },
+  brandSub: { color: "rgba(244,239,231,0.58)", fontFamily: mono, fontSize: 8, lineHeight: 12, letterSpacing: 1.8, fontWeight: "800" },
 
   content: { flex: 1, zIndex: 4 },
-  contentWide: { justifyContent: "flex-end", paddingHorizontal: 72, paddingBottom: 96 },
+  contentWide: { justifyContent: "flex-end", paddingHorizontal: 72, paddingBottom: 86 },
   // grows to center the pitch when it fits, scrolls when large text makes it tall;
   // top padding always clears the brand/login bar.
-  scrollNarrow: { flexGrow: 1, justifyContent: "center", alignItems: "center", paddingHorizontal: 24, paddingTop: 92, paddingBottom: 64 },
-  blockWide: { maxWidth: 640 },
-  blockNarrow: { alignItems: "center" },
+  scrollNarrow: { flexGrow: 1, justifyContent: "center", alignItems: "center", paddingHorizontal: 20, paddingTop: 96, paddingBottom: 26 },
+  scrollWideShort: { flexGrow: 1, justifyContent: "center", alignItems: "flex-start", paddingHorizontal: 72, paddingTop: 102, paddingBottom: 30 },
+  blockWide: { width: "100%", maxWidth: 720 },
+  blockNarrow: { width: "100%", maxWidth: 580, alignItems: "center" },
 
-  kicker: { color: "#F2A65A", fontFamily: mono, fontSize: 12, letterSpacing: 5, fontWeight: "800", marginBottom: 14 },
+  kickerRow: { flexDirection: "row", alignItems: "center", gap: 12, marginBottom: 15 },
+  kickerRowNarrow: { justifyContent: "center" },
+  kickerLine: { width: 36, height: 2, borderRadius: 2, backgroundColor: "#FF8C42", ...Platform.select({ web: { boxShadow: "0 0 14px rgba(255,140,66,0.85)" } }) },
+  kicker: { color: "#F2A65A", fontFamily: mono, fontSize: 11, letterSpacing: 3.2, fontWeight: "900" },
+  kickerCompact: { fontSize: 10, letterSpacing: 2.3 },
   headline: {
-    color: "#FFFFFF", fontSize: 58, lineHeight: 62, fontWeight: "900", letterSpacing: -1.2,
+    color: "#FFFFFF", fontFamily: displayFont, fontSize: 60, lineHeight: 62, fontWeight: "900", letterSpacing: -1.4,
     ...(Platform.OS === "web" ? { textShadow: "0 1px 18px rgba(0,0,0,0.55)" } : { textShadowColor: "rgba(0,0,0,0.55)", textShadowRadius: 18 }),
   },
-  headlineNarrow: { fontSize: 40, lineHeight: 44, textAlign: "center" },
-  headlineAccent: { color: "#FF8C42" },
-  sub: { color: "rgba(244,239,231,0.82)", fontSize: 16, lineHeight: 24, maxWidth: 520, marginTop: 16 },
+  headlineNarrow: { fontSize: 44, lineHeight: 47, textAlign: "center" },
+  headlineCompact: { fontSize: 38, lineHeight: 41, letterSpacing: -0.7 },
+  headlineAccent: { color: "#FF9A4F" },
+  sub: { color: "rgba(244,239,231,0.84)", fontSize: 16, lineHeight: 24, maxWidth: 550, marginTop: 16 },
 
   ctas: { flexDirection: "row", gap: 12, marginTop: 26, flexWrap: "wrap" },
-  primary: {
-    flexDirection: "row", alignItems: "center", gap: 9, backgroundColor: "#FF8C42",
-    borderRadius: radius.pill, paddingHorizontal: 30, paddingVertical: 15,
-    ...(Platform.OS === "web"
-      ? { boxShadow: "0 6px 24px rgba(255,140,66,0.55)" }
-      : { shadowColor: "#FF8C42", shadowOpacity: 0.55, shadowRadius: 24, shadowOffset: { width: 0, height: 6 }, elevation: 10 }),
+  ctasNarrow: { justifyContent: "center" },
+  ctasCompact: { width: "100%", maxWidth: 360, flexDirection: "column", flexWrap: "nowrap", gap: 10 },
+  action: {
+    minHeight: 52,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 9,
+    borderRadius: radius.pill,
+    borderWidth: 1.5,
+    paddingHorizontal: 26,
+    paddingVertical: 13,
+    ...Platform.select({ web: { cursor: "pointer", transitionDuration: "140ms", transitionProperty: "filter, transform, box-shadow, background-color" } }),
   },
+  actionPrimary: {
+    backgroundColor: "#FF8C42",
+    borderColor: "#FFB05F",
+    ...(Platform.OS === "web"
+      ? { boxShadow: "0 8px 28px rgba(255,140,66,0.42)" }
+      : { shadowColor: "#FF8C42", shadowOpacity: 0.46, shadowRadius: 22, shadowOffset: { width: 0, height: 7 }, elevation: 9 }),
+  },
+  actionGhost: {
+    borderColor: "rgba(244,239,231,0.42)",
+    backgroundColor: "rgba(5,6,11,0.48)",
+    ...Platform.select({ web: { backdropFilter: "blur(12px)" } }),
+  },
+  actionLogin: {
+    minHeight: 44,
+    paddingVertical: 9,
+    paddingHorizontal: 18,
+    borderColor: "rgba(244,239,231,0.45)",
+    backgroundColor: "rgba(5,6,11,0.48)",
+    ...Platform.select({ web: { backdropFilter: "blur(12px)" } }),
+  },
+  actionFull: { width: "100%" },
+  actionHovered: { transform: [{ translateY: -1 }], ...Platform.select({ web: { filter: "brightness(1.08)" } }) },
+  actionPressed: { transform: [{ translateY: 2 }], opacity: 0.92 },
+  actionText: { fontFamily: displayFont, fontSize: 15, lineHeight: 20, fontWeight: "900", letterSpacing: 0.1 },
+  actionPrimaryText: { color: "#1A1206" },
+  actionGhostText: { color: "#F4EFE7" },
+  actionLoginText: { fontSize: 14 },
+
+  proofRail: {
+    width: "100%",
+    maxWidth: 700,
+    flexDirection: "row",
+    alignItems: "stretch",
+    marginTop: 28,
+    borderWidth: 1,
+    borderColor: "rgba(244,239,231,0.15)",
+    borderRadius: radius.md,
+    backgroundColor: "rgba(5,6,11,0.58)",
+    overflow: "hidden",
+    ...Platform.select({ web: { backdropFilter: "blur(14px)", boxShadow: "inset 0 1px 0 rgba(255,255,255,0.04), 0 12px 30px rgba(0,0,0,0.24)" } }),
+  },
+  proofRailCompact: { maxWidth: 360, flexDirection: "column" },
+  proofItem: { flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 15, paddingVertical: 14 },
+  proofItemCompact: { flex: 0, width: "100%", minHeight: 56, paddingHorizontal: 14, paddingVertical: 11 },
+  proofItemDivider: { borderLeftWidth: 1, borderLeftColor: "rgba(244,239,231,0.11)" },
+  proofItemDividerCompact: { borderTopWidth: 1, borderTopColor: "rgba(244,239,231,0.11)" },
+  proofIcon: { width: 30, height: 30, borderRadius: 10, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(242,166,90,0.12)" },
+  proofCopy: { flex: 1, minWidth: 0 },
+  proofTitle: { color: "#F4EFE7", fontFamily: mono, fontSize: 10, lineHeight: 14, letterSpacing: 1.15, fontWeight: "900" },
+  proofDetail: { color: "rgba(244,239,231,0.62)", fontSize: 11, lineHeight: 15, fontWeight: "600", marginTop: 1 },
+
+  inlineFoot: { width: "100%", maxWidth: 360, alignItems: "center", marginTop: 22, gap: 12 },
+  slideRail: { flexDirection: "row", alignItems: "center", gap: 5 },
+  slideDot: { width: 4, height: 4, borderRadius: 4, backgroundColor: "rgba(244,239,231,0.27)" },
+  slideDotActive: { width: 24, backgroundColor: "#F2A65A" },
+  creditBlock: { alignItems: "flex-end", maxWidth: 360, gap: 2 },
+  creditBlockInline: { alignItems: "center", maxWidth: "100%" },
+  communitySource: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 2 },
+  communitySourceDot: { width: 5, height: 5, borderRadius: 5, backgroundColor: "#F2A65A" },
+  communitySourceText: { color: "#F2A65A", fontFamily: mono, fontSize: 9, lineHeight: 12, letterSpacing: 1.5, fontWeight: "900" },
+  communityCaption: { color: "rgba(244,239,231,0.88)", fontFamily: displayFont, fontSize: 12, lineHeight: 16, fontWeight: "800", textAlign: "right" },
+  communityCaptionInline: { textAlign: "center" },
+  credit: { color: "rgba(215,218,228,0.78)", fontFamily: mono, fontSize: 10, lineHeight: 14, letterSpacing: 0.35 },
+
   noPointerEvents: { pointerEvents: "none" },
   boxNonePointerEvents: { pointerEvents: "box-none" },
-  primaryTxt: { color: "#1A1206", fontSize: 16, fontWeight: "900", letterSpacing: 0.3 },
-  ghost: {
-    borderRadius: radius.pill, paddingHorizontal: 26, paddingVertical: 15,
-    borderWidth: 1.5, borderColor: "rgba(244,239,231,0.4)", backgroundColor: "rgba(5,6,11,0.35)",
-    ...(Platform.OS === "web" ? { backdropFilter: "blur(10px)" } : null),
-  },
-  ghostTxt: { color: "#F4EFE7", fontSize: 16, fontWeight: "700" },
-
-  stats: { flexDirection: "row", gap: 10, marginTop: 30, flexWrap: "wrap" },
-  statChip: {
-    flexDirection: "row", alignItems: "baseline", gap: 8,
-    backgroundColor: "rgba(5,6,11,0.5)", borderWidth: 1, borderColor: "rgba(244,239,231,0.14)",
-    borderRadius: radius.pill, paddingHorizontal: 16, paddingVertical: 9,
-    ...(Platform.OS === "web" ? { backdropFilter: "blur(10px)" } : null),
-  },
-  statNum: { color: "#F2A65A", fontFamily: mono, fontSize: 16, fontWeight: "800" },
-  statLbl: { color: "rgba(244,239,231,0.6)", fontFamily: mono, fontSize: 10, letterSpacing: 1.5, fontWeight: "700" },
 
   foot: {
     position: "absolute", bottom: 0, left: 0, right: 0, zIndex: 5,
-    flexDirection: "row", alignItems: "center", justifyContent: "space-between",
+    flexDirection: "row", alignItems: "flex-end", justifyContent: "space-between",
     paddingHorizontal: 28, paddingBottom: 16,
   },
-  footTxt: { color: "rgba(154,160,182,0.5)", fontFamily: mono, fontSize: 10, letterSpacing: 2.5 },
-  creditBlock: { alignItems: "flex-end", maxWidth: "48%", gap: 2 },
-  communityCaption: { color: "rgba(244,239,231,0.78)", fontSize: 11, fontWeight: "700" },
-  credit: { color: "rgba(154,160,182,0.45)", fontFamily: mono, fontSize: 10, letterSpacing: 0.5 },
 });

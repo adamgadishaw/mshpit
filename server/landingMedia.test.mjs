@@ -171,7 +171,7 @@ test("landing route excludes private, removed, status, restricted, and blocked m
   assert.deepEqual(result.media.map((item) => item.postId), ["landing_visible"]);
   assert.equal(result.source, "community");
   assert.equal(typeof result.totals.artists, "number");
-  assert.ok(result.totals.members >= 3);
+  assert.equal(Object.hasOwn(result.totals, "members"), false);
   assert.equal(headers.get("Cache-Control"), "private, max-age=60");
   assert.ok(result.media.length <= 12);
   assert.deepEqual(Object.keys(result.media[0]).sort(), ["artist", "credit", "id", "postId", "uri", "venue"]);

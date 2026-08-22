@@ -130,14 +130,9 @@ export function landingCommunityMedia({ viewerId = null, limit, at = Date.now(),
   return projectLandingMedia(rows, { limit: max, mediaBaseUrl });
 }
 
-export function landingTotals({ at = Date.now() } = {}) {
-  const timestamp = Number.isFinite(Number(at)) ? Number(at) : Date.now();
-  const row = db.prepare(`SELECT
-    (SELECT COUNT(*) FROM artists) AS artists,
-    (SELECT COUNT(*) FROM users WHERE is_banned=0
-      AND (suspended_until IS NULL OR suspended_until<=?)) AS members`).get(timestamp);
+export function landingTotals() {
+  const row = db.prepare("SELECT COUNT(*) AS artists FROM artists").get();
   return {
     artists: Math.max(0, Number(row?.artists) || 0),
-    members: Math.max(0, Number(row?.members) || 0),
   };
 }
