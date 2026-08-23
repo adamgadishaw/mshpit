@@ -171,6 +171,18 @@ CREATE TABLE IF NOT EXISTS dms (
 CREATE INDEX IF NOT EXISTS idx_dms_pair ON dms(from_id, to_id);
 CREATE INDEX IF NOT EXISTS idx_dms_cursor ON dms(from_id, to_id, created_at DESC, id DESC);
 
+-- Read positions belong on the server so opening a conversation survives a
+-- reload and carries across devices. The timestamp + id tuple uses the same
+-- deterministic ordering as message pagination, including same-millisecond DMs.
+CREATE TABLE IF NOT EXISTS dm_reads (
+  user_id      TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  other_id     TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  last_read_at INTEGER NOT NULL,
+  last_read_id TEXT NOT NULL,
+  PRIMARY KEY (user_id, other_id),
+  CHECK (user_id <> other_id)
+);
+
 CREATE TABLE IF NOT EXISTS reports (
   id          TEXT PRIMARY KEY,
   target_type TEXT NOT NULL,

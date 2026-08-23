@@ -79,6 +79,7 @@ import {
   withoutVenueReviewsByUser,
 } from "./domain/accountMediaCache.mjs";
 import { mediaDisplayItems, sameMediaDisplayItems } from "./domain/postMediaDisplay.mjs";
+import { writeDirectMessageRead } from "./features/chat/services/dmReadApi.mjs";
 import { artistGalleryIdentityKey, mergeArtistGalleryMedia, postMatchesArtistGallery } from "./domain/artistGalleryMedia.mjs";
 import { deleteMediaDraftsForOwner, releaseMediaDraftAssets } from "./lib/mediaDraftStaging";
 import {
@@ -98,6 +99,11 @@ import {
 } from "./domain/artistRequestMutation.mjs";
 import { reconcileConfirmedArtistPostRemoval } from "./domain/artistPostMutation.mjs";
 import { reconcileConfirmedNotificationReads } from "./domain/notificationReadMutation.mjs";
+import {
+  directMessageUnreadCount,
+  latestDirectMessageReadCursor,
+  normalizeDirectMessageReadCursor,
+} from "./domain/directMessageRead.mjs";
 import {
   profileFailureOutcome,
   reconcileProfilePostSnapshot,
@@ -2123,6 +2129,16 @@ export function StoreProvider({ children }) {
             n[key] = mergeChatMessages(n[key] || [], incoming, removedIds, 750);
           });
           return n;
+        });
+        setDmRead((current) => {
+          const next = { ...current };
+          threads.forEach((thread) => {
+            const cursor = normalizeDirectMessageReadCursor(thread.readCursor);
+            if (!cursor) return;
+            const key = dmKey(su.id, thread.otherId);
+            next[key] = latestDirectMessageReadCursor(next[key], cursor);
+          });
+          return next;
         });
       })
       .catch(() => {});
@@ -4378,6 +4394,16 @@ export function StoreProvider({ children }) {
           }
           return next;
         });
+        setDmRead((current) => {
+          const next = { ...current };
+          for (const thread of threads) {
+            const cursor = normalizeDirectMessageReadCursor(thread.readCursor);
+            if (!cursor) continue;
+            const key = dmKey(accountId, thread.otherId);
+            next[key] = latestDirectMessageReadCursor(next[key], cursor);
+          }
+          return next;
+        });
         return threads;
       })
       .catch((error) => {
@@ -4455,10 +4481,37 @@ export function StoreProvider({ children }) {
       failed: false,
     });
   };
-  const markThreadRead = (otherId) => {
-    if (!session) return;
-    const key = dmKey(session.id, otherId);
-    setDmRead((r) => ({ ...r, [key]: dms[key]?.length || 0 }));
+  const markThreadRead = async (otherId) => {
+    const actor = sessionRef.current;
+    const context = "Marking this conversation as read";
+    if (!actor || !otherId) return localCommandError("PIT-AUTH-001", context);
+    const key = dmKey(actor.id, otherId);
+    if (ENABLE_DEMO_DATA) {
+      setDmRead((current) => ({ ...current, [key]: dms[key]?.length || 0 }));
+      return commandSuccess({ accountId: actor.id, otherId });
+    }
+    const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
+    try {
+      const response = await writeDirectMessageRead(otherId);
+      const cursor = normalizeDirectMessageReadCursor(response?.readCursor);
+      if (response?.ok !== true) return localCommandError("PIT-API-001", context);
+      if (!accountMutationIsCurrent(mutation, sessionRef.current?.id, accountMutationEpochRef.current)) {
+        return localCommandError("PIT-AUTH-004", context);
+      }
+      if (!cursor) return commandSuccess({ accountId: actor.id, otherId, readCursor: null });
+      setDmRead((current) => ({
+        ...current,
+        [key]: latestDirectMessageReadCursor(current[key], cursor),
+      }));
+      setNotifications((current) => reconcileConfirmedNotificationReads(current, {
+        accountId: actor.id,
+        notificationIds: response.notificationIds,
+      }));
+      return commandSuccess({ accountId: actor.id, otherId, readCursor: cursor });
+    } catch (error) {
+      // Keep the badge visible when the server cannot durably save the read.
+      return commandError(error, context);
+    }
   };
   const inboxThreads = () => {
     if (!session) return [];
@@ -4478,7 +4531,12 @@ export function StoreProvider({ children }) {
         );
         const otherId = k.split("__").find((id) => id !== session.id);
         const last = msgs[msgs.length - 1];
-        const unread = msgs.filter((m, i) => m.from !== session.id && i >= (dmRead[k] || 0)).length;
+        const marker = dmRead[k];
+        const unread = directMessageUnreadCount(msgs, {
+          accountId: session.id,
+          cursor: marker,
+          legacyReadCount: Number.isSafeInteger(marker) ? marker : undefined,
+        });
         // A thread is a "request" until you accept it: someone you don't follow
         // messaged you and you haven't replied yet. Following them or sending a
         // single reply promotes it to the main inbox (Instagram-style gating).

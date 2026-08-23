@@ -44,6 +44,7 @@ import {
   updateMediaAsset,
 } from "./mediaAssets.js";
 import { mediaAssetRoutes } from "./mediaAssetRoutes.js";
+import { directMessageReadProjection, dmReadRoutes } from "./dmReadRoutes.js";
 import {
   enqueueAllOwnedMedia,
   enqueueOwnedMediaKeys,
@@ -1578,6 +1579,14 @@ async function searchYouTubeTrack(ctx, input) {
 // route table: "METHOD /path" -> handler(ctx) ; :params exposed as ctx.params
 export const routes = {
   ...mediaAssetRoutes({ database: db, requireUser, limit, now }),
+  ...dmReadRoutes({
+    database: db,
+    requireUser,
+    userById: q.userById,
+    blockedEitherWay,
+    atomicWrite,
+    ApiError,
+  }),
   // Render only needs liveness plus capability flags. Operational topology,
   // commit ids, quota and mail diagnostics belong on the authenticated staff
   // route so a public probe cannot inventory the deployment.
@@ -3518,6 +3527,7 @@ export const routes = {
   "GET /api/me/threads": (ctx) => {
     const u = requireUser(ctx);
     const hidden = blockedIdSet(u.id);
+    const readProjection = directMessageReadProjection(db, u.id);
     // Inbox refreshes need only one latest message per conversation. A windowed
     // query avoids downloading up to 500 messages for every thread every time the
     // inbox is opened or refreshed, while the full route remains for hydration.
@@ -3537,6 +3547,7 @@ export const routes = {
           otherId: message.other_id,
           otherUser: publicUser(other),
           messages: [{ id: message.id, from: message.from_id, text: message.text, createdAt: message.created_at }],
+          ...readProjection.forOther(message.other_id),
         } : null;
       }).filter(Boolean), removedIds: removedDmIdsFor(u.id) };
     }
@@ -3549,7 +3560,12 @@ export const routes = {
       const msgs = db.prepare(`SELECT id, from_id, text, created_at FROM dms
         WHERE removed=0 AND ((from_id=? AND to_id=?) OR (from_id=? AND to_id=?)) ORDER BY created_at DESC, id DESC LIMIT 500`)
         .all(u.id, o.other, o.other, u.id);
-      return { otherId: o.other, otherUser: publicUser(other), messages: msgs.reverse().map((m) => ({ id: m.id, from: m.from_id, text: m.text, createdAt: m.created_at })) };
+      return {
+        otherId: o.other,
+        otherUser: publicUser(other),
+        messages: msgs.reverse().map((m) => ({ id: m.id, from: m.from_id, text: m.text, createdAt: m.created_at })),
+        ...readProjection.forOther(o.other),
+      };
     }).filter(Boolean);
     return { threads, removedIds: removedDmIdsFor(u.id) };
   },
