@@ -1,4 +1,4 @@
-import { getMediaConfig, mediaConfigured, presignS3Request } from "./media.js";
+import { getMediaConfig, mediaBucketForScope, mediaConfigured, presignS3Request, privateVideoMediaConfigured } from "./media.js";
 import { withImmediateWrite as withWrite } from "./databaseTransaction.js";
 import { ApiError } from "./errors.js";
 
@@ -153,6 +153,7 @@ function normalizedTicketExpiry(expiresAt, at) {
 export function recordMediaObjectTicket(database, {
   ownerId,
   objectKey,
+  storageScope = "public",
   byteSize = 0,
   at = Date.now(),
   expiresAt,
@@ -162,11 +163,11 @@ export function recordMediaObjectTicket(database, {
   const match = key ? OBJECT_KEY.exec(key) : null;
   if (!owner || !match) return false;
   const bytes = Number(byteSize);
-  if (!Number.isSafeInteger(bytes) || bytes < 0) return false;
+  if (!Number.isSafeInteger(bytes) || bytes < 0 || !new Set(["public", "private"]).has(storageScope)) return false;
   const uploadExpiresAt = normalizedTicketExpiry(expiresAt, at);
   return Number(database.prepare(`INSERT OR IGNORE INTO media_objects
-    (object_key,owner_id,purpose,byte_size,status,created_at,upload_expires_at,updated_at)
-    VALUES (?,?,?,?,'issued',?,?,?)`).run(key, owner, match[2], bytes, at, uploadExpiresAt, at).changes || 0) === 1;
+    (object_key,owner_id,storage_scope,purpose,byte_size,status,created_at,upload_expires_at,updated_at)
+    VALUES (?,?,?,?,?,'issued',?,?,?)`).run(key, owner, storageScope, match[2], bytes, at, uploadExpiresAt, at).changes || 0) === 1;
 }
 
 /**
@@ -180,6 +181,7 @@ export function reserveMediaUploadTicket(database, {
   ownerId,
   objectKey,
   byteSize,
+  storageScope = "public",
   at = Date.now(),
   expiresAt = at + MEDIA_UPLOAD_TICKET_MS,
   env = process.env,
@@ -200,10 +202,11 @@ export function reserveMediaUploadTicket(database, {
     database.prepare("DELETE FROM media_upload_issuances WHERE issued_at<=?")
       .run(at - (2 * MEDIA_UPLOAD_ROLLING_WINDOW_MS));
 
-    const existing = database.prepare(`SELECT owner_id,purpose,byte_size,status
+    const existing = database.prepare(`SELECT owner_id,storage_scope,purpose,byte_size,status
       FROM media_objects WHERE object_key=?`).get(key);
-    if (existing && (existing.owner_id !== owner || existing.purpose !== match[2]
-        || (Number(existing.byte_size || 0) > 0 && Number(existing.byte_size) !== bytes))) {
+    if (!new Set(["public", "private"]).has(storageScope)
+        || (existing && (existing.owner_id !== owner || existing.storage_scope !== storageScope || existing.purpose !== match[2]
+        || (Number(existing.byte_size || 0) > 0 && Number(existing.byte_size) !== bytes)))) {
       throw new ApiError(409, "That media upload ticket belongs to different bytes.", "CONFLICT");
     }
 
@@ -229,6 +232,7 @@ export function reserveMediaUploadTicket(database, {
       const inserted = recordMediaObjectTicket(database, {
         ownerId: owner,
         objectKey: key,
+        storageScope,
         byteSize: bytes,
         at,
         expiresAt: uploadExpiresAt,
@@ -391,9 +395,9 @@ export function enqueueOwnerMediaSweep(database, { ownerId, at = Date.now() } = 
   const notBeforeAt = latestExpiry ? Math.max(at, latestExpiry + MEDIA_UPLOAD_SETTLE_BUFFER_MS) : at;
   const finalizeAfterAt = notBeforeAt + MEDIA_OWNER_SWEEP_QUIET_WINDOW_MS;
   const result = database.prepare(`INSERT OR IGNORE INTO media_owner_sweeps
-    (owner_id,status,attempts,continuation_token,not_before_at,finalize_after_at,verification_passes,
+    (owner_id,storage_scope,status,attempts,continuation_token,not_before_at,finalize_after_at,verification_passes,
       next_attempt_at,discovered_count,last_error_code,created_at,updated_at,dead_at)
-    VALUES (?,'pending',0,NULL,?,?,0,?,0,NULL,?,?,NULL)`)
+    VALUES (?,'public','pending',0,NULL,?,?,0,?,0,NULL,?,?,NULL)`)
     .run(owner, notBeforeAt, finalizeAfterAt, notBeforeAt, at, at);
   return Number(result.changes || 0) === 1;
 }
@@ -480,14 +484,23 @@ function joinObjectUrl(base, segments) {
   return `${base.origin}${prefix}/${suffix}`;
 }
 
-export function createMediaDeleteRequest({ objectKey, ownerId, env = process.env, now = new Date() } = {}) {
+export function createMediaDeleteRequest({
+  objectKey,
+  ownerId,
+  storageScope = "public",
+  env = process.env,
+  now = new Date(),
+} = {}) {
   const key = trustedMediaQueueKey(objectKey, ownerId);
   if (!key) return { ok: false, errorCode: "invalid_key" };
   let config;
   try { config = getMediaConfig(env); }
   catch { return { ok: false, errorCode: "storage_unconfigured" }; }
   if (!config.configured) return { ok: false, errorCode: "storage_unconfigured" };
-  const objectUrl = joinObjectUrl(config.endpoint, [config.bucket, ...key.split("/")]);
+  let bucket;
+  try { bucket = mediaBucketForScope(config, storageScope); }
+  catch { return { ok: false, errorCode: "storage_unconfigured" }; }
+  const objectUrl = joinObjectUrl(config.endpoint, [bucket, ...key.split("/")]);
   try {
     return {
       ok: true,
@@ -507,7 +520,13 @@ export function createMediaDeleteRequest({ objectKey, ownerId, env = process.env
   }
 }
 
-export function createMediaListRequest({ ownerId, continuationToken, env = process.env, now = new Date() } = {}) {
+export function createMediaListRequest({
+  ownerId,
+  continuationToken,
+  storageScope = "public",
+  env = process.env,
+  now = new Date(),
+} = {}) {
   const owner = safeOwnerId(ownerId);
   if (!owner) return { ok: false, errorCode: "invalid_owner" };
   if (continuationToken != null && (typeof continuationToken !== "string" || continuationToken.length < 1 || continuationToken.length > 4096)) {
@@ -518,7 +537,7 @@ export function createMediaListRequest({ ownerId, continuationToken, env = proce
   catch { return { ok: false, errorCode: "storage_unconfigured" }; }
   if (!config.configured) return { ok: false, errorCode: "storage_unconfigured" };
   try {
-    const target = new URL(joinObjectUrl(config.endpoint, [config.bucket]));
+    const target = new URL(joinObjectUrl(config.endpoint, [mediaBucketForScope(config, storageScope)]));
     target.searchParams.set("list-type", "2");
     target.searchParams.set("encoding-type", "url");
     target.searchParams.set("max-keys", "1000");
@@ -565,11 +584,13 @@ function claimNext(database, at) {
       SET status='dead',last_error_code='worker_interrupted',dead_at=?,updated_at=?
       WHERE status='processing' AND next_attempt_at<=? AND attempts>=?`)
       .run(at, at, at, MEDIA_DELETION_MAX_ATTEMPTS);
-    const row = database.prepare(`SELECT id,owner_id,object_key,status,attempts
-      FROM media_deletion_queue
-      WHERE status IN ('pending','retry','processing')
-        AND next_attempt_at<=? AND attempts<?
-      ORDER BY next_attempt_at ASC,id ASC LIMIT 1`)
+    const row = database.prepare(`SELECT q.id,q.owner_id,q.object_key,q.status,q.attempts,
+        COALESCE(mo.storage_scope,'public') storage_scope
+      FROM media_deletion_queue q JOIN media_objects mo
+        ON mo.owner_id=q.owner_id AND mo.object_key=q.object_key
+      WHERE q.status IN ('pending','retry','processing')
+        AND q.next_attempt_at<=? AND q.attempts<?
+      ORDER BY q.next_attempt_at ASC,q.id ASC LIMIT 1`)
       .get(at, MEDIA_DELETION_MAX_ATTEMPTS);
     if (!row) return null;
     const attempts = Number(row.attempts || 0) + 1;
@@ -616,7 +637,7 @@ function claimOwnerSweep(database, at) {
       SET status='dead',last_error_code='worker_interrupted',dead_at=?,updated_at=?
       WHERE status='processing' AND next_attempt_at<=? AND attempts>=?`)
       .run(at, at, at, MEDIA_DELETION_MAX_ATTEMPTS);
-    const row = database.prepare(`SELECT owner_id,continuation_token,status,attempts,discovered_count,
+    const row = database.prepare(`SELECT owner_id,storage_scope,continuation_token,status,attempts,discovered_count,
         not_before_at,finalize_after_at,verification_passes
       FROM media_owner_sweeps
       WHERE status IN ('pending','retry','processing') AND not_before_at<=? AND next_attempt_at<=? AND attempts<?
@@ -715,6 +736,7 @@ export async function runMediaOwnerSweepOnce({
   const prepared = createMediaListRequest({
     ownerId: job.owner_id,
     continuationToken: job.continuation_token,
+    storageScope: job.storage_scope,
     env,
     now: new Date(clock()),
   });
@@ -762,7 +784,13 @@ export async function runMediaOwnerSweepOnce({
     for (const key of page.keys) {
       if (!trustedMediaQueueKey(key, job.owner_id)) continue;
       const before = database.prepare("SELECT 1 FROM media_objects WHERE owner_id=? AND object_key=?").get(job.owner_id, key);
-      recordMediaObjectTicket(database, { ownerId: job.owner_id, objectKey: key, at, expiresAt: null });
+      recordMediaObjectTicket(database, {
+        ownerId: job.owner_id,
+        objectKey: key,
+        storageScope: job.storage_scope,
+        at,
+        expiresAt: null,
+      });
       if (!before) discovered += 1;
       valid.push(key);
     }
@@ -781,6 +809,10 @@ export async function runMediaOwnerSweepOnce({
         verification_passes=verification_passes+1,next_attempt_at=?,
         discovered_count=discovered_count+?,last_error_code=NULL,updated_at=?,dead_at=NULL
         WHERE owner_id=?`).run(nextVerificationAt, discovered, at, job.owner_id);
+    } else if (job.storage_scope === "public" && privateVideoMediaConfigured(env)) {
+      database.prepare(`UPDATE media_owner_sweeps SET storage_scope='private',status='pending',attempts=0,
+        continuation_token=NULL,verification_passes=0,next_attempt_at=?,last_error_code=NULL,updated_at=?,dead_at=NULL
+        WHERE owner_id=?`).run(at, at, job.owner_id);
     } else {
       database.prepare("DELETE FROM media_owner_sweeps WHERE owner_id=?").run(job.owner_id);
     }
@@ -792,6 +824,7 @@ async function deleteOne(job, { env, fetchImpl, timeoutMs, clock }) {
   const prepared = createMediaDeleteRequest({
     objectKey: job.object_key,
     ownerId: job.owner_id,
+    storageScope: job.storage_scope,
     env,
     now: new Date(clock()),
   });

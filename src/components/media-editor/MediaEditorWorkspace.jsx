@@ -25,6 +25,7 @@ import {
   videoEditRequiresExport,
 } from "../../domain/mediaEdit.mjs";
 import { normalizeMediaProject } from "../../domain/mediaProject.mjs";
+import { mediaUploadProgressCopy } from "../../domain/mediaTransferProgress.mjs";
 import { mediaAltTextCompletion } from "../../domain/media-alt-text.mjs";
 import { mediaEditorGesturePatch, touchCentroid, touchDistance } from "../../domain/mediaEditorGesture.mjs";
 import { mediaEditorNarrowStageHeight, mediaEditorWideStageHeight } from "../../domain/mediaEditorLayout.mjs";
@@ -135,6 +136,7 @@ export default function MediaEditorWorkspace({
   onAssetRemove,
   onApply,
   onCancelProcessing,
+  uploadProgress = null,
 }) {
   const viewport = useWindowDimensions();
   const reduceMotion = useReducedMotion();
@@ -725,7 +727,24 @@ export default function MediaEditorWorkspace({
               <Text style={styles.errorText}>This draft contains a destructive video recipe. Reset that video to cover-only editing before applying.</Text>
             </View>
           ) : null}
-          {progress ? (
+          {uploadProgress ? (
+            <View
+              style={styles.transferProgress}
+              accessibilityRole="progressbar"
+              accessibilityLabel={mediaUploadProgressCopy(uploadProgress)}
+              accessibilityValue={{
+                min: 0,
+                max: 100,
+                now: Math.round(Math.min(1, Math.max(0, Number(uploadProgress.fraction) || 0)) * 100),
+                text: mediaUploadProgressCopy(uploadProgress),
+              }}
+            >
+              <Text style={styles.progress} accessibilityLiveRegion="polite">{mediaUploadProgressCopy(uploadProgress)}</Text>
+              <View style={styles.transferProgressTrack}>
+                <View style={[styles.transferProgressFill, { width: `${Math.min(1, Math.max(0, Number(uploadProgress.fraction) || 0)) * 100}%` }]} />
+              </View>
+            </View>
+          ) : progress ? (
             <Text style={styles.progress} accessibilityLiveRegion="polite">Preparing media {progress.current} of {progress.total}…</Text>
           ) : null}
 
@@ -831,6 +850,9 @@ const styles = StyleSheet.create({
   error: { marginHorizontal: space(3), marginTop: space(2), borderRadius: radius.md, borderWidth: 1, borderColor: colors.danger, backgroundColor: colors.surface, padding: 10, flexDirection: "row", alignItems: "center", gap: 9 },
   errorText: { flex: 1, color: colors.text, fontSize: 12, lineHeight: 17 },
   progress: { color: colors.amber, fontFamily: mono, fontSize: 10, textAlign: "center", paddingVertical: 7 },
+  transferProgress: { marginHorizontal: space(3), paddingBottom: 7 },
+  transferProgressTrack: { height: 4, overflow: "hidden", borderRadius: 2, backgroundColor: colors.lineSoft },
+  transferProgressFill: { height: "100%", borderRadius: 2, backgroundColor: colors.amber },
   empty: { flex: 1, alignItems: "center", justifyContent: "center", padding: space(8), gap: space(2) },
   emptyTitle: { color: colors.text, fontFamily: displayFont, fontSize: 18, fontWeight: "900" },
   emptyBody: { maxWidth: 360, color: colors.textDim, fontSize: 13, lineHeight: 19, textAlign: "center" },

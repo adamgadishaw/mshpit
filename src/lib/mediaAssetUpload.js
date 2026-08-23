@@ -1,17 +1,8 @@
 import { api } from "./api";
 import { prepareMediaUploadAsset, uploadPreparedMediaAsset } from "./mediaUpload";
+import { finalizeMediaSourceV1 } from "./mediaAssetFinalize.mjs";
 import { mediaEditFingerprint, mediaImageRequiresRender, normalizeMediaEdit, videoEditRequiresExport } from "../domain/mediaEdit.mjs";
-
-function stableToken(value, prefix) {
-  const input = String(value || "media");
-  let hash = 2166136261;
-  for (let index = 0; index < input.length; index += 1) {
-    hash ^= input.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  const readable = input.replace(/[^A-Za-z0-9._:-]/g, "-").slice(0, 70) || "media";
-  return `${prefix}:${readable}:${(hash >>> 0).toString(36)}`.slice(0, 120);
-}
+import { mediaSourceClientAssetId, stableMediaUploadToken } from "../domain/mediaUploadIdentity.mjs";
 
 function mediaPipelineError(code, message, cause) {
   const error = new Error(message, cause ? { cause } : undefined);
@@ -21,7 +12,19 @@ function mediaPipelineError(code, message, cause) {
 
 const safeDimension = (value) => Math.max(1, Math.min(32_768, Math.round(Number(value) || 1)));
 
-async function createAndUploadVariant({ assetId, localId, role, prepared, dimensions, timeMs, signal, onStage, apiCall, uploadPrepared }) {
+async function createAndUploadVariant({
+  assetId,
+  localId,
+  role,
+  prepared,
+  dimensions,
+  timeMs,
+  signal,
+  onStage,
+  onProgress,
+  apiCall,
+  uploadPrepared,
+}) {
   onStage?.(role === "poster" ? "uploading-poster" : "uploading-render");
   const created = await apiCall(`/api/media/assets/${encodeURIComponent(assetId)}/variants`, {
     method: "POST",
@@ -31,7 +34,7 @@ async function createAndUploadVariant({ assetId, localId, role, prepared, dimens
       // Identity follows the logical edit/cover revision rather than an
       // encoder's nondeterministic byte size. Retrying the same recipe can
       // safely replace an unfinished variant instead of colliding forever.
-      clientVariantId: stableToken(`${localId}:${role}`, `studio-${role}`),
+      clientVariantId: stableMediaUploadToken(`${localId}:${role}`, `studio-${role}`),
       role,
       contentType: prepared.contentType,
       fileSize: prepared.fileSize,
@@ -43,6 +46,7 @@ async function createAndUploadVariant({ assetId, localId, role, prepared, dimens
     await uploadPrepared(prepared, created.upload, {
       signal,
       context: role === "poster" ? "Uploading the video cover" : "Uploading the edited photo",
+      onProgress: (progress) => onProgress?.({ ...progress, stage: role === "poster" ? "uploading-poster" : "uploading-render" }),
     });
   }
   onStage?.(role === "poster" ? "verifying-poster" : "verifying-render");
@@ -70,6 +74,8 @@ export async function uploadStudioMediaAsset({
   posterAsset = null,
   signal,
   onStage,
+  onProgress,
+  onRemoteDraft,
 } = {}, services = {}) {
   const apiCall = services.apiCall || api;
   const prepareAsset = services.prepareAsset || prepareMediaUploadAsset;
@@ -77,6 +83,17 @@ export async function uploadStudioMediaAsset({
   if (!asset?.id || !asset?.uri) throw mediaPipelineError("MEDIA_SOURCE_INVALID", "Choose that media again before uploading.");
   const kind = asset.kind === "video" ? "video" : "image";
   const edit = normalizeMediaEdit(asset.edit, { kind, durationMs: asset.durationMs });
+  const reusingVerifiedVideoSource = kind === "video" && !!asset.assetId;
+  if (reusingVerifiedVideoSource) {
+    // private-derivative-v1 posters come from the authoritative source verifier. Until
+    // that verifier exposes an idempotent cover-regeneration contract, never
+    // PATCH a new cover recipe or substitute client-generated poster bytes on
+    // an already verified clip.
+    throw mediaPipelineError(
+      "VIDEO_COVER_REEDIT_UNAVAILABLE",
+      "Verified clip covers cannot be changed yet. Remove the clip and add it again to choose a new cover.",
+    );
+  }
   const needsPhotoRender = mediaImageRequiresRender(asset, edit);
   if (kind === "video" && videoEditRequiresExport(edit)) {
     throw mediaPipelineError("VIDEO_RENDERER_UNAVAILABLE", "PIT can publish a chosen cover now, but this video edit needs the authoritative encoder.");
@@ -118,7 +135,12 @@ export async function uploadStudioMediaAsset({
     // The immutable source is independent from any reversible recipe. Changing
     // a filter or alt text must not upload the same original bytes as a new
     // source asset.
-    const clientAssetId = stableToken(`${asset.id}:${sourcePrepared.fileSize}:${sourcePrepared.contentType}:${sourcePrepared.name}`, "studio-asset");
+    const clientAssetId = mediaSourceClientAssetId({
+      localId: asset.id,
+      fileSize: sourcePrepared.fileSize,
+      contentType: sourcePrepared.contentType,
+      name: sourcePrepared.name,
+    });
     onStage?.("preparing-source");
     const created = await apiCall("/api/media/assets", {
       method: "POST",
@@ -134,15 +156,26 @@ export async function uploadStudioMediaAsset({
     });
     if (!created?.asset?.id) throw mediaPipelineError("MEDIA_ASSET_INVALID", "PIT could not prepare that media item.");
     assetId = created.asset.id;
+    if (created.asset.status !== "ready") {
+      // Surface the owner-only draft identity before the potentially long PUT
+      // and decoder pass. The composer can then retire the exact source when a
+      // user explicitly cancels or discards, without persisting the capability
+      // in the recoverable local draft.
+      onRemoteDraft?.({ assetId, duplicate: !!created.duplicate });
+    }
     if (created.upload) {
       onStage?.("uploading-source");
-      await uploadPrepared(sourcePrepared, created.upload, { signal, context: "Uploading the original media" });
+      await uploadPrepared(sourcePrepared, created.upload, {
+        signal,
+        context: "Uploading the original media",
+        onProgress: (progress) => onProgress?.({ ...progress, stage: "uploading-source" }),
+      });
     }
 
     onStage?.("verifying-source");
-    result = await apiCall(`/api/media/assets/${encodeURIComponent(assetId)}/finalize`, {
-      method: "POST",
-      context: "Verifying your PIT media",
+    result = await finalizeMediaSourceV1({
+      apiCall,
+      assetId,
       signal,
       body: {
         width: safeDimension(asset.width),
@@ -185,11 +218,12 @@ export async function uploadStudioMediaAsset({
       dimensions: renderedAsset,
       signal,
       onStage,
+      onProgress,
       apiCall,
       uploadPrepared,
     });
   }
-  if (posterPrepared && !result?.asset?.posterUrl) {
+  if (posterPrepared && !reusingVerifiedVideoSource && !result?.asset?.posterUrl) {
     result = await createAndUploadVariant({
       assetId,
       localId: `${asset.id}:${recipeFingerprint}:${posterAsset.actualTimeMs ?? asset.posterTimeMs ?? edit.coverMs}`,
@@ -199,6 +233,7 @@ export async function uploadStudioMediaAsset({
       timeMs: posterAsset.actualTimeMs ?? asset.posterTimeMs ?? edit.coverMs,
       signal,
       onStage,
+      onProgress,
       apiCall,
       uploadPrepared,
     });

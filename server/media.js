@@ -34,6 +34,8 @@ const REQUIRED_ENV = [
   "MEDIA_SECRET_ACCESS_KEY",
   "MEDIA_PUBLIC_BASE_URL",
 ];
+const OWNED_OBJECT_KEY = /^users\/[A-Za-z0-9_-]{1,128}\/(?:avatar|banner|post|review|venue)\/[A-Za-z0-9_-]{1,240}\.(?:jpg|png|webp|gif|heic|heif|mp4|webm|mov)$/;
+const STRONG_ETAG = /^"[\x21\x23-\x7e]{1,200}"$/u;
 
 function checkedUrl(value, label, env) {
   let url;
@@ -55,6 +57,7 @@ export function getMediaConfig(env = process.env) {
   const endpoint = checkedUrl(env.MEDIA_ENDPOINT, "MEDIA_ENDPOINT", env);
   const publicBase = checkedUrl(env.MEDIA_PUBLIC_BASE_URL, "MEDIA_PUBLIC_BASE_URL", env);
   const bucket = String(env.MEDIA_BUCKET).trim();
+  const sourceBucket = String(env.MEDIA_SOURCE_BUCKET || "").trim();
   const region = String(env.MEDIA_REGION).trim();
   const accessKeyId = String(env.MEDIA_ACCESS_KEY_ID).trim();
   const secretAccessKey = String(env.MEDIA_SECRET_ACCESS_KEY);
@@ -62,12 +65,48 @@ export function getMediaConfig(env = process.env) {
       || !accessKeyId || !secretAccessKey) {
     return { configured: false, missing: ["invalid media storage configuration"] };
   }
-  return { configured: true, endpoint, publicBase, bucket, region, accessKeyId, secretAccessKey };
+  return { configured: true, endpoint, publicBase, bucket, sourceBucket, region, accessKeyId, secretAccessKey };
 }
 
 export function mediaConfigured(env = process.env) {
   try { return getMediaConfig(env).configured; }
   catch { return false; }
+}
+
+export function privateVideoMediaConfigured(env = process.env) {
+  try {
+    const config = getMediaConfig(env);
+    return config.configured
+      && /^[A-Za-z0-9._-]{3,255}$/.test(config.sourceBucket)
+      && config.sourceBucket !== config.bucket;
+  } catch {
+    return false;
+  }
+}
+
+function storageBucket(config, storageScope) {
+  if (storageScope === "private") {
+    if (!config.sourceBucket || config.sourceBucket === config.bucket) {
+      throw new ApiError(503, "Private clip storage is not configured.", "MEDIA_STORAGE_UNAVAILABLE");
+    }
+    return config.sourceBucket;
+  }
+  if (storageScope !== "public") {
+    throw new ApiError(500, "Media storage scope is invalid.", "INTERNAL_ERROR");
+  }
+  return config.bucket;
+}
+
+export function mediaBucketForScope(config, storageScope = "public") {
+  return storageBucket(config, storageScope);
+}
+
+export function privateMediaLocator(objectKey) {
+  const key = String(objectKey || "");
+  if (!OWNED_OBJECT_KEY.test(key)) {
+    throw new ApiError(500, "Private media identity is invalid.", "INTERNAL_ERROR");
+  }
+  return `pit-private:${key}`;
 }
 
 function rfc3986(value) {
@@ -173,7 +212,14 @@ function joinObjectUrl(base, segments) {
   return `${base.origin}${prefix}/${suffix}`;
 }
 
-export function createMediaPresign({ userId, body, env = process.env, now = new Date(), objectId = randomUUID() }) {
+export function createMediaPresign({
+  userId,
+  body,
+  env = process.env,
+  now = new Date(),
+  objectId = randomUUID(),
+  storageScope = "public",
+} = {}) {
   const file = validateMediaRequest(body);
   const config = getMediaConfig(env);
   if (!config.configured) {
@@ -183,8 +229,8 @@ export function createMediaPresign({ userId, body, env = process.env, now = new 
   if (!owner) throw new ApiError(401, "Log in first.", "AUTH_REQUIRED");
   const safeId = String(objectId).replace(/[^A-Za-z0-9_-]/g, "");
   const key = `users/${owner}/${file.purpose}/${safeId}.${file.extension}`;
-  const objectUrl = joinObjectUrl(config.endpoint, [config.bucket, ...key.split("/")]);
-  const publicUrl = joinObjectUrl(config.publicBase, key.split("/"));
+  const objectUrl = joinObjectUrl(config.endpoint, [storageBucket(config, storageScope), ...key.split("/")]);
+  const publicUrl = storageScope === "public" ? joinObjectUrl(config.publicBase, key.split("/")) : null;
   // R2 implements conditional PutObject. Binding every public object key to a
   // create-only PUT prevents a still-valid signed URL from overwriting bytes
   // after finalization/moderation. The browser is allowed to author this header;
@@ -215,9 +261,110 @@ export function createMediaPresign({ userId, body, env = process.env, now = new 
     method: "PUT",
     uploadUrl,
     publicUrl,
+    storageLocator: storageScope === "private" ? privateMediaLocator(key) : publicUrl,
+    storageScope,
     key,
     requiredHeaders,
     expiresAt: now.getTime() + expiresIn * 1000,
     fileSize: file.fileSize,
+  };
+}
+
+// Internal processors never receive the bucket credential. Instead, the web
+// control plane grants one short-lived, immutable-generation GET capability.
+// Binding If-Match prevents a delete/recreate race from making a verifier read
+// bytes other than the exact object generation that HEAD inspection approved.
+export function createMediaDownloadCapability({
+  objectKey,
+  ifMatch,
+  env = process.env,
+  now = new Date(),
+  expiresIn = 120,
+  storageScope = "public",
+} = {}) {
+  const key = String(objectKey || "");
+  const etag = String(ifMatch || "").trim();
+  const ttl = Number(expiresIn);
+  if (!OWNED_OBJECT_KEY.test(key) || !STRONG_ETAG.test(etag)) {
+    throw new ApiError(500, "Clip verification could not be prepared.", "INTERNAL_ERROR");
+  }
+  if (!Number.isSafeInteger(ttl) || ttl < 30 || ttl > 300) {
+    throw new ApiError(500, "Clip verification could not be prepared.", "INTERNAL_ERROR");
+  }
+  const config = getMediaConfig(env);
+  if (!config.configured) {
+    throw new ApiError(503, "Media storage is temporarily unavailable.", "MEDIA_STORAGE_UNAVAILABLE");
+  }
+  const objectUrl = joinObjectUrl(config.endpoint, [storageBucket(config, storageScope), ...key.split("/")]);
+  const headers = { "If-Match": etag };
+  let downloadUrl;
+  try {
+    downloadUrl = presignS3Request({
+      method: "GET",
+      url: objectUrl,
+      region: config.region,
+      accessKeyId: config.accessKeyId,
+      secretAccessKey: config.secretAccessKey,
+      headers,
+      expiresIn: ttl,
+      now,
+    });
+  } catch (error) {
+    throw new ApiError(503, "Clip verification could not be prepared. Try again.", "MEDIA_STORAGE_UNAVAILABLE", error);
+  }
+  return {
+    method: "GET",
+    downloadUrl,
+    requiredHeaders: headers,
+    expiresAt: now.getTime() + ttl * 1_000,
+  };
+}
+
+// The isolated verifier receives a single create-only public-output
+// capability, never the bucket credential. Content-Length is deliberately not
+// signed because the sanitized derivative size exists only after transcoding;
+// the worker sends its measured length and the control plane independently
+// HEADs and hashes the finished object before publication.
+export function createMediaProcessorUploadCapability({
+  objectKey,
+  env = process.env,
+  now = new Date(),
+  expiresIn = 120,
+} = {}) {
+  const key = String(objectKey || "");
+  const ttl = Number(expiresIn);
+  if (!OWNED_OBJECT_KEY.test(key) || !key.endsWith(".mp4")
+      || !Number.isSafeInteger(ttl) || ttl < 30 || ttl > 300) {
+    throw new ApiError(500, "Clip delivery upload could not be prepared.", "INTERNAL_ERROR");
+  }
+  const config = getMediaConfig(env);
+  if (!config.configured) {
+    throw new ApiError(503, "Media storage is temporarily unavailable.", "MEDIA_STORAGE_UNAVAILABLE");
+  }
+  const objectUrl = joinObjectUrl(config.endpoint, [config.bucket, ...key.split("/")]);
+  const headers = { "Content-Type": "video/mp4", "If-None-Match": "*" };
+  let uploadUrl;
+  try {
+    uploadUrl = presignS3Request({
+      method: "PUT",
+      url: objectUrl,
+      region: config.region,
+      accessKeyId: config.accessKeyId,
+      secretAccessKey: config.secretAccessKey,
+      headers,
+      expiresIn: ttl,
+      now,
+    });
+  } catch (error) {
+    throw new ApiError(503, "Clip delivery upload could not be prepared.", "MEDIA_STORAGE_UNAVAILABLE", error);
+  }
+  return {
+    method: "PUT",
+    uploadUrl,
+    requiredHeaders: headers,
+    publicUrl: joinObjectUrl(config.publicBase, key.split("/")),
+    key,
+    storageScope: "public",
+    expiresAt: now.getTime() + ttl * 1_000,
   };
 }

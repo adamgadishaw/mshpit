@@ -134,6 +134,16 @@ export function reserveRateLimits(requests = []) {
   });
 }
 
+// Deterministic policy tests exercise cross-account/IP/global interactions in
+// one process. Never call this from runtime code; production refuses it even if
+// accidentally imported.
+export function resetRateLimitsForTests() {
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("Rate-limit test reset is unavailable in production.");
+  }
+  buckets.clear();
+}
+
 // Bound the bucket map so it can't grow without limit (memory-safety).
 setInterval(() => {
   const now = Date.now();

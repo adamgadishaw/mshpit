@@ -13,11 +13,17 @@ export function attachMediaEditArtifacts(asset, { renderedAsset = null, posterAs
     return renderedAsset ? { ...asset, renderedAsset } : { ...asset };
   }
   if (asset.kind === "video" && posterAsset) {
+    const posterTimeMs = Math.max(0, Math.round(Number(posterAsset.actualTimeMs) || 0));
     return {
       ...asset,
+      // Auto-cover scoring may land on a better decoded frame than the recipe's
+      // initial hint. Commit that exact reviewed frame into the recipe consumed
+      // by authoritative finalization; otherwise Studio can preview one cover
+      // while the private verifier publishes another.
+      edit: { ...(asset.edit || {}), coverMs: posterTimeMs },
       posterAsset,
       posterUri: posterAsset.uri,
-      posterTimeMs: Math.max(0, Math.round(Number(posterAsset.actualTimeMs) || 0)),
+      posterTimeMs,
       durationMs: Math.max(0, Math.round(Number(posterAsset.durationMs ?? asset.durationMs) || 0)),
     };
   }

@@ -8,8 +8,11 @@ import { assertSafeAuthoredText } from "./contentSafety.js";
 import { withImmediateWrite as withWrite } from "./databaseTransaction.js";
 import { ApiError } from "./errors.js";
 import {
+  createMediaDownloadCapability,
+  createMediaProcessorUploadCapability,
   createMediaPresign,
   getMediaConfig,
+  mediaBucketForScope,
   presignS3Request,
   validateMediaRequest,
 } from "./media.js";
@@ -33,6 +36,7 @@ const MAX_RECIPE_BYTES = 16 * 1024;
 const MAX_IMAGE_EDGE = 32_768;
 const MAX_VIDEO_DURATION_MS = 60_000;
 const MAX_VIDEO_DURATION_DRIFT_MS = 1_500;
+const MAX_VIDEO_BYTES = 100 * 1024 * 1024;
 const MAX_POST_MEDIA = 8;
 const MAX_ALT_TEXT = 1_000;
 
@@ -128,6 +132,7 @@ function reserveAndSign(database, {
   objectId,
   env,
   at,
+  storageScope = "public",
 } = {}) {
   const file = validateMediaRequest(body);
   const key = expectedObjectKey({ ownerId, purpose: file.purpose, objectId, extension: file.extension });
@@ -138,6 +143,7 @@ function reserveAndSign(database, {
     at,
     expiresAt: at + MEDIA_UPLOAD_TICKET_MS,
     env,
+    storageScope,
   });
   const ticket = createMediaPresign({
     userId: ownerId,
@@ -145,6 +151,7 @@ function reserveAndSign(database, {
     env,
     now: new Date(at),
     objectId,
+    storageScope,
   });
   if (ticket.key !== key || ticket.fileSize !== file.fileSize) {
     throw new ApiError(502, "Media upload could not be prepared. Try again.", "MEDIA_UPLOAD_FAILED");
@@ -188,7 +195,13 @@ function assetCreateInput(body) {
 }
 
 function assetUploadTicket(row, { env, now }) {
-  return { body: storedUploadBody(row), objectId: objectIdFromKey(row.source_key), env, at: now };
+  return {
+    body: storedUploadBody(row),
+    objectId: objectIdFromKey(row.source_key),
+    env,
+    at: now,
+    storageScope: row.source_storage_scope || "public",
+  };
 }
 
 export function createMediaAsset(database, {
@@ -222,13 +235,14 @@ export function createMediaAsset(database, {
         // random token so readers cannot enumerate camera originals/EXIF by
         // combining a public asset id with the small supported-extension set.
         objectId: sourceObjectId,
+        storageScope: input.canonical.kind === "video" ? "private" : "public",
       });
       database.prepare(`INSERT INTO media_assets
-        (id,owner_id,client_asset_id,create_hash,purpose,kind,source_key,source_url,original_name,mime_type,
+        (id,owner_id,client_asset_id,create_hash,purpose,kind,source_key,source_url,source_storage_scope,original_name,mime_type,
          byte_size,status,metadata_status,edit_recipe,recipe_version,render_state,created_at,updated_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,'upload_pending','pending','{}',1,'not_required',?,?)`)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,'upload_pending','pending','{}',1,'not_required',?,?)`)
         .run(assetId, owner, input.canonical.clientAssetId, input.createHash, input.canonical.purpose,
-          input.canonical.kind, ticket.key, ticket.publicUrl, input.canonical.name,
+          input.canonical.kind, ticket.key, ticket.storageLocator, ticket.storageScope, input.canonical.name,
           input.canonical.contentType, input.canonical.fileSize, at, at);
       row = database.prepare("SELECT * FROM media_assets WHERE id=?").get(assetId);
       return { asset: assetProjection(row, { owner: true }), upload: ticket, duplicate: false };
@@ -260,14 +274,15 @@ function strongObjectEtag(value) {
   return /^"[\x21\x23-\x7e]{1,200}"$/u.test(etag) ? etag : null;
 }
 
-async function verifyStoredObject({ objectKey, expectedBytes, expectedType, env, fetchImpl }) {
+async function verifyStoredObject({ objectKey, expectedBytes, expectedType, env, fetchImpl, signal, storageScope = "public" }) {
   const config = getMediaConfig(env);
   if (!config.configured) throw new ApiError(503, "Media storage is temporarily unavailable.", "MEDIA_STORAGE_UNAVAILABLE");
   let url;
   try {
+    const bucket = mediaBucketForScope(config, storageScope);
     url = presignS3Request({
       method: "HEAD",
-      url: endpointObjectUrl(config, objectKey),
+      url: endpointObjectUrl({ ...config, bucket }, objectKey),
       region: config.region,
       accessKeyId: config.accessKeyId,
       secretAccessKey: config.secretAccessKey,
@@ -281,7 +296,7 @@ async function verifyStoredObject({ objectKey, expectedBytes, expectedType, env,
     response = await fetchImpl(url, {
       method: "HEAD",
       redirect: "error",
-      signal: AbortSignal.timeout(8_000),
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(8_000)]) : AbortSignal.timeout(8_000),
     });
   } catch (error) {
     throw new ApiError(503, "The upload could not be verified yet. Try again.", "MEDIA_STORAGE_UNAVAILABLE", error);
@@ -304,14 +319,375 @@ async function verifyStoredObject({ objectKey, expectedBytes, expectedType, env,
   };
 }
 
+function authoritativePosterInput(poster, { durationMs }) {
+  const bytes = Buffer.isBuffer(poster?.bytes) ? poster.bytes : null;
+  const byteSize = Number(poster?.byteSize);
+  const width = Number(poster?.width);
+  const height = Number(poster?.height);
+  const timeMs = Number(poster?.timeMs);
+  const digest = String(poster?.sha256 || "");
+  if (poster?.contentType !== "image/jpeg"
+      || !bytes || bytes.byteLength !== byteSize || byteSize < 4 || byteSize > 1_500_000
+      || !Number.isSafeInteger(width) || width < 1 || width > 1_280
+      || !Number.isSafeInteger(height) || height < 1 || height > 1_280
+      || !Number.isSafeInteger(timeMs) || timeMs < 0 || timeMs >= durationMs
+      || !/^[a-f0-9]{64}$/.test(digest)
+      || createHash("sha256").update(bytes).digest("hex") !== digest
+      || bytes[0] !== 0xff || bytes[1] !== 0xd8 || bytes[bytes.length - 2] !== 0xff || bytes[bytes.length - 1] !== 0xd9) {
+    throw new ApiError(503, "Clip decoding returned an invalid cover. Try again later.", "MEDIA_STORAGE_UNAVAILABLE");
+  }
+  return { bytes, byteSize, width, height, timeMs, digest };
+}
+
+function createAuthoritativePosterVariant(database, {
+  ownerId,
+  assetId,
+  input,
+  sourceEtag,
+  env,
+  at,
+}) {
+  return withWrite(database, () => {
+    const asset = database.prepare("SELECT * FROM media_assets WHERE id=? AND owner_id=?").get(assetId, ownerId);
+    if (!asset) throw new ApiError(404, "That media item was not found.", "NOT_FOUND");
+    if (asset.kind !== "video" || database.prepare("SELECT 1 FROM post_media WHERE asset_id=?").get(asset.id)) {
+      throw new ApiError(409, "That clip cover can no longer be generated.", "CONFLICT");
+    }
+    touchLiveLedger(database, ownerId, asset.source_key, at);
+    const clientVariantId = `pit-worker-poster-v2:${input.digest.slice(0, 48)}:${input.timeMs}`;
+    const createHash = fingerprint({
+      origin: "private_derivative_v1",
+      sourceKey: asset.source_key,
+      sourceEtag,
+      digest: input.digest,
+      timeMs: input.timeMs,
+      byteSize: input.byteSize,
+    });
+    const existing = database.prepare("SELECT * FROM media_variants WHERE asset_id=? AND role='poster'").get(asset.id);
+    if (existing && existing.client_variant_id === clientVariantId && existing.create_hash === createHash
+        && existing.verification_origin === "private_derivative_v1") {
+      const upload = existing.status === "upload_pending"
+        ? reserveAndSign(database, variantUploadRequest(asset, existing, { env, at }))
+        : null;
+      return { row: existing, upload };
+    }
+    if (existing) {
+      const queued = enqueueOwnedMediaKeys(database, { ownerId, keys: [existing.object_key], at });
+      if (queued.accepted !== 1) {
+        throw new ApiError(409, "A previous clip cover is no longer available. Start the clip again.", "CONFLICT");
+      }
+      database.prepare("DELETE FROM media_variants WHERE id=? AND asset_id=?").run(existing.id, asset.id);
+      database.prepare(`UPDATE media_assets SET poster_variant_id=NULL,poster_key=NULL,poster_url=NULL,poster_time_ms=NULL,updated_at=?
+        WHERE id=? AND owner_id=?`).run(at, asset.id, ownerId);
+    }
+    const variantId = newId("mv");
+    const objectId = `${asset.id}_poster_${variantId}`;
+    const ticket = reserveAndSign(database, {
+      ownerId,
+      body: {
+        purpose: asset.purpose,
+        contentType: "image/jpeg",
+        fileSize: input.byteSize,
+        name: `pit-worker-cover-${input.digest.slice(0, 16)}.jpg`,
+      },
+      env,
+      at,
+      objectId,
+    });
+    database.prepare(`INSERT INTO media_variants
+      (id,asset_id,client_variant_id,create_hash,role,object_key,public_url,mime_type,byte_size,status,verification_origin,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,'upload_pending','private_derivative_v1',?,?)`)
+      .run(variantId, asset.id, clientVariantId, createHash, "poster", ticket.key,
+        ticket.publicUrl, "image/jpeg", input.byteSize, at, at);
+    return {
+      row: database.prepare("SELECT * FROM media_variants WHERE id=? AND asset_id=?").get(variantId, asset.id),
+      upload: ticket,
+    };
+  });
+}
+
+async function verifyStoredObjectDigest({ objectKey, stored, expectedBytes, expectedType, expectedDigest, env, fetchImpl, signal }) {
+  const capability = createMediaDownloadCapability({ objectKey, ifMatch: stored.etag, env, expiresIn: 90 });
+  let response;
+  try {
+    response = await fetchImpl(capability.downloadUrl, {
+      method: "GET",
+      redirect: "error",
+      headers: capability.requiredHeaders,
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(8_000)]) : AbortSignal.timeout(8_000),
+    });
+  } catch (error) {
+    throw new ApiError(503, "The generated clip cover could not be verified.", "MEDIA_STORAGE_UNAVAILABLE", error);
+  }
+  const actualBytes = Number(response?.headers?.get?.("content-length"));
+  const actualType = contentType(response?.headers?.get?.("content-type"));
+  const actualEtag = strongObjectEtag(response?.headers?.get?.("etag"));
+  if (response?.status !== 200 || actualBytes !== expectedBytes || actualType !== expectedType
+      || actualEtag !== stored.etag || !response.body || typeof response.body.getReader !== "function") {
+    throw new ApiError(409, "The generated clip cover changed before publication.", "CONFLICT");
+  }
+  const reader = response.body.getReader();
+  const hash = createHash("sha256");
+  let received = 0;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      received += value.byteLength;
+      if (received > expectedBytes) {
+        await reader.cancel("cover exceeded signed size");
+        throw new ApiError(409, "The generated clip cover changed before publication.", "CONFLICT");
+      }
+      hash.update(value);
+    }
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+    throw new ApiError(503, "The generated clip cover could not be verified.", "MEDIA_STORAGE_UNAVAILABLE", error);
+  } finally {
+    reader.releaseLock();
+  }
+  if (received !== expectedBytes || hash.digest("hex") !== expectedDigest) {
+    throw new ApiError(409, "The generated clip cover bytes do not match the authoritative decoder.", "CONFLICT");
+  }
+}
+
+async function stageAuthoritativePoster(database, {
+  ownerId,
+  assetId,
+  poster,
+  durationMs,
+  sourceEtag,
+  env,
+  at,
+  fetchImpl,
+  signal,
+}) {
+  const input = authoritativePosterInput(poster, { durationMs });
+  const created = createAuthoritativePosterVariant(database, {
+    ownerId,
+    assetId,
+    input,
+    sourceEtag,
+    env,
+    at,
+  });
+  const row = created?.row;
+  if (!row || row.role !== "poster" || row.verification_origin !== "private_derivative_v1"
+      || row.mime_type !== "image/jpeg" || Number(row.byte_size) !== input.byteSize) {
+    throw new ApiError(409, "That clip cover changed while it was being prepared.", "CONFLICT");
+  }
+  if (row.status === "verified") {
+    if (Number(row.width) !== input.width || Number(row.height) !== input.height || Number(row.time_ms) !== input.timeMs) {
+      throw new ApiError(409, "That clip cover was already finalized differently.", "CONFLICT");
+    }
+  } else if (row.status !== "upload_pending" || !created.upload) {
+    throw new ApiError(409, "That clip cover cannot be finalized.", "CONFLICT");
+  }
+  let response;
+  if (created.upload) {
+    try {
+      response = await fetchImpl(created.upload.uploadUrl, {
+        method: "PUT",
+        redirect: "error",
+        headers: created.upload.requiredHeaders,
+        body: input.bytes,
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(10_000)]) : AbortSignal.timeout(10_000),
+      });
+    } catch (error) {
+      throw new ApiError(503, "Clip cover storage is temporarily unavailable.", "MEDIA_STORAGE_UNAVAILABLE", error);
+    }
+    // A lost response can leave the deterministic create-only object present.
+    // 412 is reconciled only after the exact generation is downloaded and its
+    // SHA-256 matches the worker response below.
+    if (!response || !((response.status >= 200 && response.status < 300) || response.status === 412)) {
+      throw new ApiError(503, "Clip cover storage is temporarily unavailable.", "MEDIA_STORAGE_UNAVAILABLE");
+    }
+  }
+  const stored = await verifyStoredObject({
+    objectKey: row.object_key,
+    expectedBytes: input.byteSize,
+    expectedType: "image/jpeg",
+    env,
+    fetchImpl,
+    signal,
+  });
+  if (!stored.etag) {
+    throw new ApiError(503, "The generated clip cover could not be generation-bound.", "MEDIA_STORAGE_UNAVAILABLE");
+  }
+  await verifyStoredObjectDigest({
+    objectKey: row.object_key,
+    stored,
+    expectedBytes: input.byteSize,
+    expectedType: "image/jpeg",
+    expectedDigest: input.digest,
+    env,
+    fetchImpl,
+    signal,
+  });
+  return { row, input };
+}
+
+function commitAuthoritativePoster(database, { ownerId, assetId, staged, at }) {
+  if (!staged) return;
+  const current = database.prepare("SELECT * FROM media_variants WHERE id=? AND asset_id=?")
+    .get(staged.row.id, assetId);
+  if (!current || current.role !== "poster" || current.object_key !== staged.row.object_key
+      || current.verification_origin !== "private_derivative_v1"
+      || current.mime_type !== "image/jpeg" || Number(current.byte_size) !== staged.input.byteSize) {
+    throw new ApiError(409, "That clip cover changed while it was finalizing.", "CONFLICT");
+  }
+  requireLiveLedger(database, ownerId, current.object_key);
+  touchLiveLedger(database, ownerId, current.object_key, at);
+  const finalizeHash = fingerprint({
+    width: staged.input.width,
+    height: staged.input.height,
+    timeMs: staged.input.timeMs,
+  });
+  if (current.status === "verified") {
+    if (current.finalize_hash !== finalizeHash) {
+      throw new ApiError(409, "That clip cover changed while it was finalizing.", "CONFLICT");
+    }
+  } else {
+    const updated = database.prepare(`UPDATE media_variants SET width=?,height=?,time_ms=?,status='verified',
+      finalize_hash=?,verified_at=?,updated_at=? WHERE id=? AND asset_id=? AND status='upload_pending'`)
+      .run(staged.input.width, staged.input.height, staged.input.timeMs, finalizeHash,
+        at, at, current.id, assetId);
+    if (Number(updated.changes || 0) !== 1) {
+      throw new ApiError(409, "That clip cover changed while it was finalizing.", "CONFLICT");
+    }
+  }
+  database.prepare(`UPDATE media_assets SET poster_variant_id=?,poster_key=?,poster_url=?,poster_time_ms=?,updated_at=?
+    WHERE id=? AND owner_id=?`).run(current.id, current.object_key, current.public_url,
+    staged.input.timeMs, at, assetId, ownerId);
+}
+
+function prepareAuthoritativeDelivery(database, { ownerId, assetId, sourceEtag, editRecipe, env, at }) {
+  return withWrite(database, () => {
+    const asset = database.prepare("SELECT * FROM media_assets WHERE id=? AND owner_id=?").get(assetId, ownerId);
+    if (!asset || asset.kind !== "video" || asset.source_storage_scope !== "private") {
+      throw new ApiError(409, "That clip cannot create a private delivery.", "CONFLICT");
+    }
+    const createHash = fingerprint({
+      origin: "private_derivative_v1",
+      sourceKey: asset.source_key,
+      sourceEtag,
+      editRecipe,
+    });
+    let row = database.prepare("SELECT * FROM media_variants WHERE asset_id=? AND role='render'").get(asset.id);
+    if (row && (row.verification_origin !== "private_derivative_v1" || row.create_hash !== createHash)) {
+      throw new ApiError(409, "That clip delivery changed while it was being prepared.", "CONFLICT");
+    }
+    if (!row) {
+      const variantId = newId("mv");
+      const objectKey = expectedObjectKey({
+        ownerId,
+        purpose: asset.purpose,
+        objectId: `${asset.id}_delivery_${variantId}`,
+        extension: "mp4",
+      });
+      reserveMediaUploadTicket(database, {
+        ownerId,
+        objectKey,
+        storageScope: "public",
+        byteSize: MAX_VIDEO_BYTES,
+        at,
+        expiresAt: at + MEDIA_UPLOAD_TICKET_MS,
+        env,
+      });
+      const upload = createMediaProcessorUploadCapability({ objectKey, env, now: new Date(at), expiresIn: 300 });
+      database.prepare(`INSERT INTO media_variants
+        (id,asset_id,client_variant_id,create_hash,role,object_key,public_url,mime_type,byte_size,status,verification_origin,created_at,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,'upload_pending','private_derivative_v1',?,?)`)
+        .run(variantId, asset.id, `pit-private-delivery-v1:${createHash.slice(0, 64)}`, createHash,
+          "render", objectKey, upload.publicUrl, "video/mp4", MAX_VIDEO_BYTES, at, at);
+      row = database.prepare("SELECT * FROM media_variants WHERE id=?").get(variantId);
+      return { row, upload };
+    }
+    const upload = createMediaProcessorUploadCapability({ objectKey: row.object_key, env, now: new Date(at), expiresIn: 300 });
+    return { row, upload };
+  });
+}
+
+async function stageAuthoritativeDelivery(database, {
+  ownerId,
+  assetId,
+  delivery,
+  prepared,
+  env,
+  fetchImpl,
+  signal,
+}) {
+  if (!prepared?.row || delivery?.key !== prepared.row.object_key
+      || delivery?.contentType !== "video/mp4" || !/^[a-f0-9]{64}$/.test(String(delivery?.sha256 || ""))) {
+    throw new ApiError(409, "The sanitized clip delivery changed while finalizing.", "CONFLICT");
+  }
+  const stored = await verifyStoredObject({
+    objectKey: delivery.key,
+    expectedBytes: Number(delivery.byteSize),
+    expectedType: "video/mp4",
+    env,
+    fetchImpl,
+    signal,
+    storageScope: "public",
+  });
+  if (!stored.etag) throw new ApiError(503, "The sanitized clip could not be generation-bound.", "MEDIA_STORAGE_UNAVAILABLE");
+  await verifyStoredObjectDigest({
+    objectKey: delivery.key,
+    stored,
+    expectedBytes: Number(delivery.byteSize),
+    expectedType: "video/mp4",
+    expectedDigest: delivery.sha256,
+    env,
+    fetchImpl,
+    signal,
+  });
+  return { row: prepared.row, input: delivery, stored };
+}
+
+function commitAuthoritativeDelivery(database, { ownerId, assetId, staged, at }) {
+  if (!staged) return;
+  const current = database.prepare("SELECT * FROM media_variants WHERE id=? AND asset_id=?")
+    .get(staged.row.id, assetId);
+  if (!current || current.role !== "render" || current.object_key !== staged.input.key
+      || current.verification_origin !== "private_derivative_v1"
+      || !new Set(["upload_pending", "verified"]).has(current.status)) {
+    throw new ApiError(409, "The sanitized clip delivery changed while finalizing.", "CONFLICT");
+  }
+  requireLiveLedger(database, ownerId, current.object_key);
+  const finalizeHash = fingerprint({
+    sha256: staged.input.sha256,
+    width: staged.input.width,
+    height: staged.input.height,
+    durationMs: staged.input.durationMs,
+    etag: staged.stored.etag,
+  });
+  if (current.status === "verified") {
+    if (Number(current.byte_size) !== Number(staged.input.byteSize)
+        || Number(current.width) !== Number(staged.input.width)
+        || Number(current.height) !== Number(staged.input.height)
+        || current.finalize_hash !== finalizeHash) {
+      throw new ApiError(409, "The sanitized clip delivery changed while finalizing.", "CONFLICT");
+    }
+  } else {
+    database.prepare(`UPDATE media_variants SET byte_size=?,width=?,height=?,status='verified',finalize_hash=?,verified_at=?,updated_at=?
+      WHERE id=? AND asset_id=? AND status='upload_pending'`)
+      .run(staged.input.byteSize, staged.input.width, staged.input.height, finalizeHash, at, at, current.id, assetId);
+  }
+  database.prepare(`UPDATE media_objects SET byte_size=?,status='issued',updated_at=?
+    WHERE owner_id=? AND object_key=? AND storage_scope='public' AND status IN ('issued','associated')`)
+    .run(staged.input.byteSize, at, ownerId, current.object_key);
+  database.prepare(`UPDATE media_assets SET render_variant_id=?,render_state='ready',status='ready',updated_at=?
+    WHERE id=? AND owner_id=?`).run(current.id, at, assetId, ownerId);
+}
+
 function deliveryStateForRecipe(row, editRecipe) {
   const needsExport = row.kind === "video"
-    ? videoEditRequiresExport(editRecipe)
+    ? true
     // Every new stable image gets a delivery rendition. The original remains
     // owner-only editing input, so public posts never expose camera metadata or
     // depend on a phone-specific source format even for an identity edit.
     : true;
-  const renderState = needsExport ? (row.kind === "video" ? "unavailable" : "pending") : "not_required";
+  const renderState = needsExport ? "pending" : "not_required";
   const status = renderState === "unavailable" ? "render_unavailable" : renderState === "pending" ? "render_pending" : "ready";
   return { renderState, status };
 }
@@ -349,6 +725,14 @@ function authoritativeVideoFinalize(row, body, declared, probed) {
   if (!exact && !rotated) {
     throw new ApiError(409, "The uploaded clip dimensions do not match the selected file.", "CONFLICT");
   }
+  const decodedRotation = Number(probed?.rotation);
+  const hasDecodedRotation = Number.isSafeInteger(decodedRotation) && [0, 90, 180, 270].includes(decodedRotation);
+  const displayRotated = hasDecodedRotation && (decodedRotation === 90 || decodedRotation === 270);
+  const displayWidth = displayRotated ? encodedHeight : encodedWidth;
+  const displayHeight = displayRotated ? encodedWidth : encodedHeight;
+  if (hasDecodedRotation && (declared.width !== displayWidth || declared.height !== displayHeight)) {
+    throw new ApiError(409, "The selected clip dimensions do not match its verified rotation.", "CONFLICT");
+  }
   const submittedRecipe = body?.editRecipe && typeof body.editRecipe === "object" && !Array.isArray(body.editRecipe)
     ? body.editRecipe
     : {};
@@ -364,8 +748,9 @@ function authoritativeVideoFinalize(row, body, declared, probed) {
   // supports portrait MP4 rotation metadata without trusting arbitrary geometry.
   return normalizedAssetFinalize(row, {
     ...body,
-    width: exact ? encodedWidth : encodedHeight,
-    height: exact ? encodedHeight : encodedWidth,
+    width: hasDecodedRotation ? displayWidth : exact ? encodedWidth : encodedHeight,
+    height: hasDecodedRotation ? displayHeight : exact ? encodedHeight : encodedWidth,
+    orientation: hasDecodedRotation ? decodedRotation : declared.orientation,
     durationMs,
     editRecipe,
   });
@@ -435,6 +820,23 @@ function touchLiveLedger(database, ownerId, objectKey, at) {
   }
 }
 
+function terminalVideoSourceFailure(error) {
+  if (error instanceof ApiError && error.status === 415) {
+    Object.defineProperty(error, "terminalMediaSourceFailure", {
+      value: true,
+      enumerable: false,
+      configurable: false,
+    });
+  }
+  return error;
+}
+
+export function isTerminalMediaSourceFailure(error) {
+  return error instanceof ApiError
+    && error.status === 415
+    && error.terminalMediaSourceFailure === true;
+}
+
 export async function finalizeMediaAsset(database, {
   ownerId,
   assetId,
@@ -443,15 +845,37 @@ export async function finalizeMediaAsset(database, {
   at = Date.now(),
   fetchImpl = globalThis.fetch,
   authoritativeVideoVerifier = null,
+  authoritativePosterRequired = false,
+  beforeAuthoritativeVerify,
+  signal,
 } = {}) {
   const row = database.prepare("SELECT * FROM media_assets WHERE id=? AND owner_id=?").get(assetId, ownerId);
   if (!row) throw new ApiError(404, "That media item was not found.", "NOT_FOUND");
   let input = normalizedAssetFinalize(row, body);
   const needsCodecVerification = row.kind === "video" && row.codec_status !== "verified";
+  const authoritativePosterReady = row.kind === "video" && !!row.poster_variant_id && !!database.prepare(`SELECT 1
+    FROM media_variants v JOIN media_objects o ON o.owner_id=? AND o.object_key=v.object_key
+    WHERE v.id=? AND v.asset_id=? AND v.role='poster' AND v.status='verified'
+      AND v.verification_origin='private_derivative_v1' AND v.mime_type='image/jpeg' AND v.time_ms=?
+      AND o.status IN ('issued','associated')`).get(ownerId, row.poster_variant_id, row.id,
+    Number(input.editRecipe.coverMs));
+  const needsAuthoritativePoster = row.kind === "video" && authoritativePosterRequired && !authoritativePosterReady;
+  const authoritativeDeliveryReady = row.kind !== "video" || (!!row.render_variant_id && !!database.prepare(`SELECT 1
+    FROM media_variants v JOIN media_objects o ON o.owner_id=? AND o.object_key=v.object_key
+    WHERE v.id=? AND v.asset_id=? AND v.role='render' AND v.status='verified'
+      AND v.verification_origin='private_derivative_v1' AND v.mime_type='video/mp4'
+      AND o.storage_scope='public' AND o.status IN ('issued','associated')`)
+    .get(ownerId, row.render_variant_id, row.id));
   if (row.finalize_hash && !finalizedSourceMatches(row, input)) {
     throw new ApiError(409, "That media item was already finalized with different edits.", "CONFLICT");
   }
-  if (row.finalize_hash && !needsCodecVerification) {
+  if (row.finalize_hash && row.kind === "video") {
+    const retryRecipe = normalizedRecipe(row, body?.editRecipe ?? {}, Number(row.duration_ms)).encodedRecipe;
+    if (row.edit_recipe !== retryRecipe) {
+      throw new ApiError(409, "That clip cover changed after source verification. Start the clip again.", "CONFLICT");
+    }
+  }
+  if (row.finalize_hash && !needsCodecVerification && !needsAuthoritativePoster && authoritativeDeliveryReady) {
     // A lost-response retry is also an authenticated signal that this draft is
     // still in use. Renew the lease instead of merely observing the ledger so a
     // cleanup pass cannot retire it while the owner resumes the workflow.
@@ -468,22 +892,41 @@ export async function finalizeMediaAsset(database, {
     expectedType: row.mime_type,
     env,
     fetchImpl,
+    signal,
+    storageScope: row.source_storage_scope || "public",
   });
   let codecVerified = row.kind !== "video";
+  let stagedAuthoritativePoster = null;
+  let stagedAuthoritativeDelivery = null;
   if (row.kind === "video") {
     if (!stored.etag) {
       throw new ApiError(503, "The clip could not be inspected in storage yet. Try again.", "MEDIA_STORAGE_UNAVAILABLE");
     }
     const declared = input;
-    const structural = await verifyMp4Compatibility({
-      objectKey: row.source_key,
-      expectedBytes: row.byte_size,
-      ifMatch: stored.etag,
-      env,
-      fetchImpl,
-    });
+    let structural;
+    try {
+      structural = await verifyMp4Compatibility({
+        objectKey: row.source_key,
+        expectedBytes: row.byte_size,
+        ifMatch: stored.etag,
+        env,
+        fetchImpl,
+        signal,
+        storageScope: row.source_storage_scope || "public",
+      });
+    } catch (error) {
+      throw terminalVideoSourceFailure(error);
+    }
     const structurallyNormalized = authoritativeVideoFinalize(row, body, declared, structural);
     if (typeof authoritativeVideoVerifier === "function") {
+      const preparedDelivery = prepareAuthoritativeDelivery(database, {
+        ownerId,
+        assetId: row.id,
+        sourceEtag: stored.etag,
+        editRecipe: structurallyNormalized.editRecipe,
+        env,
+        at,
+      });
       let decoded;
       try {
         decoded = await authoritativeVideoVerifier({
@@ -491,11 +934,15 @@ export async function finalizeMediaAsset(database, {
           expectedBytes: row.byte_size,
           ifMatch: stored.etag,
           structural,
+          posterTimeMs: Number(structurallyNormalized.editRecipe.coverMs),
           env,
           fetchImpl,
+          signal,
+          beforeStart: beforeAuthoritativeVerify,
+          output: preparedDelivery.upload,
         });
       } catch (error) {
-        if (error instanceof ApiError) throw error;
+        if (error instanceof ApiError) throw terminalVideoSourceFailure(error);
         throw new ApiError(503, "Clip decoding is unavailable. Try again later.", "MEDIA_STORAGE_UNAVAILABLE", error);
       }
       // A future decoder/transcoder integration must return its own measured
@@ -512,12 +959,40 @@ export async function finalizeMediaAsset(database, {
       }
       input = authoritativeVideoFinalize(row, body, declared, decoded);
       codecVerified = true;
+      stagedAuthoritativeDelivery = await stageAuthoritativeDelivery(database, {
+        ownerId,
+        assetId: row.id,
+        delivery: decoded.delivery,
+        prepared: preparedDelivery,
+        env,
+        fetchImpl,
+        signal,
+      });
+      if (decoded.poster) {
+        stagedAuthoritativePoster = await stageAuthoritativePoster(database, {
+          ownerId,
+          assetId: row.id,
+          poster: decoded.poster,
+          durationMs: input.durationMs,
+          sourceEtag: stored.etag,
+          env,
+          at,
+          fetchImpl,
+          signal,
+        });
+      }
+      if (authoritativePosterRequired && !stagedAuthoritativePoster && !authoritativePosterReady) {
+        throw new ApiError(503, "Clip decoding did not produce a verified cover. Try again later.", "MEDIA_STORAGE_UNAVAILABLE");
+      }
+      if (!stagedAuthoritativeDelivery) {
+        throw new ApiError(503, "Clip sanitization did not produce a verified delivery. Try again later.", "MEDIA_STORAGE_UNAVAILABLE");
+      }
     } else {
       // The bounded MP4 parser proves container/sample-table coherence, but it
-      // is not a full H.264/AAC decode. Render's current runtime has no trusted
-      // decoder/transcoder worker, so new clips stay explicitly unavailable and
-      // cannot be attached. This avoids certifying a black or truncated stream
-      // merely because its first structural fields look plausible.
+      // is not a full H.264/AAC decode. A caller without the readiness-gated
+      // private-derivative-v1 worker therefore cannot elevate or attach the clip. This
+      // avoids certifying a black or truncated stream merely because its first
+      // structural fields look plausible.
       input = { ...structurallyNormalized, status: "render_unavailable", renderState: "unavailable" };
     }
   }
@@ -534,6 +1009,20 @@ export async function finalizeMediaAsset(database, {
           .run(input.width, input.height, input.durationMs, at, input.status, input.renderState,
             at, at, row.id, ownerId);
       }
+      commitAuthoritativePoster(database, {
+        ownerId,
+        assetId: row.id,
+        staged: stagedAuthoritativePoster,
+        at,
+      });
+      commitAuthoritativeDelivery(database, {
+        ownerId,
+        assetId: row.id,
+        staged: stagedAuthoritativeDelivery,
+        at,
+      });
+      database.prepare("UPDATE media_assets SET source_etag=? WHERE id=? AND owner_id=?")
+        .run(stored.etag, row.id, ownerId);
       return { asset: assetProjection(loadAsset(database, row.id), { owner: true }), duplicate: true };
     }
     if (!current || current.status !== "upload_pending") throw new ApiError(409, "That media item changed while it was finalizing.", "CONFLICT");
@@ -546,6 +1035,20 @@ export async function finalizeMediaAsset(database, {
         row.kind === "video" && codecVerified ? at : null,
         input.status, input.encodedRecipe, input.editRecipe.version, input.finalizeHash, at,
         input.renderState, at, row.id, ownerId);
+    commitAuthoritativePoster(database, {
+      ownerId,
+      assetId: row.id,
+      staged: stagedAuthoritativePoster,
+      at,
+    });
+    commitAuthoritativeDelivery(database, {
+      ownerId,
+      assetId: row.id,
+      staged: stagedAuthoritativeDelivery,
+      at,
+    });
+    database.prepare("UPDATE media_assets SET source_etag=? WHERE id=? AND owner_id=?")
+      .run(stored.etag, row.id, ownerId);
     return { asset: assetProjection(loadAsset(database, row.id), { owner: true }), duplicate: false };
   });
 }
@@ -632,6 +1135,13 @@ export function updateMediaAsset(database, {
       recipe = normalized.editRecipe;
       encodedRecipe = normalized.encodedRecipe;
       recipeChanged = encodedRecipe !== row.edit_recipe;
+      if (recipeChanged && row.kind === "video" && row.codec_status === "verified") {
+        // The cover is cryptographically tied to the verifier response and the
+        // exact source generation. The current synchronous v1 flow has no
+        // server-side re-cover command, so never downgrade a verified clip to a
+        // client-declared poster during an unattached re-edit.
+        throw new ApiError(409, "Choose the cover before verifying this clip. To change it now, add the clip again.", "CONFLICT");
+      }
       if (recipeChanged && database.prepare("SELECT 1 FROM post_media WHERE asset_id=?").get(row.id)) {
         throw new ApiError(409, "Media edits cannot change after this item is published.", "CONFLICT");
       }
@@ -704,6 +1214,9 @@ function variantInput(asset, body, { pendingRevision = false } = {}) {
   if (role === "poster" && asset.kind !== "video") {
     throw new ApiError(400, "Only clips use a separate cover frame.", "VALIDATION_FAILED");
   }
+  if (role === "poster" && asset.kind === "video") {
+    throw new ApiError(409, "PIT generates and verifies clip covers with the video decoder.", "CONFLICT");
+  }
   if (role === "render" && asset.kind === "video") {
     throw new ApiError(409, "Edited clip export is not available until PIT's video encoder is configured.", "CONFLICT");
   }
@@ -724,6 +1237,9 @@ function variantInput(asset, body, { pendingRevision = false } = {}) {
     throw new ApiError(400, "Rendition name is invalid.", "VALIDATION_FAILED");
   }
   const clientVariantId = cleanClientId(body?.clientVariantId, "Rendition retry token");
+  if (clientVariantId.startsWith("pit-worker-")) {
+    throw new ApiError(400, "That rendition retry token is reserved by PIT.", "VALIDATION_FAILED");
+  }
   const canonical = { role, contentType: type, fileSize, name, clientVariantId };
   return { ...canonical, createHash: fingerprint(canonical) };
 }
@@ -1163,6 +1679,7 @@ function loadAsset(database, assetId) {
       rv.object_key render_key,rv.public_url render_url,rv.width render_width,rv.height render_height,rv.mime_type render_mime_type,rv.byte_size render_byte_size,rv.status render_variant_status,
       render_ledger.status render_ledger_status,
       pv.object_key durable_poster_key,pv.public_url durable_poster_url,pv.time_ms durable_poster_time_ms,pv.status poster_variant_status,
+      pv.verification_origin poster_verification_origin,
       poster_ledger.status poster_ledger_status
     FROM media_assets a
     LEFT JOIN media_asset_revisions revision ON revision.asset_id=a.id
@@ -1185,11 +1702,16 @@ function publishUrl(row) {
   return row.render_state === "not_required" ? row.source_url : null;
 }
 
-export function assetProjection(row, { owner = false } = {}) {
+export function assetProjection(row, { owner = false, ownerSourceUrl = null } = {}) {
   if (!row) return null;
   const outputUrl = publishUrl(row);
   const recipe = parseJsonObject(owner && row.pending_edit_recipe ? row.pending_edit_recipe : row.edit_recipe);
-  const durablePosterLive = row.poster_variant_status === "verified" && isLiveLedgerStatus(row.poster_ledger_status);
+  const authoritativePosterTime = Number(parseJsonObject(row.edit_recipe).coverMs);
+  const durablePosterLive = row.poster_variant_status === "verified"
+    && row.poster_verification_origin === "private_derivative_v1"
+    && isLiveLedgerStatus(row.poster_ledger_status)
+    && Number.isSafeInteger(Number(row.durable_poster_time_ms))
+    && Number(row.durable_poster_time_ms) === authoritativePosterTime;
   const posterUrl = durablePosterLive ? row.durable_poster_url : null;
   const posterTimeMs = durablePosterLive
     ? row.durable_poster_time_ms
@@ -1202,7 +1724,9 @@ export function assetProjection(row, { owner = false } = {}) {
     // Public post projections deliberately map sourceUrl to the publishable
     // rendition. Owners can still reopen the original source reference through the
     // authenticated asset endpoint without leaking it to every feed reader.
-    sourceUrl: owner ? row.source_url : outputUrl,
+    sourceUrl: owner
+      ? (row.source_storage_scope === "private" ? ownerSourceUrl : row.source_url)
+      : outputUrl,
     posterUrl,
     posterTimeMs,
     width: row.render_state === "ready" && row.render_variant_status === "verified" ? row.render_width : row.width,
@@ -1243,7 +1767,13 @@ function variantProjection(row) {
   };
 }
 
-export function ownedMediaAsset(database, { ownerId, assetId, renew = false, at = Date.now() } = {}) {
+export function ownedMediaAsset(database, {
+  ownerId,
+  assetId,
+  renew = false,
+  at = Date.now(),
+  env = process.env,
+} = {}) {
   if (!ASSET_ID.test(String(assetId || ""))) return null;
   const read = () => {
     const row = loadAsset(database, assetId);
@@ -1255,7 +1785,18 @@ export function ownedMediaAsset(database, { ownerId, assetId, renew = false, at 
       // cleanup/delete queue has already won instead of reviving its descriptor.
       touchLiveLedger(database, ownerId, row.source_key, at);
     }
-    return assetProjection(loadAsset(database, assetId), { owner: true });
+    const current = loadAsset(database, assetId);
+    let ownerSourceUrl = null;
+    if (current.source_storage_scope === "private" && strongObjectEtag(current.source_etag)) {
+      ownerSourceUrl = createMediaDownloadCapability({
+        objectKey: current.source_key,
+        ifMatch: current.source_etag,
+        env,
+        expiresIn: 300,
+        storageScope: "private",
+      }).downloadUrl;
+    }
+    return assetProjection(current, { owner: true, ownerSourceUrl });
   };
   return renew ? withWrite(database, read) : read();
 }
@@ -1291,8 +1832,14 @@ export function mediaSelection(database, { ownerId, assetIds, currentPostId = nu
     // clip must carry a durable, verified cover object before it can enter any
     // feed. This makes black frame-zero/decoder placeholders a fallback for old
     // content, never a valid state produced by the new contract.
-    if (row.kind === "video" && (row.poster_variant_status !== "verified" || !isLiveLedgerStatus(row.poster_ledger_status) || !row.durable_poster_url
-        || !Number.isSafeInteger(Number(row.durable_poster_time_ms)))) {
+    const expectedPosterTime = row.kind === "video"
+      ? Number(parseJsonObject(row.edit_recipe).coverMs)
+      : null;
+    if (row.kind === "video" && (row.poster_variant_status !== "verified"
+        || row.poster_verification_origin !== "private_derivative_v1"
+        || !isLiveLedgerStatus(row.poster_ledger_status) || !row.durable_poster_url
+        || !Number.isSafeInteger(Number(row.durable_poster_time_ms))
+        || Number(row.durable_poster_time_ms) !== expectedPosterTime)) {
       throw new ApiError(409, "Choose and finish uploading a cover frame before publishing this clip.", "CONFLICT");
     }
     const link = database.prepare("SELECT post_id FROM post_media WHERE asset_id=?").get(id);
@@ -1344,6 +1891,7 @@ function postMediaRowsForPosts(database, postIds) {
       rv.object_key render_key,rv.public_url render_url,rv.width render_width,rv.height render_height,rv.mime_type render_mime_type,rv.byte_size render_byte_size,rv.status render_variant_status,
       render_ledger.status render_ledger_status,
       pv.object_key durable_poster_key,pv.public_url durable_poster_url,pv.time_ms durable_poster_time_ms,pv.status poster_variant_status,
+      pv.verification_origin poster_verification_origin,
       poster_ledger.status poster_ledger_status
     FROM post_media pm
     JOIN media_assets a ON a.id=pm.asset_id
@@ -1440,6 +1988,49 @@ export function deleteMediaAssets(database, assetIds) {
   let changed = 0;
   for (const id of assetIds || []) changed += Number(remove.run(id).changes || 0);
   return changed;
+}
+
+/**
+ * Atomically retire one unattached owner draft and every object capability it
+ * minted. Queueing happens before the descriptor is removed, and the deletion
+ * ledger preserves each active PUT's expiry + settle barrier. A lost-response
+ * retry is intentionally idempotent; an absent (or foreign) id reveals nothing.
+ */
+export function cancelMediaAsset(database, {
+  ownerId,
+  assetId,
+  at = Date.now(),
+} = {}) {
+  const owner = String(ownerId || "");
+  const id = String(assetId || "");
+  if (!owner || !ASSET_ID.test(id)) return { removed: false, queuedObjects: 0 };
+
+  return withWrite(database, () => {
+    const asset = database.prepare("SELECT id,source_key FROM media_assets WHERE id=? AND owner_id=?")
+      .get(id, owner);
+    if (!asset) return { removed: false, queuedObjects: 0 };
+    if (database.prepare("SELECT 1 FROM post_media WHERE asset_id=?").get(asset.id)) {
+      throw new ApiError(409, "Published media must be removed from its post first.", "CONFLICT");
+    }
+
+    const keys = [asset.source_key,
+      ...database.prepare("SELECT object_key FROM media_variants WHERE asset_id=? AND object_key IS NOT NULL ORDER BY id")
+        .all(asset.id).map((row) => row.object_key),
+      ...database.prepare("SELECT object_key FROM media_asset_revisions WHERE asset_id=? AND object_key IS NOT NULL")
+        .all(asset.id).map((row) => row.object_key),
+    ].filter(Boolean);
+    const uniqueKeys = [...new Set(keys)];
+    const queued = enqueueOwnedMediaKeys(database, { ownerId: owner, keys: uniqueKeys, at });
+    if (queued.accepted !== uniqueKeys.length) {
+      // Never discard the only stable descriptor for bytes that could not be
+      // bound to the owner's deletion ledger.
+      throw new ApiError(409, "That media item changed while it was being removed. Try again.", "CONFLICT");
+    }
+    const removed = Number(database.prepare("DELETE FROM media_assets WHERE id=? AND owner_id=?")
+      .run(asset.id, owner).changes || 0) === 1;
+    if (!removed) throw new ApiError(409, "That media item changed while it was being removed. Try again.", "CONFLICT");
+    return { removed: true, queuedObjects: queued.accepted };
+  });
 }
 
 export function assertPhotosMatchSelection(photos, selection) {

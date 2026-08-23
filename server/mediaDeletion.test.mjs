@@ -9,6 +9,7 @@ process.env.PIT_DATA_DIR = dataDir;
 Object.assign(process.env, {
   MEDIA_ENDPOINT: "https://objects.example.com/s3",
   MEDIA_BUCKET: "pit-active-media",
+  MEDIA_SOURCE_BUCKET: "pit-private-media",
   MEDIA_REGION: "auto",
   MEDIA_ACCESS_KEY_ID: "test-access",
   MEDIA_SECRET_ACCESS_KEY: "test-secret",
@@ -288,7 +289,7 @@ test("worker signs DELETE, treats 204 and 404 as success, and never exposes cred
   const first = `users/${owner}/post/first.jpg`;
   const second = `users/${owner}/venue/second.mp4`;
   recordMediaObjectTicket(db, { ownerId: owner, objectKey: first, at: 1_000, expiresAt: null });
-  recordMediaObjectTicket(db, { ownerId: owner, objectKey: second, at: 1_000, expiresAt: null });
+  recordMediaObjectTicket(db, { ownerId: owner, objectKey: second, storageScope: "private", at: 1_000, expiresAt: null });
   enqueueAllOwnedMedia(db, { ownerId: owner, at: 2_000 });
   const requests = [];
   const statuses = [204, 404];
@@ -307,6 +308,7 @@ test("worker signs DELETE, treats 204 and 404 as success, and never exposes cred
   assert.equal(db.prepare("SELECT COUNT(*) count FROM media_objects").get().count, 0);
   assert.equal(requests.every((request) => request.options.method === "DELETE"), true);
   assert.match(requests[0].url, /^https:\/\/objects\.example\.com\/s3\/pit-active-media\/users\/worker_owner\/post\/first\.jpg\?/);
+  assert.equal(requests.some((request) => request.url.includes("/pit-private-media/users/worker_owner/venue/second.mp4?")), true);
   assert.equal(requests.some((request) => request.url.includes("test-secret")), false);
 });
 
@@ -435,6 +437,17 @@ test("legacy owner-prefix sweep paginates safely and ignores every foreign or ma
   });
   assert.deepEqual(final, { processed: 1, discovered: 0, hasMore: false, verificationPending: false, errorCode: null });
   assert.equal(requested[2].url.includes("continuation-token="), false);
+  const privateFinal = await runMediaOwnerSweepOnce({
+    database: db,
+    env: process.env,
+    fetchImpl: async (url, options) => {
+      requested.push({ url, options });
+      assert.equal(url.includes("/pit-private-media?"), true);
+      return { status: 200, text: async () => "<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>" };
+    },
+    clock: () => 5_000 + MEDIA_OWNER_SWEEP_QUIET_WINDOW_MS,
+  });
+  assert.deepEqual(privateFinal, { processed: 1, discovered: 0, hasMore: false, verificationPending: false, errorCode: null });
   assert.equal(db.prepare("SELECT 1 FROM media_owner_sweeps WHERE owner_id=?").get(owner), undefined);
 });
 
@@ -547,6 +560,22 @@ test("account cleanup waits out a live PUT ticket and catches an object created 
     }),
   });
   assert.deepEqual(finalVerification, {
+    processed: 1,
+    discovered: 0,
+    hasMore: false,
+    verificationPending: false,
+    errorCode: null,
+  });
+  const privateVerification = await runMediaOwnerSweepOnce({
+    database: db,
+    env: process.env,
+    clock: () => finalBarrier,
+    fetchImpl: async (url) => {
+      assert.equal(url.includes("/pit-private-media?"), true);
+      return { status: 200, text: async () => "<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>" };
+    },
+  });
+  assert.deepEqual(privateVerification, {
     processed: 1,
     discovered: 0,
     hasMore: false,

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,6 +11,7 @@ process.env.PIT_DATA_DIR = dataDir;
 Object.assign(process.env, {
   MEDIA_ENDPOINT: "https://objects.example.com/s3",
   MEDIA_BUCKET: "pit-media",
+  MEDIA_SOURCE_BUCKET: "pit-media-private",
   MEDIA_REGION: "auto",
   MEDIA_ACCESS_KEY_ID: "media-test-access",
   MEDIA_SECRET_ACCESS_KEY: "media-test-secret",
@@ -22,6 +24,7 @@ const { routes } = await import("./api.js");
 const {
   createMediaAsset,
   createMediaVariant,
+  cancelMediaAsset,
   attachPostMedia,
   assetObjectRecords,
   finalizeMediaAsset,
@@ -191,12 +194,24 @@ function compatibleMp4(bytes, durationMs, { videoSampleEntry = "avc1" } = {}) {
   return Buffer.concat([ftyp, moov, mp4Box("mdat", mdatPayload)]);
 }
 
+const FIXTURE_DELIVERY_BYTES = Buffer.from("pit-sanitized-delivery-fixture-v1");
+
 function verifiedMp4(bytes, durationMs, capture = null, options = {}) {
   const object = compatibleMp4(bytes, durationMs, options);
   const etag = `"fixture-${bytes}-${durationMs}-${options.videoSampleEntry || "avc1"}"`;
   return async (url, request = {}) => {
     capture?.push({ url, options: request });
     const method = String(request.method || "GET").toUpperCase();
+    if (new URL(url).pathname.includes("/pit-media/users/")) {
+      const deliveryHeaders = new Headers({
+        "content-length": String(FIXTURE_DELIVERY_BYTES.byteLength),
+        "content-type": "video/mp4",
+        etag: '"fixture-delivery"',
+      });
+      if (method === "HEAD") return { status: 200, headers: deliveryHeaders };
+      if (method === "GET") return new Response(FIXTURE_DELIVERY_BYTES, { status: 200, headers: deliveryHeaders });
+      return { status: 200, headers: new Headers() };
+    }
     if (method === "HEAD") {
       return {
         status: 200,
@@ -235,8 +250,76 @@ function verifiedMp4(bytes, durationMs, capture = null, options = {}) {
 // The HTTP API never supplies this hook, so production-default assertions below
 // still exercise the fail-closed path while linkage/deletion tests can model a
 // future decoder-approved asset without weakening the runtime contract.
-async function authoritativeFixtureDecode({ structural }) {
-  return structural;
+async function authoritativeFixtureDecode({ structural, output }) {
+  return {
+    ...structural,
+    delivery: {
+      key: output.key,
+      contentType: "video/mp4",
+      byteSize: FIXTURE_DELIVERY_BYTES.byteLength,
+      sha256: createHash("sha256").update(FIXTURE_DELIVERY_BYTES).digest("hex"),
+      width: structural.width,
+      height: structural.height,
+      durationMs: structural.durationMs,
+      rotation: 0,
+    },
+  };
+}
+
+const FIXTURE_POSTER_BYTES = Buffer.from([0xff, 0xd8, 0xff, 0xdb, 0xff, 0xd9]);
+
+async function authoritativeFixtureDecodeWithPoster({ structural, posterTimeMs, output }) {
+  const landscape = structural.width >= structural.height;
+  const width = landscape ? 1_280 : 720;
+  const height = landscape ? 720 : 1_280;
+  return {
+    ...structural,
+    delivery: {
+      key: output.key,
+      contentType: "video/mp4",
+      byteSize: FIXTURE_DELIVERY_BYTES.byteLength,
+      sha256: createHash("sha256").update(FIXTURE_DELIVERY_BYTES).digest("hex"),
+      width: structural.width,
+      height: structural.height,
+      durationMs: structural.durationMs,
+      rotation: 0,
+    },
+    poster: {
+      contentType: "image/jpeg",
+      bytes: FIXTURE_POSTER_BYTES,
+      byteSize: FIXTURE_POSTER_BYTES.byteLength,
+      width,
+      height,
+      timeMs: posterTimeMs,
+      sha256: createHash("sha256").update(FIXTURE_POSTER_BYTES).digest("hex"),
+    },
+  };
+}
+
+function verifiedMp4WithPoster(bytes, durationMs, capture = null, options = {}) {
+  const sourceFetch = verifiedMp4(bytes, durationMs, capture, options);
+  let storedPoster = null;
+  const posterEtag = `"fixture-poster-${bytes}-${durationMs}"`;
+  return async (url, request = {}) => {
+    const pathname = new URL(url).pathname;
+    if (pathname.endsWith(".mp4")) return sourceFetch(url, request);
+    capture?.push({ url, options: request });
+    const method = String(request.method || "GET").toUpperCase();
+    if (method === "PUT") {
+      if (storedPoster) return { status: 412, headers: new Headers() };
+      storedPoster = Buffer.from(request.body || []);
+      return { status: 200, headers: new Headers({ etag: posterEtag }) };
+    }
+    if (!storedPoster) return { status: 404, headers: new Headers() };
+    const headers = new Headers({
+      "content-length": String(storedPoster.byteLength),
+      "content-type": "image/jpeg",
+      etag: posterEtag,
+    });
+    if (method === "HEAD") return { status: 200, headers };
+    if (method === "GET") return new Response(storedPoster, { status: 200, headers });
+    return { status: 405, headers: new Headers() };
+  };
 }
 
 test("asset creation mints a stable owner-bound object identity and retries idempotently", () => {
@@ -291,6 +374,157 @@ test("asset registration rejects caller-supplied object locations and isolates o
     () => routes["GET /api/media/assets/:id"]({ user: stranger, ip: "asset-read-stranger", params: { id: created.asset.id } }),
     (error) => error.code === "NOT_FOUND",
   );
+});
+
+test("owner cancellation atomically queues every draft object, honors PUT barriers, and never resurrects the old source", async () => {
+  const owner = addUser("media_asset_cancel_owner");
+  const stranger = addUser("media_asset_cancel_stranger");
+  const body = sourceBody({ clientAssetId: "asset-cancel-source", fileSize: 12_000 });
+  const created = createMediaAsset(db, {
+    ownerId: owner.id,
+    body,
+    assetId: "ma_cancelcancelcancelcancelcanc",
+    sourceObjectId: "ms_cancelcancelcancelcancelcanc",
+    at: 1_000,
+  });
+  await finalizeMediaAsset(db, {
+    ownerId: owner.id,
+    assetId: created.asset.id,
+    body: { width: 1_000, height: 1_250, editRecipe: {} },
+    fetchImpl: verifiedHead(12_000, "image/jpeg"),
+    at: 2_000,
+  });
+  const rendition = createMediaVariant(db, {
+    ownerId: owner.id,
+    assetId: created.asset.id,
+    variantId: "mv_cancelcancelcancelcancelcanc",
+    body: {
+      clientVariantId: "asset-cancel-render",
+      role: "render",
+      contentType: "image/webp",
+      fileSize: 8_000,
+      name: "cancelled.webp",
+    },
+    at: 3_000,
+  });
+
+  assert.deepEqual(cancelMediaAsset(db, {
+    ownerId: stranger.id,
+    assetId: created.asset.id,
+    at: 3_500,
+  }), { removed: false, queuedObjects: 0 }, "foreign cancellation is indistinguishable from a missing id");
+  assert.deepEqual(cancelMediaAsset(db, {
+    ownerId: owner.id,
+    assetId: created.asset.id,
+    at: 4_000,
+  }), { removed: true, queuedObjects: 2 });
+  assert.equal(db.prepare("SELECT 1 FROM media_assets WHERE id=?").get(created.asset.id), undefined);
+  assert.equal(db.prepare("SELECT 1 FROM media_variants WHERE id=?").get(rendition.variant.id), undefined);
+  for (const key of [created.upload.key, rendition.upload.key]) {
+    assert.equal(db.prepare("SELECT status FROM media_objects WHERE object_key=?").get(key).status, "delete_queued");
+    const queue = db.prepare("SELECT status,next_attempt_at FROM media_deletion_queue WHERE object_key=?").get(key);
+    assert.equal(queue.status, "pending");
+    const uploadExpiry = db.prepare("SELECT upload_expires_at FROM media_objects WHERE object_key=?").get(key).upload_expires_at;
+    assert.equal(queue.next_attempt_at, uploadExpiry + MEDIA_UPLOAD_SETTLE_BUFFER_MS,
+      "cancellation cannot delete bytes while a previously signed PUT may still settle");
+  }
+  assert.deepEqual(cancelMediaAsset(db, {
+    ownerId: owner.id,
+    assetId: created.asset.id,
+    at: 5_000,
+  }), { removed: false, queuedObjects: 0 }, "lost-response retry is idempotent");
+
+  const restarted = createMediaAsset(db, {
+    ownerId: owner.id,
+    body,
+    assetId: "ma_restartrestartrestartrestart",
+    sourceObjectId: "ms_restartrestartrestartrestart",
+    at: 6_000,
+  });
+  assert.notEqual(restarted.upload.key, created.upload.key);
+  assert.equal(db.prepare("SELECT status FROM media_objects WHERE object_key=?").get(created.upload.key).status, "delete_queued");
+  assert.equal(db.prepare("SELECT status FROM media_objects WHERE object_key=?").get(restarted.upload.key).status, "issued");
+
+  const routeDraft = createMediaAsset(db, {
+    ownerId: owner.id,
+    body: sourceBody({ clientAssetId: "asset-cancel-route", fileSize: 4_500 }),
+    assetId: "ma_routecancelroutecancelroute",
+    at: Date.now(),
+  });
+  assert.deepEqual(routes["DELETE /api/media/assets/:id"]({
+    user: stranger,
+    ip: "asset-cancel-route-stranger",
+    params: { id: routeDraft.asset.id },
+  }), { removed: false, queuedObjects: 0 });
+  assert.deepEqual(routes["DELETE /api/media/assets/:id"]({
+    user: owner,
+    ip: "asset-cancel-route-owner",
+    params: { id: routeDraft.asset.id },
+  }), { removed: true, queuedObjects: 1 });
+  assert.deepEqual(routes["DELETE /api/media/assets/:id"]({
+    user: owner,
+    ip: "asset-cancel-route-owner-retry",
+    params: { id: routeDraft.asset.id },
+  }), { removed: false, queuedObjects: 0 });
+});
+
+test("owner cancellation loses the publish race and cannot retire attached media", async () => {
+  const owner = addUser("media_asset_cancel_attached_owner");
+  const created = createMediaAsset(db, {
+    ownerId: owner.id,
+    body: sourceBody({ clientAssetId: "asset-cancel-attached", fileSize: 13_000 }),
+    assetId: "ma_cancelattachedcancelattach",
+    at: 1_000,
+  });
+  await finalizeMediaAsset(db, {
+    ownerId: owner.id,
+    assetId: created.asset.id,
+    body: { width: 1_000, height: 1_250, editRecipe: {} },
+    fetchImpl: verifiedHead(13_000, "image/jpeg"),
+    at: 2_000,
+  });
+  const rendition = createMediaVariant(db, {
+    ownerId: owner.id,
+    assetId: created.asset.id,
+    variantId: "mv_cancelattachedcancelattach",
+    body: {
+      clientVariantId: "asset-cancel-attached-render",
+      role: "render",
+      contentType: "image/webp",
+      fileSize: 8_500,
+      name: "attached.webp",
+    },
+    at: 3_000,
+  });
+  await finalizeMediaVariant(db, {
+    ownerId: owner.id,
+    assetId: created.asset.id,
+    variantId: rendition.variant.id,
+    body: { width: 1_000, height: 1_250 },
+    fetchImpl: verifiedHead(8_500, "image/webp"),
+    at: 4_000,
+  });
+  routes["POST /api/posts"]({
+    user: owner,
+    ip: "asset-cancel-attached-post",
+    body: {
+      kind: "status",
+      review: "This attached media wins the cancellation race.",
+      mediaAssetIds: [created.asset.id],
+      clientMutationId: "asset-cancel-attached-post-01",
+    },
+  });
+
+  assert.throws(() => routes["DELETE /api/media/assets/:id"]({
+    user: owner,
+    ip: "asset-cancel-attached-delete",
+    params: { id: created.asset.id },
+  }), (error) => error.status === 409 && error.code === "CONFLICT");
+  assert.ok(db.prepare("SELECT 1 FROM media_assets WHERE id=?").get(created.asset.id));
+  assert.ok(db.prepare("SELECT 1 FROM post_media WHERE asset_id=?").get(created.asset.id));
+  assert.equal(db.prepare("SELECT status FROM media_objects WHERE object_key=?").get(created.upload.key).status,
+    "associated");
+  assert.equal(db.prepare("SELECT 1 FROM media_deletion_queue WHERE object_key=?").get(created.upload.key), undefined);
 });
 
 test("source finalization verifies storage transport metadata and fails closed on mismatch", async () => {
@@ -1056,29 +1290,13 @@ test("selection and attachment fail closed for retired source, render, and poste
     ownerId: owner.id,
     assetId: video.asset.id,
     body: { width: 1_080, height: 1_920, durationMs: 10_000, editRecipe: { kind: "video", coverMs: 2_000 } },
-    fetchImpl: verifiedMp4(900_000, 10_000),
-    authoritativeVideoVerifier: authoritativeFixtureDecode,
+    fetchImpl: verifiedMp4WithPoster(900_000, 10_000),
+    authoritativeVideoVerifier: authoritativeFixtureDecodeWithPoster,
+    authoritativePosterRequired: true,
   });
-  const poster = createMediaVariant(db, {
-    ownerId: owner.id,
-    assetId: video.asset.id,
-    body: {
-      clientVariantId: "live-ledger-poster-out",
-      role: "poster",
-      contentType: "image/jpeg",
-      fileSize: 20_000,
-      name: "poster.jpg",
-    },
-    variantId: "mv_qqqqqqqqqqqqqqqqqqqqqqqq",
-  });
-  await finalizeMediaVariant(db, {
-    ownerId: owner.id,
-    assetId: video.asset.id,
-    variantId: poster.variant.id,
-    body: { width: 720, height: 1_280, timeMs: 2_000 },
-    fetchImpl: verifiedHead(20_000, "image/jpeg"),
-  });
-  db.prepare("UPDATE media_objects SET status='delete_queued' WHERE object_key=?").run(poster.upload.key);
+  const posterKey = db.prepare("SELECT poster_key FROM media_assets WHERE id=?").get(video.asset.id).poster_key;
+  assert.match(posterKey, /\.jpg$/);
+  db.prepare("UPDATE media_objects SET status='delete_queued' WHERE object_key=?").run(posterKey);
   assert.throws(
     () => mediaSelection(db, { ownerId: owner.id, assetIds: [video.asset.id] }),
     (error) => error.status === 409 && error.code === "CONFLICT" && /cover frame/i.test(error.message),
@@ -1412,10 +1630,15 @@ test("production clips stay decode-gated while decoder-approved fixtures exercis
   assert.equal(source.asset.status, "ready");
   assert.equal(source.asset.codecStatus, "verified");
   assert.equal(source.asset.durationMs, 30_000, "the server persists the authoritative track duration");
-  assert.deepEqual({ width: source.asset.width, height: source.asset.height }, { width: 1_920, height: 1_080 },
-    "a picker-reported portrait/landscape axis swap must be an exact permutation of probed dimensions");
+  assert.deepEqual({ width: source.asset.width, height: source.asset.height }, { width: 1_080, height: 1_920 },
+    "the public descriptor uses the verifier-generated delivery geometry");
   assert.equal(source.asset.editRecipe.trimEndMs, 30_000,
     "a one-millisecond picker/probe rounding drift does not fabricate a destructive trim");
+  assert.equal(source.asset.sourceUrl, null, "private originals are never returned as public URLs during finalize");
+  const reopenedPrivateSource = ownedMediaAsset(db, { ownerId: user.id, assetId: coverOnly.asset.id });
+  const reopenedSourceUrl = new URL(reopenedPrivateSource.sourceUrl);
+  assert.equal(reopenedSourceUrl.pathname.includes("/pit-media-private/users/"), true);
+  assert.equal(reopenedSourceUrl.searchParams.get("X-Amz-SignedHeaders"), "host;if-match");
   const replayedClientPatch = updateMediaAsset(db, {
     ownerId: user.id,
     assetId: coverOnly.asset.id,
@@ -1445,26 +1668,37 @@ test("production clips stay decode-gated while decoder-approved fixtures exercis
     (error) => error.code === "CONFLICT" && /cover frame/i.test(error.message),
     "the stable-asset path must never publish a clip without a verified durable poster",
   );
-  const poster = createMediaVariant(db, {
+  const withPoster = await finalizeMediaAsset(db, {
     ownerId: user.id,
     assetId: coverOnly.asset.id,
-    body: {
-      clientVariantId: "poster-retry-0001",
-      role: "poster",
-      contentType: "image/jpeg",
-      fileSize: 120_000,
-      name: "cover.jpg",
-    },
-    variantId: "mv_gggggggggggggggggggggggg",
+    body: { width: 1_920, height: 1_080, durationMs: 29_999, editRecipe: {
+      kind: "video", durationMs: 29_999, trimStartMs: 0, trimEndMs: 29_999, coverMs: 8_000,
+    } },
+    fetchImpl: verifiedMp4WithPoster(5_000_000, 30_000),
+    authoritativeVideoVerifier: authoritativeFixtureDecodeWithPoster,
+    authoritativePosterRequired: true,
   });
-  const withPoster = await finalizeMediaVariant(db, {
-    ownerId: user.id,
-    assetId: coverOnly.asset.id,
-    variantId: poster.variant.id,
-    body: { width: 720, height: 1_280, timeMs: 8_000 },
-    fetchImpl: verifiedHead(120_000, "image/jpeg"),
+  const poster = db.prepare("SELECT * FROM media_variants WHERE id=?")
+    .get(db.prepare("SELECT poster_variant_id FROM media_assets WHERE id=?").get(coverOnly.asset.id).poster_variant_id);
+  assert.equal(poster.verification_origin, "private_derivative_v1");
+  const posterBinding = db.prepare(`SELECT a.edit_recipe,a.poster_variant_id,v.time_ms,v.status,v.verification_origin,
+    o.status ledger_status FROM media_assets a JOIN media_variants v ON v.id=a.poster_variant_id
+    JOIN media_objects o ON o.owner_id=a.owner_id AND o.object_key=v.object_key WHERE a.id=?`).get(coverOnly.asset.id);
+  assert.equal(JSON.parse(posterBinding.edit_recipe).coverMs, 8_000);
+  assert.deepEqual({
+    pointer: posterBinding.poster_variant_id,
+    timeMs: posterBinding.time_ms,
+    status: posterBinding.status,
+    origin: posterBinding.verification_origin,
+    ledger: posterBinding.ledger_status,
+  }, {
+    pointer: poster.id,
+    timeMs: 8_000,
+    status: "verified",
+    origin: "private_derivative_v1",
+    ledger: "issued",
   });
-  assert.equal(withPoster.asset.posterUrl, poster.upload.publicUrl);
+  assert.equal(withPoster.asset.posterUrl, poster.public_url);
   assert.equal(withPoster.asset.posterTimeMs, 8_000);
   const published = routes["POST /api/posts"]({
     user,
@@ -1476,7 +1710,7 @@ test("production clips stay decode-gated while decoder-approved fixtures exercis
       clientMutationId: "video-post-with-cover-01",
     },
   });
-  assert.equal(published.post.media[0].posterUrl, poster.upload.publicUrl);
+  assert.equal(published.post.media[0].posterUrl, poster.public_url);
   assert.equal(published.post.media[0].posterTimeMs, 8_000);
   db.prepare("UPDATE media_assets SET codec_status='pending',codec_verified_at=NULL WHERE id=?").run(coverOnly.asset.id);
   const codecRevoked = routes["GET /api/users/:id/posts"]({
@@ -1504,7 +1738,7 @@ test("production clips stay decode-gated while decoder-approved fixtures exercis
   assert.equal(db.prepare("SELECT COUNT(*) count FROM post_media WHERE post_id=?").get(published.id).count, 0);
   const queued = new Set(db.prepare("SELECT object_key FROM media_deletion_queue WHERE owner_id=?").all(user.id).map((row) => row.object_key));
   assert.equal(queued.has(coverOnly.upload.key), true);
-  assert.equal(queued.has(poster.upload.key), true);
+  assert.equal(queued.has(poster.object_key), true);
   moderation({
     user: moderator,
     ip: "stable-media-moderation-restore",
@@ -1812,28 +2046,14 @@ test("new URL-only videos are blocked while historical clips are grandfathered a
       altText: "Singer walking through a blue-lit crowd",
       editRecipe: { kind: "video", coverMs: 4_000 },
     },
-    fetchImpl: verifiedMp4(1_200_000, 15_000),
-    authoritativeVideoVerifier: authoritativeFixtureDecode,
+    fetchImpl: verifiedMp4WithPoster(1_200_000, 15_000),
+    authoritativeVideoVerifier: authoritativeFixtureDecodeWithPoster,
+    authoritativePosterRequired: true,
   });
-  const poster = createMediaVariant(db, {
-    ownerId: user.id,
-    assetId: video.asset.id,
-    body: {
-      clientVariantId: "gallery-stable-poster",
-      role: "poster",
-      contentType: "image/jpeg",
-      fileSize: 30_000,
-      name: "gallery-cover.jpg",
-    },
-    variantId: "mv_vvvvvvvvvvvvvvvvvvvvvvvv",
-  });
-  await finalizeMediaVariant(db, {
-    ownerId: user.id,
-    assetId: video.asset.id,
-    variantId: poster.variant.id,
-    body: { width: 720, height: 1_280, timeMs: 4_000 },
-    fetchImpl: verifiedHead(30_000, "image/jpeg"),
-  });
+  const poster = db.prepare("SELECT * FROM media_variants WHERE id=?")
+    .get(db.prepare("SELECT poster_variant_id FROM media_assets WHERE id=?").get(video.asset.id).poster_variant_id);
+  const delivery = db.prepare("SELECT * FROM media_variants WHERE asset_id=? AND role='render'").get(video.asset.id);
+  assert.equal(poster.verification_origin, "private_derivative_v1");
   const stablePost = routes["POST /api/posts"]({
     user,
     ip: "gallery-stable-post",
@@ -1860,8 +2080,8 @@ test("new URL-only videos are blocked while historical clips are grandfathered a
     kind: stableItem.kind,
     altText: stableItem.altText,
   }, {
-    uri: video.upload.publicUrl,
-    posterUrl: poster.upload.publicUrl,
+    uri: delivery.public_url,
+    posterUrl: poster.public_url,
     posterTimeMs: 4_000,
     kind: "video",
     altText: "Singer walking through a blue-lit crowd",

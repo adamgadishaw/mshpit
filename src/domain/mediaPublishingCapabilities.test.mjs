@@ -4,12 +4,19 @@ import test from "node:test";
 
 import {
   DEFAULT_MEDIA_PUBLISHING_CAPABILITIES,
+  MEDIA_PUBLISHING_HEALTH_PATH,
   VIDEO_PUBLISHING_PREPARING_COPY,
+  VIDEO_PUBLISHING_PIPELINE_VERSION,
   mediaPublishingCapabilitiesForRuntime,
   mediaPublishingCapabilitiesFromHealth,
   mediaPublishingSelection,
   mediaPublishingSourceRequestAllowed,
 } from "./mediaPublishingCapabilities.mjs";
+
+test("the new client opts into only the exact verified media health contract", () => {
+  assert.equal(MEDIA_PUBLISHING_HEALTH_PATH, "/api/health?mediaPipeline=private-derivative-v1");
+  assert.notEqual(MEDIA_PUBLISHING_HEALTH_PATH, "/api/health");
+});
 
 test("video publishing fails closed unless the deployed runtime explicitly enables it", () => {
   assert.deepEqual(mediaPublishingCapabilitiesForRuntime(), { photos: true, videos: false });
@@ -21,7 +28,14 @@ test("video publishing fails closed unless the deployed runtime explicitly enabl
 test("the client trusts only the explicit boolean health capability", () => {
   assert.deepEqual(mediaPublishingCapabilitiesFromHealth(null), DEFAULT_MEDIA_PUBLISHING_CAPABILITIES);
   assert.equal(mediaPublishingCapabilitiesFromHealth({ capabilities: { mediaPublishing: { videos: "true" } } }).videos, false);
-  assert.equal(mediaPublishingCapabilitiesFromHealth({ capabilities: { mediaPublishing: { photos: true, videos: true } } }).videos, true);
+  assert.equal(mediaPublishingCapabilitiesFromHealth({ capabilities: { mediaPublishing: { photos: true, videos: true } } }).videos, false,
+    "the rollout flag alone cannot expose a pipeline the server has not declared ready");
+  assert.equal(mediaPublishingCapabilitiesFromHealth({
+    capabilities: { mediaPublishing: { photos: true, videos: true, pipeline: "almost-ready" } },
+  }).videos, false);
+  assert.equal(mediaPublishingCapabilitiesFromHealth({
+    capabilities: { mediaPublishing: { photos: true, videos: true, pipeline: VIDEO_PUBLISHING_PIPELINE_VERSION } },
+  }).videos, true);
 });
 
 test("the selection gate preserves photos and rejects only new videos while disabled", () => {
@@ -48,7 +62,8 @@ test("the composer exposes the capability, honest transition copy, and both sele
   const source = await readFile(new URL("../screens/LogScreen.jsx", import.meta.url), "utf8");
   assert.match(VIDEO_PUBLISHING_PREPARING_COPY, /Photo Studio is available now/);
   assert.match(VIDEO_PUBLISHING_PREPARING_COPY, /Existing clips remain viewable/);
-  assert.match(source, /api\("\/api\/health"/);
+  assert.match(source, /loadMediaPublishingCapabilities\(\{ apiCall: api, signal: controller\.signal \}\)/);
+  assert.doesNotMatch(source, /api\(MEDIA_PUBLISHING_HEALTH_PATH/);
   assert.match(source, /allowVideos: mediaPublishingCapabilities\.videos/);
   assert.match(source, /mediaPublishingSelection\(candidateAssets, mediaPublishingCapabilities\)/);
   assert.match(source, /mediaPublishingSelection\(selected, mediaPublishingCapabilities\)/);

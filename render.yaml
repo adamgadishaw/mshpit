@@ -92,6 +92,10 @@ services:
         sync: false
       - key: MEDIA_BUCKET
         sync: false
+      # Private clip originals. Must be distinct from MEDIA_BUCKET and have no
+      # public custom domain; only sanitized derivatives enter MEDIA_BUCKET.
+      - key: MEDIA_SOURCE_BUCKET
+        sync: false
       - key: MEDIA_REGION
         sync: false
       - key: MEDIA_ACCESS_KEY_ID
@@ -99,6 +103,12 @@ services:
       - key: MEDIA_SECRET_ACCESS_KEY
         sync: false
       - key: MEDIA_PUBLIC_BASE_URL
+        sync: false
+      - key: PIT_VIDEO_PUBLISHING_ENABLED
+        value: "false"
+      - key: PIT_VIDEO_VERIFIER_HOSTPORT
+        sync: false
+      - key: PIT_VIDEO_VERIFIER_SECRET
         sync: false
       - key: MEDIA_CLEANUP_ENABLED
         value: "true"
@@ -204,6 +214,8 @@ services:
         sync: false
       - key: MEDIA_BUCKET
         sync: false                    # a SEPARATE bucket from production
+      - key: MEDIA_SOURCE_BUCKET
+        sync: false                    # a SEPARATE private source bucket
       - key: MEDIA_REGION
         sync: false
       - key: MEDIA_ACCESS_KEY_ID
@@ -211,6 +223,12 @@ services:
       - key: MEDIA_SECRET_ACCESS_KEY
         sync: false
       - key: MEDIA_PUBLIC_BASE_URL
+        sync: false
+      - key: PIT_VIDEO_PUBLISHING_ENABLED
+        value: "false"
+      - key: PIT_VIDEO_VERIFIER_HOSTPORT
+        sync: false
+      - key: PIT_VIDEO_VERIFIER_SECRET
         sync: false
       - key: MEDIA_CLEANUP_ENABLED
         value: "true"

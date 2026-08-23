@@ -31,6 +31,10 @@ import { missingStaticAssetResponse } from "./staticPolicy.js";
 import { renderPublicPage } from "./publicPages.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import { createApiResponseHeaders, createApiResponseHeaderSetter } from "./responseHeaders.js";
+import {
+  startVideoVerifierHealthScheduler,
+  stopVideoVerifierHealthScheduler,
+} from "./videoVerifier.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 3000;
@@ -285,6 +289,14 @@ function clientIp(req) {
 const server = createServer(async (req, res) => {
   const started = Date.now();
   const requestId = randomUUID();
+  const requestAbort = new AbortController();
+  const abortRequest = () => {
+    if (!requestAbort.signal.aborted) requestAbort.abort(new DOMException("HTTP caller disconnected", "AbortError"));
+  };
+  req.once("aborted", abortRequest);
+  res.once("close", () => {
+    if (!res.writableEnded) abortRequest();
+  });
   res.setHeader("X-Request-Id", requestId);
   let pathname = "/", query = {}, routePattern = "";
   try {
@@ -346,6 +358,7 @@ const server = createServer(async (req, res) => {
         body: ["POST", "PATCH", "PUT", "DELETE"].includes(req.method) ? await readBody(req) : {},
         query, params: match.params, ip, ua: req.headers["user-agent"], token, user,
         host: req.headers.host, proto, origin: `${proto}://${req.headers.host}`, requestId,
+        signal: requestAbort.signal,
         setCookie: (c) => setCookies.push(c),
         setSession: (s) => setCookies.push(sessionCookie(s.token, s.expiresAt, PROD)),
         clearSession: () => setCookies.push(clearCookie(PROD)),
@@ -364,6 +377,11 @@ const server = createServer(async (req, res) => {
     if (servePublicPage(req, res, pathname)) return;
     return serveStatic(req, res, pathname);
   } catch (e) {
+    // A client disconnect is an expected cancellation boundary, not an
+    // application failure. Downstream storage/decoder helpers may wrap the
+    // aborted fetch in a stable 503 for live callers; never record, alert, or
+    // attempt a response after this request's signal has been cancelled.
+    if (requestAbort.signal.aborted || res.destroyed) return;
     // `routePattern` is set once the router matched, so aggregation groups by
     // pattern. Before that it stays empty rather than falling back to the raw
     // path, which would carry ids and search terms into storage.
@@ -427,6 +445,7 @@ function shutdown(exitCode = 0) {
   shuttingDown = true;
   console.log("\n[pit] shutting down…");
   const campaignStop = emailCampaignScheduler?.stop() || Promise.resolve();
+  stopVideoVerifierHealthScheduler({ abortActive: true });
   legacyVideoPosterScheduler?.stop();
   server.close(async () => {
     try { await campaignStop; }
@@ -448,4 +467,5 @@ server.listen(PORT, () => {
   startBackupScheduler(); // verified daily SQLite snapshot on /data; private off-host copy when configured
   startMediaDeletionScheduler({ database: db }); // bounded, durable cleanup of active user-media objects only
   legacyVideoPosterScheduler = startLegacyVideoPosterVerificationScheduler({ database: db });
+  startVideoVerifierHealthScheduler();
 });

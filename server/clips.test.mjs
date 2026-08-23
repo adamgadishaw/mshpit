@@ -97,14 +97,15 @@ test("stable extensionless clips keep their durable poster in the reel", () => {
     (id,owner_id,client_asset_id,create_hash,purpose,kind,source_key,source_url,original_name,mime_type,byte_size,
      width,height,duration_ms,metadata_status,codec_status,codec_verified_at,status,edit_recipe,finalize_hash,source_verified_at,
      render_state,poster_variant_id,poster_key,poster_url,poster_time_ms,created_at,updated_at)
-    VALUES (?,?,?,?,?,'video',?,?,?,?,?,?,?,?,'declared','verified',?,'ready','{}',?,?,
+    VALUES (?,?,?,?,?,'video',?,?,?,?,?,?,?,?,'declared','verified',?,'ready',?,?,?,
       'not_required',?,?,?,?,?,?)`).run(
     assetId, user.id, "client-stable-extensionless", "hash", "post", sourceKey, clipUrl, "clip.mp4", "video/mp4", 1_000_000,
-    1080, 1920, 15_000, now, "finalize-hash", now, variantId, posterKey, posterUrl, 2_400, now, now,
+    1080, 1920, 15_000, now, JSON.stringify({ coverMs: 2_400 }), "finalize-hash", now,
+    variantId, posterKey, posterUrl, 2_400, now, now,
   );
   db.prepare(`INSERT INTO media_variants
-    (id,asset_id,client_variant_id,create_hash,role,object_key,public_url,mime_type,byte_size,width,height,time_ms,status,finalize_hash,verified_at,created_at,updated_at)
-    VALUES (?,?,?,?,'poster',?,?,?,?,?,?,?,'verified',?,?,?,?)`).run(
+    (id,asset_id,client_variant_id,create_hash,role,object_key,public_url,mime_type,byte_size,width,height,time_ms,status,verification_origin,finalize_hash,verified_at,created_at,updated_at)
+    VALUES (?,?,?,?,'poster',?,?,?,?,?,?,?,'verified','private_derivative_v1',?,?,?,?)`).run(
     variantId, assetId, "client-stable-poster", "poster-hash", posterKey, posterUrl, "image/jpeg", 50_000, 720, 1280, 2_400,
     "poster-finalize-hash", now, now, now,
   );

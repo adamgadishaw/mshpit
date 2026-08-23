@@ -31,12 +31,23 @@ test("an edited photo keeps its immutable source descriptor and attaches a rendi
 });
 
 test("a video cover is attached without replacing the source video", () => {
-  const source = { id: "local:clip", kind: "video", uri: "file:///original.mov", posterUri: null, posterTimeMs: 0, durationMs: 0 };
+  const source = {
+    id: "local:clip",
+    kind: "video",
+    uri: "file:///original.mov",
+    posterUri: null,
+    posterTimeMs: 0,
+    durationMs: 0,
+    edit: { coverMode: "auto", coverMs: 1_000 },
+  };
   const posterAsset = { uri: "file:///cover.jpg", actualTimeMs: 1_234, durationMs: 12_000 };
   const result = attachMediaEditArtifacts(source, { posterAsset });
   assert.equal(result.uri, source.uri);
   assert.equal(result.posterUri, posterAsset.uri);
   assert.equal(result.posterTimeMs, 1_234);
+  assert.equal(result.edit.coverMode, "auto");
+  assert.equal(result.edit.coverMs, 1_234,
+    "the authoritative recipe uses the exact auto-scored frame shown in Studio");
   assert.equal(result.durationMs, 12_000);
   assert.equal(result.posterAsset, posterAsset);
 });

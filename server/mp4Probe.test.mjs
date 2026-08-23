@@ -106,8 +106,9 @@ function makeEsds({
   return fullBox("esds", 0, elementary);
 }
 
-function makeFtyp() {
-  return box("ftyp", Buffer.from("isom"), u32(0x200), Buffer.from("isomiso6mp41"));
+function makeFtyp({ majorBrand = "isom", compatibleBrands = ["isom", "iso6", "mp41"] } = {}) {
+  return box("ftyp", Buffer.from(majorBrand), u32(0x200),
+    Buffer.from(compatibleBrands.join("")));
 }
 
 function makeMvhd({ version = 0, timescale = 1_000, duration = 5_001 } = {}) {
@@ -140,13 +141,24 @@ function makeStco({ chunkOffset = 0 } = {}) {
   return fullBox("stco", 0, u32(1), u32(chunkOffset));
 }
 
-function makeSps({ profile, level, width, height, chromaFormat = 1 } = {}) {
+function makeSps({
+  profile,
+  level,
+  width,
+  height,
+  codedWidth = width,
+  codedHeight = height,
+  chromaFormat = 1,
+  progressive = true,
+} = {}) {
   const safeWidth = width >= 1 && width <= 4_096 ? width : 1_920;
   const safeHeight = height >= 1 && height <= 2_160 ? height : 1_080;
-  const widthInMbs = Math.ceil(safeWidth / 16);
-  const heightInMapUnits = Math.ceil(safeHeight / 16);
+  const safeCodedWidth = codedWidth >= safeWidth && codedWidth <= 4_096 ? codedWidth : safeWidth;
+  const safeCodedHeight = codedHeight >= safeHeight && codedHeight <= 2_176 ? codedHeight : safeHeight;
+  const widthInMbs = Math.ceil(safeCodedWidth / 16);
+  const heightInMapUnits = Math.ceil(safeCodedHeight / (progressive ? 16 : 32));
   const cropRight = (widthInMbs * 16 - safeWidth) / 2;
-  const cropBottom = (heightInMapUnits * 16 - safeHeight) / 2;
+  const cropBottom = (heightInMapUnits * 16 * (progressive ? 1 : 2) - safeHeight) / (progressive ? 2 : 4);
   const canRepresentCrop = Number.isInteger(cropRight) && Number.isInteger(cropBottom);
   const bits = [...unsignedGolombBits(0)]; // seq_parameter_set_id
   if (profile === 100) {
@@ -161,7 +173,8 @@ function makeSps({ profile, level, width, height, chromaFormat = 1 } = {}) {
     0,
     ...unsignedGolombBits(widthInMbs - 1),
     ...unsignedGolombBits(heightInMapUnits - 1),
-    1, // frame_mbs_only_flag
+    progressive ? 1 : 0, // frame_mbs_only_flag
+    ...(progressive ? [] : [0]), // mb_adaptive_frame_field_flag
     1, // direct_8x8_inference_flag
     canRepresentCrop && (cropRight || cropBottom) ? 1 : 0,
   );
@@ -179,10 +192,13 @@ function makeAvcC({
   level = 40,
   width = 1_920,
   height = 1_080,
+  codedWidth = width,
+  codedHeight = height,
+  progressive = true,
   chromaFormat = 1,
 } = {}) {
   if (inBandOnly) return box("avcC", Buffer.from([1, profile, 0, level, 0xff, 0xe0, 0]));
-  const sps = makeSps({ profile, level, width, height, chromaFormat });
+  const sps = makeSps({ profile, level, width, height, codedWidth, codedHeight, chromaFormat, progressive });
   // AVCDecoderConfigurationRecord: one tiny SPS and one tiny PPS. The probe is
   // checking structure and codec identity, not decoding these test NAL units.
   return box("avcC", Buffer.concat([
@@ -200,6 +216,9 @@ function makeVisualEntry(type = "avc1", {
   height = 1_080,
   spsWidth = width,
   spsHeight = height,
+  spsCodedWidth = spsWidth,
+  spsCodedHeight = spsHeight,
+  progressive = true,
   profile = 66,
   level = 40,
   chromaFormat = 1,
@@ -210,7 +229,8 @@ function makeVisualEntry(type = "avc1", {
   fixed.writeUInt16BE(width, 24);
   fixed.writeUInt16BE(height, 26);
   return box(type, fixed, ...(includeConfiguration ? [makeAvcC({
-    inBandOnly, profile, level, width: spsWidth, height: spsHeight, chromaFormat,
+    inBandOnly, profile, level, width: spsWidth, height: spsHeight,
+    codedWidth: spsCodedWidth, codedHeight: spsCodedHeight, progressive, chromaFormat,
   })] : []), ...extraChildren);
 }
 
@@ -306,9 +326,10 @@ function makeMp4({
   omitMdat = false,
   emptyMdat = false,
   chunkOffsetOverride,
+  ftyp: ftypOptions,
   ...options
 } = {}) {
-  const ftyp = makeFtyp();
+  const ftyp = makeFtyp(ftypOptions);
   const payload = emptyMdat ? Buffer.alloc(0) : Buffer.from(mdatPayload);
   const provisionalMoov = makeMoov({ ...options, chunkOffset: 0, sampleSize: sample.length });
   const chunkOffset = chunkOffsetOverride ?? (ftyp.length + provisionalMoov.length + 8);
@@ -375,15 +396,48 @@ function isUnsupported(error) {
     && !/users\/|source\.mp4|storage\.example/u.test(error.message);
 }
 
+function expectedStructural({
+  durationMs = 5_001,
+  width = 1_920,
+  height = 1_080,
+  codedWidth = Math.ceil(width / 16) * 16,
+  codedHeight = Math.ceil(height / 16) * 16,
+  sampleCount = 1,
+} = {}) {
+  return { durationMs, width, height, codedWidth, codedHeight, sampleCount };
+}
+
 test("accepts AVC video with optional MPEG-4 audio and returns ceil-rounded mvhd duration", async () => {
   const bytes = makeMp4({ audioEntries: [makeAudioEntry()], movie: { timescale: 1_000, duration: 5_001 } });
   const result = await verify(bytes);
-  assert.deepEqual(result, { durationMs: 5_001, width: 1_920, height: 1_080 });
+  assert.deepEqual(result, expectedStructural());
 });
 
 test("parses version-one mvhd duration without precision loss", async () => {
   const bytes = makeMp4({ movie: { version: 1, timescale: 90_000, duration: 90_001 } });
-  assert.deepEqual(await verify(bytes), { durationMs: 1_001, width: 1_920, height: 1_080 });
+  assert.deepEqual(await verify(bytes), expectedStructural({ durationMs: 1_001 }));
+});
+
+test("accepts only conservative ISO-MP4 brands and rejects QuickTime or streaming containers", async (context) => {
+  for (const majorBrand of ["isom", "mp41", "mp42"]) {
+    await context.test(`accept-${majorBrand}`, async () => {
+      const bytes = makeMp4({ ftyp: { majorBrand, compatibleBrands: [majorBrand, "avc1"] } });
+      assert.deepEqual(await verify(bytes), expectedStructural());
+    });
+  }
+  for (const fixture of [
+    { label: "quicktime", ftyp: { majorBrand: "qt  ", compatibleBrands: ["qt  "] } },
+    { label: "unknown-major", ftyp: { majorBrand: "zzzz", compatibleBrands: ["isom"] } },
+    { label: "unknown-compatible", ftyp: { majorBrand: "isom", compatibleBrands: ["isom", "zzzz"] } },
+  ]) {
+    await context.test(`reject-${fixture.label}`, async () => {
+      await assert.rejects(() => verify(makeMp4({ ftyp: fixture.ftyp })), isUnsupported);
+    });
+  }
+  await context.test("reject-fragmented-marker", async () => {
+    const bytes = Buffer.concat([makeMp4(), box("moof", Buffer.alloc(8))]);
+    await assert.rejects(() => verify(bytes), isUnsupported);
+  });
 });
 
 test("rejects avc3 because its in-band configuration is outside the bounded probe", async () => {
@@ -395,13 +449,12 @@ test("accepts only broadly compatible 8-bit AVC profiles and levels", async (con
   const allowed = [
     { label: "baseline", profile: 66 },
     { label: "main", profile: 77 },
-    { label: "extended", profile: 88 },
     { label: "high-420-8bit", profile: 100 },
   ];
   for (const fixture of allowed) {
     await context.test(fixture.label, async () => {
       const bytes = makeMp4({ videoEntries: [makeVisualEntry("avc1", fixture)] });
-      assert.deepEqual(await verify(bytes), { durationMs: 5_001, width: 1_920, height: 1_080 });
+      assert.deepEqual(await verify(bytes), expectedStructural());
     });
   }
   for (const profile of [44, 110, 122, 244]) {
@@ -410,8 +463,20 @@ test("accepts only broadly compatible 8-bit AVC profiles and levels", async (con
       await assert.rejects(() => verify(bytes), isUnsupported);
     });
   }
+  await context.test("reject-extended-profile", async () => {
+    const bytes = makeMp4({ videoEntries: [makeVisualEntry("avc1", { profile: 88 })] });
+    await assert.rejects(() => verify(bytes), isUnsupported);
+  });
   await context.test("reject-unsupported-level", async () => {
     const bytes = makeMp4({ videoEntries: [makeVisualEntry("avc1", { level: 62 })] });
+    await assert.rejects(() => verify(bytes), isUnsupported);
+  });
+  await context.test("reject-level-5.2", async () => {
+    const bytes = makeMp4({ videoEntries: [makeVisualEntry("avc1", { level: 52 })] });
+    await assert.rejects(() => verify(bytes), isUnsupported);
+  });
+  await context.test("reject-interlaced-sps", async () => {
+    const bytes = makeMp4({ videoEntries: [makeVisualEntry("avc1", { progressive: false })] });
     await assert.rejects(() => verify(bytes), isUnsupported);
   });
   await context.test("reject-level-too-small-for-frame", async () => {
@@ -431,7 +496,7 @@ test("accepts only broadly compatible 8-bit AVC profiles and levels", async (con
 test("returns bounded structural dimensions and rejects inconsistent entries or tracks", async (context) => {
   const dimensions = { width: 3_840, height: 2_160 };
   const bytes = makeMp4({ videoEntries: [makeVisualEntry("avc1", { ...dimensions, level: 51 })] });
-  assert.deepEqual(await verify(bytes), { durationMs: 5_001, ...dimensions });
+  assert.deepEqual(await verify(bytes), expectedStructural({ ...dimensions }));
 
   for (const invalid of [{ width: 0, height: 1_080 }, { width: 4_097, height: 2_160 }, { width: 3_840, height: 2_161 }]) {
     await context.test(`reject-${invalid.width}x${invalid.height}`, async () => {
@@ -484,7 +549,34 @@ test("accepts structurally declared AAC-LC mono audio", async () => {
       sampleRate: 44_100,
     })],
   });
-  assert.deepEqual(await verify(bytes), { durationMs: 5_001, width: 1_920, height: 1_080 });
+  assert.deepEqual(await verify(bytes), expectedStructural());
+});
+
+test("accepts square pixels and rejects anamorphic AVC sample aspect ratios", async (context) => {
+  const square = makeMp4({
+    videoEntries: [makeVisualEntry("avc1", { extraChildren: [box("pasp", u32(1), u32(1))] })],
+  });
+  assert.deepEqual(await verify(square), expectedStructural());
+  for (const [horizontal, vertical] of [[4, 3], [0, 1]]) {
+    await context.test(`${horizontal}:${vertical}`, async () => {
+      const bytes = makeMp4({
+        videoEntries: [makeVisualEntry("avc1", { extraChildren: [box("pasp", u32(horizontal), u32(vertical))] })],
+      });
+      await assert.rejects(() => verify(bytes), isUnsupported);
+    });
+  }
+});
+
+test("rejects AAC sample rates outside the authoritative 8-48 kHz matrix", async (context) => {
+  for (const fixture of [
+    { sampleRate: 64_000, frequencyIndex: 2 },
+    { sampleRate: 7_350, frequencyIndex: 12 },
+  ]) {
+    await context.test(String(fixture.sampleRate), async () => {
+      const bytes = makeMp4({ audioEntries: [makeAudioEntry("mp4a", fixture)] });
+      await assert.rejects(() => verify(bytes), isUnsupported);
+    });
+  }
 });
 
 test("rejects mp4a entries that do not prove ordinary AAC-LC", async (context) => {
@@ -521,7 +613,7 @@ test("jumps over a large mdat to find a tail moov without downloading media payl
   const bytes = Buffer.concat([ftyp, mdat, moov]);
   const fetchImpl = rangeFetch(bytes);
 
-  assert.deepEqual(await verify(bytes, { fetchImpl }), { durationMs: 5_001, width: 1_920, height: 1_080 });
+  assert.deepEqual(await verify(bytes, { fetchImpl }), expectedStructural());
   assert.ok(fetchImpl.requests.some(({ start }) => start === ftyp.length + mdat.length));
   assert.ok(fetchImpl.requests.every(({ end, start }) => end - start + 1 <= Math.max(moov.length, ftyp.length)));
   assert.ok(fetchImpl.requests.every(({ start, end }) => !(start > ftyp.length + 16 && end < ftyp.length + mdat.length - 1)));
@@ -690,7 +782,7 @@ test("derives duration from mvhd, each mdhd, and each stts timeline", async (con
       movie: { duration: 5_000 },
       videoTiming: { mdhdDuration: 5_500, sampleDelta: 5_400 },
     });
-    assert.deepEqual(await verify(bytes), { durationMs: 5_500, width: 1_920, height: 1_080 });
+    assert.deepEqual(await verify(bytes), expectedStructural({ durationMs: 5_500 }));
   });
   await context.test("rejects-overlong-video-mdhd", async () => {
     const bytes = makeMp4({ videoTiming: { mdhdDuration: 60_001, sampleDelta: 5_001 } });
@@ -713,6 +805,65 @@ test("derives duration from mvhd, each mdhd, and each stts timeline", async (con
   });
   await context.test("rejects-missing-stts", async () => {
     const bytes = makeMp4({ videoTiming: { omitStts: true } });
+    await assert.rejects(() => verify(bytes), isUnsupported);
+  });
+});
+
+test("rejects clips whose frame rate or decoded pixel work exceeds the verifier envelope", async (context) => {
+  const sample = Buffer.from([0, 0, 0, 2, 0x65, 0xb8]);
+  await context.test("high-sample-rate", async () => {
+    const sampleCount = 601;
+    const bytes = makeMp4({
+      movie: { duration: 5_001 },
+      videoTiming: { mdhdDuration: 5_001, sampleCount, sampleDelta: 8 },
+      mdatPayload: Buffer.concat(Array.from({ length: sampleCount }, () => sample)),
+    });
+    await assert.rejects(() => verify(bytes), isUnsupported);
+  });
+  await context.test("4k-pixel-work", async () => {
+    const sampleCount = 1_800;
+    const bytes = makeMp4({
+      videoEntries: [makeVisualEntry("avc1", { width: 3_840, height: 2_160, level: 51 })],
+      movie: { duration: 60_000 },
+      videoTiming: { mdhdDuration: 60_000, sampleCount, sampleDelta: 33 },
+      mdatPayload: Buffer.concat(Array.from({ length: sampleCount }, () => sample)),
+    });
+    await assert.rejects(() => verify(bytes), isUnsupported);
+  });
+  await context.test("cropped-high-coded-area", async () => {
+    const sampleCount = 1_800;
+    const bytes = makeMp4({
+      videoEntries: [makeVisualEntry("avc1", {
+        width: 16,
+        height: 16,
+        spsWidth: 16,
+        spsHeight: 16,
+        spsCodedWidth: 4_096,
+        spsCodedHeight: 2_160,
+        level: 51,
+      })],
+      movie: { duration: 60_000 },
+      videoTiming: { mdhdDuration: 60_000, sampleCount, sampleDelta: 33 },
+      mdatPayload: Buffer.concat(Array.from({ length: sampleCount }, () => sample)),
+    });
+    await assert.rejects(() => verify(bytes), isUnsupported);
+  });
+  await context.test("exact-1080p60-boundary", async () => {
+    const sampleCount = 3_600;
+    const bytes = makeMp4({
+      movie: { duration: 60_000 },
+      videoTiming: { timescale: 60_000, mdhdDuration: 3_600_000, sampleCount, sampleDelta: 1_000 },
+      mdatPayload: Buffer.concat(Array.from({ length: sampleCount }, () => sample)),
+    });
+    assert.deepEqual(await verify(bytes), expectedStructural({ durationMs: 60_000, sampleCount }));
+  });
+  await context.test("one-frame-over-1080p-work-boundary", async () => {
+    const sampleCount = 3_601;
+    const bytes = makeMp4({
+      movie: { duration: 60_000 },
+      videoTiming: { timescale: 3_601, mdhdDuration: 216_060, sampleCount, sampleDelta: 60 },
+      mdatPayload: Buffer.concat(Array.from({ length: sampleCount }, () => sample)),
+    });
     await assert.rejects(() => verify(bytes), isUnsupported);
   });
 });

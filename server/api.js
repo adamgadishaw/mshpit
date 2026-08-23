@@ -21,18 +21,20 @@ import { hashPassword, verifyPassword, createSession, destroySession, rateLimit,
 import { startCatalogSeed, catalogSeedStatus, stopCatalogSeed, deezerEnrich } from "./catalogSeed.js";
 import { clean, cleanEmail, isEmail, cleanName, isName, cleanHandle, isPassword, clampRating, cleanStringArray, cleanDate, shape, LIMITS } from "./validate.js";
 import { ApiError } from "./errors.js";
-import { createMediaPresign, mediaConfigured } from "./media.js";
+import { createMediaPresign, mediaConfigured, privateVideoMediaConfigured } from "./media.js";
 import {
   assertPhotosMatchSelection,
   assetIdsMatchingPostPhotos,
   assetObjectRecords,
   attachPostMedia,
   cleanMediaAssetIds,
+  cancelMediaAsset,
   createMediaAsset,
   createMediaVariant,
   deleteMediaAssets,
   finalizeMediaAsset,
   finalizeMediaVariant,
+  isTerminalMediaSourceFailure,
   mediaSelection,
   ownedMediaAsset,
   postMediaAssetIds,
@@ -41,6 +43,7 @@ import {
   replacePostMedia,
   updateMediaAsset,
 } from "./mediaAssets.js";
+import { mediaAssetRoutes } from "./mediaAssetRoutes.js";
 import {
   enqueueAllOwnedMedia,
   enqueueOwnedMediaKeys,
@@ -83,8 +86,9 @@ import { backgroundJobEnabled } from "./backgroundJobs.js";
 import { backupSchedulerEnabled, offhostBackupConfigured } from "./backupScheduler.js";
 import {
   mediaPublishingCapabilitiesForRuntime,
-  mediaPublishingSourceRequestAllowed,
 } from "../src/domain/mediaPublishingCapabilities.mjs";
+import { verifyVideoObject, videoVerifierRuntimeStatus } from "./videoVerifier.js";
+import { VIDEO_VERIFIER_PIPELINE_VERSION } from "./videoVerifierProtocol.js";
 import { discoverChart, discoverCountries, discoverGenres, discoverOverview } from "./discoverService.js";
 import {
   applyModerationAction,
@@ -114,6 +118,12 @@ const YOUTUBE_COLD_SEARCH_ACTOR_BUDGET_VERSION = 2;
 const YOUTUBE_COLD_SEARCH_USER_DAILY_LIMIT = 20;
 const YOUTUBE_COLD_SEARCH_IP_DAILY_LIMIT = 40;
 const DAY_MS = 24 * 60 * 60 * 1000;
+const VIDEO_UPLOAD_USER_DAILY_LIMIT = 10;
+const VIDEO_UPLOAD_IP_DAILY_LIMIT = 20;
+const VIDEO_UPLOAD_GLOBAL_DAILY_LIMIT = 200;
+const VIDEO_VERIFY_USER_HOURLY_LIMIT = 12;
+const VIDEO_VERIFY_IP_HOURLY_LIMIT = 24;
+const VIDEO_VERIFY_GLOBAL_HOURLY_LIMIT = 60;
 const YOUTUBE_PLAYBACK_FAILURE_TTL_MS = 30 * DAY_MS;
 const VENUE_PHOTO_LIMIT = 24;
 const VENUE_PHOTO_SOURCE = new URL("../src/seed/catalog.venue-photos.json", import.meta.url);
@@ -1318,12 +1328,65 @@ function runtimeReadiness() {
   return { database, storageConfigured, databaseFilePresent, bootstrapAllowed };
 }
 
-function publicHealthProjection() {
+function runtimeMediaPublishingCapabilities() {
+  const flagged = mediaPublishingCapabilitiesForRuntime(process.env);
+  const verifier = videoVerifierRuntimeStatus(process.env);
+  const videos = flagged.videos === true
+    && mediaConfigured(process.env)
+    && privateVideoMediaConfigured(process.env)
+    && verifier.ready;
+  return videos
+    ? { photos: true, videos: true, pipeline: verifier.pipeline }
+    : { photos: true, videos: false };
+}
+
+function videoRequestBody(body) {
+  return String(body?.contentType || "").split(";", 1)[0].trim().toLowerCase() === "video/mp4";
+}
+
+function requireVideoPublishingActor(user) {
+  if (user?.email_verified_at || user?.role === "admin") return;
+  throw new ApiError(403, "Verify your email before publishing clips.", "FORBIDDEN");
+}
+
+export function reserveVideoPublishingDemand(ctx, user, phase) {
+  const ipHash = createHash("sha256").update(String(ctx.ip || "unknown")).digest("hex").slice(0, 24);
+  const upload = phase === "upload";
+  const windowMs = upload ? DAY_MS : 60 * 60 * 1000;
+  const reservation = reserveRateLimits([
+    {
+      key: `video-${phase}-user:${user.id}`,
+      max: upload ? VIDEO_UPLOAD_USER_DAILY_LIMIT : VIDEO_VERIFY_USER_HOURLY_LIMIT,
+      windowMs,
+    },
+    {
+      key: `video-${phase}-ip:${ipHash}`,
+      max: upload ? VIDEO_UPLOAD_IP_DAILY_LIMIT : VIDEO_VERIFY_IP_HOURLY_LIMIT,
+      windowMs,
+    },
+    {
+      key: `video-${phase}-global`,
+      max: upload ? VIDEO_UPLOAD_GLOBAL_DAILY_LIMIT : VIDEO_VERIFY_GLOBAL_HOURLY_LIMIT,
+      windowMs,
+    },
+  ]);
+  if (!reservation) {
+    throw new ApiError(429, "Clip publishing is busy for this account or network. Try again later.", "RATE_LIMITED");
+  }
+  return reservation;
+}
+
+function publicHealthProjection(ctx) {
   runtimeReadiness();
+  const negotiated = ctx?.query?.mediaPipeline === VIDEO_VERIFIER_PIPELINE_VERSION;
   return {
     ok: true,
     ts: now(),
-    capabilities: { mediaPublishing: mediaPublishingCapabilitiesForRuntime(process.env) },
+    capabilities: {
+      mediaPublishing: negotiated
+        ? runtimeMediaPublishingCapabilities()
+        : { photos: true, videos: false },
+    },
   };
 }
 
@@ -1345,7 +1408,7 @@ function staffHealthProjection(actor) {
     ts: now(),
     uptimeSeconds: Math.round(process.uptime()),
     commit: String(process.env.RENDER_GIT_COMMIT || "").slice(0, 12) || null,
-    capabilities: { mediaPublishing: mediaPublishingCapabilitiesForRuntime(process.env) },
+    capabilities: { mediaPublishing: runtimeMediaPublishingCapabilities() },
     services: {
       database: readiness.database,
       storageConfigured: readiness.storageConfigured,
@@ -1354,6 +1417,9 @@ function staffHealthProjection(actor) {
         databaseFilePresent: readiness.databaseFilePresent,
         bootstrapAllowed: readiness.bootstrapAllowed,
       },
+      mediaObjectStorageConfigured: mediaConfigured(process.env),
+      privateVideoSourceStorageConfigured: privateVideoMediaConfigured(process.env),
+      videoVerifier: videoVerifierRuntimeStatus(process.env),
       youtubeConfigured: !!process.env.YOUTUBE_API_KEY,
       youtubeLookup: {
         ...youtubeProviderStatus(),
@@ -1511,10 +1577,11 @@ async function searchYouTubeTrack(ctx, input) {
 
 // route table: "METHOD /path" -> handler(ctx) ; :params exposed as ctx.params
 export const routes = {
+  ...mediaAssetRoutes({ database: db, requireUser, limit, now }),
   // Render only needs liveness plus capability flags. Operational topology,
   // commit ids, quota and mail diagnostics belong on the authenticated staff
   // route so a public probe cannot inventory the deployment.
-  "GET /api/health": () => publicHealthProjection(),
+  "GET /api/health": (ctx) => publicHealthProjection(ctx),
   "GET /api/admin/health": (ctx) => {
     const actor = requireModerator(ctx);
     return staffHealthProjection(actor);
@@ -1554,7 +1621,8 @@ export const routes = {
   "POST /api/media/assets": (ctx) => {
     const u = requireUser(ctx);
     limit(ctx, "media-asset-create", 30, 10 * 60 * 1000);
-    if (!mediaPublishingSourceRequestAllowed(ctx.body, process.env)) {
+    const video = videoRequestBody(ctx.body);
+    if (video && !runtimeMediaPublishingCapabilities().videos) {
       // Enforce the runtime capability before createMediaAsset can reserve a
       // ledger row or sign an R2 PUT. Stale/direct clients therefore receive
       // the same fail-closed production boundary as the composer.
@@ -1564,23 +1632,60 @@ export const routes = {
         "MEDIA_TYPE_UNSUPPORTED",
       );
     }
-    return createMediaAsset(db, { ownerId: u.id, body: ctx.body, at: now() });
+    let reservation = null;
+    if (video) {
+      requireVideoPublishingActor(u);
+      reservation = reserveVideoPublishingDemand(ctx, u, "upload");
+    }
+    try {
+      const result = createMediaAsset(db, { ownerId: u.id, body: ctx.body, at: now() });
+      if (result?.duplicate) reservation?.rollback();
+      else reservation?.commit();
+      return result;
+    } catch (error) {
+      reservation?.rollback();
+      throw error;
+    }
   },
 
-  // Finalization is intentionally asynchronous: a signed HEAD confirms the
-  // ticket MIME/length. Clips then receive bounded, generation-bound MP4 table
-  // and sample preflight, but remain unavailable because this runtime has no
-  // authoritative full decoder/transcoder. Image pixels/dimensions remain
-  // client-declared until an authoritative image probe exists.
+  // A signed HEAD confirms ticket MIME/length. Readiness-gated private-derivative-v1
+  // clips then receive bounded, generation-bound MP4 preflight plus a private
+  // full decode and server-generated cover; without that live verifier the
+  // route fails before it can elevate the source. Image pixels/dimensions
+  // remain client-declared until an authoritative image probe exists.
   "POST /api/media/assets/:id/finalize": async (ctx) => {
     const u = requireUser(ctx);
     limit(ctx, "media-asset-finalize", 60, 10 * 60 * 1000);
-    return finalizeMediaAsset(db, {
-      ownerId: u.id,
-      assetId: ctx.params.id,
-      body: ctx.body,
-      at: now(),
-    });
+    const owned = db.prepare("SELECT kind FROM media_assets WHERE id=? AND owner_id=?").get(ctx.params.id, u.id);
+    const video = owned?.kind === "video";
+    if (video) {
+      requireVideoPublishingActor(u);
+      if (!runtimeMediaPublishingCapabilities().videos) {
+        throw new ApiError(503, "Clip verification is temporarily unavailable. Try again later.", "MEDIA_STORAGE_UNAVAILABLE");
+      }
+    }
+    try {
+      return await finalizeMediaAsset(db, {
+        ownerId: u.id,
+        assetId: ctx.params.id,
+        body: ctx.body,
+        at: now(),
+        authoritativeVideoVerifier: video ? verifyVideoObject : null,
+        authoritativePosterRequired: video,
+        beforeAuthoritativeVerify: video
+          ? () => reserveVideoPublishingDemand(ctx, u, "verify")
+          : undefined,
+        signal: ctx.signal,
+      });
+    } catch (error) {
+      if (video && isTerminalMediaSourceFailure(error)) {
+        // An immutable source that failed the terminal private-derivative-v1 compatibility
+        // gate cannot succeed on retry. Retire it now; transient 409/429/5xx
+        // outcomes deliberately keep the resumable draft and its source bytes.
+        cancelMediaAsset(db, { ownerId: u.id, assetId: ctx.params.id, at: now() });
+      }
+      throw error;
+    }
   },
 
   "GET /api/media/assets/:id": (ctx) => {

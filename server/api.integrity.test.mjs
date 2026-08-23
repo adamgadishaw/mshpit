@@ -8,7 +8,7 @@ const dataDir = mkdtempSync(join(tmpdir(), "pit-api-integrity-"));
 process.env.PIT_DATA_DIR = dataDir;
 
 const { db, q, publicUser, artistStmts, artistRow, publicArtist, pruneMissingArtists } = await import("./db.js");
-const { ApiError, routes } = await import("./api.js");
+const { ApiError, reserveVideoPublishingDemand, routes } = await import("./api.js");
 const {
   YOUTUBE_MATCH_CACHE_VERSION,
   invalidateSongIndex,
@@ -20,7 +20,13 @@ const {
 } = await import("./musicProviders.js");
 const { renderPublicPage } = await import("./publicPages.js");
 const { clearRecommendationSnapshotsForTests } = await import("./recommendationService.js");
-const { hashPassword } = await import("./auth.js");
+const { hashPassword, resetRateLimitsForTests } = await import("./auth.js");
+const { refreshVideoVerifierHealth, resetVideoVerifierStateForTests } = await import("./videoVerifier.js");
+const {
+  signVideoVerifierResponse,
+  verifyVideoVerifierRequest,
+  VIDEO_VERIFIER_PROTOCOL_VERSION,
+} = await import("./videoVerifierProtocol.js");
 
 after(() => {
   db.close();
@@ -112,7 +118,12 @@ test("public health is minimal while detailed readiness requires active staff", 
     assert.deepEqual(health.capabilities.mediaPublishing, { photos: true, videos: false });
 
     process.env.PIT_VIDEO_PUBLISHING_ENABLED = "true";
-    assert.deepEqual(routes["GET /api/health"]({}).capabilities.mediaPublishing, { photos: true, videos: true });
+    assert.deepEqual(routes["GET /api/health"]({ query: {} }).capabilities.mediaPublishing,
+      { photos: true, videos: false }, "legacy clients never receive the new video contract");
+    assert.deepEqual(routes["GET /api/health"]({ query: { mediaPipeline: "verified-v0" } }).capabilities.mediaPublishing,
+      { photos: true, videos: false }, "misspelled/old pipeline opt-ins fail closed");
+    assert.deepEqual(routes["GET /api/health"]({ query: { mediaPipeline: "private-derivative-v1" } }).capabilities.mediaPublishing,
+      { photos: true, videos: false }, "a flag and client opt-in cannot bypass storage/verifier readiness");
 
     addUser("u_health_mod", "health-mod@example.com", "healthmod");
     db.prepare("UPDATE users SET role='moderator' WHERE id=?").run("u_health_mod");
@@ -359,6 +370,221 @@ test("YouTube cold search preserves anonymous cache/pins but requires a verified
     globalThis.fetch = previousFetch;
     if (previousApiKey === undefined) delete process.env.YOUTUBE_API_KEY;
     else process.env.YOUTUBE_API_KEY = previousApiKey;
+  }
+});
+
+test("public video capability requires exact private-derivative negotiation plus live storage and verifier", async () => {
+  const keys = [
+    "NODE_ENV", "PIT_VIDEO_PUBLISHING_ENABLED", "PIT_VIDEO_VERIFIER_HOSTPORT", "PIT_VIDEO_VERIFIER_SECRET",
+    "MEDIA_ENDPOINT", "MEDIA_BUCKET", "MEDIA_SOURCE_BUCKET", "MEDIA_REGION", "MEDIA_ACCESS_KEY_ID", "MEDIA_SECRET_ACCESS_KEY",
+    "MEDIA_PUBLIC_BASE_URL",
+  ];
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  const secret = "api-health-video-verifier-secret-at-least-thirty-two-bytes";
+  try {
+    Object.assign(process.env, {
+      NODE_ENV: "production",
+      PIT_VIDEO_PUBLISHING_ENABLED: "true",
+      PIT_VIDEO_VERIFIER_HOSTPORT: "pit-video-verifier:10001",
+      PIT_VIDEO_VERIFIER_SECRET: secret,
+      MEDIA_ENDPOINT: "https://objects.example.com/s3",
+      MEDIA_BUCKET: "pit-media",
+      MEDIA_SOURCE_BUCKET: "pit-media-private",
+      MEDIA_REGION: "auto",
+      MEDIA_ACCESS_KEY_ID: "health-access",
+      MEDIA_SECRET_ACCESS_KEY: "health-secret",
+      MEDIA_PUBLIC_BASE_URL: "https://media.example.com/cdn",
+    });
+    resetVideoVerifierStateForTests();
+    await refreshVideoVerifierHealth({
+      env: process.env,
+      fetchImpl: async (url, request) => {
+        const path = new URL(url).pathname;
+        const authenticated = verifyVideoVerifierRequest({
+          secret,
+          path,
+          body: request.body,
+          headers: request.headers,
+        });
+        const signed = signVideoVerifierResponse({
+          secret,
+          path,
+          requestNonce: authenticated.nonce,
+          payload: {
+            ok: true,
+            protocol: VIDEO_VERIFIER_PROTOCOL_VERSION,
+            pipeline: "private-derivative-v1",
+            decoder: { ffmpeg: true, ffprobe: true, version: "ffmpeg health" },
+            poster: { generated: true, decoded: true },
+            storage: { privateInput: true, sanitizedOutput: true },
+            concurrency: 1,
+          },
+        });
+        return new Response(signed.body, { status: 200, headers: signed.headers });
+      },
+    });
+    assert.deepEqual(routes["GET /api/health"]({ query: {} }).capabilities.mediaPublishing,
+      { photos: true, videos: false });
+    assert.deepEqual(routes["GET /api/health"]({ query: { mediaPipeline: "private-derivative-v1x" } }).capabilities.mediaPublishing,
+      { photos: true, videos: false });
+    assert.deepEqual(routes["GET /api/health"]({ query: { mediaPipeline: "private-derivative-v1" } }).capabilities.mediaPublishing,
+      { photos: true, videos: true, pipeline: "private-derivative-v1" });
+    process.env.MEDIA_SOURCE_BUCKET = process.env.MEDIA_BUCKET;
+    assert.deepEqual(routes["GET /api/health"]({ query: { mediaPipeline: "private-derivative-v1" } }).capabilities.mediaPublishing,
+      { photos: true, videos: false }, "a public/shared source bucket can never activate video publishing");
+    process.env.MEDIA_SOURCE_BUCKET = "pit-media-private";
+
+    const videoBody = (clientAssetId) => ({
+      clientAssetId,
+      purpose: "post",
+      contentType: "video/mp4",
+      fileSize: 1_000_000,
+      name: `${clientAssetId}.mp4`,
+    });
+    const unverified = addUser("u_video_route_unverified", "video-route-unverified@example.com", "videorouteunverified");
+    assert.throws(() => routes["POST /api/media/assets"]({
+      user: unverified,
+      ip: "video-route-unverified-ip",
+      body: videoBody("video-route-unverified"),
+    }), (error) => error.status === 403 && error.code === "FORBIDDEN");
+    assert.equal(db.prepare("SELECT COUNT(*) count FROM media_assets WHERE owner_id=?").get(unverified.id).count, 0);
+
+    const legacyAdminSeed = addUser("u_video_route_admin", "video-route-admin@example.com", "videorouteadmin");
+    db.prepare("UPDATE users SET role='admin' WHERE id=?").run(legacyAdminSeed.id);
+    const legacyAdmin = q.userById.get(legacyAdminSeed.id);
+    assert.equal(legacyAdmin.email_verified_at, 0);
+    assert.equal(routes["POST /api/media/assets"]({
+      user: legacyAdmin,
+      ip: "video-route-admin-ip",
+      body: videoBody("video-route-admin"),
+    }).duplicate, false);
+    const terminalDraft = db.prepare("SELECT id,source_key FROM media_assets WHERE owner_id=? AND client_asset_id=?")
+      .get(legacyAdmin.id, "video-route-admin");
+    const terminalLedger = db.prepare("SELECT upload_expires_at FROM media_objects WHERE object_key=?")
+      .get(terminalDraft.source_key);
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = async (_url, request = {}) => {
+      const method = String(request.method || "GET").toUpperCase();
+      if (method === "HEAD") {
+        return new Response(null, {
+          status: 200,
+          headers: {
+            "content-length": "1000000",
+            "content-type": "video/mp4",
+            etag: '"terminal-incompatible-source"',
+          },
+        });
+      }
+      const headers = new Headers(request.headers || {});
+      const match = /^bytes=([0-9]+)-([0-9]+)$/u.exec(headers.get("range") || "");
+      assert.ok(match, "structural inspection uses an exact signed byte range");
+      const start = Number(match[1]);
+      const end = Number(match[2]);
+      return new Response(Buffer.alloc(end - start + 1), {
+        status: 206,
+        headers: {
+          "content-length": String(end - start + 1),
+          "content-range": `bytes ${start}-${end}/1000000`,
+          "content-type": "video/mp4",
+          etag: '"terminal-incompatible-source"',
+        },
+      });
+    };
+    try {
+      await assert.rejects(routes["POST /api/media/assets/:id/finalize"]({
+        user: legacyAdmin,
+        ip: "video-route-admin-finalize",
+        params: { id: terminalDraft.id },
+        body: {
+          width: 1_280,
+          height: 720,
+          durationMs: 1_000,
+          orientation: 0,
+          editRecipe: { coverMs: 0 },
+        },
+      }), (error) => error.status === 415 && error.code === "MEDIA_TYPE_UNSUPPORTED");
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+    assert.equal(db.prepare("SELECT 1 FROM media_assets WHERE id=?").get(terminalDraft.id), undefined,
+      "terminally incompatible bytes do not occupy a draft/quota slot for seven days");
+    assert.equal(db.prepare("SELECT status FROM media_objects WHERE object_key=?").get(terminalDraft.source_key).status,
+      "delete_queued");
+    assert.ok(db.prepare("SELECT next_attempt_at FROM media_deletion_queue WHERE object_key=?")
+      .get(terminalDraft.source_key).next_attempt_at > terminalLedger.upload_expires_at,
+    "terminal cleanup still respects the signed PUT settle barrier");
+
+    const fan = verifiedUser("u_video_route_verified", "video-route-verified@example.com", "videorouteverified");
+    const firstBody = videoBody("video-route-idempotent");
+    assert.equal(routes["POST /api/media/assets"]({ user: fan, ip: "video-route-fan-0", body: firstBody }).duplicate, false);
+    for (let index = 0; index < 12; index += 1) {
+      assert.equal(routes["POST /api/media/assets"]({
+        user: fan,
+        ip: `video-route-duplicate-${index}`,
+        body: firstBody,
+      }).duplicate, true, "lost-response retries do not consume a new upload permit");
+    }
+    for (let index = 1; index < 10; index += 1) {
+      assert.equal(routes["POST /api/media/assets"]({
+        user: fan,
+        ip: `video-route-unique-${index}`,
+        body: videoBody(`video-route-unique-${index}`),
+      }).duplicate, false);
+    }
+    assert.throws(() => routes["POST /api/media/assets"]({
+      user: fan,
+      ip: "video-route-account-over",
+      body: videoBody("video-route-account-over"),
+    }), (error) => error.status === 429 && error.code === "RATE_LIMITED");
+  } finally {
+    resetVideoVerifierStateForTests();
+    for (const key of keys) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+  }
+});
+
+test("video publishing demand isolates upload/verify and enforces account, network, and global ceilings", () => {
+  const previousNodeEnv = process.env.NODE_ENV;
+  delete process.env.NODE_ENV;
+  const reserve = (phase, userId, ip) => reserveVideoPublishingDemand({ ip }, { id: userId }, phase);
+  try {
+    resetRateLimitsForTests();
+    for (let index = 0; index < 10; index += 1) reserve("upload", "video-account", `account-ip-${index}`).commit();
+    assert.throws(() => reserve("upload", "video-account", "account-ip-over"),
+      (error) => error.status === 429 && error.code === "RATE_LIMITED");
+    for (let index = 0; index < 12; index += 1) reserve("verify", "video-account", `verify-ip-${index}`).commit();
+    assert.throws(() => reserve("verify", "video-account", "verify-ip-over"),
+      (error) => error.status === 429 && error.code === "RATE_LIMITED");
+
+    resetRateLimitsForTests();
+    for (let index = 0; index < 20; index += 1) reserve("upload", `shared-upload-${index}`, "shared-upload-ip").commit();
+    assert.throws(() => reserve("upload", "shared-upload-over", "shared-upload-ip"),
+      (error) => error.status === 429 && error.code === "RATE_LIMITED");
+    for (let index = 0; index < 24; index += 1) reserve("verify", `shared-verify-${index}`, "shared-verify-ip").commit();
+    assert.throws(() => reserve("verify", "shared-verify-over", "shared-verify-ip"),
+      (error) => error.status === 429 && error.code === "RATE_LIMITED");
+
+    resetRateLimitsForTests();
+    const rolledBack = reserve("verify", "rollback-account", "rollback-ip");
+    assert.equal(rolledBack.rollback(), true);
+    for (let index = 0; index < 60; index += 1) {
+      reserve("verify", `global-verify-${index}`, `global-verify-ip-${index}`).commit();
+    }
+    assert.throws(() => reserve("verify", "global-verify-over", "global-verify-ip-over"),
+      (error) => error.status === 429 && error.code === "RATE_LIMITED");
+
+    resetRateLimitsForTests();
+    for (let index = 0; index < 200; index += 1) {
+      reserve("upload", `global-upload-${index}`, `global-upload-ip-${index}`).commit();
+    }
+    assert.throws(() => reserve("upload", "global-upload-over", "global-upload-ip-over"),
+      (error) => error.status === 429 && error.code === "RATE_LIMITED");
+  } finally {
+    resetRateLimitsForTests();
+    if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previousNodeEnv;
   }
 });
 

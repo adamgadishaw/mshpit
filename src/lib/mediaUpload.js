@@ -1,12 +1,13 @@
 import { Platform } from "react-native";
-import { fetch as expoFetch } from "expo/fetch";
 import { File as ExpoFile, UploadType } from "expo-file-system";
 import { api } from "./api";
 import { AppError, captureAppError } from "./diagnostics";
 import { webImageOptimizationPlan } from "./mediaImagePolicy.mjs";
 import { mediaPutStatusAccepted } from "../domain/mediaUploadPolicy.mjs";
+import { normalizeMediaTransferProgress } from "../domain/mediaTransferProgress.mjs";
+import { createMediaUploadDeadline, mediaUploadTimeoutMs } from "../domain/mediaUploadDeadline.mjs";
+import { uploadBinaryWithProgress } from "./webBinaryUpload.mjs";
 
-const UPLOAD_TIMEOUT_MS = 45_000;
 const MIME_BY_EXTENSION = Object.freeze({
   jpg: "image/jpeg",
   jpeg: "image/jpeg",
@@ -144,7 +145,12 @@ export async function prepareMediaUploadAsset(asset, { optimizeWeb = true, conte
   };
 }
 
-export async function uploadPreparedMediaAsset(prepared, ticket, { signal, timeoutMs, context = "Uploading media" } = {}) {
+export async function uploadPreparedMediaAsset(prepared, ticket, {
+  signal,
+  timeoutMs,
+  context = "Uploading media",
+  onProgress,
+} = {}) {
   if (!prepared?.body || !prepared?.contentType || !Number.isSafeInteger(prepared?.fileSize)) {
     throw capturedUploadError(new Error("The prepared media upload is invalid."), { context, code: "PIT-UPLOAD-002" });
   }
@@ -156,46 +162,54 @@ export async function uploadPreparedMediaAsset(prepared, ticket, { signal, timeo
       meta: { method: "POST", route: "/api/media/presign" },
     });
   }
-  if (timeoutMs == null) timeoutMs = prepared.kind === "video" ? 300_000 : UPLOAD_TIMEOUT_MS;
-
-  const controller = new AbortController();
-  let timedOut = false;
-  const cancel = () => controller.abort();
-  if (signal?.aborted) cancel();
-  else signal?.addEventListener?.("abort", cancel, { once: true });
-  const timeout = setTimeout(() => {
-    timedOut = true;
-    controller.abort();
-  }, Math.max(1_000, Number(timeoutMs) || UPLOAD_TIMEOUT_MS));
+  if (timeoutMs == null) timeoutMs = mediaUploadTimeoutMs(prepared);
+  const deadline = createMediaUploadDeadline(timeoutMs, { signal });
+  const reportProgress = (value) => {
+    if (!deadline.signal.aborted) onProgress?.(normalizeMediaTransferProgress(value, prepared.fileSize));
+  };
 
   try {
+    reportProgress({ bytesSent: 0, totalBytes: prepared.fileSize });
     let status;
     if (Platform.OS === "web") {
-      const response = await expoFetch(ticket.uploadUrl, {
+      const response = await uploadBinaryWithProgress({
+        url: ticket.uploadUrl,
         method: ticket.method || "PUT",
         headers: ticket.requiredHeaders,
         body: prepared.body,
-        signal: controller.signal,
+        signal: deadline.signal,
+        expectedBytes: prepared.fileSize,
+        onProgress: reportProgress,
       });
       status = response.status;
     } else {
-      const response = await prepared.body.upload(ticket.uploadUrl, {
+      // SDK 56's task API reports native bytes and honors AbortSignal. A
+      // foreground session prevents a cancelled Studio action from continuing
+      // invisibly after the JS UI has returned to an editable state.
+      const task = prepared.body.createUploadTask(ticket.uploadUrl, {
         httpMethod: ticket.method || "PUT",
         uploadType: UploadType.BINARY_CONTENT,
         headers: ticket.requiredHeaders,
-        signal: controller.signal,
+        mimeType: prepared.contentType,
+        signal: deadline.signal,
         sessionType: "foreground",
+        onProgress: reportProgress,
       });
-      status = response.status;
+      try {
+        const response = await task.uploadAsync();
+        status = response.status;
+      } finally {
+        task.release?.();
+      }
     }
     if (!mediaPutStatusAccepted(status)) throw new Error(`Media storage rejected the upload (${status}).`);
+    reportProgress({ bytesSent: prepared.fileSize, totalBytes: prepared.fileSize });
     return ticket.publicUrl;
   } catch (error) {
-    if (signal?.aborted && !timedOut) throw error;
-    throw capturedUploadError(error, { timedOut, context });
+    if (signal?.aborted && !deadline.timedOut) throw error;
+    throw capturedUploadError(error, { timedOut: deadline.timedOut, context });
   } finally {
-    clearTimeout(timeout);
-    signal?.removeEventListener?.("abort", cancel);
+    deadline.dispose();
   }
 }
 

@@ -5,6 +5,20 @@ export const DEFAULT_MEDIA_PUBLISHING_CAPABILITIES = Object.freeze({
   videos: false,
 });
 
+// A boolean rollout switch is not proof that the full ingest path is ready.
+// The client opts in only when health also advertises the exact contract whose
+// source decoder, durable cover, and public delivery checks the composer was
+// built against. Older servers and partially configured deployments fail
+// closed even if their environment accidentally enables the coarse flag.
+export const VIDEO_PUBLISHING_PIPELINE_VERSION = "private-derivative-v1";
+
+// Capability negotiation is deliberately opt-in. Deployed legacy bundles keep
+// requesting the unversioned health endpoint and therefore remain photo-only;
+// only a client that understands this ingest contract asks the server to
+// advertise it.
+export const MEDIA_PUBLISHING_HEALTH_PATH =
+  `/api/health?mediaPipeline=${VIDEO_PUBLISHING_PIPELINE_VERSION}`;
+
 export const VIDEO_PUBLISHING_PREPARING_COPY =
   "Photo Studio is available now. New clip publishing is being prepared. Existing clips remain viewable.";
 
@@ -28,7 +42,8 @@ export function mediaPublishingCapabilitiesFromHealth(health) {
   const advertised = health?.capabilities?.mediaPublishing;
   return {
     photos: advertised?.photos !== false,
-    videos: advertised?.videos === true,
+    videos: advertised?.videos === true
+      && advertised?.pipeline === VIDEO_PUBLISHING_PIPELINE_VERSION,
   };
 }
 
