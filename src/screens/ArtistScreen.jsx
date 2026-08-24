@@ -1,12 +1,11 @@
 import { useState, useEffect, useRef } from "react";
-import { View, Text, StyleSheet, ScrollView, Pressable, Linking, Image, TextInput, ActivityIndicator } from "react-native";
+import { View, Text, StyleSheet, ScrollView, Pressable, Image, TextInput, ActivityIndicator } from "react-native";
 import { colors, focusRing, mono, radius, shadow, space } from "../theme";
 import { useStore, isStaff } from "../store";
 import { artistMeta } from "../seed/ingested";
 import { SONGS } from "../seed/songs";
 import Stars from "../components/Stars";
 import TapStars from "../components/TapStars";
-import RatingSplit from "../components/RatingSplit";
 import Icon from "../components/Icon";
 import Avatar from "../components/Avatar";
 import ScreenHeader from "../components/ScreenHeader";
@@ -14,6 +13,8 @@ import SmartImage from "../components/SmartImage";
 import Badge, { BadgeRow, BadgeChip } from "../components/Badge";
 import { proxied, isHttp } from "../lib/img";
 import { api } from "../lib/api";
+import { loadSelectedArtistDiscography } from "../lib/artistDiscographyApi";
+import { openTicketLink } from "../lib/ticketLinks";
 import Svg, { Defs, LinearGradient, Stop, Rect } from "react-native-svg";
 import { formatDate } from "../domain/dates.mjs";
 import { discographyIdentityCopy, discographyPresentation } from "../domain/discographyView.mjs";
@@ -22,6 +23,7 @@ import { trackReportDescriptor, trackReportIdentityKey } from "../domain/trackRe
 import { artistWorkspaceOwnsArtist } from "../domain/artistWorkspace.mjs";
 import { selectArtistReviewsPresentation } from "../features/artistReviews/artistReviewsState.mjs";
 import { useArtistTopReviews } from "../features/artistReviews/useArtistTopReviews";
+import { useArtistEventArchive } from "../features/artistEvents/useArtistEventArchive";
 
 const cap = (s) => (s ? s.replace(/\b\w/g, (c) => c.toUpperCase()) : s);
 const compactCount = (value) => {
@@ -160,7 +162,7 @@ function TopReviewCard({ review, rank, artistName, onOpenShow, onOpenPhotos, onO
 
 // Artist page - the rollup of a band's live reputation across every night,
 // plus where to catch them next. Answers "is this band worth seeing?"
-export default function ArtistScreen({ artistName, previewAsFan = false, onClose, onOpenShow, onOpenFanClub, onOpenPhotos, onOpenProfile, onManageArtistProfile, onEditArtistProfile, onPlay, onAddToPlaylist, onReport }) {
+export default function ArtistScreen({ artistName, previewAsFan = false, onClose, onOpenShow, onOpenArchive, onOpenFanClub, onOpenPhotos, onOpenProfile, onManageArtistProfile, onEditArtistProfile, onPlay, onAddToPlaylist, onReport }) {
   const { session, artistSummary, albumRating, songRating, rateAlbum, rateSong, loadRating,
     isArtistOwner, artistPostsFor, loadArtistPage, artistPageCacheEpoch,
     artistGallery, loadArtistPhotos, removePhoto, artistBadges, artistRank, remoteArtistMeta, resolveArtist,
@@ -189,6 +191,15 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
   });
   const topReviewsPresentation = selectArtistReviewsPresentation(topReviewsResource, a.nights, { limit: 3 });
   const topReviews = topReviewsPresentation.reviews;
+  const { resource: liveArchiveResource } = useArtistEventArchive({
+    accountId: session?.id || null,
+    name: a.name,
+    artistKey: a.profileKey,
+  });
+  const liveArchive = liveArchiveResource.updatedAt != null ? liveArchiveResource.data : null;
+  const archiveRatings = liveArchive?.shows?.reduce((sum, show) => sum + (Number(show.avgRating) || 0) * (Number(show.ratingCount) || 0), 0) || 0;
+  const archiveRatingCount = Number(liveArchive?.totals?.ratings) || 0;
+  const archiveAverage = archiveRatingCount ? archiveRatings / archiveRatingCount : 0;
   const canModerate = isStaff(session?.role);
   const genre = a.genre !== "-" ? a.genre : cap(meta?.genre) || "-";
   const spotTracks = (meta?.topTracks || []).map((t, i) => {
@@ -404,11 +415,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
     setSelectingCandidate(candidate.id);
     setIdentityError("");
     try {
-      const result = await api(`/api/artists/discography?name=${encodeURIComponent(a.name)}&deezerId=${encodeURIComponent(candidate.id)}`, {
-        context: "Switching artist catalog",
-        silent: true,
-        signal: controller.signal,
-      });
+      const result = await loadSelectedArtistDiscography(a.name, candidate.id, { signal: controller.signal });
       if (controller.signal.aborted || catalogRequestVersionRef.current !== requestVersion) return;
       setDiscoOwner(a.name);
       setDisco(result);
@@ -780,11 +787,13 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
         <View style={styles.repCard}>
           <Text style={styles.repLabel}>LIVE REPUTATION</Text>
           <View style={styles.repRow}>
-            <Text style={styles.bigScore}>{a.avgOverall ? a.avgOverall.toFixed(1) : "-"}</Text>
+            <Text style={styles.bigScore}>{liveArchive ? (archiveAverage ? archiveAverage.toFixed(1) : "-") : "…"}</Text>
             <View style={{ flex: 1 }}>
-              <Stars value={a.avgOverall} size={18} />
+              <Stars value={archiveAverage} size={18} />
               <Text style={styles.repSub}>
-                {a.nights.length} night{a.nights.length === 1 ? "" : "s"} logged · {a.totalRatings} ratings
+                {liveArchive
+                  ? `${liveArchive.totals.shows} show${liveArchive.totals.shows === 1 ? "" : "s"} · ${archiveRatingCount} fan rating${archiveRatingCount === 1 ? "" : "s"}`
+                  : "Loading the complete fan archive…"}
               </Text>
             </View>
           </View>
@@ -796,12 +805,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
               </Text>
             </View>
           )}
-          {a.nights.length > 0 && (
-            <View style={{ marginTop: 14 }}>
-              <RatingSplit band={a.avgBand} room={a.avgRoom} />
-              <Text style={styles.note}>Averaged across every logged night. Room scores reflect the venues, not the band.</Text>
-            </View>
-          )}
+          {liveArchiveResource.status === "error" && !liveArchive ? <Text style={styles.note}>The live reputation could not refresh. Open the archive to try again.</Text> : null}
         </View>
 
         {/* fan club + listen */}
@@ -876,15 +880,21 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
             <Text style={styles.sectionLabel}>UPCOMING · {upcoming.length}</Text>
             {upcoming.map((t) => (
               <View key={t.id} style={styles.upRow}>
-                <View style={{ flex: 1 }}>
+                <Pressable
+                  style={({ pressed, focused }) => [styles.upMain, pressed && styles.archivePressed, focused && focusRing]}
+                  onPress={() => onOpenShow?.(t)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Open ${a.name} at ${t.venue}, ${t.place || "location to be announced"}, ${formatDate(t.date, t.date)}`}
+                  accessibilityHint="Opens the event page"
+                >
                   <Text style={styles.upVenue}>{t.venue}</Text>
                   <Text style={styles.upPlace}>{t.place}</Text>
                   <Text style={styles.upDate}>{formatDate(t.date, t.date)}{t.scheduled ? "  · scheduled" : ""}</Text>
-                </View>
+                </Pressable>
                 {t.soldOut ? (
                   <View style={styles.soldOut}><Text style={styles.soldOutTxt}>SOLD OUT</Text></View>
                 ) : /^https:\/\//i.test(t.ticketUrl || "") ? (
-                  <Pressable style={styles.ticketBtn} onPress={() => Linking.openURL(t.ticketUrl)} accessibilityRole="link" accessibilityLabel={`Open tickets for ${a.name} at ${t.venue}`}>
+                  <Pressable style={styles.ticketBtn} onPress={() => { void openTicketLink(t.ticketUrl); }} accessibilityRole="link" accessibilityLabel={`Open tickets for ${a.name} at ${t.venue}`}>
                     <Icon name="ticket" size={14} color="#1A1206" />
                     <Text style={styles.ticketTxt}>Tickets</Text>
                   </Pressable>
@@ -899,23 +909,24 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
           </>
         )}
 
-        {/* Then what people said, reviews of every night, fan-first. */}
-        <Text style={styles.sectionLabel}>EVERY NIGHT · {a.nights.length}</Text>
-        {a.nights.length === 0 && <Text style={styles.empty}>No shows logged yet. Be the first.</Text>}
-        {a.nights.map((n) => (
-          <Pressable key={n.id} style={styles.nightRow} onPress={() => onOpenShow?.(n)}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.nightVenue}>{n.venue}</Text>
-              <Text style={styles.nightMeta}>
-                {n.city}{n.date !== "aggregate" ? ` · ${formatDate(n.date, n.date)}` : " · community avg"}
-              </Text>
-            </View>
-            <View style={styles.scorePill}>
-              <Icon name="star" size={11} color={colors.gold} />
-              <Text style={styles.scoreTxt}>{n.overall.toFixed(1)}</Text>
-            </View>
-          </Pressable>
-        ))}
+        {/* The complete archive is server-backed and groups many fan logs into
+            one performance. Keep this profile preview compact; the virtualized
+            archive owns the long history. */}
+        <Text style={styles.sectionLabel}>LIVE ARCHIVE</Text>
+        <Pressable
+          style={({ pressed, focused }) => [styles.archiveCard, pressed && styles.archivePressed, focused && focusRing]}
+          onPress={() => onOpenArchive?.(a.name, a.profileKey)}
+          accessibilityRole="button"
+          accessibilityLabel={`Open ${a.name} live archive`}
+          accessibilityHint="Shows the top rated performances, tours, photos, and every fan review"
+        >
+          <View style={styles.archiveMark}><Icon name="archive" size={20} color={colors.amber} /></View>
+          <View style={styles.archiveCopy}>
+            <Text style={styles.archiveTitle}>Every tour. Every night.</Text>
+            <Text style={styles.archiveText}>Explore the top three fan-rated shows, tour galleries, and the full review history.</Text>
+          </View>
+          <View style={styles.archiveArrow}><Icon name="chevron-right" size={17} color={colors.amber} /></View>
+        </Pressable>
 
         {/* The writing fans keep passing around, paired with its public media. */}
         {(topReviews.length > 0 || topReviewsPresentation.initialError || topReviewsPresentation.refreshError) && (
@@ -1363,6 +1374,7 @@ const styles = StyleSheet.create({
   empty: { color: colors.textDim, fontSize: 13, fontStyle: "italic" },
 
   upRow: { flexDirection: "row", alignItems: "center", backgroundColor: colors.bgElev, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 14, marginBottom: 8, gap: 12 },
+  upMain: { flex: 1, minWidth: 0, minHeight: 44, justifyContent: "center", borderRadius: radius.sm },
   upVenue: { color: colors.text, fontSize: 15, fontWeight: "700" },
   upPlace: { color: colors.textDim, fontSize: 12, marginTop: 2 },
   upDate: { color: colors.amber, fontFamily: mono, fontSize: 12, marginTop: 6 },
@@ -1372,6 +1384,14 @@ const styles = StyleSheet.create({
   ticketPendingTxt: { color: colors.textDim, fontSize: 11, fontWeight: "800" },
   soldOut: { borderWidth: 1, borderColor: colors.danger, borderRadius: radius.pill, paddingHorizontal: 12, paddingVertical: 8 },
   soldOutTxt: { color: colors.danger, fontSize: 11, fontWeight: "800", letterSpacing: 1 },
+
+  archiveCard: { minHeight: 108, flexDirection: "row", alignItems: "center", gap: 13, padding: 15, borderRadius: radius.md, borderWidth: 1, borderColor: colors.amber, backgroundColor: "rgba(242,166,90,0.07)", ...shadow.card },
+  archivePressed: { opacity: 0.78, transform: [{ scale: 0.995 }] },
+  archiveMark: { width: 46, height: 46, borderRadius: 23, alignItems: "center", justifyContent: "center", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line },
+  archiveCopy: { flex: 1, minWidth: 0 },
+  archiveTitle: { color: colors.text, fontSize: 16, fontWeight: "900", letterSpacing: -0.2 },
+  archiveText: { color: colors.textDim, fontSize: 12.5, lineHeight: 18, marginTop: 4 },
+  archiveArrow: { width: 34, height: 34, borderRadius: 17, alignItems: "center", justifyContent: "center", backgroundColor: colors.surface },
 
   nightRow: { flexDirection: "row", alignItems: "center", backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 14, marginBottom: 8 },
   nightVenue: { color: colors.text, fontSize: 15, fontWeight: "700" },

@@ -42,7 +42,7 @@ export default function VerifyEmailScreen({ token, onConsumed, onDone }) {
           <>
             <Text style={styles.h}>Confirm your email</Text>
             <Text style={styles.p}>
-              Tap below to confirm this address belongs to you. Your account already works either way.
+              Tap below to confirm this address belongs to you. You can browse without confirming, but posting, messaging, following, reacting, and public edits require it.
             </Text>
             <Pressable style={[styles.btn, styles.btnPrimary]} onPress={submit} accessibilityRole="button">
               <Text style={styles.btnTxtPrimary}>Confirm my email</Text>

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-const { parseMailFrom, mailConfigured, mailDiagnostics } = await import("./mailer.js");
+const { parseMailFrom, mailConfigured, mailDiagnostics, mailFailureLabel } = await import("./mailer.js");
 
 // Each test owns the two env vars outright so ordering can't leak between them.
 function withEnv(key, from, fn) {
@@ -76,4 +76,16 @@ test("mailDiagnostics never echoes the API key or the raw sender value", () => {
     assert.ok(!serialized.includes("re_super_secret_key"));
     assert.ok(!serialized.includes("noreply@"));
   });
+});
+
+test("mail failure labels cannot copy provider messages, addresses, or tokens into logs", () => {
+  const secret = "recipient@example.test reset=highly-sensitive-token";
+  const label = mailFailureLabel({
+    name: "FetchError",
+    code: "ETIMEDOUT",
+    message: secret,
+  });
+  assert.equal(label, "FetchError/ETIMEDOUT");
+  assert.doesNotMatch(label, /recipient|sensitive|@/i);
+  assert.equal(mailFailureLabel({ name: "bad name\nforged", code: "E BAD" }), "badnameforged/EBAD");
 });

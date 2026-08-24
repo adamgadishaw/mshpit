@@ -51,6 +51,15 @@ test("artist workspace and fan preview screen views survive the shared analytics
     name: "screen_view",
     props: { screen: "artist_preview", referrer: "artist_hq" },
   });
+  for (const screen of ["artist_archive", "artist_tour"]) {
+    assert.deepEqual(sanitizeAnalyticsEvent({ name: "screen_view", props: { screen, referrer: "artist" } }), {
+      name: "screen_view",
+      props: { screen, referrer: "artist" },
+    });
+  }
+  for (const name of ["view_artist_archive", "view_artist_tour", "view_performance"]) {
+    assert.deepEqual(sanitizeAnalyticsEvent({ name, props: { artist: "Authored names never leave the device" } }), { name, props: {} });
+  }
 });
 
 test("analytics latency buckets are stable at their boundaries", () => {

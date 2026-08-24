@@ -4,6 +4,7 @@
 export const ERROR_CATALOG = Object.freeze({
   AUTH_REQUIRED: { status: 401, retryable: false },
   AUTH_INVALID: { status: 401, retryable: false },
+  EMAIL_VERIFICATION_REQUIRED: { status: 403, retryable: false },
   FORBIDDEN: { status: 403, retryable: false },
   FAN_CLUB_MEMBERSHIP_REQUIRED: { status: 403, retryable: false },
   LOUNGE_ATTENDANCE_REQUIRED: { status: 403, retryable: false },
@@ -82,4 +83,17 @@ export function errorEnvelope(error, requestId) {
     requestId,
     retryable: definition.retryable,
   };
+}
+
+// Error messages and stacks are not safe telemetry: provider clients commonly
+// include URLs, query keys, addresses, paths, or request data in them. Runtime
+// logs use only this bounded structural classification.
+export function privateErrorLabel(error) {
+  const cleanPart = (value, fallback = "") => {
+    const text = String(value || fallback).replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 40);
+    return text || fallback;
+  };
+  const name = cleanPart(error?.name, "Error");
+  const code = cleanPart(error?.code);
+  return code ? `${name}/${code}` : name;
 }

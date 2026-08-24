@@ -1,4 +1,4 @@
-import { getMediaConfig, mediaBucketForScope, mediaConfigured, presignS3Request, privateVideoMediaConfigured } from "./media.js";
+import { getMediaConfig, mediaBucketForScope, mediaConfigured, presignS3Request } from "./media.js";
 import { withImmediateWrite as withWrite } from "./databaseTransaction.js";
 import { ApiError } from "./errors.js";
 
@@ -34,6 +34,7 @@ export const MEDIA_UPLOAD_SETTLE_BUFFER_MS = 10 * 60_000;
 // described as an absolute erasure bound.
 export const MEDIA_OWNER_SWEEP_QUIET_WINDOW_MS = 3 * DAY_MS;
 export const MEDIA_OWNER_SWEEP_RECHECK_MS = 6 * 60 * 60_000;
+export const MEDIA_DELETION_DEAD_REDRIVE_MS = DAY_MS;
 
 const schedulerState = {
   running: false,
@@ -536,8 +537,11 @@ export function createMediaListRequest({
   try { config = getMediaConfig(env); }
   catch { return { ok: false, errorCode: "storage_unconfigured" }; }
   if (!config.configured) return { ok: false, errorCode: "storage_unconfigured" };
+  let bucket;
+  try { bucket = mediaBucketForScope(config, storageScope); }
+  catch { return { ok: false, errorCode: "storage_unconfigured" }; }
   try {
-    const target = new URL(joinObjectUrl(config.endpoint, [mediaBucketForScope(config, storageScope)]));
+    const target = new URL(joinObjectUrl(config.endpoint, [bucket]));
     target.searchParams.set("list-type", "2");
     target.searchParams.set("encoding-type", "url");
     target.searchParams.set("max-keys", "1000");
@@ -601,15 +605,42 @@ function claimNext(database, at) {
   });
 }
 
-function finishSuccess(database, id) {
-  atomic(database, () => {
-    const row = database.prepare("SELECT owner_id,object_key FROM media_deletion_queue WHERE id=? AND status='processing'").get(id);
-    if (!row) return;
+function finishSuccess(database, id, at) {
+  return atomic(database, () => {
+    const row = database.prepare(`SELECT q.owner_id,q.object_key,mo.upload_expires_at
+      FROM media_deletion_queue q JOIN media_objects mo
+        ON mo.owner_id=q.owner_id AND mo.object_key=q.object_key
+      WHERE q.id=? AND q.status='processing'`).get(id);
+    if (!row) return "missing";
+    const uploadExpiry = Number(row.upload_expires_at || 0);
+    const finalizeAfter = uploadExpiry > 0
+      ? uploadExpiry + MEDIA_UPLOAD_SETTLE_BUFFER_MS + MEDIA_OWNER_SWEEP_QUIET_WINDOW_MS
+      : 0;
+    if (finalizeAfter > at) {
+      // A provider can authenticate a PUT before ticket expiry and commit it
+      // after this DELETE. Keep both the queue identity and owner ledger, then
+      // repeat exact-key deletion throughout the same quiet window used by
+      // account erasure instead of treating one optimistic 2xx/404 as final.
+      const nextAttempt = Math.min(at + MEDIA_OWNER_SWEEP_RECHECK_MS, finalizeAfter);
+      database.prepare(`UPDATE media_deletion_queue SET status='pending',attempts=0,next_attempt_at=?,
+        last_error_code=NULL,updated_at=?,dead_at=NULL WHERE id=?`)
+        .run(nextAttempt, at, id);
+      database.prepare(`UPDATE media_objects SET status='delete_queued',updated_at=?
+        WHERE owner_id=? AND object_key=?`).run(at, row.owner_id, row.object_key);
+      return "recheck";
+    }
     database.prepare("DELETE FROM media_deletion_queue WHERE id=?").run(id);
     // Successful deletion also erases the now-unneeded owner/key ledger row.
     // Failed/dead work remains visible until an operator can remediate it.
     database.prepare("DELETE FROM media_objects WHERE owner_id=? AND object_key=?").run(row.owner_id, row.object_key);
+    return "finalized";
   });
+}
+
+function pauseDeletionForConfiguration(database, job, at) {
+  database.prepare(`UPDATE media_deletion_queue SET status='pending',attempts=CASE WHEN attempts>0 THEN attempts-1 ELSE 0 END,
+    next_attempt_at=?,last_error_code='storage_unconfigured',updated_at=?,dead_at=NULL WHERE id=?`)
+    .run(at + MEDIA_OWNER_SWEEP_RECHECK_MS, at, job.id);
 }
 
 function finishFailure(database, job, errorCode, at, { terminal = false } = {}) {
@@ -722,6 +753,48 @@ function finishSweepFailure(database, job, errorCode, at, { terminal = false } =
   return "retry";
 }
 
+function pauseSweepForConfiguration(database, job, at) {
+  database.prepare(`UPDATE media_owner_sweeps SET status='pending',attempts=CASE WHEN attempts>0 THEN attempts-1 ELSE 0 END,
+    next_attempt_at=?,last_error_code='storage_unconfigured',updated_at=?,dead_at=NULL WHERE owner_id=?`)
+    .run(at + MEDIA_OWNER_SWEEP_RECHECK_MS, at, job.owner_id);
+}
+
+export function redriveMediaDeletionDeadLetters(database, {
+  at = Date.now(),
+  limit = 100,
+  minAgeMs = MEDIA_DELETION_DEAD_REDRIVE_MS,
+} = {}) {
+  if (!database) return { objects: 0, ownerSweeps: 0 };
+  const boundedLimit = Math.max(1, Math.min(1_000, Math.trunc(Number(limit) || 100)));
+  const age = Math.max(60_000, Math.min(30 * DAY_MS, Math.trunc(Number(minAgeMs) || MEDIA_DELETION_DEAD_REDRIVE_MS)));
+  const cutoff = at - age;
+  return atomic(database, () => {
+    const objectRows = database.prepare(`SELECT id,owner_id,object_key FROM media_deletion_queue
+      WHERE status='dead' AND COALESCE(dead_at,updated_at)<=?
+        AND COALESCE(last_error_code,'') NOT IN ('invalid_key')
+      ORDER BY COALESCE(dead_at,updated_at),id LIMIT ?`).all(cutoff, boundedLimit);
+    for (const row of objectRows) {
+      database.prepare(`UPDATE media_deletion_queue SET status='retry',attempts=0,next_attempt_at=?,
+        last_error_code='operator_redrive',updated_at=?,dead_at=NULL WHERE id=? AND status='dead'`)
+        .run(at, at, row.id);
+      database.prepare(`UPDATE media_objects SET status='delete_queued',updated_at=?
+        WHERE owner_id=? AND object_key=? AND status='deletion_dead'`)
+        .run(at, row.owner_id, row.object_key);
+    }
+    const remaining = Math.max(0, boundedLimit - objectRows.length);
+    const sweepRows = remaining ? database.prepare(`SELECT owner_id FROM media_owner_sweeps
+      WHERE status='dead' AND COALESCE(dead_at,updated_at)<=?
+        AND COALESCE(last_error_code,'') NOT IN ('invalid_owner','invalid_cursor')
+      ORDER BY COALESCE(dead_at,updated_at),owner_id LIMIT ?`).all(cutoff, remaining) : [];
+    for (const row of sweepRows) {
+      database.prepare(`UPDATE media_owner_sweeps SET status='retry',attempts=0,next_attempt_at=?,
+        last_error_code='operator_redrive',updated_at=?,dead_at=NULL WHERE owner_id=? AND status='dead'`)
+        .run(at, at, row.owner_id);
+    }
+    return { objects: objectRows.length, ownerSweeps: sweepRows.length };
+  });
+}
+
 export async function runMediaOwnerSweepOnce({
   database,
   env = process.env,
@@ -741,6 +814,10 @@ export async function runMediaOwnerSweepOnce({
     now: new Date(clock()),
   });
   if (!prepared.ok) {
+    if (prepared.errorCode === "storage_unconfigured") {
+      pauseSweepForConfiguration(database, job, clock());
+      return { processed: 1, errorCode: prepared.errorCode, retried: 1, configurationPaused: true };
+    }
     const state = finishSweepFailure(database, job, prepared.errorCode, clock(), {
       terminal: ["invalid_owner", "invalid_cursor"].includes(prepared.errorCode),
     });
@@ -809,7 +886,11 @@ export async function runMediaOwnerSweepOnce({
         verification_passes=verification_passes+1,next_attempt_at=?,
         discovered_count=discovered_count+?,last_error_code=NULL,updated_at=?,dead_at=NULL
         WHERE owner_id=?`).run(nextVerificationAt, discovered, at, job.owner_id);
-    } else if (job.storage_scope === "public" && privateVideoMediaConfigured(env)) {
+    } else if (job.storage_scope === "public") {
+      // Always retain the private phase. If the private bucket setting is
+      // temporarily absent, the next pass pauses without consuming retries and
+      // resumes when configuration returns; it must never silently certify
+      // account erasure from the public bucket alone.
       database.prepare(`UPDATE media_owner_sweeps SET storage_scope='private',status='pending',attempts=0,
         continuation_token=NULL,verification_passes=0,next_attempt_at=?,last_error_code=NULL,updated_at=?,dead_at=NULL
         WHERE owner_id=?`).run(at, at, job.owner_id);
@@ -867,10 +948,14 @@ export async function runMediaDeletionBatch({
     deleted: 0,
     retried: 0,
     deadLettered: 0,
+    deadLettersRedriven: 0,
+    deletionRechecks: 0,
     lastErrorCode: null,
   };
   if (database) {
     const at = clock();
+    const redriven = redriveMediaDeletionDeadLetters(database, { at });
+    result.deadLettersRedriven = redriven.objects + redriven.ownerSweeps;
     database.prepare("DELETE FROM media_upload_issuances WHERE issued_at<=?")
       .run(at - (2 * MEDIA_UPLOAD_ROLLING_WINDOW_MS));
     result.orphanTicketsQueued = enqueueExpiredMediaTickets(database, { env, at });
@@ -897,8 +982,15 @@ export async function runMediaDeletionBatch({
     result.processed += 1;
     const outcome = await deleteOne(job, { env, fetchImpl, timeoutMs: boundedTimeout, clock });
     if (outcome.ok) {
-      finishSuccess(database, job.id);
+      const state = finishSuccess(database, job.id, clock());
       result.deleted += 1;
+      if (state === "recheck") result.deletionRechecks += 1;
+      continue;
+    }
+    if (outcome.errorCode === "storage_unconfigured") {
+      pauseDeletionForConfiguration(database, job, clock());
+      result.retried += 1;
+      result.lastErrorCode = outcome.errorCode;
       continue;
     }
     const state = finishFailure(database, job, outcome.errorCode, clock(), { terminal: outcome.terminal });
@@ -930,6 +1022,12 @@ export function mediaDeletionHealth(database, { env = process.env, at = Date.now
     FROM media_owner_sweeps GROUP BY status`).all().map((row) => [row.status, Number(row.count || 0)]));
   const sweepsDue = Number(database.prepare(`SELECT COUNT(*) count FROM media_owner_sweeps
     WHERE status IN ('pending','retry','processing') AND next_attempt_at<=?`).get(at)?.count || 0);
+  const redriveEligible = Number(database.prepare(`SELECT COUNT(*) count FROM media_deletion_queue
+    WHERE status='dead' AND COALESCE(dead_at,updated_at)<=?
+      AND COALESCE(last_error_code,'') NOT IN ('invalid_key')`).get(at - MEDIA_DELETION_DEAD_REDRIVE_MS)?.count || 0);
+  const sweepRedriveEligible = Number(database.prepare(`SELECT COUNT(*) count FROM media_owner_sweeps
+    WHERE status='dead' AND COALESCE(dead_at,updated_at)<=?
+      AND COALESCE(last_error_code,'') NOT IN ('invalid_owner','invalid_cursor')`).get(at - MEDIA_DELETION_DEAD_REDRIVE_MS)?.count || 0);
   return {
     enabled: mediaDeletionSchedulerEnabled(env),
     storageConfigured: mediaConfigured(env),
@@ -938,12 +1036,14 @@ export function mediaDeletionHealth(database, { env = process.env, at = Date.now
     retrying: counts.retry || 0,
     processing: counts.processing || 0,
     deadLetter: counts.dead || 0,
+    redriveEligible,
     due,
     ownerSweeps: {
       pending: sweepCounts.pending || 0,
       retrying: sweepCounts.retry || 0,
       processing: sweepCounts.processing || 0,
       deadLetter: sweepCounts.dead || 0,
+      redriveEligible: sweepRedriveEligible,
       due: sweepsDue,
     },
     oldestActiveAgeSeconds: oldest ? Math.max(0, Math.floor((at - oldest) / 1000)) : 0,

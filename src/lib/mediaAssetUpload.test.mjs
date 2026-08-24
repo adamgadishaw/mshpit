@@ -62,3 +62,13 @@ test("new remote drafts are exposed before transfer so explicit cancellation can
   assert.match(source.slice(created, upload), /created\.asset\.status !== "ready"/);
   assert.match(source.slice(created, upload), /onRemoteDraft\?\.\(\{ assetId, duplicate: !!created\.duplicate \}\)/);
 });
+
+test("client-authored renders and covers consume only the sanitized finalized variant URL", () => {
+  const finalize = source.indexOf("const finalized = await apiCall", source.indexOf("async function createAndUploadVariant"));
+  const end = source.indexOf("\n}\n", finalize);
+  const boundary = source.slice(finalize, end);
+  assert.match(boundary, /const sanitizedUrl = finalized\?\.variant\?\.url/);
+  assert.match(boundary, /finalized\?\.variant\?\.status !== "verified"/);
+  assert.match(boundary, /asset: \{ \.\.\.finalized\.asset, url: sanitizedUrl \}/);
+  assert.match(boundary, /asset: \{ \.\.\.finalized\.asset, posterUrl: sanitizedUrl \}/);
+});

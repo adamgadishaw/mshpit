@@ -1,0 +1,19 @@
+import { api } from "./api";
+
+export function requestAccountExport(password) {
+  return api("/api/me/export", {
+    method: "POST",
+    body: { password: typeof password === "string" ? password : "" },
+    context: "Preparing your account export",
+    silent: true,
+  });
+}
+
+export function updateAnnouncementEmailPreference(enabled) {
+  return api("/api/me/email-preferences", {
+    method: "POST",
+    body: { announcements: !!enabled },
+    context: "Updating announcement email preferences",
+    silent: true,
+  });
+}

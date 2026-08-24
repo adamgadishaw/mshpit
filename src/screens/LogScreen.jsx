@@ -42,7 +42,7 @@ import {
 } from "../domain/mediaPublishingPreflight.mjs";
 import { mediaUploadProgressCopy } from "../domain/mediaTransferProgress.mjs";
 import { hasLandingCompatibleImage } from "../domain/landingShowcase.mjs";
-import { save } from "../lib/persist";
+import { remove, save } from "../lib/persist";
 import { uploadStudioMediaAsset } from "../lib/mediaAssetUpload";
 import { retireMediaAssetDrafts } from "../lib/mediaAssetDraftCleanup.mjs";
 import { loadMediaPublishingCapabilities } from "../lib/mediaPublishingHealth";
@@ -606,12 +606,12 @@ export default function LogScreen({
         allowVideos: mediaPublishingCapabilities.videos,
       }));
     } catch (error) {
-      if (pickerRequestId) save(PENDING_COMPOSER_PICKER_KEY, null);
+      if (pickerRequestId) remove(PENDING_COMPOSER_PICKER_KEY);
       studioReturnFocusRef.current = null;
       reportMediaPickerError(error, "Opening the media library");
       return;
     }
-    if (pickerRequestId) save(PENDING_COMPOSER_PICKER_KEY, null);
+    if (pickerRequestId) remove(PENDING_COMPOSER_PICKER_KEY);
     if (!res || res.canceled || !res.assets?.length) {
       studioReturnFocusRef.current = null;
       return;

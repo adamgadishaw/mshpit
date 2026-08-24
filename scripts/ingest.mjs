@@ -24,6 +24,7 @@
 import { writeFile, readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { privateErrorLabel } from "../server/errors.js";
 
 const UA = "PitConcertApp/0.1 (https://example.com; contact@example.com)";
 const SETLISTFM_KEY = process.env.SETLISTFM_KEY;
@@ -33,7 +34,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function getJSON(url, headers = {}) {
   const res = await fetch(url, { headers: { "User-Agent": UA, Accept: "application/json", ...headers } });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText} for ${url}`);
+  if (!res.ok) {
+    const error = new Error("Provider request failed.");
+    error.code = `HTTP_${res.status}`;
+    throw error;
+  }
   return res.json();
 }
 
@@ -151,7 +156,7 @@ async function main() {
       }
       console.log(`  ✓ ${a.name}${img ? " (+image)" : ""}${set ? " (+setlist)" : ""}`);
     } catch (e) {
-      console.warn(`  ! ${name}: ${e.message}`);
+      console.warn(`  ! ${name}: ${privateErrorLabel(e)}`);
     }
     await sleep(1100);
   }

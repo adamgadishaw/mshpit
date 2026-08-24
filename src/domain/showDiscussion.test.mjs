@@ -46,9 +46,18 @@ test("only persisted posts can open a PostScreen discussion", () => {
 test("ShowScreen delegates the full thread to PostScreen", () => {
   assert.match(showScreen, /onOpenPost/);
   assert.match(showScreen, /onOpenPost\?\.\(norm\)/);
+  assert.match(showScreen, /\{discussionAvailable \? <View style=\{styles\.discussionCard\}>/);
   assert.match(showScreen, /<NearbyAfterparty\s+log=\{norm\}\s+coord=\{coord\}/);
   assert.doesNotMatch(showScreen, /AfterpartySection|TextInput|addComment|deleteOwnComment|loadComments|commentsFor/);
   assert.equal(existsSync(new URL("../components/AfterpartySection.jsx", import.meta.url)), false);
+});
+
+test("aggregate show review pagination keeps loaded reviews and exposes retry feedback", () => {
+  assert.match(showScreen, /const \[archiveLoadMoreFailed, setArchiveLoadMoreFailed\] = useState\(false\)/);
+  assert.match(showScreen, /const result = await loadMoreArchiveReviews\(\)/);
+  assert.match(showScreen, /result\?\.status === "error"/);
+  assert.match(showScreen, /The reviews already on screen are still available/);
+  assert.match(showScreen, /accessibilityLabel="Retry loading more fan reviews"/);
 });
 
 test("PostScreen scopes comment reads and exposes honest loading failure recovery", () => {

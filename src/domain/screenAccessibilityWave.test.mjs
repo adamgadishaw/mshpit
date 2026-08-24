@@ -63,7 +63,7 @@ test("Settings distinguishes actionable rows and exposes selection and busy stat
   assert.match(source.settings, /swatchGrid: themeGridStyle/);
   assert.match(source.themeSwatch, /accessibilityRole="radio"/);
   assert.match(source.themeSwatch, /accessibilityState=\{\{ checked: !!active, selected: !!active \}\}/);
-  assert.match(source.settings, /disabled=\{exporting\}/);
+  assert.match(source.settings, /disabled=\{exporting \|\| !exportPassword\}/);
   assert.match(source.settings, /accessibilityState=\{\{ busy: exporting \}\}/);
 });
 

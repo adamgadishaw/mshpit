@@ -47,6 +47,9 @@ test("verification defaults ON, so a missing variable cannot silently disable it
     assert.equal(verificationEnabled({ EMAIL_VERIFICATION_ENABLED: off }), false, `${off} should disable`);
   }
   assert.equal(verificationEnabled({ EMAIL_VERIFICATION_ENABLED: "true" }), true);
+  assert.equal(verificationEnabled({ NODE_ENV: "production", EMAIL_VERIFICATION_ENABLED: "false" }), true,
+    "production cannot convert a mail outage into a verification bypass");
+  assert.equal(verificationEnabled({ RENDER: "true", EMAIL_VERIFICATION_ENABLED: "off" }), true);
 });
 
 test("signup sends the verify mail and holds the welcome until confirmed", async () => {
@@ -242,6 +245,18 @@ test("verification routes are no-store and only return private self data to the 
   });
   assert.equal(me.user.emailVerified, true);
   assert.equal(meHeaders.get("Cache-Control"), "no-store");
+});
+
+test("legacy verification GET moves the bearer token into a no-store fragment", () => {
+  const headers = new Map();
+  const token = "a".repeat(48);
+  const result = routes["GET /api/verify-email"]({
+    query: { token },
+    setHeader: (name, value) => headers.set(name, value),
+  });
+  assert.match(result.redirect, new RegExp(`/#verify=${token}$`));
+  assert.equal(result.redirect.includes("?verify="), false);
+  assert.equal(headers.get("Cache-Control"), "no-store");
 });
 
 test("already-verified resend self-heals with a fresh no-store self projection", () => {

@@ -1,13 +1,13 @@
 import { Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { colors, displayFont, focusRing, mono, radius, shadow } from "../theme";
-import { eventDateMeta, splitVenuePlace } from "../domain/venueDiscovery.mjs";
+import { eventDateMeta, optionalDistanceKm, splitVenuePlace } from "../domain/venueDiscovery.mjs";
 import Icon from "./Icon";
 
 export function VenueDiscoveryCard({ venue, onPress, compact = false }) {
   const { city, region } = splitVenuePlace(venue?.place);
   const upcoming = Math.max(0, Number(venue?.upcoming) || 0);
   const rating = Number(venue?.rating) || 0;
-  const distance = Number.isFinite(Number(venue?.distanceKm)) ? Number(venue.distanceKm) : null;
+  const distance = optionalDistanceKm(venue?.distanceKm);
   const details = [
     distance != null ? `${distance.toFixed(distance < 10 ? 1 : 0)} km away` : null,
     venue?.capacity ? `${Number(venue.capacity).toLocaleString()} capacity` : null,
@@ -48,7 +48,7 @@ export function VenueDiscoveryCard({ venue, onPress, compact = false }) {
 export function UpcomingEventCard({ event, onOpenArtist, onOpenVenue, onTickets, compact = false, context }) {
   const date = eventDateMeta(event?.date);
   const { city } = splitVenuePlace(event?.place);
-  const distance = Number.isFinite(Number(event?.distanceKm)) ? Number(event.distanceKm) : null;
+  const distance = optionalDistanceKm(event?.distanceKm);
   const detail = [
     event?.venue,
     city !== "Location unavailable" ? city : null,

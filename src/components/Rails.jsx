@@ -4,6 +4,7 @@ import { colors, displayFont, focusRing, font, mono, radius, roleColor, shadow }
 import Avatar from "./Avatar";
 import Icon from "./Icon";
 import { UpcomingEventCard } from "./VenueDiscoveryCards";
+import { RIGHT_RAIL_EVENT_SCOPE, rightRailEventsForScope } from "../domain/rightRailEvents.mjs";
 
 const NAV = [
   { key: "feed", label: "Feed", icon: "feed" },
@@ -212,11 +213,17 @@ export function RightRail({
   onOpenEvent,
 }) {
   const [artistMode, setArtistMode] = useState("top"); // 'top' | 'az'
+  const [eventScope, setEventScope] = useState(RIGHT_RAIL_EVENT_SCOPE.NEAR);
   const artists = artistMode === "top"
     ? (discoverySidebar.topArtists?.length ? discoverySidebar.topArtists.slice(0, 8) : topArtists(8))
     : artistsAlphabetical(10);
   const venues = discoverySidebar.trendingVenues?.length ? discoverySidebar.trendingVenues.slice(0, 6) : trendingVenues(6);
-  const events = discoverySidebar.upcomingEvents?.length ? discoverySidebar.upcomingEvents.slice(0, 6) : upcomingEvents(6);
+  const events = rightRailEventsForScope({
+    scope: eventScope,
+    nearEvents: discoverySidebar.upcomingEvents,
+    worldEvents: eventScope === RIGHT_RAIL_EVENT_SCOPE.WORLD ? upcomingEvents?.(6) : [],
+    limit: 6,
+  });
   const localLabel = discoverySidebar.location?.city ? ` near ${discoverySidebar.location.city}` : "";
   const listingEmpty = discoverySidebarStatus === "loading"
     ? "Tuning your local lineup..."
@@ -225,6 +232,14 @@ export function RightRail({
       : discoverySidebar.source?.providerConfigured === false
         ? "Live listings are waiting for a ticket provider."
         : `No upcoming shows${localLabel} yet.`;
+  const eventListingEmpty = eventScope === RIGHT_RAIL_EVENT_SCOPE.WORLD
+    ? (discoverySidebar.source?.providerConfigured === false
+      ? "Live listings are waiting for a ticket provider."
+      : "No upcoming shows worldwide yet.")
+    : listingEmpty;
+  const eventScopeSubtitle = eventScope === RIGHT_RAIL_EVENT_SCOPE.WORLD
+    ? "Soonest worldwide dates"
+    : (discoverySidebar.location?.city ? `Near ${discoverySidebar.location.city}` : "Near you");
 
   return (
     <ScrollView style={styles.right} contentContainerStyle={styles.rightContent} showsVerticalScrollIndicator={false}>
@@ -283,11 +298,39 @@ export function RightRail({
         <View style={styles.eventCardHead}>
           <View>
             <Text style={styles.cardTitle}>UPCOMING EVENTS</Text>
-            <Text style={styles.eventCardSub}>Soonest released dates</Text>
+            <Text style={styles.eventCardSub}>{eventScopeSubtitle}</Text>
           </View>
           <View style={styles.eventCalendarMark}><Icon name="calendar" size={15} color={colors.amber} /></View>
         </View>
-        {events.length === 0 && <Text style={styles.empty}>{listingEmpty}</Text>}
+        <View style={[styles.toggle, styles.eventScopeToggle]} accessibilityRole="tablist" accessibilityLabel="Upcoming event area">
+          <Pressable
+            onPress={() => setEventScope(RIGHT_RAIL_EVENT_SCOPE.NEAR)}
+            style={({ pressed, focused }) => [
+              styles.eventScopeButton,
+              eventScope === RIGHT_RAIL_EVENT_SCOPE.NEAR && styles.tgOn,
+              pressed && styles.itemPressed,
+              focused && focusRing,
+            ]}
+            accessibilityRole="tab"
+            accessibilityState={{ selected: eventScope === RIGHT_RAIL_EVENT_SCOPE.NEAR }}
+          >
+            <Text style={[styles.tgTxt, eventScope === RIGHT_RAIL_EVENT_SCOPE.NEAR && styles.tgTxtOn]}>Near</Text>
+          </Pressable>
+          <Pressable
+            onPress={() => setEventScope(RIGHT_RAIL_EVENT_SCOPE.WORLD)}
+            style={({ pressed, focused }) => [
+              styles.eventScopeButton,
+              eventScope === RIGHT_RAIL_EVENT_SCOPE.WORLD && styles.tgOn,
+              pressed && styles.itemPressed,
+              focused && focusRing,
+            ]}
+            accessibilityRole="tab"
+            accessibilityState={{ selected: eventScope === RIGHT_RAIL_EVENT_SCOPE.WORLD }}
+          >
+            <Text style={[styles.tgTxt, eventScope === RIGHT_RAIL_EVENT_SCOPE.WORLD && styles.tgTxtOn]}>World</Text>
+          </Pressable>
+        </View>
+        {events.length === 0 && <Text style={styles.empty}>{eventListingEmpty}</Text>}
         <View style={styles.eventList}>
           {events.map((event) => (
             <Pressable
@@ -295,7 +338,7 @@ export function RightRail({
               style={({ pressed, hovered, focused }) => [styles.eventPressable, hovered && styles.eventHover, pressed && styles.rowPressed, focused && focusRing]}
               onPress={() => (onOpenEvent ? onOpenEvent(event) : onOpenArtist?.(event.artist))}
               accessibilityRole="button"
-              accessibilityLabel={`Open ${event.artist} at ${event.venue}`}
+              accessibilityLabel={`Open ${event.artist} at ${event.venue}${event.place ? `, ${event.place}` : ""}${event.date ? `, ${event.date}` : ""}`}
             >
               <UpcomingEventCard event={event} compact />
             </Pressable>
@@ -425,6 +468,8 @@ const styles = StyleSheet.create({
   eventCardHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 10 },
   eventCardSub: { color: colors.textDim, fontSize: 10, marginTop: 3 },
   eventCalendarMark: { width: 32, height: 32, alignItems: "center", justifyContent: "center", borderRadius: 11, backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line },
+  eventScopeToggle: { alignSelf: "stretch", marginBottom: 10 },
+  eventScopeButton: { flex: 1, minHeight: 44, alignItems: "center", justifyContent: "center", paddingHorizontal: 10, paddingVertical: 5, borderRadius: radius.pill },
   eventList: { gap: 8 },
   eventPressable: { borderRadius: radius.md, borderCurve: "continuous", ...Platform.select({ web: { cursor: "pointer", transitionDuration: "110ms", transitionProperty: "transform, filter" } }) },
   eventHover: { ...Platform.select({ web: { filter: "brightness(1.06)" } }) },

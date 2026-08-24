@@ -43,7 +43,7 @@ function ArtistTile({ a, picked, onToggle, disabled = false }) {
 
 const MIN_PICKS = 3;
 
-export default function PickArtistsScreen({ onDone, onSkip, showTheme = true }) {
+export default function PickArtistsScreen({ onDone, onSkip, showTheme = true, onRequireVerification }) {
   const { session, updateProfile, chooseTheme } = useStore();
   const [q, setQ] = useState("");
   const [picked, setPicked] = useState(() => new Set(session?.favoriteArtists || []));
@@ -51,6 +51,7 @@ export default function PickArtistsScreen({ onDone, onSkip, showTheme = true }) 
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
   const query = q.trim().toLowerCase();
+  const needsEmailVerification = session?.emailVerified === false;
 
   // Popular first (Spotify popularity), then alphabetical, so the grid opens
   // with names people recognize.
@@ -69,6 +70,10 @@ export default function PickArtistsScreen({ onDone, onSkip, showTheme = true }) 
 
   const save = async () => {
     if (saving) return;
+    if (needsEmailVerification) {
+      onRequireVerification?.();
+      return;
+    }
     const favoriteArtists = [...picked];
     // fold the picks' genres into the profile so genre affinity works instantly
     const genres = new Set(session?.genres || []);
@@ -97,12 +102,18 @@ export default function PickArtistsScreen({ onDone, onSkip, showTheme = true }) 
       <SheetHeader
         title="Pick your artists"
         onClose={onSkip}
-        action={{ label: saving ? "Saving..." : picked.size >= MIN_PICKS ? `Done · ${picked.size}` : `Pick ${MIN_PICKS - picked.size} more`, onPress: save, disabled: saving || picked.size < MIN_PICKS }}
+        action={{ label: saving ? "Saving..." : picked.size >= MIN_PICKS ? needsEmailVerification ? "Confirm to save" : `Done · ${picked.size}` : `Pick ${MIN_PICKS - picked.size} more`, onPress: save, disabled: saving || picked.size < MIN_PICKS }}
       />
       <Text style={styles.sub}>
         Choose at least {MIN_PICKS} artists you love, your feed, recommendations, and events
         get built around them.
       </Text>
+      {needsEmailVerification && (
+        <View style={styles.verifyNote} accessibilityRole="alert">
+          <Icon name="mail" size={16} color={colors.gold} />
+          <Text style={styles.verifyNoteText}>Choose now if you like. Confirm your email before saving these picks to your account.</Text>
+        </View>
+      )}
 
       <View style={styles.field}>
         <Icon name="search" size={17} color={colors.textDim} />
@@ -165,6 +176,8 @@ export default function PickArtistsScreen({ onDone, onSkip, showTheme = true }) 
 const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: colors.bg },
   sub: { color: colors.textDim, fontSize: 13.5, lineHeight: 20, paddingHorizontal: 16, paddingTop: 12 },
+  verifyNote: { flexDirection: "row", alignItems: "center", gap: 9, marginHorizontal: 16, marginTop: 12, paddingHorizontal: 13, paddingVertical: 11, borderRadius: radius.md, borderWidth: 1, borderColor: colors.gold, backgroundColor: `${colors.gold}0F` },
+  verifyNoteText: { flex: 1, color: colors.text, fontSize: 12, lineHeight: 17 },
   field: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 14, marginHorizontal: 16, marginTop: 12 },
   input: { flex: 1, color: colors.text, fontSize: 15, paddingVertical: 11 },
   clearSearch: { width: 44, height: 44, marginRight: -12, alignItems: "center", justifyContent: "center" },

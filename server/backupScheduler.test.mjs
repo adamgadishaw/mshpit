@@ -6,6 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import {
   backupDirectory,
+  backupChildEnvironment,
   backupSchedulerEnabled,
   latestBackupAt,
   offhostBackupConfigured,
@@ -57,7 +58,29 @@ test("off-host upload requires a complete private bucket and controls the CLI fl
   assert.equal(scheduledBackupArgs(complete).at(-1), "--upload");
   assert.equal(offhostBackupConfigured({ ...complete, BACKUP_S3_SECRET_ACCESS_KEY: "" }), false);
   assert.equal(offhostBackupConfigured({ ...complete, BACKUP_S3_BUCKET: "pit-public-media" }), false);
+  assert.equal(offhostBackupConfigured({ ...complete, BACKUP_S3_ENDPOINT: "http://private.example" }), false);
   assert.equal(scheduledBackupArgs({}).includes("--upload"), false);
+});
+
+test("backup subprocess receives only the secrets it needs", () => {
+  const child = backupChildEnvironment({
+    NODE_ENV: "production",
+    PIT_DATA_DIR: "/data",
+    BACKUP_S3_ENDPOINT: "https://private.example",
+    BACKUP_S3_BUCKET: "pit-backup",
+    BACKUP_S3_ACCESS_KEY_ID: "backup-id",
+    BACKUP_S3_SECRET_ACCESS_KEY: "backup-secret",
+    MEDIA_BUCKET: "pit-public",
+    ADMIN_PASSWORD: "must-not-leak",
+    RESEND_API_KEY: "must-not-leak",
+    MEDIA_SECRET_ACCESS_KEY: "must-not-leak",
+    YOUTUBE_API_KEY: "must-not-leak",
+  });
+  assert.equal(child.BACKUP_S3_SECRET_ACCESS_KEY, "backup-secret");
+  assert.equal(child.ADMIN_PASSWORD, undefined);
+  assert.equal(child.RESEND_API_KEY, undefined);
+  assert.equal(child.MEDIA_SECRET_ACCESS_KEY, undefined);
+  assert.equal(child.YOUTUBE_API_KEY, undefined);
 });
 
 test("scheduled backup process is hidden, bounded, and reports success", async () => {

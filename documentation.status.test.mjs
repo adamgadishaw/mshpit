@@ -46,11 +46,14 @@ test("current incident and security docs retain measured release caveats", async
     assert.match(source, /504,824/);
     assert.match(source, /x-render-routing: no-server/);
   }
-  for (const source of [status, security]) {
-    assert.match(source, /17 advisories/);
-    assert.match(source, /9 moderate and 8\s+high/);
-    assert.match(source, /do not (?:use|run)\s+`npm audit fix --force`/i);
-  }
+  // STATUS describes the last deployed release; SECURITY describes the current
+  // uncommitted remediation worktree and must say explicitly that it is not live.
+  assert.match(status, /17 advisories/);
+  assert.match(status, /9 moderate and 8\s+high/);
+  assert.match(status, /do not (?:use|run)\s+`npm audit fix --force`/i);
+  assert.match(security, /production dependency audit currently has no known advisories/i);
+  assert.match(security, /not\s+production controls until/i);
+  assert.match(security, /historical database from Git history/i);
   assert.match(audit, /19 advisories/);
   assert.match(audit, /8 moderate and 11\s+high/);
   for (const source of [audit]) {

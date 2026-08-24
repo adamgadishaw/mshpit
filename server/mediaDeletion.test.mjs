@@ -21,15 +21,18 @@ const { routes } = await import("./api.js");
 const { hashPassword } = await import("./auth.js");
 const {
   enqueueAllOwnedMedia,
+  enqueueOwnedMediaKeys,
   enqueueOwnedMediaUrls,
   enqueueOwnerMediaSweep,
   mediaDeletionHealth,
   mediaOrphanTtlMs,
   MEDIA_OWNER_SWEEP_QUIET_WINDOW_MS,
   MEDIA_OWNER_SWEEP_RECHECK_MS,
+  MEDIA_DELETION_DEAD_REDRIVE_MS,
   MEDIA_UPLOAD_SETTLE_BUFFER_MS,
   recordMediaObjectTicket,
   reserveMediaUploadTicket,
+  redriveMediaDeletionDeadLetters,
   runMediaDeletionBatch,
   runMediaOwnerSweepOnce,
   trustedOwnedMediaKey,
@@ -49,6 +52,7 @@ function addUser(id, password = "delete-password") {
 }
 
 function clearMediaTables() {
+  db.prepare("DELETE FROM legacy_media_finalize_descriptors").run();
   db.prepare("DELETE FROM post_media").run();
   db.prepare("DELETE FROM media_variants").run();
   db.prepare("DELETE FROM media_assets").run();
@@ -83,7 +87,7 @@ test("only exact, credential-free owner-prefixed public URLs become deletion key
   }
 });
 
-test("presign records a durable owner ledger before returning an upload ticket", () => {
+test("legacy presign records a private owner ledger and one-time finalize descriptor", () => {
   clearMediaTables();
   const user = addUser("media_ticket_owner");
   const ticket = routes["POST /api/media/presign"]({
@@ -91,9 +95,17 @@ test("presign records a durable owner ledger before returning an upload ticket",
     ip: "ticket-owner",
     body: { purpose: "avatar", contentType: "image/jpeg", fileSize: 1234, name: "show.jpg" },
   });
-  const ledger = db.prepare("SELECT owner_id,purpose,status FROM media_objects WHERE object_key=?").get(ticket.key);
-  assert.deepEqual({ ...ledger }, { owner_id: user.id, purpose: "avatar", status: "issued" });
-  assert.equal(ticket.publicUrl, `https://media.example.com/cdn/${ticket.key}`);
+  const ledger = db.prepare("SELECT owner_id,purpose,status,storage_scope FROM media_objects WHERE object_key=?").get(ticket.key);
+  assert.deepEqual({ ...ledger }, { owner_id: user.id, purpose: "avatar", status: "issued", storage_scope: "private" });
+  assert.equal(ticket.publicUrl, null);
+  assert.equal(ticket.storageLocator, `pit-private:${ticket.key}`);
+  assert.equal(typeof ticket.finalizeToken, "string");
+  const descriptor = db.prepare("SELECT owner_id,token_hash,status FROM legacy_media_finalize_descriptors WHERE id=?")
+    .get(ticket.descriptorId);
+  assert.equal(descriptor.owner_id, user.id);
+  assert.equal(descriptor.status, "pending");
+  assert.equal(descriptor.token_hash.length, 64);
+  assert.notEqual(descriptor.token_hash, ticket.finalizeToken);
 });
 
 test("upload reservations enforce atomic outstanding and rolling owner budgets", () => {
@@ -259,7 +271,7 @@ test("mixed association input queues only a ledger-backed owned key, never a for
   }]);
 });
 
-test("stable deletion resolves its stored authoritative key after a public-base migration", () => {
+test("stable deletion uses its stored authoritative key after a public-base migration", () => {
   clearMediaTables();
   const user = addUser("stable_key_migration_owner");
   const created = routes["POST /api/media/assets"]({
@@ -273,10 +285,9 @@ test("stable deletion resolves its stored authoritative key after a public-base 
       name: "old-origin.jpg",
     },
   });
-  const result = enqueueOwnedMediaUrls(db, {
+  const result = enqueueOwnedMediaKeys(db, {
     ownerId: user.id,
-    urls: [created.asset.sourceUrl],
-    env: { ...process.env, MEDIA_PUBLIC_BASE_URL: "https://new-media.example.com/next" },
+    keys: [created.upload.key],
     at: 2_000,
   });
   assert.deepEqual(result.keys, [created.upload.key]);
@@ -377,6 +388,20 @@ test("stale never-associated tickets are queued after a bounded TTL", async () =
   });
   assert.equal(result.orphanTicketsQueued, 1);
   assert.equal(result.deleted, 1);
+  assert.equal(result.deletionRechecks, 1,
+    "one optimistic 404 cannot retire a key while a previously signed PUT may still settle");
+  const retained = db.prepare("SELECT upload_expires_at,status FROM media_objects WHERE object_key=?").get(key);
+  assert.equal(retained.status, "delete_queued");
+  const finalAt = retained.upload_expires_at + MEDIA_UPLOAD_SETTLE_BUFFER_MS + MEDIA_OWNER_SWEEP_QUIET_WINDOW_MS;
+  const final = await runMediaDeletionBatch({
+    database: db,
+    env: process.env,
+    clock: () => finalAt,
+    batchSize: 1,
+    fetchImpl: async () => ({ status: 404 }),
+  });
+  assert.equal(final.deleted, 1);
+  assert.equal(final.deletionRechecks, 0);
   assert.equal(db.prepare("SELECT 1 FROM media_objects WHERE object_key=?").get(key), undefined);
 });
 
@@ -509,8 +534,10 @@ test("account cleanup waits out a live PUT ticket and catches an object created 
     },
   });
   assert.equal(barrierDelete.deleted, 1);
+  assert.equal(barrierDelete.deletionRechecks, 1);
   assert.equal(barrierDelete.sweepPages, 1);
-  assert.equal(db.prepare("SELECT 1 FROM media_objects WHERE object_key=?").get(key), undefined);
+  assert.ok(db.prepare("SELECT 1 FROM media_objects WHERE object_key=?").get(key),
+    "the exact-key queue identity survives an early 404 throughout the late-PUT quiet window");
   // The same worker pass performs the first mandatory empty prefix check after
   // the signing + normal-client settle barrier. It must retain the sweep: an
   // S3-style provider can authorize a PUT before expiration while its body is
@@ -518,7 +545,9 @@ test("account cleanup waits out a live PUT ticket and catches an object created 
   assert.equal(db.prepare("SELECT verification_passes FROM media_owner_sweeps WHERE owner_id=?").get(owner).verification_passes, 1);
 
   // Model that deliberately slow PUT completing after the first empty pass.
-  // The retained exact-prefix sweep discovers and queues it on the next pass.
+  // The retained exact-prefix sweep sees it on the next pass. The durable
+  // exact-key queue already owns this identity, so discovery does not need to
+  // recreate a ledger row.
   const encoded = encodeURIComponent(key);
   const late = await runMediaOwnerSweepOnce({
     database: db,
@@ -533,7 +562,7 @@ test("account cleanup waits out a live PUT ticket and catches an object created 
       };
     },
   });
-  assert.deepEqual(late, { processed: 1, discovered: 1, hasMore: false, verificationPending: true, errorCode: null });
+  assert.deepEqual(late, { processed: 1, discovered: 0, hasMore: false, verificationPending: true, errorCode: null });
   assert.equal(listCalls, 2);
   assert.equal(db.prepare("SELECT object_key FROM media_deletion_queue").get().object_key, key);
 
@@ -545,27 +574,25 @@ test("account cleanup waits out a live PUT ticket and catches an object created 
     fetchImpl: async (_url, options) => ({ status: options.method === "DELETE" ? 204 : 500 }),
   });
   assert.equal(finalDelete.deleted, 1);
-  assert.equal(db.prepare("SELECT 1 FROM media_objects WHERE object_key=?").get(key), undefined);
+  assert.equal(finalDelete.deletionRechecks, 1);
+  assert.ok(db.prepare("SELECT 1 FROM media_objects WHERE object_key=?").get(key));
   assert.ok(db.prepare("SELECT 1 FROM media_owner_sweeps WHERE owner_id=?").get(owner),
     "a successful object DELETE must not retire the independent verification sweep");
 
   const finalBarrier = barrier + MEDIA_OWNER_SWEEP_QUIET_WINDOW_MS;
-  const finalVerification = await runMediaOwnerSweepOnce({
+  const finalPass = await runMediaDeletionBatch({
     database: db,
     env: process.env,
+    batchSize: 1,
     clock: () => finalBarrier,
-    fetchImpl: async () => ({
-      status: 200,
-      text: async () => "<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>",
-    }),
+    fetchImpl: async (_url, options) => options.method === "DELETE"
+      ? ({ status: 204 })
+      : ({ status: 200, text: async () => "<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>" }),
   });
-  assert.deepEqual(finalVerification, {
-    processed: 1,
-    discovered: 0,
-    hasMore: false,
-    verificationPending: false,
-    errorCode: null,
-  });
+  assert.equal(finalPass.deleted, 1);
+  assert.equal(finalPass.deletionRechecks, 0);
+  assert.equal(finalPass.sweepPages, 1);
+  assert.equal(db.prepare("SELECT 1 FROM media_objects WHERE object_key=?").get(key), undefined);
   const privateVerification = await runMediaOwnerSweepOnce({
     database: db,
     env: process.env,
@@ -583,6 +610,101 @@ test("account cleanup waits out a live PUT ticket and catches an object created 
     errorCode: null,
   });
   assert.equal(db.prepare("SELECT 1 FROM media_owner_sweeps WHERE owner_id=?").get(owner), undefined);
+});
+
+test("private account-erasure sweeps survive temporary source-bucket configuration loss", async () => {
+  clearMediaTables();
+  const owner = "private_config_loss_owner";
+  const startedAt = 50_000;
+  const finalAt = startedAt + MEDIA_OWNER_SWEEP_QUIET_WINDOW_MS;
+  assert.equal(enqueueOwnerMediaSweep(db, { ownerId: owner, at: startedAt }), true);
+
+  const publicPass = await runMediaOwnerSweepOnce({
+    database: db,
+    env: process.env,
+    clock: () => finalAt,
+    fetchImpl: async (url) => {
+      assert.equal(url.includes("/pit-active-media?"), true);
+      return { status: 200, text: async () => "<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>" };
+    },
+  });
+  assert.equal(publicPass.processed, 1);
+  assert.equal(db.prepare("SELECT storage_scope FROM media_owner_sweeps WHERE owner_id=?").get(owner).storage_scope,
+    "private");
+
+  const missingPrivate = { ...process.env, MEDIA_SOURCE_BUCKET: "" };
+  const paused = await runMediaOwnerSweepOnce({
+    database: db,
+    env: missingPrivate,
+    clock: () => finalAt,
+    fetchImpl: async () => { throw new Error("missing private config must fail before network access"); },
+  });
+  assert.deepEqual(paused, {
+    processed: 1,
+    errorCode: "storage_unconfigured",
+    retried: 1,
+    configurationPaused: true,
+  });
+  const retained = db.prepare(`SELECT storage_scope,status,attempts,last_error_code,next_attempt_at
+    FROM media_owner_sweeps WHERE owner_id=?`).get(owner);
+  assert.deepEqual({ ...retained }, {
+    storage_scope: "private",
+    status: "pending",
+    attempts: 0,
+    last_error_code: "storage_unconfigured",
+    next_attempt_at: finalAt + MEDIA_OWNER_SWEEP_RECHECK_MS,
+  });
+
+  const resumed = await runMediaOwnerSweepOnce({
+    database: db,
+    env: process.env,
+    clock: () => finalAt + MEDIA_OWNER_SWEEP_RECHECK_MS,
+    fetchImpl: async (url) => {
+      assert.equal(url.includes("/pit-private-media?"), true);
+      return { status: 200, text: async () => "<ListBucketResult><IsTruncated>false</IsTruncated></ListBucketResult>" };
+    },
+  });
+  assert.equal(resumed.processed, 1);
+  assert.equal(db.prepare("SELECT 1 FROM media_owner_sweeps WHERE owner_id=?").get(owner), undefined);
+});
+
+test("dead-letter deletion work is observable and safely redrivable without reviving terminal identities", () => {
+  clearMediaTables();
+  const owner = "dead_redrive_owner";
+  const retryKey = `users/${owner}/post/retryable.jpg`;
+  const terminalKey = `users/${owner}/post/terminal.jpg`;
+  for (const key of [retryKey, terminalKey]) {
+    recordMediaObjectTicket(db, { ownerId: owner, objectKey: key, at: 1_000, expiresAt: null });
+  }
+  enqueueAllOwnedMedia(db, { ownerId: owner, at: 2_000 });
+  db.prepare(`UPDATE media_deletion_queue SET status='dead',attempts=5,next_attempt_at=0,
+    last_error_code='http_503',dead_at=3_000,updated_at=3_000 WHERE object_key=?`).run(retryKey);
+  db.prepare(`UPDATE media_deletion_queue SET status='dead',attempts=1,next_attempt_at=0,
+    last_error_code='invalid_key',dead_at=3_000,updated_at=3_000 WHERE object_key=?`).run(terminalKey);
+  db.prepare("UPDATE media_objects SET status='deletion_dead',updated_at=3_000 WHERE owner_id=?")
+    .run(owner);
+
+  const eligibleAt = 3_000 + MEDIA_DELETION_DEAD_REDRIVE_MS;
+  assert.equal(mediaDeletionHealth(db, { env: process.env, at: eligibleAt - 1 }).redriveEligible, 0);
+  assert.equal(mediaDeletionHealth(db, { env: process.env, at: eligibleAt }).redriveEligible, 1);
+  assert.deepEqual(redriveMediaDeletionDeadLetters(db, { at: eligibleAt }), {
+    objects: 1,
+    ownerSweeps: 0,
+  });
+  assert.deepEqual({ ...db.prepare(`SELECT status,attempts,next_attempt_at,last_error_code,dead_at
+    FROM media_deletion_queue WHERE object_key=?`).get(retryKey) }, {
+    status: "retry",
+    attempts: 0,
+    next_attempt_at: eligibleAt,
+    last_error_code: "operator_redrive",
+    dead_at: null,
+  });
+  assert.equal(db.prepare("SELECT status FROM media_objects WHERE object_key=?").get(retryKey).status,
+    "delete_queued");
+  assert.equal(db.prepare("SELECT status FROM media_deletion_queue WHERE object_key=?").get(terminalKey).status,
+    "dead");
+  assert.equal(db.prepare("SELECT status FROM media_objects WHERE object_key=?").get(terminalKey).status,
+    "deletion_dead");
 });
 
 test("post photo edits and author deletion queue only attachments that became unreferenced", () => {

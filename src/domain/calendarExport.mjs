@@ -1,4 +1,5 @@
 import { toIsoDate } from "./dates.mjs";
+import { ticketUrlDecision } from "./ticketLinks.mjs";
 
 const CRLF = "\r\n";
 const MAX_TEXT = 240;
@@ -74,22 +75,27 @@ function stableHash(value) {
   return hash.toString(16).padStart(8, "0");
 }
 
-function safeWebUrl(value) {
-  try {
-    const url = new URL(String(value || ""));
-    return url.protocol === "https:" || url.protocol === "http:" ? url.toString() : "";
-  } catch {
-    return "";
+function confirmedTicketUrlSet(values) {
+  const confirmed = new Set();
+  for (const value of Array.isArray(values) ? values : []) {
+    const decision = ticketUrlDecision(value, { allowUntrusted: true });
+    if (decision.valid) confirmed.add(decision.url);
   }
+  return confirmed;
 }
 
-export function normalizeCalendarEvent(event) {
+export function normalizeCalendarEvent(event, { confirmedTicketUrls = [] } = {}) {
   const date = toIsoDate(event?.date);
   const artist = cleanText(event?.artist, 120);
   if (!date || !artist) return null;
   const venue = cleanText(event?.venue || event?.place, 140);
   const city = cleanText(event?.city || (event?.place !== venue ? event?.place : ""), 100);
-  const ticketUrl = safeWebUrl(event?.ticketUrl);
+  const ticketDecision = ticketUrlDecision(event?.ticketUrl, { allowUntrusted: true });
+  const confirmed = confirmedTicketUrlSet(confirmedTicketUrls);
+  const ticketUrl = ticketDecision.valid
+    && (!ticketDecision.requiresConfirmation || confirmed.has(ticketDecision.url))
+    ? ticketDecision.url
+    : "";
   const identity = [artist.toLocaleLowerCase(), venue.toLocaleLowerCase(), date].join("|");
   return {
     date,
@@ -101,10 +107,14 @@ export function normalizeCalendarEvent(event) {
   };
 }
 
-export function buildCalendarDocument(events, { now = new Date(), calendarName = "PIT concerts" } = {}) {
+export function buildCalendarDocument(events, {
+  now = new Date(),
+  calendarName = "PIT concerts",
+  confirmedTicketUrls = [],
+} = {}) {
   const unique = new Map();
   for (const candidate of Array.isArray(events) ? events : [events]) {
-    const event = normalizeCalendarEvent(candidate);
+    const event = normalizeCalendarEvent(candidate, { confirmedTicketUrls });
     if (event) unique.set(event.uid, event);
   }
   if (!unique.size) throw new Error("This show does not have a valid artist and date yet.");

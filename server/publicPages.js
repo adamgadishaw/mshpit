@@ -2,6 +2,11 @@
 // who cannot (or do not want to) sign in. These pages intentionally do not run
 // the Expo bundle: legal/support information must remain readable without
 // JavaScript, an account, local storage, or a working API.
+import {
+  ANNOUNCEMENT_EMAIL_DISCLOSURE,
+  MEDIA_AND_SESSION_SECURITY_DISCLOSURE,
+  PRIVACY_POLICY_UPDATED,
+} from "../src/domain/privacyDisclosures.mjs";
 
 const SITE_NAME = "Pit";
 export const SUPPORT_EMAIL = "support@mshpit.com";
@@ -26,7 +31,7 @@ const PAGES = Object.freeze({
   "/privacy": {
     title: "Privacy policy",
     description: "How Pit collects, uses, shares, retains, and lets you control your information.",
-    updated: "August 2026",
+    updated: PRIVACY_POLICY_UPDATED,
     intro: "Pit is a social service for logging concerts, rating them, and following people whose taste matches yours. We use account and activity data to operate the service, protect it from abuse, and personalize music and local-show features. This policy describes what we collect, why, and the choices you have.",
     note: "You can download or delete your account data and turn optional product analytics off from Settings.",
     sections: [
@@ -54,6 +59,10 @@ const PAGES = Object.freeze({
         paragraphs: [
           "We use information to provide and secure the service; deliver your feed, messages, local discovery, recommendations, search, playback, and account support; understand aggregate feature health; develop new features; detect abuse and enforce our Terms; and communicate with you when needed.",
         ],
+      },
+      {
+        heading: ANNOUNCEMENT_EMAIL_DISCLOSURE.heading,
+        paragraphs: [...ANNOUNCEMENT_EMAIL_DISCLOSURE.paragraphs],
       },
       {
         heading: "Community photo spotlights",
@@ -104,7 +113,7 @@ const PAGES = Object.freeze({
       {
         heading: "Data retention and security",
         paragraphs: [
-          "Account and content data is kept while needed to operate the account and service. Raw first-party product analytics is automatically limited to a rolling 30-day period by default and is deleted earlier when you opt out or delete your account. If an artist search returns no match, the submitted artist name may remain in a bounded staff enrichment queue for up to 30 days. Passwords are hashed, sessions use secure signed-in requests over HTTPS in production, and access is limited, but no online service can promise perfect security.",
+          `Account and content data is kept while needed to operate the account and service. Raw first-party product analytics is automatically limited to a rolling 30-day period by default and is deleted earlier when you opt out or delete your account. If an artist search returns no match, the submitted artist name may remain in a bounded staff enrichment queue for up to 30 days. ${MEDIA_AND_SESSION_SECURITY_DISCLOSURE} Passwords are hashed, signed-in requests use HTTPS in production, and access is limited, but no online service can promise perfect security.`,
           "When you delete content or your account, active database records are removed or scrubbed and Pit-owned uploads are durably queued for active object-storage deletion. That cleanup retries automatically and can take additional time. Separate backup copies remain until the configured retention period ends, or longer when legally required.",
         ],
       },

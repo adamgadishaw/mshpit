@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { FlatList, Linking, Platform, Pressable, StyleSheet, Text, View } from "react-native";
+import { FlatList, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { colors, displayFont, focusRing, mono, radius, shadow } from "../theme";
 import { useStore } from "../store";
 import Icon from "../components/Icon";
@@ -8,6 +8,7 @@ import LocationPicker from "../components/LocationPicker";
 import ScreenHeader from "../components/ScreenHeader";
 import { UpcomingEventCard, VenueDiscoveryCard } from "../components/VenueDiscoveryCards";
 import { nearestMapPoints } from "../domain/venueDiscovery.mjs";
+import { openTicketLink } from "../lib/ticketLinks";
 
 const RADII = [25, 50, 75, 150];
 const MAP_POINT_LIMIT = 60;
@@ -65,7 +66,7 @@ export default function NearbyScreen({ onClose, onOpenVenue, onOpenArtist }) {
         event={item}
         onOpenArtist={() => onOpenArtist?.(item.artist)}
         onOpenVenue={() => onOpenVenue?.(item.venue)}
-        onTickets={() => { if (item.ticketUrl) void Linking.openURL(item.ticketUrl).catch(() => {}); }}
+        onTickets={() => { void openTicketLink(item.ticketUrl); }}
       />
     );
   };

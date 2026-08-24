@@ -10,6 +10,16 @@ const MAX_INTERVAL_MS = 15 * 60 * 1000;
 const MAX_BATCH_SIZE = 50;
 const MAX_CAMPAIGNS_PER_TICK = 10;
 
+export function emailCampaignRecoveryEnabled(env = process.env) {
+  // A restored snapshot can contain pre-withdrawal consent, deleted accounts,
+  // and rows marked `sending`. Hosted recovery is therefore an explicit
+  // operator decision after the privacy/erasure replay has been verified.
+  if (env.NODE_ENV === "production" || env.RENDER === "true") {
+    return String(env.EMAIL_CAMPAIGN_RECOVERY_ENABLED || "").trim().toLowerCase() === "true";
+  }
+  return String(env.EMAIL_CAMPAIGN_RECOVERY_ENABLED || "true").trim().toLowerCase() !== "false";
+}
+
 function boundedInteger(value, fallback, minimum, maximum) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed < minimum) return fallback;

@@ -3,8 +3,9 @@ import { AppState, Platform } from "react-native";
 import { seedFeed, ratedShows, haversineKm } from "./data";
 import { catalogVenues, catalogTourDates, catalogArtists } from "./seed/catalog";
 import { clean, cleanEmail, isEmail, cleanName, isName, cleanHandle, isPassword, clampRating, LIMITS } from "./domain/validation.mjs";
-import { load, save } from "./lib/persist";
+import { load, remove, save } from "./lib/persist";
 import { api, AppError, captureAppError, configureApiIdentity } from "./lib/api";
+import { requestAccountExport, updateAnnouncementEmailPreference } from "./lib/accountPrivacyApi";
 import { clearStoredTheme, setTheme as applyTheme, storedThemeSelection, syncThemeFromAccount } from "./theme";
 import { artistMeta } from "./seed/ingested";
 import { ACHIEVEMENTS } from "./domain/badges.mjs";
@@ -146,6 +147,27 @@ import {
   youtubeVideoRejectionSource,
   youtubeVideoWasRejected,
 } from "./domain/youtubeVideoRejections.mjs";
+import {
+  accountPrivatePayloadsAfterLogout,
+  feedStorageKey,
+  playHistoryStorageKey,
+  purgeAccountLocalPrivacy,
+  purgeAccountMediaDraftFiles,
+  recentSearchStorageKey,
+  recommendationPreferenceStorageKey,
+} from "./domain/accountLocalPrivacy.mjs";
+
+const purgeLocalMediaDraftFiles = (accountId) => purgeAccountMediaDraftFiles({
+  accountId,
+  deleteForOwner: deleteMediaDraftsForOwner,
+  onFailure: (error) => captureAppError(error, {
+    code: "PIT-STORE-002",
+    context: "Removing private media drafts after an account handoff",
+    source: "device-storage",
+    severity: "warning",
+    toast: true,
+  }),
+});
 
 // Legacy client facade: combines server hydration, small persisted caches, social
 // state, and compatibility data behind one screen-facing shape. Server responses
@@ -167,7 +189,7 @@ const migrateLegacyProductionSession = () => {
   if (ENABLE_DEMO_DATA) return null;
   const legacy = load("pit.session", null);
   const legacyAccountId = legacy?.id == null || legacy.id === "" ? null : String(legacy.id);
-  save("pit.session", null);
+  remove("pit.session");
   return legacyAccountId;
 };
 const LEGACY_PRODUCTION_SESSION_ACCOUNT_ID = migrateLegacyProductionSession();
@@ -227,8 +249,6 @@ const ago = (ms) => {
 const FEED_PAGE_LIMIT = 20;
 const FEED_REFRESH_MS = 45_000;
 const FEED_REFRESH_MAX_BACKOFF_MS = 120_000;
-const feedStorageKey = (accountId) => `pit.feed.v2.${accountId || "guest"}`;
-const recommendationPreferenceStorageKey = (accountId) => `pit.feed.preferences.v1.${accountId}`;
 const AUTH_EPOCH_STORAGE_KEY = "pit.auth.epoch.v1";
 const broadcastAuthEpoch = () => {
   if (Platform.OS !== "web" || typeof window === "undefined") return;
@@ -367,9 +387,6 @@ function usePrivateEphemeral(key, seed) {
 }
 
 const RECENT_SEARCH_LEGACY_KEY = "pit.recentSearches";
-const recentSearchStorageKey = (accountId) => accountId
-  ? `pit.recentSearches.user.${encodeURIComponent(String(accountId))}`
-  : "pit.recentSearches.guest";
 const cleanRecentSearches = (stored) => Array.isArray(stored)
   ? stored
     .filter((entry) => entry && typeof entry.label === "string" && entry.label.trim())
@@ -412,8 +429,7 @@ export function StoreProvider({ children }) {
   const accountMutationEpochRef = useRef(0);
   sessionRef.current = session;
   authReadyRef.current = authReady;
-  const historyStorageKey = (userId = session?.id) => `pit.playhistory.${userId || "guest"}`;
-  const [playHistory, setPlayHistory] = useState(() => load(historyStorageKey(), [])); // every song played, newest first
+  const [playHistory, setPlayHistory] = useState(() => load(playHistoryStorageKey(session?.id), [])); // every song played, newest first
   const [playHistoryAccountId, setPlayHistoryAccountId] = useState(session?.id || null);
   const [playHistoryStatus, setPlayHistoryStatus] = useState(session?.id ? "loading" : "ready");
   const [playHistoryErrorMode, setPlayHistoryErrorMode] = useState(null);
@@ -455,7 +471,7 @@ export function StoreProvider({ children }) {
   const legacyDraftMigrationHandledRef = useRef(ENABLE_DEMO_DATA);
   draftsRef.current = drafts;
   useEffect(() => {
-    if ((session?.id || null) === playHistoryAccountId) save(historyStorageKey(playHistoryAccountId), playHistory);
+    if ((session?.id || null) === playHistoryAccountId) save(playHistoryStorageKey(playHistoryAccountId), playHistory);
   }, [session?.id, playHistoryAccountId, playHistory]);
   useEffect(() => { save("pit.snapshots", []); }, []); // retire the unused legacy queue-snapshot cache
   useEffect(() => {
@@ -600,6 +616,9 @@ export function StoreProvider({ children }) {
     sanitizePersistedStoreValue("pit.blocked", load("pit.blocked", []), ENABLE_DEMO_DATA));
   const blockedIdsRef = useRef(blockedIds);
   blockedIdsRef.current = blockedIds;
+  // This existing social-boundary ref also carries the current multi-account
+  // follows payload, avoiding another lifecycle hook in the legacy Store.
+  blockedIdsRef.follows = follows;
   useEffect(() => { save("pit.blocked", blockedIds); }, [blockedIds]);
   // Comment reads are personalized by two-way blocks. Keep their persisted and
   // in-memory projections bound to the exact cookie account that fetched them.
@@ -731,7 +750,11 @@ export function StoreProvider({ children }) {
   // A production identity is owned by the HttpOnly cookie. Persisting transient
   // validation state under the same key used for cross-tab signalling created a
   // two-tab null/user ping-pong. Demo mode alone keeps the local prototype key.
-  useEffect(() => { if (ENABLE_DEMO_DATA) save("pit.session", session); }, [session]);
+  useEffect(() => {
+    if (!ENABLE_DEMO_DATA) return;
+    if (session) save("pit.session", session);
+    else remove("pit.session");
+  }, [session]);
   useEffect(() => save("pit.users", ENABLE_DEMO_DATA
     ? users
     : users.map(publicProfileCacheEntry).filter(Boolean)), [users]);
@@ -1628,12 +1651,18 @@ export function StoreProvider({ children }) {
   // --- Per-photo reactions (full-screen media viewer) ---
   // Cached by URL so the viewer, feed thumbnails, and artist galleries all read
   // one truth. Server-authoritative; optimistic flip reconciled on response.
-  const loadMediaReactions = async (urls) => {
-    const wanted = (urls || []).filter((u) => typeof u === "string" && u.startsWith("http")).slice(0, 24);
+  const loadMediaReactions = async (items) => {
+    const wanted = (items || []).filter((item) => (
+      item
+      && typeof item.url === "string"
+      && item.url.startsWith("http")
+      && typeof item.postId === "string"
+      && item.postId
+    )).slice(0, 24);
     if (!wanted.length) return;
     const accountId = sessionRef.current?.id || null;
     try {
-      const { reactions } = await api("/api/media/reactions", { method: "POST", silent: true, body: { urls: wanted } });
+      const { reactions } = await api("/api/media/reactions", { method: "POST", silent: true, body: { items: wanted } });
       if (reactions && (sessionRef.current?.id || null) === accountId) {
         setMediaReactions((m) => ({ ...m, ...reactions }));
       }
@@ -1813,7 +1842,7 @@ export function StoreProvider({ children }) {
       setPlayHistoryStatus("ready");
       setPlayHistoryErrorMode(null);
       setPlayHistoryNextCursor(null);
-      return load(historyStorageKey(null), []);
+      return load(playHistoryStorageKey(null), []);
     }
     const before = more ? playHistoryNextCursor : null;
     if (more && !before) return [];
@@ -1853,7 +1882,7 @@ export function StoreProvider({ children }) {
   useEffect(() => {
     const accountId = session?.id || null;
     playHistoryRequestRef.current = { sequence: playHistoryRequestRef.current.sequence + 1, accountId };
-    const cached = load(historyStorageKey(accountId), []);
+    const cached = load(playHistoryStorageKey(accountId), []);
     setPlayHistoryAccountId(accountId);
     setPlayHistory(Array.isArray(cached) ? cached : []);
     setPlayHistoryNextCursor(null);
@@ -2056,6 +2085,65 @@ export function StoreProvider({ children }) {
     return playlist || null;
   };
 
+  // `/api/me` validation is also an account-exit boundary: another tab may
+  // have logged out, deleted the account, or replaced the origin-wide cookie.
+  // Cache adoption intentionally saves its outgoing snapshot, so the purge must
+  // run after adoption and be the final device write for the departed identity.
+  // Keep this separate from logout's network request; calling logout here after
+  // an A -> B cookie switch would destroy B's newly authoritative session.
+  const retireRevalidatedAccount = (departingAccountId) => {
+    const id = departingAccountId == null || departingAccountId === ""
+      ? null
+      : String(departingAccountId);
+    if (!id) return { purged: false, accountId: null, drafts: [], follows: {} };
+
+    playHistoryRequestRef.current = { sequence: playHistoryRequestRef.current.sequence + 1, accountId: null };
+    playlistRequestRef.current = { sequence: playlistRequestRef.current.sequence + 1, accountId: null };
+    setPlayHistory([]);
+    setPlayHistoryAccountId(null);
+    setPlayHistoryNextCursor(null);
+    setPlayHistoryErrorMode(null);
+    setPlayHistoryStatus("ready");
+    setMyPlaylistsForAccount(null, []);
+    setMyPlaylistsStatus("ready");
+    setFriendsListening([]);
+    resetStaffState();
+    staffStateScopeRef.current = null;
+    remove("pit.session");
+    clearStoredTheme();
+    configureProductAnalytics(null);
+    purgeProductAnalyticsAccount(id);
+
+    // Comment/cache coordinators may persist A while moving to guest. Delete A
+    // only after those handoffs have completed, then synchronously rotate every
+    // remaining in-memory projection before B or guest can render.
+    adoptFeedAccount(null);
+    const privacy = purgeAccountLocalPrivacy({
+      accountId: id,
+      drafts: draftsRef.current,
+      follows: blockedIdsRef.follows,
+      load,
+      save,
+      remove,
+    });
+    draftsRef.current = privacy.drafts;
+    setDrafts(privacy.drafts);
+    blockedIdsRef.follows = privacy.follows;
+    setFollows(privacy.follows);
+    blockedIdsRef.current = [];
+    setBlockedIds([]);
+    setMyLikes({});
+    setRecommendationHiddenIds(new Set());
+    setPrivateListeningUntil(0);
+    setRecentSearchState({ scope: "guest", entries: loadRecentSearches(null) });
+    youtubeRejectedRef.current = {
+      accountId: null,
+      entries: activeYouTubeVideoRejections(load(youtubeVideoRejectionStorageKey(null), [])),
+    };
+    void purgeLocalMediaDraftFiles(id);
+    return privacy;
+  };
+
   // Fold a server user into local state so profiles/avatars resolve everywhere.
   const absorbServerUser = (su, { announce = false } = {}) => {
     const merged = { playlists: [], genres: [], favoriteArtists: [], ...su };
@@ -2181,6 +2269,10 @@ export function StoreProvider({ children }) {
     let stopped = false;
     let retryTimer = null;
     let lastValidationAt = 0;
+    // A transient identity lock clears sessionRef so stale responses are rejected,
+    // but it must not forget which account needs retiring if a later retry proves
+    // the cookie was removed or replaced.
+    let lockedAccountId = null;
     const validate = ({ force = false } = {}) => {
       if (stopped || (!force && Date.now() - lastValidationAt < 1_000)) return;
       lastValidationAt = Date.now();
@@ -2196,6 +2288,8 @@ export function StoreProvider({ children }) {
         setAuthReady(true);
         return;
       }
+      const accountBeforeValidation = sessionRef.current?.id || lockedAccountId || null;
+      if (accountBeforeValidation) lockedAccountId = accountBeforeValidation;
       const sequence = ++authValidationSequenceRef.current;
       configureProductAnalytics(null);
       configureApiIdentity(sessionRef.current?.id || null, { ready: false });
@@ -2204,14 +2298,22 @@ export function StoreProvider({ children }) {
       if (!ENABLE_DEMO_DATA) {
         sessionRef.current = null;
         adoptFeedAccount(null);
-        setSession(null);
       }
       api("/api/me", { silent: true, context: "Validating your account", skipIdentityCheck: true })
         .then(({ user }) => {
           if (stopped || sequence !== authValidationSequenceRef.current) return;
-          if (user) absorbServerUser(user);
+          const departingAccountId = lockedAccountId;
+          if (user) {
+            if (departingAccountId && String(user.id) !== String(departingAccountId)) {
+              retireRevalidatedAccount(departingAccountId);
+            }
+            lockedAccountId = null;
+            absorbServerUser(user);
+          }
           else {
             resolveLegacyDraftsForIdentity(null);
+            if (departingAccountId) retireRevalidatedAccount(departingAccountId);
+            lockedAccountId = null;
             configureApiIdentity(null, { ready: true });
             authReadyRef.current = true;
             setAuthReady(true);
@@ -2223,7 +2325,10 @@ export function StoreProvider({ children }) {
         .catch((error) => {
           if (stopped || sequence !== authValidationSequenceRef.current) return;
           if (error?.status === 401) {
+            const departingAccountId = lockedAccountId;
             resolveLegacyDraftsForIdentity(null);
+            if (departingAccountId) retireRevalidatedAccount(departingAccountId);
+            lockedAccountId = null;
             configureApiIdentity(null, { ready: true });
             authReadyRef.current = true;
             setAuthReady(true);
@@ -2401,21 +2506,15 @@ export function StoreProvider({ children }) {
     const srvCoords = locationCenter(pickedLocation);
     if (remoteIdentityValidationEnabled(LOCAL_AUTH_FALLBACK)) {
       try {
-        const { user } = await api("/api/signup", {
+        const response = await api("/api/signup", {
           method: "POST",
           body: { name: nm, email: em, password, city, lat: srvCoords?.lat, lng: srvCoords?.lng, analyticsConsent: !!analyticsConsent, termsVersion: TERMS_VERSION },
           context: "Creating your Pit account",
           silent: true,
           skipIdentityCheck: true,
         });
-        absorbServerUser(user, { announce: true });
-        // Signup persists consent in the same server transaction as the account;
-        // configure only from the authoritative response so the first batch cannot
-        // race a fire-and-forget profile PATCH and disappear.
-        configureProductAnalytics(user);
-        track("signup", { method: "password" });
-        pushWelcome(user.id);
-        return { ok: true };
+        if (response?.pending) return { ok: true, pending: true };
+        return { ok: false, error: "That request did not complete. Please try again." };
       } catch (e) {
         if (e.status) return { ok: false, error: e.message };
       }
@@ -2427,7 +2526,9 @@ export function StoreProvider({ children }) {
     const u = {
       id: "u_" + Date.now(),
       name: nm,
-      handle: uniqueHandle(em.split("@")[0]),
+      // Development-only accounts follow the production privacy rule: never
+      // derive a public username from the private email local-part.
+      handle: uniqueHandle(`pitfan_${Date.now().toString(36).slice(-4)}${Math.random().toString(36).slice(2, 6)}`),
       email: em,
       password,
       role: "fan",
@@ -2472,14 +2573,43 @@ export function StoreProvider({ children }) {
     resetStaffState();
     staffStateScopeRef.current = null;
     // Clear identity synchronously before a theme-triggered reload can occur.
-    save("pit.session", null);
+    remove("pit.session");
     clearStoredTheme();
     sessionRef.current = null;
     configureProductAnalytics(null);
+    if (departingAccountId) purgeProductAnalyticsAccount(departingAccountId);
     configureApiIdentity(null, { ready: true });
     authReadyRef.current = true;
     setAuthReady(true);
+    // Rotate every viewer-personalized in-memory projection first. Some cache
+    // owners persist their outgoing snapshot during adoption; the account purge
+    // therefore runs immediately afterwards and is the final disk boundary.
     adoptFeedAccount(null);
+    const privacy = purgeAccountLocalPrivacy({
+      accountId: departingAccountId,
+      drafts: draftsRef.current,
+      follows,
+      load,
+      save,
+      remove,
+    });
+    if (privacy.purged) {
+      draftsRef.current = privacy.drafts;
+      setDrafts(privacy.drafts);
+      blockedIdsRef.follows = privacy.follows;
+      setFollows(privacy.follows);
+      blockedIdsRef.current = [];
+      setBlockedIds([]);
+      setMyLikes({});
+      setRecommendationHiddenIds(new Set());
+      setPrivateListeningUntil(0);
+      setRecentSearchState({ scope: "guest", entries: loadRecentSearches(null) });
+      youtubeRejectedRef.current = {
+        accountId: null,
+        entries: activeYouTubeVideoRejections(load(youtubeVideoRejectionStorageKey(null), [])),
+      };
+      void purgeLocalMediaDraftFiles(departingAccountId);
+    }
     setSession(null);
     return request;
   };
@@ -2544,12 +2674,14 @@ export function StoreProvider({ children }) {
 
     if (!confirmedDeleted) return { ok: false, unknown: true, error: "Pit could not confirm account deletion." };
 
-    await deleteMediaDraftsForOwner(deleted.id);
-    purgeProductAnalyticsAccount(deleted.id);
-    save(feedStorageKey(deleted.id), []);
-    save(recommendationPreferenceStorageKey(deleted.id), []);
-    save(historyStorageKey(deleted.id), []);
-    save("pit.session", null);
+    const devicePrivacy = accountPrivatePayloadsAfterLogout({
+      accountId: deleted.id,
+      drafts: draftsRef.current,
+      follows,
+    });
+    // Start file cleanup now, but do not hold stale account references in memory
+    // while a locked filesystem handle is retried below.
+    const mediaDraftCleanup = purgeLocalMediaDraftFiles(deleted.id);
 
     const withoutUserEntries = (map) => Object.fromEntries(
       Object.entries(map || {}).map(([key, rows]) => [key, Array.isArray(rows) ? rows.filter((row) => row?.userId !== deleted.id && row?.user_id !== deleted.id) : rows])
@@ -2566,11 +2698,8 @@ export function StoreProvider({ children }) {
     setFeed((all) => all.filter((post) => post.userId !== deleted.id));
     setComments(withoutUserEntries);
     setMyLikes({});
-    setFollows((all) => Object.fromEntries(
-      Object.entries(all || {})
-        .filter(([id]) => id !== deleted.id)
-        .map(([id, ids]) => [id, (ids || []).filter((otherId) => otherId !== deleted.id)])
-    ));
+    blockedIdsRef.follows = devicePrivacy.follows;
+    setFollows(devicePrivacy.follows);
     blockedIdsRef.current = [];
     setBlockedIds([]);
     setRequests((all) => all.filter((request) => request.userId !== deleted.id));
@@ -2588,7 +2717,7 @@ export function StoreProvider({ children }) {
     setUserStats((all) => { const next = { ...all }; delete next[deleted.id]; return next; });
     setPlayHistory([]);
     setPlayHistoryAccountId(null);
-    commitDrafts((all) => all.filter((draft) => String(draft?.ownerId || "") !== String(deleted.id)));
+    commitDrafts(devicePrivacy.drafts);
     setMyPlaylistsForAccount(null, []);
     setFriendsListening([]);
     setRatingAgg({});
@@ -2599,26 +2728,37 @@ export function StoreProvider({ children }) {
     setFeedNextCursor(null);
     setFeedHasMore(true);
 
-    // Account deletion also clears this account's device-local search bucket;
-    // the guest and other account buckets remain isolated and untouched.
-    save(recentSearchStorageKey(deleted.id), []);
-
-    // This viewer-scoped cache belongs to the deleted identity in full.
-    invalidateArtistPageCache();
-
-    save("pit.session", null);
+    clearStoredTheme();
     resetStaffState();
     staffStateScopeRef.current = null;
     sessionRef.current = null;
     configureProductAnalytics(null);
+    purgeProductAnalyticsAccount(deleted.id);
     configureApiIdentity(null, { ready: true });
     authReadyRef.current = true;
     setAuthReady(true);
+    // Cache owners are allowed to persist their outgoing snapshot while rotating.
+    // Run the comprehensive deletion purge after that handoff so it is the final
+    // write for the deleted identity on this device.
     adoptFeedAccount(null);
-    commentCache.clearAccount(deleted.id);
+    purgeAccountLocalPrivacy({
+      accountId: deleted.id,
+      drafts: devicePrivacy.drafts,
+      follows: devicePrivacy.follows,
+      load,
+      save,
+      remove,
+    });
+    setPrivateListeningUntil(0);
+    setRecentSearchState({ scope: "guest", entries: loadRecentSearches(null) });
+    youtubeRejectedRef.current = {
+      accountId: null,
+      entries: activeYouTubeVideoRejections(load(youtubeVideoRejectionStorageKey(null), [])),
+    };
     setSession(null);
     broadcastAuthEpoch();
     setMemberCount((count) => Math.max(0, count - 1));
+    await mediaDraftCleanup;
     return { ok: true };
   };
 
@@ -3180,10 +3320,10 @@ export function StoreProvider({ children }) {
 
   // Personal data backup: pull the server's portable account export and hand it
   // to the user as a downloadable JSON file.
-  const exportMyData = async () => {
+  const exportMyData = async (password) => {
     if (!session) return { ok: false, error: "Log in before exporting your data." };
     try {
-      const data = await api("/api/me/export", { context: "Preparing your account export", silent: true });
+      const data = await requestAccountExport(password);
       const fileName = `pit-backup-${session.handle || "me"}-${new Date().toISOString().slice(0, 10)}.json`;
       const json = JSON.stringify(data, null, 2);
       if (typeof window !== "undefined" && typeof document !== "undefined") {
@@ -3203,9 +3343,23 @@ export function StoreProvider({ children }) {
         ]);
         if (!(await Sharing.isAvailableAsync())) throw new Error("File sharing is unavailable on this device.");
         const file = new File(Paths.cache, fileName);
-        file.create({ overwrite: true, intermediates: true });
-        file.write(json);
-        await Sharing.shareAsync(file.uri, { mimeType: "application/json", dialogTitle: "Save your Pit data" });
+        try {
+          file.create({ overwrite: true, intermediates: true });
+          file.write(json);
+          await Sharing.shareAsync(file.uri, { mimeType: "application/json", dialogTitle: "Save your Pit data" });
+        } finally {
+          // Account exports contain messages and listening/profile history.
+          // Never leave that archive in the app cache after the share sheet.
+          try { file.delete(); }
+          catch (cleanupError) {
+            captureAppError(cleanupError, {
+              code: "PIT-STORE-001",
+              context: "Clearing the temporary account export",
+              source: "account-export-cleanup",
+              toast: false,
+            });
+          }
+        }
       }
       return { ok: true, fileName };
     } catch (error) {
@@ -3216,6 +3370,21 @@ export function StoreProvider({ children }) {
         toast: false,
       });
       return { ok: false, error: appError.userMessage || "Pit could not prepare your data file.", appError };
+    }
+  };
+
+  const setAnnouncementEmailsEnabled = async (enabled) => {
+    if (!session?.id) return { ok: false };
+    const accountId = session.id;
+    try {
+      const { user } = await updateAnnouncementEmailPreference(enabled);
+      if (!user || sessionRef.current?.id !== accountId) return { ok: false };
+      const merged = { ...sessionRef.current, ...user };
+      sessionRef.current = merged;
+      setSession(merged);
+      return { ok: true, user: merged };
+    } catch (error) {
+      return { ok: false, error };
     }
   };
 
@@ -5239,7 +5408,7 @@ export function StoreProvider({ children }) {
   const value = {
     users, adminMembers, adminMemberDirectory, session, authReady, feed, removedIds, blockedIds, requests, tourDates, reports, moderationConsole, follows, discoverySidebar, discoverySidebarStatus,
     userById, userByHandle, logsByUser, sharedShows,
-    login, signup, logout, deleteAccount, forgotPassword, resetPassword, confirmEmailVerification, resendEmailVerification, updateProfile, setAnalyticsEnabled, chooseTheme,
+    login, signup, logout, deleteAccount, forgotPassword, resetPassword, confirmEmailVerification, resendEmailVerification, updateProfile, setAnalyticsEnabled, setAnnouncementEmailsEnabled, chooseTheme,
     addLog, editLog, reportContent, actionReport, dismissReport, removeContent, restoreContent,
     requestArtist, approveArtist, rejectArtist,
     addTourDatesBatch,

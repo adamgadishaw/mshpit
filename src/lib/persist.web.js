@@ -8,6 +8,7 @@ const localStorageAdapter = (() => {
     return storage ? {
       getItem: (key) => storage.getItem(key),
       setItem: (key, value) => storage.setItem(key, value),
+      removeItem: (key) => storage.removeItem(key),
     } : null;
   } catch {
     return null;
@@ -18,4 +19,5 @@ const persistence = createJsonPersistence(localStorageAdapter);
 
 export const load = persistence.load;
 export const save = persistence.save;
+export const remove = persistence.remove;
 export const setPersistErrorHandler = persistence.setErrorHandler;

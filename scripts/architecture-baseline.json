@@ -78,7 +78,7 @@
   },
   "legacyApi": {
     "file": "server/api.js",
-    "maxInlineRoutes": 167,
+    "maxInlineRoutes": 164,
     "allowedInlineRoutes": [
       "DELETE /api/admin/catalog/seed",
       "DELETE /api/admin/email/templates/:key",
@@ -110,7 +110,6 @@
       "GET /api/artists",
       "GET /api/artists/:key/profile",
       "GET /api/artists/candidates",
-      "GET /api/artists/discography",
       "GET /api/artists/photos",
       "GET /api/artists/resolve",
       "GET /api/artists/seen",
@@ -135,7 +134,6 @@
       "GET /api/lounges/:key/meta",
       "GET /api/me",
       "GET /api/me/blocked",
-      "GET /api/me/export",
       "GET /api/me/fanclubs",
       "GET /api/me/following",
       "GET /api/me/going",
@@ -223,7 +221,6 @@
       "POST /api/media/assets/:id/finalize",
       "POST /api/media/assets/:id/variants",
       "POST /api/media/assets/:id/variants/:variantId/finalize",
-      "POST /api/media/presign",
       "POST /api/media/react",
       "POST /api/media/reactions",
       "POST /api/playlists",
@@ -263,16 +260,16 @@
   ],
   "unexplainedEmptyCatchSignaturesByFile": {
     "App.js": {
-      "count": 15,
-      "fingerprint": "bee488c0fc23350d21c5"
+      "count": 11,
+      "fingerprint": "1a9098e2dee70f46e200"
     },
     "server/analyticsService.js": {
       "count": 1,
       "fingerprint": "4d294d2c104ee633de31"
     },
     "server/api.js": {
-      "count": 13,
-      "fingerprint": "ffa7201fb04aaefe2652"
+      "count": 12,
+      "fingerprint": "034ef4f6beaee35898a9"
     },
     "server/backupScheduler.js": {
       "count": 3,
@@ -291,8 +288,8 @@
       "fingerprint": "9c955b19e0848f2eae7a"
     },
     "server/db.js": {
-      "count": 10,
-      "fingerprint": "7808aeabbd5511dcb15f"
+      "count": 2,
+      "fingerprint": "d9021a2e1c977168b764"
     },
     "server/emailQueue.js": {
       "count": 2,
@@ -347,8 +344,8 @@
       "fingerprint": "74663b09c290477a8de1"
     },
     "src/components/PlayerBar.jsx": {
-      "count": 3,
-      "fingerprint": "0914ccdabd17c6c00f3b"
+      "count": 2,
+      "fingerprint": "a6fbe23c770f41a0d7d6"
     },
     "src/components/VenuePhotoWidget.jsx": {
       "count": 1,
@@ -450,10 +447,6 @@
       "count": 1,
       "fingerprint": "d92b8b82bec0ba614760"
     },
-    "src/screens/NearbyScreen.jsx": {
-      "count": 1,
-      "fingerprint": "a28220c8557cecc463e1"
-    },
     "src/screens/PolicyScreen.jsx": {
       "count": 1,
       "fingerprint": "a7d7591efd0f54f47090"
@@ -463,8 +456,8 @@
       "fingerprint": "eebdbd0e789699cc4d12"
     },
     "src/screens/VenueScreen.jsx": {
-      "count": 3,
-      "fingerprint": "6235f9ef23733dad3094"
+      "count": 2,
+      "fingerprint": "24f26ada05845e10953a"
     },
     "src/seed/ingested.js": {
       "count": 1,
@@ -497,8 +490,8 @@
       "fingerprint": "e24f99a3d8bd141abe21"
     },
     "src/screens/ArtistScreen.jsx": {
-      "count": 2,
-      "fingerprint": "1e87054098510b8dd4dc"
+      "count": 1,
+      "fingerprint": "bcda4e36efd0869ce0cd"
     },
     "src/screens/FanClubScreen.jsx": {
       "count": 1,
@@ -529,8 +522,8 @@
       "fingerprint": "01e0028f751a5ee02884"
     },
     "src/store.js": {
-      "count": 124,
-      "fingerprint": "c7e92b5836c2f1cda292"
+      "count": 123,
+      "fingerprint": "e513a5b7ece2f4db8434"
     }
   },
   "legacyClientContractShapesByFile": {

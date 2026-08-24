@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Linking, Platform, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import { Platform, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { colors, displayFont, focusRing, mono, radius, shadow } from "../theme";
 import { useStore } from "../store";
 import Stars from "../components/Stars";
@@ -12,6 +12,7 @@ import SmartImage from "../components/SmartImage";
 import { UpcomingEventCard } from "../components/VenueDiscoveryCards";
 import { formatDate } from "../domain/dates.mjs";
 import { venueRowWindow } from "../domain/venueDiscovery.mjs";
+import { openTicketLink } from "../lib/ticketLinks";
 
 const REVIEW_BATCH = 8;
 const HISTORY_BATCH = 12;
@@ -93,7 +94,7 @@ export default function VenueScreen({ venueName, onClose, onOpenShow, onOpenArti
                   key={event.id}
                   event={event}
                   onOpenArtist={() => onOpenArtist?.(event.artist)}
-                  onTickets={() => { if (event.ticketUrl) void Linking.openURL(event.ticketUrl).catch(() => {}); }}
+                  onTickets={() => { void openTicketLink(event.ticketUrl); }}
                 />
               ))}
             </View>

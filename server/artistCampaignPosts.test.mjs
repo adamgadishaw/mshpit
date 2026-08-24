@@ -36,18 +36,29 @@ function addUser(id, role = "fan", artistName = null) {
 
 function addReadyImage(ownerId, id = "ma_campaignasset123456") {
   const at = Date.now();
-  const objectKey = `users/${ownerId}/post/${id}.jpg`;
-  const url = `https://media.example/${ownerId}/${id}.jpg`;
+  const sourceKey = `users/${ownerId}/post/${id}-source.jpg`;
+  const renderKey = `users/${ownerId}/post/${id}-safe.jpg`;
+  const variantId = `mv_${id.slice(3)}_render`;
+  const url = `https://media.example/${ownerId}/${id}-safe.jpg`;
   db.prepare(`INSERT INTO media_objects
     (object_key,owner_id,storage_scope,purpose,byte_size,status,created_at,updated_at)
-    VALUES (?,?,?,?,?,'issued',?,?)`).run(objectKey, ownerId, "public", "post", 4096, at, at);
+    VALUES (?,?,?,?,?,'issued',?,?)`).run(sourceKey, ownerId, "private", "post", 4096, at, at);
+  db.prepare(`INSERT INTO media_objects
+    (object_key,owner_id,storage_scope,purpose,byte_size,status,created_at,updated_at)
+    VALUES (?,?,?,?,?,'issued',?,?)`).run(renderKey, ownerId, "public", "post", 2048, at, at);
   db.prepare(`INSERT INTO media_assets
     (id,owner_id,client_asset_id,create_hash,purpose,kind,source_key,source_url,source_storage_scope,
       original_name,mime_type,byte_size,width,height,orientation,metadata_status,codec_status,status,
-      edit_recipe,recipe_version,finalize_hash,source_verified_at,render_state,created_at,updated_at)
-    VALUES (?,?,?,?,?,'image',?,?,?,'campaign.jpg','image/jpeg',4096,1200,1500,0,'declared','not_applicable','ready','{}',1,?,?,'not_required',?,?)`)
-    .run(id, ownerId, `client_${id}`, "a".repeat(64), "post", objectKey, url, "public", "b".repeat(64), at, at, at);
-  return { id, url };
+      edit_recipe,recipe_version,finalize_hash,source_verified_at,render_state,render_variant_id,created_at,updated_at)
+    VALUES (?,?,?,?,?,'image',?,?,?,'campaign.jpg','image/jpeg',4096,1200,1500,0,'declared','not_applicable','ready','{}',1,?,?,'ready',?,?,?)`)
+    .run(id, ownerId, `client_${id}`, "a".repeat(64), "post", sourceKey, `pit-private:${sourceKey}`, "private",
+      "b".repeat(64), at, variantId, at, at);
+  db.prepare(`INSERT INTO media_variants
+    (id,asset_id,client_variant_id,create_hash,role,object_key,public_url,mime_type,byte_size,width,height,
+      status,finalize_hash,verified_at,verification_origin,created_at,updated_at)
+    VALUES (?,?,?,?,'render',?,?,'image/jpeg',2048,1200,1500,'verified',?,?,'private_derivative_v1',?,?)`)
+    .run(variantId, id, `client_${variantId}`, "c".repeat(64), renderKey, url, "d".repeat(64), at, at, at);
+  return { id, url, renderKey };
 }
 
 const campaign = (treatment = "spotlight", backgroundAssetId = null) => ({
@@ -162,7 +173,7 @@ test("an attached ready image can become the background and stays normal moderat
   assert.equal(created.post.media[0].kind, "image");
   assert.deepEqual(created.post.photos, [image.url]);
   assert.equal(db.prepare("SELECT asset_id FROM post_media WHERE post_id=?").get(created.id).asset_id, image.id);
-  assert.equal(db.prepare("SELECT status FROM media_objects WHERE object_key LIKE ?").get(`%${image.id}.jpg`).status, "associated");
+  assert.equal(db.prepare("SELECT status FROM media_objects WHERE object_key=?").get(image.renderKey).status, "associated");
 });
 
 test("campaign edits preserve concurrency and revoked styling fails closed", () => {

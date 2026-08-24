@@ -53,7 +53,9 @@ after(() => {
 
 function addUser(id, email, handle, extra = {}) {
   q.insertUser.run(id, email, handle, handle, "hash", extra.role || "fan", null, null, null, "XX", "#111111", Date.now());
-  if (extra.optOut) db.prepare("UPDATE users SET marketing_opt_out=1 WHERE id=?").run(id);
+  db.prepare(`UPDATE users SET email_verified_at=?,marketing_opt_out=?,marketing_consent_at=?,
+    marketing_consent_version='test',marketing_consent_source='test',marketing_withdrawn_at=? WHERE id=?`)
+    .run(extra.unverified ? 0 : Date.now(), extra.optOut ? 1 : 0, extra.noConsent ? null : Date.now(), extra.optOut ? Date.now() : null, id);
   if (extra.banned) db.prepare("UPDATE users SET is_banned=1 WHERE id=?").run(id);
   return q.userById.get(id);
 }
@@ -63,6 +65,7 @@ addUser("u_mail_a", "a@example.com", "fanaaa");
 addUser("u_mail_b", "b@example.com", "fanbbb");
 const optedOut = addUser("u_mail_out", "out@example.com", "fanout", { optOut: true });
 addUser("u_mail_ban", "ban@example.com", "fanban", { banned: true });
+addUser("u_mail_unverified", "unverified@example.com", "fanunverified", { unverified: true });
 
 const ctxFor = (user, extra = {}) => ({ user, ip: "127.0.0.1", ua: "test", body: {}, params: {}, query: {}, ...extra });
 // Several routes are synchronous and throw rather than reject, which
@@ -527,6 +530,7 @@ test("a broadcast skips opted-out and banned accounts and records why", async ()
 
   assert.ok(!sentTo.includes("out@example.com"), "an opted-out account must never receive a broadcast");
   assert.ok(!sentTo.includes("ban@example.com"), "a banned account must never receive a broadcast");
+  assert.ok(!sentTo.includes("unverified@example.com"), "an unverified address must never receive a broadcast");
   assert.ok(sentTo.includes("a@example.com") && sentTo.includes("b@example.com"));
   assert.equal(result.campaign.status, "sent");
 
@@ -572,13 +576,20 @@ test("unsubscribe needs the POST; following the emailed GET link alone changes n
   assert.ok(token, "a token is minted the first time the user is mailed");
 
   const redirect = await routes["GET /api/unsubscribe"](ctxFor(null, { query: { token } }));
-  assert.match(redirect.redirect, /\?unsubscribe=/);
+  assert.match(redirect.redirect, /#unsubscribe=/);
   assert.equal(q.userById.get("u_mail_a").marketing_opt_out, 0, "a scanner following the link must not opt anyone out");
 
   await routes["POST /api/unsubscribe"](ctxFor(null, { body: { token } }));
   assert.equal(q.userById.get("u_mail_a").marketing_opt_out, 1);
 
   await routes["POST /api/unsubscribe"](ctxFor(null, { body: { token, resubscribe: true } }));
+  assert.equal(q.userById.get("u_mail_a").marketing_opt_out, 1, "a bearer link must never opt an account back in");
+
+  const signedIn = q.userById.get("u_mail_a");
+  const preference = routes["POST /api/me/email-preferences"](ctxFor(signedIn, {
+    body: { announcements: true },
+  }));
+  assert.equal(preference.user.marketingOptOut, false);
   assert.equal(q.userById.get("u_mail_a").marketing_opt_out, 0);
 });
 

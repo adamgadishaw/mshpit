@@ -66,6 +66,8 @@ function chartRow(name, artist, rank, extra = {}) {
  */
 export function createDiscoverService({ database = db, clock = Date.now } = {}) {
   const PROJECTION_TTL_MS = 60 * 1000;
+  const PUBLIC_PLAY_DELAY_MS = 6 * 60 * 60 * 1000;
+  const PUBLIC_PLAY_MIN_LISTENERS = 3;
   let projectionCache = { version: null, at: 0, rows: [] };
 
   function projectionVersion() {
@@ -104,11 +106,11 @@ export function createDiscoverService({ database = db, clock = Date.now } = {}) 
     if (source === "plays") {
       let sql = `
         SELECT MIN(p.artist) AS play_name, COUNT(*) AS play_count,
-          MAX(p.created_at) AS last_played_at, a.*
+          COUNT(DISTINCT p.user_id) AS listener_count, a.*
         FROM plays p
         LEFT JOIN artists a ON a.norm = LOWER(TRIM(p.artist))
-        WHERE p.artist IS NOT NULL AND TRIM(p.artist) <> ''`;
-      const params = [];
+        WHERE p.artist IS NOT NULL AND TRIM(p.artist) <> '' AND p.created_at <= ?`;
+      const params = [clock() - PUBLIC_PLAY_DELAY_MS];
       if (countryFilter && countryFilter !== "Worldwide") {
         sql += " AND a.country = ? COLLATE NOCASE";
         params.push(countryFilter);
@@ -117,14 +119,23 @@ export function createDiscoverService({ database = db, clock = Date.now } = {}) 
         sql += " AND a.norm IN (SELECT value FROM json_each(?))";
         params.push(JSON.stringify(artistNorms));
       }
-      sql += " GROUP BY LOWER(TRIM(p.artist)) ORDER BY play_count DESC, last_played_at DESC, play_name LIMIT ?";
-      params.push(rowLimit);
+      sql += " GROUP BY LOWER(TRIM(p.artist)) HAVING COUNT(DISTINCT p.user_id) >= ? ORDER BY play_count DESC, play_name LIMIT 240";
+      params.push(PUBLIC_PLAY_MIN_LISTENERS);
       const rows = database.prepare(sql).all(...params);
+      const coarseCount = (value) => {
+        const count = Math.max(PUBLIC_PLAY_MIN_LISTENERS, Number(value) || 0);
+        const bands = [3, 5, 10, 25, 50, 100, 250, 500, 1_000, 2_500, 5_000, 10_000, 25_000, 50_000, 100_000];
+        return bands.filter((band) => band <= count).at(-1) || PUBLIC_PLAY_MIN_LISTENERS;
+      };
+      const publicRows = rows.map((row) => ({ row, plays: coarseCount(row.play_count) }))
+        .sort((left, right) => right.plays - left.plays || left.row.play_name.localeCompare(right.row.play_name))
+        .slice(0, rowLimit);
       return {
         source,
-        label,
-        live: true,
-        rows: rows.map((row, index) => chartRow(row.play_name, row, index + 1, { plays: Number(row.play_count) || 0 })),
+        label: "Community listening · delayed and grouped",
+        live: false,
+        privacy: { minimumListeners: PUBLIC_PLAY_MIN_LISTENERS, delayedHours: PUBLIC_PLAY_DELAY_MS / 3_600_000, counts: "lower-bound" },
+        rows: publicRows.map(({ row, plays }, index) => chartRow(row.play_name, row, index + 1, { plays, playsApproximate: true })),
       };
     }
 
@@ -181,16 +192,12 @@ export function createDiscoverService({ database = db, clock = Date.now } = {}) 
   function overview({ by = "popularity", country = "Worldwide" } = {}) {
     const chartResult = chart({ by, country, limit: 24 });
     const genreResult = genres({ country, limit: 8 });
-    // Match the public People surface: banned accounts are private moderation
-    // state and must not inflate the community total shown in Discover.
-    const memberTotal = Number(database.prepare("SELECT COUNT(*) AS count FROM users WHERE is_banned=0").get()?.count) || 0;
     return {
       chart: chartResult,
       genres: genreResult.genres,
       genreTotal: genreResult.total,
       distinctGenres: genreResult.distinctGenres,
       catalogTotal: genreResult.catalogTotal,
-      memberTotal,
       countries: countries({ min: 5 }).countries,
       generatedAt: new Date(clock()).toISOString(),
     };

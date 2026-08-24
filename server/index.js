@@ -17,7 +17,15 @@ import { ApiError, errorEnvelope } from "./errors.js";
 import { assertExpectedAccount } from "./identityBinding.js";
 import { maybeAlert, pruneErrors, recordError } from "./errorLog.js";
 import { injectHead, robotsTxt, sitemapXml } from "./seo.js";
-import { getSession, sweepExpiredSessions, sessionCookie, clearCookie, parseCookies, COOKIE, hashPassword, rateLimit } from "./auth.js";
+import {
+  clearSessionCookies,
+  getSession,
+  parseCookies,
+  rateLimit,
+  sessionCookieHeaders,
+  sessionCookieName,
+  sweepExpiredSessions,
+} from "./auth.js";
 import { startTourDateScheduler } from "./tourdates.js";
 import { startCacheWarmScheduler } from "./cacheWarmer.js";
 import { startBackupScheduler } from "./backupScheduler.js";
@@ -26,21 +34,50 @@ import {
   registerLegacyVideoPosterRelease,
   startLegacyVideoPosterVerificationScheduler,
 } from "./legacyVideoPosters.js";
-import { startEmailCampaignScheduler } from "./emailCampaignScheduler.js";
+import { emailCampaignRecoveryEnabled, startEmailCampaignScheduler } from "./emailCampaignScheduler.js";
+import { pruneEmailOperationalData } from "./emailRetention.js";
+import { pruneAnalyticsData } from "./analyticsService.js";
+import { pruneExpiredAccountSecrets } from "./accountSecretRetention.js";
 import { missingStaticAssetResponse } from "./staticPolicy.js";
 import { renderPublicPage } from "./publicPages.js";
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { createApiResponseHeaders, createApiResponseHeaderSetter } from "./responseHeaders.js";
+import { reconcileAdminAccount } from "./adminBootstrap.js";
+import { applyHttpServerLimits } from "./httpServerPolicy.js";
+import { safeRequestFailureContext } from "./safeLogging.js";
+import { assertAccountMutationAccess } from "./accountMutationAccess.js";
+import { healthRateLimitPolicy } from "./healthAvailability.js";
+import {
+  allowedUnsafeRequestOrigins,
+  assertProductionRequestHost,
+  assertUnsafeRequestOrigin,
+  clientIpFromRequest,
+  readJsonBody,
+  trustedProxyCidrs,
+} from "./requestSecurity.js";
 import {
   startVideoVerifierHealthScheduler,
   stopVideoVerifierHealthScheduler,
 } from "./videoVerifier.js";
+import { verifyPrivateMediaBucketIsolation } from "./media.js";
+import {
+  ensureLegacyMediaFinalizeSchema,
+  expireLegacyMediaUploads,
+} from "./mediaLegacyFinalize.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 3000;
 const PROD = process.env.NODE_ENV === "production";
 const DIST = join(HERE, "..", "dist"); // `npx expo export -p web` output
 const BODY_LIMIT = 256 * 1024; // 256 KB is plenty for JSON
+const UNSAFE_REQUEST_ORIGINS = allowedUnsafeRequestOrigins({
+  production: PROD,
+  publicOrigin: process.env.PUBLIC_ORIGIN,
+  port: PORT,
+});
+const TRUSTED_PROXY_CIDRS = trustedProxyCidrs(process.env.PIT_TRUSTED_PROXY_CIDRS);
+const RENDER_PROXY_HEADERS = process.env.RENDER === "true";
+const ACTIVE_SESSION_COOKIE = sessionCookieName(PROD);
 
 function mediaConnectOrigin() {
   try {
@@ -50,37 +87,19 @@ function mediaConnectOrigin() {
 }
 const MEDIA_CONNECT_ORIGIN = mediaConnectOrigin();
 
-// ---- seed the admin account (server-side only, never in the client bundle) --
-function seedAdmin() {
-  const email = (process.env.ADMIN_EMAIL || "adamgadishaw@gmail.com").toLowerCase();
-  const existing = q.userByEmail.get(email);
-  if (existing) {
-    // ADMIN_PASSWORD is the source of truth: set/change it in the host env and
-    // redeploy to reset the admin login (and un-ban/re-admin the account).
-    if (process.env.ADMIN_PASSWORD) {
-      db.prepare("UPDATE users SET pass_hash = ?, role = 'admin', is_banned = 0 WHERE id = ?")
-        .run(hashPassword(process.env.ADMIN_PASSWORD), existing.id);
-      console.log(`[pit] admin password synced from ADMIN_PASSWORD for ${email}`);
-    }
-    return;
-  }
-  const password = process.env.ADMIN_PASSWORD || randomBytes(9).toString("base64url");
-  q.insertUser.run(`u_${randomUUID().slice(0, 12)}`, email, "Adam", "admin", hashPassword(password),
-    "admin", "Toronto", 43.6532, -79.3832, "AD", "#F2A65A", Date.now());
-  console.log(`[pit] admin account created: ${email}`);
-  if (!process.env.ADMIN_PASSWORD) {
-    console.log(`[pit] generated admin password (SAVE THIS, shown once): ${password}`);
-  }
-}
-seedAdmin();
+// ---- reconcile the admin account (server-side only, never in the bundle) ----
+// Production refuses to start without an explicit secret. Existing credentials
+// are rehashed only when that secret changes, and rotations revoke all cookies.
+reconcileAdminAccount({ database: db, queries: q, env: process.env, production: PROD });
+ensureLegacyMediaFinalizeSchema(db);
 const legacyPosterRelease = registerLegacyVideoPosterRelease(db);
 if (legacyPosterRelease.active && (legacyPosterRelease.registered || legacyPosterRelease.retired)) {
   console.log(`[media] legacy poster release registered=${legacyPosterRelease.registered} retired=${legacyPosterRelease.retired}`);
 }
 
 // ---- security headers --------------------------------------------------------
-// CSP: the app hotlinks images from many hosts (Commons/Openverse/web + wsrv.nl
-// proxy + YouTube/Unsplash CDNs), so img-src stays broad; everything else locked.
+// CSP: catalog/media assets can come from HTTPS hosts plus local data/blob
+// previews. Executable sources remain an explicit allowlist.
 // The interactive Google map (LiveMap) needs the Google Maps domains allowed for
 // its loader script, its tile/data fetches, and its vector-map web workers -
 // without these the browser blocks the script and the map silently falls back to
@@ -89,15 +108,17 @@ const HEADERS = {
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "strict-origin-when-cross-origin",
   "X-Frame-Options": "DENY",
+  "Cross-Origin-Opener-Policy": "same-origin-allow-popups",
+  "Cross-Origin-Resource-Policy": "same-origin",
+  "Origin-Agent-Cluster": "?1",
   "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
   "Content-Security-Policy": [
     "default-src 'self'",
-    "img-src * data: blob:",
-    "media-src *",
-    // expo web build inlines its bootstrap ('unsafe-inline'); Google Maps JS loads
-    // from *.googleapis.com / *.gstatic.com. The YouTube IFrame Player API loads
-    // its script from www.youtube.com + its widget/player code from s.ytimg.com.
-    "script-src 'self' 'unsafe-inline' https://*.googleapis.com https://*.gstatic.com https://www.youtube.com https://s.ytimg.com",
+    "img-src 'self' https: data: blob:",
+    "media-src 'self' https: blob:",
+    // Expo SDK 56's export uses external bundles; its inline shell content is
+    // CSS. Google Maps and the YouTube player still need these script origins.
+    "script-src 'self' https://*.googleapis.com https://*.gstatic.com https://www.youtube.com https://s.ytimg.com",
     "style-src 'self' 'unsafe-inline'",
     // Google Maps XHR + the YouTube player's own data/stats fetches.
     `connect-src 'self' https://*.googleapis.com https://*.gstatic.com https://www.youtube.com https://*.googlevideo.com${MEDIA_CONNECT_ORIGIN ? ` ${MEDIA_CONNECT_ORIGIN}` : ""}`,
@@ -106,6 +127,9 @@ const HEADERS = {
     // In-app player: YouTube video/audio is framed in-app so people never leave
     // the site (full songs, no account needed).
     "frame-src 'self' https://www.youtube.com https://www.youtube-nocookie.com",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'self'",
     "frame-ancestors 'none'",
   ].join("; "),
   ...(PROD ? { "Strict-Transport-Security": "max-age=31536000; includeSubDomains" } : {}),
@@ -135,32 +159,6 @@ function sendApiError(res, error, requestId, extra = {}) {
 function withRequestId(body, requestId) {
   if (body && typeof body === "object" && !Array.isArray(body) && !Buffer.isBuffer(body)) return { ...body, requestId };
   return body;
-}
-
-function readBody(req) {
-  return new Promise((resolve, reject) => {
-    let size = 0;
-    let tooLarge = false;
-    const chunks = [];
-    req.on("data", (c) => {
-      if (tooLarge) return; // keep draining so the structured 413 can be sent
-      size += c.length;
-      if (size > BODY_LIMIT) {
-        tooLarge = true;
-        chunks.length = 0;
-        reject(new ApiError(413, "Request too large.", "REQUEST_TOO_LARGE"));
-        return;
-      }
-      chunks.push(c);
-    });
-    req.on("end", () => {
-      if (tooLarge) return;
-      if (!chunks.length) return resolve({});
-      try { resolve(JSON.parse(Buffer.concat(chunks).toString("utf8"))); }
-      catch { reject(new ApiError(400, "Invalid JSON.", "VALIDATION_FAILED")); }
-    });
-    req.on("error", () => reject(new ApiError(400, "Bad request.", "VALIDATION_FAILED")));
-  });
 }
 
 // Match "METHOD /api/x/:param/y" patterns against the route table.
@@ -262,28 +260,21 @@ function serveStatic(req, res, pathname) {
   if (req.method === "HEAD") return res.end();
   const stream = createReadStream(file);
   stream.on("error", (error) => {
-    console.error(`[pit] static read failed for ${file}:`, error);
+    const failure = safeRequestFailureContext({ method: req.method, pathname, error });
+    console.error(`[pit] static read failed: cause=${failure.cause}`);
     res.destroy(error);
   });
   stream.pipe(res);
 }
 
-// The real client address behind Cloudflare and Render.
-//
-// `cf-connecting-ip` is set by Cloudflare and it strips any client-supplied
-// copy, so it is trustworthy whenever traffic must pass through Cloudflare.
-// `x-forwarded-for` is a chain, client first; a client that reaches the origin
-// directly could forge it, which is a rate-limit-evasion risk rather than an
-// auth one, and the alternative (one shared bucket for everybody) is worse.
+// The real client address behind Render and, on the public hostname,
+// Cloudflare. Header values are used only after the socket/nearest-hop trust
+// boundary is independently verified.
 function clientIp(req) {
-  const cf = req.headers["cf-connecting-ip"];
-  if (typeof cf === "string" && cf.trim()) return cf.trim();
-  const forwarded = req.headers["x-forwarded-for"];
-  if (typeof forwarded === "string" && forwarded.trim()) {
-    const first = forwarded.split(",")[0].trim();
-    if (first) return first;
-  }
-  return req.socket.remoteAddress || "?";
+  return clientIpFromRequest(req, {
+    renderEnvironment: RENDER_PROXY_HEADERS,
+    trustedIngressCidrs: TRUSTED_PROXY_CIDRS,
+  });
 }
 
 const server = createServer(async (req, res) => {
@@ -305,6 +296,19 @@ const server = createServer(async (req, res) => {
     query = Object.fromEntries(u.searchParams);
   } catch { return sendApiError(res, new ApiError(400, "Bad URL.", "VALIDATION_FAILED"), requestId); }
 
+  try {
+    assertProductionRequestHost({
+      production: PROD,
+      method: req.method,
+      pathname,
+      host: req.headers.host,
+      publicOrigin: process.env.PUBLIC_ORIGIN,
+      renderExternalHostname: process.env.RENDER_EXTERNAL_HOSTNAME,
+    });
+  } catch (error) {
+    return sendApiError(res, error, requestId);
+  }
+
   // dev CORS (no-op in production, same-origin there)
   const origin = req.headers.origin;
   const cors = !PROD && origin && DEV_ORIGINS.has(origin)
@@ -318,6 +322,11 @@ const server = createServer(async (req, res) => {
     if (pathname === "/robots.txt" || pathname === "/sitemap.xml") return serveCrawlerFile(req, res, pathname);
 
     if (pathname.startsWith("/api/")) {
+      // Cookie authentication needs an explicit browser request boundary.
+      // Native clients omit Origin/Fetch Metadata and remain supported; browser
+      // writes must originate from the configured first-party app.
+      assertUnsafeRequestOrigin(req.method, req.headers, UNSAFE_REQUEST_ORIGINS);
+
       // Global flood guard on top of per-route limits.
       //
       // This must use the CLIENT's address, not the socket's. In production the
@@ -326,14 +335,20 @@ const server = createServer(async (req, res) => {
       // site shared a single 300/minute allowance. That is a self-inflicted
       // outage waiting for the first busy day.
       const ip = clientIp(req);
-      // Health checks are exempt: Render polls /api/health to decide whether the
-      // service is alive, so letting a traffic spike rate-limit it would turn a
-      // busy minute into a restart loop.
-      if (pathname !== "/api/health") {
+      // Render's liveness probe must not share the application-wide bucket, or
+      // normal traffic could turn a busy minute into a restart loop. It still
+      // receives its own generous per-address ceiling so the public endpoint
+      // cannot be used as an unbounded readiness/SQLite polling surface.
+      if (pathname === "/api/health") {
+        const healthLimit = healthRateLimitPolicy(ip);
+        if (!rateLimit(healthLimit.key, healthLimit.max, healthLimit.windowMs)) {
+          return sendApiError(res, new ApiError(429, "Too many requests.", "RATE_LIMITED"), requestId, cors);
+        }
+      } else {
         // Signed-in members are limited per account, like the per-route limiter,
         // so a carrier NAT or office network cannot make its users throttle each
         // other. Guests still share by address, which is the best available key.
-        const sessionToken = parseCookies(req.headers.cookie)[COOKIE];
+        const sessionToken = parseCookies(req.headers.cookie)[ACTIVE_SESSION_COOKIE];
         const flooder = getSession(sessionToken)?.user_id || `ip:${ip}`;
         if (!rateLimit(`global:${flooder}`, 300, 60 * 1000)) return sendApiError(res, new ApiError(429, "Too many requests.", "RATE_LIMITED"), requestId, cors);
       }
@@ -342,9 +357,10 @@ const server = createServer(async (req, res) => {
       if (!match) return sendApiError(res, new ApiError(404, "Not found.", "NOT_FOUND"), requestId, cors);
       routePattern = match.route || "";
 
-      const token = parseCookies(req.headers.cookie)[COOKIE];
+      const token = parseCookies(req.headers.cookie)[ACTIVE_SESSION_COOKIE];
       const sess = getSession(token);
       const user = sess ? q.userById.get(sess.user_id) : null;
+      assertAccountMutationAccess({ method: req.method, pathname, user });
       const expectedAccountHeader = req.headers["x-pit-expected-account"];
       const expectedAccount = Array.isArray(expectedAccountHeader) ? expectedAccountHeader[0] : expectedAccountHeader;
       assertExpectedAccount(expectedAccount, user);
@@ -355,20 +371,31 @@ const server = createServer(async (req, res) => {
       const ctx = {
         // DELETE /api/me requires the current password. Parse JSON on DELETE as
         // well as write verbs so that confirmation is verified server-side.
-        body: ["POST", "PATCH", "PUT", "DELETE"].includes(req.method) ? await readBody(req) : {},
+        body: ["POST", "PATCH", "PUT", "DELETE"].includes(req.method)
+          ? await readJsonBody(req, { limit: BODY_LIMIT })
+          : {},
         query, params: match.params, ip, ua: req.headers["user-agent"], token, user,
         host: req.headers.host, proto, origin: `${proto}://${req.headers.host}`, requestId,
         signal: requestAbort.signal,
         setCookie: (c) => setCookies.push(c),
-        setSession: (s) => setCookies.push(sessionCookie(s.token, s.expiresAt, PROD)),
-        clearSession: () => setCookies.push(clearCookie(PROD)),
+        setSession: (s) => setCookies.push(...sessionCookieHeaders(s.token, s.expiresAt, PROD)),
+        clearSession: () => setCookies.push(...clearSessionCookies(PROD)),
         setHeader: createApiResponseHeaderSetter(responseHeaders),
       };
       const result = await match.handler(ctx);
       const extra = { ...cors, ...responseHeaders };
       if (setCookies.length) extra["Set-Cookie"] = setCookies;
       // A handler can 302-redirect (OAuth handoff) by returning { redirect: url }.
-      if (result && result.redirect) { res.writeHead(302, { Location: result.redirect, ...extra }); return res.end(); }
+      if (result && result.redirect) {
+        res.writeHead(302, {
+          ...HEADERS,
+          ...extra,
+          Location: result.redirect,
+          "Cache-Control": "no-store",
+          "Referrer-Policy": "no-referrer",
+        });
+        return res.end();
+      }
       return send(res, 200, withRequestId(result ?? { ok: true }, requestId), extra);
     }
 
@@ -385,22 +412,22 @@ const server = createServer(async (req, res) => {
     // `routePattern` is set once the router matched, so aggregation groups by
     // pattern. Before that it stays empty rather than falling back to the raw
     // path, which would carry ids and search terms into storage.
+    const failure = safeRequestFailureContext({ method: req.method, pathname, routePattern, error: e });
     if (e instanceof ApiError) {
       if (e.status >= 500) {
-        const causeName = String(e.cause?.name || "none").replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 40);
-        const causeCode = String(e.cause?.code || "").replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 40);
-        console.error(`[pit] ${e.status} ${requestId} on ${req.method} ${pathname} (${Date.now() - started}ms): code=${e.code} cause=${causeName}${causeCode ? `/${causeCode}` : ""}`);
-        recordError({ level: "error", code: e.code, status: e.status, method: req.method, route: routePattern, cause: `${causeName}${causeCode ? `/${causeCode}` : ""}`, requestId });
+        console.error(`[pit] ${e.status} ${requestId} on ${failure.method} ${failure.route} (${Date.now() - started}ms): code=${e.code} cause=${failure.cause}`);
+        recordError({ level: "error", code: e.code, status: e.status, method: failure.method, route: routePattern, cause: failure.cause, requestId });
         scheduleAlert();
       }
       return sendApiError(res, e, requestId, cors);
     }
-    console.error(`[pit] 500 ${requestId} on ${req.method} ${pathname} (${Date.now() - started}ms):`, e);
-    recordError({ level: "error", code: "UNHANDLED", status: 500, method: req.method, route: routePattern, cause: String(e?.name || "Error"), requestId });
+    console.error(`[pit] 500 ${requestId} on ${failure.method} ${failure.route} (${Date.now() - started}ms): cause=${failure.cause}`);
+    recordError({ level: "error", code: "UNHANDLED", status: 500, method: failure.method, route: routePattern, cause: failure.cause, requestId });
     scheduleAlert();
     return sendApiError(res, e, requestId, cors);
   }
 });
+applyHttpServerLimits(server);
 
 // Observe fatal errors without installing an `uncaughtException` handler. Node
 // explicitly warns that resuming after an uncaught exception is unsafe because
@@ -408,22 +435,31 @@ const server = createServer(async (req, res) => {
 // rejection is thrown by default too, so both paths are logged here and then
 // retain Node's fail-fast exit semantics for Render to restart cleanly.
 process.on("uncaughtExceptionMonitor", (error, origin) => {
-  console.error(`[pit] fatal process error (${origin}):`, error);
+  const failure = safeRequestFailureContext({ method: "PROCESS", routePattern: String(origin || ""), error });
+  console.error(`[pit] fatal process error (${failure.route}): cause=${failure.cause}`);
   // Recorded synchronously because the process is about to exit. No alert is
   // scheduled here: a timer would never fire, and Render restarting the service
   // is what surfaces this. The next request after the restart sends the digest.
-  recordError({ level: "fatal", code: "PROCESS", status: 0, method: "", route: String(origin || ""), cause: String(error?.name || "Error") });
+  recordError({ level: "fatal", code: "PROCESS", status: 0, method: "", route: failure.route, cause: failure.cause });
 });
 
 // Hourly maintenance owns its failure at the timer boundary. A transient
 // cleanup error should be visible, but it is not an unknown process-level bug.
 setInterval(() => {
   try { sweepExpiredSessions(); }
-  catch (error) { console.error("[pit] expired-session sweep failed safely:", error); }
+  catch (error) { console.error(`[pit] expired-session sweep failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
   try { pruneErrors(); }
-  catch (error) { console.error("[pit] error-log prune failed safely:", error); }
+  catch (error) { console.error(`[pit] error-log prune failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
   try { pruneMissingArtists(); }
-  catch (error) { console.error("[pit] missing-artist retention sweep failed safely:", error); }
+  catch (error) { console.error(`[pit] missing-artist retention sweep failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
+  try { pruneEmailOperationalData(db); }
+  catch (error) { console.error(`[mail] operational-retention sweep failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
+  try { pruneAnalyticsData({ database: db }); }
+  catch (error) { console.error(`[pit] analytics-retention sweep failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
+  try { pruneExpiredAccountSecrets(db); }
+  catch (error) { console.error(`[pit] account-secret retention sweep failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
+  try { expireLegacyMediaUploads(db); }
+  catch (error) { console.error(`[media] legacy staging-expiry sweep failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
 }, 60 * 60 * 1000).unref();
 
 // Alerting is deferred off the request path so a slow mail provider can never
@@ -440,18 +476,20 @@ function scheduleAlert() {
 let shuttingDown = false;
 let emailCampaignScheduler = null;
 let legacyVideoPosterScheduler = null;
+let privateMediaIsolationTimer = null;
 function shutdown(exitCode = 0) {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log("\n[pit] shutting down…");
   const campaignStop = emailCampaignScheduler?.stop() || Promise.resolve();
   stopVideoVerifierHealthScheduler({ abortActive: true });
+  if (privateMediaIsolationTimer) clearInterval(privateMediaIsolationTimer);
   legacyVideoPosterScheduler?.stop();
   server.close(async () => {
     try { await campaignStop; }
-    catch (error) { console.error(`[mail] campaign recovery shutdown failed safely: ${String(error?.name || "Error")}`); }
+    catch (error) { console.error(`[mail] campaign recovery shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     try { db.close(); }
-    catch (error) { console.error(`[pit] database close failed safely: ${String(error?.name || "Error")}`); }
+    catch (error) { console.error(`[pit] database close failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     process.exit(exitCode);
   });
   setTimeout(() => process.exit(exitCode), 5000).unref();
@@ -459,13 +497,70 @@ function shutdown(exitCode = 0) {
 process.on("SIGINT", () => shutdown(0));
 process.on("SIGTERM", () => shutdown(0));
 
-server.listen(PORT, () => {
-  console.log(`[pit] up on http://localhost:${PORT} ${PROD ? "(production)" : "(dev)"}, serving API${existsSync(DIST) ? " + web build" : " (no dist/ yet)"}`);
-  emailCampaignScheduler = startEmailCampaignScheduler(); // bounded recovery for durable campaigns already marked sending
-  startTourDateScheduler(); // scrapes tour dates into the DB on a timer (no cron/redeploy)
-  startCacheWarmScheduler(); // warms popular YouTube lookups daily so first listens play the video, not a preview
-  startBackupScheduler(); // verified daily SQLite snapshot on /data; private off-host copy when configured
-  startMediaDeletionScheduler({ database: db }); // bounded, durable cleanup of active user-media objects only
-  legacyVideoPosterScheduler = startLegacyVideoPosterVerificationScheduler({ database: db });
-  startVideoVerifierHealthScheduler();
+let privateIsolationProbeActive = false;
+async function refreshPrivateMediaIsolation() {
+  if (privateIsolationProbeActive) return null;
+  privateIsolationProbeActive = true;
+  try {
+    return await verifyPrivateMediaBucketIsolation({ env: process.env });
+  } finally {
+    privateIsolationProbeActive = false;
+  }
+}
+
+function startPrivateMediaIsolationScheduler() {
+  if (!PROD || privateMediaIsolationTimer) return;
+  privateMediaIsolationTimer = setInterval(() => {
+    refreshPrivateMediaIsolation()
+      .then((status) => {
+        if (status && !status.ready) {
+          console.error(`[media] private-storage privacy check failed closed: code=${status.errorCode || "probe_failed"}`);
+        }
+      })
+      .catch((error) => {
+        console.error(`[media] private-storage privacy check failed safely: cause=${safeRequestFailureContext({ error }).cause}`);
+      });
+  }, 5 * 60 * 1000);
+  privateMediaIsolationTimer.unref();
+}
+
+async function startServer() {
+  if (PROD) {
+    const isolation = await refreshPrivateMediaIsolation();
+    if (!isolation?.ready) {
+      throw new Error(`Private media storage privacy check failed (${isolation?.errorCode || "probe_failed"}).`);
+    }
+  }
+  server.listen(PORT, () => {
+    console.log(`[pit] up on http://localhost:${PORT} ${PROD ? "(production)" : "(dev)"}, serving API${existsSync(DIST) ? " + web build" : " (no dist/ yet)"}`);
+    try { pruneEmailOperationalData(db); }
+    catch (error) { console.error(`[mail] startup retention sweep failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
+    try { pruneAnalyticsData({ database: db }); }
+    catch (error) { console.error(`[pit] startup analytics-retention sweep failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
+    try { pruneExpiredAccountSecrets(db); }
+    catch (error) { console.error(`[pit] startup account-secret retention sweep failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
+    try { expireLegacyMediaUploads(db); }
+    catch (error) { console.error(`[media] startup legacy staging-expiry sweep failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
+    if (emailCampaignRecoveryEnabled()) {
+      emailCampaignScheduler = startEmailCampaignScheduler(); // bounded continuation after explicit restore/privacy approval
+    } else {
+      console.log("[mail] automatic campaign recovery disabled; resume only after privacy replay and restore review.");
+    }
+    startTourDateScheduler(); // scrapes tour dates into the DB on a timer (no cron/redeploy)
+    startCacheWarmScheduler(); // warms popular YouTube lookups daily so first listens play the video, not a preview
+    startBackupScheduler(); // verified daily SQLite snapshot on /data; private off-host copy when configured
+    startMediaDeletionScheduler({ database: db }); // bounded, durable cleanup of active user-media objects only
+    legacyVideoPosterScheduler = startLegacyVideoPosterVerificationScheduler({ database: db });
+    startVideoVerifierHealthScheduler();
+    startPrivateMediaIsolationScheduler();
+  });
+}
+
+startServer().catch((error) => {
+  console.error(`[pit] startup refused: cause=${safeRequestFailureContext({ error }).cause}`);
+  try { db.close(); }
+  catch (closeError) {
+    console.error(`[pit] startup database close failed safely: cause=${safeRequestFailureContext({ error: closeError }).cause}`);
+  }
+  process.exitCode = 1;
 });

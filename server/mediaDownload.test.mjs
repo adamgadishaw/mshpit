@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createMediaDownloadCapability, createMediaProcessorUploadCapability } from "./media.js";
+import {
+  createMediaDownloadCapability,
+  createMediaProcessorUploadCapability,
+  verifyPrivateMediaBucketIsolation,
+} from "./media.js";
 
 const ENV = {
   NODE_ENV: "production",
@@ -13,6 +17,11 @@ const ENV = {
   MEDIA_SECRET_ACCESS_KEY: "test-secret-key",
   MEDIA_PUBLIC_BASE_URL: "https://media.example.invalid",
 };
+
+await verifyPrivateMediaBucketIsolation({
+  env: ENV,
+  fetchImpl: async () => ({ status: 403 }),
+});
 
 test("authoritative processors receive an exact short-lived ETag-bound GET capability", () => {
   const now = new Date("2026-08-23T12:00:00.000Z");

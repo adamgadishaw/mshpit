@@ -39,20 +39,20 @@ function fixture() {
     END;
     CREATE TABLE users (id TEXT PRIMARY KEY, is_banned INTEGER NOT NULL DEFAULT 0);
     INSERT INTO users VALUES ('member-1', 0), ('member-2', 0), ('banned-member', 1);
-    CREATE TABLE plays (artist TEXT, created_at INTEGER);
+    CREATE TABLE plays (artist TEXT, user_id TEXT, created_at INTEGER);
   `);
   const addArtist = database.prepare("INSERT INTO artists VALUES (?,?,?,?,?,?,?,?)");
   addArtist.run("alpha", "Alpha", "rap", "Canada", 90, 9, "alpha.jpg", JSON.stringify({ followers: 120, topTracks: [{ title: "First", url: "first.mp3" }] }));
   addArtist.run("bravo", "Bravo", "Hip Hop", "United States", 98, 10, "bravo.jpg", "{}");
   addArtist.run("charlie", "Charlie", "indie rock", "Canada", 80, 8, null, "{}");
   addArtist.run("delta", "Delta", "Soul", "Canada", 70, 7, null, "{}");
-  const addPlay = database.prepare("INSERT INTO plays VALUES (?,?)");
-  addPlay.run("Alpha", 1);
-  addPlay.run("Alpha", 2);
-  addPlay.run("Bravo", 3);
-  addPlay.run("Charlie", 4);
-  addPlay.run("Charlie", 5);
-  addPlay.run("Charlie", 6);
+  const addPlay = database.prepare("INSERT INTO plays VALUES (?,?,?)");
+  addPlay.run("Alpha", "member-1", 1);
+  addPlay.run("Alpha", "member-1", 2);
+  addPlay.run("Bravo", "member-2", 3);
+  addPlay.run("Charlie", "member-1", 4);
+  addPlay.run("Charlie", "member-2", 5);
+  addPlay.run("Charlie", "member-3", 6);
   return database;
 }
 
@@ -156,6 +156,11 @@ test("plays chart honors genre and country instead of returning an unfiltered gl
     const service = createDiscoverService({ database });
     const result = service.chart({ by: "plays", genre: "Indie", country: "Canada", limit: 10 });
     assert.deepEqual(result.rows.map((row) => ({ name: row.name, plays: row.plays })), [{ name: "Charlie", plays: 3 }]);
+    assert.equal(result.rows[0].playsApproximate, true);
+    assert.deepEqual(result.privacy, { minimumListeners: 3, delayedHours: 6, counts: "lower-bound" });
+    assert.equal(result.live, false);
+    assert.deepEqual(service.chart({ by: "plays", genre: "Hip-Hop", country: "Canada", limit: 10 }).rows, [],
+      "one listener's repeated plays never become a public chart row");
   } finally {
     database.close();
   }
@@ -171,7 +176,7 @@ test("overview returns one coherent first-paint payload", () => {
     assert.equal(result.genreTotal, 2);
     assert.equal(result.distinctGenres, 2);
     assert.equal(result.catalogTotal, 4);
-    assert.equal(result.memberTotal, 2, "public member totals exclude banned accounts like /api/people");
+    assert.equal(Object.hasOwn(result, "memberTotal"), false, "Discover no longer computes or returns a member count");
     assert.deepEqual(result.countries, []); // default minimum is five artists
     assert.equal(result.generatedAt, "2023-11-14T22:13:20.000Z");
   } finally {

@@ -21,6 +21,7 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) 
   const [analyticsConsent, setAnalyticsConsent] = useState(false); // optional, default off
   const [viewing, setViewing] = useState(null); // "terms" | "privacy", inline reader
   const [error, setError] = useState("");
+  const [signupSubmitted, setSignupSubmitted] = useState(false);
   const [busyAction, setBusyAction] = useState(null); // "auth" | "reset"
 
   const authBusy = busyAction === "auth";
@@ -38,7 +39,8 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) 
       const res = mode === "login"
         ? await login(email.trim(), password)
         : await signup({ name, email: email.trim(), password, city: city?.city, location: city, agreedToTerms: true, analyticsConsent });
-      if (res?.ok) onDone?.(mode); // signup flows into the artist taste picker
+      if (res?.ok && mode === "signup" && res?.pending) setSignupSubmitted(true);
+      else if (res?.ok) onDone?.(mode);
       else setError(res?.error || "That request did not complete. Please try again.");
     } catch {
       setError("Couldn't connect. Check your connection and try again.");
@@ -59,6 +61,25 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) 
   // Let people actually read what they're agreeing to, without leaving sign-up.
   if (viewing === "terms") return <TermsScreen onClose={() => setViewing(null)} />;
   if (viewing === "privacy") return <PrivacyScreen onClose={() => setViewing(null)} />;
+
+  if (signupSubmitted) {
+    return (
+      <View style={styles.wrap}>
+        <SheetHeader title="Check your email" onClose={onCancel} />
+        <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+          <Text style={styles.wordmark}>PIT</Text>
+          <Text style={[styles.tag, { marginBottom: 20 }]} accessibilityRole="header">Account request received</Text>
+          <View style={styles.artistNote}>
+            <Icon name="mail" size={16} color={colors.amber} />
+            <Text style={styles.artistNoteTxt} accessibilityLiveRegion="polite" role="status">If this is a new address, we sent a verification link. If it already belongs to a Pit account, log in or use password reset. This message is intentionally the same either way.</Text>
+          </View>
+          <Pressable style={styles.primary} onPress={() => { setMode("login"); setSignupSubmitted(false); setPassword(""); setError(""); }} accessibilityRole="button">
+            <Text style={styles.primaryTxt}>CONTINUE TO LOG IN</Text>
+          </Pressable>
+        </ScrollView>
+      </View>
+    );
+  }
 
   const sendReset = async () => {
     if (busyAction) return;

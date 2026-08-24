@@ -9,6 +9,7 @@ process.env.PIT_DATA_DIR = dataDir;
 
 const { db, q, publicUser, artistStmts, artistRow, publicArtist, pruneMissingArtists } = await import("./db.js");
 const { ApiError, reserveVideoPublishingDemand, routes } = await import("./api.js");
+const { discoverySidebar } = await import("./discovery.js");
 const {
   YOUTUBE_MATCH_CACHE_VERSION,
   invalidateSongIndex,
@@ -21,6 +22,8 @@ const {
 const { renderPublicPage } = await import("./publicPages.js");
 const { clearRecommendationSnapshotsForTests } = await import("./recommendationService.js");
 const { hashPassword, resetRateLimitsForTests } = await import("./auth.js");
+const { verifyPrivateMediaBucketIsolation } = await import("./media.js");
+const { portableMediaAsset } = await import("./features/accountPrivacy/accountPrivacyRoutes.js");
 const { refreshVideoVerifierHealth, resetVideoVerifierStateForTests } = await import("./videoVerifier.js");
 const {
   signVideoVerifierResponse,
@@ -99,7 +102,7 @@ test("public profile and people search expose city only while self keeps coordin
   assert.equal(profile.user.home.lat, undefined);
   assert.equal(profile.user.home.lng, undefined);
 
-  const search = routes["GET /api/people"]({ query: { q: "locationprojection" } });
+  const search = routes["GET /api/people"]({ user, ip: "location-search", query: { q: "locationprojection" } });
   const result = search.users.find((entry) => entry.id === user.id);
   assert.deepEqual(result.home, { city: "Toronto" });
   assert.equal(result.home.lat, undefined);
@@ -134,6 +137,12 @@ test("public health is minimal while detailed readiness requires active staff", 
     assert.equal(typeof staffHealth.services.mail.apiKeyPresent, "boolean");
     assert.equal(typeof staffHealth.services.youtubeLookup?.search?.remaining, "number");
     assert.equal(typeof staffHealth.services.youtubeLookup?.efficiency?.searchCallsReserved, "number");
+    assert.deepEqual(Object.keys(staffHealth.services.privateMediaIsolation).sort(),
+      ["checkedAt", "configured", "errorCode", "listStatus", "objectStatus", "ready"].sort());
+    assert.equal(typeof staffHealth.services.imageProcessor.available, "boolean");
+    assert.equal(typeof staffHealth.services.legacyMediaFinalize.pending, "number");
+    assert.equal(JSON.stringify(staffHealth.services.privateMediaIsolation).includes("pit-private"), false,
+      "private storage diagnostics never expose bucket identities");
     assert.deepEqual(staffHealth.services.youtubeLookup?.actorAllowance, {
       version: 2,
       day: staffHealth.services.youtubeLookup.actorAllowance.day,
@@ -396,6 +405,10 @@ test("public video capability requires exact private-derivative negotiation plus
       MEDIA_PUBLIC_BASE_URL: "https://media.example.com/cdn",
     });
     resetVideoVerifierStateForTests();
+    await verifyPrivateMediaBucketIsolation({
+      env: process.env,
+      fetchImpl: async () => ({ status: 403 }),
+    });
     await refreshVideoVerifierHealth({
       env: process.env,
       fetchImpl: async (url, request) => {
@@ -429,9 +442,18 @@ test("public video capability requires exact private-derivative negotiation plus
       { photos: true, videos: false });
     assert.deepEqual(routes["GET /api/health"]({ query: { mediaPipeline: "private-derivative-v1" } }).capabilities.mediaPublishing,
       { photos: true, videos: true, pipeline: "private-derivative-v1" });
-    process.env.MEDIA_SOURCE_BUCKET = process.env.MEDIA_BUCKET;
+    process.env.PIT_VIDEO_PUBLISHING_ENABLED = "false";
     assert.deepEqual(routes["GET /api/health"]({ query: { mediaPipeline: "private-derivative-v1" } }).capabilities.mediaPublishing,
-      { photos: true, videos: false }, "a public/shared source bucket can never activate video publishing");
+      { photos: true, videos: false }, "capability environment flags are evaluated on every health response");
+    process.env.PIT_VIDEO_PUBLISHING_ENABLED = "true";
+    assert.deepEqual(routes["GET /api/health"]({ query: { mediaPipeline: "private-derivative-v1" } }).capabilities.mediaPublishing,
+      { photos: true, videos: true, pipeline: "private-derivative-v1" });
+    process.env.MEDIA_SOURCE_BUCKET = process.env.MEDIA_BUCKET;
+    assert.throws(
+      () => routes["GET /api/health"]({ query: { mediaPipeline: "private-derivative-v1" } }),
+      (error) => error.status === 503 && error.code === "MEDIA_STORAGE_UNAVAILABLE",
+      "a public/shared source bucket makes production readiness fail closed",
+    );
     process.env.MEDIA_SOURCE_BUCKET = "pit-media-private";
 
     const videoBody = (clientAssetId) => ({
@@ -1645,6 +1667,7 @@ test("stable media creation rejects disabled video before reserving a ticket and
     "PIT_VIDEO_PUBLISHING_ENABLED",
     "MEDIA_ENDPOINT",
     "MEDIA_BUCKET",
+    "MEDIA_SOURCE_BUCKET",
     "MEDIA_REGION",
     "MEDIA_ACCESS_KEY_ID",
     "MEDIA_SECRET_ACCESS_KEY",
@@ -1654,6 +1677,7 @@ test("stable media creation rejects disabled video before reserving a ticket and
   Object.assign(process.env, {
     MEDIA_ENDPOINT: "https://objects.example.com/s3",
     MEDIA_BUCKET: "pit-capability-test",
+    MEDIA_SOURCE_BUCKET: "pit-capability-test-private",
     MEDIA_REGION: "auto",
     MEDIA_ACCESS_KEY_ID: "capability-test-access",
     MEDIA_SECRET_ACCESS_KEY: "capability-test-secret",
@@ -1836,7 +1860,7 @@ test("Discover legacy routes share one service and overview opts into a bounded 
   });
   assert.deepEqual(overview.chart.rows.map((row) => row.name), chart.rows.map((row) => row.name));
   assert.equal(overview.genreTotal, genres.total);
-  assert.equal(overview.memberTotal, db.prepare("SELECT COUNT(*) count FROM users WHERE is_banned=0").get().count);
+  assert.equal(overview.memberTotal, undefined, "public discovery does not expose an exact account count");
   assert.equal(responseHeaders["Cache-Control"], "public, max-age=60, stale-while-revalidate=300");
 });
 
@@ -1875,12 +1899,13 @@ test("PATCH /api/me schemas extras, filters public song text, and keeps trusted 
 
 test("signup records Terms separately while optional analytics defaults off", () => {
   let sessionCookie;
+  const email = "default-private@example.com";
   const result = routes["POST /api/signup"]({
     ip: "signup-consent-test",
     ua: "integrity-test",
     body: {
       name: "Default Private",
-      email: "default-private@example.com",
+      email,
       password: "privatepass123",
       city: "Toronto",
       termsVersion: "2026-08",
@@ -1888,11 +1913,13 @@ test("signup records Terms separately while optional analytics defaults off", ()
     },
     setSession: (value) => { sessionCookie = value; },
   });
-  assert.ok(sessionCookie?.token);
-  assert.ok(result.user.termsAcceptedAt);
-  assert.equal(result.user.termsVersion, "2026-08");
-  assert.equal(result.user.analyticsConsentAt, undefined);
-  assert.equal(result.user.consentAt, undefined);
+  const created = publicUser(q.userByEmail.get(email), { self: true });
+  assert.equal(sessionCookie, undefined);
+  assert.deepEqual(result, { ok: true, pending: true });
+  assert.ok(created.termsAcceptedAt);
+  assert.equal(created.termsVersion, "2026-08");
+  assert.equal(created.analyticsConsentAt, undefined);
+  assert.equal(created.consentAt, undefined);
   assert.throws(() => routes["POST /api/signup"]({
     ip: "signup-consent-test-2", ua: "integrity-test", body: {
       name: "No Terms", email: "no-terms@example.com", password: "privatepass123", city: "Toronto",
@@ -2249,6 +2276,15 @@ test("tour-date batches are owner-authorized, atomic, canonical, and release-gat
     { venue: "Valid Hall", place: "Toronto, Ontario", date: showDate, ticketUrl: "https://tickets.example.com/show" },
     { venue: "Bad Hall", place: "Montreal, Quebec", date: "not-a-date", ticketUrl: "javascript:alert(1)" },
   ])), (error) => error.code === "VALIDATION_FAILED");
+  for (const ticketUrl of [
+    "https://user:password@tickets.example.com/show",
+    "https://tickets.example.com:8443/show",
+    "https://ticketmaster.com.evil-site.com/show",
+  ]) {
+    assert.throws(() => post(context(artist, [
+      { venue: "Unsafe Link Hall", place: "Montreal, Quebec", date: showDate, ticketUrl },
+    ])), (error) => error.code === "VALIDATION_FAILED", ticketUrl);
+  }
   assert.equal(db.prepare("SELECT COUNT(*) c FROM tour_dates WHERE owner_id=?").get(artist.id).c, before,
     "one invalid row leaves the entire batch unwritten");
   assert.throws(() => post(context(artist, [{ venue: "kill yourself", place: "Toronto, Ontario", date: showDate }])),
@@ -2281,6 +2317,19 @@ test("tour-date batches are owner-authorized, atomic, canonical, and release-gat
     (id,artist,venue,place,date,ticket_url,sold_out,source,updated_at,release_at)
     VALUES (?,?,?,?,?,?,0,?,?,?)`)
     .run("provider_release_compat", "Provider Band", "Provider Hall", "Ottawa, Ontario", showDate, "", "ticketmaster", Date.now(), releaseAt);
+  const publicSharedDate = new Date(Date.now() + 90 * 86400000).toISOString().slice(0, 10);
+  db.prepare(`INSERT INTO tour_dates
+    (id,artist,venue,place,date,ticket_url,sold_out,source,updated_at,release_at)
+    VALUES (?,?,?,?,?,?,0,?,?,0)`)
+    .run("provider_shared_release", "Provider Band", "Valid Hall", "Toronto, Ontario", publicSharedDate, "https://www.ticketmaster.ca/event/1#buy", "ticketmaster", Date.now());
+  db.prepare(`INSERT INTO tour_dates
+    (id,artist,venue,place,date,ticket_url,sold_out,source,updated_at,release_at)
+    VALUES (?,?,?,?,?,?,0,?,?,0)`)
+    .run("provider_unsafe_ticket", "Provider Band", "Unsafe Hall", "Toronto, Ontario", publicSharedDate, "https://ticketmaster.com.evil-site.com/phish", "ticketmaster", Date.now());
+  const publicTourDates = routes["GET /api/tourdates"]({}).tourDates;
+  assert.equal(publicTourDates.find((row) => row.id === "provider_shared_release")?.ticketUrl, "https://www.ticketmaster.ca/event/1");
+  assert.equal(publicTourDates.find((row) => row.id === "provider_unsafe_ticket")?.ticketUrl, "",
+    "unsafe legacy provider destinations are retained as dates but dropped from public projection");
   const guestIds = new Set(routes["GET /api/tourdates"]({}).tourDates.map((row) => row.id));
   const otherIds = new Set(routes["GET /api/tourdates"]({ user: other }).tourDates.map((row) => row.id));
   const ownerIds = new Set(routes["GET /api/tourdates"]({ user: artist }).tourDates.map((row) => row.id));
@@ -2291,19 +2340,44 @@ test("tour-date batches are owner-authorized, atomic, canonical, and release-gat
   assert.equal(adminIds.has(created[0].id), true);
   assert.equal(guestIds.has("provider_release_compat"), true, "pre-attribution provider rows stay public");
   assert.equal(routes["GET /api/discovery/sidebar"]({}).upcomingEvents.some((row) => row.id === created[0].id), false);
+  const guestDiscovery = discoverySidebar(null, { eventLimit: 5000, venueLimit: 5000 });
+  assert.equal(guestDiscovery.upcomingEvents.find((row) => row.id === "provider_unsafe_ticket")?.ticketUrl, "",
+    "direct discovery-service callers receive the same revalidated ticket projection");
+  const guestSharedVenue = guestDiscovery.trendingVenues.find((row) => row.name === "Valid Hall");
+  assert.equal(guestSharedVenue?.upcoming, 1, "hidden dates do not influence a public venue count");
+  assert.equal(guestSharedVenue?.nextDate, publicSharedDate, "hidden dates do not reveal a venue's unreleased next date");
+  assert.equal(guestDiscovery.upcomingEvents.some((row) => row.id === created[0].id), false,
+    "the discovery service itself excludes hidden dates before ranking");
   const ownerSidebarDate = routes["GET /api/discovery/sidebar"]({ user: artist }).upcomingEvents.find((row) => row.id === created[0].id);
   assert.equal(ownerSidebarDate?.releaseAt, releaseAt);
   assert.equal(ownerSidebarDate?.createdBy, artist.id);
+  const ownerDiscovery = discoverySidebar(artist, { eventLimit: 5000, venueLimit: 5000 });
+  const ownerSharedVenue = ownerDiscovery.trendingVenues.find((row) => row.name === "Valid Hall");
+  assert.equal(ownerSharedVenue?.upcoming, 2, "the owner can preview their unreleased date in discovery");
+  assert.equal(ownerSharedVenue?.nextDate, showDate);
   db.prepare("UPDATE tour_dates SET release_at=? WHERE owner_id=?").run(Date.now() - 1, artist.id);
   assert.equal(routes["GET /api/tourdates"]({}).tourDates.some((row) => row.id === created[0].id), true);
+  db.prepare("INSERT INTO blocks (blocker_id,blocked_id,created_at) VALUES (?,?,?)")
+    .run(artist.id, other.id, Date.now());
+  assert.equal(routes["GET /api/tourdates"]({ user: other }).tourDates.some((row) => row.id === created[0].id), false,
+    "a released artist-owned date remains hidden across a bilateral block");
+  const blockedDiscovery = discoverySidebar(other, { eventLimit: 5000, venueLimit: 5000 });
+  const blockedSharedVenue = blockedDiscovery.trendingVenues.find((row) => row.name === "Valid Hall");
+  assert.equal(blockedDiscovery.upcomingEvents.some((row) => row.id === created[0].id), false);
+  assert.equal(blockedSharedVenue?.upcoming, 1, "blocked dates do not affect discovery aggregates");
+  assert.equal(blockedSharedVenue?.nextDate, publicSharedDate);
+  db.prepare("DELETE FROM blocks WHERE blocker_id=? AND blocked_id=?").run(artist.id, other.id);
 
   const adminRows = post(context(admin, [{ venue: "Admin Hall", place: "Calgary, Alberta", date: showDate, ticketUrl: "" }], { releaseAt: 0 })).tourDates;
   assert.equal(adminRows[0].source, "admin-submitted");
-  db.prepare("DELETE FROM tour_dates WHERE owner_id IN (?,?) OR id=?").run(artist.id, admin.id, "provider_release_compat");
+  db.prepare("DELETE FROM tour_dates WHERE owner_id IN (?,?) OR id IN (?,?,?)")
+    .run(artist.id, admin.id, "provider_release_compat", "provider_shared_release", "provider_unsafe_ticket");
 });
 
 test("attendee pages expose a block-aware authoritative total beyond the page cap", () => {
   const viewer = addUser("u_attendee_viewer", "attendee-viewer@example.com", "attendeeviewer");
+  db.prepare("UPDATE users SET email_verified_at=? WHERE id=?").run(Date.now(), viewer.id);
+  const verifiedViewer = q.userById.get(viewer.id);
   const key = "authority-band|large-hall|2099-01-01";
   const attendees = Array.from({ length: 55 }, (_, index) => addUser(
     `u_attendee_${index}`,
@@ -2317,7 +2391,7 @@ test("attendee pages expose a block-aware authoritative total beyond the page ca
   db.prepare("UPDATE users SET suspended_until=? WHERE id=?").run(Date.now() + 86400000, attendees[2].id);
 
   const read = (query = {}) => routes["GET /api/going/:key/attendees"]({
-    user: viewer,
+    user: verifiedViewer,
     params: { key: encodeURIComponent(key) },
     query: { limit: "50", ...query },
   });
@@ -2338,12 +2412,11 @@ test("attendee pages expose a block-aware authoritative total beyond the page ca
     query: { limit: "1" },
   });
   assert.equal(guest.total, 53);
-  assert.deepEqual(guest.attendees[0].home, { city: "Toronto" });
-  assert.equal(guest.attendees[0].home.lat, undefined);
-  assert.equal(guest.attendees[0].home.lng, undefined);
+  assert.deepEqual(guest.attendees, [], "logged-out show pages receive only the aggregate attendance count");
+  assert.equal(guest.nextCursor, null);
 
   routes["POST /api/users/:id/block"]({
-    user: viewer,
+    user: verifiedViewer,
     ip: "attendee-total-block",
     params: { id: attendees[0].id },
     body: { blocked: true },
@@ -2488,6 +2561,8 @@ test("reward rule v2 preserves ambiguous legacy awards instead of revoking legit
 test("blocking closes direct profile, content, interaction, and community read paths", () => {
   const blocker = addUser("u_block_matrix_a", "block-matrix-a@example.com", "blockmatrixa");
   const blocked = addUser("u_block_matrix_b", "block-matrix-b@example.com", "blockmatrixb");
+  db.prepare("UPDATE users SET email_verified_at=? WHERE id=?").run(Date.now(), blocker.id);
+  const verifiedBlocker = q.userById.get(blocker.id);
   db.prepare("INSERT INTO posts (id,user_id,artist,venue,overall,created_at) VALUES (?,?,?,?,?,?)").run("post_block_matrix", blocked.id, "Artist", "Venue", 4, 100);
   db.prepare("INSERT INTO playlists (id,user_id,name,tracks,created_at) VALUES (?,?,?,?,?)").run("playlist_block_matrix", blocked.id, "List", '[{"title":"Song"}]', 100);
   db.prepare("INSERT INTO fan_club_messages (id,artist,user_id,text,created_at) VALUES (?,?,?,?,?)").run("fan_block_matrix", "artist", blocked.id, "hidden", 100);
@@ -2506,7 +2581,7 @@ test("blocking closes direct profile, content, interaction, and community read p
   assert.throws(() => routes["POST /api/posts/:id/like"]({ user: blocker, ip: "block-like", params: { id: "post_block_matrix" }, body: { liked: true } }), (error) => error.status === 403);
   assert.throws(() => routes["POST /api/posts/:id/comments"]({ user: blocker, ip: "block-comment", params: { id: "post_block_matrix" }, body: { text: "nope" } }), (error) => error.status === 403);
   assert.equal(routes["GET /api/fanclubs/:artist/messages"]({ user: blocker, params: { artist: "artist" } }).messages.some((message) => message.userId === blocked.id), false);
-  assert.equal(routes["GET /api/going/:key/attendees"]({ user: blocker, params: { key: "show-block-matrix" } }).attendees.length, 0);
+  assert.equal(routes["GET /api/going/:key/attendees"]({ user: verifiedBlocker, params: { key: "show-block-matrix" } }).attendees.length, 0);
   assert.equal(routes["GET /api/venues/:key/reviews"]({ user: blocker, params: { key: "venue" } }).reviews.length, 0);
   assert.equal(routes["GET /api/me/notifications"]({ user: blocker }).unread, 0);
 });
@@ -2603,9 +2678,11 @@ test("track reports preserve a constrained playback category and replacement can
 
 test("moderators have real bounded actions and every content change is audited", () => {
   addUser("u_mod_actions", "mod-actions@example.com", "modactions");
+  addUser("u_mod_peer", "mod-peer@example.com", "modpeer");
   const target = addUser("u_mod_target", "mod-target@example.com", "modtarget");
-  db.prepare("UPDATE users SET role='moderator' WHERE id='u_mod_actions'").run();
+  db.prepare("UPDATE users SET role='moderator' WHERE id IN ('u_mod_actions','u_mod_peer')").run();
   const moderator = q.userById.get("u_mod_actions");
+  const peerModerator = q.userById.get("u_mod_peer");
   db.prepare("INSERT INTO posts (id,user_id,artist,venue,overall,created_at) VALUES (?,?,?,?,?,?)").run("post_mod_actions", target.id, "Artist", "Venue", 4, 100);
 
   const result = routes["POST /api/admin/content/:type/:id"]({ user: moderator, requestId: "request-mod-actions", params: { type: "post", id: "post_mod_actions" }, body: { removed: true } });
@@ -2622,6 +2699,15 @@ test("moderators have real bounded actions and every content change is audited",
   }));
   assert.equal(memberHeaders["Cache-Control"], "no-store");
   assert.throws(() => routes["POST /api/admin/users/:id/ban"]({ user: moderator, params: { id: target.id }, body: {} }), (error) => error.status === 403);
+  assert.throws(
+    () => routes["POST /api/admin/users/:id/suspend"]({ user: moderator, params: { id: peerModerator.id }, body: { days: 1 } }),
+    (error) => error.code === "FORBIDDEN",
+  );
+  db.prepare("UPDATE users SET suspended_until=? WHERE id=?").run(Date.now() + 86_400_000, peerModerator.id);
+  assert.throws(
+    () => routes["POST /api/admin/users/:id/unsuspend"]({ user: moderator, params: { id: peerModerator.id }, body: {} }),
+    (error) => error.code === "FORBIDDEN",
+  );
   assert.equal(routes["POST /api/admin/users/:id/suspend"]({ user: moderator, params: { id: target.id }, body: { days: 1 } }).ok, true);
 });
 
@@ -2630,6 +2716,8 @@ test("account export covers owned social data without secrets or raw IP addresse
   db.prepare("UPDATE users SET suspended_until=? WHERE id=?").run(Date.now() + 86_400_000, user.id);
   const restrictedUser = q.userById.get(user.id);
   const other = addUser("u_export_other", "export-other@example.com", "exportother");
+  const follower = addUser("u_export_follower", "export-follower@example.com", "exportfollower");
+  const blockedAccount = addUser("u_export_blocked", "export-blocked@example.com", "exportblocked");
   db.prepare("INSERT INTO venue_reviews (id,venue_key,user_id,rating,text,photos,created_at) VALUES (?,?,?,?,?,?,?)")
     .run("vr_export", "the-venue", user.id, 4.5, "Great room", '["https://cdn.example/review.jpg"]', 10);
   db.prepare("INSERT INTO fan_club_members (artist,user_id) VALUES (?,?)").run("The Band", user.id);
@@ -2641,6 +2729,12 @@ test("account export covers owned social data without secrets or raw IP addresse
   db.prepare("INSERT INTO reports (id,target_type,target_id,reason,reporter_id,created_at) VALUES (?,?,?,?,?,?)").run("rep_export", "post", "missing", "spam", user.id, 16);
   db.prepare("INSERT INTO events (id,user_id,name,props,ip,created_at) VALUES (?,?,?,?,?,?)").run("evt_export", user.id, "view_artist", '{"artist":"The Band"}', "203.0.113.10", 17);
   db.prepare("INSERT INTO dms (id,from_id,to_id,text,created_at) VALUES (?,?,?,?,?)").run("dm_export_in", other.id, user.id, "incoming", 18);
+  db.prepare("INSERT INTO dms (id,from_id,to_id,text,created_at) VALUES (?,?,?,?,?)").run("dm_export_out", user.id, other.id, "outgoing", 18);
+  db.prepare("INSERT INTO follows (follower_id,followee_id) VALUES (?,?)").run(user.id, other.id);
+  db.prepare("INSERT INTO follows (follower_id,followee_id) VALUES (?,?)").run(follower.id, user.id);
+  db.prepare("INSERT INTO blocks (blocker_id,blocked_id,created_at) VALUES (?,?,?)").run(user.id, blockedAccount.id, 18);
+  db.prepare("INSERT INTO notifications (id,user_id,actor_id,type,text,created_at) VALUES (?,?,?,?,?,?)")
+    .run("notif_export_in", user.id, other.id, "comment", "notification copy", 18);
   const exportedCampaign = { version: 1, treatment: "after-dark", artistKey: "the band" };
   db.prepare(`INSERT INTO posts (id,user_id,kind,artist,venue,overall,review,campaign,created_at)
     VALUES (?,?,?,?,?,?,?,?,?)`).run(
@@ -2653,7 +2747,8 @@ test("account export covers owned social data without secrets or raw IP addresse
   db.prepare("INSERT INTO post_tag_rejections (post_id,user_id,created_at) VALUES (?,?,?)")
     .run("post_export_rejected", user.id, 22);
 
-  const data = routes["GET /api/me/export"]({ user: restrictedUser, ip: "export-test" });
+  db.prepare("UPDATE users SET pass_hash=? WHERE id=?").run(hashPassword("export-password1"), restrictedUser.id);
+  const data = routes["POST /api/me/export"]({ user: q.userById.get(restrictedUser.id), ip: "export-test", body: { password: "export-password1" } });
   assert.equal(data.venueReviews[0].id, "vr_export");
   assert.deepEqual(data.fanClubs.memberships, ["The Band"]);
   assert.equal(data.loungeMessages[0].id, "lm_export");
@@ -2663,6 +2758,13 @@ test("account export covers owned social data without secrets or raw IP addresse
   assert.equal(data.reportsSubmitted[0].id, "rep_export");
   assert.deepEqual(data.activityEvents[0].properties, { artist: "The Band" });
   assert.equal(data.messagesReceived[0].text, "incoming");
+  assert.deepEqual(data.messagesReceived[0].from, { id: other.id });
+  assert.equal(data.messagesSent[0].text, "outgoing");
+  assert.deepEqual(data.messagesSent[0].to, { id: other.id });
+  assert.deepEqual(data.following, [{ id: other.id }]);
+  assert.deepEqual(data.followers, [{ id: follower.id }]);
+  assert.deepEqual(data.blocked, [{ id: blockedAccount.id }]);
+  assert.deepEqual(data.notifications[0].from, { id: other.id });
   assert.deepEqual(data.posts.find((post) => post.id === "post_export_campaign").campaign, exportedCampaign);
   assert.deepEqual(data.taggedInPosts.find((post) => post.postId === "post_export_tagged"), {
     postId: "post_export_tagged",
@@ -2675,7 +2777,11 @@ test("account export covers owned social data without secrets or raw IP addresse
     createdAt: 22,
   });
   assert.ok(data.exportNotes.some((note) => note.includes("1,000 posts tagging you") && note.includes("1,000 tags you removed")));
+  assert.ok(data.exportNotes.some((note) => note.includes("stable internal ids only") && note.includes("blocks")));
   const encoded = JSON.stringify(data);
+  for (const account of [other, follower, blockedAccount]) {
+    assert.equal(encoded.includes(account.handle), false, "exports must not resolve live third-party profile fields");
+  }
   assert.equal(encoded.includes("203.0.113.10"), false);
   assert.equal(encoded.includes("pass_hash"), false);
   assert.equal(encoded.includes("test-hash"), false);
@@ -2698,6 +2804,21 @@ test("account deletion requires the password and erases SET NULL privacy rows at
   db.prepare("INSERT INTO posts (id,user_id,artist,venue,overall,tagged_user_ids,created_at) VALUES (?,?,?,?,?,?,?)")
     .run("post_delete_survivor_tag", survivor.id, "Band", "Venue", 4, JSON.stringify([user.id, survivor.id]), 26);
   db.prepare("INSERT INTO sessions (token_hash,user_id,created_at,expires_at) VALUES (?,?,?,?)").run("session_delete", user.id, 1, Date.now() + 100000);
+  const legacyStagingKey = `users/${user.id}/avatar/delete-legacy-staging.jpg`;
+  const legacyOutputKey = `users/${user.id}/avatar/delete-legacy-safe.webp`;
+  const legacyOutputUrl = `https://media.example.com/cdn/${legacyOutputKey}`;
+  db.prepare(`INSERT INTO media_objects
+    (object_key,owner_id,storage_scope,purpose,byte_size,status,created_at,updated_at)
+    VALUES (?,?,'private','avatar',1024,'issued',?,?), (?,?,'public','avatar',512,'issued',?,?)`)
+    .run(legacyStagingKey, user.id, 27, 27, legacyOutputKey, user.id, 27, 27);
+  db.prepare(`INSERT INTO legacy_media_finalize_descriptors
+    (id,owner_id,token_hash,purpose,staging_object_key,staging_mime_type,staging_byte_size,
+      output_mime_type,output_object_key,output_url,output_byte_size,width,height,status,expires_at,
+      finalized_at,created_at,updated_at)
+    VALUES ('lm_deletelegacydescriptor',? ,?,'avatar',?,'image/jpeg',1024,'image/webp',?,?,512,64,64,
+      'finalized',?,?,?,?)`)
+    .run(user.id, "e".repeat(64), legacyStagingKey, legacyOutputKey, legacyOutputUrl,
+      Date.now() + 60_000, 27, 27, 27);
 
   const handler = routes["DELETE /api/me"];
   assert.throws(
@@ -2710,6 +2831,12 @@ test("account deletion requires the password and erases SET NULL privacy rows at
   assert.deepEqual(handler({ user: freshUser, ip: "delete-test", body: { password }, clearSession: () => { cleared = true; } }), { ok: true });
   assert.equal(cleared, true);
   assert.equal(q.userById.get(user.id), undefined);
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM legacy_media_finalize_descriptors WHERE owner_id=?")
+    .get(user.id).count, 0, "account erasure removes owner-bound legacy finalize descriptors");
+  for (const key of [legacyStagingKey, legacyOutputKey]) {
+    assert.equal(db.prepare("SELECT status FROM media_objects WHERE object_key=?").get(key).status,
+      "delete_queued", "account erasure keeps both private staging and sanitized output recoverably queued");
+  }
   assert.ok(q.userById.get(survivor.id));
   for (const [table, column] of [
     ["events", "user_id"],
@@ -2733,6 +2860,28 @@ test("account deletion requires the password and erases SET NULL privacy rows at
     0,
     "account erasure must leave no normalized tag association for the deleted account",
   );
+});
+
+test("account export media projection never serializes private-source capabilities", () => {
+  const signedSource = `https://objects.example.test/private/source.mp4?X-Amz-Credential=test&X-Amz-Signature=${"a".repeat(64)}`;
+  const projected = portableMediaAsset({
+    id: "ma_portable",
+    kind: "video",
+    purpose: "post",
+    sourceUrl: signedSource,
+    storageCredential: "future-provider-secret",
+    url: "https://media.example.test/public/render.mp4",
+    posterUrl: "https://media.example.test/public/poster.webp",
+    durationMs: 12_000,
+    status: "ready",
+  });
+
+  assert.equal(Object.hasOwn(projected, "sourceUrl"), false);
+  assert.equal(Object.hasOwn(projected, "storageCredential"), false);
+  assert.equal(JSON.stringify(projected).includes("X-Amz-"), false);
+  assert.equal(projected.id, "ma_portable");
+  assert.equal(projected.url, "https://media.example.test/public/render.mp4");
+  assert.equal(projected.posterUrl, "https://media.example.test/public/poster.webp");
 });
 
 // Discover looked broken because the catalogue seeder published its MusicBrainz
@@ -2824,7 +2973,22 @@ test("public UGC surfaces share one banned and live-suspension visibility rule",
   const nowAt = Date.now();
 
   db.prepare(`INSERT INTO posts (id,user_id,artist,venue,overall,review,photos,photos_public,created_at)
-    VALUES (?,?,?,?,?,?,?,?,?)`).run(postId, author.id, "Visibility Artist", "Visibility Venue", 4, "visible post", '["https://media.example/visible.mp4"]', 1, nowAt);
+    VALUES (?,?,?,?,?,?,?,?,?)`).run(postId, author.id, "Visibility Artist", "Visibility Venue", 4, "visible post", '["https://media.example/users/u_public_visibility_author/post/visible.mp4"]', 1, nowAt);
+  const visibilityClipKey = "users/u_public_visibility_author/post/visible.mp4";
+  const visibilityClipUrl = "https://media.example/users/u_public_visibility_author/post/visible.mp4";
+  db.prepare(`INSERT INTO media_objects
+    (object_key,owner_id,purpose,byte_size,status,created_at,associated_at,updated_at)
+    VALUES (?,?, 'post',2048,'associated',?,?,?)`).run(visibilityClipKey, author.id, nowAt, nowAt, nowAt);
+  db.prepare(`INSERT INTO media_assets
+    (id,owner_id,client_asset_id,create_hash,purpose,kind,source_key,source_url,original_name,mime_type,byte_size,
+      width,height,duration_ms,metadata_status,codec_status,codec_verified_at,status,source_verified_at,created_at,updated_at)
+    VALUES ('ma_public_visibility_clip',?,?,?,'post','video',?,?, 'visible.mp4','video/mp4',2048,
+      1080,1920,15000,'declared','verified',?,'ready',?,?,?)`).run(
+    author.id, "public-visibility-clip", "visibility-hash", visibilityClipKey, visibilityClipUrl,
+    nowAt, nowAt, nowAt, nowAt,
+  );
+  db.prepare("INSERT INTO post_media (post_id,asset_id,position,created_at) VALUES (?,'ma_public_visibility_clip',0,?)")
+    .run(postId, nowAt);
   db.prepare("INSERT INTO posts (id,user_id,artist,venue,overall,review,created_at) VALUES (?,?,?,?,?,?,?)")
     .run(hostPostId, viewer.id, "Host Artist", "Host Venue", 4, "host", nowAt - 1);
   db.prepare("INSERT INTO comments (id,post_id,user_id,text,created_at) VALUES (?,?,?,?,?)")
@@ -3041,10 +3205,10 @@ test("playlist tracks keep their exact recording identity", () => {
   const made = create({
     user: owner, ip: "playlist-id",
     body: { name: "Identity", visibility: "public", tracks: [
-      { title: "Bare", artist: "A", videoId: "dQw4w9WgXcQ" },
+      { title: "Bare", artist: "A", videoId: "dQw4w9WgXcQ", art: "https://tracker.example/pixel/bare" },
       { title: "FromUrl", artist: "A", url: "https://www.youtube.com/watch?v=oHg5SJYRHA0" },
-      { title: "Deezer", artist: "A", sourceId: "12345", provider: "deezer" },
-      { title: "NoIdentity", artist: "A" },
+      { title: "Deezer", artist: "A", sourceId: "12345", provider: "deezer", art: "https://e-cdns-images.dzcdn.net/images/cover/trusted/500x500.jpg?viewer=secret" },
+      { title: "NoIdentity", artist: "A", art: "https://tracker.example/pixel/no-identity" },
     ] },
   });
   const id = made.playlist?.id || made.id;
@@ -3055,6 +3219,11 @@ test("playlist tracks keep their exact recording identity", () => {
   assert.equal(byTitle.FromUrl.videoId, "oHg5SJYRHA0", "the id must be recovered from a watch link");
   assert.equal(byTitle.Deezer.sourceId, "12345");
   assert.equal(byTitle.Deezer.provider, "deezer");
+  assert.equal(byTitle.Bare.art, "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg",
+    "a caller cannot replace deterministic YouTube art with a tracking pixel");
+  assert.equal(byTitle.Deezer.art, "https://e-cdns-images.dzcdn.net/images/cover/trusted/500x500.jpg",
+    "provider artwork keeps only its provider-owned path");
+  assert.equal(byTitle.NoIdentity.art, null, "arbitrary artwork never reaches another playlist viewer");
   // A track with only title/artist is still a complete reference; the player
   // resolves it when it becomes current.
   assert.equal(byTitle.NoIdentity.videoId, null);
@@ -3080,10 +3249,11 @@ test("play history round-trips exact provider recordings to history, friends, an
   const untrusted = postPlay({
     user: owner,
     ip: "play-source-owner",
-    body: { title: "Untrusted Source", artist: "Exact Recording Artist", provider: "filesystem", sourceId: "../../private" },
+    body: { title: "Untrusted Source", artist: "Exact Recording Artist", provider: "filesystem", sourceId: "../../private", art: "https://tracker.example/pixel/history" },
   }).play;
   assert.equal(untrusted.provider, null);
   assert.equal(untrusted.sourceId, null, "unknown provider namespaces never become durable recording identities");
+  assert.equal(untrusted.art, null, "play history cannot carry a cross-user tracking pixel");
   db.prepare("UPDATE plays SET created_at=? WHERE id=?").run(100, solo.id);
   db.prepare("UPDATE plays SET created_at=? WHERE id=?").run(200, feature.id);
   db.prepare("UPDATE plays SET created_at=? WHERE id=?").run(50, untrusted.id);
@@ -3112,7 +3282,8 @@ test("play history round-trips exact provider recordings to history, friends, an
     videoId: "histFeat001",
   });
 
-  const exported = routes["GET /api/me/export"]({ user: owner, ip: "play-source-export" })
+  db.prepare("UPDATE users SET pass_hash=? WHERE id=?").run(hashPassword("play-export-password1"), owner.id);
+  const exported = routes["POST /api/me/export"]({ user: q.userById.get(owner.id), ip: "play-source-export", body: { password: "play-export-password1" } })
     .listeningHistory.filter((play) => play.title === shared.title);
   assert.deepEqual(exported.map((play) => ({
     provider: play.provider,

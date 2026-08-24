@@ -21,8 +21,81 @@ function addUser(id, passwordHash = "test-hash") {
   return q.userById.get(id);
 }
 
+let mediaSequence = 0;
+function readyImage(owner, label) {
+  const token = `${label}${++mediaSequence}`.replace(/[^A-Za-z0-9_-]/g, "").padEnd(12, "x");
+  const assetId = `ma_${token}`;
+  const variantId = `mv_${token}`;
+  const sourceKey = `users/${owner.id}/post/${token}.jpg`;
+  const renderKey = `users/${owner.id}/post/${token}.webp`;
+  const sourceUrl = `pit-private:${sourceKey}`;
+  const publicUrl = `https://pit-media.example/${renderKey}`;
+  const at = Date.now();
+  db.prepare(`INSERT INTO media_objects
+    (object_key,owner_id,storage_scope,purpose,byte_size,status,created_at,updated_at)
+    VALUES (?,?,'private','post',2048,'issued',?,?)`).run(sourceKey, owner.id, at, at);
+  db.prepare(`INSERT INTO media_objects
+    (object_key,owner_id,storage_scope,purpose,byte_size,status,created_at,updated_at)
+    VALUES (?,?,'public','post',1024,'issued',?,?)`).run(renderKey, owner.id, at, at);
+  db.prepare(`INSERT INTO media_assets
+    (id,owner_id,client_asset_id,create_hash,purpose,kind,source_key,source_url,source_storage_scope,
+      original_name,mime_type,byte_size,width,height,metadata_status,codec_status,status,source_verified_at,
+      render_state,render_variant_id,created_at,updated_at)
+    VALUES (?,?,?,?, 'post','image',?,?,'private','photo.jpg','image/jpeg',2048,100,100,
+      'declared','not_applicable','ready',?,'ready',?,?,?)`)
+    .run(assetId, owner.id, `client-${token}`, "a".repeat(64), sourceKey, sourceUrl, at, variantId, at, at);
+  db.prepare(`INSERT INTO media_variants
+    (id,asset_id,client_variant_id,create_hash,role,object_key,public_url,mime_type,byte_size,width,height,
+      status,finalize_hash,verified_at,verification_origin,created_at,updated_at)
+    VALUES (?,?,?,?,'render',?,?,'image/webp',1024,100,100,'verified',?,?,'private_derivative_v1',?,?)`)
+    .run(variantId, assetId, `variant-${token}`, "b".repeat(64), renderKey, publicUrl, "c".repeat(64), at, at, at);
+  return publicUrl;
+}
+
 function report(user, body) {
   return routes["POST /api/reports"]({ user, ip: `reports-${user.id}`, body });
+}
+
+function addReportableSurfaces(prefix, owner, viewer) {
+  const createdAt = Date.now();
+  const postId = `${prefix}_post`;
+  const commentId = `${prefix}_comment`;
+  const fanArtist = `${prefix} artist`;
+  const fanMessageId = `${prefix}_fan_message`;
+  const loungeId = `${prefix}|venue|2026-09-01`;
+  const loungeMessageId = `${prefix}_lounge_message`;
+  const venueReviewId = `${prefix}_venue_review`;
+  const artistKey = `${prefix} official`;
+  const artistPostId = `${prefix}_artist_post`;
+
+  db.prepare("INSERT INTO posts (id,user_id,artist,venue,overall,review,photos,created_at) VALUES (?,?,?,?,?,?,?,?)")
+    .run(postId, owner.id, fanArtist, "Venue", 4, "post", "[]", createdAt);
+  db.prepare("INSERT INTO comments (id,post_id,user_id,text,created_at) VALUES (?,?,?,?,?)")
+    .run(commentId, postId, owner.id, "comment", createdAt);
+  db.prepare("INSERT INTO fan_club_members (artist,user_id) VALUES (?,?)").run(fanArtist, viewer.id);
+  db.prepare("INSERT INTO fan_club_messages (id,artist,user_id,text,created_at) VALUES (?,?,?,?,?)")
+    .run(fanMessageId, fanArtist, owner.id, "fan message", createdAt);
+  db.prepare("INSERT INTO going (user_id,concert_key,artist,venue,city,date) VALUES (?,?,?,?,?,?)")
+    .run(viewer.id, loungeId, fanArtist, "Venue", "Toronto", "2026-09-01");
+  db.prepare("INSERT INTO lounge_messages (id,lounge_id,user_id,text,created_at) VALUES (?,?,?,?,?)")
+    .run(loungeMessageId, loungeId, owner.id, "lounge message", createdAt);
+  db.prepare("INSERT INTO venue_reviews (id,venue_key,user_id,rating,text,photos,created_at) VALUES (?,?,?,?,?,?,?)")
+    .run(venueReviewId, `${prefix} venue`, owner.id, 4, "venue review", "[]", createdAt);
+  db.prepare("INSERT INTO artist_profiles (artist_key,owner_id,bio,feed_enabled,updated_at) VALUES (?,?,?,?,?)")
+    .run(artistKey, owner.id, "artist profile", 1, createdAt);
+  db.prepare("INSERT INTO artist_posts (id,artist_key,user_id,text,created_at) VALUES (?,?,?,?,?)")
+    .run(artistPostId, artistKey, owner.id, "artist post", createdAt);
+
+  return [
+    { targetType: "user", targetId: owner.id },
+    { targetType: "post", targetId: postId },
+    { targetType: "comment", targetId: commentId },
+    { targetType: "fan_message", targetId: fanMessageId },
+    { targetType: "lounge_message", targetId: loungeMessageId },
+    { targetType: "venue_review", targetId: venueReviewId },
+    { targetType: "artist_post", targetId: artistPostId },
+    { targetType: "artist_profile", targetId: artistKey },
+  ];
 }
 
 function expectApiError(run, status, code) {
@@ -32,6 +105,11 @@ function expectApiError(run, status, code) {
 const reporter = addUser("reports_reporter");
 const author = addUser("reports_author");
 const outsider = addUser("reports_outsider");
+const postPhotoOne = readyImage(author, "reportpostone");
+const postPhotoTwo = readyImage(author, "reportposttwo");
+const venuePhoto = readyImage(author, "reportvenue");
+const artistBanner = readyImage(author, "reportbanner");
+const artistAvatar = readyImage(author, "reportavatar");
 
 db.prepare(`INSERT INTO posts (id,user_id,artist,venue,overall,review,photos,removed,created_at)
   VALUES (?,?,?,?,?,?,?,?,?)`).run(
@@ -41,7 +119,7 @@ db.prepare(`INSERT INTO posts (id,user_id,artist,venue,overall,review,photos,rem
   "Scotiabank Arena",
   4.5,
   "A public post",
-  JSON.stringify(["https://media.example/one.jpg", "https://media.example/two.jpg"]),
+  JSON.stringify([postPhotoOne, postPhotoTwo]),
   0,
   Date.now(),
 );
@@ -57,23 +135,23 @@ db.prepare("INSERT INTO going (user_id,concert_key,artist,venue,city,date) VALUE
 db.prepare("INSERT INTO lounge_messages (id,lounge_id,user_id,text,created_at) VALUES (?,?,?,?,?)")
   .run("reports_lounge_message", "j. cole|scotiabank|2026-08-13", author.id, "A lounge message", Date.now());
 db.prepare("INSERT INTO venue_reviews (id,venue_key,user_id,rating,text,photos,created_at) VALUES (?,?,?,?,?,?,?)")
-  .run("reports_venue_review", "scotiabank arena", author.id, 4, "A venue review", JSON.stringify(["https://media.example/venue.jpg"]), Date.now());
+  .run("reports_venue_review", "scotiabank arena", author.id, 4, "A venue review", JSON.stringify([venuePhoto]), Date.now());
 db.prepare("INSERT INTO artist_profiles (artist_key,owner_id,bio,banner,avatar_uri,feed_enabled,updated_at) VALUES (?,?,?,?,?,?,?)")
-  .run("j. cole", author.id, "Official artist bio", "https://media.example/artist-banner.jpg", "https://media.example/artist-avatar.jpg", 1, Date.now());
+  .run("j. cole", author.id, "Official artist bio", artistBanner, artistAvatar, 1, Date.now());
 db.prepare("INSERT INTO artist_posts (id,artist_key,user_id,text,created_at) VALUES (?,?,?,?,?)")
   .run("reports_artist_post", "j. cole", author.id, "An artist-page update", Date.now());
 
 test("all reachable UGC targets report idempotently and exact media is verified without storing its URL", () => {
   const targets = [
     { targetType: "user", targetId: author.id, reason: "Impersonation" },
-    { targetType: "post", targetId: "reports_post", reason: "Unsafe image", mediaUri: "https://media.example/two.jpg" },
+    { targetType: "post", targetId: "reports_post", reason: "Unsafe image", mediaUri: postPhotoTwo },
     { targetType: "comment", targetId: "reports_comment", reason: "Harassment" },
     { targetType: "message", targetId: "reports_dm", reason: "Harassment" },
     { targetType: "fan_message", targetId: "reports_fan_message", reason: "Spam" },
     { targetType: "lounge_message", targetId: "reports_lounge_message", reason: "Threats" },
-    { targetType: "venue_review", targetId: "reports_venue_review", reason: "Unsafe image", mediaUri: "https://media.example/venue.jpg" },
+    { targetType: "venue_review", targetId: "reports_venue_review", reason: "Unsafe image", mediaUri: venuePhoto },
     { targetType: "artist_post", targetId: "reports_artist_post", reason: "Harassment" },
-    { targetType: "artist_profile", targetId: "j. cole", reason: "Unsafe image", mediaUri: "https://media.example/artist-avatar.jpg" },
+    { targetType: "artist_profile", targetId: "j. cole", reason: "Unsafe image", mediaUri: artistAvatar },
   ];
 
   for (const target of targets) {
@@ -135,6 +213,60 @@ test("private and gated targets cannot be probed or self-reported", () => {
   );
 });
 
+test("blocks make every public and artist-owned report target indistinguishable from missing", () => {
+  const viewer = addUser("reports_block_viewer");
+  const target = addUser("reports_block_target");
+  const targets = addReportableSurfaces("reports_block", target, viewer);
+  db.prepare("INSERT INTO blocks (blocker_id,blocked_id,created_at) VALUES (?,?,?)")
+    .run(target.id, viewer.id, Date.now());
+
+  for (const body of targets) {
+    expectApiError(() => report(viewer, { ...body, reason: "probe" }), 404, "NOT_FOUND");
+  }
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM reports WHERE reporter_id=?").get(viewer.id).count, 0);
+});
+
+test("restricted authors cannot be confirmed through public or artist-owned report targets", () => {
+  const viewer = addUser("reports_restricted_viewer");
+  const target = addUser("reports_restricted_target");
+  const targets = addReportableSurfaces("reports_restricted", target, viewer);
+  db.prepare("UPDATE users SET suspended_until=? WHERE id=?").run(Date.now() + 86_400_000, target.id);
+
+  for (const body of targets) {
+    expectApiError(() => report(viewer, { ...body, reason: "probe" }), 404, "NOT_FOUND");
+  }
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM reports WHERE reporter_id=?").get(viewer.id).count, 0);
+});
+
+test("artist-post reports honor a distinct profile owner's visibility boundary", () => {
+  const viewer = addUser("reports_split_viewer");
+  const owner = addUser("reports_split_owner");
+  const staffAuthor = addUser("reports_split_staff");
+  db.prepare("UPDATE users SET role='admin' WHERE id=?").run(staffAuthor.id);
+  const artistKey = "reports split official";
+  const postId = "reports_split_artist_post";
+  db.prepare("INSERT INTO artist_profiles (artist_key,owner_id,bio,feed_enabled,updated_at) VALUES (?,?,?,?,?)")
+    .run(artistKey, owner.id, "owner profile", 1, Date.now());
+  db.prepare("INSERT INTO artist_posts (id,artist_key,user_id,text,created_at) VALUES (?,?,?,?,?)")
+    .run(postId, artistKey, staffAuthor.id, "staff-authored update", Date.now());
+
+  db.prepare("INSERT INTO blocks (blocker_id,blocked_id,created_at) VALUES (?,?,?)")
+    .run(owner.id, viewer.id, Date.now());
+  expectApiError(
+    () => report(viewer, { targetType: "artist_post", targetId: postId, reason: "blocked probe" }),
+    404,
+    "NOT_FOUND",
+  );
+  db.prepare("DELETE FROM blocks WHERE blocker_id=? AND blocked_id=?").run(owner.id, viewer.id);
+  db.prepare("UPDATE users SET suspended_until=? WHERE id=?").run(Date.now() + 86_400_000, owner.id);
+  expectApiError(
+    () => report(viewer, { targetType: "artist_post", targetId: postId, reason: "restricted probe" }),
+    404,
+    "NOT_FOUND",
+  );
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM reports WHERE reporter_id=?").get(viewer.id).count, 0);
+});
+
 test("account deletion removes reports aimed at every newly reportable authored surface", () => {
   const password = "DeleteMe123";
   const deleting = addUser("reports_delete_target", hashPassword(password));
@@ -192,6 +324,8 @@ test("account deletion removes reports aimed at every newly reportable authored 
     .run(outsider.id, "reports_delete_badge", deleting.id, Date.now(), `granted by ${deleting.handle}`);
   db.prepare("INSERT INTO track_overrides (key,title,artist,video_id,set_by,updated_at) VALUES (?,?,?,?,?,?)")
     .run("reports_delete_track", "Track", "Artist", null, deleting.id, Date.now());
+  db.prepare("INSERT INTO track_source_overrides (provider,source_id,title,artist,video_id,set_by,updated_at) VALUES (?,?,?,?,?,?,?)")
+    .run("spotify", "reports_delete_source", "Source track", "Artist", null, deleting.id, Date.now());
   db.prepare("INSERT INTO email_templates (key,subject,body,updated_at,updated_by) VALUES (?,?,?,?,?)")
     .run("reports_delete_template", "Template", "Body", Date.now(), deleting.id);
 
@@ -217,6 +351,7 @@ test("account deletion removes reports aimed at every newly reportable authored 
   assert.equal(retainedGrant.granted_by, null);
   assert.equal(retainedGrant.note, "");
   assert.equal(db.prepare("SELECT set_by FROM track_overrides WHERE key='reports_delete_track'").get().set_by, null);
+  assert.equal(db.prepare("SELECT set_by FROM track_source_overrides WHERE provider='spotify' AND source_id='reports_delete_source'").get().set_by, null);
   assert.equal(db.prepare("SELECT updated_by FROM email_templates WHERE key='reports_delete_template'").get().updated_by, null);
   assert.equal(db.prepare("SELECT created_by FROM email_campaigns WHERE id='reports_delete_campaign'").get().created_by, null);
 });

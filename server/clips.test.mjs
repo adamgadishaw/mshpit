@@ -33,26 +33,72 @@ function post(user, { photos, photosPublic = 1, artist = "Turnstile" }) {
   return { id };
 }
 
-test("clips reel returns only public posts that carry a real video, with just the clip urls", () => {
+function stableClipPost(user, {
+  artist = "Turnstile",
+  createdAt = Date.now(),
+  photosPublic = 1,
+} = {}) {
+  const sequence = ++legacyPostSequence;
+  const id = `p_stable_clip_${sequence}`;
+  const assetId = `ma_stable_clip_${sequence}`;
+  const posterId = `mv_stable_clip_${sequence}`;
+  const clipUrl = `https://media.example/users/${user.id}/post/${sequence}.mp4`;
+  const posterUrl = `https://media.example/users/${user.id}/post/${sequence}.jpg`;
+  const sourceKey = `users/${user.id}/post/${sequence}.mp4`;
+  const posterKey = `users/${user.id}/post/${sequence}.jpg`;
+  db.prepare(`INSERT INTO posts
+    (id,user_id,artist,venue,city,date,overall,review,photos,photos_public,created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(
+    id, user.id, artist, "History", "Toronto", "2026-07-12", 4.5, "", JSON.stringify([clipUrl]), photosPublic ? 1 : 0, createdAt,
+  );
+  db.prepare(`INSERT INTO media_objects
+    (object_key,owner_id,purpose,byte_size,status,created_at,associated_at,updated_at)
+    VALUES (?,?,?,?,'associated',?,?,?)`).run(sourceKey, user.id, "post", 1_000_000, createdAt, createdAt, createdAt);
+  db.prepare(`INSERT INTO media_objects
+    (object_key,owner_id,purpose,byte_size,status,created_at,associated_at,updated_at)
+    VALUES (?,?,?,?,'associated',?,?,?)`).run(posterKey, user.id, "post", 50_000, createdAt, createdAt, createdAt);
+  db.prepare(`INSERT INTO media_assets
+    (id,owner_id,client_asset_id,create_hash,purpose,kind,source_key,source_url,original_name,mime_type,byte_size,
+     width,height,duration_ms,metadata_status,codec_status,codec_verified_at,status,edit_recipe,finalize_hash,source_verified_at,
+     render_state,poster_variant_id,poster_key,poster_url,poster_time_ms,created_at,updated_at)
+    VALUES (?,?,?,?,?,'video',?,?,?,?,?,?,?,?,'declared','verified',?,'ready',?,?,?,
+      'not_required',?,?,?,?,?,?)`).run(
+    assetId, user.id, `client-stable-${sequence}`, "hash", "post", sourceKey, clipUrl, `${sequence}.mp4`, "video/mp4", 1_000_000,
+    1080, 1920, 15_000, createdAt, JSON.stringify({ coverMs: 2_000 }), "finalize-hash", createdAt,
+    posterId, posterKey, posterUrl, 2_000, createdAt, createdAt,
+  );
+  db.prepare(`INSERT INTO media_variants
+    (id,asset_id,client_variant_id,create_hash,role,object_key,public_url,mime_type,byte_size,width,height,time_ms,status,verification_origin,finalize_hash,verified_at,created_at,updated_at)
+    VALUES (?,?,?,?,'poster',?,?,?,?,?,?,?,'verified','private_derivative_v1',?,?,?,?)`).run(
+    posterId, assetId, `client-poster-${sequence}`, "poster-hash", posterKey, posterUrl, "image/jpeg", 50_000, 720, 1280, 2_000,
+    "poster-finalize-hash", createdAt, createdAt, createdAt,
+  );
+  db.prepare("INSERT INTO post_media (post_id,asset_id,position,created_at) VALUES (?,?,0,?)").run(id, assetId, createdAt);
+  return { id, clipUrl, posterUrl };
+}
+
+test("clips reel returns only public stable videos and suppresses URL-only legacy media", () => {
   const u = addUser("clipper");
   const V = "https://cdn.example/users/clipper/post/a.webm";
   const V2 = "https://cdn.example/users/clipper/post/b.mp4";
   const IMG = "https://cdn.example/users/clipper/post/c.jpg";
 
-  post(u, { photos: [IMG] });                 // photo-only: excluded
-  post(u, { photos: [V, IMG] });              // mixed: included, only the video surfaces
-  post(u, { photos: [V2], photosPublic: 0 }); // private video: excluded
+  post(u, { photos: [IMG] });                 // URL-only photo: excluded
+  post(u, { photos: [V, IMG] });              // URL-only historical video: excluded
+  post(u, { photos: [V2], photosPublic: 0 }); // private URL-only video: excluded
+  const stable = stableClipPost(u);
+  stableClipPost(u, { photosPublic: 0 });
 
   const { clips } = routes["GET /api/clips"]({ user: u, query: {} });
-  assert.equal(clips.length, 1, "only the public post with a video is a clip");
-  assert.deepEqual(clips[0].clips, [V], "clips array is just the video urls, images stripped");
+  assert.equal(clips.length, 1, "only the public stable post with a video is a clip");
+  assert.deepEqual(clips[0].clips, [stable.clipUrl], "clips array contains only the verified attached video URL");
   assert.equal(clips[0].artist, "Turnstile");
 });
 
 test("clips reel paginates newest-first with a stable cursor", () => {
   const u = addUser("clipper2");
   for (let i = 0; i < 3; i++) {
-    const p = post(u, { photos: [`https://cdn.example/users/clipper2/post/${i}.mp4`], artist: `Band ${i}` });
+    const p = stableClipPost(u, { artist: `Band ${i}`, createdAt: 2_000_000_000_000 + i });
     // The route stamps created_at = now(), which ties across this fast loop and
     // left "newest first" resolving on the random uid tie-break. Give each post a
     // distinct, increasing timestamp (and newer than any earlier test's post) so
@@ -123,9 +169,9 @@ test("stable extensionless clips keep their durable poster in the reel", () => {
 test("false-positive photo URLs cannot consume a clips page before a real video", () => {
   const user = addUser("clipper_page_filter");
   const base = 2_200_000_000_000;
-  const real = post(user, {
-    photos: ["https://cdn.example/users/clipper_page_filter/post/real.mp4"],
+  const real = stableClipPost(user, {
     artist: "Real clip below bait",
+    createdAt: base,
   });
   db.prepare("UPDATE posts SET created_at=? WHERE id=?").run(base, real.id);
 

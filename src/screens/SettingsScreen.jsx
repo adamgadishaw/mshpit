@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import Constants from "expo-constants";
-import { Linking, View, Text, StyleSheet, ScrollView, Pressable } from "react-native";
+import { Linking, View, Text, TextInput, StyleSheet, ScrollView, Pressable } from "react-native";
 import { colors, focusRing, radius, mono, THEMES, themeKey, space } from "../theme";
 import { useStore } from "../store";
 import SheetHeader from "../components/SheetHeader";
@@ -57,15 +57,19 @@ function Toggle({ value, busy = false }) {
 }
 
 export default function SettingsScreen({ onClose, onManageProfile, onOpenProfile, onOpenPrivacy, onOpenTerms, onOpenDiagnostics, onOpenDeleteAccount, onLogout }) {
-  const { session, chooseTheme, blockedUsers, unblockUser, exportMyData, setAnalyticsEnabled, privateListeningActive, privateListeningUntil, setPrivateListening } = useStore();
+  const { session, chooseTheme, blockedUsers, unblockUser, exportMyData, setAnalyticsEnabled, setAnnouncementEmailsEnabled, privateListeningActive, privateListeningUntil, setPrivateListening } = useStore();
   const blocked = session ? blockedUsers() : [];
   const [exporting, setExporting] = useState(false);
   const [exportResult, setExportResult] = useState(null);
+  const [exportPassword, setExportPassword] = useState("");
   const [savingAnalytics, setSavingAnalytics] = useState(false);
   const [analyticsResult, setAnalyticsResult] = useState(null);
+  const [savingAnnouncements, setSavingAnnouncements] = useState(false);
+  const [announcementResult, setAnnouncementResult] = useState(null);
   const [supportError, setSupportError] = useState(null);
   const [, setPrivateClock] = useState(0);
   const analyticsEnabled = !!(session?.analyticsConsentAt || session?.consentAt) && !session?.analyticsOptOut;
+  const announcementsEnabled = !session?.marketingOptOut;
   const manageProfile = profileManagementAction(session);
   const publicProfileLabel = manageProfile.destination === "artistHub" ? "View public artist page" : "View public profile";
   const publicProfileDetail = manageProfile.destination === "artistHub" ? session?.artistName : `@${session?.handle || ""}`;
@@ -78,8 +82,9 @@ export default function SettingsScreen({ onClose, onManageProfile, onOpenProfile
     if (exporting) return;
     setExporting(true);
     setExportResult(null);
-    const result = await exportMyData();
+    const result = await exportMyData(exportPassword);
     setExportResult(result);
+    if (result?.ok) setExportPassword("");
     setExporting(false);
   };
   const toggleAnalytics = async () => {
@@ -92,6 +97,16 @@ export default function SettingsScreen({ onClose, onManageProfile, onOpenProfile
       ? (optingOut ? "Product analytics are off and your prior product events were deleted." : "Product analytics are on for this account.")
       : "That preference did not save. Please try again.");
     setSavingAnalytics(false);
+  };
+  const toggleAnnouncements = async () => {
+    if (!session || savingAnnouncements) return;
+    setSavingAnnouncements(true);
+    setAnnouncementResult(null);
+    const result = await setAnnouncementEmailsEnabled(!announcementsEnabled);
+    setAnnouncementResult(result?.ok
+      ? (!announcementsEnabled ? "Announcement emails are on." : "Announcement emails are off.")
+      : "That email preference did not save. Please try again.");
+    setSavingAnnouncements(false);
   };
 
   return (
@@ -151,11 +166,41 @@ export default function SettingsScreen({ onClose, onManageProfile, onOpenProfile
               </Text>
             )}
             <Row
+              icon="mail"
+              label="Email announcements"
+              sub={announcementsEnabled
+                ? "On. Receive occasional Pit news and community updates."
+                : "Off. Account and security email will still be delivered."}
+              onPress={toggleAnnouncements}
+              disabled={savingAnnouncements}
+              accessibilityRole="switch"
+              accessibilityState={{ checked: announcementsEnabled, busy: savingAnnouncements }}
+              right={<Toggle value={announcementsEnabled} busy={savingAnnouncements} />}
+            />
+            {!!announcementResult && (
+              <Text style={[styles.exportStatus, announcementResult.startsWith("That email") && styles.exportError]} accessibilityRole="alert" accessibilityLiveRegion="polite">
+                {announcementResult}
+              </Text>
+            )}
+            <TextInput
+              value={exportPassword}
+              onChangeText={setExportPassword}
+              placeholder="Current password for data export"
+              placeholderTextColor={colors.textFaint}
+              secureTextEntry
+              autoCapitalize="none"
+              autoCorrect={false}
+              autoComplete="current-password"
+              textContentType="password"
+              style={styles.passwordInput}
+              accessibilityLabel="Current password for data export"
+            />
+            <Row
               icon="share"
               label={exporting ? "Preparing your backup..." : "Download your data"}
               sub="A portable backup of your profile, reviews, playlists, and activity (JSON)"
               onPress={doExport}
-              disabled={exporting}
+              disabled={exporting || !exportPassword}
               accessibilityState={{ busy: exporting }}
             />
             {exportResult && (
@@ -228,6 +273,7 @@ const styles = StyleSheet.create({
   blockedEmpty: { color: colors.textFaint, fontSize: 12.5, lineHeight: 18, marginBottom: 8 },
   exportStatus: { color: colors.good, fontSize: 12.5, lineHeight: 18, marginTop: -1, marginBottom: 10, paddingHorizontal: 4 },
   exportError: { color: colors.danger },
+  passwordInput: { minHeight: 48, color: colors.text, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft, borderRadius: radius.md, paddingHorizontal: 14, marginBottom: 8 },
   unblockBtn: { minHeight: 44, minWidth: 76, alignItems: "center", justifyContent: "center", borderRadius: radius.pill, borderWidth: 1, borderColor: colors.danger, paddingHorizontal: 14, paddingVertical: 7 },
   unblockTxt: { color: colors.danger, fontSize: 12.5, fontWeight: "800" },
   toggle: { width: 48, height: 28, borderRadius: 14, padding: 3, backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line, justifyContent: "center" },

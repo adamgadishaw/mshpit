@@ -56,6 +56,15 @@ export const ERROR_CATALOG = Object.freeze({
     guidance: "Refresh, confirm the active account, then repeat the action.",
     retryable: false,
   }),
+  "PIT-AUTH-005": Object.freeze({
+    category: "permission",
+    severity: "warning",
+    title: "Confirm your email first",
+    message: "Check your inbox and confirm your email before publishing, messaging, following, reacting, or changing public information.",
+    failurePoint: "Email ownership check",
+    guidance: "Use the persistent confirmation reminder to send a fresh link, then repeat the action.",
+    retryable: false,
+  }),
   "PIT-CHAT-001": Object.freeze({
     category: "permission",
     severity: "warning",
@@ -236,6 +245,15 @@ export const ERROR_CATALOG = Object.freeze({
     guidance: "Check available storage, then retry.",
     retryable: true,
   }),
+  "PIT-STORE-002": Object.freeze({
+    category: "storage",
+    severity: "warning",
+    title: "A private draft remains on this device",
+    message: "Pit cleared the account, but this device may still hold a local media draft.",
+    failurePoint: "Private media draft cleanup",
+    guidance: "Clear Pit's app storage before sharing or disposing of this device.",
+    retryable: false,
+  }),
   "PIT-APP-001": Object.freeze({
     category: "application",
     severity: "fatal",
@@ -258,6 +276,7 @@ export const ERROR_CATALOG = Object.freeze({
 
 export const SERVER_CODE_MAP = Object.freeze({
   AUTH_REQUIRED: "PIT-AUTH-001",
+  EMAIL_VERIFICATION_REQUIRED: "PIT-AUTH-005",
   AUTH_INVALID: "PIT-AUTH-003",
   FORBIDDEN: "PIT-AUTH-002",
   FAN_CLUB_MEMBERSHIP_REQUIRED: "PIT-CHAT-001",

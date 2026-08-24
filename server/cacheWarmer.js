@@ -17,6 +17,7 @@
 // clock are injectable so the accounting is testable without a real key.
 
 import { db, ytStmts, normName } from "./db.js";
+import { privateErrorLabel } from "./errors.js";
 import {
   pruneExpiredProviderData,
   resolveYouTubeTrack,
@@ -42,7 +43,7 @@ export function isCacheWarmSchedulerEnabled(env = process.env) {
 // promise, or even a broken error reporter can never become an unhandled
 // rejection that takes down the web process.
 export async function runCacheWarmJobSafely(job, report = (error) => {
-  console.error("[pit] scheduled catalogue enrichment failed safely:", error);
+  console.error(`[pit] scheduled catalogue enrichment failed safely cause=${privateErrorLabel(error)}`);
 }) {
   try {
     await job();
@@ -260,14 +261,14 @@ export function startCacheWarmScheduler({
       const wd = await backfillChannelsFromWikidata({});
       if (wd.stored) console.log(`[pit] wikidata channels: ${wd.stored} discovered free (of ${wd.considered} considered).`);
     } catch (error) {
-      console.log(`[pit] wikidata channel backfill skipped: ${error?.message || error}`);
+      console.log(`[pit] wikidata channel backfill skipped cause=${privateErrorLabel(error)}`);
     }
     if (youtubeConfigured) {
       try {
         const stats = await warmYouTubeCache({ budget });
         console.log(`[pit] cache warm: ${stats.resolved} resolved, ${stats.skipped} fresh cache rows, ${stats.failed} deferred/unmatched, ~${stats.spent} general units.`);
       } catch (error) {
-        console.log(`[pit] cache warm failed: ${error?.message || error}`);
+        console.log(`[pit] cache warm failed cause=${privateErrorLabel(error)}`);
       }
     }
     markRanToday();

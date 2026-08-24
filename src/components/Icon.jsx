@@ -126,6 +126,14 @@ function paths(name, { stroke, solid, color, filled }) {
           <Line x1="3" y1="10" x2="21" y2="10" {...stroke} />
         </>
       );
+    case "archive":
+      return (
+        <>
+          <Rect x="3" y="5" width="18" height="16" rx="2" {...stroke} />
+          <Path d="M2 5h20V2H2v3z" {...stroke} />
+          <Line x1="9" y1="10" x2="15" y2="10" {...stroke} />
+        </>
+      );
     case "ticket":
       return (
         <>

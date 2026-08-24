@@ -14,7 +14,14 @@ const {
   pauseCampaign,
   resumableCampaigns,
 } = await import("./emailQueue.js");
-const { createEmailCampaignScheduler } = await import("./emailCampaignScheduler.js");
+const { createEmailCampaignScheduler, emailCampaignRecoveryEnabled } = await import("./emailCampaignScheduler.js");
+
+test("hosted campaign recovery fails closed until an operator explicitly enables it", () => {
+  assert.equal(emailCampaignRecoveryEnabled({ NODE_ENV: "production" }), false);
+  assert.equal(emailCampaignRecoveryEnabled({ RENDER: "true", EMAIL_CAMPAIGN_RECOVERY_ENABLED: "false" }), false);
+  assert.equal(emailCampaignRecoveryEnabled({ NODE_ENV: "production", EMAIL_CAMPAIGN_RECOVERY_ENABLED: "true" }), true);
+  assert.equal(emailCampaignRecoveryEnabled({ NODE_ENV: "development" }), true);
+});
 
 let sequence = 0;
 
@@ -268,9 +275,11 @@ test("scheduler failures are contained, sanitized, and observable", async () => 
 test("server startup and shutdown own the campaign recovery worker", () => {
   const source = readFileSync(new URL("./index.js", import.meta.url), "utf8");
   const startup = source.indexOf("emailCampaignScheduler = startEmailCampaignScheduler()");
+  const gate = source.indexOf("emailCampaignRecoveryEnabled()");
   const shutdown = source.indexOf("emailCampaignScheduler?.stop()");
   const databaseClose = source.indexOf("db.close()", shutdown);
   assert.ok(startup > source.indexOf("server.listen("), "recovery starts only after the HTTP server is ready");
+  assert.ok(gate > source.indexOf("server.listen(") && gate < startup, "hosted recovery is gated before the worker starts");
   assert.ok(shutdown > 0, "graceful shutdown stops future recovery ticks");
   assert.ok(databaseClose > shutdown, "the active bounded tick settles before the database closes");
 });

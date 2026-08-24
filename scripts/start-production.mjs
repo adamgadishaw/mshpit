@@ -8,6 +8,7 @@ import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { backupChildEnvironment } from "../server/backupScheduler.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..");
@@ -42,7 +43,9 @@ export function startupBackupPlan({ env = process.env, exists = existsSync } = {
 export function runStartupBackup({ env = process.env, spawn = spawnSync } = {}) {
   const result = spawn(process.execPath, [BACKUP_SCRIPT], {
     cwd: ROOT,
-    env,
+    // The pre-migration path gets the same least-privilege environment as the
+    // scheduled backup worker—never admin, mail, provider, or media secrets.
+    env: backupChildEnvironment(env),
     stdio: "inherit",
   });
   if (result.error) throw new Error("The pre-migration backup process could not start.", { cause: result.error });

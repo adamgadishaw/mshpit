@@ -31,6 +31,7 @@ let drainTail = Promise.resolve();
 
 const RECIPIENT_SKIP_REASONS = new Set([
   "opted-out",
+  "no-consent",
   "banned",
   "no-such-user",
   "no-address",
@@ -45,7 +46,8 @@ function recipientRows(audience) {
   return db.prepare(
     `SELECT id, email FROM users
      WHERE email IS NOT NULL AND email <> ''
-       AND is_banned = 0 AND marketing_opt_out = 0 ${clause}
+       AND is_banned = 0 AND marketing_opt_out = 0
+       AND marketing_consent_at IS NOT NULL AND email_verified_at > 0 ${clause}
      ORDER BY created_at, id`
   ).all();
 }

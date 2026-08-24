@@ -14,7 +14,16 @@ const PAGE = 8; // load the feed in pages, like the big apps - never all at once
 export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, accountId = null, homeCity, unread = 0, notifUnread = 0, newUser = false, artistWorkspaceAvailable = false, hideHeaderActions = false, onLoadMore, hasMore = false, loadingMore = false, onOpen, onImpression, onDwell, onNotInterested, onUndoNotInterested, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onOpenClips, onReport, onEdit, onOpenPhotos, onPlay, onRemoveMyPostTag, onLogShow, onManageProfile }) {
   const { width } = useWindowDimensions();
   const phone = width < 700;
-  const [filter, setFilter] = useState(() => normalizeFeedFilter(load(feedFilterStorageKey(accountId), "everyone"), { loggedIn })); // following | local | everyone
+  const filterScope = feedFilterStorageKey(accountId);
+  const [filterState, setFilterState] = useState(() => ({
+    scope: filterScope,
+    value: normalizeFeedFilter(load(filterScope, "everyone"), { loggedIn }),
+  }));
+  // Account props change before passive effects run. Project the new account's
+  // persisted choice during that transition so A's preference never flashes for B.
+  const filter = filterState.scope === filterScope
+    ? filterState.value
+    : normalizeFeedFilter(load(filterScope, "everyone"), { loggedIn }); // following | local | everyone
   const [count, setCount] = useState(PAGE);
   const [undoItem, setUndoItem] = useState(null);
   const [undoBusy, setUndoBusy] = useState(false);
@@ -33,12 +42,14 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
   analyticsRef.current = { surface, onImpression, onDwell };
 
   useEffect(() => {
-    setFilter(normalizeFeedFilter(load(feedFilterStorageKey(accountId), "everyone"), { loggedIn }));
+    setFilterState((current) => current.scope === filterScope
+      ? current
+      : { scope: filterScope, value: normalizeFeedFilter(load(filterScope, "everyone"), { loggedIn }) });
     setCount(PAGE);
     setUndoItem(null);
     setUndoError(null);
     setVisibleMediaPostIds(new Set());
-  }, [accountId, loggedIn]);
+  }, [filterScope, loggedIn]);
 
   const onViewableItemsChanged = useRef(({ changed }) => {
     const at = Date.now();
@@ -78,8 +89,8 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
     }
     visibleSince.current.clear();
     setVisibleMediaPostIds(new Set());
-    setFilter(f);
-    save(feedFilterStorageKey(accountId), f);
+    setFilterState({ scope: filterScope, value: f });
+    save(filterScope, f);
     setCount(PAGE);
   };
   const loadMore = async () => {

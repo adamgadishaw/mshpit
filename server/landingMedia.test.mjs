@@ -3,17 +3,20 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
+import sharp from "sharp";
 
 const dataDir = mkdtempSync(join(tmpdir(), "pit-landing-media-"));
 process.env.PIT_DATA_DIR = dataDir;
 process.env.MEDIA_PUBLIC_BASE_URL = "https://media.example.com/assets";
 process.env.MEDIA_ENDPOINT = "https://storage.example.com";
 process.env.MEDIA_BUCKET = "pit-media";
+process.env.MEDIA_SOURCE_BUCKET = "pit-media-private";
 process.env.MEDIA_REGION = "auto";
 process.env.MEDIA_ACCESS_KEY_ID = "test-access";
 process.env.MEDIA_SECRET_ACCESS_KEY = "test-secret";
 
 const { db, q } = await import("./db.js");
+const { hashPassword } = await import("./auth.js");
 const { routes } = await import("./api.js");
 const { hasTrustedLandingImage, projectLandingMedia, trustedLandingImageUrl } = await import("./landingMedia.js");
 const { createMediaAsset, createMediaVariant, finalizeMediaAsset, finalizeMediaVariant } = await import("./mediaAssets.js");
@@ -54,17 +57,51 @@ function insertPost(id, authorId, overrides = {}) {
 }
 
 let stableImageSequence = 0;
+function verifiedImageStorage(sourceBytes, contentType) {
+  const sourceEtag = `"source-${sourceBytes.length}"`;
+  const deliveryEtag = `"delivery-${sourceBytes.length}"`;
+  let delivery = null;
+  return async (url, options = {}) => {
+    const method = String(options.method || "GET").toUpperCase();
+    const publicDelivery = new URL(url).pathname.includes("/pit-media/users/");
+    if (method === "PUT") {
+      if (!publicDelivery) return { status: 405, headers: new Headers() };
+      if (delivery) return { status: 412, headers: new Headers() };
+      delivery = Buffer.from(options.body || []);
+      return { status: 200, headers: new Headers({ etag: deliveryEtag }) };
+    }
+    const selected = publicDelivery ? delivery : sourceBytes;
+    if (!selected) return { status: 404, headers: new Headers() };
+    const etag = publicDelivery ? deliveryEtag : sourceEtag;
+    const headers = new Headers({
+      "content-length": String(selected.length),
+      "content-type": contentType,
+      etag,
+    });
+    if (method === "HEAD") return { status: 200, headers };
+    if (method !== "GET") return { status: 405, headers: new Headers() };
+    if (new Headers(options.headers || {}).get("if-match") !== etag) {
+      return { status: 412, headers: new Headers() };
+    }
+    return new Response(selected, { status: 200, headers });
+  };
+}
+
 async function stablePostImage(owner) {
   const sequence = String(++stableImageSequence).padStart(4, "0");
-  const sourceBytes = 12_000 + stableImageSequence;
-  const renderBytes = 8_000 + stableImageSequence;
+  const sourceBytes = await sharp({
+    create: { width: 120, height: 150, channels: 3, background: "#901040" },
+  }).jpeg().toBuffer();
+  const renderBytes = await sharp({
+    create: { width: 108, height: 135, channels: 3, background: "#c02070" },
+  }).webp().toBuffer();
   const source = createMediaAsset(db, {
     ownerId: owner.id,
     body: {
       clientAssetId: `landing-source-${sequence}`,
       purpose: "post",
       contentType: "image/jpeg",
-      fileSize: sourceBytes,
+      fileSize: sourceBytes.length,
       name: `landing-${sequence}.jpg`,
     },
     assetId: `ma_landingasset${sequence}xxxxxxxx`,
@@ -72,11 +109,8 @@ async function stablePostImage(owner) {
   await finalizeMediaAsset(db, {
     ownerId: owner.id,
     assetId: source.asset.id,
-    body: { width: 1_200, height: 1_500, editRecipe: {} },
-    fetchImpl: async () => ({
-      status: 200,
-      headers: { get: (name) => String(name).toLowerCase() === "content-length" ? String(sourceBytes) : "image/jpeg" },
-    }),
+    body: { width: 120, height: 150, editRecipe: {} },
+    fetchImpl: verifiedImageStorage(sourceBytes, "image/jpeg"),
   });
   const render = createMediaVariant(db, {
     ownerId: owner.id,
@@ -85,22 +119,19 @@ async function stablePostImage(owner) {
       clientVariantId: `landing-render-${sequence}`,
       role: "render",
       contentType: "image/webp",
-      fileSize: renderBytes,
+      fileSize: renderBytes.length,
       name: `landing-${sequence}.webp`,
     },
     variantId: `mv_landingrender${sequence}xxxxxx`,
   });
-  await finalizeMediaVariant(db, {
+  const finalized = await finalizeMediaVariant(db, {
     ownerId: owner.id,
     assetId: source.asset.id,
     variantId: render.variant.id,
-    body: { width: 1_080, height: 1_350 },
-    fetchImpl: async () => ({
-      status: 200,
-      headers: { get: (name) => String(name).toLowerCase() === "content-length" ? String(renderBytes) : "image/webp" },
-    }),
+    body: { width: 108, height: 135 },
+    fetchImpl: verifiedImageStorage(renderBytes, "image/webp"),
   });
-  return { assetId: source.asset.id, url: render.upload.publicUrl };
+  return { assetId: source.asset.id, url: finalized.variant.url };
 }
 
 test("landing image URLs are HTTPS, browser-compatible, PIT-owned author media", () => {
@@ -294,7 +325,8 @@ test("homepage consent is default-off, owner-only, idempotent, and privacy-norma
   assert.equal(restoredEdit.post.photosPublic, true);
   assert.equal(restoredEdit.post.landingShowcase, true);
 
-  const exported = routes["GET /api/me/export"]({ user: owner, ip: "landing-consent-export" });
+  db.prepare("UPDATE users SET pass_hash=? WHERE id=?").run(hashPassword("landing-export-password1"), owner.id);
+  const exported = routes["POST /api/me/export"]({ user: q.userById.get(owner.id), ip: "landing-consent-export", body: { password: "landing-export-password1" } });
   const exportedPost = exported.posts.find((post) => post.id === first.id);
   assert.equal(exportedPost.photosPublic, true);
   assert.equal(exportedPost.landingShowcase, true);

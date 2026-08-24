@@ -14,6 +14,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { getArtistsByIds, spotifyConfigured } from "./lib/spotify.mjs";
+import { privateErrorLabel } from "../server/errors.js";
 
 const OUT = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "seed", "catalog.generated.json");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -37,7 +38,7 @@ async function main() {
   for (let i = 0; i < ids.length; i += 50) {
     const chunk = ids.slice(i, i + 50);
     let map = {};
-    try { map = await getArtistsByIds(chunk); } catch (e) { console.warn(`  ! chunk ${i}: ${e.message}`); }
+    try { map = await getArtistsByIds(chunk); } catch (e) { console.warn(`  ! chunk ${i}: ${privateErrorLabel(e)}`); }
     // Restricted (dev-mode) Spotify apps 403 the batch /artists endpoint and strip
     // popularity everywhere. Detect that on the first chunk and stop with guidance
     // instead of grinding through the whole catalog for nothing.

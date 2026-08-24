@@ -3,7 +3,9 @@ import { existsSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { runBackgroundJob } from "./backgroundJobCoordinator.js";
+import { privateErrorLabel } from "./errors.js";
 import { boundedBackupTimeout } from "../scripts/backup-db-verification.mjs";
+import { privateBackupStorageConfig } from "./backupStorageSecurity.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..");
@@ -45,10 +47,25 @@ export function shouldRunScheduledBackup(lastBackupAt, now = Date.now(), interva
 }
 
 export function offhostBackupConfigured(env = process.env) {
-  if (!UPLOAD_KEYS.every((key) => String(env?.[key] || "").trim())) return false;
-  const backupBucket = String(env.BACKUP_S3_BUCKET).trim();
-  const publicMediaBucket = String(env.MEDIA_BUCKET || "").trim();
-  return !publicMediaBucket || backupBucket !== publicMediaBucket;
+  return UPLOAD_KEYS.every((key) => String(env?.[key] || "").trim())
+    && !!privateBackupStorageConfig(env);
+}
+
+const BACKUP_CHILD_KEYS = new Set([
+  "NODE_ENV", "PIT_DATA_DIR", "BACKUP_DIR", "BACKUP_KEEP",
+  "BACKUP_UPLOAD_TIMEOUT_MS", "BACKUP_S3_ENDPOINT", "BACKUP_S3_BUCKET",
+  "BACKUP_S3_REGION", "BACKUP_S3_ACCESS_KEY_ID", "BACKUP_S3_SECRET_ACCESS_KEY",
+  "MEDIA_BUCKET", "PATH", "Path", "PATHEXT", "SystemRoot", "WINDIR",
+  "TEMP", "TMP", "HOME", "USERPROFILE",
+]);
+
+export function backupChildEnvironment(env = process.env) {
+  const child = {};
+  for (const [key, value] of Object.entries(env || {})) {
+    if (BACKUP_CHILD_KEYS.has(key) && value != null) child[key] = String(value);
+  }
+  child.BACKUP_DIR = backupDirectory(env);
+  return child;
 }
 
 export function scheduledBackupArgs(env = process.env) {
@@ -60,7 +77,9 @@ export function runScheduledBackup({ env = process.env, spawnProcess = spawn, pr
     // Make the child and the freshness probe agree on the same persistent path.
     // Without this explicit env value the child historically defaulted to the
     // repo's ephemeral /backups directory while the scheduler inspected /data.
-    const childEnv = { ...env, BACKUP_DIR: backupDirectory(env) };
+    // Do not hand the backup subprocess unrelated production credentials such
+    // as admin, email, maps, ticketing, media-write, or verifier secrets.
+    const childEnv = backupChildEnvironment(env);
     const child = spawnProcess(process.execPath, scheduledBackupArgs(env), {
       cwd: ROOT,
       env: childEnv,
@@ -103,7 +122,7 @@ export function runScheduledBackup({ env = process.env, spawnProcess = spawn, pr
 }
 
 export async function runBackupJobSafely(job, report = (error) => {
-  console.error("[pit] scheduled database backup failed safely:", error);
+  console.error(`[pit] scheduled database backup failed safely cause=${privateErrorLabel(error)}`);
 }) {
   try {
     await job();

@@ -21,6 +21,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync,
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { presignS3Request } from "../server/media.js";
+import { privateBackupStorageConfig, verifyPrivateBackupBucket } from "../server/backupStorageSecurity.js";
 import {
   backupRetentionCount,
   backupTableCounts,
@@ -51,13 +52,13 @@ async function upload(path, publishedName = basename(path)) {
   const need = ["BACKUP_S3_ENDPOINT", "BACKUP_S3_BUCKET", "BACKUP_S3_ACCESS_KEY_ID", "BACKUP_S3_SECRET_ACCESS_KEY"];
   const missing = need.filter((k) => !String(process.env[k] || "").trim());
   if (missing.length) throw new Error(`--upload needs ${missing.join(", ")}`);
-  const bucket = process.env.BACKUP_S3_BUCKET.trim();
-  // The guard that matters. A backup in the public media bucket is a breach.
-  if (bucket === String(process.env.MEDIA_BUCKET || "").trim()) {
-    throw new Error(`Refusing to upload: BACKUP_S3_BUCKET is the public media bucket (${bucket}). Use a separate private bucket.`);
-  }
-  const endpoint = new URL(process.env.BACKUP_S3_ENDPOINT.trim());
+  const config = privateBackupStorageConfig(process.env);
+  if (!config) throw new Error("Refusing off-host upload: private backup storage is not safely configured.");
+  const { endpoint, bucket } = config;
   const key = `db/${publishedName}`;
+  // Configuration labels are not proof of privacy. Fail before reading the
+  // database snapshot unless anonymous listing and object reads are denied.
+  await verifyPrivateBackupBucket({ env: process.env, objectKey: key });
   const body = readFileSync(path);
   const url = presignS3Request({
     method: "PUT",
@@ -74,8 +75,33 @@ async function upload(path, publishedName = basename(path)) {
     headers: { "Content-Length": String(body.byteLength) },
     signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
   });
-  if (!res.ok) throw new Error(`upload failed: ${res.status} ${(await res.text().catch(() => "")).slice(0, 200)}`);
-  return `${bucket}/${key}`;
+  if (!res.ok) {
+    // Provider bodies can echo object names or credential-adjacent request
+    // details. The status is sufficient for the scheduler's retry decision.
+    const error = new Error("Off-host backup upload failed.");
+    error.code = `HTTP_${res.status}`;
+    throw error;
+  }
+  // Re-check the exact uploaded key. If a provider policy changed between
+  // preflight and PUT, never report the copy as verified/private and attempt an
+  // immediate authenticated removal before surfacing the failure.
+  try {
+    await verifyPrivateBackupBucket({ env: process.env, objectKey: key });
+  } catch (privacyError) {
+    try {
+      const deleteUrl = presignS3Request({
+        method: "DELETE",
+        url: `${endpoint.origin}${endpoint.pathname.replace(/\/+$/, "")}/${bucket}/${key}`,
+        region: String(process.env.BACKUP_S3_REGION || "auto").trim(),
+        accessKeyId: process.env.BACKUP_S3_ACCESS_KEY_ID.trim(),
+        secretAccessKey: process.env.BACKUP_S3_SECRET_ACCESS_KEY.trim(),
+        expiresIn: 60,
+      });
+      await fetch(deleteUrl, { method: "DELETE", signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS) });
+    } catch {}
+    throw privacyError;
+  }
+  return key;
 }
 
 function prune() {
@@ -131,7 +157,7 @@ try {
 console.log(`snapshot  ${dest}`);
 console.log(`size      ${(bytes / 1048576).toFixed(2)} MB`);
 console.log(`verified  integrity_check ok  ${Object.entries(got).map(([k, v]) => `${k}=${v}`).join("  ")}`);
-if (uploadedAt) console.log(`uploaded  ${uploadedAt}`);
+if (uploadedAt) console.log("uploaded  verified private off-host copy");
 else console.log("offhost   skipped (pass --upload with BACKUP_S3_* set)");
 
 const { kept, dropped } = prune();

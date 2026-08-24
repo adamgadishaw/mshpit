@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { View, Text, StyleSheet, Pressable, ScrollView, Linking, Platform, useWindowDimensions } from "react-native";
+import { View, Text, StyleSheet, Pressable, ScrollView, Platform, useWindowDimensions } from "react-native";
 import { colors, mono, radius, shadow, space } from "../theme";
 import { useStore } from "../store";
 import ScreenHeader from "../components/ScreenHeader";
 import Icon from "./../components/Icon";
 import { exportCalendarEvents } from "../lib/calendarExport";
+import { openTicketLink } from "../lib/ticketLinks";
 
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const DOW = [
@@ -287,7 +288,7 @@ export default function CalendarScreen({ onClose, onOpen, onOpenArtist }) {
                   <Icon name="calendar" size={15} color={colors.textDim} />
                 </Pressable>
                 {ev.ticketUrl ? (
-                  <Pressable style={styles.ticketBtn} onPress={() => Linking.openURL(ev.ticketUrl).catch(() => setCalendarNotice({ ok: false, text: "Tickets could not be opened on this device." }))} hitSlop={6} accessibilityRole="link" accessibilityLabel={`Tickets for ${ev.artist || "show"}`}>
+                  <Pressable style={styles.ticketBtn} onPress={() => { void openTicketLink(ev.ticketUrl, { onFailure: () => setCalendarNotice({ ok: false, text: "Tickets could not be opened on this device." }) }); }} hitSlop={6} accessibilityRole="link" accessibilityLabel={`Tickets for ${ev.artist || "show"}`}>
                     <Text style={styles.ticketTxt}>Tickets</Text>
                   </Pressable>
                 ) : null}

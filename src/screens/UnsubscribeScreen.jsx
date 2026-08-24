@@ -9,11 +9,11 @@ import { api } from "../lib/api";
 export default function UnsubscribeScreen({ token, onDone }) {
   const [state, setState] = useState("asking");
 
-  const submit = async (resubscribe) => {
+  const submit = async () => {
     setState("working");
     try {
-      await api("/api/unsubscribe", { method: "POST", body: { token, resubscribe }, context: "Updating email preferences" });
-      setState(resubscribe ? "resubscribed" : "done");
+      await api("/api/unsubscribe", { method: "POST", body: { token }, context: "Updating email preferences" });
+      setState("done");
     } catch {
       setState("failed");
     }
@@ -28,7 +28,7 @@ export default function UnsubscribeScreen({ token, onDone }) {
             <Text style={styles.p}>
               You'll still get account email, like password resets. Those aren't announcements and can't be turned off.
             </Text>
-            <Pressable style={[styles.btn, styles.btnPrimary]} onPress={() => submit(false)}>
+            <Pressable style={[styles.btn, styles.btnPrimary]} onPress={submit}>
               <Text style={styles.btnTxtPrimary}>Unsubscribe</Text>
             </Pressable>
             <Pressable style={styles.btn} onPress={onDone}>
@@ -42,19 +42,7 @@ export default function UnsubscribeScreen({ token, onDone }) {
         {state === "done" && (
           <>
             <Text style={styles.h}>Done, you're unsubscribed.</Text>
-            <Text style={styles.p}>You won't get announcement email from Pit any more.</Text>
-            <Pressable style={styles.btn} onPress={() => submit(true)}>
-              <Text style={styles.btnTxt}>Actually, resubscribe me</Text>
-            </Pressable>
-            <Pressable style={[styles.btn, styles.btnPrimary]} onPress={onDone}>
-              <Text style={styles.btnTxtPrimary}>Back to Pit</Text>
-            </Pressable>
-          </>
-        )}
-
-        {state === "resubscribed" && (
-          <>
-            <Text style={styles.h}>You're back on the list.</Text>
+            <Text style={styles.p}>You won't get announcement email from Pit any more. To opt back in securely, sign in and use Email announcements in Settings.</Text>
             <Pressable style={[styles.btn, styles.btnPrimary]} onPress={onDone}>
               <Text style={styles.btnTxtPrimary}>Back to Pit</Text>
             </Pressable>

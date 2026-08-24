@@ -17,6 +17,7 @@ import {
   VIDEO_VERIFIER_PIPELINE_VERSION,
   VIDEO_VERIFIER_PROTOCOL_VERSION,
 } from "./videoVerifierProtocol.js";
+import { verifyPrivateMediaBucketIsolation } from "./media.js";
 
 const SECRET = "video-verifier-test-secret-that-is-at-least-thirty-two-bytes";
 const ENV = Object.freeze({
@@ -39,6 +40,11 @@ const STRUCTURAL = Object.freeze({
   codedHeight: 1_088,
   sampleCount: 300,
   durationMs: 10_000,
+});
+
+await verifyPrivateMediaBucketIsolation({
+  env: ENV,
+  fetchImpl: async () => ({ status: 403 }),
 });
 
 afterEach(() => resetVideoVerifierStateForTests());

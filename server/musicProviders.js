@@ -613,7 +613,14 @@ export async function findDeezerArtistCandidates(name, { fetchImpl = fetch, limi
     .map((a) => ({ id: a.id, name: a.name, fans: Number(a.nb_fan) || 0, albums: Number(a.nb_album) || 0, photo: a.picture_medium || a.picture || null }));
 }
 
-export async function getDeezerDiscography(name, { fetchImpl = fetch, deezerId = null } = {}) {
+export async function getDeezerDiscography(name, {
+  fetchImpl = fetch,
+  deezerId = null,
+  ephemeralSelection = false,
+} = {}) {
+  if (deezerId && !ephemeralSelection) {
+    throw new TypeError("A caller-selected Deezer identity must be request-scoped");
+  }
   // v6 retires every discography resolved before the impostor fix below. Those
   // rows are served straight from cache for 24 hours, so without this bump the
   // wrong artist (Korn matched a 4.5k-fan impostor with one track) keeps being
@@ -629,7 +636,7 @@ export async function getDeezerDiscography(name, { fetchImpl = fetch, deezerId =
     const identity = await findDeezerArtist(name, { preferredId: deezerId, hintId: storedDeezerId(name), fetchImpl });
     if (!identity) return cached ? { ...cached.data, status: "stale", stale: true } : { albums: [], status: "not_found", stale: false };
     const artist = identity.artist;
-    persistDeezerIdentity(name, artist.id);
+    if (!ephemeralSelection) persistDeezerIdentity(name, artist.id);
     // A deep popular-songs chart (up to 25) so the artist page isn't cut off at
     // ~10. Resolved live for ANY artist, not just ones the seeder pre-enriched.
     const topData = await providerJson("Deezer", `https://api.deezer.com/artist/${artist.id}/top?limit=25`, { fetchImpl });
@@ -674,7 +681,7 @@ export async function getDeezerDiscography(name, { fetchImpl = fetch, deezerId =
     const genreCounts = {};
     for (const al of fullAlbums) { const g = al.genre && al.genre.trim(); if (g) genreCounts[g] = (genreCounts[g] || 0) + 1; }
     const derivedGenre = Object.entries(genreCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
-    if (derivedGenre) persistDeezerIdentity(name, artist.id, derivedGenre);
+    if (derivedGenre && !ephemeralSelection) persistDeezerIdentity(name, artist.id, derivedGenre);
     const data = {
       artist: { id: artist.id, name: artist.name, fans: artist.nb_fan, photo: artist.picture_xl || artist.picture_big || null, genre: derivedGenre || null },
       albums: fullAlbums,
@@ -683,7 +690,9 @@ export async function getDeezerDiscography(name, { fetchImpl = fetch, deezerId =
       identity: { confidence: identity.confidence, reason: identity.reason },
     };
     // Empty/partial provider failures never replace a last-known-good catalogue.
-    if (data.albums.length || data.topTracks.length) writeProviderCache(key, data, DEEZER_DISCOGRAPHY_TTL_MS);
+    if (!ephemeralSelection && (data.albums.length || data.topTracks.length)) {
+      writeProviderCache(key, data, DEEZER_DISCOGRAPHY_TTL_MS);
+    }
     return { ...data, status: "fresh", stale: false };
   } catch (error) {
     if (cached) return { ...cached.data, status: "stale", stale: true };

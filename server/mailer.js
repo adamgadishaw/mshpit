@@ -24,6 +24,15 @@ export function mailConfigured() {
   return !!process.env.RESEND_API_KEY && parseMailFrom(process.env.MAIL_FROM).ok;
 }
 
+// Provider/network failures can carry request payloads, addresses, URLs, or
+// credentials in their human-readable message. Hosted logs only need a bounded
+// failure class for diagnosis and alert grouping.
+export function mailFailureLabel(error) {
+  const name = String(error?.name || "Error").replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 40) || "Error";
+  const code = String(error?.code || "").replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 40);
+  return code ? `${name}/${code}` : name;
+}
+
 // Which half of the configuration is missing. Reports booleans and the public
 // sending domain only; never the key, and never the raw env value.
 export function mailDiagnostics() {
@@ -59,13 +68,16 @@ export async function sendEmail({ to, subject, html, text, idempotencyKey }) {
       signal: AbortSignal.timeout(10000),
     });
     if (!r.ok) {
-      const d = await r.text().catch(() => "");
       // 403 here is nearly always an unverified domain or a MAIL_FROM whose domain
       // isn't the one verified in Resend. Name that case so the log is actionable.
-      const hint = r.status === 403 ? ` (check that ${parseMailFrom(process.env.MAIL_FROM).domain} is verified in Resend)` : "";
-      console.warn("[mail] send failed", r.status, d.slice(0, 200) + hint);
+      // Never log the provider body: it may echo the recipient or authored mail.
+      const reason = r.status === 403 ? "sender-not-verified" : "provider-rejected";
+      console.warn(`[mail] send failed status=${r.status} reason=${reason}`);
       return { ok: false, sent: false, reason: r.status === 403 ? "sender-not-verified" : "send-failed" };
     }
     return { ok: true, sent: true };
-  } catch (e) { console.warn("[mail] error", e?.message); return { ok: false, sent: false, reason: "error" }; }
+  } catch (e) {
+    console.warn(`[mail] transport error cause=${mailFailureLabel(e)}`);
+    return { ok: false, sent: false, reason: "error" };
+  }
 }

@@ -44,9 +44,11 @@ test("tag removal is injected through Root instead of deepening TicketStub's Sto
   assert.match(storeRead, /\blikeInfo\b/);
   assert.match(storeRead, /\bcommentsFor\b/);
   assert.match(app, /\bremoveMyPostTag,\s*\n\s*\} = useStore\(\)/);
-  assert.match(app, /<FeedScreen[\s\S]*?onRemoveMyPostTag=\{removeMyPostTag\}[\s\S]*?\/>/);
-  assert.match(app, /<PostScreen[^>]*onRemoveMyPostTag=\{removeMyPostTag\}/);
-  assert.match(app, /<ProfileScreen[^>]*onRemoveMyPostTag=\{removeMyPostTag\}/);
+  assert.match(app, /const removePostTag = \(postId\) => requireVerifiedMutation\("interact", \(\) => removeMyPostTag\(postId\)\)/,
+    "self-tag removal must pass through the verified mutation gate");
+  assert.match(app, /<FeedScreen[\s\S]*?onRemoveMyPostTag=\{removePostTag\}[\s\S]*?\/>/);
+  assert.match(app, /<PostScreen[^>]*onRemoveMyPostTag=\{removePostTag\}/);
+  assert.match(app, /<ProfileScreen[^>]*onRemoveMyPostTag=\{removePostTag\}/);
   assert.match(feed, /<TicketStub[\s\S]*?onRemoveMyPostTag=\{onRemoveMyPostTag\}[\s\S]*?\/>/);
   assert.match(postScreen, /<TicketStub[\s\S]*?onRemoveMyPostTag=\{onRemoveMyPostTag\}[\s\S]*?\/>/);
   assert.match(profile, /<TicketStub[\s\S]*?onRemoveMyPostTag=\{onRemoveMyPostTag\}/);

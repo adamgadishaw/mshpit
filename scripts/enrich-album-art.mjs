@@ -21,6 +21,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { privateErrorLabel } from "../server/errors.js";
 
 const UA = "PitConcertApp/0.1 (contact@example.com)";
 const OUT = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "seed", "catalog.generated.json");
@@ -92,7 +93,7 @@ async function main() {
         for (const g of groups) { g.art = `https://coverartarchive.org/release-group/${g.mbid}/front-250`; arts++; }
         a.albums = groups;
       }
-    } catch (e) { console.warn(`  ! ${a.name}: ${e.message}`); }
+    } catch (e) { console.warn(`  ! ${a.name}: ${privateErrorLabel(e)}`); }
     if (++done % 10 === 0) {
       console.log(`  …${done}/${keys.length} (${arts} covers found)`);
       await writeFile(OUT, JSON.stringify(cat, null, 2));

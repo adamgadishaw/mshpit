@@ -25,6 +25,7 @@ test("every public error has a stable code and complete support copy", () => {
 test("server failure codes normalize to stable PIT references", () => {
   const expected = {
     AUTH_REQUIRED: "PIT-AUTH-001",
+    EMAIL_VERIFICATION_REQUIRED: "PIT-AUTH-005",
     AUTH_INVALID: "PIT-AUTH-003",
     FORBIDDEN: "PIT-AUTH-002",
     FAN_CLUB_MEMBERSHIP_REQUIRED: "PIT-CHAT-001",

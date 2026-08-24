@@ -1,5 +1,5 @@
 import { api } from "./api";
-import { prepareMediaUploadAsset, uploadPreparedMediaAsset } from "./mediaUpload";
+import { isDurableMediaUrl, prepareMediaUploadAsset, uploadPreparedMediaAsset } from "./mediaUpload";
 import { finalizeMediaSourceV1 } from "./mediaAssetFinalize.mjs";
 import { mediaEditFingerprint, mediaImageRequiresRender, normalizeMediaEdit, videoEditRequiresExport } from "../domain/mediaEdit.mjs";
 import { mediaSourceClientAssetId, stableMediaUploadToken } from "../domain/mediaUploadIdentity.mjs";
@@ -50,7 +50,7 @@ async function createAndUploadVariant({
     });
   }
   onStage?.(role === "poster" ? "verifying-poster" : "verifying-render");
-  return apiCall(`/api/media/assets/${encodeURIComponent(assetId)}/variants/${encodeURIComponent(created.variant.id)}/finalize`, {
+  const finalized = await apiCall(`/api/media/assets/${encodeURIComponent(assetId)}/variants/${encodeURIComponent(created.variant.id)}/finalize`, {
     method: "POST",
     context: role === "poster" ? "Verifying the video cover" : "Verifying the edited photo",
     signal,
@@ -60,6 +60,20 @@ async function createAndUploadVariant({
       ...(role === "poster" ? { timeMs: Math.max(0, Math.round(Number(timeMs) || 0)) } : {}),
     },
   });
+  const sanitizedUrl = finalized?.variant?.url;
+  if (finalized?.variant?.status !== "verified" || !isDurableMediaUrl(sanitizedUrl)) {
+    throw mediaPipelineError("MEDIA_VARIANT_INVALID", "PIT did not return a verified media rendition.");
+  }
+  if (role === "render") {
+    if (finalized?.asset?.url && finalized.asset.url !== sanitizedUrl) {
+      throw mediaPipelineError("MEDIA_VARIANT_INVALID", "PIT returned mismatched photo rendition identities.");
+    }
+    return { ...finalized, asset: { ...finalized.asset, url: sanitizedUrl } };
+  }
+  if (finalized?.asset?.posterUrl && finalized.asset.posterUrl !== sanitizedUrl) {
+    throw mediaPipelineError("MEDIA_VARIANT_INVALID", "PIT returned mismatched video-cover identities.");
+  }
+  return { ...finalized, asset: { ...finalized.asset, posterUrl: sanitizedUrl } };
 }
 
 /**

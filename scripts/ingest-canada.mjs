@@ -17,6 +17,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { privateErrorLabel } from "../server/errors.js";
 
 const UA = "mshpit/1.0 (https://www.mshpit.com)";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -93,7 +94,7 @@ async function venuesForCity(c) {
       .sort((a, b) => (TYPE_RANK[a.type] ?? 4) - (TYPE_RANK[b.type] ?? 4))
       .slice(0, 16);
   } catch (e) {
-    console.warn(`  ! ${city}: ${e.message}`);
+    console.warn(`  ! ${city}: ${privateErrorLabel(e)}`);
     return [];
   }
 }

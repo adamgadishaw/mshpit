@@ -1,4 +1,6 @@
-import { db, artistStmts, publicArtist } from "./db.js";
+import { artistStmts, publicArtist } from "./db.js";
+import { visibleTourDateRows } from "./tourDateVisibility.js";
+import { projectedTourDateTicketUrl } from "../src/domain/ticketLinks.mjs";
 
 const norm = (value) => String(value || "").trim().toLowerCase();
 const radians = (degrees) => degrees * Math.PI / 180;
@@ -28,11 +30,11 @@ function publicEvent(row) {
     lat: row.lat,
     lng: row.lng,
     date: row.date,
-    ticketUrl: row.ticket_url,
+    ticketUrl: projectedTourDateTicketUrl(row),
     soldOut: !!row.sold_out,
     source: row.source,
-    releaseAt: 0,
-    createdBy: "import",
+    releaseAt: Number(row.release_at) || 0,
+    createdBy: row.owner_id || "import",
   };
 }
 
@@ -42,7 +44,10 @@ function publicEvent(row) {
 // instead of presenting three blank cards.
 export function discoverySidebar(viewer, { artistLimit = 8, eventLimit = 8, venueLimit = 8 } = {}) {
   const today = new Date().toISOString().slice(0, 10);
-  const rows = db.prepare("SELECT * FROM tour_dates WHERE date >= ? ORDER BY date ASC LIMIT 5000").all(today);
+  // Visibility is enforced inside the service before ranking or aggregation.
+  // Callers cannot inject a preselected row set and accidentally disclose an
+  // unreleased, blocked, or restricted owner's date through venue metadata.
+  const rows = visibleTourDateRows(viewer, { today });
   const home = viewer?.home_city
     ? { city: viewer.home_city, lat: finite(viewer.home_lat), lng: finite(viewer.home_lng) }
     : null;

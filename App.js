@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, Suspense } from "react";
+import { useState, useRef, useEffect, useLayoutEffect, Suspense } from "react";
 import { View, Text, StyleSheet, Pressable, SafeAreaView, Platform, StatusBar as RNStatusBar, Animated, ActivityIndicator, useWindowDimensions, BackHandler } from "react-native";
 import { StatusBar } from "expo-status-bar";
 import { SafeAreaProvider } from "react-native-safe-area-context";
@@ -38,6 +38,8 @@ const ProfileScreen = lazyWithRetry(() => import("./src/screens/ProfileScreen"),
 const EditProfileScreen = lazyWithRetry(() => import("./src/screens/EditProfileScreen"), "EditProfileScreen");
 const ReportScreen = lazyWithRetry(() => import("./src/screens/ReportScreen"), "ReportScreen");
 const ArtistScreen = lazyWithRetry(() => import("./src/screens/ArtistScreen"), "ArtistScreen");
+const ArtistArchiveScreen = lazyWithRetry(() => import("./src/screens/ArtistArchiveScreen"), "ArtistArchiveScreen");
+const TourArchiveScreen = lazyWithRetry(() => import("./src/screens/TourArchiveScreen"), "TourArchiveScreen");
 const ArtistHubScreen = lazyWithRetry(() => import("./src/screens/ArtistHubScreen"), "ArtistHubScreen");
 const EditArtistProfileScreen = lazyWithRetry(() => import("./src/screens/EditArtistProfileScreen"), "EditArtistProfileScreen");
 const VenueScreen = lazyWithRetry(() => import("./src/screens/VenueScreen"), "VenueScreen");
@@ -61,7 +63,7 @@ const BadgeLegendScreen = lazyWithRetry(() => import("./src/screens/BadgeLegendS
 const WelcomeScreen = lazyWithRetry(() => import("./src/screens/WelcomeScreen"), "WelcomeScreen");
 const FollowListScreen = lazyWithRetry(() => import("./src/screens/FollowListScreen"), "FollowListScreen");
 import LandingScreen from "./src/screens/LandingScreen";
-import { load, save } from "./src/lib/persist";
+import { load, remove, save } from "./src/lib/persist";
 import { api } from "./src/lib/api";
 import { getPendingImagePickerResult } from "./src/lib/imagePickerRecovery";
 import { lazyWithRetry } from "./src/lib/lazyWithRetry";
@@ -84,6 +86,13 @@ import { analyticsDwellBucket } from "./src/domain/analyticsPolicy.mjs";
 import { ownedPlayerEnvelope, playerQueueWithEntryIds, restoreOwnedPlayerState } from "./src/domain/player-session.mjs";
 import { playerLookupIntent } from "./src/domain/playback.mjs";
 import { profileManagementAction, publicIdentityTarget } from "./src/domain/artistWorkspace.mjs";
+import { prepareShowNavigation, showNavigationPostId } from "./src/domain/showNavigation.mjs";
+import { readSensitiveLinkToken, scrubSensitiveLinkToken } from "./src/domain/sensitiveLinkTokens.mjs";
+import { verifiedMutationDecision } from "./src/domain/emailVerificationUx.mjs";
+import {
+  PLAYER_POSITION_STORAGE_KEY,
+  PLAYER_STATE_STORAGE_KEY,
+} from "./src/domain/accountLocalPrivacy.mjs";
 
 const LEFT = [
   { key: "feed", label: "Feed", icon: "feed" },
@@ -100,7 +109,7 @@ const ANALYTICS_OVERLAY_KEYS = [
   ["reporting", "report"], ["editProfile", "profile_edit"], ["venueReview", "venue_review"], ["thread", "message_thread"],
   ["inbox", "inbox"], ["listeningHistory", "listening_history"], ["notifications", "activity"], ["calendar", "calendar"], ["clips", "clips"],
   ["profileId", "profile"], ["fanClub", "fan_club"], ["artistHub", "artist_hq"], ["artistPreview", "artist_preview"],
-  ["editArtist", "artist_edit"], ["artistName", "artist"],
+  ["editArtist", "artist_edit"], ["artistArchive", "artist_archive"], ["artistTour", "artist_tour"], ["artistName", "artist"],
   ["venueName", "venue"], ["nearby", "nearby"], ["venues", "venues"], ["fanClubs", "fan_clubs"],
   ["settings", "settings"], ["deleteAccount", "account_delete"], ["diagnostics", "diagnostics"], ["privacy", "privacy"],
   ["terms", "terms"], ["lounge", "lounge"], ["openLog", "show"], ["post", "post"], ["badges", "badges"],
@@ -200,7 +209,8 @@ function Root() {
   useEffect(() => {
     if (web) return;
     const top = stack[stack.length - 1];
-    save(ACTIVE_COMPOSER_KEY, isComposerFrame(top) ? top : null);
+    if (isComposerFrame(top)) save(ACTIVE_COMPOSER_KEY, top);
+    else remove(ACTIVE_COMPOSER_KEY);
   }, [web, stack]);
 
   // SDK 56 documents that Android may destroy MainActivity while the system
@@ -217,7 +227,7 @@ function Root() {
         if (!active) return;
         const frame = stackRef.current[stackRef.current.length - 1];
         if (!pickerOwnerMatchesComposer(owner, frame)) {
-          save(PENDING_COMPOSER_PICKER_KEY, null);
+          remove(PENDING_COMPOSER_PICKER_KEY);
           return;
         }
         // Android may restore the activity before it has published the picker
@@ -230,7 +240,7 @@ function Root() {
               .then((retry) => {
                 if (!active) return;
                 if (retry) setPendingComposerPicker({ ...owner, result: retry });
-                else save(PENDING_COMPOSER_PICKER_KEY, null);
+                else remove(PENDING_COMPOSER_PICKER_KEY);
               })
               .catch((error) => {
                 if (active) setPendingComposerPicker({ ...owner, result: { code: "PICKER_RECOVERY_FAILED", message: error?.message } });
@@ -244,7 +254,7 @@ function Root() {
         if (!active) return;
         const frame = stackRef.current[stackRef.current.length - 1];
         if (pickerOwnerMatchesComposer(owner, frame)) setPendingComposerPicker({ ...owner, result: { code: "PICKER_RECOVERY_FAILED", message: error?.message } });
-        else save(PENDING_COMPOSER_PICKER_KEY, null);
+        else remove(PENDING_COMPOSER_PICKER_KEY);
       });
     return () => { active = false; if (retryTimer) clearTimeout(retryTimer); };
   }, []);
@@ -295,9 +305,18 @@ function Root() {
   // Persisted so the player survives a reload (switching themes reloads the page):
   // the bar comes back with its queue instead of vanishing mid-listen.
   const playerAccountId = session?.id || null;
-  const [player, setPlayer] = useState(() => {
-    if (!web || !session?.id) return null;
-    return restoreOwnedPlayerState(load("pit.player.v2", null), session.id);
+  const [playerState, setPlayerState] = useState(() => ({
+    accountId: playerAccountId,
+    player: web && session?.id
+      ? restoreOwnedPlayerState(load(PLAYER_STATE_STORAGE_KEY, null), session.id)
+      : null,
+  }));
+  const playerStateIsScoped = playerState.accountId === playerAccountId;
+  const player = playerStateIsScoped ? playerState.player : null;
+  const setPlayer = (updater) => setPlayerState((current) => {
+    const scopedCurrent = current.accountId === playerAccountId ? current.player : null;
+    const next = typeof updater === "function" ? updater(scopedCurrent) : updater;
+    return { accountId: playerAccountId, player: next };
   });
   // The player starts COLLAPSED (a slim rail on desktop, hidden on mobile) and
   // opens itself the moment something plays; collapsing pauses (YouTube terms).
@@ -319,40 +338,61 @@ function Root() {
     document.head.appendChild(style);
   }, [web]);
 
-  const previousPlayerAccountRef = useRef(playerAccountId);
   useEffect(() => {
     if (!authReady) return;
-    if (previousPlayerAccountRef.current !== playerAccountId) {
-      previousPlayerAccountRef.current = playerAccountId;
-      const stored = web && playerAccountId ? load("pit.player.v2", null) : null;
-      setPlayer(restoreOwnedPlayerState(stored, playerAccountId));
+    if (playerState.accountId !== playerAccountId) {
+      const stored = web && playerAccountId ? load(PLAYER_STATE_STORAGE_KEY, null) : null;
+      setPlayerState({ accountId: playerAccountId, player: restoreOwnedPlayerState(stored, playerAccountId) });
       setPlayerMinimized(true);
     }
-  }, [authReady, playerAccountId, web]);
+  }, [authReady, playerAccountId, playerState.accountId, web]);
   useEffect(() => {
-    if (!web || !authReady) return;
-    save("pit.player", null); // scrub the legacy device-global queue
-    save("pit.player.v2", ownedPlayerEnvelope(playerAccountId, player));
-  }, [authReady, player, playerAccountId, web]);
+    if (!web || !authReady || !playerStateIsScoped) return;
+    remove("pit.player"); // scrub the legacy device-global queue
+    const envelope = player ? ownedPlayerEnvelope(playerAccountId, player) : null;
+    if (envelope) save(PLAYER_STATE_STORAGE_KEY, envelope);
+    else remove(PLAYER_STATE_STORAGE_KEY);
+  }, [authReady, player, playerAccountId, playerStateIsScoped, web]);
   const [acctOpen, setAcctOpen] = useState(false);
   // First-run welcome (Spotify + find-your-people). Armed at signup, shown once the
   // taste picker is closed so it survives the theme reload PickArtists can trigger.
   const [welcome, setWelcome] = useState(false);
-  // Password reset: if we arrived on an emailed ?reset=TOKEN link, show the set-new-
-  // password screen over everything until it's completed or cancelled.
-  const [resetToken, setResetToken] = useState(() => { try { return web ? new URLSearchParams(window.location.search).get("reset") : null; } catch { return null; } });
-  const clearResetUrl = () => { try { if (web) window.history.replaceState({}, "", window.location.pathname); } catch {} setResetToken(null); };
+  const [verificationPrompt, setVerificationPrompt] = useState(null);
+  useEffect(() => {
+    if (!session?.id || session.emailVerified !== false) setVerificationPrompt(null);
+  }, [session?.id, session?.emailVerified]);
+  // Reset links now put their bearer credential in the URL fragment so it never
+  // reaches the HTTP server/CDN. Read old query links during their short expiry,
+  // then scrub either form from browser history as soon as React mounts.
+  const scrubSensitiveUrl = (kind) => {
+    if (!web) return;
+    const nextUrl = scrubSensitiveLinkToken(window.location, kind);
+    try {
+      window.history.replaceState({}, "", nextUrl);
+    } catch {
+      // If history mutation is unavailable, a reload is preferable to leaving
+      // a reset/verification bearer credential visible in browser history.
+      window.location.replace(nextUrl);
+    }
+  };
+  const [resetToken, setResetToken] = useState(() => { try { return web ? readSensitiveLinkToken(window.location, "reset") : null; } catch { return null; } });
+  const scrubResetUrl = () => scrubSensitiveUrl("reset");
+  const clearResetUrl = () => { scrubResetUrl(); setResetToken(null); };
+  useEffect(() => { if (resetToken) scrubResetUrl(); }, [resetToken]);
   // Unsubscribe: the emailed link only carries the token here. Opting out is the
   // explicit tap below, so a mail scanner following the link cannot silently
   // unsubscribe someone.
-  const [unsubToken, setUnsubToken] = useState(() => { try { return web ? new URLSearchParams(window.location.search).get("unsubscribe") : null; } catch { return null; } });
-  const clearUnsubUrl = () => { try { if (web) window.history.replaceState({}, "", window.location.pathname); } catch {} setUnsubToken(null); };
+  const [unsubToken, setUnsubToken] = useState(() => { try { return web ? readSensitiveLinkToken(window.location, "unsubscribe") : null; } catch { return null; } });
+  const scrubUnsubUrl = () => scrubSensitiveUrl("unsubscribe");
+  const clearUnsubUrl = () => { scrubUnsubUrl(); setUnsubToken(null); };
+  useEffect(() => { if (unsubToken) scrubUnsubUrl(); }, [unsubToken]);
   // Email verification: same shape as unsubscribe, and for the same reason. The
   // emailed link only delivers the token; confirming is the explicit tap, so a
   // scanner that follows the link cannot verify an address for its owner.
-  const [verifyToken, setVerifyToken] = useState(() => { try { return web ? new URLSearchParams(window.location.search).get("verify") : null; } catch { return null; } });
-  const scrubVerifyUrl = () => { try { if (web) window.history.replaceState({}, "", window.location.pathname); } catch {} };
+  const [verifyToken, setVerifyToken] = useState(() => { try { return web ? readSensitiveLinkToken(window.location, "verify") : null; } catch { return null; } });
+  const scrubVerifyUrl = () => scrubSensitiveUrl("verify");
   const clearVerifyUrl = () => { scrubVerifyUrl(); setVerifyToken(null); };
+  useEffect(() => { if (verifyToken) scrubVerifyUrl(); }, [verifyToken]);
   // The concert opening screen: fresh visitors (and anyone who logs out) see it;
   // "browse as guest" or logging in dismisses it. Guest choice persists.
   const [landing, setLanding] = useState(() => (
@@ -391,7 +431,8 @@ function Root() {
     if (frame.artistName) return artistPath(frame.artistName);
     if (frame.venueName) return venuePath(frame.venueName);
     if (frame.post?.id) return showPath(frame.post.id);
-    if (frame.openLog?.id) return showPath(frame.openLog.id);
+    const showPostId = showNavigationPostId(frame.openLog);
+    if (showPostId) return showPath(showPostId);
     if (frame.profileId) {
       const user = userById?.(frame.profileId);
       return user?.handle ? profilePath(user.handle) : null;
@@ -435,11 +476,26 @@ function Root() {
     runAfterComposerClose(() => (transition === "replace" ? commitReplace(candidate) : commitGo(candidate)));
   };
   const replace = (frame) => runAfterComposerClose(() => commitReplace(frame));
+  const requireAuth = (fn) => (session ? fn() : go({ auth: true }));
+  // This is an affordance, not the security boundary: the server independently
+  // rejects every protected mutation. Intercepting here keeps people out of a
+  // composer that cannot publish and gives them a direct resend path instead of
+  // a generic permission error.
+  const requireVerifiedMutation = (intent, fn) => {
+    const decision = verifiedMutationDecision(session);
+    if (decision === "authenticate") { go({ auth: true }); return false; }
+    if (decision === "verify") { setVerificationPrompt(intent || "default"); return false; }
+    return fn();
+  };
   const profileAction = profileManagementAction(session);
   const profileDestination = profileAction.destination;
   const profileManagementFrame = () => (profileDestination === "artistHub" ? { artistHub: true } : { editProfile: true });
-  const openProfileManagement = () => go(profileManagementFrame());
-  const replaceProfileManagement = () => replace(profileManagementFrame());
+  const openProfileManagement = () => (profileDestination === "artistHub"
+    ? go(profileManagementFrame())
+    : requireVerifiedMutation("profile", () => go(profileManagementFrame())));
+  const replaceProfileManagement = () => (profileDestination === "artistHub"
+    ? replace(profileManagementFrame())
+    : requireVerifiedMutation("profile", () => replace(profileManagementFrame())));
   const publicIdentityFrame = (id, authoritativeUser = null) => {
     const targetId = String(id || "");
     const suppliedUser = authoritativeUser && String(authoritativeUser.id || "") === targetId
@@ -504,7 +560,7 @@ function Root() {
   const consumePendingComposerPicker = (requestId) => {
     setPendingComposerPicker((current) => (current?.requestId === requestId ? null : current));
     const stored = load(PENDING_COMPOSER_PICKER_KEY, null);
-    if (!requestId || stored?.requestId === requestId) save(PENDING_COMPOSER_PICKER_KEY, null);
+    if (!requestId || stored?.requestId === requestId) remove(PENDING_COMPOSER_PICKER_KEY);
   };
 
   const enter = () => {
@@ -518,12 +574,10 @@ function Root() {
     // Back to the slim idle rail: an empty expanded column is just dead space.
     setPlayerMinimized(true);
     if (web) {
-      save("pit.player", null);
-      save("pit.player.v2", ownedPlayerEnvelope(playerAccountId, null));
-      try {
-        window.localStorage.removeItem("pit.playpos");
-        window.localStorage.removeItem("pit.playpos.v2");
-      } catch {}
+      remove("pit.player");
+      remove(PLAYER_STATE_STORAGE_KEY);
+      remove("pit.playpos");
+      remove(PLAYER_POSITION_STORAGE_KEY);
     }
   };
   const commitExitToLanding = () => {
@@ -538,6 +592,36 @@ function Root() {
   const onAccountDeleted = () => {
     commitExitToLanding();
   };
+
+  // An origin-wide cookie can change in another tab. Store locks the private
+  // data plane while `/api/me` is checked; once that boundary is authoritative,
+  // discard any screen-local composer/viewer state before the A -> guest/B
+  // commit can paint. Routine A -> A focus validation leaves the workspace intact.
+  const confirmedNavigationAccountRef = useRef(session?.id || null);
+  useLayoutEffect(() => {
+    if (!authReady) return;
+    const nextAccountId = session?.id || null;
+    const previousAccountId = confirmedNavigationAccountRef.current;
+    confirmedNavigationAccountRef.current = nextAccountId;
+    if (!previousAccountId || previousAccountId === nextAccountId) return;
+
+    composerCloseGuardRef.current = null;
+    bypassNextPopRef.current = null;
+    setPendingComposerPicker(null);
+    remove(ACTIVE_COMPOSER_KEY);
+    remove(PENDING_COMPOSER_PICKER_KEY);
+    stopAndClearPlayback();
+    setPreview(null);
+    setWelcome(false);
+    setVerificationPrompt(null);
+    setAcctOpen(false);
+    setTab("feed");
+    setStack([{}]);
+    if (!nextAccountId) {
+      save("pit.entered", false);
+      setLanding(true);
+    }
+  }, [authReady, session?.id]);
 
   // Persist tab + nav stack so a reload lands exactly where you were.
   useEffect(() => { if (web) save("pit.tab", tab); }, [tab]);
@@ -654,9 +738,7 @@ function Root() {
     }, 3200);
   };
 
-  const requireAuth = (fn) => (session ? fn() : go({ auth: true }));
-
-  const openReport = (candidate) => requireAuth(() => {
+  const openReport = (candidate) => requireVerifiedMutation("report", () => {
     if (!candidate) return;
     const target = candidate.targetType && candidate.targetId
       ? candidate
@@ -719,17 +801,36 @@ function Root() {
   const openShow = (log, analytics = {}) => {
     if (!log) return;
     if (log.kind === "status") return openPost(log, analytics);
-    track("content_open", {
-      postId: log.id,
-      surface: analytics.surface || "direct",
-      ...(Number.isSafeInteger(analytics.position) ? { position: analytics.position } : {}),
-    });
-    track("view_show", { postId: log.id });
-    go({ openLog: log });
+    const navigation = prepareShowNavigation(log);
+    if (!navigation) return;
+    const { destination } = navigation;
+    if (navigation.kind === "performance") {
+      // Provider ids and opaque archive keys are not Pit post ids. Keep them out
+      // of post analytics; the categorical view measures performance-page use.
+      track("view_performance");
+    } else {
+      track("content_open", {
+        postId: navigation.postId,
+        surface: analytics.surface || "direct",
+        ...(Number.isSafeInteger(analytics.position) ? { position: analytics.position } : {}),
+      });
+      track("view_show", { postId: navigation.postId });
+    }
+    go({ openLog: destination });
   };
-  const openPostEditor = (log) => requireAuth(() => { if (log?.id) go({ editingPost: log }); });
+  const openPostEditor = (log) => requireVerifiedMutation("post", () => { if (log?.id) go({ editingPost: log }); });
   const openBadges = (userId) => go({ badges: { userId } });
   const openArtist = (name) => { track("view_artist"); go({ artistName: name }); };
+  const openArtistArchive = (name, artistKey = null) => {
+    if (!name) return;
+    track("view_artist_archive");
+    go({ artistArchive: { name, artistKey } });
+  };
+  const openArtistTour = (name, artistKey, tour) => {
+    if (!name || !tour?.key) return;
+    track("view_artist_tour");
+    go({ artistTour: { name, artistKey: artistKey || null, tourKey: tour.key, tourName: tour.name || "Live tour" } });
+  };
   const openVenue = (name) => { track("view_venue"); go({ venueName: name }); };
   const openFanClub = (artist) => go({ fanClub: artist });
   // Open the persistent top player. `queue` (optional) is a list of tracks so the
@@ -800,13 +901,14 @@ function Root() {
     }
     go({ photos: { images, index, postId } });
   };
-  const openAddToPlaylist = (track) => requireAuth(() => go({ addToPlaylist: track }));
+  const openAddToPlaylist = (track) => requireVerifiedMutation("playlist", () => go({ addToPlaylist: track }));
   const openFollowList = (userId, mode) => go({ followList: { userId, mode } });
-  const reviewShow = (log) => requireAuth(() => go({ logging: true, prefill: { artist: log.artist, artistKey: log.artistKey || null, venue: log.venue, city: log.city, date: log.date || null } }));
+  const reviewShow = (log) => requireVerifiedMutation("review", () => go({ logging: true, prefill: { artist: log.artist, artistKey: log.artistKey || null, venue: log.venue, city: log.city, date: log.date || null } }));
   const openInbox = () => requireAuth(() => go({ inbox: true }));
   const openNotifications = () => requireAuth(() => go({ notifications: true }));
   const openThread = (otherId) => requireAuth(() => go({ thread: otherId }));
-  const openVenueReview = (name) => requireAuth(() => go({ venueReview: name }));
+  const openVenueReview = (name) => requireVerifiedMutation("review", () => go({ venueReview: name }));
+  const removePostTag = (postId) => requireVerifiedMutation("interact", () => removeMyPostTag(postId));
 
   let overlay = null;
   // Auth is a modal that must win over any page overlay — requireAuth() can fire
@@ -815,7 +917,7 @@ function Root() {
   else if (nav.addToPlaylist) overlay = <PlaylistPickerScreen track={nav.addToPlaylist} onClose={back} />;
   else if (nav.followList) overlay = <FollowListScreen userId={nav.followList.userId} mode={nav.followList.mode} onClose={back} onOpenProfile={openProfile} />;
   else if (nav.auth) overlay = <AuthScreen initialMode={nav.authMode} onDone={(mode) => { if (mode === "signup") { if (web) save("pit.welcomePending", true); replace({ pickArtists: true }); } else back(); }} onCancel={back} />;
-  else if (nav.pickArtists) overlay = <PickArtistsScreen onDone={clear} onSkip={clear} />;
+  else if (nav.pickArtists) overlay = <PickArtistsScreen onDone={clear} onSkip={clear} onRequireVerification={() => setVerificationPrompt("playlist")} />;
   else if (nav.editingPost) overlay = <LogScreen user={session} editing={nav.editingPost} composerId={nav.composerId} initialDraftId={nav.draftId} onDraftIdentity={updateComposerDraftIdentity} pendingMedia={pendingComposerPicker?.composerId === nav.composerId ? pendingComposerPicker : null} onPendingMediaConsumed={consumePendingComposerPicker} onPost={onEditLog} onCancel={back} closeGuardRef={composerCloseGuardRef} />;
   else if (nav.logging) overlay = <LogScreen user={session} prefill={nav.prefill} defaultMode={nav.postMode || "show"} composerId={nav.composerId} initialDraftId={nav.draftId} onDraftIdentity={updateComposerDraftIdentity} pendingMedia={pendingComposerPicker?.composerId === nav.composerId ? pendingComposerPicker : null} onPendingMediaConsumed={consumePendingComposerPicker} onPost={onAddLog} onCancel={back} closeGuardRef={composerCloseGuardRef} />;
   else if (nav.reporting) overlay = <ReportScreen target={nav.reporting} onClose={back} />;
@@ -827,12 +929,14 @@ function Root() {
   else if (nav.notifications) overlay = <NotificationsScreen onClose={back} onOpenProfile={openProfile} onOpenThread={openThread} onOpen={openShow} onOpenPost={openPost} />;
   else if (nav.calendar) overlay = <CalendarScreen onClose={back} onOpen={openShow} onOpenArtist={openArtist} />;
   else if (ENABLE_CLIPS && nav.clips) overlay = <ClipsScreen onClose={back} onOpenPost={openPost} onOpenProfile={openProfile} onOpenArtist={openArtist} onRequireAuth={() => go({ auth: true })} />;
-  else if (nav.profileId) overlay = <ProfileScreen userId={nav.profileId} onClose={back} onOpenShow={openShow} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenVenue={openVenue} onManageProfile={openProfileManagement} onPreview={showPreview} onMessage={openThread} onReport={openReport} onEditPost={openPostEditor} onOpenPhotos={openPhotos} onPlay={openPlayer} onRemoveMyPostTag={removeMyPostTag} onOpenFollowList={openFollowList} onOpenBadges={openBadges} />;
+  else if (nav.profileId) overlay = <ProfileScreen userId={nav.profileId} onClose={back} onOpenShow={openShow} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenVenue={openVenue} onManageProfile={openProfileManagement} onPreview={showPreview} onMessage={openThread} onReport={openReport} onEditPost={openPostEditor} onOpenPhotos={openPhotos} onPlay={openPlayer} onRemoveMyPostTag={removePostTag} onOpenFollowList={openFollowList} onOpenBadges={openBadges} />;
   else if (nav.fanClub) overlay = <FanClubScreen artist={nav.fanClub} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} onReport={openReport} />;
-  else if (nav.artistHub) overlay = <ArtistHubScreen onClose={back} onPreview={(name) => name && go({ artistPreview: name })} onEditPage={(name) => name && go({ editArtist: name })} onEditAccount={() => go({ editProfile: true })} onTourDates={() => go({ bulk: true })} onCampaignPost={() => go({ logging: true, postMode: "campaign" })} onPlay={openPlayer} />;
-  else if (nav.artistPreview) overlay = <ArtistScreen artistName={nav.artistPreview} previewAsFan onClose={back} onOpenShow={openShow} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenPhotos={openPhotos} onOpenProfile={openProfile} onPlay={openPlayer} onAddToPlaylist={openAddToPlaylist} />;
+  else if (nav.artistHub) overlay = <ArtistHubScreen onClose={back} onPreview={(name) => name && go({ artistPreview: name })} onEditPage={(name) => name && requireVerifiedMutation("artist", () => go({ editArtist: name }))} onEditAccount={() => requireVerifiedMutation("profile", () => go({ editProfile: true }))} onTourDates={() => requireVerifiedMutation("artist", () => go({ bulk: true }))} onCampaignPost={() => requireVerifiedMutation("artist", () => go({ logging: true, postMode: "campaign" }))} onPlay={openPlayer} />;
+  else if (nav.artistPreview) overlay = <ArtistScreen artistName={nav.artistPreview} previewAsFan onClose={back} onOpenShow={openShow} onOpenArchive={openArtistArchive} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenPhotos={openPhotos} onOpenProfile={openProfile} onPlay={openPlayer} onAddToPlaylist={openAddToPlaylist} />;
   else if (nav.editArtist) overlay = <EditArtistProfileScreen artistName={nav.editArtist} onClose={back} />;
-  else if (nav.artistName) overlay = <ArtistScreen artistName={nav.artistName} onClose={back} onOpenShow={openShow} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenPhotos={openPhotos} onOpenProfile={openProfile} onManageArtistProfile={() => go({ artistHub: true })} onEditArtistProfile={(name) => name && go({ editArtist: name })} onPlay={openPlayer} onAddToPlaylist={openAddToPlaylist} onReport={openReport} />;
+  else if (nav.artistArchive) overlay = <ArtistArchiveScreen artistName={nav.artistArchive.name} artistKey={nav.artistArchive.artistKey} onClose={back} onOpenShow={openShow} onOpenTour={(tour) => openArtistTour(nav.artistArchive.name, nav.artistArchive.artistKey, tour)} onOpenPhotos={openPhotos} onOpenProfile={openProfile} />;
+  else if (nav.artistTour) overlay = <TourArchiveScreen artistName={nav.artistTour.name} artistKey={nav.artistTour.artistKey} tourKey={nav.artistTour.tourKey} tourName={nav.artistTour.tourName} onClose={back} onOpenShow={openShow} onOpenPost={openPost} onOpenPhotos={openPhotos} onOpenProfile={openProfile} />;
+  else if (nav.artistName) overlay = <ArtistScreen artistName={nav.artistName} onClose={back} onOpenShow={openShow} onOpenArchive={openArtistArchive} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenPhotos={openPhotos} onOpenProfile={openProfile} onManageArtistProfile={() => go({ artistHub: true })} onEditArtistProfile={(name) => name && requireVerifiedMutation("artist", () => go({ editArtist: name }))} onPlay={openPlayer} onAddToPlaylist={openAddToPlaylist} onReport={openReport} />;
   else if (nav.venueName) overlay = <VenueScreen venueName={nav.venueName} onClose={back} onOpenShow={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onReviewVenue={openVenueReview} onOpenProfile={openProfile} onOpenPhotos={openPhotos} onReport={openReport} />;
   else if (nav.nearby) overlay = <NearbyScreen onClose={back} onOpenVenue={openVenue} onOpenArtist={openArtist} />;
   else if (nav.venues) overlay = <VenuesScreen onClose={back} onOpenVenue={openVenue} />;
@@ -843,8 +947,8 @@ function Root() {
   else if (nav.privacy) overlay = <PrivacyScreen onClose={back} />;
   else if (nav.terms) overlay = <TermsScreen onClose={back} />;
   else if (nav.lounge) overlay = <LoungeScreen log={nav.lounge} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} onReport={openReport} />;
-  else if (nav.openLog) overlay = <ShowScreen log={nav.openLog} onClose={back} onPreview={showPreview} onReview={reviewShow} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenLounge={(log) => go({ lounge: log })} onOpenPost={openPost} onRequireAuth={() => go({ auth: true })} />;
-  else if (nav.post) overlay = <PostScreen log={nav.post} onClose={back} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenShow={openShow} onReport={openReport} onEdit={openPostEditor} onOpenPhotos={openPhotos} onPlay={openPlayer} onRemoveMyPostTag={removeMyPostTag} />;
+  else if (nav.openLog) overlay = <ShowScreen log={nav.openLog} onClose={back} onPreview={showPreview} onReview={reviewShow} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenArchive={openArtistArchive} onOpenVenue={openVenue} onOpenLounge={(log) => go({ lounge: log })} onOpenPost={openPost} onOpenPhotos={openPhotos} onRequireAuth={() => go({ auth: true })} />;
+  else if (nav.post) overlay = <PostScreen log={nav.post} onClose={back} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenShow={openShow} onReport={openReport} onEdit={openPostEditor} onOpenPhotos={openPhotos} onPlay={openPlayer} onRemoveMyPostTag={removePostTag} />;
   else if (nav.badges) overlay = <BadgeLegendScreen userId={nav.badges.userId} onClose={back} />;
   else if (nav.topRated) overlay = <TopRatedScreen onClose={back} onOpen={openShow} />;
   else if (nav.admin) overlay = <AdminScreen onClose={back} />;
@@ -863,8 +967,8 @@ function Root() {
       onManageProfile={replaceProfileManagement}
       onSettings={() => replace({ settings: true })}
       onAdmin={() => replace({ admin: true })}
-      onTourDates={() => replace({ bulk: true })}
-      onRequestArtist={() => replace({ reqArtist: true })}
+      onTourDates={() => requireVerifiedMutation("artist", () => replace({ bulk: true }))}
+      onRequestArtist={() => requireVerifiedMutation("artist", () => replace({ reqArtist: true }))}
       onLogin={() => replace({ auth: true })}
       onLogout={signOut}
       onBackToLanding={exitToLanding}
@@ -890,7 +994,7 @@ function Root() {
                   onLoadMore={loadMoreFeed}
                   hasMore={feedHasMore}
                   loadingMore={feedLoadingMore}
-                  onLogShow={() => requireAuth(() => go({ logging: true }))}
+                  onLogShow={() => requireVerifiedMutation("review", () => go({ logging: true }))}
                   onManageProfile={openProfileManagement}
                   artistWorkspaceAvailable={profileDestination === "artistHub"}
                   onOpenInbox={openInbox}
@@ -909,8 +1013,8 @@ function Root() {
                     durationBucket: analyticsDwellBucket(milliseconds),
                     surface,
                   })}
-                  onNotInterested={(log) => requireAuth(() => notInterested(log?.id))}
-                  onUndoNotInterested={(log) => requireAuth(() => undoNotInterested(log?.id))}
+                  onNotInterested={(log) => requireVerifiedMutation("interact", () => notInterested(log?.id))}
+                  onUndoNotInterested={(log) => requireVerifiedMutation("interact", () => undoNotInterested(log?.id))}
                   onComment={openPost}
                   onPreview={showPreview}
                   onOpenProfile={openProfile}
@@ -923,7 +1027,7 @@ function Root() {
                   onEdit={openPostEditor}
                   onOpenPhotos={openPhotos}
                   onPlay={openPlayer}
-                  onRemoveMyPostTag={removeMyPostTag}
+                  onRemoveMyPostTag={removePostTag}
                 />
               )}
               {tab === "search" && <SearchScreen onOpen={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenProfile={openProfile} onPlay={openPlayer} onAddToPlaylist={openAddToPlaylist} />}
@@ -933,7 +1037,7 @@ function Root() {
                   onLogin={() => go({ auth: true })}
                   onLogout={signOut}
                   onAdmin={() => go({ admin: true })}
-                  onRequestArtist={() => go({ reqArtist: true })}
+                  onRequestArtist={() => requireVerifiedMutation("artist", () => go({ reqArtist: true }))}
                   onManageProfile={openProfileManagement}
                   onSettings={() => go({ settings: true })}
                   onOpenProfile={openProfile}
@@ -963,7 +1067,7 @@ function Root() {
         notifUnread={session ? unreadNotifications() : 0}
         compact={width < 1500}
         onHome={() => switchTab("feed")}
-        onLog={() => requireAuth(() => go({ logging: true, postMode: "status" }))}
+        onLog={() => requireVerifiedMutation("post", () => go({ logging: true, postMode: "status" }))}
         onActivity={openNotifications}
         onInbox={openInbox}
         onClips={ENABLE_CLIPS ? () => go({ clips: true }) : undefined}
@@ -975,7 +1079,7 @@ function Root() {
       />
       <View style={styles.deskWrap}>
         <View style={styles.deskCenter}><Suspense fallback={<ScreenLoading />}>{overlay || tabScreens}</Suspense></View>
-        {showRightRail && <RightRail topArtists={topArtists} artistsAlphabetical={artistsAlphabetical} trendingVenues={trendingVenues} upcomingEvents={upcomingEvents} discoverySidebar={discoverySidebar} discoverySidebarStatus={discoverySidebarStatus} onOpenArtist={openArtist} onOpenVenue={openVenue} onFindVenues={() => go({ venues: true })} onOpenEvent={(t) => openArtist(t.artist)} />}
+        {showRightRail && <RightRail topArtists={topArtists} artistsAlphabetical={artistsAlphabetical} trendingVenues={trendingVenues} upcomingEvents={upcomingEvents} discoverySidebar={discoverySidebar} discoverySidebarStatus={discoverySidebarStatus} onOpenArtist={openArtist} onOpenVenue={openVenue} onFindVenues={() => go({ venues: true })} onOpenEvent={openShow} />}
       </View>
     </View>
   );
@@ -1042,7 +1146,7 @@ function Root() {
                     <View style={styles.tabbar}>
                       {LEFT.map((t) => <TabButton key={t.key} tab={t} active={tab} onPress={switchTab} />)}
                       <View style={styles.fabCol}>
-                        <Pressable style={styles.fab} onPress={() => requireAuth(() => go({ logging: true, postMode: "status" }))} accessibilityLabel="Make a post">
+                        <Pressable style={styles.fab} onPress={() => requireVerifiedMutation("post", () => go({ logging: true, postMode: "status" }))} accessibilityLabel="Make a post">
                           <Icon name="plus" size={26} color="#1A1206" strokeWidth={2.6} />
                         </Pressable>
                         <Text style={styles.fabLabel}>Post</Text>
@@ -1056,11 +1160,16 @@ function Root() {
           </View>
         )}
 
-        {/* Non-blocking: the account works unverified, this only asks. Rendered
-            as a sibling so it does not have to be threaded through both the wide
-            and mobile branches of the frame above. */}
+        {/* Browsing and privacy/account rights stay available, while protected
+            actions expand this persistent reminder into a verification gate. */}
         {status === "ok" && session && session.emailVerified === false && (
-          <VerifyEmailBanner email={session.email} topOffset={!wide && player ? 72 : undefined} onResend={resendEmailVerification} />
+          <VerifyEmailBanner
+            email={session.email}
+            topOffset={!wide && player ? 72 : undefined}
+            onResend={resendEmailVerification}
+            blockedAction={verificationPrompt}
+            onCloseGate={() => setVerificationPrompt(null)}
+          />
         )}
 
         <FeedbackHost onOpenDiagnostics={() => go({ diagnostics: true })} />

@@ -60,8 +60,8 @@ test("the shell keeps artist management, staff editing, and fan preview as disti
   assert.doesNotMatch(app, /<ArtistHubScreen[^;]+onOpenPublicPage=/);
   assert.match(hub, /title="Manage artist profile"[\s\S]*?onPress=\{\(\) => onEditPage\?\.\(artistName\)\}/);
   assert.match(hub, /title="Personal account"[\s\S]*?onPress=\{onEditAccount\}/);
-  assert.match(app, /onEditPage=\{\(name\) => name && go\(\{ editArtist: name \}\)\}/);
-  assert.match(app, /onEditAccount=\{\(\) => go\(\{ editProfile: true \}\)\}/);
+  assert.match(app, /onEditPage=\{\(name\) => name && requireVerifiedMutation\("artist", \(\) => go\(\{ editArtist: name \}\)\)\}/);
+  assert.match(app, /onEditAccount=\{\(\) => requireVerifiedMutation\("profile", \(\) => go\(\{ editProfile: true \}\)\)\}/);
   assert.match(artist, /onManageArtistProfile/);
   assert.match(artist, /onEditArtistProfile/);
   assert.match(artist, /ownsNamedArtistPage && !previewAsFan && onManageArtistProfile/);
@@ -69,7 +69,7 @@ test("the shell keeps artist management, staff editing, and fan preview as disti
   assert.match(artist, /<Text style=\{styles\.editTxt\}>Manage artist profile<\/Text>/);
   assert.match(artist, /<Text style=\{styles\.editTxt\}>Edit artist profile<\/Text>/);
   assert.match(app, /onManageArtistProfile=\{\(\) => go\(\{ artistHub: true \}\)\}/);
-  assert.match(app, /onEditArtistProfile=\{\(name\) => name && go\(\{ editArtist: name \}\)\}/);
+  assert.match(app, /onEditArtistProfile=\{\(name\) => name && requireVerifiedMutation\("artist", \(\) => go\(\{ editArtist: name \}\)\)\}/);
   assert.match(app, /go\(\{ artistPreview: name \}\)/);
   assert.match(app, /else if \(nav\.artistPreview\) overlay = <ArtistScreen artistName=\{nav\.artistPreview\} previewAsFan/);
   assert.match(app, /\["artistHub", "artist_hq"\]/);
@@ -90,7 +90,7 @@ test("Artist HQ exposes one primary action for each distinct job", () => {
 test("Artist HQ launches the artist-only campaign composer and the feed renders its trusted presentation", () => {
   assert.match(hub, /onCampaignPost/);
   assert.match(hub, /title="Artist drop"/);
-  assert.match(app, /onCampaignPost=\{\(\) => go\(\{ logging: true, postMode: "campaign" \}\)\}/);
+  assert.match(app, /onCampaignPost=\{\(\) => requireVerifiedMutation\("artist", \(\) => go\(\{ logging: true, postMode: "campaign" \}\)\)\}/);
   assert.match(composer, /user\?\.role === "artist"/);
   assert.match(composer, /campaign: isCampaign \? campaign : null/);
   assert.match(composer, /backgroundAssetId: isCampaignBackground \? undefined : backgroundAssetId/);

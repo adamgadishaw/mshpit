@@ -7,8 +7,10 @@ import {
 import { assertSafeAuthoredText } from "./contentSafety.js";
 import { withImmediateWrite as withWrite } from "./databaseTransaction.js";
 import { ApiError } from "./errors.js";
+import { inspectImageBytes, MAX_IMAGE_EDGE } from "./imageInspection.js";
 import {
   createMediaDownloadCapability,
+  createMediaProcessorImageUploadCapability,
   createMediaProcessorUploadCapability,
   createMediaPresign,
   getMediaConfig,
@@ -23,6 +25,7 @@ import {
   trustedMediaQueueKey,
 } from "./mediaDeletion.js";
 import { verifyMp4Compatibility } from "./mp4Probe.js";
+import { sanitizeDecodedImage, validateDecodedImage, ImageProcessorError } from "./imageProcessor.js";
 
 const ASSET_ID = /^ma_[A-Za-z0-9_-]{8,80}$/;
 const VARIANT_ID = /^mv_[A-Za-z0-9_-]{8,80}$/;
@@ -33,7 +36,6 @@ const CLIENT_ID = /^[A-Za-z0-9._:-]{8,120}$/;
 const COMPOSER_PURPOSES = new Set(["post"]);
 const IMAGE_VARIANT_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 const MAX_RECIPE_BYTES = 16 * 1024;
-const MAX_IMAGE_EDGE = 32_768;
 const MAX_VIDEO_DURATION_MS = 60_000;
 const MAX_VIDEO_DURATION_DRIFT_MS = 1_500;
 const MAX_VIDEO_BYTES = 100 * 1024 * 1024;
@@ -235,7 +237,11 @@ export function createMediaAsset(database, {
         // random token so readers cannot enumerate camera originals/EXIF by
         // combining a public asset id with the small supported-extension set.
         objectId: sourceObjectId,
-        storageScope: input.canonical.kind === "video" ? "private" : "public",
+        // Originals are editing inputs, not delivery assets. Keeping every
+        // stable source in the private bucket prevents camera EXIF/GPS data (or
+        // an unsupported source codec) from becoming reachable before PIT has
+        // inspected it and a metadata-free render has passed verification.
+        storageScope: "private",
       });
       database.prepare(`INSERT INTO media_assets
         (id,owner_id,client_asset_id,create_hash,purpose,kind,source_key,source_url,source_storage_scope,original_name,mime_type,
@@ -319,6 +325,124 @@ async function verifyStoredObject({ objectKey, expectedBytes, expectedType, env,
   };
 }
 
+async function downloadStoredObjectBytes({
+  objectKey,
+  stored,
+  expectedBytes,
+  expectedType,
+  env,
+  fetchImpl,
+  signal,
+  storageScope = "public",
+}) {
+  if (!stored?.etag) {
+    throw new ApiError(503, "The uploaded image could not be generation-bound yet. Try again.", "MEDIA_STORAGE_UNAVAILABLE");
+  }
+  const capability = createMediaDownloadCapability({
+    objectKey,
+    ifMatch: stored.etag,
+    env,
+    expiresIn: 90,
+    storageScope,
+  });
+  let response;
+  try {
+    response = await fetchImpl(capability.downloadUrl, {
+      method: "GET",
+      redirect: "error",
+      headers: capability.requiredHeaders,
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(10_000)]) : AbortSignal.timeout(10_000),
+    });
+  } catch (error) {
+    throw new ApiError(503, "The uploaded image could not be inspected yet. Try again.", "MEDIA_STORAGE_UNAVAILABLE", error);
+  }
+  const actualBytes = Number(response?.headers?.get?.("content-length"));
+  const actualType = contentType(response?.headers?.get?.("content-type"));
+  const actualEtag = strongObjectEtag(response?.headers?.get?.("etag"));
+  if (response?.status !== 200 || actualBytes !== expectedBytes || actualType !== expectedType
+      || actualEtag !== stored.etag || !response.body || typeof response.body.getReader !== "function") {
+    throw new ApiError(409, "The uploaded image changed before it could be inspected.", "CONFLICT");
+  }
+  const reader = response.body.getReader();
+  const chunks = [];
+  let received = 0;
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      received += value?.byteLength || 0;
+      if (received > expectedBytes) {
+        await reader.cancel("image exceeded signed size");
+        throw new ApiError(409, "The uploaded image changed before it could be inspected.", "CONFLICT");
+      }
+      chunks.push(Buffer.from(value));
+    }
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+    throw new ApiError(503, "The uploaded image could not be inspected yet. Try again.", "MEDIA_STORAGE_UNAVAILABLE", error);
+  } finally {
+    reader.releaseLock();
+  }
+  if (received !== expectedBytes) {
+    throw new ApiError(409, "The uploaded image changed before it could be inspected.", "CONFLICT");
+  }
+  return Buffer.concat(chunks, received);
+}
+
+async function verifyStoredImage({
+  objectKey,
+  stored,
+  expectedBytes,
+  expectedType,
+  env,
+  fetchImpl,
+  signal,
+  storageScope = "public",
+}) {
+  const bytes = await downloadStoredObjectBytes({
+    objectKey,
+    stored,
+    expectedBytes,
+    expectedType,
+    env,
+    fetchImpl,
+    signal,
+    storageScope,
+  });
+  // Structural inspection and full pixel decoding happen together in the
+  // isolated image worker. Keeping them out of this process means a compressed
+  // PNG cannot block the HTTP event loop before admission control is acquired.
+  return { bytes };
+}
+
+const defaultImageProcessor = Object.freeze({
+  validate: validateDecodedImage,
+  sanitize: sanitizeDecodedImage,
+});
+
+async function runImageProcessor(operation, options, { sanitizing = false } = {}) {
+  try {
+    return await operation(options.bytes, options);
+  } catch (error) {
+    if (error instanceof ImageProcessorError
+        && new Set(["busy", "timeout", "worker_unavailable", "worker_protocol"]).has(error.code)) {
+      throw new ApiError(503, "Photo verification is busy. Try again shortly.", "MEDIA_STORAGE_UNAVAILABLE", error);
+    }
+    throw new ApiError(415, sanitizing
+      ? "That rendition could not be decoded and sanitized. Export it again and retry."
+      : "That upload contains invalid or unsupported image pixels. Choose a different photo.",
+    "MEDIA_TYPE_UNSUPPORTED", error);
+  }
+}
+
+function assertVerifiedDimensions(inspection, declaredWidth, declaredHeight, { allowSwap = false } = {}) {
+  const exact = inspection.width === Number(declaredWidth) && inspection.height === Number(declaredHeight);
+  const swapped = allowSwap && inspection.width === Number(declaredHeight) && inspection.height === Number(declaredWidth);
+  if (!exact && !swapped) {
+    throw new ApiError(409, "The uploaded image dimensions do not match the selected file.", "CONFLICT");
+  }
+}
+
 function authoritativePosterInput(poster, { durationMs }) {
   const bytes = Buffer.isBuffer(poster?.bytes) ? poster.bytes : null;
   const byteSize = Number(poster?.byteSize);
@@ -326,6 +450,13 @@ function authoritativePosterInput(poster, { durationMs }) {
   const height = Number(poster?.height);
   const timeMs = Number(poster?.timeMs);
   const digest = String(poster?.sha256 || "");
+  let inspection = null;
+  try {
+    if (bytes) inspection = inspectImageBytes(bytes, { expectedType: "image/jpeg", sanitized: true });
+  } catch (inspectionError) {
+    void inspectionError;
+    inspection = null;
+  }
   if (poster?.contentType !== "image/jpeg"
       || !bytes || bytes.byteLength !== byteSize || byteSize < 4 || byteSize > 1_500_000
       || !Number.isSafeInteger(width) || width < 1 || width > 1_280
@@ -333,7 +464,7 @@ function authoritativePosterInput(poster, { durationMs }) {
       || !Number.isSafeInteger(timeMs) || timeMs < 0 || timeMs >= durationMs
       || !/^[a-f0-9]{64}$/.test(digest)
       || createHash("sha256").update(bytes).digest("hex") !== digest
-      || bytes[0] !== 0xff || bytes[1] !== 0xd8 || bytes[bytes.length - 2] !== 0xff || bytes[bytes.length - 1] !== 0xd9) {
+      || !inspection || inspection.width !== width || inspection.height !== height) {
     throw new ApiError(503, "Clip decoding returned an invalid cover. Try again later.", "MEDIA_STORAGE_UNAVAILABLE");
   }
   return { bytes, byteSize, width, height, timeMs, digest };
@@ -680,6 +811,213 @@ function commitAuthoritativeDelivery(database, { ownerId, assetId, staged, at })
     WHERE id=? AND owner_id=?`).run(current.id, at, assetId, ownerId);
 }
 
+const IMAGE_DELIVERY_EXTENSIONS = Object.freeze({
+  "image/jpeg": "jpg",
+  "image/png": "png",
+  "image/webp": "webp",
+});
+
+function prepareSanitizedImageDelivery(database, {
+  ownerId,
+  asset,
+  variantId,
+  stagingKey,
+  output,
+  env,
+  at,
+}) {
+  const extension = IMAGE_DELIVERY_EXTENSIONS[output?.mimeType];
+  if (!extension || !VARIANT_ID.test(String(variantId || "")) || !trustedMediaQueueKey(stagingKey, ownerId)) {
+    throw new ApiError(409, "That photo rendition changed while it was being sanitized.", "CONFLICT");
+  }
+  const digest = createHash("sha256").update(output.bytes).digest("hex");
+  const objectKey = expectedObjectKey({
+    ownerId,
+    purpose: asset.purpose,
+    objectId: `${asset.id}_${variantId}_safe_${digest.slice(0, 16)}`,
+    extension,
+  });
+  return withWrite(database, () => {
+    requirePrivateLiveLedger(database, ownerId, stagingKey);
+    reserveMediaUploadTicket(database, {
+      ownerId,
+      objectKey,
+      storageScope: "public",
+      byteSize: output.byteSize,
+      at,
+      expiresAt: at + MEDIA_UPLOAD_TICKET_MS,
+      env,
+    });
+    const upload = createMediaProcessorImageUploadCapability({
+      objectKey,
+      contentType: output.mimeType,
+      contentLength: output.byteSize,
+      env,
+      now: new Date(at),
+      expiresIn: 300,
+    });
+    return { upload, objectKey, digest, stagingKey, output };
+  });
+}
+
+async function stageSanitizedImageDelivery(database, {
+  ownerId,
+  asset,
+  variantId,
+  stagingKey,
+  output,
+  env,
+  at,
+  fetchImpl,
+  signal,
+}) {
+  const prepared = prepareSanitizedImageDelivery(database, {
+    ownerId,
+    asset,
+    variantId,
+    stagingKey,
+    output,
+    env,
+    at,
+  });
+  let response;
+  try {
+    response = await fetchImpl(prepared.upload.uploadUrl, {
+      method: "PUT",
+      redirect: "error",
+      headers: prepared.upload.requiredHeaders,
+      body: output.bytes,
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(12_000)]) : AbortSignal.timeout(12_000),
+    });
+  } catch (error) {
+    throw new ApiError(503, "Photo delivery storage is temporarily unavailable.", "MEDIA_STORAGE_UNAVAILABLE", error);
+  }
+  if (!response || !((response.status >= 200 && response.status < 300) || response.status === 412)) {
+    throw new ApiError(503, "Photo delivery storage is temporarily unavailable.", "MEDIA_STORAGE_UNAVAILABLE");
+  }
+  const stored = await verifyStoredObject({
+    objectKey: prepared.objectKey,
+    expectedBytes: output.byteSize,
+    expectedType: output.mimeType,
+    env,
+    fetchImpl,
+    signal,
+    storageScope: "public",
+  });
+  if (!stored.etag) {
+    throw new ApiError(503, "The sanitized photo could not be generation-bound.", "MEDIA_STORAGE_UNAVAILABLE");
+  }
+  await verifyStoredObjectDigest({
+    objectKey: prepared.objectKey,
+    stored,
+    expectedBytes: output.byteSize,
+    expectedType: output.mimeType,
+    expectedDigest: prepared.digest,
+    env,
+    fetchImpl,
+    signal,
+  });
+  return { ...prepared, stored };
+}
+
+// Shared trust-boundary helpers for legacy avatar/banner/review upload
+// migration. They deliberately expose only the private staging -> decoded
+// pixels -> server-authored public derivative path; callers never receive a
+// public PUT capability.
+export async function sanitizePrivateImageStaging(database, {
+  ownerId,
+  objectKey,
+  expectedBytes,
+  expectedType,
+  outputType = expectedType,
+  env = process.env,
+  fetchImpl = globalThis.fetch,
+  imageProcessor = defaultImageProcessor,
+  signal,
+} = {}) {
+  const owner = String(ownerId || "");
+  const key = trustedMediaQueueKey(objectKey, owner);
+  if (!owner || !key || typeof fetchImpl !== "function") {
+    throw new ApiError(400, "That private photo upload is invalid.", "VALIDATION_FAILED");
+  }
+  requirePrivateLiveLedger(database, owner, key, { expectedBytes });
+  const stored = await verifyStoredObject({
+    objectKey: key,
+    expectedBytes,
+    expectedType,
+    env,
+    fetchImpl,
+    signal,
+    storageScope: "private",
+  });
+  // A cancellation/expiry pass may win while HEAD is in flight.
+  requirePrivateLiveLedger(database, owner, key, { expectedBytes });
+  const verified = await verifyStoredImage({
+    objectKey: key,
+    stored,
+    expectedBytes,
+    expectedType,
+    env,
+    fetchImpl,
+    signal,
+    storageScope: "private",
+  });
+  const sanitized = await runImageProcessor(imageProcessor?.sanitize || defaultImageProcessor.sanitize, {
+    bytes: verified.bytes,
+    expectedType,
+    outputType,
+  }, { sanitizing: true });
+  return Object.freeze({ sanitized, sourceEtag: stored.etag });
+}
+
+export async function stageSanitizedPublicImage(database, {
+  ownerId,
+  purpose,
+  publicIdentity,
+  stagingKey,
+  output,
+  env = process.env,
+  at = Date.now(),
+  fetchImpl = globalThis.fetch,
+  signal,
+} = {}) {
+  const identity = String(publicIdentity || "");
+  if (!/^[A-Za-z0-9_-]{8,80}$/.test(identity)
+      || !new Set(["avatar", "banner", "post", "review", "venue"]).has(String(purpose || ""))) {
+    throw new ApiError(400, "That sanitized photo identity is invalid.", "VALIDATION_FAILED");
+  }
+  const variantId = `mv_${fingerprint({ ownerId, purpose, identity }).slice(0, 24)}`;
+  const staged = await stageSanitizedImageDelivery(database, {
+    ownerId,
+    asset: { id: identity, purpose },
+    variantId,
+    stagingKey,
+    output,
+    env,
+    at,
+    fetchImpl,
+    signal,
+  });
+  return Object.freeze({
+    objectKey: staged.objectKey,
+    publicUrl: staged.upload.publicUrl,
+    mimeType: output.mimeType,
+    byteSize: output.byteSize,
+    width: output.width,
+    height: output.height,
+    sha256: staged.digest,
+    etag: staged.stored.etag,
+  });
+}
+
+function queuePrivateImageStaging(database, { ownerId, stagingKey, at }) {
+  requirePrivateLiveLedger(database, ownerId, stagingKey);
+  const queued = enqueueOwnedMediaKeys(database, { ownerId, keys: [stagingKey], at });
+  if (queued.accepted !== 1) {
+    throw new ApiError(409, "That private photo staging object is no longer available.", "CONFLICT");
+  }
+}
+
 function deliveryStateForRecipe(row, editRecipe) {
   const needsExport = row.kind === "video"
     ? true
@@ -820,6 +1158,17 @@ function touchLiveLedger(database, ownerId, objectKey, at) {
   }
 }
 
+function requirePrivateLiveLedger(database, ownerId, objectKey, { expectedBytes } = {}) {
+  const key = trustedMediaQueueKey(objectKey, ownerId);
+  const row = key ? database.prepare(`SELECT storage_scope,byte_size,status FROM media_objects
+    WHERE owner_id=? AND object_key=?`).get(ownerId, key) : null;
+  if (!row || row.storage_scope !== "private" || !new Set(["issued", "associated"]).has(row.status)
+      || (expectedBytes != null && Number(row.byte_size) !== Number(expectedBytes))) {
+    throw new ApiError(409, "That private photo upload is no longer available. Start again.", "CONFLICT");
+  }
+  return row;
+}
+
 function terminalVideoSourceFailure(error) {
   if (error instanceof ApiError && error.status === 415) {
     Object.defineProperty(error, "terminalMediaSourceFailure", {
@@ -847,6 +1196,7 @@ export async function finalizeMediaAsset(database, {
   authoritativeVideoVerifier = null,
   authoritativePosterRequired = false,
   beforeAuthoritativeVerify,
+  imageProcessor = defaultImageProcessor,
   signal,
 } = {}) {
   const row = database.prepare("SELECT * FROM media_assets WHERE id=? AND owner_id=?").get(assetId, ownerId);
@@ -895,6 +1245,30 @@ export async function finalizeMediaAsset(database, {
     signal,
     storageScope: row.source_storage_scope || "public",
   });
+  // Re-check after the asynchronous HEAD. Cancellation/orphan cleanup can win
+  // while storage is responding; never spend a second capability or certify
+  // bytes for an object whose ledger has already entered deletion.
+  requireLiveLedger(database, ownerId, row.source_key);
+  if (row.kind === "image") {
+    const verifiedImage = await verifyStoredImage({
+      objectKey: row.source_key,
+      stored,
+      expectedBytes: row.byte_size,
+      expectedType: row.mime_type,
+      env,
+      fetchImpl,
+      signal,
+      storageScope: row.source_storage_scope || "public",
+    });
+    const decoded = await runImageProcessor(imageProcessor?.validate || defaultImageProcessor.validate, {
+      bytes: verifiedImage.bytes,
+      expectedType: row.mime_type,
+    });
+    // Pickers differ on whether they report encoded axes or display axes for
+    // EXIF-oriented camera photos. Both are tied to the isolated full decode;
+    // arbitrary caller geometry is never accepted.
+    assertVerifiedDimensions(decoded, input.width, input.height, { allowSwap: true });
+  }
   let codecVerified = row.kind !== "video";
   let stagedAuthoritativePoster = null;
   let stagedAuthoritativeDelivery = null;
@@ -1256,6 +1630,7 @@ function variantUploadRequest(asset, variant, { env, at }) {
     env,
     at,
     objectId: objectIdFromKey(variant.object_key),
+    storageScope: asset.kind === "image" ? "private" : "public",
   };
 }
 
@@ -1333,12 +1708,13 @@ function createPendingPhotoRevisionVariant(database, {
     env,
     at,
     objectId,
+    storageScope: "private",
   });
   database.prepare(`UPDATE media_asset_revisions SET
       variant_id=?,client_variant_id=?,create_hash=?,object_key=?,public_url=?,mime_type=?,byte_size=?,
       status='upload_pending',updated_at=?
     WHERE asset_id=? AND base_render_variant_id=?`)
-    .run(nextVariantId, input.clientVariantId, input.createHash, ticket.key, ticket.publicUrl,
+    .run(nextVariantId, input.clientVariantId, input.createHash, ticket.key, ticket.storageLocator,
       input.contentType, input.fileSize, at, asset.id, asset.render_variant_id);
   const updated = pendingPhotoRevision(database, asset.id);
   if (!updated || updated.variant_id !== nextVariantId) {
@@ -1418,12 +1794,13 @@ export function createMediaVariant(database, {
         env,
         at,
         objectId,
+        storageScope: "private",
       });
       database.prepare(`INSERT INTO media_variants
         (id,asset_id,client_variant_id,create_hash,role,object_key,public_url,mime_type,byte_size,status,created_at,updated_at)
         VALUES (?,?,?,?,?,?,?,?,?,'upload_pending',?,?)`)
         .run(nextVariantId, asset.id, input.clientVariantId, input.createHash, input.role, ticket.key,
-          ticket.publicUrl, input.contentType, input.fileSize, at, at);
+          ticket.storageLocator, input.contentType, input.fileSize, at, at);
       variant = database.prepare("SELECT * FROM media_variants WHERE id=?").get(nextVariantId);
       return { variant: variantProjection(variant), upload: ticket, duplicate: false, replaced: !!existingRole };
     }
@@ -1455,7 +1832,7 @@ function loadPendingPhotoRevisionVariant(database, { ownerId, assetId, variantId
       r.object_key,r.public_url,r.mime_type,r.byte_size,NULL width,NULL height,NULL time_ms,
       r.status,NULL finalize_hash,NULL verified_at,r.created_at,r.updated_at,
       r.edit_recipe pending_edit_recipe,r.recipe_version pending_recipe_version,r.base_render_variant_id,
-      a.render_variant_id,a.owner_id,a.kind,a.duration_ms,a.source_key,a.status asset_status,a.render_state,
+      a.render_variant_id,a.owner_id,a.purpose,a.kind,a.duration_ms,a.source_key,a.status asset_status,a.render_state,
       EXISTS (SELECT 1 FROM post_media pm WHERE pm.asset_id=a.id) attached
     FROM media_asset_revisions r JOIN media_assets a ON a.id=r.asset_id
     WHERE r.variant_id=? AND r.asset_id=? AND a.owner_id=?`)
@@ -1471,6 +1848,8 @@ async function finalizePendingPhotoRevisionVariant(database, {
   env,
   at,
   fetchImpl,
+  imageProcessor,
+  signal,
 }) {
   if (row.kind !== "image" || row.role !== "render" || row.attached) {
     throw new ApiError(409, "That photo can no longer be replaced. Reopen PIT Studio.", "CONFLICT");
@@ -1481,6 +1860,7 @@ async function finalizePendingPhotoRevisionVariant(database, {
   const asset = {
     id: assetId,
     owner_id: row.owner_id,
+    purpose: row.purpose,
     kind: row.kind,
     duration_ms: row.duration_ms,
     edit_recipe: row.pending_edit_recipe,
@@ -1496,12 +1876,40 @@ async function finalizePendingPhotoRevisionVariant(database, {
   if (typeof fetchImpl !== "function") {
     throw new ApiError(503, "Media verification is unavailable.", "MEDIA_STORAGE_UNAVAILABLE");
   }
-  await verifyStoredObject({
+  const stored = await verifyStoredObject({
     objectKey: row.object_key,
     expectedBytes: row.byte_size,
     expectedType: row.mime_type,
     env,
     fetchImpl,
+    signal,
+    storageScope: "private",
+  });
+  const verifiedImage = await verifyStoredImage({
+    objectKey: row.object_key,
+    stored,
+    expectedBytes: row.byte_size,
+    expectedType: row.mime_type,
+    env,
+    fetchImpl,
+    signal,
+    storageScope: "private",
+  });
+  const sanitized = await runImageProcessor(imageProcessor?.sanitize || defaultImageProcessor.sanitize, {
+    bytes: verifiedImage.bytes,
+    expectedType: row.mime_type,
+  }, { sanitizing: true });
+  assertVerifiedDimensions(sanitized, input.width, input.height);
+  const stagedDelivery = await stageSanitizedImageDelivery(database, {
+    ownerId,
+    asset,
+    variantId,
+    stagingKey: row.object_key,
+    output: sanitized,
+    env,
+    at,
+    fetchImpl,
+    signal,
   });
 
   return withWrite(database, () => {
@@ -1537,6 +1945,7 @@ async function finalizePendingPhotoRevisionVariant(database, {
     requireLiveLedger(database, ownerId, current.source_key);
     requireLiveLedger(database, ownerId, current.object_key);
     requireLiveLedger(database, ownerId, base.object_key);
+    requireLiveLedger(database, ownerId, stagedDelivery.objectKey);
     touchLiveLedger(database, ownerId, current.source_key, at);
     touchLiveLedger(database, ownerId, current.object_key, at);
 
@@ -1544,15 +1953,16 @@ async function finalizePendingPhotoRevisionVariant(database, {
     if (queued.accepted !== 1) {
       throw new ApiError(409, "That ready photo rendition is no longer available. Reopen PIT Studio.", "CONFLICT");
     }
+    queuePrivateImageStaging(database, { ownerId, stagingKey: current.object_key, at });
     database.prepare("DELETE FROM media_variants WHERE id=? AND asset_id=?")
       .run(base.id, assetId);
     database.prepare(`INSERT INTO media_variants
       (id,asset_id,client_variant_id,create_hash,role,object_key,public_url,mime_type,byte_size,
-        width,height,time_ms,status,finalize_hash,verified_at,created_at,updated_at)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,NULL,'verified',?,?,?,?)`)
+        width,height,time_ms,status,finalize_hash,verified_at,verification_origin,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,NULL,'verified',?,?,'private_derivative_v1',?,?)`)
       .run(variantId, assetId, current.client_variant_id, current.create_hash, "render",
-        current.object_key, current.public_url, current.mime_type, current.byte_size,
-        input.width, input.height, input.finalizeHash, at, current.created_at, at);
+        stagedDelivery.objectKey, stagedDelivery.upload.publicUrl, sanitized.mimeType, sanitized.byteSize,
+        sanitized.width, sanitized.height, input.finalizeHash, at, current.created_at, at);
     const swapped = database.prepare(`UPDATE media_assets SET
         edit_recipe=?,recipe_version=?,render_variant_id=?,render_state='ready',status='ready',updated_at=?
       WHERE id=? AND owner_id=? AND render_variant_id=?`)
@@ -1584,8 +1994,10 @@ export async function finalizeMediaVariant(database, {
   env = process.env,
   at = Date.now(),
   fetchImpl = globalThis.fetch,
+  imageProcessor = defaultImageProcessor,
+  signal,
 } = {}) {
-  let row = database.prepare(`SELECT v.*,a.owner_id,a.kind,a.duration_ms,a.edit_recipe,a.source_key,a.status asset_status,
+  let row = database.prepare(`SELECT v.*,a.owner_id,a.purpose,a.kind,a.duration_ms,a.edit_recipe,a.source_key,a.status asset_status,
       a.render_state FROM media_variants v JOIN media_assets a ON a.id=v.asset_id
       WHERE v.id=? AND v.asset_id=? AND a.owner_id=?`).get(variantId, assetId, ownerId);
   if (!row) {
@@ -1600,11 +2012,14 @@ export async function finalizeMediaVariant(database, {
       env,
       at,
       fetchImpl,
+      imageProcessor,
+      signal,
     });
   }
   const asset = {
     id: assetId,
     owner_id: row.owner_id,
+    purpose: row.purpose,
     kind: row.kind,
     duration_ms: row.duration_ms,
     edit_recipe: row.edit_recipe,
@@ -1622,12 +2037,40 @@ export async function finalizeMediaVariant(database, {
   }
   if (row.status !== "upload_pending") throw new ApiError(409, "That rendition cannot be finalized again.", "CONFLICT");
   if (typeof fetchImpl !== "function") throw new ApiError(503, "Media verification is unavailable.", "MEDIA_STORAGE_UNAVAILABLE");
-  await verifyStoredObject({
+  const stored = await verifyStoredObject({
     objectKey: row.object_key,
     expectedBytes: row.byte_size,
     expectedType: row.mime_type,
     env,
     fetchImpl,
+    signal,
+    storageScope: "private",
+  });
+  const verifiedImage = await verifyStoredImage({
+    objectKey: row.object_key,
+    stored,
+    expectedBytes: row.byte_size,
+    expectedType: row.mime_type,
+    env,
+    fetchImpl,
+    signal,
+    storageScope: "private",
+  });
+  const sanitized = await runImageProcessor(imageProcessor?.sanitize || defaultImageProcessor.sanitize, {
+    bytes: verifiedImage.bytes,
+    expectedType: row.mime_type,
+  }, { sanitizing: true });
+  assertVerifiedDimensions(sanitized, input.width, input.height);
+  const stagedDelivery = await stageSanitizedImageDelivery(database, {
+    ownerId,
+    asset,
+    variantId,
+    stagingKey: row.object_key,
+    output: sanitized,
+    env,
+    at,
+    fetchImpl,
+    signal,
   });
 
   return withWrite(database, () => {
@@ -1643,17 +2086,22 @@ export async function finalizeMediaVariant(database, {
     if (!current || current.status !== "upload_pending") throw new ApiError(409, "That rendition changed while it was finalizing.", "CONFLICT");
     touchLiveLedger(database, ownerId, current.source_key, at);
     touchLiveLedger(database, ownerId, current.object_key, at);
-    database.prepare(`UPDATE media_variants SET width=?,height=?,time_ms=?,status='verified',finalize_hash=?,verified_at=?,updated_at=?
-      WHERE id=? AND asset_id=?`).run(input.width, input.height, input.timeMs, input.finalizeHash, at, at, variantId, assetId);
+    requireLiveLedger(database, ownerId, stagedDelivery.objectKey);
+    queuePrivateImageStaging(database, { ownerId, stagingKey: current.object_key, at });
+    database.prepare(`UPDATE media_variants SET object_key=?,public_url=?,mime_type=?,byte_size=?,width=?,height=?,time_ms=?,
+      status='verified',finalize_hash=?,verified_at=?,verification_origin='private_derivative_v1',updated_at=?
+      WHERE id=? AND asset_id=?`)
+      .run(stagedDelivery.objectKey, stagedDelivery.upload.publicUrl, sanitized.mimeType, sanitized.byteSize,
+        sanitized.width, sanitized.height, input.timeMs, input.finalizeHash, at, at, variantId, assetId);
     if (row.role === "poster") {
       database.prepare(`UPDATE media_assets SET poster_variant_id=?,poster_key=?,poster_url=?,poster_time_ms=?,updated_at=?
-        WHERE id=? AND owner_id=?`).run(variantId, row.object_key, row.public_url, input.timeMs, at, assetId, ownerId);
+        WHERE id=? AND owner_id=?`).run(variantId, stagedDelivery.objectKey, stagedDelivery.upload.publicUrl, input.timeMs, at, assetId, ownerId);
     } else {
       database.prepare(`UPDATE media_assets SET render_variant_id=?,render_state='ready',status='ready',updated_at=?
         WHERE id=? AND owner_id=? AND render_state='pending'`).run(variantId, at, assetId, ownerId);
     }
     if (database.prepare("SELECT 1 FROM post_media WHERE asset_id=?").get(assetId)) {
-      if (!markObjectAssociated(database, ownerId, row.object_key, at)) {
+      if (!markObjectAssociated(database, ownerId, stagedDelivery.objectKey, at)) {
         throw new ApiError(409, "That media rendition is no longer available. Finish the upload again.", "CONFLICT");
       }
     }
@@ -1677,7 +2125,8 @@ function loadAsset(database, assetId) {
       revision.variant_id pending_variant_id,revision.status pending_revision_status,
       source_ledger.status source_ledger_status,
       rv.object_key render_key,rv.public_url render_url,rv.width render_width,rv.height render_height,rv.mime_type render_mime_type,rv.byte_size render_byte_size,rv.status render_variant_status,
-      render_ledger.status render_ledger_status,
+      rv.verification_origin render_verification_origin,
+      render_ledger.status render_ledger_status,render_ledger.storage_scope render_ledger_scope,
       pv.object_key durable_poster_key,pv.public_url durable_poster_url,pv.time_ms durable_poster_time_ms,pv.status poster_variant_status,
       pv.verification_origin poster_verification_origin,
       poster_ledger.status poster_ledger_status
@@ -1697,9 +2146,14 @@ function publishUrl(row) {
   if (!row || row.status !== "ready" || !isLiveLedgerStatus(row.source_ledger_status)) return null;
   if (row.kind === "video" && row.codec_status !== "verified") return null;
   if (row.render_state === "ready") {
-    return row.render_variant_status === "verified" && isLiveLedgerStatus(row.render_ledger_status) ? row.render_url : null;
+    const serverAuthoredImage = row.kind !== "image" || row.render_verification_origin === "private_derivative_v1";
+    return serverAuthoredImage && row.render_variant_status === "verified" && row.render_ledger_scope === "public"
+      && isLiveLedgerStatus(row.render_ledger_status) ? row.render_url : null;
   }
-  return row.render_state === "not_required" ? row.source_url : null;
+  // Stable images are never allowed to fall back to a browser-authored source.
+  // Pre-hardening rows stay owner-visible for recovery but remain quarantined
+  // until a backfill creates a verified server-authored derivative.
+  return row.kind === "video" && row.render_state === "not_required" ? row.source_url : null;
 }
 
 export function assetProjection(row, { owner = false, ownerSourceUrl = null } = {}) {
@@ -1889,7 +2343,8 @@ function postMediaRowsForPosts(database, postIds) {
   return database.prepare(`SELECT pm.post_id,a.*,
       source_ledger.status source_ledger_status,
       rv.object_key render_key,rv.public_url render_url,rv.width render_width,rv.height render_height,rv.mime_type render_mime_type,rv.byte_size render_byte_size,rv.status render_variant_status,
-      render_ledger.status render_ledger_status,
+      rv.verification_origin render_verification_origin,
+      render_ledger.status render_ledger_status,render_ledger.storage_scope render_ledger_scope,
       pv.object_key durable_poster_key,pv.public_url durable_poster_url,pv.time_ms durable_poster_time_ms,pv.status poster_variant_status,
       pv.verification_origin poster_verification_origin,
       poster_ledger.status poster_ledger_status

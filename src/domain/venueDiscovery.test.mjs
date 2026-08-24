@@ -7,12 +7,23 @@ import {
   isVenuePlaceActionable,
   locationCenterFromVenues,
   nearestMapPoints,
+  optionalDistanceKm,
   splitVenuePlace,
   venueDirectoryTotals,
   venueHomePlaceId,
   venuePlaceIdentity,
   venueRowWindow,
 } from "./venueDiscovery.mjs";
+
+test("missing event coordinates never become a fake zero-kilometre distance", () => {
+  assert.equal(optionalDistanceKm(null), null);
+  assert.equal(optionalDistanceKm(undefined), null);
+  assert.equal(optionalDistanceKm(""), null);
+  assert.equal(optionalDistanceKm(false), null);
+  assert.equal(optionalDistanceKm(-1), null);
+  assert.equal(optionalDistanceKm("0"), 0);
+  assert.equal(optionalDistanceKm(12.5), 12.5);
+});
 
 test("venue place parsing keeps the city useful without inventing missing geography", () => {
   assert.deepEqual(splitVenuePlace("Toronto, Ontario, Canada"), { city: "Toronto", region: "Ontario, Canada" });

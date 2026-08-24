@@ -14,6 +14,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { findArtist, spotifyConfigured } from "./lib/spotify.mjs";
+import { privateErrorLabel } from "../server/errors.js";
 
 const OUT = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "seed", "catalog.generated.json");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -41,7 +42,7 @@ async function main() {
   for (const k of keys) {
     const a = cat.artists[k];
     let info = null;
-    try { info = await findArtist(a.name); } catch (e) { console.warn(`  ! ${a.name}: ${e.message}`); }
+    try { info = await findArtist(a.name); } catch (e) { console.warn(`  ! ${a.name}: ${privateErrorLabel(e)}`); }
     await sleep(120); // gentle on the API
 
     if (info && info.images.length) {

@@ -27,8 +27,8 @@ const {
   cancelMediaAsset,
   attachPostMedia,
   assetObjectRecords,
-  finalizeMediaAsset,
-  finalizeMediaVariant,
+  finalizeMediaAsset: finalizeMediaAssetRuntime,
+  finalizeMediaVariant: finalizeMediaVariantRuntime,
   mediaSelection,
   ownedMediaAsset,
   updateMediaAsset,
@@ -38,6 +38,7 @@ const {
   MEDIA_UPLOAD_SETTLE_BUFFER_MS,
   recordMediaObjectTicket,
 } = await import("./mediaDeletion.js");
+const { inspectImageBytes } = await import("./imageInspection.js");
 
 after(() => {
   db.close();
@@ -266,12 +267,134 @@ async function authoritativeFixtureDecode({ structural, output }) {
   };
 }
 
-const FIXTURE_POSTER_BYTES = Buffer.from([0xff, 0xd8, 0xff, 0xdb, 0xff, 0xd9]);
+function testBox(type, payload) {
+  const box = Buffer.alloc(8 + payload.length);
+  box.writeUInt32BE(box.length, 0);
+  box.write(type, 4, 4, "ascii");
+  payload.copy(box, 8);
+  return box;
+}
+
+function imageFixture(bytes, type, width, height, { metadata = false, trailing = null } = {}) {
+  if (type === "image/jpeg") {
+    const app0Payload = Buffer.from([0x4a, 0x46, 0x49, 0x46, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0]);
+    const segment = (marker, payload) => {
+      const output = Buffer.alloc(payload.length + 4);
+      output[0] = 0xff;
+      output[1] = marker;
+      output.writeUInt16BE(payload.length + 2, 2);
+      payload.copy(output, 4);
+      return output;
+    };
+    const sof = Buffer.alloc(15);
+    sof[0] = 8;
+    sof.writeUInt16BE(height, 1);
+    sof.writeUInt16BE(width, 3);
+    sof[5] = 3;
+    sof.set([1, 0x11, 0, 2, 0x11, 0, 3, 0x11, 0], 6);
+    const sos = Buffer.from([3, 1, 0, 2, 0, 3, 0, 0, 63, 0]);
+    const prefix = [Buffer.from([0xff, 0xd8]), segment(0xe0, app0Payload)];
+    if (metadata) prefix.push(segment(0xe1, Buffer.from("Exif\0\0private-gps", "ascii")));
+    prefix.push(segment(0xc0, sof), segment(0xda, sos));
+    const suffix = Buffer.from([0xff, 0xd9]);
+    const fixed = prefix.reduce((sum, part) => sum + part.length, 0) + suffix.length;
+    if (bytes < fixed) throw new Error("JPEG fixture is too small");
+    const image = Buffer.concat([...prefix, Buffer.alloc(bytes - fixed), suffix]);
+    return trailing ? Buffer.concat([image, Buffer.from(trailing)]) : image;
+  }
+  if (type === "image/webp") {
+    const payloadLength = bytes - 20;
+    if (payloadLength < 5 || payloadLength % 2) throw new Error("WebP fixture size must be even and at least 26 bytes");
+    const payload = Buffer.alloc(payloadLength);
+    payload[0] = 0x2f;
+    const packed = ((width - 1) & 0x3fff) | (((height - 1) & 0x3fff) << 14);
+    payload.writeUInt32LE(packed >>> 0, 1);
+    const chunk = Buffer.alloc(8 + payload.length);
+    chunk.write("VP8L", 0, 4, "ascii");
+    chunk.writeUInt32LE(payload.length, 4);
+    payload.copy(chunk, 8);
+    const image = Buffer.concat([Buffer.from("RIFF", "ascii"), Buffer.alloc(4), Buffer.from("WEBP", "ascii"), chunk]);
+    image.writeUInt32LE(image.length - 8, 4);
+    return trailing ? Buffer.concat([image, Buffer.from(trailing)]) : image;
+  }
+  if (type === "image/heic" || type === "image/heif") {
+    const ftyp = testBox("ftyp", Buffer.concat([
+      Buffer.from(type === "image/heic" ? "heic" : "mif1", "ascii"),
+      Buffer.alloc(4),
+      Buffer.from("mif1heic", "ascii"),
+    ]));
+    const ispePayload = Buffer.alloc(12);
+    ispePayload.writeUInt32BE(width, 4);
+    ispePayload.writeUInt32BE(height, 8);
+    const meta = testBox("meta", Buffer.concat([Buffer.alloc(4), testBox("iprp", testBox("ipco", testBox("ispe", ispePayload)))]));
+    const used = ftyp.length + meta.length + 8;
+    if (bytes < used) throw new Error("HEIF fixture is too small");
+    return Buffer.concat([ftyp, meta, testBox("mdat", Buffer.alloc(bytes - used))]);
+  }
+  throw new Error(`Unsupported image fixture type: ${type}`);
+}
+
+function verifiedImage(bytes, type, width, height, capture = null, options = {}) {
+  const object = imageFixture(bytes, type, width, height, options);
+  const etag = `"image-${type}-${bytes}-${width}-${height}"`;
+  const deliveryEtag = `"delivery-${type}-${bytes}-${width}-${height}"`;
+  let delivery = null;
+  return async (url, request = {}) => {
+    capture?.push({ url, options: request });
+    const method = String(request.method || "GET").toUpperCase();
+    const publicDelivery = new URL(url).pathname.includes("/pit-media/users/");
+    if (method === "PUT") {
+      if (!publicDelivery) return { status: 405, headers: new Headers() };
+      if (delivery) return { status: 412, headers: new Headers() };
+      delivery = Buffer.from(request.body || []);
+      return { status: 200, headers: new Headers({ etag: deliveryEtag }) };
+    }
+    const selected = publicDelivery ? delivery : object;
+    if (!selected) return { status: 404, headers: new Headers() };
+    const selectedEtag = publicDelivery ? deliveryEtag : etag;
+    const headers = new Headers({
+      "content-length": String(selected.length),
+      "content-type": type,
+      etag: selectedEtag,
+    });
+    if (method === "HEAD") return { status: 200, headers };
+    if (method !== "GET") return { status: 405, headers: new Headers() };
+    if (new Headers(request.headers || {}).get("if-match") !== selectedEtag) return { status: 412, headers: new Headers() };
+    return new Response(selected, { status: 200, headers });
+  };
+}
+
+const fixtureImageProcessor = Object.freeze({
+  async validate(bytes, { expectedType }) {
+    return inspectImageBytes(bytes, { expectedType, sanitized: false });
+  },
+  async sanitize(bytes, { expectedType }) {
+    const inspection = inspectImageBytes(bytes, { expectedType, sanitized: false });
+    return {
+      bytes: Buffer.from(bytes),
+      byteSize: bytes.length,
+      mimeType: expectedType,
+      width: inspection.width,
+      height: inspection.height,
+      pixels: inspection.pixels,
+    };
+  },
+});
+
+const finalizeMediaAsset = (database, options) => finalizeMediaAssetRuntime(database, {
+  imageProcessor: fixtureImageProcessor,
+  ...options,
+});
+const finalizeMediaVariant = (database, options) => finalizeMediaVariantRuntime(database, {
+  imageProcessor: fixtureImageProcessor,
+  ...options,
+});
 
 async function authoritativeFixtureDecodeWithPoster({ structural, posterTimeMs, output }) {
   const landscape = structural.width >= structural.height;
   const width = landscape ? 1_280 : 720;
   const height = landscape ? 720 : 1_280;
+  const posterBytes = imageFixture(1_024, "image/jpeg", width, height);
   return {
     ...structural,
     delivery: {
@@ -286,12 +409,12 @@ async function authoritativeFixtureDecodeWithPoster({ structural, posterTimeMs, 
     },
     poster: {
       contentType: "image/jpeg",
-      bytes: FIXTURE_POSTER_BYTES,
-      byteSize: FIXTURE_POSTER_BYTES.byteLength,
+      bytes: posterBytes,
+      byteSize: posterBytes.byteLength,
       width,
       height,
       timeMs: posterTimeMs,
-      sha256: createHash("sha256").update(FIXTURE_POSTER_BYTES).digest("hex"),
+      sha256: createHash("sha256").update(posterBytes).digest("hex"),
     },
   };
 }
@@ -337,7 +460,10 @@ test("asset creation mints a stable owner-bound object identity and retries idem
   assert.equal(first.asset.id, "ma_aaaaaaaaaaaaaaaaaaaaaaaa");
   assert.equal(first.asset.status, "upload_pending");
   assert.match(first.upload.key, /^users\/media_asset_create_owner\/post\/ms_[a-f0-9]{24}\.jpg$/);
-  assert.equal(first.asset.sourceUrl, `https://media.example.com/cdn/${first.upload.key}`);
+  assert.equal(first.asset.sourceUrl, null);
+  assert.equal(first.upload.publicUrl, null);
+  assert.equal(first.upload.storageScope, "private");
+  assert.equal(first.upload.storageLocator, `pit-private:${first.upload.key}`);
   assert.equal(first.upload.key.includes(first.asset.id.slice(3)), false,
     "a projected asset id cannot reveal or share the private source object token");
   const ledger = db.prepare("SELECT owner_id,status FROM media_objects WHERE object_key=?").get(first.upload.key);
@@ -391,7 +517,7 @@ test("owner cancellation atomically queues every draft object, honors PUT barrie
     ownerId: owner.id,
     assetId: created.asset.id,
     body: { width: 1_000, height: 1_250, editRecipe: {} },
-    fetchImpl: verifiedHead(12_000, "image/jpeg"),
+    fetchImpl: verifiedImage(12_000, "image/jpeg", 1_000, 1_250),
     at: 2_000,
   });
   const rendition = createMediaVariant(db, {
@@ -480,7 +606,7 @@ test("owner cancellation loses the publish race and cannot retire attached media
     ownerId: owner.id,
     assetId: created.asset.id,
     body: { width: 1_000, height: 1_250, editRecipe: {} },
-    fetchImpl: verifiedHead(13_000, "image/jpeg"),
+    fetchImpl: verifiedImage(13_000, "image/jpeg", 1_000, 1_250),
     at: 2_000,
   });
   const rendition = createMediaVariant(db, {
@@ -501,7 +627,7 @@ test("owner cancellation loses the publish race and cannot retire attached media
     assetId: created.asset.id,
     variantId: rendition.variant.id,
     body: { width: 1_000, height: 1_250 },
-    fetchImpl: verifiedHead(8_500, "image/webp"),
+    fetchImpl: verifiedImage(8_500, "image/webp", 1_000, 1_250),
     at: 4_000,
   });
   routes["POST /api/posts"]({
@@ -556,7 +682,7 @@ test("source finalization verifies storage transport metadata and fails closed o
       ownerId: user.id,
       assetId: created.asset.id,
       body: { width: 1_920, height: 1_080, orientation: 0, altText: "  Crowd\nunder   gold lights  ", editRecipe: {} },
-      fetchImpl: verifiedHead(8_191, "image/jpeg"),
+      fetchImpl: verifiedImage(8_191, "image/jpeg", 1_920, 1_080),
     }),
     (error) => error.code === "CONFLICT",
   );
@@ -567,7 +693,7 @@ test("source finalization verifies storage transport metadata and fails closed o
     ownerId: user.id,
     assetId: created.asset.id,
     body: { width: 1_920, height: 1_080, orientation: 0, altText: "  Crowd\nunder   gold lights  ", editRecipe: {} },
-    fetchImpl: verifiedHead(8_192, "image/jpeg", requests),
+    fetchImpl: verifiedImage(8_192, "image/jpeg", 1_920, 1_080, requests),
     at: 10_000,
   });
   assert.equal(finalized.asset.status, "render_pending");
@@ -712,7 +838,7 @@ test("new stable delivery rejects GIF and non-MP4 motion, clips over 60 seconds,
     ownerId: user.id,
     assetId: heic.asset.id,
     body: { width: 3_024, height: 4_032, editRecipe: {} },
-    fetchImpl: verifiedHead(20_000, "image/heic"),
+    fetchImpl: verifiedImage(20_000, "image/heic", 3_024, 4_032),
   });
   assert.equal(pending.asset.status, "render_pending");
   assert.equal(pending.asset.url, null, "a raw compatibility source is never projected as ready");
@@ -733,10 +859,14 @@ test("new stable delivery rejects GIF and non-MP4 motion, clips over 60 seconds,
     assetId: heic.asset.id,
     variantId: rendition.variant.id,
     body: { width: 1_536, height: 2_048 },
-    fetchImpl: verifiedHead(8_000, "image/webp"),
+    fetchImpl: verifiedImage(8_000, "image/webp", 1_536, 2_048),
   });
   assert.equal(ready.asset.status, "ready");
-  assert.equal(ready.asset.url, rendition.upload.publicUrl);
+  assert.equal(rendition.upload.publicUrl, null, "client-authored renditions remain private staging objects");
+  assert.equal(ready.asset.url, ready.variant.url);
+  assert.match(ready.variant.url, /^https:\/\/media\.example\.com\/cdn\//);
+  assert.notEqual(ready.variant.url, rendition.upload.storageLocator,
+    "only the distinct server-authored rendition becomes public");
 });
 
 test("edited images stay unpublishable until a verified rendition is uploaded", async () => {
@@ -750,7 +880,7 @@ test("edited images stay unpublishable until a verified rendition is uploaded", 
     ownerId: user.id,
     assetId: created.asset.id,
     body: { width: 3_024, height: 4_032, editRecipe: { kind: "image", filter: "pit", aspect: "portrait" } },
-    fetchImpl: verifiedHead(10_000, "image/jpeg"),
+    fetchImpl: verifiedImage(10_000, "image/jpeg", 3_024, 4_032),
   });
   assert.equal(source.asset.status, "render_pending");
   assert.equal(source.asset.renderState, "pending");
@@ -774,12 +904,15 @@ test("edited images stay unpublishable until a verified rendition is uploaded", 
     assetId: created.asset.id,
     variantId: variant.variant.id,
     body: { width: 1_638, height: 2_048 },
-    fetchImpl: verifiedHead(6_000, "image/webp"),
+    fetchImpl: verifiedImage(6_000, "image/webp", 1_638, 2_048),
   });
   assert.equal(finished.asset.status, "ready");
   assert.equal(finished.asset.renderState, "ready");
-  assert.equal(finished.asset.url, variant.upload.publicUrl);
-  assert.equal(finished.asset.sourceUrl, created.upload.publicUrl, "owner reads retain the original source reference");
+  assert.equal(variant.upload.publicUrl, null, "the edited client output is private staging");
+  assert.equal(finished.asset.url, finished.variant.url);
+  assert.notEqual(finished.variant.url, variant.upload.storageLocator,
+    "publishing uses server-decoded, metadata-free pixels at a distinct key");
+  assert.equal(finished.asset.sourceUrl, null, "private originals are not projected as public URLs");
 });
 
 test("pending rendition retries are idempotent and replacement never reuses the old identity", async () => {
@@ -794,7 +927,7 @@ test("pending rendition retries are idempotent and replacement never reuses the 
     ownerId: user.id,
     assetId: created.asset.id,
     body: { width: 2_000, height: 3_000, editRecipe: { kind: "image", filter: "pit" } },
-    fetchImpl: verifiedHead(15_000, "image/jpeg"),
+    fetchImpl: verifiedImage(15_000, "image/jpeg", 2_000, 3_000),
     at: 2_000,
   });
   const firstBody = {
@@ -888,7 +1021,7 @@ test("pending rendition retries are idempotent and replacement never reuses the 
     assetId: created.asset.id,
     variantId: replacement.variant.id,
     body: { width: 1_333, height: 2_000 },
-    fetchImpl: verifiedHead(firstBody.fileSize, "image/webp"),
+    fetchImpl: verifiedImage(firstBody.fileSize, "image/webp", 1_333, 2_000),
   });
   assert.throws(
     () => createMediaVariant(db, {
@@ -928,7 +1061,7 @@ test("asset PATCH stages photo revisions and swaps the ready rendition only afte
     ownerId: owner.id,
     assetId: created.asset.id,
     body: { width: 2_400, height: 3_000, altText: "First description", editRecipe: { kind: "image", filter: "pit" } },
-    fetchImpl: verifiedHead(18_000, "image/jpeg"),
+    fetchImpl: verifiedImage(18_000, "image/jpeg", 2_400, 3_000),
     at: 2_000,
   });
   const firstRender = createMediaVariant(db, {
@@ -944,14 +1077,18 @@ test("asset PATCH stages photo revisions and swaps the ready rendition only afte
     variantId: "mv_mmmmmmmmmmmmmmmmmmmmmmmm",
     at: 3_000,
   });
-  await finalizeMediaVariant(db, {
+  const firstFinished = await finalizeMediaVariant(db, {
     ownerId: owner.id,
     assetId: created.asset.id,
     variantId: firstRender.variant.id,
     body: { width: 1_638, height: 2_048 },
-    fetchImpl: verifiedHead(10_000, "image/webp"),
+    fetchImpl: verifiedImage(10_000, "image/webp", 1_638, 2_048),
     at: 4_000,
   });
+  const firstRenderUrl = firstFinished.variant.url;
+  const firstRenderKey = db.prepare("SELECT object_key FROM media_variants WHERE id=?")
+    .get(firstRender.variant.id).object_key;
+  assert.notEqual(firstRenderKey, firstRender.upload.key);
   const beforeAlt = db.prepare("SELECT source_key,source_url,finalize_hash,edit_recipe FROM media_assets WHERE id=?").get(created.asset.id);
   const altOnly = routes["PATCH /api/media/assets/:id"]({
     user: owner,
@@ -999,13 +1136,13 @@ test("asset PATCH stages photo revisions and swaps the ready rendition only afte
   assert.equal(recipeUpdate.recipeChanged, true);
   assert.equal(recipeUpdate.revisionPending, true);
   assert.equal(recipeUpdate.asset.status, "ready");
-  assert.equal(recipeUpdate.asset.url, firstRender.upload.publicUrl,
+  assert.equal(recipeUpdate.asset.url, firstRenderUrl,
     "the previous verified pixels remain available while replacement work is staged");
   assert.equal(recipeUpdate.asset.revisionPending, true);
   assert.equal(recipeUpdate.asset.editRecipe.filter, "mono",
     "owner reads resume the pending recipe even though the active rendition is unchanged");
   assert.ok(db.prepare("SELECT 1 FROM media_variants WHERE id=?").get(firstRender.variant.id));
-  assert.equal(db.prepare("SELECT 1 FROM media_deletion_queue WHERE object_key=?").get(firstRender.upload.key), undefined);
+  assert.equal(db.prepare("SELECT 1 FROM media_deletion_queue WHERE object_key=?").get(firstRenderKey), undefined);
   const afterRecipe = db.prepare("SELECT source_key,source_url,finalize_hash FROM media_assets WHERE id=?").get(created.asset.id);
   assert.deepEqual({ ...afterRecipe }, {
     source_key: beforeAlt.source_key,
@@ -1061,11 +1198,11 @@ test("asset PATCH stages photo revisions and swaps the ready rendition only afte
   });
   assert.equal(cancelled.recipeChanged, false);
   assert.equal(cancelled.revisionPending, false);
-  assert.equal(cancelled.asset.url, firstRender.upload.publicUrl);
+  assert.equal(cancelled.asset.url, firstRenderUrl);
   assert.equal(cancelled.asset.editRecipe.filter, "pit");
   assert.equal(db.prepare("SELECT 1 FROM media_asset_revisions WHERE asset_id=?").get(created.asset.id), undefined);
   assert.equal(db.prepare("SELECT status FROM media_deletion_queue WHERE object_key=?").get(recoveredRender.upload.key).status, "pending");
-  assert.equal(db.prepare("SELECT 1 FROM media_deletion_queue WHERE object_key=?").get(firstRender.upload.key), undefined,
+  assert.equal(db.prepare("SELECT 1 FROM media_deletion_queue WHERE object_key=?").get(firstRenderKey), undefined,
     "cancelling a replacement retires only its staged object");
 
   const restaged = updateMediaAsset(db, {
@@ -1114,11 +1251,11 @@ test("asset PATCH stages photo revisions and swaps the ready rendition only afte
     at: 15_000,
   }), (error) => error.status === 503 && error.code === "MEDIA_STORAGE_UNAVAILABLE");
   const afterFailedReplacement = ownedMediaAsset(db, { ownerId: owner.id, assetId: created.asset.id });
-  assert.equal(afterFailedReplacement.url, firstRender.upload.publicUrl);
+  assert.equal(afterFailedReplacement.url, firstRenderUrl);
   assert.equal(afterFailedReplacement.editRecipe.filter, "mono");
   assert.equal(afterFailedReplacement.revisionPending, true);
   assert.ok(db.prepare("SELECT 1 FROM media_variants WHERE id=?").get(firstRender.variant.id));
-  assert.equal(db.prepare("SELECT 1 FROM media_deletion_queue WHERE object_key=?").get(firstRender.upload.key), undefined,
+  assert.equal(db.prepare("SELECT 1 FROM media_deletion_queue WHERE object_key=?").get(firstRenderKey), undefined,
     "failed verification cannot retire the last good rendition");
 
   const swapped = await finalizeMediaVariant(db, {
@@ -1126,17 +1263,20 @@ test("asset PATCH stages photo revisions and swaps the ready rendition only afte
     assetId: created.asset.id,
     variantId: secondRender.variant.id,
     body: { width: 1_638, height: 2_048 },
-    fetchImpl: verifiedHead(9_000, "image/webp"),
+    fetchImpl: verifiedImage(9_000, "image/webp", 1_638, 2_048),
     at: 16_000,
   });
-  assert.equal(swapped.asset.url, secondRender.upload.publicUrl);
+  assert.equal(swapped.asset.url, swapped.variant.url);
   assert.equal(swapped.asset.editRecipe.filter, "mono");
   assert.equal(swapped.asset.revisionPending, false);
   assert.equal(db.prepare("SELECT 1 FROM media_asset_revisions WHERE asset_id=?").get(created.asset.id), undefined);
   assert.equal(db.prepare("SELECT 1 FROM media_variants WHERE id=?").get(firstRender.variant.id), undefined);
   assert.ok(db.prepare("SELECT 1 FROM media_variants WHERE id=?").get(secondRender.variant.id));
-  assert.equal(db.prepare("SELECT status FROM media_deletion_queue WHERE object_key=?").get(firstRender.upload.key).status, "pending");
-  assert.equal(db.prepare("SELECT 1 FROM media_deletion_queue WHERE object_key=?").get(secondRender.upload.key), undefined);
+  assert.equal(db.prepare("SELECT status FROM media_deletion_queue WHERE object_key=?").get(firstRenderKey).status, "pending");
+  const secondRenderKey = db.prepare("SELECT object_key FROM media_variants WHERE id=?")
+    .get(secondRender.variant.id).object_key;
+  assert.notEqual(secondRenderKey, secondRender.upload.key);
+  assert.equal(db.prepare("SELECT 1 FROM media_deletion_queue WHERE object_key=?").get(secondRenderKey), undefined);
   const finalizeRetry = await finalizeMediaVariant(db, {
     ownerId: owner.id,
     assetId: created.asset.id,
@@ -1146,7 +1286,7 @@ test("asset PATCH stages photo revisions and swaps the ready rendition only afte
     at: 17_000,
   });
   assert.equal(finalizeRetry.duplicate, true);
-  assert.equal(finalizeRetry.asset.url, secondRender.upload.publicUrl);
+  assert.equal(finalizeRetry.asset.url, swapped.variant.url);
   const published = routes["POST /api/posts"]({
     user: owner,
     ip: "asset-patch-publish",
@@ -1192,7 +1332,7 @@ test("selection and attachment fail closed for retired source, render, and poste
     ownerId: owner.id,
     assetId: source.asset.id,
     body: { width: 1_200, height: 1_500, editRecipe: {} },
-    fetchImpl: verifiedHead(7_000, "image/jpeg"),
+    fetchImpl: verifiedImage(7_000, "image/jpeg", 1_200, 1_500),
   });
   const sourceRender = createMediaVariant(db, {
     ownerId: owner.id,
@@ -1211,7 +1351,7 @@ test("selection and attachment fail closed for retired source, render, and poste
     assetId: source.asset.id,
     variantId: sourceRender.variant.id,
     body: { width: 1_200, height: 1_500 },
-    fetchImpl: verifiedHead(5_000, "image/webp"),
+    fetchImpl: verifiedImage(5_000, "image/webp", 1_200, 1_500),
   });
   const staleSelection = mediaSelection(db, { ownerId: owner.id, assetIds: [source.asset.id] });
   db.prepare("UPDATE media_objects SET status='delete_queued' WHERE object_key=?").run(source.upload.key);
@@ -1249,7 +1389,7 @@ test("selection and attachment fail closed for retired source, render, and poste
     ownerId: owner.id,
     assetId: edited.asset.id,
     body: { width: 1_200, height: 1_500, editRecipe: { kind: "image", filter: "encore" } },
-    fetchImpl: verifiedHead(8_000, "image/jpeg"),
+    fetchImpl: verifiedImage(8_000, "image/jpeg", 1_200, 1_500),
   });
   const render = createMediaVariant(db, {
     ownerId: owner.id,
@@ -1263,14 +1403,19 @@ test("selection and attachment fail closed for retired source, render, and poste
     },
     variantId: "mv_pppppppppppppppppppppppp",
   });
-  await finalizeMediaVariant(db, {
+  const finalizedRender = await finalizeMediaVariant(db, {
     ownerId: owner.id,
     assetId: edited.asset.id,
     variantId: render.variant.id,
     body: { width: 1_200, height: 1_500 },
-    fetchImpl: verifiedHead(6_000, "image/webp"),
+    fetchImpl: verifiedImage(6_000, "image/webp", 1_200, 1_500),
   });
-  db.prepare("UPDATE media_objects SET status='delete_queued' WHERE object_key=?").run(render.upload.key);
+  const publicRenderKey = db.prepare("SELECT object_key FROM media_variants WHERE id=?")
+    .get(render.variant.id).object_key;
+  assert.equal(finalizedRender.variant.url,
+    db.prepare("SELECT public_url FROM media_variants WHERE id=?").get(render.variant.id).public_url);
+  assert.notEqual(publicRenderKey, render.upload.key);
+  db.prepare("UPDATE media_objects SET status='delete_queued' WHERE object_key=?").run(publicRenderKey);
   assert.throws(
     () => mediaSelection(db, { ownerId: owner.id, assetIds: [edited.asset.id] }),
     (error) => error.status === 409 && error.code === "CONFLICT",
@@ -1319,7 +1464,7 @@ test("orphan cleanup respects refreshed activity, invalidates stale drafts, and 
     ownerId: staleOwner.id,
     assetId: stale.asset.id,
     body: { width: 1_500, height: 2_000, editRecipe: { kind: "image", filter: "analog" } },
-    fetchImpl: verifiedHead(11_000, "image/jpeg"),
+    fetchImpl: verifiedImage(11_000, "image/jpeg", 1_500, 2_000),
     at: 2_000,
   });
   const staleRender = createMediaVariant(db, {
@@ -1335,19 +1480,27 @@ test("orphan cleanup respects refreshed activity, invalidates stale drafts, and 
     variantId: "mv_rrrrrrrrrrrrrrrrrrrrrrrr",
     at: 3_000,
   });
-  await finalizeMediaVariant(db, {
+  const finalizedStaleRender = await finalizeMediaVariant(db, {
     ownerId: staleOwner.id,
     assetId: stale.asset.id,
     variantId: staleRender.variant.id,
     body: { width: 1_500, height: 2_000 },
-    fetchImpl: verifiedHead(7_000, "image/webp"),
+    fetchImpl: verifiedImage(7_000, "image/webp", 1_500, 2_000),
     at: 4_000,
   });
+  const stalePublicKey = db.prepare("SELECT object_key FROM media_variants WHERE id=?")
+    .get(staleRender.variant.id).object_key;
+  assert.equal(finalizedStaleRender.variant.url,
+    db.prepare("SELECT public_url FROM media_variants WHERE id=?").get(staleRender.variant.id).public_url);
   assert.ok(enqueueExpiredMediaTickets(db, { env: cleanupEnv, at: cleanupAt }) >= 2);
   assert.equal(db.prepare("SELECT 1 FROM media_assets WHERE id=?").get(stale.asset.id), undefined,
     "an expired unattached descriptor is removed before it can publish dead URLs");
   assert.deepEqual(db.prepare("SELECT object_key FROM media_deletion_queue WHERE owner_id=? ORDER BY object_key")
-    .all(staleOwner.id).map((row) => row.object_key), [stale.upload.key, staleRender.upload.key].sort());
+    .all(staleOwner.id).map((row) => row.object_key), [
+      stale.upload.key,
+      staleRender.upload.key,
+      stalePublicKey,
+    ].sort());
 
   const finalizedOwner = addUser("media_orphan_finalize_owner");
   const finalizedBody = sourceBody({ clientAssetId: "orphan-finalize-source", fileSize: 12_500 });
@@ -1361,7 +1514,7 @@ test("orphan cleanup respects refreshed activity, invalidates stale drafts, and 
     ownerId: finalizedOwner.id,
     assetId: recentlyFinalized.asset.id,
     body: { width: 1_000, height: 1_250, editRecipe: {} },
-    fetchImpl: verifiedHead(12_500, "image/jpeg"),
+    fetchImpl: verifiedImage(12_500, "image/jpeg", 1_000, 1_250),
     at: 2_000,
   });
   const resumedRender = createMediaVariant(db, {
@@ -1382,7 +1535,7 @@ test("orphan cleanup respects refreshed activity, invalidates stale drafts, and 
     assetId: recentlyFinalized.asset.id,
     variantId: resumedRender.variant.id,
     body: { width: 1_000, height: 1_250 },
-    fetchImpl: verifiedHead(7_500, "image/webp"),
+    fetchImpl: verifiedImage(7_500, "image/webp", 1_000, 1_250),
     at: 4_000,
   });
   const resumed = createMediaAsset(db, {
@@ -1441,7 +1594,7 @@ test("orphan cleanup respects refreshed activity, invalidates stale drafts, and 
     ownerId: attachedOwner.id,
     assetId: attached.asset.id,
     body: { width: 1_000, height: 1_000, editRecipe: {} },
-    fetchImpl: verifiedHead(13_000, "image/jpeg"),
+    fetchImpl: verifiedImage(13_000, "image/jpeg", 1_000, 1_000),
     at: 2_000,
   });
   const attachedRender = createMediaVariant(db, {
@@ -1462,7 +1615,7 @@ test("orphan cleanup respects refreshed activity, invalidates stale drafts, and 
     assetId: attached.asset.id,
     variantId: attachedRender.variant.id,
     body: { width: 1_000, height: 1_000 },
-    fetchImpl: verifiedHead(8_000, "image/webp"),
+    fetchImpl: verifiedImage(8_000, "image/webp", 1_000, 1_000),
     at: 4_000,
   });
   routes["POST /api/posts"]({
@@ -1524,7 +1677,7 @@ test("aggregate draft activity cannot starve later orphan cleanup batches", asyn
     ownerId: activeOwner.id,
     assetId: active.asset.id,
     body: { width: 1_200, height: 1_500, editRecipe: {} },
-    fetchImpl: verifiedHead(15_000, "image/jpeg"),
+    fetchImpl: verifiedImage(15_000, "image/jpeg", 1_200, 1_500),
     at: 2_000,
   });
   createMediaVariant(db, {
@@ -1811,7 +1964,7 @@ test("post creation projects stable media and grandfathers stored URL-only media
     ownerId: user.id,
     assetId: created.asset.id,
     body: { width: 1_080, height: 1_350, altText: "Singer reaching toward the front row", editRecipe: {} },
-    fetchImpl: verifiedHead(12_345, "image/jpeg"),
+    fetchImpl: verifiedImage(12_345, "image/jpeg", 1_080, 1_350),
   });
   const delivery = createMediaVariant(db, {
     ownerId: user.id,
@@ -1825,13 +1978,14 @@ test("post creation projects stable media and grandfathers stored URL-only media
     },
     variantId: "mv_iiiiiiiiiiiiiiiiiiiiiiii",
   });
-  await finalizeMediaVariant(db, {
+  const finalizedDelivery = await finalizeMediaVariant(db, {
     ownerId: user.id,
     assetId: created.asset.id,
     variantId: delivery.variant.id,
     body: { width: 1_080, height: 1_350 },
-    fetchImpl: verifiedHead(8_000, "image/webp"),
+    fetchImpl: verifiedImage(8_000, "image/webp", 1_080, 1_350),
   });
+  const deliveryUrl = finalizedDelivery.variant.url;
   const stable = routes["POST /api/posts"]({
     user,
     ip: "stable-media-post",
@@ -1842,12 +1996,12 @@ test("post creation projects stable media and grandfathers stored URL-only media
       clientMutationId: "post-media-retry-0001",
     },
   });
-  assert.deepEqual(stable.post.photos, [delivery.upload.publicUrl]);
+  assert.deepEqual(stable.post.photos, [deliveryUrl]);
   assert.equal(stable.post.media.length, 1);
   assert.deepEqual(stable.post.mediaAssetIds, [created.asset.id]);
   assert.equal(stable.post.media[0].id, created.asset.id);
-  assert.equal(stable.post.media[0].url, delivery.upload.publicUrl);
-  assert.equal(stable.post.media[0].sourceUrl, created.upload.publicUrl);
+  assert.equal(stable.post.media[0].url, deliveryUrl);
+  assert.equal(stable.post.media[0].sourceUrl, null);
   assert.equal(stable.post.media[0].altText, "Singer reaching toward the front row");
   const publicStable = routes["GET /api/users/:id/posts"]({
     user: null,
@@ -1855,14 +2009,16 @@ test("post creation projects stable media and grandfathers stored URL-only media
     params: { id: user.id },
     query: {},
   }).posts.find((post) => post.id === stable.id);
-  assert.equal(publicStable.media[0].sourceUrl, delivery.upload.publicUrl);
-  assert.notEqual(publicStable.media[0].sourceUrl, created.upload.publicUrl,
+  assert.equal(publicStable.media[0].sourceUrl, deliveryUrl);
+  assert.notEqual(publicStable.media[0].sourceUrl, created.upload.storageLocator,
     "non-owners never receive the original source reference");
   assert.equal(db.prepare("SELECT status FROM media_objects WHERE object_key=?").get(created.upload.key).status, "associated");
-  const exported = routes["GET /api/me/export"]({ user, ip: "stable-media-export", body: {} });
-  assert.equal(exported.mediaAssets.some((asset) => asset.id === created.asset.id
-    && asset.sourceUrl === created.upload.publicUrl
-    && asset.altText === "Singer reaching toward the front row"), true);
+  const exported = routes["POST /api/me/export"]({ user, ip: "stable-media-export", body: { password: "media-password" } });
+  const exportedAsset = exported.mediaAssets.find((asset) => asset.id === created.asset.id);
+  assert.equal(exportedAsset?.url, deliveryUrl);
+  assert.equal(exportedAsset?.altText, "Singer reaching toward the front row");
+  assert.equal(Object.hasOwn(exportedAsset || {}, "sourceUrl"), false,
+    "portable exports never serialize a reusable private-source capability");
 
   const legacyUrl = "https://legacy.example.com/concert.jpg";
   assert.throws(
@@ -2097,19 +2253,8 @@ test("new URL-only videos are blocked while historical clips are grandfathered a
   db.prepare("UPDATE media_assets SET codec_status='verified',codec_verified_at=? WHERE id=?")
     .run(Date.now(), video.asset.id);
   const legacyItem = gallery.find((item) => item.postId === "p_gallery_legacy_image");
-  assert.deepEqual({
-    uri: legacyItem.uri,
-    posterUrl: legacyItem.posterUrl,
-    posterTimeMs: legacyItem.posterTimeMs,
-    kind: legacyItem.kind,
-    altText: legacyItem.altText,
-  }, {
-    uri: legacyImage,
-    posterUrl: null,
-    posterTimeMs: null,
-    kind: "image",
-    altText: "",
-  });
+  assert.equal(legacyItem, undefined,
+    "historical raw URL-only images are retained in storage but no longer projected publicly");
   assert.equal(gallery.some((item) => item.postId === "p_gallery_private_image"), false,
     "artist gallery privacy and existing ordering filter remain unchanged");
   assert.equal(gallery.some((item) => item.postId === "p_gallery_blocked_image"), false,
@@ -2127,6 +2272,6 @@ test("new URL-only videos are blocked while historical clips are grandfathered a
     ip: "gallery-identity-read",
     query: { name: "Twin Act", artistKey: "twin a" },
   }).photos;
-  assert.deepEqual(exactArtist.map((item) => item.postId), ["p_gallery_homonym_a"],
-    "an explicit catalog identity never mixes a same-named artist into the gallery");
+  assert.deepEqual(exactArtist.map((item) => item.postId), [],
+    "raw URL-only rows stay hidden even when an exact catalog identity is requested");
 });

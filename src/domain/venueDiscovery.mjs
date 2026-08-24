@@ -51,6 +51,15 @@ export function splitVenuePlace(value) {
   };
 }
 
+// JSON and SQLite both commonly project an absent numeric field as null. Since
+// Number(null) is 0, distance labels must reject missing/blank values before
+// coercion or a worldwide listing can falsely look like it is 0.0 km away.
+export function optionalDistanceKm(value) {
+  if (value == null || value === "" || typeof value === "boolean") return null;
+  const distance = Number(value);
+  return Number.isFinite(distance) && distance >= 0 ? distance : null;
+}
+
 // City names are not globally unique. Directory state and React keys must use
 // the complete place, otherwise London, Ontario and London, England collapse
 // into one misleading card whose region depends on insertion order.

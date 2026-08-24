@@ -40,7 +40,7 @@ test("public documents are complete standalone HTML with canonical metadata", ()
 
 test("privacy and terms mirror the dated in-app policies and expose support", () => {
   const privacy = renderPublicPage("/privacy");
-  assert.match(privacy, /Last updated August 2026/);
+  assert.match(privacy, /Last updated August 24, 2026/);
   assert.match(privacy, /rolling 30-day period/);
   assert.match(privacy, /product analytics enabled/);
   assert.match(privacy, /YouTube API Services/);

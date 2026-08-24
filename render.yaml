@@ -1,8 +1,8 @@
 # Render Blueprint — one-click deploy of mshpit.com.
 # In Render: New ▸ Blueprint ▸ pick this repo. It provisions the web service,
 # a PERSISTENT DISK for the SQLite DB (critical — without it the database is
-# wiped on every deploy), Node 24, and the production env. Set ADMIN_PASSWORD
-# when prompted (it's marked sync:false so it isn't stored in git).
+# wiped on every deploy), Node 24, and the production env. Set ADMIN_EMAIL and
+# ADMIN_PASSWORD when prompted (both are sync:false so neither is stored in git).
 services:
   - type: web
     name: mshpit
@@ -59,7 +59,7 @@ services:
       - key: PUBLIC_ORIGIN
         value: https://www.mshpit.com
       - key: ADMIN_EMAIL
-        value: adamgadishaw@gmail.com
+        sync: false                    # enter the administrator identity in Render
       - key: ADMIN_PASSWORD
         sync: false                    # you enter this in the Render dashboard
       # In-app playback resolves each song to a YouTube video via the YouTube Data
@@ -81,6 +81,10 @@ services:
         sync: false
       - key: MAIL_FROM
         sync: false
+      # Fail closed after database restore: old snapshots may predate consent
+      # withdrawals or deletion. Enable only after the privacy replay/drill.
+      - key: EMAIL_CAMPAIGN_RECOVERY_ENABLED
+        value: "false"
       # Durable photos upload directly to an S3-compatible bucket using a
       # short-lived signed PUT. The same active-media credential must be limited
       # to this bucket and permit PutObject, DeleteObject, and ListBucket: account
@@ -128,9 +132,15 @@ services:
       - key: BANDSINTOWN_APP_ID
         sync: false                    # self-assigned string; developer.bandsintown.com
       - key: TOURDATE_REFRESH_ENABLED
-        value: "false"
+        value: "true"                  # production owns the quota-safe worldwide refresh
       - key: TOURDATE_LIMIT
         value: "150"                   # top artists polled per refresh
+      - key: TOURDATE_ARTIST_PAGE_SIZE
+        value: "50"                    # one larger page; no extra provider request
+      - key: TOURDATE_COUNTRY_BATCH
+        value: "10"                    # persisted round-robin global markets per pass
+      - key: TOURDATE_REQUEST_DELAY_MS
+        value: "550"                   # conservative Ticketmaster pacing
       - key: TOURDATE_REFRESH_H
         value: "12"                    # hours between refreshes
       - key: TOURDATE_CITY_LIMIT
@@ -199,7 +209,7 @@ services:
       - key: PUBLIC_ORIGIN
         sync: false                    # the onrender.com URL Render assigns
       - key: ADMIN_EMAIL
-        value: adamgadishaw@gmail.com
+        sync: false                    # configure staging independently in Render
       - key: ADMIN_PASSWORD
         sync: false                    # must NOT match production
       # Comma-separated. Anything not listed is logged as skipped, never sent.
@@ -210,6 +220,8 @@ services:
         sync: false
       - key: MAIL_FROM
         sync: false
+      - key: EMAIL_CAMPAIGN_RECOVERY_ENABLED
+        value: "false"
       - key: MEDIA_ENDPOINT
         sync: false
       - key: MEDIA_BUCKET

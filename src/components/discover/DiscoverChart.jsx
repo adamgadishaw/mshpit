@@ -33,9 +33,12 @@ function SearchBox({ value, onChange }) {
 function ChartMetric({ row, source }) {
   const value = source === "plays" ? row?.plays : row?.popularity ?? row?.followers ?? row?.rating;
   const label = source === "plays" ? "plays" : row?.popularity != null ? "pop" : row?.followers != null ? "fans" : row?.rating != null ? "rating" : "rank";
+  const displayValue = source === "plays" && row?.playsApproximate
+    ? `${compactDiscoverNumber(value)}+`
+    : compactDiscoverNumber(value);
   return (
-    <View style={styles.chartMetric} accessible accessibilityLabel={`${compactDiscoverNumber(value)} ${label}`}>
-      <Text style={styles.chartMetricValue}>{compactDiscoverNumber(value)}</Text>
+    <View style={styles.chartMetric} accessible accessibilityLabel={`${displayValue} ${label}`}>
+      <Text style={styles.chartMetricValue}>{displayValue}</Text>
       <Text style={styles.chartMetricLabel}>{label}</Text>
     </View>
   );

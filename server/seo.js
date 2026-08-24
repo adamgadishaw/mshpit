@@ -14,6 +14,7 @@ import { isProduction } from "./environment.js";
 import { parsePath, slugify, artistPath, venuePath, showPath, profilePath } from "../src/domain/urls.mjs";
 import { publicPageSitemapEntries } from "./publicPages.js";
 import { activeAccountSql } from "./accountVisibility.js";
+import { safeOwnedReadyMediaUrl } from "./publicMedia.js";
 
 const SITE_NAME = "Pit";
 const DEFAULT_TITLE = "PIT - Your life's musical journey";
@@ -57,7 +58,7 @@ function findByHandle(slug) {
     kind: "profile",
     title: `${row.name} (@${row.handle}) — ${SITE_NAME}`,
     description: summarize(row.bio || `${row.name} reviews live music on ${SITE_NAME}. See the gigs they've been to and what they thought.`),
-    image: row.avatar_uri || null,
+    image: safeOwnedReadyMediaUrl(db, { ownerId: row.id, url: row.avatar_uri, kind: "image" }),
     path: profilePath(row.handle),
     handle: row.handle,
     id: row.id,
@@ -66,9 +67,10 @@ function findByHandle(slug) {
 
 function findArtist(slug) {
   // Slugs are lossy, so match on the normalised name rather than storing a
-  // separate slug column that could drift from the artist's actual name.
-  const row = db.prepare("SELECT name,genre,bio,photo,data FROM artists WHERE norm=?").get(normName(slug.replace(/-/g, " ")))
-    || db.prepare("SELECT name,genre,bio,photo,data FROM artists").all().find((r) => slugify(r.name) === slug);
+  // separate slug column that could drift from the artist's actual name. A
+  // lossy miss falls back to default metadata rather than scanning the entire
+  // catalogue for every attacker-chosen path.
+  const row = db.prepare("SELECT name,genre,bio,photo,data FROM artists WHERE norm=?").get(normName(slug.replace(/-/g, " ")));
   if (!row) return null;
   const stats = db.prepare(`SELECT COUNT(*) c,AVG(p.overall) avg FROM posts p JOIN users u ON u.id=p.user_id
     WHERE p.removed=0 AND lower(p.artist)=? AND ${activeAccountSql("u")}`).get(String(row.name).toLowerCase());
@@ -85,8 +87,10 @@ function findArtist(slug) {
 }
 
 function findVenue(slug) {
-  const row = db.prepare(`SELECT DISTINCT p.venue,p.city FROM posts p JOIN users u ON u.id=p.user_id
-    WHERE p.removed=0 AND ${activeAccountSql("u")}`).all().find((r) => slugify(r.venue) === slug);
+  const venueKey = normName(slug.replace(/-/g, " "));
+  const row = db.prepare(`SELECT p.venue,p.city FROM posts p JOIN users u ON u.id=p.user_id
+    WHERE p.venue_key=? AND p.removed=0 AND ${activeAccountSql("u")}
+    ORDER BY p.created_at DESC LIMIT 1`).get(venueKey);
   if (!row) return null;
   const stats = db.prepare(`SELECT COUNT(*) c,AVG(p.room) avg FROM posts p JOIN users u ON u.id=p.user_id
     WHERE p.removed=0 AND lower(p.venue)=? AND ${activeAccountSql("u")}`).get(String(row.venue).toLowerCase());
@@ -102,23 +106,37 @@ function findVenue(slug) {
 }
 
 function findShow(id) {
-  const row = db.prepare(`SELECT p.id,p.artist,p.venue,p.city,p.date,p.overall,p.review,p.photos
+  const row = db.prepare(`SELECT p.id,p.user_id,p.artist,p.venue,p.city,p.date,p.overall,p.review,p.photos
     FROM posts p JOIN users u ON u.id=p.user_id
     WHERE p.id=? AND p.removed=0 AND ${activeAccountSql("u")}`).get(id);
   if (!row) return null;
-  const photos = jsonField(row, "photos", []);
+  const storedPhotos = jsonField(row, "photos", []);
+  const photos = (Array.isArray(storedPhotos) ? storedPhotos : []).filter((url) =>
+    !!safeOwnedReadyMediaUrl(db, { ownerId: row.user_id, url }));
   return {
     kind: "show",
     title: `${row.artist} at ${row.venue}${row.date ? ` · ${row.date}` : ""} | ${SITE_NAME}`,
     description: summarize(row.review || `A review of ${row.artist} live at ${row.venue}${row.city ? ` in ${row.city}` : ""}.`),
     image: Array.isArray(photos) && photos.length ? photos[0] : null,
     path: showPath(row.id),
-    show: row,
+    show: {
+      id: row.id,
+      artist: row.artist,
+      venue: row.venue,
+      city: row.city,
+      date: row.date,
+      overall: row.overall,
+      review: row.review,
+    },
   };
 }
 
 // Returns the metadata for a path, or null when it is not a public entity.
-export function metadataFor(pathname) {
+const METADATA_CACHE_TTL_MS = 60 * 1000;
+const METADATA_CACHE_MAX = 1_000;
+const metadataCache = new Map();
+
+function uncachedMetadataFor(pathname) {
   const parsed = parsePath(pathname);
   if (!parsed) return null;
   const slug = slugify(parsed.value) || String(parsed.value).toLowerCase();
@@ -133,6 +151,17 @@ export function metadataFor(pathname) {
     // Metadata must never take the page down; the shell still renders.
     return null;
   }
+}
+
+export function metadataFor(pathname) {
+  const key = String(pathname || "/").slice(0, 500);
+  const at = Date.now();
+  const cached = metadataCache.get(key);
+  if (cached && at - cached.at < METADATA_CACHE_TTL_MS) return cached.value;
+  const value = uncachedMetadataFor(key);
+  if (metadataCache.size >= METADATA_CACHE_MAX) metadataCache.delete(metadataCache.keys().next().value);
+  metadataCache.set(key, { at, value });
+  return value;
 }
 
 // What the client router needs to open a URL: which kind of thing this is and
@@ -226,33 +255,44 @@ export function robotsTxt() {
 // Only pages with something on them. A sitemap full of empty artist stubs
 // teaches a search engine that the site is thin, which is worse than a smaller
 // sitemap that is entirely substantial.
+const SITEMAP_CACHE_TTL_MS = 5 * 60 * 1000;
+let sitemapCache = { at: 0, value: "" };
+
 export function sitemapXml() {
+  const generatedAt = Date.now();
+  if (sitemapCache.value && generatedAt - sitemapCache.at < SITEMAP_CACHE_TTL_MS) return sitemapCache.value;
   const base = origin();
   const urls = [{ loc: `${base}/`, priority: "1.0", changefreq: "daily" }];
+  const seenLocations = new Set(urls.map((url) => url.loc));
+
+  const addUrl = (entry) => {
+    if (!entry?.loc || seenLocations.has(entry.loc)) return;
+    seenLocations.add(entry.loc);
+    urls.push(entry);
+  };
 
   for (const page of publicPageSitemapEntries()) {
-    urls.push({ loc: `${base}${page.path}`, priority: page.priority, changefreq: page.changefreq });
+    addUrl({ loc: `${base}${page.path}`, priority: page.priority, changefreq: page.changefreq });
   }
 
   for (const row of db.prepare(`SELECT p.artist,COUNT(*) c,MAX(p.created_at) latest FROM posts p JOIN users u ON u.id=p.user_id
                                 WHERE p.removed=0 AND p.artist<>'' AND ${activeAccountSql("u")} GROUP BY lower(p.artist)`).all()) {
-    urls.push({ loc: base + artistPath(row.artist), priority: "0.8", changefreq: "weekly", lastmod: row.latest });
+    addUrl({ loc: base + artistPath(row.artist), priority: "0.8", changefreq: "weekly", lastmod: row.latest });
   }
   for (const row of db.prepare(`SELECT p.venue,MAX(p.created_at) latest FROM posts p JOIN users u ON u.id=p.user_id
                                 WHERE p.removed=0 AND p.venue<>'' AND ${activeAccountSql("u")} GROUP BY lower(p.venue)`).all()) {
-    urls.push({ loc: base + venuePath(row.venue), priority: "0.6", changefreq: "weekly", lastmod: row.latest });
+    addUrl({ loc: base + venuePath(row.venue), priority: "0.6", changefreq: "weekly", lastmod: row.latest });
   }
   for (const row of db.prepare(`SELECT p.id,p.created_at,p.updated_at FROM posts p JOIN users u ON u.id=p.user_id
                                 WHERE p.removed=0 AND p.kind='review' AND ${activeAccountSql("u")}
                                 ORDER BY p.created_at DESC LIMIT 5000`).all()) {
-    urls.push({ loc: base + showPath(row.id), priority: "0.5", changefreq: "monthly", lastmod: row.updated_at || row.created_at });
+    addUrl({ loc: base + showPath(row.id), priority: "0.5", changefreq: "monthly", lastmod: row.updated_at || row.created_at });
   }
   // Artists with a real catalogue presence but no reviews yet still deserve
   // indexing: they are the pages a search for the band should land on.
   for (const row of db.prepare(`SELECT name FROM artists WHERE photo IS NOT NULL AND popularity IS NOT NULL
                                 ORDER BY rank_score DESC LIMIT 2000`).all()) {
-    const loc = base + artistPath(row.name);
-    if (!urls.some((u) => u.loc === loc)) urls.push({ loc, priority: "0.4", changefreq: "monthly" });
+    addUrl({ loc: base + artistPath(row.name), priority: "0.4", changefreq: "monthly" });
   }
 
   const entries = urls.map((u) => [
@@ -264,5 +304,7 @@ export function sitemapXml() {
     "  </url>",
   ].filter(Boolean).join("\n")).join("\n");
 
-  return `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${entries}\n</urlset>\n`;
+  const value = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${entries}\n</urlset>\n`;
+  sitemapCache = { at: generatedAt, value };
+  return value;
 }

@@ -24,9 +24,9 @@ function addUser(id, handle) {
 
 function addPost(id, userId, { artist, venue, overall, room, createdAt }) {
   db.prepare(`INSERT INTO posts
-    (id,user_id,artist,venue,city,date,overall,room,review,photos,photos_public,created_at)
-    VALUES (?,?,?,?,?,?,?,?,?,'[]',0,?)`)
-    .run(id, userId, artist, venue, "Toronto", "2026-08-20", overall, room, `${artist} review by ${userId}`, createdAt);
+    (id,user_id,artist,venue,venue_key,city,date,overall,room,review,photos,photos_public,created_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,'[]',0,?)`)
+    .run(id, userId, artist, venue, normName(venue), "Toronto", "2026-08-20", overall, room, `${artist} review by ${userId}`, createdAt);
 }
 
 test("SEO metadata, entity routing, and sitemap exclude restricted authors", () => {
@@ -82,4 +82,33 @@ test("SEO metadata, entity routing, and sitemap exclude restricted authors", () 
   assert.doesNotMatch(sitemap, new RegExp(showPath("seo_banned_show")));
   assert.doesNotMatch(sitemap, new RegExp(venuePath("SEO Suspended Secret Hall")));
   assert.doesNotMatch(sitemap, new RegExp(venuePath("SEO Banned Hall")));
+});
+
+test("profile share metadata drops legacy user-hosted images but keeps catalog provider art", () => {
+  const user = addUser("u_seo_legacy_media", "seolegacymedia");
+  const attackerUrl = "https://attacker.example/tracking-avatar.jpg";
+  db.prepare("UPDATE users SET avatar_uri=? WHERE id=?").run(attackerUrl, user.id);
+
+  const profile = metadataFor(profilePath(user.handle));
+  assert.equal(profile.image, null);
+  assert.doesNotMatch(headTagsFor(profilePath(user.handle)), /attacker\.example/i);
+
+  addPost("seo_legacy_media_show", user.id, {
+    artist: "Legacy Media Artist", venue: "Legacy Media Hall", overall: 4, room: 4, createdAt: 400,
+  });
+  db.prepare("UPDATE posts SET photos=?,photos_public=1 WHERE id=?")
+    .run(JSON.stringify([attackerUrl]), "seo_legacy_media_show");
+  const show = metadataFor(showPath("seo_legacy_media_show"));
+  assert.equal(show.image, null);
+  assert.equal(show.show.photos, undefined, "metadata objects do not retain the untrusted storage column");
+  assert.doesNotMatch(headTagsFor(showPath("seo_legacy_media_show")), /attacker\.example/i);
+
+  const artist = "Provider Image Artist";
+  const providerImage = "https://catalog-provider.example/artist.jpg";
+  db.prepare(`INSERT OR REPLACE INTO artists
+    (norm,name,search_key,genre,photo,bio,popularity,rank_score,data,source,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(normName(artist), artist, "providerimageartist", "Rock", providerImage, "Provider-authored catalog bio.", 10, 10, "{}", "test", 1, 1);
+  assert.equal(metadataFor(artistPath(artist)).image, providerImage,
+    "catalog/provider imagery is separate from user-authored profile media");
 });

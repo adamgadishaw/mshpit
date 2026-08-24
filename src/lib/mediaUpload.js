@@ -7,6 +7,7 @@ import { mediaPutStatusAccepted } from "../domain/mediaUploadPolicy.mjs";
 import { normalizeMediaTransferProgress } from "../domain/mediaTransferProgress.mjs";
 import { createMediaUploadDeadline, mediaUploadTimeoutMs } from "../domain/mediaUploadDeadline.mjs";
 import { uploadBinaryWithProgress } from "./webBinaryUpload.mjs";
+import { validMediaUploadTicket } from "../domain/mediaUploadTicket.mjs";
 
 const MIME_BY_EXTENSION = Object.freeze({
   jpg: "image/jpeg",
@@ -154,7 +155,7 @@ export async function uploadPreparedMediaAsset(prepared, ticket, {
   if (!prepared?.body || !prepared?.contentType || !Number.isSafeInteger(prepared?.fileSize)) {
     throw capturedUploadError(new Error("The prepared media upload is invalid."), { context, code: "PIT-UPLOAD-002" });
   }
-  if (!ticket?.uploadUrl || !isDurableMediaUrl(ticket?.publicUrl) || !ticket?.requiredHeaders) {
+  if (!validMediaUploadTicket(ticket)) {
     throw captureAppError(new AppError(undefined, { code: "PIT-UPLOAD-004", context, source: "media" }), {
       context,
       source: "media",
@@ -204,7 +205,9 @@ export async function uploadPreparedMediaAsset(prepared, ticket, {
     }
     if (!mediaPutStatusAccepted(status)) throw new Error(`Media storage rejected the upload (${status}).`);
     reportProgress({ bytesSent: prepared.fileSize, totalBytes: prepared.fileSize });
-    return ticket.publicUrl;
+    // Private source capabilities deliberately have no browser-readable URL.
+    // Stable-media callers finalize them by opaque asset id after the PUT.
+    return ticket.storageScope === "public" ? ticket.publicUrl : null;
   } catch (error) {
     if (signal?.aborted && !deadline.timedOut) throw error;
     throw capturedUploadError(error, { timedOut: deadline.timedOut, context });
@@ -246,5 +249,41 @@ export async function uploadMediaAsset(asset, purpose, { signal, timeoutMs } = {
       name: prepared.name,
     },
   });
-  return uploadPreparedMediaAsset(prepared, ticket, { signal, timeoutMs, context });
+  // Legacy surfaces no longer receive a browser-authored public object. Camera
+  // bytes are staged privately, then the server performs the full decode and a
+  // metadata-free re-encode before returning the only URL callers may persist.
+  if (ticket?.storageScope !== "private"
+      || typeof ticket?.finalizeToken !== "string"
+      || typeof ticket?.descriptorId !== "string") {
+    throw captureAppError(new AppError(undefined, {
+      code: "PIT-UPLOAD-004",
+      context: "Preparing your private photo upload",
+      source: "media",
+    }), {
+      context: "Preparing your private photo upload",
+      source: "media",
+      toast: true,
+      meta: { method: "POST", route: "/api/media/presign" },
+    });
+  }
+  await uploadPreparedMediaAsset(prepared, ticket, { signal, timeoutMs, context });
+  const finalized = await api("/api/media/finalize", {
+    method: "POST",
+    context: `Securing ${purpose} media`,
+    signal,
+    body: { finalizeToken: ticket.finalizeToken },
+  });
+  if (finalized?.descriptorId !== ticket.descriptorId || !isDurableMediaUrl(finalized?.publicUrl)) {
+    throw captureAppError(new AppError(undefined, {
+      code: "PIT-UPLOAD-004",
+      context: `Securing ${purpose} media`,
+      source: "media",
+    }), {
+      context: `Securing ${purpose} media`,
+      source: "media",
+      toast: true,
+      meta: { method: "POST", route: "/api/media/finalize" },
+    });
+  }
+  return finalized.publicUrl;
 }

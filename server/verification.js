@@ -1,8 +1,8 @@
 // Email verification.
 //
-// Non-blocking by design: an unverified account works normally and only sees a
-// prompt. Verification is a signal, not a gate, so a mail outage degrades into
-// "nobody sees the badge" rather than "nobody can use the site".
+// Unverified accounts may browse and exercise privacy/account rights, but unsafe
+// social, media, and artist mutations are gated at the HTTP boundary. A mail
+// outage therefore fails closed for publishing without trapping data rights.
 //
 // The ordering the owner asked for: signup sends the VERIFY mail, and the WELCOME
 // mail is held until the address is actually confirmed. Welcoming an address
@@ -13,11 +13,10 @@ import { publicOrigin, sendTemplate, sendTemplateInBackground } from "./emailSer
 
 const TTL_MS = 24 * 60 * 60 * 1000;
 
-// Kill switch. Email is a single external dependency; when it breaks, signup must
-// not start producing accounts stuck in a permanently unverified state. Setting
-// this treats every new account as verified and sends the welcome mail directly.
-// Default is ON, so forgetting the variable cannot silently disable verification.
+// Local-only compatibility switch. Hosted production must never turn a mail
+// outage into an authorization bypass by auto-verifying new accounts.
 export function verificationEnabled(env = process.env) {
+  if (env?.NODE_ENV === "production" || env?.RENDER === "true") return true;
   const raw = String(env?.EMAIL_VERIFICATION_ENABLED ?? "").trim().toLowerCase();
   if (!raw) return true;
   return !["0", "false", "no", "off"].includes(raw);
@@ -35,7 +34,10 @@ export function mintVerifyToken(userId, now = Date.now()) {
 }
 
 export function verifyLink(token) {
-  return `${publicOrigin()}/api/verify-email?token=${encodeURIComponent(token)}`;
+  // Fragments never enter HTTP requests, reverse-proxy logs, or Referer
+  // headers. The app retains its explicit confirmation step, so mail scanners
+  // still cannot consume the verification capability.
+  return `${publicOrigin()}/#verify=${encodeURIComponent(token)}`;
 }
 
 /**

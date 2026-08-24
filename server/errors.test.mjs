@@ -9,6 +9,7 @@ import {
   ERROR_CATALOG as SERVER_ERROR_CATALOG,
   errorCodeForStatus,
   errorEnvelope,
+  privateErrorLabel,
 } from "./errors.js";
 import {
   ERROR_CATALOG as CLIENT_ERROR_CATALOG,
@@ -152,6 +153,17 @@ test("ApiError refuses unknown codes and explicit status drift", () => {
     /VALIDATION_FAILED requires status 400, received 409/,
   );
   assert.equal(new ApiError(418, "Unsupported status without an explicit code.").status, 400);
+});
+
+test("runtime error labels never copy messages, URLs, addresses, or credentials", () => {
+  const label = privateErrorLabel({
+    name: "Fetch Error\nforged",
+    code: "ETIMEDOUT / bad",
+    message: "https://provider.test/?key=secret recipient@example.test",
+    stack: "private stack",
+  });
+  assert.equal(label, "FetchErrorforged/ETIMEDOUTbad");
+  assert.doesNotMatch(label, /provider|secret|recipient|@|\s/i);
 });
 
 test("every server error code has a valid client diagnostic mapping", () => {

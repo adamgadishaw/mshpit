@@ -6,8 +6,9 @@
 import { randomBytes } from "node:crypto";
 import { db, emailStmts, q } from "./db.js";
 import { isProduction } from "./environment.js";
-import { mailConfigured, mailDiagnostics, sendEmail } from "./mailer.js";
+import { mailConfigured, mailDiagnostics, mailFailureLabel, sendEmail } from "./mailer.js";
 import { DEFAULT_TEMPLATES, renderEmail } from "./emails.js";
+import { privateErrorLabel } from "./errors.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -63,7 +64,9 @@ export function unsubscribeToken(userId) {
 }
 
 export function unsubscribeUrl(userId) {
-  return `${publicOrigin()}/api/unsubscribe?token=${unsubscribeToken(userId)}`;
+  // Keep the bearer credential out of CDN/server access logs. The app still
+  // requires an explicit POST after this fragment link is opened.
+  return `${publicOrigin()}/#unsubscribe=${encodeURIComponent(unsubscribeToken(userId))}`;
 }
 
 export function templateFor(key) {
@@ -98,7 +101,7 @@ function writeLog(entry) {
   } catch (e) {
     // Logging must never take down a send. Losing one audit row is bad; failing
     // the password reset that produced it is worse.
-    console.warn("[mail] could not write email_log:", e?.message);
+    console.warn(`[mail] could not write email_log cause=${privateErrorLabel(e)}`);
   }
 }
 
@@ -116,6 +119,7 @@ export async function deliver({ to, userId = null, kind = "transactional", templ
     const user = q.userById.get(userId);
     if (!user) { writeLog({ ...base, status: "skipped", reason: "no-such-user" }); return { sent: false, reason: "no-such-user" }; }
     if (user.marketing_opt_out) { writeLog({ ...base, status: "skipped", reason: "opted-out" }); return { sent: false, reason: "opted-out" }; }
+    if (!user.marketing_consent_at) { writeLog({ ...base, status: "skipped", reason: "no-consent" }); return { sent: false, reason: "no-consent" }; }
     if (user.is_banned) { writeLog({ ...base, status: "skipped", reason: "banned" }); return { sent: false, reason: "banned" }; }
   }
 
@@ -177,7 +181,7 @@ export async function sendTemplate(key, { user, to = null, vars = {}, kind = "tr
 export function sendTemplateInBackground(key, options) {
   Promise.resolve()
     .then(() => sendTemplate(key, options))
-    .catch((e) => console.warn(`[mail] background ${key} failed:`, e?.message));
+    .catch((e) => console.warn(`[mail] background ${key} failed cause=${mailFailureLabel(e)}`));
 }
 
 export function logStatsSince(sinceMs) {

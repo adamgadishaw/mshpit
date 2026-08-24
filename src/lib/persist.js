@@ -6,4 +6,5 @@ const persistence = createJsonPersistence();
 
 export const load = persistence.load;
 export const save = persistence.save;
+export const remove = persistence.remove;
 export const setPersistErrorHandler = persistence.setErrorHandler;

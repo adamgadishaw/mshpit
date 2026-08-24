@@ -37,9 +37,14 @@ function check(name, severity, sql, describe) {
   if (missing) { findings.push({ name, severity: "skipped", count: 0, note: `table ${missing} not in this database` }); return; }
   try {
     const rows = db.prepare(sql).all();
-    findings.push({ name, severity, count: rows.length, samples: rows.slice(0, 3), note: describe });
+    // Integrity output is routinely copied into deploy logs and support
+    // tickets. A count is enough to route remediation; returning row samples
+    // can expose email addresses, session-token hashes, and private record
+    // identifiers to systems that do not need them.
+    findings.push({ name, severity, count: rows.length, note: describe });
   } catch (error) {
-    findings.push({ name, severity: "error", count: 0, note: `check failed: ${error.message}` });
+    const errorType = String(error?.code || error?.name || "Error").replace(/[^A-Za-z0-9_]/g, "").slice(0, 40) || "Error";
+    findings.push({ name, severity: "error", count: 0, note: `check failed (${errorType})` });
   }
 }
 
@@ -119,7 +124,6 @@ if (asJson) {
   for (const f of findings) {
     const mark = f.severity === "skipped" ? "-" : f.count === 0 ? "ok" : f.severity === "warn" ? "warn" : f.severity === "error" ? "ERR" : "FAIL";
     console.log(`  ${mark.padEnd(5)} ${f.name}${f.count ? `  (${f.count})` : ""}${f.severity !== "skipped" && f.count ? `\n        ${f.note}` : ""}`);
-    if (f.count && f.samples?.length) console.log(`        e.g. ${JSON.stringify(f.samples[0])}`);
   }
   console.log(`\n  ${failed.length} failing, ${warned.length} warnings, ${broken.length} checks errored`);
 }

@@ -16,6 +16,8 @@ import { contentSafetyDecision } from "./contentSafety.js";
 import { canonicalProfileExtras } from "./profileExtras.js";
 import { legacyTrackOverrideIdentityKey, trackOverrideIdentityKey } from "./trackIdentity.js";
 import { normalizeTaggedUserIds } from "../src/domain/postFriendTags.mjs";
+import { privateErrorLabel } from "./errors.js";
+import { quarantineUnsafeLegacyImages } from "./publicMedia.js";
 
 export const artistSearchKey = (value) => String(value || "")
   .normalize("NFKD")
@@ -652,8 +654,8 @@ CREATE INDEX IF NOT EXISTS idx_media_upload_issuances_at
 -- the product. Source keys/URLs are minted by the server and never replaced by
 -- a client-supplied URL. HEAD verification observes the signed byte count and
 -- MIME transport metadata. Video publication additionally requires a bounded
--- ISO-BMFF track/duration probe, recorded separately below. Pixel dimensions
--- and image content remain declared, so the API does not overstate them.
+-- ISO-BMFF track/duration probe. Image publication requires an isolated full
+-- decode and a separately keyed, metadata-free server-authored rendition.
 CREATE TABLE IF NOT EXISTS media_assets (
   id                 TEXT PRIMARY KEY,
   owner_id           TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -698,10 +700,10 @@ CREATE TABLE IF NOT EXISTS media_assets (
 CREATE INDEX IF NOT EXISTS idx_media_assets_owner_status
   ON media_assets(owner_id, status, created_at DESC);
 
--- Renditions are separate owned objects. Today PIT accepts a verified
--- client-rendered image rendition and a verified still poster. Destructive
--- video edits deliberately remain unavailable until an authoritative encoder
--- is configured; no row is marked ready merely because a recipe exists.
+-- Renditions are separate owned objects. Client-rendered images are private
+-- staging inputs; only an isolated decode/re-encode receives the durable public
+-- identity. Destructive video edits remain unavailable until an authoritative
+-- encoder is configured; no row is ready merely because a recipe exists.
 CREATE TABLE IF NOT EXISTS media_variants (
   id                TEXT PRIMARY KEY,
   asset_id          TEXT NOT NULL REFERENCES media_assets(id) ON DELETE CASCADE,
@@ -1190,7 +1192,11 @@ const additiveMigrations = [
   // Marketing consent. Broadcasts must honour this; password resets must not,
   // since a user who opted out of announcements still needs to reach their
   // account. server/emailService.js is where that distinction is enforced.
-  "ALTER TABLE users ADD COLUMN marketing_opt_out INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE users ADD COLUMN marketing_opt_out INTEGER NOT NULL DEFAULT 1",
+  "ALTER TABLE users ADD COLUMN marketing_consent_at INTEGER",
+  "ALTER TABLE users ADD COLUMN marketing_consent_version TEXT",
+  "ALTER TABLE users ADD COLUMN marketing_consent_source TEXT",
+  "ALTER TABLE users ADD COLUMN marketing_withdrawn_at INTEGER",
   // Per-user unsubscribe secret, minted lazily. A link must not be forgeable
   // from the address alone, or anyone could opt out anybody.
   "ALTER TABLE users ADD COLUMN unsub_token TEXT",
@@ -1276,9 +1282,14 @@ try {
   // Image codecs are outside the MP4 compatibility gate. This also gives image
   // rows created before the codec columns an honest, non-pending state.
   db.prepare("UPDATE media_assets SET codec_status='not_applicable' WHERE kind='image' AND codec_status='pending'").run();
+  // Rows created before server-side image sanitization may point directly at a
+  // public camera upload. Preserve their records and originals for an explicit
+  // re-sanitization/backfill, but make their publish state fail closed now.
+  quarantineUnsafeLegacyImages(db);
   db.exec("COMMIT");
 } catch (error) {
-  try { db.exec("ROLLBACK"); } catch {}
+  try { db.exec("ROLLBACK"); }
+  catch { /* architecture: allow-empty-catch -- preserve the original schema migration failure */ }
   throw error;
 }
 
@@ -1400,8 +1411,10 @@ db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_lounge_client_mutation ON lounge_
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_tourdates_owner_show ON tour_dates(owner_id, lower(artist), lower(venue), lower(place), date) WHERE owner_id IS NOT NULL");
 db.exec("CREATE INDEX IF NOT EXISTS idx_tourdates_visibility ON tour_dates(release_at, date)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_tourdates_owner ON tour_dates(owner_id, date)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_tourdates_artist_date ON tour_dates(lower(artist), date, id)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_going_cursor ON going(concert_key, created_at DESC, user_id DESC)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_posts_landing_media ON posts(landing_showcase, photos_public, removed, kind, created_at DESC, id DESC)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_posts_venue_visibility ON posts(venue_key, removed, created_at DESC) WHERE venue_key IS NOT NULL");
 // Artist profile Top Reviews scans only substantive, live review posts. Keep
 // both canonical-key and legacy-name reads bounded without bloating the general
 // feed indexes with rows this projection can never return.
@@ -1411,6 +1424,14 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_posts_artist_reviews
 db.exec(`CREATE INDEX IF NOT EXISTS idx_posts_artist_name_reviews
   ON posts(lower(artist), created_at DESC, id)
   WHERE removed=0 AND COALESCE(kind,'review')='review' AND length(trim(review))>0`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_posts_artist_archive
+  ON posts(artist_key, date DESC, created_at DESC, id DESC)
+  WHERE removed=0 AND COALESCE(kind,'review')='review'
+    AND date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_posts_artist_name_archive
+  ON posts(lower(artist), date DESC, created_at DESC, id DESC)
+  WHERE removed=0 AND COALESCE(kind,'review')='review'
+    AND date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'`);
 db.exec("CREATE INDEX IF NOT EXISTS idx_dms_visible_cursor ON dms(from_id, to_id, removed, created_at DESC, id DESC)");
 // The queue is drained by "next pending for this campaign" on every iteration,
 // and the log is read newest-first, so both need their own covering order.
@@ -1459,7 +1480,8 @@ try {
   }
   db.exec("COMMIT");
 } catch (error) {
-  try { db.exec("ROLLBACK"); } catch {}
+  try { db.exec("ROLLBACK"); }
+  catch { /* architecture: allow-empty-catch -- preserve the original track-identity migration failure */ }
   throw error;
 }
 
@@ -1471,7 +1493,8 @@ if (db.prepare("SELECT 1 FROM artists WHERE search_key IS NULL OR search_key='' 
     for (const row of artistSearchKeyRows) setArtistSearchKey.run(artistSearchKey(row.name), row.norm);
     db.exec("COMMIT");
   } catch (error) {
-    try { db.exec("ROLLBACK"); } catch {}
+    try { db.exec("ROLLBACK"); }
+    catch { /* architecture: allow-empty-catch -- preserve the original search-key migration failure */ }
     throw error;
   }
 }
@@ -1488,7 +1511,46 @@ if (!db.prepare("SELECT 1 FROM app_meta WHERE key=?").get(eventIpPurgeMarker)) {
     }
     db.exec("COMMIT");
   } catch (error) {
-    try { db.exec("ROLLBACK"); } catch {}
+    try { db.exec("ROLLBACK"); }
+    catch { /* architecture: allow-empty-catch -- preserve the original privacy migration failure */ }
+    throw error;
+  }
+}
+
+// Session IP/user-agent columns predate the privacy-minimized session model and
+// are not used for authorization or device management. Erase historical values
+// once; new session rows intentionally write empty strings in auth.js.
+const sessionMetadataPurgeMarker = "privacy:sessions-metadata-purged:v1";
+if (!db.prepare("SELECT 1 FROM app_meta WHERE key=?").get(sessionMetadataPurgeMarker)) {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    if (!db.prepare("SELECT 1 FROM app_meta WHERE key=?").get(sessionMetadataPurgeMarker)) {
+      db.prepare("UPDATE sessions SET ip='',ua='' WHERE COALESCE(ip,'')<>'' OR COALESCE(ua,'')<>''").run();
+      db.prepare("INSERT OR IGNORE INTO app_meta (key,value) VALUES (?,?)").run(sessionMetadataPurgeMarker, String(Date.now()));
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    try { db.exec("ROLLBACK"); }
+    catch { /* architecture: allow-empty-catch -- preserve the original privacy migration failure */ }
+    throw error;
+  }
+}
+
+// Accepting Terms was historically (and incorrectly) treated as announcement
+// consent. No affirmative record exists for those accounts, so fail private:
+// migrate them to opted out and require a signed-in Settings action to opt in.
+const marketingConsentPurgeMarker = "privacy:affirmative-marketing-consent:v1";
+if (!db.prepare("SELECT 1 FROM app_meta WHERE key=?").get(marketingConsentPurgeMarker)) {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    if (!db.prepare("SELECT 1 FROM app_meta WHERE key=?").get(marketingConsentPurgeMarker)) {
+      db.prepare("UPDATE users SET marketing_opt_out=1 WHERE marketing_consent_at IS NULL").run();
+      db.prepare("INSERT OR IGNORE INTO app_meta (key,value) VALUES (?,?)").run(marketingConsentPurgeMarker, String(Date.now()));
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    try { db.exec("ROLLBACK"); }
+    catch { /* architecture: allow-empty-catch -- preserve the original privacy migration failure */ }
     throw error;
   }
 }
@@ -1512,7 +1574,8 @@ if (!db.prepare("SELECT 1 FROM app_meta WHERE key=?").get(eventPropsV2Marker)) {
     }
     db.exec("COMMIT");
   } catch (error) {
-    try { db.exec("ROLLBACK"); } catch {}
+    try { db.exec("ROLLBACK"); }
+    catch { /* architecture: allow-empty-catch -- preserve the original event-policy migration failure */ }
     throw error;
   }
 }
@@ -1574,7 +1637,8 @@ if (!db.prepare("SELECT 1 FROM app_meta WHERE key=?").get(isoDateMigration)) {
     }
     db.exec("COMMIT");
   } catch (error) {
-    try { db.exec("ROLLBACK"); } catch {}
+    try { db.exec("ROLLBACK"); }
+    catch { /* architecture: allow-empty-catch -- preserve the original date migration failure */ }
     throw error;
   }
 }
@@ -1714,7 +1778,13 @@ export const emailStmts = {
   userUnsubToken: db.prepare("SELECT unsub_token FROM users WHERE id = ?"),
   setUnsubToken: db.prepare("UPDATE users SET unsub_token=? WHERE id=?"),
   userByUnsubToken: db.prepare("SELECT * FROM users WHERE unsub_token = ?"),
-  setMarketingOptOut: db.prepare("UPDATE users SET marketing_opt_out=? WHERE id=?"),
+  setMarketingPreference: db.prepare(`UPDATE users SET
+    marketing_opt_out=@opt_out,
+    marketing_consent_at=CASE WHEN @opt_out=0 THEN @at ELSE marketing_consent_at END,
+    marketing_consent_version=CASE WHEN @opt_out=0 THEN @version ELSE marketing_consent_version END,
+    marketing_consent_source=@source,
+    marketing_withdrawn_at=CASE WHEN @opt_out=1 THEN @at ELSE NULL END
+    WHERE id=@id`),
 };
 
 // YouTube video-ID cache statements. Positive entries are periodically
@@ -1935,8 +2005,9 @@ export function seedArtistsFromBundle() {
     if (fresh) console.log(`[db] seeded ${entries.length} artists into the DB from the bundled catalog`);
     else console.log(`[db] merged ${entries.length} bundled artists (refreshed rank/enrichment)`);
   } catch (e) {
-    try { db.exec("ROLLBACK"); } catch {}
-    console.warn("[db] artist seed skipped:", e.message);
+    try { db.exec("ROLLBACK"); }
+    catch { /* architecture: allow-empty-catch -- optional seed failure remains the primary diagnostic */ }
+    console.warn(`[db] artist seed skipped cause=${privateErrorLabel(e)}`);
   }
 }
 seedArtistsFromBundle();
@@ -1970,7 +2041,8 @@ export function sanitizeStoredArtistPreviews() {
     db.prepare("INSERT OR IGNORE INTO app_meta (key,value) VALUES (?,?)").run(marker, String(Date.now()));
     db.exec("COMMIT");
   } catch (error) {
-    try { db.exec("ROLLBACK"); } catch {}
+    try { db.exec("ROLLBACK"); }
+    catch { /* architecture: allow-empty-catch -- preserve the original preview-retention failure */ }
     throw error;
   }
   if (changed) console.log(`[db] removed expired preview URLs from ${changed} artist profiles`);
@@ -2060,6 +2132,13 @@ export function publicUser(u, { self = false, badges = false } = {}) {
     // a stranger has confirmed their address, and invite it being read as a
     // trust signal it is not.
     ...(badges ? { badges: customBadgesFor(u.id) } : {}),
-    ...(self ? { email: u.email, emailVerified: !!u.email_verified_at } : {}),
+    ...(self ? {
+      email: u.email,
+      emailVerified: !!u.email_verified_at,
+      marketingOptOut: !!u.marketing_opt_out || !u.marketing_consent_at,
+      marketingConsentAt: u.marketing_consent_at || null,
+      isBanned: !!u.is_banned,
+      suspendedUntil: u.suspended_until || null,
+    } : {}),
   };
 }

@@ -13,6 +13,22 @@ export const ANALYTICS_MAX_ROWS_PER_ACCOUNT = Math.max(1_000, Math.min(10_000, N
 const ANALYTICS_PRUNE_CHUNK = 5_000;
 let lastPruneAt = 0;
 
+export function pruneAnalyticsData({ database = db, at = Date.now() } = {}) {
+  const aged = database.prepare("DELETE FROM events WHERE created_at < ?").run(at - RETENTION_MS);
+  let count = database.prepare("SELECT COUNT(*) count FROM events").get().count;
+  let overflowRows = 0;
+  while (count > ANALYTICS_MAX_RAW_ROWS) {
+    const remove = Math.min(ANALYTICS_PRUNE_CHUNK, count - ANALYTICS_MAX_RAW_ROWS);
+    const removed = database.prepare(`DELETE FROM events WHERE id IN (SELECT id FROM events ORDER BY created_at,id LIMIT ?)` ).run(remove);
+    const changes = Number(removed?.changes) || 0;
+    overflowRows += changes;
+    if (!changes) break;
+    count -= changes;
+  }
+  lastPruneAt = at;
+  return { agedRows: Number(aged?.changes) || 0, overflowRows };
+}
+
 function profileExtras(user) {
   try {
     const parsed = JSON.parse(user?.extras || "{}");
@@ -40,14 +56,7 @@ export function ingestAnalyticsBatch({ user, events, requireIds = false, at = Da
   if (!incoming.length) return { ok: true, received: 0, accepted: 0, stored: 0, duplicates: 0, rejected: 0 };
 
   if (at - lastPruneAt >= 60 * 60 * 1000) {
-    db.prepare("DELETE FROM events WHERE created_at < ?").run(at - RETENTION_MS);
-    let count = db.prepare("SELECT COUNT(*) count FROM events").get().count;
-    while (count > ANALYTICS_MAX_RAW_ROWS) {
-      const remove = Math.min(ANALYTICS_PRUNE_CHUNK, count - ANALYTICS_MAX_RAW_ROWS);
-      db.prepare(`DELETE FROM events WHERE id IN (SELECT id FROM events ORDER BY created_at,id LIMIT ?)` ).run(remove);
-      count -= remove;
-    }
-    lastPruneAt = at;
+    pruneAnalyticsData({ at });
   }
 
   const accepted = [];

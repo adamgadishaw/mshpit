@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { View, Text, StyleSheet, Pressable } from "react-native";
+import { View, Text, TextInput, StyleSheet, Pressable } from "react-native";
 import { colors } from "../theme";
 import Icon from "../components/Icon";
 
@@ -13,12 +13,14 @@ export default function AccountGate({ status, until, onLogout, onExport, onDelet
   const left = until ? Math.max(1, Math.ceil((until - Date.now()) / 86400000)) : 0;
   const [exporting, setExporting] = useState(false);
   const [exportResult, setExportResult] = useState(null);
+  const [exportPassword, setExportPassword] = useState("");
   const exportData = async () => {
     if (exporting) return;
     setExporting(true);
     setExportResult(null);
-    const result = await onExport?.();
+    const result = await onExport?.(exportPassword);
     setExportResult(result || { ok: false, error: "Pit could not prepare your data file." });
+    if (result?.ok) setExportPassword("");
     setExporting(false);
   };
   return (
@@ -34,8 +36,21 @@ export default function AccountGate({ status, until, onLogout, onExport, onDelet
       </Text>
       <Text style={styles.appeal}>Think this is a mistake? Email appeals@pit.app.</Text>
       <Text style={styles.rights}>You can still download your data or permanently delete this account.</Text>
+      <TextInput
+        value={exportPassword}
+        onChangeText={setExportPassword}
+        placeholder="Current password for data export"
+        placeholderTextColor="rgba(255,255,255,0.45)"
+        secureTextEntry
+        autoCapitalize="none"
+        autoCorrect={false}
+        autoComplete="current-password"
+        textContentType="password"
+        style={styles.passwordInput}
+        accessibilityLabel="Current password for data export"
+      />
       <View style={styles.actions}>
-        <Pressable style={[styles.btn, { borderColor: accent }]} onPress={exportData} disabled={exporting}>
+        <Pressable style={[styles.btn, { borderColor: accent }, (exporting || !exportPassword) && styles.btnDisabled]} onPress={exportData} disabled={exporting || !exportPassword}>
           <Text style={[styles.btnTxt, { color: accent }]}>{exporting ? "Preparing data..." : "Download my data"}</Text>
         </Pressable>
         <Pressable style={[styles.btn, styles.deleteBtn]} onPress={onDelete}>
@@ -57,9 +72,11 @@ const styles = StyleSheet.create({
   body: { color: "#fff", fontSize: 15, lineHeight: 23, textAlign: "center", opacity: 0.92 },
   appeal: { color: "rgba(255,255,255,0.6)", fontSize: 13, marginTop: 4 },
   rights: { color: "rgba(255,255,255,0.78)", fontSize: 12.5, lineHeight: 18, textAlign: "center", marginTop: 6 },
+  passwordInput: { width: "100%", maxWidth: 360, minHeight: 48, color: "#fff", borderWidth: 1, borderColor: "rgba(255,255,255,0.35)", borderRadius: 14, paddingHorizontal: 14 },
   actions: { flexDirection: "row", flexWrap: "wrap", justifyContent: "center", gap: 10 },
   btn: { borderWidth: 1, borderRadius: 999, paddingHorizontal: 28, paddingVertical: 12, marginTop: 12 },
   deleteBtn: { backgroundColor: colors.danger, borderColor: colors.danger },
+  btnDisabled: { opacity: 0.5 },
   btnTxt: { fontSize: 15, fontWeight: "800" },
   result: { color: colors.good, fontSize: 12.5, lineHeight: 18, textAlign: "center" },
   resultError: { color: "#fff" },

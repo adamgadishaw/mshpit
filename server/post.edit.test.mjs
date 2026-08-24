@@ -190,7 +190,9 @@ test("post edits enforce ownership, revisions, validation, and canonical fields"
   });
   assert.equal(first.post.review, "Updated review");
   assert.equal(first.post.song.videoId, "dQw4w9WgXcQ");
-  assert.deepEqual(first.post.photos, ["https://cdn.example/photo.jpg"]);
+  assert.deepEqual(first.post.photos, [], "legacy external media stays stored for owner cleanup but is not republished");
+  assert.deepEqual(JSON.parse(db.prepare("SELECT photos FROM posts WHERE id='post_edit'").get().photos),
+    ["https://cdn.example/photo.jpg"]);
   assert.equal(first.post.photosPublic, true);
   assert.equal(first.post.dims.performance, 5);
   assert.equal(first.post.dims.privileged, undefined);

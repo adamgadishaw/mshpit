@@ -1,9 +1,16 @@
 import { AppState, Platform } from "react-native";
 import { api } from "./api";
-import { load, save } from "./persist";
+import { load, remove, save } from "./persist";
 import { ANALYTICS_BATCH_LIMIT, ANALYTICS_QUEUE_LIMIT, sanitizeAnalyticsEvent } from "../domain/analyticsPolicy.mjs";
+import {
+  LEGACY_PRODUCT_ANALYTICS_STORAGE_KEY,
+  productAnalyticsStorageKey,
+} from "../domain/accountLocalPrivacy.mjs";
 
-const QUEUE_KEY = "pit.analytics.v2";
+// Retire the pre-account-scoping retry queue on first load. Its events have no
+// trustworthy owner and therefore must never be adopted by the current cookie.
+remove(LEGACY_PRODUCT_ANALYTICS_STORAGE_KEY);
+
 const FLUSH_INTERVAL_MS = 8000;
 const RETRY_MAX_MS = 60_000;
 const platform = ["web", "ios", "android"].includes(Platform.OS) ? Platform.OS : "unknown";
@@ -19,19 +26,15 @@ let sessionNonce = 0;
 let persistTimer = null;
 let pendingPersistOwnerId = null;
 
-function queueStorageKey(accountId) {
-  return accountId ? `${QUEUE_KEY}.${accountId}` : null;
-}
-
 function readQueue(accountId) {
-  const key = queueStorageKey(accountId);
+  const key = productAnalyticsStorageKey(accountId);
   const stored = key ? load(key, []) : [];
   if (!Array.isArray(stored)) return [];
   return stored.map((event) => sanitizeAnalyticsEvent(event, { requireId: true })).filter(Boolean).slice(-ANALYTICS_QUEUE_LIMIT);
 }
 
 function persistQueue({ immediate = false, ownerId = account.id, snapshot = queue } = {}) {
-  const key = queueStorageKey(ownerId);
+  const key = productAnalyticsStorageKey(ownerId);
   if (!key) return;
   if (persistTimer && pendingPersistOwnerId === ownerId) clearTimeout(persistTimer);
   const durableSnapshot = snapshot.slice(-ANALYTICS_QUEUE_LIMIT);
@@ -170,8 +173,8 @@ export function productAnalyticsPlatform() {
   return platform;
 }
 
-// Permanent account deletion has a stronger boundary than logout: remove the
-// deleted account's device-local retry batch so it cannot be replayed later.
+// Account exit removes that identity's device-local retry batch so logout or
+// deletion cannot leave private analytics events for the next device user.
 export function purgeProductAnalyticsAccount(accountId) {
   const id = accountId || account.id;
   if (!id) return;
@@ -180,7 +183,7 @@ export function purgeProductAnalyticsAccount(accountId) {
     persistTimer = null;
     pendingPersistOwnerId = null;
   }
-  save(queueStorageKey(id), []);
+  remove(productAnalyticsStorageKey(id));
   if (account.id === id) {
     queue = [];
     account = { id: null, enabled: false };

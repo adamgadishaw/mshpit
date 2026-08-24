@@ -14,6 +14,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { privateErrorLabel } from "../server/errors.js";
 
 const UA = "PitConcertApp/0.1 (https://example.com; contact@example.com)";
 const OUT = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "seed", "catalog.generated.json");
@@ -80,7 +81,7 @@ async function venuesForCity(c) {
       .sort((a, b) => (TYPE_RANK[a.type] ?? 4) - (TYPE_RANK[b.type] ?? 4))
       .slice(0, 16);
   } catch (e) {
-    console.warn(`  ! ${city}: ${e.message}`);
+    console.warn(`  ! ${city}: ${privateErrorLabel(e)}`);
     return [];
   }
 }

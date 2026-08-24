@@ -17,10 +17,20 @@ const {
 } = await import("./cacheWarmer.js");
 const {
   collectTourProviderResults,
+  DEFAULT_TICKETMASTER_COUNTRIES,
+  hasSuccessfulTourProviderWork,
   isTourDateSchedulerEnabled,
   reconcileStaleProviderTourDates,
   runTourDateJobSafely,
   shouldRefreshTourDates,
+  ticketmasterArtistPageSize,
+  ticketmasterCountryBatchSize,
+  ticketmasterCountryCodes,
+  ticketmasterCountryRotation,
+  ticketmasterEventSearchUrl,
+  ticketmasterArtistIdentity,
+  ticketmasterFutureBoundary,
+  ticketmasterRequestDelayMs,
 } = await import("./tourdates.js");
 const { youtubeCacheKey } = await import("./musicProviders.js");
 
@@ -93,6 +103,64 @@ test("tour-date restarts skip provider fan-out while the persisted refresh is fr
   assert.equal(shouldRefreshTourDates(now - 13 * 60 * 60 * 1000, now, 12), true);
 });
 
+test("Ticketmaster searches request all locales and keep artist pages bounded", () => {
+  const url = new URL(ticketmasterEventSearchUrl({
+    apiKey: "test-key",
+    keyword: "Björk & Friends",
+    size: ticketmasterArtistPageSize(500),
+    startDateTime: ticketmasterFutureBoundary(Date.UTC(2026, 7, 24, 12, 34, 56)),
+  }));
+  assert.equal(url.origin, "https://app.ticketmaster.com");
+  assert.equal(url.pathname, "/discovery/v2/events.json");
+  assert.equal(url.searchParams.get("keyword"), "Björk & Friends");
+  assert.equal(url.searchParams.get("classificationName"), "music");
+  assert.equal(url.searchParams.get("locale"), "*");
+  assert.equal(url.searchParams.get("includeTBA"), "no");
+  assert.equal(url.searchParams.get("includeTBD"), "no");
+  assert.equal(url.searchParams.get("startDateTime"), "2026-08-24T12:34:56Z");
+  assert.equal(url.searchParams.get("size"), "200");
+  assert.equal(url.searchParams.get("sort"), "date,asc");
+  assert.equal(url.searchParams.get("apikey"), "test-key");
+  assert.equal(ticketmasterArtistPageSize(undefined), 50);
+  assert.equal(ticketmasterArtistPageSize(1), 8);
+  assert.equal(ticketmasterArtistPageSize("not-a-number"), 50);
+  assert.equal(ticketmasterArtistIdentity("Beyoncé"), "beyonce");
+  assert.equal(ticketmasterArtistIdentity("P!nk"), "p nk");
+  assert.equal(ticketmasterArtistIdentity("Simon & Garfunkel"), "simon and garfunkel");
+});
+
+test("Ticketmaster global countries rotate deterministically within a bounded batch", () => {
+  assert.deepEqual(ticketmasterCountryCodes(" gb,JP,gb,invalid,de, br "), ["GB", "JP", "DE", "BR"]);
+  assert.ok(DEFAULT_TICKETMASTER_COUNTRIES.includes("GB"));
+  assert.ok(DEFAULT_TICKETMASTER_COUNTRIES.includes("JP"));
+  assert.ok(DEFAULT_TICKETMASTER_COUNTRIES.includes("AU"));
+  assert.ok(DEFAULT_TICKETMASTER_COUNTRIES.includes("BR"));
+  assert.ok(DEFAULT_TICKETMASTER_COUNTRIES.includes("ZA"));
+
+  const first = ticketmasterCountryRotation(["GB", "JP", "AU", "BR"], 3, 3);
+  assert.deepEqual(first, { countries: ["BR", "GB", "JP"], nextCursor: 2 });
+  const next = ticketmasterCountryRotation(["GB", "JP", "AU", "BR"], first.nextCursor, 3);
+  assert.deepEqual(next, { countries: ["AU", "BR", "GB"], nextCursor: 1 });
+  assert.deepEqual(ticketmasterCountryRotation(["GB", "JP"], -1, 1), { countries: ["JP"], nextCursor: 0 });
+  assert.deepEqual(ticketmasterCountryRotation([], 10, 10), { countries: [], nextCursor: 0 });
+  assert.equal(ticketmasterCountryBatchSize(undefined), 10);
+  assert.equal(ticketmasterCountryBatchSize(999), 25);
+  assert.equal(ticketmasterCountryBatchSize(-1), 0);
+});
+
+test("Ticketmaster request pacing stays below the conservative published limit", () => {
+  assert.equal(ticketmasterRequestDelayMs(undefined), 550);
+  assert.equal(ticketmasterRequestDelayMs(1), 500);
+  assert.equal(ticketmasterRequestDelayMs(200), 500);
+  assert.equal(ticketmasterRequestDelayMs(750), 750);
+  assert.equal(ticketmasterRequestDelayMs(99999), 5000);
+
+  const countryUrl = new URL(ticketmasterEventSearchUrl({ apiKey: "test-key", countryCode: "jp", size: 999 }));
+  assert.equal(countryUrl.searchParams.get("countryCode"), "JP");
+  assert.equal(countryUrl.searchParams.get("locale"), "*");
+  assert.equal(countryUrl.searchParams.get("size"), "200");
+});
+
 test("tour refresh can distinguish an empty success from total provider failure", async () => {
   const partial = await collectTourProviderResults([
     async () => [],
@@ -105,6 +173,14 @@ test("tour refresh can distinguish an empty success from total provider failure"
     async () => { throw new Error("second down"); },
   ]);
   assert.deepEqual(failed, { rows: [], successes: 0, failures: 2 });
+});
+
+test("partial tour-provider success advances freshness without weakening total-outage failure", () => {
+  assert.equal(hasSuccessfulTourProviderWork(1), true);
+  assert.equal(hasSuccessfulTourProviderWork(200), true);
+  assert.equal(hasSuccessfulTourProviderWork(0), false);
+  assert.equal(hasSuccessfulTourProviderWork(-1), false);
+  assert.equal(hasSuccessfulTourProviderWork("not-a-number"), false);
 });
 
 test("tour reconciliation is isolated by provider and never deletes owner rows", () => {

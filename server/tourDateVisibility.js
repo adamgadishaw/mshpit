@@ -1,0 +1,46 @@
+import { accountIsPublic, activeAccountSql } from "./accountVisibility.js";
+import { db } from "./db.js";
+
+// Apply release and account-state rules before tour dates reach discovery,
+// ranking, counts, or serialization. Keeping this query outside the API layer
+// prevents aggregate metadata (for example a venue's next date) from revealing
+// an artist's unreleased schedule.
+export function visibleTourDateRowsFrom(database, viewer, {
+  today = null,
+  artist = null,
+  limit: rowLimit = 5000,
+  at = Date.now(),
+} = {}) {
+  const filters = [];
+  const prefix = [];
+  if (today) {
+    filters.push("td.date>=?");
+    prefix.push(today);
+  }
+  if (artist) {
+    filters.push("LOWER(td.artist)=LOWER(?)");
+    prefix.push(artist);
+  }
+  const filterSql = filters.length ? `${filters.join(" AND ")} AND ` : "";
+  if (viewer?.role === "admin" && accountIsPublic(viewer, at)) {
+    return database.prepare(`SELECT td.* FROM tour_dates td WHERE ${filterSql}1=1 ORDER BY td.date ASC,td.id ASC LIMIT ?`)
+      .all(...prefix, rowLimit);
+  }
+  if (viewer?.id) {
+    return database.prepare(`SELECT td.* FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id WHERE ${filterSql}
+      (td.owner_id IS NULL OR (${activeAccountSql("owner")} AND (td.release_at<=? OR td.owner_id=?)
+        AND NOT EXISTS (SELECT 1 FROM blocks b WHERE
+          (b.blocker_id=? AND b.blocked_id=td.owner_id) OR
+          (b.blocker_id=td.owner_id AND b.blocked_id=?))))
+      ORDER BY td.date ASC,td.id ASC LIMIT ?`)
+      .all(...prefix, at, viewer.id, viewer.id, viewer.id, rowLimit);
+  }
+  return database.prepare(`SELECT td.* FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id WHERE ${filterSql}
+    (td.owner_id IS NULL OR (${activeAccountSql("owner")} AND td.release_at<=?))
+    ORDER BY td.date ASC,td.id ASC LIMIT ?`)
+    .all(...prefix, at, rowLimit);
+}
+
+export function visibleTourDateRows(viewer, options = {}) {
+  return visibleTourDateRowsFrom(db, viewer, options);
+}

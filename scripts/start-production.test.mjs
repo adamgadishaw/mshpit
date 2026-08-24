@@ -54,12 +54,26 @@ test("a verified backup completes before the server module loads", async () => {
   assert.equal(plan.backup, true);
 });
 
-test("the backup subprocess inherits the production environment", () => {
-  const env = { NODE_ENV: "production", PIT_DATA_DIR: "/data", SENTINEL: "kept" };
+test("the backup subprocess receives only its least-privilege environment", () => {
+  const env = {
+    NODE_ENV: "production",
+    PIT_DATA_DIR: "/data",
+    BACKUP_S3_ACCESS_KEY_ID: "backup-id",
+    BACKUP_S3_SECRET_ACCESS_KEY: "backup-secret",
+    ADMIN_PASSWORD: "must-not-leak",
+    RESEND_API_KEY: "must-not-leak",
+    MEDIA_SECRET_ACCESS_KEY: "must-not-leak",
+  };
   let call;
   runStartupBackup({ env, spawn: (...args) => { call = args; return { status: 0 }; } });
   assert.equal(call[0], process.execPath);
   assert.match(call[1][0].replaceAll("\\", "/"), /\/scripts\/backup-db\.mjs$/);
-  assert.equal(call[2].env, env);
+  assert.equal(call[2].env.NODE_ENV, "production");
+  assert.equal(call[2].env.PIT_DATA_DIR, "/data");
+  assert.equal(call[2].env.BACKUP_S3_ACCESS_KEY_ID, "backup-id");
+  assert.equal(call[2].env.BACKUP_S3_SECRET_ACCESS_KEY, "backup-secret");
+  assert.equal(Object.hasOwn(call[2].env, "ADMIN_PASSWORD"), false);
+  assert.equal(Object.hasOwn(call[2].env, "RESEND_API_KEY"), false);
+  assert.equal(Object.hasOwn(call[2].env, "MEDIA_SECRET_ACCESS_KEY"), false);
   assert.equal(call[2].stdio, "inherit");
 });

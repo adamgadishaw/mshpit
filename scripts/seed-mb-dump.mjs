@@ -23,6 +23,7 @@ import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
 import { join } from "node:path";
 import { artistRow, artistStmts, db } from "../server/db.js";
+import { privateErrorLabel } from "../server/errors.js";
 
 const args = process.argv.slice(2);
 const dir = args.find((a) => !a.startsWith("--"));
@@ -89,4 +90,4 @@ async function main() {
   db.exec("COMMIT");
   console.log(`\nDone. Scanned ${total} artists, seeded ${inserted} notable ones. Catalog now: ${artistStmts.count.get().c}.`);
 }
-main().catch((e) => { try { db.exec("ROLLBACK"); } catch {} console.error("Failed:", e.message); process.exit(1); });
+main().catch((e) => { try { db.exec("ROLLBACK"); } catch {} console.error(`Failed: ${privateErrorLabel(e)}`); process.exit(1); });

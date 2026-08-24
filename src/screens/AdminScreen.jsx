@@ -138,7 +138,7 @@ function AdInsights({ adminMembers = [], adminMemberDirectory = {}, loadAdminMem
         <Stat n={t.newUsers7d} label="new 7d" />
         <Stat n={t.posts30d} label="posts 30d" />
       </View>
-      <Text style={styles.analyticsPrivacy}>Account-consented product events only. Raw IP addresses, typed searches, messages, reviews, and media URLs are never retained in analytics. Artist, venue, and genre panels below are aggregate public-post trends.</Text>
+      <Text style={styles.analyticsPrivacy}>The event counters use only account-consented product events. Raw IP addresses, typed searches, messages, reviews, and media URLs are never retained in analytics. Artist, venue, and genre panels are aggregate public-post trends; member-detail message and play counts are restricted operational support totals, not analytics events.</Text>
       <Text style={styles.analyticsPrivacy}>* Raw-event metrics are bounded to {data.retentionDays || 30} days, {Number(data.rawEventLimit || 0).toLocaleString()} rows globally, and {Number(data.rawEventLimitPerAccount || 0).toLocaleString()} per account; under heavy traffic the actual window is shorter. Current oldest retained event: {oldestRaw}. Signups and posts remain authoritative domain totals.</Text>
       <Text style={styles.insightH}>30-DAY GROWTH</Text>
       <View style={styles.growthCard}>

@@ -10,6 +10,7 @@ import { randomUUID } from "node:crypto";
 import { artistStmts, artistRow, normName, db } from "./db.js";
 import { findDeezerArtist, providerJson, ProviderError } from "./musicProviders.js";
 import { genreFieldsForClaim, providerGenreFields, resolveGenre, storedClaims } from "../src/domain/genre.mjs";
+import { privateErrorLabel } from "./errors.js";
 
 // Enrichment used to do `row.genre || e.genre`, which let a stale crawl-bucket
 // label outrank real provider evidence: Deezer knew Justin Bieber was pop, but
@@ -297,7 +298,7 @@ export const shouldEnrichAfterCrawl = ({ enrich, added, stopRequested }) => !!en
 let state = { runId: null, running: false, stopRequested: false, mode: "grow", phase: "idle", add: 0, target: 0, startTotal: 0, added: 0, ranked: 0, total: 0, startedAt: 0, finishedAt: 0, error: null, errorCode: null, note: "" };
 
 const reportDetachedSeedFailure = (error, runId) => {
-  console.error(`[pit] catalog seed task ${runId} failed outside its provider boundary:`, error);
+  console.error(`[pit] catalog seed task failed outside its provider boundary cause=${privateErrorLabel(error)}`);
   if (state.runId !== runId) return;
   state.running = false;
   state.stopRequested = false;

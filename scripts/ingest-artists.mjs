@@ -17,6 +17,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { privateErrorLabel } from "../server/errors.js";
 
 const UA = "mshpit/1.0 (https://www.mshpit.com)";
 const OUT = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "seed", "catalog.generated.json");
@@ -102,7 +103,7 @@ async function artistsForTag(tag, offset = 0) {
         country: x.area?.name || null,
       }));
   } catch (e) {
-    console.warn(`  ! tag ${tag}: ${e.message}`);
+    console.warn(`  ! tag ${tag}: ${privateErrorLabel(e)}`);
     return [];
   }
 }

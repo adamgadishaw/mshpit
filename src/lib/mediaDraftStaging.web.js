@@ -10,4 +10,6 @@ export async function recoverMediaDraftAssets(assets) {
 
 export async function releaseMediaDraftAsset() { return false; }
 export async function releaseMediaDraftAssets() {}
-export async function deleteMediaDraftsForOwner() { return false; }
+// Web picker/blob handles are not copied into durable PIT-owned storage, so
+// there is no account directory to erase. Treat the no-op as successful.
+export async function deleteMediaDraftsForOwner() { return true; }

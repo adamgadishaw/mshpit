@@ -15,6 +15,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { privateErrorLabel } from "../server/errors.js";
 
 const OUT = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "seed", "catalog.generated.json");
 const KEY = process.env.TICKETMASTER_KEY;
@@ -130,7 +131,7 @@ async function main() {
         for (const r of rows) if (!have.has(r.id)) { cat.tourDates.push(r); dates++; }
         withDates++;
       }
-    } catch (e) { console.warn(`  ! ${a.name}: ${e.message}`); }
+    } catch (e) { console.warn(`  ! ${a.name}: ${privateErrorLabel(e)}`); }
     if (++done % 25 === 0) { console.log(`  …${done}/${targets.length} (${dates} dates)`); await writeFile(OUT, JSON.stringify(cat, null, 2)); }
     await sleep(250); // TM free tier: 5 req/sec — stay well under
   }

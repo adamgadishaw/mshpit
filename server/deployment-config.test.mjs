@@ -43,11 +43,14 @@ test("the test runner cannot inherit Render's production bootstrap approval", as
   assert.match(source, /PIT_ALLOW_EMPTY_DB_BOOTSTRAP:\s*["']false["']/);
 });
 
-test("runtime bootstrap and high-cost background jobs fail closed on both Render services", async () => {
+test("runtime bootstrap fails closed while production alone owns the bounded tour refresh", async () => {
   const source = await readFile(new URL("render.yaml", ROOT), "utf8");
   assert.equal(configuredFalseCount(source, "PIT_ALLOW_EMPTY_DB_BOOTSTRAP"), 2);
   assert.equal(configuredFalseCount(source, "CACHE_WARM_ENABLED"), 2);
-  assert.equal(configuredFalseCount(source, "TOURDATE_REFRESH_ENABLED"), 2);
+  assert.equal(configuredFalseCount(source, "TOURDATE_REFRESH_ENABLED"), 1);
+  assert.equal(configuredTrueCount(source, "TOURDATE_REFRESH_ENABLED"), 1);
+  const stagingStart = source.indexOf("name: mshpit-staging");
+  assert.equal(configuredTrueCount(source.slice(0, stagingStart), "TOURDATE_REFRESH_ENABLED"), 1);
   assert.equal(configuredTrueCount(source, "BACKUP_ENABLED"), 2);
   assert.equal(configuredTrueCount(source, "MEDIA_CLEANUP_ENABLED"), 2);
   assert.equal([...source.matchAll(/^\s*- key: MEDIA_ORPHAN_TTL_MS$/gm)].length, 2);
@@ -69,4 +72,50 @@ test("only production carries the bounded legacy-poster release identity", async
 test("quality runs on both branches that Render auto-deploys", async () => {
   const source = await readFile(new URL(".github/workflows/quality.yml", ROOT), "utf8");
   assert.match(source, /branches:\s*\[master, staging\]/);
+});
+
+test("CI actions are immutable and checkout does not persist a repository credential", async () => {
+  const source = await readFile(new URL(".github/workflows/quality.yml", ROOT), "utf8");
+  const actionUses = [...source.matchAll(/^\s*- uses:\s*([^\s#]+)(?:\s*#.*)?$/gm)].map((match) => match[1]);
+  assert.ok(actionUses.length >= 2, "expected the checkout and Node setup actions");
+  for (const action of actionUses) {
+    assert.match(action, /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+@[a-f0-9]{40}$/,
+      `${action} must be pinned to an immutable full commit SHA`);
+  }
+  assert.match(source, /permissions:\s*\n\s*contents:\s*read/);
+  assert.match(source, /persist-credentials:\s*false/);
+});
+
+test("Render never stores private credentials in the tracked blueprint", async () => {
+  const source = await readFile(new URL("render.yaml", ROOT), "utf8");
+  const privateKeys = new Set([
+    "ADMIN_EMAIL",
+    "ADMIN_PASSWORD",
+    "YOUTUBE_API_KEY",
+    "RESEND_API_KEY",
+    "TICKETMASTER_KEY",
+    "MEDIA_ACCESS_KEY_ID",
+    "MEDIA_SECRET_ACCESS_KEY",
+    "BACKUP_S3_ACCESS_KEY_ID",
+    "BACKUP_S3_SECRET_ACCESS_KEY",
+    "PIT_VIDEO_VERIFIER_SECRET",
+  ]);
+  const blocks = source.split(/(?=^\s*- key: )/gm);
+  const seen = new Map();
+  for (const block of blocks) {
+    const key = /^\s*- key:\s*([A-Z0-9_]+)/m.exec(block)?.[1];
+    if (!privateKeys.has(key)) continue;
+    seen.set(key, (seen.get(key) || 0) + 1);
+    assert.match(block, /^\s*sync:\s*false\s*(?:#.*)?$/m, `${key} must be supplied by the host secret store`);
+    assert.doesNotMatch(block, /^\s*value\s*:/m, `${key} must not have a tracked value`);
+  }
+  for (const key of privateKeys) assert.ok(seen.get(key), `${key} is missing from the deployment contract`);
+  assert.equal(seen.get("ADMIN_EMAIL"), 2, "production and staging must each source the administrator identity from Render");
+});
+
+test("the retired catalog cron cannot place a GitHub token in process arguments", async () => {
+  const source = await readFile(new URL("scripts/cron-scrape.mjs", ROOT), "utf8");
+  assert.doesNotMatch(source, /GITHUB_TOKEN|x-access-token/i);
+  assert.match(source, /retired/i);
+  assert.match(source, /process\.exitCode\s*=\s*1/);
 });

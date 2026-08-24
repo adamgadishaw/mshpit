@@ -9,6 +9,8 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { backgroundJobEnabled } from "./backgroundJobs.js";
 import { runBackgroundJob } from "./backgroundJobCoordinator.js";
+import { privateErrorLabel } from "./errors.js";
+import { canonicalTicketUrl } from "../src/domain/ticketLinks.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CATALOG = join(HERE, "..", "src", "seed", "catalog.generated.json");
@@ -19,9 +21,109 @@ const CITY_LIMIT = Number(process.env.TOURDATE_CITY_LIMIT) || 50;
 const REFRESH_H = Number(process.env.TOURDATE_REFRESH_H) || 12;
 const DAY = 86400000;
 const LAST_REFRESH_KEY = "tourdates:last-refresh:v1";
+const COUNTRY_CURSOR_KEY = "tourdates:ticketmaster-country-cursor:v1";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const slugId = (p, n, v, d) => `${p}_${n}_${v}_${d}`.toLowerCase().replace(/[^a-z0-9]+/g, "_").slice(0, 120);
 const norm = (value) => String(value || "").trim().toLowerCase();
+export const ticketmasterArtistIdentity = (value) => String(value || "")
+  .normalize("NFKD")
+  .replace(/\p{Mark}+/gu, "")
+  .toLocaleLowerCase("en")
+  .replace(/&/g, " and ")
+  .replace(/[^\p{Letter}\p{Number}]+/gu, " ")
+  .trim();
+
+export function ticketmasterFutureBoundary(at = Date.now()) {
+  const parsed = Number(at);
+  const date = new Date(Number.isFinite(parsed) ? parsed : Date.now());
+  return date.toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+// Ticketmaster's Discovery API is international, but its default locale is
+// `en`. Keep the default sweep intentionally broad and deterministic while
+// allowing operators to narrow it without a deploy. The local-member-city lane
+// below remains separate and continues to give active communities priority.
+export const DEFAULT_TICKETMASTER_COUNTRIES = Object.freeze([
+  "GB", "DE", "FR", "ES", "IT", "NL", "SE", "PL", "AU", "NZ",
+  "JP", "KR", "SG", "IN", "BR", "AR", "MX", "ZA", "AE", "IE",
+  "AT", "BE", "CH", "DK", "FI", "NO", "PT", "CZ", "GR", "HU",
+  "RO", "TR", "CA", "US",
+]);
+
+function boundedInteger(value, fallback, { min, max }) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(parsed)));
+}
+
+export function ticketmasterArtistPageSize(value) {
+  return boundedInteger(value, 50, { min: 8, max: 200 });
+}
+
+export function ticketmasterCountryBatchSize(value) {
+  return boundedInteger(value, 10, { min: 0, max: 25 });
+}
+
+export function ticketmasterRequestDelayMs(value) {
+  // Ticketmaster documentation has historically described both two- and
+  // five-request-per-second defaults. Stay below the conservative boundary so
+  // a long global sweep cannot turn a harmless documentation mismatch into a
+  // provider-wide 429 burst.
+  return boundedInteger(value, 550, { min: 500, max: 5000 });
+}
+
+export function ticketmasterCountryCodes(value, fallback = DEFAULT_TICKETMASTER_COUNTRIES) {
+  const raw = Array.isArray(value) ? value : String(value || "").split(/[\s,]+/);
+  const unique = [];
+  const seen = new Set();
+  for (const entry of raw) {
+    const code = String(entry || "").trim().toUpperCase();
+    if (!/^[A-Z]{2}$/.test(code) || seen.has(code)) continue;
+    seen.add(code);
+    unique.push(code);
+  }
+  if (unique.length || !fallback) return unique;
+  return ticketmasterCountryCodes(fallback, null);
+}
+
+export function ticketmasterCountryRotation(countries, cursor, batchSize) {
+  const normalized = ticketmasterCountryCodes(countries, null);
+  const size = Math.min(normalized.length, ticketmasterCountryBatchSize(batchSize));
+  if (!normalized.length || size === 0) return { countries: [], nextCursor: 0 };
+  const numericCursor = Number.isFinite(Number(cursor)) ? Math.floor(Number(cursor)) : 0;
+  const start = ((numericCursor % normalized.length) + normalized.length) % normalized.length;
+  const selected = Array.from({ length: size }, (_, index) => normalized[(start + index) % normalized.length]);
+  return { countries: selected, nextCursor: (start + size) % normalized.length };
+}
+
+export function ticketmasterEventSearchUrl({
+  apiKey,
+  keyword,
+  city,
+  countryCode,
+  startDateTime,
+  size = 20,
+  sort = "date,asc",
+} = {}) {
+  const url = new URL("https://app.ticketmaster.com/discovery/v2/events.json");
+  if (keyword) url.searchParams.set("keyword", String(keyword));
+  if (city) url.searchParams.set("city", String(city));
+  if (countryCode) url.searchParams.set("countryCode", String(countryCode).toUpperCase());
+  if (startDateTime) url.searchParams.set("startDateTime", String(startDateTime));
+  url.searchParams.set("classificationName", "music");
+  url.searchParams.set("locale", "*");
+  url.searchParams.set("includeTBA", "no");
+  url.searchParams.set("includeTBD", "no");
+  url.searchParams.set("size", String(boundedInteger(size, 20, { min: 1, max: 200 })));
+  url.searchParams.set("sort", sort);
+  url.searchParams.set("apikey", String(apiKey || ""));
+  return url.toString();
+}
+
+const ARTIST_PAGE_SIZE = ticketmasterArtistPageSize(process.env.TOURDATE_ARTIST_PAGE_SIZE);
+const COUNTRY_BATCH_SIZE = ticketmasterCountryBatchSize(process.env.TOURDATE_COUNTRY_BATCH);
+const COUNTRY_CODES = ticketmasterCountryCodes(process.env.TOURDATE_COUNTRIES);
+const TM_REQUEST_DELAY_MS = ticketmasterRequestDelayMs(process.env.TOURDATE_REQUEST_DELAY_MS);
 
 // Hosted instances opt in explicitly. The full refresh performs one provider
 // request per artist, so replaying it after every ephemeral cold start can make
@@ -34,7 +136,7 @@ export function isTourDateSchedulerEnabled(env = process.env) {
 // boundary before starting scheduled work so no future refactor can leak a
 // rejection into the process-level fatal handler.
 export async function runTourDateJobSafely(job, report = (error) => {
-  console.error("[pit] scheduled tour-date refresh failed safely:", error);
+  console.error(`[pit] scheduled tour-date refresh failed safely cause=${privateErrorLabel(error)}`);
 }) {
   try {
     await job();
@@ -60,6 +162,15 @@ function markRefreshed(at = Date.now()) {
     .run(LAST_REFRESH_KEY, String(at));
 }
 
+function storedCountryCursor() {
+  return db.prepare("SELECT value FROM app_meta WHERE key=?").get(COUNTRY_CURSOR_KEY)?.value || 0;
+}
+
+function markCountryCursor(cursor) {
+  db.prepare("INSERT INTO app_meta (key,value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+    .run(COUNTRY_CURSOR_KEY, String(cursor));
+}
+
 async function getJSON(url) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), 15000);
@@ -70,26 +181,42 @@ async function getJSON(url) {
   } finally { clearTimeout(t); }
 }
 
-async function tmDates(name) {
-  if (!KEY) return [];
-  const data = await getJSON(
-    `https://app.ticketmaster.com/discovery/v2/events.json?keyword=${encodeURIComponent(name)}&classificationName=music&size=8&sort=date,asc&apikey=${KEY}`
-  );
+function ticketmasterRows(data, { requestedArtist = null } = {}) {
   const out = [];
-  for (const e of data._embedded?.events || []) {
-    const v = e._embedded?.venues?.[0];
-    const isRequestedArtist = (e._embedded?.attractions || []).some((a) => norm(a.name) === norm(name));
-    const date = e.dates?.start?.localDate;
-    if (!v?.name || !date || !isRequestedArtist) continue;
+  for (const event of data?._embedded?.events || []) {
+    const venue = event._embedded?.venues?.[0];
+    const attractions = event._embedded?.attractions || [];
+    const requestedIdentity = ticketmasterArtistIdentity(requestedArtist);
+    const matchesRequestedArtist = !requestedArtist
+      || attractions.some((attraction) => ticketmasterArtistIdentity(attraction.name) === requestedIdentity);
+    const artist = requestedArtist || attractions[0]?.name || event.name;
+    const date = event.dates?.start?.localDate;
+    if (!artist || !venue?.name || !date || !matchesRequestedArtist) continue;
     out.push({
-      id: e.id ? `tm_${e.id}` : slugId("tm", name, v.name, date), artist: name, venue: v.name,
-      place: [v.city?.name, v.state?.name, v.country?.name].filter(Boolean).join(", "),
-      lat: v.location?.latitude ? Number(v.location.latitude) : null,
-      lng: v.location?.longitude ? Number(v.location.longitude) : null,
-      date, ticket_url: e.url, sold_out: e.dates?.status?.code === "offsale" ? 1 : 0, source: "ticketmaster",
+      id: event.id ? `tm_${event.id}` : slugId("tm", artist, venue.name, date), artist, venue: venue.name,
+      place: [venue.city?.name, venue.state?.name, venue.country?.name].filter(Boolean).join(", "),
+      lat: venue.location?.latitude ? Number(venue.location.latitude) : null,
+      lng: venue.location?.longitude ? Number(venue.location.longitude) : null,
+      // Ticketmaster's `offsale` means the provider is no longer selling; it
+      // does not prove the room sold out. Keep that fan-facing claim false.
+      date,
+      ticket_url: canonicalTicketUrl(event.url, { source: "ticketmaster", allowUntrusted: false }),
+      sold_out: 0,
+      source: "ticketmaster",
     });
   }
   return out;
+}
+
+async function tmDates(name) {
+  if (!KEY) return [];
+  const data = await getJSON(ticketmasterEventSearchUrl({
+    apiKey: KEY,
+    keyword: name,
+    size: ARTIST_PAGE_SIZE,
+    startDateTime: ticketmasterFutureBoundary(),
+  }));
+  return ticketmasterRows(data, { requestedArtist: name });
 }
 
 // Fill the areas where actual members live. Artist-keyword polling alone can
@@ -98,24 +225,17 @@ async function tmDates(name) {
 // request per distinct member city gives the local rail useful coverage.
 async function tmCityDates(city) {
   if (!KEY || !city) return [];
-  const data = await getJSON(
-    `https://app.ticketmaster.com/discovery/v2/events.json?city=${encodeURIComponent(city)}&classificationName=music&size=200&sort=date,asc&apikey=${KEY}`
-  );
-  const out = [];
-  for (const e of data._embedded?.events || []) {
-    const v = e._embedded?.venues?.[0];
-    const artist = e._embedded?.attractions?.[0]?.name || e.name;
-    const date = e.dates?.start?.localDate;
-    if (!artist || !v?.name || !date) continue;
-    out.push({
-      id: e.id ? `tm_${e.id}` : slugId("tm", artist, v.name, date), artist, venue: v.name,
-      place: [v.city?.name, v.state?.name, v.country?.name].filter(Boolean).join(", "),
-      lat: v.location?.latitude ? Number(v.location.latitude) : null,
-      lng: v.location?.longitude ? Number(v.location.longitude) : null,
-      date, ticket_url: e.url, sold_out: e.dates?.status?.code === "offsale" ? 1 : 0, source: "ticketmaster",
-    });
-  }
-  return out;
+  const data = await getJSON(ticketmasterEventSearchUrl({ apiKey: KEY, city, size: 200, startDateTime: ticketmasterFutureBoundary() }));
+  return ticketmasterRows(data);
+}
+
+// A small rotating country batch gives Pit representative worldwide coverage
+// without multiplying the per-artist/provider fan-out. One complete sweep takes
+// several scheduled runs, and the cursor survives restarts on the same disk.
+async function tmCountryDates(countryCode) {
+  if (!KEY || !countryCode) return [];
+  const data = await getJSON(ticketmasterEventSearchUrl({ apiKey: KEY, countryCode, size: 200, startDateTime: ticketmasterFutureBoundary() }));
+  return ticketmasterRows(data);
 }
 
 async function bitDates(name) {
@@ -127,11 +247,15 @@ async function bitDates(name) {
     const v = e.venue || {};
     const date = (e.datetime || "").slice(0, 10);
     if (!v.name || !date) continue;
+    const ticketUrl = (e.offers || []).find((offer) => offer.type === "Tickets")?.url
+      || e.url
+      || "https://www.bandsintown.com/";
     out.push({
       id: e.id ? `bit_${e.id}` : slugId("bit", name, v.name, date), artist: name, venue: v.name,
       place: [v.city, v.region, v.country].filter(Boolean).join(", "),
       lat: v.latitude ? Number(v.latitude) : null, lng: v.longitude ? Number(v.longitude) : null,
-      date, ticket_url: (e.offers || []).find((o) => o.type === "Tickets")?.url || e.url || "https://www.bandsintown.com/",
+      date,
+      ticket_url: canonicalTicketUrl(ticketUrl, { source: "bandsintown", allowUntrusted: false }),
       sold_out: 0, source: "bandsintown",
     });
   }
@@ -146,6 +270,11 @@ export async function collectTourProviderResults(providers) {
     successes: settled.filter((result) => result.status === "fulfilled").length,
     failures: settled.filter((result) => result.status === "rejected").length,
   };
+}
+
+export function hasSuccessfulTourProviderWork(successes) {
+  const count = Number(successes);
+  return Number.isSafeInteger(count) && count > 0;
 }
 
 async function collectNamedTourProviderResults(providers) {
@@ -212,6 +341,9 @@ async function refresh() {
       .filter((a) => a.name)
       .sort((x, y) => (y.popularity || 0) - (x.popularity || 0))
       .slice(0, LIMIT);
+    const countryBatch = KEY
+      ? ticketmasterCountryRotation(COUNTRY_CODES, storedCountryCursor(), COUNTRY_BATCH_SIZE)
+      : { countries: [], nextCursor: 0 };
     let total = 0, providerSuccesses = 0, providerFailures = 0;
     const providerStats = new Map();
     const recordOutcomes = (outcomes) => {
@@ -236,7 +368,7 @@ async function refresh() {
         try { db.exec("ROLLBACK"); } catch {}
         throw e;
       }
-      await sleep(250); // stay gentle on the APIs (and our event loop)
+      await sleep(TM_REQUEST_DELAY_MS); // stay below provider rate limits
     }
     const cities = db.prepare(`SELECT home_city city, COUNT(*) members FROM users
       WHERE home_city IS NOT NULL AND trim(home_city) <> ''
@@ -256,9 +388,30 @@ async function refresh() {
         try { db.exec("ROLLBACK"); } catch {}
         throw e;
       }
-      await sleep(250);
+      await sleep(TM_REQUEST_DELAY_MS);
     }
-    if (!providerSuccesses) {
+    for (const countryCode of countryBatch.countries) {
+      try {
+        const result = await collectNamedTourProviderResults([
+          { source: "ticketmaster", run: () => tmCountryDates(countryCode) },
+        ]);
+        providerSuccesses += result.successes;
+        providerFailures += result.failures;
+        recordOutcomes(result.outcomes);
+        const now = Date.now();
+        db.exec("BEGIN");
+        for (const r of result.rows) upsert.run({ lat: null, lng: null, ...r, updated_at: now });
+        db.exec("COMMIT");
+        total += result.rows.length;
+      } catch (e) {
+        try { db.exec("ROLLBACK"); }
+        catch { /* architecture: allow-empty-catch -- preserve the original country-ingest write failure if rollback itself fails */ }
+        throw e;
+      }
+      await sleep(TM_REQUEST_DELAY_MS);
+    }
+    if (countryBatch.countries.length) markCountryCursor(countryBatch.nextCursor);
+    if (!hasSuccessfulTourProviderWork(providerSuccesses)) {
       throw new Error(`Every configured tour provider request failed (${providerFailures} failures); existing dates were kept and the refresh remains due.`);
     }
     // Reconcile only a provider that completed EVERY attempted call. Never let
@@ -271,10 +424,15 @@ async function refresh() {
       successfulSources,
       staleBefore: Date.now() - 30 * DAY,
     });
-    if (providerFailures === 0) markRefreshed();
-    console.log(`[pit] tour dates refreshed: ${total} dates / ${artists.length} artists + ${cities.length} member cities (${providerSuccesses} provider calls ok, ${providerFailures} failed) in ${Math.round((Date.now() - t0) / 1000)}s`);
+    // A partial provider outage must not turn Render restarts into an immediate
+    // replay of the entire worldwide sweep. Successful rows are durable and
+    // stale cleanup is already isolated to sources with zero failures, so any
+    // useful provider work advances the normal interval. A total outage still
+    // throws above and intentionally leaves the refresh due.
+    markRefreshed();
+    console.log(`[pit] tour dates refreshed: ${total} dates / ${artists.length} artists + ${cities.length} member cities + ${countryBatch.countries.length} global markets (${providerSuccesses} provider calls ok, ${providerFailures} failed) in ${Math.round((Date.now() - t0) / 1000)}s`);
   } catch (e) {
-    console.error("[pit] tour-date refresh failed:", e.message);
+    console.error(`[pit] tour-date refresh failed cause=${privateErrorLabel(e)}`);
     throw e;
   } finally { running = false; }
 }

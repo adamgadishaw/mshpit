@@ -7,6 +7,8 @@ import { captureAppError } from "../lib/diagnostics";
 import { playerResolutionKey, trackKey } from "../domain/trackIdentity.mjs";
 import { uniqueTracks } from "../domain/recommend.mjs";
 import { ownedPlayerPositionEnvelope, restoreOwnedPlayerPosition } from "../domain/player-session.mjs";
+import { PLAYER_POSITION_STORAGE_KEY } from "../domain/accountLocalPrivacy.mjs";
+import { load, remove, save } from "../lib/persist";
 import {
   playerColdSearchAllowed,
   playerYouTubeLookupNotice,
@@ -545,15 +547,11 @@ export default function PlayerBar({
   // to localStorage; on mount we seek to it once for the same track.
   const playerOwnerId = session?.id || null;
   const resume = useMemo(() => {
-    if (!web || typeof localStorage === "undefined") return null;
-    try {
-      // The old key was device-global and could leak one account's position into
-      // another account's matching track. Read only the owner-scoped envelope.
-      localStorage.removeItem("pit.playpos");
-      return restoreOwnedPlayerPosition(JSON.parse(localStorage.getItem("pit.playpos.v2") || "null"), playerOwnerId);
-    } catch {
-      return null;
-    }
+    if (!web) return null;
+    // The old key was device-global and could leak one account's position into
+    // another account's matching track. Read only the owner-scoped envelope.
+    remove("pit.playpos");
+    return restoreOwnedPlayerPosition(load(PLAYER_POSITION_STORAGE_KEY, null), playerOwnerId);
   }, [playerOwnerId]);
   const resumedRef = useRef(false);
   const engineResumeMs = engineResumeRef.current?.key === resolutionKey ? (engineResumeRef.current.ms || 0) : 0;
@@ -681,7 +679,7 @@ export default function PlayerBar({
     if (!web) return;
     const id = setInterval(() => {
       const envelope = ownedPlayerPositionEnvelope(playerOwnerRef.current, keyRef.current, posRef.current);
-      if (envelope) { try { localStorage.setItem("pit.playpos.v2", JSON.stringify(envelope)); } catch {} }
+      if (envelope) save(PLAYER_POSITION_STORAGE_KEY, envelope);
     }, 3000);
     return () => clearInterval(id);
   }, []);

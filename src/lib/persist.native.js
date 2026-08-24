@@ -18,14 +18,22 @@ const DURABLE_KEYS = new Set([
   "pit.analytics.v2",
 ]);
 const volatile = new Map();
+const isDurableKey = (key) => DURABLE_KEYS.has(key)
+  || key.startsWith("pit.analytics.v2.")
+  || key.startsWith("pit.youtubeRejected.v1.");
 const persistence = createJsonPersistence({
-  getItem: (key) => (DURABLE_KEYS.has(key) || key.startsWith("pit.analytics.v2.") || key.startsWith("pit.youtubeRejected.v1.")) ? Storage.getItemSync(key) : (volatile.get(key) ?? null),
+  getItem: (key) => isDurableKey(key) ? Storage.getItemSync(key) : (volatile.get(key) ?? null),
   setItem: (key, value) => {
-    if (DURABLE_KEYS.has(key) || key.startsWith("pit.analytics.v2.") || key.startsWith("pit.youtubeRejected.v1.")) Storage.setItemSync(key, value);
+    if (isDurableKey(key)) Storage.setItemSync(key, value);
     else volatile.set(key, value);
+  },
+  removeItem: (key) => {
+    if (isDurableKey(key)) Storage.removeItemSync(key);
+    else volatile.delete(key);
   },
 });
 
 export const load = persistence.load;
 export const save = persistence.save;
+export const remove = persistence.remove;
 export const setPersistErrorHandler = persistence.setErrorHandler;

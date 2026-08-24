@@ -249,7 +249,7 @@ test("unrelated posts and non-manifest sources return before preparing SQL", () 
   }), [], "both the immutable post id and exact source URL are required");
 });
 
-test("an exact trusted release registers idempotently and projects only after authoritative HEAD", async () => {
+test("an exact trusted release registers idempotently but cannot republish its external legacy source", async () => {
   const user = addUser("u_legacy_owner");
   const entry = releaseEntry();
   addPost({ id: entry.postId, ownerId: user.id, photos: [entry.sourceUrl] });
@@ -293,15 +293,16 @@ test("an exact trusted release registers idempotently and projects only after au
 
   const feed = routes["GET /api/feed"]({ query: {}, ip: "legacy-poster-feed" });
   const projected = feed.posts.find((post) => post.id === entry.postId);
-  assert.equal(projected.media[0].posterUrl, entry.posterUrl);
-  assert.deepEqual(projected.photos, [entry.sourceUrl]);
+  assert.deepEqual(projected.media, [], "a verified cover cannot make an untrusted external source URL public");
+  assert.deepEqual(projected.photos, []);
   assert.deepEqual(projected.mediaAssetIds, [], "a legacy cover cannot masquerade as a stable composer asset");
   const gallery = routes["GET /api/artists/photos"]({
     user,
     query: { name: "Archive Artist" },
     ip: "legacy-poster-gallery",
   });
-  assert.equal(gallery.photos.find((item) => item.postId === entry.postId).posterUrl, entry.posterUrl);
+  assert.equal(gallery.photos.some((item) => item.postId === entry.postId), false,
+    "artist galleries apply the same verified-owned-media boundary");
 });
 
 test("wrong poster bytes fail closed and enter the owned deletion queue", async () => {
@@ -379,8 +380,8 @@ test("author removal retires the derivative while leaving unrelated covers alone
   );
   const projected = routes["GET /api/feed"]({ query: {}, ip: "legacy-multi-photo-feed" }).posts
     .find((post) => post.id === first.postId);
-  assert.deepEqual(projected.photos, canonicalPhotos);
-  assert.deepEqual(projected.media.map((item) => item.url), [second.sourceUrl, first.sourceUrl]);
+  assert.deepEqual(projected.photos, []);
+  assert.deepEqual(projected.media, []);
   assert.deepEqual(projected.mediaAssetIds, [], "partial legacy descriptors never become composer asset ids");
 
   const retainedPhotos = canonicalPhotos.filter((url) => url !== first.sourceUrl);
@@ -391,8 +392,8 @@ test("author removal retires the derivative while leaving unrelated covers alone
     ip: "legacy-poster-author-edit",
     requestId: "legacy-poster-author-edit",
   });
-  assert.deepEqual(edited.post.photos, retainedPhotos);
-  assert.deepEqual(edited.post.media.map((item) => item.url), [second.sourceUrl]);
+  assert.deepEqual(edited.post.photos, [], "an owner may clean up the stored row without republishing legacy URLs");
+  assert.deepEqual(edited.post.media, []);
   assert.equal(db.prepare("SELECT 1 FROM legacy_video_posters WHERE media_url=?").get(first.sourceUrl), undefined);
   assert.ok(db.prepare("SELECT 1 FROM legacy_video_posters WHERE media_url=?").get(second.sourceUrl));
   assert.equal(db.prepare("SELECT status FROM media_objects WHERE object_key=?").get(first.posterKey).status, "delete_queued");

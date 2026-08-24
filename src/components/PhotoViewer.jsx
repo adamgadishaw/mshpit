@@ -266,7 +266,11 @@ export default function PhotoViewer({
   const altText = typeof p === "object" && p ? p.altText || "" : "";
   const by = typeof p === "object" && p ? p.by : null;
   const currentPostId = galleryItemPostId(p, postId);
-  const urls = photos.map(mediaDisplayUri).filter(Boolean);
+  const reactionItems = photos.map((item) => ({
+    url: mediaDisplayUri(item),
+    postId: galleryItemPostId(item, postId),
+  })).filter((item) => item.url && item.postId);
+  const reactionScope = reactionItems.map((item) => `${item.postId}:${item.url}`).join("|");
   const prev = () => setI((x) => (x - 1 + photos.length) % photos.length);
   const next = () => setI((x) => (x + 1) % photos.length);
 
@@ -275,7 +279,7 @@ export default function PhotoViewer({
   }, [index, photos.length]);
 
   // One batch read when the set opens; likes render instantly after.
-  useEffect(() => { loadMediaReactions(urls); }, [urls.join("|")]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { loadMediaReactions(reactionItems); }, [reactionScope]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Keyboard: arrows navigate, Escape closes (web).
   useEffect(() => {
@@ -434,9 +438,9 @@ export default function PhotoViewer({
       <View style={styles.footer} pointerEvents="box-none">
         {!!by && <Text style={styles.by}>{video ? "Shared" : "Photo"} by {by}</Text>}
         <Pressable
-          style={[styles.likeBtn, r.mine && styles.likeBtnOn, !session && styles.likeBtnDisabled]}
+          style={[styles.likeBtn, r.mine && styles.likeBtnOn, (!session || !currentPostId) && styles.likeBtnDisabled]}
           onPress={() => toggleMediaReaction(uri, currentPostId)}
-          disabled={!session}
+          disabled={!session || !currentPostId}
           hitSlop={8}
           accessibilityRole="button"
           accessibilityLabel={`${r.mine ? "Unlike" : "Like"} this ${video ? "video" : "photo"}, ${r.count} ${r.count === 1 ? "like" : "likes"}`}

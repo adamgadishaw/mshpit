@@ -10,7 +10,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const dataDir = mkdtempSync(join(tmpdir(), "pit-tests-"));
-const result = spawnSync(process.execPath, ["--test"], {
+const testArgs = process.argv.slice(2);
+const result = spawnSync(process.execPath, ["--test", ...testArgs], {
   stdio: "inherit",
   // Render's build command deliberately carries production bootstrap approval
   // so modules used outside the test runner can open its throwaway database.

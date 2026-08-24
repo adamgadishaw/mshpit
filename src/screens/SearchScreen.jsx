@@ -1,5 +1,5 @@
 import { useMemo, useState, useEffect, useRef } from "react";
-import { ActivityIndicator, View, Text, StyleSheet, ScrollView, TextInput, Pressable, Linking, Image } from "react-native";
+import { ActivityIndicator, View, Text, StyleSheet, ScrollView, TextInput, Pressable, Image } from "react-native";
 import { colors, mono, radius, roleColor } from "../theme";
 import { ratedShows } from "../data";
 import { ingestedArtists } from "../seed/ingested";
@@ -19,6 +19,7 @@ import {
 } from "../domain/unifiedSearch.mjs";
 import { searchLiveAnnouncement } from "../domain/searchAccessibility.mjs";
 import { accountTargetScope, isCurrentScreenRequest, scopedScreenValue } from "../domain/screenScope.mjs";
+import { openTicketLink } from "../lib/ticketLinks";
 
 const EMPTY_LOOKUP_STATE = Object.freeze({ busy: false, message: "" });
 
@@ -319,13 +320,9 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
       if (isCurrent()) updateLookupState({ busy: false });
     }
   };
-  const openTicket = async (event) => {
-    try {
-      await Linking.openURL(event.ticketUrl);
-    } catch {
-      setActionMessage(`The ticket link for ${event.artist} could not be opened.`);
-    }
-  };
+  const openTicket = (event) => openTicketLink(event.ticketUrl, {
+    onFailure: () => setActionMessage(`The ticket link for ${event.artist} could not be opened.`),
+  });
 
   return (
     <View style={styles.wrap}>

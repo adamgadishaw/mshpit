@@ -11,6 +11,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { findArtist, topTracks, spotifyConfigured } from "./lib/spotify.mjs";
+import { privateErrorLabel } from "../server/errors.js";
 
 const OUT = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "seed", "catalog.generated.json");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -35,7 +36,7 @@ async function main() {
         got++;
         previews += tracks.filter((t) => t.preview).length;
       }
-    } catch (e) { console.warn(`  ! ${a.name}: ${e.message}`); }
+    } catch (e) { console.warn(`  ! ${a.name}: ${privateErrorLabel(e)}`); }
     if (++done % 25 === 0) {
       console.log(`  …${done}/${keys.length} (${got} with tracks, ${previews} previews)`);
       await writeFile(OUT, JSON.stringify(cat, null, 2));

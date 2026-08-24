@@ -25,6 +25,12 @@ const VIDEO_TYPES = Object.freeze({
   "video/webm": "webm",
   "video/quicktime": "mov",
 });
+const PROCESSOR_IMAGE_TYPES = Object.freeze({
+  "image/jpeg": "jpg",
+  "image/png": "png",
+  "image/webp": "webp",
+});
+const MAX_PROCESSOR_IMAGE_BYTES = 12 * MEBIBYTE;
 
 const REQUIRED_ENV = [
   "MEDIA_ENDPOINT",
@@ -36,6 +42,16 @@ const REQUIRED_ENV = [
 ];
 const OWNED_OBJECT_KEY = /^users\/[A-Za-z0-9_-]{1,128}\/(?:avatar|banner|post|review|venue)\/[A-Za-z0-9_-]{1,240}\.(?:jpg|png|webp|gif|heic|heif|mp4|webm|mov)$/;
 const STRONG_ETAG = /^"[\x21\x23-\x7e]{1,200}"$/u;
+
+let privateIsolationState = Object.freeze({
+  configured: false,
+  ready: false,
+  checkedAt: null,
+  listStatus: null,
+  objectStatus: null,
+  errorCode: "not_checked",
+  identity: null,
+});
 
 function checkedUrl(value, label, env) {
   let url;
@@ -82,6 +98,96 @@ export function privateVideoMediaConfigured(env = process.env) {
   } catch {
     return false;
   }
+}
+
+function privateIsolationIdentity(config) {
+  if (!config?.configured || !/^[A-Za-z0-9._-]{3,255}$/.test(String(config.sourceBucket || ""))
+      || config.sourceBucket === config.bucket) return null;
+  return sha256(`${config.endpoint.origin}${config.endpoint.pathname}|${config.sourceBucket}`);
+}
+
+export function privateMediaIsolationStatus(env = process.env) {
+  let config;
+  try { config = getMediaConfig(env); } catch { config = null; }
+  const identity = privateIsolationIdentity(config);
+  const current = identity && identity === privateIsolationState.identity
+    ? privateIsolationState
+    : { configured: !!identity, ready: false, checkedAt: null, listStatus: null, objectStatus: null, errorCode: "not_checked" };
+  return Object.freeze({
+    configured: !!current.configured,
+    ready: !!current.ready,
+    checkedAt: current.checkedAt || null,
+    listStatus: current.listStatus || null,
+    objectStatus: current.objectStatus || null,
+    errorCode: current.errorCode || null,
+  });
+}
+
+export function requirePrivateMediaIsolationReady(env = process.env) {
+  const status = privateMediaIsolationStatus(env);
+  if (!status.ready) {
+    throw new ApiError(503, "Private media storage has not passed its privacy check.", "MEDIA_STORAGE_UNAVAILABLE");
+  }
+  return status;
+}
+
+function privacyProbeStatus(value) {
+  const status = Number(value);
+  return Number.isInteger(status) && status >= 100 && status <= 599 ? status : null;
+}
+
+export async function verifyPrivateMediaBucketIsolation({
+  env = process.env,
+  fetchImpl = globalThis.fetch,
+  clock = () => Date.now(),
+  timeoutMs = 5_000,
+} = {}) {
+  let config;
+  try { config = getMediaConfig(env); }
+  catch {
+    privateIsolationState = Object.freeze({ configured: false, ready: false, checkedAt: clock(), listStatus: null,
+      objectStatus: null, errorCode: "storage_unconfigured", identity: null });
+    return privateMediaIsolationStatus(env);
+  }
+  const identity = privateIsolationIdentity(config);
+  if (!config.configured || !identity || config.sourceBucket === config.bucket || typeof fetchImpl !== "function") {
+    privateIsolationState = Object.freeze({ configured: !!identity, ready: false, checkedAt: clock(), listStatus: null,
+      objectStatus: null, errorCode: "storage_unconfigured", identity });
+    return privateMediaIsolationStatus(env);
+  }
+  const root = new URL(joinObjectUrl(config.endpoint, [config.sourceBucket]));
+  root.searchParams.set("list-type", "2");
+  root.searchParams.set("max-keys", "1");
+  const randomObject = joinObjectUrl(config.endpoint, [config.sourceBucket, "__pit_privacy_probe__", randomUUID()]);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), Math.max(500, Math.min(15_000, Math.trunc(Number(timeoutMs) || 5_000))));
+  timeout.unref?.();
+  let listStatus = null;
+  let objectStatus = null;
+  let errorCode = null;
+  try {
+    const [list, object] = await Promise.all([
+      fetchImpl(root.toString(), { method: "GET", redirect: "error", signal: controller.signal }),
+      fetchImpl(randomObject, { method: "GET", redirect: "error", signal: controller.signal }),
+    ]);
+    listStatus = privacyProbeStatus(list?.status);
+    objectStatus = privacyProbeStatus(object?.status);
+    if (![401, 403].includes(listStatus) || ![401, 403].includes(objectStatus)) errorCode = "anonymous_access_not_denied";
+  } catch {
+    errorCode = controller.signal.aborted ? "probe_timeout" : "probe_failed";
+  } finally {
+    clearTimeout(timeout);
+  }
+  privateIsolationState = Object.freeze({
+    configured: true,
+    ready: !errorCode,
+    checkedAt: clock(),
+    listStatus,
+    objectStatus,
+    errorCode,
+    identity,
+  });
+  return privateMediaIsolationStatus(env);
 }
 
 function storageBucket(config, storageScope) {
@@ -225,6 +331,13 @@ export function createMediaPresign({
   if (!config.configured) {
     throw new ApiError(503, "Photo storage is warming up. Try again soon.", "MEDIA_STORAGE_UNAVAILABLE");
   }
+  if (storageScope === "private" && String(env.NODE_ENV || "").toLowerCase() === "production") {
+    // Do not mint a capability that could place an original camera file into a
+    // bucket whose anonymous-read policy has not been proven closed. Checking
+    // again at signed-GET time protects publication, while this earlier gate
+    // also prevents the upload itself from becoming an exposure window.
+    requirePrivateMediaIsolationReady(env);
+  }
   const owner = String(userId || "").replace(/[^A-Za-z0-9_-]/g, "");
   if (!owner) throw new ApiError(401, "Log in first.", "AUTH_REQUIRED");
   const safeId = String(objectId).replace(/[^A-Za-z0-9_-]/g, "");
@@ -294,6 +407,9 @@ export function createMediaDownloadCapability({
   const config = getMediaConfig(env);
   if (!config.configured) {
     throw new ApiError(503, "Media storage is temporarily unavailable.", "MEDIA_STORAGE_UNAVAILABLE");
+  }
+  if (storageScope === "private" && String(env.NODE_ENV || "").toLowerCase() === "production") {
+    requirePrivateMediaIsolationReady(env);
   }
   const objectUrl = joinObjectUrl(config.endpoint, [storageBucket(config, storageScope), ...key.split("/")]);
   const headers = { "If-Match": etag };
@@ -366,5 +482,56 @@ export function createMediaProcessorUploadCapability({
     key,
     storageScope: "public",
     expiresAt: now.getTime() + ttl * 1_000,
+  };
+}
+
+export function createMediaProcessorImageUploadCapability({
+  objectKey,
+  contentType,
+  contentLength,
+  env = process.env,
+  now = new Date(),
+  expiresIn = 120,
+} = {}) {
+  const key = String(objectKey || "");
+  const type = String(contentType || "").toLowerCase();
+  const bytes = Number(contentLength);
+  const extension = PROCESSOR_IMAGE_TYPES[type];
+  const ttl = Number(expiresIn);
+  if (!OWNED_OBJECT_KEY.test(key) || !extension || !key.endsWith(`.${extension}`)
+      || !Number.isSafeInteger(bytes) || bytes < 1 || bytes > MAX_PROCESSOR_IMAGE_BYTES
+      || !Number.isSafeInteger(ttl) || ttl < 30 || ttl > 300) {
+    throw new ApiError(500, "Photo delivery upload could not be prepared.", "INTERNAL_ERROR");
+  }
+  const config = getMediaConfig(env);
+  if (!config.configured) {
+    throw new ApiError(503, "Media storage is temporarily unavailable.", "MEDIA_STORAGE_UNAVAILABLE");
+  }
+  const objectUrl = joinObjectUrl(config.endpoint, [config.bucket, ...key.split("/")]);
+  const headers = { "Content-Type": type, "Content-Length": String(bytes), "If-None-Match": "*" };
+  let uploadUrl;
+  try {
+    uploadUrl = presignS3Request({
+      method: "PUT",
+      url: objectUrl,
+      region: config.region,
+      accessKeyId: config.accessKeyId,
+      secretAccessKey: config.secretAccessKey,
+      headers,
+      expiresIn: ttl,
+      now,
+    });
+  } catch (error) {
+    throw new ApiError(503, "Photo delivery upload could not be prepared.", "MEDIA_STORAGE_UNAVAILABLE", error);
+  }
+  return {
+    method: "PUT",
+    uploadUrl,
+    requiredHeaders: headers,
+    publicUrl: joinObjectUrl(config.publicBase, key.split("/")),
+    key,
+    storageScope: "public",
+    expiresAt: now.getTime() + ttl * 1_000,
+    fileSize: bytes,
   };
 }
