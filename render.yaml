@@ -10,8 +10,10 @@ services:
     plan: starter                      # $7/mo; has persistent disk support
     # The persistent disk is not mounted during builds. Give the quality gate a
     # throwaway, explicitly bootstrapped database; these command-scoped values do
-    # not reach the runtime process or weaken the /data startup guard.
-    buildCommand: npm ci && mkdir -p /tmp/pit-build-data && PIT_DATA_DIR=/tmp/pit-build-data PIT_ALLOW_EMPTY_DB_BOOTSTRAP=true npm run check
+    # not reach the runtime process or weaken the /data startup guard. The live
+    # npm advisory query remains in GitHub CI; a registry outage must not make an
+    # already-audited production artifact undeployable.
+    buildCommand: npm ci && mkdir -p /tmp/pit-build-data && PIT_DATA_DIR=/tmp/pit-build-data PIT_ALLOW_EMPTY_DB_BOOTSTRAP=true npm run check:deploy
     # The runtime disk is finally mounted here. Snapshot + verify the existing
     # database before importing db.js applies this release's migrations; a
     # failed snapshot stops startup before migration (persistent-disk deploys
@@ -170,7 +172,7 @@ services:
     runtime: node
     plan: starter
     branch: staging
-    buildCommand: npm ci && mkdir -p /tmp/pit-build-data && PIT_DATA_DIR=/tmp/pit-build-data PIT_ALLOW_EMPTY_DB_BOOTSTRAP=true npm run check
+    buildCommand: npm ci && mkdir -p /tmp/pit-build-data && PIT_DATA_DIR=/tmp/pit-build-data PIT_ALLOW_EMPTY_DB_BOOTSTRAP=true npm run check:deploy
     startCommand: node scripts/start-production.mjs
     healthCheckPath: /api/health
     autoDeploy: true

@@ -14,14 +14,22 @@ function configuredTrueCount(source, key) {
   return [...source.matchAll(pattern)].length;
 }
 
-test("both Render services gate deployment on the full check in isolated build storage", async () => {
+test("both Render services gate deployment on deterministic checks in isolated build storage", async () => {
   const source = await readFile(new URL("render.yaml", ROOT), "utf8");
   const commands = [...source.matchAll(/^\s*buildCommand:\s*(.+)$/gm)].map((match) => match[1]);
   assert.equal(commands.length, 2, "production and staging both declare a build command");
   for (const command of commands) {
-    assert.match(command, /npm run check(?:\s|$)/);
+    assert.match(command, /npm run check:deploy(?:\s|$)/);
     assert.match(command, /PIT_DATA_DIR=\/tmp\/pit-build-data/);
     assert.match(command, /PIT_ALLOW_EMPTY_DB_BOOTSTRAP=true/);
+  }
+
+  const packageJson = JSON.parse(await readFile(new URL("package.json", ROOT), "utf8"));
+  assert.match(packageJson.scripts.check, /check:dependencies/, "CI retains the live dependency advisory gate");
+  assert.doesNotMatch(packageJson.scripts["check:deploy"], /check:dependencies|npm audit/,
+    "a transient advisory-service outage cannot block an otherwise verified deploy");
+  for (const gate of ["test", "check:syntax", "check:architecture", "build:web"]) {
+    assert.match(packageJson.scripts["check:deploy"], new RegExp(`npm run ${gate.replace(":", "\\:")}`));
   }
 });
 

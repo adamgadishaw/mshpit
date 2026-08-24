@@ -24,6 +24,13 @@ test("public health probes use a dedicated per-IP allowance", () => {
   assert.match(source, /if \(pathname === "\/api\/health"\) \{\s*const healthLimit = healthRateLimitPolicy\(ip\);\s*if \(!rateLimit\(healthLimit\.key, healthLimit\.max, healthLimit\.windowMs\)\)/);
 });
 
+test("private media probes degrade publishing without preventing core startup", () => {
+  const source = readFileSync(new URL("./index.js", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /throw new Error\(`Private media storage privacy check failed/);
+  assert.match(source, /if \(PROD\) refreshPrivateMediaIsolationSafely\("startup"\)/);
+  assert.match(source, /private-storage privacy check failed closed: phase=\$\{phase\} code=\$\{status\.errorCode/);
+});
+
 test("successful readiness work is shared briefly and recomputed at expiry", () => {
   let at = 10_000;
   let checks = 0;

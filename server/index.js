@@ -511,26 +511,26 @@ async function refreshPrivateMediaIsolation() {
 function startPrivateMediaIsolationScheduler() {
   if (!PROD || privateMediaIsolationTimer) return;
   privateMediaIsolationTimer = setInterval(() => {
-    refreshPrivateMediaIsolation()
-      .then((status) => {
-        if (status && !status.ready) {
-          console.error(`[media] private-storage privacy check failed closed: code=${status.errorCode || "probe_failed"}`);
-        }
-      })
-      .catch((error) => {
-        console.error(`[media] private-storage privacy check failed safely: cause=${safeRequestFailureContext({ error }).cause}`);
-      });
+    refreshPrivateMediaIsolationSafely("scheduled");
   }, 5 * 60 * 1000);
   privateMediaIsolationTimer.unref();
 }
 
-async function startServer() {
-  if (PROD) {
-    const isolation = await refreshPrivateMediaIsolation();
-    if (!isolation?.ready) {
-      throw new Error(`Private media storage privacy check failed (${isolation?.errorCode || "probe_failed"}).`);
-    }
-  }
+function refreshPrivateMediaIsolationSafely(phase) {
+  return refreshPrivateMediaIsolation()
+    .then((status) => {
+      if (status && !status.ready) {
+        console.error(`[media] private-storage privacy check failed closed: phase=${phase} code=${status.errorCode || "probe_failed"}`);
+      }
+      return status;
+    })
+    .catch((error) => {
+      console.error(`[media] private-storage privacy check failed safely: phase=${phase} cause=${safeRequestFailureContext({ error }).cause}`);
+      return null;
+    });
+}
+
+function startServer() {
   server.listen(PORT, () => {
     console.log(`[pit] up on http://localhost:${PORT} ${PROD ? "(production)" : "(dev)"}, serving API${existsSync(DIST) ? " + web build" : " (no dist/ yet)"}`);
     try { pruneEmailOperationalData(db); }
@@ -552,15 +552,12 @@ async function startServer() {
     startMediaDeletionScheduler({ database: db }); // bounded, durable cleanup of active user-media objects only
     legacyVideoPosterScheduler = startLegacyVideoPosterVerificationScheduler({ database: db });
     startVideoVerifierHealthScheduler();
+    // Do not couple core availability to an optional remote provider. Until
+    // this proof succeeds, capabilities stay off and private media operations
+    // fail closed through requirePrivateMediaIsolationReady().
+    if (PROD) refreshPrivateMediaIsolationSafely("startup");
     startPrivateMediaIsolationScheduler();
   });
 }
 
-startServer().catch((error) => {
-  console.error(`[pit] startup refused: cause=${safeRequestFailureContext({ error }).cause}`);
-  try { db.close(); }
-  catch (closeError) {
-    console.error(`[pit] startup database close failed safely: cause=${safeRequestFailureContext({ error: closeError }).cause}`);
-  }
-  process.exitCode = 1;
-});
+startServer();

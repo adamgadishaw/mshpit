@@ -120,8 +120,10 @@ to be completed.
 ### Media and storage
 
 - Original uploads go to a private source bucket. Production performs an
-  anonymous exact-object and listing canary and refuses to start if the private
-  bucket is publicly readable.
+  anonymous exact-object and listing canary. Until that proof succeeds, photo
+  and video capabilities remain disabled and every private-media operation
+  fails closed; the core site stays available while a bounded background probe
+  retries so provider/configuration outages do not become whole-site outages.
 - Image uploads are validated by framing and magic bytes, decoded and re-encoded
   in a fresh secret-free child process behind a one-job admission gate, and
   stripped of metadata including EXIF/GPS. The worker has a 12-second kill

@@ -59,6 +59,7 @@
     "check:dependencies": "npm audit --omit=dev --audit-level=high",
     "check:syntax": "node scripts/check-syntax.mjs",
     "check:architecture": "node scripts/check-architecture.mjs",
+    "check:deploy": "npm run split:catalog && npm run test && npm run check:syntax && npm run check:architecture && npm run build:web",
     "check": "npm run split:catalog && npm run test && npm run check:dependencies && npm run check:syntax && npm run check:architecture && npm run build:web",
     "split:catalog": "node scripts/split-catalog.mjs"
   },

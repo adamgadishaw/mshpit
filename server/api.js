@@ -1787,7 +1787,7 @@ function assertVisibleAttachedMedia(user, postId, url) {
   }
 }
 
-function runtimeReadiness({ requirePrivateMedia = false } = {}) {
+function runtimeReadiness() {
   // Render can probe several times while browsers also negotiate media
   // capability. Cache only successful SQLite/filesystem work for one second;
   // environment flags and privacy state below remain live on every request.
@@ -1809,9 +1809,6 @@ function runtimeReadiness({ requirePrivateMedia = false } = {}) {
     String(process.env.PIT_ALLOW_EMPTY_DB_BOOTSTRAP || "").trim().toLowerCase(),
   );
   const privateMediaIsolation = privateMediaIsolationStatus(process.env);
-  if (requirePrivateMedia && production && !privateMediaIsolation.ready) {
-    throw new ApiError(503, "Private media storage is not ready.", "MEDIA_STORAGE_UNAVAILABLE");
-  }
   return { ...runtime, storageConfigured, bootstrapAllowed, privateMediaIsolation };
 }
 
@@ -1872,7 +1869,10 @@ export function reserveVideoPublishingDemand(ctx, user, phase) {
 }
 
 function publicHealthProjection(ctx) {
-  runtimeReadiness({ requirePrivateMedia: true });
+  // Core liveness is independent of optional remote media storage. Media
+  // capabilities remain false until the private bucket passes its live privacy
+  // probe, and every upload/download path enforces that gate independently.
+  runtimeReadiness();
   const negotiated = ctx?.query?.mediaPipeline === VIDEO_VERIFIER_PIPELINE_VERSION;
   const capabilities = runtimeMediaPublishingCapabilities();
   return {

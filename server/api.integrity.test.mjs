@@ -449,11 +449,10 @@ test("public video capability requires exact private-derivative negotiation plus
     assert.deepEqual(routes["GET /api/health"]({ query: { mediaPipeline: "private-derivative-v1" } }).capabilities.mediaPublishing,
       { photos: true, videos: true, pipeline: "private-derivative-v1" });
     process.env.MEDIA_SOURCE_BUCKET = process.env.MEDIA_BUCKET;
-    assert.throws(
-      () => routes["GET /api/health"]({ query: { mediaPipeline: "private-derivative-v1" } }),
-      (error) => error.status === 503 && error.code === "MEDIA_STORAGE_UNAVAILABLE",
-      "a public/shared source bucket makes production readiness fail closed",
-    );
+    const degraded = routes["GET /api/health"]({ query: { mediaPipeline: "private-derivative-v1" } });
+    assert.equal(degraded.ok, true, "core liveness survives an unavailable optional media provider");
+    assert.deepEqual(degraded.capabilities.mediaPublishing, { photos: false, videos: false },
+      "a public/shared source bucket keeps every publishing capability fail closed");
     process.env.MEDIA_SOURCE_BUCKET = "pit-media-private";
 
     const videoBody = (clientAssetId) => ({
