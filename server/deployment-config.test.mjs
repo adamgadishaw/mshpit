@@ -44,11 +44,15 @@ test("both Render services verify a persistent-disk snapshot before migrations",
   assert.ok(launcher.indexOf("runStartupBackup") < launcher.indexOf("await loadServer()"));
 });
 
-test("the test runner cannot inherit Render's production bootstrap approval", async () => {
+test("the test runner cannot inherit Render's hosted runtime or bootstrap approval", async () => {
   const source = await readFile(new URL("scripts/run-tests.mjs", ROOT), "utf8");
   assert.match(source, /NODE_ENV:\s*["']test["']/);
   assert.match(source, /PIT_ENV:\s*["']production["']/);
   assert.match(source, /PIT_ALLOW_EMPTY_DB_BOOTSTRAP:\s*["']false["']/);
+  assert.match(source, /delete\s+testEnvironment\.RENDER/);
+  assert.match(source, /delete\s+testEnvironment\.RESEND_API_KEY/);
+  assert.match(source, /delete\s+testEnvironment\.MAIL_FROM/);
+  assert.match(source, /env:\s*testEnvironment/);
 });
 
 test("runtime bootstrap fails closed while production alone owns the bounded tour refresh", async () => {
