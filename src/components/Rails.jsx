@@ -197,61 +197,6 @@ export function DesktopTopNav({
   );
 }
 
-// Legacy desktop rail retained for compatibility with older shells. App.js now
-// uses DesktopTopNav and the persistent player column instead.
-export function LeftRail({ tab, setTab, session, unread = 0, notifUnread = 0, onLog, onFindVenues, onFanClubs, onNearby, onTopRated, onInbox, onActivity, onProfile, onEditProfile, onLogin }) {
-  const NavItem = ({ item }) => {
-    const on = tab === item.key;
-    return (
-      <Pressable
-        style={({ pressed, hovered, focused }) => [
-          styles.navItem,
-          on && styles.navItemOn,
-          hovered && !on && styles.itemHover,
-          pressed && styles.itemPressed,
-          focused && focusRing,
-        ]}
-        onPress={() => setTab(item.key)}
-        accessibilityRole="tab"
-        accessibilityState={{ selected: on }}
-      >
-        <Icon name={item.icon} size={20} color={on ? colors.amber : colors.textDim} />
-        <Text style={[styles.navTxt, on && styles.navTxtOn]}>{item.label}</Text>
-      </Pressable>
-    );
-  };
-  const Link = ({ icon, label, badge, onPress }) => (
-    <Pressable
-      style={({ pressed, hovered, focused }) => [styles.link, hovered && styles.itemHover, pressed && styles.itemPressed, focused && focusRing]}
-      onPress={onPress}
-      accessibilityRole="button"
-      accessibilityLabel={badge > 0 ? `${label}, ${badge} unread` : label}
-    >
-      <Icon name={icon} size={18} color={colors.textDim} />
-      <Text style={styles.linkTxt}>{label}</Text>
-      {badge > 0 && <View style={styles.badge}><Text style={styles.badgeTxt}>{badge}</Text></View>}
-    </Pressable>
-  );
-
-  return (
-    <View style={styles.left}>
-      <View style={{ gap: 4 }}>
-        {NAV.map((item) => <NavItem key={item.key} item={item} />)}
-      </View>
-
-      <Pressable
-        style={({ pressed, hovered, focused }) => [styles.logBtn, hovered && !pressed && styles.logBtnHover, pressed && styles.logBtnPressed, focused && focusRing]}
-        onPress={onLog}
-        accessibilityRole="button"
-      >
-        <Icon name="plus" size={18} color="#1A1206" strokeWidth={2.6} />
-        <Text style={styles.logTxt}>Make a post</Text>
-      </Pressable>
-
-    </View>
-  );
-}
-
 // Right rail: contextual widgets, Top / A-Z artists, trending venues, upcoming
 // events. Read-only discovery surfaces that stay out of the feed's way.
 export function RightRail({
@@ -455,28 +400,6 @@ const styles = StyleSheet.create({
   topSignupButton: { minHeight: 40, alignItems: "center", justifyContent: "center", paddingHorizontal: 14, borderRadius: radius.pill, backgroundColor: colors.amberStrong, borderWidth: 1, borderBottomWidth: 3, borderColor: colors.amber, borderBottomColor: colors.accentEdge, ...shadow.control },
   topSignupText: { color: "#1A1206", fontFamily: displayFont, fontSize: 13, fontWeight: "800" },
 
-  // left rail
-  left: { width: 200, flexGrow: 0, flexShrink: 0, flexBasis: 200, paddingHorizontal: 12, paddingVertical: 18, borderRightWidth: 1, borderRightColor: colors.lineSoft, gap: 6 },
-  navItem: { flexDirection: "row", alignItems: "center", gap: 14, paddingVertical: 10, paddingHorizontal: 12, borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderBottomWidth: 3, borderColor: "transparent", ...Platform.select({ web: { cursor: "pointer", transitionDuration: "110ms", transitionProperty: "background-color, transform, box-shadow" } }) },
-  navItemOn: { backgroundColor: colors.surfaceAlt, borderColor: colors.line, borderBottomColor: colors.accentEdge, ...shadow.control },
-  navTxt: { color: colors.textDim, fontFamily: font, fontSize: 15, fontWeight: "600" },
-  navTxtOn: { color: colors.amber, fontFamily: displayFont, fontWeight: "800" },
-  logBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, backgroundColor: colors.amberStrong, borderRadius: radius.pill, borderWidth: 1, borderBottomWidth: 4, borderColor: colors.amber, borderBottomColor: colors.accentEdge, paddingVertical: 11, marginTop: 12, ...shadow.control, ...Platform.select({ web: { cursor: "pointer", transitionDuration: "110ms", transitionProperty: "filter, transform, box-shadow" } }) },
-  logBtnHover: { transform: [{ translateY: -1 }], ...Platform.select({ web: { filter: "brightness(1.06)" } }) },
-  logBtnPressed: { transform: [{ translateY: 3 }], boxShadow: "inset 0 1px 3px rgba(0,0,0,0.18)" },
-  logTxt: { color: "#1A1206", fontFamily: displayFont, fontSize: 14, fontWeight: "800", letterSpacing: 0.1 },
-  divider: { height: 1, backgroundColor: colors.lineSoft, marginVertical: 14 },
-  railLabel: { color: colors.textFaint, fontSize: 10, letterSpacing: 1.5, fontWeight: "700", marginBottom: 6, marginLeft: 12 },
-  link: { flexDirection: "row", alignItems: "center", gap: 12, paddingVertical: 9, paddingHorizontal: 12, borderRadius: radius.md, borderCurve: "continuous", ...Platform.select({ web: { cursor: "pointer" } }) },
-  linkTxt: { color: colors.text, fontFamily: font, fontSize: 14, fontWeight: "600", flex: 1 },
-  badge: { backgroundColor: colors.amberStrong, borderRadius: 10, minWidth: 20, paddingHorizontal: 6, paddingVertical: 1, alignItems: "center" },
-  badgeTxt: { color: "#1A1206", fontSize: 11, fontWeight: "800" },
-  me: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 10 },
-  meName: { color: colors.text, fontSize: 14, fontWeight: "800" },
-  meSub: { color: colors.textDim, fontSize: 11, marginTop: 1 },
-  loginBtn: { backgroundColor: colors.amberStrong, borderRadius: radius.md, paddingVertical: 12, alignItems: "center" },
-  loginTxt: { color: "#1A1206", fontSize: 13, fontWeight: "800", letterSpacing: 1 },
-
   // right rail, RNW gives ScrollView a default flex:1, so pin it rigid or it
   // grows past its width and starves the feed column.
   right: { width: 340, flexGrow: 0, flexShrink: 0, flexBasis: 340 },
@@ -506,7 +429,6 @@ const styles = StyleSheet.create({
   eventPressable: { borderRadius: radius.md, borderCurve: "continuous", ...Platform.select({ web: { cursor: "pointer", transitionDuration: "110ms", transitionProperty: "transform, filter" } }) },
   eventHover: { ...Platform.select({ web: { filter: "brightness(1.06)" } }) },
   empty: { color: colors.textDim, fontSize: 12, fontStyle: "italic" },
-  itemHover: { backgroundColor: colors.surface },
   itemPressed: { transform: [{ scale: 0.98 }], opacity: 0.88 },
   rowHover: { backgroundColor: colors.surfaceAlt },
   rowPressed: { backgroundColor: colors.bgElev, transform: [{ scale: 0.985 }] },

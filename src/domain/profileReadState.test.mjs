@@ -78,8 +78,8 @@ test("the store evicts only authoritative misses and the screen labels retained 
   assert.match(loader, /const outcome = profileFailureOutcome/);
   assert.match(loader, /if \(outcome\.evict\) quarantine\(\)/);
   assert.match(loader, /withoutUnavailableProfilePosts/);
-  assert.match(loader, /Array\.isArray\(posts\)/);
-  assert.match(loader, /reconcileProfilePostSnapshot/);
+  assert.doesNotMatch(loader, /\/posts/);
+  assert.match(screenSource, /useProfileHistory/);
   assert.match(screenSource, /profileView\.status === "missing"/);
   assert.match(screenSource, /profileView\.status === "stale"/);
   assert.match(screenSource, /styles\.staleProfileText\}>\{profileView\.error\}/);

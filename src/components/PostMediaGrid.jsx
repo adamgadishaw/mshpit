@@ -11,16 +11,13 @@ function Tile({ item, index, onOpen, openerId, style, more = 0, contain = false,
   const mediaKind = mediaDisplayKind(item);
   const video = mediaKind === "video";
   const authoredAlt = typeof item?.altText === "string" ? item.altText.trim() : "";
-  return (
-    <Pressable
-      ref={openerRef}
-      nativeID={openerId}
-      style={[styles.tile, style]}
-      onPress={onOpen ? () => onOpen(index, openerRef.current) : undefined}
-      accessibilityRole={onOpen ? "button" : undefined}
-      accessibilityLabel={authoredAlt || (video ? "Concert video" : "Concert photo")}
-      accessibilityHint={`${video ? "Double tap to play video" : "Double tap to open photo"}${more ? `. Opens a gallery with ${more} more items` : ""}`}
-    >
+  const interactive = typeof onOpen === "function";
+  const accessibilityLabel = authoredAlt || (video ? "Concert video" : "Concert photo");
+  const moreHint = more
+    ? ` Opens a gallery with ${more} additional ${more === 1 ? "item" : "items"}.`
+    : "";
+  const content = (
+    <>
       {/* Feed cards need a screen-sized derivative, not a 12 MP original. The
           full durable object remains untouched for PhotoViewer. */}
       <SmartImage
@@ -38,6 +35,28 @@ function Tile({ item, index, onOpen, openerId, style, more = 0, contain = false,
           <Text style={styles.moreText}>+{more}</Text>
         </View>
       )}
+    </>
+  );
+
+  if (!interactive) {
+    return (
+      <View style={[styles.tile, style]} accessible accessibilityRole="image" accessibilityLabel={accessibilityLabel}>
+        {content}
+      </View>
+    );
+  }
+
+  return (
+    <Pressable
+      ref={openerRef}
+      nativeID={openerId}
+      style={[styles.tile, style]}
+      onPress={() => onOpen(index, openerRef.current)}
+      accessibilityRole="button"
+      accessibilityLabel={accessibilityLabel}
+      accessibilityHint={`${video ? "Opens the video player." : "Opens the full-size photo."}${moreHint}`}
+    >
+      {content}
     </Pressable>
   );
 }
@@ -47,7 +66,7 @@ function Tile({ item, index, onOpen, openerId, style, more = 0, contain = false,
 // The component is shared by status and concert posts so neither falls back to
 // the old 64px thumbnail strip.
 export default function PostMediaGrid({ media = [], onOpen, openerScope = null, viewable = null }) {
-  const { width: viewportWidth } = useWindowDimensions();
+  const { width: viewportWidth, height: viewportHeight } = useWindowDimensions();
   const items = mediaDisplayItems({ photos: Array.isArray(media) ? media : [] });
   if (!items.length) return null;
   const openerScopeKey = openerScope === null || openerScope === undefined
@@ -57,6 +76,7 @@ export default function PostMediaGrid({ media = [], onOpen, openerScope = null, 
 
   const desktopLayout = postMediaGridLayout({
     viewportWidth,
+    viewportHeight,
     count: items.length,
     width: items[0]?.width,
     height: items[0]?.height,

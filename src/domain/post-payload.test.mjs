@@ -22,6 +22,7 @@ test("a selected J. Cole catalog key survives the review create payload", () => 
     landingShowcase: true,
     setlist: [],
     tags: ["final tour"],
+    taggedPeople: [{ id: "u_friend", name: "Mara" }, { id: "u_friend", name: "Duplicate" }],
   });
 
   assert.equal(body.artist, "J. Cole");
@@ -31,6 +32,7 @@ test("a selected J. Cole catalog key survives the review create payload", () => 
   assert.equal(body.date, "2026-07-27");
   assert.equal(body.landingShowcase, 1);
   assert.deepEqual(body.mediaAssetIds, ["ma_abcdefgh12345678"]);
+  assert.deepEqual(body.taggedUserIds, ["u_friend"]);
 });
 
 test("review payloads never feature photos that are not public", () => {

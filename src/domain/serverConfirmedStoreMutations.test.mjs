@@ -4,7 +4,7 @@ import test from "node:test";
 
 const store = readFileSync(new URL("../store.js", import.meta.url), "utf8");
 const admin = readFileSync(new URL("../screens/AdminScreen.jsx", import.meta.url), "utf8");
-const artist = readFileSync(new URL("../screens/ArtistScreen.jsx", import.meta.url), "utf8");
+const artistHub = readFileSync(new URL("../screens/ArtistHubScreen.jsx", import.meta.url), "utf8");
 const notifications = readFileSync(new URL("../screens/NotificationsScreen.jsx", import.meta.url), "utf8");
 
 function mutationSlice(startMarker, endMarker) {
@@ -39,9 +39,9 @@ test("artist update deletion is server-first and exposes scoped retry feedback",
   const source = mutationSlice("const removeArtistPost =", "// --- Ban / suspend");
   assertServerFirst(source, "setArtistPosts(");
   assert.match(source, /reconcileConfirmedArtistPostRemoval/);
-  assert.match(artist, /await removeArtistPost\(a\.name, postId, \{ signal: controller\.signal \}\)/);
-  assert.match(artist, /artistPostMutation\.scope === artistPostScope/);
-  assert.match(artist, /This update was not removed, so it is still visible/);
+  assert.match(artistHub, /await removeArtistPost\(artistName, postId, \{ signal: controller\.signal \}\)/);
+  assert.match(artistHub, /artistPostMutation\.scope === artistPostScope/);
+  assert.match(artistHub, /This page update was not removed, so it is still visible/);
 });
 
 test("notification read is server-first and never clears uncaptured rows", () => {

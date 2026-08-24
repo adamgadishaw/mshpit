@@ -97,6 +97,7 @@ function ListGroup({ items, actions }) {
 }
 
 function JourneyHero({ session, onProfile, onLogin, wide }) {
+  const publicProfileLabel = session?.role === "artist" && session?.artistName ? "public artist page" : "public profile";
   return (
     <View style={[styles.hero, wide && styles.heroWide]}>
       <View pointerEvents="none" style={styles.heroGlow} />
@@ -123,11 +124,11 @@ function JourneyHero({ session, onProfile, onLogin, wide }) {
           style={({ pressed, focused }) => [styles.profileButton, pressed && styles.pressed, focused && focusRing]}
           onPress={onProfile}
           accessibilityRole="button"
-          accessibilityLabel={`View ${session.name}'s journey and profile`}
+          accessibilityLabel={`View ${session.name}'s ${publicProfileLabel}`}
         >
           <Avatar user={session} size={46} />
           <View style={styles.profileCopy}>
-            <Text style={styles.profileKicker}>YOUR PROFILE</Text>
+            <Text style={styles.profileKicker}>{publicProfileLabel.toUpperCase()}</Text>
             <Text style={styles.profileName} numberOfLines={1}>{session.name}</Text>
             <Text style={styles.profileHandle} numberOfLines={1}>@{session.handle}</Text>
           </View>
@@ -148,7 +149,7 @@ function JourneyHero({ session, onProfile, onLogin, wide }) {
   );
 }
 
-export default function MenuScreen({ onClose, onNear, onVenues, onFanClubs, onTopRated, onInbox, onActivity, onProfile, onEditProfile, onAdmin, onTourDates, onRequestArtist, onLogin, onLogout, onBackToLanding }) {
+export default function MenuScreen({ onClose, onNear, onVenues, onFanClubs, onTopRated, onInbox, onActivity, onProfile, onManageProfile, onSettings, onAdmin, onTourDates, onRequestArtist, onLogin, onLogout, onBackToLanding }) {
   const { width } = useWindowDimensions();
   const wide = width >= 920;
   const narrow = width < 560;
@@ -166,7 +167,8 @@ export default function MenuScreen({ onClose, onNear, onVenues, onFanClubs, onTo
     topRated: onTopRated,
     activity: onActivity,
     inbox: onInbox,
-    editProfile: onEditProfile,
+    manageProfile: onManageProfile,
+    settings: onSettings,
     admin: onAdmin,
     tourDates: onTourDates,
     requestArtist: onRequestArtist,
@@ -188,7 +190,7 @@ export default function MenuScreen({ onClose, onNear, onVenues, onFanClubs, onTo
               <SectionHeading
                 eyebrow="DISCOVER"
                 title="Find your next night"
-                detail="Follow the sound from your city to the crowd favorites everyone is talking about."
+                detail="Follow the sound from your city to the top-rated shows people are talking about."
               />
               <View style={styles.tileGrid}>
                 {model.discover.map((item) => (

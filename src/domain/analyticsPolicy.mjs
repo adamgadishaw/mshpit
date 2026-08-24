@@ -12,6 +12,7 @@ const id = { type: "id" };
 const version = { type: "version" };
 const bool = { type: "boolean" };
 const integer = (min, max) => ({ type: "integer", min, max });
+const analyticsScreen = enums("landing", "tab_feed", "tab_search", "tab_discover", "tab_you", "media_viewer", "playlist_picker", "follow_list", "auth", "pick_artists", "post_edit", "post_create", "report", "profile_edit", "venue_review", "message_thread", "inbox", "activity", "calendar", "clips", "profile", "fan_club", "artist_hq", "artist_preview", "artist_edit", "artist", "venue", "nearby", "venues", "fan_clubs", "settings", "account_delete", "diagnostics", "privacy", "terms", "lounge", "show", "post", "badges", "top_rated", "admin", "tour_dates", "request_artist", "menu");
 
 export const ANALYTICS_BATCH_LIMIT = 40;
 export const ANALYTICS_QUEUE_LIMIT = 200;
@@ -22,8 +23,8 @@ export const ANALYTICS_EVENT_SPECS = Object.freeze({
     entry: enums("launch", "resume", "login"),
   },
   screen_view: {
-    screen: enums("landing", "tab_feed", "tab_search", "tab_discover", "tab_you", "media_viewer", "playlist_picker", "follow_list", "auth", "pick_artists", "post_edit", "post_create", "report", "profile_edit", "venue_review", "message_thread", "inbox", "activity", "calendar", "clips", "profile", "fan_club", "artist_edit", "artist", "venue", "nearby", "venues", "fan_clubs", "settings", "account_delete", "diagnostics", "privacy", "terms", "lounge", "show", "post", "badges", "top_rated", "admin", "tour_dates", "request_artist", "menu"),
-    referrer: enums("landing", "tab_feed", "tab_search", "tab_discover", "tab_you", "media_viewer", "playlist_picker", "follow_list", "auth", "pick_artists", "post_edit", "post_create", "report", "profile_edit", "venue_review", "message_thread", "inbox", "activity", "calendar", "clips", "profile", "fan_club", "artist_edit", "artist", "venue", "nearby", "venues", "fan_clubs", "settings", "account_delete", "diagnostics", "privacy", "terms", "lounge", "show", "post", "badges", "top_rated", "admin", "tour_dates", "request_artist", "menu"),
+    screen: analyticsScreen,
+    referrer: analyticsScreen,
   },
   feed_request: {
     surface: enums("everyone", "following", "local", "clips"),

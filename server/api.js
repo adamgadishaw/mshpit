@@ -45,6 +45,8 @@ import {
 } from "./mediaAssets.js";
 import { mediaAssetRoutes } from "./mediaAssetRoutes.js";
 import { directMessageReadProjection, dmReadRoutes } from "./dmReadRoutes.js";
+import { postTagRoutes } from "./postTagRoutes.js";
+import { artistReviewRoutes } from "./features/artistReviews/artistReviewRoutes.js";
 import {
   enqueueAllOwnedMedia,
   enqueueOwnedMediaKeys,
@@ -104,6 +106,8 @@ import { assertSafeAuthoredFields, assertSafeAuthoredText } from "./contentSafet
 import { canonicalProfileExtras } from "./profileExtras.js";
 import { licensedVenuePhoto, verifiedHttpsUrl } from "../src/domain/venuePhotoProvenance.mjs";
 import { accountIsPublic, activeAccountSql } from "./accountVisibility.js";
+import { normalizeArtistCampaign } from "../src/domain/artistCampaignPost.mjs";
+import { normalizeTaggedUserIds } from "../src/domain/postFriendTags.mjs";
 
 export { ApiError } from "./errors.js";
 
@@ -559,8 +563,8 @@ function cleanPostRatingDims(value) {
   return out;
 }
 
-const postRow = db.prepare(`INSERT INTO posts (id,user_id,artist,venue,city,date,overall,band,room,dims,review,photos,photos_public,landing_showcase,setlist,tour,tags,kind,song,playlist,artist_key,artist_mbid,venue_key,client_mutation_id,client_mutation_hash,created_at)
-                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+const postRow = db.prepare(`INSERT INTO posts (id,user_id,artist,venue,city,date,overall,band,room,dims,review,photos,photos_public,landing_showcase,campaign,setlist,tour,tags,tagged_user_ids,kind,song,playlist,artist_key,artist_mbid,venue_key,client_mutation_id,client_mutation_hash,created_at)
+                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
 const postByClientMutation = db.prepare("SELECT id,removed,client_mutation_hash FROM posts WHERE user_id=? AND client_mutation_id=? LIMIT 1");
 
 function clientMutationId(value) {
@@ -773,6 +777,7 @@ const SEEN_ORDINAL_SQL = `(SELECT COUNT(*) FROM posts s
       AND (s.created_at < p.created_at OR (s.created_at = p.created_at AND s.id <= p.id))) AS seen_ordinal`;
 const feedPostById = db.prepare(`
   SELECT p.*, u.name AS u_name, u.handle AS u_handle, u.initials AS u_initials, u.avatar_uri AS u_avatar, u.avatar_color AS u_color,
+    u.role AS u_role,u.artist_name AS u_artist_name,
     (SELECT COUNT(*) FROM likes l JOIN users lu ON lu.id=l.user_id WHERE l.post_id=p.id AND ${activeAccountSql("lu")}) AS like_count,
     (SELECT COUNT(*) FROM comments c JOIN users cu ON cu.id=c.user_id
       WHERE c.post_id=p.id AND c.removed=0 AND ${activeAccountSql("cu")}) AS comment_count,
@@ -792,6 +797,146 @@ function cleanPostTags(value) {
     if (out.length >= 5) break;
   }
   return out;
+}
+
+function storedPostTaggedUserIds(value) {
+  const ids = normalizeTaggedUserIds(parseJsonArray(value));
+  return ids || [];
+}
+
+const structuredTagsForRecipient = db.prepare(`SELECT p.id,p.tagged_user_ids,p.created_at,p.updated_at,t.user_id AS removed_user_id
+  FROM post_user_tags t JOIN posts p ON p.id=t.post_id
+  WHERE t.user_id=?`);
+const structuredTagsByAuthorAndRecipient = db.prepare(`SELECT p.id,p.tagged_user_ids,p.created_at,p.updated_at,t.user_id AS removed_user_id
+  FROM post_user_tags t JOIN posts p ON p.id=t.post_id
+  WHERE t.author_id=? AND t.user_id=?`);
+const deleteStructuredPostTag = db.prepare("DELETE FROM post_user_tags WHERE post_id=? AND user_id=?");
+const replaceStructuredPostTags = db.prepare("UPDATE posts SET tagged_user_ids=?,updated_at=? WHERE id=?");
+
+function scrubStructuredPostTagRows(rows) {
+  const seen = new Set();
+  for (const post of rows) {
+    const pair = `${post.id}\u0000${post.removed_user_id}`;
+    if (seen.has(pair)) continue;
+    seen.add(pair);
+    const current = storedPostTaggedUserIds(post.tagged_user_ids);
+    const next = current.filter((id) => id !== post.removed_user_id);
+    if (next.length !== current.length) {
+      const currentVersion = post.updated_at || post.created_at;
+      replaceStructuredPostTags.run(
+        JSON.stringify(next),
+        Math.max(now(), currentVersion + 1),
+        post.id,
+      );
+    }
+    // The trigger above normally performs this delete while synchronizing the
+    // complete JSON list. Keep the targeted delete as a fail-closed repair for
+    // an old malformed JSON row that could not be projected safely.
+    deleteStructuredPostTag.run(post.id, post.removed_user_id);
+  }
+}
+
+function scrubTaggedUserFromPosts(userId) {
+  scrubStructuredPostTagRows(structuredTagsForRecipient.all(userId));
+}
+function scrubPostTagsBetweenUsers(leftId, rightId) {
+  scrubStructuredPostTagRows([
+    ...structuredTagsByAuthorAndRecipient.all(leftId, rightId),
+    ...structuredTagsByAuthorAndRecipient.all(rightId, leftId),
+  ]);
+}
+
+// Existing committed ids may be preserved after a later block/suspension so an
+// exact lost-response retry stays idempotent. Every newly added id must resolve
+// to an active account with no two-way block, and authors cannot tag themselves.
+const rejectedPostTag = db.prepare("SELECT 1 FROM post_tag_rejections WHERE post_id=? AND user_id=?");
+const mutualFollowForPostTag = db.prepare(`SELECT 1
+  WHERE EXISTS (SELECT 1 FROM follows WHERE follower_id=? AND followee_id=?)
+    AND EXISTS (SELECT 1 FROM follows WHERE follower_id=? AND followee_id=?)`);
+const existingPostTagNotification = db.prepare(`SELECT 1 FROM notifications
+  WHERE actor_id=? AND user_id=? AND post_id=? AND type='post_tag'`);
+const recentPostTagNotificationCount = db.prepare(`SELECT COUNT(*) AS count FROM notifications
+  WHERE actor_id=? AND user_id=? AND type='post_tag' AND created_at>=?`);
+const POST_TAG_RECIPIENT_DAILY_LIMIT = 3;
+const POST_TAG_RECIPIENT_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+function mutuallyFollowing(leftId, rightId) {
+  if (!leftId || !rightId || leftId === rightId) return false;
+  return !!mutualFollowForPostTag.get(leftId, rightId, rightId, leftId);
+}
+
+function validatedPostTaggedUserIds(user, value, { committedIds = [], postId = null } = {}) {
+  const ids = normalizeTaggedUserIds(value);
+  if (!ids) throw new ApiError(400, "Those tagged people are invalid. Refresh the people search and try again.", "VALIDATION_FAILED");
+  const committed = new Set(normalizeTaggedUserIds(committedIds) || []);
+  for (const id of ids) {
+    if (committed.has(id)) continue;
+    if (id === user?.id || !publicAccountOrNull(id) || blockedEitherWay(user?.id, id) || !mutuallyFollowing(user?.id, id)
+      || (postId && rejectedPostTag.get(postId, id))) {
+      throw new ApiError(400, "One tagged person is no longer available. Refresh the people search and try again.", "VALIDATION_FAILED");
+    }
+  }
+  return ids;
+}
+
+// A mutual follow is consent to be discoverable in the composer, not permission
+// to repeatedly ping someone. Count durable, unique post-tag notifications so a
+// retry of the same post remains free while a fourth distinct post in 24h stops.
+function assertPostTagRecipientBudget(actorId, recipientIds, { postId = null } = {}) {
+  const cutoff = now() - POST_TAG_RECIPIENT_WINDOW_MS;
+  for (const recipientId of normalizeTaggedUserIds(recipientIds) || []) {
+    if (postId && existingPostTagNotification.get(actorId, recipientId, postId)) continue;
+    const count = Number(recentPostTagNotificationCount.get(actorId, recipientId, cutoff)?.count) || 0;
+    if (count >= POST_TAG_RECIPIENT_DAILY_LIMIT) {
+      throw new ApiError(429, "You've tagged this friend in several recent posts. Try again tomorrow.", "RATE_LIMITED");
+    }
+  }
+}
+
+const TAGGED_PEOPLE_PROJECTION = Symbol("taggedPeopleProjection");
+const TAGGED_PEOPLE_POST_BATCH = 300;
+
+function withTaggedPeople(posts, viewerId = null) {
+  if (!Array.isArray(posts) || !posts.length) return posts || [];
+  const postIds = [...new Set(posts.map((post) => post?.id).filter(Boolean))];
+  const byPost = new Map(postIds.map((id) => [id, []]));
+  for (let offset = 0; offset < postIds.length; offset += TAGGED_PEOPLE_POST_BATCH) {
+    const batch = postIds.slice(offset, offset + TAGGED_PEOPLE_POST_BATCH);
+    const placeholders = batch.map(() => "?").join(",");
+    const rows = db.prepare(`SELECT t.post_id AS tag_post_id,t.position AS tag_position,u.*
+      FROM post_user_tags t JOIN users u ON u.id=t.user_id
+      WHERE t.post_id IN (${placeholders})
+        AND ${activeAccountSql("u")}
+        AND NOT EXISTS (SELECT 1 FROM blocks author_block WHERE
+          (author_block.blocker_id=t.author_id AND author_block.blocked_id=t.user_id) OR
+          (author_block.blocker_id=t.user_id AND author_block.blocked_id=t.author_id))
+        AND (? IS NULL OR NOT EXISTS (SELECT 1 FROM blocks viewer_block WHERE
+          (viewer_block.blocker_id=? AND viewer_block.blocked_id=t.user_id) OR
+          (viewer_block.blocker_id=t.user_id AND viewer_block.blocked_id=?)))
+      ORDER BY t.post_id,t.position`).all(...batch, viewerId, viewerId, viewerId);
+    for (const row of rows) {
+      const person = publicUser(row);
+      byPost.get(row.tag_post_id)?.push({
+        id: person.id,
+        name: person.name,
+        handle: person.handle,
+        initials: person.initials,
+        avatarUri: person.avatarUri,
+        avatarColor: person.avatarColor,
+        role: person.role,
+        verified: person.verified,
+      });
+    }
+  }
+  return posts.map((post) => ({
+    ...post,
+    [TAGGED_PEOPLE_PROJECTION]: byPost.get(post.id) || [],
+  }));
+}
+
+function projectedPostTaggedPeople(post, viewerId) {
+  if (Array.isArray(post?.[TAGGED_PEOPLE_PROJECTION])) return post[TAGGED_PEOPLE_PROJECTION];
+  return withTaggedPeople([post], viewerId)[0]?.[TAGGED_PEOPLE_PROJECTION] || [];
 }
 
 // Idempotency compares the canonical user-authored post, not the incidental JSON
@@ -836,9 +981,78 @@ function rejectNewLegacyMediaUrls(nextPhotos, previousPhotos = []) {
   }
 }
 
+function artistCampaignMediaRows(selectionOrRows) {
+  const source = Array.isArray(selectionOrRows)
+    ? selectionOrRows
+    : Array.isArray(selectionOrRows?.rows) ? selectionOrRows.rows : [];
+  return source.map((entry) => entry?.row || entry).filter(Boolean);
+}
+
+function currentPostCampaignMediaRows(postId, ownerId) {
+  return db.prepare(`SELECT a.id,a.kind FROM post_media pm
+    JOIN media_assets a ON a.id=pm.asset_id
+    WHERE pm.post_id=? AND a.owner_id=? ORDER BY pm.position`).all(postId, ownerId);
+}
+
+// Campaign styling is a server-granted capability, not a client-side badge.
+// Only the approved artist identity may create/change it, and a background must
+// be one of this same post's verified image assets. No URLs, CSS, colors, or
+// other presentation primitives cross this boundary.
+function sameArtistCampaignIntent(left, right) {
+  const a = normalizeArtistCampaign(left);
+  const b = normalizeArtistCampaign(right);
+  return !!a && !!b
+    && a.treatment === b.treatment
+    && (a.backgroundAssetId || null) === (b.backgroundAssetId || null);
+}
+
+function cleanArtistCampaign(value, {
+  user,
+  mediaRows = [],
+  committedCampaign = null,
+  allowCommittedReplay = false,
+} = {}) {
+  if (value == null) return null; // lets a demoted artist remove old styling
+  const campaign = normalizeArtistCampaign(value);
+  if (!campaign) throw new ApiError(400, "That artist drop style is invalid.", "VALIDATION_FAILED");
+  const committed = normalizeArtistCampaign(committedCampaign);
+  const currentArtistName = user?.role === "artist"
+    ? clean(user?.artist_name, { max: LIMITS.artist })
+    : "";
+  const currentArtistKey = currentArtistName ? normName(currentArtistName) : null;
+  // Exact create retries compare against the durable row and remain idempotent
+  // even after revocation, but projection still fails closed. PATCH is a new
+  // authorship decision: a revoked or renamed identity cannot explicitly carry
+  // old official styling into rewritten copy.
+  if (allowCommittedReplay && committed && sameArtistCampaignIntent(campaign, committed)) return committed;
+  if (!currentArtistKey) {
+    throw new ApiError(403, "Only an approved artist account can publish an artist drop.", "FORBIDDEN");
+  }
+  if (committed?.artistKey && normName(committed.artistKey) !== currentArtistKey) {
+    throw new ApiError(403, "That artist drop belongs to an identity this account no longer manages.", "FORBIDDEN");
+  }
+  if (campaign.backgroundAssetId) {
+    const background = artistCampaignMediaRows(mediaRows)
+      .find((row) => row.id === campaign.backgroundAssetId);
+    if (!background || background.kind !== "image") {
+      throw new ApiError(400, "Choose an attached, finished image as the artist drop background.", "VALIDATION_FAILED");
+    }
+  }
+  return {
+    version: 1,
+    treatment: campaign.treatment,
+    artistKey: currentArtistKey,
+    ...(campaign.backgroundAssetId ? { backgroundAssetId: campaign.backgroundAssetId } : {}),
+  };
+}
+
 function canonicalCreateRequest(user, body, storedPost = null) {
   const source = body && typeof body === "object" && !Array.isArray(body) ? body : {};
   const stableMedia = requestedPostMediaSelection(user, source, storedPost);
+  const taggedUserIds = validatedPostTaggedUserIds(user, source.taggedUserIds, {
+    committedIds: storedPostTaggedUserIds(storedPost?.tagged_user_ids),
+    postId: storedPost?.id || null,
+  });
   if (source.kind === "status") {
     const [errs, v] = shape(source, {
       review: { parse: (x) => clean(x, { max: LIMITS.review, newlines: true }) },
@@ -849,6 +1063,12 @@ function canonicalCreateRequest(user, body, storedPost = null) {
     if (errs.length) throw new ApiError(400, errs[0]);
     const playlist = playlistSnapshotForPost(user, source.playlistId, parsedStoredObject(storedPost?.playlist));
     if (!stableMedia) rejectNewLegacyMediaUrls(v.photos || [], parseJsonArray(storedPost?.photos));
+    const campaign = cleanArtistCampaign(source.campaign, {
+      user,
+      mediaRows: stableMedia,
+      committedCampaign: parsedStoredObject(storedPost?.campaign),
+      allowCommittedReplay: !!storedPost,
+    });
     const values = {
       review: v.review || "",
       photos: stableMedia ? stableMedia.photos : (v.photos || []),
@@ -856,6 +1076,8 @@ function canonicalCreateRequest(user, body, storedPost = null) {
       landingShowcase: 0,
       song: v.song || null,
       playlist,
+      campaign,
+      taggedUserIds,
       mediaSelection: stableMedia,
     };
     assertSafeAuthoredFields({
@@ -889,8 +1111,10 @@ function canonicalCreateRequest(user, body, storedPost = null) {
         setlist: [],
         tour: null,
         tags: [],
+        taggedUserIds,
         song: values.song,
         playlistId: playlist?.id || null,
+        campaign,
       },
     };
   }
@@ -939,6 +1163,7 @@ function canonicalCreateRequest(user, body, storedPost = null) {
     setlist: v.setlist || [],
     tour: v.tour || null,
     tags: v.tags || [],
+    taggedUserIds,
     song: v.song || null,
     binding,
     mediaSelection: stableMedia,
@@ -977,8 +1202,10 @@ function canonicalCreateRequest(user, body, storedPost = null) {
       setlist: values.setlist,
       tour: values.tour,
       tags: values.tags,
+      taggedUserIds,
       song: values.song,
       playlistId: null,
+      campaign: null,
     },
   };
 }
@@ -995,6 +1222,7 @@ function canonicalStoredPost(row) {
   const kind = row?.kind === "status" ? "status" : "review";
   const song = cleanSong(parsedStoredObject(row?.song));
   const playlist = parsedStoredObject(row?.playlist);
+  const campaign = kind === "status" ? normalizeArtistCampaign(parsedStoredObject(row?.campaign)) : null;
   const dims = cleanPostRatingDims(parsedStoredObject(row?.dims) || {}) || {};
   return {
     kind,
@@ -1016,12 +1244,15 @@ function canonicalStoredPost(row) {
     setlist: kind === "status" ? [] : cleanStringArray(parseJsonArray(row?.setlist), { maxItems: 40, maxLen: 120 }),
     tour: kind === "status" ? null : clean(row?.tour, { max: 80 }) || null,
     tags: kind === "status" ? [] : cleanPostTags(parseJsonArray(row?.tags)) || [],
+    taggedUserIds: storedPostTaggedUserIds(row?.tagged_user_ids),
     song: song || null,
     playlistId: kind === "status" ? playlist?.id || null : null,
+    campaign,
   };
 }
 // Insert a notification for a recipient (never notify yourself).
 const notifRow = db.prepare("INSERT INTO notifications (id,user_id,actor_id,type,post_id,artist,text,created_at) VALUES (?,?,?,?,?,?,?,?)");
+const postTagNotifRow = db.prepare("INSERT OR IGNORE INTO notifications (id,user_id,actor_id,type,post_id,artist,text,created_at) VALUES (?,?,?,?,?,?,?,?)");
 function addNotif(recipientId, actorId, type, extra = {}) {
   if (!recipientId || recipientId === actorId) return;
   if (actorId && blockedEitherWay(recipientId, actorId)) return; // no pings across a block
@@ -1033,6 +1264,12 @@ const blockCheck = db.prepare("SELECT 1 FROM blocks WHERE (blocker_id=? AND bloc
 function blockedEitherWay(a, b) {
   if (!a || !b) return false;
   return !!blockCheck.get(a, b, b, a);
+}
+function addPostTagNotifications(recipientIds, actorId, postId, artist = null) {
+  for (const recipientId of normalizeTaggedUserIds(recipientIds) || []) {
+    if (!recipientId || recipientId === actorId || blockedEitherWay(recipientId, actorId)) continue;
+    postTagNotifRow.run(uid("n"), recipientId, actorId, "post_tag", postId, artist || null, null, now());
+  }
 }
 // Ids hidden from a viewer's feed (people they blocked or who blocked them).
 const blockedIdsStmt = db.prepare("SELECT blocked_id id FROM blocks WHERE blocker_id=? UNION SELECT blocker_id id FROM blocks WHERE blocked_id=?");
@@ -1161,6 +1398,22 @@ function postJson(p, viewerId) {
   const media = stableMedia.linkedAssetIds.length
     ? stableMedia.assets
     : legacyVideoPosterDescriptors(db, { postId: p.id, photos: legacyPhotos });
+  const storedCampaign = p.kind === "status" ? normalizeArtistCampaign(parsedStoredObject(p.campaign)) : null;
+  // Official presentation is a live authorization claim, not a permanent
+  // visual badge embedded in authored JSON. Every row source feeding this
+  // projector supplies current role/artist identity aliases; an old or custom
+  // source missing them fails closed rather than reviving revoked styling.
+  const campaignAuthorized = !!storedCampaign?.artistKey
+    && p.u_role === "artist"
+    && normName(p.u_artist_name) === normName(storedCampaign.artistKey);
+  let campaign = campaignAuthorized ? storedCampaign : null;
+  const campaignBackground = campaign?.backgroundAssetId
+    ? media.find((asset) => asset.id === campaign.backgroundAssetId && asset.kind === "image")
+    : null;
+  if (campaign?.backgroundAssetId && !campaignBackground) {
+    const { backgroundAssetId: _unavailableBackground, ...fallbackCampaign } = campaign;
+    campaign = fallbackCampaign;
+  }
   return {
     id: p.id,
     userId: p.user_id,
@@ -1190,10 +1443,12 @@ function postJson(p, viewerId) {
     setlist: parseJsonArray(p.setlist),
     tour: p.tour || null,
     tags: parseJsonArray(p.tags),
+    taggedPeople: projectedPostTaggedPeople(p, viewerId),
     song: p.song ? (() => { try { return JSON.parse(p.song); } catch { return null; } })() : null,
     // Feed pages receive a bounded preview. The full immutable song list is
     // loaded only when somebody presses Play, keeping 50-card feeds lightweight.
     playlist: playlistPostProjection(p.playlist),
+    campaign,
     seen: p.seen_ordinal ?? null,
     ...(p.open_reports != null ? { flags: p.open_reports } : {}),
     likes: p.like_count ?? 0, comments: p.comment_count ?? 0,
@@ -1579,6 +1834,24 @@ async function searchYouTubeTrack(ctx, input) {
 // route table: "METHOD /path" -> handler(ctx) ; :params exposed as ctx.params
 export const routes = {
   ...mediaAssetRoutes({ database: db, requireUser, limit, now }),
+  ...artistReviewRoutes({
+    database: db,
+    ApiError,
+    clean,
+    normName,
+    projectPost: postJson,
+    rateLimit: limit,
+    resolveArtistName: (key) => artistStmts.byNorm.get(key)?.name || null,
+  }),
+  ...postTagRoutes({
+    database: db,
+    requireUser,
+    limit,
+    atomicWrite,
+    ApiError,
+    normalizeTaggedUserIds,
+    now,
+  }),
   ...dmReadRoutes({
     database: db,
     requireUser,
@@ -2519,11 +2792,53 @@ export const routes = {
   // Always returns `total` = member count, so the app can show a real stat.
   "GET /api/people": (ctx) => {
     const term = clean(ctx.query.q, { max: 60 }).toLowerCase();
-    const total = db.prepare(`SELECT COUNT(*) c FROM users WHERE ${activeAccountSql("users")}`).get().c;
+    const postTagEligibleOnly = ctx.query.scope === "post_tag";
+    const viewer = postTagEligibleOnly ? requireUser(ctx) : ctx.user;
     const cols = "id,name,handle,initials,avatar_uri,avatar_color,verified,role,home_city";
     const map = (r) => ({ id: r.id, name: r.name, handle: r.handle, initials: r.initials, avatarUri: r.avatar_uri, avatarColor: r.avatar_color, verified: !!r.verified, role: r.role, home: { city: r.home_city } });
     // Never surface someone you've blocked (or who blocked you) in search.
-    const hidden = blockedIdSet(ctx.user?.id);
+    const hidden = blockedIdSet(viewer?.id);
+    if (postTagEligibleOnly) {
+      limit(ctx, "post-tag-people", 120, 10 * 60 * 1000);
+      let postId = null;
+      if (ctx.query.postId != null && ctx.query.postId !== "") {
+        if (typeof ctx.query.postId !== "string" || ctx.query.postId.length > 100) {
+          throw new ApiError(404, "That post is no longer available.", "NOT_FOUND");
+        }
+        postId = ctx.query.postId;
+        const ownedPost = db.prepare("SELECT 1 FROM posts WHERE id=? AND user_id=? AND removed=0")
+          .get(postId, viewer.id);
+        if (!ownedPost) throw new ApiError(404, "That post is no longer available.", "NOT_FOUND");
+      }
+      // Start at this account's indexed follow edges rather than scanning the
+      // complete member directory for every composer keystroke. The reciprocal
+      // primary-key probe proves mutual consent; an edit-specific rejection is
+      // excluded only after proving the caller owns that active post.
+      const rejectionSql = postId
+        ? "AND NOT EXISTS (SELECT 1 FROM post_tag_rejections rejected WHERE rejected.post_id=? AND rejected.user_id=users.id)"
+        : "";
+      const eligibleFrom = `FROM follows mine
+        JOIN follows theirs ON theirs.follower_id=mine.followee_id AND theirs.followee_id=mine.follower_id
+        JOIN users ON users.id=mine.followee_id
+        WHERE mine.follower_id=? AND users.id<>? AND ${activeAccountSql("users")}
+          AND NOT EXISTS (SELECT 1 FROM blocks post_tag_block WHERE
+            (post_tag_block.blocker_id=? AND post_tag_block.blocked_id=users.id) OR
+            (post_tag_block.blocker_id=users.id AND post_tag_block.blocked_id=?))
+          ${rejectionSql}`;
+      const eligibleArgs = [viewer.id, viewer.id, viewer.id, viewer.id, ...(postId ? [postId] : [])];
+      const total = db.prepare(`SELECT COUNT(*) c ${eligibleFrom}`).get(...eligibleArgs).c;
+      if (term.length < 1) {
+        const rows = db.prepare(`SELECT ${cols} ${eligibleFrom} ORDER BY name COLLATE NOCASE LIMIT 40`).all(...eligibleArgs);
+        return { users: rows.filter((r) => !hidden.has(r.id)).map(map), total };
+      }
+      const like = `%${term.replace(/[%_\\]/g, "")}%`;
+      const rows = db.prepare(`SELECT ${cols} ${eligibleFrom}
+        AND (lower(name) LIKE ? OR lower(handle) LIKE ?)
+        ORDER BY (lower(handle)=? OR lower(name)=?) DESC, name COLLATE NOCASE LIMIT 30`)
+        .all(...eligibleArgs, like, like, term, term);
+      return { users: rows.filter((r) => !hidden.has(r.id)).map(map), total };
+    }
+    const total = db.prepare(`SELECT COUNT(*) c FROM users WHERE ${activeAccountSql("users")}`).get().c;
     if (term.length < 1) {
       const rows = db.prepare(`SELECT ${cols} FROM users WHERE ${activeAccountSql("users")} ORDER BY created_at DESC LIMIT 60`).all();
       return { users: rows.filter((r) => !hidden.has(r.id)).map(map).slice(0, 40), total };
@@ -2600,9 +2915,14 @@ export const routes = {
     if (!blocked && has) {
       db.prepare("DELETE FROM blocks WHERE blocker_id=? AND blocked_id=?").run(u.id, other);
     } else if (blocked && !has) {
-      db.prepare("INSERT INTO blocks (blocker_id,blocked_id,created_at) VALUES (?,?,?)").run(u.id, other, now());
-      // Sever the relationship both ways so neither keeps the other in a list.
-      db.prepare("DELETE FROM follows WHERE (follower_id=? AND followee_id=?) OR (follower_id=? AND followee_id=?)").run(u.id, other, other, u.id);
+      atomicWrite(() => {
+        db.prepare("INSERT INTO blocks (blocker_id,blocked_id,created_at) VALUES (?,?,?)").run(u.id, other, now());
+        // Sever every visible association both ways. Existing structured tags
+        // are scrubbed (not merely hidden) and validation prevents new ones for
+        // as long as either block direction remains active.
+        db.prepare("DELETE FROM follows WHERE (follower_id=? AND followee_id=?) OR (follower_id=? AND followee_id=?)").run(u.id, other, other, u.id);
+        scrubPostTagsBetweenUsers(u.id, other);
+      });
     }
     return { blocked };
   },
@@ -2631,11 +2951,18 @@ export const routes = {
       exportNotes: [
         "Password hashes, reset credentials, provider tokens, session cookies, raw IP addresses, and user-agent strings are intentionally excluded.",
         "Uploaded media files are represented by attached URLs and stable media descriptors; storage-provider audit metadata is not part of the account export.",
-        "This synchronous export includes all current feed preferences plus up to 300 plays, 1,000 sent and received messages, 200 notifications, and 5,000 activity events. A queued archive job is required before production-scale launch.",
+        "This synchronous export includes all current feed preferences plus up to 300 plays, 1,000 sent and received messages, 200 notifications, 5,000 activity events, 1,000 posts tagging you, and 1,000 tags you removed. A queued archive job is required before production-scale launch.",
       ],
       profile: publicUser(u, { self: true }),
       posts: db.prepare("SELECT * FROM posts WHERE user_id=? ORDER BY created_at DESC").all(u.id)
-        .map((p) => ({ id: p.id, kind: p.kind || "review", artist: p.artist, venue: p.venue, city: p.city, date: p.date, overall: p.overall, band: p.band, room: p.room, review: p.review, tour: p.tour, setlist: json(p.setlist, []), photos: json(p.photos, []), photosPublic: !!p.photos_public, landingShowcase: !!p.landing_showcase, song: json(p.song, null), playlist: json(p.playlist, null), removed: !!p.removed, createdAt: p.created_at })),
+        .map((p) => ({ id: p.id, kind: p.kind || "review", artist: p.artist, venue: p.venue, city: p.city, date: p.date, overall: p.overall, band: p.band, room: p.room, review: p.review, tour: p.tour, setlist: json(p.setlist, []), tags: json(p.tags, []), taggedUserIds: json(p.tagged_user_ids, []), campaign: json(p.campaign, null), photos: json(p.photos, []), photosPublic: !!p.photos_public, landingShowcase: !!p.landing_showcase, song: json(p.song, null), playlist: json(p.playlist, null), removed: !!p.removed, createdAt: p.created_at })),
+      taggedInPosts: db.prepare(`SELECT t.post_id,p.user_id AS author_id,p.removed,p.created_at
+        FROM post_user_tags t JOIN posts p ON p.id=t.post_id
+        WHERE t.user_id=? ORDER BY p.created_at DESC,p.id DESC LIMIT 1000`).all(u.id)
+        .map((row) => ({ postId: row.post_id, authorId: row.author_id, removed: !!row.removed, createdAt: row.created_at })),
+      removedPostTags: db.prepare(`SELECT post_id,created_at FROM post_tag_rejections
+        WHERE user_id=? ORDER BY created_at DESC,post_id DESC LIMIT 1000`).all(u.id)
+        .map((row) => ({ postId: row.post_id, createdAt: row.created_at })),
       mediaAssets: db.prepare("SELECT id FROM media_assets WHERE owner_id=? ORDER BY created_at DESC").all(u.id)
         .map((row) => ownedMediaAsset(db, { ownerId: u.id, assetId: row.id })).filter(Boolean),
       comments: db.prepare("SELECT post_id, text, removed, created_at FROM comments WHERE user_id=? ORDER BY created_at DESC").all(u.id)
@@ -2777,6 +3104,9 @@ export const routes = {
       db.prepare(`DELETE FROM reports WHERE ${accountReportWhere}`).run(...accountReportParams);
       db.prepare("DELETE FROM artist_posts WHERE user_id=?").run(u.id);
       db.prepare("DELETE FROM artist_profiles WHERE owner_id=?").run(u.id);
+      // Structured post tags are JSON rather than foreign-key rows, so account
+      // erasure must explicitly remove this id from posts authored by others.
+      scrubTaggedUserFromPosts(u.id);
       db.prepare("DELETE FROM users WHERE id=?").run(u.id);
       db.exec("COMMIT");
     } catch (error) {
@@ -2869,6 +3199,7 @@ export const routes = {
     const flagSql = staff ? `, (SELECT COUNT(*) FROM reports r WHERE r.target_type = 'post' AND r.target_id = p.id AND r.status = 'open') AS open_reports` : "";
     const found = db.prepare(`
       SELECT p.*, u.name AS u_name, u.handle AS u_handle, u.initials AS u_initials, u.avatar_uri AS u_avatar, u.avatar_color AS u_color,
+        u.role AS u_role,u.artist_name AS u_artist_name,
         (SELECT COUNT(*) FROM likes l JOIN users lu ON lu.id=l.user_id WHERE l.post_id=p.id AND ${activeAccountSql("lu")}) AS like_count,
         (SELECT COUNT(*) FROM comments c JOIN users cu ON cu.id=c.user_id
           WHERE c.post_id=p.id AND c.removed=0 AND ${activeAccountSql("cu")}) AS comment_count,
@@ -2877,7 +3208,8 @@ export const routes = {
       WHERE p.removed=0 AND ${activeAccountSql("u")} ${cursorSql} ${blockSql}
       ORDER BY p.created_at DESC, p.id DESC LIMIT ?${cursor ? "" : " OFFSET ?"}`).all(...args);
     const { rows, nextCursor } = finishPage(found, lim);
-    return { posts: withCommentPreviews(rows, viewer).map((p) => postJson(p, viewer)), nextCursor };
+    const projectedRows = withTaggedPeople(withCommentPreviews(rows, viewer), viewer);
+    return { posts: projectedRows.map((p) => postJson(p, viewer)), nextCursor };
   },
 
   // Global-first For You feed. A bounded worldwide candidate pool is scored for
@@ -2896,7 +3228,8 @@ export const routes = {
       limit: pageSize,
       at: now(),
     });
-    const projected = withCommentPreviews(result.rows, ctx.user?.id).map((row) => ({
+    const projectedRows = withTaggedPeople(withCommentPreviews(result.rows, ctx.user?.id), ctx.user?.id);
+    const projected = projectedRows.map((row) => ({
       ...postJson(row, ctx.user?.id),
       recommendation: result.recommendations.get(row.id),
     }));
@@ -2974,7 +3307,8 @@ export const routes = {
     if (!row || row.removed || blockedEitherWay(ctx.user?.id, row.user_id)) {
       throw new ApiError(404, "That post left the stage.", "NOT_FOUND");
     }
-    return { post: postJson(withCommentPreviews([row], ctx.user?.id)[0], ctx.user?.id) };
+    const projected = withTaggedPeople(withCommentPreviews([row], ctx.user?.id), ctx.user?.id)[0];
+    return { post: postJson(projected, ctx.user?.id) };
   },
 
   "GET /api/posts/:id/playlist": (ctx) => {
@@ -3011,6 +3345,7 @@ export const routes = {
       args.push(batchLimit);
       return db.prepare(`
         SELECT p.*, u.name AS u_name, u.handle AS u_handle, u.initials AS u_initials, u.avatar_uri AS u_avatar, u.avatar_color AS u_color,
+          u.role AS u_role,u.artist_name AS u_artist_name,
           EXISTS (SELECT 1 FROM post_media pm JOIN media_assets ma ON ma.id=pm.asset_id
             WHERE pm.post_id=p.id AND ma.kind='video') AS has_stable_video,
           (SELECT COUNT(*) FROM likes l JOIN users lu ON lu.id=l.user_id WHERE l.post_id=p.id AND ${activeAccountSql("lu")}) AS like_count,
@@ -3036,7 +3371,8 @@ export const routes = {
       // DB lookups per row even though none can ever enter the reel.
       const plausible = found.filter((row) => row.has_stable_video
         || parseJsonArray(row.photos).some((uri) => isLegacyVideoUrl(uri)));
-      for (const p of withCommentPreviews(plausible, viewer)) {
+      const projectedCandidates = withTaggedPeople(withCommentPreviews(plausible, viewer), viewer);
+      for (const p of projectedCandidates) {
         const projected = postJson(p, viewer); // photos already parsed here
         const descriptorClips = new Set((projected.media || [])
           .filter((asset) => asset?.kind === "video" && typeof asset.url === "string")
@@ -3059,15 +3395,33 @@ export const routes = {
   "GET /api/users/:id/posts": (ctx) => {
     if (ctx.user?.id !== ctx.params.id && blockedEitherWay(ctx.user?.id, ctx.params.id)) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
     if (!publicAccountOrNull(ctx.params.id)) throw new ApiError(404, "This profile isn't available.", "NOT_FOUND");
-    const rows = db.prepare(`
+    // Shipped clients called this endpoint without pagination and received the
+    // newest 100 posts. Preserve that compatibility window; current clients
+    // explicitly request 30 and page with the new cursor contract (capped 50).
+    const legacyUnpaged = ctx.query?.limit == null && !ctx.query?.before;
+    const { cursor, limit: pageLimit } = legacyUnpaged
+      ? { cursor: null, limit: 100 }
+      : pageRequest(ctx, 30, 50);
+    const cursorSql = cursor ? "AND (p.created_at < ? OR (p.created_at = ? AND p.id < ?))" : "";
+    const args = [ctx.params.id];
+    if (cursor) args.push(cursor.createdAt, cursor.createdAt, cursor.id);
+    args.push(pageLimit + 1);
+    const found = db.prepare(`
       SELECT p.*, u.name AS u_name, u.handle AS u_handle, u.initials AS u_initials, u.avatar_uri AS u_avatar, u.avatar_color AS u_color,
+        u.role AS u_role,u.artist_name AS u_artist_name,
         (SELECT COUNT(*) FROM likes l JOIN users lu ON lu.id=l.user_id WHERE l.post_id=p.id AND ${activeAccountSql("lu")}) AS like_count,
         (SELECT COUNT(*) FROM comments c JOIN users cu ON cu.id=c.user_id
           WHERE c.post_id=p.id AND c.removed=0 AND ${activeAccountSql("cu")}) AS comment_count,
         ${SEEN_ORDINAL_SQL}
       FROM posts p JOIN users u ON u.id = p.user_id
-      WHERE p.removed = 0 AND p.user_id = ? ORDER BY p.created_at DESC LIMIT 100`).all(ctx.params.id);
-    return { posts: withCommentPreviews(rows, ctx.user?.id).map((p) => postJson(p, ctx.user?.id)) };
+      WHERE p.removed = 0 AND p.user_id = ? ${cursorSql}
+      ORDER BY p.created_at DESC, p.id DESC LIMIT ?`).all(...args);
+    const { rows, nextCursor } = finishPage(found, pageLimit);
+    return {
+      posts: withTaggedPeople(withCommentPreviews(rows, ctx.user?.id), ctx.user?.id)
+        .map((p) => postJson(p, ctx.user?.id)),
+      nextCursor,
+    };
   },
 
   "POST /api/posts": (ctx) => {
@@ -3102,13 +3456,20 @@ export const routes = {
     // posts table so it keeps the same feed, likes, comments, and moderation.
     if (request.kind === "status") {
       const v = request.values;
+      if (v.campaign) limit(ctx, "artist-campaign", 2, 24 * 60 * 60 * 1000);
       const id = uid("p");
       atomicWrite(() => {
+        // Re-read consent/account/block state while holding SQLite's write lock.
+        // The earlier validation shapes a friendly response quickly; this one
+        // closes the gap before the durable post + notification write.
+        const transactionTaggedUserIds = validatedPostTaggedUserIds(u, v.taggedUserIds);
+        assertPostTagRecipientBudget(u.id, transactionTaggedUserIds);
         postRow.run(id, u.id, "", "", "", "", 0, null, null,
-          "{}", v.review, JSON.stringify(v.photos), v.photosPublic, 0, "[]", null,
-          "[]", "status", v.song ? JSON.stringify(v.song) : null, v.playlist ? JSON.stringify(v.playlist) : null, null, null, null, mutationId, mutationHash, now());
+          "{}", v.review, JSON.stringify(v.photos), v.photosPublic, 0, v.campaign ? JSON.stringify(v.campaign) : null, "[]", null,
+          "[]", JSON.stringify(transactionTaggedUserIds), "status", v.song ? JSON.stringify(v.song) : null, v.playlist ? JSON.stringify(v.playlist) : null, null, null, null, mutationId, mutationHash, now());
         markOwnedMediaAssociated(db, { ownerId: u.id, urls: v.photos, at: now() });
         if (v.mediaSelection) attachPostMedia(db, { postId: id, ownerId: u.id, selection: v.mediaSelection, at: now() });
+        addPostTagNotifications(transactionTaggedUserIds, u.id, id);
       });
       return { id, post: postJson(feedPostById.get(id), u.id) };
     }
@@ -3116,12 +3477,15 @@ export const routes = {
     const v = request.values;
     const id = uid("p");
     atomicWrite(() => {
+      const transactionTaggedUserIds = validatedPostTaggedUserIds(u, v.taggedUserIds);
+      assertPostTagRecipientBudget(u.id, transactionTaggedUserIds);
       postRow.run(id, u.id, v.artist, v.venue, v.city, v.date, v.overall, v.band, v.room,
-        JSON.stringify(v.dims), v.review, JSON.stringify(v.photos), v.photosPublic, v.landingShowcase, JSON.stringify(v.setlist), v.tour,
-        JSON.stringify(v.tags), "review", v.song ? JSON.stringify(v.song) : null, null,
+        JSON.stringify(v.dims), v.review, JSON.stringify(v.photos), v.photosPublic, v.landingShowcase, null, JSON.stringify(v.setlist), v.tour,
+        JSON.stringify(v.tags), JSON.stringify(transactionTaggedUserIds), "review", v.song ? JSON.stringify(v.song) : null, null,
         v.binding.artist_key, v.binding.artist_mbid, venueBinding(v.venue), mutationId, mutationHash, now());
       markOwnedMediaAssociated(db, { ownerId: u.id, urls: v.photos, at: now() });
       if (v.mediaSelection) attachPostMedia(db, { postId: id, ownerId: u.id, selection: v.mediaSelection, at: now() });
+      addPostTagNotifications(transactionTaggedUserIds, u.id, id, v.artist);
     });
     return { id, post: postJson(feedPostById.get(id), u.id) };
   },
@@ -3139,7 +3503,7 @@ export const routes = {
 
     const body = ctx.body && typeof ctx.body === "object" && !Array.isArray(ctx.body) ? ctx.body : {};
     const has = (key) => Object.prototype.hasOwnProperty.call(body, key);
-    const editable = ["artist", "artistKey", "venue", "city", "date", "overall", "band", "room", "dims", "review", "photos", "mediaAssetIds", "photosPublic", "landingShowcase", "setlist", "tour", "tags", "song", "playlistId"];
+    const editable = ["artist", "artistKey", "venue", "city", "date", "overall", "band", "room", "dims", "review", "photos", "mediaAssetIds", "photosPublic", "landingShowcase", "setlist", "tour", "tags", "taggedUserIds", "song", "playlistId", "campaign"];
     if (!editable.some(has)) throw new ApiError(400, "Make a change before saving this post.", "VALIDATION_FAILED");
 
     // Optimistic concurrency prevents two devices (or an old open edit sheet)
@@ -3153,6 +3517,7 @@ export const routes = {
     }
 
     const next = { ...current };
+    const previousTaggedUserIds = storedPostTaggedUserIds(current.tagged_user_ids);
     const textField = (key, max, { required = false, newlines = false } = {}) => {
       if (!has(key)) return;
       if (typeof body[key] !== "string") throw new ApiError(400, `${key} is invalid`, "VALIDATION_FAILED");
@@ -3236,6 +3601,12 @@ export const routes = {
       if (!tags) throw new ApiError(400, "tags is invalid", "VALIDATION_FAILED");
       next.tags = JSON.stringify(tags);
     }
+    if (has("taggedUserIds")) {
+      next.tagged_user_ids = JSON.stringify(validatedPostTaggedUserIds(u, body.taggedUserIds, {
+        committedIds: previousTaggedUserIds,
+        postId: current.id,
+      }));
+    }
     if (has("song")) {
       // null clears the tag; anything present must be a valid YouTube link.
       const song = cleanSong(body.song);
@@ -3299,20 +3670,70 @@ export const routes = {
       const retainedIds = assetIdsMatchingPostPhotos(db, { postId: current.id, photos: storedPhotos });
       editedMediaSelection = mediaSelection(db, { ownerId: u.id, assetIds: retainedIds, currentPostId: current.id });
     }
+    const availableCampaignMedia = editedMediaSelection
+      ? artistCampaignMediaRows(editedMediaSelection)
+      : currentPostCampaignMediaRows(current.id, u.id);
+    if (has("campaign")) {
+      if (current.kind !== "status") {
+        throw new ApiError(400, "Artist drops can only style regular feed posts.", "VALIDATION_FAILED");
+      }
+      const currentCampaign = normalizeArtistCampaign(parsedStoredObject(current.campaign));
+      const campaign = cleanArtistCampaign(body.campaign, {
+        user: u,
+        mediaRows: availableCampaignMedia,
+        committedCampaign: currentCampaign,
+      });
+      if (!currentCampaign && campaign) limit(ctx, "artist-campaign", 2, 24 * 60 * 60 * 1000);
+      next.campaign = campaign ? JSON.stringify(campaign) : null;
+    } else if (current.kind === "status") {
+      const campaign = normalizeArtistCampaign(parsedStoredObject(current.campaign));
+      const currentArtistKey = u.role === "artist" ? normName(u.artist_name) : null;
+      if (campaign && (!currentArtistKey || currentArtistKey !== normName(campaign.artistKey))) {
+        // An old client does not know to submit `campaign:null`. Treat any
+        // ordinary edit after role/name revocation as the point where the stale
+        // capability is durably removed instead of letting rewritten copy keep
+        // official presentation metadata.
+        next.campaign = null;
+      } else if (campaign?.backgroundAssetId && !availableCampaignMedia.some((row) => row.id === campaign.backgroundAssetId && row.kind === "image")) {
+        // A legacy client may remove the background without knowing about the
+        // campaign field. Keep the still-authorized treatment, but never retain
+        // a dangling asset reference or let it bypass post_media deletion.
+        const { backgroundAssetId: _removedBackground, ...fallback } = campaign;
+        next.campaign = JSON.stringify(fallback);
+      }
+    }
     // Re-resolve the binding on every edit: renaming the artist must move the
     // review to that artist's page, and retyping it as free text must drop the
     // binding rather than leave the post pointing at the previous entity.
     const editBinding = current.kind === "status"
       ? { artist_key: null, artist_mbid: null }
       : resolveArtistBinding(next.artist, has("artistKey") ? body.artistKey : current.artist_key);
+    const nextTaggedUserIds = storedPostTaggedUserIds(next.tagged_user_ids);
     atomicWrite(() => {
-      const updated = db.prepare(`UPDATE posts SET artist=?,venue=?,city=?,date=?,overall=?,band=?,room=?,dims=?,review=?,photos=?,photos_public=?,landing_showcase=?,setlist=?,tour=?,tags=?,song=?,playlist=?,artist_key=?,artist_mbid=?,venue_key=?,updated_at=?
+      const transactionCurrent = db.prepare(`SELECT tagged_user_ids,COALESCE(updated_at,created_at) AS version
+        FROM posts WHERE id=? AND user_id=? AND removed=0`).get(current.id, u.id);
+      if (!transactionCurrent || transactionCurrent.version !== currentVersion) {
+        throw new ApiError(409, "This review changed on another screen. Refresh before saving again.", "CONFLICT");
+      }
+      const transactionCommittedIds = storedPostTaggedUserIds(transactionCurrent.tagged_user_ids);
+      const transactionCommittedIdSet = new Set(transactionCommittedIds);
+      // An unrelated edit must preserve the in-lock tag set, not the stale
+      // pre-transaction snapshot. Only an explicit tag edit can add ids.
+      const transactionRequestedIds = has("taggedUserIds") ? nextTaggedUserIds : transactionCommittedIds;
+      const transactionTaggedUserIds = validatedPostTaggedUserIds(u, transactionRequestedIds, {
+        committedIds: transactionCommittedIds,
+        postId: current.id,
+      });
+      const transactionNewlyTaggedUserIds = transactionTaggedUserIds.filter((id) => !transactionCommittedIdSet.has(id));
+      assertPostTagRecipientBudget(u.id, transactionNewlyTaggedUserIds, { postId: current.id });
+      const updated = db.prepare(`UPDATE posts SET artist=?,venue=?,city=?,date=?,overall=?,band=?,room=?,dims=?,review=?,photos=?,photos_public=?,landing_showcase=?,campaign=?,setlist=?,tour=?,tags=?,tagged_user_ids=?,song=?,playlist=?,artist_key=?,artist_mbid=?,venue_key=?,updated_at=?
         WHERE id=? AND user_id=? AND removed=0 AND COALESCE(updated_at,created_at)=?`)
-        .run(next.artist, next.venue, next.city, next.date, next.overall, next.band, next.room, next.dims, next.review, next.photos, next.photos_public, next.landing_showcase, next.setlist, next.tour, next.tags, next.song, next.playlist,
+        .run(next.artist, next.venue, next.city, next.date, next.overall, next.band, next.room, next.dims, next.review, next.photos, next.photos_public, next.landing_showcase, next.campaign, next.setlist, next.tour, next.tags, JSON.stringify(transactionTaggedUserIds), next.song, next.playlist,
           editBinding.artist_key, editBinding.artist_mbid, current.kind === "status" ? null : venueBinding(next.venue), editedAt, current.id, u.id, currentVersion);
       if (Number(updated.changes || 0) !== 1) {
         throw new ApiError(409, "This review changed on another screen. Refresh before saving again.", "CONFLICT");
       }
+      addPostTagNotifications(transactionNewlyTaggedUserIds, u.id, current.id, current.kind === "status" ? null : next.artist);
       retireLegacyVideoPosters(db, {
         postId: current.id,
         ownerId: u.id,
@@ -3393,8 +3814,8 @@ export const routes = {
         // required for foreign keys and the audit trail; authored copy, entity
         // bindings, ratings, media and request fingerprints are scrubbed.
         db.prepare(`UPDATE posts SET removed=1,artist='',venue='',city='',date='',overall=0,
-          band=NULL,room=NULL,dims='{}',review='',photos='[]',photos_public=0,landing_showcase=0,
-          setlist='[]',tour=NULL,tags='[]',song=NULL,playlist=NULL,artist_key=NULL,artist_mbid=NULL,
+          band=NULL,room=NULL,dims='{}',review='',photos='[]',photos_public=0,landing_showcase=0,campaign=NULL,
+          setlist='[]',tour=NULL,tags='[]',tagged_user_ids='[]',song=NULL,playlist=NULL,artist_key=NULL,artist_mbid=NULL,
           venue_key=NULL,client_mutation_id=NULL,client_mutation_hash=NULL,updated_at=?
           WHERE id=? AND user_id=?`).run(now(), post.id, u.id);
         retireLegacyVideoPosters(db, { postId: post.id, ownerId: u.id, at: now() });
@@ -5200,7 +5621,11 @@ export const routes = {
     const blockSql = viewer ? `AND NOT EXISTS (SELECT 1 FROM blocks b WHERE
       (b.blocker_id=? AND b.blocked_id=post.user_id) OR (b.blocker_id=post.user_id AND b.blocked_id=?))` : "";
     const args = viewer ? [key, viewer, viewer] : [key];
-    const posts = p?.removed ? [] : db.prepare(`SELECT post.id,post.user_id,post.text,post.created_at
+    // A disabled updates feed is a publication boundary, not just a client-side
+    // presentation preference. Keep its posts available to the owning artist
+    // and admins for management, but never disclose them to public/non-owners.
+    const canManageFeed = ownsArtist(ctx.user, key);
+    const posts = p?.removed || (!p?.feed_enabled && !canManageFeed) ? [] : db.prepare(`SELECT post.id,post.user_id,post.text,post.created_at
       FROM artist_posts post JOIN users author ON author.id=post.user_id
       WHERE post.artist_key=? AND post.removed=0 AND ${activeAccountSql("author")}
         ${blockSql}

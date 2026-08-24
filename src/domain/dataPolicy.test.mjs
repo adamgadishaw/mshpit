@@ -50,6 +50,13 @@ test("persisted demo cleanup keeps server-created records", () => {
       real: [{ id: "msg_real", text: "keep too" }],
     },
   );
+
+  assert.deepEqual(
+    sanitizePersistedStoreValue("pit.comments.v2.u_real", {
+      demo: [{ id: "c1" }, { id: "comment_server", text: "keep" }],
+    }),
+    { demo: [{ id: "comment_server", text: "keep" }] },
+  );
 });
 
 test("persisted public users use an exact privacy allowlist", () => {

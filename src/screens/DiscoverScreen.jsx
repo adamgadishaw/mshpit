@@ -321,7 +321,7 @@ export default function DiscoverScreen({
         <View style={styles.quickGrid}>
           <QuickAction icon="map" title="Near you" detail={session?.home?.city ? `Shows around ${session.home.city}` : "Shows and scenes close by"} tint={colors.good} onPress={onOpenNearby} basis={actionBasis} />
           <QuickAction icon="pin" title="Find venues" detail="Browse rooms by city and lineup" tint={colors.cool} onPress={onOpenVenues} basis={actionBasis} />
-          <QuickAction icon="trophy" title="Top rated" detail="Concerts members loved most" tint={colors.gold} onPress={onOpenTopRated} basis={actionBasis} />
+          <QuickAction icon="trophy" title="Top-rated shows" detail="Concerts members loved most" tint={colors.gold} onPress={onOpenTopRated} basis={actionBasis} />
           <QuickAction icon="you" title="Fan clubs" detail="Join artist communities" tint={colors.magenta} onPress={onOpenFanClubs} basis={actionBasis} />
         </View>
       </View>

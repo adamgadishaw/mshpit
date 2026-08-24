@@ -10,7 +10,7 @@
 // cannot see is a destructive statement written outside the loop, which is what
 // this test covers.
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -149,4 +149,161 @@ test("legacy attendance, tour-date, and campaign tables gain safe additive colum
   assert.equal(upgraded.db.prepare("SELECT 1 FROM track_overrides WHERE key=?")
     .get(trackOverrideIdentityKey("Shared Recording", "Proofed Artist")), undefined,
   "source overrides live outside legacy reconciliation and cannot corrupt a tuple pin during a rolling deploy");
+});
+
+test("legacy post friend-tag JSON backfills an indexed rolling-deploy relation", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "pit-post-user-tag-migration-"));
+  process.env.PIT_DATA_DIR = dataDir;
+  const legacy = await import(`./db.js?post-user-tags-legacy=${encodeURIComponent(dataDir)}`);
+  const addUser = (id) => legacy.q.insertUser.run(
+    id,
+    `${id}@example.com`,
+    id,
+    id,
+    "test-hash",
+    "fan",
+    "Toronto",
+    43.65,
+    -79.38,
+    id.slice(0, 2).toUpperCase(),
+    "#123456",
+    Date.now(),
+  );
+  addUser("migration-tag-author");
+  addUser("migration-tag-left");
+  addUser("migration-tag-right");
+  legacy.db.exec(`
+    DROP TRIGGER trg_posts_user_tags_insert;
+    DROP TRIGGER trg_posts_user_tags_update;
+    DROP TABLE post_user_tags;
+    DELETE FROM app_meta WHERE key='schema:post-user-tags:v1';
+  `);
+  legacy.db.prepare(`INSERT INTO posts
+    (id,user_id,artist,venue,overall,tagged_user_ids,created_at)
+    VALUES (?,?,?,?,?,?,?)`).run(
+    "migration-tag-post",
+    "migration-tag-author",
+    "Migration Act",
+    "Migration Hall",
+    4,
+    JSON.stringify(["migration-tag-right", "migration-tag-left"]),
+    123,
+  );
+  legacy.db.close();
+
+  const upgraded = await import(`./db.js?post-user-tags-upgrade=${encodeURIComponent(dataDir)}`);
+  try {
+    assert.deepEqual(
+      upgraded.db.prepare(`SELECT post_id,user_id,author_id,position FROM post_user_tags
+        WHERE post_id='migration-tag-post' ORDER BY position`).all().map((row) => ({ ...row })),
+      [
+        { post_id: "migration-tag-post", user_id: "migration-tag-right", author_id: "migration-tag-author", position: 0 },
+        { post_id: "migration-tag-post", user_id: "migration-tag-left", author_id: "migration-tag-author", position: 1 },
+      ],
+    );
+    assert.ok(upgraded.db.prepare("SELECT 1 FROM app_meta WHERE key='schema:post-user-tags:v1'").get());
+    const indexes = new Set(upgraded.db.prepare("PRAGMA index_list(post_user_tags)").all().map((row) => row.name));
+    assert.ok(indexes.has("idx_post_user_tags_user_post"));
+    assert.ok(indexes.has("idx_post_user_tags_author_user_post"));
+
+    // Simulate an older process that still writes only tagged_user_ids after the
+    // migration. The database trigger keeps the new relation authoritative.
+    upgraded.db.prepare(`INSERT INTO posts
+      (id,user_id,artist,venue,overall,tagged_user_ids,created_at)
+      VALUES (?,?,?,?,?,?,?)`).run(
+      "migration-tag-rolling-post",
+      "migration-tag-author",
+      "Migration Act",
+      "Migration Hall",
+      4,
+      JSON.stringify(["migration-tag-left"]),
+      124,
+    );
+    assert.equal(
+      upgraded.db.prepare("SELECT user_id FROM post_user_tags WHERE post_id='migration-tag-rolling-post'").get()?.user_id,
+      "migration-tag-left",
+    );
+
+    // The previous release's author-delete statement cannot name campaign or
+    // tagged_user_ids. The database recognizes its complete irreversible scrub
+    // signature and clears this release's fields plus normalized relation.
+    upgraded.db.prepare(`INSERT INTO posts
+      (id,user_id,kind,artist,venue,overall,review,campaign,tagged_user_ids,created_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
+      "migration-tag-old-author-delete",
+      "migration-tag-author",
+      "status",
+      "",
+      "",
+      0,
+      "Legacy process will scrub this copy",
+      JSON.stringify({ version: 1, treatment: "spotlight", artistKey: "migration act" }),
+      JSON.stringify(["migration-tag-left"]),
+      125,
+    );
+    upgraded.db.prepare(`UPDATE posts SET removed=1,artist='',venue='',city='',date='',overall=0,
+      band=NULL,room=NULL,dims='{}',review='',photos='[]',photos_public=0,landing_showcase=0,
+      setlist='[]',tour=NULL,tags='[]',song=NULL,playlist=NULL,artist_key=NULL,artist_mbid=NULL,
+      venue_key=NULL,client_mutation_id=NULL,client_mutation_hash=NULL,updated_at=?
+      WHERE id=? AND user_id=?`).run(126, "migration-tag-old-author-delete", "migration-tag-author");
+    assert.deepEqual(
+      { ...upgraded.db.prepare(`SELECT campaign,tagged_user_ids,
+        (SELECT COUNT(*) FROM post_user_tags WHERE post_id=posts.id) AS relation_count
+        FROM posts WHERE id=?`).get("migration-tag-old-author-delete") },
+      { campaign: null, tagged_user_ids: "[]", relation_count: 0 },
+    );
+
+    // Moderator hides remain reversible and therefore must not be mistaken for
+    // the legacy author's destructive tombstone.
+    upgraded.db.prepare(`INSERT INTO posts
+      (id,user_id,kind,artist,venue,overall,review,campaign,tagged_user_ids,created_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
+      "migration-tag-moderator-hide",
+      "migration-tag-author",
+      "status",
+      "",
+      "",
+      0,
+      "Keep this for a reversible moderation restore",
+      JSON.stringify({ version: 1, treatment: "spotlight", artistKey: "migration act" }),
+      JSON.stringify(["migration-tag-left"]),
+      127,
+    );
+    upgraded.db.prepare("UPDATE posts SET removed=1 WHERE id=?").run("migration-tag-moderator-hide");
+    const hidden = upgraded.db.prepare(`SELECT campaign,tagged_user_ids,
+      (SELECT COUNT(*) FROM post_user_tags WHERE post_id=posts.id) AS relation_count
+      FROM posts WHERE id=?`).get("migration-tag-moderator-hide");
+    assert.ok(hidden.campaign);
+    assert.equal(hidden.tagged_user_ids, JSON.stringify(["migration-tag-left"]));
+    assert.equal(hidden.relation_count, 1);
+
+    // Simulate the previous release's account erasure: it deletes the user
+    // directly, without the current API's explicit JSON scrub. The BEFORE DELETE
+    // compatibility trigger removes only that recipient and reindexes survivors.
+    upgraded.db.prepare(`INSERT INTO posts
+      (id,user_id,artist,venue,overall,tagged_user_ids,created_at)
+      VALUES (?,?,?,?,?,?,?)`).run(
+      "migration-tag-old-account-delete",
+      "migration-tag-author",
+      "Migration Act",
+      "Migration Hall",
+      4,
+      JSON.stringify(["migration-tag-left", "migration-tag-right"]),
+      128,
+    );
+    upgraded.db.prepare("DELETE FROM users WHERE id=?").run("migration-tag-left");
+    assert.deepEqual(
+      JSON.parse(upgraded.db.prepare("SELECT tagged_user_ids FROM posts WHERE id=?")
+        .get("migration-tag-old-account-delete").tagged_user_ids),
+      ["migration-tag-right"],
+    );
+    assert.deepEqual(
+      upgraded.db.prepare(`SELECT user_id,position FROM post_user_tags
+        WHERE post_id=? ORDER BY position`).all("migration-tag-old-account-delete").map((row) => ({ ...row })),
+      [{ user_id: "migration-tag-right", position: 0 }],
+    );
+  } finally {
+    upgraded.db.close();
+    rmSync(dataDir, { recursive: true, force: true });
+  }
 });

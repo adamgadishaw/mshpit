@@ -11,7 +11,7 @@ import { JOURNEY_TAGLINE } from "../domain/menuJourney.mjs";
 
 const PAGE = 8; // load the feed in pages, like the big apps - never all at once
 
-export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, accountId = null, homeCity, unread = 0, notifUnread = 0, newUser = false, hideHeaderActions = false, onLoadMore, hasMore = false, loadingMore = false, onOpen, onImpression, onDwell, onNotInterested, onUndoNotInterested, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onOpenClips, onReport, onEdit, onOpenPhotos, onPlay, onLogShow, onEditProfile }) {
+export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, accountId = null, homeCity, unread = 0, notifUnread = 0, newUser = false, artistWorkspaceAvailable = false, hideHeaderActions = false, onLoadMore, hasMore = false, loadingMore = false, onOpen, onImpression, onDwell, onNotInterested, onUndoNotInterested, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenVenue, onOpenNearby, onOpenInbox, onOpenNotifications, onOpenMenu, onOpenClips, onReport, onEdit, onOpenPhotos, onPlay, onRemoveMyPostTag, onLogShow, onManageProfile }) {
   const { width } = useWindowDimensions();
   const phone = width < 700;
   const [filter, setFilter] = useState(() => normalizeFeedFilter(load(feedFilterStorageKey(accountId), "everyone"), { loggedIn })); // following | local | everyone
@@ -201,7 +201,13 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
               </View>
               <GsStep n="1" icon="plus" label="Log your first show" sub="Rate the band and the room" onPress={onLogShow} />
               <GsStep n="2" icon="pin" label="Find shows near you" sub="Local venues & upcoming gigs" onPress={onOpenNearby} />
-              <GsStep n="3" icon="edit" label="Complete your profile" sub="Photo, bio, favorite artists" onPress={onEditProfile} />
+              <GsStep
+                n="3"
+                icon={artistWorkspaceAvailable ? "music" : "edit"}
+                label="Manage your profile"
+                sub={artistWorkspaceAvailable ? "Artist page, posts, and live dates" : "Photo, bio, and favorite artists"}
+                onPress={onManageProfile}
+              />
             </View>
           )}
 
@@ -275,7 +281,7 @@ export default function FeedScreen({ feed, followingFeed, localFeed, loggedIn, a
         </View>
       ) : null}
       renderItem={({ item, index: itemIndex }) => (
-        <TicketStub log={item} mediaViewable={visibleMediaPostIds.has(String(item.id)) ? true : null} onOpen={(_unused) => onOpen?.(item, { surface, position: itemIndex })} onNotInterested={surface === "everyone" && item.recommendation ? hideRecommendation : undefined} onComment={onComment} onPreview={onPreview} onOpenProfile={onOpenProfile} onOpenArtist={onOpenArtist} onOpenVenue={onOpenVenue} onReport={onReport} onEdit={onEdit} onOpenPhotos={onOpenPhotos} onPlay={onPlay} />
+        <TicketStub log={item} mediaViewable={visibleMediaPostIds.has(String(item.id)) ? true : null} onOpen={(_unused) => onOpen?.(item, { surface, position: itemIndex })} onNotInterested={surface === "everyone" && item.recommendation ? hideRecommendation : undefined} onComment={onComment} onPreview={onPreview} onOpenProfile={onOpenProfile} onOpenArtist={onOpenArtist} onOpenVenue={onOpenVenue} onReport={onReport} onEdit={onEdit} onOpenPhotos={onOpenPhotos} onPlay={onPlay} onRemoveMyPostTag={onRemoveMyPostTag} />
       )}
     />
   );

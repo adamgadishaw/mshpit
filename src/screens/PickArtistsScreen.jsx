@@ -43,7 +43,7 @@ function ArtistTile({ a, picked, onToggle, disabled = false }) {
 
 const MIN_PICKS = 3;
 
-export default function PickArtistsScreen({ onDone, onSkip }) {
+export default function PickArtistsScreen({ onDone, onSkip, showTheme = true }) {
   const { session, updateProfile, chooseTheme } = useStore();
   const [q, setQ] = useState("");
   const [picked, setPicked] = useState(() => new Set(session?.favoriteArtists || []));
@@ -83,7 +83,7 @@ export default function PickArtistsScreen({ onDone, onSkip }) {
       }
       // Keep the theme local until the profile mutation succeeds. Applying it
       // earlier reloads this StyleSheet-based app and can discard unsaved picks.
-      if (theme && theme !== themeKey) await chooseTheme(theme, result?.patch || { favoriteArtists, genres: [...genres] });
+      if (showTheme && theme && theme !== themeKey) await chooseTheme(theme, result?.patch || { favoriteArtists, genres: [...genres] });
       else onDone?.();
     } catch {
       setSaveError("Your artist picks did not save. Please try again.");
@@ -134,14 +134,18 @@ export default function PickArtistsScreen({ onDone, onSkip }) {
       </View>
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-        <Text style={styles.themeLabel}>PICK A THEME</Text>
-        <View accessibilityRole="radiogroup" accessibilityLabel="Theme">
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.themeRow}>
-            {THEMES.map((t) => (
-              <ThemeSwatch key={t.key} theme={t} active={t.key === theme} onPress={() => setThemeChoice(t.key)} />
-            ))}
-          </ScrollView>
-        </View>
+        {showTheme && (
+          <>
+            <Text style={styles.themeLabel}>PICK A THEME</Text>
+            <View accessibilityRole="radiogroup" accessibilityLabel="Theme">
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.themeRow}>
+                {THEMES.map((t) => (
+                  <ThemeSwatch key={t.key} theme={t} active={t.key === theme} onPress={() => setThemeChoice(t.key)} />
+                ))}
+              </ScrollView>
+            </View>
+          </>
+        )}
 
         {shown.length === 0 && <Text style={styles.empty} accessibilityLiveRegion="polite" role="status">No artists match "{q}".</Text>}
         <CardGrid minColWidth={220} gap={10}>

@@ -302,7 +302,7 @@ export default function PlayerBar({
   onMoveNext,
   history = [],
   onRefreshHistory,
-  onSaveSession,
+  onSaveQueueAsPlaylist,
   onPlayTrack,
   onPlaybackStarted,
   onOpenArtist,
@@ -876,11 +876,12 @@ export default function PlayerBar({
     audio.pause?.();
     onMinimize?.();
   };
+  const canSaveQueue = !!session && typeof onSaveQueueAsPlaylist === "function";
   const doSave = async () => {
-    if (saving) return;
+    if (saving || !canSaveQueue) return;
     setSaving(true);
     const intended = list.slice(0, Math.max(1, Math.min(player?.explicitCount ?? list.length, list.length)));
-    const result = await onSaveSession?.(intended, `${cur.artist || "Session"} mix`);
+    const result = await onSaveQueueAsPlaylist?.(intended, `${cur.artist || "Listening"} queue`);
     setSaving(false);
     if (result) { setSaved(true); setTimeout(() => setSaved(false), 1800); }
   };
@@ -1047,13 +1048,15 @@ export default function PlayerBar({
           {onAddToPlaylist && (
             <Pressable style={styles.columnAction} onPress={() => onAddToPlaylist(playlistTrack(cur, forThis ? resolved.videoId : null))} accessibilityRole="button" accessibilityLabel={`Add ${title} to a playlist`}>
               <Icon name="plus" size={14} color={colors.textDim} />
-              <Text style={styles.columnActionTxt}>Playlist</Text>
+              <Text style={styles.columnActionTxt}>Add song</Text>
             </Pressable>
           )}
-          <Pressable style={styles.columnAction} onPress={doSave} disabled={saving} accessibilityRole="button" accessibilityLabel="Save listening session">
-            <Icon name={saved ? "check" : "star"} size={13} color={saved ? colors.good : colors.textDim} />
-            <Text style={[styles.columnActionTxt, saved && { color: colors.good }]}>{saved ? "Saved" : saving ? "Saving" : "Save mix"}</Text>
-          </Pressable>
+          {canSaveQueue && (
+            <Pressable style={styles.columnAction} onPress={doSave} disabled={saving} accessibilityRole="button" accessibilityLabel="Save current queue as a private playlist">
+              <Icon name={saved ? "check" : "star"} size={13} color={saved ? colors.good : colors.textDim} />
+              <Text style={[styles.columnActionTxt, saved && { color: colors.good }]}>{saved ? "Saved" : saving ? "Saving" : "Save queue"}</Text>
+            </Pressable>
+          )}
         </View>
 
         <View style={styles.columnQueueArea}>
@@ -1206,10 +1209,12 @@ export default function PlayerBar({
                   <Text style={styles.addTxt}>Add song</Text>
                 </Pressable>
               )}
-              <Pressable style={styles.saveBtn} onPress={doSave} disabled={saving}>
-                <Icon name={saved ? "check" : "star"} size={12} color={saved ? colors.good : colors.amber} />
-                <Text style={[styles.saveTxt, saved && { color: colors.good }]}>{saved ? "Saved" : saving ? "Saving" : "Save session"}</Text>
-              </Pressable>
+              {canSaveQueue && (
+                <Pressable style={styles.saveBtn} onPress={doSave} disabled={saving} accessibilityRole="button" accessibilityLabel="Save current queue as a private playlist">
+                  <Icon name={saved ? "check" : "star"} size={12} color={saved ? colors.good : colors.amber} />
+                  <Text style={[styles.saveTxt, saved && { color: colors.good }]}>{saved ? "Saved" : saving ? "Saving" : "Save queue"}</Text>
+                </Pressable>
+              )}
             </View>
           </View>
 
@@ -1275,8 +1280,8 @@ export default function PlayerBar({
               <Pressable style={[styles.mobileTransportBtn, index >= list.length - 1 && styles.ctrlOff]} onPress={goNext} disabled={index >= list.length - 1} accessibilityRole="button" accessibilityLabel="Next song"><Icon name="chevron-right" size={25} color={colors.text} /></Pressable>
             </View>
             <View style={styles.mobileQuickActions}>
-              {onAddToPlaylist && <Pressable style={styles.mobileQuickBtn} onPress={() => onAddToPlaylist(playlistTrack(cur, forThis ? resolved.videoId : null))}><Icon name="plus" size={16} color={colors.amber} /><Text style={styles.mobileQuickTxt}>Playlist</Text></Pressable>}
-              <Pressable style={styles.mobileQuickBtn} onPress={doSave} disabled={saving}><Icon name={saved ? "check" : "star"} size={16} color={saved ? colors.good : colors.amber} /><Text style={styles.mobileQuickTxt}>{saved ? "Saved" : "Save mix"}</Text></Pressable>
+              {onAddToPlaylist && <Pressable style={styles.mobileQuickBtn} onPress={() => onAddToPlaylist(playlistTrack(cur, forThis ? resolved.videoId : null))}><Icon name="plus" size={16} color={colors.amber} /><Text style={styles.mobileQuickTxt}>Add song</Text></Pressable>}
+              {canSaveQueue && <Pressable style={styles.mobileQuickBtn} onPress={doSave} disabled={saving} accessibilityRole="button" accessibilityLabel="Save current queue as a private playlist"><Icon name={saved ? "check" : "star"} size={16} color={saved ? colors.good : colors.amber} /><Text style={styles.mobileQuickTxt}>{saved ? "Saved" : "Save queue"}</Text></Pressable>}
               {ytActive && <Pressable style={styles.mobileQuickBtn} onPress={() => { setOpen(false); setShowVideo(true); }}><Icon name="play" size={16} color={colors.amber} /><Text style={styles.mobileQuickTxt}>Video</Text></Pressable>}
               <Pressable style={styles.mobileQuickBtn} onPress={closePlayer} accessibilityRole="button" accessibilityLabel="Stop playback and close player"><Icon name="x" size={16} color={colors.danger} /><Text style={[styles.mobileQuickTxt, { color: colors.danger }]}>Stop</Text></Pressable>
             </View>

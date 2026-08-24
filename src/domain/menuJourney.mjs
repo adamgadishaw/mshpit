@@ -1,3 +1,5 @@
+import { profileManagementAction } from "./artistWorkspace.mjs";
+
 export const JOURNEY_TAGLINE = "Your life's musical journey";
 
 export function landingSlideUri(uri, viewportWidth) {
@@ -35,26 +37,28 @@ export function journeyMenuModel({ session = null, inboxUnread = 0, notification
   const unread = count(inboxUnread);
   const notificationCount = count(notifications);
   const role = session?.role;
+  const manageProfile = profileManagementAction(session);
 
   const account = session ? [
-    { key: "editProfile", icon: "edit", title: "Appearance & profile", detail: "Theme, photo, music, and banner" },
+    { key: manageProfile.key, icon: manageProfile.icon, title: manageProfile.title, detail: manageProfile.detail },
+    { key: "settings", icon: "menu", title: "Settings", detail: "Appearance, privacy, data, and account controls" },
     ...(role === "admin" || role === "moderator"
       ? [{ key: "admin", icon: "shield", title: "Moderation", detail: "Reports, members, and content" }]
       : []),
-    ...(role === "admin" || role === "artist"
-      ? [{ key: "tourDates", icon: "calendar", title: "Post tour dates", detail: "Publish and schedule shows" }]
+    ...(role === "admin"
+      ? [{ key: "tourDates", icon: "calendar", title: "Tour date tools", detail: "Staff publishing and scheduling" }]
       : []),
     ...(role === "fan"
-      ? [{ key: "requestArtist", icon: "shield", title: "Claim an artist profile", detail: "Start artist verification" }]
+      ? [{ key: "requestArtist", icon: "shield", title: "Claim an artist profile", detail: "Verify your relationship to an artist" }]
       : []),
   ] : [];
 
   return {
     discover: [
       { key: "near", icon: "pin", title: "Near you", detail: city ? `Shows and scenes around ${city}` : "Local shows and scenes", accent: "good" },
-      { key: "venues", icon: "search", title: "Find a venue", detail: "Explore rooms by city and lineup", accent: "cool" },
+      { key: "venues", icon: "search", title: "Find venues", detail: "Explore rooms by city and lineup", accent: "cool" },
       { key: "fanClubs", icon: "comment", title: "Fan clubs", detail: "Join artist communities", accent: "magenta" },
-      { key: "topRated", icon: "trophy", title: "Crowd favorites", detail: "Top-rated nights close to home", accent: "gold" },
+      { key: "topRated", icon: "trophy", title: "Top-rated shows", detail: "The highest-rated nights close to home", accent: "gold" },
     ],
     connection: [
       ...(includeActivity ? [{ key: "activity", icon: "bell", title: "Activity", detail: notificationCount ? `${notificationCount} new` : "Follows, likes, and replies", badge: notificationCount }] : []),

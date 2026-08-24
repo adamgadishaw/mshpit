@@ -25,10 +25,10 @@ export default function TopRatedScreen({ onClose, onOpen }) {
 
   return (
     <View style={styles.wrap}>
-      <SheetHeader title="Best rated" onBack={onClose} />
+      <SheetHeader title="Top-rated shows" onBack={onClose} />
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-        <Text style={styles.h1}>Best rated near you</Text>
+        <Text style={styles.h1}>Top-rated shows near you</Text>
 
         <View style={styles.locField}>
           <Icon name="pin" size={16} color={colors.amber} />

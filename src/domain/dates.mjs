@@ -50,10 +50,20 @@ export function formatDate(value, fallback = "") {
   return `${year} · ${month} · ${day}`;
 }
 
+// Turn a Date or timestamp into its LOCAL calendar day. Publication timestamps
+// and manually selected show dates must share this boundary: using toISOString
+// here would move a late-night Toronto post into tomorrow's diary group.
+export function localCalendarIso(value = new Date()) {
+  if (value === null || value === "") return "";
+  const date = value instanceof Date ? value : new Date(Number(value));
+  if (!Number.isFinite(date.getTime())) return "";
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
 // Today, in the canonical stored form. Uses local calendar components so a show
 // logged at 11pm is not dated tomorrow.
 export function todayIso(now = new Date()) {
-  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  return localCalendarIso(now);
 }
 
 // A new review opened from an existing Show must inherit that performance's

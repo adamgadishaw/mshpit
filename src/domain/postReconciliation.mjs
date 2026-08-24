@@ -1,12 +1,21 @@
 import { toIsoDate } from "./dates.mjs";
 import { clean, clampRating, LIMITS } from "./validation.mjs";
+import { normalizeArtistCampaign } from "./artistCampaignPost.mjs";
+import { normalizeTaggedPeople, normalizeTaggedUserIds } from "./postFriendTags.mjs";
 
 const DIMENSION_KEYS = ["performance", "setlist", "sound", "venue", "crowd", "experience"];
 const EDITABLE_KEYS = new Set([
   "artist", "artistKey", "venue", "city", "date", "overall", "band", "room", "dims",
-  "review", "photos", "mediaAssetIds", "photosPublic", "landingShowcase", "setlist", "tour", "tags", "song", "playlistId",
+  "review", "photos", "mediaAssetIds", "photosPublic", "landingShowcase", "setlist", "tour", "tags", "taggedUserIds", "song", "playlistId", "campaign",
 ]);
 const INVALID_STORED_VALUE = Symbol("invalid-stored-post-value");
+
+function campaignEditIntent(value) {
+  const campaign = normalizeArtistCampaign(value);
+  if (!campaign) return null;
+  const { artistKey: _serverOwnedArtistKey, ...intent } = campaign;
+  return intent;
+}
 
 function cleanArray(value, { maxItems, maxLen }) {
   if (!Array.isArray(value)) return [];
@@ -73,8 +82,10 @@ function intendedValue(key, value) {
     case "setlist": return cleanArray(value, { maxItems: 40, maxLen: 120 });
     case "tour": return clean(value, { max: 80 }) || null;
     case "tags": return cleanTags(value);
+    case "taggedUserIds": return normalizeTaggedUserIds(value);
     case "song": return cleanSong(value);
     case "playlistId": return value == null || value === "" ? null : String(value);
+    case "campaign": return campaignEditIntent(value);
     default: return undefined;
   }
 }
@@ -84,7 +95,7 @@ function isPlainObject(value) {
 }
 
 function storedValue(post, key) {
-  const storedKey = key === "playlistId" ? "playlist" : key;
+  const storedKey = key === "playlistId" ? "playlist" : key === "taggedUserIds" ? "taggedPeople" : key;
   if (!post || !Object.prototype.hasOwnProperty.call(post, storedKey)) return INVALID_STORED_VALUE;
   const value = post[storedKey];
   switch (key) {
@@ -127,6 +138,15 @@ function storedValue(post, key) {
     case "playlistId":
       if (value !== null && value !== undefined && (!isPlainObject(value) || typeof value.id !== "string" || !value.id)) return INVALID_STORED_VALUE;
       return value?.id || null;
+    case "campaign":
+      if (value !== null && value !== undefined && !normalizeArtistCampaign(value)) return INVALID_STORED_VALUE;
+      return campaignEditIntent(value);
+    case "taggedUserIds": {
+      if (!Array.isArray(value)) return INVALID_STORED_VALUE;
+      const people = normalizeTaggedPeople(value);
+      if (people.length !== value.length) return INVALID_STORED_VALUE;
+      return people.map((person) => person.id);
+    }
     default:
       return INVALID_STORED_VALUE;
   }

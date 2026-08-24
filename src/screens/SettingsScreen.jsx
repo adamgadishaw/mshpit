@@ -6,7 +6,9 @@ import { useStore } from "../store";
 import SheetHeader from "../components/SheetHeader";
 import Icon from "../components/Icon";
 import Avatar from "../components/Avatar";
+import ThemeSwatch, { themeGridStyle } from "../components/ThemeSwatch";
 import { privateListeningRemainingLabel } from "../domain/privateListening.mjs";
+import { profileManagementAction } from "../domain/artistWorkspace.mjs";
 
 const versionLabel = Constants.expoConfig?.version || "Unavailable";
 const SUPPORT_URL = "https://www.mshpit.com/support";
@@ -54,30 +56,7 @@ function Toggle({ value, busy = false }) {
   );
 }
 
-// Theme swatch: a mini preview of the preset's palette.
-function Swatch({ theme, active, onPress }) {
-  const s = theme.swatch;
-  return (
-    <Pressable
-      style={({ focused }) => [styles.swatch, { backgroundColor: s.bg, borderColor: active ? colors.amber : colors.line }, focused && focusRing]}
-      onPress={onPress}
-      accessibilityRole="radio"
-      accessibilityLabel={`${theme.name} theme, ${theme.dark ? "dark" : "light"}`}
-      accessibilityState={{ checked: active }}
-    >
-      <View style={styles.swatchDots}>
-        <View style={[styles.chip, { backgroundColor: s.accent }]} />
-        <View style={[styles.chip, { backgroundColor: s.accent2 }]} />
-        <View style={[styles.bar, { backgroundColor: s.surface, borderColor: s.accent }]} />
-      </View>
-      <Text style={[styles.swatchName, { color: s.text }]}>{theme.name}</Text>
-      <Text style={[styles.swatchSub, { color: s.text, opacity: 0.6 }]} numberOfLines={1}>{theme.sub}</Text>
-      {active && <View style={styles.swatchCheck}><Icon name="check" size={12} color="#1A1206" /></View>}
-    </Pressable>
-  );
-}
-
-export default function SettingsScreen({ onClose, onEditProfile, onOpenProfile, onOpenPrivacy, onOpenTerms, onOpenDiagnostics, onOpenDeleteAccount, onLogout }) {
+export default function SettingsScreen({ onClose, onManageProfile, onOpenProfile, onOpenPrivacy, onOpenTerms, onOpenDiagnostics, onOpenDeleteAccount, onLogout }) {
   const { session, chooseTheme, blockedUsers, unblockUser, exportMyData, setAnalyticsEnabled, privateListeningActive, privateListeningUntil, setPrivateListening } = useStore();
   const blocked = session ? blockedUsers() : [];
   const [exporting, setExporting] = useState(false);
@@ -87,6 +66,9 @@ export default function SettingsScreen({ onClose, onEditProfile, onOpenProfile, 
   const [supportError, setSupportError] = useState(null);
   const [, setPrivateClock] = useState(0);
   const analyticsEnabled = !!(session?.analyticsConsentAt || session?.consentAt) && !session?.analyticsOptOut;
+  const manageProfile = profileManagementAction(session);
+  const publicProfileLabel = manageProfile.destination === "artistHub" ? "View public artist page" : "View public profile";
+  const publicProfileDetail = manageProfile.destination === "artistHub" ? session?.artistName : `@${session?.handle || ""}`;
   useEffect(() => {
     if (!privateListeningActive) return undefined;
     const timer = setInterval(() => setPrivateClock((value) => value + 1), 60_000);
@@ -120,15 +102,20 @@ export default function SettingsScreen({ onClose, onEditProfile, onOpenProfile, 
         <Text style={styles.hint}>{session ? "Pick a theme. It's saved to your account and follows you to any device." : "Pick a theme. It applies across the whole app."}</Text>
         <View style={styles.swatchGrid} accessibilityRole="radiogroup" accessibilityLabel="Appearance theme">
           {THEMES.map((t) => (
-            <Swatch key={t.key} theme={t} active={t.key === themeKey} onPress={() => t.key !== themeKey && chooseTheme(t.key)} />
+            <ThemeSwatch key={t.key} theme={t} active={t.key === themeKey} onPress={() => t.key !== themeKey && chooseTheme(t.key)} showMode />
           ))}
         </View>
 
         {session && (
           <>
             <Text style={styles.section}>ACCOUNT</Text>
-            <Row icon="you" label="Go to profile" sub={`@${session.handle}`} onPress={onOpenProfile} />
-            <Row icon="edit" label="Edit profile" sub="Photo, bio, music, banner" onPress={onEditProfile} />
+            <Row icon="you" label={publicProfileLabel} sub={publicProfileDetail} onPress={onOpenProfile} />
+            <Row
+              icon={manageProfile.icon}
+              label={manageProfile.title}
+              sub={manageProfile.detail}
+              onPress={onManageProfile}
+            />
           </>
         )}
 
@@ -230,14 +217,7 @@ const styles = StyleSheet.create({
   content: { padding: 16, paddingBottom: 48 },
   section: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "700", marginTop: space(6), marginBottom: space(2) },
   hint: { color: colors.textDim, fontSize: 13, marginBottom: 12 },
-  swatchGrid: { flexDirection: "row", flexWrap: "wrap", gap: 12 },
-  swatch: { width: "47.5%", borderWidth: 2, borderRadius: radius.md, padding: 14, minHeight: 96 },
-  swatchDots: { flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 12 },
-  chip: { width: 18, height: 18, borderRadius: 9 },
-  bar: { flex: 1, height: 10, borderRadius: 5, borderWidth: 1 },
-  swatchName: { fontSize: 15, fontWeight: "800" },
-  swatchSub: { fontSize: 11, marginTop: 2 },
-  swatchCheck: { position: "absolute", top: 10, right: 10, width: 20, height: 20, borderRadius: 10, backgroundColor: colors.amber, alignItems: "center", justifyContent: "center" },
+  swatchGrid: themeGridStyle,
   row: { minHeight: 64, flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 14, marginBottom: 8 },
   rowDisabled: { opacity: 0.62 },
   rowIcon: { width: 36, height: 36, borderRadius: 10, backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },

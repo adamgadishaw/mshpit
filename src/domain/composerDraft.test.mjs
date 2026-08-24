@@ -18,15 +18,17 @@ test("status drafts preserve playlist, unresolved song input, media, and panel s
     tagDraft: "toronto",
     songUrl: "https://youtu.be/example",
     playlist: { id: "playlist_1", name: "Concert night", tracks: [{ id: "track_1" }] },
+    taggedPeople: [{ id: "u_friend", name: "Mara", handle: "mara" }],
     photos: ["https://media.example/one.jpg"],
-    panels: { song: true, photos: true, playlist: true },
+    panels: { song: true, photos: true, playlist: true, people: true },
   });
 
   assert.equal(draft.postType, "status");
   assert.equal(draft.songUrl, "https://youtu.be/example");
   assert.equal(draft.playlist.id, "playlist_1");
   assert.deepEqual(draft.photos, ["https://media.example/one.jpg"]);
-  assert.deepEqual(draft.panels, { song: true, photos: true, playlist: true });
+  assert.deepEqual(draft.taggedPeople.map((person) => person.id), ["u_friend"]);
+  assert.deepEqual(draft.panels, { song: true, photos: true, playlist: true, people: true });
   assert.equal(composerDraftTitle(draft), "J. Cole was unreal");
 });
 
@@ -71,6 +73,28 @@ test("draft fingerprints ignore storage metadata but include user-visible change
 
 test("default mode, date, and opened panels alone do not create empty drafts", () => {
   assert.equal(composerDraftHasContent({ postType: "status", date: "2026-08-13", panels: { photos: true } }), false);
+});
+
+test("selected friends survive drafts and participate in dirty fingerprints", () => {
+  const taggedPeople = [{ id: "u_friend", name: "Mara", handle: "mara" }];
+  assert.equal(composerDraftHasContent({ postType: "show", taggedPeople }), true);
+  assert.notEqual(
+    composerDraftFingerprint({ postType: "show", taggedPeople }),
+    composerDraftFingerprint({ postType: "show", taggedPeople: [] }),
+  );
+});
+
+test("artist drop metadata survives status drafts without becoming fake post content", () => {
+  const campaign = { version: 1, treatment: "after-dark", backgroundAssetId: "ma_abcdefgh12345678" };
+  const draft = normalizeComposerDraft({ postType: "status", campaign, review: "New record at midnight." });
+  assert.deepEqual(draft.campaign, campaign);
+  assert.equal(composerDraftTitle(normalizeComposerDraft({ postType: "status", campaign })), "Artist drop draft");
+  assert.equal(composerDraftHasContent({ postType: "status", campaign }), false, "styling alone cannot publish an empty post");
+  assert.equal(normalizeComposerDraft({ postType: "show", campaign }).campaign, null);
+  assert.notEqual(
+    composerDraftFingerprint({ postType: "status", review: "drop", campaign }),
+    composerDraftFingerprint({ postType: "status", review: "drop", campaign: { ...campaign, treatment: "spotlight" } }),
+  );
 });
 
 test("clearing a saved draft schedules deletion even when the form equals its pristine baseline", () => {

@@ -11,8 +11,8 @@ import { accountTargetScope, scopedScreenValue } from "../domain/screenScope.mjs
 const EMPTY_PICKER_STATE = Object.freeze({ name: "", busy: false, done: null, visibility: "public" });
 
 // Add a single song to a playlist: pick an existing one, or type a name to start a
-// new one. This is the "build a playlist one song at a time" flow (the Save-as-
-// playlist button on the player still snapshots a whole session).
+// new one. This is the "build a playlist one song at a time" flow; the player
+// offers the companion shortcut for saving the current queue as one playlist.
 export default function PlaylistPickerScreen({ track, onClose }) {
   const { session, myPlaylists, loadMyPlaylists, createPlaylist, addToPlaylist } = useStore();
   const pickerScope = accountTargetScope(session?.id, `playlist:${playlistTrackIdentity(track) || "empty"}`);

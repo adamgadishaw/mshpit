@@ -4,7 +4,7 @@ import { colors, displayFont, mono, radius, shadow, space } from "../theme";
 import Stars from "../components/Stars";
 import RatingSplit from "../components/RatingSplit";
 import RatingBreakdown from "../components/RatingBreakdown";
-import AfterpartySection from "../components/AfterpartySection";
+import NearbyAfterparty from "../components/NearbyAfterparty";
 import Icon from "../components/Icon";
 import VenuePhotoWidget from "../components/VenuePhotoWidget";
 import ScreenHeader from "../components/ScreenHeader";
@@ -15,6 +15,7 @@ import { formatDate } from "../domain/dates.mjs";
 import { api } from "../lib/api";
 import { normalizeLoungeMeta, normalizeShowAttendees, showSocialIdentity, showSocialView } from "../domain/showSocial.mjs";
 import { attendanceTotalForView, normalizeAttendanceSnapshot } from "../domain/showAttendance.mjs";
+import { hasPostDiscussion, showDiscussionCount } from "../domain/showDiscussion.mjs";
 
 // The "performance page" - ONE artist, ONE venue, ONE date. This is the night
 // itself, not the room (that's the venue page): a ticket-style hero owns the
@@ -23,7 +24,7 @@ import { attendanceTotalForView, normalizeAttendanceSnapshot } from "../domain/s
 // community score and the setlist. It must render for ANY event shape - a
 // logged review, a bare tour date from the calendar, a lounge link - so every
 // field is guarded; a tour date has no score and that's a mode, not a crash.
-export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenProfile, onOpenArtist, onOpenVenue, onOpenLounge, onRequireAuth }) {
+export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenProfile, onOpenArtist, onOpenVenue, onOpenLounge, onOpenPost, onRequireAuth }) {
   const {
     venueCoord, venuePhotos, venuePhotoState, loadVenuePhotos,
     session, concertKey, isGoing, isGoingBusy, toggleGoing, attendeesFor, loungeFor,
@@ -36,6 +37,8 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
   const overall = typeof log.overall === "number" ? log.overall : null;
   const setlist = Array.isArray(log.setlist) ? log.setlist : [];
   const norm = { ...log, artist, venue, city };
+  const discussionCount = showDiscussionCount(log.comments);
+  const discussionAvailable = hasPostDiscussion(norm);
   const coord = venueCoord(venue);
   const photos = venuePhotos(venue);
   const photoState = venuePhotoState(venue);
@@ -280,9 +283,41 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
           </Pressable>
         </View>
 
-        {/* the Afterparty: like, what's still open nearby, and the discussion */}
+        {/* PostScreen owns the full composer/thread. This concert page only
+            explains that destination so Lounge and post comments stay distinct. */}
+        <View style={styles.discussionCard}>
+          <View style={styles.discussionCopy}>
+            <Text style={styles.discussionLabel}>POST DISCUSSION</Text>
+            <Text style={styles.discussionTitle}>Comments on this fan post</Text>
+            <Text style={styles.discussionText}>Open the original post for the full thread, replies, and moderation tools.</Text>
+          </View>
+          {discussionAvailable ? (
+            <Pressable
+              style={({ pressed }) => [styles.discussionCta, pressed && styles.discussionCtaPressed]}
+              onPress={() => onOpenPost?.(norm)}
+              accessibilityRole="button"
+              accessibilityLabel={discussionCount ? `Open post discussion, ${discussionCount.label} comments` : "Open post discussion"}
+            >
+              <Icon name="comment" size={16} color="#1A1206" />
+              <Text style={styles.discussionCtaText}>Open comments</Text>
+              {discussionCount && (
+                <View style={styles.discussionCount}>
+                  <Text style={styles.discussionCountText}>{discussionCount.label}</Text>
+                </View>
+              )}
+            </Pressable>
+          ) : (
+            <View style={styles.discussionUnavailable}>
+              <Icon name="lock" size={15} color={colors.textDim} />
+              <Text style={styles.discussionUnavailableText}>Post comments appear after a fan logs this show. Use the Lounge for concert-wide chat.</Text>
+            </View>
+          )}
+        </View>
+
+        {/* Nearby discovery is deliberately Maps-only: Pit makes no claims
+            about a business being open, close, accessible, or age-appropriate. */}
         <View style={styles.afterCard}>
-          <AfterpartySection log={norm} coord={coord} onOpenProfile={onOpenProfile} onRequireAuth={onRequireAuth} />
+          <NearbyAfterparty log={norm} coord={coord} />
         </View>
 
         {setlist.length > 0 && (
@@ -376,7 +411,19 @@ const styles = StyleSheet.create({
   seeRow: { flexDirection: "row", gap: 10, marginTop: 16 },
   seeBtn: { flex: 1, flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, paddingHorizontal: 12, paddingVertical: 13 },
   seeTxt: { flex: 1, color: colors.text, fontSize: 13, fontWeight: "700" },
-  afterCard: { backgroundColor: colors.bgElev, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 16, marginTop: 24 },
+  discussionCard: { backgroundColor: colors.surface, borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: colors.lineSoft, padding: 16, marginTop: 24, gap: 14 },
+  discussionCopy: { gap: 4 },
+  discussionLabel: { color: colors.amber, fontFamily: mono, fontSize: 10, fontWeight: "900", letterSpacing: 1.4 },
+  discussionTitle: { color: colors.text, fontSize: 16, fontWeight: "900" },
+  discussionText: { color: colors.textDim, fontSize: 12.5, lineHeight: 18 },
+  discussionCta: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, backgroundColor: colors.amberStrong, borderRadius: radius.md, borderCurve: "continuous", paddingHorizontal: 14, paddingVertical: 11 },
+  discussionCtaPressed: { opacity: 0.8 },
+  discussionCtaText: { color: "#1A1206", fontSize: 14, fontWeight: "900" },
+  discussionCount: { minWidth: 24, borderRadius: radius.pill, backgroundColor: "rgba(26,18,6,0.14)", paddingHorizontal: 7, paddingVertical: 2, alignItems: "center" },
+  discussionCountText: { color: "#1A1206", fontFamily: mono, fontSize: 11, fontWeight: "900", fontVariant: ["tabular-nums"] },
+  discussionUnavailable: { flexDirection: "row", alignItems: "flex-start", gap: 8, borderRadius: radius.sm, backgroundColor: colors.bgElev, padding: 11 },
+  discussionUnavailableText: { flex: 1, color: colors.textDim, fontSize: 12, lineHeight: 17 },
+  afterCard: { backgroundColor: colors.bgElev, borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: colors.lineSoft, padding: 16, marginTop: 12 },
   venueLink: { color: colors.text, fontWeight: "700" },
   venue: { color: colors.textDim, fontSize: 15, marginTop: 4 },
   date: { color: colors.amber, fontFamily: mono, fontSize: 13, marginTop: 6, letterSpacing: 1 },

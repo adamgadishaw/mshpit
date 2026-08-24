@@ -61,6 +61,7 @@ test("bundle targets keep conversations separate and malformed post activity iso
   assert.equal(notificationBundleTarget({ id: "follow-1", type: "follow", actorId: "adam" }), "account");
   assert.equal(notificationBundleTarget({ id: "dm-1", type: "dm", actorId: "adam" }), "thread:adam");
   assert.equal(notificationBundleTarget({ id: "like-1", type: "like", postId: "post-1" }), "post:post-1");
+  assert.equal(notificationBundleTarget({ id: "tag-1", type: "post_tag", postId: "post-1" }), "post:post-1");
   assert.notEqual(
     notificationBundleTarget({ id: "bad-1", type: "like" }),
     notificationBundleTarget({ id: "bad-2", type: "like" }),

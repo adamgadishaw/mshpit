@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { View, Text, StyleSheet, Pressable, Alert, Platform } from "react-native";
+import { Image as ExpoImage } from "expo-image";
 import { colors, displayFont, font, mono, radius, shadow, roleColor } from "../theme";
 import Stars from "./Stars";
 import Icon from "./Icon";
@@ -15,6 +16,9 @@ import { BadgeRow } from "./Badge";
 import { formatDate, relativeTime } from "../domain/dates.mjs";
 import { mediaDisplayItems } from "../domain/postMediaDisplay.mjs";
 import { recommendationDisclosure } from "../domain/feedExperience.mjs";
+import { artistCampaignPresentation } from "../domain/artistCampaignPost.mjs";
+import { normalizeTaggedPeople } from "../domain/postFriendTags.mjs";
+import useReducedMotion from "../hooks/useReducedMotion";
 
 // "3rd time in the pit" needs a real ordinal, not "3th".
 const ordinal = (n) => {
@@ -42,23 +46,58 @@ function TagRow({ tags, center = false }) {
   );
 }
 
-function RecommendationWhy({ recommendation, expanded, onToggle }) {
-  if (!recommendation) return null;
+function TaggedPeopleRow({ people, onOpenProfile, selfId, onRemoveSelf, palette = null }) {
+  const tagged = normalizeTaggedPeople(people);
+  if (!tagged.length) return null;
+  const textColor = palette?.textColor || colors.text;
+  const borderColor = palette?.accentColor ? palette.accentColor + "70" : colors.line;
   return (
-    <View style={styles.whyWrap}>
+    <View style={styles.taggedPeopleRow} accessibilityLabel={`With ${tagged.map((person) => person.name).join(", ")}`}>
+      <Icon name="you" size={14} color={palette?.accentColor || colors.amber} />
+      <Text style={[styles.taggedPeopleLead, { color: palette?.mutedTextColor || colors.textDim }]}>with</Text>
+      {tagged.map((person) => (
+        <View key={person.id} style={[styles.taggedPersonChip, { borderColor }]}>
+          <Pressable
+            style={styles.taggedPersonProfile}
+            onPress={onOpenProfile ? () => onOpenProfile(person.id) : undefined}
+            disabled={!onOpenProfile}
+            accessibilityRole={onOpenProfile ? "link" : undefined}
+            accessibilityLabel={onOpenProfile ? `Open ${person.name}'s profile` : person.name}
+          >
+            <Avatar user={person} size={22} />
+            <Text style={[styles.taggedPersonText, { color: textColor }]} numberOfLines={1}>@{person.handle || person.name}</Text>
+          </Pressable>
+          {person.id === selfId && onRemoveSelf && (
+            <Pressable style={styles.taggedPersonRemove} onPress={() => onRemoveSelf(person)} hitSlop={6} accessibilityRole="button" accessibilityLabel={`Remove your tag from this post`}>
+              <Icon name="x" size={12} color={palette?.mutedTextColor || colors.textDim} />
+            </Pressable>
+          )}
+        </View>
+      ))}
+    </View>
+  );
+}
+
+function RecommendationWhy({ recommendation, expanded, onToggle, palette = null }) {
+  if (!recommendation) return null;
+  const accent = palette?.accentColor || colors.amber;
+  const text = palette?.textColor || colors.text;
+  const muted = palette?.mutedTextColor || colors.textDim;
+  return (
+    <View style={[styles.whyWrap, palette && styles.campaignWhyWrap]}>
       <Pressable
-        style={({ pressed }) => [styles.whyButton, pressed && styles.controlPressed]}
+        style={({ pressed }) => [styles.whyButton, palette && styles.campaignTouchTarget, pressed && (palette ? styles.campaignControlPressed : styles.controlPressed)]}
         onPress={onToggle}
         accessibilityRole="button"
         accessibilityLabel={`${recommendation.label}. ${expanded ? "Hide" : "Show"} why this was recommended.`}
         accessibilityState={{ expanded }}
       >
-        <Icon name="discover" size={14} color={colors.amber} />
-        <Text style={styles.whyLabel} numberOfLines={1}>{recommendation.label}</Text>
-        <Text style={styles.whyAction}>{expanded ? "Hide why" : "Why this?"}</Text>
+        <Icon name="discover" size={14} color={accent} />
+        <Text style={[styles.whyLabel, { color: text }]} numberOfLines={1}>{recommendation.label}</Text>
+        <Text style={[styles.whyAction, { color: accent }]}>{expanded ? "Hide why" : "Why this?"}</Text>
       </Pressable>
       {expanded && (
-        <Text style={styles.whyDetail} accessibilityLiveRegion="polite">
+        <Text style={[styles.whyDetail, { color: muted }]} accessibilityLiveRegion="polite">
           {recommendation.detail} {recommendation.personalized ? "This recommendation uses your Pit preferences." : "This recommendation is community-based."}
         </Text>
       )}
@@ -66,12 +105,13 @@ function RecommendationWhy({ recommendation, expanded, onToggle }) {
   );
 }
 
-function NotForMeButton({ onPress }) {
+function NotForMeButton({ onPress, palette = null }) {
   if (!onPress) return null;
+  const color = palette?.mutedTextColor || colors.textDim;
   return (
-    <Pressable style={({ pressed }) => [styles.notForMe, pressed && styles.controlPressed]} hitSlop={8} onPress={onPress} accessibilityRole="button" accessibilityLabel="Not for me. Hide this recommendation.">
-      <Icon name="minus" size={14} color={colors.textDim} />
-      <Text style={styles.notForMeTxt}>Not for me</Text>
+    <Pressable style={({ pressed }) => [styles.notForMe, palette && styles.campaignTouchTarget, pressed && (palette ? styles.campaignControlPressed : styles.controlPressed)]} hitSlop={8} onPress={onPress} accessibilityRole="button" accessibilityLabel="Not for me. Hide this recommendation.">
+      <Icon name="minus" size={14} color={color} />
+      <Text style={[styles.notForMeTxt, { color }]}>Not for me</Text>
     </Pressable>
   );
 }
@@ -79,12 +119,13 @@ function NotForMeButton({ onPress }) {
 // Review-forward feed card: the review is the centerpiece. Artist / venue / date
 // sit on a ticket-stub line below, the score reads at a glance, and the footer
 // opens the Afterparty (like + comments) for that concert.
-export default function TicketStub({ log, mediaViewable = null, onOpen, onNotInterested, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenVenue, onReport, onEdit, onDelete, onOpenPhotos, onPlay, showComments = true }) {
+export default function TicketStub({ log, mediaViewable = null, onOpen, onNotInterested, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenVenue, onReport, onEdit, onDelete, onOpenPhotos, onPlay, onRemoveMyPostTag, onSelfTagRemoved, showComments = true }) {
   const openComments = () => (onComment || onOpen)?.(log);
   const { userById, likeInfo, toggleLike, commentsFor, session, userBadges, deleteOwnPost } = useStore();
   const author = userById?.(log.userId) || { initials: log.user?.initials, name: log.user?.name, handle: log.user?.handle };
   const [revealed, setRevealed] = useState(!log.inTourWindow);
   const [whyOpen, setWhyOpen] = useState(false);
+  const reduceMotion = useReducedMotion();
   const recommendation = recommendationDisclosure(log.recommendation);
   // Editing is the author's alone. Admins moderate (remove/mute/ban); they
   // never rewrite someone's review, so no admin bypass here.
@@ -108,12 +149,26 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onNotInt
   const setlist = Array.isArray(log.setlist) ? log.setlist : [];
   const timeLabel = log.timeAgo || relativeTime(log.createdAt);
   const tags = Array.isArray(log.tags) ? log.tags : [];
+  const taggedPeople = normalizeTaggedPeople(log.taggedPeople);
+  const removeSelfTag = async () => {
+    const result = await onRemoveMyPostTag?.(log.id);
+    if (result?.ok === false) Alert.alert("Tag not removed", result.error?.message || "Refresh the post and try again.");
+    else if (result?.ok) onSelfTagRemoved?.(result);
+  };
   const postMedia = mediaDisplayItems(log).map((item) => ({
     ...item,
     by: log.user?.name,
     postId: log.id,
     ownerId: log.userId,
   }));
+  const campaignPresentation = artistCampaignPresentation(log.campaign, postMedia);
+  const campaignBackground = campaignPresentation?.background || null;
+  const campaignBackgroundIndex = campaignBackground
+    ? postMedia.findIndex((item) => (item.id || item.assetId) === (campaignBackground.id || campaignBackground.assetId))
+    : -1;
+  const statusMedia = campaignBackground
+    ? postMedia.filter((_, index) => index !== campaignBackgroundIndex)
+    : postMedia;
   // Score analytics: tap the star pill to see WHY the night got its score;
   // hovering it (web) previews the reviewer's tag words.
   const [statsOpen, setStatsOpen] = useState(false);
@@ -130,30 +185,70 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onNotInt
   // A plain status update: a Facebook/Twitter-style social card (no ticket stub,
   // no score, no artist/venue line) with the comment section preloaded below.
   if (log.kind === "status") {
+    const campaignTreatment = campaignPresentation?.treatment;
+    const campaignArtUri = campaignBackground?.url || campaignBackground?.uri || campaignBackground?.sourceUrl || null;
     return (
-      <View style={styles.card}>
+      <View style={[styles.card, campaignPresentation && styles.campaignCard, campaignTreatment && { backgroundColor: campaignTreatment.backgroundColor }]}>
+        {campaignArtUri && (
+          <ExpoImage
+            source={{ uri: campaignArtUri }}
+            style={StyleSheet.absoluteFill}
+            contentFit="cover"
+            autoplay={!reduceMotion}
+            transition={reduceMotion ? 0 : 180}
+            accessible={false}
+            accessibilityElementsHidden
+          />
+        )}
+        {campaignPresentation && !campaignArtUri && (
+          <View style={styles.campaignBackdrop} pointerEvents="none" accessibilityElementsHidden>
+            <View style={[styles.campaignGlowLarge, { backgroundColor: campaignTreatment.accentColor + "2E" }]} />
+            <View style={[styles.campaignGlowSmall, { backgroundColor: campaignTreatment.accentColor + "22" }]} />
+          </View>
+        )}
+        {campaignPresentation && <View style={[StyleSheet.absoluteFill, { backgroundColor: campaignTreatment.scrimColor }]} pointerEvents="none" accessibilityElementsHidden />}
+        {campaignPresentation && (
+          <View style={styles.campaignTopline}>
+            <View style={[styles.campaignBadge, { borderColor: campaignTreatment.accentColor + "80" }]}>
+              <Icon name="star" size={12} color={campaignTreatment.accentColor} />
+              <Text style={[styles.campaignBadgeText, { color: campaignTreatment.accentColor }]}>{campaignTreatment.eyebrow.toUpperCase()}</Text>
+            </View>
+            {campaignBackground && onOpenPhotos && campaignBackgroundIndex >= 0 && (
+              <Pressable
+                style={styles.campaignArtworkButton}
+                onPress={() => onOpenPhotos(postMedia, campaignBackgroundIndex, log.id)}
+                accessibilityRole="button"
+                accessibilityLabel={`Open artist drop artwork${campaignBackground.altText ? `, ${campaignBackground.altText}` : ""}`}
+              >
+                <Icon name="photo" size={12} color="#FFF8EE" />
+                <Text style={styles.campaignArtworkText}>View artwork</Text>
+              </Pressable>
+            )}
+          </View>
+        )}
+        <View style={campaignPresentation ? [styles.campaignContent, { backgroundColor: campaignTreatment.contentSurfaceColor }] : null}>
         <View style={styles.header}>
           <Avatar user={author} size={40} onPress={log.userId ? () => onOpenProfile?.(log.userId) : undefined} />
           <Pressable style={{ flex: 1 }} onPress={log.userId ? () => onOpenProfile?.(log.userId) : undefined}>
             <View style={styles.nameRow}>
-              <Text style={styles.name}>{author.name}</Text>
+              <Text style={[styles.name, campaignPresentation && { color: campaignTreatment.textColor }]}>{author.name}</Text>
               <BadgeRow badges={userBadges(author)} size={14} />
             </View>
-            <Text style={styles.sub}><Text style={roleColor(author.role) ? { color: roleColor(author.role), fontWeight: "800" } : null}>@{author.handle}</Text> · {timeLabel}{log.editedAt ? " · edited" : ""}</Text>
+            <Text style={[styles.sub, campaignPresentation && { color: campaignTreatment.mutedTextColor }]}><Text style={campaignPresentation ? { color: campaignTreatment.accentColor, fontWeight: "800" } : roleColor(author.role) ? { color: roleColor(author.role), fontWeight: "800" } : null}>@{author.handle}</Text> · {timeLabel}{log.editedAt ? " · edited" : ""}</Text>
           </Pressable>
           {canEdit && (
-            <Pressable style={styles.iconBtn} hitSlop={8} onPress={() => onEdit?.(log)} accessibilityRole="button" accessibilityLabel="Edit post">
-              <Icon name="edit" size={16} color={colors.amber} />
+            <Pressable style={[styles.iconBtn, campaignPresentation && styles.campaignTouchTarget]} hitSlop={8} onPress={() => onEdit?.(log)} accessibilityRole="button" accessibilityLabel="Edit post">
+              <Icon name="edit" size={16} color={campaignPresentation ? campaignTreatment.accentColor : colors.amber} />
             </Pressable>
           )}
           {canDelete && (
-            <Pressable style={styles.iconBtn} hitSlop={8} onPress={confirmDelete} accessibilityRole="button" accessibilityLabel="Delete post">
-              <Icon name="trash" size={16} color={colors.danger} />
+            <Pressable style={[styles.iconBtn, campaignPresentation && styles.campaignTouchTarget]} hitSlop={8} onPress={confirmDelete} accessibilityRole="button" accessibilityLabel="Delete post">
+              <Icon name="trash" size={16} color={campaignPresentation ? "#FFB4AB" : colors.danger} />
             </Pressable>
           )}
           {canReport && (
-            <Pressable style={styles.iconBtn} hitSlop={8} onPress={() => onReport(log)} accessibilityRole="button" accessibilityLabel="Report post">
-              <Icon name="flag" size={15} color={colors.textFaint} />
+            <Pressable style={[styles.iconBtn, campaignPresentation && styles.campaignTouchTarget]} hitSlop={8} onPress={() => onReport(log)} accessibilityRole="button" accessibilityLabel="Report post">
+              <Icon name="flag" size={15} color={campaignPresentation ? campaignTreatment.mutedTextColor : colors.textFaint} />
             </Pressable>
           )}
         </View>
@@ -166,29 +261,31 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onNotInt
         )}
 
         {!!log.review && (
-          <Pressable onPress={() => (onComment || onOpen)?.(log)}><Text style={styles.statusText}>{log.review}</Text></Pressable>
+          <Pressable onPress={() => (onComment || onOpen)?.(log)}><Text style={[styles.statusText, campaignPresentation && { color: campaignTreatment.textColor }]}>{log.review}</Text></Pressable>
         )}
+        <TaggedPeopleRow people={taggedPeople} onOpenProfile={onOpenProfile} selfId={session?.id} onRemoveSelf={onRemoveMyPostTag ? removeSelfTag : undefined} palette={campaignTreatment} />
         {!!log.song && <SongAttachment song={log.song} onPlay={onPlay} />}
         {!!log.playlist && <PlaylistAttachment playlist={log.playlist} onPlay={onPlay} />}
-        {postMedia.length > 0 && (
-          <PostMediaGrid media={postMedia} viewable={mediaViewable} openerScope={log.id} onOpen={onOpenPhotos ? (i, opener) => onOpenPhotos(postMedia, i, log.id, opener) : undefined} />
+        {statusMedia.length > 0 && (
+          <PostMediaGrid media={statusMedia} viewable={mediaViewable} openerScope={log.id} onOpen={onOpenPhotos ? (i, opener) => onOpenPhotos(postMedia, postMedia.indexOf(statusMedia[i]), log.id, opener) : undefined} />
         )}
 
-        <RecommendationWhy recommendation={recommendation} expanded={whyOpen} onToggle={() => setWhyOpen((current) => !current)} />
+        <RecommendationWhy recommendation={recommendation} expanded={whyOpen} onToggle={() => setWhyOpen((current) => !current)} palette={campaignTreatment} />
 
-        <View style={styles.statusFooter}>
-          <NotForMeButton onPress={onNotInterested ? () => onNotInterested(log) : undefined} />
-          <Pressable style={({ pressed }) => [styles.fBtn, pressed && styles.controlPressed]} onPress={() => (session ? toggleLike(log.id, log.likes || 0) : onOpen?.(log))} hitSlop={8} accessibilityRole="button" accessibilityLabel={`${liked ? "Unlike" : "Like"}, ${likeCount} likes`}>
-            <Icon name="heart" size={18} color={liked ? colors.magenta : colors.textDim} filled={liked} />
-            <Text style={[styles.fCount, liked && { color: colors.magenta }]}>{likeCount}</Text>
+        <View style={[styles.statusFooter, campaignPresentation && styles.campaignFooter]}>
+          <NotForMeButton onPress={onNotInterested ? () => onNotInterested(log) : undefined} palette={campaignTreatment} />
+          <Pressable style={({ pressed }) => [styles.fBtn, campaignPresentation && styles.campaignTouchTarget, pressed && (campaignPresentation ? styles.campaignControlPressed : styles.controlPressed)]} onPress={() => (session ? toggleLike(log.id, log.likes || 0) : onOpen?.(log))} hitSlop={8} accessibilityRole="button" accessibilityLabel={`${liked ? "Unlike" : "Like"}, ${likeCount} likes`}>
+            <Icon name="heart" size={18} color={campaignPresentation ? (liked ? campaignTreatment.accentColor : campaignTreatment.mutedTextColor) : liked ? colors.magenta : colors.textDim} filled={liked} />
+            <Text style={[styles.fCount, campaignPresentation && { color: liked ? campaignTreatment.accentColor : campaignTreatment.mutedTextColor }, !campaignPresentation && liked && { color: colors.magenta }]}>{likeCount}</Text>
           </Pressable>
-          <Pressable style={({ pressed }) => [styles.fBtn, pressed && styles.controlPressed]} onPress={openComments} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Comments, ${commentCount}`}>
-            <Icon name="comment" size={17} color={colors.textDim} />
-            <Text style={styles.fCount}>{commentCount}</Text>
+          <Pressable style={({ pressed }) => [styles.fBtn, campaignPresentation && styles.campaignTouchTarget, pressed && (campaignPresentation ? styles.campaignControlPressed : styles.controlPressed)]} onPress={openComments} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Comments, ${commentCount}`}>
+            <Icon name="comment" size={17} color={campaignPresentation ? campaignTreatment.mutedTextColor : colors.textDim} />
+            <Text style={[styles.fCount, campaignPresentation && { color: campaignTreatment.mutedTextColor }]}>{commentCount}</Text>
           </Pressable>
         </View>
 
-        {showComments && <AfterpartyPreview log={log} onOpen={onComment || onOpen} />}
+        {showComments && <AfterpartyPreview log={log} onOpen={onComment || onOpen} palette={campaignTreatment} />}
+        </View>
       </View>
     );
   }
@@ -265,6 +362,7 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onNotInt
           <Text style={styles.noReview}>Logged this show - no review yet. Tap to open.</Text>
         )}
       </Pressable>
+      <TaggedPeopleRow people={taggedPeople} onOpenProfile={onOpenProfile} selfId={session?.id} onRemoveSelf={onRemoveMyPostTag ? removeSelfTag : undefined} />
       {!!log.song && <SongAttachment song={log.song} onPlay={onPlay} />}
       {postMedia.length > 0 && (
         <PostMediaGrid media={postMedia} viewable={mediaViewable} openerScope={log.id} onOpen={onOpenPhotos ? (i, opener) => onOpenPhotos(postMedia, i, log.id, opener) : undefined} />
@@ -344,6 +442,16 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onNotInt
 
 const styles = StyleSheet.create({
   card: { backgroundColor: colors.surface, borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: colors.line, padding: 16, marginBottom: 16, ...shadow.card },
+  campaignCard: { minHeight: 340, overflow: "hidden", padding: 12, borderColor: "rgba(242,166,90,0.42)", boxShadow: "0 18px 48px rgba(0,0,0,0.34)" },
+  campaignBackdrop: { ...StyleSheet.absoluteFillObject, overflow: "hidden" },
+  campaignGlowLarge: { position: "absolute", width: 390, height: 390, borderRadius: 195, left: -150, top: -170 },
+  campaignGlowSmall: { position: "absolute", width: 250, height: 250, borderRadius: 125, right: -90, bottom: -100 },
+  campaignTopline: { zIndex: 2, minHeight: 42, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 50 },
+  campaignBadge: { flexDirection: "row", alignItems: "center", gap: 6, maxWidth: "72%", minHeight: 34, paddingHorizontal: 10, borderRadius: radius.pill, backgroundColor: "rgba(5,6,10,0.82)", borderWidth: 1 },
+  campaignBadgeText: { flexShrink: 1, fontFamily: mono, fontSize: 8.5, fontWeight: "900", letterSpacing: 1.05 },
+  campaignArtworkButton: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 12, borderRadius: radius.pill, backgroundColor: "rgba(5,6,10,0.82)", borderWidth: 1, borderColor: "rgba(255,255,255,0.2)" },
+  campaignArtworkText: { color: "#FFF8EE", fontSize: 10.5, fontWeight: "800" },
+  campaignContent: { zIndex: 2, padding: 14, borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: "rgba(255,255,255,0.14)", boxShadow: "0 14px 34px rgba(0,0,0,0.3)" },
   header: { flexDirection: "row", alignItems: "center", gap: 10 },
   nameRow: { flexDirection: "row", alignItems: "center", gap: 4 },
   name: { color: colors.text, fontFamily: displayFont, fontWeight: "800", fontSize: 14, letterSpacing: -0.1 },
@@ -366,6 +474,12 @@ const styles = StyleSheet.create({
   tagRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: 12, alignItems: "center" },
   tagChip: { borderWidth: 1.5, borderRadius: radius.sm, borderCurve: "continuous", paddingHorizontal: 10, paddingVertical: 5, backgroundColor: colors.surfaceAlt },
   tagTxt: { fontFamily: displayFont, fontSize: 12.5, fontWeight: "900", letterSpacing: 1.4 },
+  taggedPeopleRow: { flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6, marginTop: 12 },
+  taggedPeopleLead: { fontSize: 11.5, fontWeight: "700" },
+  taggedPersonChip: { minHeight: 44, maxWidth: "100%", flexDirection: "row", alignItems: "center", borderWidth: 1, borderRadius: radius.pill, backgroundColor: "rgba(0,0,0,0.12)" },
+  taggedPersonProfile: { minHeight: 44, maxWidth: 190, flexDirection: "row", alignItems: "center", gap: 6, paddingLeft: 8, paddingRight: 10 },
+  taggedPersonText: { flexShrink: 1, fontSize: 11.5, fontWeight: "800" },
+  taggedPersonRemove: { width: 44, height: 44, alignItems: "center", justifyContent: "center", borderLeftWidth: 1, borderLeftColor: colors.lineSoft },
 
   ratedLine: { color: colors.textDim, fontFamily: font, fontSize: 13, marginTop: 12 },
   artistLink: { color: colors.text, fontFamily: displayFont, fontSize: 16, fontWeight: "800", letterSpacing: -0.15 },
@@ -378,6 +492,10 @@ const styles = StyleSheet.create({
   iconBtn: { width: 34, height: 34, borderRadius: 17, alignItems: "center", justifyContent: "center" },
   statusText: { color: colors.text, fontFamily: font, fontSize: 16, lineHeight: 23, marginTop: 12 },
   statusFooter: { flexDirection: "row", alignItems: "center", gap: 14, marginTop: 14, paddingTop: 4, borderTopWidth: 1, borderTopColor: colors.lineSoft },
+  campaignFooter: { borderTopColor: "rgba(255,255,255,0.12)" },
+  campaignTouchTarget: { minWidth: 44, minHeight: 44 },
+  campaignWhyWrap: { borderColor: "rgba(255,255,255,0.14)", backgroundColor: "rgba(255,255,255,0.06)" },
+  campaignControlPressed: { backgroundColor: "rgba(255,255,255,0.10)", transform: [{ scale: 0.96 }] },
 
   perfWrap: { flexDirection: "row", alignItems: "center", height: 16, marginVertical: 14 },
   dashed: { flex: 1, borderTopWidth: 1, borderStyle: "dashed", borderColor: colors.line },

@@ -6,13 +6,13 @@ import Avatar from "../components/Avatar";
 import SmartImage from "../components/SmartImage";
 import SoundDonut, { DONUT_PALETTE } from "../components/SoundDonut";
 import { BadgeRow } from "../components/Badge";
-import { useStore, isStaff, isMod, isArtist } from "../store";
-import { showDateMs } from "../lib/showTime";
-import Countdown from "../components/Countdown";
-import { formatDate, toIsoDate, relativeTime } from "../domain/dates.mjs";
-import { mediaDisplayItems, mediaDisplayKind, mediaPosterUri } from "../domain/postMediaDisplay.mjs";
+import { useStore, isStaff, isMod } from "../store";
+import { formatDate } from "../domain/dates.mjs";
 import { concertMemoryShareText, selectConcertMemories } from "../domain/concertMemories.mjs";
 import { selectRediscoverTracks } from "../domain/listeningRediscovery.mjs";
+import { profileManagementAction } from "../domain/artistWorkspace.mjs";
+import { selectConcertReviews } from "../domain/profileTimeline.mjs";
+import { useProfileHistory } from "../features/profileHistory/useProfileHistory";
 
 const web = Platform.OS === "web";
 
@@ -56,18 +56,19 @@ function SongBar({ rank, title, sub, count, max, art, onPress, delay = 0 }) {
   );
 }
 
-// The You tab: the user's own page, profile-first like prime MySpace/Facebook -
-// a hero identity card, then the sound (donut + podium + charts), the photo
-// wall, plans, and a compact toolbelt. Every number is DERIVED from real
-// activity; empty sections hide instead of padding the page.
-export default function YouScreen({ feed, onLogin, onLogout, onAdmin, onAddTourDate, onRequestArtist, onEditProfile, onOpenProfile, onOpen, onActivity, onInbox, onCalendar, onListeningHistory, onOpenNearby, homeCity, onPlay, onOpenPhotos, onOpenArtist }) {
-  const { session, logsByUser, unreadNotifications, inboxUnread, playHistory, genreOfArtist, goingFor, myPlaylists, loadMyPlaylists, userBadges, userPoints } = useStore();
-  const mine = session ? logsByUser(session.id) : [];
+// The You tab is the private dashboard: listening, memories, nearby activity,
+// and account tools. The public Profile screen owns the diary, media wall,
+// playlists, and posts so those features have one canonical home.
+export default function YouScreen({ onLogin, onLogout, onManageProfile, onSettings, onAdmin, onRequestArtist, onOpenProfile, onOpen, onActivity, onInbox, onCalendar, onListeningHistory, onOpenNearby, homeCity, onPlay, onOpenArtist }) {
+  const { session, logsByUser, unreadNotifications, inboxUnread, playHistory, genreOfArtist, userBadges, userPoints } = useStore();
+  const history = useProfileHistory({ accountId: session?.id, targetId: session?.id, enabled: !!session });
+  const cachedMine = session ? logsByUser(session.id) : [];
+  const mine = session && (history.posts.length || history.status === "ready") ? history.posts : cachedMine;
+  const concertLogs = selectConcertReviews(mine);
   const notif = session ? unreadNotifications() : 0;
   const unread = session ? inboxUnread() : 0;
+  const profileAction = profileManagementAction(session);
   const [memoryStatus, setMemoryStatus] = useState("");
-
-  useEffect(() => { if (session) loadMyPlaylists(); }, [session?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---- listening analytics, all from the server-backed play history ----
   const sound = useMemo(() => {
@@ -100,7 +101,7 @@ export default function YouScreen({ feed, onLogin, onLogout, onAdmin, onAddTourD
   const live = useMemo(() => {
     const artists = new Set(); const venues = new Set(); const genres = {};
     let best = null;
-    for (const l of mine) {
+    for (const l of concertLogs) {
       if (l.artist) { artists.add(l.artist.toLowerCase()); const g = genreOfArtist(l.artist); if (g) { const k = g.toLowerCase(); genres[k] = (genres[k] || 0) + 1; } }
       if (l.venue) venues.add(l.venue.toLowerCase());
       if (best == null || (l.overall || 0) > best) best = l.overall || 0;
@@ -110,7 +111,6 @@ export default function YouScreen({ feed, onLogin, onLogout, onAdmin, onAddTourD
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mine]);
 
-  const gallery = useMemo(() => mine.flatMap((l) => mediaDisplayItems(l).map((item) => ({ ...item, uri: item.uri, postId: l.id }))), [mine]);
   const memories = useMemo(
     () => selectConcertMemories(mine, { ownerId: session?.id, now: Date.now(), limit: 2 }),
     [mine, session?.id],
@@ -120,12 +120,7 @@ export default function YouScreen({ feed, onLogin, onLogout, onAdmin, onAddTourD
     [playHistory],
   );
 
-  const planned = session ? goingFor(session.id) : [];
-  const upcoming = planned.filter((p) => { const t = showDateMs(p.date); return t != null && t - Date.now() > -86400000; });
-
-  const playlists = myPlaylists || [];
   const playTrack = (t) => onPlay?.({ kind: "track", title: t.title, artist: t.artist, art: t.art || null });
-  const playPlaylist = (pl) => { const q = (pl.tracks || []).filter((t) => t.title); if (q.length) onPlay?.(q[0], q); };
   const shareMemory = async (memory) => {
     try {
       setMemoryStatus(`Opening share options for ${memory.artist}.`);
@@ -154,23 +149,28 @@ export default function YouScreen({ feed, onLogin, onLogout, onAdmin, onAddTourD
   }
 
   const roleLabel = session.role === "admin" ? "ADMIN" : session.role === "artist" ? "VERIFIED ARTIST" : "FAN";
+  const historyCount = (value) => `${value}${history.complete ? "" : "+"}`;
   const year = new Date().getFullYear();
-  const showsThisYear = mine.filter((l) => String(l.date || "").includes(String(year))).length;
+  const showsThisYear = concertLogs.filter((l) => String(l.date || "").includes(String(year))).length;
   const points = userPoints(session);
   const badges = userBadges(session);
+  const publicProfileLabel = profileAction.destination === "artistHub" ? "View public artist page" : "View public profile";
+  const publicProfileDetail = profileAction.destination === "artistHub"
+    ? "See the official page exactly as fans do"
+    : "Your diary, photos, playlists, and public posts";
   const podium = sound.topArtists.slice(0, 3);
   const restArtists = sound.topArtists.slice(3, 6);
   const MEDAL = [colors.gold, "#c9ccd4", "#c98d5a"];
 
   // Compact toolbelt instead of a wall of menu rows.
   const tools = [
+    { icon: profileAction.icon, label: profileAction.title, onPress: onManageProfile },
+    { icon: "menu", label: "Settings", onPress: onSettings },
     { icon: "bell", label: "Activity", badge: notif, onPress: onActivity },
     { icon: "mail", label: "Inbox", badge: unread, onPress: onInbox },
     { icon: "calendar", label: "Calendar", onPress: onCalendar },
-    { icon: "edit", label: "Edit profile", onPress: onEditProfile },
     isMod(session.role) && { icon: "shield", label: "Moderation", onPress: onAdmin },
-    isArtist(session.role) && { icon: "calendar", label: "Tour dates", onPress: onAddTourDate },
-    session.role === "fan" && { icon: "shield", label: "Artist account", onPress: onRequestArtist },
+    session.role === "fan" && { icon: "shield", label: "Claim artist profile", onPress: onRequestArtist },
     { icon: "logout", label: "Log out", danger: true, onPress: onLogout },
   ].filter(Boolean);
 
@@ -209,7 +209,7 @@ export default function YouScreen({ feed, onLogin, onLogout, onAdmin, onAddTourD
               </Pressable>
             </View>
             <View style={styles.heroStats}>
-              {[[mine.length, "SHOWS"], [live.artists, "ARTISTS"], [live.venues, "VENUES"], [sound.totalPlays, "PLAYS"]].map(([v, l]) => (
+              {[[historyCount(concertLogs.length), "SHOWS"], [historyCount(live.artists), "ARTISTS"], [historyCount(live.venues), "VENUES"], [sound.totalPlays, "PLAYS"]].map(([v, l]) => (
                 <View key={l} style={styles.heroStat}>
                   <Text style={styles.heroStatVal}>{v}</Text>
                   <Text style={styles.heroStatLabel}>{l}</Text>
@@ -218,14 +218,27 @@ export default function YouScreen({ feed, onLogin, onLogout, onAdmin, onAddTourD
             </View>
             <Text style={styles.wrappedLine}>
               <Text style={{ color: colors.amber, fontWeight: "800" }}>{year} · </Text>
-              {showsThisYear === 0 ? "No shows logged this year yet. The pit is waiting." : (
+              {showsThisYear === 0 ? "No shows loaded for this year yet. The pit is waiting." : (
                 <>
-                  {showsThisYear} show{showsThisYear === 1 ? "" : "s"}
+                  {history.complete ? showsThisYear : `at least ${showsThisYear}`} show{showsThisYear === 1 ? "" : "s"}
                   {live.topGenre ? ` · most-seen: ${live.topGenre.replace(/\b\w/g, (c) => c.toUpperCase())}` : ""}
                   {live.best ? <> · best night <Text style={{ color: colors.gold, fontFamily: mono }}>{live.best.toFixed(1)}</Text></> : null}
                 </>
               )}
             </Text>
+            <Pressable
+              style={styles.publicProfileLink}
+              onPress={() => onOpenProfile?.(session.id)}
+              accessibilityRole="button"
+              accessibilityLabel={`${publicProfileLabel}. ${publicProfileDetail}`}
+            >
+              <View style={styles.publicProfileIcon}><Icon name="external" size={16} color={colors.amber} /></View>
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={styles.publicProfileTitle}>{publicProfileLabel}</Text>
+                <Text style={styles.publicProfileSub} numberOfLines={2}>{publicProfileDetail}</Text>
+              </View>
+              <Icon name="chevron-right" size={17} color={colors.textDim} />
+            </Pressable>
           </View>
         </View>
       </Reveal>
@@ -355,68 +368,8 @@ export default function YouScreen({ feed, onLogin, onLogout, onAdmin, onAddTourD
         </Reveal>
       )}
 
-      {/* ---- PHOTO WALL: feature-first, like an album preview ---- */}
-      {gallery.length > 0 && (
-        <Reveal delay={160}>
-          <Text style={styles.sectionLabel}>YOUR PHOTO WALL · {gallery.length}</Text>
-          <View style={styles.wall}>
-            <SmartImage uri={gallery[0].uri} posterUri={mediaPosterUri(gallery[0])} mediaKind={mediaDisplayKind(gallery[0])} accessibilityLabel={gallery[0].altText || "Open your media"} style={styles.wallFeature} contain={false}
-              onPress={onOpenPhotos ? () => onOpenPhotos(gallery.map((x) => ({ ...x, uri: x.uri, by: session.name, postId: x.postId, ownerId: session.id })), 0, gallery[0].postId) : undefined} />
-            <View style={styles.wallSide}>
-              {gallery.slice(1, 5).map((p, i) => (
-                <SmartImage key={p.uri + i} uri={p.uri} posterUri={mediaPosterUri(p)} mediaKind={mediaDisplayKind(p)} accessibilityLabel={p.altText || "Open your media"} style={styles.wallCell} contain={false}
-                  onPress={onOpenPhotos ? () => onOpenPhotos(gallery.map((x) => ({ ...x, uri: x.uri, by: session.name, postId: x.postId, ownerId: session.id })), i + 1, p.postId) : undefined} />
-              ))}
-            </View>
-          </View>
-          {gallery.length > 5 && (
-            <Pressable onPress={onOpenPhotos ? () => onOpenPhotos(gallery.map((x) => ({ ...x, uri: x.uri, by: session.name, postId: x.postId, ownerId: session.id })), 0, gallery[0].postId) : undefined}>
-              <Text style={styles.wallMore}>See all {gallery.length} photos ›</Text>
-            </Pressable>
-          )}
-        </Reveal>
-      )}
-
-      {/* ---- PLAYLISTS + GOING TO ---- */}
-      {(playlists.length > 0 || upcoming.length > 0) && (
-        <Reveal delay={220}>
-          {playlists.length > 0 && (
-            <>
-              <Text style={styles.sectionLabel}>PLAYLISTS · {playlists.length}</Text>
-              {playlists.map((pl) => (
-                <Pressable key={pl.id} style={styles.row} onPress={() => playPlaylist(pl)} accessibilityRole="button" accessibilityLabel={`Play playlist ${pl.name}`}>
-                  <View style={styles.rowIcon}><Icon name="music" size={16} color={colors.amber} /></View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={styles.rowLabel} numberOfLines={1}>{pl.name}</Text>
-                    <Text style={styles.rowSub}>{(pl.tracks || []).length} songs</Text>
-                  </View>
-                  <Icon name="play" size={14} color={colors.amber} />
-                </Pressable>
-              ))}
-            </>
-          )}
-          {upcoming.length > 0 && (
-            <>
-              <Text style={styles.sectionLabel}>GOING TO · {upcoming.length}</Text>
-              {upcoming.map((p) => {
-                return (
-                  <Pressable key={p.key} style={styles.row} onPress={() => onOpen?.(p)}>
-                    <View style={styles.rowIcon}><Icon name="calendar" size={15} color={colors.amber} /></View>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.rowLabel} numberOfLines={1}>{p.artist}</Text>
-                      <Text style={styles.rowSub} numberOfLines={1}>{p.venue}{p.date ? ` · ${formatDate(p.date, p.date)}` : ""}</Text>
-                    </View>
-                    <Countdown target={showDateMs(p.date)} style={styles.goingT} />
-                  </Pressable>
-                );
-              })}
-            </>
-          )}
-        </Reveal>
-      )}
-
       {/* ---- TOOLBELT: one compact grid instead of stacked menu rows ---- */}
-      <Reveal delay={280}>
+      <Reveal delay={180}>
         <Text style={styles.sectionLabel}>TOOLS</Text>
         <View style={styles.toolGrid}>
           {tools.map((t) => (
@@ -431,55 +384,6 @@ export default function YouScreen({ feed, onLogin, onLogout, onAdmin, onAddTourD
         </View>
       </Reveal>
 
-      {/* ---- DIARY ---- */}
-      <Reveal delay={340}>
-        <Text style={styles.sectionLabel}>YOUR DIARY · {mine.length}</Text>
-        {mine.length === 0 && <Text style={styles.emptyHint}>No shows yet. Tap the + to log your first one.</Text>}
-        {mine.map((l) => {
-          // A status post is not a concert review: it has no artist, venue or
-          // score, so rendering it with the review layout produced the empty
-          // "." rows with a fake ★0.0. It shows its text and a date badge only.
-          const isStatus = l.kind === "status";
-          // Dates are stored ISO now; the old code split on " · " and so the
-          // month/day badge came up blank for every migrated entry.
-          const iso = toIsoDate(l.date);
-          const [, mon, day] = iso ? iso.split("-") : [];
-          const statusText = (l.review || "").trim();
-          return (
-            <Pressable key={l.id} style={styles.row} onPress={() => onOpen?.(l)}>
-              <View style={styles.diaryStub}>
-                {isStatus ? (
-                  <Icon name="feed" size={16} color={colors.textDim} />
-                ) : (
-                  <>
-                    <Text style={styles.diaryStubMon}>{mon || ""}</Text>
-                    <Text style={styles.diaryStubDay}>{day || ""}</Text>
-                  </>
-                )}
-              </View>
-              <View style={{ flex: 1 }}>
-                {isStatus ? (
-                  <>
-                    <Text style={styles.rowLabel} numberOfLines={1}>{statusText || (l.photos?.length ? "Shared a photo" : l.song ? "Shared a song" : "Posted an update")}</Text>
-                    <Text style={styles.rowSub} numberOfLines={1}>{relativeTime(l.createdAt)}</Text>
-                  </>
-                ) : (
-                  <>
-                    <Text style={styles.rowLabel} numberOfLines={1}>{l.artist}</Text>
-                    <Text style={styles.rowSub} numberOfLines={1}>{[l.venue, l.city].filter(Boolean).join(" · ")}</Text>
-                  </>
-                )}
-              </View>
-              {!isStatus && (
-                <View style={styles.diaryScorePill}>
-                  <Icon name="star" size={11} color={colors.gold} />
-                  <Text style={styles.diaryScore}>{(l.overall || 0).toFixed(1)}</Text>
-                </View>
-              )}
-            </Pressable>
-          );
-        })}
-      </Reveal>
     </ScrollView>
   );
 }
@@ -509,6 +413,10 @@ const styles = StyleSheet.create({
   heroStatVal: { color: colors.text, fontFamily: mono, fontSize: 19, fontWeight: "800" },
   heroStatLabel: { color: colors.textFaint, fontSize: 9.5, letterSpacing: 1.2, marginTop: 3, fontWeight: "800" },
   wrappedLine: { color: colors.textDim, fontSize: 13, lineHeight: 19, marginTop: 12 },
+  publicProfileLink: { minHeight: 62, flexDirection: "row", alignItems: "center", gap: 10, marginTop: 14, padding: 10, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.bgElev },
+  publicProfileIcon: { width: 38, height: 38, borderRadius: 19, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
+  publicProfileTitle: { color: colors.text, fontSize: 13.5, fontWeight: "800" },
+  publicProfileSub: { color: colors.textDim, fontSize: 11.5, lineHeight: 16, marginTop: 2 },
 
   nearCard: { flexDirection: "row", alignItems: "center", gap: 12, marginTop: 16, backgroundColor: colors.bgElev, borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: colors.amber, paddingHorizontal: 14, paddingVertical: 13, ...shadow.card },
   nearIcon: { width: 40, height: 40, borderRadius: 20, alignItems: "center", justifyContent: "center", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line },
@@ -574,18 +482,6 @@ const styles = StyleSheet.create({
   songFill: { height: 5, borderRadius: 3, backgroundColor: colors.amber },
   songPlay: { width: 28, height: 28, borderRadius: 14, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
 
-  wall: { flexDirection: "row", gap: 6, height: 232 },
-  wallFeature: { flex: 2, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft },
-  wallSide: { flex: 1, gap: 6 },
-  wallCell: { flex: 1, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.lineSoft },
-  wallMore: { color: colors.amber, fontSize: 13, fontWeight: "700", marginTop: 10 },
-
-  row: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 12, marginBottom: 8 },
-  rowIcon: { width: 38, height: 38, borderRadius: 19, backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
-  rowLabel: { color: colors.text, fontSize: 14.5, fontWeight: "700" },
-  rowSub: { color: colors.textDim, fontSize: 12, marginTop: 2 },
-  goingT: { color: colors.amber, fontFamily: mono, fontSize: 13, fontWeight: "800", fontVariant: ["tabular-nums"] },
-
   toolGrid: { flexDirection: "row", flexWrap: "wrap", gap: space(2) },
   // No `flexGrow`. With it, the tiles left over on the final row stretched to
   // fill the space, so seven tools rendered as four even ones above three of
@@ -596,10 +492,4 @@ const styles = StyleSheet.create({
   toolBadge: { position: "absolute", top: -4, right: -6, backgroundColor: colors.magenta, borderRadius: 9, minWidth: 17, height: 17, alignItems: "center", justifyContent: "center", paddingHorizontal: 4 },
   toolBadgeTxt: { color: "#fff", fontSize: 10, fontWeight: "800", fontFamily: mono },
   toolLabel: { color: colors.text, fontSize: 11.5, fontWeight: "700" },
-
-  diaryStub: { width: 46, height: 46, borderRadius: 8, backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
-  diaryStubMon: { color: colors.amber, fontFamily: mono, fontSize: 13, fontWeight: "800" },
-  diaryStubDay: { color: colors.textFaint, fontFamily: mono, fontSize: 11 },
-  diaryScorePill: { flexDirection: "row", alignItems: "center", gap: 4 },
-  diaryScore: { color: colors.gold, fontFamily: mono, fontSize: 14, fontWeight: "700" },
 });

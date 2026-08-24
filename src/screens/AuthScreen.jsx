@@ -271,8 +271,8 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) 
         <View style={styles.artistNote}>
           <Icon name="shield" size={16} color={colors.amber} />
           <Text style={styles.artistNoteTxt}>
-            Are you an artist? Log in as a fan first, then request an official artist account from
-            your profile - an admin reviews every request before approval.
+            Are you an artist? Create a personal account first, then claim your official artist
+            profile from Manage profile. Every claim is reviewed before approval.
           </Text>
         </View>
       </ScrollView>

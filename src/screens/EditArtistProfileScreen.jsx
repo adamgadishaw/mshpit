@@ -10,9 +10,9 @@ import Button from "../components/Button";
 import SheetHeader from "../components/SheetHeader";
 import { isDurableMediaUrl, reportMediaPickerError, uploadMediaAsset } from "../lib/mediaUpload";
 
-// The band's own account edits its public artist page: banner, profile photo,
-// bio, and whether the Updates feed is enabled. Mirrors EditProfileScreen but
-// writes to the artist-profile overrides instead of the user record.
+// The verified artist account and Pit staff edit the public artist profile:
+// banner, profile photo, bio, and page-update visibility. Personal account
+// details remain in the separate member-profile editor.
 export default function EditArtistProfileScreen({ artistName, onClose }) {
   const { artistSummary, artistProfile, updateArtistProfile, isArtistOwner } = useStore();
   const a = artistSummary(artistName);
@@ -32,8 +32,8 @@ export default function EditArtistProfileScreen({ artistName, onClose }) {
   if (!isArtistOwner(a.name)) {
     return (
       <View style={styles.wrap}>
-        <SheetHeader title="Edit artist" onClose={onClose} />
-        <Text style={styles.denied}>Only the verified {a.name} account can edit this page.</Text>
+        <SheetHeader title="Manage artist profile" onClose={onClose} />
+        <Text style={styles.denied}>Only the verified {a.name} account or Pit staff can manage this artist profile.</Text>
       </View>
     );
   }
@@ -95,7 +95,7 @@ export default function EditArtistProfileScreen({ artistName, onClose }) {
 
   return (
     <View style={styles.wrap}>
-      <SheetHeader title="Edit artist page" onClose={onClose} action={{ label: saving ? "Saving..." : mediaBusy ? "Uploading..." : "Save", onPress: save, disabled: mediaBusy || saving }} />
+      <SheetHeader title="Manage artist profile" onClose={onClose} action={{ label: saving ? "Saving..." : mediaBusy ? "Uploading..." : "Save", onPress: save, disabled: mediaBusy || saving }} />
 
       <ScrollView style={saving ? styles.savingLock : null} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <Pressable style={styles.bannerEdit} onPress={pickBanner} disabled={uploadingBanner || saving}>
@@ -119,18 +119,27 @@ export default function EditArtistProfileScreen({ artistName, onClose }) {
         <Text style={styles.label}>BIO</Text>
         <TextInput style={[styles.input, styles.multiline]} value={bio} onChangeText={setBio} placeholder="Tell fans who you are" placeholderTextColor={colors.textFaint} multiline />
 
-        <Text style={styles.label}>UPDATES FEED</Text>
-        <Pressable style={styles.toggleRow} onPress={() => setFeedEnabled((v) => !v)}>
+        <Text style={styles.label}>PAGE UPDATES</Text>
+        <Pressable
+          style={styles.toggleRow}
+          onPress={() => setFeedEnabled((value) => !value)}
+          disabled={mediaBusy || saving}
+          accessibilityRole="switch"
+          accessibilityLabel="Show page updates on the public artist profile"
+          accessibilityHint="Controls whether fans can see short updates published from Artist HQ"
+          accessibilityState={{ checked: feedEnabled, disabled: mediaBusy || saving }}
+          accessibilityValue={{ text: feedEnabled ? "Shown" : "Hidden" }}
+        >
           <View style={{ flex: 1 }}>
-            <Text style={styles.toggleTitle}>Enable updates feed</Text>
-            <Text style={styles.toggleSub}>Post announcements on your page. Fans see them; only you can post.</Text>
+            <Text style={styles.toggleTitle}>Show page updates</Text>
+            <Text style={styles.toggleSub}>{feedEnabled ? "Fans can see page updates published from Artist HQ." : "Page updates stay in Artist HQ until you make them public."}</Text>
           </View>
           <View style={[styles.switch, feedEnabled && styles.switchOn]}>
             <View style={[styles.knob, feedEnabled && styles.knobOn]} />
           </View>
         </Pressable>
 
-        <Button title={saving ? "Saving artist page..." : mediaBusy ? "Uploading photo..." : "Save artist page"} icon="check" onPress={save} disabled={mediaBusy || saving} style={{ marginTop: 28 }} />
+        <Button title={saving ? "Saving artist profile..." : mediaBusy ? "Uploading photo..." : "Save artist profile"} icon="check" onPress={save} disabled={mediaBusy || saving} style={{ marginTop: 28 }} />
       </ScrollView>
     </View>
   );

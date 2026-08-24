@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { toIsoDate, isValidDate, formatDate, todayIso, initialComposerDate } from "./dates.mjs";
+import { toIsoDate, isValidDate, formatDate, localCalendarIso, todayIso, initialComposerDate } from "./dates.mjs";
 
 test("every stored date shape in the wild collapses to one ISO identity", () => {
   // The formats actually found in the database: ISO, the DatePicker's display
@@ -46,6 +46,25 @@ test("today uses local calendar components, so a late-night log is not tomorrow"
   const lateNight = new Date(2026, 5, 21, 23, 30);
   assert.equal(todayIso(lateNight), "2026-06-21");
   assert.match(todayIso(), /^\d{4}-\d{2}-\d{2}$/);
+});
+
+test("publication timestamps keep the local calendar day across midnight", () => {
+  const originalTimezone = process.env.TZ;
+  process.env.TZ = "America/Toronto";
+  try {
+    // Both values are August 24 in UTC, but the first is still August 23 on
+    // the local Toronto publication calendar. An ISO/UTC slice fails here.
+    const beforeLocalMidnight = Date.parse("2026-08-24T03:59:59Z");
+    const afterLocalMidnight = Date.parse("2026-08-24T04:00:01Z");
+    assert.equal(localCalendarIso(new Date(beforeLocalMidnight)), "2026-08-23");
+    assert.equal(localCalendarIso(beforeLocalMidnight), "2026-08-23");
+    assert.equal(localCalendarIso(afterLocalMidnight), "2026-08-24");
+    assert.equal(localCalendarIso("not-a-timestamp"), "");
+    assert.equal(localCalendarIso(null), "");
+  } finally {
+    if (originalTimezone === undefined) delete process.env.TZ;
+    else process.env.TZ = originalTimezone;
+  }
 });
 
 test("canonicalizing is idempotent, so re-running the migration cannot drift", () => {

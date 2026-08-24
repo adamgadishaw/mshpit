@@ -389,7 +389,7 @@ test("post delete is author-only, content-scrubbing, and idempotent", () => {
   const id = made.post.id;
   db.prepare(`UPDATE posts SET artist='Private Artist',venue='Private Venue',city='Private City',date='2026-08-01',
     overall=4.5,band=4,room=3.5,dims='{"sound":5}',review='private review',setlist='["private song"]',
-    tour='private tour',tags='["private tag"]',song='{"title":"private song"}',
+    tour='private tour',tags='["private tag"]',tagged_user_ids='["postdelstranger"]',song='{"title":"private song"}',
     playlist='{"id":"private playlist","tracks":[]}',artist_key='private artist',artist_mbid='private-mbid',
     venue_key='private venue' WHERE id=?`).run(id);
 
@@ -405,13 +405,13 @@ test("post delete is author-only, content-scrubbing, and idempotent", () => {
   // every authored field and entity binding is irreversibly scrubbed.
   assert.deepEqual(del({ user: owner, ip: "pd-own", params: { id } }), { ok: true, id });
   const tombstone = db.prepare(`SELECT removed,artist,venue,city,date,overall,band,room,dims,review,photos,
-    photos_public,landing_showcase,setlist,tour,tags,song,playlist,artist_key,artist_mbid,venue_key,
+    photos_public,landing_showcase,campaign,setlist,tour,tags,tagged_user_ids,song,playlist,artist_key,artist_mbid,venue_key,
     client_mutation_id,client_mutation_hash FROM posts WHERE id=?`).get(id);
   assert.deepEqual({ ...tombstone }, {
     removed: 1,
     artist: "", venue: "", city: "", date: "", overall: 0, band: null, room: null,
-    dims: "{}", review: "", photos: "[]", photos_public: 0, landing_showcase: 0,
-    setlist: "[]", tour: null, tags: "[]", song: null, playlist: null,
+    dims: "{}", review: "", photos: "[]", photos_public: 0, landing_showcase: 0, campaign: null,
+    setlist: "[]", tour: null, tags: "[]", tagged_user_ids: "[]", song: null, playlist: null,
     artist_key: null, artist_mbid: null, venue_key: null,
     client_mutation_id: null, client_mutation_hash: null,
   });

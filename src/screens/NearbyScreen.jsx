@@ -96,14 +96,14 @@ export default function NearbyScreen({ onClose, onOpenVenue, onOpenArtist }) {
                 style={({ pressed, focused }) => [styles.cityButton, pressed && styles.controlPressed, focused && focusRing]}
                 onPress={() => setPickingCity(true)}
                 accessibilityRole="button"
-                accessibilityLabel={`Change location${center?.city ? `, currently ${center.city}` : ""}`}
+                accessibilityLabel={`Browse another city${center?.city ? `, currently ${center.city}` : ""}`}
               >
                 <View style={styles.cityIcon}><Icon name="pin" size={17} color={colors.amber} /></View>
                 <View style={styles.cityCopy}>
                   <Text style={styles.cityLabel}>BROWSING FROM</Text>
                   <Text style={styles.cityName}>{center?.label || center?.city || "Choose a city"}</Text>
                 </View>
-                <Text style={styles.changeText}>Change</Text>
+                <Text style={styles.changeText}>Browse another city</Text>
                 <Icon name="chevron-right" size={17} color={colors.textFaint} />
               </Pressable>
             </View>

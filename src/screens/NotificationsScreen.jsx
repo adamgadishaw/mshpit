@@ -9,6 +9,7 @@ import { api } from "../lib/api";
 import { isCurrentNotificationPostRequest, normalizeFetchedNotificationPost, notificationPostFailureNotice, resolveNotificationPost } from "../domain/notificationDeepLink.mjs";
 import { bundleNotifications } from "../domain/notification-bundles.mjs";
 import { accountTargetScope } from "../domain/screenScope.mjs";
+import { postTagNotificationCopy, postTagNotificationPhrase } from "../domain/postTagNotification.mjs";
 
 const ago = (ts) => {
   const s = Math.max(1, Math.floor((Date.now() - ts) / 1000));
@@ -22,12 +23,14 @@ const META = {
   follow: { icon: "you", tint: colors.cool, verb: "started following you" },
   like: { icon: "heart", tint: colors.magenta, verb: "liked your review" },
   comment: { icon: "comment", tint: colors.amber, verb: "commented on your review" },
+  post_tag: { icon: "you", tint: colors.gold, verb: "tagged you in a post" },
   dm: { icon: "mail", tint: colors.good, verb: "sent you a message" },
   welcome: { icon: "star", tint: colors.amber, verb: "" },
 };
 
 function notificationCopy(notification, actorName) {
   if (notification.type === "welcome") return "Welcome to Pit! Follow people whose taste matches yours, log the shows you go to, and rate the band versus the room.";
+  if (notification.type === "post_tag") return postTagNotificationCopy(actorName, notification.artist);
   const meta = META[notification.type] || META.like;
   const reference = (notification.type === "like" || notification.type === "comment") && notification.artist
     ? ` of ${notification.artist}`
@@ -222,7 +225,7 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
           <View style={styles.empty}>
             <Icon name="heart" size={28} color={colors.textFaint} />
             <Text style={styles.emptyTitle}>No activity yet</Text>
-            <Text style={styles.emptySub}>When people follow you, like your reviews, comment, or message you, it shows up here.</Text>
+            <Text style={styles.emptySub}>When people follow you, tag you, like your reviews, comment, or message you, it shows up here.</Text>
           </View>
         )}
         {activityRows.map(({ key, notification: n, bundle }) => {
@@ -254,7 +257,7 @@ export default function NotificationsScreen({ onClose, onOpenProfile, onOpenThre
                   </Text>
                 ) : (
                   <Text style={styles.text}>
-                    <Text style={styles.who}>{actorName}</Text> {meta.verb}
+                    <Text style={styles.who}>{actorName}</Text> {n.type === "post_tag" ? postTagNotificationPhrase(n.artist) : meta.verb}
                     {(n.type === "like" || n.type === "comment") && n.artist ? <Text style={styles.ref}> of {n.artist}</Text> : null}
                   </Text>
                 )}

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { View, Text, StyleSheet, ScrollView, Pressable, Linking, Image, TextInput, ActivityIndicator } from "react-native";
-import { colors, mono, radius, space } from "../theme";
+import { colors, focusRing, mono, radius, shadow, space } from "../theme";
 import { useStore, isStaff } from "../store";
 import { artistMeta } from "../seed/ingested";
 import { SONGS } from "../seed/songs";
@@ -17,9 +17,11 @@ import { api } from "../lib/api";
 import Svg, { Defs, LinearGradient, Stop, Rect } from "react-native-svg";
 import { formatDate } from "../domain/dates.mjs";
 import { discographyIdentityCopy, discographyPresentation } from "../domain/discographyView.mjs";
-import { mediaDisplayKind, mediaPosterUri } from "../domain/postMediaDisplay.mjs";
+import { mediaDisplayItems, mediaDisplayKind, mediaPosterUri } from "../domain/postMediaDisplay.mjs";
 import { trackReportDescriptor, trackReportIdentityKey } from "../domain/trackReportIdentity.mjs";
-import { accountTargetScope } from "../domain/screenScope.mjs";
+import { artistWorkspaceOwnsArtist } from "../domain/artistWorkspace.mjs";
+import { selectArtistReviewsPresentation } from "../features/artistReviews/artistReviewsState.mjs";
+import { useArtistTopReviews } from "../features/artistReviews/useArtistTopReviews";
 
 const cap = (s) => (s ? s.replace(/\b\w/g, (c) => c.toUpperCase()) : s);
 const compactCount = (value) => {
@@ -58,11 +60,109 @@ function AlbumArt({ uri }) {
   return <Image source={{ uri: src }} style={styles.albumArtImg} resizeMode="cover" onError={() => setStage((s) => s + 1)} />;
 }
 
+function TopReviewCard({ review, rank, artistName, onOpenShow, onOpenPhotos, onOpenProfile }) {
+  const author = review.user?.name || "A Pit fan";
+  const handle = review.user?.handle ? `@${review.user.handle}` : "Fan review";
+  const score = Number(review.overall) || 0;
+  const likes = Math.max(0, Number(review.likes) || 0);
+  const date = formatDate(review.date, review.date || "Night logged");
+  const mediaIsPublic = review.photosPublic === true || Number(review.photosPublic) === 1;
+  const publicMedia = mediaIsPublic
+    ? mediaDisplayItems(review).map((item) => ({
+      ...item,
+      by: author,
+      postId: review.id,
+      ownerId: review.userId,
+    }))
+    : [];
+  const thumbnail = publicMedia[0] || null;
+  const canOpenAuthor = !!review.userId && typeof onOpenProfile === "function";
+  const authorIdentity = (
+    <>
+      <Avatar user={review.user || { name: author, initials: "PF" }} size={34} />
+      <View style={styles.topReviewAuthor}>
+        <Text style={styles.topReviewName} numberOfLines={1}>{author}</Text>
+        <Text style={styles.topReviewHandle} numberOfLines={1}>{handle}</Text>
+      </View>
+    </>
+  );
+
+  return (
+    <View style={[styles.topReviewCard, rank === 1 && styles.topReviewCardLead]}>
+      <View style={styles.topReviewMain}>
+        <View style={styles.topReviewHeader}>
+          {canOpenAuthor ? (
+            <Pressable
+              style={({ pressed, focused }) => [
+                styles.topReviewAuthorAction,
+                pressed && styles.topReviewActionPressed,
+                focused && focusRing,
+              ]}
+              onPress={() => onOpenProfile(review.userId)}
+              accessibilityRole="button"
+              accessibilityLabel={`Open ${author}'s profile`}
+            >
+              {authorIdentity}
+            </Pressable>
+          ) : (
+            <View style={styles.topReviewAuthorAction}>{authorIdentity}</View>
+          )}
+          <View style={[styles.topReviewRank, rank === 1 && styles.topReviewRankLead]}>
+            {rank === 1 ? <Icon name="star" size={10} color={colors.gold} /> : null}
+            <Text style={[styles.topReviewRankText, rank === 1 && styles.topReviewRankTextLead]}>
+              {rank === 1 ? "TOP TAKE" : `#${rank}`}
+            </Text>
+          </View>
+        </View>
+
+        <Pressable
+          style={({ pressed, focused }) => [
+            styles.topReviewBodyAction,
+            pressed && styles.topReviewActionPressed,
+            focused && focusRing,
+          ]}
+          onPress={() => onOpenShow?.(review)}
+          accessibilityRole="button"
+          accessibilityLabel={`Open ${author}'s ${score.toFixed(1)} star review of ${artistName}`}
+          accessibilityHint="Opens the concert night and full review"
+        >
+          <Text style={styles.topReviewExcerpt} numberOfLines={3}>{review.review.trim()}</Text>
+
+          <View style={styles.topReviewFooter}>
+            <View style={styles.topReviewSignal} accessibilityLabel={`${score.toFixed(1)} stars`}>
+              <Icon name="star" size={12} color={colors.gold} />
+              <Text style={styles.topReviewScore}>{score.toFixed(1)}</Text>
+            </View>
+            <View style={styles.topReviewSignal} accessibilityLabel={`${likes} likes`}>
+              <Icon name="heart" size={12} color={colors.magenta} />
+              <Text style={styles.topReviewLikes}>{compactCount(likes)}</Text>
+            </View>
+            <Text style={styles.topReviewMeta} numberOfLines={1}>{review.venue || "Live show"} · {date}</Text>
+          </View>
+        </Pressable>
+      </View>
+
+      {thumbnail ? (
+        <SmartImage
+          uri={thumbnail.uri}
+          posterUri={mediaPosterUri(thumbnail)}
+          mediaKind={mediaDisplayKind(thumbnail)}
+          style={styles.topReviewMedia}
+          contain={false}
+          previewWidth={320}
+          accessibilityLabel={`Open media from ${author}'s review of ${artistName}`}
+          onPress={() => onOpenPhotos?.(publicMedia, 0, review.id)}
+        />
+      ) : null}
+    </View>
+  );
+}
+
 // Artist page - the rollup of a band's live reputation across every night,
 // plus where to catch them next. Answers "is this band worth seeing?"
-export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFanClub, onOpenPhotos, onEditArtist, onPlay, onAddToPlaylist, onReport }) {
+export default function ArtistScreen({ artistName, previewAsFan = false, onClose, onOpenShow, onOpenFanClub, onOpenPhotos, onOpenProfile, onManageArtistProfile, onEditArtistProfile, onPlay, onAddToPlaylist, onReport }) {
   const { session, artistSummary, albumRating, songRating, rateAlbum, rateSong, loadRating,
-    isArtistOwner, artistPostsFor, loadArtistPage, addArtistPost, removeArtistPost,
+    isArtistOwner, artistPostsFor, loadArtistPage, artistPageCacheEpoch,
     artistGallery, loadArtistPhotos, removePhoto, artistBadges, artistRank, remoteArtistMeta, resolveArtist,
     artistDiscography, artistSeenCount, reportTrack } = useStore();
   const a = artistSummary(artistName);
@@ -81,6 +181,14 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
   // every public post photo ever, not just posts sitting in this device's feed.
   useEffect(() => { loadArtistPhotos(a.name, a.profileKey); }, [a.name, a.profileKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const gallery = artistGallery(a.name, 12, a.profileKey);
+  const { resource: topReviewsResource, reload: retryTopReviews } = useArtistTopReviews({
+    accountId: session?.id || null,
+    name: a.name,
+    artistKey: a.profileKey,
+    limit: 3,
+  });
+  const topReviewsPresentation = selectArtistReviewsPresentation(topReviewsResource, a.nights, { limit: 3 });
+  const topReviews = topReviewsPresentation.reviews;
   const canModerate = isStaff(session?.role);
   const genre = a.genre !== "-" ? a.genre : cap(meta?.genre) || "-";
   const spotTracks = (meta?.topTracks || []).map((t, i) => {
@@ -98,8 +206,12 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
     };
   });
   const seedSongs = spotTracks.length ? spotTracks : SONGS.filter((s) => s.artist.toLowerCase() === a.name.toLowerCase());
-  // Artist-owned profile: the band's account can edit its header + post updates.
-  const isOwner = isArtistOwner(a.name);
+  // Named artist accounts manage their workspace in Artist HQ. Staff can edit
+  // this public profile directly, but never enter an artist-only workspace.
+  const ownsArtistPage = isArtistOwner(a.name);
+  const ownsNamedArtistPage = artistWorkspaceOwnsArtist(session, a.name);
+  const canManagePublicPage = ownsArtistPage && !previewAsFan;
+  const upcoming = previewAsFan ? a.upcoming.filter((date) => !date.scheduled) : a.upcoming;
   const bio = a.ownerBio || meta?.bio;
   const bannerUri = a.banner || meta?.photo || null;
   const profileBannerPhotos = a.banner && a.ownerId
@@ -110,50 +222,6 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
     : null;
   const avatarUser = { avatarUri: a.photo || meta?.photo || null, initials: a.name.slice(0, 2).toUpperCase(), avatarColor: colors.amber };
   const posts = artistPostsFor(a.name);
-  const [draft, setDraft] = useState("");
-  const artistPostScope = accountTargetScope(session?.id || null, `artist-posts:${String(a.profileKey || a.name).toLowerCase()}`);
-  const artistPostMutationRef = useRef({ sequence: 0, scope: artistPostScope, postId: null, controller: null });
-  const [artistPostMutation, setArtistPostMutation] = useState({ scope: artistPostScope, postId: null, status: "idle", error: null });
-  const scopedArtistPostMutation = artistPostMutation.scope === artistPostScope
-    ? artistPostMutation
-    : { scope: artistPostScope, postId: null, status: "idle", error: null };
-  useEffect(() => {
-    const active = artistPostMutationRef.current;
-    active.controller?.abort();
-    artistPostMutationRef.current = { sequence: active.sequence + 1, scope: artistPostScope, postId: null, controller: null };
-    setArtistPostMutation({ scope: artistPostScope, postId: null, status: "idle", error: null });
-    return () => artistPostMutationRef.current.controller?.abort();
-  }, [artistPostScope]);
-  const deleteArtistPost = async (postId) => {
-    if (artistPostMutationRef.current.controller) return;
-    const controller = new AbortController();
-    const operation = {
-      sequence: artistPostMutationRef.current.sequence + 1,
-      scope: artistPostScope,
-      postId,
-      controller,
-    };
-    artistPostMutationRef.current = operation;
-    setArtistPostMutation({ scope: artistPostScope, postId, status: "pending", error: null });
-    try {
-      const result = await removeArtistPost(a.name, postId, { signal: controller.signal });
-      if (artistPostMutationRef.current !== operation || operation.scope !== artistPostScope) return;
-      if (result.ok) {
-        setArtistPostMutation({ scope: artistPostScope, postId: null, status: "idle", error: null });
-      } else {
-        setArtistPostMutation({ scope: artistPostScope, postId, status: "error", error: result.error });
-      }
-    } catch (error) {
-      if (!controller.signal.aborted && artistPostMutationRef.current === operation
-        && operation.scope === artistPostScope) {
-        setArtistPostMutation({ scope: artistPostScope, postId, status: "error", error });
-      }
-    } finally {
-      if (artistPostMutationRef.current === operation) {
-        artistPostMutationRef.current = { ...operation, controller: null };
-      }
-    }
-  };
 
   // Full discography (albums + tracklists) from Deezer, so the page has real depth:
   // open an album, see every song, rate them, play them in the top bar.
@@ -495,19 +563,36 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
 
   // Slice 7: hydrate the artist's owner overrides + updates feed, and the server
   // aggregates for each album/song rating shown on the page.
-  useEffect(() => { loadArtistPage(a.name); }, [a.name]);
+  useEffect(() => {
+    const controller = new AbortController();
+    void loadArtistPage(a.name, { signal: controller.signal });
+    return () => controller.abort();
+    // The legacy store facade recreates actions as state changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [a.name, artistPageCacheEpoch]);
   useEffect(() => {
     (bundledAlbums || []).forEach((al) => loadRating("album", a.name, al.title));
     songs.forEach((s) => loadRating("song", a.name, s.title));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [a.name]);
-  const post = () => { if (draft.trim()) { addArtistPost(a.name, draft); setDraft(""); } };
-
   return (
     <View style={styles.wrap}>
       <ScreenHeader kicker="ARTIST" title={a.name} onBack={onClose} />
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+        {previewAsFan && (
+          <View
+            style={styles.fanPreviewNotice}
+            accessible
+            accessibilityLabel="Fan preview. Owner controls and scheduled dates are hidden."
+          >
+            <View style={styles.fanPreviewIcon}><Icon name="you" size={14} color={colors.amber} /></View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.fanPreviewTitle}>FAN PREVIEW</Text>
+              <Text style={styles.fanPreviewText}>Owner controls and scheduled dates are hidden.</Text>
+            </View>
+          </View>
+        )}
         {/* Twitter-style header: banner, then the avatar punches through the
             bottom edge inside a bg-colored ring (the "box"), action on the right. */}
         <View style={styles.banner}>
@@ -532,10 +617,15 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
             <Avatar user={avatarUser} size={84} onPress={() => onOpenPhotos?.(profileAvatarPhotos || (meta?.photos?.length ? meta.photos : a.photo ? [a.photo] : []), 0)} />
           </View>
           <View style={styles.profileActions}>
-            {isOwner ? (
-              <Pressable style={styles.editBtn} onPress={() => onEditArtist?.(a.name)}>
+            {ownsNamedArtistPage && !previewAsFan && onManageArtistProfile ? (
+              <Pressable style={styles.editBtn} onPress={onManageArtistProfile} accessibilityRole="button" accessibilityLabel={`Manage ${a.name} artist profile`}>
+                <Icon name="music" size={14} color={colors.amber} />
+                <Text style={styles.editTxt}>Manage artist profile</Text>
+              </Pressable>
+            ) : canModerate && !previewAsFan && onEditArtistProfile ? (
+              <Pressable style={styles.editBtn} onPress={() => onEditArtistProfile(a.name)} accessibilityRole="button" accessibilityLabel={`Edit ${a.name} artist profile`}>
                 <Icon name="edit" size={14} color={colors.amber} />
-                <Text style={styles.editTxt}>Edit profile</Text>
+                <Text style={styles.editTxt}>Edit artist profile</Text>
               </Pressable>
             ) : badges.length ? (
               <View style={styles.badgeChips}>
@@ -543,7 +633,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
                 {badges.includes("top100") && <BadgeChip type="top100" label={rank && rank <= 100 ? `TOP 100 · #${rank}` : "TOP 100"} />}
               </View>
             ) : null}
-            {!isOwner && a.ownerId && onReport ? (
+            {!ownsArtistPage && a.ownerId && onReport ? (
               <Pressable
                 style={styles.reportProfileBtn}
                 onPress={() => onReport({
@@ -586,7 +676,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
           </View>
         </View>
 
-        {thin && !isOwner && (
+        {thin && !canManagePublicPage && (
           <View style={styles.comingSoon}>
             <Icon name="clock" size={16} color={colors.amber} />
             <View style={{ flex: 1 }}>
@@ -738,30 +828,15 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
           </Pressable>
         )}
 
-        {/* Updates feed, the band's own posts. Owner enables it in Edit profile;
-            when on, the owner gets a composer box and fans see the feed. */}
-        {(a.feedEnabled || isOwner) && (
+        {/* Page updates are read-only here. Creation and removal live in the
+            single management surface: Artist HQ. */}
+        {(a.feedEnabled || canManagePublicPage) && (
           <>
             <View style={styles.feedHead}>
-              <Text style={styles.sectionLabel}>UPDATES{posts.length ? ` · ${posts.length}` : ""}</Text>
-              {isOwner && !a.feedEnabled && <Text style={styles.feedOff}>hidden · enable in Edit profile</Text>}
+              <Text style={styles.sectionLabel}>PAGE UPDATES{posts.length ? ` · ${posts.length}` : ""}</Text>
+              {canManagePublicPage && !a.feedEnabled && <Text style={styles.feedOff}>hidden from fans</Text>}
             </View>
-            {isOwner && (
-              <View style={styles.composer}>
-                <TextInput
-                  style={styles.composerInput}
-                  placeholder="Post an update to your fans…"
-                  placeholderTextColor={colors.textFaint}
-                  value={draft}
-                  onChangeText={setDraft}
-                  multiline
-                />
-                <Pressable style={[styles.postBtn, !draft.trim() && styles.postBtnOff]} onPress={post} disabled={!draft.trim()}>
-                  <Icon name="chevron-right" size={18} color="#1A1206" />
-                </Pressable>
-              </View>
-            )}
-            {posts.length === 0 && !isOwner && <Text style={styles.empty}>No updates yet.</Text>}
+            {posts.length === 0 && <Text style={styles.empty}>No page updates yet.</Text>}
             {posts.map((p) => (
               <View key={p.id} style={styles.postCard}>
                 <View style={styles.postTop}>
@@ -770,25 +845,7 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
                     <Text style={styles.postName}>{a.name}</Text>
                     <Text style={styles.postTs}>{p.ts}</Text>
                   </View>
-                  {isOwner && (
-                    <Pressable
-                      style={styles.artistPostRemove}
-                      hitSlop={8}
-                      onPress={() => void deleteArtistPost(p.id)}
-                      disabled={scopedArtistPostMutation.status === "pending"}
-                      accessibilityRole="button"
-                      accessibilityLabel={`Remove ${a.name} artist update`}
-                      accessibilityState={{
-                        disabled: scopedArtistPostMutation.status === "pending",
-                        busy: scopedArtistPostMutation.status === "pending" && scopedArtistPostMutation.postId === p.id,
-                      }}
-                    >
-                      {scopedArtistPostMutation.status === "pending" && scopedArtistPostMutation.postId === p.id
-                        ? <ActivityIndicator size="small" color={colors.amber} />
-                        : <Icon name="x" size={15} color={colors.textFaint} />}
-                    </Pressable>
-                  )}
-                  {!isOwner && onReport ? (
+                  {!ownsArtistPage && onReport ? (
                     <Pressable
                       style={styles.artistPostReport}
                       hitSlop={8}
@@ -808,33 +865,16 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
                   ) : null}
                 </View>
                 <Text style={styles.postText}>{p.text}</Text>
-                {scopedArtistPostMutation.status === "error" && scopedArtistPostMutation.postId === p.id ? (
-                  <View style={styles.artistPostError} accessibilityRole="alert" accessibilityLiveRegion="assertive">
-                    <Text selectable style={styles.artistPostErrorText}>
-                      This update was not removed, so it is still visible. {scopedArtistPostMutation.error?.userMessage || scopedArtistPostMutation.error?.message || "Try again."}
-                    </Text>
-                    <View style={styles.artistPostErrorActions}>
-                      {scopedArtistPostMutation.error?.retryable ? (
-                        <Pressable style={styles.artistPostRetry} onPress={() => void deleteArtistPost(p.id)} accessibilityRole="button" accessibilityLabel="Retry removing artist update">
-                          <Text style={styles.artistPostRetryText}>Try again</Text>
-                        </Pressable>
-                      ) : null}
-                      <Pressable style={styles.artistPostDismiss} onPress={() => setArtistPostMutation({ scope: artistPostScope, postId: null, status: "idle", error: null })} accessibilityRole="button" accessibilityLabel="Dismiss artist update error">
-                        <Text style={styles.artistPostDismissText}>Dismiss</Text>
-                      </Pressable>
-                    </View>
-                  </View>
-                ) : null}
               </View>
             ))}
           </>
         )}
 
         {/* Upcoming shows first, this is a live-music app, gigs lead. */}
-        {a.upcoming.length > 0 && (
+        {upcoming.length > 0 && (
           <>
-            <Text style={styles.sectionLabel}>UPCOMING · {a.upcoming.length}</Text>
-            {a.upcoming.map((t) => (
+            <Text style={styles.sectionLabel}>UPCOMING · {upcoming.length}</Text>
+            {upcoming.map((t) => (
               <View key={t.id} style={styles.upRow}>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.upVenue}>{t.venue}</Text>
@@ -843,11 +883,16 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
                 </View>
                 {t.soldOut ? (
                   <View style={styles.soldOut}><Text style={styles.soldOutTxt}>SOLD OUT</Text></View>
-                ) : (
-                  <Pressable style={styles.ticketBtn} onPress={() => Linking.openURL(t.ticketUrl)}>
+                ) : /^https:\/\//i.test(t.ticketUrl || "") ? (
+                  <Pressable style={styles.ticketBtn} onPress={() => Linking.openURL(t.ticketUrl)} accessibilityRole="link" accessibilityLabel={`Open tickets for ${a.name} at ${t.venue}`}>
                     <Icon name="ticket" size={14} color="#1A1206" />
                     <Text style={styles.ticketTxt}>Tickets</Text>
                   </Pressable>
+                ) : (
+                  <View style={styles.ticketPending} accessibilityLabel="Ticket link coming soon">
+                    <Icon name="clock" size={13} color={colors.textDim} />
+                    <Text style={styles.ticketPendingTxt}>Tickets soon</Text>
+                  </View>
                 )}
               </View>
             ))}
@@ -871,6 +916,62 @@ export default function ArtistScreen({ artistName, onClose, onOpenShow, onOpenFa
             </View>
           </Pressable>
         ))}
+
+        {/* The writing fans keep passing around, paired with its public media. */}
+        {(topReviews.length > 0 || topReviewsPresentation.initialError || topReviewsPresentation.refreshError) && (
+          <>
+            <View style={styles.topReviewsHeading}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.sectionLabel}>TOP REVIEWS · {topReviews.length}</Text>
+                <Text style={styles.topReviewsIntro}>The fan takes with the strongest signal across every night.</Text>
+              </View>
+              <View style={styles.topReviewsSeal} accessibilityLabel="Fan favorites">
+                <Icon name="heart" size={12} color={colors.magenta} />
+                <Text style={styles.topReviewsSealText}>FAN FAVORITES</Text>
+              </View>
+            </View>
+            {(topReviewsPresentation.initialError || topReviewsPresentation.refreshError) && (
+              <View style={styles.topReviewsFallback} accessibilityRole="alert">
+                <View style={styles.topReviewsFallbackCopy}>
+                  <Text style={styles.topReviewsFallbackLabel}>
+                    {topReviewsPresentation.initialError ? "DEVICE COPY" : "LAST LIVE RANKING"}
+                  </Text>
+                  <Text style={styles.topReviewsFallbackText}>
+                    {topReviewsPresentation.initialError
+                      ? "Live favorites could not load, so these are reviews already on this device."
+                      : "The latest refresh failed. The last verified ranking is still showing."}
+                  </Text>
+                </View>
+                <Pressable
+                  style={({ pressed, focused }) => [
+                    styles.topReviewsRetry,
+                    pressed && styles.topReviewActionPressed,
+                    focused && focusRing,
+                  ]}
+                  onPress={retryTopReviews}
+                  accessibilityRole="button"
+                  accessibilityLabel="Retry loading live artist reviews"
+                >
+                  <Icon name="chevron-right" size={13} color={colors.amber} />
+                  <Text style={styles.topReviewsRetryText}>Retry</Text>
+                </Pressable>
+              </View>
+            )}
+            <View style={styles.topReviewsList}>
+              {topReviews.map((review, index) => (
+                <TopReviewCard
+                  key={review.id}
+                  review={review}
+                  rank={index + 1}
+                  artistName={a.name}
+                  onOpenShow={onOpenShow}
+                  onOpenPhotos={onOpenPhotos}
+                  onOpenProfile={onOpenProfile}
+                />
+              ))}
+            </View>
+          </>
+        )}
 
         {/* Fan photos/media next. */}
         {gallery.length > 0 && (
@@ -1085,6 +1186,10 @@ const styles = StyleSheet.create({
   back: { color: colors.amber, fontSize: 15 },
   topTitle: { color: colors.textFaint, fontSize: 11, letterSpacing: 2, fontWeight: "700" },
   content: { padding: 16, paddingBottom: 48 },
+  fanPreviewNotice: { flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 12, paddingHorizontal: 12, paddingVertical: 9, borderRadius: radius.md, borderWidth: 1, borderColor: colors.amber, backgroundColor: colors.bgElev },
+  fanPreviewIcon: { width: 28, height: 28, borderRadius: 14, alignItems: "center", justifyContent: "center", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line },
+  fanPreviewTitle: { color: colors.amber, fontFamily: mono, fontSize: 10, fontWeight: "900", letterSpacing: 1.2 },
+  fanPreviewText: { color: colors.textDim, fontSize: 11.5, marginTop: 2 },
   banner: { height: 168, borderRadius: radius.md, overflow: "hidden", backgroundColor: colors.surfaceAlt },
   bannerFallback: { ...StyleSheet.absoluteFillObject, backgroundColor: colors.surfaceAlt },
   headRow: { flexDirection: "row", alignItems: "flex-end", justifyContent: "space-between", marginTop: -42, paddingLeft: 4 },
@@ -1115,22 +1220,10 @@ const styles = StyleSheet.create({
   sectionLabel: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "700", marginTop: space(6), marginBottom: space(2) },
   feedHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
   feedOff: { color: colors.textFaint, fontSize: 11, fontStyle: "italic", marginTop: 14 },
-  composer: { flexDirection: "row", alignItems: "flex-end", gap: 10, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, padding: 10, marginBottom: 10 },
-  composerInput: { flex: 1, color: colors.text, fontSize: 15, paddingHorizontal: 6, paddingVertical: 6, maxHeight: 120 },
-  postBtn: { width: 38, height: 38, borderRadius: 19, backgroundColor: colors.amberStrong, alignItems: "center", justifyContent: "center" },
-  postBtnOff: { opacity: 0.4 },
   postCard: { backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 14, marginBottom: 8 },
   postTop: { flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 8 },
   postName: { color: colors.text, fontSize: 14, fontWeight: "800" },
   postTs: { color: colors.textFaint, fontFamily: mono, fontSize: 11, marginTop: 1 },
-  artistPostRemove: { width: 36, height: 36, alignItems: "center", justifyContent: "center", borderRadius: 18 },
-  artistPostError: { gap: 8, marginTop: 10, paddingTop: 10, borderTopWidth: 1, borderTopColor: colors.lineSoft },
-  artistPostErrorText: { color: colors.danger, fontSize: 12, lineHeight: 17 },
-  artistPostErrorActions: { flexDirection: "row", alignItems: "center", gap: 8 },
-  artistPostRetry: { minHeight: 44, justifyContent: "center", paddingHorizontal: 13, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.amber },
-  artistPostRetryText: { color: colors.amber, fontSize: 12, fontWeight: "800" },
-  artistPostDismiss: { minHeight: 44, justifyContent: "center", paddingHorizontal: 10 },
-  artistPostDismissText: { color: colors.textDim, fontSize: 12, fontWeight: "700" },
   artistPostReport: { width: 36, height: 36, borderRadius: 18, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.lineSoft },
   postText: { color: colors.textDim, fontSize: 14, lineHeight: 20 },
   artistActions: { flexDirection: "row", gap: 10, marginTop: 16 },
@@ -1170,6 +1263,38 @@ const styles = StyleSheet.create({
   identityErrorRow: { flexDirection: "row", alignItems: "center", gap: 10, paddingTop: 3 },
   identityError: { flex: 1, color: colors.danger, fontSize: 12, lineHeight: 16 },
   identityRetry: { color: colors.amber, fontSize: 12, fontWeight: "800" },
+  topReviewsHeading: { flexDirection: "row", alignItems: "flex-end", gap: 10 },
+  topReviewsIntro: { color: colors.textDim, fontSize: 12.5, lineHeight: 18, marginTop: -4 },
+  topReviewsSeal: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 10, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface },
+  topReviewsSealText: { color: colors.textDim, fontFamily: mono, fontSize: 8.5, fontWeight: "900", letterSpacing: 0.7 },
+  topReviewsFallback: { minHeight: 66, flexDirection: "row", alignItems: "center", gap: 12, marginTop: 10, padding: 10, paddingLeft: 12, borderRadius: radius.md, borderWidth: 1, borderColor: colors.amber, backgroundColor: "rgba(242,166,90,0.07)" },
+  topReviewsFallbackCopy: { flex: 1, minWidth: 0 },
+  topReviewsFallbackLabel: { color: colors.amber, fontFamily: mono, fontSize: 9, fontWeight: "900", letterSpacing: 1 },
+  topReviewsFallbackText: { color: colors.textDim, fontSize: 11.5, lineHeight: 16, marginTop: 3 },
+  topReviewsRetry: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 4, paddingHorizontal: 11, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.amber, backgroundColor: colors.surface },
+  topReviewsRetryText: { color: colors.amber, fontSize: 11.5, fontWeight: "900" },
+  topReviewsList: { gap: 10, marginTop: 11 },
+  topReviewCard: { minHeight: 150, flexDirection: "row", overflow: "hidden", borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface, ...shadow.card },
+  topReviewCardLead: { borderColor: colors.amber },
+  topReviewMain: { flex: 1, minHeight: 150, gap: 5, padding: 10 },
+  topReviewActionPressed: { opacity: 0.78, backgroundColor: colors.surfaceAlt },
+  topReviewHeader: { flexDirection: "row", alignItems: "center", gap: 6 },
+  topReviewAuthorAction: { flex: 1, minWidth: 0, minHeight: 44, flexDirection: "row", alignItems: "center", gap: 9, paddingHorizontal: 4, borderRadius: radius.sm },
+  topReviewAuthor: { flex: 1, minWidth: 0 },
+  topReviewName: { color: colors.text, fontSize: 13.5, fontWeight: "900" },
+  topReviewHandle: { color: colors.textFaint, fontFamily: mono, fontSize: 9.5, marginTop: 2 },
+  topReviewRank: { minHeight: 26, minWidth: 34, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 4, paddingHorizontal: 8, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.bgElev },
+  topReviewRankLead: { borderColor: colors.gold, backgroundColor: "rgba(232,182,90,0.09)" },
+  topReviewRankText: { color: colors.textDim, fontFamily: mono, fontSize: 9, fontWeight: "900", letterSpacing: 0.8 },
+  topReviewRankTextLead: { color: colors.gold },
+  topReviewBodyAction: { flex: 1, minHeight: 76, justifyContent: "space-between", gap: 8, paddingHorizontal: 4, paddingVertical: 3, borderRadius: radius.sm },
+  topReviewExcerpt: { color: colors.text, fontSize: 14, lineHeight: 20, fontWeight: "600" },
+  topReviewFooter: { minHeight: 24, flexDirection: "row", alignItems: "center", gap: 9 },
+  topReviewSignal: { flexDirection: "row", alignItems: "center", gap: 3 },
+  topReviewScore: { color: colors.gold, fontFamily: mono, fontSize: 11.5, fontWeight: "900", fontVariant: ["tabular-nums"] },
+  topReviewLikes: { color: colors.textDim, fontFamily: mono, fontSize: 11, fontWeight: "800", fontVariant: ["tabular-nums"] },
+  topReviewMeta: { flex: 1, color: colors.textFaint, fontSize: 10.5 },
+  topReviewMedia: { width: 108, minHeight: 150, borderLeftWidth: 1, borderLeftColor: colors.lineSoft },
   galleryRow: { gap: 10, paddingRight: 16 },
   galleryTile: { width: 140, height: 140, borderRadius: 10 },
   fanGrid: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 10 },
@@ -1243,6 +1368,8 @@ const styles = StyleSheet.create({
   upDate: { color: colors.amber, fontFamily: mono, fontSize: 12, marginTop: 6 },
   ticketBtn: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: colors.amberStrong, borderRadius: radius.pill, paddingHorizontal: 14, paddingVertical: 9 },
   ticketTxt: { color: "#1A1206", fontSize: 13, fontWeight: "800" },
+  ticketPending: { flexDirection: "row", alignItems: "center", gap: 5, backgroundColor: colors.surfaceAlt, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 11, paddingVertical: 8 },
+  ticketPendingTxt: { color: colors.textDim, fontSize: 11, fontWeight: "800" },
   soldOut: { borderWidth: 1, borderColor: colors.danger, borderRadius: radius.pill, paddingHorizontal: 12, paddingVertical: 8 },
   soldOutTxt: { color: colors.danger, fontSize: 11, fontWeight: "800", letterSpacing: 1 },
 

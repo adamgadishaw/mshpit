@@ -9,11 +9,14 @@ const files = {
   reset: "../screens/ResetPasswordScreen.jsx",
   requestArtist: "../screens/RequestArtistScreen.jsx",
   settings: "../screens/SettingsScreen.jsx",
+  themeSwatch: "../components/ThemeSwatch.jsx",
   venuePhotos: "../components/VenuePhotoWidget.jsx",
   bulkTour: "../screens/BulkTourDatesScreen.jsx",
   datePicker: "../components/DatePicker.jsx",
   calendar: "../screens/CalendarScreen.jsx",
   topRated: "../screens/TopRatedScreen.jsx",
+  ticketStub: "../components/TicketStub.jsx",
+  reducedMotion: "../hooks/useReducedMotion.js",
 };
 
 const source = Object.fromEntries(Object.entries(files).map(([name, relative]) => [
@@ -55,8 +58,11 @@ test("artist requests only show success after the mutation result succeeds", () 
 test("Settings distinguishes actionable rows and exposes selection and busy state", () => {
   assert.match(source.settings, /if \(!onPress\)/);
   assert.match(source.settings, /accessibilityRole=\{accessibilityRole \|\| "button"\}/);
-  assert.match(source.settings, /accessibilityRole="radio"/);
-  assert.match(source.settings, /accessibilityState=\{\{ checked: active \}\}/);
+  assert.match(source.settings, /import ThemeSwatch, \{ themeGridStyle \}/);
+  assert.match(source.settings, /<ThemeSwatch/);
+  assert.match(source.settings, /swatchGrid: themeGridStyle/);
+  assert.match(source.themeSwatch, /accessibilityRole="radio"/);
+  assert.match(source.themeSwatch, /accessibilityState=\{\{ checked: !!active, selected: !!active \}\}/);
   assert.match(source.settings, /disabled=\{exporting\}/);
   assert.match(source.settings, /accessibilityState=\{\{ busy: exporting \}\}/);
 });
@@ -67,6 +73,13 @@ test("venue photos respect Reduce Motion and provide explicit carousel controls"
   assert.match(source.venuePhotos, /accessibilityLabel="Previous venue photo"/);
   assert.match(source.venuePhotos, /accessibilityLabel="Next venue photo"/);
   assert.match(source.venuePhotos, /Pause venue photo slideshow/);
+});
+
+test("feed cards share one native Reduce Motion subscription", () => {
+  assert.match(source.ticketStub, /useReducedMotion/);
+  assert.doesNotMatch(source.ticketStub, /AccessibilityInfo/);
+  assert.match(source.reducedMotion, /useSyncExternalStore/);
+  assert.equal((source.reducedMotion.match(/addEventListener/g) || []).length, 1);
 });
 
 test("bulk tour rows retain identity and expose labelled grouped controls", () => {

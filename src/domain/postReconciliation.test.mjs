@@ -20,6 +20,7 @@ const canonical = {
   setlist: ["Opener"],
   tour: null,
   tags: ["hip-hop"],
+  taggedPeople: [{ id: "u_friend", name: "Mara", handle: "mara" }],
   song: { videoId: "dQw4w9WgXcQ", title: "Song", artist: "J. Cole" },
   playlist: null,
 };
@@ -42,6 +43,7 @@ test("edit reconciliation accepts an already-committed canonical review", () => 
     setlist: ["Opener"],
     tour: null,
     tags: ["hip-hop", "hip-hop"],
+    taggedUserIds: ["u_friend"],
     song: { videoId: "dQw4w9WgXcQ", title: "Song", artist: "J. Cole" },
     version: 100,
   }), true);
@@ -76,6 +78,22 @@ test("status reconciliation handles playlist clear and attachment identity", () 
   assert.equal(postMatchesEditIntent(status, { review: canonical.review, playlistId: "pl_1", version: 10 }), true);
   assert.equal(postMatchesEditIntent(status, { playlistId: null, version: 10 }), false);
   assert.equal(postMatchesEditIntent({ ...status, playlist: null }, { playlistId: null, version: 10 }), true);
+});
+
+test("structured friend tags participate in ambiguous edit reconciliation by id", () => {
+  assert.equal(postMatchesEditIntent(canonical, { taggedUserIds: ["u_friend"], version: 100 }), true);
+  assert.equal(postMatchesEditIntent(canonical, { taggedUserIds: [], version: 100 }), false);
+  assert.equal(postMatchesEditIntent({ ...canonical, taggedPeople: "u_friend" }, { taggedUserIds: ["u_friend"], version: 100 }), false);
+});
+
+test("artist drop treatment participates in ambiguous edit reconciliation", () => {
+  const campaign = { version: 1, treatment: "tour-poster", artistKey: "turnstile", backgroundAssetId: "ma_abcdefgh12345678" };
+  assert.equal(postMatchesEditIntent({ ...canonical, kind: "status", campaign }, { campaign, version: 10 }), true);
+  assert.equal(postMatchesEditIntent({ ...canonical, kind: "status", campaign }, {
+    campaign: { ...campaign, treatment: "spotlight" },
+    version: 10,
+  }), false);
+  assert.equal(postMatchesEditIntent({ ...canonical, kind: "status", campaign: null }, { campaign: null, version: 10 }), true);
 });
 
 test("only ambiguous edit failures trigger a canonical read", () => {

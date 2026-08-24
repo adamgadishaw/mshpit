@@ -23,14 +23,24 @@ test("journey menu keeps every public discovery and connection destination reach
   assert.equal(model.connection[1].detail, "3 unread");
 });
 
-test("role-specific account destinations mirror the existing access model", () => {
-  const keysFor = (role) => journeyMenuModel({ session: { role } }).account.map(({ key }) => key);
+test("role-specific account destinations expose one profile-management doorway", () => {
+  const keysFor = (role, artistName) => journeyMenuModel({ session: { role, artistName } }).account.map(({ key }) => key);
 
-  assert.deepEqual(keysFor("fan"), ["editProfile", "requestArtist"]);
-  assert.deepEqual(keysFor("artist"), ["editProfile", "tourDates"]);
-  assert.deepEqual(keysFor("moderator"), ["editProfile", "admin"]);
-  assert.deepEqual(keysFor("admin"), ["editProfile", "admin", "tourDates"]);
+  assert.deepEqual(keysFor("fan"), ["manageProfile", "settings", "requestArtist"]);
+  assert.deepEqual(keysFor("artist", "Model/Actriz"), ["manageProfile", "settings"]);
+  assert.deepEqual(keysFor("artist"), ["manageProfile", "settings"]);
+  assert.deepEqual(keysFor("moderator"), ["manageProfile", "settings", "admin"]);
+  assert.deepEqual(keysFor("admin"), ["manageProfile", "settings", "admin", "tourDates"]);
   assert.deepEqual(journeyMenuModel().account, []);
+});
+
+test("menu vocabulary names identical destinations consistently", () => {
+  const model = journeyMenuModel({ session: { id: "fan", role: "fan" } });
+  assert.equal(model.account[0].title, "Manage profile");
+  assert.equal(model.account[1].title, "Settings");
+  assert.equal(model.account.at(-1).title, "Claim an artist profile");
+  assert.equal(model.discover.find((item) => item.key === "venues").title, "Find venues");
+  assert.equal(model.discover.find((item) => item.key === "topRated").title, "Top-rated shows");
 });
 
 test("menu badges reject malformed and negative counts", () => {

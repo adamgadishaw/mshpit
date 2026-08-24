@@ -1,13 +1,13 @@
 import { useState } from "react";
 import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, Image } from "react-native";
 import * as ImagePicker from "expo-image-picker";
-import { colors, radius, themeKey, THEMES } from "../theme";
-import ThemeSwatch, { themeGridStyle } from "../components/ThemeSwatch";
+import { colors, radius } from "../theme";
 import { useStore } from "../store";
 import { GENRES } from "../data";
 import Avatar from "../components/Avatar";
 import Icon from "../components/Icon";
 import LocationPicker from "../components/LocationPicker";
+import PickArtistsScreen from "./PickArtistsScreen";
 import SongPicker from "./SongPicker";
 import Button from "../components/Button";
 import SheetHeader from "../components/SheetHeader";
@@ -29,9 +29,8 @@ function SongField({ song, color, onPress, onClear }) {
   );
 }
 
-export default function EditProfileScreen({ onClose, onPickArtists }) {
-  const { session, users, updateProfile, chooseTheme, locationCenter } = useStore();
-  const isDark = (THEMES.find((t) => t.key === themeKey) || {}).dark;
+export default function EditProfileScreen({ onClose }) {
+  const { session, users, updateProfile, locationCenter } = useStore();
   const [name, setName] = useState(session?.name || "");
   const [handle, setHandle] = useState(session?.handle || "");
   const cleanHandleInput = (v) => v.toLowerCase().replace(/[^a-z0-9_]/g, "").slice(0, 20);
@@ -48,6 +47,7 @@ export default function EditProfileScreen({ onClose, onPickArtists }) {
   const [bass, setBass] = useState(session?.bass || null);
   const [pickingCity, setPickingCity] = useState(false);
   const [pickingSong, setPickingSong] = useState(null); // 'now' | 'treble' | 'bass'
+  const [pickingArtists, setPickingArtists] = useState(false);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const [uploadingBanner, setUploadingBanner] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -69,6 +69,16 @@ export default function EditProfileScreen({ onClose, onPickArtists }) {
     const kick = pickingSong === "now" ? "NOW PLAYING" : pickingSong === "treble" ? "TREBLE · TOP PICK" : "BASS · UNDERDOG";
     return (
       <SongPicker kicker={kick} onClose={() => setPickingSong(null)} onSelect={(s) => { setters[pickingSong]({ title: s.title, artist: s.artist }); setPickingSong(null); }} />
+    );
+  }
+
+  if (pickingArtists) {
+    return (
+      <PickArtistsScreen
+        showTheme={false}
+        onDone={() => setPickingArtists(false)}
+        onSkip={() => setPickingArtists(false)}
+      />
     );
   }
 
@@ -137,9 +147,10 @@ export default function EditProfileScreen({ onClose, onPickArtists }) {
 
   return (
     <View style={styles.wrap}>
-      <SheetHeader title="Edit profile" onClose={onClose} action={{ label: saving ? "Saving..." : mediaBusy ? "Uploading..." : "Save", onPress: save, disabled: mediaBusy || saving }} />
+      <SheetHeader title="Personal Pit profile" onClose={onClose} action={{ label: saving ? "Saving..." : mediaBusy ? "Uploading..." : "Save", onPress: save, disabled: mediaBusy || saving }} />
 
       <ScrollView style={saving ? styles.savingLock : null} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+        <Text style={styles.profileScope}>This is your personal identity across Pit. Artist page, promotion, and live-show tools stay in Artist HQ.</Text>
         <Pressable style={styles.bannerEdit} onPress={pickBanner} disabled={uploadingBanner || saving}>
           {banner ? <Image source={{ uri: banner }} style={StyleSheet.absoluteFill} resizeMode="cover" /> : null}
           <View style={styles.bannerOverlay}>
@@ -208,16 +219,8 @@ export default function EditProfileScreen({ onClose, onPickArtists }) {
           </View>
         </View>
 
-        <Text style={styles.label}>APPEARANCE · {THEMES.length} THEMES</Text>
-        <Text style={styles.themeHint}>Saved to your account, so it follows you to any device.</Text>
-        <View style={styles.themeGrid}>
-          {THEMES.map((t) => (
-            <ThemeSwatch key={t.key} theme={t} active={t.key === themeKey} onPress={() => chooseTheme(t.key)} showMode />
-          ))}
-        </View>
-
         <Text style={styles.label}>YOUR ARTISTS</Text>
-        <Pressable style={styles.artistsBtn} onPress={onPickArtists}>
+        <Pressable style={styles.artistsBtn} onPress={() => setPickingArtists(true)}>
           <Icon name="music" size={16} color={colors.amber} />
           <Text style={styles.artistsBtnTxt}>
             {session?.favoriteArtists?.length ? `${session.favoriteArtists.length} picked · tune your feed` : "Pick artists to personalize your feed"}
@@ -251,6 +254,7 @@ const styles = StyleSheet.create({
   topTitle: { color: colors.textFaint, fontSize: 11, letterSpacing: 2, fontWeight: "700" },
   save: { color: colors.amber, fontSize: 15, fontWeight: "700" },
   content: { padding: 16, paddingBottom: 48, alignItems: "stretch" },
+  profileScope: { color: colors.textDim, fontSize: 13, lineHeight: 19, marginBottom: 12 },
   bannerEdit: { height: 96, borderRadius: radius.md, overflow: "hidden", backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
   bannerOverlay: { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: "rgba(11,14,22,0.4)", paddingHorizontal: 14, paddingVertical: 8, borderRadius: radius.pill },
   bannerEditTxt: { color: colors.text, fontSize: 13, fontWeight: "600" },
@@ -277,13 +281,6 @@ const styles = StyleSheet.create({
   songField: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: colors.surface, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 14, paddingVertical: 13 },
   songFieldTxt: { flex: 1, color: colors.text, fontSize: 14 },
   songFieldEmpty: { color: colors.textFaint },
-  themeGrid: themeGridStyle,
-  themeHint: { color: colors.textDim, fontSize: 12, marginTop: -4, marginBottom: 10 },
-  themeRow: { flexDirection: "row", gap: 10 },
-  themeBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 12, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
-  themeOn: { borderColor: colors.amber, backgroundColor: colors.bgElev },
-  themeTxt: { color: colors.textDim, fontSize: 14, fontWeight: "600" },
-  themeTxtOn: { color: colors.amber, fontWeight: "800" },
   artistsBtn: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: colors.surface, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 14, paddingVertical: 13 },
   artistsBtnTxt: { flex: 1, color: colors.text, fontSize: 14, fontWeight: "600" },
   chips: { flexDirection: "row", flexWrap: "wrap", gap: 8 },

@@ -18,6 +18,7 @@ import {
   recommendationPreferenceMutationKey,
 } from "./domain/recommendationPreferenceMutation.mjs";
 import { createAccountReadCoordinator } from "./domain/accountReadCoordinator.mjs";
+import { commentRequestCacheKey } from "./domain/commentCache.mjs";
 import {
   applyFanClubMembership,
   createFanClubDirectoryReadCoordinator,
@@ -79,7 +80,20 @@ import {
   withoutVenueReviewsByUser,
 } from "./domain/accountMediaCache.mjs";
 import { mediaDisplayItems, sameMediaDisplayItems } from "./domain/postMediaDisplay.mjs";
+import { normalizeArtistCampaign } from "./domain/artistCampaignPost.mjs";
+import { normalizeTaggedPeople, taggedUserIdsFromPeople } from "./domain/postFriendTags.mjs";
 import { writeDirectMessageRead } from "./features/chat/services/dmReadApi.mjs";
+import { removeMyPostTagRequest } from "./features/postTags/services/postTagApi.mjs";
+import { searchPeopleRequest } from "./features/people/services/peopleSearchApi.mjs";
+import { useAccountCommentCache } from "./features/comments/useAccountCommentCache";
+import { useAccountArtistPageCache } from "./features/artistPage/useAccountArtistPageCache";
+import {
+  adoptProfileHistoryAccount,
+  removeProfileHistoryPost,
+  resetProfileHistoryAccount,
+  scrubBlockedProfileHistoryPerson,
+  upsertProfileHistoryPost,
+} from "./features/profileHistory/profileHistoryClient.mjs";
 import { artistGalleryIdentityKey, mergeArtistGalleryMedia, postMatchesArtistGallery } from "./domain/artistGalleryMedia.mjs";
 import { deleteMediaDraftsForOwner, releaseMediaDraftAssets } from "./lib/mediaDraftStaging";
 import {
@@ -106,7 +120,6 @@ import {
 } from "./domain/directMessageRead.mjs";
 import {
   profileFailureOutcome,
-  reconcileProfilePostSnapshot,
   unavailableProfileOutcome,
   withoutUnavailableProfile,
   withoutUnavailableProfilePosts,
@@ -235,10 +248,12 @@ const loadScopedFeed = (accountId) => {
 };
 const normalizeServerPost = (post) => ({
   ...post,
+  campaign: normalizeArtistCampaign(post?.campaign),
   photos: Array.isArray(post?.photos) ? post.photos : [],
   media: Array.isArray(post?.media) ? post.media : [],
   mediaAssetIds: Array.isArray(post?.mediaAssetIds) ? post.mediaAssetIds : [],
   setlist: Array.isArray(post?.setlist) ? post.setlist : [],
+  taggedPeople: normalizeTaggedPeople(post?.taggedPeople),
   timeAgo: ago(post?.createdAt),
 });
 
@@ -255,6 +270,7 @@ const sameServerPost = (a, b) => !!a && !!b
   && JSON.stringify(a.recommendation || null) === JSON.stringify(b.recommendation || null)
   && JSON.stringify(a.commentPreview || null) === JSON.stringify(b.commentPreview || null)
   && JSON.stringify(a.user || null) === JSON.stringify(b.user || null)
+  && JSON.stringify(a.taggedPeople || []) === JSON.stringify(b.taggedPeople || [])
   && sameMediaDisplayItems(a, b);
 
 const demoUsers = [
@@ -433,7 +449,6 @@ export function StoreProvider({ children }) {
   const currentPrivateListeningUntil = currentPrivateListeningKey
     ? Number(load(currentPrivateListeningKey, privateListeningUntil)) || 0
     : 0;
-  const [snapshots, setSnapshots] = useState(() => ENABLE_DEMO_DATA ? load("pit.snapshots", []) : []); // private listening sessions stay memory-only in production
   const [drafts, setDrafts] = useState(() =>
     migrateLegacyDrafts(load("pit.drafts", []), session?.id)); // unfinished reviews, account-scoped on this device
   const draftsRef = useRef(drafts);
@@ -442,7 +457,7 @@ export function StoreProvider({ children }) {
   useEffect(() => {
     if ((session?.id || null) === playHistoryAccountId) save(historyStorageKey(playHistoryAccountId), playHistory);
   }, [session?.id, playHistoryAccountId, playHistory]);
-  useEffect(() => { save("pit.snapshots", ENABLE_DEMO_DATA ? snapshots : []); }, [snapshots]);
+  useEffect(() => { save("pit.snapshots", []); }, []); // retire the unused legacy queue-snapshot cache
   useEffect(() => {
     const key = privateListeningStorageKey(session?.id);
     setPrivateListeningUntil(key ? Number(load(key, 0)) || 0 : 0);
@@ -586,13 +601,11 @@ export function StoreProvider({ children }) {
   const blockedIdsRef = useRef(blockedIds);
   blockedIdsRef.current = blockedIds;
   useEffect(() => { save("pit.blocked", blockedIds); }, [blockedIds]);
-  // Afterparty: like + comment a concert (keyed by the concert/log id)
-  const [comments, setComments] = usePersisted("pit.comments", demoSeed({
-    log_1: [
-      { id: "c1", userId: "u_devon", name: "Devon Ash", initials: "DA", text: "The two-step during HEALING was unreal. Worth the bruises.", likes: 5 },
-      { id: "c2", userId: "u_priya", name: "Priya N.", initials: "PN", text: "Back of the room sound was rough but the pit didn't care.", likes: 2 },
-    ],
-  }, {}));
+  // Comment reads are personalized by two-way blocks. Keep their persisted and
+  // in-memory projections bound to the exact cookie account that fetched them.
+  const commentCache = useAccountCommentCache(session?.id || null);
+  const comments = commentCache.comments;
+  const setComments = commentCache.update;
   const [likes, setLikes] = usePersisted("pit.likes", demoSeed({ log_1: 42, log_2: 88, log_3: 156 }, {}));
   const [myLikes, setMyLikes] = usePersisted("pit.myLikes", {});
 
@@ -632,13 +645,17 @@ export function StoreProvider({ children }) {
   const [fanClubDirectoryStatus, setFanClubDirectoryStatus] = useState("idle");
   const fanClubDirectoryReadsRef = useRef(null);
   if (!fanClubDirectoryReadsRef.current) fanClubDirectoryReadsRef.current = createFanClubDirectoryReadCoordinator();
-  // Artist-owned profile overrides (banner/avatar/bio/feedEnabled) + updates feed
-  const [artistProfiles, setArtistProfiles] = usePersisted("pit.artistProfiles", demoSeed({
-    turnstile: { feedEnabled: true },
-  }, {}));
-  const [artistPosts, setArtistPosts] = usePersisted("pit.artistPosts", demoSeed({
-    turnstile: [{ id: "ap1", text: "New tour dates just dropped. MSG we're coming for you.", ts: "2d" }],
-  }, {}));
+  // The artist profile endpoint is viewer-personalized by blocks and owner/staff
+  // publication rules. Keep its continuity cache account-scoped and pair it
+  // with a synchronous read epoch so a late response cannot cross identities.
+  const artistPageCache = useAccountArtistPageCache(session?.id || null);
+  const scopedArtistPageCache = artistPageCache.snapshot;
+  const artistProfiles = scopedArtistPageCache.profiles;
+  const artistPosts = scopedArtistPageCache.posts;
+  const setArtistProfiles = artistPageCache.updateProfiles;
+  const setArtistPosts = artistPageCache.updatePosts;
+  const adoptArtistPageAccount = artistPageCache.adoptAccount;
+  const invalidateArtistPageCache = artistPageCache.invalidate;
   // Venue reviews are public, but the visible snapshot is personalized by
   // blocks/moderation. Keep each account's bounded cache separate so a shared
   // device cannot carry account A's hidden/visible rows into account B.
@@ -722,7 +739,15 @@ export function StoreProvider({ children }) {
   // window so a long scrolling session cannot turn every like/poll into a large
   // main-thread JSON serialization on a phone.
   useEffect(() => save(feedStorageKey(feedAccountIdRef.current), feed.slice(0, PERSISTED_FEED_LIMIT)), [feed]);
+  const adoptCommentAccount = (nextAccountId) => {
+    commentCache.adoptAccount(nextAccountId);
+  };
   const adoptFeedAccount = (nextAccountId) => {
+    // Profile history is a process-global, account-scoped cache. Rotate it at
+    // this synchronous identity boundary before the next account can render.
+    adoptProfileHistoryAccount(nextAccountId);
+    adoptCommentAccount(nextAccountId);
+    adoptArtistPageAccount(nextAccountId);
     if (nextAccountId === feedAccountIdRef.current) return;
     accountMutationEpochRef.current += 1;
     // Rating aggregates include the viewer's `mine` field. Drop them at the
@@ -788,7 +813,6 @@ export function StoreProvider({ children }) {
       setDms({});
       setDmRead({});
       setNotifications([]);
-      setSnapshots([]);
     }
     if (!ENABLE_DEMO_DATA) setUsers((current) => current.map(publicProfileCacheEntry).filter(Boolean));
   };
@@ -1277,45 +1301,16 @@ export function StoreProvider({ children }) {
       return outcome;
     }
 
-    let posts;
-    try {
-      ({ posts } = await api(`/api/users/${encodeURIComponent(id)}/posts`, {
-        signal,
-        context: "Loading profile posts",
-        silent: true,
-      }));
-    } catch (error) {
-      if (isLoadCancellation(error, signal)) throw error;
-      const outcome = profileFailureOutcome(error, { hasCachedProfile: true });
-      if (outcome.evict) {
-        quarantine();
-        return outcome;
-      }
-      absorbUsers([su]);
-      setUserStats((m) => ({ ...m, [su.id]: { followers: followers || 0, following: following || 0 } }));
-      if (session && fol && !(follows[session.id] || []).includes(su.id)) {
-        setFollows((f) => ({ ...f, [session.id]: [...new Set([...(f[session.id] || []), su.id])] }));
-      }
-      return { ...outcome, user: su };
-    }
-
-    if (!Array.isArray(posts)) {
-      const outcome = profileFailureOutcome(null, { hasCachedProfile: true });
-      absorbUsers([su]);
-      setUserStats((m) => ({ ...m, [su.id]: { followers: followers || 0, following: following || 0 } }));
-      return { ...outcome, user: su };
-    }
-
     absorbUsers([su]);
     setUserStats((m) => ({ ...m, [su.id]: { followers: followers || 0, following: following || 0 } }));
     // Sync my follow state for this person (another device may have followed).
     if (session && fol && !(follows[session.id] || []).includes(su.id)) {
       setFollows((f) => ({ ...f, [session.id]: [...new Set([...(f[session.id] || []), su.id])] }));
     }
-    // Replace this wall's confirmed cache projection, including an authoritative
-    // empty response, so removed profile media cannot survive a successful read.
-    mergeServerFeed(posts, { preserveOrder: true });
-    setFeed((current) => reconcileProfilePostSnapshot(current, id, posts));
+    // Post history is a separate account+target-scoped resource. Keeping this
+    // loader metadata-only prevents ProfileScreen from issuing two identical
+    // head reads and lets history failures retry without downgrading valid
+    // profile identity/follower metadata.
     return { status: "ready", reason: "confirmed", evict: false, user: su, error: "" };
   };
   // Recent searches are device-local but identity-scoped. The old global key is
@@ -1364,15 +1359,15 @@ export function StoreProvider({ children }) {
   const clearRecentSearches = () => setRecentSearches([]);
   // Search users by name/handle on the server (cross-device friend finding).
   // Also captures the member count (`total`) so the app can show a real stat.
-  const searchPeople = async (q, { signal, throwOnError = false } = {}) => {
+  const searchPeople = async (q, { signal, throwOnError = false, postTagEligibleOnly = false, postId = null } = {}) => {
     const accountId = sessionRef.current?.id || null;
     try {
-      const { users: found, total } = await api(`/api/people?q=${encodeURIComponent(q || "")}`, { signal, silent: true, context: "Searching people" });
+      const { users: found, total } = await searchPeopleRequest(q, { signal, postTagEligibleOnly, postId });
       if (signal?.aborted || (sessionRef.current?.id || null) !== accountId) return [];
       const blocked = new Set(blockedIdsRef.current.map(String));
       const visible = (found || []).filter((u) => u?.id && !blocked.has(String(u.id)));
       absorbUsers(visible);
-      if (typeof total === "number") setMemberCount(total);
+      if (!postTagEligibleOnly && typeof total === "number") setMemberCount(total);
       // Belt-and-suspenders: hide anyone I've blocked immediately, even before the
       // server's own block filter (which needs my block to have persisted).
       return visible;
@@ -1959,7 +1954,7 @@ export function StoreProvider({ children }) {
     return [...base, ...recs].slice(0, 60);
   };
 
-  // --- Playlists (build one song at a time, not just whole-session snapshots) --
+  // --- Playlists (build one song at a time or save the current queue) ---------
   const [myPlaylistState, setMyPlaylistState] = useState(() => ({ accountId: session?.id || null, rows: [] }));
   const [myPlaylistsStatus, setMyPlaylistsStatus] = useState(session ? "loading" : "ready");
   const playlistRequestRef = useRef({ sequence: 0, accountId: session?.id || null });
@@ -2050,24 +2045,16 @@ export function StoreProvider({ children }) {
       return true;
     } catch { return false; }
   };
-  // Snapshot a listening session (queue) into a saved playlist seed that shows on
-  // the profile and can be resumed.
-  const saveSnapshot = async (tracks, name) => {
+  // Save a listening queue as a private playlist. A one-tap utility must
+  // never silently publish listening context to somebody's public profile.
+  const saveQueueAsPlaylist = async (tracks, name) => {
+    if (!session) return null;
     const list = (tracks || []).filter((t) => !!trackKey(t)).map(cleanTrack);
     if (!list.length) return null;
     const playlistName = name || `Session ${new Date().toLocaleDateString()}`;
-    if (session) {
-      const playlist = await createPlaylist(playlistName, list);
-      if (!playlist) return null;
-      const snap = { ...playlist, serverId: playlist.id, by: session.id };
-      setSnapshots((current) => [snap, ...current.filter((item) => item.serverId !== playlist.id)].slice(0, 50));
-      return snap;
-    }
-    const snap = { id: "snap_" + Date.now(), name: playlistName, tracks: list, at: Date.now(), by: null };
-    setSnapshots((current) => [snap, ...current].slice(0, 50));
-    return snap;
+    const playlist = await createPlaylist(playlistName, list, "private");
+    return playlist || null;
   };
-  const removeSnapshot = (id) => setSnapshots((s) => s.filter((x) => x.id !== id));
 
   // Fold a server user into local state so profiles/avatars resolve everywhere.
   const absorbServerUser = (su, { announce = false } = {}) => {
@@ -2481,7 +2468,6 @@ export function StoreProvider({ children }) {
     setPlayHistoryStatus("ready");
     setMyPlaylistsForAccount(null, []);
     setMyPlaylistsStatus("ready");
-    setSnapshots([]);
     setFriendsListening([]);
     resetStaffState();
     staffStateScopeRef.current = null;
@@ -2563,7 +2549,6 @@ export function StoreProvider({ children }) {
     save(feedStorageKey(deleted.id), []);
     save(recommendationPreferenceStorageKey(deleted.id), []);
     save(historyStorageKey(deleted.id), []);
-    save("pit.snapshots", []);
     save("pit.session", null);
 
     const withoutUserEntries = (map) => Object.fromEntries(
@@ -2603,7 +2588,6 @@ export function StoreProvider({ children }) {
     setUserStats((all) => { const next = { ...all }; delete next[deleted.id]; return next; });
     setPlayHistory([]);
     setPlayHistoryAccountId(null);
-    setSnapshots([]);
     commitDrafts((all) => all.filter((draft) => String(draft?.ownerId || "") !== String(deleted.id)));
     setMyPlaylistsForAccount(null, []);
     setFriendsListening([]);
@@ -2619,14 +2603,8 @@ export function StoreProvider({ children }) {
     // the guest and other account buckets remain isolated and untouched.
     save(recentSearchStorageKey(deleted.id), []);
 
-    // Artist-owned client caches do not retain author IDs on every legacy row;
-    // remove the deleted artist's own page cache while preserving unrelated
-    // public artist pages. The server deletes all attributable rows precisely.
-    if (deleted.artistName) {
-      const artistKey = norm(deleted.artistName);
-      setArtistProfiles((all) => { const next = { ...all }; delete next[artistKey]; return next; });
-      setArtistPosts((all) => { const next = { ...all }; delete next[artistKey]; return next; });
-    }
+    // This viewer-scoped cache belongs to the deleted identity in full.
+    invalidateArtistPageCache();
 
     save("pit.session", null);
     resetStaffState();
@@ -2637,6 +2615,7 @@ export function StoreProvider({ children }) {
     authReadyRef.current = true;
     setAuthReady(true);
     adoptFeedAccount(null);
+    commentCache.clearAccount(deleted.id);
     setSession(null);
     broadcastAuthEpoch();
     setMemberCount((count) => Math.max(0, count - 1));
@@ -2737,15 +2716,19 @@ export function StoreProvider({ children }) {
       overall: clampRating(log.overall),
       band: log.band == null ? log.band : clampRating(log.band),
       room: log.room == null ? log.room : clampRating(log.room),
+      campaign: kind === "status" ? normalizeArtistCampaign(log.campaign) : null,
+      taggedPeople: normalizeTaggedPeople(log.taggedPeople),
+      createdAt: Number(log.createdAt) > 0 ? Number(log.createdAt) : Date.now(),
       userId: session?.id,
     };
     feedMutationRevisionRef.current += 1;
     setFeed((f) => [safe, ...f]);
+    if (session?.id) upsertProfileHistoryPost(session.id, session.id, safe);
     // Slice 2 write-through: persist the post server-side, then adopt the server
     // id so likes/comments on it key correctly. Best-effort (offline keeps local).
     if (session) {
       const body = kind === "status"
-        ? { clientMutationId: localId, kind: "status", review: safe.review, song: safe.song || null, photos: safe.photos || [], ...(Array.isArray(safe.mediaAssetIds) ? { mediaAssetIds: safe.mediaAssetIds } : {}), photosPublic: safe.photosPublic === false ? 0 : 1, ...(log.playlistId ? { playlistId: log.playlistId } : {}) }
+        ? { clientMutationId: localId, kind: "status", review: safe.review, taggedUserIds: taggedUserIdsFromPeople(safe.taggedPeople), song: safe.song || null, photos: safe.photos || [], ...(Array.isArray(safe.mediaAssetIds) ? { mediaAssetIds: safe.mediaAssetIds } : {}), photosPublic: safe.photosPublic === false ? 0 : 1, ...(log.playlistId ? { playlistId: log.playlistId } : {}), campaign: safe.campaign }
         : buildReviewCreateBody(safe);
       return api("/api/posts", {
         method: "POST",
@@ -2760,8 +2743,11 @@ export function StoreProvider({ children }) {
             // while the original POST response was lost. Collapse both IDs so
             // an idempotent retry cannot render the same post twice.
             setFeed((f) => [published, ...f.filter((l) => l.id !== localId && l.id !== published.id)]);
+            upsertProfileHistoryPost(session.id, session.id, published, { previousId: localId });
           } else if (id && id !== localId) {
-            setFeed((f) => [{ ...safe, id }, ...f.filter((l) => l.id !== localId && l.id !== id)]);
+            const published = { ...safe, id };
+            setFeed((f) => [published, ...f.filter((l) => l.id !== localId && l.id !== id)]);
+            upsertProfileHistoryPost(session.id, session.id, published, { previousId: localId });
           }
           track("post", { kind: kind === "status" ? "status" : "review", mediaCount: Array.isArray(safe.photos) ? safe.photos.length : 0 });
           return { ok: true, id: id || localId };
@@ -2770,6 +2756,7 @@ export function StoreProvider({ children }) {
           feedMutationRevisionRef.current += 1;
           // A failed write must not remain looking published on this device.
           setFeed((f) => f.filter((l) => l.id !== localId));
+          removeProfileHistoryPost(session.id, session.id, localId);
           return { ok: false, error };
         });
     }
@@ -2787,6 +2774,7 @@ export function StoreProvider({ children }) {
       if (!postMatchesEditIntent(post, body)) return null;
       const updated = normalizeServerPost(post);
       setFeed((all) => mergeEditedPost(all, updated));
+      upsertProfileHistoryPost(sessionRef.current?.id, updated.userId, updated);
       return updated;
     } catch {
       return null;
@@ -2807,11 +2795,13 @@ export function StoreProvider({ children }) {
       const playlistId = changes.playlistId ?? changes.playlist?.id ?? null;
       const body = {
         review: clean(changes.review, { max: LIMITS.review, newlines: true }),
+        taggedUserIds: taggedUserIdsFromPeople(changes.taggedPeople ?? previous.taggedPeople),
         song: changes.song?.videoId ? changes.song : null,
         playlistId,
         photos: Array.isArray(changes.photos) ? changes.photos.filter((item) => typeof item === "string").slice(0, 8) : [],
         ...(Array.isArray(changes.mediaAssetIds) ? { mediaAssetIds: changes.mediaAssetIds } : {}),
         photosPublic: changes.photosPublic !== false,
+        campaign: normalizeArtistCampaign(Object.prototype.hasOwnProperty.call(changes, "campaign") ? changes.campaign : previous.campaign),
         ...(Number.isSafeInteger(version) ? { version } : {}),
       };
       if (!body.review && !body.photos.length && !body.song && !playlistId) return { ok: false };
@@ -2821,6 +2811,7 @@ export function StoreProvider({ children }) {
         feedMutationRevisionRef.current += 1;
         const updated = normalizeServerPost(post);
         setFeed((all) => mergeEditedPost(all, updated));
+        upsertProfileHistoryPost(session.id, updated.userId, updated);
         return { ok: true, post: updated };
       } catch (error) {
         feedMutationRevisionRef.current += 1;
@@ -2844,6 +2835,7 @@ export function StoreProvider({ children }) {
       feedMutationRevisionRef.current += 1;
       const updated = normalizeServerPost(post);
       setFeed((all) => mergeEditedPost(all, updated));
+      upsertProfileHistoryPost(session.id, updated.userId, updated);
       return { ok: true, post: updated };
     } catch (error) {
       feedMutationRevisionRef.current += 1;
@@ -3122,41 +3114,63 @@ export function StoreProvider({ children }) {
   const isBlocked = (id) => blockedIds.includes(id);
   const blockUser = (id) => {
     if (!session || !id || isBlocked(id)) return;
-    const mineBefore = follows[session.id] || [];
+    const accountId = session.id;
+    const mineBefore = follows[accountId] || [];
     const theirsBefore = follows[id] || [];
     const nextBlocked = [...new Set([...blockedIdsRef.current, id])];
     blockedIdsRef.current = nextBlocked;
     setBlockedIds(nextBlocked);
+    // Artist page snapshots are personalized by this block graph. Clear them
+    // before React can render the optimistic boundary and reject older reads.
+    invalidateArtistPageCache();
     setRecentSearches((entries) => withoutBlockedPersonSearches(entries, [id]));
     setVenueReviews((groups) => withoutVenueReviewsByUser(groups, id));
     // Sever locally the way the server does.
-    setFollows((f) => ({ ...f, [session.id]: (f[session.id] || []).filter((x) => x !== id), [id]: (f[id] || []).filter((x) => x !== session.id) }));
+    setFollows((f) => ({ ...f, [accountId]: (f[accountId] || []).filter((x) => x !== id), [id]: (f[id] || []).filter((x) => x !== accountId) }));
     api(`/api/users/${id}/block`, { method: "POST", body: { blocked: true }, context: "Blocking this account" })
       .then(() => {
-        setFeed((rows) => rows.filter((post) => post.userId !== id));
+        scrubBlockedProfileHistoryPerson(accountId, id);
+        if (sessionRef.current?.id !== accountId) return;
+        setFeed((rows) => rows
+          .filter((post) => post.userId !== id)
+          .map((post) => {
+            const tagged = normalizeTaggedPeople(post.taggedPeople);
+            const visible = tagged.filter((person) => person.id !== id);
+            return visible.length === tagged.length ? post : { ...post, taggedPeople: visible };
+          }));
         setArtistPhotosSrv((groups) => Object.fromEntries(Object.entries(groups)
           .map(([key, photos]) => [key, (photos || []).filter((photo) => photo.ownerId !== id)])));
         setComments((groups) => Object.fromEntries(Object.entries(groups).map(([key, rows]) => [key, rows.filter((row) => row.userId !== id)])));
         setFanClubMsgs((groups) => Object.fromEntries(Object.entries(groups).map(([key, rows]) => [key, rows.filter((row) => row.userId !== id)])));
         setLounge((groups) => Object.fromEntries(Object.entries(groups).map(([key, rows]) => [key, rows.filter((row) => row.userId !== id)])));
-        setDms((threads) => { const next = { ...threads }; delete next[dmKey(session.id, id)]; return next; });
+        setDms((threads) => { const next = { ...threads }; delete next[dmKey(accountId, id)]; return next; });
         setNotifications((rows) => rows.filter((notification) => notification.actorId !== id));
       })
       .catch(() => {
+        if (sessionRef.current?.id !== accountId) return;
         const restored = blockedIdsRef.current.filter((x) => x !== id);
         blockedIdsRef.current = restored;
         setBlockedIds(restored);
-        setFollows((f) => ({ ...f, [session.id]: mineBefore, [id]: theirsBefore }));
+        setFollows((f) => ({ ...f, [accountId]: mineBefore, [id]: theirsBefore }));
       });
     track("block");
   };
   const unblockUser = (id) => {
     if (!session || !isBlocked(id)) return;
+    const accountId = session.id;
     const nextBlocked = blockedIdsRef.current.filter((x) => x !== id);
     blockedIdsRef.current = nextBlocked;
     setBlockedIds(nextBlocked);
     api(`/api/users/${id}/block`, { method: "POST", body: { blocked: false }, context: "Unblocking this account" })
+      .then(() => {
+        // A block scrub leaves privacy tombstones in optimistic overlays. The
+        // confirmed unblock must drop that account cache so the next visit can
+        // read the newly visible server projection from scratch.
+        resetProfileHistoryAccount(accountId);
+        if (sessionRef.current?.id === accountId) invalidateArtistPageCache();
+      })
       .catch(() => {
+        if (sessionRef.current?.id !== accountId) return;
         const restored = [...new Set([...blockedIdsRef.current, id])];
         blockedIdsRef.current = restored;
         setBlockedIds(restored);
@@ -3206,23 +3220,38 @@ export function StoreProvider({ children }) {
   };
 
   // Afterparty interactions
-  const commentsFor = (id) => comments[id] || [];
+  const renderedCommentAccountId = session?.id || null;
+  const commentsAreAccountScoped = commentCache.isScopedTo(renderedCommentAccountId);
+  const scopedComments = commentsAreAccountScoped ? comments : {};
+  const commentsFor = (id) => scopedComments[id] || [];
+  const commentClaimIsCurrent = (claim) => commentCache.isCurrent(
+    claim,
+    sessionRef.current?.id || null,
+  );
   // Inline comment previews on the feed call this per card; a small in-flight
   // guard stops the same post being fetched twice at once (card + PostScreen).
-  const commentsInflight = useRef(new Set());
-  const commentsLoadedAt = useRef(new Map());
   // Slice 3: pull a post's comments from the server and merge them in (dedupe by
   // id). For bundled demo posts the server has none, so the seed comments stand.
   const loadComments = (id, { limit = 50, force = false } = {}) => {
     const safeLimit = Math.max(1, Math.min(100, Number(limit) || 50));
-    const requestKey = `${id}:${safeLimit}`;
-    if (!id || commentsInflight.current.has(requestKey)) return;
-    if (!force && Date.now() - (commentsLoadedAt.current.get(requestKey) || 0) < 30_000) return;
-    commentsInflight.current.add(requestKey);
-    api(`/api/posts/${id}/comments?limit=${safeLimit}`)
+    if (!id) return Promise.resolve({ ok: false, error: new Error("A post is required to load comments.") });
+    const claim = commentCache.capture();
+    if (!commentClaimIsCurrent(claim)) return Promise.resolve({ ok: false, stale: true });
+    const requestKey = commentRequestCacheKey(claim.accountId, id, safeLimit);
+    const pending = commentCache.pendingRequest(requestKey);
+    if (pending) return pending;
+    if (!force && commentCache.requestIsFresh(requestKey, 30_000)) {
+      return Promise.resolve({ ok: true, cached: true });
+    }
+    const request = api(`/api/posts/${id}/comments?limit=${safeLimit}`, {
+      silent: true,
+      context: "Loading comments",
+      expectedAccountId: claim.accountId,
+    })
       .then(({ comments: rows, removedIds = [] }) => {
-        if (!Array.isArray(rows)) return;
-        commentsLoadedAt.current.set(requestKey, Date.now());
+        if (!commentClaimIsCurrent(claim)) return { ok: false, stale: true };
+        if (!Array.isArray(rows)) throw new Error("The comment response was invalid.");
+        commentCache.markRequestFresh(requestKey);
         setComments((m) => {
           const existing = m[id] || [];
           const byId = new Map(existing.map((c) => [c.id, c]));
@@ -3240,20 +3269,28 @@ export function StoreProvider({ children }) {
           });
           return unchanged ? m : { ...m, [id]: merged };
         });
+        return { ok: true };
       })
-      .catch(() => {})
-      .finally(() => commentsInflight.current.delete(requestKey));
+      .catch((error) => commentClaimIsCurrent(claim) ? { ok: false, error } : { ok: false, stale: true })
+      .finally(() => {
+        commentCache.releaseRequest(requestKey, request);
+      });
+    commentCache.trackRequest(requestKey, request);
+    return request;
   };
   const addComment = (id, text, parentId = null) => {
     const t = clean(text, { max: LIMITS.message, newlines: true });
-    if (!session || !t) return Promise.resolve({ ok: false });
+    const actor = sessionRef.current;
+    const claim = commentCache.capture();
+    if (!actor || !t || actor.id !== claim.accountId || !commentClaimIsCurrent(claim)) return Promise.resolve({ ok: false });
     const localId = "c_" + Date.now();
-    const c = { id: localId, userId: session.id, name: session.name, initials: session.initials, avatarUri: session.avatarUri, avatarColor: session.avatarColor, role: session.role, text: t, parentId: parentId || null, at: Date.now(), likes: 0, pending: true };
+    const c = { id: localId, userId: actor.id, name: actor.name, initials: actor.initials, avatarUri: actor.avatarUri, avatarColor: actor.avatarColor, role: actor.role, text: t, parentId: parentId || null, at: Date.now(), likes: 0, pending: true };
     setComments((m) => ({ ...m, [id]: [...(m[id] || []), c] }));
     // Write-through + adopt the server id so a later loadComments() dedupes it
     // instead of showing my comment twice.
-    return api(`/api/posts/${id}/comments`, { method: "POST", body: { text: t, parentId: parentId || null }, context: "Adding your afterparty comment" })
+    return api(`/api/posts/${id}/comments`, { method: "POST", body: { text: t, parentId: parentId || null }, context: "Adding your afterparty comment", expectedAccountId: claim.accountId })
       .then(({ id: sid }) => {
+        if (!commentClaimIsCurrent(claim)) return { ok: false, stale: true };
         const published = { ...c, id: sid || localId, pending: false, createdAt: c.at };
         setComments((m) => ({ ...m, [id]: (m[id] || []).map((x) => (x.id === localId ? published : x)) }));
         feedMutationRevisionRef.current += 1;
@@ -3274,16 +3311,21 @@ export function StoreProvider({ children }) {
         return { ok: true, id: sid || localId };
       })
       .catch((error) => {
+        if (!commentClaimIsCurrent(claim)) return { ok: false, stale: true };
         setComments((m) => ({ ...m, [id]: (m[id] || []).filter((x) => x.id !== localId) }));
         return { ok: false, error };
       });
   };
   const deleteOwnComment = (postId, commentId) => {
-    if (!session || !postId || !commentId) return Promise.resolve({ ok: false });
+    const actor = sessionRef.current;
+    const claim = commentCache.capture();
+    if (!actor || actor.id !== claim.accountId || !postId || !commentId || !commentClaimIsCurrent(claim)) return Promise.resolve({ ok: false });
     return api(`/api/posts/${postId}/comments/${commentId}`, {
       method: "DELETE",
       context: "Deleting your comment",
+      expectedAccountId: claim.accountId,
     }).then(({ tombstone }) => {
+      if (!commentClaimIsCurrent(claim)) return { ok: false, stale: true };
       setComments((all) => {
         const current = all[postId] || [];
         const next = tombstone
@@ -3294,7 +3336,7 @@ export function StoreProvider({ children }) {
         return { ...all, [postId]: next };
       });
       return { ok: true, tombstone: !!tombstone };
-    }).catch((error) => ({ ok: false, error }));
+    }).catch((error) => commentClaimIsCurrent(claim) ? { ok: false, error } : { ok: false, stale: true });
   };
   // Delete your own post. Optimistic: drop it from the feed immediately, and if
   // the write fails put it back exactly where it was so nothing is silently
@@ -3309,6 +3351,7 @@ export function StoreProvider({ children }) {
       removed = removedIndex >= 0 ? f[removedIndex] : null;
       return f.filter((l) => l.id !== postId);
     });
+    removeProfileHistoryPost(session.id, session.id, postId);
     return api(`/api/posts/${postId}`, { method: "DELETE", context: "Deleting your post" })
       .then(() => { track("delete_post", { postId }); return { ok: true }; })
       .catch((error) => {
@@ -3321,9 +3364,27 @@ export function StoreProvider({ children }) {
             next.splice(Math.max(0, Math.min(removedIndex, next.length)), 0, removed);
             return next;
           });
+          upsertProfileHistoryPost(session.id, session.id, removed);
         }
         return { ok: false, error };
       });
+  };
+  const removeMyPostTag = async (postId) => {
+    const actor = sessionRef.current;
+    if (!actor?.id || !postId) return { ok: false };
+    try {
+      const response = await removeMyPostTagRequest(postId);
+      if (sessionRef.current?.id !== actor.id) return { ok: false, stale: true };
+      feedMutationRevisionRef.current += 1;
+      setFeed((all) => all.map((post) => post.id === postId ? {
+        ...post,
+        taggedPeople: normalizeTaggedPeople(post.taggedPeople).filter((person) => person.id !== actor.id),
+        ...(Number.isSafeInteger(response?.version) ? { version: response.version, editedAt: response.version } : {}),
+      } : post));
+      return { ok: true, id: response?.id || postId, version: response?.version, userId: actor.id };
+    } catch (error) {
+      return { ok: false, error };
+    }
   };
   const likeInfo = (id, base = 0) => ({ count: (likes[id] ?? base) + (myLikes[id] ? 1 : 0), liked: !!myLikes[id] });
   const toggleLike = (id, base = 0) => {
@@ -3886,50 +3947,129 @@ export function StoreProvider({ children }) {
     return session.role === "artist" && norm(session.artistName) === norm(name);
   };
   const artistProfile = (name) => artistProfiles[norm(name)] || {};
-  // Slice 7: hydrate an artist page's owner overrides + updates feed.
-  const loadArtistPage = (name) => {
-    const enc = encodeURIComponent(norm(name));
-    api(`/api/artists/${enc}/profile`)
-      .then(({ profile, posts }) => {
-        setArtistProfiles((m) => ({ ...m, [norm(name)]: profile ? { ...(m[norm(name)] || {}), ...profile } : {} }));
-        if (Array.isArray(posts)) {
-          // This is an authoritative moderation-aware snapshot. Replacing it also
-          // removes a post that staff hid since this device last opened the page.
-          setArtistPosts((m) => ({
-            ...m,
-            [norm(name)]: posts.map((p) => ({ id: p.id, userId: p.userId, text: p.text, ts: ago(p.createdAt) })),
-          }));
-        }
-      })
-      .catch(() => {});
+  // Slice 7: hydrate an artist page's owner overrides + updates feed. The
+  // returned CommandResult lets screens own an explicit scoped LoadState rather
+  // than treating the cache's fallback `{}` / `[]` as a successful empty page.
+  const loadArtistPage = async (name, { signal } = {}) => {
+    const artistKey = norm(name);
+    const accountId = sessionRef.current?.id || null;
+    const scope = accountTargetScope(accountId, `artist-page:${artistKey}`);
+    const context = "Loading this artist page";
+    if (!artistKey) return localCommandError("PIT-REQ-002", context);
+    const claim = artistPageCache.claim(`artist-page:${artistKey}`, accountId);
+    const enc = encodeURIComponent(artistKey);
+    try {
+      const { profile, posts } = await api(`/api/artists/${enc}/profile`, {
+        signal,
+        silent: true,
+        context,
+      });
+      if ((sessionRef.current?.id || null) !== accountId
+        || !artistPageCache.isCurrent(claim, accountId)) {
+        return localCommandError("PIT-AUTH-004", context);
+      }
+      if (profile != null && (typeof profile !== "object" || Array.isArray(profile))) {
+        throw new Error("The artist profile response was invalid.");
+      }
+      if (!Array.isArray(posts)) throw new Error("The artist updates response was invalid.");
+      const normalizedProfile = profile || {};
+      const normalizedPosts = posts.map((post) => ({
+        id: post.id,
+        userId: post.userId,
+        text: post.text,
+        ts: ago(post.createdAt),
+      }));
+      // This is an authoritative moderation-aware snapshot. Replacing it also
+      // removes a post that staff hid since this device last opened the page.
+      const committed = artistPageCache.resolveRefresh(
+        artistKey,
+        { ok: true, profile: normalizedProfile, posts: normalizedPosts },
+        { claim },
+      );
+      if (!committed) return localCommandError("PIT-AUTH-004", context);
+      return commandSuccess({ scope, profile: normalizedProfile, posts: normalizedPosts, loadedAt: Date.now() });
+    } catch (error) {
+      return commandError(error, context);
+    }
   };
   const updateArtistProfile = (name, patch) => {
-    if (!isArtistOwner(name)) return Promise.resolve({ ok: false });
+    const actor = sessionRef.current;
+    if (!actor || !(isStaff(actor.role)
+      || (actor.role === "artist" && norm(actor.artistName) === norm(name)))) {
+      return Promise.resolve({ ok: false });
+    }
     const key = norm(name);
     const previous = artistProfiles[key] || {};
+    const claim = artistPageCache.claim(`artist-profile-mutation:${key}`, actor.id);
     const safe = { ...patch };
     if ("bio" in safe) safe.bio = clean(safe.bio, { max: 600, newlines: true });
-    setArtistProfiles((m) => ({ ...m, [key]: { ...(m[key] || {}), ...safe } }));
+    setArtistProfiles((m) => ({ ...m, [key]: { ...(m[key] || {}), ...safe } }), { claim, persist: false });
     const enc = encodeURIComponent(key);
     return api(`/api/artists/${enc}/profile`, { method: "PATCH", body: safe, context: "Saving this artist page" })
-      .then(() => ({ ok: true }))
+      .then(() => {
+        if (!artistPageCache.isCurrent(claim, sessionRef.current?.id || null)) {
+          return { ok: false };
+        }
+        artistPageCache.persistCurrent();
+        return { ok: true };
+      })
       .catch((error) => {
-        setArtistProfiles((m) => ({ ...m, [key]: previous }));
+        setArtistProfiles((m) => ({ ...m, [key]: previous }), { claim });
         return { ok: false, error };
       });
   };
   const artistFeedEnabled = (name) => !!artistProfiles[norm(name)]?.feedEnabled;
   const artistPostsFor = (name) => artistPosts[norm(name)] || [];
-  const addArtistPost = (name, text) => {
+  const addArtistPost = async (name, text, { signal } = {}) => {
     const t = clean(text, { max: LIMITS.message, newlines: true });
-    if (!isArtistOwner(name) || !t) return;
+    const context = "Publishing this artist update";
+    const actor = sessionRef.current;
+    const artistKey = norm(name);
+    if (!actor) return localCommandError("PIT-AUTH-001", context);
+    const ownsTarget = isStaff(actor.role)
+      || (actor.role === "artist" && norm(actor.artistName) === artistKey);
+    if (!ownsTarget) return localCommandError("PIT-AUTH-002", context);
+    if (!t) return localCommandError("PIT-REQ-002", context);
+    const mutation = captureAccountMutation(actor.id, accountMutationEpochRef.current);
+    const cacheClaim = artistPageCache.claim(`artist-post-mutation:${artistKey}`, actor.id);
     const localId = "ap_" + Date.now();
-    const p = { id: localId, userId: session.id, text: t, ts: "now" };
-    setArtistPosts((m) => ({ ...m, [norm(name)]: [p, ...(m[norm(name)] || [])] }));
-    const enc = encodeURIComponent(norm(name));
-    api(`/api/artists/${enc}/posts`, { method: "POST", body: { text: t } })
-      .then(({ id }) => { if (id) setArtistPosts((m) => ({ ...m, [norm(name)]: (m[norm(name)] || []).map((x) => (x.id === localId ? { ...x, id } : x)) })); })
-      .catch(() => setArtistPosts((m) => ({ ...m, [norm(name)]: (m[norm(name)] || []).filter((x) => x.id !== localId) })));
+    const p = { id: localId, userId: actor.id, text: t, ts: "now" };
+    const removeOptimisticPost = () => setArtistPosts((current) => ({
+      ...current,
+      [artistKey]: (current[artistKey] || []).filter((post) => post.id !== localId),
+    }), { claim: cacheClaim });
+    setArtistPosts(
+      (current) => ({ ...current, [artistKey]: [p, ...(current[artistKey] || [])] }),
+      { claim: cacheClaim, persist: false },
+    );
+    const enc = encodeURIComponent(artistKey);
+    try {
+      const { id } = await api(`/api/artists/${enc}/posts`, {
+        method: "POST",
+        body: { text: t },
+        context,
+        silent: true,
+        signal,
+      });
+      if (!id) throw new Error("The artist update did not return an id.");
+      const currentActor = sessionRef.current;
+      const stillOwnsTarget = isStaff(currentActor?.role)
+        || (currentActor?.role === "artist" && norm(currentActor.artistName) === artistKey);
+      if (!accountMutationIsCurrent(mutation, currentActor?.id, accountMutationEpochRef.current)
+        || !stillOwnsTarget) {
+        removeOptimisticPost();
+        return localCommandError("PIT-AUTH-004", context);
+      }
+      setArtistPosts((current) => ({
+        ...current,
+        [artistKey]: (current[artistKey] || []).map((post) => (post.id === localId ? { ...post, id } : post)),
+      }), { claim: cacheClaim });
+      return commandSuccess({ id });
+    } catch (error) {
+      removeOptimisticPost();
+      if (isLoadCancellation(error, signal)) throw error;
+      return commandError(error, context);
+    }
   };
   const removeArtistPost = async (name, id, { signal } = {}) => {
     const actor = sessionRef.current;
@@ -4148,8 +4288,15 @@ export function StoreProvider({ children }) {
   // moderation: drop a single chat/lounge/comment message (staff)
   const removeLoungeMessage = (key, msgId) => moderateContent("lounge_message", msgId, true)
     .then(() => { setLounge((L) => ({ ...L, [key]: (L[key] || []).filter((m) => m.id !== msgId) })); return true; }).catch(() => false);
-  const removeComment = (logId, cId) => moderateContent("comment", cId, true)
-    .then(() => { setComments((m) => ({ ...m, [logId]: (m[logId] || []).filter((c) => c.id !== cId) })); return true; }).catch(() => false);
+  const removeComment = (logId, cId) => {
+    const claim = commentCache.capture();
+    return moderateContent("comment", cId, true)
+      .then(() => {
+        if (!commentClaimIsCurrent(claim)) return false;
+        setComments((m) => ({ ...m, [logId]: (m[logId] || []).filter((c) => c.id !== cId) }));
+        return true;
+      }).catch(() => false);
+  };
   const removeFanClubMessage = (artistKey, msgId) => moderateContent("fan_message", msgId, true)
     .then(() => { setFanClubMsgs((L) => ({ ...L, [artistKey]: (L[artistKey] || []).filter((m) => m.id !== msgId) })); return true; }).catch(() => false);
   // Promote/demote a member (fan ⇄ artist ⇄ admin). Admin grants full moderation.
@@ -4556,7 +4703,7 @@ export function StoreProvider({ children }) {
 
   const artistSummary = (name) => {
     const key = norm(name);
-    const liveLogs = feed.filter((l) => !removedIds.includes(l.id) && norm(l.artist) === key);
+    const liveLogs = feed.filter((l) => !removedIds.includes(l.id) && !blockedIds.includes(l.userId) && norm(l.artist) === key);
     const venues = new Set(liveLogs.map((l) => norm(l.venue)));
     // community aggregate nights for venues not already covered by a real log
     const aggregateNights = ratedShows
@@ -5106,7 +5253,7 @@ export function StoreProvider({ children }) {
     mediaReactions, loadMediaReactions, toggleMediaReaction,
     playHistory: scopedPlayHistory, playHistoryAccountId, playHistoryStatus: scopedPlayHistoryStatus, playHistoryErrorMode: scopedPlayHistoryErrorMode, playHistoryNextCursor: scopedPlayHistoryNextCursor, loadPlayHistory, recordPlay,
     privateListeningActive: isPrivateListeningActive(currentPrivateListeningUntil), privateListeningUntil: currentPrivateListeningUntil, setPrivateListening,
-    snapshots, saveSnapshot, removeSnapshot, friendsListening, loadFriendsListening, loadFriendsListeningStrict, userPlaylists,
+    saveQueueAsPlaylist, friendsListening, loadFriendsListening, loadFriendsListeningStrict, userPlaylists,
     favoriteGenre, genreOfArtist, recommendTracks, autoplayQueue, searchSongsApi, myPlaylists: scopedMyPlaylists, myPlaylistsAccountId, myPlaylistsStatus: scopedMyPlaylistsStatus, loadMyPlaylists, loadPlaylist, createPlaylist, addToPlaylist, updatePlaylist, deletePlaylist,
     drafts: draftsForAccount(drafts, session?.id), saveDraft, deleteDraft,
     visibleFeed, followingFeed, loadMoreFeed, feedHasMore, feedLoadingMore, loadClips, notInterested, undoNotInterested, visibleTourDates, artistSummary, venueSummary,
@@ -5116,14 +5263,15 @@ export function StoreProvider({ children }) {
     isVerifiedArtist, isTop100, artistRank, artistBadges, userBadges,
     activityStats, userAchievements, userPoints, loadRewards,
     chartTop, chartInfo, catalogCountries, topGenres, topPhotos, discoverStats, topArtistsBy, topSongsBy,
-    commentsFor, addComment, deleteOwnComment, deleteOwnPost, loadComments, likeInfo, toggleLike,
+    commentsFor, addComment, deleteOwnComment, deleteOwnPost, removeMyPostTag, loadComments, likeInfo, toggleLike,
     concertKey, loungeFor, enterLounge, addLoungeMessage, loadLounge,
     albumRating, songRating, rateAlbum, rateSong, loadRating,
     fanClubFor, loadFanClub, loadFanClubsDirectory, fanClubDirectoryStatus, addFanClubMessage, isFanClubMember, joinFanClub, fanClubCount, fanClubsDirectory,
     isArtistOwner, artistProfile, loadArtistPage, updateArtistProfile, artistFeedEnabled,
+    artistPageCacheEpoch: scopedArtistPageCache.boundaryEpoch,
     artistPostsFor, addArtistPost, removeArtistPost,
     accountStatus, banUser, unbanUser, suspendUser, liftSuspension, setUserRole, setVerified, markEmailVerified, setSponsor, loadAdminMembers, loadAdminMembersStrict, loadMoreAdminMembersStrict, adminStats, adminArtistQueue, enrichArtists, purgeArtist, startCatalogSeed, catalogSeedStatus, stopCatalogSeed, catalogSeedRuns, removeLoungeMessage, removeComment, removeFanClubMessage,
-    comments, fanClubMsgs, lounge,
+    comments: scopedComments, fanClubMsgs, lounge,
     goingFor, isGoing, isGoingBusy, toggleGoing, attendeesFor,
     venueReviewsFor, loadVenueReviews, addVenueReview, venueRating, venueTopPhotos,
     venuePhotos, venuePhotoState, loadVenuePhotos, artistFanPhotos, loadArtistPhotos,

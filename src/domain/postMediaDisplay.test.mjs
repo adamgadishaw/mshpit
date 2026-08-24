@@ -97,6 +97,6 @@ test("every public media surface consumes descriptor kind and durable poster met
   assert.match(profile, /const video = mediaDisplayKind\(item\) === "video"/);
   assert.match(discover, /const video = mediaDisplayKind\(photo\) === "video"/);
   assert.match(artist, /mediaKind=\{mediaDisplayKind\(p\)\}/);
-  assert.match(you, /mediaKind=\{mediaDisplayKind\(gallery\[0\]\)\}/);
+  assert.doesNotMatch(you, /mediaDisplayItems|mediaDisplayKind|mediaPosterUri/, "the private You dashboard must not duplicate the public profile media wall");
   assert.match(store, /sameMediaDisplayItems\(a, b\)/);
 });

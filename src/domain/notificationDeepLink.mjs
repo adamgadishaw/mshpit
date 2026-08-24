@@ -8,7 +8,7 @@ export function notificationDestination(notification) {
   if (notification.type === "dm") return text(notification.actorId)
     ? { kind: "thread", actorId: text(notification.actorId) }
     : { kind: "none" };
-  if (notification.type === "like" || notification.type === "comment") return text(notification.postId)
+  if (notification.type === "like" || notification.type === "comment" || notification.type === "post_tag") return text(notification.postId)
     ? { kind: "post", postId: text(notification.postId) }
     : { kind: "unavailable" };
   return text(notification.actorId)
@@ -33,6 +33,7 @@ export function normalizeFetchedNotificationPost(payload, expectedPostId) {
     media: Array.isArray(post.media) ? post.media : [],
     mediaAssetIds: Array.isArray(post.mediaAssetIds) ? post.mediaAssetIds : [],
     setlist: Array.isArray(post.setlist) ? post.setlist : [],
+    taggedPeople: Array.isArray(post.taggedPeople) ? post.taggedPeople : [],
   };
 }
 

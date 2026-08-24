@@ -55,6 +55,7 @@ import {
 import { lazyWithRetry } from "../lib/lazyWithRetry";
 import {
   mediaAssetIdsMatchingPhotos,
+  mediaProjectPublishedMedia,
   mediaProjectFromPost,
   mediaProjectFromPicker,
   mediaProjectRequiresLegacyUpload,
@@ -63,6 +64,12 @@ import {
   normalizeMediaProjectAsset,
   removeMediaProjectAsset,
 } from "../domain/mediaProject.mjs";
+import {
+  ARTIST_CAMPAIGN_TREATMENTS,
+  DEFAULT_ARTIST_CAMPAIGN_TREATMENT,
+  normalizeArtistCampaign,
+} from "../domain/artistCampaignPost.mjs";
+import { MAX_POST_TAGGED_PEOPLE, normalizeTaggedPeople } from "../domain/postFriendTags.mjs";
 
 const createMediaEditorWorkspace = (attempt) => lazyWithRetry(
   () => import("../components/media-editor"),
@@ -178,7 +185,7 @@ export default function LogScreen({
   pendingMedia,
   onPendingMediaConsumed,
 }) {
-  const { searchArtistsApi, searchVenues, drafts, saveDraft, deleteDraft, myPlaylists, myPlaylistsStatus, loadMyPlaylists } = useStore();
+  const { searchArtistsApi, searchVenues, searchPeople, drafts, saveDraft, deleteDraft, myPlaylists, myPlaylistsStatus, loadMyPlaylists } = useStore();
   const initialRecoveryDraftRef = useRef(!editing && initialDraftId
     ? drafts.find((draft) => draft?.id === initialDraftId) || null
     : null);
@@ -186,9 +193,19 @@ export default function LogScreen({
   // Two kinds of post share this composer: a full show review, or a plain
   // status update ("post whatever": text and/or photos, no artist/rating).
   const [postType, setPostType] = useState(
-    editing ? (editing.kind === "status" ? "status" : "show") : (prefill?.artist ? "show" : defaultMode)
+    editing ? (editing.kind === "status" ? "status" : "show") : (prefill?.artist ? "show" : defaultMode === "campaign" ? "status" : defaultMode)
   );
   const isStatus = postType === "status";
+  const artistCampaignAllowed = user?.role === "artist" && !!String(user?.artistName || "").trim();
+  const [campaign, setCampaign] = useState(() => {
+    const existing = editing?.kind === "status" ? normalizeArtistCampaign(editing?.campaign) : null;
+    if (existing) return existing;
+    if (!editing && defaultMode === "campaign" && artistCampaignAllowed) {
+      return { version: 1, treatment: DEFAULT_ARTIST_CAMPAIGN_TREATMENT };
+    }
+    return null;
+  });
+  const isCampaign = isStatus && !!campaign;
   const [draftId, setDraftId] = useState(null);
   const [savedDraftFingerprint, setSavedDraftFingerprint] = useState(null);
   const [artist, setArtist] = useState(editing?.artist || prefill?.artist || "");
@@ -237,6 +254,64 @@ export default function LogScreen({
   const [showSong, setShowSong] = useState(!!editing?.song);
   const [showPhotos, setShowPhotos] = useState((editing?.photos || []).length > 0);
   const [showPlaylist, setShowPlaylist] = useState(!!editing?.playlist);
+  const [taggedPeople, setTaggedPeople] = useState(() => normalizeTaggedPeople(editing?.taggedPeople));
+  const [showPeople, setShowPeople] = useState(() => normalizeTaggedPeople(editing?.taggedPeople).length > 0);
+  const [peopleQuery, setPeopleQuery] = useState("");
+  const [peopleHits, setPeopleHits] = useState([]);
+  const [peopleLoading, setPeopleLoading] = useState(false);
+  const [peopleError, setPeopleError] = useState("");
+  const peopleRequestRef = useRef(0);
+  useEffect(() => {
+    const query = peopleQuery.trim();
+    const sequence = ++peopleRequestRef.current;
+    const controller = new AbortController();
+    if (!showPeople || query.length < 2 || taggedPeople.length >= MAX_POST_TAGGED_PEOPLE) {
+      setPeopleHits([]);
+      setPeopleLoading(false);
+      setPeopleError("");
+      return () => controller.abort();
+    }
+    setPeopleLoading(true);
+    setPeopleError("");
+    const timer = setTimeout(() => {
+      void searchPeople(query, {
+        signal: controller.signal,
+        throwOnError: true,
+        postTagEligibleOnly: true,
+        postId: editing?.id || null,
+      })
+        .then((found) => {
+          if (controller.signal.aborted || sequence !== peopleRequestRef.current) return;
+          const selected = new Set(taggedPeople.map((person) => person.id));
+          setPeopleHits(normalizeTaggedPeople(found)
+            .filter((person) => person.id !== user?.id && !selected.has(person.id))
+            .slice(0, 6));
+        })
+        .catch(() => {
+          if (!controller.signal.aborted && sequence === peopleRequestRef.current) {
+            setPeopleHits([]);
+            setPeopleError("Friend search missed a beat. Try again.");
+          }
+        })
+        .finally(() => {
+          if (!controller.signal.aborted && sequence === peopleRequestRef.current) setPeopleLoading(false);
+        });
+    }, 240);
+    return () => { clearTimeout(timer); controller.abort(); };
+    // Store actions are recreated by the legacy Context facade; the query and
+    // selection are the stable inputs, and each request is abortable/latest-only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showPeople, peopleQuery, taggedPeople, user?.id, editing?.id]);
+  const chooseTaggedPerson = (person) => {
+    const normalized = normalizeTaggedPeople([person])[0];
+    if (!normalized) return;
+    setTaggedPeople((current) => current.length >= MAX_POST_TAGGED_PEOPLE || current.some((item) => item.id === normalized.id)
+      ? current
+      : [...current, normalized]);
+    setPeopleQuery("");
+    setPeopleHits([]);
+    setPeopleError("");
+  };
   // Only shareable playlists (public/unlisted, with songs) can be attached.
   const shareablePlaylists = (myPlaylists || []).filter((pl) => pl?.visibility !== "private" && (pl?.tracks?.length || 0) > 0);
   const togglePlaylistPanel = () => {
@@ -558,7 +633,12 @@ export default function LogScreen({
       if (!hasLandingCompatibleImage(next)) setLandingShowcase(false);
       return next;
     });
-    if (matching) setMediaProject((current) => removeMediaProjectAsset(current, matching.id));
+    if (matching) {
+      if (campaign?.backgroundAssetId === matching.assetId) {
+        setCampaign((current) => current ? { ...current, backgroundAssetId: undefined } : current);
+      }
+      setMediaProject((current) => removeMediaProjectAsset(current, matching.id));
+    }
   };
 
   const reopenReadyMedia = async () => {
@@ -691,6 +771,7 @@ export default function LogScreen({
     id: draftId,
     submissionId: submissionIdRef.current,
     postType,
+    campaign: isStatus ? campaign : null,
     artist,
     artistKey: artistPicked ? artistKey : null,
     venue,
@@ -701,6 +782,7 @@ export default function LogScreen({
     review,
     tags,
     tagDraft,
+    taggedPeople,
     song,
     songUrl,
     playlist,
@@ -708,8 +790,8 @@ export default function LogScreen({
     mediaProject: draftMediaProject,
     photosPublic,
     landingShowcase: photosPublic && landingShowcase && hasLandingCompatiblePhoto,
-    panels: { song: showSong, photos: showPhotos, playlist: showPlaylist },
-  }), [draftId, postType, artist, artistPicked, artistKey, venue, city, tour, date, dims, review, tags, tagDraft, song, songUrl, playlist, photos, draftMediaProject, photosPublic, landingShowcase, hasLandingCompatiblePhoto, showSong, showPhotos, showPlaylist]);
+    panels: { song: showSong, photos: showPhotos, playlist: showPlaylist, people: showPeople },
+  }), [draftId, postType, isStatus, campaign, artist, artistPicked, artistKey, venue, city, tour, date, dims, review, tags, tagDraft, taggedPeople, song, songUrl, playlist, photos, draftMediaProject, photosPublic, landingShowcase, hasLandingCompatiblePhoto, showSong, showPhotos, showPlaylist, showPeople]);
   const draftFingerprint = useMemo(() => composerDraftFingerprint(currentDraft), [currentDraft]);
   const hasContent = useMemo(() => composerDraftHasContent(currentDraft), [currentDraft]);
   const hasUnappliedStudioMedia = studioAssets.length > 0;
@@ -807,19 +889,20 @@ export default function LogScreen({
     onDraftIdentity?.(composerId, restored.id);
     submissionIdRef.current = restored.submissionId || submissionIdRef.current;
     setPostType(restored.postType);
+    setCampaign(restored.campaign);
     setArtist(restored.artist); setArtistPicked(!!restored.artistKey); setArtistKey(restored.artistKey); setVenue(restored.venue); setVenuePicked(!!restored.venue); setCity(restored.city);
     const restoredPhotos = restored.photos.filter(isDurableMediaUrl);
     const restoredProject = normalizeMediaProject(restored.mediaProject);
     const restoredPending = restoredProject.assets.filter((asset) => asset.status !== "ready" && (asset.durableLocalUri || asset.assetId));
     const restoredReady = restoredProject.assets.filter((asset) => !!asset.sourceUrl && !restoredPending.some((pending) => pending.id === asset.id));
-    setTour(restored.tour); setDate(toIsoDate(restored.date) || restored.date || todayStr); setDims(restored.dims); setReview(restored.review); setTags(restored.tags); setTagDraft(restored.tagDraft); setSong(restored.song); setSongUrl(restored.songUrl); setPlaylist(restored.playlist); setPhotos(restoredPhotos); setMediaProject(normalizeMediaProject({ assets: restoredReady })); setStudioAssets(restoredPending); setPhotosPublic(restored.photosPublic); setLandingShowcase(restored.landingShowcase && hasLandingCompatibleImage(restoredPhotos));
+    setTour(restored.tour); setDate(toIsoDate(restored.date) || restored.date || todayStr); setDims(restored.dims); setReview(restored.review); setTags(restored.tags); setTagDraft(restored.tagDraft); setTaggedPeople(restored.taggedPeople); setSong(restored.song); setSongUrl(restored.songUrl); setPlaylist(restored.playlist); setPhotos(restoredPhotos); setMediaProject(normalizeMediaProject({ assets: restoredReady })); setStudioAssets(restoredPending); setPhotosPublic(restored.photosPublic); setLandingShowcase(restored.landingShowcase && hasLandingCompatibleImage(restoredPhotos));
     if (restoredPending.length) {
       void recoverMediaDraftAssets(restoredPending).then((recoverable) => {
         setStudioAssets(recoverable);
         if (recoverable.length < restoredPending.length) setMediaError("One staged media file was removed by the device. The rest of your draft is safe; choose that item again.");
       });
     }
-    setShowSong(restored.panels.song); setShowPhotos(restored.panels.photos); setShowPlaylist(restored.panels.playlist);
+    setShowSong(restored.panels.song); setShowPhotos(restored.panels.photos); setShowPlaylist(restored.panels.playlist); setShowPeople(restored.panels.people || restored.taggedPeople.length > 0);
   };
 
   useEffect(() => {
@@ -947,6 +1030,8 @@ export default function LogScreen({
     try {
       const durablePhotos = photos.filter(isDurableMediaUrl);
       const stableMediaAssetIds = mediaAssetIdsMatchingPhotos(mediaProject, durablePhotos);
+      const publishedMedia = mediaProjectPublishedMedia(mediaProject)
+        .filter((item) => durablePhotos.includes(item.url));
       if (isStatus) {
         const result = await onPost?.({
           id: submissionIdRef.current,
@@ -956,13 +1041,15 @@ export default function LogScreen({
             : { name: "You", handle: "you", initials: "YOU" }),
           timeAgo: editing?.timeAgo || "now",
           review: review.trim(),
+          taggedPeople,
           song,
           playlist,
           playlistId: playlist?.id || null,
           photos: durablePhotos,
           ...(stableMediaAssetIds ? { mediaAssetIds: stableMediaAssetIds } : {}),
-          media: durablePhotos.length,
+          media: publishedMedia,
           photosPublic: true,
+          campaign: isCampaign ? campaign : null,
           likes: editing?.likes || 0,
           comments: editing?.comments || 0,
         });
@@ -989,7 +1076,7 @@ export default function LogScreen({
         city: city.trim(),
         tour: tour.trim() || null,
         date,
-        media: durablePhotos.length,
+        media: publishedMedia,
         photos: durablePhotos,
         ...(stableMediaAssetIds ? { mediaAssetIds: stableMediaAssetIds } : {}),
         photosPublic,
@@ -999,6 +1086,7 @@ export default function LogScreen({
         room: submittedRatings.room || submittedRatings.overall,
         dims,
         review: review.trim(),
+        taggedPeople,
         song,
         tags: tagDraft.trim() && tags.length < 5 && !tags.some((t) => t.toLowerCase() === tagDraft.trim().toLowerCase()) ? [...tags, tagDraft.trim()] : tags,
         setlist: editing?.setlist || [],
@@ -1024,7 +1112,7 @@ export default function LogScreen({
 
   return (
     <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-      <SheetHeader title={editing ? "Edit post" : isStatus ? "New post" : "Log a show"} onClose={onCancel} leadDisabled={submitBusy} action={{ label: posting ? (editing ? "Saving..." : "Posting...") : uploadingPhotos ? "Uploading..." : resolvingSong ? "Checking..." : editing ? "Save" : "Post", onPress: submit, disabled: !canPost || submitBusy }} />
+      <SheetHeader title={editing ? (isCampaign ? "Edit artist drop" : "Edit post") : isCampaign ? "New artist drop" : isStatus ? "New post" : "Log a show"} onClose={onCancel} leadDisabled={submitBusy} action={{ label: posting ? (editing ? "Saving..." : "Posting...") : uploadingPhotos ? "Uploading..." : resolvingSong ? "Checking..." : editing ? "Save" : "Post", onPress: submit, disabled: !canPost || submitBusy }} />
 
       {studioOpen ? (
         <StudioErrorBoundary
@@ -1067,13 +1155,19 @@ export default function LogScreen({
         {!!postError && <View style={styles.postErrorBox}><Icon name="flag" size={14} color={colors.danger} /><Text style={styles.postErrorTxt}>{postError}</Text></View>}
         {!editing && (
           <View style={styles.modeRow}>
-            <Pressable style={[styles.modeBtn, isStatus && styles.modeBtnOn]} onPress={() => setPostType("status")} accessibilityRole="button" accessibilityState={{ selected: isStatus }} accessibilityLabel="Share a status update">
-              <Icon name="edit" size={15} color={isStatus ? "#1A1206" : colors.textDim} />
-              <Text style={[styles.modeTxt, isStatus && styles.modeTxtOn]}>Share something</Text>
+            <Pressable style={[styles.modeBtn, isStatus && !isCampaign && styles.modeBtnOn]} onPress={() => { setPostType("status"); setCampaign(null); }} accessibilityRole="button" accessibilityState={{ selected: isStatus && !isCampaign }} accessibilityLabel="Share a status update">
+              <Icon name="edit" size={15} color={isStatus && !isCampaign ? "#1A1206" : colors.textDim} />
+              <Text style={[styles.modeTxt, isStatus && !isCampaign && styles.modeTxtOn]}>Share</Text>
             </Pressable>
-            <Pressable style={[styles.modeBtn, !isStatus && styles.modeBtnOn]} onPress={() => setPostType("show")} accessibilityRole="button" accessibilityState={{ selected: !isStatus }} accessibilityLabel="Log a concert">
+            {artistCampaignAllowed && (
+              <Pressable style={[styles.modeBtn, isCampaign && styles.modeBtnOn]} onPress={() => { setPostType("status"); setCampaign((current) => current || { version: 1, treatment: DEFAULT_ARTIST_CAMPAIGN_TREATMENT }); }} accessibilityRole="button" accessibilityState={{ selected: isCampaign }} accessibilityLabel="Create an artist drop">
+                <Icon name="star" size={15} color={isCampaign ? "#1A1206" : colors.textDim} />
+                <Text style={[styles.modeTxt, isCampaign && styles.modeTxtOn]}>Artist drop</Text>
+              </Pressable>
+            )}
+            <Pressable style={[styles.modeBtn, !isStatus && styles.modeBtnOn]} onPress={() => { setPostType("show"); setCampaign(null); }} accessibilityRole="button" accessibilityState={{ selected: !isStatus }} accessibilityLabel="Log a concert">
               <Icon name="star" size={15} color={!isStatus ? "#1A1206" : colors.textDim} />
-              <Text style={[styles.modeTxt, !isStatus && styles.modeTxtOn]}>Log a show</Text>
+              <Text style={[styles.modeTxt, !isStatus && styles.modeTxtOn]}>Log show</Text>
             </Pressable>
           </View>
         )}
@@ -1098,7 +1192,8 @@ export default function LogScreen({
         )}
 
         {isStatus ? (
-          <View style={styles.composerCard}>
+          <>
+          <View style={[styles.composerCard, isCampaign && styles.campaignComposerCard]}>
             <View style={styles.authorRow}>
               <Avatar user={user || { name: "You", initials: "YOU" }} size={44} />
               <View style={{ flex: 1, minWidth: 0 }}>
@@ -1119,6 +1214,50 @@ export default function LogScreen({
               autoFocus={!editing}
             />
           </View>
+          {isCampaign && (
+            <View style={[styles.campaignStudio, { borderColor: ARTIST_CAMPAIGN_TREATMENTS[campaign.treatment]?.accentColor || colors.amber }]}>
+              <View style={styles.campaignStudioHead}>
+                <View style={styles.campaignStudioIcon}><Icon name="star" size={18} color={colors.amber} /></View>
+                <View style={{ flex: 1, minWidth: 0 }}>
+                  <Text style={styles.campaignStudioKicker}>ARTIST DROP</Text>
+                  <Text style={styles.campaignStudioTitle}>Give this post its own stage</Text>
+                </View>
+                <Pressable style={styles.campaignClearButton} onPress={() => setCampaign(null)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Remove artist drop styling">
+                  <Text style={styles.campaignClear}>Make regular</Text>
+                </Pressable>
+              </View>
+              <Text style={styles.campaignStudioCopy}>Pick a curated treatment, then optionally use one attached image as the canvas. Pit keeps the words and controls on a solid contrast panel.</Text>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.campaignTreatments} keyboardShouldPersistTaps="handled">
+                {Object.values(ARTIST_CAMPAIGN_TREATMENTS).map((treatment) => {
+                  const selected = campaign.treatment === treatment.id;
+                  return (
+                    <Pressable
+                      key={treatment.id}
+                      onPress={() => setCampaign((current) => ({ ...(current || { version: 1 }), version: 1, treatment: treatment.id }))}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected }}
+                      accessibilityLabel={`${treatment.label} artist drop treatment`}
+                      style={[styles.campaignTreatment, { backgroundColor: treatment.backgroundColor, borderColor: selected ? treatment.accentColor : colors.line }]}
+                    >
+                      <View style={[styles.campaignTreatmentDot, { backgroundColor: treatment.accentColor }]} />
+                      <Text style={[styles.campaignTreatmentText, { color: treatment.textColor }]}>{treatment.label}</Text>
+                      {selected && <Icon name="check" size={12} color={treatment.accentColor} />}
+                    </Pressable>
+                  );
+                })}
+              </ScrollView>
+              <View style={styles.campaignCanvasState}>
+                <Icon name={campaign.backgroundAssetId ? "check" : "photo"} size={14} color={campaign.backgroundAssetId ? colors.good : colors.textDim} />
+                <Text style={styles.campaignCanvasText}>{campaign.backgroundAssetId ? "Attached artwork is set as the background." : "Attach an image below, then tap Use as background."}</Text>
+                {!!campaign.backgroundAssetId && (
+                  <Pressable style={styles.campaignClearButton} onPress={() => setCampaign((current) => current ? { ...current, backgroundAssetId: undefined } : current)} accessibilityRole="button" accessibilityLabel="Clear artist drop background image">
+                    <Text style={styles.campaignClear}>Clear</Text>
+                  </Pressable>
+                )}
+              </View>
+            </View>
+          )}
+          </>
         ) : (
           <>
         <Text style={styles.fieldLabel}>WHO DID YOU SEE?</Text>
@@ -1273,8 +1412,75 @@ export default function LogScreen({
         <View style={styles.attachBar}>
           <AttachChip icon="camera" label={mediaPublishingCapabilities.videos ? "Photo / video" : "Photos"} active={showPhotos || photos.length > 0 || studioAssets.length > 0} count={photos.length + studioAssets.length} onPress={() => setShowPhotos((v) => !v)} disabled={submitBusy} />
           <AttachChip icon="play" label="YouTube" active={showSong || !!song?.videoId} onPress={() => setShowSong((v) => !v)} disabled={submitBusy} />
+          <AttachChip icon="you" label="Friends" active={showPeople || taggedPeople.length > 0} count={taggedPeople.length} onPress={() => setShowPeople((v) => !v)} disabled={submitBusy} />
           {isStatus && <AttachChip icon="feed" label="Playlist" active={showPlaylist || !!playlist} count={playlist ? (playlist.tracks?.length || 0) : 0} onPress={togglePlaylistPanel} disabled={submitBusy} />}
         </View>
+        {(showPeople || taggedPeople.length > 0) && (
+          <View style={styles.attachPanel}>
+            <Text style={styles.attachHint}>Tag friends who follow you back. Their names link to their Pit profiles, and they can remove their own tag anytime.</Text>
+            {!!taggedPeople.length && (
+              <View style={styles.peopleSelected}>
+                {taggedPeople.map((person) => (
+                  <Pressable
+                    key={person.id}
+                    style={styles.personChip}
+                    onPress={() => setTaggedPeople((current) => current.filter((item) => item.id !== person.id))}
+                    disabled={submitBusy}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Remove ${person.name} from tagged people`}
+                  >
+                    <Avatar user={person} size={24} />
+                    <Text style={styles.personChipText} numberOfLines={1}>@{person.handle || person.name}</Text>
+                    <Icon name="x" size={13} color={colors.textDim} />
+                  </Pressable>
+                ))}
+              </View>
+            )}
+            {taggedPeople.length < MAX_POST_TAGGED_PEOPLE ? (
+              <>
+                <TextInput
+                  style={[styles.input, styles.peopleInput]}
+                  placeholder="Search your friends"
+                  placeholderTextColor={colors.textFaint}
+                  value={peopleQuery}
+                  onChangeText={setPeopleQuery}
+                  editable={!submitBusy}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  accessibilityLabel="Search friends to tag"
+                />
+                <View accessibilityRole="status" accessibilityLiveRegion="polite">
+                  {peopleLoading && <Text style={styles.peopleState}>Searching friends...</Text>}
+                  {!!peopleError && <Text style={styles.songError}>{peopleError}</Text>}
+                  {!peopleLoading && !peopleError && peopleQuery.trim().length >= 2 && peopleHits.length === 0 && <Text style={styles.peopleState}>No matching friends found.</Text>}
+                </View>
+                {!!peopleHits.length && (
+                  <View style={styles.peopleResults}>
+                    {peopleHits.map((person) => (
+                      <Pressable
+                        key={person.id}
+                        style={styles.personResult}
+                        onPress={() => chooseTaggedPerson(person)}
+                        disabled={submitBusy}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Tag ${person.name}`}
+                      >
+                        <Avatar user={person} size={34} />
+                        <View style={styles.personResultCopy}>
+                          <Text style={styles.personResultName} numberOfLines={1}>{person.name}</Text>
+                          <Text style={styles.personResultHandle} numberOfLines={1}>@{person.handle}</Text>
+                        </View>
+                        <Icon name="plus" size={17} color={colors.amber} />
+                      </Pressable>
+                    ))}
+                  </View>
+                )}
+              </>
+            ) : (
+              <Text style={styles.peopleState}>All {MAX_POST_TAGGED_PEOPLE} spots are filled.</Text>
+            )}
+          </View>
+        )}
         {!mediaPublishingCapabilities.videos && (
           <View style={styles.mediaCapabilityNotice} accessibilityRole="note">
             <Icon name="camera" size={16} color={colors.amber} />
@@ -1380,10 +1586,25 @@ export default function LogScreen({
         <View style={styles.photoRow}>
           {photos.map((uri, i) => {
             const descriptor = mediaProject.assets.find((asset) => asset.sourceUrl === uri);
+            const backgroundAssetId = descriptor?.assetId || null;
+            const canBeCampaignBackground = isCampaign && !!backgroundAssetId && mediaDisplayKind(descriptor || uri) === "image";
+            const isCampaignBackground = canBeCampaignBackground && campaign?.backgroundAssetId === backgroundAssetId;
             return (
-            <View key={`${uri}:${i}`} style={styles.thumb}>
+            <View key={`${uri}:${i}`} style={[styles.thumb, isCampaignBackground && styles.campaignThumbSelected]}>
               {/* SmartImage renders clips as a play tile and HEIC via transcode. */}
               <SmartImage uri={uri} posterUri={mediaPosterUri(descriptor)} mediaKind={mediaDisplayKind(descriptor || uri)} style={StyleSheet.absoluteFill} contain={false} accessibilityLabel={descriptor?.altText || `Media ${i + 1}`} />
+              {canBeCampaignBackground && (
+                <Pressable
+                  style={[styles.useBackground, isCampaignBackground && styles.useBackgroundSelected]}
+                  onPress={() => setCampaign((current) => current ? { ...current, backgroundAssetId: isCampaignBackground ? undefined : backgroundAssetId } : current)}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: isCampaignBackground }}
+                  accessibilityLabel={isCampaignBackground ? `Remove media ${i + 1} as artist drop background` : `Use media ${i + 1} as artist drop background`}
+                >
+                  <Icon name={isCampaignBackground ? "check" : "photo"} size={10} color="#fff" />
+                  <Text style={styles.useBackgroundText}>{isCampaignBackground ? "BACKGROUND" : "USE AS BG"}</Text>
+                </Pressable>
+              )}
               <Pressable style={styles.removeThumb} onPress={() => removeAttachedMedia(i)} disabled={submitBusy} accessibilityRole="button" accessibilityLabel={`Remove media ${i + 1}`}>
                 <Icon name="x" size={12} color="#fff" />
               </Pressable>
@@ -1483,11 +1704,26 @@ const styles = StyleSheet.create({
   modeTxtOn: { color: "#1A1206" },
   // Status composer: an author card like the big social apps.
   composerCard: { backgroundColor: colors.surface, borderRadius: radius.lg, borderCurve: "continuous", borderWidth: 1, borderColor: colors.line, padding: 14, ...shadow.card },
+  campaignComposerCard: { borderColor: colors.amber, boxShadow: "0 0 0 1px rgba(242,166,90,0.12), 0 14px 34px rgba(0,0,0,0.24)" },
   authorRow: { flexDirection: "row", alignItems: "center", gap: 11, marginBottom: 10 },
   authorName: { color: colors.text, fontFamily: displayFont, fontSize: 15.5, fontWeight: "800" },
   publicChip: { flexDirection: "row", alignItems: "center", alignSelf: "flex-start", gap: 4, marginTop: 3, paddingHorizontal: 8, paddingVertical: 3, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.bgElev },
   publicTxt: { color: colors.textDim, fontFamily: mono, fontSize: 9.5, fontWeight: "800", letterSpacing: 0.6 },
   statusBox: { minHeight: 120, textAlignVertical: "top", fontSize: 17, lineHeight: 24, color: colors.text, padding: 0 },
+  campaignStudio: { marginTop: 12, padding: 14, borderRadius: radius.lg, borderCurve: "continuous", borderWidth: 1, backgroundColor: colors.bgElev, ...shadow.card },
+  campaignStudioHead: { flexDirection: "row", alignItems: "center", gap: 10 },
+  campaignStudioIcon: { width: 38, height: 38, borderRadius: 19, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(242,166,90,0.12)", borderWidth: 1, borderColor: "rgba(242,166,90,0.34)" },
+  campaignStudioKicker: { color: colors.amber, fontFamily: mono, fontSize: 10, fontWeight: "900", letterSpacing: 1.5 },
+  campaignStudioTitle: { color: colors.text, fontFamily: displayFont, fontSize: 17, fontWeight: "900", marginTop: 2 },
+  campaignStudioCopy: { color: colors.textDim, fontSize: 12.5, lineHeight: 18, marginTop: 11 },
+  campaignClear: { color: colors.amber, fontSize: 11.5, fontWeight: "800" },
+  campaignClearButton: { minHeight: 44, minWidth: 44, alignItems: "center", justifyContent: "center", paddingHorizontal: 4 },
+  campaignTreatments: { gap: 9, paddingVertical: 13 },
+  campaignTreatment: { minHeight: 46, minWidth: 132, flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, borderRadius: radius.md, borderWidth: 1.5 },
+  campaignTreatmentDot: { width: 10, height: 10, borderRadius: 5 },
+  campaignTreatmentText: { flex: 1, fontFamily: displayFont, fontSize: 12.5, fontWeight: "900" },
+  campaignCanvasState: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 11, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface },
+  campaignCanvasText: { flex: 1, color: colors.textDim, fontSize: 11.5, lineHeight: 16 },
   // "Add to your post" attachment bar + reveal panels.
   attachLabel: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "800", marginTop: 22, marginBottom: 10 },
   attachBar: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
@@ -1520,6 +1756,16 @@ const styles = StyleSheet.create({
   plChipTxt: { color: colors.text, fontSize: 13, fontWeight: "700", flexShrink: 1 },
   plChipCount: { color: colors.amber, fontFamily: mono, fontSize: 11, fontWeight: "800" },
   plEmpty: { color: colors.textDim, fontSize: 12.5, lineHeight: 18, fontStyle: "italic" },
+  peopleSelected: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 10 },
+  personChip: { minHeight: 44, maxWidth: "100%", flexDirection: "row", alignItems: "center", gap: 7, paddingHorizontal: 9, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.amber, backgroundColor: colors.surface },
+  personChipText: { maxWidth: 180, color: colors.text, fontSize: 12.5, fontWeight: "800" },
+  peopleInput: { marginBottom: 0 },
+  peopleState: { color: colors.textDim, fontSize: 12, lineHeight: 18, marginTop: 8 },
+  peopleResults: { marginTop: 8, overflow: "hidden", borderWidth: 1, borderColor: colors.line, borderRadius: radius.md, backgroundColor: colors.surface },
+  personResult: { minHeight: 52, flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 10, paddingVertical: 7, borderTopWidth: 1, borderTopColor: colors.lineSoft },
+  personResultCopy: { flex: 1, minWidth: 0 },
+  personResultName: { color: colors.text, fontSize: 13.5, fontWeight: "800" },
+  personResultHandle: { color: colors.textDim, fontFamily: mono, fontSize: 10.5, marginTop: 2 },
   tagEditRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 8 },
   tagEditChip: { flexDirection: "row", alignItems: "center", gap: 6, borderWidth: 1.5, borderColor: colors.amber, borderRadius: radius.sm, paddingHorizontal: 10, paddingVertical: 6, backgroundColor: colors.surfaceAlt },
   tagEditTxt: { color: colors.amber, fontSize: 12, fontWeight: "900", letterSpacing: 1.2 },
@@ -1560,7 +1806,11 @@ const styles = StyleSheet.create({
   resumeStudioTitle: { color: colors.text, fontFamily: displayFont, fontSize: 13, fontWeight: "900" },
   resumeStudioCopy: { color: colors.textDim, fontSize: 11.5, lineHeight: 16, marginTop: 2 },
   thumb: { width: 76, height: 76, borderRadius: 10, overflow: "hidden", borderWidth: 1, borderColor: colors.line },
+  campaignThumbSelected: { borderWidth: 2, borderColor: colors.amber },
   removeThumb: { position: "absolute", top: 3, right: 3, width: 20, height: 20, borderRadius: 10, backgroundColor: "rgba(0,0,0,0.6)", alignItems: "center", justifyContent: "center" },
+  useBackground: { position: "absolute", left: 3, right: 3, bottom: 3, minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 4, paddingHorizontal: 5, borderRadius: 7, backgroundColor: "rgba(7,9,15,0.84)", borderWidth: 1, borderColor: "rgba(255,255,255,0.22)" },
+  useBackgroundSelected: { backgroundColor: "rgba(155,96,24,0.94)", borderColor: colors.amber },
+  useBackgroundText: { color: "#fff", fontFamily: mono, fontSize: 8, fontWeight: "900", letterSpacing: 0.45 },
   addThumb: { width: 76, height: 76, borderRadius: 10, borderWidth: 1, borderColor: colors.line, borderStyle: "dashed", alignItems: "center", justifyContent: "center", gap: 4, backgroundColor: colors.surface },
   addThumbTxt: { color: colors.amber, fontSize: 12 },
   uploadStatus: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12, marginTop: 10 },

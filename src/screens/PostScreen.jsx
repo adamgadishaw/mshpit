@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Alert, Platform, View, Text, StyleSheet, ScrollView, Pressable, TextInput } from "react-native";
+import { ActivityIndicator, Alert, Platform, View, Text, StyleSheet, ScrollView, Pressable, TextInput } from "react-native";
 import { colors, mono, radius, roleColor } from "../theme";
 import { useStore } from "../store";
 import ScreenHeader from "../components/ScreenHeader";
@@ -8,6 +8,8 @@ import Icon from "../components/Icon";
 import TicketStub from "../components/TicketStub";
 import { BadgeRow } from "../components/Badge";
 import { LIMITS } from "../domain/validation.mjs";
+import { applyPostLocalOverride, withRemovedSelfPostTag } from "../domain/postLocalOverrides.mjs";
+import { accountTargetScope } from "../domain/screenScope.mjs";
 
 const ago = (ts) => {
   if (!ts) return "";
@@ -70,23 +72,85 @@ function CommentNode({ c, replies, depth, onReply, onDelete, onReport, sessionId
 
 // Post detail — the actual post + its comment thread. This is where like/comment
 // notifications land (not the performance page), and where forum-style replies live.
-export default function PostScreen({ log, onClose, onOpenProfile, onOpenArtist, onOpenVenue, onOpenShow, onReport, onEdit, onOpenPhotos, onPlay }) {
+export default function PostScreen({ log, onClose, onOpenProfile, onOpenArtist, onOpenVenue, onOpenShow, onReport, onEdit, onOpenPhotos, onPlay, onRemoveMyPostTag }) {
   const { session, feed, commentsFor, addComment, deleteOwnComment, deleteOwnPost, loadComments, userById, userBadges } = useStore();
+  const [postLocalOverrides, setPostLocalOverrides] = useState({});
   // Navigation keeps the post that was originally opened. Resolve it against
-  // live feed state so an edit made on this screen appears immediately.
-  const activeLog = feed.find((post) => post.id === log.id) || log;
+  // live feed state so an edit made on this screen appears immediately. A
+  // server-confirmed self-untag also overlays notification-fetched posts that
+  // were never part of this feed page.
+  const activeLog = applyPostLocalOverride(
+    feed.find((post) => post.id === log.id) || log,
+    postLocalOverrides,
+    session?.id || null,
+  );
+  const reconcileSelfTagRemoval = (result) => {
+    if (!result?.userId || !result?.id) return;
+    setPostLocalOverrides((current) => withRemovedSelfPostTag(current, {
+      accountId: result.userId,
+      postId: result.id,
+      userId: result.userId,
+      version: result.version,
+    }));
+  };
   const flat = commentsFor(log.id);
   const [text, setText] = useState("");
   const [replyTo, setReplyTo] = useState(null); // { id, name } or null (= reply to the post)
   const [sending, setSending] = useState(false);
+  const commentScope = accountTargetScope(session?.id, `post-comments:${String(log.id || "")}`);
+  const [commentRequestVersion, setCommentRequestVersion] = useState(0);
+  const [commentResource, setCommentResource] = useState(() => ({
+    scope: commentScope,
+    status: flat.length > 0 ? "refreshing" : "loading",
+    loaded: flat.length > 0,
+    error: null,
+  }));
   const scrollRef = useRef(null);
 
   // Live comments: hydrate + poll so replies appear without a refresh.
   useEffect(() => {
-    loadComments(log.id, { limit: 50, force: true });
-    const t = setInterval(() => loadComments(log.id, { limit: 50, force: true }), 15_000);
-    return () => clearInterval(t);
-  }, [log.id]);
+    let active = true;
+    const scope = commentScope;
+    const hasCachedComments = flat.length > 0;
+    const refresh = async ({ background = false } = {}) => {
+      if (!background) {
+        setCommentResource((current) => {
+          const loaded = current.scope === scope ? current.loaded : hasCachedComments;
+          return { scope, status: loaded ? "refreshing" : "loading", loaded, error: null };
+        });
+      }
+      const result = await loadComments(log.id, { limit: 50, force: true });
+      if (!active) return;
+      setCommentResource((current) => {
+        const loaded = current.scope === scope && current.loaded;
+        if (result?.ok) return { scope, status: "ready", loaded: true, error: null };
+        return {
+          scope,
+          status: loaded ? "stale" : "error",
+          loaded,
+          error: result?.error || new Error("Comments could not be loaded."),
+        };
+      });
+    };
+    void refresh();
+    const t = setInterval(() => void refresh({ background: true }), 15_000);
+    return () => {
+      active = false;
+      clearInterval(t);
+    };
+    // Store actions are intentionally excluded: they are recreated as store state changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [commentScope, commentRequestVersion]);
+
+  // Never present another post's request state while navigation swaps the post
+  // prop on this mounted screen.
+  const scopedCommentResource = commentResource.scope === commentScope
+    ? commentResource
+    : { scope: commentScope, status: "loading", loaded: flat.length > 0, error: null };
+  const commentsUsable = scopedCommentResource.loaded;
+  const commentsPending = !commentsUsable && scopedCommentResource.status === "loading";
+  const commentErrorMessage = scopedCommentResource.error?.userMessage
+    || "The comment thread could not be reached. Check your connection and try again.";
 
   // Build the reply tree. Anything whose parent isn't present is treated as a
   // top-level reply to the post, so nothing is ever hidden.
@@ -130,17 +194,45 @@ export default function PostScreen({ log, onClose, onOpenProfile, onOpenArtist, 
     <View style={styles.wrap}>
       <ScreenHeader kicker="POST" title="Comments" onBack={onClose} />
       <ScrollView ref={scrollRef} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-        <TicketStub log={activeLog} showComments={false} onOpen={() => onOpenShow?.(activeLog)} onOpenProfile={onOpenProfile} onOpenArtist={onOpenArtist} onOpenVenue={onOpenVenue} onReport={onReport} onEdit={onEdit} onDelete={removePost} onOpenPhotos={onOpenPhotos} onPlay={onPlay} />
+        <TicketStub log={activeLog} showComments={false} onOpen={() => onOpenShow?.(activeLog)} onOpenProfile={onOpenProfile} onOpenArtist={onOpenArtist} onOpenVenue={onOpenVenue} onReport={onReport} onEdit={onEdit} onDelete={removePost} onOpenPhotos={onOpenPhotos} onPlay={onPlay} onRemoveMyPostTag={onRemoveMyPostTag} onSelfTagRemoved={reconcileSelfTagRemoval} />
 
-        <Text style={styles.sectionLabel}>{flat.length} COMMENT{flat.length === 1 ? "" : "S"}</Text>
-        {tree.length === 0 && <Text style={styles.empty}>No comments yet. Start the conversation.</Text>}
-        {tree.map((node) => (
+        <Text style={styles.sectionLabel}>
+          {commentsUsable ? `${flat.length} COMMENT${flat.length === 1 ? "" : "S"}` : "COMMENTS"}
+        </Text>
+        {commentsPending ? (
+          <View style={styles.threadState} accessibilityLiveRegion="polite">
+            <ActivityIndicator size="small" color={colors.amber} />
+            <Text style={styles.threadStateText}>Loading comments...</Text>
+          </View>
+        ) : null}
+        {scopedCommentResource.status === "error" || scopedCommentResource.status === "stale" ? (
+          <View style={styles.threadError} accessibilityLiveRegion="polite">
+            <Text style={styles.threadErrorTitle}>
+              {scopedCommentResource.status === "stale" ? "Comments may be out of date" : "Comments are unavailable"}
+            </Text>
+            <Text style={styles.threadErrorCopy}>{commentErrorMessage}</Text>
+            <Pressable
+              style={styles.retry}
+              onPress={() => setCommentRequestVersion((version) => version + 1)}
+              accessibilityRole="button"
+              accessibilityLabel="Retry loading comments"
+            >
+              <Text style={styles.retryText}>Retry</Text>
+            </Pressable>
+          </View>
+        ) : null}
+        {commentsUsable && tree.length === 0 ? <Text style={styles.empty}>No comments yet. Start the conversation.</Text> : null}
+        {commentsUsable ? tree.map((node) => (
           <CommentNode key={node.c.id} c={node.c} replies={node.replies} depth={0} onReply={(c) => setReplyTo({ id: c.id, name: c.name || userById?.(c.userId)?.name })} onDelete={removeComment} onReport={onReport} sessionId={session?.id} onOpenProfile={onOpenProfile} userById={userById} userBadges={userBadges} />
-        ))}
+        )) : null}
         <View style={{ height: 20 }} />
       </ScrollView>
 
-      {session ? (
+      {!commentsUsable ? (
+        <View style={styles.composerWrap}>
+          <Text style={styles.signin}>{commentsPending ? "Connecting to comments..." : "Reconnect to the thread to comment."}</Text>
+        </View>
+      ) : session ? (
         <View style={styles.composerWrap}>
           {replyTo && (
             <View style={styles.replyingTo}>
@@ -177,6 +269,13 @@ const styles = StyleSheet.create({
   content: { padding: 16, paddingBottom: 24, ...(Platform.OS === "web" ? { width: "100%", maxWidth: 900, alignSelf: "center" } : null) },
   sectionLabel: { color: colors.textFaint, fontFamily: mono, fontSize: 11, letterSpacing: 1.5, fontWeight: "800", marginTop: 4, marginBottom: 12 },
   empty: { color: colors.textDim, fontSize: 14, fontStyle: "italic", marginBottom: 12 },
+  threadState: { flexDirection: "row", alignItems: "center", gap: 9, marginBottom: 14 },
+  threadStateText: { color: colors.textDim, fontSize: 13.5 },
+  threadError: { backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.line, borderRadius: radius.md, padding: 14, marginBottom: 16 },
+  threadErrorTitle: { color: colors.text, fontSize: 14, fontWeight: "800", marginBottom: 4 },
+  threadErrorCopy: { color: colors.textDim, fontSize: 13, lineHeight: 18 },
+  retry: { alignSelf: "flex-start", borderWidth: 1, borderColor: colors.amber, borderRadius: radius.full, paddingHorizontal: 13, paddingVertical: 7, marginTop: 11 },
+  retryText: { color: colors.amber, fontFamily: mono, fontSize: 11, fontWeight: "800", letterSpacing: 0.8 },
   cRow: { flexDirection: "row", gap: 10, marginBottom: 14 },
   replyWrap: { marginLeft: 22, borderLeftWidth: 2, borderLeftColor: colors.lineSoft, paddingLeft: 12 },
   deepReplyWrap: { borderLeftWidth: 2, borderLeftColor: colors.lineSoft, paddingLeft: 8 },

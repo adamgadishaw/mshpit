@@ -4,6 +4,8 @@ import {
   normalizeMediaProject,
   serializableMediaProject,
 } from "./mediaProject.mjs";
+import { normalizeArtistCampaign } from "./artistCampaignPost.mjs";
+import { normalizeTaggedPeople } from "./postFriendTags.mjs";
 
 const text = (value) => value == null ? "" : String(value);
 
@@ -26,6 +28,7 @@ const normalizedDims = (value) => {
  */
 export function normalizeComposerDraft(value = {}) {
   const panels = value.panels && typeof value.panels === "object" ? value.panels : {};
+  const postType = value.postType === "status" ? "status" : "show";
   const legacyPhotos = Array.isArray(value.photos) ? value.photos.filter((uri) => typeof uri === "string").slice(0, 8) : [];
   const normalizedProject = value.mediaProject
     ? normalizeMediaProject(value.mediaProject)
@@ -36,7 +39,8 @@ export function normalizeComposerDraft(value = {}) {
   return {
     id: value.id || null,
     submissionId: text(value.submissionId) || null,
-    postType: value.postType === "status" ? "status" : "show",
+    postType,
+    campaign: postType === "status" ? normalizeArtistCampaign(value.campaign) : null,
     artist: text(value.artist),
     artistKey: value.artistKey == null || value.artistKey === "" ? null : String(value.artistKey),
     venue: text(value.venue),
@@ -45,6 +49,7 @@ export function normalizeComposerDraft(value = {}) {
     date: text(value.date),
     dims: normalizedDims(value.dims),
     review: text(value.review),
+    taggedPeople: normalizeTaggedPeople(value.taggedPeople),
     tags: Array.isArray(value.tags) ? value.tags.filter((tag) => typeof tag === "string").slice(0, 5) : [],
     tagDraft: text(value.tagDraft),
     song: value.song && typeof value.song === "object" ? value.song : null,
@@ -60,6 +65,7 @@ export function normalizeComposerDraft(value = {}) {
       song: !!(panels.song ?? value.showSong ?? value.song),
       photos: !!(panels.photos ?? value.showPhotos ?? (photos.length || mediaProject.assets.length)),
       playlist: !!(panels.playlist ?? value.showPlaylist ?? value.playlist),
+      people: !!(panels.people ?? value.showPeople ?? normalizeTaggedPeople(value.taggedPeople).length),
     },
   };
 }
@@ -77,6 +83,7 @@ export function composerDraftHasContent(value) {
     || draft.city.trim()
     || draft.tour.trim()
     || draft.review.trim()
+    || draft.taggedPeople.length
     || draft.tags.length
     || draft.tagDraft.trim()
     || draft.song?.videoId
@@ -90,7 +97,7 @@ export function composerDraftHasContent(value) {
 
 export function composerDraftTitle(value) {
   const draft = normalizeComposerDraft(value);
-  if (draft.postType === "status") return draft.review.trim() || "Status draft";
+  if (draft.postType === "status") return draft.review.trim() || (draft.campaign ? "Artist drop draft" : "Status draft");
   return `${draft.artist.trim() || "Untitled show"}${draft.venue.trim() ? ` ${String.fromCharCode(183)} ${draft.venue.trim()}` : ""}`;
 }
 

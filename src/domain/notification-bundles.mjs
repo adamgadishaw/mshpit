@@ -31,7 +31,7 @@ export function notificationBundleTarget(notification) {
   if (type === "dm") return text(notification?.actorId)
     ? `thread:${text(notification.actorId)}`
     : `notification:${notificationId(notification)}`;
-  if (type === "like" || type === "comment") return text(notification?.postId)
+  if (type === "like" || type === "comment" || type === "post_tag") return text(notification?.postId)
     ? `post:${text(notification.postId)}`
     : `notification:${notificationId(notification)}`;
   if (type === "welcome") return `notification:${notificationId(notification)}`;

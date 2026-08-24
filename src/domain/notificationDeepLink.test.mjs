@@ -13,6 +13,7 @@ test("notification destinations preserve social intent", () => {
   assert.deepEqual(notificationDestination({ type: "follow", actorId: "fan-b" }), { kind: "profile", actorId: "fan-b" });
   assert.deepEqual(notificationDestination({ type: "dm", actorId: "fan-b" }), { kind: "thread", actorId: "fan-b" });
   assert.deepEqual(notificationDestination({ type: "comment", postId: "post-1" }), { kind: "post", postId: "post-1" });
+  assert.deepEqual(notificationDestination({ type: "post_tag", postId: "post-1" }), { kind: "post", postId: "post-1" });
   assert.deepEqual(notificationDestination({ type: "like", postId: null }), { kind: "unavailable" });
 });
 
@@ -26,7 +27,7 @@ test("fetched notification posts must match the requested id and normalize array
   assert.equal(normalizeFetchedNotificationPost({ post: { id: "other" } }, "post-2"), null);
   assert.equal(normalizeFetchedNotificationPost({ post: null }, "post-2"), null);
   assert.deepEqual(normalizeFetchedNotificationPost({ post: { id: "post-2", photos: null } }, "post-2"), {
-    id: "post-2", photos: [], media: [], mediaAssetIds: [], setlist: [],
+    id: "post-2", photos: [], media: [], mediaAssetIds: [], setlist: [], taggedPeople: [],
   });
 });
 

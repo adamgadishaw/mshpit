@@ -31,12 +31,12 @@ export default function RequestArtistScreen({ onClose }) {
 
   return (
     <View style={styles.wrap}>
-      <SheetHeader title="Artist account" onBack={onClose} />
+      <SheetHeader title="Claim artist profile" onBack={onClose} />
 
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <View style={styles.h1Row}>
           <Icon name="shield" size={22} color={colors.amber} />
-          <Text style={styles.h1}>Request artist account</Text>
+          <Text style={styles.h1}>Claim an artist profile</Text>
         </View>
 
         {done ? (
@@ -50,8 +50,8 @@ export default function RequestArtistScreen({ onClose }) {
         ) : (
           <>
             <Text style={styles.intro}>
-              Verified artists can post official tour dates with ticket links. Every request is
-              reviewed by an admin before approval.
+              If you represent an artist, submit verification details to manage their official
+              profile, posts, and live dates. Every claim is reviewed before approval.
             </Text>
             <Text style={styles.label}>ARTIST / BAND NAME</Text>
             <TextInput
@@ -88,7 +88,7 @@ export default function RequestArtistScreen({ onClose }) {
               accessibilityRole="button"
               accessibilityState={{ disabled: !valid || busy, busy }}
             >
-              <Text style={styles.primaryTxt}>{busy ? "SUBMITTING..." : "SUBMIT REQUEST"}</Text>
+              <Text style={styles.primaryTxt}>{busy ? "SUBMITTING..." : "SUBMIT CLAIM"}</Text>
             </Pressable>
           </>
         )}

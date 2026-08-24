@@ -78,6 +78,9 @@ export function sanitizeTourDates(value, demoEnabled = false) {
 // use different IDs and are retained, including when mixed into a persisted map.
 export function sanitizePersistedStoreValue(key, value, demoEnabled = false) {
   if (demoEnabled) return value;
+  if (key === "pit.comments" || key.startsWith("pit.comments.v2.")) {
+    return withoutNestedRecordIds(value, new Set(["c1", "c2"]));
+  }
 
   switch (key) {
     case "pit.session":
@@ -90,8 +93,6 @@ export function sanitizePersistedStoreValue(key, value, demoEnabled = false) {
       return sanitizeTourDates(value, false);
     case "pit.requests":
       return withoutIds(value, new Set(["r1"]));
-    case "pit.comments":
-      return withoutNestedRecordIds(value, new Set(["c1", "c2"]));
     case "pit.likes":
     case "pit.myLikes": {
       if (!isObject(value)) return {};

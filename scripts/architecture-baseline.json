@@ -2,12 +2,9 @@
   "version": 3,
   "legacyStore": {
     "file": "src/store.js",
-    "maxUseStateCalls": 48,
+    "maxUseStateCalls": 47,
     "allowedStateHooks": [
       "usePersisted:albumRatings:setAlbumRatings",
-      "usePersisted:artistPosts:setArtistPosts",
-      "usePersisted:artistProfiles:setArtistProfiles",
-      "usePersisted:comments:setComments",
       "usePersisted:likes:setLikes",
       "usePersisted:myLikes:setMyLikes",
       "usePersisted:songRatings:setSongRatings",
@@ -59,7 +56,6 @@
       "useState:reports:setReports",
       "useState:rewardProfiles:setRewardProfiles",
       "useState:session:setSession",
-      "useState:snapshots:setSnapshots",
       "useState:tourDates:setTourDates",
       "useState:userStats:setUserStats",
       "useState:users:setUsers",
@@ -68,14 +64,16 @@
       "useState:venuePhotoPools:setVenuePhotoPools",
       "useState:venueReviews:setVenueReviews"
     ],
-    "maxHookCalls": 149,
+    "maxHookCalls": 145,
     "allowedHookCalls": {
+      "useAccountArtistPageCache": 1,
+      "useAccountCommentCache": 1,
       "useContext": 1,
       "useEffect": 30,
-      "usePersisted": 7,
+      "usePersisted": 4,
       "usePrivateEphemeral": 8,
-      "useRef": 55,
-      "useState": 48
+      "useRef": 53,
+      "useState": 47
     }
   },
   "legacyApi": {
@@ -253,7 +251,6 @@
   },
   "allowedImportViolations": [
     "src/components/AfterpartyPreview.jsx -> src/store",
-    "src/components/AfterpartySection.jsx -> src/store",
     "src/components/TicketStub.jsx -> src/store"
   ],
   "allowedFileNameViolations": [
@@ -340,10 +337,6 @@
     "server/wikidataChannels.js": {
       "count": 1,
       "fingerprint": "4d294d2c104ee633de31"
-    },
-    "src/components/AfterpartySection.jsx": {
-      "count": 1,
-      "fingerprint": "f24cf247b8b86e9a9275"
     },
     "src/components/ErrorBoundary.jsx": {
       "count": 1,
@@ -478,8 +471,8 @@
       "fingerprint": "40fd4f5f8d88c2c85d87"
     },
     "src/store.js": {
-      "count": 26,
-      "fingerprint": "69161d11273582b04c20"
+      "count": 24,
+      "fingerprint": "55f82ee1ea16c4a6dbfc"
     },
     "src/theme.js": {
       "count": 5,
@@ -536,8 +529,8 @@
       "fingerprint": "01e0028f751a5ee02884"
     },
     "src/store.js": {
-      "count": 126,
-      "fingerprint": "46b2c80929dd8bb13a45"
+      "count": 124,
+      "fingerprint": "c7e92b5836c2f1cda292"
     }
   },
   "legacyClientContractShapesByFile": {

@@ -15,6 +15,7 @@ import { PIT_SQLITE_APPLICATION_ID, prepareDataDirectory } from "./dataDirectory
 import { contentSafetyDecision } from "./contentSafety.js";
 import { canonicalProfileExtras } from "./profileExtras.js";
 import { legacyTrackOverrideIdentityKey, trackOverrideIdentityKey } from "./trackIdentity.js";
+import { normalizeTaggedUserIds } from "../src/domain/postFriendTags.mjs";
 
 export const artistSearchKey = (value) => String(value || "")
   .normalize("NFKD")
@@ -102,6 +103,8 @@ CREATE TABLE IF NOT EXISTS posts (
   photos        TEXT NOT NULL DEFAULT '[]',
   photos_public INTEGER NOT NULL DEFAULT 0,
   landing_showcase INTEGER NOT NULL DEFAULT 0,
+  campaign      TEXT,
+  tagged_user_ids TEXT NOT NULL DEFAULT '[]',
   setlist       TEXT NOT NULL DEFAULT '[]',
   client_mutation_id TEXT,
   client_mutation_hash TEXT,
@@ -112,7 +115,25 @@ CREATE TABLE IF NOT EXISTS posts (
 CREATE INDEX IF NOT EXISTS idx_posts_user ON posts(user_id);
 CREATE INDEX IF NOT EXISTS idx_posts_created ON posts(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_posts_cursor ON posts(created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_posts_user_history ON posts(user_id, removed, created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_posts_recommendation_candidates ON posts(removed, created_at DESC, id DESC);
+
+-- Structured friend tags are a relationship, not an opaque post attribute.
+-- Keep the legacy JSON column on posts for rolling-deploy/read compatibility,
+-- while this indexed relation is authoritative for targeted privacy cleanup.
+CREATE TABLE IF NOT EXISTS post_user_tags (
+  post_id    TEXT NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  author_id  TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  position   INTEGER NOT NULL,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (post_id, user_id),
+  UNIQUE (post_id, position)
+);
+CREATE INDEX IF NOT EXISTS idx_post_user_tags_user_post
+  ON post_user_tags(user_id, post_id);
+CREATE INDEX IF NOT EXISTS idx_post_user_tags_author_user_post
+  ON post_user_tags(author_id, user_id, post_id);
 
 CREATE TABLE IF NOT EXISTS likes (
   post_id TEXT NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
@@ -314,6 +335,21 @@ CREATE TABLE IF NOT EXISTS notifications (
 );
 CREATE INDEX IF NOT EXISTS idx_notifs_user ON notifications(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_notifs_cursor ON notifications(user_id, created_at DESC, id DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notifs_post_tag_unique
+  ON notifications(user_id, post_id, type) WHERE type='post_tag' AND post_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_notifs_post_tag_actor_recipient_created
+  ON notifications(actor_id, user_id, created_at DESC) WHERE type='post_tag';
+
+-- A tag recipient can remove their own association. Keep that choice durable so
+-- an author cannot immediately add the same account back to the same post.
+CREATE TABLE IF NOT EXISTS post_tag_rejections (
+  post_id    TEXT NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+  user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (post_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_post_tag_rejections_user
+  ON post_tag_rejections(user_id, created_at DESC, post_id);
 
 -- ---- Tour dates (provider imports + authoritative artist/admin batches) -------
 -- Provider rows have no owner and remain immediately public. First-party rows
@@ -1111,6 +1147,11 @@ const additiveMigrations = [
   // Existing artist-page photo consent must never silently become permission
   // to feature an old upload as the full-screen logged-out homepage.
   "ALTER TABLE posts ADD COLUMN landing_showcase INTEGER NOT NULL DEFAULT 0",
+  // Versioned, server-authorized presentation metadata for verified-artist
+  // status posts. The linked background remains a normal post_media asset so
+  // moderation, deletion, ownership, and rendition guarantees stay unified.
+  "ALTER TABLE posts ADD COLUMN campaign TEXT",
+  "ALTER TABLE posts ADD COLUMN tagged_user_ids TEXT NOT NULL DEFAULT '[]'", // structured account ids; distinct from descriptive review tags
   "ALTER TABLE posts ADD COLUMN song TEXT", // JSON of a tagged YouTube song {videoId,title,artist,url,thumb}
   "ALTER TABLE posts ADD COLUMN playlist TEXT", // immutable playlist snapshot attached to a post
   "ALTER TABLE plays ADD COLUMN video_id TEXT", // exact YouTube identity for cross-device replay
@@ -1241,6 +1282,117 @@ try {
   throw error;
 }
 
+// A rolling deploy can briefly have an older API process writing only the
+// legacy posts.tagged_user_ids column. Database triggers keep the normalized
+// relation synchronized for both old and current writers, closing that window
+// without requiring the old binary to understand the new table.
+db.exec(`
+CREATE TRIGGER IF NOT EXISTS trg_posts_user_tags_insert
+AFTER INSERT ON posts
+WHEN json_valid(NEW.tagged_user_ids)
+BEGIN
+  INSERT OR IGNORE INTO post_user_tags (post_id,user_id,author_id,position,created_at)
+  SELECT NEW.id,tag.value,NEW.user_id,CAST(tag.key AS INTEGER),NEW.created_at
+  FROM json_each(NEW.tagged_user_ids) tag JOIN users tagged_user ON tagged_user.id=tag.value
+  WHERE tag.type='text' AND CAST(tag.key AS INTEGER) BETWEEN 0 AND 7;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_posts_user_tags_update
+AFTER UPDATE OF tagged_user_ids,user_id ON posts
+BEGIN
+  DELETE FROM post_user_tags WHERE post_id=NEW.id;
+  INSERT OR IGNORE INTO post_user_tags (post_id,user_id,author_id,position,created_at)
+  SELECT NEW.id,tag.value,NEW.user_id,CAST(tag.key AS INTEGER),COALESCE(NEW.updated_at,NEW.created_at)
+  FROM json_each(CASE WHEN json_valid(NEW.tagged_user_ids) THEN NEW.tagged_user_ids ELSE '[]' END) tag
+  JOIN users tagged_user ON tagged_user.id=tag.value
+  WHERE tag.type='text' AND CAST(tag.key AS INTEGER) BETWEEN 0 AND 7;
+END;
+
+-- During a rolling deploy, the previous API binary still knows how to perform
+-- an irreversible author deletion, but its tombstone UPDATE cannot name columns
+-- introduced by this release. Recognize that complete legacy scrub signature
+-- (distinct from a moderator's reversible removed=1) and clear the new
+-- authored campaign/tag fields too. Updating tagged_user_ids also invokes the
+-- synchronization trigger above, so no normalized association survives.
+CREATE TRIGGER IF NOT EXISTS trg_posts_legacy_author_tombstone
+AFTER UPDATE OF removed ON posts
+WHEN OLD.removed=0 AND NEW.removed=1
+  AND NEW.artist='' AND NEW.venue='' AND NEW.city='' AND NEW.date=''
+  AND NEW.overall=0 AND NEW.band IS NULL AND NEW.room IS NULL AND NEW.dims='{}'
+  AND NEW.review='' AND NEW.photos='[]' AND NEW.photos_public=0 AND NEW.landing_showcase=0
+  AND NEW.setlist='[]' AND NEW.tour IS NULL AND NEW.tags='[]'
+  AND NEW.song IS NULL AND NEW.playlist IS NULL
+  AND NEW.artist_key IS NULL AND NEW.artist_mbid IS NULL AND NEW.venue_key IS NULL
+  AND NEW.client_mutation_id IS NULL AND NEW.client_mutation_hash IS NULL
+  AND (NEW.campaign IS NOT NULL OR NEW.tagged_user_ids<>'[]')
+BEGIN
+  UPDATE posts SET campaign=NULL,tagged_user_ids='[]' WHERE id=NEW.id;
+END;
+
+-- A pre-upgrade account-erasure process does not know to rewrite the legacy
+-- JSON column before deleting a recipient. Do that at the database boundary
+-- while the recipient and indexed relation still exist. The post tag UPDATE
+-- trigger rebuilds every affected relation with compact positions before the
+-- user's FK cascades run, preventing an erased account id from surviving in an
+-- author's export or being resurrected by a later legacy edit.
+CREATE TRIGGER IF NOT EXISTS trg_users_legacy_post_tag_erasure
+BEFORE DELETE ON users
+BEGIN
+  UPDATE posts
+  SET tagged_user_ids=COALESCE((
+        SELECT json_group_array(remaining.value)
+        FROM (
+          SELECT tag.value AS value
+          FROM json_each(
+            CASE WHEN json_valid(posts.tagged_user_ids)
+              THEN CASE WHEN json_type(posts.tagged_user_ids)='array' THEN posts.tagged_user_ids ELSE '[]' END
+              ELSE '[]'
+            END
+          ) tag
+          WHERE tag.type='text' AND tag.value<>OLD.id
+          ORDER BY CAST(tag.key AS INTEGER)
+        ) remaining
+      ),'[]'),
+      updated_at=MAX(
+        COALESCE(updated_at,created_at)+1,
+        CAST((julianday('now')-2440587.5)*86400000 AS INTEGER)
+      )
+  WHERE user_id<>OLD.id
+    AND id IN (SELECT post_id FROM post_user_tags WHERE user_id=OLD.id);
+END;
+`);
+
+// Move legacy structured friend-tag JSON into the indexed relationship table
+// exactly once. The post column remains synchronized by current writes so an
+// older process in a rolling deploy can continue reading the established API
+// shape. A single immediate transaction makes a crash either preserve the
+// pre-migration state or publish the complete relation plus its durable marker.
+const postUserTagBackfillMarker = "schema:post-user-tags:v1";
+if (!db.prepare("SELECT 1 FROM app_meta WHERE key=?").get(postUserTagBackfillMarker)) {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    if (!db.prepare("SELECT 1 FROM app_meta WHERE key=?").get(postUserTagBackfillMarker)) {
+      const legacyTaggedPosts = db.prepare(`SELECT id,user_id,tagged_user_ids,created_at
+        FROM posts WHERE tagged_user_ids IS NOT NULL AND tagged_user_ids<>'[]'`).all();
+      const insertTag = db.prepare(`INSERT OR IGNORE INTO post_user_tags
+        (post_id,user_id,author_id,position,created_at)
+        SELECT ?,?,?,?,? WHERE EXISTS (SELECT 1 FROM users WHERE id=?)`);
+      for (const post of legacyTaggedPosts) {
+        const taggedUserIds = normalizeTaggedUserIds(parseJsonArray(post.tagged_user_ids)) || [];
+        taggedUserIds.forEach((userId, position) => {
+          insertTag.run(post.id, userId, post.user_id, position, post.created_at, userId);
+        });
+      }
+      db.prepare("INSERT OR IGNORE INTO app_meta (key,value) VALUES (?,?)")
+        .run(postUserTagBackfillMarker, String(Date.now()));
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    try { db.exec("ROLLBACK"); }
+    catch { /* architecture: allow-empty-catch -- preserve the original migration failure if rollback itself fails */ }
+    throw error;
+  }
+}
+
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_posts_client_mutation ON posts(user_id, client_mutation_id) WHERE client_mutation_id IS NOT NULL");
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_dms_client_mutation ON dms(from_id, client_mutation_id) WHERE client_mutation_id IS NOT NULL");
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_fcm_client_mutation ON fan_club_messages(user_id, client_mutation_id) WHERE client_mutation_id IS NOT NULL");
@@ -1250,6 +1402,15 @@ db.exec("CREATE INDEX IF NOT EXISTS idx_tourdates_visibility ON tour_dates(relea
 db.exec("CREATE INDEX IF NOT EXISTS idx_tourdates_owner ON tour_dates(owner_id, date)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_going_cursor ON going(concert_key, created_at DESC, user_id DESC)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_posts_landing_media ON posts(landing_showcase, photos_public, removed, kind, created_at DESC, id DESC)");
+// Artist profile Top Reviews scans only substantive, live review posts. Keep
+// both canonical-key and legacy-name reads bounded without bloating the general
+// feed indexes with rows this projection can never return.
+db.exec(`CREATE INDEX IF NOT EXISTS idx_posts_artist_reviews
+  ON posts(artist_key, created_at DESC, id)
+  WHERE removed=0 AND COALESCE(kind,'review')='review' AND length(trim(review))>0`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_posts_artist_name_reviews
+  ON posts(lower(artist), created_at DESC, id)
+  WHERE removed=0 AND COALESCE(kind,'review')='review' AND length(trim(review))>0`);
 db.exec("CREATE INDEX IF NOT EXISTS idx_dms_visible_cursor ON dms(from_id, to_id, removed, created_at DESC, id DESC)");
 // The queue is drained by "next pending for this campaign" on every iteration,
 // and the log is read newest-first, so both need their own covering order.

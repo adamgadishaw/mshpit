@@ -1,4 +1,5 @@
 import { clean, clampRating, LIMITS } from "./validation.mjs";
+import { taggedUserIdsFromPeople } from "./postFriendTags.mjs";
 
 // Artist suggestions carry a catalog key that is distinct from the display
 // name. Keep that identity explicit at the client boundary so punctuation and
@@ -31,6 +32,7 @@ export function buildReviewCreateBody(post) {
     room: post.room,
     dims: post.dims,
     review: post.review,
+    taggedUserIds: taggedUserIdsFromPeople(post.taggedPeople),
     photos: post.photos,
     ...(Array.isArray(post.mediaAssetIds) ? { mediaAssetIds: cleanMediaAssetIds(post.mediaAssetIds) } : {}),
     photosPublic: post.photosPublic ? 1 : 0,
@@ -54,6 +56,7 @@ export function buildReviewEditBody(changes) {
     room: changes.room == null ? null : clampRating(changes.room),
     dims: changes.dims && typeof changes.dims === "object" ? changes.dims : {},
     review: clean(changes.review, { max: LIMITS.review, newlines: true }),
+    taggedUserIds: taggedUserIdsFromPeople(changes.taggedPeople),
     photos: Array.isArray(changes.photos) ? changes.photos.filter((item) => typeof item === "string").slice(0, 8) : [],
     ...(Array.isArray(changes.mediaAssetIds) ? { mediaAssetIds: cleanMediaAssetIds(changes.mediaAssetIds) } : {}),
     photosPublic: !!changes.photosPublic,

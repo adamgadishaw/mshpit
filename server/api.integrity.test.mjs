@@ -1749,6 +1749,35 @@ test("artist-owned profile UGC honors blocks in both directions without hiding c
   assert.equal(catalog.artists[0]?.name, "Block-safe Catalog Artist", "provider/catalog identity remains available without owner UGC");
 });
 
+test("disabled artist feeds conceal updates from public and non-owners while remaining manageable", () => {
+  const ownerSeed = addUser("u_artist_feed_owner", "artist-feed-owner@example.com", "artistfeedowner");
+  const outsider = addUser("u_artist_feed_outsider", "artist-feed-outsider@example.com", "artistfeedoutsider");
+  const otherArtistSeed = addUser("u_artist_feed_other", "artist-feed-other@example.com", "artistfeedother");
+  const adminSeed = addUser("u_artist_feed_admin", "artist-feed-admin@example.com", "artistfeedadmin");
+  const key = "private updates artist";
+  db.prepare("UPDATE users SET role='artist',artist_name=? WHERE id=?").run("Private Updates Artist", ownerSeed.id);
+  db.prepare("UPDATE users SET role='artist',artist_name=? WHERE id=?").run("Different Artist", otherArtistSeed.id);
+  db.prepare("UPDATE users SET role='admin' WHERE id=?").run(adminSeed.id);
+  const owner = q.userById.get(ownerSeed.id);
+  const otherArtist = q.userById.get(otherArtistSeed.id);
+  const admin = q.userById.get(adminSeed.id);
+  db.prepare("INSERT INTO artist_profiles (artist_key,owner_id,bio,feed_enabled,updated_at) VALUES (?,?,?,?,?)")
+    .run(key, owner.id, "Public profile, private update feed", 0, Date.now());
+  db.prepare("INSERT INTO artist_posts (id,artist_key,user_id,text,created_at) VALUES (?,?,?,?,?)")
+    .run("artist_disabled_feed_post", key, owner.id, "UNPUBLISHED_ARTIST_UPDATE", Date.now());
+
+  const read = (user) => routes["GET /api/artists/:key/profile"]({ user, params: { key } });
+  assert.equal(read(undefined).profile.feedEnabled, false);
+  assert.deepEqual(read(undefined).posts, [], "public reads cannot disclose disabled-feed posts");
+  assert.deepEqual(read(outsider).posts, [], "signed-in fans cannot disclose disabled-feed posts");
+  assert.deepEqual(read(otherArtist).posts, [], "an unrelated artist cannot disclose disabled-feed posts");
+  assert.equal(read(owner).posts[0]?.text, "UNPUBLISHED_ARTIST_UPDATE", "the owner can still manage hidden updates");
+  assert.equal(read(admin).posts[0]?.text, "UNPUBLISHED_ARTIST_UPDATE", "admins retain management visibility");
+
+  db.prepare("UPDATE artist_profiles SET feed_enabled=1 WHERE artist_key=?").run(key);
+  assert.equal(read(undefined).posts[0]?.text, "UNPUBLISHED_ARTIST_UPDATE", "enabling the feed publishes its updates");
+});
+
 test("unresolved artist search names expire after 30 days and the enrichment queue stays bounded", () => {
   const at = 2_000_000_000_000;
   artistStmts.recordMissing.run("privacy-old-miss", "Privacy Old Miss", at - 31 * 24 * 60 * 60 * 1000);
@@ -2612,6 +2641,17 @@ test("account export covers owned social data without secrets or raw IP addresse
   db.prepare("INSERT INTO reports (id,target_type,target_id,reason,reporter_id,created_at) VALUES (?,?,?,?,?,?)").run("rep_export", "post", "missing", "spam", user.id, 16);
   db.prepare("INSERT INTO events (id,user_id,name,props,ip,created_at) VALUES (?,?,?,?,?,?)").run("evt_export", user.id, "view_artist", '{"artist":"The Band"}', "203.0.113.10", 17);
   db.prepare("INSERT INTO dms (id,from_id,to_id,text,created_at) VALUES (?,?,?,?,?)").run("dm_export_in", other.id, user.id, "incoming", 18);
+  const exportedCampaign = { version: 1, treatment: "after-dark", artistKey: "the band" };
+  db.prepare(`INSERT INTO posts (id,user_id,kind,artist,venue,overall,review,campaign,created_at)
+    VALUES (?,?,?,?,?,?,?,?,?)`).run(
+    "post_export_campaign", user.id, "status", "", "", 0, "New music tonight", JSON.stringify(exportedCampaign), 19,
+  );
+  db.prepare(`INSERT INTO posts (id,user_id,artist,venue,overall,tagged_user_ids,created_at)
+    VALUES (?,?,?,?,?,?,?)`).run("post_export_tagged", other.id, "The Band", "The Venue", 4, JSON.stringify([user.id]), 20);
+  db.prepare("INSERT INTO posts (id,user_id,artist,venue,overall,created_at) VALUES (?,?,?,?,?,?)")
+    .run("post_export_rejected", other.id, "The Band", "The Venue", 4, 21);
+  db.prepare("INSERT INTO post_tag_rejections (post_id,user_id,created_at) VALUES (?,?,?)")
+    .run("post_export_rejected", user.id, 22);
 
   const data = routes["GET /api/me/export"]({ user: restrictedUser, ip: "export-test" });
   assert.equal(data.venueReviews[0].id, "vr_export");
@@ -2623,6 +2663,18 @@ test("account export covers owned social data without secrets or raw IP addresse
   assert.equal(data.reportsSubmitted[0].id, "rep_export");
   assert.deepEqual(data.activityEvents[0].properties, { artist: "The Band" });
   assert.equal(data.messagesReceived[0].text, "incoming");
+  assert.deepEqual(data.posts.find((post) => post.id === "post_export_campaign").campaign, exportedCampaign);
+  assert.deepEqual(data.taggedInPosts.find((post) => post.postId === "post_export_tagged"), {
+    postId: "post_export_tagged",
+    authorId: other.id,
+    removed: false,
+    createdAt: 20,
+  });
+  assert.deepEqual(data.removedPostTags.find((tag) => tag.postId === "post_export_rejected"), {
+    postId: "post_export_rejected",
+    createdAt: 22,
+  });
+  assert.ok(data.exportNotes.some((note) => note.includes("1,000 posts tagging you") && note.includes("1,000 tags you removed")));
   const encoded = JSON.stringify(data);
   assert.equal(encoded.includes("203.0.113.10"), false);
   assert.equal(encoded.includes("pass_hash"), false);
@@ -2643,6 +2695,8 @@ test("account deletion requires the password and erases SET NULL privacy rows at
   db.prepare("INSERT INTO artist_posts (id,artist_key,user_id,text,created_at) VALUES (?,?,?,?,?)").run("ap_delete", "delete band", user.id, "post", 23);
   db.prepare("INSERT INTO notifications (id,user_id,actor_id,type,created_at) VALUES (?,?,?,?,?)").run("n_delete", survivor.id, user.id, "follow", 24);
   db.prepare("INSERT INTO posts (id,user_id,artist,venue,overall,created_at) VALUES (?,?,?,?,?,?)").run("post_delete", user.id, "Band", "Venue", 4, 25);
+  db.prepare("INSERT INTO posts (id,user_id,artist,venue,overall,tagged_user_ids,created_at) VALUES (?,?,?,?,?,?,?)")
+    .run("post_delete_survivor_tag", survivor.id, "Band", "Venue", 4, JSON.stringify([user.id, survivor.id]), 26);
   db.prepare("INSERT INTO sessions (token_hash,user_id,created_at,expires_at) VALUES (?,?,?,?)").run("session_delete", user.id, 1, Date.now() + 100000);
 
   const handler = routes["DELETE /api/me"];
@@ -2669,6 +2723,16 @@ test("account deletion requires the password and erases SET NULL privacy rows at
     assert.equal(db.prepare(`SELECT COUNT(*) count FROM ${table} WHERE ${column}=?`).get(user.id).count, 0, `${table} retained deleted-account data`);
   }
   assert.equal(db.prepare("SELECT COUNT(*) count FROM reports WHERE id='rep_delete_target'").get().count, 0);
+  assert.equal(
+    db.prepare("SELECT tagged_user_ids FROM posts WHERE id='post_delete_survivor_tag'").get().tagged_user_ids,
+    JSON.stringify([survivor.id]),
+    "account erasure must scrub structured associations from posts that survive",
+  );
+  assert.equal(
+    db.prepare("SELECT COUNT(*) count FROM post_user_tags WHERE user_id=?").get(user.id).count,
+    0,
+    "account erasure must leave no normalized tag association for the deleted account",
+  );
 });
 
 // Discover looked broken because the catalogue seeder published its MusicBrainz

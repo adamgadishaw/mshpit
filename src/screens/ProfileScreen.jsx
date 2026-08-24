@@ -20,6 +20,8 @@ import { profileMediaItems } from "../domain/profileMedia.mjs";
 import { mediaDisplayKind, mediaPosterUri } from "../domain/postMediaDisplay.mjs";
 import { accountTargetScope, scopedScreenValue } from "../domain/screenScope.mjs";
 import { tasteMatch } from "../domain/tasteMatch.mjs";
+import { selectConcertReviews, selectProfileTimeline } from "../domain/profileTimeline.mjs";
+import { useProfileHistory } from "../features/profileHistory/useProfileHistory";
 
 const EMPTY_PLAYLIST_STATE = Object.freeze({ status: "loading", rows: [], error: "" });
 const EMPTY_PROFILE_STATE = Object.freeze({ status: "loading", user: null, error: "" });
@@ -83,14 +85,15 @@ function ProfileMediaTile({ item, index, onOpen }) {
 
 // MySpace-style profile - banner, pfp, now-playing, theme song, Treble/Bass top
 // artists, planned shows, reviews. Built to make people findable and followable.
-export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtist, onOpenVenue, onEditProfile, onPreview, onMessage, onReport, onEditPost, onOpenPhotos, onPlay, onOpenFollowList, onOpenBadges }) {
-  const { session, userById, logsByUser, isFollowing, follow, unfollow, followerCount, followingCount, goingFor, userBadges, sharedShows, userPlaylists, loadUser, isBlocked, blockUser, unblockUser, userPoints, userAchievements, loadRewards } = useStore();
+export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenProfile, onOpenArtist, onOpenVenue, onManageProfile, onPreview, onMessage, onReport, onEditPost, onOpenPhotos, onPlay, onRemoveMyPostTag, onOpenFollowList, onOpenBadges }) {
+  const { session, userById, logsByUser, isFollowing, follow, unfollow, followerCount, followingCount, goingFor, userBadges, sharedShows, userPlaylists, loadUser, isBlocked, blockUser, unblockUser, userPoints, userAchievements, loadRewards, deleteOwnPost } = useStore();
   const profileScope = accountTargetScope(session?.id, `profile:${userId || ""}`);
   const profileScopeRef = useRef(profileScope);
   profileScopeRef.current = profileScope;
   const [profileRevision, setProfileRevision] = useState(0);
   const [profileState, setProfileState] = useState(() => ({ scope: profileScope, value: EMPTY_PROFILE_STATE }));
   const profileView = scopedScreenValue(profileState, profileScope, EMPTY_PROFILE_STATE);
+  const history = useProfileHistory({ accountId: session?.id, targetId: userId, enabled: !!userId && profileView.status !== "missing" });
   const confirmedUser = profileView.user?.id === userId ? profileView.user : null;
   const cachedUser = confirmedUser || userById(userId);
   // The shared public-profile cache keeps only server-approved public profile
@@ -205,8 +208,18 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtis
     );
   }
 
-  const logs = logsByUser(user.id);
+  const cachedLogs = logsByUser(user.id);
+  const logs = history.posts.length || history.status === "ready" ? history.posts : cachedLogs;
+  const reviews = selectConcertReviews(logs);
+  const timeline = selectProfileTimeline(logs);
   const isSelf = session?.id === user.id;
+  const historyLoading = history.status === "idle" || history.status === "loading" || history.status === "refreshing";
+  const historyCount = (value) => `${value}${history.complete ? "" : "+"}`;
+  const deleteHistoryPost = async (postId) => {
+    const result = await deleteOwnPost(postId);
+    if (result?.ok) history.removePost(postId);
+    return result;
+  };
   // Play a saved playlist: first track opens the bar with the whole list queued.
   const playPlaylist = (pl) => { const q = (pl.tracks || []).filter((t) => !!trackKey(t)); if (q.length) onPlay?.(q[0], q); };
   // "Crossed paths", shows you've both been to (and artists you've both seen).
@@ -278,9 +291,14 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtis
           {!!user.bio && <Text style={styles.bio}>{user.bio}</Text>}
 
           {isSelf ? (
-            <Pressable style={styles.editBtn} onPress={onEditProfile}>
+            <Pressable
+              style={styles.editBtn}
+              onPress={onManageProfile}
+              accessibilityRole="button"
+              accessibilityLabel="Manage profile"
+            >
               <Icon name="edit" size={15} color={colors.amber} />
-              <Text style={styles.editTxt}>Edit profile</Text>
+              <Text style={styles.editTxt}>Manage profile</Text>
             </Pressable>
           ) : session && isBlocked(user.id) ? (
             <View style={styles.blockedBox}>
@@ -309,7 +327,7 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtis
         </View>
 
         <View style={styles.statsRow}>
-          <Stat value={logs.length} label="REVIEWS" />
+          <Stat value={historyCount(reviews.length)} label="REVIEWS" />
           <Stat value={planned.length} label="GOING" />
           <Stat value={followerCount(user.id)} label="FOLLOWERS" onPress={() => onOpenFollowList?.(user.id, "followers")} />
           <Stat value={followingCount(user.id)} label="FOLLOWING" onPress={() => onOpenFollowList?.(user.id, "following")} />
@@ -411,7 +429,7 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtis
         {/* Media gallery, using the same resilient descriptor pipeline as You. */}
         {gallery.length > 0 && (
           <>
-            <Text style={styles.sectionLabel}>MEDIA · {gallery.length}</Text>
+            <Text style={styles.sectionLabel}>MEDIA · {historyCount(gallery.length)}</Text>
             <View style={styles.gallery}>
               {gallery.map((g, i) => (
                 <ProfileMediaTile key={g.id || `${g.postId || "post"}:${g.uri}:${i}`} item={g} index={i} onOpen={() => onOpenPhotos?.(galleryViewerItems, i, g.postId)} />
@@ -470,27 +488,54 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenArtis
 
         {/* their posts, the same feed card as home, so a profile reads like a
             wall of everything this person has posted (Facebook/Letterboxd style) */}
-        <Text style={styles.sectionLabel}>{isSelf ? "YOUR POSTS" : "POSTS"} · {logs.length}</Text>
-        {logs.length === 0 && (
-          <Text style={styles.empty}>{isSelf ? "You haven't posted a show yet. Tap “Make a post” to log your first night." : "No posts yet."}</Text>
+        <Text style={styles.sectionLabel}>{isSelf ? "YOUR POSTS" : "POSTS"} · {historyCount(logs.length)}</Text>
+        {logs.length === 0 && !historyLoading && (
+          <Text style={styles.empty}>{isSelf ? "You haven't posted yet. Tap “Make a post” to log a show or share an update." : "No posts yet."}</Text>
+        )}
+        {!logs.length && historyLoading && (
+          <View style={styles.historyState} accessibilityLiveRegion="polite">
+            <ActivityIndicator size="small" color={colors.amber} />
+            <Text style={styles.historyStateText}>Loading posts...</Text>
+          </View>
         )}
         <View style={styles.postsWrap}>
-          {logs.map((l) => (
+          {timeline.map((l) => (
             <TicketStub
               key={l.id}
               log={l}
               onOpen={onOpenShow}
               onPreview={onPreview}
-              onOpenProfile={() => {}}
+              onOpenProfile={onOpenProfile}
               onOpenArtist={onOpenArtist}
               onOpenVenue={onOpenVenue}
               onReport={onReport}
               onEdit={onEditPost}
+              onDelete={deleteHistoryPost}
+              onRemoveMyPostTag={onRemoveMyPostTag}
+              onSelfTagRemoved={({ id, version, userId: removedUserId }) => history.updatePost(id, (post) => ({
+                ...post,
+                taggedPeople: (Array.isArray(post.taggedPeople) ? post.taggedPeople : []).filter((person) => person?.id !== removedUserId),
+                ...(Number.isSafeInteger(version) ? { version, editedAt: version } : {}),
+              }))}
               onOpenPhotos={onOpenPhotos}
               onPlay={onPlay}
             />
           ))}
         </View>
+        {!!history.error && (
+          <View style={styles.historyError} accessibilityLiveRegion="assertive">
+            <Text style={styles.historyErrorText}>{history.posts.length ? "Earlier posts could not be loaded." : "Posts could not be loaded."}</Text>
+            <Pressable style={styles.historyButton} onPress={history.posts.length && history.nextCursor ? history.loadMore : history.retry} accessibilityRole="button" accessibilityLabel="Retry loading profile posts">
+              <Text style={styles.historyButtonText}>Try again</Text>
+            </Pressable>
+          </View>
+        )}
+        {!!history.nextCursor && !history.error && (
+          <Pressable style={styles.historyButton} onPress={history.loadMore} disabled={history.loadingMore} accessibilityRole="button" accessibilityLabel="Load earlier profile posts" accessibilityState={{ disabled: history.loadingMore }}>
+            {history.loadingMore && <ActivityIndicator size="small" color={colors.amber} />}
+            <Text style={styles.historyButtonText}>{history.loadingMore ? "Loading earlier posts..." : "Load earlier posts"}</Text>
+          </Pressable>
+        )}
 
       </ScrollView>
     </View>
@@ -504,6 +549,12 @@ const styles = StyleSheet.create({
   missingSub: { color: colors.textDim, fontSize: 14, textAlign: "center", lineHeight: 20 },
   profileRetry: { minHeight: 44, justifyContent: "center", marginTop: 10, paddingHorizontal: 18, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.amber },
   profileRetryText: { color: colors.amber, fontSize: 13, fontWeight: "800" },
+  historyState: { minHeight: 56, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8 },
+  historyStateText: { color: colors.textDim, fontSize: 12 },
+  historyError: { alignItems: "center", gap: 8, marginHorizontal: 16, marginTop: 12, padding: 12, borderWidth: 1, borderColor: colors.danger, borderRadius: radius.md },
+  historyErrorText: { color: colors.textDim, fontSize: 12, textAlign: "center" },
+  historyButton: { alignSelf: "center", minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, marginTop: 12, paddingHorizontal: 18, borderWidth: 1, borderColor: colors.amber, borderRadius: radius.pill },
+  historyButtonText: { color: colors.amber, fontSize: 12, fontWeight: "800" },
   topbar: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 12, paddingBottom: 8 },
   backBtn: { width: 40 },
   backCircle: { width: 36, height: 36, borderRadius: 18, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },

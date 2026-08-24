@@ -42,6 +42,17 @@ test("analytics policy rejects unknown names and malformed idempotency identifie
   });
 });
 
+test("artist workspace and fan preview screen views survive the shared analytics allowlist", () => {
+  assert.deepEqual(sanitizeAnalyticsEvent({ name: "screen_view", props: { screen: "artist_hq", referrer: "artist" } }), {
+    name: "screen_view",
+    props: { screen: "artist_hq", referrer: "artist" },
+  });
+  assert.deepEqual(sanitizeAnalyticsEvent({ name: "screen_view", props: { screen: "artist_preview", referrer: "artist_hq" } }), {
+    name: "screen_view",
+    props: { screen: "artist_preview", referrer: "artist_hq" },
+  });
+});
+
 test("analytics latency buckets are stable at their boundaries", () => {
   assert.equal(analyticsDurationBucket(249), "under_250ms");
   assert.equal(analyticsDurationBucket(250), "250_to_750ms");
