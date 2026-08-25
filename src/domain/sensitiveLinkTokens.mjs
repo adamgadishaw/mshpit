@@ -32,6 +32,15 @@ export function readSensitiveLinkToken(locationLike, key) {
     || validToken(safeParams(locationLike?.search).get(name));
 }
 
+// New security boundaries have no legacy query-link population to support.
+// Keeping them fragment-only means the client will not legitimize a credential
+// form that already leaked into an HTTP request before the app could scrub it.
+export function readSensitiveFragmentToken(locationLike, key) {
+  const name = String(key || "");
+  if (!name) return null;
+  return validToken(hashParams(locationLike?.hash)?.get(name));
+}
+
 // Return a same-origin history target with only the consumed credential
 // removed. Other query parameters and ordinary navigation fragments survive.
 export function scrubSensitiveLinkToken(locationLike, key) {

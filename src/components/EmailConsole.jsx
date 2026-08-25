@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { View, Text, StyleSheet, Pressable, TextInput, ScrollView } from "react-native";
 import { colors, mono, radius, space } from "../theme";
 import { api } from "../lib/api";
+import { emailTemplateEditable } from "../domain/emailTemplateAccess.mjs";
 import Icon from "./Icon";
 
 const SECTIONS = [
@@ -18,11 +19,22 @@ const REASON_COPY = {
   "missing-from": "MAIL_FROM is not set on the server.",
   "invalid-from": "MAIL_FROM is set but is not a usable address.",
   "missing-api-key-and-from": "Neither RESEND_API_KEY nor MAIL_FROM is set.",
+  "invalid-reply-to": "MAIL_REPLY_TO is set but is not a usable address; replies will not be routed there.",
   "sender-not-verified": "Resend rejected the sender. The domain is probably not verified.",
   "opted-out": "This person turned off announcements.",
   banned: "This account is banned.",
   "send-failed": "Resend rejected the request.",
   error: "The request to Resend did not complete.",
+};
+
+const TEMPLATE_LABELS = {
+  error_alert: "Server error digest",
+  owner_approval_requested: "Owner approval request",
+  owner_approval_receipt: "Owner security receipt",
+  site_health_digest: "Site health digest",
+  verify_email: "Email confirmation",
+  welcome: "Welcome",
+  password_reset: "Password reset",
 };
 
 function timeAgo(ms) {
@@ -36,13 +48,15 @@ function timeAgo(ms) {
 }
 
 function Field({ label, hint, ...props }) {
+  const readOnly = props.editable === false;
   return (
     <View style={{ marginBottom: space(3) }}>
       <Text style={styles.label}>{label}</Text>
       <TextInput
-        placeholderTextColor={colors.textFaint}
-        style={[styles.input, props.multiline && styles.inputTall]}
         {...props}
+        placeholderTextColor={colors.textFaint}
+        style={[styles.input, props.multiline && styles.inputTall, readOnly && styles.inputReadOnly, props.style]}
+        accessibilityState={{ ...props.accessibilityState, disabled: readOnly }}
       />
       {hint ? <Text style={styles.hint}>{hint}</Text> : null}
     </View>
@@ -103,12 +117,21 @@ export default function EmailConsole() {
         <View style={styles.statusRow}>
           <Icon name={mail.configured ? "check" : "flag"} size={15} color={mail.configured ? colors.good : colors.danger} />
           <Text style={styles.statusTitle}>
-            {mail.configured ? `Sending as ${mail.fromDomain}` : "Email is not configured, nothing can send"}
+            {mail.configured ? `Configured to send from ${mail.fromDomain}` : "Email is not configured, nothing can send"}
           </Text>
         </View>
         {!mail.configured && (
           <Text style={styles.statusBody}>
             {REASON_COPY[mail.reason] || mail.reason || "Mail is not configured."} See RESEND_SETUP.md.
+          </Text>
+        )}
+        {mail.configured && (
+          <Text style={styles.statusBody}>
+            {mail.warning
+              ? REASON_COPY[mail.warning]
+              : mail.replyToValid
+                ? `Replies route to the monitored ${mail.replyToDomain} inbox.`
+                : "No reply inbox is configured. Set MAIL_REPLY_TO to the monitored Workspace address."}
           </Text>
         )}
         {overview.verification && (
@@ -150,48 +173,51 @@ function Templates({ overview, run, busy }) {
   const open = async (key) => {
     if (openKey === key) { setOpenKey(null); setDraft(null); return; }
     const data = await api(`/api/admin/email/templates/${key}`);
+    const summary = (overview.templates || []).find((template) => template.key === key);
     setOpenKey(key);
     setDraft({
       subject: data.template.subject, body: data.template.body,
       ctaLabel: data.template.cta_label || "", ctaUrl: data.template.cta_url || "",
       customized: data.template.customized,
+      editable: emailTemplateEditable(summary, data.template),
     });
   };
 
   return (
     <View>
       <Text style={styles.sectionHint}>
-        This is the mail Pit sends on its own. Placeholders in {"{{curly braces}}"} get filled in per person:
+        This is the mail Pit sends on its own. Security and account templates are code-owned and view-only here. Placeholders in {"{{curly braces}}"} get filled in per person:
         {" "}{(overview.tokens || []).map((t) => `{{${t}}}`).join(", ")}.
       </Text>
       {(overview.templates || []).map((t) => (
         <View key={t.key} style={styles.card}>
-          <Pressable style={styles.cardHead} onPress={() => open(t.key)}>
+          <Pressable accessibilityRole="button" accessibilityState={{ expanded: openKey === t.key }} style={styles.cardHead} onPress={() => open(t.key)}>
             <View style={{ flex: 1 }}>
-              <Text style={styles.cardTitle}>{t.key === "welcome" ? "Welcome (sent at signup)" : "Password reset"}</Text>
+              <Text style={styles.cardTitle}>{TEMPLATE_LABELS[t.key] || t.key}</Text>
               <Text style={styles.cardSub}>{t.subject}</Text>
             </View>
-            <Text style={styles.tag}>{t.customized ? `edited ${timeAgo(t.updatedAt)}` : "default"}</Text>
+            <Text style={[styles.tag, t.editable === false && styles.tagLocked]}>{t.editable === false ? "code-owned" : t.customized ? `edited ${timeAgo(t.updatedAt)}` : "default"}</Text>
           </Pressable>
 
           {openKey === t.key && draft && (
             <View style={styles.cardBody}>
-              <Field label="Subject" value={draft.subject} onChangeText={(v) => setDraft({ ...draft, subject: v })} />
-              <Field label="Body" value={draft.body} multiline onChangeText={(v) => setDraft({ ...draft, body: v })}
+              {!draft.editable ? <View style={styles.readOnlyNotice}><Icon name="lock" size={14} color={colors.gold} /><Text style={styles.readOnlyText}>This copy and its button destination protect an account or security boundary. Changes require reviewed source code and a deployment.</Text></View> : null}
+              <Field label="Subject" value={draft.subject} editable={draft.editable && !busy} onChangeText={(v) => setDraft({ ...draft, subject: v })} />
+              <Field label="Body" value={draft.body} editable={draft.editable && !busy} multiline onChangeText={(v) => setDraft({ ...draft, body: v })}
                 hint="Plain text. Leave a blank line between paragraphs." />
-              <Field label="Button label" value={draft.ctaLabel} onChangeText={(v) => setDraft({ ...draft, ctaLabel: v })} />
-              <Field label="Button link" value={draft.ctaUrl} onChangeText={(v) => setDraft({ ...draft, ctaUrl: v })}
+              <Field label="Button label" value={draft.ctaLabel} editable={draft.editable && !busy} onChangeText={(v) => setDraft({ ...draft, ctaLabel: v })} />
+              <Field label="Button link" value={draft.ctaUrl} editable={draft.editable && !busy} onChangeText={(v) => setDraft({ ...draft, ctaUrl: v })}
                 hint="Must be http/https, or a placeholder like {{origin}}." />
               <View style={styles.btnRow}>
-                <Btn label="Save" tone="primary" busy={busy} onPress={() => run(
-                  () => api(`/api/admin/email/templates/${t.key}`, { method: "PUT", body: draft, context: "Saving email copy" }),
+                {draft.editable ? <Btn label="Save" tone="primary" busy={busy} onPress={() => run(
+                  () => api(`/api/admin/email/templates/${t.key}`, { method: "PUT", body: { subject: draft.subject, body: draft.body, ctaLabel: draft.ctaLabel, ctaUrl: draft.ctaUrl }, context: "Saving email copy" }),
                   "Saved.",
-                )} />
+                )} /> : null}
                 <Btn label="Send me a test" busy={busy} onPress={() => run(
                   () => api(`/api/admin/email/templates/${t.key}/test`, { method: "POST", context: "Sending a test email" }),
                   (r) => (r?.sent ? `Test sent to ${r.to}.` : `Not sent: ${REASON_COPY[r?.reason] || r?.reason}`),
                 )} />
-                {draft.customized && (
+                {draft.editable && draft.customized && (
                   <Btn label="Restore default" tone="danger" busy={busy} onPress={() => run(
                     async () => { const r = await api(`/api/admin/email/templates/${t.key}`, { method: "DELETE", context: "Restoring default copy" }); setOpenKey(null); setDraft(null); return r; },
                     "Restored the built-in copy.",
@@ -387,11 +413,15 @@ const styles = StyleSheet.create({
   tag: { color: colors.textFaint, fontSize: 10, fontFamily: mono, textTransform: "uppercase", borderWidth: 1, borderColor: colors.line, borderRadius: radius.pill, paddingHorizontal: 8, paddingVertical: 2, overflow: "hidden" },
   tagOk: { color: colors.good, borderColor: colors.good },
   tagWarn: { color: colors.gold, borderColor: colors.gold },
+  tagLocked: { color: colors.gold, borderColor: colors.gold },
   meta: { color: colors.textDim, fontSize: 12, marginBottom: 4 },
   label: { color: colors.textDim, fontSize: 11, fontWeight: "700", marginBottom: 4, textTransform: "uppercase" },
   hint: { color: colors.textFaint, fontSize: 11, marginTop: 4, lineHeight: 15 },
   input: { borderWidth: 1, borderColor: colors.line, borderRadius: radius.sm, color: colors.text, padding: 10, fontSize: 13, backgroundColor: colors.bgElev },
+  inputReadOnly: { color: colors.textDim, backgroundColor: colors.surface, opacity: 0.82 },
   inputTall: { minHeight: 120, textAlignVertical: "top" },
+  readOnlyNotice: { flexDirection: "row", alignItems: "flex-start", gap: 8, borderWidth: 1, borderColor: colors.gold + "66", borderRadius: radius.sm, backgroundColor: colors.gold + "0D", padding: space(3), marginBottom: space(3) },
+  readOnlyText: { flex: 1, color: colors.gold, fontSize: 11, lineHeight: 17, fontWeight: "700" },
   btnRow: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginTop: space(3) },
   btn: { paddingVertical: 9, paddingHorizontal: 14, borderRadius: 999, borderWidth: 1, borderColor: colors.line },
   btnPrimary: { backgroundColor: colors.amberStrong, borderColor: colors.amberStrong },

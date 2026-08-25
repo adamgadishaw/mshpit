@@ -101,6 +101,8 @@ test("CI actions are immutable and checkout does not persist a repository creden
 test("Render never stores private credentials in the tracked blueprint", async () => {
   const source = await readFile(new URL("render.yaml", ROOT), "utf8");
   const privateKeys = new Set([
+    "OWNER_EMAIL",
+    "OWNER_MIGRATION_EMAIL",
     "ADMIN_EMAIL",
     "ADMIN_PASSWORD",
     "YOUTUBE_API_KEY",
@@ -132,6 +134,8 @@ test("Render never stores private credentials in the tracked blueprint", async (
     assert.doesNotMatch(block, /^\s*value\s*:/m, `${key} must not have a tracked value`);
   }
   for (const key of privateKeys) assert.ok(seen.get(key), `${key} is missing from the deployment contract`);
+  assert.equal(seen.get("OWNER_EMAIL"), 2, "production and staging must source Owner mail from Render rather than git");
+  assert.equal(seen.get("OWNER_MIGRATION_EMAIL"), 2, "one-time Owner migration approval must remain a Render secret");
   assert.equal(seen.get("ADMIN_EMAIL"), 2, "production and staging must each source the administrator identity from Render");
   assert.equal(seen.get("PIT_VIDEO_VERIFIER_SECRET"), 3, "production references one generated verifier secret while staging remains host-managed");
 });

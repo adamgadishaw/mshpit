@@ -59,6 +59,36 @@ ${blocks}${cta}
 // Built-in copy. A row in email_templates overrides these; deleting that row
 // restores exactly this, which is the escape hatch for a bad edit.
 export const DEFAULT_TEMPLATES = {
+  owner_approval_requested: {
+    subject: "Mshpit Owner approval required",
+    body: `{{summary}}
+
+{{detail}}
+
+Opening this link does not apply the change. You must be signed in as the locked Mshpit Owner and re-enter the Owner password before approving or rejecting it. If you did not expect this request, reject it and review the staff accounts.`,
+    cta_label: "Review Owner approval",
+    cta_url: "{{link}}",
+  },
+  owner_approval_receipt: {
+    subject: "Mshpit security receipt",
+    body: `{{summary}}
+
+{{detail}}
+
+This immutable receipt is hash-chained to the previous Mshpit security receipt. Keep this email as an external checkpoint of the recorded stamp.`,
+    cta_label: "Open Mshpit",
+    cta_url: "{{origin}}",
+  },
+  site_health_digest: {
+    subject: "Mshpit daily site health readout",
+    body: `{{summary}}
+
+{{detail}}
+
+This readout contains privacy-safe operational aggregates only. It excludes member identities, search text, messages, posts, media URLs, network addresses, and credentials.`,
+    cta_label: "Open moderation",
+    cta_url: "{{origin}}",
+  },
   error_alert: {
     subject: "Pit: errors on the server",
     body: `{{summary}} since the last alert.
@@ -104,6 +134,23 @@ If this wasn't you, ignore this email and nothing will change.`,
     cta_url: "{{link}}",
   },
 };
+
+// These messages establish or report a security boundary. Their copy and CTA
+// destination are owned by reviewed source code, never by the admin-editable
+// email table. A compromised ordinary administrator therefore cannot turn a
+// password reset or Owner approval into an off-site credential link.
+export const CODE_OWNED_TEMPLATE_KEYS = Object.freeze(new Set([
+  "error_alert",
+  "verify_email",
+  "password_reset",
+  "owner_approval_requested",
+  "owner_approval_receipt",
+  "site_health_digest",
+]));
+
+export function isCodeOwnedTemplate(key) {
+  return CODE_OWNED_TEMPLATE_KEYS.has(String(key || ""));
+}
 
 // Marketing mail must carry a working opt-out; transactional mail must not,
 // because unsubscribing from your own password reset is a way to lock yourself

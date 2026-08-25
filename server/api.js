@@ -7,7 +7,7 @@
 import { randomUUID, randomBytes, createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { mailConfigured, mailDiagnostics } from "./mailer.js";
-import { DEFAULT_TEMPLATES, availableTokens, renderEmail, safeUrl } from "./emails.js";
+import { DEFAULT_TEMPLATES, availableTokens, isCodeOwnedTemplate, renderEmail, safeUrl } from "./emails.js";
 import {
   dailySendLimit, deliver, logStatsSince, publicOrigin, recentLog, remainingToday,
   sendTemplate, sendTemplateInBackground, sentToday, templateFor, unsubscribeUrl,
@@ -15,7 +15,7 @@ import {
 import { AUDIENCES, audienceSize, campaignProgress, drainCampaign, pauseCampaign, startCampaign } from "./emailQueue.js";
 import { db, DATABASE_PATH, q, emailStmts, badgeStmts, customBadgesFor, publicUser as storedPublicUser, parseJsonArray, parseJsonObject, artistStmts, publicArtist, artistRow, artistSearchKey, normName, pruneMissingArtists } from "./db.js";
 import { BADGE_COLORS, BADGE_GLYPHS, BADGE_KINDS, validateBadge } from "../src/domain/badgeArt.mjs";
-import { alertCooldownMs, alertsEnabled, errorStats, maybeAlert, recentErrors, recordError } from "./errorLog.js";
+import { alertCooldownMs, alertRecipient, alertsEnabled, errorStats, maybeAlert, recentErrors, recordError } from "./errorLog.js";
 import { genreClaim, providerGenreFields, resolveGenre, storedClaims, upsertClaim, withoutSource } from "../src/domain/genre.mjs";
 import { hashPassword, verifyPassword, verifyPasswordForUser, createSession, destroySession, rateLimit, reserveRateLimits } from "./auth.js";
 import { createRecoveryResponseFloor } from "./authResponseFloor.js";
@@ -121,6 +121,12 @@ import {
   recordModerationAction as moderationRecord,
 } from "./moderation.js";
 import { ANALYTICS_MAX_RAW_ROWS, ANALYTICS_MAX_ROWS_PER_ACCOUNT, ANALYTICS_RETENTION_DAYS, ingestAnalyticsBatch } from "./analyticsService.js";
+import { readGuestSearchAnalytics } from "./guestSearchAnalytics.js";
+import { guestSearchAnalyticsRoutes } from "./features/guestSearchAnalytics/guestSearchAnalyticsRoutes.js";
+import { suggestionRoutes } from "./features/suggestions/suggestionRoutes.js";
+import { artistMemorialRoutes } from "./features/artistMemorials/artistMemorialRoutes.js";
+import { createArtistMemorialRepository } from "./features/artistMemorials/artistMemorialRepository.js";
+import { createArtistMemorialService } from "./features/artistMemorials/artistMemorialService.js";
 import { recommendedFeedPage } from "./recommendationService.js";
 import { hasTrustedLandingImage, landingCommunityMedia, landingTotals } from "./landingMedia.js";
 import { createSuccessfulReadinessCache } from "./healthAvailability.js";
@@ -133,10 +139,19 @@ import { safeOwnedReadyMediaUrl } from "./publicMedia.js";
 import { normalizeArtistCampaign } from "../src/domain/artistCampaignPost.mjs";
 import { normalizeTaggedUserIds } from "../src/domain/postFriendTags.mjs";
 import { canonicalTicketUrl, projectedTourDateTicketUrl } from "../src/domain/ticketLinks.mjs";
+import { isOwnerId, ownerAccount } from "./ownerIdentity.js";
+import {
+  createOwnerApprovalRequest,
+  emailOwnerApprovalRequest,
+} from "./ownerApprovals.js";
+import { ownerApprovalRoutes } from "./features/ownerApprovals/ownerApprovalRoutes.js";
 
 export { ApiError } from "./errors.js";
 
 const now = () => Date.now();
+const artistMemorialService = createArtistMemorialService({
+  repository: createArtistMemorialRepository(db),
+});
 ensureLegacyMediaFinalizeSchema(db);
 const uid = (p) => `${p}_${randomUUID().slice(0, 12)}`;
 const PROFILE_EXTRAS_MAX_BYTES = 8000;
@@ -284,8 +299,19 @@ function requireModerator(ctx) {
   if (u.role !== "admin" && u.role !== "moderator") throw new ApiError(403, "Moderators only.", "FORBIDDEN");
   return u;
 }
+function requireOwner(ctx) {
+  const user = requireAdmin(ctx);
+  if (!isOwnerId(db, user.id)) throw new ApiError(403, "The locked Mshpit Owner must approve this action.", "FORBIDDEN");
+  return user;
+}
 function assertModerationRank(actor, target) {
-  if (actor?.role === "admin") return;
+  if (isOwnerId(db, target?.id)) {
+    throw new ApiError(403, "The Owner account cannot be restricted.", "FORBIDDEN");
+  }
+  if (actor?.role === "admin") {
+    if (target?.role === "admin") throw new ApiError(403, "Administrator accounts require Owner approval.", "FORBIDDEN");
+    return;
+  }
   if (target?.role === "admin" || target?.role === "moderator") {
     throw new ApiError(403, "Staff accounts require administrator review.", "FORBIDDEN");
   }
@@ -775,6 +801,39 @@ function cleanPlaybackSource(providerValue, sourceIdValue) {
     if (videoId) return { provider, sourceId: videoId };
   }
   return { provider: null, sourceId: null };
+}
+
+function roleChangeTouchesHead(currentRole, nextRole) {
+  return [currentRole, nextRole].some((role) => role === "admin" || role === "moderator");
+}
+
+function selectedRoleHandle(target, role, requestedHandle = null) {
+  const handle = requestedHandle ? cleanHandle(requestedHandle) : null;
+  if (handle && !handleAllowedForRole(handle, role)) {
+    throw new ApiError(400, `A ${role} username must include ${role === "admin" ? "admin" : "mod"}.`, "VALIDATION_FAILED");
+  }
+  if (role === "admin" || role === "moderator") {
+    return uniqueTaggedHandle(handle || target.handle, role, target.id);
+  }
+  const selected = handle || target.handle;
+  if (handle && !handleAvailableTo(handle, target.id)) {
+    throw new ApiError(409, "That username is already taken.", "CONFLICT");
+  }
+  return selected;
+}
+
+function applyRoleChange(ctx, target, role, requestedHandle, { reason = "", requestedBy = null } = {}) {
+  if (isOwnerId(db, target.id)) throw new ApiError(403, "The Owner role cannot be changed.", "FORBIDDEN");
+  const selectedHandle = selectedRoleHandle(target, role, requestedHandle);
+  if (target.role === role && target.handle === selectedHandle) return { changed: false, role, handle: selectedHandle };
+  const changed = db.prepare(`UPDATE users SET role=?,handle=?
+    WHERE id=? AND role=? AND handle=?`).run(role, selectedHandle, target.id, target.role, target.handle).changes === 1;
+  if (!changed) throw new ApiError(409, "That member changed while the role was being reviewed. Start a new approval.", "CONFLICT");
+  db.prepare("DELETE FROM sessions WHERE user_id=?").run(target.id);
+  moderationRecord(ctx, "change_role", "user", target.id, reason,
+    { role: target.role, handle: target.handle },
+    { role, handle: selectedHandle, ...(requestedBy ? { requestedBy } : {}) });
+  return { changed: true, role, handle: selectedHandle };
 }
 
 function cleanTrackPlaybackUrl({ videoId = null, provider = null, sourceId = null } = {}) {
@@ -1719,7 +1778,8 @@ function safePublicProfileImage(ownerId, value) {
 // live media capability check to every other-user projection in this API.
 function publicUser(row, options = {}) {
   const projected = storedPublicUser(row, options);
-  if (!projected || options.self) return projected;
+  if (!projected) return projected;
+  if (options.self) return { ...projected, owner: isOwnerId(db, row.id) };
   return {
     ...projected,
     avatarUri: safePublicProfileImage(row.id, projected.avatarUri),
@@ -2227,6 +2287,47 @@ export const routes = {
     atomicWrite,
     ApiError,
   }),
+  ...guestSearchAnalyticsRoutes({
+    database: db,
+    ApiError,
+    now,
+    rateLimit: limit,
+  }),
+  ...suggestionRoutes({
+    database: db,
+    ApiError,
+    assertSafeAuthoredText,
+    createId: uid,
+    now,
+    rateLimit: limit,
+    recordModerationAction: moderationRecord,
+    requireAdmin,
+    requireUser,
+  }),
+  ...artistMemorialRoutes({
+    database: db,
+    ApiError,
+    assertSafeAuthoredText,
+    decodeArtistKey: (ctx) => decodedPathParam(ctx, "key", { max: 180, label: "artist memorial link" }),
+    normName,
+    now,
+    rateLimit: limit,
+    recordModerationAction: moderationRecord,
+    requireAdmin,
+    resolveArtist: (key) => artistStmts.byNorm.get(key) || null,
+  }),
+  ...ownerApprovalRoutes({
+    database: db,
+    ApiError,
+    applyRoleChange,
+    getUser: (id) => q.userById.get(id),
+    limit,
+    now,
+    requireAdmin,
+    requireOwner,
+    roleChangeTouchesHead,
+    selectedRoleHandle,
+  }),
   // Render only needs liveness plus capability flags. Operational topology,
   // commit ids, quota and mail diagnostics belong on the authenticated staff
   // route so a public probe cannot inventory the deployment.
@@ -2513,7 +2614,28 @@ export const routes = {
     const rows = term.length >= 1
       ? artistStmts.search.all(`%${literal}%`, folded ? `%${folded}%` : "\u0000", term, folded, lim)
       : artistStmts.top.all(lim);
-    return { artists: rows.map(publicArtist), total: artistStmts.count.get().c };
+    const artistMbids = new Map(rows.map((row) => [row.norm, row.mbid]));
+    const memorials = artistMemorialService.readPublicForArtistKeys({
+      artistKeys: rows.map((row) => row.norm),
+      artistMbids,
+      at: now(),
+    });
+    return {
+      artists: rows.map((row) => {
+        const memorial = memorials.get(row.norm);
+        return {
+          ...publicArtist(row),
+          // Search receives only the compact public marker. The complete prose,
+          // accomplishments, thank-you, and citation load on the artist page.
+          memorial: memorial ? {
+            deceased: true,
+            deathDate: memorial.deathDate,
+            spotlight: memorial.spotlight,
+          } : null,
+        };
+      }),
+      total: artistStmts.count.get().c,
+    };
   },
 
   // Resolve a public URL to the thing it names, so the client router can open
@@ -3267,7 +3389,7 @@ export const routes = {
     if (v.handle && v.handle !== u.handle) {
       const taken = q.userByHandle.get(v.handle);
       if (taken && taken.id !== u.id) throw new ApiError(409, "That username is taken.");
-      if (!handleAllowedForRole(v.handle, u.role)) {
+      if (!isOwnerId(db, u.id) && !handleAllowedForRole(v.handle, u.role)) {
         throw new ApiError(400, u.role === "admin" ? 'Admin usernames must contain "admin".' : 'Moderator usernames must contain "mod".');
       }
       if (u.handle_changed_at) {
@@ -3471,6 +3593,9 @@ export const routes = {
   "DELETE /api/me": (ctx) => {
     // A moderation restriction cannot trap someone in the service.
     const u = requireSessionUser(ctx);
+    if (isOwnerId(db, u.id)) {
+      throw new ApiError(403, "The permanent Owner account cannot be deleted.", "FORBIDDEN");
+    }
     limit(ctx, "delete-account", 5, 60 * 60 * 1000);
     const password = typeof ctx.body?.password === "string" ? ctx.body.password : "";
     if (!password) throw new ApiError(400, "Enter your current password to delete your account.", "VALIDATION_FAILED");
@@ -4775,16 +4900,17 @@ export const routes = {
   // posts, while private product events provide aggregate usage/funnel counts.
   "GET /api/admin/analytics": (ctx) => {
     requireAdmin(ctx);
-    const dayAgo = now() - 24 * 60 * 60 * 1000;
-    const weekAgo = now() - 7 * 24 * 60 * 60 * 1000;
-    const monthAgo = now() - 30 * 24 * 60 * 60 * 1000;
+    ctx.setHeader?.("Cache-Control", "no-store");
+    const analyticsAt = now();
+    const dayAgo = analyticsAt - 24 * 60 * 60 * 1000;
+    const weekAgo = analyticsAt - 7 * 24 * 60 * 60 * 1000;
+    const monthAgo = analyticsAt - 30 * 24 * 60 * 60 * 1000;
     const one = (sql, ...a) => db.prepare(sql).get(...a);
     const all = (sql, ...a) => db.prepare(sql).all(...a);
     const totals = {
       events: one("SELECT COUNT(*) c FROM events").c,
       events24h: one("SELECT COUNT(*) c FROM events WHERE created_at >= ?", dayAgo).c,
       knownUsers: one("SELECT COUNT(DISTINCT user_id) c FROM events WHERE user_id IS NOT NULL").c,
-      guestHits: one("SELECT COUNT(*) c FROM events WHERE user_id IS NULL").c,
       users: one("SELECT COUNT(*) c FROM users").c,
       newUsers7d: one("SELECT COUNT(*) c FROM users WHERE created_at >= ?", weekAgo).c,
       activeUsers7d: one("SELECT COUNT(DISTINCT user_id) c FROM events WHERE user_id IS NOT NULL AND created_at >= ?", weekAgo).c,
@@ -4804,7 +4930,7 @@ export const routes = {
     const postDays = new Map(all("SELECT date(created_at/1000,'unixepoch') day,COUNT(*) c FROM posts WHERE removed=0 AND created_at >= ? GROUP BY day", monthAgo).map((row) => [row.day, row.c]));
     const growth = [];
     for (let offset = 29; offset >= 0; offset--) {
-      const date = new Date();
+      const date = new Date(analyticsAt);
       date.setUTCHours(0, 0, 0, 0);
       date.setUTCDate(date.getUTCDate() - offset);
       const day = date.toISOString().slice(0, 10);
@@ -4815,13 +4941,58 @@ export const routes = {
     // post and return only k-anonymous trends, never a post/user association.
     const stopWords = new Set(["the", "and", "for", "that", "this", "with", "was", "were", "are", "but", "not", "you", "your", "they", "their", "from", "have", "has", "had", "just", "show", "concert", "really", "very", "into", "out", "all", "our", "its", "it's"]);
     const wordCounts = new Map();
-    for (const row of all("SELECT review FROM posts WHERE removed=0 AND created_at >= ? AND length(review) > 0 ORDER BY created_at DESC LIMIT 5000", now() - 90 * 24 * 60 * 60 * 1000)) {
+    for (const row of all("SELECT review FROM posts WHERE removed=0 AND created_at >= ? AND length(review) > 0 ORDER BY created_at DESC LIMIT 5000", analyticsAt - 90 * 24 * 60 * 60 * 1000)) {
       const words = new Set(String(row.review || "").toLowerCase().match(/[\p{L}\p{N}']{3,24}/gu) || []);
       for (const word of words) if (!stopWords.has(word) && !/^\d+$/.test(word)) wordCounts.set(word, (wordCounts.get(word) || 0) + 1);
     }
     const postKeywords = [...wordCounts.entries()].filter(([, count]) => count >= 3).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 20).map(([label, count]) => ({ label, count }));
+    const guestSearchRows = readGuestSearchAnalytics({ database: db, at: analyticsAt, days: 30 }).rows;
+    const utcDay = (offset = 0) => {
+      const date = new Date(analyticsAt);
+      date.setUTCHours(0, 0, 0, 0);
+      date.setUTCDate(date.getUTCDate() - offset);
+      return date.toISOString().slice(0, 10);
+    };
+    const today = utcDay();
+    const sevenDayStart = utcDay(6);
+    const totalSearches = (rows) => rows.reduce((sum, row) => sum + (Number(row.count) || 0), 0);
+    const sevenDayRows = guestSearchRows.filter((row) => row.day >= sevenDayStart);
+    const successfulSevenDayRows = sevenDayRows.filter((row) => row.outcome === "success");
+    const successfulSevenDayCount = totalSearches(successfulSevenDayRows);
+    const zeroSevenDayCount = totalSearches(successfulSevenDayRows.filter((row) => row.resultBucket === "zero"));
+    const resultBucketLabels = {
+      zero: "0 results",
+      one_to_five: "1-5 results",
+      six_to_twenty: "6-20 results",
+      over_twenty: "21+ results",
+    };
+    const byResultBucket7d = Object.entries(resultBucketLabels).map(([bucket, label]) => ({
+      label,
+      count: totalSearches(successfulSevenDayRows.filter((row) => row.resultBucket === bucket)),
+    }));
+    const guestSearchDaily = [];
+    for (let offset = 29; offset >= 0; offset -= 1) {
+      const day = utcDay(offset);
+      const rows = guestSearchRows.filter((row) => row.day === day);
+      guestSearchDaily.push({
+        day,
+        searches: totalSearches(rows),
+        failed: totalSearches(rows.filter((row) => row.outcome === "failed")),
+        zeroResults: totalSearches(rows.filter((row) => row.outcome === "success" && row.resultBucket === "zero")),
+      });
+    }
+    const guestSearches = {
+      today: totalSearches(guestSearchRows.filter((row) => row.day === today)),
+      sevenDays: totalSearches(sevenDayRows),
+      thirtyDays: totalSearches(guestSearchRows),
+      failed7d: totalSearches(sevenDayRows.filter((row) => row.outcome === "failed")),
+      zeroResultRate7d: successfulSevenDayCount ? Math.round((zeroSevenDayCount / successfulSevenDayCount) * 1000) / 10 : 0,
+      byResultBucket7d,
+      daily: guestSearchDaily,
+    };
     return {
       totals,
+      guestSearches,
       retentionDays: ANALYTICS_RETENTION_DAYS,
       rawEventLimit: ANALYTICS_MAX_RAW_ROWS,
       rawEventLimitPerAccount: ANALYTICS_MAX_ROWS_PER_ACCOUNT,
@@ -5116,7 +5287,7 @@ export const routes = {
     requireAdmin(ctx);
     const templates = Object.keys(DEFAULT_TEMPLATES).map((key) => {
       const t = templateFor(key);
-      return { key, subject: t.subject, customized: t.customized, updatedAt: t.updated_at, updatedBy: t.updated_by };
+      return { key, subject: t.subject, customized: t.customized, editable: t.editable, updatedAt: t.updated_at, updatedBy: t.updated_by };
     });
     return {
       mail: mailDiagnostics(),
@@ -5148,6 +5319,7 @@ export const routes = {
     const actor = requireAdmin(ctx);
     const key = ctx.params.key;
     if (!DEFAULT_TEMPLATES[key]) throw new ApiError(404, "No such template.", "NOT_FOUND");
+    if (isCodeOwnedTemplate(key)) throw new ApiError(403, "Security and account templates are code-owned and cannot be edited here.", "FORBIDDEN");
     const subject = clean(ctx.body?.subject, { max: 200 });
     const body = clean(ctx.body?.body, { max: 8000 });
     if (!subject) throw new ApiError(400, "A subject is required.", "VALIDATION_FAILED");
@@ -5172,6 +5344,7 @@ export const routes = {
   "DELETE /api/admin/email/templates/:key": (ctx) => {
     requireAdmin(ctx);
     if (!DEFAULT_TEMPLATES[ctx.params.key]) throw new ApiError(404, "No such template.", "NOT_FOUND");
+    if (isCodeOwnedTemplate(ctx.params.key)) throw new ApiError(403, "Security and account templates are code-owned and cannot be reset here.", "FORBIDDEN");
     emailStmts.deleteTemplate.run(ctx.params.key);
     return { template: templateFor(ctx.params.key) };
   },
@@ -5200,7 +5373,9 @@ export const routes = {
   // arbitrary recipient here would turn the admin panel into a relay for
   // sending attacker-authored mail from a verified domain.
   "POST /api/admin/email/templates/:key/test": async (ctx) => {
-    const actor = requireAdmin(ctx);
+    const actor = ["owner_approval_requested", "owner_approval_receipt", "site_health_digest"].includes(ctx.params.key)
+      ? requireOwner(ctx)
+      : requireAdmin(ctx);
     if (!DEFAULT_TEMPLATES[ctx.params.key]) throw new ApiError(404, "No such template.", "NOT_FOUND");
     limit(ctx, "email-test", 20, 60 * 60 * 1000);
     const result = await sendTemplate(ctx.params.key, {
@@ -5526,7 +5701,7 @@ export const routes = {
       })),
       last24h: errorStats(dayAgo),
       last7Days: errorStats(weekAgo),
-      alerts: { enabled: alertsEnabled(), cooldownMinutes: Math.round(alertCooldownMs() / 60000), to: process.env.ADMIN_EMAIL || null },
+      alerts: { enabled: alertsEnabled(), cooldownMinutes: Math.round(alertCooldownMs() / 60000), to: alertRecipient() || null },
     };
   },
 
@@ -5693,10 +5868,12 @@ export const routes = {
         badgesByUser.get(row.user_id).push({ slug: row.slug, label: row.label, color: row.color, glyph: row.glyph, glyphChar: row.glyph_char });
       }
     }
+    const lockedOwnerId = ownerAccount(db)?.user?.id || null;
     const users = rows.map((r) => ({
       id: r.id, name: r.name, handle: r.handle, initials: r.initials,
       avatarUri: safePublicProfileImage(r.id, r.avatar_uri), avatarColor: r.avatar_color, verified: !!r.verified,
       sponsor: !!r.sponsor, role: r.role, home: { city: r.home_city },
+      owner: r.id === lockedOwnerId,
       isBanned: !!r.is_banned, suspendedUntil: r.suspended_until || null,
       createdAt: r.created_at, badges: badgesByUser.get(r.id) || [],
       // Address-confirmation state is private and actionable only by admins.
@@ -5713,48 +5890,66 @@ export const routes = {
     return { users, total, matchingTotal, banned, verified, regions, nextCursor };
   },
 
-  // Persist a role change (fan/artist/moderator/admin) + optional role-tagged handle.
+  // Fan/artist changes remain an ordinary admin decision. Every transition to
+  // or from moderator/admin is only REQUESTED here; it cannot mutate authority
+  // until the locked Owner follows the founder email and reauthenticates.
   "POST /api/admin/users/:id/role": (ctx) => {
-    requireAdmin(ctx);
+    const actor = requireAdmin(ctx);
+    limit(ctx, "role-change-request", 20, 60 * 60 * 1000);
     const role = ["fan", "artist", "moderator", "admin"].includes(ctx.body?.role) ? ctx.body.role : null;
     if (!role) throw new ApiError(400, "Bad role.");
     if (ctx.params.id === ctx.user.id) throw new ApiError(400, "You can't change your own role.");
     const handle = ctx.body?.handle ? cleanHandle(ctx.body.handle) : null;
     if (handle && !handleAllowedForRole(handle, role)) throw new ApiError(400, `A ${role} username must include ${role === "admin" ? "admin" : "mod"}.`, "VALIDATION_FAILED");
-    const nextHandle = atomicWrite(() => {
-      const target = q.userById.get(ctx.params.id);
-      if (!target) throw new ApiError(404, "No such user.", "NOT_FOUND");
+    const target = q.userById.get(ctx.params.id);
+    if (!target) throw new ApiError(404, "No such user.", "NOT_FOUND");
+    if (isOwnerId(db, target.id)) throw new ApiError(403, "The Owner role cannot be changed.", "FORBIDDEN");
 
-      let selectedHandle;
-      if (role === "admin" || role === "moderator") {
-        selectedHandle = uniqueTaggedHandle(handle || target.handle, role, target.id);
-      } else {
-        selectedHandle = handle || target.handle;
-        if (handle && !handleAvailableTo(handle, target.id)) {
-          throw new ApiError(409, "That username is already taken.", "CONFLICT");
-        }
-      }
+    // Resolve a no-op without sending mail. The helper also validates a supplied
+    // handle against the complete directory, not merely the loaded UI page.
+    const selectedHandle = selectedRoleHandle(target, role, handle);
+    if (target.role === role && target.handle === selectedHandle) {
+      return { ok: true, role, handle: selectedHandle };
+    }
 
-      // Promoting an account to admin can lose its response. Re-resolving the
-      // original requested handle while excluding this account produces the
-      // same selected handle, so the exact retry succeeds. Different changes to
-      // an existing administrator remain owner-review only.
-      if (target.role === "admin") {
-        if (role === "admin" && selectedHandle === target.handle) return target.handle;
-        throw new ApiError(403, "Administrator accounts require owner review.", "FORBIDDEN");
-      }
+    if (!roleChangeTouchesHead(target.role, role)) {
+      const result = atomicWrite(() => applyRoleChange(ctx, target, role, handle, {
+        reason: clean(ctx.body?.reason, { max: LIMITS.note }),
+      }));
+      return { ok: true, role: result.role, handle: result.handle };
+    }
 
-      const changed = db.prepare("UPDATE users SET role=?, handle=? WHERE id=? AND (role<>? OR handle<>?)")
-        .run(role, selectedHandle, target.id, role, selectedHandle).changes === 1;
-      if (changed) {
-        // Sessions resolve current roles on every request. Revoke them anyway so
-        // a pre-promotion cookie cannot silently become a 30-day staff session.
-        db.prepare("DELETE FROM sessions WHERE user_id=?").run(target.id);
-        moderationRecord(ctx, "change_role", "user", target.id, ctx.body?.reason || "", { role: target.role, handle: target.handle }, { role, handle: selectedHandle });
-      }
-      return selectedHandle;
+    if (target.is_banned || Number(target.suspended_until || 0) > now()) {
+      throw new ApiError(409, "Restore this account before requesting a privileged role change.", "CONFLICT");
+    }
+    if ((role === "admin" || role === "moderator") && !target.email_verified_at) {
+      throw new ApiError(409, "Confirm this member's email before requesting a privileged role.", "CONFLICT");
+    }
+    const created = createOwnerApprovalRequest(db, {
+      kind: "privileged_role_change",
+      requestedBy: actor.id,
+      targetUserId: target.id,
+      summary: "Privileged role change awaiting Owner review",
+      payload: {
+        targetUserId: target.id,
+        expectedRole: target.role,
+        expectedHandle: target.handle,
+        requestedRole: role,
+        requestedHandle: selectedHandle,
+      },
+      requestId: ctx.requestId || null,
+      at: now(),
     });
-    return { ok: true, role, handle: nextHandle };
+    return emailOwnerApprovalRequest(db, created.request, created.token).then((delivery) => ({
+      ok: true,
+      pending: true,
+      approvalId: created.request.id,
+      expiresAt: created.request.expiresAt,
+      emailSent: !!delivery.sent,
+      message: delivery.sent
+        ? "Awaiting Owner approval. A review link was sent to founder@mshpit.com."
+        : "Authority was not changed. The Owner approval request was saved, but its email could not be delivered; retry the request after mail is healthy.",
+    }));
   },
 
   // Catalog queue: thin artists (in the DB but no photo yet) + names people

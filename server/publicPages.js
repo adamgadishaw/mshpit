@@ -7,9 +7,10 @@ import {
   MEDIA_AND_SESSION_SECURITY_DISCLOSURE,
   PRIVACY_POLICY_UPDATED,
 } from "../src/domain/privacyDisclosures.mjs";
+import { SUPPORT_EMAIL } from "../src/domain/contact.mjs";
 
 const SITE_NAME = "Pit";
-export const SUPPORT_EMAIL = "support@mshpit.com";
+export { SUPPORT_EMAIL };
 
 export const PUBLIC_PAGE_PATHS = Object.freeze([
   "/privacy",
@@ -38,14 +39,15 @@ const PAGES = Object.freeze({
       {
         heading: "Information you give us",
         paragraphs: [
-          "Account details (name, email, password, and the city you choose), your profile (bio, avatar, genres, favorite artists, and playlists), feed preferences such as Not for me, and everything you create on Pit: reviews, ratings, photos, comments, fan-club and lounge messages, direct messages, follows, and who or what you engage with.",
+          "Account details (name, email, password, and the city you choose), your profile (bio, avatar, genres, favorite artists, and playlists), feed preferences such as Not for me, and everything you create on Pit: reviews, ratings, photos, comments, fan-club and lounge messages, direct messages, follows, and who or what you engage with. The suggestion box accepts an anonymous category, message, and optional general area of Pit; Pit does not attach the suggestion to an account or ask for contact details.",
         ],
       },
       {
         heading: "Information we collect automatically",
         paragraphs: [
-          "For signed-in accounts that have product analytics enabled, Pit records a limited, server-approved set of categorical events such as screen and feed usage, internal post impressions, opening content, time-range buckets, playback milestones, following, liking, and posting. Search usage may be counted by category and result-count range, but the words you type are not stored in product analytics. Guests are not recorded in product analytics.",
-          "Like every web service, Pit receives an IP address and basic request details when a device connects. Those details may be processed briefly for security and rate limiting, but raw IP addresses are not retained in the product-analytics table.",
+          "For signed-in accounts that have product analytics enabled, Pit records a limited, server-approved set of categorical events such as screen and feed usage, internal post impressions, opening content, time-range buckets, playback milestones, following, liking, and posting.",
+          "Separately, when a guest searches, Pit increments daily aggregate counters for the search category, success or failure, and a coarse result-count range. These counters do not contain typed words, account or device identifiers, cookies, URLs, IP addresses, user agents, or exact request times, and cannot identify a unique visitor.",
+          "Like every web service, Pit receives an IP address and basic request details when a device connects. Those details may be processed briefly for security and rate limiting, but raw IP addresses are not retained in product analytics or suggestion records.",
         ],
       },
       {
@@ -113,7 +115,7 @@ const PAGES = Object.freeze({
       {
         heading: "Data retention and security",
         paragraphs: [
-          `Account and content data is kept while needed to operate the account and service. Raw first-party product analytics is automatically limited to a rolling 30-day period by default and is deleted earlier when you opt out or delete your account. If an artist search returns no match, the submitted artist name may remain in a bounded staff enrichment queue for up to 30 days. ${MEDIA_AND_SESSION_SECURITY_DISCLOSURE} Passwords are hashed, signed-in requests use HTTPS in production, and access is limited, but no online service can promise perfect security.`,
+          `Account and content data is kept while needed to operate the account and service. Raw first-party product analytics is automatically limited to a rolling 30-day period by default and is deleted earlier when you opt out or delete your account. Aggregate guest-search counters are retained for up to 90 days. Closed suggestion records are pruned after 90 days and unresolved suggestions after one year. If an artist search returns no match, the submitted artist name may remain in a bounded staff enrichment queue for up to 30 days. ${MEDIA_AND_SESSION_SECURITY_DISCLOSURE} Passwords are hashed, signed-in requests use HTTPS in production, and access is limited, but no online service can promise perfect security.`,
           "When you delete content or your account, active database records are removed or scrubbed and Pit-owned uploads are durably queued for active object-storage deletion. That cleanup retries automatically and can take additional time. Separate backup copies remain until the configured retention period ends, or longer when legally required.",
         ],
       },

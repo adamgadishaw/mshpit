@@ -25,6 +25,26 @@ const DIRECTLY_REMOVABLE_TARGETS = new Set([
 
 const safeText = (value) => (typeof value === "string" ? value.trim() : "");
 const lower = (value) => safeText(value).toLowerCase();
+const ACCOUNT_ROLES = new Set(["fan", "artist", "moderator", "admin"]);
+const HEAD_ROLES = new Set(["moderator", "admin"]);
+
+export function moderationMemberIsLockedOwner(member) {
+  return member?.owner === true;
+}
+
+export function roleChangeRequiresOwnerApproval(currentRole, requestedRole) {
+  return HEAD_ROLES.has(lower(currentRole)) || HEAD_ROLES.has(lower(requestedRole));
+}
+
+// A successful request is not necessarily an applied mutation: privileged
+// transitions return `pending: true` until the Founder acts. Only the exact
+// role and handle echoed by an applied server response may update local state.
+export function confirmedRoleMutationPatch(result) {
+  if (!result || result.ok === false || result.pending === true) return null;
+  const role = lower(result.role);
+  const handle = safeText(result.handle).replace(/^@+/, "");
+  return ACCOUNT_ROLES.has(role) && handle ? { role, handle } : null;
+}
 
 export function adminPlaybackHealthPresentation(health) {
   const services = health?.services;

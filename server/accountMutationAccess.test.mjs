@@ -11,6 +11,7 @@ test("unverified sessions can browse and exercise account rights", () => {
     ["POST", "/api/verify-email/resend"],
     ["POST", "/api/logout"],
     ["POST", "/api/me/email-preferences"],
+    ["POST", "/api/suggestions"],
     ["DELETE", "/api/me"],
   ]) assert.equal(assertAccountMutationAccess({ method, pathname, user: unverified }), true);
 });

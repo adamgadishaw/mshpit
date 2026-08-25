@@ -1,48 +1,71 @@
-# Resend production setup
+# Google Workspace and Resend production mail
 
-Pit already sends password-reset mail through Resend in `server/mailer.js`. The
-application code is finished. Everything remaining is account and DNS setup that
-only the owner can do.
+Google Workspace and Resend have different jobs and both remain required:
 
-## State as of 2026-08-05
+- Google Workspace receives and sends human mail at `@mshpit.com`.
+- Resend sends Pit's automated verification, welcome, reset, alert, and opted-in
+  announcement mail from the isolated `mail.mshpit.com` subdomain.
+
+Changing the apex MX to Google does not move the application to Gmail SMTP, and
+the Google MX must not replace Resend's subdomain authentication records.
+
+## State verified on 2026-08-25
 
 Verified by DNS lookup against 1.1.1.1, not assumed:
 
 | Thing | State |
 |---|---|
 | `mshpit.com` nameservers | Cloudflare (`lloyd`/`nola.ns.cloudflare.com`) |
-| Resend SPF/MX/DKIM records | **None present, on the root or any subdomain** |
-| `RESEND_API_KEY` on Render | Set, previously exposed in chat, needs rotating |
-| `MAIL_FROM` on Render | Not set (`sync: false`, so Render never fills it) |
-| Production `mailConfigured` | `false` |
+| Google Workspace MX | Published at the apex: `smtp.google.com` |
+| Google Workspace DKIM | Published at `google._domainkey.mshpit.com` |
+| Google Workspace SPF | **Missing at the apex** |
+| DMARC | `p=quarantine`, but aggregate reports still go to the stale GoDaddy `onsecureserver.net` address |
+| Resend DKIM | Published at `resend._domainkey.mail.mshpit.com` |
+| Resend return path | MX and SPF published at `send.mail.mshpit.com` |
+| Render secrets/sender | Private dashboard state; verify in Moderation -> Email and with a test delivery |
 
-So the domain has never been verified in Resend. A valid API key alone cannot
-send; Resend answers `403` until the domain is verified.
+The screenshot's `www.mshpit.com is now configured` wording does not mean email
+addresses should end in `@www.mshpit.com`. Public DNS confirms the receiving
+domain is the correct apex, `mshpit.com`.
 
-There is also a leftover **DMARC record at `p=quarantine`** pointing its reports
-at `onsecureserver.net` (GoDaddy). It uses relaxed alignment, so a Resend
-subdomain sender passes once DKIM exists. It does mean a half-finished setup
-lands in spam quietly rather than failing loudly.
+## Immediate Cloudflare actions
 
-## Step by step, from zero
+1. Add the one missing Google Workspace SPF TXT record at the apex (`@`):
 
-### 1. Create the Resend account
+   ```text
+   v=spf1 include:_spf.google.com ~all
+   ```
 
-1. Go to <https://resend.com> and sign up. Email plus password is fine; there is
-   no Google account requirement.
-2. Free tier covers password resets comfortably (3,000/month at time of writing).
+   There is currently no apex SPF record. If another sender is ever added at the
+   apex, merge it into this single SPF record; never publish two SPF records at
+   one hostname.
+2. Create and monitor `support@mshpit.com` (mailbox, alias, or group) before the
+   app promises it publicly. Create a separate `ops@mshpit.com` inbox/alias for
+   incident alerts if desired.
+3. Replace the stale DMARC `rua=mailto:dmarc_rua@onsecureserver.net` destination
+   with an address or reporting service you control. Do that only after the
+   destination exists; keep the current `p=quarantine` policy while reviewing
+   reports.
+4. Leave every existing Resend record under `mail.mshpit.com` / `send.mail.mshpit.com`
+   in place and DNS-only.
 
-### 2. Add the sending domain
+## Resend setup and verification
+
+### 1. Confirm the Resend account
+
+Use the existing Resend account. Rotate any API key ever pasted into chat, and
+keep the replacement restricted to sending from `mail.mshpit.com`.
+
+### 2. Confirm the sending domain
 
 Use a dedicated subdomain, `mail.mshpit.com`, so transactional mail cannot
 damage the root domain's reputation.
 
-1. In the Resend sidebar choose **Domains**, then **Add Domain**.
-2. Enter `mail.mshpit.com` and pick the region closest to Render's region.
-3. Resend shows a table of DNS records: one MX, one or two TXT (SPF), and a TXT
-   DKIM record at `resend._domainkey`.
+In Resend -> Domains, `mail.mshpit.com` should read **Verified**. Public DNS has
+the expected record families, but the provider dashboard remains authoritative
+for the account-specific verification state.
 
-### 3. Put the records in Cloudflare
+### 3. Preserve the records in Cloudflare
 
 Resend offers a **Sign in to Cloudflare** button. Use it if you can; it writes
 the records itself and skips this whole section. Manually:
@@ -57,7 +80,7 @@ the records itself and skips this whole section. Manually:
    `send.mail`, entering `send.mail` yields `send.mail.mshpit.com`. Confirm the
    final name reads correctly before saving.
 
-### 4. Verify
+### 4. Re-verify after DNS changes
 
 Back in Resend, click **Verify DNS Records**. It usually passes in a few minutes.
 The domain must read **Verified** before anything will send.
@@ -68,7 +91,7 @@ To check from your own machine:
 nslookup -type=txt resend._domainkey.mail.mshpit.com 1.1.1.1
 ```
 
-### 5. Create a fresh API key
+### 5. Keep a fresh API key
 
 1. **API Keys → Create API Key**.
 2. Name it `pit-production`, permission **Sending access** only, restricted to
@@ -82,27 +105,70 @@ Render dashboard → the Pit web service → **Environment**:
 
 ```text
 RESEND_API_KEY=<the new sending-only key>
-MAIL_FROM=Pit <noreply@mail.mshpit.com>
+MAIL_FROM=Mshpit <noreply@mail.mshpit.com>
+MAIL_REPLY_TO=support@mshpit.com
+ALERT_EMAIL=ops@mshpit.com
+OWNER_EMAIL=<the same address as ADMIN_EMAIL during Owner migration>
+OWNER_MIGRATION_EMAIL=<the same confirmed address, required once for the v1 lock/transfer>
+SITE_HEALTH_DIGEST_ENABLED=true
+SITE_HEALTH_DIGEST_HOUR=9
 ```
 
 `PUBLIC_ORIGIN` is already pinned in the Blueprint. Save and let Render redeploy.
 
-The domain in `MAIL_FROM` must match the verified domain exactly. Verifying the
-root instead means `Pit <noreply@mshpit.com>`.
+`OWNER_MIGRATION_EMAIL` is an explicit one-time deployment approval, not a
+second account. The migration refuses to create a replacement member or adopt
+an unconfirmed mailbox. After the database stores the v2 Owner lock, changing
+any of these email variables cannot transfer ownership; the migration variable
+may then be removed from Render.
+
+The domain in `MAIL_FROM` must match the Resend-verified sending domain exactly.
+Do not change it to the Google Workspace apex merely because Workspace now owns
+the receiving MX. `MAIL_REPLY_TO` is the bridge into the monitored Workspace
+inbox. `ALERT_EMAIL` is deliberately separate from `ADMIN_EMAIL`: changing
+`ADMIN_EMAIL` transfers Pit's bootstrap-root identity and revokes admin sessions.
+
+## Founder operations mail
+
+Production sends the database-locked Owner a code-owned site-health template once
+per Toronto calendar day, at or after 09:00 by default. A durable `app_meta`
+claim suppresses duplicates through restarts and rolling deploys; failed delivery
+uses bounded retries with the same provider idempotency key. Staging and local
+development cannot enable this production mail accidentally.
+
+The readout contains only operational aggregates: database readiness, configuration
+booleans, verified-local-backup age, mail outcome counts, media cleanup counts,
+distinct serious error-pattern count, pending-approval count, release identifier,
+and process uptime. It excludes member identities, recipients, search terms,
+messages, posts, paths, raw URLs, bucket names, addresses, and credentials.
+
+A production release also records and emails one hash-chained security receipt per
+Render commit. This happens only after the web process is listening; it is a live
+process stamp, not proof that every public route or external provider is healthy.
+
+The app cannot email while it is down and cannot prove Render build/control-plane
+status, public DNS, Google Workspace delivery, public reachability, or the latest
+off-host backup upload from its own process. Keep Render deployment notifications
+and an independent uptime monitor addressed to a staffed inbox. The digest reports
+off-host backup configuration, not independent remote-upload completion evidence.
 
 ### 7. Confirm, then revoke the old key
 
-`GET /api/health` reports exactly what is missing:
+Moderation -> Email reports the private configuration state to administrators:
 
 ```json
-{ "services": { "mail": {
+{ "mail": {
   "configured": true, "apiKeyPresent": true,
-  "fromValid": true, "fromDomain": "mail.mshpit.com", "reason": null } } }
+  "fromValid": true, "fromDomain": "mail.mshpit.com",
+  "replyToPresent": true, "replyToValid": true,
+  "replyToDomain": "mshpit.com", "reason": null, "warning": null } }
 ```
 
 `reason` is `missing-api-key`, `missing-from`, `invalid-from`, or
-`missing-api-key-and-from` while incomplete. `fromDomain` is there so a mismatch
-against the verified domain is visible without reading env vars.
+`missing-api-key-and-from` while incomplete. `warning` is `invalid-reply-to`
+when the optional Workspace address is malformed. Diagnostics expose domains and
+presence only, never credentials or full inbox addresses. The public health
+route intentionally does not expose mail topology.
 
 Once the new key is confirmed working in Resend's logs, **revoke the old one**.
 
@@ -110,7 +176,7 @@ Once the new key is confirmed working in Resend's logs, **revoke the old one**.
 
 Resend allows sending from its shared `onboarding@resend.dev` address without any
 domain verification, but only to the address that owns the Resend account. Setting
-`MAIL_FROM=Pit <onboarding@resend.dev>` proves the whole reset flow end to end
+`MAIL_FROM=Mshpit <onboarding@resend.dev>` proves the whole reset flow end to end
 while DNS propagates. It cannot stay in production, since no other user would ever
 receive mail. Confirm the sender is still offered on your plan.
 
@@ -121,7 +187,8 @@ receive mail. Confirm the sender is still offered on your plan.
 3. Confirm one Resend delivery appears in the Resend logs and one message arrives.
 4. Open the reset link and set a new password within one hour.
 5. Confirm the old password and old sessions no longer work, and the new does.
-6. Check spam/junk and test at a second mail provider before launch. The
+6. Reply to the message and confirm it reaches `MAIL_REPLY_TO`.
+7. Check spam/junk and test at a second mail provider before launch. The
    `p=quarantine` DMARC policy makes this step matter more than usual.
 
 The forgot-password response is intentionally identical for existing and unknown
@@ -134,6 +201,8 @@ recorded in server logs without ever printing the reset secret.
   actually running. It is `sync: false`, so it must be set by hand.
 - `mail.reason: invalid-from`: the value is set but unparseable, e.g. a bare
   display name with no address. `server/mailer.js` refuses to attempt the send.
+- `mail.warning: invalid-reply-to`: automated delivery can continue, but replies
+  are omitted until `MAIL_REPLY_TO` is corrected.
 - Resend `403` / `sender-not-verified` in logs: `mail.fromDomain` does not match
   the verified domain, or verification never completed.
 - Resend `403 invalid_api_key`: rotate the key and update Render.
@@ -144,4 +213,6 @@ recorded in server logs without ever printing the reset secret.
 
 Official references: [Resend's Cloudflare guide](https://resend.com/docs/knowledge-base/cloudflare),
 [sender-address behavior](https://resend.com/docs/knowledge-base/how-do-I-create-an-email-address-or-sender-in-resend),
-and [API-key handling](https://resend.com/docs/knowledge-base/how-to-handle-api-keys).
+[API-key handling](https://resend.com/docs/knowledge-base/how-to-handle-api-keys),
+[Google Workspace MX](https://support.google.com/a/answer/87127), and
+[Google Workspace SPF](https://support.google.com/a/answer/33786).

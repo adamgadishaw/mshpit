@@ -585,7 +585,7 @@ test("member search and keyset pagination reach older accounts without exposing 
   );
 });
 
-test("member desired-state actions are safe to retry after a lost response", () => {
+test("member desired-state actions are safe to retry after a lost response", async () => {
   const target = addUser("member_action_retry", "fan");
   const roleTarget = addUser("member_role_retry", "fan");
   const adminTarget = addUser("member_admin_retry", "fan");
@@ -623,13 +623,18 @@ test("member desired-state actions are safe to retry after a lost response", () 
   assert.deepEqual(call("POST /api/admin/users/:id/role", admin, roleTarget.id, { role: "artist" }), { ok: true, role: "artist", handle: roleTarget.handle });
   assert.deepEqual(call("POST /api/admin/users/:id/role", admin, roleTarget.id, { role: "artist" }), { ok: true, role: "artist", handle: roleTarget.handle });
   assert.equal(auditCount(roleTarget.id, "change_role"), 1);
-  assert.deepEqual(call("POST /api/admin/users/:id/role", admin, adminTarget.id, { role: "admin", handle: "member_admin_retry" }), { ok: true, role: "admin", handle: "member_admin_retry" });
-  assert.deepEqual(call("POST /api/admin/users/:id/role", admin, adminTarget.id, { role: "admin", handle: "member_admin_retry" }), { ok: true, role: "admin", handle: "member_admin_retry" },
-    "an identical retry after promotion must not be rejected just because the account is now admin");
-  assert.equal(auditCount(adminTarget.id, "change_role"), 1);
+  db.prepare("UPDATE users SET email_verified_at=? WHERE id=?").run(Date.now(), adminTarget.id);
+  const firstAdminRequest = await call("POST /api/admin/users/:id/role", admin, adminTarget.id, { role: "admin", handle: "member_admin_retry" });
+  const retriedAdminRequest = await call("POST /api/admin/users/:id/role", admin, adminTarget.id, { role: "admin", handle: "member_admin_retry" });
+  assert.equal(firstAdminRequest.pending, true);
+  assert.equal(retriedAdminRequest.approvalId, firstAdminRequest.approvalId,
+    "an identical retry must rotate the secret while retaining one pending decision");
+  assert.equal(q.userById.get(adminTarget.id).role, "fan");
+  assert.equal(auditCount(adminTarget.id, "change_role"), 0);
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM owner_approval_requests WHERE target_user_id=? AND status='pending'").get(adminTarget.id).count, 1);
 });
 
-test("staff role changes allocate globally unique tagged handles and retry exactly", () => {
+test("staff role requests reserve globally unique tagged handles without applying authority", async () => {
   const moderatorTarget = addUser("tagtarget", "fan");
   const hiddenModeratorCollision = addUser("tagtarget_mod", "fan");
   const adminTarget = addUser("tagtargettwo", "fan");
@@ -638,22 +643,27 @@ test("staff role changes allocate globally unique tagged handles and retry exact
     params: { id }, body: { role, handle, reason: "server allocation regression" },
   }));
   const auditCount = (id) => db.prepare("SELECT COUNT(*) count FROM moderation_actions WHERE target_id=? AND action='change_role'").get(id).count;
+  db.prepare("UPDATE users SET email_verified_at=? WHERE id IN (?,?)").run(Date.now(), moderatorTarget.id, adminTarget.id);
 
-  const firstModerator = call(moderatorTarget.id, "moderator", hiddenModeratorCollision.handle);
-  assert.deepEqual(firstModerator, { ok: true, role: "moderator", handle: "tagtarget_mod1" });
-  assert.deepEqual(call(moderatorTarget.id, "moderator", hiddenModeratorCollision.handle), firstModerator,
-    "replaying the client candidate must return the same server-selected handle");
-  assert.equal(q.userById.get(moderatorTarget.id).handle, firstModerator.handle);
+  const firstModerator = await call(moderatorTarget.id, "moderator", hiddenModeratorCollision.handle);
+  const retriedModerator = await call(moderatorTarget.id, "moderator", hiddenModeratorCollision.handle);
+  assert.equal(firstModerator.pending, true);
+  assert.equal(retriedModerator.approvalId, firstModerator.approvalId);
+  const moderatorPayload = JSON.parse(db.prepare("SELECT payload FROM owner_approval_requests WHERE id=?").get(firstModerator.approvalId).payload);
+  assert.equal(moderatorPayload.requestedHandle, "tagtarget_mod1");
+  assert.equal(q.userById.get(moderatorTarget.id).handle, moderatorTarget.handle);
   assert.equal(q.userById.get(hiddenModeratorCollision.id).handle, hiddenModeratorCollision.handle);
-  assert.equal(auditCount(moderatorTarget.id), 1);
+  assert.equal(auditCount(moderatorTarget.id), 0);
 
-  const firstAdmin = call(adminTarget.id, "admin", hiddenAdminCollision.handle);
-  assert.deepEqual(firstAdmin, { ok: true, role: "admin", handle: "tagtargettwo_admin1" });
-  assert.deepEqual(call(adminTarget.id, "admin", hiddenAdminCollision.handle), firstAdmin,
-    "an exact retry after admin promotion must retain the allocated handle");
-  assert.equal(q.userById.get(adminTarget.id).handle, firstAdmin.handle);
+  const firstAdmin = await call(adminTarget.id, "admin", hiddenAdminCollision.handle);
+  const retriedAdmin = await call(adminTarget.id, "admin", hiddenAdminCollision.handle);
+  assert.equal(firstAdmin.pending, true);
+  assert.equal(retriedAdmin.approvalId, firstAdmin.approvalId);
+  const adminPayload = JSON.parse(db.prepare("SELECT payload FROM owner_approval_requests WHERE id=?").get(firstAdmin.approvalId).payload);
+  assert.equal(adminPayload.requestedHandle, "tagtargettwo_admin1");
+  assert.equal(q.userById.get(adminTarget.id).handle, adminTarget.handle);
   assert.equal(q.userById.get(hiddenAdminCollision.id).handle, hiddenAdminCollision.handle);
-  assert.equal(auditCount(adminTarget.id), 1);
+  assert.equal(auditCount(adminTarget.id), 0);
 });
 
 test("email verification and its moderation audit commit atomically", () => {

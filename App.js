@@ -48,6 +48,7 @@ const PickArtistsScreen = lazyWithRetry(() => import("./src/screens/PickArtistsS
 const FanClubsScreen = lazyWithRetry(() => import("./src/screens/FanClubsScreen"), "FanClubsScreen");
 const NearbyScreen = lazyWithRetry(() => import("./src/screens/NearbyScreen"), "NearbyScreen");
 const SettingsScreen = lazyWithRetry(() => import("./src/screens/SettingsScreen"), "SettingsScreen");
+const SuggestionBoxScreen = lazyWithRetry(() => import("./src/screens/SuggestionBoxScreen"), "SuggestionBoxScreen");
 const DeleteAccountScreen = lazyWithRetry(() => import("./src/screens/DeleteAccountScreen"), "DeleteAccountScreen");
 const DiagnosticsScreen = lazyWithRetry(() => import("./src/screens/DiagnosticsScreen"), "DiagnosticsScreen");
 const PrivacyScreen = lazyWithRetry(() => import("./src/screens/PrivacyScreen"), "PrivacyScreen");
@@ -59,6 +60,7 @@ const PostScreen = lazyWithRetry(() => import("./src/screens/PostScreen"), "Post
 const ResetPasswordScreen = lazyWithRetry(() => import("./src/screens/ResetPasswordScreen"), "ResetPasswordScreen");
 const UnsubscribeScreen = lazyWithRetry(() => import("./src/screens/UnsubscribeScreen"), "UnsubscribeScreen");
 const VerifyEmailScreen = lazyWithRetry(() => import("./src/screens/VerifyEmailScreen"), "VerifyEmailScreen");
+const OwnerApprovalScreen = lazyWithRetry(() => import("./src/screens/OwnerApprovalScreen"), "OwnerApprovalScreen");
 const BadgeLegendScreen = lazyWithRetry(() => import("./src/screens/BadgeLegendScreen"), "BadgeLegendScreen");
 const WelcomeScreen = lazyWithRetry(() => import("./src/screens/WelcomeScreen"), "WelcomeScreen");
 const FollowListScreen = lazyWithRetry(() => import("./src/screens/FollowListScreen"), "FollowListScreen");
@@ -87,7 +89,7 @@ import { ownedPlayerEnvelope, playerQueueWithEntryIds, restoreOwnedPlayerState }
 import { playerLookupIntent } from "./src/domain/playback.mjs";
 import { profileManagementAction, publicIdentityTarget } from "./src/domain/artistWorkspace.mjs";
 import { prepareShowNavigation, showNavigationPostId } from "./src/domain/showNavigation.mjs";
-import { readSensitiveLinkToken, scrubSensitiveLinkToken } from "./src/domain/sensitiveLinkTokens.mjs";
+import { readSensitiveFragmentToken, readSensitiveLinkToken, scrubSensitiveLinkToken } from "./src/domain/sensitiveLinkTokens.mjs";
 import { verifiedMutationDecision } from "./src/domain/emailVerificationUx.mjs";
 import {
   PLAYER_POSITION_STORAGE_KEY,
@@ -111,7 +113,7 @@ const ANALYTICS_OVERLAY_KEYS = [
   ["profileId", "profile"], ["fanClub", "fan_club"], ["artistHub", "artist_hq"], ["artistPreview", "artist_preview"],
   ["editArtist", "artist_edit"], ["artistArchive", "artist_archive"], ["artistTour", "artist_tour"], ["artistName", "artist"],
   ["venueName", "venue"], ["nearby", "nearby"], ["venues", "venues"], ["fanClubs", "fan_clubs"],
-  ["settings", "settings"], ["deleteAccount", "account_delete"], ["diagnostics", "diagnostics"], ["privacy", "privacy"],
+  ["settings", "settings"], ["suggestion", "suggestion"], ["deleteAccount", "account_delete"], ["diagnostics", "diagnostics"], ["privacy", "privacy"],
   ["terms", "terms"], ["lounge", "lounge"], ["openLog", "show"], ["post", "post"], ["badges", "badges"],
   ["topRated", "top_rated"], ["admin", "admin"], ["bulk", "tour_dates"], ["reqArtist", "request_artist"], ["menu", "menu"],
 ];
@@ -393,6 +395,13 @@ function Root() {
   const scrubVerifyUrl = () => scrubSensitiveUrl("verify");
   const clearVerifyUrl = () => { scrubVerifyUrl(); setVerifyToken(null); };
   useEffect(() => { if (verifyToken) scrubVerifyUrl(); }, [verifyToken]);
+  // Founder approvals use the same fragment-only bearer pattern. Capture it in
+  // memory, remove it from browser history immediately, and never place it in a
+  // navigation frame or analytics event.
+  const [ownerApprovalToken, setOwnerApprovalToken] = useState(() => { try { return web ? readSensitiveFragmentToken(window.location, "ownerApproval") : null; } catch { return null; } });
+  const scrubOwnerApprovalUrl = () => scrubSensitiveUrl("ownerApproval");
+  const clearOwnerApprovalUrl = () => { scrubOwnerApprovalUrl(); setOwnerApprovalToken(null); };
+  useEffect(() => { if (ownerApprovalToken) scrubOwnerApprovalUrl(); }, [ownerApprovalToken]);
   // The concert opening screen: fresh visitors (and anyone who logs out) see it;
   // "browse as guest" or logging in dismisses it. Guest choice persists.
   const [landing, setLanding] = useState(() => (
@@ -941,6 +950,7 @@ function Root() {
   else if (nav.nearby) overlay = <NearbyScreen onClose={back} onOpenVenue={openVenue} onOpenArtist={openArtist} />;
   else if (nav.venues) overlay = <VenuesScreen onClose={back} onOpenVenue={openVenue} />;
   else if (nav.fanClubs) overlay = <FanClubsScreen onClose={back} onOpenFanClub={openFanClub} />;
+  else if (nav.suggestion) overlay = <SuggestionBoxScreen onClose={back} initialSurface={nav.suggestion.surface} />;
   else if (nav.settings) overlay = <SettingsScreen onClose={back} onManageProfile={openProfileManagement} onOpenProfile={() => (session ? openProfile(session.id) : go({ auth: true }))} onOpenPrivacy={() => go({ privacy: true })} onOpenTerms={() => go({ terms: true })} onOpenDiagnostics={() => go({ diagnostics: true })} onOpenDeleteAccount={() => go({ deleteAccount: true })} onLogout={signOut} />;
   else if (nav.deleteAccount) overlay = <DeleteAccountScreen onClose={back} onDeleted={onAccountDeleted} />;
   else if (nav.diagnostics) overlay = <DiagnosticsScreen onClose={back} />;
@@ -963,6 +973,7 @@ function Root() {
       onTopRated={() => replace({ topRated: true })}
       onInbox={() => requireAuth(() => replace({ inbox: true }))}
       onActivity={() => requireAuth(() => replace({ notifications: true }))}
+      onSuggestion={() => replace({ suggestion: { surface: "menu" } })}
       onProfile={() => session && replace(publicIdentityFrame(session.id))}
       onManageProfile={replaceProfileManagement}
       onSettings={() => replace({ settings: true })}
@@ -1089,7 +1100,7 @@ function Root() {
   // Full-screen clips and gallery videos own audio while visible. Pause the
   // music player at its current position and require an explicit Play afterward
   // instead of auto-resuming two audio surfaces on viewer close.
-  const playerObscured = !!resetToken || !!welcome || !!nav.photos || (ENABLE_CLIPS && !!nav.clips);
+  const playerObscured = !!resetToken || !!ownerApprovalToken || !!welcome || !!nav.photos || (ENABLE_CLIPS && !!nav.clips);
 
   return (
     <View style={styles.root}>
@@ -1103,6 +1114,7 @@ function Root() {
             onLogin={() => { enter(); go({ auth: true, authMode: "login" }); }}
             onSignup={() => { enter(); go({ auth: true, authMode: "signup" }); }}
             onBrowse={enter}
+            onSuggestion={() => { enter(); go({ suggestion: { surface: "landing" } }); }}
           />
         ) : status !== "ok" ? (
           nav.deleteAccount ? overlay : <AccountGate status={status} until={session?.suspendedUntil} onLogout={signOut} onExport={exportMyData} onDelete={() => go({ deleteAccount: true })} />
@@ -1215,6 +1227,24 @@ function Root() {
         {verifyToken && (
           <View style={styles.welcomeModal}>
             <VerifyEmailScreen token={verifyToken} onConsumed={scrubVerifyUrl} onDone={clearVerifyUrl} />
+          </View>
+        )}
+
+        {ownerApprovalToken && (
+          <View style={styles.welcomeModal}>
+            {!authReady ? <ScreenLoading /> : !session ? (
+              <AuthScreen initialMode="login" onDone={() => {}} onCancel={clearOwnerApprovalUrl} />
+            ) : (
+              <Suspense fallback={<ScreenLoading />}>
+                <OwnerApprovalScreen
+                  token={ownerApprovalToken}
+                  session={session}
+                  onConsumed={scrubOwnerApprovalUrl}
+                  onDone={clearOwnerApprovalUrl}
+                  onSignOut={signOut}
+                />
+              </Suspense>
+            )}
           </View>
         )}
 

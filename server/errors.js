@@ -15,6 +15,7 @@ export const ERROR_CATALOG = Object.freeze({
   RECOMMENDATION_CURSOR_EXPIRED: { status: 400, retryable: false },
   NOT_FOUND: { status: 404, retryable: false },
   CONFLICT: { status: 409, retryable: false },
+  IDEMPOTENCY_MISMATCH: { status: 409, retryable: false },
   IDENTITY_CHANGED: { status: 409, retryable: false },
   POST_REMOVED: { status: 409, retryable: false },
   POST_MUTATION_CONFLICT: { status: 409, retryable: false },

@@ -1,4 +1,4 @@
-export const PRIVACY_POLICY_UPDATED = "August 24, 2026";
+export const PRIVACY_POLICY_UPDATED = "August 25, 2026";
 
 export const ANNOUNCEMENT_EMAIL_DISCLOSURE = Object.freeze({
   heading: "Email and announcement choices",

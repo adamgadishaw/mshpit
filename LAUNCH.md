@@ -92,7 +92,8 @@ Secrets belong in the Render web-service environment, never tracked files or
 | Variable | Requirement / effect |
 | --- | --- |
 | `NODE_ENV=production` | Secure cookies, HSTS, and production behavior. |
-| `ADMIN_EMAIL`, `ADMIN_PASSWORD` | Seed/maintain the founder admin. Use a unique strong password and rotate anything exposed in chat. |
+| `ADMIN_EMAIL`, `ADMIN_PASSWORD` | Seed/maintain the founder admin. Do not use a shared or AI automation mailbox; changing this identity transfers bootstrap-root ownership and revokes sessions. |
+| `ALERT_EMAIL` | Monitored operations inbox for server digests. Falls back to `ADMIN_EMAIL` while unset. |
 | `PUBLIC_ORIGIN=https://www.mshpit.com` | Canonical links, resets, and public routes. |
 | `YOUTUBE_API_KEY` | Server-side Data API lookup. The IFrame player does not receive this key. |
 | `YOUTUBE_SEARCH_DAILY_BUDGET` | Optional Pit reserve; default 90 inside the provider's separate default 100-call/day Search Queries bucket. |
@@ -102,7 +103,8 @@ Secrets belong in the Render web-service environment, never tracked files or
 | `BACKUP_ENABLED`, `BACKUP_KEEP` | Daily verified snapshot switch and retained-count limit. Production defaults on with seven copies. |
 | `BACKUP_S3_ENDPOINT`, `BACKUP_S3_BUCKET`, `BACKUP_S3_ACCESS_KEY_ID`, `BACKUP_S3_SECRET_ACCESS_KEY` | Optional private off-host backup target. All four are required and the bucket must not reuse the public media bucket. |
 | `BACKUP_S3_REGION` | Optional for off-host backups; defaults to `auto` for R2-compatible endpoints. |
-| `RESEND_API_KEY`, `MAIL_FROM` | Both required for delivery. `MAIL_FROM` must use a verified Resend domain. |
+| `RESEND_API_KEY`, `MAIL_FROM` | Both required for automated delivery. Use the verified Resend subdomain, e.g. `Mshpit <noreply@mail.mshpit.com>`. Google Workspace MX does not replace this sender. |
+| `MAIL_REPLY_TO` | Optional monitored Google Workspace mailbox/alias for replies, e.g. `support@mshpit.com`. |
 
 Optional job/provider timeout and retention knobs should remain at reviewed
 defaults unless a measured production issue justifies changing them. In
@@ -230,8 +232,9 @@ persisted run state, leases, retries, and operator-visible outcomes.
 
 - Rotate any Ticketmaster, Resend, R2, or YouTube credential ever pasted into a
   chat, then update Render.
-- Verify the Resend sending domain, set `MAIL_FROM`, and test a single-use,
-  expiring reset at two inbox providers. Reset secrets must never be logged.
+- Keep the verified Resend `mail.mshpit.com` records beside Google Workspace's
+  apex MX, set `MAIL_FROM` and `MAIL_REPLY_TO`, and test a single-use, expiring
+  reset at two inbox providers. Reset secrets must never be logged.
 - Submit `sitemap.xml` to Google Search Console.
 - Complete real iOS/Android playback and upload checks before advertising native
   parity.

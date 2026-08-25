@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readSensitiveLinkToken, scrubSensitiveLinkToken } from "./sensitiveLinkTokens.mjs";
+import { readSensitiveFragmentToken, readSensitiveLinkToken, scrubSensitiveLinkToken } from "./sensitiveLinkTokens.mjs";
 
 const TOKEN = "0123456789_abcdefghijklmnopqrstuvwxyz-ABCDE";
 
@@ -26,4 +26,18 @@ test("scrubs only the consumed credential and preserves navigation state", () =>
     scrubSensitiveLinkToken({ pathname: "/", search: "?from=email", hash: `#reset=${TOKEN}&campaign=one` }, "reset"),
     "/?from=email#campaign=one",
   );
+});
+
+test("captures and scrubs an Owner approval fragment without touching unrelated state", () => {
+  const location = {
+    pathname: "/",
+    search: "?from=founder-email",
+    hash: `#ownerApproval=${TOKEN}&campaign=security`,
+  };
+  assert.equal(readSensitiveFragmentToken(location, "ownerApproval"), TOKEN);
+  assert.equal(
+    scrubSensitiveLinkToken(location, "ownerApproval"),
+    "/?from=founder-email#campaign=security",
+  );
+  assert.equal(readSensitiveFragmentToken({ search: `?ownerApproval=${TOKEN}`, hash: "" }, "ownerApproval"), null);
 });

@@ -8,12 +8,15 @@ import {
   filterModerationMembers,
   filterModerationReports,
   formatModerationTimestamp,
+  confirmedRoleMutationPatch,
+  moderationMemberIsLockedOwner,
   moderationMemberStatus,
   moderationTargetLabel,
   nextVisibleLimit,
   normalizeAdminMemberQuery,
   patchModerationMemberContext,
   reconcileSelectedMemberId,
+  roleChangeRequiresOwnerApproval,
   staffActionStillOwned,
   summarizeModerationMembers,
   summarizeModerationReports,
@@ -91,6 +94,28 @@ test("member status gives bans priority and ignores expired timeouts", () => {
   assert.equal(moderationMemberStatus({ suspendedUntil: NOW + 1 }, NOW), "suspended");
   assert.equal(moderationMemberStatus({ suspendedUntil: NOW - 1 }, NOW), "active");
   assert.equal(moderationMemberStatus({}, NOW), "active");
+});
+
+test("Owner and privileged-role helpers keep pending authority out of local state", () => {
+  assert.equal(moderationMemberIsLockedOwner({ owner: true, role: "admin" }), true);
+  assert.equal(moderationMemberIsLockedOwner({ owner: false, role: "admin" }), false);
+  assert.equal(roleChangeRequiresOwnerApproval("fan", "moderator"), true);
+  assert.equal(roleChangeRequiresOwnerApproval("admin", "artist"), true);
+  assert.equal(roleChangeRequiresOwnerApproval("fan", "artist"), false);
+  assert.equal(confirmedRoleMutationPatch({ ok: true, pending: true, role: "admin", handle: "fan_admin" }), null);
+  assert.equal(confirmedRoleMutationPatch({ ok: true, role: "admin" }), null);
+  assert.deepEqual(confirmedRoleMutationPatch({ ok: true, role: "moderator", handle: "@fan_mod" }), { role: "moderator", handle: "fan_mod" });
+});
+
+test("Store adopts only an applied server role response", () => {
+  const storeSource = fs.readFileSync(new URL("../store.js", import.meta.url), "utf8");
+  const start = storeSource.indexOf("const setUserRole =");
+  const end = storeSource.indexOf("const setVerified =", start);
+  assert.ok(start >= 0 && end > start);
+  const slice = storeSource.slice(start, end);
+  assert.match(slice, /confirmedRoleMutationPatch\(result\)/);
+  assert.match(slice, /if \(appliedPatch\)/);
+  assert.doesNotMatch(slice, /patchStaffMember\(id, \{ role/);
 });
 
 test("moderation timestamps never render invalid dates and include timezone for actions", () => {

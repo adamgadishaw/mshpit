@@ -129,24 +129,28 @@ test("artist approval binds owner_id and refuses a duplicate normalized identity
   assert.equal(db.prepare("SELECT status FROM artist_requests WHERE id='request_duplicate_artist'").get().status, "pending");
 });
 
-test("staff role promotion revokes every target session in the same transaction", () => {
+test("staff role promotion remains pending and cannot change or revoke authority before Owner approval", async () => {
   const adminSeed = addUser("session_admin");
   db.prepare("UPDATE users SET role='admin' WHERE id=?").run(adminSeed.id);
   const admin = q.userById.get(adminSeed.id);
   const target = addUser("session_target");
+  db.prepare("UPDATE users SET email_verified_at=? WHERE id=?").run(Date.now(), target.id);
   const insert = db.prepare("INSERT INTO sessions (token_hash,user_id,created_at,expires_at) VALUES (?,?,?,?)");
   insert.run("target-session-a", target.id, Date.now(), Date.now() + 60_000);
   insert.run("target-session-b", target.id, Date.now(), Date.now() + 60_000);
 
-  const result = routes["POST /api/admin/users/:id/role"]({
+  const result = await routes["POST /api/admin/users/:id/role"]({
     user: admin,
     params: { id: target.id },
     body: { role: "moderator", handle: "session_target_mod" },
     requestId: "role-session-test",
   });
-  assert.deepEqual(result, { ok: true, role: "moderator", handle: "session_target_mod" });
-  assert.equal(db.prepare("SELECT COUNT(*) count FROM sessions WHERE user_id=?").get(target.id).count, 0);
-  assert.equal(q.userById.get(target.id).role, "moderator");
+  assert.equal(result.ok, true);
+  assert.equal(result.pending, true);
+  assert.equal("token" in result, false);
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM sessions WHERE user_id=?").get(target.id).count, 2);
+  assert.equal(q.userById.get(target.id).role, "fan");
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM moderation_actions WHERE target_id=? AND action='change_role'").get(target.id).count, 0);
 });
 
 test("legacy artist pages are claimed only by one unambiguous matching account", () => {

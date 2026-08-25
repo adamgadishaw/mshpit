@@ -13,6 +13,9 @@ const UNVERIFIED_MUTATION_ALLOWLIST = new Set([
   "POST /api/me/analytics-consent",
   "POST /api/me/email-preferences",
   "POST /api/me/export",
+  // Product suggestions are anonymous and never mutate account/public state;
+  // an unverified signed-in visitor should have the same feedback path as a guest.
+  "POST /api/suggestions",
   "DELETE /api/me",
 ]);
 

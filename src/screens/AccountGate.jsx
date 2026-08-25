@@ -2,6 +2,7 @@ import { useState } from "react";
 import { View, Text, TextInput, StyleSheet, Pressable } from "react-native";
 import { colors } from "../theme";
 import Icon from "../components/Icon";
+import { APPEALS_EMAIL } from "../domain/contact.mjs";
 
 // Full-screen block for banned (red) or suspended (yellow) accounts. They can't
 // post, DM, or browse. Privacy rights remain available: a restriction must not
@@ -34,7 +35,7 @@ export default function AccountGate({ status, until, onLogout, onExport, onDelet
           ? "Your account broke the rules and has been permanently banned. You can't post, message, or browse."
           : `Your account is on a time-out for ${left} more day${left === 1 ? "" : "s"}. You can't post or message until it lifts.`}
       </Text>
-      <Text style={styles.appeal}>Think this is a mistake? Email appeals@pit.app.</Text>
+      <Text style={styles.appeal}>Think this is a mistake? Email {APPEALS_EMAIL}.</Text>
       <Text style={styles.rights}>You can still download your data or permanently delete this account.</Text>
       <TextInput
         value={exportPassword}

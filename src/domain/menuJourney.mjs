@@ -63,6 +63,7 @@ export function journeyMenuModel({ session = null, inboxUnread = 0, notification
     connection: [
       ...(includeActivity ? [{ key: "activity", icon: "bell", title: "Activity", detail: notificationCount ? `${notificationCount} new` : "Follows, likes, and replies", badge: notificationCount }] : []),
       { key: "inbox", icon: "mail", title: "Inbox", detail: unread ? `${unread} unread` : "Your messages", badge: unread },
+      { key: "suggestion", icon: "comment", title: "Suggestion box", detail: "Tell Pit what feels missing or confusing" },
     ],
     account,
   };

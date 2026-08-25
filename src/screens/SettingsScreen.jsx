@@ -9,9 +9,9 @@ import Avatar from "../components/Avatar";
 import ThemeSwatch, { themeGridStyle } from "../components/ThemeSwatch";
 import { privateListeningRemainingLabel } from "../domain/privateListening.mjs";
 import { profileManagementAction } from "../domain/artistWorkspace.mjs";
+import { SUPPORT_EMAIL, SUPPORT_URL } from "../domain/contact.mjs";
 
 const versionLabel = Constants.expoConfig?.version || "Unavailable";
-const SUPPORT_URL = "https://www.mshpit.com/support";
 
 function Row({ icon, label, sub, onPress, danger, right, disabled = false, accessibilityRole, accessibilityState }) {
   const body = (
@@ -234,7 +234,7 @@ export default function SettingsScreen({ onClose, onManageProfile, onOpenProfile
           onPress={() => {
             setSupportError(null);
             void Linking.openURL(SUPPORT_URL).catch(() => {
-              setSupportError("Support could not be opened. Email support@mshpit.com.");
+              setSupportError(`Support could not be opened. Email ${SUPPORT_EMAIL}.`);
             });
           }}
         />

@@ -1,17 +1,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-const { parseMailFrom, mailConfigured, mailDiagnostics, mailFailureLabel } = await import("./mailer.js");
+const { parseMailFrom, mailConfigured, mailDiagnostics, mailFailureLabel, sendEmail } = await import("./mailer.js");
 
-// Each test owns the two env vars outright so ordering can't leak between them.
+// Each test owns the mail env vars outright so ordering can't leak between them.
 function withEnv(key, from, fn) {
   const prevKey = process.env.RESEND_API_KEY;
   const prevFrom = process.env.MAIL_FROM;
+  const prevReplyTo = process.env.MAIL_REPLY_TO;
   if (key === undefined) delete process.env.RESEND_API_KEY; else process.env.RESEND_API_KEY = key;
   if (from === undefined) delete process.env.MAIL_FROM; else process.env.MAIL_FROM = from;
+  delete process.env.MAIL_REPLY_TO;
   try { fn(); } finally {
     if (prevKey === undefined) delete process.env.RESEND_API_KEY; else process.env.RESEND_API_KEY = prevKey;
     if (prevFrom === undefined) delete process.env.MAIL_FROM; else process.env.MAIL_FROM = prevFrom;
+    if (prevReplyTo === undefined) delete process.env.MAIL_REPLY_TO; else process.env.MAIL_REPLY_TO = prevReplyTo;
   }
 }
 
@@ -71,11 +74,46 @@ test("mailDiagnostics names which half of the setup is missing", () => {
 });
 
 test("mailDiagnostics never echoes the API key or the raw sender value", () => {
-  withEnv("re_super_secret_key", "Pit <noreply@mail.mshpit.com>", () => {
+  withEnv("re_super_secret_key", "Mshpit <noreply@mail.mshpit.com>", () => {
+    process.env.MAIL_REPLY_TO = "Mshpit Support <private-inbox@mshpit.com>";
     const serialized = JSON.stringify(mailDiagnostics());
     assert.ok(!serialized.includes("re_super_secret_key"));
     assert.ok(!serialized.includes("noreply@"));
+    assert.ok(!serialized.includes("private-inbox@"));
+    assert.equal(mailDiagnostics().replyToDomain, "mshpit.com");
   });
+});
+
+test("sendEmail routes replies only to a validated Workspace mailbox", async () => {
+  const previous = {
+    key: process.env.RESEND_API_KEY,
+    from: process.env.MAIL_FROM,
+    replyTo: process.env.MAIL_REPLY_TO,
+    fetch: globalThis.fetch,
+  };
+  let payload = null;
+  process.env.RESEND_API_KEY = "re_test_key";
+  process.env.MAIL_FROM = "Mshpit <noreply@mail.mshpit.com>";
+  process.env.MAIL_REPLY_TO = "Mshpit Support <support@mshpit.com>";
+  globalThis.fetch = async (_url, options) => {
+    payload = JSON.parse(options.body);
+    return { ok: true, status: 200 };
+  };
+  try {
+    const sent = await sendEmail({ to: "member@example.com", subject: "Test", html: "<p>Test</p>", text: "Test" });
+    assert.equal(sent.sent, true);
+    assert.equal(payload.reply_to, "Mshpit Support <support@mshpit.com>");
+
+    process.env.MAIL_REPLY_TO = "not an address";
+    await sendEmail({ to: "member@example.com", subject: "Test", html: "<p>Test</p>", text: "Test" });
+    assert.equal(Object.hasOwn(payload, "reply_to"), false, "an invalid optional inbox must never reach Resend");
+    assert.equal(mailDiagnostics().warning, "invalid-reply-to");
+  } finally {
+    if (previous.key === undefined) delete process.env.RESEND_API_KEY; else process.env.RESEND_API_KEY = previous.key;
+    if (previous.from === undefined) delete process.env.MAIL_FROM; else process.env.MAIL_FROM = previous.from;
+    if (previous.replyTo === undefined) delete process.env.MAIL_REPLY_TO; else process.env.MAIL_REPLY_TO = previous.replyTo;
+    globalThis.fetch = previous.fetch;
+  }
 });
 
 test("mail failure labels cannot copy provider messages, addresses, or tokens into logs", () => {

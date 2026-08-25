@@ -10,6 +10,7 @@ const app = readJson("app.json").expo;
 const eas = readJson("eas.json");
 const pkg = readJson("package.json");
 const settingsSource = readFileSync(join(ROOT, "src", "screens", "SettingsScreen.jsx"), "utf8");
+const contactSource = readFileSync(join(ROOT, "src", "domain", "contact.mjs"), "utf8");
 const playerSource = readFileSync(join(ROOT, "src", "components", "PlayerBar.jsx"), "utf8");
 const playerResolutionSource = readFileSync(join(ROOT, "src", "domain", "playerSourceResolution.mjs"), "utf8");
 const nativeAudioSource = readFileSync(join(ROOT, "src", "lib", "audioPreview.native.js"), "utf8");
@@ -42,7 +43,8 @@ test("native application identifiers and versions are explicit", () => {
 test("Settings uses the configured native version instead of stale alpha copy", () => {
   assert.match(settingsSource, /Constants\.expoConfig\?\.version/);
   assert.doesNotMatch(settingsSource, /Alpha build|>0\.1</i);
-  assert.match(settingsSource, /https:\/\/www\.mshpit\.com\/support/);
+  assert.match(settingsSource, /SUPPORT_EMAIL, SUPPORT_URL/);
+  assert.match(contactSource, /SUPPORT_URL = "https:\/\/www\.mshpit\.com\/support"/);
   assert.match(settingsSource, /Help & support/);
 });
 

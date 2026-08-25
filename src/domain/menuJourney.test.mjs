@@ -17,10 +17,11 @@ test("journey menu keeps every public discovery and connection destination reach
 
   assert.equal(JOURNEY_TAGLINE, "Your life's musical journey");
   assert.deepEqual(model.discover.map(({ key }) => key), ["near", "venues", "fanClubs", "topRated"]);
-  assert.deepEqual(model.connection.map(({ key }) => key), ["activity", "inbox"]);
+  assert.deepEqual(model.connection.map(({ key }) => key), ["activity", "inbox", "suggestion"]);
   assert.equal(model.discover[0].detail, "Shows and scenes around Toronto");
   assert.equal(model.connection[0].detail, "2 new");
   assert.equal(model.connection[1].detail, "3 unread");
+  assert.equal(model.connection[2].title, "Suggestion box");
 });
 
 test("role-specific account destinations expose one profile-management doorway", () => {
@@ -47,6 +48,7 @@ test("menu badges reject malformed and negative counts", () => {
   const model = journeyMenuModel({ inboxUnread: -7, notifications: "not-a-number", includeActivity: false });
   assert.deepEqual(model.connection, [
     { key: "inbox", icon: "mail", title: "Inbox", detail: "Your messages", badge: 0 },
+    { key: "suggestion", icon: "comment", title: "Suggestion box", detail: "Tell Pit what feels missing or confusing" },
   ]);
 });
 

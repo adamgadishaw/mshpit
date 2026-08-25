@@ -13,9 +13,11 @@ import {
   filterModerationMembers,
   filterModerationReports,
   formatModerationTimestamp,
+  moderationMemberIsLockedOwner,
   moderationMemberStatus,
   nextVisibleLimit,
   reconcileSelectedMemberId,
+  roleChangeRequiresOwnerApproval,
   summarizeModerationMembers,
   summarizeModerationReports,
 } from "../../domain/moderationConsole.mjs";
@@ -89,13 +91,15 @@ function FilterPill({ label, count, selected, disabled = false, onPress }) {
 function Feedback({ feedback, onClear }) {
   if (!feedback) return null;
   const bad = feedback.tone === "error";
+  const pending = feedback.tone === "pending";
+  const color = bad ? colors.danger : pending ? colors.gold : colors.good;
   return (
     <View
       accessibilityLiveRegion={bad ? "assertive" : "polite"}
-      style={[styles.feedback, bad ? styles.feedbackError : styles.feedbackSuccess]}
+      style={[styles.feedback, bad ? styles.feedbackError : pending ? styles.feedbackPending : styles.feedbackSuccess]}
     >
-      <Icon name={bad ? "x" : "check"} size={15} color={bad ? colors.danger : colors.good} />
-      <Text selectable style={[styles.feedbackText, { color: bad ? colors.danger : colors.good }]}>{feedback.message}</Text>
+      <Icon name={bad ? "x" : pending ? "clock" : "check"} size={15} color={color} />
+      <Text selectable style={[styles.feedbackText, { color }]}>{feedback.message}</Text>
       <Pressable accessibilityRole="button" accessibilityLabel="Dismiss message" hitSlop={8} onPress={onClear} style={styles.iconButton}>
         <Icon name="x" size={14} color={colors.textDim} />
       </Pressable>
@@ -390,11 +394,12 @@ function ReportsWorkspace({ rows, queueSummary, nextCursor, loadingState, loadEr
 
 function MemberListRow({ member, selected, wide, onPress, expandedDetail }) {
   const status = moderationMemberStatus(member);
+  const owner = moderationMemberIsLockedOwner(member);
   return (
     <View>
       <Pressable
         accessibilityRole="button"
-        accessibilityLabel={`Manage ${member.name}, @${member.handle}, ${status}`}
+        accessibilityLabel={`${owner ? "Review locked Owner" : "Manage"} ${member.name}, @${member.handle}, ${owner ? "Owner, locked" : status}`}
         accessibilityHint={wide ? "Shows member controls beside the directory" : selected ? "Hides member controls" : "Shows member controls below this row"}
         accessibilityState={{ expanded: wide ? undefined : selected, selected }}
         onPress={onPress}
@@ -405,10 +410,11 @@ function MemberListRow({ member, selected, wide, onPress, expandedDetail }) {
           <View style={styles.memberNameLine}>
             <Text style={styles.memberName} numberOfLines={1}>{member.name}</Text>
             {member.verified ? <Badge type="verified" size={14} /> : null}
+            {owner ? <Badge type="founder" size={14} /> : null}
           </View>
           <Text style={styles.memberHandle} numberOfLines={1}>@{member.handle}{member.home?.city ? ` / ${member.home.city}` : ""}</Text>
         </View>
-        <View style={[styles.memberStatus, { borderColor: statusColor(status) }]}><Text style={[styles.memberStatusText, { color: statusColor(status) }]}>{status}</Text></View>
+        {owner ? <View style={styles.ownerLockTag}><Icon name="lock" size={10} color={colors.amber} /><Text style={styles.ownerLockText}>OWNER</Text></View> : <View style={[styles.memberStatus, { borderColor: statusColor(status) }]}><Text style={[styles.memberStatusText, { color: statusColor(status) }]}>{status}</Text></View>}
         <Icon name={!wide && selected ? "chevron-down" : "chevron-right"} size={15} color={colors.textFaint} />
       </Pressable>
       {expandedDetail || null}
@@ -428,6 +434,7 @@ function ControlGroup({ label, children }) {
 function MemberDetail({ member, selfId, canAdmin, grantableBadges, busy, confirmation, actions, onRequest, onConfirm, onCancel }) {
   if (!member) return <View style={styles.memberDetailEmpty}><Icon name="you" size={26} color={colors.textFaint} /><Text style={styles.emptyText}>Choose a member to review their account and moderation controls.</Text></View>;
   const self = member.id === selfId;
+  const owner = moderationMemberIsLockedOwner(member);
   const status = moderationMemberStatus(member);
   const timed = status === "suspended";
   const banned = status === "banned";
@@ -435,32 +442,48 @@ function MemberDetail({ member, selfId, canAdmin, grantableBadges, busy, confirm
   const ask = (request) => onRequest({ ...request, scope });
   const confirmChange = ({ key, title, detail, label, icon, tone, success, run }) => ask({ key: `${scope}:${key}`, title, detail, confirmLabel: label, icon, tone, success, run });
   return (
-    <View style={[styles.memberDetail, banned && styles.cardDanger]}>
+    <View style={[styles.memberDetail, banned && styles.cardDanger, owner && styles.cardOwner]}>
       <View style={styles.memberDetailHeader}>
         <Avatar user={member} size={50} />
         <View style={styles.memberDetailIdentity}>
           <View style={styles.memberNameLine}>
             <Text style={styles.memberDetailName}>{member.name}</Text>
             {member.verified ? <Badge type="verified" size={17} /> : null}
+            {owner ? <Badge type="founder" size={17} /> : null}
             {self ? <Text style={styles.youTag}>YOU</Text> : null}
           </View>
           <Text selectable style={styles.memberHandle}>@{member.handle} / {member.id}</Text>
           <View style={styles.identityTags}>
             <View style={[styles.memberStatus, { borderColor: statusColor(status) }]}><Text style={[styles.memberStatusText, { color: statusColor(status) }]}>{status}</Text></View>
             <View style={[styles.memberStatus, { borderColor: roleColor(member.role) }]}><Text style={[styles.memberStatusText, { color: roleColor(member.role) }]}>{member.role}</Text></View>
+            {owner ? <View style={styles.ownerLockTag}><Icon name="lock" size={10} color={colors.amber} /><Text style={styles.ownerLockText}>NON-TRANSFERABLE OWNER</Text></View> : null}
           </View>
         </View>
       </View>
       {timed && member.suspendedUntil ? <Text selectable style={styles.guidance}>Timeout ends {formatModerationTimestamp(member.suspendedUntil)}.</Text> : null}
-      {self ? <Text style={styles.guidance}>Your own role and account restrictions are locked to prevent accidental lockout.</Text> : null}
+      {owner ? <Text style={styles.guidance}>This is the non-transferable Founder Owner. Role, trust, badges, and account restrictions are locked here and enforced again by the server.</Text> : self ? <Text style={styles.guidance}>Your own role and account restrictions are locked to prevent accidental lockout.</Text> : null}
 
-      {canAdmin ? (
+      {canAdmin && !owner ? (
         <>
           <ControlGroup label="Role">
-            {ROLES.map((role) => <FilterPill key={role} label={role} selected={member.role === role} disabled={self || member.role === "admin" || busy} onPress={() => {
-              if (self || member.role === "admin" || role === member.role || busy) return;
-              confirmChange({ key: `role:${role}`, title: `Change @${member.handle} to ${role}?`, detail: "Role changes alter account permissions immediately and are recorded by the server.", label: `Set ${role}`, icon: "shield", tone: "warning", success: `Role changed to ${role}.`, run: () => actions.setUserRole(member.id, role) });
-            }} />)}
+            {ROLES.map((role) => {
+              const needsOwner = roleChangeRequiresOwnerApproval(member.role, role);
+              return <FilterPill key={role} label={role} selected={member.role === role} disabled={self || role === member.role || busy} onPress={() => {
+                if (self || role === member.role || busy) return;
+                confirmChange({
+                  key: `role:${role}`,
+                  title: needsOwner ? `Request ${role} for @${member.handle}?` : `Change @${member.handle} to ${role}?`,
+                  detail: needsOwner
+                    ? "This does not change authority now. It creates a 45-minute review request and emails founder@mshpit.com; only the locked Owner can approve or reject it with their password."
+                    : "This fan/artist role change applies immediately and is recorded by the server.",
+                  label: needsOwner ? `Request ${role}` : `Set ${role}`,
+                  icon: "shield",
+                  tone: "warning",
+                  success: (result) => result?.pending ? result.message || "Awaiting Owner approval. No authority changed." : `Role changed to ${role}.`,
+                  run: () => actions.setUserRole(member.id, role),
+                });
+              }} />;
+            })}
           </ControlGroup>
           <ControlGroup label="Trust">
             <ActionButton label={member.verified ? "Remove verification" : "Grant verification"} icon={member.verified ? "x" : "check"} tone={member.verified ? "warning" : "success"} disabled={busy} onPress={() => confirmChange({ key: "verified", title: `${member.verified ? "Remove" : "Grant"} public verification?`, detail: "This controls the public blue check and is separate from email confirmation.", label: member.verified ? "Remove check" : "Grant check", icon: member.verified ? "x" : "check", tone: member.verified ? "warning" : "success", success: member.verified ? "Verification removed." : "Verification granted.", run: () => actions.setVerified(member.id, !member.verified) })} />
@@ -479,7 +502,7 @@ function MemberDetail({ member, selfId, canAdmin, grantableBadges, busy, confirm
         </>
       ) : null}
 
-      {!self && member.role !== "admin" ? (
+      {!owner && !self && member.role !== "admin" ? (
         <ControlGroup label="Moderation">
           {!banned && !timed ? <>
             <ActionButton label="Timeout 1 day" icon="clock" tone="warning" disabled={busy} onPress={() => confirmChange({ key: "timeout:1", title: `Timeout @${member.handle} for 1 day?`, detail: "The member cannot use the account until the timeout expires or staff lift it.", label: "Timeout 1 day", icon: "clock", tone: "warning", success: "Member timed out for 1 day.", run: () => actions.suspendUser(member.id, 1) })} />
@@ -491,7 +514,7 @@ function MemberDetail({ member, selfId, canAdmin, grantableBadges, busy, confirm
             : <ActionButton label="Ban member" icon="x" tone="danger" disabled={busy} onPress={() => confirmChange({ key: "ban", title: `Ban @${member.handle}?`, detail: "This blocks account access until an administrator reverses it.", label: "Ban member", icon: "x", tone: "danger", success: "Member banned.", run: () => actions.banUser(member.id) })} />) : null}
         </ControlGroup>
       ) : null}
-      {member.role === "admin" && !self ? <Text style={styles.guidance}>Administrator accounts require owner review. Role and restriction controls are locked here.</Text> : null}
+      {!owner && member.role === "admin" && !self ? <Text style={styles.guidance}>Administrator restrictions stay locked here. Changing this account out of the admin role creates a Founder approval request; it does not change authority immediately.</Text> : null}
       {confirmation?.scope === scope ? <Confirmation request={confirmation} busy={busy} onCancel={onCancel} onConfirm={onConfirm} /> : null}
     </View>
   );
@@ -554,7 +577,7 @@ function MembersWorkspace({ users, adminStats, directory, loadingState, loadErro
           <Text style={styles.eyebrow}>MEMBER TRIAGE</Text>
           <Text accessibilityRole="header" style={styles.sectionTitle}>{scopePending || loadingState === "loading" ? "Searching members" : status === "restricted" ? `${filtered.length.toLocaleString()} restricted in loaded results` : `${matchingTotal.toLocaleString()} matching member${matchingTotal === 1 ? "" : "s"}`}</Text>
           <Text style={styles.loadedCount}>{users.length.toLocaleString()} loaded / {total.toLocaleString()} total accounts</Text>
-          <Text style={styles.sectionIntro}>Restricted accounts appear first. Filter the directory, then open one member's controls instead of rendering every action for every account.</Text>
+          <Text style={styles.sectionIntro}>Restricted accounts appear first. The Founder Owner is visibly locked. Any change to or from moderator/admin stays pending until the Owner approves it from founder@mshpit.com.</Text>
         </View>
         <ActionButton label="Refresh matching members" icon="discover" compact busy={loadingState === "loading"} disabled={loadingState === "loading" || busy} onPress={() => searchRef.current(serverScope)} />
       </View>
@@ -811,7 +834,8 @@ export default function ModerationConsole({
       if (actionInFlight.current !== operation || activeSessionId.current !== operation.sessionId) return;
       if (result === false || result?.ok === false) throw result?.error || new Error("The server did not apply this change.");
       setConfirmation(null);
-      setFeedback({ tone: "success", message: request.success || "Change saved." });
+      const successMessage = typeof request.success === "function" ? request.success(result) : request.success;
+      setFeedback({ tone: result?.pending ? "pending" : "success", message: successMessage || result?.message || "Change saved." });
     } catch (error) {
       if (actionInFlight.current !== operation || activeSessionId.current !== operation.sessionId) return;
       setFeedback({ tone: "error", message: errorText(error, "That change was not applied. Review the current state and try again.") });
@@ -861,6 +885,7 @@ const styles = StyleSheet.create({
   auditWhen: { color: colors.textFaint, fontFamily: mono, fontSize: 10 },
   feedback: { minHeight: 48, flexDirection: "row", alignItems: "center", gap: space(2), borderRadius: radius.sm, borderWidth: 1, paddingHorizontal: space(3), paddingVertical: space(2) },
   feedbackError: { borderColor: colors.danger + "66", backgroundColor: colors.danger + "12" },
+  feedbackPending: { borderColor: colors.gold + "66", backgroundColor: colors.gold + "12" },
   feedbackSuccess: { borderColor: colors.good + "66", backgroundColor: colors.good + "12" },
   feedbackText: { flex: 1, fontSize: 12, lineHeight: 18, fontWeight: "700" },
   inlineError: { color: colors.danger, fontSize: 12, lineHeight: 18, fontWeight: "700" },
@@ -886,6 +911,7 @@ const styles = StyleSheet.create({
   reportCard: { borderWidth: 1, borderColor: colors.line, borderRadius: radius.md, backgroundColor: colors.surface, padding: space(4), gap: space(3) },
   cardWarning: { borderColor: colors.gold + "88" },
   cardDanger: { borderColor: colors.danger + "88" },
+  cardOwner: { borderColor: colors.amber + "99", backgroundColor: colors.amber + "08" },
   reportHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: space(2) },
   typeTag: { borderWidth: 1, borderColor: colors.cool + "77", borderRadius: radius.pill, paddingHorizontal: space(2), paddingVertical: 4, backgroundColor: colors.cool + "10" },
   typeTagText: { color: colors.cool, fontFamily: mono, fontSize: 9, fontWeight: "900", letterSpacing: 0.7, textTransform: "uppercase" },
@@ -934,6 +960,8 @@ const styles = StyleSheet.create({
   memberHandle: { color: colors.textDim, fontSize: 10, lineHeight: 15 },
   memberStatus: { borderWidth: 1, borderRadius: radius.pill, paddingHorizontal: space(2), paddingVertical: 3 },
   memberStatusText: { fontFamily: mono, fontSize: 8, fontWeight: "900", letterSpacing: 0.3, textTransform: "uppercase" },
+  ownerLockTag: { minHeight: 24, flexDirection: "row", alignItems: "center", gap: 4, borderWidth: 1, borderColor: colors.amber + "88", borderRadius: radius.pill, paddingHorizontal: space(2), backgroundColor: colors.amber + "0D" },
+  ownerLockText: { color: colors.amber, fontFamily: mono, fontSize: 8, fontWeight: "900", letterSpacing: 0.4 },
   memberDetail: { borderWidth: 1, borderColor: colors.line, borderRadius: radius.md, backgroundColor: colors.bgElev, padding: space(4), gap: space(4) },
   memberDetailEmpty: { minHeight: 180, alignItems: "center", justifyContent: "center", gap: space(2), borderWidth: 1, borderColor: colors.lineSoft, borderStyle: "dashed", borderRadius: radius.md },
   memberDetailHeader: { flexDirection: "row", alignItems: "center", gap: space(3) },

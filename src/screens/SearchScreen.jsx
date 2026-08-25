@@ -20,6 +20,7 @@ import {
 import { searchLiveAnnouncement } from "../domain/searchAccessibility.mjs";
 import { accountTargetScope, isCurrentScreenRequest, scopedScreenValue } from "../domain/screenScope.mjs";
 import { openTicketLink } from "../lib/ticketLinks";
+import { recordGuestSearch } from "../features/analytics/services/guestSearchAnalyticsApi.mjs";
 
 const EMPTY_LOOKUP_STATE = Object.freeze({ busy: false, message: "" });
 
@@ -46,12 +47,21 @@ function PersonRow({ u, following, canFollow, onFollow, onOpen }) {
     </View>
   );
 }
-function ArtistRow({ name, genre, onPress }) {
+function ArtistRow({ name, genre, memorial, onPress }) {
+  const remembered = memorial?.deceased === true;
   return (
-    <Pressable style={styles.row} onPress={onPress} accessibilityRole="button" accessibilityLabel={`Open artist ${name}${genre ? `, ${genre}` : ""}`}>
-      <View style={[styles.dot, { borderColor: colors.amber }]}><Icon name="music" size={14} color={colors.amber} /></View>
+    <Pressable style={styles.row} onPress={onPress} accessibilityRole="button" accessibilityLabel={`Open artist ${name}${genre ? `, ${genre}` : ""}${remembered ? ", memorial tribute" : ""}`}>
+      <View style={[styles.dot, { borderColor: remembered ? colors.gold : colors.amber }]}><Icon name={remembered ? "dove" : "music"} size={14} color={remembered ? colors.gold : colors.amber} /></View>
       <View style={{ flex: 1 }}>
-        <Text style={styles.rowName} numberOfLines={1}>{name}</Text>
+        <View style={styles.nameLine}>
+          <Text style={[styles.rowName, { flexShrink: 1 }]} numberOfLines={1}>{name}</Text>
+          {remembered ? (
+            <View style={styles.memorialPill} accessible={false}>
+              <Icon name="dove" size={11} color={colors.gold} />
+              <Text style={styles.memorialPillText}>IN MEMORY</Text>
+            </View>
+          ) : null}
+        </View>
         {!!genre && <Text style={styles.rowSub} numberOfLines={1}>{genre}</Text>}
       </View>
       <Icon name="chevron-right" size={16} color={colors.textDim} />
@@ -206,7 +216,10 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
     const id = setTimeout(async () => {
       try {
         const [peopleRows, artistRows, songRows] = await Promise.all([
-          searchPeople(query, requestOptions),
+          // People search is intentionally member-only. Calling it from a guest
+          // query turns the entire combined Promise into a 401 and makes public
+          // artist/song discovery look broken.
+          session?.id ? searchPeople(query, requestOptions) : Promise.resolve([]),
           searchArtistsApi(query, requestOptions),
           searchSongsApi(query, requestOptions),
         ]);
@@ -222,15 +235,27 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
         const eventCount = tourDates.filter((t) => `${t.artist} ${t.venue} ${t.place || t.city || ""}`.toLowerCase().includes(query)).slice(0, 24).length;
         const clubCount = fanClubsDirectory().filter((c) => c.artist.toLowerCase().includes(query)).slice(0, 12).length;
         const resultCount = (peopleRows?.length || 0) + (artistRows?.length || 0) + (songRows?.length || 0) + venueCount + eventCount + clubCount;
-        track("search", { kind: "all", resultBucket: searchResultBucket(resultCount) });
+        const resultBucket = searchResultBucket(resultCount);
+        if (session?.id) {
+          track("search", { kind: "all", resultBucket });
+        } else {
+          // This request contains no search text or browser/account identity;
+          // the server increments one coarse daily aggregate counter only.
+          void recordGuestSearch({ kind: "all", resultBucket, outcome: "success" }, { signal: controller.signal });
+        }
       } catch (error) {
-        if (live && error?.name !== "AbortError") setSearchError("Search could not update. Check your connection and try again.");
+        if (live && error?.name !== "AbortError") {
+          setSearchError("Search could not update. Check your connection and try again.");
+          if (!session?.id) {
+            void recordGuestSearch({ kind: "all", resultBucket: "unknown", outcome: "failed" }, { signal: controller.signal });
+          }
+        }
       } finally {
         if (live) setSearchLoading(false);
       }
     }, 250);
     return () => { live = false; clearTimeout(id); controller.abort(); };
-  }, [query, peopleScope, searchRevision]);
+  }, [query, peopleScope, searchRevision, session?.id]);
 
   const mine = session?.id;
   // People are pure type-ahead (like every social app): never a full list, always
@@ -247,9 +272,9 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
 
   const artists = useMemo(() => {
     const map = new Map();
-    const add = (name, genre) => { const k = name.toLowerCase(); if (name && !map.has(k)) map.set(k, { name, genre }); };
+    const add = (name, genre, memorial = null) => { const k = name.toLowerCase(); if (name && !map.has(k)) map.set(k, { name, genre, memorial }); };
     // DB catalog first (notable-first, includes on-demand-resolved artists).
-    dbArtists.forEach((a) => add(a.name, a.genre));
+    dbArtists.forEach((a) => add(a.name, a.genre, a.memorial));
     if (!query) {
       artistsAlphabetical(24).forEach((a) => add(a.name, a.genre));
       return [...map.values()].slice(0, 24);
@@ -414,7 +439,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
           icon="music" tint={colors.amber}
           title={showBrowse ? "ARTISTS TO EXPLORE" : "ARTISTS"} count={artists.length}
           rows={[
-            ...artists.map((a) => <ArtistRow key={a.name} name={a.name} genre={a.genre} onPress={() => openArtist(a.name)} />),
+            ...artists.map((a) => <ArtistRow key={a.name} name={a.name} genre={a.genre} memorial={a.memorial} onPress={() => openArtist(a.name)} />),
             query.length >= 2 && !exactArtist ? (
               <Pressable key="_lookup" style={styles.row} onPress={() => lookUp(q.trim())} disabled={lookupBusy} accessibilityRole="button" accessibilityLabel={`Look up artist ${q.trim()}`} accessibilityHint="Searches MusicBrainz if the artist is not in Pit yet" accessibilityState={{ busy: lookupBusy, disabled: lookupBusy }}>
                 <View style={[styles.dot, { borderColor: colors.good }]}><Icon name="search" size={14} color={colors.good} /></View>
@@ -511,6 +536,8 @@ const styles = StyleSheet.create({
   link: { color: colors.text, fontWeight: "700" },
   pill: { backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.amber, borderRadius: radius.pill, minWidth: 22, paddingHorizontal: 7, paddingVertical: 1, alignItems: "center" },
   pillTxt: { color: colors.amber, fontSize: 11, fontWeight: "800" },
+  memorialPill: { flexDirection: "row", alignItems: "center", gap: 3, flexShrink: 0, paddingHorizontal: 6, paddingVertical: 2, borderRadius: radius.pill, borderWidth: 1, borderColor: `${colors.gold}66`, backgroundColor: `${colors.gold}12` },
+  memorialPillText: { color: colors.gold, fontFamily: mono, fontSize: 8, lineHeight: 11, letterSpacing: 0.7, fontWeight: "900" },
   soldOut: { color: colors.danger, fontSize: 10, fontWeight: "800", letterSpacing: 0.5 },
   empty: { color: colors.textDim, fontSize: 13, fontStyle: "italic", padding: 12, textAlign: "center" },
   followBtn: { minHeight: 44, justifyContent: "center", paddingHorizontal: 14, borderRadius: radius.pill, backgroundColor: colors.amberStrong },

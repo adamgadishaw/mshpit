@@ -281,6 +281,49 @@ CREATE TABLE IF NOT EXISTS artist_profiles (
   updated_at   INTEGER
 );
 
+-- PIT-managed artist memorials are catalog facts, not artist-account UGC.
+-- Only an administrator can publish one after deliberately confirming the page
+-- represents a deceased individual and supplying a public HTTPS source. The
+-- deceased marker remains public; the richer spotlight has an explicit window.
+CREATE TABLE IF NOT EXISTS artist_memorials (
+  artist_key           TEXT PRIMARY KEY CHECK (length(artist_key) BETWEEN 1 AND 200),
+  artist_name          TEXT NOT NULL CHECK (length(artist_name) BETWEEN 1 AND 160),
+  artist_mbid          TEXT CHECK (
+                         artist_mbid IS NULL OR (
+                           length(artist_mbid)=36 AND
+                           lower(artist_mbid) GLOB '[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[1-5][0-9a-f][0-9a-f][0-9a-f]-[89ab][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'
+                         )
+                       ),
+  status               TEXT NOT NULL CHECK (status IN ('draft','published')),
+  death_date           TEXT NOT NULL CHECK (
+                         length(death_date)=10 AND
+                         death_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+                       ),
+  summary              TEXT NOT NULL CHECK (length(summary) BETWEEN 20 AND 600),
+  thank_you            TEXT NOT NULL CHECK (length(thank_you) BETWEEN 3 AND 320),
+  accomplishments      TEXT NOT NULL CHECK (
+                         json_valid(accomplishments) AND
+                         json_type(accomplishments)='array' AND
+                         json_array_length(accomplishments) BETWEEN 1 AND 8
+                       ),
+  source_url           TEXT NOT NULL CHECK (source_url LIKE 'https://%'),
+  source_title         TEXT CHECK (source_title IS NULL OR length(source_title) BETWEEN 1 AND 180),
+  published_at         INTEGER,
+  spotlight_started_at INTEGER,
+  created_at           INTEGER NOT NULL,
+  updated_at           INTEGER NOT NULL,
+  CHECK (
+    (status='draft' AND published_at IS NULL AND spotlight_started_at IS NULL)
+    OR
+    (status='published' AND published_at IS NOT NULL AND spotlight_started_at IS NOT NULL)
+  ),
+  CHECK (created_at >= 0 AND updated_at >= created_at),
+  CHECK (published_at IS NULL OR (published_at >= created_at AND published_at <= updated_at)),
+  CHECK (spotlight_started_at IS NULL OR (spotlight_started_at >= published_at AND spotlight_started_at <= updated_at))
+);
+CREATE INDEX IF NOT EXISTS idx_artist_memorials_status_updated
+  ON artist_memorials(status, updated_at DESC, artist_key);
+
 -- The artist "updates" feed (posts on their own page).
 CREATE TABLE IF NOT EXISTS artist_posts (
   id         TEXT PRIMARY KEY,
@@ -294,8 +337,9 @@ CREATE INDEX IF NOT EXISTS idx_artist_posts_artist ON artist_posts(artist_key);
 
 -- ---- Privacy-safe first-party product analytics -----------------------------
 -- Approved categorical behavior and internal content ids only. Raw IPs,
--- searches, messages, reviews, and media URLs are never written. Guests are not
--- recorded; raw rows have both age and count ceilings in analyticsService.js.
+-- searches, messages, reviews, and media URLs are never written. Guests never
+-- enter this raw table; the aggregate-only search counters below carry no
+-- person or request identity. Raw rows have age/count ceilings in analyticsService.js.
 CREATE TABLE IF NOT EXISTS events (
   id         TEXT PRIMARY KEY,
   user_id    TEXT REFERENCES users(id) ON DELETE SET NULL,
@@ -308,6 +352,45 @@ CREATE INDEX IF NOT EXISTS idx_events_name ON events(name, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_events_user ON events(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_events_user_name_created ON events(user_id, name, created_at DESC);
+
+-- Anonymous search demand is deliberately aggregate-only. One row represents
+-- a site's daily counter, never a person or request: there is no account,
+-- address, cookie, device, user-agent, URL, typed query, or exact timestamp.
+-- The service prunes counters after 90 days.
+CREATE TABLE IF NOT EXISTS guest_search_daily (
+  day           TEXT NOT NULL CHECK (
+                  length(day)=10 AND
+                  day GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+                ),
+  kind          TEXT NOT NULL CHECK (kind IN ('all','artists','venues','people','events','songs')),
+  result_bucket TEXT NOT NULL CHECK (result_bucket IN ('zero','one_to_five','six_to_twenty','over_twenty','unknown')),
+  outcome       TEXT NOT NULL CHECK (outcome IN ('success','failed')),
+  count         INTEGER NOT NULL CHECK (typeof(count)='integer' AND count > 0),
+  PRIMARY KEY (day, kind, result_bucket, outcome),
+  CHECK (
+    (outcome='failed' AND result_bucket='unknown') OR
+    (outcome='success' AND result_bucket<>'unknown')
+  )
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS idx_guest_search_daily_day
+  ON guest_search_daily(day DESC);
+
+-- Product feedback is anonymous by design. Account ids, email addresses, IPs,
+-- user agents, URLs, and cookies do not belong in this table. The opaque client
+-- mutation id makes a network retry idempotent without identifying its author.
+CREATE TABLE IF NOT EXISTS product_suggestions (
+  id                 TEXT PRIMARY KEY,
+  client_mutation_id TEXT NOT NULL UNIQUE,
+  category           TEXT NOT NULL CHECK (category IN ('friction','idea','bug','other')),
+  body               TEXT NOT NULL,
+  surface            TEXT CHECK (surface IS NULL OR surface IN ('landing','feed','search','discover','you','artist','profile','player','settings','menu','other')),
+  status             TEXT NOT NULL DEFAULT 'new' CHECK (status IN ('new','considering','planned','shipped','closed')),
+  created_at         INTEGER NOT NULL,
+  updated_at         INTEGER NOT NULL,
+  closed_at          INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_product_suggestions_status_created
+  ON product_suggestions(status, created_at DESC, id DESC);
 
 -- Core recommendation preference, independent of optional analytics. A member
 -- who says "Not for me" must keep that post suppressed even when product
@@ -501,6 +584,67 @@ CREATE TABLE IF NOT EXISTS moderation_actions (
 );
 CREATE INDEX IF NOT EXISTS idx_moderation_actions_created ON moderation_actions(created_at DESC);
 
+-- High-impact changes use a separate founder-approval ledger. Only a digest of
+-- the requested payload is copied into the immutable receipt; bearer tokens are
+-- stored as hashes and are erased as soon as a request is decided or expires.
+CREATE TABLE IF NOT EXISTS owner_approval_requests (
+  id             TEXT PRIMARY KEY,
+  kind           TEXT NOT NULL CHECK(kind IN ('privileged_role_change','security_release')),
+  status         TEXT NOT NULL DEFAULT 'pending'
+                   CHECK(status IN ('pending','approved','rejected','expired','superseded')),
+  requested_by   TEXT REFERENCES users(id) ON DELETE SET NULL,
+  target_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+  safe_summary   TEXT NOT NULL,
+  payload        TEXT NOT NULL,
+  payload_hash   TEXT NOT NULL,
+  token_hash     TEXT UNIQUE,
+  requested_at   INTEGER NOT NULL,
+  expires_at     INTEGER NOT NULL,
+  decided_at     INTEGER,
+  decided_by     TEXT REFERENCES users(id) ON DELETE SET NULL,
+  receipt_id     TEXT,
+  request_id     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_owner_approval_requests_status
+  ON owner_approval_requests(status, requested_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_owner_approval_requests_target
+  ON owner_approval_requests(target_user_id, status, requested_at DESC);
+
+CREATE TABLE IF NOT EXISTS owner_approval_receipts (
+  id             TEXT PRIMARY KEY,
+  request_id     TEXT,
+  kind           TEXT NOT NULL CHECK(kind IN ('privileged_role_change','security_release')),
+  decision       TEXT NOT NULL CHECK(decision IN ('approved','rejected','recorded')),
+  -- Opaque historical ids deliberately have no FK: a later account deletion
+  -- must not mutate or invalidate an already-issued security receipt.
+  requested_by   TEXT,
+  decided_by     TEXT,
+  target_user_id TEXT,
+  safe_summary   TEXT NOT NULL,
+  payload_hash   TEXT NOT NULL,
+  previous_stamp TEXT NOT NULL,
+  stamp          TEXT NOT NULL UNIQUE,
+  release_commit TEXT,
+  requested_at   INTEGER NOT NULL,
+  created_at     INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_owner_approval_receipts_request
+  ON owner_approval_receipts(request_id) WHERE request_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_owner_approval_receipts_created
+  ON owner_approval_receipts(created_at DESC, id DESC);
+
+CREATE TRIGGER IF NOT EXISTS owner_approval_receipts_no_update
+BEFORE UPDATE ON owner_approval_receipts
+BEGIN
+  SELECT RAISE(ABORT, 'owner approval receipts are append-only');
+END;
+
+CREATE TRIGGER IF NOT EXISTS owner_approval_receipts_no_delete
+BEFORE DELETE ON owner_approval_receipts
+BEGIN
+  SELECT RAISE(ABORT, 'owner approval receipts are append-only');
+END;
+
 -- Concert lounge / afterparty chat, keyed by concertKey (artist|venue|date), so
 -- attendee chat is shared + live like the fan clubs (not device-local).
 CREATE TABLE IF NOT EXISTS lounge_messages (
@@ -579,6 +723,52 @@ CREATE TABLE IF NOT EXISTS app_meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+-- A v2 Owner identity is permanent. Normal application SQL cannot rewrite the
+-- marker or remove/demote/restrict/delete its account. Recovery from physical
+-- database corruption remains an offline operator procedure with the service
+-- stopped, not a remotely reachable admin action.
+CREATE TRIGGER IF NOT EXISTS owner_identity_no_update
+BEFORE UPDATE ON app_meta
+WHEN OLD.key='security.bootstrap_admin_identity.v1'
+  AND json_extract(OLD.value,'$.version')=2
+  AND NEW.value<>OLD.value
+BEGIN
+  SELECT RAISE(ABORT, 'the Owner identity is locked');
+END;
+
+CREATE TRIGGER IF NOT EXISTS owner_identity_no_delete
+BEFORE DELETE ON app_meta
+WHEN OLD.key='security.bootstrap_admin_identity.v1'
+  AND json_extract(OLD.value,'$.version')=2
+BEGIN
+  SELECT RAISE(ABORT, 'the Owner identity is locked');
+END;
+
+CREATE TRIGGER IF NOT EXISTS owner_account_security_boundary
+BEFORE UPDATE ON users
+WHEN OLD.id=(SELECT json_extract(value,'$.userId') FROM app_meta
+  WHERE key='security.bootstrap_admin_identity.v1' AND json_extract(value,'$.version')=2)
+  AND (
+    NEW.id<>OLD.id
+    OR lower(NEW.email)<>(SELECT lower(json_extract(value,'$.email')) FROM app_meta
+      WHERE key='security.bootstrap_admin_identity.v1')
+    OR NEW.role<>'admin'
+    OR COALESCE(NEW.is_banned,0)<>0
+    OR NEW.suspended_until IS NOT NULL
+    OR COALESCE(NEW.email_verified_at,0)<=0
+  )
+BEGIN
+  SELECT RAISE(ABORT, 'the Owner account security boundary is locked');
+END;
+
+CREATE TRIGGER IF NOT EXISTS owner_account_no_delete
+BEFORE DELETE ON users
+WHEN OLD.id=(SELECT json_extract(value,'$.userId') FROM app_meta
+  WHERE key='security.bootstrap_admin_identity.v1' AND json_extract(value,'$.version')=2)
+BEGIN
+  SELECT RAISE(ABORT, 'the Owner account cannot be deleted');
+END;
 
 -- Durable, indexed Wikidata discovery state. The original implementation kept
 -- every processed MBID in one ever-growing app_meta JSON array, then applied a
@@ -974,6 +1164,19 @@ CREATE TABLE IF NOT EXISTS error_events (
 );
 CREATE INDEX IF NOT EXISTS idx_error_events_last ON error_events(last_seen DESC);
 
+-- The summary row above is lifetime-per-fingerprint. Time-bounded health
+-- reports need occurrence volume for their actual window, so retain one small
+-- counter per fingerprint/hour. This is still bounded aggregation: no request
+-- values, messages, IPs, or per-occurrence rows are stored.
+CREATE TABLE IF NOT EXISTS error_occurrence_buckets (
+  fingerprint TEXT NOT NULL REFERENCES error_events(fingerprint) ON DELETE CASCADE,
+  hour_start  INTEGER NOT NULL,
+  count       INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (fingerprint,hour_start)
+);
+CREATE INDEX IF NOT EXISTS idx_error_occurrence_buckets_hour
+  ON error_occurrence_buckets(hour_start DESC);
+
 -- Admin-created badges: tiers, event marks, ad-hoc status. Art is chosen from the
 -- named palette in src/domain/badgeArt.mjs rather than free-form, so a badge can
 -- never carry an arbitrary colour string into an SVG attribute.
@@ -1264,10 +1467,50 @@ const additiveMigrations = [
   // the private authoritative video verifier path.
   "ALTER TABLE media_variants ADD COLUMN verification_origin TEXT NOT NULL DEFAULT 'client'",
   "ALTER TABLE media_objects ADD COLUMN storage_scope TEXT NOT NULL DEFAULT 'public'",
+  // Legacy pre-release memorial rows are backfilled below only when their
+  // exact catalog key resolves to a syntactically valid MusicBrainz identity.
+  "ALTER TABLE artist_memorials ADD COLUMN artist_mbid TEXT",
   // Preserve one safe correlation handle per aggregated problem. The UUID is
   // generated by the HTTP shell and contains no user-authored data.
   "ALTER TABLE error_events ADD COLUMN last_request_id TEXT",
 ];
+
+// Memorials briefly existed without a durable identity binding. Backfill under
+// the startup write lock using exact catalog keys and valid MBIDs only.
+// An unbound legacy row remains staff-visible but is fail-closed by the service
+// until an admin re-saves it against an exact catalog identity.
+function ensureArtistMemorialSchema(database) {
+  const mbidGlob = "[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[1-5][0-9a-f][0-9a-f][0-9a-f]-[89ab][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]";
+  database.exec(`
+    UPDATE artist_memorials
+    SET artist_mbid=(
+      SELECT lower(artists.mbid) FROM artists
+      WHERE artists.norm=artist_memorials.artist_key
+        AND length(artists.mbid)=36
+        AND lower(artists.mbid) GLOB '${mbidGlob}'
+    )
+    WHERE artist_mbid IS NULL
+      AND EXISTS (
+        SELECT 1 FROM artists
+        WHERE artists.norm=artist_memorials.artist_key
+          AND length(artists.mbid)=36
+          AND lower(artists.mbid) GLOB '${mbidGlob}'
+      );
+    CREATE TRIGGER IF NOT EXISTS trg_artist_memorials_require_mbid_insert
+    BEFORE INSERT ON artist_memorials
+    WHEN NEW.artist_mbid IS NULL
+    BEGIN
+      SELECT RAISE(ABORT,'artist memorial identity is required');
+    END;
+    CREATE TRIGGER IF NOT EXISTS trg_artist_memorials_require_mbid_update
+    BEFORE UPDATE ON artist_memorials
+    WHEN NEW.artist_mbid IS NULL
+    BEGIN
+      SELECT RAISE(ABORT,'artist memorial identity is required');
+    END;
+  `);
+}
+
 db.exec("BEGIN IMMEDIATE");
 try {
   // Keep the initial version row under the same cross-process write lock as the
@@ -1286,6 +1529,7 @@ try {
       .some((entry) => String(entry.name).toLowerCase() === column.toLowerCase());
     if (!present) db.exec(stmt);
   }
+  ensureArtistMemorialSchema(db);
   // Image codecs are outside the MP4 compatibility gate. This also gives image
   // rows created before the codec columns an honest, non-pending state.
   db.prepare("UPDATE media_assets SET codec_status='not_applicable' WHERE kind='image' AND codec_status='pending'").run();
@@ -1672,11 +1916,19 @@ export const errorStmts = {
     ON CONFLICT(fingerprint) DO UPDATE SET count=count+1, last_seen=excluded.last_seen,
       last_request_id=COALESCE(excluded.last_request_id,error_events.last_request_id)`),
   recent: db.prepare("SELECT * FROM error_events ORDER BY last_seen DESC LIMIT ?"),
-  since: db.prepare("SELECT * FROM error_events WHERE last_seen >= ? ORDER BY count DESC, last_seen DESC LIMIT ?"),
-  totalSince: db.prepare("SELECT COALESCE(SUM(count),0) c, COUNT(*) kinds FROM error_events WHERE last_seen >= ?"),
+  recordBucket: db.prepare(`INSERT INTO error_occurrence_buckets (fingerprint,hour_start,count)
+    VALUES (?,?,1) ON CONFLICT(fingerprint,hour_start) DO UPDATE SET count=count+1`),
+  since: db.prepare(`SELECT e.fingerprint,e.level,e.code,e.status,e.method,e.route,e.cause,
+      e.last_request_id,e.first_seen,e.last_seen,SUM(b.count) count
+    FROM error_occurrence_buckets b JOIN error_events e ON e.fingerprint=b.fingerprint
+    WHERE b.hour_start>=? GROUP BY e.fingerprint
+    ORDER BY count DESC,e.last_seen DESC LIMIT ?`),
+  totalSince: db.prepare(`SELECT COALESCE(SUM(count),0) c,COUNT(DISTINCT fingerprint) kinds
+    FROM error_occurrence_buckets WHERE hour_start>=?`),
   // Anything not seen recently is noise once it stops happening. Pruning by age
   // keeps the table bounded without a background job.
   prune: db.prepare("DELETE FROM error_events WHERE last_seen < ?"),
+  pruneBuckets: db.prepare("DELETE FROM error_occurrence_buckets WHERE hour_start < ?"),
   countRows: db.prepare("SELECT COUNT(*) c FROM error_events"),
   oldest: db.prepare("SELECT last_seen FROM error_events ORDER BY last_seen ASC LIMIT ?"),
   pruneBelow: db.prepare("DELETE FROM error_events WHERE last_seen <= ?"),

@@ -77,8 +77,29 @@ const silentLog = { info() {}, warn() {} };
 const RATE_LIMIT_BUCKET_CAPACITY = 50_000;
 const RATE_LIMIT_TEST_WINDOW_MS = 60_000;
 
-function setBootstrapAdminIdentity(user) {
-  const identity = { version: 1, email: user.email, userId: user.id };
+const ownerBoundaryTriggerNames = [
+  "owner_identity_no_update",
+  "owner_identity_no_delete",
+  "owner_account_security_boundary",
+  "owner_account_no_delete",
+];
+const ownerBoundaryTriggers = db.prepare(`SELECT name,sql FROM sqlite_master
+  WHERE type='trigger' AND name IN (${ownerBoundaryTriggerNames.map(() => "?").join(",")})`)
+  .all(...ownerBoundaryTriggerNames);
+
+function resetBootstrapIdentityForTest() {
+  // Every bootstrap scenario models a separate production database. This test
+  // suite shares one SQLite connection, so temporarily remove only the Owner
+  // boundary triggers while replacing the fixture marker, then restore their
+  // exact production SQL before the system under test runs.
+  for (const name of ownerBoundaryTriggerNames) db.exec(`DROP TRIGGER IF EXISTS ${name}`);
+  db.prepare("DELETE FROM app_meta WHERE key=?").run(BOOTSTRAP_ADMIN_IDENTITY_KEY);
+  for (const trigger of ownerBoundaryTriggers) db.exec(trigger.sql);
+}
+
+function setBootstrapAdminIdentity(user, { version = 2 } = {}) {
+  resetBootstrapIdentityForTest();
+  const identity = { version, email: user.email, userId: user.id, ...(version === 2 ? { lockedAt: 1 } : {}) };
   db.prepare(`INSERT INTO app_meta (key,value) VALUES (?,?)
     ON CONFLICT(key) DO UPDATE SET value=excluded.value`)
     .run(BOOTSTRAP_ADMIN_IDENTITY_KEY, JSON.stringify(identity));
@@ -243,7 +264,7 @@ test("first production root adoption stores its identity and revokes every admin
   const peerAdmin = addUser({ role: "admin", password: "peer-root-password2" });
   const selectedSession = createSession(selected.id, "127.0.0.1", "selected");
   const peerSession = createSession(peerAdmin.id, "127.0.0.1", "peer");
-  db.prepare("DELETE FROM app_meta WHERE key=?").run(BOOTSTRAP_ADMIN_IDENTITY_KEY);
+  resetBootstrapIdentityForTest();
 
   const result = reconcileAdminAccount({
     database: db,
@@ -254,14 +275,111 @@ test("first production root adoption stores its identity and revokes every admin
   });
 
   assert.equal(result.sessionsRevoked, true);
-  assert.deepEqual(getBootstrapAdminIdentity(), {
-    version: 1,
-    email: selected.email,
-    userId: selected.id,
-  });
+  assert.deepEqual(
+    { ...getBootstrapAdminIdentity(), lockedAt: true },
+    { version: 2, email: selected.email, userId: selected.id, lockedAt: true },
+  );
   assert.equal(getSession(selectedSession.token), null);
   assert.equal(getSession(peerSession.token), null);
   assert.equal(q.userById.get(peerAdmin.id).role, "admin", "adoption must not demote another legitimate administrator");
+});
+
+test("a locked v2 Owner cannot be transferred by changing deployment configuration", () => {
+  const owner = addUser({ role: "admin", password: "locked-owner-password1" });
+  const proposed = addUser({ role: "fan", password: "proposed-owner-password2" });
+  setBootstrapAdminIdentity(owner);
+  assert.throws(() => reconcileAdminAccount({
+    database: db,
+    queries: q,
+    env: {
+      ADMIN_EMAIL: proposed.email,
+      OWNER_EMAIL: proposed.email,
+      OWNER_MIGRATION_EMAIL: proposed.email,
+      ADMIN_PASSWORD: "proposed-owner-password2",
+    },
+    production: true,
+    log: silentLog,
+  }), /does not match the locked Owner identity/u);
+  assert.equal(getBootstrapAdminIdentity().userId, owner.id);
+  assert.equal(q.userById.get(proposed.id).role, "fan");
+});
+
+test("a rolling deploy can preserve a healthy legacy root while explicit Owner migration is pending", () => {
+  const legacyRoot = addUser({ role: "admin", password: "legacy-rolling-password1" });
+  setBootstrapAdminIdentity(legacyRoot, { version: 1 });
+  const session = createSession(legacyRoot.id, "127.0.0.1", "legacy-rolling");
+
+  const result = reconcileAdminAccount({
+    database: db,
+    queries: q,
+    env: {
+      ADMIN_EMAIL: legacyRoot.email,
+      ADMIN_PASSWORD: "legacy-rolling-password1",
+    },
+    production: true,
+    log: silentLog,
+  });
+
+  assert.deepEqual(result, {
+    created: false,
+    passwordChanged: false,
+    authorityChanged: false,
+    sessionsRevoked: false,
+    generated: false,
+    migrationPending: true,
+  });
+  assert.deepEqual(getBootstrapAdminIdentity(), {
+    version: 1,
+    email: legacyRoot.email,
+    userId: legacyRoot.id,
+  });
+  assert.equal(getSession(session.token)?.user_id, legacyRoot.id);
+  assert.equal(q.userById.get(legacyRoot.id).role, "admin");
+});
+
+test("legacy rolling-deploy compatibility rejects authority or identity drift", () => {
+  const legacyRoot = addUser({ role: "admin", password: "legacy-drift-password1" });
+  const proposed = addUser({ role: "admin", password: "legacy-drift-password2" });
+  setBootstrapAdminIdentity(legacyRoot, { version: 1 });
+
+  assert.throws(() => reconcileAdminAccount({
+    database: db,
+    queries: q,
+    env: {
+      ADMIN_EMAIL: proposed.email,
+      OWNER_EMAIL: proposed.email,
+      ADMIN_PASSWORD: "legacy-drift-password2",
+    },
+    production: true,
+    log: silentLog,
+  }), /OWNER_MIGRATION_EMAIL must explicitly match/u);
+  assert.deepEqual(getBootstrapAdminIdentity(), {
+    version: 1,
+    email: legacyRoot.email,
+    userId: legacyRoot.id,
+  });
+});
+
+test("SQLite itself blocks Owner identity replacement, restriction, demotion, and deletion", () => {
+  const owner = addUser({ role: "admin", password: "database-owner-password1" });
+  setBootstrapAdminIdentity(owner);
+  assert.throws(() => db.prepare("UPDATE app_meta SET value='{}' WHERE key=?")
+    .run(BOOTSTRAP_ADMIN_IDENTITY_KEY), /Owner identity is locked/u);
+  assert.throws(() => db.prepare("DELETE FROM app_meta WHERE key=?")
+    .run(BOOTSTRAP_ADMIN_IDENTITY_KEY), /Owner identity is locked/u);
+  assert.throws(() => db.prepare("UPDATE users SET role='fan' WHERE id=?").run(owner.id), /Owner account security boundary/u);
+  assert.throws(() => db.prepare("UPDATE users SET is_banned=1 WHERE id=?").run(owner.id), /Owner account security boundary/u);
+  assert.throws(() => db.prepare("UPDATE users SET suspended_until=? WHERE id=?").run(Date.now() + 60_000, owner.id), /Owner account security boundary/u);
+  assert.throws(() => db.prepare("UPDATE users SET email=? WHERE id=?").run("other@example.test", owner.id), /Owner account security boundary/u);
+  assert.throws(() => db.prepare("UPDATE users SET email_verified_at=0 WHERE id=?").run(owner.id), /Owner account security boundary/u);
+  assert.throws(() => db.prepare("DELETE FROM users WHERE id=?").run(owner.id), /Owner account cannot be deleted/u);
+
+  db.prepare("UPDATE users SET name=?,handle=? WHERE id=?").run("Mshpit", "mshpit", owner.id);
+  assert.deepEqual(
+    { ...db.prepare("SELECT name,handle,role FROM users WHERE id=?").get(owner.id) },
+    { name: "Mshpit", handle: "mshpit", role: "admin" },
+    "public branding remains editable without becoming the source of authority",
+  );
 });
 
 test("switching the configured root retires only the prior root and preserves unrelated admin roles", () => {
@@ -269,7 +387,7 @@ test("switching the configured root retires only the prior root and preserves un
   const nextRoot = addUser({ role: "fan", password: "next-root-password2" });
   const unrelatedAdmin = addUser({ role: "admin", password: "unrelated-admin-password3" });
   const ordinary = addUser({ role: "fan", password: "ordinary-fan-password3" });
-  setBootstrapAdminIdentity(previousRoot);
+  setBootstrapAdminIdentity(previousRoot, { version: 1 });
   const previousSession = createSession(previousRoot.id, "127.0.0.1", "previous");
   const nextSession = createSession(nextRoot.id, "127.0.0.1", "next");
   const unrelatedAdminSession = createSession(unrelatedAdmin.id, "127.0.0.1", "unrelated-admin");
@@ -278,23 +396,30 @@ test("switching the configured root retires only the prior root and preserves un
   const result = reconcileAdminAccount({
     database: db,
     queries: q,
-    env: { ADMIN_EMAIL: nextRoot.email, ADMIN_PASSWORD: "next-root-password2" },
+    env: {
+      ADMIN_EMAIL: nextRoot.email,
+      OWNER_EMAIL: nextRoot.email,
+      OWNER_MIGRATION_EMAIL: nextRoot.email,
+      ADMIN_PASSWORD: "deployment-only-password4",
+    },
     production: true,
     log: silentLog,
   });
 
   assert.equal(result.authorityChanged, true);
   assert.equal(result.sessionsRevoked, true);
-  assert.deepEqual(getBootstrapAdminIdentity(), {
-    version: 1,
-    email: nextRoot.email,
-    userId: nextRoot.id,
-  });
+  assert.deepEqual(
+    { ...getBootstrapAdminIdentity(), lockedAt: true },
+    { version: 2, email: nextRoot.email, userId: nextRoot.id, lockedAt: true },
+  );
   const retiredRoot = q.userById.get(previousRoot.id);
   assert.equal(retiredRoot.role, "fan");
   assert.equal(retiredRoot.email, previousRoot.email, "root transfer preserves mailbox ownership for ordinary recovery");
   assert.equal(verifyPassword("previous-root-password1", retiredRoot.pass_hash), false);
   assert.equal(q.userById.get(nextRoot.id).role, "admin");
+  assert.equal(verifyPassword("next-root-password2", q.userById.get(nextRoot.id).pass_hash), true,
+    "Owner adoption preserves the confirmed member's own login password");
+  assert.equal(verifyPassword("deployment-only-password4", q.userById.get(nextRoot.id).pass_hash), false);
   assert.equal(q.userById.get(unrelatedAdmin.id).role, "admin");
   assert.equal(getSession(previousSession.token), null);
   assert.equal(getSession(nextSession.token), null);
@@ -307,47 +432,46 @@ test("switching the configured root retires only the prior root and preserves un
   );
 });
 
-test("switching the configured root to a new account still retires the prior root atomically", () => {
+test("a legacy Owner transfer cannot fabricate a replacement member account", () => {
   const previousRoot = addUser({ role: "admin", password: "new-email-previous-password1" });
   const unrelatedAdmin = addUser({ role: "admin", password: "new-email-peer-password2" });
-  setBootstrapAdminIdentity(previousRoot);
+  setBootstrapAdminIdentity(previousRoot, { version: 1 });
   const previousSession = createSession(previousRoot.id, "127.0.0.1", "previous");
   const unrelatedSession = createSession(unrelatedAdmin.id, "127.0.0.1", "unrelated");
   const newRootId = `u_auth_security_new_root_${Date.now()}`;
   const newRootEmail = `new-root-${Date.now()}@example.test`;
 
-  const result = reconcileAdminAccount({
+  assert.throws(() => reconcileAdminAccount({
     database: db,
     queries: q,
-    env: { ADMIN_EMAIL: newRootEmail, ADMIN_PASSWORD: "brand-new-root-password3" },
+    env: {
+      ADMIN_EMAIL: newRootEmail,
+      OWNER_EMAIL: newRootEmail,
+      OWNER_MIGRATION_EMAIL: newRootEmail,
+      ADMIN_PASSWORD: "brand-new-root-password3",
+    },
     production: true,
     log: silentLog,
     createId: () => newRootId,
-  });
+  }), /requires an existing member account/u);
 
-  assert.equal(result.created, true);
-  assert.equal(result.sessionsRevoked, true);
-  const createdRoot = q.userById.get(newRootId);
-  const retiredRoot = q.userById.get(previousRoot.id);
-  assert.equal(createdRoot.role, "admin");
-  assert.match(createdRoot.handle, /admin/);
-  assert.equal(verifyPassword("brand-new-root-password3", createdRoot.pass_hash), true);
-  assert.equal(retiredRoot.role, "fan");
-  assert.equal(verifyPassword("new-email-previous-password1", retiredRoot.pass_hash), false);
-  assert.equal(getSession(previousSession.token), null);
-  assert.equal(getSession(unrelatedSession.token), null);
+  assert.equal(q.userById.get(newRootId), undefined);
+  assert.equal(q.userById.get(previousRoot.id).role, "admin");
+  assert.equal(verifyPassword("new-email-previous-password1", q.userById.get(previousRoot.id).pass_hash), true);
+  assert.equal(getSession(previousSession.token)?.user_id, previousRoot.id);
+  assert.equal(getSession(unrelatedSession.token)?.user_id, unrelatedAdmin.id);
   assert.equal(q.userById.get(unrelatedAdmin.id).role, "admin");
   assert.deepEqual(getBootstrapAdminIdentity(), {
     version: 1,
-    email: newRootEmail,
-    userId: newRootId,
+    email: previousRoot.email,
+    userId: previousRoot.id,
   });
 });
 
 test("configured root switch rolls back identity, authority, password, and revocation together", () => {
   const previousRoot = addUser({ role: "admin", password: "rollback-root-password1" });
   const nextRoot = addUser({ role: "fan", password: "rollback-target-old-password2" });
-  setBootstrapAdminIdentity(previousRoot);
+  setBootstrapAdminIdentity(previousRoot, { version: 1 });
   const previousSession = createSession(previousRoot.id, "127.0.0.1", "previous");
   const nextSession = createSession(nextRoot.id, "127.0.0.1", "next");
   db.exec(`CREATE TRIGGER auth_security_root_switch_revoke_failure
@@ -357,7 +481,12 @@ test("configured root switch rolls back identity, authority, password, and revoc
     assert.throws(() => reconcileAdminAccount({
       database: db,
       queries: q,
-      env: { ADMIN_EMAIL: nextRoot.email, ADMIN_PASSWORD: "rollback-target-new-password3" },
+      env: {
+        ADMIN_EMAIL: nextRoot.email,
+        OWNER_EMAIL: nextRoot.email,
+        OWNER_MIGRATION_EMAIL: nextRoot.email,
+        ADMIN_PASSWORD: "rollback-target-new-password3",
+      },
       production: true,
       log: silentLog,
     }), /forced root switch revoke failure/);
@@ -406,7 +535,7 @@ test("an unchanged configured admin password is not rehashed and does not revoke
   assert.equal(getSession(session.token)?.user_id, user.id);
 });
 
-test("a changed admin password is rehashed once and revokes every existing session", () => {
+test("a changed deployment password cannot rotate a locked production Owner", () => {
   const user = addUser({ role: "admin", password: "old-admin-password" });
   setBootstrapAdminIdentity(user);
   createSession(user.id, "127.0.0.1", "one");
@@ -420,13 +549,14 @@ test("a changed admin password is rehashed once and revokes every existing sessi
     log: silentLog,
   });
 
-  assert.equal(result.passwordChanged, true);
-  assert.equal(result.sessionsRevoked, true);
-  assert.equal(verifyPassword("new-admin-password", q.userById.get(user.id).pass_hash), true);
-  assert.equal(db.prepare("SELECT COUNT(*) count FROM sessions WHERE user_id=?").get(user.id).count, 0);
+  assert.equal(result.passwordChanged, false);
+  assert.equal(result.sessionsRevoked, false);
+  assert.equal(verifyPassword("old-admin-password", q.userById.get(user.id).pass_hash), true);
+  assert.equal(verifyPassword("new-admin-password", q.userById.get(user.id).pass_hash), false);
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM sessions WHERE user_id=?").get(user.id).count, 2);
 });
 
-test("password rotation rolls back if session revocation cannot complete", () => {
+test("development password rotation still rolls back if session revocation cannot complete", () => {
   const user = addUser({ role: "admin", password: "atomic-old-password" });
   setBootstrapAdminIdentity(user);
   createSession(user.id, "127.0.0.1", "test");
@@ -438,7 +568,7 @@ test("password rotation rolls back if session revocation cannot complete", () =>
       database: db,
       queries: q,
       env: { ADMIN_EMAIL: user.email, ADMIN_PASSWORD: "atomic-new-password" },
-      production: true,
+      production: false,
       log: silentLog,
     }), /forced revoke failure/);
     const unchanged = q.userById.get(user.id);
@@ -495,20 +625,23 @@ test("authority repair restores the admin boundary and revokes old cookies", () 
   assert.equal(db.prepare("SELECT COUNT(*) count FROM sessions WHERE user_id=?").get(user.id).count, 0);
 });
 
-test("production repairs a legacy unverified root admin before mutation middleware is active", () => {
+test("the one-time legacy Owner migration refuses an unconfirmed mailbox", () => {
   const user = addUser({ role: "admin", password: "legacy-root-password1", emailVerified: false });
-  setBootstrapAdminIdentity(user);
+  setBootstrapAdminIdentity(user, { version: 1 });
   createSession(user.id, "127.0.0.1", "legacy-root");
-  const result = reconcileAdminAccount({
+  assert.throws(() => reconcileAdminAccount({
     database: db,
     queries: q,
-    env: { ADMIN_EMAIL: user.email, ADMIN_PASSWORD: "legacy-root-password1" },
+    env: {
+      ADMIN_EMAIL: user.email,
+      OWNER_EMAIL: user.email,
+      OWNER_MIGRATION_EMAIL: user.email,
+      ADMIN_PASSWORD: "legacy-root-password1",
+    },
     production: true,
     log: silentLog,
-  });
-  assert.equal(result.authorityChanged, true);
-  assert.equal(result.sessionsRevoked, true);
-  assert.ok(q.userById.get(user.id).email_verified_at > 0);
+  }), /already-confirmed member email/u);
+  assert.equal(q.userById.get(user.id).email_verified_at, 0);
 });
 
 test("staff sessions are capped at twelve hours while member sessions retain thirty days", () => {

@@ -7,7 +7,7 @@ import { randomBytes } from "node:crypto";
 import { db, emailStmts, q } from "./db.js";
 import { isProduction } from "./environment.js";
 import { mailConfigured, mailDiagnostics, mailFailureLabel, sendEmail } from "./mailer.js";
-import { DEFAULT_TEMPLATES, renderEmail } from "./emails.js";
+import { DEFAULT_TEMPLATES, isCodeOwnedTemplate, renderEmail } from "./emails.js";
 import { privateErrorLabel } from "./errors.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -70,7 +70,7 @@ export function unsubscribeUrl(userId) {
 }
 
 export function templateFor(key) {
-  const stored = emailStmts.templateByKey.get(key);
+  const stored = isCodeOwnedTemplate(key) ? null : emailStmts.templateByKey.get(key);
   const fallback = DEFAULT_TEMPLATES[key];
   if (!stored && !fallback) return null;
   return {
@@ -80,6 +80,7 @@ export function templateFor(key) {
     cta_label: stored ? stored.cta_label : fallback.cta_label,
     cta_url: stored ? stored.cta_url : fallback.cta_url,
     customized: !!stored,
+    editable: !isCodeOwnedTemplate(key),
     updated_at: stored?.updated_at ?? null,
     updated_by: stored?.updated_by ?? null,
   };

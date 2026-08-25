@@ -149,7 +149,7 @@ function JourneyHero({ session, onProfile, onLogin, wide }) {
   );
 }
 
-export default function MenuScreen({ onClose, onNear, onVenues, onFanClubs, onTopRated, onInbox, onActivity, onProfile, onManageProfile, onSettings, onAdmin, onTourDates, onRequestArtist, onLogin, onLogout, onBackToLanding }) {
+export default function MenuScreen({ onClose, onNear, onVenues, onFanClubs, onTopRated, onInbox, onActivity, onSuggestion, onProfile, onManageProfile, onSettings, onAdmin, onTourDates, onRequestArtist, onLogin, onLogout, onBackToLanding }) {
   const { width } = useWindowDimensions();
   const wide = width >= 920;
   const narrow = width < 560;
@@ -167,6 +167,7 @@ export default function MenuScreen({ onClose, onNear, onVenues, onFanClubs, onTo
     topRated: onTopRated,
     activity: onActivity,
     inbox: onInbox,
+    suggestion: onSuggestion,
     manageProfile: onManageProfile,
     settings: onSettings,
     admin: onAdmin,

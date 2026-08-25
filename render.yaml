@@ -60,10 +60,26 @@ services:
         sync: false
       - key: PUBLIC_ORIGIN
         value: https://www.mshpit.com
+      # Set this to the same address as ADMIN_EMAIL for the one-way Owner
+      # identity migration. The database-locked Owner becomes authoritative.
+      - key: OWNER_EMAIL
+        sync: false
       - key: ADMIN_EMAIL
         sync: false                    # enter the administrator identity in Render
+      - key: OWNER_MIGRATION_EMAIL
+        sync: false                    # one-time v1 -> locked Owner approval; must match OWNER_EMAIL
       - key: ADMIN_PASSWORD
         sync: false                    # you enter this in the Render dashboard
+      # Operational alerts are separate from the bootstrap root identity. Point
+      # this at a monitored Workspace inbox without changing ADMIN_EMAIL.
+      - key: ALERT_EMAIL
+        sync: false
+      # Privacy-safe aggregate readout. Durable app_meta claims suppress
+      # duplicates across restarts and rolling deploys.
+      - key: SITE_HEALTH_DIGEST_ENABLED
+        value: "true"
+      - key: SITE_HEALTH_DIGEST_HOUR
+        value: "9"                    # America/Toronto
       # In-app playback resolves each song to a YouTube video via the YouTube Data
       # API and caches the id in SQLite within the reviewed 30-day provider-data
       # ceiling (the free quota is ~100 searches/day,
@@ -83,6 +99,8 @@ services:
         sync: false
       - key: MAIL_FROM
         sync: false
+      - key: MAIL_REPLY_TO
+        sync: false                    # monitored Google Workspace inbox/alias
       # Fail closed after database restore: old snapshots may predate consent
       # withdrawals or deletion. Enable only after the privacy replay/drill.
       - key: EMAIL_CAMPAIGN_RECOVERY_ENABLED
@@ -288,10 +306,20 @@ services:
         sync: false
       - key: PUBLIC_ORIGIN
         sync: false                    # the onrender.com URL Render assigns
+      - key: OWNER_EMAIL
+        sync: false                    # if set, must match staging ADMIN_EMAIL
       - key: ADMIN_EMAIL
         sync: false                    # configure staging independently in Render
+      - key: OWNER_MIGRATION_EMAIL
+        sync: false                    # staging migration must be independent
       - key: ADMIN_PASSWORD
         sync: false                    # must NOT match production
+      - key: ALERT_EMAIL
+        sync: false
+      - key: SITE_HEALTH_DIGEST_ENABLED
+        value: "false"                # never mail production operations from staging
+      - key: SITE_HEALTH_DIGEST_HOUR
+        value: "9"
       # Comma-separated. Anything not listed is logged as skipped, never sent.
       # Empty means staging sends no email at all, which is the safe default.
       - key: EMAIL_ALLOWED_RECIPIENTS
@@ -299,6 +327,8 @@ services:
       - key: RESEND_API_KEY
         sync: false
       - key: MAIL_FROM
+        sync: false
+      - key: MAIL_REPLY_TO
         sync: false
       - key: EMAIL_CAMPAIGN_RECOVERY_ENABLED
         value: "false"

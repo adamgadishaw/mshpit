@@ -12,7 +12,7 @@ delete process.env.MAIL_FROM;
 
 const { db, errorStmts } = await import("./db.js");
 const {
-  alertCooldownMs, alertsEnabled, errorStats, fingerprintOf,
+  alertCooldownMs, alertRecipient, alertsEnabled, errorStats, fingerprintOf,
   maybeAlert, pruneErrors, recentErrors, recordError, resetAlertStateForTests,
 } = await import("./errorLog.js");
 
@@ -26,7 +26,15 @@ beforeEach(() => {
   db.exec("DELETE FROM email_log");
   delete process.env.ERROR_ALERTS_ENABLED;
   delete process.env.ERROR_ALERT_COOLDOWN_MIN;
+  delete process.env.ALERT_EMAIL;
   resetAlertStateForTests();
+});
+
+test("incident alerts use a separate operations inbox without changing the root admin", () => {
+  assert.equal(alertRecipient({ ADMIN_EMAIL: "root@example.com" }), "root@example.com");
+  assert.equal(alertRecipient({ ADMIN_EMAIL: "root@example.com", ALERT_EMAIL: "ops@mshpit.com" }), "ops@mshpit.com");
+  assert.equal(alertRecipient({ ADMIN_EMAIL: "root@example.com", ALERT_EMAIL: "not-an-address" }), "root@example.com");
+  assert.equal(alertRecipient({}), "");
 });
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
@@ -120,6 +128,17 @@ test("stats count occurrences and distinct kinds", () => {
   assert.equal(stats.occurrences, 3);
   assert.equal(stats.kinds, 2);
   assert.deepEqual(errorStats(Date.now() + 60_000), { occurrences: 0, kinds: 0 });
+});
+
+test("windowed stats do not report a fingerprint's lifetime count as today's volume", () => {
+  const currentHour = Math.floor(Date.now() / 3_600_000) * 3_600_000;
+  const old = currentHour - 10 * 24 * 60 * 60 * 1000;
+  const shared = { code: "WINDOWED", status: 500, route: "/api/windowed" };
+  for (let index = 0; index < 20; index += 1) recordError({ ...shared, at: old });
+  recordError({ ...shared, at: currentHour + 1_000 });
+  assert.equal(recentErrors()[0].count, 21, "the diagnostic row remains a useful lifetime aggregate");
+  assert.deepEqual(errorStats(currentHour), { occurrences: 1, kinds: 1 },
+    "the site-health window uses hourly occurrence buckets instead of lifetime totals");
 });
 
 test("pruning ages out rows that stopped happening", () => {

@@ -69,6 +69,13 @@ function paths(name, { stroke, solid, color, filled }) {
           {...(filled ? { ...solid, stroke: color, strokeWidth: 2, strokeLinejoin: "round" } : stroke)}
         />
       );
+    case "dove":
+      return (
+        <>
+          <Path d="M22 4c-4.5.2-7.3 1.9-8.5 5.1C11.8 7.2 9.1 6 5.6 6.4c1.3 1.3 2.3 2.6 2.8 4.1-2.3-.1-4.5.7-6.4 2.4 2.7.2 4.5 1 5.5 2.3-1.4.9-2.4 2.2-3 3.8 4.5.1 8-1.1 10.4-3.6 2.1-2.2 2.8-5.4 2-8C18.7 7.7 20.4 6.6 22 4Z" {...stroke} />
+          <Path d="M14.8 15.5c1.5 1.1 3 2 4.7 2.5M19.5 18l1.5-1M19.5 18l.8 1.6" {...stroke} />
+        </>
+      );
     case "comment":
       return (
         <Path

@@ -30,6 +30,7 @@ import { startTourDateScheduler } from "./tourdates.js";
 import { startCacheWarmScheduler } from "./cacheWarmer.js";
 import { startBackupScheduler } from "./backupScheduler.js";
 import { startMediaDeletionScheduler } from "./mediaDeletion.js";
+import { startFounderOperationsScheduler } from "./siteHealthDigest.js";
 import {
   registerLegacyVideoPosterRelease,
   startLegacyVideoPosterVerificationScheduler,
@@ -37,6 +38,8 @@ import {
 import { emailCampaignRecoveryEnabled, startEmailCampaignScheduler } from "./emailCampaignScheduler.js";
 import { pruneEmailOperationalData } from "./emailRetention.js";
 import { pruneAnalyticsData } from "./analyticsService.js";
+import { pruneGuestSearchAnalytics } from "./guestSearchAnalytics.js";
+import { pruneProductSuggestions } from "./features/suggestions/suggestionRetention.js";
 import { pruneExpiredAccountSecrets } from "./accountSecretRetention.js";
 import { missingStaticAssetResponse } from "./staticPolicy.js";
 import { renderPublicPage } from "./publicPages.js";
@@ -456,6 +459,10 @@ setInterval(() => {
   catch (error) { console.error(`[mail] operational-retention sweep failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
   try { pruneAnalyticsData({ database: db }); }
   catch (error) { console.error(`[pit] analytics-retention sweep failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
+  try { pruneGuestSearchAnalytics({ database: db }); }
+  catch (error) { console.error(`[pit] guest-search retention sweep failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
+  try { pruneProductSuggestions({ database: db }); }
+  catch (error) { console.error(`[pit] suggestion retention sweep failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
   try { pruneExpiredAccountSecrets(db); }
   catch (error) { console.error(`[pit] account-secret retention sweep failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
   try { expireLegacyMediaUploads(db); }
@@ -475,6 +482,7 @@ function scheduleAlert() {
 // close; its current bounded drain is allowed to settle within the hard timeout.
 let shuttingDown = false;
 let emailCampaignScheduler = null;
+let founderOperationsScheduler = null;
 let legacyVideoPosterScheduler = null;
 let privateMediaIsolationTimer = null;
 function shutdown(exitCode = 0) {
@@ -482,12 +490,15 @@ function shutdown(exitCode = 0) {
   shuttingDown = true;
   console.log("\n[pit] shutting down…");
   const campaignStop = emailCampaignScheduler?.stop() || Promise.resolve();
+  const founderOperationsStop = founderOperationsScheduler?.stop() || Promise.resolve();
   stopVideoVerifierHealthScheduler({ abortActive: true });
   if (privateMediaIsolationTimer) clearInterval(privateMediaIsolationTimer);
   legacyVideoPosterScheduler?.stop();
   server.close(async () => {
     try { await campaignStop; }
     catch (error) { console.error(`[mail] campaign recovery shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
+    try { await founderOperationsStop; }
+    catch (error) { console.error(`[health] founder operations shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     try { db.close(); }
     catch (error) { console.error(`[pit] database close failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     process.exit(exitCode);
@@ -537,6 +548,10 @@ function startServer() {
     catch (error) { console.error(`[mail] startup retention sweep failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     try { pruneAnalyticsData({ database: db }); }
     catch (error) { console.error(`[pit] startup analytics-retention sweep failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
+    try { pruneGuestSearchAnalytics({ database: db }); }
+    catch (error) { console.error(`[pit] startup guest-search retention sweep failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
+    try { pruneProductSuggestions({ database: db }); }
+    catch (error) { console.error(`[pit] startup suggestion retention sweep failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     try { pruneExpiredAccountSecrets(db); }
     catch (error) { console.error(`[pit] startup account-secret retention sweep failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     try { expireLegacyMediaUploads(db); }
@@ -557,6 +572,9 @@ function startServer() {
     // fail closed through requirePrivateMediaIsolationReady().
     if (PROD) refreshPrivateMediaIsolationSafely("startup");
     startPrivateMediaIsolationScheduler();
+    // A deployment is stamped only from this listen callback, after startup
+    // checks have completed and the web process is accepting connections.
+    founderOperationsScheduler = startFounderOperationsScheduler({ database: db });
   });
 }
 

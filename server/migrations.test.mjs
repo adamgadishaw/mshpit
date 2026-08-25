@@ -15,6 +15,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { trackOverrideIdentityKey } from "./trackIdentity.js";
+import { createArtistMemorialRepository } from "./features/artistMemorials/artistMemorialRepository.js";
+import { createArtistMemorialService } from "./features/artistMemorials/artistMemorialService.js";
 
 const source = readFileSync(new URL("./db.js", import.meta.url), "utf8");
 
@@ -304,6 +306,152 @@ test("legacy post friend-tag JSON backfills an indexed rolling-deploy relation",
     );
   } finally {
     upgraded.db.close();
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("legacy artist memorials gain exact identity bindings without exposing ambiguous rows", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "pit-artist-memorial-migration-"));
+  const migrationAt = Date.parse("2026-08-25T12:00:00.000Z");
+  process.env.PIT_DATA_DIR = dataDir;
+  let legacy;
+  let upgraded;
+  try {
+    legacy = await import(`./db.js?artist-memorial-legacy=${encodeURIComponent(dataDir)}`);
+    const validArtist = legacy.db.prepare(`SELECT norm,name,lower(mbid) mbid FROM artists
+      WHERE mbid IS NOT NULL AND length(mbid)=36
+        AND lower(mbid) GLOB '[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[1-5][0-9a-f][0-9a-f][0-9a-f]-[89ab][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'
+      ORDER BY norm LIMIT 1`).get();
+    assert.ok(validArtist?.mbid, "the bundled catalog must provide a valid migration fixture MBID");
+    const secondValidArtist = legacy.db.prepare(`SELECT norm,name,lower(mbid) mbid FROM artists
+      WHERE norm<>? AND mbid IS NOT NULL AND length(mbid)=36
+        AND lower(mbid) GLOB '[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f]-[1-5][0-9a-f][0-9a-f][0-9a-f]-[89ab][0-9a-f][0-9a-f][0-9a-f]-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]'
+      ORDER BY norm LIMIT 1`).get(validArtist.norm);
+    assert.ok(secondValidArtist?.mbid, "the migration fixture needs a second valid artist for a new write");
+    legacy.db.prepare(`INSERT INTO artists
+      (norm,name,mbid,rank_score,created_at,updated_at)
+      VALUES ('malformed memorial artist','Malformed Memorial Artist',?,0,1,1)
+      ON CONFLICT(norm) DO UPDATE SET mbid=excluded.mbid`).run("xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx");
+    legacy.db.exec(`
+      DROP TRIGGER IF EXISTS trg_artist_memorials_require_mbid_insert;
+      DROP TRIGGER IF EXISTS trg_artist_memorials_require_mbid_update;
+      DROP INDEX IF EXISTS idx_artist_memorials_status_updated;
+      DROP TABLE artist_memorials;
+      CREATE TABLE artist_memorials (
+        artist_key           TEXT PRIMARY KEY,
+        artist_name          TEXT NOT NULL,
+        status               TEXT NOT NULL CHECK (status IN ('draft','published')),
+        death_date           TEXT NOT NULL,
+        summary              TEXT NOT NULL,
+        thank_you            TEXT NOT NULL,
+        accomplishments      TEXT NOT NULL,
+        source_url           TEXT NOT NULL,
+        source_title         TEXT,
+        source_hostname      TEXT NOT NULL,
+        source_verified_at   INTEGER NOT NULL,
+        first_published_at   INTEGER,
+        published_at         INTEGER,
+        spotlight_started_at INTEGER,
+        spotlight_ends_at    INTEGER,
+        created_at           INTEGER NOT NULL,
+        updated_at           INTEGER NOT NULL,
+        CHECK (
+          (status='draft' AND published_at IS NULL AND spotlight_started_at IS NULL AND spotlight_ends_at IS NULL)
+          OR
+          (status='published' AND published_at IS NOT NULL AND first_published_at IS NOT NULL
+            AND spotlight_started_at IS NOT NULL AND spotlight_ends_at > spotlight_started_at)
+        )
+      );
+    `);
+    const insertLegacy = legacy.db.prepare(`INSERT INTO artist_memorials
+      (artist_key,artist_name,status,death_date,summary,thank_you,accomplishments,
+       source_url,source_title,source_hostname,source_verified_at,first_published_at,
+       published_at,spotlight_started_at,spotlight_ends_at,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+    const legacyValues = (key, name) => [
+      key,
+      name,
+      "published",
+      "2024-05-17",
+      "A singular performer whose songs and live shows changed generations.",
+      "Thank you for leaving the music with us.",
+      JSON.stringify(["Three landmark albums"]),
+      "https://news.example.org/artist/confirmed",
+      "Official announcement",
+      "news.example.org",
+      migrationAt,
+      migrationAt,
+      migrationAt,
+      migrationAt,
+      migrationAt + 30 * 24 * 60 * 60 * 1000,
+      migrationAt,
+      migrationAt,
+    ];
+    insertLegacy.run(...legacyValues(validArtist.norm, validArtist.name));
+    insertLegacy.run(...legacyValues("unmatched memorial artist", "Unmatched Memorial Artist"));
+    insertLegacy.run(...legacyValues("malformed memorial artist", "Malformed Memorial Artist"));
+    legacy.db.close();
+    legacy = null;
+
+    upgraded = await import(`./db.js?artist-memorial-upgrade=${encodeURIComponent(dataDir)}`);
+    const rows = upgraded.db.prepare(`SELECT artist_key,artist_mbid FROM artist_memorials
+      ORDER BY artist_key`).all().map((row) => ({ ...row }));
+    assert.equal(rows.find((row) => row.artist_key === validArtist.norm)?.artist_mbid, validArtist.mbid);
+    assert.equal(rows.find((row) => row.artist_key === "unmatched memorial artist")?.artist_mbid, null);
+    assert.equal(rows.find((row) => row.artist_key === "malformed memorial artist")?.artist_mbid, null);
+
+    const repository = createArtistMemorialRepository(upgraded.db);
+    const service = createArtistMemorialService({ repository });
+    assert.equal(service.readPublic({
+      artistKey: "unmatched memorial artist",
+      artistMbid: "12345678-1234-4234-8234-123456789abc",
+      at: migrationAt,
+    }), null);
+    assert.equal(service.readPublic({
+      artistKey: "malformed memorial artist",
+      artistMbid: "12345678-1234-4234-8234-123456789abc",
+      at: migrationAt,
+    }), null);
+    const saved = service.upsert({
+      status: "published",
+      deathDate: "2024-05-17",
+      summary: "A revised memorial summary that keeps the verified artist identity intact.",
+      thankYou: "Thank you for leaving the music with us.",
+      accomplishments: ["Three landmark albums"],
+      sourceUrl: "https://news.example.org/artist/confirmed",
+      sourceTitle: "Official announcement",
+      confirmedIndividual: true,
+      restartSpotlight: false,
+    }, {
+      artistKey: validArtist.norm,
+      artistName: validArtist.name,
+      artistMbid: validArtist.mbid,
+      at: migrationAt + 1,
+    });
+    assert.equal(saved.ok, true);
+    assert.equal(saved.changed, true);
+    assert.equal(repository.findByArtistKey(validArtist.norm).artist_mbid, validArtist.mbid);
+    const created = service.upsert({
+      status: "draft",
+      deathDate: "2024-05-17",
+      summary: "A newly created memorial proves legacy extra columns do not block current writes.",
+      thankYou: "Thank you for leaving the music with us.",
+      accomplishments: ["Three landmark albums"],
+      sourceUrl: "https://news.example.org/artist/confirmed",
+      sourceTitle: "Official announcement",
+      confirmedIndividual: true,
+      restartSpotlight: false,
+    }, {
+      artistKey: secondValidArtist.norm,
+      artistName: secondValidArtist.name,
+      artistMbid: secondValidArtist.mbid,
+      at: migrationAt + 2,
+    });
+    assert.equal(created.ok, true);
+    assert.equal(repository.findByArtistKey(secondValidArtist.norm).artist_mbid, secondValidArtist.mbid);
+  } finally {
+    try { upgraded?.db.close(); } catch { /* architecture: allow-empty-catch -- test cleanup preserves the migration assertion */ }
+    try { legacy?.db.close(); } catch { /* architecture: allow-empty-catch -- test cleanup preserves the migration assertion */ }
     rmSync(dataDir, { recursive: true, force: true });
   }
 });

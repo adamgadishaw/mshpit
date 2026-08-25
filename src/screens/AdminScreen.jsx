@@ -9,9 +9,17 @@ import SheetHeader from "../components/SheetHeader";
 import EmailConsole from "../components/EmailConsole";
 import BadgeConsole from "../components/BadgeConsole";
 import ModerationConsole from "../components/moderation/ModerationConsole";
+import SuggestionInbox from "../components/moderation/SuggestionInbox";
+import ArtistMemorialConsole from "../components/moderation/ArtistMemorialConsole";
 import { adminPlaybackHealthPresentation, normalizeAdminMemberQuery, staffActionStillOwned, trackReportDetails } from "../domain/moderationConsole.mjs";
 import { staffScopeFor } from "../domain/staffReadCoordinator.mjs";
 import { readAdminHealth } from "../features/admin/services/adminHealthApi.mjs";
+import { listSuggestions, updateSuggestionStatus } from "../features/suggestions/suggestionService";
+import { useArtistMemorialAdmin } from "../features/artistMemorials/useArtistMemorial";
+
+const ADMIN_ONLY_TABS = new Set([
+  "overview", "analytics", "catalog", "email", "badges", "suggestions", "memorials", "requests",
+]);
 
 // Privacy-bounded first-party product analytics for operator diagnosis. Public
 // content trends are kept separate from consented raw interaction counters.
@@ -107,6 +115,7 @@ function AdInsights({ adminMembers = [], adminMemberDirectory = {}, loadAdminMem
   if (!data) return <Text style={styles.empty}>Loading audience data...</Text>;
 
   const t = data.totals || {};
+  const guestSearches = data.guestSearches || {};
   const oldestRaw = data.rawWindow?.oldestAt ? new Date(data.rawWindow.oldestAt).toLocaleString() : "none";
   const Stat = ({ n, label }) => (
     <View style={styles.stat}><Text style={styles.statN}>{n ?? 0}</Text><Text style={styles.statL}>{label}</Text></View>
@@ -140,6 +149,34 @@ function AdInsights({ adminMembers = [], adminMemberDirectory = {}, loadAdminMem
       </View>
       <Text style={styles.analyticsPrivacy}>The event counters use only account-consented product events. Raw IP addresses, typed searches, messages, reviews, and media URLs are never retained in analytics. Artist, venue, and genre panels are aggregate public-post trends; member-detail message and play counts are restricted operational support totals, not analytics events.</Text>
       <Text style={styles.analyticsPrivacy}>* Raw-event metrics are bounded to {data.retentionDays || 30} days, {Number(data.rawEventLimit || 0).toLocaleString()} rows globally, and {Number(data.rawEventLimitPerAccount || 0).toLocaleString()} per account; under heavy traffic the actual window is shorter. Current oldest retained event: {oldestRaw}. Signups and posts remain authoritative domain totals.</Text>
+      <Text style={styles.insightH}>ANONYMOUS SEARCH DEMAND</Text>
+      <View style={styles.statRow}>
+        <Stat n={guestSearches.today} label="guest searches today" />
+        <Stat n={guestSearches.sevenDays} label="guest searches 7d" />
+        <Stat n={guestSearches.thirtyDays} label="guest searches 30d" />
+        <Stat n={`${Number(guestSearches.zeroResultRate7d || 0).toFixed(1)}%`} label="zero-result rate 7d" />
+        <Stat n={guestSearches.failed7d} label="failed searches 7d" />
+      </View>
+      <Text style={styles.analyticsPrivacy}>These are search actions, not unique people or return visits. PIT stores one daily aggregate count by outcome and result range; never the words typed, an account or device identifier, a cookie, URL, IP address, user agent, or exact request time.</Text>
+      <View style={styles.growthCard}>
+        {(guestSearches.daily || []).slice(-14).map((day) => {
+          const max = Math.max(1, ...(guestSearches.daily || []).slice(-14).map((row) => Number(row.searches) || 0));
+          const width = day.searches ? Math.max(2, (Number(day.searches) || 0) / max * 100) : 0;
+          return (
+            <View key={day.day} style={styles.growthRow}>
+              <Text style={styles.growthDay}>{day.day.slice(5)}</Text>
+              <View style={styles.growthTracks}>
+                <View style={[styles.growthBar, styles.growthActive, { width: `${width}%` }]} />
+              </View>
+              <Text style={styles.growthNumbers}>{day.searches || 0}/{day.zeroResults || 0}/{day.failed || 0}</Text>
+            </View>
+          );
+        })}
+        <Text style={styles.growthLegend}>searches / zero-result searches / failed searches</Text>
+      </View>
+      <View style={styles.insightGrid}>
+        <List title="GUEST RESULT RANGES / 7D" rows={guestSearches.byResultBucket7d} empty="No guest searches recorded yet" />
+      </View>
       <Text style={styles.insightH}>30-DAY GROWTH</Text>
       <View style={styles.growthCard}>
         {(data.growth || []).slice(-14).map((day) => {
@@ -203,6 +240,84 @@ function AdInsights({ adminMembers = [], adminMemberDirectory = {}, loadAdminMem
   );
 }
 
+function SuggestionsPanel({ session }) {
+  const scope = staffScopeFor(session);
+  const [state, setState] = useState({ scope, suggestions: [], nextCursor: null, loading: true, loadingMore: false, error: "" });
+  const [busyId, setBusyId] = useState(null);
+  const requestRef = useRef(null);
+
+  const load = async ({ append = false } = {}) => {
+    if (!scope) return;
+    requestRef.current?.abort();
+    const controller = new AbortController();
+    requestRef.current = controller;
+    const before = append && state.scope === scope ? state.nextCursor : null;
+    setState((current) => ({
+      ...(current.scope === scope ? current : { scope, suggestions: [], nextCursor: null }),
+      loading: !append,
+      loadingMore: append,
+      error: "",
+    }));
+    try {
+      const result = await listSuggestions({ before, limit: 50, signal: controller.signal });
+      if (controller.signal.aborted || requestRef.current !== controller) return;
+      setState((current) => ({
+        scope,
+        suggestions: append ? [...current.suggestions, ...(result.suggestions || [])] : (result.suggestions || []),
+        nextCursor: result.nextCursor || null,
+        loading: false,
+        loadingMore: false,
+        error: "",
+      }));
+    } catch (error) {
+      if (controller.signal.aborted || requestRef.current !== controller) return;
+      setState((current) => ({ ...current, scope, loading: false, loadingMore: false, error: error?.message || "Suggestions could not be loaded." }));
+    } finally {
+      if (requestRef.current === controller) requestRef.current = null;
+    }
+  };
+
+  useEffect(() => {
+    setBusyId(null);
+    void load();
+    return () => requestRef.current?.abort();
+    // A staff account boundary owns the inbox. Pagination state is deliberately
+    // reset when that identity or role changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scope]);
+
+  const changeStatus = async (id, status) => {
+    if (busyId || !scope) return;
+    setBusyId(id);
+    try {
+      const result = await updateSuggestionStatus(id, status);
+      setState((current) => current.scope !== scope ? current : ({
+        ...current,
+        suggestions: current.suggestions.map((item) => item.id === id ? (result.suggestion || { ...item, status }) : item),
+      }));
+    } catch (error) {
+      setState((current) => current.scope !== scope ? current : ({ ...current, error: error?.message || "That suggestion status was not changed." }));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const scoped = state.scope === scope ? state : { suggestions: [], nextCursor: null, loading: true, loadingMore: false, error: "" };
+  return (
+    <SuggestionInbox
+      suggestions={scoped.suggestions}
+      loading={scoped.loading}
+      loadingMore={scoped.loadingMore}
+      error={scoped.error}
+      busyId={busyId}
+      hasMore={!!scoped.nextCursor}
+      onRefresh={() => void load()}
+      onLoadMore={() => void load({ append: true })}
+      onChangeStatus={(id, status) => void changeStatus(id, status)}
+    />
+  );
+}
+
 const roleColor = (r) => (r === "admin" ? colors.magenta : r === "moderator" ? colors.good : r === "artist" ? colors.amber : colors.textDim);
 
 const confirmStaffAction = (title, detail) => new Promise((resolve) => {
@@ -229,6 +344,7 @@ export default function AdminScreen({ onClose }) {
 
   const iAmAdmin = isStaff(session?.role); // full access; mods get a subset
   const [tab, setTab] = useState(iAmAdmin ? "overview" : "reports");
+  const activeTab = iAmAdmin || !ADMIN_ONLY_TABS.has(tab) ? tab : "reports";
   // Admin-created badges available to grant. Retired ones are excluded here but
   // still render on anyone holding them, so they stay revocable.
   const [grantableBadges, setGrantableBadges] = useState([]);
@@ -244,11 +360,19 @@ export default function AdminScreen({ onClose }) {
   const activeStaffSession = useRef(session);
   activeStaffSession.current = session;
   const artistRequestScope = staffScopeFor(session);
+  const memorialAdmin = useArtistMemorialAdmin({
+    accountId: session?.id || null,
+    sessionScope: artistRequestScope,
+    enabled: iAmAdmin && activeTab === "memorials",
+  });
   const artistRequestActionRef = useRef({ sequence: 0, scope: artistRequestScope, requestId: null, action: null, controller: null });
   const [artistRequestAction, setArtistRequestAction] = useState({ scope: artistRequestScope, requestId: null, action: null, status: "idle", error: null });
   const scopedArtistRequestAction = artistRequestAction.scope === artistRequestScope
     ? artistRequestAction
     : { scope: artistRequestScope, requestId: null, action: null, status: "idle", error: null };
+  useEffect(() => {
+    if (tab !== activeTab) setTab(activeTab);
+  }, [activeTab, tab]);
   useEffect(() => {
     trackActionInFlight.current = null;
     setTrackActionState({ key: null, tone: "", message: "" });
@@ -301,7 +425,7 @@ export default function AdminScreen({ onClose }) {
   // The moderation queue is server-authoritative: re-pull it whenever a
   // moderation tab opens so reports survive refreshes and other devices' work.
   useEffect(() => {
-    if (tab !== "songs") return undefined;
+    if (activeTab !== "songs") return undefined;
     let live = true;
     setTrackQueueState({ loading: true, error: "" });
     loadModerationConsole()
@@ -310,7 +434,7 @@ export default function AdminScreen({ onClose }) {
     refreshPins();
     return () => { live = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab]);
+  }, [activeTab]);
   const loadOlderTrackReports = async () => {
     if (trackQueueState.loading || !moderationConsole.nextCursor) return;
     setTrackQueueState({ loading: true, error: "" });
@@ -367,24 +491,24 @@ export default function AdminScreen({ onClose }) {
   const [seedRuns, setSeedRuns] = useState([]);
   const refreshSeed = () => catalogSeedStatus().then((s) => s && setSeedJob(s));
   const refreshRuns = () => catalogSeedRuns().then(setSeedRuns);
-  useEffect(() => { if (tab === "catalog") { refreshCatalog(); refreshSeed(); refreshRuns(); } }, [tab]);
+  useEffect(() => { if (activeTab === "catalog") { refreshCatalog(); refreshSeed(); refreshRuns(); } }, [activeTab]);
   useEffect(() => {
-    if (tab !== "members" || !iAmAdmin) return;
+    if (activeTab !== "members" || !iAmAdmin) return;
     let cancelled = false;
     api("/api/admin/badges")
       .then((r) => { if (!cancelled) setGrantableBadges((r.badges || []).filter((b) => !b.archived)); })
       .catch(() => {});
     return () => { cancelled = true; };
-  }, [tab, iAmAdmin]);
+  }, [activeTab, iAmAdmin]);
 
   useEffect(() => {
-    if (tab !== "overview" || !iAmAdmin) return;
+    if (activeTab !== "overview" || !iAmAdmin) return;
     let cancelled = false;
     api("/api/admin/errors")
       .then((r) => { if (!cancelled) setErrorLog(r); })
       .catch(() => {});
     return () => { cancelled = true; };
-  }, [tab, iAmAdmin]);
+  }, [activeTab, iAmAdmin]);
 
   // Proves the alert path without waiting for an incident. It cannot invent
   // errors, so a clean window correctly sends nothing and says so.
@@ -405,10 +529,10 @@ export default function AdminScreen({ onClose }) {
     } catch { return false; }
   };
   useEffect(() => {
-    if (tab !== "catalog" || !seedJob?.running) return;
+    if (activeTab !== "catalog" || !seedJob?.running) return;
     const id = setInterval(refreshSeed, 3000);
     return () => clearInterval(id);
-  }, [tab, seedJob?.running]);
+  }, [activeTab, seedJob?.running]);
   // When a job stops running, pull the durable record of what it actually did.
   const wasRunning = useRef(false);
   useEffect(() => {
@@ -453,7 +577,7 @@ export default function AdminScreen({ onClose }) {
   // credential diagnostics and must never be interpreted as a missing key.
   const [health, setHealth] = useState(null);
   useEffect(() => {
-    if (tab !== "overview" || !artistRequestScope) {
+    if (activeTab !== "overview" || !artistRequestScope) {
       setHealth(null);
       return undefined;
     }
@@ -469,7 +593,7 @@ export default function AdminScreen({ onClose }) {
       }
     });
     return () => controller.abort();
-  }, [tab, artistRequestScope]);
+  }, [activeTab, artistRequestScope]);
 
   const TABS = [
     { key: "overview", label: "Overview", icon: "discover", admin: true },
@@ -481,6 +605,8 @@ export default function AdminScreen({ onClose }) {
     { key: "catalog", label: "Catalog", icon: "music", admin: true },
     { key: "email", label: "Email", icon: "feed", admin: true },
     { key: "badges", label: "Badges", icon: "star", admin: true },
+    { key: "suggestions", label: "Suggestions", icon: "comment", admin: true },
+    { key: "memorials", label: "Memorials", icon: "dove", admin: true },
     { key: "requests", label: "Requests", icon: "shield", badge: pending.length, admin: true },
   ].filter((t) => iAmAdmin || !t.admin);
 
@@ -512,12 +638,12 @@ export default function AdminScreen({ onClose }) {
             key={t.key}
             accessibilityRole="tab"
             accessibilityLabel={`${t.label}${t.badge ? `, ${t.badge} open` : ""}`}
-            accessibilityState={{ selected: tab === t.key }}
-            style={[styles.tab, tab === t.key && styles.tabOn]}
+            accessibilityState={{ selected: activeTab === t.key }}
+            style={[styles.tab, activeTab === t.key && styles.tabOn]}
             onPress={() => setTab(t.key)}
           >
-            <Icon name={t.icon} size={15} color={tab === t.key ? "#1A1206" : colors.textDim} />
-            <Text style={[styles.tabTxt, tab === t.key && styles.tabTxtOn]}>{t.label}</Text>
+            <Icon name={t.icon} size={15} color={activeTab === t.key ? "#1A1206" : colors.textDim} />
+            <Text style={[styles.tabTxt, activeTab === t.key && styles.tabTxtOn]}>{t.label}</Text>
             {t.badge ? <View style={styles.tabBadge}><Text style={styles.tabBadgeTxt}>{t.badge}</Text></View> : null}
           </Pressable>
         ))}
@@ -532,7 +658,7 @@ export default function AdminScreen({ onClose }) {
         showsVerticalScrollIndicator={false}
       >
         {/* ---- OVERVIEW ---- */}
-        {tab === "overview" && (
+        {activeTab === "overview" && (
           <>
             <ModerationConsole
               mode="overview"
@@ -624,10 +750,10 @@ export default function AdminScreen({ onClose }) {
         )}
 
         {/* ---- PRIVACY-BOUNDED PRODUCT ANALYTICS ---- */}
-        {tab === "analytics" && <AdInsights adminMembers={adminMembers} adminMemberDirectory={adminMemberDirectory} loadAdminMembersStrict={loadAdminMembersStrict} session={session} />}
+        {activeTab === "analytics" && <AdInsights adminMembers={adminMembers} adminMemberDirectory={adminMemberDirectory} loadAdminMembersStrict={loadAdminMembersStrict} session={session} />}
 
         {/* ---- REPORTS ---- */}
-        {tab === "reports" && (
+        {activeTab === "reports" && (
           <ModerationConsole
             mode="reports"
             session={session}
@@ -660,7 +786,7 @@ export default function AdminScreen({ onClose }) {
         )}
 
         {/* ---- SONGS: wrong-version reports + every pinned video ---- */}
-        {tab === "songs" && (
+        {activeTab === "songs" && (
           <>
             <Text style={styles.policy}>Listeners can flag wrong videos, playback failures, preview-only fallbacks, and missing songs. Verify a candidate on YouTube, then pin its link to the exact provider recording when the report includes one.</Text>
             {trackActionState.message ? <Text accessibilityLiveRegion={trackActionState.tone === "error" ? "assertive" : "polite"} selectable style={[styles.trackActionFeedback, trackActionState.tone === "error" ? styles.trackActionError : trackActionState.tone === "warning" ? styles.trackActionWarning : styles.trackActionSuccess]}>{trackActionState.message}</Text> : null}
@@ -761,7 +887,7 @@ export default function AdminScreen({ onClose }) {
         )}
 
         {/* ---- MEMBERS ---- */}
-        {tab === "members" && (
+        {activeTab === "members" && (
           <ModerationConsole
             mode="members"
             session={session}
@@ -796,7 +922,7 @@ export default function AdminScreen({ onClose }) {
         )}
 
         {/* ---- CONTENT ---- */}
-        {tab === "content" && (
+        {activeTab === "content" && (
           <>
             <Text style={styles.sectionLabel}>POSTS / {feed.length}</Text>
             {feed.map((l) => {
@@ -858,7 +984,7 @@ export default function AdminScreen({ onClose }) {
         )}
 
         {/* ---- CATALOG ---- */}
-        {tab === "catalog" && (
+        {activeTab === "catalog" && (
           <>
             <Text style={styles.policy}>Artists people looked up. Seed them from Deezer (photo, popularity, top songs) on demand, the targeted alternative to a blind bulk dump. Purge dead or typo entries.</Text>
 
@@ -989,12 +1115,27 @@ export default function AdminScreen({ onClose }) {
         )}
 
         {/* ---- EMAIL ---- */}
-        {tab === "email" && <EmailConsole />}
+        {activeTab === "email" && <EmailConsole />}
 
-        {tab === "badges" && <BadgeConsole />}
+        {activeTab === "badges" && <BadgeConsole />}
+
+        {activeTab === "suggestions" && <SuggestionsPanel session={session} />}
+
+        {activeTab === "memorials" && iAmAdmin && (
+          <ArtistMemorialConsole
+            key={`artist-memorials:${session?.id || "signed-out"}:${session?.role || "none"}`}
+            sessionScope={artistRequestScope}
+            memorials={memorialAdmin.memorials}
+            loading={memorialAdmin.loading}
+            saving={memorialAdmin.saving}
+            error={memorialAdmin.error}
+            onRefresh={memorialAdmin.reload}
+            onSave={memorialAdmin.save}
+          />
+        )}
 
         {/* ---- REQUESTS ---- */}
-        {tab === "requests" && (
+        {activeTab === "requests" && (
           <>
             <Text style={styles.policy}>Fans requesting an official artist account. Approve to let them post tour dates for their artist.</Text>
             {scopedArtistRequestAction.status === "error" && (

@@ -135,7 +135,7 @@ function LandingAttribution({ frame, caption, inline = false }) {
   );
 }
 
-export default function LandingScreen({ onLogin, onSignup, onBrowse }) {
+export default function LandingScreen({ onLogin, onSignup, onBrowse, onSuggestion }) {
   const { width, height, fontScale } = useWindowDimensions();
   const { wide, compact, scrollPitch, overlayCredit } = landingLayoutMode({ width, height, fontScale });
   const [reduceMotion, setReduceMotion] = useState(false);
@@ -439,6 +439,24 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse }) {
             ))}
           </View>
 
+          {!!onSuggestion && (
+            <Pressable
+              style={({ pressed, hovered, focused }) => [
+                styles.feedbackLink,
+                (pressed || hovered) && styles.feedbackLinkActive,
+                focused && styles.feedbackLinkFocused,
+              ]}
+              onPress={onSuggestion}
+              accessibilityRole="button"
+              accessibilityLabel="Tell Pit what would make you come back"
+              accessibilityHint="Opens the anonymous suggestion box"
+            >
+              <Icon name="comment" size={14} color="#F2A65A" />
+              <Text style={styles.feedbackLinkText}>What would make you come back?</Text>
+              <Icon name="chevron-right" size={14} color="#F2A65A" />
+            </Pressable>
+          )}
+
           {!overlayCredit && (
             <View style={styles.inlineFoot}>
               <View style={styles.slideRail} accessible={false}>
@@ -576,6 +594,15 @@ const styles = StyleSheet.create({
   proofCopy: { flex: 1, minWidth: 0 },
   proofTitle: { color: "#F4EFE7", fontFamily: mono, fontSize: 10, lineHeight: 14, letterSpacing: 1.15, fontWeight: "900" },
   proofDetail: { color: "rgba(244,239,231,0.62)", fontSize: 11, lineHeight: 15, fontWeight: "600", marginTop: 1 },
+
+  feedbackLink: {
+    minHeight: 44, marginTop: 12, flexDirection: "row", alignItems: "center", gap: 8,
+    paddingHorizontal: 12, borderRadius: radius.pill, borderWidth: 1,
+    borderColor: "rgba(242,166,90,0.24)", backgroundColor: "rgba(5,6,11,0.38)",
+  },
+  feedbackLinkActive: { backgroundColor: "rgba(242,166,90,0.1)", borderColor: "rgba(242,166,90,0.48)" },
+  feedbackLinkFocused: { borderColor: "#F2A65A", borderWidth: 2 },
+  feedbackLinkText: { color: "rgba(244,239,231,0.76)", fontSize: 12, fontWeight: "800" },
 
   inlineFoot: { width: "100%", maxWidth: 360, alignItems: "center", marginTop: 22, gap: 12 },
   slideRail: { flexDirection: "row", alignItems: "center", gap: 5 },

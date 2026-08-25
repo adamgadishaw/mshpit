@@ -18,9 +18,12 @@
 //      digest rather than one mail per error.
 import { createHash } from "node:crypto";
 import { errorStmts } from "./db.js";
+import { cleanEmail, isEmail } from "../src/domain/validation.mjs";
 
 const RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_ROWS = 2000;
+const HOUR_MS = 60 * 60 * 1000;
+const hourStart = (value) => Math.floor(Number(value) / HOUR_MS) * HOUR_MS;
 
 // A digest, not a notification per error. During an outage the difference is
 // one email versus thousands, and thousands means the alert gets muted and the
@@ -67,6 +70,16 @@ export function alertsEnabled(env = process.env) {
   return !["0", "false", "no", "off"].includes(raw);
 }
 
+// Operational delivery must not own the bootstrap administrator identity.
+// ALERT_EMAIL can move to a monitored Workspace queue without transferring the
+// root admin, rotating its password, or revoking active admin sessions.
+export function alertRecipient(env = process.env) {
+  const operations = cleanEmail(env?.ALERT_EMAIL);
+  if (isEmail(operations)) return operations;
+  const admin = cleanEmail(env?.ADMIN_EMAIL);
+  return isEmail(admin) ? admin : "";
+}
+
 export function fingerprintOf({ level, code, status, method, route, cause }) {
   return createHash("sha256")
     .update([level, code, status, method, route, cause].join("|"))
@@ -77,7 +90,7 @@ export function fingerprintOf({ level, code, status, method, route, cause }) {
  * Record one occurrence. Safe to call from a catch block: it never throws, so a
  * logging failure cannot turn a handled 500 into an unhandled one.
  */
-export function recordError({ level = "error", code = "", status = 0, method = "", route = "", cause = "", requestId = "" } = {}) {
+export function recordError({ level = "error", code = "", status = 0, method = "", route = "", cause = "", requestId = "", at = Date.now() } = {}) {
   try {
     const entry = {
       level: level === "fatal" ? "fatal" : "error",
@@ -90,7 +103,9 @@ export function recordError({ level = "error", code = "", status = 0, method = "
       requestId: shaped(requestId, REQUEST_ID_RE, null, 36),
     };
     const fingerprint = fingerprintOf(entry);
-    errorStmts.record.run({ ...entry, fingerprint, at: Date.now() });
+    const recordedAt = Number.isFinite(Number(at)) ? Number(at) : Date.now();
+    errorStmts.record.run({ ...entry, fingerprint, at: recordedAt });
+    errorStmts.recordBucket.run(fingerprint, hourStart(recordedAt));
     return fingerprint;
   } catch {
     return null;
@@ -101,6 +116,7 @@ export function recordError({ level = "error", code = "", status = 0, method = "
 export function pruneErrors(now = Date.now()) {
   try {
     errorStmts.prune.run(now - RETENTION_MS);
+    errorStmts.pruneBuckets.run(hourStart(now - RETENTION_MS));
     const rows = errorStmts.countRows.get().c;
     if (rows > MAX_ROWS) {
       // Drop the oldest overflow in one statement rather than row by row.
@@ -116,8 +132,9 @@ export function recentErrors(limit = 50) {
 }
 
 export function errorStats(sinceMs) {
+  if (Number(sinceMs) > Date.now()) return { occurrences: 0, kinds: 0 };
   try {
-    const totals = errorStmts.totalSince.get(sinceMs);
+    const totals = errorStmts.totalSince.get(hourStart(sinceMs));
     return { occurrences: totals.c, kinds: totals.kinds };
   } catch { return { occurrences: 0, kinds: 0 }; }
 }
@@ -139,7 +156,7 @@ export async function maybeAlert({ now = Date.now(), force = false } = {}) {
 
   const windowStart = alertedThrough || now - alertCooldownMs();
   let rows;
-  try { rows = errorStmts.since.all(windowStart, 20); }
+  try { rows = errorStmts.since.all(hourStart(windowStart), 20); }
   catch { return { sent: false, reason: "unavailable" }; }
   // Only server faults page anybody. A 404 or a validation error is not news.
   const serious = rows.filter((r) => r.level === "fatal" || r.status === 0 || r.status >= 500);
@@ -148,8 +165,8 @@ export async function maybeAlert({ now = Date.now(), force = false } = {}) {
   alerting = true;
   try {
     const { sendTemplate } = await import("./emailService.js");
-    const admin = String(process.env.ADMIN_EMAIL || "").trim();
-    if (!admin) return { sent: false, reason: "no-admin-email" };
+    const recipient = alertRecipient();
+    if (!recipient) return { sent: false, reason: "no-alert-email" };
 
     const total = serious.reduce((sum, r) => sum + r.count, 0);
     const lines = serious.map((r) => {
@@ -159,7 +176,7 @@ export async function maybeAlert({ now = Date.now(), force = false } = {}) {
     }).join("\n");
 
     const result = await sendTemplate("error_alert", {
-      to: admin,
+      to: recipient,
       vars: {
         name: "there",
         summary: `${total} error${total === 1 ? "" : "s"} across ${serious.length} kind${serious.length === 1 ? "" : "s"}`,

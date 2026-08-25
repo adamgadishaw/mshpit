@@ -24,6 +24,9 @@ import { artistWorkspaceOwnsArtist } from "../domain/artistWorkspace.mjs";
 import { selectArtistReviewsPresentation } from "../features/artistReviews/artistReviewsState.mjs";
 import { useArtistTopReviews } from "../features/artistReviews/useArtistTopReviews";
 import { useArtistEventArchive } from "../features/artistEvents/useArtistEventArchive";
+import { selectArtistUpcomingShows } from "../domain/artistUpcomingShows.mjs";
+import ArtistMemorialTribute from "../components/artist/ArtistMemorialTribute";
+import { useArtistMemorial } from "../features/artistMemorials/useArtistMemorial";
 
 const cap = (s) => (s ? s.replace(/\b\w/g, (c) => c.toUpperCase()) : s);
 const compactCount = (value) => {
@@ -168,6 +171,11 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
     artistGallery, loadArtistPhotos, removePhoto, artistBadges, artistRank, remoteArtistMeta, resolveArtist,
     artistDiscography, artistSeenCount, reportTrack } = useStore();
   const a = artistSummary(artistName);
+  const { resource: memorialResource } = useArtistMemorial({
+    accountId: session?.id || null,
+    artistKey: a.profileKey,
+  });
+  const memorial = memorialResource.data;
   const badges = artistBadges(a.name);
   const rank = artistRank(a.name);
   // Metadata: bundled catalog first, else the DB catalog (resolved from
@@ -223,6 +231,9 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
   const ownsNamedArtistPage = artistWorkspaceOwnsArtist(session, a.name);
   const canManagePublicPage = ownsArtistPage && !previewAsFan;
   const upcoming = previewAsFan ? a.upcoming.filter((date) => !date.scheduled) : a.upcoming;
+  const [showAllUpcoming, setShowAllUpcoming] = useState(false);
+  const upcomingPresentation = selectArtistUpcomingShows(upcoming, { expanded: showAllUpcoming });
+  const visibleUpcoming = upcomingPresentation.shows;
   const bio = a.ownerBio || meta?.bio;
   const bannerUri = a.banner || meta?.photo || null;
   const profileBannerPhotos = a.banner && a.ownerId
@@ -365,6 +376,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
   useEffect(() => {
     setOpenAlbum(null);
     setShowAllSongs(false);
+    setShowAllUpcoming(false);
     setIdentityOpen(false);
     setCandidates(null);
     setCandidatesLoading(false);
@@ -665,6 +677,12 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
           <View style={styles.nameRow}>
             <Text style={styles.heroName}>{a.name}</Text>
             {badges.length ? <BadgeRow badges={badges} size={20} style={styles.nameBadges} /> : null}
+            {memorial?.deceased ? (
+              <View accessible style={styles.memorialChip} accessibilityLabel={`${a.name}, remembered in tribute`}>
+                <Icon name="dove" size={13} color={colors.gold} strokeWidth={1.8} />
+                <Text style={styles.memorialChipText}>IN MEMORY</Text>
+              </View>
+            ) : null}
           </View>
           <View style={styles.chipRow}>
             <View style={styles.genreChip}>
@@ -682,6 +700,13 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
             )}
           </View>
         </View>
+
+        <ArtistMemorialTribute
+          artistKey={a.profileKey}
+          artistName={a.name}
+          memorial={memorial}
+          style={styles.memorial}
+        />
 
         {thin && !canManagePublicPage && (
           <View style={styles.comingSoon}>
@@ -878,7 +903,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
         {upcoming.length > 0 && (
           <>
             <Text style={styles.sectionLabel}>UPCOMING · {upcoming.length}</Text>
-            {upcoming.map((t) => (
+            {visibleUpcoming.map((t) => (
               <View key={t.id} style={styles.upRow}>
                 <Pressable
                   style={({ pressed, focused }) => [styles.upMain, pressed && styles.archivePressed, focused && focusRing]}
@@ -906,6 +931,22 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
                 )}
               </View>
             ))}
+            {upcomingPresentation.hasOverflow && (
+              <Pressable
+                style={({ pressed, focused }) => [styles.showAllBtn, pressed && styles.archivePressed, focused && focusRing]}
+                onPress={() => setShowAllUpcoming((current) => !current)}
+                accessibilityRole="button"
+                accessibilityState={{ expanded: upcomingPresentation.expanded }}
+                accessibilityLabel={upcomingPresentation.expanded
+                  ? `Show fewer upcoming ${a.name} shows`
+                  : `Load ${upcomingPresentation.overflowCount} more upcoming ${a.name} shows`}
+              >
+                <Text style={styles.showAllTxt}>
+                  {upcomingPresentation.expanded ? "Show fewer" : `Load ${upcomingPresentation.overflowCount} more`}
+                </Text>
+                <Icon name={upcomingPresentation.expanded ? "chevron-up" : "chevron-down"} size={15} color={colors.amber} />
+              </Pressable>
+            )}
           </>
         )}
 
@@ -1215,6 +1256,9 @@ const styles = StyleSheet.create({
   nameRow: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 4 },
   nameBadges: { marginTop: 4 },
   heroName: { color: colors.text, fontSize: 30, fontWeight: "900", letterSpacing: -0.6 },
+  memorialChip: { minHeight: 28, flexDirection: "row", alignItems: "center", gap: 5, marginLeft: 5, paddingHorizontal: 9, borderRadius: radius.pill, borderWidth: 1, borderColor: `${colors.gold}66`, backgroundColor: `${colors.gold}12` },
+  memorialChipText: { color: colors.gold, fontFamily: mono, fontSize: 9, fontWeight: "900", letterSpacing: 1 },
+  memorial: { marginTop: 16 },
   chipRow: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 10, flexWrap: "wrap" },
   genreChip: { alignSelf: "flex-start", borderWidth: 1, borderColor: colors.line, borderRadius: radius.pill, paddingHorizontal: 12, paddingVertical: 4 },
   genreTxt: { color: colors.amber, fontSize: 11, letterSpacing: 1, fontWeight: "700" },
@@ -1354,7 +1398,7 @@ const styles = StyleSheet.create({
   songReportInput: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: radius.sm, color: colors.text, fontSize: 13, paddingHorizontal: 10, paddingVertical: 8 },
   songReportNote: { minHeight: 58, marginTop: 8, textAlignVertical: "top" },
   songReportActions: { flexDirection: "row", alignItems: "center", gap: 14, marginTop: 10 },
-  showAllBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 12, marginTop: 4, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface },
+  showAllBtn: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 12, marginTop: 4, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface },
   showAllTxt: { color: colors.amber, fontSize: 13, fontWeight: "800" },
   songReportBtn: { backgroundColor: colors.amberStrong, borderRadius: radius.pill, paddingHorizontal: 14, paddingVertical: 8 },
   songReportBtnTxt: { color: "#1A1206", fontSize: 12.5, fontWeight: "800" },

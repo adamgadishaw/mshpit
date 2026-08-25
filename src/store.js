@@ -39,7 +39,7 @@ import {
   withoutChatOutboxItem,
 } from "./domain/chatDelivery.mjs";
 import { createStaffReadCoordinator, staffScopeFor } from "./domain/staffReadCoordinator.mjs";
-import { patchModerationMemberContext } from "./domain/moderationConsole.mjs";
+import { confirmedRoleMutationPatch, patchModerationMemberContext } from "./domain/moderationConsole.mjs";
 import {
   deleteAccountDraft,
   draftsForAccount,
@@ -1416,9 +1416,13 @@ export function StoreProvider({ children }) {
   };
   // Search the DB catalog (notable-first). Powers Search so ANY catalog artist is
   // findable, not just the ~1.6k bundled ones.
-  const searchArtistsApi = async (query, { signal } = {}) => {
+  const searchArtistsApi = async (query, { signal, throwOnError = false } = {}) => {
     try { const { artists } = await api(`/api/artists?q=${encodeURIComponent(query || "")}`, { signal, silent: true, context: "Searching artists" }); cacheArtists(artists); return artists || []; }
-    catch { return []; }
+    catch (error) {
+      if (throwOnError) throw error;
+      // architecture: allow-ambiguous-result -- legacy browse callers treat catalog suggestions as optional; measured search opts into strict errors
+      return [];
+    }
   };
   // Song search for the search box, so not knowing the artist is no longer a
   // dead end. Server-side this is Deezer (keyless), so it costs no YouTube
@@ -4470,9 +4474,11 @@ export function StoreProvider({ children }) {
   };
   const removeFanClubMessage = (artistKey, msgId) => moderateContent("fan_message", msgId, true)
     .then(() => { setFanClubMsgs((L) => ({ ...L, [artistKey]: (L[artistKey] || []).filter((m) => m.id !== msgId) })); return true; }).catch(() => false);
-  // Promote/demote a member (fan ⇄ artist ⇄ admin). Admin grants full moderation.
+  // Fan/artist changes apply immediately. Any transition to or from a head role
+  // only creates a Founder approval request; a pending response must never make
+  // the member look promoted or demoted before that separate decision lands.
   const setUserRole = async (id, role) => {
-    if (!["fan", "artist", "moderator", "admin"].includes(role)) return;
+    if (!["fan", "artist", "moderator", "admin"].includes(role)) return { ok: false, error: new Error("Choose a valid role.") };
     // Staff carry their role in their @ (admin → "admin", moderator → "mod"); on
     // promotion, tag the handle if it isn't already, keeping it unique.
     const directory = adminMembersRef.current;
@@ -4487,17 +4493,21 @@ export function StoreProvider({ children }) {
     const scope = staffScopeFor(sessionRef.current);
     try {
       const result = await api(`/api/admin/users/${id}/role`, { method: "POST", body: { role, handle }, context: "Changing this account role" });
-      if (staffMutationStillOwned(scope)) {
-        // The server allocates against the complete directory, not merely this
-        // loaded page, so its collision-safe handle is authoritative.
-        const authoritativeHandle = result?.handle || handle || target?.handle;
-        invalidateStaffMemberReads();
-        patchStaffMember(id, { role, handle: authoritativeHandle }, {
-          publicPatch: { role, handle: authoritativeHandle },
-        });
+      const appliedPatch = confirmedRoleMutationPatch(result);
+      if (result?.pending !== true && !appliedPatch) {
+        return { ok: false, error: new Error("The server did not confirm the resulting role and username.") };
       }
-      return true;
-    } catch { return false; }
+      if (staffMutationStillOwned(scope)) {
+        if (appliedPatch) {
+          // The server allocates against the complete directory, not merely this
+          // loaded page, so only its echoed role and collision-safe handle may
+          // enter local account projections.
+          invalidateStaffMemberReads();
+          patchStaffMember(id, appliedPatch, { publicPatch: appliedPatch });
+        }
+      }
+      return { ok: true, ...result };
+    } catch (error) { return { ok: false, error }; }
   };
 
   // Admin-granted verification (the blue check), independent of role, so any

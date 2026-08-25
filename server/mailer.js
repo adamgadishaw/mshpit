@@ -1,7 +1,8 @@
 // Minimal transactional email via Resend's HTTP API (no dependency, one fetch).
 // Configured with two env vars on the web service:
 //   RESEND_API_KEY  — from resend.com (free tier is plenty for password resets)
-//   MAIL_FROM       — a verified sender, e.g. "Pit <noreply@mail.mshpit.com>"
+//   MAIL_FROM       — a verified sender, e.g. "Mshpit <noreply@mail.mshpit.com>"
+// Optional MAIL_REPLY_TO points replies at a monitored Google Workspace inbox.
 // When either is absent it's a graceful no-op that returns { ok:false, sent:false }
 // so the reset flow still works (the caller decides what to do with an un-sent mail).
 
@@ -38,6 +39,8 @@ export function mailFailureLabel(error) {
 export function mailDiagnostics() {
   const hasKey = !!process.env.RESEND_API_KEY;
   const from = parseMailFrom(process.env.MAIL_FROM);
+  const replyToPresent = !!String(process.env.MAIL_REPLY_TO || "").trim();
+  const replyTo = parseMailFrom(process.env.MAIL_REPLY_TO);
   let reason = null;
   if (!hasKey && !from.ok) reason = "missing-api-key-and-from";
   else if (!hasKey) reason = "missing-api-key";
@@ -49,6 +52,10 @@ export function mailDiagnostics() {
     fromPresent: !!String(process.env.MAIL_FROM || "").trim(),
     fromValid: from.ok,
     fromDomain: from.domain,
+    replyToPresent,
+    replyToValid: replyToPresent ? replyTo.ok : null,
+    replyToDomain: replyToPresent && replyTo.ok ? replyTo.domain : null,
+    warning: replyToPresent && !replyTo.ok ? "invalid-reply-to" : null,
     reason,
   };
 }
@@ -56,6 +63,7 @@ export function mailDiagnostics() {
 export async function sendEmail({ to, subject, html, text, idempotencyKey }) {
   if (!mailConfigured()) return { ok: false, sent: false, reason: mailDiagnostics().reason || "not-configured" };
   try {
+    const replyTo = parseMailFrom(process.env.MAIL_REPLY_TO);
     const r = await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: {
@@ -64,7 +72,14 @@ export async function sendEmail({ to, subject, html, text, idempotencyKey }) {
         "User-Agent": "PitConcertApp/1.0 (https://mshpit.com)",
         ...(idempotencyKey ? { "Idempotency-Key": String(idempotencyKey).slice(0, 256) } : {}),
       },
-      body: JSON.stringify({ from: process.env.MAIL_FROM, to: [to], subject, html, text }),
+      body: JSON.stringify({
+        from: process.env.MAIL_FROM,
+        to: [to],
+        subject,
+        html,
+        text,
+        ...(replyTo.ok ? { reply_to: String(process.env.MAIL_REPLY_TO).trim() } : {}),
+      }),
       signal: AbortSignal.timeout(10000),
     });
     if (!r.ok) {

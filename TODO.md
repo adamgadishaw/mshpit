@@ -250,8 +250,10 @@ remains a broad context whose changing value can rerender unrelated consumers.
 9. **SEO:** submit the sitemap in Search Console, confirm Cloudflare serves the
    origin robots file, and plan pre-render/server rendering for important public
    entity pages.
-10. **Resend:** rotate exposed credentials, verify the sending domain, configure
-    `MAIL_FROM`, and complete two-provider reset delivery tests.
+10. **Email operations:** keep Google Workspace inbound mail separate from the
+    verified Resend sending subdomain; configure `MAIL_FROM`, `MAIL_REPLY_TO`,
+    and `ALERT_EMAIL`, then complete two-provider reset/reply delivery tests and
+    add signed bounce/complaint webhooks before large broadcasts.
 11. **Release operations:** provision and verify the declared Render staging
     service (the default hostname returned `no-server` on 2026-08-13); configure
     separate private `BACKUP_S3_*` credentials, observe a scheduled production
