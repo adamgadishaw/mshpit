@@ -1,8 +1,8 @@
 # Private-derivative-v1 video publishing runbook
 
-Status: **production video publishing is disabled.** Keep `PIT_VIDEO_PUBLISHING_ENABLED=false` (or unset) in production until the owner explicitly approves the recurring private-service cost and the real staging canary below passes. This runbook does not provision a service, change `render.yaml`, or authorize a production rollout.
+Status: **the production verifier is Blueprint-provisioned, but production video publishing remains disabled.** `render.yaml` defines the private service and keeps `PIT_VIDEO_PUBLISHING_ENABLED=false`. Do not change that flag in the first deployment. First prove that the live private-source bucket and verifier are healthy; enable video in a second deployment only, then require the negotiated health result and real production canary described below.
 
-Budget assumption: the currently expected Render starter floor is about **US$7/month per always-on private service** (about US$14/month while separate staging and production verifiers are both retained). Confirm the live [Render pricing](https://render.com/pricing) before approval; this document creates no charge.
+Budget: the current topology adds **one production-only Render Starter private service in Oregon, about US$7/month** at the expected Starter floor. No staging verifier is provisioned by the Blueprint, so this rollout does not add a second approximately US$7/month service. Confirm the live [Render pricing](https://render.com/pricing) before changing plans or adding a staging verifier.
 
 ## What is being deployed
 
@@ -34,28 +34,23 @@ Current hard bounds are MP4 only, at most 100 MiB and 60 seconds, one progressiv
 
 ## Render topology
 
-Create a **private service**, not a background worker: it must accept signed HTTP calls from the web service. Put each verifier in the same Render workspace, region, and environment as its paired web service. Render private services have no public `onrender.com` address and are reachable through their internal service address. See [Private Services](https://render.com/docs/private-services) and [Private Network](https://render.com/docs/private-network).
+The Blueprint defines a **production private service**, not a background worker, because the web service must make signed HTTP calls to it:
 
-Use port `10001`. The service binds `0.0.0.0` and defaults to `10001`; Render forbids private-network ports `10000`, `18012`, `18013`, and `19099`. Copy the hostname from the verifier's Render **Connect > Internal** address and configure the web value as `hostname:10001` with no scheme, path, query, or credentials.
+- service: `pit-video-verifier`
+- type/runtime: Render `pserv` using `Dockerfile.video-verifier`
+- plan/region: Starter in `oregon`
+- branch/deploy: `master` with automatic deploys
+- internal port: `10001`
 
-Start command:
+Render private services have no public `onrender.com` address and are reachable only through the private network. The production web service receives `PIT_VIDEO_VERIFIER_HOSTPORT` from the verifier's Blueprint `hostport` property, so operators must not paste a public URL or manually construct a hostname. The verifier HMAC secret is generated on the private service and injected into the web service through a Blueprint `fromService` reference. See [Private Services](https://render.com/docs/private-services), [Private Network](https://render.com/docs/private-network), and [Blueprint YAML Reference](https://render.com/docs/blueprint-spec).
 
-```text
-node server/videoVerifierService.js
-```
+The container pins its Node base image by immutable digest and pins and verifies the FFmpeg source release before building it. Its image build includes an encode/probe/full-decode smoke test, and the runtime uses the fixed `/opt/ffmpeg/bin/ffmpeg` and `/opt/ffmpeg/bin/ffprobe` paths. A successful image build is necessary but is not sufficient to enable publishing; live signed verifier health and storage checks must still pass. Decoder/base-image security updates require a rebuild and repeat canary before rollout.
 
-Do not scale this version above one verifier instance. Its concurrency and coalescing controls are process-local; horizontal scale needs a durable queue/shared lock first.
-
-### Runtime choice
-
-- **Pinned container (recommended for production):** pin the Node 24 base image by immutable digest, pin the FFmpeg package/build, and set `PIT_FFMPEG_PATH` and `PIT_FFPROBE_PATH` if the binaries are not on `PATH`. This gives reproducible decoder behavior. The operator owns base-image/FFmpeg CVE updates, codec licensing review, rebuilds, and a repeat of the full canary after every decoder change. Never use a floating `latest` tag.
-- **Render native Node runtime:** simpler to create, but use it only if that exact runtime demonstrably contains the required FFmpeg and FFprobe binaries for every deploy. Native images can change over time and are not a pinned decoder environment; a missing or changed binary correctly makes verifier health fail. Do not enable publishing based only on a successful build.
-
-Render recommends Docker where OS packages or reproducible builds are required; see [Docker on Render](https://render.com/docs/docker). Secrets belong in Render runtime environment values, never image build arguments or the repository; see [Environment Variables and Secrets](https://render.com/docs/configure-environment-variables).
+Do not scale this version above one verifier instance. Its concurrency and coalescing controls are process-local; horizontal scale needs a durable queue/shared lock first. Render recommends Docker where OS packages or reproducible builds are required; see [Docker on Render](https://render.com/docs/docker). Secrets belong in Render runtime environment values, never image build arguments or the repository; see [Environment Variables and Secrets](https://render.com/docs/configure-environment-variables).
 
 ## Exact environment separation
 
-Use separate staging and production verifier services, buckets, and HMAC secrets. Do not link the worker to a broad web-service environment group. If an environment group is used, it may contain only the verifier secret and must be scoped to that Render environment.
+The current rollout provisions only the production verifier. It does not share a broad environment group with the web service. The verifier receives only its protocol secret, bounded bucket/origin identifiers, and decoder paths; it never receives storage credentials or application/database secrets. If a staging verifier is added later, it must be a separate service with separate buckets and a separate HMAC secret, and it will add its own recurring service cost.
 
 ### Web service only
 
@@ -63,9 +58,9 @@ Keep the existing database/disk, application, email, provider, and complete medi
 
 | Variable | Value |
 | --- | --- |
-| `PIT_VIDEO_PUBLISHING_ENABLED` | `false` through setup and health validation; `true` only for the approved canary/rollout step |
-| `PIT_VIDEO_VERIFIER_HOSTPORT` | Exact Render private address, for example `pit-video-verifier-staging:10001`; no `http://` |
-| `PIT_VIDEO_VERIFIER_SECRET` | Same environment-specific HMAC secret as its verifier, 32–1024 UTF-8 bytes |
+| `PIT_VIDEO_PUBLISHING_ENABLED` | Blueprint value `false` through infrastructure deploy and live health validation; change to `true` only in the separate enablement deployment |
+| `PIT_VIDEO_VERIFIER_HOSTPORT` | Blueprint `fromService` reference to `pit-video-verifier` property `hostport`; never a public URL |
+| `PIT_VIDEO_VERIFIER_SECRET` | Blueprint `fromService` reference to the verifier's generated `PIT_VIDEO_VERIFIER_SECRET` |
 
 The web service retains `MEDIA_ENDPOINT`, `MEDIA_BUCKET`, `MEDIA_REGION`, `MEDIA_ACCESS_KEY_ID`, `MEDIA_SECRET_ACCESS_KEY`, and `MEDIA_PUBLIC_BASE_URL`, and adds `MEDIA_SOURCE_BUCKET` for private originals. `MEDIA_SOURCE_BUCKET` must be distinct from `MEDIA_BUCKET` and must not have a public custom domain. Production does not accept `PIT_VIDEO_VERIFIER_URL`; that variable is local-development-only. Do not reuse a staging secret, bucket, or verifier hostname in production.
 
@@ -73,29 +68,30 @@ The web service retains `MEDIA_ENDPOINT`, `MEDIA_BUCKET`, `MEDIA_REGION`, `MEDIA
 
 | Variable | Value |
 | --- | --- |
-| `NODE_VERSION` | `24` when using the native runtime |
 | `PORT` | `10001` |
-| `PIT_VIDEO_VERIFIER_SECRET` | Same environment-specific HMAC secret as the paired web service |
-| `PIT_VIDEO_SOURCE_ORIGIN` | Exact HTTPS S3/R2 API base used by the paired web service's `MEDIA_ENDPOINT` |
-| `PIT_VIDEO_SOURCE_BUCKET` | Exact private bucket used by the paired web service's `MEDIA_SOURCE_BUCKET` |
-| `PIT_VIDEO_OUTPUT_ORIGIN` | Exact HTTPS S3/R2 API base used by the paired web service's `MEDIA_ENDPOINT` |
-| `PIT_VIDEO_OUTPUT_BUCKET` | Exact public derivative bucket used by the paired web service's `MEDIA_BUCKET` |
-| `PIT_FFMPEG_PATH` | Optional fixed executable path; otherwise `ffmpeg` on `PATH` |
-| `PIT_FFPROBE_PATH` | Optional fixed executable path; otherwise `ffprobe` on `PATH` |
+| `PIT_VIDEO_VERIFIER_SECRET` | Generated by the Blueprint on `pit-video-verifier`; the paired web service reads this exact value through `fromService` |
+| `PIT_VIDEO_SOURCE_ORIGIN` | Blueprint reference to production web `MEDIA_ENDPOINT` |
+| `PIT_VIDEO_SOURCE_BUCKET` | Blueprint reference to production web `MEDIA_SOURCE_BUCKET` |
+| `PIT_VIDEO_OUTPUT_ORIGIN` | Blueprint reference to production web `MEDIA_ENDPOINT` |
+| `PIT_VIDEO_OUTPUT_BUCKET` | Blueprint reference to production web `MEDIA_BUCKET` |
+| `PIT_FFMPEG_PATH` | `/opt/ffmpeg/bin/ffmpeg` |
+| `PIT_FFPROBE_PATH` | `/opt/ffmpeg/bin/ffprobe` |
 
 The verifier must **not** receive any R2/S3 access key, secret key, database URL/file/disk, `PIT_DATA_DIR`, admin credential, email credential, provider API key, backup credential, session secret, or `MEDIA_PUBLIC_BASE_URL`. In particular, do not set `MEDIA_ACCESS_KEY_ID`, `MEDIA_SECRET_ACCESS_KEY`, or any database credential on it. It downloads only the exact source identified by a short-lived signed URL and `If-Match` header supplied inside an authenticated job. Use the explicit `PIT_VIDEO_SOURCE_*` names rather than the compatibility `MEDIA_*` fallbacks so an environment audit is unambiguous.
 
-Generate a high-entropy secret (at least 32 random bytes, encoded for an environment variable), set the same value independently on the two paired services, and never print it. Rotate it with publishing disabled; a one-sided rotation is expected to fail closed.
+Never print, copy into a ticket, or commit the generated HMAC secret. Rotate it only with publishing disabled and preserve the single Blueprint source of truth; a mismatched/one-sided rotation is expected to fail closed.
 
-## Staging enable sequence
+## Optional future staging enable sequence
+
+No staging verifier is provisioned in the current production-only rollout. The following sequence applies only if the owner later approves the additional service cost and a separate staging verifier is added. Never point staging at the production verifier or either production bucket.
 
 1. Run the repository quality gate (`npm run check`) and deploy the web code to `mshpit-staging` with its separate staging database, media bucket, and `PIT_VIDEO_PUBLISHING_ENABLED=false`.
-2. Create the staging private service manually with port `10001`, the isolated verifier environment above, and either the approved pinned container or a proven native decoder runtime. Do not add production values.
+2. Add a separate staging private service with port `10001`, the isolated verifier environment above, and the same pinned-container controls. Do not add production values.
 3. Add the private hostport and matching HMAC secret to the staging web service. Keep the flag false and redeploy both services.
 4. As an authenticated moderator, inspect `GET /api/admin/health`. Require `services.mediaObjectStorageConfigured=true`, `services.privateVideoSourceStorageConfigured=true`, `services.videoVerifier.configured=true`, `services.videoVerifier.ready=true`, `services.videoVerifier.pipeline="private-derivative-v1"`, no `lastErrorCode`, and a nonempty `ffmpegVersion`. With the flag still false, both health URLs must advertise `videos:false`.
 5. Set the flag to `true` on **staging only**, deploy, and require the exact negotiated route to return `{photos:true,videos:true,pipeline:"private-derivative-v1"}` while unversioned `GET /api/health` still returns `videos:false`.
 6. Run every canary case and performance gate below using real staging object storage and release-equivalent clients. A mocked FFmpeg call, unit fixture, or direct database edit is not a canary.
-7. Disable the staging flag again after evidence is captured. Production stays false until the owner explicitly approves the private-service cost, private-source retention policy, and the production change window.
+7. Disable the staging flag again after evidence is captured. Do not use a future staging exercise to alter production; production follows the separate sequence below.
 
 ## Exact staging canary matrix
 
@@ -136,11 +132,18 @@ Any failed bullet blocks production. Increase verifier resources or narrow the a
 
 ## Production enable sequence
 
-1. Obtain explicit owner approval for the recurring private-service cost, the exact runtime/build, the canary evidence, and the private-source retention policy below.
-2. Provision a separate production private verifier with a new secret and production source origin/bucket constraints. Keep production `PIT_VIDEO_PUBLISHING_ENABLED=false`.
-3. Deploy the production web hostport/secret wiring. Require five consecutive minutes of fresh authenticated verifier health with the flag false. Verify both public health forms still advertise video false.
-4. Announce a monitored change window. Save and deploy `PIT_VIDEO_PUBLISHING_ENABLED=true`; immediately require exact negotiated health to advertise `private-derivative-v1` and run one real verified-account production upload/publish/playback canary.
-5. If the production canary and the following 30-minute observation pass, leave the flag on. Otherwise execute rollback immediately. Do not call the feature released merely because the environment variable deployed.
+This is a two-deployment rollout. The infrastructure deployment must not enable video publishing.
+
+1. Confirm the private source bucket exists, has no public development URL or custom domain, and is distinct from `MEDIA_BUCKET`. Configure the production web service with `MEDIA_SOURCE_BUCKET` and an R2 credential scoped only to the public derivative bucket and private source bucket. Keep the previous production R2 token active during this migration; do not revoke it yet.
+2. Deploy the Blueprint changes with `PIT_VIDEO_PUBLISHING_ENABLED=false`. This creates `pit-video-verifier`, generates its HMAC secret, and wires the verifier hostport/secret and source/output identifiers through `fromService`. Confirm that no R2/S3 or database credential appears on the private service.
+3. With the flag still false, require at least five consecutive minutes of fresh authenticated `GET /api/admin/health` results: `services.mediaObjectStorageConfigured=true`, `services.privateVideoSourceStorageConfigured=true`, `services.privateMediaIsolation.ready=true`, `services.videoVerifier.configured=true`, `services.videoVerifier.ready=true`, pipeline exactly `private-derivative-v1`, no `lastErrorCode`, a nonempty `ffmpegVersion`, and `ageMs<=90000`. Require `GET /api/health?mediaPipeline=private-derivative-v1` to advertise `photos:true,videos:false`; the unversioned route must also advertise `videos:false`.
+4. Run a real verified-account **photo** upload/publish/reload canary against production. This proves that the newly installed R2 credential can use the existing public bucket and the new private-source configuration has not broken photo publishing. Any storage/authentication error blocks video enablement.
+5. In a second reviewed change, set the Blueprint value `PIT_VIDEO_PUBLISHING_ENABLED=true` and deploy. Do not use a dashboard-only override that the next Blueprint sync will silently reset.
+6. Immediately require `GET /api/health?mediaPipeline=private-derivative-v1` to return `{photos:true,videos:true,pipeline:"private-derivative-v1"}` while unversioned `GET /api/health` continues to return `videos:false`. Then run one small, known-valid MP4 through the real verified-account upload, finalize, post, reload, poster, playback-to-end, and delete/cleanup path.
+7. Observe authenticated health, web errors, verifier resource use, and object cleanup for 30 minutes. If the canary or observation fails, set the Blueprint flag back to `false`, deploy, and follow rollback immediately.
+8. Only after both the photo and video canaries pass on the new credential, the 30-minute observation has no storage authentication errors, and live health remains fresh may the previous R2 token be revoked in Cloudflare. After revocation, repeat health plus a small photo/video canary to prove there was no hidden dependency on the old token. Never expose either token in logs, screenshots, commits, or tickets.
+
+Do not call the feature released merely because the private service built or the flag deployment completed. The live negotiated response and end-to-end canary are the release evidence.
 
 ## Monitoring
 

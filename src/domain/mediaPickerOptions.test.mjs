@@ -27,6 +27,16 @@ test("post selection fails closed to photos until video publishing is advertised
   assert.deepEqual(postMediaPickerOptions({ platform: "ios", remaining: 3, iosH264Preset: 7, allowVideos: false }).mediaTypes, ["images"]);
 });
 
+test("picker honors an explicit photo outage without hiding available videos", () => {
+  assert.deepEqual(postMediaPickerOptions({
+    platform: "ios",
+    remaining: 3,
+    iosH264Preset: 7,
+    allowPhotos: false,
+    allowVideos: true,
+  }).mediaTypes, ["videos"]);
+});
+
 test("picker selection limits stay inside the supported one-to-six range", () => {
   assert.equal(postMediaPickerOptions({ platform: "ios", remaining: 0, iosH264Preset: 7 }).selectionLimit, 1);
   assert.equal(postMediaPickerOptions({ platform: "ios", remaining: 99, iosH264Preset: 7 }).selectionLimit, 6);

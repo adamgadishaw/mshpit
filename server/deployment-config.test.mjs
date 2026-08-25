@@ -118,11 +118,22 @@ test("Render never stores private credentials in the tracked blueprint", async (
     const key = /^\s*- key:\s*([A-Z0-9_]+)/m.exec(block)?.[1];
     if (!privateKeys.has(key)) continue;
     seen.set(key, (seen.get(key) || 0) + 1);
-    assert.match(block, /^\s*sync:\s*false\s*(?:#.*)?$/m, `${key} must be supplied by the host secret store`);
+    const isVerifierSecret = key === "PIT_VIDEO_VERIFIER_SECRET";
+    const isGeneratedVerifierSecret = isVerifierSecret && /^\s*generateValue:\s*true\s*(?:#.*)?$/m.test(block);
+    const isPrivateServiceReference = isVerifierSecret
+      && /^\s*fromService:\s*$/m.test(block)
+      && /^\s*type:\s*pserv\s*$/m.test(block)
+      && /^\s*name:\s*pit-video-verifier\s*$/m.test(block)
+      && /^\s*envVarKey:\s*PIT_VIDEO_VERIFIER_SECRET\s*$/m.test(block);
+    assert.ok(
+      /^\s*sync:\s*false\s*(?:#.*)?$/m.test(block) || isGeneratedVerifierSecret || isPrivateServiceReference,
+      `${key} must be supplied by or generated inside the host secret store`,
+    );
     assert.doesNotMatch(block, /^\s*value\s*:/m, `${key} must not have a tracked value`);
   }
   for (const key of privateKeys) assert.ok(seen.get(key), `${key} is missing from the deployment contract`);
   assert.equal(seen.get("ADMIN_EMAIL"), 2, "production and staging must each source the administrator identity from Render");
+  assert.equal(seen.get("PIT_VIDEO_VERIFIER_SECRET"), 3, "production references one generated verifier secret while staging remains host-managed");
 });
 
 test("the retired catalog cron cannot place a GitHub token in process arguments", async () => {

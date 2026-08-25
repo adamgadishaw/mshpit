@@ -1,4 +1,4 @@
-import { Component, Suspense, useState, useEffect, useMemo, useRef } from "react";
+import { Component, Suspense, useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, KeyboardAvoidingView, Platform, Alert, AppState } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import { colors, mono, radius, font, displayFont, shadow, space } from "../theme";
@@ -32,8 +32,11 @@ import { PENDING_COMPOSER_PICKER_KEY } from "../domain/composerRecovery.mjs";
 import { postMediaPickerOptions } from "../domain/mediaPickerOptions.mjs";
 import {
   DEFAULT_MEDIA_PUBLISHING_CAPABILITIES,
-  VIDEO_PUBLISHING_PREPARING_COPY,
+  MEDIA_PUBLISHING_UNAVAILABLE_COPY,
+  PHOTO_SELECTION_BLOCKED_COPY,
   VIDEO_SELECTION_BLOCKED_COPY,
+  mediaPublishingAttachmentLabel,
+  mediaPublishingAvailabilityCopy,
   mediaPublishingSelection,
 } from "../domain/mediaPublishingCapabilities.mjs";
 import {
@@ -384,6 +387,8 @@ export default function LogScreen({
   const [mediaError, setMediaError] = useState("");
   const [mediaPublishingCapabilities, setMediaPublishingCapabilities] = useState(DEFAULT_MEDIA_PUBLISHING_CAPABILITIES);
   const [mediaPublishingCapabilitiesReady, setMediaPublishingCapabilitiesReady] = useState(false);
+  const [mediaPublishingCapabilitiesRefreshing, setMediaPublishingCapabilitiesRefreshing] = useState(false);
+  const mediaPublishingCapabilitiesRequestRef = useRef(null);
   const uploadControllerRef = useRef(null);
   const remoteDraftAssetIdsRef = useRef(new Map());
   const submissionIdRef = useRef(editing?.id || submissionId());
@@ -404,21 +409,61 @@ export default function LogScreen({
     }
     return result;
   }
-  useEffect(() => {
+  const refreshMediaPublishingCapabilities = useCallback(() => {
+    if (mediaPublishingCapabilitiesRequestRef.current?.promise) {
+      return mediaPublishingCapabilitiesRequestRef.current.promise;
+    }
     const controller = new AbortController();
-    void (async () => {
+    setMediaPublishingCapabilitiesRefreshing(true);
+    const promise = (async () => {
       try {
         const capabilities = await loadMediaPublishingCapabilities({ apiCall: api, signal: controller.signal });
-        if (!controller.signal.aborted) setMediaPublishingCapabilities(capabilities);
+        if (controller.signal.aborted) return { ok: false };
+        setMediaPublishingCapabilities(capabilities);
+        return { ok: true, capabilities };
       } catch {
-        // A failed capability read keeps the default: photos work, videos stay
-        // fail-closed. The composer itself must remain usable while offline.
+        // Preserve the last authoritative result. On a first-load network
+        // failure this remains the legacy-safe default: photos on, videos off.
+        return { ok: false };
       } finally {
-        if (!controller.signal.aborted) setMediaPublishingCapabilitiesReady(true);
+        if (mediaPublishingCapabilitiesRequestRef.current?.promise === promise) {
+          mediaPublishingCapabilitiesRequestRef.current = null;
+          if (!controller.signal.aborted) {
+            setMediaPublishingCapabilitiesReady(true);
+            setMediaPublishingCapabilitiesRefreshing(false);
+          }
+        }
       }
     })();
-    return () => controller.abort();
+    mediaPublishingCapabilitiesRequestRef.current = { controller, promise };
+    return promise;
   }, []);
+  useEffect(() => {
+    void refreshMediaPublishingCapabilities();
+    return () => {
+      mediaPublishingCapabilitiesRequestRef.current?.controller.abort();
+      mediaPublishingCapabilitiesRequestRef.current = null;
+    };
+  }, [refreshMediaPublishingCapabilities]);
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", (state) => {
+      if (state === "active") void refreshMediaPublishingCapabilities();
+    });
+    return () => subscription.remove();
+  }, [refreshMediaPublishingCapabilities]);
+  const mediaAvailabilityCopy = mediaPublishingAvailabilityCopy(mediaPublishingCapabilities);
+  const mediaAttachmentLabel = mediaPublishingAttachmentLabel(mediaPublishingCapabilities);
+  const mediaAddLabel = mediaPublishingCapabilities.photos && mediaPublishingCapabilities.videos
+    ? "Add media"
+    : mediaPublishingCapabilities.photos
+      ? "Add photos"
+      : mediaPublishingCapabilities.videos
+        ? "Add videos"
+        : "Check media";
+  const toggleMediaPanel = () => {
+    if (!showPhotos) void refreshMediaPublishingCapabilities();
+    setShowPhotos((visible) => !visible);
+  };
   const [posting, setPosting] = useState(false);
   // Show date, defaults to today so logging stays one-tap, but you can set the
   // real date of a past show. Years run from this year back to 2000, descending.
@@ -436,15 +481,16 @@ export default function LogScreen({
   }));
   const [showDate, setShowDate] = useState(false);
 
-  async function stageSelectedAssets(assets) {
+  async function stageSelectedAssets(assets, capabilities = mediaPublishingCapabilities) {
     if (uploadingPhotos || posting || !Array.isArray(assets) || !assets.length) return;
     const remaining = Math.max(0, 8 - photos.length - studioAssets.length);
     if (!remaining) return;
     const candidateAssets = mediaProjectFromPicker(assets.slice(0, remaining), `${submissionIdRef.current}:${Date.now().toString(36)}`).assets;
-    const selection = mediaPublishingSelection(candidateAssets, mediaPublishingCapabilities);
+    const selection = mediaPublishingSelection(candidateAssets, capabilities);
     const preflight = mediaPublishingPreflightSelection(selection.accepted, { platform: Platform.OS });
     const selected = preflight.accepted;
     const notices = [];
+    if (selection.blockedPhotos) notices.push(PHOTO_SELECTION_BLOCKED_COPY);
     if (selection.blockedVideos) notices.push(VIDEO_SELECTION_BLOCKED_COPY);
     if (preflight.rejected.length) notices.push(mediaPublishingPreflightMessage(preflight.rejected));
     setMediaError(notices.join(" "));
@@ -469,10 +515,18 @@ export default function LogScreen({
   async function applyStudioMedia(result) {
     const selected = Array.isArray(result?.assets) ? result.assets.slice(0, 8) : [];
     if (!selected.length || uploadingPhotos || posting) return;
-    const selection = mediaPublishingSelection(selected, mediaPublishingCapabilities);
-    if (selection.blockedVideos) {
-      setMediaError(VIDEO_SELECTION_BLOCKED_COPY);
-      throw new Error(VIDEO_SELECTION_BLOCKED_COPY);
+    const refreshedCapabilities = await refreshMediaPublishingCapabilities();
+    const activeCapabilities = refreshedCapabilities.ok
+      ? refreshedCapabilities.capabilities
+      : mediaPublishingCapabilities;
+    const selection = mediaPublishingSelection(selected, activeCapabilities);
+    const blockedCopy = [
+      selection.blockedPhotos ? PHOTO_SELECTION_BLOCKED_COPY : "",
+      selection.blockedVideos ? VIDEO_SELECTION_BLOCKED_COPY : "",
+    ].filter(Boolean).join(" ");
+    if (blockedCopy) {
+      setMediaError(blockedCopy);
+      throw new Error(blockedCopy);
     }
     const controller = new AbortController();
     uploadControllerRef.current?.abort();
@@ -576,6 +630,21 @@ export default function LogScreen({
 
   const addPhoto = async () => {
     if (uploadingPhotos || posting) return;
+    // Mobile web requires the picker to open inside the original user gesture.
+    // Refresh in parallel there, then await the same request before staging the
+    // result. Native can safely wait for the newest capability before opening.
+    let pickerCapabilities = mediaPublishingCapabilities;
+    if (Platform.OS === "web") {
+      void refreshMediaPublishingCapabilities();
+    } else {
+      const refreshedCapabilities = await refreshMediaPublishingCapabilities();
+      if (refreshedCapabilities.ok) pickerCapabilities = refreshedCapabilities.capabilities;
+    }
+    if (!pickerCapabilities.photos && !pickerCapabilities.videos) {
+      setShowPhotos(true);
+      setMediaError(MEDIA_PUBLISHING_UNAVAILABLE_COPY);
+      return;
+    }
     if (mediaProjectRequiresLegacyUpload(mediaProject, photos)) {
       setMediaError("Remove all existing media from this older post before adding a new photo or clip. This prevents an unsafe mix of legacy URLs and verified PIT media.");
       return;
@@ -603,7 +672,8 @@ export default function LogScreen({
         platform: Platform.OS,
         remaining,
         iosH264Preset: ImagePicker.VideoExportPreset.H264_1920x1080,
-        allowVideos: mediaPublishingCapabilities.videos,
+        allowPhotos: pickerCapabilities.photos,
+        allowVideos: pickerCapabilities.videos,
       }));
     } catch (error) {
       if (pickerRequestId) remove(PENDING_COMPOSER_PICKER_KEY);
@@ -616,7 +686,8 @@ export default function LogScreen({
       studioReturnFocusRef.current = null;
       return;
     }
-    await stageSelectedAssets(res.assets);
+    const latestCapabilities = await refreshMediaPublishingCapabilities();
+    await stageSelectedAssets(res.assets, latestCapabilities.ok ? latestCapabilities.capabilities : pickerCapabilities);
   };
 
   const cancelUpload = async () => {
@@ -1117,7 +1188,10 @@ export default function LogScreen({
       {studioOpen ? (
         <StudioErrorBoundary
           resetKey={studioLoadAttempt}
-          onRetry={() => setStudioLoadAttempt((attempt) => attempt + 1)}
+          onRetry={() => {
+            void refreshMediaPublishingCapabilities();
+            setStudioLoadAttempt((attempt) => attempt + 1);
+          }}
           onExit={() => setStudioOpen(false)}
         >
           <Suspense fallback={(
@@ -1410,7 +1484,7 @@ export default function LogScreen({
 
         <Text style={styles.attachLabel}>ADD TO YOUR POST</Text>
         <View style={styles.attachBar}>
-          <AttachChip icon="camera" label={mediaPublishingCapabilities.videos ? "Photo / video" : "Photos"} active={showPhotos || photos.length > 0 || studioAssets.length > 0} count={photos.length + studioAssets.length} onPress={() => setShowPhotos((v) => !v)} disabled={submitBusy} />
+          <AttachChip icon="camera" label={mediaAttachmentLabel} active={showPhotos || photos.length > 0 || studioAssets.length > 0} count={photos.length + studioAssets.length} onPress={toggleMediaPanel} disabled={submitBusy} />
           <AttachChip icon="play" label="YouTube" active={showSong || !!song?.videoId} onPress={() => setShowSong((v) => !v)} disabled={submitBusy} />
           <AttachChip icon="you" label="Friends" active={showPeople || taggedPeople.length > 0} count={taggedPeople.length} onPress={() => setShowPeople((v) => !v)} disabled={submitBusy} />
           {isStatus && <AttachChip icon="feed" label="Playlist" active={showPlaylist || !!playlist} count={playlist ? (playlist.tracks?.length || 0) : 0} onPress={togglePlaylistPanel} disabled={submitBusy} />}
@@ -1481,10 +1555,22 @@ export default function LogScreen({
             )}
           </View>
         )}
-        {!mediaPublishingCapabilities.videos && (
+        {!!mediaAvailabilityCopy && (
           <View style={styles.mediaCapabilityNotice} accessibilityRole="note">
             <Icon name="camera" size={16} color={colors.amber} />
-            <Text style={styles.mediaCapabilityNoticeText}>{VIDEO_PUBLISHING_PREPARING_COPY}</Text>
+            <View style={styles.mediaCapabilityNoticeBody}>
+              <Text style={styles.mediaCapabilityNoticeText}>{mediaAvailabilityCopy}</Text>
+              <Pressable
+                style={styles.mediaCapabilityRetry}
+                onPress={() => void refreshMediaPublishingCapabilities()}
+                disabled={mediaPublishingCapabilitiesRefreshing}
+                accessibilityRole="button"
+                accessibilityLabel="Check media upload availability again"
+                accessibilityState={{ busy: mediaPublishingCapabilitiesRefreshing, disabled: mediaPublishingCapabilitiesRefreshing }}
+              >
+                <Text style={styles.mediaCapabilityRetryText}>{mediaPublishingCapabilitiesRefreshing ? "Checking..." : "Check again"}</Text>
+              </Pressable>
+            </View>
           </View>
         )}
 
@@ -1611,9 +1697,9 @@ export default function LogScreen({
             </View>
           );})}
           {photos.length + studioAssets.length < 8 && (
-            <Pressable style={styles.addThumb} onPress={addPhoto} disabled={submitBusy} accessibilityRole="button" accessibilityLabel={mediaPublishingCapabilities.videos ? "Add photos or videos" : "Add photos"}>
+            <Pressable style={styles.addThumb} onPress={addPhoto} disabled={submitBusy} accessibilityRole="button" accessibilityLabel={mediaAddLabel}>
               <Icon name="camera" size={20} color={colors.amber} />
-              <Text style={styles.addThumbTxt}>{uploadProgress ? `${uploadProgress.current}/${uploadProgress.total}` : mediaPublishingCapabilities.videos ? "Add media" : "Add photos"}</Text>
+              <Text style={styles.addThumbTxt}>{uploadProgress ? `${uploadProgress.current}/${uploadProgress.total}` : mediaAddLabel}</Text>
             </Pressable>
           )}
         </View>
@@ -1733,7 +1819,10 @@ const styles = StyleSheet.create({
   attachChipTxtOn: { color: colors.text },
   attachChipCount: { color: colors.amber, fontFamily: mono, fontSize: 11, fontWeight: "800", marginLeft: 1 },
   mediaCapabilityNotice: { flexDirection: "row", alignItems: "flex-start", gap: 9, marginTop: 10, padding: 11, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface },
-  mediaCapabilityNoticeText: { flex: 1, color: colors.textDim, fontSize: 12, lineHeight: 18 },
+  mediaCapabilityNoticeBody: { flex: 1, alignItems: "flex-start" },
+  mediaCapabilityNoticeText: { color: colors.textDim, fontSize: 12, lineHeight: 18 },
+  mediaCapabilityRetry: { minHeight: 44, justifyContent: "center", marginTop: 2, paddingRight: 12 },
+  mediaCapabilityRetryText: { color: colors.amber, fontSize: 12, fontWeight: "900" },
   attachPanel: { marginTop: 12, backgroundColor: colors.bgElev, borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: colors.lineSoft, padding: 12 },
   attachHint: { color: colors.textFaint, fontSize: 11.5, lineHeight: 16, marginBottom: 10 },
   songInputRow: { flexDirection: "row", alignItems: "stretch", gap: 8 },

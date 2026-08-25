@@ -1,0 +1,66 @@
+ARG NODE_IMAGE=node:24.19.0-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03
+
+FROM ${NODE_IMAGE} AS ffmpeg-build
+ARG FFMPEG_VERSION=9.0.1
+ARG FFMPEG_SHA256=cf38e0e28c7e5605942c4a77755349b0145804a397af37eb1fb4c77cb237f635
+ARG X264_VERSION=2:0.164.3095+gitbaee400-3
+
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends \
+      build-essential ca-certificates curl libx264-dev="${X264_VERSION}" nasm pkg-config xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+RUN set -eux; \
+    curl --fail --location --proto '=https' --tlsv1.2 \
+      "https://ffmpeg.org/releases/ffmpeg-${FFMPEG_VERSION}.tar.xz" \
+      --output /tmp/ffmpeg.tar.xz; \
+    echo "${FFMPEG_SHA256}  /tmp/ffmpeg.tar.xz" | sha256sum --check --strict; \
+    tar --extract --file /tmp/ffmpeg.tar.xz --directory /tmp; \
+    cd "/tmp/ffmpeg-${FFMPEG_VERSION}"; \
+    ./configure \
+      --prefix=/opt/ffmpeg \
+      --disable-autodetect \
+      --disable-debug \
+      --disable-doc \
+      --disable-ffplay \
+      --disable-network \
+      --enable-gpl \
+      --enable-libx264; \
+    make -j"$(nproc)"; \
+    make install-strip; \
+    rm -rf /tmp/ffmpeg.tar.xz "/tmp/ffmpeg-${FFMPEG_VERSION}"
+
+# A decoder image is not ready merely because it compiled. Exercise the exact
+# encode/probe/full-decode primitives used by the signed health contract.
+RUN set -eux; \
+    /opt/ffmpeg/bin/ffmpeg -hide_banner -loglevel error \
+      -f lavfi -i 'testsrc2=size=320x240:rate=30' \
+      -f lavfi -i 'sine=frequency=1000:sample_rate=48000' \
+      -t 1 -c:v libx264 -pix_fmt yuv420p -c:a aac \
+      -movflags +faststart -y /tmp/verifier-smoke.mp4; \
+    /opt/ffmpeg/bin/ffprobe -v error -show_streams -of json \
+      /tmp/verifier-smoke.mp4 > /tmp/verifier-smoke.json; \
+    /opt/ffmpeg/bin/ffmpeg -v error -i /tmp/verifier-smoke.mp4 -f null -; \
+    rm -f /tmp/verifier-smoke.mp4 /tmp/verifier-smoke.json
+
+FROM ${NODE_IMAGE}
+ARG X264_VERSION=2:0.164.3095+gitbaee400-3
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends ca-certificates libx264-164="${X264_VERSION}" \
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -rf /usr/local/lib/node_modules/npm \
+    && rm -f /usr/local/bin/npm /usr/local/bin/npx
+
+WORKDIR /app
+COPY --from=ffmpeg-build /opt/ffmpeg /opt/ffmpeg
+COPY --chown=node:node package.json ./package.json
+COPY --chown=node:node server/videoVerifierProtocol.js server/videoVerifierService.js ./server/
+
+ENV NODE_ENV=production \
+    PIT_FFMPEG_PATH=/opt/ffmpeg/bin/ffmpeg \
+    PIT_FFPROBE_PATH=/opt/ffmpeg/bin/ffprobe \
+    PORT=10001
+
+USER node
+EXPOSE 10001
+STOPSIGNAL SIGTERM
+CMD ["node", "server/videoVerifierService.js"]

@@ -7,7 +7,7 @@ const studioSource = await readFile(new URL("../components/media-editor/MediaEdi
 
 test("composer filters picker and recovered selections before Studio staging", () => {
   const stage = source.slice(source.indexOf("async function stageSelectedAssets"), source.indexOf("async function applyStudioMedia"));
-  const capability = stage.indexOf("mediaPublishingSelection(candidateAssets, mediaPublishingCapabilities)");
+  const capability = stage.indexOf("mediaPublishingSelection(candidateAssets, capabilities)");
   const preflight = stage.indexOf("mediaPublishingPreflightSelection(selection.accepted");
   const persist = stage.indexOf("stageMediaDraftAssets(selected");
   assert.ok(capability >= 0);
@@ -19,7 +19,9 @@ test("composer filters picker and recovered selections before Studio staging", (
 
 test("apply rechecks the live capability and connects byte progress plus cancellation", () => {
   const apply = source.slice(source.indexOf("async function applyStudioMedia"), source.indexOf("const addPhoto"));
-  assert.match(apply, /mediaPublishingSelection\(selected, mediaPublishingCapabilities\)/);
+  assert.match(apply, /await refreshMediaPublishingCapabilities\(\)/);
+  assert.match(apply, /mediaPublishingSelection\(selected, activeCapabilities\)/);
+  assert.match(apply, /selection\.blockedPhotos/);
   assert.match(apply, /const controller = new AbortController\(\)/);
   assert.match(apply, /onProgress: \(progress\) =>/);
   assert.match(apply, /fraction: progress\.fraction/);
@@ -36,12 +38,18 @@ test("apply rechecks the live capability and connects byte progress plus cancell
   assert.match(studioSource, /onPress=\{saving \? cancelProcessing : applyEdits\}/);
 });
 
-test("picker stays photo-only until the exact server capability reaches LogScreen", () => {
+test("picker refreshes and honors both media capabilities from the exact server contract", () => {
   assert.match(source, /loadMediaPublishingCapabilities\(\{ apiCall: api, signal: controller\.signal \}\)/);
   assert.doesNotMatch(source, /api\(MEDIA_PUBLISHING_HEALTH_PATH/);
-  assert.match(source, /allowVideos: mediaPublishingCapabilities\.videos/);
-  assert.match(source, /label=\{mediaPublishingCapabilities\.videos \? "Photo \/ video" : "Photos"\}/);
-  assert.match(source, /VIDEO_PUBLISHING_PREPARING_COPY/);
+  assert.match(source, /allowPhotos: pickerCapabilities\.photos/);
+  assert.match(source, /allowVideos: pickerCapabilities\.videos/);
+  assert.match(source, /label=\{mediaAttachmentLabel\}/);
+  assert.match(source, /AppState\.addEventListener\("change"/);
+  assert.match(source, /accessibilityLabel="Check media upload availability again"/);
+  assert.doesNotMatch(source, /Photo Studio is available now/);
+  const picker = source.slice(source.indexOf("const addPhoto"), source.indexOf("const cancelUpload"));
+  assert.match(picker, /if \(Platform\.OS === "web"\) \{\s*void refreshMediaPublishingCapabilities\(\)/);
+  assert.match(picker, /const latestCapabilities = await refreshMediaPublishingCapabilities\(\)/);
 });
 
 test("verified clips never reopen into the unsupported client cover replacement path", () => {

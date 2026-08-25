@@ -25,6 +25,66 @@ const photoBody = Object.freeze({
   name: "avatar.jpg",
 });
 
+test("missing private storage preserves the checked deployment diagnostic", async () => {
+  const env = { ...BASE_ENV, MEDIA_SOURCE_BUCKET: "" };
+  let fetches = 0;
+  const status = await verifyPrivateMediaBucketIsolation({
+    env,
+    clock: () => 54_321,
+    fetchImpl: async () => {
+      fetches += 1;
+      throw new Error("an unconfigured bucket must not be probed");
+    },
+  });
+  const expected = {
+    configured: false,
+    ready: false,
+    checkedAt: 54_321,
+    listStatus: null,
+    objectStatus: null,
+    errorCode: "storage_unconfigured",
+  };
+  assert.equal(fetches, 0);
+  assert.deepEqual(status, expected);
+  assert.deepEqual(privateMediaIsolationStatus(env), expected);
+});
+
+test("Cloudflare R2's exact unsigned-authorization response proves denial without trusting generic 400s", async () => {
+  const r2Env = {
+    ...BASE_ENV,
+    MEDIA_ENDPOINT: "https://0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com",
+    MEDIA_SOURCE_BUCKET: "pit-private-r2",
+  };
+  const r2Denial = '<?xml version="1.0" encoding="UTF-8"?><Error><Code>InvalidArgument</Code><Message>Authorization</Message></Error>';
+  const denied = await verifyPrivateMediaBucketIsolation({
+    env: r2Env,
+    clock: () => 98_765,
+    fetchImpl: async () => ({ status: 400, text: async () => r2Denial }),
+  });
+  assert.deepEqual(denied, {
+    configured: true,
+    ready: true,
+    checkedAt: 98_765,
+    listStatus: 400,
+    objectStatus: 400,
+    errorCode: null,
+  });
+
+  const generic400 = await verifyPrivateMediaBucketIsolation({
+    env: { ...r2Env, MEDIA_SOURCE_BUCKET: "pit-private-r2-generic" },
+    fetchImpl: async () => ({ status: 400, text: async () => "Bad Request" }),
+  });
+  assert.equal(generic400.ready, false);
+  assert.equal(generic400.errorCode, "anonymous_access_not_denied");
+
+  const lookalikeHost = await verifyPrivateMediaBucketIsolation({
+    env: { ...r2Env, MEDIA_ENDPOINT: "https://objects.example.com", MEDIA_SOURCE_BUCKET: "pit-private-lookalike" },
+    fetchImpl: async () => ({ status: 400, text: async () => r2Denial }),
+  });
+  assert.equal(lookalikeHost.ready, false);
+  assert.equal(lookalikeHost.errorCode, "anonymous_access_not_denied");
+});
+
 test("production private capabilities require anonymous list and object GET denial", async () => {
   assert.throws(
     () => createMediaPresign({

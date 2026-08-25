@@ -110,7 +110,7 @@ export function privateMediaIsolationStatus(env = process.env) {
   let config;
   try { config = getMediaConfig(env); } catch { config = null; }
   const identity = privateIsolationIdentity(config);
-  const current = identity && identity === privateIsolationState.identity
+  const current = identity === privateIsolationState.identity
     ? privateIsolationState
     : { configured: !!identity, ready: false, checkedAt: null, listStatus: null, objectStatus: null, errorCode: "not_checked" };
   return Object.freeze({
@@ -134,6 +134,54 @@ export function requirePrivateMediaIsolationReady(env = process.env) {
 function privacyProbeStatus(value) {
   const status = Number(value);
   return Number.isInteger(status) && status >= 100 && status <= 599 ? status : null;
+}
+
+function cloudflareR2ApiEndpoint(endpoint) {
+  const hostname = String(endpoint?.hostname || "").trim().toLowerCase();
+  return /^[a-f0-9]{32}\.(?:(?:eu|fedramp)\.)?r2\.cloudflarestorage\.com$/.test(hostname);
+}
+
+async function boundedPrivacyProbeBody(response, maxBytes = 512) {
+  const declaredLength = Number(response?.headers?.get?.("content-length"));
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) return null;
+  const reader = response?.body?.getReader?.();
+  if (!reader) {
+    if (typeof response?.text !== "function") return null;
+    const text = String(await response.text());
+    return Buffer.byteLength(text, "utf8") <= maxBytes ? text : null;
+  }
+  const chunks = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value?.byteLength || 0;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => { /* architecture: allow-empty-catch -- oversized denial-body cleanup is best-effort */ });
+        return null;
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock?.();
+  }
+  return new TextDecoder().decode(Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))));
+}
+
+async function privacyProbeDenied(response, endpoint) {
+  const status = privacyProbeStatus(response?.status);
+  if (status === 401 || status === 403) return true;
+  // Cloudflare's authenticated R2 S3 endpoint currently rejects an unsigned
+  // request with HTTP 400 rather than 401/403. Accept only that provider's
+  // exact, tiny authorization-denial document; a generic 400/404 remains
+  // insufficient proof and media publishing stays closed.
+  if (status !== 400 || !cloudflareR2ApiEndpoint(endpoint)) return false;
+  const body = await boundedPrivacyProbeBody(response);
+  if (!body) return false;
+  const compact = body.trim().replace(/>\s+</g, "><");
+  return compact === '<?xml version="1.0" encoding="UTF-8"?><Error><Code>InvalidArgument</Code><Message>Authorization</Message></Error>'
+    || compact === "<Error><Code>InvalidArgument</Code><Message>Authorization</Message></Error>";
 }
 
 export async function verifyPrivateMediaBucketIsolation({
@@ -172,7 +220,11 @@ export async function verifyPrivateMediaBucketIsolation({
     ]);
     listStatus = privacyProbeStatus(list?.status);
     objectStatus = privacyProbeStatus(object?.status);
-    if (![401, 403].includes(listStatus) || ![401, 403].includes(objectStatus)) errorCode = "anonymous_access_not_denied";
+    const [listDenied, objectDenied] = await Promise.all([
+      privacyProbeDenied(list, config.endpoint),
+      privacyProbeDenied(object, config.endpoint),
+    ]);
+    if (!listDenied || !objectDenied) errorCode = "anonymous_access_not_denied";
   } catch {
     errorCode = controller.signal.aborted ? "probe_timeout" : "probe_failed";
   } finally {

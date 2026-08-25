@@ -113,9 +113,15 @@ services:
       - key: PIT_VIDEO_PUBLISHING_ENABLED
         value: "false"
       - key: PIT_VIDEO_VERIFIER_HOSTPORT
-        sync: false
+        fromService:
+          type: pserv
+          name: pit-video-verifier
+          property: hostport
       - key: PIT_VIDEO_VERIFIER_SECRET
-        sync: false
+        fromService:
+          type: pserv
+          name: pit-video-verifier
+          envVarKey: PIT_VIDEO_VERIFIER_SECRET
       - key: MEDIA_CLEANUP_ENABLED
         value: "true"
       - key: MEDIA_ORPHAN_TTL_MS
@@ -147,6 +153,52 @@ services:
         value: "12"                    # hours between refreshes
       - key: TOURDATE_CITY_LIMIT
         value: "50"                    # most-used member cities refreshed per pass
+
+  # Originals never enter the feed directly. This private service performs the
+  # authoritative full decode, strips container metadata, writes a sanitized
+  # MP4 derivative plus JPEG cover, and has no storage/database credentials.
+  # Its only storage authority is the short-lived, object-bound URLs signed by
+  # the web service. A pinned Node image plus a startup decoder probe makes an
+  # FFmpeg/runtime change fail closed instead of silently changing acceptance.
+  - type: pserv
+    name: pit-video-verifier
+    runtime: docker
+    plan: starter
+    region: oregon
+    branch: master
+    dockerfilePath: ./Dockerfile.video-verifier
+    dockerContext: .
+    autoDeploy: true
+    maxShutdownDelaySeconds: 60
+    envVars:
+      - key: PORT
+        value: "10001"
+      - key: PIT_VIDEO_VERIFIER_SECRET
+        generateValue: true
+      - key: PIT_VIDEO_SOURCE_ORIGIN
+        fromService:
+          type: web
+          name: mshpit
+          envVarKey: MEDIA_ENDPOINT
+      - key: PIT_VIDEO_SOURCE_BUCKET
+        fromService:
+          type: web
+          name: mshpit
+          envVarKey: MEDIA_SOURCE_BUCKET
+      - key: PIT_VIDEO_OUTPUT_ORIGIN
+        fromService:
+          type: web
+          name: mshpit
+          envVarKey: MEDIA_ENDPOINT
+      - key: PIT_VIDEO_OUTPUT_BUCKET
+        fromService:
+          type: web
+          name: mshpit
+          envVarKey: MEDIA_BUCKET
+      - key: PIT_FFMPEG_PATH
+        value: /opt/ffmpeg/bin/ffmpeg
+      - key: PIT_FFPROBE_PATH
+        value: /opt/ffmpeg/bin/ffprobe
 
   # ---------------------------------------------------------------------------
   # STAGING. Deploys from the `staging` branch so `master` stops being both the

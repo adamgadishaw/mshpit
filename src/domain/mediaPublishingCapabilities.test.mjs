@@ -4,9 +4,12 @@ import test from "node:test";
 
 import {
   DEFAULT_MEDIA_PUBLISHING_CAPABILITIES,
+  MEDIA_PUBLISHING_UNAVAILABLE_COPY,
   MEDIA_PUBLISHING_HEALTH_PATH,
   VIDEO_PUBLISHING_PREPARING_COPY,
   VIDEO_PUBLISHING_PIPELINE_VERSION,
+  mediaPublishingAttachmentLabel,
+  mediaPublishingAvailabilityCopy,
   mediaPublishingCapabilitiesForRuntime,
   mediaPublishingCapabilitiesFromHealth,
   mediaPublishingSelection,
@@ -27,6 +30,7 @@ test("video publishing fails closed unless the deployed runtime explicitly enabl
 
 test("the client trusts only the explicit boolean health capability", () => {
   assert.deepEqual(mediaPublishingCapabilitiesFromHealth(null), DEFAULT_MEDIA_PUBLISHING_CAPABILITIES);
+  assert.deepEqual(mediaPublishingCapabilitiesFromHealth({ capabilities: { mediaPublishing: { photos: false, videos: false } } }), { photos: false, videos: false });
   assert.equal(mediaPublishingCapabilitiesFromHealth({ capabilities: { mediaPublishing: { videos: "true" } } }).videos, false);
   assert.equal(mediaPublishingCapabilitiesFromHealth({ capabilities: { mediaPublishing: { photos: true, videos: true } } }).videos, false,
     "the rollout flag alone cannot expose a pipeline the server has not declared ready");
@@ -41,11 +45,31 @@ test("the client trusts only the explicit boolean health capability", () => {
 test("the selection gate preserves photos and rejects only new videos while disabled", () => {
   const image = { id: "image", kind: "image" };
   const video = { id: "video", kind: "video" };
-  assert.deepEqual(mediaPublishingSelection([image, video]), { accepted: [image], blockedVideos: 1 });
+  assert.deepEqual(mediaPublishingSelection([image, video]), { accepted: [image], blockedPhotos: 0, blockedVideos: 1 });
   assert.deepEqual(mediaPublishingSelection([image, video], { photos: true, videos: true }), {
     accepted: [image, video],
+    blockedPhotos: 0,
     blockedVideos: 0,
   });
+  assert.deepEqual(mediaPublishingSelection([image, video], { photos: false, videos: true }), {
+    accepted: [video],
+    blockedPhotos: 1,
+    blockedVideos: 0,
+  });
+  assert.deepEqual(mediaPublishingSelection([image, video], { photos: false, videos: false }), {
+    accepted: [],
+    blockedPhotos: 1,
+    blockedVideos: 1,
+  });
+});
+
+test("composer availability copy and labels match each negotiated media type", () => {
+  assert.equal(mediaPublishingAvailabilityCopy({ photos: true, videos: true }), "");
+  assert.equal(mediaPublishingAvailabilityCopy({ photos: true, videos: false }), VIDEO_PUBLISHING_PREPARING_COPY);
+  assert.equal(mediaPublishingAvailabilityCopy({ photos: false, videos: false }), MEDIA_PUBLISHING_UNAVAILABLE_COPY);
+  assert.equal(mediaPublishingAttachmentLabel({ photos: false, videos: false }), "Media");
+  assert.equal(mediaPublishingAttachmentLabel({ photos: false, videos: true }), "Videos");
+  assert.doesNotMatch(VIDEO_PUBLISHING_PREPARING_COPY, /Photo Studio is available now/);
 });
 
 test("source-ticket policy blocks video on absent and misspelled runtime flags without affecting images", () => {
@@ -60,12 +84,16 @@ test("source-ticket policy blocks video on absent and misspelled runtime flags w
 
 test("the composer exposes the capability, honest transition copy, and both selection/upload gates", async () => {
   const source = await readFile(new URL("../screens/LogScreen.jsx", import.meta.url), "utf8");
-  assert.match(VIDEO_PUBLISHING_PREPARING_COPY, /Photo Studio is available now/);
+  assert.match(VIDEO_PUBLISHING_PREPARING_COPY, /Photo uploads are available/);
   assert.match(VIDEO_PUBLISHING_PREPARING_COPY, /Existing clips remain viewable/);
   assert.match(source, /loadMediaPublishingCapabilities\(\{ apiCall: api, signal: controller\.signal \}\)/);
   assert.doesNotMatch(source, /api\(MEDIA_PUBLISHING_HEALTH_PATH/);
-  assert.match(source, /allowVideos: mediaPublishingCapabilities\.videos/);
-  assert.match(source, /mediaPublishingSelection\(candidateAssets, mediaPublishingCapabilities\)/);
-  assert.match(source, /mediaPublishingSelection\(selected, mediaPublishingCapabilities\)/);
-  assert.match(source, /VIDEO_PUBLISHING_PREPARING_COPY/);
+  assert.match(source, /AppState\.addEventListener\("change"/);
+  assert.match(source, /if \(state === "active"\) void refreshMediaPublishingCapabilities\(\)/);
+  assert.match(source, /allowPhotos: pickerCapabilities\.photos/);
+  assert.match(source, /allowVideos: pickerCapabilities\.videos/);
+  assert.match(source, /mediaPublishingSelection\(candidateAssets, capabilities\)/);
+  assert.match(source, /mediaPublishingSelection\(selected, activeCapabilities\)/);
+  assert.match(source, /mediaPublishingAvailabilityCopy\(mediaPublishingCapabilities\)/);
+  assert.match(source, /accessibilityLabel="Check media upload availability again"/);
 });

@@ -1,9 +1,14 @@
-export function postMediaPickerOptions({ platform, remaining, iosH264Preset, allowVideos = false }) {
+export function postMediaPickerOptions({ platform, remaining, iosH264Preset, allowPhotos = true, allowVideos = false }) {
   const selectionLimit = Math.max(1, Math.min(6, Math.floor(Number(remaining) || 1)));
+  const mediaTypes = [
+    ...(allowPhotos === true ? ["images"] : []),
+    ...(allowVideos === true ? ["videos"] : []),
+  ];
   return {
-    // Video is an explicit server capability. Defaulting to images keeps stale,
-    // offline, and not-yet-hydrated clients on the honest production boundary.
-    mediaTypes: allowVideos === true ? ["images", "videos"] : ["images"],
+    // Each type is an explicit server capability. The composer never calls the
+    // picker when both are disabled; the image fallback is only a defensive
+    // valid SDK option for direct helper callers.
+    mediaTypes: mediaTypes.length ? mediaTypes : ["images"],
     quality: 0.6,
     videoQuality: 1,
     allowsMultipleSelection: true,
