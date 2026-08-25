@@ -158,6 +158,8 @@ test("URL-only post photos become stable private-source assets with a sanitized 
   });
   assert.equal(processorOptions.allowHeicFallback, true,
     "only the bounded historical recovery explicitly enables the HEIC fallback");
+  assert.equal(processorOptions.allowLegacyJpegTrailer, true,
+    "only the bounded historical recovery may canonicalize a valid legacy JPEG prefix");
   assert.equal(processorOptions.timeoutMs, 30_000,
     "the one-off recovery gets enough isolated-worker time for production phone photos");
 
@@ -370,6 +372,8 @@ test("profile candidates dedupe shared exact owner references, skip external URL
   });
   assert.equal(processorOptions.allowHeicFallback, true,
     "profile recovery passes the explicit HEIC capability through private staging");
+  assert.equal(processorOptions.allowLegacyJpegTrailer, true,
+    "profile recovery passes the explicit legacy JPEG capability through private staging");
   assert.equal(processorOptions.timeoutMs, 30_000,
     "profile HEIC recovery gets the same bounded production timeout");
   assert.equal(recovered.references, 2);

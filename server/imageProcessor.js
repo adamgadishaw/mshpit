@@ -168,6 +168,10 @@ function runIsolatedImageJob(operation, bytes, options = {}) {
         // this as an explicit, strict boolean prevents ordinary upload routes
         // from silently acquiring a second decoder surface.
         allowHeicFallback: options.allowHeicFallback === true,
+        // Some historical phone JPEGs carry a second-image/gain-map trailer.
+        // This exact boolean is enabled only by the bounded recovery worker;
+        // normal upload validation remains byte-for-byte strict.
+        allowLegacyJpegTrailer: options.allowLegacyJpegTrailer === true,
       }, (error) => {
         if (error) fail(new ImageProcessorError("worker_unavailable", "Image verification input could not be delivered.", error));
       });
@@ -190,6 +194,7 @@ export async function sanitizeDecodedImage(bytes, {
   timeoutMs = DEFAULT_TIMEOUT_MS,
   maxOutputBytes = MAX_IMAGE_OUTPUT_BYTES,
   allowHeicFallback = false,
+  allowLegacyJpegTrailer = false,
 } = {}) {
   return runIsolatedImageJob("sanitize", bytes, {
     expectedType,
@@ -197,6 +202,7 @@ export async function sanitizeDecodedImage(bytes, {
     timeoutMs,
     maxOutputBytes,
     allowHeicFallback: allowHeicFallback === true,
+    allowLegacyJpegTrailer: allowLegacyJpegTrailer === true,
   });
 }
 

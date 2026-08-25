@@ -62,7 +62,7 @@ function expectedTypeMatches(actual, expected, bytes) {
     : brands.some((brand) => HEIF_BRANDS.has(brand));
 }
 
-function inspectJpeg(bytes, { sanitized }) {
+function inspectJpeg(bytes, { sanitized, allowTrailing = false }) {
   if (bytes.length < 12 || bytes[0] !== 0xff || bytes[1] !== 0xd8) invalid();
   let offset = 2;
   let width = null;
@@ -92,10 +92,11 @@ function inspectJpeg(bytes, { sanitized }) {
     if (offset >= bytes.length) invalid();
     const marker = bytes[offset++];
     if (marker === 0xd9) {
-      if (!width || !height || scans < 1 || offset !== bytes.length) {
-        invalid(offset === bytes.length ? "malformed" : "trailing_data", "JPEG contains bytes after its end marker.");
+      if (!width || !height || scans < 1) invalid();
+      if (offset !== bytes.length && !allowTrailing) {
+        invalid("trailing_data", "JPEG contains bytes after its end marker.");
       }
-      return { width, height, metadataPresent };
+      return { width, height, metadataPresent, endOffset: offset };
     }
     if (marker === 0xd8 || marker === 0x00 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) invalid();
     if (offset + 2 > bytes.length) invalid();
@@ -441,4 +442,29 @@ export function inspectImageBytes(value, {
     metadataPresent: !!result.metadataPresent,
     sanitized: !!sanitized,
   });
+}
+
+// A small set of pre-hardening phone-camera objects contain an otherwise valid
+// primary JPEG followed by an MPO/gain-map trailer. Ordinary uploads remain
+// byte-for-byte strict. The isolated recovery worker alone may use this helper
+// to select the marker-validated primary image, which it then fully decodes and
+// re-encodes before any bytes can become public.
+export function canonicalLegacyRecoveryJpegPrefix(value) {
+  const bytes = asBuffer(value);
+  if (detectedMimeType(bytes) !== "image/jpeg") {
+    invalid("mime_mismatch", "Legacy JPEG recovery accepts JPEG bytes only.");
+  }
+  const result = inspectJpeg(bytes, { sanitized: false, allowTrailing: true });
+  assertResourceBounds(result.width, result.height, {
+    maxPixels: MAX_IMAGE_PIXELS,
+    maxEdge: MAX_IMAGE_EDGE,
+  });
+  if (!Number.isSafeInteger(result.endOffset) || result.endOffset < 12 || result.endOffset > bytes.length) {
+    invalid();
+  }
+  const prefix = bytes.subarray(0, result.endOffset);
+  // Re-enter the ordinary strict parser so a future parser change cannot make
+  // this recovery boundary less strict than normal standalone JPEG validation.
+  inspectImageBytes(prefix, { expectedType: "image/jpeg", sanitized: false });
+  return prefix;
 }

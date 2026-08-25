@@ -150,6 +150,75 @@ test("claimed MIME, truncation, trailing payload, and oversized dimensions all f
   );
 });
 
+test("legacy recovery strips only a marker-validated JPEG trailer before isolated re-encoding", async () => {
+  const jpeg = await createdImage({ width: 37, height: 29 });
+  const secondJpeg = await createdImage({ width: 9, height: 7 });
+  const sentinel = Buffer.from("<script>legacy-trailer-must-never-publish</script>");
+  const withTrailer = Buffer.concat([jpeg, sentinel, secondJpeg]);
+
+  await assert.rejects(
+    validateDecodedImage(withTrailer, { expectedType: "image/jpeg" }),
+    (error) => error.code === "trailing_data",
+  );
+  await assert.rejects(
+    sanitizeDecodedImage(withTrailer, { expectedType: "image/jpeg" }),
+    (error) => error.code === "trailing_data",
+  );
+  await assert.rejects(
+    sanitizeDecodedImage(withTrailer, {
+      expectedType: "image/jpeg",
+      allowLegacyJpegTrailer: "true",
+    }),
+    (error) => error.code === "trailing_data",
+  );
+
+  const recovered = await sanitizeDecodedImage(withTrailer, {
+    expectedType: "image/jpeg",
+    outputType: "image/jpeg",
+    allowLegacyJpegTrailer: true,
+  });
+  assert.deepEqual([recovered.width, recovered.height], [37, 29]);
+  assert.equal(recovered.bytes.includes(sentinel), false);
+  assert.equal(recovered.bytes.includes(secondJpeg), false);
+  assert.equal(inspectImageBytes(recovered.bytes, {
+    expectedType: "image/jpeg",
+    sanitized: true,
+  }).metadataPresent, false);
+
+  const scan = jpeg.indexOf(Buffer.from([0xff, 0xda]));
+  assert.ok(scan > 0);
+  const malformedEntropy = Buffer.concat([
+    jpeg.subarray(0, scan + 20),
+    Buffer.from([0xff, 0xd9]),
+    sentinel,
+  ]);
+  await assert.rejects(
+    sanitizeDecodedImage(malformedEntropy, {
+      expectedType: "image/jpeg",
+      allowLegacyJpegTrailer: true,
+    }),
+    (error) => error.code === "decode",
+  );
+
+  const missingEnd = Buffer.concat([jpeg.subarray(0, jpeg.length - 2), sentinel]);
+  await assert.rejects(
+    sanitizeDecodedImage(missingEnd, {
+      expectedType: "image/jpeg",
+      allowLegacyJpegTrailer: true,
+    }),
+    (error) => error.code !== "trailing_data",
+  );
+
+  const pngWithTrailer = Buffer.concat([await createdImage({ format: "png" }), sentinel]);
+  await assert.rejects(
+    sanitizeDecodedImage(pngWithTrailer, {
+      expectedType: "image/png",
+      allowLegacyJpegTrailer: true,
+    }),
+    (error) => new Set(["malformed", "trailing_data"]).has(error.code),
+  );
+});
+
 test("private HEIF/GIF-style sources can select a safe public output codec", async () => {
   const png = await createdImage({ width: 10, height: 7, format: "png" });
   const sanitized = await sanitizeDecodedImage(png, {

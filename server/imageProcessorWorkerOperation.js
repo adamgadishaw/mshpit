@@ -1,6 +1,7 @@
 import sharp from "sharp";
 
 import {
+  canonicalLegacyRecoveryJpegPrefix,
   ImageInspectionError,
   inspectImageBytes,
   MAX_IMAGE_EDGE,
@@ -206,17 +207,37 @@ async function validate(bytes, expectedType) {
   return Object.freeze({ ...decoded, pixels: decoded.width * decoded.height });
 }
 
-async function sanitize(bytes, expectedType, requestedOutputType, requestedMaxOutputBytes, allowHeicFallback) {
-  const structural = inspectImageBytes(bytes, { expectedType, sanitized: false });
+function sanitizationSource(bytes, expectedType, allowLegacyJpegTrailer) {
+  try {
+    return {
+      bytes,
+      structural: inspectImageBytes(bytes, { expectedType, sanitized: false }),
+    };
+  } catch (error) {
+    if (!(allowLegacyJpegTrailer === true && expectedType === "image/jpeg"
+        && error instanceof ImageInspectionError && error.code === "trailing_data")) {
+      throw error;
+    }
+    const canonical = canonicalLegacyRecoveryJpegPrefix(bytes);
+    return {
+      bytes: canonical,
+      structural: inspectImageBytes(canonical, { expectedType: "image/jpeg", sanitized: false }),
+    };
+  }
+}
+
+async function sanitize(bytes, expectedType, requestedOutputType, requestedMaxOutputBytes,
+  allowHeicFallback, allowLegacyJpegTrailer) {
+  const source = sanitizationSource(bytes, expectedType, allowLegacyJpegTrailer);
   const type = outputType(requestedOutputType || expectedType);
-  const pipeline = sharp(bytes, sharpOptions());
+  const pipeline = sharp(source.bytes, sharpOptions());
   try {
     const metadata = await pipeline.metadata();
     assertDecodedMetadata(metadata, expectedType);
     return await sanitizeDecodedPixels(pipeline, type, requestedMaxOutputBytes);
   } catch (error) {
     if (allowHeicFallback === true && HEIC_TYPES.has(expectedType)) {
-      return sanitizeHeicFallback(bytes, structural, type, requestedMaxOutputBytes);
+      return sanitizeHeicFallback(source.bytes, source.structural, type, requestedMaxOutputBytes);
     }
     throw error;
   }
@@ -232,7 +253,7 @@ export async function runImageProcessorWorkerOperation(message) {
     const expectedType = sourceType(message?.expectedType);
     if (operation === "validate") return await validate(bytes, expectedType);
     return await sanitize(bytes, expectedType, message?.outputType, message?.maxOutputBytes,
-      message?.allowHeicFallback === true);
+      message?.allowHeicFallback === true, message?.allowLegacyJpegTrailer === true);
   } catch (error) {
     if (error instanceof ImageInspectionError || error?.code) throw error;
     throw processorError("decode", "Image pixels could not be decoded safely.", error);

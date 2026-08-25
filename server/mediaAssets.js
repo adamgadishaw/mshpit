@@ -991,6 +991,7 @@ export async function sanitizePrivateImageStaging(database, {
   imageProcessor = defaultImageProcessor,
   imageTimeoutMs,
   allowHeicFallback = false,
+  allowLegacyJpegTrailer = false,
   signal,
 } = {}) {
   const owner = String(ownerId || "");
@@ -1028,6 +1029,7 @@ export async function sanitizePrivateImageStaging(database, {
       ? { timeoutMs: Math.min(imageTimeoutMs, 30_000) }
       : {}),
     allowHeicFallback: allowHeicFallback === true,
+    allowLegacyJpegTrailer: allowLegacyJpegTrailer === true,
   }, { sanitizing: true });
   return Object.freeze({ sanitized, sourceEtag: stored.etag });
 }

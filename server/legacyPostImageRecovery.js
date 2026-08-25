@@ -739,6 +739,7 @@ export async function recoverLegacyPostImage(database, candidate, {
       outputType,
       timeoutMs: LEGACY_IMAGE_RECOVERY_TIMEOUT_MS,
       allowHeicFallback: true,
+      allowLegacyJpegTrailer: true,
     });
     const output = {
       bytes: Buffer.from(sanitized?.bytes || []),
@@ -873,6 +874,7 @@ export async function recoverLegacyProfileImage(database, candidate, {
     imageProcessor: typeof imageProcessor === "function" ? { sanitize: imageProcessor } : imageProcessor,
     imageTimeoutMs: LEGACY_IMAGE_RECOVERY_TIMEOUT_MS,
     allowHeicFallback: true,
+    allowLegacyJpegTrailer: true,
     signal,
   });
   const delivery = await stageSanitizedPublicImage(database, {
