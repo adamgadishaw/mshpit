@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 
 import {
   ARTIST_MEMORIAL_LIMITS,
+  ARTIST_MEMORIAL_SPOTLIGHT_DAYS,
   ARTIST_MEMORIAL_STATUSES,
   parseArtistMemorialAdminPayload,
 } from "../../domain/artistMemorial.mjs";
@@ -14,6 +15,11 @@ import {
   artistMemorialConsoleOwnsScope,
   normalizeArtistMemorialConsoleScope,
 } from "./artistMemorialConsoleScope.mjs";
+import {
+  createArtistMemorialDraft,
+  isMemorialDraftCandidate,
+  memorialDraftCandidates,
+} from "./artistMemorialDraft.mjs";
 
 const EMPTY_FORM = Object.freeze({
   artistKey: "",
@@ -129,7 +135,7 @@ function RestartControl({ checked, onPress, disabled }) {
       onPress={onPress}
       disabled={disabled}
       accessibilityRole="switch"
-      accessibilityLabel="Restart the 30-day memorial spotlight"
+      accessibilityLabel={`Restart the ${ARTIST_MEMORIAL_SPOTLIGHT_DAYS}-day memorial spotlight`}
       accessibilityState={{ checked, disabled }}
       style={({ pressed, focused }) => [styles.restart, pressed && !disabled && styles.pressed, focused && focusRing, disabled && styles.disabled]}
     >
@@ -137,7 +143,7 @@ function RestartControl({ checked, onPress, disabled }) {
         <View style={[styles.switchThumb, checked && styles.switchThumbOn]} />
       </View>
       <View style={styles.restartCopy}>
-        <Text style={styles.restartTitle}>Restart the 30-day spotlight</Text>
+        <Text style={styles.restartTitle}>Restart the {ARTIST_MEMORIAL_SPOTLIGHT_DAYS}-day spotlight</Text>
         <Text style={styles.restartHint}>Use this only for a deliberate renewed tribute. Normal edits never reset the spotlight.</Text>
       </View>
     </Pressable>
@@ -157,7 +163,7 @@ function MemorialRow({ memorial, selected, onEdit }) {
         </View>
         <Text selectable style={styles.rowKey}>{memorial.artistKey}</Text>
         <Text style={styles.rowMeta}>Death date {memorial.deathDate} - Updated {dateTime(memorial.updatedAt)}</Text>
-        {memorial.spotlightActive ? <Text style={styles.spotlightMeta}>30-day spotlight is active</Text> : null}
+        {memorial.spotlightActive ? <Text style={styles.spotlightMeta}>{ARTIST_MEMORIAL_SPOTLIGHT_DAYS}-day spotlight is active</Text> : null}
       </View>
       <Button title="Edit" variant="secondary" icon="edit" small onPress={onEdit} accessibilityLabel={`Edit memorial for ${memorial.artistName || memorial.artistKey}`} />
     </View>
@@ -170,6 +176,7 @@ export default function ArtistMemorialConsole({
   saving = false,
   error = "",
   onRefresh,
+  onSearchArtists,
   onSave,
   onSaved,
   sessionScope,
@@ -177,23 +184,74 @@ export default function ArtistMemorialConsole({
   const currentScope = normalizeArtistMemorialConsoleScope(sessionScope);
   const [ownerScope, setOwnerScope] = useState(currentScope);
   const [selectedKey, setSelectedKey] = useState(null);
+  const [catalogArtist, setCatalogArtist] = useState(null);
+  const [lookupQuery, setLookupQuery] = useState("");
+  const [lookupState, setLookupState] = useState({ scope: currentScope, query: "", status: "idle", results: [], error: "" });
   const [form, setForm] = useState(() => ({ ...EMPTY_FORM }));
   const [confirmedIndividual, setConfirmedIndividual] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [localError, setLocalError] = useState("");
   const [success, setSuccess] = useState("");
   const operationId = useRef(0);
+  const lookupSequence = useRef(0);
+  const artistSearchRef = useRef(onSearchArtists);
   const scopeRef = useRef(currentScope);
+  artistSearchRef.current = onSearchArtists;
   scopeRef.current = currentScope;
   const rows = useMemo(() => Array.isArray(memorials) ? memorials.filter((item) => item?.artistKey) : [], [memorials]);
   const ownsSession = artistMemorialConsoleOwnsScope(ownerScope, currentScope);
   const busy = loading || saving || submitting || !ownsSession;
 
   useEffect(() => {
+    const sequence = lookupSequence.current + 1;
+    lookupSequence.current = sequence;
+    const query = lookupQuery.trim();
+    if (!ownsSession || selectedKey || catalogArtist || query.length < 2 || typeof artistSearchRef.current !== "function") {
+      setLookupState({ scope: currentScope, query, status: "idle", results: [], error: "" });
+      return undefined;
+    }
+    const controller = new AbortController();
+    setLookupState({ scope: currentScope, query, status: "pending", results: [], error: "" });
+    const timer = setTimeout(async () => {
+      setLookupState((current) => current.scope === currentScope && current.query === query
+        ? { ...current, status: "loading" }
+        : current);
+      try {
+        const results = await artistSearchRef.current(query, { signal: controller.signal, throwOnError: true });
+        if (controller.signal.aborted || lookupSequence.current !== sequence || scopeRef.current !== currentScope) return;
+        setLookupState({
+          scope: currentScope,
+          query,
+          status: "ready",
+          results: memorialDraftCandidates(results),
+          error: "",
+        });
+      } catch (lookupError) {
+        if (controller.signal.aborted || lookupSequence.current !== sequence || scopeRef.current !== currentScope) return;
+        setLookupState({
+          scope: currentScope,
+          query,
+          status: "error",
+          results: [],
+          error: errorMessage(lookupError) || "The artist catalog could not be searched.",
+        });
+      }
+    }, 250);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [catalogArtist, currentScope, lookupQuery, ownsSession, selectedKey]);
+
+  useEffect(() => {
     if (ownerScope === currentScope) return;
     operationId.current += 1;
+    lookupSequence.current += 1;
     setOwnerScope(currentScope);
     setSelectedKey(null);
+    setCatalogArtist(null);
+    setLookupQuery("");
+    setLookupState({ scope: currentScope, query: "", status: "idle", results: [], error: "" });
     setForm({ ...EMPTY_FORM });
     setConfirmedIndividual(false);
     setSubmitting(false);
@@ -213,6 +271,9 @@ export default function ArtistMemorialConsole({
 
   const startNew = () => {
     setSelectedKey(null);
+    setCatalogArtist(null);
+    setLookupQuery("");
+    setLookupState({ scope: currentScope, query: "", status: "idle", results: [], error: "" });
     setForm({ ...EMPTY_FORM });
     setConfirmedIndividual(false);
     setLocalError("");
@@ -221,7 +282,37 @@ export default function ArtistMemorialConsole({
 
   const select = (memorial) => {
     setSelectedKey(memorial.artistKey);
+    setCatalogArtist(null);
+    setLookupQuery("");
+    setLookupState({ scope: currentScope, query: "", status: "idle", results: [], error: "" });
     setForm(formFromMemorial(memorial));
+    setConfirmedIndividual(false);
+    setLocalError("");
+    setSuccess("");
+  };
+
+  const chooseCatalogArtist = (artist) => {
+    const key = typeof artist?.key === "string" ? artist.key.trim() : "";
+    if (!key || key.length > 180 || !isMemorialDraftCandidate(artist)) {
+      setLocalError("That artist needs an exact MusicBrainz-backed Pit identity before a memorial can be drafted.");
+      return;
+    }
+    lookupSequence.current += 1;
+    setCatalogArtist(artist);
+    setLookupQuery(artist.name);
+    setLookupState({ scope: currentScope, query: artist.name, status: "chosen", results: [], error: "" });
+    setForm((current) => createArtistMemorialDraft({ artistKey: key, artist, existingForm: current }));
+    setConfirmedIndividual(false);
+    setLocalError("");
+    setSuccess("Safe draft copy added from Pit's catalog. Add the death date and a trusted public source, then verify every field before saving.");
+  };
+
+  const changeCatalogArtist = () => {
+    lookupSequence.current += 1;
+    setCatalogArtist(null);
+    setLookupQuery("");
+    setLookupState({ scope: currentScope, query: "", status: "idle", results: [], error: "" });
+    setForm({ ...EMPTY_FORM });
     setConfirmedIndividual(false);
     setLocalError("");
     setSuccess("");
@@ -261,7 +352,13 @@ export default function ArtistMemorialConsole({
     operationId.current = operation;
     const operationScope = currentScope;
     try {
-      const saved = await onSave({ artistKey: key, ...parsed.payload });
+      const saved = await onSave({
+        artistKey: key,
+        ...parsed.payload,
+        ...(isMemorialDraftCandidate(catalogArtist)
+          ? { expectedArtistMbid: String(catalogArtist.mbid).toLowerCase() }
+          : {}),
+      });
       if (!artistMemorialConsoleOperationOwned({
         operationScope,
         operationId: operation,
@@ -308,7 +405,7 @@ export default function ArtistMemorialConsole({
       <View style={styles.heading}>
         <View style={styles.headingCopy}>
           <Text accessibilityRole="header" style={styles.headingTitle}>Artist memorials</Text>
-          <Text selectable style={styles.headingDetail}>Create a verified, permanent tribute for an individual artist. Publishing opens one respectful 30-day spotlight; the tribute card remains on the artist page afterward.</Text>
+          <Text selectable style={styles.headingDetail}>Create a verified, permanent tribute for an individual artist. Publishing opens one respectful {ARTIST_MEMORIAL_SPOTLIGHT_DAYS}-day spotlight; the tribute card remains on the artist page afterward.</Text>
         </View>
         <View style={styles.headingActions}>
           <Button title="New memorial" variant="secondary" icon="plus" small onPress={startNew} disabled={busy} />
@@ -333,17 +430,97 @@ export default function ArtistMemorialConsole({
           {selectedKey ? <Text style={styles.editingBadge}>EXISTING</Text> : null}
         </View>
 
+        {!selectedKey ? (
+          <View style={styles.autofill}>
+            <View style={styles.autofillHeading}>
+              <View style={styles.autofillHeadingCopy}>
+                <Text style={styles.autofillKicker}>SAFE AUTO-FILL</Text>
+                <Text style={styles.autofillTitle}>Start from an exact Pit artist</Text>
+                <Text style={styles.autofillHint}>Search the catalog and choose one result. Pit fills a neutral private draft from catalog facts, but never guesses a death date, source, award, or cause of death—and never publishes automatically.</Text>
+              </View>
+              {catalogArtist ? <Button title="Clear draft & choose another" variant="secondary" small disabled={busy} onPress={changeCatalogArtist} /> : null}
+            </View>
+            {catalogArtist ? (
+              <View style={styles.chosenArtist} accessibilityLiveRegion="polite">
+                <Icon name="check" size={17} color={colors.good} strokeWidth={2.5} />
+                <View style={styles.chosenArtistCopy}>
+                  <Text selectable style={styles.chosenArtistName}>{catalogArtist.name}</Text>
+                  <Text selectable style={styles.chosenArtistKey}>{catalogArtist.key}</Text>
+                </View>
+                <Text style={styles.draftBadge}>DRAFT FILLED</Text>
+              </View>
+            ) : (
+              <>
+                <View style={styles.lookup}>
+                  <Icon name="search" size={17} color={colors.textDim} />
+                  <TextInput
+                    accessibilityRole="search"
+                    accessibilityLabel="Find an artist to auto-fill a memorial draft"
+                    accessibilityHint="Searches Pit's artist catalog and shows exact identities to choose from"
+                    value={lookupQuery}
+                    onChangeText={(value) => {
+                      setLookupQuery(value);
+                      setLocalError("");
+                      setSuccess("");
+                    }}
+                    editable={!busy && typeof onSearchArtists === "function"}
+                    style={styles.lookupInput}
+                    placeholder="Search an artist name"
+                    placeholderTextColor={colors.textFaint}
+                    selectionColor={colors.amber}
+                    autoCapitalize="words"
+                    autoCorrect={false}
+                    returnKeyType="search"
+                  />
+                  {lookupState.status === "pending" || lookupState.status === "loading"
+                    ? <ActivityIndicator accessibilityLabel="Searching the artist catalog" size="small" color={colors.amber} />
+                    : null}
+                </View>
+                {lookupState.scope === currentScope && lookupState.status === "error" ? (
+                  <Text selectable accessibilityLiveRegion="assertive" style={styles.lookupError}>{lookupState.error}</Text>
+                ) : null}
+                {lookupState.scope === currentScope && lookupState.status === "ready" && lookupState.results.length === 0 ? (
+                  <Text accessibilityLiveRegion="polite" style={styles.lookupEmpty}>No memorial-ready catalog matches. Try the artist's full stage name or enrich the artist in the Catalog tab first.</Text>
+                ) : null}
+                {lookupState.scope === currentScope && lookupState.status === "ready" && lookupState.results.length > 0 ? (
+                  <Text accessibilityLiveRegion="polite" style={styles.lookupCount}>{lookupState.results.length} memorial-ready {lookupState.results.length === 1 ? "artist" : "artists"} found.</Text>
+                ) : null}
+                {lookupState.scope === currentScope && lookupState.results.length ? (
+                  <View accessibilityRole="list" style={styles.lookupResults}>
+                    {lookupState.results.map((artist) => (
+                      <Pressable
+                        key={`${artist.key}:${artist.mbid || "catalog"}`}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Use ${artist.name} and auto-fill a private memorial draft`}
+                        onPress={() => chooseCatalogArtist(artist)}
+                        disabled={busy}
+                        style={({ pressed, focused }) => [styles.lookupResult, pressed && styles.pressed, focused && focusRing, busy && styles.disabled]}
+                      >
+                        <View style={styles.lookupResultCopy}>
+                          <Text selectable style={styles.lookupResultName}>{artist.name}</Text>
+                          <Text selectable style={styles.lookupResultMeta}>{[artist.genre, artist.country, artist.key, `MBID …${String(artist.mbid).slice(-8)}`].filter(Boolean).join(" · ")}</Text>
+                        </View>
+                        <Text style={styles.lookupResultAction}>USE & AUTO-FILL</Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                ) : null}
+              </>
+            )}
+          </View>
+        ) : null}
+
         <FormField
           label="Artist key"
-          hint="Use the exact individual artist key from Pit's catalog. This cannot be changed while editing."
+          hint="Filled when you choose a catalog result. You may still enter an exact key manually; it cannot be changed while editing."
           value={form.artistKey}
           onChangeText={(value) => update("artistKey", value)}
-          editable={!busy && !selectedKey}
+          editable={!busy && !selectedKey && !catalogArtist}
           maxLength={180}
           autoCapitalize="none"
           autoCorrect={false}
           placeholder="artist-catalog-key"
-          accessibilityState={{ disabled: busy || !!selectedKey }}
+          accessibilityState={{ disabled: busy || !!selectedKey || !!catalogArtist }}
         />
 
         <View style={styles.field} accessibilityRole="radiogroup" accessibilityLabel="Memorial publication status">
@@ -493,6 +670,28 @@ const styles = StyleSheet.create({
   kicker: { color: colors.gold, fontFamily: mono, fontSize: 9.5, lineHeight: 14, fontWeight: "900", letterSpacing: 1.3 },
   formTitle: { color: colors.text, fontFamily: displayFont, fontSize: 20, lineHeight: 26, fontWeight: "900", paddingTop: 2 },
   editingBadge: { color: colors.cool, fontFamily: mono, fontSize: 9, lineHeight: 13, fontWeight: "900", letterSpacing: 1, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.cool, paddingHorizontal: space(2), paddingVertical: space(1) },
+  autofill: { gap: space(3), padding: space(4), borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: `${colors.cool}66`, backgroundColor: `${colors.cool}0A` },
+  autofillHeading: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: space(3) },
+  autofillHeadingCopy: { flex: 1, minWidth: 220, gap: 3 },
+  autofillKicker: { color: colors.cool, fontFamily: mono, fontSize: 9, lineHeight: 13, fontWeight: "900", letterSpacing: 1.2 },
+  autofillTitle: { color: colors.text, fontSize: 14.5, lineHeight: 20, fontWeight: "900" },
+  autofillHint: { color: colors.textDim, fontSize: 11.5, lineHeight: 17 },
+  lookup: { minHeight: 48, flexDirection: "row", alignItems: "center", gap: space(2.5), paddingHorizontal: space(3.5), borderRadius: radius.sm, borderCurve: "continuous", borderWidth: 1, borderColor: colors.line, backgroundColor: colors.bgElev },
+  lookupInput: { flex: 1, minWidth: 0, minHeight: 46, color: colors.text, fontSize: 13.5, lineHeight: 20, paddingVertical: space(2.5) },
+  lookupError: { color: colors.danger, fontSize: 11.5, lineHeight: 17, fontWeight: "700" },
+  lookupEmpty: { color: colors.textDim, fontSize: 11.5, lineHeight: 17 },
+  lookupCount: { color: colors.textDim, fontSize: 10.5, lineHeight: 16, fontWeight: "700" },
+  lookupResults: { gap: space(2) },
+  lookupResult: { minHeight: 54, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: space(3), paddingHorizontal: space(3), paddingVertical: space(2.5), borderRadius: radius.sm, borderCurve: "continuous", borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface },
+  lookupResultCopy: { flex: 1, minWidth: 0 },
+  lookupResultName: { color: colors.text, fontSize: 13, lineHeight: 18, fontWeight: "900" },
+  lookupResultMeta: { color: colors.textFaint, fontFamily: mono, fontSize: 9.5, lineHeight: 14, paddingTop: 2 },
+  lookupResultAction: { color: colors.amber, fontFamily: mono, fontSize: 8.5, lineHeight: 13, fontWeight: "900", letterSpacing: 0.6 },
+  chosenArtist: { minHeight: 56, flexDirection: "row", alignItems: "center", gap: space(3), padding: space(3), borderRadius: radius.sm, borderCurve: "continuous", borderWidth: 1, borderColor: `${colors.good}77`, backgroundColor: `${colors.good}0A` },
+  chosenArtistCopy: { flex: 1, minWidth: 0 },
+  chosenArtistName: { color: colors.text, fontSize: 13.5, lineHeight: 19, fontWeight: "900" },
+  chosenArtistKey: { color: colors.textFaint, fontFamily: mono, fontSize: 9.5, lineHeight: 14, paddingTop: 1 },
+  draftBadge: { color: colors.good, fontFamily: mono, fontSize: 8.5, lineHeight: 13, fontWeight: "900", letterSpacing: 0.7, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.good, paddingHorizontal: space(2), paddingVertical: 2 },
   field: { gap: space(1.5) },
   fieldLabel: { color: colors.text, fontSize: 12.5, lineHeight: 17, fontWeight: "900" },
   fieldHint: { color: colors.textFaint, fontSize: 11, lineHeight: 16 },

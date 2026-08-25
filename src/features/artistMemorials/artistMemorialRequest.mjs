@@ -5,6 +5,7 @@ import {
 import { clean } from "../../domain/validation.mjs";
 
 const ARTIST_KEY_MAX = 180;
+const MUSICBRAINZ_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
 function artistKey(value) {
   const raw = typeof value === "string" ? value.trim() : "";
@@ -20,6 +21,16 @@ function expectedAccountId(value) {
   if (value == null) return null;
   const accountId = clean(value, { max: 180 });
   return accountId || null;
+}
+
+function expectedArtistMbid(value) {
+  if (value == null || value === "") return null;
+  if (typeof value !== "string") throw new TypeError("Artist memorial requests require a valid expected MusicBrainz identity.");
+  const mbid = value.trim().toLowerCase();
+  if (!MUSICBRAINZ_ID.test(mbid)) {
+    throw new TypeError("Artist memorial requests require a valid expected MusicBrainz identity.");
+  }
+  return mbid;
 }
 
 function timestamp(value, { nullable = false, label = "timestamp" } = {}) {
@@ -133,6 +144,7 @@ export function artistMemorialAdminListRequest({ accountId } = {}) {
 
 export function artistMemorialSaveRequest(input, { accountId, at = Date.now() } = {}) {
   const key = artistKey(input?.artistKey);
+  const expectedMbid = expectedArtistMbid(input?.expectedArtistMbid);
   const parsed = parseArtistMemorialAdminPayload({
     status: input?.status,
     deathDate: input?.deathDate,
@@ -152,7 +164,10 @@ export function artistMemorialSaveRequest(input, { accountId, at = Date.now() } 
   return {
     path: `/api/admin/artist-memorials/${encodeURIComponent(key)}`,
     expectedAccountId: expectedAccountId(accountId),
-    body: parsed.payload,
+    body: {
+      ...parsed.payload,
+      ...(expectedMbid ? { expectedArtistMbid: expectedMbid } : {}),
+    },
   };
 }
 

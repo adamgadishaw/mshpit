@@ -1,3 +1,5 @@
+import { createArtistMemorialRepository } from "../artistMemorials/artistMemorialRepository.js";
+import { createArtistMemorialService } from "../artistMemorials/artistMemorialService.js";
 import { createPublicDocumentRepository } from "./publicDocumentRepository.js";
 import { createPublicDocumentProjector } from "./publicDocumentProjection.js";
 import {
@@ -14,9 +16,12 @@ import {
  * public URL resolver owns ambiguous vanity-route precedence; this layer owns
  * only privacy-safe reads, public projection and HTML rendering.
  */
-export function createPublicDocumentService({ database, origin, paths } = {}) {
+export function createPublicDocumentService({ database, origin, paths, artistMemorialService = null } = {}) {
   const repository = createPublicDocumentRepository(database);
   const projector = createPublicDocumentProjector({ database, origin, paths });
+  const memorials = artistMemorialService || createArtistMemorialService({
+    repository: createArtistMemorialRepository(database),
+  });
 
   const service = {
     homeDocument(options = {}) {
@@ -25,7 +30,19 @@ export function createPublicDocumentService({ database, origin, paths } = {}) {
 
     artistDocument(options = {}) {
       const raw = repository.readArtist(options);
-      return raw ? projector.artist(raw, options) : null;
+      if (!raw) return null;
+      const requestedAt = Number(options.at);
+      const at = Number.isSafeInteger(requestedAt) && requestedAt >= 0 ? requestedAt : Date.now();
+      const memorialDetail = memorials.readPublicWithMetadata({
+        artistKey: raw.artist.norm,
+        artistMbid: raw.artist.mbid,
+        at,
+      });
+      return projector.artist({
+        ...raw,
+        memorial: memorialDetail?.memorial || null,
+        memorialUpdatedAt: memorialDetail?.updatedAt ?? null,
+      }, options);
     },
 
     memberDocument(options = {}) {

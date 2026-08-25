@@ -212,7 +212,8 @@ function documentIsIndexable(document) {
   if (!document) return false;
   if (document.kind === "home") return true;
   if (document.kind === "artist") {
-    return substantiveText(document.artist?.bio, 80)
+    return substantiveText(document.memorial?.summary, 20)
+      || substantiveText(document.artist?.bio, 80)
       || document.reviews?.some((review) => substantiveText(review.text, 40) || review.media?.length)
       || document.events?.length > 0;
   }

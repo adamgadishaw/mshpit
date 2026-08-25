@@ -58,9 +58,9 @@ export function createPublicDocumentRepository(database) {
       AND LENGTH(TRIM(COALESCE(p.review,'')))>=40
     ORDER BY p.created_at DESC,p.id DESC LIMIT ?`);
 
-  const artistByKey = database.prepare(`SELECT norm,name,public_slug,genre,bio,country,formed,updated_at
+  const artistByKey = database.prepare(`SELECT norm,name,public_slug,genre,bio,mbid,country,formed,updated_at
     FROM artists WHERE norm=? LIMIT 1`);
-  const artistByName = database.prepare(`SELECT norm,name,public_slug,genre,bio,country,formed,updated_at
+  const artistByName = database.prepare(`SELECT norm,name,public_slug,genre,bio,mbid,country,formed,updated_at
     FROM artists WHERE LOWER(name)=LOWER(?) ORDER BY rank_score DESC,norm LIMIT 1`);
   const artistProfile = database.prepare(`SELECT ap.bio,ap.banner,ap.avatar_uri,ap.feed_enabled,
       ap.owner_id,ap.updated_at

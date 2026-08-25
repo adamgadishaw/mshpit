@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  ARTIST_MEMORIAL_SPOTLIGHT_DAYS,
   ARTIST_MEMORIAL_SPOTLIGHT_MS,
   parseArtistMemorialAdminPayload,
   projectArtistMemorialPublic,
@@ -84,7 +85,9 @@ test("copy, accomplishment and source boundaries fail closed", () => {
   assert.equal(missingResult.field, "confirmedIndividual");
 });
 
-test("first publication starts a 30-day spotlight and ordinary edits do not renew it", () => {
+test("first publication starts a 90-day spotlight and ordinary edits do not renew it", () => {
+  assert.equal(ARTIST_MEMORIAL_SPOTLIGHT_DAYS, 90);
+  assert.equal(ARTIST_MEMORIAL_SPOTLIGHT_MS, 90 * 24 * 60 * 60 * 1000);
   const first = transitionArtistMemorial(null, payload(), { at: NOW });
   assert.equal(first.valid, true);
   assert.equal(first.record.publishedAt, NOW);

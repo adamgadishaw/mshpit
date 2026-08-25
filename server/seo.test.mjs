@@ -3,6 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
+import { createArtistMemorialRepository } from "./features/artistMemorials/artistMemorialRepository.js";
+import { createArtistMemorialService } from "./features/artistMemorials/artistMemorialService.js";
 
 const dataDir = mkdtempSync(join(tmpdir(), "pit-seo-visibility-"));
 process.env.PIT_DATA_DIR = dataDir;
@@ -131,6 +133,50 @@ test("public route policy redirects legacy identities and fails unknown or malfo
   assert.equal(seoHttpPlan("/does-not-exist/extra").status, 404);
   assert.equal(seoHttpPlan("/artist/%E0%A4%A").status, 404);
   assert.match(headTagsFor("/does-not-exist/extra"), /name="robots" content="noindex,follow"/);
+});
+
+test("a verified memorial makes only its canonical artist page crawlable", () => {
+  const artist = "SEO Memorial Only Artist";
+  const artistKey = normName(artist);
+  const artistMbid = "32345678-1234-4234-8234-123456789abc";
+  db.prepare(`INSERT OR REPLACE INTO artists
+    (norm,name,public_slug,search_key,genre,photo,bio,mbid,popularity,rank_score,data,source,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(artistKey, artist, "seo-memorial-only-artist", "seomemorialonlyartist", null, null, "",
+      artistMbid, 1, 1, "{}", "test", 1, 1);
+  const at = Date.parse("2026-08-25T12:00:00.000Z");
+  const memorials = createArtistMemorialService({ repository: createArtistMemorialRepository(db) });
+  const saved = memorials.upsert({
+    status: "published",
+    deathDate: "2026-08-25",
+    summary: "A beloved songwriter remembered through the music, performances, and community they brought together.",
+    thankYou: "Thank you for everything you gave listeners.",
+    accomplishments: ["A lasting catalogue", "Performances remembered by generations"],
+    sourceUrl: "https://news.example.org/seo-memorial-confirmation",
+    sourceTitle: "Verified public announcement",
+    confirmedIndividual: true,
+    restartSpotlight: false,
+  }, { artistKey, artistName: artist, artistMbid, at });
+  assert.equal(saved.ok, true);
+
+  const path = artistPath({ name: artist, publicSlug: "seo-memorial-only-artist" });
+  const plan = seoHttpPlan(path);
+  assert.equal(plan.type, "document", "the permanent memorial is substantive public artist content");
+  assert.equal(plan.document.memorial.deathDate, "2026-08-25");
+  const shell = injectHead(
+    '<html><head><title>Pit</title></head><body><div id="root"></div></body></html>',
+    path,
+  );
+  assert.match(shell, /Remembering SEO Memorial Only Artist/);
+  assert.match(shell, /Verified public announcement/);
+  assert.match(shell, /"@type":"Person"/);
+  assert.match(shell, /"deathDate":"2026-08-25"/);
+
+  const legacy = seoHttpPlan("/seo-memorial-only-artist");
+  assert.deepEqual(
+    { type: legacy.type, location: legacy.location, hasDocument: Object.hasOwn(legacy, "document") },
+    { type: "redirect", location: path, hasDocument: false },
+  );
 });
 
 test("crawlable HTML contains semantic content and keeps the interactive bundle", () => {

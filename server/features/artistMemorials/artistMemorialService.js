@@ -98,6 +98,16 @@ function matchingPublishedProjection(row, artistMbid, at) {
   return projectArtistMemorialPublic(domainRecord(row), { at });
 }
 
+function matchingPublishedDetail(row, artistMbid, at) {
+  const memorial = matchingPublishedProjection(row, artistMbid, at);
+  if (!memorial) return null;
+  const updatedAt = Number(row?.updated_at);
+  return Object.freeze({
+    memorial,
+    updatedAt: Number.isSafeInteger(updatedAt) && updatedAt >= 0 ? updatedAt : null,
+  });
+}
+
 export function memorialAuditProjection(row) {
   if (!row) return null;
   const record = domainRecord(row);
@@ -136,10 +146,39 @@ export function createArtistMemorialService({ repository }) {
     throw new TypeError("Artist memorials require complete service dependencies");
   }
 
+  function readPublicDetailsForArtistKeys({ artistKeys, artistMbids, at }) {
+    const readAt = validTimestamp(at);
+    if (!Array.isArray(artistKeys) || artistKeys.length > 40) {
+      throw new TypeError("Artist memorial batch reads require no more than 40 artist keys");
+    }
+    if (!(artistMbids instanceof Map)) {
+      throw new TypeError("Artist memorial batch reads require current MusicBrainz identities");
+    }
+    const keys = [];
+    const seen = new Set();
+    for (const value of artistKeys) {
+      const key = clean(value, { max: ARTIST_KEY_MAX + 1 });
+      if (typeof value !== "string" || key !== value || !key || key.length > ARTIST_KEY_MAX || seen.has(key)) continue;
+      seen.add(key);
+      keys.push(key);
+    }
+    const details = new Map();
+    for (const row of repository.findPublishedByArtistKeys(keys)) {
+      const detail = matchingPublishedDetail(row, artistMbids.get(row.artist_key), readAt);
+      if (detail) details.set(row.artist_key, detail);
+    }
+    return details;
+  }
+
   return Object.freeze({
     readPublic({ artistKey, artistMbid, at }) {
       const readAt = validTimestamp(at);
       return matchingPublishedProjection(repository.findByArtistKey(artistKey), artistMbid, readAt);
+    },
+
+    readPublicWithMetadata({ artistKey, artistMbid, at }) {
+      const readAt = validTimestamp(at);
+      return matchingPublishedDetail(repository.findByArtistKey(artistKey), artistMbid, readAt);
     },
 
     readPublicSearch({ query = null, limit = 20, artistMbids, at }) {
@@ -158,27 +197,14 @@ export function createArtistMemorialService({ repository }) {
     },
 
     readPublicForArtistKeys({ artistKeys, artistMbids, at }) {
-      const readAt = validTimestamp(at);
-      if (!Array.isArray(artistKeys) || artistKeys.length > 40) {
-        throw new TypeError("Artist memorial batch reads require no more than 40 artist keys");
-      }
-      if (!(artistMbids instanceof Map)) {
-        throw new TypeError("Artist memorial batch reads require current MusicBrainz identities");
-      }
-      const keys = [];
-      const seen = new Set();
-      for (const value of artistKeys) {
-        const key = clean(value, { max: ARTIST_KEY_MAX + 1 });
-        if (typeof value !== "string" || key !== value || !key || key.length > ARTIST_KEY_MAX || seen.has(key)) continue;
-        seen.add(key);
-        keys.push(key);
-      }
+      const details = readPublicDetailsForArtistKeys({ artistKeys, artistMbids, at });
       const memorials = new Map();
-      for (const row of repository.findPublishedByArtistKeys(keys)) {
-        const memorial = matchingPublishedProjection(row, artistMbids.get(row.artist_key), readAt);
-        if (memorial) memorials.set(row.artist_key, memorial);
-      }
+      for (const [artistKey, detail] of details) memorials.set(artistKey, detail.memorial);
       return memorials;
+    },
+
+    readPublicForArtistKeysWithMetadata(options) {
+      return readPublicDetailsForArtistKeys(options);
     },
 
     listAdmin({ status = null, query = null, limit = 50, at }) {

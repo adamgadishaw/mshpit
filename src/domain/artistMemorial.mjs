@@ -1,7 +1,7 @@
 import { clean } from "./validation.mjs";
 
 export const ARTIST_MEMORIAL_STATUSES = Object.freeze(["draft", "published"]);
-export const ARTIST_MEMORIAL_SPOTLIGHT_DAYS = 30;
+export const ARTIST_MEMORIAL_SPOTLIGHT_DAYS = 90;
 export const ARTIST_MEMORIAL_SPOTLIGHT_MS = ARTIST_MEMORIAL_SPOTLIGHT_DAYS * 24 * 60 * 60 * 1000;
 
 export const ARTIST_MEMORIAL_LIMITS = Object.freeze({
@@ -234,7 +234,7 @@ export function transitionArtistMemorial(current, input, { at = Date.now() } = {
 
 /**
  * Expose only presentation-safe memorial fields. The deceased marker outlives
- * the 30-day spotlight; verifier/admin identity and arbitrary stored fields are
+ * the 90-day spotlight; verifier/admin identity and arbitrary stored fields are
  * deliberately not projected.
  */
 export function projectArtistMemorialPublic(record, { at = Date.now() } = {}) {

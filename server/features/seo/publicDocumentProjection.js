@@ -74,6 +74,40 @@ function validDate(value) {
   return /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : null;
 }
 
+function publicHttpsUrl(value) {
+  try {
+    const parsed = new URL(String(value || ""));
+    if (parsed.protocol !== "https:" || parsed.username || parsed.password) return null;
+    return parsed.toString();
+  } catch {
+    return null;
+  }
+}
+
+function memorialProjection(value) {
+  if (value?.deceased !== true) return null;
+  const deathDate = validDate(value.deathDate);
+  const memorialSummary = cleanBody(value.summary, 600);
+  const thankYou = cleanBody(value.thankYou, 320);
+  const accomplishments = (Array.isArray(value.accomplishments) ? value.accomplishments : [])
+    .map((item) => cleanLine(item, 180))
+    .filter((item) => item.length >= 2)
+    .slice(0, 8);
+  const sourceUrl = publicHttpsUrl(value.citation?.url);
+  if (!deathDate || memorialSummary.length < 20 || thankYou.length < 3 || !accomplishments.length || !sourceUrl) return null;
+  let sourceLabel = cleanLine(value.citation?.title, 180);
+  if (!sourceLabel) {
+    try { sourceLabel = new URL(sourceUrl).hostname.replace(/^www\./u, ""); } catch { sourceLabel = "Memorial source"; }
+  }
+  return Object.freeze({
+    deathDate,
+    summary: memorialSummary,
+    thankYou,
+    accomplishments: Object.freeze(accomplishments),
+    citation: Object.freeze({ url: sourceUrl, title: sourceLabel }),
+  });
+}
+
 function normalizedOrigin(value) {
   try {
     const parsed = new URL(value || DEFAULT_ORIGIN);
@@ -242,7 +276,11 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
     artist(raw, { canonicalPath: requestedPath = null } = {}) {
       if (!raw?.artist) return null;
       const source = raw.artist;
-      const path = canonicalPath(requestedPath, canonicalArtistPath(publicPaths, source));
+      const artistCanonicalPath = canonicalArtistPath(publicPaths, source);
+      const path = canonicalPath(requestedPath, artistCanonicalPath);
+      // Legacy vanity routes redirect before rendering, and this second gate
+      // keeps a memorial out of any mistakenly requested non-canonical document.
+      const memorial = path === artistCanonicalPath ? memorialProjection(raw.memorial) : null;
       const mediaByPost = publicMediaForRows(database, raw.reviews || [], { galleryOnly: true, maxPerPost: 3 });
       const reviews = (raw.reviews || []).map((row) => postCard(row, mediaByPost.get(row.id), publicPaths));
       const profileOwner = raw.profile?.owner_id || null;
@@ -255,7 +293,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       const bio = cleanBody(raw.profile?.bio || source.bio, 2_000);
       const reviewCount = count(raw.stats?.review_count);
       const averageRating = rating(raw.stats?.average_rating);
-      const description = summary(bio || `${name} live reviews, fan photos, artist updates and upcoming performances on Mshpit.`);
+      const description = summary(memorial?.summary || bio || `${name} live reviews, fan photos, artist updates and upcoming performances on Mshpit.`);
       const events = (raw.events || []).map((event) => Object.freeze({
         id: String(event.id),
         venue: cleanLine(event.venue, 180) || "Venue to be announced",
@@ -268,26 +306,49 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         text: cleanBody(update.text, 2_000),
         publishedAt: timestamp(update.created_at),
       })).filter((update) => update.text);
+      const modifiedAt = Math.max(
+        timestamp(source.updated_at) || 0,
+        timestamp(raw.profile?.updated_at) || 0,
+        timestamp(raw.stats?.latest_at) || 0,
+        memorial ? timestamp(raw.memorialUpdatedAt) || 0 : 0,
+      );
       const entity = {
-        // The catalogue currently does not preserve whether an artist is a
-        // solo person or a group. A generic Thing is accurate for both; falsely
-        // labelling Bruno Mars as a MusicGroup would be worse than less-specific
-        // structured data until provider type is persisted.
-        "@type": "Thing",
+        // The catalogue currently does not preserve Person versus Group. Keep
+        // the generic type unless the identity-bound memorial workflow has a
+        // published record; that workflow requires an explicit individual
+        // attestation before it can write anything public.
+        "@type": memorial ? "Person" : "Thing",
         name,
         url: absolute(publicOrigin, path),
-        ...(bio ? { description: bio } : {}),
+        ...((bio || memorial?.summary) ? { description: bio || memorial.summary } : {}),
         ...((avatar || banner || fanImage) ? { image: avatar || banner || fanImage } : {}),
+        ...(memorial ? {
+          deathDate: memorial.deathDate,
+          subjectOf: {
+            "@type": "CreativeWork",
+            name: `Remembering ${name}`,
+            text: [memorial.summary, ...memorial.accomplishments, memorial.thankYou].join("\n"),
+            url: `${absolute(publicOrigin, path)}#memorial`,
+            citation: {
+              "@type": "CreativeWork",
+              name: memorial.citation.title,
+              url: memorial.citation.url,
+            },
+          },
+        } : {}),
       };
       return Object.freeze({
         kind: "artist",
         siteName: SITE_NAME,
-        title: `${name} live — reviews, photos and shows | Mshpit`,
+        title: memorial
+          ? `Remembering ${name} — music, shows and fan memories | Mshpit`
+          : `${name} live — reviews, photos and shows | Mshpit`,
         description,
         canonicalPath: path,
         canonicalUrl: absolute(publicOrigin, path),
         image: banner || avatar || fanImage,
         artist: Object.freeze({ name, bio, genres: genres(source.genre), country: cleanLine(source.country, 100) || null, formed: cleanLine(source.formed, 80) || null }),
+        memorial,
         stats: Object.freeze({ reviewCount, averageRating }),
         reviews,
         updates,
@@ -298,8 +359,8 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
           name: `${name} on Mshpit`,
           url: absolute(publicOrigin, path),
           description,
-          ...(isoTimestamp(Math.max(timestamp(source.updated_at) || 0, timestamp(raw.profile?.updated_at) || 0, timestamp(raw.stats?.latest_at) || 0))
-            ? { dateModified: isoTimestamp(Math.max(timestamp(source.updated_at) || 0, timestamp(raw.profile?.updated_at) || 0, timestamp(raw.stats?.latest_at) || 0)) }
+          ...(isoTimestamp(modifiedAt)
+            ? { dateModified: isoTimestamp(modifiedAt) }
             : {}),
           about: entity,
           isPartOf: siteReference(publicOrigin),

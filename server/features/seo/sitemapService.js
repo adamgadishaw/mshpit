@@ -2,6 +2,8 @@ import { activeAccountSql } from "../../accountVisibility.js";
 import { postMediaProjectionByPost } from "../../mediaAssets.js";
 import { publicPageSitemapEntries } from "../../publicPages.js";
 import { artistPath, postPath, profilePath } from "../../../src/domain/urls.mjs";
+import { createArtistMemorialRepository } from "../artistMemorials/artistMemorialRepository.js";
+import { createArtistMemorialService } from "../artistMemorials/artistMemorialService.js";
 
 export const SITEMAP_PATHS = Object.freeze([
   "/sitemaps/pages.xml",
@@ -128,7 +130,9 @@ export function profileSitemapEntries(database) {
 }
 
 export function artistSitemapEntries(database, { now = Date.now() } = {}) {
-  const today = new Date(Number.isFinite(Number(now)) ? Number(now) : Date.now()).toISOString().slice(0, 10);
+  const requestedAt = Number(now);
+  const at = Number.isSafeInteger(requestedAt) && requestedAt >= 0 ? requestedAt : Date.now();
+  const today = new Date(at).toISOString().slice(0, 10);
   const postUpdates = new Map();
   for (const row of visiblePostCandidates(database)) {
     if (!row.meaningfulText && !(row.photos_public && row.readyMedia)) continue;
@@ -143,21 +147,42 @@ export function artistSitemapEntries(database, { now = Date.now() } = {}) {
       AND td.release_at<=? AND td.date>=?
       AND td.date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
       AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
-    GROUP BY lower(td.artist)`).all(now, today)
+    GROUP BY lower(td.artist)`).all(at, today)
     .map((row) => [row.artist_key, Number(row.lastmod || 0)]));
 
-  // The two maps above perform the visibility work once. Correlated EXISTS
+  const artistRows = database.prepare(`SELECT norm,name,public_slug,bio,mbid,updated_at FROM artists
+      WHERE public_slug IS NOT NULL AND trim(public_slug)<>''
+      ORDER BY rank_score DESC,norm LIMIT 50000`).all();
+  const memorials = createArtistMemorialService({ repository: createArtistMemorialRepository(database) });
+  const memorialDetails = new Map();
+  // The public memorial service caps identity-bound batches at 40. Chunking
+  // preserves that boundary and avoids reimplementing publication/identity
+  // policy as a second sitemap-only SQL query.
+  for (let offset = 0; offset < artistRows.length; offset += 40) {
+    const batch = artistRows.slice(offset, offset + 40);
+    const matches = memorials.readPublicForArtistKeysWithMetadata({
+      artistKeys: batch.map((row) => row.norm),
+      artistMbids: new Map(batch.map((row) => [row.norm, row.mbid])),
+      at,
+    });
+    for (const [artistKey, detail] of matches) memorialDetails.set(artistKey, detail);
+  }
+
+  // The maps above perform the visibility work once. Correlated EXISTS
   // checks here made SQLite repeat those scans for every catalog artist and
   // blocked the single Node event loop under crawler bursts.
-  return database.prepare(`SELECT norm,name,public_slug,bio,updated_at FROM artists
-      WHERE public_slug IS NOT NULL AND trim(public_slug)<>''
-      ORDER BY rank_score DESC,norm LIMIT 50000`).all()
-    .filter((row) => String(row.bio || "").replace(/\s+/g, " ").trim().length >= 80
+  return artistRows.filter((row) => memorialDetails.has(row.norm)
+      || String(row.bio || "").replace(/\s+/g, " ").trim().length >= 80
       || postUpdates.has(row.norm)
       || tourUpdates.has(row.norm))
     .map((row) => ({
       path: artistPath({ name: row.name, publicSlug: row.public_slug }),
-      lastmod: newest(row.updated_at, postUpdates.get(row.norm), tourUpdates.get(row.norm)),
+      lastmod: newest(
+        row.updated_at,
+        postUpdates.get(row.norm),
+        tourUpdates.get(row.norm),
+        memorialDetails.get(row.norm)?.updatedAt,
+      ),
     }));
 }
 

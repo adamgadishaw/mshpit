@@ -339,6 +339,7 @@ export default function AdminScreen({ onClose }) {
     suspendUser, liftSuspension, banUser, unbanUser, setUserRole, setVerified, markEmailVerified, setSponsor,
     removeComment, removeFanClubMessage, removeLoungeMessage,
     loadAdminMembersStrict, loadMoreAdminMembersStrict, adminStats, adminArtistQueue, enrichArtists, purgeArtist, startCatalogSeed, catalogSeedStatus, stopCatalogSeed, catalogSeedRuns,
+    searchArtistsApi,
     adminSetTrackVideo, trackOverridesList, removeTrackOverride, loadModerationConsole, loadMoreModerationConsole, moderateReport,
   } = useStore();
 
@@ -1130,6 +1131,7 @@ export default function AdminScreen({ onClose }) {
             saving={memorialAdmin.saving}
             error={memorialAdmin.error}
             onRefresh={memorialAdmin.reload}
+            onSearchArtists={searchArtistsApi}
             onSave={memorialAdmin.save}
           />
         )}

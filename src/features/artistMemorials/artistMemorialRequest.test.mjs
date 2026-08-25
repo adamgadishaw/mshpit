@@ -54,7 +54,9 @@ test("public and admin requests encode artist identity and bind the expected acc
 });
 
 test("save requests use keyed PUT data and require an explicit individual confirmation", () => {
-  const request = artistMemorialSaveRequest(command(), { accountId: "admin-a", at: NOW });
+  const request = artistMemorialSaveRequest(command({
+    expectedArtistMbid: "12345678-1234-4234-8234-123456789ABC",
+  }), { accountId: "admin-a", at: NOW });
   assert.equal(request.path, "/api/admin/artist-memorials/artist%2Fkey");
   assert.equal(request.expectedAccountId, "admin-a");
   assert.deepEqual(request.body, {
@@ -67,10 +69,15 @@ test("save requests use keyed PUT data and require an explicit individual confir
     sourceTitle: "Official announcement",
     confirmedIndividual: true,
     restartSpotlight: false,
+    expectedArtistMbid: "12345678-1234-4234-8234-123456789abc",
   });
   assert.throws(
     () => artistMemorialSaveRequest(command({ confirmedIndividual: false }), { at: NOW }),
     (error) => error?.field === "confirmedIndividual",
+  );
+  assert.throws(
+    () => artistMemorialSaveRequest(command({ expectedArtistMbid: "not-an-mbid" }), { at: NOW }),
+    /expected MusicBrainz identity/i,
   );
 });
 

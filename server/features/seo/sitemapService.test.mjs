@@ -3,6 +3,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
+import { createArtistMemorialRepository } from "../artistMemorials/artistMemorialRepository.js";
+import { createArtistMemorialService } from "../artistMemorials/artistMemorialService.js";
+
+const MEMORIAL_MBID = "42345678-1234-4234-8234-123456789abc";
 
 const dataDir = mkdtempSync(join(tmpdir(), "pit-seo-sitemaps-"));
 process.env.PIT_DATA_DIR = dataDir;
@@ -34,11 +38,11 @@ function addPost(id, userId, { artist, review, createdAt, removed = false } = {}
       review, removed ? 1 : 0, createdAt, createdAt + 1_000, "status");
 }
 
-function addArtist(name, publicSlug, { bio = "", updatedAt = 1_700_000_000_000 } = {}) {
+function addArtist(name, publicSlug, { bio = "", mbid = null, updatedAt = 1_700_000_000_000 } = {}) {
   db.prepare(`INSERT OR REPLACE INTO artists
-    (norm,name,public_slug,search_key,genre,photo,bio,popularity,rank_score,data,source,created_at,updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .run(normName(name), name, publicSlug, normName(name).replace(/\s/g, ""), "Rock", null, bio, 1, 1, "{}", "test", updatedAt, updatedAt);
+    (norm,name,public_slug,search_key,genre,photo,bio,mbid,popularity,rank_score,data,source,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(normName(name), name, publicSlug, normName(name).replace(/\s/g, ""), "Rock", null, bio, mbid, 1, 1, "{}", "test", updatedAt, updatedAt);
 }
 
 test("the root sitemap is an index of canonical segmented maps", () => {
@@ -67,6 +71,35 @@ test("segmented sitemaps contain only substantive canonical public pages", () =>
   addArtist("Thin Sitemap Artist", "thin-sitemap-artist");
   addArtist("Banned Sitemap Artist", "banned-sitemap-artist");
   addArtist("Touring Sitemap Artist", "touring-sitemap-artist");
+  addArtist("Memorial Sitemap Artist", "memorial-sitemap-artist", { mbid: MEMORIAL_MBID });
+  addArtist("Draft Memorial Sitemap Artist", "draft-memorial-sitemap-artist", {
+    mbid: "52345678-1234-4234-8234-123456789abc",
+  });
+
+  const memorials = createArtistMemorialService({ repository: createArtistMemorialRepository(db) });
+  const memorialPayload = {
+    status: "published",
+    deathDate: "2024-08-20",
+    summary: "A lasting musical legacy remembered by listeners and the communities their performances brought together.",
+    thankYou: "Thank you for the music and memories.",
+    accomplishments: ["A lasting catalogue"],
+    sourceUrl: "https://news.example.org/sitemap-memorial",
+    sourceTitle: "Verified public announcement",
+    confirmedIndividual: true,
+    restartSpotlight: false,
+  };
+  assert.equal(memorials.upsert(memorialPayload, {
+    artistKey: normName("Memorial Sitemap Artist"),
+    artistName: "Memorial Sitemap Artist",
+    artistMbid: MEMORIAL_MBID,
+    at: 1_725_000_000_000,
+  }).ok, true);
+  assert.equal(memorials.upsert({ ...memorialPayload, status: "draft" }, {
+    artistKey: normName("Draft Memorial Sitemap Artist"),
+    artistName: "Draft Memorial Sitemap Artist",
+    artistMbid: "52345678-1234-4234-8234-123456789abc",
+    at: 1_725_000_000_000,
+  }).ok, true);
 
   addPost("p_sitemap_public", active.id, {
     artist: "Reviewed Sitemap Artist",
@@ -91,7 +124,13 @@ test("segmented sitemaps contain only substantive canonical public pages", () =>
   assert.match(artists, /\/artist\/rich-sitemap-artist/);
   assert.match(artists, /\/artist\/reviewed-sitemap-artist/);
   assert.match(artists, /\/artist\/touring-sitemap-artist/);
-  assert.doesNotMatch(artists, /thin-sitemap-artist|banned-sitemap-artist/);
+  assert.match(artists, /\/artist\/memorial-sitemap-artist/);
+  assert.doesNotMatch(artists, /thin-sitemap-artist|banned-sitemap-artist|draft-memorial-sitemap-artist/);
+  assert.match(
+    artists,
+    /<loc>https:\/\/www\.example\.com\/artist\/memorial-sitemap-artist<\/loc>\s*<lastmod>2024-08-30<\/lastmod>/,
+    "the identity-bound memorial revision contributes the canonical artist lastmod",
+  );
   assert.match(artists, /<lastmod>2024-10-27<\/lastmod>/, "lastmod comes from useful source changes, not sitemap generation time");
 
   const posts = sitemapXmlFor("/sitemaps/posts.xml", { database: db });

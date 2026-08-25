@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 
-import { ARTIST_MEMORIAL_SPOTLIGHT_MS } from "../../../src/domain/artistMemorial.mjs";
+import {
+  ARTIST_MEMORIAL_SPOTLIGHT_DAYS,
+  ARTIST_MEMORIAL_SPOTLIGHT_MS,
+} from "../../../src/domain/artistMemorial.mjs";
 import { createArtistMemorialRepository } from "./artistMemorialRepository.js";
 import { artistMemorialRoutes } from "./artistMemorialRoutes.js";
 import { createArtistMemorialService } from "./artistMemorialService.js";
@@ -225,6 +228,16 @@ test("repository remains write-compatible with the additive pre-release memorial
       first_published_at: NOW,
       spotlight_ends_at: NOW + ARTIST_MEMORIAL_SPOTLIGHT_MS,
     });
+
+    database.prepare("UPDATE artist_memorials SET spotlight_ends_at=? WHERE artist_key=?")
+      .run(NOW + 30 * DAY_MS, "the artist");
+    const legacyPublic = createArtistMemorialService({ repository }).readPublic({
+      artistKey: "the artist",
+      artistMbid: ARTIST_MBID,
+      at: NOW + 31 * DAY_MS,
+    });
+    assert.equal(legacyPublic.spotlight.active, true, "an old stored 30-day end cannot shorten the current policy");
+    assert.equal(legacyPublic.spotlight.endsAt, NOW + ARTIST_MEMORIAL_SPOTLIGHT_MS);
   } finally {
     database.close();
   }
@@ -262,6 +275,7 @@ test("service owns draft, publish, edit, restart, and permanent-marker semantics
     });
     assert.equal(published.memorial.publishedAt, publishedAt);
     assert.equal(published.memorial.spotlightStartedAt, publishedAt);
+    assert.equal(ARTIST_MEMORIAL_SPOTLIGHT_DAYS, 90);
     assert.equal(published.memorial.spotlightEndsAt, publishedAt + ARTIST_MEMORIAL_SPOTLIGHT_MS);
 
     const publicMemorial = service.readPublic({
@@ -283,6 +297,12 @@ test("service owns draft, publish, edit, restart, and permanent-marker semantics
         endsAt: publishedAt + ARTIST_MEMORIAL_SPOTLIGHT_MS,
       },
     });
+    assert.deepEqual(service.readPublicWithMetadata({
+      artistKey: "the artist", artistMbid: ARTIST_MBID, at: publishedAt + DAY_MS,
+    }), {
+      memorial: publicMemorial,
+      updatedAt: publishedAt,
+    });
     for (const internal of ["artistKey", "artistName", "status", "sourceUrl", "sourceHostname", "sourceVerifiedAt"]) {
       assert.equal(Object.hasOwn(publicMemorial, internal), false, `${internal} must not be public`);
     }
@@ -293,6 +313,15 @@ test("service owns draft, publish, edit, restart, and permanent-marker semantics
     });
     assert.equal(batch.size, 1);
     assert.deepEqual(batch.get("the artist"), publicMemorial);
+    const batchWithMetadata = service.readPublicForArtistKeysWithMetadata({
+      artistKeys: ["the artist"],
+      artistMbids: new Map([["the artist", ARTIST_MBID]]),
+      at: publishedAt + DAY_MS,
+    });
+    assert.deepEqual(batchWithMetadata.get("the artist"), {
+      memorial: publicMemorial,
+      updatedAt: publishedAt,
+    });
     assert.equal(service.readPublic({
       artistKey: "the artist", artistMbid: REASSIGNED_MBID, at: publishedAt + DAY_MS,
     }), null, "a reassigned catalog key cannot inherit the deceased marker");
@@ -405,7 +434,7 @@ test("routes require admin plus an exact MBID catalog row and audit no prose, UR
     const saveCtx = context({
       user: { id: "u_admin", role: "admin" },
       params: { key: "The Artist" },
-      body: command(),
+      body: command({ expectedArtistMbid: ARTIST_MBID.toUpperCase() }),
       ip: "203.0.113.10",
       ua: "private browser fingerprint",
     });
@@ -453,6 +482,15 @@ test("routes require admin plus an exact MBID catalog row and audit no prose, UR
     const list = routes["GET /api/admin/artist-memorials"](listCtx);
     assert.equal(list.memorials.length, 1);
     assert.equal(listCtx.headers["Cache-Control"], "no-store");
+
+    assert.throws(
+      () => routes["PUT /api/admin/artist-memorials/:key"](context({
+        user: { id: "u_admin", role: "admin" },
+        params: { key: "the%20artist" },
+        body: command({ expectedArtistMbid: REASSIGNED_MBID }),
+      })),
+      (error) => error.status === 409 && error.code === "CONFLICT" && /changed since you selected/u.test(error.message),
+    );
 
     database.prepare("UPDATE artist_memorials SET artist_mbid=? WHERE artist_key=?")
       .run(REASSIGNED_MBID, "the artist");

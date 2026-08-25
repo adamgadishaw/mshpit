@@ -1,8 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
+import { createArtistMemorialRepository } from "../artistMemorials/artistMemorialRepository.js";
+import { createArtistMemorialService } from "../artistMemorials/artistMemorialService.js";
 import { createPublicDocumentService } from "./publicDocuments.js";
 import { serializePublicStructuredData } from "./publicDocumentRenderer.js";
+
+const ARTIST_MBID = "12345678-1234-4234-8234-123456789abc";
+const OTHER_MBID = "22345678-1234-4234-8234-123456789abc";
+const NOW = Date.parse("2026-08-25T12:00:00.000Z");
 
 function createDatabase() {
   const database = new DatabaseSync(":memory:");
@@ -13,8 +19,19 @@ function createDatabase() {
       suspended_until INTEGER
     );
     CREATE TABLE artists (
-      norm TEXT PRIMARY KEY,name TEXT NOT NULL,public_slug TEXT,genre TEXT,bio TEXT,country TEXT,formed TEXT,
+      norm TEXT PRIMARY KEY,name TEXT NOT NULL,public_slug TEXT,genre TEXT,bio TEXT,mbid TEXT,country TEXT,formed TEXT,
       popularity INTEGER,rank_score INTEGER NOT NULL DEFAULT 0,updated_at INTEGER
+    );
+    CREATE TABLE artist_memorials (
+      artist_key TEXT PRIMARY KEY,artist_mbid TEXT,artist_name TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('draft','published')),death_date TEXT NOT NULL,
+      summary TEXT NOT NULL,thank_you TEXT NOT NULL,accomplishments TEXT NOT NULL,
+      source_url TEXT NOT NULL,source_title TEXT,published_at INTEGER,spotlight_started_at INTEGER,
+      created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,reviewer_secret TEXT,
+      CHECK (
+        (status='draft' AND published_at IS NULL AND spotlight_started_at IS NULL)
+        OR (status='published' AND published_at IS NOT NULL AND spotlight_started_at IS NOT NULL)
+      )
     );
     CREATE TABLE posts (
       id TEXT PRIMARY KEY,user_id TEXT NOT NULL,artist TEXT NOT NULL,artist_key TEXT,venue TEXT NOT NULL,
@@ -74,10 +91,33 @@ function addUser(database, id, { name = id, handle = id, banned = false, suspend
   );
 }
 
-function addArtist(database, { key = "alpha", name = "Alpha", bio = "A real artist biography.", genre = "Rock" } = {}) {
+function addArtist(database, {
+  key = "alpha", name = "Alpha", bio = "A real artist biography.", genre = "Rock", mbid = ARTIST_MBID,
+} = {}) {
   database.prepare(`INSERT INTO artists
-    (norm,name,public_slug,genre,bio,country,formed,popularity,rank_score,updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?)`).run(key, name, key, genre, bio, "Canada", "2012", 90, 100, 200);
+    (norm,name,public_slug,genre,bio,mbid,country,formed,popularity,rank_score,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(key, name, key, genre, bio, mbid, "Canada", "2012", 90, 100, 200);
+}
+
+function saveMemorial(database, overrides = {}) {
+  const memorials = createArtistMemorialService({ repository: createArtistMemorialRepository(database) });
+  return memorials.upsert({
+    status: "published",
+    deathDate: "2026-08-25",
+    summary: "A generous songwriter whose work gave generations a place to gather and remember.",
+    thankYou: "Thank you for the songs and the rooms they filled.",
+    accomplishments: ["A lasting songbook", "Decades of memorable performances"],
+    sourceUrl: "https://news.example.org/artist/confirmed",
+    sourceTitle: "Verified public announcement",
+    confirmedIndividual: true,
+    restartSpotlight: false,
+    ...overrides,
+  }, {
+    artistKey: "alpha",
+    artistName: "Alpha",
+    artistMbid: ARTIST_MBID,
+    at: NOW,
+  });
 }
 
 function addPost(database, {
@@ -221,6 +261,70 @@ test("artist document uses only active UGC and verified ready media, and never c
       '{"text":"\\u003c/script\\u003e\\u003cscript\\u003ealert(1)\\u003c/script\\u003e"}',
       "JSON-LD serialization cannot terminate its script element",
     );
+  } finally {
+    database.close();
+  }
+});
+
+test("canonical artist documents expose only an identity-bound published memorial", () => {
+  const database = createDatabase();
+  try {
+    addArtist(database, { bio: "" });
+    assert.equal(saveMemorial(database, {
+      summary: "A generous <script>songwriter</script> whose work gave generations a place to gather and remember.",
+      thankYou: "Thank you for the <strong>songs</strong> and the rooms they filled.",
+      accomplishments: ["A <b>lasting</b> songbook", "Decades of memorable performances"],
+      sourceTitle: "Verified <public> & announcement",
+    }).ok, true);
+    database.prepare("UPDATE artist_memorials SET reviewer_secret=? WHERE artist_key=?")
+      .run("PRIVATE REVIEWER AND AUDIT MATERIAL", "alpha");
+
+    const documents = service(database);
+    const canonical = documents.artistDocument({ artistKey: "alpha", at: NOW });
+    const html = documents.render(canonical);
+    assert.deepEqual(canonical.memorial, {
+      deathDate: "2026-08-25",
+      summary: "A generous <script>songwriter</script> whose work gave generations a place to gather and remember.",
+      thankYou: "Thank you for the <strong>songs</strong> and the rooms they filled.",
+      accomplishments: ["A <b>lasting</b> songbook", "Decades of memorable performances"],
+      citation: {
+        url: "https://news.example.org/artist/confirmed",
+        title: "Verified <public> & announcement",
+      },
+    });
+    assert.equal(canonical.jsonLd[0].about["@type"], "Person");
+    assert.equal(canonical.jsonLd[0].about.deathDate, "2026-08-25");
+    assert.equal(canonical.jsonLd[0].about.subjectOf.citation.url, "https://news.example.org/artist/confirmed");
+    assert.equal(canonical.jsonLd[0].dateModified, new Date(NOW).toISOString());
+    assert.match(html, /id="memorial"/);
+    assert.match(html, /Died <time datetime="2026-08-25">August 25, 2026<\/time>/);
+    assert.match(html, /A generous &lt;script&gt;songwriter&lt;\/script&gt;/);
+    assert.match(html, /A &lt;b&gt;lasting&lt;\/b&gt; songbook/);
+    assert.match(html, /Thank you for the &lt;strong&gt;songs&lt;\/strong&gt;/);
+    assert.match(html, /Verified &lt;public&gt; &amp; announcement/);
+    assert.match(html, /Verified source: <a href="https:\/\/news\.example\.org\/artist\/confirmed"/);
+    assert.match(html, /\\u003cscript\\u003esongwriter\\u003c\/script\\u003e/);
+    assert.doesNotMatch(html, /<script>songwriter<\/script>|<strong>songs<\/strong>|<b>lasting<\/b>/);
+    assert.doesNotMatch(html, /PRIVATE REVIEWER AND AUDIT MATERIAL|restartSpotlight|spotlightStartedAt/);
+
+    const nonCanonical = documents.artistDocument({
+      artistKey: "alpha", canonicalPath: "/alpha", at: NOW,
+    });
+    assert.equal(nonCanonical.memorial, null);
+    assert.equal(nonCanonical.jsonLd[0].about["@type"], "Thing");
+    assert.equal(Object.hasOwn(nonCanonical.jsonLd[0].about, "deathDate"), false);
+
+    database.prepare(`UPDATE artist_memorials SET status='draft',published_at=NULL,
+      spotlight_started_at=NULL WHERE artist_key=?`).run("alpha");
+    const draft = documents.artistDocument({ artistKey: "alpha", at: NOW });
+    assert.equal(draft.memorial, null);
+    assert.equal(draft.jsonLd[0].about["@type"], "Thing");
+
+    database.prepare(`UPDATE artist_memorials SET status='published',published_at=?,
+      spotlight_started_at=?,artist_mbid=? WHERE artist_key=?`).run(NOW, NOW, OTHER_MBID, "alpha");
+    const mismatched = documents.artistDocument({ artistKey: "alpha", at: NOW });
+    assert.equal(mismatched.memorial, null);
+    assert.equal(mismatched.jsonLd[0].about["@type"], "Thing");
   } finally {
     database.close();
   }

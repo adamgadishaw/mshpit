@@ -32,10 +32,28 @@ const publicMediaUrl = (value) => {
   }
 };
 
+const publicHttpsUrl = (value) => {
+  try {
+    const url = new URL(String(value || ""));
+    return url.protocol === "https:" && !url.username && !url.password ? url.toString() : null;
+  } catch {
+    return null;
+  }
+};
+
 const dateLabel = (value) => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || ""))) return null;
   const [year, month, day] = String(value).split("-");
   return `${month}/${day}/${year}`;
+};
+
+const longDateLabel = (value) => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(value || ""))) return null;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  if (Number.isNaN(date.valueOf()) || date.toISOString().slice(0, 10) !== value) return null;
+  return new Intl.DateTimeFormat("en", {
+    year: "numeric", month: "long", day: "numeric", timeZone: "UTC",
+  }).format(date);
 };
 
 const dateTimeLabel = (value) => {
@@ -123,6 +141,23 @@ function artistMain(document) {
     return `<article class="update"><p>${esc(update.text)}</p>${date ? `<time datetime="${esc(date.iso)}">${esc(date.label)}</time>` : ""}</article>`;
   }).join("");
   const reviews = document.reviews.map((review) => compactPost(review)).join("");
+  const memorialDate = longDateLabel(document.memorial?.deathDate);
+  const memorialSource = publicHttpsUrl(document.memorial?.citation?.url);
+  const memorialAccomplishments = (Array.isArray(document.memorial?.accomplishments)
+    ? document.memorial.accomplishments : [])
+    .map((item) => `<li>${esc(item)}</li>`)
+    .join("");
+  const memorial = document.memorial && memorialDate && memorialSource
+    ? `<section class="section memorial" id="memorial" aria-labelledby="memorial-heading">
+      <div class="memorial-mark" aria-hidden="true">IN<br>MEMORY</div>
+      <div><p class="eyebrow">In remembrance</p><h2 id="memorial-heading">Remembering ${esc(artist.name)}</h2>
+      <p class="memorial-date">Died <time datetime="${esc(document.memorial.deathDate)}">${esc(memorialDate)}</time></p>
+      <div class="memorial-copy">${paragraphs(document.memorial.summary)}</div>
+      ${memorialAccomplishments ? `<div class="memorial-legacy"><h3>Creative legacy</h3><ul>${memorialAccomplishments}</ul></div>` : ""}
+      <div class="memorial-thanks"><h3>With gratitude</h3>${paragraphs(document.memorial.thankYou)}</div>
+      <p class="memorial-source">Verified source: <a href="${esc(memorialSource)}" rel="noopener noreferrer">${esc(document.memorial.citation.title)}</a></p></div>
+    </section>`
+    : "";
   return `<main id="main">
     <section class="profile-hero">
       <p class="eyebrow">Artist on Mshpit</p>
@@ -131,6 +166,7 @@ function artistMain(document) {
       ${artist.bio ? `<div class="bio">${paragraphs(artist.bio)}</div>` : ""}
       <dl class="stats"><div><dt>Fan reviews</dt><dd>${esc(stats.reviewCount)}</dd></div>${stats.averageRating != null ? `<div><dt>Live rating</dt><dd>${esc(stats.averageRating.toFixed(1))}<small>/5</small></dd></div>` : ""}${artist.formed ? `<div><dt>Active since</dt><dd>${esc(artist.formed)}</dd></div>` : ""}</dl>
     </section>
+    ${memorial}
     ${events ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">On the road</p><h2>Upcoming shows</h2></div></div><ol class="event-list">${events}</ol></section>` : ""}
     ${updates ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">Official notes</p><h2>From ${esc(artist.name)}</h2></div></div><div class="updates">${updates}</div></section>` : ""}
     ${reviews ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">People who were there</p><h2>Top live reviews</h2></div></div><div class="post-list">${reviews}</div></section>` : ""}
@@ -211,6 +247,7 @@ const STYLES = `
   main{max-width:var(--max);margin:auto;padding:0 1.3rem 5rem}.hero,.profile-hero{padding:clamp(4rem,11vw,8rem) 0;border-bottom:1px solid var(--line)}.hero{max-width:900px}.eyebrow{margin:0 0 .8rem;color:var(--gold);font:800 .72rem/1.2 ui-monospace,monospace;letter-spacing:.16em;text-transform:uppercase}.hero h1,.profile-hero h1{max-width:930px;margin:0;font:900 clamp(3.2rem,9vw,7.4rem)/.92 Georgia,serif;letter-spacing:-.05em}.hero h1 em{color:var(--rose);font-weight:400}.hero-copy{max-width:690px;margin:2rem 0 0;color:#d7cfc4;font-size:clamp(1.05rem,2.3vw,1.35rem)}.actions{display:flex;flex-wrap:wrap;gap:.7rem;margin-top:2rem}.button{display:inline-block;border:1px solid var(--line);border-radius:999px;padding:.8rem 1.2rem;text-decoration:none;font-weight:800}.button.primary{background:var(--gold);border-color:var(--gold);color:#130d03}
   .section{padding:4rem 0;border-bottom:1px solid var(--line)}.section-heading{display:flex;justify-content:space-between;align-items:end;gap:1rem;margin-bottom:1.5rem}.section-heading h2{margin:0;font:800 clamp(1.8rem,4vw,3rem)/1.05 Georgia,serif}.artist-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.8rem;list-style:none;padding:0}.artist-card,.post-card,.update{background:linear-gradient(145deg,#191713,#11100e);border:1px solid var(--line);border-radius:1rem;padding:1.25rem}.artist-card h3{margin:.2rem 0;font-size:1.3rem}.artist-card>p:not(.eyebrow){color:#c8c0b6}.micro,.muted,.byline,.handle,.genres,.empty{color:var(--muted)}
   .post-list{display:grid;gap:1rem}.post-card>header{display:flex;align-items:start;justify-content:space-between;gap:1rem}.post-card h3,.post-card h1{margin:0;font:800 clamp(1.3rem,3vw,2rem)/1.14 Georgia,serif}.post-card h1{font-size:clamp(2rem,5vw,4rem)}.rating{margin:0;color:var(--gold);font-size:1.25rem;font-weight:900}.rating span{font-size:.75rem;color:var(--muted)}.byline{margin:.6rem 0 0;font-size:.85rem}.post-copy{max-width:780px;margin:1.2rem 0;color:#ddd4c8}.post-copy p{white-space:normal}.post-card footer{display:flex;flex-wrap:wrap;gap:1rem;margin-top:1rem;color:var(--muted);font-size:.8rem}.text-link{margin-left:auto;color:var(--ink);font-weight:800}.media-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.6rem;margin-top:1.2rem}.media-item{margin:0;border-radius:.8rem;overflow:hidden;background:#050505}.media-item img,.media-item video{width:100%;max-height:560px;object-fit:cover}.post-full{padding:clamp(1.25rem,4vw,2.5rem);margin-top:3rem}.post-full .media-grid{grid-template-columns:1fr}
+  .memorial{display:grid;grid-template-columns:auto 1fr;gap:1.25rem;background:linear-gradient(135deg,#211b16,#11100e);padding-left:clamp(1rem,3vw,2rem);padding-right:clamp(1rem,3vw,2rem)}.memorial-mark{display:grid;place-items:center;width:3.2rem;height:3.2rem;border:1px solid var(--gold);border-radius:50%;color:var(--gold);font:900 .52rem/1.05 ui-monospace,monospace;letter-spacing:.06em;text-align:center}.memorial h2{margin:0;font:800 clamp(2rem,5vw,3.6rem)/1.05 Georgia,serif}.memorial h3{margin:1.5rem 0 .5rem;font:800 1rem/1.2 ui-sans-serif,system-ui}.memorial-date{margin:.65rem 0;color:var(--muted)}.memorial-copy,.memorial-thanks{max-width:780px;color:#ddd4c8;font-size:1.08rem}.memorial-legacy ul{display:grid;gap:.4rem;max-width:780px;margin:.5rem 0 0;padding-left:1.2rem;color:#ddd4c8}.memorial-thanks p{margin:.5rem 0}.memorial-source{margin:1.2rem 0 0;color:var(--muted);font-size:.82rem}
   .profile-hero h1{max-width:850px}.profile-hero .bio{max-width:760px;margin-top:1.6rem;color:#d8d0c5;font-size:1.1rem}.stats{display:flex;flex-wrap:wrap;gap:2.4rem;margin:2rem 0 0}.stats div{display:flex;flex-direction:column-reverse}.stats dt{color:var(--muted);font-size:.75rem;text-transform:uppercase;letter-spacing:.1em}.stats dd{margin:0;font:900 2rem/1 Georgia,serif}.stats small{font-size:.8rem;color:var(--muted)}.event-list{list-style:none;padding:0;margin:0}.event-list li{display:grid;grid-template-columns:7rem 1fr auto;align-items:center;gap:1rem;padding:1.1rem 0;border-top:1px solid var(--line)}.event-list h3,.event-list p{margin:0}.pill{border:1px solid var(--rose);border-radius:99px;padding:.25rem .55rem;color:var(--rose);font-size:.7rem}.updates{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.8rem}.update p{margin:0}.update time{display:block;margin-top:1rem;color:var(--muted);font-size:.8rem}.member-hero{position:relative}.avatar{border:1px solid var(--line);border-radius:50%;object-fit:cover;margin-bottom:1.2rem}.avatar-fallback{display:grid;place-items:center;background:#241d12;color:var(--gold);font:900 3rem Georgia,serif}.comments ol{list-style:none;padding:0;margin:0}.comment{padding:1.2rem 0;border-top:1px solid var(--line)}.comment p{max-width:760px}.comment-meta{display:flex;justify-content:space-between;gap:1rem}.comment-meta time{color:var(--muted);font-size:.8rem}
   .site-footer{max-width:var(--max);margin:auto;padding:2rem 1.3rem 3rem;display:flex;justify-content:space-between;gap:1rem;color:var(--muted);font-size:.8rem}.site-footer div{display:flex;gap:1rem}
   @media(max-width:760px){nav a:first-child{display:none}.artist-grid,.updates{grid-template-columns:1fr}.media-grid{grid-template-columns:1fr}.event-list li{grid-template-columns:5.5rem 1fr}.event-list .pill{grid-column:2}.section-heading{align-items:start}.profile-hero h1,.hero h1{font-size:clamp(3rem,15vw,5rem)}}

@@ -75,13 +75,32 @@ export function artistMemorialRoutes({
       requireAdmin(ctx);
       noStore(ctx);
       const artist = canonicalArtist(artistKey(ctx));
+      const body = ctx.body && typeof ctx.body === "object" && !Array.isArray(ctx.body) ? ctx.body : {};
+      if (body.expectedArtistMbid != null && body.expectedArtistMbid !== ""
+        && typeof body.expectedArtistMbid !== "string") {
+        throw new ApiError(400, "Choose a valid MusicBrainz-backed artist and try again.", "VALIDATION_FAILED");
+      }
+      const expectedArtistMbid = typeof body.expectedArtistMbid === "string" && body.expectedArtistMbid !== ""
+        ? body.expectedArtistMbid.trim().toLowerCase()
+        : null;
+      if (expectedArtistMbid != null && !MUSICBRAINZ_ID.test(expectedArtistMbid)) {
+        throw new ApiError(400, "Choose a valid MusicBrainz-backed artist and try again.", "VALIDATION_FAILED");
+      }
+      if (expectedArtistMbid != null && expectedArtistMbid !== artist.mbid) {
+        throw new ApiError(
+          409,
+          "This catalog artist changed since you selected it. Search again before saving the memorial.",
+          "CONFLICT",
+        );
+      }
+      const { expectedArtistMbid: _expectedArtistMbid, ...memorialInput } = body;
       assertSafeAuthoredText(ctx.body?.summary, { field: "memorial summary" });
       if (ctx.body?.thankYou) assertSafeAuthoredText(ctx.body.thankYou, { field: "memorial thank-you" });
       if (ctx.body?.sourceTitle) assertSafeAuthoredText(ctx.body.sourceTitle, { field: "memorial source title" });
       for (const accomplishment of Array.isArray(ctx.body?.accomplishments) ? ctx.body.accomplishments : []) {
         assertSafeAuthoredText(accomplishment, { field: "artist accomplishment" });
       }
-      const result = service.upsert(ctx.body, {
+      const result = service.upsert(memorialInput, {
         artistKey: artist.key,
         artistName: artist.name,
         artistMbid: artist.mbid,
