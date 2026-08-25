@@ -34,6 +34,10 @@ const HOST_WAIT_INTERVAL_MS = 100;
 const MIN_PLAYER_PX = 200;
 const MIN_VISIBLE_RATIO = 0.5;
 const LOAD_START_TIMEOUT_MS = 15_000;
+// Player progress is decorative UI state, not an audio clock. Updating it once
+// a second keeps the scrubber useful without re-rendering the persistent player
+// shell twice a second for the entire time a listener has PIT open.
+const PROGRESS_UPDATE_INTERVAL_MS = 1_000;
 
 function resolveHost(options) {
   const supplied = options?.hostRef?.current || options?.hostElement || null;
@@ -550,6 +554,10 @@ export function useYouTubePlayer(enabled, options = {}) {
         }
         return;
       }
+      // setVisible(false) pauses minimized/obscured players synchronously. Do
+      // not keep waking React to publish an unchanged clock while the persistent
+      // iframe is intentionally retained for a quick restore.
+      if (!shownRef.current) return;
       try {
         const playerState = player.getPlayerState?.() ?? -1;
         if ((playerState === 1 || playerState === 3) && !canPlayNow()) {
@@ -558,15 +566,24 @@ export function useYouTubePlayer(enabled, options = {}) {
         }
         const activeLoad = activeLoadRef.current;
         if (!activeLoad) return;
-        setState({
-          position: (player.getCurrentTime() || 0) * 1000,
-          duration: (player.getDuration() || 0) * 1000,
+        const next = {
+          position: Math.round((player.getCurrentTime() || 0) * 10) * 100,
+          duration: Math.round((player.getDuration() || 0) * 1000),
           playing: playerState === 1,
           mediaKey: activeLoad.mediaKey,
           videoId: activeLoad.videoId,
-        });
-      } catch { /* polls twice a second; recording here would bury the real signal */ }
-    }, 500);
+        };
+        setState((current) => (
+          current.position === next.position
+          && current.duration === next.duration
+          && current.playing === next.playing
+          && current.mediaKey === next.mediaKey
+          && current.videoId === next.videoId
+            ? current
+            : next
+        ));
+      } catch { /* progress polling is best-effort; recording it would bury the real signal */ }
+    }, PROGRESS_UPDATE_INTERVAL_MS);
     return () => clearInterval(timer);
   }, [enabled, canPlayNow, commandPlayer, pauseImmediately]);
 

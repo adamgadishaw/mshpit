@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { ApiError } from "./errors.js";
-import { verifyMp4Compatibility } from "./mp4Probe.js";
+import {
+  MAX_CONCURRENT_MP4_STRUCTURAL_PROBES,
+  verifyMp4Compatibility,
+} from "./mp4Probe.js";
 
 const MEBIBYTE = 1024 * 1024;
 
@@ -406,6 +409,137 @@ function expectedStructural({
 } = {}) {
   return { durationMs, width, height, codedWidth, codedHeight, sampleCount };
 }
+
+test("coalesces the same stored generation into one structural R2 proof", async () => {
+  const bytes = makeMp4();
+  const baselineFetch = rangeFetch(bytes, { expectedIfMatch: '"shared-generation"' });
+  await verifyMp4Compatibility({
+    objectKey: "users/owner/post/shared-source.mp4",
+    expectedBytes: bytes.length,
+    ifMatch: '"shared-generation"',
+    env: ENV,
+    fetchImpl: baselineFetch,
+  });
+
+  const sharedFetch = rangeFetch(bytes, { expectedIfMatch: '"shared-generation"' });
+  const options = {
+    objectKey: "users/owner/post/shared-source.mp4",
+    expectedBytes: bytes.length,
+    ifMatch: '"shared-generation"',
+    env: ENV,
+    fetchImpl: sharedFetch,
+  };
+  const [first, second] = await Promise.all([
+    verifyMp4Compatibility(options),
+    verifyMp4Compatibility(options),
+  ]);
+
+  assert.deepEqual(first, expectedStructural());
+  assert.deepEqual(second, expectedStructural());
+  assert.equal(sharedFetch.requests.length, baselineFetch.requests.length,
+    "duplicate finalization shares the exact same bounded range work");
+});
+
+test("an immediate same-generation retry does not join an already-aborted shared proof", async () => {
+  const bytes = makeMp4();
+  const regularFetch = rangeFetch(bytes, { expectedIfMatch: '"retry-generation"' });
+  let firstFetchStarted;
+  const started = new Promise((resolve) => { firstFetchStarted = resolve; });
+  let rejectFirstFetch;
+  let calls = 0;
+  const fetchImpl = (url, options) => {
+    calls += 1;
+    if (calls === 1) {
+      firstFetchStarted();
+      return new Promise((_resolve, reject) => { rejectFirstFetch = reject; });
+    }
+    return regularFetch(url, options);
+  };
+  const options = {
+    objectKey: "users/owner/post/retried-source.mp4",
+    expectedBytes: bytes.length,
+    ifMatch: '"retry-generation"',
+    env: ENV,
+    fetchImpl,
+  };
+  const controller = new AbortController();
+  const first = verifyMp4Compatibility({ ...options, signal: controller.signal });
+  await started;
+  controller.abort();
+  await assert.rejects(first, (error) => error?.name === "AbortError");
+
+  const retried = await verifyMp4Compatibility(options);
+  assert.deepEqual(retried, expectedStructural());
+  assert.ok(calls > 1, "the retry starts a fresh proof instead of joining cancelled work");
+
+  rejectFirstFetch(new DOMException("Aborted", "AbortError"));
+  await new Promise((resolve) => setImmediate(resolve));
+});
+
+test("global admission rejects excess distinct probes before R2 and recovers without disabling uploads", async () => {
+  assert.ok(MAX_CONCURRENT_MP4_STRUCTURAL_PROBES >= 1);
+  const bytes = makeMp4();
+  let fetchCalls = 0;
+  let markAllStarted;
+  const allStarted = new Promise((resolve) => { markAllStarted = resolve; });
+  const blockedFetch = async (_url, options) => {
+    fetchCalls += 1;
+    if (fetchCalls === MAX_CONCURRENT_MP4_STRUCTURAL_PROBES) markAllStarted();
+    return new Promise((_resolve, reject) => {
+      const onAbort = () => reject(options.signal?.reason || new DOMException("Aborted", "AbortError"));
+      if (options.signal?.aborted) onAbort();
+      else options.signal?.addEventListener("abort", onAbort, { once: true });
+    });
+  };
+  const controllers = Array.from(
+    { length: MAX_CONCURRENT_MP4_STRUCTURAL_PROBES },
+    () => new AbortController(),
+  );
+  const active = controllers.map((controller, index) => verifyMp4Compatibility({
+    objectKey: `users/owner/post/active-${index}.mp4`,
+    expectedBytes: bytes.length,
+    ifMatch: `"active-generation-${index}"`,
+    env: ENV,
+    fetchImpl: blockedFetch,
+    signal: controller.signal,
+  }));
+
+  await allStarted;
+  assert.equal(fetchCalls, MAX_CONCURRENT_MP4_STRUCTURAL_PROBES);
+  const outcome = await Promise.race([
+    verifyMp4Compatibility({
+      objectKey: "users/owner/post/excess.mp4",
+      expectedBytes: bytes.length,
+      ifMatch: '"excess-generation"',
+      env: ENV,
+      fetchImpl: blockedFetch,
+    }).then(
+      () => ({ type: "accepted" }),
+      (error) => ({ type: "rejected", error }),
+    ),
+    new Promise((resolve) => setImmediate(() => resolve({ type: "waited" }))),
+  ]);
+  assert.equal(outcome.type, "rejected", "overload settles before another event-loop turn");
+  assert.ok(outcome.error instanceof ApiError);
+  assert.equal(outcome.error.status, 429);
+  assert.equal(outcome.error.code, "RATE_LIMITED");
+  assert.equal(fetchCalls, MAX_CONCURRENT_MP4_STRUCTURAL_PROBES,
+    "rejected overload performs no storage request");
+
+  controllers.forEach((controller) => controller.abort());
+  await Promise.allSettled(active);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const recoveryFetch = rangeFetch(bytes);
+  const recovered = await verifyMp4Compatibility({
+    objectKey: "users/owner/post/recovered.mp4",
+    expectedBytes: bytes.length,
+    env: ENV,
+    fetchImpl: recoveryFetch,
+  });
+  assert.deepEqual(recovered, expectedStructural());
+  assert.ok(recoveryFetch.requests.length > 0, "a released slot admits the next upload normally");
+});
 
 test("accepts AVC video with optional MPEG-4 audio and returns ceil-rounded mvhd duration", async () => {
   const bytes = makeMp4({ audioEntries: [makeAudioEntry()], movie: { timescale: 1_000, duration: 5_001 } });

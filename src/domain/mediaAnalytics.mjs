@@ -17,3 +17,24 @@ export function pendingVideoMilestones({ currentTime = 0, duration = 0, seen = [
   if (ended && !recorded.has("100")) pending.push("100");
   return pending;
 }
+
+// A broken clip can become active repeatedly as someone swipes away and back,
+// and the web reel can also unmount pages outside its bounded render window.
+// Claim the analytics signal at screen scope so those ordinary revisits do not
+// report the same failed attempt again. An explicit retry gets a new attempt
+// number and therefore remains observable.
+export function claimClipPlaybackFailure(reported, {
+  postId = "",
+  uri = "",
+  attempt = 0,
+} = {}) {
+  if (typeof reported?.has !== "function" || typeof reported?.add !== "function") return false;
+  const normalizedPostId = String(postId || "").trim();
+  const normalizedUri = String(uri || "").trim();
+  if (!normalizedPostId && !normalizedUri) return false;
+  const normalizedAttempt = Math.max(0, Math.trunc(Number(attempt) || 0));
+  const key = JSON.stringify([normalizedPostId, normalizedUri, normalizedAttempt]);
+  if (reported.has(key)) return false;
+  reported.add(key);
+  return true;
+}

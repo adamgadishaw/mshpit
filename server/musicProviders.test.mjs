@@ -16,6 +16,7 @@ const {
   normName,
 } = await import("./db.js");
 const {
+  PREVIEW_CACHE_MAX_ENTRIES,
   YOUTUBE_MATCH_CACHE_VERSION,
   invalidateSongIndex,
   invalidateYouTubeTrack,
@@ -44,6 +45,16 @@ after(() => {
   db.close();
   rmSync(dataDir, { recursive: true, force: true });
 });
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((onResolve, onReject) => {
+    resolve = onResolve;
+    reject = onReject;
+  });
+  return { promise, resolve, reject };
+}
 
 test("every bundled Spotify track has exact local recording proof without duration metadata", () => {
   const bundled = JSON.parse(readFileSync(new URL("../src/seed/catalog.core.json", import.meta.url), "utf8"));
@@ -209,6 +220,30 @@ test("a Deezer hdnea preview is reused while its bounded signature remains fresh
   assert.equal(requests, 1, "the second resolution should not call Deezer again");
   assert.ok(first.expiresAt > requestedAt);
   assert.ok(first.expiresAt <= completedAt + 5 * 60_000);
+});
+
+test("Deezer preview cancellation reaches the active provider request", async () => {
+  const started = deferred();
+  const callerAbort = new AbortController();
+  let providerSignal;
+  const fetchImpl = async (_url, request) => {
+    providerSignal = request.signal;
+    started.resolve();
+    return new Promise((_resolve, reject) => {
+      const onAbort = () => reject(request.signal.reason);
+      if (request.signal.aborted) onAbort();
+      else request.signal.addEventListener("abort", onAbort, { once: true });
+    });
+  };
+  const pending = getFreshDeezerPreview("Preview Cancellation Track", "Preview Cancellation Artist", {
+    fetchImpl,
+    signal: callerAbort.signal,
+  });
+
+  await started.promise;
+  callerAbort.abort(new DOMException("listener skipped", "AbortError"));
+  await assert.rejects(() => pending, (error) => error?.code === "network" && error?.cause?.name === "AbortError");
+  assert.equal(providerSignal.aborted, true);
 });
 
 function youtubeCandidate(id, title, channel, { embeddable = true, madeForKids = false, licensed = true, duration = "PT3M30S", views = "1000000" } = {}) {
@@ -608,6 +643,99 @@ test("concurrent listeners share one cold YouTube resolution", async () => {
   assert.deepEqual(second, first);
   assert.equal(requests, 3, "one shared data-only channel/catalogue/video request chain");
   assert.equal(youtubeProviderStatus().inFlight, 0);
+});
+
+test("one cancelled coalesced listener does not abort YouTube work needed by another", async () => {
+  const gate = deferred();
+  const started = deferred();
+  const leaderAbort = new AbortController();
+  const followerAbort = new AbortController();
+  let providerSignal;
+  let requests = 0;
+  const fetchImpl = async (_url, request) => {
+    requests += 1;
+    providerSignal = request.signal;
+    started.resolve();
+    await gate.promise;
+    if (request.signal.aborted) throw request.signal.reason;
+    return { ok: true, status: 200, json: async () => ({ items: [] }) };
+  };
+  const leader = resolveYouTubeTrack("Coalesced Cancellation Track", "", {
+    apiKey: "test-key",
+    fetchImpl,
+    signal: leaderAbort.signal,
+  });
+  const follower = resolveYouTubeTrack("Coalesced Cancellation Track", "", {
+    apiKey: "test-key",
+    fetchImpl,
+    signal: followerAbort.signal,
+  });
+
+  await started.promise;
+  leaderAbort.abort(new DOMException("leader left", "AbortError"));
+  await assert.rejects(() => leader, { name: "AbortError" });
+  assert.equal(providerSignal.aborted, false, "the live follower retains the shared provider request");
+  gate.resolve();
+  assert.equal((await follower).status, "low_confidence");
+  assert.equal(requests, 1, "both listeners still share one search request");
+});
+
+test("the final cancelled listener aborts its in-flight YouTube provider request", async () => {
+  const started = deferred();
+  const stopped = deferred();
+  const callerAbort = new AbortController();
+  let providerSignal;
+  const fetchImpl = async (_url, request) => {
+    providerSignal = request.signal;
+    started.resolve();
+    return new Promise((_resolve, reject) => {
+      const onAbort = () => {
+        stopped.resolve();
+        reject(request.signal.reason);
+      };
+      if (request.signal.aborted) onAbort();
+      else request.signal.addEventListener("abort", onAbort, { once: true });
+    });
+  };
+  const pending = resolveYouTubeTrack("Solo Cancellation Track", "", {
+    apiKey: "test-key",
+    fetchImpl,
+    signal: callerAbort.signal,
+  });
+
+  await started.promise;
+  callerAbort.abort(new DOMException("listener skipped", "AbortError"));
+  await assert.rejects(() => pending, { name: "AbortError" });
+  await stopped.promise;
+  assert.equal(providerSignal.aborted, true);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(youtubeProviderStatus().inFlightByKind.tracks, 0);
+});
+
+test("interactive YouTube resolution enforces a shared deadline below the client timeout", async () => {
+  const started = deferred();
+  let providerSignal;
+  const fetchImpl = async (_url, request) => {
+    providerSignal = request.signal;
+    started.resolve();
+    return new Promise((_resolve, reject) => {
+      const onAbort = () => reject(request.signal.reason);
+      if (request.signal.aborted) onAbort();
+      else request.signal.addEventListener("abort", onAbort, { once: true });
+    });
+  };
+  const beganAt = Date.now();
+  const pending = resolveYouTubeTrack("Deadline Cancellation Track", "", {
+    apiKey: "test-key",
+    fetchImpl,
+    deadlineMs: 25,
+  });
+
+  await started.promise;
+  await assert.rejects(() => pending, (error) => error?.code === "resolution_timeout" && error?.retryable === true);
+  assert.equal(providerSignal.aborted, true);
+  assert.equal(providerSignal.reason?.name, "TimeoutError");
+  assert.ok(Date.now() - beganAt < 1_000, "the server deadline ends provider work promptly");
 });
 
 test("resolver searches the artist's channel first, so reactions can never win", async () => {
@@ -1578,6 +1706,56 @@ test("Deezer preview cache keys keep pipe-bearing artist/title tuples separate",
   assert.equal(first.preview, "https://preview.example/first");
   assert.equal(second.preview, "https://preview.example/second");
   assert.equal(fetches, 2);
+});
+
+test("Deezer preview misses are briefly cached instead of repeating provider work", async () => {
+  let fetches = 0;
+  const fetchImpl = async () => {
+    fetches += 1;
+    return { ok: true, status: 200, json: async () => ({ data: [] }) };
+  };
+
+  const first = await getFreshDeezerPreview("Bounded Missing Preview", "Missing Preview Artist", { fetchImpl });
+  const second = await getFreshDeezerPreview("Bounded Missing Preview", "Missing Preview Artist", { fetchImpl });
+  assert.equal(first.status, "not_found");
+  assert.equal(second.status, "not_found");
+  assert.equal(fetches, 2, "one exact and one broad lookup are reused during the miss TTL");
+});
+
+test("Deezer preview memory is bounded with least-recently-used eviction", async () => {
+  let fetches = 0;
+  const futureExpiry = Math.floor(Date.now() / 1000) + 60 * 60;
+  const fetchImpl = async (url) => {
+    fetches += 1;
+    const query = new URL(String(url)).searchParams.get("q") || "";
+    const title = query.match(/track:"([^"]+)"/)?.[1] || "";
+    const artist = query.match(/artist:"([^"]+)"/)?.[1] || "";
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ data: [{
+        id: fetches,
+        title,
+        preview: `https://preview.example/${fetches}?exp=${futureExpiry}`,
+        link: `https://deezer.example/${fetches}`,
+        artist: { id: fetches, name: artist },
+      }] }),
+    };
+  };
+
+  for (let index = 0; index <= PREVIEW_CACHE_MAX_ENTRIES; index += 1) {
+    await getFreshDeezerPreview(`Bounded Preview ${index}`, `Bounded Artist ${index}`, { fetchImpl });
+  }
+  const afterFill = fetches;
+  await getFreshDeezerPreview(
+    `Bounded Preview ${PREVIEW_CACHE_MAX_ENTRIES}`,
+    `Bounded Artist ${PREVIEW_CACHE_MAX_ENTRIES}`,
+    { fetchImpl },
+  );
+  assert.equal(fetches, afterFill, "the newest entry remains cached");
+
+  await getFreshDeezerPreview("Bounded Preview 0", "Bounded Artist 0", { fetchImpl });
+  assert.equal(fetches, afterFill + 1, "the least-recently-used entry was evicted at the cap");
 });
 
 test("provider pruning removes dormant YouTube mappings and downgrades CC0 pointers without retaining API trust", () => {

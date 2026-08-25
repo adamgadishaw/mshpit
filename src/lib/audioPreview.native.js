@@ -51,7 +51,9 @@ export function useAudioPreview(src, {
   const playbackKeyRef = useRef(playbackKey);
   enabledRef.current = !!enabled;
   playbackKeyRef.current = playbackKey;
-  const player = useAudioPlayer(source, { updateInterval: 280 });
+  // Expo recommends a low-frequency status interval for better performance.
+  // The player UI needs a readable scrubber, not sub-second decoder updates.
+  const player = useAudioPlayer(source, { updateInterval: 1_000 });
   const status = useAudioPlayerStatus(player);
   const [operationError, setOperationError] = useState(null);
   const activeRef = useRef(AppState.currentState == null || AppState.currentState === "active");

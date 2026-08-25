@@ -2,7 +2,20 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { VIDEO_PUBLISHING_PIPELINE_VERSION } from "../domain/mediaPublishingCapabilities.mjs";
-import { loadMediaPublishingCapabilities } from "./mediaPublishingHealth.js";
+import {
+  MEDIA_PUBLISHING_CAPABILITIES_TTL_MS,
+  loadMediaPublishingCapabilities,
+} from "./mediaPublishingHealth.js";
+
+const healthyPipeline = () => ({
+  capabilities: {
+    mediaPublishing: {
+      photos: true,
+      videos: true,
+      pipeline: VIDEO_PUBLISHING_PIPELINE_VERSION,
+    },
+  },
+});
 
 test("media publishing health negotiates the exact pipeline behind a service boundary", async () => {
   const controller = new AbortController();
@@ -11,24 +24,18 @@ test("media publishing health negotiates the exact pipeline behind a service bou
     signal: controller.signal,
     apiCall: async (path, options) => {
       calls.push({ path, options });
-      return {
-        capabilities: {
-          mediaPublishing: {
-            photos: true,
-            videos: true,
-            pipeline: VIDEO_PUBLISHING_PIPELINE_VERSION,
-          },
-        },
-      };
+      return healthyPipeline();
     },
   });
 
   assert.deepEqual(result, { photos: true, videos: true });
   assert.equal(calls.length, 1);
   assert.equal(calls[0].path, `/api/health?mediaPipeline=${VIDEO_PUBLISHING_PIPELINE_VERSION}`);
-  assert.equal(calls[0].options.signal, controller.signal);
+  assert.equal(calls[0].options.signal instanceof AbortSignal, true);
+  assert.notEqual(calls[0].options.signal, controller.signal);
   assert.equal(calls[0].options.silent, true);
   assert.equal(calls[0].options.skipIdentityCheck, true);
+  assert.equal(calls[0].options.timeoutMs, 3_000);
 });
 
 test("media publishing health keeps malformed capability responses fail-closed", async () => {
@@ -38,4 +45,82 @@ test("media publishing health keeps malformed capability responses fail-closed",
     }),
   });
   assert.deepEqual(result, { photos: true, videos: false });
+});
+
+test("media publishing health reuses one request inside the short TTL and refreshes after it", async () => {
+  let requestCount = 0;
+  let currentTime = 10_000;
+  const apiCall = async () => {
+    requestCount += 1;
+    return healthyPipeline();
+  };
+  const options = { apiCall, now: () => currentTime };
+
+  await loadMediaPublishingCapabilities(options);
+  currentTime += MEDIA_PUBLISHING_CAPABILITIES_TTL_MS - 1;
+  await loadMediaPublishingCapabilities(options);
+  assert.equal(requestCount, 1);
+
+  currentTime += 1;
+  await loadMediaPublishingCapabilities(options);
+  assert.equal(requestCount, 2);
+});
+
+test("media publishing health coalesces concurrent stale checks into one request", async () => {
+  let requestCount = 0;
+  let releaseRequest;
+  const apiCall = async () => {
+    requestCount += 1;
+    return new Promise((resolve) => {
+      releaseRequest = () => resolve(healthyPipeline());
+    });
+  };
+
+  const first = loadMediaPublishingCapabilities({ apiCall });
+  const second = loadMediaPublishingCapabilities({ apiCall });
+  await Promise.resolve();
+  assert.equal(requestCount, 1);
+
+  releaseRequest();
+  const [firstResult, secondResult] = await Promise.all([first, second]);
+  assert.deepEqual(firstResult, { photos: true, videos: true });
+  assert.deepEqual(secondResult, firstResult);
+  assert.equal(requestCount, 1);
+});
+
+test("a forced pre-upload check bypasses a fresh cached capability result", async () => {
+  let requestCount = 0;
+  const apiCall = async () => {
+    requestCount += 1;
+    return healthyPipeline();
+  };
+
+  await loadMediaPublishingCapabilities({ apiCall });
+  await loadMediaPublishingCapabilities({ apiCall });
+  assert.equal(requestCount, 1);
+
+  await loadMediaPublishingCapabilities({ apiCall, force: true });
+  assert.equal(requestCount, 2);
+});
+
+test("one cancelled consumer does not duplicate or cancel a shared request still in use", async () => {
+  let requestCount = 0;
+  let releaseRequest;
+  const apiCall = async () => {
+    requestCount += 1;
+    return new Promise((resolve) => {
+      releaseRequest = () => resolve(healthyPipeline());
+    });
+  };
+  const controller = new AbortController();
+
+  const cancelled = loadMediaPublishingCapabilities({ apiCall, signal: controller.signal });
+  const retained = loadMediaPublishingCapabilities({ apiCall });
+  await Promise.resolve();
+  controller.abort();
+  releaseRequest();
+
+  await assert.rejects(cancelled, { name: "AbortError" });
+  assert.deepEqual(await retained, { photos: true, videos: true });
+  assert.equal(requestCount, 1);
 });

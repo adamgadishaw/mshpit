@@ -94,3 +94,25 @@ export function playerPlaybackFailure({
     toast: sourceUnavailable || (!!audioErrorKind && audioErrorKind !== "permission"),
   };
 }
+
+// Player engines can emit the same terminal condition for every track when a
+// browser/privacy setting or provider outage affects the whole session. Keep a
+// useful diagnostic sample without filling the local history with one copy per
+// song. Content identity never enters this key.
+export function claimPlayerFailureDiagnostic(recent, {
+  source = "player",
+  kind = "unknown",
+  code = "",
+  now = Date.now(),
+  cooldownMs = 5 * 60 * 1000,
+  maxEntries = 32,
+} = {}) {
+  if (typeof recent?.get !== "function" || typeof recent?.set !== "function") return true;
+  const key = JSON.stringify([String(source), String(kind), String(code || "")]);
+  const previous = Number(recent.get(key));
+  if (Number.isFinite(previous) && now - previous >= 0 && now - previous < cooldownMs) return false;
+  recent.delete?.(key);
+  recent.set(key, now);
+  while (recent.size > maxEntries) recent.delete(recent.keys().next().value);
+  return true;
+}

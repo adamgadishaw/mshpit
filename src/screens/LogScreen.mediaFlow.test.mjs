@@ -19,7 +19,7 @@ test("composer filters picker and recovered selections before Studio staging", (
 
 test("apply rechecks the live capability and connects byte progress plus cancellation", () => {
   const apply = source.slice(source.indexOf("async function applyStudioMedia"), source.indexOf("const addPhoto"));
-  assert.match(apply, /await refreshMediaPublishingCapabilities\(\)/);
+  assert.match(apply, /await refreshMediaPublishingCapabilities\(\{ force: true, background: true \}\)/);
   assert.match(apply, /mediaPublishingSelection\(selected, activeCapabilities\)/);
   assert.match(apply, /selection\.blockedPhotos/);
   assert.match(apply, /const controller = new AbortController\(\)/);
@@ -39,17 +39,21 @@ test("apply rechecks the live capability and connects byte progress plus cancell
 });
 
 test("picker refreshes and honors both media capabilities from the exact server contract", () => {
-  assert.match(source, /loadMediaPublishingCapabilities\(\{ apiCall: api, signal: controller\.signal \}\)/);
+  assert.match(source, /loadMediaPublishingCapabilities\(\{\s*apiCall: api,\s*signal: controller\.signal,\s*force,/);
   assert.doesNotMatch(source, /api\(MEDIA_PUBLISHING_HEALTH_PATH/);
   assert.match(source, /allowPhotos: pickerCapabilities\.photos/);
   assert.match(source, /allowVideos: pickerCapabilities\.videos/);
   assert.match(source, /label=\{mediaAttachmentLabel\}/);
   assert.match(source, /AppState\.addEventListener\("change"/);
+  assert.match(source, /state === "active"\) void refreshMediaPublishingCapabilities\(\{ background: true \}\)/);
+  assert.match(source, /sameMediaPublishingCapabilities\(current, capabilities\) \? current : capabilities/);
+  assert.match(source, /refreshMediaPublishingCapabilities\(\{ force: true, background: false \}\)/);
   assert.match(source, /accessibilityLabel="Check media upload availability again"/);
   assert.doesNotMatch(source, /Photo Studio is available now/);
   const picker = source.slice(source.indexOf("const addPhoto"), source.indexOf("const cancelUpload"));
-  assert.match(picker, /if \(Platform\.OS === "web"\) \{\s*void refreshMediaPublishingCapabilities\(\)/);
-  assert.match(picker, /const latestCapabilities = await refreshMediaPublishingCapabilities\(\)/);
+  assert.match(picker, /if \(Platform\.OS === "web"\) \{\s*\/\/[^]*if \(!mediaPublishingCapabilitiesReady\) \{\s*pickerCapabilities = \{ photos: true, videos: true \};\s*\}\s*void refreshMediaPublishingCapabilities\(\{ background: true \}\)/);
+  assert.match(picker, /const refreshedCapabilities = await refreshMediaPublishingCapabilities\(\{ background: true \}\)/);
+  assert.match(picker, /const latestCapabilities = await refreshMediaPublishingCapabilities\(\{ background: true \}\)/);
 });
 
 test("verified clips never reopen into the unsupported client cover replacement path", () => {

@@ -344,8 +344,8 @@
       "fingerprint": "74663b09c290477a8de1"
     },
     "src/components/PlayerBar.jsx": {
-      "count": 2,
-      "fingerprint": "a6fbe23c770f41a0d7d6"
+      "count": 1,
+      "fingerprint": "ac94f628a8f0ddbb7256"
     },
     "src/components/VenuePhotoWidget.jsx": {
       "count": 1,
@@ -522,8 +522,8 @@
       "fingerprint": "01e0028f751a5ee02884"
     },
     "src/store.js": {
-      "count": 123,
-      "fingerprint": "e513a5b7ece2f4db8434"
+      "count": 122,
+      "fingerprint": "7b00ada2823e37a9e491"
     }
   },
   "legacyClientContractShapesByFile": {
@@ -546,8 +546,8 @@
       "fingerprint": "3b9bc393e377e0c78f89"
     },
     "server/musicProviders.js": {
-      "count": 2,
-      "fingerprint": "73cfba822635039011a2"
+      "count": 1,
+      "fingerprint": "73fcade72c0a0ebbb7ef"
     },
     "server/wikidataChannels.js": {
       "count": 1,

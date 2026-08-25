@@ -86,14 +86,15 @@ test("the composer exposes the capability, honest transition copy, and both sele
   const source = await readFile(new URL("../screens/LogScreen.jsx", import.meta.url), "utf8");
   assert.match(VIDEO_PUBLISHING_PREPARING_COPY, /Photo uploads are available/);
   assert.match(VIDEO_PUBLISHING_PREPARING_COPY, /Existing clips remain viewable/);
-  assert.match(source, /loadMediaPublishingCapabilities\(\{ apiCall: api, signal: controller\.signal \}\)/);
+  assert.match(source, /loadMediaPublishingCapabilities\(\{\s*apiCall: api,\s*signal: controller\.signal,\s*force,/);
   assert.doesNotMatch(source, /api\(MEDIA_PUBLISHING_HEALTH_PATH/);
   assert.match(source, /AppState\.addEventListener\("change"/);
-  assert.match(source, /if \(state === "active"\) void refreshMediaPublishingCapabilities\(\)/);
+  assert.match(source, /if \(state === "active"\) void refreshMediaPublishingCapabilities\(\{ background: true \}\)/);
   assert.match(source, /allowPhotos: pickerCapabilities\.photos/);
   assert.match(source, /allowVideos: pickerCapabilities\.videos/);
   assert.match(source, /mediaPublishingSelection\(candidateAssets, capabilities\)/);
   assert.match(source, /mediaPublishingSelection\(selected, activeCapabilities\)/);
+  assert.match(source, /await refreshMediaPublishingCapabilities\(\{ force: true, background: true \}\)/);
   assert.match(source, /mediaPublishingAvailabilityCopy\(mediaPublishingCapabilities\)/);
   assert.match(source, /accessibilityLabel="Check media upload availability again"/);
 });

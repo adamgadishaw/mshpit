@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { View, Text, StyleSheet, Pressable, Platform, FlatList, useWindowDimensions } from "react-native";
 import { useEvent } from "expo";
 import { useVideoPlayer, VideoView } from "expo-video";
@@ -7,7 +7,8 @@ import { analyticsDurationBucket } from "../domain/analyticsPolicy.mjs";
 import { shouldWarmClipPoster } from "../domain/clipPoster.mjs";
 import { clipKeyboardTarget, clipPageIndex, clipPageNeedsMore, clipRenderWindow } from "../domain/clipPaging.mjs";
 import { mediaDescriptorForUri, mediaPosterUri } from "../domain/postMediaDisplay.mjs";
-import { pendingVideoMilestones } from "../domain/mediaAnalytics.mjs";
+import { claimClipPlaybackFailure, pendingVideoMilestones } from "../domain/mediaAnalytics.mjs";
+import { videoViewerWebFrameReady } from "../domain/mediaViewer.mjs";
 import Icon from "../components/Icon";
 import Avatar from "../components/Avatar";
 import ClipPoster from "../components/ClipPoster";
@@ -19,7 +20,7 @@ const web = Platform.OS === "web";
 // centered vertically, with its own play/pause + mute. Only the ACTIVE page
 // mounts a real player (mounting every video at once would hammer the network
 // and the decoder), so `active` gates the heavy VideoView.
-function ClipPage({ post, uri, posterUri, altText, height, active, posterEnabled, muted, onToggleMute, onLike, onOpenPost, onOpenProfile, onOpenArtist, onTrack }) {
+function ClipPage({ post, uri, posterUri, altText, height, active, posterEnabled, muted, onToggleMute, onLike, onOpenPost, onOpenProfile, onOpenArtist, onTrack, onPlaybackError }) {
   const [attempt, setAttempt] = useState(0);
   const source = active
     ? { uri, useCaching: !web, metadata: { title: `PIT clip ${post?.id || "video"} ${attempt}` } }
@@ -35,14 +36,18 @@ function ClipPage({ post, uri, posterUri, altText, height, active, posterEnabled
   });
   const [paused, setPaused] = useState(false);
   const [firstFrameSession, setFirstFrameSession] = useState(null);
+  const videoViewRef = useRef(null);
   const activationRef = useRef({ active: false, count: 0 });
   if (active && !activationRef.current.active) activationRef.current.count += 1;
   activationRef.current.active = active;
   const playbackSession = `${uri}:${attempt}:${activationRef.current.count}`;
+  const playbackSessionRef = useRef(playbackSession);
+  const activeRef = useRef(active);
+  playbackSessionRef.current = playbackSession;
+  activeRef.current = active;
   const hasFirstFrame = active && firstFrameSession === playbackSession;
   const mountedAtRef = useRef(Date.now());
   const trackedFirstFrameRef = useRef(false);
-  const trackedErrorRef = useRef(false);
   const trackRef = useRef(onTrack);
   trackRef.current = onTrack;
   const phase = error || status === "error" ? "error" : hasFirstFrame ? "ready" : "loading";
@@ -52,7 +57,6 @@ function ClipPage({ post, uri, posterUri, altText, height, active, posterEnabled
     setPaused(false);
     mountedAtRef.current = Date.now();
     trackedFirstFrameRef.current = false;
-    trackedErrorRef.current = false;
   }, [active, attempt, uri]);
 
   useEffect(() => {
@@ -101,12 +105,14 @@ function ClipPage({ post, uri, posterUri, altText, height, active, posterEnabled
   }, [active, paused, player]);
 
   useEffect(() => {
-    if (!active || phase !== "error" || trackedErrorRef.current) return;
-    trackedErrorRef.current = true;
-    trackRef.current?.("product_error", { code: "video_load_failed", surface: "clips", retryable: true });
-  }, [active, phase]);
+    if (!active || phase !== "error") return;
+    onPlaybackError?.({ postId: post?.id, uri, attempt });
+  }, [active, attempt, onPlaybackError, phase, post?.id, uri]);
 
-  const recordFirstFrame = () => {
+  const recordFirstFrame = useCallback((session = playbackSession) => {
+    // A decoded-frame callback from the player generation being replaced must
+    // not mark the new clip ready or consume its first-frame metric.
+    if (!activeRef.current || playbackSessionRef.current !== session) return;
     setFirstFrameSession(playbackSession);
     setPaused(!player.playing);
     if (trackedFirstFrameRef.current) return;
@@ -117,7 +123,23 @@ function ClipPage({ post, uri, posterUri, altText, height, active, posterEnabled
       surface: "clips",
       outcome: "ok",
     });
-  };
+  }, [playbackSession, player]);
+
+  // Expo 56 web can miss VideoView's first-frame callback even though its
+  // underlying HTMLVideoElement already has a decoded current frame. Reuse the
+  // media viewer's DOM-readiness fallback so the poster cannot cover a healthy
+  // playing or paused clip indefinitely.
+  useEffect(() => {
+    if (!web || !active || hasFirstFrame || phase === "error") return undefined;
+    const session = playbackSession;
+    const probe = () => {
+      const element = videoViewRef.current?.nativeRef?.current;
+      if (videoViewerWebFrameReady(element)) recordFirstFrame(session);
+    };
+    probe();
+    const timer = setInterval(probe, 125);
+    return () => clearInterval(timer);
+  }, [active, hasFirstFrame, phase, playbackSession, recordFirstFrame]);
 
   const retry = () => {
     setPaused(false);
@@ -146,6 +168,7 @@ function ClipPage({ post, uri, posterUri, altText, height, active, posterEnabled
         >
           <VideoView
             key={playbackSession}
+            ref={videoViewRef}
             player={player}
             style={styles.video}
             contentFit="contain"
@@ -241,6 +264,14 @@ export default function ClipsScreen({ onClose, onOpenPost, onOpenProfile, onOpen
   const [muted, setMuted] = useState(web);
   const scrollRef = useRef(null);
   const loadingMoreRef = useRef(false);
+  const reportedPlaybackErrorsRef = useRef(new Set());
+  const trackRef = useRef(track);
+  trackRef.current = track;
+
+  const reportClipPlaybackError = useCallback((failure) => {
+    if (!claimClipPlaybackFailure(reportedPlaybackErrorsRef.current, failure)) return;
+    trackRef.current?.("product_error", { code: "video_load_failed", surface: "clips", retryable: true });
+  }, []);
 
   // The reel owns the viewport height minus the slim top bar.
   const pageH = Math.max(240, reelHeight || winH - 52);
@@ -368,6 +399,7 @@ export default function ClipsScreen({ onClose, onOpenPost, onOpenProfile, onOpen
           onOpenProfile={onOpenProfile}
           onOpenArtist={onOpenArtist}
           onTrack={track}
+          onPlaybackError={reportClipPlaybackError}
         />
       )}
       {!loading && pages.length > 0 && loadError ? (
@@ -384,7 +416,7 @@ function ClipReel(props) {
   return web ? <WebReel {...props} /> : <NativeReel {...props} />;
 }
 
-function ClipReelPage({ pg, index, pageH, active, muted, onToggleMute, onLike, onOpenPost, onOpenProfile, onOpenArtist, onTrack }) {
+function ClipReelPage({ pg, index, pageH, active, muted, onToggleMute, onLike, onOpenPost, onOpenProfile, onOpenArtist, onTrack, onPlaybackError }) {
   return (
     <ClipPage
       post={pg.post}
@@ -401,6 +433,7 @@ function ClipReelPage({ pg, index, pageH, active, muted, onToggleMute, onLike, o
       onOpenProfile={onOpenProfile}
       onOpenArtist={onOpenArtist}
       onTrack={onTrack}
+      onPlaybackError={onPlaybackError}
     />
   );
 }
@@ -409,7 +442,7 @@ function ClipReelPage({ pg, index, pageH, active, muted, onToggleMute, onLike, o
 // scroll gestures, which previously stranded iOS and Android on the first clip.
 // Only the active page mounts a decoder; the adjacent pages retain lightweight
 // durable posters so swipes never reveal a black rectangle.
-function NativeReel({ reelRef, pages, pageH, active, muted, onScroll, onToggleMute, onLike, onOpenPost, onOpenProfile, onOpenArtist, onTrack }) {
+function NativeReel({ reelRef, pages, pageH, active, muted, onScroll, onToggleMute, onLike, onOpenPost, onOpenProfile, onOpenArtist, onTrack, onPlaybackError }) {
   return (
     <FlatList
       ref={reelRef}
@@ -429,6 +462,7 @@ function NativeReel({ reelRef, pages, pageH, active, muted, onScroll, onToggleMu
           onOpenProfile={onOpenProfile}
           onOpenArtist={onOpenArtist}
           onTrack={onTrack}
+          onPlaybackError={onPlaybackError}
         />
       )}
       getItemLayout={(_, index) => ({ length: pageH, offset: pageH * index, index })}
@@ -454,7 +488,7 @@ function NativeReel({ reelRef, pages, pageH, active, muted, onScroll, onToggleMu
 
 // Web reel uses CSS scroll-snap because React Native Web's FlatList does not
 // provide native-style paging and expo-video renders a real HTML video element.
-function WebReel({ reelRef, pages, pageH, active, muted, onOffset, onToggleMute, onLike, onOpenPost, onOpenProfile, onOpenArtist, onTrack }) {
+function WebReel({ reelRef, pages, pageH, active, muted, onOffset, onToggleMute, onLike, onOpenPost, onOpenProfile, onOpenArtist, onTrack, onPlaybackError }) {
   const localRef = useRef(null);
   const ref = reelRef || localRef;
   const previousPageHeightRef = useRef(pageH);
@@ -523,6 +557,7 @@ function WebReel({ reelRef, pages, pageH, active, muted, onOffset, onToggleMute,
             onOpenProfile={onOpenProfile}
             onOpenArtist={onOpenArtist}
             onTrack={onTrack}
+            onPlaybackError={onPlaybackError}
           />
         </View>
       );})}

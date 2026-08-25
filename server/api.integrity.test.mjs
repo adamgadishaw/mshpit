@@ -47,11 +47,22 @@ function verifiedUser(id, email, handle) {
   return q.userById.get(id);
 }
 
-const coldYouTubeResolve = ({ user, query, ip }) => routes["POST /api/youtube/track/resolve"]({
+const coldYouTubeResolve = ({ user, query, ip, signal }) => routes["POST /api/youtube/track/resolve"]({
   user,
   body: query,
   ip,
+  signal,
 });
+
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((onResolve, onReject) => {
+    resolve = onResolve;
+    reject = onReject;
+  });
+  return { promise, resolve, reject };
+}
 
 test("publicUser treats extras as untrusted and tolerates malformed stored JSON", () => {
   const base = {
@@ -375,6 +386,75 @@ test("YouTube cold search preserves anonymous cache/pins but requires a verified
     }
     assert.equal(searchCalls - beforeFreshIp, 40,
       "a persisted-account denial consumes none of a fresh IP's allowance");
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousApiKey === undefined) delete process.env.YOUTUBE_API_KEY;
+    else process.env.YOUTUBE_API_KEY = previousApiKey;
+  }
+});
+
+test("player provider routes propagate disconnects and downgrade ordinary preview outages", async () => {
+  const previousApiKey = process.env.YOUTUBE_API_KEY;
+  const previousFetch = globalThis.fetch;
+  process.env.YOUTUBE_API_KEY = "test-key";
+  const listener = verifiedUser("u_player_abort", "player-abort@example.com", "playerabort");
+  try {
+    const youtubeStarted = deferred();
+    const youtubeStopped = deferred();
+    globalThis.fetch = async (_url, request) => {
+      youtubeStarted.resolve();
+      return new Promise((_resolve, reject) => {
+        const onAbort = () => {
+          youtubeStopped.resolve();
+          reject(request.signal.reason);
+        };
+        if (request.signal.aborted) onAbort();
+        else request.signal.addEventListener("abort", onAbort, { once: true });
+      });
+    };
+    const youtubeAbort = new AbortController();
+    const youtube = coldYouTubeResolve({
+      user: listener,
+      query: { title: "Route Cancellation Track", artist: "" },
+      ip: "player-abort-youtube",
+      signal: youtubeAbort.signal,
+    });
+    await youtubeStarted.promise;
+    youtubeAbort.abort(new DOMException("HTTP caller disconnected", "AbortError"));
+    await assert.rejects(() => youtube, { name: "AbortError" });
+    await youtubeStopped.promise;
+
+    const deezerStarted = deferred();
+    const deezerStopped = deferred();
+    globalThis.fetch = async (_url, request) => {
+      deezerStarted.resolve();
+      return new Promise((_resolve, reject) => {
+        const onAbort = () => {
+          deezerStopped.resolve();
+          reject(request.signal.reason);
+        };
+        if (request.signal.aborted) onAbort();
+        else request.signal.addEventListener("abort", onAbort, { once: true });
+      });
+    };
+    const deezerAbort = new AbortController();
+    const deezer = routes["GET /api/deezer/track"]({
+      query: { title: "Route Preview Cancellation", artist: "Route Preview Artist" },
+      ip: "player-abort-deezer",
+      signal: deezerAbort.signal,
+    });
+    await deezerStarted.promise;
+    deezerAbort.abort(new DOMException("HTTP caller disconnected", "AbortError"));
+    await assert.rejects(() => deezer, { name: "AbortError" });
+    await deezerStopped.promise;
+
+    globalThis.fetch = async () => ({ ok: false, status: 503 });
+    assert.deepEqual(await routes["GET /api/deezer/track"]({
+      query: { title: "Route Preview Provider Miss", artist: "Route Preview Artist" },
+      ip: "player-preview-provider-miss",
+      signal: new AbortController().signal,
+    }), { preview: null, status: "http_error", retryable: true },
+    "a normal third-party preview outage is playback state, not a PIT server failure");
   } finally {
     globalThis.fetch = previousFetch;
     if (previousApiKey === undefined) delete process.env.YOUTUBE_API_KEY;

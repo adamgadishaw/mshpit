@@ -16,6 +16,7 @@ import {
 } from "../domain/playback.mjs";
 import {
   directPlayerVideoId,
+  claimPlayerFailureDiagnostic,
   initialPlayerSources,
   patchPlayerSources,
   playerPlaybackFailure,
@@ -42,6 +43,7 @@ const web = Platform.OS === "web";
 const TERMINAL_YT_CODES = [2, 100, 101, 150, 153];
 const MAX_YT_RETRIES = 2;
 const PROVIDER_SETTLE_TIMEOUT_MS = 25000;
+const recentPlaybackFailureDiagnostics = new Map();
 
 // Provider fetches do not share a completion barrier: whichever source settles
 // first becomes playable immediately. Cleanup cancels the timer and ignores a
@@ -373,14 +375,19 @@ export default function PlayerBar({
   useEffect(() => {
     if (!cur || !curKey) return undefined;
     setResolved((current) => patchPlayerSources(current, resolutionKey, { previewPending: true }));
-    let task = null;
-    try { task = resolveDeezerPreview(cur.title, cur.artist); } catch {}
-    return subscribeToProvider(task, (preview) => {
+    const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+    const task = resolveDeezerPreview(cur.title, cur.artist, { signal: controller?.signal });
+    const unsubscribe = subscribeToProvider(task, (preview) => {
+      controller?.abort();
       setResolved((current) => patchPlayerSources(current, resolutionKey, {
         ...(preview ? { preview } : null),
         previewPending: false,
       }));
     });
+    return () => {
+      unsubscribe?.();
+      controller?.abort();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resolutionKey]);
 
@@ -391,17 +398,23 @@ export default function PlayerBar({
       youtubePending: true,
       youtubeSettled: false,
     }));
+    const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
     let task = null;
     try {
       task = resolveYouTube(cur.title, cur.artist, cur.duration || 0, {
         ...youtubeSource,
         allowSearch: allowSearch === true,
+        signal: controller?.signal,
       });
     } catch (error) {
       task = Promise.reject(error);
     }
     const request = { key: resolutionKey, cancel: null };
-    request.cancel = subscribeToProvider(task, (videoId) => {
+    const unsubscribe = subscribeToProvider(task, (videoId) => {
+      // Also closes the underlying fetch when the provider subscription's
+      // bounded timer settles first. Aborting an already-finished fetch is a
+      // harmless no-op; leaving a timed-out lookup alive is not.
+      controller?.abort();
       if (youtubeResolutionRef.current === request) youtubeResolutionRef.current = null;
       setResolved((current) => patchPlayerSources(current, resolutionKey, {
         videoId,
@@ -410,6 +423,10 @@ export default function PlayerBar({
         youtubeSettled: true,
       }));
     });
+    request.cancel = () => {
+      unsubscribe?.();
+      controller?.abort();
+    };
     youtubeResolutionRef.current = request;
     return true;
   };
@@ -494,7 +511,8 @@ export default function PlayerBar({
   const previewSrc = forThis && !hasVideo ? resolved.preview : null;
   const hasNext = index < list.length - 1;
 
-  // Removed and non-embeddable videos (IFrame errors 100/101/150) must not stay
+  // Invalid, removed and non-embeddable videos (IFrame errors 2/100/101/150)
+  // must not stay
   // pinned in either cache. The next play excludes this ID and selects a newly
   // scored candidate while this play immediately falls back to a fresh preview.
   useEffect(() => {
@@ -518,7 +536,10 @@ export default function PlayerBar({
   const invalidatedRef = useRef("");
   useEffect(() => {
     const failedId = ytErrorForThis?.videoId;
-    if (!cur || !failedId || ![100, 101, 150].includes(Number(ytErrorForThis?.code))) return;
+    // 153 is intentionally excluded: privacy tools can strip the client
+    // identity/referrer YouTube requires, so that error does not prove the
+    // shared video id is bad for other listeners.
+    if (!cur || !failedId || ![2, 100, 101, 150].includes(Number(ytErrorForThis?.code))) return;
     const signature = `${resolutionKey}|${cur.artist || ""}|${cur.title || ""}|${failedId}`;
     if (invalidatedRef.current === signature) return;
     invalidatedRef.current = signature;
@@ -751,6 +772,14 @@ export default function PlayerBar({
     const key = `${resolutionKey}:${playbackFailure.source}:${failureKind}:${playbackFailure.toast ? "toast" : "silent"}`;
     if (reportedFailure.current === key) return;
     reportedFailure.current = key;
+    const engineCode = playbackFailure.source === "youtube-player"
+      ? currentYoutubeError?.code
+      : currentAudioError?.code;
+    if (!claimPlayerFailureDiagnostic(recentPlaybackFailureDiagnostics, {
+      source: playbackFailure.source,
+      kind: failureKind,
+      code: engineCode,
+    })) return;
     captureAppError(new Error("Playback source failed"), {
       code: "PIT-MEDIA-001",
       context: "Starting the selected track",
@@ -761,7 +790,7 @@ export default function PlayerBar({
       // expected recovery path, not a broken-track failure.
       toast: playbackFailure.toast,
     });
-  }, [resolutionKey, curKey, playbackFailure?.kind, playbackFailure?.source, playbackFailure?.toast]);
+  }, [resolutionKey, curKey, playbackFailure?.kind, playbackFailure?.source, playbackFailure?.toast, currentYoutubeError?.code, currentAudioError?.code]);
 
   const closePlayer = () => {
     // Close an open phone sheet first, then let App clear the account-owned queue.

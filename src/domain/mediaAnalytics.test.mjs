@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { pendingVideoMilestones } from "./mediaAnalytics.mjs";
+import { claimClipPlaybackFailure, pendingVideoMilestones } from "./mediaAnalytics.mjs";
 
 test("video milestones cross each threshold once and reserve completion for the end event", () => {
   assert.deepEqual(pendingVideoMilestones({ currentTime: 51, duration: 100 }), ["25", "50"]);
@@ -13,4 +13,19 @@ test("video milestones ignore invalid durations and never duplicate recorded pro
   assert.deepEqual(pendingVideoMilestones({ currentTime: 30, duration: 0 }), []);
   assert.deepEqual(pendingVideoMilestones({ currentTime: 80, duration: 100, seen: new Set(["25", "50", "75"]) }), []);
   assert.deepEqual(pendingVideoMilestones({ ended: true, seen: ["100"] }), []);
+});
+
+test("broken clip analytics report once per attempt across ordinary revisits", () => {
+  const reported = new Set();
+  const failure = {
+    postId: "post-1",
+    uri: "https://media.test/clip.mp4",
+    attempt: 0,
+  };
+
+  assert.equal(claimClipPlaybackFailure(reported, failure), true);
+  assert.equal(claimClipPlaybackFailure(reported, failure), false);
+  assert.equal(claimClipPlaybackFailure(reported, { ...failure, attempt: 1 }), true);
+  assert.equal(claimClipPlaybackFailure(reported, { ...failure, attempt: 1 }), false);
+  assert.equal(claimClipPlaybackFailure(reported, { ...failure, uri: "https://media.test/replacement.mp4" }), true);
 });

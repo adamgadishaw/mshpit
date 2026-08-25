@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
+  claimPlayerFailureDiagnostic,
   directPlayerVideoId,
   embeddedPlayerPreview,
   initialPlayerSources,
@@ -184,4 +185,22 @@ test("PlayerBar publishes provider results independently instead of awaiting Pro
 test("the full-screen media viewer owns audio instead of overlapping PlayerBar", async () => {
   const source = await readFile(new URL("../../App.js", import.meta.url), "utf8");
   assert.match(source, /playerObscured\s*=\s*[^;]*!!nav\.photos/);
+});
+
+test("repeated engine failures are sampled without using track identity", () => {
+  const recent = new Map();
+  const failure = { source: "youtube-player", kind: "embed", code: 153, now: 1_000 };
+  assert.equal(claimPlayerFailureDiagnostic(recent, failure), true);
+  assert.equal(claimPlayerFailureDiagnostic(recent, { ...failure, now: 2_000 }), false,
+    "the same browser-wide failure must not add one diagnostic per track");
+  assert.equal(claimPlayerFailureDiagnostic(recent, { ...failure, code: 100, now: 2_000 }), true,
+    "a materially different player failure remains observable");
+  assert.equal(claimPlayerFailureDiagnostic(recent, { ...failure, now: 301_001 }), true,
+    "a later recurrence remains observable after the cooldown");
+
+  const bounded = new Map();
+  for (let code = 1; code <= 40; code += 1) {
+    claimPlayerFailureDiagnostic(bounded, { source: "youtube-player", kind: "playback", code, now: code });
+  }
+  assert.equal(bounded.size, 32);
 });

@@ -22,7 +22,7 @@ export function useAudioPreview(src, { enabled = true, mediaKey = "", onEnded, o
   const [error, setError] = useState(null);
   const sourceRef = useRef(src);
   sourceRef.current = src;
-  const lastPos = useRef(0); // throttle position state updates to cut re-renders (lag)
+  const lastPos = useRef(0); // throttle decorative progress updates to cut shell re-renders
 
   // One <audio> element per queue occurrence, wired to state. Recreating it on
   // mediaKey changes gives delayed DOM events an immutable occurrence lease.
@@ -32,9 +32,10 @@ export function useAudioPreview(src, { enabled = true, mediaKey = "", onEnded, o
     const occurrence = { mediaKey, source: src || null };
     a.preload = "auto";
     audioRef.current = a;
-    // timeupdate fires ~4x/sec; only push to state ~3x/sec so the whole player
-    // bar isn't re-rendering on every tick (that was a real lag source).
-    const onTime = () => { const t = a.currentTime || 0; if (Math.abs(t - lastPos.current) >= 0.28) { lastPos.current = t; setPos(t); } };
+    // timeupdate can fire several times per second. One progress update per
+    // second is smooth enough for a 30-second preview and avoids repeatedly
+    // re-rendering the persistent player shell.
+    const onTime = () => { const t = a.currentTime || 0; if (Math.abs(t - lastPos.current) >= 0.95) { lastPos.current = t; setPos(t); } };
     const onMeta = () => setDur(isFinite(a.duration) ? a.duration : 0);
     const onPlay = () => { setPlaying(true); setError(null); startedRef.current?.(occurrence); };
     const onPause = () => setPlaying(false);

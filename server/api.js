@@ -2065,6 +2065,7 @@ async function searchYouTubeTrack(ctx, input) {
   return resolveYouTubeTrack(playback.title, playback.artist, {
     ...playback.resolverOptions,
     beforeSearch: reserveActorOnce,
+    signal: ctx.signal,
     // Keep actor/IP demand failures out of another listener's in-flight result.
     // The provider sees only this opaque process-local coalescing partition.
     demandScope: createHash("sha256")
@@ -2437,9 +2438,12 @@ export const routes = {
     const artist = clean(ctx.query.artist, { max: 120 });
     if (!title) throw new ApiError(400, "Missing title.");
     limit(ctx, "deezer-track", 180, 10 * 60 * 1000);
-    try { return await getFreshDeezerPreview(title, artist); }
+    try { return await getFreshDeezerPreview(title, artist, { signal: ctx.signal }); }
     catch (error) {
-      if (error instanceof ProviderError) throw new ApiError(502, "The preview source missed its cue. Try again shortly.", "PROVIDER_UNAVAILABLE", error);
+      if (ctx.signal?.aborted) throw ctx.signal.reason || error;
+      if (error instanceof ProviderError) {
+        return { preview: null, status: error.code, retryable: error.retryable };
+      }
       throw error;
     }
   },

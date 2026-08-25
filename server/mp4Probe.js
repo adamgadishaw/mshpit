@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { ApiError } from "./errors.js";
 import { getMediaConfig, presignS3Request } from "./media.js";
 
@@ -26,6 +28,13 @@ const MAX_CHUNKS = 250_000;
 const MAX_TIMING_ENTRIES = 65_536;
 const MAX_RANGE_REQUESTS = 72;
 const MAX_WALL_MS = 12_000;
+// The web process performs structural admission before the isolated decoder.
+// Each probe can retain roughly eight MiB of bounded MP4 tables/sample data, so
+// this fixed process-wide gate protects unrelated API/SQLite work on the
+// Starter instance. There is intentionally no queue: excess distinct work gets
+// a retryable response before any R2 request, while an identical generation
+// joins the already-running proof.
+export const MAX_CONCURRENT_MP4_STRUCTURAL_PROBES = 2;
 const MAX_CLIP_DURATION_MS = 60_000;
 const MAX_VIDEO_WIDTH = 4_096;
 const MAX_VIDEO_HEIGHT = 2_160;
@@ -47,6 +56,10 @@ const ISO_MP4_MAJOR_BRANDS = new Set(["isom", "mp41", "mp42"]);
 const ISO_MP4_COMPATIBLE_BRANDS = new Set(["isom", "iso2", "iso3", "iso4", "iso5", "iso6", "avc1", "mp41", "mp42"]);
 const STREAMING_ONLY_BOXES = new Set(["moof", "mfra", "sidx", "styp"]);
 
+const activeStructuralProbes = new Map();
+const fetchImplementationIds = new WeakMap();
+let nextFetchImplementationId = 1;
+
 function unsupported() {
   return new ApiError(415, "That MP4 is not compatible with PIT clips.", "MEDIA_TYPE_UNSUPPORTED");
 }
@@ -57,6 +70,70 @@ function unavailable() {
 
 function changedDuringInspection() {
   return new ApiError(409, "The uploaded clip changed while it was being inspected. Try again.", "CONFLICT");
+}
+
+function structuralProbeBusy() {
+  return new ApiError(429, "Clip inspection is busy. Try again shortly.", "RATE_LIMITED");
+}
+
+function fetchImplementationId(fetchImpl) {
+  let identity = fetchImplementationIds.get(fetchImpl);
+  if (!identity) {
+    identity = nextFetchImplementationId;
+    nextFetchImplementationId += 1;
+    fetchImplementationIds.set(fetchImpl, identity);
+  }
+  return identity;
+}
+
+function structuralProbeIdentity(state) {
+  const credential = createHash("sha256")
+    .update(`${state.config.accessKeyId}\0${state.config.secretAccessKey}`)
+    .digest("hex");
+  return createHash("sha256").update([
+    state.objectUrl,
+    state.expectedBytes,
+    state.ifMatch || "",
+    state.storageScope,
+    state.config.region,
+    credential,
+    fetchImplementationId(state.fetchImpl),
+  ].join("\0")).digest("hex");
+}
+
+function waitForStructuralProbe(job, signal) {
+  if (signal?.aborted) {
+    return Promise.reject(signal.reason || new DOMException("Aborted", "AbortError"));
+  }
+  job.waiters += 1;
+  return new Promise((resolve, reject) => {
+    let released = false;
+    const release = () => {
+      if (released) return false;
+      released = true;
+      signal?.removeEventListener?.("abort", onAbort);
+      job.waiters = Math.max(0, job.waiters - 1);
+      if (!job.settled && job.waiters === 0 && !job.controller.signal.aborted) {
+        job.controller.abort(new DOMException("All structural-probe callers disconnected", "AbortError"));
+      }
+      return true;
+    };
+    const onAbort = () => {
+      if (!release()) return;
+      reject(signal.reason || new DOMException("Aborted", "AbortError"));
+    };
+    signal?.addEventListener?.("abort", onAbort, { once: true });
+    job.promise.then(
+      (value) => {
+        if (!release()) return;
+        resolve(value);
+      },
+      (error) => {
+        if (!release()) return;
+        reject(error);
+      },
+    );
+  });
 }
 
 function endpointObjectUrl(config, objectKey) {
@@ -1026,54 +1103,13 @@ async function verifyFirstAvcSample(state, sample) {
   if (cursor !== bytes.length || !hasIdr) throw unsupported();
 }
 
-/**
- * Inspect a stored MP4 using authenticated, exact byte ranges.
- *
- * The optional `ifMatch` value should be the strong ETag observed by the
- * caller's HEAD request. When supplied, it is signed and sent on every GET so
- * the probe cannot combine boxes from different object generations.
- *
- * This is deliberately a bounded structural preflight, not a software decode.
- * Its result must never by itself set codec_status=verified or make a clip
- * public: slice payloads and later access units can still fail to decode.
- */
-export async function verifyMp4Compatibility({
-  objectKey,
-  expectedBytes,
-  ifMatch,
-  env = process.env,
-  fetchImpl = globalThis.fetch,
-  signal,
-  storageScope = "public",
-} = {}) {
-  if (!Number.isSafeInteger(expectedBytes) || expectedBytes < 16) throw unsupported();
-  if (typeof fetchImpl !== "function") throw unavailable();
-
-  let config;
-  try {
-    config = getMediaConfig(env);
-  } catch (error) {
-    if (error instanceof ApiError && error.status === 503) throw error;
-    throw unavailable();
-  }
-  if (!config.configured) throw unavailable();
-  const key = normalizedObjectKey(objectKey);
-  const etag = normalizedIfMatch(ifMatch);
+async function runStructuralProbe(initialState) {
   const state = {
-    config,
-    objectUrl: endpointObjectUrl({
-      ...config,
-      bucket: storageScope === "private" ? config.sourceBucket : config.bucket,
-    }, key),
-    expectedBytes,
-    ifMatch: etag,
-    fetchImpl,
-    signal,
+    ...initialState,
     requests: 0,
     responseBytes: 0,
     deadline: Date.now() + MAX_WALL_MS,
   };
-
   const { ftyp, moov, mdats } = await scanTopLevel(state);
   const ftypBytes = await getRange(state, ftyp.start, ftyp.end - 1);
   const moovBytes = await getRange(state, moov.start, moov.end - 1);
@@ -1089,4 +1125,81 @@ export async function verifyMp4Compatibility({
     if (error instanceof ApiError) throw error;
     throw unsupported();
   }
+}
+
+/**
+ * Inspect a stored MP4 using authenticated, exact byte ranges.
+ *
+ * The optional `ifMatch` value should be the strong ETag observed by the
+ * caller's HEAD request. When supplied, it is signed and sent on every GET so
+ * the probe cannot combine boxes from different object generations.
+ *
+ * This is deliberately a bounded structural preflight, not a software decode.
+ * Its result must never by itself set codec_status=verified or make a clip
+ * public: slice payloads and later access units can still fail to decode.
+ * Distinct probes are globally bounded before their first storage request;
+ * callers for the same exact object generation share the in-flight proof.
+ */
+export async function verifyMp4Compatibility({
+  objectKey,
+  expectedBytes,
+  ifMatch,
+  env = process.env,
+  fetchImpl = globalThis.fetch,
+  signal,
+  storageScope = "public",
+} = {}) {
+  if (!Number.isSafeInteger(expectedBytes) || expectedBytes < 16) throw unsupported();
+  if (typeof fetchImpl !== "function") throw unavailable();
+  if (signal?.aborted) throw signal.reason || new DOMException("Aborted", "AbortError");
+
+  let config;
+  try {
+    config = getMediaConfig(env);
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 503) throw error;
+    throw unavailable();
+  }
+  if (!config.configured) throw unavailable();
+  const key = normalizedObjectKey(objectKey);
+  const etag = normalizedIfMatch(ifMatch);
+  const normalizedStorageScope = storageScope === "private" ? "private" : "public";
+  const state = {
+    config,
+    objectUrl: endpointObjectUrl({
+      ...config,
+      bucket: normalizedStorageScope === "private" ? config.sourceBucket : config.bucket,
+    }, key),
+    expectedBytes,
+    ifMatch: etag,
+    fetchImpl,
+    storageScope: normalizedStorageScope,
+  };
+  const identity = structuralProbeIdentity(state);
+  let current = activeStructuralProbes.get(identity);
+  // The last caller can cancel the shared job one microtask before its finally
+  // handler removes it. Do not make an immediate retry inherit that already-
+  // aborted generation; the old cleanup is identity-fenced below.
+  if (current?.controller.signal.aborted && !current.settled && current.waiters === 0) {
+    if (activeStructuralProbes.get(identity) === current) activeStructuralProbes.delete(identity);
+    current = null;
+  }
+  if (current) return waitForStructuralProbe(current, signal);
+  if (activeStructuralProbes.size >= MAX_CONCURRENT_MP4_STRUCTURAL_PROBES) throw structuralProbeBusy();
+
+  const controller = new AbortController();
+  const job = {
+    controller,
+    promise: null,
+    settled: false,
+    waiters: 0,
+  };
+  activeStructuralProbes.set(identity, job);
+  job.promise = Promise.resolve()
+    .then(() => runStructuralProbe({ ...state, signal: controller.signal }))
+    .finally(() => {
+      job.settled = true;
+      if (activeStructuralProbes.get(identity) === job) activeStructuralProbes.delete(identity);
+    });
+  return waitForStructuralProbe(job, signal);
 }

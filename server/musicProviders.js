@@ -40,6 +40,9 @@ const YOUTUBE_SEARCH_DAILY_BUDGET = Number.isFinite(configuredYouTubeSearchBudge
 const YOUTUBE_SEARCH_MAX_RESULTS = Math.max(10, Math.min(50,
   Math.floor(Number(process.env.YOUTUBE_SEARCH_MAX_RESULTS) || 25)));
 const YOUTUBE_CATALOGUE_MAX_PAGES = Math.max(2, Math.min(20, Number(process.env.YOUTUBE_CATALOGUE_MAX_PAGES) || 12));
+const YOUTUBE_INTERACTIVE_RESOLVE_DEADLINE_MS = 20_000;
+export const PREVIEW_CACHE_MAX_ENTRIES = 512;
+const PREVIEW_MISS_TTL_MS = 30_000;
 const previewCache = new Map();
 const youtubeInflight = new Map();
 const youtubeChannelInflight = new Map();
@@ -71,6 +74,88 @@ const youtubeCircuits = {
 };
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+function abortReason(signal, message = "YouTube provider work was cancelled.") {
+  return signal?.reason || new DOMException(message, "AbortError");
+}
+
+function throwIfAborted(signal) {
+  if (signal?.aborted) throw abortReason(signal);
+}
+
+function fetchWithSignal(fetchImpl, signal) {
+  if (!signal) return fetchImpl;
+  return (url, request = {}) => fetchImpl(url, {
+    ...request,
+    signal: request.signal ? AbortSignal.any([signal, request.signal]) : signal,
+  });
+}
+
+function waitForYouTubeJob(job, signal) {
+  if (signal?.aborted) return Promise.reject(abortReason(signal));
+  job.waiters += 1;
+  return new Promise((resolve, reject) => {
+    let done = false;
+    const release = () => {
+      if (done) return false;
+      done = true;
+      signal?.removeEventListener("abort", onAbort);
+      job.waiters = Math.max(0, job.waiters - 1);
+      if (!job.settled && job.waiters === 0 && !job.controller.signal.aborted) {
+        job.controller.abort(new DOMException("All YouTube resolution callers disconnected.", "AbortError"));
+      }
+      return true;
+    };
+    const onAbort = () => {
+      if (!release()) return;
+      reject(abortReason(signal));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    job.promise.then(
+      (value) => {
+        if (!release()) return;
+        resolve(value);
+      },
+      (error) => {
+        if (!release()) return;
+        reject(error);
+      },
+    );
+  });
+}
+
+function coalescedYouTubeJob({ map, key, signal, deadlineMs = 0, onCoalesced, run }) {
+  if (signal?.aborted) return Promise.reject(abortReason(signal));
+  let job = map.get(key);
+  if (job?.controller.signal.aborted && !job.settled && job.waiters === 0) {
+    if (map.get(key) === job) map.delete(key);
+    job = null;
+  }
+  if (job) {
+    onCoalesced?.();
+    return waitForYouTubeJob(job, signal);
+  }
+
+  const controller = new AbortController();
+  job = { controller, promise: null, settled: false, waiters: 0, deadlineTimer: null };
+  if (deadlineMs > 0) {
+    job.deadlineTimer = setTimeout(() => {
+      if (!controller.signal.aborted) {
+        controller.abort(new DOMException("YouTube resolution deadline exceeded.", "TimeoutError"));
+      }
+    }, deadlineMs);
+    job.deadlineTimer.unref?.();
+  }
+  job.promise = Promise.resolve()
+    .then(() => run(controller.signal))
+    .finally(() => {
+      job.settled = true;
+      if (job.deadlineTimer) clearTimeout(job.deadlineTimer);
+      if (map.get(key) === job) map.delete(key);
+    });
+  map.set(key, job);
+  return waitForYouTubeJob(job, signal);
+}
 
 export class ProviderError extends Error {
   constructor(provider, status, message, { retryable = true, code = "provider_error", cause } = {}) {
@@ -507,12 +592,13 @@ function providerMessage(provider, status) {
   return `${provider} did not return a usable response.`;
 }
 
-export async function providerJson(provider, url, { timeoutMs = 10_000, fetchImpl = fetch } = {}) {
+export async function providerJson(provider, url, { timeoutMs = 10_000, fetchImpl = fetch, signal } = {}) {
   let response;
   try {
+    const timeoutSignal = AbortSignal.timeout(timeoutMs);
     response = await fetchImpl(url, {
       headers: { Accept: "application/json", "User-Agent": "PitConcertApp/1.0 (https://mshpit.com)" },
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal,
     });
   } catch (error) {
     throw new ProviderError(provider, 502, `${provider} could not be reached.`, { code: "network", cause: error });
@@ -772,15 +858,46 @@ export function playbackUrlExpiry(url, now = Date.now()) {
   return Math.min(now + DEEZER_PREVIEW_MAX_TTL_MS, safeProviderExpiry || now + DEEZER_PREVIEW_MAX_TTL_MS);
 }
 
-export async function getFreshDeezerPreview(title, artist, { fetchImpl = fetch } = {}) {
-  const key = JSON.stringify([normName(artist), normName(title)]);
+function readPreviewCache(key, now = Date.now()) {
   const hit = previewCache.get(key);
-  if (hit?.expiresAt > Date.now()) return { ...hit.data, status: "cached" };
+  if (!hit) return null;
+  if (hit.expiresAt <= now) {
+    previewCache.delete(key);
+    return null;
+  }
+  // Refresh insertion order so actively replayed previews survive the bounded
+  // least-recently-used eviction below.
+  previewCache.delete(key);
+  previewCache.set(key, hit);
+  return hit;
+}
+
+function writePreviewCache(key, data, expiresAt, now = Date.now()) {
+  for (const [cachedKey, cached] of previewCache) {
+    if (cached.expiresAt <= now) previewCache.delete(cachedKey);
+  }
+  previewCache.delete(key);
+  while (previewCache.size >= PREVIEW_CACHE_MAX_ENTRIES) {
+    previewCache.delete(previewCache.keys().next().value);
+  }
+  previewCache.set(key, { data, expiresAt });
+}
+
+export async function getFreshDeezerPreview(title, artist, { fetchImpl = fetch, signal } = {}) {
+  const key = JSON.stringify([normName(artist), normName(title)]);
+  const hit = readPreviewCache(key);
+  if (hit) {
+    return {
+      ...hit.data,
+      status: hit.data.preview ? "cached" : "not_found",
+      expiresAt: hit.data.preview ? hit.expiresAt : null,
+    };
+  }
   const exactQuery = `track:"${title}"${artist ? ` artist:"${artist}"` : ""}`;
-  let data = await providerJson("Deezer", `https://api.deezer.com/search?q=${encodeURIComponent(exactQuery)}&limit=10`, { fetchImpl });
+  let data = await providerJson("Deezer", `https://api.deezer.com/search?q=${encodeURIComponent(exactQuery)}&limit=10`, { fetchImpl, signal });
   let selected = selectDeezerTrack(title, artist, data?.data || []);
   if (!selected) {
-    data = await providerJson("Deezer", `https://api.deezer.com/search?q=${encodeURIComponent(`${artist || ""} ${title}`.trim())}&limit=10`, { fetchImpl });
+    data = await providerJson("Deezer", `https://api.deezer.com/search?q=${encodeURIComponent(`${artist || ""} ${title}`.trim())}&limit=10`, { fetchImpl, signal });
     selected = selectDeezerTrack(title, artist, data?.data || []);
   }
   const track = selected?.track;
@@ -792,7 +909,11 @@ export async function getFreshDeezerPreview(title, artist, { fetchImpl = fetch }
     confidence: selected ? Math.min(1, selected.score / 115) : 0,
   };
   const expiresAt = playbackUrlExpiry(result.preview);
-  if (result.preview && expiresAt > Date.now()) previewCache.set(key, { data: result, expiresAt });
+  writePreviewCache(
+    key,
+    result,
+    result.preview && expiresAt > Date.now() ? expiresAt : Date.now() + PREVIEW_MISS_TTL_MS,
+  );
   return { ...result, status: result.preview ? "fresh" : "not_found", expiresAt: result.preview ? expiresAt : null };
 }
 
@@ -834,7 +955,7 @@ export function spotifyCatalogueTrackProof({ sourceId, title, artist }) {
   };
 }
 
-async function providerTrackCreditProof({ sourceProvider, sourceId, title, artist, fetchImpl }) {
+async function providerTrackCreditProof({ sourceProvider, sourceId, title, artist, fetchImpl, signal }) {
   const provider = String(sourceProvider || "").toLowerCase();
   if (provider === "spotify") return spotifyCatalogueTrackProof({ sourceId, title, artist });
   if (provider !== "deezer" || !/^\d{1,20}$/.test(String(sourceId || ""))) return null;
@@ -846,8 +967,10 @@ async function providerTrackCreditProof({ sourceProvider, sourceId, title, artis
   if (cached?.fresh) return cached.data || null;
   let data;
   try {
-    data = await providerJson("Deezer", `https://api.deezer.com/track/${sourceId}`, { fetchImpl, timeoutMs: 6_000 });
+    data = await providerJson("Deezer", `https://api.deezer.com/track/${sourceId}`, { fetchImpl, timeoutMs: 6_000, signal });
   } catch {
+    throwIfAborted(signal);
+    // architecture: allow-ambiguous-result -- optional provider credit absence is interpreted by the caller as no recording proof
     return null;
   }
   const requestedBase = youtubeTitleCreditCandidates(title)[0]?.base || "";
@@ -1115,7 +1238,9 @@ const youtubeChannelCacheKey = (artist) => `yt:channel:v3:${normalizeYouTubeCach
 async function resolveArtistChannelUnshared(artist, apiKey, fetchImpl, {
   allowSearch = true,
   beforeSearch = null,
+  signal,
 } = {}) {
+  throwIfAborted(signal);
   if (!artist) return null;
   const norm = normName(artist);
   const currentTime = Date.now();
@@ -1166,7 +1291,7 @@ async function resolveArtistChannelUnshared(artist, apiKey, fetchImpl, {
         part: "snippet",
         id: providerCached.data.channelId,
         maxResults: "1",
-      }, apiKey, fetchImpl);
+      }, apiKey, fetchImpl, 8_000, { signal });
       const item = data?.items?.[0];
       const ranked = item?.id === providerCached.data.channelId
         ? selectArtistChannel(artist, [{ id: { channelId: item.id }, snippet: item.snippet }])
@@ -1186,6 +1311,7 @@ async function resolveArtistChannelUnshared(artist, apiKey, fetchImpl, {
         };
       }
     } catch (error) {
+      throwIfAborted(signal);
       if (error instanceof ProviderError && error.retryable) {
         youtubeMetrics.staleFallbacks += 1;
         return {
@@ -1202,7 +1328,7 @@ async function resolveArtistChannelUnshared(artist, apiKey, fetchImpl, {
   // transient outage, but it stays untrusted unless the channel title agrees.
   if (stored?.channelId) {
     try {
-      const data = await youtubeJson("channels", { part: "snippet", id: stored.channelId, maxResults: "1" }, apiKey, fetchImpl);
+      const data = await youtubeJson("channels", { part: "snippet", id: stored.channelId, maxResults: "1" }, apiKey, fetchImpl, 8_000, { signal });
       const item = data?.items?.[0];
       if (item?.id === stored.channelId) {
         const ranked = selectArtistChannel(artist, [{ id: { channelId: item.id }, snippet: item.snippet }]);
@@ -1223,6 +1349,7 @@ async function resolveArtistChannelUnshared(artist, apiKey, fetchImpl, {
         artistStmts.clearChannel.run(norm);
       }
     } catch (error) {
+      throwIfAborted(signal);
       if (String(stored.source || "").startsWith("wikidata")) {
         // The Wikidata channel pointer is CC0 and can remain, but a YouTube title
         // validation older than the 30-day API-data window is no longer trusted.
@@ -1252,13 +1379,21 @@ async function resolveArtistChannelUnshared(artist, apiKey, fetchImpl, {
   if (row?.mbid) {
     try {
       const { lookupChannelByMbid } = await import("./wikidataChannels.js");
-      const fromWikidata = await lookupChannelByMbid(row.mbid, { artist, apiKey, fetchImpl });
+      const fromWikidata = await lookupChannelByMbid(row.mbid, {
+        artist,
+        apiKey,
+        fetchImpl: fetchWithSignal(fetchImpl, signal),
+      });
+      throwIfAborted(signal);
       if (fromWikidata?.channelId) {
         const source = fromWikidata.validated ? "wikidata_v4" : "wikidata_unverified";
         artistStmts.setWikidataChannel.run(fromWikidata.channelId, Date.now(), source, norm);
         return { channelId: fromWikidata.channelId, trusted: !!fromWikidata.validated, source };
       }
-    } catch { /* fall through to the search below */ }
+    } catch {
+      throwIfAborted(signal);
+      /* fall through to the search below */
+    }
   }
 
   // Normal cache warming must not consume the scarce interactive search bucket.
@@ -1267,7 +1402,7 @@ async function resolveArtistChannelUnshared(artist, apiKey, fetchImpl, {
   try {
     const data = await youtubeSearchJson({
       part: "snippet", type: "channel", maxResults: String(YOUTUBE_SEARCH_MAX_RESULTS), q: `${artist} - Topic`,
-    }, apiKey, fetchImpl, beforeSearch);
+    }, apiKey, fetchImpl, beforeSearch, signal);
     const best = selectArtistChannel(artist, data?.items || []);
     // Persist to the artist row when we know this artist; the provider cache is
     // still written as a fallback for names not in the catalogue.
@@ -1286,6 +1421,7 @@ async function resolveArtistChannelUnshared(artist, apiKey, fetchImpl, {
       ? { channelId: best.channelId, trusted, source: trusted ? "youtube_v4" : "youtube_unverified" }
       : null;
   } catch (error) {
+    throwIfAborted(signal);
     if (providerPaused(error)) throw error;
     // Fall back to any provider-cache hit for artists not in the catalogue.
     const fallback = readProviderCache(cacheKey);
@@ -1300,15 +1436,13 @@ function resolveArtistChannel(artist, apiKey, fetchImpl, options = {}) {
     normalizeYouTubeCacheText(artist),
     options.allowSearch === false ? "catalogue-only" : "interactive",
   ]);
-  const existing = youtubeChannelInflight.get(key);
-  if (existing) {
-    youtubeMetrics.channelCoalesced += 1;
-    return existing;
-  }
-  const pending = resolveArtistChannelUnshared(artist, apiKey, fetchImpl, options)
-    .finally(() => { if (youtubeChannelInflight.get(key) === pending) youtubeChannelInflight.delete(key); });
-  youtubeChannelInflight.set(key, pending);
-  return pending;
+  return coalescedYouTubeJob({
+    map: youtubeChannelInflight,
+    key,
+    signal: options.signal,
+    onCoalesced: () => { youtubeMetrics.channelCoalesced += 1; },
+    run: (signal) => resolveArtistChannelUnshared(artist, apiKey, fetchImpl, { ...options, signal }),
+  });
 }
 
 const YOUTUBE_CATALOGUE_TTL_MS = days(7);
@@ -1357,7 +1491,8 @@ function catalogueCreditFallbackTracks(title, catalogue = []) {
 // Topic channel holds — and a subsequent in-channel API search would be pure
 // wasted quota. Only a truncated catalogue (a very prolific artist past the
 // page cap) can justify spending a search to look deeper.
-async function getArtistCatalogueUnshared(artist, channelId, apiKey, fetchImpl) {
+async function getArtistCatalogueUnshared(artist, channelId, apiKey, fetchImpl, { signal } = {}) {
+  throwIfAborted(signal);
   // A channel id already is the canonical identity. Keying by the artist's
   // display spelling forked one uploads playlist into multiple cache rows.
   const key = `yt:catalogue:v3:${channelId}`;
@@ -1375,7 +1510,7 @@ async function getArtistCatalogueUnshared(artist, channelId, apiKey, fetchImpl) 
   try {
     const channelData = await youtubeJson("channels", {
       part: "contentDetails", id: channelId,
-    }, apiKey, fetchImpl);
+    }, apiKey, fetchImpl, 8_000, { signal });
     const uploads = channelData?.items?.[0]?.contentDetails?.relatedPlaylists?.uploads;
     // No readable uploads playlist means we learned nothing about the channel's
     // contents, which is NOT the same as a complete catalogue missing the song.
@@ -1394,7 +1529,7 @@ async function getArtistCatalogueUnshared(artist, channelId, apiKey, fetchImpl) 
     for (let page = 0; page < YOUTUBE_CATALOGUE_MAX_PAGES; page++) {
       const params = { part: "snippet", playlistId: uploads, maxResults: "50" };
       if (pageToken) params.pageToken = pageToken;
-      const data = await youtubeJson("playlistItems", params, apiKey, fetchImpl);
+      const data = await youtubeJson("playlistItems", params, apiKey, fetchImpl, 8_000, { signal });
       for (const item of data?.items || []) {
         const videoId = item?.snippet?.resourceId?.videoId;
         const videoTitle = item?.snippet?.title;
@@ -1415,6 +1550,7 @@ async function getArtistCatalogueUnshared(artist, channelId, apiKey, fetchImpl) 
     }, YOUTUBE_POLICY_MAX_AGE_MS);
     return { items, complete };
   } catch {
+    throwIfAborted(signal);
     if (cachedWithinPolicy) {
       youtubeMetrics.staleFallbacks += 1;
       return { items: cached?.data?.items || [], complete: cached?.data?.complete !== false };
@@ -1423,17 +1559,15 @@ async function getArtistCatalogueUnshared(artist, channelId, apiKey, fetchImpl) 
   }
 }
 
-function getArtistCatalogue(artist, channelId, apiKey, fetchImpl) {
+function getArtistCatalogue(artist, channelId, apiKey, fetchImpl, { signal } = {}) {
   const key = String(channelId || "");
-  const existing = youtubeCatalogueInflight.get(key);
-  if (existing) {
-    youtubeMetrics.catalogueCoalesced += 1;
-    return existing;
-  }
-  const pending = getArtistCatalogueUnshared(artist, channelId, apiKey, fetchImpl)
-    .finally(() => { if (youtubeCatalogueInflight.get(key) === pending) youtubeCatalogueInflight.delete(key); });
-  youtubeCatalogueInflight.set(key, pending);
-  return pending;
+  return coalescedYouTubeJob({
+    map: youtubeCatalogueInflight,
+    key,
+    signal,
+    onCoalesced: () => { youtubeMetrics.catalogueCoalesced += 1; },
+    run: (jobSignal) => getArtistCatalogueUnshared(artist, channelId, apiKey, fetchImpl, { signal: jobSignal }),
+  });
 }
 
 // A JSON tuple keeps artist/title boundaries unambiguous. The earlier delimiter
@@ -1608,7 +1742,11 @@ function youtubeUrl(path, params, apiKey) {
   return `https://www.googleapis.com/youtube/v3/${path}?${query.toString()}`;
 }
 
-export async function youtubeJson(path, params, apiKey, fetchImpl, timeoutMs = 8_000, { beforeRequest = null } = {}) {
+export async function youtubeJson(path, params, apiKey, fetchImpl, timeoutMs = 8_000, {
+  beforeRequest = null,
+  signal,
+} = {}) {
+  throwIfAborted(signal);
   const bucket = path === "search" ? "search" : "data";
   const circuit = youtubeCircuits[bucket];
   if (circuit.until > Date.now()) {
@@ -1625,13 +1763,14 @@ export async function youtubeJson(path, params, apiKey, fetchImpl, timeoutMs = 8
     const reservation = reserveYouTubeSearch();
     try {
       if (typeof beforeRequest === "function") await beforeRequest();
+      throwIfAborted(signal);
     } catch (error) {
       releaseYouTubeSearch(reservation);
       throw error;
     }
   } else youtubeMetrics.dataCalls += 1;
   try {
-    return await providerJson("YouTube", youtubeUrl(path, params, apiKey), { fetchImpl, timeoutMs });
+    return await providerJson("YouTube", youtubeUrl(path, params, apiKey), { fetchImpl, timeoutMs, signal });
   } catch (error) {
     if (error instanceof ProviderError && ["quota_or_forbidden", "rate_limited"].includes(error.code)) {
       circuit.until = Date.now() + (error.code === "rate_limited" ? 60_000 : 15 * 60_000);
@@ -1641,7 +1780,7 @@ export async function youtubeJson(path, params, apiKey, fetchImpl, timeoutMs = 8
   }
 }
 
-async function youtubeSearchJson(params, apiKey, fetchImpl, beforeSearch = null) {
+async function youtubeSearchJson(params, apiKey, fetchImpl, beforeSearch = null, signal) {
   // The route can attach an account/IP demand permit. It is evaluated lazily so
   // cached, catalogue, Wikidata, and coalesced requests consume no user budget.
   if (youtubeCircuits.data.until > Date.now()) {
@@ -1650,15 +1789,15 @@ async function youtubeSearchJson(params, apiKey, fetchImpl, beforeSearch = null)
       retryable: true,
     });
   }
-  return youtubeJson("search", params, apiKey, fetchImpl, 8_000, { beforeRequest: beforeSearch });
+  return youtubeJson("search", params, apiKey, fetchImpl, 8_000, { beforeRequest: beforeSearch, signal });
 }
 
-async function youtubeVideos(ids, apiKey, fetchImpl) {
+async function youtubeVideos(ids, apiKey, fetchImpl, signal) {
   if (!ids.length) return [];
   const data = await youtubeJson("videos", {
     part: "snippet,contentDetails,status,statistics",
     id: ids.join(","),
-  }, apiKey, fetchImpl);
+  }, apiKey, fetchImpl, 8_000, { signal });
   return data?.items || [];
 }
 
@@ -1747,7 +1886,9 @@ async function resolveYouTubeTrackUnshared(title, artist, {
   excludedVideoIds = [],
   sourceProvider = "",
   sourceId = "",
+  signal,
 } = {}) {
+  throwIfAborted(signal);
   if (readOnly) {
     return resolveYouTubeTrackReadOnly(title, artist, {
       excludedVideoIds,
@@ -1776,7 +1917,7 @@ async function resolveYouTubeTrackUnshared(title, artist, {
   const loadCreditProof = () => {
     if (!recordingIdentity) return Promise.resolve(null);
     if (!creditProofPromise) {
-      creditProofPromise = providerTrackCreditProof({ sourceProvider, sourceId, title, artist, fetchImpl });
+      creditProofPromise = providerTrackCreditProof({ sourceProvider, sourceId, title, artist, fetchImpl, signal });
     }
     return creditProofPromise;
   };
@@ -1811,7 +1952,7 @@ async function resolveYouTubeTrackUnshared(title, artist, {
       && !tupleRejected.has(tupleHit.video_id);
     if (tuplePositiveIsCurrent) {
       try {
-        const candidate = (await youtubeVideos([tupleHit.video_id], apiKey, fetchImpl))[0];
+        const candidate = (await youtubeVideos([tupleHit.video_id], apiKey, fetchImpl, signal))[0];
         const selected = candidate ? await selectSourceScopedTupleCandidate(
           candidate,
           { title, artist, expectedDurationSec },
@@ -1836,6 +1977,7 @@ async function resolveYouTubeTrackUnshared(title, artist, {
           hit = ytStmts.get.get(key);
         }
       } catch (error) {
+        throwIfAborted(signal);
         // A tuple is only an optimization. Provider/data failures must not turn
         // it into source authority; continue through the exact resolver paths.
         if (providerPaused(error)) throw error;
@@ -1892,7 +2034,7 @@ async function resolveYouTubeTrackUnshared(title, artist, {
       });
     }
     searchUsed = true;
-    return youtubeSearchJson(params, apiKey, fetchImpl, beforeSearch);
+    return youtubeSearchJson(params, apiKey, fetchImpl, beforeSearch, signal);
   };
 
   // Validate legacy cache rows cheaply with videos.list before trusting them.
@@ -1900,7 +2042,7 @@ async function resolveYouTubeTrackUnshared(title, artist, {
   if (hit?.video_id && !rejected.has(hit.video_id)) {
     let legacy;
     try {
-      legacy = (await youtubeVideos([hit.video_id], apiKey, fetchImpl))[0];
+      legacy = (await youtubeVideos([hit.video_id], apiKey, fetchImpl, signal))[0];
     } catch (error) {
       if (usableCachedMatch && error instanceof ProviderError && error.retryable) return staleResult();
       throw error;
@@ -1943,14 +2085,14 @@ async function resolveYouTubeTrackUnshared(title, artist, {
     // lookup and could turn one click into two or three actor charges. Only
     // cached/Wikidata/data-validated channel identities participate here; an
     // unmapped artist proceeds to the one global video search below.
-    const channel = await resolveArtistChannel(artist, apiKey, fetchImpl, { allowSearch: false });
+    const channel = await resolveArtistChannel(artist, apiKey, fetchImpl, { allowSearch: false, signal });
     if (channel?.channelId) {
       const channelId = channel.channelId;
       // Cheapest and most accurate: match against the artist's own catalogue,
       // pulled once per artist for ~5 quota units and reused for every song.
       let catalogueComplete = true;
       try {
-        const { items: catalogue, complete } = await getArtistCatalogue(artist, channelId, apiKey, fetchImpl);
+        const { items: catalogue, complete } = await getArtistCatalogue(artist, channelId, apiKey, fetchImpl, { signal });
         catalogueComplete = complete;
         const availableCatalogue = catalogue.filter((item) => !rejected.has(item.videoId));
         const picked = selectCatalogueTrack(title, availableCatalogue);
@@ -1959,7 +2101,7 @@ async function resolveYouTubeTrackUnshared(title, artist, {
           ...catalogueCreditFallbackTracks(title, availableCatalogue),
         ].map((entry) => [entry.videoId, entry])).values()];
         if (possible.length) {
-          const verified = await youtubeVideos(possible.map((entry) => entry.videoId), apiKey, fetchImpl);
+          const verified = await youtubeVideos(possible.map((entry) => entry.videoId), apiKey, fetchImpl, signal);
           const bestCatalogue = await selectBestYouTubeCandidate(
             verified,
             { title, artist, expectedDurationSec, trustedChannel: channel.trusted },
@@ -1980,7 +2122,10 @@ async function resolveYouTubeTrackUnshared(title, artist, {
             return { videoId: bestCatalogue.candidate.id, status: "artist_catalogue", confidence: assessment.score };
           }
         }
-      } catch { /* fall through to the channel search below */ }
+      } catch {
+        throwIfAborted(signal);
+        /* fall through to the channel search below */
+      }
 
       // Only spend a search inside the channel if the local catalogue was
       // truncated and might be hiding the song. A complete catalogue that did
@@ -1998,7 +2143,7 @@ async function resolveYouTubeTrackUnshared(title, artist, {
         });
         const channelIds = (inChannel?.items || []).map((item) => item?.id?.videoId).filter((id) => id && !rejected.has(id));
         const bestInChannel = await selectBestYouTubeCandidate(
-          await youtubeVideos(channelIds, apiKey, fetchImpl),
+          await youtubeVideos(channelIds, apiKey, fetchImpl, signal),
           { title, artist, expectedDurationSec, trustedChannel: channel.trusted },
           loadCreditProof,
           providerProofRequired,
@@ -2036,7 +2181,7 @@ async function resolveYouTubeTrackUnshared(title, artist, {
     q: query,
   });
   const ids = (search?.items || []).map((item) => item?.id?.videoId).filter((id) => id && !rejected.has(id));
-  const candidates = await youtubeVideos(ids, apiKey, fetchImpl);
+  const candidates = await youtubeVideos(ids, apiKey, fetchImpl, signal);
   const best = await selectBestYouTubeCandidate(
     candidates,
     { title, artist, expectedDurationSec },
@@ -2084,16 +2229,34 @@ export function resolveYouTubeTrack(title, artist, options = {}) {
   const resolutionMode = options.readOnly
     ? "read-only"
     : options.allowSearch === false ? "catalogue-only" : "interactive";
-  const key = `${youtubeCacheKey(title, artist, recordingIdentity)}|${durationBucket}|${resolutionMode}|${excluded}|${demandScope}`;
-  const existing = youtubeInflight.get(key);
-  if (existing) {
-    youtubeMetrics.trackCoalesced += 1;
-    return existing;
-  }
-  const pending = resolveYouTubeTrackUnshared(title, artist, options)
-    .finally(() => { if (youtubeInflight.get(key) === pending) youtubeInflight.delete(key); });
-  youtubeInflight.set(key, pending);
-  return pending;
+  const configuredDeadline = Number(options.deadlineMs);
+  const deadlineMs = resolutionMode === "interactive"
+    ? (Number.isFinite(configuredDeadline) && configuredDeadline > 0
+      ? Math.min(YOUTUBE_INTERACTIVE_RESOLVE_DEADLINE_MS, Math.max(1, Math.round(configuredDeadline)))
+      : YOUTUBE_INTERACTIVE_RESOLVE_DEADLINE_MS)
+    : 0;
+  const key = `${youtubeCacheKey(title, artist, recordingIdentity)}|${durationBucket}|${resolutionMode}|${excluded}|${demandScope}|${deadlineMs}`;
+  return coalescedYouTubeJob({
+    map: youtubeInflight,
+    key,
+    signal: options.signal,
+    deadlineMs,
+    onCoalesced: () => { youtubeMetrics.trackCoalesced += 1; },
+    run: async (signal) => {
+      try {
+        return await resolveYouTubeTrackUnshared(title, artist, { ...options, signal });
+      } catch (error) {
+        if (signal.aborted && signal.reason?.name === "TimeoutError") {
+          throw new ProviderError("YouTube", 504, "YouTube resolution exceeded Pit's playback deadline.", {
+            code: "resolution_timeout",
+            retryable: true,
+            cause: error,
+          });
+        }
+        throw error;
+      }
+    },
+  });
 }
 
 export function invalidateYouTubeTrack(title, artist, videoId, {

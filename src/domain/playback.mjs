@@ -32,6 +32,7 @@ const TRANSIENT = new Set([
   "quota_or_forbidden",
   "rate_limited",
   "http_error",
+  "resolution_timeout",
   "timeout",
   "network",
 ]);
@@ -143,6 +144,7 @@ export async function requestYouTubeTrackOnce({
   sourceId = "",
   excludedVideoIds = [],
   allowSearch = false,
+  signal,
 } = {}) {
   if (typeof request !== "function" || !title) return { videoId: null, status: "invalid_request", retryable: false };
 
@@ -167,13 +169,17 @@ export async function requestYouTubeTrackOnce({
     coldSearchBody.exclude = excluded.join(",");
   }
 
-  let response = await request(`/api/youtube/track?${query.toString()}`);
+  let response = await request(
+    `/api/youtube/track?${query.toString()}`,
+    signal ? { signal } : undefined,
+  );
   if (response?.status === DEFERRED && allowSearch) {
     response = await request("/api/youtube/track/resolve", {
       method: "POST",
       body: coldSearchBody,
       context: "Finding the full track",
       silent: true,
+      signal,
     });
   }
   return response;

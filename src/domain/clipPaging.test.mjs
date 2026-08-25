@@ -35,5 +35,12 @@ test("ClipsScreen keeps a paged virtualized native reel instead of a non-scrolla
   assert.match(source, /onScroll=\{onScroll\}/);
   assert.match(source, /<VideoView\s+key=\{playbackSession\}/,
     "a retry or reactivation remounts the web listener with the current first-frame session");
+  assert.match(source, /ref=\{videoViewRef\}[\s\S]*onFirstFrameRender=\{recordFirstFrame\}/,
+    "the clip player exposes Expo's web video element to the decoded-frame fallback");
+  assert.match(source, /videoViewerWebFrameReady\(element\)[\s\S]*setInterval\(probe, 125\)/,
+    "a missed Expo web first-frame event cannot leave the clip poster mounted forever");
+  assert.match(source, /claimClipPlaybackFailure\(reportedPlaybackErrorsRef\.current, failure\)/,
+    "broken clip analytics are claimed at screen scope instead of resetting on each revisit");
+  assert.doesNotMatch(source, /trackedErrorRef/);
   assert.match(source, /return web \? <WebReel \{\.\.\.props\} \/> : <NativeReel \{\.\.\.props\} \/>/);
 });

@@ -171,3 +171,35 @@ test("autoplay blocking stays recoverable through the visible Play control", asy
   assert.match(bar, /autoplayBlocked \? ytErrorForThis\.message/);
   assert.match(bar, /accessibilityLiveRegion="polite">\{statusLine\}/);
 });
+
+test("persistent media engines publish progress at a bounded frequency", async () => {
+  const youtube = await readFile(new URL("./youtubePlayer.js", import.meta.url), "utf8");
+  const webPreview = await readFile(new URL("./audioPreview.js", import.meta.url), "utf8");
+  const nativePreview = await readFile(new URL("./audioPreview.native.js", import.meta.url), "utf8");
+
+  assert.match(youtube, /PROGRESS_UPDATE_INTERVAL_MS = 1_000/);
+  assert.match(youtube, /if \(!shownRef\.current\) return;/,
+    "a retained minimized iframe must not keep publishing an unchanged clock");
+  assert.match(youtube, /current\.position === next\.position[\s\S]*\? current\s*: next/,
+    "paused progress snapshots must preserve state identity and skip React renders");
+  assert.match(webPreview, />= 0\.95/);
+  assert.match(nativePreview, /updateInterval: 1_000/);
+});
+
+test("invalid YouTube ids are evicted while client-identity errors stay local", async () => {
+  const bar = await readFile(new URL("../components/PlayerBar.jsx", import.meta.url), "utf8");
+  assert.match(bar, /\[2, 100, 101, 150\]\.includes/);
+  assert.doesNotMatch(bar, /\[2, 100, 101, 150, 153\]\.includes/,
+    "error 153 can be caused by one listener's privacy settings and must not poison the shared cache");
+});
+
+test("intentional YouTube lookup cancellation never becomes a cached miss", async () => {
+  const store = await readFile(new URL("../store.js", import.meta.url), "utf8");
+  const resolver = store.slice(store.indexOf("const resolveYouTube = async"), store.indexOf("const youtubeLookupStatus"));
+  const cancellationFence = resolver.indexOf("if (isLoadCancellation(error, signal)) throw error;");
+  const failureClassification = resolver.indexOf("outcome = classifyResolve({ error });");
+  const cacheWrite = resolver.indexOf("ytCache.current[k] = {");
+  assert.ok(cancellationFence >= 0, "player teardown and track changes must bypass failure caching");
+  assert.ok(failureClassification > cancellationFence);
+  assert.ok(cacheWrite > failureClassification);
+});

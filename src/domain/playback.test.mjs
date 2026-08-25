@@ -24,7 +24,7 @@ test("a resolved video is trusted and cached for a long time", () => {
 test("capacity failures stay temporary without amplifying one play into retries", () => {
   // These are the statuses that made popular songs play as previews: the song
   // was fine, we just could not ask at that moment.
-  for (const status of ["search_budget_exhausted", "provider_paused", "quota_or_forbidden", "rate_limited"]) {
+  for (const status of ["search_budget_exhausted", "provider_paused", "quota_or_forbidden", "rate_limited", "resolution_timeout"]) {
     const r = classifyResolve({ videoId: null, status, retryable: true });
     assert.equal(r.transient, true, `${status} should be temporary`);
     assert.equal(r.retry, false, `${status} must require another explicit listener action`);
@@ -128,6 +128,27 @@ test("one explicit cold attempt performs exactly one POST without quota retry am
   assert.equal(classifyResolve(result).retry, false);
 });
 
+test("a player cancellation signal reaches both resolver phases", async () => {
+  const controller = new AbortController();
+  const calls = [];
+  await requestYouTubeTrackOnce({
+    request: async (path, options) => {
+      calls.push({ path, options });
+      return options?.method === "POST"
+        ? { videoId: "abcdefghijk", status: "resolved" }
+        : { videoId: null, status: "search_deferred", retryable: false };
+    },
+    title: "Middle Child",
+    artist: "J. Cole",
+    allowSearch: true,
+    signal: controller.signal,
+  });
+
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].options.signal, controller.signal);
+  assert.equal(calls[1].options.signal, controller.signal);
+});
+
 test("an explicit action upgrades a fresh catalogue-only result instead of inheriting it", () => {
   const deferred = { videoId: null, status: "search_deferred", expiresAt: 2_000 };
   assert.equal(shouldUseYouTubeLookupCache(deferred, { allowSearch: false, now: 1_000 }), true,
@@ -187,6 +208,7 @@ test("access and capacity outcomes get truthful player notices", () => {
   assert.equal(playerYouTubeLookupNotice("search_deferred")?.kind, "catalogue_only");
   assert.equal(playerYouTubeLookupNotice("search_budget_exhausted")?.kind, "global_limit");
   assert.equal(playerYouTubeLookupNotice("provider_paused")?.kind, "provider_unavailable");
+  assert.equal(playerYouTubeLookupNotice("resolution_timeout")?.kind, "temporary");
   assert.equal(playerYouTubeLookupNotice("unconfigured")?.kind, "configuration");
 });
 

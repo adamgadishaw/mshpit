@@ -105,6 +105,10 @@ const GROUP_COLOR = { "THE BAND": colors.amber, "THE ROOM": colors.cool, "THE NI
 const GROUPS = ["THE BAND", "THE ROOM", "THE NIGHT"];
 const submissionId = () => `post_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 
+function sameMediaPublishingCapabilities(left, right) {
+  return left?.photos === right?.photos && left?.videos === right?.videos;
+}
+
 function mediaProjectForPost(post) {
   return mediaProjectFromPost(post);
 }
@@ -409,37 +413,59 @@ export default function LogScreen({
     }
     return result;
   }
-  const refreshMediaPublishingCapabilities = useCallback(() => {
-    if (mediaPublishingCapabilitiesRequestRef.current?.promise) {
-      return mediaPublishingCapabilitiesRequestRef.current.promise;
+  const refreshMediaPublishingCapabilities = useCallback(({ force = false, background = true } = {}) => {
+    const currentRequest = mediaPublishingCapabilitiesRequestRef.current;
+    if (currentRequest?.promise) {
+      if (!background && !currentRequest.showRefreshing) {
+        currentRequest.showRefreshing = true;
+        setMediaPublishingCapabilitiesRefreshing(true);
+      }
+      // A forced upload-boundary check must not inherit a result that may have
+      // come from the short cache. Finish that consumer, then negotiate fresh.
+      if (force && !currentRequest.force) {
+        return currentRequest.promise.then(() => (
+          currentRequest.controller.signal.aborted
+            ? { ok: false }
+            : refreshMediaPublishingCapabilities({ force: true, background })
+        ));
+      }
+      return currentRequest.promise;
     }
     const controller = new AbortController();
-    setMediaPublishingCapabilitiesRefreshing(true);
+    const request = { controller, force, showRefreshing: !background, promise: null };
+    if (request.showRefreshing) setMediaPublishingCapabilitiesRefreshing(true);
     const promise = (async () => {
       try {
-        const capabilities = await loadMediaPublishingCapabilities({ apiCall: api, signal: controller.signal });
+        const capabilities = await loadMediaPublishingCapabilities({
+          apiCall: api,
+          signal: controller.signal,
+          force,
+        });
         if (controller.signal.aborted) return { ok: false };
-        setMediaPublishingCapabilities(capabilities);
+        setMediaPublishingCapabilities((current) => (
+          sameMediaPublishingCapabilities(current, capabilities) ? current : capabilities
+        ));
         return { ok: true, capabilities };
       } catch {
         // Preserve the last authoritative result. On a first-load network
         // failure this remains the legacy-safe default: photos on, videos off.
         return { ok: false };
       } finally {
-        if (mediaPublishingCapabilitiesRequestRef.current?.promise === promise) {
+        if (mediaPublishingCapabilitiesRequestRef.current === request) {
           mediaPublishingCapabilitiesRequestRef.current = null;
           if (!controller.signal.aborted) {
             setMediaPublishingCapabilitiesReady(true);
-            setMediaPublishingCapabilitiesRefreshing(false);
+            if (request.showRefreshing) setMediaPublishingCapabilitiesRefreshing(false);
           }
         }
       }
     })();
-    mediaPublishingCapabilitiesRequestRef.current = { controller, promise };
+    request.promise = promise;
+    mediaPublishingCapabilitiesRequestRef.current = request;
     return promise;
   }, []);
   useEffect(() => {
-    void refreshMediaPublishingCapabilities();
+    void refreshMediaPublishingCapabilities({ background: true });
     return () => {
       mediaPublishingCapabilitiesRequestRef.current?.controller.abort();
       mediaPublishingCapabilitiesRequestRef.current = null;
@@ -447,7 +473,7 @@ export default function LogScreen({
   }, [refreshMediaPublishingCapabilities]);
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state) => {
-      if (state === "active") void refreshMediaPublishingCapabilities();
+      if (state === "active") void refreshMediaPublishingCapabilities({ background: true });
     });
     return () => subscription.remove();
   }, [refreshMediaPublishingCapabilities]);
@@ -461,7 +487,7 @@ export default function LogScreen({
         ? "Add videos"
         : "Check media";
   const toggleMediaPanel = () => {
-    if (!showPhotos) void refreshMediaPublishingCapabilities();
+    if (!showPhotos) void refreshMediaPublishingCapabilities({ background: true });
     setShowPhotos((visible) => !visible);
   };
   const [posting, setPosting] = useState(false);
@@ -515,7 +541,7 @@ export default function LogScreen({
   async function applyStudioMedia(result) {
     const selected = Array.isArray(result?.assets) ? result.assets.slice(0, 8) : [];
     if (!selected.length || uploadingPhotos || posting) return;
-    const refreshedCapabilities = await refreshMediaPublishingCapabilities();
+    const refreshedCapabilities = await refreshMediaPublishingCapabilities({ force: true, background: true });
     const activeCapabilities = refreshedCapabilities.ok
       ? refreshedCapabilities.capabilities
       : mediaPublishingCapabilities;
@@ -630,14 +656,21 @@ export default function LogScreen({
 
   const addPhoto = async () => {
     if (uploadingPhotos || posting) return;
-    // Mobile web requires the picker to open inside the original user gesture.
-    // Refresh in parallel there, then await the same request before staging the
-    // result. Native can safely wait for the newest capability before opening.
+    // Mobile web must keep the picker inside the original user gesture. Native
+    // can safely await the short cached/coalesced check so a first fast tap does
+    // not inherit the photos-only startup default and hide video selection.
     let pickerCapabilities = mediaPublishingCapabilities;
     if (Platform.OS === "web") {
-      void refreshMediaPublishingCapabilities();
+      // The browser picker must open synchronously inside this tap. Until the
+      // first health response arrives, offer both choices and validate the
+      // selected assets against the authoritative response immediately below.
+      // This keeps a fast first tap from silently becoming photo-only.
+      if (!mediaPublishingCapabilitiesReady) {
+        pickerCapabilities = { photos: true, videos: true };
+      }
+      void refreshMediaPublishingCapabilities({ background: true });
     } else {
-      const refreshedCapabilities = await refreshMediaPublishingCapabilities();
+      const refreshedCapabilities = await refreshMediaPublishingCapabilities({ background: true });
       if (refreshedCapabilities.ok) pickerCapabilities = refreshedCapabilities.capabilities;
     }
     if (!pickerCapabilities.photos && !pickerCapabilities.videos) {
@@ -686,7 +719,7 @@ export default function LogScreen({
       studioReturnFocusRef.current = null;
       return;
     }
-    const latestCapabilities = await refreshMediaPublishingCapabilities();
+    const latestCapabilities = await refreshMediaPublishingCapabilities({ background: true });
     await stageSelectedAssets(res.assets, latestCapabilities.ok ? latestCapabilities.capabilities : pickerCapabilities);
   };
 
@@ -1189,7 +1222,7 @@ export default function LogScreen({
         <StudioErrorBoundary
           resetKey={studioLoadAttempt}
           onRetry={() => {
-            void refreshMediaPublishingCapabilities();
+            void refreshMediaPublishingCapabilities({ background: true });
             setStudioLoadAttempt((attempt) => attempt + 1);
           }}
           onExit={() => setStudioOpen(false)}
@@ -1562,7 +1595,7 @@ export default function LogScreen({
               <Text style={styles.mediaCapabilityNoticeText}>{mediaAvailabilityCopy}</Text>
               <Pressable
                 style={styles.mediaCapabilityRetry}
-                onPress={() => void refreshMediaPublishingCapabilities()}
+                onPress={() => void refreshMediaPublishingCapabilities({ force: true, background: false })}
                 disabled={mediaPublishingCapabilitiesRefreshing}
                 accessibilityRole="button"
                 accessibilityLabel="Check media upload availability again"

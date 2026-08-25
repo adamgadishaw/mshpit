@@ -6,6 +6,7 @@ import { clean, cleanEmail, isEmail, cleanName, isName, cleanHandle, isPassword,
 import { load, remove, save } from "./lib/persist";
 import { api, AppError, captureAppError, configureApiIdentity } from "./lib/api";
 import { requestAccountExport, updateAnnouncementEmailPreference } from "./lib/accountPrivacyApi";
+import { requestFreshDeezerPreview } from "./lib/playbackApi";
 import { clearStoredTheme, setTheme as applyTheme, storedThemeSelection, syncThemeFromAccount } from "./theme";
 import { artistMeta } from "./seed/ingested";
 import { ACHIEVEMENTS } from "./domain/badges.mjs";
@@ -1481,6 +1482,7 @@ export function StoreProvider({ children }) {
     allowSearch = false,
     provider = "",
     sourceId = "",
+    signal,
   } = {}) => {
     if (!title) return null;
     const tupleKey = trackTupleKey(title, artist);
@@ -1502,9 +1504,14 @@ export function StoreProvider({ children }) {
         sourceId,
         excludedVideoIds: youtubeRejectedVideoIds(currentYouTubeRejections().entries, title, artist, source),
         allowSearch: allowSearch === true,
+        signal,
       });
       outcome = classifyResolve(response);
     } catch (error) {
+      // Track changes and player teardown intentionally cancel this lookup.
+      // Never turn that lifecycle event into a cached network miss: doing so
+      // makes a quick skip/back incorrectly fall through to the preview.
+      if (isLoadCancellation(error, signal)) throw error;
       outcome = classifyResolve({ error });
     }
     if (outcome?.videoId && youtubeVideoRejected(title, artist, outcome.videoId, source)) {
@@ -1517,15 +1524,10 @@ export function StoreProvider({ children }) {
       status: outcome?.status || null,
       expiresAt: Date.now() + (outcome?.cacheMs || CACHE_MS.transient),
     };
-    if (outcome && !outcome.videoId && outcome.transient) {
-      captureAppError(new Error("YouTube lookup capacity is temporarily unavailable"), {
-        code: "PIT-MEDIA-002",
-        context: `Resolving ${artist || "artist"} - ${title} (${outcome.status})`,
-        source: "youtube-resolver",
-        severity: "warning",
-        toast: false,
-      });
-    }
+    // Provider capacity and catalogue boundaries are expected playback states,
+    // not client defects. PlayerBar explains them beside the working preview.
+    // Actual request failures are already captured once by the API adapter, so recording
+    // another per-track PIT-MEDIA-002 here only duplicates diagnostics.
     return outcome?.videoId || null;
   };
   // PlayerBar reads the resolver reason in the same completion turn as the
@@ -1809,13 +1811,13 @@ export function StoreProvider({ children }) {
     return result;
   };
 
-  const resolveDeezerPreview = async (title, artist) => {
+  const resolveDeezerPreview = async (title, artist, { signal } = {}) => {
     if (!title) return null;
     const k = trackTupleKey(title, artist);
     const hit = previewCache.current[k];
     if (hit && hit.expiresAt > Date.now()) return hit.preview;
     try {
-      const { preview, expiresAt } = await api(`/api/deezer/track?title=${encodeURIComponent(title)}&artist=${encodeURIComponent(artist || "")}`);
+      const { preview, expiresAt } = await requestFreshDeezerPreview(title, artist, { signal });
       previewCache.current[k] = { preview: preview || null, expiresAt: preview ? Math.min(Number(expiresAt) || Date.now() + 4 * 60 * 1000, Date.now() + 4 * 60 * 1000) : Date.now() + 60 * 1000 };
       return preview || null;
     } catch { return null; }
