@@ -303,6 +303,46 @@ test("a rolling-deploy legacy worker result remains valid only for its MP4 contr
   })), (error) => error.status === 503 && error.code === "MEDIA_STORAGE_UNAVAILABLE");
 });
 
+test("signed coded axes accept only the display report or structural envelope", async () => {
+  await refreshVideoVerifierHealth({
+    env: ENV,
+    at: Date.now(),
+    fetchImpl: (url, request) => signedResponse({
+      path: new URL(url).pathname,
+      request,
+      payload: healthyPayload(),
+    }),
+  });
+  for (const codedHeight of [STRUCTURAL.height, STRUCTURAL.codedHeight]) {
+    const result = await verifyVideoObject(verificationInput({
+      fetchImpl: (url, request) => signedResponse({
+        path: new URL(url).pathname,
+        request,
+        payload: (requestPayload) => {
+          const decoded = decodedPayload(requestPayload);
+          decoded.video.codedHeight = codedHeight;
+          return decoded;
+        },
+      }),
+    }));
+    assert.equal(result.height, STRUCTURAL.height);
+  }
+
+  for (const codedHeight of [STRUCTURAL.height - 1, STRUCTURAL.height + 1, STRUCTURAL.codedHeight + 8]) {
+    await assert.rejects(() => verifyVideoObject(verificationInput({
+      fetchImpl: (url, request) => signedResponse({
+        path: new URL(url).pathname,
+        request,
+        payload: (requestPayload) => {
+          const decoded = decodedPayload(requestPayload);
+          decoded.video.codedHeight = codedHeight;
+          return decoded;
+        },
+      }),
+    })), (error) => error.status === 409 && error.code === "CONFLICT");
+  }
+});
+
 test("a successful verification preserves the source types proven by health", async () => {
   const at = Date.now();
   await refreshVideoVerifierHealth({

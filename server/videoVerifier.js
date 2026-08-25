@@ -398,12 +398,18 @@ function verifiedDecode(payload, {
       || !Number.isSafeInteger(Number(video?.durationMs))) {
     throw new ApiError(503, "Clip verification returned an invalid result.", "MEDIA_STORAGE_UNAVAILABLE");
   }
+  // FFprobe may expose cropped AVC display axes as coded_width/height while
+  // the signed structural parser retains the padded macroblock envelope. The
+  // worker has already admitted only these same two exact representations;
+  // independently bind its response to either the display or signed envelope,
+  // never to an intermediate or larger report.
+  const codedReportMatches = new Set([Number(video.width), Number(structural.codedWidth)])
+    .has(Number(video.codedWidth))
+    && new Set([Number(video.height), Number(structural.codedHeight)])
+      .has(Number(video.codedHeight));
   if (Number(video.width) !== Number(structural.width)
       || Number(video.height) !== Number(structural.height)
-      || (contentType === "video/mp4" && expectedSourceCodec === "h264"
-        && Number(video.codedWidth) !== Number(structural.codedWidth))
-      || (contentType === "video/mp4" && expectedSourceCodec === "h264"
-        && Number(video.codedHeight) !== Number(structural.codedHeight))
+      || !codedReportMatches
       || Number(video.codedWidth) < Number(video.width) || Number(video.codedWidth) > 4_096
       || Number(video.codedHeight) < Number(video.height) || Number(video.codedHeight) > 4_096
       || Math.abs(Number(video.durationMs) - Number(structural.durationMs)) > 1_500) {

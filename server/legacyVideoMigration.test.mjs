@@ -719,6 +719,27 @@ test("a second grouped finalizer failure leaves every legacy attachment and dele
     .get(entries[0].posterKey).status, "associated");
   assert.equal(db.prepare("SELECT status FROM media_objects WHERE object_key=?")
     .get(entries[1].posterKey).status, "associated");
+
+  const resumedAssetIds = [];
+  const resumeFinalizer = fakeFinalizeForEntries(entries);
+  const resumed = await migrateLegacyVideoRelease(db, {
+    apply: true,
+    entries,
+    allowNonProduction: true,
+    fetchImpl: sourceHeadFetch(entries[0]),
+    structuralProbe,
+    privacyProbe: healthyPrivacy,
+    verifierHealthCheck: healthyVerifier,
+    sourceCopier: async () => {},
+    assetFinalizer: async (database, options) => {
+      resumedAssetIds.push(options.assetId);
+      return resumeFinalizer(database, options);
+    },
+    at: 428_001,
+  });
+  assert.equal(resumed.migrated, 2);
+  assert.deepEqual(resumedAssetIds, [legacyVideoMigrationIdentity(entries[1]).assetId],
+    "resume reuses the exact ready asset and finalizes only the remaining clip");
 });
 
 test("apply moves every exact-source reaction and merges destination conflicts without losing engagement", async () => {

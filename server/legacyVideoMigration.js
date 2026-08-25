@@ -840,6 +840,12 @@ async function prepareEntry(database, preflight, {
       throw migrationError("The deterministic historical clip draft contains different bytes.");
     }
   }
+  // A prior apply can finish one deterministic private asset and then stop on
+  // a later clip before any post is swapped. Once its exact source generation,
+  // owner, release identity, delivery, poster, and ledgers all pass the same
+  // readyStableAsset predicate used below, reuse it instead of replaying the
+  // immutable finalize recipe against an already-finalized row.
+  if (readyStableAsset(database, entry, identity)) return preflight;
   const asset = stableAssetRow(database, identity.assetId);
   const structural = await structuralProbe({
     objectKey: asset.source_key,
