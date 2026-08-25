@@ -1,6 +1,6 @@
 # Private-derivative-v1 video publishing runbook
 
-Status: **the production verifier is Blueprint-provisioned, but production video publishing remains disabled.** `render.yaml` defines the private service and keeps `PIT_VIDEO_PUBLISHING_ENABLED=false`. Do not change that flag in the first deployment. First prove that the live private-source bucket and verifier are healthy; enable video in a second deployment only, then require the negotiated health result and real production canary described below.
+Status: **the production verifier is Blueprint-provisioned and production video publishing is enabled after the gated infrastructure rollout.** `render.yaml` keeps `PIT_VIDEO_PUBLISHING_ENABLED=true`; revert it to `false` immediately if negotiated health, the production canary, or ongoing verifier health fails. The first infrastructure deployment remained disabled until private storage and signed verifier health passed.
 
 Budget: the current topology adds **one production-only Render Starter private service in Oregon, about US$7/month** at the expected Starter floor. No staging verifier is provisioned by the Blueprint, so this rollout does not add a second approximately US$7/month service. Confirm the live [Render pricing](https://render.com/pricing) before changing plans or adding a staging verifier.
 
@@ -58,7 +58,7 @@ Keep the existing database/disk, application, email, provider, and complete medi
 
 | Variable | Value |
 | --- | --- |
-| `PIT_VIDEO_PUBLISHING_ENABLED` | Blueprint value `false` through infrastructure deploy and live health validation; change to `true` only in the separate enablement deployment |
+| `PIT_VIDEO_PUBLISHING_ENABLED` | Blueprint value `true` after the separate enablement deployment; return to `false` for rollback or any failed health/canary gate |
 | `PIT_VIDEO_VERIFIER_HOSTPORT` | Blueprint `fromService` reference to `pit-video-verifier` property `hostport`; never a public URL |
 | `PIT_VIDEO_VERIFIER_SECRET` | Blueprint `fromService` reference to the verifier's generated `PIT_VIDEO_VERIFIER_SECRET` |
 

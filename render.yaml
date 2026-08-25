@@ -111,7 +111,7 @@ services:
       - key: MEDIA_PUBLIC_BASE_URL
         sync: false
       - key: PIT_VIDEO_PUBLISHING_ENABLED
-        value: "false"
+        value: "true"
       # Blueprint owns both references. Reconciliation can safely be retried
       # after the private service's first deployment establishes the source.
       - key: PIT_VIDEO_VERIFIER_HOSTPORT

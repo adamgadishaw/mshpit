@@ -41,6 +41,8 @@ test("production verifier is private, automatically wired, and credential-free",
   assert.doesNotMatch(verifier, /^\s+- key: (?:MEDIA_ACCESS_KEY_ID|MEDIA_SECRET_ACCESS_KEY|PIT_DATA_DIR|ADMIN_PASSWORD|BACKUP_S3_)/m);
 
   const productionWeb = blueprint.slice(0, blueprint.indexOf("  - type: pserv\n    name: pit-video-verifier\n"));
+  assert.match(productionWeb, /PIT_VIDEO_PUBLISHING_ENABLED\n        value: "true"/,
+    "production must keep verified media publishing enabled after the gated rollout");
   assert.match(productionWeb, /PIT_VIDEO_VERIFIER_HOSTPORT[\s\S]*?name: pit-video-verifier[\s\S]*?property: hostport/);
   assert.match(productionWeb, /PIT_VIDEO_VERIFIER_SECRET[\s\S]*?name: pit-video-verifier[\s\S]*?envVarKey: PIT_VIDEO_VERIFIER_SECRET/);
 });
