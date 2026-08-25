@@ -257,6 +257,7 @@ function videoProbe({
   majorBrand = "isom",
   compatibleBrands = "isomiso2avc1mp41",
   sampleAspectRatio = "1:1",
+  omitSampleAspectRatio = false,
   fieldOrder = "progressive",
   width = 1_920,
   height = 1_080,
@@ -277,7 +278,7 @@ function videoProbe({
       coded_width: codedWidth,
       coded_height: codedHeight,
       field_order: fieldOrder,
-      sample_aspect_ratio: sampleAspectRatio,
+      ...(omitSampleAspectRatio ? {} : { sample_aspect_ratio: sampleAspectRatio }),
       avg_frame_rate: "30/1",
       r_frame_rate: "30/1",
       disposition: { attached_pic: 0 },
@@ -473,7 +474,7 @@ test("authoritative worker accepts the reviewed iPhone AVC probe shape", async (
     rotation: 0,
     majorBrand: "qt  ",
     compatibleBrands: "qt  ",
-    sampleAspectRatio: "N/A",
+    omitSampleAspectRatio: true,
     codedHeight: 1_080,
     metadataStreams,
   }) });
@@ -753,11 +754,12 @@ test("ISO-MP4 HEVC rejects hev1, Dolby Vision, encrypted tags, and unsupported p
   }
 });
 
-test("MP4 mode independently rejects QuickTime brands, anamorphic pixels, and fields", async () => {
+test("MP4 mode independently rejects QuickTime brands, missing or anamorphic pixels, and fields", async () => {
   for (const probe of [
     videoProbe({ majorBrand: "qt  ", compatibleBrands: "qt  " }),
     videoProbe({ sampleAspectRatio: "4:3" }),
     videoProbe({ sampleAspectRatio: "N/A" }),
+    videoProbe({ omitSampleAspectRatio: true }),
     videoProbe({ fieldOrder: "tt" }),
   ]) {
     const root = await mkdtemp(join(tmpdir(), "pit-verifier-reject-"));
