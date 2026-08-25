@@ -509,6 +509,51 @@ test("authenticated source/decode conflict stays 409 and consumes an admitted jo
   assert.deepEqual({ commits, rollbacks }, { commits: 1, rollbacks: 0 });
 });
 
+test("signed worker 422 codes distinguish source rejection from retryable pipeline failures", async (context) => {
+  const privateWorkerMessage = "private worker diagnostic must not cross the boundary";
+  const cases = [
+    { code: "unsupported_media", status: 415, apiCode: "MEDIA_TYPE_UNSUPPORTED" },
+    { code: "decode_failed", status: 503, apiCode: "MEDIA_STORAGE_UNAVAILABLE" },
+    { code: "invalid_request", status: 503, apiCode: "MEDIA_STORAGE_UNAVAILABLE" },
+    { code: "incompatible_protocol", status: 503, apiCode: "MEDIA_STORAGE_UNAVAILABLE" },
+    { code: "delivery_invalid", status: 503, apiCode: "MEDIA_STORAGE_UNAVAILABLE" },
+    { code: "poster_invalid", status: 503, apiCode: "MEDIA_STORAGE_UNAVAILABLE" },
+    { code: "verification_failed", status: 503, apiCode: "MEDIA_STORAGE_UNAVAILABLE" },
+    { code: "unknown_worker_failure", status: 503, apiCode: "MEDIA_STORAGE_UNAVAILABLE" },
+  ];
+
+  for (const fixture of cases) {
+    await context.test(fixture.code, async () => {
+      await assert.rejects(() => verifyVideoObject(verificationInput({
+        fetchImpl: (url, request) => signedResponse({
+          path: new URL(url).pathname,
+          request,
+          status: 422,
+          payload: { ok: false, code: fixture.code, message: privateWorkerMessage },
+        }),
+      })), (error) => {
+        assert.equal(error.status, fixture.status);
+        assert.equal(error.code, fixture.apiCode);
+        assert.equal(error.message.includes(privateWorkerMessage), false);
+        if (fixture.status === 503) assert.match(error.message, /Try again later/u);
+        return true;
+      });
+    });
+  }
+});
+
+test("an unsigned 422 source claim cannot select the non-retryable media error", async () => {
+  await assert.rejects(() => verifyVideoObject(verificationInput({
+    fetchImpl: async () => new Response(JSON.stringify({
+      ok: false,
+      code: "unsupported_media",
+    }), {
+      status: 422,
+      headers: { "content-type": "application/json" },
+    }),
+  })), (error) => error.status === 503 && error.code === "MEDIA_STORAGE_UNAVAILABLE");
+});
+
 test("one coalesced caller abort does not cancel an independently live waiter", async () => {
   const gate = deferred();
   const leaderAbort = new AbortController();

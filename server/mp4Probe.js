@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { ApiError } from "./errors.js";
 import { getMediaConfig, presignS3Request } from "./media.js";
 import {
+  VIDEO_VERIFIER_MAX_DISCARDED_QUICKTIME_TRACKS,
   VIDEO_VERIFIER_SOURCE_CONTENT_TYPES,
   videoVerifierSourceExtension,
 } from "./videoVerifierProtocol.js";
@@ -62,10 +63,6 @@ const ISO_MP4_COMPATIBLE_BRANDS = new Set(["isom", "iso2", "iso3", "iso4", "iso5
 const QUICKTIME_MAJOR_BRAND = "qt  ";
 const QUICKTIME_COMPATIBLE_BRANDS = new Set([QUICKTIME_MAJOR_BRAND]);
 const QUICKTIME_DISCARDED_TRACK_HANDLERS = new Set(["meta", "tmcd"]);
-// Current iPhone camera MOVs can carry several mebx-backed `meta` tracks in
-// addition to timecode. They are never decoded or published, but keep a small
-// explicit ceiling so arbitrary auxiliary-track collections remain rejected.
-const MAX_QUICKTIME_DISCARDED_TRACKS = 8;
 const DOLBY_VISION_CONFIGURATION_BOXES = new Set(["dvcC", "dvvC"]);
 const SOURCE_CONTENT_TYPES = new Set(VIDEO_VERIFIER_SOURCE_CONTENT_TYPES);
 const STREAMING_ONLY_BOXES = new Set(["moof", "mfra", "sidx", "styp"]);
@@ -398,6 +395,29 @@ function validateFtyp(buffer, parseState, contentType) {
   }
 }
 
+function listSampleEntryBoxes(buffer, start, end, parseState, {
+  allowQuickTimeZeroPadding = false,
+} = {}) {
+  const boxes = [];
+  let cursor = start;
+  while (cursor < end) {
+    // iPhone AVC sample entries terminate their otherwise ordinary child-box
+    // list with one four-byte zero alignment word. Accept that exact padding
+    // only at a child boundary in QuickTime mode; arbitrary trailers and ISO
+    // MP4 entries remain rejected.
+    if (allowQuickTimeZeroPadding && end - cursor === 4
+        && buffer.readUInt32BE(cursor) === 0) {
+      cursor = end;
+      break;
+    }
+    const box = parseBoxHeader(buffer, cursor, end, parseState);
+    boxes.push(box);
+    cursor = box.end;
+  }
+  if (cursor !== end) throw unsupported();
+  return boxes;
+}
+
 function parseMovieDuration(buffer, box) {
   const payloadBytes = box.end - box.payloadStart;
   if (payloadBytes < 20) throw unsupported();
@@ -719,10 +739,12 @@ function parseSpsDimensions(sequence) {
   };
 }
 
-function validateAvcConfiguration(buffer, entry, fixedPayloadBytes, parseState) {
+function validateAvcConfiguration(buffer, entry, fixedPayloadBytes, parseState, contentType) {
   const childrenStart = entry.payloadStart + fixedPayloadBytes;
   if (childrenStart >= entry.end) throw unsupported();
-  const children = listBoxes(buffer, childrenStart, entry.end, parseState);
+  const children = listSampleEntryBoxes(buffer, childrenStart, entry.end, parseState, {
+    allowQuickTimeZeroPadding: contentType === "video/quicktime",
+  });
   if (children.some((child) => child.type === "sinf")) throw unsupported();
   const pixelAspect = onlyBox(children, "pasp", { required: false });
   if (pixelAspect) {
@@ -855,7 +877,7 @@ function validateVideoEntry(buffer, entry, parseState, contentType) {
   if (!width || !height || width > MAX_VIDEO_WIDTH || height > MAX_VIDEO_HEIGHT) throw unsupported();
   const configuration = entry.type === "hvc1"
     ? validateHevcConfiguration(buffer, entry, fixedPayloadBytes, parseState)
-    : validateAvcConfiguration(buffer, entry, fixedPayloadBytes, parseState);
+    : validateAvcConfiguration(buffer, entry, fixedPayloadBytes, parseState, contentType);
   if (entry.type === "avc1"
       && (configuration.dimensions.width !== width || configuration.dimensions.height !== height)) throw unsupported();
   const codedWidth = entry.type === "hvc1" ? Math.ceil(width / 16) * 16 : configuration.dimensions.codedWidth;
@@ -938,16 +960,20 @@ function parseAacLcConfig(buffer) {
   return { sampleRate, channels: channelConfiguration };
 }
 
-function parseEsds(buffer, esds) {
+function parseEsds(buffer, esds, { quickTimeWave = false } = {}) {
   if (esds.end - esds.payloadStart < 6 || buffer[esds.payloadStart] !== 0
       || buffer[esds.payloadStart + 1] !== 0 || buffer[esds.payloadStart + 2] !== 0
       || buffer[esds.payloadStart + 3] !== 0) {
     throw unsupported();
   }
   const roots = descriptorList(buffer, esds.payloadStart + 4, esds.end);
+  if (quickTimeWave && roots.length !== 1) throw unsupported();
   const elementary = onlyDescriptor(roots, 0x03);
   let cursor = elementary.payloadStart;
   if (elementary.end - cursor < 3) throw unsupported();
+  if (quickTimeWave && (buffer.readUInt16BE(cursor) !== 0 || buffer[cursor + 2] !== 0)) {
+    throw unsupported();
+  }
   cursor += 2; // ES_ID
   const flags = buffer[cursor];
   cursor += 1;
@@ -961,23 +987,37 @@ function parseEsds(buffer, esds) {
   if (cursor > elementary.end) throw unsupported();
 
   const elementaryChildren = descriptorList(buffer, cursor, elementary.end);
+  if (quickTimeWave && (elementaryChildren.length !== 2
+      || elementaryChildren[0].tag !== 0x04 || elementaryChildren[1].tag !== 0x06
+      || elementaryChildren[1].end - elementaryChildren[1].payloadStart !== 1
+      || buffer[elementaryChildren[1].payloadStart] !== 2)) {
+    throw unsupported();
+  }
   const decoder = onlyDescriptor(elementaryChildren, 0x04);
   if (decoder.end - decoder.payloadStart < 13) throw unsupported();
   const objectType = buffer[decoder.payloadStart];
   const streamFlags = buffer[decoder.payloadStart + 1];
   const streamType = (streamFlags >> 2) & 0x3f;
-  if (objectType !== 0x40 || streamType !== 5 || (streamFlags & 0x03) !== 1) throw unsupported();
+  const descriptorFlags = streamFlags & 0x03;
+  if (objectType !== 0x40 || streamType !== 5
+      || (quickTimeWave ? descriptorFlags !== 0 : descriptorFlags !== 1)) throw unsupported();
   const decoderChildren = descriptorList(buffer, decoder.payloadStart + 13, decoder.end);
+  if (quickTimeWave && (decoderChildren.length !== 1 || decoderChildren[0].tag !== 0x05)) {
+    throw unsupported();
+  }
   const specific = onlyDescriptor(decoderChildren, 0x05);
   return parseAacLcConfig(buffer.subarray(specific.payloadStart, specific.end));
 }
 
-function validateAudioEntry(buffer, entry, parseState) {
+function validateAudioEntry(buffer, entry, parseState, contentType) {
   if (!AUDIO_SAMPLE_ENTRIES.has(entry.type)) throw unsupported();
   if (entry.end - entry.payloadStart < 28) throw unsupported();
   const version = buffer.readUInt16BE(entry.payloadStart + 8);
-  const fixedPayloadBytes = 28;
-  if (version !== 0 || buffer.readUInt16BE(entry.payloadStart + 6) !== 1) throw unsupported();
+  const quickTimeV1 = contentType === "video/quicktime" && version === 1;
+  const fixedPayloadBytes = quickTimeV1 ? 44 : 28;
+  if ((!quickTimeV1 && version !== 0)
+      || entry.end - entry.payloadStart < fixedPayloadBytes
+      || buffer.readUInt16BE(entry.payloadStart + 6) !== 1) throw unsupported();
   const channels = buffer.readUInt16BE(entry.payloadStart + 16);
   const sampleSize = buffer.readUInt16BE(entry.payloadStart + 18);
   const fixedSampleRate = buffer.readUInt32BE(entry.payloadStart + 24);
@@ -985,11 +1025,51 @@ function validateAudioEntry(buffer, entry, parseState) {
     throw unsupported();
   }
   const sampleRate = fixedSampleRate / 65_536;
+  if (quickTimeV1 && (buffer.readUInt16BE(entry.payloadStart + 10) !== 0
+      || entry.headerSize !== 8 || entry.size !== 143 || entry.extendsToEnd
+      || buffer.subarray(entry.payloadStart, entry.payloadStart + 6).some((byte) => byte !== 0)
+      || buffer.readUInt32BE(entry.payloadStart + 12) !== 0
+      || channels !== 2
+      || buffer.readInt16BE(entry.payloadStart + 20) !== -2
+      || buffer.readUInt16BE(entry.payloadStart + 22) !== 0
+      || buffer.readUInt32BE(entry.payloadStart + 28) !== 1_024
+      || buffer.readUInt32BE(entry.payloadStart + 32) !== 1
+      || buffer.readUInt32BE(entry.payloadStart + 36) !== 2
+      || buffer.readUInt32BE(entry.payloadStart + 40) !== 2)) {
+    throw unsupported();
+  }
   const childrenStart = entry.payloadStart + fixedPayloadBytes;
   if (childrenStart >= entry.end) throw unsupported();
   const children = listBoxes(buffer, childrenStart, entry.end, parseState);
   if (children.some((child) => child.type === "sinf")) throw unsupported();
-  const config = parseEsds(buffer, onlyBox(children, "esds"));
+  let esds;
+  if (quickTimeV1) {
+    if (children.length !== 1 || children[0].type !== "wave"
+        || children[0].headerSize !== 8 || children[0].size !== 91
+        || children[0].extendsToEnd) throw unsupported();
+    const waveChildren = listBoxes(buffer, children[0].payloadStart, children[0].end, parseState);
+    if (waveChildren.length !== 4
+        || waveChildren[0].type !== "frma"
+        || waveChildren[0].headerSize !== 8 || waveChildren[0].size !== 12
+        || waveChildren[0].extendsToEnd
+        || fourCc(buffer, waveChildren[0].payloadStart) !== "mp4a"
+        || waveChildren[1].type !== "mp4a"
+        || waveChildren[1].headerSize !== 8 || waveChildren[1].size !== 12
+        || waveChildren[1].extendsToEnd
+        || buffer.readUInt32BE(waveChildren[1].payloadStart) !== 0
+        || waveChildren[2].type !== "esds" || waveChildren[2].headerSize !== 8
+        || waveChildren[2].size !== 51 || waveChildren[2].extendsToEnd
+        || waveChildren[3].type !== "\0\0\0\0"
+        || waveChildren[3].headerSize !== 8 || waveChildren[3].size !== 8
+        || waveChildren[3].extendsToEnd
+        || waveChildren[3].end !== waveChildren[3].payloadStart) {
+      throw unsupported();
+    }
+    esds = waveChildren[2];
+  } else {
+    esds = onlyBox(children, "esds");
+  }
+  const config = parseEsds(buffer, esds, { quickTimeWave: quickTimeV1 });
   if (config.channels !== channels || config.sampleRate !== sampleRate) throw unsupported();
 }
 
@@ -1035,7 +1115,9 @@ function parseSampleDescriptions(buffer, stsd, handlerType, parseState, contentT
       sampleConfigs: descriptions.map(({ nalLengthSize, codec }) => ({ nalLengthSize, codec })),
     };
   }
-  if (handlerType === "soun") entries.forEach((entry) => validateAudioEntry(buffer, entry, parseState));
+  if (handlerType === "soun") {
+    entries.forEach((entry) => validateAudioEntry(buffer, entry, parseState, contentType));
+  }
   return { descriptionCount: entries.length, dimensions: null, sampleConfigs: [] };
 }
 
@@ -1090,7 +1172,7 @@ function parseMoov(buffer, parseState, mdats, contentType) {
   const audioTracks = parsedTracks.filter(({ handlerType }) => handlerType === "soun");
   const unknownTracks = parsedTracks.filter(({ handlerType }) => handlerType !== "vide" && handlerType !== "soun");
   const discardedQuickTimeTracks = contentType === "video/quicktime"
-    && unknownTracks.length <= MAX_QUICKTIME_DISCARDED_TRACKS
+    && unknownTracks.length <= VIDEO_VERIFIER_MAX_DISCARDED_QUICKTIME_TRACKS
     && unknownTracks.every(({ handlerType }) => QUICKTIME_DISCARDED_TRACK_HANDLERS.has(handlerType));
   if (videoTracks.length !== 1 || audioTracks.length > 1
       || (unknownTracks.length && !discardedQuickTimeTracks)) {

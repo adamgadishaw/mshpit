@@ -62,6 +62,12 @@ function descriptor(tag, ...payloads) {
   return Buffer.concat([Buffer.from([tag, ...encodedLength]), payload]);
 }
 
+function quickTimeDescriptor(tag, ...payloads) {
+  const payload = Buffer.concat(payloads.map((value) => Buffer.from(value)));
+  assert.ok(payload.length < 128, "QuickTime descriptor fixture remains bounded");
+  return Buffer.concat([Buffer.from([tag, 0x80, 0x80, 0x80, payload.length]), payload]);
+}
+
 function packedBits(fields) {
   const bits = fields.flatMap(({ value, width }) => (
     Array.from({ length: width }, (_, index) => (value >> (width - index - 1)) & 1)
@@ -106,6 +112,22 @@ function makeEsds({
     u32(128_000), u32(128_000), specific);
   const slConfig = descriptor(0x06, Buffer.from([2]));
   const elementary = descriptor(0x03, Buffer.from([0, 1, 0]), decoder, slConfig);
+  return fullBox("esds", 0, elementary);
+}
+
+function makeQuickTimeEsds({ channels = 2, streamFlags = 0x14 } = {}) {
+  const audioConfig = packedBits([
+    { value: 2, width: 5 },
+    { value: 4, width: 4 },
+    { value: channels, width: 4 },
+    { value: 0, width: 3 },
+  ]);
+  const specific = quickTimeDescriptor(0x05, audioConfig);
+  const decoder = quickTimeDescriptor(0x04,
+    Buffer.from([0x40, streamFlags, 0, 0x18, 0]),
+    u32(192_000), u32(0), specific);
+  const slConfig = quickTimeDescriptor(0x06, Buffer.from([2]));
+  const elementary = quickTimeDescriptor(0x03, Buffer.from([0, 0, 0]), decoder, slConfig);
   return fullBox("esds", 0, elementary);
 }
 
@@ -248,6 +270,7 @@ function makeVisualEntry(type = "avc1", {
   chromaFormat = 1,
   bitDepthMinus8 = 0,
   dataReferenceIndex = 1,
+  trailingBytes = Buffer.alloc(0),
 } = {}) {
   const fixed = Buffer.alloc(78);
   fixed.writeUInt16BE(dataReferenceIndex, 6);
@@ -259,7 +282,8 @@ function makeVisualEntry(type = "avc1", {
       inBandOnly, profile, level, width: spsWidth, height: spsHeight,
       codedWidth: spsCodedWidth, codedHeight: spsCodedHeight, progressive, chromaFormat,
     });
-  return box(type, fixed, ...(includeConfiguration ? [configuration] : []), ...extraChildren);
+  return box(type, fixed, ...(includeConfiguration ? [configuration] : []), ...extraChildren,
+    Buffer.from(trailingBytes));
 }
 
 function makeAudioEntry(type = "mp4a", {
@@ -287,6 +311,50 @@ function makeAudioEntry(type = "mp4a", {
     streamFlags, audioConfigSuffix,
   })] : [];
   return box(type, fixed, ...esds, ...extraChildren);
+}
+
+function makeQuickTimeAudioEntry({
+  reservedByte = 0,
+  version = 1,
+  revision = 0,
+  vendor = 0,
+  channels = 2,
+  sampleSize = 16,
+  compressionId = -2,
+  packetSize = 0,
+  sampleRate = 44_100,
+  samplesPerPacket = 1_024,
+  bytesPerPacket = 1,
+  bytesPerFrame = channels,
+  bytesPerSample = 2,
+  format = "mp4a",
+  waveMarker = 0,
+  includeEsds = true,
+  streamFlags = 0x14,
+  extraWaveChildren = [],
+} = {}) {
+  const fixed = Buffer.alloc(44);
+  fixed[0] = reservedByte;
+  fixed.writeUInt16BE(1, 6);
+  fixed.writeUInt16BE(version, 8);
+  fixed.writeUInt16BE(revision, 10);
+  fixed.writeUInt32BE(vendor, 12);
+  fixed.writeUInt16BE(channels, 16);
+  fixed.writeUInt16BE(sampleSize, 18);
+  fixed.writeInt16BE(compressionId, 20);
+  fixed.writeUInt16BE(packetSize, 22);
+  fixed.writeUInt32BE(sampleRate * 65_536, 24);
+  fixed.writeUInt32BE(samplesPerPacket, 28);
+  fixed.writeUInt32BE(bytesPerPacket, 32);
+  fixed.writeUInt32BE(bytesPerFrame, 36);
+  fixed.writeUInt32BE(bytesPerSample, 40);
+  const wave = box("wave",
+    box("frma", Buffer.from(format, "latin1")),
+    box("mp4a", u32(waveMarker)),
+    ...(includeEsds ? [makeQuickTimeEsds({ channels, streamFlags })] : []),
+    ...extraWaveChildren,
+    box("\0\0\0\0"));
+  return box("mp4a", fixed, wave);
 }
 
 function makeTrack(handlerType, entries, {
@@ -610,6 +678,8 @@ test("accepts only conservative ISO-MP4 brands and rejects QuickTime or streamin
 test("QuickTime mode binds the MOV key/type and admits bounded iPhone AVC or HEVC structure", async () => {
   const h264 = makeMp4({
     ftyp: { majorBrand: "qt  ", compatibleBrands: ["qt  "] },
+    videoEntries: [makeVisualEntry("avc1", { trailingBytes: Buffer.alloc(4) })],
+    audioEntries: [makeQuickTimeAudioEntry()],
     metadataHandlers: Array.from({ length: 5 }, () => "meta"),
   });
   assert.deepEqual(await verify(h264, {
@@ -645,6 +715,89 @@ test("QuickTime mode binds the MOV key/type and admits bounded iPhone AVC or HEV
     fetchImpl: async () => { fetches += 1; },
   }), isUnsupported);
   assert.equal(fetches, 0, "a MOV claim cannot be paired with an MP4 object key");
+});
+
+test("QuickTime mode admits only the reviewed iPhone v1 wave-wrapped AAC layout", async (context) => {
+  const quickTime = (audioEntry, videoEntry = makeVisualEntry("avc1", {
+    trailingBytes: Buffer.alloc(4),
+  })) => makeMp4({
+    ftyp: { majorBrand: "qt  ", compatibleBrands: ["qt  "] },
+    videoEntries: [videoEntry],
+    audioEntries: [audioEntry],
+  });
+  await context.test("production-shaped-stereo-aac-lc", async () => {
+    assert.deepEqual(await verify(quickTime(makeQuickTimeAudioEntry()), {
+      objectKey: "users/owner/post/iphone-v1-aac.mov",
+      contentType: "video/quicktime",
+    }), {
+      ...expectedStructural(),
+      sourceContainer: "quicktime",
+      sourceCodec: "h264",
+    });
+  });
+  for (const fixture of [
+    { label: "reserved-byte", options: { reservedByte: 1 } },
+    { label: "version-two", options: { version: 2 } },
+    { label: "revision", options: { revision: 1 } },
+    { label: "vendor", options: { vendor: 1 } },
+    { label: "mono", options: { channels: 1, bytesPerFrame: 1 } },
+    { label: "sample-size", options: { sampleSize: 8 } },
+    { label: "compression-id", options: { compressionId: 0 } },
+    { label: "packet-size", options: { packetSize: 1 } },
+    { label: "samples-per-packet", options: { samplesPerPacket: 960 } },
+    { label: "bytes-per-packet", options: { bytesPerPacket: 2 } },
+    { label: "bytes-per-frame", options: { bytesPerFrame: 3 } },
+    { label: "bytes-per-sample", options: { bytesPerSample: 1 } },
+    { label: "wrong-frma", options: { format: "enca" } },
+    { label: "wrong-wave-marker", options: { waveMarker: 1 } },
+    { label: "missing-esds", options: { includeEsds: false } },
+    { label: "standard-reserved-bit", options: { streamFlags: 0x15 } },
+    { label: "extra-wave-child", options: { extraWaveChildren: [box("free")] } },
+  ]) {
+    await context.test(`reject-${fixture.label}`, async () => {
+      await assert.rejects(() => verify(quickTime(makeQuickTimeAudioEntry(fixture.options)), {
+        objectKey: `users/owner/post/iphone-${fixture.label}.mov`,
+        contentType: "video/quicktime",
+      }), isUnsupported);
+    });
+  }
+  await context.test("reject-version-one-wave-in-iso-mp4", async () => {
+    await assert.rejects(() => verify(makeMp4({
+      audioEntries: [makeQuickTimeAudioEntry()],
+    })), isUnsupported);
+  });
+  await context.test("reject-size-zero-sample-entry-alias", async () => {
+    const bytes = quickTime(makeQuickTimeAudioEntry());
+    const sampleEntryType = bytes.indexOf("mp4a", 0, "ascii");
+    assert.ok(sampleEntryType >= 4);
+    bytes.writeUInt32BE(0, sampleEntryType - 4);
+    await assert.rejects(() => verify(bytes, {
+      objectKey: "users/owner/post/iphone-size-zero-audio.mov",
+      contentType: "video/quicktime",
+    }), isUnsupported);
+  });
+  await context.test("reject-size-zero-wave-alias", async () => {
+    const bytes = quickTime(makeQuickTimeAudioEntry());
+    const waveType = bytes.indexOf("wave", 0, "ascii");
+    assert.ok(waveType >= 4);
+    bytes.writeUInt32BE(0, waveType - 4);
+    await assert.rejects(() => verify(bytes, {
+      objectKey: "users/owner/post/iphone-size-zero-wave.mov",
+      contentType: "video/quicktime",
+    }), isUnsupported);
+  });
+  await context.test("reject-quicktime-nonzero-avc-trailer", async () => {
+    await assert.rejects(() => verify(quickTime(makeQuickTimeAudioEntry(),
+      makeVisualEntry("avc1", { trailingBytes: Buffer.from([0, 0, 0, 1]) })), {
+      objectKey: "users/owner/post/iphone-bad-padding.mov",
+      contentType: "video/quicktime",
+    }), isUnsupported);
+  });
+  await context.test("reject-quicktime-padding-in-iso-mp4", async () => {
+    await assert.rejects(() => verify(makeMp4({
+      videoEntries: [makeVisualEntry("avc1", { trailingBytes: Buffer.alloc(4) })],
+    })), isUnsupported);
+  });
 });
 
 test("QuickTime mode bounds discarded metadata tracks and rejects unknown handlers", async (context) => {

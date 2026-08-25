@@ -8,6 +8,10 @@ import {
 export const VIDEO_VERIFIER_PROTOCOL_VERSION = "pit-video-verifier-v2";
 export const VIDEO_VERIFIER_PIPELINE_VERSION = "private-derivative-v1";
 export const VIDEO_VERIFIER_CLOCK_SKEW_MS = 60_000;
+// Both the web structural gate and the isolated decoder must admit the same
+// bounded set of disposable QuickTime metadata tracks. Keeping the ceiling in
+// the signed protocol module prevents either layer from drifting independently.
+export const VIDEO_VERIFIER_MAX_DISCARDED_QUICKTIME_TRACKS = 8;
 export const VIDEO_VERIFIER_SOURCE_CONTENT_TYPES = Object.freeze(["video/mp4", "video/quicktime"]);
 export const VIDEO_VERIFIER_SOURCE_CODECS = Object.freeze({
   "video/mp4": Object.freeze(["h264", "hevc"]),

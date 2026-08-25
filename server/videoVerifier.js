@@ -30,6 +30,10 @@ const OUTPUT_OBJECT_KEY = /^users\/[A-Za-z0-9_-]{1,128}\/post\/[A-Za-z0-9_-]{1,2
 const SOURCE_CONTENT_TYPES = new Set(VIDEO_VERIFIER_SOURCE_CONTENT_TYPES);
 const SHA256 = /^[a-f0-9]{64}$/;
 const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+// `decode_failed` is emitted by the generic child-process runner for source,
+// derivative, and poster stages alike. It is therefore retryable: only the
+// worker's explicit, signed source-admission verdict may retire member bytes.
+const WORKER_SOURCE_REJECTION_CODES = new Set(["unsupported_media"]);
 
 let healthTimer = null;
 let healthInFlight = null;
@@ -240,7 +244,18 @@ async function verifierRequest({ path, payload, env, fetchImpl, signal, timeoutM
       throw new ApiError(429, "Clip verification is busy. Try again shortly.", "RATE_LIMITED");
     }
     if (response?.status === 422) {
-      throw new ApiError(415, "That clip could not pass authoritative decoding.", "MEDIA_TYPE_UNSUPPORTED");
+      if (WORKER_SOURCE_REJECTION_CODES.has(decoded?.code)) {
+        throw new ApiError(415, "That clip could not pass authoritative decoding.", "MEDIA_TYPE_UNSUPPORTED");
+      }
+      // The signed worker distinguishes an incompatible source from failures
+      // in PIT's generated request, derivative, and poster pipeline. Never
+      // blame the member's file for the latter, and never reflect worker text
+      // across this trust boundary.
+      throw new ApiError(
+        503,
+        "Clip processing is temporarily unavailable. Try again later.",
+        "MEDIA_STORAGE_UNAVAILABLE",
+      );
     }
     if (response?.status === 409) {
       throw new ApiError(409, "That clip changed while it was being verified. Try again.", "CONFLICT");

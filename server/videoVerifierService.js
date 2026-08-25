@@ -9,6 +9,7 @@ import { pipeline } from "node:stream/promises";
 import { pathToFileURL } from "node:url";
 
 import {
+  VIDEO_VERIFIER_MAX_DISCARDED_QUICKTIME_TRACKS,
   VIDEO_VERIFIER_PIPELINE_VERSION,
   VIDEO_VERIFIER_PROTOCOL_VERSION,
   VIDEO_VERIFIER_SOURCE_CODECS,
@@ -396,6 +397,7 @@ async function probeVideo(filePath, config, {
   directory,
   signal,
   sourceContentType = "video/mp4",
+  structural,
 }) {
   const result = await runProcess(config.ffprobe, [
     "-v", "error",
@@ -449,18 +451,40 @@ async function probeVideo(filePath, config, {
       && compatibleBrands.every((brand) => ISO_MP4_COMPATIBLE_BRANDS.has(brand));
   const audioProfile = String(audio[0]?.profile || "");
   const sampleRate = Number(audio[0]?.sample_rate);
+  const widthValue = Number(video[0]?.width);
+  const heightValue = Number(video[0]?.height);
   const codedWidth = Number(video[0]?.coded_width);
   const codedHeight = Number(video[0]?.coded_height);
+  const structuralCodedWidth = Number(structural?.codedWidth);
+  const structuralCodedHeight = Number(structural?.codedHeight);
+  // FFprobe 5.1 reports the cropped display axis as coded_width/height for
+  // current iPhone AVC MOVs. The signed web preflight still carries the SPS
+  // macroblock envelope. Accept only either of those two exact reports, and use
+  // the larger signed envelope—not FFprobe's presentation—for decode-work.
+  const hasStructuralEnvelope = Number.isSafeInteger(structuralCodedWidth)
+    && Number.isSafeInteger(structuralCodedHeight);
+  const roundedDisplayWidth = Math.ceil(widthValue / 16) * 16;
+  const roundedDisplayHeight = Math.ceil(heightValue / 16) * 16;
+  const codedReportMatches = hasStructuralEnvelope
+    ? new Set([widthValue, structuralCodedWidth]).has(codedWidth)
+      && new Set([heightValue, structuralCodedHeight]).has(codedHeight)
+    : new Set([widthValue, roundedDisplayWidth]).has(codedWidth)
+      && new Set([heightValue, roundedDisplayHeight]).has(codedHeight);
+  const sampleAspectRatio = String(video[0]?.sample_aspect_ratio || "");
+  const sourceAspectAccepted = sampleAspectRatio === "1:1"
+    || (quickTime && hasStructuralEnvelope && sampleAspectRatio === "N/A");
   const estimatedSamples = Number.isFinite(avgFps) && Number.isFinite(realFps) && Number.isSafeInteger(durationMs)
     ? Math.ceil(Math.max(avgFps, realFps) * (durationMs / 1_000))
     : VIDEO_MAX_SAMPLES + 1;
-  const estimatedCodedWork = Number.isSafeInteger(codedWidth) && Number.isSafeInteger(codedHeight)
-      && Number.isSafeInteger(estimatedSamples)
-    ? BigInt(codedWidth) * BigInt(codedHeight) * BigInt(estimatedSamples)
+  const workWidth = hasStructuralEnvelope ? structuralCodedWidth : roundedDisplayWidth;
+  const workHeight = hasStructuralEnvelope ? structuralCodedHeight : roundedDisplayHeight;
+  const estimatedCodedWork = Number.isSafeInteger(workWidth)
+      && Number.isSafeInteger(workHeight) && Number.isSafeInteger(estimatedSamples)
+    ? BigInt(workWidth) * BigInt(workHeight) * BigInt(estimatedSamples)
     : VIDEO_MAX_CODED_PIXEL_SAMPLES + 1n;
   if (video.length !== 1 || (!h264 && !hevc) || !codecProfileValid
       || video[0]?.field_order !== "progressive"
-      || video[0]?.sample_aspect_ratio !== "1:1"
+      || !sourceAspectAccepted
       || video[0]?.disposition?.attached_pic === 1
       || !Number.isFinite(avgFps) || avgFps <= 0 || avgFps > 60.01
       || !Number.isFinite(realFps) || realFps <= 0 || realFps > 60.01
@@ -470,10 +494,11 @@ async function probeVideo(filePath, config, {
         || !new Set(["mono", "stereo"]).has(String(audio[0]?.channel_layout || ""))
         || !Number.isInteger(sampleRate) || sampleRate < 8_000 || sampleRate > 48_000))
       || !Number.isSafeInteger(codedWidth) || !Number.isSafeInteger(codedHeight)
-      || (h264 && (codedWidth % 16 !== 0 || codedHeight % 16 !== 0))
-      || codedWidth < Number(video[0]?.width) || codedHeight < Number(video[0]?.height)
+      || !codedReportMatches
       || estimatedSamples > VIDEO_MAX_SAMPLES || estimatedCodedWork > VIDEO_MAX_CODED_PIXEL_SAMPLES
-      || unknown.length || discardedQuickTime.length > 2 || !containerValid
+      || unknown.length
+      || discardedQuickTime.length > VIDEO_VERIFIER_MAX_DISCARDED_QUICKTIME_TRACKS
+      || !containerValid
       || !Number.isSafeInteger(durationMs) || durationMs < 1 || durationMs > VIDEO_MAX_DURATION_MS) {
     throw serviceError("unsupported_media", "Clip must be a bounded compatible MP4 or QuickTime MOV.");
   }
@@ -688,13 +713,10 @@ export async function runVideoVerifierJob(payload, {
       directory,
       signal,
       sourceContentType: job.contentType,
+      structural: job.structural,
     });
     if (video.width !== job.structural.width
         || video.height !== job.structural.height
-        || (job.contentType === "video/mp4" && job.structural.sourceCodec === undefined
-          && video.codedWidth !== job.structural.codedWidth)
-        || (job.contentType === "video/mp4" && job.structural.sourceCodec === undefined
-          && video.codedHeight !== job.structural.codedHeight)
         || (job.structural.sourceCodec !== undefined && video.codec !== job.structural.sourceCodec)
         || Math.abs(video.durationMs - job.structural.durationMs) > 1_500) {
       throw serviceError("metadata_mismatch", "Decoded clip does not match structural preflight.", { status: 409 });

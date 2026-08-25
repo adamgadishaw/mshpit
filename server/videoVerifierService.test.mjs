@@ -16,6 +16,7 @@ import {
 import {
   signVideoVerifierRequest,
   verifyVideoVerifierResponse,
+  VIDEO_VERIFIER_MAX_DISCARDED_QUICKTIME_TRACKS,
   VIDEO_VERIFIER_PROTOCOL_VERSION,
 } from "./videoVerifierProtocol.js";
 
@@ -291,7 +292,15 @@ function videoProbe({
   });
 }
 
-function fakeRunner({ probe = videoProbe() } = {}) {
+function fakeRunner({
+  probe = videoProbe(),
+  deliveryProbe = videoProbe({
+    rotation: 0, width: 720, height: 1_280, codedWidth: 720, codedHeight: 1_280,
+  }),
+  posterProbe = JSON.stringify({
+    streams: [{ codec_type: "video", codec_name: "mjpeg", width: 720, height: 1_280 }],
+  }),
+} = {}) {
   const calls = [];
   const runProcess = async (executable, args, options) => {
     calls.push({ executable, args: [...args], options });
@@ -299,10 +308,10 @@ function fakeRunner({ probe = videoProbe() } = {}) {
       return { stdout: probe, stderr: "" };
     }
     if (executable === "ffprobe" && args.some((value) => String(value).endsWith("delivery.mp4"))) {
-      return { stdout: videoProbe({ rotation: 0, width: 720, height: 1_280, codedWidth: 720, codedHeight: 1_280 }), stderr: "" };
+      return { stdout: deliveryProbe, stderr: "" };
     }
     if (executable === "ffprobe") {
-      return { stdout: JSON.stringify({ streams: [{ codec_type: "video", codec_name: "mjpeg", width: 720, height: 1_280 }] }), stderr: "" };
+      return { stdout: posterProbe, stderr: "" };
     }
     const output = args.at(-1);
     if (typeof output === "string" && output.endsWith("poster.jpg")) await writeFile(output, POSTER);
@@ -390,7 +399,9 @@ test("authoritative worker accepts an exact iPhone HEVC MOV and emits only sanit
     pixelFormat: "yuv420p10le",
     majorBrand: "qt  ",
     compatibleBrands: "qt  ",
-    metadataStreams: [{ codec_type: "data", codec_name: "none", codec_tag_string: "mebx" }],
+    metadataStreams: Array.from({
+      length: VIDEO_VERIFIER_MAX_DISCARDED_QUICKTIME_TRACKS,
+    }, () => ({ codec_type: "data", codec_name: "none", codec_tag_string: "mebx" })),
   });
   const runProcess = fakeRunner({ probe: movProbe });
   const base = validJob();
@@ -437,6 +448,208 @@ test("authoritative worker accepts an exact iPhone HEVC MOV and emits only sanit
     assert.deepEqual(await readdir(root), []);
   } finally {
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("authoritative worker accepts the reviewed iPhone AVC probe shape", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pit-verifier-iphone-avc-"));
+  const metadataStreams = [
+    {
+      codec_type: "audio",
+      codec_name: "aac",
+      codec_tag_string: "mp4a",
+      profile: "LC",
+      channels: 2,
+      channel_layout: "stereo",
+      sample_rate: "44100",
+    },
+    ...Array.from({ length: 5 }, () => ({
+      codec_type: "data",
+      codec_name: "none",
+      codec_tag_string: "mebx",
+    })),
+  ];
+  const runProcess = fakeRunner({ probe: videoProbe({
+    rotation: 0,
+    majorBrand: "qt  ",
+    compatibleBrands: "qt  ",
+    sampleAspectRatio: "N/A",
+    codedHeight: 1_080,
+    metadataStreams,
+  }) });
+  const base = validJob();
+  const payload = validJob({
+    object: {
+      ...base.object,
+      key: "users/u_video/post/iphone-avc.mov",
+      contentType: "video/quicktime",
+      downloadUrl: capabilityUrl("iphone-avc.mov"),
+    },
+    structural: {
+      ...base.structural,
+      sourceContainer: "quicktime",
+      sourceCodec: "h264",
+    },
+  });
+  try {
+    const result = await runVideoVerifierJob(payload, {
+      config: getVideoVerifierServiceConfig(ENV),
+      fetchImpl: async (_url, request) => request.method === "PUT"
+        ? new Response(null, { status: 200 })
+        : new Response(SOURCE, {
+          status: 200,
+          headers: {
+            "content-type": "video/quicktime",
+            "content-length": String(SOURCE.byteLength),
+            etag: ETAG,
+          },
+        }),
+      runProcess,
+      signal: AbortSignal.timeout(5_000),
+      temporaryRoot: root,
+    });
+    assert.equal(result.video.codec, "h264");
+    assert.equal(result.video.codedHeight, 1_080,
+      "FFprobe may report the signed display axis for cropped AVC");
+    assert.equal(result.delivery.contentType, "video/mp4");
+    assert.deepEqual(await readdir(root), []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("sanitized AVC derivative accepts display or rounded coded-axis reports", async (context) => {
+  for (const codedHeight of [1_080, 1_088]) {
+    await context.test(String(codedHeight), async () => {
+      const root = await mkdtemp(join(tmpdir(), "pit-verifier-delivery-axis-"));
+      const runProcess = fakeRunner({
+        deliveryProbe: videoProbe({
+          rotation: 0,
+          width: 1_920,
+          height: 1_080,
+          codedWidth: 1_920,
+          codedHeight,
+        }),
+        posterProbe: JSON.stringify({
+          streams: [{ codec_type: "video", codec_name: "mjpeg", width: 1_280, height: 720 }],
+        }),
+      });
+      try {
+        const result = await runVideoVerifierJob(validJob(), {
+          config: getVideoVerifierServiceConfig(ENV),
+          fetchImpl: async (_url, request) => request.method === "PUT"
+            ? new Response(null, { status: 200 })
+            : new Response(SOURCE, {
+              status: 200,
+              headers: {
+                "content-type": "video/mp4",
+                "content-length": String(SOURCE.byteLength),
+                etag: ETAG,
+              },
+            }),
+          runProcess,
+          signal: AbortSignal.timeout(5_000),
+          temporaryRoot: root,
+        });
+        assert.equal(result.delivery.width, 1_920);
+        assert.equal(result.delivery.height, 1_080);
+        assert.deepEqual({ width: result.poster.width, height: result.poster.height }, {
+          width: 1_280, height: 720,
+        });
+        assert.deepEqual(await readdir(root), []);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+test("authoritative worker bounds QuickTime metadata and source report ambiguity", async (context) => {
+  const base = validJob();
+  const payload = validJob({
+    object: {
+      ...base.object,
+      key: "users/u_video/post/iphone-bounds.mov",
+      contentType: "video/quicktime",
+      downloadUrl: capabilityUrl("iphone-bounds.mov"),
+    },
+    structural: {
+      ...base.structural,
+      sourceContainer: "quicktime",
+      sourceCodec: "h264",
+    },
+  });
+  const mebx = () => ({ codec_type: "data", codec_name: "none", codec_tag_string: "mebx" });
+  for (const fixture of [
+    {
+      label: "nine-disposable-tracks",
+      probe: videoProbe({
+        majorBrand: "qt  ", compatibleBrands: "qt  ",
+        metadataStreams: Array.from({
+          length: VIDEO_VERIFIER_MAX_DISCARDED_QUICKTIME_TRACKS + 1,
+        }, mebx),
+      }),
+    },
+    {
+      label: "unknown-data-track",
+      probe: videoProbe({
+        majorBrand: "qt  ", compatibleBrands: "qt  ",
+        metadataStreams: [{ codec_type: "data", codec_name: "none", codec_tag_string: "zzzz" }],
+      }),
+    },
+    {
+      label: "anamorphic-signal",
+      probe: videoProbe({
+        majorBrand: "qt  ", compatibleBrands: "qt  ", sampleAspectRatio: "4:3",
+      }),
+    },
+    {
+      label: "missing-aspect-signal",
+      probe: videoProbe({
+        majorBrand: "qt  ", compatibleBrands: "qt  ", sampleAspectRatio: "",
+      }),
+    },
+    {
+      label: "coded-axis-below-display",
+      probe: videoProbe({
+        majorBrand: "qt  ", compatibleBrands: "qt  ", codedHeight: 1_079,
+      }),
+    },
+    {
+      label: "coded-axis-between-display-and-envelope",
+      probe: videoProbe({
+        majorBrand: "qt  ", compatibleBrands: "qt  ", codedHeight: 1_081,
+      }),
+    },
+    {
+      label: "coded-axis-above-envelope",
+      probe: videoProbe({
+        majorBrand: "qt  ", compatibleBrands: "qt  ", codedHeight: 1_096,
+      }),
+    },
+  ]) {
+    await context.test(fixture.label, async () => {
+      const root = await mkdtemp(join(tmpdir(), "pit-verifier-iphone-reject-"));
+      try {
+        await assert.rejects(() => runVideoVerifierJob(payload, {
+          config: getVideoVerifierServiceConfig(ENV),
+          fetchImpl: async () => new Response(SOURCE, {
+            status: 200,
+            headers: {
+              "content-type": "video/quicktime",
+              "content-length": String(SOURCE.byteLength),
+              etag: ETAG,
+            },
+          }),
+          runProcess: fakeRunner({ probe: fixture.probe }),
+          signal: AbortSignal.timeout(5_000),
+          temporaryRoot: root,
+        }), { code: "unsupported_media" });
+        assert.deepEqual(await readdir(root), []);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    });
   }
 });
 
@@ -544,6 +757,7 @@ test("MP4 mode independently rejects QuickTime brands, anamorphic pixels, and fi
   for (const probe of [
     videoProbe({ majorBrand: "qt  ", compatibleBrands: "qt  " }),
     videoProbe({ sampleAspectRatio: "4:3" }),
+    videoProbe({ sampleAspectRatio: "N/A" }),
     videoProbe({ fieldOrder: "tt" }),
   ]) {
     const root = await mkdtemp(join(tmpdir(), "pit-verifier-reject-"));
