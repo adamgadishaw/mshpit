@@ -112,6 +112,8 @@ services:
         sync: false
       - key: PIT_VIDEO_PUBLISHING_ENABLED
         value: "false"
+      # Blueprint owns both references. Reconciliation can safely be retried
+      # after the private service's first deployment establishes the source.
       - key: PIT_VIDEO_VERIFIER_HOSTPORT
         fromService:
           type: pserv
