@@ -32,10 +32,10 @@ const ETAG = '"source-generation"';
 const SOURCE = Buffer.from("bounded-mp4-source-fixture");
 const POSTER = Buffer.from([0xff, 0xd8, 0xff, 0xdb, 0xff, 0xd9]);
 
-function capabilityUrl() {
+function capabilityUrl(objectKey = "source.mp4") {
   const credential = encodeURIComponent("access/20260823/auto/s3/aws4_request");
   const signedHeaders = encodeURIComponent("host;if-match");
-  return `https://objects.example.com/s3/pit-media/users/u_video/post/source.mp4?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=${credential}&X-Amz-Date=20260823T120000Z&X-Amz-Expires=120&X-Amz-SignedHeaders=${signedHeaders}&X-Amz-Signature=${"a".repeat(64)}`;
+  return `https://objects.example.com/s3/pit-media/users/u_video/post/${objectKey}?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=${credential}&X-Amz-Date=20260823T120000Z&X-Amz-Expires=120&X-Amz-SignedHeaders=${signedHeaders}&X-Amz-Signature=${"a".repeat(64)}`;
 }
 
 function outputCapabilityUrl() {
@@ -136,6 +136,11 @@ test("worker authenticates health, caps request bytes before JSON parse, and rej
     const health = await authenticatedResponse(first, "/v2/health", signed.nonce);
     assert.equal(health.decoder.ffmpeg, true);
     assert.equal(health.poster.decoded, true);
+    assert.deepEqual(health.sourceTypes, ["video/mp4", "video/quicktime"]);
+    assert.deepEqual(health.sourceCodecs, {
+      "video/mp4": ["h264", "hevc"],
+      "video/quicktime": ["h264", "hevc"],
+    });
 
     const replay = await postSigned(origin, "/v2/health", signed);
     assert.equal(replay.status, 409);
@@ -203,12 +208,24 @@ test("global decoder concurrency rejects busy without queueing and disconnect ca
 test("job validation binds exact origin/key/generation and enforces the coded-work envelope", () => {
   const config = getVideoVerifierServiceConfig(ENV);
   assert.equal(validateVideoVerifierJob(validJob(), config).structural.sampleCount, 300);
+  assert.equal(validateVideoVerifierJob(validJob({
+    structural: { ...validJob().structural, sourceCodec: "hevc" },
+  }), config).structural.sourceCodec, "hevc");
   assert.throws(() => validateVideoVerifierJob(validJob({
     object: { ...validJob().object, downloadUrl: capabilityUrl().replace("objects.example.com", "evil.example.com") },
   }), config), { code: "invalid_request" });
   assert.throws(() => validateVideoVerifierJob(validJob({
     structural: { ...validJob().structural, sampleCount: 3_601, durationMs: 60_000 },
   }), config), { code: "invalid_request" });
+  assert.throws(() => validateVideoVerifierJob(validJob({
+    object: { ...validJob().object, contentType: "video/quicktime" },
+  }), config), { code: "invalid_request" }, "MIME and source extension stay identity-bound");
+  assert.throws(() => validateVideoVerifierJob(validJob({
+    structural: { ...validJob().structural, sourceContainer: "quicktime", sourceCodec: "hevc" },
+  }), config), { code: "invalid_request" }, "an MP4 source cannot claim QuickTime structure");
+  assert.throws(() => validateVideoVerifierJob(validJob({
+    structural: { ...validJob().structural, sourceCodec: "h264" },
+  }), config), { code: "invalid_request" }, "legacy MP4 H.264 keeps its exact structural shape");
 });
 
 test("an exact source generation loss is a conflict before decoder work", async () => {
@@ -231,6 +248,11 @@ test("an exact source generation loss is a conflict before decoder work", async 
 
 function videoProbe({
   rotation = 90,
+  codec = "h264",
+  codecTag = codec === "hevc" ? "hvc1" : "avc1",
+  profile = codec === "hevc" ? "Main" : "High",
+  level = codec === "hevc" ? 120 : 40,
+  pixelFormat = codec === "hevc" ? "yuv420p10le" : "yuv420p",
   majorBrand = "isom",
   compatibleBrands = "isomiso2avc1mp41",
   sampleAspectRatio = "1:1",
@@ -239,15 +261,16 @@ function videoProbe({
   height = 1_080,
   codedWidth = 1_920,
   codedHeight = 1_088,
+  metadataStreams = [],
 } = {}) {
   return JSON.stringify({
     streams: [{
       codec_type: "video",
-      codec_name: "h264",
-      codec_tag_string: "avc1",
-      profile: "High",
-      level: 40,
-      pix_fmt: "yuv420p",
+      codec_name: codec,
+      codec_tag_string: codecTag,
+      profile,
+      level,
+      pix_fmt: pixelFormat,
       width,
       height,
       coded_width: codedWidth,
@@ -259,7 +282,7 @@ function videoProbe({
       disposition: { attached_pic: 0 },
       tags: rotation ? { rotate: String(rotation) } : {},
       side_data_list: rotation ? [{ rotation }] : [],
-    }],
+    }, ...metadataStreams],
     format: {
       format_name: "mov,mp4,m4a,3gp,3g2,mj2",
       duration: "10.000",
@@ -272,7 +295,7 @@ function fakeRunner({ probe = videoProbe() } = {}) {
   const calls = [];
   const runProcess = async (executable, args, options) => {
     calls.push({ executable, args: [...args], options });
-    if (executable === "ffprobe" && args.some((value) => String(value).endsWith("source.mp4"))) {
+    if (executable === "ffprobe" && args.some((value) => /source\.(?:mp4|mov)$/.test(String(value)))) {
       return { stdout: probe, stderr: "" };
     }
     if (executable === "ffprobe" && args.some((value) => String(value).endsWith("delivery.mp4"))) {
@@ -342,10 +365,12 @@ test("authoritative job forces local demux/full decode, preserves rotation, and 
     assert.equal(ffmpegCalls.some((call) => call.args.includes("-map") && call.args.includes("0:v:0")
       && call.args.includes("0:a:0?")), true);
     assert.equal(ffmpegCalls.some((call) => call.args.includes("libx264")
+      && call.args.includes("-maxrate") && call.args.includes("11M")
+      && call.args.includes("-bufsize") && call.args.includes("22M")
       && call.args.includes("-map_metadata") && call.args.includes("-map_chapters")
       && call.args.some((value) => String(value).endsWith("delivery.mp4"))), true);
     const sourceConsumers = runProcess.calls.filter((call) => call.args.some((value) => String(value).endsWith("source.mp4")));
-    assert.equal(sourceConsumers.length >= 3, true);
+    assert.equal(sourceConsumers.length, 2, "one metadata probe and one full transcode consume the source");
     assert.equal(sourceConsumers.every((call) => call.args.includes("-protocol_whitelist")
       && call.args.includes("file,pipe") && call.args.includes("-f") && call.args.includes("mov")), true);
     assert.equal(sourceConsumers.some((call) => JSON.stringify(call.args).includes("https://")
@@ -356,7 +381,166 @@ test("authoritative job forces local demux/full decode, preserves rotation, and 
   }
 });
 
-test("authoritative worker independently rejects QuickTime brands, anamorphic pixels, and fields", async () => {
+test("authoritative worker accepts an exact iPhone HEVC MOV and emits only sanitized H.264 MP4", async () => {
+  const root = await mkdtemp(join(tmpdir(), "pit-verifier-mov-"));
+  const movProbe = videoProbe({
+    codec: "hevc",
+    profile: "Main 10",
+    level: 120,
+    pixelFormat: "yuv420p10le",
+    majorBrand: "qt  ",
+    compatibleBrands: "qt  ",
+    metadataStreams: [{ codec_type: "data", codec_name: "none", codec_tag_string: "mebx" }],
+  });
+  const runProcess = fakeRunner({ probe: movProbe });
+  const base = validJob();
+  const payload = validJob({
+    object: {
+      ...base.object,
+      key: "users/u_video/post/iphone.mov",
+      contentType: "video/quicktime",
+      downloadUrl: capabilityUrl("iphone.mov"),
+    },
+    structural: {
+      ...base.structural,
+      sourceContainer: "quicktime",
+      sourceCodec: "hevc",
+    },
+  });
+  const fetchImpl = async (url, request) => {
+    if (request.method === "PUT") return new Response(null, { status: 200 });
+    return new Response(SOURCE, {
+      status: 200,
+      headers: {
+        "content-type": "video/quicktime",
+        "content-length": String(SOURCE.byteLength),
+        etag: ETAG,
+      },
+    });
+  };
+  try {
+    const result = await runVideoVerifierJob(payload, {
+      config: getVideoVerifierServiceConfig(ENV),
+      fetchImpl,
+      runProcess,
+      signal: AbortSignal.timeout(5_000),
+      temporaryRoot: root,
+    });
+    assert.equal(result.object.contentType, "video/quicktime");
+    assert.equal(result.video.codec, "hevc");
+    assert.equal(result.delivery.contentType, "video/mp4");
+    assert.equal(result.delivery.codec, "h264");
+    const sourceConsumers = runProcess.calls.filter((call) => call.args.some((value) => String(value).endsWith("source.mov")));
+    assert.equal(sourceConsumers.length, 2, "one metadata probe and one full transcode consume the source");
+    assert.equal(sourceConsumers.every((call) => call.args.includes("-protocol_whitelist")
+      && call.args.includes("file,pipe") && call.args.includes("-f") && call.args.includes("mov")), true);
+    assert.deepEqual(await readdir(root), []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("authoritative worker accepts ISO-MP4 hvc1 Main/Main 10 and emits only sanitized H.264 MP4", async (context) => {
+  for (const fixture of [
+    { label: "main-8-bit", profile: "Main", pixelFormat: "yuv420p" },
+    { label: "main10-10-bit", profile: "Main 10", pixelFormat: "yuv420p10le" },
+  ]) {
+    await context.test(fixture.label, async () => {
+      const root = await mkdtemp(join(tmpdir(), "pit-verifier-hevc-mp4-"));
+      const probe = videoProbe({
+        codec: "hevc",
+        codecTag: "hvc1",
+        profile: fixture.profile,
+        level: 120,
+        pixelFormat: fixture.pixelFormat,
+        majorBrand: "isom",
+        compatibleBrands: "isomiso6hvc1mp42",
+        codedHeight: 1_080,
+      });
+      const runProcess = fakeRunner({ probe });
+      const payload = validJob({
+        structural: { ...validJob().structural, sourceCodec: "hevc" },
+      });
+      try {
+        const result = await runVideoVerifierJob(payload, {
+          config: getVideoVerifierServiceConfig(ENV),
+          fetchImpl: async (url, request) => {
+            if (request.method === "PUT") return new Response(null, { status: 200 });
+            return new Response(SOURCE, {
+              status: 200,
+              headers: {
+                "content-type": "video/mp4",
+                "content-length": String(SOURCE.byteLength),
+                etag: ETAG,
+              },
+            });
+          },
+          runProcess,
+          signal: AbortSignal.timeout(5_000),
+          temporaryRoot: root,
+        });
+        assert.equal(result.object.contentType, "video/mp4");
+        assert.equal(result.video.codec, "hevc");
+        assert.equal(result.video.codedHeight, 1_080,
+          "HEVC coded dimensions remain decoder-bounded instead of using AVC macroblock equality");
+        assert.equal(result.delivery.contentType, "video/mp4");
+        assert.equal(result.delivery.codec, "h264");
+        assert.equal(runProcess.calls.some((call) => call.executable === "ffmpeg"
+          && call.args.includes("libx264")
+          && call.args.some((value) => String(value).endsWith("delivery.mp4"))), true);
+        assert.deepEqual(await readdir(root), []);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+test("ISO-MP4 HEVC rejects hev1, Dolby Vision, encrypted tags, and unsupported profiles", async (context) => {
+  const cases = [
+    { label: "hev1", probe: { codecTag: "hev1" } },
+    { label: "dolby-dvhe", probe: { codecTag: "dvhe" } },
+    { label: "dolby-dvh1", probe: { codecTag: "dvh1" } },
+    { label: "encrypted", probe: { codecTag: "encv" } },
+    { label: "unsupported-profile", probe: { profile: "Main 12" } },
+    { label: "main-with-10-bit", probe: { profile: "Main", pixelFormat: "yuv420p10le" } },
+    { label: "main10-with-12-bit", probe: { profile: "Main 10", pixelFormat: "yuv420p12le" } },
+  ];
+  for (const fixture of cases) {
+    await context.test(fixture.label, async () => {
+      const root = await mkdtemp(join(tmpdir(), "pit-verifier-hevc-reject-"));
+      try {
+        await assert.rejects(() => runVideoVerifierJob(validJob({
+          structural: { ...validJob().structural, sourceCodec: "hevc" },
+        }), {
+          config: getVideoVerifierServiceConfig(ENV),
+          fetchImpl: async () => new Response(SOURCE, {
+            status: 200,
+            headers: { "content-type": "video/mp4", "content-length": String(SOURCE.byteLength), etag: ETAG },
+          }),
+          runProcess: fakeRunner({
+            probe: videoProbe({
+              codec: "hevc",
+              codecTag: "hvc1",
+              profile: "Main 10",
+              pixelFormat: "yuv420p10le",
+              majorBrand: "isom",
+              compatibleBrands: "isomiso6hvc1mp42",
+              ...fixture.probe,
+            }),
+          }),
+          signal: AbortSignal.timeout(5_000),
+          temporaryRoot: root,
+        }), { code: "unsupported_media" });
+        assert.deepEqual(await readdir(root), []);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+test("MP4 mode independently rejects QuickTime brands, anamorphic pixels, and fields", async () => {
   for (const probe of [
     videoProbe({ majorBrand: "qt  ", compatibleBrands: "qt  " }),
     videoProbe({ sampleAspectRatio: "4:3" }),

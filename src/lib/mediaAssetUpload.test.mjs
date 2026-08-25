@@ -5,14 +5,18 @@ import test from "node:test";
 const source = await readFile(new URL("./mediaAssetUpload.js", import.meta.url), "utf8");
 
 test("stable upload reconciles mutable recipe and alt text after source finalize", () => {
+  const finalizeBody = source.indexOf("const sourceFinalizeBody =");
   const finalize = source.indexOf("result = await finalizeMediaSourceV1", source.indexOf("verifying-source"));
   const patch = source.indexOf('method: "PATCH"', finalize);
-  const variants = source.indexOf("result = await createAndUploadVariant", patch);
+  const variants = source.indexOf("result = await createAndUploadRenderVariant", patch);
+  assert.ok(finalizeBody >= 0 && finalizeBody < finalize, "source finalize body is assembled before finalization");
   assert.ok(finalize >= 0, "source finalize call is present");
   assert.ok(patch > finalize, "owner metadata PATCH follows source finalization");
   assert.ok(variants > patch, "derived variants are created only after metadata reconciliation");
-  assert.match(source.slice(finalize, patch), /body:\s*\{[\s\S]*editRecipe:\s*edit/,
+  assert.match(source.slice(finalizeBody, finalize), /editRecipe:\s*edit/,
     "the chosen coverMs inside the normalized edit recipe reaches initial source finalization");
+  assert.match(source.slice(finalizeBody, finalize), /altText:/);
+  assert.match(source.slice(finalize, patch), /body:\s*sourceFinalizeBody/);
   assert.match(source.slice(patch, variants), /editRecipe:\s*edit/);
   assert.match(source.slice(patch, variants), /altText:/);
 });
@@ -24,15 +28,14 @@ test("verified recipe derivatives are reused after an ambiguous response unless 
   assert.match(source, /result\?\.recipeChanged/);
   assert.match(source, /renderPrepared && \(photoRevisionPending \|\| !\(result\?\.asset\?\.renderState === "ready" && result\?\.asset\?\.url\)\)/);
   assert.match(source, /renderState === "ready" && result\?\.asset\?\.url/);
-  assert.match(source, /posterPrepared && !reusingVerifiedVideoSource && !result\?\.asset\?\.posterUrl/);
-  assert.match(source, /clientVariantId: stableMediaUploadToken\(`\$\{localId\}:\$\{role\}`/);
+  assert.match(source, /clientVariantId: stableMediaUploadToken\(`\$\{localId\}:render`, "studio-render"\)/);
 });
 
 test("reopening a stable asset reconciles by asset id without re-reading the device source", () => {
   const branch = source.slice(source.indexOf("if (assetId)"), source.indexOf("} else {", source.indexOf("if (assetId)")));
-  assert.match(branch, /Checking your PIT media source/);
+  assert.match(branch, /resumeExistingMediaSourceV1/);
   assert.doesNotMatch(branch, /prepareAsset/);
-  assert.match(source, /result = await apiCall\(`\/api\/media\/assets\/\$\{encodeURIComponent\(assetId\)\}`/);
+  assert.match(source, /sourceFinalizeBody/);
 });
 
 test("verified uploads stop drafts from pointing at released staging files", () => {
@@ -41,17 +44,14 @@ test("verified uploads stop drafts from pointing at released staging files", () 
 });
 
 test("verified clips fail closed before cover PATCH or client-poster replacement", () => {
-  const guard = source.indexOf("if (reusingVerifiedVideoSource)");
-  const existingBranch = source.indexOf("if (assetId)", guard);
-  assert.ok(guard >= 0);
-  assert.ok(existingBranch > guard, "the verified-video guard runs before existing-source reconciliation");
-  assert.match(source.slice(guard, existingBranch), /VIDEO_COVER_REEDIT_UNAVAILABLE/);
-  assert.match(source, /posterPrepared && !reusingVerifiedVideoSource && !result\?\.asset\?\.posterUrl/);
+  assert.match(source, /resumeExistingMediaSourceV1/);
+  assert.doesNotMatch(source, /prepareAsset\(posterAsset/);
+  assert.doesNotMatch(source, /role:\s*"poster"/);
 });
 
-test("source, photo-render and video-cover transfers forward byte progress", () => {
+test("source and photo-render transfers forward byte progress", () => {
   assert.match(source, /onProgress:\s*\(progress\) => onProgress\?\.\(\{ \.\.\.progress, stage: "uploading-source" \}\)/);
-  assert.match(source, /stage: role === "poster" \? "uploading-poster" : "uploading-render"/);
+  assert.match(source, /onProgress:\s*\(progress\) => onProgress\?\.\(\{ \.\.\.progress, stage: "uploading-render" \}\)/);
   assert.match(source, /onProgress,\s*apiCall,\s*uploadPrepared/);
 });
 
@@ -60,15 +60,23 @@ test("new remote drafts are exposed before transfer so explicit cancellation can
   const upload = source.indexOf("await uploadPrepared(sourcePrepared", created);
   assert.ok(created >= 0 && upload > created);
   assert.match(source.slice(created, upload), /created\.asset\.status !== "ready"/);
-  assert.match(source.slice(created, upload), /onRemoteDraft\?\.\(\{ assetId, duplicate: !!created\.duplicate \}\)/);
+  assert.match(source.slice(created, upload), /onRemoteDraft\?\.\(\{ assetId, duplicate: !!created\.duplicate, sourceUploaded: false \}\)/);
+  assert.match(source.slice(upload), /onRemoteDraft\?\.\(\{ assetId, duplicate: !!created\.duplicate, sourceUploaded: true \}\)/);
 });
 
-test("client-authored renders and covers consume only the sanitized finalized variant URL", () => {
-  const finalize = source.indexOf("const finalized = await apiCall", source.indexOf("async function createAndUploadVariant"));
+test("client-authored renders consume only the sanitized finalized variant URL", () => {
+  const finalize = source.indexOf("const finalized = await apiCall", source.indexOf("async function createAndUploadRenderVariant"));
   const end = source.indexOf("\n}\n", finalize);
   const boundary = source.slice(finalize, end);
   assert.match(boundary, /const sanitizedUrl = finalized\?\.variant\?\.url/);
   assert.match(boundary, /finalized\?\.variant\?\.status !== "verified"/);
   assert.match(boundary, /asset: \{ \.\.\.finalized\.asset, url: sanitizedUrl \}/);
-  assert.match(boundary, /asset: \{ \.\.\.finalized\.asset, posterUrl: sanitizedUrl \}/);
+});
+
+test("video publication depends on the verifier poster, never a local preview artifact", () => {
+  const upload = source.slice(source.indexOf("export async function uploadStudioMediaAsset"));
+  assert.doesNotMatch(upload, /posterAsset/);
+  assert.match(upload, /editRecipe:\s*edit/);
+  assert.match(upload, /kind === "video" && !finalAsset\.posterUrl/);
+  assert.match(upload, /posterTimeMs:\s*finalAsset\.posterTimeMs \?\? edit\.coverMs \?\? 0/);
 });

@@ -27,6 +27,7 @@ import {
 } from "./mediaDeletion.js";
 import { verifyMp4Compatibility } from "./mp4Probe.js";
 import { sanitizeDecodedImage, validateDecodedImage, ImageProcessorError } from "./imageProcessor.js";
+import { VIDEO_VERIFIER_SOURCE_CONTENT_TYPES } from "./videoVerifierProtocol.js";
 
 const ASSET_ID = /^ma_[A-Za-z0-9_-]{8,80}$/;
 const VARIANT_ID = /^mv_[A-Za-z0-9_-]{8,80}$/;
@@ -36,6 +37,7 @@ const CLIENT_ID = /^[A-Za-z0-9._:-]{8,120}$/;
 // their own foreign-key linkage table; do not mint unusable stable descriptors.
 const COMPOSER_PURPOSES = new Set(["post"]);
 const IMAGE_VARIANT_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+const VERIFIED_VIDEO_SOURCE_TYPES = new Set(VIDEO_VERIFIER_SOURCE_CONTENT_TYPES);
 const MAX_RECIPE_BYTES = 16 * 1024;
 const MAX_VIDEO_DURATION_MS = 60_000;
 const MAX_VIDEO_DURATION_DRIFT_MS = 1_500;
@@ -180,8 +182,8 @@ function assetCreateInput(body) {
   }
   const clientAssetId = cleanClientId(body?.clientAssetId, "Media retry token");
   const kind = file.contentType.startsWith("video/") ? "video" : "image";
-  if (kind === "video" && file.contentType !== "video/mp4") {
-    throw new ApiError(415, "New PIT clips must use MP4 until the video compatibility encoder is available.", "MEDIA_TYPE_UNSUPPORTED");
+  if (kind === "video" && !VERIFIED_VIDEO_SOURCE_TYPES.has(file.contentType)) {
+    throw new ApiError(415, "New PIT clips must use MP4 or QuickTime MOV.", "MEDIA_TYPE_UNSUPPORTED");
   }
   if (kind === "image" && file.contentType === "image/gif") {
     // The current rendition contract produces one still JPEG/PNG/WebP frame.
@@ -218,6 +220,7 @@ export function createMediaAsset(database, {
   at = Date.now(),
   assetId = newId("ma"),
   sourceObjectId = newId("ms"),
+  suppressDuplicateUpload = false,
 } = {}) {
   const owner = String(ownerId || "");
   if (!owner) throw new ApiError(401, "Log in first.", "AUTH_REQUIRED");
@@ -263,6 +266,13 @@ export function createMediaAsset(database, {
       // Reopening a durable draft is an explicit authenticated lease renewal.
       // Without this touch, an old ready draft could expire while its owner is
       // actively revisiting caption/edits immediately before publication.
+      touchLiveLedger(database, owner, row.source_key, at);
+      return { asset: assetProjection(loadAsset(database, row.id), { owner: true }), upload: null, duplicate: true };
+    }
+    if (suppressDuplicateUpload) {
+      // A background video verifier may currently be reading this exact object.
+      // Renew ownership, but do not mint or expose another writer capability for
+      // a cached client's deterministic create retry.
       touchLiveLedger(database, owner, row.source_key, at);
       return { asset: assetProjection(loadAsset(database, row.id), { owner: true }), upload: null, duplicate: true };
     }
@@ -1389,6 +1399,7 @@ export async function finalizeMediaAsset(database, {
       structural = await verifyMp4Compatibility({
         objectKey: row.source_key,
         expectedBytes: row.byte_size,
+        contentType: row.mime_type,
         ifMatch: stored.etag,
         env,
         fetchImpl,
@@ -1413,6 +1424,7 @@ export async function finalizeMediaAsset(database, {
         decoded = await authoritativeVideoVerifier({
           objectKey: row.source_key,
           expectedBytes: row.byte_size,
+          contentType: row.mime_type,
           ifMatch: stored.etag,
           structural,
           posterTimeMs: Number(structurallyNormalized.editRecipe.coverMs),
@@ -1436,7 +1448,7 @@ export async function finalizeMediaAsset(database, {
       if (Number(decoded.width) !== Number(structural.width)
           || Number(decoded.height) !== Number(structural.height)
           || Math.abs(Number(decoded.durationMs) - Number(structural.durationMs)) > MAX_VIDEO_DURATION_DRIFT_MS) {
-        throw new ApiError(409, "The decoded clip does not match its MP4 metadata.", "CONFLICT");
+        throw new ApiError(409, "The decoded clip does not match its container metadata.", "CONFLICT");
       }
       input = authoritativeVideoFinalize(row, body, declared, decoded);
       codecVerified = true;
@@ -1469,7 +1481,7 @@ export async function finalizeMediaAsset(database, {
         throw new ApiError(503, "Clip sanitization did not produce a verified delivery. Try again later.", "MEDIA_STORAGE_UNAVAILABLE");
       }
     } else {
-      // The bounded MP4 parser proves container/sample-table coherence, but it
+      // The bounded ISO-BMFF parser proves container/sample-table coherence, but it
       // is not a full H.264/AAC decode. A caller without the readiness-gated
       // private-derivative-v1 worker therefore cannot elevate or attach the clip. This
       // avoids certifying a black or truncated stream merely because its first

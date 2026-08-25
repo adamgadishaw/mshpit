@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  VIDEO_VERIFIER_SOURCE_CONTENT_TYPES,
   signVideoVerifierRequest,
   signVideoVerifierResponse,
+  videoVerifierSourceExtension,
   verifyVideoVerifierRequest,
   verifyVideoVerifierResponse,
 } from "./videoVerifierProtocol.js";
@@ -11,6 +13,13 @@ import {
 const SECRET = "test-video-verifier-secret-that-is-at-least-thirty-two-bytes";
 const AT = 1_800_000_000_000;
 const NONCE = "abcdefghijklmnopqrstuv";
+
+test("source media types have one shared exact extension contract", () => {
+  assert.deepEqual(VIDEO_VERIFIER_SOURCE_CONTENT_TYPES, ["video/mp4", "video/quicktime"]);
+  assert.equal(videoVerifierSourceExtension("Video/MP4; codecs=avc1"), "mp4");
+  assert.equal(videoVerifierSourceExtension("video/quicktime"), "mov");
+  assert.equal(videoVerifierSourceExtension("video/webm"), null);
+});
 
 test("video verifier protocol binds request path, timestamp, nonce, and exact body", () => {
   const signed = signVideoVerifierRequest({

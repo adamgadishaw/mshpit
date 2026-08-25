@@ -31,7 +31,7 @@ import { mediaEditorGesturePatch, touchCentroid, touchDistance } from "../../dom
 import { mediaEditorNarrowStageHeight, mediaEditorWideStageHeight } from "../../domain/mediaEditorLayout.mjs";
 import { exportEditedImage, mediaEditImageCapabilities } from "../../lib/mediaEditImageEngine";
 import { generateVideoCover, mediaEditVideoCapabilities } from "../../lib/mediaEditVideoCover";
-import { attachMediaEditArtifacts, mediaEditAssetNeedsPosterArtifact } from "../../lib/mediaEditApplyResult.mjs";
+import { attachMediaEditArtifacts } from "../../lib/mediaEditApplyResult.mjs";
 import {
   commitMediaEditHistory,
   createMediaEditHistory,
@@ -224,7 +224,6 @@ export default function MediaEditorWorkspace({
     return asset.kind === "video" && working?.coverMode !== "manual";
   });
   const autoCoverSignature = autoCoverAssets.map((asset) => `${autoCoverCacheKey(asset)}:auto`).join("|");
-  const autoCoversReady = autoCoverAssets.every((asset) => previewCovers[asset.id]?.key === autoCoverCacheKey(asset));
   const unsupportedVideo = assets.some((asset) => {
     const working = histories[asset.id]?.present?.edit || asset.edit;
     return asset.kind === "video" && videoEditRequiresExport(working);
@@ -233,17 +232,11 @@ export default function MediaEditorWorkspace({
     const working = histories[asset.id]?.present?.edit || asset.edit;
     return mediaImageRequiresRender(asset, working);
   });
-  // A picker-provided posterUri is only a preview and may not have an
-  // uploadable File/Blob behind it. Every committed video therefore receives
-  // a fresh poster artifact from the shared, validated poster engine.
-  const needsCoverRenderer = assets.some(mediaEditAssetNeedsPosterArtifact);
   const applyBlocked = saving
     || !assets.length
     || typeof onApply !== "function"
     || unsupportedVideo
-    || !autoCoversReady
-    || (needsImageRenderer && !mediaEditImageCapabilities.image.export)
-    || (needsCoverRenderer && !mediaEditVideoCapabilities.video.cover);
+    || (needsImageRenderer && !mediaEditImageCapabilities.image.export);
   const anyDirty = assets.some((asset) => {
     const history = histories[asset.id];
     return history && snapshotFingerprint(history.present, asset) !== snapshotFingerprint(history.baseline, asset);
@@ -281,10 +274,9 @@ export default function MediaEditorWorkspace({
     setShowOriginal(false);
   }, [selectedAsset?.id, selectedAsset?.kind]);
 
-  // Auto-cover is resolved before Apply, not during an invisible publishing
-  // step. The exact scored frame shown here is the same concrete JPEG later
-  // uploaded as the durable poster. Cache one artifact per selected clip so a
-  // multi-video post never publishes an auto frame the author could not see.
+  // Auto-cover scoring is a best-effort preview. Its timestamp is forwarded to
+  // the private verifier when available, but a device frame-extraction failure
+  // must not block the authoritative server-generated cover or the video.
   useEffect(() => {
     if (!visible || !mediaEditVideoCapabilities.video.cover) return undefined;
     const wanted = new Map(autoCoverAssets.map((asset) => [asset.id, {
@@ -623,14 +615,8 @@ export default function MediaEditorWorkspace({
         } else if (asset.kind === "video") {
           if (videoEditRequiresExport(asset.edit)) throw new Error("Trim, mute, crop, and video filters need PIT's authoritative video renderer and cannot be applied yet.");
           const cached = asset.edit.coverMode !== "manual" ? previewCoversRef.current[asset.id] : null;
-          const cover = cached?.key === autoCoverCacheKey(asset)
-            ? cached.cover
-            : await generateVideoCover(asset, {
-              coverMs: asset.edit.coverMs,
-              coverMode: asset.edit.coverMode,
-              signal: processingAbortRef.current?.signal,
-            });
-          renders[asset.id] = { cover };
+          const cover = cached?.key === autoCoverCacheKey(asset) ? cached.cover : null;
+          if (cover) renders[asset.id] = { cover };
           committed.push(attachMediaEditArtifacts(asset, { posterAsset: cover }));
         } else committed.push(asset);
       }
@@ -789,7 +775,7 @@ export default function MediaEditorWorkspace({
                   onAdjustmentChange={adjustmentChange}
                   onMetaChange={metaChange}
                   onSeal={seal}
-                  coverAvailable={mediaEditVideoCapabilities.video.cover}
+                  coverAvailable
                   resolvedCoverTimeMs={previewCovers[selectedAsset.id]?.cover?.actualTimeMs}
                   resolvingAutoCover={resolvingAutoCoverId === selectedAsset.id}
                   altTextCompletion={altTextCompletion}

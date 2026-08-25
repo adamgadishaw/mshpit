@@ -11,7 +11,10 @@ import { pathToFileURL } from "node:url";
 import {
   VIDEO_VERIFIER_PIPELINE_VERSION,
   VIDEO_VERIFIER_PROTOCOL_VERSION,
+  VIDEO_VERIFIER_SOURCE_CODECS,
+  VIDEO_VERIFIER_SOURCE_CONTENT_TYPES,
   signVideoVerifierResponse,
+  videoVerifierSourceExtension,
   verifyVideoVerifierRequest,
 } from "./videoVerifierProtocol.js";
 
@@ -23,17 +26,23 @@ const VIDEO_MAX_SAMPLES = 3_602;
 const VIDEO_MAX_CODED_PIXEL_SAMPLES = 120n * 68n * 256n * 60n * 60n;
 const POSTER_MAX_BYTES = 1_500_000;
 const POSTER_MAX_EDGE = 1_280;
-const JOB_TIMEOUT_MS = 50_000;
+// The web control plane waits 110 seconds. Keep the worker inside that envelope
+// while allowing the bounded transcode to finish on the production instance.
+const JOB_TIMEOUT_MS = 105_000;
 const COMMAND_OUTPUT_MAX_BYTES = 64 * 1024;
 const HEALTH_FRESH_MS = 60_000;
 const NONCE_TTL_MS = 2 * 60_000;
 const NONCE_CACHE_MAX = 2_048;
-const OBJECT_KEY = /^users\/[A-Za-z0-9_-]{1,128}\/post\/[A-Za-z0-9_-]{1,240}\.mp4$/;
+const SOURCE_OBJECT_KEY = /^users\/[A-Za-z0-9_-]{1,128}\/post\/[A-Za-z0-9_-]{1,240}\.(?:mp4|mov)$/;
+const OUTPUT_OBJECT_KEY = /^users\/[A-Za-z0-9_-]{1,128}\/post\/[A-Za-z0-9_-]{1,240}\.mp4$/;
+const SOURCE_CONTENT_TYPES = new Set(VIDEO_VERIFIER_SOURCE_CONTENT_TYPES);
 const STRONG_ETAG = /^"[\x21\x23-\x7e]{1,200}"$/u;
 const SHA256 = /^[a-f0-9]{64}$/;
 const FORBIDDEN_RENDER_PORTS = new Set([10_000, 18_012, 18_013, 19_099]);
 const ISO_MP4_MAJOR_BRANDS = new Set(["isom", "mp41", "mp42"]);
-const ISO_MP4_COMPATIBLE_BRANDS = new Set(["isom", "iso2", "iso3", "iso4", "iso5", "iso6", "avc1", "mp41", "mp42"]);
+const ISO_MP4_COMPATIBLE_BRANDS = new Set(["isom", "iso2", "iso3", "iso4", "iso5", "iso6", "avc1", "hvc1", "mp41", "mp42"]);
+const QUICKTIME_MAJOR_BRAND = "qt  ";
+const QUICKTIME_COMPATIBLE_BRANDS = new Set([QUICKTIME_MAJOR_BRAND]);
 
 function serviceError(code, message, { status = 422, cause } = {}) {
   const error = new Error(message, cause ? { cause } : undefined);
@@ -196,9 +205,14 @@ export function validateVideoVerifierJob(payload, config) {
   }
   const object = payload?.object;
   const objectKey = String(object?.key || "");
+  const sourceContentType = String(object?.contentType || "");
   const byteSize = boundedInteger(object?.byteSize, { min: 1, max: VIDEO_MAX_BYTES, label: "Object size" });
   const etag = String(object?.etag || "");
-  if (!OBJECT_KEY.test(objectKey) || object?.contentType !== "video/mp4" || !STRONG_ETAG.test(etag)) {
+  const sourceExtension = videoVerifierSourceExtension(sourceContentType);
+  const sourceIdentityValid = SOURCE_OBJECT_KEY.test(objectKey)
+    && SOURCE_CONTENT_TYPES.has(sourceContentType)
+    && !!sourceExtension && objectKey.endsWith(`.${sourceExtension}`);
+  if (!sourceIdentityValid || !STRONG_ETAG.test(etag)) {
     throw serviceError("invalid_request", "Object identity is invalid.");
   }
   let downloadUrl;
@@ -251,12 +265,20 @@ export function validateVideoVerifierJob(payload, config) {
     codedHeight: boundedInteger(payload?.structural?.codedHeight, { min: 16, max: VIDEO_MAX_EDGE, label: "Coded video height" }),
     sampleCount: boundedInteger(payload?.structural?.sampleCount, { min: 1, max: VIDEO_MAX_SAMPLES, label: "Video sample count" }),
     durationMs: boundedInteger(payload?.structural?.durationMs, { min: 1, max: VIDEO_MAX_DURATION_MS, label: "Video duration" }),
+    sourceContainer: payload?.structural?.sourceContainer,
+    sourceCodec: payload?.structural?.sourceCodec,
   };
+  const quickTimeStructural = sourceContentType !== "video/quicktime"
+    || (structural.sourceContainer === "quicktime" && new Set(["h264", "hevc"]).has(structural.sourceCodec));
+  const mp4Structural = sourceContentType !== "video/mp4"
+    || (structural.sourceContainer === undefined
+      && (structural.sourceCodec === undefined || structural.sourceCodec === "hevc"));
   const sampleLimit = Math.floor((structural.durationMs * 60) / 1_000) + 2;
   const codedWork = BigInt(structural.codedWidth) * BigInt(structural.codedHeight) * BigInt(structural.sampleCount);
   if (structural.codedWidth % 16 !== 0 || structural.codedHeight % 16 !== 0
       || structural.codedWidth < structural.width || structural.codedHeight < structural.height
-      || structural.sampleCount > sampleLimit || codedWork > VIDEO_MAX_CODED_PIXEL_SAMPLES) {
+      || structural.sampleCount > sampleLimit || codedWork > VIDEO_MAX_CODED_PIXEL_SAMPLES
+      || !quickTimeStructural || !mp4Structural) {
     throw serviceError("invalid_request", "Video decode-work proof is invalid.");
   }
   const poster = {
@@ -269,7 +291,7 @@ export function validateVideoVerifierJob(payload, config) {
   }
   const output = payload?.output;
   const outputKey = String(output?.key || "");
-  if (!OBJECT_KEY.test(outputKey) || outputKey === objectKey || output?.contentType !== "video/mp4") {
+  if (!OUTPUT_OBJECT_KEY.test(outputKey) || outputKey === objectKey || output?.contentType !== "video/mp4") {
     throw serviceError("invalid_request", "Delivery identity is invalid.");
   }
   let uploadUrl;
@@ -297,7 +319,7 @@ export function validateVideoVerifierJob(payload, config) {
     throw serviceError("invalid_request", "Delivery headers are invalid.");
   }
   return {
-    objectKey, byteSize, etag, downloadUrl, downloadHeaders, structural, poster, expires,
+    objectKey, byteSize, contentType: sourceContentType, etag, downloadUrl, downloadHeaders, structural, poster, expires,
     output: { key: outputKey, uploadUrl, uploadHeaders },
   };
 }
@@ -323,7 +345,7 @@ async function downloadExactObject(job, filePath, { fetchImpl, signal }) {
   const contentType = String(response.headers?.get?.("content-type") || "").split(";", 1)[0].trim().toLowerCase();
   const contentLength = Number(response.headers?.get?.("content-length"));
   const etag = String(response.headers?.get?.("etag") || "").trim();
-  if (contentType !== "video/mp4" || contentLength !== job.byteSize || etag !== job.etag || !response.body) {
+  if (contentType !== job.contentType || contentLength !== job.byteSize || etag !== job.etag || !response.body) {
     throw serviceError("object_changed", "Source object no longer matches its verified generation.", { status: 409 });
   }
   let observed = 0;
@@ -369,7 +391,12 @@ function parseProbeJson(text, label) {
   return value;
 }
 
-async function probeVideo(filePath, config, { runProcess, directory, signal }) {
+async function probeVideo(filePath, config, {
+  runProcess,
+  directory,
+  signal,
+  sourceContentType = "video/mp4",
+}) {
   const result = await runProcess(config.ffprobe, [
     "-v", "error",
     "-protocol_whitelist", "file,pipe",
@@ -380,9 +407,13 @@ async function probeVideo(filePath, config, { runProcess, directory, signal }) {
   ], { cwd: directory, signal });
   const probe = parseProbeJson(result.stdout, "Video");
   const streams = Array.isArray(probe.streams) ? probe.streams : [];
+  const quickTime = sourceContentType === "video/quicktime";
   const video = streams.filter((stream) => stream?.codec_type === "video");
   const audio = streams.filter((stream) => stream?.codec_type === "audio");
-  const unknown = streams.filter((stream) => !new Set(["video", "audio"]).has(stream?.codec_type));
+  const discardedQuickTime = quickTime ? streams.filter((stream) => stream?.codec_type === "data"
+    && new Set(["mebx", "tmcd"]).has(String(stream?.codec_tag_string || ""))) : [];
+  const unknown = streams.filter((stream) => !new Set(["video", "audio"]).has(stream?.codec_type)
+    && !discardedQuickTime.includes(stream));
   const formatNames = String(probe.format?.format_name || "").split(",");
   const majorBrand = String(probe.format?.tags?.major_brand || "");
   const compatibleRaw = String(probe.format?.tags?.compatible_brands || "");
@@ -398,6 +429,24 @@ async function probeVideo(filePath, config, { runProcess, directory, signal }) {
   const realFps = frameRate(video[0]?.r_frame_rate);
   const videoProfile = String(video[0]?.profile || "");
   const videoLevel = Number(video[0]?.level);
+  const sourceCodec = String(video[0]?.codec_name || "");
+  const sourceCodecTag = String(video[0]?.codec_tag_string || "");
+  const h264 = sourceCodec === "h264" && sourceCodecTag === "avc1";
+  const hevc = sourceCodec === "hevc" && sourceCodecTag === "hvc1";
+  const hevcProfileValid = (videoProfile === "Main" && video[0]?.pix_fmt === "yuv420p")
+    || (videoProfile === "Main 10" && new Set(["yuv420p", "yuv420p10le"]).has(video[0]?.pix_fmt));
+  const codecProfileValid = h264
+    ? new Set(["Baseline", "Constrained Baseline", "Main", "High"]).has(videoProfile)
+      && Number.isInteger(videoLevel) && videoLevel >= 10 && videoLevel <= 51
+      && video[0]?.pix_fmt === "yuv420p"
+    : hevc
+      && hevcProfileValid
+      && Number.isInteger(videoLevel) && videoLevel >= 30 && videoLevel <= 186;
+  const containerValid = quickTime
+    ? formatNames.includes("mov") && majorBrand === QUICKTIME_MAJOR_BRAND && compatibleBrands.length
+      && compatibleBrands.every((brand) => QUICKTIME_COMPATIBLE_BRANDS.has(brand))
+    : formatNames.includes("mp4") && ISO_MP4_MAJOR_BRANDS.has(majorBrand) && compatibleBrands.length
+      && compatibleBrands.every((brand) => ISO_MP4_COMPATIBLE_BRANDS.has(brand));
   const audioProfile = String(audio[0]?.profile || "");
   const sampleRate = Number(audio[0]?.sample_rate);
   const codedWidth = Number(video[0]?.coded_width);
@@ -409,11 +458,7 @@ async function probeVideo(filePath, config, { runProcess, directory, signal }) {
       && Number.isSafeInteger(estimatedSamples)
     ? BigInt(codedWidth) * BigInt(codedHeight) * BigInt(estimatedSamples)
     : VIDEO_MAX_CODED_PIXEL_SAMPLES + 1n;
-  if (video.length !== 1 || video[0]?.codec_name !== "h264"
-      || video[0]?.codec_tag_string !== "avc1"
-      || !new Set(["Baseline", "Constrained Baseline", "Main", "High"]).has(videoProfile)
-      || !Number.isInteger(videoLevel) || videoLevel < 10 || videoLevel > 51
-      || video[0]?.pix_fmt !== "yuv420p"
+  if (video.length !== 1 || (!h264 && !hevc) || !codecProfileValid
       || video[0]?.field_order !== "progressive"
       || video[0]?.sample_aspect_ratio !== "1:1"
       || video[0]?.disposition?.attached_pic === 1
@@ -425,14 +470,12 @@ async function probeVideo(filePath, config, { runProcess, directory, signal }) {
         || !new Set(["mono", "stereo"]).has(String(audio[0]?.channel_layout || ""))
         || !Number.isInteger(sampleRate) || sampleRate < 8_000 || sampleRate > 48_000))
       || !Number.isSafeInteger(codedWidth) || !Number.isSafeInteger(codedHeight)
-      || codedWidth % 16 !== 0 || codedHeight % 16 !== 0
+      || (h264 && (codedWidth % 16 !== 0 || codedHeight % 16 !== 0))
       || codedWidth < Number(video[0]?.width) || codedHeight < Number(video[0]?.height)
       || estimatedSamples > VIDEO_MAX_SAMPLES || estimatedCodedWork > VIDEO_MAX_CODED_PIXEL_SAMPLES
-      || unknown.length || !formatNames.includes("mp4")
-      || !ISO_MP4_MAJOR_BRANDS.has(majorBrand) || !compatibleBrands.length
-      || compatibleBrands.some((brand) => !ISO_MP4_COMPATIBLE_BRANDS.has(brand))
+      || unknown.length || discardedQuickTime.length > 2 || !containerValid
       || !Number.isSafeInteger(durationMs) || durationMs < 1 || durationMs > VIDEO_MAX_DURATION_MS) {
-    throw serviceError("unsupported_media", "Clip must be a bounded H.264/AAC MP4.");
+    throw serviceError("unsupported_media", "Clip must be a bounded compatible MP4 or QuickTime MOV.");
   }
   const width = boundedInteger(video[0]?.width, { min: 1, max: VIDEO_MAX_EDGE, label: "Decoded width" });
   const height = boundedInteger(video[0]?.height, { min: 1, max: VIDEO_MAX_EDGE, label: "Decoded height" });
@@ -453,7 +496,7 @@ async function probeVideo(filePath, config, { runProcess, directory, signal }) {
     codedHeight,
     durationMs,
     rotation,
-    codec: "h264",
+    codec: hevc ? "hevc" : "h264",
     audioCodec: audio.length ? "aac" : "none",
   };
 }
@@ -484,7 +527,12 @@ async function transcodeSanitizedDelivery(sourcePath, deliveryPath, config, { ru
     "-protocol_whitelist", "file,pipe", "-f", "mov", "-i", sourcePath,
     "-map", "0:v:0", "-map", "0:a:0?",
     "-vf", videoFilter,
+    // Concert footage is often grainy enough that unconstrained CRF H.264 can
+    // expand beyond the 100 MiB delivery contract even from a smaller HEVC
+    // source. VBV keeps the sanitized output inside that contract while CRF
+    // still spends fewer bits on easier scenes.
     "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
+    "-maxrate", "11M", "-bufsize", "22M",
     "-profile:v", "high", "-level:v", "4.2", "-pix_fmt", "yuv420p",
     "-c:a", "aac", "-profile:a", "aac_low", "-ac", "2", "-ar", "48000", "-b:a", "160k",
     "-map_metadata", "-1", "-map_chapters", "-1", "-metadata:s:v:0", "rotate=0",
@@ -630,20 +678,30 @@ export async function runVideoVerifierJob(payload, {
   }
   const job = validateVideoVerifierJob(payload, config);
   const directory = await mkdtemp(join(temporaryRoot, "pit-video-verify-"));
-  const sourcePath = join(directory, "source.mp4");
+  const sourcePath = join(directory, `source.${videoVerifierSourceExtension(job.contentType)}`);
   const deliveryPath = join(directory, "delivery.mp4");
   const posterPath = join(directory, "poster.jpg");
   try {
     await downloadExactObject(job, sourcePath, { fetchImpl, signal });
-    const video = await probeVideo(sourcePath, config, { runProcess, directory, signal });
+    const video = await probeVideo(sourcePath, config, {
+      runProcess,
+      directory,
+      signal,
+      sourceContentType: job.contentType,
+    });
     if (video.width !== job.structural.width
         || video.height !== job.structural.height
-        || video.codedWidth !== job.structural.codedWidth
-        || video.codedHeight !== job.structural.codedHeight
+        || (job.contentType === "video/mp4" && job.structural.sourceCodec === undefined
+          && video.codedWidth !== job.structural.codedWidth)
+        || (job.contentType === "video/mp4" && job.structural.sourceCodec === undefined
+          && video.codedHeight !== job.structural.codedHeight)
+        || (job.structural.sourceCodec !== undefined && video.codec !== job.structural.sourceCodec)
         || Math.abs(video.durationMs - job.structural.durationMs) > 1_500) {
       throw serviceError("metadata_mismatch", "Decoded clip does not match structural preflight.", { status: 409 });
     }
-    await decodeAllStreams(sourcePath, config, { runProcess, directory, signal });
+    // The following xerror/err_detect transcode necessarily decodes every
+    // selected source frame and audio packet. A separate full source decode was
+    // redundant and doubled the slowest HEVC path without adding a new proof.
     const delivery = await transcodeSanitizedDelivery(sourcePath, deliveryPath, config, { runProcess, directory, signal });
     const poster = await generateAndVerifyPoster(deliveryPath, posterPath, job, delivery.video, config, { runProcess, directory, signal });
     if (!SHA256.test(poster.sha256)) throw serviceError("poster_invalid", "Generated cover hash is invalid.");
@@ -652,7 +710,7 @@ export async function runVideoVerifierJob(payload, {
       ok: true,
       protocol: VIDEO_VERIFIER_PROTOCOL_VERSION,
       pipeline: VIDEO_VERIFIER_PIPELINE_VERSION,
-      object: { key: job.objectKey, byteSize: job.byteSize, etag: job.etag },
+      object: { key: job.objectKey, byteSize: job.byteSize, contentType: job.contentType, etag: job.etag },
       video,
       delivery: published,
       poster,
@@ -855,6 +913,11 @@ export function createVideoVerifierService({
             decoder: { ffmpeg: true, ffprobe: true, version: ready.ffmpegVersion },
             poster: { generated: true, decoded: true },
             storage: { privateInput: true, sanitizedOutput: true },
+            sourceTypes: [...VIDEO_VERIFIER_SOURCE_CONTENT_TYPES],
+            sourceCodecs: Object.fromEntries(VIDEO_VERIFIER_SOURCE_CONTENT_TYPES.map((type) => [
+              type,
+              [...VIDEO_VERIFIER_SOURCE_CODECS[type]],
+            ])),
             concurrency: 1,
           },
         });

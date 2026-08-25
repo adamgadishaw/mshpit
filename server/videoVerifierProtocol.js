@@ -8,6 +8,18 @@ import {
 export const VIDEO_VERIFIER_PROTOCOL_VERSION = "pit-video-verifier-v2";
 export const VIDEO_VERIFIER_PIPELINE_VERSION = "private-derivative-v1";
 export const VIDEO_VERIFIER_CLOCK_SKEW_MS = 60_000;
+export const VIDEO_VERIFIER_SOURCE_CONTENT_TYPES = Object.freeze(["video/mp4", "video/quicktime"]);
+export const VIDEO_VERIFIER_SOURCE_CODECS = Object.freeze({
+  "video/mp4": Object.freeze(["h264", "hevc"]),
+  "video/quicktime": Object.freeze(["h264", "hevc"]),
+});
+
+export function videoVerifierSourceExtension(contentType) {
+  const type = String(contentType || "").split(";", 1)[0].trim().toLowerCase();
+  if (type === "video/mp4") return "mp4";
+  if (type === "video/quicktime") return "mov";
+  return null;
+}
 
 const NONCE = /^[A-Za-z0-9_-]{22,64}$/;
 const SIGNATURE = /^v1=([a-f0-9]{64})$/;

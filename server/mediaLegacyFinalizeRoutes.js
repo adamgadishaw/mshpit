@@ -7,11 +7,12 @@ import {
 // Legacy profile/review pickers stage camera bytes in private object storage.
 // A second owner-bound call decodes and re-encodes them server-side; only that
 // sanitized public result may be associated with an account-visible field.
-export function mediaLegacyFinalizeRoutes({ database, requireUser, limit, now }) {
+export function mediaLegacyFinalizeRoutes({ database, requireUser, now }) {
   return {
     "POST /api/media/presign": (ctx) => {
       const user = requireUser(ctx);
-      limit(ctx, "media-presign", 30, 10 * 60 * 1000);
+      // Upload volume is governed by the durable per-owner ledger and global
+      // storage circuit breakers, not a member-facing request count bucket.
       const legacyPurpose = String(ctx.body?.purpose || "").trim().toLowerCase();
       const legacyType = String(ctx.body?.contentType || "").split(";", 1)[0].trim().toLowerCase();
       if (legacyPurpose === "post") {
@@ -34,7 +35,6 @@ export function mediaLegacyFinalizeRoutes({ database, requireUser, limit, now })
     },
     "POST /api/media/finalize": async (ctx) => {
       const user = requireUser(ctx);
-      limit(ctx, "media-finalize", 30, 10 * 60 * 1000);
       const finalizeToken = typeof ctx.body?.finalizeToken === "string" ? ctx.body.finalizeToken : "";
       if (!finalizeToken) {
         throw new ApiError(400, "Photo finalization is missing.", "VALIDATION_FAILED");

@@ -1,5 +1,8 @@
 export function postMediaPickerOptions({ platform, remaining, iosH264Preset, allowPhotos = true, allowVideos = false }) {
-  const selectionLimit = Math.max(1, Math.min(6, Math.floor(Number(remaining) || 1)));
+  // The composer owns the eight-item post capacity and passes only the open
+  // slots. Do not add a smaller picker-only ceiling: it made an empty post
+  // stop at six even though Studio and publishing both support eight.
+  const selectionLimit = Math.max(1, Math.min(8, Math.floor(Number(remaining) || 1)));
   const mediaTypes = [
     ...(allowPhotos === true ? ["images"] : []),
     ...(allowVideos === true ? ["videos"] : []),

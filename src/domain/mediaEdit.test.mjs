@@ -14,7 +14,7 @@ import {
   mediaPreviewTransformPlan,
   mediaSourceMaxBytes,
   mediaSourceSizeAllowed,
-  mediaVideoDeliveryCompatible,
+  mediaVideoSourceCompatible,
   normalizeMediaEdit,
   normalizeRotation,
   videoEditRequiresExport,
@@ -141,10 +141,11 @@ test("animated GIF is never silently flattened into a still photo", () => {
   assert.equal(mediaImageAnimationUnsupported({ mimeType: "image/jpeg", fileName: "crowd.jpg" }), false);
 });
 
-test("new stable clips use the cross-platform MP4 delivery boundary", () => {
-  assert.equal(mediaVideoDeliveryCompatible({ mimeType: "video/mp4", fileName: "clip.mp4" }), true);
-  assert.equal(mediaVideoDeliveryCompatible({ mimeType: "video/quicktime", fileName: "clip.mov" }), false);
-  assert.equal(mediaVideoDeliveryCompatible({ mimeType: "video/webm", fileName: "clip.webm" }), false);
+test("new stable clip sources admit MP4 and QuickTime while delivery remains server-sanitized", () => {
+  assert.equal(mediaVideoSourceCompatible({ mimeType: "video/mp4", fileName: "clip.mp4" }), true);
+  assert.equal(mediaVideoSourceCompatible({ mimeType: "video/quicktime", fileName: "clip.mov" }), true);
+  assert.equal(mediaVideoSourceCompatible({ mimeType: "", fileName: "clip.MOV" }), true);
+  assert.equal(mediaVideoSourceCompatible({ mimeType: "video/webm", fileName: "clip.webm" }), false);
 });
 
 test("Studio rejects sources above the same post limits before durable staging", () => {

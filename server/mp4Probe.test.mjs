@@ -211,6 +211,27 @@ function makeAvcC({
   ]));
 }
 
+function makeHvcC({ profile = 1, level = 120, bitDepthMinus8 = 0 } = {}) {
+  const header = Buffer.alloc(23);
+  header[0] = 1;
+  header[1] = profile & 0x1f;
+  header[12] = level;
+  header[13] = 0xf0;
+  header[15] = 0xfc;
+  header[16] = 0xfc | 1;
+  header[17] = 0xf8 | bitDepthMinus8;
+  header[18] = 0xf8 | bitDepthMinus8;
+  header[21] = 0x03; // four-byte NAL lengths
+  header[22] = 3;
+  const parameterArray = (type) => Buffer.from([
+    0x80 | type,
+    0, 1,
+    0, 3,
+    (type << 1) & 0x7e, 1, 0,
+  ]);
+  return box("hvcC", header, parameterArray(32), parameterArray(33), parameterArray(34));
+}
+
 function makeVisualEntry(type = "avc1", {
   includeConfiguration = true,
   inBandOnly = false,
@@ -225,16 +246,20 @@ function makeVisualEntry(type = "avc1", {
   profile = 66,
   level = 40,
   chromaFormat = 1,
+  bitDepthMinus8 = 0,
   dataReferenceIndex = 1,
 } = {}) {
   const fixed = Buffer.alloc(78);
   fixed.writeUInt16BE(dataReferenceIndex, 6);
   fixed.writeUInt16BE(width, 24);
   fixed.writeUInt16BE(height, 26);
-  return box(type, fixed, ...(includeConfiguration ? [makeAvcC({
-    inBandOnly, profile, level, width: spsWidth, height: spsHeight,
-    codedWidth: spsCodedWidth, codedHeight: spsCodedHeight, progressive, chromaFormat,
-  })] : []), ...extraChildren);
+  const configuration = type === "hvc1"
+    ? makeHvcC({ profile: profile === 66 ? 1 : profile, level, bitDepthMinus8 })
+    : makeAvcC({
+      inBandOnly, profile, level, width: spsWidth, height: spsHeight,
+      codedWidth: spsCodedWidth, codedHeight: spsCodedHeight, progressive, chromaFormat,
+    });
+  return box(type, fixed, ...(includeConfiguration ? [configuration] : []), ...extraChildren);
 }
 
 function makeAudioEntry(type = "mp4a", {
@@ -289,6 +314,11 @@ function makeTrack(handlerType, entries, {
     box("minf", box("stbl", stsd, ...timing, ...sizes, ...sampleMap, ...offsets))));
 }
 
+function makeDiscardedTrack(handlerType) {
+  const hdlr = fullBox("hdlr", 0, u32(0), Buffer.from(handlerType));
+  return box("trak", box("mdia", hdlr));
+}
+
 function projectedMovieDuration(movie) {
   const timescale = BigInt(movie.timescale ?? 1_000);
   const duration = BigInt(movie.duration ?? 5_001);
@@ -306,6 +336,7 @@ function makeMoov({
   audioTiming = {},
   videoTable = {},
   audioTable = {},
+  metadataHandlers = [],
   chunkOffset = 0,
   sampleSize = 6,
 } = {}) {
@@ -320,6 +351,7 @@ function makeMoov({
       mdhdDuration: defaultDuration, sampleSize, chunkOffset, ...audioTiming, ...audioTable,
     }));
   }
+  tracks.push(...metadataHandlers.map((handlerType) => makeDiscardedTrack(handlerType)));
   return box("moov", makeMvhd(movie), ...tracks);
 }
 
@@ -384,8 +416,9 @@ function rangeFetch(bytes, {
 async function verify(bytes, overrides = {}) {
   const fetchImpl = overrides.fetchImpl || rangeFetch(bytes, overrides);
   return verifyMp4Compatibility({
-    objectKey: "users/owner/post/source.mp4",
+    objectKey: overrides.objectKey || "users/owner/post/source.mp4",
     expectedBytes: bytes.length,
+    contentType: overrides.contentType || "video/mp4",
     env: ENV,
     fetchImpl,
     ...(overrides.ifMatch ? { ifMatch: overrides.ifMatch } : {}),
@@ -574,6 +607,73 @@ test("accepts only conservative ISO-MP4 brands and rejects QuickTime or streamin
   });
 });
 
+test("QuickTime mode binds the MOV key/type and admits bounded iPhone AVC or HEVC structure", async () => {
+  const h264 = makeMp4({
+    ftyp: { majorBrand: "qt  ", compatibleBrands: ["qt  "] },
+    metadataHandlers: ["meta"],
+  });
+  assert.deepEqual(await verify(h264, {
+    objectKey: "users/owner/post/iphone-avc.mov",
+    contentType: "video/quicktime",
+  }), {
+    ...expectedStructural(),
+    sourceContainer: "quicktime",
+    sourceCodec: "h264",
+  });
+
+  const hevcSample = Buffer.from([0, 0, 0, 3, 19 << 1, 1, 0]);
+  const hevc = makeMp4({
+    ftyp: { majorBrand: "qt  ", compatibleBrands: ["qt  "] },
+    sample: hevcSample,
+    videoEntries: [makeVisualEntry("hvc1", { profile: 1, level: 120 })],
+  });
+  assert.deepEqual(await verify(hevc, {
+    objectKey: "users/owner/post/iphone-hevc.mov",
+    contentType: "video/quicktime",
+  }), {
+    ...expectedStructural(),
+    sourceContainer: "quicktime",
+    sourceCodec: "hevc",
+  });
+
+  let fetches = 0;
+  await assert.rejects(() => verifyMp4Compatibility({
+    objectKey: "users/owner/post/type-confusion.mp4",
+    contentType: "video/quicktime",
+    expectedBytes: h264.length,
+    env: ENV,
+    fetchImpl: async () => { fetches += 1; },
+  }), isUnsupported);
+  assert.equal(fetches, 0, "a MOV claim cannot be paired with an MP4 object key");
+});
+
+test("ISO-MP4 mode admits only bounded hvc1 Main or Main 10 structure", async (context) => {
+  const hevcSample = Buffer.from([0, 0, 0, 3, 19 << 1, 1, 0]);
+  for (const fixture of [
+    { label: "main-8-bit", profile: 1, bitDepthMinus8: 0 },
+    { label: "main10-10-bit", profile: 2, bitDepthMinus8: 1 },
+  ]) {
+    await context.test(fixture.label, async () => {
+      const bytes = makeMp4({
+        ftyp: { majorBrand: "mp42", compatibleBrands: ["isom", "iso6", "hvc1", "mp42"] },
+        sample: hevcSample,
+        videoEntries: [makeVisualEntry("hvc1", {
+          profile: fixture.profile,
+          level: 120,
+          bitDepthMinus8: fixture.bitDepthMinus8,
+        })],
+      });
+      assert.deepEqual(await verify(bytes, {
+        objectKey: `users/owner/post/${fixture.label}.mp4`,
+        contentType: "video/mp4",
+      }), {
+        ...expectedStructural(),
+        sourceCodec: "hevc",
+      });
+    });
+  }
+});
+
 test("rejects avc3 because its in-band configuration is outside the bounded probe", async () => {
   const bytes = makeMp4({ videoEntries: [makeVisualEntry("avc3", { inBandOnly: true })] });
   await assert.rejects(() => verify(bytes), isUnsupported);
@@ -753,10 +853,26 @@ test("jumps over a large mdat to find a tail moov without downloading media payl
   assert.ok(fetchImpl.requests.every(({ start, end }) => !(start > ftyp.length + 16 && end < ftyp.length + mdat.length - 1)));
 });
 
-test("rejects HEVC, AV1, VP9, encrypted, and unknown video sample entries", async (context) => {
-  for (const type of ["hvc1", "hev1", "av01", "vp09", "encv", "zzzz"]) {
+test("rejects non-hvc1 HEVC, Dolby Vision, encrypted, and unknown video sample entries", async (context) => {
+  for (const type of ["hev1", "dvhe", "dvh1", "av01", "vp09", "encv", "zzzz"]) {
     await context.test(type, async () => {
       const bytes = makeMp4({ videoEntries: [makeVisualEntry(type)] });
+      await assert.rejects(() => verify(bytes), isUnsupported);
+    });
+  }
+});
+
+test("rejects unsupported HEVC profiles, depths, and Dolby Vision configuration", async (context) => {
+  const cases = [
+    { label: "unsupported-profile", options: { profile: 3 } },
+    { label: "main-with-10-bit", options: { profile: 1, bitDepthMinus8: 1 } },
+    { label: "main10-with-12-bit", options: { profile: 2, bitDepthMinus8: 2 } },
+    { label: "dolby-dvcC", options: { profile: 2, bitDepthMinus8: 1, extraChildren: [box("dvcC")] } },
+    { label: "dolby-dvvC", options: { profile: 2, bitDepthMinus8: 1, extraChildren: [box("dvvC")] } },
+  ];
+  for (const fixture of cases) {
+    await context.test(fixture.label, async () => {
+      const bytes = makeMp4({ videoEntries: [makeVisualEntry("hvc1", fixture.options)] });
       await assert.rejects(() => verify(bytes), isUnsupported);
     });
   }
@@ -771,14 +887,26 @@ test("rejects non-mp4a and encrypted audio sample entries", async (context) => {
   }
 });
 
-test("rejects malformed AVC entries without an avcC configuration box", async () => {
-  const bytes = makeMp4({ videoEntries: [makeVisualEntry("avc1", { includeConfiguration: false })] });
-  await assert.rejects(() => verify(bytes), isUnsupported);
+test("rejects malformed AVC or HEVC entries without decoder configuration", async (context) => {
+  for (const type of ["avc1", "hvc1"]) {
+    await context.test(type, async () => {
+      const bytes = makeMp4({ videoEntries: [makeVisualEntry(type, { includeConfiguration: false })] });
+      await assert.rejects(() => verify(bytes), isUnsupported);
+    });
+  }
 });
 
 test("rejects protection metadata even when an entry claims an allowed codec", async (context) => {
   await context.test("video", async () => {
     const bytes = makeMp4({ videoEntries: [makeVisualEntry("avc1", { extraChildren: [box("sinf")] })] });
+    await assert.rejects(() => verify(bytes), isUnsupported);
+  });
+  await context.test("hevc-video", async () => {
+    const bytes = makeMp4({ videoEntries: [makeVisualEntry("hvc1", {
+      profile: 2,
+      bitDepthMinus8: 1,
+      extraChildren: [box("sinf")],
+    })] });
     await assert.rejects(() => verify(bytes), isUnsupported);
   });
   await context.test("audio", async () => {

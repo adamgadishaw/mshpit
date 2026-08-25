@@ -3,7 +3,10 @@ const ENABLED_VALUES = new Set(["1", "true", "yes", "on", "enabled"]);
 export const DEFAULT_MEDIA_PUBLISHING_CAPABILITIES = Object.freeze({
   photos: true,
   videos: false,
+  sourceTypes: Object.freeze([]),
 });
+
+const VIDEO_SOURCE_TYPES = Object.freeze(["video/mp4", "video/quicktime"]);
 
 // A boolean rollout switch is not proof that the full ingest path is ready.
 // The client opts in only when health also advertises the exact contract whose
@@ -49,10 +52,16 @@ export function mediaPublishingCapabilitiesForRuntime(env = {}) {
 // `true` enables video selection; truthy strings and malformed shapes stay off.
 export function mediaPublishingCapabilitiesFromHealth(health) {
   const advertised = health?.capabilities?.mediaPublishing;
+  const advertisedTypes = Array.isArray(advertised?.sourceTypes)
+    ? advertised.sourceTypes.filter((type, index, all) => VIDEO_SOURCE_TYPES.includes(type) && all.indexOf(type) === index)
+    : ["video/mp4"];
+  const videos = advertised?.videos === true
+    && advertised?.pipeline === VIDEO_PUBLISHING_PIPELINE_VERSION
+    && advertisedTypes[0] === "video/mp4";
   return {
     photos: advertised?.photos !== false,
-    videos: advertised?.videos === true
-      && advertised?.pipeline === VIDEO_PUBLISHING_PIPELINE_VERSION,
+    videos,
+    sourceTypes: videos ? advertisedTypes : [],
   };
 }
 
@@ -82,6 +91,15 @@ export function mediaPublishingSourceRequestAllowed(body, env = {}) {
   return mediaPublishingCapabilitiesForRuntime(env).videos;
 }
 
+function selectedVideoSourceType(asset) {
+  const mimeType = String(asset?.mimeType || "").split(";", 1)[0].trim().toLowerCase();
+  if (mimeType) return mimeType;
+  const name = String(asset?.fileName || asset?.name || asset?.uri || "").split(/[?#]/u, 1)[0].toLowerCase();
+  if (name.endsWith(".mov")) return "video/quicktime";
+  if (name.endsWith(".mp4")) return "video/mp4";
+  return "";
+}
+
 export function mediaPublishingSelection(assets, capabilities = DEFAULT_MEDIA_PUBLISHING_CAPABILITIES) {
   const input = Array.isArray(assets) ? assets : [];
   const photosEnabled = capabilities?.photos === true;
@@ -89,9 +107,13 @@ export function mediaPublishingSelection(assets, capabilities = DEFAULT_MEDIA_PU
   const accepted = [];
   let blockedPhotos = 0;
   let blockedVideos = 0;
+  const negotiatedSourceTypes = Array.isArray(capabilities?.sourceTypes) && capabilities.sourceTypes.length
+    ? new Set(capabilities.sourceTypes)
+    : null;
   for (const asset of input) {
     if (asset?.kind === "image" && !photosEnabled) blockedPhotos += 1;
-    else if (asset?.kind === "video" && !videosEnabled) blockedVideos += 1;
+    else if (asset?.kind === "video" && (!videosEnabled
+      || (negotiatedSourceTypes && !negotiatedSourceTypes.has(selectedVideoSourceType(asset))))) blockedVideos += 1;
     else accepted.push(asset);
   }
   return { accepted, blockedPhotos, blockedVideos };

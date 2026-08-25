@@ -73,6 +73,11 @@ function healthyPayload() {
     decoder: { ffmpeg: true, ffprobe: true, version: "ffmpeg test" },
     poster: { generated: true, decoded: true },
     storage: { privateInput: true, sanitizedOutput: true },
+    sourceTypes: ["video/mp4", "video/quicktime"],
+    sourceCodecs: {
+      "video/mp4": ["h264", "hevc"],
+      "video/quicktime": ["h264", "hevc"],
+    },
     concurrency: 1,
   };
 }
@@ -85,10 +90,11 @@ function decodedPayload(requestPayload) {
     object: {
       key: requestPayload.object.key,
       byteSize: requestPayload.object.byteSize,
+      contentType: requestPayload.object.contentType,
       etag: requestPayload.object.etag,
     },
     video: {
-      codec: "h264",
+      codec: requestPayload.structural.sourceCodec || "h264",
       audioCodec: "none",
       rotation: 0,
       width: requestPayload.structural.width,
@@ -185,6 +191,144 @@ test("health readiness is fresh, exact, and a latest failed probe disables it im
   assert.notEqual(failed.lastErrorCode, null);
 });
 
+test("a rolling-deploy legacy worker keeps MP4 ready without advertising MOV", async () => {
+  const payload = healthyPayload();
+  delete payload.sourceTypes;
+  delete payload.sourceCodecs;
+  const status = await refreshVideoVerifierHealth({
+    env: ENV,
+    fetchImpl: (url, request) => signedResponse({
+      path: new URL(url).pathname,
+      request,
+      payload,
+    }),
+    at: Date.now(),
+  });
+  assert.equal(status.ready, true);
+  assert.deepEqual(status.sourceTypes, ["video/mp4"]);
+  assert.deepEqual(status.sourceCodecs, { "video/mp4": ["h264"] });
+});
+
+test("a legacy worker blocks HEVC MP4 before dispatch while H.264 MP4 stays retryable", async () => {
+  const payload = healthyPayload();
+  delete payload.sourceTypes;
+  delete payload.sourceCodecs;
+  await refreshVideoVerifierHealth({
+    env: ENV,
+    fetchImpl: (url, request) => signedResponse({
+      path: new URL(url).pathname,
+      request,
+      payload,
+    }),
+    at: Date.now(),
+  });
+
+  let verifierFetches = 0;
+  const verifierFetch = (url, request) => {
+    verifierFetches += 1;
+    return signedResponse({ path: new URL(url).pathname, request, payload: decodedPayload });
+  };
+  await assert.rejects(() => verifyVideoObject(verificationInput({
+    structural: { ...STRUCTURAL, sourceCodec: "hevc" },
+    fetchImpl: verifierFetch,
+  })), (error) => error.status === 503 && error.code === "MEDIA_STORAGE_UNAVAILABLE");
+  assert.equal(verifierFetches, 0, "unsupported rolling codec never reaches the old worker");
+
+  const h264 = await verifyVideoObject(verificationInput({ fetchImpl: verifierFetch }));
+  assert.equal(h264.delivery.contentType, "video/mp4");
+  assert.equal(verifierFetches, 1);
+});
+
+test("health rejects malformed codec capability claims", async () => {
+  const payload = healthyPayload();
+  payload.sourceCodecs["video/mp4"] = ["hevc"];
+  const status = await refreshVideoVerifierHealth({
+    env: ENV,
+    fetchImpl: (url, request) => signedResponse({
+      path: new URL(url).pathname,
+      request,
+      payload,
+    }),
+    at: Date.now(),
+  });
+  assert.equal(status.ready, false);
+  assert.deepEqual(status.sourceTypes, []);
+  assert.deepEqual(status.sourceCodecs, {});
+});
+
+test("health never infers codecs from MIME declarations alone", async () => {
+  const payload = healthyPayload();
+  delete payload.sourceCodecs;
+  const status = await refreshVideoVerifierHealth({
+    env: ENV,
+    fetchImpl: (url, request) => signedResponse({
+      path: new URL(url).pathname,
+      request,
+      payload,
+    }),
+    at: Date.now(),
+  });
+  assert.equal(status.ready, false);
+  assert.deepEqual(status.sourceTypes, []);
+  assert.deepEqual(status.sourceCodecs, {});
+});
+
+test("a rolling-deploy legacy worker result remains valid only for its MP4 contract", async () => {
+  const result = await verifyVideoObject(verificationInput({
+    fetchImpl: (url, request) => signedResponse({
+      path: new URL(url).pathname,
+      request,
+      payload: (requestPayload) => {
+        const decoded = decodedPayload(requestPayload);
+        delete decoded.object.contentType;
+        return decoded;
+      },
+    }),
+  }));
+  assert.equal(result.delivery.contentType, "video/mp4");
+
+  await assert.rejects(() => verifyVideoObject(verificationInput({
+    objectKey: "users/u_video/post/iphone.mov",
+    contentType: "video/quicktime",
+    structural: { ...STRUCTURAL, sourceContainer: "quicktime", sourceCodec: "h264" },
+    fetchImpl: (url, request) => signedResponse({
+      path: new URL(url).pathname,
+      request,
+      payload: (requestPayload) => {
+        const decoded = decodedPayload(requestPayload);
+        delete decoded.object.contentType;
+        return decoded;
+      },
+    }),
+  })), (error) => error.status === 503 && error.code === "MEDIA_STORAGE_UNAVAILABLE");
+});
+
+test("a successful verification preserves the source types proven by health", async () => {
+  const at = Date.now();
+  await refreshVideoVerifierHealth({
+    env: ENV,
+    at,
+    fetchImpl: (url, request) => signedResponse({
+      path: new URL(url).pathname,
+      request,
+      payload: healthyPayload(),
+    }),
+  });
+  await verifyVideoObject(verificationInput({
+    fetchImpl: (url, request) => signedResponse({
+      path: new URL(url).pathname,
+      request,
+      payload: decodedPayload,
+    }),
+  }));
+  assert.deepEqual(videoVerifierRuntimeStatus(ENV, at + 1).sourceTypes,
+    ["video/mp4", "video/quicktime"]);
+  assert.deepEqual(videoVerifierRuntimeStatus(ENV, at + 1).sourceCodecs, {
+    "video/mp4": ["h264", "hevc"],
+    "video/quicktime": ["h264", "hevc"],
+  });
+});
+
 test("exact jobs coalesce once, while a different cover is rejected busy without charging", async () => {
   const gate = deferred();
   let fetches = 0;
@@ -227,6 +371,83 @@ test("a denied leader stays actor-local and a fresh caller can start the same jo
   }));
   assert.equal(fetches, 1);
   assert.equal(result.width, 1_920);
+});
+
+test("QuickTime source identity is HMAC-bound while the delivery stays MP4", async () => {
+  let observed;
+  const result = await verifyVideoObject(verificationInput({
+    objectKey: "users/u_video/post/iphone.mov",
+    contentType: "video/quicktime",
+    structural: { ...STRUCTURAL, sourceContainer: "quicktime", sourceCodec: "hevc" },
+    fetchImpl: async (url, request) => {
+      observed = verifyVideoVerifierRequest({
+        secret: SECRET,
+        path: new URL(url).pathname,
+        body: request.body,
+        headers: request.headers,
+      }).payload;
+      return signedResponse({ path: new URL(url).pathname, request, payload: decodedPayload });
+    },
+  }));
+  assert.equal(observed.object.contentType, "video/quicktime");
+  assert.equal(observed.object.key.endsWith(".mov"), true);
+  assert.equal(observed.output.contentType, "video/mp4");
+  assert.equal(observed.output.key.endsWith(".mp4"), true);
+  assert.equal(result.delivery.contentType, "video/mp4");
+
+  await assert.rejects(() => verifyVideoObject(verificationInput({
+    objectKey: "users/u_video/post/type-confusion.mp4",
+    contentType: "video/quicktime",
+    structural: { ...STRUCTURAL, sourceContainer: "quicktime", sourceCodec: "h264" },
+    fetchImpl: async () => { throw new Error("must not call verifier"); },
+  })), (error) => error.status === 500 && error.code === "INTERNAL_ERROR");
+});
+
+test("ISO-MP4 hvc1 identity is HMAC-bound and must decode as HEVC before H.264 delivery", async () => {
+  let observed;
+  const input = verificationInput({
+    structural: { ...STRUCTURAL, sourceCodec: "hevc" },
+    fetchImpl: async (url, request) => {
+      observed = verifyVideoVerifierRequest({
+        secret: SECRET,
+        path: new URL(url).pathname,
+        body: request.body,
+        headers: request.headers,
+      }).payload;
+      return signedResponse({ path: new URL(url).pathname, request, payload: decodedPayload });
+    },
+  });
+  const result = await verifyVideoObject(input);
+  assert.equal(observed.object.contentType, "video/mp4");
+  assert.equal(observed.object.key.endsWith(".mp4"), true);
+  assert.equal(observed.structural.sourceCodec, "hevc");
+  assert.equal(Object.hasOwn(observed.structural, "sourceContainer"), false);
+  assert.equal(observed.output.contentType, "video/mp4");
+  assert.equal(result.delivery.contentType, "video/mp4");
+
+  await assert.rejects(() => verifyVideoObject(verificationInput({
+    structural: { ...STRUCTURAL, sourceCodec: "hevc" },
+    fetchImpl: (url, request) => signedResponse({
+      path: new URL(url).pathname,
+      request,
+      payload: (requestPayload) => {
+        const decoded = decodedPayload(requestPayload);
+        decoded.video.codec = "h264";
+        return decoded;
+      },
+    }),
+  })), (error) => error.status === 503 && error.code === "MEDIA_STORAGE_UNAVAILABLE");
+
+  for (const overrides of [
+    { objectKey: "users/u_video/post/type-confusion.mov" },
+    { structural: { ...STRUCTURAL, sourceContainer: "quicktime", sourceCodec: "hevc" } },
+    { structural: { ...STRUCTURAL, sourceCodec: "h264" } },
+  ]) {
+    await assert.rejects(() => verifyVideoObject(verificationInput({
+      ...overrides,
+      fetchImpl: async () => { throw new Error("must not call verifier"); },
+    })), (error) => error.status === 500 && error.code === "INTERNAL_ERROR");
+  }
 });
 
 test("authenticated worker busy rolls back the scarce permit and preserves fresh health", async () => {

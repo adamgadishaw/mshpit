@@ -30,7 +30,7 @@ test("video publishing fails closed unless the deployed runtime explicitly enabl
 
 test("the client trusts only the explicit boolean health capability", () => {
   assert.deepEqual(mediaPublishingCapabilitiesFromHealth(null), DEFAULT_MEDIA_PUBLISHING_CAPABILITIES);
-  assert.deepEqual(mediaPublishingCapabilitiesFromHealth({ capabilities: { mediaPublishing: { photos: false, videos: false } } }), { photos: false, videos: false });
+  assert.deepEqual(mediaPublishingCapabilitiesFromHealth({ capabilities: { mediaPublishing: { photos: false, videos: false } } }), { photos: false, videos: false, sourceTypes: [] });
   assert.equal(mediaPublishingCapabilitiesFromHealth({ capabilities: { mediaPublishing: { videos: "true" } } }).videos, false);
   assert.equal(mediaPublishingCapabilitiesFromHealth({ capabilities: { mediaPublishing: { photos: true, videos: true } } }).videos, false,
     "the rollout flag alone cannot expose a pipeline the server has not declared ready");
@@ -40,11 +40,18 @@ test("the client trusts only the explicit boolean health capability", () => {
   assert.equal(mediaPublishingCapabilitiesFromHealth({
     capabilities: { mediaPublishing: { photos: true, videos: true, pipeline: VIDEO_PUBLISHING_PIPELINE_VERSION } },
   }).videos, true);
+  assert.deepEqual(mediaPublishingCapabilitiesFromHealth({
+    capabilities: { mediaPublishing: { photos: true, videos: true, pipeline: VIDEO_PUBLISHING_PIPELINE_VERSION } },
+  }).sourceTypes, ["video/mp4"], "an older healthy worker keeps MP4 available during a rolling deploy");
+  assert.deepEqual(mediaPublishingCapabilitiesFromHealth({
+    capabilities: { mediaPublishing: { photos: true, videos: true, pipeline: VIDEO_PUBLISHING_PIPELINE_VERSION,
+      sourceTypes: ["video/mp4", "video/quicktime"] } },
+  }).sourceTypes, ["video/mp4", "video/quicktime"]);
 });
 
 test("the selection gate preserves photos and rejects only new videos while disabled", () => {
   const image = { id: "image", kind: "image" };
-  const video = { id: "video", kind: "video" };
+  const video = { id: "video", kind: "video", mimeType: "video/mp4" };
   assert.deepEqual(mediaPublishingSelection([image, video]), { accepted: [image], blockedPhotos: 0, blockedVideos: 1 });
   assert.deepEqual(mediaPublishingSelection([image, video], { photos: true, videos: true }), {
     accepted: [image, video],
@@ -61,6 +68,12 @@ test("the selection gate preserves photos and rejects only new videos while disa
     blockedPhotos: 1,
     blockedVideos: 1,
   });
+  const mov = { id: "mov", kind: "video", mimeType: "video/quicktime", fileName: "concert.mov" };
+  assert.deepEqual(mediaPublishingSelection([video, mov], {
+    photos: true,
+    videos: true,
+    sourceTypes: ["video/mp4"],
+  }), { accepted: [video], blockedPhotos: 0, blockedVideos: 1 });
 });
 
 test("composer availability copy and labels match each negotiated media type", () => {

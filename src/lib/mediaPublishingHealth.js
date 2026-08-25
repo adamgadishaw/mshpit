@@ -4,16 +4,27 @@ import {
 } from "../domain/mediaPublishingCapabilities.mjs";
 
 export const MEDIA_PUBLISHING_CAPABILITIES_TTL_MS = 30_000;
+export const MEDIA_PUBLISHING_VIDEO_STALE_IF_UNAVAILABLE_MS = 5 * 60_000;
 
 const capabilityStateByApi = new WeakMap();
 
 function stateFor(apiCall) {
   let state = capabilityStateByApi.get(apiCall);
   if (!state) {
-    state = { cached: null, inFlight: null };
+    state = { cached: null, inFlight: null, lastVideoReadyAt: null, lastVideoSourceTypes: [] };
     capabilityStateByApi.set(apiCall, state);
   }
   return state;
+}
+
+function capabilitiesForConsumer(state, capabilities, { checkedAt, force }) {
+  if (force || capabilities?.videos === true || !Number.isFinite(state.lastVideoReadyAt)) return capabilities;
+  const readyAge = checkedAt - state.lastVideoReadyAt;
+  if (readyAge < 0 || readyAge > MEDIA_PUBLISHING_VIDEO_STALE_IF_UNAVAILABLE_MS) return capabilities;
+  // The upload boundary always forces an authoritative check. Selection may
+  // briefly retain the last exact healthy contract so one stale/busy probe
+  // does not hide the video picker and discard a user's local choice.
+  return { ...capabilities, videos: true, sourceTypes: [...state.lastVideoSourceTypes] };
 }
 
 function abortError() {
@@ -71,7 +82,7 @@ export async function loadMediaPublishingCapabilities({
   const checkedAt = now();
   const cacheAge = state.cached ? checkedAt - state.cached.checkedAt : Infinity;
   if (!force && cacheAge >= 0 && cacheAge < MEDIA_PUBLISHING_CAPABILITIES_TTL_MS) {
-    return state.cached.capabilities;
+    return capabilitiesForConsumer(state, state.cached.capabilities, { checkedAt, force });
   }
   if (state.inFlight) return waitForInFlight(state.inFlight, signal);
 
@@ -93,8 +104,13 @@ export async function loadMediaPublishingCapabilities({
     .then((health) => {
       if (controller.signal.aborted) throw abortError();
       const capabilities = mediaPublishingCapabilitiesFromHealth(health);
-      state.cached = { capabilities, checkedAt: now() };
-      return capabilities;
+      const completedAt = now();
+      if (capabilities.videos === true) {
+        state.lastVideoReadyAt = completedAt;
+        state.lastVideoSourceTypes = [...(capabilities.sourceTypes || [])];
+      }
+      state.cached = { capabilities, checkedAt: completedAt };
+      return capabilitiesForConsumer(state, capabilities, { checkedAt: completedAt, force });
     })
     .finally(() => {
       entry.settled = true;

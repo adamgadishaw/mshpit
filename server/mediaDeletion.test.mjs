@@ -26,6 +26,8 @@ const {
   enqueueOwnerMediaSweep,
   mediaDeletionHealth,
   mediaOrphanTtlMs,
+  mediaUploadGlobalCircuitBreakerLimits,
+  mediaUploadQuotaLimits,
   MEDIA_OWNER_SWEEP_QUIET_WINDOW_MS,
   MEDIA_OWNER_SWEEP_RECHECK_MS,
   MEDIA_DELETION_DEAD_REDRIVE_MS,
@@ -66,6 +68,135 @@ function enqueueTicket(owner, key, at = Date.now()) {
   assert.equal(recordMediaObjectTicket(db, { ownerId: owner, objectKey: key, at, expiresAt: null }), true);
   return enqueueAllOwnedMedia(db, { ownerId: owner, at });
 }
+
+test("default media allowances are creator-scale emergency ceilings, not product-plan caps", () => {
+  const limits = mediaUploadQuotaLimits({});
+  assert.deepEqual(limits, {
+    outstandingObjects: 256,
+    outstandingBytes: 16 * 1024 * 1024 * 1024,
+    rollingBytes: 64 * 1024 * 1024 * 1024,
+    rollingTickets: 4_096,
+  });
+  assert.deepEqual(mediaUploadGlobalCircuitBreakerLimits({}), {
+    outstandingObjects: 100_000,
+    outstandingBytes: 2 * 1024 * 1024 * 1024 * 1024,
+    rollingBytes: 8 * 1024 * 1024 * 1024 * 1024,
+    rollingTickets: 1_000_000,
+  });
+  assert.ok(db.prepare("PRAGMA index_list('media_objects')").all()
+    .some((index) => index.name === "idx_media_objects_status_bytes"),
+  "existing databases receive a covering index for the global outstanding-capability aggregate");
+  assert.deepEqual(
+    db.prepare("PRAGMA index_info('idx_media_upload_issuances_at_bytes')").all().map((column) => column.name),
+    ["issued_at", "byte_size"],
+    "the global rolling-byte aggregate is covered without table-row fetches",
+  );
+});
+
+test("service-wide upload breakers atomically aggregate outstanding capabilities across owners", () => {
+  clearMediaTables();
+  const first = addUser("media_global_outstanding_first");
+  const second = addUser("media_global_outstanding_second");
+  const third = addUser("media_global_outstanding_third");
+  const env = {
+    ...process.env,
+    MEDIA_UPLOAD_OUTSTANDING_OBJECTS: "100",
+    MEDIA_UPLOAD_OUTSTANDING_BYTES: String(100 * 1024 * 1024),
+    MEDIA_UPLOAD_24H_TICKETS: "100",
+    MEDIA_UPLOAD_24H_BYTES: String(100 * 1024 * 1024),
+    MEDIA_UPLOAD_GLOBAL_OUTSTANDING_OBJECTS: "2",
+    MEDIA_UPLOAD_GLOBAL_OUTSTANDING_BYTES: String(100 * 1024 * 1024),
+    MEDIA_UPLOAD_GLOBAL_24H_TICKETS: "100",
+    MEDIA_UPLOAD_GLOBAL_24H_BYTES: String(100 * 1024 * 1024),
+  };
+  const reserve = (owner, name, at) => reserveMediaUploadTicket(db, {
+    ownerId: owner.id,
+    objectKey: `users/${owner.id}/post/${name}.jpg`,
+    byteSize: 512 * 1024,
+    at,
+    env,
+  });
+
+  reserve(first, "first", 1_000);
+  reserve(second, "second", 2_000);
+  assert.throws(
+    () => reserve(third, "blocked", 3_000),
+    (error) => {
+      assert.equal(error.status, 503);
+      assert.equal(error.code, "MEDIA_STORAGE_UNAVAILABLE");
+      assert.equal(error.message.includes(first.id), false);
+      assert.equal(error.message.includes(third.id), false);
+      assert.equal(error.message.toLowerCase().includes("plan"), false);
+      return true;
+    },
+  );
+  assert.equal(db.prepare("SELECT 1 FROM media_objects WHERE owner_id=?").get(third.id), undefined,
+    "a rejected cross-owner reservation leaves no object capability");
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM media_upload_issuances").get().count, 2,
+    "a rejected cross-owner reservation consumes no rolling issuance");
+
+  db.prepare("UPDATE media_objects SET status='associated' WHERE owner_id=?").run(first.id);
+  assert.equal(reserve(third, "after-release", 4_000).duplicate, false,
+    "associating an object releases global outstanding capability capacity");
+});
+
+test("service-wide upload breakers cover aggregate outstanding and rolling bytes and tickets", () => {
+  const makeEnv = (overrides) => ({
+    ...process.env,
+    MEDIA_UPLOAD_OUTSTANDING_OBJECTS: "100",
+    MEDIA_UPLOAD_OUTSTANDING_BYTES: String(100 * 1024 * 1024),
+    MEDIA_UPLOAD_24H_TICKETS: "100",
+    MEDIA_UPLOAD_24H_BYTES: String(100 * 1024 * 1024),
+    MEDIA_UPLOAD_GLOBAL_OUTSTANDING_OBJECTS: "100",
+    MEDIA_UPLOAD_GLOBAL_OUTSTANDING_BYTES: String(100 * 1024 * 1024),
+    MEDIA_UPLOAD_GLOBAL_24H_TICKETS: "100",
+    MEDIA_UPLOAD_GLOBAL_24H_BYTES: String(100 * 1024 * 1024),
+    ...overrides,
+  });
+  const reserve = (owner, name, at, byteSize, env) => reserveMediaUploadTicket(db, {
+    ownerId: owner.id,
+    objectKey: `users/${owner.id}/post/${name}.jpg`,
+    byteSize,
+    at,
+    env,
+  });
+
+  clearMediaTables();
+  const byteFirst = addUser("media_global_outstanding_bytes_first");
+  const byteSecond = addUser("media_global_outstanding_bytes_second");
+  const outstandingByteEnv = makeEnv({ MEDIA_UPLOAD_GLOBAL_OUTSTANDING_BYTES: String(1024 * 1024) });
+  reserve(byteFirst, "first", 1_000, 700 * 1024, outstandingByteEnv);
+  assert.throws(
+    () => reserve(byteSecond, "blocked", 2_000, 400 * 1024, outstandingByteEnv),
+    (error) => error.status === 503 && error.code === "MEDIA_STORAGE_UNAVAILABLE",
+    "outstanding bytes aggregate across different owners",
+  );
+
+  clearMediaTables();
+  const ticketFirst = addUser("media_global_rolling_tickets_first");
+  const ticketSecond = addUser("media_global_rolling_tickets_second");
+  const rollingTicketEnv = makeEnv({ MEDIA_UPLOAD_GLOBAL_24H_TICKETS: "2" });
+  reserve(ticketFirst, "first", 1_000, 256 * 1024, rollingTicketEnv);
+  reserve(ticketSecond, "second", 2_000, 256 * 1024, rollingTicketEnv);
+  db.prepare("UPDATE media_objects SET status='associated'").run();
+  assert.throws(
+    () => reserve(ticketFirst, "blocked", 3_000, 1, rollingTicketEnv),
+    (error) => error.status === 503 && error.code === "MEDIA_STORAGE_UNAVAILABLE",
+    "rolling tickets aggregate even after objects are associated",
+  );
+
+  clearMediaTables();
+  const rollingByteFirst = addUser("media_global_rolling_bytes_first");
+  const rollingByteSecond = addUser("media_global_rolling_bytes_second");
+  const rollingByteEnv = makeEnv({ MEDIA_UPLOAD_GLOBAL_24H_BYTES: String(1024 * 1024) });
+  reserve(rollingByteFirst, "first", 1_000, 700 * 1024, rollingByteEnv);
+  db.prepare("UPDATE media_objects SET status='associated'").run();
+  assert.throws(
+    () => reserve(rollingByteSecond, "blocked", 2_000, 400 * 1024, rollingByteEnv),
+    (error) => error.status === 503 && error.code === "MEDIA_STORAGE_UNAVAILABLE",
+    "rolling bytes aggregate across different owners",
+  );
+});
 
 test("only exact, credential-free owner-prefixed public URLs become deletion keys", () => {
   const env = { ...process.env };

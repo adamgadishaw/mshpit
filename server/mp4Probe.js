@@ -2,6 +2,10 @@ import { createHash } from "node:crypto";
 
 import { ApiError } from "./errors.js";
 import { getMediaConfig, presignS3Request } from "./media.js";
+import {
+  VIDEO_VERIFIER_SOURCE_CONTENT_TYPES,
+  videoVerifierSourceExtension,
+} from "./videoVerifierProtocol.js";
 
 const KIBIBYTE = 1024;
 const MEBIBYTE = 1024 * KIBIBYTE;
@@ -39,7 +43,8 @@ const MAX_CLIP_DURATION_MS = 60_000;
 const MAX_VIDEO_WIDTH = 4_096;
 const MAX_VIDEO_HEIGHT = 2_160;
 
-const VIDEO_SAMPLE_ENTRIES = new Set(["avc1", "avc3"]);
+const VIDEO_SAMPLE_ENTRIES = new Set(["avc1", "avc3", "hvc1"]);
+const QUICKTIME_VIDEO_SAMPLE_ENTRIES = new Set(["avc1", "hvc1"]);
 const AUDIO_SAMPLE_ENTRIES = new Set(["mp4a"]);
 const AVC_PROFILES = new Set([66, 77, 100]);
 const AVC_LEVELS = new Set([9, 10, 11, 12, 13, 20, 21, 22, 30, 31, 32, 40, 41, 42, 50, 51]);
@@ -53,7 +58,12 @@ const AAC_SAMPLE_RATES = Object.freeze([
   22_050, 16_000, 12_000, 11_025, 8_000, 7_350,
 ]);
 const ISO_MP4_MAJOR_BRANDS = new Set(["isom", "mp41", "mp42"]);
-const ISO_MP4_COMPATIBLE_BRANDS = new Set(["isom", "iso2", "iso3", "iso4", "iso5", "iso6", "avc1", "mp41", "mp42"]);
+const ISO_MP4_COMPATIBLE_BRANDS = new Set(["isom", "iso2", "iso3", "iso4", "iso5", "iso6", "avc1", "hvc1", "mp41", "mp42"]);
+const QUICKTIME_MAJOR_BRAND = "qt  ";
+const QUICKTIME_COMPATIBLE_BRANDS = new Set([QUICKTIME_MAJOR_BRAND]);
+const QUICKTIME_DISCARDED_TRACK_HANDLERS = new Set(["meta", "tmcd"]);
+const DOLBY_VISION_CONFIGURATION_BOXES = new Set(["dvcC", "dvvC"]);
+const SOURCE_CONTENT_TYPES = new Set(VIDEO_VERIFIER_SOURCE_CONTENT_TYPES);
 const STREAMING_ONLY_BOXES = new Set(["moof", "mfra", "sidx", "styp"]);
 
 const activeStructuralProbes = new Map();
@@ -61,7 +71,7 @@ const fetchImplementationIds = new WeakMap();
 let nextFetchImplementationId = 1;
 
 function unsupported() {
-  return new ApiError(415, "That MP4 is not compatible with PIT clips.", "MEDIA_TYPE_UNSUPPORTED");
+  return new ApiError(415, "That video container is not compatible with PIT clips.", "MEDIA_TYPE_UNSUPPORTED");
 }
 
 function unavailable() {
@@ -94,6 +104,7 @@ function structuralProbeIdentity(state) {
     state.objectUrl,
     state.expectedBytes,
     state.ifMatch || "",
+    state.contentType,
     state.storageScope,
     state.config.region,
     credential,
@@ -152,6 +163,16 @@ function normalizedObjectKey(value) {
     throw unavailable();
   }
   return key;
+}
+
+function normalizedSourceContentType(value, objectKey) {
+  const type = String(value || "video/mp4").split(";", 1)[0].trim().toLowerCase();
+  const extension = videoVerifierSourceExtension(type);
+  if (!SOURCE_CONTENT_TYPES.has(type) || !extension
+      || !String(objectKey || "").toLowerCase().endsWith(`.${extension}`)) {
+    throw unsupported();
+  }
+  return type;
 }
 
 function normalizedIfMatch(value) {
@@ -350,7 +371,7 @@ function onlyBox(boxes, type, { required = true } = {}) {
   return matches[0] || null;
 }
 
-function validateFtyp(buffer, parseState) {
+function validateFtyp(buffer, parseState, contentType) {
   const box = parseBoxHeader(buffer, 0, buffer.length, parseState);
   if (box.type !== "ftyp" || box.end !== buffer.length || box.extendsToEnd) throw unsupported();
   const payloadBytes = box.end - box.payloadStart;
@@ -360,8 +381,15 @@ function validateFtyp(buffer, parseState) {
   for (let cursor = box.payloadStart + 8; cursor < box.end; cursor += 4) {
     compatibleBrands.push(fourCc(buffer, cursor));
   }
-  if (!ISO_MP4_MAJOR_BRANDS.has(majorBrand) || !compatibleBrands.length
-      || compatibleBrands.some((brand) => !ISO_MP4_COMPATIBLE_BRANDS.has(brand))) {
+  const validMp4 = contentType === "video/mp4"
+    && ISO_MP4_MAJOR_BRANDS.has(majorBrand)
+    && compatibleBrands.length
+    && compatibleBrands.every((brand) => ISO_MP4_COMPATIBLE_BRANDS.has(brand));
+  const validQuickTime = contentType === "video/quicktime"
+    && majorBrand === QUICKTIME_MAJOR_BRAND
+    && compatibleBrands.length
+    && compatibleBrands.every((brand) => QUICKTIME_COMPATIBLE_BRANDS.has(brand));
+  if (!validMp4 && !validQuickTime) {
     throw unsupported();
   }
 }
@@ -748,23 +776,94 @@ function validateAvcConfiguration(buffer, entry, fixedPayloadBytes, parseState) 
   };
 }
 
-function validateVideoEntry(buffer, entry, parseState) {
-  if (!VIDEO_SAMPLE_ENTRIES.has(entry.type) || entry.type !== "avc1") throw unsupported();
+function validateHevcConfiguration(buffer, entry, fixedPayloadBytes, parseState) {
+  const childrenStart = entry.payloadStart + fixedPayloadBytes;
+  if (childrenStart >= entry.end) throw unsupported();
+  const children = listBoxes(buffer, childrenStart, entry.end, parseState);
+  if (children.some((child) => child.type === "sinf"
+      || DOLBY_VISION_CONFIGURATION_BOXES.has(child.type))) throw unsupported();
+  const pixelAspect = onlyBox(children, "pasp", { required: false });
+  if (pixelAspect) {
+    if (pixelAspect.end - pixelAspect.payloadStart !== 8) throw unsupported();
+    const horizontalSpacing = buffer.readUInt32BE(pixelAspect.payloadStart);
+    const verticalSpacing = buffer.readUInt32BE(pixelAspect.payloadStart + 4);
+    if (!horizontalSpacing || horizontalSpacing !== verticalSpacing) throw unsupported();
+  }
+  const configuration = onlyBox(children, "hvcC");
+  const payload = buffer.subarray(configuration.payloadStart, configuration.end);
+  if (payload.length < 23 || payload[0] !== 1) throw unsupported();
+  const profile = payload[1] & 0x1f;
+  const level = payload[12];
+  const chromaFormat = payload[16] & 0x03;
+  const lumaDepthMinus8 = payload[17] & 0x07;
+  const chromaDepthMinus8 = payload[18] & 0x07;
+  const lengthSize = (payload[21] & 0x03) + 1;
+  const arrayCount = payload[22];
+  if (!new Set([1, 2]).has(profile) || (payload[1] & 0xc0) !== 0 || level < 30 || level > 186
+      || (payload[13] & 0xf0) !== 0xf0 || (payload[15] & 0xfc) !== 0xfc
+      || (payload[16] & 0xfc) !== 0xfc || (payload[17] & 0xf8) !== 0xf8
+      || (payload[18] & 0xf8) !== 0xf8 || chromaFormat !== 1
+      || lumaDepthMinus8 !== chromaDepthMinus8 || lumaDepthMinus8 > 1
+      || (profile === 1 && lumaDepthMinus8 !== 0)
+      || ![1, 2, 4].includes(lengthSize) || arrayCount < 3 || arrayCount > 16) {
+    throw unsupported();
+  }
+  let cursor = 23;
+  let unitCount = 0;
+  const arrayTypes = new Set();
+  for (let arrayIndex = 0; arrayIndex < arrayCount; arrayIndex += 1) {
+    if (cursor + 3 > payload.length) throw unsupported();
+    const descriptor = payload[cursor];
+    cursor += 1;
+    const reserved = descriptor & 0x40;
+    const nalType = descriptor & 0x3f;
+    const count = payload.readUInt16BE(cursor);
+    cursor += 2;
+    if (reserved || !count || arrayTypes.has(nalType)
+        || !new Set([32, 33, 34, 39, 40]).has(nalType)) throw unsupported();
+    arrayTypes.add(nalType);
+    for (let unitIndex = 0; unitIndex < count; unitIndex += 1) {
+      unitCount += 1;
+      if (unitCount > 64 || cursor + 2 > payload.length) throw unsupported();
+      const length = payload.readUInt16BE(cursor);
+      cursor += 2;
+      if (length < 3 || cursor + length > payload.length) throw unsupported();
+      const headerType = (payload[cursor] >> 1) & 0x3f;
+      const temporalIdPlusOne = payload[cursor + 1] & 0x07;
+      if ((payload[cursor] & 0x80) !== 0 || headerType !== nalType || temporalIdPlusOne === 0) {
+        throw unsupported();
+      }
+      cursor += length;
+    }
+  }
+  if (cursor !== payload.length || ![32, 33, 34].every((type) => arrayTypes.has(type))) throw unsupported();
+  return { nalLengthSize: lengthSize };
+}
+
+function validateVideoEntry(buffer, entry, parseState, contentType) {
+  const allowedEntries = contentType === "video/quicktime" ? QUICKTIME_VIDEO_SAMPLE_ENTRIES : VIDEO_SAMPLE_ENTRIES;
+  if (!allowedEntries.has(entry.type) || entry.type === "avc3") throw unsupported();
   const fixedPayloadBytes = 78;
   if (entry.end - entry.payloadStart < fixedPayloadBytes) throw unsupported();
   if (buffer.readUInt16BE(entry.payloadStart + 6) !== 1) throw unsupported();
   const width = buffer.readUInt16BE(entry.payloadStart + 24);
   const height = buffer.readUInt16BE(entry.payloadStart + 26);
   if (!width || !height || width > MAX_VIDEO_WIDTH || height > MAX_VIDEO_HEIGHT) throw unsupported();
-  const configuration = validateAvcConfiguration(buffer, entry, fixedPayloadBytes, parseState);
-  if (configuration.dimensions.width !== width || configuration.dimensions.height !== height) throw unsupported();
+  const configuration = entry.type === "hvc1"
+    ? validateHevcConfiguration(buffer, entry, fixedPayloadBytes, parseState)
+    : validateAvcConfiguration(buffer, entry, fixedPayloadBytes, parseState);
+  if (entry.type === "avc1"
+      && (configuration.dimensions.width !== width || configuration.dimensions.height !== height)) throw unsupported();
+  const codedWidth = entry.type === "hvc1" ? Math.ceil(width / 16) * 16 : configuration.dimensions.codedWidth;
+  const codedHeight = entry.type === "hvc1" ? Math.ceil(height / 16) * 16 : configuration.dimensions.codedHeight;
   return {
     width,
     height,
-    codedWidth: configuration.dimensions.codedWidth,
-    codedHeight: configuration.dimensions.codedHeight,
-    frameMacroblocks: configuration.dimensions.frameMacroblocks,
+    codedWidth,
+    codedHeight,
+    frameMacroblocks: (codedWidth / 16) * (codedHeight / 16),
     nalLengthSize: configuration.nalLengthSize,
+    codec: entry.type === "hvc1" ? "hevc" : "h264",
   };
 }
 
@@ -890,7 +989,7 @@ function validateAudioEntry(buffer, entry, parseState) {
   if (config.channels !== channels || config.sampleRate !== sampleRate) throw unsupported();
 }
 
-function parseSampleDescriptions(buffer, stsd, handlerType, parseState) {
+function parseSampleDescriptions(buffer, stsd, handlerType, parseState, contentType) {
   const payloadBytes = stsd.end - stsd.payloadStart;
   if (payloadBytes < 8 || buffer[stsd.payloadStart] !== 0
       || buffer[stsd.payloadStart + 1] !== 0 || buffer[stsd.payloadStart + 2] !== 0
@@ -910,12 +1009,13 @@ function parseSampleDescriptions(buffer, stsd, handlerType, parseState) {
   if (cursor !== stsd.end) throw unsupported();
 
   if (handlerType === "vide") {
-    const descriptions = entries.map((entry) => validateVideoEntry(buffer, entry, parseState));
-    if (descriptions.some(({ width, height, codedWidth, codedHeight, frameMacroblocks, nalLengthSize }) => (
+    const descriptions = entries.map((entry) => validateVideoEntry(buffer, entry, parseState, contentType));
+    if (descriptions.some(({ width, height, codedWidth, codedHeight, frameMacroblocks, nalLengthSize, codec }) => (
       width !== descriptions[0].width || height !== descriptions[0].height
       || codedWidth !== descriptions[0].codedWidth || codedHeight !== descriptions[0].codedHeight
       || frameMacroblocks !== descriptions[0].frameMacroblocks
       || nalLengthSize !== descriptions[0].nalLengthSize
+      || codec !== descriptions[0].codec
     ))) {
       throw unsupported();
     }
@@ -928,14 +1028,14 @@ function parseSampleDescriptions(buffer, stsd, handlerType, parseState) {
         codedHeight: descriptions[0].codedHeight,
         frameMacroblocks: descriptions[0].frameMacroblocks,
       },
-      nalLengthSizes: descriptions.map(({ nalLengthSize }) => nalLengthSize),
+      sampleConfigs: descriptions.map(({ nalLengthSize, codec }) => ({ nalLengthSize, codec })),
     };
   }
   if (handlerType === "soun") entries.forEach((entry) => validateAudioEntry(buffer, entry, parseState));
-  return { descriptionCount: entries.length, dimensions: null, nalLengthSizes: [] };
+  return { descriptionCount: entries.length, dimensions: null, sampleConfigs: [] };
 }
 
-function parseTrack(buffer, trak, parseState, mdats) {
+function parseTrack(buffer, trak, parseState, mdats, contentType) {
   const trakChildren = listBoxes(buffer, trak.payloadStart, trak.end, parseState);
   const mdia = onlyBox(trakChildren, "mdia");
   const mdiaChildren = listBoxes(buffer, mdia.payloadStart, mdia.end, parseState);
@@ -957,7 +1057,7 @@ function parseTrack(buffer, trak, parseState, mdats) {
   const stblChildren = listBoxes(buffer, stbl.payloadStart, stbl.end, parseState);
   const stsd = onlyBox(stblChildren, "stsd");
   const stts = onlyBox(stblChildren, "stts");
-  const descriptions = parseSampleDescriptions(buffer, stsd, handlerType, parseState);
+  const descriptions = parseSampleDescriptions(buffer, stsd, handlerType, parseState, contentType);
   const firstSample = firstSampleMapping(buffer, stblChildren, descriptions.descriptionCount, mdats);
   const sampleTimeline = parseSampleTimeline(buffer, stts, mediaDuration.timescale);
   if (sampleTimeline.sampleCount !== firstSample.sampleCount) throw unsupported();
@@ -968,12 +1068,12 @@ function parseTrack(buffer, trak, parseState, mdats) {
     sampleCount: sampleTimeline.sampleCount,
     firstSample: handlerType === "vide" ? {
       ...firstSample,
-      nalLengthSize: descriptions.nalLengthSizes[firstSample.descriptionIndex - 1],
+      ...descriptions.sampleConfigs[firstSample.descriptionIndex - 1],
     } : firstSample,
   };
 }
 
-function parseMoov(buffer, parseState, mdats) {
+function parseMoov(buffer, parseState, mdats, contentType) {
   const moov = parseBoxHeader(buffer, 0, buffer.length, parseState);
   if (moov.type !== "moov" || moov.end !== buffer.length || moov.extendsToEnd) throw unsupported();
   const children = listBoxes(buffer, moov.payloadStart, moov.end, parseState);
@@ -981,11 +1081,15 @@ function parseMoov(buffer, parseState, mdats) {
   const movieDuration = parseMovieDuration(buffer, mvhd);
   const tracks = children.filter((box) => box.type === "trak");
   if (!tracks.length) throw unsupported();
-  const parsedTracks = tracks.map((track) => parseTrack(buffer, track, parseState, mdats));
+  const parsedTracks = tracks.map((track) => parseTrack(buffer, track, parseState, mdats, contentType));
   const videoTracks = parsedTracks.filter(({ handlerType }) => handlerType === "vide");
   const audioTracks = parsedTracks.filter(({ handlerType }) => handlerType === "soun");
   const unknownTracks = parsedTracks.filter(({ handlerType }) => handlerType !== "vide" && handlerType !== "soun");
-  if (videoTracks.length !== 1 || audioTracks.length > 1 || unknownTracks.length) {
+  const discardedQuickTimeTracks = contentType === "video/quicktime"
+    && unknownTracks.length <= 2
+    && unknownTracks.every(({ handlerType }) => QUICKTIME_DISCARDED_TRACK_HANDLERS.has(handlerType));
+  if (videoTracks.length !== 1 || audioTracks.length > 1
+      || (unknownTracks.length && !discardedQuickTimeTracks)) {
     throw unsupported();
   }
   const video = videoTracks[0];
@@ -1003,6 +1107,12 @@ function parseMoov(buffer, parseState, mdats) {
     codedHeight: video.dimensions.codedHeight,
     sampleCount: video.sampleCount,
     videoSamples: [video.firstSample],
+    ...(contentType === "video/quicktime" ? {
+      sourceContainer: "quicktime",
+      sourceCodec: video.firstSample.codec,
+    } : video.firstSample.codec === "hevc" ? {
+      sourceCodec: "hevc",
+    } : {}),
   };
 }
 
@@ -1103,6 +1213,37 @@ async function verifyFirstAvcSample(state, sample) {
   if (cursor !== bytes.length || !hasIdr) throw unsupported();
 }
 
+async function verifyFirstHevcSample(state, sample) {
+  if (!sample || !Number.isSafeInteger(sample.size) || sample.size < 1
+      || sample.size > MAX_FIRST_SAMPLE_BYTES || ![1, 2, 4].includes(sample.nalLengthSize)) {
+    throw unsupported();
+  }
+  const bytes = await getRange(state, sample.offset, sample.offset + sample.size - 1);
+  let cursor = 0;
+  let units = 0;
+  let hasRandomAccessPicture = false;
+  while (cursor < bytes.length) {
+    units += 1;
+    if (units > 4_096 || cursor + sample.nalLengthSize > bytes.length) throw unsupported();
+    const length = readNalLength(bytes, cursor, sample.nalLengthSize);
+    cursor += sample.nalLengthSize;
+    if (length < 3 || cursor + length > bytes.length) throw unsupported();
+    const forbiddenZero = bytes[cursor] & 0x80;
+    const nalType = (bytes[cursor] >> 1) & 0x3f;
+    const temporalIdPlusOne = bytes[cursor + 1] & 0x07;
+    if (forbiddenZero || temporalIdPlusOne === 0) throw unsupported();
+    if (nalType >= 16 && nalType <= 21) hasRandomAccessPicture = true;
+    cursor += length;
+  }
+  if (cursor !== bytes.length || !hasRandomAccessPicture) throw unsupported();
+}
+
+async function verifyFirstVideoSample(state, sample) {
+  if (sample?.codec === "hevc") return verifyFirstHevcSample(state, sample);
+  if (sample?.codec === "h264") return verifyFirstAvcSample(state, sample);
+  throw unsupported();
+}
+
 async function runStructuralProbe(initialState) {
   const state = {
     ...initialState,
@@ -1115,9 +1256,9 @@ async function runStructuralProbe(initialState) {
   const moovBytes = await getRange(state, moov.start, moov.end - 1);
   const parseState = { boxes: 0 };
   try {
-    validateFtyp(ftypBytes, parseState);
-    const parsed = parseMoov(moovBytes, parseState, mdats);
-    for (const sample of parsed.videoSamples) await verifyFirstAvcSample(state, sample);
+    validateFtyp(ftypBytes, parseState, state.contentType);
+    const parsed = parseMoov(moovBytes, parseState, mdats, state.contentType);
+    for (const sample of parsed.videoSamples) await verifyFirstVideoSample(state, sample);
     const { videoSamples, ...projection } = parsed;
     void videoSamples;
     return projection;
@@ -1143,6 +1284,7 @@ async function runStructuralProbe(initialState) {
 export async function verifyMp4Compatibility({
   objectKey,
   expectedBytes,
+  contentType = "video/mp4",
   ifMatch,
   env = process.env,
   fetchImpl = globalThis.fetch,
@@ -1162,6 +1304,7 @@ export async function verifyMp4Compatibility({
   }
   if (!config.configured) throw unavailable();
   const key = normalizedObjectKey(objectKey);
+  const normalizedContentType = normalizedSourceContentType(contentType, key);
   const etag = normalizedIfMatch(ifMatch);
   const normalizedStorageScope = storageScope === "private" ? "private" : "public";
   const state = {
@@ -1171,6 +1314,7 @@ export async function verifyMp4Compatibility({
       bucket: normalizedStorageScope === "private" ? config.sourceBucket : config.bucket,
     }, key),
     expectedBytes,
+    contentType: normalizedContentType,
     ifMatch: etag,
     fetchImpl,
     storageScope: normalizedStorageScope,

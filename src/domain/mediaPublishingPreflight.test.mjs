@@ -20,11 +20,12 @@ const video = (patch = {}) => ({
   ...patch,
 });
 
-test("video preflight admits only a bounded MP4 with usable picker metadata", () => {
+test("video preflight admits bounded MP4 and iPhone MOV sources with usable picker metadata", () => {
   assert.equal(mediaPublishingPreflightIssue(video()), null);
+  assert.equal(mediaPublishingPreflightIssue(video({ mimeType: "video/quicktime", fileName: "crowd.mov" })), null);
   assert.equal(mediaPublishingPreflightIssue(video({ durationMs: 0 })).code, MEDIA_PREFLIGHT_CODES.videoDurationMissing);
   assert.equal(mediaPublishingPreflightIssue(video({ durationMs: 60_001 })).code, MEDIA_PREFLIGHT_CODES.videoTooLong);
-  assert.equal(mediaPublishingPreflightIssue(video({ mimeType: "video/quicktime", fileName: "crowd.mov" })).code, MEDIA_PREFLIGHT_CODES.videoContainerUnsupported);
+  assert.equal(mediaPublishingPreflightIssue(video({ mimeType: "video/webm", fileName: "crowd.webm" })).code, MEDIA_PREFLIGHT_CODES.videoContainerUnsupported);
   assert.equal(mediaPublishingPreflightIssue(video({ fileSize: 101 * 1024 * 1024 })).code, MEDIA_PREFLIGHT_CODES.videoTooLarge);
   assert.equal(mediaPublishingPreflightIssue(video({ width: 1 })).code, MEDIA_PREFLIGHT_CODES.videoDimensionsMissing);
 });
@@ -41,7 +42,7 @@ test("mixed selections keep valid media and report every rejected item determini
   const result = mediaPublishingPreflightSelection([
     photo,
     video({ durationMs: 0 }),
-    video({ id: "mov", mimeType: "video/quicktime", fileName: "crowd.mov" }),
+    video({ id: "webm", mimeType: "video/webm", fileName: "crowd.webm" }),
   ]);
   assert.deepEqual(result.accepted, [photo]);
   assert.deepEqual(result.rejected.map((item) => item.code), [

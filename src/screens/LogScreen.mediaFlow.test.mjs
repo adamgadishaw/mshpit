@@ -27,7 +27,15 @@ test("apply rechecks the live capability and connects byte progress plus cancell
   assert.match(apply, /fraction: progress\.fraction/);
   assert.match(source, /uploadProgress=\{uploadProgress\}/);
   assert.match(source, /uploadControllerRef\.current\?\.abort\(\)/);
-  assert.match(apply, /onRemoteDraft: \(\{ assetId \}\) =>/);
+  assert.match(apply, /onRemoteDraft: \(\{ assetId, sourceUploaded \}\) =>/);
+  assert.match(apply, /if \(sourceUploaded !== true\) return/);
+  assert.match(apply, /normalizeMediaProjectAsset\(\{ \.\.\.candidate, assetId \}, candidateIndex\)/,
+    "the recoverable Studio draft retains the remote asset id so retries skip the source PUT");
+  const retirement = source.slice(source.indexOf("async function retireRemoteDrafts"), source.indexOf("const refreshMediaPublishingCapabilities"));
+  assert.match(retirement, /remoteDraftAssetIdsRef\.current\.get\(localId\) === assetId/,
+    "a late retirement response cannot clear a newer retry mapping");
+  assert.match(retirement, /normalizeMediaProjectAsset\(\{ \.\.\.asset, assetId: null \}, index\)/,
+    "explicitly retired remote identities are cleared from the local retry draft");
   assert.match(source, /await retireRemoteDrafts\(\)/);
   assert.match(source, /void retireRemoteDrafts\(\[id\]\)/);
   assert.match(source, /accessibilityRole="progressbar"/);
@@ -36,6 +44,16 @@ test("apply rechecks the live capability and connects byte progress plus cancell
   assert.match(studioSource, /accessibilityRole="progressbar"/);
   assert.match(studioSource, /mediaUploadProgressCopy\(uploadProgress\)/);
   assert.match(studioSource, /onPress=\{saving \? cancelProcessing : applyEdits\}/);
+});
+
+test("Studio treats local video covers as optional previews and leaves durable poster generation to the verifier", () => {
+  const blocked = studioSource.slice(studioSource.indexOf("const applyBlocked"), studioSource.indexOf("const anyDirty"));
+  assert.doesNotMatch(blocked, /autoCoversReady|needsCoverRenderer|mediaEditVideoCapabilities/);
+  const apply = studioSource.slice(studioSource.indexOf("async function applyEdits"), studioSource.indexOf("async function cancelProcessing"));
+  assert.doesNotMatch(apply, /await generateVideoCover/);
+  assert.match(apply, /const cover = cached\?\.key === autoCoverCacheKey\(asset\) \? cached\.cover : null/);
+  assert.match(apply, /attachMediaEditArtifacts\(asset, \{ posterAsset: cover \}\)/);
+  assert.match(studioSource, /coverAvailable\s+resolvedCoverTimeMs=/);
 });
 
 test("picker refreshes and honors both media capabilities from the exact server contract", () => {
@@ -51,9 +69,18 @@ test("picker refreshes and honors both media capabilities from the exact server 
   assert.match(source, /accessibilityLabel="Check media upload availability again"/);
   assert.doesNotMatch(source, /Photo Studio is available now/);
   const picker = source.slice(source.indexOf("const addPhoto"), source.indexOf("const cancelUpload"));
-  assert.match(picker, /if \(Platform\.OS === "web"\) \{\s*\/\/[^]*if \(!mediaPublishingCapabilitiesReady\) \{\s*pickerCapabilities = \{ photos: true, videos: true \};\s*\}\s*void refreshMediaPublishingCapabilities\(\{ background: true \}\)/);
+  assert.match(picker, /if \(Platform\.OS === "web"\) \{\s*\/\/[^]*if \(!mediaPublishingCapabilitiesConfirmed\) \{\s*pickerCapabilities = \{ photos: true, videos: true \};\s*\}\s*void refreshMediaPublishingCapabilities\(\{ background: true \}\)/);
   assert.match(picker, /const refreshedCapabilities = await refreshMediaPublishingCapabilities\(\{ background: true \}\)/);
+  assert.match(picker, /else if \(!mediaPublishingCapabilitiesConfirmed\) pickerCapabilities = \{ photos: true, videos: true \}/);
   assert.match(picker, /const latestCapabilities = await refreshMediaPublishingCapabilities\(\{ background: true \}\)/);
+});
+
+test("a transient first health failure does not permanently hide video selection", () => {
+  assert.match(source, /const \[mediaPublishingCapabilitiesConfirmed, setMediaPublishingCapabilitiesConfirmed\] = useState\(false\)/);
+  const start = source.indexOf("const refreshMediaPublishingCapabilities");
+  const refresh = source.slice(start, source.indexOf("useEffect(() => {", start));
+  assert.match(refresh, /setMediaPublishingCapabilitiesConfirmed\(true\)/);
+  assert.doesNotMatch(refresh.slice(refresh.indexOf("} catch")), /setMediaPublishingCapabilitiesConfirmed\(true\)/);
 });
 
 test("verified clips never reopen into the unsupported client cover replacement path", () => {

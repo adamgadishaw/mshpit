@@ -15,13 +15,13 @@ import {
 import { AUDIENCES, audienceSize, campaignProgress, drainCampaign, pauseCampaign, startCampaign } from "./emailQueue.js";
 import { db, DATABASE_PATH, q, emailStmts, badgeStmts, customBadgesFor, publicUser as storedPublicUser, parseJsonArray, parseJsonObject, artistStmts, publicArtist, artistRow, artistSearchKey, normName, pruneMissingArtists } from "./db.js";
 import { BADGE_COLORS, BADGE_GLYPHS, BADGE_KINDS, validateBadge } from "../src/domain/badgeArt.mjs";
-import { alertCooldownMs, alertsEnabled, errorStats, maybeAlert, recentErrors } from "./errorLog.js";
+import { alertCooldownMs, alertsEnabled, errorStats, maybeAlert, recentErrors, recordError } from "./errorLog.js";
 import { genreClaim, providerGenreFields, resolveGenre, storedClaims, upsertClaim, withoutSource } from "../src/domain/genre.mjs";
 import { hashPassword, verifyPassword, verifyPasswordForUser, createSession, destroySession, rateLimit, reserveRateLimits } from "./auth.js";
 import { createRecoveryResponseFloor } from "./authResponseFloor.js";
 import { startCatalogSeed, catalogSeedStatus, stopCatalogSeed, deezerEnrich } from "./catalogSeed.js";
 import { clean, cleanEmail, isEmail, cleanName, isName, cleanHandle, isPassword, clampRating, cleanStringArray, cleanDate, shape, LIMITS } from "./validate.js";
-import { ApiError } from "./errors.js";
+import { ApiError, privateErrorLabel } from "./errors.js";
 import {
   mediaConfigured,
   privateMediaIsolationStatus,
@@ -108,6 +108,11 @@ import {
 } from "../src/domain/mediaPublishingCapabilities.mjs";
 import { verifyVideoObject, videoVerifierRuntimeStatus } from "./videoVerifier.js";
 import { VIDEO_VERIFIER_PIPELINE_VERSION } from "./videoVerifierProtocol.js";
+import {
+  startVideoFinalizeJob,
+  videoFinalizeState,
+  waitForVideoFinalizeCompletion,
+} from "./videoFinalizeJobs.js";
 import { discoverChart, discoverCountries, discoverGenres, discoverOverview } from "./discoverService.js";
 import {
   applyModerationAction,
@@ -145,12 +150,13 @@ const YOUTUBE_COLD_SEARCH_ACTOR_BUDGET_VERSION = 2;
 const YOUTUBE_COLD_SEARCH_USER_DAILY_LIMIT = 20;
 const YOUTUBE_COLD_SEARCH_IP_DAILY_LIMIT = 40;
 const DAY_MS = 24 * 60 * 60 * 1000;
-const VIDEO_UPLOAD_USER_DAILY_LIMIT = 10;
-const VIDEO_UPLOAD_IP_DAILY_LIMIT = 20;
-const VIDEO_UPLOAD_GLOBAL_DAILY_LIMIT = 200;
-const VIDEO_VERIFY_USER_HOURLY_LIMIT = 12;
-const VIDEO_VERIFY_IP_HOURLY_LIMIT = 24;
-const VIDEO_VERIFY_GLOBAL_HOURLY_LIMIT = 60;
+// These sit far above the one-slot worker's physical hourly throughput. They
+// are incident breakers, not a creator allowance, so an eight-clip post cannot
+// make a second post fail halfway through.
+const VIDEO_VERIFY_USER_HOURLY_LIMIT = 240;
+const VIDEO_VERIFY_IP_HOURLY_LIMIT = 480;
+const VIDEO_VERIFY_GLOBAL_HOURLY_LIMIT = 2_000;
+const VIDEO_CACHED_FINALIZE_WAIT_MS = 18_000;
 const runtimeReadinessSuccessCache = createSuccessfulReadinessCache();
 const YOUTUBE_PLAYBACK_FAILURE_TTL_MS = 30 * DAY_MS;
 const VENUE_PHOTO_LIMIT = 24;
@@ -1828,12 +1834,78 @@ function runtimeMediaPublishingCapabilities() {
     && privateStorageReady
     && verifier.ready;
   return videos
-    ? { photos, videos: true, pipeline: verifier.pipeline }
+    ? {
+        photos,
+        videos: true,
+        pipeline: verifier.pipeline,
+        sourceTypes: verifier.sourceTypes,
+        sourceCodecs: verifier.sourceCodecs,
+      }
     : { photos, videos: false };
 }
 
 function videoRequestBody(body) {
-  return String(body?.contentType || "").split(";", 1)[0].trim().toLowerCase() === "video/mp4";
+  return String(body?.contentType || "").split(";", 1)[0].trim().toLowerCase().startsWith("video/");
+}
+
+function normalizedRequestedMediaType(body) {
+  return String(body?.contentType || "").split(";", 1)[0].trim().toLowerCase();
+}
+
+function runtimeAcceptsVideoSourceType(capabilities, contentType) {
+  return capabilities?.videos === true
+    && Array.isArray(capabilities.sourceTypes)
+    && capabilities.sourceTypes.includes(String(contentType || "").toLowerCase());
+}
+
+function canonicalFinalizeTransportValue(value, depth = 0) {
+  if (depth > 16) throw new ApiError(400, "Media verification details are invalid.", "VALIDATION_FAILED");
+  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (Array.isArray(value)) return value.map((entry) => canonicalFinalizeTransportValue(entry, depth + 1));
+  if (!value || typeof value !== "object" || ![Object.prototype, null].includes(Object.getPrototypeOf(value))) {
+    throw new ApiError(400, "Media verification details are invalid.", "VALIDATION_FAILED");
+  }
+  const output = Object.create(null);
+  for (const key of Object.keys(value).sort()) {
+    if (value[key] === undefined) continue;
+    output[key] = canonicalFinalizeTransportValue(value[key], depth + 1);
+  }
+  return output;
+}
+
+function videoFinalizeOperationFingerprint(body) {
+  let encoded;
+  try { encoded = JSON.stringify(canonicalFinalizeTransportValue(body)); }
+  catch (error) {
+    if (error instanceof ApiError) throw error;
+    throw new ApiError(400, "Media verification details are invalid.", "VALIDATION_FAILED");
+  }
+  if (Buffer.byteLength(encoded || "", "utf8") > 64 * 1024) {
+    throw new ApiError(400, "Media verification details are too large.", "VALIDATION_FAILED");
+  }
+  return createHash("sha256").update(encoded || "null").digest("hex");
+}
+
+function observeBackgroundVideoFinalizeFailure(error) {
+  const status = error instanceof ApiError ? error.status : 500;
+  if (status < 500) return;
+  const code = error instanceof ApiError ? error.code : "INTERNAL_ERROR";
+  const cause = privateErrorLabel(error);
+  console.error(`[media] background clip finalize failed safely: status=${status} code=${code} cause=${cause}`);
+  recordError({
+    level: "error",
+    code,
+    status,
+    method: "POST",
+    route: "/api/media/assets/:id/finalize",
+    cause,
+  });
+  setTimeout(() => {
+    maybeAlert().catch((alertError) => {
+      console.error(`[media] background clip alert failed safely: cause=${privateErrorLabel(alertError)}`);
+    });
+  }, 0).unref?.();
 }
 
 function requireVideoPublishingActor(user) {
@@ -1842,23 +1914,31 @@ function requireVideoPublishingActor(user) {
 }
 
 export function reserveVideoPublishingDemand(ctx, user, phase) {
+  // Source creation is count-unmetered. Durable outstanding-object/byte and
+  // rolling byte/ticket breakers in mediaDeletion remain the service safety
+  // boundary without turning carrier NATs or the whole site into a daily plan.
+  if (phase === "upload") return null;
+  if (phase !== "verify") {
+    throw new ApiError(500, "Clip publishing admission is invalid.", "INTERNAL_ERROR");
+  }
   const ipHash = createHash("sha256").update(String(ctx.ip || "unknown")).digest("hex").slice(0, 24);
-  const upload = phase === "upload";
-  const windowMs = upload ? DAY_MS : 60 * 60 * 1000;
+  const windowMs = 60 * 60 * 1000;
   const reservation = reserveRateLimits([
+    // Keep count-based fairness only on the scarce decoder slot, where one
+    // actor or network could otherwise starve everyone.
     {
       key: `video-${phase}-user:${user.id}`,
-      max: upload ? VIDEO_UPLOAD_USER_DAILY_LIMIT : VIDEO_VERIFY_USER_HOURLY_LIMIT,
+      max: VIDEO_VERIFY_USER_HOURLY_LIMIT,
       windowMs,
     },
     {
       key: `video-${phase}-ip:${ipHash}`,
-      max: upload ? VIDEO_UPLOAD_IP_DAILY_LIMIT : VIDEO_VERIFY_IP_HOURLY_LIMIT,
+      max: VIDEO_VERIFY_IP_HOURLY_LIMIT,
       windowMs,
     },
     {
       key: `video-${phase}-global`,
-      max: upload ? VIDEO_UPLOAD_GLOBAL_DAILY_LIMIT : VIDEO_VERIFY_GLOBAL_HOURLY_LIMIT,
+      max: VIDEO_VERIFY_GLOBAL_HOURLY_LIMIT,
       windowMs,
     },
   ]);
@@ -2077,8 +2157,8 @@ async function searchYouTubeTrack(ctx, input) {
 
 // route table: "METHOD /path" -> handler(ctx) ; :params exposed as ctx.params
 export const routes = {
-  ...mediaAssetRoutes({ database: db, requireUser, limit, now }),
-  ...mediaLegacyFinalizeRoutes({ database: db, requireUser, limit, now }),
+  ...mediaAssetRoutes({ database: db, requireUser, now }),
+  ...mediaLegacyFinalizeRoutes({ database: db, requireUser, now }),
   ...artistArchiveRoutes({
     database: db,
     ApiError,
@@ -2161,9 +2241,13 @@ export const routes = {
   // location; a caller can never register an arbitrary public URL as PIT media.
   "POST /api/media/assets": (ctx) => {
     const u = requireUser(ctx);
-    limit(ctx, "media-asset-create", 30, 10 * 60 * 1000);
+    // Stable asset creation has no per-member count bucket. Outstanding object
+    // accounting and service-wide circuit breakers bound abandoned/corrupt
+    // work, while video additionally has IP/global incident admission below.
     const video = videoRequestBody(ctx.body);
-    if (video && !runtimeMediaPublishingCapabilities().videos) {
+    const requestedType = normalizedRequestedMediaType(ctx.body);
+    const mediaCapabilities = video ? runtimeMediaPublishingCapabilities() : null;
+    if (video && !runtimeAcceptsVideoSourceType(mediaCapabilities, requestedType)) {
       // Enforce the runtime capability before createMediaAsset can reserve a
       // ledger row or sign an R2 PUT. Stale/direct clients therefore receive
       // the same fail-closed production boundary as the composer.
@@ -2173,20 +2257,28 @@ export const routes = {
         "MEDIA_TYPE_UNSUPPORTED",
       );
     }
-    let reservation = null;
     if (video) {
       requireVideoPublishingActor(u);
-      reservation = reserveVideoPublishingDemand(ctx, u, "upload");
     }
-    try {
-      const result = createMediaAsset(db, { ownerId: u.id, body: ctx.body, at: now() });
-      if (result?.duplicate) reservation?.rollback();
-      else reservation?.commit();
-      return result;
-    } catch (error) {
-      reservation?.rollback();
-      throw error;
-    }
+    const retryToken = typeof ctx.body?.clientAssetId === "string" ? ctx.body.clientAssetId : "";
+    const existing = video && retryToken
+      ? db.prepare("SELECT id,status FROM media_assets WHERE owner_id=? AND client_asset_id=?").get(u.id, retryToken)
+      : null;
+    const suppressDuplicateUpload = existing?.status === "upload_pending"
+      && videoFinalizeState({
+        ownerId: u.id,
+        assetId: existing.id,
+        at: now(),
+      }).state === "processing";
+    // createMediaAsset still validates the complete retry identity/hash. The
+    // flag only prevents a second signed writer from being minted for the same
+    // validated row while its detached verifier job is reading it.
+    return createMediaAsset(db, {
+      ownerId: u.id,
+      body: ctx.body,
+      at: now(),
+      suppressDuplicateUpload,
+    });
   },
 
   // A signed HEAD confirms ticket MIME/length. Readiness-gated private-derivative-v1
@@ -2196,50 +2288,139 @@ export const routes = {
   // remain client-declared until an authoritative image probe exists.
   "POST /api/media/assets/:id/finalize": async (ctx) => {
     const u = requireUser(ctx);
-    limit(ctx, "media-asset-finalize", 60, 10 * 60 * 1000);
-    const owned = db.prepare("SELECT kind FROM media_assets WHERE id=? AND owner_id=?").get(ctx.params.id, u.id);
+    const owned = db.prepare("SELECT kind,mime_type FROM media_assets WHERE id=? AND owner_id=?").get(ctx.params.id, u.id);
+    if (!owned) throw new ApiError(404, "That media item was not found.", "NOT_FOUND");
     const video = owned?.kind === "video";
+    const capabilities = video ? runtimeMediaPublishingCapabilities() : null;
     if (video) {
       requireVideoPublishingActor(u);
-      if (!runtimeMediaPublishingCapabilities().videos) {
+      if (!runtimeAcceptsVideoSourceType(capabilities, owned.mime_type)) {
         throw new ApiError(503, "Clip verification is temporarily unavailable. Try again later.", "MEDIA_STORAGE_UNAVAILABLE");
       }
     }
-    try {
-      return await finalizeMediaAsset(db, {
+
+    // `async` is a transport hint, never authored media metadata. Every video
+    // uses the background coordinator, including cached clients that omit the
+    // hint, so no public request waits on the proxy's hard timeout. Those old
+    // clients receive a resumable pending asset instead of losing its bytes.
+    const asyncRequested = ctx.body?.async === true;
+    const finalizeBody = ctx.body && typeof ctx.body === "object" && !Array.isArray(ctx.body)
+      ? { ...ctx.body }
+      : ctx.body;
+    if (finalizeBody && typeof finalizeBody === "object") delete finalizeBody.async;
+
+    if (video) {
+      const initialAsset = ownedMediaAsset(db, {
         ownerId: u.id,
         assetId: ctx.params.id,
-        body: ctx.body,
+        renew: true,
         at: now(),
-        authoritativeVideoVerifier: video ? verifyVideoObject : null,
-        authoritativePosterRequired: video,
-        beforeAuthoritativeVerify: video
-          ? () => reserveVideoPublishingDemand(ctx, u, "verify")
-          : undefined,
-        signal: ctx.signal,
       });
-    } catch (error) {
-      if (video && isTerminalMediaSourceFailure(error)) {
-        // An immutable source that failed the terminal private-derivative-v1 compatibility
-        // gate cannot succeed on retry. Retire it now; transient 409/429/5xx
-        // outcomes deliberately keep the resumable draft and its source bytes.
-        cancelMediaAsset(db, { ownerId: u.id, assetId: ctx.params.id, at: now() });
+      if (initialAsset.status === "ready") {
+        // Preserve the immutable-finalize conflict contract on a lost-response
+        // retry. A healthy ready row returns before storage I/O; a corrupt row
+        // fails quickly instead of dragging this compatibility check back over
+        // the public proxy deadline.
+        const result = await finalizeMediaAsset(db, {
+          ownerId: u.id,
+          assetId: ctx.params.id,
+          body: finalizeBody,
+          at: now(),
+          authoritativeVideoVerifier: verifyVideoObject,
+          authoritativePosterRequired: true,
+          fetchImpl: async () => {
+            throw new ApiError(503, "Clip verification is temporarily unavailable. Try again later.", "MEDIA_STORAGE_UNAVAILABLE");
+          },
+        });
+        return { ...result, finalize: { state: "completed" } };
       }
-      throw error;
+      const ownerId = u.id;
+      const assetId = ctx.params.id;
+      const requestIp = String(ctx.ip || "unknown");
+      const operationFingerprint = videoFinalizeOperationFingerprint(finalizeBody);
+      const started = startVideoFinalizeJob({
+        ownerId,
+        assetId,
+        fingerprint: operationFingerprint,
+        at: now(),
+        run: async () => {
+          try {
+            return await finalizeMediaAsset(db, {
+              ownerId,
+              assetId,
+              body: finalizeBody,
+              at: now(),
+              authoritativeVideoVerifier: verifyVideoObject,
+              authoritativePosterRequired: true,
+              beforeAuthoritativeVerify: () => reserveVideoPublishingDemand(
+                { ip: requestIp },
+                { id: ownerId },
+                "verify",
+              ),
+              // Deliberately no caller signal: a browser disconnect or proxy
+              // timeout must not cancel the shared process-local job.
+            });
+          } catch (error) {
+            observeBackgroundVideoFinalizeFailure(error);
+            if (isTerminalMediaSourceFailure(error)) {
+              cancelMediaAsset(db, { ownerId, assetId, at: now() });
+            }
+            throw error;
+          }
+        },
+      });
+      if (!asyncRequested) {
+        const compatibility = await waitForVideoFinalizeCompletion(started.completion, {
+          // Tests use a tiny deterministic budget; production keeps a large
+          // margin beneath both the browser and outer-proxy request limits.
+          timeoutMs: process.env.NODE_ENV === "test" ? 10 : VIDEO_CACHED_FINALIZE_WAIT_MS,
+          signal: ctx.signal,
+        });
+        if (compatibility.settled) {
+          return { ...compatibility.value, finalize: { state: "completed" } };
+        }
+        // Cached bundles do not understand a successful `processing` body: they
+        // would immediately PATCH recipe/poster metadata as though verification
+        // had completed. A retryable response stops that old flow at finalize,
+        // while the detached coordinator keeps the already-uploaded bytes and
+        // finishes normally for the next retry.
+        throw new ApiError(
+          429,
+          "PIT is still processing this clip. Your upload is saved—try again to resume it.",
+          "RATE_LIMITED",
+        );
+      }
+      return { asset: initialAsset, finalize: started.finalize };
     }
+
+    const result = await finalizeMediaAsset(db, {
+      ownerId: u.id,
+      assetId: ctx.params.id,
+      body: finalizeBody,
+      at: now(),
+      signal: ctx.signal,
+    });
+    return { ...result, finalize: { state: result.asset?.status === "ready" ? "completed" : "idle" } };
   },
 
   "GET /api/media/assets/:id": (ctx) => {
     const u = requireUser(ctx);
-    limit(ctx, "media-asset-read", 240, 10 * 60 * 1000);
-    const asset = ownedMediaAsset(db, { ownerId: u.id, assetId: ctx.params.id, renew: true, at: now() });
-    if (!asset) throw new ApiError(404, "That media item was not found.", "NOT_FOUND");
-    return { asset };
+    const knownFinalize = videoFinalizeState({ ownerId: u.id, assetId: ctx.params.id, at: now() });
+    const asset = ownedMediaAsset(db, {
+      ownerId: u.id,
+      assetId: ctx.params.id,
+      // A live background job already owns the draft and its source lease.
+      // Avoid turning a two-second poll into a stream of SQLite writes.
+      renew: knownFinalize.state !== "processing",
+      at: now(),
+    });
+    const finalize = videoFinalizeState({ ownerId: u.id, assetId: ctx.params.id, asset, at: now() });
+    if (!asset && finalize.state === "idle") throw new ApiError(404, "That media item was not found.", "NOT_FOUND");
+    return { asset, finalize };
   },
 
   "PATCH /api/media/assets/:id": (ctx) => {
     const u = requireUser(ctx);
-    limit(ctx, "media-asset-update", 60, 10 * 60 * 1000);
     return updateMediaAsset(db, {
       ownerId: u.id,
       assetId: ctx.params.id,
@@ -2250,7 +2431,6 @@ export const routes = {
 
   "POST /api/media/assets/:id/variants": (ctx) => {
     const u = requireUser(ctx);
-    limit(ctx, "media-variant-create", 30, 10 * 60 * 1000);
     return createMediaVariant(db, {
       ownerId: u.id,
       assetId: ctx.params.id,
@@ -2261,7 +2441,6 @@ export const routes = {
 
   "POST /api/media/assets/:id/variants/:variantId/finalize": async (ctx) => {
     const u = requireUser(ctx);
-    limit(ctx, "media-variant-finalize", 60, 10 * 60 * 1000);
     return finalizeMediaVariant(db, {
       ownerId: u.id,
       assetId: ctx.params.id,

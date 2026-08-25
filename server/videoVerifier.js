@@ -5,13 +5,19 @@ import { createMediaDownloadCapability, privateVideoMediaConfigured } from "./me
 import {
   VIDEO_VERIFIER_PIPELINE_VERSION,
   VIDEO_VERIFIER_PROTOCOL_VERSION,
+  VIDEO_VERIFIER_SOURCE_CODECS,
+  VIDEO_VERIFIER_SOURCE_CONTENT_TYPES,
   signVideoVerifierRequest,
+  videoVerifierSourceExtension,
   verifyVideoVerifierResponse,
 } from "./videoVerifierProtocol.js";
 
 export const VIDEO_VERIFIER_HEALTH_FRESH_MS = 90_000;
 export const VIDEO_VERIFIER_HEALTH_INTERVAL_MS = 30_000;
-export const VIDEO_VERIFIER_JOB_TIMEOUT_MS = 55_000;
+// Background finalization gives the isolated worker 110 seconds. Leave time
+// for signed response verification and database commit while still allowing a
+// full one-minute HEVC phone clip to normalize.
+export const VIDEO_VERIFIER_JOB_TIMEOUT_MS = 110_000;
 export const VIDEO_VERIFIER_MAX_RESPONSE_BYTES = 3 * 1024 * 1024;
 export const VIDEO_VERIFIER_MAX_POSTER_BYTES = 1_500_000;
 export const VIDEO_VERIFIER_POSTER_MAX_EDGE = 1_280;
@@ -19,7 +25,9 @@ export const VIDEO_VERIFIER_POSTER_MAX_EDGE = 1_280;
 const PRIVATE_HOSTPORT = /^(?![0-9.]+:)(?!localhost:)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?:([1-9][0-9]{1,4})$/;
 const FORBIDDEN_RENDER_PORTS = new Set([10_000, 18_012, 18_013, 19_099]);
 const STRONG_ETAG = /^"[\x21\x23-\x7e]{1,200}"$/u;
-const OBJECT_KEY = /^users\/[A-Za-z0-9_-]{1,128}\/post\/[A-Za-z0-9_-]{1,240}\.mp4$/;
+const SOURCE_OBJECT_KEY = /^users\/[A-Za-z0-9_-]{1,128}\/post\/[A-Za-z0-9_-]{1,240}\.(?:mp4|mov)$/;
+const OUTPUT_OBJECT_KEY = /^users\/[A-Za-z0-9_-]{1,128}\/post\/[A-Za-z0-9_-]{1,240}\.mp4$/;
+const SOURCE_CONTENT_TYPES = new Set(VIDEO_VERIFIER_SOURCE_CONTENT_TYPES);
 const SHA256 = /^[a-f0-9]{64}$/;
 const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
@@ -33,6 +41,8 @@ const runtime = {
   lastSuccessAt: 0,
   lastErrorCode: null,
   ffmpegVersion: null,
+  sourceTypes: [],
+  sourceCodecs: {},
 };
 
 function cleanHostport(value) {
@@ -125,7 +135,47 @@ function verifierUnavailable(error, message = "Clip decoding is temporarily unav
   return new ApiError(503, message, "MEDIA_STORAGE_UNAVAILABLE", error);
 }
 
-function noteHealthy(config, payload, at) {
+function healthSourceCapabilities(payload) {
+  const declaredTypes = Array.isArray(payload?.sourceTypes);
+  const sourceTypes = declaredTypes ? payload.sourceTypes : ["video/mp4"];
+  if (sourceTypes.length < 1 || sourceTypes.length > VIDEO_VERIFIER_SOURCE_CONTENT_TYPES.length
+      || sourceTypes.some((type, index) => type !== VIDEO_VERIFIER_SOURCE_CONTENT_TYPES[index])) {
+    return null;
+  }
+
+  let sourceCodecs;
+  if (payload?.sourceCodecs !== undefined) {
+    if (!declaredTypes) return null;
+    if (!payload.sourceCodecs || typeof payload.sourceCodecs !== "object"
+        || Array.isArray(payload.sourceCodecs)
+        || Object.keys(payload.sourceCodecs).length !== sourceTypes.length
+        || Object.keys(payload.sourceCodecs).some((type) => !sourceTypes.includes(type))) {
+      return null;
+    }
+    sourceCodecs = {};
+    for (const type of sourceTypes) {
+      const codecs = payload.sourceCodecs[type];
+      const allowed = VIDEO_VERIFIER_SOURCE_CODECS[type];
+      if (!Array.isArray(codecs) || codecs.length < 1 || codecs.length > allowed.length
+          || codecs.some((codec, index) => codec !== allowed[index])) {
+        return null;
+      }
+      sourceCodecs[type] = [...codecs];
+    }
+  } else if (declaredTypes) {
+    // MIME names cannot prove decoder capability. A worker generation that
+    // advertises types without an explicit codec matrix is incompatible rather
+    // than being silently promoted to HEVC support.
+    return null;
+  } else {
+    // Workers predating sourceTypes were MP4/H.264-only. Never infer HEVC from
+    // the MIME alone: doing so can turn a rolling deploy into terminal deletion.
+    sourceCodecs = { "video/mp4": ["h264"] };
+  }
+  return { sourceTypes: [...sourceTypes], sourceCodecs };
+}
+
+function noteHealthy(config, payload, at, { capabilities = null } = {}) {
   runtime.fingerprint = config.fingerprint;
   runtime.lastAttemptAt = at;
   runtime.lastSuccessAt = at;
@@ -133,6 +183,13 @@ function noteHealthy(config, payload, at) {
   runtime.ffmpegVersion = typeof payload?.decoder?.version === "string"
     ? payload.decoder.version.slice(0, 80)
     : runtime.ffmpegVersion;
+  if (capabilities) {
+    runtime.sourceTypes = [...capabilities.sourceTypes];
+    runtime.sourceCodecs = Object.fromEntries(capabilities.sourceTypes.map((type) => [
+      type,
+      [...capabilities.sourceCodecs[type]],
+    ]));
+  }
 }
 
 function noteFailure(config, error, at) {
@@ -194,7 +251,9 @@ async function verifierRequest({ path, payload, env, fetchImpl, signal, timeoutM
 }
 
 function exactHealth(payload) {
-  return payload?.protocol === VIDEO_VERIFIER_PROTOCOL_VERSION
+  const capabilities = healthSourceCapabilities(payload);
+  return !!capabilities
+    && payload?.protocol === VIDEO_VERIFIER_PROTOCOL_VERSION
     && payload?.pipeline === VIDEO_VERIFIER_PIPELINE_VERSION
     && payload?.decoder?.ffmpeg === true
     && payload?.decoder?.ffprobe === true
@@ -222,6 +281,10 @@ export function videoVerifierRuntimeStatus(env = process.env, at = Date.now()) {
     ageMs,
     lastErrorCode: sameRuntime ? runtime.lastErrorCode : null,
     ffmpegVersion: sameRuntime ? runtime.ffmpegVersion : null,
+    sourceTypes: sameRuntime && runtime.lastSuccessAt ? [...runtime.sourceTypes] : [],
+    sourceCodecs: sameRuntime && runtime.lastSuccessAt
+      ? Object.fromEntries(runtime.sourceTypes.map((type) => [type, [...(runtime.sourceCodecs[type] || [])]]))
+      : {},
   };
 }
 
@@ -250,7 +313,9 @@ export async function refreshVideoVerifierHealth({
     if (!exactHealth(result.decoded)) {
       throw new ApiError(503, "Clip verifier health contract is incompatible.", "MEDIA_STORAGE_UNAVAILABLE");
     }
-    noteHealthy(result.config, result.decoded, at);
+    noteHealthy(result.config, result.decoded, at, {
+      capabilities: healthSourceCapabilities(result.decoded),
+    });
   } catch (error) {
     if (error instanceof ApiError && error.status === 429) {
       return videoVerifierRuntimeStatus(env, at);
@@ -283,15 +348,32 @@ function verifiedPoster(value, requestedTimeMs) {
   return { contentType: "image/jpeg", bytes, byteSize, width, height, timeMs, sha256: hash };
 }
 
-function verifiedDecode(payload, { objectKey, expectedBytes, ifMatch, structural, posterTimeMs, outputKey }) {
+function verifiedDecode(payload, {
+  objectKey,
+  expectedBytes,
+  contentType,
+  ifMatch,
+  structural,
+  posterTimeMs,
+  outputKey,
+}) {
   const video = payload?.video;
   const delivery = payload?.delivery;
+  const expectedSourceCodec = structural?.sourceCodec || "h264";
+  // private-derivative-v1 workers deployed before MOV support did not echo a
+  // source content type. They could only process MP4, and the signed response
+  // still binds the exact key, byte size, and ETag, so accept that one
+  // historical omission during a rolling deploy. MOV must always echo its
+  // explicit type because there is no compatible legacy worker for it.
+  const responseContentTypeMatches = payload?.object?.contentType === contentType
+    || (contentType === "video/mp4" && payload?.object?.contentType === undefined);
   if (payload?.protocol !== VIDEO_VERIFIER_PROTOCOL_VERSION
       || payload?.pipeline !== VIDEO_VERIFIER_PIPELINE_VERSION
       || payload?.object?.key !== objectKey
       || payload?.object?.etag !== ifMatch
       || Number(payload?.object?.byteSize) !== expectedBytes
-      || video?.codec !== "h264"
+      || !responseContentTypeMatches
+      || video?.codec !== expectedSourceCodec
       || !new Set(["aac", "none"]).has(video?.audioCodec)
       || ![0, 90, 180, 270].includes(Number(video?.rotation))
       || !Number.isSafeInteger(Number(video?.width))
@@ -303,10 +385,14 @@ function verifiedDecode(payload, { objectKey, expectedBytes, ifMatch, structural
   }
   if (Number(video.width) !== Number(structural.width)
       || Number(video.height) !== Number(structural.height)
-      || Number(video.codedWidth) !== Number(structural.codedWidth)
-      || Number(video.codedHeight) !== Number(structural.codedHeight)
+      || (contentType === "video/mp4" && expectedSourceCodec === "h264"
+        && Number(video.codedWidth) !== Number(structural.codedWidth))
+      || (contentType === "video/mp4" && expectedSourceCodec === "h264"
+        && Number(video.codedHeight) !== Number(structural.codedHeight))
+      || Number(video.codedWidth) < Number(video.width) || Number(video.codedWidth) > 4_096
+      || Number(video.codedHeight) < Number(video.height) || Number(video.codedHeight) > 4_096
       || Math.abs(Number(video.durationMs) - Number(structural.durationMs)) > 1_500) {
-    throw new ApiError(409, "The decoded clip does not match its MP4 metadata.", "CONFLICT");
+    throw new ApiError(409, "The decoded clip does not match its container metadata.", "CONFLICT");
   }
   if (delivery?.key !== outputKey || delivery?.contentType !== "video/mp4"
       || delivery?.codec !== "h264" || !new Set(["aac", "none"]).has(delivery?.audioCodec)
@@ -359,6 +445,7 @@ function waitWithCallerSignal(promise, signal) {
 async function performVerification({
   objectKey,
   expectedBytes,
+  contentType,
   ifMatch,
   structural,
   posterTimeMs,
@@ -375,7 +462,7 @@ async function performVerification({
       object: {
         key: objectKey,
         byteSize: expectedBytes,
-        contentType: "video/mp4",
+        contentType,
         etag: ifMatch,
         downloadUrl: capability.downloadUrl,
         downloadHeaders: capability.requiredHeaders,
@@ -387,6 +474,12 @@ async function performVerification({
         codedHeight: Number(structural.codedHeight),
         sampleCount: Number(structural.sampleCount),
         durationMs: Number(structural.durationMs),
+        ...(structural.sourceContainer !== undefined
+          ? { sourceContainer: structural.sourceContainer }
+          : {}),
+        ...(structural.sourceCodec !== undefined
+          ? { sourceCodec: structural.sourceCodec }
+          : {}),
       },
       poster: {
         timeMs: posterTimeMs,
@@ -408,7 +501,7 @@ async function performVerification({
     maxResponseBytes: VIDEO_VERIFIER_MAX_RESPONSE_BYTES,
   });
   const decoded = verifiedDecode(result.decoded, {
-    objectKey, expectedBytes, ifMatch, structural, posterTimeMs, outputKey: output.key,
+    objectKey, expectedBytes, contentType, ifMatch, structural, posterTimeMs, outputKey: output.key,
   });
   noteHealthy(result.config, result.decoded, Date.now());
   return decoded;
@@ -417,6 +510,7 @@ async function performVerification({
 export async function verifyVideoObject({
   objectKey,
   expectedBytes,
+  contentType = "video/mp4",
   ifMatch,
   structural,
   posterTimeMs,
@@ -427,17 +521,27 @@ export async function verifyVideoObject({
   output,
 } = {}) {
   if (signal?.aborted) throw signal.reason || new DOMException("Aborted", "AbortError");
-  if (!OBJECT_KEY.test(String(objectKey || ""))
+  const normalizedContentType = String(contentType || "").split(";", 1)[0].trim().toLowerCase();
+  const sourceExtension = videoVerifierSourceExtension(normalizedContentType);
+  const sourceKeyValid = SOURCE_OBJECT_KEY.test(String(objectKey || ""))
+    && !!sourceExtension && String(objectKey).endsWith(`.${sourceExtension}`);
+  const quickTimeStructural = normalizedContentType !== "video/quicktime"
+    || (structural?.sourceContainer === "quicktime" && new Set(["h264", "hevc"]).has(structural?.sourceCodec));
+  const mp4Structural = normalizedContentType !== "video/mp4"
+    || (structural?.sourceContainer === undefined
+      && (structural?.sourceCodec === undefined || structural?.sourceCodec === "hevc"));
+  if (!sourceKeyValid || !SOURCE_CONTENT_TYPES.has(normalizedContentType)
       || !Number.isSafeInteger(Number(expectedBytes)) || Number(expectedBytes) < 1 || Number(expectedBytes) > 100 * 1024 * 1024
       || !STRONG_ETAG.test(String(ifMatch || ""))
       || !Number.isSafeInteger(Number(structural?.codedWidth)) || Number(structural.codedWidth) < Number(structural?.width)
       || !Number.isSafeInteger(Number(structural?.codedHeight)) || Number(structural.codedHeight) < Number(structural?.height)
       || !Number.isSafeInteger(Number(structural?.sampleCount)) || Number(structural.sampleCount) < 1
+      || !quickTimeStructural || !mp4Structural
       || !Number.isSafeInteger(Number(posterTimeMs)) || Number(posterTimeMs) < 0
       || Number(posterTimeMs) >= Number(structural?.durationMs)) {
     throw new ApiError(500, "Clip verification request is invalid.", "INTERNAL_ERROR");
   }
-  if (!output || !OBJECT_KEY.test(String(output.key || "")) || output.key === objectKey
+  if (!output || !OUTPUT_OBJECT_KEY.test(String(output.key || "")) || output.key === objectKey
       || typeof output.uploadUrl !== "string" || output.uploadUrl.length > 4_096
       || output.requiredHeaders?.["Content-Type"] !== "video/mp4"
       || output.requiredHeaders?.["If-None-Match"] !== "*") {
@@ -447,10 +551,25 @@ export async function verifyVideoObject({
     await waitWithCallerSignal(healthInFlight, signal);
   }
   if (signal?.aborted) throw signal.reason || new DOMException("Aborted", "AbortError");
+  const config = getVideoVerifierConfig(env);
+  const provenCapabilities = config.configured
+    && runtime.fingerprint === config.fingerprint
+    && runtime.lastSuccessAt > 0;
+  const sourceCodec = structural?.sourceCodec || "h264";
+  if (provenCapabilities
+      && (!runtime.sourceTypes.includes(normalizedContentType)
+        || !runtime.sourceCodecs[normalizedContentType]?.includes(sourceCodec))) {
+    throw new ApiError(
+      503,
+      "Clip verification is temporarily unavailable for that video format. Try again later.",
+      "MEDIA_STORAGE_UNAVAILABLE",
+    );
+  }
   const identity = createHash("sha256").update(JSON.stringify({
     pipeline: VIDEO_VERIFIER_PIPELINE_VERSION,
     objectKey,
     expectedBytes: Number(expectedBytes),
+    contentType: normalizedContentType,
     ifMatch,
     structural: {
       width: Number(structural?.width),
@@ -459,6 +578,8 @@ export async function verifyVideoObject({
       codedHeight: Number(structural?.codedHeight),
       sampleCount: Number(structural?.sampleCount),
       durationMs: Number(structural?.durationMs),
+      sourceContainer: structural?.sourceContainer || null,
+      sourceCodec: structural?.sourceCodec || null,
     },
     posterTimeMs: Number(posterTimeMs),
     outputKey: output.key,
@@ -498,6 +619,7 @@ export async function verifyVideoObject({
   const promise = performVerification({
     objectKey,
     expectedBytes: Number(expectedBytes),
+    contentType: normalizedContentType,
     ifMatch,
     structural,
     posterTimeMs: Number(posterTimeMs),
@@ -591,4 +713,6 @@ export function resetVideoVerifierStateForTests() {
   runtime.lastSuccessAt = 0;
   runtime.lastErrorCode = null;
   runtime.ffmpegVersion = null;
+  runtime.sourceTypes = [];
+  runtime.sourceCodecs = {};
 }

@@ -7,7 +7,7 @@ test("request deadlines use bounded read/write defaults", () => {
   assert.equal(resolveRequestTimeout("GET"), 20_000);
   assert.equal(resolveRequestTimeout("POST"), 30_000);
   assert.equal(resolveRequestTimeout("PATCH", 2500), 2500);
-  assert.equal(resolveRequestTimeout("GET", 999_999), 120_000);
+  assert.equal(resolveRequestTimeout("GET", 999_999), 240_000);
   assert.equal(resolveRequestTimeout("GET", 0), 20_000);
 });
 test("request control distinguishes its timeout from caller cancellation", async () => {

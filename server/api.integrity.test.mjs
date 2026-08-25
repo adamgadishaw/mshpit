@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -25,6 +26,10 @@ const { hashPassword, resetRateLimitsForTests } = await import("./auth.js");
 const { verifyPrivateMediaBucketIsolation } = await import("./media.js");
 const { portableMediaAsset } = await import("./features/accountPrivacy/accountPrivacyRoutes.js");
 const { refreshVideoVerifierHealth, resetVideoVerifierStateForTests } = await import("./videoVerifier.js");
+const {
+  resetVideoFinalizeJobsForTests,
+  startVideoFinalizeJob,
+} = await import("./videoFinalizeJobs.js");
 const {
   signVideoVerifierResponse,
   verifyVideoVerifierRequest,
@@ -62,6 +67,16 @@ function deferred() {
     reject = onReject;
   });
   return { promise, resolve, reject };
+}
+
+async function eventually(read, predicate, { attempts = 100 } = {}) {
+  let value;
+  for (let index = 0; index < attempts; index += 1) {
+    value = await read();
+    if (predicate(value)) return value;
+    await new Promise((resolve) => setImmediate(resolve));
+  }
+  assert.fail(`Expected asynchronous state was not reached: ${JSON.stringify(value)}`);
 }
 
 test("publicUser treats extras as untrusted and tolerates malformed stored JSON", () => {
@@ -489,45 +504,66 @@ test("public video capability requires exact private-derivative negotiation plus
       env: process.env,
       fetchImpl: async () => ({ status: 403 }),
     });
+    const verifierHealth = (sourceTypes) => async (url, request) => {
+      const path = new URL(url).pathname;
+      const authenticated = verifyVideoVerifierRequest({
+        secret,
+        path,
+        body: request.body,
+        headers: request.headers,
+      });
+      const signed = signVideoVerifierResponse({
+        secret,
+        path,
+        requestNonce: authenticated.nonce,
+        payload: {
+          ok: true,
+          protocol: VIDEO_VERIFIER_PROTOCOL_VERSION,
+          pipeline: "private-derivative-v1",
+          decoder: { ffmpeg: true, ffprobe: true, version: "ffmpeg health" },
+          poster: { generated: true, decoded: true },
+          storage: { privateInput: true, sanitizedOutput: true },
+          sourceTypes,
+          sourceCodecs: Object.fromEntries(sourceTypes.map((type) => [type, ["h264", "hevc"]])),
+          concurrency: 1,
+        },
+      });
+      return new Response(signed.body, { status: 200, headers: signed.headers });
+    };
     await refreshVideoVerifierHealth({
       env: process.env,
-      fetchImpl: async (url, request) => {
-        const path = new URL(url).pathname;
-        const authenticated = verifyVideoVerifierRequest({
-          secret,
-          path,
-          body: request.body,
-          headers: request.headers,
-        });
-        const signed = signVideoVerifierResponse({
-          secret,
-          path,
-          requestNonce: authenticated.nonce,
-          payload: {
-            ok: true,
-            protocol: VIDEO_VERIFIER_PROTOCOL_VERSION,
-            pipeline: "private-derivative-v1",
-            decoder: { ffmpeg: true, ffprobe: true, version: "ffmpeg health" },
-            poster: { generated: true, decoded: true },
-            storage: { privateInput: true, sanitizedOutput: true },
-            concurrency: 1,
-          },
-        });
-        return new Response(signed.body, { status: 200, headers: signed.headers });
-      },
+      fetchImpl: verifierHealth(["video/mp4", "video/quicktime"]),
     });
     assert.deepEqual(routes["GET /api/health"]({ query: {} }).capabilities.mediaPublishing,
       { photos: true, videos: false });
     assert.deepEqual(routes["GET /api/health"]({ query: { mediaPipeline: "private-derivative-v1x" } }).capabilities.mediaPublishing,
       { photos: true, videos: false });
     assert.deepEqual(routes["GET /api/health"]({ query: { mediaPipeline: "private-derivative-v1" } }).capabilities.mediaPublishing,
-      { photos: true, videos: true, pipeline: "private-derivative-v1" });
+      {
+        photos: true,
+        videos: true,
+        pipeline: "private-derivative-v1",
+        sourceTypes: ["video/mp4", "video/quicktime"],
+        sourceCodecs: {
+          "video/mp4": ["h264", "hevc"],
+          "video/quicktime": ["h264", "hevc"],
+        },
+      });
     process.env.PIT_VIDEO_PUBLISHING_ENABLED = "false";
     assert.deepEqual(routes["GET /api/health"]({ query: { mediaPipeline: "private-derivative-v1" } }).capabilities.mediaPublishing,
       { photos: true, videos: false }, "capability environment flags are evaluated on every health response");
     process.env.PIT_VIDEO_PUBLISHING_ENABLED = "true";
     assert.deepEqual(routes["GET /api/health"]({ query: { mediaPipeline: "private-derivative-v1" } }).capabilities.mediaPublishing,
-      { photos: true, videos: true, pipeline: "private-derivative-v1" });
+      {
+        photos: true,
+        videos: true,
+        pipeline: "private-derivative-v1",
+        sourceTypes: ["video/mp4", "video/quicktime"],
+        sourceCodecs: {
+          "video/mp4": ["h264", "hevc"],
+          "video/quicktime": ["h264", "hevc"],
+        },
+      });
     process.env.MEDIA_SOURCE_BUCKET = process.env.MEDIA_BUCKET;
     const degraded = routes["GET /api/health"]({ query: { mediaPipeline: "private-derivative-v1" } });
     assert.equal(degraded.ok, true, "core liveness survives an unavailable optional media provider");
@@ -554,6 +590,47 @@ test("public video capability requires exact private-derivative negotiation plus
     db.prepare("UPDATE users SET role='admin' WHERE id=?").run(legacyAdminSeed.id);
     const legacyAdmin = q.userById.get(legacyAdminSeed.id);
     assert.equal(legacyAdmin.email_verified_at, 0);
+    const rollingMov = routes["POST /api/media/assets"]({
+      user: legacyAdmin,
+      ip: "video-route-admin-mov",
+      body: {
+        clientAssetId: "video-route-admin-mov",
+        purpose: "post",
+        contentType: "video/quicktime",
+        fileSize: 1_000_000,
+        name: "video-route-admin-mov.mov",
+      },
+    });
+    await refreshVideoVerifierHealth({
+      env: process.env,
+      fetchImpl: verifierHealth(["video/mp4"]),
+      at: Date.now() + 1,
+    });
+    assert.throws(() => routes["POST /api/media/assets"]({
+      user: legacyAdmin,
+      ip: "video-route-admin-mov-blocked",
+      body: {
+        clientAssetId: "video-route-admin-mov-blocked",
+        purpose: "post",
+        contentType: "video/quicktime",
+        fileSize: 1_000_000,
+        name: "video-route-admin-mov-blocked.mov",
+      },
+    }), (error) => error.status === 415 && error.code === "MEDIA_TYPE_UNSUPPORTED");
+    await assert.rejects(routes["POST /api/media/assets/:id/finalize"]({
+      user: legacyAdmin,
+      ip: "video-route-admin-mov-finalize-blocked",
+      params: { id: rollingMov.asset.id },
+      body: {
+        width: 720,
+        height: 1_280,
+        durationMs: 1_000,
+        orientation: 0,
+        editRecipe: { coverMs: 0 },
+      },
+    }), (error) => error.status === 503 && error.code === "MEDIA_STORAGE_UNAVAILABLE");
+    assert.equal(db.prepare("SELECT status FROM media_assets WHERE id=?").get(rollingMov.asset.id).status, "upload_pending",
+      "a rolling capability mismatch preserves the resumable source instead of terminally cancelling it");
     assert.equal(routes["POST /api/media/assets"]({
       user: legacyAdmin,
       ip: "video-route-admin-ip",
@@ -564,6 +641,121 @@ test("public video capability requires exact private-derivative negotiation plus
     const terminalLedger = db.prepare("SELECT upload_expires_at FROM media_objects WHERE object_key=?")
       .get(terminalDraft.source_key);
     const previousFetch = globalThis.fetch;
+    const cachedFastDraft = routes["POST /api/media/assets"]({
+      user: legacyAdmin,
+      ip: "video-route-cached-fast-create",
+      body: videoBody("video-route-cached-fast"),
+    }).asset;
+    const cachedFastBody = {
+      width: 1_280,
+      height: 720,
+      durationMs: 1_000,
+      orientation: 0,
+      editRecipe: { coverMs: 0 },
+    };
+    const cachedFastFingerprint = createHash("sha256").update(JSON.stringify({
+      durationMs: 1_000,
+      editRecipe: { coverMs: 0 },
+      height: 720,
+      orientation: 0,
+      width: 1_280,
+    })).digest("hex");
+    startVideoFinalizeJob({
+      ownerId: legacyAdmin.id,
+      assetId: cachedFastDraft.id,
+      fingerprint: cachedFastFingerprint,
+      run: async () => {
+        db.prepare("UPDATE media_assets SET status='ready',render_state='ready',updated_at=? WHERE id=? AND owner_id=?")
+          .run(Date.now(), cachedFastDraft.id, legacyAdmin.id);
+        return { asset: { ...cachedFastDraft, status: "ready", renderState: "ready" }, duplicate: false };
+      },
+    });
+    const cachedFast = await routes["POST /api/media/assets/:id/finalize"]({
+      user: legacyAdmin,
+      ip: "video-route-cached-fast-finalize",
+      params: { id: cachedFastDraft.id },
+      body: cachedFastBody,
+    });
+    assert.equal(cachedFast.asset.status, "ready");
+    assert.deepEqual(cachedFast.finalize, { state: "completed" },
+      "a cached client keeps its ready response when the shared job finishes inside the compatibility window");
+
+    const cachedCreateBody = videoBody("video-route-cached-client");
+    const cachedDraft = routes["POST /api/media/assets"]({
+      user: legacyAdmin,
+      ip: "video-route-cached-client-create",
+      body: cachedCreateBody,
+    }).asset;
+    const cachedFetchGate = deferred();
+    globalThis.fetch = async () => {
+      await cachedFetchGate.promise;
+      return new Response(null, { status: 503 });
+    };
+    const cachedBody = {
+      width: 1_280,
+      height: 720,
+      durationMs: 1_000,
+      orientation: 0,
+      editRecipe: { coverMs: 0 },
+    };
+    const cachedNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = "test";
+    try {
+      await assert.rejects(routes["POST /api/media/assets/:id/finalize"]({
+        user: legacyAdmin,
+        ip: "video-route-cached-client-start",
+        params: { id: cachedDraft.id },
+        body: cachedBody,
+      }), (error) => error.status === 429 && error.code === "RATE_LIMITED"
+        && /upload is saved/u.test(error.message));
+      const issuancesBeforeRetry = db.prepare("SELECT COUNT(*) count FROM media_upload_issuances").get().count;
+      const cachedDuplicate = routes["POST /api/media/assets"]({
+        user: legacyAdmin,
+        ip: "video-route-cached-client-duplicate-create",
+        body: cachedCreateBody,
+      });
+      assert.equal(cachedDuplicate.duplicate, true);
+      assert.equal(cachedDuplicate.upload, null,
+        "a cached create retry cannot mint a second writer while verification reads the source");
+      assert.equal(db.prepare("SELECT COUNT(*) count FROM media_upload_issuances").get().count, issuancesBeforeRetry,
+        "suppressing the duplicate writer also avoids a hidden unused issuance");
+      assert.deepEqual(routes["GET /api/media/assets/:id"]({
+        user: legacyAdmin,
+        ip: "video-route-cached-client-still-processing",
+        params: { id: cachedDraft.id },
+      }).finalize, { state: "processing" });
+      await assert.rejects(routes["POST /api/media/assets/:id/finalize"]({
+        user: legacyAdmin,
+        ip: "video-route-cached-client-join",
+        params: { id: cachedDraft.id },
+        body: cachedBody,
+      }), (error) => error.status === 429 && error.code === "RATE_LIMITED"
+        && /upload is saved/u.test(error.message));
+    } finally {
+      process.env.NODE_ENV = cachedNodeEnv;
+    }
+    assert.equal(db.prepare("SELECT status FROM media_assets WHERE id=?").get(cachedDraft.id).status, "upload_pending",
+      "a cached timeout keeps the resumable source owned while background processing continues");
+    cachedFetchGate.resolve();
+    const cachedFailed = await eventually(
+      () => routes["GET /api/media/assets/:id"]({
+        user: legacyAdmin,
+        ip: "video-route-cached-client-poll",
+        params: { id: cachedDraft.id },
+      }),
+      (value) => value.finalize.state === "failed",
+    );
+    assert.equal(cachedFailed.finalize.error.retryable, true);
+    assert.equal(cachedFailed.asset.status, "upload_pending",
+      "a transient worker/storage failure does not cancel cached-client source bytes");
+    const observedBackgroundFailure = db.prepare(`SELECT code,status,method,route,cause,count FROM error_events
+      WHERE method='POST' AND route='/api/media/assets/:id/finalize' ORDER BY last_seen DESC LIMIT 1`).get();
+    assert.equal(observedBackgroundFailure.code, "MEDIA_STORAGE_UNAVAILABLE");
+    assert.equal(observedBackgroundFailure.status, 503);
+    assert.equal(observedBackgroundFailure.count >= 1, true);
+    assert.equal(JSON.stringify(observedBackgroundFailure).includes("objects.example.com"), false,
+      "detached-job observability stores only the route pattern and sanitized error identity");
+
     globalThis.fetch = async (_url, request = {}) => {
       const method = String(request.method || "GET").toUpperCase();
       if (method === "HEAD") {
@@ -591,22 +783,60 @@ test("public video capability requires exact private-derivative negotiation plus
         },
       });
     };
+    let terminalOutcome;
     try {
-      await assert.rejects(routes["POST /api/media/assets/:id/finalize"]({
+      resetVideoFinalizeJobsForTests();
+      const finalizeBody = {
+        width: 1_280,
+        height: 720,
+        durationMs: 1_000,
+        orientation: 0,
+        editRecipe: { coverMs: 0 },
+      };
+      const caller = new AbortController();
+      const firstRequest = routes["POST /api/media/assets/:id/finalize"]({
         user: legacyAdmin,
         ip: "video-route-admin-finalize",
         params: { id: terminalDraft.id },
-        body: {
-          width: 1_280,
-          height: 720,
-          durationMs: 1_000,
-          orientation: 0,
-          editRecipe: { coverMs: 0 },
-        },
-      }), (error) => error.status === 415 && error.code === "MEDIA_TYPE_UNSUPPORTED");
+        body: { ...finalizeBody, async: true },
+        signal: caller.signal,
+      });
+      const joinedRequest = routes["POST /api/media/assets/:id/finalize"]({
+        user: legacyAdmin,
+        ip: "video-route-admin-finalize-joined",
+        params: { id: terminalDraft.id },
+        // Reordered JSON keys prove the operation identity is canonical.
+        body: { ...finalizeBody, editRecipe: { coverMs: 0 }, async: true },
+      });
+      await assert.rejects(routes["POST /api/media/assets/:id/finalize"]({
+        user: legacyAdmin,
+        ip: "video-route-admin-finalize-conflict",
+        params: { id: terminalDraft.id },
+        body: { ...finalizeBody, editRecipe: { coverMs: 1 } },
+      }), (error) => error.status === 409 && error.code === "CONFLICT");
+      caller.abort(new DOMException("HTTP caller disconnected", "AbortError"));
+      const [started, joined] = await Promise.all([firstRequest, joinedRequest]);
+      assert.equal(started.asset.status, "upload_pending");
+      assert.deepEqual(started.finalize, { state: "processing" });
+      assert.deepEqual(joined.finalize, { state: "processing" });
+      terminalOutcome = await eventually(
+        () => routes["GET /api/media/assets/:id"]({
+          user: legacyAdmin,
+          ip: "video-route-admin-poll",
+          params: { id: terminalDraft.id },
+        }),
+        (value) => value.finalize.state === "failed",
+      );
     } finally {
       globalThis.fetch = previousFetch;
     }
+    assert.equal(terminalOutcome.asset, null);
+    assert.deepEqual(Object.keys(terminalOutcome.finalize.error).sort(), ["code", "message", "retryable", "status"]);
+    assert.equal(terminalOutcome.finalize.error.code, "MEDIA_TYPE_UNSUPPORTED");
+    assert.equal(terminalOutcome.finalize.error.status, 415);
+    assert.equal(terminalOutcome.finalize.error.retryable, false);
+    assert.equal(JSON.stringify(terminalOutcome).includes("terminal-incompatible-source"), false,
+      "polling never exposes object generations, causes, stacks, or verifier details");
     assert.equal(db.prepare("SELECT 1 FROM media_assets WHERE id=?").get(terminalDraft.id), undefined,
       "terminally incompatible bytes do not occupy a draft/quota slot for seven days");
     assert.equal(db.prepare("SELECT status FROM media_objects WHERE object_key=?").get(terminalDraft.source_key).status,
@@ -625,18 +855,16 @@ test("public video capability requires exact private-derivative negotiation plus
         body: firstBody,
       }).duplicate, true, "lost-response retries do not consume a new upload permit");
     }
-    for (let index = 1; index < 10; index += 1) {
+    for (let index = 1; index < 40; index += 1) {
       assert.equal(routes["POST /api/media/assets"]({
         user: fan,
         ip: `video-route-unique-${index}`,
         body: videoBody(`video-route-unique-${index}`),
       }).duplicate, false);
     }
-    assert.throws(() => routes["POST /api/media/assets"]({
-      user: fan,
-      ip: "video-route-account-over",
-      body: videoBody("video-route-account-over"),
-    }), (error) => error.status === 429 && error.code === "RATE_LIMITED");
+    assert.equal(db.prepare("SELECT COUNT(*) count FROM media_assets WHERE owner_id=?")
+      .get(fan.id).count, 40,
+    "clip source creation has neither the old ten-per-day cap nor a hidden thirty-per-ten-minute route cap");
   } finally {
     resetVideoVerifierStateForTests();
     for (const key of keys) {
@@ -646,42 +874,34 @@ test("public video capability requires exact private-derivative negotiation plus
   }
 });
 
-test("video publishing demand isolates upload/verify and enforces account, network, and global ceilings", () => {
+test("video publishing leaves source counts unmetered while protecting scarce decoder capacity", () => {
   const previousNodeEnv = process.env.NODE_ENV;
   delete process.env.NODE_ENV;
   const reserve = (phase, userId, ip) => reserveVideoPublishingDemand({ ip }, { id: userId }, phase);
   try {
     resetRateLimitsForTests();
-    for (let index = 0; index < 10; index += 1) reserve("upload", "video-account", `account-ip-${index}`).commit();
-    assert.throws(() => reserve("upload", "video-account", "account-ip-over"),
-      (error) => error.status === 429 && error.code === "RATE_LIMITED");
-    for (let index = 0; index < 12; index += 1) reserve("verify", "video-account", `verify-ip-${index}`).commit();
+    for (let index = 0; index < 5_000; index += 1) {
+      assert.equal(reserve("upload", "video-account", `shared-upload-ip-${index % 3}`), null,
+        "source admission has no account, carrier-NAT, or site-wide count bucket");
+    }
+    for (let index = 0; index < 240; index += 1) reserve("verify", "video-account", `verify-ip-${index}`).commit();
     assert.throws(() => reserve("verify", "video-account", "verify-ip-over"),
       (error) => error.status === 429 && error.code === "RATE_LIMITED");
 
     resetRateLimitsForTests();
-    for (let index = 0; index < 20; index += 1) reserve("upload", `shared-upload-${index}`, "shared-upload-ip").commit();
-    assert.throws(() => reserve("upload", "shared-upload-over", "shared-upload-ip"),
-      (error) => error.status === 429 && error.code === "RATE_LIMITED");
-    for (let index = 0; index < 24; index += 1) reserve("verify", `shared-verify-${index}`, "shared-verify-ip").commit();
+    for (let index = 0; index < 480; index += 1) reserve("verify", `shared-verify-${index}`, "shared-verify-ip").commit();
     assert.throws(() => reserve("verify", "shared-verify-over", "shared-verify-ip"),
       (error) => error.status === 429 && error.code === "RATE_LIMITED");
 
     resetRateLimitsForTests();
     const rolledBack = reserve("verify", "rollback-account", "rollback-ip");
     assert.equal(rolledBack.rollback(), true);
-    for (let index = 0; index < 60; index += 1) {
+    for (let index = 0; index < 2_000; index += 1) {
       reserve("verify", `global-verify-${index}`, `global-verify-ip-${index}`).commit();
     }
     assert.throws(() => reserve("verify", "global-verify-over", "global-verify-ip-over"),
       (error) => error.status === 429 && error.code === "RATE_LIMITED");
 
-    resetRateLimitsForTests();
-    for (let index = 0; index < 200; index += 1) {
-      reserve("upload", `global-upload-${index}`, `global-upload-ip-${index}`).commit();
-    }
-    assert.throws(() => reserve("upload", "global-upload-over", "global-upload-ip-over"),
-      (error) => error.status === 429 && error.code === "RATE_LIMITED");
   } finally {
     resetRateLimitsForTests();
     if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
@@ -1816,6 +2036,239 @@ test("stable media creation rejects disabled video before reserving a ticket and
     for (const [key, value] of previous) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
+    }
+  }
+});
+
+test("owner media polling isolates, joins, completes, safely fails, and resumes after coordinator restart", async () => {
+  const owner = addUser("u_video_finalize_poll", "video-finalize-poll@example.com", "videofinalizepoll");
+  const stranger = addUser("u_video_finalize_stranger", "video-finalize-stranger@example.com", "videofinalizestranger");
+  const keys = [
+    "MEDIA_ENDPOINT", "MEDIA_BUCKET", "MEDIA_SOURCE_BUCKET", "MEDIA_REGION",
+    "MEDIA_ACCESS_KEY_ID", "MEDIA_SECRET_ACCESS_KEY", "MEDIA_PUBLIC_BASE_URL",
+  ];
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  try {
+    Object.assign(process.env, {
+      MEDIA_ENDPOINT: "https://objects.example.com/s3",
+      MEDIA_BUCKET: "pit-finalize-poll",
+      MEDIA_SOURCE_BUCKET: "pit-finalize-poll-private",
+      MEDIA_REGION: "auto",
+      MEDIA_ACCESS_KEY_ID: "finalize-poll-access",
+      MEDIA_SECRET_ACCESS_KEY: "finalize-poll-secret",
+      MEDIA_PUBLIC_BASE_URL: "https://media.example.com/finalize-poll",
+    });
+    resetVideoFinalizeJobsForTests();
+    const createDraft = (clientAssetId) => routes["POST /api/media/assets"]({
+      user: owner,
+      ip: `finalize-poll-${clientAssetId}`,
+      body: {
+        clientAssetId,
+        purpose: "post",
+        contentType: "image/jpeg",
+        fileSize: 2_048,
+        name: `${clientAssetId}.jpg`,
+      },
+    }).asset;
+
+    const completing = createDraft("finalize-poll-completing");
+    const gate = deferred();
+    let runs = 0;
+    const first = startVideoFinalizeJob({
+      ownerId: owner.id,
+      assetId: completing.id,
+      fingerprint: "a".repeat(64),
+      run: async () => {
+        runs += 1;
+        await gate.promise;
+        db.prepare("UPDATE media_assets SET status='ready',render_state='ready',updated_at=? WHERE id=? AND owner_id=?")
+          .run(Date.now(), completing.id, owner.id);
+        return { asset: { id: completing.id, status: "ready" } };
+      },
+    });
+    const joined = startVideoFinalizeJob({
+      ownerId: owner.id,
+      assetId: completing.id,
+      fingerprint: "a".repeat(64),
+      run: async () => { runs += 100; },
+    });
+    assert.equal(first.joined, false);
+    assert.equal(joined.joined, true);
+    assert.throws(() => startVideoFinalizeJob({
+      ownerId: owner.id,
+      assetId: completing.id,
+      fingerprint: "b".repeat(64),
+      run: async () => {},
+    }), (error) => error.status === 409 && error.code === "CONFLICT");
+    await Promise.resolve();
+    assert.equal(runs, 1, "same-operation retries share exactly one background job");
+    assert.deepEqual(routes["GET /api/media/assets/:id"]({
+      user: owner,
+      ip: "finalize-poll-processing",
+      params: { id: completing.id },
+    }).finalize, { state: "processing" });
+    assert.throws(() => routes["GET /api/media/assets/:id"]({
+      user: stranger,
+      ip: "finalize-poll-owner-isolation",
+      params: { id: completing.id },
+    }), (error) => error.status === 404 && error.code === "NOT_FOUND");
+    gate.resolve();
+    const completed = await eventually(
+      () => routes["GET /api/media/assets/:id"]({
+        user: owner,
+        ip: "finalize-poll-completed",
+        params: { id: completing.id },
+      }),
+      (value) => value.finalize.state === "completed",
+    );
+    assert.equal(completed.asset.status, "ready");
+
+    const failing = createDraft("finalize-poll-failing");
+    startVideoFinalizeJob({
+      ownerId: owner.id,
+      assetId: failing.id,
+      fingerprint: "c".repeat(64),
+      run: async () => { throw new Error("secret=https://private.example/token"); },
+    });
+    const failed = await eventually(
+      () => routes["GET /api/media/assets/:id"]({
+        user: owner,
+        ip: "finalize-poll-failed",
+        params: { id: failing.id },
+      }),
+      (value) => value.finalize.state === "failed",
+    );
+    assert.deepEqual(failed.finalize.error, {
+      code: "INTERNAL_ERROR",
+      status: 500,
+      message: "Clip processing failed on our end. Try again.",
+      retryable: true,
+    });
+    assert.equal(JSON.stringify(failed).includes("private.example"), false);
+    resetVideoFinalizeJobsForTests();
+    assert.deepEqual(routes["GET /api/media/assets/:id"]({
+      user: owner,
+      ip: "finalize-poll-restart",
+      params: { id: failing.id },
+    }).finalize, { state: "idle" }, "a process restart safely invites an idempotent resubmission");
+  } finally {
+    resetVideoFinalizeJobsForTests();
+    for (const key of keys) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+  }
+});
+
+test("normal media preparation routes have no hidden per-member count buckets", async () => {
+  const user = addUser("u_media_count_free", "media-count-free@example.com", "mediacountfree");
+  const keys = [
+    "MEDIA_ENDPOINT", "MEDIA_BUCKET", "MEDIA_SOURCE_BUCKET", "MEDIA_REGION",
+    "MEDIA_ACCESS_KEY_ID", "MEDIA_SECRET_ACCESS_KEY", "MEDIA_PUBLIC_BASE_URL",
+  ];
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  const previousFetch = globalThis.fetch;
+  try {
+    Object.assign(process.env, {
+      MEDIA_ENDPOINT: "https://objects.example.com/s3",
+      MEDIA_BUCKET: "pit-count-free",
+      MEDIA_SOURCE_BUCKET: "pit-count-free-private",
+      MEDIA_REGION: "auto",
+      MEDIA_ACCESS_KEY_ID: "count-free-access",
+      MEDIA_SECRET_ACCESS_KEY: "count-free-secret",
+      MEDIA_PUBLIC_BASE_URL: "https://media.example.com/count-free",
+    });
+    resetRateLimitsForTests();
+    const renderVariants = [];
+    for (let index = 0; index < 40; index += 1) {
+      const created = routes["POST /api/media/assets"]({
+        user,
+        ip: `media-count-create-${index}`,
+        body: {
+          clientAssetId: `media-count-source-${index}`,
+          purpose: "post",
+          contentType: "image/jpeg",
+          fileSize: 2_048,
+          name: `media-count-source-${index}.jpg`,
+        },
+      });
+      db.prepare(`UPDATE media_assets SET status='render_pending',render_state='pending',finalize_hash=?,
+        width=1,height=1,orientation=0,metadata_status='declared',updated_at=? WHERE id=? AND owner_id=?`)
+        .run(`count-finalize-${index}`, Date.now(), created.asset.id, user.id);
+      renderVariants.push(routes["POST /api/media/assets/:id/variants"]({
+        user,
+        ip: `media-count-variant-${index}`,
+        params: { id: created.asset.id },
+        body: {
+          clientVariantId: `media-count-render-${index}`,
+          role: "render",
+          contentType: "image/jpeg",
+          fileSize: 1_024,
+          name: `media-count-render-${index}.jpg`,
+        },
+      }));
+    }
+    assert.equal(renderVariants.length, 40, "more than thirty normal photo renders are admitted");
+    assert.equal(renderVariants.every((entry) => entry.variant.status === "upload_pending"), true);
+
+    // PATCH is part of every normal upload, reads are the async video polling
+    // path, and source/variant finalize are safe retries. None may become a
+    // hidden member plan merely because the caller crossed an arbitrary count.
+    const patchAsset = renderVariants[0].asset?.id
+      || db.prepare("SELECT id FROM media_assets WHERE owner_id=? AND client_asset_id=?")
+        .get(user.id, "media-count-source-0").id;
+    for (let index = 0; index < 65; index += 1) {
+      const patched = routes["PATCH /api/media/assets/:id"]({
+        user,
+        ip: "media-count-patch",
+        params: { id: patchAsset },
+        body: { altText: `count-free-${index}` },
+      });
+      assert.notEqual(patched?.asset?.status, undefined);
+    }
+    for (let index = 0; index < 300; index += 1) {
+      assert.equal(routes["GET /api/media/assets/:id"]({
+        user,
+        ip: "media-count-poll",
+        params: { id: patchAsset },
+      }).asset.id, patchAsset);
+    }
+
+    globalThis.fetch = async () => new Response(null, { status: 503 });
+    const sourceFinalizeAsset = routes["POST /api/media/assets"]({
+      user,
+      ip: "media-count-source-finalize-create",
+      body: {
+        clientAssetId: "media-count-source-finalize",
+        purpose: "post",
+        contentType: "image/jpeg",
+        fileSize: 2_048,
+        name: "media-count-source-finalize.jpg",
+      },
+    }).asset;
+    for (let index = 0; index < 65; index += 1) {
+      await assert.rejects(routes["POST /api/media/assets/:id/finalize"]({
+        user,
+        ip: "media-count-source-finalize",
+        params: { id: sourceFinalizeAsset.id },
+        body: { width: 1, height: 1, orientation: 0, editRecipe: {} },
+      }), (error) => error.status === 503 && error.code === "MEDIA_STORAGE_UNAVAILABLE");
+    }
+    const variant = renderVariants[0].variant;
+    for (let index = 0; index < 65; index += 1) {
+      await assert.rejects(routes["POST /api/media/assets/:id/variants/:variantId/finalize"]({
+        user,
+        ip: "media-count-variant-finalize",
+        params: { id: patchAsset, variantId: variant.id },
+        body: { width: 1, height: 1 },
+      }), (error) => error.status === 503 && error.code === "MEDIA_STORAGE_UNAVAILABLE");
+    }
+  } finally {
+    globalThis.fetch = previousFetch;
+    resetRateLimitsForTests();
+    for (const key of keys) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
     }
   }
 });

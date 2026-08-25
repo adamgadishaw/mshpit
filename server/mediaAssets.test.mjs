@@ -119,17 +119,21 @@ function baselineSps(width, height) {
   return Buffer.concat([Buffer.from([0x67, 66, 0, 40]), packBitArray(bits)]);
 }
 
-function compatibleMp4(bytes, durationMs, { videoSampleEntry = "avc1" } = {}) {
+function compatibleMp4(bytes, durationMs, { videoSampleEntry = "avc1", container = "mp4" } = {}) {
+  const quickTime = container === "quicktime";
+  const hevc = videoSampleEntry === "hvc1";
   const ftyp = mp4Box("ftyp",
-    Buffer.from("isom", "ascii"),
+    Buffer.from(quickTime ? "qt  " : "isom", "ascii"),
     Buffer.from([0, 0, 2, 0]),
-    Buffer.from("isomiso2avc1mp41", "ascii"));
+    Buffer.from(quickTime ? "qt  " : hevc ? "isomiso6hvc1mp42" : "isomiso2avc1mp41", "ascii"));
   const timescale = 1_000;
   const encodedWidth = 1_080;
   const encodedHeight = 1_920;
   // Four-byte AVC length prefix + one IDR I-slice whose first_mb_in_slice,
   // slice_type, and pic_parameter_set_id Exp-Golomb fields are 0, 2, and 0.
-  const firstSample = Buffer.from([0, 0, 0, 2, 0x65, 0xb8]);
+  const firstSample = hevc
+    ? Buffer.from([0, 0, 0, 3, 19 << 1, 1, 0])
+    : Buffer.from([0, 0, 0, 2, 0x65, 0xb8]);
   const buildMoov = (chunkOffset) => {
     const mvhdPayload = Buffer.alloc(100);
     mvhdPayload.writeUInt32BE(timescale, 12);
@@ -151,7 +155,27 @@ function compatibleMp4(bytes, durationMs, { videoSampleEntry = "avc1" } = {}) {
       sps,
       Buffer.from([1, 0, 1, 0x68]),
     ]));
-    const sampleEntry = mp4Box(videoSampleEntry, visualSample, avcConfiguration);
+    const hevcHeader = Buffer.alloc(23);
+    hevcHeader[0] = 1;
+    hevcHeader[1] = 2;
+    hevcHeader[12] = 120;
+    hevcHeader[13] = 0xf0;
+    hevcHeader[15] = 0xfc;
+    hevcHeader[16] = 0xfd;
+    hevcHeader[17] = 0xf9;
+    hevcHeader[18] = 0xf9;
+    hevcHeader[21] = 0x03;
+    hevcHeader[22] = 3;
+    const hevcParameterArray = (type) => Buffer.from([
+      0x80 | type,
+      0, 1,
+      0, 3,
+      (type << 1) & 0x7e, 1, 0,
+    ]);
+    const hevcConfiguration = mp4Box("hvcC", hevcHeader,
+      hevcParameterArray(32), hevcParameterArray(33), hevcParameterArray(34));
+    const sampleEntry = mp4Box(videoSampleEntry, visualSample,
+      hevc ? hevcConfiguration : avcConfiguration);
     const stsdHeader = Buffer.alloc(8);
     stsdHeader.writeUInt32BE(1, 4);
     const stsd = mp4Box("stsd", stsdHeader, sampleEntry);
@@ -218,7 +242,7 @@ function verifiedMp4(bytes, durationMs, capture = null, options = {}) {
         status: 200,
         headers: new Headers({
           "content-length": String(object.length),
-          "content-type": "video/mp4",
+          "content-type": options.sourceContentType || "video/mp4",
           etag,
         }),
       };
@@ -425,7 +449,7 @@ function verifiedMp4WithPoster(bytes, durationMs, capture = null, options = {}) 
   const posterEtag = `"fixture-poster-${bytes}-${durationMs}"`;
   return async (url, request = {}) => {
     const pathname = new URL(url).pathname;
-    if (pathname.endsWith(".mp4")) return sourceFetch(url, request);
+    if (/\.(?:mp4|mov)$/.test(pathname)) return sourceFetch(url, request);
     capture?.push({ url, options: request });
     const method = String(request.method || "GET").toUpperCase();
     if (method === "PUT") {
@@ -712,7 +736,7 @@ test("source finalization verifies storage transport metadata and fails closed o
   assert.equal(duplicate.duplicate, true);
 });
 
-test("new stable delivery rejects GIF and non-MP4 motion, clips over 60 seconds, and raw HEIC publication", async () => {
+test("new stable delivery rejects unsupported motion, accepts verified MOV, limits duration, and blocks raw HEIC publication", async () => {
   const user = addUser("media_asset_delivery_owner");
   assert.throws(
     () => createMediaAsset(db, {
@@ -733,18 +757,33 @@ test("new stable delivery rejects GIF and non-MP4 motion, clips over 60 seconds,
     }),
     (error) => error.status === 415 && error.code === "MEDIA_TYPE_UNSUPPORTED" && /MP4/i.test(error.message),
   );
-  assert.throws(
-    () => createMediaAsset(db, {
-      ownerId: user.id,
-      body: sourceBody({
-        clientAssetId: "delivery-mov-source",
-        contentType: "video/quicktime",
-        fileSize: 2_000_000,
-        name: "camera.mov",
-      }),
+  const mov = createMediaAsset(db, {
+    ownerId: user.id,
+    body: sourceBody({
+      clientAssetId: "delivery-mov-source",
+      contentType: "video/quicktime",
+      fileSize: 2_000_000,
+      name: "camera.mov",
     }),
-    (error) => error.status === 415 && error.code === "MEDIA_TYPE_UNSUPPORTED",
-  );
+    assetId: "ma_movsourcexxxxxxxxxxxxxxxxx",
+  });
+  assert.equal(mov.upload.key.endsWith(".mov"), true);
+  assert.equal(mov.upload.storageScope, "private");
+  const finalizedMov = await finalizeMediaAsset(db, {
+    ownerId: user.id,
+    assetId: mov.asset.id,
+    body: { width: 1_080, height: 1_920, durationMs: 10_000, editRecipe: { kind: "video", coverMs: 2_000 } },
+    fetchImpl: verifiedMp4WithPoster(2_000_000, 10_000, null, {
+      container: "quicktime",
+      sourceContentType: "video/quicktime",
+    }),
+    authoritativeVideoVerifier: authoritativeFixtureDecodeWithPoster,
+    authoritativePosterRequired: true,
+  });
+  assert.equal(finalizedMov.asset.status, "ready");
+  assert.equal(finalizedMov.asset.url.endsWith(".mp4"), true, "the public delivery is sanitized MP4");
+  assert.equal(finalizedMov.asset.mimeType, "video/mp4");
+  assert.equal(db.prepare("SELECT mime_type FROM media_assets WHERE id=?").get(mov.asset.id).mime_type, "video/quicktime");
 
   const video = createMediaAsset(db, {
     ownerId: user.id,
@@ -789,19 +828,26 @@ test("new stable delivery rejects GIF and non-MP4 motion, clips over 60 seconds,
       fileSize: 1_000_000,
       name: "hevc-in-mp4.mp4",
     }),
-    assetId: "ma_codec_hevc_rejected_001",
+    assetId: "ma_codec_hevc_accepted_001",
   });
-  await assert.rejects(
-    finalizeMediaAsset(db, {
-      ownerId: user.id,
-      assetId: hevc.asset.id,
-      body: { width: 1_080, height: 1_920, durationMs: 10_000, editRecipe: {} },
-      fetchImpl: verifiedMp4(1_000_000, 10_000, null, { videoSampleEntry: "hvc1" }),
-    }),
-    (error) => error.status === 415 && error.code === "MEDIA_TYPE_UNSUPPORTED",
-    "an MP4 transport MIME cannot stand in for a supported H.264/AAC track declaration",
-  );
-  assert.equal(db.prepare("SELECT codec_status FROM media_assets WHERE id=?").get(hevc.asset.id).codec_status, "pending");
+  const finalizedHevc = await finalizeMediaAsset(db, {
+    ownerId: user.id,
+    assetId: hevc.asset.id,
+    body: {
+      width: 1_080,
+      height: 1_920,
+      durationMs: 10_000,
+      editRecipe: { kind: "video", coverMs: 2_000 },
+    },
+    fetchImpl: verifiedMp4WithPoster(1_000_000, 10_000, null, { videoSampleEntry: "hvc1" }),
+    authoritativeVideoVerifier: authoritativeFixtureDecodeWithPoster,
+    authoritativePosterRequired: true,
+  });
+  assert.equal(finalizedHevc.asset.status, "ready");
+  assert.equal(finalizedHevc.asset.codecStatus, "verified");
+  assert.equal(finalizedHevc.asset.mimeType, "video/mp4");
+  assert.equal(finalizedHevc.asset.url.endsWith(".mp4"), true,
+    "the HEVC source is published only through its sanitized H.264 MP4 delivery");
 
   const noGeneration = createMediaAsset(db, {
     ownerId: user.id,

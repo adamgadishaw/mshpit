@@ -9,15 +9,31 @@ const FALSE_VALUES = new Set(["0", "false", "no", "off", "disabled"]);
 const RETRY_DELAYS_MS = Object.freeze([60_000, 5 * 60_000, 30 * 60_000, 2 * 60 * 60_000]);
 const DAY_MS = 24 * 60 * 60_000;
 const MEBIBYTE = 1024 * 1024;
+const TEBIBYTE = 1024 * 1024 * MEBIBYTE;
+const PEBIBYTE = 1024 * TEBIBYTE;
 
 export const MEDIA_UPLOAD_TICKET_MS = 10 * 60_000;
 export const MEDIA_UPLOAD_ROLLING_WINDOW_MS = DAY_MS;
 
 const DEFAULT_UPLOAD_QUOTAS = Object.freeze({
-  outstandingObjects: 32,
-  outstandingBytes: 1024 * MEBIBYTE,
-  rollingBytes: 4 * 1024 * MEBIBYTE,
-  rollingTickets: 128,
+  // These are emergency abuse/cleanup bounds, not product-plan limits. A
+  // normal member can publish hundreds of clips in a day without meeting
+  // them, while a compromised account still cannot mint an unbounded number
+  // of storage capabilities or leave an unbounded private staging backlog.
+  outstandingObjects: 256,
+  outstandingBytes: 16 * 1024 * MEBIBYTE,
+  rollingBytes: 64 * 1024 * MEBIBYTE,
+  rollingTickets: 4_096,
+});
+
+const DEFAULT_UPLOAD_GLOBAL_CIRCUIT_BREAKERS = Object.freeze({
+  // Service-wide incident brakes are deliberately orders of magnitude above
+  // ordinary creator use. They are not member plans or daily upload limits;
+  // they bound damage if many accounts or credentials are compromised at once.
+  outstandingObjects: 100_000,
+  outstandingBytes: 2 * TEBIBYTE,
+  rollingBytes: 8 * TEBIBYTE,
+  rollingTickets: 1_000_000,
 });
 
 export const MEDIA_DELETION_MAX_ATTEMPTS = 5;
@@ -56,6 +72,19 @@ export function mediaUploadQuotaLimits(env = process.env) {
     outstandingBytes: boundedQuota(env?.MEDIA_UPLOAD_OUTSTANDING_BYTES, DEFAULT_UPLOAD_QUOTAS.outstandingBytes, MEBIBYTE, 1024 * 1024 * MEBIBYTE),
     rollingBytes: boundedQuota(env?.MEDIA_UPLOAD_24H_BYTES, DEFAULT_UPLOAD_QUOTAS.rollingBytes, MEBIBYTE, 1024 * 1024 * MEBIBYTE),
     rollingTickets: boundedQuota(env?.MEDIA_UPLOAD_24H_TICKETS, DEFAULT_UPLOAD_QUOTAS.rollingTickets, 1, 100_000),
+  };
+}
+
+export function mediaUploadGlobalCircuitBreakerLimits(env = process.env) {
+  return {
+    outstandingObjects: boundedQuota(env?.MEDIA_UPLOAD_GLOBAL_OUTSTANDING_OBJECTS,
+      DEFAULT_UPLOAD_GLOBAL_CIRCUIT_BREAKERS.outstandingObjects, 1, 10_000_000),
+    outstandingBytes: boundedQuota(env?.MEDIA_UPLOAD_GLOBAL_OUTSTANDING_BYTES,
+      DEFAULT_UPLOAD_GLOBAL_CIRCUIT_BREAKERS.outstandingBytes, MEBIBYTE, PEBIBYTE),
+    rollingBytes: boundedQuota(env?.MEDIA_UPLOAD_GLOBAL_24H_BYTES,
+      DEFAULT_UPLOAD_GLOBAL_CIRCUIT_BREAKERS.rollingBytes, MEBIBYTE, 4 * PEBIBYTE),
+    rollingTickets: boundedQuota(env?.MEDIA_UPLOAD_GLOBAL_24H_TICKETS,
+      DEFAULT_UPLOAD_GLOBAL_CIRCUIT_BREAKERS.rollingTickets, 1, 100_000_000),
   };
 }
 
@@ -196,6 +225,7 @@ export function reserveMediaUploadTicket(database, {
   }
   const uploadExpiresAt = normalizedTicketExpiry(expiresAt, at);
   const limits = mediaUploadQuotaLimits(env);
+  const globalLimits = mediaUploadGlobalCircuitBreakerLimits(env);
   const rollingCutoff = at - MEDIA_UPLOAD_ROLLING_WINDOW_MS;
 
   return withWrite(database, () => {
@@ -227,6 +257,22 @@ export function reserveMediaUploadTicket(database, {
     if (nextObjectCount > limits.outstandingObjects || nextOutstandingBytes > limits.outstandingBytes
         || nextRollingTickets > limits.rollingTickets || nextRollingBytes > limits.rollingBytes) {
       throw new ApiError(429, "Your media upload allowance is full. Finish or remove pending media, then try again.", "MEDIA_UPLOAD_QUOTA_EXCEEDED");
+    }
+
+    const globalOutstanding = database.prepare(`SELECT COUNT(*) object_count,COALESCE(SUM(byte_size),0) byte_count
+      FROM media_objects WHERE status IN ('issued','delete_queued','deletion_dead')`).get();
+    const globalRolling = database.prepare(`SELECT COUNT(*) ticket_count,COALESCE(SUM(byte_size),0) byte_count
+      FROM media_upload_issuances WHERE issued_at>?`).get(rollingCutoff);
+    const nextGlobalObjectCount = Number(globalOutstanding?.object_count || 0) + (newObject ? 1 : 0);
+    const nextGlobalOutstandingBytes = Number(globalOutstanding?.byte_count || 0) + outstandingByteDelta;
+    const nextGlobalRollingTickets = Number(globalRolling?.ticket_count || 0) + 1;
+    const nextGlobalRollingBytes = Number(globalRolling?.byte_count || 0) + bytes;
+    if (nextGlobalObjectCount > globalLimits.outstandingObjects
+        || nextGlobalOutstandingBytes > globalLimits.outstandingBytes
+        || nextGlobalRollingTickets > globalLimits.rollingTickets
+        || nextGlobalRollingBytes > globalLimits.rollingBytes) {
+      throw new ApiError(503, "Media uploads are temporarily at service capacity. Please try again later.",
+        "MEDIA_STORAGE_UNAVAILABLE");
     }
 
     if (!existing) {

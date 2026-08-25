@@ -106,7 +106,9 @@ const GROUPS = ["THE BAND", "THE ROOM", "THE NIGHT"];
 const submissionId = () => `post_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
 
 function sameMediaPublishingCapabilities(left, right) {
-  return left?.photos === right?.photos && left?.videos === right?.videos;
+  return left?.photos === right?.photos
+    && left?.videos === right?.videos
+    && JSON.stringify(left?.sourceTypes || []) === JSON.stringify(right?.sourceTypes || []);
 }
 
 function mediaProjectForPost(post) {
@@ -391,6 +393,7 @@ export default function LogScreen({
   const [mediaError, setMediaError] = useState("");
   const [mediaPublishingCapabilities, setMediaPublishingCapabilities] = useState(DEFAULT_MEDIA_PUBLISHING_CAPABILITIES);
   const [mediaPublishingCapabilitiesReady, setMediaPublishingCapabilitiesReady] = useState(false);
+  const [mediaPublishingCapabilitiesConfirmed, setMediaPublishingCapabilitiesConfirmed] = useState(false);
   const [mediaPublishingCapabilitiesRefreshing, setMediaPublishingCapabilitiesRefreshing] = useState(false);
   const mediaPublishingCapabilitiesRequestRef = useRef(null);
   const uploadControllerRef = useRef(null);
@@ -408,8 +411,22 @@ export default function LogScreen({
       apiCall: api,
     });
     const retired = new Set(result.retired);
+    const retiredByLocalId = new Map();
     for (const [localId, assetId] of entries) {
-      if (retired.has(assetId)) remoteDraftAssetIdsRef.current.delete(localId);
+      // Do not erase a newer retry that may have replaced this mapping while
+      // the DELETE was in flight. Clear the persisted remote identity only
+      // when both the ref and Studio draft still point at the retired asset.
+      if (retired.has(assetId) && remoteDraftAssetIdsRef.current.get(localId) === assetId) {
+        remoteDraftAssetIdsRef.current.delete(localId);
+        retiredByLocalId.set(localId, assetId);
+      }
+    }
+    if (retiredByLocalId.size) {
+      setStudioAssets((current) => current.map((asset, index) => (
+        retiredByLocalId.get(asset.id) === asset.assetId
+          ? normalizeMediaProjectAsset({ ...asset, assetId: null }, index)
+          : asset
+      )));
     }
     return result;
   }
@@ -445,6 +462,7 @@ export default function LogScreen({
         setMediaPublishingCapabilities((current) => (
           sameMediaPublishingCapabilities(current, capabilities) ? current : capabilities
         ));
+        setMediaPublishingCapabilitiesConfirmed(true);
         return { ok: true, capabilities };
       } catch {
         // Preserve the last authoritative result. On a first-load network
@@ -578,7 +596,6 @@ export default function LogScreen({
         ready = await uploadStudioMediaAsset({
           asset,
           renderedAsset: asset.renderedAsset || result?.renders?.[asset.id] || null,
-          posterAsset: asset.posterAsset || result?.renders?.[asset.id]?.cover || null,
           signal: controller.signal,
           onStage: (stage) => setUploadProgress({
             current: index + 1,
@@ -599,9 +616,19 @@ export default function LogScreen({
               fraction: progress.fraction,
             });
           },
-          onRemoteDraft: ({ assetId }) => {
+          onRemoteDraft: ({ assetId, sourceUploaded }) => {
             if (!controller.signal.aborted && assetId) {
               remoteDraftAssetIdsRef.current.set(asset.id, assetId);
+              if (sourceUploaded !== true) return;
+              // Keep the opaque server identity in the recoverable Studio
+              // draft once its PUT succeeds. A retry can then GET/finalize the
+              // same private source, while a failed partial PUT still mints a
+              // fresh upload capability instead of trusting incomplete bytes.
+              setStudioAssets((current) => current.map((candidate, candidateIndex) => (
+                candidate.id === asset.id
+                  ? normalizeMediaProjectAsset({ ...candidate, assetId }, candidateIndex)
+                  : candidate
+              )));
             }
           },
         });
@@ -665,13 +692,14 @@ export default function LogScreen({
       // first health response arrives, offer both choices and validate the
       // selected assets against the authoritative response immediately below.
       // This keeps a fast first tap from silently becoming photo-only.
-      if (!mediaPublishingCapabilitiesReady) {
+      if (!mediaPublishingCapabilitiesConfirmed) {
         pickerCapabilities = { photos: true, videos: true };
       }
       void refreshMediaPublishingCapabilities({ background: true });
     } else {
       const refreshedCapabilities = await refreshMediaPublishingCapabilities({ background: true });
       if (refreshedCapabilities.ok) pickerCapabilities = refreshedCapabilities.capabilities;
+      else if (!mediaPublishingCapabilitiesConfirmed) pickerCapabilities = { photos: true, videos: true };
     }
     if (!pickerCapabilities.photos && !pickerCapabilities.videos) {
       setShowPhotos(true);

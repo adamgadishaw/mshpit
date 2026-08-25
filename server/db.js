@@ -630,6 +630,9 @@ CREATE TABLE IF NOT EXISTS media_objects (
   UNIQUE (owner_id, object_key)
 );
 CREATE INDEX IF NOT EXISTS idx_media_objects_owner ON media_objects(owner_id, status, created_at);
+-- The service-wide upload circuit breaker aggregates only unresolved object
+-- capabilities. Keep that reservation-time query off the full object ledger.
+CREATE INDEX IF NOT EXISTS idx_media_objects_status_bytes ON media_objects(status, byte_size);
 
 -- Every returned upload ticket consumes the owner's rolling upload allowance.
 -- This history intentionally outlives media_objects deletion for 24 hours, so
@@ -647,6 +650,10 @@ CREATE INDEX IF NOT EXISTS idx_media_upload_issuances_owner_at
   ON media_upload_issuances(owner_id, issued_at);
 CREATE INDEX IF NOT EXISTS idx_media_upload_issuances_at
   ON media_upload_issuances(issued_at);
+-- The global rolling-byte breaker reads issued_at and SUM(byte_size). Covering
+-- both columns avoids fetching every matching ledger row from the table.
+CREATE INDEX IF NOT EXISTS idx_media_upload_issuances_at_bytes
+  ON media_upload_issuances(issued_at, byte_size);
 
 -- Stable media identity sits above the object ledger. media_objects remains
 -- the deletion authority (and deliberately survives account erasure until the

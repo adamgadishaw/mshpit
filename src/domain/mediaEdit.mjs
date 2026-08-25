@@ -8,6 +8,7 @@ export const VIDEO_MIN_DURATION_MS = 1_000;
 export const MEDIA_PHOTO_MAX_BYTES = 12 * 1024 * 1024;
 export const MEDIA_VIDEO_MAX_BYTES = 100 * 1024 * 1024;
 export const MEDIA_DELIVERY_IMAGE_MIME_TYPES = Object.freeze(["image/jpeg", "image/png", "image/webp"]);
+export const MEDIA_VIDEO_SOURCE_MIME_TYPES = Object.freeze(["video/mp4", "video/quicktime"]);
 
 export const MEDIA_ASPECTS = Object.freeze({
   original: null,
@@ -177,10 +178,10 @@ export function mediaImageRequiresRender(asset = {}, edit = asset.edit) {
   return normalizeMediaKind(asset.kind || asset.type) === "image";
 }
 
-export function mediaVideoDeliveryCompatible(asset = {}) {
+export function mediaVideoSourceCompatible(asset = {}) {
   const mime = String(asset.mimeType || "").toLowerCase().split(";")[0].trim();
-  if (mime) return mime === "video/mp4";
-  return /\.mp4(?:[?#]|$)/i.test(String(asset.fileName || asset.uri || ""));
+  if (mime) return MEDIA_VIDEO_SOURCE_MIME_TYPES.includes(mime);
+  return /\.(?:mp4|mov)(?:[?#]|$)/i.test(String(asset.fileName || asset.uri || ""));
 }
 
 export function effectiveAdjustments(value = {}) {

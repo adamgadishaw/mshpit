@@ -1,6 +1,9 @@
 const DEFAULT_READ_TIMEOUT_MS = 20_000;
 const DEFAULT_WRITE_TIMEOUT_MS = 30_000;
-const MAX_TIMEOUT_MS = 120_000;
+// Route-scoped media finalization performs bounded storage probes around a
+// private 110-second transcode. Defaults remain short; explicit callers may
+// reserve this larger envelope so completed verifier work is not discarded.
+const MAX_TIMEOUT_MS = 240_000;
 
 export function resolveRequestTimeout(method = "GET", requested) {
   if (requested !== undefined && requested !== null) {

@@ -1,9 +1,3 @@
-export function mediaEditAssetNeedsPosterArtifact(asset) {
-  // A URI can drive preview UI without being an uploadable native file or web
-  // Blob. The Studio contract requires a concrete poster artifact per video.
-  return asset?.kind === "video";
-}
-
 export function attachMediaEditArtifacts(asset, { renderedAsset = null, posterAsset = null } = {}) {
   if (!asset || typeof asset !== "object") return asset;
   if (asset.kind === "image") {
@@ -16,10 +10,9 @@ export function attachMediaEditArtifacts(asset, { renderedAsset = null, posterAs
     const posterTimeMs = Math.max(0, Math.round(Number(posterAsset.actualTimeMs) || 0));
     return {
       ...asset,
-      // Auto-cover scoring may land on a better decoded frame than the recipe's
-      // initial hint. Commit that exact reviewed frame into the recipe consumed
-      // by authoritative finalization; otherwise Studio can preview one cover
-      // while the private verifier publishes another.
+      // A locally decoded cover is an optional preview only. Its timestamp is
+      // still useful: commit the reviewed frame time into the recipe so the
+      // private verifier generates the durable poster from the source video.
       edit: { ...(asset.edit || {}), coverMs: posterTimeMs },
       posterAsset,
       posterUri: posterAsset.uri,

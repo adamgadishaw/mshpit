@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { attachMediaEditArtifacts, mediaEditAssetNeedsPosterArtifact } from "./mediaEditApplyResult.mjs";
+import { attachMediaEditArtifacts } from "./mediaEditApplyResult.mjs";
 
 test("an edited photo keeps its immutable source descriptor and attaches a rendition", () => {
   const source = {
@@ -52,7 +52,15 @@ test("a video cover is attached without replacing the source video", () => {
   assert.equal(result.posterAsset, posterAsset);
 });
 
-test("a video preview URI never substitutes for an uploadable poster artifact", () => {
-  assert.equal(mediaEditAssetNeedsPosterArtifact({ kind: "video", posterUri: "blob:preview-only" }), true);
-  assert.equal(mediaEditAssetNeedsPosterArtifact({ kind: "image", posterUri: "blob:not-relevant" }), false);
+test("a video without a local cover artifact keeps the authoritative cover timestamp", () => {
+  const source = {
+    id: "local:server-cover",
+    kind: "video",
+    uri: "file:///original.mp4",
+    edit: { coverMode: "manual", coverMs: 4_250 },
+  };
+  const result = attachMediaEditArtifacts(source);
+  assert.deepEqual(result, source);
+  assert.equal(result.edit.coverMs, 4_250);
+  assert.equal(Object.hasOwn(result, "posterAsset"), false);
 });

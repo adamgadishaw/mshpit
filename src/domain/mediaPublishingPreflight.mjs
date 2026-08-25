@@ -3,7 +3,7 @@ import {
   mediaImageAnimationUnsupported,
   mediaImageNeedsNativeDecode,
   mediaSourceSizeAllowed,
-  mediaVideoDeliveryCompatible,
+  mediaVideoSourceCompatible,
 } from "./mediaEdit.mjs";
 
 export const MEDIA_PREFLIGHT_CODES = Object.freeze({
@@ -41,8 +41,8 @@ export function mediaPublishingPreflightIssue(asset = {}, { platform = "web" } =
     return null;
   }
 
-  if (!mediaVideoDeliveryCompatible(asset)) {
-    return issue(MEDIA_PREFLIGHT_CODES.videoContainerUnsupported, "PIT currently accepts new clips only as MP4 files. MOV and WebM stay blocked until the authoritative transcoder is live.");
+  if (!mediaVideoSourceCompatible(asset)) {
+    return issue(MEDIA_PREFLIGHT_CODES.videoContainerUnsupported, "PIT accepts MP4 and iPhone MOV clips. Export WebM or another container as MP4 before opening it in PIT Studio.");
   }
   const durationMs = Number(asset?.durationMs);
   if (!Number.isFinite(durationMs) || durationMs <= 0) {

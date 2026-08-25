@@ -7,7 +7,7 @@ test("iOS post videos request the SDK 56 H.264 MP4 export preset", () => {
   const options = postMediaPickerOptions({ platform: "ios", remaining: 8, iosH264Preset: 7, allowVideos: true });
   assert.equal(options.videoExportPreset, 7);
   assert.equal(options.orderedSelection, true);
-  assert.equal(options.selectionLimit, 6);
+  assert.equal(options.selectionLimit, 8);
   assert.deepEqual(options.mediaTypes, ["images", "videos"]);
 });
 
@@ -37,7 +37,8 @@ test("picker honors an explicit photo outage without hiding available videos", (
   }).mediaTypes, ["videos"]);
 });
 
-test("picker selection limits stay inside the supported one-to-six range", () => {
+test("picker selection limit uses every open post slot without exceeding post capacity", () => {
   assert.equal(postMediaPickerOptions({ platform: "ios", remaining: 0, iosH264Preset: 7 }).selectionLimit, 1);
-  assert.equal(postMediaPickerOptions({ platform: "ios", remaining: 99, iosH264Preset: 7 }).selectionLimit, 6);
+  assert.equal(postMediaPickerOptions({ platform: "ios", remaining: 7, iosH264Preset: 7 }).selectionLimit, 7);
+  assert.equal(postMediaPickerOptions({ platform: "ios", remaining: 99, iosH264Preset: 7 }).selectionLimit, 8);
 });

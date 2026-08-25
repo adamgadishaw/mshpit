@@ -128,6 +128,27 @@ services:
         value: "true"
       - key: MEDIA_ORPHAN_TTL_MS
         value: "604800000"             # 7 days; code bounds this to 1-30 days
+      # These are high emergency abuse ceilings, not member upload-plan caps.
+      # They keep a compromised account from minting unbounded storage
+      # capabilities while staying far above ordinary creator use.
+      - key: MEDIA_UPLOAD_OUTSTANDING_OBJECTS
+        value: "256"
+      - key: MEDIA_UPLOAD_OUTSTANDING_BYTES
+        value: "17179869184"            # 16 GiB unfinished at once
+      - key: MEDIA_UPLOAD_24H_BYTES
+        value: "68719476736"            # 64 GiB of upload tickets per member
+      - key: MEDIA_UPLOAD_24H_TICKETS
+        value: "4096"
+      # Service-wide incident circuit breakers. These are intentionally far
+      # above member-scale use and are not upload-plan limits.
+      - key: MEDIA_UPLOAD_GLOBAL_OUTSTANDING_OBJECTS
+        value: "100000"
+      - key: MEDIA_UPLOAD_GLOBAL_OUTSTANDING_BYTES
+        value: "2199023255552"          # 2 TiB unfinished across the service
+      - key: MEDIA_UPLOAD_GLOBAL_24H_BYTES
+        value: "8796093022208"          # 8 TiB of tickets across the service
+      - key: MEDIA_UPLOAD_GLOBAL_24H_TICKETS
+        value: "1000000"
       - key: EXPO_PUBLIC_GOOGLE_MAPS_KEY
         # Referrer-locked (mshpit.com/*) + Maps Static API only. Safe to commit:
         # EXPO_PUBLIC_* vars are inlined into the public web bundle on every build,
@@ -165,7 +186,10 @@ services:
   - type: pserv
     name: pit-video-verifier
     runtime: docker
-    plan: starter
+    # Video normalization is CPU/memory work, not ordinary request serving.
+    # Standard provides 1 CPU / 2 GiB so bounded iPhone HEVC clips do not starve
+    # or OOM the verifier's single isolated slot.
+    plan: standard
     region: oregon
     branch: master
     dockerfilePath: ./Dockerfile.video-verifier
@@ -302,6 +326,22 @@ services:
         value: "true"
       - key: MEDIA_ORPHAN_TTL_MS
         value: "604800000"
+      - key: MEDIA_UPLOAD_OUTSTANDING_OBJECTS
+        value: "256"
+      - key: MEDIA_UPLOAD_OUTSTANDING_BYTES
+        value: "17179869184"
+      - key: MEDIA_UPLOAD_24H_BYTES
+        value: "68719476736"
+      - key: MEDIA_UPLOAD_24H_TICKETS
+        value: "4096"
+      - key: MEDIA_UPLOAD_GLOBAL_OUTSTANDING_OBJECTS
+        value: "100000"
+      - key: MEDIA_UPLOAD_GLOBAL_OUTSTANDING_BYTES
+        value: "2199023255552"
+      - key: MEDIA_UPLOAD_GLOBAL_24H_BYTES
+        value: "8796093022208"
+      - key: MEDIA_UPLOAD_GLOBAL_24H_TICKETS
+        value: "1000000"
       # Provider fan-out stays off on staging: it would burn production's shared
       # YouTube and Ticketmaster quotas for data nobody looks at.
       - key: CACHE_WARM_ENABLED
