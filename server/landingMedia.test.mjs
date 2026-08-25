@@ -19,7 +19,14 @@ const { db, q } = await import("./db.js");
 const { hashPassword } = await import("./auth.js");
 const { routes } = await import("./api.js");
 const { hasTrustedLandingImage, projectLandingMedia, trustedLandingImageUrl } = await import("./landingMedia.js");
-const { createMediaAsset, createMediaVariant, finalizeMediaAsset, finalizeMediaVariant } = await import("./mediaAssets.js");
+const {
+  attachPostMedia,
+  createMediaAsset,
+  createMediaVariant,
+  finalizeMediaAsset,
+  finalizeMediaVariant,
+  mediaSelection,
+} = await import("./mediaAssets.js");
 
 after(() => {
   db.close();
@@ -134,6 +141,11 @@ async function stablePostImage(owner) {
   return { assetId: source.asset.id, url: finalized.variant.url };
 }
 
+function attachStablePostImage(postId, owner, media) {
+  const selection = mediaSelection(db, { ownerId: owner.id, assetIds: [media.assetId] });
+  attachPostMedia(db, { postId, ownerId: owner.id, selection });
+}
+
 test("landing image URLs are HTTPS, browser-compatible, PIT-owned author media", () => {
   const options = { authorId: "u_one", mediaBaseUrl: process.env.MEDIA_PUBLIC_BASE_URL };
   assert.equal(trustedLandingImageUrl(image("u_one", "night.webp?width=1600"), options), image("u_one", "night.webp?width=1600"));
@@ -162,9 +174,10 @@ test("landing projection is bounded, one-frame-per-post, and author-diverse", ()
   assert.ok(media.every((item) => !Object.hasOwn(item, "userId") && !Object.hasOwn(item, "review") && !Object.hasOwn(item, "city")));
 });
 
-test("landing route excludes private, removed, status, restricted, and blocked media", () => {
+test("landing route requires verified stable images and excludes private, removed, status, restricted, and blocked media", async () => {
   const viewer = addUser("u_viewer");
   const visible = addUser("u_visible");
+  const staleCompatibility = addUser("u_stale_compat");
   const blockedByViewer = addUser("u_blocked_out");
   const blocksViewer = addUser("u_blocked_in");
   const banned = addUser("u_banned");
@@ -176,7 +189,21 @@ test("landing route excludes private, removed, status, restricted, and blocked m
   db.prepare("INSERT INTO blocks (blocker_id,blocked_id,created_at) VALUES (?,?,?)").run(viewer.id, blockedByViewer.id, Date.now());
   db.prepare("INSERT INTO blocks (blocker_id,blocked_id,created_at) VALUES (?,?,?)").run(blocksViewer.id, viewer.id, Date.now());
 
-  insertPost("landing_visible", visible.id);
+  const verifiedMedia = await stablePostImage(visible);
+  insertPost("landing_visible", visible.id, { photos: JSON.stringify([verifiedMedia.url]) });
+  attachStablePostImage("landing_visible", visible, verifiedMedia);
+  const staleCompatibilityMedia = await stablePostImage(staleCompatibility);
+  insertPost("landing_stale_compatibility", staleCompatibility.id, {
+    photos: "[]",
+    createdAt: Date.now() - 1,
+  });
+  attachStablePostImage("landing_stale_compatibility", staleCompatibility, staleCompatibilityMedia);
+  // This URL has the right PIT origin and owner path, but no stable descriptor.
+  // The pure shape projector accepts it; the production route must not.
+  insertPost("landing_trusted_raw", visible.id, {
+    photos: JSON.stringify([image(visible.id, "trusted-but-unverified.jpg")]),
+    createdAt: Date.now() + 2,
+  });
   insertPost("landing_private", visible.id, { photosPublic: 0 });
   insertPost("landing_no_showcase", visible.id, { landingShowcase: 0 });
   insertPost("landing_removed", visible.id, { removed: 1 });
@@ -199,7 +226,10 @@ test("landing route excludes private, removed, status, restricted, and blocked m
     setHeader: (name, value) => headers.set(name, value),
   });
 
-  assert.deepEqual(result.media.map((item) => item.postId), ["landing_visible"]);
+  assert.deepEqual(new Set(result.media.map((item) => item.postId)), new Set([
+    "landing_visible",
+    "landing_stale_compatibility",
+  ]));
   assert.equal(result.source, "community");
   assert.equal(typeof result.totals.artists, "number");
   assert.equal(Object.hasOwn(result.totals, "members"), false);
@@ -208,14 +238,25 @@ test("landing route excludes private, removed, status, restricted, and blocked m
   assert.deepEqual(Object.keys(result.media[0]).sort(), ["artist", "credit", "id", "postId", "uri", "venue"]);
 });
 
-test("per-author candidate ranking prevents a 96-post flood from hiding other authors", () => {
+test("raw post floods cannot hide an older verified image before candidate ranking", async () => {
   const flood = addUser("u_landing_flood");
   const other = addUser("u_landing_other");
   const base = Date.now() + 1_000_000;
   for (let index = 0; index < 105; index += 1) {
     insertPost(`landing_flood_${index}`, flood.id, { createdAt: base + index });
   }
-  insertPost("landing_other_author", other.id, { createdAt: base - 1 });
+  const floodMedia = await stablePostImage(flood);
+  const floodPostId = "landing_flood_0";
+  db.prepare("UPDATE posts SET photos=? WHERE id=?")
+    .run(JSON.stringify([floodMedia.url]), floodPostId);
+  attachStablePostImage(floodPostId, flood, floodMedia);
+
+  const otherMedia = await stablePostImage(other);
+  insertPost("landing_other_author", other.id, {
+    createdAt: base - 1,
+    photos: JSON.stringify([otherMedia.url]),
+  });
+  attachStablePostImage("landing_other_author", other, otherMedia);
 
   const result = routes["GET /api/landing/media"]({
     user: null,
@@ -225,6 +266,32 @@ test("per-author candidate ranking prevents a 96-post flood from hiding other au
   const postIds = result.media.map((item) => item.postId);
   assert.equal(postIds.filter((id) => id.startsWith("landing_flood_")).length, 1);
   assert.ok(postIds.includes("landing_other_author"));
+});
+
+test("more than 96 globally ranked raw candidates cannot hide an older verified author", async () => {
+  const base = Date.now() + 2_000_000;
+  for (let authorIndex = 0; authorIndex < 25; authorIndex += 1) {
+    const author = addUser(`u_raw_global_${String(authorIndex).padStart(2, "0")}`);
+    for (let postIndex = 0; postIndex < 4; postIndex += 1) {
+      insertPost(`landing_raw_global_${authorIndex}_${postIndex}`, author.id, {
+        createdAt: base + (authorIndex * 4) + postIndex,
+      });
+    }
+  }
+  const verifiedAuthor = addUser("u_global_verified");
+  const verifiedMedia = await stablePostImage(verifiedAuthor);
+  insertPost("landing_global_verified", verifiedAuthor.id, {
+    createdAt: base - 1,
+    photos: JSON.stringify([verifiedMedia.url]),
+  });
+  attachStablePostImage("landing_global_verified", verifiedAuthor, verifiedMedia);
+
+  const result = routes["GET /api/landing/media"]({
+    user: null,
+    query: { limit: "12" },
+    setHeader: () => {},
+  });
+  assert.ok(result.media.some((item) => item.postId === "landing_global_verified"));
 });
 
 test("homepage consent is default-off, owner-only, idempotent, and privacy-normalized on edit", async () => {

@@ -28,7 +28,18 @@ const {
   createLegacyMediaUpload,
   finalizeLegacyMediaUpload,
   LEGACY_MEDIA_FINALIZE_TTL_MS,
+  recoverProfileImageReference,
 } = await import("./mediaLegacyFinalize.js");
+const { createMediaPresign } = await import("./media.js");
+const {
+  MEDIA_UPLOAD_TICKET_MS,
+  reserveMediaUploadTicket,
+  trustedOwnedMediaKey,
+} = await import("./mediaDeletion.js");
+const {
+  sanitizePrivateImageStaging,
+  stageSanitizedPublicImage,
+} = await import("./mediaAssets.js");
 
 after(() => {
   db.close();
@@ -88,6 +99,66 @@ async function clientPut(ticket, bytes, fetchImpl) {
     body: bytes,
   });
   assert.equal(response.status, 200);
+}
+
+async function stagedProfileDelivery({
+  ownerId,
+  purpose,
+  identity,
+  objectId,
+  at,
+  storage,
+  legacySourceUrl,
+  color = "#5b2c83",
+}) {
+  const source = await sharp({
+    create: { width: 24, height: 18, channels: 3, background: color },
+  }).jpeg().withExif({ IFD0: { Artist: `private-${identity}` } }).toBuffer();
+  const upload = createMediaPresign({
+    userId: ownerId,
+    body: {
+      purpose,
+      contentType: "image/jpeg",
+      fileSize: source.length,
+      name: `${identity}.jpg`,
+    },
+    now: new Date(at),
+    objectId,
+    storageScope: "private",
+  });
+  reserveMediaUploadTicket(db, {
+    ownerId,
+    objectKey: upload.key,
+    storageScope: "private",
+    byteSize: source.length,
+    at,
+    expiresAt: at + MEDIA_UPLOAD_TICKET_MS,
+  });
+  await clientPut(upload, source, storage.fetchImpl);
+  const { sanitized } = await sanitizePrivateImageStaging(db, {
+    ownerId,
+    objectKey: upload.key,
+    expectedBytes: source.length,
+    expectedType: "image/jpeg",
+    outputType: "image/jpeg",
+    fetchImpl: storage.fetchImpl,
+  });
+  const sourceEtag = `"legacy-${identity}-generation"`;
+  const delivery = await stageSanitizedPublicImage(db, {
+    ownerId,
+    purpose,
+    publicIdentity: identity,
+    stagingKey: upload.key,
+    sourceBinding: {
+      objectKey: trustedOwnedMediaKey(legacySourceUrl, { ownerId }),
+      etag: sourceEtag,
+    },
+    output: sanitized,
+    at: at + 1,
+    fetchImpl: storage.fetchImpl,
+    serverRecovery: true,
+  });
+  return { delivery, source, sourceEtag, stagingKey: upload.key };
 }
 
 test("legacy photos use a one-time owner-bound private descriptor and publish only sanitized pixels", async () => {
@@ -289,4 +360,199 @@ test("legacy API route stages privately, finalizes, and gates profile associatio
   } finally {
     globalThis.fetch = previousFetch;
   }
+});
+
+test("profile recovery registers only attested sanitized derivatives and CAS-replaces exact owner references", async () => {
+  const owner = addUser("legacy_profile_recovery_owner");
+  const storage = memoryObjectStorage();
+  const base = process.env.MEDIA_PUBLIC_BASE_URL;
+  const oldAvatar = `${base}/users/${owner.id}/avatar/legacy-avatar.jpg`;
+  const oldBanner = `${base}/users/${owner.id}/banner/legacy-banner.jpg`;
+  db.prepare("UPDATE users SET avatar_uri=?,banner=? WHERE id=?")
+    .run(oldAvatar, oldBanner, owner.id);
+  db.prepare(`INSERT INTO artist_profiles (artist_key,owner_id,banner,feed_enabled,updated_at)
+    VALUES (?,?,?,?,?)`).run("legacy recovery artist", owner.id, oldBanner, 1, 50_000);
+
+  const avatar = await stagedProfileDelivery({
+    ownerId: owner.id,
+    purpose: "avatar",
+    identity: "recoveryavatar01",
+    objectId: "recovery_avatar_private",
+    at: 51_000,
+    storage,
+    legacySourceUrl: oldAvatar,
+  });
+  assert.throws(
+    () => recoverProfileImageReference(db, {
+      ownerId: owner.id,
+      reference: "user.avatar",
+      expectedCurrentUrl: oldAvatar,
+      sourceByteSize: avatar.source.length,
+      sourceEtag: avatar.sourceEtag,
+      delivery: { ...avatar.delivery },
+      at: 52_000,
+    }),
+    (error) => error.status === 400 && error.code === "VALIDATION_FAILED",
+    "copying the public fields must not recreate the in-process sanitizer attestation",
+  );
+  assert.throws(
+    () => recoverProfileImageReference(db, {
+      ownerId: owner.id,
+      reference: "user.avatar",
+      expectedCurrentUrl: oldAvatar,
+      sourceByteSize: avatar.source.length,
+      sourceEtag: '"different-generation"',
+      delivery: avatar.delivery,
+      at: 52_000,
+    }),
+    (error) => error.status === 400 && error.code === "VALIDATION_FAILED",
+    "a sanitized delivery cannot be reused for a different source generation",
+  );
+  assert.throws(
+    () => recoverProfileImageReference(db, {
+      ownerId: owner.id,
+      reference: "user.avatar",
+      expectedCurrentUrl: "https://attacker.example/avatar.jpg",
+      sourceByteSize: avatar.source.length,
+      sourceEtag: avatar.sourceEtag,
+      delivery: avatar.delivery,
+      at: 52_000,
+    }),
+    (error) => error.status === 400 && error.code === "VALIDATION_FAILED",
+    "an arbitrary source URL cannot become recovery authority",
+  );
+
+  const recoveredAvatar = recoverProfileImageReference(db, {
+    ownerId: owner.id,
+    reference: "user.avatar",
+    expectedCurrentUrl: oldAvatar,
+    sourceByteSize: avatar.source.length,
+    sourceEtag: avatar.sourceEtag,
+    delivery: avatar.delivery,
+    at: 52_000,
+  });
+  assert.equal(recoveredAvatar.publicUrl, avatar.delivery.publicUrl);
+  assert.equal(recoveredAvatar.duplicate, false);
+  assert.equal(db.prepare("SELECT avatar_uri FROM users WHERE id=?").get(owner.id).avatar_uri,
+    avatar.delivery.publicUrl);
+  assert.equal(db.prepare("SELECT status FROM media_objects WHERE object_key=?").get(avatar.stagingKey).status,
+    "delete_queued", "private recovery staging is retired in the same commit");
+  assert.equal(db.prepare("SELECT status FROM media_objects WHERE object_key=?").get(avatar.delivery.objectKey).status,
+    "associated");
+  const oldAvatarKey = trustedOwnedMediaKey(oldAvatar, { ownerId: owner.id });
+  assert.equal(db.prepare("SELECT status FROM media_objects WHERE object_key=?").get(oldAvatarKey).status,
+    "delete_queued", "the now-unreferenced raw public profile photo is retired atomically");
+  assert.equal(recoveredAvatar.sourceRetired, true);
+  const avatarDescriptor = db.prepare("SELECT * FROM legacy_media_finalize_descriptors WHERE id=?")
+    .get(recoveredAvatar.descriptorId);
+  assert.equal(avatarDescriptor.status, "finalized");
+  assert.equal(avatarDescriptor.purpose, "avatar");
+  assert.equal(avatarDescriptor.output_object_key, avatar.delivery.objectKey);
+  assert.equal(avatarDescriptor.consumed_at, 52_000);
+
+  const avatarReplay = recoverProfileImageReference(db, {
+    ownerId: owner.id,
+    reference: "user.avatar",
+    expectedCurrentUrl: oldAvatar,
+    sourceByteSize: avatar.source.length,
+    sourceEtag: avatar.sourceEtag,
+    delivery: avatar.delivery,
+    at: 53_000,
+  });
+  assert.equal(avatarReplay.duplicate, true);
+  assert.equal(avatarReplay.descriptorId, recoveredAvatar.descriptorId);
+
+  const banner = await stagedProfileDelivery({
+    ownerId: owner.id,
+    purpose: "banner",
+    identity: "recoverybanner01",
+    objectId: "recovery_banner_private",
+    at: 54_000,
+    storage,
+    legacySourceUrl: oldBanner,
+    color: "#aa4400",
+  });
+  const recoveredUserBanner = recoverProfileImageReference(db, {
+    ownerId: owner.id,
+    reference: "user.banner",
+    expectedCurrentUrl: oldBanner,
+    sourceByteSize: banner.source.length,
+    sourceEtag: banner.sourceEtag,
+    delivery: banner.delivery,
+    at: 55_000,
+  });
+  const oldBannerKey = trustedOwnedMediaKey(oldBanner, { ownerId: owner.id });
+  assert.equal(recoveredUserBanner.sourceRetired, false,
+    "a raw object shared by another exact profile reference must stay live");
+  assert.equal(db.prepare("SELECT status FROM media_objects WHERE object_key=?").get(oldBannerKey).status,
+    "associated");
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM media_deletion_queue WHERE owner_id=? AND object_key=?")
+    .get(owner.id, oldBannerKey).count, 0);
+  assert.equal(db.prepare("SELECT status FROM media_objects WHERE object_key=?").get(banner.stagingKey).status,
+    "issued", "shared-source staging remains retryable until the last exact reference moves");
+  const recoveredArtistBanner = recoverProfileImageReference(db, {
+    ownerId: owner.id,
+    reference: "artist_profile.banner",
+    artistKey: "legacy recovery artist",
+    expectedCurrentUrl: oldBanner,
+    sourceByteSize: banner.source.length,
+    sourceEtag: banner.sourceEtag,
+    delivery: banner.delivery,
+    at: 56_000,
+  });
+  assert.equal(recoveredArtistBanner.descriptorId, recoveredUserBanner.descriptorId,
+    "one sanitized owner/purpose derivative can safely repair multiple exact references");
+  assert.equal(db.prepare("SELECT banner FROM users WHERE id=?").get(owner.id).banner,
+    banner.delivery.publicUrl);
+  const artistProfile = db.prepare("SELECT banner,updated_at FROM artist_profiles WHERE artist_key=?")
+    .get("legacy recovery artist");
+  assert.equal(artistProfile.banner, banner.delivery.publicUrl);
+  assert.equal(artistProfile.updated_at, 56_000);
+  assert.equal(recoveredArtistBanner.sourceRetired, true);
+  assert.equal(db.prepare("SELECT status FROM media_objects WHERE object_key=?").get(oldBannerKey).status,
+    "delete_queued", "the shared raw object is queued only after its last reference is swapped");
+  assert.equal(db.prepare("SELECT status FROM media_objects WHERE object_key=?").get(banner.stagingKey).status,
+    "delete_queued");
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM legacy_media_finalize_descriptors WHERE owner_id=? AND status='finalized'")
+    .get(owner.id).count, 2);
+});
+
+test("profile recovery rolls back descriptor registration when the exact reference changed", async () => {
+  const owner = addUser("legacy_profile_recovery_cas");
+  const storage = memoryObjectStorage();
+  const base = process.env.MEDIA_PUBLIC_BASE_URL;
+  const expected = `${base}/users/${owner.id}/banner/original-banner.jpg`;
+  const changed = `${base}/users/${owner.id}/banner/newer-banner.jpg`;
+  db.prepare("UPDATE users SET banner=? WHERE id=?").run(expected, owner.id);
+  const staged = await stagedProfileDelivery({
+    ownerId: owner.id,
+    purpose: "banner",
+    identity: "recoverycasbanner",
+    objectId: "recovery_cas_private",
+    at: 61_000,
+    storage,
+    legacySourceUrl: expected,
+  });
+  db.prepare("UPDATE users SET banner=? WHERE id=?").run(changed, owner.id);
+
+  assert.throws(
+    () => recoverProfileImageReference(db, {
+      ownerId: owner.id,
+      reference: "user.banner",
+      expectedCurrentUrl: expected,
+      sourceByteSize: staged.source.length,
+      sourceEtag: staged.sourceEtag,
+      delivery: staged.delivery,
+      at: 62_000,
+    }),
+    (error) => error.status === 409 && error.code === "CONFLICT",
+  );
+  assert.equal(db.prepare("SELECT banner FROM users WHERE id=?").get(owner.id).banner, changed);
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM legacy_media_finalize_descriptors WHERE owner_id=? AND output_url=?")
+    .get(owner.id, staged.delivery.publicUrl).count, 0,
+  "the descriptor insert and reference swap share one transaction");
+  assert.equal(db.prepare("SELECT status FROM media_objects WHERE object_key=?").get(staged.delivery.objectKey).status,
+    "issued");
+  assert.equal(db.prepare("SELECT status FROM media_objects WHERE object_key=?").get(staged.stagingKey).status,
+    "issued");
 });

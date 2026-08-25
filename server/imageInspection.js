@@ -380,7 +380,21 @@ function inspectHeif(bytes) {
       }
       const containers = new Set(["meta", "iprp", "ipco", "iinf", "iref", "dinf"]);
       if (containers.has(box.type)) {
-        const childStart = box.dataStart + (new Set(["meta", "iinf", "iref"]).has(box.type) ? 4 : 0);
+        let childStart = box.dataStart + (new Set(["meta", "iref"]).has(box.type) ? 4 : 0);
+        // iinf is a FullBox followed by its declared entry_count (16-bit in
+        // version 0, 32-bit in later versions) before the child infe boxes.
+        // Treating that count as a BMFF box header rejects ordinary HEIC files.
+        if (box.type === "iinf") {
+          if (box.dataStart + 6 > box.end) invalid();
+          const version = bytes[box.dataStart];
+          const countBytes = version === 0 ? 2 : 4;
+          if (box.dataStart + 4 + countBytes > box.end) invalid();
+          const declaredEntries = countBytes === 2
+            ? bytes.readUInt16BE(box.dataStart + 4)
+            : bytes.readUInt32BE(box.dataStart + 4);
+          if (declaredEntries > 4096) invalid("resource_limit");
+          childStart = box.dataStart + 4 + countBytes;
+        }
         if (childStart > box.end) invalid();
         walk(childStart, box.end, depth + 1, box.type);
       }

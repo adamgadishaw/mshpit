@@ -50,6 +50,38 @@ function sixteenBitPng(width = 32, height = 32) {
   ]);
 }
 
+function bmffBox(type, payload = Buffer.alloc(0)) {
+  const box = Buffer.alloc(8 + payload.byteLength);
+  box.writeUInt32BE(box.byteLength, 0);
+  box.write(type, 4, 4, "ascii");
+  payload.copy(box, 8);
+  return box;
+}
+
+function structurallyAdmittedUndecodableHeic(width = 8, height = 6) {
+  const ftyp = bmffBox("ftyp", Buffer.concat([
+    Buffer.from("heic", "ascii"),
+    Buffer.alloc(4),
+    Buffer.from("mif1heic", "ascii"),
+  ]));
+  const ispe = Buffer.alloc(12);
+  ispe.writeUInt32BE(width, 4);
+  ispe.writeUInt32BE(height, 8);
+  const entryCount = Buffer.alloc(2);
+  entryCount.writeUInt16BE(1);
+  const iinf = bmffBox("iinf", Buffer.concat([
+    Buffer.alloc(4),
+    entryCount,
+    bmffBox("infe", Buffer.alloc(8)),
+  ]));
+  const meta = bmffBox("meta", Buffer.concat([
+    Buffer.alloc(4),
+    iinf,
+    bmffBox("iprp", bmffBox("ipco", bmffBox("ispe", ispe))),
+  ]));
+  return Buffer.concat([ftyp, meta, bmffBox("mdat", Buffer.alloc(16))]);
+}
+
 test("full pixel decode rejects malformed JPEG entropy that passes structural framing", async () => {
   const valid = await createdImage({ width: 64, height: 64 });
   const scan = valid.indexOf(Buffer.from([0xff, 0xda]));
@@ -130,6 +162,27 @@ test("private HEIF/GIF-style sources can select a safe public output codec", asy
     expectedType: "image/webp",
     sanitized: true,
   }).metadataPresent, false);
+});
+
+test("the real HEIC decoder fallback is explicit and remains unavailable to ordinary sanitization", async () => {
+  const heic = structurallyAdmittedUndecodableHeic();
+  assert.equal(inspectImageBytes(heic, { expectedType: "image/heic" }).mimeType, "image/heic");
+
+  await assert.rejects(
+    sanitizeDecodedImage(heic, {
+      expectedType: "image/heic",
+      outputType: "image/jpeg",
+    }),
+    (error) => error.code === "decode",
+  );
+  await assert.rejects(
+    sanitizeDecodedImage(heic, {
+      expectedType: "image/heic",
+      outputType: "image/jpeg",
+      allowHeicFallback: true,
+    }),
+    (error) => error.code === "heic_decode",
+  );
 });
 
 test("untrusted decode work is admitted before a one-shot isolated child process starts", async () => {

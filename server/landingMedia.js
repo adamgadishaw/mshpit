@@ -1,4 +1,5 @@
 import { db, parseJsonArray } from "./db.js";
+import { postMediaStateByPost } from "./mediaAssets.js";
 
 export const LANDING_MEDIA_DEFAULT_LIMIT = 8;
 export const LANDING_MEDIA_MAX_LIMIT = 12;
@@ -60,9 +61,11 @@ function creditFor(row) {
   return name ? `Shared by ${name}` : "Shared by the PIT community";
 }
 
-// Pure projection kept separately from the query so privacy and URL rules can
-// be tested without a server or media bucket. Input order is authoritative and
-// deterministic (newest post first from the query below).
+// Pure shape projection kept separately from the query so URL and diversity
+// rules can be tested without a server or media bucket. It is deliberately not
+// publication authority: landingCommunityMedia replaces `photos` with the
+// verified stable-media projection before calling it. Input order is
+// authoritative and deterministic (newest post first from the query below).
 export function projectLandingMedia(rows, { limit, mediaBaseUrl } = {}) {
   const max = boundedLimit(limit);
   const media = [];
@@ -115,7 +118,25 @@ export function landingCommunityMedia({ viewerId = null, limit, at = Date.now(),
         ) AS author_rank
       FROM posts p JOIN users u ON u.id=p.user_id
       WHERE p.removed=0 AND p.photos_public=1 AND p.landing_showcase=1
-        AND p.kind='review' AND p.photos!='[]'
+        AND p.kind='review'
+        AND EXISTS (
+          SELECT 1
+          FROM post_media pm
+          JOIN media_assets a ON a.id=pm.asset_id
+          JOIN media_objects source_ledger
+            ON source_ledger.owner_id=a.owner_id AND source_ledger.object_key=a.source_key
+          JOIN media_variants rv
+            ON rv.id=a.render_variant_id AND rv.asset_id=a.id
+          JOIN media_objects render_ledger
+            ON render_ledger.owner_id=a.owner_id AND render_ledger.object_key=rv.object_key
+          WHERE pm.post_id=p.id AND a.owner_id=p.user_id
+            AND a.kind='image' AND a.status='ready' AND a.render_state='ready'
+            AND source_ledger.status IN ('issued','associated')
+            AND rv.status='verified' AND rv.verification_origin='private_derivative_v1'
+            AND rv.public_url!=''
+            AND render_ledger.storage_scope='public'
+            AND render_ledger.status IN ('issued','associated')
+        )
         AND u.email_verified_at>0
         AND u.is_banned=0 AND (u.suspended_until IS NULL OR u.suspended_until<=?)
         AND NOT EXISTS (SELECT 1 FROM reports r
@@ -127,7 +148,17 @@ export function landingCommunityMedia({ viewerId = null, limit, at = Date.now(),
     WHERE author_rank<=4
     ORDER BY created_at DESC,id DESC
     LIMIT ?`).all(...args);
-  return projectLandingMedia(rows, { limit: max, mediaBaseUrl });
+  // The EXISTS gate above keeps raw/quarantined rows out before ranking and
+  // limiting, while this projection remains the publication authority. That
+  // combination prevents both unsafe display and candidate starvation.
+  const stableMedia = postMediaStateByPost(db, rows.map((row) => row.id));
+  const verifiedRows = rows.map((row) => ({
+    ...row,
+    photos: JSON.stringify((stableMedia.assetsByPost.get(row.id) || [])
+      .filter((asset) => asset.kind === "image")
+      .map((asset) => asset.url)),
+  }));
+  return projectLandingMedia(verifiedRows, { limit: max, mediaBaseUrl });
 }
 
 export function landingTotals() {

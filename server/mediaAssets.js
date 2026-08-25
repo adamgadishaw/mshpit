@@ -21,6 +21,7 @@ import {
 import {
   enqueueOwnedMediaKeys,
   MEDIA_UPLOAD_TICKET_MS,
+  recordMediaObjectTicket,
   reserveMediaUploadTicket,
   trustedMediaQueueKey,
 } from "./mediaDeletion.js";
@@ -41,6 +42,10 @@ const MAX_VIDEO_DURATION_DRIFT_MS = 1_500;
 const MAX_VIDEO_BYTES = 100 * 1024 * 1024;
 const MAX_POST_MEDIA = 8;
 const MAX_ALT_TEXT = 1_000;
+// A recovery path may need to attach a server-sanitized derivative to a legacy
+// profile reference. Keep that trust claim process-local and identity-bound so
+// an internal caller cannot manufacture an equivalent object from a public URL.
+const sanitizedPublicImageDeliveryClaims = new WeakMap();
 
 function stableValue(value) {
   if (Array.isArray(value)) return value.map(stableValue);
@@ -817,6 +822,54 @@ const IMAGE_DELIVERY_EXTENSIONS = Object.freeze({
   "image/webp": "webp",
 });
 
+// Processor outputs use deterministic, create-only keys and their PUT
+// capabilities never leave the server. A retry after a transient 412/503 must
+// therefore reuse the live ledger generation without charging an ordinary
+// browser upload issuance a second time.
+function reserveImmutableProcessorTicket(database, {
+  ownerId,
+  objectKey,
+  purpose,
+  byteSize,
+  at,
+  env,
+  serverRecovery = false,
+}) {
+  const existing = database.prepare(`SELECT owner_id,storage_scope,purpose,byte_size,status
+    FROM media_objects WHERE object_key=?`).get(objectKey);
+  if (!existing) {
+    if (serverRecovery) {
+      const inserted = recordMediaObjectTicket(database, {
+        ownerId,
+        objectKey,
+        storageScope: "public",
+        byteSize,
+        at,
+        expiresAt: null,
+      });
+      if (!inserted) {
+        throw new ApiError(409, "That recovered photo rendition changed while it was being sanitized.", "CONFLICT");
+      }
+    } else {
+      reserveMediaUploadTicket(database, {
+        ownerId,
+        objectKey,
+        storageScope: "public",
+        byteSize,
+        at,
+        expiresAt: at + MEDIA_UPLOAD_TICKET_MS,
+        env,
+      });
+    }
+    return;
+  }
+  if (existing.owner_id !== ownerId || existing.storage_scope !== "public"
+      || existing.purpose !== purpose || Number(existing.byte_size) !== Number(byteSize)
+      || !new Set(["issued", "associated"]).has(existing.status)) {
+    throw new ApiError(409, "That photo rendition changed while it was being sanitized.", "CONFLICT");
+  }
+}
+
 function prepareSanitizedImageDelivery(database, {
   ownerId,
   asset,
@@ -825,6 +878,7 @@ function prepareSanitizedImageDelivery(database, {
   output,
   env,
   at,
+  serverRecovery,
 }) {
   const extension = IMAGE_DELIVERY_EXTENSIONS[output?.mimeType];
   if (!extension || !VARIANT_ID.test(String(variantId || "")) || !trustedMediaQueueKey(stagingKey, ownerId)) {
@@ -839,14 +893,14 @@ function prepareSanitizedImageDelivery(database, {
   });
   return withWrite(database, () => {
     requirePrivateLiveLedger(database, ownerId, stagingKey);
-    reserveMediaUploadTicket(database, {
+    reserveImmutableProcessorTicket(database, {
       ownerId,
       objectKey,
-      storageScope: "public",
+      purpose: asset.purpose,
       byteSize: output.byteSize,
       at,
-      expiresAt: at + MEDIA_UPLOAD_TICKET_MS,
       env,
+      serverRecovery,
     });
     const upload = createMediaProcessorImageUploadCapability({
       objectKey,
@@ -870,6 +924,7 @@ async function stageSanitizedImageDelivery(database, {
   at,
   fetchImpl,
   signal,
+  serverRecovery,
 }) {
   const prepared = prepareSanitizedImageDelivery(database, {
     ownerId,
@@ -879,6 +934,7 @@ async function stageSanitizedImageDelivery(database, {
     output,
     env,
     at,
+    serverRecovery,
   });
   let response;
   try {
@@ -933,6 +989,8 @@ export async function sanitizePrivateImageStaging(database, {
   env = process.env,
   fetchImpl = globalThis.fetch,
   imageProcessor = defaultImageProcessor,
+  imageTimeoutMs,
+  allowHeicFallback = false,
   signal,
 } = {}) {
   const owner = String(ownerId || "");
@@ -966,6 +1024,10 @@ export async function sanitizePrivateImageStaging(database, {
     bytes: verified.bytes,
     expectedType,
     outputType,
+    ...(allowHeicFallback === true && Number.isSafeInteger(imageTimeoutMs) && imageTimeoutMs > 0
+      ? { timeoutMs: Math.min(imageTimeoutMs, 30_000) }
+      : {}),
+    allowHeicFallback: allowHeicFallback === true,
   }, { sanitizing: true });
   return Object.freeze({ sanitized, sourceEtag: stored.etag });
 }
@@ -975,20 +1037,28 @@ export async function stageSanitizedPublicImage(database, {
   purpose,
   publicIdentity,
   stagingKey,
+  sourceBinding,
   output,
   env = process.env,
   at = Date.now(),
   fetchImpl = globalThis.fetch,
   signal,
+  serverRecovery = false,
 } = {}) {
+  const owner = String(ownerId || "");
   const identity = String(publicIdentity || "");
+  const sourceObjectKey = trustedMediaQueueKey(sourceBinding?.objectKey, owner);
+  const sourceEtag = typeof sourceBinding?.etag === "string" && /^"[\x21\x23-\x7e]{1,200}"$/u.test(sourceBinding.etag)
+    ? sourceBinding.etag
+    : null;
   if (!/^[A-Za-z0-9_-]{8,80}$/.test(identity)
-      || !new Set(["avatar", "banner", "post", "review", "venue"]).has(String(purpose || ""))) {
+      || !new Set(["avatar", "banner", "post", "review", "venue"]).has(String(purpose || ""))
+      || (sourceBinding != null && (!sourceObjectKey || !sourceEtag))) {
     throw new ApiError(400, "That sanitized photo identity is invalid.", "VALIDATION_FAILED");
   }
-  const variantId = `mv_${fingerprint({ ownerId, purpose, identity }).slice(0, 24)}`;
+  const variantId = `mv_${fingerprint({ ownerId: owner, purpose, identity }).slice(0, 24)}`;
   const staged = await stageSanitizedImageDelivery(database, {
-    ownerId,
+    ownerId: owner,
     asset: { id: identity, purpose },
     variantId,
     stagingKey,
@@ -997,8 +1067,9 @@ export async function stageSanitizedPublicImage(database, {
     at,
     fetchImpl,
     signal,
+    serverRecovery,
   });
-  return Object.freeze({
+  const delivery = Object.freeze({
     objectKey: staged.objectKey,
     publicUrl: staged.upload.publicUrl,
     mimeType: output.mimeType,
@@ -1008,6 +1079,40 @@ export async function stageSanitizedPublicImage(database, {
     sha256: staged.digest,
     etag: staged.stored.etag,
   });
+  sanitizedPublicImageDeliveryClaims.set(delivery, Object.freeze({
+    ownerId: owner,
+    purpose: String(purpose),
+    publicIdentity: identity,
+    stagingKey,
+    sourceObjectKey,
+    sourceEtag,
+    serverRecovery: serverRecovery === true,
+    ...delivery,
+  }));
+  return delivery;
+}
+
+// This is deliberately an opaque in-process attestation rather than a shape
+// check. Recovery workers must pass the exact object minted after decode,
+// re-encode, immutable upload and digest verification above; copying its fields
+// or supplying an otherwise owner-looking URL does not recreate the claim.
+export function verifiedSanitizedPublicImageDelivery(delivery, {
+  ownerId,
+  purpose,
+  sourceObjectKey,
+  sourceEtag,
+  serverRecovery,
+} = {}) {
+  const claim = delivery && typeof delivery === "object"
+    ? sanitizedPublicImageDeliveryClaims.get(delivery)
+    : null;
+  if (!claim || claim.ownerId !== String(ownerId || "") || claim.purpose !== String(purpose || "")
+      || (sourceObjectKey != null && claim.sourceObjectKey !== String(sourceObjectKey))
+      || (sourceEtag != null && claim.sourceEtag !== String(sourceEtag))
+      || (serverRecovery != null && claim.serverRecovery !== (serverRecovery === true))) {
+    return null;
+  }
+  return claim;
 }
 
 function queuePrivateImageStaging(database, { ownerId, stagingKey, at }) {

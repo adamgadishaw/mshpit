@@ -9,11 +9,18 @@ import {
 import {
   sanitizePrivateImageStaging,
   stageSanitizedPublicImage,
+  verifiedSanitizedPublicImageDelivery,
 } from "./mediaAssets.js";
 import {
   enqueueOwnedMediaKeys,
+  enqueueOwnedMediaUrls,
+  markOwnedMediaAssociated,
   MEDIA_UPLOAD_TICKET_MS,
+  recordMediaObjectTicket,
   reserveMediaUploadTicket,
+  trustedMediaQueueKey,
+  trustedOwnedMediaKey,
+  unreferencedOwnedMediaUrls,
 } from "./mediaDeletion.js";
 
 export const LEGACY_MEDIA_FINALIZE_TTL_MS = 15 * 60_000;
@@ -31,6 +38,13 @@ const IMAGE_OUTPUT_TYPE = Object.freeze({
 });
 const DUMMY_TOKEN_HASH = createHash("sha256").update("pit-invalid-legacy-media-token").digest("hex");
 const initializedSchemas = new WeakSet();
+const RECOVERABLE_PROFILE_REFERENCES = Object.freeze({
+  "user.avatar": Object.freeze({ purpose: "avatar", scope: "user", field: "avatar_uri" }),
+  "user.banner": Object.freeze({ purpose: "banner", scope: "user", field: "banner" }),
+  "artist_profile.avatar": Object.freeze({ purpose: "avatar", scope: "artist_profile", field: "avatar_uri" }),
+  "artist_profile.banner": Object.freeze({ purpose: "banner", scope: "artist_profile", field: "banner" }),
+});
+const SANITIZED_PROFILE_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
@@ -247,7 +261,7 @@ export async function finalizeLegacyMediaUpload(database, {
   const row = claim.row;
 
   try {
-    const { sanitized } = await sanitizePrivateImageStaging(database, {
+    const { sanitized, sourceEtag } = await sanitizePrivateImageStaging(database, {
       ownerId: owner,
       objectKey: row.staging_object_key,
       expectedBytes: row.staging_byte_size,
@@ -263,6 +277,7 @@ export async function finalizeLegacyMediaUpload(database, {
       purpose: row.purpose,
       publicIdentity: row.id,
       stagingKey: row.staging_object_key,
+      sourceBinding: { objectKey: row.staging_object_key, etag: sourceEtag },
       output: sanitized,
       env,
       at,
@@ -376,6 +391,281 @@ export function associateFinalizedLegacyMedia(database, {
     database.prepare(`UPDATE legacy_media_finalize_descriptors SET consumed_at=COALESCE(consumed_at,?),updated_at=?
       WHERE id=? AND owner_id=?`).run(at, at, row.id, owner);
     return outputProjection(database.prepare("SELECT * FROM legacy_media_finalize_descriptors WHERE id=?").get(row.id));
+  });
+}
+
+function recoveryProfileRow(database, { ownerId, target, artistKey }) {
+  if (target.scope === "user") {
+    return database.prepare(`SELECT id,avatar_uri,banner FROM users WHERE id=?`).get(ownerId) || null;
+  }
+  const key = typeof artistKey === "string" ? artistKey.trim() : "";
+  if (!key) throw new ApiError(400, "The artist profile recovery target is invalid.", "VALIDATION_FAILED");
+  return database.prepare(`SELECT artist_key,owner_id,avatar_uri,banner
+    FROM artist_profiles WHERE artist_key=? AND owner_id=?`).get(key, ownerId) || null;
+}
+
+function replaceRecoveryProfileRow(database, {
+  ownerId,
+  target,
+  artistKey,
+  expectedCurrentUrl,
+  publicUrl,
+  at,
+}) {
+  let result;
+  if (target.scope === "user" && target.field === "avatar_uri") {
+    result = database.prepare("UPDATE users SET avatar_uri=? WHERE id=? AND avatar_uri=?")
+      .run(publicUrl, ownerId, expectedCurrentUrl);
+  } else if (target.scope === "user" && target.field === "banner") {
+    result = database.prepare("UPDATE users SET banner=? WHERE id=? AND banner=?")
+      .run(publicUrl, ownerId, expectedCurrentUrl);
+  } else if (target.scope === "artist_profile" && target.field === "avatar_uri") {
+    result = database.prepare(`UPDATE artist_profiles SET avatar_uri=?,updated_at=?
+      WHERE artist_key=? AND owner_id=? AND avatar_uri=?`)
+      .run(publicUrl, at, artistKey.trim(), ownerId, expectedCurrentUrl);
+  } else {
+    result = database.prepare(`UPDATE artist_profiles SET banner=?,updated_at=?
+      WHERE artist_key=? AND owner_id=? AND banner=?`)
+      .run(publicUrl, at, artistKey.trim(), ownerId, expectedCurrentUrl);
+  }
+  if (Number(result.changes || 0) !== 1) {
+    throw new ApiError(409, "That profile photo changed during recovery.", "CONFLICT");
+  }
+}
+
+function matchingRecoveryDescriptor(row, { ownerId, purpose, delivery }) {
+  return !!row
+    && row.owner_id === ownerId
+    && row.purpose === purpose
+    && row.status === "finalized"
+    && row.staging_object_key === delivery.stagingKey
+    && row.output_object_key === delivery.objectKey
+    && row.output_url === delivery.publicUrl
+    && row.output_mime_type === delivery.mimeType
+    && Number(row.output_byte_size) === Number(delivery.byteSize)
+    && Number(row.width) === Number(delivery.width)
+    && Number(row.height) === Number(delivery.height);
+}
+
+// Internal recovery boundary for legacy profile references. The delivery must
+// be the exact opaque object minted by stageSanitizedPublicImage after a full
+// decode/re-encode and digest-bound upload. The old URL is used only as an exact
+// compare-and-swap guard; it is never registered as safe or returned publicly by
+// this helper. No API route exposes this operation.
+export function recoverProfileImageReference(database, {
+  ownerId,
+  reference,
+  artistKey,
+  expectedCurrentUrl,
+  sourceByteSize,
+  sourceEtag,
+  delivery,
+  env = process.env,
+  at = Date.now(),
+} = {}) {
+  ensureLegacyMediaFinalizeSchema(database);
+  const owner = normalizedOwner(ownerId);
+  const target = RECOVERABLE_PROFILE_REFERENCES[String(reference || "")];
+  if (!target) throw new ApiError(400, "The profile photo recovery target is invalid.", "VALIDATION_FAILED");
+  const expectedUrl = typeof expectedCurrentUrl === "string" ? expectedCurrentUrl.trim() : "";
+  const expectedKey = trustedOwnedMediaKey(expectedUrl, { ownerId: owner, env });
+  if (!expectedKey || expectedKey.split("/")[2] !== target.purpose) {
+    throw new ApiError(400, "The legacy profile photo is not owner-bound to this destination.", "VALIDATION_FAILED");
+  }
+  const verifiedSourceBytes = Number(sourceByteSize);
+  const verifiedSourceEtag = typeof sourceEtag === "string" && /^"[\x21\x23-\x7e]{1,200}"$/u.test(sourceEtag)
+    ? sourceEtag
+    : null;
+  if (!Number.isSafeInteger(verifiedSourceBytes) || verifiedSourceBytes < 1) {
+    throw new ApiError(400, "The legacy profile photo size was not verified.", "VALIDATION_FAILED");
+  }
+  if (!verifiedSourceEtag) {
+    throw new ApiError(400, "The legacy profile photo generation was not verified.", "VALIDATION_FAILED");
+  }
+
+  const attested = verifiedSanitizedPublicImageDelivery(delivery, {
+    ownerId: owner,
+    purpose: target.purpose,
+    sourceObjectKey: expectedKey,
+    sourceEtag: verifiedSourceEtag,
+    serverRecovery: true,
+  });
+  if (!attested || !SANITIZED_PROFILE_IMAGE_TYPES.has(attested.mimeType)
+      || !trustedMediaQueueKey(attested.objectKey, owner)
+      || !trustedMediaQueueKey(attested.stagingKey, owner)) {
+    throw new ApiError(400, "The recovered profile photo is not a verified sanitized derivative.", "VALIDATION_FAILED");
+  }
+  const publicKey = trustedOwnedMediaKey(attested.publicUrl, { ownerId: owner, env });
+  if (publicKey !== attested.objectKey || publicKey.split("/")[2] !== target.purpose
+      || expectedUrl === attested.publicUrl) {
+    throw new ApiError(400, "The recovered profile photo is not bound to this destination.", "VALIDATION_FAILED");
+  }
+  if (!Number.isSafeInteger(attested.byteSize) || attested.byteSize < 1
+      || !Number.isSafeInteger(attested.width) || attested.width < 1
+      || !Number.isSafeInteger(attested.height) || attested.height < 1) {
+    throw new ApiError(400, "The recovered profile photo metadata is invalid.", "VALIDATION_FAILED");
+  }
+
+  return withWrite(database, () => {
+    const profile = recoveryProfileRow(database, { ownerId: owner, target, artistKey });
+    if (!profile) throw new ApiError(404, "That profile recovery target was not found.", "NOT_FOUND");
+    const currentUrl = profile[target.field];
+    const duplicate = currentUrl === attested.publicUrl;
+    if (!duplicate && currentUrl !== expectedUrl) {
+      throw new ApiError(409, "That profile photo changed before recovery completed.", "CONFLICT");
+    }
+
+    let sourceObject = database.prepare(`SELECT owner_id,storage_scope,purpose,byte_size,status
+      FROM media_objects WHERE owner_id=? AND object_key=?`).get(owner, expectedKey);
+    if (!sourceObject) {
+      const recorded = recordMediaObjectTicket(database, {
+        ownerId: owner,
+        objectKey: expectedKey,
+        storageScope: "public",
+        byteSize: verifiedSourceBytes,
+        at,
+        expiresAt: null,
+      });
+      if (!recorded) {
+        throw new ApiError(409, "The legacy profile photo could not be registered for retirement.", "CONFLICT");
+      }
+      sourceObject = database.prepare(`SELECT owner_id,storage_scope,purpose,byte_size,status
+        FROM media_objects WHERE owner_id=? AND object_key=?`).get(owner, expectedKey);
+    }
+    if (sourceObject && Number(sourceObject.byte_size) === 0
+        && sourceObject.owner_id === owner && sourceObject.storage_scope === "public"
+        && sourceObject.purpose === target.purpose
+        && new Set(["issued", "associated"]).has(sourceObject.status)) {
+      database.prepare(`UPDATE media_objects SET byte_size=?,updated_at=?
+        WHERE owner_id=? AND object_key=? AND byte_size=0 AND status IN ('issued','associated')`)
+        .run(verifiedSourceBytes, at, owner, expectedKey);
+      sourceObject = database.prepare(`SELECT owner_id,storage_scope,purpose,byte_size,status
+        FROM media_objects WHERE owner_id=? AND object_key=?`).get(owner, expectedKey);
+    }
+    if (!sourceObject || sourceObject.owner_id !== owner || sourceObject.storage_scope !== "public"
+        || sourceObject.purpose !== target.purpose
+        || Number(sourceObject.byte_size) !== verifiedSourceBytes
+        || (!duplicate && !new Set(["issued", "associated"]).has(sourceObject.status))) {
+      throw new ApiError(409, "The legacy profile photo ledger does not match the verified source.", "CONFLICT");
+    }
+
+    const outputObject = database.prepare(`SELECT owner_id,storage_scope,purpose,byte_size,status
+      FROM media_objects WHERE owner_id=? AND object_key=?`).get(owner, attested.objectKey);
+    if (!outputObject || outputObject.storage_scope !== "public"
+        || outputObject.purpose !== target.purpose
+        || Number(outputObject.byte_size) !== Number(attested.byteSize)
+        || !new Set(["issued", "associated"]).has(outputObject.status)) {
+      throw new ApiError(409, "The sanitized profile photo is no longer available.", "CONFLICT");
+    }
+
+    let descriptor = finalizedDescriptorReference(database, {
+      ownerId: owner,
+      publicUrl: attested.publicUrl,
+      purpose: target.purpose,
+    });
+    if (descriptor && !matchingRecoveryDescriptor(descriptor, {
+      ownerId: owner,
+      purpose: target.purpose,
+      delivery: attested,
+    })) {
+      throw new ApiError(409, "The sanitized profile photo has conflicting recovery history.", "CONFLICT");
+    }
+    if (!descriptor) {
+      const descriptorId = `lm_${sha256(`profile-recovery\0${owner}\0${target.purpose}\0${attested.objectKey}`).slice(0, 48)}`;
+      const inaccessibleTokenHash = randomBytes(32).toString("hex");
+      try {
+        database.prepare(`INSERT INTO legacy_media_finalize_descriptors
+          (id,owner_id,token_hash,purpose,staging_object_key,staging_mime_type,staging_byte_size,
+           output_mime_type,output_object_key,output_url,output_byte_size,width,height,status,
+           expires_at,consumed_at,finalized_at,created_at,updated_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'finalized',?,?,?,?,?)`)
+          .run(descriptorId, owner, inaccessibleTokenHash, target.purpose, attested.stagingKey,
+            attested.mimeType, attested.byteSize, attested.mimeType, attested.objectKey,
+            attested.publicUrl, attested.byteSize, attested.width, attested.height,
+            at + LEGACY_MEDIA_FINALIZE_TTL_MS, at, at, at, at);
+      } catch (error) {
+        throw new ApiError(409, "The sanitized profile photo could not be registered for recovery.", "CONFLICT", error);
+      }
+      descriptor = database.prepare("SELECT * FROM legacy_media_finalize_descriptors WHERE id=?")
+        .get(descriptorId);
+      if (!matchingRecoveryDescriptor(descriptor, {
+        ownerId: owner,
+        purpose: target.purpose,
+        delivery: attested,
+      })) {
+        throw new ApiError(409, "The sanitized profile photo could not be registered for recovery.", "CONFLICT");
+      }
+    }
+
+    if (!duplicate) {
+      replaceRecoveryProfileRow(database, {
+        ownerId: owner,
+        target,
+        artistKey,
+        expectedCurrentUrl: expectedUrl,
+        publicUrl: attested.publicUrl,
+        at,
+      });
+    }
+    const sourceUnreferenced = unreferencedOwnedMediaUrls(database, {
+      ownerId: owner,
+      urls: [expectedUrl],
+      env,
+    }).includes(expectedUrl);
+    if (sourceUnreferenced) {
+      const retired = enqueueOwnedMediaUrls(database, {
+        ownerId: owner,
+        urls: [expectedUrl],
+        env,
+        at,
+      });
+      if (retired.accepted !== 1) {
+        throw new ApiError(409, "The legacy profile photo could not be retired.", "CONFLICT");
+      }
+    } else if (markOwnedMediaAssociated(database, {
+      ownerId: owner,
+      urls: [expectedUrl],
+      env,
+      at,
+    }) !== 1) {
+      throw new ApiError(409, "The shared legacy profile photo could not remain associated.", "CONFLICT");
+    }
+    const associated = database.prepare(`UPDATE media_objects SET status='associated',
+      associated_at=COALESCE(associated_at,?),updated_at=?
+      WHERE owner_id=? AND object_key=? AND storage_scope='public' AND status IN ('issued','associated')`)
+      .run(at, at, owner, attested.objectKey);
+    if (Number(associated.changes || 0) !== 1) {
+      throw new ApiError(409, "The sanitized profile photo is no longer available.", "CONFLICT");
+    }
+
+    // A shared exact source may need another CAS after a process restart. Keep
+    // deterministic private staging live until the final reference has moved;
+    // then retire it in the same commit as the last raw public reference.
+    if (sourceUnreferenced) {
+      const stagingObject = database.prepare(`SELECT storage_scope,status FROM media_objects
+        WHERE owner_id=? AND object_key=?`).get(owner, attested.stagingKey);
+      if (stagingObject?.storage_scope === "private"
+          && new Set(["issued", "associated"]).has(stagingObject.status)) {
+        const queued = enqueueOwnedMediaKeys(database, {
+          ownerId: owner,
+          keys: [attested.stagingKey],
+          at,
+        });
+        if (queued.accepted !== 1) {
+          throw new ApiError(409, "The private recovery source could not be retired.", "CONFLICT");
+        }
+      }
+    }
+    database.prepare(`UPDATE legacy_media_finalize_descriptors
+      SET consumed_at=COALESCE(consumed_at,?),updated_at=? WHERE id=? AND owner_id=?`)
+      .run(at, at, descriptor.id, owner);
+    const committed = database.prepare("SELECT * FROM legacy_media_finalize_descriptors WHERE id=?")
+      .get(descriptor.id);
+    return Object.freeze({
+      ...outputProjection(committed, { duplicate }),
+      reference: String(reference),
+      sourceRetired: sourceUnreferenced,
+    });
   });
 }
 

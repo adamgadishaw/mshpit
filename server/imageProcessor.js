@@ -164,6 +164,10 @@ function runIsolatedImageJob(operation, bytes, options = {}) {
         expectedType: options.expectedType,
         outputType: options.outputType,
         maxOutputBytes: options.maxOutputBytes,
+        // HEVC-backed HEIC decoding is intentionally recovery-only. Keeping
+        // this as an explicit, strict boolean prevents ordinary upload routes
+        // from silently acquiring a second decoder surface.
+        allowHeicFallback: options.allowHeicFallback === true,
       }, (error) => {
         if (error) fail(new ImageProcessorError("worker_unavailable", "Image verification input could not be delivered.", error));
       });
@@ -185,12 +189,14 @@ export async function sanitizeDecodedImage(bytes, {
   outputType = expectedType,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   maxOutputBytes = MAX_IMAGE_OUTPUT_BYTES,
+  allowHeicFallback = false,
 } = {}) {
   return runIsolatedImageJob("sanitize", bytes, {
     expectedType,
     outputType,
     timeoutMs,
     maxOutputBytes,
+    allowHeicFallback: allowHeicFallback === true,
   });
 }
 
