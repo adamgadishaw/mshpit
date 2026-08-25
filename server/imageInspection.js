@@ -6,6 +6,11 @@ import { inflateSync } from "node:zlib";
 export const MAX_IMAGE_PIXELS = 24_000_000;
 export const MAX_IMAGE_EDGE = 16_384;
 export const MAX_PNG_BIT_DEPTH = 8;
+// Historical 24 MP-class phone JPEGs in production are 5712x4284 (24,470,208
+// pixels) and carry a second-image/gain-map trailer. This narrow ceiling is
+// available only through canonicalLegacyRecoveryJpegPrefix; ordinary uploads
+// stay on MAX_IMAGE_PIXELS and recovered output is downscaled before publish.
+export const MAX_LEGACY_RECOVERY_JPEG_PIXELS = 25_000_000;
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const SAFE_PNG_CHUNKS = new Set(["IHDR", "PLTE", "IDAT", "IEND", "tRNS", "cHRM", "gAMA", "sRGB"]);
@@ -456,15 +461,22 @@ export function canonicalLegacyRecoveryJpegPrefix(value) {
   }
   const result = inspectJpeg(bytes, { sanitized: false, allowTrailing: true });
   assertResourceBounds(result.width, result.height, {
-    maxPixels: MAX_IMAGE_PIXELS,
+    maxPixels: MAX_LEGACY_RECOVERY_JPEG_PIXELS,
     maxEdge: MAX_IMAGE_EDGE,
   });
   if (!Number.isSafeInteger(result.endOffset) || result.endOffset < 12 || result.endOffset > bytes.length) {
     invalid();
   }
+  if (result.endOffset === bytes.length) {
+    invalid("trailing_data", "Legacy JPEG recovery requires a trailer after the primary image.");
+  }
   const prefix = bytes.subarray(0, result.endOffset);
   // Re-enter the ordinary strict parser so a future parser change cannot make
   // this recovery boundary less strict than normal standalone JPEG validation.
-  inspectImageBytes(prefix, { expectedType: "image/jpeg", sanitized: false });
+  inspectImageBytes(prefix, {
+    expectedType: "image/jpeg",
+    sanitized: false,
+    maxPixels: MAX_LEGACY_RECOVERY_JPEG_PIXELS,
+  });
   return prefix;
 }

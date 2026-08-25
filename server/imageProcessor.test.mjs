@@ -219,6 +219,55 @@ test("legacy recovery strips only a marker-validated JPEG trailer before isolate
   );
 });
 
+test("oversized legacy trailer JPEGs have a narrow recovery-only admission and bounded output", async () => {
+  const width = 5712;
+  const height = 4284;
+  assert.ok(width * height > MAX_IMAGE_PIXELS);
+  assert.ok(width * height < 25_000_000);
+  const jpeg = await createdImage({ width, height });
+  const sentinel = Buffer.from("legacy-oversize-trailer-must-never-publish");
+  const withTrailer = Buffer.concat([jpeg, sentinel]);
+
+  await assert.rejects(
+    sanitizeDecodedImage(withTrailer, { expectedType: "image/jpeg" }),
+    (error) => error.code === "trailing_data",
+  );
+  await assert.rejects(
+    sanitizeDecodedImage(jpeg, {
+      expectedType: "image/jpeg",
+      allowLegacyJpegTrailer: true,
+    }),
+    (error) => error.code === "resource_limit",
+  );
+
+  const recovered = await sanitizeDecodedImage(withTrailer, {
+    expectedType: "image/jpeg",
+    outputType: "image/jpeg",
+    allowLegacyJpegTrailer: true,
+  });
+  assert.deepEqual([recovered.width, recovered.height], [4096, 3072]);
+  assert.ok(recovered.width * recovered.height <= MAX_IMAGE_PIXELS);
+  assert.equal(recovered.bytes.includes(sentinel), false);
+  assert.equal(inspectImageBytes(recovered.bytes, {
+    expectedType: "image/jpeg",
+    sanitized: true,
+  }).metadataPresent, false);
+
+  const overLimit = Buffer.from(jpeg);
+  const sof = overLimit.indexOf(Buffer.from([0xff, 0xc0]));
+  assert.ok(sof > 0);
+  overLimit.writeUInt16BE(6000, sof + 5);
+  overLimit.writeUInt16BE(4200, sof + 7);
+  assert.ok(6000 * 4200 > 25_000_000);
+  await assert.rejects(
+    sanitizeDecodedImage(Buffer.concat([overLimit, sentinel]), {
+      expectedType: "image/jpeg",
+      allowLegacyJpegTrailer: true,
+    }),
+    (error) => error.code === "resource_limit",
+  );
+});
+
 test("private HEIF/GIF-style sources can select a safe public output codec", async () => {
   const png = await createdImage({ width: 10, height: 7, format: "png" });
   const sanitized = await sanitizeDecodedImage(png, {
