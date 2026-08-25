@@ -1,5 +1,10 @@
-# Local/server-only configuration. Copy to .env and keep real credentials out
-# of source control. EXPO_PUBLIC_* values are embedded into browser bundles.
+# Environment configuration example
+
+Use these names as a local/server-only configuration reference. Keep real
+credentials in the deployment provider or an untracked `.env` file.
+`EXPO_PUBLIC_*` values, if added, are embedded into browser bundles.
+
+```dotenv
 NODE_ENV=development
 PUBLIC_ORIGIN=http://localhost:8081
 
@@ -26,3 +31,4 @@ SITE_HEALTH_DIGEST_HOUR=9
 
 # Non-production email fails closed unless a recipient is explicitly allowed.
 EMAIL_ALLOWED_RECIPIENTS=
+```
