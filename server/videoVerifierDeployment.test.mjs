@@ -20,6 +20,8 @@ test("video verifier container pins its runtime and drops root privileges", () =
   assert.match(dockerfile, /--disable-network/);
   assert.match(dockerfile, /--enable-libx264/);
   assert.match(dockerfile, /sha256sum --check --strict/);
+  assert.match(dockerfile, /^\s*make install; \\$/m);
+  assert.doesNotMatch(dockerfile, /install-strip/);
   assert.match(dockerfile, /verifier-smoke\.mp4/);
   assert.match(dockerfile, /PIT_FFMPEG_PATH=\/opt\/ffmpeg\/bin\/ffmpeg/);
   assert.match(dockerfile, /PIT_FFPROBE_PATH=\/opt\/ffmpeg\/bin\/ffprobe/);
