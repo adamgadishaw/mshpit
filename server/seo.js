@@ -1,239 +1,329 @@
-// Server-rendered metadata, robots.txt and sitemap.xml.
+// Public discovery documents, canonical URL resolution, and crawler controls.
 //
-// The app is a client-rendered bundle, so a crawler that does not execute
-// JavaScript sees an empty shell — and so does every link preview: Facebook,
-// iMessage, WhatsApp, Slack and Discord read the HTML and never run the app.
-// Sharing an artist showed a blank card titled "Pit".
-//
-// Full server rendering is a much larger change. Injecting real per-URL
-// metadata into the existing shell is not, and it fixes both the previews and
-// what a crawler indexes, which is the part that actually matters here.
+// The interactive app remains an Expo web bundle. Public entity routes receive
+// meaningful HTML inside #root before that bundle mounts, so people without
+// JavaScript, link-preview bots, and search crawlers all see the same public
+// facts. React replaces the preview when it starts; private/session state is
+// never projected into this layer.
 
-import { db, normName } from "./db.js";
-import { isProduction } from "./environment.js";
-import { parsePath, slugify, artistPath, venuePath, showPath, profilePath } from "../src/domain/urls.mjs";
-import { publicPageSitemapEntries } from "./publicPages.js";
+import { db, artistStmts, normName } from "./db.js";
 import { activeAccountSql } from "./accountVisibility.js";
-import { safeOwnedReadyMediaUrl } from "./publicMedia.js";
+import { isProduction } from "./environment.js";
+import {
+  artistPath,
+  parsePath,
+  postPath,
+  profilePath,
+  venuePath,
+} from "../src/domain/urls.mjs";
+import {
+  createPublicDocumentService,
+  renderPublicDocumentHead,
+  renderPublicDocumentShell,
+} from "./features/seo/publicDocuments.js";
+import {
+  sitemapIndexXml,
+  sitemapXmlFor,
+} from "./features/seo/sitemapService.js";
 
-const SITE_NAME = "Pit";
-const DEFAULT_TITLE = "PIT - Your life's musical journey";
+const SITE_NAME = "Mshpit";
+const DEFAULT_TITLE = "Mshpit — Your life's musical journey";
 const DEFAULT_DESCRIPTION =
-  "Log the concerts that shape your story, remember every band and room, and discover your next unforgettable night through people whose taste you trust.";
+  "Log the concerts that shape your story, share the nights you were there, and discover live music through people whose taste you trust.";
 
-export const origin = () => (process.env.PUBLIC_ORIGIN || "https://www.mshpit.com").replace(/\/+$/, "");
-
-// HTML-escape everything interpolated into a tag. Artist names and reviews are
-// user- and provider-supplied, so a stray quote would otherwise break out of the
-// attribute it sits in.
-const esc = (value) =>
-  String(value ?? "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-
-// Descriptions are for a search result snippet, so they get cut at a word.
-function summarize(text, max = 160) {
-  const clean = String(text ?? "").replace(/\s+/g, " ").trim();
-  if (clean.length <= max) return clean;
-  const cut = clean.slice(0, max);
-  const lastSpace = cut.lastIndexOf(" ");
-  return `${(lastSpace > max * 0.6 ? cut.slice(0, lastSpace) : cut).trimEnd()}…`;
-}
-
-const jsonField = (row, field, fallback) => {
-  try { return JSON.parse(row?.[field] || "null") ?? fallback; } catch { return fallback; }
-};
-
-// --- entity lookup ----------------------------------------------------------
-// One namespace, so the order here IS the collision policy: a person owns their
-// handle first, then artists, then venues. It must match the client's resolver.
-function findByHandle(slug) {
-  const row = db.prepare(`SELECT u.id,u.name,u.handle,u.bio,u.avatar_uri,u.verified FROM users u
-    WHERE lower(u.handle)=? AND ${activeAccountSql("u")}`).get(String(slug).toLowerCase());
-  if (!row) return null;
-  return {
-    kind: "profile",
-    title: `${row.name} (@${row.handle}) — ${SITE_NAME}`,
-    description: summarize(row.bio || `${row.name} reviews live music on ${SITE_NAME}. See the gigs they've been to and what they thought.`),
-    image: safeOwnedReadyMediaUrl(db, { ownerId: row.id, url: row.avatar_uri, kind: "image" }),
-    path: profilePath(row.handle),
-    handle: row.handle,
-    id: row.id,
-  };
-}
-
-function findArtist(slug) {
-  // Slugs are lossy, so match on the normalised name rather than storing a
-  // separate slug column that could drift from the artist's actual name. A
-  // lossy miss falls back to default metadata rather than scanning the entire
-  // catalogue for every attacker-chosen path.
-  const row = db.prepare("SELECT name,genre,bio,photo,data FROM artists WHERE norm=?").get(normName(slug.replace(/-/g, " ")));
-  if (!row) return null;
-  const stats = db.prepare(`SELECT COUNT(*) c,AVG(p.overall) avg FROM posts p JOIN users u ON u.id=p.user_id
-    WHERE p.removed=0 AND lower(p.artist)=? AND ${activeAccountSql("u")}`).get(String(row.name).toLowerCase());
-  const nights = stats?.c || 0;
-  const rating = nights && stats.avg ? ` Rated ${Number(stats.avg).toFixed(1)}/5 across ${nights} logged ${nights === 1 ? "night" : "nights"}.` : "";
-  return {
-    kind: "artist",
-    title: `${row.name} live — reviews, setlists and tour dates | ${SITE_NAME}`,
-    description: summarize(`${row.bio || `Is ${row.name} worth seeing live?`}${rating} Read reviews from people who were actually there.`),
-    image: row.photo || jsonField(row, "data", {}).photo || null,
-    path: artistPath(row.name),
-    name: row.name,
-  };
-}
-
-function findVenue(slug) {
-  const venueKey = normName(slug.replace(/-/g, " "));
-  const row = db.prepare(`SELECT p.venue,p.city FROM posts p JOIN users u ON u.id=p.user_id
-    WHERE p.venue_key=? AND p.removed=0 AND ${activeAccountSql("u")}
-    ORDER BY p.created_at DESC LIMIT 1`).get(venueKey);
-  if (!row) return null;
-  const stats = db.prepare(`SELECT COUNT(*) c,AVG(p.room) avg FROM posts p JOIN users u ON u.id=p.user_id
-    WHERE p.removed=0 AND lower(p.venue)=? AND ${activeAccountSql("u")}`).get(String(row.venue).toLowerCase());
-  const room = stats?.avg ? ` Room rated ${Number(stats.avg).toFixed(1)}/5.` : "";
-  return {
-    kind: "venue",
-    title: `${row.venue}${row.city ? `, ${row.city}` : ""} — gig reviews | ${SITE_NAME}`,
-    description: summarize(`What it's actually like to see a show at ${row.venue}.${room} Sound, sightlines and crowd, reviewed by people who were there.`),
-    image: null,
-    path: venuePath(row.venue),
-    name: row.venue,
-  };
-}
-
-function findShow(id) {
-  const row = db.prepare(`SELECT p.id,p.user_id,p.artist,p.venue,p.city,p.date,p.overall,p.review,p.photos
-    FROM posts p JOIN users u ON u.id=p.user_id
-    WHERE p.id=? AND p.removed=0 AND ${activeAccountSql("u")}`).get(id);
-  if (!row) return null;
-  const storedPhotos = jsonField(row, "photos", []);
-  const photos = (Array.isArray(storedPhotos) ? storedPhotos : []).filter((url) =>
-    !!safeOwnedReadyMediaUrl(db, { ownerId: row.user_id, url }));
-  return {
-    kind: "show",
-    title: `${row.artist} at ${row.venue}${row.date ? ` · ${row.date}` : ""} | ${SITE_NAME}`,
-    description: summarize(row.review || `A review of ${row.artist} live at ${row.venue}${row.city ? ` in ${row.city}` : ""}.`),
-    image: Array.isArray(photos) && photos.length ? photos[0] : null,
-    path: showPath(row.id),
-    show: {
-      id: row.id,
-      artist: row.artist,
-      venue: row.venue,
-      city: row.city,
-      date: row.date,
-      overall: row.overall,
-      review: row.review,
-    },
-  };
-}
-
-// Returns the metadata for a path, or null when it is not a public entity.
-const METADATA_CACHE_TTL_MS = 60 * 1000;
-const METADATA_CACHE_MAX = 1_000;
-const metadataCache = new Map();
-
-function uncachedMetadataFor(pathname) {
-  const parsed = parsePath(pathname);
-  if (!parsed) return null;
-  const slug = slugify(parsed.value) || String(parsed.value).toLowerCase();
+function configuredOrigin(env = process.env) {
   try {
-    if (parsed.type === "show") return findShow(parsed.value);
-    if (parsed.type === "profile") return findByHandle(parsed.value.replace(/^@/, ""));
-    if (parsed.type === "artist") return findArtist(slug);
-    if (parsed.type === "venue") return findVenue(slug);
-    // Ambiguous root slug: handle, then artist, then venue.
-    return findByHandle(parsed.value) || findArtist(slug) || findVenue(slug);
+    const parsed = new URL(env.PUBLIC_ORIGIN || "https://www.mshpit.com");
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") throw new TypeError("Unsupported public origin");
+    return parsed.origin;
   } catch {
-    // Metadata must never take the page down; the shell still renders.
+    return "https://www.mshpit.com";
+  }
+}
+
+export const origin = () => configuredOrigin(process.env);
+
+const publicDocuments = createPublicDocumentService({
+  database: db,
+  origin: origin(),
+  paths: {
+    artist: (row) => artistPath({
+      name: row?.name,
+      public_slug: row?.public_slug || row?.artist_public_slug,
+    }),
+    member: (row) => profilePath(row?.u_handle || row?.handle),
+    post: (row) => postPath(row?.id),
+  },
+});
+
+const memberByHandle = db.prepare(`SELECT u.id,u.name,u.handle FROM users u
+  WHERE u.handle=? AND ${activeAccountSql("u")} LIMIT 1`);
+const venueByKey = db.prepare(`SELECT p.venue,p.city FROM posts p JOIN users u ON u.id=p.user_id
+  WHERE p.venue_key=? AND p.removed=0 AND ${activeAccountSql("u")}
+  ORDER BY p.created_at DESC,p.id DESC LIMIT 1`);
+const publicPostIdentity = db.prepare(`SELECT p.id FROM posts p JOIN users u ON u.id=p.user_id
+  WHERE p.id=? AND p.removed=0 AND ${activeAccountSql("u")} LIMIT 1`);
+
+const esc = (value) => String(value ?? "")
+  .replace(/&/g, "&amp;")
+  .replace(/</g, "&lt;")
+  .replace(/>/g, "&gt;")
+  .replace(/"/g, "&quot;")
+  .replace(/'/g, "&#39;");
+
+function cleanPathname(value) {
+  const pathname = String(value || "/");
+  if (!pathname.startsWith("/") || pathname.length > 500 || /[\u0000-\u001f\u007f\\]/.test(pathname)) return null;
+  return pathname;
+}
+
+function artistResolution(slug) {
+  const artist = artistStmts.byPublicSlug.get(String(slug || "").trim());
+  if (!artist) return null;
+  const path = artistPath(artist);
+  return {
+    entity: { kind: "artist", name: artist.name, path },
+    canonicalPath: path,
+    documentRequest: { kind: "artist", artistKey: artist.norm, canonicalPath: path },
+  };
+}
+
+function memberResolution(handle) {
+  const member = memberByHandle.get(String(handle || "").replace(/^@+/, "").toLowerCase());
+  if (!member) return null;
+  const path = profilePath(member.handle);
+  return {
+    entity: { kind: "profile", name: member.name, handle: member.handle, id: member.id, path },
+    canonicalPath: path,
+    documentRequest: { kind: "member", id: member.id, canonicalPath: path },
+  };
+}
+
+function postResolution(id) {
+  const post = publicPostIdentity.get(String(id || ""));
+  if (!post) return null;
+  const path = postPath(id);
+  return {
+    // The client still calls a logged review a "show" internally. Its public
+    // identity is /post/:id; this compatibility value does not affect schema.
+    entity: { kind: "show", id: String(id), path },
+    canonicalPath: path,
+    documentRequest: { kind: "post", id: post.id, canonicalPath: path },
+  };
+}
+
+function venueResolution(value) {
+  const key = normName(String(value || "").replace(/-/g, " "));
+  const venue = key ? venueByKey.get(key) : null;
+  if (!venue) return null;
+  const path = venuePath(venue.venue);
+  return {
+    entity: { kind: "venue", name: venue.venue, path },
+    canonicalPath: path,
+  };
+}
+
+function hydrateResolution(resolution) {
+  if (!resolution) return null;
+  if (!resolution?.documentRequest) return { ...resolution, document: null };
+  const document = safePublicDocument(() => publicDocuments.documentFor(resolution.documentRequest));
+  return { ...resolution, document: document || null };
+}
+
+function safePublicDocument(read) {
+  try {
+    return read();
+  } catch (error) {
+    const cause = error instanceof Error && error.name ? error.name : "UnknownError";
+    console.error(`[seo] public document projection unavailable: cause=${cause}`);
     return null;
   }
 }
 
-export function metadataFor(pathname) {
-  const key = String(pathname || "/").slice(0, 500);
-  const at = Date.now();
-  const cached = metadataCache.get(key);
-  if (cached && at - cached.at < METADATA_CACHE_TTL_MS) return cached.value;
-  const value = uncachedMetadataFor(key);
-  if (metadataCache.size >= METADATA_CACHE_MAX) metadataCache.delete(metadataCache.keys().next().value);
-  metadataCache.set(key, { at, value });
-  return value;
+function entityResolution(pathname) {
+  const parsed = parsePath(pathname);
+  if (!parsed) return null;
+
+  if (parsed.type === "artist") return artistResolution(parsed.value);
+  if (parsed.type === "profile") return memberResolution(parsed.value);
+  if (parsed.type === "show") return postResolution(parsed.value);
+  if (parsed.type === "venue") return venueResolution(parsed.value);
+
+  // Legacy root vanity links had one shared namespace. Preserve their original
+  // collision policy, then redirect profiles/artists to explicit canonicals.
+  return memberResolution(parsed.value)
+    || artistResolution(parsed.value)
+    || venueResolution(parsed.value);
 }
 
-// What the client router needs to open a URL: which kind of thing this is and
-// its canonical name. Same lookup and same collision order as the metadata, so
-// the page a crawler is told about is the page a visitor gets.
 export function resolveEntity(pathname) {
-  const meta = metadataFor(pathname);
-  if (!meta) return null;
-  return { kind: meta.kind, name: meta.name || null, path: meta.path, id: meta.id || meta.show?.id || null, handle: meta.handle || null };
+  const path = cleanPathname(pathname);
+  return path ? entityResolution(path)?.entity || null : null;
 }
 
-// --- structured data --------------------------------------------------------
-// Schema.org lets a result carry a rating or an event date in the search page
-// itself, which is the difference between a blue link and a rich result.
-function structuredData(meta) {
-  if (!meta) return null;
-  if (meta.kind === "artist") {
-    return { "@context": "https://schema.org", "@type": "MusicGroup", name: meta.name, url: origin() + meta.path, ...(meta.image ? { image: meta.image } : {}) };
-  }
-  if (meta.kind === "show" && meta.show) {
-    const s = meta.show;
+const APP_SCREENS = new Set([
+  "/about", "/admin", "/badges", "/calendar", "/clips", "/discover",
+  "/download", "/feed", "/help", "/home", "/inbox", "/login", "/menu",
+  "/messages", "/moderation", "/nearby", "/new", "/notifications",
+  "/playlist", "/playlists", "/search", "/settings", "/signup", "/tour",
+  "/venues", "/you",
+]);
+
+function publicRoute(pathname) {
+  const path = cleanPathname(pathname);
+  if (!path) return { type: "not-found", status: 404 };
+  if (path === "/") {
+    const document = safePublicDocument(() => publicDocuments.homeDocument({ canonicalPath: "/" }));
+    if (!document) return { type: "app", status: 200 };
     return {
-      "@context": "https://schema.org",
-      "@type": "MusicEvent",
-      name: `${s.artist} at ${s.venue}`,
-      ...(s.date ? { startDate: s.date } : {}),
-      location: { "@type": "Place", name: s.venue, ...(s.city ? { address: s.city } : {}) },
-      performer: { "@type": "MusicGroup", name: s.artist },
-      ...(s.overall ? { review: { "@type": "Review", reviewRating: { "@type": "Rating", ratingValue: s.overall, bestRating: 5 } } } : {}),
+      type: "document",
+      status: 200,
+      canonicalPath: "/",
+      document,
     };
   }
-  return null;
+
+  const parsed = parsePath(path);
+  if (parsed) {
+    const identity = entityResolution(path);
+    if (!identity) return { type: "not-found", status: 404 };
+    if (identity.canonicalPath && identity.canonicalPath !== path) {
+      return { type: "redirect", status: 301, location: identity.canonicalPath, entity: identity.entity };
+    }
+    const resolution = hydrateResolution(identity);
+    if (resolution.document && documentIsIndexable(resolution.document)) {
+      return { type: "document", status: 200, ...resolution };
+    }
+    if (resolution.document) return { type: "app", status: 200, entity: resolution.entity };
+    // Venue identity is not stable enough for a search canonical yet. Keep its
+    // interactive route but explicitly withhold it from indexing.
+    return { type: "app", status: 200, entity: resolution.entity };
+  }
+
+  if (APP_SCREENS.has(path.toLowerCase())) return { type: "app", status: 200 };
+  return { type: "not-found", status: 404 };
 }
 
-// Build the <head> additions for a path. Always returns a full set, falling
-// back to the site defaults, so no page ever ships without a title.
+function substantiveText(value, minimum) {
+  return String(value || "").replace(/\s+/g, " ").trim().length >= minimum;
+}
+
+function documentIsIndexable(document) {
+  if (!document) return false;
+  if (document.kind === "home") return true;
+  if (document.kind === "artist") {
+    return substantiveText(document.artist?.bio, 80)
+      || document.reviews?.some((review) => substantiveText(review.text, 40) || review.media?.length)
+      || document.events?.length > 0;
+  }
+  if (document.kind === "member") {
+    return substantiveText(document.member?.bio, 60)
+      || document.posts?.some((post) => substantiveText(post.text, 40) || post.media?.length);
+  }
+  if (document.kind === "post") {
+    return substantiveText(document.post?.text, 40) || document.post?.media?.length > 0;
+  }
+  return false;
+}
+
+export function seoHttpPlan(pathname) {
+  return publicRoute(pathname);
+}
+
+function legacyMetadata(resolution) {
+  if (!resolution) return null;
+  const { document, entity } = resolution;
+  if (!document) {
+    if (entity?.kind !== "venue") return null;
+    return {
+      kind: "venue",
+      name: entity.name,
+      path: entity.path,
+      title: `${entity.name} — live music on Mshpit`,
+      description: `Open ${entity.name} on Mshpit.`,
+      image: null,
+    };
+  }
+  const kind = document.kind === "member" ? "profile" : document.kind === "post" ? "show" : document.kind;
+  return {
+    kind,
+    name: document.artist?.name || document.member?.name || null,
+    handle: document.member?.handle || null,
+    id: document.post?.id || entity?.id || null,
+    path: document.canonicalPath,
+    title: document.title,
+    description: document.description,
+    image: document.image,
+    ...(kind === "show" ? {
+      show: {
+        id: document.post.id,
+        artist: document.post.artist,
+        venue: document.post.venue,
+        city: document.post.city,
+        date: document.post.showDate,
+        overall: document.post.rating,
+        review: document.post.text,
+      },
+    } : {}),
+  };
+}
+
+export function metadataFor(pathname) {
+  const path = cleanPathname(pathname);
+  return path ? legacyMetadata(hydrateResolution(entityResolution(path))) : null;
+}
+
+function defaultHead(pathname, { noindex = true } = {}) {
+  const path = cleanPathname(pathname) || "/";
+  const url = `${origin()}${path}`;
+  const image = `${origin()}/og.png`;
+  return `<title>${esc(DEFAULT_TITLE)}</title>
+    <meta name="description" content="${esc(DEFAULT_DESCRIPTION)}" />
+    ${noindex ? '<meta name="robots" content="noindex,follow" />' : ""}
+    <meta property="og:site_name" content="${SITE_NAME}" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="${esc(DEFAULT_TITLE)}" />
+    <meta property="og:description" content="${esc(DEFAULT_DESCRIPTION)}" />
+    <meta property="og:url" content="${esc(url)}" />
+    <meta property="og:image" content="${esc(image)}" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta name="twitter:card" content="summary_large_image" />`;
+}
+
 export function headTagsFor(pathname) {
-  const meta = metadataFor(pathname);
-  const url = origin() + (meta?.path || pathname || "/");
-  const title = meta?.title || DEFAULT_TITLE;
-  const description = meta?.description || DEFAULT_DESCRIPTION;
-  const image = meta?.image || `${origin()}/icon.png`;
-
-  const tags = [
-    `<title>${esc(title)}</title>`,
-    `<meta name="description" content="${esc(description)}" />`,
-    `<link rel="canonical" href="${esc(url)}" />`,
-    `<meta property="og:site_name" content="${esc(SITE_NAME)}" />`,
-    `<meta property="og:type" content="${meta?.kind === "profile" ? "profile" : "website"}" />`,
-    `<meta property="og:title" content="${esc(title)}" />`,
-    `<meta property="og:description" content="${esc(description)}" />`,
-    `<meta property="og:url" content="${esc(url)}" />`,
-    `<meta property="og:image" content="${esc(image)}" />`,
-    `<meta name="twitter:card" content="summary_large_image" />`,
-    `<meta name="twitter:title" content="${esc(title)}" />`,
-    `<meta name="twitter:description" content="${esc(description)}" />`,
-    `<meta name="twitter:image" content="${esc(image)}" />`,
-  ];
-  const schema = structuredData(meta);
-  if (schema) tags.push(`<script type="application/ld+json">${JSON.stringify(schema).replace(/</g, "\\u003c")}</script>`);
-  return tags.join("\n    ");
+  const route = publicRoute(pathname);
+  return route.type === "document" && route.document
+    ? renderPublicDocumentHead(route.document)
+    : defaultHead(pathname);
 }
 
-// Replace the shell's placeholder <title> with real metadata.
-export function injectHead(html, pathname) {
-  return html.replace(/<title>.*?<\/title>/i, headTagsFor(pathname));
+function replaceHead(html, tags) {
+  const withoutTitle = String(html).replace(/\s*<title[^>]*>[\s\S]*?<\/title>/i, "");
+  return withoutTitle.replace(/<\/head>/i, `    ${tags}\n  </head>`);
 }
 
-// --- robots.txt -------------------------------------------------------------
+export function injectHead(html, pathname, resolvedRoute = null) {
+  const route = resolvedRoute || publicRoute(pathname);
+  let output = replaceHead(html, route.type === "document" && route.document
+    ? renderPublicDocumentHead(route.document)
+    : defaultHead(pathname));
+  if (route.type === "document" && route.document) {
+    const shell = renderPublicDocumentShell(route.document);
+    if (shell) output = output.replace(/<div\s+id=["']root["']\s*><\/div>/i, `<div id="root">${shell}</div>`);
+  }
+  return output;
+}
+
+export function renderNotFoundDocument() {
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Page not found | Mshpit</title><meta name="robots" content="noindex,follow" />
+  <style>body{margin:0;background:#080807;color:#f8f4ec;font:16px/1.5 system-ui;display:grid;min-height:100vh;place-items:center}main{max-width:42rem;padding:2rem}p:first-child{color:#f4b72a;font:800 .75rem monospace;letter-spacing:.15em;text-transform:uppercase}h1{font:900 clamp(3rem,10vw,6rem)/.95 Georgia,serif;margin:.4rem 0}p{color:#bdb4aa}a{display:inline-block;margin-top:1rem;border-radius:999px;background:#f4b72a;color:#150f05;padding:.8rem 1.1rem;text-decoration:none;font-weight:800}</style>
+</head><body><main><p>Lost in the crowd</p><h1>That page isn't here.</h1><p>The link may be old, private, or removed.</p><a href="/">Back to Mshpit</a></main></body></html>`;
+}
+
 export function robotsTxt() {
-  // A staging copy serving the same pages is duplicate content at best and a
-  // public preview of unreleased work at worst. Keep it out of every index.
   if (!isProduction()) {
     return ["# staging — not for indexing", "User-agent: *", "Disallow: /", ""].join("\n");
   }
@@ -241,70 +331,33 @@ export function robotsTxt() {
     "# mshpit.com",
     "User-agent: *",
     "Allow: /",
-    // Nothing here is secret, but these are per-account views with no value in
-    // an index and they would burn crawl budget on duplicate shells.
     "Disallow: /api/",
-    "Disallow: /show/*/edit",
+    "Disallow: /admin",
+    "Disallow: /moderation",
+    "Disallow: /messages",
+    "Disallow: /notifications",
+    "Disallow: /settings",
+    "Disallow: /you",
     "",
     `Sitemap: ${origin()}/sitemap.xml`,
     "",
   ].join("\n");
 }
 
-// --- sitemap ----------------------------------------------------------------
-// Only pages with something on them. A sitemap full of empty artist stubs
-// teaches a search engine that the site is thin, which is worse than a smaller
-// sitemap that is entirely substantial.
-const SITEMAP_CACHE_TTL_MS = 5 * 60 * 1000;
-let sitemapCache = { at: 0, value: "" };
-
 export function sitemapXml() {
-  const generatedAt = Date.now();
-  if (sitemapCache.value && generatedAt - sitemapCache.at < SITEMAP_CACHE_TTL_MS) return sitemapCache.value;
-  const base = origin();
-  const urls = [{ loc: `${base}/`, priority: "1.0", changefreq: "daily" }];
-  const seenLocations = new Set(urls.map((url) => url.loc));
+  return sitemapIndexXml(process.env);
+}
 
-  const addUrl = (entry) => {
-    if (!entry?.loc || seenLocations.has(entry.loc)) return;
-    seenLocations.add(entry.loc);
-    urls.push(entry);
-  };
+const SITEMAP_CACHE_TTL_MS = 5 * 60 * 1000;
+const sitemapCache = new Map();
 
-  for (const page of publicPageSitemapEntries()) {
-    addUrl({ loc: `${base}${page.path}`, priority: page.priority, changefreq: page.changefreq });
-  }
-
-  for (const row of db.prepare(`SELECT p.artist,COUNT(*) c,MAX(p.created_at) latest FROM posts p JOIN users u ON u.id=p.user_id
-                                WHERE p.removed=0 AND p.artist<>'' AND ${activeAccountSql("u")} GROUP BY lower(p.artist)`).all()) {
-    addUrl({ loc: base + artistPath(row.artist), priority: "0.8", changefreq: "weekly", lastmod: row.latest });
-  }
-  for (const row of db.prepare(`SELECT p.venue,MAX(p.created_at) latest FROM posts p JOIN users u ON u.id=p.user_id
-                                WHERE p.removed=0 AND p.venue<>'' AND ${activeAccountSql("u")} GROUP BY lower(p.venue)`).all()) {
-    addUrl({ loc: base + venuePath(row.venue), priority: "0.6", changefreq: "weekly", lastmod: row.latest });
-  }
-  for (const row of db.prepare(`SELECT p.id,p.created_at,p.updated_at FROM posts p JOIN users u ON u.id=p.user_id
-                                WHERE p.removed=0 AND p.kind='review' AND ${activeAccountSql("u")}
-                                ORDER BY p.created_at DESC LIMIT 5000`).all()) {
-    addUrl({ loc: base + showPath(row.id), priority: "0.5", changefreq: "monthly", lastmod: row.updated_at || row.created_at });
-  }
-  // Artists with a real catalogue presence but no reviews yet still deserve
-  // indexing: they are the pages a search for the band should land on.
-  for (const row of db.prepare(`SELECT name FROM artists WHERE photo IS NOT NULL AND popularity IS NOT NULL
-                                ORDER BY rank_score DESC LIMIT 2000`).all()) {
-    addUrl({ loc: base + artistPath(row.name), priority: "0.4", changefreq: "monthly" });
-  }
-
-  const entries = urls.map((u) => [
-    "  <url>",
-    `    <loc>${esc(u.loc)}</loc>`,
-    u.lastmod ? `    <lastmod>${new Date(Number(u.lastmod)).toISOString().slice(0, 10)}</lastmod>` : null,
-    `    <changefreq>${u.changefreq}</changefreq>`,
-    `    <priority>${u.priority}</priority>`,
-    "  </url>",
-  ].filter(Boolean).join("\n")).join("\n");
-
-  const value = `<?xml version="1.0" encoding="UTF-8"?>\n<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${entries}\n</urlset>\n`;
-  sitemapCache = { at: generatedAt, value };
-  return value;
+export function sitemapForPath(pathname) {
+  const path = cleanPathname(pathname);
+  if (!path) return null;
+  const at = Date.now();
+  const cached = sitemapCache.get(path);
+  if (cached && at - cached.at < SITEMAP_CACHE_TTL_MS) return cached.body;
+  const body = sitemapXmlFor(path, { database: db, env: process.env, now: at });
+  if (body != null) sitemapCache.set(path, { at, body });
+  return body;
 }

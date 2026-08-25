@@ -8,7 +8,7 @@ const validPostId = (value) => {
 // ShowScreen accepts both persisted Pit review posts and non-post performance
 // listings (Ticketmaster dates, artist-created tour dates, and archive
 // aggregates). Keep that distinction explicit so only real posts receive
-// `/show/:postId` URLs and post-scoped analytics.
+// `/post/:postId` URLs and post-scoped analytics.
 export function prepareShowNavigation(log) {
   if (!log || typeof log !== "object" || Array.isArray(log)) return null;
 

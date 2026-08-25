@@ -2644,6 +2644,7 @@ export const routes = {
   "GET /api/resolve": (ctx) => {
     const path = clean(ctx.query.path, { max: 300 });
     if (!path.startsWith("/")) throw new ApiError(400, "Missing path.");
+    limit(ctx, "public-url-resolve", 120, 10 * 60 * 1000);
     return { entity: resolveEntity(path) };
   },
 

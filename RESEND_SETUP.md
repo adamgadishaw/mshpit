@@ -132,9 +132,12 @@ inbox. `ALERT_EMAIL` is deliberately separate from `ADMIN_EMAIL`: changing
 
 Production sends the database-locked Owner a code-owned site-health template once
 per Toronto calendar day, at or after 09:00 by default. A durable `app_meta`
-claim suppresses duplicates through restarts and rolling deploys; failed delivery
-uses bounded retries with the same provider idempotency key. Staging and local
-development cannot enable this production mail accidentally.
+claim is scoped to the Owner identity version plus an opaque digest of its user
+ID, so a legacy Owner's same-day claim cannot suppress the locked Founder's
+delivery. It suppresses duplicates through restarts and rolling deploys; failed
+delivery uses bounded retries with the same Owner-scoped provider idempotency
+key. No email address is stored in a dedupe key. Staging and local development
+cannot enable this production mail accidentally.
 
 The readout contains only operational aggregates: database readiness, configuration
 booleans, verified-local-backup age, mail outcome counts, media cleanup counts,
@@ -143,8 +146,10 @@ and process uptime. It excludes member identities, recipients, search terms,
 messages, posts, paths, raw URLs, bucket names, addresses, and credentials.
 
 A production release also records and emails one hash-chained security receipt per
-Render commit. This happens only after the web process is listening; it is a live
-process stamp, not proof that every public route or external provider is healthy.
+Render commit and Owner identity. A v1 receipt for that commit therefore cannot
+consume the locked v2 Founder's receipt. This happens only after the web process
+is listening; it is a live process stamp, not proof that every public route or
+external provider is healthy.
 
 The app cannot email while it is down and cannot prove Render build/control-plane
 status, public DNS, Google Workspace delivery, public reachability, or the latest

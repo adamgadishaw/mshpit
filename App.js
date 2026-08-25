@@ -69,7 +69,7 @@ import { load, remove, save } from "./src/lib/persist";
 import { api } from "./src/lib/api";
 import { getPendingImagePickerResult } from "./src/lib/imagePickerRecovery";
 import { lazyWithRetry } from "./src/lib/lazyWithRetry";
-import { artistPath, venuePath, showPath, profilePath, isPublicEntityPath } from "./src/domain/urls.mjs";
+import { artistPath, venuePath, postPath, profilePath, parsePath, isPublicEntityPath } from "./src/domain/urls.mjs";
 import {
   composerNavigationTransition,
   isActiveComposer,
@@ -143,6 +143,7 @@ function Root() {
     searchPeople, inboxUnread, accountStatus, track, unreadNotifications, recordPlay, playHistory,
     loadPlayHistory, saveQueueAsPlaylist, autoplayQueue, followingCount, resendEmailVerification,
     topArtists, artistsAlphabetical, trendingVenues, upcomingEvents, discoverySidebar, discoverySidebarStatus,
+    remoteArtistMeta,
     resolveYouTube, invalidateYouTube, youtubeVideoRejected, resolveDeezerPreview,
     youtubeLookupStatus, mediaReactions, loadMediaReactions, toggleMediaReaction,
     removeMyPostTag,
@@ -437,11 +438,17 @@ function Root() {
   // half-finished drafts in someone's history.
   const pathForFrame = (frame) => {
     if (!frame) return null;
-    if (frame.artistName) return artistPath(frame.artistName);
+    if (frame.artistName) {
+      const publicSlug = frame.artistPublicSlug || remoteArtistMeta?.(frame.artistName)?.publicSlug || null;
+      // A display name is not a durable identity: punctuation and collisions
+      // can produce a different catalog row. Leave history untouched until an
+      // API projection or resolved link supplies the authoritative slug.
+      return publicSlug ? artistPath(frame.artistName, publicSlug) : null;
+    }
     if (frame.venueName) return venuePath(frame.venueName);
-    if (frame.post?.id) return showPath(frame.post.id);
+    if (frame.post?.id) return postPath(frame.post.id);
     const showPostId = showNavigationPostId(frame.openLog);
-    if (showPostId) return showPath(showPostId);
+    if (showPostId) return postPath(showPostId);
     if (frame.profileId) {
       const user = userById?.(frame.profileId);
       return user?.handle ? profilePath(user.handle) : null;
@@ -695,7 +702,13 @@ function Root() {
         // Land inside the app, not on the marketing page: someone following a
         // link to a band wants the band.
         setLanding(false);
-        if (entity.kind === "artist") setStack([{}, { artistName: entity.name }]);
+        if (entity.kind === "artist") {
+          const canonical = parsePath(entity.path);
+          setStack([{}, {
+            artistName: entity.name,
+            ...(canonical?.type === "artist" ? { artistPublicSlug: canonical.value } : {}),
+          }]);
+        }
         else if (entity.kind === "venue") setStack([{}, { venueName: entity.name }]);
         else if (entity.kind === "profile") {
           const targetId = String(entity.id || "");
@@ -829,7 +842,16 @@ function Root() {
   };
   const openPostEditor = (log) => requireVerifiedMutation("post", () => { if (log?.id) go({ editingPost: log }); });
   const openBadges = (userId) => go({ badges: { userId } });
-  const openArtist = (name) => { track("view_artist"); go({ artistName: name }); };
+  const openArtist = (artist) => {
+    const payload = artist && typeof artist === "object" ? artist : null;
+    const name = String(payload?.name || artist || "").trim();
+    if (!name) return;
+    track("view_artist");
+    go({
+      artistName: name,
+      ...(payload?.publicSlug ? { artistPublicSlug: payload.publicSlug } : {}),
+    });
+  };
   const openArtistArchive = (name, artistKey = null) => {
     if (!name) return;
     track("view_artist_archive");

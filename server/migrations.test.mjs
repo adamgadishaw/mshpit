@@ -74,6 +74,120 @@ test("verification retry receipts are additive, bounded, and avoid raw email", (
     "the lookup index must be created only after legacy databases gain the column");
 });
 
+test("legacy artists receive unique immutable public slugs deterministically", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "pit-artist-public-slug-migration-"));
+  process.env.PIT_DATA_DIR = dataDir;
+  let legacy;
+  let upgraded;
+  let rebooted;
+  try {
+    legacy = await import(`./db.js?artist-public-slug-legacy=${encodeURIComponent(dataDir)}`);
+    legacy.db.exec(`
+      DELETE FROM artists;
+      DROP TRIGGER trg_artists_public_slug_immutable;
+      DROP INDEX idx_artists_public_slug;
+      ALTER TABLE artists DROP COLUMN public_slug;
+    `);
+    const insertLegacy = legacy.db.prepare(`INSERT INTO artists
+      (norm,name,rank_score,created_at,updated_at) VALUES (?,?,0,1,1)`);
+    insertLegacy.run("seo slug collision a", "SEO Slug Collision");
+    insertLegacy.run("seo slug collision b", "SEO-Slug Collision");
+    insertLegacy.run("seo slug symbols", "!!!");
+    legacy.db.close();
+    legacy = null;
+
+    upgraded = await import(`./db.js?artist-public-slug-upgrade=${encodeURIComponent(dataDir)}`);
+    const migrated = upgraded.db.prepare(`SELECT norm,public_slug FROM artists
+      WHERE norm LIKE 'seo slug %' ORDER BY norm`).all().map((row) => ({ ...row }));
+    assert.equal(migrated.length, 3);
+    assert.equal(migrated[0].public_slug, "seo-slug-collision");
+    assert.match(migrated[1].public_slug, /^seo-slug-collision-[a-f0-9]{10}$/);
+    assert.match(migrated[2].public_slug, /^artist-[a-f0-9]{12}$/);
+    assert.equal(new Set(migrated.map((row) => row.public_slug.toLowerCase())).size, migrated.length);
+
+    const indexes = upgraded.db.prepare("PRAGMA index_list(artists)").all();
+    assert.ok(indexes.some((row) => row.name === "idx_artists_public_slug" && row.unique === 1));
+    assert.equal(
+      upgraded.artistStmts.byPublicSlug.get(migrated[0].public_slug)?.norm,
+      "seo slug collision a",
+    );
+    assert.equal(
+      upgraded.publicArtist(upgraded.artistStmts.byNorm.get("seo slug collision a"))?.publicSlug,
+      migrated[0].public_slug,
+    );
+    assert.throws(
+      () => upgraded.db.prepare("UPDATE artists SET public_slug=? WHERE norm=?")
+        .run("moved-without-an-audited-migration", "seo slug collision a"),
+      /artist public slug is immutable/i,
+      "an arbitrary update cannot break an indexed artist URL",
+    );
+    upgraded.db.prepare(`INSERT INTO artists
+      (norm,name,rank_score,created_at,updated_at) VALUES (?,?,0,1,1)`)
+      .run("seo slug uniqueness probe", "SEO Slug Uniqueness Probe");
+    assert.throws(
+      () => upgraded.db.prepare("UPDATE artists SET public_slug=? WHERE norm=?")
+        .run(migrated[0].public_slug.toUpperCase(), "seo slug uniqueness probe"),
+      /UNIQUE constraint failed/i,
+      "public slug uniqueness is case-insensitive for a newly assigned slug",
+    );
+    upgraded.db.prepare("DELETE FROM artists WHERE norm=?").run("seo slug uniqueness probe");
+
+    upgraded.artistStmts.upsert.run(upgraded.artistRow(
+      "seo slug collision a",
+      { name: "A Completely New Display Name" },
+      "test",
+    ));
+    assert.equal(
+      upgraded.artistStmts.byNorm.get("seo slug collision a").public_slug,
+      migrated[0].public_slug,
+      "catalog enrichment and display-name changes cannot move an established URL",
+    );
+
+    upgraded.artistStmts.upsert.run(upgraded.artistRow(
+      "seo slug collision c",
+      { name: "SEO Slug Collision" },
+      "test",
+    ));
+    assert.match(
+      upgraded.artistStmts.byNorm.get("seo slug collision c").public_slug,
+      /^seo-slug-collision-[a-f0-9]{10}$/,
+      "new colliding catalog identities receive deterministic suffixes",
+    );
+
+    // A previous binary in a rolling deploy does not know the new column and
+    // can still insert NULL. The first current enrichment fills that blank but
+    // never rewrites an established slug.
+    upgraded.db.prepare(`INSERT INTO artists
+      (norm,name,rank_score,created_at,updated_at) VALUES (?,?,0,2,2)`)
+      .run("seo slug rolling", "SEO Slug Rolling");
+    assert.equal(upgraded.artistStmts.byNorm.get("seo slug rolling").public_slug, null);
+    upgraded.artistStmts.upsert.run(upgraded.artistRow(
+      "seo slug rolling",
+      { name: "SEO Slug Rolling" },
+      "test",
+    ));
+    assert.equal(upgraded.artistStmts.byNorm.get("seo slug rolling").public_slug, "seo-slug-rolling");
+
+    const beforeReboot = upgraded.db.prepare(`SELECT norm,public_slug FROM artists
+      WHERE norm LIKE 'seo slug %' ORDER BY norm`).all().map((row) => ({ ...row }));
+    upgraded.db.close();
+    upgraded = null;
+    rebooted = await import(`./db.js?artist-public-slug-reboot=${encodeURIComponent(dataDir)}`);
+    assert.deepEqual(
+      rebooted.db.prepare(`SELECT norm,public_slug FROM artists
+        WHERE norm LIKE 'seo slug %' ORDER BY norm`).all().map((row) => ({ ...row })),
+      beforeReboot,
+      "re-running the migration is idempotent",
+    );
+  } finally {
+    try { legacy?.db.close(); } catch {}
+    try { upgraded?.db.close(); } catch {}
+    try { rebooted?.db.close(); } catch {}
+    delete process.env.PIT_DATA_DIR;
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
 test("legacy attendance, tour-date, and campaign tables gain safe additive columns", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "pit-index-migration-order-"));
   process.env.PIT_DATA_DIR = dataDir;

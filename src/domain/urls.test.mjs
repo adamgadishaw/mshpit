@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { slugify, parsePath, artistPath, venuePath, showPath, profilePath, isReservedSlug } from "./urls.mjs";
+import { slugify, parsePath, artistPath, venuePath, postPath, showPath, profilePath, isReservedSlug } from "./urls.mjs";
 
 test("slugs are readable and stable for real band names", () => {
   assert.equal(slugify("Turnstile"), "turnstile");
@@ -13,11 +13,17 @@ test("slugs are readable and stable for real band names", () => {
   assert.equal(slugify("!!!"), "");
 });
 
-test("vanity paths sit at the root, Facebook style", () => {
-  assert.equal(artistPath("Billy Talent"), "/billy-talent");
-  assert.equal(profilePath("@superfingerbusiness_"), "/superfingerbusiness_");
-  // A show is an opaque id, so it keeps a prefix like facebook.com/events/<id>.
-  assert.equal(showPath("p_abc123"), "/show/p_abc123");
+test("canonical public identities have collision-free namespaces", () => {
+  assert.equal(artistPath("Billy Talent"), "/artist/billy-talent");
+  assert.equal(profilePath("@superfingerbusiness_"), "/u/superfingerbusiness_");
+  assert.equal(postPath("p_abc123"), "/post/p_abc123");
+  assert.equal(showPath("p_abc123"), "/post/p_abc123", "legacy helper emits the canonical post URL");
+});
+
+test("a stored artist slug wins over a mutable or colliding display name", () => {
+  assert.equal(artistPath("Beyoncé Renamed", "beyonce"), "/artist/beyonce");
+  assert.equal(artistPath({ name: "Beyonce", publicSlug: "beyonce-2f9465f6a1" }), "/artist/beyonce-2f9465f6a1");
+  assert.equal(artistPath({ name: "Ignored", public_slug: "guns-n-roses" }), "/artist/guns-n-roses");
 });
 
 test("a root slug is ambiguous and defers to the resolver", () => {
@@ -37,6 +43,7 @@ test("explicit and legacy forms keep working", () => {
   assert.deepEqual(parsePath("/artist/Turnstile"), { type: "artist", value: "Turnstile" });
   assert.deepEqual(parsePath("/venue/The%20Fillmore"), { type: "venue", value: "The Fillmore" });
   assert.deepEqual(parsePath("/u/andrew"), { type: "profile", value: "andrew" });
+  assert.deepEqual(parsePath("/post/p_1"), { type: "show", value: "p_1" });
   assert.deepEqual(parsePath("/show/p_1"), { type: "show", value: "p_1" });
 });
 
@@ -51,6 +58,7 @@ test("query strings, fragments and the root resolve sanely", () => {
 test("unknown nested paths are not entities", () => {
   assert.equal(parsePath("/turnstile/extra"), null);
   assert.equal(parsePath("/_expo/static/js/app.js"), null);
+  assert.equal(parsePath("/artist/%E0%A4%A"), null, "malformed URL encoding fails closed");
 });
 
 test("a name that collides with an app route still gets a working URL", () => {

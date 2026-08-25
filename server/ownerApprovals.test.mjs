@@ -15,6 +15,8 @@ const {
   createOwnerApprovalRequest,
   decideOwnerApproval,
   ownerApprovalReview,
+  ownerIdentityDeliveryScope,
+  recordAndEmailDeploymentStamp,
 } = await import("./ownerApprovals.js");
 const { db: applicationDb } = await import("./db.js");
 
@@ -24,6 +26,14 @@ function database() {
   const value = new DatabaseSync(":memory:");
   databases.add(value);
   value.exec(`
+    CREATE TABLE users (
+      id TEXT PRIMARY KEY,
+      email TEXT NOT NULL UNIQUE
+    );
+    CREATE TABLE app_meta (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
     CREATE TABLE owner_approval_requests (
       id TEXT PRIMARY KEY,
       kind TEXT NOT NULL,
@@ -195,4 +205,65 @@ test("payload tampering cannot be approved and rolls back every side effect", ()
   assert.equal(applied, false);
   assert.equal(db.prepare("SELECT status FROM owner_approval_requests WHERE id=?").get(created.request.id).status, "pending");
   assert.equal(db.prepare("SELECT COUNT(*) count FROM owner_approval_receipts").get().count, 0);
+});
+
+test("a v1 deployment claim cannot suppress the same commit receipt for the locked v2 Founder", async () => {
+  const db = database();
+  const commit = "abcdef0123456789abcdef0123456789abcdef01";
+  assert.notEqual(
+    ownerIdentityDeliveryScope({ version: 1, userId: "same_owner_row" }),
+    ownerIdentityDeliveryScope({ version: 2, userId: "same_owner_row" }),
+  );
+  db.prepare("INSERT INTO users (id,email) VALUES (?,?),(?,?)")
+    .run("legacy_owner", "legacy-owner@example.test", "founder_owner", "founder@example.test");
+  db.prepare("INSERT INTO app_meta (key,value) VALUES (?,?)").run(
+    "security.bootstrap_admin_identity.v1",
+    JSON.stringify({ version: 1, email: "legacy-owner@example.test", userId: "legacy_owner" }),
+  );
+
+  const deliveries = [];
+  const sendTemplateImpl = async (key, options) => {
+    deliveries.push({ key, ...options });
+    return { sent: true };
+  };
+  const legacy = await recordAndEmailDeploymentStamp(db, {
+    commit,
+    at: 1_000,
+    sendTemplateImpl,
+  });
+
+  db.prepare("UPDATE app_meta SET value=? WHERE key=?").run(
+    JSON.stringify({
+      version: 2,
+      email: "founder@example.test",
+      userId: "founder_owner",
+      lockedAt: 2_000,
+    }),
+    "security.bootstrap_admin_identity.v1",
+  );
+  const founder = await recordAndEmailDeploymentStamp(db, {
+    commit,
+    at: 2_001,
+    sendTemplateImpl,
+  });
+  const duplicate = await recordAndEmailDeploymentStamp(db, {
+    commit,
+    at: 2_002,
+    sendTemplateImpl,
+  });
+
+  assert.equal(legacy.created, true);
+  assert.equal(founder.created, true);
+  assert.equal(duplicate.created, false);
+  assert.deepEqual(deliveries.map((delivery) => delivery.to), [
+    "legacy-owner@example.test",
+    "founder@example.test",
+  ]);
+  assert.equal(new Set(deliveries.map((delivery) => delivery.idempotencyKey)).size, 2);
+  const receipts = db.prepare("SELECT * FROM owner_approval_receipts ORDER BY created_at,id").all();
+  assert.equal(receipts.length, 2);
+  assert.equal(receipts[1].previous_stamp, receipts[0].stamp);
+  assert.notEqual(receipts[0].request_id, receipts[1].request_id);
+  assert.equal(receipts.every((receipt) => !receipt.request_id.includes("@")), true);
+  assert.throws(() => db.prepare("UPDATE owner_approval_receipts SET safe_summary='changed'").run(), /append-only/u);
 });

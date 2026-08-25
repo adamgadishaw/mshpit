@@ -26,5 +26,6 @@ test("index delegates missing static files to the executable no-store policy", a
     body: { error: "Asset not found." },
     headers: { "Cache-Control": "no-store" },
   });
-  assert.equal(missingStaticAssetResponse("/concert/j-cole"), null, "extensionless app routes keep the SPA fallback");
+  assert.equal(missingStaticAssetResponse("/concert/j-cole"), null,
+    "extensionless routes are classified by the SEO/app router instead of the static-asset policy");
 });

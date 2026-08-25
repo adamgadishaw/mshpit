@@ -16,7 +16,13 @@ import { routes } from "./api.js";
 import { ApiError, errorEnvelope } from "./errors.js";
 import { assertExpectedAccount } from "./identityBinding.js";
 import { maybeAlert, pruneErrors, recordError } from "./errorLog.js";
-import { injectHead, robotsTxt, sitemapXml } from "./seo.js";
+import {
+  injectHead,
+  renderNotFoundDocument,
+  robotsTxt,
+  seoHttpPlan,
+  sitemapForPath,
+} from "./seo.js";
 import {
   clearSessionCookies,
   getSession,
@@ -193,14 +199,21 @@ function matchRoute(method, pathname) {
 // search engine could read it, and robots.txt fell through to Cloudflare's
 // managed default rather than ours.
 function serveCrawlerFile(req, res, pathname) {
-  const body = pathname === "/robots.txt" ? robotsTxt() : sitemapXml();
+  const body = pathname === "/robots.txt" ? robotsTxt() : sitemapForPath(pathname);
   const type = pathname === "/robots.txt" ? "text/plain; charset=utf-8" : "application/xml; charset=utf-8";
+  if (body == null) {
+    return send(res, 404, "Not found.\n", {
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cache-Control": "no-store",
+      "X-Robots-Tag": "noindex",
+    });
+  }
   res.writeHead(200, {
     ...HEADERS,
     "Content-Type": type,
     "Content-Length": Buffer.byteLength(body),
     // Short cache: the sitemap changes whenever anyone posts a review.
-    "Cache-Control": "public, max-age=3600",
+    "Cache-Control": "public, max-age=300, stale-while-revalidate=300",
   });
   if (req.method === "HEAD") return res.end();
   res.end(body);
@@ -225,19 +238,27 @@ function servePublicPage(req, res, pathname) {
 
 function serveStatic(req, res, pathname) {
   if (!existsSync(DIST)) {
-    return send(res, 503, { error: "Web build not found. Run: npx expo export -p web" });
+    send(res, 503, { error: "Web build not found. Run: npx expo export -p web" });
+    return true;
   }
+  if (pathname === "/") return false;
   // path-traversal proof: normalize then require the DIST prefix
   let file = normalize(join(DIST, pathname === "/" ? "index.html" : pathname));
   const distRoot = normalize(DIST) + sep;
-  if (!file.startsWith(distRoot)) return send(res, 403, { error: "Forbidden" });
+  if (!file.startsWith(distRoot)) {
+    send(res, 403, { error: "Forbidden" });
+    return true;
+  }
   if (!existsSync(file) || statSync(file).isDirectory()) {
     // A stale hashed chunk must be a real 404. Returning the SPA HTML with 200
     // makes browsers report an opaque module error and defeats safe deploy
     // recovery. Extensionless application routes still receive the shell.
     const missingAsset = missingStaticAssetResponse(pathname);
-    if (missingAsset) return send(res, missingAsset.status, missingAsset.body, missingAsset.headers);
-    file = join(DIST, "index.html");
+    if (missingAsset) {
+      send(res, missingAsset.status, missingAsset.body, missingAsset.headers);
+      return true;
+    }
+    return false;
   }
   const ext = extname(file).toLowerCase();
 
@@ -249,8 +270,12 @@ function serveStatic(req, res, pathname) {
     let html = readFileSync(file, "utf8");
     try { html = injectHead(html, pathname); } catch { /* never fail the page over metadata */ }
     res.writeHead(200, { ...HEADERS, "Content-Type": "text/html; charset=utf-8", "Content-Length": Buffer.byteLength(html), "Cache-Control": "no-cache" });
-    if (req.method === "HEAD") return res.end();
-    return res.end(html);
+    if (req.method === "HEAD") {
+      res.end();
+      return true;
+    }
+    res.end(html);
+    return true;
   }
   const cache = ext === ".html" ? "no-cache" : "public, max-age=31536000, immutable";
   const size = statSync(file).size;
@@ -268,6 +293,56 @@ function serveStatic(req, res, pathname) {
     res.destroy(error);
   });
   stream.pipe(res);
+  return true;
+}
+
+function serveWebShell(req, res, pathname, { noindex = false, plan = null } = {}) {
+  if (!existsSync(DIST)) {
+    return send(res, 503, { error: "Web build not found. Run: npx expo export -p web" });
+  }
+  const file = join(DIST, "index.html");
+  if (!existsSync(file)) return send(res, 503, { error: "Web build entry point is missing." });
+  let html = readFileSync(file, "utf8");
+  // Reuse the request-scoped resolution. Public projections contain several
+  // bounded aggregate queries; resolving again here would double crawler load.
+  html = injectHead(html, pathname, plan);
+  res.writeHead(200, {
+    ...HEADERS,
+    "Content-Type": "text/html; charset=utf-8",
+    "Content-Length": Buffer.byteLength(html),
+    "Cache-Control": "no-cache",
+    ...(noindex ? { "X-Robots-Tag": "noindex,follow" } : {}),
+  });
+  if (req.method === "HEAD") {
+    res.end();
+    return true;
+  }
+  res.end(html);
+}
+
+function serveSeoRoute(req, res, pathname) {
+  const plan = seoHttpPlan(pathname);
+  if (plan.type === "redirect") {
+    res.writeHead(plan.status || 301, {
+      ...HEADERS,
+      Location: plan.location,
+      "Cache-Control": "public, max-age=3600",
+    });
+    return res.end();
+  }
+  if (plan.type === "document") return serveWebShell(req, res, pathname, { plan });
+  if (plan.type === "app") return serveWebShell(req, res, pathname, { noindex: true, plan });
+
+  const html = renderNotFoundDocument();
+  res.writeHead(404, {
+    ...HEADERS,
+    "Content-Type": "text/html; charset=utf-8",
+    "Content-Length": Buffer.byteLength(html),
+    "Cache-Control": "no-store",
+    "X-Robots-Tag": "noindex,follow",
+  });
+  if (req.method === "HEAD") return res.end();
+  res.end(html);
 }
 
 // The real client address behind Render and, on the public hostname,
@@ -322,7 +397,9 @@ const server = createServer(async (req, res) => {
   if (req.method === "OPTIONS") return send(res, 204, "", createApiResponseHeaders(cors));
 
   try {
-    if (pathname === "/robots.txt" || pathname === "/sitemap.xml") return serveCrawlerFile(req, res, pathname);
+    if (pathname === "/robots.txt" || pathname === "/sitemap.xml" || pathname.startsWith("/sitemaps/")) {
+      return serveCrawlerFile(req, res, pathname);
+    }
 
     if (pathname.startsWith("/api/")) {
       // Cookie authentication needs an explicit browser request boundary.
@@ -405,7 +482,12 @@ const server = createServer(async (req, res) => {
     // everything else = the web app
     if (req.method !== "GET" && req.method !== "HEAD") return send(res, 405, { error: "Method not allowed." });
     if (servePublicPage(req, res, pathname)) return;
-    return serveStatic(req, res, pathname);
+    if (pathname === "/index.html") {
+      res.writeHead(301, { ...HEADERS, Location: "/", "Cache-Control": "public, max-age=3600" });
+      return res.end();
+    }
+    if (serveStatic(req, res, pathname)) return;
+    return serveSeoRoute(req, res, pathname);
   } catch (e) {
     // A client disconnect is an expected cancellation boundary, not an
     // application failure. Downstream storage/decoder helpers may wrap the

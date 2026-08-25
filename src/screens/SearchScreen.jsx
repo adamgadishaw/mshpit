@@ -300,7 +300,13 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
 
   // Opening any result records it as a recent search, so the empty state stays
   // useful (like every big app). Re-opening a recent bumps it back to the top.
-  const openArtist = (name) => { addRecentSearch?.({ type: "artist", label: name }); onOpenArtist?.(name); };
+  const openArtist = (artist) => {
+    const payload = artist && typeof artist === "object" ? artist : null;
+    const name = String(payload?.name || artist || "").trim();
+    if (!name) return;
+    addRecentSearch?.({ type: "artist", label: name });
+    onOpenArtist?.(payload || name);
+  };
   const openVenue = (name) => { addRecentSearch?.({ type: "venue", label: name }); onOpenVenue?.(name); };
   const openPerson = (u) => { addRecentSearch?.({ type: "person", label: u.name, id: u.id, sub: `@${u.handle}` }); onOpenProfile?.(u.id); };
   const reopenRecent = (e) => {
@@ -338,7 +344,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
         return;
       }
       addRecentSearch?.({ type: "artist", label: artist.name });
-      onOpenArtist?.(artist.name);
+      onOpenArtist?.(artist);
     } catch {
       if (isCurrent()) updateLookupState({ message: `Pit could not look up ${name}. Check your connection and try again.` });
     } finally {
@@ -439,7 +445,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
           icon="music" tint={colors.amber}
           title={showBrowse ? "ARTISTS TO EXPLORE" : "ARTISTS"} count={artists.length}
           rows={[
-            ...artists.map((a) => <ArtistRow key={a.name} name={a.name} genre={a.genre} memorial={a.memorial} onPress={() => openArtist(a.name)} />),
+            ...artists.map((a) => <ArtistRow key={a.name} name={a.name} genre={a.genre} memorial={a.memorial} onPress={() => openArtist(a)} />),
             query.length >= 2 && !exactArtist ? (
               <Pressable key="_lookup" style={styles.row} onPress={() => lookUp(q.trim())} disabled={lookupBusy} accessibilityRole="button" accessibilityLabel={`Look up artist ${q.trim()}`} accessibilityHint="Searches MusicBrainz if the artist is not in Pit yet" accessibilityState={{ busy: lookupBusy, disabled: lookupBusy }}>
                 <View style={[styles.dot, { borderColor: colors.good }]}><Icon name="search" size={14} color={colors.good} /></View>

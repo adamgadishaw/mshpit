@@ -6,12 +6,10 @@
 // to index except the home page. Meta tags and sitemaps are worthless until the
 // pages they describe have addresses.
 //
-// The scheme is Facebook's: vanity names live at the ROOT (`mshpit.com/zuck`,
-// `mshpit.com/turnstile`), and only things identified by an opaque id sit under
-// a prefix (`/show/<id>`, like `facebook.com/events/<id>`). That means one
-// global namespace shared by handles, artists and venues, so it needs two
-// things a prefixed scheme would not: a reserved list, and a fixed resolution
-// order for collisions.
+// Canonical public identities own explicit namespaces. That keeps a member,
+// artist, and venue with the same readable name from silently taking over one
+// another's shared link. Legacy root vanity paths remain parseable below so an
+// older bookmark can still reach the resolver and be redirected by the server.
 
 export const slugify = (value) =>
   String(value ?? "")
@@ -28,14 +26,14 @@ export const slugify = (value) =>
 // over the search screen, and these also keep future routes free. Handles are
 // validated against this list at signup for the same reason.
 export const RESERVED_SLUGS = new Set([
-  // The four route prefixes below must be reserved as ROOT slugs too, or a band
+  // Public route prefixes must be reserved as ROOT slugs too, or a band
   // called "Artist" builds "/artist", which parsePath reads as a prefix with no
   // value and rejects. That put a dead link in the sitemap.
-  "artist", "venue", "u", "show",
+  "artist", "venue", "u", "post", "show",
   "about", "admin", "api", "assets", "auth", "badges", "calendar", "clips",
   "contact", "discover", "download", "edit", "explore", "favicon.ico", "feed",
   "help", "home", "inbox", "legal", "login", "logout", "menu", "messages",
-  "nearby", "new", "notifications", "playlist", "playlists", "post", "press",
+  "nearby", "new", "notifications", "playlist", "playlists", "press",
   "privacy", "profile", "public", "robots.txt", "search", "settings", "show",
   "signup", "sitemap.xml", "static", "support", "terms", "tour", "venues",
   "you", "account-deletion", "_expo",
@@ -43,27 +41,40 @@ export const RESERVED_SLUGS = new Set([
 
 export const isReservedSlug = (slug) => RESERVED_SLUGS.has(String(slug || "").toLowerCase());
 
-// A show is a specific night, identified by an id rather than a name, so it
-// keeps a prefix. Everything else is a vanity path at the root.
-//
-// One exception, and it is not hypothetical: a band called "Search" or "Artist"
-// slugifies onto a word the app owns. Those fall back to the explicit prefixed
-// form so the URL still resolves instead of silently becoming a dead link in
-// the sitemap. Every path these build must parse back to the same entity, which
-// `urls.test.mjs` asserts.
+// Venues still have legacy root vanity links until their catalog identity gains
+// a city/provider-stable key. Reserved app words use the explicit venue prefix
+// so every URL this transitional helper builds remains parseable.
 const vanity = (prefix, name) => {
   const slug = slugify(name);
   if (!slug) return null;
   return isReservedSlug(slug) ? `/${prefix}/${slug}` : `/${slug}`;
 };
 
-export const showPath = (id) => `/show/${encodeURIComponent(id)}`;
-export const artistPath = (name) => vanity("artist", name);
+// An artist's stored publicSlug is immutable. The name fallback keeps callers
+// from manufacturing a dead link while older API payloads roll forward, but a
+// discovered publicSlug always wins so punctuation/collision changes cannot
+// move an established page.
+export const artistPath = (artistOrName, publicSlug = null) => {
+  const artist = artistOrName && typeof artistOrName === "object" ? artistOrName : null;
+  const name = artist ? artist.name : artistOrName;
+  const stableSlug = publicSlug || artist?.publicSlug || artist?.public_slug || null;
+  const slug = slugify(stableSlug || name);
+  return slug ? `/artist/${slug}` : null;
+};
+
+export const postPath = (id) => {
+  const value = String(id ?? "");
+  return value ? `/post/${encodeURIComponent(value)}` : null;
+};
+
+// Compatibility name for code that still calls a logged review a "show".
+// Its generated URL is canonical; parsePath continues accepting legacy /show.
+export const showPath = postPath;
 export const venuePath = (name) => vanity("venue", name);
 export const profilePath = (handle) => {
   const clean = String(handle || "").replace(/^@/, "").toLowerCase();
   if (!clean) return null;
-  return isReservedSlug(clean) ? `/u/${clean}` : `/${clean}`;
+  return `/u/${encodeURIComponent(clean)}`;
 };
 
 /**
@@ -83,19 +94,24 @@ export function parsePath(pathname) {
   const [head, ...rest] = parts;
   const lower = head.toLowerCase();
 
-  if (lower === "show") {
-    const id = decodeURIComponent(rest.join("/") || "");
+  const decode = (value) => {
+    try { return decodeURIComponent(value); } catch { return null; }
+  };
+
+  if (lower === "post" || lower === "show") {
+    const id = decode(rest.join("/") || "");
     return id ? { type: "show", value: id } : null;
   }
   // Legacy/explicit forms stay understood so old links keep working.
   if (lower === "artist" || lower === "venue" || lower === "u") {
-    const value = decodeURIComponent(rest.join("/") || "");
+    const value = decode(rest.join("/") || "");
     if (!value) return null;
     return { type: lower === "u" ? "profile" : lower, value };
   }
   if (rest.length) return null;              // no unknown nested paths
   if (isReservedSlug(lower)) return null;    // the app's own screens
-  return { type: "entity", value: decodeURIComponent(head) };
+  const value = decode(head);
+  return value ? { type: "entity", value } : null;
 }
 
 export const isPublicEntityPath = (pathname) => parsePath(pathname) !== null;

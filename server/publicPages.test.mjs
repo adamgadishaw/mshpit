@@ -112,7 +112,9 @@ test("the HTTP server answers public documents before the SPA fallback", async (
   const source = await readFile(new URL("./index.js", import.meta.url), "utf8");
   assert.match(source, /import \{ renderPublicPage \} from "\.\/publicPages\.js"/);
   const publicRoute = source.indexOf("if (servePublicPage(req, res, pathname)) return;");
-  const spaFallback = source.indexOf("return serveStatic(req, res, pathname);", publicRoute);
+  const staticAssets = source.indexOf("if (serveStatic(req, res, pathname)) return;", publicRoute);
+  const publicAppRouter = source.indexOf("return serveSeoRoute(req, res, pathname);", publicRoute);
   assert.ok(publicRoute > 0, "the public-document route must be wired into the server");
-  assert.ok(spaFallback > publicRoute, "only non-document paths may reach the SPA fallback");
+  assert.ok(staticAssets > publicRoute, "legal documents must be answered before static assets");
+  assert.ok(publicAppRouter > staticAssets, "only non-document, non-asset paths may reach the public app router");
 });

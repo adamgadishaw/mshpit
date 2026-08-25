@@ -23,8 +23,11 @@ import {
   privateVideoMediaConfigured,
 } from "./media.js";
 import { mediaDeletionHealth } from "./mediaDeletion.js";
-import { recordAndEmailDeploymentStamp } from "./ownerApprovals.js";
-import { ownerRecipient } from "./ownerIdentity.js";
+import {
+  ownerIdentityDeliveryScope,
+  recordAndEmailDeploymentStamp,
+} from "./ownerApprovals.js";
+import { ownerAccount } from "./ownerIdentity.js";
 import { videoVerifierRuntimeStatus } from "./videoVerifier.js";
 
 export const SITE_HEALTH_TIME_ZONE = "America/Toronto";
@@ -41,6 +44,7 @@ const TRUE_VALUES = new Set(["1", "true", "yes", "on", "enabled"]);
 const FALSE_VALUES = new Set(["0", "false", "no", "off", "disabled"]);
 const RETRY_DELAYS_MS = [5 * 60 * 1000, 30 * 60 * 1000, 2 * HOUR_MS, 6 * HOUR_MS, 6 * HOUR_MS];
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/u;
+const OWNER_SCOPE_RE = /^v[12]-[a-f0-9]{64}$/u;
 const SAFE_CODE_RE = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/u;
 const COMMIT_RE = /^[a-f0-9]{7,64}$/iu;
 
@@ -108,9 +112,14 @@ function transaction(database, work) {
   }
 }
 
-function markerKey(date) {
+function markerDateKey(date) {
   if (!DATE_RE.test(String(date || ""))) throw new TypeError("Site-health marker date is invalid");
   return `${MARKER_PREFIX}${date}`;
+}
+
+function markerKey(date, ownerScope) {
+  if (!OWNER_SCOPE_RE.test(String(ownerScope || ""))) throw new TypeError("Site-health Owner scope is invalid");
+  return `${markerDateKey(date)}:${ownerScope}`;
 }
 
 function parseMarker(value) {
@@ -135,7 +144,7 @@ export function pruneSiteHealthDigestMarkers(database, {
   const days = Math.min(120, Math.max(7, Math.floor(Number(retentionDays) || SITE_HEALTH_MARKER_RETENTION_DAYS)));
   const cutoff = torontoParts(at - days * DAY_MS).day;
   return database.prepare("DELETE FROM app_meta WHERE key GLOB ? AND key < ?")
-    .run(`${MARKER_PREFIX}*`, markerKey(cutoff)).changes;
+    .run(`${MARKER_PREFIX}*`, markerDateKey(cutoff)).changes;
 }
 
 /**
@@ -145,10 +154,11 @@ export function pruneSiteHealthDigestMarkers(database, {
  */
 export function claimSiteHealthDigest(database, {
   date,
+  ownerScope,
   at = Date.now(),
   leaseMs = SITE_HEALTH_CLAIM_LEASE_MS,
 } = {}) {
-  const key = markerKey(date);
+  const key = markerKey(date, ownerScope);
   const boundedLease = Math.min(HOUR_MS, Math.max(60_000, Number(leaseMs) || SITE_HEALTH_CLAIM_LEASE_MS));
   return transaction(database, () => {
     const current = parseMarker(database.prepare("SELECT value FROM app_meta WHERE key=?").get(key)?.value);
@@ -398,10 +408,16 @@ export function collectSiteHealthDigest(database, {
 export async function sendSiteHealthDigest(database, digest, {
   env = process.env,
   date,
+  owner = null,
+  ownerScope = null,
   sendTemplateImpl = sendTemplate,
 } = {}) {
-  const recipient = ownerRecipient(database, env);
-  if (!recipient) return { sent: false, reason: "no-owner-email" };
+  const account = owner || ownerAccount(database);
+  const resolvedScope = ownerIdentityDeliveryScope(account?.identity);
+  if (!account || !resolvedScope || (ownerScope && ownerScope !== resolvedScope)) {
+    return { sent: false, reason: "no-owner-email" };
+  }
+  const recipient = account.identity.email;
   return sendTemplateImpl("site_health_digest", {
     to: recipient,
     vars: {
@@ -409,7 +425,7 @@ export async function sendSiteHealthDigest(database, digest, {
       summary: digest.summary,
       detail: digest.detail,
     },
-    idempotencyKey: `site-health-${date}`,
+    idempotencyKey: `site-health-${date}-${resolvedScope}`,
   });
 }
 
@@ -422,8 +438,11 @@ export async function runSiteHealthDigest(database, {
   if (!siteHealthDigestEnabled(env)) return { sent: false, reason: "disabled" };
   const slot = siteHealthDigestSlot(at, env);
   if (!slot.due) return { sent: false, reason: "not-due", slot };
+  const owner = ownerAccount(database);
+  const ownerScope = ownerIdentityDeliveryScope(owner?.identity);
+  if (!owner || !ownerScope) return { sent: false, reason: "no-owner", slot };
   pruneSiteHealthDigestMarkers(database, { at });
-  const claim = claimSiteHealthDigest(database, { date: slot.date, at });
+  const claim = claimSiteHealthDigest(database, { date: slot.date, ownerScope, at });
   if (!claim.claimed) return { sent: false, reason: claim.reason, slot, claim };
 
   try {
@@ -431,6 +450,8 @@ export async function runSiteHealthDigest(database, {
     const delivery = await sendSiteHealthDigest(database, digest, {
       env,
       date: slot.date,
+      owner,
+      ownerScope,
       sendTemplateImpl,
     });
     const settled = settleSiteHealthDigestClaim(database, {

@@ -6,8 +6,10 @@
 // pit.db-wal until a checkpoint, so a bare copy can be torn or stale. Use
 // `npm run backup` (VACUUM INTO), which asks SQLite for a consistent snapshot.
 import { DatabaseSync } from "node:sqlite";
+import { createHash } from "node:crypto";
 import { toIsoDate } from "../src/domain/dates.mjs";
 import { displayGenre, resolveGenre, storedClaims } from "../src/domain/genre.mjs";
+import { slugify } from "../src/domain/urls.mjs";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -205,6 +207,7 @@ CREATE TABLE IF NOT EXISTS dm_reads (
   PRIMARY KEY (user_id, other_id),
   CHECK (user_id <> other_id)
 );
+CREATE INDEX IF NOT EXISTS idx_follows_followee_follower ON follows(followee_id, follower_id);
 
 CREATE TABLE IF NOT EXISTS reports (
   id          TEXT PRIMARY KEY,
@@ -465,6 +468,7 @@ CREATE INDEX IF NOT EXISTS idx_tourdates_artist ON tour_dates(artist);
 CREATE TABLE IF NOT EXISTS artists (
   norm        TEXT PRIMARY KEY,
   name        TEXT NOT NULL,
+  public_slug TEXT,
   search_key  TEXT,
   genre       TEXT,
   photo       TEXT,
@@ -482,6 +486,7 @@ CREATE TABLE IF NOT EXISTS artists (
 );
 CREATE INDEX IF NOT EXISTS idx_artists_rank ON artists(rank_score DESC);
 CREATE INDEX IF NOT EXISTS idx_artists_name ON artists(name);
+CREATE INDEX IF NOT EXISTS idx_artists_name_nocase ON artists(name COLLATE NOCASE,rank_score DESC,norm);
 -- A single cheap revision lets Discover cache the evidence-aware projection
 -- without rescanning/parsing every rich artist blob on every request. Triggers
 -- advance it only when a field that can change public genre membership changes.
@@ -1337,6 +1342,10 @@ const additiveMigrations = [
   "ALTER TABLE posts ADD COLUMN dims TEXT NOT NULL DEFAULT '{}'",
   "ALTER TABLE artists ADD COLUMN searches INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE artists ADD COLUMN search_key TEXT",
+  // Immutable public identity. Nullable is required for rolling rollback: an
+  // older process can ignore the column, while this release fills every row
+  // deterministically before publishing the unique lookup index below.
+  "ALTER TABLE artists ADD COLUMN public_slug TEXT",
   // The artist's YouTube channel. Since June 2026 search.list has its own
   // 100-call/day bucket; catalogue endpoints use the separate general bucket.
   // Provenance distinguishes a CC0 Wikidata identity from YouTube API data, and
@@ -1511,6 +1520,49 @@ function ensureArtistMemorialSchema(database) {
   `);
 }
 
+const artistSlugDigest = (identity) => createHash("sha256")
+  .update(String(identity || "artist"), "utf8")
+  .digest("hex");
+
+function artistSlugCandidates(name, norm) {
+  const base = slugify(name) || `artist-${artistSlugDigest(norm).slice(0, 12)}`;
+  const digest = artistSlugDigest(`artist-public-slug\0${norm}`);
+  const candidates = [base];
+  for (const tokenLength of [10, 16, 24, 32, 48, 64]) {
+    const stem = base.slice(0, Math.max(1, 79 - tokenLength));
+    candidates.push(`${stem}-${digest.slice(0, tokenLength)}`);
+  }
+  return candidates;
+}
+
+// Backfill runs under the migration transaction's cross-process write lock.
+// Existing non-empty slugs are immutable; blank legacy rows are processed in a
+// stable order and collision suffixes derive only from the catalog identity.
+function ensureArtistPublicSlugs(database) {
+  const rows = database.prepare(`SELECT norm,name,public_slug FROM artists
+    ORDER BY norm COLLATE BINARY`).all();
+  const owners = new Map();
+  for (const row of rows) {
+    const slug = String(row.public_slug || "").trim();
+    if (!slug) continue;
+    const key = slug.toLowerCase();
+    const owner = owners.get(key);
+    if (owner && owner !== row.norm) throw new Error(`Duplicate artist public slug: ${slug}`);
+    owners.set(key, row.norm);
+  }
+
+  const update = database.prepare(`UPDATE artists SET public_slug=?
+    WHERE norm=? AND (public_slug IS NULL OR trim(public_slug)='')`);
+  for (const row of rows) {
+    if (String(row.public_slug || "").trim()) continue;
+    const candidate = artistSlugCandidates(row.name, row.norm)
+      .find((value) => !owners.has(value.toLowerCase()));
+    if (!candidate) throw new Error(`Could not allocate artist public slug for ${row.norm}`);
+    update.run(candidate, row.norm);
+    owners.set(candidate.toLowerCase(), row.norm);
+  }
+}
+
 db.exec("BEGIN IMMEDIATE");
 try {
   // Keep the initial version row under the same cross-process write lock as the
@@ -1529,6 +1581,15 @@ try {
       .some((entry) => String(entry.name).toLowerCase() === column.toLowerCase());
     if (!present) db.exec(stmt);
   }
+  ensureArtistPublicSlugs(db);
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_artists_public_slug
+    ON artists(lower(public_slug)) WHERE public_slug IS NOT NULL AND public_slug<>''`);
+  db.exec(`CREATE TRIGGER IF NOT EXISTS trg_artists_public_slug_immutable
+    BEFORE UPDATE OF public_slug ON artists
+    WHEN trim(COALESCE(OLD.public_slug,''))<>'' AND NEW.public_slug IS NOT OLD.public_slug
+    BEGIN
+      SELECT RAISE(ABORT,'artist public slug is immutable');
+    END`);
   ensureArtistMemorialSchema(db);
   // Image codecs are outside the MP4 compatibility gate. This also gives image
   // rows created before the codec columns an honest, non-pending state.
@@ -1664,6 +1725,7 @@ db.exec("CREATE INDEX IF NOT EXISTS idx_tourdates_visibility ON tour_dates(relea
 db.exec("CREATE INDEX IF NOT EXISTS idx_tourdates_owner ON tour_dates(owner_id, date)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_tourdates_artist_date ON tour_dates(lower(artist), date, id)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_going_cursor ON going(concert_key, created_at DESC, user_id DESC)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_follows_followee_follower ON follows(followee_id, follower_id)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_posts_landing_media ON posts(landing_showcase, photos_public, removed, kind, created_at DESC, id DESC)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_posts_venue_visibility ON posts(venue_key, removed, created_at DESC) WHERE venue_key IS NOT NULL");
 // Artist profile Top Reviews scans only substantive, live review posts. Keep
@@ -1693,6 +1755,7 @@ db.exec("CREATE INDEX IF NOT EXISTS idx_email_log_campaign ON email_log(campaign
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_unsub_token ON users(unsub_token) WHERE unsub_token IS NOT NULL");
 db.exec("CREATE INDEX IF NOT EXISTS idx_users_email_verify_hash ON users(email_verify_hash) WHERE email_verify_hash IS NOT NULL");
 db.exec("CREATE INDEX IF NOT EXISTS idx_artists_search_key ON artists(search_key)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_artists_name_nocase ON artists(name COLLATE NOCASE,rank_score DESC,norm)");
 
 // These unsafe triggers existed only in an unreleased development build. An
 // old UPSERT cannot reveal which colliding Unicode identity it intended, so
@@ -2075,11 +2138,13 @@ export const providerCacheStmts = {
 };
 
 // --- Artist catalog statements + helpers -------------------------------------
-const ARTIST_COLS = "norm,name,search_key,genre,photo,bio,mbid,spotify_id,country,formed,popularity,rank_score,data,source,created_at,updated_at";
+const ARTIST_COLS = "norm,name,public_slug,search_key,genre,photo,bio,mbid,spotify_id,country,formed,popularity,rank_score,data,source,created_at,updated_at";
 export const MISSING_ARTIST_RETENTION_DAYS = 30;
 export const MISSING_ARTIST_MAX_ROWS = 5000;
 export const artistStmts = {
   byNorm: db.prepare("SELECT * FROM artists WHERE norm = ?"),
+  byPublicSlug: db.prepare(`SELECT * FROM artists
+    WHERE public_slug IS NOT NULL AND public_slug<>'' AND lower(public_slug)=lower(?)`),
   count: db.prepare("SELECT COUNT(*) c FROM artists"),
   search: db.prepare(`SELECT * FROM artists WHERE norm LIKE ? OR search_key LIKE ?
     ORDER BY (norm = ?) DESC, (search_key = ?) DESC, rank_score DESC, name LIMIT ?`),
@@ -2105,9 +2170,10 @@ export const artistStmts = {
     SELECT norm FROM missing_artists ORDER BY last_at DESC,norm DESC LIMIT -1 OFFSET ?
   )`),
   upsert: db.prepare(`INSERT INTO artists (${ARTIST_COLS})
-    VALUES (@norm,@name,@search_key,@genre,@photo,@bio,@mbid,@spotify_id,@country,@formed,@popularity,@rank_score,@data,@source,@created_at,@updated_at)
+    VALUES (@norm,@name,@public_slug,@search_key,@genre,@photo,@bio,@mbid,@spotify_id,@country,@formed,@popularity,@rank_score,@data,@source,@created_at,@updated_at)
     ON CONFLICT(norm) DO UPDATE SET
       name=excluded.name,
+      public_slug=COALESCE(artists.public_slug,excluded.public_slug),
       search_key=excluded.search_key,
       genre=COALESCE(excluded.genre,artists.genre),
       photo=COALESCE(excluded.photo,artists.photo),
@@ -2141,14 +2207,32 @@ pruneMissingArtists();
 
 export const normName = (s) => (s || "").trim().toLowerCase();
 
+const artistPublicSlugByNorm = db.prepare("SELECT public_slug FROM artists WHERE norm=?");
+const artistPublicSlugOwner = db.prepare(`SELECT norm FROM artists
+  WHERE public_slug IS NOT NULL AND public_slug<>'' AND lower(public_slug)=lower(?) LIMIT 1`);
+
+function artistPublicSlugForWrite(norm, name) {
+  const existing = String(artistPublicSlugByNorm.get(norm)?.public_slug || "").trim();
+  if (existing) return existing;
+  const candidate = artistSlugCandidates(name, norm).find((value) => {
+    const owner = artistPublicSlugOwner.get(value)?.norm;
+    return !owner || owner === norm;
+  });
+  if (!candidate) throw new Error(`Could not allocate artist public slug for ${norm}`);
+  return candidate;
+}
+
 // Build a row from an artist object (bundled shape or a resolved MB/Spotify one).
 export function artistRow(key, a, source = "musicbrainz") {
   const now = Date.now();
+  const norm = normName(key || a.name);
+  const name = a.name || key;
   const rank = (a.popularity != null ? a.popularity * 1000 : 0) + (a.albums?.length || 0) * 10 + ((a.topTracks?.length || 0) ? 5 : 0);
   return {
-    norm: normName(key || a.name),
-    name: a.name || key,
-    search_key: artistSearchKey(a.name || key),
+    norm,
+    name,
+    public_slug: artistPublicSlugForWrite(norm, name),
+    search_key: artistSearchKey(name),
     genre: a.genre || null,
     photo: a.photo || null,
     bio: a.bio || null,
@@ -2184,7 +2268,8 @@ export function publicArtist(r) {
     // `key` is the catalog's stable identity. The composer sends it back when a
     // suggestion is picked, so a review binds to this artist rather than to
     // whatever string was typed.
-    ...data, key: r.norm, name: r.name, photo: r.photo, bio: r.bio, mbid: r.mbid, spotifyId: r.spotify_id,
+    ...data, key: r.norm, name: r.name, publicSlug: r.public_slug || null,
+    photo: r.photo, bio: r.bio, mbid: r.mbid, spotifyId: r.spotify_id,
     formed: r.formed || null,
     country: r.country, popularity: r.popularity,
     genre: shown,

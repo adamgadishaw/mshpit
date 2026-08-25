@@ -13,6 +13,17 @@ function hash(value) {
   return createHash("sha256").update(String(value || "")).digest("hex");
 }
 
+// Delivery dedupe belongs to the database Owner identity, not an address. A
+// legacy v1 identity and the locked v2 Founder therefore receive independent
+// commit/day claims even if a migration reuses the same user row. The opaque
+// digest keeps email and other account attributes out of durable keys.
+export function ownerIdentityDeliveryScope(identity) {
+  const version = Number(identity?.version);
+  const userId = String(identity?.userId || "");
+  if (![1, 2].includes(version) || !userId) return null;
+  return `v${version}-${hash(`owner-delivery\0${userId}`)}`;
+}
+
 function safeSummary(value) {
   return String(value || "").replace(/[\u0000-\u001F\u007F]/gu, " ").replace(/\s+/gu, " ").trim().slice(0, 180);
 }
@@ -236,10 +247,13 @@ export function decideOwnerApproval(database, {
   });
 }
 
-export async function emailOwnerApprovalReceipt(database, receipt, { env = process.env } = {}) {
+export async function emailOwnerApprovalReceipt(database, receipt, {
+  env = process.env,
+  sendTemplateImpl = sendTemplate,
+} = {}) {
   const recipient = ownerRecipient(database, env);
   if (!recipient) return { sent: false, reason: "no-owner-email" };
-  return sendTemplate("owner_approval_receipt", {
+  return sendTemplateImpl("owner_approval_receipt", {
     to: recipient,
     vars: {
       name: "Mshpit Founder",
@@ -278,26 +292,33 @@ export function recordDeploymentStamp(database, {
 } = {}) {
   const normalizedCommit = String(commit || "").trim().slice(0, 64);
   if (!normalizedCommit) return { created: false, reason: "no-commit" };
-  const requestId = `deployment:${normalizedCommit}`;
-  const existing = database.prepare("SELECT * FROM owner_approval_receipts WHERE request_id=?").get(requestId);
-  if (existing) return { created: false, receipt: projectedReceipt(existing) };
   const owner = ownerAccount(database);
   if (!owner) return { created: false, reason: "no-owner" };
-  const encoded = payloadJson({ commit: normalizedCommit, type: "production_deployment" });
-  const receipt = transaction(database, () => insertReceipt(database, {
-    requestId,
-    kind: "security_release",
-    decision: "recorded",
-    requestedBy: owner.user.id,
-    decidedBy: owner.user.id,
-    targetUserId: null,
-    summary,
-    payloadHash: hash(encoded),
-    releaseCommit: normalizedCommit,
-    requestedAt: at,
-    createdAt: at,
-  }));
-  return { created: true, receipt };
+  const ownerScope = ownerIdentityDeliveryScope(owner.identity);
+  if (!ownerScope) return { created: false, reason: "no-owner" };
+  const requestId = `deployment:${normalizedCommit}:owner:${ownerScope}`;
+  const encoded = payloadJson({ commit: normalizedCommit, type: "production_deployment", ownerScope });
+  return transaction(database, () => {
+    // Keep the uniqueness check under the same write lock as insertion. Two
+    // rolling processes may stamp simultaneously; the loser should observe the
+    // existing receipt instead of surfacing a UNIQUE constraint failure.
+    const existing = database.prepare("SELECT * FROM owner_approval_receipts WHERE request_id=?").get(requestId);
+    if (existing) return { created: false, receipt: projectedReceipt(existing) };
+    const receipt = insertReceipt(database, {
+      requestId,
+      kind: "security_release",
+      decision: "recorded",
+      requestedBy: owner.user.id,
+      decidedBy: owner.user.id,
+      targetUserId: null,
+      summary,
+      payloadHash: hash(encoded),
+      releaseCommit: normalizedCommit,
+      requestedAt: at,
+      createdAt: at,
+    });
+    return { created: true, receipt };
+  });
 }
 
 export async function recordAndEmailDeploymentStamp(database, options = {}) {

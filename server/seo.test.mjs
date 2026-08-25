@@ -9,7 +9,7 @@ process.env.PIT_DATA_DIR = dataDir;
 process.env.PUBLIC_ORIGIN = "https://www.example.com";
 
 const { db, q, normName } = await import("./db.js");
-const { metadataFor, resolveEntity, headTagsFor, injectHead, sitemapXml } = await import("./seo.js");
+const { metadataFor, resolveEntity, headTagsFor, injectHead, sitemapXml, sitemapForPath, seoHttpPlan } = await import("./seo.js");
 const { artistPath, profilePath, showPath, venuePath } = await import("../src/domain/urls.mjs");
 
 after(() => {
@@ -26,7 +26,8 @@ function addPost(id, userId, { artist, venue, overall, room, createdAt }) {
   db.prepare(`INSERT INTO posts
     (id,user_id,artist,venue,venue_key,city,date,overall,room,review,photos,photos_public,created_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,'[]',0,?)`)
-    .run(id, userId, artist, venue, normName(venue), "Toronto", "2026-08-20", overall, room, `${artist} review by ${userId}`, createdAt);
+    .run(id, userId, artist, venue, normName(venue), "Toronto", "2026-08-20", overall, room,
+      `${artist} review by ${userId}, with enough first-hand detail to be useful.`, createdAt);
 }
 
 test("SEO metadata, entity routing, and sitemap exclude restricted authors", () => {
@@ -38,9 +39,11 @@ test("SEO metadata, entity routing, and sitemap exclude restricted authors", () 
 
   const artist = "SEO Race Band";
   db.prepare(`INSERT OR REPLACE INTO artists
-    (norm,name,search_key,genre,photo,bio,popularity,rank_score,data,source,created_at,updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .run(normName(artist), artist, "seoraceband", "Rock", null, "A catalogue-owned artist biography.", 10, 10, "{}", "test", 1, 1);
+    (norm,name,public_slug,search_key,genre,photo,bio,popularity,rank_score,data,source,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(normName(artist), artist, "seo-race-band", "seoraceband", "Rock", null,
+      "A catalogue-owned artist biography with enough original detail for a useful public discovery page and live-review context.",
+      10, 10, "{}", "test", 1, 1);
   addPost("seo_active_show", active.id, {
     artist, venue: "SEO Active Hall", overall: 5, room: 5, createdAt: 100,
   });
@@ -58,10 +61,10 @@ test("SEO metadata, entity routing, and sitemap exclude restricted authors", () 
   assert.equal(metadataFor(profilePath(banned.handle)), null);
   const restrictedHead = headTagsFor(profilePath(suspended.handle));
   assert.match(restrictedHead, /og:type" content="website"/i);
-  assert.match(restrictedHead, /PIT - Your life/);
+  assert.match(restrictedHead, /Mshpit — Your life/);
   assert.doesNotMatch(restrictedHead, /reviews live music/i);
   const restrictedShell = injectHead("<html><head><title>Pit</title></head></html>", profilePath(suspended.handle));
-  assert.match(restrictedShell, /PIT - Your life/,
+  assert.match(restrictedShell, /Mshpit — Your life/,
     "the static share shell falls back instead of caching restricted identity copy");
 
   assert.equal(metadataFor(showPath("seo_active_show"))?.kind, "show");
@@ -72,16 +75,18 @@ test("SEO metadata, entity routing, and sitemap exclude restricted authors", () 
   assert.equal(metadataFor(venuePath("SEO Banned Hall")), null);
 
   const artistMeta = metadataFor(artistPath(artist));
-  assert.match(artistMeta.description, /5\.0\/5 across 1 logged night/i,
-    "artist rich metadata counts only active authors");
-  assert.doesNotMatch(artistMeta.description, /across 2 logged/i);
+  assert.match(artistMeta.description, /catalogue-owned artist biography/i);
+  const artistShell = injectHead("<html><head><title>Pit</title></head><body><div id=\"root\"></div></body></html>", artistPath(artist));
+  assert.match(artistShell, /Fan reviews<\/dt><dd>1<\/dd>/,
+    "artist aggregates count only active authors");
+  assert.doesNotMatch(artistShell, /SEO Suspended Secret Hall|SEO Banned Hall/);
 
-  const sitemap = sitemapXml();
-  assert.match(sitemap, new RegExp(showPath("seo_active_show")));
-  assert.doesNotMatch(sitemap, new RegExp(showPath("seo_suspended_show")));
-  assert.doesNotMatch(sitemap, new RegExp(showPath("seo_banned_show")));
-  assert.doesNotMatch(sitemap, new RegExp(venuePath("SEO Suspended Secret Hall")));
-  assert.doesNotMatch(sitemap, new RegExp(venuePath("SEO Banned Hall")));
+  assert.match(sitemapXml(), /sitemapindex/);
+  const postSitemap = sitemapForPath("/sitemaps/posts.xml");
+  assert.match(postSitemap, new RegExp(showPath("seo_active_show")));
+  assert.doesNotMatch(postSitemap, new RegExp(showPath("seo_suspended_show")));
+  assert.doesNotMatch(postSitemap, new RegExp(showPath("seo_banned_show")));
+  assert.equal(seoHttpPlan(profilePath(suspended.handle)).status, 404);
 });
 
 test("profile share metadata drops legacy user-hosted images but keeps catalog provider art", () => {
@@ -106,9 +111,34 @@ test("profile share metadata drops legacy user-hosted images but keeps catalog p
   const artist = "Provider Image Artist";
   const providerImage = "https://catalog-provider.example/artist.jpg";
   db.prepare(`INSERT OR REPLACE INTO artists
-    (norm,name,search_key,genre,photo,bio,popularity,rank_score,data,source,created_at,updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .run(normName(artist), artist, "providerimageartist", "Rock", providerImage, "Provider-authored catalog bio.", 10, 10, "{}", "test", 1, 1);
-  assert.equal(metadataFor(artistPath(artist)).image, providerImage,
-    "catalog/provider imagery is separate from user-authored profile media");
+    (norm,name,public_slug,search_key,genre,photo,bio,popularity,rank_score,data,source,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(normName(artist), artist, "provider-image-artist", "providerimageartist", "Rock", providerImage,
+      "Provider-authored catalog biography with enough original context to make this artist page substantive for live music discovery.",
+      10, 10, "{}", "test", 1, 1);
+  assert.equal(metadataFor(artistPath({ name: artist, publicSlug: "provider-image-artist" })).image, null,
+    "unverified external provider art is not republished as user-controlled page media");
+  assert.match(headTagsFor(artistPath({ name: artist, publicSlug: "provider-image-artist" })), /https:\/\/www\.example\.com\/og\.png/);
+});
+
+test("public route policy redirects legacy identities and fails unknown or malformed paths closed", () => {
+  assert.deepEqual(
+    { type: seoHttpPlan("/seo-race-band").type, location: seoHttpPlan("/seo-race-band").location },
+    { type: "redirect", location: "/artist/seo-race-band" },
+  );
+  assert.equal(seoHttpPlan("/show/seo_active_show").location, "/post/seo_active_show");
+  assert.equal(seoHttpPlan("/search").type, "app");
+  assert.equal(seoHttpPlan("/does-not-exist/extra").status, 404);
+  assert.equal(seoHttpPlan("/artist/%E0%A4%A").status, 404);
+  assert.match(headTagsFor("/does-not-exist/extra"), /name="robots" content="noindex,follow"/);
+});
+
+test("crawlable HTML contains semantic content and keeps the interactive bundle", () => {
+  const shell = `<!doctype html><html><head><title>Pit</title></head><body><div id="root"></div><script src="/app.js" defer></script></body></html>`;
+  const html = injectHead(shell, "/");
+  assert.match(html, /<h1>Remember every show/);
+  assert.match(html, /<script src="\/app\.js" defer><\/script>/);
+  assert.match(html, /https:\/\/www\.example\.com\/og\.png/);
+  assert.match(html, /data-mshpit-public-document/);
+  assert.doesNotMatch(html, /You need to enable JavaScript/);
 });
