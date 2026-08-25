@@ -637,6 +637,10 @@ async function generateAndVerifyPoster(filePath, posterPath, job, video, config,
     "-frames:v", "1",
     "-vf", scale,
     "-map_metadata", "-1",
+    // FFmpeg's MJPEG encoder otherwise adds a Lavc COM marker even after
+    // metadata mapping is disabled. Public covers are deliberately accepted
+    // only when the shared image inspector finds no comment/metadata segment.
+    "-flags:v", "+bitexact",
     "-q:v", "4",
     "-f", "image2",
     "-y",

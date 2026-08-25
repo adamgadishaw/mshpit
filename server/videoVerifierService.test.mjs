@@ -379,6 +379,10 @@ test("authoritative job forces local demux/full decode, preserves rotation, and 
       && call.args.includes("-bufsize") && call.args.includes("22M")
       && call.args.includes("-map_metadata") && call.args.includes("-map_chapters")
       && call.args.some((value) => String(value).endsWith("delivery.mp4"))), true);
+    assert.equal(ffmpegCalls.some((call) => call.args.includes("-flags:v")
+      && call.args.includes("+bitexact")
+      && call.args.some((value) => String(value).endsWith("poster.jpg"))), true,
+    "worker covers must omit FFmpeg's Lavc comment metadata");
     const sourceConsumers = runProcess.calls.filter((call) => call.args.some((value) => String(value).endsWith("source.mp4")));
     assert.equal(sourceConsumers.length, 2, "one metadata probe and one full transcode consume the source");
     assert.equal(sourceConsumers.every((call) => call.args.includes("-protocol_whitelist")
