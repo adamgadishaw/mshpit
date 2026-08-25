@@ -610,7 +610,7 @@ test("accepts only conservative ISO-MP4 brands and rejects QuickTime or streamin
 test("QuickTime mode binds the MOV key/type and admits bounded iPhone AVC or HEVC structure", async () => {
   const h264 = makeMp4({
     ftyp: { majorBrand: "qt  ", compatibleBrands: ["qt  "] },
-    metadataHandlers: ["meta"],
+    metadataHandlers: Array.from({ length: 5 }, () => "meta"),
   });
   assert.deepEqual(await verify(h264, {
     objectKey: "users/owner/post/iphone-avc.mov",
@@ -645,6 +645,35 @@ test("QuickTime mode binds the MOV key/type and admits bounded iPhone AVC or HEV
     fetchImpl: async () => { fetches += 1; },
   }), isUnsupported);
   assert.equal(fetches, 0, "a MOV claim cannot be paired with an MP4 object key");
+});
+
+test("QuickTime mode bounds discarded metadata tracks and rejects unknown handlers", async (context) => {
+  const quickTime = (metadataHandlers) => makeMp4({
+    ftyp: { majorBrand: "qt  ", compatibleBrands: ["qt  "] },
+    metadataHandlers,
+  });
+  await context.test("accept-reviewed-eight-track-ceiling", async () => {
+    assert.deepEqual(await verify(quickTime(Array.from({ length: 8 }, () => "meta")), {
+      objectKey: "users/owner/post/iphone-eight-meta.mov",
+      contentType: "video/quicktime",
+    }), {
+      ...expectedStructural(),
+      sourceContainer: "quicktime",
+      sourceCodec: "h264",
+    });
+  });
+  await context.test("reject-nine-discarded-tracks", async () => {
+    await assert.rejects(() => verify(quickTime(Array.from({ length: 9 }, () => "meta")), {
+      objectKey: "users/owner/post/iphone-nine-meta.mov",
+      contentType: "video/quicktime",
+    }), isUnsupported);
+  });
+  await context.test("reject-unknown-handler-within-ceiling", async () => {
+    await assert.rejects(() => verify(quickTime(["meta", "zzzz"]), {
+      objectKey: "users/owner/post/iphone-unknown-track.mov",
+      contentType: "video/quicktime",
+    }), isUnsupported);
+  });
 });
 
 test("ISO-MP4 mode admits only bounded hvc1 Main or Main 10 structure", async (context) => {

@@ -62,6 +62,10 @@ const ISO_MP4_COMPATIBLE_BRANDS = new Set(["isom", "iso2", "iso3", "iso4", "iso5
 const QUICKTIME_MAJOR_BRAND = "qt  ";
 const QUICKTIME_COMPATIBLE_BRANDS = new Set([QUICKTIME_MAJOR_BRAND]);
 const QUICKTIME_DISCARDED_TRACK_HANDLERS = new Set(["meta", "tmcd"]);
+// Current iPhone camera MOVs can carry several mebx-backed `meta` tracks in
+// addition to timecode. They are never decoded or published, but keep a small
+// explicit ceiling so arbitrary auxiliary-track collections remain rejected.
+const MAX_QUICKTIME_DISCARDED_TRACKS = 8;
 const DOLBY_VISION_CONFIGURATION_BOXES = new Set(["dvcC", "dvvC"]);
 const SOURCE_CONTENT_TYPES = new Set(VIDEO_VERIFIER_SOURCE_CONTENT_TYPES);
 const STREAMING_ONLY_BOXES = new Set(["moof", "mfra", "sidx", "styp"]);
@@ -1086,7 +1090,7 @@ function parseMoov(buffer, parseState, mdats, contentType) {
   const audioTracks = parsedTracks.filter(({ handlerType }) => handlerType === "soun");
   const unknownTracks = parsedTracks.filter(({ handlerType }) => handlerType !== "vide" && handlerType !== "soun");
   const discardedQuickTimeTracks = contentType === "video/quicktime"
-    && unknownTracks.length <= 2
+    && unknownTracks.length <= MAX_QUICKTIME_DISCARDED_TRACKS
     && unknownTracks.every(({ handlerType }) => QUICKTIME_DISCARDED_TRACK_HANDLERS.has(handlerType));
   if (videoTracks.length !== 1 || audioTracks.length > 1
       || (unknownTracks.length && !discardedQuickTimeTracks)) {
