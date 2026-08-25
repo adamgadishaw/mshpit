@@ -24,7 +24,14 @@ test("a resolved video is trusted and cached for a long time", () => {
 test("capacity failures stay temporary without amplifying one play into retries", () => {
   // These are the statuses that made popular songs play as previews: the song
   // was fine, we just could not ask at that moment.
-  for (const status of ["search_budget_exhausted", "provider_paused", "quota_or_forbidden", "rate_limited", "resolution_timeout"]) {
+  for (const status of [
+    "search_budget_exhausted",
+    "provider_paused",
+    "recording_proof_unavailable",
+    "quota_or_forbidden",
+    "rate_limited",
+    "resolution_timeout",
+  ]) {
     const r = classifyResolve({ videoId: null, status, retryable: true });
     assert.equal(r.transient, true, `${status} should be temporary`);
     assert.equal(r.retry, false, `${status} must require another explicit listener action`);
@@ -208,19 +215,36 @@ test("access and capacity outcomes get truthful player notices", () => {
   assert.equal(playerYouTubeLookupNotice("search_deferred")?.kind, "catalogue_only");
   assert.equal(playerYouTubeLookupNotice("search_budget_exhausted")?.kind, "global_limit");
   assert.equal(playerYouTubeLookupNotice("provider_paused")?.kind, "provider_unavailable");
+  assert.deepEqual(playerYouTubeLookupNotice("recording_proof_unavailable"), {
+    kind: "recording_verification",
+    message: "PIT could not verify this exact recording for full-track playback yet.",
+  });
   assert.equal(playerYouTubeLookupNotice("resolution_timeout")?.kind, "temporary");
   assert.equal(playerYouTubeLookupNotice("unconfigured")?.kind, "configuration");
 });
 
-test("a playing preview keeps the resolver reason visible", () => {
+test("preview status copy reports actual playback state", () => {
   const verification = playerYouTubeLookupNotice("search_verification_required");
   assert.equal(
-    playerYouTubeStatusMessage(verification, { preview: true }),
+    playerYouTubeStatusMessage(verification, { preview: true, previewState: "playing" }),
     "Verify your email for full-track YouTube lookup. Preview playing.",
   );
   assert.equal(
-    playerYouTubeStatusMessage(playerYouTubeLookupNotice("search_deferred"), { preview: true }),
+    playerYouTubeStatusMessage(verification, { preview: true }),
+    "Verify your email for full-track YouTube lookup. Preview available.",
+  );
+  assert.equal(
+    playerYouTubeStatusMessage(verification, { preview: true, previewState: "requires_gesture" }),
+    "Verify your email for full-track YouTube lookup. Preview ready — press Play.",
+  );
+  assert.equal(
+    playerYouTubeStatusMessage(playerYouTubeLookupNotice("search_deferred"), { preview: true, previewState: "playing" }),
     "Previewing without spending a YouTube search.",
+  );
+  assert.equal(
+    playerYouTubeStatusMessage(playerYouTubeLookupNotice("recording_proof_unavailable"), { preview: true, previewState: "playing" }),
+    "PIT could not verify this exact recording for full-track playback yet. Preview playing.",
+    "a source-proof outage must not claim that the YouTube provider paused",
   );
 });
 

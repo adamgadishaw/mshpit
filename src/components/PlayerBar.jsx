@@ -497,9 +497,9 @@ export default function PlayerBar({
   const transientYt = !!ytErrorForThis && !terminalYt && !autoplayBlocked && !!ytErrorForThis.videoId;
   const retryKey = `${resolutionKey}|${ytErrorForThis?.videoId || ""}`;
   const retriesUsed = ytRetryRef.current.key === retryKey ? ytRetryRef.current.count : 0;
-  const ytFailed = ytErrorForThis?.kind === "init"
+  const ytFailed = !autoplayBlocked && (ytErrorForThis?.kind === "init"
     || (!!ytErrorForThis?.videoId && ytErrorForThis.videoId === resolved.videoId
-        && (terminalYt || retriesUsed >= MAX_YT_RETRIES));
+        && (terminalYt || retriesUsed >= MAX_YT_RETRIES)));
   const canRetryVideo = !!resolved.videoId && !!ytFailed
     && (ytErrorForThis?.kind === "init" || (!terminalYt && !autoplayBlocked));
   // Native has no YouTube iframe host in this component. Treat the resolved id
@@ -729,7 +729,25 @@ export default function PlayerBar({
     previewPending: resolved.previewPending,
   });
   const resolverNotice = forThis ? playerYouTubeLookupNotice(resolved.youtubeStatus) : null;
-  const resolverNoticeMessage = playerYouTubeStatusMessage(resolverNotice, { preview: !!previewSrc });
+  const currentAudioError = audio.error
+    && previewSrc
+    && (!web || (audio.error.mediaKey === resolutionKey && audio.error.source === previewSrc))
+    ? audio.error
+    : null;
+  const previewState = audio.playing
+    ? "playing"
+    : currentAudioError?.kind === "permission"
+      ? "requires_gesture"
+      : "available";
+  const previewStatusMessage = previewState === "playing"
+    ? "Preview playing."
+    : previewState === "requires_gesture"
+      ? "Preview ready — press Play."
+      : "Preview available.";
+  const resolverNoticeMessage = playerYouTubeStatusMessage(resolverNotice, {
+    preview: !!previewSrc,
+    previewState,
+  });
   const canFindFullTrack = !!(web
     && forThis
     && !resolved.videoId
@@ -739,11 +757,6 @@ export default function PlayerBar({
     if (!canFindFullTrack) return;
     beginYouTubeResolution({ allowSearch: true });
   };
-  const currentAudioError = audio.error
-    && previewSrc
-    && (!web || audio.error.source === previewSrc)
-    ? audio.error
-    : null;
   const currentYoutubeError = ytFailed && ytErrorForThis
     ? ytErrorForThis
     : null;
@@ -921,7 +934,7 @@ export default function PlayerBar({
   const statusLine = autoplayBlocked ? ytErrorForThis.message
     : canRetryVideo ? (ytErrorForThis?.message || "Video playback needs another try.")
     : connecting ? "Loading video..."
-    : resolved.youtubePending && previewSrc ? "Checking for full track... Preview playing."
+    : resolved.youtubePending && previewSrc ? `Checking for full track... ${previewStatusMessage}`
     : resolving ? "Loading..."
     : resolverNoticeMessage ? resolverNoticeMessage
     : unplayable ? "Not available to play"

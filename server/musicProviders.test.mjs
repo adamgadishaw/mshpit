@@ -910,8 +910,8 @@ test("provider recording proof keeps omitted feature credits exact and fails clo
     fetchImpl,
   });
   assert.equal(unavailable.videoId, null);
-  assert.deepEqual(unavailable, { videoId: null, status: "provider_paused", retryable: true },
-    "a proof outage is temporary and falls back to the preview, never a different recording");
+  assert.deepEqual(unavailable, { videoId: null, status: "recording_proof_unavailable", retryable: true },
+    "a proof outage is temporary, distinctly classified, and never plays a different recording");
   assert.equal(
     db.prepare("SELECT 1 FROM yt_cache WHERE key=?").get(youtubeCacheKey(title, artist, `deezer:${outageSourceId}`)),
     undefined,

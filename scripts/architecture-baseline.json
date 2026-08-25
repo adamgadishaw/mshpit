@@ -371,10 +371,6 @@
       "count": 1,
       "fingerprint": "90b50fe3ceb140860110"
     },
-    "src/lib/audioPreview.js": {
-      "count": 9,
-      "fingerprint": "1cf01f70549cf905d1c0"
-    },
     "src/lib/audioPreview.native.js": {
       "count": 3,
       "fingerprint": "a66e02d315335ac9d4b9"

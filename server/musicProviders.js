@@ -1200,9 +1200,11 @@ function creditProofUnavailable(selection) {
 }
 
 function creditProofUnavailableResult() {
-  // `provider_paused` is already a retryable client classification with a
-  // short local TTL. Most importantly, this path never reaches setYouTubeCache.
-  return { videoId: null, status: "provider_paused", retryable: true };
+  // This is not a YouTube circuit failure: the source provider could not prove
+  // the exact recording identity, so selecting any candidate would risk playing
+  // the wrong version. Keep it retryable and out of the shared YouTube cache,
+  // but give the client a truthful status instead of claiming YouTube paused.
+  return { videoId: null, status: "recording_proof_unavailable", retryable: true };
 }
 
 const YOUTUBE_CHANNEL_REFRESH_TTL_MS = days(14);

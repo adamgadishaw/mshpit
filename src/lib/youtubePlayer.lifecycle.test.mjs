@@ -131,12 +131,12 @@ test("adjacent duplicate occurrences restart and stale ENDED cannot advance the 
     "preview starts and history writes must use the same occurrence boundary");
   assert.match(webPreview, /\[src, enabled, mediaKey\]/,
     "web audio must reload an identical URI for occurrence two");
-  assert.match(webPreview, /const occurrence = \{ mediaKey, source: src \|\| null \}/,
-    "web audio callbacks must capture an immutable occurrence lease");
-  assert.match(webPreview, /\[enabled, mediaKey\]/,
-    "web audio must detach the prior occurrence's delayed event listeners");
-  assert.match(webPreview, /if \(audioRef\.current !== a\) return;/,
-    "a delayed play rejection cannot write into the next occurrence's state");
+  assert.match(webPreview, /const lease = \{[\s\S]*mediaKey,[\s\S]*source: src \|\| null,[\s\S]*generation: \+\+loadGenerationRef\.current/,
+    "web audio callbacks must capture an immutable source and occurrence lease");
+  assert.match(webPreview, /\[enabled, mediaKey, src\]/,
+    "web audio must detach the prior source occurrence's delayed event listeners");
+  assert.match(webPreview, /audioPreviewLeaseMatches\(activeLoadRef\.current, lease\)/,
+    "a delayed play rejection cannot write into the next load generation's state");
   assert.match(nativePreview, /playbackKey = sourceKey \? JSON\.stringify\(\[sourceKey, String\(mediaKey \|\| ""\)\]\)/,
     "native audio load/start/completion keys must include the queue occurrence");
   assert.match(nativePreview, /await player\.seekTo\(0\)/,
@@ -167,6 +167,8 @@ test("autoplay blocking stays recoverable through the visible Play control", asy
   assert.match(hook, /onAutoplayBlocked:/);
   assert.match(hook, /kind: "autoplay"/);
   assert.match(bar, /const autoplayBlocked = ytErrorForThis\?\.kind === "autoplay"/);
+  assert.match(bar, /const ytFailed = !autoplayBlocked &&/,
+    "retry exhaustion must never turn a recoverable autoplay block into a failed video");
   assert.match(bar, /!terminalYt && !autoplayBlocked/);
   assert.match(bar, /autoplayBlocked \? ytErrorForThis\.message/);
   assert.match(bar, /accessibilityLiveRegion="polite">\{statusLine\}/);

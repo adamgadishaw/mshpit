@@ -29,6 +29,7 @@ const DEFERRED = "search_deferred";
 const TRANSIENT = new Set([
   "search_budget_exhausted",
   "provider_paused",
+  "recording_proof_unavailable",
   "quota_or_forbidden",
   "rate_limited",
   "http_error",
@@ -66,6 +67,10 @@ const LOOKUP_NOTICES = Object.freeze({
     kind: "provider_unavailable",
     message: "YouTube full-track lookup is temporarily paused.",
   }),
+  recording_proof_unavailable: Object.freeze({
+    kind: "recording_verification",
+    message: "PIT could not verify this exact recording for full-track playback yet.",
+  }),
   quota_or_forbidden: Object.freeze({
     kind: "provider_unavailable",
     message: "YouTube full-track lookup is temporarily unavailable.",
@@ -101,10 +106,16 @@ export function playerYouTubeLookupNotice(status) {
 // Keep the reason visible even while the fallback is successfully playing.
 // Previously the UI only showed this copy when *no* source was playable, which
 // made verification, account and provider limits look like an ordinary preview.
-export function playerYouTubeStatusMessage(notice, { preview = false } = {}) {
+export function playerYouTubeStatusMessage(notice, { preview = false, previewState = "available" } = {}) {
   const message = typeof notice?.message === "string" ? notice.message.trim() : "";
   if (!message) return null;
-  return preview && notice?.kind !== "catalogue_only" ? `${message} Preview playing.` : message;
+  if (!preview || notice?.kind === "catalogue_only") return message;
+  const previewMessage = previewState === "playing"
+    ? "Preview playing."
+    : previewState === "requires_gesture"
+      ? "Preview ready — press Play."
+      : "Preview available.";
+  return `${message} ${previewMessage}`;
 }
 
 function cleanOccurrenceId(track) {
