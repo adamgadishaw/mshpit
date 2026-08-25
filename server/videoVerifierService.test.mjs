@@ -323,9 +323,9 @@ function fakeRunner({
   return runProcess;
 }
 
-test("authoritative job forces local demux/full decode, preserves rotation, and cleans random temp state", async () => {
+test("authoritative MP4 job accepts omitted square-pixel metadata, forces local demux/full decode, and cleans temp state", async () => {
   const root = await mkdtemp(join(tmpdir(), "pit-verifier-test-"));
-  const runProcess = fakeRunner();
+  const runProcess = fakeRunner({ probe: videoProbe({ omitSampleAspectRatio: true }) });
   const fetchImpl = async (url, request) => {
     assert.equal(new URL(url).origin, "https://objects.example.com");
     assert.equal(request.redirect, "error");
@@ -758,12 +758,11 @@ test("ISO-MP4 HEVC rejects hev1, Dolby Vision, encrypted tags, and unsupported p
   }
 });
 
-test("MP4 mode independently rejects QuickTime brands, missing or anamorphic pixels, and fields", async () => {
+test("MP4 mode independently rejects QuickTime brands, textual or anamorphic pixels, and fields", async () => {
   for (const probe of [
     videoProbe({ majorBrand: "qt  ", compatibleBrands: "qt  " }),
     videoProbe({ sampleAspectRatio: "4:3" }),
     videoProbe({ sampleAspectRatio: "N/A" }),
-    videoProbe({ omitSampleAspectRatio: true }),
     videoProbe({ fieldOrder: "tt" }),
   ]) {
     const root = await mkdtemp(join(tmpdir(), "pit-verifier-reject-"));

@@ -472,15 +472,17 @@ async function probeVideo(filePath, config, {
       && new Set([heightValue, roundedDisplayHeight]).has(codedHeight);
   const hasSampleAspectRatio = Object.hasOwn(video[0] || {}, "sample_aspect_ratio");
   const sampleAspectRatio = String(video[0]?.sample_aspect_ratio || "");
-  // FFprobe's JSON writer omits optional fields whose value is N/A. Current
-  // iPhone QuickTime files use that representation when they have no explicit
-  // pixel-aspect signal. Treat an omitted value like the textual N/A form only
-  // after the bounded parser has signed the QuickTime coded envelope. Any
-  // explicit non-square (or empty) value remains invalid, and ISO MP4 stays
-  // strict because it does not use this reviewed compatibility path.
-  const noQuickTimeAspectSignal = !hasSampleAspectRatio || sampleAspectRatio === "N/A";
+  // FFprobe's JSON writer omits optional fields whose value is N/A. Reviewed
+  // iPhone QuickTime and mp42 files both use that representation when they
+  // have no explicit pixel-aspect signal. Accept the omission only after the
+  // bounded parser has signed the coded envelope (and rejected non-square
+  // `pasp`). QuickTime can also report the equivalent textual N/A form. Any
+  // explicit empty or non-square value remains invalid, and generated
+  // derivatives have no structural envelope so they stay strictly 1:1.
+  const noExplicitSourceAspect = !hasSampleAspectRatio
+    || (quickTime && sampleAspectRatio === "N/A");
   const sourceAspectAccepted = sampleAspectRatio === "1:1"
-    || (quickTime && hasStructuralEnvelope && noQuickTimeAspectSignal);
+    || (hasStructuralEnvelope && noExplicitSourceAspect);
   const estimatedSamples = Number.isFinite(avgFps) && Number.isFinite(realFps) && Number.isSafeInteger(durationMs)
     ? Math.ceil(Math.max(avgFps, realFps) * (durationMs / 1_000))
     : VIDEO_MAX_SAMPLES + 1;
