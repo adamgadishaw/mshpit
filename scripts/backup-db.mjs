@@ -104,13 +104,30 @@ async function upload(path, publishedName = basename(path)) {
   return key;
 }
 
-function prune() {
-  const kept = readdirSync(BACKUP_DIR).filter((f) => NAME.test(f))
+function completedSnapshots() {
+  return readdirSync(BACKUP_DIR).filter((f) => NAME.test(f))
     .map((f) => ({ f, t: statSync(join(BACKUP_DIR, f)).mtimeMs }))
     .sort((a, b) => b.t - a.t);
-  const dropped = kept.slice(KEEP);
+}
+
+function prune(keep = KEEP) {
+  const snapshots = completedSnapshots();
+  const safeKeep = Math.max(0, Math.floor(Number(keep) || 0));
+  const dropped = snapshots.slice(safeKeep);
   for (const { f } of dropped) unlinkSync(join(BACKUP_DIR, f));
-  return { kept: Math.min(kept.length, KEEP), dropped: dropped.length };
+  return { kept: Math.min(snapshots.length, safeKeep), dropped: dropped.length };
+}
+
+function reserveReplacementSlot() {
+  const snapshots = completedSnapshots();
+  // Retention rotation must make room before VACUUM INTO writes another
+  // database-sized file. Keep at least the newest verified snapshot if the new
+  // backup later fails; after a successful replacement the ordinary retention
+  // pass below returns the directory to KEEP snapshots.
+  if (snapshots.length < KEEP || snapshots.length <= 1) {
+    return { kept: snapshots.length, dropped: 0 };
+  }
+  return prune(Math.max(1, KEEP - 1));
 }
 
 const args = process.argv.slice(2);
@@ -126,6 +143,10 @@ if (verifyAt !== -1) {
 if (!existsSync(SOURCE)) { console.error(`No database at ${SOURCE}. Set PIT_DATA_DIR.`); process.exit(1); }
 mkdirSync(BACKUP_DIR, { recursive: true });
 
+const rollover = reserveReplacementSlot();
+if (rollover.dropped) {
+  console.log(`preflight ${rollover.kept} verified snapshot(s) kept, ${rollover.dropped} oldest pruned for replacement capacity`);
+}
 const live = new DatabaseSync(SOURCE, { readOnly: true });
 let expected;
 try { expected = backupTableCounts(live); } finally { live.close(); }

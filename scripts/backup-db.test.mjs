@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
-import { mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -115,6 +115,42 @@ test("backup CLI creates, verifies, and retains a VACUUM INTO snapshot end to en
       posts: 1,
       artists: 0,
     });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("backup retention reserves one verified replacement slot before VACUUM INTO", () => {
+  const root = mkdtempSync(join(tmpdir(), "pit-backup-rollover-"));
+  const dataDirectory = join(root, "data");
+  const backupDirectory = join(root, "backups");
+  mkdirSync(dataDirectory);
+  mkdirSync(backupDirectory);
+  try {
+    createSnapshot(dataDirectory, "pit.db");
+    const oldest = createSnapshot(backupDirectory, "pit-20260801-010203.db");
+    const newest = createSnapshot(backupDirectory, "pit-20260802-010203.db");
+    const oldClock = new Date("2026-08-01T01:02:03Z");
+    const newClock = new Date("2026-08-02T01:02:03Z");
+    utimesSync(oldest, oldClock, oldClock);
+    utimesSync(newest, newClock, newClock);
+
+    const result = spawnSync(process.execPath, [BACKUP_SCRIPT], {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PIT_DATA_DIR: dataDirectory,
+        BACKUP_DIR: backupDirectory,
+        BACKUP_KEEP: "2",
+      },
+    });
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /preflight 1 verified snapshot\(s\) kept, 1 oldest pruned/);
+    assert.equal(existsSync(oldest), false, "the replaceable oldest snapshot frees capacity first");
+    assert.equal(existsSync(newest), true, "the newest verified recovery point is never removed");
+    const snapshots = readdirSync(backupDirectory).filter((name) => name.endsWith(".db"));
+    assert.equal(snapshots.length, 2, "the verified replacement restores configured retention");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
