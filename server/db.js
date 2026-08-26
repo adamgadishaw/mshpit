@@ -21,6 +21,7 @@ import { normalizeTaggedUserIds } from "../src/domain/postFriendTags.mjs";
 import { privateErrorLabel } from "./errors.js";
 import { quarantineUnsafeLegacyImages } from "./publicMedia.js";
 import { ensurePostMediaCapacity, POST_MEDIA_MAX_POSITION } from "./postMediaSchema.js";
+import { registerPitSqliteFunctions } from "./sqliteFunctions.js";
 
 export const artistSearchKey = (value) => String(value || "")
   .normalize("NFKD")
@@ -33,13 +34,7 @@ export const DATABASE_DIRECTORY = prepareDataDirectory({ fallbackDir: join(HERE,
 export const DATABASE_PATH = join(DATABASE_DIRECTORY, "pit.db");
 
 export const db = new DatabaseSync(DATABASE_PATH);
-db.function("pit_public_slug", { deterministic: true }, (value) => slugify(value) || "");
-db.function("pit_venue_public_slug", { deterministic: true }, (source, providerVenueId) => {
-  const provider = slugify(providerVenueId);
-  if (!provider) return "";
-  const namespace = slugify(source) || "provider";
-  return `${namespace}-${provider}`;
-});
+registerPitSqliteFunctions(db);
 
 db.exec(`
   PRAGMA busy_timeout = 5000;

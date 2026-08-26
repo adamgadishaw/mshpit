@@ -13,16 +13,21 @@ import {
   boundedBackupTimeout,
   verifyBackupSnapshot,
 } from "./backup-db-verification.mjs";
+import { registerPitSqliteFunctions } from "../server/sqliteFunctions.js";
 
 const BACKUP_SCRIPT = fileURLToPath(new URL("./backup-db.mjs", import.meta.url));
 
 function createSnapshot(directory, name = "snapshot.db") {
   const path = join(directory, name);
   const db = new DatabaseSync(path);
+  registerPitSqliteFunctions(db);
   db.exec(`
     CREATE TABLE users (id TEXT PRIMARY KEY);
     CREATE TABLE posts (id TEXT PRIMARY KEY);
     CREATE TABLE artists (id TEXT PRIMARY KEY);
+    CREATE TABLE tour_dates (source TEXT, venue_provider_id TEXT);
+    CREATE INDEX idx_test_provider_venue_slug
+      ON tour_dates(pit_venue_public_slug(source, venue_provider_id));
     INSERT INTO users VALUES ('u1'), ('u2');
     INSERT INTO posts VALUES ('p1');
   `);

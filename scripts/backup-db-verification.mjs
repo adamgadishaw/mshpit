@@ -1,5 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import { existsSync } from "node:fs";
+import { registerPitSqliteFunctions } from "../server/sqliteFunctions.js";
 
 // Tables whose absence means a snapshot is unusable even when SQLite's page
 // structure itself is valid.
@@ -39,6 +40,7 @@ export function backupTableCounts(database) {
 export function verifyBackupSnapshot(path, expected = null) {
   if (!existsSync(path)) throw new Error(`No such snapshot: ${path}`);
   const snapshot = new DatabaseSync(path, { readOnly: true });
+  registerPitSqliteFunctions(snapshot);
   try {
     const integrity = snapshot.prepare("PRAGMA integrity_check").get();
     const verdict = String(Object.values(integrity)[0] || "");

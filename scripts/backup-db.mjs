@@ -21,6 +21,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync,
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { presignS3Request } from "../server/media.js";
+import { registerPitSqliteFunctions } from "../server/sqliteFunctions.js";
 import { privateBackupStorageConfig, verifyPrivateBackupBucket } from "../server/backupStorageSecurity.js";
 import {
   backupRetentionCount,
@@ -148,6 +149,7 @@ if (rollover.dropped) {
   console.log(`preflight ${rollover.kept} verified snapshot(s) kept, ${rollover.dropped} oldest pruned for replacement capacity`);
 }
 const live = new DatabaseSync(SOURCE, { readOnly: true });
+registerPitSqliteFunctions(live);
 let expected;
 try { expected = backupTableCounts(live); } finally { live.close(); }
 
@@ -162,6 +164,7 @@ let bytes;
 let uploadedAt = null;
 try {
   const source = new DatabaseSync(SOURCE);
+  registerPitSqliteFunctions(source);
   try { source.exec(`VACUUM INTO '${partial.replace(/'/g, "''")}'`); } finally { source.close(); }
 
   got = verifyBackupSnapshot(partial, expected);
