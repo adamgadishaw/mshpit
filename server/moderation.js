@@ -11,6 +11,7 @@ import {
   deleteLegacyVideoPosterMappings,
   legacyVideoPosterObjectRecords,
 } from "./legacyVideoPosters.js";
+import { MEDIA_POST_MAX_ATTACHMENTS } from "../src/domain/mediaUploadPolicy.mjs";
 import { clean, LIMITS } from "./validate.js";
 
 export const MODERATABLE_CONTENT = Object.freeze({
@@ -205,7 +206,7 @@ function contextsFor(reports) {
       if (type === "post") context = {
         type, exists: true, removed: !!row.removed, postKind: row.kind || "review",
         author: publicPerson(row), artist: boundedText(row.artist, LIMITS.artist), venue: boundedText(row.venue, LIMITS.venue),
-        excerpt: boundedText(row.review), mediaCount: parseArrayLength(row.photos, 8), _mediaUris: (() => { try { const values = JSON.parse(row.photos || "[]"); return Array.isArray(values) ? values.slice(0, 8).filter((value) => typeof value === "string") : []; } catch { return []; } })(), createdAt: row.created_at,
+        excerpt: boundedText(row.review), mediaCount: parseArrayLength(row.photos, MEDIA_POST_MAX_ATTACHMENTS), _mediaUris: (() => { try { const values = JSON.parse(row.photos || "[]"); return Array.isArray(values) ? values.slice(0, MEDIA_POST_MAX_ATTACHMENTS).filter((value) => typeof value === "string") : []; } catch { return []; } })(), createdAt: row.created_at,
       };
       else if (type === "comment") context = {
         type, exists: true, removed: !!row.removed, author: publicPerson(row), postId: row.post_id,
@@ -221,7 +222,7 @@ function contextsFor(reports) {
       };
       else if (type === "venue_review") context = {
         type, exists: true, removed: !!row.removed, author: publicPerson(row), venueKey: boundedText(row.venue_key, 200),
-        rating: Number(row.rating) || 0, excerpt: boundedText(row.text), mediaCount: parseArrayLength(row.photos, 8), _mediaUris: (() => { try { const values = JSON.parse(row.photos || "[]"); return Array.isArray(values) ? values.slice(0, 8).filter((value) => typeof value === "string") : []; } catch { return []; } })(), createdAt: row.created_at,
+        rating: Number(row.rating) || 0, excerpt: boundedText(row.text), mediaCount: parseArrayLength(row.photos, MEDIA_POST_MAX_ATTACHMENTS), _mediaUris: (() => { try { const values = JSON.parse(row.photos || "[]"); return Array.isArray(values) ? values.slice(0, MEDIA_POST_MAX_ATTACHMENTS).filter((value) => typeof value === "string") : []; } catch { return []; } })(), createdAt: row.created_at,
       };
       else if (type === "artist_post") context = {
         type, exists: true, removed: !!row.removed, author: publicPerson(row), artistKey: boundedText(row.artist_key, 200),

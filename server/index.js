@@ -18,11 +18,14 @@ import { assertExpectedAccount } from "./identityBinding.js";
 import { maybeAlert, pruneErrors, recordError } from "./errorLog.js";
 import {
   injectHead,
+  enforceHtmlRobotsMeta,
+  origin,
   renderNotFoundDocument,
   robotsTxt,
   seoHttpPlan,
   sitemapForPath,
 } from "./seo.js";
+import { htmlRobotsDirective, isProduction } from "./environment.js";
 import {
   clearSessionCookies,
   getSession,
@@ -48,7 +51,8 @@ import { pruneGuestSearchAnalytics } from "./guestSearchAnalytics.js";
 import { pruneProductSuggestions } from "./features/suggestions/suggestionRetention.js";
 import { pruneExpiredAccountSecrets } from "./accountSecretRetention.js";
 import { missingStaticAssetResponse } from "./staticPolicy.js";
-import { renderPublicPage } from "./publicPages.js";
+import { publicPageFor, renderPublicPage } from "./publicPages.js";
+import { staticAssetCacheControl } from "./staticAssetCache.js";
 import { randomUUID } from "node:crypto";
 import { createApiResponseHeaders, createApiResponseHeaderSetter } from "./responseHeaders.js";
 import { reconcileAdminAccount } from "./adminBootstrap.js";
@@ -56,6 +60,7 @@ import { applyHttpServerLimits } from "./httpServerPolicy.js";
 import { safeRequestFailureContext } from "./safeLogging.js";
 import { assertAccountMutationAccess } from "./accountMutationAccess.js";
 import { healthRateLimitPolicy } from "./healthAvailability.js";
+import { crawlerFileRateLimitPolicy } from "./crawlerFileRateLimit.js";
 import {
   allowedUnsafeRequestOrigins,
   assertProductionRequestHost,
@@ -73,6 +78,10 @@ import {
   ensureLegacyMediaFinalizeSchema,
   expireLegacyMediaUploads,
 } from "./mediaLegacyFinalize.js";
+import {
+  legacyImageRecoveryEnabled,
+  startLegacyImageRecoveryScheduler,
+} from "./legacyPostImageRecovery.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 3000;
@@ -199,6 +208,14 @@ function matchRoute(method, pathname) {
 // search engine could read it, and robots.txt fell through to Cloudflare's
 // managed default rather than ours.
 function serveCrawlerFile(req, res, pathname) {
+  if (req.method !== "GET" && req.method !== "HEAD") {
+    return send(res, 405, "Method not allowed.\n", {
+      "Content-Type": "text/plain; charset=utf-8",
+      "Cache-Control": "no-store",
+      "X-Robots-Tag": "noindex",
+      Allow: "GET, HEAD",
+    });
+  }
   const body = pathname === "/robots.txt" ? robotsTxt() : sitemapForPath(pathname);
   const type = pathname === "/robots.txt" ? "text/plain; charset=utf-8" : "application/xml; charset=utf-8";
   if (body == null) {
@@ -223,13 +240,27 @@ function serveCrawlerFile(req, res, pathname) {
 // that do not depend on the client bundle or an API session. Keep this before
 // the SPA fallback, while leaving every non-document route on the existing app.
 function servePublicPage(req, res, pathname) {
-  const body = renderPublicPage(pathname);
+  const page = publicPageFor(pathname);
+  if (!page) return false;
+  if (pathname !== page.path) {
+    res.writeHead(301, {
+      ...HEADERS,
+      Location: page.path,
+      "Cache-Control": "public, max-age=3600",
+      "X-Robots-Tag": htmlRobotsDirective(),
+    });
+    res.end();
+    return true;
+  }
+  const body = renderPublicPage(page.path);
   if (!body) return false;
   res.writeHead(200, {
     ...HEADERS,
     "Content-Type": "text/html; charset=utf-8",
     "Content-Length": Buffer.byteLength(body),
-    "Cache-Control": "public, max-age=3600",
+    "Cache-Control": "public, max-age=0, s-maxage=3600, stale-while-revalidate=86400",
+    "X-Robots-Tag": htmlRobotsDirective({ indexable: true }),
+    Link: `<${origin()}${page.path}>; rel="canonical"`,
   });
   if (req.method === "HEAD") res.end();
   else res.end(body);
@@ -269,7 +300,14 @@ function serveStatic(req, res, pathname) {
   if (ext === ".html") {
     let html = readFileSync(file, "utf8");
     try { html = injectHead(html, pathname); } catch { /* never fail the page over metadata */ }
-    res.writeHead(200, { ...HEADERS, "Content-Type": "text/html; charset=utf-8", "Content-Length": Buffer.byteLength(html), "Cache-Control": "no-cache" });
+    if (!isProduction()) html = enforceHtmlRobotsMeta(html);
+    res.writeHead(200, {
+      ...HEADERS,
+      "Content-Type": "text/html; charset=utf-8",
+      "Content-Length": Buffer.byteLength(html),
+      "Cache-Control": "no-cache",
+      ...(!isProduction() ? { "X-Robots-Tag": htmlRobotsDirective() } : {}),
+    });
     if (req.method === "HEAD") {
       res.end();
       return true;
@@ -277,7 +315,7 @@ function serveStatic(req, res, pathname) {
     res.end(html);
     return true;
   }
-  const cache = ext === ".html" ? "no-cache" : "public, max-age=31536000, immutable";
+  const cache = staticAssetCacheControl(pathname);
   const size = statSync(file).size;
   res.writeHead(200, {
     ...HEADERS,
@@ -296,7 +334,13 @@ function serveStatic(req, res, pathname) {
   return true;
 }
 
-function serveWebShell(req, res, pathname, { noindex = false, plan = null } = {}) {
+function serveWebShell(req, res, pathname, {
+  noindex = false,
+  plan = null,
+  status = 200,
+  cacheControl = null,
+  retryAfter = null,
+} = {}) {
   if (!existsSync(DIST)) {
     return send(res, 503, { error: "Web build not found. Run: npx expo export -p web" });
   }
@@ -306,12 +350,19 @@ function serveWebShell(req, res, pathname, { noindex = false, plan = null } = {}
   // Reuse the request-scoped resolution. Public projections contain several
   // bounded aggregate queries; resolving again here would double crawler load.
   html = injectHead(html, pathname, plan);
-  res.writeHead(200, {
+  const publicDocument = status === 200 && plan?.type === "document" && !noindex;
+  res.writeHead(status, {
     ...HEADERS,
     "Content-Type": "text/html; charset=utf-8",
     "Content-Length": Buffer.byteLength(html),
-    "Cache-Control": "no-cache",
-    ...(noindex ? { "X-Robots-Tag": "noindex,follow" } : {}),
+    "Cache-Control": cacheControl || (publicDocument
+      ? "public, max-age=0, s-maxage=60, must-revalidate"
+      : "no-store"),
+    "X-Robots-Tag": htmlRobotsDirective({ indexable: publicDocument }),
+    ...(publicDocument && plan?.document?.canonicalUrl
+      ? { Link: `<${plan.document.canonicalUrl}>; rel="canonical"` }
+      : {}),
+    ...(retryAfter ? { "Retry-After": String(retryAfter) } : {}),
   });
   if (req.method === "HEAD") {
     res.end();
@@ -330,8 +381,20 @@ function serveSeoRoute(req, res, pathname) {
     });
     return res.end();
   }
-  if (plan.type === "document") return serveWebShell(req, res, pathname, { plan });
+  if (plan.type === "document") return serveWebShell(req, res, pathname, {
+    noindex: plan.indexable === false,
+    plan,
+  });
   if (plan.type === "app") return serveWebShell(req, res, pathname, { noindex: true, plan });
+  if (plan.type === "unavailable") {
+    return serveWebShell(req, res, pathname, {
+      noindex: true,
+      plan,
+      status: 503,
+      cacheControl: "no-store",
+      retryAfter: 300,
+    });
+  }
 
   const html = renderNotFoundDocument();
   res.writeHead(404, {
@@ -339,7 +402,7 @@ function serveSeoRoute(req, res, pathname) {
     "Content-Type": "text/html; charset=utf-8",
     "Content-Length": Buffer.byteLength(html),
     "Cache-Control": "no-store",
-    "X-Robots-Tag": "noindex,follow",
+    "X-Robots-Tag": htmlRobotsDirective(),
   });
   if (req.method === "HEAD") return res.end();
   res.end(html);
@@ -398,6 +461,15 @@ const server = createServer(async (req, res) => {
 
   try {
     if (pathname === "/robots.txt" || pathname === "/sitemap.xml" || pathname.startsWith("/sitemaps/")) {
+      const crawlerLimit = crawlerFileRateLimitPolicy(clientIp(req));
+      if (!rateLimit(crawlerLimit.key, crawlerLimit.max, crawlerLimit.windowMs)) {
+        return send(res, 429, "Too many crawler-file requests.\n", {
+          "Content-Type": "text/plain; charset=utf-8",
+          "Cache-Control": "no-store",
+          "X-Robots-Tag": "noindex",
+          "Retry-After": String(Math.ceil(crawlerLimit.windowMs / 1000)),
+        });
+      }
       return serveCrawlerFile(req, res, pathname);
     }
 
@@ -566,6 +638,7 @@ let shuttingDown = false;
 let emailCampaignScheduler = null;
 let founderOperationsScheduler = null;
 let legacyVideoPosterScheduler = null;
+let legacyImageRecoveryScheduler = null;
 let privateMediaIsolationTimer = null;
 function shutdown(exitCode = 0) {
   if (shuttingDown) return;
@@ -573,6 +646,7 @@ function shutdown(exitCode = 0) {
   console.log("\n[pit] shutting down…");
   const campaignStop = emailCampaignScheduler?.stop() || Promise.resolve();
   const founderOperationsStop = founderOperationsScheduler?.stop() || Promise.resolve();
+  const legacyImageRecoveryStop = legacyImageRecoveryScheduler?.stop() || Promise.resolve();
   stopVideoVerifierHealthScheduler({ abortActive: true });
   if (privateMediaIsolationTimer) clearInterval(privateMediaIsolationTimer);
   legacyVideoPosterScheduler?.stop();
@@ -581,6 +655,8 @@ function shutdown(exitCode = 0) {
     catch (error) { console.error(`[mail] campaign recovery shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     try { await founderOperationsStop; }
     catch (error) { console.error(`[health] founder operations shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
+    try { await legacyImageRecoveryStop; }
+    catch (error) { console.error(`[media] legacy image recovery shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     try { db.close(); }
     catch (error) { console.error(`[pit] database close failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     process.exit(exitCode);
@@ -609,9 +685,17 @@ function startPrivateMediaIsolationScheduler() {
   privateMediaIsolationTimer.unref();
 }
 
+function ensureLegacyImageRecoveryScheduler() {
+  if (shuttingDown || legacyImageRecoveryScheduler) return legacyImageRecoveryScheduler;
+  if (!legacyImageRecoveryEnabled(process.env)) return null;
+  legacyImageRecoveryScheduler = startLegacyImageRecoveryScheduler({ database: db });
+  console.log("[media] verified private storage; bounded legacy image recovery is active");
+  return legacyImageRecoveryScheduler;
+}
 function refreshPrivateMediaIsolationSafely(phase) {
   return refreshPrivateMediaIsolation()
     .then((status) => {
+      if (status?.ready) ensureLegacyImageRecoveryScheduler();
       if (status && !status.ready) {
         console.error(`[media] private-storage privacy check failed closed: phase=${phase} code=${status.errorCode || "probe_failed"}`);
       }

@@ -1,6 +1,16 @@
 import { Directory, File, Paths } from "expo-file-system";
 import { isPersistableMediaDraftUri, mediaDraftFileName, safeMediaDraftSegment } from "../domain/mediaDraftStaging.mjs";
 import { mediaSourceSizeAllowed } from "../domain/mediaEdit.mjs";
+import {
+  MEDIA_PHOTO_SOURCE_MAX_BYTES,
+  MEDIA_VIDEO_SOURCE_MAX_BYTES,
+  mediaUploadLimitLabel,
+} from "../domain/mediaUploadPolicy.mjs";
+
+const mediaSizeError = (asset) => asset?.kind === "video"
+  ? `That clip is over PIT's ${mediaUploadLimitLabel(MEDIA_VIDEO_SOURCE_MAX_BYTES)} limit. Export a smaller MP4 first.`
+  : `That photo is over PIT's ${mediaUploadLimitLabel(MEDIA_PHOTO_SOURCE_MAX_BYTES)} limit. Export a smaller copy first.`;
+
 
 const STUDIO_ROOT_NAME = "pit-studio";
 const normalizedUri = (value) => String(value || "").replace(/\\/g, "/").replace(/\/+$/, "");
@@ -41,17 +51,13 @@ export async function stageMediaDraftAssets(assets, { ownerId, projectId } = {})
         throw new Error("The selected media could not be copied into the PIT draft.");
       }
       if (!mediaSourceSizeAllowed(asset, input.size)) {
-        throw new Error(asset.kind === "video"
-          ? "That clip is over PIT's 100 MB limit. Export a smaller MP4 first."
-          : "That photo is over PIT's 12 MB limit. Export a smaller copy first.");
+        throw new Error(mediaSizeError(asset));
       }
       const output = new File(directory, mediaDraftFileName(asset, index));
       await input.copy(output, { overwrite: true });
       copied.push(output);
       if (!mediaSourceSizeAllowed(asset, output.size)) {
-        throw new Error(asset.kind === "video"
-          ? "That clip is over PIT's 100 MB limit. Export a smaller MP4 first."
-          : "That photo is over PIT's 12 MB limit. Export a smaller copy first.");
+        throw new Error(mediaSizeError(asset));
       }
       staged.push({
         ...asset,

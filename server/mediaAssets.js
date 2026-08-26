@@ -4,9 +4,20 @@ import {
   normalizeMediaEdit,
   videoEditRequiresExport,
 } from "../src/domain/mediaEdit.mjs";
+import {
+  MEDIA_POST_MAX_ATTACHMENTS,
+  MEDIA_VIDEO_MAX_DURATION_MS,
+  MEDIA_VIDEO_SOURCE_MAX_BYTES,
+} from "../src/domain/mediaUploadPolicy.mjs";
 import { assertSafeAuthoredText } from "./contentSafety.js";
 import { withImmediateWrite as withWrite } from "./databaseTransaction.js";
 import { ApiError } from "./errors.js";
+import {
+  IMAGE_FINALIZATION_GENERATION_TOKEN,
+  IMAGE_FINALIZATION_PREFLIGHT_TOKEN,
+  runImageFinalizationGeneration,
+  runImageFinalizationPreflight,
+} from "./imageFinalizationAdmission.js";
 import { inspectImageBytes, MAX_IMAGE_EDGE } from "./imageInspection.js";
 import {
   createMediaDownloadCapability,
@@ -39,10 +50,11 @@ const COMPOSER_PURPOSES = new Set(["post"]);
 const IMAGE_VARIANT_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 const VERIFIED_VIDEO_SOURCE_TYPES = new Set(VIDEO_VERIFIER_SOURCE_CONTENT_TYPES);
 const MAX_RECIPE_BYTES = 16 * 1024;
-const MAX_VIDEO_DURATION_MS = 60_000;
+const MAX_VIDEO_DURATION_MS = MEDIA_VIDEO_MAX_DURATION_MS;
 const MAX_VIDEO_DURATION_DRIFT_MS = 1_500;
-const MAX_VIDEO_BYTES = 100 * 1024 * 1024;
-const MAX_POST_MEDIA = 8;
+const MAX_VIDEO_BYTES = MEDIA_VIDEO_SOURCE_MAX_BYTES;
+const VIDEO_DELIVERY_CAPABILITY_MS = 20 * 60_000;
+const MAX_POST_MEDIA = MEDIA_POST_MAX_ATTACHMENTS;
 const MAX_ALT_TEXT = 1_000;
 // A recovery path may need to attach a server-sanitized derivative to a legacy
 // profile reference. Keep that trust claim process-local and identity-bound so
@@ -61,6 +73,19 @@ function fingerprint(value) {
   return createHash("sha256").update(JSON.stringify(stableValue(value))).digest("hex");
 }
 
+function joinedFinalizationResult(value) {
+  return value && typeof value === "object" && Object.hasOwn(value, "duplicate")
+    ? { ...value, duplicate: true }
+    : value;
+}
+
+function requireAdmittedStoredGeneration(stored, { expectedBytes, expectedType }) {
+  if (!stored?.etag || Number(stored.byteSize) !== Number(expectedBytes)
+      || stored.mimeType !== expectedType) {
+    throw new ApiError(409, "That photo generation changed while it was waiting to be inspected.", "CONFLICT");
+  }
+  return stored;
+}
 function newId(prefix) {
   return `${prefix}_${randomUUID().replaceAll("-", "").slice(0, 24)}`;
 }
@@ -288,6 +313,19 @@ function endpointObjectUrl(config, objectKey) {
   return `${config.endpoint.origin}${prefix}/${suffix}`;
 }
 
+export function mediaObjectTransferTimeoutMs(byteSize) {
+  const bytes = Number(byteSize);
+  if (!Number.isSafeInteger(bytes) || bytes < 1) return 30_000;
+  // Storage verification is streamed, not buffered. Budget a conservative
+  // 1 MiB/s plus startup time and retain a finite ceiling for stalled peers.
+  return Math.min(12 * 60_000, Math.max(30_000, Math.ceil(bytes / (1024 * 1024)) * 1_000 + 15_000));
+}
+
+function mediaTransferSignal(signal, byteSize) {
+  const timeout = AbortSignal.timeout(mediaObjectTransferTimeoutMs(byteSize));
+  return signal ? AbortSignal.any([signal, timeout]) : timeout;
+}
+
 function strongObjectEtag(value) {
   const etag = typeof value === "string" ? value.trim() : "";
   // R2 returns a quoted strong ETag. Reject weak/control-bearing values before
@@ -317,7 +355,7 @@ async function verifyStoredObject({ objectKey, expectedBytes, expectedType, env,
     response = await fetchImpl(url, {
       method: "HEAD",
       redirect: "error",
-      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(8_000)]) : AbortSignal.timeout(8_000),
+      signal: mediaTransferSignal(signal, expectedBytes),
     });
   } catch (error) {
     throw new ApiError(503, "The upload could not be verified yet. Try again.", "MEDIA_STORAGE_UNAVAILABLE", error);
@@ -366,7 +404,7 @@ async function downloadStoredObjectBytes({
       method: "GET",
       redirect: "error",
       headers: capability.requiredHeaders,
-      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(10_000)]) : AbortSignal.timeout(10_000),
+      signal: mediaTransferSignal(signal, expectedBytes),
     });
   } catch (error) {
     throw new ApiError(503, "The uploaded image could not be inspected yet. Try again.", "MEDIA_STORAGE_UNAVAILABLE", error);
@@ -439,14 +477,29 @@ async function runImageProcessor(operation, options, { sanitizing = false } = {}
   try {
     return await operation(options.bytes, options);
   } catch (error) {
-    if (error instanceof ImageProcessorError
-        && new Set(["busy", "timeout", "worker_unavailable", "worker_protocol"]).has(error.code)) {
-      throw new ApiError(503, "Photo verification is busy. Try again shortly.", "MEDIA_STORAGE_UNAVAILABLE", error);
+    const code = String(error?.code || "");
+    if (new Set(["busy", "timeout", "worker_unavailable", "worker_protocol"]).has(code)) {
+      const message = code === "busy"
+        ? "Photo verification is at capacity. Your upload is safe; retry shortly."
+        : code === "timeout"
+          ? "Photo verification timed out. Retry the upload once."
+          : "Photo verification is temporarily unavailable. Try again shortly.";
+      throw new ApiError(503, message, "MEDIA_STORAGE_UNAVAILABLE", error);
     }
-    throw new ApiError(415, sanitizing
-      ? "That rendition could not be decoded and sanitized. Export it again and retry."
-      : "That upload contains invalid or unsupported image pixels. Choose a different photo.",
-    "MEDIA_TYPE_UNSUPPORTED", error);
+    if (new Set(["resource_limit", "output_size"]).has(code)) {
+      throw new ApiError(413,
+        "That photo exceeds PIT's safe camera-processing bounds. Choose a smaller export.",
+        "MEDIA_TOO_LARGE", error);
+    }
+    if (new Set(["mime_mismatch", "output_type", "invalid_rendition", "unsupported"]).has(code)) {
+      throw new ApiError(415,
+        "The photo's actual bytes do not match a supported image type.",
+        "MEDIA_TYPE_UNSUPPORTED", error);
+    }
+    throw new ApiError(400, sanitizing
+      ? "PIT could not read and secure the complete rendition. Re-export it and retry."
+      : "PIT could not read the complete photo. Re-export it from Photos and retry.",
+    "VALIDATION_FAILED", error);
   }
 }
 
@@ -513,7 +566,15 @@ function createAuthoritativePosterVariant(database, {
     if (existing && existing.client_variant_id === clientVariantId && existing.create_hash === createHash
         && existing.verification_origin === "private_derivative_v1") {
       const upload = existing.status === "upload_pending"
-        ? reserveAndSign(database, variantUploadRequest(asset, existing, { env, at }))
+        ? immutableProcessorImageUploadTicket(database, {
+          ownerId,
+          objectKey: existing.object_key,
+          purpose: asset.purpose,
+          contentType: "image/jpeg",
+          byteSize: input.byteSize,
+          env,
+          at,
+        })
         : null;
       return { row: existing, upload };
     }
@@ -528,17 +589,20 @@ function createAuthoritativePosterVariant(database, {
     }
     const variantId = newId("mv");
     const objectId = `${asset.id}_poster_${variantId}`;
-    const ticket = reserveAndSign(database, {
+    const objectKey = expectedObjectKey({
       ownerId,
-      body: {
-        purpose: asset.purpose,
-        contentType: "image/jpeg",
-        fileSize: input.byteSize,
-        name: `pit-worker-cover-${input.digest.slice(0, 16)}.jpg`,
-      },
+      purpose: asset.purpose,
+      objectId,
+      extension: "jpg",
+    });
+    const ticket = immutableProcessorImageUploadTicket(database, {
+      ownerId,
+      objectKey,
+      purpose: asset.purpose,
+      contentType: "image/jpeg",
+      byteSize: input.byteSize,
       env,
       at,
-      objectId,
     });
     database.prepare(`INSERT INTO media_variants
       (id,asset_id,client_variant_id,create_hash,role,object_key,public_url,mime_type,byte_size,status,verification_origin,created_at,updated_at)
@@ -560,7 +624,7 @@ async function verifyStoredObjectDigest({ objectKey, stored, expectedBytes, expe
       method: "GET",
       redirect: "error",
       headers: capability.requiredHeaders,
-      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(8_000)]) : AbortSignal.timeout(8_000),
+      signal: mediaTransferSignal(signal, expectedBytes),
     });
   } catch (error) {
     throw new ApiError(503, "The generated clip cover could not be verified.", "MEDIA_STORAGE_UNAVAILABLE", error);
@@ -637,7 +701,7 @@ async function stageAuthoritativePoster(database, {
         redirect: "error",
         headers: created.upload.requiredHeaders,
         body: input.bytes,
-        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(10_000)]) : AbortSignal.timeout(10_000),
+        signal: mediaTransferSignal(signal, input.byteSize),
       });
     } catch (error) {
       throw new ApiError(503, "Clip cover storage is temporarily unavailable.", "MEDIA_STORAGE_UNAVAILABLE", error);
@@ -737,10 +801,10 @@ function prepareAuthoritativeDelivery(database, { ownerId, assetId, sourceEtag, 
         storageScope: "public",
         byteSize: MAX_VIDEO_BYTES,
         at,
-        expiresAt: at + MEDIA_UPLOAD_TICKET_MS,
+        expiresAt: at + VIDEO_DELIVERY_CAPABILITY_MS,
         env,
       });
-      const upload = createMediaProcessorUploadCapability({ objectKey, env, now: new Date(at), expiresIn: 300 });
+      const upload = createMediaProcessorUploadCapability({ objectKey, env, now: new Date(at), expiresIn: VIDEO_DELIVERY_CAPABILITY_MS / 1_000 });
       database.prepare(`INSERT INTO media_variants
         (id,asset_id,client_variant_id,create_hash,role,object_key,public_url,mime_type,byte_size,status,verification_origin,created_at,updated_at)
         VALUES (?,?,?,?,?,?,?,?,?,'upload_pending','private_derivative_v1',?,?)`)
@@ -749,7 +813,7 @@ function prepareAuthoritativeDelivery(database, { ownerId, assetId, sourceEtag, 
       row = database.prepare("SELECT * FROM media_variants WHERE id=?").get(variantId);
       return { row, upload };
     }
-    const upload = createMediaProcessorUploadCapability({ objectKey: row.object_key, env, now: new Date(at), expiresIn: 300 });
+    const upload = createMediaProcessorUploadCapability({ objectKey: row.object_key, env, now: new Date(at), expiresIn: VIDEO_DELIVERY_CAPABILITY_MS / 1_000 });
     return { row, upload };
   });
 }
@@ -880,6 +944,35 @@ function reserveImmutableProcessorTicket(database, {
   }
 }
 
+function immutableProcessorImageUploadTicket(database, {
+  ownerId,
+  objectKey,
+  purpose,
+  contentType: outputType,
+  byteSize,
+  env,
+  at,
+  serverRecovery = false,
+}) {
+  reserveImmutableProcessorTicket(database, {
+    ownerId,
+    objectKey,
+    purpose,
+    byteSize,
+    at,
+    env,
+    serverRecovery,
+  });
+  return createMediaProcessorImageUploadCapability({
+    objectKey,
+    contentType: outputType,
+    contentLength: byteSize,
+    env,
+    now: new Date(at),
+    expiresIn: 300,
+  });
+}
+
 function prepareSanitizedImageDelivery(database, {
   ownerId,
   asset,
@@ -903,22 +996,15 @@ function prepareSanitizedImageDelivery(database, {
   });
   return withWrite(database, () => {
     requirePrivateLiveLedger(database, ownerId, stagingKey);
-    reserveImmutableProcessorTicket(database, {
+    const upload = immutableProcessorImageUploadTicket(database, {
       ownerId,
       objectKey,
       purpose: asset.purpose,
+      contentType: output.mimeType,
       byteSize: output.byteSize,
       at,
       env,
       serverRecovery,
-    });
-    const upload = createMediaProcessorImageUploadCapability({
-      objectKey,
-      contentType: output.mimeType,
-      contentLength: output.byteSize,
-      env,
-      now: new Date(at),
-      expiresIn: 300,
     });
     return { upload, objectKey, digest, stagingKey, output };
   });
@@ -953,7 +1039,7 @@ async function stageSanitizedImageDelivery(database, {
       redirect: "error",
       headers: prepared.upload.requiredHeaders,
       body: output.bytes,
-      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(12_000)]) : AbortSignal.timeout(12_000),
+      signal: mediaTransferSignal(signal, output.byteSize),
     });
   } catch (error) {
     throw new ApiError(503, "Photo delivery storage is temporarily unavailable.", "MEDIA_STORAGE_UNAVAILABLE", error);
@@ -1002,7 +1088,11 @@ export async function sanitizePrivateImageStaging(database, {
   imageTimeoutMs,
   allowHeicFallback = false,
   allowLegacyJpegTrailer = false,
+  profileRendition = null,
   signal,
+  imageFinalizationStage = null,
+  imageStoredObject = null,
+  imageExpectedFingerprint = null,
 } = {}) {
   const owner = String(ownerId || "");
   const key = trustedMediaQueueKey(objectKey, owner);
@@ -1010,17 +1100,93 @@ export async function sanitizePrivateImageStaging(database, {
     throw new ApiError(400, "That private photo upload is invalid.", "VALIDATION_FAILED");
   }
   requirePrivateLiveLedger(database, owner, key, { expectedBytes });
-  const stored = await verifyStoredObject({
-    objectKey: key,
+  const admissionFingerprint = fingerprint({
+    key,
     expectedBytes,
     expectedType,
-    env,
-    fetchImpl,
-    signal,
-    storageScope: "private",
+    outputType,
+    allowHeicFallback: allowHeicFallback === true,
+    allowLegacyJpegTrailer: allowLegacyJpegTrailer === true,
+    profileRendition,
   });
-  // A cancellation/expiry pass may win while HEAD is in flight.
+  if (imageFinalizationStage !== IMAGE_FINALIZATION_PREFLIGHT_TOKEN
+      && imageFinalizationStage !== IMAGE_FINALIZATION_GENERATION_TOKEN) {
+    return runImageFinalizationPreflight({
+      scope: database,
+      ownerId: owner,
+      baseKey: `private:${key}`,
+      fingerprint: admissionFingerprint,
+      byteSize: Number(expectedBytes),
+      signal,
+      task: ({ signal: sharedSignal }) => sanitizePrivateImageStaging(database, {
+        ownerId: owner,
+        objectKey: key,
+        expectedBytes,
+        expectedType,
+        outputType,
+        env,
+        fetchImpl,
+        imageProcessor,
+        imageTimeoutMs,
+        allowHeicFallback,
+        allowLegacyJpegTrailer,
+        profileRendition,
+        signal: sharedSignal,
+        imageFinalizationStage: IMAGE_FINALIZATION_PREFLIGHT_TOKEN,
+        imageExpectedFingerprint: admissionFingerprint,
+      }),
+    });
+  }
+  if (imageExpectedFingerprint && imageExpectedFingerprint !== admissionFingerprint) {
+    throw new ApiError(409, "That photo changed while it was waiting to be verified.", "CONFLICT");
+  }
+
+  const stored = imageFinalizationStage === IMAGE_FINALIZATION_GENERATION_TOKEN
+    ? requireAdmittedStoredGeneration(imageStoredObject, {
+      expectedBytes,
+      expectedType,
+    })
+    : await verifyStoredObject({
+      objectKey: key,
+      expectedBytes,
+      expectedType,
+      env,
+      fetchImpl,
+      signal,
+      storageScope: "private",
+    });
+  // A cancellation/expiry pass may win while HEAD is in flight or while this
+  // immutable generation waits for the single bounded download/decode lane.
   requirePrivateLiveLedger(database, owner, key, { expectedBytes });
+  if (imageFinalizationStage === IMAGE_FINALIZATION_PREFLIGHT_TOKEN) {
+    return runImageFinalizationGeneration({
+      scope: database,
+      ownerId: owner,
+      baseKey: `private:${key}:${stored.etag}`,
+      fingerprint: admissionFingerprint,
+      byteSize: Number(expectedBytes),
+      signal,
+      task: ({ signal: sharedSignal }) => sanitizePrivateImageStaging(database, {
+        ownerId: owner,
+        objectKey: key,
+        expectedBytes,
+        expectedType,
+        outputType,
+        env,
+        fetchImpl,
+        imageProcessor,
+        imageTimeoutMs,
+        allowHeicFallback,
+        allowLegacyJpegTrailer,
+        profileRendition,
+        signal: sharedSignal,
+        imageFinalizationStage: IMAGE_FINALIZATION_GENERATION_TOKEN,
+        imageStoredObject: stored,
+        imageExpectedFingerprint: admissionFingerprint,
+      }),
+    });
+  }
+
   const verified = await verifyStoredImage({
     objectKey: key,
     stored,
@@ -1036,10 +1202,11 @@ export async function sanitizePrivateImageStaging(database, {
     expectedType,
     outputType,
     ...(allowHeicFallback === true && Number.isSafeInteger(imageTimeoutMs) && imageTimeoutMs > 0
-      ? { timeoutMs: Math.min(imageTimeoutMs, 30_000) }
+      ? { timeoutMs: Math.min(imageTimeoutMs, 60_000) }
       : {}),
     allowHeicFallback: allowHeicFallback === true,
     allowLegacyJpegTrailer: allowLegacyJpegTrailer === true,
+    profileRendition,
   }, { sanitizing: true });
   return Object.freeze({ sanitized, sourceEtag: stored.etag });
 }
@@ -1170,7 +1337,7 @@ function authoritativeVideoFinalize(row, body, declared, probed) {
   const encodedWidth = Number(probed?.width);
   const encodedHeight = Number(probed?.height);
   if (!Number.isSafeInteger(durationMs) || durationMs < 1 || durationMs > MAX_VIDEO_DURATION_MS) {
-    throw new ApiError(400, "PIT clips must be 60 seconds or shorter.", "VALIDATION_FAILED");
+    throw new ApiError(400, "PIT videos must be 10 minutes or shorter.", "VALIDATION_FAILED");
   }
   if (Math.abs(durationMs - declared.durationMs) > MAX_VIDEO_DURATION_DRIFT_MS) {
     throw new ApiError(409, "The uploaded clip duration does not match the selected file.", "CONFLICT");
@@ -1315,6 +1482,9 @@ export async function finalizeMediaAsset(database, {
   beforeAuthoritativeVerify,
   imageProcessor = defaultImageProcessor,
   signal,
+  imageFinalizationStage = null,
+  imageStoredObject = null,
+  imageExpectedFingerprint = null,
 } = {}) {
   const row = database.prepare("SELECT * FROM media_assets WHERE id=? AND owner_id=?").get(assetId, ownerId);
   if (!row) throw new ApiError(404, "That media item was not found.", "NOT_FOUND");
@@ -1353,19 +1523,96 @@ export async function finalizeMediaAsset(database, {
     throw new ApiError(409, "That media item cannot be finalized again.", "CONFLICT");
   }
   if (typeof fetchImpl !== "function") throw new ApiError(503, "Media verification is unavailable.", "MEDIA_STORAGE_UNAVAILABLE");
-  const stored = await verifyStoredObject({
-    objectKey: row.source_key,
-    expectedBytes: row.byte_size,
-    expectedType: row.mime_type,
-    env,
-    fetchImpl,
-    signal,
+  const admissionFingerprint = row.kind === "image" ? fingerprint({
+    assetId: row.id,
+    sourceKey: row.source_key,
+    byteSize: row.byte_size,
+    mimeType: row.mime_type,
     storageScope: row.source_storage_scope || "public",
-  });
+    finalizeHash: input.finalizeHash,
+    altText: input.altText,
+    encodedRecipe: input.encodedRecipe,
+    renderState: input.renderState,
+    status: input.status,
+  }) : null;
+  if (row.kind === "image"
+      && imageFinalizationStage !== IMAGE_FINALIZATION_PREFLIGHT_TOKEN
+      && imageFinalizationStage !== IMAGE_FINALIZATION_GENERATION_TOKEN) {
+    requireLiveLedger(database, ownerId, row.source_key);
+    return runImageFinalizationPreflight({
+      scope: database,
+      ownerId,
+      baseKey: `asset:${row.id}:${row.source_key}`,
+      fingerprint: admissionFingerprint,
+      byteSize: Number(row.byte_size),
+      signal,
+      onJoin: joinedFinalizationResult,
+      task: ({ signal: sharedSignal }) => finalizeMediaAsset(database, {
+        ownerId,
+        assetId,
+        body,
+        env,
+        at,
+        fetchImpl,
+        authoritativeVideoVerifier,
+        authoritativePosterRequired,
+        beforeAuthoritativeVerify,
+        imageProcessor,
+        signal: sharedSignal,
+        imageFinalizationStage: IMAGE_FINALIZATION_PREFLIGHT_TOKEN,
+        imageExpectedFingerprint: admissionFingerprint,
+      }),
+    });
+  }
+  if (row.kind === "image" && imageExpectedFingerprint
+      && imageExpectedFingerprint !== admissionFingerprint) {
+    throw new ApiError(409, "That photo changed while it was waiting to be verified.", "CONFLICT");
+  }
+  const stored = row.kind === "image" && imageFinalizationStage === IMAGE_FINALIZATION_GENERATION_TOKEN
+    ? requireAdmittedStoredGeneration(imageStoredObject, {
+      expectedBytes: row.byte_size,
+      expectedType: row.mime_type,
+    })
+    : await verifyStoredObject({
+      objectKey: row.source_key,
+      expectedBytes: row.byte_size,
+      expectedType: row.mime_type,
+      env,
+      fetchImpl,
+      signal,
+      storageScope: row.source_storage_scope || "public",
+    });
   // Re-check after the asynchronous HEAD. Cancellation/orphan cleanup can win
   // while storage is responding; never spend a second capability or certify
   // bytes for an object whose ledger has already entered deletion.
   requireLiveLedger(database, ownerId, row.source_key);
+  if (row.kind === "image" && imageFinalizationStage === IMAGE_FINALIZATION_PREFLIGHT_TOKEN) {
+    return runImageFinalizationGeneration({
+      scope: database,
+      ownerId,
+      baseKey: `asset:${row.id}:${row.source_key}:${stored.etag}`,
+      fingerprint: admissionFingerprint,
+      byteSize: Number(row.byte_size),
+      signal,
+      onJoin: joinedFinalizationResult,
+      task: ({ signal: sharedSignal }) => finalizeMediaAsset(database, {
+        ownerId,
+        assetId,
+        body,
+        env,
+        at,
+        fetchImpl,
+        authoritativeVideoVerifier,
+        authoritativePosterRequired,
+        beforeAuthoritativeVerify,
+        imageProcessor,
+        signal: sharedSignal,
+        imageFinalizationStage: IMAGE_FINALIZATION_GENERATION_TOKEN,
+        imageStoredObject: stored,
+        imageExpectedFingerprint: admissionFingerprint,
+      }),
+    });
+  }
   if (row.kind === "image") {
     const verifiedImage = await verifyStoredImage({
       objectKey: row.source_key,
@@ -1380,6 +1627,9 @@ export async function finalizeMediaAsset(database, {
     const decoded = await runImageProcessor(imageProcessor?.validate || defaultImageProcessor.validate, {
       bytes: verifiedImage.bytes,
       expectedType: row.mime_type,
+      timeoutMs: 60_000,
+      allowHeicFallback: true,
+      allowLegacyJpegTrailer: true,
     });
     // Pickers differ on whether they report encoded axes or display axes for
     // EXIF-oriented camera photos. Both are tied to the isolated full decode;
@@ -1969,6 +2219,9 @@ async function finalizePendingPhotoRevisionVariant(database, {
   fetchImpl,
   imageProcessor,
   signal,
+  imageFinalizationStage = null,
+  imageStoredObject = null,
+  imageExpectedFingerprint = null,
 }) {
   if (row.kind !== "image" || row.role !== "render" || row.attached) {
     throw new ApiError(409, "That photo can no longer be replaced. Reopen PIT Studio.", "CONFLICT");
@@ -1995,15 +2248,97 @@ async function finalizePendingPhotoRevisionVariant(database, {
   if (typeof fetchImpl !== "function") {
     throw new ApiError(503, "Media verification is unavailable.", "MEDIA_STORAGE_UNAVAILABLE");
   }
-  const stored = await verifyStoredObject({
+  const admissionFingerprint = fingerprint({
+    assetId,
+    variantId,
     objectKey: row.object_key,
-    expectedBytes: row.byte_size,
-    expectedType: row.mime_type,
-    env,
-    fetchImpl,
-    signal,
-    storageScope: "private",
+    createHash: row.create_hash,
+    baseRenderVariantId: row.base_render_variant_id,
+    pendingEditRecipe: row.pending_edit_recipe,
+    byteSize: row.byte_size,
+    mimeType: row.mime_type,
+    finalizeHash: input.finalizeHash,
   });
+  if (imageFinalizationStage !== IMAGE_FINALIZATION_PREFLIGHT_TOKEN
+      && imageFinalizationStage !== IMAGE_FINALIZATION_GENERATION_TOKEN) {
+    return runImageFinalizationPreflight({
+      scope: database,
+      ownerId,
+      baseKey: `revision:${assetId}:${variantId}:${row.object_key}`,
+      fingerprint: admissionFingerprint,
+      byteSize: Number(row.byte_size),
+      signal,
+      onJoin: joinedFinalizationResult,
+      task: ({ signal: sharedSignal }) => finalizePendingPhotoRevisionVariant(database, {
+        ownerId,
+        assetId,
+        variantId,
+        row,
+        body,
+        env,
+        at,
+        fetchImpl,
+        imageProcessor,
+        signal: sharedSignal,
+        imageFinalizationStage: IMAGE_FINALIZATION_PREFLIGHT_TOKEN,
+        imageExpectedFingerprint: admissionFingerprint,
+      }),
+    });
+  }
+  if (imageExpectedFingerprint && imageExpectedFingerprint !== admissionFingerprint) {
+    throw new ApiError(409, "That photo revision changed while it was waiting to be verified.", "CONFLICT");
+  }
+  const stored = imageFinalizationStage === IMAGE_FINALIZATION_GENERATION_TOKEN
+    ? requireAdmittedStoredGeneration(imageStoredObject, {
+      expectedBytes: row.byte_size,
+      expectedType: row.mime_type,
+    })
+    : await verifyStoredObject({
+      objectKey: row.object_key,
+      expectedBytes: row.byte_size,
+      expectedType: row.mime_type,
+      env,
+      fetchImpl,
+      signal,
+      storageScope: "private",
+    });
+  const afterHead = loadPendingPhotoRevisionVariant(database, { ownerId, assetId, variantId });
+  if (!afterHead || afterHead.status !== "upload_pending" || afterHead.attached
+      || afterHead.object_key !== row.object_key
+      || afterHead.create_hash !== row.create_hash
+      || afterHead.base_render_variant_id !== row.base_render_variant_id
+      || afterHead.render_variant_id !== row.render_variant_id
+      || afterHead.pending_edit_recipe !== row.pending_edit_recipe) {
+    throw new ApiError(409, "That photo revision changed while it was waiting to be verified.", "CONFLICT");
+  }
+  requireLiveLedger(database, ownerId, afterHead.source_key);
+  requireLiveLedger(database, ownerId, afterHead.object_key);
+  if (imageFinalizationStage === IMAGE_FINALIZATION_PREFLIGHT_TOKEN) {
+    return runImageFinalizationGeneration({
+      scope: database,
+      ownerId,
+      baseKey: `revision:${assetId}:${variantId}:${row.object_key}:${stored.etag}`,
+      fingerprint: admissionFingerprint,
+      byteSize: Number(row.byte_size),
+      signal,
+      onJoin: joinedFinalizationResult,
+      task: ({ signal: sharedSignal }) => finalizePendingPhotoRevisionVariant(database, {
+        ownerId,
+        assetId,
+        variantId,
+        row: afterHead,
+        body,
+        env,
+        at,
+        fetchImpl,
+        imageProcessor,
+        signal: sharedSignal,
+        imageFinalizationStage: IMAGE_FINALIZATION_GENERATION_TOKEN,
+        imageStoredObject: stored,
+        imageExpectedFingerprint: admissionFingerprint,
+      }),
+    });
+  }
   const verifiedImage = await verifyStoredImage({
     objectKey: row.object_key,
     stored,
@@ -2115,6 +2450,9 @@ export async function finalizeMediaVariant(database, {
   fetchImpl = globalThis.fetch,
   imageProcessor = defaultImageProcessor,
   signal,
+  imageFinalizationStage = null,
+  imageStoredObject = null,
+  imageExpectedFingerprint = null,
 } = {}) {
   let row = database.prepare(`SELECT v.*,a.owner_id,a.purpose,a.kind,a.duration_ms,a.edit_recipe,a.source_key,a.status asset_status,
       a.render_state FROM media_variants v JOIN media_assets a ON a.id=v.asset_id
@@ -2133,6 +2471,9 @@ export async function finalizeMediaVariant(database, {
       fetchImpl,
       imageProcessor,
       signal,
+      imageFinalizationStage,
+      imageStoredObject,
+      imageExpectedFingerprint,
     });
   }
   const asset = {
@@ -2156,15 +2497,92 @@ export async function finalizeMediaVariant(database, {
   }
   if (row.status !== "upload_pending") throw new ApiError(409, "That rendition cannot be finalized again.", "CONFLICT");
   if (typeof fetchImpl !== "function") throw new ApiError(503, "Media verification is unavailable.", "MEDIA_STORAGE_UNAVAILABLE");
-  const stored = await verifyStoredObject({
+  const admissionFingerprint = fingerprint({
+    assetId,
+    variantId,
     objectKey: row.object_key,
-    expectedBytes: row.byte_size,
-    expectedType: row.mime_type,
-    env,
-    fetchImpl,
-    signal,
-    storageScope: "private",
+    createHash: row.create_hash,
+    role: row.role,
+    byteSize: row.byte_size,
+    mimeType: row.mime_type,
+    finalizeHash: input.finalizeHash,
   });
+  if (imageFinalizationStage !== IMAGE_FINALIZATION_PREFLIGHT_TOKEN
+      && imageFinalizationStage !== IMAGE_FINALIZATION_GENERATION_TOKEN) {
+    return runImageFinalizationPreflight({
+      scope: database,
+      ownerId,
+      baseKey: `variant:${assetId}:${variantId}:${row.object_key}`,
+      fingerprint: admissionFingerprint,
+      byteSize: Number(row.byte_size),
+      signal,
+      onJoin: joinedFinalizationResult,
+      task: ({ signal: sharedSignal }) => finalizeMediaVariant(database, {
+        ownerId,
+        assetId,
+        variantId,
+        body,
+        env,
+        at,
+        fetchImpl,
+        imageProcessor,
+        signal: sharedSignal,
+        imageFinalizationStage: IMAGE_FINALIZATION_PREFLIGHT_TOKEN,
+        imageExpectedFingerprint: admissionFingerprint,
+      }),
+    });
+  }
+  if (imageExpectedFingerprint && imageExpectedFingerprint !== admissionFingerprint) {
+    throw new ApiError(409, "That rendition changed while it was waiting to be verified.", "CONFLICT");
+  }
+  const stored = imageFinalizationStage === IMAGE_FINALIZATION_GENERATION_TOKEN
+    ? requireAdmittedStoredGeneration(imageStoredObject, {
+      expectedBytes: row.byte_size,
+      expectedType: row.mime_type,
+    })
+    : await verifyStoredObject({
+      objectKey: row.object_key,
+      expectedBytes: row.byte_size,
+      expectedType: row.mime_type,
+      env,
+      fetchImpl,
+      signal,
+      storageScope: "private",
+    });
+  const afterHead = database.prepare(`SELECT v.object_key,v.status,v.create_hash,v.finalize_hash,a.source_key
+    FROM media_variants v JOIN media_assets a ON a.id=v.asset_id
+    WHERE v.id=? AND v.asset_id=? AND a.owner_id=?`).get(variantId, assetId, ownerId);
+  if (!afterHead || (afterHead.status !== "upload_pending" && !afterHead.finalize_hash)
+      || afterHead.object_key !== row.object_key || afterHead.create_hash !== row.create_hash) {
+    throw new ApiError(409, "That rendition changed while it was waiting to be verified.", "CONFLICT");
+  }
+  requireLiveLedger(database, ownerId, afterHead.source_key);
+  requireLiveLedger(database, ownerId, afterHead.object_key);
+  if (imageFinalizationStage === IMAGE_FINALIZATION_PREFLIGHT_TOKEN) {
+    return runImageFinalizationGeneration({
+      scope: database,
+      ownerId,
+      baseKey: `variant:${assetId}:${variantId}:${row.object_key}:${stored.etag}`,
+      fingerprint: admissionFingerprint,
+      byteSize: Number(row.byte_size),
+      signal,
+      onJoin: joinedFinalizationResult,
+      task: ({ signal: sharedSignal }) => finalizeMediaVariant(database, {
+        ownerId,
+        assetId,
+        variantId,
+        body,
+        env,
+        at,
+        fetchImpl,
+        imageProcessor,
+        signal: sharedSignal,
+        imageFinalizationStage: IMAGE_FINALIZATION_GENERATION_TOKEN,
+        imageStoredObject: stored,
+        imageExpectedFingerprint: admissionFingerprint,
+      }),
+    });
+  }
   const verifiedImage = await verifyStoredImage({
     objectKey: row.object_key,
     stored,
@@ -2200,7 +2618,13 @@ export async function finalizeMediaVariant(database, {
       if (current.finalize_hash !== input.finalizeHash) throw new ApiError(409, "That rendition changed while it was finalizing.", "CONFLICT");
       touchLiveLedger(database, ownerId, current.source_key, at);
       touchLiveLedger(database, ownerId, current.object_key, at);
-      return { asset: assetProjection(loadAsset(database, assetId), { owner: true }), variant: variantProjection(row), duplicate: true };
+      const committedVariant = database.prepare("SELECT * FROM media_variants WHERE id=? AND asset_id=?")
+        .get(variantId, assetId);
+      return {
+        asset: assetProjection(loadAsset(database, assetId), { owner: true }),
+        variant: variantProjection(committedVariant),
+        duplicate: true,
+      };
     }
     if (!current || current.status !== "upload_pending") throw new ApiError(409, "That rendition changed while it was finalizing.", "CONFLICT");
     touchLiveLedger(database, ownerId, current.source_key, at);

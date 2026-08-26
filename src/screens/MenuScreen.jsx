@@ -3,6 +3,7 @@ import { colors, displayFont, focusRing, font, mono, radius, shadow, space, THEM
 import ThemeSwatch, { themeGridStyle } from "../components/ThemeSwatch";
 import { useStore } from "../store";
 import { JOURNEY_TAGLINE, journeyMenuModel } from "../domain/menuJourney.mjs";
+import { visibleThemeChoices } from "../domain/themeChoices.mjs";
 import ScreenHeader from "../components/ScreenHeader";
 import Avatar from "../components/Avatar";
 import Icon from "../components/Icon";
@@ -112,7 +113,7 @@ function JourneyHero({ session, onProfile, onLogin, wide }) {
       )}
 
       <View style={styles.heroCopy}>
-        <Text style={styles.heroEyebrow}>PIT · YOUR STORY IN SOUND</Text>
+        <Text style={styles.heroEyebrow}>MSHPIT · YOUR STORY IN SOUND</Text>
         <Text style={styles.heroTitle} accessibilityRole="header" selectable>{JOURNEY_TAGLINE}</Text>
         <Text style={styles.heroBody} selectable>
           Revisit the nights that shaped you, stay close to your music community, and find the room worth showing up for next.
@@ -154,6 +155,7 @@ export default function MenuScreen({ onClose, onNear, onVenues, onFanClubs, onTo
   const wide = width >= 920;
   const narrow = width < 560;
   const { session, inboxUnread, unreadNotifications, chooseTheme } = useStore();
+  const guestThemeChoices = visibleThemeChoices(THEMES, { selectedKey: themeKey });
   const model = journeyMenuModel({
     session,
     inboxUnread: session ? inboxUnread() : 0,
@@ -220,7 +222,7 @@ export default function MenuScreen({ onClose, onNear, onVenues, onFanClubs, onTo
                     <SectionHeading eyebrow="APPEARANCE" title="Set the mood" detail="Your theme applies across Pit. Log in to save it to your account." />
                     <View style={styles.themePanel}>
                       <View style={styles.themeGrid}>
-                        {THEMES.map((theme) => (
+                        {guestThemeChoices.map((theme) => (
                           <ThemeSwatch key={theme.key} theme={theme} active={theme.key === themeKey} onPress={() => chooseTheme(theme.key)} />
                         ))}
                       </View>

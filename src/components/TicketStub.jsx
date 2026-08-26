@@ -19,6 +19,8 @@ import { recommendationDisclosure } from "../domain/feedExperience.mjs";
 import { artistCampaignPresentation } from "../domain/artistCampaignPost.mjs";
 import { normalizeTaggedPeople } from "../domain/postFriendTags.mjs";
 import useReducedMotion from "../hooks/useReducedMotion";
+import { PublicPressableLink, PublicTextLink } from "./PublicWebLinks";
+import { artistPath, postPath, profilePath, venuePath } from "../domain/urls.mjs";
 
 // "3rd time in the pit" needs a real ordinal, not "3th".
 const ordinal = (n) => {
@@ -57,16 +59,16 @@ function TaggedPeopleRow({ people, onOpenProfile, selfId, onRemoveSelf, palette 
       <Text style={[styles.taggedPeopleLead, { color: palette?.mutedTextColor || colors.textDim }]}>with</Text>
       {tagged.map((person) => (
         <View key={person.id} style={[styles.taggedPersonChip, { borderColor }]}>
-          <Pressable
+          <PublicPressableLink
+            href={person.handle ? profilePath(person.handle) : null}
+            onNavigate={onOpenProfile ? () => onOpenProfile(person.id) : undefined}
             style={styles.taggedPersonProfile}
-            onPress={onOpenProfile ? () => onOpenProfile(person.id) : undefined}
-            disabled={!onOpenProfile}
-            accessibilityRole={onOpenProfile ? "link" : undefined}
+            disabled={Platform.OS === "web" ? !person.handle && !onOpenProfile : !onOpenProfile}
             accessibilityLabel={onOpenProfile ? `Open ${person.name}'s profile` : person.name}
           >
             <Avatar user={person} size={22} />
             <Text style={[styles.taggedPersonText, { color: textColor }]} numberOfLines={1}>@{person.handle || person.name}</Text>
-          </Pressable>
+          </PublicPressableLink>
           {person.id === selfId && onRemoveSelf && (
             <Pressable style={styles.taggedPersonRemove} onPress={() => onRemoveSelf(person)} hitSlop={6} accessibilityRole="button" accessibilityLabel={`Remove your tag from this post`}>
               <Icon name="x" size={12} color={palette?.mutedTextColor || colors.textDim} />
@@ -123,6 +125,14 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onNotInt
   const openComments = () => (onComment || onOpen)?.(log);
   const { userById, likeInfo, toggleLike, commentsFor, session, userBadges, deleteOwnPost } = useStore();
   const author = userById?.(log.userId) || { initials: log.user?.initials, name: log.user?.name, handle: log.user?.handle };
+  const authorHref = author?.handle ? profilePath(author.handle) : null;
+  const canonicalPostHref = postPath(log.id);
+  const artistHref = log.artist ? artistPath(log.artist, log.artistPublicSlug || log.artist_public_slug || null) : null;
+  const venueHref = log.venue ? venuePath({
+    name: log.venue,
+    providerVenueId: log.providerVenueId || log.venue_provider_id || null,
+    source: log.source || null,
+  }) : null;
   const [revealed, setRevealed] = useState(!log.inTourWindow);
   const [whyOpen, setWhyOpen] = useState(false);
   const reduceMotion = useReducedMotion();
@@ -234,7 +244,7 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onNotInt
               <Text style={[styles.name, campaignPresentation && { color: campaignTreatment.textColor }]}>{author.name}</Text>
               <BadgeRow badges={userBadges(author)} size={14} />
             </View>
-            <Text style={[styles.sub, campaignPresentation && { color: campaignTreatment.mutedTextColor }]}><Text style={campaignPresentation ? { color: campaignTreatment.accentColor, fontWeight: "800" } : roleColor(author.role) ? { color: roleColor(author.role), fontWeight: "800" } : null}>@{author.handle}</Text> · {timeLabel}{log.editedAt ? " · edited" : ""}</Text>
+            <Text style={[styles.sub, campaignPresentation && { color: campaignTreatment.mutedTextColor }]}><PublicTextLink href={authorHref} onNavigate={log.userId ? () => onOpenProfile?.(log.userId) : undefined} style={campaignPresentation ? { color: campaignTreatment.accentColor, fontWeight: "800" } : roleColor(author.role) ? { color: roleColor(author.role), fontWeight: "800" } : null}>@{author.handle}</PublicTextLink> · {timeLabel}{log.editedAt ? " · edited" : ""}</Text>
           </Pressable>
           {canEdit && (
             <Pressable style={[styles.iconBtn, campaignPresentation && styles.campaignTouchTarget]} hitSlop={8} onPress={() => onEdit?.(log)} accessibilityRole="button" accessibilityLabel="Edit post">
@@ -261,7 +271,7 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onNotInt
         )}
 
         {!!log.review && (
-          <Pressable onPress={() => (onComment || onOpen)?.(log)}><Text style={[styles.statusText, campaignPresentation && { color: campaignTreatment.textColor }]}>{log.review}</Text></Pressable>
+          <PublicPressableLink href={canonicalPostHref} onNavigate={() => (onComment || onOpen)?.(log)} accessibilityLabel="Open post and comments"><Text style={[styles.statusText, campaignPresentation && { color: campaignTreatment.textColor }]}>{log.review}</Text></PublicPressableLink>
         )}
         <TaggedPeopleRow people={taggedPeople} onOpenProfile={onOpenProfile} selfId={session?.id} onRemoveSelf={onRemoveMyPostTag ? removeSelfTag : undefined} palette={campaignTreatment} />
         {!!log.song && <SongAttachment song={log.song} onPlay={onPlay} />}
@@ -278,10 +288,10 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onNotInt
             <Icon name="heart" size={18} color={campaignPresentation ? (liked ? campaignTreatment.accentColor : campaignTreatment.mutedTextColor) : liked ? colors.magenta : colors.textDim} filled={liked} />
             <Text style={[styles.fCount, campaignPresentation && { color: liked ? campaignTreatment.accentColor : campaignTreatment.mutedTextColor }, !campaignPresentation && liked && { color: colors.magenta }]}>{likeCount}</Text>
           </Pressable>
-          <Pressable style={({ pressed }) => [styles.fBtn, campaignPresentation && styles.campaignTouchTarget, pressed && (campaignPresentation ? styles.campaignControlPressed : styles.controlPressed)]} onPress={openComments} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Comments, ${commentCount}`}>
+          <PublicPressableLink href={canonicalPostHref} onNavigate={openComments} style={({ pressed }) => [styles.fBtn, campaignPresentation && styles.campaignTouchTarget, pressed && (campaignPresentation ? styles.campaignControlPressed : styles.controlPressed)]} hitSlop={8} accessibilityLabel={`Comments, ${commentCount}`}>
             <Icon name="comment" size={17} color={campaignPresentation ? campaignTreatment.mutedTextColor : colors.textDim} />
             <Text style={[styles.fCount, campaignPresentation && { color: campaignTreatment.mutedTextColor }]}>{commentCount}</Text>
-          </Pressable>
+          </PublicPressableLink>
         </View>
 
         {showComments && <AfterpartyPreview log={log} onOpen={onComment || onOpen} palette={campaignTreatment} />}
@@ -300,7 +310,7 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onNotInt
             <Text style={styles.name}>{author.name}</Text>
             <BadgeRow badges={userBadges(author)} size={14} />
           </View>
-          <Text style={styles.sub}><Text style={roleColor(author.role) ? { color: roleColor(author.role), fontWeight: "800" } : null}>@{author.handle}</Text> · {timeLabel}{log.editedAt ? " · edited" : ""}</Text>
+          <Text style={styles.sub}><PublicTextLink href={authorHref} onNavigate={log.userId ? () => onOpenProfile?.(log.userId) : undefined} style={roleColor(author.role) ? { color: roleColor(author.role), fontWeight: "800" } : null}>@{author.handle}</PublicTextLink> · {timeLabel}{log.editedAt ? " · edited" : ""}</Text>
         </Pressable>
         <Pressable
           style={[styles.scorePill, statsOpen && styles.scorePillOpen]}
@@ -329,7 +339,7 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onNotInt
       )}
 
       <Text style={styles.ratedLine}>
-        reviewed <Text style={styles.artistLink} onPress={() => onOpenArtist?.(log.artist)}>{log.artist}</Text>
+        reviewed <PublicTextLink href={artistHref} onNavigate={() => onOpenArtist?.(log.artist)} style={styles.artistLink}>{log.artist}</PublicTextLink>
         {log.seen > 1 ? <Text style={styles.seenTxt}>  ·  {ordinal(log.seen)} time in the pit</Text> : null}
       </Text>
 
@@ -350,7 +360,7 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onNotInt
       )}
 
       {/* THE REVIEW - the main event */}
-      <Pressable onPress={() => onOpen?.(log)}>
+      <PublicPressableLink href={canonicalPostHref} onNavigate={() => onOpen?.(log)} accessibilityLabel={`Open ${log.artist || "concert"} post`}>
         {log.review ? (
           <View style={styles.reviewWrap}>
             <Text style={styles.review}>{log.review}</Text>
@@ -361,7 +371,7 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onNotInt
         ) : (
           <Text style={styles.noReview}>Logged this show - no review yet. Tap to open.</Text>
         )}
-      </Pressable>
+      </PublicPressableLink>
       <TaggedPeopleRow people={taggedPeople} onOpenProfile={onOpenProfile} selfId={session?.id} onRemoveSelf={onRemoveMyPostTag ? removeSelfTag : undefined} />
       {!!log.song && <SongAttachment song={log.song} onPlay={onPlay} />}
       {postMedia.length > 0 && (
@@ -379,7 +389,7 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onNotInt
         <View style={styles.stubRow}>
           <View style={{ flex: 1 }}>
             <Text style={styles.venueLine}>
-              <Text style={styles.venueLink} onPress={() => onOpenVenue?.(log.venue)}>{log.venue}</Text>
+              <PublicTextLink href={venueHref} onNavigate={() => onOpenVenue?.(log.venue)} style={styles.venueLink}>{log.venue}</PublicTextLink>
               <Text style={styles.dim}> · {log.city}</Text>
             </Text>
             <Text style={styles.factors}>{factors}</Text>
@@ -409,14 +419,14 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onNotInt
           <Icon name="heart" size={18} color={liked ? colors.magenta : colors.textDim} filled={liked} />
           <Text style={[styles.fCount, liked && { color: colors.magenta }]}>{likeCount}</Text>
         </Pressable>
-        <Pressable style={({ pressed }) => [styles.fBtn, pressed && styles.controlPressed]} onPress={openComments} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Comments, ${commentCount}`}>
+        <PublicPressableLink href={canonicalPostHref} onNavigate={openComments} style={({ pressed }) => [styles.fBtn, pressed && styles.controlPressed]} hitSlop={8} accessibilityLabel={`Comments, ${commentCount}`}>
           <Icon name="comment" size={17} color={colors.textDim} />
           <Text style={styles.fCount}>{commentCount}</Text>
-        </Pressable>
-        <Pressable style={({ pressed }) => [styles.afterLink, pressed && styles.afterPressed]} onPress={() => onOpen?.(log)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Open the afterparty discussion">
+        </PublicPressableLink>
+        <PublicPressableLink href={canonicalPostHref} onNavigate={() => onOpen?.(log)} style={({ pressed }) => [styles.afterLink, pressed && styles.afterPressed]} hitSlop={8} accessibilityLabel="Open the afterparty discussion">
           <Text style={styles.afterTxt}>Afterparty</Text>
           <Icon name="chevron-right" size={14} color={colors.amber} />
-        </Pressable>
+        </PublicPressableLink>
         <View style={{ flex: 1 }} />
         {canEdit && (
           <Pressable style={({ pressed }) => [styles.fBtn, pressed && styles.controlPressed]} hitSlop={8} onPress={() => onEdit?.(log)} accessibilityRole="button" accessibilityLabel="Edit post">

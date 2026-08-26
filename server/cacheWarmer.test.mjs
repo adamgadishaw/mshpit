@@ -16,6 +16,7 @@ const {
   runCacheWarmJobSafely,
 } = await import("./cacheWarmer.js");
 const {
+  bandsintownRows,
   collectTourProviderResults,
   DEFAULT_TICKETMASTER_COUNTRIES,
   hasSuccessfulTourProviderWork,
@@ -31,7 +32,10 @@ const {
   ticketmasterArtistIdentity,
   ticketmasterFutureBoundary,
   ticketmasterRequestDelayMs,
+  ticketmasterRows,
+  upsertProviderTourDateRows,
 } = await import("./tourdates.js");
+const { visibleTourDateRowsFrom } = await import("./tourDateVisibility.js");
 const { youtubeCacheKey } = await import("./musicProviders.js");
 
 // Seed a few artists with top tracks, most-popular first, and clear the resume
@@ -183,34 +187,234 @@ test("partial tour-provider success advances freshness without weakening total-o
   assert.equal(hasSuccessfulTourProviderWork("not-a-number"), false);
 });
 
-test("tour reconciliation is isolated by provider and never deletes owner rows", () => {
+test("provider projections retain stable event, clock, status, and venue identity", () => {
+  const [ticketmaster] = ticketmasterRows({
+    _embedded: {
+      events: [{
+        id: "tm-provider-42",
+        name: "Foundation World Tour",
+        url: "https://www.ticketmaster.com/event/42",
+        dates: {
+          start: {
+            localDate: "2032-05-10",
+            localTime: "19:30:00",
+            dateTime: "2032-05-10T23:30:00Z",
+          },
+          status: { code: "offsale" },
+        },
+        _embedded: {
+          attractions: [{ name: "Foundation Artist" }],
+          venues: [{
+            id: "tm-venue-7",
+            name: "Foundation Hall",
+            timezone: "America/Toronto",
+            address: { line1: "1 Music Way", line2: "Suite 2" },
+            city: { name: "Toronto" },
+            state: { name: "Ontario", stateCode: "ON" },
+            postalCode: "M5V 1A1",
+            country: { name: "Canada", countryCode: "CA" },
+            location: { latitude: "43.64", longitude: "-79.39" },
+          }],
+        },
+      }],
+    },
+  }, { requestedArtist: "Foundation Artist" });
+
+  assert.equal(ticketmaster.provider_event_id, "tm-provider-42");
+  assert.equal(ticketmaster.event_name, "Foundation World Tour");
+  assert.equal(ticketmaster.start_date_time, "2032-05-10T23:30:00.000Z");
+  assert.equal(ticketmaster.start_local_time, "2032-05-10T19:30:00");
+  assert.equal(ticketmaster.event_timezone, "America/Toronto");
+  assert.equal(ticketmaster.event_status, "offsale");
+  assert.equal(ticketmaster.sold_out, 0, "offsale is not evidence that an event sold out");
+  assert.equal(ticketmaster.venue_provider_id, "tm-venue-7");
+  assert.equal(ticketmaster.venue_address_line1, "1 Music Way");
+  assert.equal(ticketmaster.venue_address_line2, "Suite 2");
+  assert.equal(ticketmaster.venue_city, "Toronto");
+  assert.equal(ticketmaster.venue_region, "ON");
+  assert.equal(ticketmaster.venue_postal_code, "M5V 1A1");
+  assert.equal(ticketmaster.venue_country_code, "CA");
+  assert.equal(ticketmaster.venue_country, "Canada");
+
+  const [bandsintown, localOnly] = bandsintownRows([{
+    id: 84,
+    title: "Foundation Artist Live",
+    datetime: "2032-06-01T20:00:00-04:00",
+    status: "rescheduled",
+    url: "https://www.bandsintown.com/e/84",
+    venue: {
+      id: 9,
+      name: "Second Hall",
+      timezone: "America/Toronto",
+      street_address: "2 Music Way",
+      street_address_2: "Floor 3",
+      city: "Toronto",
+      region: "ON",
+      postal_code: "M5V 2B2",
+      country_code: "ca",
+      country: "Canada",
+    },
+  }, {
+    id: 85,
+    datetime: "2032-06-02T20:00:00",
+    venue: { name: "Local Clock Hall", city: "Paris", country: "France" },
+  }], { requestedArtist: "Foundation Artist" });
+
+  assert.equal(bandsintown.provider_event_id, "84");
+  assert.equal(bandsintown.start_date_time, "2032-06-02T00:00:00.000Z");
+  assert.equal(bandsintown.start_local_time, "2032-06-01T20:00:00-04:00");
+  assert.equal(bandsintown.event_status, "rescheduled");
+  assert.equal(bandsintown.venue_provider_id, "9");
+  assert.equal(bandsintown.venue_country_code, "CA");
+  assert.equal(localOnly.start_date_time, null,
+    "a provider-local wall clock without an offset must not be mislabeled as UTC");
+});
+
+test("tour reconciliation is isolated by provider and preserves rows as inactive", () => {
   const ownerId = "u_tour_reconcile_owner";
   if (!q.userById.get(ownerId)) {
     q.insertUser.run(ownerId, "tour-reconcile@example.com", "Tour Owner", "tourreconcile", "hash",
       "artist", null, null, null, "TR", "#111111", Date.now());
   }
   const insert = db.prepare(`INSERT OR REPLACE INTO tour_dates
-    (id,artist,source,updated_at,owner_id) VALUES (?,?,?,?,?)`);
-  insert.run("tour_reconcile_tm_stale", "A", "ticketmaster", 1000, null);
-  insert.run("tour_reconcile_bit_stale", "B", "bandsintown", 1000, null);
-  insert.run("tour_reconcile_owner_stale", "C", "ticketmaster", 1000, ownerId);
-  insert.run("tour_reconcile_tm_fresh", "D", "ticketmaster", 3000, null);
-  insert.run("tour_reconcile_unknown", "E", "legacy-import", 1000, null);
+    (id,artist,source,updated_at,last_seen_at,provider_active,owner_id) VALUES (?,?,?,?,?,?,?)`);
+  insert.run("tour_reconcile_tm_stale", "A", "ticketmaster", 1000, null, 1, null);
+  insert.run("tour_reconcile_bit_stale", "B", "bandsintown", 1000, 1000, 1, null);
+  insert.run("tour_reconcile_owner_stale", "C", "ticketmaster", 1000, 1000, 1, ownerId);
+  insert.run("tour_reconcile_tm_fresh", "D", "ticketmaster", 1000, 3000, 1, null);
+  insert.run("tour_reconcile_unknown", "E", "legacy-import", 1000, 1000, 1, null);
 
   assert.equal(reconcileStaleProviderTourDates(db, {
     successfulSources: ["ticketmaster"], staleBefore: 2000,
   }), 1);
-  assert.equal(db.prepare("SELECT 1 FROM tour_dates WHERE id='tour_reconcile_tm_stale'").get(), undefined);
-  assert.ok(db.prepare("SELECT 1 FROM tour_dates WHERE id='tour_reconcile_bit_stale'").get(),
-    "one provider's success cannot erase another provider's cache");
-  assert.ok(db.prepare("SELECT 1 FROM tour_dates WHERE id='tour_reconcile_owner_stale'").get(),
-    "provider reconciliation cannot erase member-authored dates");
-  assert.ok(db.prepare("SELECT 1 FROM tour_dates WHERE id='tour_reconcile_tm_fresh'").get());
-  assert.ok(db.prepare("SELECT 1 FROM tour_dates WHERE id='tour_reconcile_unknown'").get());
+  assert.equal(db.prepare("SELECT provider_active FROM tour_dates WHERE id='tour_reconcile_tm_stale'").get().provider_active, 0);
+  assert.equal(db.prepare("SELECT provider_active FROM tour_dates WHERE id='tour_reconcile_bit_stale'").get().provider_active, 1,
+    "one provider's success cannot deactivate another provider's cache");
+  assert.equal(db.prepare("SELECT provider_active FROM tour_dates WHERE id='tour_reconcile_owner_stale'").get().provider_active, 1,
+    "provider reconciliation cannot deactivate member-authored dates");
+  assert.equal(db.prepare("SELECT provider_active FROM tour_dates WHERE id='tour_reconcile_tm_fresh'").get().provider_active, 1,
+    "last_seen_at is the authoritative provider freshness clock");
+  assert.equal(db.prepare("SELECT provider_active FROM tour_dates WHERE id='tour_reconcile_unknown'").get().provider_active, 1);
+  assert.equal(reconcileStaleProviderTourDates(db, {
+    successfulSources: ["ticketmaster"], staleBefore: 2000,
+  }), 0, "deactivation is idempotent");
 
   assert.equal(reconcileStaleProviderTourDates(db, {
     successfulSources: ["bandsintown"], staleBefore: 2000,
   }), 1);
+  assert.equal(db.prepare("SELECT provider_active FROM tour_dates WHERE id='tour_reconcile_bit_stale'").get().provider_active, 0);
+});
+
+test("provider upserts persist the durable fields and reactivate a returned event", () => {
+  const row = {
+    id: "tm_foundation_upsert",
+    artist: "Upsert Artist",
+    venue: "Upsert Hall",
+    place: "Toronto, Ontario, Canada",
+    lat: 43.64,
+    lng: -79.39,
+    date: "2033-01-02",
+    ticket_url: "https://www.ticketmaster.com/event/foundation",
+    sold_out: 0,
+    source: "ticketmaster",
+    provider_event_id: "foundation-upstream-id",
+    event_name: "Upsert Artist Live",
+    start_date_time: "2033-01-03T00:00:00.000Z",
+    start_local_time: "2033-01-02T19:00:00",
+    event_timezone: "America/Toronto",
+    event_status: "onsale",
+    venue_provider_id: "upstream-venue-id",
+    venue_address_line1: "3 Music Way",
+    venue_address_line2: "Unit 4",
+    venue_city: "Toronto",
+    venue_region: "ON",
+    venue_postal_code: "M5V 3C3",
+    venue_country_code: "CA",
+    venue_country: "Canada",
+  };
+
+  assert.equal(upsertProviderTourDateRows(db, [row], { seenAt: 5000 }), 1);
+  const inserted = db.prepare("SELECT * FROM tour_dates WHERE id=?").get(row.id);
+  for (const field of [
+    "provider_event_id", "event_name", "start_date_time", "start_local_time", "event_timezone",
+    "event_status", "venue_provider_id", "venue_address_line1", "venue_address_line2", "venue_city",
+    "venue_region", "venue_postal_code", "venue_country_code", "venue_country",
+  ]) assert.equal(inserted[field], row[field], `${field} should survive the provider upsert`);
+  assert.equal(inserted.provider_active, 1);
+  assert.equal(inserted.last_seen_at, 5000);
+  assert.equal(inserted.updated_at, 5000);
+
+  db.prepare("UPDATE tour_dates SET provider_active=0 WHERE id=?").run(row.id);
+  assert.equal(upsertProviderTourDateRows(db, [{ ...row, event_status: "offsale" }], { seenAt: 6000 }), 1);
+  const returned = db.prepare("SELECT provider_active,last_seen_at,updated_at,event_status,sold_out FROM tour_dates WHERE id=?").get(row.id);
+  assert.deepEqual({ ...returned }, { provider_active: 1, last_seen_at: 6000, updated_at: 6000, event_status: "offsale", sold_out: 0 });
+  upsertProviderTourDateRows(db, [{ ...row, event_name: null, event_status: null, venue_address_line2: null }], { seenAt: 7000 });
+  const partial = db.prepare("SELECT event_name,event_status,venue_address_line2,last_seen_at,updated_at FROM tour_dates WHERE id=?").get(row.id);
+  assert.deepEqual({ ...partial }, {
+    event_name: row.event_name,
+    event_status: "offsale",
+    venue_address_line2: row.venue_address_line2,
+    last_seen_at: 7000,
+    updated_at: 6000,
+  }, "a thinner provider response refreshes liveness without erasing richer known metadata");
+  upsertProviderTourDateRows(db, [{ ...row, event_status: "offsale" }], { seenAt: 8000 });
+  assert.deepEqual(
+    { ...db.prepare("SELECT last_seen_at,updated_at FROM tour_dates WHERE id=?").get(row.id) },
+    { last_seen_at: 8000, updated_at: 6000 },
+    "an identical refresh advances liveness without manufacturing a public content change",
+  );
+  upsertProviderTourDateRows(db, [{ ...row, event_status: "offsale", venue: "Upsert Hall Annex" }], { seenAt: 9000 });
+  assert.deepEqual(
+    { ...db.prepare("SELECT venue,last_seen_at,updated_at FROM tour_dates WHERE id=?").get(row.id) },
+    { venue: "Upsert Hall Annex", last_seen_at: 9000, updated_at: 9000 },
+    "a material provider correction advances both the liveness and public revision clocks",
+  );
+});
+
+test("public tour visibility hides inactive upcoming providers without hiding authored dates or history", () => {
+  const ownerId = "u_tour_visibility_owner";
+  if (!q.userById.get(ownerId)) {
+    q.insertUser.run(ownerId, "tour-visibility@example.com", "Tour Visibility", "tourvisibility", "hash",
+      "artist", null, null, null, "TV", "#222222", Date.now());
+  }
+  const artist = "Provider Visibility Foundation";
+  const at = Date.parse("2035-01-01T12:00:00.000Z");
+  const insert = db.prepare(`INSERT OR REPLACE INTO tour_dates
+    (id,artist,venue,date,source,updated_at,owner_id,release_at,provider_active,last_seen_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?)`);
+  insert.run("tour_visibility_history", artist, "History Hall", "2034-06-01", "ticketmaster", 1, null, 0, 0, 1);
+  insert.run("tour_visibility_active", artist, "Active Hall", "2035-06-01", "ticketmaster", 1, null, 0, 1, 1);
+  insert.run("tour_visibility_inactive", artist, "Inactive Hall", "2035-07-01", "ticketmaster", 1, null, 0, 0, 1);
+  insert.run("tour_visibility_authored", artist, "Authored Hall", "2035-08-01", "artist-submitted", 1, ownerId, 0, 0, null);
+  insert.run("tour_visibility_unreleased", artist, "Private Hall", "2035-09-01", "artist-submitted", 1, ownerId, at + 1000, 0, null);
+
+  const ids = (viewer) => visibleTourDateRowsFrom(db, viewer, { artist, at }).map((row) => row.id);
+  assert.deepEqual(ids(null), [
+    "tour_visibility_history",
+    "tour_visibility_active",
+    "tour_visibility_authored",
+  ]);
+  assert.deepEqual(visibleTourDateRowsFrom(db, null, {
+    artist,
+    today: "2035-01-01",
+    at,
+  }).map((row) => row.id), [
+    "tour_visibility_active",
+    "tour_visibility_authored",
+  ], "upcoming reads exclude both history and an inactive provider event");
+  assert.deepEqual(ids({ id: ownerId, role: "artist" }), [
+    "tour_visibility_history",
+    "tour_visibility_active",
+    "tour_visibility_authored",
+    "tour_visibility_unreleased",
+  ]);
+  assert.deepEqual(ids({ id: "admin", role: "admin", is_banned: 0, suspended_until: 0 }), [
+    "tour_visibility_history",
+    "tour_visibility_active",
+    "tour_visibility_inactive",
+    "tour_visibility_authored",
+    "tour_visibility_unreleased",
+  ]);
 });
 
 test("a dry run estimates cost and coverage without resolving or recording anything", async () => {

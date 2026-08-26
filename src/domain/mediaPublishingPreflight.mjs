@@ -1,4 +1,9 @@
 import {
+  MEDIA_PHOTO_SOURCE_MAX_BYTES,
+  MEDIA_VIDEO_SOURCE_MAX_BYTES,
+  mediaUploadLimitLabel,
+} from "./mediaUploadPolicy.mjs";
+import {
   VIDEO_MAX_DURATION_MS,
   mediaImageAnimationUnsupported,
   mediaImageNeedsNativeDecode,
@@ -27,8 +32,8 @@ export function mediaPublishingPreflightIssue(asset = {}, { platform = "web" } =
   const kind = asset?.kind === "video" ? "video" : "image";
   if (!mediaSourceSizeAllowed(asset)) {
     return kind === "video"
-      ? issue(MEDIA_PREFLIGHT_CODES.videoTooLarge, "That clip is over PIT's 100 MB limit. Export a shorter or smaller MP4 before opening it in PIT Studio.")
-      : issue(MEDIA_PREFLIGHT_CODES.imageTooLarge, "That photo is over PIT's 12 MB limit. Export a smaller copy before opening it in PIT Studio.");
+      ? issue(MEDIA_PREFLIGHT_CODES.videoTooLarge, ("That clip is over PIT's " + mediaUploadLimitLabel(MEDIA_VIDEO_SOURCE_MAX_BYTES) + " limit. Export a shorter or smaller MP4 before opening it in PIT Studio."))
+      : issue(MEDIA_PREFLIGHT_CODES.imageTooLarge, ("That photo is over PIT's " + mediaUploadLimitLabel(MEDIA_PHOTO_SOURCE_MAX_BYTES) + " limit. Export a smaller copy before opening it in PIT Studio."));
   }
 
   if (kind === "image") {
@@ -46,10 +51,10 @@ export function mediaPublishingPreflightIssue(asset = {}, { platform = "web" } =
   }
   const durationMs = Number(asset?.durationMs);
   if (!Number.isFinite(durationMs) || durationMs <= 0) {
-    return issue(MEDIA_PREFLIGHT_CODES.videoDurationMissing, "PIT could not verify this clip's duration from the picker. Export it as a 60-second-or-shorter MP4 and choose it again.");
+    return issue(MEDIA_PREFLIGHT_CODES.videoDurationMissing, "PIT could not verify this clip's duration from the picker. Export it as a 10-minute-or-shorter MP4 and choose it again.");
   }
   if (durationMs > VIDEO_MAX_DURATION_MS) {
-    return issue(MEDIA_PREFLIGHT_CODES.videoTooLong, "Clips are limited to 60 seconds until PIT's authoritative video trimmer is live. Choose a shorter MP4; PIT will not silently publish the full file.");
+    return issue(MEDIA_PREFLIGHT_CODES.videoTooLong, "Clips are limited to 10 minutes. Choose a shorter MP4; PIT will not silently publish the full file.");
   }
   if (Number(asset?.width) <= 1 || Number(asset?.height) <= 1) {
     return issue(MEDIA_PREFLIGHT_CODES.videoDimensionsMissing, "PIT could not read this clip's dimensions. Export a standard MP4 and choose it again.");

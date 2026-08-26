@@ -29,7 +29,7 @@ export const RESERVED_SLUGS = new Set([
   // Public route prefixes must be reserved as ROOT slugs too, or a band
   // called "Artist" builds "/artist", which parsePath reads as a prefix with no
   // value and rejects. That put a dead link in the sitemap.
-  "artist", "venue", "u", "post", "show",
+  "artist", "artists", "venue", "u", "post", "show", "event", "events", "concert", "concerts",
   "about", "admin", "api", "assets", "auth", "badges", "calendar", "clips",
   "contact", "discover", "download", "edit", "explore", "favicon.ico", "feed",
   "help", "home", "inbox", "legal", "login", "logout", "menu", "messages",
@@ -40,15 +40,6 @@ export const RESERVED_SLUGS = new Set([
 ]);
 
 export const isReservedSlug = (slug) => RESERVED_SLUGS.has(String(slug || "").toLowerCase());
-
-// Venues still have legacy root vanity links until their catalog identity gains
-// a city/provider-stable key. Reserved app words use the explicit venue prefix
-// so every URL this transitional helper builds remains parseable.
-const vanity = (prefix, name) => {
-  const slug = slugify(name);
-  if (!slug) return null;
-  return isReservedSlug(slug) ? `/${prefix}/${slug}` : `/${slug}`;
-};
 
 // An artist's stored publicSlug is immutable. The name fallback keeps callers
 // from manufacturing a dead link while older API payloads roll forward, but a
@@ -70,7 +61,41 @@ export const postPath = (id) => {
 // Compatibility name for code that still calls a logged review a "show".
 // Its generated URL is canonical; parsePath continues accepting legacy /show.
 export const showPath = postPath;
-export const venuePath = (name) => vanity("venue", name);
+// Venue names historically occupied the ambiguous root namespace. Always emit
+// the explicit namespace now; the resolver still accepts old root links and
+// redirects them, so an artist/member with the same slug can never steal a
+// newly shared venue URL.
+export const venuePath = (venueOrName) => {
+  const venue = venueOrName && typeof venueOrName === "object" ? venueOrName : null;
+  const slug = slugify(venue?.publicSlug || venue?.public_slug || venue?.name || venueOrName);
+  if (!slug) return null;
+  const providerId = String(venue?.providerVenueId || venue?.venue_provider_id || "").trim();
+  const providerSource = slugify(venue?.source || "");
+  const providerSlug = slugify(providerId);
+  // Provider venues get a durable disambiguator. A human venue name can be
+  // corrected and many cities have identically named rooms; the provider key
+  // keeps those pages from collapsing into one search identity.
+  if (providerSlug) return `/venue/${providerSource ? `${providerSource}-` : "provider-"}${providerSlug}`;
+  return `/venue/${slug}`;
+};
+
+// Provider event ids are already durable, opaque identities. Keep the id as
+// the sole canonical segment so a corrected artist, venue, or localized event
+// name does not move the page or split its search history.
+export const eventPath = (eventOrId) => {
+  const id = eventOrId && typeof eventOrId === "object" ? eventOrId.id : eventOrId;
+  const value = String(id ?? "").trim();
+  return value ? `/event/${encodeURIComponent(value)}` : null;
+};
+
+// Fan concert archives currently use an identity-bound opaque show key. It is
+// collision-safe and survives display-label correction better than a pretty
+// name/date slug. A future persistent concert table can redirect these paths
+// without breaking links already shared by fans.
+export const concertPath = (showKey) => {
+  const value = String(showKey ?? "").trim();
+  return value ? `/concert/${encodeURIComponent(value)}` : null;
+};
 export const profilePath = (handle) => {
   const clean = String(handle || "").replace(/^@/, "").toLowerCase();
   if (!clean) return null;
@@ -101,6 +126,11 @@ export function parsePath(pathname) {
   if (lower === "post" || lower === "show") {
     const id = decode(rest.join("/") || "");
     return id ? { type: "show", value: id } : null;
+  }
+  if (lower === "event" || lower === "concert") {
+    const value = decode(rest.join("/") || "");
+    if (!value) return null;
+    return { type: lower, value };
   }
   // Legacy/explicit forms stay understood so old links keep working.
   if (lower === "artist" || lower === "venue" || lower === "u") {

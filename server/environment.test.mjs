@@ -7,7 +7,7 @@ import test, { after } from "node:test";
 const dataDir = mkdtempSync(join(tmpdir(), "pit-environment-"));
 process.env.PIT_DATA_DIR = dataDir;
 
-const { pitEnv, isProduction } = await import("./environment.js");
+const { htmlRobotsDirective, pitEnv, isProduction } = await import("./environment.js");
 const { nonProductionBlock } = await import("./emailService.js");
 const { db } = await import("./db.js");
 
@@ -30,6 +30,20 @@ test("PIT_ENV is case and whitespace tolerant", () => {
   assert.equal(pitEnv({ PIT_ENV: "  STAGING " }), "staging");
   assert.equal(isProduction({ PIT_ENV: "Production" }), true);
   assert.equal(isProduction({ PIT_ENV: "staging" }), false);
+});
+
+test("HTML robots directives fail closed only for explicit non-production deployments", () => {
+  const indexable = "index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1";
+  assert.equal(htmlRobotsDirective({ indexable: true, env: {} }), indexable);
+  assert.equal(htmlRobotsDirective({ indexable: false, env: {} }), "noindex,follow");
+  assert.equal(
+    htmlRobotsDirective({ indexable: true, env: { PIT_ENV: "staging", NODE_ENV: "production" } }),
+    "noindex,nofollow",
+  );
+  assert.equal(
+    htmlRobotsDirective({ indexable: false, env: { PIT_ENV: "staging" } }),
+    "noindex,nofollow",
+  );
 });
 
 test("production never blocks a recipient", () => {

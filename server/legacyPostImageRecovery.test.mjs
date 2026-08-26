@@ -25,9 +25,104 @@ const {
   legacyPostImageRecoveryCandidates,
   legacyProfileImageRecoveryCandidates,
   recoverLegacyPostImage,
+  legacyImageRecoveryEnabled,
+  legacyImageRecoveryHealth,
   recoverLegacyProfileImage,
+  startLegacyImageRecoveryScheduler,
 } = await import("./legacyPostImageRecovery.js");
 
+test("legacy recovery defaults on and only explicit false values pause it", () => {
+  assert.equal(legacyImageRecoveryEnabled({}), true);
+  assert.equal(legacyImageRecoveryEnabled({ RENDER: "true" }), true);
+  for (const value of ["0", "false", "no", "off", "disabled"]) {
+    assert.equal(legacyImageRecoveryEnabled({ MEDIA_LEGACY_RECOVERY_ENABLED: value }), false);
+  }
+  assert.equal(legacyImageRecoveryEnabled({ MEDIA_LEGACY_RECOVERY_ENABLED: "true" }), true);
+});
+test("automatic legacy recovery is serial, bounded, observable, and stoppable", async () => {
+  let releaseFirst;
+  const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
+  let calls = 0;
+  const scheduler = startLegacyImageRecoveryScheduler({
+    database: db,
+    initialDelayMs: 60_000,
+    intervalMs: 60_000,
+    maxItems: 2,
+    drain: async (_database, options) => {
+      calls += 1;
+      assert.equal(options.maxItems, 2);
+      assert.ok(options.signal instanceof AbortSignal);
+      if (calls === 1) await firstGate;
+      return {
+        scanned: 1,
+        recovered: [{ kind: "post" }],
+        failed: [],
+        exhausted: true,
+        limitReached: false,
+      };
+    },
+  });
+  const first = scheduler.runOnce();
+  const coalesced = scheduler.runOnce();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls, 1, "overlapping ticks share one serial drain");
+  releaseFirst();
+  const [firstResult, coalescedResult] = await Promise.all([first, coalesced]);
+  assert.deepEqual(firstResult, {
+    status: "completed",
+    value: {
+      scanned: 1,
+      recovered: [{ kind: "post" }],
+      failed: [],
+      exhausted: true,
+      limitReached: false,
+    },
+    errorCode: null,
+  });
+  assert.equal(coalescedResult, firstResult, "overlapping ticks share one typed result");
+  assert.deepEqual(legacyImageRecoveryHealth(db), {
+    enabled: true,
+    running: false,
+    lastStartedAt: legacyImageRecoveryHealth(db).lastStartedAt,
+    lastFinishedAt: legacyImageRecoveryHealth(db).lastFinishedAt,
+    lastSuccessAt: legacyImageRecoveryHealth(db).lastSuccessAt,
+    lastErrorCode: null,
+    scanned: 1,
+    recovered: 1,
+    failed: 0,
+    backlog: false,
+    exhausted: true,
+    limitReached: false,
+  });
+  const healthy = legacyImageRecoveryHealth(db);
+  assert.ok(healthy.lastStartedAt > 0 && healthy.lastFinishedAt >= healthy.lastStartedAt);
+  assert.ok(healthy.lastSuccessAt >= healthy.lastStartedAt);
+  await scheduler.stop();
+  assert.equal(legacyImageRecoveryHealth(db).enabled, false);
+  assert.deepEqual(await scheduler.runOnce(), {
+    status: "stopped",
+    value: null,
+    errorCode: null,
+  });
+
+  const failingScheduler = startLegacyImageRecoveryScheduler({
+    database: db,
+    initialDelayMs: 60_000,
+    intervalMs: 60_000,
+    drain: async () => {
+      const failure = new Error("Synthetic recovery failure");
+      failure.code = "TEST_RECOVERY_FAILED";
+      throw failure;
+    },
+  });
+  assert.deepEqual(await failingScheduler.runOnce(), {
+    status: "failed",
+    value: null,
+    errorCode: "TEST_RECOVERY_FAILED",
+  });
+  assert.equal(legacyImageRecoveryHealth(db).lastErrorCode, "TEST_RECOVERY_FAILED");
+  await failingScheduler.stop();
+});
 after(() => {
   db.close();
   rmSync(dataDir, { recursive: true, force: true });
@@ -160,8 +255,8 @@ test("URL-only post photos become stable private-source assets with a sanitized 
     "only the bounded historical recovery explicitly enables the HEIC fallback");
   assert.equal(processorOptions.allowLegacyJpegTrailer, true,
     "only the bounded historical recovery may canonicalize a valid legacy JPEG prefix");
-  assert.equal(processorOptions.timeoutMs, 30_000,
-    "the one-off recovery gets enough isolated-worker time for production phone photos");
+  assert.equal(processorOptions.timeoutMs, 60_000,
+    "the bounded recovery gets enough isolated-worker time for large production phone photos");
 
   const link = db.prepare("SELECT asset_id,position FROM post_media WHERE post_id=?").get(postId);
   assert.deepEqual({ ...link }, { asset_id: recovered.assetId, position: 0 });
@@ -182,6 +277,11 @@ test("URL-only post photos become stable private-source assets with a sanitized 
     .every((request) => /^"[a-f0-9]{64}"$/u.test(request.headers.get("if-match") || "")));
   assert.ok(storage.requests.filter((request) => request.method === "PUT")
     .every((request) => request.headers.get("if-none-match") === "*"));
+  assert.ok(storage.requests.filter((request) => request.method === "PUT" && request.identity.startsWith("pit-public/"))
+    .every((request) => request.headers.get("cache-control") === "public, max-age=300, must-revalidate"));
+  assert.ok(storage.requests.filter((request) => request.method === "PUT" && request.identity.startsWith("pit-private/"))
+    .every((request) => request.headers.get("cache-control") === null),
+  "private recovery copies never receive public cache metadata");
   const retiredSource = db.prepare("SELECT status,byte_size FROM media_objects WHERE object_key=?").get(keyFor(sourceUrl));
   assert.deepEqual({ ...retiredSource }, { status: "delete_queued", byte_size: sourceBytes.length },
     "a live zero-byte legacy ledger is upgraded only to its HEAD-verified size");
@@ -374,7 +474,7 @@ test("profile candidates dedupe shared exact owner references, skip external URL
     "profile recovery passes the explicit HEIC capability through private staging");
   assert.equal(processorOptions.allowLegacyJpegTrailer, true,
     "profile recovery passes the explicit legacy JPEG capability through private staging");
-  assert.equal(processorOptions.timeoutMs, 30_000,
+  assert.equal(processorOptions.timeoutMs, 60_000,
     "profile HEIC recovery gets the same bounded production timeout");
   assert.equal(recovered.references, 2);
   const user = db.prepare("SELECT avatar_uri,banner FROM users WHERE id=?").get(owner.id);

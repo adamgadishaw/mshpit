@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, Image } from "react-native";
+import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, Image, Platform } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import { colors, radius } from "../theme";
 import { useStore } from "../store";
@@ -9,9 +9,17 @@ import Icon from "../components/Icon";
 import Button from "../components/Button";
 import SheetHeader from "../components/SheetHeader";
 import { isDurableMediaUrl, reportMediaPickerError, uploadMediaAsset } from "../lib/mediaUpload";
+import {
+  changedProfileImageFields,
+  profileImagePickerOptions,
+  profileImageSelectionHint,
+} from "../domain/profileImagePolicy.mjs";
 
 // The verified artist account and Pit staff edit the public artist profile:
 // banner, profile photo, bio, and page-update visibility. Personal account
+const AVATAR_IMAGE_HINT = profileImageSelectionHint("avatar");
+const BANNER_IMAGE_HINT = profileImageSelectionHint("banner");
+
 // details remain in the separate member-profile editor.
 export default function EditArtistProfileScreen({ artistName, onClose }) {
   const { artistSummary, artistProfile, updateArtistProfile, isArtistOwner } = useStore();
@@ -26,6 +34,8 @@ export default function EditArtistProfileScreen({ artistName, onClose }) {
   const [banner, setBanner] = useState(isDurableMediaUrl(initialBanner) ? initialBanner : null);
   const [feedEnabled, setFeedEnabled] = useState(!!prof.feedEnabled);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
+  const [avatarChanged, setAvatarChanged] = useState(false);
+  const [bannerChanged, setBannerChanged] = useState(false);
   const [uploadingBanner, setUploadingBanner] = useState(false);
   const [saving, setSaving] = useState(false);
 
@@ -42,7 +52,7 @@ export default function EditArtistProfileScreen({ artistName, onClose }) {
     if (uploadingAvatar || saving) return;
     let res;
     try {
-      res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images"], allowsEditing: true, aspect: [1, 1], quality: 0.6 });
+      res = await ImagePicker.launchImageLibraryAsync(profileImagePickerOptions("avatar", { platform: Platform.OS }));
     } catch (error) {
       reportMediaPickerError(error, "Opening the artist profile photo library");
       return;
@@ -50,7 +60,9 @@ export default function EditArtistProfileScreen({ artistName, onClose }) {
     if (!res || res.canceled || !res.assets?.[0]) return;
     setUploadingAvatar(true);
     try {
-      setAvatarUri(await uploadMediaAsset(res.assets[0], "avatar"));
+      const uploaded = await uploadMediaAsset(res.assets[0], "avatar");
+      setAvatarUri(uploaded);
+      setAvatarChanged(true);
     } catch {
       // Keep the previous durable photo; the helper records themed feedback.
     } finally {
@@ -61,7 +73,7 @@ export default function EditArtistProfileScreen({ artistName, onClose }) {
     if (uploadingBanner || saving) return;
     let res;
     try {
-      res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images"], allowsEditing: true, aspect: [3, 1], quality: 0.6 });
+      res = await ImagePicker.launchImageLibraryAsync(profileImagePickerOptions("banner", { platform: Platform.OS }));
     } catch (error) {
       reportMediaPickerError(error, "Opening the artist banner photo library");
       return;
@@ -69,7 +81,9 @@ export default function EditArtistProfileScreen({ artistName, onClose }) {
     if (!res || res.canceled || !res.assets?.[0]) return;
     setUploadingBanner(true);
     try {
-      setBanner(await uploadMediaAsset(res.assets[0], "banner"));
+      const uploaded = await uploadMediaAsset(res.assets[0], "banner");
+      setBanner(uploaded);
+      setBannerChanged(true);
     } catch {
       // Keep this editor open so the owner can retry without losing the bio.
     } finally {
@@ -82,7 +96,11 @@ export default function EditArtistProfileScreen({ artistName, onClose }) {
     if (mediaBusy || saving) return;
     setSaving(true);
     try {
-      const result = await updateArtistProfile(a.name, { bio: bio.trim(), avatarUri, banner, feedEnabled });
+      const result = await updateArtistProfile(a.name, {
+        bio: bio.trim(),
+        feedEnabled,
+        ...changedProfileImageFields({ avatarUri, banner, avatarChanged, bannerChanged }),
+      });
       if (result?.ok !== false) onClose?.();
     } catch {
       // API diagnostics already explain the failure; preserve the form values.
@@ -98,23 +116,47 @@ export default function EditArtistProfileScreen({ artistName, onClose }) {
       <SheetHeader title="Manage artist profile" onClose={onClose} action={{ label: saving ? "Saving..." : mediaBusy ? "Uploading..." : "Save", onPress: save, disabled: mediaBusy || saving }} />
 
       <ScrollView style={saving ? styles.savingLock : null} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-        <Pressable style={styles.bannerEdit} onPress={pickBanner} disabled={uploadingBanner || saving}>
+        <Pressable
+          style={styles.bannerEdit}
+          onPress={pickBanner}
+          disabled={uploadingBanner || saving}
+          accessibilityRole="button"
+          accessibilityLabel={banner ? "Change artist profile banner" : "Add an artist profile banner"}
+          accessibilityHint={BANNER_IMAGE_HINT}
+        >
           {banner ? <Image source={{ uri: banner }} style={StyleSheet.absoluteFill} resizeMode="cover" /> : null}
           <View style={styles.bannerOverlay}>
             <Icon name="camera" size={18} color={colors.text} />
-            <Text style={styles.bannerEditTxt}>{uploadingBanner ? "Uploading..." : banner ? "Change banner" : "Add a banner"}</Text>
+            <View>
+              <Text style={styles.bannerEditTxt}>{uploadingBanner ? "Uploading..." : banner ? "Change banner" : "Add a banner"}</Text>
+              <Text style={styles.bannerFormat}>{BANNER_IMAGE_HINT}</Text>
+            </View>
           </View>
         </Pressable>
 
         <View style={styles.headRow}>
           <View style={styles.avatarWrap}>
             <Avatar user={preview} size={84} />
-            <Pressable style={styles.cameraBtn} onPress={pickPhoto} disabled={uploadingAvatar || saving}>
+            <Pressable
+              style={styles.cameraBtn}
+              onPress={pickPhoto}
+              disabled={uploadingAvatar || saving}
+              accessibilityRole="button"
+              accessibilityLabel="Change artist profile photo"
+              accessibilityHint={AVATAR_IMAGE_HINT}
+            >
               <Icon name="camera" size={15} color="#1A1206" />
             </Pressable>
           </View>
         </View>
-        <Pressable onPress={pickPhoto} disabled={uploadingAvatar || saving}><Text style={styles.changePhoto}>{uploadingAvatar ? "Uploading photo..." : "Change profile photo"}</Text></Pressable>
+        <Pressable onPress={pickPhoto} disabled={uploadingAvatar || saving}
+          accessibilityRole="button"
+          accessibilityLabel="Change artist profile photo"
+          accessibilityHint={AVATAR_IMAGE_HINT}
+        >
+          <Text style={styles.changePhoto}>{uploadingAvatar ? "Uploading photo..." : "Change profile photo"}</Text>
+        </Pressable>
+        <Text style={styles.avatarFormat}>{AVATAR_IMAGE_HINT}</Text>
 
         <Text style={styles.label}>BIO</Text>
         <TextInput style={[styles.input, styles.multiline]} value={bio} onChangeText={setBio} placeholder="Tell fans who you are" placeholderTextColor={colors.textFaint} multiline />
@@ -161,12 +203,14 @@ const styles = StyleSheet.create({
   avatarWrap: { borderWidth: 3, borderColor: colors.bg, borderRadius: 48, backgroundColor: colors.bg },
   cameraBtn: { position: "absolute", right: -2, bottom: -2, width: 30, height: 30, borderRadius: 15, backgroundColor: colors.amberStrong, alignItems: "center", justifyContent: "center", borderWidth: 2, borderColor: colors.bg },
   changePhoto: { color: colors.amber, fontSize: 13, marginTop: 10, marginLeft: 4 },
+  avatarFormat: { color: colors.textFaint, fontSize: 11, lineHeight: 16, marginTop: 4, marginLeft: 4 },
   label: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "700", marginBottom: 8, marginTop: 22 },
   input: { backgroundColor: colors.surface, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.line, color: colors.text, paddingHorizontal: 14, paddingVertical: 12, fontSize: 15 },
   multiline: { minHeight: 90, textAlignVertical: "top" },
   toggleRow: { flexDirection: "row", alignItems: "center", gap: 14, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.line, padding: 14 },
   toggleTitle: { color: colors.text, fontSize: 15, fontWeight: "700" },
   toggleSub: { color: colors.textDim, fontSize: 12, lineHeight: 17, marginTop: 4 },
+  bannerFormat: { color: colors.textDim, fontSize: 10, lineHeight: 14, marginTop: 2 },
   switch: { width: 48, height: 28, borderRadius: 14, backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.line, padding: 2, justifyContent: "center" },
   switchOn: { backgroundColor: colors.amberStrong, borderColor: colors.amberStrong },
   knob: { width: 22, height: 22, borderRadius: 11, backgroundColor: colors.textDim },

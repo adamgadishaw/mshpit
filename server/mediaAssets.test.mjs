@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
 
+import { MEDIA_VIDEO_MAX_DURATION_MS } from "../src/domain/mediaUploadPolicy.mjs";
+
 const dataDir = mkdtempSync(join(tmpdir(), "pit-media-assets-"));
 process.env.PIT_DATA_DIR = dataDir;
 
@@ -736,6 +738,103 @@ test("source finalization verifies storage transport metadata and fails closed o
   assert.equal(duplicate.duplicate, true);
 });
 
+test("concurrent exact photo source finalizers share one generation-bound GET and conflicting edits do no work", async () => {
+  const user = addUser("media_source_coalesce_owner");
+  const created = createMediaAsset(db, {
+    ownerId: user.id,
+    body: sourceBody({
+      clientAssetId: "source-coalesce-client-0001",
+      fileSize: 9_000,
+    }),
+    assetId: "ma_source_coalesce_000001",
+  });
+  const requests = [];
+  const verifiedFetch = verifiedImage(9_000, "image/jpeg", 1_200, 1_500, requests);
+  let releaseGet;
+  const getGate = new Promise((resolve) => { releaseGet = resolve; });
+  let announceGet;
+  const getStarted = new Promise((resolve) => { announceGet = resolve; });
+  let sourceGets = 0;
+  let decodes = 0;
+  const fetchImpl = async (url, options = {}) => {
+    if (String(options.method || "GET").toUpperCase() === "GET") {
+      sourceGets += 1;
+      announceGet();
+      await getGate;
+    }
+    return verifiedFetch(url, options);
+  };
+  const imageProcessor = {
+    ...fixtureImageProcessor,
+    async validate(bytes, options) {
+      decodes += 1;
+      return fixtureImageProcessor.validate(bytes, options);
+    },
+  };
+  const body = {
+    width: 1_200,
+    height: 1_500,
+    orientation: 0,
+    altText: "One shared crowd photo",
+    editRecipe: {},
+  };
+  const first = finalizeMediaAsset(db, {
+    ownerId: user.id,
+    assetId: created.asset.id,
+    body,
+    fetchImpl,
+    imageProcessor,
+  });
+  await Promise.race([
+    getStarted,
+    first.then(
+      () => { throw new Error("finalization completed before its source GET"); },
+      (error) => { throw error; },
+    ),
+    new Promise((resolve, reject) => {
+      void resolve;
+      const timer = setTimeout(() => reject(new Error("source GET did not start")), 2_000);
+      void timer;
+    }),
+  ]);
+  let duplicateStorageCalls = 0;
+  const joined = finalizeMediaAsset(db, {
+    ownerId: user.id,
+    assetId: created.asset.id,
+    body,
+    fetchImpl: async () => {
+      duplicateStorageCalls += 1;
+      throw new Error("a coalesced retry must not reach storage");
+    },
+    imageProcessor,
+  });
+  await assert.rejects(
+    finalizeMediaAsset(db, {
+      ownerId: user.id,
+      assetId: created.asset.id,
+      body: { ...body, altText: "Conflicting edit" },
+      fetchImpl: async () => {
+        duplicateStorageCalls += 1;
+        throw new Error("a conflicting retry must fail before storage");
+      },
+      imageProcessor,
+    }),
+    (error) => error?.status === 409 && error?.code === "CONFLICT",
+  );
+  assert.equal(sourceGets, 1);
+  assert.equal(requests.filter((request) => request.options.method === "HEAD").length, 1);
+  assert.equal(duplicateStorageCalls, 0);
+  releaseGet();
+  const [leader, duplicate] = await Promise.all([first, joined]);
+  assert.equal(leader.duplicate, false);
+  assert.equal(duplicate.duplicate, true);
+  assert.equal(leader.asset.status, "render_pending");
+  assert.equal(duplicate.asset.status, "render_pending");
+  assert.equal(sourceGets, 1);
+  assert.equal(decodes, 1);
+  assert.equal(duplicateStorageCalls, 0);
+});
+
 test("new stable delivery rejects unsupported motion, accepts verified MOV, limits duration, and blocks raw HEIC publication", async () => {
   const user = addUser("media_asset_delivery_owner");
   assert.throws(
@@ -800,7 +899,7 @@ test("new stable delivery rejects unsupported motion, accepts verified MOV, limi
     finalizeMediaAsset(db, {
       ownerId: user.id,
       assetId: video.asset.id,
-      body: { width: 1_920, height: 1_080, durationMs: 60_001, editRecipe: {} },
+      body: { width: 1_920, height: 1_080, durationMs: MEDIA_VIDEO_MAX_DURATION_MS + 1, editRecipe: {} },
       fetchImpl: async () => { headCalls += 1; return { status: 500 }; },
     }),
     (error) => error.status === 400 && error.code === "VALIDATION_FAILED",
@@ -811,11 +910,11 @@ test("new stable delivery rejects unsupported motion, accepts verified MOV, limi
     finalizeMediaAsset(db, {
       ownerId: user.id,
       assetId: video.asset.id,
-      body: { width: 1_080, height: 1_920, durationMs: 60_000, editRecipe: {} },
-      fetchImpl: verifiedMp4(2_000_000, 60_001),
+      body: { width: 1_080, height: 1_920, durationMs: MEDIA_VIDEO_MAX_DURATION_MS, editRecipe: {} },
+      fetchImpl: verifiedMp4(2_000_000, MEDIA_VIDEO_MAX_DURATION_MS + 1),
     }),
     (error) => error.status === 415 && error.code === "MEDIA_TYPE_UNSUPPORTED",
-    "mvhd/mdhd/stts duration, not the client declaration, enforces the 60-second ceiling",
+    "mvhd/mdhd/stts duration, not the client declaration, enforces the ten-minute ceiling",
   );
   assert.deepEqual({ ...db.prepare("SELECT status,codec_status FROM media_assets WHERE id=?").get(video.asset.id) },
     { status: "upload_pending", codec_status: "pending" });
@@ -959,6 +1058,107 @@ test("edited images stay unpublishable until a verified rendition is uploaded", 
   assert.notEqual(finished.variant.url, variant.upload.storageLocator,
     "publishing uses server-decoded, metadata-free pixels at a distinct key");
   assert.equal(finished.asset.sourceUrl, null, "private originals are not projected as public URLs");
+});
+
+test("concurrent exact photo variant finalizers share GET, sanitize, and public staging", async () => {
+  const user = addUser("media_variant_coalesce_owner");
+  const created = createMediaAsset(db, {
+    ownerId: user.id,
+    body: sourceBody({
+      clientAssetId: "variant-coalesce-source-0001",
+      fileSize: 10_000,
+    }),
+    assetId: "ma_variant_coalesce_000001",
+  });
+  await finalizeMediaAsset(db, {
+    ownerId: user.id,
+    assetId: created.asset.id,
+    body: { width: 1_500, height: 2_000, editRecipe: { kind: "image", filter: "pit" } },
+    fetchImpl: verifiedImage(10_000, "image/jpeg", 1_500, 2_000),
+  });
+  const variant = createMediaVariant(db, {
+    ownerId: user.id,
+    assetId: created.asset.id,
+    body: {
+      clientVariantId: "variant-coalesce-client-0001",
+      role: "render",
+      contentType: "image/webp",
+      fileSize: 8_000,
+      name: "coalesced.webp",
+    },
+    variantId: "mv_variant_coalesce_000001",
+  });
+  const requests = [];
+  const verifiedFetch = verifiedImage(8_000, "image/webp", 1_200, 1_600, requests);
+  let releaseGet;
+  const getGate = new Promise((resolve) => { releaseGet = resolve; });
+  let announceGet;
+  const getStarted = new Promise((resolve) => { announceGet = resolve; });
+  let stagingGets = 0;
+  let sanitizes = 0;
+  const fetchImpl = async (url, options = {}) => {
+    const method = String(options.method || "GET").toUpperCase();
+    const privateStaging = new URL(url).pathname.includes("/pit-media-private/");
+    if (method === "GET" && privateStaging) {
+      stagingGets += 1;
+      announceGet();
+      await getGate;
+    }
+    return verifiedFetch(url, options);
+  };
+  const imageProcessor = {
+    ...fixtureImageProcessor,
+    async sanitize(bytes, options) {
+      sanitizes += 1;
+      return fixtureImageProcessor.sanitize(bytes, options);
+    },
+  };
+  const body = { width: 1_200, height: 1_600 };
+  const first = finalizeMediaVariant(db, {
+    ownerId: user.id,
+    assetId: created.asset.id,
+    variantId: variant.variant.id,
+    body,
+    fetchImpl,
+    imageProcessor,
+  });
+  await Promise.race([
+    getStarted,
+    first.then(
+      () => { throw new Error("finalization completed before its source GET"); },
+      (error) => { throw error; },
+    ),
+    new Promise((resolve, reject) => {
+      void resolve;
+      const timer = setTimeout(() => reject(new Error("source GET did not start")), 2_000);
+      void timer;
+    }),
+  ]);
+  let duplicateStorageCalls = 0;
+  const joined = finalizeMediaVariant(db, {
+    ownerId: user.id,
+    assetId: created.asset.id,
+    variantId: variant.variant.id,
+    body,
+    fetchImpl: async () => {
+      duplicateStorageCalls += 1;
+      throw new Error("a coalesced variant retry must not reach storage");
+    },
+    imageProcessor,
+  });
+  assert.equal(stagingGets, 1);
+  assert.equal(duplicateStorageCalls, 0);
+  releaseGet();
+  const [leader, duplicate] = await Promise.all([first, joined]);
+  assert.equal(leader.duplicate, false);
+  assert.equal(duplicate.duplicate, true);
+  assert.equal(leader.variant.status, "verified");
+  assert.equal(duplicate.variant.status, "verified");
+  assert.equal(duplicate.variant.url, leader.variant.url);
+  assert.equal(stagingGets, 1);
+  assert.equal(sanitizes, 1);
+  assert.equal(requests.filter((request) => request.options.method === "PUT").length, 1);
+  assert.equal(duplicateStorageCalls, 0);
 });
 
 test("pending rendition retries are idempotent and replacement never reuses the old identity", async () => {

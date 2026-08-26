@@ -1,7 +1,8 @@
-// 8s source HEAD + 12s structural admission + 110s private verifier + bounded
-// delivery/poster storage verification can legitimately exceed two minutes.
-// This remains route-scoped; ordinary API reads/writes retain short defaults.
-export const MEDIA_SOURCE_FINALIZE_V1_TIMEOUT_MS = 210_000;
+// The server acknowledges background verification quickly, while a ten-minute
+// phone clip can take longer to normalize on a small worker. Poll for a finite
+// 18-minute envelope without holding one proxy request open that whole time.
+export const MEDIA_SOURCE_FINALIZE_V1_TIMEOUT_MS = 18 * 60_000;
+export const MEDIA_SOURCE_FINALIZE_REQUEST_TIMEOUT_MS = 210_000;
 // Five seconds avoids noisy polling while still giving quick completion
 // feedback. Poll reads have no member-facing upload count allowance.
 export const MEDIA_SOURCE_FINALIZE_POLL_INTERVAL_MS = 5_000;
@@ -106,7 +107,7 @@ export async function finalizeMediaSourceV1({
       signal,
       // This also supports a web-first rolling deploy whose prior server still
       // finalizes synchronously. The new server acknowledges video work quickly.
-      timeoutMs: MEDIA_SOURCE_FINALIZE_V1_TIMEOUT_MS,
+      timeoutMs: MEDIA_SOURCE_FINALIZE_REQUEST_TIMEOUT_MS,
       // Current servers always coordinate video work in the background. The
       // hint is harmless to the prior body-tolerant server during web-first
       // rollout and lets this client poll instead of holding a proxy request.

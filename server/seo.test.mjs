@@ -5,14 +5,16 @@ import { join } from "node:path";
 import test, { after } from "node:test";
 import { createArtistMemorialRepository } from "./features/artistMemorials/artistMemorialRepository.js";
 import { createArtistMemorialService } from "./features/artistMemorials/artistMemorialService.js";
+import { archiveShowKey } from "./features/artistArchive/artistArchiveKeys.js";
 
 const dataDir = mkdtempSync(join(tmpdir(), "pit-seo-visibility-"));
 process.env.PIT_DATA_DIR = dataDir;
 process.env.PUBLIC_ORIGIN = "https://www.example.com";
 
 const { db, q, normName } = await import("./db.js");
-const { metadataFor, resolveEntity, headTagsFor, injectHead, sitemapXml, sitemapForPath, seoHttpPlan } = await import("./seo.js");
-const { artistPath, profilePath, showPath, venuePath } = await import("../src/domain/urls.mjs");
+const { enforceHtmlRobotsMeta, metadataFor, resolveEntity, headTagsFor, injectHead, renderNotFoundDocument, sitemapXml, sitemapForPath, seoHttpPlan } = await import("./seo.js");
+const { postSitemapEntries, profileSitemapEntries } = await import("./features/seo/sitemapService.js");
+const { artistPath, concertPath, eventPath, profilePath, showPath, venuePath } = await import("../src/domain/urls.mjs");
 
 after(() => {
   db.close();
@@ -63,10 +65,10 @@ test("SEO metadata, entity routing, and sitemap exclude restricted authors", () 
   assert.equal(metadataFor(profilePath(banned.handle)), null);
   const restrictedHead = headTagsFor(profilePath(suspended.handle));
   assert.match(restrictedHead, /og:type" content="website"/i);
-  assert.match(restrictedHead, /Mshpit — Your life/);
+  assert.match(restrictedHead, /Mshpit — Concert reviews, photos and live music discovery/);
   assert.doesNotMatch(restrictedHead, /reviews live music/i);
   const restrictedShell = injectHead("<html><head><title>Pit</title></head></html>", profilePath(suspended.handle));
-  assert.match(restrictedShell, /Mshpit — Your life/,
+  assert.match(restrictedShell, /Mshpit — Concert reviews, photos and live music discovery/,
     "the static share shell falls back instead of caching restricted identity copy");
 
   assert.equal(metadataFor(showPath("seo_active_show"))?.kind, "show");
@@ -89,6 +91,38 @@ test("SEO metadata, entity routing, and sitemap exclude restricted authors", () 
   assert.doesNotMatch(postSitemap, new RegExp(showPath("seo_suspended_show")));
   assert.doesNotMatch(postSitemap, new RegExp(showPath("seo_banned_show")));
   assert.equal(seoHttpPlan(profilePath(suspended.handle)).status, 404);
+});
+
+test("member search-indexing opt-out serves the app noindex while public posts stay indexable", () => {
+  const member = addUser("u_seo_search_private", "seosearchprivate");
+  db.prepare("UPDATE users SET name=?,bio=?,extras=? WHERE id=?").run(
+    "Search Privacy Person",
+    "A detailed personal concert diary that would otherwise qualify as a substantive public member profile.",
+    JSON.stringify({ searchIndexingOptOut: true }),
+    member.id,
+  );
+  addPost("seo_search_private_post", member.id, {
+    artist: "Search Privacy Artist", venue: "Search Privacy Hall", overall: 5, room: 4, createdAt: 350,
+  });
+
+  const path = profilePath(member.handle);
+  const plan = seoHttpPlan(path);
+  assert.equal(plan.type, "app");
+  assert.equal(plan.status, 200);
+  assert.equal(metadataFor(path), null);
+  assert.equal(resolveEntity(path)?.id, member.id,
+    "the member remains reachable inside Pit; this setting controls external indexing only");
+  assert.match(headTagsFor(path), /name="robots" content="noindex,follow"/);
+  assert.doesNotMatch(headTagsFor(path), /Search Privacy Person|detailed personal concert diary/i);
+  assert.equal(profileSitemapEntries(db).some((entry) => entry.path === path), false);
+
+  assert.equal(seoHttpPlan(showPath("seo_search_private_post")).type, "document");
+  assert.equal(postSitemapEntries(db).some((entry) => entry.path === showPath("seo_search_private_post")), true);
+
+  db.prepare("UPDATE users SET extras=? WHERE id=?")
+    .run(JSON.stringify({ searchIndexingOptOut: false }), member.id);
+  assert.equal(seoHttpPlan(path).type, "document", "opting back in restores the canonical public profile document");
+  assert.equal(profileSitemapEntries(db).some((entry) => entry.path === path), true);
 });
 
 test("profile share metadata drops legacy user-hosted images but keeps catalog provider art", () => {
@@ -129,10 +163,43 @@ test("public route policy redirects legacy identities and fails unknown or malfo
     { type: "redirect", location: "/artist/seo-race-band" },
   );
   assert.equal(seoHttpPlan("/show/seo_active_show").location, "/post/seo_active_show");
-  assert.equal(seoHttpPlan("/search").type, "app");
+  assert.equal(seoHttpPlan("/search").type, "document");
+  assert.equal(seoHttpPlan("/search").indexable, false);
   assert.equal(seoHttpPlan("/does-not-exist/extra").status, 404);
   assert.equal(seoHttpPlan("/artist/%E0%A4%A").status, 404);
   assert.match(headTagsFor("/does-not-exist/extra"), /name="robots" content="noindex,follow"/);
+});
+
+test("staging HTML has one noindex,nofollow directive while production public documents remain indexable", () => {
+  const source = `<!doctype html><html><head><title>Pit</title>
+    <meta name="robots" content="index,follow" /></head><body><div id="root"></div></body></html>`;
+  const stagingEnv = { PIT_ENV: "staging" };
+  for (const path of ["/", "/search"]) {
+    const html = injectHead(source, path, seoHttpPlan(path), stagingEnv);
+    const robots = [...html.matchAll(/<meta\b(?=[^>]*\bname=["']robots["'])[^>]*>/gi)];
+    assert.equal(robots.length, 1, `${path} must not render conflicting robots metadata`);
+    assert.match(robots[0][0], /content="noindex,nofollow"/);
+    assert.doesNotMatch(html, /content="index,follow/);
+  }
+
+  const stagingAppHead = headTagsFor("/search", stagingEnv);
+  assert.match(stagingAppHead, /name="robots" content="noindex,nofollow"/);
+  assert.equal([...stagingAppHead.matchAll(/name="robots"/g)].length, 1);
+  const stagingNotFound = renderNotFoundDocument(stagingEnv);
+  const recoveredStaticHtml = enforceHtmlRobotsMeta(source, { env: stagingEnv });
+  assert.equal([...recoveredStaticHtml.matchAll(/name="robots"/g)].length, 1);
+  assert.match(recoveredStaticHtml, /name="robots" content="noindex,nofollow"/);
+
+  assert.match(stagingNotFound, /name="robots" content="noindex,nofollow"/);
+
+  const productionPublicHead = headTagsFor("/", { PIT_ENV: "production" });
+  assert.match(
+    productionPublicHead,
+    /name="robots" content="index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1"/,
+  );
+  const productionFallback = headTagsFor("/search", { PIT_ENV: "production" });
+  assert.match(productionFallback, /<title>Search artists, concerts and fans \| Mshpit<\/title>/);
+  assert.match(productionFallback, /name="robots" content="noindex,follow"/);
 });
 
 test("a verified memorial makes only its canonical artist page crawlable", () => {
@@ -187,4 +254,97 @@ test("crawlable HTML contains semantic content and keeps the interactive bundle"
   assert.match(html, /https:\/\/www\.example\.com\/og\.png/);
   assert.match(html, /data-mshpit-public-document/);
   assert.doesNotMatch(html, /You need to enable JavaScript/);
+});
+
+test("events, durable venues, historical concerts, and directories form one crawlable graph", () => {
+  const member = addUser("u_seo_event_fan", "seoeventfan");
+  const artist = "SEO Global Tour Artist";
+  db.prepare(`INSERT OR REPLACE INTO artists
+    (norm,name,public_slug,search_key,genre,photo,bio,popularity,rank_score,data,source,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(normName(artist), artist, "seo-global-tour-artist", "seoglobaltourartist", "Pop", null,
+      "A touring artist with a sufficiently detailed public biography for the connected event and archive test surface.",
+      10, 10, "{}", "test", 1, 1);
+  db.prepare(`INSERT INTO tour_dates
+    (id,provider_event_id,event_name,artist,venue,place,date,start_date_time,start_local_time,event_timezone,
+      event_status,ticket_url,sold_out,source,updated_at,release_at,venue_provider_id,venue_address_line1,
+      venue_city,venue_region,venue_postal_code,venue_country_code,venue_country,provider_active,last_seen_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    "seo_event_world", "tm-seo-event", `${artist} World Tour`, artist, "SEO World Arena", "London, United Kingdom",
+    "2026-12-10", "2026-12-10T20:00:00.000Z", "20:00:00", "Europe/London", "onsale",
+    "https://www.ticketmaster.co.uk/event/seo-event", 0, "ticketmaster", Date.now(), 0, "KovZ-seo-world",
+    "1 Arena Way", "London", "England", "E20 2ST", "GB", "United Kingdom", 1, Date.now(),
+  );
+  const addSameNameProviderEvent = db.prepare(`INSERT INTO tour_dates
+    (id,provider_event_id,event_name,artist,venue,place,date,source,updated_at,release_at,
+      venue_provider_id,venue_city,provider_active)
+    VALUES (?,?,?,?,?,?,?,?,?,0,?,?,1)`);
+  addSameNameProviderEvent.run(
+    "seo_twin_north", "tm-seo-twin-north", `${artist} North`, artist, "SEO Twin Arena",
+    "Toronto, Canada", "2026-12-11", "ticketmaster", Date.now(), "twin-north", "Toronto",
+  );
+  addSameNameProviderEvent.run(
+    "seo_twin_south", "tm-seo-twin-south", `${artist} South`, artist, "SEO Twin Arena",
+    "London, United Kingdom", "2026-12-12", "ticketmaster", Date.now(), "twin-south", "London",
+  );
+  db.prepare(`INSERT INTO posts
+    (id,user_id,artist,artist_key,venue,venue_key,city,date,overall,room,review,photos,photos_public,kind,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,'[]',0,'review',?,?)`).run(
+    "seo_archive_review", member.id, artist, normName(artist), "SEO Archive Hall", normName("SEO Archive Hall"),
+    "Toronto", "2026-08-20", 4.5, 4,
+    "A detailed firsthand review of the sound, crowd, staging, and encore from this exact concert night.",
+    Date.now() - 10_000, Date.now() - 5_000,
+  );
+  addPost("seo_twin_unattributed", member.id, {
+    artist, venue: "SEO Twin Arena", overall: 4, room: 4, createdAt: Date.now() - 4_000,
+  });
+
+
+  const eventRoute = eventPath("seo_event_world");
+  const eventPlan = seoHttpPlan(eventRoute);
+  assert.equal(eventPlan.type, "document");
+  assert.equal(eventPlan.document.kind, "event");
+  assert.equal(eventPlan.document.event.ticketUrl, "https://www.ticketmaster.co.uk/event/seo-event");
+  assert.match(injectHead('<html><head><title>Pit</title></head><body><div id="root"></div></body></html>', eventRoute), /MusicEvent/);
+  assert.equal(resolveEntity(eventRoute)?.performanceEvent, true);
+
+  const durableVenue = venuePath({ name: "SEO World Arena", source: "ticketmaster", providerVenueId: "KovZ-seo-world" });
+  assert.equal(seoHttpPlan(durableVenue).type, "document");
+  assert.equal(seoHttpPlan("/venue/seo-world-arena").location, durableVenue,
+    "a legacy name-only venue URL upgrades to the provider-stable canonical");
+  const northVenue = venuePath({ name: "SEO Twin Arena", source: "ticketmaster", providerVenueId: "twin-north" });
+  const southVenue = venuePath({ name: "SEO Twin Arena", source: "ticketmaster", providerVenueId: "twin-south" });
+  const northPlan = seoHttpPlan(northVenue);
+  const southPlan = seoHttpPlan(southVenue);
+  assert.equal(northPlan.type, "document");
+  assert.equal(southPlan.type, "document");
+  assert.deepEqual(northPlan.document.events.map((event) => event.path), [eventPath("seo_twin_north")]);
+  assert.deepEqual(southPlan.document.events.map((event) => event.path), [eventPath("seo_twin_south")]);
+  assert.deepEqual(northPlan.document.posts, [],
+    "provider venue pages omit name-only fan posts whose provider identity cannot be proven");
+  assert.deepEqual(southPlan.document.posts, []);
+  assert.equal(seoHttpPlan("/venue/seo-twin-arena").type, "not-found",
+    "a duplicate venue name never redirects to an arbitrary provider identity");
+  assert.equal(seoHttpPlan("/seo-twin-arena").type, "not-found",
+    "the legacy root fallback also fails closed for an ambiguous venue name");
+
+
+  const key = archiveShowKey({
+    artistIdentity: normName(artist),
+    venueIdentity: normName("SEO Archive Hall"),
+    date: "2026-08-20",
+  });
+  const concertRoute = concertPath(key);
+  const concertPlan = seoHttpPlan(concertRoute);
+  assert.equal(concertPlan.type, "document");
+  assert.equal(concertPlan.document.kind, "concert");
+  assert.equal(concertPlan.document.concert.ratingCount, 1);
+  assert.equal(resolveEntity(concertRoute)?.archiveShowKey, key);
+
+  for (const path of ["/artists", "/events", "/discover"]) {
+    const plan = seoHttpPlan(path);
+    assert.equal(plan.type, "document");
+    assert.equal(plan.document.kind, path === "/discover" ? "discover" : "directory");
+    assert.match(injectHead('<html><head><title>Pit</title></head><body><div id="root"></div></body></html>', path), /BreadcrumbList/);
+  }
 });

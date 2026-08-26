@@ -102,7 +102,8 @@ test("video export decisions never describe cover-only selection as destructive 
   assert.equal(videoEditRequiresExport({ ...base, coverMode: "manual", coverMs: 12_000 }), false);
   assert.equal(videoEditRequiresExport({ ...base, muted: true }), true);
   assert.equal(videoEditRequiresExport({ ...base, trimEndMs: 20_000 }), true);
-  assert.equal(videoEditRequiresExport(defaultMediaEdit("video", { durationMs: 300_000 })), true);
+  assert.equal(videoEditRequiresExport(defaultMediaEdit("video", { durationMs: 300_000 })), false);
+  assert.equal(videoEditRequiresExport(defaultMediaEdit("video", { durationMs: VIDEO_MAX_DURATION_MS + 1 })), true);
 });
 
 test("picker assets become stable local draft entries without persisting opaque file objects", () => {
@@ -110,7 +111,7 @@ test("picker assets become stable local draft entries without persisting opaque 
   const asset = mediaDraftAssetFromPicker(input, 2);
   assert.equal(asset.kind, "video");
   assert.equal(asset.durationMs, 82_000);
-  assert.equal(asset.edit.trimEndMs, 60_000);
+  assert.equal(asset.edit.trimEndMs, 82_000);
   assert.equal(asset.altText, "Crowd singing together");
   assert.equal("file" in asset, false);
 });
@@ -149,11 +150,14 @@ test("new stable clip sources admit MP4 and QuickTime while delivery remains ser
 });
 
 test("Studio rejects sources above the same post limits before durable staging", () => {
-  assert.equal(mediaSourceMaxBytes({ kind: "image" }), 12 * 1024 * 1024);
-  assert.equal(mediaSourceMaxBytes({ kind: "video" }), 100 * 1024 * 1024);
-  assert.equal(mediaSourceSizeAllowed({ kind: "image", fileSize: 12 * 1024 * 1024 }), true);
-  assert.equal(mediaSourceSizeAllowed({ kind: "image", fileSize: 12 * 1024 * 1024 + 1 }), false);
-  assert.equal(mediaSourceSizeAllowed({ kind: "video", fileSize: 100 * 1024 * 1024 + 1 }), false);
+  const photoLimit = 30 * 1024 * 1024;
+  const videoLimit = 500 * 1024 * 1024;
+  assert.equal(mediaSourceMaxBytes({ kind: "image" }), photoLimit);
+  assert.equal(mediaSourceMaxBytes({ kind: "video" }), videoLimit);
+  assert.equal(mediaSourceSizeAllowed({ kind: "image", fileSize: photoLimit }), true);
+  assert.equal(mediaSourceSizeAllowed({ kind: "image", fileSize: photoLimit + 1 }), false);
+  assert.equal(mediaSourceSizeAllowed({ kind: "video", fileSize: videoLimit }), true);
+  assert.equal(mediaSourceSizeAllowed({ kind: "video", fileSize: videoLimit + 1 }), false);
   assert.equal(mediaSourceSizeAllowed({ kind: "video", fileSize: 0 }), true, "native staging remeasures unknown picker sizes");
   assert.equal(mediaSourceSizeAllowed({ kind: "video", fileSize: Number.POSITIVE_INFINITY }), false);
 });

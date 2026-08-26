@@ -1,9 +1,10 @@
+import { MEDIA_POST_MAX_ATTACHMENTS } from "./mediaUploadPolicy.mjs";
 import { mediaDraftAssetFromPicker, normalizeMediaDraftAsset } from "./mediaEdit.mjs";
 import { isPersistableMediaDraftUri } from "./mediaDraftStaging.mjs";
 import { mediaDisplayItems, mediaDisplayKind } from "./postMediaDisplay.mjs";
 
 export const MEDIA_PROJECT_VERSION = 1;
-export const MEDIA_PROJECT_MAX_ASSETS = 8;
+export const MEDIA_PROJECT_MAX_ASSETS = MEDIA_POST_MAX_ATTACHMENTS;
 
 const STATUSES = new Set(["selected", "editing", "rendering", "uploading", "finalizing", "ready", "failed"]);
 const TRANSITIONS = Object.freeze({
@@ -149,6 +150,43 @@ export function transitionMediaProjectAsset(project, assetId, nextStatus, patch 
   });
 }
 
+function sameMediaProjectAsset(left, right) {
+  if (!left || !right) return false;
+  const leftIds = new Set([left.id, left.assetId].filter(Boolean));
+  if ([right.id, right.assetId].some((value) => value && leftIds.has(value))) return true;
+  return !!left.sourceUrl && left.sourceUrl === right.sourceUrl;
+}
+
+// Apply PIT Studio replacements in the order the editor returned. Existing
+// selected items keep their occupied slots (so editing a subset cannot jump in
+// front of untouched attachments), while newly selected items append in editor
+// order. This same model drives the compatibility URL array sent to the server.
+export function reconcileMediaProjectSelection(project, selection, replacements = []) {
+  const current = normalizeMediaProject(project).assets;
+  const selected = normalizeMediaProject({ assets: Array.isArray(selection) ? selection : [] }).assets;
+  const ready = normalizeMediaProject({ assets: Array.isArray(replacements) ? replacements : [] }).assets;
+  const resolved = selected.map((selectedAsset, index) => {
+    const existing = current.find((asset) => sameMediaProjectAsset(asset, selectedAsset));
+    const replacement = ready.find((asset) => sameMediaProjectAsset(asset, selectedAsset)
+      || (existing && sameMediaProjectAsset(asset, existing)));
+    return normalizeMediaProjectAsset({
+      ...(existing || {}),
+      ...selectedAsset,
+      ...(replacement || {}),
+      id: existing?.id || replacement?.id || selectedAsset.id,
+    }, index);
+  });
+
+  let selectedIndex = 0;
+  const assets = current.map((asset) => {
+    if (!selected.some((candidate) => sameMediaProjectAsset(asset, candidate))) return asset;
+    const replacement = resolved[selectedIndex];
+    selectedIndex += 1;
+    return replacement || asset;
+  });
+  assets.push(...resolved.slice(selectedIndex));
+  return normalizeMediaProject({ assets });
+}
 export function removeMediaProjectAsset(project, assetId) {
   const current = normalizeMediaProject(project);
   return { ...current, assets: current.assets.filter((asset) => asset.id !== assetId && asset.assetId !== assetId) };

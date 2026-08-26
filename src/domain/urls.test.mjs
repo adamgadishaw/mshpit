@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { slugify, parsePath, artistPath, venuePath, postPath, showPath, profilePath, isReservedSlug } from "./urls.mjs";
+import { slugify, parsePath, artistPath, venuePath, postPath, showPath, profilePath, eventPath, concertPath, isReservedSlug } from "./urls.mjs";
 
 test("slugs are readable and stable for real band names", () => {
   assert.equal(slugify("Turnstile"), "turnstile");
@@ -18,6 +18,10 @@ test("canonical public identities have collision-free namespaces", () => {
   assert.equal(profilePath("@superfingerbusiness_"), "/u/superfingerbusiness_");
   assert.equal(postPath("p_abc123"), "/post/p_abc123");
   assert.equal(showPath("p_abc123"), "/post/p_abc123", "legacy helper emits the canonical post URL");
+  assert.equal(venuePath("The Fillmore"), "/venue/the-fillmore");
+  assert.equal(venuePath({ name: "The Fillmore", source: "ticketmaster", providerVenueId: "KovZpZA6tFlA" }), "/venue/ticketmaster-kovzpza6tfla");
+  assert.equal(eventPath("tm_G5di/Z"), "/event/tm_G5di%2FZ");
+  assert.equal(concertPath("show.opaque_key"), "/concert/show.opaque_key");
 });
 
 test("a stored artist slug wins over a mutable or colliding display name", () => {
@@ -33,7 +37,7 @@ test("a root slug is ambiguous and defers to the resolver", () => {
 });
 
 test("the app's own screens cannot be taken over by a band name", () => {
-  for (const reserved of ["/search", "/discover", "/admin", "/settings", "/api", "/robots.txt", "/account-deletion"]) {
+  for (const reserved of ["/search", "/discover", "/artists", "/events", "/admin", "/settings", "/api", "/robots.txt", "/account-deletion"]) {
     assert.equal(parsePath(reserved), null, `${reserved} must stay the app's`);
   }
   assert.equal(isReservedSlug("Search"), true, "reserved matching is case-insensitive");
@@ -45,6 +49,8 @@ test("explicit and legacy forms keep working", () => {
   assert.deepEqual(parsePath("/u/andrew"), { type: "profile", value: "andrew" });
   assert.deepEqual(parsePath("/post/p_1"), { type: "show", value: "p_1" });
   assert.deepEqual(parsePath("/show/p_1"), { type: "show", value: "p_1" });
+  assert.deepEqual(parsePath("/event/tm_G5di%2FZ"), { type: "event", value: "tm_G5di/Z" });
+  assert.deepEqual(parsePath("/concert/show.opaque_key"), { type: "concert", value: "show.opaque_key" });
 });
 
 test("query strings, fragments and the root resolve sanely", () => {

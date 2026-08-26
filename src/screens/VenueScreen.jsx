@@ -94,6 +94,7 @@ export default function VenueScreen({ venueName, onClose, onOpenShow, onOpenArti
                   key={event.id}
                   event={event}
                   onOpenArtist={() => onOpenArtist?.(event.artist)}
+                  onOpenEvent={() => onOpenShow?.(event)}
                   onTickets={() => { void openTicketLink(event.ticketUrl); }}
                 />
               ))}

@@ -1,15 +1,24 @@
-// Loads whatever the live scraper (scripts/ingest.mjs) produced. Guarded so the
-// app still builds if the file hasn't been generated yet.
-let data = { artists: {}, venues: {}, shows: [], tourDates: [] };
-try {
-  // eslint-disable-next-line
-  data = require("./catalog.core.json");
-} catch {}
+// Mutable demo projections. Production artist/venue metadata is API-owned; the
+// generated local catalogue is installed only after StoreProvider's explicit
+// development-only dynamic import. This module therefore stays tiny even though
+// its lookup helpers are imported by first-load screens.
+export const ingestedArtists = {};
+export const ingestedVenues = {};
+export const ingestedShows = [];
+export const ingestedTourDates = [];
 
-export const ingestedArtists = data.artists || {};
-export const ingestedVenues = data.venues || {};
-export const ingestedShows = data.shows || [];
-export const ingestedTourDates = data.tourDates || [];
+const replaceObject = (target, value) => {
+  for (const key of Object.keys(target)) delete target[key];
+  if (value && typeof value === "object") Object.assign(target, value);
+};
+const replaceArray = (target, value) => target.splice(0, target.length, ...(Array.isArray(value) ? value : []));
+
+export function installIngestedCatalog({ artists, venues, shows, tourDates } = {}) {
+  replaceObject(ingestedArtists, artists);
+  replaceObject(ingestedVenues, venues);
+  replaceArray(ingestedShows, shows);
+  replaceArray(ingestedTourDates, tourDates);
+}
 
 const norm = (s) => (s || "").trim().toLowerCase();
 

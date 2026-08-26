@@ -15,7 +15,7 @@ Budget: the current topology adds **one production-only Render Starter private s
 5. uploaded the derivative through a create-only signed PUT, then independently HEAD- and SHA-256-verified it from the control plane; and
 6. generated the JPEG poster from the sanitized derivative and verified that poster before making the asset publishable.
 
-The web control plane and private verifier authenticate both request and response with the shared HMAC contract `pit-video-verifier-v2`. The client opts in through `GET /api/health?mediaPipeline=private-derivative-v1`; the unversioned health route deliberately remains photo-only so older clients fail closed.
+The web control plane and private verifier authenticate both request and response with the shared HMAC contract `pit-video-verifier-v3`. The client opts in through `GET /api/health?mediaPipeline=private-derivative-v1`; the unversioned health route deliberately remains photo-only so older clients fail closed. Protocol v3 also binds `Cache-Control: public, max-age=300, must-revalidate` into the create-only public delivery signature. That keeps browser/CDN retention bounded after deletion or moderation, and the worker cannot weaken or extend the policy.
 
 Source of truth:
 

@@ -11,3 +11,6 @@ export const ANNOUNCEMENT_EMAIL_DISCLOSURE = Object.freeze({
 
 export const MEDIA_AND_SESSION_SECURITY_DISCLOSURE =
   "Pit does not retain raw session IP addresses or user-agent strings in session records. Uploaded images are decoded, metadata such as EXIF/GPS is removed, and only server re-encoded derivatives are made public; private staging objects are not published directly.";
+
+export const PROFILE_SEARCH_INDEXING_DISCLOSURE =
+  "Public posts may appear in search engines. You can ask Pit to keep your personal member profile out of search-engine results from Settings; Pit then marks that profile noindex and removes it from its sitemaps. This does not make public posts private, remove an artist page, or immediately erase results already cached by a search engine.";

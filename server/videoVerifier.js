@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
 
+import { MEDIA_VIDEO_SOURCE_MAX_BYTES } from "../src/domain/mediaUploadPolicy.mjs";
 import { ApiError } from "./errors.js";
 import { createMediaDownloadCapability, privateVideoMediaConfigured } from "./media.js";
+import { PUBLIC_MEDIA_CACHE_CONTROL } from "./mediaDeliveryPolicy.js";
 import {
   VIDEO_VERIFIER_PIPELINE_VERSION,
   VIDEO_VERIFIER_PROTOCOL_VERSION,
@@ -16,8 +18,8 @@ export const VIDEO_VERIFIER_HEALTH_FRESH_MS = 90_000;
 export const VIDEO_VERIFIER_HEALTH_INTERVAL_MS = 30_000;
 // Background finalization gives the isolated worker 110 seconds. Leave time
 // for signed response verification and database commit while still allowing a
-// full one-minute HEVC phone clip to normalize.
-export const VIDEO_VERIFIER_JOB_TIMEOUT_MS = 110_000;
+// full ten-minute HEVC phone clip to normalize.
+export const VIDEO_VERIFIER_JOB_TIMEOUT_MS = 16 * 60_000;
 export const VIDEO_VERIFIER_MAX_RESPONSE_BYTES = 3 * 1024 * 1024;
 export const VIDEO_VERIFIER_MAX_POSTER_BYTES = 1_500_000;
 export const VIDEO_VERIFIER_POSTER_MAX_EDGE = 1_280;
@@ -419,7 +421,7 @@ function verifiedDecode(payload, {
       || delivery?.codec !== "h264" || !new Set(["aac", "none"]).has(delivery?.audioCodec)
       || delivery?.rotation !== 0 || !SHA256.test(String(delivery?.sha256 || ""))
       || !Number.isSafeInteger(Number(delivery?.byteSize)) || Number(delivery.byteSize) < 16
-      || Number(delivery.byteSize) > 100 * 1024 * 1024
+      || Number(delivery.byteSize) > MEDIA_VIDEO_SOURCE_MAX_BYTES
       || !Number.isSafeInteger(Number(delivery?.width)) || Number(delivery.width) < 1 || Number(delivery.width) > 1920
       || !Number.isSafeInteger(Number(delivery?.height)) || Number(delivery.height) < 1 || Number(delivery.height) > 1920
       || !Number.isSafeInteger(Number(delivery?.durationMs))
@@ -552,7 +554,7 @@ export async function verifyVideoObject({
     || (structural?.sourceContainer === undefined
       && (structural?.sourceCodec === undefined || structural?.sourceCodec === "hevc"));
   if (!sourceKeyValid || !SOURCE_CONTENT_TYPES.has(normalizedContentType)
-      || !Number.isSafeInteger(Number(expectedBytes)) || Number(expectedBytes) < 1 || Number(expectedBytes) > 100 * 1024 * 1024
+      || !Number.isSafeInteger(Number(expectedBytes)) || Number(expectedBytes) < 1 || Number(expectedBytes) > MEDIA_VIDEO_SOURCE_MAX_BYTES
       || !STRONG_ETAG.test(String(ifMatch || ""))
       || !Number.isSafeInteger(Number(structural?.codedWidth)) || Number(structural.codedWidth) < Number(structural?.width)
       || !Number.isSafeInteger(Number(structural?.codedHeight)) || Number(structural.codedHeight) < Number(structural?.height)
@@ -564,6 +566,8 @@ export async function verifyVideoObject({
   }
   if (!output || !OUTPUT_OBJECT_KEY.test(String(output.key || "")) || output.key === objectKey
       || typeof output.uploadUrl !== "string" || output.uploadUrl.length > 4_096
+      || Object.keys(output.requiredHeaders || {}).length !== 3
+      || output.requiredHeaders?.["Cache-Control"] !== PUBLIC_MEDIA_CACHE_CONTROL
       || output.requiredHeaders?.["Content-Type"] !== "video/mp4"
       || output.requiredHeaders?.["If-None-Match"] !== "*") {
     throw new ApiError(500, "Clip delivery request is invalid.", "INTERNAL_ERROR");

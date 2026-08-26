@@ -323,10 +323,6 @@
       "count": 1,
       "fingerprint": "4d294d2c104ee633de31"
     },
-    "server/tourdates.js": {
-      "count": 4,
-      "fingerprint": "9b87d29e239149f0efdc"
-    },
     "server/verification.js": {
       "count": 1,
       "fingerprint": "4d294d2c104ee633de31"
@@ -454,10 +450,6 @@
     "src/screens/VenueScreen.jsx": {
       "count": 2,
       "fingerprint": "24f26ada05845e10953a"
-    },
-    "src/seed/ingested.js": {
-      "count": 1,
-      "fingerprint": "40fd4f5f8d88c2c85d87"
     },
     "src/store.js": {
       "count": 24,

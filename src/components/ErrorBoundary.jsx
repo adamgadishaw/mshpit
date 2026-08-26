@@ -61,7 +61,7 @@ export default class ErrorBoundary extends Component {
     return (
       <View style={styles.wrap} accessibilityRole="alert" accessibilityLiveRegion="assertive">
         <ScrollView contentContainerStyle={styles.content}>
-          <Text style={styles.brand}>PIT</Text>
+          <Text style={styles.brand}>MSHPIT</Text>
           <Text style={styles.title} accessibilityRole="header">The night hit a snag</Text>
           <Text style={styles.sub}>
             Something crashed on our end. Your data is safe, try again, and if it keeps

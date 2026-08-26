@@ -5,6 +5,8 @@ import { AppError, captureAppError } from "./diagnostics";
 import { webImageOptimizationPlan } from "./mediaImagePolicy.mjs";
 import { mediaPutStatusAccepted } from "../domain/mediaUploadPolicy.mjs";
 import { normalizeMediaTransferProgress } from "../domain/mediaTransferProgress.mjs";
+import { resolveMediaMimeType } from "../domain/mediaMime.mjs";
+import { normalizeProfileImageAsset } from "./profileImageNormalizer";
 import { createMediaUploadDeadline, mediaUploadTimeoutMs } from "../domain/mediaUploadDeadline.mjs";
 import { uploadBinaryWithProgress } from "./webBinaryUpload.mjs";
 import { validMediaUploadTicket } from "../domain/mediaUploadTicket.mjs";
@@ -17,6 +19,7 @@ const MIME_BY_EXTENSION = Object.freeze({
   gif: "image/gif",
   heic: "image/heic",
   heif: "image/heif",
+  avif: "image/avif",
   mp4: "video/mp4",
   webm: "video/webm",
   mov: "video/quicktime",
@@ -28,6 +31,7 @@ const EXTENSION_BY_MIME = Object.freeze({
   "image/gif": "gif",
   "image/heic": "heic",
   "image/heif": "heif",
+  "image/avif": "avif",
   "video/mp4": "mp4",
   "video/webm": "webm",
   "video/quicktime": "mov",
@@ -51,10 +55,22 @@ function extensionOf(value) {
   return match ? match[1].toLowerCase() : "";
 }
 
-function contentTypeFor(asset, body) {
-  const declared = String(body?.type || asset?.mimeType || "").split(";", 1)[0].trim().toLowerCase();
-  if (EXTENSION_BY_MIME[declared]) return declared;
-  return MIME_BY_EXTENSION[extensionOf(asset?.fileName || asset?.uri)] || "";
+async function firstMediaBytes(body) {
+  if (typeof body?.slice === "function") {
+    const prefix = body.slice(0, 96);
+    if (typeof prefix?.arrayBuffer === "function") return new Uint8Array(await prefix.arrayBuffer());
+  }
+  if (typeof body?.open === "function") {
+    const handle = body.open();
+    try { return handle.readBytes(Math.min(96, Number(handle.size) || 96)); }
+    finally { handle.close(); }
+  }
+  return null;
+}
+
+async function contentTypeFor(asset, body) {
+  const bytes = await firstMediaBytes(body);
+  return resolveMediaMimeType({ bytes, declaredType: body?.type || asset?.mimeType, fileName: asset?.fileName || asset?.uri });
 }
 
 function safeFileName(asset, contentType) {
@@ -123,7 +139,7 @@ export async function prepareMediaUploadAsset(asset, { optimizeWeb = true, conte
   } catch (error) {
     throw capturedUploadError(error, { context, code: "PIT-UPLOAD-002" });
   }
-  const contentType = contentTypeFor(asset, body);
+  const contentType = await contentTypeFor(asset, body);
   if (!contentType) {
     throw captureAppError(new AppError(undefined, { code: "PIT-UPLOAD-002", context, source: "media" }), {
       context,
@@ -233,8 +249,18 @@ function capturedUploadError(error, { timedOut = false, context, code } = {}) {
  * to the Pit API.
  */
 export async function uploadMediaAsset(asset, purpose, { signal, timeoutMs } = {}) {
+  let uploadAsset = asset;
+  try {
+    if (purpose === "avatar" || purpose === "banner") {
+      try {
+        uploadAsset = await normalizeProfileImageAsset(asset, purpose, { signal });
+      } catch (error) {
+        if (signal?.aborted || error?.name === "AbortError") throw error;
+        uploadAsset = asset;
+      }
+    }
   const context = `Uploading ${purpose} media`;
-  const prepared = await prepareMediaUploadAsset(asset, { optimizeWeb: true, context });
+  const prepared = await prepareMediaUploadAsset(uploadAsset, { optimizeWeb: true, context });
 
   // The authenticated Pit API validates size/type and returns a short-lived URL;
   // storage credentials never enter the client bundle.
@@ -286,4 +312,7 @@ export async function uploadMediaAsset(asset, purpose, { signal, timeoutMs } = {
     });
   }
   return finalized.publicUrl;
+  } finally {
+    if (uploadAsset !== asset) uploadAsset?.release?.();
+  }
 }

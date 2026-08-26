@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import test from "node:test";
 import { brotliCompressSync, gzipSync } from "node:zlib";
+import { INITIAL_JS_GZIP_BUDGET_BYTES, measureInitialJavaScript } from "../../scripts/check-web-bundle-budget.mjs";
 
 const walk = (dir, out = []) => {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -30,12 +31,17 @@ test("the exported web entry does not contain the venue photo catalogue", { time
     });
 
     const scripts = walk(output).filter((path) => /[\\/]_expo[\\/]static[\\/]js[\\/]web[\\/].*\.js$/.test(path));
-    const main = scripts
-      .filter((path) => /[\\/]index-[^\\/]+\.js$/.test(path))
-      .sort((a, b) => statSync(b).size - statSync(a).size)[0];
+    const initial = measureInitialJavaScript(output);
+    const main = initial.scripts
+      .filter(({ source }) => !source.includes("__expo-metro-runtime") && !source.includes("__common"))
+      .sort((a, b) => b.rawBytes - a.rawBytes)[0]?.path;
     assert.ok(main, "Expo export must contain a hashed web index entry");
     const discoverChunk = scripts.find((path) => /[\\/]DiscoverScreen-[^\\/]+\.js$/.test(path));
     assert.ok(discoverChunk, "Discover must remain an on-demand screen chunk instead of inflating first load");
+    assert.ok(
+      initial.gzipBytes <= INITIAL_JS_GZIP_BUDGET_BYTES,
+      `initial web JavaScript is ${(initial.gzipBytes / 1024).toFixed(0)} KiB gzip; keep it below ${(INITIAL_JS_GZIP_BUDGET_BYTES / 1024).toFixed(0)} KiB`,
+    );
     const allClientJavaScript = scripts.map((path) => readFileSync(path, "utf8")).join("\n");
     const mainJavaScript = readFileSync(main, "utf8");
 

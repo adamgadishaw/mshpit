@@ -2,15 +2,20 @@ import { fork } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 import { MAX_IMAGE_PIXELS } from "./imageInspection.js";
+import { MEDIA_PHOTO_SOURCE_MAX_BYTES } from "../src/domain/mediaUploadPolicy.mjs";
 
 const MAX_ACTIVE_IMAGE_JOBS = 1;
-const MAX_IMAGE_INPUT_BYTES = 12 * 1024 * 1024;
+const MAX_QUEUED_IMAGE_JOBS = 24;
+const MAX_QUEUED_IMAGE_BYTES = 128 * 1024 * 1024;
+const MAX_IMAGE_INPUT_BYTES = MEDIA_PHOTO_SOURCE_MAX_BYTES;
 const MAX_IMAGE_OUTPUT_BYTES = 12 * 1024 * 1024;
-const DEFAULT_TIMEOUT_MS = 12_000;
-const CHILD_HEAP_MIB = 160;
+const DEFAULT_TIMEOUT_MS = 30_000;
+const CHILD_HEAP_MIB = 320;
 const WORKER_PATH = fileURLToPath(new URL("./imageProcessorWorker.js", import.meta.url));
 
 let activeImageJobs = 0;
+const queuedImageJobs = [];
+let queuedImageBytes = 0;
 
 export class ImageProcessorError extends Error {
   constructor(code, message, cause) {
@@ -22,7 +27,7 @@ export class ImageProcessorError extends Error {
 
 function normalizedTimeout(value) {
   const numeric = Number(value);
-  return Number.isFinite(numeric) ? Math.max(1_000, Math.min(30_000, Math.trunc(numeric))) : DEFAULT_TIMEOUT_MS;
+  return Number.isFinite(numeric) ? Math.max(1_000, Math.min(60_000, Math.trunc(numeric))) : DEFAULT_TIMEOUT_MS;
 }
 
 function inputBytes(value) {
@@ -41,7 +46,7 @@ function childEnvironment() {
   const env = {
     NODE_ENV: "production",
     UV_THREADPOOL_SIZE: "1",
-    // Private uploads arrive as <=12 MiB buffers. Do not lower libvips' disk
+    // Private uploads arrive as <=30 MiB buffers. Do not lower libvips' disk
     // threshold or opt decoded pixels into temp-file spill; file caching is
     // disabled inside the worker as a second independent control.
     VIPS_BLOCK_UNTRUSTED: "true",
@@ -100,10 +105,7 @@ function normalizedWorkerResult(message, operation) {
   return Object.freeze({ bytes, byteSize, mimeType: result.mimeType, width, height, pixels });
 }
 
-function runIsolatedImageJob(operation, bytes, options = {}) {
-  if (activeImageJobs >= MAX_ACTIVE_IMAGE_JOBS) {
-    return Promise.reject(new ImageProcessorError("busy", "Image verification capacity is full."));
-  }
+function executeIsolatedImageJob(operation, bytes, options = {}) {
   const input = inputBytes(bytes);
   activeImageJobs += 1;
   return new Promise((resolve, reject) => {
@@ -115,6 +117,7 @@ function runIsolatedImageJob(operation, bytes, options = {}) {
       if (released) return;
       released = true;
       activeImageJobs = Math.max(0, activeImageJobs - 1);
+      queueMicrotask(drainImageQueue);
     };
     const fail = (error) => {
       if (!outcome) outcome = { error };
@@ -164,6 +167,7 @@ function runIsolatedImageJob(operation, bytes, options = {}) {
         expectedType: options.expectedType,
         outputType: options.outputType,
         maxOutputBytes: options.maxOutputBytes,
+        profileRendition: options.profileRendition,
         // HEVC-backed HEIC decoding is intentionally recovery-only. Keeping
         // this as an explicit, strict boolean prevents ordinary upload routes
         // from silently acquiring a second decoder surface.
@@ -181,11 +185,44 @@ function runIsolatedImageJob(operation, bytes, options = {}) {
   });
 }
 
+function drainImageQueue() {
+  while (activeImageJobs < MAX_ACTIVE_IMAGE_JOBS && queuedImageJobs.length) {
+    const job = queuedImageJobs.shift();
+    queuedImageBytes = Math.max(0, queuedImageBytes - job.bytes.byteLength);
+    executeIsolatedImageJob(job.operation, job.bytes, job.options).then(job.resolve, job.reject);
+  }
+}
+
+function runIsolatedImageJob(operation, bytes, options = {}) {
+  const input = inputBytes(bytes);
+  if (activeImageJobs < MAX_ACTIVE_IMAGE_JOBS) {
+    return executeIsolatedImageJob(operation, input, options);
+  }
+  if (queuedImageJobs.length >= MAX_QUEUED_IMAGE_JOBS
+      || queuedImageBytes + input.byteLength > MAX_QUEUED_IMAGE_BYTES) {
+    return Promise.reject(new ImageProcessorError(
+      "busy",
+      "Image verification queue is full. Try again shortly.",
+    ));
+  }
+  return new Promise((resolve, reject) => {
+    queuedImageBytes += input.byteLength;
+    queuedImageJobs.push({ operation, bytes: input, options, resolve, reject });
+  });
+}
+
 export async function validateDecodedImage(bytes, {
   expectedType,
   timeoutMs = DEFAULT_TIMEOUT_MS,
+  allowHeicFallback = false,
+  allowLegacyJpegTrailer = false,
 } = {}) {
-  return runIsolatedImageJob("validate", bytes, { expectedType, timeoutMs });
+  return runIsolatedImageJob("validate", bytes, {
+    expectedType,
+    timeoutMs,
+    allowHeicFallback: allowHeicFallback === true,
+    allowLegacyJpegTrailer: allowLegacyJpegTrailer === true,
+  });
 }
 
 export async function sanitizeDecodedImage(bytes, {
@@ -195,6 +232,7 @@ export async function sanitizeDecodedImage(bytes, {
   maxOutputBytes = MAX_IMAGE_OUTPUT_BYTES,
   allowHeicFallback = false,
   allowLegacyJpegTrailer = false,
+  profileRendition = null,
 } = {}) {
   return runIsolatedImageJob("sanitize", bytes, {
     expectedType,
@@ -203,6 +241,7 @@ export async function sanitizeDecodedImage(bytes, {
     maxOutputBytes,
     allowHeicFallback: allowHeicFallback === true,
     allowLegacyJpegTrailer: allowLegacyJpegTrailer === true,
+    profileRendition,
   });
 }
 
@@ -212,7 +251,11 @@ export function imageProcessorHealth() {
     isolation: "child_process",
     active: activeImageJobs,
     capacity: MAX_ACTIVE_IMAGE_JOBS,
+    queued: queuedImageJobs.length,
+    queueCapacity: MAX_QUEUED_IMAGE_JOBS,
     timeoutMs: DEFAULT_TIMEOUT_MS,
+    queuedBytes: queuedImageBytes,
+    queueByteCapacity: MAX_QUEUED_IMAGE_BYTES,
     childHeapMiB: CHILD_HEAP_MIB,
     maxInputBytes: MAX_IMAGE_INPUT_BYTES,
     maxPixels: MAX_IMAGE_PIXELS,

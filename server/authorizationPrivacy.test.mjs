@@ -248,7 +248,8 @@ test("new profile, artist, and venue-review media must be a ready image owned by
   const other = addUser("media_boundary_other");
   const ownProfile = finalizedLegacyImage(owner, "ownprofile", "banner");
   const ownArtist = finalizedLegacyImage(owner, "ownartist", "banner");
-  const ownReview = finalizedLegacyImage(owner, "ownreview", "venue");
+  const ownReviewAlbum = Array.from({ length: 20 }, (_, index) =>
+    finalizedLegacyImage(owner, `ownreview${index}`, "venue").url);
   const foreign = finalizedLegacyImage(other, "foreign", "banner");
   const clientAuthoredOnly = readyImage(owner, "rawclientvariant");
   const external = "https://attacker.example/upload.jpg";
@@ -299,12 +300,12 @@ test("new profile, artist, and venue-review media must be a ready image owned by
   }
   const review = routes["POST /api/venues/:key/reviews"]({
     user: q.userById.get(owner.id), ip: "venue-media-own", params: { key: "media venue" },
-    body: { rating: 4, text: "Review", photos: [ownReview.url] },
+    body: { rating: 4, text: "Review", photos: ownReviewAlbum },
   });
-  assert.equal(JSON.parse(db.prepare("SELECT photos FROM venue_reviews WHERE id=?").get(review.id).photos)[0], ownReview.url);
+  assert.deepEqual(JSON.parse(db.prepare("SELECT photos FROM venue_reviews WHERE id=?").get(review.id).photos), ownReviewAlbum);
   assert.deepEqual(routes["GET /api/venues/:key/reviews"]({
     user: other, params: { key: "media venue" }, query: {},
-  }).reviews.find((row) => row.id === review.id).photos, [ownReview.url]);
+  }).reviews.find((row) => row.id === review.id).photos, ownReviewAlbum);
 });
 
 test("legacy attacker media is retained for self-service but omitted from every public API projection", () => {

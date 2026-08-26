@@ -4,7 +4,9 @@ import { colors, displayFont, focusRing, font, mono, radius, roleColor, shadow }
 import Avatar from "./Avatar";
 import Icon from "./Icon";
 import { UpcomingEventCard } from "./VenueDiscoveryCards";
+import { PublicPressableLink } from "./PublicWebLinks";
 import { RIGHT_RAIL_EVENT_SCOPE, rightRailEventsForScope } from "../domain/rightRailEvents.mjs";
+import { artistPath, eventPath, venuePath } from "../domain/urls.mjs";
 
 const NAV = [
   { key: "feed", label: "Feed", icon: "feed" },
@@ -73,14 +75,14 @@ export function DesktopTopNav({
 
   return (
     <View style={styles.desktopTopNav} accessibilityLabel="Primary navigation">
-      <Pressable
+      <PublicPressableLink
+        href="/"
+        onNavigate={goHome}
         style={({ pressed, focused }) => [styles.topBrandButton, pressed && styles.topControlPressed, focused && focusRing]}
-        onPress={goHome}
-        accessibilityRole="button"
         accessibilityLabel="Pit home"
       >
-        <Text style={styles.topBrand}>PIT</Text>
-      </Pressable>
+        <Text style={styles.topBrand}>MSHPIT</Text>
+      </PublicPressableLink>
 
       <View style={styles.topTabs} accessibilityRole="tablist">
         {NAV.map((item) => {
@@ -257,7 +259,13 @@ export function RightRail({
           </View>
         </View>
         {artists.map((a, i) => (
-          <Pressable key={a.name} style={({ pressed, hovered, focused }) => [styles.aRow, hovered && styles.rowHover, pressed && styles.rowPressed, focused && focusRing]} onPress={() => onOpenArtist?.(a.name)} accessibilityRole="button">
+          <PublicPressableLink
+            key={a.name}
+            href={artistPath(a)}
+            onNavigate={() => onOpenArtist?.(a)}
+            style={({ pressed, hovered, focused }) => [styles.aRow, hovered && styles.rowHover, pressed && styles.rowPressed, focused && focusRing]}
+            accessibilityLabel={`Open ${a.name}`}
+          >
             {artistMode === "top" ? (
               <Text style={styles.rank}>{i + 1}</Text>
             ) : (
@@ -270,7 +278,7 @@ export function RightRail({
             {artistMode === "top" && a.avg > 0 && (
               <View style={styles.scorePill}><Icon name="star" size={10} color={colors.gold} /><Text style={styles.scoreTxt}>{a.avg.toFixed(1)}</Text></View>
             )}
-          </Pressable>
+          </PublicPressableLink>
         ))}
       </View>
 
@@ -282,14 +290,20 @@ export function RightRail({
         </View>
         {venues.length === 0 && <Text style={styles.empty}>{listingEmpty}</Text>}
         {venues.map((v) => (
-          <Pressable key={v.name} style={({ pressed, hovered, focused }) => [styles.aRow, hovered && styles.rowHover, pressed && styles.rowPressed, focused && focusRing]} onPress={() => onOpenVenue?.(v.name)} accessibilityRole="button">
+          <PublicPressableLink
+            key={v.name}
+            href={venuePath(v)}
+            onNavigate={() => onOpenVenue?.(v)}
+            style={({ pressed, hovered, focused }) => [styles.aRow, hovered && styles.rowHover, pressed && styles.rowPressed, focused && focusRing]}
+            accessibilityLabel={`Open ${v.name}`}
+          >
             <View style={styles.aDot}><Icon name="pin" size={13} color={colors.cool} /></View>
             <View style={{ flex: 1 }}>
               <Text style={styles.aName} numberOfLines={1}>{v.name}</Text>
               <Text style={styles.aSub} numberOfLines={1}>{(v.place || "").split(",").slice(0, 2).join(", ")}</Text>
             </View>
             <View style={styles.upPill}><Text style={styles.upTxt}>{v.upcoming}</Text></View>
-          </Pressable>
+          </PublicPressableLink>
         ))}
       </View>
 
@@ -333,15 +347,15 @@ export function RightRail({
         {events.length === 0 && <Text style={styles.empty}>{eventListingEmpty}</Text>}
         <View style={styles.eventList}>
           {events.map((event) => (
-            <Pressable
+            <PublicPressableLink
               key={event.id}
+              href={eventPath(event)}
+              onNavigate={() => (onOpenEvent ? onOpenEvent(event) : onOpenArtist?.(event.artist))}
               style={({ pressed, hovered, focused }) => [styles.eventPressable, hovered && styles.eventHover, pressed && styles.rowPressed, focused && focusRing]}
-              onPress={() => (onOpenEvent ? onOpenEvent(event) : onOpenArtist?.(event.artist))}
-              accessibilityRole="button"
               accessibilityLabel={`Open ${event.artist} at ${event.venue}${event.place ? `, ${event.place}` : ""}${event.date ? `, ${event.date}` : ""}`}
             >
               <UpcomingEventCard event={event} compact />
-            </Pressable>
+            </PublicPressableLink>
           ))}
         </View>
       </View>

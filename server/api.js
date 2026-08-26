@@ -1,3 +1,4 @@
+import { MEDIA_POST_MAX_ATTACHMENTS } from "../src/domain/mediaUploadPolicy.mjs";
 // API routes. Conventions that keep this hard to crash and easy to fix:
 // - every route: authenticate -> rate-limit -> validate (shape) -> act -> respond
 // - all handlers are wrapped by the server's try/catch; throwing ApiError(status,
@@ -78,6 +79,10 @@ import {
   legacyVideoPosterDescriptorsByPost,
   retireLegacyVideoPosters,
 } from "./legacyVideoPosters.js";
+import {
+  legacyImageRecoveryEnabled,
+  legacyImageRecoveryHealth,
+} from "./legacyPostImageRecovery.js";
 import { discoverySidebar } from "./discovery.js";
 import { resolveEntity } from "./seo.js";
 import { userRewards } from "./rewards.js";
@@ -1135,7 +1140,7 @@ function requestedPostMediaSelection(user, source, storedPost = null) {
     currentPostId: storedPost?.id || null,
   });
   if (Object.prototype.hasOwnProperty.call(source || {}, "photos")) {
-    const supplied = cleanStringArray(source.photos, { maxItems: 8, maxLen: 2000 });
+    const supplied = cleanStringArray(source.photos, { maxItems: MEDIA_POST_MAX_ATTACHMENTS, maxLen: 2000 });
     assertPhotosMatchSelection(supplied, selection);
   }
   return selection;
@@ -1236,7 +1241,7 @@ function canonicalCreateRequest(user, body, storedPost = null) {
   if (source.kind === "status") {
     const [errs, v] = shape(source, {
       review: { parse: (x) => clean(x, { max: LIMITS.review, newlines: true }) },
-      photos: { parse: (x) => cleanStringArray(x, { maxItems: 8, maxLen: 2000 }) },
+      photos: { parse: (x) => cleanStringArray(x, { maxItems: MEDIA_POST_MAX_ATTACHMENTS, maxLen: 2000 }) },
       photosPublic: { parse: (x) => typeof x === "boolean" ? (x ? 1 : 0) : x === 0 || x === 1 ? x : undefined },
       song: { parse: cleanSong },
     });
@@ -1309,7 +1314,7 @@ function canonicalCreateRequest(user, body, storedPost = null) {
     room: { parse: (x) => clampRating(x) },
     dims: { parse: cleanPostRatingDims },
     review: { parse: (x) => clean(x, { max: LIMITS.review, newlines: true }) },
-    photos: { parse: (x) => cleanStringArray(x, { maxItems: 8, maxLen: 2000 }) },
+    photos: { parse: (x) => cleanStringArray(x, { maxItems: MEDIA_POST_MAX_ATTACHMENTS, maxLen: 2000 }) },
     photosPublic: { parse: (x) => typeof x === "boolean" ? (x ? 1 : 0) : x === 0 || x === 1 ? x : undefined },
     landingShowcase: { parse: (x) => typeof x === "boolean" ? (x ? 1 : 0) : x === 0 || x === 1 ? x : undefined },
     setlist: { parse: (x) => cleanStringArray(x, { maxItems: 40, maxLen: 120 }) },
@@ -1417,7 +1422,7 @@ function canonicalStoredPost(row) {
     room: kind === "status" || row?.room == null ? null : clampRating(row.room),
     dims: kind === "status" ? {} : dims,
     review: clean(row?.review, { max: LIMITS.review, newlines: true }),
-    photos: cleanStringArray(parseJsonArray(row?.photos), { maxItems: 8, maxLen: 2000 }),
+    photos: cleanStringArray(parseJsonArray(row?.photos), { maxItems: MEDIA_POST_MAX_ATTACHMENTS, maxLen: 2000 }),
     mediaAssetIds: row?.id ? postMediaAssetIds(db, row.id) : [],
     photosPublic: row?.photos_public ? 1 : 0,
     landingShowcase: kind === "review" && row?.landing_showcase ? 1 : 0,
@@ -1594,11 +1599,31 @@ function reportableTargetFor(user, targetType, targetId) {
 
 function postJson(p, viewerId) {
   const stableMedia = postMediaState(db, p.id, { ownerId: viewerId || null });
-  const legacyPhotos = parseJsonArray(p.photos).filter((url) =>
-    !!safeOwnedReadyMediaUrl(db, { ownerId: p.user_id, url }));
-  const media = stableMedia.linkedAssetIds.length
-    ? stableMedia.assets
-    : legacyVideoPosterDescriptors(db, { postId: p.id, photos: legacyPhotos });
+  const storedPhotos = parseJsonArray(p.photos);
+  const stableByUrl = new Map(stableMedia.assets.map((asset) => [asset.url, asset]));
+  const legacyDescriptors = legacyVideoPosterDescriptors(db, { postId: p.id, photos: storedPhotos });
+  const legacyByUrl = new Map(legacyDescriptors.map((asset) => [asset.url, asset]));
+  const photos = [];
+  const seenPhotos = new Set();
+  for (const url of storedPhotos) {
+    const publishable = stableByUrl.has(url)
+      || legacyByUrl.has(url)
+      || !!safeOwnedReadyMediaUrl(db, { ownerId: p.user_id, url });
+    if (publishable && !seenPhotos.has(url)) {
+      seenPhotos.add(url);
+      photos.push(url);
+    }
+  }
+  // post_media remains authoritative even if an old denormalized URL array
+  // drifted. Verified release-only video descriptors can fill only their exact
+  // stored slots and never become composer IDs.
+  for (const asset of stableMedia.assets) {
+    if (!seenPhotos.has(asset.url)) {
+      seenPhotos.add(asset.url);
+      photos.push(asset.url);
+    }
+  }
+  const media = photos.map((url) => stableByUrl.get(url) || legacyByUrl.get(url)).filter(Boolean);
   const storedCampaign = p.kind === "status" ? normalizeArtistCampaign(parsedStoredObject(p.campaign)) : null;
   // Official presentation is a live authorization claim, not a permanent
   // visual badge embedded in authored JSON. Every row source feeding this
@@ -1629,8 +1654,9 @@ function postJson(p, viewerId) {
     // A stable descriptor is the publication authority. If its verified
     // rendition/source becomes unavailable, do not let the denormalized legacy
     // URL column bypass that fail-closed state. Historical URL-only rows are
-    // exposed only when the URL now resolves to this author's verified asset.
-    photos: stableMedia.linkedAssetIds.length ? media.map((asset) => asset.url) : legacyPhotos,
+    // exposed only when the URL now resolves to this author's verified asset or
+    // an exact verified release-only video mapping.
+    photos,
     photosPublic: !!p.photos_public,
     // New clients get stable, poster-aware descriptors. A historical URL is
     // considered only after the ownership/readiness check above; unverified
@@ -1638,7 +1664,7 @@ function postJson(p, viewerId) {
     media,
     // Release-only legacy descriptors are presentation metadata, not stable
     // composer assets and must never be sent back through mediaAssetIds.
-    mediaAssetIds: stableMedia.linkedAssetIds.length ? media.map((asset) => asset.id) : [],
+    mediaAssetIds: stableMedia.assets.map((asset) => asset.id),
     // Separate homepage consent is owner-only account state, not social proof.
     ...(viewerId === p.user_id ? { landingShowcase: !!p.landing_showcase } : {}),
     setlist: parseJsonArray(p.setlist),
@@ -2058,6 +2084,7 @@ function staffHealthProjection(actor) {
       privateMediaIsolation: readiness.privateMediaIsolation,
       imageProcessor: imageProcessorHealth(),
       legacyMediaFinalize: legacyMediaFinalizeHealth(db),
+      legacyImageRecovery: legacyImageRecoveryHealth(db),
       videoVerifier: videoVerifierRuntimeStatus(process.env),
       youtubeConfigured: !!process.env.YOUTUBE_API_KEY,
       youtubeLookup: {
@@ -2071,6 +2098,7 @@ function staffHealthProjection(actor) {
         cacheWarmEnabled: backgroundJobEnabled(process.env, "CACHE_WARM_ENABLED"),
         tourDateRefreshEnabled: backgroundJobEnabled(process.env, "TOURDATE_REFRESH_ENABLED"),
         backupEnabled: backupSchedulerEnabled(process.env),
+        legacyImageRecoveryEnabled: legacyImageRecoveryEnabled(process.env),
         offhostBackupConfigured: offhostBackupConfigured(process.env),
       },
       mailConfigured: mailConfigured(),
@@ -2784,10 +2812,21 @@ export const routes = {
         .map((asset) => [asset.url, asset]));
       const legacyByUrl = new Map((legacyMedia.get(r.id) || [])
         .map((asset) => [asset.url, asset]));
-      const publishableUris = stableMedia.linkedPostIds.has(r.id)
-        ? projectedAssets.map((asset) => asset.url)
-        : list.filter((url) => !!safeOwnedReadyMediaUrl(db, { ownerId: r.user_id, url }));
-      for (const uri of publishableUris) {
+      const publishableUris = [];
+      const seenUris = new Set();
+      for (const uri of list) {
+        if ((stableByUrl.has(uri) || legacyByUrl.has(uri)
+            || !!safeOwnedReadyMediaUrl(db, { ownerId: r.user_id, url: uri })) && !seenUris.has(uri)) {
+          seenUris.add(uri);
+          publishableUris.push(uri);
+        }
+      }
+      for (const asset of projectedAssets) {
+        if (!seenUris.has(asset.url)) {
+          seenUris.add(asset.url);
+          publishableUris.push(asset.url);
+        }
+      }      for (const uri of publishableUris) {
         if (typeof uri === "string" && /^https?:\/\//i.test(uri)) {
           const asset = stableByUrl.get(uri) || legacyByUrl.get(uri);
           photos.push({
@@ -3330,17 +3369,22 @@ export const routes = {
     // Reject invalid/oversized metadata atomically. Truncating serialized JSON
     // can leave an account with malformed data that breaks every projection.
     const hasExtras = Object.prototype.hasOwnProperty.call(ctx.body || {}, "extras");
+    const hasSearchIndexingOptOut = Object.prototype.hasOwnProperty.call(ctx.body || {}, "searchIndexingOptOut");
+    if (hasSearchIndexingOptOut && typeof ctx.body.searchIndexingOptOut !== "boolean") {
+      throw new ApiError(400, "searchIndexingOptOut must be a boolean.", "VALIDATION_FAILED");
+    }
     const incomingExtras = hasExtras ? canonicalProfileExtras(ctx.body.extras, { strict: true }) : null;
     let serializedExtras = hasExtras && incomingExtras.valid ? serializeProfileExtras(incomingExtras.value) : undefined;
     if (hasExtras && (!incomingExtras.valid || serializedExtras === null)) {
       throw new ApiError(400, `extras must be a JSON object no larger than ${PROFILE_EXTRAS_MAX_BYTES} bytes.`);
     }
     if (hasExtras) {
-      // Consent and terms timestamps are server-authored account records. A
-      // generic profile metadata patch may neither forge nor erase them.
+      // Consent and terms timestamps are server-authored account records. The
+      // search-indexing choice has a dedicated boolean field below. A generic
+      // compatibility-envelope patch may neither forge nor erase any of them.
       const requested = incomingExtras.value;
       const current = canonicalProfileExtras(parseStoredProfileExtras(u.extras)).value;
-      for (const key of ["consentAt", "analyticsConsentAt", "termsAcceptedAt", "termsVersion", "analyticsOptOut"]) {
+      for (const key of ["consentAt", "analyticsConsentAt", "termsAcceptedAt", "termsVersion", "analyticsOptOut", "searchIndexingOptOut"]) {
         if (current[key] === undefined) delete requested[key];
         else requested[key] = current[key];
       }
@@ -3366,6 +3410,7 @@ export const routes = {
       // newer themes get silently rejected here, the server then re-hydrates the
       // stale theme on /api/me and the client "snaps back" to a previous theme.
       theme: { parse: (x) => (["stage", "neon", "forest", "ember", "backstage", "vinyl", "daylight", "ice", "rose", "mint", "sunset", "lavender"].includes(x) ? x : undefined) },
+      searchIndexingOptOut: { parse: (x) => (typeof x === "boolean" ? x : undefined) },
       extras: { parse: () => serializedExtras },
     });
     assertSafeAuthoredFields({
@@ -3410,13 +3455,18 @@ export const routes = {
     if (v.favoriteArtists) { sets.push("favorite_artists = ?"); args.push(JSON.stringify(v.favoriteArtists)); }
     // Theme is stored inside the extras blob, so it survives sign-out and follows
     // the account. Merge it with an extras patch when both arrive together.
-    if (v.theme) {
+    if (v.theme || v.searchIndexingOptOut !== undefined) {
       const cur = parseStoredProfileExtras(v.extras ?? u.extras);
-      cur.theme = v.theme;
+      if (v.theme) cur.theme = v.theme;
+      if (v.searchIndexingOptOut !== undefined) cur.searchIndexingOptOut = v.searchIndexingOptOut;
       const encoded = serializeProfileExtras(cur);
       if (!encoded) throw new ApiError(400, `profile metadata must be no larger than ${PROFILE_EXTRAS_MAX_BYTES} bytes.`);
       sets.push("extras = ?"); args.push(encoded);
     } else if (v.extras !== undefined) { sets.push("extras = ?"); args.push(v.extras); }
+    if (sets.length) {
+      sets.push("profile_updated_at = ?");
+      args.push(now());
+    }
     const replacedProfileMedia = [
       ...(v.banner !== undefined && v.banner !== u.banner ? [u.banner] : []),
       ...(v.avatarUri !== undefined && v.avatarUri !== u.avatar_uri ? [u.avatar_uri] : []),
@@ -4132,13 +4182,13 @@ export const routes = {
         if (!Array.isArray(body.photos) || body.photos.some((item) => typeof item !== "string")) {
           throw new ApiError(400, "photos is invalid", "VALIDATION_FAILED");
         }
-        assertPhotosMatchSelection(cleanStringArray(body.photos, { maxItems: 8, maxLen: 2000 }), editedMediaSelection);
+        assertPhotosMatchSelection(cleanStringArray(body.photos, { maxItems: MEDIA_POST_MAX_ATTACHMENTS, maxLen: 2000 }), editedMediaSelection);
       }
       next.photos = JSON.stringify(editedMediaSelection.photos);
     }
     if (has("photos") && !has("mediaAssetIds")) {
       if (!Array.isArray(body.photos) || body.photos.some((item) => typeof item !== "string")) throw new ApiError(400, "photos is invalid", "VALIDATION_FAILED");
-      const legacyPhotos = cleanStringArray(body.photos, { maxItems: 8, maxLen: 2000 });
+      const legacyPhotos = cleanStringArray(body.photos, { maxItems: MEDIA_POST_MAX_ATTACHMENTS, maxLen: 2000 });
       rejectNewLegacyMediaUrls(legacyPhotos, parseJsonArray(current.photos));
       next.photos = JSON.stringify(legacyPhotos);
     }
@@ -6237,7 +6287,7 @@ export const routes = {
     if (!key || !rating) throw new ApiError(400, "Bad review.");
     const text = clean(ctx.body?.text, { max: LIMITS.review, newlines: true });
     assertSafeAuthoredText(text, { field: "venue review" });
-    const photos = cleanStringArray(ctx.body?.photos, { maxItems: 8, maxLen: 2000 });
+    const photos = cleanStringArray(ctx.body?.photos, { maxItems: MEDIA_POST_MAX_ATTACHMENTS, maxLen: 2000 });
     if ((photos || []).some(isLegacyVideoUrl)) {
       throw new ApiError(400, "Venue reviews support photos only until verified venue clips are available.", "VALIDATION_FAILED");
     }

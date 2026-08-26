@@ -73,9 +73,11 @@ test("artist page renders ranked review cards beside the fan gallery", () => {
   assert.match(artistScreen, /TOP REVIEWS · \{topReviews\.length\}/);
   assert.match(artistScreen, /DEVICE COPY/);
   assert.match(artistScreen, /accessibilityLabel="Retry loading live artist reviews"/);
-  assert.match(artistScreen, /onPress=\{\(\) => onOpenProfile\(review\.userId\)\}/);
+  assert.match(artistScreen, /href=\{review\.user\?\.handle \? profilePath\(review\.user\.handle\) : null\}/);
+  assert.match(artistScreen, /onNavigate=\{\(\) => onOpenProfile\(review\.userId\)\}/);
   assert.match(artistScreen, /accessibilityHint="Opens the concert night and full review"/);
-  assert.match(artistScreen, /onPress=\{\(\) => onOpenShow\?\.\(review\)\}/);
+  assert.match(artistScreen, /href=\{postPath\(review\.id\)\}/);
+  assert.match(artistScreen, /onNavigate=\{\(\) => onOpenShow\?\.\(review\)\}/);
   assert.match(artistScreen, /review\.photosPublic === true \|\| Number\(review\.photosPublic\) === 1/);
   assert.match(artistScreen, /onPress=\{\(\) => onOpenPhotos\?\.\(publicMedia, 0, review\.id\)\}/);
   assert.match(artistScreen, /topReviewMain: \{ flex: 1, minHeight: 150/);

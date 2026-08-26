@@ -7,6 +7,8 @@ import test, { after } from "node:test";
 
 import sharp from "sharp";
 
+import { ApiError } from "./errors.js";
+
 const dataDir = mkdtempSync(join(tmpdir(), "pit-legacy-media-finalize-"));
 process.env.PIT_DATA_DIR = dataDir;
 Object.assign(process.env, {
@@ -27,6 +29,7 @@ const {
   associateFinalizedLegacyMedia,
   createLegacyMediaUpload,
   finalizeLegacyMediaUpload,
+  isTerminalLegacyImageError,
   LEGACY_MEDIA_FINALIZE_TTL_MS,
   recoverProfileImageReference,
 } = await import("./mediaLegacyFinalize.js");
@@ -41,6 +44,18 @@ const {
   stageSanitizedPublicImage,
 } = await import("./mediaAssets.js");
 
+test("legacy finalize retires immutable image failures while keeping transient work resumable", () => {
+  for (const [status, code] of [
+    [400, "VALIDATION_FAILED"],
+    [413, "MEDIA_TOO_LARGE"],
+    [415, "MEDIA_TYPE_UNSUPPORTED"],
+  ]) {
+    assert.equal(isTerminalLegacyImageError(new ApiError(status, "terminal", code)), true);
+  }
+  assert.equal(isTerminalLegacyImageError(new ApiError(409, "changed", "CONFLICT")), false);
+  assert.equal(isTerminalLegacyImageError(new ApiError(503, "retry", "MEDIA_STORAGE_UNAVAILABLE")), false);
+  assert.equal(isTerminalLegacyImageError(new Error("unknown")), false);
+});
 after(() => {
   db.close();
   rmSync(dataDir, { recursive: true, force: true });
@@ -214,6 +229,7 @@ test("legacy photos use a one-time owner-bound private descriptor and publish on
   assert.equal(finalized.status, "finalized");
   assert.equal(finalized.duplicate, false);
   assert.match(finalized.publicUrl, /^https:\/\/media\.example\.com\/cdn\//);
+  assert.deepEqual([finalized.width, finalized.height], [1024, 1024]);
   assert.notEqual(finalized.key, created.upload.key);
   assert.match(finalized.key, /_safe_/);
   const publicObject = storage.objects.get(`pit-public/${finalized.key}`);
@@ -307,7 +323,7 @@ test("expired and malformed legacy descriptors fail closed and retire private st
       at: 21_000,
       fetchImpl: storage.fetchImpl,
     }),
-    (error) => error.status === 415 && error.code === "MEDIA_TYPE_UNSUPPORTED",
+    (error) => error.status === 400 && error.code === "VALIDATION_FAILED",
   );
   assert.equal(db.prepare("SELECT status FROM legacy_media_finalize_descriptors WHERE id=?")
     .get(malformed.descriptorId).status, "failed");

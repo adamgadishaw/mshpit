@@ -39,7 +39,7 @@ test("named artists get one profile-management doorway across account surfaces",
   assert.match(app, /onManageProfile=\{openProfileManagement\}/);
   assert.match(profile, /accessibilityLabel="Manage profile"/);
   assert.match(settings, /const manageProfile = profileManagementAction\(session\)/);
-  assert.match(feed, /onPress=\{onManageProfile\}/);
+  assert.doesNotMatch(feed, /onPress=\{onManageProfile\}/, "Feed does not duplicate profile management");
 });
 
 test("authoritative artist identities survive uncached people and direct-link navigation", () => {

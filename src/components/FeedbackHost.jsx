@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { colors, focusRing, mono, radius } from "../theme";
-import { subscribeFeedback } from "../lib/diagnostics";
+import { subscribeFeedback, supportReferenceFor } from "../lib/diagnostics";
 import Icon from "./Icon";
 
 const severityColor = (severity) => {
@@ -10,7 +10,7 @@ const severityColor = (severity) => {
   return colors.cool;
 };
 
-export default function FeedbackHost({ onOpenDiagnostics }) {
+export default function FeedbackHost({ canViewDiagnostics = false, onOpenDiagnostics }) {
   const [entry, setEntry] = useState(null);
 
   useEffect(() => subscribeFeedback(setEntry), []);
@@ -22,6 +22,7 @@ export default function FeedbackHost({ onOpenDiagnostics }) {
 
   if (!entry) return null;
   const accent = severityColor(entry.severity);
+  const supportReference = supportReferenceFor(entry);
 
   return (
     <View style={[styles.host, styles.hostPointerEvents]}>
@@ -33,18 +34,22 @@ export default function FeedbackHost({ onOpenDiagnostics }) {
         <View style={styles.copy}>
           <View style={styles.heading}>
             <Text style={styles.title} numberOfLines={1}>{entry.title}</Text>
-            <Text style={[styles.code, { color: accent }]}>{entry.code}</Text>
+            {canViewDiagnostics && <Text style={[styles.code, { color: accent }]}>{entry.code}</Text>}
           </View>
-          <Text style={styles.message}>{entry.message}</Text>
-          <Pressable
-            style={({ focused, pressed }) => [styles.detailsButton, focused && focusRing, pressed && styles.controlPressed]}
-            onPress={() => { setEntry(null); onOpenDiagnostics?.(); }}
-            accessibilityRole="button"
-            accessibilityLabel={`View diagnostics for ${entry.code}`}
-            hitSlop={6}
-          >
-            <Text style={[styles.details, { color: accent }]}>View failure details</Text>
-          </Pressable>
+          <Text selectable style={styles.message}>{entry.message}</Text>
+          {canViewDiagnostics ? (
+            <Pressable
+              style={({ focused, pressed }) => [styles.detailsButton, focused && focusRing, pressed && styles.controlPressed]}
+              onPress={() => { setEntry(null); onOpenDiagnostics?.(); }}
+              accessibilityRole="button"
+              accessibilityLabel={`View diagnostics for ${entry.code}`}
+              hitSlop={6}
+            >
+              <Text style={[styles.details, { color: accent }]}>View failure details</Text>
+            </Pressable>
+          ) : supportReference ? (
+            <Text selectable accessibilityLabel={`Support reference ${supportReference}`} style={[styles.reference, { color: accent }]}>Support reference: {supportReference}</Text>
+          ) : null}
         </View>
         <Pressable style={({ focused, pressed }) => [styles.close, focused && focusRing, pressed && styles.controlPressed]} onPress={() => setEntry(null)} accessibilityRole="button" accessibilityLabel="Dismiss message" hitSlop={8}>
           <Icon name="x" size={16} color={colors.textDim} />
@@ -90,6 +95,7 @@ const styles = StyleSheet.create({
   code: { fontFamily: mono, fontSize: 10.5, fontWeight: "800" },
   message: { color: colors.textDim, fontSize: 12.5, lineHeight: 18 },
   details: { fontSize: 12, fontWeight: "800", marginTop: 2 },
+  reference: { fontFamily: mono, fontSize: 10.5, lineHeight: 16, paddingTop: 3 },
   detailsButton: { minHeight: 44, alignSelf: "flex-start", justifyContent: "center" },
   close: { width: 44, height: 44, alignItems: "center", justifyContent: "center", marginTop: -9, marginRight: -9 },
   controlPressed: { opacity: 0.72 },

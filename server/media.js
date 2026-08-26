@@ -1,16 +1,22 @@
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import { ApiError } from "./errors.js";
+import { PUBLIC_MEDIA_CACHE_CONTROL } from "./mediaDeliveryPolicy.js";
+import {
+  MEDIA_PHOTO_SOURCE_MAX_BYTES,
+  MEDIA_VIDEO_SOURCE_MAX_BYTES,
+} from "../src/domain/mediaUploadPolicy.mjs";
+
+export { PUBLIC_MEDIA_CACHE_CONTROL } from "./mediaDeliveryPolicy.js";
 
 const MEBIBYTE = 1024 * 1024;
 // Video is allowed only where motion makes sense (concert clips on posts and
-// reviews, venue walkthroughs); avatars and banners stay image-only. Clips get
-// their own, larger cap because a minute of 1080p is nothing like a photo.
+// reviews, venue walkthroughs); avatars and banners stay image-only.
 const PURPOSES = Object.freeze({
-  avatar: { maxBytes: 5 * MEBIBYTE },
-  banner: { maxBytes: 12 * MEBIBYTE },
-  post: { maxBytes: 12 * MEBIBYTE, videoMaxBytes: 100 * MEBIBYTE },
-  review: { maxBytes: 12 * MEBIBYTE, videoMaxBytes: 100 * MEBIBYTE },
-  venue: { maxBytes: 12 * MEBIBYTE, videoMaxBytes: 100 * MEBIBYTE },
+  avatar: { maxBytes: MEDIA_PHOTO_SOURCE_MAX_BYTES },
+  banner: { maxBytes: MEDIA_PHOTO_SOURCE_MAX_BYTES },
+  post: { maxBytes: MEDIA_PHOTO_SOURCE_MAX_BYTES, videoMaxBytes: MEDIA_VIDEO_SOURCE_MAX_BYTES },
+  review: { maxBytes: MEDIA_PHOTO_SOURCE_MAX_BYTES, videoMaxBytes: MEDIA_VIDEO_SOURCE_MAX_BYTES },
+  venue: { maxBytes: MEDIA_PHOTO_SOURCE_MAX_BYTES, videoMaxBytes: MEDIA_VIDEO_SOURCE_MAX_BYTES },
 });
 const TYPES = Object.freeze({
   "image/jpeg": "jpg",
@@ -19,6 +25,7 @@ const TYPES = Object.freeze({
   "image/gif": "gif",
   "image/heic": "heic",
   "image/heif": "heif",
+  "image/avif": "avif",
 });
 const VIDEO_TYPES = Object.freeze({
   "video/mp4": "mp4",
@@ -40,7 +47,7 @@ const REQUIRED_ENV = [
   "MEDIA_SECRET_ACCESS_KEY",
   "MEDIA_PUBLIC_BASE_URL",
 ];
-const OWNED_OBJECT_KEY = /^users\/[A-Za-z0-9_-]{1,128}\/(?:avatar|banner|post|review|venue)\/[A-Za-z0-9_-]{1,240}\.(?:jpg|png|webp|gif|heic|heif|mp4|webm|mov)$/;
+const OWNED_OBJECT_KEY = /^users\/[A-Za-z0-9_-]{1,128}\/(?:avatar|banner|post|review|venue)\/[A-Za-z0-9_-]{1,240}\.(?:jpg|png|webp|gif|heic|heif|avif|mp4|webm|mov)$/;
 const STRONG_ETAG = /^"[\x21\x23-\x7e]{1,200}"$/u;
 
 let privateIsolationState = Object.freeze({
@@ -497,12 +504,12 @@ export function createMediaProcessorUploadCapability({
   objectKey,
   env = process.env,
   now = new Date(),
-  expiresIn = 120,
+  expiresIn = 20 * 60,
 } = {}) {
   const key = String(objectKey || "");
   const ttl = Number(expiresIn);
   if (!OWNED_OBJECT_KEY.test(key) || !key.endsWith(".mp4")
-      || !Number.isSafeInteger(ttl) || ttl < 30 || ttl > 300) {
+      || !Number.isSafeInteger(ttl) || ttl < 30 || ttl > 20 * 60) {
     throw new ApiError(500, "Clip delivery upload could not be prepared.", "INTERNAL_ERROR");
   }
   const config = getMediaConfig(env);
@@ -510,7 +517,11 @@ export function createMediaProcessorUploadCapability({
     throw new ApiError(503, "Media storage is temporarily unavailable.", "MEDIA_STORAGE_UNAVAILABLE");
   }
   const objectUrl = joinObjectUrl(config.endpoint, [config.bucket, ...key.split("/")]);
-  const headers = { "Content-Type": "video/mp4", "If-None-Match": "*" };
+  const headers = {
+    "Cache-Control": PUBLIC_MEDIA_CACHE_CONTROL,
+    "Content-Type": "video/mp4",
+    "If-None-Match": "*",
+  };
   let uploadUrl;
   try {
     uploadUrl = presignS3Request({
@@ -560,7 +571,12 @@ export function createMediaProcessorImageUploadCapability({
     throw new ApiError(503, "Media storage is temporarily unavailable.", "MEDIA_STORAGE_UNAVAILABLE");
   }
   const objectUrl = joinObjectUrl(config.endpoint, [config.bucket, ...key.split("/")]);
-  const headers = { "Content-Type": type, "Content-Length": String(bytes), "If-None-Match": "*" };
+  const headers = {
+    "Cache-Control": PUBLIC_MEDIA_CACHE_CONTROL,
+    "Content-Type": type,
+    "Content-Length": String(bytes),
+    "If-None-Match": "*",
+  };
   let uploadUrl;
   try {
     uploadUrl = presignS3Request({

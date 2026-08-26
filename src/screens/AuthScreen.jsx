@@ -67,7 +67,7 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) 
       <View style={styles.wrap}>
         <SheetHeader title="Check your email" onClose={onCancel} />
         <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-          <Text style={styles.wordmark}>PIT</Text>
+          <Text style={styles.wordmark}>MSHPIT</Text>
           <Text style={[styles.tag, { marginBottom: 20 }]} accessibilityRole="header">Account request received</Text>
           <View style={styles.artistNote}>
             <Icon name="mail" size={16} color={colors.amber} />
@@ -104,7 +104,7 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) 
       <View style={styles.wrap}>
         <SheetHeader title="Reset password" onClose={onCancel} />
         <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-          <Text style={styles.wordmark}>PIT</Text>
+          <Text style={styles.wordmark}>MSHPIT</Text>
           {sentTo ? (
             <View>
               <Text style={[styles.tag, { marginBottom: 20 }]} accessibilityRole="header">Check your email</Text>
@@ -162,7 +162,7 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) 
       <SheetHeader title={mode === "login" ? "Log in" : "Sign up"} onClose={onCancel} />
 
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-        <Text style={styles.wordmark}>PIT</Text>
+        <Text style={styles.wordmark}>MSHPIT</Text>
         <Text style={styles.tag}>log the shows you go to</Text>
 
         {mode === "signup" && (

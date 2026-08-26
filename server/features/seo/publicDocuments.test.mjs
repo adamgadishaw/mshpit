@@ -3,6 +3,8 @@ import test from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { createArtistMemorialRepository } from "../artistMemorials/artistMemorialRepository.js";
 import { createArtistMemorialService } from "../artistMemorials/artistMemorialService.js";
+import { archiveShowKey } from "../artistArchive/artistArchiveKeys.js";
+import { ensureLegacyMediaFinalizeSchema } from "../../mediaLegacyFinalize.js";
 import { createPublicDocumentService } from "./publicDocuments.js";
 import { serializePublicStructuredData } from "./publicDocumentRenderer.js";
 
@@ -16,7 +18,7 @@ function createDatabase() {
     CREATE TABLE users (
       id TEXT PRIMARY KEY,name TEXT NOT NULL,handle TEXT NOT NULL,artist_name TEXT,bio TEXT,
       avatar_uri TEXT,banner TEXT,created_at INTEGER NOT NULL,is_banned INTEGER NOT NULL DEFAULT 0,
-      suspended_until INTEGER
+      suspended_until INTEGER,extras TEXT NOT NULL DEFAULT '{}'
     );
     CREATE TABLE artists (
       norm TEXT PRIMARY KEY,name TEXT NOT NULL,public_slug TEXT,genre TEXT,bio TEXT,mbid TEXT,country TEXT,formed TEXT,
@@ -35,13 +37,14 @@ function createDatabase() {
     );
     CREATE TABLE posts (
       id TEXT PRIMARY KEY,user_id TEXT NOT NULL,artist TEXT NOT NULL,artist_key TEXT,venue TEXT NOT NULL,
-      city TEXT,date TEXT,overall REAL,review TEXT,photos TEXT NOT NULL DEFAULT '[]',
+      venue_key TEXT,city TEXT,date TEXT,overall REAL,review TEXT,photos TEXT NOT NULL DEFAULT '[]',
       photos_public INTEGER NOT NULL DEFAULT 0,kind TEXT DEFAULT 'review',removed INTEGER NOT NULL DEFAULT 0,
+      like_count INTEGER NOT NULL DEFAULT 0,comment_count INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL,updated_at INTEGER
     );
     CREATE TABLE likes (post_id TEXT NOT NULL,user_id TEXT NOT NULL,PRIMARY KEY(post_id,user_id));
     CREATE TABLE comments (
-      id TEXT PRIMARY KEY,post_id TEXT NOT NULL,user_id TEXT NOT NULL,text TEXT NOT NULL,
+      id TEXT PRIMARY KEY,post_id TEXT NOT NULL,user_id TEXT NOT NULL,parent_id TEXT,text TEXT NOT NULL,
       removed INTEGER NOT NULL DEFAULT 0,created_at INTEGER NOT NULL
     );
     CREATE TABLE follows (follower_id TEXT NOT NULL,followee_id TEXT NOT NULL,PRIMARY KEY(follower_id,followee_id));
@@ -54,8 +57,13 @@ function createDatabase() {
       removed INTEGER NOT NULL DEFAULT 0,created_at INTEGER NOT NULL
     );
     CREATE TABLE tour_dates (
-      id TEXT PRIMARY KEY,artist TEXT NOT NULL,venue TEXT,place TEXT,date TEXT,sold_out INTEGER NOT NULL DEFAULT 0,
-      owner_id TEXT,release_at INTEGER NOT NULL DEFAULT 0
+      id TEXT PRIMARY KEY,artist TEXT NOT NULL,venue TEXT,place TEXT,lat REAL,lng REAL,date TEXT,ticket_url TEXT,
+      sold_out INTEGER NOT NULL DEFAULT 0,source TEXT,updated_at INTEGER NOT NULL DEFAULT 0,
+      owner_id TEXT,release_at INTEGER NOT NULL DEFAULT 0,provider_event_id TEXT,event_name TEXT,
+      start_date_time TEXT,start_local_time TEXT,event_timezone TEXT,event_status TEXT,venue_provider_id TEXT,
+      venue_address_line1 TEXT,venue_address_line2 TEXT,venue_city TEXT,venue_region TEXT,
+      venue_postal_code TEXT,venue_country_code TEXT,venue_country TEXT,
+      provider_active INTEGER NOT NULL DEFAULT 1,last_seen_at INTEGER
     );
     CREATE TABLE media_objects (
       object_key TEXT PRIMARY KEY,owner_id TEXT NOT NULL,storage_scope TEXT NOT NULL,
@@ -82,12 +90,13 @@ function createDatabase() {
   return database;
 }
 
-function addUser(database, id, { name = id, handle = id, banned = false, suspended = false, bio = "" } = {}) {
+function addUser(database, id, { name = id, handle = id, banned = false, suspended = false, bio = "", searchIndexingOptOut = false } = {}) {
   database.prepare(`INSERT INTO users
-    (id,name,handle,artist_name,bio,avatar_uri,banner,created_at,is_banned,suspended_until)
-    VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
+    (id,name,handle,artist_name,bio,avatar_uri,banner,created_at,is_banned,suspended_until,extras)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(
     id, name, handle, null, bio, null, null, 100, banned ? 1 : 0,
     suspended ? Date.now() + 86_400_000 : null,
+    JSON.stringify(searchIndexingOptOut ? { searchIndexingOptOut: true } : {}),
   );
 }
 
@@ -132,11 +141,14 @@ function addPost(database, {
   kind = "review",
   removed = false,
   createdAt = 1_000,
+  overall = 4.5,
+  date = "2026-08-20",
+  city = "Toronto",
 } = {}) {
   database.prepare(`INSERT INTO posts
-    (id,user_id,artist,artist_key,venue,city,date,overall,review,photos,photos_public,kind,removed,created_at,updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
-    id, userId, artist, artistKey, venue, "Toronto", "2026-08-20", 4.5, review,
+    (id,user_id,artist,artist_key,venue,venue_key,city,date,overall,review,photos,photos_public,kind,removed,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    id, userId, artist, artistKey, venue, venue.toLowerCase(), city, date, overall, review,
     JSON.stringify(photos), photosPublic ? 1 : 0, kind, removed ? 1 : 0, createdAt, createdAt + 1,
   );
 }
@@ -167,6 +179,82 @@ function addReadyImage(database, { assetId, ownerId, url, postId = null, purpose
   if (postId) database.prepare("INSERT INTO post_media (post_id,asset_id,position,created_at) VALUES (?,?,0,10)").run(postId, assetId);
 }
 
+function addFinalizedProfileImage(database, {
+  descriptorId,
+  ownerId,
+  url,
+  purpose = "avatar",
+  mimeType = "image/jpeg",
+  width = 640,
+  height = 640,
+}) {
+  ensureLegacyMediaFinalizeSchema(database);
+  const stagingKey = `private/profile/${descriptorId}`;
+  const outputKey = `public/profile/${descriptorId}`;
+  database.prepare("INSERT INTO media_objects (object_key,owner_id,storage_scope,purpose,status) VALUES (?,?,?,?,?)")
+    .run(outputKey, ownerId, "public", purpose, "associated");
+  database.prepare(`INSERT INTO legacy_media_finalize_descriptors
+    (id,owner_id,token_hash,purpose,staging_object_key,staging_mime_type,staging_byte_size,
+      output_mime_type,output_object_key,output_url,output_byte_size,width,height,status,
+      expires_at,consumed_at,finalized_at,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'finalized',?,?,?,?,?)`).run(
+    descriptorId,
+    ownerId,
+    "0".repeat(64),
+    purpose,
+    stagingKey,
+    mimeType,
+    1_000,
+    mimeType,
+    outputKey,
+    url,
+    900,
+    width,
+    height,
+    NOW + 86_400_000,
+    NOW,
+    NOW,
+    NOW,
+    NOW,
+  );
+}
+
+function addReadyVideo(database, { assetId, ownerId, url, posterUrl, postId }) {
+  const sourceKey = `private/${assetId}`;
+  const renderKey = `public/${assetId}.mp4`;
+  const posterKey = `public/${assetId}-poster.jpg`;
+  const renderId = `render-${assetId}`;
+  const posterId = `poster-${assetId}`;
+  for (const [key, scope] of [[sourceKey, "private"], [renderKey, "public"], [posterKey, "public"]]) {
+    database.prepare("INSERT INTO media_objects (object_key,owner_id,storage_scope,purpose,status) VALUES (?,?,?,?,?)")
+      .run(key, ownerId, scope, "post", "associated");
+  }
+  database.prepare(`INSERT INTO media_assets
+    (id,owner_id,purpose,kind,source_key,source_url,source_storage_scope,original_name,mime_type,byte_size,
+      width,height,duration_ms,metadata_status,codec_status,alt_text,status,edit_recipe,source_verified_at,
+      render_state,render_variant_id,poster_variant_id,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    assetId, ownerId, "post", "video", sourceKey, `https://private.example/${assetId}`, "private",
+    `${assetId}.mp4`, "video/mp4", 1_000, 1280, 720, 45_000, "declared", "verified",
+    "The encore from the crowd", "ready", JSON.stringify({ coverMs: 1_000 }), 10,
+    "ready", renderId, posterId, 10, 10,
+  );
+  database.prepare(`INSERT INTO media_variants
+    (id,asset_id,role,object_key,public_url,mime_type,byte_size,width,height,time_ms,status,verification_origin)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    renderId, assetId, "render", renderKey, url, "video/mp4", 900, 1280, 720, null,
+    "verified", "video_verifier_v1",
+  );
+  database.prepare(`INSERT INTO media_variants
+    (id,asset_id,role,object_key,public_url,mime_type,byte_size,width,height,time_ms,status,verification_origin)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    posterId, assetId, "poster", posterKey, posterUrl, "image/jpeg", 90, 1280, 720, 1_000,
+    "verified", "private_derivative_v1",
+  );
+  database.prepare("INSERT INTO post_media (post_id,asset_id,position,created_at) VALUES (?,?,0,10)")
+    .run(postId, assetId);
+}
+
 function service(database) {
   return createPublicDocumentService({ database, origin: "https://www.example.com" });
 }
@@ -191,6 +279,10 @@ test("home document is substantive, contains WebSite JSON-LD, and excludes restr
     const html = documents.render(document);
 
     assert.equal(document.jsonLd[0]["@type"], "WebSite");
+    assert.equal(document.jsonLd[1]["@type"], "Organization");
+    assert.equal(document.jsonLd[1].alternateName, "PIT");
+    assert.equal(document.jsonLd[1].logo.url, "https://www.example.com/logo.svg");
+    assert.equal(document.jsonLd[1].contactPoint.email, "support@mshpit.com");
     assert.equal(document.posts.length, 1);
     assert.deepEqual(document.posts[0].media, [], "ordinary post media is not republished by the marketing homepage");
     assert.match(html, /Crowd energy &amp; joy &lt;b&gt;all night&lt;\/b&gt;/);
@@ -202,7 +294,7 @@ test("home document is substantive, contains WebSite JSON-LD, and excludes restr
   }
 });
 
-test("artist document uses only active UGC and verified ready media, and never claims a fan post is a MusicEvent", () => {
+test("artist document uses only active UGC and references Event leaf pages without duplicating MusicEvent", () => {
   const database = createDatabase();
   try {
     addUser(database, "active", { name: "Active Fan", handle: "activefan" });
@@ -233,17 +325,22 @@ test("artist document uses only active UGC and verified ready media, and never c
       .run("update-visible", "alpha", "artist-owner", "New record out now.", 400);
     database.prepare("INSERT INTO artist_posts (id,artist_key,user_id,text,removed,created_at) VALUES (?,?,?,?,0,?)")
       .run("update-hidden", "alpha", "banned", "HIDDEN UPDATE", 500);
-    database.prepare("INSERT INTO tour_dates (id,artist,venue,place,date,sold_out,owner_id,release_at) VALUES (?,?,?,?,?,?,?,?)")
-      .run("event-public", "Alpha", "Global Hall", "London, UK", "2026-09-01", 0, null, 0);
+    database.prepare("INSERT INTO tour_dates (id,artist,venue,place,date,sold_out,owner_id,release_at,venue_city,venue_country_code) VALUES (?,?,?,?,?,?,?,?,?,?)")
+      .run("event-public", "Alpha", "Global Hall", "London, UK", "2026-09-01", 0, null, 0, "London", "GB");
     database.prepare("INSERT INTO tour_dates (id,artist,venue,place,date,sold_out,owner_id,release_at) VALUES (?,?,?,?,?,?,?,?)")
       .run("event-hidden", "Alpha", "Secret Hall", "Nowhere", "2026-09-02", 0, "banned", 0);
+    addArtist(database, { key: "bad-mbid", name: "Bad MBID", mbid: "not-a-musicbrainz-id" });
 
     const documents = service(database);
     const document = documents.artistDocument({ artistKey: "alpha", today: "2026-08-25", at: Date.now() });
     const html = documents.render(document);
+    const eventDocument = documents.eventDocument({ id: "event-public", today: "2026-08-25", at: Date.now() });
+    const invalidMbidDocument = documents.artistDocument({ artistKey: "bad-mbid", today: "2026-08-25", at: Date.now() });
 
     assert.equal(document.jsonLd[0]["@type"], "CollectionPage");
     assert.equal(document.jsonLd[0].about["@type"], "Thing");
+    assert.deepEqual(document.jsonLd[0].about.sameAs, [`https://musicbrainz.org/artist/${ARTIST_MBID}`]);
+    assert.equal(Object.hasOwn(invalidMbidDocument.jsonLd[0].about, "sameAs"), false);
     assert.deepEqual(document.reviews.map((review) => review.id), ["visible", "private-gallery"]);
     assert.deepEqual(document.events.map((event) => event.id), ["event-public"]);
     assert.deepEqual(document.updates.map((update) => update.id), ["update-visible"]);
@@ -252,7 +349,14 @@ test("artist document uses only active UGC and verified ready media, and never c
     assert.equal(document.image, avatarUrl);
     assert.match(html, /media\.example\/public\/visible\.jpg/);
     assert.doesNotMatch(html, /attacker\.example|HIDDEN REVIEW|HIDDEN UPDATE|Secret Hall/);
-    assert.doesNotMatch(html, /MusicEvent/);
+    assert.doesNotMatch(html, /MusicEvent/, "the artist collection references the canonical event page instead of duplicating it");
+    assert.match(html, /event-public/);
+    assert.equal(document.jsonLd[0].hasPart[0]["@id"], "https://www.example.com/event/event-public#page");
+    assert.equal(eventDocument.jsonLd[0]["@type"], "MusicEvent");
+    assert.equal(eventDocument.jsonLd[0].location.address.addressLocality, "London");
+    assert.equal(eventDocument.jsonLd[0].location.address.addressCountry, "GB");
+    assert.equal(eventDocument.jsonLd[1]["@type"], "WebPage");
+    assert.equal(eventDocument.jsonLd[1].mainEntity["@id"], "https://www.example.com/event/event-public#event");
     assert.doesNotMatch(html, /preload="metadata"/);
     assert.doesNotMatch(html, /<script>alert/);
     assert.match(html, /&lt;\/script&gt;&lt;script&gt;alert/);
@@ -261,6 +365,137 @@ test("artist document uses only active UGC and verified ready media, and never c
       '{"text":"\\u003c/script\\u003e\\u003cscript\\u003ealert(1)\\u003c/script\\u003e"}',
       "JSON-LD serialization cannot terminate its script element",
     );
+  } finally {
+    database.close();
+  }
+});
+
+test("finalized profile images are owner and purpose bound and expose only trusted SEO metadata", () => {
+  const database = createDatabase();
+  try {
+    addUser(database, "profile-owner", { name: "Profile Owner", handle: "profileowner" });
+    addUser(database, "artist-owner", { name: "Alpha Artist", handle: "alphaartist" });
+    addUser(database, "other-owner", { name: "Other Owner", handle: "otherowner" });
+    addUser(database, "wrong-owner", { name: "Wrong Owner", handle: "wrongowner" });
+    addUser(database, "wrong-purpose", { name: "Wrong Purpose", handle: "wrongpurpose" });
+    addUser(database, "external-image", { name: "External Image", handle: "externalimage" });
+    addArtist(database);
+
+    const memberAvatarUrl = "https://media.example/public/profile-member-avatar.webp";
+    const artistBannerUrl = "https://media.example/public/profile-artist-banner.jpg";
+    const artistWrongAvatarUrl = "https://media.example/public/profile-artist-wrong-avatar.jpg";
+    const wrongOwnerUrl = "https://media.example/public/profile-other-owner.jpg";
+    const wrongPurposeUrl = "https://media.example/public/profile-wrong-purpose.jpg";
+    addFinalizedProfileImage(database, {
+      descriptorId: "lm_profilememberavatar000001",
+      ownerId: "profile-owner",
+      url: memberAvatarUrl,
+      purpose: "avatar",
+      mimeType: "image/webp",
+      width: 640,
+      height: 640,
+    });
+    addFinalizedProfileImage(database, {
+      descriptorId: "lm_profileartistbanner000001",
+      ownerId: "artist-owner",
+      url: artistBannerUrl,
+      purpose: "banner",
+      width: 1_600,
+      height: 600,
+    });
+    addFinalizedProfileImage(database, {
+      descriptorId: "lm_profileartistavatarwrong01",
+      ownerId: "artist-owner",
+      url: artistWrongAvatarUrl,
+      purpose: "banner",
+    });
+    addFinalizedProfileImage(database, {
+      descriptorId: "lm_profileotherowner00000001",
+      ownerId: "other-owner",
+      url: wrongOwnerUrl,
+      purpose: "avatar",
+    });
+    addFinalizedProfileImage(database, {
+      descriptorId: "lm_profilewrongpurpose000001",
+      ownerId: "wrong-purpose",
+      url: wrongPurposeUrl,
+      purpose: "banner",
+    });
+
+    database.prepare("UPDATE users SET avatar_uri=?,banner=? WHERE id=?")
+      .run(memberAvatarUrl, "https://attacker.example/profile-banner.jpg", "profile-owner");
+    database.prepare("UPDATE users SET avatar_uri=? WHERE id=?").run(wrongOwnerUrl, "wrong-owner");
+    database.prepare("UPDATE users SET avatar_uri=? WHERE id=?").run(wrongPurposeUrl, "wrong-purpose");
+    database.prepare("UPDATE users SET avatar_uri=? WHERE id=?")
+      .run("https://attacker.example/profile-avatar.jpg", "external-image");
+    database.prepare(`INSERT INTO artist_profiles
+      (artist_key,bio,banner,avatar_uri,feed_enabled,owner_id,removed,updated_at)
+      VALUES (?,?,?,?,1,?,0,?)`).run(
+      "alpha",
+      "Official artist profile",
+      artistBannerUrl,
+      artistWrongAvatarUrl,
+      "artist-owner",
+      NOW,
+    );
+    addPost(database, { id: "profile-image-comment-post", userId: "profile-owner" });
+    database.prepare("INSERT INTO comments (id,post_id,user_id,text,removed,created_at) VALUES (?,?,?,?,0,?)")
+      .run("profile-image-comment", "profile-image-comment-post", "wrong-purpose", "Purpose-bound avatar check.", NOW);
+
+    const documents = service(database);
+    const member = documents.memberDocument({ handle: "profileowner" });
+    const memberHtml = documents.render(member);
+    assert.equal(database.prepare("SELECT COUNT(*) total FROM media_assets WHERE owner_id IN (?,?)")
+      .get("profile-owner", "artist-owner").total, 0, "the regression fixture uses finalized descriptors, not stable media assets");
+    assert.equal(member.member.avatar, memberAvatarUrl);
+    assert.equal(member.member.banner, null);
+    assert.equal(member.image, memberAvatarUrl);
+    assert.equal(member.imageWidth, 640);
+    assert.equal(member.imageHeight, 640);
+    assert.equal(member.imageMimeType, "image/webp");
+    assert.deepEqual(member.jsonLd[0].mainEntity.image, {
+      "@type": "ImageObject",
+      contentUrl: memberAvatarUrl,
+      url: memberAvatarUrl,
+      name: "Profile Owner profile photo",
+      width: 640,
+      height: 640,
+      encodingFormat: "image/webp",
+    });
+    assert.match(memberHtml, /<meta property="og:image:width" content="640"/);
+    assert.match(memberHtml, /<meta property="og:image:height" content="640"/);
+    assert.match(memberHtml, /<meta property="og:image:type" content="image\/webp"/);
+    assert.doesNotMatch(memberHtml, /attacker\.example/);
+
+    const artist = documents.artistDocument({ artistKey: "alpha", today: "2026-08-25", at: NOW });
+    assert.equal(artist.image, artistBannerUrl);
+    assert.equal(artist.imageWidth, 1_600);
+    assert.equal(artist.imageHeight, 600);
+    assert.equal(artist.imageMimeType, "image/jpeg");
+    assert.deepEqual(artist.jsonLd[0].about.image, {
+      "@type": "ImageObject",
+      contentUrl: artistBannerUrl,
+      url: artistBannerUrl,
+      name: "Alpha profile banner",
+      width: 1_600,
+      height: 600,
+      encodingFormat: "image/jpeg",
+    });
+    assert.doesNotMatch(JSON.stringify(artist), /profile-artist-wrong-avatar/);
+
+    const wrongOwner = documents.memberDocument({ handle: "wrongowner" });
+    const wrongPurpose = documents.memberDocument({ handle: "wrongpurpose" });
+    const external = documents.memberDocument({ handle: "externalimage" });
+    assert.equal(wrongOwner.member.avatar, null);
+    assert.equal(wrongOwner.image, null);
+    assert.equal(wrongPurpose.member.avatar, null);
+    assert.equal(wrongPurpose.image, null);
+    assert.equal(external.member.avatar, null);
+    assert.equal(external.image, null);
+
+    const post = documents.postDocument({ id: "profile-image-comment-post" });
+    assert.equal(post.comments[0].author.avatar, null, "comment avatars enforce the avatar purpose too");
+    assert.doesNotMatch(JSON.stringify(post), /profile-wrong-purpose/);
   } finally {
     database.close();
   }
@@ -337,6 +572,7 @@ test("member and post documents fail closed for restricted accounts and expose o
     addUser(database, "commenter", { name: "Visible Commenter", handle: "visiblecomment" });
     addUser(database, "banned", { name: "Banned Secret", banned: true });
     addUser(database, "suspended", { name: "Suspended Secret", handle: "suspended", suspended: true });
+    addUser(database, "search-private", { name: "Search Private", handle: "searchprivate", searchIndexingOptOut: true });
     addArtist(database);
     addPost(database, {
       id: "visible",
@@ -346,6 +582,8 @@ test("member and post documents fail closed for restricted accounts and expose o
     addPost(database, { id: "restricted-post", userId: "suspended", review: "PRIVATE SUSPENDED POST" });
     database.prepare("INSERT INTO comments (id,post_id,user_id,text,removed,created_at) VALUES (?,?,?,?,0,?)")
       .run("comment-visible", "visible", "commenter", "Same — that finale!", 2_000);
+    database.prepare("INSERT INTO comments (id,post_id,user_id,parent_id,text,removed,created_at) VALUES (?,?,?,?,?,0,?)")
+      .run("comment-reply", "visible", "commenter", "comment-visible", "Exactly — the whole room sang.", 2_001);
     database.prepare("INSERT INTO comments (id,post_id,user_id,text,removed,created_at) VALUES (?,?,?,?,0,?)")
       .run("comment-hidden", "visible", "banned", "HIDDEN COMMENT", 2_001);
     database.prepare("INSERT INTO likes (post_id,user_id) VALUES (?,?)").run("visible", "commenter");
@@ -357,15 +595,379 @@ test("member and post documents fail closed for restricted accounts and expose o
     const html = documents.render(post);
 
     assert.equal(member.member.name, "A & B");
+    assert.equal(documents.memberDocument({ handle: "searchprivate" }), null,
+      "the document service honors the account's explicit search-indexing opt-out");
     assert.equal(documents.memberDocument({ handle: "suspended" }), null);
     assert.equal(documents.postDocument({ id: "restricted-post" }), null);
-    assert.equal(post.jsonLd[0]["@type"], "SocialMediaPosting");
+    assert.deepEqual(post.jsonLd[0]["@type"], ["DiscussionForumPosting", "SocialMediaPosting"]);
+    assert.equal(Object.hasOwn(member.jsonLd[0], "interactionStatistic"), false);
+    assert.equal(member.jsonLd[0].mainEntity.interactionStatistic[0].interactionType, "https://schema.org/FollowAction");
+    assert.equal(post.jsonLd[0].comment.length, 1, "only root comments are attached directly to the posting");
+    assert.equal(post.jsonLd[0].comment[0].comment[0]["@id"], "https://www.example.com/post/visible#comment-comment-reply");
+    assert.equal(Object.hasOwn(post.jsonLd[0].comment[0], "dateCreated"), false);
+    assert.equal(post.jsonLd[0].comment[0].datePublished, new Date(2_000).toISOString());
     assert.equal(post.post.likes, 1, "restricted likes never enter public interaction totals");
-    assert.equal(post.post.comments, 1, "restricted comments never enter public interaction totals");
-    assert.deepEqual(post.comments.map((comment) => comment.id), ["comment-visible"]);
+    assert.equal(post.post.comments, 2, "restricted comments never enter public interaction totals");
+    assert.deepEqual(post.comments.map((comment) => comment.id), ["comment-visible", "comment-reply"]);
     assert.equal(post.post.media.length, 0, "unverified legacy URLs fail closed");
     assert.match(html, /Same — that finale!/);
+    assert.match(html, /Exactly — the whole room sang\./);
     assert.doesNotMatch(html, /HIDDEN COMMENT|attacker\.example|PRIVATE SUSPENDED POST|MusicEvent/);
+  } finally {
+    database.close();
+  }
+});
+
+test("historical concert documents expose only real 1-to-5 fan ratings", () => {
+  const database = createDatabase();
+  try {
+    addUser(database, "active", { name: "Active Fan", handle: "activefan" });
+    addUser(database, "gallery", { name: "Gallery Fan", handle: "galleryfan" });
+    addArtist(database);
+    addPost(database, {
+      id: "archive-review",
+      review: "A detailed firsthand review of the room, performance, crowd, and encore that night.",
+    });
+    addPost(database, {
+      id: "archive-media-only",
+      userId: "gallery",
+      review: "",
+      overall: null,
+      createdAt: 2_000,
+    });
+    addReadyImage(database, { assetId: "archive-photo", ownerId: "gallery", postId: "archive-media-only", url: "https://media.example/public/archive-photo.jpg" });
+    database.prepare("INSERT INTO tour_dates (id,artist,venue,place,date,release_at,venue_city,venue_country_code) VALUES (?,?,?,?,?,?,?,?)")
+      .run("archive-event", "Alpha", "History", "Toronto, Canada", "2026-08-20", 0, "Toronto", "CA");
+    const showKey = archiveShowKey({
+      artistIdentity: "alpha",
+      venueIdentity: "history",
+      date: "2026-08-20",
+    });
+    const documents = service(database);
+    const document = documents.concertDocument({ showKey, today: "2026-08-25" });
+    const html = documents.render(document);
+    const event = document.jsonLd[0];
+    assert.equal(event["@type"], "MusicEvent");
+    assert.equal(event.aggregateRating.ratingValue, 4.5);
+    assert.equal(event.aggregateRating.ratingCount, 1);
+    assert.equal(event.aggregateRating.reviewCount, 2);
+    assert.equal(Object.hasOwn(event, "eventStatus"), false, "past events never claim EventScheduled");
+    assert.equal(document.jsonLd[1]["@type"], "CollectionPage");
+    assert.equal(event.aggregateRating.worstRating, 1);
+    assert.equal(event.aggregateRating.bestRating, 5);
+    assert.equal(event.review.length, 1, "media-only memories without a rating remain HTML but are not Review schema");
+    assert.equal(event.review[0].reviewRating.worstRating, 1);
+    assert.equal(event.review[0].itemReviewed["@id"], event["@id"]);
+    assert.equal(event.review.every((review) => review.reviewRating.ratingValue >= 1 && review.reviewRating.ratingValue <= 5), true);
+    assert.equal(Object.hasOwn(document.jsonLd[1], "hasPart"), false, "the collection never points at undefined #review nodes");
+    assert.equal(document.reviews.some((review) => review.id === "archive-media-only" && review.media.length === 1), true);
+    assert.match(html, /archive-photo\.jpg/);
+  } finally {
+    database.close();
+  }
+});
+
+
+test("concert aggregates count distinct people and use each person's latest valid rating", () => {
+  const database = createDatabase();
+  try {
+    addArtist(database);
+    const review = "A detailed firsthand account of the performance, crowd, sound, lights, and encore.";
+    for (let index = 0; index < 12; index += 1) {
+      const userId = `five-star-fan-${index}`;
+      addUser(database, userId, { name: `Five Star Fan ${index}`, handle: `fivefan${index}` });
+      addPost(database, {
+        id: `five-star-${index}`,
+        userId,
+        review,
+        overall: 5,
+        date: "2026-08-19",
+        createdAt: 1_000 + index,
+      });
+    }
+    addUser(database, "mixed-rater", { name: "Mixed Rater", handle: "mixedrater" });
+    addUser(database, "legacy-rater", { name: "Legacy Rater", handle: "legacyrater" });
+    addPost(database, { id: "mixed-old-valid", userId: "mixed-rater", review, overall: 1, date: "2026-08-19", createdAt: 4_000 });
+    addPost(database, { id: "mixed-latest-valid", userId: "mixed-rater", review, overall: 3, date: "2026-08-19", createdAt: 5_000 });
+    addPost(database, { id: "mixed-newer-invalid", userId: "mixed-rater", review, overall: 0, date: "2026-08-19", createdAt: 6_000 });
+    addPost(database, { id: "legacy-zero", userId: "legacy-rater", review, overall: 0, date: "2026-08-19", createdAt: 5 });
+    database.prepare("INSERT INTO tour_dates (id,artist,venue,date,release_at,venue_city,venue_country_code) VALUES (?,?,?,?,?,?,?)")
+      .run("skew-event", "Alpha", "History", "2026-08-19", 0, "Toronto", "CA");
+
+    const showKey = archiveShowKey({
+      artistIdentity: "alpha",
+      venueIdentity: "history",
+      date: "2026-08-19",
+    });
+    const documents = service(database);
+    const document = documents.concertDocument({ showKey, today: "2026-08-25" });
+    const artistDocument = documents.artistDocument({ artistKey: "alpha", today: "2026-08-25" });
+    const event = document.jsonLd[0];
+
+    assert.equal(document.reviews.length, 12);
+    assert.equal(document.concert.reviewCount, 14);
+    assert.equal(document.concert.ratingCount, 13);
+    assert.ok(Math.abs(document.concert.averageRating - (63 / 13)) < 1e-9);
+    assert.equal(event.aggregateRating.ratingValue, 4.85);
+    assert.equal(event.aggregateRating.ratingCount, 13);
+    assert.equal(event.aggregateRating.reviewCount, 14);
+    assert.equal(event.review.every((item) => item.reviewRating.ratingValue >= 1 && item.reviewRating.ratingValue <= 5), true);
+    const authorRefs = event.review.map((item) => item.author.alternateName);
+    assert.equal(new Set(authorRefs).size, authorRefs.length, "one member cannot contribute duplicate Review nodes");
+    const mixedReview = event.review.find((item) => item.author.alternateName === "@mixedrater");
+    assert.equal(mixedReview.reviewRating.ratingValue, 3, "the latest valid rating wins and a newer legacy zero cannot erase it");
+    const artistArchive = artistDocument.concerts.find((concert) => concert.date === "2026-08-19");
+    assert.equal(artistArchive.reviewCount, 14);
+    assert.equal(artistArchive.ratingCount, 13);
+    assert.ok(Math.abs(artistArchive.averageRating - (63 / 13)) < 1e-9);
+  } finally {
+    database.close();
+  }
+});
+test("concert pages keep media visible but emit no Review schema without an address-backed event", () => {
+  const database = createDatabase();
+  try {
+    addUser(database, "rated-memory", { name: "Rated Memory", handle: "ratedmemory" });
+    addUser(database, "gallery-memory", { name: "Gallery Memory", handle: "gallerymemory" });
+    addPost(database, {
+      id: "unlisted-rated",
+      userId: "rated-memory",
+      artist: "Unlisted Artist",
+      artistKey: null,
+      venue: "Archive Room",
+      date: "2026-08-18",
+      review: "A detailed firsthand review of an unlisted artist, the room, the crowd, and the encore.",
+    });
+    addPost(database, {
+      id: "unlisted-gallery",
+      userId: "gallery-memory",
+      artist: "Unlisted Artist",
+      artistKey: null,
+      venue: "Archive Room",
+      date: "2026-08-18",
+      review: "",
+      overall: null,
+      createdAt: 2_000,
+    });
+    addReadyImage(database, { assetId: "unlisted-photo", ownerId: "gallery-memory", postId: "unlisted-gallery", url: "https://media.example/public/unlisted-photo.jpg" });
+    const showKey = archiveShowKey({
+      artistIdentity: "Unlisted Artist",
+      venueIdentity: "Archive Room",
+      date: "2026-08-18",
+    });
+    const documents = service(database);
+    const document = documents.concertDocument({ showKey, today: "2026-08-25" });
+    const html = documents.render(document);
+    const serialized = JSON.stringify(document.jsonLd);
+
+    assert.deepEqual(document.jsonLd.map((item) => item["@type"]), ["CollectionPage", "BreadcrumbList"]);
+    assert.doesNotMatch(serialized, /"@type":"Review"/);
+    assert.doesNotMatch(serialized, /#review/);
+    assert.equal(document.concert.artistPath, null);
+    assert.equal(Object.hasOwn(document.jsonLd[0].about[0], "url"), false);
+    assert.equal(document.breadcrumbs.some((crumb) => crumb.name === "Unlisted Artist"), false);
+    assert.equal(document.reviews.some((review) => review.id === "unlisted-gallery" && review.media.length === 1), true);
+    assert.match(html, /Unlisted Artist/);
+    assert.match(html, /unlisted-photo\.jpg/);
+    assert.doesNotMatch(html, /href="\/artist\//);
+  } finally {
+    database.close();
+  }
+});
+test("event ticket offers require a supported future purchasable state and missing artists stay plain text", () => {
+  const database = createDatabase();
+  try {
+    database.prepare(`INSERT INTO tour_dates
+      (id,artist,venue,date,ticket_url,event_status,venue_city,venue_country_code,release_at)
+      VALUES (?,?,?,?,?,?,?,?,?)`).run(
+      "unknown-event",
+      "Unlisted Touring Artist",
+      "World Hall",
+      "2026-09-01",
+      "https://www.ticketmaster.ca/event/100",
+      "scheduled",
+      "Toronto",
+      "CA",
+      0,
+    );
+    const documents = service(database);
+    const options = { id: "unknown-event", today: "2026-08-25", at: NOW };
+    const scheduled = documents.eventDocument(options);
+    const scheduledHtml = documents.render(scheduled);
+
+    assert.equal(scheduled.jsonLd[0].offers.url, "https://www.ticketmaster.ca/event/100");
+    assert.equal(Object.hasOwn(scheduled.jsonLd[0].offers, "availability"), false);
+    assert.equal(scheduled.event.ticketUrl, "https://www.ticketmaster.ca/event/100");
+    assert.equal(scheduled.event.artistPath, null);
+    assert.equal(scheduled.breadcrumbs.some((crumb) => crumb.name === "Unlisted Touring Artist"), false);
+    assert.match(scheduledHtml, /Unlisted Touring Artist/);
+    assert.doesNotMatch(scheduledHtml, /href="\/artist\//);
+
+    database.prepare("UPDATE tour_dates SET event_status=? WHERE id=?").run("offSale", "unknown-event");
+    const offSale = documents.eventDocument(options);
+    assert.equal(Object.hasOwn(offSale.jsonLd[0], "offers"), false);
+    assert.equal(offSale.event.ticketUrl, null);
+    assert.doesNotMatch(documents.render(offSale), /Buy tickets/);
+
+    database.prepare("UPDATE tour_dates SET event_status=? WHERE id=?").run("unavailable", "unknown-event");
+    const unavailable = documents.eventDocument(options);
+    assert.equal(Object.hasOwn(unavailable.jsonLd[0], "offers"), false);
+    assert.equal(unavailable.event.ticketUrl, null);
+
+    database.prepare("UPDATE tour_dates SET event_status=? WHERE id=?").run("cancelled", "unknown-event");
+    const cancelled = documents.eventDocument(options);
+    assert.equal(Object.hasOwn(cancelled.jsonLd[0], "offers"), false);
+    assert.equal(cancelled.event.ticketUrl, null);
+
+    database.prepare("UPDATE tour_dates SET event_status=?,date=? WHERE id=?").run("scheduled", "2026-08-20", "unknown-event");
+    const past = documents.eventDocument(options);
+    assert.equal(past.jsonLd[0]["@type"], "MusicEvent");
+    assert.equal(Object.hasOwn(past.jsonLd[0], "offers"), false);
+    assert.equal(past.event.ticketUrl, null);
+    assert.doesNotMatch(documents.render(past), /Buy tickets/);
+  } finally {
+    database.close();
+  }
+});
+test("a verified prominent clip emits matching VideoObject, Open Graph, dimensions, and visible HTML", () => {
+  const database = createDatabase();
+  try {
+    addUser(database, "active", { name: "Clip Fan", handle: "clipfan" });
+    addPost(database, {
+      id: "video-post",
+      review: "A detailed account of the finale, stage production, crowd reaction, and the encore captured in this clip.",
+    });
+    addReadyVideo(database, {
+      assetId: "asset-video",
+      ownerId: "active",
+      postId: "video-post",
+      url: "https://media.example/public/encore.mp4",
+      posterUrl: "https://media.example/public/encore-poster.jpg",
+    });
+    const documents = service(database);
+    const document = documents.postDocument({ id: "video-post" });
+    const html = documents.render(document);
+    const videoObject = document.jsonLd[0].video[0];
+    assert.equal(videoObject.contentUrl, "https://media.example/public/encore.mp4");
+    assert.deepEqual(videoObject.thumbnailUrl, ["https://media.example/public/encore-poster.jpg"]);
+    assert.equal(videoObject.duration, "PT45S");
+    assert.match(html, /<meta property="og:video" content="https:\/\/media\.example\/public\/encore\.mp4"/);
+    assert.match(html, /<video controls preload="metadata" playsinline poster="https:\/\/media\.example\/public\/encore-poster\.jpg" width="1280" height="720"/);
+    assert.match(html, /<figcaption>The encore from the crowd<\/figcaption>/);
+  } finally {
+    database.close();
+  }
+});
+
+test("incomplete legacy media does not emit an incomplete posting schema", () => {
+  const database = createDatabase();
+  try {
+    addUser(database, "active", { name: "Legacy Fan", handle: "legacyfan" });
+    addPost(database, {
+      id: "legacy-empty",
+      review: "",
+      photos: ["https://attacker.example/unverified-legacy.mp4"],
+    });
+
+    const document = service(database).postDocument({ id: "legacy-empty" });
+    assert.ok(document);
+    assert.equal(document.post.media.length, 0);
+    assert.deepEqual(document.jsonLd.map((item) => item["@type"]), ["BreadcrumbList"]);
+  } finally {
+    database.close();
+  }
+});
+
+test("verified post images are ImageObjects and the public artist directory is substantive and bounded", () => {
+  const database = createDatabase();
+  try {
+    addUser(database, "active", { name: "Image Fan", handle: "imagefan" });
+    addPost(database, {
+      id: "image-post",
+      review: "A detailed account of the sound, crowd, stage production, set list, and memorable encore.",
+    });
+    addReadyImage(database, {
+      assetId: "schema-image",
+      ownerId: "active",
+      postId: "image-post",
+      url: "https://media.example/public/schema-image.jpg",
+    });
+    const imageDocument = service(database).postDocument({ id: "image-post" });
+    assert.equal(imageDocument.jsonLd[0].image[0]["@type"], "ImageObject");
+    assert.equal(imageDocument.jsonLd[0].image[0].contentUrl, "https://media.example/public/schema-image.jpg");
+    assert.equal(Object.hasOwn(imageDocument.jsonLd[0], "associatedMedia"), false);
+
+    const longBio = "A substantive artist biography covering live history, musical style, recordings, tours, collaborators, and fan context.";
+    for (let index = 0; index < 205; index += 1) {
+      const key = `artist-${String(index).padStart(3, "0")}`;
+      addArtist(database, { key, name: key, bio: longBio });
+    }
+    addArtist(database, { key: "thin-only", name: "thin-only", bio: "Thin catalog row" });
+
+    const documents = service(database);
+    const directory = documents.directoryDocument({ kind: "artists", limit: 10_000, at: NOW, today: "2026-08-25" });
+    assert.equal(directory.artists.length, 200);
+    assert.equal(directory.artists.some((artist) => artist.name === "thin-only"), false);
+    for (const artist of directory.artists.slice(0, 3)) {
+      const resolved = documents.artistDocument({ artistKey: artist.name, at: NOW });
+      assert.ok(resolved);
+      assert.ok(resolved.description.length >= 80);
+    }
+  } finally {
+    database.close();
+  }
+});
+
+test("Discover is a substantive public hub while Search stays useful and noindex", () => {
+  const database = createDatabase();
+  try {
+    addUser(database, "active", { name: "Discovery Fan", handle: "discoveryfan" });
+    addUser(database, "banned", { name: "Restricted Fan", handle: "restrictedfan", banned: true });
+    addArtist(database, {
+      key: "discover-artist",
+      name: "Discover Artist",
+      bio: "A substantive artist biography about recordings, tours, collaborators, live performance history, and the community around the music.",
+    });
+    addPost(database, {
+      id: "discover-review",
+      artist: "Discover Artist",
+      artistKey: "discover-artist",
+      review: "A detailed fan review of the sound, crowd, musicianship, stage production, and an encore everyone kept talking about.",
+    });
+    addPost(database, {
+      id: "restricted-discover-review",
+      userId: "banned",
+      artist: "Discover Artist",
+      artistKey: "discover-artist",
+      review: "RESTRICTED DISCOVERY COPY THAT MUST NEVER BE PUBLISHED",
+    });
+    database.prepare(`INSERT INTO tour_dates
+      (id,artist,venue,place,date,source,release_at,venue_city,venue_country_code,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
+      "discover-event", "Discover Artist", "Discovery Hall", "London, United Kingdom",
+      "2026-12-05", "ticketmaster", 0, "London", "GB", NOW,
+    );
+
+    const documents = service(database);
+    const discover = documents.discoverDocument({ at: NOW, today: "2026-08-25" });
+    assert.equal(discover.kind, "discover");
+    assert.equal(discover.indexable, true);
+    assert.equal(discover.artists.some((artist) => artist.name === "Discover Artist"), true);
+    assert.equal(discover.events.some((event) => event.id === "discover-event"), true);
+    assert.equal(discover.posts.some((post) => post.id === "discover-review"), true);
+    const discoverHtml = documents.render(discover);
+    assert.match(discoverHtml, /Discover music through the people who were there/);
+    assert.match(discoverHtml, /Discover Artist|Discovery Hall/);
+    assert.doesNotMatch(discoverHtml, /RESTRICTED DISCOVERY COPY/);
+    assert.match(discoverHtml, /name="robots" content="index,follow/);
+
+    const search = documents.searchDocument();
+    const searchHtml = documents.render(search);
+    assert.equal(search.kind, "search");
+    assert.equal(search.indexable, false);
+    assert.match(searchHtml, /Search across the whole community/);
+    assert.match(searchHtml, /name="robots" content="noindex,follow"/);
+    assert.doesNotMatch(searchHtml, /rel="canonical"/);
   } finally {
     database.close();
   }

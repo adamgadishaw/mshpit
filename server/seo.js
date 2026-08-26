@@ -8,12 +8,17 @@
 
 import { db, artistStmts, normName } from "./db.js";
 import { activeAccountSql } from "./accountVisibility.js";
-import { isProduction } from "./environment.js";
+import { htmlRobotsDirective, isProduction } from "./environment.js";
+import { profileAllowsSearchIndexing } from "./profileSearchIndexing.js";
+import { projectedTourDateTicketUrl } from "../src/domain/ticketLinks.mjs";
 import {
   artistPath,
+  concertPath,
+  eventPath,
   parsePath,
   postPath,
   profilePath,
+  slugify,
   venuePath,
 } from "../src/domain/urls.mjs";
 import {
@@ -22,12 +27,13 @@ import {
   renderPublicDocumentShell,
 } from "./features/seo/publicDocuments.js";
 import {
-  sitemapIndexXml,
-  sitemapXmlFor,
+  createSitemapSnapshot,
+  isSitemapRequestPath,
 } from "./features/seo/sitemapService.js";
+import { decodeArchiveShowKey } from "./features/artistArchive/artistArchiveKeys.js";
 
 const SITE_NAME = "Mshpit";
-const DEFAULT_TITLE = "Mshpit — Your life's musical journey";
+const DEFAULT_TITLE = "Mshpit — Concert reviews, photos and live music discovery";
 const DEFAULT_DESCRIPTION =
   "Log the concerts that shape your story, share the nights you were there, and discover live music through people whose taste you trust.";
 
@@ -53,16 +59,86 @@ const publicDocuments = createPublicDocumentService({
     }),
     member: (row) => profilePath(row?.u_handle || row?.handle),
     post: (row) => postPath(row?.id),
+    event: (row) => eventPath(row?.id),
+    concert: (key) => concertPath(key),
+    venue: (row) => venuePath({
+      name: row?.venue || row?.name,
+      providerVenueId: row?.providerVenueId || row?.venue_provider_id,
+      source: row?.source,
+    }),
   },
 });
 
-const memberByHandle = db.prepare(`SELECT u.id,u.name,u.handle FROM users u
+const memberByHandle = db.prepare(`SELECT u.id,u.name,u.handle,u.extras FROM users u
   WHERE u.handle=? AND ${activeAccountSql("u")} LIMIT 1`);
-const venueByKey = db.prepare(`SELECT p.venue,p.city FROM posts p JOIN users u ON u.id=p.user_id
-  WHERE p.venue_key=? AND p.removed=0 AND ${activeAccountSql("u")}
-  ORDER BY p.created_at DESC,p.id DESC LIMIT 1`);
 const publicPostIdentity = db.prepare(`SELECT p.id FROM posts p JOIN users u ON u.id=p.user_id
   WHERE p.id=? AND p.removed=0 AND ${activeAccountSql("u")} LIMIT 1`);
+const publicEventIdentity = db.prepare(`SELECT td.id,td.event_name,td.artist,td.venue,td.place,td.date,
+    td.start_date_time,td.start_local_time,td.event_timezone,td.event_status,td.ticket_url,td.sold_out,
+    td.source,td.owner_id,td.venue_provider_id
+  FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id
+  WHERE td.id=? AND td.release_at<=?
+    AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
+    AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1 OR td.date<?)
+  LIMIT 1`);
+const publicConcertIdentity = db.prepare(`SELECT p.artist,p.artist_key,p.venue,p.venue_key,p.city,p.date,
+    AVG(p.overall) AS average_rating,COUNT(DISTINCT p.user_id) AS rating_count
+  FROM posts p JOIN users u ON u.id=p.user_id
+  WHERE p.removed=0 AND COALESCE(p.kind,'review')='review'
+    AND pit_archive_identity(COALESCE(NULLIF(TRIM(p.artist_key),''),p.artist))=?
+    AND pit_archive_identity(COALESCE(NULLIF(TRIM(p.venue_key),''),p.venue))=?
+    AND p.date=? AND ${activeAccountSql("u")}
+    AND (LENGTH(TRIM(COALESCE(p.review,'')))>=40 OR EXISTS (
+      SELECT 1 FROM post_media media WHERE media.post_id=p.id
+    ))
+  GROUP BY pit_archive_identity(COALESCE(NULLIF(TRIM(p.artist_key),''),p.artist)),
+    pit_archive_identity(COALESCE(NULLIF(TRIM(p.venue_key),''),p.venue)),p.date
+  LIMIT 1`);
+const PUBLIC_VENUE_EVENT_IDENTITY_COLUMNS = `td.venue,LOWER(td.venue) AS venue_key,
+    COALESCE(NULLIF(td.venue_city,''),td.place) AS city,td.source,td.venue_provider_id,td.updated_at`;
+const venueProviderByPublicSlug = db.prepare(`SELECT ${PUBLIC_VENUE_EVENT_IDENTITY_COLUMNS}
+  FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id
+  WHERE pit_venue_public_slug(td.source,td.venue_provider_id)=?
+    AND td.venue_provider_id IS NOT NULL AND TRIM(td.venue_provider_id)<>''
+    AND td.release_at<=? AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
+    AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1 OR td.date<?)
+  ORDER BY td.updated_at DESC,td.id DESC LIMIT 1`);
+const venueProvidersByNameSlug = db.prepare(`SELECT MAX(td.venue) AS venue,td.source,td.venue_provider_id,
+    MAX(COALESCE(NULLIF(td.venue_city,''),td.place)) AS city,MAX(td.updated_at) AS updated_at
+  FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id
+  WHERE pit_public_slug(td.venue)=? AND TRIM(COALESCE(td.venue,''))<>''
+    AND td.venue_provider_id IS NOT NULL AND TRIM(td.venue_provider_id)<>''
+    AND td.release_at<=? AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
+    AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1 OR td.date<?)
+  GROUP BY td.source,td.venue_provider_id
+  ORDER BY MAX(td.updated_at) DESC,td.source,td.venue_provider_id LIMIT 2`);
+const venueEventIdentitiesByNameSlug = db.prepare(`SELECT LOWER(TRIM(td.venue)) AS venue_identity,
+    pit_public_slug(COALESCE(NULLIF(td.venue_city,''),NULLIF(td.place,''))) AS location_identity
+  FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id
+  WHERE pit_public_slug(td.venue)=? AND TRIM(COALESCE(td.venue,''))<>''
+    AND td.release_at<=? AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
+    AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1 OR td.date<?)
+  GROUP BY venue_identity,location_identity
+  ORDER BY MAX(td.updated_at) DESC,venue_identity,location_identity LIMIT 2`);
+const venuePostIdentitiesByNameSlug = db.prepare(`SELECT LOWER(TRIM(p.venue)) AS venue_identity,
+    pit_public_slug(p.city) AS location_identity
+  FROM posts p JOIN users u ON u.id=p.user_id
+  WHERE pit_public_slug(p.venue)=? AND p.removed=0
+    AND TRIM(COALESCE(p.venue,''))<>'' AND ${activeAccountSql("u")}
+  GROUP BY venue_identity,location_identity
+  ORDER BY MAX(COALESCE(p.updated_at,p.created_at)) DESC,venue_identity,location_identity LIMIT 2`);
+const venueEventByNameSlug = db.prepare(`SELECT ${PUBLIC_VENUE_EVENT_IDENTITY_COLUMNS}
+  FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id
+  WHERE pit_public_slug(td.venue)=? AND TRIM(COALESCE(td.venue,''))<>''
+    AND td.release_at<=? AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
+    AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1 OR td.date<?)
+  ORDER BY td.updated_at DESC,td.id DESC LIMIT 1`);
+const venuePostByNameSlug = db.prepare(`SELECT p.venue,p.venue_key,p.city,
+    NULL AS source,NULL AS venue_provider_id,COALESCE(p.updated_at,p.created_at) AS updated_at
+  FROM posts p JOIN users u ON u.id=p.user_id
+  WHERE pit_public_slug(p.venue)=? AND p.removed=0
+    AND TRIM(COALESCE(p.venue,''))<>'' AND ${activeAccountSql("u")}
+  ORDER BY COALESCE(p.updated_at,p.created_at) DESC,p.id DESC LIMIT 1`);
 
 const esc = (value) => String(value ?? "")
   .replace(/&/g, "&amp;")
@@ -92,10 +168,13 @@ function memberResolution(handle) {
   const member = memberByHandle.get(String(handle || "").replace(/^@+/, "").toLowerCase());
   if (!member) return null;
   const path = profilePath(member.handle);
+  const allowsSearchIndexing = profileAllowsSearchIndexing(member);
   return {
     entity: { kind: "profile", name: member.name, handle: member.handle, id: member.id, path },
     canonicalPath: path,
-    documentRequest: { kind: "member", id: member.id, canonicalPath: path },
+    ...(allowsSearchIndexing
+      ? { documentRequest: { kind: "member", id: member.id, canonicalPath: path } }
+      : {}),
   };
 }
 
@@ -112,22 +191,135 @@ function postResolution(id) {
   };
 }
 
-function venueResolution(value) {
-  const key = normName(String(value || "").replace(/-/g, " "));
-  const venue = key ? venueByKey.get(key) : null;
-  if (!venue) return null;
-  const path = venuePath(venue.venue);
+function eventResolution(id, at = Date.now()) {
+  const instant = Number.isFinite(Number(at)) ? Number(at) : Date.now();
+  const today = new Date(instant).toISOString().slice(0, 10);
+  const event = publicEventIdentity.get(String(id || ""), instant, today);
+  if (!event) return null;
+  const path = eventPath(event.id);
   return {
-    entity: { kind: "venue", name: venue.venue, path },
+    entity: {
+      kind: "event",
+      id: event.id,
+      name: event.event_name || `${event.artist} at ${event.venue}`,
+      artist: event.artist,
+      venue: event.venue,
+      place: event.place || "",
+      city: event.place || "",
+      date: event.date,
+      startDateTime: event.start_date_time || null,
+      startLocalTime: event.start_local_time || null,
+      eventTimezone: event.event_timezone || null,
+      eventStatus: event.event_status || "scheduled",
+      ticketUrl: projectedTourDateTicketUrl(event) || null,
+      soldOut: !!event.sold_out,
+      performanceEvent: true,
+      path,
+    },
     canonicalPath: path,
+    documentRequest: { kind: "event", id: event.id, canonicalPath: path, at: instant, today },
   };
 }
+
+function concertResolution(showKey) {
+  const decoded = decodeArchiveShowKey(showKey);
+  if (!decoded) return null;
+  const concert = publicConcertIdentity.get(decoded.artistIdentity, decoded.venueIdentity, decoded.date);
+  if (!concert) return null;
+  const path = concertPath(showKey);
+  return {
+    entity: {
+      kind: "concert",
+      id: showKey,
+      showKey,
+      archiveShowKey: showKey,
+      artist: concert.artist,
+      venue: concert.venue,
+      city: concert.city || "",
+      place: concert.city || "",
+      date: concert.date,
+      overall: Number.isFinite(Number(concert.average_rating)) ? Number(concert.average_rating) : null,
+      ratingCount: Math.max(0, Number(concert.rating_count) || 0),
+      performanceEvent: true,
+      path,
+    },
+    canonicalPath: path,
+    documentRequest: { kind: "concert", showKey, canonicalPath: path },
+  };
+}
+
+function canonicalVenueSlug(candidate) {
+  return venuePath({
+    name: candidate?.venue,
+    providerVenueId: candidate?.venue_provider_id,
+    source: candidate?.source,
+  })?.slice("/venue/".length) || "";
+}
+
+function venueIdentityKey(row) {
+  const name = String(row?.venue_identity || "").trim();
+  const location = String(row?.location_identity || "").trim();
+  return name ? `${name}|${location}` : "";
+}
+
+function unambiguousVenueByNameSlug(requestedSlug, at, today) {
+  const providers = venueProvidersByNameSlug.all(requestedSlug, at, today);
+  if (providers.length > 1) return null;
+
+  const identities = new Set([
+    ...venueEventIdentitiesByNameSlug.all(requestedSlug, at, today),
+    ...venuePostIdentitiesByNameSlug.all(requestedSlug),
+  ].map(venueIdentityKey).filter(Boolean));
+  if (identities.size > 1) return null;
+
+  if (providers.length === 1) {
+    const providerSlug = canonicalVenueSlug(providers[0]);
+    return providerSlug ? venueProviderByPublicSlug.get(providerSlug, at, today) || null : null;
+  }
+  return venueEventByNameSlug.get(requestedSlug, at, today)
+    || venuePostByNameSlug.get(requestedSlug)
+    || null;
+}
+
+function venueResolution(value) {
+  const requestedSlug = String(value || "").trim().toLowerCase();
+  if (!requestedSlug || requestedSlug.length > 240 || slugify(requestedSlug) !== requestedSlug) return null;
+  const at = Date.now();
+  const today = new Date(at).toISOString().slice(0, 10);
+  const venue = venueProviderByPublicSlug.get(requestedSlug, at, today)
+    || unambiguousVenueByNameSlug(requestedSlug, at, today);
+  if (!venue) return null;
+  const path = venuePath({
+    name: venue.venue,
+    providerVenueId: venue.venue_provider_id,
+    source: venue.source,
+  });
+  if (!path) return null;
+  return {
+    entity: { kind: "venue", name: venue.venue, city: venue.city || null, path },
+    canonicalPath: path,
+    documentRequest: {
+      kind: "venue",
+      name: venue.venue,
+      venueKey: venue.venue_key || normName(venue.venue),
+      providerVenueId: venue.venue_provider_id || null,
+      source: venue.source || null,
+      canonicalPath: path,
+      at,
+      today,
+    },
+  };
+}
+
+const PUBLIC_DOCUMENT_UNAVAILABLE = Symbol("public-document-unavailable");
 
 function hydrateResolution(resolution) {
   if (!resolution) return null;
   if (!resolution?.documentRequest) return { ...resolution, document: null };
   const document = safePublicDocument(() => publicDocuments.documentFor(resolution.documentRequest));
-  return { ...resolution, document: document || null };
+  return document === PUBLIC_DOCUMENT_UNAVAILABLE
+    ? { ...resolution, document: null, unavailable: true }
+    : { ...resolution, document: document || null, unavailable: false };
 }
 
 function safePublicDocument(read) {
@@ -136,7 +328,7 @@ function safePublicDocument(read) {
   } catch (error) {
     const cause = error instanceof Error && error.name ? error.name : "UnknownError";
     console.error(`[seo] public document projection unavailable: cause=${cause}`);
-    return null;
+    return PUBLIC_DOCUMENT_UNAVAILABLE;
   }
 }
 
@@ -147,6 +339,8 @@ function entityResolution(pathname) {
   if (parsed.type === "artist") return artistResolution(parsed.value);
   if (parsed.type === "profile") return memberResolution(parsed.value);
   if (parsed.type === "show") return postResolution(parsed.value);
+  if (parsed.type === "event") return eventResolution(parsed.value);
+  if (parsed.type === "concert") return concertResolution(parsed.value);
   if (parsed.type === "venue") return venueResolution(parsed.value);
 
   // Legacy root vanity links had one shared namespace. Preserve their original
@@ -174,6 +368,7 @@ function publicRoute(pathname) {
   if (!path) return { type: "not-found", status: 404 };
   if (path === "/") {
     const document = safePublicDocument(() => publicDocuments.homeDocument({ canonicalPath: "/" }));
+    if (document === PUBLIC_DOCUMENT_UNAVAILABLE) return { type: "unavailable", status: 503 };
     if (!document) return { type: "app", status: 200 };
     return {
       type: "document",
@@ -181,6 +376,35 @@ function publicRoute(pathname) {
       canonicalPath: "/",
       document,
     };
+  }
+
+  if (path === "/artists" || path === "/events") {
+    const kind = path.slice(1);
+    const document = safePublicDocument(() => publicDocuments.directoryDocument({
+      kind,
+      canonicalPath: path,
+      at: Date.now(),
+    }));
+    if (document === PUBLIC_DOCUMENT_UNAVAILABLE) return { type: "unavailable", status: 503 };
+    if (!document) return { type: "not-found", status: 404 };
+    return { type: "document", status: 200, canonicalPath: path, document };
+  }
+
+  if (path === "/discover") {
+    const document = safePublicDocument(() => publicDocuments.discoverDocument({
+      canonicalPath: path,
+      at: Date.now(),
+    }));
+    if (document === PUBLIC_DOCUMENT_UNAVAILABLE) return { type: "unavailable", status: 503 };
+    if (!document || !documentIsIndexable(document)) return { type: "app", status: 200 };
+    return { type: "document", status: 200, canonicalPath: path, indexable: true, document };
+  }
+
+  if (path === "/search") {
+    const document = safePublicDocument(() => publicDocuments.searchDocument({ canonicalPath: path }));
+    if (document === PUBLIC_DOCUMENT_UNAVAILABLE) return { type: "unavailable", status: 503 };
+    if (!document) return { type: "app", status: 200 };
+    return { type: "document", status: 200, canonicalPath: path, indexable: false, document };
   }
 
   const parsed = parsePath(path);
@@ -191,12 +415,12 @@ function publicRoute(pathname) {
       return { type: "redirect", status: 301, location: identity.canonicalPath, entity: identity.entity };
     }
     const resolution = hydrateResolution(identity);
+    if (resolution.unavailable) return { type: "unavailable", status: 503 };
     if (resolution.document && documentIsIndexable(resolution.document)) {
       return { type: "document", status: 200, ...resolution };
     }
     if (resolution.document) return { type: "app", status: 200, entity: resolution.entity };
-    // Venue identity is not stable enough for a search canonical yet. Keep its
-    // interactive route but explicitly withhold it from indexing.
+    if (identity.documentRequest) return { type: "not-found", status: 404 };
     return { type: "app", status: 200, entity: resolution.entity };
   }
 
@@ -215,7 +439,8 @@ function documentIsIndexable(document) {
     return substantiveText(document.memorial?.summary, 20)
       || substantiveText(document.artist?.bio, 80)
       || document.reviews?.some((review) => substantiveText(review.text, 40) || review.media?.length)
-      || document.events?.length > 0;
+      || document.events?.length > 0
+      || document.concerts?.length > 0;
   }
   if (document.kind === "member") {
     return substantiveText(document.member?.bio, 60)
@@ -224,6 +449,21 @@ function documentIsIndexable(document) {
   if (document.kind === "post") {
     return substantiveText(document.post?.text, 40) || document.post?.media?.length > 0;
   }
+  if (document.kind === "event") {
+    return !!(document.event?.artist && document.event?.venue && document.event?.date);
+  }
+  if (document.kind === "concert") {
+    return document.reviews?.some((review) => substantiveText(review.text, 40) || review.media?.length)
+      || Number(document.concert?.ratingCount) > 0;
+  }
+  if (document.kind === "venue") {
+    return document.events?.length > 0
+      || document.posts?.some((post) => substantiveText(post.text, 40) || post.media?.length);
+  }
+  if (document.kind === "discover") {
+    return document.artists?.length > 0 || document.events?.length > 0 || document.posts?.length > 0;
+  }
+  if (document.kind === "directory") return true;
   return false;
 }
 
@@ -274,13 +514,29 @@ export function metadataFor(pathname) {
   return path ? legacyMetadata(hydrateResolution(entityResolution(path))) : null;
 }
 
-function defaultHead(pathname, { noindex = true } = {}) {
+const ROBOTS_META_PATTERN = /<meta\b(?=[^>]*\bname\s*=\s*["']robots["'])[^>]*\/?>\s*/gi;
+
+function withRobotsMeta(tags, { indexable = false, env = process.env } = {}) {
+  const withoutRobots = String(tags || "").replace(ROBOTS_META_PATTERN, "").trimStart();
+  const directive = htmlRobotsDirective({ indexable, env });
+  return `<meta name="robots" content="${esc(directive)}" />\n${withoutRobots}`;
+}
+
+export function enforceHtmlRobotsMeta(html, { indexable = false, env = process.env } = {}) {
+  const directive = htmlRobotsDirective({ indexable, env });
+  const tag = `<meta name="robots" content="${esc(directive)}" />`;
+  const withoutRobots = String(html || "").replace(ROBOTS_META_PATTERN, "");
+  return /<\/head>/i.test(withoutRobots)
+    ? withoutRobots.replace(/<\/head>/i, `  ${tag}\n</head>`)
+    : `${tag}\n${withoutRobots}`;
+}
+
+function defaultHead(pathname) {
   const path = cleanPathname(pathname) || "/";
   const url = `${origin()}${path}`;
   const image = `${origin()}/og.png`;
   return `<title>${esc(DEFAULT_TITLE)}</title>
     <meta name="description" content="${esc(DEFAULT_DESCRIPTION)}" />
-    ${noindex ? '<meta name="robots" content="noindex,follow" />' : ""}
     <meta property="og:site_name" content="${SITE_NAME}" />
     <meta property="og:type" content="website" />
     <meta property="og:title" content="${esc(DEFAULT_TITLE)}" />
@@ -292,23 +548,30 @@ function defaultHead(pathname, { noindex = true } = {}) {
     <meta name="twitter:card" content="summary_large_image" />`;
 }
 
-export function headTagsFor(pathname) {
-  const route = publicRoute(pathname);
-  return route.type === "document" && route.document
+function headTagsForRoute(pathname, route, env) {
+  const tags = route.type === "document" && route.document
     ? renderPublicDocumentHead(route.document)
     : defaultHead(pathname);
+  return withRobotsMeta(tags, {
+    indexable: route.type === "document" && !!route.document && route.indexable !== false,
+    env,
+  });
+}
+
+export function headTagsFor(pathname, env = process.env) {
+  const route = publicRoute(pathname);
+  return headTagsForRoute(pathname, route, env);
 }
 
 function replaceHead(html, tags) {
   const withoutTitle = String(html).replace(/\s*<title[^>]*>[\s\S]*?<\/title>/i, "");
-  return withoutTitle.replace(/<\/head>/i, `    ${tags}\n  </head>`);
+  const withoutRobots = withoutTitle.replace(ROBOTS_META_PATTERN, "");
+  return withoutRobots.replace(/<\/head>/i, `    ${tags}\n  </head>`);
 }
 
-export function injectHead(html, pathname, resolvedRoute = null) {
+export function injectHead(html, pathname, resolvedRoute = null, env = process.env) {
   const route = resolvedRoute || publicRoute(pathname);
-  let output = replaceHead(html, route.type === "document" && route.document
-    ? renderPublicDocumentHead(route.document)
-    : defaultHead(pathname));
+  let output = replaceHead(html, headTagsForRoute(pathname, route, env));
   if (route.type === "document" && route.document) {
     const shell = renderPublicDocumentShell(route.document);
     if (shell) output = output.replace(/<div\s+id=["']root["']\s*><\/div>/i, `<div id="root">${shell}</div>`);
@@ -316,10 +579,10 @@ export function injectHead(html, pathname, resolvedRoute = null) {
   return output;
 }
 
-export function renderNotFoundDocument() {
+export function renderNotFoundDocument(env = process.env) {
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Page not found | Mshpit</title><meta name="robots" content="noindex,follow" />
+  <title>Page not found | Mshpit</title><meta name="robots" content="${esc(htmlRobotsDirective({ env }))}" />
   <style>body{margin:0;background:#080807;color:#f8f4ec;font:16px/1.5 system-ui;display:grid;min-height:100vh;place-items:center}main{max-width:42rem;padding:2rem}p:first-child{color:#f4b72a;font:800 .75rem monospace;letter-spacing:.15em;text-transform:uppercase}h1{font:900 clamp(3rem,10vw,6rem)/.95 Georgia,serif;margin:.4rem 0}p{color:#bdb4aa}a{display:inline-block;margin-top:1rem;border-radius:999px;background:#f4b72a;color:#150f05;padding:.8rem 1.1rem;text-decoration:none;font-weight:800}</style>
 </head><body><main><p>Lost in the crowd</p><h1>That page isn't here.</h1><p>The link may be old, private, or removed.</p><a href="/">Back to Mshpit</a></main></body></html>`;
 }
@@ -333,32 +596,36 @@ export function robotsTxt() {
     "User-agent: *",
     "Allow: /",
     "Disallow: /api/",
-    "Disallow: /admin",
-    "Disallow: /moderation",
-    "Disallow: /messages",
-    "Disallow: /notifications",
-    "Disallow: /settings",
-    "Disallow: /you",
     "",
     `Sitemap: ${origin()}/sitemap.xml`,
     "",
   ].join("\n");
 }
 
-export function sitemapXml() {
-  return sitemapIndexXml(process.env);
+const SITEMAP_CACHE_TTL_MS = 5 * 60 * 1000;
+let sitemapSnapshotCache = null;
+
+function currentSitemapSnapshot(at) {
+  if (!sitemapSnapshotCache || at - sitemapSnapshotCache.createdAt >= SITEMAP_CACHE_TTL_MS) {
+    sitemapSnapshotCache = {
+      createdAt: at,
+      snapshot: createSitemapSnapshot({
+        database: db,
+        env: process.env,
+        now: at,
+      }),
+    };
+  }
+  return sitemapSnapshotCache.snapshot;
 }
 
-const SITEMAP_CACHE_TTL_MS = 5 * 60 * 1000;
-const sitemapCache = new Map();
+export function sitemapXml() {
+  return sitemapForPath("/sitemap.xml");
+}
 
 export function sitemapForPath(pathname) {
   const path = cleanPathname(pathname);
-  if (!path) return null;
+  if (!path || !isSitemapRequestPath(path)) return null;
   const at = Date.now();
-  const cached = sitemapCache.get(path);
-  if (cached && at - cached.at < SITEMAP_CACHE_TTL_MS) return cached.body;
-  const body = sitemapXmlFor(path, { database: db, env: process.env, now: at });
-  if (body != null) sitemapCache.set(path, { at, body });
-  return body;
+  return currentSitemapSnapshot(at).xmlFor(path);
 }

@@ -20,6 +20,7 @@ import { legacyTrackOverrideIdentityKey, trackOverrideIdentityKey } from "./trac
 import { normalizeTaggedUserIds } from "../src/domain/postFriendTags.mjs";
 import { privateErrorLabel } from "./errors.js";
 import { quarantineUnsafeLegacyImages } from "./publicMedia.js";
+import { ensurePostMediaCapacity, POST_MEDIA_MAX_POSITION } from "./postMediaSchema.js";
 
 export const artistSearchKey = (value) => String(value || "")
   .normalize("NFKD")
@@ -32,6 +33,13 @@ export const DATABASE_DIRECTORY = prepareDataDirectory({ fallbackDir: join(HERE,
 export const DATABASE_PATH = join(DATABASE_DIRECTORY, "pit.db");
 
 export const db = new DatabaseSync(DATABASE_PATH);
+db.function("pit_public_slug", { deterministic: true }, (value) => slugify(value) || "");
+db.function("pit_venue_public_slug", { deterministic: true }, (source, providerVenueId) => {
+  const provider = slugify(providerVenueId);
+  if (!provider) return "";
+  const namespace = slugify(source) || "provider";
+  return `${namespace}-${provider}`;
+});
 
 db.exec(`
   PRAGMA busy_timeout = 5000;
@@ -65,6 +73,7 @@ CREATE TABLE IF NOT EXISTS users (
   is_banned       INTEGER NOT NULL DEFAULT 0,
   suspended_until INTEGER,
   handle_changed_at INTEGER NOT NULL DEFAULT 0,
+  profile_updated_at INTEGER NOT NULL DEFAULT 0,
   created_at      INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_users_created ON users(created_at DESC, id DESC);
@@ -440,23 +449,39 @@ CREATE INDEX IF NOT EXISTS idx_post_tag_rejections_user
   ON post_tag_rejections(user_id, created_at DESC, post_id);
 
 -- ---- Tour dates (provider imports + authoritative artist/admin batches) -------
--- Provider rows have no owner and remain immediately public. First-party rows
--- carry owner/release attribution, so scheduled dates can be withheld without
--- client-local state or a redeploy.
+-- Active provider rows have no owner and are immediately public; inactive rows
+-- remain durable historical evidence. First-party rows carry owner/release
+-- attribution, so scheduled dates can be withheld without client-local state.
 CREATE TABLE IF NOT EXISTS tour_dates (
-  id         TEXT PRIMARY KEY,
-  artist     TEXT NOT NULL,
-  venue      TEXT,
-  place      TEXT,
-  lat        REAL,
-  lng        REAL,
-  date       TEXT,
-  ticket_url TEXT,
-  sold_out   INTEGER NOT NULL DEFAULT 0,
-  source     TEXT,
-  updated_at INTEGER NOT NULL,
-  owner_id   TEXT REFERENCES users(id) ON DELETE CASCADE,
-  release_at INTEGER NOT NULL DEFAULT 0
+  id                    TEXT PRIMARY KEY,
+  artist                TEXT NOT NULL,
+  venue                 TEXT,
+  place                 TEXT,
+  lat                   REAL,
+  lng                   REAL,
+  date                  TEXT,
+  ticket_url            TEXT,
+  sold_out              INTEGER NOT NULL DEFAULT 0,
+  source                TEXT,
+  updated_at            INTEGER NOT NULL,
+  owner_id              TEXT REFERENCES users(id) ON DELETE CASCADE,
+  release_at            INTEGER NOT NULL DEFAULT 0,
+  provider_event_id     TEXT,
+  event_name            TEXT,
+  start_date_time       TEXT,
+  start_local_time      TEXT,
+  event_timezone        TEXT,
+  event_status          TEXT,
+  venue_provider_id     TEXT,
+  venue_address_line1   TEXT,
+  venue_address_line2   TEXT,
+  venue_city            TEXT,
+  venue_region          TEXT,
+  venue_postal_code     TEXT,
+  venue_country_code    TEXT,
+  venue_country         TEXT,
+  provider_active       INTEGER NOT NULL DEFAULT 1,
+  last_seen_at          INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_tourdates_artist ON tour_dates(artist);
 
@@ -960,13 +985,13 @@ CREATE INDEX IF NOT EXISTS idx_media_asset_revisions_variant
   ON media_asset_revisions(variant_id);
 
 -- The old posts.photos URL array remains the compatibility/read fallback.
--- New clients additionally attach up to eight stable assets in the same order.
+-- New clients additionally attach up to twenty stable assets in the same order.
 -- An asset belongs to at most one post so removing a post has unambiguous
 -- privacy/deletion semantics for its original and every rendition.
 CREATE TABLE IF NOT EXISTS post_media (
   post_id    TEXT NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
   asset_id   TEXT NOT NULL REFERENCES media_assets(id) ON DELETE CASCADE,
-  position   INTEGER NOT NULL CHECK (position BETWEEN 0 AND 7),
+  position   INTEGER NOT NULL CHECK (position BETWEEN 0 AND ${POST_MEDIA_MAX_POSITION}),
   created_at INTEGER NOT NULL,
   PRIMARY KEY (post_id, position),
   UNIQUE (asset_id)
@@ -1333,6 +1358,7 @@ db.exec(`PRAGMA application_id = ${PIT_SQLITE_APPLICATION_ID}`);
 // while an already-present column is safely skipped on every boot.
 const additiveMigrations = [
   "ALTER TABLE users ADD COLUMN handle_changed_at INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE users ADD COLUMN profile_updated_at INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE users ADD COLUMN verified INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE users ADD COLUMN spotify_access_token TEXT",
   "ALTER TABLE users ADD COLUMN spotify_refresh_token TEXT",
@@ -1406,6 +1432,26 @@ const additiveMigrations = [
   // batches carry durable authorship and can be scheduled without leaking.
   "ALTER TABLE tour_dates ADD COLUMN owner_id TEXT REFERENCES users(id) ON DELETE CASCADE",
   "ALTER TABLE tour_dates ADD COLUMN release_at INTEGER NOT NULL DEFAULT 0",
+  // Provider identity and local/absolute time are kept separately. A local
+  // wall-clock value without an offset must never be silently presented as UTC.
+  "ALTER TABLE tour_dates ADD COLUMN provider_event_id TEXT",
+  "ALTER TABLE tour_dates ADD COLUMN event_name TEXT",
+  "ALTER TABLE tour_dates ADD COLUMN start_date_time TEXT",
+  "ALTER TABLE tour_dates ADD COLUMN start_local_time TEXT",
+  "ALTER TABLE tour_dates ADD COLUMN event_timezone TEXT",
+  "ALTER TABLE tour_dates ADD COLUMN event_status TEXT",
+  "ALTER TABLE tour_dates ADD COLUMN venue_provider_id TEXT",
+  "ALTER TABLE tour_dates ADD COLUMN venue_address_line1 TEXT",
+  "ALTER TABLE tour_dates ADD COLUMN venue_address_line2 TEXT",
+  "ALTER TABLE tour_dates ADD COLUMN venue_city TEXT",
+  "ALTER TABLE tour_dates ADD COLUMN venue_region TEXT",
+  "ALTER TABLE tour_dates ADD COLUMN venue_postal_code TEXT",
+  "ALTER TABLE tour_dates ADD COLUMN venue_country_code TEXT",
+  "ALTER TABLE tour_dates ADD COLUMN venue_country TEXT",
+  // Stale provider rows remain durable for archives and can be reactivated by
+  // the same stable provider identity on a later successful refresh.
+  "ALTER TABLE tour_dates ADD COLUMN provider_active INTEGER NOT NULL DEFAULT 1",
+  "ALTER TABLE tour_dates ADD COLUMN last_seen_at INTEGER",
   // Stable attendee pagination for existing rows (0 + user id) and all new rows.
   "ALTER TABLE going ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0",
   // Marketing consent. Broadcasts must honour this; password resets must not,
@@ -1571,7 +1617,7 @@ try {
   const ver = db.prepare("SELECT version FROM schema_version LIMIT 1").get();
   if (!ver) db.prepare("INSERT INTO schema_version (version) VALUES (1)").run();
   for (const stmt of additiveMigrations) {
-    const match = /^ALTER TABLE ([a-z_]+) ADD COLUMN ([a-z_]+)/i.exec(stmt);
+    const match = /^ALTER TABLE ([a-z_][a-z0-9_]*) ADD COLUMN ([a-z_][a-z0-9_]*)/i.exec(stmt);
     if (!match) throw new Error(`Unsupported additive migration: ${stmt}`);
     const [, table, column] = match;
     // This check intentionally runs after the write lock is held. A second
@@ -1581,6 +1627,7 @@ try {
       .some((entry) => String(entry.name).toLowerCase() === column.toLowerCase());
     if (!present) db.exec(stmt);
   }
+  ensurePostMediaCapacity(db);
   ensureArtistPublicSlugs(db);
   db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_artists_public_slug
     ON artists(lower(public_slug)) WHERE public_slug IS NOT NULL AND public_slug<>''`);
@@ -1724,6 +1771,23 @@ db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_tourdates_owner_show ON tour_date
 db.exec("CREATE INDEX IF NOT EXISTS idx_tourdates_visibility ON tour_dates(release_at, date)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_tourdates_owner ON tour_dates(owner_id, date)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_tourdates_artist_date ON tour_dates(lower(artist), date, id)");
+db.exec(`CREATE INDEX IF NOT EXISTS idx_tourdates_provider_identity
+  ON tour_dates(source, provider_event_id)
+  WHERE owner_id IS NULL AND provider_event_id IS NOT NULL`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_tourdates_provider_venue
+  ON tour_dates(source, venue_provider_id, date)
+  WHERE owner_id IS NULL AND venue_provider_id IS NOT NULL`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_tourdates_provider_venue_public_slug
+  ON tour_dates(pit_venue_public_slug(source, venue_provider_id), updated_at DESC, id DESC)
+  WHERE venue_provider_id IS NOT NULL AND trim(venue_provider_id)<>''`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_tourdates_venue_public_slug
+  ON tour_dates(pit_public_slug(venue), updated_at DESC, id DESC)
+  WHERE trim(COALESCE(venue,''))<>''`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_posts_venue_public_slug
+  ON posts(pit_public_slug(venue), updated_at DESC, created_at DESC, id DESC)
+  WHERE removed=0 AND trim(COALESCE(venue,''))<>''`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_tourdates_provider_visibility
+  ON tour_dates(provider_active, date, id) WHERE owner_id IS NULL`);
 db.exec("CREATE INDEX IF NOT EXISTS idx_going_cursor ON going(concert_key, created_at DESC, user_id DESC)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_follows_followee_follower ON follows(followee_id, follower_id)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_posts_landing_media ON posts(landing_showcase, photos_public, removed, kind, created_at DESC, id DESC)");
@@ -2447,7 +2511,7 @@ export function publicUser(u, { self = false, badges = false } = {}) {
   }
   const publicExtras = Object.fromEntries(["theme", "nowPlaying"].filter((key) => extras[key] !== undefined).map((key) => [key, extras[key]]));
   const selfExtras = self
-    ? Object.fromEntries(["consentAt", "analyticsConsentAt", "termsAcceptedAt", "termsVersion", "analyticsOptOut", "treble", "bass", "playlists"].filter((key) => extras[key] !== undefined).map((key) => [key, extras[key]]))
+    ? Object.fromEntries(["consentAt", "analyticsConsentAt", "termsAcceptedAt", "termsVersion", "analyticsOptOut", "searchIndexingOptOut", "treble", "bass", "playlists"].filter((key) => extras[key] !== undefined).map((key) => [key, extras[key]]))
     : {};
 
   return {

@@ -55,7 +55,7 @@ RUN apt-get update \
 WORKDIR /app
 COPY --from=ffmpeg-build /opt/ffmpeg /opt/ffmpeg
 COPY --chown=node:node package.json ./package.json
-COPY --chown=node:node server/videoVerifierProtocol.js server/videoVerifierService.js ./server/
+COPY --chown=node:node server/mediaDeliveryPolicy.js server/videoVerifierProtocol.js server/videoVerifierService.js ./server/
 
 ENV NODE_ENV=production \
     PIT_FFMPEG_PATH=/opt/ffmpeg/bin/ffmpeg \

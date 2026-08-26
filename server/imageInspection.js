@@ -1,21 +1,21 @@
 import { inflateSync } from "node:zlib";
 
-// These limits are enforced before libvips visits pixels. Twenty-four
-// megapixels still covers ordinary phone-camera uploads while bounding an
-// isolated decoder job to roughly 96 MiB of 8-bit RGBA pixels.
-export const MAX_IMAGE_PIXELS = 24_000_000;
+// These limits are enforced before libvips visits pixels. Fifty megapixels
+// covers current 48 MP phone-camera output while the isolated child heap and
+// one-job processor queue bound expanded-pixel memory.
+export const MAX_IMAGE_PIXELS = 50_000_000;
 export const MAX_IMAGE_EDGE = 16_384;
 export const MAX_PNG_BIT_DEPTH = 8;
-// Historical 24 MP-class phone JPEGs in production are 5712x4284 (24,470,208
-// pixels) and carry a second-image/gain-map trailer. This narrow ceiling is
-// available only through canonicalLegacyRecoveryJpegPrefix; ordinary uploads
-// stay on MAX_IMAGE_PIXELS and recovered output is downscaled before publish.
-export const MAX_LEGACY_RECOVERY_JPEG_PIXELS = 25_000_000;
+// Some phone JPEGs carry a second-image or HDR gain-map trailer. Recovery only
+// admits the marker-validated primary JPEG, then re-encodes bounded pixels;
+// ordinary validation remains strict and recovered output is downscaled.
+export const MAX_LEGACY_RECOVERY_JPEG_PIXELS = MAX_IMAGE_PIXELS;
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const SAFE_PNG_CHUNKS = new Set(["IHDR", "PLTE", "IDAT", "IEND", "tRNS", "cHRM", "gAMA", "sRGB"]);
-const HEIF_BRANDS = new Set(["avif", "heic", "heif", "heix", "hevc", "hevx", "mif1", "msf1"]);
+const HEIF_BRANDS = new Set(["avif", "avis", "heic", "heif", "heix", "hevc", "hevx", "mif1", "msf1"]);
 const HEIC_BRANDS = new Set(["heic", "heix", "hevc", "hevx"]);
+const AVIF_BRANDS = new Set(["avif", "avis"]);
 const JPEG_SOF_MARKERS = new Set([0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf]);
 
 export class ImageInspectionError extends Error {
@@ -54,7 +54,7 @@ function detectedMimeType(bytes) {
 
 function expectedTypeMatches(actual, expected, bytes) {
   if (actual !== "image/heif") return actual === expected;
-  if (!new Set(["image/heic", "image/heif"]).has(expected)) return false;
+  if (!new Set(["image/heic", "image/heif", "image/avif"]).has(expected)) return false;
   const boxSize = bytes.readUInt32BE(0);
   if (boxSize < 16 || boxSize > bytes.length) return false;
   const brands = [];
@@ -62,6 +62,7 @@ function expectedTypeMatches(actual, expected, bytes) {
     if (offset === 12) continue; // ftyp minor version
     brands.push(bytes.toString("ascii", offset, offset + 4));
   }
+  if (expected === "image/avif") return brands.some((brand) => AVIF_BRANDS.has(brand));
   return expected === "image/heic"
     ? brands.some((brand) => HEIC_BRANDS.has(brand))
     : brands.some((brand) => HEIF_BRANDS.has(brand));

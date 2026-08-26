@@ -10,6 +10,7 @@
 // cannot see is a destructive statement written outside the loop, which is what
 // this test covers.
 import assert from "node:assert/strict";
+import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,8 +18,10 @@ import test from "node:test";
 import { trackOverrideIdentityKey } from "./trackIdentity.js";
 import { createArtistMemorialRepository } from "./features/artistMemorials/artistMemorialRepository.js";
 import { createArtistMemorialService } from "./features/artistMemorials/artistMemorialService.js";
+import { ensurePostMediaCapacity, POST_MEDIA_MAX_POSITION } from "./postMediaSchema.js";
 
 const source = readFileSync(new URL("./db.js", import.meta.url), "utf8");
+const postMediaSchemaSource = readFileSync(new URL("./postMediaSchema.js", import.meta.url), "utf8");
 
 test("no destructive DDL anywhere in the database layer", () => {
   // Dropping or renaming makes a code rollback insufficient on its own: the
@@ -32,10 +35,91 @@ test("no destructive DDL anywhere in the database layer", () => {
   assert.deepEqual(offenders.map((o) => `db.js:${o.n}  ${o.line.slice(0, 70)}`), []);
 });
 
+test("the post media capacity rebuild is the only audited table replacement", () => {
+  const destructive = /\b(DROP\s+TABLE|RENAME\s+COLUMN|RENAME\s+TO|ALTER\s+COLUMN)\b/i;
+  const statements = postMediaSchemaSource.split("\n")
+    .map((line) => line.trim())
+    .filter((line) => destructive.test(line));
+  assert.deepEqual(statements, [
+    "DROP TABLE post_media;",
+    "ALTER TABLE post_media_capacity_v2 RENAME TO post_media;",
+  ]);
+  assert.match(postMediaSchemaSource, /rollback-compatible constraint relaxation/);
+  assert.match(postMediaSchemaSource, /BEGIN IMMEDIATE/);
+});
+
+test("post media capacity migration preserves all legacy rows, order, and foreign keys", () => {
+  const database = new DatabaseSync(":memory:");
+  try {
+    database.exec(`
+      PRAGMA foreign_keys=ON;
+      CREATE TABLE posts (id TEXT PRIMARY KEY);
+      CREATE TABLE media_assets (id TEXT PRIMARY KEY);
+      CREATE TABLE post_media (
+        post_id TEXT NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+        asset_id TEXT NOT NULL REFERENCES media_assets(id) ON DELETE CASCADE,
+        position INTEGER NOT NULL CHECK (position BETWEEN 0 AND 7),
+        created_at INTEGER NOT NULL,
+        PRIMARY KEY (post_id, position),
+        UNIQUE (asset_id)
+      );
+      CREATE INDEX idx_post_media_asset ON post_media(asset_id);
+      INSERT INTO posts (id) VALUES ('album');
+    `);
+    const addAsset = database.prepare("INSERT INTO media_assets (id) VALUES (?)");
+    const addMedia = database.prepare(`INSERT INTO post_media
+      (post_id,asset_id,position,created_at) VALUES ('album',?,?,?)`);
+    for (let position = 0; position <= POST_MEDIA_MAX_POSITION; position += 1) {
+      addAsset.run(`asset-${String(position).padStart(2, "0")}`);
+      if (position <= 7) addMedia.run(`asset-${String(position).padStart(2, "0")}`, position, 1_000 + position);
+    }
+
+    database.exec("BEGIN IMMEDIATE");
+    const migrated = ensurePostMediaCapacity(database);
+    database.exec("COMMIT");
+    assert.deepEqual(migrated, { migrated: true, rowCount: 8 });
+    assert.match(
+      String(database.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='post_media'").get().sql),
+      /position BETWEEN 0 AND 19/,
+    );
+    assert.deepEqual(
+      database.prepare("SELECT asset_id,position,created_at FROM post_media ORDER BY position").all()
+        .map((row) => ({ ...row })),
+      Array.from({ length: 8 }, (_, position) => ({
+        asset_id: `asset-${String(position).padStart(2, "0")}`,
+        position,
+        created_at: 1_000 + position,
+      })),
+    );
+
+    for (let position = 8; position <= POST_MEDIA_MAX_POSITION; position += 1) {
+      addMedia.run(`asset-${String(position).padStart(2, "0")}`, position, 1_000 + position);
+    }
+    assert.deepEqual(
+      database.prepare("SELECT position FROM post_media WHERE post_id='album' ORDER BY position").all()
+        .map((row) => row.position),
+      Array.from({ length: 20 }, (_, position) => position),
+    );
+    assert.throws(
+      () => database.prepare(`INSERT INTO post_media
+        (post_id,asset_id,position,created_at) VALUES ('album','asset-00',20,2000)`).run(),
+      /CHECK constraint failed/i,
+    );
+    assert.deepEqual(database.prepare("PRAGMA foreign_key_check(post_media)").all(), []);
+
+    database.exec("BEGIN IMMEDIATE");
+    const rebooted = ensurePostMediaCapacity(database);
+    database.exec("COMMIT");
+    assert.deepEqual(rebooted, { migrated: false, rowCount: 20 });
+  } finally {
+    if (database.isTransaction) database.exec("ROLLBACK");
+    database.close();
+  }
+});
 test("the additive-migration guard is still enforced at runtime", () => {
   // The loop parses each statement and throws on anything that is not an
   // ADD COLUMN, so a destructive entry fails at boot rather than on first use.
-  assert.match(source, /ALTER TABLE \(\[a-z_\]\+\) ADD COLUMN/,
+  assert.match(source, /ALTER TABLE \(\[a-z_\]\[a-z0-9_\]\*\) ADD COLUMN/,
     "the migration parser changed; re-check that non-additive statements still cannot run");
   assert.match(source, /Unsupported additive migration/,
     "the guard that rejects non-additive migrations is gone");
@@ -210,7 +294,27 @@ test("legacy attendance, tour-date, and campaign tables gain safe additive colum
     DROP INDEX idx_tourdates_owner_show;
     DROP INDEX idx_tourdates_visibility;
     DROP INDEX idx_tourdates_owner;
+    DROP INDEX idx_tourdates_provider_identity;
+    DROP INDEX idx_tourdates_provider_venue;
+    DROP INDEX idx_tourdates_provider_venue_public_slug;
+    DROP INDEX idx_tourdates_provider_visibility;
     ALTER TABLE going DROP COLUMN created_at;
+    ALTER TABLE tour_dates DROP COLUMN last_seen_at;
+    ALTER TABLE tour_dates DROP COLUMN provider_active;
+    ALTER TABLE tour_dates DROP COLUMN venue_country;
+    ALTER TABLE tour_dates DROP COLUMN venue_country_code;
+    ALTER TABLE tour_dates DROP COLUMN venue_postal_code;
+    ALTER TABLE tour_dates DROP COLUMN venue_region;
+    ALTER TABLE tour_dates DROP COLUMN venue_city;
+    ALTER TABLE tour_dates DROP COLUMN venue_address_line2;
+    ALTER TABLE tour_dates DROP COLUMN venue_address_line1;
+    ALTER TABLE tour_dates DROP COLUMN venue_provider_id;
+    ALTER TABLE tour_dates DROP COLUMN event_status;
+    ALTER TABLE tour_dates DROP COLUMN event_timezone;
+    ALTER TABLE tour_dates DROP COLUMN start_local_time;
+    ALTER TABLE tour_dates DROP COLUMN start_date_time;
+    ALTER TABLE tour_dates DROP COLUMN event_name;
+    ALTER TABLE tour_dates DROP COLUMN provider_event_id;
     ALTER TABLE tour_dates DROP COLUMN release_at;
     ALTER TABLE tour_dates DROP COLUMN owner_id;
     ALTER TABLE email_queue DROP COLUMN claim_token;
@@ -233,6 +337,12 @@ test("legacy attendance, tour-date, and campaign tables gain safe additive colum
   assert.ok(goingColumns.has("created_at"));
   assert.ok(tourColumns.has("owner_id"));
   assert.ok(tourColumns.has("release_at"));
+  for (const column of [
+    "provider_event_id", "event_name", "start_date_time", "start_local_time", "event_timezone",
+    "event_status", "venue_provider_id", "venue_address_line1", "venue_address_line2", "venue_city",
+    "venue_region", "venue_postal_code", "venue_country_code", "venue_country", "provider_active",
+    "last_seen_at",
+  ]) assert.ok(tourColumns.has(column), `tour_dates should add ${column}`);
   assert.ok(emailQueueColumns.has("claimed_at"));
   assert.ok(emailQueueColumns.has("claim_token"));
   assert.ok(campaignColumns.has("content_revision"));
@@ -255,6 +365,9 @@ test("legacy attendance, tour-date, and campaign tables gain safe additive colum
   assert.ok(tourIndexes.has("idx_tourdates_visibility"));
   assert.ok(tourIndexes.has("idx_tourdates_owner"));
   assert.ok(tourIndexes.has("idx_tourdates_owner_show"));
+  assert.ok(tourIndexes.has("idx_tourdates_provider_identity"));
+  assert.ok(tourIndexes.has("idx_tourdates_provider_venue"));
+  assert.ok(tourIndexes.has("idx_tourdates_provider_visibility"));
   const migratedOverride = upgraded.db.prepare("SELECT * FROM track_overrides WHERE key=?")
     .get(trackOverrideIdentityKey("初恋", "宇多田ヒカル"));
   assert.equal(migratedOverride.video_id, "legacyjp001");

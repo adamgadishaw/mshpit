@@ -6,6 +6,8 @@ import Avatar from "../Avatar";
 import { proxied, isHttp } from "../../lib/img";
 import { compactDiscoverNumber, discoverSectionState, filterDiscoverRows } from "../../domain/discoverView.mjs";
 import { SectionHeading } from "./DiscoverPrimitives";
+import { PublicPressableLink } from "../PublicWebLinks";
+import { artistPath } from "../../domain/urls.mjs";
 
 const initialsOf = (name = "") => name.split(/\s+/).filter(Boolean).slice(0, 2).map((word) => word[0]).join("").toUpperCase() || "?";
 const artistUser = (row) => ({ avatarUri: row?.photo && isHttp(row.photo) ? proxied(row.photo, 240) : row?.photo || null, initials: initialsOf(row?.name), avatarColor: colors.amber });
@@ -51,10 +53,10 @@ function ArtistChartRow({ row, index, source, onOpen, onPlay, onAdd, narrow }) {
     <View style={[styles.chartRow, narrow && styles.chartRowNarrow, index > 0 && styles.chartRowBorder, rank === 1 && styles.chartRowLead]}>
       <View style={[styles.rankBadge, topThree && styles.rankBadgeTop]}><Text style={[styles.rankText, topThree && styles.rankTextTop]}>{rank}</Text></View>
       <Avatar user={artistUser(row)} size={narrow ? 40 : rank === 1 ? 52 : 44} />
-      <Pressable style={styles.chartRowMain} onPress={() => onOpen?.(row.name)} accessibilityRole="button" accessibilityLabel={`Open ${row.name}${row.genre ? `, ${row.genre}` : ""}`}>
+      <PublicPressableLink href={artistPath(row)} onNavigate={() => onOpen?.(row)} style={styles.chartRowMain} accessibilityLabel={`Open ${row.name}${row.genre ? `, ${row.genre}` : ""}`}>
         <Text style={[styles.chartArtist, rank === 1 && styles.chartArtistLead]} numberOfLines={1}>{row.name}</Text>
         <Text style={styles.chartMeta} numberOfLines={1}>{[row.genre || "Artist", row.topTrack?.title].filter(Boolean).join(" · ")}</Text>
-      </Pressable>
+      </PublicPressableLink>
       {!!row.topTrack && (
         <View style={styles.trackActions}>
           <Pressable style={styles.trackButton} onPress={() => onAdd?.(row)} accessibilityRole="button" accessibilityLabel={`Add ${row.topTrack.title} by ${row.name} to a playlist`} hitSlop={4}><Icon name="plus" size={14} color={colors.textDim} /></Pressable>

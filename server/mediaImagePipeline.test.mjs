@@ -191,7 +191,7 @@ test("client-authored stable variants stay private and only a decoded metadata-f
       body: { width: 30, height: 20 },
       fetchImpl: storage.fetchImpl,
     }),
-    (error) => error.status === 415 && error.code === "MEDIA_TYPE_UNSUPPORTED",
+    (error) => error.status === 400 && error.code === "VALIDATION_FAILED",
   );
   assert.equal(storage.publicPuts.length, publicCount,
     "invalid client bytes never receive a public object capability");

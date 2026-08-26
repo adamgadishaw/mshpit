@@ -32,6 +32,7 @@ const {
   MEDIA_OWNER_SWEEP_RECHECK_MS,
   MEDIA_DELETION_DEAD_REDRIVE_MS,
   MEDIA_UPLOAD_SETTLE_BUFFER_MS,
+  MEDIA_MAX_COMPOSITION_OUTSTANDING_BYTES,
   recordMediaObjectTicket,
   reserveMediaUploadTicket,
   redriveMediaDeletionDeadLetters,
@@ -73,10 +74,12 @@ test("default media allowances are creator-scale emergency ceilings, not product
   const limits = mediaUploadQuotaLimits({});
   assert.deepEqual(limits, {
     outstandingObjects: 256,
-    outstandingBytes: 16 * 1024 * 1024 * 1024,
+    outstandingBytes: 32 * 1024 * 1024 * 1024,
     rollingBytes: 64 * 1024 * 1024 * 1024,
     rollingTickets: 4_096,
   });
+  assert.ok(limits.outstandingBytes > MEDIA_MAX_COMPOSITION_OUTSTANDING_BYTES,
+    "one maximum valid 20-video composition must fit before attachment");
   assert.deepEqual(mediaUploadGlobalCircuitBreakerLimits({}), {
     outstandingObjects: 100_000,
     outstandingBytes: 2 * 1024 * 1024 * 1024 * 1024,

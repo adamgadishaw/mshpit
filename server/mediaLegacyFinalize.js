@@ -3,6 +3,10 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypt
 import { withImmediateWrite as withWrite } from "./databaseTransaction.js";
 import { ApiError } from "./errors.js";
 import {
+  IMAGE_FINALIZATION_PREFLIGHT_TOKEN,
+  runImageFinalizationPreflight,
+} from "./imageFinalizationAdmission.js";
+import {
   createMediaPresign,
   validateMediaRequest,
 } from "./media.js";
@@ -34,6 +38,7 @@ const IMAGE_OUTPUT_TYPE = Object.freeze({
   "image/webp": "image/webp",
   "image/gif": "image/webp",
   "image/heic": "image/jpeg",
+  "image/avif": "image/jpeg",
   "image/heif": "image/jpeg",
 });
 const DUMMY_TOKEN_HASH = createHash("sha256").update("pit-invalid-legacy-media-token").digest("hex");
@@ -45,6 +50,7 @@ const RECOVERABLE_PROFILE_REFERENCES = Object.freeze({
   "artist_profile.banner": Object.freeze({ purpose: "banner", scope: "artist_profile", field: "banner" }),
 });
 const SANITIZED_PROFILE_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+const PROFILE_IMAGE_RENDITIONS = new Set(["avatar", "banner"]);
 
 function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
@@ -229,8 +235,22 @@ function claimOutcomeError(outcome) {
   return new ApiError(409, "That photo finalization is no longer available.", "CONFLICT");
 }
 
+const TERMINAL_LEGACY_IMAGE_ERRORS = new Map([
+  ["VALIDATION_FAILED", 400],
+  ["MEDIA_TOO_LARGE", 413],
+  ["MEDIA_TYPE_UNSUPPORTED", 415],
+]);
+
+export function isTerminalLegacyImageError(error) {
+  return error instanceof ApiError && TERMINAL_LEGACY_IMAGE_ERRORS.get(error.code) === error.status;
+}
+
 function settleFailedClaim(database, { ownerId, row, claimId, error, at }) {
-  const terminal = error instanceof ApiError && error.status === 415;
+  // Malformed bytes, resource-limit violations, and unsupported actual codecs
+  // cannot become valid by replaying the same immutable staging generation.
+  // Transport/capacity failures and object-generation conflicts remain pending
+  // so the owner can safely resume without uploading the source twice.
+  const terminal = isTerminalLegacyImageError(error);
   withWrite(database, () => {
     const current = database.prepare(`SELECT status,processing_claim,staging_object_key
       FROM legacy_media_finalize_descriptors WHERE id=? AND owner_id=?`).get(row.id, ownerId);
@@ -251,9 +271,46 @@ export async function finalizeLegacyMediaUpload(database, {
   fetchImpl = globalThis.fetch,
   imageProcessor,
   signal,
+  imageFinalizationStage = null,
+  imageExpectedFingerprint = null,
 } = {}) {
   ensureLegacyMediaFinalizeSchema(database);
   const owner = normalizedOwner(ownerId);
+  const descriptor = authenticatedDescriptor(database, { ownerId: owner, finalizeToken });
+  if (descriptor.status === "finalized") return outputProjection(descriptor, { duplicate: true });
+  const admissionFingerprint = sha256(JSON.stringify({
+    descriptorId: descriptor.id,
+    stagingObjectKey: descriptor.staging_object_key,
+    stagingMimeType: descriptor.staging_mime_type,
+    stagingByteSize: descriptor.staging_byte_size,
+    outputMimeType: descriptor.output_mime_type,
+    purpose: descriptor.purpose,
+  }));
+  if (imageFinalizationStage !== IMAGE_FINALIZATION_PREFLIGHT_TOKEN) {
+    return runImageFinalizationPreflight({
+      scope: database,
+      ownerId: owner,
+      baseKey: `legacy:${descriptor.id}:${descriptor.staging_object_key}`,
+      fingerprint: admissionFingerprint,
+      byteSize: Number(descriptor.staging_byte_size),
+      signal,
+      onJoin: (value) => Object.freeze({ ...value, duplicate: true }),
+      task: ({ signal: sharedSignal }) => finalizeLegacyMediaUpload(database, {
+        ownerId: owner,
+        finalizeToken,
+        env,
+        at,
+        fetchImpl,
+        imageProcessor,
+        signal: sharedSignal,
+        imageFinalizationStage: IMAGE_FINALIZATION_PREFLIGHT_TOKEN,
+        imageExpectedFingerprint: admissionFingerprint,
+      }),
+    });
+  }
+  if (imageExpectedFingerprint !== admissionFingerprint) {
+    throw new ApiError(409, "That photo changed while it was waiting to be finalized.", "CONFLICT");
+  }
   const claimId = randomUUID();
   const claim = claimDescriptor(database, { ownerId: owner, finalizeToken, at, claimId });
   if (claim.outcome === "finalized") return outputProjection(claim.row, { duplicate: true });
@@ -270,7 +327,12 @@ export async function finalizeLegacyMediaUpload(database, {
       env,
       fetchImpl,
       imageProcessor,
+      imageTimeoutMs: 60_000,
+      allowHeicFallback: true,
+      allowLegacyJpegTrailer: true,
+      profileRendition: PROFILE_IMAGE_RENDITIONS.has(row.purpose) ? row.purpose : null,
       signal,
+      imageFinalizationStage: IMAGE_FINALIZATION_PREFLIGHT_TOKEN,
     });
     const staged = await stageSanitizedPublicImage(database, {
       ownerId: owner,

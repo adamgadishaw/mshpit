@@ -10,6 +10,8 @@ import { BadgeRow } from "../components/Badge";
 import { LIMITS } from "../domain/validation.mjs";
 import { applyPostLocalOverride, withRemovedSelfPostTag } from "../domain/postLocalOverrides.mjs";
 import { accountTargetScope } from "../domain/screenScope.mjs";
+import { PublicTextLink } from "../components/PublicWebLinks";
+import { profilePath } from "../domain/urls.mjs";
 
 const ago = (ts) => {
   if (!ts) return "";
@@ -33,9 +35,15 @@ function CommentNode({ c, replies, depth, onReply, onDelete, onReport, sessionId
           : <Avatar user={author} size={30} onPress={c.userId ? () => onOpenProfile?.(c.userId) : undefined} />}
         <View style={{ flex: 1 }}>
           <View style={styles.cHead}>
-            {!c.deleted && <Pressable onPress={c.userId ? () => onOpenProfile?.(c.userId) : undefined}>
-              <Text style={[styles.cName, roleColor(author.role) && { color: roleColor(author.role) }]}>{author.name}</Text>
-            </Pressable>}
+            {!c.deleted && (
+              <PublicTextLink
+                href={author.handle ? profilePath(author.handle) : null}
+                onNavigate={c.userId ? () => onOpenProfile?.(c.userId) : undefined}
+                style={[styles.cName, roleColor(author.role) && { color: roleColor(author.role) }]}
+              >
+                {author.name}
+              </PublicTextLink>
+            )}
             {!c.deleted && <BadgeRow badges={userBadges(author)} size={12} />}
             <Text style={styles.cTime}>· {ago(c.at)}</Text>
           </View>

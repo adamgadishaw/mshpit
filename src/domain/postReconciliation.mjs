@@ -1,3 +1,4 @@
+import { MEDIA_POST_MAX_ATTACHMENTS } from "./mediaUploadPolicy.mjs";
 import { toIsoDate } from "./dates.mjs";
 import { clean, clampRating, LIMITS } from "./validation.mjs";
 import { normalizeArtistCampaign } from "./artistCampaignPost.mjs";
@@ -72,10 +73,10 @@ function intendedValue(key, value) {
     case "room": return value == null ? null : clampRating(value);
     case "dims": return cleanDimensions(value);
     case "review": return clean(value, { max: LIMITS.review, newlines: true });
-    case "photos": return cleanArray(value, { maxItems: 8, maxLen: 2000 });
+    case "photos": return cleanArray(value, { maxItems: MEDIA_POST_MAX_ATTACHMENTS, maxLen: 2000 });
     case "mediaAssetIds": {
       if (!Array.isArray(value)) return [];
-      return value.filter((item) => typeof item === "string" && /^ma_[A-Za-z0-9_-]{8,80}$/.test(item)).slice(0, 8);
+      return value.filter((item) => typeof item === "string" && /^ma_[A-Za-z0-9_-]{8,80}$/.test(item)).slice(0, MEDIA_POST_MAX_ATTACHMENTS);
     }
     case "photosPublic":
     case "landingShowcase": return !!value;

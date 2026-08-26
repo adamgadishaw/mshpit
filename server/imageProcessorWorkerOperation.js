@@ -8,8 +8,10 @@ import {
   MAX_IMAGE_PIXELS,
   MAX_LEGACY_RECOVERY_JPEG_PIXELS,
 } from "./imageInspection.js";
+import { profileImageContract } from "../src/domain/profileImagePolicy.mjs";
+import { MEDIA_PHOTO_SOURCE_MAX_BYTES } from "../src/domain/mediaUploadPolicy.mjs";
 
-export const MAX_IMAGE_INPUT_BYTES = 12 * 1024 * 1024;
+export const MAX_IMAGE_INPUT_BYTES = MEDIA_PHOTO_SOURCE_MAX_BYTES;
 export const MAX_IMAGE_OUTPUT_BYTES = 12 * 1024 * 1024;
 
 const SOURCE_TYPES = new Set([
@@ -19,9 +21,11 @@ const SOURCE_TYPES = new Set([
   "image/gif",
   "image/heic",
   "image/heif",
+  "image/avif",
 ]);
 const OUTPUT_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 const HEIC_TYPES = new Set(["image/heic", "image/heif"]);
+const HEIF_TYPES = new Set(["image/heic", "image/heif", "image/avif"]);
 const HEIC_FALLBACK_OUTPUT_TYPES = new Set(["image/jpeg", "image/webp"]);
 const FORMAT_MIME = Object.freeze({
   jpeg: "image/jpeg",
@@ -67,6 +71,13 @@ function outputType(value) {
   return type;
 }
 
+function requestedProfileRendition(value) {
+  if (value == null || value === "") return null;
+  const contract = profileImageContract(value);
+  if (!contract) throw processorError("invalid_rendition", "Profile image rendition is invalid.");
+  return contract;
+}
+
 function sharpOptions(limitInputPixels = MAX_IMAGE_PIXELS) {
   return {
     failOn: "warning",
@@ -83,7 +94,7 @@ function assertDecodedMetadata(metadata, expectedType, {
   maxPixels = MAX_IMAGE_PIXELS,
 } = {}) {
   const actualType = FORMAT_MIME[String(metadata?.format || "")];
-  const compatibleHeif = expectedType === "image/heic" && actualType === "image/heif";
+  const compatibleHeif = HEIF_TYPES.has(expectedType) && actualType === "image/heif";
   const width = Number(metadata?.width);
   const height = Number(metadata?.height);
   const channels = Number(metadata?.channels);
@@ -99,9 +110,17 @@ function assertDecodedMetadata(metadata, expectedType, {
   return { mimeType: expectedType, width, height };
 }
 
-function outputPipeline(pipeline, type, { maxEdge = null } = {}) {
+function outputPipeline(pipeline, type, { maxEdge = null, profileRendition = null } = {}) {
   let oriented = pipeline.autoOrient();
-  if (Number.isSafeInteger(maxEdge) && maxEdge > 0) {
+  if (profileRendition) {
+    oriented = oriented.resize({
+      width: profileRendition.outputWidth,
+      height: profileRendition.outputHeight,
+      fit: "cover",
+      position: "centre",
+      kernel: "lanczos3",
+    });
+  } else if (Number.isSafeInteger(maxEdge) && maxEdge > 0) {
     // Keeping resize in the Sharp pipeline lets JPEG shrink-on-load reduce
     // native decoder memory before the fully decoded image is materialized.
     oriented = oriented.resize({
@@ -137,8 +156,10 @@ function assertFallbackDimensions(value, structural) {
 
 async function sanitizeDecodedPixels(pipeline, type, requestedMaxOutputBytes, {
   maxEdge = null,
+  profileRendition = null,
 } = {}) {
-  const { data, info } = await outputPipeline(pipeline, type, { maxEdge }).toBuffer({ resolveWithObject: true });
+  const { data, info } = await outputPipeline(pipeline, type, { maxEdge, profileRendition })
+    .toBuffer({ resolveWithObject: true });
   const maxOutputBytes = Math.max(1, Math.min(
     MAX_IMAGE_OUTPUT_BYTES,
     Math.trunc(Number(requestedMaxOutputBytes) || MAX_IMAGE_OUTPUT_BYTES),
@@ -154,6 +175,11 @@ async function sanitizeDecodedPixels(pipeline, type, requestedMaxOutputBytes, {
       && (inspection.width > maxEdge || inspection.height > maxEdge)) {
     throw processorError("dimensions", "Recovered image exceeds its safe delivery dimensions.");
   }
+  if (profileRendition
+      && (inspection.width !== profileRendition.outputWidth
+        || inspection.height !== profileRendition.outputHeight)) {
+    throw processorError("dimensions", "Profile image rendition dimensions are invalid.");
+  }
   return Object.freeze({
     bytes: data,
     byteSize: data.byteLength,
@@ -164,7 +190,7 @@ async function sanitizeDecodedPixels(pipeline, type, requestedMaxOutputBytes, {
   });
 }
 
-async function sanitizeHeicFallback(bytes, structural, type, requestedMaxOutputBytes) {
+async function sanitizeHeicFallback(bytes, structural, type, requestedMaxOutputBytes, profileRendition) {
   if (!HEIC_FALLBACK_OUTPUT_TYPES.has(type)) {
     throw processorError("output_type", "Recovered HEIC photos must be converted to JPEG or WebP.");
   }
@@ -204,7 +230,7 @@ async function sanitizeHeicFallback(bytes, structural, type, requestedMaxOutputB
       failOn: "warning",
       limitInputPixels: MAX_IMAGE_PIXELS,
       sequentialRead: true,
-    }), type, requestedMaxOutputBytes);
+    }), type, requestedMaxOutputBytes, { profileRendition });
   } catch (error) {
     if (error?.code) throw error;
     throw processorError("heic_decode", "HEIC pixels could not be decoded safely.", error);
@@ -214,18 +240,28 @@ async function sanitizeHeicFallback(bytes, structural, type, requestedMaxOutputB
   }
 }
 
-async function validate(bytes, expectedType) {
-  const structural = inspectImageBytes(bytes, { expectedType, sanitized: false });
-  const pipeline = sharp(bytes, sharpOptions());
-  const metadata = await pipeline.metadata();
-  const decoded = assertDecodedMetadata(metadata, expectedType);
-  // stats() forces libvips to visit every pixel. metadata() alone does not
-  // detect a truncated or corrupt entropy stream.
-  await pipeline.stats();
-  if (decoded.width !== structural.width || decoded.height !== structural.height) {
-    throw processorError("dimensions", "Structural and decoded image dimensions disagree.");
+async function validate(bytes, expectedType, allowHeicFallback, allowLegacyJpegTrailer) {
+  const source = sanitizationSource(bytes, expectedType, allowLegacyJpegTrailer);
+  const pipeline = sharp(source.bytes, sharpOptions());
+  try {
+    const metadata = await pipeline.metadata();
+    const decoded = assertDecodedMetadata(metadata, expectedType);
+    await pipeline.stats();
+    if (decoded.width !== source.structural.width || decoded.height !== source.structural.height) {
+      throw processorError("dimensions", "Structural and decoded image dimensions disagree.");
+    }
+    return Object.freeze({ ...decoded, pixels: decoded.width * decoded.height });
+  } catch (error) {
+    if (allowHeicFallback === true && HEIC_TYPES.has(expectedType)) {
+      const decoded = await sanitizeHeicFallback(
+        source.bytes, source.structural, "image/jpeg", MAX_IMAGE_OUTPUT_BYTES, null,
+      );
+      return Object.freeze({
+        mimeType: expectedType, width: decoded.width, height: decoded.height, pixels: decoded.pixels,
+      });
+    }
+    throw error;
   }
-  return Object.freeze({ ...decoded, pixels: decoded.width * decoded.height });
 }
 
 function sanitizationSource(bytes, expectedType, allowLegacyJpegTrailer) {
@@ -254,9 +290,10 @@ function sanitizationSource(bytes, expectedType, allowLegacyJpegTrailer) {
 }
 
 async function sanitize(bytes, expectedType, requestedOutputType, requestedMaxOutputBytes,
-  allowHeicFallback, allowLegacyJpegTrailer) {
+  allowHeicFallback, allowLegacyJpegTrailer, profileRenditionValue) {
   const source = sanitizationSource(bytes, expectedType, allowLegacyJpegTrailer);
   const type = outputType(requestedOutputType || expectedType);
+  const profileRendition = requestedProfileRendition(profileRenditionValue);
   const sourcePixelLimit = source.oversizedLegacyJpeg
     ? MAX_LEGACY_RECOVERY_JPEG_PIXELS
     : MAX_IMAGE_PIXELS;
@@ -266,10 +303,12 @@ async function sanitize(bytes, expectedType, requestedOutputType, requestedMaxOu
     assertDecodedMetadata(metadata, expectedType, { maxPixels: sourcePixelLimit });
     return await sanitizeDecodedPixels(pipeline, type, requestedMaxOutputBytes, {
       maxEdge: source.oversizedLegacyJpeg ? 4096 : null,
+      profileRendition,
     });
   } catch (error) {
     if (allowHeicFallback === true && HEIC_TYPES.has(expectedType)) {
-      return sanitizeHeicFallback(source.bytes, source.structural, type, requestedMaxOutputBytes);
+      return sanitizeHeicFallback(source.bytes, source.structural, type, requestedMaxOutputBytes,
+        profileRendition);
     }
     throw error;
   }
@@ -283,9 +322,12 @@ export async function runImageProcessorWorkerOperation(message) {
     if (!operation) throw processorError("invalid_operation", "Image processor operation is invalid.");
     const bytes = asBoundedBuffer(message?.bytes);
     const expectedType = sourceType(message?.expectedType);
-    if (operation === "validate") return await validate(bytes, expectedType);
+    if (operation === "validate") return await validate(bytes, expectedType,
+      message?.allowHeicFallback === true,
+      message?.allowLegacyJpegTrailer === true);
     return await sanitize(bytes, expectedType, message?.outputType, message?.maxOutputBytes,
-      message?.allowHeicFallback === true, message?.allowLegacyJpegTrailer === true);
+      message?.allowHeicFallback === true, message?.allowLegacyJpegTrailer === true,
+      message?.profileRendition);
   } catch (error) {
     if (error instanceof ImageInspectionError || error?.code) throw error;
     throw processorError("decode", "Image pixels could not be decoded safely.", error);

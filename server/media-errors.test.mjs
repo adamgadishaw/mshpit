@@ -3,6 +3,10 @@ import test from "node:test";
 
 import { ApiError, ERROR_CATALOG, errorEnvelope } from "./errors.js";
 import { createMediaPresign, getMediaConfig, presignS3Request, validateMediaRequest } from "./media.js";
+import {
+  MEDIA_PHOTO_SOURCE_MAX_BYTES,
+  MEDIA_VIDEO_SOURCE_MAX_BYTES,
+} from "../src/domain/mediaUploadPolicy.mjs";
 
 const configuredEnv = {
   NODE_ENV: "production",
@@ -48,8 +52,12 @@ test("media validation rejects unsafe or oversized uploads with stable codes", (
     () => validateMediaRequest({ purpose: "post", contentType: "image/svg+xml", fileSize: 100, name: "photo.svg" }),
     (error) => error instanceof ApiError && error.code === "MEDIA_TYPE_UNSUPPORTED" && error.status === 415
   );
+  const avatar = validateMediaRequest({
+    purpose: "avatar", contentType: "image/jpeg", fileSize: MEDIA_PHOTO_SOURCE_MAX_BYTES, name: "photo.jpg",
+  });
+  assert.equal(avatar.fileSize, MEDIA_PHOTO_SOURCE_MAX_BYTES, "the exact 30 MiB photo boundary remains usable");
   assert.throws(
-    () => validateMediaRequest({ purpose: "avatar", contentType: "image/jpeg", fileSize: 6 * 1024 * 1024, name: "photo.jpg" }),
+    () => validateMediaRequest({ purpose: "avatar", contentType: "image/jpeg", fileSize: MEDIA_PHOTO_SOURCE_MAX_BYTES + 1, name: "photo.jpg" }),
     (error) => error instanceof ApiError && error.code === "MEDIA_TOO_LARGE" && error.status === 413
   );
   assert.throws(
@@ -60,13 +68,13 @@ test("media validation rejects unsafe or oversized uploads with stable codes", (
 });
 
 test("video clips are allowed on posts with their own cap, never on avatars", () => {
-  const clip = validateMediaRequest({ purpose: "post", contentType: "video/mp4", fileSize: 60 * 1024 * 1024, name: "clip.mp4" });
-  assert.equal(clip.extension, "mp4");
+  const clip = validateMediaRequest({ purpose: "post", contentType: "video/mp4", fileSize: MEDIA_VIDEO_SOURCE_MAX_BYTES, name: "clip.mp4" });
+  assert.equal(clip.fileSize, MEDIA_VIDEO_SOURCE_MAX_BYTES, "the exact 500 MiB video boundary remains usable");
   const mov = validateMediaRequest({ purpose: "review", contentType: "video/quicktime", fileSize: 5 * 1024 * 1024, name: "clip.mov" });
   assert.equal(mov.extension, "mov");
   // A clip larger than the video cap is refused with the stable size code.
   assert.throws(
-    () => validateMediaRequest({ purpose: "post", contentType: "video/mp4", fileSize: 101 * 1024 * 1024, name: "clip.mp4" }),
+    () => validateMediaRequest({ purpose: "post", contentType: "video/mp4", fileSize: MEDIA_VIDEO_SOURCE_MAX_BYTES + 1, name: "clip.mp4" }),
     (error) => error instanceof ApiError && error.code === "MEDIA_TOO_LARGE" && error.status === 413
   );
   // The photo cap does NOT loosen: a 60MB jpeg is still too large for a post.
@@ -117,25 +125,5 @@ test("media storage fails closed when server credentials are incomplete", () => 
       env: {},
     }),
     (error) => error instanceof ApiError && error.code === "MEDIA_STORAGE_UNAVAILABLE" && error.status === 503
-  );
-});
-
-test("video clips are accepted for posts, capped at 100MB, and image-only surfaces refuse them", () => {
-  const clip = validateMediaRequest({ purpose: "post", contentType: "video/mp4", fileSize: 50 * 1024 * 1024, name: "clip.mp4" });
-  assert.equal(clip.extension, "mp4");
-  const mov = validateMediaRequest({ purpose: "review", contentType: "video/quicktime", fileSize: 1024, name: "clip.mov" });
-  assert.equal(mov.extension, "mov");
-  assert.throws(
-    () => validateMediaRequest({ purpose: "post", contentType: "video/mp4", fileSize: 101 * 1024 * 1024, name: "clip.mp4" }),
-    (error) => error.code === "MEDIA_TOO_LARGE" && error.status === 413,
-  );
-  assert.throws(
-    () => validateMediaRequest({ purpose: "avatar", contentType: "video/mp4", fileSize: 1024, name: "clip.mp4" }),
-    (error) => error.code === "MEDIA_TYPE_UNSUPPORTED",
-  );
-  // Photo caps are untouched by the video allowance.
-  assert.throws(
-    () => validateMediaRequest({ purpose: "post", contentType: "image/jpeg", fileSize: 13 * 1024 * 1024, name: "big.jpg" }),
-    (error) => error.code === "MEDIA_TOO_LARGE",
   );
 });

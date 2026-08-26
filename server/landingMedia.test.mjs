@@ -232,6 +232,7 @@ test("landing route requires verified stable images and excludes private, remove
   ]));
   assert.equal(result.source, "community");
   assert.equal(typeof result.totals.artists, "number");
+  assert.equal(typeof result.totals.venues, "number");
   assert.equal(Object.hasOwn(result.totals, "members"), false);
   assert.equal(headers.get("Cache-Control"), "private, max-age=60");
   assert.ok(result.media.length <= 12);

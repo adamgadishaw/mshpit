@@ -1,5 +1,5 @@
 const HTTP_URL = /^https?:\/\/[^\s]+$/i;
-const PRIVATE_LOCATOR = /^pit-private:users\/[A-Za-z0-9_-]{1,128}\/[a-z0-9-]{1,40}\/[A-Za-z0-9_-]{1,160}\.(?:jpe?g|png|webp|gif|heic|heif|mp4|webm|mov)$/;
+const PRIVATE_LOCATOR = /^pit-private:users\/[A-Za-z0-9_-]{1,128}\/[a-z0-9-]{1,40}\/[A-Za-z0-9_-]{1,160}\.(?:jpe?g|png|webp|gif|heic|heif|avif|mp4|webm|mov)$/;
 
 function headersAreBound(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;

@@ -3,7 +3,7 @@ import { clean } from "./validate.js";
 const THEMES = new Set(["stage", "neon", "forest", "ember", "backstage", "vinyl", "daylight", "ice", "rose", "mint", "sunset", "lavender"]);
 const ALLOWED_KEYS = new Set([
   "theme", "consentAt", "analyticsConsentAt", "termsAcceptedAt", "termsVersion",
-  "analyticsOptOut", "nowPlaying", "treble", "bass", "playlists",
+  "analyticsOptOut", "searchIndexingOptOut", "nowPlaying", "treble", "bass", "playlists",
 ]);
 
 function timestamp(value) {
@@ -49,7 +49,7 @@ export function canonicalProfileExtras(value, { strict = false } = {}) {
     if (key === "theme") normalized = typeof raw === "string" && THEMES.has(raw) ? raw : undefined;
     else if (["consentAt", "analyticsConsentAt", "termsAcceptedAt"].includes(key)) normalized = timestamp(raw);
     else if (key === "termsVersion") normalized = typeof raw === "string" ? clean(raw, { max: 32 }) : undefined;
-    else if (key === "analyticsOptOut") normalized = typeof raw === "boolean" ? raw : undefined;
+    else if (["analyticsOptOut", "searchIndexingOptOut"].includes(key)) normalized = typeof raw === "boolean" ? raw : undefined;
     else if (["nowPlaying", "treble", "bass"].includes(key)) normalized = song(raw);
     else if (key === "playlists") normalized = playlists(raw);
     if (normalized === undefined) { valid = false; continue; }

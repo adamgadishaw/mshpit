@@ -25,6 +25,24 @@ const COUNTRY_CURSOR_KEY = "tourdates:ticketmaster-country-cursor:v1";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const slugId = (p, n, v, d) => `${p}_${n}_${v}_${d}`.toLowerCase().replace(/[^a-z0-9]+/g, "_").slice(0, 120);
 const norm = (value) => String(value || "").trim().toLowerCase();
+const optionalText = (value) => {
+  if (typeof value !== "string" && typeof value !== "number") return null;
+  return String(value).trim() || null;
+};
+const optionalCoordinate = (value) => {
+  if (value == null || value === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+function absoluteIsoTime(value) {
+  const text = optionalText(value);
+  // A provider-local wall clock is not an absolute instant. Keep it in
+  // start_local_time unless the provider supplied Z or an explicit offset.
+  if (!text || !/(?:Z|[+-]\d{2}:?\d{2})$/i.test(text)) return null;
+  const parsed = Date.parse(text);
+  return Number.isFinite(parsed) ? new Date(parsed).toISOString() : null;
+}
 export const ticketmasterArtistIdentity = (value) => String(value || "")
   .normalize("NFKD")
   .replace(/\p{Mark}+/gu, "")
@@ -142,7 +160,8 @@ export async function runTourDateJobSafely(job, report = (error) => {
     await job();
     return true;
   } catch (error) {
-    try { report(error); } catch {}
+    try { report(error); }
+    catch { /* architecture: allow-empty-catch -- diagnostic reporting cannot escape the scheduler safety boundary */ }
     return false;
   }
 }
@@ -181,7 +200,7 @@ async function getJSON(url) {
   } finally { clearTimeout(t); }
 }
 
-function ticketmasterRows(data, { requestedArtist = null } = {}) {
+export function ticketmasterRows(data, { requestedArtist = null } = {}) {
   const out = [];
   for (const event of data?._embedded?.events || []) {
     const venue = event._embedded?.venues?.[0];
@@ -190,19 +209,36 @@ function ticketmasterRows(data, { requestedArtist = null } = {}) {
     const matchesRequestedArtist = !requestedArtist
       || attractions.some((attraction) => ticketmasterArtistIdentity(attraction.name) === requestedIdentity);
     const artist = requestedArtist || attractions[0]?.name || event.name;
-    const date = event.dates?.start?.localDate;
+    const date = optionalText(event.dates?.start?.localDate);
     if (!artist || !venue?.name || !date || !matchesRequestedArtist) continue;
+    const localTime = optionalText(event.dates?.start?.localTime);
+    const countryCode = optionalText(venue.country?.countryCode);
     out.push({
       id: event.id ? `tm_${event.id}` : slugId("tm", artist, venue.name, date), artist, venue: venue.name,
       place: [venue.city?.name, venue.state?.name, venue.country?.name].filter(Boolean).join(", "),
-      lat: venue.location?.latitude ? Number(venue.location.latitude) : null,
-      lng: venue.location?.longitude ? Number(venue.location.longitude) : null,
+      lat: optionalCoordinate(venue.location?.latitude),
+      lng: optionalCoordinate(venue.location?.longitude),
       // Ticketmaster's `offsale` means the provider is no longer selling; it
       // does not prove the room sold out. Keep that fan-facing claim false.
       date,
       ticket_url: canonicalTicketUrl(event.url, { source: "ticketmaster", allowUntrusted: false }),
       sold_out: 0,
       source: "ticketmaster",
+      provider_event_id: optionalText(event.id),
+      event_name: optionalText(event.name),
+      start_date_time: absoluteIsoTime(event.dates?.start?.dateTime),
+      start_local_time: localTime ? `${date}T${localTime}` : date,
+      event_timezone: optionalText(venue.timezone),
+      event_status: optionalText(event.dates?.status?.code)?.toLowerCase() || null,
+      venue_provider_id: optionalText(venue.id),
+      venue_address_line1: optionalText(venue.address?.line1),
+      venue_address_line2: optionalText(venue.address?.line2),
+      venue_city: optionalText(venue.city?.name),
+      venue_region: optionalText(venue.state?.stateCode) || optionalText(venue.state?.name),
+      venue_postal_code: optionalText(venue.postalCode),
+      venue_country_code: countryCode?.toUpperCase() || null,
+      venue_country: optionalText(venue.country?.name),
+      provider_active: 1,
     });
   }
   return out;
@@ -238,28 +274,51 @@ async function tmCountryDates(countryCode) {
   return ticketmasterRows(data);
 }
 
+export function bandsintownRows(data, { requestedArtist = null } = {}) {
+  const out = [];
+  for (const e of Array.isArray(data) ? data : []) {
+    const v = e.venue || {};
+    const artist = optionalText(requestedArtist) || optionalText(e.artist?.name) || optionalText(e.lineup?.[0]);
+    const localStart = optionalText(e.datetime);
+    const date = localStart && /^\d{4}-\d{2}-\d{2}/.test(localStart) ? localStart.slice(0, 10) : null;
+    if (!artist || !v.name || !date) continue;
+    const ticketUrl = (e.offers || []).find((offer) => offer.type === "Tickets")?.url
+      || e.url
+      || "https://www.bandsintown.com/";
+    const countryCode = optionalText(v.country_code || v.countryCode);
+    const explicitStatus = optionalText(e.status);
+    out.push({
+      id: e.id ? `bit_${e.id}` : slugId("bit", artist, v.name, date), artist, venue: v.name,
+      place: [v.city, v.region, v.country].filter(Boolean).join(", "),
+      lat: optionalCoordinate(v.latitude), lng: optionalCoordinate(v.longitude),
+      date,
+      ticket_url: canonicalTicketUrl(ticketUrl, { source: "bandsintown", allowUntrusted: false }),
+      sold_out: 0, source: "bandsintown",
+      provider_event_id: optionalText(e.id),
+      event_name: optionalText(e.title) || optionalText(e.artist?.name) || artist,
+      start_date_time: absoluteIsoTime(localStart),
+      start_local_time: localStart,
+      event_timezone: optionalText(e.timezone) || optionalText(v.timezone),
+      event_status: (explicitStatus || (e.cancelled === true ? "cancelled" : null))?.toLowerCase() || null,
+      venue_provider_id: optionalText(v.id),
+      venue_address_line1: optionalText(v.street_address || v.address),
+      venue_address_line2: optionalText(v.street_address_2 || v.address2),
+      venue_city: optionalText(v.city),
+      venue_region: optionalText(v.region),
+      venue_postal_code: optionalText(v.postal_code || v.postalCode),
+      venue_country_code: countryCode?.toUpperCase() || null,
+      venue_country: optionalText(v.country),
+      provider_active: 1,
+    });
+  }
+  return out;
+}
+
 async function bitDates(name) {
   if (!BIT) return [];
   const enc = encodeURIComponent(name).replace(/%2F/gi, "%252F");
   const data = await getJSON(`https://rest.bandsintown.com/artists/${enc}/events?app_id=${encodeURIComponent(BIT)}&date=upcoming`);
-  const out = [];
-  for (const e of Array.isArray(data) ? data : []) {
-    const v = e.venue || {};
-    const date = (e.datetime || "").slice(0, 10);
-    if (!v.name || !date) continue;
-    const ticketUrl = (e.offers || []).find((offer) => offer.type === "Tickets")?.url
-      || e.url
-      || "https://www.bandsintown.com/";
-    out.push({
-      id: e.id ? `bit_${e.id}` : slugId("bit", name, v.name, date), artist: name, venue: v.name,
-      place: [v.city, v.region, v.country].filter(Boolean).join(", "),
-      lat: v.latitude ? Number(v.latitude) : null, lng: v.longitude ? Number(v.longitude) : null,
-      date,
-      ticket_url: canonicalTicketUrl(ticketUrl, { source: "bandsintown", allowUntrusted: false }),
-      sold_out: 0, source: "bandsintown",
-    });
-  }
-  return out;
+  return bandsintownRows(data, { requestedArtist: name });
 }
 
 export async function collectTourProviderResults(providers) {
@@ -295,16 +354,18 @@ export function reconcileStaleProviderTourDates(database, {
   const sources = [...new Set((successfulSources || []).filter((source) => /^(ticketmaster|bandsintown)$/.test(source)))];
   const cutoff = Number(staleBefore);
   if (!Number.isSafeInteger(cutoff) || cutoff < 0 || !sources.length) return 0;
-  const remove = database.prepare(`DELETE FROM tour_dates
-    WHERE owner_id IS NULL AND source=? AND updated_at<?`);
-  let deleted = 0;
+  const deactivate = database.prepare(`UPDATE tour_dates SET provider_active=0
+    WHERE owner_id IS NULL AND source=? AND provider_active<>0
+      AND COALESCE(last_seen_at,updated_at)<?`);
+  let deactivated = 0;
   database.exec("BEGIN IMMEDIATE");
   try {
-    for (const source of sources) deleted += Number(remove.run(source, cutoff).changes) || 0;
+    for (const source of sources) deactivated += Number(deactivate.run(source, cutoff).changes) || 0;
     database.exec("COMMIT");
-    return deleted;
+    return deactivated;
   } catch (error) {
-    try { database.exec("ROLLBACK"); } catch {}
+    try { database.exec("ROLLBACK"); }
+    catch { /* architecture: allow-empty-catch -- preserve the original provider reconciliation failure */ }
     throw error;
   }
 }
@@ -322,13 +383,100 @@ async function fetchDates(name) {
   return { ...result, rows: [...byGig.values()] };
 }
 
-const upsert = db.prepare(`
-  INSERT INTO tour_dates (id,artist,venue,place,lat,lng,date,ticket_url,sold_out,source,updated_at)
-  VALUES (@id,@artist,@venue,@place,@lat,@lng,@date,@ticket_url,@sold_out,@source,@updated_at)
-  ON CONFLICT(id) DO UPDATE SET artist=excluded.artist,venue=excluded.venue,place=excluded.place,
+const PROVIDER_TOUR_DATE_UPSERT_SQL = `
+  INSERT INTO tour_dates (
+    id,artist,venue,place,lat,lng,date,ticket_url,sold_out,source,updated_at,
+    provider_event_id,event_name,start_date_time,start_local_time,event_timezone,event_status,
+    venue_provider_id,venue_address_line1,venue_address_line2,venue_city,venue_region,
+    venue_postal_code,venue_country_code,venue_country,provider_active,last_seen_at
+  ) VALUES (
+    @id,@artist,@venue,@place,@lat,@lng,@date,@ticket_url,@sold_out,@source,@updated_at,
+    @provider_event_id,@event_name,@start_date_time,@start_local_time,@event_timezone,@event_status,
+    @venue_provider_id,@venue_address_line1,@venue_address_line2,@venue_city,@venue_region,
+    @venue_postal_code,@venue_country_code,@venue_country,@provider_active,@last_seen_at
+  )
+  ON CONFLICT(id) DO UPDATE SET
+    artist=excluded.artist,venue=excluded.venue,place=excluded.place,
     lat=excluded.lat,lng=excluded.lng,date=excluded.date,ticket_url=excluded.ticket_url,
-    sold_out=excluded.sold_out,source=excluded.source,updated_at=excluded.updated_at
-  WHERE tour_dates.owner_id IS NULL`);
+    sold_out=excluded.sold_out,source=excluded.source,
+    updated_at=CASE WHEN
+      excluded.artist IS NOT tour_dates.artist OR excluded.venue IS NOT tour_dates.venue
+      OR excluded.place IS NOT tour_dates.place OR excluded.lat IS NOT tour_dates.lat
+      OR excluded.lng IS NOT tour_dates.lng OR excluded.date IS NOT tour_dates.date
+      OR excluded.ticket_url IS NOT tour_dates.ticket_url OR excluded.sold_out IS NOT tour_dates.sold_out
+      OR excluded.source IS NOT tour_dates.source OR excluded.provider_active IS NOT tour_dates.provider_active
+      OR COALESCE(excluded.provider_event_id,tour_dates.provider_event_id) IS NOT tour_dates.provider_event_id
+      OR COALESCE(excluded.event_name,tour_dates.event_name) IS NOT tour_dates.event_name
+      OR COALESCE(excluded.start_date_time,tour_dates.start_date_time) IS NOT tour_dates.start_date_time
+      OR COALESCE(excluded.start_local_time,tour_dates.start_local_time) IS NOT tour_dates.start_local_time
+      OR COALESCE(excluded.event_timezone,tour_dates.event_timezone) IS NOT tour_dates.event_timezone
+      OR COALESCE(excluded.event_status,tour_dates.event_status) IS NOT tour_dates.event_status
+      OR COALESCE(excluded.venue_provider_id,tour_dates.venue_provider_id) IS NOT tour_dates.venue_provider_id
+      OR COALESCE(excluded.venue_address_line1,tour_dates.venue_address_line1) IS NOT tour_dates.venue_address_line1
+      OR COALESCE(excluded.venue_address_line2,tour_dates.venue_address_line2) IS NOT tour_dates.venue_address_line2
+      OR COALESCE(excluded.venue_city,tour_dates.venue_city) IS NOT tour_dates.venue_city
+      OR COALESCE(excluded.venue_region,tour_dates.venue_region) IS NOT tour_dates.venue_region
+      OR COALESCE(excluded.venue_postal_code,tour_dates.venue_postal_code) IS NOT tour_dates.venue_postal_code
+      OR COALESCE(excluded.venue_country_code,tour_dates.venue_country_code) IS NOT tour_dates.venue_country_code
+      OR COALESCE(excluded.venue_country,tour_dates.venue_country) IS NOT tour_dates.venue_country
+      THEN excluded.updated_at ELSE tour_dates.updated_at END,
+    provider_event_id=COALESCE(excluded.provider_event_id,tour_dates.provider_event_id),
+    event_name=COALESCE(excluded.event_name,tour_dates.event_name),
+    start_date_time=COALESCE(excluded.start_date_time,tour_dates.start_date_time),
+    start_local_time=COALESCE(excluded.start_local_time,tour_dates.start_local_time),
+    event_timezone=COALESCE(excluded.event_timezone,tour_dates.event_timezone),
+    event_status=COALESCE(excluded.event_status,tour_dates.event_status),
+    venue_provider_id=COALESCE(excluded.venue_provider_id,tour_dates.venue_provider_id),
+    venue_address_line1=COALESCE(excluded.venue_address_line1,tour_dates.venue_address_line1),
+    venue_address_line2=COALESCE(excluded.venue_address_line2,tour_dates.venue_address_line2),
+    venue_city=COALESCE(excluded.venue_city,tour_dates.venue_city),
+    venue_region=COALESCE(excluded.venue_region,tour_dates.venue_region),
+    venue_postal_code=COALESCE(excluded.venue_postal_code,tour_dates.venue_postal_code),
+    venue_country_code=COALESCE(excluded.venue_country_code,tour_dates.venue_country_code),
+    venue_country=COALESCE(excluded.venue_country,tour_dates.venue_country),
+    provider_active=excluded.provider_active,last_seen_at=excluded.last_seen_at
+  WHERE tour_dates.owner_id IS NULL`;
+
+function providerTourDateWrite(row, seenAt) {
+  return {
+    id: row.id,
+    artist: row.artist,
+    venue: row.venue ?? null,
+    place: row.place ?? null,
+    lat: optionalCoordinate(row.lat),
+    lng: optionalCoordinate(row.lng),
+    date: row.date ?? null,
+    ticket_url: row.ticket_url ?? null,
+    sold_out: row.sold_out ? 1 : 0,
+    source: row.source ?? null,
+    updated_at: seenAt,
+    provider_event_id: row.provider_event_id ?? null,
+    event_name: row.event_name ?? null,
+    start_date_time: row.start_date_time ?? null,
+    start_local_time: row.start_local_time ?? null,
+    event_timezone: row.event_timezone ?? null,
+    event_status: row.event_status ?? null,
+    venue_provider_id: row.venue_provider_id ?? null,
+    venue_address_line1: row.venue_address_line1 ?? null,
+    venue_address_line2: row.venue_address_line2 ?? null,
+    venue_city: row.venue_city ?? null,
+    venue_region: row.venue_region ?? null,
+    venue_postal_code: row.venue_postal_code ?? null,
+    venue_country_code: row.venue_country_code ?? null,
+    venue_country: row.venue_country ?? null,
+    provider_active: 1,
+    last_seen_at: seenAt,
+  };
+}
+
+export function upsertProviderTourDateRows(database, rows, { seenAt = Date.now() } = {}) {
+  const timestamp = Number(seenAt);
+  if (!Number.isSafeInteger(timestamp) || timestamp < 0) throw new TypeError("seenAt must be a non-negative integer");
+  const statement = database.prepare(PROVIDER_TOUR_DATE_UPSERT_SQL);
+  let changed = 0;
+  for (const row of rows || []) changed += Number(statement.run(providerTourDateWrite(row, timestamp)).changes) || 0;
+  return changed;
+}
 
 let running = false;
 async function refresh() {
@@ -361,11 +509,12 @@ async function refresh() {
         recordOutcomes(result.outcomes);
         const now = Date.now();
         db.exec("BEGIN");
-        for (const r of result.rows) upsert.run({ lat: null, lng: null, ...r, updated_at: now });
+        upsertProviderTourDateRows(db, result.rows, { seenAt: now });
         db.exec("COMMIT");
         total += result.rows.length;
       } catch (e) {
-        try { db.exec("ROLLBACK"); } catch {}
+        try { db.exec("ROLLBACK"); }
+        catch { /* architecture: allow-empty-catch -- preserve the original artist-ingest write failure */ }
         throw e;
       }
       await sleep(TM_REQUEST_DELAY_MS); // stay below provider rate limits
@@ -381,11 +530,12 @@ async function refresh() {
         recordOutcomes(result.outcomes);
         const now = Date.now();
         db.exec("BEGIN");
-        for (const r of result.rows) upsert.run({ lat: null, lng: null, ...r, updated_at: now });
+        upsertProviderTourDateRows(db, result.rows, { seenAt: now });
         db.exec("COMMIT");
         total += result.rows.length;
       } catch (e) {
-        try { db.exec("ROLLBACK"); } catch {}
+        try { db.exec("ROLLBACK"); }
+        catch { /* architecture: allow-empty-catch -- preserve the original city-ingest write failure */ }
         throw e;
       }
       await sleep(TM_REQUEST_DELAY_MS);
@@ -400,7 +550,7 @@ async function refresh() {
         recordOutcomes(result.outcomes);
         const now = Date.now();
         db.exec("BEGIN");
-        for (const r of result.rows) upsert.run({ lat: null, lng: null, ...r, updated_at: now });
+        upsertProviderTourDateRows(db, result.rows, { seenAt: now });
         db.exec("COMMIT");
         total += result.rows.length;
       } catch (e) {
@@ -415,7 +565,7 @@ async function refresh() {
       throw new Error(`Every configured tour provider request failed (${providerFailures} failures); existing dates were kept and the refresh remains due.`);
     }
     // Reconcile only a provider that completed EVERY attempted call. Never let
-    // one healthy API erase another provider's cache, and never touch member or
+    // one healthy API deactivate another provider's cache, and never touch member or
     // staff-authored rows (`owner_id` is non-null).
     const successfulSources = [...providerStats]
       .filter(([, stats]) => stats.successes > 0 && stats.failures === 0)
@@ -426,7 +576,7 @@ async function refresh() {
     });
     // A partial provider outage must not turn Render restarts into an immediate
     // replay of the entire worldwide sweep. Successful rows are durable and
-    // stale cleanup is already isolated to sources with zero failures, so any
+    // stale deactivation is already isolated to sources with zero failures, so any
     // useful provider work advances the normal interval. A total outage still
     // throws above and intentionally leaves the refresh due.
     markRefreshed();

@@ -1,9 +1,13 @@
+import {
+  MEDIA_POST_MAX_ATTACHMENTS,
+  MEDIA_VIDEO_SOURCE_MAX_BYTES,
+} from "../src/domain/mediaUploadPolicy.mjs";
 import { getMediaConfig, mediaBucketForScope, mediaConfigured, presignS3Request } from "./media.js";
 import { withImmediateWrite as withWrite } from "./databaseTransaction.js";
 import { ApiError } from "./errors.js";
 
 const OWNER = /^[A-Za-z0-9_-]{1,128}$/;
-const OBJECT_KEY = /^users\/([A-Za-z0-9_-]{1,128})\/(avatar|banner|post|review|venue)\/([A-Za-z0-9_-]{1,180})\.(jpg|png|webp|gif|heic|heif|mp4|webm|mov)$/;
+const OBJECT_KEY = /^users\/([A-Za-z0-9_-]{1,128})\/(avatar|banner|post|review|venue)\/([A-Za-z0-9_-]{1,180})\.(jpg|png|webp|gif|heic|heif|avif|mp4|webm|mov)$/;
 const TRUE_VALUES = new Set(["1", "true", "yes", "on", "enabled"]);
 const FALSE_VALUES = new Set(["0", "false", "no", "off", "disabled"]);
 const RETRY_DELAYS_MS = Object.freeze([60_000, 5 * 60_000, 30 * 60_000, 2 * 60 * 60_000]);
@@ -14,6 +18,8 @@ const PEBIBYTE = 1024 * TEBIBYTE;
 
 export const MEDIA_UPLOAD_TICKET_MS = 10 * 60_000;
 export const MEDIA_UPLOAD_ROLLING_WINDOW_MS = DAY_MS;
+export const MEDIA_MAX_COMPOSITION_OUTSTANDING_BYTES =
+  MEDIA_POST_MAX_ATTACHMENTS * MEDIA_VIDEO_SOURCE_MAX_BYTES * 2;
 
 const DEFAULT_UPLOAD_QUOTAS = Object.freeze({
   // These are emergency abuse/cleanup bounds, not product-plan limits. A
@@ -21,7 +27,7 @@ const DEFAULT_UPLOAD_QUOTAS = Object.freeze({
   // them, while a compromised account still cannot mint an unbounded number
   // of storage capabilities or leave an unbounded private staging backlog.
   outstandingObjects: 256,
-  outstandingBytes: 16 * 1024 * MEBIBYTE,
+  outstandingBytes: 32 * 1024 * MEBIBYTE,
   rollingBytes: 64 * 1024 * MEBIBYTE,
   rollingTickets: 4_096,
 });

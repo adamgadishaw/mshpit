@@ -3,7 +3,9 @@ import test from "node:test";
 
 import {
   createMediaDownloadCapability,
+  createMediaProcessorImageUploadCapability,
   createMediaProcessorUploadCapability,
+  PUBLIC_MEDIA_CACHE_CONTROL,
   verifyPrivateMediaBucketIsolation,
 } from "./media.js";
 
@@ -56,10 +58,37 @@ test("authoritative processors receive create-only public delivery capability wi
   assert.equal(ticket.method, "PUT");
   assert.equal(ticket.storageScope, "public");
   assert.equal(ticket.publicUrl, "https://media.example.invalid/users/u_owner/post/ma_delivery.mp4");
-  assert.deepEqual(ticket.requiredHeaders, { "Content-Type": "video/mp4", "If-None-Match": "*" });
+  assert.deepEqual(ticket.requiredHeaders, {
+    "Cache-Control": PUBLIC_MEDIA_CACHE_CONTROL,
+    "Content-Type": "video/mp4",
+    "If-None-Match": "*",
+  });
   assert.equal(url.pathname, "/pit-media/users/u_owner/post/ma_delivery.mp4");
-  assert.equal(url.searchParams.get("X-Amz-SignedHeaders"), "content-type;host;if-none-match");
+  assert.equal(url.searchParams.get("X-Amz-SignedHeaders"), "cache-control;content-type;host;if-none-match");
   assert.equal(url.toString().includes(ENV.MEDIA_SECRET_ACCESS_KEY), false);
+});
+
+test("server-authored image and poster capabilities bind revocation-bounded public caching", () => {
+  const now = new Date("2026-08-23T12:00:00.000Z");
+  assert.equal(PUBLIC_MEDIA_CACHE_CONTROL, "public, max-age=300, must-revalidate");
+  const ticket = createMediaProcessorImageUploadCapability({
+    objectKey: "users/u_owner/post/ma_poster.jpg",
+    contentType: "image/jpeg",
+    contentLength: 42_000,
+    env: ENV,
+    now,
+    expiresIn: 120,
+  });
+  const url = new URL(ticket.uploadUrl);
+  assert.deepEqual(ticket.requiredHeaders, {
+    "Cache-Control": PUBLIC_MEDIA_CACHE_CONTROL,
+    "Content-Type": "image/jpeg",
+    "Content-Length": "42000",
+    "If-None-Match": "*",
+  });
+  assert.equal(url.searchParams.get("X-Amz-SignedHeaders"),
+    "cache-control;content-length;content-type;host;if-none-match");
+  assert.equal(ticket.publicUrl, "https://media.example.invalid/users/u_owner/post/ma_poster.jpg");
 });
 
 test("download capabilities reject traversal, weak generations, and broad lifetimes", () => {

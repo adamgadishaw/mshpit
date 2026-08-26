@@ -17,3 +17,12 @@ export function updateAnnouncementEmailPreference(enabled) {
     silent: true,
   });
 }
+
+export function updateProfileSearchIndexingPreference(enabled) {
+  return api("/api/me", {
+    method: "PATCH",
+    body: { searchIndexingOptOut: !enabled },
+    context: enabled ? "Showing your profile in search engines" : "Hiding your profile from search engines",
+    silent: true,
+  });
+}

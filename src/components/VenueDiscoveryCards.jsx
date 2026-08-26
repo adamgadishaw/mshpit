@@ -1,7 +1,9 @@
 import { Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { colors, displayFont, focusRing, mono, radius, shadow } from "../theme";
 import { eventDateMeta, optionalDistanceKm, splitVenuePlace } from "../domain/venueDiscovery.mjs";
+import { eventPath } from "../domain/urls.mjs";
 import Icon from "./Icon";
+import { PublicTextLink } from "./PublicWebLinks";
 
 export function VenueDiscoveryCard({ venue, onPress, compact = false }) {
   const { city, region } = splitVenuePlace(venue?.place);
@@ -45,7 +47,7 @@ export function VenueDiscoveryCard({ venue, onPress, compact = false }) {
   );
 }
 
-export function UpcomingEventCard({ event, onOpenArtist, onOpenVenue, onTickets, compact = false, context }) {
+export function UpcomingEventCard({ event, onOpenArtist, onOpenVenue, onOpenEvent, onTickets, compact = false, context }) {
   const date = eventDateMeta(event?.date);
   const { city } = splitVenuePlace(event?.place);
   const distance = optionalDistanceKm(event?.distanceKm);
@@ -81,6 +83,16 @@ export function UpcomingEventCard({ event, onOpenArtist, onOpenVenue, onTickets,
           <Text style={styles.eventPlace} numberOfLines={compact ? 2 : 1}>{detail || "Venue to be announced"}</Text>
         )}
         {!compact && event?.genre ? <Text style={styles.genre}>{event.genre}</Text> : null}
+        {!compact && onOpenEvent && eventPath(event) ? (
+          <PublicTextLink
+            href={eventPath(event)}
+            onNavigate={onOpenEvent}
+            style={styles.eventDetails}
+            accessibilityLabel={`Open event details for ${event?.artist || "this show"}`}
+          >
+            Event details →
+          </PublicTextLink>
+        ) : null}
       </View>
       {!compact && !event?.soldOut && event?.ticketUrl ? (
         <Pressable
@@ -126,6 +138,7 @@ const styles = StyleSheet.create({
   artistCompact: { fontSize: 14 },
   eventPlace: { color: colors.textDim, fontSize: 12, lineHeight: 17, marginTop: 2 },
   genre: { alignSelf: "flex-start", color: colors.cool, fontSize: 10, fontWeight: "700", marginTop: 4 },
+  eventDetails: { alignSelf: "flex-start", color: colors.amber, fontFamily: mono, fontSize: 10, lineHeight: 16, fontWeight: "900", marginTop: 5 },
   ticketButton: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingHorizontal: 13, borderRadius: radius.pill, backgroundColor: colors.amberStrong, borderWidth: 1, borderBottomWidth: 3, borderColor: colors.amber, borderBottomColor: colors.accentEdge, ...shadow.control, ...Platform.select({ web: { cursor: "pointer" } }) },
   ticketPressed: { transform: [{ translateY: 2 }], opacity: 0.9 },
   ticketText: { color: "#1A1206", fontFamily: displayFont, fontSize: 12, fontWeight: "900" },

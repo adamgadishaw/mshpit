@@ -9,6 +9,14 @@ import { pipeline } from "node:stream/promises";
 import { pathToFileURL } from "node:url";
 
 import {
+  MEDIA_VIDEO_MAX_DURATION_MS,
+  MEDIA_VIDEO_MAX_SAMPLES,
+  MEDIA_VIDEO_SOURCE_MAX_BYTES,
+} from "../src/domain/mediaUploadPolicy.mjs";
+
+import { PUBLIC_MEDIA_CACHE_CONTROL } from "./mediaDeliveryPolicy.js";
+
+import {
   VIDEO_VERIFIER_MAX_DISCARDED_QUICKTIME_TRACKS,
   VIDEO_VERIFIER_PIPELINE_VERSION,
   VIDEO_VERIFIER_PROTOCOL_VERSION,
@@ -20,16 +28,16 @@ import {
 } from "./videoVerifierProtocol.js";
 
 const REQUEST_MAX_BYTES = 16 * 1024;
-const VIDEO_MAX_BYTES = 100 * 1024 * 1024;
-const VIDEO_MAX_DURATION_MS = 60_000;
+const VIDEO_MAX_BYTES = MEDIA_VIDEO_SOURCE_MAX_BYTES;
+const VIDEO_MAX_DURATION_MS = MEDIA_VIDEO_MAX_DURATION_MS;
 const VIDEO_MAX_EDGE = 4_096;
-const VIDEO_MAX_SAMPLES = 3_602;
-const VIDEO_MAX_CODED_PIXEL_SAMPLES = 120n * 68n * 256n * 60n * 60n;
+const VIDEO_MAX_SAMPLES = MEDIA_VIDEO_MAX_SAMPLES;
+const VIDEO_MAX_CODED_PIXEL_SAMPLES = 120n * 68n * 256n * BigInt(MEDIA_VIDEO_MAX_SAMPLES);
 const POSTER_MAX_BYTES = 1_500_000;
 const POSTER_MAX_EDGE = 1_280;
-// The web control plane waits 110 seconds. Keep the worker inside that envelope
+// The control plane owns a finite 16-minute envelope. Keep the worker inside it
 // while allowing the bounded transcode to finish on the production instance.
-const JOB_TIMEOUT_MS = 105_000;
+const JOB_TIMEOUT_MS = 15 * 60_000;
 const COMMAND_OUTPUT_MAX_BYTES = 64 * 1024;
 const HEALTH_FRESH_MS = 60_000;
 const NONCE_TTL_MS = 2 * 60_000;
@@ -310,12 +318,19 @@ export function validateVideoVerifierJob(payload, config) {
     }
   }
   if (uploadUrl.searchParams.get("X-Amz-Algorithm") !== "AWS4-HMAC-SHA256"
-      || uploadUrl.searchParams.get("X-Amz-SignedHeaders") !== "content-type;host;if-none-match"
+      || uploadUrl.searchParams.get("X-Amz-SignedHeaders") !== "cache-control;content-type;host;if-none-match"
+      || !/^[0-9]{8}T[0-9]{6}Z$/.test(String(uploadUrl.searchParams.get("X-Amz-Date") || ""))
       || !/^[a-f0-9]{64}$/.test(String(uploadUrl.searchParams.get("X-Amz-Signature") || ""))) {
     throw serviceError("invalid_request", "Delivery capability is invalid.");
   }
+  boundedInteger(uploadUrl.searchParams.get("X-Amz-Expires"), {
+    min: 30,
+    max: 20 * 60,
+    label: "Delivery capability lifetime",
+  });
   const uploadHeaders = output?.uploadHeaders;
-  if (!uploadHeaders || Object.keys(uploadHeaders).length !== 2
+  if (!uploadHeaders || Object.keys(uploadHeaders).length !== 3
+      || uploadHeaders["Cache-Control"] !== PUBLIC_MEDIA_CACHE_CONTROL
       || uploadHeaders["Content-Type"] !== "video/mp4" || uploadHeaders["If-None-Match"] !== "*") {
     throw serviceError("invalid_request", "Delivery headers are invalid.");
   }
@@ -563,7 +578,7 @@ async function transcodeSanitizedDelivery(sourcePath, deliveryPath, config, { ru
     "-map", "0:v:0", "-map", "0:a:0?",
     "-vf", videoFilter,
     // Concert footage is often grainy enough that unconstrained CRF H.264 can
-    // expand beyond the 100 MiB delivery contract even from a smaller HEVC
+    // expand beyond the bounded delivery contract even from a smaller HEVC
     // source. VBV keeps the sanitized output inside that contract while CRF
     // still spends fewer bits on easier scenes.
     "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",

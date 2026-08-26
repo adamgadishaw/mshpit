@@ -7,6 +7,12 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
+import { PUBLIC_MEDIA_CACHE_CONTROL } from "./mediaDeliveryPolicy.js";
+import {
+  MEDIA_VIDEO_MAX_DURATION_MS,
+  MEDIA_VIDEO_MAX_SAMPLES,
+} from "../src/domain/mediaUploadPolicy.mjs";
+
 import {
   createVideoVerifierService,
   getVideoVerifierServiceConfig,
@@ -41,7 +47,7 @@ function capabilityUrl(objectKey = "source.mp4") {
 
 function outputCapabilityUrl() {
   const credential = encodeURIComponent("access/20260823/auto/s3/aws4_request");
-  const signedHeaders = encodeURIComponent("content-type;host;if-none-match");
+  const signedHeaders = encodeURIComponent("cache-control;content-type;host;if-none-match");
   return `https://objects.example.com/s3/pit-media-public/users/u_video/post/delivery.mp4?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Credential=${credential}&X-Amz-Date=20260823T120000Z&X-Amz-Expires=120&X-Amz-SignedHeaders=${signedHeaders}&X-Amz-Signature=${"b".repeat(64)}`;
 }
 
@@ -74,7 +80,11 @@ function validJob(overrides = {}) {
       key: "users/u_video/post/delivery.mp4",
       contentType: "video/mp4",
       uploadUrl: outputCapabilityUrl(),
-      uploadHeaders: { "Content-Type": "video/mp4", "If-None-Match": "*" },
+      uploadHeaders: {
+        "Cache-Control": PUBLIC_MEDIA_CACHE_CONTROL,
+        "Content-Type": "video/mp4",
+        "If-None-Match": "*",
+      },
     },
     ...overrides,
   };
@@ -216,7 +226,7 @@ test("job validation binds exact origin/key/generation and enforces the coded-wo
     object: { ...validJob().object, downloadUrl: capabilityUrl().replace("objects.example.com", "evil.example.com") },
   }), config), { code: "invalid_request" });
   assert.throws(() => validateVideoVerifierJob(validJob({
-    structural: { ...validJob().structural, sampleCount: 3_601, durationMs: 60_000 },
+    structural: { ...validJob().structural, sampleCount: MEDIA_VIDEO_MAX_SAMPLES + 1, durationMs: MEDIA_VIDEO_MAX_DURATION_MS },
   }), config), { code: "invalid_request" });
   assert.throws(() => validateVideoVerifierJob(validJob({
     object: { ...validJob().object, contentType: "video/quicktime" },
@@ -227,6 +237,17 @@ test("job validation binds exact origin/key/generation and enforces the coded-wo
   assert.throws(() => validateVideoVerifierJob(validJob({
     structural: { ...validJob().structural, sourceCodec: "h264" },
   }), config), { code: "invalid_request" }, "legacy MP4 H.264 keeps its exact structural shape");
+  assert.throws(() => validateVideoVerifierJob(validJob({
+    output: {
+      ...validJob().output,
+      uploadHeaders: { ...validJob().output.uploadHeaders, "Cache-Control": "public, max-age=60" },
+    },
+  }), config), { code: "invalid_request" }, "the worker cannot alter the exact signed public cache policy");
+  const unsignedCachePolicy = new URL(outputCapabilityUrl());
+  unsignedCachePolicy.searchParams.set("X-Amz-SignedHeaders", "content-type;host;if-none-match");
+  assert.throws(() => validateVideoVerifierJob(validJob({
+    output: { ...validJob().output, uploadUrl: unsignedCachePolicy.toString() },
+  }), config), { code: "invalid_request" }, "the exact cache header must be covered by SigV4");
 });
 
 test("an exact source generation loss is a conflict before decoder work", async () => {
@@ -331,6 +352,7 @@ test("authoritative MP4 job accepts omitted square-pixel metadata, forces local 
     assert.equal(request.redirect, "error");
     if (request.method === "PUT") {
       assert.equal(new URL(url).pathname.endsWith("/pit-media-public/users/u_video/post/delivery.mp4"), true);
+      assert.equal(new Headers(request.headers).get("cache-control"), PUBLIC_MEDIA_CACHE_CONTROL);
       return new Response(null, { status: 200 });
     }
     assert.deepEqual(request.headers, { "If-Match": ETAG });

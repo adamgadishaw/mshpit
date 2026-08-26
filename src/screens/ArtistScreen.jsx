@@ -27,6 +27,8 @@ import { useArtistEventArchive } from "../features/artistEvents/useArtistEventAr
 import { selectArtistUpcomingShows } from "../domain/artistUpcomingShows.mjs";
 import ArtistMemorialTribute from "../components/artist/ArtistMemorialTribute";
 import { useArtistMemorial } from "../features/artistMemorials/useArtistMemorial";
+import { PublicPressableLink } from "../components/PublicWebLinks";
+import { eventPath, postPath, profilePath } from "../domain/urls.mjs";
 
 const cap = (s) => (s ? s.replace(/\b\w/g, (c) => c.toUpperCase()) : s);
 const compactCount = (value) => {
@@ -97,18 +99,18 @@ function TopReviewCard({ review, rank, artistName, onOpenShow, onOpenPhotos, onO
       <View style={styles.topReviewMain}>
         <View style={styles.topReviewHeader}>
           {canOpenAuthor ? (
-            <Pressable
+            <PublicPressableLink
+              href={review.user?.handle ? profilePath(review.user.handle) : null}
+              onNavigate={() => onOpenProfile(review.userId)}
               style={({ pressed, focused }) => [
                 styles.topReviewAuthorAction,
                 pressed && styles.topReviewActionPressed,
                 focused && focusRing,
               ]}
-              onPress={() => onOpenProfile(review.userId)}
-              accessibilityRole="button"
               accessibilityLabel={`Open ${author}'s profile`}
             >
               {authorIdentity}
-            </Pressable>
+            </PublicPressableLink>
           ) : (
             <View style={styles.topReviewAuthorAction}>{authorIdentity}</View>
           )}
@@ -120,14 +122,14 @@ function TopReviewCard({ review, rank, artistName, onOpenShow, onOpenPhotos, onO
           </View>
         </View>
 
-        <Pressable
+        <PublicPressableLink
+          href={postPath(review.id)}
+          onNavigate={() => onOpenShow?.(review)}
           style={({ pressed, focused }) => [
             styles.topReviewBodyAction,
             pressed && styles.topReviewActionPressed,
             focused && focusRing,
           ]}
-          onPress={() => onOpenShow?.(review)}
-          accessibilityRole="button"
           accessibilityLabel={`Open ${author}'s ${score.toFixed(1)} star review of ${artistName}`}
           accessibilityHint="Opens the concert night and full review"
         >
@@ -144,7 +146,7 @@ function TopReviewCard({ review, rank, artistName, onOpenShow, onOpenPhotos, onO
             </View>
             <Text style={styles.topReviewMeta} numberOfLines={1}>{review.venue || "Live show"} · {date}</Text>
           </View>
-        </Pressable>
+        </PublicPressableLink>
       </View>
 
       {thumbnail ? (
@@ -905,17 +907,17 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
             <Text style={styles.sectionLabel}>UPCOMING · {upcoming.length}</Text>
             {visibleUpcoming.map((t) => (
               <View key={t.id} style={styles.upRow}>
-                <Pressable
+                <PublicPressableLink
+                  href={eventPath(t)}
+                  onNavigate={() => onOpenShow?.(t)}
                   style={({ pressed, focused }) => [styles.upMain, pressed && styles.archivePressed, focused && focusRing]}
-                  onPress={() => onOpenShow?.(t)}
-                  accessibilityRole="button"
                   accessibilityLabel={`Open ${a.name} at ${t.venue}, ${t.place || "location to be announced"}, ${formatDate(t.date, t.date)}`}
                   accessibilityHint="Opens the event page"
                 >
                   <Text style={styles.upVenue}>{t.venue}</Text>
                   <Text style={styles.upPlace}>{t.place}</Text>
                   <Text style={styles.upDate}>{formatDate(t.date, t.date)}{t.scheduled ? "  · scheduled" : ""}</Text>
-                </Pressable>
+                </PublicPressableLink>
                 {t.soldOut ? (
                   <View style={styles.soldOut}><Text style={styles.soldOutTxt}>SOLD OUT</Text></View>
                 ) : /^https:\/\//i.test(t.ticketUrl || "") ? (

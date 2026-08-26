@@ -1,12 +1,18 @@
+import {
+  MEDIA_PHOTO_SOURCE_MAX_BYTES,
+  MEDIA_VIDEO_MAX_DURATION_MS,
+  MEDIA_VIDEO_MIN_DURATION_MS,
+  MEDIA_VIDEO_SOURCE_MAX_BYTES,
+} from "./mediaUploadPolicy.mjs";
 const finite = (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback;
 const clamp = (value, min, max, fallback = min) => Math.min(max, Math.max(min, finite(value, fallback)));
 
 export const MEDIA_EDIT_VERSION = 1;
 export const PHOTO_MAX_EDGE = 2048;
-export const VIDEO_MAX_DURATION_MS = 60_000;
-export const VIDEO_MIN_DURATION_MS = 1_000;
-export const MEDIA_PHOTO_MAX_BYTES = 12 * 1024 * 1024;
-export const MEDIA_VIDEO_MAX_BYTES = 100 * 1024 * 1024;
+export const VIDEO_MAX_DURATION_MS = MEDIA_VIDEO_MAX_DURATION_MS;
+export const VIDEO_MIN_DURATION_MS = MEDIA_VIDEO_MIN_DURATION_MS;
+export const MEDIA_PHOTO_MAX_BYTES = MEDIA_PHOTO_SOURCE_MAX_BYTES;
+export const MEDIA_VIDEO_MAX_BYTES = MEDIA_VIDEO_SOURCE_MAX_BYTES;
 export const MEDIA_DELIVERY_IMAGE_MIME_TYPES = Object.freeze(["image/jpeg", "image/png", "image/webp"]);
 export const MEDIA_VIDEO_SOURCE_MIME_TYPES = Object.freeze(["video/mp4", "video/quicktime"]);
 
@@ -271,8 +277,8 @@ export function videoEditRequiresExport(value) {
   const edit = normalizeMediaEdit(value, { kind: "video", durationMs: value?.durationMs });
   const baseline = defaultMediaEdit("video", { durationMs: edit.durationMs });
   // PIT does not yet have an authoritative video encoder. A source longer
-  // than the public 60-second clip contract would otherwise be uploaded whole
-  // while the normalized recipe misleadingly displays a 60-second trim.
+  // than the public clip-duration contract would otherwise be uploaded whole
+  // while the normalized recipe misleadingly displays a shorter trim.
   return edit.durationMs > VIDEO_MAX_DURATION_MS
     || edit.trimStartMs !== baseline.trimStartMs
     || edit.trimEndMs !== baseline.trimEndMs

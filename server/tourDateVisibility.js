@@ -26,19 +26,25 @@ export function visibleTourDateRowsFrom(database, viewer, {
     return database.prepare(`SELECT td.* FROM tour_dates td WHERE ${filterSql}1=1 ORDER BY td.date ASC,td.id ASC LIMIT ?`)
       .all(...prefix, rowLimit);
   }
+  const publicDate = new Date(Number.isFinite(Number(at)) ? Number(at) : Date.now()).toISOString().slice(0, 10);
+  // Provider rows that disappear from a healthy upstream refresh stay in the
+  // database as historical evidence, but an inactive event cannot keep
+  // advertising itself as upcoming. `provider_active` never gates a member's
+  // own authored row.
+  const publicProviderSql = "(td.owner_id IS NULL AND (COALESCE(td.provider_active,1)=1 OR td.date<?))";
   if (viewer?.id) {
     return database.prepare(`SELECT td.* FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id WHERE ${filterSql}
-      (td.owner_id IS NULL OR (${activeAccountSql("owner")} AND (td.release_at<=? OR td.owner_id=?)
+      (${publicProviderSql} OR (${activeAccountSql("owner")} AND (td.release_at<=? OR td.owner_id=?)
         AND NOT EXISTS (SELECT 1 FROM blocks b WHERE
           (b.blocker_id=? AND b.blocked_id=td.owner_id) OR
           (b.blocker_id=td.owner_id AND b.blocked_id=?))))
       ORDER BY td.date ASC,td.id ASC LIMIT ?`)
-      .all(...prefix, at, viewer.id, viewer.id, viewer.id, rowLimit);
+      .all(...prefix, publicDate, at, viewer.id, viewer.id, viewer.id, rowLimit);
   }
   return database.prepare(`SELECT td.* FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id WHERE ${filterSql}
-    (td.owner_id IS NULL OR (${activeAccountSql("owner")} AND td.release_at<=?))
+    (${publicProviderSql} OR (${activeAccountSql("owner")} AND td.release_at<=?))
     ORDER BY td.date ASC,td.id ASC LIMIT ?`)
-    .all(...prefix, at, rowLimit);
+    .all(...prefix, publicDate, at, rowLimit);
 }
 
 export function visibleTourDateRows(viewer, options = {}) {

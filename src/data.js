@@ -1,6 +1,5 @@
 // Mock data for the prototype. No backend - this stands in for what would come
 // from the Performance / Artist / Venue spine described in the brief.
-import { catalogShows } from "./seed/catalog";
 import { ENABLE_DEMO_DATA } from "./config/runtime.mjs";
 
 let _id = 100;
@@ -101,7 +100,9 @@ export const cities = {
 };
 
 // Aggregated shows (one artist + venue + date), with how many people rated them.
-// Base seed + the ingested catalog (see src/seed/catalog.js).
+// The small hand-authored fixture is synchronous. The larger generated demo
+// catalogue is installed after a development-only dynamic import so production
+// does not parse it before the first screen can render.
 const baseRatedShows = [
   { id: "rs1", artist: "Turnstile", genre: "Hardcore", venue: "The Fillmore", city: "San Francisco", lat: 37.7840, lng: -122.4330, rating: 4.7, reviews: 212, band: 4.8, room: 4.0, setlist: ["Mystery", "HEALING", "Blackout"] },
   { id: "rs2", artist: "Geese", genre: "Indie", venue: "The Independent", city: "San Francisco", lat: 37.7765, lng: -122.4376, rating: 4.9, reviews: 38, band: 4.9, room: 4.6, setlist: ["3D Country", "Cowboy Nudes", "Doghouse"] },
@@ -114,8 +115,19 @@ const baseRatedShows = [
 ];
 
 // These aggregates are prototype fixtures, not verified community reviews.
-// Production rankings are built from server posts only.
-export const ratedShows = ENABLE_DEMO_DATA ? [...baseRatedShows, ...catalogShows] : [];
+// Production rankings are built from server posts only. Keep one exported array
+// identity because legacy screen helpers import it directly; installing demo
+// rows in place lets those helpers observe the lazy catalogue on their next
+// render without pulling the JSON into the entry module.
+export const ratedShows = ENABLE_DEMO_DATA ? [...baseRatedShows] : [];
+export function installDemoCatalogShows(shows) {
+  if (!ENABLE_DEMO_DATA) return;
+  const merged = new Map(baseRatedShows.map((show) => [show.id, show]));
+  for (const show of Array.isArray(shows) ? shows : []) {
+    if (show?.id) merged.set(show.id, show);
+  }
+  ratedShows.splice(0, ratedShows.length, ...merged.values());
+}
 
 export const GENRES = ["Hardcore", "Indie", "Psych Rock", "Alt-Country", "Punk", "Shoegaze", "Metal", "Electronic", "Hip-Hop", "Jazz"];
 

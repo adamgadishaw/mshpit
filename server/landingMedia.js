@@ -162,8 +162,23 @@ export function landingCommunityMedia({ viewerId = null, limit, at = Date.now(),
 }
 
 export function landingTotals() {
-  const row = db.prepare("SELECT COUNT(*) AS artists FROM artists").get();
+  const artistRow = db.prepare("SELECT COUNT(*) AS artists FROM artists").get();
+  // Count server-known public rooms rather than shipping the entire venue seed
+  // to every landing-page visitor for one number. Released event listings and
+  // visible concert posts are both legitimate evidence that a room is in PIT.
+  const venueRow = db.prepare(`
+    SELECT COUNT(*) AS venues FROM (
+      SELECT lower(trim(venue)) AS venue_key
+      FROM tour_dates
+      WHERE release_at<=? AND trim(coalesce(venue,''))!=''
+      UNION
+      SELECT lower(trim(venue)) AS venue_key
+      FROM posts
+      WHERE removed=0 AND trim(coalesce(venue,''))!=''
+    )
+  `).get(Date.now());
   return {
-    artists: Math.max(0, Number(row?.artists) || 0),
+    artists: Math.max(0, Number(artistRow?.artists) || 0),
+    venues: Math.max(0, Number(venueRow?.venues) || 0),
   };
 }

@@ -12,19 +12,79 @@ import {
   moveMediaProjectAsset,
   normalizeMediaProject,
   patchMediaProjectAsset,
+  reconcileMediaProjectSelection,
   serializableMediaProject,
   transitionMediaProjectAsset,
 } from "./mediaProject.mjs";
 
 test("picker projects are bounded, ordered and strip opaque picker objects", () => {
-  const picked = Array.from({ length: 10 }, (_, index) => ({
+  const picked = Array.from({ length: MEDIA_PROJECT_MAX_ASSETS + 1 }, (_, index) => ({
     uri: `blob:clip-${index}`, type: "video", duration: 8_000, width: 1080, height: 1920, file: { size: 100 + index, secret: index },
   }));
   const project = mediaProjectFromPicker(picked, "test");
   assert.equal(project.assets.length, MEDIA_PROJECT_MAX_ASSETS);
   assert.equal(project.assets[0].id, "local:test:1");
+  assert.equal(project.assets.at(-1).id, `local:test:${MEDIA_PROJECT_MAX_ASSETS}`);
   assert.equal("file" in project.assets[0], false);
   assert.equal(project.assets[0].runtimeFile.size, 100);
+});
+
+test("twenty stable post attachments survive editing, serialization, and publishing in order", () => {
+  const photos = Array.from(
+    { length: MEDIA_PROJECT_MAX_ASSETS },
+    (_, index) => `https://media.mshpit.com/users/u/post/photo-${index + 1}.webp`,
+  );
+  const mediaAssetIds = photos.map((_, index) => `ma_asset_${String(index + 1).padStart(8, "0")}`);
+  const project = mediaProjectFromPost({
+    photos,
+    media: photos.map((url, index) => ({
+      id: mediaAssetIds[index],
+      assetId: mediaAssetIds[index],
+      kind: "image",
+      url,
+    })),
+    mediaAssetIds,
+  });
+
+  assert.equal(project.assets.length, MEDIA_PROJECT_MAX_ASSETS);
+  assert.equal(serializableMediaProject(project).assets.length, MEDIA_PROJECT_MAX_ASSETS);
+  assert.deepEqual(mediaProjectPublishedMedia(project).map((item) => item.url), photos);
+  assert.deepEqual(mediaAssetIdsMatchingPhotos(project, photos), mediaAssetIds);
+});
+
+test("Studio can reverse a full mixed-media album without truncating IDs or edit recipes", () => {
+  const project = normalizeMediaProject({
+    assets: Array.from({ length: MEDIA_PROJECT_MAX_ASSETS }, (_, index) => {
+      const kind = index % 2 === 0 ? "image" : "video";
+      const extension = kind === "video" ? "mp4" : "webp";
+      return {
+        id: `project-${index + 1}`,
+        assetId: `ma_mixed_${String(index + 1).padStart(8, "0")}`,
+        kind,
+        sourceUrl: `https://media.mshpit.com/users/u/post/original-${index + 1}.${extension}`,
+        status: "ready",
+        edit: kind === "image"
+          ? { kind, filter: index % 4 === 0 ? "encore" : "pit" }
+          : { kind, coverMode: "manual", coverMs: 1_000 + index },
+        altText: `Crowd view ${index + 1}`,
+      };
+    }),
+  });
+  const selection = project.assets.slice().reverse();
+  const replacements = selection.map((asset, index) => ({
+    ...asset,
+    sourceUrl: `https://media.mshpit.com/users/u/post/rendered-${index + 1}.${asset.kind === "video" ? "mp4" : "webp"}`,
+    status: "ready",
+  }));
+  const reconciled = reconcileMediaProjectSelection(project, selection, replacements);
+  const published = mediaProjectPublishedMedia(reconciled);
+
+  assert.equal(reconciled.assets.length, MEDIA_PROJECT_MAX_ASSETS);
+  assert.deepEqual(reconciled.assets.map((asset) => asset.id), selection.map((asset) => asset.id));
+  assert.deepEqual(reconciled.assets.map((asset) => asset.assetId), selection.map((asset) => asset.assetId));
+  assert.deepEqual(reconciled.assets.map((asset) => asset.edit), selection.map((asset) => asset.edit));
+  assert.deepEqual(published.map((item) => item.url), replacements.map((asset) => asset.sourceUrl));
+  assert.deepEqual(published.map((item) => item.position), Array.from({ length: MEDIA_PROJECT_MAX_ASSETS }, (_, index) => index));
 });
 
 test("legacy URL posts normalize into ready backward-compatible assets", () => {

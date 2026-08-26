@@ -95,6 +95,7 @@ test("publicUser treats extras as untrusted and tolerates malformed stored JSON"
     favorite_artists: "null",
     extras: JSON.stringify({
       id: "spoofed", email: "leak@example.com", role: "admin", verified: true, home: { city: "Spoofed" }, theme: "stage",
+      searchIndexingOptOut: true,
       nowPlaying: { title: { nested: "crash" }, artist: ["not", "a", "string"] },
     }),
   };
@@ -108,6 +109,7 @@ test("publicUser treats extras as untrusted and tolerates malformed stored JSON"
   assert.equal(publicProjection.home.lat, undefined);
   assert.equal(publicProjection.home.lng, undefined);
   assert.equal(publicProjection.theme, "stage");
+  assert.equal(publicProjection.searchIndexingOptOut, undefined);
   assert.equal(publicProjection.nowPlaying, undefined);
   assert.deepEqual(publicProjection.genres, []);
   assert.deepEqual(publicProjection.favoriteArtists, []);
@@ -115,6 +117,7 @@ test("publicUser treats extras as untrusted and tolerates malformed stored JSON"
   const selfProjection = publicUser(base, { self: true });
   assert.equal(selfProjection.email, "real@example.com");
   assert.deepEqual(selfProjection.home, { city: "Toronto", lat: 43.65, lng: -79.38 });
+  assert.equal(selfProjection.searchIndexingOptOut, true);
   assert.doesNotThrow(() => publicUser({ ...base, extras: "{broken" }));
 });
 
@@ -2427,6 +2430,29 @@ test("PATCH /api/me schemas extras, filters public song text, and keeps trusted 
   assert.equal(result.user.termsAcceptedAt, undefined, "generic profile extras cannot forge Terms acceptance");
   assert.deepEqual(result.user.nowPlaying, { title: "Safe Song", artist: "Safe Artist" });
   assert.deepEqual(JSON.parse(q.userById.get(user.id).extras), { theme: "stage", nowPlaying: { title: "Safe Song", artist: "Safe Artist" } });
+
+  assert.throws(
+    () => handler({ user: q.userById.get(user.id), ip: "profile-test", body: { searchIndexingOptOut: "yes" } }),
+    (error) => error instanceof ApiError && error.status === 400 && error.code === "VALIDATION_FAILED",
+  );
+
+  const optedOut = handler({
+    user: q.userById.get(user.id), ip: "profile-test", body: { searchIndexingOptOut: true },
+  });
+  assert.equal(optedOut.user.searchIndexingOptOut, true, "the preference rehydrates only in the self projection");
+  assert.equal(publicUser(q.userById.get(user.id)).searchIndexingOptOut, undefined);
+
+  const protectedPreference = handler({
+    user: q.userById.get(user.id), ip: "profile-test", body: { extras: { theme: "neon", searchIndexingOptOut: false } },
+  });
+  assert.equal(protectedPreference.user.searchIndexingOptOut, true,
+    "generic extras writes cannot silently erase the dedicated privacy preference");
+  assert.deepEqual(JSON.parse(q.userById.get(user.id).extras), { theme: "neon", searchIndexingOptOut: true });
+
+  const optedIn = handler({
+    user: q.userById.get(user.id), ip: "profile-test", body: { searchIndexingOptOut: false },
+  });
+  assert.equal(optedIn.user.searchIndexingOptOut, false);
 });
 
 test("signup records Terms separately while optional analytics defaults off", () => {

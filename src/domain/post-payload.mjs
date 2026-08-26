@@ -1,3 +1,4 @@
+import { MEDIA_POST_MAX_ATTACHMENTS } from "./mediaUploadPolicy.mjs";
 import { clean, clampRating, LIMITS } from "./validation.mjs";
 import { taggedUserIdsFromPeople } from "./postFriendTags.mjs";
 
@@ -14,7 +15,7 @@ export function cleanMediaAssetIds(value) {
   for (const item of value) {
     if (typeof item !== "string" || !/^ma_[A-Za-z0-9_-]{8,80}$/.test(item) || ids.includes(item)) continue;
     ids.push(item);
-    if (ids.length >= 8) break;
+    if (ids.length >= MEDIA_POST_MAX_ATTACHMENTS) break;
   }
   return ids;
 }
@@ -57,7 +58,7 @@ export function buildReviewEditBody(changes) {
     dims: changes.dims && typeof changes.dims === "object" ? changes.dims : {},
     review: clean(changes.review, { max: LIMITS.review, newlines: true }),
     taggedUserIds: taggedUserIdsFromPeople(changes.taggedPeople),
-    photos: Array.isArray(changes.photos) ? changes.photos.filter((item) => typeof item === "string").slice(0, 8) : [],
+    photos: Array.isArray(changes.photos) ? changes.photos.filter((item) => typeof item === "string").slice(0, MEDIA_POST_MAX_ATTACHMENTS) : [],
     ...(Array.isArray(changes.mediaAssetIds) ? { mediaAssetIds: cleanMediaAssetIds(changes.mediaAssetIds) } : {}),
     photosPublic: !!changes.photosPublic,
     landingShowcase: !!changes.photosPublic && !!changes.landingShowcase,

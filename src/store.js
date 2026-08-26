@@ -1,14 +1,13 @@
 import { createContext, useContext, useState, useEffect, useRef } from "react";
 import { AppState, Platform } from "react-native";
-import { seedFeed, ratedShows, haversineKm } from "./data";
-import { catalogVenues, catalogTourDates, catalogArtists } from "./seed/catalog";
+import { seedFeed, ratedShows, haversineKm, installDemoCatalogShows } from "./data";
 import { clean, cleanEmail, isEmail, cleanName, isName, cleanHandle, isPassword, clampRating, LIMITS } from "./domain/validation.mjs";
 import { load, remove, save } from "./lib/persist";
 import { api, AppError, captureAppError, configureApiIdentity } from "./lib/api";
-import { requestAccountExport, updateAnnouncementEmailPreference } from "./lib/accountPrivacyApi";
+import { requestAccountExport, updateAnnouncementEmailPreference, updateProfileSearchIndexingPreference } from "./lib/accountPrivacyApi";
 import { requestFreshDeezerPreview } from "./lib/playbackApi";
 import { clearStoredTheme, setTheme as applyTheme, storedThemeSelection, syncThemeFromAccount } from "./theme";
-import { artistMeta } from "./seed/ingested";
+import { artistMeta, installIngestedCatalog } from "./seed/ingested";
 import { ACHIEVEMENTS } from "./domain/badges.mjs";
 import { ENABLE_DEMO_DATA, remoteIdentityValidationEnabled } from "./config/runtime.mjs";
 import { isUpcomingEventDate, PERSISTED_FEED_LIMIT, publicProfileCacheEntry, sanitizePersistedStoreValue, sanitizeTourDates } from "./domain/dataPolicy.mjs";
@@ -47,6 +46,7 @@ import {
   resolveQuarantinedLegacyDrafts,
   upsertAccountDraft,
 } from "./domain/draftPolicy.mjs";
+import { MEDIA_POST_MAX_ATTACHMENTS } from "./domain/mediaUploadPolicy.mjs";
 import { buildReviewCreateBody, buildReviewEditBody, cleanArtistKey } from "./domain/post-payload.mjs";
 import { mergeEditedPost, resolvePostEditTarget } from "./domain/postEditTarget.mjs";
 import { postMatchesEditIntent, shouldReconcileEditFailure } from "./domain/postReconciliation.mjs";
@@ -215,6 +215,10 @@ const EMPTY_DISCOVERY_SIDEBAR = Object.freeze({
   location: null,
   source: null,
 });
+// Development-only catalogue projections are mutated exactly once when the
+// lazy demo fixture resolves. Production leaves them empty and relies on APIs.
+const catalogArtists = {};
+const catalogVenues = {};
 const discoverySidebarScopeFor = (candidate) => accountTargetScope(
   candidate?.id || null,
   `discovery-sidebar:${JSON.stringify([
@@ -313,7 +317,6 @@ const demoTourDates = [
   { id: "t3", artist: "Japanese Breakfast", venue: "The Fillmore", place: "San Francisco, California, United States", date: "2026 · 10 · 11", ticketUrl: "", releaseAt: now - DAY, createdBy: "u_admin" },
   // a scheduled (not-yet-public) date the Turnstile team can see but fans can't:
   { id: "t4", artist: "Turnstile", venue: "Madison Square Garden", place: "New York City, New York, United States", date: "2026 · 12 · 31", ticketUrl: "", releaseAt: now + 7 * DAY, createdBy: "u_artist" },
-  ...catalogTourDates,
 ];
 const seedTourDates = demoSeed(demoTourDates, []);
 const publicTourDateCache = (value, at = Date.now()) => {
@@ -335,18 +338,36 @@ export const isStaff = (role) => role === "admin";
 export const isMod = (role) => role === "admin" || role === "moderator";
 export const isArtist = (role) => role === "artist" || role === "admin";
 
-// Popularity ranking for the Top-100 badge, computed once from the bundled
-// catalog (Spotify popularity, tie-break followers). Names still missing a
-// popularity score (not yet enriched) are simply unranked. Rebuilds on reload
-// after each scrape refreshes the bundled catalog.
-const ARTIST_RANK = (() => {
-  const rows = Object.values(catalogArtists || {})
+// Demo-only popularity ranking. Production catalogue ranking is API-owned; the
+// generated local catalogue installs this map only after its lazy development
+// import resolves.
+let ARTIST_RANK = new Map();
+const installArtistRanks = (artists) => {
+  const rows = Object.values(artists || {})
     .filter((a) => a && a.popularity != null)
     .sort((x, y) => (y.popularity - x.popularity) || ((y.followers || 0) - (x.followers || 0)));
   const m = new Map();
   rows.forEach((a, i) => m.set((a.name || "").toLowerCase(), i + 1));
-  return m;
-})();
+  ARTIST_RANK = m;
+};
+let demoCatalogPromise = null;
+const loadDemoCatalogFixture = () => {
+  if (!demoCatalogPromise) {
+    demoCatalogPromise = import("./seed/catalog").then((catalog) => {
+      const artists = catalog.catalogArtists || {};
+      const venues = catalog.catalogVenues || {};
+      const shows = catalog.catalogShows || [];
+      const tourDates = catalog.catalogTourDates || [];
+      Object.assign(catalogArtists, artists);
+      Object.assign(catalogVenues, venues);
+      installDemoCatalogShows(shows);
+      installIngestedCatalog({ artists, venues, shows, tourDates });
+      installArtistRanks(artists);
+      return tourDates;
+    });
+  }
+  return demoCatalogPromise;
+};
 export const artistRankOf = (name) => ARTIST_RANK.get((name || "").trim().toLowerCase()) || null;
 
 // role → the official badge it earns (Pit team / moderator / verified artist).
@@ -578,8 +599,37 @@ export function StoreProvider({ children }) {
     : publicTourDateCache(load("pit.tourDates", [])));
   const tourDatesRef = useRef(tourDates);
   tourDatesRef.current = tourDates;
-  const tourDateReadRef = useRef({ sequence: 0, accountId: session?.id || null });
-  useEffect(() => { save("pit.tourDates", publicTourDateCache(tourDates)); }, [tourDates]);
+  const tourDateReadRef = useRef({ sequence: 0, accountId: session?.id || null, demoCatalogApplied: false });
+  useEffect(() => {
+    save("pit.tourDates", publicTourDateCache(tourDates));
+    if (!ENABLE_DEMO_DATA) return undefined;
+    let active = true;
+    // Metro emits this as a separate web chunk. Production never requests it;
+    // explicit demo builds retain the complete offline fixture after first paint.
+    loadDemoCatalogFixture()
+      .then((dates) => {
+        if (!active || tourDateReadRef.current.demoCatalogApplied) return;
+        tourDateReadRef.current.demoCatalogApplied = true;
+        setTourDates((current) => {
+          const next = sanitizeTourDates(
+            [...new Map([...dates, ...current].map((event) => [event.id, event])).values()],
+            true,
+          );
+          tourDatesRef.current = next;
+          return next;
+        });
+      })
+      .catch((error) => {
+        if (active) captureAppError(error, {
+          code: "PIT-STORE-003",
+          context: "Loading the optional development catalogue",
+          source: "demo-catalog",
+          severity: "warning",
+          toast: false,
+        });
+      });
+    return () => { active = false; };
+  }, [tourDates]);
   const [reports, setReports] = useState([]);
   const [moderationConsole, setModerationConsole] = useState(emptyModerationConsole);
   const moderationConsoleRef = useRef(moderationConsole);
@@ -2944,7 +2994,7 @@ export function StoreProvider({ children }) {
         taggedUserIds: taggedUserIdsFromPeople(changes.taggedPeople ?? previous.taggedPeople),
         song: changes.song?.videoId ? changes.song : null,
         playlistId,
-        photos: Array.isArray(changes.photos) ? changes.photos.filter((item) => typeof item === "string").slice(0, 8) : [],
+        photos: Array.isArray(changes.photos) ? changes.photos.filter((item) => typeof item === "string").slice(0, MEDIA_POST_MAX_ATTACHMENTS) : [],
         ...(Array.isArray(changes.mediaAssetIds) ? { mediaAssetIds: changes.mediaAssetIds } : {}),
         photosPublic: changes.photosPublic !== false,
         campaign: normalizeArtistCampaign(Object.prototype.hasOwnProperty.call(changes, "campaign") ? changes.campaign : previous.campaign),
@@ -3376,6 +3426,24 @@ export function StoreProvider({ children }) {
         toast: false,
       });
       return { ok: false, error: appError.userMessage || "Pit could not prepare your data file.", appError };
+    }
+  };
+
+  const setProfileSearchIndexingEnabled = async (enabled) => {
+    if (!session?.id) return { ok: false };
+    const accountId = session.id;
+    try {
+      const { user } = await updateProfileSearchIndexingPreference(enabled);
+      if (!user || sessionRef.current?.id !== accountId) return { ok: false };
+      const merged = { ...sessionRef.current, ...user };
+      setUsers((all) => all.map((entry) => entry.id === accountId
+        ? (ENABLE_DEMO_DATA ? { ...entry, ...user } : publicProfileCacheEntry({ ...entry, ...user }))
+        : entry));
+      sessionRef.current = merged;
+      setSession(merged);
+      return { ok: true, user: merged };
+    } catch (error) {
+      return { ok: false, error };
     }
   };
 
@@ -4096,7 +4164,7 @@ export function StoreProvider({ children }) {
     if (fanClubDirectoryStatus === "ready") {
       return fanClubDirectorySnapshot.map((club) => ({
         ...club,
-        artist: catalogArtists[fcKey(club.artist)]?.name || club.artist.replace(/\b\w/g, (character) => character.toUpperCase()),
+        artist: remoteArtists[fcKey(club.artist)]?.name || catalogArtists[fcKey(club.artist)]?.name || club.artist.replace(/\b\w/g, (character) => character.toUpperCase()),
       }));
     }
     const byKey = {};
@@ -4605,7 +4673,7 @@ export function StoreProvider({ children }) {
   const addVenueReview = (venueName, { rating, text, photos }) => {
     if (!session) return Promise.resolve({ ok: false });
     const localId = "vr_" + Date.now();
-    const r = { id: localId, userId: session.id, name: session.name, initials: session.initials, rating: clampRating(rating), text: clean(text, { max: LIMITS.review, newlines: true }), photos: (photos || []).slice(0, 8), ts: "now" };
+    const r = { id: localId, userId: session.id, name: session.name, initials: session.initials, rating: clampRating(rating), text: clean(text, { max: LIMITS.review, newlines: true }), photos: (photos || []).slice(0, MEDIA_POST_MAX_ATTACHMENTS), ts: "now" };
     setVenueReviews((m) => ({ ...m, [norm(venueName)]: [r, ...(m[norm(venueName)] || [])] }));
     const enc = encodeURIComponent(norm(venueName));
     return api(`/api/venues/${enc}/reviews`, { method: "POST", body: { rating: r.rating, text: r.text, photos: r.photos }, context: "Posting your venue review" })
@@ -4639,7 +4707,9 @@ export function StoreProvider({ children }) {
     for (const key of Object.keys(catalogVenues)) {
       if (loose(key) === lk) return key;
     }
-    return null;
+    // Production venue media is resolved by the server and does not require a
+    // bundled catalogue row merely to form its normalized lookup key.
+    return ENABLE_DEMO_DATA ? null : k;
   };
   const venuePhotoState = (venueName) => {
     const key = venueCatalogKey(venueName);
@@ -4915,7 +4985,7 @@ export function StoreProvider({ children }) {
         && (t.releaseAt <= Date.now() || isStaff(session?.role) || t.createdBy === session?.id))
       .map((t) => ({ ...t, scheduled: t.releaseAt > Date.now() }));
     const totalRatings = nights.reduce((s, n) => s + (n.likes || 0), 0);
-    const cat = catalogArtists[key];
+    const cat = remoteArtists[key] || catalogArtists[key];
     const prof = artistProfiles[key] || {};
     return {
       name,
@@ -5001,7 +5071,12 @@ export function StoreProvider({ children }) {
 
   const artistGenre = (name) => {
     const k = norm(name);
-    return ratedShows.find((r) => norm(r.artist) === k)?.genre || feed.find((l) => norm(l.artist) === k)?.genre || null;
+    return remoteArtists[k]?.genre
+      || catalogArtists[k]?.genre
+      || ratedShows.find((r) => norm(r.artist) === k)?.genre
+      || feed.find((l) => norm(l.artist) === k)?.genre
+      || artistMeta(name)?.genre
+      || null;
   };
 
   const venueCoord = (name) => {
@@ -5009,7 +5084,9 @@ export function StoreProvider({ children }) {
     const cat = catalogVenues[k];
     if (cat && cat.lat != null) return { lat: cat.lat, lng: cat.lng };
     const rs = ratedShows.find((r) => norm(r.venue) === k);
-    return rs ? { lat: rs.lat, lng: rs.lng } : null;
+    if (rs) return { lat: rs.lat, lng: rs.lng };
+    const event = tourDates.find((date) => norm(date.venue) === k && date.lat != null && date.lng != null);
+    return event ? { lat: event.lat, lng: event.lng } : null;
   };
 
   const allVenues = () => {
@@ -5399,7 +5476,7 @@ export function StoreProvider({ children }) {
   // Moderated URLs are filtered at every layer, so pulling one photo simply
   // promotes the next available image to keep the gallery full (up to n).
   const artistGallery = (name, n = 5, artistKey = null) => {
-    const meta = artistMeta(name) || {};
+    const meta = remoteArtists[norm(name)] || artistMeta(name) || {};
     const fan = artistFanPhotos(name, artistKey);
     const pool = (meta.galleryPool && meta.galleryPool.length
       ? meta.galleryPool
@@ -5420,7 +5497,7 @@ export function StoreProvider({ children }) {
   const value = {
     users, adminMembers, adminMemberDirectory, session, authReady, feed, removedIds, blockedIds, requests, tourDates, reports, moderationConsole, follows, discoverySidebar, discoverySidebarStatus,
     userById, userByHandle, logsByUser, sharedShows,
-    login, signup, logout, deleteAccount, forgotPassword, resetPassword, confirmEmailVerification, resendEmailVerification, updateProfile, setAnalyticsEnabled, setAnnouncementEmailsEnabled, chooseTheme,
+    login, signup, logout, deleteAccount, forgotPassword, resetPassword, confirmEmailVerification, resendEmailVerification, updateProfile, setAnalyticsEnabled, setProfileSearchIndexingEnabled, setAnnouncementEmailsEnabled, chooseTheme,
     addLog, editLog, reportContent, actionReport, dismissReport, removeContent, restoreContent,
     requestArtist, approveArtist, rejectArtist,
     addTourDatesBatch,

@@ -6,6 +6,7 @@ import sharp from "sharp";
 
 import { inspectImageBytes, MAX_IMAGE_PIXELS } from "./imageInspection.js";
 import { imageProcessorHealth, sanitizeDecodedImage, validateDecodedImage } from "./imageProcessor.js";
+import { MEDIA_POST_MAX_ATTACHMENTS } from "../src/domain/mediaUploadPolicy.mjs";
 
 function createdImage({ width = 64, height = 48, format = "jpeg" } = {}) {
   const pipeline = sharp({
@@ -219,11 +220,10 @@ test("legacy recovery strips only a marker-validated JPEG trailer before isolate
   );
 });
 
-test("oversized legacy trailer JPEGs have a narrow recovery-only admission and bounded output", async () => {
+test("ordinary high-resolution camera JPEGs are accepted while legacy trailers are stripped and hard pixel bounds remain", async () => {
   const width = 5712;
   const height = 4284;
-  assert.ok(width * height > MAX_IMAGE_PIXELS);
-  assert.ok(width * height < 25_000_000);
+  assert.ok(width * height < MAX_IMAGE_PIXELS, "a normal 24 MP camera photo stays inside the 50 MP safety envelope");
   const jpeg = await createdImage({ width, height });
   const sentinel = Buffer.from("legacy-oversize-trailer-must-never-publish");
   const withTrailer = Buffer.concat([jpeg, sentinel]);
@@ -232,20 +232,18 @@ test("oversized legacy trailer JPEGs have a narrow recovery-only admission and b
     sanitizeDecodedImage(withTrailer, { expectedType: "image/jpeg" }),
     (error) => error.code === "trailing_data",
   );
-  await assert.rejects(
-    sanitizeDecodedImage(jpeg, {
-      expectedType: "image/jpeg",
-      allowLegacyJpegTrailer: true,
-    }),
-    (error) => error.code === "resource_limit",
-  );
+  const ordinary = await sanitizeDecodedImage(jpeg, {
+    expectedType: "image/jpeg",
+    allowLegacyJpegTrailer: true,
+  });
+  assert.deepEqual([ordinary.width, ordinary.height], [width, height]);
 
   const recovered = await sanitizeDecodedImage(withTrailer, {
     expectedType: "image/jpeg",
     outputType: "image/jpeg",
     allowLegacyJpegTrailer: true,
   });
-  assert.deepEqual([recovered.width, recovered.height], [4096, 3072]);
+  assert.deepEqual([recovered.width, recovered.height], [width, height]);
   assert.ok(recovered.width * recovered.height <= MAX_IMAGE_PIXELS);
   assert.equal(recovered.bytes.includes(sentinel), false);
   assert.equal(inspectImageBytes(recovered.bytes, {
@@ -256,9 +254,9 @@ test("oversized legacy trailer JPEGs have a narrow recovery-only admission and b
   const overLimit = Buffer.from(jpeg);
   const sof = overLimit.indexOf(Buffer.from([0xff, 0xc0]));
   assert.ok(sof > 0);
-  overLimit.writeUInt16BE(6000, sof + 5);
-  overLimit.writeUInt16BE(4200, sof + 7);
-  assert.ok(6000 * 4200 > 25_000_000);
+  overLimit.writeUInt16BE(8000, sof + 5);
+  overLimit.writeUInt16BE(7000, sof + 7);
+  assert.ok(8000 * 7000 > MAX_IMAGE_PIXELS);
   await assert.rejects(
     sanitizeDecodedImage(Buffer.concat([overLimit, sentinel]), {
       expectedType: "image/jpeg",
@@ -303,23 +301,26 @@ test("the real HEIC decoder fallback is explicit and remains unavailable to ordi
   );
 });
 
-test("untrusted decode work is admitted before a one-shot isolated child process starts", async () => {
+test("the bounded processor queue admits a complete ordinary 20-item album without busy failures", async () => {
   const jpeg = await createdImage({ width: 512, height: 512 });
-  const first = validateDecodedImage(jpeg, { expectedType: "image/jpeg" });
-  await assert.rejects(
-    validateDecodedImage(jpeg, { expectedType: "image/jpeg" }),
-    (error) => error.code === "busy",
-  );
-  assert.deepEqual(await first, {
-    mimeType: "image/jpeg",
-    width: 512,
-    height: 512,
-    pixels: 512 * 512,
-  });
+  const jobs = Array.from({ length: MEDIA_POST_MAX_ATTACHMENTS }, () => (
+    validateDecodedImage(jpeg, { expectedType: "image/jpeg" })
+  ));
+  const during = imageProcessorHealth();
+  assert.equal(during.capacity, 1);
+  assert.equal(during.active, 1);
+  assert.equal(during.queued, MEDIA_POST_MAX_ATTACHMENTS - 1);
+  assert.ok(during.queueCapacity >= MEDIA_POST_MAX_ATTACHMENTS,
+    "queue capacity covers an ordinary album even before client-side serial backpressure");
+
+  const results = await Promise.all(jobs);
+  assert.equal(results.length, MEDIA_POST_MAX_ATTACHMENTS);
+  assert.equal(results.every((result) => result.mimeType === "image/jpeg"
+    && result.width === 512 && result.height === 512 && result.pixels === 512 * 512), true);
   const health = imageProcessorHealth();
   assert.equal(health.isolation, "child_process");
-  assert.equal(health.capacity, 1);
   assert.equal(health.active, 0);
+  assert.equal(health.queued, 0);
   assert.equal(health.maxPixels, MAX_IMAGE_PIXELS);
   assert.equal(health.diskCache, false);
   assert.equal(health.untrustedOperationsBlocked, true);
@@ -334,5 +335,29 @@ test("high-bit-depth PNGs are rejected before their expanded pixels reach libvip
   await assert.rejects(
     validateDecodedImage(sixteenBit, { expectedType: "image/png" }),
     (error) => error.code === "resource_limit",
+  );
+});
+
+test("profile photos receive exact server-authored avatar and banner geometry", async () => {
+  const source = await createdImage({ width: 1200, height: 800 });
+
+  const avatar = await sanitizeDecodedImage(source, {
+    expectedType: "image/jpeg",
+    profileRendition: "avatar",
+  });
+  assert.deepEqual([avatar.width, avatar.height], [1024, 1024]);
+
+  const banner = await sanitizeDecodedImage(source, {
+    expectedType: "image/jpeg",
+    profileRendition: "banner",
+  });
+  assert.deepEqual([banner.width, banner.height], [1800, 600]);
+
+  await assert.rejects(
+    sanitizeDecodedImage(source, {
+      expectedType: "image/jpeg",
+      profileRendition: "post",
+    }),
+    (error) => error.code === "invalid_rendition",
   );
 });

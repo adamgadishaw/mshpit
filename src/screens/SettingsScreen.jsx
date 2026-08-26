@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import Constants from "expo-constants";
 import { Linking, View, Text, TextInput, StyleSheet, ScrollView, Pressable } from "react-native";
 import { colors, focusRing, radius, mono, THEMES, themeKey, space } from "../theme";
-import { useStore } from "../store";
+import { isMod, useStore } from "../store";
 import SheetHeader from "../components/SheetHeader";
 import Icon from "../components/Icon";
 import Avatar from "../components/Avatar";
@@ -10,6 +10,7 @@ import ThemeSwatch, { themeGridStyle } from "../components/ThemeSwatch";
 import { privateListeningRemainingLabel } from "../domain/privateListening.mjs";
 import { profileManagementAction } from "../domain/artistWorkspace.mjs";
 import { SUPPORT_EMAIL, SUPPORT_URL } from "../domain/contact.mjs";
+import { visibleThemeChoices } from "../domain/themeChoices.mjs";
 
 const versionLabel = Constants.expoConfig?.version || "Unavailable";
 
@@ -57,22 +58,27 @@ function Toggle({ value, busy = false }) {
 }
 
 export default function SettingsScreen({ onClose, onManageProfile, onOpenProfile, onOpenPrivacy, onOpenTerms, onOpenDiagnostics, onOpenDeleteAccount, onLogout }) {
-  const { session, chooseTheme, blockedUsers, unblockUser, exportMyData, setAnalyticsEnabled, setAnnouncementEmailsEnabled, privateListeningActive, privateListeningUntil, setPrivateListening } = useStore();
+  const { session, chooseTheme, blockedUsers, unblockUser, exportMyData, setAnalyticsEnabled, setProfileSearchIndexingEnabled, setAnnouncementEmailsEnabled, privateListeningActive, privateListeningUntil, setPrivateListening } = useStore();
   const blocked = session ? blockedUsers() : [];
   const [exporting, setExporting] = useState(false);
   const [exportResult, setExportResult] = useState(null);
   const [exportPassword, setExportPassword] = useState("");
   const [savingAnalytics, setSavingAnalytics] = useState(false);
   const [analyticsResult, setAnalyticsResult] = useState(null);
+  const [savingSearchIndexing, setSavingSearchIndexing] = useState(false);
+  const [searchIndexingResult, setSearchIndexingResult] = useState(null);
   const [savingAnnouncements, setSavingAnnouncements] = useState(false);
   const [announcementResult, setAnnouncementResult] = useState(null);
   const [supportError, setSupportError] = useState(null);
+  const [showMoreThemes, setShowMoreThemes] = useState(false);
   const [, setPrivateClock] = useState(0);
   const analyticsEnabled = !!(session?.analyticsConsentAt || session?.consentAt) && !session?.analyticsOptOut;
+  const profileSearchIndexingEnabled = session?.searchIndexingOptOut !== true;
   const announcementsEnabled = !session?.marketingOptOut;
   const manageProfile = profileManagementAction(session);
   const publicProfileLabel = manageProfile.destination === "artistHub" ? "View public artist page" : "View public profile";
   const publicProfileDetail = manageProfile.destination === "artistHub" ? session?.artistName : `@${session?.handle || ""}`;
+  const themeChoices = visibleThemeChoices(THEMES, { expanded: showMoreThemes, selectedKey: themeKey });
   useEffect(() => {
     if (!privateListeningActive) return undefined;
     const timer = setInterval(() => setPrivateClock((value) => value + 1), 60_000);
@@ -98,6 +104,19 @@ export default function SettingsScreen({ onClose, onManageProfile, onOpenProfile
       : "That preference did not save. Please try again.");
     setSavingAnalytics(false);
   };
+  const toggleProfileSearchIndexing = async () => {
+    if (!session || savingSearchIndexing) return;
+    setSavingSearchIndexing(true);
+    setSearchIndexingResult(null);
+    const nextEnabled = !profileSearchIndexingEnabled;
+    const result = await setProfileSearchIndexingEnabled(nextEnabled);
+    setSearchIndexingResult(result?.ok
+      ? (nextEnabled
+        ? "Your personal profile can appear in search engines."
+        : "Pit now asks search engines not to index your personal profile. Earlier results may take time to disappear.")
+      : "That search visibility preference did not save. Please try again.");
+    setSavingSearchIndexing(false);
+  };
   const toggleAnnouncements = async () => {
     if (!session || savingAnnouncements) return;
     setSavingAnnouncements(true);
@@ -116,10 +135,20 @@ export default function SettingsScreen({ onClose, onManageProfile, onOpenProfile
         <Text style={styles.section}>APPEARANCE</Text>
         <Text style={styles.hint}>{session ? "Pick a theme. It's saved to your account and follows you to any device." : "Pick a theme. It applies across the whole app."}</Text>
         <View style={styles.swatchGrid} accessibilityRole="radiogroup" accessibilityLabel="Appearance theme">
-          {THEMES.map((t) => (
+          {themeChoices.map((t) => (
             <ThemeSwatch key={t.key} theme={t} active={t.key === themeKey} onPress={() => t.key !== themeKey && chooseTheme(t.key)} showMode />
           ))}
         </View>
+        <Pressable
+          style={({ focused }) => [styles.moreThemesButton, focused && focusRing]}
+          onPress={() => setShowMoreThemes((value) => !value)}
+          accessibilityRole="button"
+          accessibilityLabel={showMoreThemes ? "Show primary themes only" : "Show more themes"}
+          accessibilityState={{ expanded: showMoreThemes }}
+        >
+          <Text style={styles.moreThemesText}>{showMoreThemes ? "Show primary themes" : "More themes"}</Text>
+          <Icon name="chevron-right" size={16} color={colors.amber} />
+        </Pressable>
 
         {session && (
           <>
@@ -148,6 +177,23 @@ export default function SettingsScreen({ onClose, onManageProfile, onOpenProfile
               accessibilityState={{ checked: privateListeningActive }}
               right={<Toggle value={privateListeningActive} />}
             />
+            <Row
+              icon="search"
+              label="Show my profile in search engines"
+              sub={profileSearchIndexingEnabled
+                ? "On. Google and other search engines may show your personal member profile."
+                : "Off. Pit marks your personal member profile noindex and removes it from sitemaps. Public posts and artist pages can still appear."}
+              onPress={toggleProfileSearchIndexing}
+              disabled={savingSearchIndexing}
+              accessibilityRole="switch"
+              accessibilityState={{ checked: profileSearchIndexingEnabled, busy: savingSearchIndexing }}
+              right={<Toggle value={profileSearchIndexingEnabled} busy={savingSearchIndexing} />}
+            />
+            {!!searchIndexingResult && (
+              <Text style={[styles.exportStatus, searchIndexingResult.startsWith("That search") && styles.exportError]} accessibilityRole="alert" accessibilityLiveRegion="polite">
+                {searchIndexingResult}
+              </Text>
+            )}
             <Row
               icon="activity"
               label="Product analytics"
@@ -239,10 +285,10 @@ export default function SettingsScreen({ onClose, onManageProfile, onOpenProfile
           }}
         />
         {!!supportError && <Text style={[styles.exportStatus, styles.exportError]} accessibilityRole="alert" accessibilityLiveRegion="assertive">{supportError}</Text>}
-        <Row icon="discover" label="Diagnostics" sub="Recent errors, request references, and failure points" onPress={onOpenDiagnostics} />
+        {isMod(session?.role) && <Row icon="discover" label="Diagnostics" sub="Recent errors, request references, and failure points" onPress={onOpenDiagnostics} />}
         <Row icon="lock" label="Privacy policy" onPress={onOpenPrivacy} />
         <Row icon="shield" label="Terms & conditions" onPress={onOpenTerms} />
-        <Row icon="globe" label="Version" sub="Pit mobile" onPress={undefined} right={<Text style={styles.ver}>{versionLabel}</Text>} />
+        <Row icon="globe" label="Version" sub="Mshpit mobile" onPress={undefined} right={<Text style={styles.ver}>{versionLabel}</Text>} />
 
         {session && (
           <>
@@ -263,6 +309,8 @@ const styles = StyleSheet.create({
   section: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "700", marginTop: space(6), marginBottom: space(2) },
   hint: { color: colors.textDim, fontSize: 13, marginBottom: 12 },
   swatchGrid: themeGridStyle,
+  moreThemesButton: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 7, alignSelf: "flex-start", marginTop: 8, paddingHorizontal: 13, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
+  moreThemesText: { color: colors.amber, fontSize: 12.5, fontWeight: "800" },
   row: { minHeight: 64, flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 14, marginBottom: 8 },
   rowDisabled: { opacity: 0.62 },
   rowIcon: { width: 36, height: 36, borderRadius: 10, backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },

@@ -1,3 +1,4 @@
+import { MEDIA_POST_MAX_ATTACHMENTS } from "./mediaUploadPolicy.mjs";
 import {
   mediaProjectFromLegacyUrls,
   mediaProjectPublishedMedia,
@@ -29,7 +30,7 @@ const normalizedDims = (value) => {
 export function normalizeComposerDraft(value = {}) {
   const panels = value.panels && typeof value.panels === "object" ? value.panels : {};
   const postType = value.postType === "status" ? "status" : "show";
-  const legacyPhotos = Array.isArray(value.photos) ? value.photos.filter((uri) => typeof uri === "string").slice(0, 8) : [];
+  const legacyPhotos = Array.isArray(value.photos) ? value.photos.filter((uri) => typeof uri === "string").slice(0, MEDIA_POST_MAX_ATTACHMENTS) : [];
   const normalizedProject = value.mediaProject
     ? normalizeMediaProject(value.mediaProject)
     : mediaProjectFromLegacyUrls(legacyPhotos);

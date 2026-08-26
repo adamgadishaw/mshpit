@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, Image } from "react-native";
 import { colors, mono, radius, THEMES, themeKey } from "../theme";
 import ThemeSwatch from "../components/ThemeSwatch";
@@ -8,6 +8,7 @@ import Icon from "../components/Icon";
 import SheetHeader from "../components/SheetHeader";
 import CardGrid from "../components/CardGrid";
 import { proxied, isHttp } from "../lib/img";
+import { visibleThemeChoices } from "../domain/themeChoices.mjs";
 
 // Signup taste picker, choose the artists you love so the feed and
 // recommendations start personal instead of generic. Also reachable from Edit
@@ -44,22 +45,54 @@ function ArtistTile({ a, picked, onToggle, disabled = false }) {
 const MIN_PICKS = 3;
 
 export default function PickArtistsScreen({ onDone, onSkip, showTheme = true, onRequireVerification }) {
-  const { session, updateProfile, chooseTheme } = useStore();
+  const { session, updateProfile, chooseTheme, searchArtistsApi } = useStore();
   const [q, setQ] = useState("");
+  const [remoteArtists, setRemoteArtists] = useState([]);
+  const [artistsLoading, setArtistsLoading] = useState(true);
+  const [artistsError, setArtistsError] = useState("");
   const [picked, setPicked] = useState(() => new Set(session?.favoriteArtists || []));
   const [theme, setThemeChoice] = useState(themeKey); // the current/default preset
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState("");
   const query = q.trim().toLowerCase();
   const needsEmailVerification = session?.emailVerified === false;
+  const onboardingThemes = visibleThemeChoices(THEMES, { selectedKey: theme });
 
-  // Popular first (Spotify popularity), then alphabetical, so the grid opens
-  // with names people recognize.
-  const all = useMemo(() =>
-    Object.values(ingestedArtists)
-      .filter((a) => a.name)
-      .sort((x, y) => (y.popularity || 0) - (x.popularity || 0) || x.name.localeCompare(y.name)),
-  []);
+  useEffect(() => {
+    const controller = new AbortController();
+    setArtistsLoading(true);
+    setArtistsError("");
+    const timer = setTimeout(() => {
+      searchArtistsApi(q.trim(), { signal: controller.signal, throwOnError: true })
+        .then((artists) => {
+          if (!controller.signal.aborted) setRemoteArtists(Array.isArray(artists) ? artists : []);
+        })
+        .catch((error) => {
+          if (!controller.signal.aborted && error?.name !== "AbortError") {
+            setArtistsError("Artists could not load. Check your connection and try again.");
+          }
+        })
+        .finally(() => { if (!controller.signal.aborted) setArtistsLoading(false); });
+    }, query ? 220 : 0);
+    return () => { clearTimeout(timer); controller.abort(); };
+    // searchArtistsApi is a StoreProvider command whose identity follows the
+    // provider render; the query is the request identity for this screen.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [query]);
+
+  // Production rows come from the catalog API. Explicit demo builds merge in
+  // the lazily installed local fixture so offline development keeps its full
+  // artist picker without placing that JSON in the production entry bundle.
+  const localArtistCount = Object.keys(ingestedArtists).length;
+  const all = useMemo(() => {
+    const merged = new Map();
+    for (const artist of remoteArtists) if (artist?.name) merged.set(artist.name.toLowerCase(), artist);
+    for (const artist of Object.values(ingestedArtists)) {
+      if (artist?.name && !merged.has(artist.name.toLowerCase())) merged.set(artist.name.toLowerCase(), artist);
+    }
+    return [...merged.values()]
+      .sort((x, y) => (y.popularity || 0) - (x.popularity || 0) || x.name.localeCompare(y.name));
+  }, [localArtistCount, remoteArtists]);
   const shown = useMemo(
     () => (query ? all.filter((a) => a.name.toLowerCase().includes(query)) : all.slice(0, 60)),
     [query, all]
@@ -77,7 +110,8 @@ export default function PickArtistsScreen({ onDone, onSkip, showTheme = true, on
     const favoriteArtists = [...picked];
     // fold the picks' genres into the profile so genre affinity works instantly
     const genres = new Set(session?.genres || []);
-    favoriteArtists.forEach((n) => { const g = ingestedArtists[n.toLowerCase()]?.genre; if (g) genres.add(g); });
+    const artistsByName = new Map(all.map((artist) => [artist.name.toLowerCase(), artist]));
+    favoriteArtists.forEach((n) => { const g = artistsByName.get(n.toLowerCase())?.genre; if (g) genres.add(g); });
     setSaving(true);
     setSaveError("");
     try {
@@ -150,22 +184,25 @@ export default function PickArtistsScreen({ onDone, onSkip, showTheme = true, on
             <Text style={styles.themeLabel}>PICK A THEME</Text>
             <View accessibilityRole="radiogroup" accessibilityLabel="Theme">
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.themeRow}>
-                {THEMES.map((t) => (
+                {onboardingThemes.map((t) => (
                   <ThemeSwatch key={t.key} theme={t} active={t.key === theme} onPress={() => setThemeChoice(t.key)} />
                 ))}
               </ScrollView>
             </View>
+            <Text style={styles.themeHint}>More themes are available later in Settings.</Text>
           </>
         )}
 
-        {shown.length === 0 && <Text style={styles.empty} accessibilityLiveRegion="polite" role="status">No artists match "{q}".</Text>}
+        {artistsLoading && shown.length === 0 && <Text style={styles.empty} accessibilityLiveRegion="polite" role="status">Loading artists…</Text>}
+        {!artistsLoading && !!artistsError && shown.length === 0 && <Text style={styles.saveError} accessibilityRole="alert">{artistsError}</Text>}
+        {!artistsLoading && !artistsError && shown.length === 0 && <Text style={styles.empty} accessibilityLiveRegion="polite" role="status">No artists match "{q}".</Text>}
         <CardGrid minColWidth={220} gap={10}>
           {shown.map((a) => (
             <ArtistTile key={a.name} a={a} picked={picked.has(a.name)} onToggle={() => toggle(a.name)} disabled={saving} />
           ))}
         </CardGrid>
-        {!query && all.length > 60 && (
-          <Text style={styles.moreHint}>Showing the {Math.min(60, all.length)} most popular. Search to find anyone.</Text>
+        {!query && all.length >= 20 && (
+          <Text style={styles.moreHint}>Showing popular artists. Search to find anyone.</Text>
         )}
         {!!saveError && <Text style={styles.saveError} accessibilityRole="alert" accessibilityLiveRegion="assertive">{saveError}</Text>}
       </ScrollView>
@@ -184,6 +221,7 @@ const styles = StyleSheet.create({
   content: { padding: 16, paddingBottom: 48 },
   themeLabel: { color: colors.textFaint, fontFamily: mono, fontSize: 11, letterSpacing: 1.5, fontWeight: "800", marginBottom: 10 },
   themeRow: { gap: 10, paddingBottom: 4 },
+  themeHint: { color: colors.textFaint, fontSize: 11.5, lineHeight: 17, marginTop: 5, marginBottom: 2 },
 
   empty: { color: colors.textDim, fontSize: 13, fontStyle: "italic", marginTop: 16 },
   moreHint: { color: colors.textFaint, fontFamily: mono, fontSize: 11, textAlign: "center", marginTop: 16 },

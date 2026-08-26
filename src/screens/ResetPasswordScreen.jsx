@@ -35,7 +35,7 @@ export default function ResetPasswordScreen({ token, onDone, onCancel }) {
     <View style={styles.wrap}>
       <SheetHeader title="Set a new password" onClose={onCancel} />
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-        <Text style={styles.wordmark}>PIT</Text>
+        <Text style={styles.wordmark}>MSHPIT</Text>
         <Text style={styles.tag}>Choose a new password for your account.</Text>
         <TextInput
           style={styles.input}

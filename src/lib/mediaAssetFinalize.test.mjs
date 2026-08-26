@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  MEDIA_SOURCE_FINALIZE_REQUEST_TIMEOUT_MS,
   MEDIA_SOURCE_FINALIZE_V1_TIMEOUT_MS,
   finalizeMediaSourceV1,
   resumeExistingMediaSourceV1,
@@ -16,7 +17,7 @@ const input = Object.freeze({
 const ready = () => ({ asset: { id: input.assetId, status: "ready" }, finalize: { state: "completed" } });
 const processing = () => ({ asset: { id: input.assetId, status: "upload_pending" }, finalize: { state: "processing" } });
 
-test("an immediately ready source keeps the route-scoped budget without changing API defaults", async () => {
+test("an immediately ready source uses a bounded request inside the longer resumable processing envelope", async () => {
   let captured;
   const result = await finalizeMediaSourceV1({
     ...input,
@@ -27,8 +28,8 @@ test("an immediately ready source keeps the route-scoped budget without changing
   });
   assert.equal(result.asset.status, "ready");
   assert.equal(captured.path, "/api/media/assets/ma_abcdefgh12345678/finalize");
-  assert.equal(captured.options.timeoutMs, MEDIA_SOURCE_FINALIZE_V1_TIMEOUT_MS);
-  assert.ok(captured.options.timeoutMs >= 210_000);
+  assert.equal(captured.options.timeoutMs, MEDIA_SOURCE_FINALIZE_REQUEST_TIMEOUT_MS);
+  assert.ok(MEDIA_SOURCE_FINALIZE_V1_TIMEOUT_MS > captured.options.timeoutMs);
   assert.equal(resolveRequestTimeout("POST", captured.options.timeoutMs), captured.options.timeoutMs,
     "the shared request controller must not silently shorten the rolling-deploy request budget");
 });
@@ -172,7 +173,7 @@ test("the overall processing deadline is bounded and leaves the resumable source
     },
   }), (error) => error.code === "MEDIA_STORAGE_UNAVAILABLE" && error.status === 503
     && error.retryable === true && /upload is saved/u.test(error.message));
-  assert.ok(reads >= 40 && reads <= 43, "polling remains bounded instead of hot-looping");
+  assert.equal(reads, MEDIA_SOURCE_FINALIZE_V1_TIMEOUT_MS / 5_000, "polling remains bounded instead of hot-looping");
 });
 
 test("an idle coordinator after restart resubmits the identical finalize operation once", async () => {

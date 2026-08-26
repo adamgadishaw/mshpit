@@ -29,6 +29,10 @@ test("private media probes degrade publishing without preventing core startup", 
   assert.doesNotMatch(source, /throw new Error\(`Private media storage privacy check failed/);
   assert.match(source, /if \(PROD\) refreshPrivateMediaIsolationSafely\("startup"\)/);
   assert.match(source, /private-storage privacy check failed closed: phase=\$\{phase\} code=\$\{status\.errorCode/);
+  assert.match(source, /if \(status\?\.ready\) ensureLegacyImageRecoveryScheduler\(\)/,
+    "legacy recovery starts only from a successful private-storage proof");
+  assert.match(source, /legacyImageRecoveryEnabled\(process\.env\)/,
+    "operators retain an explicit rollout and rollback switch");
 });
 
 test("successful readiness work is shared briefly and recomputed at expiry", () => {

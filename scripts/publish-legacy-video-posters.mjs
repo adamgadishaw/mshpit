@@ -9,7 +9,7 @@ import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 
-import { createMediaPresign, getMediaConfig, presignS3Request } from "../server/media.js";
+import { createMediaProcessorImageUploadCapability, getMediaConfig, presignS3Request } from "../server/media.js";
 import {
   LEGACY_VIDEO_POSTER_PUBLIC_BASE,
   LEGACY_VIDEO_POSTER_RELEASE,
@@ -129,16 +129,11 @@ async function publish(entry, bytes) {
     return "retained";
   }
   if (!apply) return "ready";
-  const objectId = entry.posterKey.split("/").at(-1).replace(/\.jpg$/u, "");
-  const ticket = createMediaPresign({
-    userId: entry.ownerId,
-    body: {
-      purpose: "post",
-      contentType: "image/jpeg",
-      fileSize: entry.byteSize,
-      name: entry.localFileName,
-    },
-    objectId,
+  const ticket = createMediaProcessorImageUploadCapability({
+    objectKey: entry.posterKey,
+    contentType: "image/jpeg",
+    contentLength: entry.byteSize,
+    expiresIn: 300,
   });
   if (ticket.key !== entry.posterKey || ticket.publicUrl !== entry.posterUrl) {
     throw new Error(`Storage identity drifted for ${entry.posterKey}.`);

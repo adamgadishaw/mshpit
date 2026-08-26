@@ -2,11 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { postMediaPickerOptions } from "./mediaPickerOptions.mjs";
+import { MEDIA_POST_MAX_ATTACHMENTS } from "./mediaUploadPolicy.mjs";
 
 test("iOS post videos request the SDK 56 H.264 MP4 export preset", () => {
   const options = postMediaPickerOptions({ platform: "ios", remaining: 8, iosH264Preset: 7, allowVideos: true });
   assert.equal(options.videoExportPreset, 7);
   assert.equal(options.orderedSelection, true);
+  assert.equal(options.shouldDownloadFromNetwork, true);
   assert.equal(options.selectionLimit, 8);
   assert.deepEqual(options.mediaTypes, ["images", "videos"]);
 });
@@ -16,6 +18,7 @@ test("web and Android keep their native files without an iOS-only export option"
     const options = postMediaPickerOptions({ platform, remaining: 3, iosH264Preset: 7, allowVideos: true });
     assert.equal(Object.hasOwn(options, "videoExportPreset"), false);
     assert.equal(Object.hasOwn(options, "orderedSelection"), false);
+    assert.equal(Object.hasOwn(options, "shouldDownloadFromNetwork"), false);
     assert.equal(options.selectionLimit, 3);
   }
 });
@@ -40,5 +43,5 @@ test("picker honors an explicit photo outage without hiding available videos", (
 test("picker selection limit uses every open post slot without exceeding post capacity", () => {
   assert.equal(postMediaPickerOptions({ platform: "ios", remaining: 0, iosH264Preset: 7 }).selectionLimit, 1);
   assert.equal(postMediaPickerOptions({ platform: "ios", remaining: 7, iosH264Preset: 7 }).selectionLimit, 7);
-  assert.equal(postMediaPickerOptions({ platform: "ios", remaining: 99, iosH264Preset: 7 }).selectionLimit, 8);
+  assert.equal(postMediaPickerOptions({ platform: "ios", remaining: 99, iosH264Preset: 7 }).selectionLimit, MEDIA_POST_MAX_ATTACHMENTS);
 });

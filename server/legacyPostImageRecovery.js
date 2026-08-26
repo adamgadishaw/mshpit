@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
 
+import {
+  MEDIA_PHOTO_SOURCE_MAX_BYTES,
+  MEDIA_POST_MAX_ATTACHMENTS,
+} from "../src/domain/mediaUploadPolicy.mjs";
 import { withImmediateWrite as withWrite } from "./databaseTransaction.js";
 import { ApiError } from "./errors.js";
 import { sanitizeDecodedImage } from "./imageProcessor.js";
@@ -15,6 +19,7 @@ import {
 import {
   createMediaDownloadCapability,
   createMediaPresign,
+  createMediaProcessorImageUploadCapability,
   getMediaConfig,
   mediaBucketForScope,
   presignS3Request,
@@ -26,10 +31,10 @@ import {
   trustedOwnedMediaKey,
 } from "./mediaDeletion.js";
 
-const MAX_SOURCE_BYTES = 12 * 1024 * 1024;
+const MAX_SOURCE_BYTES = MEDIA_PHOTO_SOURCE_MAX_BYTES;
 const MAX_RECOVERY_BATCH = 2;
 const RETRY_BASE_MS = 5 * 60_000;
-const IMAGE_EXT = /\.(?:jpe?g|png|webp|gif|heic|heif)$/iu;
+const IMAGE_EXT = /\.(?:jpe?g|png|webp|gif|heic|heif|avif)$/iu;
 const IMAGE_TYPES = new Set([
   "image/jpeg",
   "image/png",
@@ -37,6 +42,7 @@ const IMAGE_TYPES = new Set([
   "image/gif",
   "image/heic",
   "image/heif",
+  "image/avif",
 ]);
 const OUTPUT_TYPE = Object.freeze({
   "image/jpeg": "image/jpeg",
@@ -45,13 +51,14 @@ const OUTPUT_TYPE = Object.freeze({
   "image/gif": "image/webp",
   "image/heic": "image/jpeg",
   "image/heif": "image/jpeg",
+  "image/avif": "image/jpeg",
 });
 const OUTPUT_EXTENSION = Object.freeze({
   "image/jpeg": "jpg",
   "image/png": "png",
   "image/webp": "webp",
 });
-const LEGACY_IMAGE_RECOVERY_TIMEOUT_MS = 30_000;
+const LEGACY_IMAGE_RECOVERY_TIMEOUT_MS = 60_000;
 
 const activeRuns = new WeakMap();
 const retryState = new WeakMap();
@@ -80,6 +87,7 @@ function imageTypeMatchesKey(objectKey, mimeType) {
   if (extension === "webp") return mimeType === "image/webp";
   if (extension === "gif") return mimeType === "image/gif";
   if (extension === "heic" || extension === "heif") return mimeType === "image/heic" || mimeType === "image/heif";
+  if (extension === "avif") return mimeType === "image/avif";
   return false;
 }
 
@@ -281,13 +289,13 @@ async function stageOutput(database, candidate, output, identity, {
     objectId: identity.sourceObjectId,
     storageScope: "private",
   });
-  const publicUpload = createMediaPresign({
-    userId: candidate.ownerId,
-    body: request,
+  const publicUpload = createMediaProcessorImageUploadCapability({
+    objectKey: `users/${candidate.ownerId}/post/${identity.renderObjectId}.${extension}`,
+    contentType: output.mimeType,
+    contentLength: output.byteSize,
     env,
     now: new Date(at),
-    objectId: identity.renderObjectId,
-    storageScope: "public",
+    expiresIn: 300,
   });
   reserveDeterministicRecoveryTicket(database, {
     ownerId: candidate.ownerId,
@@ -370,7 +378,7 @@ export function legacyPostImageRecoveryCandidates(database, {
     const sourceUrl = String(row.source_url || "");
     const ownerId = String(row.owner_id || "");
     const sourceKey = trustedOwnedMediaKey(sourceUrl, { ownerId, env });
-    if (!Number.isSafeInteger(position) || position < 0 || position > 7 || !sourceKey || !IMAGE_EXT.test(sourceKey)) continue;
+    if (!Number.isSafeInteger(position) || position < 0 || position >= MEDIA_POST_MAX_ATTACHMENTS || !sourceKey || !IMAGE_EXT.test(sourceKey)) continue;
     const liveLedger = (status) => status === "issued" || status === "associated";
     const alreadyPublishable = row.asset_id && row.asset_kind === "image"
       && row.asset_status === "ready" && liveLedger(row.source_ledger_status)
@@ -1063,4 +1071,133 @@ export async function drainLegacyImageRecovery(database, {
   finally {
     if (aggregateRuns.get(database) === promise) aggregateRuns.delete(database);
   }
+}
+
+const RECOVERY_DISABLED_VALUES = new Set(["0", "false", "no", "off", "disabled"]);
+
+export function legacyImageRecoveryEnabled(env = process.env) {
+  return !RECOVERY_DISABLED_VALUES.has(String(env?.MEDIA_LEGACY_RECOVERY_ENABLED || "").trim().toLowerCase());
+}
+const recoverySchedulers = new WeakMap();
+const recoverySchedulerHealth = new WeakMap();
+
+function freshRecoveryHealth() {
+  return {
+    enabled: false,
+    running: false,
+    lastStartedAt: 0,
+    lastFinishedAt: 0,
+    lastSuccessAt: 0,
+    lastErrorCode: null,
+    scanned: 0,
+    recovered: 0,
+    failed: 0,
+    exhausted: false,
+    limitReached: false,
+  };
+}
+
+export function legacyImageRecoveryHealth(database) {
+  return { ...(recoverySchedulerHealth.get(database) || freshRecoveryHealth()) };
+}
+
+// Old URL-only photos remain private/fail-closed until this worker copies their
+// exact owned generation through the same decoder/sanitizer used by new camera
+// uploads. Each turn is serial and tiny; a backlog continues after a short yield
+// while idle/deferred failures wait for the normal interval and per-item backoff.
+export function startLegacyImageRecoveryScheduler({
+  database,
+  env = process.env,
+  maxItems = 2,
+  intervalMs = 5 * 60_000,
+  continuationDelayMs = 1_000,
+  initialDelayMs = 0,
+  drain = drainLegacyImageRecovery,
+} = {}) {
+  if (!database?.prepare || typeof drain !== "function") {
+    throw new TypeError("Legacy image recovery scheduler requires a database and drain function.");
+  }
+  const existing = recoverySchedulers.get(database);
+  if (existing) return existing;
+  const batchSize = Math.max(1, Math.min(8, Math.trunc(Number(maxItems) || 2)));
+  const idleDelay = Math.max(1_000, Math.min(60 * 60_000, Math.trunc(Number(intervalMs) || 5 * 60_000)));
+  const continuationDelay = Math.max(100, Math.min(60_000, Math.trunc(Number(continuationDelayMs) || 1_000)));
+  const startupDelay = Math.max(0, Math.min(idleDelay, Math.trunc(Number(initialDelayMs) || 0)));
+  const health = freshRecoveryHealth();
+  health.enabled = true;
+  recoverySchedulerHealth.set(database, health);
+
+  let stopped = false;
+  let timer = null;
+  let active = null;
+  let controller = null;
+
+  const runResult = (status, value = null, errorCode = null) => Object.freeze({
+    status,
+    value,
+    errorCode,
+  });
+
+  const schedule = (delay) => {
+    if (stopped || timer) return;
+    timer = setTimeout(() => {
+      timer = null;
+      void run(true);
+    }, delay);
+    timer.unref?.();
+  };
+
+  const run = async (reschedule = false) => {
+    if (stopped) return runResult("stopped");
+    if (active) return active;
+    controller = new AbortController();
+    health.running = true;
+    health.lastStartedAt = Date.now();
+    active = (async () => {
+      try {
+        const result = await drain(database, {
+          env,
+          maxItems: batchSize,
+          signal: controller.signal,
+        });
+        health.scanned += Number(result?.scanned) || 0;
+        health.recovered += Array.isArray(result?.recovered) ? result.recovered.length : 0;
+        health.failed += Array.isArray(result?.failed) ? result.failed.length : 0;
+        health.exhausted = result?.exhausted === true;
+        health.backlog = result?.exhausted === true ? false : true;
+        health.limitReached = result?.limitReached === true;
+        health.lastErrorCode = null;
+        health.lastSuccessAt = Date.now();
+        return runResult("completed", result);
+      } catch (error) {
+        const errorCode = String(error?.code || "recovery_failed").slice(0, 64);
+        health.lastErrorCode = errorCode;
+        return runResult("failed", null, errorCode);
+      } finally {
+        health.running = false;
+        health.lastFinishedAt = Date.now();
+        active = null;
+        controller = null;
+        if (reschedule && !stopped) schedule(health.limitReached ? continuationDelay : idleDelay);
+      }
+    })();
+    return active;
+  };
+
+  const handle = Object.freeze({
+    runOnce: () => run(false),
+    stop: async () => {
+      if (stopped) return;
+      stopped = true;
+      health.enabled = false;
+      if (timer) clearTimeout(timer);
+      timer = null;
+      controller?.abort();
+      try { await active; } catch { /* drain errors are reflected in health */ }
+      recoverySchedulers.delete(database);
+    },
+  });
+  recoverySchedulers.set(database, handle);
+  schedule(startupDelay);
+  return handle;
 }

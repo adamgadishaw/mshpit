@@ -273,6 +273,12 @@ export default function PhotoViewer({
   const reactionScope = reactionItems.map((item) => `${item.postId}:${item.url}`).join("|");
   const prev = () => setI((x) => (x - 1 + photos.length) % photos.length);
   const next = () => setI((x) => (x + 1) % photos.length);
+  const dotWindowSize = 12;
+  const dotStart = Math.max(0, Math.min(
+    i - Math.floor(dotWindowSize / 2),
+    photos.length - dotWindowSize,
+  ));
+  const visibleDots = photos.slice(dotStart, dotStart + dotWindowSize);
 
   useEffect(() => {
     setI(normalizedGalleryIndex(index, photos.length));
@@ -450,9 +456,10 @@ export default function PhotoViewer({
         </Pressable>
         {photos.length > 1 && (
           <View style={styles.dots}>
-            {photos.slice(0, 12).map((_, d) => (
-              <View key={d} style={[styles.dot, d === i && styles.dotOn]} />
-            ))}
+            {visibleDots.map((_, offset) => {
+              const mediaIndex = dotStart + offset;
+              return <View key={mediaIndex} style={[styles.dot, mediaIndex === i && styles.dotOn]} />;
+            })}
           </View>
         )}
       </View>

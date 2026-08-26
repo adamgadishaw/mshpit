@@ -24,8 +24,11 @@ test("composer people search is abortable, bounded, recoverable, and submitted",
 
 test("feed chips link to profiles and expose a real 44 point self-removal control", () => {
   const card = source("../components/TicketStub.jsx");
+  const publicLinks = source("../components/PublicWebLinks.jsx");
   assert.match(card, /onOpenProfile\(person\.id\)/);
-  assert.match(card, /accessibilityRole=\{onOpenProfile \? "link" : undefined\}/);
+  assert.match(card, /href=\{person\.handle \? profilePath\(person\.handle\) : null\}/);
+  assert.match(card, /<PublicPressableLink[\s\S]*?onNavigate=\{onOpenProfile \? \(\) => onOpenProfile\(person\.id\) : undefined\}/);
+  assert.match(publicLinks, /accessibilityRole=\{href \? "link" : "button"\}/);
   assert.match(card, /onRemoveMyPostTag\?\.\(log\.id\)/);
   assert.equal((card.match(/onRemoveSelf=\{onRemoveMyPostTag \? removeSelfTag : undefined\}/g) || []).length, 2);
   assert.match(card, /taggedPersonProfile: \{ minHeight: 44/);

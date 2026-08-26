@@ -249,7 +249,7 @@ test("unrelated posts and non-manifest sources return before preparing SQL", () 
   }), [], "both the immutable post id and exact source URL are required");
 });
 
-test("an exact trusted release registers idempotently but cannot republish its external legacy source", async () => {
+test("an exact trusted release restores its verified owned clip without minting a stable asset id", async () => {
   const user = addUser("u_legacy_owner");
   const entry = releaseEntry();
   addPost({ id: entry.postId, ownerId: user.id, photos: [entry.sourceUrl] });
@@ -293,16 +293,27 @@ test("an exact trusted release registers idempotently but cannot republish its e
 
   const feed = routes["GET /api/feed"]({ query: {}, ip: "legacy-poster-feed" });
   const projected = feed.posts.find((post) => post.id === entry.postId);
-  assert.deepEqual(projected.media, [], "a verified cover cannot make an untrusted external source URL public");
-  assert.deepEqual(projected.photos, []);
-  assert.deepEqual(projected.mediaAssetIds, [], "a legacy cover cannot masquerade as a stable composer asset");
+  assert.deepEqual(projected.photos, [entry.sourceUrl],
+    "the immutable release restores only its exact owned source slot");
+  assert.deepEqual(projected.media, [descriptor]);
+  assert.deepEqual(projected.mediaAssetIds, [], "a release-only cover cannot masquerade as a stable composer asset");
   const gallery = routes["GET /api/artists/photos"]({
     user,
     query: { name: "Archive Artist" },
     ip: "legacy-poster-gallery",
   });
-  assert.equal(gallery.photos.some((item) => item.postId === entry.postId), false,
-    "artist galleries apply the same verified-owned-media boundary");
+  const galleryItem = gallery.photos.find((item) => item.postId === entry.postId);
+  assert.deepEqual({
+    uri: galleryItem?.uri,
+    kind: galleryItem?.kind,
+    posterUrl: galleryItem?.posterUrl,
+    posterTimeMs: galleryItem?.posterTimeMs,
+  }, {
+    uri: entry.sourceUrl,
+    kind: "video",
+    posterUrl: entry.posterUrl,
+    posterTimeMs: entry.timeMs,
+  }, "artist galleries project the same exact verified release descriptor");
 });
 
 test("wrong poster bytes fail closed and enter the owned deletion queue", async () => {
@@ -373,16 +384,20 @@ test("author removal retires the derivative while leaving unrelated covers alone
     allowNonProduction: true,
   });
 
+  const verifiedDescriptors = legacyVideoPosterDescriptors(db, {
+    postId: first.postId,
+    photos: canonicalPhotos,
+  });
   assert.deepEqual(
-    legacyVideoPosterDescriptors(db, { postId: first.postId, photos: canonicalPhotos }).map((item) => item.url),
+    verifiedDescriptors.map((item) => item.url),
     [second.sourceUrl, first.sourceUrl],
     "partial video enrichment follows canonical photo order without inventing image descriptors",
   );
   const projected = routes["GET /api/feed"]({ query: {}, ip: "legacy-multi-photo-feed" }).posts
     .find((post) => post.id === first.postId);
-  assert.deepEqual(projected.photos, []);
-  assert.deepEqual(projected.media, []);
-  assert.deepEqual(projected.mediaAssetIds, [], "partial legacy descriptors never become composer asset ids");
+  assert.deepEqual(projected.photos, [second.sourceUrl, first.sourceUrl]);
+  assert.deepEqual(projected.media, verifiedDescriptors);
+  assert.deepEqual(projected.mediaAssetIds, [], "release-only descriptors never become composer asset ids");
 
   const retainedPhotos = canonicalPhotos.filter((url) => url !== first.sourceUrl);
   const edited = routes["PATCH /api/posts/:id"]({
@@ -392,8 +407,18 @@ test("author removal retires the derivative while leaving unrelated covers alone
     ip: "legacy-poster-author-edit",
     requestId: "legacy-poster-author-edit",
   });
-  assert.deepEqual(edited.post.photos, [], "an owner may clean up the stored row without republishing legacy URLs");
-  assert.deepEqual(edited.post.media, []);
+  assert.deepEqual(edited.post.photos, [second.sourceUrl],
+    "the exact retained release clip stays visible while unrelated unverified URLs remain hidden");
+  assert.deepEqual(edited.post.media.map((item) => ({
+    kind: item.kind,
+    url: item.url,
+    posterUrl: item.posterUrl,
+  })), [{
+    kind: "video",
+    url: second.sourceUrl,
+    posterUrl: second.posterUrl,
+  }]);
+  assert.deepEqual(edited.post.mediaAssetIds, []);
   assert.equal(db.prepare("SELECT 1 FROM legacy_video_posters WHERE media_url=?").get(first.sourceUrl), undefined);
   assert.ok(db.prepare("SELECT 1 FROM legacy_video_posters WHERE media_url=?").get(second.sourceUrl));
   assert.equal(db.prepare("SELECT status FROM media_objects WHERE object_key=?").get(first.posterKey).status, "delete_queued");

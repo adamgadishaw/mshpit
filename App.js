@@ -5,12 +5,13 @@ import { SafeAreaProvider } from "react-native-safe-area-context";
 import "./src/lib/safeArea"; // reserves iOS notch / toolbar safe areas (web)
 import "./src/lib/webInputFix"; // strips the harsh browser focus box from inputs (web)
 import { colors, mono, radius, themeIsDark } from "./src/theme";
-import { StoreProvider, useStore, isStaff } from "./src/store";
+import { StoreProvider, useStore, isMod, isStaff } from "./src/store";
 import Icon from "./src/components/Icon";
 import ErrorBoundary from "./src/components/ErrorBoundary";
 import FeedbackHost from "./src/components/FeedbackHost";
 import VerifyEmailBanner from "./src/components/VerifyEmailBanner";
 import { DesktopTopNav, RightRail } from "./src/components/Rails";
+import { PublicDirectoryPanel, PublicWebTrail } from "./src/components/PublicWebLinks";
 import FeedScreen from "./src/screens/FeedScreen";
 import SearchScreen from "./src/screens/SearchScreen";
 import YouScreen from "./src/screens/YouScreen";
@@ -67,9 +68,12 @@ const FollowListScreen = lazyWithRetry(() => import("./src/screens/FollowListScr
 import LandingScreen from "./src/screens/LandingScreen";
 import { load, remove, save } from "./src/lib/persist";
 import { api } from "./src/lib/api";
+import { configureDiagnosticsIdentity } from "./src/lib/diagnostics";
 import { getPendingImagePickerResult } from "./src/lib/imagePickerRecovery";
 import { lazyWithRetry } from "./src/lib/lazyWithRetry";
-import { artistPath, venuePath, postPath, profilePath, parsePath, isPublicEntityPath } from "./src/domain/urls.mjs";
+import { artistPath, concertPath, eventPath, venuePath, postPath, profilePath, parsePath, isPublicEntityPath } from "./src/domain/urls.mjs";
+import { shouldRestorePersistedStack } from "./src/domain/browserNavigation.mjs";
+import { publicNavigationLinks } from "./src/domain/publicNavigationLinks.mjs";
 import {
   composerNavigationTransition,
   isActiveComposer,
@@ -149,6 +153,7 @@ function Root() {
     removeMyPostTag,
   } = useStore();
   const staff = isStaff(session?.role);
+  const canViewDiagnostics = isMod(session?.role);
   const feed = visibleFeed(staff);
   const following = followingFeed(staff);
   const local = localFeed(staff);
@@ -177,8 +182,10 @@ function Root() {
   // frame; Back POPS one — so you retrace your steps instead of always being
     // dumped back to the feed. (Before this, nav was a single flat object and
   // every close reset it to {}, which is why Back only ever went to the feed.)
-  // The whole stack is PERSISTED, so a refresh restores the exact screen you were
-  // on (and its back-stack) instead of flashing the feed then jumping around.
+  // The stack is persisted as recovery state for URL-less app overlays. On web,
+  // however, the address bar owns public navigation: `/` must stay home and an
+  // entity URL must be resolved from that URL rather than resurrecting some
+  // different artist/profile from local storage.
   const [stack, setStack] = useState(() => {
     if (!web) {
       const restored = restoreComposerFrame(
@@ -187,6 +194,7 @@ function Root() {
       );
       return restored ? [{}, restored] : [{}];
     }
+    if (!shouldRestorePersistedStack(window.location.pathname)) return [{}];
     const saved = load("pit.stack", null);
     if (!Array.isArray(saved) || !saved.length) return [{}];
     // Restore the exact screen you were on, but COLLAPSE the back-stack to a single
@@ -195,6 +203,7 @@ function Root() {
     // random back page"). Now: refresh lands you here; Back goes straight to the tab.
     const top = prepareNavigationFrame(saved[saved.length - 1]);
     if (!ENABLE_CLIPS && top?.clips) return [{}];
+    if (top?.diagnostics) return [{}];
     return top && Object.keys(top).length ? [{}, top] : [{}];
   });
   const nav = stack[stack.length - 1];
@@ -406,7 +415,12 @@ function Root() {
   // The concert opening screen: fresh visitors (and anyone who logs out) see it;
   // "browse as guest" or logging in dismisses it. Guest choice persists.
   const [landing, setLanding] = useState(() => (
-    !load("pit.entered", false)
+    !(web && (
+      isPublicEntityPath(window.location.pathname)
+      || window.location.pathname === "/artists"
+      || window.location.pathname === "/events"
+    ))
+    && !load("pit.entered", false)
     && (ENABLE_DEMO_DATA ? !load("pit.session", null) : true)
   ));
   const lastAnalyticsScreenRef = useRef({ accountId: null, screen: null });
@@ -438,6 +452,7 @@ function Root() {
   // half-finished drafts in someone's history.
   const pathForFrame = (frame) => {
     if (!frame) return null;
+    if (frame.directory === "artists" || frame.directory === "events") return `/${frame.directory}`;
     if (frame.artistName) {
       const publicSlug = frame.artistPublicSlug || remoteArtistMeta?.(frame.artistName)?.publicSlug || null;
       // A display name is not a durable identity: punctuation and collisions
@@ -445,10 +460,12 @@ function Root() {
       // API projection or resolved link supplies the authoritative slug.
       return publicSlug ? artistPath(frame.artistName, publicSlug) : null;
     }
-    if (frame.venueName) return venuePath(frame.venueName);
+    if (frame.venueName) return venuePath(frame.venue || frame.venueName);
     if (frame.post?.id) return postPath(frame.post.id);
     const showPostId = showNavigationPostId(frame.openLog);
     if (showPostId) return postPath(showPostId);
+    if (frame.openLog?.archiveShowKey) return concertPath(frame.openLog.archiveShowKey);
+    if (frame.openLog?.performanceEvent && frame.openLog?.id) return eventPath(frame.openLog.id);
     if (frame.profileId) {
       const user = userById?.(frame.profileId);
       return user?.handle ? profilePath(user.handle) : null;
@@ -561,6 +578,16 @@ function Root() {
     setTab(key);
     commitClear();
   });
+  const openPublicDirectory = (directory) => {
+    if (directory !== "artists" && directory !== "events") return;
+    runAfterComposerClose(() => {
+      // architecture: allow-empty-catch -- Directory chunk preloading is optional; Suspense owns the visible loading and retry state.
+      DiscoverScreen.preload?.().catch(() => {});
+      setLanding(false);
+      setTab("discover");
+      commitGo({ directory });
+    });
+  };
 
   const updateComposerDraftIdentity = (composerId, draftId) => {
     if (!composerId) return;
@@ -617,6 +644,7 @@ function Root() {
   useLayoutEffect(() => {
     if (!authReady) return;
     const nextAccountId = session?.id || null;
+    configureDiagnosticsIdentity(nextAccountId);
     const previousAccountId = confirmedNavigationAccountRef.current;
     confirmedNavigationAccountRef.current = nextAccountId;
     if (!previousAccountId || previousAccountId === nextAccountId) return;
@@ -689,12 +717,19 @@ function Root() {
   // place also guarantees a crawler and a visitor get the same page.
   useEffect(() => {
     if (!web) return;
-    // A restored composer is already the user's chosen destination. Resolving
-    // its underlying public URL must never replace that recoverable work.
-    if (isComposerFrame(stackRef.current[stackRef.current.length - 1])) return;
     let cancelled = false;
     const path = window.location.pathname;
-    if (!path || path === "/" || !isPublicEntityPath(path)) return;
+    if (!path || path === "/") return;
+    if (path === "/artists" || path === "/events") {
+      setLanding(false);
+      setTab("discover");
+      setStack([{}, { directory: path.slice(1) }]);
+      try { window.history.pushState({ pit: "nav" }, "", path); } catch {
+        // architecture: allow-empty-catch -- History is a best-effort web enhancement; app state already owns the requested directory.
+      }
+      return;
+    }
+    if (!isPublicEntityPath(path)) return;
     (async () => {
       try {
         const { entity } = await api(`/api/resolve?path=${encodeURIComponent(path)}`);
@@ -709,7 +744,14 @@ function Root() {
             ...(canonical?.type === "artist" ? { artistPublicSlug: canonical.value } : {}),
           }]);
         }
-        else if (entity.kind === "venue") setStack([{}, { venueName: entity.name }]);
+        else if (entity.kind === "venue") setStack([{}, {
+          venueName: entity.name,
+          venue: {
+            name: entity.name,
+            providerVenueId: entity.providerVenueId || entity.venue_provider_id || null,
+            source: entity.source || null,
+          },
+        }]);
         else if (entity.kind === "profile") {
           const targetId = String(entity.id || "");
           const knownUser = String(sessionRef.current?.id || "") === targetId
@@ -724,6 +766,9 @@ function Root() {
         else if (entity.kind === "show") {
           const post = await api(`/api/posts/${encodeURIComponent(entity.id)}`).then((r) => r.post).catch(() => null);
           if (!cancelled && post) setStack([{}, post.kind === "status" ? { post } : { openLog: post }]);
+        }
+        else if (entity.kind === "event" || entity.kind === "concert") {
+          setStack([{}, { openLog: { ...entity, performanceEvent: true } }]);
         }
         // One history entry for the opened screen, so Back returns to the feed
         // rather than leaving the site.
@@ -862,7 +907,13 @@ function Root() {
     track("view_artist_tour");
     go({ artistTour: { name, artistKey: artistKey || null, tourKey: tour.key, tourName: tour.name || "Live tour" } });
   };
-  const openVenue = (name) => { track("view_venue"); go({ venueName: name }); };
+  const openVenue = (venue) => {
+    const payload = venue && typeof venue === "object" ? venue : null;
+    const name = String(payload?.name || venue || "").trim();
+    if (!name) return;
+    track("view_venue");
+    go({ venueName: name, ...(payload ? { venue: payload } : {}) });
+  };
   const openFanClub = (artist) => go({ fanClub: artist });
   // Open the persistent top player. `queue` (optional) is a list of tracks so the
   // bar can skip prev/next; without it, a single track. player = { list, index }.
@@ -973,9 +1024,9 @@ function Root() {
   else if (nav.venues) overlay = <VenuesScreen onClose={back} onOpenVenue={openVenue} />;
   else if (nav.fanClubs) overlay = <FanClubsScreen onClose={back} onOpenFanClub={openFanClub} />;
   else if (nav.suggestion) overlay = <SuggestionBoxScreen onClose={back} initialSurface={nav.suggestion.surface} />;
-  else if (nav.settings) overlay = <SettingsScreen onClose={back} onManageProfile={openProfileManagement} onOpenProfile={() => (session ? openProfile(session.id) : go({ auth: true }))} onOpenPrivacy={() => go({ privacy: true })} onOpenTerms={() => go({ terms: true })} onOpenDiagnostics={() => go({ diagnostics: true })} onOpenDeleteAccount={() => go({ deleteAccount: true })} onLogout={signOut} />;
+  else if (nav.settings) overlay = <SettingsScreen onClose={back} onManageProfile={openProfileManagement} onOpenProfile={() => (session ? openProfile(session.id) : go({ auth: true }))} onOpenPrivacy={() => go({ privacy: true })} onOpenTerms={() => go({ terms: true })} onOpenDiagnostics={() => { if (canViewDiagnostics) go({ diagnostics: true }); }} onOpenDeleteAccount={() => go({ deleteAccount: true })} onLogout={signOut} />;
   else if (nav.deleteAccount) overlay = <DeleteAccountScreen onClose={back} onDeleted={onAccountDeleted} />;
-  else if (nav.diagnostics) overlay = <DiagnosticsScreen onClose={back} />;
+  else if (nav.diagnostics && canViewDiagnostics) overlay = <DiagnosticsScreen onClose={back} />;
   else if (nav.privacy) overlay = <PrivacyScreen onClose={back} />;
   else if (nav.terms) overlay = <TermsScreen onClose={back} />;
   else if (nav.lounge) overlay = <LoungeScreen log={nav.lounge} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} onReport={openReport} />;
@@ -1008,6 +1059,35 @@ function Root() {
     />
   );
 
+  const hydratedPublicLinks = publicNavigationLinks(nav, { resolveUser: userById });
+  const hydratedDirectoryArtists = nav.directory === "artists"
+    ? [
+      ...(Array.isArray(discoverySidebar?.topArtists) ? discoverySidebar.topArtists : []),
+      ...(typeof topArtists === "function" ? topArtists(12) : []),
+    ].filter((artist, index, rows) => {
+      const href = artistPath(artist);
+      return !!href && rows.findIndex((candidate) => artistPath(candidate) === href) === index;
+    }).slice(0, 10)
+    : [];
+  const hydratedDirectoryEvents = nav.directory === "events"
+    ? [
+      ...(Array.isArray(discoverySidebar?.upcomingEvents) ? discoverySidebar.upcomingEvents : []),
+      ...(typeof upcomingEvents === "function" ? upcomingEvents(12) : []),
+    ].filter((event, index, rows) => {
+      const href = eventPath(event);
+      return !!href && rows.findIndex((candidate) => eventPath(candidate) === href) === index;
+    }).slice(0, 10)
+    : [];
+  const openHydratedPublicTarget = (target) => {
+    if (!target) return;
+    if (target.type === "home") { switchTab("feed"); return; }
+    if (target.type === "directory") { openPublicDirectory(target.value); return; }
+    if (target.type === "artist") { openArtist(target.value); return; }
+    if (target.type === "venue") { openVenue(target.value); return; }
+    if (target.type === "event") { openShow(target.value); return; }
+    if (target.type === "profile") openProfile(target.value);
+  };
+
   const status = session ? accountStatus(session) : "ok";
 
   const tabScreens = (
@@ -1028,8 +1108,7 @@ function Root() {
                   hasMore={feedHasMore}
                   loadingMore={feedLoadingMore}
                   onLogShow={() => requireVerifiedMutation("review", () => go({ logging: true }))}
-                  onManageProfile={openProfileManagement}
-                  artistWorkspaceAvailable={profileDestination === "artistHub"}
+                  onOpenDiscover={() => switchTab("discover")}
                   onOpenInbox={openInbox}
                   onOpenNotifications={openNotifications}
                   onOpen={openShow}
@@ -1110,8 +1189,18 @@ function Root() {
         onLogin={() => go({ auth: true, authMode: "login" })}
         onSignup={() => go({ auth: true, authMode: "signup" })}
       />
+      <PublicWebTrail links={hydratedPublicLinks} onNavigate={openHydratedPublicTarget} />
       <View style={styles.deskWrap}>
-        <View style={styles.deskCenter}><Suspense fallback={<ScreenLoading />}>{overlay || tabScreens}</Suspense></View>
+        <View style={styles.deskCenter}>
+          <PublicDirectoryPanel
+            directory={nav.directory}
+            artists={hydratedDirectoryArtists}
+            events={hydratedDirectoryEvents}
+            onOpenArtist={openArtist}
+            onOpenEvent={openShow}
+          />
+          <Suspense fallback={<ScreenLoading />}>{overlay || tabScreens}</Suspense>
+        </View>
         {showRightRail && <RightRail topArtists={topArtists} artistsAlphabetical={artistsAlphabetical} trendingVenues={trendingVenues} upcomingEvents={upcomingEvents} discoverySidebar={discoverySidebar} discoverySidebarStatus={discoverySidebarStatus} onOpenArtist={openArtist} onOpenVenue={openVenue} onFindVenues={() => go({ venues: true })} onOpenEvent={openShow} />}
       </View>
     </View>
@@ -1174,21 +1263,31 @@ function Root() {
             )}
             <View style={styles.appContent}>
               {wide ? desktop : (
-                overlay ? <Suspense fallback={<ScreenLoading />}>{overlay}</Suspense> : (
-                  <>
-                    <Suspense fallback={<ScreenLoading />}>{tabScreens}</Suspense>
-                    <View style={styles.tabbar}>
-                      {LEFT.map((t) => <TabButton key={t.key} tab={t} active={tab} onPress={switchTab} />)}
-                      <View style={styles.fabCol}>
-                        <Pressable style={styles.fab} onPress={() => requireVerifiedMutation("post", () => go({ logging: true, postMode: "status" }))} accessibilityLabel="Make a post">
-                          <Icon name="plus" size={26} color="#1A1206" strokeWidth={2.6} />
-                        </Pressable>
-                        <Text style={styles.fabLabel}>Post</Text>
+                <>
+                  <PublicWebTrail links={hydratedPublicLinks} onNavigate={openHydratedPublicTarget} />
+                  <PublicDirectoryPanel
+                    directory={nav.directory}
+                    artists={hydratedDirectoryArtists}
+                    events={hydratedDirectoryEvents}
+                    onOpenArtist={openArtist}
+                    onOpenEvent={openShow}
+                  />
+                  {overlay ? <Suspense fallback={<ScreenLoading />}>{overlay}</Suspense> : (
+                    <>
+                      <Suspense fallback={<ScreenLoading />}>{tabScreens}</Suspense>
+                      <View style={styles.tabbar}>
+                        {LEFT.map((t) => <TabButton key={t.key} tab={t} active={tab} onPress={switchTab} />)}
+                        <View style={styles.fabCol}>
+                          <Pressable style={styles.fab} onPress={() => requireVerifiedMutation("post", () => go({ logging: true, postMode: "status" }))} accessibilityLabel="Make a post">
+                            <Icon name="plus" size={26} color="#1A1206" strokeWidth={2.6} />
+                          </Pressable>
+                          <Text style={styles.fabLabel}>Post</Text>
+                        </View>
+                        {RIGHT.map((t) => <TabButton key={t.key} tab={t} active={tab} onPress={switchTab} />)}
                       </View>
-                      {RIGHT.map((t) => <TabButton key={t.key} tab={t} active={tab} onPress={switchTab} />)}
-                    </View>
-                  </>
-                )
+                    </>
+                  )}
+                </>
               )}
             </View>
           </View>
@@ -1206,7 +1305,7 @@ function Root() {
           />
         )}
 
-        <FeedbackHost onOpenDiagnostics={() => go({ diagnostics: true })} />
+        <FeedbackHost canViewDiagnostics={canViewDiagnostics} onOpenDiagnostics={() => { if (canViewDiagnostics) go({ diagnostics: true }); }} />
 
         {status === "ok" && preview && (
           <Animated.View style={[styles.preview, { opacity: fade }]}>

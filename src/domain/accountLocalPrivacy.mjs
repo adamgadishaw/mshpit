@@ -9,6 +9,14 @@ import { youtubeVideoRejectionStorageKey } from "./youtubeVideoRejections.mjs";
 export const PLAYER_STATE_STORAGE_KEY = "pit.player.v2";
 export const PLAYER_POSITION_STORAGE_KEY = "pit.playpos.v2";
 export const LEGACY_PRODUCT_ANALYTICS_STORAGE_KEY = "pit.analytics.v2";
+export const LEGACY_DIAGNOSTICS_STORAGE_KEY = "pit.diagnostics.v1";
+
+export const diagnosticsStorageKey = (accountId) => {
+  const id = accountId == null || accountId === "" ? null : String(accountId);
+  return id
+    ? `pit.diagnostics.v2.user.${encodeURIComponent(id)}`
+    : "pit.diagnostics.v2.guest";
+};
 
 const DRAFTS_STORAGE_KEY = "pit.drafts";
 const FOLLOWS_STORAGE_KEY = "pit.follows";
@@ -16,6 +24,9 @@ const SINGLE_ACCOUNT_PRIVATE_KEYS = Object.freeze([
   // Pre-account-scoping analytics builds used one device-global retry queue.
   // Ownership cannot be proven, so any authenticated logout retires it.
   LEGACY_PRODUCT_ANALYTICS_STORAGE_KEY,
+  // The v1 error history was also device-global. It can contain support request
+  // references from a previous account, so it is never adopted by v2.
+  LEGACY_DIAGNOSTICS_STORAGE_KEY,
   "pit.blocked",
   "pit.myLikes",
   "pit.session",
@@ -57,6 +68,7 @@ export function accountScopedPrivateStorageKeys(accountId) {
     venueReviewStorageKey(id),
     youtubeVideoRejectionStorageKey(id),
     productAnalyticsStorageKey(id),
+    diagnosticsStorageKey(id),
   ].filter(Boolean);
 }
 

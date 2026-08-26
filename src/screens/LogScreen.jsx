@@ -30,6 +30,7 @@ import {
 import { composerCloseDecision } from "../domain/composerClosePolicy.mjs";
 import { PENDING_COMPOSER_PICKER_KEY } from "../domain/composerRecovery.mjs";
 import { postMediaPickerOptions } from "../domain/mediaPickerOptions.mjs";
+import { MEDIA_POST_MAX_ATTACHMENTS } from "../domain/mediaUploadPolicy.mjs";
 import {
   DEFAULT_MEDIA_PUBLISHING_CAPABILITIES,
   MEDIA_PUBLISHING_UNAVAILABLE_COPY,
@@ -65,6 +66,7 @@ import {
   moveMediaProjectAsset,
   normalizeMediaProject,
   normalizeMediaProjectAsset,
+  reconcileMediaProjectSelection,
   removeMediaProjectAsset,
 } from "../domain/mediaProject.mjs";
 import {
@@ -527,7 +529,7 @@ export default function LogScreen({
 
   async function stageSelectedAssets(assets, capabilities = mediaPublishingCapabilities) {
     if (uploadingPhotos || posting || !Array.isArray(assets) || !assets.length) return;
-    const remaining = Math.max(0, 8 - photos.length - studioAssets.length);
+    const remaining = Math.max(0, MEDIA_POST_MAX_ATTACHMENTS - photos.length - studioAssets.length);
     if (!remaining) return;
     const candidateAssets = mediaProjectFromPicker(assets.slice(0, remaining), `${submissionIdRef.current}:${Date.now().toString(36)}`).assets;
     const selection = mediaPublishingSelection(candidateAssets, capabilities);
@@ -557,7 +559,7 @@ export default function LogScreen({
   }
 
   async function applyStudioMedia(result) {
-    const selected = Array.isArray(result?.assets) ? result.assets.slice(0, 8) : [];
+    const selected = Array.isArray(result?.assets) ? result.assets.slice(0, MEDIA_POST_MAX_ATTACHMENTS) : [];
     if (!selected.length || uploadingPhotos || posting) return;
     const refreshedCapabilities = await refreshMediaPublishingCapabilities({ force: true, background: true });
     const activeCapabilities = refreshedCapabilities.ok
@@ -589,8 +591,6 @@ export default function LogScreen({
       }
       for (let index = 0; index < selected.length; index++) {
         const asset = selected[index];
-        const existing = mediaProject.assets.find((item) => item.id === asset.id || (asset.assetId && item.assetId === asset.assetId));
-        const previousSourceUrl = existing?.sourceUrl || null;
         setUploadProgress({ current: index + 1, total: selected.length, completed: completedAssets.length, stage: "preparing" });
         let ready;
         ready = await uploadStudioMediaAsset({
@@ -637,24 +637,13 @@ export default function LogScreen({
         // Commit each verified asset immediately. If a later item fails, a
         // retry resumes with only the unfinished selections instead of
         // orphaning completed uploads or uploading them twice.
-        setPhotos((current) => {
-          const priorIndex = previousSourceUrl ? current.indexOf(previousSourceUrl) : -1;
-          if (priorIndex >= 0) {
-            const next = current.slice();
-            next[priorIndex] = ready.sourceUrl;
-            return [...new Set(next.filter(isDurableMediaUrl))].slice(0, 8);
-          }
-          return current.includes(ready.sourceUrl)
-            ? current
-            : [...current, ready.sourceUrl].filter(isDurableMediaUrl).slice(0, 8);
-        });
-        setMediaProject((current) => {
-          const existingIndex = current.assets.findIndex((item) => item.id === asset.id || (ready.assetId && item.assetId === ready.assetId) || (previousSourceUrl && item.sourceUrl === previousSourceUrl));
-          if (existingIndex < 0) return normalizeMediaProject({ assets: [...current.assets, ready].slice(0, 8) });
-          const next = current.assets.slice();
-          next[existingIndex] = normalizeMediaProjectAsset({ ...ready, id: next[existingIndex].id }, existingIndex);
-          return normalizeMediaProject({ assets: next });
-        });
+        const committedProject = reconcileMediaProjectSelection(
+          mediaProject,
+          selected.slice(0, completedAssets.length),
+          completedAssets,
+        );
+        setMediaProject(committedProject);
+        setPhotos(mediaProjectPublishedMedia(committedProject).map((item) => item.url));
         setStudioAssets((current) => current.filter((item) => item.id !== asset.id));
         // The verified owner source is now recoverable from the server. Remove
         // only PIT's private staged copy; the helper refuses arbitrary paths.
@@ -710,7 +699,7 @@ export default function LogScreen({
       setMediaError("Remove all existing media from this older post before adding a new photo or clip. This prevents an unsafe mix of legacy URLs and verified PIT media.");
       return;
     }
-    const remaining = Math.max(0, 8 - photos.length - studioAssets.length);
+    const remaining = Math.max(0, MEDIA_POST_MAX_ATTACHMENTS - photos.length - studioAssets.length);
     if (!remaining) return;
     captureStudioOpener();
     let res;
@@ -774,10 +763,9 @@ export default function LogScreen({
   };
 
   const reopenReadyMedia = async () => {
-    // private-derivative-v1 owns clip posters. Until the server exposes authoritative
-    // cover regeneration, reopen only verified photos; clips stay attached and
-    // cannot enter a client-poster replacement path.
-    const ready = mediaProject.assets.filter((asset) => asset.assetId && asset.status === "ready" && asset.kind !== "video");
+    // Reopen the complete verified project so photos and clips can be reordered
+    // together without dropping video identities or their authoritative posters.
+    const ready = mediaProject.assets.filter((asset) => asset.assetId && asset.status === "ready");
     if (!ready.length || submitBusy || studioHydrating) return;
     captureStudioOpener();
     setStudioHydrating(true);
@@ -1721,7 +1709,7 @@ export default function LogScreen({
             </View>
           </Pressable>
         ) : null}
-        {!editing && !studioOpen && studioAssets.length === 0 && mediaProject.assets.some((asset) => asset.assetId && asset.status === "ready" && asset.kind !== "video") ? (
+        {!editing && !studioOpen && studioAssets.length === 0 && mediaProject.assets.some((asset) => asset.assetId && asset.status === "ready") ? (
           <Pressable style={styles.resumeStudio} onPress={reopenReadyMedia} disabled={submitBusy || studioHydrating} accessibilityRole="button" accessibilityLabel="Edit attached media again in PIT Studio" accessibilityState={{ busy: studioHydrating, disabled: submitBusy || studioHydrating }}>
             <Icon name="edit" size={16} color={colors.amber} />
             <View style={{ flex: 1 }}>
@@ -1757,7 +1745,7 @@ export default function LogScreen({
               </Pressable>
             </View>
           );})}
-          {photos.length + studioAssets.length < 8 && (
+          {photos.length + studioAssets.length < MEDIA_POST_MAX_ATTACHMENTS && (
             <Pressable style={styles.addThumb} onPress={addPhoto} disabled={submitBusy} accessibilityRole="button" accessibilityLabel={mediaAddLabel}>
               <Icon name="camera" size={20} color={colors.amber} />
               <Text style={styles.addThumbTxt}>{uploadProgress ? `${uploadProgress.current}/${uploadProgress.total}` : mediaAddLabel}</Text>

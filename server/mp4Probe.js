@@ -7,6 +7,12 @@ import {
   VIDEO_VERIFIER_SOURCE_CONTENT_TYPES,
   videoVerifierSourceExtension,
 } from "./videoVerifierProtocol.js";
+import {
+  MEDIA_VIDEO_MAX_DURATION_MS,
+  MEDIA_VIDEO_MAX_FRAME_RATE,
+  MEDIA_VIDEO_MAX_SAMPLES,
+} from "../src/domain/mediaUploadPolicy.mjs";
+
 
 const KIBIBYTE = 1024;
 const MEBIBYTE = 1024 * KIBIBYTE;
@@ -22,13 +28,13 @@ const MAX_MEDIA_SAMPLES = 250_000;
 // Full-decode admission is intentionally narrower than the table parser's
 // memory bound. One video sample is one compressed picture for the admitted AVC
 // layout, so these checks cap both frame rate and pixels decoded before an
-// account can occupy the isolated verifier. The envelope admits a 60-second
+// account can occupy the isolated verifier. The envelope admits a ten-minute
 // 1080p60 concert clip, while rejecting high-sample-rate and 4K decode bombs.
-const MAX_VIDEO_SAMPLES_PER_SECOND = 60;
+const MAX_VIDEO_SAMPLES_PER_SECOND = MEDIA_VIDEO_MAX_FRAME_RATE;
 const MAX_VIDEO_SAMPLE_SLACK = 2;
 // 1080p is coded as 120x68 macroblocks (1920x1088), so use coded
 // macroblocks—not cropped display dimensions—for the decode-work envelope.
-const MAX_VIDEO_CODED_PIXEL_SAMPLES = 120n * 68n * 256n * 60n * 60n;
+const MAX_VIDEO_CODED_PIXEL_SAMPLES = 120n * 68n * 256n * BigInt(MEDIA_VIDEO_MAX_SAMPLES);
 const MAX_CHUNKS = 250_000;
 const MAX_TIMING_ENTRIES = 65_536;
 const MAX_RANGE_REQUESTS = 72;
@@ -40,7 +46,7 @@ const MAX_WALL_MS = 12_000;
 // a retryable response before any R2 request, while an identical generation
 // joins the already-running proof.
 export const MAX_CONCURRENT_MP4_STRUCTURAL_PROBES = 2;
-const MAX_CLIP_DURATION_MS = 60_000;
+const MAX_CLIP_DURATION_MS = MEDIA_VIDEO_MAX_DURATION_MS;
 const MAX_VIDEO_WIDTH = 4_096;
 const MAX_VIDEO_HEIGHT = 2_160;
 

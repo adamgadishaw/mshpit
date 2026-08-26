@@ -3,6 +3,10 @@ import test from "node:test";
 
 import { ApiError } from "./errors.js";
 import {
+  MEDIA_VIDEO_MAX_DURATION_MS,
+  MEDIA_VIDEO_MAX_SAMPLES,
+} from "../src/domain/mediaUploadPolicy.mjs";
+import {
   MAX_CONCURRENT_MP4_STRUCTURAL_PROBES,
   verifyMp4Compatibility,
 } from "./mp4Probe.js";
@@ -1229,17 +1233,17 @@ test("derives duration from mvhd, each mdhd, and each stts timeline", async (con
     assert.deepEqual(await verify(bytes), expectedStructural({ durationMs: 5_500 }));
   });
   await context.test("rejects-overlong-video-mdhd", async () => {
-    const bytes = makeMp4({ videoTiming: { mdhdDuration: 60_001, sampleDelta: 5_001 } });
+    const bytes = makeMp4({ videoTiming: { mdhdDuration: MEDIA_VIDEO_MAX_DURATION_MS + 1, sampleDelta: 5_001 } });
     await assert.rejects(() => verify(bytes), isUnsupported);
   });
   await context.test("rejects-overlong-video-sample-timeline", async () => {
-    const bytes = makeMp4({ videoTiming: { mdhdDuration: 5_001, sampleCount: 61, sampleDelta: 1_000 } });
+    const bytes = makeMp4({ videoTiming: { mdhdDuration: 5_001, sampleCount: 61, sampleDelta: 10_000 } });
     await assert.rejects(() => verify(bytes), isUnsupported);
   });
   await context.test("rejects-overlong-audio-sample-timeline", async () => {
     const bytes = makeMp4({
       audioEntries: [makeAudioEntry()],
-      audioTiming: { mdhdDuration: 5_001, sampleCount: 61, sampleDelta: 1_000 },
+      audioTiming: { mdhdDuration: 5_001, sampleCount: 61, sampleDelta: 10_000 },
     });
     await assert.rejects(() => verify(bytes), isUnsupported);
   });
@@ -1265,17 +1269,21 @@ test("rejects clips whose frame rate or decoded pixel work exceeds the verifier 
     await assert.rejects(() => verify(bytes), isUnsupported);
   });
   await context.test("4k-pixel-work", async () => {
-    const sampleCount = 1_800;
+    const sampleCount = 10_000;
     const bytes = makeMp4({
       videoEntries: [makeVisualEntry("avc1", { width: 3_840, height: 2_160, level: 51 })],
-      movie: { duration: 60_000 },
-      videoTiming: { mdhdDuration: 60_000, sampleCount, sampleDelta: 33 },
+      movie: { duration: MEDIA_VIDEO_MAX_DURATION_MS },
+      videoTiming: {
+        mdhdDuration: MEDIA_VIDEO_MAX_DURATION_MS,
+        sampleCount,
+        sampleDelta: MEDIA_VIDEO_MAX_DURATION_MS / sampleCount,
+      },
       mdatPayload: Buffer.concat(Array.from({ length: sampleCount }, () => sample)),
     });
     await assert.rejects(() => verify(bytes), isUnsupported);
   });
   await context.test("cropped-high-coded-area", async () => {
-    const sampleCount = 1_800;
+    const sampleCount = 10_000;
     const bytes = makeMp4({
       videoEntries: [makeVisualEntry("avc1", {
         width: 16,
@@ -1286,26 +1294,43 @@ test("rejects clips whose frame rate or decoded pixel work exceeds the verifier 
         spsCodedHeight: 2_160,
         level: 51,
       })],
-      movie: { duration: 60_000 },
-      videoTiming: { mdhdDuration: 60_000, sampleCount, sampleDelta: 33 },
+      movie: { duration: MEDIA_VIDEO_MAX_DURATION_MS },
+      videoTiming: {
+        mdhdDuration: MEDIA_VIDEO_MAX_DURATION_MS,
+        sampleCount,
+        sampleDelta: MEDIA_VIDEO_MAX_DURATION_MS / sampleCount,
+      },
       mdatPayload: Buffer.concat(Array.from({ length: sampleCount }, () => sample)),
     });
     await assert.rejects(() => verify(bytes), isUnsupported);
   });
-  await context.test("exact-1080p60-boundary", async () => {
-    const sampleCount = 3_600;
+  await context.test("exact-1080p60-ten-minute-boundary", async () => {
+    const sampleCount = 36_000;
     const bytes = makeMp4({
-      movie: { duration: 60_000 },
-      videoTiming: { timescale: 60_000, mdhdDuration: 3_600_000, sampleCount, sampleDelta: 1_000 },
+      movie: { duration: MEDIA_VIDEO_MAX_DURATION_MS },
+      videoTiming: {
+        timescale: 60_000,
+        mdhdDuration: 36_000_000,
+        sampleCount,
+        sampleDelta: 1_000,
+      },
       mdatPayload: Buffer.concat(Array.from({ length: sampleCount }, () => sample)),
     });
-    assert.deepEqual(await verify(bytes), expectedStructural({ durationMs: 60_000, sampleCount }));
+    assert.deepEqual(await verify(bytes), expectedStructural({
+      durationMs: MEDIA_VIDEO_MAX_DURATION_MS,
+      sampleCount,
+    }));
   });
   await context.test("one-frame-over-1080p-work-boundary", async () => {
-    const sampleCount = 3_601;
+    const sampleCount = MEDIA_VIDEO_MAX_SAMPLES + 1;
     const bytes = makeMp4({
-      movie: { duration: 60_000 },
-      videoTiming: { timescale: 3_601, mdhdDuration: 216_060, sampleCount, sampleDelta: 60 },
+      movie: { duration: MEDIA_VIDEO_MAX_DURATION_MS },
+      videoTiming: {
+        timescale: sampleCount,
+        mdhdDuration: sampleCount * 600,
+        sampleCount,
+        sampleDelta: 600,
+      },
       mdatPayload: Buffer.concat(Array.from({ length: sampleCount }, () => sample)),
     });
     await assert.rejects(() => verify(bytes), isUnsupported);

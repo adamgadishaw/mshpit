@@ -18,6 +18,7 @@ import {
   VIDEO_VERIFIER_PROTOCOL_VERSION,
 } from "./videoVerifierProtocol.js";
 import { verifyPrivateMediaBucketIsolation } from "./media.js";
+import { PUBLIC_MEDIA_CACHE_CONTROL } from "./mediaDeliveryPolicy.js";
 
 const SECRET = "video-verifier-test-secret-that-is-at-least-thirty-two-bytes";
 const ENV = Object.freeze({
@@ -138,7 +139,11 @@ function verificationInput(overrides = {}) {
     output: {
       key: "users/u_video/post/delivery.mp4",
       uploadUrl: "https://objects.example.com/signed-output",
-      requiredHeaders: { "Content-Type": "video/mp4", "If-None-Match": "*" },
+      requiredHeaders: {
+        "Cache-Control": PUBLIC_MEDIA_CACHE_CONTROL,
+        "Content-Type": "video/mp4",
+        "If-None-Match": "*",
+      },
     },
     env: ENV,
     ...overrides,

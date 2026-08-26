@@ -5,6 +5,8 @@ import Icon from "../Icon";
 import Avatar from "../Avatar";
 import { proxied, isHttp } from "../../lib/img";
 import { SectionHeading } from "./DiscoverPrimitives";
+import { PublicPressableLink } from "../PublicWebLinks";
+import { artistPath } from "../../domain/urls.mjs";
 
 const GENRE_COLORS = [colors.amber, colors.cool, colors.magenta, colors.good, colors.gold, "#9B7BFF", "#4FD0E0", "#E8794B"];
 const initialsOf = (name = "") => name.split(/\s+/).filter(Boolean).slice(0, 2).map((word) => word[0]).join("").toUpperCase() || "?";
@@ -15,10 +17,10 @@ function GenreArtist({ row, index, onOpen, onPlay, onAdd }) {
     <View style={[styles.genreArtistRow, index > 0 && styles.genreArtistBorder]}>
       <Text style={styles.genreRank}>{index + 1}</Text>
       <Avatar user={artistUser(row)} size={40} />
-      <Pressable style={styles.genreArtistMain} onPress={() => onOpen?.(row.name)} accessibilityRole="button" accessibilityLabel={`Open ${row.name}`}>
+      <PublicPressableLink href={artistPath(row)} onNavigate={() => onOpen?.(row)} style={styles.genreArtistMain} accessibilityLabel={`Open ${row.name}`}>
         <Text style={styles.genreArtistName} numberOfLines={1}>{row.name}</Text>
         <Text style={styles.genreArtistTrack} numberOfLines={1}>{row.topTrack?.title || row.genre || "Artist"}</Text>
-      </Pressable>
+      </PublicPressableLink>
       {!!row.topTrack && (
         <View style={styles.trackActions}>
           <Pressable style={styles.trackButton} onPress={() => onAdd?.(row)} accessibilityRole="button" accessibilityLabel={`Add ${row.topTrack.title} by ${row.name} to a playlist`} hitSlop={4}><Icon name="plus" size={14} color={colors.textDim} /></Pressable>

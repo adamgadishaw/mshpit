@@ -5,7 +5,10 @@ import {
   timingSafeEqual,
 } from "node:crypto";
 
-export const VIDEO_VERIFIER_PROTOCOL_VERSION = "pit-video-verifier-v2";
+// v3 requires the public delivery PUT to carry PIT's exact signed cache policy.
+// A rolling deploy therefore fails closed between old/new web and verifier
+// instances instead of publishing with weaker or longer-lived caching.
+export const VIDEO_VERIFIER_PROTOCOL_VERSION = "pit-video-verifier-v3";
 export const VIDEO_VERIFIER_PIPELINE_VERSION = "private-derivative-v1";
 export const VIDEO_VERIFIER_CLOCK_SKEW_MS = 60_000;
 // Both the web structural gate and the isolated decoder must admit the same

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, Image } from "react-native";
+import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, Image, Platform } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import { colors, radius } from "../theme";
 import { useStore } from "../store";
@@ -8,6 +8,8 @@ import Icon from "../components/Icon";
 import TapStars from "../components/TapStars";
 import Button from "../components/Button";
 import { isDurableMediaUrl, reportMediaPickerError, uploadMediaAsset } from "../lib/mediaUpload";
+import { postMediaPickerOptions } from "../domain/mediaPickerOptions.mjs";
+import { MEDIA_POST_MAX_ATTACHMENTS } from "../domain/mediaUploadPolicy.mjs";
 
 export default function VenueReviewScreen({ venueName, onClose }) {
   const { addVenueReview } = useStore();
@@ -19,11 +21,16 @@ export default function VenueReviewScreen({ venueName, onClose }) {
 
   const addPhoto = async () => {
     if (uploadingPhotos || posting) return;
-    const remaining = Math.max(0, 8 - photos.length);
+    const remaining = Math.max(0, MEDIA_POST_MAX_ATTACHMENTS - photos.length);
     if (!remaining) return;
     let res;
     try {
-      res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images"], quality: 0.6, allowsMultipleSelection: true, selectionLimit: Math.min(5, remaining) });
+      res = await ImagePicker.launchImageLibraryAsync(postMediaPickerOptions({
+        platform: Platform.OS,
+        remaining,
+        allowPhotos: true,
+        allowVideos: false,
+      }));
     } catch (error) {
       reportMediaPickerError(error, "Opening the venue photo library");
       return;
@@ -40,7 +47,7 @@ export default function VenueReviewScreen({ venueName, onClose }) {
         }
       }
     } finally {
-      if (uploaded.length) setPhotos((current) => [...current, ...uploaded].filter(isDurableMediaUrl).slice(0, 8));
+      if (uploaded.length) setPhotos((current) => [...current, ...uploaded].filter(isDurableMediaUrl).slice(0, MEDIA_POST_MAX_ATTACHMENTS));
       setUploadingPhotos(false);
     }
   };
@@ -87,7 +94,7 @@ export default function VenueReviewScreen({ venueName, onClose }) {
               </Pressable>
             </View>
           ))}
-          {photos.length < 8 && (
+          {photos.length < MEDIA_POST_MAX_ATTACHMENTS && (
             <Pressable style={styles.addThumb} onPress={addPhoto} disabled={submitBusy}>
               <Icon name="camera" size={20} color={colors.amber} />
               <Text style={styles.addThumbTxt}>{uploadingPhotos ? "Uploading" : "Add"}</Text>

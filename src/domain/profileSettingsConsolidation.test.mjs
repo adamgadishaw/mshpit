@@ -9,6 +9,8 @@ const editProfile = read("../screens/EditProfileScreen.jsx");
 const pickArtists = read("../screens/PickArtistsScreen.jsx");
 const you = read("../screens/YouScreen.jsx");
 const rails = read("../components/Rails.jsx");
+const store = read("../store.js");
+const accountPrivacyApi = read("../lib/accountPrivacyApi.js");
 
 test("the consolidated appearance and profile modules remain parseable", () => {
   for (const [name, source] of Object.entries({ settings, editProfile, pickArtists, you, rails })) {
@@ -23,6 +25,17 @@ test("Settings is the single signed-in appearance home and uses the shared theme
   assert.match(settings, /swatchGrid: themeGridStyle/);
   assert.doesNotMatch(settings, /function Swatch/);
   assert.doesNotMatch(settings, /styles\.swatchDots/);
+});
+
+test("Settings owns a server-confirmed member search-indexing opt-out", () => {
+  assert.match(settings, /Show my profile in search engines/);
+  assert.match(settings, /Public posts and artist pages can still appear/);
+  assert.match(settings, /accessibilityState=\{\{ checked: profileSearchIndexingEnabled, busy: savingSearchIndexing \}\}/);
+  assert.match(store, /const setProfileSearchIndexingEnabled = async \(enabled\) =>/);
+  assert.match(store, /updateProfileSearchIndexingPreference\(enabled\)/);
+  assert.match(accountPrivacyApi, /body: \{ searchIndexingOptOut: !enabled \}/);
+  assert.match(store, /sessionRef\.current = merged;\s+setSession\(merged\)/);
+  assert.match(store, /setProfileSearchIndexingEnabled, setAnnouncementEmailsEnabled/);
 });
 
 test("Edit Profile clearly owns the personal Pit identity without duplicating appearance", () => {

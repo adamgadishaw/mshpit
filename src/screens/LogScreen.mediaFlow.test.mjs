@@ -83,8 +83,11 @@ test("a transient first health failure does not permanently hide video selection
   assert.doesNotMatch(refresh.slice(refresh.indexOf("} catch")), /setMediaPublishingCapabilitiesConfirmed\(true\)/);
 });
 
-test("verified clips never reopen into the unsupported client cover replacement path", () => {
+test("verified mixed media reopens together for ordering while preserving authoritative video posters", () => {
   const reopen = source.slice(source.indexOf("const reopenReadyMedia"), source.indexOf("const openPendingStudio"));
-  assert.match(reopen, /asset\.status === "ready" && asset\.kind !== "video"/);
-  assert.match(source, /mediaProject\.assets\.some\(\(asset\) => asset\.assetId && asset\.status === "ready" && asset\.kind !== "video"\)/);
+  assert.match(reopen, /asset\.assetId && asset\.status === "ready"/);
+  assert.doesNotMatch(reopen, /asset\.kind !== "video"/);
+  assert.match(reopen, /posterUri: ownerAsset\.posterUrl \|\| asset\.posterUri/);
+  assert.match(reopen, /posterTimeMs: ownerAsset\.posterTimeMs \?\? asset\.posterTimeMs/);
+  assert.match(source, /mediaProject\.assets\.some\(\(asset\) => asset\.assetId && asset\.status === "ready"\)/);
 });

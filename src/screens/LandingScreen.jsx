@@ -4,8 +4,9 @@ import { Image as ExpoImage } from "expo-image";
 import Svg, { Defs, LinearGradient, Stop, Rect } from "react-native-svg";
 import { displayFont, focusRing, mono, radius } from "../theme";
 import Icon from "../components/Icon";
-import { catalogVenues, catalogArtists } from "../seed/catalog";
 import { api } from "../lib/api";
+import { useStore } from "../store";
+import { ENABLE_DEMO_DATA } from "../config/runtime.mjs";
 import { landingSlideUri, landingVisibleSlideIndices } from "../domain/menuJourney.mjs";
 import {
   LANDING_IDENTITY_COPY,
@@ -119,6 +120,17 @@ function LandingAction({ kind = "ghost", title, icon, onPress, accessibilityHint
   );
 }
 
+function WebPublicNav({ hidden = false, compact = false }) {
+  if (Platform.OS !== "web" || hidden) return null;
+  return (
+    <View style={[styles.publicNav, compact && styles.publicNavCompact]} accessibilityLabel="Public music directories">
+      <Text href="/artists" accessibilityRole="link" style={styles.publicNavLink}>Artists</Text>
+      <Text href="/events" accessibilityRole="link" style={styles.publicNavLink}>Events</Text>
+      <Text href="/about" accessibilityRole="link" style={styles.publicNavLink}>About</Text>
+    </View>
+  );
+}
+
 function LandingAttribution({ frame, caption, inline = false }) {
   const community = frame?.source === "community";
   return (
@@ -130,12 +142,13 @@ function LandingAttribution({ frame, caption, inline = false }) {
         </View>
       )}
       {!!caption && <Text style={[styles.communityCaption, inline && styles.communityCaptionInline]} numberOfLines={2}>{caption}</Text>}
-      <Text style={styles.credit}>{frame?.credit || "PIT"}</Text>
+      <Text style={styles.credit}>{frame?.credit || "MSHPIT"}</Text>
     </View>
   );
 }
 
 export default function LandingScreen({ onLogin, onSignup, onBrowse, onSuggestion }) {
+  const { discoverStats } = useStore();
   const { width, height, fontScale } = useWindowDimensions();
   const { wide, compact, scrollPitch, overlayCredit } = landingLayoutMode({ width, height, fontScale });
   const [reduceMotion, setReduceMotion] = useState(false);
@@ -222,10 +235,9 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse, onSuggestio
   }, [failedCommunityIds, idx, slides, width]);
 
   const glowOp = pulse.interpolate({ inputRange: [0, 1], outputRange: [0.58, 1] });
-  // The live artist total reflects saved catalogue growth and falls back to the
-  // bundled catalogue offline. Account totals are intentionally not requested
-  // or presented as landing-page social proof.
-  const [liveArtists, setLiveArtists] = useState(null);
+  // Production catalogue totals are server-owned. Account totals are
+  // intentionally not requested or presented as landing-page social proof.
+  const [catalogTotals, setCatalogTotals] = useState({ artists: 0, venues: 0 });
   useEffect(() => {
     const controller = new AbortController();
     let earlyAdvanceTimer = null;
@@ -241,7 +253,10 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse, onSuggestio
           return nextDeck.map((slide, index) => index === visible ? (current[index] || slide) : slide);
         });
         const hasCommunity = nextDeck[1]?.source === "community";
-        if (typeof totals?.artists === "number") setLiveArtists(totals.artists);
+        setCatalogTotals({
+          artists: typeof totals?.artists === "number" ? totals.artists : 0,
+          venues: typeof totals?.venues === "number" ? totals.venues : 0,
+        });
 
         const delay = landingCommunityAdvanceDelay({
           mountedAt: mountedAtRef.current,
@@ -281,9 +296,11 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse, onSuggestio
       if (earlyAdvanceTimer) clearTimeout(earlyAdvanceTimer);
     };
   }, []);
-  const venueCount = Object.keys(catalogVenues).length;
-  const artistCount = liveArtists ?? Object.keys(catalogArtists).length;
-  const proofItems = landingProofItems({ venues: venueCount, artists: artistCount });
+  const demoTotals = ENABLE_DEMO_DATA ? discoverStats() : null;
+  const proofItems = landingProofItems({
+    artists: catalogTotals.artists || demoTotals?.artists || 0,
+    venues: catalogTotals.venues || demoTotals?.venues || 0,
+  });
 
   // On phones the pitch SCROLLS (centered when it fits, scrollable when the user
   // has large text) so it can never overlap the top bar or get clipped. On desktop
@@ -365,18 +382,19 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse, onSuggestio
 
       {/* ---- top bar: brand + login ---- */}
       <View style={[styles.topbar, scrollPitch && styles.topbarScrolled, compact && styles.topbarCompact, styles.boxNonePointerEvents]}>
-        <View style={styles.brandLockup} accessibilityRole="text" accessibilityLabel="PIT, live music remembered">
+        <View style={styles.brandLockup} accessibilityRole="text" accessibilityLabel="Mshpit, live music remembered">
           <ExpoImage source={require("../../assets/pit-favicon-v1.png")} style={styles.brandMark} contentFit="cover" accessible={false} />
           <View>
-            <Text style={styles.brand}>PIT</Text>
+            <Text style={styles.brand}>MSHPIT</Text>
             {!compact && <Text style={styles.brandSub}>LIVE MUSIC, REMEMBERED</Text>}
           </View>
         </View>
+        <WebPublicNav hidden={compact} />
         <LandingAction
           kind="login"
           title="Log in"
           onPress={onLogin}
-          accessibilityHint="Opens the PIT sign-in form"
+          accessibilityHint="Opens the Mshpit sign-in form"
         />
       </View>
 
@@ -407,18 +425,18 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse, onSuggestio
               icon="ticket"
               onPress={onSignup}
               fullWidth={compact}
-              accessibilityHint="Creates a PIT account"
+              accessibilityHint="Creates a Mshpit account"
             />
             <LandingAction
               title={LANDING_IDENTITY_COPY.browseAction}
               icon="discover"
               onPress={onBrowse}
               fullWidth={compact}
-              accessibilityHint="Opens PIT without creating an account"
+              accessibilityHint="Opens Mshpit without creating an account"
             />
           </View>
 
-          <View style={[styles.proofRail, compact && styles.proofRailCompact]} accessibilityLabel="PIT catalogue and rating features">
+          <View style={[styles.proofRail, compact && styles.proofRailCompact]} accessibilityLabel="Mshpit catalogue and rating features">
             {proofItems.map((item, index) => (
               <View
                 key={item.key}
@@ -438,6 +456,8 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse, onSuggestio
               </View>
             ))}
           </View>
+
+          {compact && <WebPublicNav compact />}
 
           {!!onSuggestion && (
             <Pressable
@@ -498,6 +518,9 @@ const styles = StyleSheet.create({
     ...Platform.select({ web: { backdropFilter: "blur(14px)" } }),
   },
   topbarCompact: { paddingHorizontal: 16, paddingTop: 12 },
+  publicNav: { marginLeft: "auto", marginRight: 18, flexDirection: "row", alignItems: "center", gap: 18 },
+  publicNavCompact: { alignSelf: "center", marginLeft: 0, marginRight: 0, marginTop: 2, marginBottom: 2 },
+  publicNavLink: { color: "rgba(244,239,231,0.86)", fontFamily: mono, fontSize: 11, lineHeight: 18, fontWeight: "800", letterSpacing: 1.1, textDecorationLine: "none" },
   brandLockup: { flexDirection: "row", alignItems: "center", gap: 10 },
   brandMark: { width: 34, height: 34, borderRadius: 9 },
   brand: {

@@ -6,13 +6,19 @@ import {
   ANNOUNCEMENT_EMAIL_DISCLOSURE,
   MEDIA_AND_SESSION_SECURITY_DISCLOSURE,
   PRIVACY_POLICY_UPDATED,
+  PROFILE_SEARCH_INDEXING_DISCLOSURE,
 } from "../src/domain/privacyDisclosures.mjs";
 import { SUPPORT_EMAIL } from "../src/domain/contact.mjs";
 
-const SITE_NAME = "Pit";
+import { htmlRobotsDirective } from "./environment.js";
+const SITE_NAME = "Mshpit";
 export { SUPPORT_EMAIL };
 
 export const PUBLIC_PAGE_PATHS = Object.freeze([
+  "/about",
+  "/contact",
+  "/community-guidelines",
+  "/ratings-methodology",
   "/privacy",
   "/terms",
   "/support",
@@ -29,11 +35,129 @@ const esc = (value) => String(value ?? "")
 const link = (label, href) => ({ label, href });
 
 const PAGES = Object.freeze({
+  "/about": {
+    title: "About Mshpit",
+    description: "Mshpit is a social concert diary for remembering live shows, sharing honest fan reviews, and discovering music through people.",
+    intro: "Mshpit is built around the part of music that streaming cannot capture: being there. It gives concert fans one place to log their show history, preserve the feeling of a night, and discover artists, venues, and future shows through other people.",
+    note: "Mshpit is an independent fan community. Artist, venue, and ticket-provider names identify the subject of a page and do not imply endorsement.",
+    sections: [
+      {
+        heading: "A concert diary with a community around it",
+        paragraphs: ["Members can record the date, artist, venue, rating, review, and media from a concert. Those memories build a personal diary while contributing to artist and concert archives that help other fans understand what a live show actually felt like."],
+      },
+      {
+        heading: "Discovery through real live-music taste",
+        paragraphs: ["Mshpit connects artist pages, upcoming event information, venue pages, and fan reviews. The goal is to make discovery feel human: not only what is popular, but what moved people whose taste you trust."],
+        links: [link("Browse artists", "/artists"), link("Browse upcoming concerts", "/events")],
+      },
+      {
+        heading: "Fan voices and artist voices",
+        paragraphs: ["Fan reviews remain attributed to the members who wrote them. Verified artist accounts can manage artist-facing information and share official updates. A verified badge identifies an account status; it does not turn fan opinion into an artist endorsement."],
+      },
+      {
+        heading: "How public information is handled",
+        paragraphs: ["Public pages expose only information intended for public discovery. Members can keep their personal profile out of search-engine results without making independently public posts private. Photos used in aggregate artist, venue, or concert galleries require the applicable sharing choice."],
+        links: [link("Read the Privacy policy", "/privacy"), link("Read the ratings methodology", "/ratings-methodology")],
+      },
+    ],
+  },
+  "/contact": {
+    title: "Contact Mshpit",
+    description: "Contact Mshpit about account help, safety, privacy, artist pages, partnerships, or technical problems.",
+    intro: "Use the monitored support address below for Mshpit questions. Include only the information needed to understand the issue, and never send a password, session cookie, or verification code.",
+    note: `Public support email: ${SUPPORT_EMAIL}`,
+    primaryAction: link("Email Mshpit", `mailto:${SUPPORT_EMAIL}`),
+    sections: [
+      {
+        heading: "Account, product, and technical help",
+        paragraphs: ["For sign-in trouble, a broken feature, or a question about your account, describe what happened, the device or browser involved, and any support reference shown by Mshpit. Screenshots are useful after private information is removed."],
+        links: [link("Open Support", "/support")],
+      },
+      {
+        heading: "Safety, moderation, and privacy",
+        paragraphs: ["Use an in-product Report action when one is available. For an issue that cannot be reported there, email the public URL or handle and a short explanation. Privacy and account-data requests may require account ownership verification."],
+        links: [link("Community guidelines", "/community-guidelines"), link("Privacy policy", "/privacy")],
+      },
+      {
+        heading: "Artists, venues, and factual corrections",
+        paragraphs: ["Artists, representatives, venues, and fans can report an incorrect public fact or ask about an artist profile through support. Include the exact Mshpit page and a reliable source for the requested correction. Verification or memorial changes are reviewed before publication."],
+      },
+      {
+        heading: "Business and media enquiries",
+        paragraphs: ["Partnership, press, and other business enquiries can begin at the same monitored address and will be routed to the appropriate owner."],
+        links: [link(SUPPORT_EMAIL, `mailto:${SUPPORT_EMAIL}`)],
+      },
+    ],
+  },
+  "/community-guidelines": {
+    title: "Community guidelines",
+    description: "The standards for honest reviews, respectful discussion, safe media, artist pages, and participation on Mshpit.",
+    updated: "August 2026",
+    intro: "Mshpit works when people can be excited, opinionated, and honest about music without making the community unsafe. These guidelines explain the behavior and content expected across reviews, comments, messages, media, and profiles.",
+    note: "Context matters. Mshpit can remove content, limit features, or restrict accounts when needed to protect people, the integrity of ratings, or the service.",
+    sections: [
+      {
+        heading: "Review shows honestly",
+        paragraphs: ["Log concerts you attended and describe your own experience. Do not fabricate attendance, coordinate rating manipulation, trade engagement, impersonate another fan, or use reviews to settle unrelated disputes. Disagreement about a performance is welcome; deceptive activity is not."],
+      },
+      {
+        heading: "Respect people in the crowd",
+        paragraphs: ["Do not post harassment, threats, hate, sexual exploitation, targeted humiliation, or another person's private information. Do not encourage unwanted contact. Critique music and public performances without turning that critique into abuse of artists, staff, or other fans."],
+      },
+      {
+        heading: "Share media you are allowed to share",
+        paragraphs: ["Only upload photos or clips you have the right to post. Respect venue rules, personal privacy, and requests involving sensitive images. Do not upload full copyrighted performances, pirated recordings, malware, or content intended to evade rights controls."],
+      },
+      {
+        heading: "Keep artist and event information accurate",
+        paragraphs: ["Artist, venue, tour, setlist, memorial, and event details should be entered in good faith. Do not knowingly publish false death notices, fake events, misleading ticket destinations, or an affiliation you do not have. Corrections may merge or relabel community records without changing the substance of a member's review."],
+      },
+      {
+        heading: "No spam or artificial reach",
+        paragraphs: ["Do not automate engagement, scrape private surfaces, repeatedly advertise unrelated services, conceal commercial links, or flood comments and messages. Artist promotion should remain relevant, accurately attributed, and within the features provided for it."],
+      },
+      {
+        heading: "Reporting and review",
+        paragraphs: ["Use Report where available or contact support with the relevant public page. Mshpit reviews the available context and may preserve limited records needed for safety, appeals, or legal obligations. Enforcement decisions can be appealed through the monitored support channel."],
+        links: [link("Contact Mshpit", "/contact"), link("Terms and conditions", "/terms")],
+      },
+    ],
+  },
+  "/ratings-methodology": {
+    title: "How Mshpit ratings work",
+    description: "How Mshpit collects, calculates, displays, and protects fan ratings and concert-review summaries.",
+    updated: "August 2026",
+    intro: "Mshpit ratings summarize the opinions of members who log live shows. They are community signals, not professional criticism, ticket guarantees, artist endorsements, or scientific measurements.",
+    note: "A displayed average is calculated from the eligible ratings attached to that exact public subject and can change as reviews are added, edited, removed, or moderated.",
+    sections: [
+      {
+        heading: "The rating scale",
+        paragraphs: ["Members rate live experiences on a five-point scale. A higher number means the member reported a stronger experience. Written reviews, tags, photos, the artist, venue, and concert date provide context that a number alone cannot capture."],
+      },
+      {
+        heading: "What an average represents",
+        paragraphs: ["Mshpit uses the arithmetic mean of eligible member ratings for the same entity or concert night and shows a count alongside it. Ratings are not silently weighted by follower count, account role, advertising, ticket value, or artist status. Different pages can represent different scopes, so an exact concert-night score is not the same as an artist's broader live history."],
+      },
+      {
+        heading: "Eligibility and moderation",
+        paragraphs: ["Removed posts, banned or deleted accounts, and content excluded by safety controls do not contribute to public summaries. Mshpit may investigate coordinated manipulation, duplicate or fabricated reviews, and other behavior that compromises rating integrity."],
+      },
+      {
+        heading: "Small samples and change over time",
+        paragraphs: ["A rating based on a small number of reviews can move substantially when another person contributes. Mshpit displays the rating count so readers can judge that context. Historical concert archives remain tied to the show date, while edits and moderation can update the visible result."],
+      },
+      {
+        heading: "Corrections and questions",
+        paragraphs: ["If reviews appear attached to the wrong artist, venue, or date, send the exact public page to support. Mshpit can correct entity matching without rewriting a member's stated opinion."],
+        links: [link("Contact Mshpit", "/contact"), link("Community guidelines", "/community-guidelines")],
+      },
+    ],
+  },
   "/privacy": {
     title: "Privacy policy",
-    description: "How Pit collects, uses, shares, retains, and lets you control your information.",
+    description: "How Mshpit collects, uses, shares, retains, and lets you control your information.",
     updated: PRIVACY_POLICY_UPDATED,
-    intro: "Pit is a social service for logging concerts, rating them, and following people whose taste matches yours. We use account and activity data to operate the service, protect it from abuse, and personalize music and local-show features. This policy describes what we collect, why, and the choices you have.",
+    intro: "Mshpit, branded as PIT in the app and referred to below as Pit, is a social service for logging concerts, rating them, and following people whose taste matches yours. We use account and activity data to operate the service, protect it from abuse, and personalize music and local-show features. This policy describes what we collect, why, and the choices you have.",
     note: "You can download or delete your account data and turn optional product analytics off from Settings.",
     sections: [
       {
@@ -105,6 +229,7 @@ const PAGES = Object.freeze({
         heading: "Your choices and rights",
         paragraphs: [
           "You can edit your profile, download a portable account backup, delete content, block accounts, turn product analytics off, or permanently delete your account from Settings. Turning analytics off deletes that account's existing product-event rows and prevents new ones from being recorded.",
+          PROFILE_SEARCH_INDEXING_DISCLOSURE,
           "Depending on where you live, additional access, correction, deletion, objection, or restriction rights may apply. Email us to make a privacy request. We may need to verify that the request belongs to you before acting on it.",
         ],
         links: [
@@ -141,10 +266,10 @@ const PAGES = Object.freeze({
   },
   "/terms": {
     title: "Terms and conditions",
-    description: "The rules and conditions that apply when you create an account or use Pit.",
+    description: "The rules and conditions that apply when you create an account or use Mshpit.",
     updated: "August 2026",
-    intro: "Welcome to Pit. By creating an account or using Pit you agree to these Terms and Conditions and to our Privacy policy, which explains how we collect and use your data. Please read both carefully.",
-    note: "These terms form a binding agreement between you and Pit. If you don't agree with them, don't use Pit.",
+    intro: "Welcome to Mshpit, branded as PIT in the app and referred to below as Pit. By creating an account or using Pit you agree to these Terms and Conditions and to our Privacy policy, which explains how we collect and use your data. Please read both carefully.",
+    note: "These terms form a binding agreement between you and Mshpit. If you don't agree with them, don't use Pit.",
     sections: [
       {
         heading: "Eligibility",
@@ -213,10 +338,10 @@ const PAGES = Object.freeze({
   },
   "/support": {
     title: "Support",
-    description: "Get help with a Pit account, technical issue, safety report, privacy request, or account deletion.",
-    intro: "Need a hand with Pit? Use the paths below to reach the right place. Never send your password, session cookie, or verification code to anyone, including Pit support.",
+    description: "Get help with a Mshpit account, technical issue, safety report, privacy request, or account deletion.",
+    intro: "Need a hand with Mshpit? Use the paths below to reach the right place. Never send your password, session cookie, or verification code to anyone, including Mshpit support.",
     note: `Email: ${SUPPORT_EMAIL}`,
-    primaryAction: link("Email Pit support", `mailto:${SUPPORT_EMAIL}`),
+    primaryAction: link("Email Mshpit support", `mailto:${SUPPORT_EMAIL}`),
     sections: [
       {
         heading: "Account and sign-in help",
@@ -248,19 +373,19 @@ const PAGES = Object.freeze({
     ],
   },
   "/account-deletion": {
-    title: "Delete your Pit account",
-    description: "How to permanently delete a Pit account and its associated activity.",
-    intro: "Pit lets you permanently delete your account from inside the app. Deletion starts only after you confirm the warning and your current password is verified by the server. There is no recovery period after deletion succeeds.",
+    title: "Delete your Mshpit account",
+    description: "How to permanently delete a Mshpit account and its associated activity.",
+    intro: "Mshpit lets you permanently delete your account from inside the app. Deletion starts only after you confirm the warning and your current password is verified by the server. There is no recovery period after deletion succeeds.",
     note: "You do not need to contact support if you can sign in and complete these steps.",
     sections: [
       {
-        heading: "Delete your account in Pit",
+        heading: "Delete your account in Mshpit",
         ordered: [
-          "Sign in to the Pit account you want to delete.",
+          "Sign in to the Mshpit account you want to delete.",
           "Open your account menu, choose Settings, and scroll to Danger zone.",
           "Choose Delete account and review the deletion warning.",
           "Choose Continue, enter your current password, then choose Delete account permanently.",
-          "Wait for Pit to confirm deletion. If the app says it could not confirm whether deletion finished, do not submit another deletion immediately; reconnect and check whether you can sign in, then contact support with the diagnostic request ID if needed.",
+          "Wait for Mshpit to confirm deletion. If the app says it could not confirm whether deletion finished, do not submit another deletion immediately; reconnect and check whether you can sign in, then contact support with the diagnostic request ID if needed.",
         ],
       },
       {
@@ -269,7 +394,7 @@ const PAGES = Object.freeze({
       },
       {
         heading: "Storage and backup copies",
-        paragraphs: ["Account deletion removes your active database records and durably queues Pit-owned uploaded photos and clips for deletion from active object storage. Cleanup retries automatically but may not finish immediately. Separate database or storage backups can remain until their retention period ends, or longer where required for legal reasons or where content was already shared with others, as described in the Terms and Privacy policy."],
+        paragraphs: ["Account deletion removes your active database records and durably queues Mshpit-owned uploaded photos and clips for deletion from active object storage. Cleanup retries automatically but may not finish immediately. Separate database or storage backups can remain until their retention period ends, or longer where required for legal reasons or where content was already shared with others, as described in the Terms and Privacy policy."],
         links: [
           link("Privacy policy", "/privacy"),
           link("Terms and conditions", "/terms"),
@@ -281,7 +406,7 @@ const PAGES = Object.freeze({
       },
       {
         heading: "If you cannot sign in",
-        paragraphs: ["Use Forgot password on the sign-in screen first. If you still cannot access the account, email support from the address connected to the account when possible and include your Pit handle. Support may need to verify that the request belongs to you before helping with access or deletion. Never send your password."],
+        paragraphs: ["Use Forgot password on the sign-in screen first. If you still cannot access the account, email support from the address connected to the account when possible and include your Mshpit handle. Support may need to verify that the request belongs to you before helping with access or deletion. Never send your password."],
         links: [link(SUPPORT_EMAIL, `mailto:${SUPPORT_EMAIL}`)],
       },
     ],
@@ -326,14 +451,108 @@ function renderSection(section) {
 }
 
 function publicOrigin(env = process.env) {
-  return String(env.PUBLIC_ORIGIN || "https://www.mshpit.com").replace(/\/+$/, "");
+  try {
+    const parsed = new URL(String(env.PUBLIC_ORIGIN || "https://www.mshpit.com"));
+    if (!/^https?:$/.test(parsed.protocol) || parsed.username || parsed.password) throw new TypeError("Invalid public origin");
+    return parsed.origin;
+  } catch {
+    return "https://www.mshpit.com";
+  }
+}
+
+const structuredJson = (value) => JSON.stringify(value)
+  .replace(/</g, "\\u003c")
+  .replace(/>/g, "\\u003e")
+  .replace(/&/g, "\\u0026")
+  .replace(/\u2028/g, "\\u2028")
+  .replace(/\u2029/g, "\\u2029");
+
+const DISPLAY_MONTHS = Object.freeze({
+  January: 1,
+  February: 2,
+  March: 3,
+  April: 4,
+  May: 5,
+  June: 6,
+  July: 7,
+  August: 8,
+  September: 9,
+  October: 10,
+  November: 11,
+  December: 12,
+});
+
+function exactDateModified(value) {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (!text) return null;
+
+  const isoDate = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text);
+  const displayDate = /^(January|February|March|April|May|June|July|August|September|October|November|December) ([1-9]|[12]\d|3[01]), (\d{4})$/.exec(text);
+  const parts = isoDate
+    ? { year: Number(isoDate[1]), month: Number(isoDate[2]), day: Number(isoDate[3]) }
+    : displayDate
+      ? { year: Number(displayDate[3]), month: DISPLAY_MONTHS[displayDate[1]], day: Number(displayDate[2]) }
+      : null;
+
+  if (parts) {
+    const date = new Date(Date.UTC(parts.year, parts.month - 1, parts.day));
+    if (date.getUTCFullYear() !== parts.year || date.getUTCMonth() !== parts.month - 1 || date.getUTCDate() !== parts.day) return null;
+    return date.toISOString().slice(0, 10);
+  }
+
+  // A timestamp is machine-authoritative only when it includes both a time and
+  // an explicit timezone. Month-only policy labels intentionally do not qualify.
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:\d{2})$/.test(text)) return null;
+  const timestamp = new Date(text);
+  return Number.isNaN(timestamp.valueOf()) ? null : timestamp.toISOString();
 }
 
 export function renderPublicPage(pathname, env = process.env) {
   const page = publicPageFor(pathname);
   if (!page) return null;
   const canonical = `${publicOrigin(env)}${page.path}`;
-  const fullTitle = `${page.title} | ${SITE_NAME}`;
+  const fullTitle = /\bmshpit\b/i.test(page.title) ? page.title : `${page.title} | ${SITE_NAME}`;
+  const image = `${publicOrigin(env)}/og.png`;
+  const pageType = page.path === "/about" ? "AboutPage" : page.path === "/contact" ? "ContactPage" : "WebPage";
+  const dateModified = exactDateModified(page.modifiedAt || page.updated);
+  const jsonLd = {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "Organization",
+        "@id": `${publicOrigin(env)}/#organization`,
+        name: SITE_NAME,
+        alternateName: "PIT",
+        url: `${publicOrigin(env)}/`,
+        logo: { "@type": "ImageObject", url: `${publicOrigin(env)}/logo.svg`, width: 512, height: 512 },
+        contactPoint: {
+          "@type": "ContactPoint",
+          contactType: "customer support",
+          email: SUPPORT_EMAIL,
+          url: `${publicOrigin(env)}/contact`,
+          availableLanguage: "English",
+        },
+      },
+      {
+        "@type": pageType,
+        "@id": `${canonical}#page`,
+        name: page.title,
+        headline: page.title,
+        description: page.description,
+        url: canonical,
+        isPartOf: { "@type": "WebSite", "@id": `${publicOrigin(env)}/#website`, name: SITE_NAME, url: `${publicOrigin(env)}/` },
+        publisher: { "@id": `${publicOrigin(env)}/#organization` },
+        ...(dateModified ? { dateModified } : {}),
+      },
+      {
+        "@type": "BreadcrumbList",
+        itemListElement: [
+          { "@type": "ListItem", position: 1, name: SITE_NAME, item: `${publicOrigin(env)}/` },
+          { "@type": "ListItem", position: 2, name: page.title, item: canonical },
+        ],
+      },
+    ],
+  };
   const primaryAction = page.primaryAction
     ? `<a class="primary" href="${esc(page.primaryAction.href)}">${esc(page.primaryAction.label)}</a>`
     : "";
@@ -346,12 +565,25 @@ export function renderPublicPage(pathname, env = process.env) {
   <meta name="theme-color" content="#0d0b09" />
   <title>${esc(fullTitle)}</title>
   <meta name="description" content="${esc(page.description)}" />
+  <meta name="robots" content="${esc(htmlRobotsDirective({ indexable: true, env }))}" />
   <link rel="canonical" href="${esc(canonical)}" />
+  <link rel="icon" href="/logo.svg" type="image/svg+xml" />
   <meta property="og:site_name" content="${SITE_NAME}" />
+  <meta property="og:locale" content="en_CA" />
   <meta property="og:type" content="website" />
   <meta property="og:title" content="${esc(fullTitle)}" />
   <meta property="og:description" content="${esc(page.description)}" />
   <meta property="og:url" content="${esc(canonical)}" />
+  <meta property="og:image" content="${esc(image)}" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta property="og:image:alt" content="${esc(fullTitle)}" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="${esc(fullTitle)}" />
+  <meta name="twitter:description" content="${esc(page.description)}" />
+  <meta name="twitter:image" content="${esc(image)}" />
+  <meta name="twitter:image:alt" content="${esc(fullTitle)}" />
+  <script type="application/ld+json">${structuredJson(jsonLd)}</script>
   <style>
     :root { color-scheme: dark; --bg:#0d0b09; --panel:#171310; --text:#fff9ec; --dim:#c9c0b2; --muted:#92887c; --line:#332b24; --gold:#f3b61f; --gold-ink:#171006; }
     * { box-sizing: border-box; }
@@ -369,6 +601,8 @@ export function renderPublicPage(pathname, env = process.env) {
     nav a { color: var(--dim); text-decoration: none; }
     nav a[aria-current="page"] { color: var(--gold); }
     main { max-width: 760px; margin: 0 auto; padding: 64px 24px 88px; }
+    .crumbs { margin: 0 0 28px; color: var(--muted); font-size: .8rem; }
+    .crumbs a { color: var(--dim); }
     .eyebrow { margin: 0 0 10px; color: var(--gold); font-size: .72rem; font-weight: 900; letter-spacing: .18em; text-transform: uppercase; }
     h1 { margin: 0; max-width: 700px; font-family: Georgia, serif; font-size: clamp(2.2rem, 8vw, 4.25rem); line-height: 1.04; letter-spacing: -.04em; }
     .updated { margin: 16px 0 0; color: var(--muted); font-size: .875rem; }
@@ -395,13 +629,14 @@ export function renderPublicPage(pathname, env = process.env) {
   <a class="skip" href="#content">Skip to content</a>
   <header>
     <div class="bar">
-      <a class="brand" href="/" aria-label="Pit home">PIT</a>
+      <a class="brand" href="/" aria-label="Mshpit home">Mshpit</a>
       <nav aria-label="Public information">
         ${PUBLIC_PAGE_PATHS.map((path) => `<a href="${path}"${path === page.path ? ' aria-current="page"' : ""}>${path === "/account-deletion" ? "Delete account" : esc(PAGES[path].title)}</a>`).join("\n        ")}
       </nav>
     </div>
   </header>
   <main id="content">
+    <nav class="crumbs" aria-label="Breadcrumb"><a href="/">Mshpit</a><span aria-hidden="true"> / </span><span aria-current="page">${esc(page.title)}</span></nav>
     <p class="eyebrow">Public information</p>
     <h1>${esc(page.title)}</h1>
     ${page.updated ? `<p class="updated">Last updated ${esc(page.updated)}</p>` : ""}
@@ -412,9 +647,11 @@ export function renderPublicPage(pathname, env = process.env) {
   </main>
   <footer>
     <div class="foot">
-      <p>Pit - Your life's musical journey</p>
+      <p>Mshpit - Your life's musical journey</p>
       <div class="foot-links">
-        <a href="/">Open Pit</a>
+        <a href="/artists">Artists</a>
+        <a href="/events">Events</a>
+        <a href="/">Open Mshpit</a>
         <a href="mailto:${SUPPORT_EMAIL}">${SUPPORT_EMAIL}</a>
       </div>
     </div>

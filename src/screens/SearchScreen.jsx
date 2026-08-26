@@ -23,6 +23,15 @@ import { openTicketLink } from "../lib/ticketLinks";
 import { recordGuestSearch } from "../features/analytics/services/guestSearchAnalyticsApi.mjs";
 
 const EMPTY_LOOKUP_STATE = Object.freeze({ busy: false, message: "" });
+const SEARCH_CATEGORIES = Object.freeze([
+  { key: "all", label: "All" },
+  { key: "artists", label: "Artists" },
+  { key: "shows", label: "Shows" },
+  { key: "venues", label: "Venues" },
+  { key: "people", label: "People" },
+  { key: "songs", label: "Songs" },
+]);
+
 
 // ---- result rows (shared by every section of the unified dropdown) ----
 function PersonRow({ u, following, canFollow, onFollow, onOpen }) {
@@ -123,8 +132,8 @@ function EventRow({ t, onOpenArtist, onOpenVenue, onOpenTicket }) {
 }
 
 // A collapsible-free section: header + rows. Renders nothing when empty.
-function Section({ icon, tint, title, count, rows }) {
-  if (!rows || rows.length === 0) return null;
+function Section({ icon, tint, title, count, rows, hidden = false }) {
+  if (hidden || !rows || rows.length === 0) return null;
   return (
     <View style={styles.section}>
       <View style={styles.secHead}>
@@ -146,7 +155,7 @@ function searchResultBucket(count) {
 
 export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpenFanClub, onOpenProfile, onPlay, onAddToPlaylist }) {
   const { tourDates, searchVenues, artistsAlphabetical, venuesByCity, upcomingEvents, fanClubsDirectory, commentsFor, track,
-    session, blockedIds, isFollowing, follow, unfollow, searchPeople, loadMembers, memberCount, searchArtistsApi, resolveArtist,
+    session, blockedIds, isFollowing, follow, unfollow, searchPeople, searchArtistsApi, resolveArtist,
     recentSearches, addRecentSearch, removeRecentSearch, clearRecentSearches, searchSongsApi } = useStore();
   const searchAccountScope = accountTargetScope(session?.id, "search");
   const lookupRequestRef = useRef({ sequence: 0, scope: searchAccountScope, target: null });
@@ -158,6 +167,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
     setQueryState({ scope: searchAccountScope, value: String(value || "") });
   };
   const [focused, setFocused] = useState(false);
+  const [activeCategory, setActiveCategory] = useState("all");
   const [dbArtists, setDbArtists] = useState([]); // from the DB catalog API (scales past the bundle)
   const [songs, setSongs] = useState([]);
   const [searchLoading, setSearchLoading] = useState(false);
@@ -180,6 +190,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
   useEffect(() => {
     setQueryState({ scope: searchAccountScope, value: "" });
     setFocused(false);
+    setActiveCategory("all");
     setSearchError("");
     setLookupState({ scope: accountTargetScope(session?.id, "search:"), value: EMPTY_LOOKUP_STATE });
   }, [searchAccountScope, session?.id]);
@@ -296,7 +307,15 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
   const exactArtist = artists.some((a) => a.name.toLowerCase() === query);
   const resultState = unifiedSearchState({ query, loading: searchLoading, people, artists, songs, venues, events, clubs });
   const resultGroups = { people, artists, songs, venues, events, clubs };
-  const liveAnnouncement = actionMessage || searchLiveAnnouncement({ query, state: resultState, error: searchError, groups: resultGroups });
+  const categoryGroupKey = activeCategory === "shows" ? "events" : activeCategory;
+  const selectedRows = activeCategory === "all" ? [] : resultGroups[categoryGroupKey] || [];
+  const visibleResultState = activeCategory === "all"
+    ? resultState
+    : searchLoading ? "loading" : selectedRows.length ? "results" : "no-results";
+  const visibleResultGroups = activeCategory === "all" ? resultGroups : { [categoryGroupKey]: selectedRows };
+  const activeCategoryLabel = SEARCH_CATEGORIES.find((item) => item.key === activeCategory)?.label || "Results";
+  const showCategory = (key) => activeCategory === "all" || activeCategory === key;
+  const liveAnnouncement = actionMessage || searchLiveAnnouncement({ query, state: visibleResultState, error: searchError, groups: visibleResultGroups });
 
   // Opening any result records it as a recent search, so the empty state stays
   // useful (like every big app). Re-opening a recent bumps it back to the top.
@@ -340,13 +359,13 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
       const artist = await resolveArtist(name);
       if (!isCurrent()) return;
       if (!artist?.name) {
-        updateLookupState({ message: `Pit could not find an artist named ${name}.` });
+        updateLookupState({ message: `Mshpit could not find an artist named ${name}.` });
         return;
       }
       addRecentSearch?.({ type: "artist", label: artist.name });
       onOpenArtist?.(artist);
     } catch {
-      if (isCurrent()) updateLookupState({ message: `Pit could not look up ${name}. Check your connection and try again.` });
+      if (isCurrent()) updateLookupState({ message: `Mshpit could not look up ${name}. Check your connection and try again.` });
     } finally {
       if (isCurrent()) updateLookupState({ busy: false });
     }
@@ -370,12 +389,29 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
             onBlur={() => setFocused(false)}
             autoCapitalize="none"
             maxLength={80}
-            accessibilityLabel="Search Pit"
+            accessibilityLabel="Search Mshpit"
             accessibilityHint="Search people, artists, songs, venues, events, and fan clubs"
             accessibilityState={{ busy: searchLoading }}
           />
-          {!!q && <Pressable style={styles.fieldAction} onPress={() => { setQ(""); setActionMessage(""); }} accessibilityRole="button" accessibilityLabel="Clear search"><Icon name="x" size={16} color={colors.textFaint} /></Pressable>}
+          {!!q && <Pressable style={styles.fieldAction} onPress={() => { setQ(""); setActiveCategory("all"); setActionMessage(""); }} accessibilityRole="button" accessibilityLabel="Clear search"><Icon name="x" size={16} color={colors.textFaint} /></Pressable>}
         </View>
+        {!!query && (
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.categoryRail}
+            accessibilityLabel="Filter search results"
+          >
+            {SEARCH_CATEGORIES.map((item) => {
+              const selected = item.key === activeCategory;
+              return (
+                <Pressable key={item.key} style={[styles.categoryChip, selected && styles.categoryChipSelected]} onPress={() => setActiveCategory(item.key)} accessibilityRole="tab" accessibilityState={{ selected }}>
+                  <Text style={[styles.categoryChipText, selected && styles.categoryChipTextSelected]}>{item.label}</Text>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+        )}
         {!!liveAnnouncement && (
           <Text style={[styles.resultStatus, (searchError || actionMessage) && styles.resultError]} accessibilityRole="summary" accessibilityLiveRegion={searchError || actionMessage ? "assertive" : "polite"}>{liveAnnouncement}</Text>
         )}
@@ -389,7 +425,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
       <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.list} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
         {showBrowse && (
           <Text style={styles.browseHint}>
-            {memberCount > 0 ? `${memberCount.toLocaleString()} member${memberCount === 1 ? "" : "s"} on Pit` : "Discover Pit"} · start typing to search people, artists, songs, venues, events, and fan clubs
+            Search Mshpit · people, artists, songs, venues, events, and fan clubs
           </Text>
         )}
 
@@ -420,13 +456,14 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
         )}
 
         {resultState === "loading" && (
-          <View style={styles.loading} accessibilityRole="progressbar" accessibilityLabel="Searching Pit" accessibilityState={{ busy: true }}>
+          <View style={styles.loading} accessibilityRole="progressbar" accessibilityLabel="Searching Mshpit" accessibilityState={{ busy: true }}>
             <ActivityIndicator size="small" color={colors.amber} />
             <Text style={styles.loadingText}>Searching people, artists, songs, venues, and events...</Text>
           </View>
         )}
 
         <Section
+          hidden={!showCategory("people")}
           icon="you" tint={colors.gold}
           title="PEOPLE" count={people.length}
           rows={people.map((u) => (
@@ -442,12 +479,13 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
         />
 
         <Section
+          hidden={!showCategory("artists")}
           icon="music" tint={colors.amber}
           title={showBrowse ? "ARTISTS TO EXPLORE" : "ARTISTS"} count={artists.length}
           rows={[
             ...artists.map((a) => <ArtistRow key={a.name} name={a.name} genre={a.genre} memorial={a.memorial} onPress={() => openArtist(a)} />),
             query.length >= 2 && !exactArtist ? (
-              <Pressable key="_lookup" style={styles.row} onPress={() => lookUp(q.trim())} disabled={lookupBusy} accessibilityRole="button" accessibilityLabel={`Look up artist ${q.trim()}`} accessibilityHint="Searches MusicBrainz if the artist is not in Pit yet" accessibilityState={{ busy: lookupBusy, disabled: lookupBusy }}>
+              <Pressable key="_lookup" style={styles.row} onPress={() => lookUp(q.trim())} disabled={lookupBusy} accessibilityRole="button" accessibilityLabel={`Look up artist ${q.trim()}`} accessibilityHint="Searches MusicBrainz if the artist is not in Mshpit yet" accessibilityState={{ busy: lookupBusy, disabled: lookupBusy }}>
                 <View style={[styles.dot, { borderColor: colors.good }]}><Icon name="search" size={14} color={colors.good} /></View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.rowName} numberOfLines={1}>Look up “{q.trim()}”</Text>
@@ -460,6 +498,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
         />
 
         <Section
+          hidden={!showCategory("songs")}
           icon="music" tint={colors.good}
           title="SONGS" count={songs.length}
           rows={songs.map((song) => (
@@ -479,13 +518,13 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
             />
           ))} />
 
-        <Section icon="pin" tint={colors.cool} title="VENUES" count={venues.length}
+        <Section hidden={!showCategory("venues")} icon="pin" tint={colors.cool} title="VENUES" count={venues.length}
           rows={venues.map((v) => <VenueRow key={v.name} v={v} onPress={() => openVenue(v.name)} />)} />
 
-        <Section icon="calendar" tint={colors.amber} title="EVENTS" count={events.length}
+        <Section hidden={!showCategory("shows")} icon="calendar" tint={colors.amber} title="SHOWS" count={events.length}
           rows={events.map((t) => <EventRow key={t.id} t={t} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenTicket={openTicket} />)} />
 
-        <Section icon="comment" tint={colors.magenta} title="FAN CLUBS" count={clubs.length}
+        <Section hidden={activeCategory !== "all"} icon="comment" tint={colors.magenta} title="FAN CLUBS" count={clubs.length}
           rows={clubs.map((c) => (
             <Pressable key={"fc_" + c.artist} style={styles.row} onPress={() => onOpenFanClub?.(c.artist)} accessibilityRole="button" accessibilityLabel={`Open ${c.artist} fan club${c.members > 0 ? `, ${c.members} members` : ""}`}>
               <View style={[styles.dot, { borderColor: colors.magenta }]}><Icon name="comment" size={14} color={colors.magenta} /></View>
@@ -498,8 +537,8 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
           ))}
         />
 
-        {!searchError && resultState === "no-results" && (
-          <Text style={styles.empty}>No matches for “{q}”.</Text>
+        {!searchError && visibleResultState === "no-results" && (
+          <Text style={styles.empty}>No {activeCategory === "all" ? "matches" : activeCategoryLabel.toLowerCase()} for “{q}”.</Text>
         )}
       </ScrollView>
     </View>
@@ -514,6 +553,11 @@ const styles = StyleSheet.create({
   fieldFocused: { borderColor: colors.amber },
   input: { flex: 1, color: colors.text, fontSize: 15, paddingVertical: 13 },
   fieldAction: { width: 44, height: 44, marginRight: -12, alignItems: "center", justifyContent: "center" },
+  categoryRail: { gap: 8, paddingTop: 10, paddingRight: 8 },
+  categoryChip: { minHeight: 36, justifyContent: "center", paddingHorizontal: 13, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
+  categoryChipSelected: { borderColor: colors.amber, backgroundColor: colors.bgElev },
+  categoryChipText: { color: colors.textDim, fontSize: 12, fontWeight: "700" },
+  categoryChipTextSelected: { color: colors.amber, fontWeight: "900" },
   resultStatus: { color: colors.textDim, fontSize: 11.5, lineHeight: 17, marginTop: 7, paddingHorizontal: 2 },
   resultError: { color: colors.danger },
   retrySearch: { minHeight: 44, alignSelf: "flex-start", justifyContent: "center", marginTop: 2, paddingHorizontal: 2 },

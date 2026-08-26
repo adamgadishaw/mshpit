@@ -144,6 +144,8 @@ services:
           envVarKey: PIT_VIDEO_VERIFIER_SECRET
       - key: MEDIA_CLEANUP_ENABLED
         value: "true"
+      - key: MEDIA_LEGACY_RECOVERY_ENABLED
+        value: "true"
       - key: MEDIA_ORPHAN_TTL_MS
         value: "604800000"             # 7 days; code bounds this to 1-30 days
       # These are high emergency abuse ceilings, not member upload-plan caps.
@@ -152,7 +154,7 @@ services:
       - key: MEDIA_UPLOAD_OUTSTANDING_OBJECTS
         value: "256"
       - key: MEDIA_UPLOAD_OUTSTANDING_BYTES
-        value: "17179869184"            # 16 GiB unfinished at once
+        value: "34359738368"            # 32 GiB: above one max 20-clip source + delivery composition
       - key: MEDIA_UPLOAD_24H_BYTES
         value: "68719476736"            # 64 GiB of upload tickets per member
       - key: MEDIA_UPLOAD_24H_TICKETS
@@ -354,12 +356,14 @@ services:
         sync: false
       - key: MEDIA_CLEANUP_ENABLED
         value: "true"
+      - key: MEDIA_LEGACY_RECOVERY_ENABLED
+        value: "true"
       - key: MEDIA_ORPHAN_TTL_MS
         value: "604800000"
       - key: MEDIA_UPLOAD_OUTSTANDING_OBJECTS
         value: "256"
       - key: MEDIA_UPLOAD_OUTSTANDING_BYTES
-        value: "17179869184"
+        value: "34359738368"
       - key: MEDIA_UPLOAD_24H_BYTES
         value: "68719476736"
       - key: MEDIA_UPLOAD_24H_TICKETS

@@ -15,3 +15,13 @@ export function pitEnv(env = process.env) {
 export function isProduction(env = process.env) {
   return pitEnv(env) === "production";
 }
+
+const INDEXABLE_HTML_ROBOTS = "index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1";
+
+// One policy is shared by HTML metadata and HTTP headers so a staging page can
+// never send contradictory crawler instructions. Unset PIT_ENV remains
+// production by design; only an explicit non-production deployment opts out.
+export function htmlRobotsDirective({ indexable = false, env = process.env } = {}) {
+  if (!isProduction(env)) return "noindex,nofollow";
+  return indexable ? INDEXABLE_HTML_ROBOTS : "noindex,follow";
+}

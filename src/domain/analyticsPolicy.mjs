@@ -3,6 +3,8 @@
 // never reviews, searches, messages, media URLs, artist/title names, or other
 // user-authored strings. The server remains authoritative; client sanitizing is
 // defense in depth and also keeps forbidden data out of the durable retry queue.
+import { MEDIA_POST_MAX_ATTACHMENTS } from "./mediaUploadPolicy.mjs";
+
 
 const IDENTIFIER = /^(?:p|evt|post|cursor|log)_[A-Za-z0-9][A-Za-z0-9_-]{1,74}$/;
 const VERSION = /^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$/;
@@ -86,7 +88,7 @@ export const ANALYTICS_EVENT_SPECS = Object.freeze({
   play: { source: enums("player", "catalog", "provider", "deezer", "youtube", "spotify", "playlist", "profile", "discover") },
   login: { method: enums("password", "session", "unknown") },
   signup: { method: enums("password", "unknown") },
-  post: { kind: enums("status", "review"), mediaCount: integer(0, 8) },
+  post: { kind: enums("status", "review"), mediaCount: integer(0, MEDIA_POST_MAX_ATTACHMENTS) },
   follow: {},
   block: {},
   like: { postId: id },
