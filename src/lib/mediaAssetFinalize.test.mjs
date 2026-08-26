@@ -11,6 +11,7 @@ import { resolveRequestTimeout } from "./requestControl.mjs";
 
 const input = Object.freeze({
   assetId: "ma_abcdefgh12345678",
+  kind: "video",
   body: Object.freeze({ width: 1080, height: 1920, durationMs: 25_000, orientation: 0, editRecipe: {}, altText: "" }),
 });
 
@@ -52,6 +53,29 @@ test("accepted video finalization polls until the authoritative asset is ready",
   assert.equal(result.asset.status, "ready");
   assert.deepEqual(calls.map((call) => call.method), ["POST", "GET", "GET"]);
   assert.deepEqual(calls[0].body, { ...input.body, async: true });
+});
+
+test("metadata-poor video still polls by media kind without inventing dimensions or duration", async () => {
+  const calls = [];
+  let clock = 1_000;
+  const body = { orientation: 0, editRecipe: {}, altText: "" };
+  const result = await finalizeMediaSourceV1({
+    assetId: input.assetId,
+    kind: "video",
+    body,
+    now: () => clock,
+    wait: async (ms) => { clock += ms; },
+    apiCall: async (_path, options) => {
+      calls.push(options);
+      return options.method === "POST" ? processing() : ready();
+    },
+  });
+  assert.equal(result.asset.status, "ready");
+  assert.deepEqual(calls.map(({ method }) => method), ["POST", "GET"]);
+  assert.deepEqual(calls[0].body, { ...body, async: true });
+  assert.equal("width" in calls[0].body, false);
+  assert.equal("height" in calls[0].body, false);
+  assert.equal("durationMs" in calls[0].body, false);
 });
 
 test("photo source finalization returns render-pending work to the rendition step", async () => {

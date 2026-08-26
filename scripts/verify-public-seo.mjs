@@ -10,7 +10,7 @@ const MAX_HTML_BYTES = 2 * 1024 * 1024;
 const MAX_ROBOTS_BYTES = 256 * 1024;
 const MAX_CHILD_SITEMAPS = 100;
 const MAX_SITEMAP_CLASSES = 25;
-const MAX_TOTAL_SITEMAP_BYTES = 64 * 1024 * 1024;
+const MAX_TOTAL_SITEMAP_BYTES = 512 * 1024 * 1024;
 
 function cleanText(value = "") {
   return String(value)
@@ -491,17 +491,29 @@ async function verifySitemaps(origin, options) {
     if (entries.length > MAX_SITEMAP_ENTRIES) {
       throw new Error(`${label} exceeds ${MAX_SITEMAP_ENTRIES} URLs`);
     }
-    if (entries.length) {
+    const canonicalEntries = [];
+    for (const entry of entries) {
+      const url = canonicalUrl(entry, origin, "sitemap page URL");
+      if (/\/page\/1\/?$/.test(new URL(url).pathname)) {
+        throw new Error("sitemaps contain a noncanonical /page/1 URL");
+      }
+      if (publicUrls.has(url)) throw new Error("sitemaps contain a duplicate public URL");
+      publicUrls.add(url);
+      canonicalEntries.push(url);
+    }
+    if (canonicalEntries.length) {
       const className = sitemapClass(children[index]);
-      if (!samplesByClass.has(className)) samplesByClass.set(className, entries[0]);
+      const state = samplesByClass.get(className) || { first: null, last: null, middle: null, largestShard: 0 };
+      state.first ||= canonicalEntries[0];
+      state.last = canonicalEntries.at(-1);
+      if (canonicalEntries.length > state.largestShard) {
+        state.largestShard = canonicalEntries.length;
+        state.middle = canonicalEntries[Math.floor(canonicalEntries.length / 2)];
+      }
+      samplesByClass.set(className, state);
       if (samplesByClass.size > MAX_SITEMAP_CLASSES) {
         throw new Error(`sitemaps exceed the verifier safety limit of ${MAX_SITEMAP_CLASSES} classes`);
       }
-    }
-    for (const entry of entries) {
-      const url = canonicalUrl(entry, origin, "sitemap page URL");
-      if (publicUrls.has(url)) throw new Error("sitemaps contain a duplicate public URL");
-      publicUrls.add(url);
     }
   }
 
@@ -510,33 +522,38 @@ async function verifySitemaps(origin, options) {
       throw new Error(`sitemaps do not include required public URL ${requiredPath}`);
     }
   }
-  for (const [className, rawUrl] of samplesByClass) {
-    const url = canonicalUrl(rawUrl, origin, "sitemap sample URL");
-    const response = await request(url, options);
-    const label = `sitemap class ${className} sample`;
-    requireStatus(response, 200, label);
-    requireContentType(response, ["text/html"], label);
-    if (hasNoindex(response, response.body)) throw new Error(`${label} is marked noindex`);
-    const visible = visibleBodyText(response.body);
-    if (/you need to enable javascript/i.test(visible) || visible.length < 80) {
-      throw new Error(`${label} is a JavaScript-only or materially empty HTML shell`);
-    }
-    if (!cleanText(response.body.match(/<h1\b[^>]*>([\s\S]*?)<\/h1>/i)?.[1])) {
-      throw new Error(`${label} has no visible <h1>`);
-    }
-    verifyHtmlMetadata(response, response.body, origin, new URL(url).pathname, []);
-    const canonical = exactlyOne(linkHrefs(response.body, "canonical"), `${label} canonical link`);
-    if (!/^https?:\/\//i.test(canonical) || canonicalUrl(canonical, origin, `${label} canonical link`) !== url) {
-      throw new Error(`${label} canonical link is not self-referential`);
-    }
-    for (const headerCanonical of httpCanonicalLinks(response.headers.get("link"))) {
-      if (canonicalUrl(headerCanonical, origin, `${label} HTTP canonical`) !== url) {
-        throw new Error(`${label} HTTP canonical conflicts with HTML`);
+  let sampledUrls = 0;
+  for (const [className, state] of samplesByClass) {
+    const samples = [...new Set([state.first, state.middle, state.last].filter(Boolean))];
+    for (const rawUrl of samples) {
+      sampledUrls += 1;
+      const url = canonicalUrl(rawUrl, origin, "sitemap sample URL");
+      const response = await request(url, options);
+      const label = `sitemap class ${className} sample`;
+      requireStatus(response, 200, label);
+      requireContentType(response, ["text/html"], label);
+      if (hasNoindex(response, response.body)) throw new Error(`${label} is marked noindex`);
+      const visible = visibleBodyText(response.body);
+      if (/you need to enable javascript/i.test(visible) || visible.length < 80) {
+        throw new Error(`${label} is a JavaScript-only or materially empty HTML shell`);
+      }
+      if (!cleanText(response.body.match(/<h1\b[^>]*>([\s\S]*?)<\/h1>/i)?.[1])) {
+        throw new Error(`${label} has no visible <h1>`);
+      }
+      verifyHtmlMetadata(response, response.body, origin, new URL(url).pathname, []);
+      const canonical = exactlyOne(linkHrefs(response.body, "canonical"), `${label} canonical link`);
+      if (!/^https?:\/\//i.test(canonical) || canonicalUrl(canonical, origin, `${label} canonical link`) !== url) {
+        throw new Error(`${label} canonical link is not self-referential`);
+      }
+      for (const headerCanonical of httpCanonicalLinks(response.headers.get("link"))) {
+        if (canonicalUrl(headerCanonical, origin, `${label} HTTP canonical`) !== url) {
+          throw new Error(`${label} HTTP canonical conflicts with HTML`);
+        }
       }
     }
   }
 
-  return `${children.length} child sitemaps, ${publicUrls.size} unique public URLs, ${samplesByClass.size} sampled classes`;
+  return `${children.length} child sitemaps, ${publicUrls.size} unique public URLs, ${samplesByClass.size} sampled classes / ${sampledUrls} pages`;
 }
 
 function requireAbsoluteMediaUrl(value, label) {

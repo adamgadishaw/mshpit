@@ -3,6 +3,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test, { after } from "node:test";
+import {
+  artistConcertsPath, artistsPath, cityConcertsPath, cityVenuesPath, concertPath,
+  concertsPath, eventsPath, parsePublicCollectionPath, venuesPath,
+} from "../../../src/domain/urls.mjs";
+import { createPublicCollectionRepository } from "./publicCollectionRepository.js";
+import { createPublicDocumentRepository } from "./publicDocumentRepository.js";
+import { archiveShowKey } from "../artistArchive/artistArchiveKeys.js";
 import { createArtistMemorialRepository } from "../artistMemorials/artistMemorialRepository.js";
 import { createArtistMemorialService } from "../artistMemorials/artistMemorialService.js";
 import { ensureLegacyMediaFinalizeSchema } from "../../mediaLegacyFinalize.js";
@@ -17,9 +24,14 @@ const { db, q, normName } = await import("../../db.js");
 const {
   SITEMAP_PATHS,
   SITEMAP_MAX_BYTES,
+  SITEMAP_MAX_SOURCE_ROWS,
   SITEMAP_MAX_URLS,
+  buildSitemapDatasets,
   createSitemapSnapshot,
   isSitemapRequestPath,
+  materializeSitemapCandidates,
+  pageSitemapEntries,
+  paginationEntries,
   sitemapIndexXml,
   sitemapXmlFor,
   urlsetParts,
@@ -150,6 +162,7 @@ test("the root sitemap is an index of canonical segmented maps", () => {
     "/sitemaps/artists.xml",
     "/sitemaps/events.xml",
     "/sitemaps/venues.xml",
+    "/sitemaps/cities.xml",
     "/sitemaps/concerts.xml",
     "/sitemaps/posts.xml",
     "/sitemaps/profiles.xml",
@@ -179,6 +192,75 @@ test("URL sets shard deterministically at Google's uncompressed limits", () => {
   for (const xml of byteParts) {
     assert.ok(Buffer.byteLength(xml, "utf8") <= 256, "each uncompressed shard stays within its byte limit");
   }
+});
+
+test("static discovery and pagination respect content and router bounds", () => {
+  assert.equal(pageSitemapEntries({ includeDiscover: false }).some((row) => row.path === "/discover"), false);
+  assert.equal(pageSitemapEntries({ includeDiscover: true }).some((row) => row.path === "/discover"), true);
+  const pages = paginationEntries({
+    itemCount: 50_000,
+    includeFirst: true,
+    pathFor: (page) => page === 1 ? "/events" : `/events/page/${page}`,
+  });
+  assert.equal(pages.length, 1_000);
+  assert.equal(pages[0].path, "/events");
+  assert.equal(pages.at(-1).path, "/events/page/1000");
+  assert.equal(pages.some((row) => row.path === "/events/page/1001"), false);
+});
+
+test("candidate keysets preserve more than fifty thousand rows and fail closed before unsafe accumulation", () => {
+  assert.equal(SITEMAP_MAX_SOURCE_ROWS, 100_000);
+  const tours = Array.from({ length: 50_025 }, (_, index) => ({
+    id: `scale-${String(index).padStart(5, "0")}`,
+    artist: "Scale Artist",
+    artist_key: "scale artist",
+    venue: `Scale Hall ${index % 25}`,
+    source: "test",
+    venue_provider_id: `scale-venue-${index % 25}`,
+    date: "2026-12-20",
+    updated_at: 1_725_000_000_000 + index,
+    owner_id: null,
+    provider_active: 1,
+    venue_city: "Toronto",
+    venue_country_code: "CA",
+  }));
+  let postReads = 0;
+  let tourReads = 0;
+  const fakeDatabase = {
+    prepare(sql) {
+      if (sql.includes("FROM posts p JOIN users u")) {
+        return { all() { postReads += 1; return []; } };
+      }
+      if (sql.includes("FROM tour_dates td INDEXED BY idx_tourdates_sitemap_cursor")) {
+        return {
+          all(...args) {
+            tourReads += 1;
+            const cursorId = args[5];
+            const limit = args[6];
+            const start = cursorId == null ? 0 : tours.findIndex((row) => row.id === cursorId) + 1;
+            return tours.slice(start, start + limit);
+          },
+        };
+      }
+      throw new Error(`unexpected scale query: ${sql.slice(0, 80)}`);
+    },
+  };
+
+  const candidates = materializeSitemapCandidates(fakeDatabase, { now: 1_725_000_000_000 });
+  assert.equal(candidates.tourDates.length, tours.length);
+  assert.equal(candidates.upcomingEvents.length, tours.length);
+  assert.equal(new Set(candidates.tourDates.map((row) => row.id)).size, tours.length);
+  assert.equal(candidates.tourDates.at(-1).id, tours.at(-1).id);
+  assert.equal(postReads, 1);
+  assert.equal(tourReads, Math.ceil(tours.length / 500));
+  assert.throws(
+    () => materializeSitemapCandidates(fakeDatabase, {
+      now: 1_725_000_000_000,
+      maximumSourceRows: 50_000,
+    }),
+    /SITEMAP_SOURCE_ROW_LIMIT/,
+    "the explicit memory ceiling rejects the build instead of returning a partial sitemap",
+  );
 });
 
 test("segmented sitemaps contain only substantive canonical public pages", async () => {
@@ -261,8 +343,52 @@ test("segmented sitemaps contain only substantive canonical public pages", async
     createdAt: 1_720_000_020_000,
   });
   db.prepare(`INSERT INTO tour_dates
+    (id,artist,venue,place,date,source,ticket_url,updated_at,release_at)
+    VALUES (?,?,?,?,?,?,?,?,0)`).run(
+    "td_sitemap_public",
+    "Touring Sitemap Artist",
+    "World Hall",
+    "London, UK",
+    "2026-12-01",
+    "test",
+    "https://www.ticketmaster.com/event/td-sitemap-public",
+    1_730_000_000_000,
+  );
+  db.prepare(`INSERT INTO tour_dates
     (id,artist,venue,place,date,source,updated_at,release_at)
-    VALUES (?,?,?,?,?,?,?,0)`).run("td_sitemap_public", "Touring Sitemap Artist", "World Hall", "London, UK", "2026-12-01", "test", 1_730_000_000_000);
+    VALUES (?,?,?,?,?,?,?,0)`).run(
+    "td_sitemap_thin_event", "Thin Event Artist", "Thin Event Hall", "Toronto, Canada",
+    "2026-12-05", "test", 1_730_000_000_100,
+  );
+  addPost("p_sitemap_event_fan", active.id, {
+    artist: "Fan Evidence Artist",
+    review: "A detailed first-hand review of the crowd, sound, staging, set list, and encore at this exact event.",
+    createdAt: 1_730_000_000_200,
+    kind: "review",
+  });
+  db.prepare("UPDATE posts SET venue='Fan Evidence Hall',venue_key=?,date='2026-12-06' WHERE id='p_sitemap_event_fan'")
+    .run(normName("Fan Evidence Hall"));
+  db.prepare(`INSERT INTO tour_dates
+    (id,artist,venue,place,date,source,venue_city,venue_country_code,updated_at,release_at)
+    VALUES (?,?,?,?,?,?,?,?,?,0)`).run(
+    "td_sitemap_fan_event", "Fan Evidence Artist", "Fan Evidence Hall", "Toronto, Canada",
+    "2026-12-06", "test", "Toronto", "CA", 1_730_000_000_300,
+  );
+  db.prepare(`INSERT INTO tour_dates
+    (id,artist,venue,place,date,source,start_date_time,venue_address_line1,venue_city,
+      venue_country_code,updated_at,release_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,0)`).run(
+    "td_sitemap_rich_event", "Rich Evidence Artist", "Rich Evidence Hall", "Toronto, Canada",
+    "2026-12-07", "test", "2026-12-07T20:00:00-05:00", "1 Music Way", "Toronto", "CA",
+    1_730_000_000_400,
+  );
+  db.prepare(`INSERT INTO tour_dates
+    (id,artist,venue,place,date,source,ticket_url,event_status,updated_at,release_at)
+    VALUES (?,?,?,?,?,?,?,?,?,0)`).run(
+    "td_sitemap_offsale_event", "Offsale Artist", "Offsale Hall", "Toronto, Canada",
+    "2026-12-08", "test", "https://www.ticketmaster.com/event/td-sitemap-offsale", "offsale",
+    1_730_000_000_500,
+  );
   const addProviderVenueEvent = db.prepare(`INSERT INTO tour_dates
     (id,artist,venue,place,date,source,venue_provider_id,venue_city,updated_at,release_at)
     VALUES (?,?,?,?,?,?,?,?,?,0)`);
@@ -343,13 +469,16 @@ test("segmented sitemaps contain only substantive canonical public pages", async
   assert.doesNotMatch(profiles, /raw\.example\.test/, "unverified profile URLs stay out of image sitemaps");
 
   const pages = sitemapXmlFor("/sitemaps/pages.xml", { database: db });
-  for (const path of ["/", "/discover", "/artists", "/events", "/about", "/contact", "/community-guidelines", "/ratings-methodology", "/privacy", "/terms", "/support", "/account-deletion"]) {
+  for (const path of ["/", "/discover", "/artists", "/events", "/venues", "/concerts", "/about", "/contact", "/community-guidelines", "/ratings-methodology", "/privacy", "/terms", "/support", "/account-deletion"]) {
     assert.match(pages, new RegExp(`<loc>https://www\\.example\\.com${path.replace("/", "\\/")}`));
   }
   assert.doesNotMatch(pages, /<loc>[^<]*\/search(?:[?<]|$)/, "internal search pages do not belong in the sitemap");
   assert.doesNotMatch(pages, /changefreq|priority/);
   const events = sitemapXmlFor("/sitemaps/events.xml", { database: db, now: 1_725_000_000_000 });
   assert.match(events, /\/event\/td_sitemap_public/);
+  assert.match(events, /\/event\/td_sitemap_fan_event/);
+  assert.match(events, /\/event\/td_sitemap_rich_event/);
+  assert.doesNotMatch(events, /td_sitemap_thin_event|td_sitemap_offsale_event/);
   const venues = sitemapXmlFor("/sitemaps/venues.xml", { database: db, now: 1_725_000_000_000 });
   assert.match(venues, /\/venue\/world-hall/);
   assert.match(venues, /\/venue\/sitemap-hall/);
@@ -417,11 +546,24 @@ test("segmented sitemaps contain only substantive canonical public pages", async
   assert.equal(rejectedPrepares, 0, "pathological suffixes are rejected before dataset materialization");
 
   let prepareCalls = 0;
+  let postCandidatePrepares = 0;
+  let tourCandidatePrepares = 0;
   const countedDatabase = new Proxy(db, {
     get(target, property) {
       if (property === "prepare") {
         return (...args) => {
           prepareCalls += 1;
+          const sql = String(args[0] || "");
+          if (sql.includes("SELECT p.id,p.user_id,p.artist,p.artist_key")
+            && sql.includes("(? IS NULL OR p.created_at<? OR (p.created_at=? AND p.id<?))")
+            && sql.includes("ORDER BY p.created_at DESC,p.id DESC LIMIT ?")) {
+            postCandidatePrepares += 1;
+          }
+          if (sql.includes("SELECT td.id,td.provider_event_id,td.artist,td.artist_key")
+            && sql.includes("(? IS NULL OR td.date>? OR (td.date=? AND td.id>?))")
+            && sql.includes("ORDER BY td.date ASC,td.id ASC LIMIT ?")) {
+            tourCandidatePrepares += 1;
+          }
           return target.prepare(...args);
         };
       }
@@ -435,12 +577,254 @@ test("segmented sitemaps contain only substantive canonical public pages", async
   });
   const preparesAfterSnapshot = prepareCalls;
   assert.ok(preparesAfterSnapshot > 0, "the snapshot materializes each dataset once");
+  assert.equal(postCandidatePrepares, 1, "all post-derived datasets share one keyset candidate read");
+  assert.equal(tourCandidatePrepares, 1, "all event, venue, city, and archive datasets share one tour candidate read");
   assert.match(snapshot.xmlFor("/sitemap.xml"), /<sitemapindex/);
   assert.match(snapshot.xmlFor(indexedPaths[0]), /<urlset/);
   assert.equal(snapshot.xmlFor("/sitemaps/posts-50000.xml"), null);
   assert.equal(snapshot.xmlFor("/sitemaps/posts-50000.xml"), null, "missing shards are negative-cached");
   assert.equal(prepareCalls, preparesAfterSnapshot,
     "valid and invalid shard reads reuse the materialized five-minute snapshot");
+});
+
+test("qualified collection, city, and artist archive pages are complete, canonical, and date-safe", () => {
+  const author = addUser("u_sitemap_directories", "sitemapdirectories");
+  const artist = "Directory Scale Artist";
+  const artistKey = normName(artist);
+  addArtist(artist, "directory-scale-artist", {
+    bio: "A substantive artist biography documenting a long live career, evolving performances, landmark tours, and the communities formed around those shows.",
+    updatedAt: Date.parse("2026-08-01T00:00:00.000Z"),
+  });
+
+  for (let index = 0; index < 13; index += 1) {
+    const day = String(index + 1).padStart(2, "0");
+    const date = `2026-07-${day}`;
+    const venue = index % 2 ? "Archive North" : "Archive South";
+    const postId = `p_directory_archive_${index}`;
+    addPost(postId, author.id, {
+      artist,
+      review: `A detailed firsthand review number ${index} describing the set, sound, crowd, venue, and a distinctive live moment worth preserving.`,
+      createdAt: Date.parse(`2026-07-${day}T20:00:00.000Z`),
+      kind: "review",
+    });
+    db.prepare("UPDATE posts SET venue=?,venue_key=?,city='Toronto',date=? WHERE id=?")
+      .run(venue, normName(venue), date, postId);
+    db.prepare(`INSERT INTO tour_dates
+      (id,artist,artist_key,venue,place,date,source,venue_provider_id,venue_city,
+        venue_country_code,updated_at,release_at,provider_active)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1)`).run(
+      `td_directory_archive_${index}`,
+      artist,
+      artistKey,
+      venue,
+      "Toronto, Canada",
+      date,
+      "ticketmaster",
+      `archive-${index % 2}`,
+      "Toronto",
+      "CA",
+      Date.parse(`2026-07-${day}T21:00:00.000Z`),
+      0,
+    );
+  }
+
+  for (let index = 0; index < 13; index += 1) {
+    const day = String(index + 1).padStart(2, "0");
+    db.prepare(`INSERT INTO tour_dates
+      (id,artist,artist_key,venue,place,date,source,venue_provider_id,venue_city,
+        venue_country_code,updated_at,release_at,provider_active)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1)`).run(
+      `td_directory_upcoming_${index}`,
+      artist,
+      artistKey,
+      `Future Hall ${index}`,
+      "Toronto, Canada",
+      `2026-12-${day}`,
+      "ticketmaster",
+      `future-${index}`,
+      "Toronto",
+      "CA",
+      Date.parse(`2026-08-${day}T10:00:00.000Z`),
+      0,
+    );
+  }
+
+  // Thirteen eligible events at only two visible venues qualify the city
+  // directory, but still render a single 2-row venue page.
+  for (let index = 0; index < 13; index += 1) {
+    const day = String(index + 1).padStart(2, "0");
+    const venueIndex = index % 2;
+    db.prepare(`INSERT INTO tour_dates
+      (id,artist,artist_key,venue,place,date,source,venue_provider_id,venue_city,
+        venue_country_code,updated_at,release_at,provider_active)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1)`).run(
+      `td_city_venue_row_boundary_${index}`,
+      artist,
+      artistKey,
+      `Ottawa Venue ${venueIndex}`,
+      "Ottawa, Canada",
+      `2027-01-${day}`,
+      "ticketmaster",
+      `ottawa-venue-${venueIndex}`,
+      "Ottawa",
+      "CA",
+      Date.parse(`2026-08-${day}T11:00:00.000Z`),
+      0,
+    );
+  }
+
+  for (let index = 0; index < 3; index += 1) {
+    const day = String(index + 20).padStart(2, "0");
+    const date = `2026-06-${day}`;
+    const venue = index % 2 ? "Collision Room North" : "Collision Room South";
+    const postId = `p_sitemap_city_collision_${index}`;
+    addPost(postId, author.id, {
+      artist,
+      review: "A detailed review whose same-name/date provider records disagree on structured city and therefore cannot safely seed a city directory.",
+      createdAt: Date.parse(`2026-06-${day}T20:00:00.000Z`),
+      kind: "review",
+    });
+    db.prepare("UPDATE posts SET venue=?,venue_key=?,date=? WHERE id=?")
+      .run(venue, normName(venue), date, postId);
+    for (const location of [
+      { suffix: "north", city: "North Collision", country: "CA" },
+      { suffix: "south", city: "South Collision", country: "US" },
+    ]) {
+      db.prepare(`INSERT INTO tour_dates
+        (id,artist,artist_key,venue,place,date,source,venue_provider_id,venue_city,
+          venue_country_code,updated_at,release_at,provider_active)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,1)`).run(
+        `td_sitemap_city_collision_${index}_${location.suffix}`,
+        artist,
+        artistKey,
+        venue,
+        `${location.city}, ${location.country}`,
+        date,
+        "ticketmaster",
+        `collision-${index}-${location.suffix}`,
+        location.city,
+        location.country,
+        Date.parse(`2026-06-${day}T21:00:00.000Z`),
+        0,
+      );
+    }
+  }
+
+  addPost("p_sitemap_impossible_date", author.id, {
+    artist,
+    review: "A detailed but impossible calendar date must never manufacture a public concert archive or sitemap entry.",
+    createdAt: Date.parse("2026-08-15T00:00:00.000Z"),
+    kind: "review",
+  });
+  db.prepare("UPDATE posts SET venue='Impossible Hall',venue_key=?,date='2026-02-31' WHERE id='p_sitemap_impossible_date'")
+    .run(normName("Impossible Hall"));
+  db.prepare(`INSERT INTO tour_dates
+    (id,artist,artist_key,venue,place,date,source,venue_city,venue_country_code,updated_at,release_at,provider_active)
+    VALUES (?,?,?,?,?,?,?,?,?,?,0,1)`).run(
+    "td_sitemap_impossible_date",
+    artist,
+    artistKey,
+    "Impossible Hall",
+    "Toronto, Canada",
+    "2026-02-31",
+    "test",
+    "Toronto",
+    "CA",
+    Date.parse("2026-08-15T00:00:00.000Z"),
+  );
+
+  const options = { now: Date.parse("2026-08-25T00:00:00.000Z") };
+  const candidates = materializeSitemapCandidates(db, options);
+  assert.equal(candidates.tourDates.some((row) => row.id === "td_sitemap_impossible_date"), false);
+  const first = buildSitemapDatasets(db, options);
+  const second = buildSitemapDatasets(db, options);
+  const paths = (name, source = first) => source.get(name).map((row) => row.path);
+  assert.deepEqual(paths("pages"), paths("pages", second), "collection pagination is deterministic");
+  assert.deepEqual(paths("cities"), paths("cities", second), "qualified city ordering is deterministic");
+
+  for (const root of ["/artists", "/events", "/venues", "/concerts"]) {
+    assert.ok(paths("pages").includes(root), `${root} is present when its eligible collection is nonempty`);
+  }
+  assert.ok(paths("pages").includes("/artists/page/2"));
+  assert.ok(paths("pages").includes("/events/page/2"));
+  assert.ok(paths("pages").includes("/venues/page/2"));
+  assert.ok(paths("pages").includes("/concerts/page/2"));
+  assert.equal(paths("pages").some((path) => path.endsWith("/page/1")), false);
+
+  assert.ok(paths("cities").includes("/venues/ca/toronto"));
+  assert.ok(paths("cities").includes("/venues/ca/toronto/page/2"));
+  assert.ok(paths("cities").includes("/venues/ca/ottawa"));
+  assert.equal(paths("cities").includes("/venues/ca/ottawa/page/2"), false,
+    "event volume cannot create a dead second venue page when only two venues render");
+  assert.ok(paths("cities").includes("/concerts/ca/toronto"));
+  assert.ok(paths("cities").includes("/concerts/ca/toronto/page/2"));
+  assert.equal(paths("cities").includes("/concerts/ca/north-collision"), false);
+  assert.equal(paths("cities").includes("/concerts/us/south-collision"), false);
+  assert.ok(paths("concerts").includes("/artist/directory-scale-artist/concerts"));
+  assert.ok(paths("concerts").includes("/artist/directory-scale-artist/concerts/page/2"));
+
+  const impossibleKey = archiveShowKey({
+    artistIdentity: artistKey,
+    venueIdentity: normName("Impossible Hall"),
+    date: "2026-02-31",
+  });
+  assert.equal(paths("events").includes("/event/td_sitemap_impossible_date"), false);
+  assert.equal(paths("concerts").includes(concertPath(impossibleKey)), false);
+
+  const cityXml = sitemapXmlFor("/sitemaps/cities.xml", { database: db, ...options });
+  assert.match(cityXml, /<loc>https:\/\/www\.example\.com\/concerts\/ca\/toronto<\/loc>/);
+  assert.doesNotMatch(cityXml, /\/page\/1<\/loc>/);
+  assert.deepEqual(cityXml, sitemapXmlFor("/sitemaps/cities.xml", { database: db, ...options }));
+});
+
+test("artist archive name fallback is allowed only for one unambiguous catalogue identity", () => {
+  const author = addUser("u_sitemap_duplicate_artist_name", "sitemapduplicateartist");
+  const displayName = "Shared Catalogue Display Name";
+  const firstKey = "catalog:shared-display-one";
+  const secondKey = "catalog:shared-display-two";
+  const insertArtist = db.prepare(`INSERT INTO artists
+    (norm,name,public_slug,search_key,genre,photo,bio,popularity,rank_score,data,source,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+  const bio = "A substantive catalogue biography long enough to make this distinct artist identity publicly indexable for live music discovery.";
+  insertArtist.run(
+    firstKey, displayName, "shared-display-one", "shareddisplayone", "Rock", null, bio,
+    1, 2, "{}", "test", 1, 1,
+  );
+  insertArtist.run(
+    secondKey, displayName, "shared-display-two", "shareddisplaytwo", "Rock", null, bio,
+    1, 1, "{}", "test", 1, 1,
+  );
+
+  addPost("p_sitemap_ambiguous_artist_archive", author.id, {
+    artist: displayName,
+    review: "A detailed review tied only to a shared display name cannot choose between two catalogue artist identities.",
+    createdAt: Date.parse("2026-07-01T20:00:00.000Z"),
+    kind: "review",
+  });
+  db.prepare(`UPDATE posts SET artist_key=NULL,venue='Ambiguous Identity Hall',venue_key=?,
+      city='Toronto',date='2026-07-01' WHERE id='p_sitemap_ambiguous_artist_archive'`)
+    .run(normName("Ambiguous Identity Hall"));
+
+  const options = { now: Date.parse("2026-08-25T00:00:00.000Z") };
+  const ambiguousPaths = buildSitemapDatasets(db, options).get("concerts").map((row) => row.path);
+  assert.equal(ambiguousPaths.includes("/artist/shared-display-one/concerts"), false);
+  assert.equal(ambiguousPaths.includes("/artist/shared-display-two/concerts"), false,
+    "a duplicate display name never assigns its archive to whichever catalogue row was read last");
+
+  addPost("p_sitemap_keyed_artist_archive", author.id, {
+    artist: displayName,
+    review: "A second detailed review carries the durable catalogue key and therefore belongs to one exact artist archive.",
+    createdAt: Date.parse("2026-07-02T20:00:00.000Z"),
+    kind: "review",
+  });
+  db.prepare(`UPDATE posts SET artist_key=?,venue='Keyed Identity Hall',venue_key=?,
+      city='Toronto',date='2026-07-02' WHERE id='p_sitemap_keyed_artist_archive'`)
+    .run(firstKey, normName("Keyed Identity Hall"));
+
+  const keyedPaths = buildSitemapDatasets(db, options).get("concerts").map((row) => row.path);
+  assert.ok(keyedPaths.includes("/artist/shared-display-one/concerts"),
+    "a durable artist_key takes precedence even when the display name is duplicated");
+  assert.equal(keyedPaths.includes("/artist/shared-display-two/concerts"), false);
 });
 
 test("profile sitemap lastmod includes profile_updated_at", () => {
@@ -559,4 +943,102 @@ test("artist post and tour updates resolve through the canonical artist norm", (
     withTour,
     /<loc>https:\/\/www\.example\.com\/artist\/canonical-display-identity<\/loc>\s*<lastmod>2026-05-11<\/lastmod>/,
   );
+});
+
+
+test("collection sitemaps use exact qualified totals and every emitted page is nonempty", () => {
+  const author = addUser("u_sitemap_candidate_mismatch", "sitemapcandidatemismatch");
+  for (let index = 0; index < 100; index += 1) {
+    const id = "p_sitemap_post_only_venue_" + index;
+    const venue = "Post Only Venue " + String(index).padStart(3, "0");
+    addPost(id, author.id, {
+      artist: "Directory Scale Artist",
+      review: "A detailed public review creates a legitimate venue leaf candidate but not an upcoming venue-directory row.",
+      createdAt: Date.parse("2026-08-24T12:00:00.000Z") + index,
+      kind: "review",
+    });
+    db.prepare("UPDATE posts SET venue=?,venue_key=?,city=? WHERE id=?")
+      .run(venue, normName(venue), "Toronto", id);
+  }
+
+  const options = { now: Date.parse("2026-08-25T00:00:00.000Z") };
+  const datasets = buildSitemapDatasets(db, options);
+  const directoryRepository = createPublicDocumentRepository(db);
+  const collectionRepository = createPublicCollectionRepository(db);
+  const pagePaths = datasets.get("pages").map((row) => row.path);
+  const globalKinds = {
+    artists: { build: artistsPath, rows: "artists" },
+    events: { build: eventsPath, rows: "events" },
+    venues: { build: venuesPath, rows: "venues" },
+    concerts: { build: concertsPath, rows: "concerts" },
+  };
+
+  for (const [kind, contract] of Object.entries(globalKinds)) {
+    const first = directoryRepository.readDirectory({
+      kind, page: 1, at: options.now, today: "2026-08-25",
+    });
+    const expectedPages = Math.min(1_000, Math.ceil(first.total / 12));
+    const emitted = pagePaths.filter((path) => parsePublicCollectionPath(path)?.type === kind);
+    assert.equal(emitted.length, expectedPages, kind + " pagination comes from exact rendered rows");
+    for (const path of emitted) {
+      const parsed = parsePublicCollectionPath(path);
+      const result = directoryRepository.readDirectory({
+        kind, page: parsed.page, at: options.now, today: "2026-08-25",
+      });
+      assert.ok(result?.[contract.rows]?.length > 0, path + " resolves a nonempty directory page");
+      assert.equal(path, contract.build(parsed.page), path + " is self-canonical");
+    }
+  }
+
+  const venueLeafCount = datasets.get("venues").length;
+  const exactVenueTotal = directoryRepository.readDirectory({
+    kind: "venues", page: 1, at: options.now, today: "2026-08-25",
+  }).total;
+  assert.ok(venueLeafCount > exactVenueTotal,
+    "post-only venue leaf candidates outnumber the stricter upcoming venue directory");
+  assert.equal(
+    pagePaths.filter((path) => parsePublicCollectionPath(path)?.type === "venues").length,
+    Math.ceil(exactVenueTotal / 12),
+    "broader leaf candidates never manufacture an empty venue page",
+  );
+
+  const collectionPaths = [
+    ...datasets.get("cities").map((row) => row.path),
+    ...datasets.get("concerts").map((row) => row.path),
+  ].filter((path) => {
+    const type = parsePublicCollectionPath(path)?.type;
+    return type === "city-venues" || type === "city-concerts" || type === "artist-concerts";
+  });
+  for (const path of collectionPaths) {
+    const parsed = parsePublicCollectionPath(path);
+    let result;
+    let canonical;
+    if (parsed.type === "city-venues") {
+      result = collectionRepository.readCityVenues({
+        countryCode: parsed.countryCode, citySlug: parsed.citySlug, page: parsed.page,
+        at: options.now, today: "2026-08-25",
+      });
+      canonical = cityVenuesPath({
+        countryCode: parsed.countryCode, city: parsed.citySlug,
+      }, parsed.page);
+      assert.ok(result?.venues?.length > 0, path + " resolves visible venues");
+    } else if (parsed.type === "city-concerts") {
+      result = collectionRepository.readCityConcerts({
+        countryCode: parsed.countryCode, citySlug: parsed.citySlug, page: parsed.page,
+        at: options.now, today: "2026-08-25",
+      });
+      canonical = cityConcertsPath({
+        countryCode: parsed.countryCode, city: parsed.citySlug,
+      }, parsed.page);
+      assert.ok(result?.concerts?.length > 0, path + " resolves visible concerts");
+    } else {
+      result = collectionRepository.readArtistConcerts({
+        publicSlug: parsed.artistSlug, page: parsed.page,
+        at: options.now, today: "2026-08-25",
+      });
+      canonical = artistConcertsPath(parsed.artistSlug, parsed.page);
+      assert.ok(result?.concerts?.length > 0, path + " resolves visible artist concerts");
+    }
+    assert.equal(path, canonical, path + " uses the shared canonical route helper");
+  }
 });

@@ -4,7 +4,11 @@ import { deflateSync } from "node:zlib";
 
 import sharp from "sharp";
 
-import { inspectImageBytes, MAX_IMAGE_PIXELS } from "./imageInspection.js";
+import {
+  inspectImageBytes,
+  MAX_IMAGE_ANIMATION_FRAMES,
+  MAX_IMAGE_PIXELS,
+} from "./imageInspection.js";
 import { imageProcessorHealth, sanitizeDecodedImage, validateDecodedImage } from "./imageProcessor.js";
 import { MEDIA_POST_MAX_ATTACHMENTS } from "../src/domain/mediaUploadPolicy.mjs";
 
@@ -13,6 +17,22 @@ function createdImage({ width = 64, height = 48, format = "jpeg" } = {}) {
     create: { width, height, channels: 4, background: { r: 100, g: 30, b: 180, alpha: 0.8 } },
   });
   return pipeline[format]().toBuffer();
+}
+
+function gifFixture({ width = 1, height = 1, frames = 1 } = {}) {
+  const header = Buffer.from("47494638396101000100800000000000ffffff", "hex");
+  header.writeUInt16LE(width, 6);
+  header.writeUInt16LE(height, 8);
+  const graphicControl = Buffer.from("21f904000a000000", "hex");
+  const images = Array.from({ length: frames }, (_, index) => Buffer.from(
+    `2c0000000001000100000201${index % 2 ? "44" : "4c"}00`,
+    "hex",
+  ));
+  return Buffer.concat([
+    header,
+    ...images.flatMap((image) => [graphicControl, image]),
+    Buffer.from([0x3b]),
+  ]);
 }
 
 function crc32(bytes) {
@@ -278,6 +298,128 @@ test("private HEIF/GIF-style sources can select a safe public output codec", asy
     expectedType: "image/webp",
     sanitized: true,
   }).metadataPresent, false);
+});
+
+test("ordinary PNG photos survive the server sanitizer without retaining source density metadata", async () => {
+  const source = await sharp({
+    create: { width: 640, height: 480, channels: 4, background: { r: 24, g: 72, b: 120, alpha: 0.8 } },
+  }).withMetadata({ density: 300 }).png().toBuffer();
+
+  const sanitized = await sanitizeDecodedImage(source, {
+    expectedType: "image/png",
+    outputType: "image/png",
+  });
+
+  assert.equal(sanitized.mimeType, "image/png");
+  assert.deepEqual([sanitized.width, sanitized.height], [640, 480]);
+  assert.equal(inspectImageBytes(sanitized.bytes, {
+    expectedType: "image/png",
+    sanitized: true,
+  }).metadataPresent, false);
+  const outputMetadata = await sharp(sanitized.bytes).metadata();
+  assert.notEqual(outputMetadata.density, 300,
+    "the public rendition must not retain the camera or source-file density value");
+});
+
+test("animated GIFs remain animated after metadata-free server WebP normalization", async () => {
+  const source = gifFixture({ frames: 2 });
+  const sourceInspection = inspectImageBytes(source, { expectedType: "image/gif" });
+  assert.deepEqual({
+    width: sourceInspection.width,
+    height: sourceInspection.height,
+    frames: sourceInspection.frames,
+    animated: sourceInspection.animated,
+    totalPixels: sourceInspection.totalPixels,
+  }, { width: 1, height: 1, frames: 2, animated: true, totalPixels: 2 });
+
+  const validated = await validateDecodedImage(source, { expectedType: "image/gif" });
+  assert.deepEqual([validated.width, validated.height], [1, 1]);
+
+  const sanitized = await sanitizeDecodedImage(source, {
+    expectedType: "image/gif",
+    outputType: "image/webp",
+  });
+  const publicInspection = inspectImageBytes(sanitized.bytes, {
+    expectedType: "image/webp",
+    sanitized: true,
+  });
+  assert.deepEqual({
+    width: publicInspection.width,
+    height: publicInspection.height,
+    frames: publicInspection.frames,
+    animated: publicInspection.animated,
+    totalPixels: publicInspection.totalPixels,
+    metadataPresent: publicInspection.metadataPresent,
+  }, {
+    width: 1,
+    height: 1,
+    frames: 2,
+    animated: true,
+    totalPixels: 2,
+    metadataPresent: false,
+  });
+  const metadata = await sharp(sanitized.bytes, { animated: true, pages: -1 }).metadata();
+  assert.equal(metadata.pages, 2);
+  assert.equal(metadata.pageHeight, 1);
+  assert.equal(metadata.exif, undefined);
+  assert.equal(metadata.xmp, undefined);
+  assert.equal(metadata.icc, undefined);
+});
+
+test("static GIFs remain safe still WebP renditions", async () => {
+  const source = gifFixture();
+  assert.equal(inspectImageBytes(source, { expectedType: "image/gif" }).frames, 1);
+  const sanitized = await sanitizeDecodedImage(source, {
+    expectedType: "image/gif",
+    outputType: "image/webp",
+  });
+  const inspection = inspectImageBytes(sanitized.bytes, {
+    expectedType: "image/webp",
+    sanitized: true,
+  });
+  assert.equal(inspection.frames, 1);
+  assert.equal(inspection.animated, false);
+});
+
+test("animation frame bombs, metadata flags, and trailing payloads fail closed", async () => {
+  assert.throws(
+    () => inspectImageBytes(gifFixture({ frames: MAX_IMAGE_ANIMATION_FRAMES + 1 }), {
+      expectedType: "image/gif",
+    }),
+    (error) => error.code === "resource_limit",
+  );
+  assert.throws(
+    () => inspectImageBytes(gifFixture({ width: 4096, height: 4096, frames: 4 }), {
+      expectedType: "image/gif",
+    }),
+    (error) => error.code === "resource_limit",
+  );
+
+  const source = gifFixture({ frames: 2 });
+  assert.throws(
+    () => inspectImageBytes(Buffer.concat([source, Buffer.from("hidden")]), {
+      expectedType: "image/gif",
+    }),
+    (error) => error.code === "trailing_data",
+  );
+  const sanitized = await sanitizeDecodedImage(source, {
+    expectedType: "image/gif",
+    outputType: "image/webp",
+  });
+  assert.throws(
+    () => inspectImageBytes(Buffer.concat([sanitized.bytes, Buffer.from("hidden")]), {
+      expectedType: "image/webp",
+      sanitized: true,
+    }),
+    (error) => error.code === "trailing_data",
+  );
+  const metadataFlag = Buffer.from(sanitized.bytes);
+  assert.equal(metadataFlag.toString("ascii", 12, 16), "VP8X");
+  metadataFlag[20] |= 0x08;
+  assert.throws(
+    () => inspectImageBytes(metadataFlag, { expectedType: "image/webp", sanitized: true }),
+    (error) => error.code === "metadata",
+  );
 });
 
 test("the real HEIC decoder fallback is explicit and remains unavailable to ordinary sanitization", async () => {

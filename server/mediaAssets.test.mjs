@@ -361,9 +361,12 @@ function imageFixture(bytes, type, width, height, { metadata = false, trailing =
 }
 
 function verifiedImage(bytes, type, width, height, capture = null, options = {}) {
-  const object = imageFixture(bytes, type, width, height, options);
+  const object = options.sourceBytes
+    ? Buffer.from(options.sourceBytes)
+    : imageFixture(bytes, type, width, height, options);
   const etag = `"image-${type}-${bytes}-${width}-${height}"`;
-  const deliveryEtag = `"delivery-${type}-${bytes}-${width}-${height}"`;
+  const deliveryType = options.deliveryType || type;
+  const deliveryEtag = `"delivery-${deliveryType}-${bytes}-${width}-${height}"`;
   let delivery = null;
   return async (url, request = {}) => {
     capture?.push({ url, options: request });
@@ -373,6 +376,7 @@ function verifiedImage(bytes, type, width, height, capture = null, options = {})
       if (!publicDelivery) return { status: 405, headers: new Headers() };
       if (delivery) return { status: 412, headers: new Headers() };
       delivery = Buffer.from(request.body || []);
+      options.onDelivery?.(delivery);
       return { status: 200, headers: new Headers({ etag: deliveryEtag }) };
     }
     const selected = publicDelivery ? delivery : object;
@@ -380,7 +384,7 @@ function verifiedImage(bytes, type, width, height, capture = null, options = {})
     const selectedEtag = publicDelivery ? deliveryEtag : etag;
     const headers = new Headers({
       "content-length": String(selected.length),
-      "content-type": type,
+      "content-type": publicDelivery ? deliveryType : type,
       etag: selectedEtag,
     });
     if (method === "HEAD") return { status: 200, headers };
@@ -738,6 +742,81 @@ test("source finalization verifies storage transport metadata and fails closed o
   assert.equal(duplicate.duplicate, true);
 });
 
+test("unedited photos are normalized once on the server and publish only a sanitized derivative", async () => {
+  const user = addUser("media_server_original_owner");
+  const created = createMediaAsset(db, {
+    ownerId: user.id,
+    body: sourceBody({
+      clientAssetId: "server-original-photo-0001",
+      fileSize: 8_192,
+      name: "IMG_4102.JPG",
+    }),
+    assetId: "ma_server_original_000001",
+  });
+  const safeBytes = imageFixture(4_096, "image/jpeg", 1_920, 1_080);
+  let sanitizes = 0;
+  let validates = 0;
+  const imageProcessor = {
+    async validate() {
+      validates += 1;
+      throw new Error("server-original delivery must sanitize instead of validating twice");
+    },
+    async sanitize(bytes, options) {
+      sanitizes += 1;
+      assert.equal(bytes.byteLength, 8_192);
+      assert.equal(options.expectedType, "image/jpeg");
+      assert.equal(options.outputType, "image/jpeg");
+      assert.equal(options.maxEdge, 2_048);
+      assert.equal(options.allowHeicFallback, true);
+      assert.equal(options.allowLegacyJpegTrailer, true);
+      return {
+        bytes: safeBytes,
+        byteSize: safeBytes.byteLength,
+        mimeType: "image/jpeg",
+        width: 1_920,
+        height: 1_080,
+        pixels: 1_920 * 1_080,
+        sourceWidth: 1_920,
+        sourceHeight: 1_080,
+      };
+    },
+  };
+  const finalized = await finalizeMediaAsset(db, {
+    ownerId: user.id,
+    assetId: created.asset.id,
+    body: { deliveryMode: "server", editRecipe: {}, altText: "Crowd from the balcony" },
+    fetchImpl: verifiedImage(8_192, "image/jpeg", 1_920, 1_080),
+    imageProcessor,
+    at: 12_000,
+  });
+  assert.equal(finalized.asset.status, "ready");
+  assert.equal(finalized.asset.renderState, "ready");
+  assert.match(finalized.asset.url, /^https:\/\/media\.example\.com\/cdn\//);
+  assert.equal(sanitizes, 1);
+  assert.equal(validates, 0);
+  assert.deepEqual({ ...db.prepare(`SELECT storage_scope,status FROM media_objects
+    WHERE owner_id=? AND object_key=?`).get(user.id, created.upload.key) },
+  { storage_scope: "private", status: "issued" }, "the original camera file remains private");
+  assert.deepEqual({ ...db.prepare(`SELECT v.status,v.verification_origin,v.mime_type,o.storage_scope
+    FROM media_variants v JOIN media_objects o ON o.owner_id=? AND o.object_key=v.object_key
+    WHERE v.asset_id=? AND v.role='render'`).get(user.id, created.asset.id) }, {
+    status: "verified",
+    verification_origin: "private_derivative_v1",
+    mime_type: "image/jpeg",
+    storage_scope: "public",
+  });
+
+  const duplicate = await finalizeMediaAsset(db, {
+    ownerId: user.id,
+    assetId: created.asset.id,
+    body: { deliveryMode: "server", editRecipe: {}, altText: "Crowd from the balcony" },
+    fetchImpl: async () => { throw new Error("exact retry must not reach storage"); },
+    imageProcessor,
+  });
+  assert.equal(duplicate.duplicate, true);
+  assert.equal(sanitizes, 1);
+});
+
 test("concurrent exact photo source finalizers share one generation-bound GET and conflicting edits do no work", async () => {
   const user = addUser("media_source_coalesce_owner");
   const created = createMediaAsset(db, {
@@ -835,7 +914,7 @@ test("concurrent exact photo source finalizers share one generation-bound GET an
   assert.equal(duplicateStorageCalls, 0);
 });
 
-test("new stable delivery rejects unsupported motion, accepts verified MOV, limits duration, and blocks raw HEIC publication", async () => {
+test("new stable delivery preserves GIF motion, accepts verified MOV, limits duration, and blocks raw HEIC publication", async () => {
   const user = addUser("media_asset_delivery_owner");
   assert.throws(
     () => createMediaAsset(db, {
@@ -844,18 +923,41 @@ test("new stable delivery rejects unsupported motion, accepts verified MOV, limi
     }),
     (error) => error.status === 400 && error.code === "VALIDATION_FAILED",
   );
-  assert.throws(
-    () => createMediaAsset(db, {
-      ownerId: user.id,
-      body: sourceBody({
-        clientAssetId: "delivery-gif-source",
-        contentType: "image/gif",
-        fileSize: 500_000,
-        name: "animation.gif",
-      }),
-    }),
-    (error) => error.status === 415 && error.code === "MEDIA_TYPE_UNSUPPORTED" && /MP4/i.test(error.message),
+  const animatedGif = Buffer.from(
+    "R0lGODlhAQABAIAAAAAAAP///yH5BAAKAAAALAAAAAABAAEAAAIBTAAh+QQACgAAACwAAAAAAQABAAACAUQAOw==",
+    "base64",
   );
+  const gif = createMediaAsset(db, {
+    ownerId: user.id,
+    body: sourceBody({
+      clientAssetId: "delivery-gif-source",
+      contentType: "image/gif",
+      fileSize: animatedGif.byteLength,
+      name: "animation.gif",
+    }),
+    assetId: "ma_animated_gif_source_001",
+  });
+  let gifDelivery = null;
+  const finalizedGif = await finalizeMediaAssetRuntime(db, {
+    ownerId: user.id,
+    assetId: gif.asset.id,
+    body: { deliveryMode: "server", editRecipe: {} },
+    fetchImpl: verifiedImage(animatedGif.byteLength, "image/gif", 1, 1, null, {
+      sourceBytes: animatedGif,
+      deliveryType: "image/webp",
+      onDelivery: (bytes) => { gifDelivery = bytes; },
+    }),
+  });
+  assert.equal(finalizedGif.asset.status, "ready");
+  assert.equal(finalizedGif.asset.mimeType, "image/webp");
+  assert.equal(finalizedGif.asset.url.endsWith(".webp"), true);
+  assert.deepEqual(inspectImageBytes(gifDelivery, {
+    expectedType: "image/webp",
+    sanitized: true,
+  }), {
+    mimeType: "image/webp", width: 1, height: 1, pixels: 1,
+    frames: 2, animated: true, totalPixels: 2, metadataPresent: false, sanitized: true,
+  });
   const mov = createMediaAsset(db, {
     ownerId: user.id,
     body: sourceBody({
@@ -884,28 +986,40 @@ test("new stable delivery rejects unsupported motion, accepts verified MOV, limi
   assert.equal(finalizedMov.asset.mimeType, "video/mp4");
   assert.equal(db.prepare("SELECT mime_type FROM media_assets WHERE id=?").get(mov.asset.id).mime_type, "video/quicktime");
 
+  const advisoryVideo = createMediaAsset(db, {
+    ownerId: user.id,
+    body: sourceBody({
+      clientAssetId: "delivery-advisory-video",
+      contentType: "video/mp4",
+      fileSize: 2_000_000,
+      name: "picker-metadata.mp4",
+    }),
+    assetId: "ma_jjjjjjjjjjjjjjjjjjjjjjjj",
+  });
+  const advisoryFinalized = await finalizeMediaAsset(db, {
+    ownerId: user.id,
+    assetId: advisoryVideo.asset.id,
+    body: { width: 1, height: 1, durationMs: MEDIA_VIDEO_MAX_DURATION_MS + 1, editRecipe: {} },
+    fetchImpl: verifiedMp4(2_000_000, 10_000),
+    authoritativeVideoVerifier: authoritativeFixtureDecode,
+  });
+  assert.deepEqual({
+    width: advisoryFinalized.asset.width,
+    height: advisoryFinalized.asset.height,
+    durationMs: advisoryFinalized.asset.durationMs,
+  }, { width: 1_080, height: 1_920, durationMs: 10_000 },
+  "authoritative probe metadata replaces stale or missing picker declarations");
+
   const video = createMediaAsset(db, {
     ownerId: user.id,
     body: sourceBody({
-      clientAssetId: "delivery-long-video",
+      clientAssetId: "delivery-actual-long-video",
       contentType: "video/mp4",
       fileSize: 2_000_000,
       name: "long.mp4",
     }),
-    assetId: "ma_jjjjjjjjjjjjjjjjjjjjjjjj",
+    assetId: "ma_actual_long_video_000001",
   });
-  let headCalls = 0;
-  await assert.rejects(
-    finalizeMediaAsset(db, {
-      ownerId: user.id,
-      assetId: video.asset.id,
-      body: { width: 1_920, height: 1_080, durationMs: MEDIA_VIDEO_MAX_DURATION_MS + 1, editRecipe: {} },
-      fetchImpl: async () => { headCalls += 1; return { status: 500 }; },
-    }),
-    (error) => error.status === 400 && error.code === "VALIDATION_FAILED",
-  );
-  assert.equal(headCalls, 0, "duration policy is enforced before storage is trusted");
-  assert.equal(db.prepare("SELECT status FROM media_assets WHERE id=?").get(video.asset.id).status, "upload_pending");
   await assert.rejects(
     finalizeMediaAsset(db, {
       ownerId: user.id,

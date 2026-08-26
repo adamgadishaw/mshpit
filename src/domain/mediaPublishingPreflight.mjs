@@ -3,23 +3,11 @@ import {
   MEDIA_VIDEO_SOURCE_MAX_BYTES,
   mediaUploadLimitLabel,
 } from "./mediaUploadPolicy.mjs";
-import {
-  VIDEO_MAX_DURATION_MS,
-  mediaImageAnimationUnsupported,
-  mediaImageNeedsNativeDecode,
-  mediaSourceSizeAllowed,
-  mediaVideoSourceCompatible,
-} from "./mediaEdit.mjs";
+import { mediaSourceSizeAllowed } from "./mediaEdit.mjs";
 
 export const MEDIA_PREFLIGHT_CODES = Object.freeze({
   imageTooLarge: "IMAGE_TOO_LARGE",
   videoTooLarge: "VIDEO_TOO_LARGE",
-  animatedImageUnsupported: "ANIMATED_IMAGE_UNSUPPORTED",
-  webImageDecodeUnsupported: "WEB_IMAGE_DECODE_UNSUPPORTED",
-  videoContainerUnsupported: "VIDEO_CONTAINER_UNSUPPORTED",
-  videoDurationMissing: "VIDEO_DURATION_MISSING",
-  videoTooLong: "VIDEO_TOO_LONG",
-  videoDimensionsMissing: "VIDEO_DIMENSIONS_MISSING",
 });
 
 const issue = (code, message) => ({ code, message });
@@ -28,7 +16,7 @@ const issue = (code, message) => ({ code, message });
 // immutable upload and authoritatively verifies video duration/dimensions and
 // codecs before publishing. This check prevents known-dead-end files from
 // entering Studio while allowing native staging to measure a missing size.
-export function mediaPublishingPreflightIssue(asset = {}, { platform = "web" } = {}) {
+export function mediaPublishingPreflightIssue(asset = {}) {
   const kind = asset?.kind === "video" ? "video" : "image";
   if (!mediaSourceSizeAllowed(asset)) {
     return kind === "video"
@@ -37,28 +25,14 @@ export function mediaPublishingPreflightIssue(asset = {}, { platform = "web" } =
   }
 
   if (kind === "image") {
-    if (mediaImageAnimationUnsupported(asset)) {
-      return issue(MEDIA_PREFLIGHT_CODES.animatedImageUnsupported, "PIT will not silently flatten an animated GIF into one frame. Export it as a short MP4 clip once verified clip publishing is available.");
-    }
-    if (platform === "web" && mediaImageNeedsNativeDecode(asset)) {
-      return issue(MEDIA_PREFLIGHT_CODES.webImageDecodeUnsupported, "This browser cannot safely decode HEIC or HEIF for PIT Studio. Choose a JPEG, PNG, or WebP, or add the photo from the PIT mobile app so it can create a web-safe rendition.");
-    }
+    // Do not use browser/device decoder support as an admission gate. The
+    // immutable source is byte-sniffed and normalized by PIT's server media
+    // pipeline; picker metadata is only advisory and may be stale on iOS.
     return null;
   }
 
-  if (!mediaVideoSourceCompatible(asset)) {
-    return issue(MEDIA_PREFLIGHT_CODES.videoContainerUnsupported, "PIT accepts MP4 and iPhone MOV clips. Export WebM or another container as MP4 before opening it in PIT Studio.");
-  }
-  const durationMs = Number(asset?.durationMs);
-  if (!Number.isFinite(durationMs) || durationMs <= 0) {
-    return issue(MEDIA_PREFLIGHT_CODES.videoDurationMissing, "PIT could not verify this clip's duration from the picker. Export it as a 10-minute-or-shorter MP4 and choose it again.");
-  }
-  if (durationMs > VIDEO_MAX_DURATION_MS) {
-    return issue(MEDIA_PREFLIGHT_CODES.videoTooLong, "Clips are limited to 10 minutes. Choose a shorter MP4; PIT will not silently publish the full file.");
-  }
-  if (Number(asset?.width) <= 1 || Number(asset?.height) <= 1) {
-    return issue(MEDIA_PREFLIGHT_CODES.videoDimensionsMissing, "PIT could not read this clip's dimensions. Export a standard MP4 and choose it again.");
-  }
+  // Picker MIME, container, duration and dimensions are advisory. Stage the
+  // readable bytes and let the authoritative verifier inspect the source.
   return null;
 }
 

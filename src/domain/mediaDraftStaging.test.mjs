@@ -10,6 +10,20 @@ import {
 test("native Studio draft names stay bounded and path-safe", () => {
   assert.equal(safeMediaDraftSegment(" u/member:one "), "u-member-one");
   assert.equal(mediaDraftFileName({ id: "local:one", fileName: "IMG 42.HEIC", kind: "image" }, 2), "03-local-one.heic");
+  assert.equal(mediaDraftFileName({
+    id: "converted",
+    uri: "file:///cache/picker-output.jpg",
+    fileName: "IMG 42.HEIC",
+    mimeType: "image/heic",
+    kind: "image",
+  }, 0), "01-converted.jpg");
+  assert.equal(mediaDraftFileName({
+    id: "sniffed",
+    uri: "file:///cache/no-extension",
+    fileName: "IMG 42.HEIC",
+    mimeType: "image/heic",
+    kind: "image",
+  }, 0, { detectedMimeType: "image/jpeg" }), "01-sniffed.jpg");
   assert.equal(mediaDraftFileName({ id: "clip", kind: "video" }, 0), "01-clip.mp4");
 });
 

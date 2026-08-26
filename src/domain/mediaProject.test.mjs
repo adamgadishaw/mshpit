@@ -29,6 +29,41 @@ test("picker projects are bounded, ordered and strip opaque picker objects", () 
   assert.equal(project.assets[0].runtimeFile.size, 100);
 });
 
+test("iOS Live Photos publish their motion pair while retaining the still as transient cover metadata", () => {
+  const project = mediaProjectFromPicker([{
+    uri: "file:///live-still.heic",
+    type: "livePhoto",
+    width: 3024,
+    height: 4032,
+    pairedVideoAsset: {
+      uri: "file:///live-motion.mov",
+      type: "pairedVideo",
+      fileName: "IMG_0042.MOV",
+      mimeType: "video/quicktime",
+      fileSize: 2_400_000,
+      width: 1080,
+      height: 1440,
+      duration: 2_800,
+    },
+  }], "live");
+  assert.equal(project.assets[0].kind, "video");
+  assert.equal(project.assets[0].uri, "file:///live-motion.mov");
+  assert.equal(project.assets[0].posterUri, "file:///live-still.heic");
+  assert.equal(project.assets[0].durationMs, 2_800);
+});
+
+test("a Live Photo remains a still when video publishing is unavailable", () => {
+  const project = mediaProjectFromPicker([{
+    uri: "file:///live-still.jpg",
+    type: "livePhoto",
+    width: 3024,
+    height: 4032,
+    pairedVideoAsset: { uri: "file:///live-motion.mov", type: "pairedVideo", duration: 2_800 },
+  }], "live-still", { allowLivePhotoVideo: false });
+  assert.equal(project.assets[0].kind, "image");
+  assert.equal(project.assets[0].uri, "file:///live-still.jpg");
+});
+
 test("twenty stable post attachments survive editing, serialization, and publishing in order", () => {
   const photos = Array.from(
     { length: MEDIA_PROJECT_MAX_ASSETS },

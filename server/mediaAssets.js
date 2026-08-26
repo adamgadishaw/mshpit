@@ -1,7 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 
 import {
+  mediaEditHasChanges,
   normalizeMediaEdit,
+  PHOTO_MAX_EDGE,
   videoEditRequiresExport,
 } from "../src/domain/mediaEdit.mjs";
 import {
@@ -209,13 +211,6 @@ function assetCreateInput(body) {
   const kind = file.contentType.startsWith("video/") ? "video" : "image";
   if (kind === "video" && !VERIFIED_VIDEO_SOURCE_TYPES.has(file.contentType)) {
     throw new ApiError(415, "New PIT clips must use MP4 or QuickTime MOV.", "MEDIA_TYPE_UNSUPPORTED");
-  }
-  if (kind === "image" && file.contentType === "image/gif") {
-    // The current rendition contract produces one still JPEG/PNG/WebP frame.
-    // Accepting an animated GIF as a stable source would silently flatten motion
-    // while presenting it as an ordinary edit, so require the explicit MP4 clip
-    // path until PIT has an animation-preserving encoder.
-    throw new ApiError(415, "Animated GIFs cannot use PIT Studio yet. Convert the animation to an MP4 clip first.", "MEDIA_TYPE_UNSUPPORTED");
   }
   const canonical = {
     clientAssetId,
@@ -1072,6 +1067,72 @@ async function stageSanitizedImageDelivery(database, {
   return { ...prepared, stored };
 }
 
+function serverImageDeliveryType(sourceType) {
+  const type = contentType(sourceType);
+  if (type === "image/png" || type === "image/webp") return type;
+  if (type === "image/gif") return "image/webp";
+  // Camera JPEG/HEIC/HEIF/AVIF sources are normalized to ordinary sRGB JPEG.
+  return "image/jpeg";
+}
+
+function commitAuthoritativeImageDelivery(database, {
+  ownerId,
+  assetId,
+  staged,
+  input,
+  at,
+}) {
+  if (!staged) return;
+  const current = database.prepare("SELECT * FROM media_assets WHERE id=? AND owner_id=?")
+    .get(assetId, ownerId);
+  if (!current || current.kind !== "image") {
+    throw new ApiError(409, "That photo changed while its safe rendition was being committed.", "CONFLICT");
+  }
+  requireLiveLedger(database, ownerId, current.source_key);
+  requireLiveLedger(database, ownerId, staged.objectKey);
+  const createHash = fingerprint({
+    origin: "private_derivative_v1",
+    sourceKey: current.source_key,
+    sourceEtag: staged.sourceEtag,
+    editRecipe: input.encodedRecipe,
+    sha256: staged.digest,
+  });
+  const clientVariantId = `pit-server-original:${createHash.slice(0, 64)}`;
+  const finalizeHash = fingerprint({
+    sha256: staged.digest,
+    width: staged.output.width,
+    height: staged.output.height,
+    etag: staged.stored.etag,
+  });
+  let variant = database.prepare("SELECT * FROM media_variants WHERE asset_id=? AND role='render'")
+    .get(assetId);
+  if (variant) {
+    if (variant.id !== staged.variantId || variant.client_variant_id !== clientVariantId
+        || variant.create_hash !== createHash || variant.object_key !== staged.objectKey
+        || variant.finalize_hash !== finalizeHash || variant.status !== "verified"
+        || variant.verification_origin !== "private_derivative_v1") {
+      throw new ApiError(409, "That photo rendition changed while it was being committed.", "CONFLICT");
+    }
+  } else {
+    database.prepare(`INSERT INTO media_variants
+      (id,asset_id,client_variant_id,create_hash,role,object_key,public_url,mime_type,byte_size,
+       width,height,time_ms,status,finalize_hash,verified_at,verification_origin,created_at,updated_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,NULL,'verified',?,?,'private_derivative_v1',?,?)`)
+      .run(staged.variantId, assetId, clientVariantId, createHash, "render",
+        staged.objectKey, staged.upload.publicUrl, staged.output.mimeType, staged.output.byteSize,
+        staged.output.width, staged.output.height, finalizeHash, at, at, at);
+    variant = database.prepare("SELECT * FROM media_variants WHERE id=? AND asset_id=?")
+      .get(staged.variantId, assetId);
+  }
+  const updated = database.prepare(`UPDATE media_assets
+    SET render_variant_id=?,render_state='ready',status='ready',updated_at=?
+    WHERE id=? AND owner_id=? AND (render_variant_id IS NULL OR render_variant_id=?)`)
+    .run(variant.id, at, assetId, ownerId, variant.id);
+  if (updated.changes !== 1) {
+    throw new ApiError(409, "That photo changed while its safe rendition was being committed.", "CONFLICT");
+  }
+}
+
 // Shared trust-boundary helpers for legacy avatar/banner/review upload
 // migration. They deliberately expose only the private staging -> decoded
 // pixels -> server-authored public derivative path; callers never receive a
@@ -1316,20 +1377,35 @@ function deliveryStateForRecipe(row, editRecipe) {
 
 function normalizedAssetFinalize(row, body) {
   assertNoObjectReferences(body);
-  const width = integer(body?.width, { label: "Media width", min: 1, max: MAX_IMAGE_EDGE });
-  const height = integer(body?.height, { label: "Media height", min: 1, max: MAX_IMAGE_EDGE });
+  const width = integer(body?.width, {
+    label: "Media width", min: 1, max: MAX_IMAGE_EDGE, optional: true,
+  }) ?? (row.finalize_hash ? Number(row.width) : null);
+  const height = integer(body?.height, {
+    label: "Media height", min: 1, max: MAX_IMAGE_EDGE, optional: true,
+  }) ?? (row.finalize_hash ? Number(row.height) : null);
   const orientation = integer(body?.orientation ?? 0, { label: "Media orientation", min: 0, max: 270 });
   if (![0, 90, 180, 270].includes(orientation)) {
     throw new ApiError(400, "Media orientation is invalid.", "VALIDATION_FAILED");
   }
   const durationMs = row.kind === "video"
-    ? integer(body?.durationMs, { label: "Clip duration", min: 1, max: MAX_VIDEO_DURATION_MS })
+    ? integer(body?.durationMs, {
+      label: "Clip duration", min: 1, max: Number.MAX_SAFE_INTEGER, optional: true,
+    }) ?? (row.finalize_hash ? Number(row.duration_ms) : null)
     : null;
   const altText = normalizedAltText(body?.altText);
   const { editRecipe, encodedRecipe } = normalizedRecipe(row, body?.editRecipe ?? {}, durationMs);
+  const deliveryMode = body?.deliveryMode == null ? "client" : String(body.deliveryMode);
+  if (!new Set(["client", "server"]).has(deliveryMode)) {
+    throw new ApiError(400, "Photo delivery mode is invalid.", "VALIDATION_FAILED");
+  }
+  const serverOriginalDelivery = row.kind === "image" && deliveryMode === "server"
+    && !mediaEditHasChanges(editRecipe, { kind: "image" });
   const { renderState, status } = deliveryStateForRecipe(row, editRecipe);
   const sourceIdentity = { width, height, durationMs, orientation };
-  return { ...sourceIdentity, altText, editRecipe, encodedRecipe, renderState, status, finalizeHash: fingerprint(sourceIdentity) };
+  return {
+    ...sourceIdentity, altText, editRecipe, encodedRecipe, renderState, status,
+    serverOriginalDelivery, finalizeHash: fingerprint(sourceIdentity),
+  };
 }
 
 function authoritativeVideoFinalize(row, body, declared, probed) {
@@ -1339,22 +1415,15 @@ function authoritativeVideoFinalize(row, body, declared, probed) {
   if (!Number.isSafeInteger(durationMs) || durationMs < 1 || durationMs > MAX_VIDEO_DURATION_MS) {
     throw new ApiError(400, "PIT videos must be 10 minutes or shorter.", "VALIDATION_FAILED");
   }
-  if (Math.abs(durationMs - declared.durationMs) > MAX_VIDEO_DURATION_DRIFT_MS) {
-    throw new ApiError(409, "The uploaded clip duration does not match the selected file.", "CONFLICT");
-  }
-  const exact = declared.width === encodedWidth && declared.height === encodedHeight;
-  const rotated = declared.width === encodedHeight && declared.height === encodedWidth;
-  if (!exact && !rotated) {
-    throw new ApiError(409, "The uploaded clip dimensions do not match the selected file.", "CONFLICT");
-  }
+  // Picker duration and dimensions are advisory. iOS and Android may omit them,
+  // round them differently, or report display axes for rotated clips. The
+  // bounded container probe and isolated full decoder are authoritative.
   const decodedRotation = Number(probed?.rotation);
   const hasDecodedRotation = Number.isSafeInteger(decodedRotation) && [0, 90, 180, 270].includes(decodedRotation);
   const displayRotated = hasDecodedRotation && (decodedRotation === 90 || decodedRotation === 270);
   const displayWidth = displayRotated ? encodedHeight : encodedWidth;
   const displayHeight = displayRotated ? encodedWidth : encodedHeight;
-  if (hasDecodedRotation && (declared.width !== displayWidth || declared.height !== displayHeight)) {
-    throw new ApiError(409, "The selected clip dimensions do not match its verified rotation.", "CONFLICT");
-  }
+
   const submittedRecipe = body?.editRecipe && typeof body.editRecipe === "object" && !Array.isArray(body.editRecipe)
     ? body.editRecipe
     : {};
@@ -1370,8 +1439,8 @@ function authoritativeVideoFinalize(row, body, declared, probed) {
   // supports portrait MP4 rotation metadata without trusting arbitrary geometry.
   return normalizedAssetFinalize(row, {
     ...body,
-    width: hasDecodedRotation ? displayWidth : exact ? encodedWidth : encodedHeight,
-    height: hasDecodedRotation ? displayHeight : exact ? encodedHeight : encodedWidth,
+    width: hasDecodedRotation ? displayWidth : encodedWidth,
+    height: hasDecodedRotation ? displayHeight : encodedHeight,
     orientation: hasDecodedRotation ? decodedRotation : declared.orientation,
     durationMs,
     editRecipe,
@@ -1497,12 +1566,16 @@ export async function finalizeMediaAsset(database, {
       AND o.status IN ('issued','associated')`).get(ownerId, row.poster_variant_id, row.id,
     Number(input.editRecipe.coverMs));
   const needsAuthoritativePoster = row.kind === "video" && authoritativePosterRequired && !authoritativePosterReady;
-  const authoritativeDeliveryReady = row.kind !== "video" || (!!row.render_variant_id && !!database.prepare(`SELECT 1
+  const authoritativeDelivery = row.render_variant_id ? database.prepare(`SELECT v.mime_type
     FROM media_variants v JOIN media_objects o ON o.owner_id=? AND o.object_key=v.object_key
     WHERE v.id=? AND v.asset_id=? AND v.role='render' AND v.status='verified'
-      AND v.verification_origin='private_derivative_v1' AND v.mime_type='video/mp4'
+      AND v.verification_origin='private_derivative_v1'
       AND o.storage_scope='public' AND o.status IN ('issued','associated')`)
-    .get(ownerId, row.render_variant_id, row.id));
+    .get(ownerId, row.render_variant_id, row.id) : null;
+  const authoritativeDeliveryReady = row.kind === "image"
+    ? (!input.serverOriginalDelivery || (!!authoritativeDelivery
+      && IMAGE_VARIANT_TYPES.has(authoritativeDelivery.mime_type)))
+    : authoritativeDelivery?.mime_type === "video/mp4";
   if (row.finalize_hash && !finalizedSourceMatches(row, input)) {
     throw new ApiError(409, "That media item was already finalized with different edits.", "CONFLICT");
   }
@@ -1532,6 +1605,7 @@ export async function finalizeMediaAsset(database, {
     finalizeHash: input.finalizeHash,
     altText: input.altText,
     encodedRecipe: input.encodedRecipe,
+    serverOriginalDelivery: input.serverOriginalDelivery,
     renderState: input.renderState,
     status: input.status,
   }) : null;
@@ -1613,6 +1687,7 @@ export async function finalizeMediaAsset(database, {
       }),
     });
   }
+  let stagedAuthoritativeImage = null;
   if (row.kind === "image") {
     const verifiedImage = await verifyStoredImage({
       objectKey: row.source_key,
@@ -1624,17 +1699,54 @@ export async function finalizeMediaAsset(database, {
       signal,
       storageScope: row.source_storage_scope || "public",
     });
-    const decoded = await runImageProcessor(imageProcessor?.validate || defaultImageProcessor.validate, {
-      bytes: verifiedImage.bytes,
-      expectedType: row.mime_type,
-      timeoutMs: 60_000,
-      allowHeicFallback: true,
-      allowLegacyJpegTrailer: true,
+    const decoded = input.serverOriginalDelivery
+      ? await runImageProcessor(imageProcessor?.sanitize || defaultImageProcessor.sanitize, {
+        bytes: verifiedImage.bytes,
+        expectedType: row.mime_type,
+        outputType: serverImageDeliveryType(row.mime_type),
+        timeoutMs: 60_000,
+        maxEdge: PHOTO_MAX_EDGE,
+        allowHeicFallback: true,
+        allowLegacyJpegTrailer: true,
+      }, { sanitizing: true })
+      : await runImageProcessor(imageProcessor?.validate || defaultImageProcessor.validate, {
+        bytes: verifiedImage.bytes,
+        expectedType: row.mime_type,
+        timeoutMs: 60_000,
+        allowHeicFallback: true,
+        allowLegacyJpegTrailer: true,
+      });
+    input = normalizedAssetFinalize(row, {
+      ...body,
+      width: decoded.sourceWidth ?? decoded.width,
+      height: decoded.sourceHeight ?? decoded.height,
     });
-    // Pickers differ on whether they report encoded axes or display axes for
-    // EXIF-oriented camera photos. Both are tied to the isolated full decode;
-    // arbitrary caller geometry is never accepted.
-    assertVerifiedDimensions(decoded, input.width, input.height, { allowSwap: true });
+    if (input.serverOriginalDelivery) {
+      const variantIdentity = fingerprint({
+        origin: "private_derivative_v1",
+        assetId: row.id,
+        sourceKey: row.source_key,
+        sourceEtag: stored.etag,
+        editRecipe: input.encodedRecipe,
+      });
+      const variantId = `mv_${variantIdentity.slice(0, 24)}`;
+      const staged = await stageSanitizedImageDelivery(database, {
+        ownerId,
+        asset: row,
+        variantId,
+        stagingKey: row.source_key,
+        output: decoded,
+        env,
+        at,
+        fetchImpl,
+        signal,
+      });
+      stagedAuthoritativeImage = {
+        ...staged,
+        variantId,
+        sourceEtag: stored.etag,
+      };
+    }
   }
   let codecVerified = row.kind !== "video";
   let stagedAuthoritativePoster = null;
@@ -1764,6 +1876,13 @@ export async function finalizeMediaAsset(database, {
         staged: stagedAuthoritativeDelivery,
         at,
       });
+      commitAuthoritativeImageDelivery(database, {
+        ownerId,
+        assetId: row.id,
+        staged: stagedAuthoritativeImage,
+        input,
+        at,
+      });
       database.prepare("UPDATE media_assets SET source_etag=? WHERE id=? AND owner_id=?")
         .run(stored.etag, row.id, ownerId);
       return { asset: assetProjection(loadAsset(database, row.id), { owner: true }), duplicate: true };
@@ -1788,6 +1907,13 @@ export async function finalizeMediaAsset(database, {
       ownerId,
       assetId: row.id,
       staged: stagedAuthoritativeDelivery,
+      at,
+    });
+    commitAuthoritativeImageDelivery(database, {
+      ownerId,
+      assetId: row.id,
+      staged: stagedAuthoritativeImage,
+      input,
       at,
     });
     database.prepare("UPDATE media_assets SET source_etag=? WHERE id=? AND owner_id=?")

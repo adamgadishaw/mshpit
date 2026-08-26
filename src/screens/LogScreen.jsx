@@ -531,7 +531,11 @@ export default function LogScreen({
     if (uploadingPhotos || posting || !Array.isArray(assets) || !assets.length) return;
     const remaining = Math.max(0, MEDIA_POST_MAX_ATTACHMENTS - photos.length - studioAssets.length);
     if (!remaining) return;
-    const candidateAssets = mediaProjectFromPicker(assets.slice(0, remaining), `${submissionIdRef.current}:${Date.now().toString(36)}`).assets;
+    const candidateAssets = mediaProjectFromPicker(
+      assets.slice(0, remaining),
+      `${submissionIdRef.current}:${Date.now().toString(36)}`,
+      { allowLivePhotoVideo: capabilities?.videos === true },
+    ).assets;
     const selection = mediaPublishingSelection(candidateAssets, capabilities);
     const preflight = mediaPublishingPreflightSelection(selection.accepted, { platform: Platform.OS });
     const selected = preflight.accepted;
@@ -722,6 +726,7 @@ export default function LogScreen({
         platform: Platform.OS,
         remaining,
         iosH264Preset: ImagePicker.VideoExportPreset.H264_1920x1080,
+        iosCompatibleRepresentation: ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
         allowPhotos: pickerCapabilities.photos,
         allowVideos: pickerCapabilities.videos,
       }));

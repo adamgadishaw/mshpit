@@ -455,6 +455,7 @@ CREATE INDEX IF NOT EXISTS idx_post_tag_rejections_user
 CREATE TABLE IF NOT EXISTS tour_dates (
   id                    TEXT PRIMARY KEY,
   artist                TEXT NOT NULL,
+  artist_key            TEXT REFERENCES artists(norm),
   venue                 TEXT,
   place                 TEXT,
   lat                   REAL,
@@ -1431,6 +1432,7 @@ const additiveMigrations = [
   // Provider dates remain public (NULL owner, immediate release). Artist/admin
   // batches carry durable authorship and can be scheduled without leaking.
   "ALTER TABLE tour_dates ADD COLUMN owner_id TEXT REFERENCES users(id) ON DELETE CASCADE",
+  "ALTER TABLE tour_dates ADD COLUMN artist_key TEXT REFERENCES artists(norm)",
   "ALTER TABLE tour_dates ADD COLUMN release_at INTEGER NOT NULL DEFAULT 0",
   // Provider identity and local/absolute time are kept separately. A local
   // wall-clock value without an offset must never be silently presented as UTC.
@@ -1767,10 +1769,28 @@ db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_posts_client_mutation ON posts(us
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_dms_client_mutation ON dms(from_id, client_mutation_id) WHERE client_mutation_id IS NOT NULL");
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_fcm_client_mutation ON fan_club_messages(user_id, client_mutation_id) WHERE client_mutation_id IS NOT NULL");
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_lounge_client_mutation ON lounge_messages(user_id, client_mutation_id) WHERE client_mutation_id IS NOT NULL");
+// Backfill only a single exact normalized display-name match. Ambiguous and
+// unmatched provider rows deliberately stay NULL for later review.
+db.exec(`UPDATE tour_dates SET artist_key=lower(trim(artist))
+  WHERE artist_key IS NULL AND EXISTS (
+    SELECT 1 FROM artists a WHERE a.norm=lower(trim(tour_dates.artist))
+  )`);
+db.exec(`UPDATE tour_dates SET artist_key=(
+  SELECT a.norm FROM artists a WHERE lower(trim(a.name))=lower(trim(tour_dates.artist))
+) WHERE artist_key IS NULL AND trim(COALESCE(artist,''))<>'' AND 1=(
+  SELECT COUNT(*) FROM artists a WHERE lower(trim(a.name))=lower(trim(tour_dates.artist))
+)`);
 db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_tourdates_owner_show ON tour_dates(owner_id, lower(artist), lower(venue), lower(place), date) WHERE owner_id IS NOT NULL");
 db.exec("CREATE INDEX IF NOT EXISTS idx_tourdates_visibility ON tour_dates(release_at, date)");
+db.exec(`CREATE INDEX IF NOT EXISTS idx_tourdates_sitemap_cursor
+  ON tour_dates(date, id, release_at, provider_active)`);
 db.exec("CREATE INDEX IF NOT EXISTS idx_tourdates_owner ON tour_dates(owner_id, date)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_tourdates_artist_date ON tour_dates(lower(artist), date, id)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_tourdates_artist_trim_date ON tour_dates(lower(trim(artist)), date, id)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_tourdates_artist_visibility ON tour_dates(artist_key, release_at, date, provider_active, id) WHERE artist_key IS NOT NULL");
+db.exec(`CREATE INDEX IF NOT EXISTS idx_tourdates_structured_city_date
+  ON tour_dates(venue_country_code, venue_city, release_at, date, provider_active, id)
+  WHERE venue_country_code IS NOT NULL AND venue_city IS NOT NULL`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_tourdates_provider_identity
   ON tour_dates(source, provider_event_id)
   WHERE owner_id IS NULL AND provider_event_id IS NOT NULL`);

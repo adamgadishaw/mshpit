@@ -31,6 +31,7 @@ async function fixture({
   pageProblem = "",
   duplicatePublicUrl = false,
   omitAbout = false,
+  nonCanonicalPageOne = false,
   redirectAlias = false,
 } = {}) {
   let origin;
@@ -54,7 +55,8 @@ Sitemap: ${origin}/sitemap.xml
     if (request.url === "/sitemaps/pages.xml") {
       const duplicate = duplicatePublicUrl ? `<url><loc>${origin}/</loc></url>` : "";
       const about = omitAbout ? "" : `<url><loc>${origin}/about</loc></url>`;
-      response.writeHead(200, { "content-type": "application/xml" }).end(`<?xml version="1.0"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:image="http://www.google.com/schemas/sitemap-image/1.1"><url><loc>${origin}/</loc><image:image><image:loc>https://media.example.test/public/cover.jpg</image:loc></image:image></url>${about}${duplicate}</urlset>`);
+      const pageOne = nonCanonicalPageOne ? `<url><loc>${origin}/artists/page/1</loc></url>` : "";
+      response.writeHead(200, { "content-type": "application/xml" }).end(`<?xml version="1.0"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:image="http://www.google.com/schemas/sitemap-image/1.1"><url><loc>${origin}/</loc><image:image><image:loc>https://media.example.test/public/cover.jpg</image:loc></image:image></url>${about}${duplicate}${pageOne}</urlset>`);
       return;
     }
     if (request.url === "/" || request.url === "/about") {
@@ -319,6 +321,12 @@ test("duplicate or missing required sitemap URLs fail", async (context) => {
   const missingReport = await verifyPublicSeo({ origin: missingSite.origin, timeoutMs: 2_000 });
   assert.equal(missingReport.ok, false);
   assert.match(missingReport.checks.find((item) => item.name === "Sitemaps").detail, /required public URL \/about/);
+
+  const pageOneSite = await fixture({ nonCanonicalPageOne: true });
+  closeAfter(context, pageOneSite.server);
+  const pageOneReport = await verifyPublicSeo({ origin: pageOneSite.origin, timeoutMs: 2_000 });
+  assert.equal(pageOneReport.ok, false);
+  assert.match(pageOneReport.checks.find((item) => item.name === "Sitemaps").detail, /noncanonical \/page\/1/);
 });
 
 test("social metadata, JSON-LD types, and crawlable directory anchors are enforced", async (context) => {

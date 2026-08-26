@@ -69,16 +69,35 @@ export function normalizeMediaProject(value = {}) {
   return { version: MEDIA_PROJECT_VERSION, assets };
 }
 
-export function mediaProjectFromPicker(assets, nonce = Date.now().toString(36)) {
+function publishablePickerAsset(asset, { allowLivePhotoVideo = true } = {}) {
+  if (asset?.type !== "livePhoto" || !allowLivePhotoVideo || !asset?.pairedVideoAsset?.uri) {
+    // A Live Photo without a usable motion pair remains a normal still image.
+    return asset?.type === "livePhoto" ? { ...asset, type: "image" } : asset;
+  }
+  const motion = asset.pairedVideoAsset;
+  return {
+    ...motion,
+    type: "video",
+    // Keep the unaltered still only as transient preview metadata. The video
+    // verifier remains authoritative for the durable public poster.
+    posterUri: asset.uri || null,
+    posterTimeMs: 0,
+  };
+}
+
+export function mediaProjectFromPicker(assets, nonce = Date.now().toString(36), options = {}) {
   const selected = (Array.isArray(assets) ? assets : [])
     .slice(0, MEDIA_PROJECT_MAX_ASSETS)
-    .map((asset, index) => ({
-      ...mediaDraftAssetFromPicker(asset, index),
-      id: `local:${nonce}:${index + 1}`,
-      runtimeFile: asset?.file || null,
-      status: "selected",
-      progress: 0,
-    }));
+    .map((asset, index) => {
+      const publishable = publishablePickerAsset(asset, options);
+      return {
+        ...mediaDraftAssetFromPicker(publishable, index),
+        id: `local:${nonce}:${index + 1}`,
+        runtimeFile: publishable?.file || null,
+        status: "selected",
+        progress: 0,
+      };
+    });
   return normalizeMediaProject(selected);
 }
 

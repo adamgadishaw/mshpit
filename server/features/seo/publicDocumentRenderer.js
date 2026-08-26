@@ -84,6 +84,21 @@ function breadcrumbs(document) {
   return items ? `<nav class="breadcrumbs" aria-label="Breadcrumb"><ol>${items}</ol></nav>` : "";
 }
 
+function postalAddress(address) {
+  if (!address || typeof address !== "object") return "";
+  const street = String(address.streetAddress || "").trim();
+  const locality = String(address.addressLocality || "").trim();
+  const region = String(address.addressRegion || "").trim();
+  const postalCode = String(address.postalCode || "").trim();
+  const country = String(address.addressCountry || "").trim();
+  const localityRegion = [locality, region].filter(Boolean).join(", ");
+  const localityLine = [localityRegion, postalCode].filter(Boolean).join(" ");
+  const lines = [street, localityLine, country].filter(Boolean);
+  return lines.length
+    ? `<address class="postal-address">${lines.map((line) => `<span>${esc(line)}</span>`).join("")}</address>`
+    : "";
+}
+
 function mediaGallery(media, label, { primary = false } = {}) {
   const items = (Array.isArray(media) ? media : []).flatMap((asset, index) => {
     const url = publicMediaUrl(asset?.url);
@@ -100,7 +115,7 @@ function mediaGallery(media, label, { primary = false } = {}) {
   return items.length ? `<div class="media-grid">${items.join("")}</div>` : "";
 }
 
-function compactPost(post, { full = false } = {}) {
+function compactPost(post, { full = false, showShowDetails = full } = {}) {
   if (!post) return "";
   const author = post.author?.path
     ? link(post.author.path, post.author.handle ? `@${post.author.handle}` : post.author.name)
@@ -113,6 +128,13 @@ function compactPost(post, { full = false } = {}) {
     ? `${artist}${post.venue ? ` <span class="muted">at ${venue}</span>` : ""}`
     : `<span>${author} shared an update</span>`;
   const body = full ? paragraphs(post.text) : `<p>${esc(post.text)}</p>`;
+  const showDetails = post.kind === "review" && showShowDetails;
+  const tour = showDetails && post.tour
+    ? `<p class="post-show-details"><strong>Tour</strong> ${esc(post.tour)}</p>`
+    : "";
+  const setlist = showDetails && Array.isArray(post.setlist) && post.setlist.length
+    ? `<section class="post-setlist"><h4>Setlist shared by ${author}</h4><ol>${post.setlist.map((item) => `<li>${esc(item)}</li>`).join("")}</ol></section>`
+    : "";
   return `<article class="post-card${full ? " post-full" : ""}">
     <header>
       <div><p class="eyebrow">${post.kind === "review" ? "Live review" : "From the community"}</p><h${full ? "1" : "3"}>${title}</h${full ? "1" : "3"}></div>
@@ -120,6 +142,7 @@ function compactPost(post, { full = false } = {}) {
     </header>
     <p class="byline">By ${author}${showDate ? ` · <time datetime="${esc(post.showDate)}">${esc(showDate)}</time>` : published ? ` · <time datetime="${esc(published.iso)}">${esc(published.label)}</time>` : ""}</p>
     <div class="post-copy">${body}</div>
+    ${tour}${setlist}
     ${mediaGallery(post.media, post.artist || "Concert post", { primary: full })}
     <footer><span>${esc(post.likes)} likes</span><span>${esc(post.comments)} comments</span>${!full && post.path ? link(post.path, "Read the full post", "text-link") : ""}</footer>
   </article>`;
@@ -174,6 +197,7 @@ function artistMain(document) {
   const { artist, stats } = document;
   const events = document.events.map((event) => `<li><time datetime="${esc(event.startDateTime || event.date)}"><strong>${esc(dateLabel(event.date))}</strong>${event.localTime ? `<small>${esc(event.localTime)}</small>` : ""}</time><div><h3>${link(event.path, event.name)}</h3><p>${link(event.venuePath, event.venue)}${event.place ? ` · ${esc(event.place)}` : ""}</p></div>${event.soldOut ? '<span class="pill">Sold out</span>' : event.statusLabel !== "scheduled" ? `<span class="pill">${esc(event.statusLabel)}</span>` : ""}</li>`).join("");
   const concerts = (document.concerts || []).map((concert) => `<li><time datetime="${esc(concert.date)}"><strong>${esc(dateLabel(concert.date))}</strong></time><div><h3>${link(concert.path, concert.venue)}</h3>${concert.city ? `<p>${esc(concert.city)}</p>` : ""}</div><span class="archive-score">${concert.averageRating != null ? `${esc(concert.averageRating.toFixed(1))}/5 · ` : ""}${esc(concert.ratingCount)} ${concert.ratingCount === 1 ? "rating" : "ratings"}</span></li>`).join("");
+  const archiveLink = document.archivePath && Number(document.archiveTotal) > 3 ? link(document.archivePath, "View full concert archive") : "";
   const updates = document.updates.map((update) => {
     const date = dateTimeLabel(update.publishedAt);
     return `<article class="update"><p>${esc(update.text)}</p>${date ? `<time datetime="${esc(date.iso)}">${esc(date.label)}</time>` : ""}</article>`;
@@ -203,11 +227,11 @@ function artistMain(document) {
       <h1>${esc(artist.name)}</h1>
       ${artist.genres.length ? `<p class="genres">${esc(artist.genres.join(" · "))}</p>` : ""}
       ${artist.bio ? `<div class="bio">${paragraphs(artist.bio)}</div>` : ""}
-      <dl class="stats"><div><dt>Fan reviews</dt><dd>${esc(stats.reviewCount)}</dd></div>${stats.averageRating != null ? `<div><dt>Live rating</dt><dd>${esc(stats.averageRating.toFixed(1))}<small>/5</small></dd></div>` : ""}${artist.formed ? `<div><dt>Active since</dt><dd>${esc(artist.formed)}</dd></div>` : ""}</dl>
+      <dl class="stats"><div><dt>Fan reviews</dt><dd>${esc(stats.reviewCount)}</dd></div>${stats.averageRating != null ? `<div><dt>Live rating</dt><dd>${esc(stats.averageRating.toFixed(1))}<small>/5</small></dd></div>` : `<div><dt>Live rating</dt><dd>No live rating yet</dd></div>`}${artist.formed ? `<div><dt>Active since</dt><dd>${esc(artist.formed)}</dd></div>` : ""}</dl>
     </section>
     ${memorial}
     ${events ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">On the road</p><h2>Upcoming shows</h2></div></div><ol class="event-list">${events}</ol></section>` : ""}
-    ${concerts ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">From the archive</p><h2>Top-rated concert nights</h2></div></div><ol class="event-list archive-list">${concerts}</ol></section>` : ""}
+    ${concerts ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">From the archive</p><h2>Top-rated concert nights</h2></div>${archiveLink}</div><ol class="event-list archive-list">${concerts}</ol></section>` : ""}
     ${updates ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">Official notes</p><h2>From ${esc(artist.name)}</h2></div></div><div class="updates">${updates}</div></section>` : ""}
     ${reviews ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">People who were there</p><h2>Top live reviews</h2></div></div><div class="post-list">${reviews}</div></section>` : ""}
   </main>`;
@@ -250,10 +274,12 @@ function eventDetails(event) {
   const ticket = publicHttpsUrl(event.ticketUrl);
   const date = longDateLabel(event.date);
   const venue = link(event.venuePath, event.venue);
+  const address = postalAddress(event.address);
   return `<dl class="event-facts">
     <div><dt>Date</dt><dd><time datetime="${esc(event.startDateTime || event.date)}">${esc(date || event.date)}${event.localTime ? ` at ${esc(event.localTime)}` : ""}</time></dd></div>
     <div><dt>Venue</dt><dd>${venue}</dd></div>
     ${event.place ? `<div><dt>Location</dt><dd>${esc(event.place)}</dd></div>` : ""}
+    ${address ? `<div><dt>Venue address</dt><dd>${address}</dd></div>` : ""}
     ${event.statusLabel && event.statusLabel !== "scheduled" ? `<div><dt>Status</dt><dd>${esc(event.statusLabel)}</dd></div>` : ""}
   </dl>${ticket ? `<p class="ticket-action"><a class="button primary" href="${esc(ticket)}" rel="sponsored noopener noreferrer">View tickets</a><small>Tickets are handled by the linked provider.</small></p>` : ""}`;
 }
@@ -274,13 +300,15 @@ function eventMain(document) {
 
 function concertMain(document) {
   const { concert } = document;
-  const reviews = document.reviews.map((review) => compactPost(review)).join("");
+  const reviews = document.reviews.map((review) => compactPost(review, { showShowDetails: true })).join("");
+  const address = postalAddress(concert.address);
   return `<main id="main">
     ${breadcrumbs(document)}
     <section class="profile-hero event-hero">
       <p class="eyebrow">Fan concert archive</p>
       <h1>${link(concert.artistPath, concert.artist)} <em>at ${link(concert.venuePath, concert.venue)}</em></h1>
       <p class="hero-copy"><time datetime="${esc(concert.date)}">${esc(longDateLabel(concert.date) || concert.date)}</time>${concert.city ? ` · ${esc(concert.city)}` : ""}</p>
+      ${address ? `<dl class="event-facts"><div><dt>Venue address</dt><dd>${address}</dd></div></dl>` : ""}
       <dl class="stats"><div><dt>Fan ratings</dt><dd>${esc(concert.ratingCount)}</dd></div>${concert.averageRating != null ? `<div><dt>Average rating</dt><dd>${esc(concert.averageRating.toFixed(1))}<small>/5</small></dd></div>` : ""}</dl>
     </section>
     <section class="section"><div class="section-heading"><div><p class="eyebrow">The crowd remembers</p><h2>Reviews and photos from this night</h2></div></div><div class="post-list">${reviews}</div></section>
@@ -289,24 +317,59 @@ function concertMain(document) {
 
 function venueMain(document) {
   const { venue } = document;
+  const address = postalAddress(venue.address);
   const events = document.events.map((event) => `<li><time datetime="${esc(event.startDateTime || event.date)}"><strong>${esc(dateLabel(event.date))}</strong></time><div><h3>${link(event.path, event.name)}</h3><p>${link(event.artistPath, event.artist)}${event.place ? ` · ${esc(event.place)}` : ""}</p></div>${event.soldOut ? '<span class="pill">Sold out</span>' : ""}</li>`).join("");
   const posts = document.posts.map((post) => compactPost(post)).join("");
+  const reviewStats = document.venueReviewStats || { reviewCount: 0, ratingCount: 0, averageRating: null };
+  const rating = reviewStats.ratingCount > 0 && Number.isFinite(Number(reviewStats.averageRating))
+    ? `<strong>${esc(Number(reviewStats.averageRating).toFixed(1))}<small>/5</small></strong> from ${esc(reviewStats.ratingCount)} ${reviewStats.ratingCount === 1 ? "rating" : "ratings"}`
+    : "No community rating yet";
+  const publicReviewCount = `${esc(reviewStats.reviewCount)} public ${reviewStats.reviewCount === 1 ? "review" : "reviews"}`;
+  const venueReviews = (document.venueReviews || []).map((review) => {
+    const author = review.author?.handle
+      ? `${esc(review.author.name)} <span class="muted">@${esc(review.author.handle)}</span>`
+      : esc(review.author?.name || "Mshpit member");
+    const reviewedAt = dateTimeLabel(review.createdAt);
+    const photos = mediaGallery((review.photos || []).map((url) => ({ kind: "image", url })), `${venue.name} fan photo`);
+    return `<article class="post-card venue-review"><header><div><p class="eyebrow">Venue review</p><h3>${author}</h3></div>${review.rating != null ? `<span class="pill">${esc(Number(review.rating).toFixed(1))}/5</span>` : ""}</header>${review.text ? paragraphs(review.text) : ""}${photos}${reviewedAt ? `<time datetime="${esc(reviewedAt.iso)}">${esc(reviewedAt.label)}</time>` : ""}</article>`;
+  }).join("");
   return `<main id="main">
     ${breadcrumbs(document)}
-    <section class="profile-hero"><p class="eyebrow">Live music venue</p><h1>${esc(venue.name)}</h1>${venue.place ? `<p class="hero-copy">${esc(venue.place)}</p>` : ""}</section>
+    <section class="profile-hero"><p class="eyebrow">Live music venue</p><h1>${esc(venue.name)}</h1>${venue.place ? `<p class="hero-copy">${esc(venue.place)}</p>` : ""}${address}<p class="hero-copy venue-rating">${rating} · ${publicReviewCount}</p></section>
     ${events ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">On the calendar</p><h2>Upcoming concerts</h2></div></div><ol class="event-list">${events}</ol></section>` : ""}
+    ${venueReviews ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">About the room</p><h2>Recent venue reviews</h2></div><span>${publicReviewCount}</span></div><div class="post-list">${venueReviews}</div></section>` : `<section class="section empty-state"><p class="eyebrow">About the room</p><h2>No public venue reviews yet.</h2><p>Be the first to share what the sound, sightlines and atmosphere were like.</p></section>`}
     ${posts ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">From the floor</p><h2>Fan reviews and photos</h2></div></div><div class="post-list">${posts}</div></section>` : ""}
   </main>`;
 }
 
 function directoryMain(document) {
-  const isArtists = document.directoryKind === "artists";
-  const artists = document.artists.map((artist) => `<li class="artist-card"><p class="eyebrow">${artist.genre.length ? esc(artist.genre.slice(0, 2).join(" · ")) : "Artist page"}</p><h2>${link(artist.path, artist.name)}</h2>${artist.description ? `<p>${esc(artist.description)}</p>` : ""}</li>`).join("");
-  const events = document.events.map((event) => `<li><time datetime="${esc(event.startDateTime || event.date)}"><strong>${esc(dateLabel(event.date))}</strong></time><div><h2>${link(event.path, event.name)}</h2><p>${link(event.artistPath, event.artist)} · ${link(event.venuePath, event.venue)}${event.place ? ` · ${esc(event.place)}` : ""}</p></div>${event.soldOut ? '<span class="pill">Sold out</span>' : ""}</li>`).join("");
+  const kind = document.directoryKind;
+  const artists = (document.artists || []).map((artist) => `<li class="artist-card"><p class="eyebrow">${artist.genre.length ? esc(artist.genre.slice(0, 2).join(" · ")) : "Artist page"}</p><h2>${link(artist.path, artist.name)}</h2>${artist.description ? `<p>${esc(artist.description)}</p>` : ""}</li>`).join("");
+  const events = (document.events || []).map((event) => `<li><time datetime="${esc(event.startDateTime || event.date)}"><strong>${esc(dateLabel(event.date))}</strong></time><div><h2>${link(event.path, event.name)}</h2><p>${link(event.artistPath, event.artist)} · ${link(event.venuePath, event.venue)}${event.place ? ` · ${esc(event.place)}` : ""}</p></div>${event.soldOut ? '<span class="pill">Sold out</span>' : ""}</li>`).join("");
+  const venues = (document.venues || []).map((venue) => {
+    const featured = venue.featuredEvent
+      ? `<p>Next: ${link(venue.featuredEvent.path, venue.featuredEvent.name)} · ${link(venue.featuredEvent.artistPath, venue.featuredEvent.artist)}</p>`
+      : venue.featuredArtist ? `<p>Recently documented with ${link(venue.featuredArtistPath, venue.featuredArtist)}</p>` : "";
+    return `<li class="artist-card"><p class="eyebrow">Live music venue</p><h2>${link(venue.path, venue.name)}</h2>${venue.place ? `<p>${esc(venue.place)}</p>` : ""}${featured}${venue.reviewCount ? `<p class="micro">${esc(venue.reviewCount)} fan ${venue.reviewCount === 1 ? "review" : "reviews"}</p>` : ""}</li>`;
+  }).join("");
+  const concerts = (document.concerts || []).map((concert) => `<li><time datetime="${esc(concert.date)}"><strong>${esc(dateLabel(concert.date))}</strong></time><div><h2>${link(concert.path, `${concert.artist} at ${concert.venue}`)}</h2><p>${link(concert.artistPath, concert.artist)} · ${link(concert.venuePath, concert.venue)}${concert.city ? ` · ${esc(concert.city)}` : ""}</p></div><span class="archive-score">${concert.averageRating != null ? `${esc(concert.averageRating.toFixed(1))}/5 · ` : "No rating yet · "}${esc(concert.reviewCount)} ${concert.reviewCount === 1 ? "fan review" : "fan reviews"}</span></li>`).join("");
+  const pageSuffix = document.page > 1 ? ` — Page ${esc(document.page)}` : "";
+  const heading = kind === "artists" ? "Artists in the live archive"
+    : kind === "venues" ? "Concert venues on Mshpit"
+      : kind === "concerts" ? "Concert nights fans remember" : "Upcoming concerts worldwide";
+  const label = kind === "artists" ? "Artist directory"
+    : kind === "venues" ? "Venue directory"
+      : kind === "concerts" ? "Concert archive" : "Event directory";
+  const related = document.relatedPath && document.relatedLabel ? '<div class="actions">' + link(document.relatedPath, document.relatedLabel, "button") + '</div>' : "";
+  const content = kind === "artists" ? `<ul class="artist-grid directory-grid">${artists}</ul>`
+    : kind === "venues" ? `<ul class="artist-grid directory-grid">${venues}</ul>`
+      : kind === "concerts" ? `<ol class="event-list archive-list">${concerts}</ol>`
+        : `<ol class="event-list directory-events">${events}</ol>`;
   return `<main id="main">
     ${breadcrumbs(document)}
-    <section class="directory-hero"><p class="eyebrow">Mshpit directory</p><h1>${isArtists ? "Artists in the live archive" : "Upcoming concerts worldwide"}</h1><p>${esc(document.description)}</p></section>
-    <section class="section" aria-label="${isArtists ? "Artist directory" : "Event directory"}">${isArtists ? `<ul class="artist-grid directory-grid">${artists}</ul>` : `<ol class="event-list directory-events">${events}</ol>`}</section>
+    <section class="directory-hero"><p class="eyebrow">Mshpit directory</p><h1>${heading}${pageSuffix}</h1><p>${esc(document.description)}</p>${related}</section>
+    <section class="section" aria-label="${label}">${content}</section>
+    ${(document.previousPath || document.nextPath) ? `<nav class="pagination" aria-label="Directory pages">${document.previousPath ? link(document.previousPath, "Previous page") : ""}${document.nextPath ? link(document.nextPath, "Next page") : ""}</nav>` : ""}
   </main>`;
 }
 
@@ -377,6 +440,7 @@ const STYLES = `
   main{max-width:var(--max);margin:auto;padding:0 1.3rem 5rem}.breadcrumbs{padding-top:1.25rem;color:var(--muted);font-size:.78rem}.breadcrumbs ol{display:flex;flex-wrap:wrap;gap:.45rem;list-style:none;margin:0;padding:0}.breadcrumbs li:not(:last-child)::after{content:"/";margin-left:.45rem;color:#6c6259}.hero,.profile-hero,.directory-hero{padding:clamp(4rem,11vw,8rem) 0;border-bottom:1px solid var(--line)}.hero{max-width:900px}.eyebrow{margin:0 0 .8rem;color:var(--gold);font:800 .72rem/1.2 ui-monospace,monospace;letter-spacing:.16em;text-transform:uppercase}.hero h1,.profile-hero h1,.directory-hero h1{max-width:930px;margin:0;font:900 clamp(3.2rem,9vw,7.4rem)/.92 Georgia,serif;letter-spacing:-.05em}.hero h1 em,.event-hero h1 em{color:var(--rose);font-weight:400}.hero-copy,.directory-hero>p:last-child{max-width:690px;margin:2rem 0 0;color:#d7cfc4;font-size:clamp(1.05rem,2.3vw,1.35rem)}.actions{display:flex;flex-wrap:wrap;gap:.7rem;margin-top:2rem}.button{display:inline-block;border:1px solid var(--line);border-radius:999px;padding:.8rem 1.2rem;text-decoration:none;font-weight:800}.button.primary{background:var(--gold);border-color:var(--gold);color:#130d03}
   .section{padding:4rem 0;border-bottom:1px solid var(--line);content-visibility:auto;contain-intrinsic-size:auto 700px}.section-heading{display:flex;justify-content:space-between;align-items:end;gap:1rem;margin-bottom:1.5rem}.section-heading h2{margin:0;font:800 clamp(1.8rem,4vw,3rem)/1.05 Georgia,serif}.artist-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.8rem;list-style:none;padding:0}.artist-card,.post-card,.update{background:linear-gradient(145deg,#191713,#11100e);border:1px solid var(--line);border-radius:1rem;padding:1.25rem}.artist-card h2,.artist-card h3{margin:.2rem 0;font-size:1.3rem}.artist-card>p:not(.eyebrow){color:#c8c0b6}.micro,.muted,.byline,.handle,.genres,.empty{color:var(--muted)}
   .post-list{display:grid;gap:1rem}.post-card>header{display:flex;align-items:start;justify-content:space-between;gap:1rem}.post-card h3,.post-card h1{margin:0;font:800 clamp(1.3rem,3vw,2rem)/1.14 Georgia,serif}.post-card h1{font-size:clamp(2rem,5vw,4rem)}.rating{margin:0;color:var(--gold);font-size:1.25rem;font-weight:900}.rating span{font-size:.75rem;color:var(--muted)}.byline{margin:.6rem 0 0;font-size:.85rem}.post-copy{max-width:780px;margin:1.2rem 0;color:#ddd4c8}.post-copy p{white-space:normal}.post-card footer{display:flex;flex-wrap:wrap;gap:1rem;margin-top:1rem;color:var(--muted);font-size:.8rem}.text-link{margin-left:auto;color:var(--ink);font-weight:800}.media-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.6rem;margin-top:1.2rem}.media-item{margin:0;border-radius:.8rem;overflow:hidden;background:#050505}.media-item img,.media-item video{width:100%;max-height:560px;object-fit:cover;aspect-ratio:var(--media-ratio,auto)}.media-item figcaption{padding:.55rem .7rem;color:var(--muted);font-size:.72rem}.post-full{padding:clamp(1.25rem,4vw,2.5rem);margin-top:3rem}.post-full .media-grid{grid-template-columns:1fr}
+  .post-show-details{max-width:780px;margin:1rem 0;color:#d8d0c5}.post-show-details strong{color:var(--gold);margin-right:.45rem}.post-setlist{max-width:780px;margin:1.2rem 0;padding:1rem;border:1px solid var(--line);border-radius:.8rem}.post-setlist h4{margin:0 0 .7rem}.post-setlist ol{columns:2;gap:2rem;margin:0;padding-left:1.4rem}.postal-address{display:grid;font-style:normal;font-weight:inherit}.postal-address span{display:block}
   .memorial{display:grid;grid-template-columns:auto 1fr;gap:1.25rem;background:linear-gradient(135deg,#211b16,#11100e);padding-left:clamp(1rem,3vw,2rem);padding-right:clamp(1rem,3vw,2rem)}.memorial-mark{display:grid;place-items:center;width:3.2rem;height:3.2rem;border:1px solid var(--gold);border-radius:50%;color:var(--gold);font:900 .52rem/1.05 ui-monospace,monospace;letter-spacing:.06em;text-align:center}.memorial h2{margin:0;font:800 clamp(2rem,5vw,3.6rem)/1.05 Georgia,serif}.memorial h3{margin:1.5rem 0 .5rem;font:800 1rem/1.2 ui-sans-serif,system-ui}.memorial-date{margin:.65rem 0;color:var(--muted)}.memorial-copy,.memorial-thanks{max-width:780px;color:#ddd4c8;font-size:1.08rem}.memorial-legacy ul{display:grid;gap:.4rem;max-width:780px;margin:.5rem 0 0;padding-left:1.2rem;color:#ddd4c8}.memorial-thanks p{margin:.5rem 0}.memorial-source{margin:1.2rem 0 0;color:var(--muted);font-size:.82rem}
   .profile-hero h1{max-width:850px}.profile-hero .bio{max-width:760px;margin-top:1.6rem;color:#d8d0c5;font-size:1.1rem}.stats{display:flex;flex-wrap:wrap;gap:2.4rem;margin:2rem 0 0}.stats div{display:flex;flex-direction:column-reverse}.stats dt{color:var(--muted);font-size:.75rem;text-transform:uppercase;letter-spacing:.1em}.stats dd{margin:0;font:900 2rem/1 Georgia,serif}.stats small{font-size:.8rem;color:var(--muted)}.event-list{list-style:none;padding:0;margin:0}.event-list li{display:grid;grid-template-columns:7rem 1fr auto;align-items:center;gap:1rem;padding:1.1rem 0;border-top:1px solid var(--line)}.event-list time{display:grid;gap:.2rem}.event-list time small,.archive-score{color:var(--muted);font-size:.75rem}.event-list h2,.event-list h3,.event-list p{margin:0}.event-list h2{font-size:1rem}.pill{border:1px solid var(--rose);border-radius:99px;padding:.25rem .55rem;color:var(--rose);font-size:.7rem}.event-facts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1rem;margin:2.5rem 0 0}.event-facts div{border-top:1px solid var(--line);padding-top:.8rem}.event-facts dt{color:var(--muted);font-size:.7rem;letter-spacing:.1em;text-transform:uppercase}.event-facts dd{margin:.25rem 0 0;font-weight:800}.ticket-action{display:flex;align-items:center;gap:1rem;margin-top:2rem}.ticket-action small{color:var(--muted)}.updates{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.8rem}.update p{margin:0}.update time{display:block;margin-top:1rem;color:var(--muted);font-size:.8rem}.member-hero{position:relative}.avatar{border:1px solid var(--line);border-radius:50%;object-fit:cover;margin-bottom:1.2rem}.avatar-fallback{display:grid;place-items:center;background:#241d12;color:var(--gold);font:900 3rem Georgia,serif}.comments ol{list-style:none;padding:0;margin:0}.comment{padding:1.2rem 0;border-top:1px solid var(--line)}.comment-reply{margin-left:clamp(1rem,5vw,4rem);border-left:2px solid var(--line);padding-left:1rem}.comment p{max-width:760px}.comment-meta{display:flex;justify-content:space-between;gap:1rem}.comment-meta time{color:var(--muted);font-size:.8rem}.empty-state{max-width:760px}.directory-grid{grid-template-columns:repeat(4,minmax(0,1fr))}
   .site-footer{max-width:var(--max);margin:auto;padding:2rem 1.3rem 3rem;display:flex;flex-wrap:wrap;justify-content:space-between;gap:1rem;color:var(--muted);font-size:.8rem}.site-footer div{display:flex;flex-wrap:wrap;gap:1rem}
@@ -392,7 +456,7 @@ export function renderPublicDocumentShell(document) {
   return `<style data-mshpit-public-document>${STYLES}</style>
     <div class="seo-document">
       <a class="skip" href="#main">Skip to content</a>
-      <header class="site-header"><div><a class="brand" href="/" aria-label="Mshpit home">Mshpit</a><nav aria-label="Main navigation"><a href="/artists">Artists</a><a href="/events">Events</a><a href="/discover">Discover</a><a href="/search">Search</a><a href="/login">Log in</a></nav></div></header>
+      <header class="site-header"><div><a class="brand" href="/" aria-label="Mshpit home">Mshpit</a><nav aria-label="Main navigation"><a href="/artists">Artists</a><a href="/events">Events</a><a href="/venues">Venues</a><a href="/concerts">Concerts</a><a href="/discover">Discover</a><a href="/search">Search</a><a href="/login">Log in</a></nav></div></header>
       ${main}
       <footer class="site-footer"><span>© ${new Date().getUTCFullYear()} Mshpit</span><div><a href="/about">About</a><a href="/contact">Contact</a><a href="/community-guidelines">Guidelines</a><a href="/ratings-methodology">Ratings</a><a href="/privacy">Privacy</a><a href="/terms">Terms</a><a href="/support">Support</a></div></footer>
     </div>`;

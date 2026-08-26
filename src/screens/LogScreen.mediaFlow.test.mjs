@@ -61,6 +61,8 @@ test("picker refreshes and honors both media capabilities from the exact server 
   assert.doesNotMatch(source, /api\(MEDIA_PUBLISHING_HEALTH_PATH/);
   assert.match(source, /allowPhotos: pickerCapabilities\.photos/);
   assert.match(source, /allowVideos: pickerCapabilities\.videos/);
+  assert.match(source, /iosCompatibleRepresentation: ImagePicker\.UIImagePickerPreferredAssetRepresentationMode\.Compatible/);
+  assert.match(source, /allowLivePhotoVideo: capabilities\?\.videos === true/);
   assert.match(source, /label=\{mediaAttachmentLabel\}/);
   assert.match(source, /AppState\.addEventListener\("change"/);
   assert.match(source, /state === "active"\) void refreshMediaPublishingCapabilities\(\{ background: true \}\)/);

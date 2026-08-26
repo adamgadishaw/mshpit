@@ -6,13 +6,19 @@ import { inflateSync } from "node:zlib";
 export const MAX_IMAGE_PIXELS = 50_000_000;
 export const MAX_IMAGE_EDGE = 16_384;
 export const MAX_PNG_BIT_DEPTH = 8;
+// Animated inputs are decoded as a vertical stack of complete canvases by
+// libvips. Keep that expanded surface inside the same hard pixel budget as a
+// still image, and cap frame count independently so tiny-frame files cannot
+// turn parser/encoder work into an unbounded loop.
+export const MAX_IMAGE_ANIMATION_FRAMES = 300;
+export const MAX_IMAGE_ANIMATION_PIXELS = MAX_IMAGE_PIXELS;
 // Some phone JPEGs carry a second-image or HDR gain-map trailer. Recovery only
 // admits the marker-validated primary JPEG, then re-encodes bounded pixels;
 // ordinary validation remains strict and recovered output is downscaled.
 export const MAX_LEGACY_RECOVERY_JPEG_PIXELS = MAX_IMAGE_PIXELS;
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-const SAFE_PNG_CHUNKS = new Set(["IHDR", "PLTE", "IDAT", "IEND", "tRNS", "cHRM", "gAMA", "sRGB"]);
+const SAFE_PNG_CHUNKS = new Set(["IHDR", "PLTE", "IDAT", "IEND", "tRNS", "cHRM", "gAMA", "sRGB", "pHYs"]);
 const HEIF_BRANDS = new Set(["avif", "avis", "heic", "heif", "heix", "hevc", "hevx", "mif1", "msf1"]);
 const HEIC_BRANDS = new Set(["heic", "heix", "hevc", "hevx"]);
 const AVIF_BRANDS = new Set(["avif", "avis"]);
@@ -228,6 +234,10 @@ function inspectPng(bytes, { sanitized }) {
       idat.push(bytes.subarray(dataStart, dataEnd));
     } else {
       if (sawIdat) idatEnded = true;
+      if (type === "pHYs"
+          && (length !== 9 || bytes[dataStart + 8] > 1)) {
+        invalid("metadata", "PNG physical-pixel metadata is malformed.");
+      }
       if (new Set(["acTL", "fcTL", "fdAT"]).has(type)) {
         invalid("animation", "Animated PNG is not supported for a stable photo.");
       }
@@ -237,7 +247,7 @@ function inspectPng(bytes, { sanitized }) {
       }
       const ancillary = (bytes[offset + 4] & 0x20) !== 0;
       if (!ancillary && !new Set(["IHDR", "PLTE", "IDAT", "IEND"]).has(type)) invalid("unsupported", "PNG contains an unknown critical chunk.");
-      if (ancillary && !new Set(["tRNS", "cHRM", "gAMA", "sRGB"]).has(type)) metadataPresent = true;
+      if (ancillary && !SAFE_PNG_CHUNKS.has(type)) metadataPresent = true;
       if (sanitized && !SAFE_PNG_CHUNKS.has(type)) invalid("metadata", "Public PNG contains metadata or an unapproved chunk.");
     }
     offset = chunkEnd;
@@ -251,6 +261,66 @@ function readUInt24LE(bytes, offset) {
   return bytes[offset] | (bytes[offset + 1] << 8) | (bytes[offset + 2] << 16);
 }
 
+function webpChunk(bytes, offset, limit) {
+  if (offset + 8 > limit) invalid();
+  const type = bytes.toString("ascii", offset, offset + 4);
+  const length = bytes.readUInt32LE(offset + 4);
+  const dataStart = offset + 8;
+  const dataEnd = dataStart + length;
+  const end = dataEnd + (length & 1);
+  if (dataEnd < dataStart || end > limit) invalid();
+  if ((length & 1) && bytes[dataEnd] !== 0) invalid("padding", "WebP chunk padding is malformed.");
+  return { type, length, dataStart, dataEnd, end };
+}
+
+function inspectWebpBitstream(bytes, type, dataStart, length) {
+  if (type === "VP8 ") {
+    if (length < 10 || (bytes[dataStart] & 1) !== 0
+        || !bytes.subarray(dataStart + 3, dataStart + 6).equals(Buffer.from([0x9d, 0x01, 0x2a]))) {
+      invalid("decode", "WebP lossy frame header is malformed.");
+    }
+    return {
+      width: bytes.readUInt16LE(dataStart + 6) & 0x3fff,
+      height: bytes.readUInt16LE(dataStart + 8) & 0x3fff,
+    };
+  }
+  if (length < 5 || bytes[dataStart] !== 0x2f) {
+    invalid("decode", "WebP lossless frame header is malformed.");
+  }
+  const bits = bytes.readUInt32LE(dataStart + 1);
+  if ((bits >>> 29) !== 0) invalid("decode", "WebP lossless version is unsupported.");
+  return {
+    width: (bits & 0x3fff) + 1,
+    height: ((bits >>> 14) & 0x3fff) + 1,
+  };
+}
+
+function inspectWebpFrame(bytes, start, end, declaredWidth, declaredHeight) {
+  let offset = start;
+  let dimensions = null;
+  let sawAlpha = false;
+  let chunks = 0;
+  while (offset < end) {
+    if (++chunks > 64) invalid("resource_limit");
+    const chunk = webpChunk(bytes, offset, end);
+    if (chunk.type === "ALPH") {
+      if (sawAlpha || dimensions || chunk.length < 1) invalid();
+      sawAlpha = true;
+    } else if (chunk.type === "VP8 " || chunk.type === "VP8L") {
+      if (dimensions) invalid();
+      dimensions = inspectWebpBitstream(bytes, chunk.type, chunk.dataStart, chunk.length);
+    } else {
+      invalid("unsupported", "Animated WebP frame contains an unapproved chunk.");
+    }
+    offset = chunk.end;
+  }
+  if (offset !== end || !dimensions
+      || dimensions.width !== declaredWidth || dimensions.height !== declaredHeight) {
+    invalid("dimensions", "Animated WebP frame dimensions disagree with its frame header.");
+  }
+  return { sawAlpha };
+}
+
 function inspectWebp(bytes, { sanitized }) {
   if (bytes.length < 20 || bytes.toString("ascii", 0, 4) !== "RIFF" || bytes.toString("ascii", 8, 12) !== "WEBP"
       || bytes.readUInt32LE(4) + 8 !== bytes.length) invalid(bytes.readUInt32LE(4) + 8 === bytes.length ? "malformed" : "trailing_data");
@@ -261,52 +331,88 @@ function inspectWebp(bytes, { sanitized }) {
   let imageChunks = 0;
   let metadataPresent = false;
   let sawAlpha = false;
+  let animationFlag = false;
+  let sawAnim = false;
+  let frames = 0;
   let chunks = 0;
   while (offset < bytes.length) {
-    if (++chunks > 1024 || offset + 8 > bytes.length) invalid();
-    const type = bytes.toString("ascii", offset, offset + 4);
-    const length = bytes.readUInt32LE(offset + 4);
-    const dataStart = offset + 8;
-    const dataEnd = dataStart + length;
-    const chunkEnd = dataEnd + (length & 1);
-    if (dataEnd < dataStart || chunkEnd > bytes.length) invalid();
+    if (++chunks > 1024) invalid("resource_limit");
+    const chunk = webpChunk(bytes, offset, bytes.length);
+    const { type, length, dataStart, dataEnd } = chunk;
     if (type === "VP8X") {
-      if (canvas || length !== 10 || bytes[dataStart + 1] || bytes[dataStart + 2] || bytes[dataStart + 3]) invalid();
+      if (canvas || offset !== 12 || length !== 10
+          || bytes[dataStart + 1] || bytes[dataStart + 2] || bytes[dataStart + 3]) invalid();
       const flags = bytes[dataStart];
-      if ((flags & ~0x3e) !== 0 || (flags & 0x02) !== 0) invalid("animation", "Animated WebP is not supported for a stable photo.");
+      if ((flags & ~0x3e) !== 0) invalid();
+      animationFlag = (flags & 0x02) !== 0;
       if (flags & (0x20 | 0x08 | 0x04)) metadataPresent = true;
       canvas = { width: readUInt24LE(bytes, dataStart + 4) + 1, height: readUInt24LE(bytes, dataStart + 7) + 1 };
     } else if (type === "VP8 ") {
+      if (animationFlag || sawAnim || frames) invalid();
       imageChunks += 1;
-      if (length < 10 || (bytes[dataStart] & 1) !== 0 || !bytes.subarray(dataStart + 3, dataStart + 6).equals(Buffer.from([0x9d, 0x01, 0x2a]))) invalid("decode", "WebP lossy frame header is malformed.");
-      width = bytes.readUInt16LE(dataStart + 6) & 0x3fff;
-      height = bytes.readUInt16LE(dataStart + 8) & 0x3fff;
+      ({ width, height } = inspectWebpBitstream(bytes, type, dataStart, length));
     } else if (type === "VP8L") {
+      if (animationFlag || sawAnim || frames) invalid();
       imageChunks += 1;
-      if (length < 5 || bytes[dataStart] !== 0x2f) invalid("decode", "WebP lossless frame header is malformed.");
-      const bits = bytes.readUInt32LE(dataStart + 1);
-      if ((bits >>> 29) !== 0) invalid("decode", "WebP lossless version is unsupported.");
-      width = (bits & 0x3fff) + 1;
-      height = ((bits >>> 14) & 0x3fff) + 1;
+      ({ width, height } = inspectWebpBitstream(bytes, type, dataStart, length));
     } else if (type === "ALPH") {
+      if (animationFlag || sawAnim || frames || sawAlpha || imageChunks || length < 1) invalid();
       sawAlpha = true;
-    } else if (type === "ANIM" || type === "ANMF") {
-      invalid("animation", "Animated WebP is not supported for a stable photo.");
+    } else if (type === "ANIM") {
+      if (!animationFlag || !canvas || sawAnim || frames || imageChunks || length !== 6) invalid();
+      sawAnim = true;
+    } else if (type === "ANMF") {
+      if (!animationFlag || !canvas || !sawAnim || imageChunks || length <= 16) invalid();
+      if (++frames > MAX_IMAGE_ANIMATION_FRAMES
+          || canvas.width * canvas.height * frames > MAX_IMAGE_ANIMATION_PIXELS) {
+        invalid("resource_limit", "Animated image exceeds the safe decoded-frame limit.");
+      }
+      const frameX = readUInt24LE(bytes, dataStart) * 2;
+      const frameY = readUInt24LE(bytes, dataStart + 3) * 2;
+      const frameWidth = readUInt24LE(bytes, dataStart + 6) + 1;
+      const frameHeight = readUInt24LE(bytes, dataStart + 9) + 1;
+      const frameFlags = bytes[dataStart + 15];
+      if ((frameFlags & 0xfc) !== 0 || frameX + frameWidth > canvas.width
+          || frameY + frameHeight > canvas.height) {
+        invalid("dimensions", "Animated WebP frame lies outside its canvas.");
+      }
+      const frame = inspectWebpFrame(bytes, dataStart + 16, dataEnd, frameWidth, frameHeight);
+      sawAlpha ||= frame.sawAlpha;
     } else if (new Set(["EXIF", "XMP ", "ICCP"]).has(type)) {
       metadataPresent = true;
     } else if (sanitized) {
       invalid("metadata", "Public WebP contains metadata or an unapproved chunk.");
+    } else {
+      metadataPresent = true;
     }
-    offset = chunkEnd;
+    offset = chunk.end;
   }
-  if (offset !== bytes.length || imageChunks !== 1 || !width || !height || (sawAlpha && !canvas)) invalid();
-  if (canvas && (canvas.width !== width || canvas.height !== height)) invalid("dimensions", "WebP canvas and frame dimensions disagree.");
+  if (offset !== bytes.length) invalid();
+  if (animationFlag) {
+    if (!canvas || !sawAnim || frames < 1 || imageChunks) invalid();
+    width = canvas.width;
+    height = canvas.height;
+  } else {
+    if (sawAnim || frames || imageChunks !== 1 || !width || !height || (sawAlpha && !canvas)) invalid();
+    if (canvas && (canvas.width !== width || canvas.height !== height)) {
+      invalid("dimensions", "WebP canvas and frame dimensions disagree.");
+    }
+    frames = 1;
+  }
   if (sanitized && metadataPresent) invalid("metadata", "Public WebP contains metadata.");
-  return { width, height, metadataPresent };
+  return {
+    width,
+    height,
+    frames,
+    animated: frames > 1,
+    totalPixels: width * height * frames,
+    metadataPresent,
+  };
 }
 
-function skipGifSubBlocks(bytes, offset) {
+function skipGifSubBlocks(bytes, offset, state) {
   while (offset < bytes.length) {
+    if (++state.blocks > 65_536) invalid("resource_limit");
     const length = bytes[offset++];
     if (length === 0) return offset;
     if (offset + length > bytes.length) invalid();
@@ -321,27 +427,57 @@ function inspectGif(bytes) {
   const height = bytes.readUInt16LE(8);
   let offset = 13;
   if (bytes[10] & 0x80) offset += 3 * (2 ** ((bytes[10] & 0x07) + 1));
+  if (!width || !height || offset > bytes.length) invalid();
   let frames = 0;
+  let records = 0;
+  let metadataPresent = false;
+  const state = { blocks: 0 };
   while (offset < bytes.length) {
+    if (++records > 4096) invalid("resource_limit");
     const introducer = bytes[offset++];
     if (introducer === 0x3b) {
-      if (offset !== bytes.length || frames !== 1) invalid(frames > 1 ? "animation" : "trailing_data");
-      return { width, height, metadataPresent: false };
+      if (offset !== bytes.length || frames < 1) invalid(offset === bytes.length ? "malformed" : "trailing_data");
+      return {
+        width,
+        height,
+        frames,
+        animated: frames > 1,
+        totalPixels: width * height * frames,
+        metadataPresent,
+      };
     }
     if (introducer === 0x21) {
       if (offset >= bytes.length) invalid();
-      offset += 1;
-      offset = skipGifSubBlocks(bytes, offset);
+      const label = bytes[offset++];
+      if (label === 0xf9) {
+        if (offset + 6 > bytes.length || bytes[offset] !== 4
+            || (bytes[offset + 1] & 0xe0) !== 0 || bytes[offset + 5] !== 0) invalid();
+        offset += 6;
+      } else {
+        metadataPresent = true;
+        offset = skipGifSubBlocks(bytes, offset, state);
+      }
       continue;
     }
     if (introducer !== 0x2c || offset + 9 > bytes.length) invalid();
-    frames += 1;
+    const left = bytes.readUInt16LE(offset);
+    const top = bytes.readUInt16LE(offset + 2);
+    const frameWidth = bytes.readUInt16LE(offset + 4);
+    const frameHeight = bytes.readUInt16LE(offset + 6);
     const packed = bytes[offset + 8];
     offset += 9;
+    if (!frameWidth || !frameHeight || left + frameWidth > width || top + frameHeight > height) {
+      invalid("dimensions", "GIF frame lies outside its canvas.");
+    }
+    if (++frames > MAX_IMAGE_ANIMATION_FRAMES
+        || width * height * frames > MAX_IMAGE_ANIMATION_PIXELS) {
+      invalid("resource_limit", "Animated image exceeds the safe decoded-frame limit.");
+    }
     if (packed & 0x80) offset += 3 * (2 ** ((packed & 0x07) + 1));
     if (offset >= bytes.length) invalid();
-    offset += 1; // LZW minimum code size
-    offset = skipGifSubBlocks(bytes, offset);
+    const minimumCodeSize = bytes[offset++];
+    if (minimumCodeSize < 2 || minimumCodeSize > 8) invalid("decode", "GIF LZW code size is invalid.");
+    offset = skipGifSubBlocks(bytes, offset, state);
   }
   invalid();
 }
@@ -439,12 +575,23 @@ export function inspectImageBytes(value, {
   else if (actualType === "image/gif") result = inspectGif(bytes);
   else result = inspectHeif(bytes);
   assertResourceBounds(result.width, result.height, { maxPixels, maxEdge });
+  const frames = Number.isSafeInteger(result.frames) ? result.frames : 1;
+  const totalPixels = Number.isSafeInteger(result.totalPixels)
+    ? result.totalPixels
+    : result.width * result.height;
+  if (frames < 1 || frames > MAX_IMAGE_ANIMATION_FRAMES
+      || totalPixels !== result.width * result.height * frames || totalPixels > maxPixels) {
+    invalid("resource_limit", "Animated image exceeds the safe decoded-frame limit.");
+  }
   if (sanitized && result.metadataPresent) invalid("metadata", "Public image contains metadata.");
   return Object.freeze({
     mimeType: expectedType || actualType,
     width: result.width,
     height: result.height,
     pixels: result.width * result.height,
+    frames,
+    animated: frames > 1,
+    totalPixels,
     metadataPresent: !!result.metadataPresent,
     sanitized: !!sanitized,
   });

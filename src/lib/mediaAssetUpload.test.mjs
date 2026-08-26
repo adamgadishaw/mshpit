@@ -21,6 +21,20 @@ test("stable upload reconciles mutable recipe and alt text after source finalize
   assert.match(source.slice(patch, variants), /altText:/);
 });
 
+test("unknown picker dimensions and duration are omitted instead of fabricated", () => {
+  const finalizeBody = source.slice(
+    source.indexOf("const sourceFinalizeBody ="),
+    source.indexOf("let assetId =", source.indexOf("const sourceFinalizeBody =")),
+  );
+  assert.match(finalizeBody, /sourceWidth === null \? \{\} : \{ width: sourceWidth \}/);
+  assert.match(finalizeBody, /sourceHeight === null \? \{\} : \{ height: sourceHeight \}/);
+  assert.match(finalizeBody, /sourceDurationMs !== null \? \{ durationMs: sourceDurationMs \}/);
+  assert.match(finalizeBody, /kind === "image" \? \{ deliveryMode: needsPhotoRender \? "client" : "server" \}/,
+    "unedited photos explicitly request the server-authored sanitized delivery path");
+  assert.doesNotMatch(finalizeBody, /Math\.max\(1/);
+  assert.match(source, /assetId,\s*kind,\s*signal,\s*body: sourceFinalizeBody/);
+});
+
 test("verified recipe derivatives are reused after an ambiguous response unless a staged replacement is pending", () => {
   assert.match(source, /const photoRevisionPending =/);
   assert.match(source, /result\?\.revisionPending/);

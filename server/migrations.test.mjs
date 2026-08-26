@@ -292,7 +292,10 @@ test("legacy attendance, tour-date, and campaign tables gain safe additive colum
   previous.db.exec(`
     DROP INDEX idx_going_cursor;
     DROP INDEX idx_tourdates_owner_show;
+    DROP INDEX idx_tourdates_artist_visibility;
+    DROP INDEX idx_tourdates_structured_city_date;
     DROP INDEX idx_tourdates_visibility;
+    DROP INDEX idx_tourdates_sitemap_cursor;
     DROP INDEX idx_tourdates_owner;
     DROP INDEX idx_tourdates_provider_identity;
     DROP INDEX idx_tourdates_provider_venue;
@@ -317,6 +320,7 @@ test("legacy attendance, tour-date, and campaign tables gain safe additive colum
     ALTER TABLE tour_dates DROP COLUMN provider_event_id;
     ALTER TABLE tour_dates DROP COLUMN release_at;
     ALTER TABLE tour_dates DROP COLUMN owner_id;
+    ALTER TABLE tour_dates DROP COLUMN artist_key;
     ALTER TABLE email_queue DROP COLUMN claim_token;
     ALTER TABLE email_queue DROP COLUMN claimed_at;
     ALTER TABLE email_campaigns DROP COLUMN tested_revision;
@@ -325,6 +329,11 @@ test("legacy attendance, tour-date, and campaign tables gain safe additive colum
     ALTER TABLE plays DROP COLUMN provider;
   `);
 
+  previous.db.prepare("INSERT OR IGNORE INTO artists (norm,name,data,rank_score,source,updated_at) VALUES (?,?,?,?,?,?)").run("seo exact artist", "SEO Exact Artist", "{}", 0, "test", 1);
+  previous.db.prepare("INSERT OR IGNORE INTO artists (norm,name,data,rank_score,source,updated_at) VALUES (?,?,?,?,?,?)").run("seo ambiguous one", "SEO Ambiguous", "{}", 0, "test", 1);
+  previous.db.prepare("INSERT OR IGNORE INTO artists (norm,name,data,rank_score,source,updated_at) VALUES (?,?,?,?,?,?)").run("seo ambiguous two", " SEO Ambiguous ", "{}", 0, "test", 1);
+  previous.db.prepare("INSERT INTO tour_dates (id,artist,updated_at) VALUES (?,?,?)").run("seo_exact_event", " Radiohead ", 1);
+  previous.db.prepare("INSERT INTO tour_dates (id,artist,updated_at) VALUES (?,?,?)").run("seo_ambiguous_event", "SEO Ambiguous", 1);
   const upgraded = await import(`./db.js?index-migration-upgrade=${encodeURIComponent(dataDir)}`);
   const goingColumns = new Set(upgraded.db.prepare("PRAGMA table_info(going)").all().map((row) => row.name));
   const tourColumns = new Set(upgraded.db.prepare("PRAGMA table_info(tour_dates)").all().map((row) => row.name));
@@ -336,6 +345,7 @@ test("legacy attendance, tour-date, and campaign tables gain safe additive colum
 
   assert.ok(goingColumns.has("created_at"));
   assert.ok(tourColumns.has("owner_id"));
+  assert.ok(tourColumns.has("artist_key"));
   assert.ok(tourColumns.has("release_at"));
   for (const column of [
     "provider_event_id", "event_name", "start_date_time", "start_local_time", "event_timezone",
@@ -349,6 +359,11 @@ test("legacy attendance, tour-date, and campaign tables gain safe additive colum
   assert.ok(campaignColumns.has("tested_revision"));
   assert.ok(playColumns.has("provider"));
   assert.ok(playColumns.has("source_id"));
+  assert.equal(upgraded.db.prepare("SELECT artist_key FROM tour_dates WHERE id=?").get("seo_exact_event").artist_key, "radiohead");
+  assert.equal(upgraded.db.prepare("SELECT artist_key FROM tour_dates WHERE id=?").get("seo_ambiguous_event").artist_key, null);
+  assert.ok(tourIndexes.has("idx_tourdates_artist_visibility"));
+  assert.ok(tourIndexes.has("idx_tourdates_structured_city_date"));
+  assert.ok(tourIndexes.has("idx_tourdates_sitemap_cursor"));
   const legacyCampaign = upgraded.emailStmts.campaignById.get("legacy_tested_campaign");
   assert.equal(legacyCampaign.content_revision, 1);
   assert.equal(legacyCampaign.tested_revision, null,

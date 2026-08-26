@@ -12,6 +12,18 @@ function mediaPipelineError(code, message, cause) {
 
 const safeDimension = (value) => Math.max(1, Math.min(32_768, Math.round(Number(value) || 1)));
 
+const optionalSourceDimension = (value) => {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0
+    ? Math.min(32_768, Math.round(numeric))
+    : null;
+};
+
+const optionalSourceDuration = (value) => {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0 ? Math.round(numeric) : null;
+};
+
 async function createAndUploadRenderVariant({
   assetId,
   localId,
@@ -101,10 +113,14 @@ export async function uploadStudioMediaAsset({
     : null;
 
   const recipeFingerprint = mediaEditFingerprint(edit, { kind, durationMs: asset.durationMs });
+  const sourceWidth = optionalSourceDimension(asset.width);
+  const sourceHeight = optionalSourceDimension(asset.height);
+  const sourceDurationMs = optionalSourceDuration(asset.durationMs);
   const sourceFinalizeBody = {
-    width: safeDimension(asset.width),
-    height: safeDimension(asset.height),
-    ...(kind === "video" ? { durationMs: Math.max(1, Math.round(Number(asset.durationMs) || 0)) } : {}),
+    ...(sourceWidth === null ? {} : { width: sourceWidth }),
+    ...(sourceHeight === null ? {} : { height: sourceHeight }),
+    ...(kind === "video" && sourceDurationMs !== null ? { durationMs: sourceDurationMs } : {}),
+    ...(kind === "image" ? { deliveryMode: needsPhotoRender ? "client" : "server" } : {}),
     orientation: [0, 90, 180, 270].includes(Number(asset.orientation)) ? Number(asset.orientation) : 0,
     editRecipe: edit,
     altText: typeof asset.altText === "string" ? asset.altText : "",
@@ -176,6 +192,7 @@ export async function uploadStudioMediaAsset({
     result = await finalizeMediaSourceV1({
       apiCall,
       assetId,
+      kind,
       signal,
       body: sourceFinalizeBody,
     });

@@ -1,6 +1,7 @@
 import { Directory, File, Paths } from "expo-file-system";
 import { isPersistableMediaDraftUri, mediaDraftFileName, safeMediaDraftSegment } from "../domain/mediaDraftStaging.mjs";
 import { mediaSourceSizeAllowed } from "../domain/mediaEdit.mjs";
+import { resolveMediaMimeType } from "../domain/mediaMime.mjs";
 import {
   MEDIA_PHOTO_SOURCE_MAX_BYTES,
   MEDIA_VIDEO_SOURCE_MAX_BYTES,
@@ -15,6 +16,23 @@ const mediaSizeError = (asset) => asset?.kind === "video"
 const STUDIO_ROOT_NAME = "pit-studio";
 const normalizedUri = (value) => String(value || "").replace(/\\/g, "/").replace(/\/+$/, "");
 const studioRoot = () => new Directory(Paths.document, STUDIO_ROOT_NAME);
+
+function detectedMediaType(input, asset) {
+  let handle;
+  try {
+    handle = input.open();
+    const bytes = handle.readBytes(96);
+    return resolveMediaMimeType({
+      bytes,
+      declaredType: asset?.mimeType,
+      fileName: asset?.fileName || asset?.uri,
+    });
+  } catch {
+    return resolveMediaMimeType({ declaredType: asset?.mimeType, fileName: asset?.fileName || asset?.uri });
+  } finally {
+    try { handle?.close?.(); } catch { /* architecture: allow-empty-catch -- source sniffing already completed and handle cleanup is best-effort */ }
+  }
+}
 
 function isInsideDirectory(uri, directory) {
   const child = normalizedUri(uri);
@@ -53,7 +71,9 @@ export async function stageMediaDraftAssets(assets, { ownerId, projectId } = {})
       if (!mediaSourceSizeAllowed(asset, input.size)) {
         throw new Error(mediaSizeError(asset));
       }
-      const output = new File(directory, mediaDraftFileName(asset, index));
+      const detectedMimeType = detectedMediaType(input, asset);
+      const outputName = mediaDraftFileName(asset, index, { detectedMimeType });
+      const output = new File(directory, outputName);
       await input.copy(output, { overwrite: true });
       copied.push(output);
       if (!mediaSourceSizeAllowed(asset, output.size)) {
@@ -65,13 +85,15 @@ export async function stageMediaDraftAssets(assets, { ownerId, projectId } = {})
         durableLocalUri: output.uri,
         draftManaged: true,
         runtimeFile: null,
+        fileName: outputName,
+        mimeType: detectedMimeType || asset.mimeType || null,
         fileSize: Number(output.size) || asset.fileSize || 0,
       });
     }
     return staged;
   } catch (error) {
     for (const file of copied) {
-      try { if (file.exists) file.delete(); } catch {}
+      try { if (file.exists) file.delete(); } catch { /* architecture: allow-empty-catch -- preserve the staging failure if best-effort cleanup also fails */ }
     }
     throw error;
   }

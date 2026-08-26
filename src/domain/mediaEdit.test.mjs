@@ -9,12 +9,9 @@ import {
   mediaDraftAssetFromPicker,
   mediaEditHasChanges,
   mediaImageRequiresRender,
-  mediaImageNeedsNativeDecode,
-  mediaImageAnimationUnsupported,
   mediaPreviewTransformPlan,
   mediaSourceMaxBytes,
   mediaSourceSizeAllowed,
-  mediaVideoSourceCompatible,
   normalizeMediaEdit,
   normalizeRotation,
   videoEditRequiresExport,
@@ -103,7 +100,7 @@ test("video export decisions never describe cover-only selection as destructive 
   assert.equal(videoEditRequiresExport({ ...base, muted: true }), true);
   assert.equal(videoEditRequiresExport({ ...base, trimEndMs: 20_000 }), true);
   assert.equal(videoEditRequiresExport(defaultMediaEdit("video", { durationMs: 300_000 })), false);
-  assert.equal(videoEditRequiresExport(defaultMediaEdit("video", { durationMs: VIDEO_MAX_DURATION_MS + 1 })), true);
+  assert.equal(videoEditRequiresExport(defaultMediaEdit("video", { durationMs: VIDEO_MAX_DURATION_MS + 1 })), false);
 });
 
 test("picker assets become stable local draft entries without persisting opaque file objects", () => {
@@ -123,30 +120,12 @@ test("default image recipes remain unchanged and rotations snap predictably", ()
   assert.equal(normalizeRotation(450), 90);
 });
 
-test("every source image requires a verified metadata-stripped delivery render", () => {
+test("only visually edited photos require a client render", () => {
   const edit = defaultMediaEdit("image");
-  assert.equal(mediaImageRequiresRender({ kind: "image", mimeType: "image/heic", uri: "file:///photo.heic", edit }), true);
-  assert.equal(mediaImageRequiresRender({ kind: "image", mimeType: "image/jpeg", uri: "file:///photo.jpg", edit }), true);
+  assert.equal(mediaImageRequiresRender({ kind: "image", mimeType: "image/heic", uri: "file:///photo.heic", edit }), false);
+  assert.equal(mediaImageRequiresRender({ kind: "image", mimeType: "image/jpeg", uri: "file:///photo.jpg", edit }), false);
   assert.equal(mediaImageRequiresRender({ kind: "image", mimeType: "image/jpeg", uri: "file:///photo.jpg", edit: { ...edit, filter: "pit" } }), true);
-});
-
-test("HEIC and HEIF sources require a native decoder before web-safe export", () => {
-  assert.equal(mediaImageNeedsNativeDecode({ mimeType: "image/heic", fileName: "photo.heic" }), true);
-  assert.equal(mediaImageNeedsNativeDecode({ fileName: "photo.HEIF" }), true);
-  assert.equal(mediaImageNeedsNativeDecode({ mimeType: "image/jpeg", fileName: "photo.jpg" }), false);
-});
-
-test("animated GIF is never silently flattened into a still photo", () => {
-  assert.equal(mediaImageAnimationUnsupported({ mimeType: "image/gif", fileName: "crowd.gif" }), true);
-  assert.equal(mediaImageAnimationUnsupported({ fileName: "crowd.GIF" }), true);
-  assert.equal(mediaImageAnimationUnsupported({ mimeType: "image/jpeg", fileName: "crowd.jpg" }), false);
-});
-
-test("new stable clip sources admit MP4 and QuickTime while delivery remains server-sanitized", () => {
-  assert.equal(mediaVideoSourceCompatible({ mimeType: "video/mp4", fileName: "clip.mp4" }), true);
-  assert.equal(mediaVideoSourceCompatible({ mimeType: "video/quicktime", fileName: "clip.mov" }), true);
-  assert.equal(mediaVideoSourceCompatible({ mimeType: "", fileName: "clip.MOV" }), true);
-  assert.equal(mediaVideoSourceCompatible({ mimeType: "video/webm", fileName: "clip.webm" }), false);
+  assert.equal(mediaImageRequiresRender({ kind: "video", edit: defaultMediaEdit("video", { durationMs: 3_000 }) }), false);
 });
 
 test("Studio rejects sources above the same post limits before durable staging", () => {

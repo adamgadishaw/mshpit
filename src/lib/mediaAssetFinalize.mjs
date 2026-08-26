@@ -67,6 +67,7 @@ function deadlineFailure(lastError) {
 export async function finalizeMediaSourceV1({
   apiCall,
   assetId,
+  kind,
   body,
   signal,
   now = Date.now,
@@ -90,7 +91,7 @@ export async function finalizeMediaSourceV1({
   // Video finalization owns the authoritative public rendition and must reach
   // `ready`. Photo source finalization intentionally stops at `render_pending`
   // so the client can upload its separately sanitized rendition next.
-  const awaitsReadyAsset = Number.isFinite(Number(body?.durationMs));
+  const awaitsReadyAsset = kind === "video" || Number.isFinite(Number(body?.durationMs));
 
   const completed = (value) => value?.asset?.status === "ready"
     || (!awaitsReadyAsset
@@ -205,7 +206,7 @@ export async function resumeExistingMediaSourceV1({
   }
   if (result.asset.status === "upload_pending") {
     onStage?.("verifying-source");
-    result = await finalizeMediaSourceV1({ apiCall, assetId, body, signal });
+    result = await finalizeMediaSourceV1({ apiCall, assetId, kind, body, signal });
   }
   return result;
 }

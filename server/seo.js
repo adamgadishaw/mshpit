@@ -6,20 +6,28 @@
 // facts. React replaces the preview when it starts; private/session state is
 // never projected into this layer.
 
-import { db, artistStmts, normName } from "./db.js";
+import { DATABASE_DIRECTORY, db, artistStmts, normName } from "./db.js";
 import { activeAccountSql } from "./accountVisibility.js";
 import { htmlRobotsDirective, isProduction } from "./environment.js";
 import { profileAllowsSearchIndexing } from "./profileSearchIndexing.js";
 import { projectedTourDateTicketUrl } from "../src/domain/ticketLinks.mjs";
 import {
+  artistConcertsPath,
   artistPath,
+  artistsPath,
   concertPath,
+  concertsPath,
+  cityConcertsPath,
+  cityVenuesPath,
   eventPath,
+  eventsPath,
   parsePath,
+  parsePublicCollectionPath,
   postPath,
   profilePath,
   slugify,
   venuePath,
+  venuesPath,
 } from "../src/domain/urls.mjs";
 import {
   createPublicDocumentService,
@@ -27,10 +35,12 @@ import {
   renderPublicDocumentShell,
 } from "./features/seo/publicDocuments.js";
 import {
-  createSitemapSnapshot,
+  hasIndexableEventEvidence,
   isSitemapRequestPath,
 } from "./features/seo/sitemapService.js";
+import { createSitemapSnapshotManager } from "./features/seo/sitemapSnapshotManager.js";
 import { decodeArchiveShowKey } from "./features/artistArchive/artistArchiveKeys.js";
+import { isStrictCalendarDate } from "./features/seo/publicEntityPolicy.js";
 
 const SITE_NAME = "Mshpit";
 const DEFAULT_TITLE = "Mshpit — Concert reviews, photos and live music discovery";
@@ -195,7 +205,7 @@ function eventResolution(id, at = Date.now()) {
   const instant = Number.isFinite(Number(at)) ? Number(at) : Date.now();
   const today = new Date(instant).toISOString().slice(0, 10);
   const event = publicEventIdentity.get(String(id || ""), instant, today);
-  if (!event) return null;
+  if (!event || !isStrictCalendarDate(event.date)) return null;
   const path = eventPath(event.id);
   return {
     entity: {
@@ -223,7 +233,7 @@ function eventResolution(id, at = Date.now()) {
 
 function concertResolution(showKey) {
   const decoded = decodeArchiveShowKey(showKey);
-  if (!decoded) return null;
+  if (!decoded || !isStrictCalendarDate(decoded.date)) return null;
   const concert = publicConcertIdentity.get(decoded.artistIdentity, decoded.venueIdentity, decoded.date);
   if (!concert) return null;
   const path = concertPath(showKey);
@@ -378,16 +388,70 @@ function publicRoute(pathname) {
     };
   }
 
-  if (path === "/artists" || path === "/events") {
-    const kind = path.slice(1);
+  const collection = parsePublicCollectionPath(path);
+  if (collection && ["artists", "events", "venues", "concerts"].includes(collection.type)) {
+    const buildPath = {
+      artists: artistsPath,
+      events: eventsPath,
+      venues: venuesPath,
+      concerts: concertsPath,
+    }[collection.type];
+    if (collection.nonCanonicalPageOne) {
+      return { type: "redirect", status: 301, location: buildPath(1) };
+    }
+    if (collection.page > 1_000) return { type: "not-found", status: 404 };
+    const canonicalPath = buildPath(collection.page);
     const document = safePublicDocument(() => publicDocuments.directoryDocument({
-      kind,
-      canonicalPath: path,
+      kind: collection.type,
+      page: collection.page,
+      canonicalPath,
       at: Date.now(),
     }));
     if (document === PUBLIC_DOCUMENT_UNAVAILABLE) return { type: "unavailable", status: 503 };
-    if (!document) return { type: "not-found", status: 404 };
-    return { type: "document", status: 200, canonicalPath: path, document };
+    const rows = document?.[collection.type];
+    if (!document || !Array.isArray(rows) || rows.length === 0) {
+      return { type: "not-found", status: 404 };
+    }
+    if (document.canonicalPath !== canonicalPath || path !== document.canonicalPath) {
+      return { type: "redirect", status: 301, location: document.canonicalPath || canonicalPath };
+    }
+    return { type: "document", status: 200, canonicalPath, indexable: true, document };
+  }
+
+  if (collection && ["city-venues", "city-concerts", "artist-concerts"].includes(collection.type)) {
+    const buildPath = collection.type === "city-venues" ? cityVenuesPath
+      : collection.type === "city-concerts" ? cityConcertsPath : artistConcertsPath;
+    const identity = collection.type === "artist-concerts"
+      ? collection.artistSlug
+      : { countryCode: collection.countryCode, city: collection.citySlug };
+    if (collection.page > 1_000) return { type: "not-found", status: 404 };
+    const canonicalPath = buildPath(identity, collection.page);
+    if (!canonicalPath) return { type: "not-found", status: 404 };
+    if (collection.nonCanonicalPageOne) {
+      return { type: "redirect", status: 301, location: buildPath(identity, 1) };
+    }
+    const document = safePublicDocument(() => publicDocuments.documentFor({
+      kind: collection.type,
+      page: collection.page,
+      at: Date.now(),
+      ...(collection.type === "artist-concerts"
+        ? { publicSlug: collection.artistSlug }
+        : { countryCode: collection.countryCode, citySlug: collection.citySlug }),
+    }));
+    if (document === PUBLIC_DOCUMENT_UNAVAILABLE) return { type: "unavailable", status: 503 };
+    const rows = document?.directoryKind === "venues" ? document.venues : document?.concerts;
+    if (!document || !Array.isArray(rows) || rows.length === 0) {
+      return { type: "not-found", status: 404 };
+    }
+    if (document.canonicalPath !== canonicalPath || path !== document.canonicalPath) {
+      return { type: "redirect", status: 301, location: document.canonicalPath || canonicalPath };
+    }
+    return { type: "document", status: 200, canonicalPath, indexable: true, document };
+  }
+
+  if (!collection && (/^\/(?:venues|concerts)(?:\/|$)/iu.test(path)
+    || /^\/artist\/[^/]+\/concerts(?:\/|$)/iu.test(path))) {
+    return { type: "not-found", status: 404 };
   }
 
   if (path === "/discover") {
@@ -416,10 +480,14 @@ function publicRoute(pathname) {
     }
     const resolution = hydrateResolution(identity);
     if (resolution.unavailable) return { type: "unavailable", status: 503 };
-    if (resolution.document && documentIsIndexable(resolution.document)) {
-      return { type: "document", status: 200, ...resolution };
+    if (resolution.document) {
+      return {
+        type: "document",
+        status: 200,
+        indexable: documentIsIndexable(resolution.document),
+        ...resolution,
+      };
     }
-    if (resolution.document) return { type: "app", status: 200, entity: resolution.entity };
     if (identity.documentRequest) return { type: "not-found", status: 404 };
     return { type: "app", status: 200, entity: resolution.entity };
   }
@@ -450,7 +518,17 @@ function documentIsIndexable(document) {
     return substantiveText(document.post?.text, 40) || document.post?.media?.length > 0;
   }
   if (document.kind === "event") {
-    return !!(document.event?.artist && document.event?.venue && document.event?.date);
+    return hasIndexableEventEvidence({
+      eligibleFanContent: document.posts?.some((post) => (
+        substantiveText(post.text, 40) || post.media?.length > 0
+      )),
+      // The event projector has already revalidated the persisted URL and
+      // removes past/non-purchasable offers before this policy runs.
+      currentPublicTicketUrl: document.event?.ticketUrl,
+      // The projector emits MusicEvent only for strict offset DateTime plus a
+      // complete structured street/locality/country address.
+      completeRichEvent: document.jsonLd?.some((node) => node?.["@type"] === "MusicEvent"),
+    });
   }
   if (document.kind === "concert") {
     return document.reviews?.some((review) => substantiveText(review.text, 40) || review.media?.length)
@@ -602,22 +680,16 @@ export function robotsTxt() {
   ].join("\n");
 }
 
-const SITEMAP_CACHE_TTL_MS = 5 * 60 * 1000;
-let sitemapSnapshotCache = null;
+const sitemapSnapshots = createSitemapSnapshotManager({
+  database: db,
+  dataDir: DATABASE_DIRECTORY,
+  env: process.env,
+});
 
-function currentSitemapSnapshot(at) {
-  if (!sitemapSnapshotCache || at - sitemapSnapshotCache.createdAt >= SITEMAP_CACHE_TTL_MS) {
-    sitemapSnapshotCache = {
-      createdAt: at,
-      snapshot: createSitemapSnapshot({
-        database: db,
-        env: process.env,
-        now: at,
-      }),
-    };
-  }
-  return sitemapSnapshotCache.snapshot;
-}
+export const loadSitemapSnapshot = () => sitemapSnapshots.load();
+export const refreshSitemapSnapshot = (options) => sitemapSnapshots.refresh(options);
+export const drainSitemapSnapshotRefresh = () => sitemapSnapshots.drain();
+export const sitemapSnapshotHealth = () => sitemapSnapshots.health();
 
 export function sitemapXml() {
   return sitemapForPath("/sitemap.xml");
@@ -626,6 +698,10 @@ export function sitemapXml() {
 export function sitemapForPath(pathname) {
   const path = cleanPathname(pathname);
   if (!path || !isSitemapRequestPath(path)) return null;
-  const at = Date.now();
-  return currentSitemapSnapshot(at).xmlFor(path);
+  return sitemapSnapshots.xmlFor(path);
+}
+
+export function sitemapResponseForPath(pathname) {
+  const path = cleanPathname(pathname);
+  return path ? sitemapSnapshots.lookup(path) : Object.freeze({ status: "unrecognized" });
 }

@@ -75,6 +75,7 @@ function snapshotFingerprint(snapshot, asset) {
 const autoCoverCacheKey = (asset) => `${asset?.id || "video"}:${asset?.uri || ""}`;
 
 const photoPreviewCacheKey = (asset, edit) => asset?.kind === "image"
+  && mediaImageRequiresRender(asset, edit)
   ? `${asset.id}:${asset.uri}:${mediaEditFingerprint(edit, { kind: "image" })}`
   : null;
 

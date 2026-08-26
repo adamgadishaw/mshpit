@@ -102,7 +102,64 @@ export const profilePath = (handle) => {
   return `/u/${encodeURIComponent(clean)}`;
 };
 
-/**
+
+const COLLECTION_ROOTS = Object.freeze({ artists: "/artists", events: "/events", venues: "/venues", concerts: "/concerts" });
+const positivePage = (value) => { const page = Number(value ?? 1); return Number.isSafeInteger(page) && page >= 1 ? page : null; };
+export function paginatedPath(root, page = 1) {
+  const cleanPage = positivePage(page);
+  if (!Object.values(COLLECTION_ROOTS).includes(root) || !cleanPage) return null;
+  return cleanPage === 1 ? root : `${root}/page/${cleanPage}`;
+}
+export const artistsPath = (page = 1) => paginatedPath(COLLECTION_ROOTS.artists, page);
+export const eventsPath = (page = 1) => paginatedPath(COLLECTION_ROOTS.events, page);
+export const venuesPath = (page = 1) => paginatedPath(COLLECTION_ROOTS.venues, page);
+export const concertsPath = (page = 1) => paginatedPath(COLLECTION_ROOTS.concerts, page);
+function structuredCityParts(value) {
+  const countryCode = String(value?.countryCode || value?.venueCountryCode || value?.venue_country_code || "").trim().toLowerCase();
+  const citySlug = slugify(value?.city || value?.venueCity || value?.venue_city || "");
+  return /^[a-z]{2}$/.test(countryCode) && citySlug ? { countryCode, citySlug } : null;
+}
+function cityCollectionPath(kind, value, page = 1) {
+  const city = structuredCityParts(value), cleanPage = positivePage(page);
+  if (!city || !cleanPage || !["venues", "concerts"].includes(kind)) return null;
+  const root = `/${kind}/${city.countryCode}/${city.citySlug}`;
+  return cleanPage === 1 ? root : `${root}/page/${cleanPage}`;
+}
+export const cityVenuesPath = (value, page = 1) => cityCollectionPath("venues", value, page);
+export const cityConcertsPath = (value, page = 1) => cityCollectionPath("concerts", value, page);
+export function artistConcertsPath(artistOrSlug, page = 1) {
+  const artist = artistOrSlug && typeof artistOrSlug === "object" ? artistOrSlug : null;
+  const slug = slugify(artist?.publicSlug || artist?.public_slug || artistOrSlug), cleanPage = positivePage(page);
+  if (!slug || !cleanPage) return null;
+  const root = `/artist/${slug}/concerts`;
+  return cleanPage === 1 ? root : `${root}/page/${cleanPage}`;
+}
+function parsedPage(parts, start) {
+  if (parts.length === start) return { page: 1, nonCanonicalPageOne: false };
+  if (parts.length !== start + 2 || parts[start]?.toLowerCase() !== "page" || !/^\d+$/.test(parts[start + 1])) return null;
+  const page = positivePage(parts[start + 1]);
+  return page ? { page, nonCanonicalPageOne: page === 1 } : null;
+}
+export function parsePublicCollectionPath(pathname) {
+  const parts = String(pathname || "/").split("?")[0].split("#")[0].split("/").filter(Boolean);
+  if (!parts.length) return null;
+  const head = parts[0].toLowerCase();
+  if (["artists", "events"].includes(head)) { const pagination = parsedPage(parts, 1); return pagination ? { type: head, ...pagination } : null; }
+  if (["venues", "concerts"].includes(head)) {
+    if (parts.length === 1 || parts[1]?.toLowerCase() === "page") { const pagination = parsedPage(parts, 1); return pagination ? { type: head, ...pagination } : null; }
+    const countryCode = parts[1]?.toLowerCase(), citySlug = parts[2]?.toLowerCase();
+    if (!/^[a-z]{2}$/.test(countryCode) || !citySlug || slugify(citySlug) !== citySlug) return null;
+    const pagination = parsedPage(parts, 3);
+    return pagination ? { type: head === "venues" ? "city-venues" : "city-concerts", countryCode, citySlug, ...pagination } : null;
+  }
+  if (head === "artist" && parts.length >= 3 && parts[2]?.toLowerCase() === "concerts") {
+    const artistSlug = parts[1]?.toLowerCase();
+    if (!artistSlug || slugify(artistSlug) !== artistSlug) return null;
+    const pagination = parsedPage(parts, 3);
+    return pagination ? { type: "artist-concerts", artistSlug, ...pagination } : null;
+  }
+  return null;
+}/**
  * Parse a pathname into something the app can open.
  *
  * A root slug is ambiguous by construction: `/turnstile` could be a handle, an

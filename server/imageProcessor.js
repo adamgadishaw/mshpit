@@ -102,7 +102,23 @@ function normalizedWorkerResult(message, operation) {
       || byteSize < 1 || byteSize > MAX_IMAGE_OUTPUT_BYTES) {
     throw new ImageProcessorError("worker_protocol", "Image verification returned an invalid rendition.");
   }
-  return Object.freeze({ bytes, byteSize, mimeType: result.mimeType, width, height, pixels });
+  const sourceWidth = Number(result?.sourceWidth ?? width);
+  const sourceHeight = Number(result?.sourceHeight ?? height);
+  if (!Number.isSafeInteger(sourceWidth) || sourceWidth < 1 || sourceWidth > 16_384
+      || !Number.isSafeInteger(sourceHeight) || sourceHeight < 1 || sourceHeight > 16_384
+      || sourceWidth * sourceHeight > MAX_IMAGE_PIXELS) {
+    throw new ImageProcessorError("worker_protocol", "Image verification returned invalid source dimensions.");
+  }
+  return Object.freeze({
+    bytes,
+    byteSize,
+    mimeType: result.mimeType,
+    width,
+    height,
+    pixels,
+    sourceWidth,
+    sourceHeight,
+  });
 }
 
 function executeIsolatedImageJob(operation, bytes, options = {}) {
@@ -167,6 +183,7 @@ function executeIsolatedImageJob(operation, bytes, options = {}) {
         expectedType: options.expectedType,
         outputType: options.outputType,
         maxOutputBytes: options.maxOutputBytes,
+        maxEdge: options.maxEdge,
         profileRendition: options.profileRendition,
         // HEVC-backed HEIC decoding is intentionally recovery-only. Keeping
         // this as an explicit, strict boolean prevents ordinary upload routes
@@ -230,6 +247,7 @@ export async function sanitizeDecodedImage(bytes, {
   outputType = expectedType,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   maxOutputBytes = MAX_IMAGE_OUTPUT_BYTES,
+  maxEdge = null,
   allowHeicFallback = false,
   allowLegacyJpegTrailer = false,
   profileRendition = null,
@@ -239,6 +257,7 @@ export async function sanitizeDecodedImage(bytes, {
     outputType,
     timeoutMs,
     maxOutputBytes,
+    maxEdge,
     allowHeicFallback: allowHeicFallback === true,
     allowLegacyJpegTrailer: allowLegacyJpegTrailer === true,
     profileRendition,

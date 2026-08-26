@@ -2,22 +2,59 @@ import { activeAccountSql } from "../../accountVisibility.js";
 import { profileAllowsSearchIndexingSql } from "../../profileSearchIndexing.js";
 import { postMediaProjectionByPost } from "../../mediaAssets.js";
 import { publicPageSitemapEntries } from "../../publicPages.js";
-import { artistPath, concertPath, eventPath, postPath, profilePath, slugify, venuePath } from "../../../src/domain/urls.mjs";
+import { projectedTourDateTicketUrl } from "../../../src/domain/ticketLinks.mjs";
+import {
+  artistConcertsPath,
+  artistPath,
+  artistsPath,
+  cityConcertsPath,
+  cityVenuesPath,
+  concertPath,
+  concertsPath,
+  eventPath,
+  eventsPath,
+  postPath,
+  profilePath,
+  slugify,
+  venuePath,
+  venuesPath,
+} from "../../../src/domain/urls.mjs";
 import { createArtistMemorialRepository } from "../artistMemorials/artistMemorialRepository.js";
 import { createArtistMemorialService } from "../artistMemorials/artistMemorialService.js";
-import { archiveShowKey } from "../artistArchive/artistArchiveKeys.js";
+import { archiveIdentityPart, archiveShowKey } from "../artistArchive/artistArchiveKeys.js";
+import {
+  PUBLIC_ENTITY_THRESHOLDS,
+  isStrictCalendarDate,
+  hasStructuredShowLocationCollision,
+  isStrictIsoDateTime,
+  qualifiesCityConcertDirectory,
+  qualifiesCityVenueDirectory,
+  structuredCityIdentity,
+} from "./publicEntityPolicy.js";
+import { createPublicDocumentRepository } from "./publicDocumentRepository.js";
 
 export const SITEMAP_MAX_URLS = 50_000;
 export const SITEMAP_MAX_BYTES = 50 * 1024 * 1024;
+// The current reducer shares candidates in memory. Crossing this explicit
+// safety ceiling fails the refresh without swapping a partial snapshot; it is
+// not a truncation limit. Move to the documented spool reducer before growth
+// reaches this boundary.
+export const SITEMAP_MAX_SOURCE_ROWS = 100_000;
 
 export const SITEMAP_PATHS = Object.freeze([
   "/sitemaps/pages.xml",
   "/sitemaps/artists.xml",
   "/sitemaps/events.xml",
   "/sitemaps/venues.xml",
+  "/sitemaps/cities.xml",
   "/sitemaps/concerts.xml",
   "/sitemaps/posts.xml",
   "/sitemaps/profiles.xml",
+]);
+
+const CANDIDATE_READ_SIZE = 500;
+const NON_PURCHASABLE_EVENT_STATUSES = new Set([
+  "cancelled", "canceled", "offsale", "off-sale", "off_sale", "unavailable",
 ]);
 
 const xmlEscape = (value) => String(value ?? "")
@@ -242,25 +279,38 @@ export function sitemapIndexXml(env = process.env, paths = SITEMAP_PATHS) {
   return `<?xml version="1.0" encoding="UTF-8"?>\n<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n${rows.join("\n")}\n</sitemapindex>\n`;
 }
 
-export function pageSitemapEntries() {
+export function pageSitemapEntries({ includeDiscover = true } = {}) {
   return [
     { path: "/" },
-    { path: "/discover" },
-    { path: "/artists" },
-    { path: "/events" },
+    includeDiscover ? { path: "/discover" } : null,
     ...publicPageSitemapEntries().map(({ path }) => ({ path })),
-  ];
+  ].filter(Boolean);
 }
 
-function visiblePostCandidates(database, limit = -1) {
-  const readLimit = Number.isSafeInteger(limit) && limit > 0 ? limit : -1;
-  const rows = database.prepare(`SELECT p.id,p.user_id,p.artist,p.artist_key,p.venue,p.venue_key,p.city,p.date,
+function visiblePostCandidates(database, limit = -1, { maximumRows = SITEMAP_MAX_SOURCE_ROWS } = {}) {
+  const readLimit = Number.isSafeInteger(limit) && limit > 0 ? limit : null;
+  const rows = [];
+  const statement = database.prepare(`SELECT p.id,p.user_id,p.artist,p.artist_key,p.venue,p.venue_key,p.city,p.date,
       p.kind,p.overall,p.review,p.photos_public,p.created_at,p.updated_at,u.name AS author_name,u.handle AS author_handle
     FROM posts p JOIN users u ON u.id=p.user_id
     WHERE p.removed=0 AND ${activeAccountSql("u")}
       AND (LENGTH(TRIM(COALESCE(p.review,'')))>=40
         OR EXISTS (SELECT 1 FROM post_media pm WHERE pm.post_id=p.id))
-    ORDER BY p.created_at DESC,p.id DESC LIMIT ?`).all(readLimit);
+      AND (? IS NULL OR p.created_at<? OR (p.created_at=? AND p.id<?))
+    ORDER BY p.created_at DESC,p.id DESC LIMIT ?`);
+  let cursorAt = null;
+  let cursorId = null;
+  while (readLimit == null || rows.length < readLimit) {
+    const batchSize = Math.min(CANDIDATE_READ_SIZE, readLimit == null ? CANDIDATE_READ_SIZE : readLimit - rows.length);
+    const batch = statement.all(cursorAt, cursorAt, cursorAt, cursorId, batchSize);
+    if (!batch.length) break;
+    if (rows.length + batch.length > maximumRows) throw new RangeError("SITEMAP_SOURCE_ROW_LIMIT");
+    rows.push(...batch);
+    if (batch.length < batchSize) break;
+    const last = batch.at(-1);
+    cursorAt = Number(last.created_at);
+    cursorId = String(last.id);
+  }
   const mediaCandidates = rows.map((row) => row.id);
   const mediaByPost = new Map();
   // postMediaProjectionByPost intentionally caps each read at 100 identities.
@@ -277,8 +327,81 @@ function visiblePostCandidates(database, limit = -1) {
   }));
 }
 
-export function postSitemapEntries(database) {
-  return visiblePostCandidates(database).filter((row) => row.meaningfulText || row.readyMedia.length).map((row) => {
+function visibleTourDateCandidates(database, {
+  now = Date.now(),
+  maximumRows = SITEMAP_MAX_SOURCE_ROWS,
+} = {}) {
+  const requestedAt = Number(now);
+  const at = Number.isSafeInteger(requestedAt) && requestedAt >= 0 ? requestedAt : Date.now();
+  const today = new Date(at).toISOString().slice(0, 10);
+  const rows = [];
+  const statement = database.prepare(`SELECT td.id,td.provider_event_id,td.artist,td.artist_key,td.venue,td.place,td.source,
+      td.venue_provider_id,td.date,td.updated_at,td.owner_id,COALESCE(td.provider_active,1) AS provider_active,
+      td.event_status,td.ticket_url,td.start_date_time,td.venue_address_line1,td.venue_address_line2,
+      td.venue_city,td.venue_region,td.venue_country_code,td.venue_country
+    FROM tour_dates td INDEXED BY idx_tourdates_sitemap_cursor
+    LEFT JOIN users owner ON owner.id=td.owner_id
+    WHERE td.release_at<=?
+      AND td.date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
+      AND TRIM(COALESCE(td.artist,''))<>'' AND TRIM(COALESCE(td.venue,''))<>''
+      AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
+      AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1 OR td.date<?)
+      AND (? IS NULL OR td.date>? OR (td.date=? AND td.id>?))
+    ORDER BY td.date ASC,td.id ASC LIMIT ?`);
+  let cursorDate = null;
+  let cursorId = null;
+  while (true) {
+    const batch = statement.all(
+      at,
+      today,
+      cursorDate,
+      cursorDate,
+      cursorDate,
+      cursorId,
+      CANDIDATE_READ_SIZE,
+    );
+    if (!batch.length) break;
+    if (rows.length + batch.length > maximumRows) throw new RangeError("SITEMAP_SOURCE_ROW_LIMIT");
+    rows.push(...batch);
+    if (batch.length < CANDIDATE_READ_SIZE) break;
+    const last = batch.at(-1);
+    cursorDate = String(last.date);
+    cursorId = String(last.id);
+  }
+  return rows.filter((row) => isStrictCalendarDate(row.date));
+}
+
+export function materializeSitemapCandidates(database, {
+  now = Date.now(),
+  maximumSourceRows = SITEMAP_MAX_SOURCE_ROWS,
+} = {}) {
+  if (!database?.prepare) throw new TypeError("Sitemap candidates require a database");
+  const requestedAt = Number(now);
+  const at = Number.isSafeInteger(requestedAt) && requestedAt >= 0 ? requestedAt : Date.now();
+  const today = new Date(at).toISOString().slice(0, 10);
+  const safeMaximum = Math.max(1, Math.min(
+    SITEMAP_MAX_SOURCE_ROWS,
+    Math.floor(Number(maximumSourceRows) || SITEMAP_MAX_SOURCE_ROWS),
+  ));
+  const posts = visiblePostCandidates(database, -1, { maximumRows: safeMaximum });
+  const tourDates = visibleTourDateCandidates(database, {
+    now: at,
+    maximumRows: safeMaximum - posts.length,
+  });
+  const upcomingEvents = tourDates.filter((row) => row.date >= today
+    && (row.owner_id != null || Number(row.provider_active) === 1));
+  return Object.freeze({
+    generatedAt: at,
+    today,
+    posts: Object.freeze(posts),
+    tourDates: Object.freeze(tourDates),
+    upcomingEvents: Object.freeze(upcomingEvents),
+  });
+}
+
+export function postSitemapEntries(database, { candidates = null } = {}) {
+  const posts = candidates?.posts || visiblePostCandidates(database);
+  return posts.filter((row) => row.meaningfulText || row.readyMedia.length).map((row) => {
     const context = compactText([
       row.artist,
       row.venue ? `at ${row.venue}` : "",
@@ -317,9 +440,9 @@ export function postSitemapEntries(database) {
   });
 }
 
-export function profileSitemapEntries(database) {
+export function profileSitemapEntries(database, { candidates = null } = {}) {
   const imageProjection = verifiedProfileImageProjection(database);
-  const postEntries = visiblePostCandidates(database);
+  const postEntries = candidates?.posts || visiblePostCandidates(database);
   const latestPostByUser = new Map();
   for (const row of postEntries) {
     if (!row.meaningfulText && !(row.photos_public && row.readyMedia.length)) continue;
@@ -350,7 +473,7 @@ export function profileSitemapEntries(database) {
     }));
 }
 
-export function artistSitemapEntries(database, { now = Date.now() } = {}) {
+export function artistSitemapEntries(database, { now = Date.now(), candidates = null } = {}) {
   const requestedAt = Number(now);
   const at = Number.isSafeInteger(requestedAt) && requestedAt >= 0 ? requestedAt : Date.now();
   const today = new Date(at).toISOString().slice(0, 10);
@@ -358,10 +481,21 @@ export function artistSitemapEntries(database, { now = Date.now() } = {}) {
       WHERE public_slug IS NOT NULL AND trim(public_slug)<>''
       ORDER BY rank_score DESC,norm`).all();
   const artistByNorm = new Map(artistRows.map((row) => [String(row.norm || "").trim().toLowerCase(), row]));
-  const artistByName = new Map(artistRows.map((row) => [String(row.name || "").trim().toLowerCase(), row]));
+  const artistByName = new Map();
+  const ambiguousArtistNames = new Set();
+  for (const row of artistRows) {
+    const name = String(row.name || "").trim().toLowerCase();
+    if (!name || ambiguousArtistNames.has(name)) continue;
+    if (artistByName.has(name)) {
+      artistByName.delete(name);
+      ambiguousArtistNames.add(name);
+    } else {
+      artistByName.set(name, row);
+    }
+  }
 
   const postUpdates = new Map();
-  for (const row of visiblePostCandidates(database)) {
+  for (const row of candidates?.posts || visiblePostCandidates(database)) {
     if (!row.meaningfulText && !(row.photos_public && row.readyMedia.length)) continue;
     const byKey = artistByNorm.get(String(row.artist_key || "").trim().toLowerCase());
     const byName = artistByName.get(String(row.artist || "").trim().toLowerCase());
@@ -370,16 +504,15 @@ export function artistSitemapEntries(database, { now = Date.now() } = {}) {
     postUpdates.set(artistKey, newest(postUpdates.get(artistKey), row.updated_at, row.created_at));
   }
 
-  const tourUpdates = new Map(database.prepare(`SELECT a.norm AS artist_key,MAX(td.updated_at) lastmod
-    FROM tour_dates td JOIN artists a ON LOWER(TRIM(a.name))=LOWER(TRIM(td.artist))
-    LEFT JOIN users owner ON owner.id=td.owner_id
-    WHERE trim(COALESCE(td.artist,''))<>''
-      AND td.release_at<=? AND td.date>=?
-      AND td.date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
-      AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
-      AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1)
-    GROUP BY a.norm`).all(at, today)
-    .map((row) => [row.artist_key, Number(row.lastmod || 0)]));
+  const tourUpdates = new Map();
+  const upcomingEvents = candidates?.upcomingEvents || visibleTourDateCandidates(database, { now: at })
+    .filter((row) => row.date >= today && (row.owner_id != null || Number(row.provider_active) === 1));
+  for (const row of upcomingEvents) {
+    const byKey = artistByNorm.get(String(row.artist_key || "").trim().toLowerCase());
+    const byName = artistByName.get(String(row.artist || "").trim().toLowerCase());
+    const artistKey = (byKey || byName)?.norm;
+    if (artistKey) tourUpdates.set(artistKey, newest(tourUpdates.get(artistKey), row.updated_at));
+  }
 
   const profileDetails = new Map(database.prepare(`SELECT ap.artist_key,ap.bio,ap.updated_at
     FROM artist_profiles ap JOIN users owner ON owner.id=ap.owner_id
@@ -415,6 +548,9 @@ export function artistSitemapEntries(database, { now = Date.now() } = {}) {
       || tourUpdates.has(row.norm))
     .map((row) => ({
       path: artistPath({ name: row.name, publicSlug: row.public_slug }),
+      artistKey: row.norm,
+      artistName: row.name,
+      publicSlug: row.public_slug,
       lastmod: newest(
         row.updated_at,
         profileDetails.get(row.norm)?.updated_at,
@@ -426,37 +562,99 @@ export function artistSitemapEntries(database, { now = Date.now() } = {}) {
     }));
 }
 
-function visibleUpcomingEvents(database, { now = Date.now(), limit = -1 } = {}) {
+function visibleUpcomingEvents(database, { now = Date.now(), limit = -1, candidates = null } = {}) {
   const requestedAt = Number(now);
   const at = Number.isSafeInteger(requestedAt) && requestedAt >= 0 ? requestedAt : Date.now();
   const today = new Date(at).toISOString().slice(0, 10);
-  const readLimit = Number.isSafeInteger(limit) && limit > 0 ? limit : -1;
-  return database.prepare(`SELECT td.id,td.artist,td.venue,td.source,td.venue_provider_id,
-      td.date,td.updated_at
-    FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id
-    WHERE td.release_at<=? AND td.date>=?
-      AND td.date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
-      AND TRIM(COALESCE(td.artist,''))<>'' AND TRIM(COALESCE(td.venue,''))<>''
-      AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
-      AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1)
-    ORDER BY td.date ASC,td.id ASC LIMIT ?`).all(at, today, readLimit);
+  const rows = (candidates?.upcomingEvents || visibleTourDateCandidates(database, { now: at }))
+    .filter((row) => row.date >= today && (row.owner_id != null || Number(row.provider_active) === 1));
+  return Number.isSafeInteger(limit) && limit > 0 ? rows.slice(0, limit) : rows;
+}
+
+export function hasIndexableEventEvidence({
+  eligibleFanContent = false,
+  currentPublicTicketUrl = null,
+  completeRichEvent = false,
+} = {}) {
+  return Boolean(
+    eligibleFanContent
+    || publicHttpsUrl(currentPublicTicketUrl)
+    || completeRichEvent,
+  );
+}
+
+function eventEvidenceKey(row) {
+  const artist = String(row?.artist || "").toLowerCase();
+  const venue = String(row?.venue || "").toLowerCase();
+  const date = String(row?.date || "");
+  return artist && venue && isStrictCalendarDate(date)
+    ? JSON.stringify([artist, venue, date])
+    : null;
+}
+
+function eligibleFanEvidenceByEvent(posts) {
+  const evidence = new Map();
+  for (const row of posts || []) {
+    if (row.kind != null && row.kind !== "review") continue;
+    if (!row.meaningfulText && !(row.photos_public && row.readyMedia?.length)) continue;
+    const key = eventEvidenceKey(row);
+    if (key) evidence.set(key, newest(evidence.get(key), row.updated_at, row.created_at));
+  }
+  return evidence;
+}
+
+function currentPublicEventTicketUrl(row, today) {
+  const status = String(row?.event_status || "").trim().toLowerCase();
+  if (!isStrictCalendarDate(row?.date) || row.date < today || NON_PURCHASABLE_EVENT_STATUSES.has(status)) {
+    return null;
+  }
+  return projectedTourDateTicketUrl(row) || null;
+}
+
+function hasCompleteRichEventRow(row) {
+  return isStrictIsoDateTime(row?.start_date_time)
+    && Boolean(String(row?.venue_address_line1 || row?.venue_address_line2 || "").trim())
+    && Boolean(String(row?.venue_city || "").trim())
+    && Boolean(String(row?.venue_country_code || row?.venue_country || "").trim());
 }
 
 export function eventSitemapEntries(database, options = {}) {
-  return visibleUpcomingEvents(database, options).map((row) => ({
-    path: eventPath(row.id),
-    lastmod: row.updated_at,
-  }));
+  const candidates = options.candidates || null;
+  const events = visibleUpcomingEvents(database, options);
+  const fanEvidence = eligibleFanEvidenceByEvent(candidates?.posts || visiblePostCandidates(database));
+  const today = candidates?.today
+    || new Date(Number.isFinite(Number(options.now)) ? Number(options.now) : Date.now()).toISOString().slice(0, 10);
+  return events.flatMap((row) => {
+    const fanLastmod = fanEvidence.get(eventEvidenceKey(row));
+    if (!hasIndexableEventEvidence({
+      eligibleFanContent: Boolean(fanLastmod),
+      currentPublicTicketUrl: currentPublicEventTicketUrl(row, today),
+      completeRichEvent: hasCompleteRichEventRow(row),
+    })) return [];
+    return [{
+      path: eventPath(row.id),
+      lastmod: newest(row.updated_at, fanLastmod),
+    }];
+  });
 }
 
-export function concertSitemapEntries(database, { now = Date.now() } = {}) {
+function publicConcertCandidates(database, { now = Date.now(), candidates = null } = {}) {
   const requestedAt = Number(now);
   const at = Number.isSafeInteger(requestedAt) && requestedAt >= 0 ? requestedAt : Date.now();
   const today = new Date(at).toISOString().slice(0, 10);
   const concerts = new Map();
-  for (const row of visiblePostCandidates(database)) {
-    if (row.kind === "status" || !/^\d{4}-\d{2}-\d{2}$/.test(String(row.date || "")) || row.date > today) continue;
+  const posts = candidates?.posts || visiblePostCandidates(database);
+  const locationRowsByShow = new Map();
+  for (const tourRow of candidates?.tourDates || visibleTourDateCandidates(database, { now: at })) {
+    const showKey = showLocationKey(tourRow);
+    if (!showKey) continue;
+    if (!locationRowsByShow.has(showKey)) locationRowsByShow.set(showKey, []);
+    locationRowsByShow.get(showKey).push(tourRow);
+  }
+  for (const row of posts) {
+    if (row.kind === "status" || !isStrictCalendarDate(row.date) || row.date > today) continue;
     if (!row.artist || !row.venue || (!row.meaningfulText && !(row.photos_public && row.readyMedia.length))) continue;
+    if (hasStructuredShowLocationCollision(locationRowsByShow.get(showLocationKey(row)))) continue;
     const key = archiveShowKey({
       artistIdentity: row.artist_key || row.artist,
       venueIdentity: row.venue_key || row.venue,
@@ -466,41 +664,34 @@ export function concertSitemapEntries(database, { now = Date.now() } = {}) {
     concerts.set(key, {
       path: concertPath(key),
       lastmod: newest(current?.lastmod, row.updated_at, row.created_at),
+      artistKey: row.artist_key || null,
+      artistName: row.artist,
+      venueKey: row.venue_key || null,
+      venueName: row.venue,
+      date: row.date,
     });
   }
   return [...concerts.values()];
 }
 
-function venueLocationIdentity(row) {
-  const structuredLocality = row?.venue_city || row?.city || "";
-  const fallbackLocality = String(row?.place || "").split(",")[0];
-  return slugify(structuredLocality || fallbackLocality);
+export function concertSitemapEntries(database, options = {}) {
+  return publicConcertCandidates(database, options).map(({ path, lastmod }) => ({ path, lastmod }));
 }
 
-function venueRouteCandidates(database, { now = Date.now() } = {}) {
-  const requestedAt = Number(now);
-  const at = Number.isSafeInteger(requestedAt) && requestedAt >= 0 ? requestedAt : Date.now();
-  const today = new Date(at).toISOString().slice(0, 10);
-  const events = database.prepare(`SELECT td.id,td.venue,td.place,td.source,td.venue_provider_id,
-      td.venue_city,td.venue_region,td.venue_country_code,td.venue_country,td.updated_at
-    FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id
-    WHERE td.release_at<=? AND TRIM(COALESCE(td.venue,''))<>''
-      AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
-      AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1 OR td.date<?)
-    ORDER BY td.updated_at DESC,td.id DESC LIMIT 10000`).all(at, today);
-  const posts = database.prepare(`SELECT p.id,p.venue,p.city,p.updated_at,p.created_at
-    FROM posts p JOIN users u ON u.id=p.user_id
-    WHERE p.removed=0 AND TRIM(COALESCE(p.venue,''))<>'' AND ${activeAccountSql("u")}
-    ORDER BY p.updated_at DESC,p.created_at DESC,p.id DESC LIMIT 10000`).all();
-  return { events, posts };
+function venueLocationIdentity(row) {
+  return slugify(row?.venue_city || row?.city || row?.place || "");
 }
 
 export function venueSitemapEntries(database, options = {}) {
   const upcomingById = new Map(visibleUpcomingEvents(database, options).map((row) => [row.id, row]));
-  const publicPostsById = new Map(visiblePostCandidates(database)
+  const publicPostRows = options.candidates?.posts || visiblePostCandidates(database);
+  const publicPostsById = new Map(publicPostRows
     .filter((row) => row.kind !== "status" && (row.meaningfulText || (row.photos_public && row.readyMedia.length)))
     .map((row) => [row.id, row]));
-  const routeCandidates = venueRouteCandidates(database, options);
+  const routeCandidates = {
+    events: options.candidates?.tourDates || visibleTourDateCandidates(database, options),
+    posts: publicPostRows,
+  };
   const groups = new Map();
   const groupFor = (row) => {
     const venueSlug = slugify(row?.venue);
@@ -511,11 +702,13 @@ export function venueSitemapEntries(database, options = {}) {
         locations: new Set(),
         providers: new Map(),
         unattributedLastmod: null,
+        hasUnstructuredLocation: false,
       });
     }
     const group = groups.get(venueSlug);
     const location = venueLocationIdentity(row);
     if (location) group.locations.add(location);
+    else group.hasUnstructuredLocation = true;
     return group;
   };
 
@@ -556,11 +749,247 @@ export function venueSitemapEntries(database, options = {}) {
     // let that post change or populate the provider-specific sitemap leaf.
     // A name-only URL is safe only when no provider identity can redirect it
     // and the available locality evidence does not collapse distinct rooms.
-    if (!providers.length && group.unattributedLastmod && group.locations.size <= 1) {
+    if (!providers.length && group.unattributedLastmod && !group.hasUnstructuredLocation && group.locations.size === 1) {
       addEntry(venuePath(group.name), group.unattributedLastmod);
     }
   }
   return [...entries.values()];
+}
+
+export function paginationEntries({ itemCount, lastmod, pathFor, includeFirst = false }) {
+  const pages = Math.min(
+    1_000,
+    Math.ceil(Math.max(0, Number(itemCount) || 0) / PUBLIC_ENTITY_THRESHOLDS.collectionPageSize),
+  );
+  const first = includeFirst ? 1 : 2;
+  const entries = [];
+  for (let page = first; page <= pages; page += 1) {
+    const path = pathFor(page);
+    if (path) entries.push({ path, lastmod });
+  }
+  return entries;
+}
+
+function collectionPageSitemapEntries({ artists, events, venues, concerts, totals }) {
+  return [
+    ...paginationEntries({
+      itemCount: totals.artists,
+      lastmod: newest(...artists.map((row) => row.lastmod)),
+      pathFor: artistsPath,
+      includeFirst: true,
+    }),
+    ...paginationEntries({
+      itemCount: totals.events,
+      lastmod: newest(...events.map((row) => row.updated_at)),
+      pathFor: eventsPath,
+      includeFirst: true,
+    }),
+    ...paginationEntries({
+      itemCount: totals.venues,
+      lastmod: newest(...venues.map((row) => row.lastmod)),
+      pathFor: venuesPath,
+      includeFirst: true,
+    }),
+    ...paginationEntries({
+      itemCount: totals.concerts,
+      lastmod: newest(...concerts.map((row) => row.lastmod)),
+      pathFor: concertsPath,
+      includeFirst: true,
+    }),
+  ];
+}
+
+const displayIdentity = (value) => String(value || "").trim().toLocaleLowerCase("en");
+
+function showLocationKey(row) {
+  const artist = displayIdentity(row?.artistName || row?.artist);
+  const venue = displayIdentity(row?.venueName || row?.venue);
+  const date = String(row?.date || "");
+  return artist && venue && isStrictCalendarDate(date)
+    ? JSON.stringify([artist, venue, date])
+    : null;
+}
+
+const structuredLocationComparisonKey = (identity) => identity
+  ? JSON.stringify([identity.countryCode.toUpperCase(), displayIdentity(identity.city)])
+  : null;
+const structuredLocationRouteKey = (identity) => identity
+  ? [identity.countryCode.toLowerCase(), slugify(identity.city)].join("|")
+  : null;
+const isActivePublicTourRow = (row) => row?.owner_id != null || Number(row?.provider_active) === 1;
+
+function compareRepresentativeEvents(left, right) {
+  const leftProviderRank = String(left?.provider_event_id || "").trim() ? 0 : 1;
+  const rightProviderRank = String(right?.provider_event_id || "").trim() ? 0 : 1;
+  if (leftProviderRank !== rightProviderRank) return leftProviderRank - rightProviderRank;
+  for (const field of ["source", "provider_event_id", "id"]) {
+    const compared = displayIdentity(left?.[field]).localeCompare(displayIdentity(right?.[field]));
+    if (compared) return compared;
+  }
+  return 0;
+}
+
+function citySitemapEntries({ candidates, venueEntries, concerts }) {
+  const indexableVenues = new Set(venueEntries.map((row) => row.path));
+  const tourRowsByShow = new Map();
+  const venueNameEvidence = new Map();
+  const cityNamesByRoute = new Map();
+
+  for (const row of candidates.tourDates) {
+    if (!isActivePublicTourRow(row)) continue;
+    const identity = structuredCityIdentity(row);
+    const locationKey = structuredLocationComparisonKey(identity);
+    const routeKey = structuredLocationRouteKey(identity);
+    if (routeKey) {
+      if (!cityNamesByRoute.has(routeKey)) cityNamesByRoute.set(routeKey, new Set());
+      cityNamesByRoute.get(routeKey).add(displayIdentity(identity.city));
+    }
+
+    const venueName = displayIdentity(row.venue);
+    if (venueName) {
+      if (!venueNameEvidence.has(venueName)) {
+        venueNameEvidence.set(venueName, {
+          hasProvider: false,
+          hasUnstructured: false,
+          locations: new Set(),
+        });
+      }
+      const evidence = venueNameEvidence.get(venueName);
+      if (String(row.venue_provider_id || "").trim()) evidence.hasProvider = true;
+      if (locationKey) evidence.locations.add(locationKey);
+      else evidence.hasUnstructured = true;
+    }
+
+    const showKey = showLocationKey(row);
+    if (!showKey || !identity) continue;
+    if (!tourRowsByShow.has(showKey)) tourRowsByShow.set(showKey, []);
+    tourRowsByShow.get(showKey).push({ row, identity, locationKey });
+  }
+
+  const showDetails = new Map();
+  for (const [showKey, rows] of tourRowsByShow) {
+    const locations = new Set(rows.map((entry) => entry.locationKey));
+    const artistKeys = new Set(rows
+      .map((entry) => displayIdentity(entry.row.artist_key))
+      .filter(Boolean));
+    const representative = [...rows].sort((left, right) =>
+      compareRepresentativeEvents(left.row, right.row))[0];
+    showDetails.set(showKey, { representative, locations, artistKeys });
+  }
+
+  const groupFor = (map, identity) => {
+    const routeKey = structuredLocationRouteKey(identity);
+    if (!routeKey) return null;
+    if (!map.has(routeKey)) map.set(routeKey, {
+      identity,
+      routeKey,
+      itemIds: new Set(),
+      venuePaths: new Set(),
+      lastmod: null,
+    });
+    return map.get(routeKey);
+  };
+
+  const venueGroups = new Map();
+  for (const [showKey, detail] of showDetails) {
+    if (detail.locations.size !== 1) continue;
+    const { row, identity, locationKey } = detail.representative;
+    if (row.date < candidates.today) continue;
+    const providerVenueId = String(row.venue_provider_id || "").trim();
+    const evidence = venueNameEvidence.get(displayIdentity(row.venue));
+    const safeNameOnly = !providerVenueId && evidence
+      && !evidence.hasProvider
+      && !evidence.hasUnstructured
+      && evidence.locations.size === 1
+      && evidence.locations.has(locationKey);
+    const path = providerVenueId
+      ? venuePath({ name: row.venue, providerVenueId, source: row.source })
+      : safeNameOnly ? venuePath(row.venue) : null;
+    if (!path || !indexableVenues.has(path)) continue;
+    const group = groupFor(venueGroups, identity);
+    if (!group) continue;
+    group.itemIds.add(showKey);
+    group.venuePaths.add(path);
+    group.lastmod = newest(group.lastmod, row.updated_at);
+  }
+
+  const concertGroups = new Map();
+  for (const row of concerts) {
+    const detail = showDetails.get(showLocationKey(row));
+    const artistKey = displayIdentity(row.artistKey);
+    if (!detail || detail.locations.size !== 1 || !artistKey
+      || detail.artistKeys.size !== 1 || !detail.artistKeys.has(artistKey)) continue;
+    const identity = detail.representative.identity;
+    const venueIdentity = archiveIdentityPart(row.venueKey || row.venueName);
+    if (!venueIdentity) continue;
+    const group = groupFor(concertGroups, identity);
+    if (!group) continue;
+    group.itemIds.add(row.path);
+    group.venuePaths.add(venueIdentity);
+    group.lastmod = newest(group.lastmod, row.lastmod);
+  }
+
+  const entries = [];
+  for (const group of venueGroups.values()) {
+    if (cityNamesByRoute.get(group.routeKey)?.size !== 1 || !qualifiesCityVenueDirectory({
+      itemCount: group.itemIds.size,
+      venueCount: group.venuePaths.size,
+    })) continue;
+    entries.push(...paginationEntries({
+      itemCount: group.venuePaths.size,
+      lastmod: group.lastmod,
+      includeFirst: true,
+      pathFor: (page) => cityVenuesPath(group.identity, page),
+    }));
+  }
+  for (const group of concertGroups.values()) {
+    if (cityNamesByRoute.get(group.routeKey)?.size !== 1 || !qualifiesCityConcertDirectory({
+      itemCount: group.itemIds.size,
+      venueCount: group.venuePaths.size,
+    })) continue;
+    entries.push(...paginationEntries({
+      itemCount: group.itemIds.size,
+      lastmod: group.lastmod,
+      includeFirst: true,
+      pathFor: (page) => cityConcertsPath(group.identity, page),
+    }));
+  }
+  return entries.sort((left, right) => left.path.localeCompare(right.path));
+}
+function artistArchiveSitemapEntries({ artistEntries, concerts }) {
+  const byKey = new Map(artistEntries.map((row) => [String(row.artistKey || "").toLowerCase(), row]));
+  const byName = new Map();
+  const ambiguousNames = new Set();
+  for (const row of artistEntries) {
+    const name = String(row.artistName || "").trim().toLowerCase();
+    if (!name || ambiguousNames.has(name)) continue;
+    if (byName.has(name)) {
+      byName.delete(name);
+      ambiguousNames.add(name);
+    } else {
+      byName.set(name, row);
+    }
+  }
+  const groups = new Map();
+  for (const concert of concerts) {
+    const artist = byKey.get(String(concert.artistKey || "").toLowerCase())
+      || byName.get(String(concert.artistName || "").trim().toLowerCase());
+    if (!artist?.publicSlug) continue;
+    if (!groups.has(artist.publicSlug)) groups.set(artist.publicSlug, { items: [], lastmod: null });
+    const group = groups.get(artist.publicSlug);
+    group.items.push(concert);
+    group.lastmod = newest(group.lastmod, concert.lastmod);
+  }
+  const entries = [];
+  for (const [publicSlug, group] of groups) {
+    entries.push(...paginationEntries({
+      itemCount: group.items.length,
+      lastmod: group.lastmod,
+      includeFirst: true,
+      pathFor: (page) => artistConcertsPath(publicSlug, page),
+    }));
+  }
+  return entries.sort((left, right) => left.path.localeCompare(right.path));
 }
 
 const SITEMAP_DATASETS = Object.freeze([
@@ -568,25 +997,71 @@ const SITEMAP_DATASETS = Object.freeze([
   ["artists", "/sitemaps/artists.xml"],
   ["events", "/sitemaps/events.xml"],
   ["venues", "/sitemaps/venues.xml"],
+  ["cities", "/sitemaps/cities.xml"],
   ["concerts", "/sitemaps/concerts.xml"],
   ["posts", "/sitemaps/posts.xml"],
   ["profiles", "/sitemaps/profiles.xml"],
 ]);
 
-function sitemapEntriesFor(name, database, now) {
-  if (name === "pages") return pageSitemapEntries();
-  if (!database?.prepare) return null;
-  if (name === "artists") return artistSitemapEntries(database, { now });
-  if (name === "events") return eventSitemapEntries(database, { now });
-  if (name === "venues") return venueSitemapEntries(database, { now });
-  if (name === "concerts") return concertSitemapEntries(database, { now });
-  if (name === "posts") return postSitemapEntries(database);
-  if (name === "profiles") return profileSitemapEntries(database);
-  return null;
+export function buildSitemapDatasets(database, { now = Date.now() } = {}) {
+  if (!database?.prepare) return new Map([["pages", pageSitemapEntries()]]);
+  const candidates = materializeSitemapCandidates(database, { now });
+  const options = { now: candidates.generatedAt, candidates };
+  const artists = artistSitemapEntries(database, options);
+  const events = eventSitemapEntries(database, options);
+  const venues = venueSitemapEntries(database, options);
+  // Collection pages and leaf sitemaps deliberately have different quality
+  // policies. Count the actual public directory query once during the async
+  // snapshot build so a broader leaf candidate set can never manufacture an
+  // empty /page/N URL.
+  const directoryRepository = createPublicDocumentRepository(database);
+  const directoryTotals = Object.fromEntries(
+    ["artists", "events", "venues", "concerts"].map((kind) => [kind,
+      directoryRepository.readDirectory({ kind, page: 1, at: candidates.generatedAt, today: candidates.today })?.total || 0]),
+  );
+  const concerts = publicConcertCandidates(database, options);
+  const pages = [
+    ...pageSitemapEntries({
+      includeDiscover: artists.length > 0
+        || candidates.upcomingEvents.length > 0
+        || candidates.posts.some((row) => row.meaningfulText || row.readyMedia.length),
+    }),
+    ...collectionPageSitemapEntries({
+      artists,
+      events: candidates.upcomingEvents,
+      venues,
+      concerts,
+      totals: directoryTotals,
+    }),
+  ];
+  const cities = citySitemapEntries({ candidates, venueEntries: venues, concerts });
+  const artistArchives = artistArchiveSitemapEntries({ artistEntries: artists, concerts });
+  const datasets = new Map([
+    ["pages", pages],
+    ["artists", artists],
+    ["events", events],
+    ["venues", venues],
+    ["cities", cities],
+    ["concerts", [
+      ...concerts.map(({ path, lastmod }) => ({ path, lastmod })),
+      ...artistArchives,
+    ]],
+    ["posts", postSitemapEntries(database, options)],
+    ["profiles", profileSitemapEntries(database, options)],
+  ]);
+  Object.defineProperty(datasets, "sourceCounts", {
+    value: Object.freeze({
+      posts: candidates.posts.length,
+      tourDates: candidates.tourDates.length,
+      upcomingEvents: candidates.upcomingEvents.length,
+    }),
+    enumerable: false,
+  });
+  return datasets;
 }
 
-function sitemapRowPartsFor(name, { database, env, now, maxUrls, maxBytes }) {
-  const entries = sitemapEntriesFor(name, database, now);
+function sitemapRowPartsFor(name, { database, env, now, maxUrls, maxBytes, datasets = null }) {
+  const entries = (datasets || buildSitemapDatasets(database, { now })).get(name);
   return entries == null
     ? null
     : urlsetRowParts(entries, publicOrigin(env), { maxUrls, maxBytes });
@@ -599,7 +1074,7 @@ function shardPath(basePath, partIndex) {
 const MAX_NEGATIVE_SITEMAP_SHARDS = 512;
 
 function parsedSitemapPath(pathname) {
-  const match = /^\/sitemaps\/(pages|artists|events|venues|concerts|posts|profiles)(?:-([1-9][0-9]{0,4}))?\.xml$/
+  const match = /^\/sitemaps\/(pages|artists|events|venues|cities|concerts|posts|profiles)(?:-([1-9][0-9]{0,4}))?\.xml$/
     .exec(String(pathname || ""));
   if (!match) return null;
   const shardNumber = match[2] ? Number(match[2]) : 1;
@@ -622,10 +1097,13 @@ export function createSitemapSnapshot({
   const generatedAt = Number.isSafeInteger(requestedAt) && requestedAt >= 0
     ? requestedAt
     : Date.now();
-  const options = { database, env, now: generatedAt, maxUrls, maxBytes };
+  const datasets = buildSitemapDatasets(database, { now: generatedAt });
+  const options = { database, env, now: generatedAt, maxUrls, maxBytes, datasets };
   const rowsByPath = new Map();
   const paths = [];
+  const datasetCounts = {};
   for (const [name, basePath] of SITEMAP_DATASETS) {
+    datasetCounts[name] = datasets.get(name)?.length || 0;
     const rowParts = sitemapRowPartsFor(name, options);
     if (!rowParts) continue;
     for (let index = 0; index < rowParts.length; index += 1) {
@@ -650,6 +1128,12 @@ export function createSitemapSnapshot({
   return Object.freeze({
     generatedAt,
     paths: Object.freeze([...paths]),
+    stats: Object.freeze({
+      totalUrls: Object.values(datasetCounts).reduce((total, count) => total + count, 0),
+      datasetCounts: Object.freeze({ ...datasetCounts }),
+      sourceCounts: Object.freeze({ ...(datasets.sourceCounts || {}) }),
+      shardCount: paths.length,
+    }),
     xmlFor(pathname) {
       const path = String(pathname || "");
       if (responseCache.has(path)) return responseCache.get(path);

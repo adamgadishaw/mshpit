@@ -12,7 +12,7 @@ process.env.PIT_DATA_DIR = dataDir;
 process.env.PUBLIC_ORIGIN = "https://www.example.com";
 
 const { db, q, normName } = await import("./db.js");
-const { enforceHtmlRobotsMeta, metadataFor, resolveEntity, headTagsFor, injectHead, renderNotFoundDocument, sitemapXml, sitemapForPath, seoHttpPlan } = await import("./seo.js");
+const { enforceHtmlRobotsMeta, metadataFor, resolveEntity, headTagsFor, injectHead, renderNotFoundDocument, refreshSitemapSnapshot, sitemapXml, sitemapForPath, seoHttpPlan } = await import("./seo.js");
 const { postSitemapEntries, profileSitemapEntries } = await import("./features/seo/sitemapService.js");
 const { artistPath, concertPath, eventPath, profilePath, showPath, venuePath } = await import("../src/domain/urls.mjs");
 
@@ -34,7 +34,7 @@ function addPost(id, userId, { artist, venue, overall, room, createdAt }) {
       `${artist} review by ${userId}, with enough first-hand detail to be useful.`, createdAt);
 }
 
-test("SEO metadata, entity routing, and sitemap exclude restricted authors", () => {
+test("SEO metadata, entity routing, and sitemap exclude restricted authors", async () => {
   const active = addUser("u_seo_active", "seoactive");
   const suspended = addUser("u_seo_suspended", "seosuspended");
   const banned = addUser("u_seo_banned", "seobanned");
@@ -85,6 +85,7 @@ test("SEO metadata, entity routing, and sitemap exclude restricted authors", () 
     "artist aggregates count only active authors");
   assert.doesNotMatch(artistShell, /SEO Suspended Secret Hall|SEO Banned Hall/);
 
+  assert.equal((await refreshSitemapSnapshot({ force: true })).ok, true);
   assert.match(sitemapXml(), /sitemapindex/);
   const postSitemap = sitemapForPath("/sitemaps/posts.xml");
   assert.match(postSitemap, new RegExp(showPath("seo_active_show")));
@@ -341,10 +342,359 @@ test("events, durable venues, historical concerts, and directories form one craw
   assert.equal(concertPlan.document.concert.ratingCount, 1);
   assert.equal(resolveEntity(concertRoute)?.archiveShowKey, key);
 
-  for (const path of ["/artists", "/events", "/discover"]) {
+  for (const path of ["/artists", "/events", "/venues", "/concerts", "/discover"]) {
     const plan = seoHttpPlan(path);
     assert.equal(plan.type, "document");
     assert.equal(plan.document.kind, path === "/discover" ? "discover" : "directory");
     assert.match(injectHead('<html><head><title>Pit</title></head><body><div id="root"></div></body></html>', path), /BreadcrumbList/);
+  }
+});
+
+test("thin public entities keep unique SSR at 200/noindex while real event evidence earns indexation", async () => {
+  const thinArtist = "SEO Thin Public Artist";
+  const thinVenue = "SEO Thin Public Hall";
+  const thinDate = "2036-01-10";
+  db.prepare(`INSERT OR REPLACE INTO artists
+    (norm,name,public_slug,search_key,genre,photo,bio,popularity,rank_score,data,source,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    normName(thinArtist), thinArtist, "seo-thin-public-artist", "seothinpublicartist", null, null,
+    "", 1, 1, "{}", "test", 1, 1,
+  );
+  db.prepare(`INSERT INTO tour_dates
+    (id,event_name,artist,venue,place,date,source,updated_at,release_at,provider_active)
+    VALUES (?,?,?,?,?,?,?,?,0,1)`).run(
+    "seo_thin_public_event", `${thinArtist} Live`, thinArtist, thinVenue, "Toronto, Canada",
+    thinDate, "test", Date.now(),
+  );
+
+  const removedAuthor = addUser("u_seo_thin_removed", "seothinremoved");
+  addPost("seo_thin_removed_review", removedAuthor.id, {
+    artist: thinArtist, venue: thinVenue, overall: 4, room: 4, createdAt: Date.now(),
+  });
+  db.prepare("UPDATE posts SET venue=?,venue_key=?,date=?,kind='review',removed=1 WHERE id=?")
+    .run(thinVenue, normName(thinVenue), thinDate, "seo_thin_removed_review");
+
+  const bannedAuthor = addUser("u_seo_thin_banned", "seothinbanned");
+  db.prepare("UPDATE users SET is_banned=1 WHERE id=?").run(bannedAuthor.id);
+  addPost("seo_thin_banned_review", bannedAuthor.id, {
+    artist: thinArtist, venue: thinVenue, overall: 4, room: 4, createdAt: Date.now() + 1,
+  });
+  db.prepare("UPDATE posts SET venue=?,venue_key=?,date=?,kind='review' WHERE id=?")
+    .run(thinVenue, normName(thinVenue), thinDate, "seo_thin_banned_review");
+
+  const thinPath = eventPath("seo_thin_public_event");
+  const thinPlan = seoHttpPlan(thinPath);
+  assert.equal(thinPlan.type, "document");
+  assert.equal(thinPlan.status, 200);
+  assert.equal(thinPlan.indexable, false);
+  assert.equal(thinPlan.document.kind, "event");
+  assert.deepEqual(thinPlan.document.posts, [],
+    "removed and restricted fan content cannot promote a thin event");
+  assert.match(thinPlan.document.title, /SEO Thin Public Artist at SEO Thin Public Hall/);
+
+  const thinHtml = injectHead(
+    '<html><head><title>Pit</title><meta name="robots" content="index,follow" /></head><body><div id="root"></div></body></html>',
+    thinPath,
+    thinPlan,
+    { PIT_ENV: "production" },
+  );
+  assert.match(thinHtml, /data-mshpit-public-document/);
+  assert.match(thinHtml, /SEO Thin Public Artist/);
+  assert.match(thinHtml, /SEO Thin Public Hall/);
+  assert.equal([...thinHtml.matchAll(/name="robots"/g)].length, 1);
+  assert.match(thinHtml, /name="robots" content="noindex,follow"/);
+  assert.doesNotMatch(thinHtml, /content="index,follow/);
+  assert.equal([...thinHtml.matchAll(/rel="canonical"/g)].length, 1);
+  assert.match(thinHtml, /rel="canonical" href="https:\/\/www\.example\.com\/event\/seo_thin_public_event"/);
+
+  const catalogThinArtist = "SEO Catalog Thin Artist";
+  db.prepare(`INSERT OR REPLACE INTO artists
+    (norm,name,public_slug,search_key,genre,photo,bio,popularity,rank_score,data,source,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    normName(catalogThinArtist), catalogThinArtist, "seo-catalog-thin-artist", "seocatalogthinartist",
+    null, null, "", 1, 1, "{}", "test", 1, 1,
+  );
+  const thinArtistPath = artistPath({ name: catalogThinArtist, publicSlug: "seo-catalog-thin-artist" });
+  const thinArtistPlan = seoHttpPlan(thinArtistPath);
+  assert.equal(thinArtistPlan.type, "document");
+  assert.equal(thinArtistPlan.status, 200);
+  assert.equal(thinArtistPlan.indexable, false,
+    "a legitimate thin artist keeps its public SSR instead of degrading to the generic app shell");
+
+  const fan = addUser("u_seo_event_evidence", "seoeventevidence");
+  const fanArtist = "SEO Fan Evidence Artist";
+  const fanVenue = "SEO Fan Evidence Hall";
+  const fanDate = "2036-01-11";
+  db.prepare(`INSERT INTO tour_dates
+    (id,event_name,artist,venue,place,date,source,updated_at,release_at,provider_active)
+    VALUES (?,?,?,?,?,?,?,?,0,1)`).run(
+    "seo_fan_evidence_event", `${fanArtist} Live`, fanArtist, fanVenue, "Montreal, Canada",
+    fanDate, "test", Date.now() + 2,
+  );
+  addPost("seo_fan_evidence_review", fan.id, {
+    artist: fanArtist, venue: fanVenue, overall: 5, room: 4, createdAt: Date.now() + 3,
+  });
+  db.prepare("UPDATE posts SET venue=?,venue_key=?,city='Montreal',date=?,kind='review' WHERE id=?")
+    .run(fanVenue, normName(fanVenue), fanDate, "seo_fan_evidence_review");
+
+  const fanPath = eventPath("seo_fan_evidence_event");
+  const fanPlan = seoHttpPlan(fanPath);
+  assert.equal(fanPlan.type, "document");
+  assert.equal(fanPlan.status, 200);
+  assert.equal(fanPlan.indexable, true);
+  assert.ok(fanPlan.document.posts.some((post) => post.text.length >= 40));
+
+  const suspendedOwner = addUser("u_seo_event_suspended", "seoeventsuspended");
+  db.prepare("UPDATE users SET suspended_until=? WHERE id=?").run(Date.now() + 60_000, suspendedOwner.id);
+  db.prepare(`INSERT INTO tour_dates
+    (id,event_name,artist,venue,place,date,source,owner_id,updated_at,release_at,provider_active)
+    VALUES (?,?,?,?,?,?,?,?,?,0,1)`).run(
+    "seo_restricted_owner_event", "Restricted Owner Live", "Restricted Owner Artist",
+    "Restricted Owner Hall", "Toronto, Canada", "2036-01-12", "manual", suspendedOwner.id, Date.now() + 4,
+  );
+  assert.equal(seoHttpPlan(eventPath("seo_restricted_owner_event")).status, 404,
+    "restricted owners remain fail-closed rather than receiving thin SSR");
+
+  db.prepare(`INSERT INTO tour_dates
+    (id,event_name,artist,venue,place,date,source,updated_at,release_at,provider_active)
+    VALUES (?,?,?,?,?,?,?,?,0,0)`).run(
+    "seo_inactive_provider_event", "Inactive Provider Live", "Inactive Provider Artist",
+    "Inactive Provider Hall", "Toronto, Canada", "2036-01-13", "ticketmaster", Date.now() + 5,
+  );
+  assert.equal(seoHttpPlan(eventPath("seo_inactive_provider_event")).status, 404,
+    "provider-moderated future events remain excluded");
+
+  assert.equal((await refreshSitemapSnapshot({ force: true })).ok, true);
+  const eventSitemap = sitemapForPath("/sitemaps/events.xml");
+  assert.match(eventSitemap, /\/event\/seo_fan_evidence_event/);
+  assert.doesNotMatch(
+    eventSitemap,
+    /seo_thin_public_event|seo_restricted_owner_event|seo_inactive_provider_event/,
+  );
+});
+
+test("artist and event directory pages are canonical, crawlable, and fail closed", () => {
+  const insertArtist = db.prepare(`INSERT OR REPLACE INTO artists
+    (norm,name,public_slug,search_key,genre,photo,bio,popularity,rank_score,data,source,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+  const insertEvent = db.prepare(`INSERT OR REPLACE INTO tour_dates
+    (id,provider_event_id,event_name,artist,artist_key,venue,place,date,source,updated_at,release_at,
+      venue_provider_id,venue_city,venue_country_code,venue_country,provider_active)
+    VALUES (?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,1)`);
+  for (let index = 1; index <= 30; index += 1) {
+    const suffix = String(index).padStart(2, "0");
+    const artist = `SEO Page Artist ${suffix}`;
+    const artistKey = normName(artist);
+    insertArtist.run(
+      artistKey, artist, `seo-page-artist-${suffix}`, `seopageartist${suffix}`, "Live", null,
+      "A substantive artist biography created to verify stable server-rendered pagination for public music discovery pages.",
+      1, 1, "{}", "test", 1, 1,
+    );
+    insertEvent.run(
+      `seo_page_event_${suffix}`, `tm-seo-page-${suffix}`, `${artist} Live`, artist, artistKey,
+      `SEO Page Hall ${suffix}`, "Toronto, Canada", `2035-01-${suffix}`, "ticketmaster", Date.now(),
+      `seo-page-venue-${suffix}`, "Toronto", "CA", "Canada",
+    );
+  }
+
+  for (const kind of ["artists", "events"]) {
+    const rootPath = `/${kind}`;
+    const pagePath = `/${kind}/page/2`;
+    assert.deepEqual(
+      { type: seoHttpPlan(`${rootPath}/page/1`).type, status: seoHttpPlan(`${rootPath}/page/1`).status,
+        location: seoHttpPlan(`${rootPath}/page/1`).location },
+      { type: "redirect", status: 301, location: rootPath },
+      "page one has only one canonical URL",
+    );
+
+    for (const alias of [`/${kind.toUpperCase()}`, `${rootPath}/`]) {
+      const aliasPlan = seoHttpPlan(alias);
+      assert.deepEqual(
+        { type: aliasPlan.type, status: aliasPlan.status, location: aliasPlan.location },
+        { type: "redirect", status: 301, location: rootPath },
+        `${alias} must consolidate on the exact collection canonical`,
+      );
+    }
+
+    const plan = seoHttpPlan(pagePath);
+    assert.equal(plan.type, "document");
+    assert.equal(plan.status, 200);
+    assert.equal(plan.indexable, true);
+    assert.equal(plan.canonicalPath, pagePath);
+    assert.equal(plan.document.canonicalUrl, `https://www.example.com${pagePath}`);
+    const html = injectHead(
+      '<html><head><title>Pit</title></head><body><div id="root"></div></body></html>',
+      pagePath,
+      plan,
+      { PIT_ENV: "production" },
+    );
+    assert.match(html, new RegExp(`<link rel="canonical" href="https://www\\.example\\.com${pagePath}"`));
+    assert.match(html, /name="robots" content="index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1"/);
+    assert.match(html, new RegExp(`href="${rootPath}"[^>]*>Previous page</a>`));
+    assert.match(html, kind === "artists" ? /href="\/artist\// : /href="\/event\//,
+      "the server HTML contains ordinary crawlable entity anchors");
+  }
+
+  for (const path of [
+    "/artists/page/no", "/events/page/0", "/artists/page/2/extra",
+    "/artists/page/1001", "/events/page/1001", "/artists/page/1000", "/events/page/1000",
+  ]) {
+    assert.equal(seoHttpPlan(path).status, 404, `${path} must fail closed`);
+  }
+});
+
+test("event and concert routes reject impossible calendar dates", () => {
+  db.prepare(`INSERT OR REPLACE INTO tour_dates
+    (id,event_name,artist,venue,place,date,source,updated_at,release_at,provider_active)
+    VALUES (?,?,?,?,?,?,?, ?,0,1)`).run(
+    "seo_invalid_date_event", "Impossible Date Live", "Impossible Date Artist", "Calendar Hall",
+    "Toronto, Canada", "2026-02-30", "ticketmaster", Date.now(),
+  );
+  assert.equal(seoHttpPlan(eventPath("seo_invalid_date_event")).status, 404);
+
+  const member = addUser("u_seo_invalid_date", "seoinvaliddate");
+  db.prepare(`INSERT INTO posts
+    (id,user_id,artist,artist_key,venue,venue_key,city,date,overall,room,review,photos,photos_public,kind,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,'[]',0,'review',?,?)`).run(
+    "seo_invalid_date_review", member.id, "Impossible Date Artist", normName("Impossible Date Artist"),
+    "Calendar Hall", normName("Calendar Hall"), "Toronto", "2026-02-30", 4, 4,
+    "A detailed review that would otherwise make this impossible calendar date look publishable.", Date.now(), Date.now(),
+  );
+  const invalidKey = archiveShowKey({
+    artistIdentity: normName("Impossible Date Artist"),
+    venueIdentity: normName("Calendar Hall"),
+    date: "2026-02-30",
+  });
+  assert.equal(seoHttpPlan(concertPath(invalidKey)).status, 404);
+});
+
+test("public city and artist collection routes are canonical, thresholded, linked, and hostile-path safe", () => {
+  const member = addUser("u_seo_collection_route", "seocollectionroute");
+  const artist = "SEO Route Artist";
+  const artistKey = normName(artist);
+  db.prepare("INSERT OR REPLACE INTO artists (norm,name,public_slug,search_key,genre,photo,bio,popularity,rank_score,data,source,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)")
+    .run(artistKey, artist, "seo-route-artist", "seorouteartist", "Rock", null,
+      "A substantive route-test artist biography covering live performances, touring history, and fan concert archives.",
+      10, 10, "{}", "test", 1, 1);
+
+  const insertEvent = db.prepare("INSERT INTO tour_dates (id,provider_event_id,event_name,artist,artist_key,venue,date,source,updated_at,release_at,venue_provider_id,venue_address_line1,venue_city,venue_region,venue_postal_code,venue_country_code,venue_country,provider_active) VALUES (?,?,?,?,?,?,?,?,?,0,?,?,?,?,?,?,?,1)");
+  for (let index = 1; index <= 3; index += 1) {
+    const venueNumber = index === 3 ? 1 : index;
+    insertEvent.run(
+      "seo_route_future_" + index,
+      "seo-route-future-provider-" + index,
+      artist + " Future " + index,
+      artist,
+      artistKey,
+      "Route Venue " + venueNumber,
+      "2037-01-0" + index,
+      "ticketmaster",
+      Date.now(),
+      "route-venue-" + venueNumber,
+      index + " Future Street",
+      "Routeville",
+      "Ontario",
+      "K1A 0B" + index,
+      "CA",
+      "Canada",
+    );
+  }
+
+  const insertReview = db.prepare("INSERT INTO posts (id,user_id,artist,artist_key,venue,venue_key,city,date,overall,room,review,photos,photos_public,kind,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,'[]',0,'review',?,?)");
+  const review = "A detailed firsthand account of the sound, crowd, staging, musicianship, and encore at this concert.";
+  for (let index = 1; index <= 13; index += 1) {
+    const cityShow = index <= 3;
+    const venueNumber = cityShow ? (index === 3 ? 1 : index) : index;
+    const venue = cityShow ? "Route Archive Hall " + venueNumber : "Artist Archive Hall " + venueNumber;
+    const date = cityShow ? "2026-07-0" + index : "2026-06-" + String(index).padStart(2, "0");
+    insertReview.run(
+      "seo_route_review_" + index,
+      member.id,
+      artist,
+      artistKey,
+      venue,
+      normName(venue),
+      cityShow ? "Routeville" : "Elsewhere",
+      date,
+      4.5,
+      4,
+      review,
+      Date.now() + index,
+      Date.now() + index,
+    );
+    if (cityShow) {
+      insertEvent.run(
+        "seo_route_past_" + index,
+        "seo-route-past-provider-" + index,
+        artist + " Archive " + index,
+        artist,
+        artistKey,
+        venue,
+        date,
+        "ticketmaster",
+        Date.now(),
+        "route-archive-venue-" + venueNumber,
+        index + " Archive Street",
+        "Routeville",
+        "Ontario",
+        "K2A 0B" + index,
+        "CA",
+        "Canada",
+      );
+    }
+  }
+
+  insertEvent.run(
+    "seo_route_thin_1", "seo-route-thin-provider-1", artist + " Thin 1", artist, artistKey,
+    "Thin Route Hall", "2037-02-01", "ticketmaster", Date.now(), "thin-route-hall",
+    "1 Thin Street", "Thinville", "Ontario", "K3A 0B1", "CA", "Canada",
+  );
+  insertEvent.run(
+    "seo_route_thin_2", "seo-route-thin-provider-2", artist + " Thin 2", artist, artistKey,
+    "Thin Route Hall", "2037-02-02", "ticketmaster", Date.now(), "thin-route-hall",
+    "1 Thin Street", "Thinville", "Ontario", "K3A 0B1", "CA", "Canada",
+  );
+
+  for (const pair of [
+    ["/venues/ca/routeville/page/1", "/venues/ca/routeville"],
+    ["/concerts/ca/routeville/page/1", "/concerts/ca/routeville"],
+    ["/artist/seo-route-artist/concerts/page/1", "/artist/seo-route-artist/concerts"],
+  ]) {
+    const plan = seoHttpPlan(pair[0]);
+    assert.deepEqual({ type: plan.type, status: plan.status, location: plan.location },
+      { type: "redirect", status: 301, location: pair[1] });
+  }
+
+  const cityVenues = seoHttpPlan("/venues/ca/routeville");
+  const cityConcerts = seoHttpPlan("/concerts/ca/routeville");
+  const artistPageTwo = seoHttpPlan("/artist/seo-route-artist/concerts/page/2");
+  assert.equal(cityVenues.type, "document");
+  assert.equal(cityConcerts.type, "document");
+  assert.equal(artistPageTwo.type, "document");
+  assert.equal(artistPageTwo.canonicalPath, "/artist/seo-route-artist/concerts/page/2");
+  assert.equal(artistPageTwo.document.concerts.length, 1);
+
+  const venueHtml = injectHead('<html><head><title>Pit</title></head><body><div id="root"></div></body></html>',
+    "/venues/ca/routeville", cityVenues, { PIT_ENV: "production" });
+  const concertHtml = injectHead('<html><head><title>Pit</title></head><body><div id="root"></div></body></html>',
+    "/concerts/ca/routeville", cityConcerts, { PIT_ENV: "production" });
+  assert.equal(venueHtml.includes('href="/concerts/ca/routeville"'), true);
+  assert.equal(concertHtml.includes('href="/venues/ca/routeville"'), true);
+
+  const caseRedirect = seoHttpPlan("/venues/CA/Routeville");
+  assert.deepEqual({ type: caseRedirect.type, status: caseRedirect.status, location: caseRedirect.location },
+    { type: "redirect", status: 301, location: "/venues/ca/routeville" });
+
+  for (const path of [
+    "/venues/ca/thinville",
+    "/concerts/ca/thinville",
+    "/artist/unknown-route-artist/concerts",
+    "/venues/ca/routeville/page/no",
+    "/concerts/ca/routeville/page/1001",
+    "/artist/seo-route-artist/concerts/page/0",
+    "/artist/%2F/concerts",
+    "/venues/ca/routeville/extra",
+  ]) {
+    assert.equal(seoHttpPlan(path).status, 404, path + " must fail closed");
   }
 });

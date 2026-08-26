@@ -177,7 +177,7 @@ test("the HTTP server answers public documents before the SPA fallback", async (
   assert.match(source, /import \{ publicPageFor, renderPublicPage \} from "\.\/publicPages\.js"/);
   const publicRoute = source.indexOf("if (servePublicPage(req, res, pathname)) return;");
   const staticAssets = source.indexOf("if (serveStatic(req, res, pathname)) return;", publicRoute);
-  const publicAppRouter = source.indexOf("return serveSeoRoute(req, res, pathname);", publicRoute);
+  const publicAppRouter = source.indexOf("return serveSeoRoute(req, res, pathname, { hasQueryString });", publicRoute);
   assert.ok(publicRoute > 0, "the public-document route must be wired into the server");
   assert.ok(staticAssets > publicRoute, "legal documents must be answered before static assets");
   assert.ok(publicAppRouter > staticAssets, "only non-document, non-asset paths may reach the public app router");
@@ -200,6 +200,15 @@ test("public SEO responses are cacheable, canonical, and fail closed during proj
     "static staging HTML keeps both metadata and response headers fail-closed");
   assert.match(source, /if \(plan\.type === "unavailable"\)[\s\S]*?status: 503,[\s\S]*?cacheControl: "no-store",[\s\S]*?retryAfter: 300/);
   assert.match(source, /"Retry-After": String\(retryAfter\)/);
+  assert.match(source, /const responsePlan = hasQueryString \? \{ \.\.\.plan, indexable: false \} : plan/);
+  assert.match(source, /serveSeoRoute\(req, res, pathname, \{ hasQueryString \}\)/,
+    "query/filter duplicates render their clean canonical document with noindex metadata and header");
+  assert.match(source, /function sendCrawlerText\(req, res, status, body, extra = \{\}\)[\s\S]*?if \(req\.method === "HEAD"\) return res\.end\(\)/,
+    "crawler error responses answer HEAD with headers and no response body");
+  assert.match(source, /scheduleSitemapRetry\(result\.retryAt\)/,
+    "the scheduler retries at the manager's actual backoff time");
+  assert.match(source, /const sitemapRefreshStop = drainSitemapSnapshotRefresh\(\)[\s\S]*?await sitemapRefreshStop/,
+    "graceful shutdown drains the active sitemap refresh before closing the database");
 });
 
 test("trust pages explain the product, conduct, ratings, and monitored contact route", () => {

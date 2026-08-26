@@ -37,7 +37,7 @@ function createDatabase() {
     );
     CREATE TABLE posts (
       id TEXT PRIMARY KEY,user_id TEXT NOT NULL,artist TEXT NOT NULL,artist_key TEXT,venue TEXT NOT NULL,
-      venue_key TEXT,city TEXT,date TEXT,overall REAL,review TEXT,photos TEXT NOT NULL DEFAULT '[]',
+      venue_key TEXT,city TEXT,date TEXT,overall REAL,review TEXT,setlist TEXT NOT NULL DEFAULT '[]',tour TEXT,photos TEXT NOT NULL DEFAULT '[]',
       photos_public INTEGER NOT NULL DEFAULT 0,kind TEXT DEFAULT 'review',removed INTEGER NOT NULL DEFAULT 0,
       like_count INTEGER NOT NULL DEFAULT 0,comment_count INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL,updated_at INTEGER
@@ -57,7 +57,7 @@ function createDatabase() {
       removed INTEGER NOT NULL DEFAULT 0,created_at INTEGER NOT NULL
     );
     CREATE TABLE tour_dates (
-      id TEXT PRIMARY KEY,artist TEXT NOT NULL,venue TEXT,place TEXT,lat REAL,lng REAL,date TEXT,ticket_url TEXT,
+      id TEXT PRIMARY KEY,artist TEXT NOT NULL,artist_key TEXT,venue TEXT,place TEXT,lat REAL,lng REAL,date TEXT,ticket_url TEXT,
       sold_out INTEGER NOT NULL DEFAULT 0,source TEXT,updated_at INTEGER NOT NULL DEFAULT 0,
       owner_id TEXT,release_at INTEGER NOT NULL DEFAULT 0,provider_event_id TEXT,event_name TEXT,
       start_date_time TEXT,start_local_time TEXT,event_timezone TEXT,event_status TEXT,venue_provider_id TEXT,
@@ -85,6 +85,10 @@ function createDatabase() {
     CREATE TABLE post_media (
       post_id TEXT NOT NULL,asset_id TEXT NOT NULL,position INTEGER NOT NULL,created_at INTEGER,
       PRIMARY KEY(post_id,asset_id)
+    );
+    CREATE TABLE venue_reviews (
+      id TEXT PRIMARY KEY,user_id TEXT NOT NULL,venue_key TEXT NOT NULL,rating REAL,text TEXT,
+      photos TEXT NOT NULL DEFAULT '[]',removed INTEGER NOT NULL DEFAULT 0,created_at INTEGER NOT NULL
     );
   `);
   return database;
@@ -136,6 +140,8 @@ function addPost(database, {
   artistKey = "alpha",
   venue = "History",
   review = "An unforgettable night.",
+  setlist = [],
+  tour = null,
   photos = [],
   photosPublic = true,
   kind = "review",
@@ -146,9 +152,10 @@ function addPost(database, {
   city = "Toronto",
 } = {}) {
   database.prepare(`INSERT INTO posts
-    (id,user_id,artist,artist_key,venue,venue_key,city,date,overall,review,photos,photos_public,kind,removed,created_at,updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
+    (id,user_id,artist,artist_key,venue,venue_key,city,date,overall,review,setlist,tour,photos,photos_public,kind,removed,created_at,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(
     id, userId, artist, artistKey, venue, venue.toLowerCase(), city, date, overall, review,
+    typeof setlist === "string" ? setlist : JSON.stringify(setlist), tour,
     JSON.stringify(photos), photosPublic ? 1 : 0, kind, removed ? 1 : 0, createdAt, createdAt + 1,
   );
 }
@@ -177,6 +184,22 @@ function addReadyImage(database, { assetId, ownerId, url, postId = null, purpose
     "verified", "private_derivative_v1",
   );
   if (postId) database.prepare("INSERT INTO post_media (post_id,asset_id,position,created_at) VALUES (?,?,0,10)").run(postId, assetId);
+}
+
+function addVenueReview(database, {
+  id,
+  userId = "active",
+  venueKey = "freeform hall",
+  rating = 4,
+  text = "A detailed account of the room, sound, sightlines, staff, atmosphere, and accessibility.",
+  photos = [],
+  removed = false,
+  createdAt = 1_000,
+} = {}) {
+  database.prepare(`INSERT INTO venue_reviews
+    (id,user_id,venue_key,rating,text,photos,removed,created_at) VALUES (?,?,?,?,?,?,?,?)`).run(
+    id, userId, venueKey, rating, text, JSON.stringify(photos), removed ? 1 : 0, createdAt,
+  );
 }
 
 function addFinalizedProfileImage(database, {
@@ -325,8 +348,8 @@ test("artist document uses only active UGC and references Event leaf pages witho
       .run("update-visible", "alpha", "artist-owner", "New record out now.", 400);
     database.prepare("INSERT INTO artist_posts (id,artist_key,user_id,text,removed,created_at) VALUES (?,?,?,?,0,?)")
       .run("update-hidden", "alpha", "banned", "HIDDEN UPDATE", 500);
-    database.prepare("INSERT INTO tour_dates (id,artist,venue,place,date,sold_out,owner_id,release_at,venue_city,venue_country_code) VALUES (?,?,?,?,?,?,?,?,?,?)")
-      .run("event-public", "Alpha", "Global Hall", "London, UK", "2026-09-01", 0, null, 0, "London", "GB");
+    database.prepare("INSERT INTO tour_dates (id,artist,venue,place,date,start_date_time,sold_out,owner_id,release_at,venue_city,venue_country_code) VALUES (?,?,?,?,?,?,?,?,?,?,?)")
+      .run("event-public", "Alpha", "Global Hall", "London, UK", "2026-09-01", "2026-09-01T20:00:00+01:00", 0, null, 0, "London", "GB");
     database.prepare("INSERT INTO tour_dates (id,artist,venue,place,date,sold_out,owner_id,release_at) VALUES (?,?,?,?,?,?,?,?)")
       .run("event-hidden", "Alpha", "Secret Hall", "Nowhere", "2026-09-02", 0, "banned", 0);
     addArtist(database, { key: "bad-mbid", name: "Bad MBID", mbid: "not-a-musicbrainz-id" });
@@ -352,11 +375,11 @@ test("artist document uses only active UGC and references Event leaf pages witho
     assert.doesNotMatch(html, /MusicEvent/, "the artist collection references the canonical event page instead of duplicating it");
     assert.match(html, /event-public/);
     assert.equal(document.jsonLd[0].hasPart[0]["@id"], "https://www.example.com/event/event-public#page");
-    assert.equal(eventDocument.jsonLd[0]["@type"], "MusicEvent");
-    assert.equal(eventDocument.jsonLd[0].location.address.addressLocality, "London");
-    assert.equal(eventDocument.jsonLd[0].location.address.addressCountry, "GB");
-    assert.equal(eventDocument.jsonLd[1]["@type"], "WebPage");
-    assert.equal(eventDocument.jsonLd[1].mainEntity["@id"], "https://www.example.com/event/event-public#event");
+    assert.equal(eventDocument.jsonLd[0]["@type"], "WebPage");
+    assert.equal(eventDocument.event.address.addressLocality, "London");
+    assert.equal(eventDocument.event.address.addressCountry, "GB");
+    assert.equal(Object.hasOwn(eventDocument.jsonLd[0], "mainEntity"), false);
+    assert.equal(eventDocument.jsonLd.some((node) => node["@type"] === "MusicEvent"), false);
     assert.doesNotMatch(html, /preload="metadata"/);
     assert.doesNotMatch(html, /<script>alert/);
     assert.match(html, /&lt;\/script&gt;&lt;script&gt;alert/);
@@ -627,6 +650,8 @@ test("historical concert documents expose only real 1-to-5 fan ratings", () => {
     addPost(database, {
       id: "archive-review",
       review: "A detailed firsthand review of the room, performance, crowd, and encore that night.",
+      setlist: ["Opening Song", "Finale"],
+      tour: "Summer Lights Tour",
     });
     addPost(database, {
       id: "archive-media-only",
@@ -636,8 +661,9 @@ test("historical concert documents expose only real 1-to-5 fan ratings", () => {
       createdAt: 2_000,
     });
     addReadyImage(database, { assetId: "archive-photo", ownerId: "gallery", postId: "archive-media-only", url: "https://media.example/public/archive-photo.jpg" });
-    database.prepare("INSERT INTO tour_dates (id,artist,venue,place,date,release_at,venue_city,venue_country_code) VALUES (?,?,?,?,?,?,?,?)")
-      .run("archive-event", "Alpha", "History", "Toronto, Canada", "2026-08-20", 0, "Toronto", "CA");
+    database.prepare("INSERT INTO tour_dates (id,artist,venue,place,date,start_date_time,release_at,venue_city,venue_country_code) VALUES (?,?,?,?,?,?,?,?,?)")
+      .run("archive-event", "Alpha", "History", "Toronto, Canada", "2026-08-20", "2026-08-20T20:00:00-04:00", 0, "Toronto", "CA");
+    database.prepare("UPDATE tour_dates SET venue_address_line1=? WHERE id=?").run("123 Archive Street", "archive-event");
     const showKey = archiveShowKey({
       artistIdentity: "alpha",
       venueIdentity: "history",
@@ -661,6 +687,13 @@ test("historical concert documents expose only real 1-to-5 fan ratings", () => {
     assert.equal(event.review.every((review) => review.reviewRating.ratingValue >= 1 && review.reviewRating.ratingValue <= 5), true);
     assert.equal(Object.hasOwn(document.jsonLd[1], "hasPart"), false, "the collection never points at undefined #review nodes");
     assert.equal(document.reviews.some((review) => review.id === "archive-media-only" && review.media.length === 1), true);
+    assert.equal(html.includes("Summer Lights Tour"), true);
+    assert.equal(html.includes("Setlist shared by"), true);
+    assert.equal(html.includes("Opening Song"), true);
+    assert.equal(html.includes("Finale"), true);
+    assert.equal(html.includes("123 Archive Street"), true);
+    assert.equal(html.includes('href="/concerts"'), true);
+    assert.equal(JSON.stringify(document.jsonLd).includes("EventSeries"), false);
     assert.match(html, /archive-photo\.jpg/);
   } finally {
     database.close();
@@ -691,8 +724,9 @@ test("concert aggregates count distinct people and use each person's latest vali
     addPost(database, { id: "mixed-latest-valid", userId: "mixed-rater", review, overall: 3, date: "2026-08-19", createdAt: 5_000 });
     addPost(database, { id: "mixed-newer-invalid", userId: "mixed-rater", review, overall: 0, date: "2026-08-19", createdAt: 6_000 });
     addPost(database, { id: "legacy-zero", userId: "legacy-rater", review, overall: 0, date: "2026-08-19", createdAt: 5 });
-    database.prepare("INSERT INTO tour_dates (id,artist,venue,date,release_at,venue_city,venue_country_code) VALUES (?,?,?,?,?,?,?)")
-      .run("skew-event", "Alpha", "History", "2026-08-19", 0, "Toronto", "CA");
+    database.prepare("INSERT INTO tour_dates (id,artist,venue,date,start_date_time,release_at,venue_city,venue_country_code) VALUES (?,?,?,?,?,?,?,?)")
+      .run("skew-event", "Alpha", "History", "2026-08-19", "2026-08-19T20:00:00-04:00", 0, "Toronto", "CA");
+    database.prepare("UPDATE tour_dates SET venue_address_line1=? WHERE id=?").run("123 Archive Street", "skew-event");
 
     const showKey = archiveShowKey({
       artistIdentity: "alpha",
@@ -778,12 +812,13 @@ test("event ticket offers require a supported future purchasable state and missi
   const database = createDatabase();
   try {
     database.prepare(`INSERT INTO tour_dates
-      (id,artist,venue,date,ticket_url,event_status,venue_city,venue_country_code,release_at)
-      VALUES (?,?,?,?,?,?,?,?,?)`).run(
+      (id,artist,venue,date,start_date_time,ticket_url,event_status,venue_city,venue_country_code,release_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
       "unknown-event",
       "Unlisted Touring Artist",
       "World Hall",
       "2026-09-01",
+      "2026-09-01T20:00:00-04:00",
       "https://www.ticketmaster.ca/event/100",
       "scheduled",
       "Toronto",
@@ -792,15 +827,20 @@ test("event ticket offers require a supported future purchasable state and missi
     );
     const documents = service(database);
     const options = { id: "unknown-event", today: "2026-08-25", at: NOW };
+    database.prepare("UPDATE tour_dates SET venue_address_line1=?,venue_address_line2=?,venue_region=?,venue_postal_code=?,venue_country=? WHERE id=?").run("100 World Hall Way", "Suite 2", "Ontario", "M5V 2T6", "Canada", "unknown-event");
     const scheduled = documents.eventDocument(options);
     const scheduledHtml = documents.render(scheduled);
 
+    assert.equal(scheduled.jsonLd[0]["@type"], "MusicEvent");
     assert.equal(scheduled.jsonLd[0].offers.url, "https://www.ticketmaster.ca/event/100");
     assert.equal(Object.hasOwn(scheduled.jsonLd[0].offers, "availability"), false);
     assert.equal(scheduled.event.ticketUrl, "https://www.ticketmaster.ca/event/100");
     assert.equal(scheduled.event.artistPath, null);
     assert.equal(scheduled.breadcrumbs.some((crumb) => crumb.name === "Unlisted Touring Artist"), false);
     assert.match(scheduledHtml, /Unlisted Touring Artist/);
+    assert.equal(scheduledHtml.includes("100 World Hall Way, Suite 2"), true);
+    assert.equal(scheduledHtml.includes("Toronto, Ontario M5V 2T6"), true);
+    assert.equal(scheduledHtml.includes(">CA<"), true);
     assert.doesNotMatch(scheduledHtml, /href="\/artist\//);
 
     database.prepare("UPDATE tour_dates SET event_status=? WHERE id=?").run("offSale", "unknown-event");
@@ -905,8 +945,14 @@ test("verified post images are ImageObjects and the public artist directory is s
     addArtist(database, { key: "thin-only", name: "thin-only", bio: "Thin catalog row" });
 
     const documents = service(database);
-    const directory = documents.directoryDocument({ kind: "artists", limit: 10_000, at: NOW, today: "2026-08-25" });
-    assert.equal(directory.artists.length, 200);
+    const directory = documents.directoryDocument({ kind: "artists", at: NOW, today: "2026-08-25" });
+    assert.equal(directory.artists.length, 12);
+    const firstPage = documents.directoryDocument({ kind: "artists", limit: 12, page: 1, at: NOW, today: "2026-08-25" });
+    const secondPage = documents.directoryDocument({ kind: "artists", limit: 12, page: 2, at: NOW, today: "2026-08-25" });
+    assert.equal(firstPage.nextPath, "/artists/page/2");
+    assert.equal(secondPage.previousPath, "/artists");
+    assert.notEqual(firstPage.artists[0].name, secondPage.artists[0].name);
+    assert.match(documents.render(secondPage), /href="\/artists">Previous page<\/a>/);
     assert.equal(directory.artists.some((artist) => artist.name === "thin-only"), false);
     for (const artist of directory.artists.slice(0, 3)) {
       const resolved = documents.artistDocument({ artistKey: artist.name, at: NOW });
@@ -968,6 +1014,413 @@ test("Discover is a substantive public hub while Search stays useful and noindex
     assert.match(searchHtml, /Search across the whole community/);
     assert.match(searchHtml, /name="robots" content="noindex,follow"/);
     assert.doesNotMatch(searchHtml, /rel="canonical"/);
+  } finally {
+    database.close();
+  }
+});
+
+test("global venue and concert directories are bounded, canonical, substantive, and exclude ambiguous or invalid rows", () => {
+  const database = createDatabase();
+  try {
+    addUser(database, "active", { name: "Archive Fan", handle: "archivefan" });
+    addUser(database, "banned", { name: "Restricted Fan", handle: "restrictedfan", banned: true });
+    addArtist(database, {
+      bio: "A substantive artist biography covering recordings, tours, live performance history, collaborators, and fan context.",
+    });
+
+    const insertEvent = database.prepare(`INSERT INTO tour_dates
+      (id,artist,venue,place,date,source,venue_provider_id,venue_city,venue_country_code,
+        venue_address_line1,release_at,updated_at,owner_id)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+    for (let index = 1; index <= 14; index += 1) {
+      const day = String(index).padStart(2, "0");
+      insertEvent.run(
+        `directory-event-${day}`,
+        "Alpha",
+        `Provider Hall ${day}`,
+        `Toronto, Canada`,
+        `2026-09-${day}`,
+        "ticketmaster",
+        `provider-${day}`,
+        "Toronto",
+        "CA",
+        `${index} Music Way`,
+        0,
+        NOW + index,
+        null,
+      );
+    }
+    insertEvent.run("unique-room", "Alpha", "Unique Room", "Ottawa, Canada", "2026-10-01", null, null, "Ottawa", "CA", "1 Stage Road", 0, NOW + 20, null);
+    insertEvent.run("shared-north", "Alpha", "Shared Room", "Toronto, Canada", "2026-10-02", null, null, "Toronto", "CA", "2 North Road", 0, NOW + 21, null);
+    insertEvent.run("shared-south", "Alpha", "Shared Room", "Chicago, United States", "2026-10-03", null, null, "Chicago", "US", "3 South Road", 0, NOW + 22, null);
+    insertEvent.run("impossible-event", "Alpha", "Impossible Hall", "Nowhere", "2026-99-99", "ticketmaster", "impossible", "Nowhere", "CA", "4 Invalid Road", 0, NOW + 23, null);
+    insertEvent.run("restricted-event", "Alpha", "Restricted Hall", "Toronto, Canada", "2026-10-04", "ticketmaster", "restricted", "Toronto", "CA", "5 Hidden Road", 0, NOW + 24, "banned");
+
+    const documents = service(database);
+    const venuePageOne = documents.directoryDocument({ kind: "venues", page: 1, at: NOW, today: "2026-08-25" });
+    const venuePageTwo = documents.directoryDocument({ kind: "venues", page: 2, at: NOW, today: "2026-08-25" });
+    assert.equal(venuePageOne.venues.length, 12);
+    assert.equal(venuePageTwo.venues.length, 3);
+    assert.equal(venuePageOne.nextPath, "/venues/page/2");
+    assert.equal(venuePageTwo.previousPath, "/venues");
+    assert.equal(venuePageTwo.canonicalPath, "/venues/page/2");
+    assert.match(venuePageTwo.title, /Page 2/);
+    assert.equal(documents.directoryDocument({ kind: "venues", page: 3, at: NOW, today: "2026-08-25" }), null);
+    assert.equal(documents.directoryDocument({ kind: "venues", page: 1_001, at: NOW, today: "2026-08-25" }), null);
+    assert.equal([...venuePageOne.venues, ...venuePageTwo.venues].some((venue) => venue.name === "Shared Room"), false);
+    assert.equal([...venuePageOne.venues, ...venuePageTwo.venues].some((venue) => venue.name === "Impossible Hall"), false);
+    assert.equal([...venuePageOne.venues, ...venuePageTwo.venues].some((venue) => venue.name === "Restricted Hall"), false);
+    const providerVenue = venuePageOne.venues.find((venue) => venue.name === "Provider Hall 01");
+    assert.equal(providerVenue.path, "/venue/ticketmaster-provider-01");
+    assert.equal(providerVenue.featuredEvent.path, "/event/directory-event-01");
+    assert.equal(providerVenue.featuredArtistPath, "/artist/alpha");
+    const venueHtml = documents.render(venuePageTwo);
+    assert.match(venueHtml, /<h1>Concert venues on Mshpit — Page 2<\/h1>/);
+    assert.match(venueHtml, /href="\/venues">Previous page<\/a>/);
+    assert.match(venueHtml, /href="\/event\//);
+    assert.match(venueHtml, /href="\/artist\/alpha"/);
+
+    const substantiveReview = "A detailed fan account of the sound, crowd, musicianship, stage production, and memorable encore.";
+    for (let index = 1; index <= 13; index += 1) {
+      addPost(database, {
+        id: `archive-directory-${index}`,
+        venue: index === 13 ? "Archive <Room> 13" : `Archive Room ${index}`,
+        review: substantiveReview,
+        overall: index === 13 ? 0 : 4,
+        date: `2026-08-${String(index).padStart(2, "0")}`,
+        createdAt: 10_000 + index,
+      });
+    }
+    addPost(database, { id: "invalid-concert-date", venue: "Invalid Date Room", review: substantiveReview, date: "2026-02-30" });
+    addPost(database, { id: "restricted-concert", userId: "banned", venue: "Hidden Archive", review: substantiveReview, date: "2026-08-18" });
+
+    const concertPageOne = documents.directoryDocument({ kind: "concerts", page: 1, at: NOW, today: "2026-08-25" });
+    const concertPageTwo = documents.directoryDocument({ kind: "concerts", page: 2, at: NOW, today: "2026-08-25" });
+    assert.equal(concertPageOne.concerts.length, 12);
+    assert.equal(concertPageTwo.concerts.length, 1);
+    assert.equal(concertPageOne.concerts[0].date, "2026-08-13");
+    assert.equal(concertPageTwo.concerts[0].date, "2026-08-01");
+    assert.equal(concertPageOne.nextPath, "/concerts/page/2");
+    assert.equal(concertPageTwo.previousPath, "/concerts");
+    assert.equal(concertPageTwo.canonicalPath, "/concerts/page/2");
+    assert.match(concertPageTwo.title, /Page 2/);
+    assert.equal(documents.directoryDocument({ kind: "concerts", page: 3, at: NOW, today: "2026-08-25" }), null);
+    assert.equal([...concertPageOne.concerts, ...concertPageTwo.concerts].some((concert) => concert.date === "2026-02-30"), false);
+    assert.equal(concertPageOne.concerts[0].artistPath, "/artist/alpha");
+    assert.match(concertPageOne.concerts[0].path, /^\/concert\//);
+    const concertHtml = documents.render(concertPageOne);
+    assert.match(concertHtml, /<h1>Concert nights fans remember<\/h1>/);
+    assert.match(concertHtml, /Archive &lt;Room&gt; 13/);
+    assert.doesNotMatch(concertHtml, /Archive <Room> 13/);
+    assert.match(concertHtml, /No rating yet/);
+    assert.doesNotMatch(concertHtml, /0\.0\/5/);
+    assert.match(concertHtml, /href="\/artist\/alpha"/);
+    assert.doesNotMatch(concertHtml, /href="\/venue\/archive-room-13"/,
+      "name-only venues stay visible but do not manufacture links the resolver may reject");
+    assert.match(concertHtml, /href="\/concert\//);
+    assert.equal(concertPageOne.jsonLd[0].mainEntity.numberOfItems, 12);
+  } finally {
+    database.close();
+  }
+});
+
+test("concert pages and collections fail closed when one show maps to conflicting structured locations", () => {
+  const database = createDatabase();
+  try {
+    addUser(database, "active", { name: "Collision Fan", handle: "collisionfan" });
+    addArtist(database);
+    const date = "2026-08-20";
+    const venue = "Collision Hall";
+    addPost(database, {
+      id: "location-collision-review",
+      venue,
+      date,
+      review: "A detailed fan account that would otherwise qualify this concert for public indexing.",
+    });
+    const insertLocation = database.prepare(`INSERT INTO tour_dates
+      (id,artist,artist_key,venue,date,source,updated_at,release_at,venue_city,venue_country_code,provider_active)
+      VALUES (?,?,?,?,?,?,?,?,?,?,1)`);
+    insertLocation.run("collision-toronto", "Alpha", "alpha", venue, date, "ticketmaster", NOW, 0, "Toronto", "CA");
+    insertLocation.run("collision-ottawa", "Alpha", "alpha", venue, date, "ticketmaster", NOW, 0, "Ottawa", "CA");
+
+    const documents = service(database);
+    const showKey = archiveShowKey({ artistIdentity: "alpha", venueIdentity: venue.toLowerCase(), date });
+    assert.equal(documents.concertDocument({ showKey, today: "2026-08-25", at: NOW }), null);
+    assert.equal(documents.directoryDocument({ kind: "concerts", today: "2026-08-25", at: NOW }), null);
+    assert.equal(documents.artistConcertsDocument({ publicSlug: "alpha", today: "2026-08-25", at: NOW }), null);
+    const artist = documents.artistDocument({ artistKey: "alpha", today: "2026-08-25", at: NOW });
+    assert.deepEqual(artist.concerts, []);
+  } finally {
+    database.close();
+  }
+});
+
+test("legacy name-only reviews never bleed across duplicate artist identities", () => {
+  const database = createDatabase();
+  try {
+    addUser(database, "active", { name: "Identity Fan", handle: "identityfan" });
+    const bio = "A substantive biography with enough real live-performance context to keep both catalogue identities independently useful.";
+    addArtist(database, { key: "shared-a", name: "Shared Artist", bio, mbid: ARTIST_MBID });
+    addArtist(database, { key: "shared-b", name: "Shared Artist", bio, mbid: OTHER_MBID });
+    addPost(database, {
+      id: "legacy-shared-review", artist: "Shared Artist", artistKey: null, venue: "Identity Hall",
+      review: "A detailed legacy review that cannot be assigned safely when two catalogue artists share the same display name.",
+    });
+    addPost(database, {
+      id: "keyed-shared-review", artist: "Shared Artist", artistKey: "shared-a", venue: "Identity Hall",
+      review: "A detailed identity-bound review that belongs only to the first canonical artist record.",
+    });
+
+    const documents = service(database);
+    const first = documents.artistDocument({ artistKey: "shared-a", today: "2026-08-25", at: NOW });
+    const second = documents.artistDocument({ artistKey: "shared-b", today: "2026-08-25", at: NOW });
+    assert.deepEqual(first.reviews.map((review) => review.id), ["keyed-shared-review"]);
+    assert.deepEqual(second.reviews, []);
+    const home = documents.homeDocument();
+    const counts = Object.fromEntries(home.artists.map((artist) => [artist.path, artist.reviewCount]));
+    assert.equal(counts["/artist/shared-a"], 1);
+    assert.equal(counts["/artist/shared-b"], 0);
+    assert.equal(documents.postDocument({ id: "legacy-shared-review" }).post.artistPath, null);
+  } finally {
+    database.close();
+  }
+});
+
+
+test("standalone posts safely expose attributed tour and setlist details and complete public navigation", () => {
+  const database = createDatabase();
+  try {
+    addUser(database, "active", { name: "Cloe Fan", handle: "cloe" });
+    addArtist(database);
+    const submittedSetlist = [
+      " <script>alert('x')</script> ",
+      "A & B",
+      "X".repeat(160),
+      ...Array.from({ length: 45 }, (_, index) => "Song " + (index + 1)),
+    ];
+    addPost(database, {
+      id: "setlist-review",
+      review: "A detailed firsthand review of the musicianship, crowd, room, sound, and final encore.",
+      setlist: submittedSetlist,
+      tour: "<img src=x onerror=alert(1)>" + "T".repeat(220),
+    });
+    addPost(database, {
+      id: "malformed-setlist",
+      review: "A detailed firsthand review with a malformed legacy setlist payload that must fail closed.",
+      setlist: "{not-json",
+    });
+
+    const documents = service(database);
+    const document = documents.postDocument({ id: "setlist-review" });
+    const html = documents.render(document);
+    const malformed = documents.postDocument({ id: "malformed-setlist" });
+    const malformedHtml = documents.render(malformed);
+
+    assert.equal(document.post.setlist.length, 40);
+    assert.equal(document.post.setlist.every((item) => item.length > 0 && item.length <= 120), true);
+    assert.equal(document.post.tour.length, 180);
+    assert.equal(html.includes("&lt;script&gt;alert(&#39;x&#39;)&lt;/script&gt;"), true);
+    assert.equal(html.includes("<script>alert('x')</script>"), false);
+    assert.equal(html.includes("&lt;img src=x onerror=alert(1)&gt;"), true);
+    assert.equal(html.includes("Setlist shared by"), true);
+    assert.equal(html.includes("@cloe"), true);
+    assert.equal(JSON.stringify(document.jsonLd).includes("EventSeries"), false);
+    for (const path of ["/artists", "/events", "/venues", "/concerts", "/discover"]) {
+      assert.equal(html.includes('href="' + path + '"'), true);
+    }
+    assert.deepEqual(malformed.post.setlist, []);
+    assert.equal(malformedHtml.includes("Setlist shared by"), false);
+  } finally {
+    database.close();
+  }
+});
+
+test("venue schema never promotes a free-form post city into a postal address", () => {
+  const database = createDatabase();
+  try {
+    addUser(database, "active", { name: "Active Fan", handle: "activefan" });
+    addArtist(database);
+    addPost(database, {
+      id: "freeform-venue-review",
+      venue: "Freeform Hall",
+      city: "Freeform City",
+      review: "A detailed firsthand account of the room, sound, crowd, performance, and encore.",
+    });
+    const documents = service(database);
+    const request = { name: "Freeform Hall", venueKey: "freeform hall", today: "2026-08-25", at: NOW };
+    const freeform = documents.venueDocument(request);
+    const freeformHtml = documents.render(freeform);
+
+    assert.equal(freeform.venue.place, "Freeform City");
+    assert.equal(freeform.venue.address, null);
+    assert.equal(JSON.stringify(freeform.jsonLd).includes("PostalAddress"), false);
+    assert.equal(freeformHtml.includes('<address class="postal-address">'), false);
+    assert.deepEqual(freeform.breadcrumbs.map((crumb) => crumb.name), ["Mshpit", "Venues", "Freeform Hall"]);
+    assert.equal(freeformHtml.includes('href="/venues"'), true);
+
+    database.prepare("INSERT INTO tour_dates (id,artist,venue,place,date,start_date_time,release_at,venue_address_line1,venue_address_line2,venue_city,venue_region,venue_postal_code,venue_country_code) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)").run(
+      "structured-venue-event",
+      "Alpha",
+      "Freeform Hall",
+      "Toronto, Canada",
+      "2026-09-10",
+      "2026-09-10T20:00:00-04:00",
+      0,
+      "10 Music Avenue",
+      "Level 2",
+      "Toronto",
+      "Ontario",
+      "M5V 1A1",
+      "CA",
+    );
+    const structured = documents.venueDocument(request);
+    const structuredHtml = documents.render(structured);
+    assert.equal(structured.jsonLd[0].address["@type"], "PostalAddress");
+    assert.equal(structuredHtml.includes("10 Music Avenue, Level 2"), true);
+    assert.equal(structuredHtml.includes("Toronto, Ontario M5V 1A1"), true);
+    assert.equal(structuredHtml.includes(">CA<"), true);
+  } finally {
+    database.close();
+  }
+});
+
+test("venue pages show real public ratings and safely render only eligible recent reviews", () => {
+  const database = createDatabase();
+  try {
+    addUser(database, "active", { name: "Cloe <script>alert(1)</script>", handle: "cloe<script>" });
+    addUser(database, "banned", { name: "Hidden Fan", handle: "hidden", banned: true });
+    addUser(database, "removed-reviewer", { name: "Removed Fan", handle: "removed" });
+    const verifiedUrl = "https://cdn.example/venue-room.jpg";
+    addReadyImage(database, { assetId: "venue-room", ownerId: "active", url: verifiedUrl });
+    addVenueReview(database, {
+      id: "visible-venue-review",
+      rating: 4.5,
+      text: "<script>alert('review')</script> The sound, staff, sightlines, and atmosphere made this a memorable room.",
+      photos: [verifiedUrl, "https://unverified.example/not-owned.jpg"],
+      createdAt: 4_000,
+    });
+    addVenueReview(database, {
+      id: "banned-venue-review",
+      userId: "banned",
+      rating: 1,
+      text: "This banned account review is long enough but must never become public on the venue page.",
+      createdAt: 5_000,
+    });
+    addVenueReview(database, {
+      id: "removed-venue-review",
+      userId: "removed-reviewer",
+      rating: 2,
+      text: "This removed review is long enough but must never become public on the venue page.",
+      removed: true,
+      createdAt: 6_000,
+    });
+
+    const documents = service(database);
+    const document = documents.venueDocument({
+      name: "Freeform Hall",
+      venueKey: "freeform hall",
+      today: "2026-08-25",
+      at: NOW,
+    });
+    const html = documents.render(document);
+
+    assert.deepEqual(document.venueReviewStats, { reviewCount: 1, ratingCount: 1, averageRating: 4.5 });
+    assert.equal(document.venueReviews.length, 1);
+    assert.deepEqual(document.venueReviews[0].photos, [verifiedUrl]);
+    assert.match(html, /4\.5<small>\/5<\/small><\/strong> from 1 rating/);
+    assert.match(html, /1 public review/);
+    assert.match(html, /Recent venue reviews/);
+    assert.match(html, /&lt;script&gt;alert\(&#39;review&#39;\)&lt;\/script&gt;/);
+    assert.match(html, /Cloe &lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+    assert.match(html, /src="https:\/\/cdn\.example\/venue-room\.jpg"/);
+    assert.doesNotMatch(html, /<script>alert/);
+    assert.doesNotMatch(html, /unverified\.example|Hidden Fan|Removed Fan|banned-venue-review|removed-venue-review/);
+    assert.doesNotMatch(JSON.stringify(document.jsonLd), /AggregateRating/);
+  } finally {
+    database.close();
+  }
+});
+
+test("venue pages never display a zero rating or emit venue AggregateRating markup", () => {
+  const database = createDatabase();
+  try {
+    addUser(database, "active", { name: "No-score Fan", handle: "noscore" });
+    addVenueReview(database, {
+      id: "zero-score-venue-review",
+      venueKey: "quiet room",
+      rating: 0,
+      text: "The room had clear sightlines and welcoming staff, but this legacy score is invalid.",
+    });
+    const documents = service(database);
+    const document = documents.venueDocument({ name: "Quiet Room", venueKey: "quiet room", at: NOW });
+    const html = documents.render(document);
+
+    assert.deepEqual(document.venueReviewStats, { reviewCount: 1, ratingCount: 0, averageRating: null });
+    assert.equal(document.venueReviews[0].rating, null);
+    assert.match(html, /No community rating yet/);
+    assert.match(html, /1 public review/);
+    assert.doesNotMatch(html, /0(?:\.0)?\/5/);
+    assert.doesNotMatch(JSON.stringify(document.jsonLd), /AggregateRating/);
+  } finally {
+    database.close();
+  }
+});
+
+test("public document service delegates artist collections and shows load more only above three", () => {
+  const database = createDatabase();
+  try {
+    addUser(database, "active", { name: "Archive Fan", handle: "archivefan" });
+    addArtist(database);
+    const review = "A detailed firsthand account of the sound, crowd, staging, musicianship, and encore.";
+    for (let index = 1; index <= 4; index += 1) {
+      addPost(database, {
+        id: "artist-archive-" + index,
+        venue: "Archive Hall " + index,
+        date: "2026-08-0" + index,
+        review,
+        createdAt: 2_000 + index,
+      });
+    }
+    addPost(database, {
+      id: "artist-archive-invalid-date",
+      venue: "Impossible Hall",
+      date: "2026-02-30",
+      review,
+    });
+    addPost(database, {
+      id: "artist-archive-pending-media",
+      venue: "Pending Hall",
+      date: "2026-08-10",
+      review: "",
+      photosPublic: true,
+    });
+    database.prepare("INSERT INTO post_media (post_id,asset_id,position,created_at) VALUES (?,?,0,?)")
+      .run("artist-archive-pending-media", "missing-pending-asset", 2_500);
+
+    const documents = service(database);
+    assert.equal(typeof documents.cityVenuesDocument, "function");
+    assert.equal(typeof documents.cityConcertsDocument, "function");
+    assert.equal(typeof documents.artistConcertsDocument, "function");
+
+    const archive = documents.artistConcertsDocument({ publicSlug: "alpha", today: "2026-08-25" });
+    const dispatched = documents.documentFor({ kind: "artist-concerts", publicSlug: "alpha", today: "2026-08-25" });
+    assert.equal(archive.concerts.length, 4);
+    assert.equal(dispatched.canonicalPath, "/artist/alpha/concerts");
+
+    const artist = documents.artistDocument({ artistKey: "alpha", today: "2026-08-25" });
+    const html = documents.render(artist);
+    assert.equal(artist.concerts.length, 3);
+    assert.equal(artist.archiveTotal, 4);
+    assert.equal(artist.archivePath, "/artist/alpha/concerts");
+    assert.equal(html.includes('href="/artist/alpha/concerts"'), true);
+    assert.equal(html.includes("View full concert archive"), true);
+
+    database.prepare("UPDATE posts SET removed=1 WHERE id=?").run("artist-archive-4");
+    const threshold = documents.artistDocument({ artistKey: "alpha", today: "2026-08-25" });
+    const thresholdHtml = documents.render(threshold);
+    assert.equal(threshold.archiveTotal, 3);
+    assert.equal(threshold.archivePath, null);
+    assert.equal(thresholdHtml.includes("View full concert archive"), false);
   } finally {
     database.close();
   }

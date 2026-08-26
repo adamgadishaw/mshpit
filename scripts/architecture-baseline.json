@@ -375,10 +375,6 @@
       "count": 2,
       "fingerprint": "618bfa7a2eec9fe29e39"
     },
-    "src/lib/mediaDraftStaging.native.js": {
-      "count": 1,
-      "fingerprint": "daff8334ee588254ba1e"
-    },
     "src/lib/mediaEditImageEngine.native.js": {
       "count": 1,
       "fingerprint": "047d7615007363c07cc2"

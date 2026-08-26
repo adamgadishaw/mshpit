@@ -385,22 +385,22 @@ async function fetchDates(name) {
 
 const PROVIDER_TOUR_DATE_UPSERT_SQL = `
   INSERT INTO tour_dates (
-    id,artist,venue,place,lat,lng,date,ticket_url,sold_out,source,updated_at,
+    id,artist,artist_key,venue,place,lat,lng,date,ticket_url,sold_out,source,updated_at,
     provider_event_id,event_name,start_date_time,start_local_time,event_timezone,event_status,
     venue_provider_id,venue_address_line1,venue_address_line2,venue_city,venue_region,
     venue_postal_code,venue_country_code,venue_country,provider_active,last_seen_at
   ) VALUES (
-    @id,@artist,@venue,@place,@lat,@lng,@date,@ticket_url,@sold_out,@source,@updated_at,
+    @id,@artist,@artist_key,@venue,@place,@lat,@lng,@date,@ticket_url,@sold_out,@source,@updated_at,
     @provider_event_id,@event_name,@start_date_time,@start_local_time,@event_timezone,@event_status,
     @venue_provider_id,@venue_address_line1,@venue_address_line2,@venue_city,@venue_region,
     @venue_postal_code,@venue_country_code,@venue_country,@provider_active,@last_seen_at
   )
   ON CONFLICT(id) DO UPDATE SET
-    artist=excluded.artist,venue=excluded.venue,place=excluded.place,
+    artist=excluded.artist,artist_key=excluded.artist_key,venue=excluded.venue,place=excluded.place,
     lat=excluded.lat,lng=excluded.lng,date=excluded.date,ticket_url=excluded.ticket_url,
     sold_out=excluded.sold_out,source=excluded.source,
     updated_at=CASE WHEN
-      excluded.artist IS NOT tour_dates.artist OR excluded.venue IS NOT tour_dates.venue
+      excluded.artist IS NOT tour_dates.artist OR excluded.artist_key IS NOT tour_dates.artist_key OR excluded.venue IS NOT tour_dates.venue
       OR excluded.place IS NOT tour_dates.place OR excluded.lat IS NOT tour_dates.lat
       OR excluded.lng IS NOT tour_dates.lng OR excluded.date IS NOT tour_dates.date
       OR excluded.ticket_url IS NOT tour_dates.ticket_url OR excluded.sold_out IS NOT tour_dates.sold_out
@@ -437,10 +437,11 @@ const PROVIDER_TOUR_DATE_UPSERT_SQL = `
     provider_active=excluded.provider_active,last_seen_at=excluded.last_seen_at
   WHERE tour_dates.owner_id IS NULL`;
 
-function providerTourDateWrite(row, seenAt) {
+function providerTourDateWrite(row, seenAt, artistKey) {
   return {
     id: row.id,
     artist: row.artist,
+    artist_key: artistKey,
     venue: row.venue ?? null,
     place: row.place ?? null,
     lat: optionalCoordinate(row.lat),
@@ -473,8 +474,13 @@ export function upsertProviderTourDateRows(database, rows, { seenAt = Date.now()
   const timestamp = Number(seenAt);
   if (!Number.isSafeInteger(timestamp) || timestamp < 0) throw new TypeError("seenAt must be a non-negative integer");
   const statement = database.prepare(PROVIDER_TOUR_DATE_UPSERT_SQL);
+  const artistMatches = database.prepare("SELECT norm FROM artists WHERE lower(trim(name))=lower(trim(?)) ORDER BY norm LIMIT 2");
   let changed = 0;
-  for (const row of rows || []) changed += Number(statement.run(providerTourDateWrite(row, timestamp)).changes) || 0;
+  for (const row of rows || []) {
+    const matches = artistMatches.all(row?.artist || "");
+    const artistKey = matches.length === 1 ? matches[0].norm : null;
+    changed += Number(statement.run(providerTourDateWrite(row, timestamp, artistKey)).changes) || 0;
+  }
   return changed;
 }
 

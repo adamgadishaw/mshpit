@@ -41,6 +41,7 @@ const { youtubeCacheKey } = await import("./musicProviders.js");
 // Seed a few artists with top tracks, most-popular first, and clear the resume
 // cursor between tests so each starts fresh.
 function seed(artists) {
+  db.prepare("DELETE FROM tour_dates").run();
   db.prepare("DELETE FROM artists").run();
   db.prepare("DELETE FROM app_meta WHERE key LIKE 'warm:%'").run();
   db.prepare("DELETE FROM yt_cache").run();
@@ -308,7 +309,7 @@ test("tour reconciliation is isolated by provider and preserves rows as inactive
 test("provider upserts persist the durable fields and reactivate a returned event", () => {
   const row = {
     id: "tm_foundation_upsert",
-    artist: "Upsert Artist",
+    artist: "Radiohead",
     venue: "Upsert Hall",
     place: "Toronto, Ontario, Canada",
     lat: 43.64,
@@ -334,6 +335,8 @@ test("provider upserts persist the durable fields and reactivate a returned even
   };
 
   assert.equal(upsertProviderTourDateRows(db, [row], { seenAt: 5000 }), 1);
+  db.prepare("INSERT OR IGNORE INTO artists (norm,name,data,rank_score,source,updated_at) VALUES (?,?,?,?,?,?)").run("radiohead", row.artist, "{}", 0, "test", 1);
+  assert.equal(upsertProviderTourDateRows(db, [row], { seenAt: 5000 }), 1);
   const inserted = db.prepare("SELECT * FROM tour_dates WHERE id=?").get(row.id);
   for (const field of [
     "provider_event_id", "event_name", "start_date_time", "start_local_time", "event_timezone",
@@ -346,6 +349,7 @@ test("provider upserts persist the durable fields and reactivate a returned even
 
   db.prepare("UPDATE tour_dates SET provider_active=0 WHERE id=?").run(row.id);
   assert.equal(upsertProviderTourDateRows(db, [{ ...row, event_status: "offsale" }], { seenAt: 6000 }), 1);
+  assert.equal(db.prepare("SELECT artist_key FROM tour_dates WHERE id=?").get(row.id).artist_key, "radiohead");
   const returned = db.prepare("SELECT provider_active,last_seen_at,updated_at,event_status,sold_out FROM tour_dates WHERE id=?").get(row.id);
   assert.deepEqual({ ...returned }, { provider_active: 1, last_seen_at: 6000, updated_at: 6000, event_status: "offsale", sold_out: 0 });
   upsertProviderTourDateRows(db, [{ ...row, event_name: null, event_status: null, venue_address_line2: null }], { seenAt: 7000 });

@@ -18,12 +18,15 @@ import { assertExpectedAccount } from "./identityBinding.js";
 import { maybeAlert, pruneErrors, recordError } from "./errorLog.js";
 import {
   injectHead,
+  drainSitemapSnapshotRefresh,
   enforceHtmlRobotsMeta,
+  loadSitemapSnapshot,
   origin,
+  refreshSitemapSnapshot,
   renderNotFoundDocument,
   robotsTxt,
   seoHttpPlan,
-  sitemapForPath,
+  sitemapResponseForPath,
 } from "./seo.js";
 import { htmlRobotsDirective, isProduction } from "./environment.js";
 import {
@@ -169,6 +172,18 @@ function send(res, status, body, extra = {}) {
   res.end(data);
 }
 
+function sendCrawlerText(req, res, status, body, extra = {}) {
+  const data = String(body || "");
+  res.writeHead(status, {
+    "Content-Type": "text/plain; charset=utf-8",
+    "Content-Length": Buffer.byteLength(data),
+    ...HEADERS,
+    ...extra,
+  });
+  if (req.method === "HEAD") return res.end();
+  return res.end(data);
+}
+
 function sendApiError(res, error, requestId, extra = {}) {
   const safe = error instanceof ApiError ? error : new ApiError(500, "Something broke on our end, it's been logged.", "INTERNAL_ERROR");
   return send(res, safe.status, errorEnvelope(safe, requestId), createApiResponseHeaders(extra));
@@ -209,18 +224,24 @@ function matchRoute(method, pathname) {
 // managed default rather than ours.
 function serveCrawlerFile(req, res, pathname) {
   if (req.method !== "GET" && req.method !== "HEAD") {
-    return send(res, 405, "Method not allowed.\n", {
-      "Content-Type": "text/plain; charset=utf-8",
+    return sendCrawlerText(req, res, 405, "Method not allowed.\n", {
       "Cache-Control": "no-store",
       "X-Robots-Tag": "noindex",
       Allow: "GET, HEAD",
     });
   }
-  const body = pathname === "/robots.txt" ? robotsTxt() : sitemapForPath(pathname);
+  const sitemapResponse = pathname === "/robots.txt" ? null : sitemapResponseForPath(pathname);
+  const body = pathname === "/robots.txt" ? robotsTxt() : sitemapResponse?.body;
   const type = pathname === "/robots.txt" ? "text/plain; charset=utf-8" : "application/xml; charset=utf-8";
+  if (sitemapResponse?.status === "unavailable") {
+    return sendCrawlerText(req, res, 503, "Sitemap is warming. Try again shortly.\n", {
+      "Cache-Control": "no-store",
+      "Retry-After": String(sitemapResponse.retryAfterSeconds || 30),
+      "X-Robots-Tag": "noindex",
+    });
+  }
   if (body == null) {
-    return send(res, 404, "Not found.\n", {
-      "Content-Type": "text/plain; charset=utf-8",
+    return sendCrawlerText(req, res, 404, "Not found.\n", {
       "Cache-Control": "no-store",
       "X-Robots-Tag": "noindex",
     });
@@ -371,7 +392,7 @@ function serveWebShell(req, res, pathname, {
   res.end(html);
 }
 
-function serveSeoRoute(req, res, pathname) {
+function serveSeoRoute(req, res, pathname, { hasQueryString = false } = {}) {
   const plan = seoHttpPlan(pathname);
   if (plan.type === "redirect") {
     res.writeHead(plan.status || 301, {
@@ -381,10 +402,13 @@ function serveSeoRoute(req, res, pathname) {
     });
     return res.end();
   }
-  if (plan.type === "document") return serveWebShell(req, res, pathname, {
-    noindex: plan.indexable === false,
-    plan,
-  });
+  if (plan.type === "document") {
+    const responsePlan = hasQueryString ? { ...plan, indexable: false } : plan;
+    return serveWebShell(req, res, pathname, {
+      noindex: responsePlan.indexable === false,
+      plan: responsePlan,
+    });
+  }
   if (plan.type === "app") return serveWebShell(req, res, pathname, { noindex: true, plan });
   if (plan.type === "unavailable") {
     return serveWebShell(req, res, pathname, {
@@ -430,11 +454,12 @@ const server = createServer(async (req, res) => {
     if (!res.writableEnded) abortRequest();
   });
   res.setHeader("X-Request-Id", requestId);
-  let pathname = "/", query = {}, routePattern = "";
+  let pathname = "/", query = {}, routePattern = "", hasQueryString = false;
   try {
     const u = new URL(req.url, "http://x");
     pathname = u.pathname;
     query = Object.fromEntries(u.searchParams);
+    hasQueryString = u.search.length > 1;
   } catch { return sendApiError(res, new ApiError(400, "Bad URL.", "VALIDATION_FAILED"), requestId); }
 
   try {
@@ -463,8 +488,7 @@ const server = createServer(async (req, res) => {
     if (pathname === "/robots.txt" || pathname === "/sitemap.xml" || pathname.startsWith("/sitemaps/")) {
       const crawlerLimit = crawlerFileRateLimitPolicy(clientIp(req));
       if (!rateLimit(crawlerLimit.key, crawlerLimit.max, crawlerLimit.windowMs)) {
-        return send(res, 429, "Too many crawler-file requests.\n", {
-          "Content-Type": "text/plain; charset=utf-8",
+        return sendCrawlerText(req, res, 429, "Too many crawler-file requests.\n", {
           "Cache-Control": "no-store",
           "X-Robots-Tag": "noindex",
           "Retry-After": String(Math.ceil(crawlerLimit.windowMs / 1000)),
@@ -559,7 +583,7 @@ const server = createServer(async (req, res) => {
       return res.end();
     }
     if (serveStatic(req, res, pathname)) return;
-    return serveSeoRoute(req, res, pathname);
+    return serveSeoRoute(req, res, pathname, { hasQueryString });
   } catch (e) {
     // A client disconnect is an expected cancellation boundary, not an
     // application failure. Downstream storage/decoder helpers may wrap the
@@ -640,6 +664,8 @@ let founderOperationsScheduler = null;
 let legacyVideoPosterScheduler = null;
 let legacyImageRecoveryScheduler = null;
 let privateMediaIsolationTimer = null;
+let sitemapRefreshTimer = null;
+let sitemapRetryTimer = null;
 function shutdown(exitCode = 0) {
   if (shuttingDown) return;
   shuttingDown = true;
@@ -649,6 +675,9 @@ function shutdown(exitCode = 0) {
   const legacyImageRecoveryStop = legacyImageRecoveryScheduler?.stop() || Promise.resolve();
   stopVideoVerifierHealthScheduler({ abortActive: true });
   if (privateMediaIsolationTimer) clearInterval(privateMediaIsolationTimer);
+  if (sitemapRefreshTimer) clearInterval(sitemapRefreshTimer);
+  if (sitemapRetryTimer) clearTimeout(sitemapRetryTimer);
+  const sitemapRefreshStop = drainSitemapSnapshotRefresh();
   legacyVideoPosterScheduler?.stop();
   server.close(async () => {
     try { await campaignStop; }
@@ -657,6 +686,8 @@ function shutdown(exitCode = 0) {
     catch (error) { console.error(`[health] founder operations shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     try { await legacyImageRecoveryStop; }
     catch (error) { console.error(`[media] legacy image recovery shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
+    try { await sitemapRefreshStop; }
+    catch (error) { console.error(`[seo] sitemap refresh shutdown failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     try { db.close(); }
     catch (error) { console.error(`[pit] database close failed safely: cause=${safeRequestFailureContext({ error }).cause}`); }
     process.exit(exitCode);
@@ -707,7 +738,58 @@ function refreshPrivateMediaIsolationSafely(phase) {
     });
 }
 
-function startServer() {
+function sitemapRefreshIntervalMs(env = process.env) {
+  const configured = Number(env.SITEMAP_REFRESH_INTERVAL_MS);
+  if (!Number.isFinite(configured)) return 15 * 60 * 1000;
+  return Math.max(60_000, Math.min(24 * 60 * 60 * 1000, Math.floor(configured)));
+}
+
+function clearSitemapRetryTimer() {
+  if (!sitemapRetryTimer) return;
+  clearTimeout(sitemapRetryTimer);
+  sitemapRetryTimer = null;
+}
+
+function scheduleSitemapRetry(retryAt) {
+  if (shuttingDown || !Number.isFinite(Number(retryAt))) return;
+  clearSitemapRetryTimer();
+  const delay = Math.max(1, Number(retryAt) - Date.now());
+  sitemapRetryTimer = setTimeout(() => {
+    sitemapRetryTimer = null;
+    void refreshSitemapSafely("retry");
+  }, delay);
+  sitemapRetryTimer.unref();
+}
+
+function refreshSitemapSafely(phase, { force = false } = {}) {
+  return refreshSitemapSnapshot({ force })
+    .then((result) => {
+      if (result?.ok) clearSitemapRetryTimer();
+      else if (Number.isFinite(Number(result?.retryAt))) scheduleSitemapRetry(result.retryAt);
+      if (!result.ok && result.reason !== "backoff") {
+        console.error(`[seo] sitemap refresh retained last-known-good snapshot: phase=${phase} category=${result.reason || "refresh_failed"}`);
+      }
+      return result;
+    })
+    .catch((error) => {
+      console.error(`[seo] sitemap refresh failed safely: phase=${phase} cause=${safeRequestFailureContext({ error }).cause}`);
+      return null;
+    });
+}
+
+function startSitemapRefreshScheduler() {
+  if (sitemapRefreshTimer) return;
+  sitemapRefreshTimer = setInterval(() => {
+    void refreshSitemapSafely("scheduled");
+  }, sitemapRefreshIntervalMs());
+  sitemapRefreshTimer.unref();
+}
+
+async function startServer() {
+  const loadedSitemap = await loadSitemapSnapshot();
+  if (!loadedSitemap.ok && loadedSitemap.reason !== "missing") {
+    console.error(`[seo] persisted sitemap rejected safely: category=${loadedSitemap.reason}`);
+  }
   server.listen(PORT, () => {
     console.log(`[pit] up on http://localhost:${PORT} ${PROD ? "(production)" : "(dev)"}, serving API${existsSync(DIST) ? " + web build" : " (no dist/ yet)"}`);
     try { pruneEmailOperationalData(db); }
@@ -733,6 +815,10 @@ function startServer() {
     startMediaDeletionScheduler({ database: db }); // bounded, durable cleanup of active user-media objects only
     legacyVideoPosterScheduler = startLegacyVideoPosterVerificationScheduler({ database: db });
     startVideoVerifierHealthScheduler();
+    // Sitemap reads serve only the validated persisted/current LKG. A refresh
+    // begins after readiness and is never invoked by an HTTP request.
+    void refreshSitemapSafely("startup", { force: true });
+    startSitemapRefreshScheduler();
     // Do not couple core availability to an optional remote provider. Until
     // this proof succeeds, capabilities stay off and private media operations
     // fail closed through requirePrivateMediaIsolationReady().
@@ -744,4 +830,7 @@ function startServer() {
   });
 }
 
-startServer();
+startServer().catch((error) => {
+  console.error(`[pit] startup failed: cause=${safeRequestFailureContext({ error }).cause}`);
+  process.exitCode = 1;
+});

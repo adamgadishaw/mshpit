@@ -84,7 +84,7 @@ import {
   legacyImageRecoveryHealth,
 } from "./legacyPostImageRecovery.js";
 import { discoverySidebar } from "./discovery.js";
-import { resolveEntity } from "./seo.js";
+import { resolveEntity, sitemapSnapshotHealth } from "./seo.js";
 import { userRewards } from "./rewards.js";
 import { beginVerification, completeVerification, resendVerification, sendWelcomeOnce, verificationEnabled } from "./verification.js";
 import {
@@ -2094,6 +2094,7 @@ function staffHealthProjection(actor) {
       wikidataLookup: wikidataProviderStatus(),
       tourProviderConfigured: !!(process.env.TICKETMASTER_KEY || process.env.BANDSINTOWN_APP_ID),
       tourDates: db.prepare("SELECT COUNT(*) c FROM tour_dates").get().c,
+      sitemap: sitemapSnapshotHealth(),
       backgroundJobs: {
         cacheWarmEnabled: backgroundJobEnabled(process.env, "CACHE_WARM_ENABLED"),
         tourDateRefreshEnabled: backgroundJobEnabled(process.env, "TOURDATE_REFRESH_ENABLED"),

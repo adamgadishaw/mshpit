@@ -170,6 +170,12 @@ test("public health is minimal while detailed readiness requires active staff", 
       ["checkedAt", "configured", "errorCode", "listStatus", "objectStatus", "ready"].sort());
     assert.equal(typeof staffHealth.services.imageProcessor.available, "boolean");
     assert.equal(typeof staffHealth.services.legacyMediaFinalize.pending, "number");
+    assert.equal(typeof staffHealth.services.sitemap.available, "boolean");
+    assert.equal(typeof staffHealth.services.sitemap.refreshing, "boolean");
+    assert.equal(typeof staffHealth.services.sitemap.totalUrls, "number");
+    assert.equal(health.services?.sitemap, undefined,
+      "sitemap topology and refresh history remain on the authenticated staff surface");
+    assert.equal(JSON.stringify(staffHealth.services.sitemap).includes("@"), false);
     assert.equal(JSON.stringify(staffHealth.services.privateMediaIsolation).includes("pit-private"), false,
       "private storage diagnostics never expose bucket identities");
     assert.deepEqual(staffHealth.services.youtubeLookup?.actorAllowance, {

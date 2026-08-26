@@ -2,6 +2,8 @@ import { createArtistMemorialRepository } from "../artistMemorials/artistMemoria
 import { createArtistMemorialService } from "../artistMemorials/artistMemorialService.js";
 import { createProfileSearchIndexingPolicy } from "../../profileSearchIndexing.js";
 import { createPublicDocumentRepository } from "./publicDocumentRepository.js";
+import { createPublicVenueReviewService } from "./publicVenueReviews.js";
+import { createPublicCollectionDocumentService } from "./publicCollectionDocuments.js";
 import { createPublicDocumentProjector } from "./publicDocumentProjection.js";
 import { decodeArchiveShowKey } from "../artistArchive/artistArchiveKeys.js";
 import {
@@ -19,8 +21,11 @@ import {
  * only privacy-safe reads, public projection and HTML rendering.
  */
 export function createPublicDocumentService({ database, origin, paths, artistMemorialService = null } = {}) {
-  const repository = createPublicDocumentRepository(database);
+  const repository = createPublicDocumentRepository(database, {
+    venueReviews: createPublicVenueReviewService(database),
+  });
   const projector = createPublicDocumentProjector({ database, origin, paths });
+  const collections = createPublicCollectionDocumentService({ database, origin });
   const profileSearchIndexing = createProfileSearchIndexingPolicy(database);
   const memorials = artistMemorialService || createArtistMemorialService({
     repository: createArtistMemorialRepository(database),
@@ -84,8 +89,20 @@ export function createPublicDocumentService({ database, origin, paths, artistMem
       return raw ? projector.venue(raw, options) : null;
     },
 
+    cityVenuesDocument(options = {}) {
+      return collections.cityVenuesDocument(options);
+    },
+
+    cityConcertsDocument(options = {}) {
+      return collections.cityConcertsDocument(options);
+    },
+
+    artistConcertsDocument(options = {}) {
+      return collections.artistConcertsDocument(options);
+    },
+
     directoryDocument(options = {}) {
-      const raw = repository.readDirectory(options);
+      const raw = repository.readDirectory({ ...options, limit: 12 });
       return raw ? projector.directory(raw, options) : null;
     },
 
@@ -99,6 +116,9 @@ export function createPublicDocumentService({ database, origin, paths, artistMem
       if (request.kind === "event") return service.eventDocument(request);
       if (request.kind === "concert") return service.concertDocument(request);
       if (request.kind === "venue") return service.venueDocument(request);
+      if (request.kind === "city-venues") return service.cityVenuesDocument(request);
+      if (request.kind === "city-concerts") return service.cityConcertsDocument(request);
+      if (request.kind === "artist-concerts") return service.artistConcertsDocument(request);
       if (request.kind === "directory") return service.directoryDocument(request);
       return null;
     },

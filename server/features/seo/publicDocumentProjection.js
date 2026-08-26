@@ -1,10 +1,13 @@
 import {
+  artistConcertsPath,
   artistPath,
   concertPath,
+  concertsPath,
   eventPath,
   profilePath,
   showPath,
   venuePath,
+  venuesPath,
 } from "../../../src/domain/urls.mjs";
 import { projectedTourDateTicketUrl } from "../../../src/domain/ticketLinks.mjs";
 import { SUPPORT_EMAIL } from "../../../src/domain/contact.mjs";
@@ -12,6 +15,7 @@ import { postMediaStateByPost } from "../../mediaAssets.js";
 import { verifiedFinalizedLegacyMedia } from "../../mediaLegacyFinalize.js";
 import { safeOwnedReadyMediaUrl } from "../../publicMedia.js";
 import { archiveShowKey } from "../artistArchive/artistArchiveKeys.js";
+import { isStrictCalendarDate, isStrictIsoDateTime } from "./publicEntityPolicy.js";
 
 const SITE_NAME = "Mshpit";
 const DEFAULT_ORIGIN = "https://www.mshpit.com";
@@ -62,6 +66,13 @@ function parseArray(value) {
   }
 }
 
+function setlistItems(value) {
+  return parseArray(value)
+    .flatMap((item) => typeof item === "string" ? [cleanLine(item, 120)] : [])
+    .filter(Boolean)
+    .slice(0, 40);
+}
+
 function genres(value) {
   const candidates = parseArray(value).length ? parseArray(value) : String(value || "").split(/[,;/|]/);
   return [...new Set(candidates.map((genre) => cleanLine(genre, 60)).filter(Boolean))].slice(0, 8);
@@ -100,7 +111,12 @@ function isoDuration(value) {
 
 function validDate(value) {
   const date = cleanLine(value, 10);
-  return /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : null;
+  return isStrictCalendarDate(date) ? date : null;
+}
+
+function completeDateTime(value) {
+  const candidate = cleanLine(value, 40);
+  return isStrictIsoDateTime(candidate) ? candidate : null;
 }
 
 function publicHttpsUrl(value) {
@@ -193,10 +209,12 @@ function canonicalEventPath(paths, row) {
   return internalPath(paths.event(row), eventPath(row.id));
 }
 
-function canonicalVenuePath(paths, row) {
+function canonicalVenuePath(paths, row, { allowNameOnly = false } = {}) {
+  const providerVenueId = cleanLine(row?.providerVenueId || row?.venue_provider_id, 180);
+  if (!providerVenueId && !allowNameOnly) return null;
   return internalPath(paths.venue(row), venuePath({
     name: row.venue || row.name,
-    providerVenueId: row.providerVenueId || row.venue_provider_id,
+    providerVenueId,
     source: row.source,
   }));
 }
@@ -318,6 +336,8 @@ function postCard(row, media, paths, { textLimit = 8_000 } = {}) {
     showDate: validDate(row.date),
     rating: rating(row.overall),
     text: cleanBody(row.review, textLimit),
+    setlist: Object.freeze(setlistItems(row.setlist)),
+    tour: cleanLine(row.tour, 180) || null,
     media: Array.isArray(media) ? media : [],
     likes: count(row.like_count),
     comments: count(row.comment_count),
@@ -491,7 +511,11 @@ function eventCard(row, paths) {
 }
 
 function eventSchema(event, origin, { image = null, description = null, today = null } = {}) {
-  if (!event?.address) return null;
+  const startDate = completeDateTime(event?.startDateTime);
+  const address = event?.address;
+  if (!startDate || !cleanLine(address?.streetAddress, 260)
+    || !cleanLine(address?.addressLocality, 120)
+    || !cleanLine(address?.addressCountry, 100)) return null;
   const location = {
     "@type": "MusicVenue",
     name: event.venue,
@@ -504,7 +528,7 @@ function eventSchema(event, origin, { image = null, description = null, today = 
     "@id": `${absolute(origin, event.path)}#event`,
     name: event.name,
     url: absolute(origin, event.path),
-    startDate: event.startDateTime || event.date,
+    startDate,
     ...(event.status ? { eventStatus: event.status } : {}),
     eventAttendanceMode: "https://schema.org/OfflineEventAttendanceMode",
     location,
@@ -774,6 +798,8 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
           modifiedAt: timestamp(concert.latest_at),
         })];
       });
+      const archiveTotal = count(raw.concerts?.[0]?.archive_item_count);
+      const archivePath = archiveTotal > 3 ? artistConcertsPath(source.public_slug) : null;
       const updates = (raw.updates || []).map((update) => Object.freeze({
         id: String(update.id),
         text: cleanBody(update.text, 2_000),
@@ -858,6 +884,8 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         updates,
         events,
         concerts,
+        archivePath,
+        archiveTotal,
         breadcrumbs,
         jsonLd: [
           Object.freeze(collection),
@@ -1182,6 +1210,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       };
       const breadcrumbs = Object.freeze([
         Object.freeze({ name: "Mshpit", path: "/" }),
+        Object.freeze({ name: "Concerts", path: "/concerts" }),
         ...(artistCanonicalPath ? [Object.freeze({ name: artist, path: artistCanonicalPath })] : []),
         Object.freeze({ name: `${venue} · ${date}`, path }),
       ]);
@@ -1196,7 +1225,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         imageWidth: primaryAsset?.kind === "image" ? primaryAsset.width : null,
         imageHeight: primaryAsset?.kind === "image" ? primaryAsset.height : null,
         imageMimeType: primaryAsset?.kind === "image" ? primaryAsset.mimeType : null,
-        concert: Object.freeze({ artist, artistPath: artistCanonicalPath, venue, venuePath: venueCanonicalPath, city: cleanLine(first.city, 120) || null, date, averageRating, ratingCount, reviewCount }),
+        concert: Object.freeze({ artist, artistPath: artistCanonicalPath, venue, venuePath: venueCanonicalPath, city: cleanLine(first.city, 120) || null, date, averageRating, ratingCount, reviewCount, address: concertEvent?.location?.address ? Object.freeze({ ...concertEvent.location.address }) : null }),
         reviews,
         breadcrumbs,
         jsonLd: [concertEvent ? Object.freeze(concertEvent) : null, Object.freeze(collectionPage), Object.freeze(breadcrumbNode(publicOrigin, breadcrumbs))].filter(Boolean),
@@ -1206,18 +1235,47 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
     venue(raw, { canonicalPath: requestedPath = null } = {}) {
       if (!raw?.venue?.name) return null;
       const name = cleanLine(raw.venue.name, 180);
-      const path = canonicalPath(requestedPath, canonicalVenuePath(publicPaths, raw.venue));
+      const path = canonicalPath(requestedPath, canonicalVenuePath(publicPaths, raw.venue, { allowNameOnly: true }));
       const mediaByPost = publicMediaForRows(database, raw.posts || [], { galleryOnly: true, maxPerPost: 3 });
       const posts = (raw.posts || []).map((row) => postCard(row, mediaByPost.get(row.id), publicPaths));
       const events = (raw.events || []).map((row) => eventCard(row, publicPaths)).filter(Boolean);
+      const venueReviews = (raw.venueReviews?.reviews || []).slice(0, 8).flatMap((review) => {
+        const id = cleanLine(review?.id, 120);
+        const text = cleanBody(review?.text, 8_000);
+        const photos = Object.freeze((review?.photos || []).slice(0, 3).flatMap((url) => {
+          const safe = publicHttpsUrl(url);
+          return safe ? [safe] : [];
+        }));
+        if (!id || (!text && photos.length === 0)) return [];
+        const ratingValue = Number(review?.rating);
+        const rating = Number.isFinite(ratingValue) && ratingValue >= 1 && ratingValue <= 5
+          ? ratingValue : null;
+        return [Object.freeze({
+          id,
+          author: Object.freeze({
+            name: cleanLine(review?.author?.name, 100) || "Mshpit member",
+            handle: cleanLine(review?.author?.handle, 40).replace(/^@+/u, "") || null,
+          }),
+          rating,
+          text,
+          photos,
+          createdAt: Number.isSafeInteger(Number(review?.createdAt)) && Number(review.createdAt) >= 0
+            ? Number(review.createdAt) : null,
+        })];
+      });
+      const reviewCount = count(raw.venueReviews?.stats?.reviewCount);
+      const ratingCount = count(raw.venueReviews?.stats?.ratingCount);
+      const rawAverageRating = Number(raw.venueReviews?.stats?.averageRating);
+      const averageRating = ratingCount > 0 && Number.isFinite(rawAverageRating)
+        && rawAverageRating >= 1 && rawAverageRating <= 5 ? rawAverageRating : null;
       const primaryAsset = posts.flatMap((post) => post.media).find((asset) => asset.kind === "image" || asset.posterUrl) || null;
       const image = primaryAsset?.kind === "image" ? primaryAsset.url : primaryAsset?.posterUrl || null;
       const place = events.find((event) => event.place)?.place || posts.find((post) => post.city)?.city || null;
-      const address = events.find((event) => event.address)?.address || (place ? { "@type": "PostalAddress", addressLocality: place } : null);
+      const address = events.find((event) => event.address)?.address || null;
       const description = summary(`${name}${place ? ` in ${place}` : ""}: upcoming concerts, fan reviews and live music photos on Mshpit.`);
       const breadcrumbs = Object.freeze([
         Object.freeze({ name: "Mshpit", path: "/" }),
-        Object.freeze({ name: "Events", path: "/events" }),
+        Object.freeze({ name: "Venues", path: "/venues" }),
         Object.freeze({ name, path }),
       ]);
       const venueEntity = {
@@ -1242,6 +1300,8 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         imageHeight: primaryAsset?.kind === "image" ? primaryAsset.height : null,
         imageMimeType: primaryAsset?.kind === "image" ? primaryAsset.mimeType : null,
         venue: Object.freeze({ name, place, address }),
+        venueReviewStats: Object.freeze({ reviewCount, ratingCount, averageRating }),
+        venueReviews: Object.freeze(venueReviews),
         posts,
         events,
         breadcrumbs,
@@ -1261,8 +1321,12 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
     },
 
     directory(raw, { canonicalPath: requestedPath = null } = {}) {
-      if (!raw || !["artists", "events"].includes(raw.kind)) return null;
-      const path = canonicalPath(requestedPath, `/${raw.kind}`);
+      if (!raw || !["artists", "events", "venues", "concerts"].includes(raw.kind)) return null;
+      const page = Math.max(1, Math.min(1_000, Math.trunc(Number(raw.page) || 1)));
+      const collectionPath = raw.kind === "venues" ? venuesPath
+        : raw.kind === "concerts" ? concertsPath
+          : (targetPage) => targetPage > 1 ? `/${raw.kind}/page/${targetPage}` : `/${raw.kind}`;
+      const path = canonicalPath(requestedPath, collectionPath(page));
       const artists = raw.kind === "artists" ? (raw.artists || []).slice(0, 200).map((row) => Object.freeze({
         name: cleanLine(row.name, 160),
         path: canonicalArtistPath(publicPaths, row),
@@ -1270,24 +1334,118 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         description: summary(row.bio, 180),
       })).filter((artist) => artist.name && artist.path) : [];
       const events = raw.kind === "events" ? (raw.events || []).slice(0, 200).map((row) => eventCard(row, publicPaths)).filter(Boolean) : [];
+      const venues = raw.kind === "venues" ? (raw.venues || []).slice(0, 12).flatMap((row) => {
+        const name = cleanLine(row.name, 180);
+        if (!name) return [];
+        const path = canonicalVenuePath(publicPaths, {
+          name,
+          providerVenueId: row.venue_provider_id,
+          source: row.source,
+        }, { allowNameOnly: true });
+        if (!path) return [];
+        const featuredEvent = row.event_id ? eventCard({
+          id: row.event_id,
+          event_name: row.event_name,
+          artist: row.featured_artist,
+          artist_key: row.featured_artist_key,
+          artist_public_slug: row.featured_artist_public_slug,
+          venue: name,
+          venue_provider_id: row.venue_provider_id,
+          source: row.source,
+          place: row.place,
+          venue_city: row.venue_city,
+          venue_region: row.venue_region,
+          venue_country_code: row.venue_country_code,
+          venue_country: row.venue_country,
+          date: row.event_date,
+          start_date_time: row.event_start_date_time,
+          start_local_time: row.event_local_time,
+          event_timezone: row.event_timezone,
+          event_status: row.event_status,
+          ticket_url: row.event_ticket_url,
+          sold_out: row.event_sold_out,
+          venue_address_line1: row.venue_address_line1,
+          venue_address_line2: row.venue_address_line2,
+          venue_postal_code: row.venue_postal_code,
+          updated_at: row.updated_at,
+        }, publicPaths) : null;
+        const featuredArtist = cleanLine(row.featured_artist, 160) || null;
+        return [Object.freeze({
+          name,
+          path,
+          place: cleanLine(row.place, 180)
+            || cleanLine([row.venue_city, row.venue_region, row.venue_country].filter(Boolean).join(", "), 180)
+            || null,
+          reviewCount: count(row.review_count),
+          featuredArtist,
+          featuredArtistPath: featuredArtist ? relatedArtistPath(publicPaths, {
+            artist: featuredArtist,
+            artist_key: row.featured_artist_key,
+            artist_public_slug: row.featured_artist_public_slug,
+          }) : null,
+          featuredEvent,
+          modifiedAt: timestamp(row.updated_at),
+        })];
+      }) : [];
+      const concerts = raw.kind === "concerts" ? (raw.concerts || []).slice(0, 12).flatMap((row) => {
+        const date = validDate(row.date);
+        const artist = cleanLine(row.artist, 160);
+        const venue = cleanLine(row.venue, 180);
+        if (!date || !artist || !venue) return [];
+        const key = archiveShowKey({
+          artistIdentity: row.artist_key || row.show_artist || artist,
+          venueIdentity: row.venue_key || row.show_venue || venue,
+          date,
+        });
+        return [Object.freeze({
+          key,
+          path: canonicalConcertPath(publicPaths, key),
+          artist,
+          artistPath: relatedArtistPath(publicPaths, row),
+          venue,
+          venuePath: canonicalVenuePath(publicPaths, row),
+          city: cleanLine(row.city, 120) || null,
+          date,
+          ratingCount: count(row.rating_count),
+          reviewCount: count(row.review_count),
+          averageRating: rating(row.average_rating),
+          modifiedAt: timestamp(row.latest_at),
+        })];
+      }) : [];
+      if ((raw.kind === "venues" && !venues.length) || (raw.kind === "concerts" && !concerts.length)) return null;
       const isArtists = raw.kind === "artists";
-      const title = isArtists ? "Artists with live reviews and concert archives | Mshpit" : "Upcoming concerts around the world | Mshpit";
+      const isVenues = raw.kind === "venues";
+      const isConcerts = raw.kind === "concerts";
+      const titleBase = isArtists ? "Artists with live reviews and concert archives"
+        : isVenues ? "Concert venues, reviews and upcoming shows"
+          : isConcerts ? "Fan-rated concert archive" : "Upcoming concerts around the world";
+      const title = titleBase + (page > 1 ? ' — Page ' + page : '') + ' | Mshpit';
       const description = isArtists
         ? "Browse artist pages with fan reviews, concert photos, upcoming shows and historical live archives on Mshpit."
-        : "Browse upcoming concerts worldwide, then open an event for venue details, ticket links and fan memories on Mshpit.";
+        : isVenues
+          ? "Browse established live music venues with real upcoming shows and Mshpit fan activity."
+          : isConcerts
+            ? "Browse real concert nights documented by Mshpit fans, with ratings, reviews and links to artists and venues."
+            : "Browse upcoming concerts worldwide, then open an event for venue details, ticket links and fan memories on Mshpit.";
+      const directoryLabel = isArtists ? "Artists" : isVenues ? "Venues" : isConcerts ? "Concert archive" : "Events";
       const breadcrumbs = Object.freeze([
         Object.freeze({ name: "Mshpit", path: "/" }),
-        Object.freeze({ name: isArtists ? "Artists" : "Events", path }),
+        Object.freeze({ name: page > 1 ? `${directoryLabel} — Page ${page}` : directoryLabel, path }),
       ]);
-      const items = (isArtists ? artists : events).slice(0, 100).map((item, index) => ({
+      const directoryItems = isArtists ? artists : isVenues ? venues : isConcerts ? concerts : events;
+      const items = directoryItems.slice(0, 100).map((item, index) => ({
         "@type": "ListItem",
         position: index + 1,
-        name: item.name,
+        name: item.name || [item.artist, item.venue].filter(Boolean).join(" at "),
         url: absolute(publicOrigin, item.path),
       }));
       return Object.freeze({
         kind: "directory",
         directoryKind: raw.kind,
+        page,
+        hasNext: raw.hasNext === true,
+        previousPath: page > 1 ? collectionPath(page - 1) : null,
+        nextPath: raw.hasNext === true ? collectionPath(page + 1) : null,
         siteName: SITE_NAME,
         title,
         description,
@@ -1296,17 +1454,21 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         image: null,
         artists,
         events,
+        venues,
+        concerts,
         breadcrumbs,
         jsonLd: [Object.freeze({
           "@context": "https://schema.org",
           "@type": "CollectionPage",
           "@id": `${absolute(publicOrigin, path)}#page`,
-          name: isArtists ? "Mshpit artist directory" : "Mshpit event directory",
+          name: isArtists ? "Mshpit artist directory"
+            : isVenues ? "Mshpit venue directory"
+              : isConcerts ? "Mshpit fan concert archive" : "Mshpit event directory",
           url: absolute(publicOrigin, path),
           description,
           isPartOf: siteReference(publicOrigin),
           publisher: organizationReference(publicOrigin),
-          mainEntity: { "@type": "ItemList", numberOfItems: isArtists ? artists.length : events.length, itemListElement: items },
+          mainEntity: { "@type": "ItemList", numberOfItems: directoryItems.length, itemListElement: items },
         }), Object.freeze(breadcrumbNode(publicOrigin, breadcrumbs))].filter(Boolean),
       });
     },

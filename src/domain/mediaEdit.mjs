@@ -14,7 +14,6 @@ export const VIDEO_MIN_DURATION_MS = MEDIA_VIDEO_MIN_DURATION_MS;
 export const MEDIA_PHOTO_MAX_BYTES = MEDIA_PHOTO_SOURCE_MAX_BYTES;
 export const MEDIA_VIDEO_MAX_BYTES = MEDIA_VIDEO_SOURCE_MAX_BYTES;
 export const MEDIA_DELIVERY_IMAGE_MIME_TYPES = Object.freeze(["image/jpeg", "image/png", "image/webp"]);
-export const MEDIA_VIDEO_SOURCE_MIME_TYPES = Object.freeze(["video/mp4", "video/quicktime"]);
 
 export const MEDIA_ASPECTS = Object.freeze({
   original: null,
@@ -165,29 +164,12 @@ export function mediaImageDeliveryCompatible(asset = {}) {
   return /\.(?:jpe?g|png|webp)(?:[?#]|$)/i.test(String(asset.fileName || asset.uri || ""));
 }
 
-export function mediaImageNeedsNativeDecode(asset = {}) {
-  const mime = String(asset.mimeType || "").toLowerCase().split(";")[0].trim();
-  if (mime === "image/heic" || mime === "image/heif") return true;
-  return /\.(?:heic|heif)(?:[?#]|$)/i.test(String(asset.fileName || asset.uri || ""));
-}
-
-export function mediaImageAnimationUnsupported(asset = {}) {
-  const mime = String(asset.mimeType || "").toLowerCase().split(";")[0].trim();
-  if (mime === "image/gif") return true;
-  return /\.gif(?:[?#]|$)/i.test(String(asset.fileName || asset.uri || ""));
-}
-
 export function mediaImageRequiresRender(asset = {}, edit = asset.edit) {
-  // Every newly published image receives a bounded PIT-owned derivative, even
-  // when the visual recipe is "Original". This bakes orientation and strips
-  // EXIF/IPTC/XMP/GPS/device metadata instead of exposing selected phone bytes.
-  return normalizeMediaKind(asset.kind || asset.type) === "image";
-}
-
-export function mediaVideoSourceCompatible(asset = {}) {
-  const mime = String(asset.mimeType || "").toLowerCase().split(";")[0].trim();
-  if (mime) return MEDIA_VIDEO_SOURCE_MIME_TYPES.includes(mime);
-  return /\.(?:mp4|mov)(?:[?#]|$)/i.test(String(asset.fileName || asset.uri || ""));
+  // The server creates the metadata-stripped public derivative for an Original
+  // photo. Only a visual recipe needs device-authored pixels; ordinary camera
+  // photos and screenshots must not be blocked by ImageManipulator/Skia.
+  return normalizeMediaKind(asset.kind || asset.type) === "image"
+    && mediaEditHasChanges(edit, { kind: "image" });
 }
 
 export function effectiveAdjustments(value = {}) {
@@ -276,11 +258,7 @@ export function buildPhotoTransformPlan({ width, height, edit, maxEdge = PHOTO_M
 export function videoEditRequiresExport(value) {
   const edit = normalizeMediaEdit(value, { kind: "video", durationMs: value?.durationMs });
   const baseline = defaultMediaEdit("video", { durationMs: edit.durationMs });
-  // PIT does not yet have an authoritative video encoder. A source longer
-  // than the public clip-duration contract would otherwise be uploaded whole
-  // while the normalized recipe misleadingly displays a shorter trim.
-  return edit.durationMs > VIDEO_MAX_DURATION_MS
-    || edit.trimStartMs !== baseline.trimStartMs
+  return edit.trimStartMs !== baseline.trimStartMs
     || edit.trimEndMs !== baseline.trimEndMs
     || edit.muted
     || edit.rotation !== 0
