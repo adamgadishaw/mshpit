@@ -513,6 +513,10 @@ CREATE TABLE IF NOT EXISTS artists (
 CREATE INDEX IF NOT EXISTS idx_artists_rank ON artists(rank_score DESC);
 CREATE INDEX IF NOT EXISTS idx_artists_name ON artists(name);
 CREATE INDEX IF NOT EXISTS idx_artists_name_nocase ON artists(name COLLATE NOCASE,rank_score DESC,norm);
+-- Startup migrations reconcile provider event display names with canonical
+-- artists. Keep that lookup indexed so existing production catalogues do not
+-- turn the one-time backfill into an artists x events table scan.
+CREATE INDEX IF NOT EXISTS idx_artists_trimmed_name_lookup ON artists(lower(trim(name)),norm);
 -- A single cheap revision lets Discover cache the evidence-aware projection
 -- without rescanning/parsing every rich artist blob on every request. Triggers
 -- advance it only when a field that can change public genre membership changes.

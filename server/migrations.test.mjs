@@ -290,6 +290,7 @@ test("legacy attendance, tour-date, and campaign tables gain safe additive colum
     (provider,source_id,title,artist,video_id,set_by,updated_at)
     VALUES ('deezer','1234638792','Shared Recording','Proofed Artist','sourcepin01',NULL,8)`).run();
   previous.db.exec(`
+    DROP INDEX idx_artists_trimmed_name_lookup;
     DROP INDEX idx_going_cursor;
     DROP INDEX idx_tourdates_owner_show;
     DROP INDEX idx_tourdates_artist_visibility;
@@ -342,6 +343,7 @@ test("legacy attendance, tour-date, and campaign tables gain safe additive colum
   const playColumns = new Set(upgraded.db.prepare("PRAGMA table_info(plays)").all().map((row) => row.name));
   const goingIndexes = new Set(upgraded.db.prepare("PRAGMA index_list(going)").all().map((row) => row.name));
   const tourIndexes = new Set(upgraded.db.prepare("PRAGMA index_list(tour_dates)").all().map((row) => row.name));
+  const artistIndexes = new Set(upgraded.db.prepare("PRAGMA index_list(artists)").all().map((row) => row.name));
 
   assert.ok(goingColumns.has("created_at"));
   assert.ok(tourColumns.has("owner_id"));
@@ -361,6 +363,13 @@ test("legacy attendance, tour-date, and campaign tables gain safe additive colum
   assert.ok(playColumns.has("source_id"));
   assert.equal(upgraded.db.prepare("SELECT artist_key FROM tour_dates WHERE id=?").get("seo_exact_event").artist_key, "radiohead");
   assert.equal(upgraded.db.prepare("SELECT artist_key FROM tour_dates WHERE id=?").get("seo_ambiguous_event").artist_key, null);
+  assert.ok(artistIndexes.has("idx_artists_trimmed_name_lookup"));
+  const artistLookupPlan = upgraded.db.prepare(`EXPLAIN QUERY PLAN
+    SELECT norm FROM artists WHERE lower(trim(name))=?`).all("radiohead");
+  assert.match(
+    artistLookupPlan.map((row) => row.detail).join(" "),
+    /idx_artists_trimmed_name_lookup/,
+  );
   assert.ok(tourIndexes.has("idx_tourdates_artist_visibility"));
   assert.ok(tourIndexes.has("idx_tourdates_structured_city_date"));
   assert.ok(tourIndexes.has("idx_tourdates_sitemap_cursor"));
