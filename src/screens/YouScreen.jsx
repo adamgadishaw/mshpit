@@ -121,6 +121,7 @@ export default function YouScreen({ onLogin, onLogout, onManageProfile, onSettin
   );
 
   const playTrack = (t) => onPlay?.({ kind: "track", title: t.title, artist: t.artist, art: t.art || null });
+  const StaticOrPlayable = onPlay ? Pressable : View;
   const shareMemory = async (memory) => {
     try {
       setMemoryStatus(`Opening share options for ${memory.artist}.`);
@@ -297,12 +298,12 @@ export default function YouScreen({ onLogin, onLogout, onManageProfile, onSettin
           <View style={styles.historyLinkIcon}><Icon name="clock" size={17} color={colors.amber} /></View>
           <View style={{ flex: 1, minWidth: 0 }}>
             <Text style={styles.historyLinkTitle}>Listening history</Text>
-            <Text style={styles.historyLinkSub}>Replay recent songs and load older plays</Text>
+            <Text style={styles.historyLinkSub}>{onPlay ? "Replay recent songs and load older plays" : "Review recent songs and load older listening history"}</Text>
           </View>
           <Icon name="chevron-right" size={17} color={colors.textDim} />
         </Pressable>
         {sound.totalPlays === 0 ? (
-          <View style={styles.card}><Text style={styles.emptyHint}>Play songs from any artist page and your charts build themselves.</Text></View>
+          <View style={styles.card}><Text style={styles.emptyHint}>{onPlay ? "Play songs from any artist page and your charts build themselves." : "Your listening charts will remain here while the music player is paused."}</Text></View>
         ) : (
           <View style={styles.card}>
             <View style={styles.donutRow}>
@@ -357,12 +358,12 @@ export default function YouScreen({ onLogin, onLogout, onManageProfile, onSettin
           <Text style={styles.scopeCopy}>From the listening history available on Pit—not a lifetime total.</Text>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.rediscoverRail} accessibilityLabel="Tracks to rediscover">
             {rediscover.map((track) => (
-              <Pressable key={`${track.artist}|${track.title}`} style={styles.rediscoverCard} onPress={() => onPlay?.(track)} disabled={!onPlay} accessibilityRole="button" accessibilityLabel={`Play ${track.title} by ${track.artist}. ${track.ageLabel}`} accessibilityState={{ disabled: !onPlay }}>
+              <StaticOrPlayable key={`${track.artist}|${track.title}`} style={styles.rediscoverCard} onPress={onPlay ? () => onPlay(track) : undefined} accessibilityRole={onPlay ? "button" : undefined} accessibilityLabel={onPlay ? `Play ${track.title} by ${track.artist}. ${track.ageLabel}` : `${track.title} by ${track.artist}. ${track.ageLabel}`}>
                 {track.art ? <SmartImage uri={track.art} style={styles.rediscoverArt} contain={false} accessible={false} /> : <View style={[styles.rediscoverArt, styles.songArtEmpty]}><Icon name="music" size={20} color={colors.textFaint} /></View>}
                 <Text style={styles.rediscoverTitle} numberOfLines={1}>{track.title}</Text>
                 <Text style={styles.rediscoverArtist} numberOfLines={1}>{track.artist}</Text>
                 <Text style={styles.rediscoverAge} numberOfLines={1}>{track.ageLabel}</Text>
-              </Pressable>
+              </StaticOrPlayable>
             ))}
           </ScrollView>
         </Reveal>

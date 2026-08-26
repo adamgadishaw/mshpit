@@ -68,7 +68,7 @@ test("artist profile wires the compact show selector to an accessible resettable
   assert.match(source, /selectArtistUpcomingShows\(upcoming, \{ expanded: showAllUpcoming \}\)/);
   assert.match(source, /setShowAllUpcoming\(false\)/);
   assert.match(source, /visibleUpcoming\.map\(\(t\) =>/);
-  assert.match(source, /accessibilityState=\{\{ expanded: upcomingPresentation\.expanded \}\}/);
+  assert.match(source, /accessibilityState=\{\{ expanded: sectionModel\.condensed \? false : upcomingPresentation\.expanded \}\}/);
   assert.match(source, /Load \$\{upcomingPresentation\.overflowCount\} more/);
   assert.match(source, /Show fewer/);
 });

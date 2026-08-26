@@ -24,8 +24,8 @@ export function playlistToTracks(playlist) {
     }));
 }
 
-// A playable playlist share on a post: tap the header (or any track) to load the
-// whole list into the player queue. onPlay is the app's openPlayer(media, queue).
+// A playlist share keeps its immutable track list visible in posts. When the
+// central player is available, onPlay also makes the header and tracks playable.
 export default function PlaylistAttachment({ playlist, onPlay }) {
   const tracks = playlistToTracks(playlist);
   if (!tracks.length) return null;
@@ -33,14 +33,15 @@ export default function PlaylistAttachment({ playlist, onPlay }) {
   const count = tracks.length;
   const owner = playlist?.owner?.name;
   const play = (track = tracks[0]) => onPlay?.(track, tracks);
+  const StaticOrPlayable = onPlay ? Pressable : View;
 
   return (
     <View style={styles.card}>
-      <Pressable
+      <StaticOrPlayable
         style={styles.head}
         onPress={onPlay ? () => play() : undefined}
         accessibilityRole={onPlay ? "button" : undefined}
-        accessibilityLabel={`Play playlist ${playlist?.name || ""}, ${count} ${count === 1 ? "song" : "songs"}`}
+        accessibilityLabel={onPlay ? `Play playlist ${playlist?.name || ""}, ${count} ${count === 1 ? "song" : "songs"}` : `Playlist ${playlist?.name || ""}, ${count} ${count === 1 ? "song" : "songs"}`}
       >
         {cover ? <SmartImage uri={cover} style={styles.art} contain={false} /> : <View style={[styles.art, styles.artEmpty]}><Icon name="music" size={22} color={colors.amber} /></View>}
         <View style={styles.copy}>
@@ -48,16 +49,16 @@ export default function PlaylistAttachment({ playlist, onPlay }) {
           <Text style={styles.title} numberOfLines={2}>{playlist?.name || "Playlist"}</Text>
           <Text style={styles.meta} numberOfLines={1}>{count} {count === 1 ? "song" : "songs"}{owner ? ` · ${owner}` : ""}</Text>
         </View>
-        <View style={styles.play}><Icon name="play" size={17} color="#1A1206" /></View>
-      </Pressable>
+        {onPlay && <View style={styles.play}><Icon name="play" size={17} color="#1A1206" /></View>}
+      </StaticOrPlayable>
 
       <View style={styles.tracks}>
         {tracks.slice(0, 3).map((t, i) => (
-          <Pressable key={`${t.videoId || t.id || t.title}:${i}`} style={styles.trackRow} onPress={onPlay ? () => play(t) : undefined} accessibilityRole={onPlay ? "button" : undefined} accessibilityLabel={`Play ${t.title}`}>
+          <StaticOrPlayable key={`${t.videoId || t.id || t.title}:${i}`} style={styles.trackRow} onPress={onPlay ? () => play(t) : undefined} accessibilityRole={onPlay ? "button" : undefined} accessibilityLabel={onPlay ? `Play ${t.title}` : `${t.title}${t.artist ? ` by ${t.artist}` : ""}`}>
             <Text style={styles.idx}>{i + 1}</Text>
             <Text style={styles.trackTitle} numberOfLines={1}>{t.title}</Text>
             {!!t.artist && <Text style={styles.trackArtist} numberOfLines={1}>{t.artist}</Text>}
-          </Pressable>
+          </StaticOrPlayable>
         ))}
         {count > 3 && <Text style={styles.more}>+{count - 3} more {count - 3 === 1 ? "song" : "songs"}</Text>}
       </View>

@@ -39,8 +39,9 @@ function TrebleBass({ kind, song, playing, onPlay, onOpenArtist }) {
   const treble = kind === "treble";
   const c = treble ? colors.amber : colors.magenta;
   const art = song ? artistMeta(song.artist)?.photo : null;
+  const StaticOrPreviewable = song && onPlay ? Pressable : View;
   return (
-    <Pressable style={[styles.tb, { borderColor: c }]} onPress={song ? onPlay : undefined}>
+    <StaticOrPreviewable style={[styles.tb, { borderColor: c }]} onPress={song && onPlay ? onPlay : undefined} accessibilityRole={song && onPlay ? "button" : undefined} accessibilityLabel={song && onPlay ? `Preview ${song.title} by ${song.artist}` : undefined}>
       <Text style={[styles.tbKind, { color: c }]}>{treble ? "TREBLE" : "BASS"}</Text>
       <View style={styles.tbRecord}>
         <SpinningRecord size={72} playing={playing} color={c} art={art} />
@@ -59,7 +60,7 @@ function TrebleBass({ kind, song, playing, onPlay, onOpenArtist }) {
       ) : (
         <Text style={styles.tbEmpty}>{treble ? "top pick" : "underdog pick"}</Text>
       )}
-    </Pressable>
+    </StaticOrPreviewable>
   );
 }
 
@@ -222,6 +223,8 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenProfi
   };
   // Play a saved playlist: first track opens the bar with the whole list queued.
   const playPlaylist = (pl) => { const q = (pl.tracks || []).filter((t) => !!trackKey(t)); if (q.length) onPlay?.(q[0], q); };
+  const StaticOrPlayable = onPlay ? Pressable : View;
+  const StaticOrPreviewable = onPreview ? Pressable : View;
   // "Crossed paths", shows you've both been to (and artists you've both seen).
   const crossed = !isSelf && session ? sharedShows(user.id) : { shows: [], artists: [] };
   const match = !isSelf && session ? tasteMatch(session, user) : null;
@@ -234,7 +237,7 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenProfi
   const following = isFollowing(user.id);
   const roleLabel = user.role === "admin" ? "ADMIN" : user.role === "artist" ? "VERIFIED ARTIST" : "FAN";
   const playSong = (slot, song) => {
-    if (!song) return;
+    if (!song || !onPreview) return;
     setPlaying((p) => (p === slot ? null : slot));
     onPreview?.(song.title, song.artist);
   };
@@ -414,14 +417,14 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenProfi
         ) : playlists.length > 0 ? (
           <>
             {playlists.map((pl) => (
-              <Pressable key={pl.id} style={styles.playlistRow} onPress={() => playPlaylist(pl)} accessibilityRole="button" accessibilityLabel={`Play playlist ${pl.name}, ${(pl.tracks || []).length} songs`}>
-                <View style={styles.playlistIcon}><Icon name="play" size={16} color={colors.amber} /></View>
+              <StaticOrPlayable key={pl.id} style={styles.playlistRow} onPress={onPlay ? () => playPlaylist(pl) : undefined} accessibilityRole={onPlay ? "button" : undefined} accessibilityLabel={onPlay ? `Play playlist ${pl.name}, ${(pl.tracks || []).length} songs` : `Playlist ${pl.name}, ${(pl.tracks || []).length} songs`}>
+                <View style={styles.playlistIcon}><Icon name={onPlay ? "play" : "music"} size={16} color={colors.amber} /></View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.playlistName} numberOfLines={1}>{pl.name}</Text>
                   <Text style={styles.playlistSub} numberOfLines={1}>{(pl.tracks || []).length} song{(pl.tracks || []).length === 1 ? "" : "s"} · {(pl.tracks || []).slice(0, 3).map((t) => t.artist).filter(Boolean).join(", ")}</Text>
                 </View>
-                <Icon name="chevron-right" size={16} color={colors.textDim} />
-              </Pressable>
+                {onPlay && <Icon name="chevron-right" size={16} color={colors.textDim} />}
+              </StaticOrPlayable>
             ))}
           </>
         ) : <Text style={styles.empty}>No playlists are shared here yet.</Text>}
@@ -440,7 +443,7 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenProfi
 
         {/* on rotation: now playing + treble/bass with spinning records */}
         {!!user.nowPlaying && (
-          <Pressable style={styles.nowCard} onPress={() => playSong("now", user.nowPlaying)}>
+          <StaticOrPreviewable style={styles.nowCard} onPress={onPreview ? () => playSong("now", user.nowPlaying) : undefined} accessibilityRole={onPreview ? "button" : undefined} accessibilityLabel={onPreview ? `Preview ${user.nowPlaying.title} by ${user.nowPlaying.artist}` : undefined}>
             <SpinningRecord size={44} playing={playing === "now"} color={colors.good} art={artistMeta(user.nowPlaying.artist)?.photo} />
             <View style={{ flex: 1 }}>
               <Text style={styles.nowLabel}>NOW PLAYING</Text>
@@ -449,16 +452,16 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenProfi
             <Pressable style={styles.listenBtn} onPress={() => Linking.openURL(listenUrl(user.nowPlaying))}>
               <Text style={styles.listenTxt}>Listen</Text>
             </Pressable>
-          </Pressable>
+          </StaticOrPreviewable>
         )}
 
         {(user.treble || user.bass) && (
           <>
             <Text style={styles.sectionLabel}>TREBLE & BASS</Text>
-            <Text style={styles.hint}>their top pick and their underdog. tap to spin, then listen.</Text>
+            <Text style={styles.hint}>{onPreview ? "Their top pick and underdog. Tap to preview, or use the external listen link." : "Their top pick and underdog, with external listen links."}</Text>
             <View style={styles.topRow}>
-              <TrebleBass kind="treble" song={user.treble} playing={playing === "treble"} onPlay={() => playSong("treble", user.treble)} onOpenArtist={onOpenArtist} />
-              <TrebleBass kind="bass" song={user.bass} playing={playing === "bass"} onPlay={() => playSong("bass", user.bass)} onOpenArtist={onOpenArtist} />
+              <TrebleBass kind="treble" song={user.treble} playing={playing === "treble"} onPlay={onPreview ? () => playSong("treble", user.treble) : undefined} onOpenArtist={onOpenArtist} />
+              <TrebleBass kind="bass" song={user.bass} playing={playing === "bass"} onPlay={onPreview ? () => playSong("bass", user.bass) : undefined} onOpenArtist={onOpenArtist} />
             </View>
           </>
         )}

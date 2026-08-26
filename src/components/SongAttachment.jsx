@@ -14,8 +14,8 @@ export function songToTrack(song) {
 }
 
 // A shared YouTube video, rendered like Facebook/Twitter render one: a large
-// 16:9 thumbnail with a play button over it and the title below, so it reads as
-// real media in the post rather than a tiny sidebar chip. The validated video id
+// 16:9 thumbnail and title make it read as real media in the post rather than a
+// tiny sidebar chip. When playback is available, the validated video id
 // goes straight to the player, so a tap never re-searches and swaps in a karaoke
 // or lyric upload.
 //
@@ -25,41 +25,42 @@ export default function SongAttachment({ song, onPlay, compact = false }) {
   const track = songToTrack(song);
   if (!track) return null;
   const press = onPlay ? () => onPlay(track) : undefined;
-  const a11y = { accessibilityRole: onPlay ? "button" : undefined, accessibilityLabel: `Play ${track.title} by ${track.artist} in your Pit player` };
+  const StaticOrPlayable = onPlay ? Pressable : View;
+  const a11y = { accessibilityRole: onPlay ? "button" : undefined, accessibilityLabel: onPlay ? `Play ${track.title} by ${track.artist} in your Pit player` : `Shared track ${track.title} by ${track.artist}` };
 
   if (compact) {
     return (
-      <Pressable style={styles.compactCard} onPress={press} {...a11y}>
+      <StaticOrPlayable style={styles.compactCard} onPress={press} {...a11y}>
         <SmartImage uri={track.art} style={styles.compactArt} contain={false} />
         <View style={styles.compactCopy}>
-          <Text style={styles.kicker}>WATCH ON PIT</Text>
+          <Text style={styles.kicker}>{onPlay ? "WATCH ON PIT" : "SHARED TRACK"}</Text>
           <Text style={styles.compactTitle} numberOfLines={2}>{track.title}</Text>
           <Text style={styles.artist} numberOfLines={1}>{track.artist}</Text>
         </View>
-        <View style={styles.compactPlay}><Icon name="play" size={16} color="#1A1206" /></View>
-      </Pressable>
+        {onPlay && <View style={styles.compactPlay}><Icon name="play" size={16} color="#1A1206" /></View>}
+      </StaticOrPlayable>
     );
   }
 
   return (
-    <Pressable style={styles.card} onPress={press} {...a11y}>
+    <StaticOrPlayable style={styles.card} onPress={press} {...a11y}>
       <View style={styles.stage}>
         <SmartImage uri={track.art} style={StyleSheet.absoluteFill} contain={false} />
         {/* A soft bottom gradient-ish scrim keeps the title legible over any frame. */}
         <View style={styles.scrim} pointerEvents="none" />
-        <View style={styles.playWrap} pointerEvents="none">
+        {onPlay && <View style={styles.playWrap} pointerEvents="none">
           <View style={styles.playBig}><Icon name="play" size={26} color="#1A1206" /></View>
-        </View>
+        </View>}
         <View style={styles.badge} pointerEvents="none">
-          <Icon name="play" size={9} color={colors.amber} />
-          <Text style={styles.badgeTxt}>WATCH ON PIT</Text>
+          <Icon name={onPlay ? "play" : "music"} size={9} color={colors.amber} />
+          <Text style={styles.badgeTxt}>{onPlay ? "WATCH ON PIT" : "SHARED TRACK"}</Text>
         </View>
       </View>
       <View style={styles.meta}>
         <Text style={styles.title} numberOfLines={2}>{track.title}</Text>
         <Text style={styles.artist} numberOfLines={1}>{track.artist}{onPlay ? "  ·  plays in your Pit player" : ""}</Text>
       </View>
-    </Pressable>
+    </StaticOrPlayable>
   );
 }
 

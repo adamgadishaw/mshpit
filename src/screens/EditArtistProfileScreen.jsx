@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { View, Text, StyleSheet, ScrollView, TextInput, Pressable, Image, Platform } from "react-native";
+import { useEffect, useState } from "react";
+import { ActivityIndicator, View, Text, StyleSheet, ScrollView, TextInput, Pressable, Image, Platform } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import { colors, radius } from "../theme";
 import { useStore } from "../store";
@@ -14,39 +14,38 @@ import {
   profileImagePickerOptions,
   profileImageSelectionHint,
 } from "../domain/profileImagePolicy.mjs";
+import { artistPageEditReady } from "../domain/artistPageEditor.mjs";
+import {
+  beginLoadState,
+  createLoadState,
+  projectLoadState,
+  rejectLoadState,
+  resolveLoadState,
+} from "../domain/loadState.mjs";
+import { accountTargetScope } from "../domain/screenScope.mjs";
 
-// The verified artist account and Pit staff edit the public artist profile:
-// banner, profile photo, bio, and page-update visibility. Personal account
 const AVATAR_IMAGE_HINT = profileImageSelectionHint("avatar");
 const BANNER_IMAGE_HINT = profileImageSelectionHint("banner");
 
-// details remain in the separate member-profile editor.
-export default function EditArtistProfileScreen({ artistName, onClose }) {
-  const { artistSummary, artistProfile, updateArtistProfile, isArtistOwner } = useStore();
-  const a = artistSummary(artistName);
-  const meta = artistMeta(a.name);
-  const prof = artistProfile(a.name);
-
-  const [bio, setBio] = useState(prof.bio ?? meta?.bio ?? "");
-  const initialAvatar = prof.avatarUri ?? meta?.photo;
-  const initialBanner = prof.banner ?? meta?.photo;
+function ConfirmedArtistProfileEditor({
+  artist,
+  confirmedProfile,
+  meta,
+  resource,
+  updateArtistProfile,
+  onClose,
+}) {
+  const [bio, setBio] = useState(confirmedProfile.bio ?? meta?.bio ?? "");
+  const initialAvatar = confirmedProfile.avatarUri ?? meta?.photo;
+  const initialBanner = confirmedProfile.banner ?? meta?.photo;
   const [avatarUri, setAvatarUri] = useState(isDurableMediaUrl(initialAvatar) ? initialAvatar : null);
   const [banner, setBanner] = useState(isDurableMediaUrl(initialBanner) ? initialBanner : null);
-  const [feedEnabled, setFeedEnabled] = useState(!!prof.feedEnabled);
+  const [feedEnabled, setFeedEnabled] = useState(!!confirmedProfile.feedEnabled);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const [avatarChanged, setAvatarChanged] = useState(false);
   const [bannerChanged, setBannerChanged] = useState(false);
   const [uploadingBanner, setUploadingBanner] = useState(false);
   const [saving, setSaving] = useState(false);
-
-  if (!isArtistOwner(a.name)) {
-    return (
-      <View style={styles.wrap}>
-        <SheetHeader title="Manage artist profile" onClose={onClose} />
-        <Text style={styles.denied}>Only the verified {a.name} account or Pit staff can manage this artist profile.</Text>
-      </View>
-    );
-  }
 
   const pickPhoto = async () => {
     if (uploadingAvatar || saving) return;
@@ -69,6 +68,7 @@ export default function EditArtistProfileScreen({ artistName, onClose }) {
       setUploadingAvatar(false);
     }
   };
+
   const pickBanner = async () => {
     if (uploadingBanner || saving) return;
     let res;
@@ -93,10 +93,10 @@ export default function EditArtistProfileScreen({ artistName, onClose }) {
 
   const mediaBusy = uploadingAvatar || uploadingBanner;
   const save = async () => {
-    if (mediaBusy || saving) return;
+    if (!artistPageEditReady(resource) || mediaBusy || saving) return;
     setSaving(true);
     try {
-      const result = await updateArtistProfile(a.name, {
+      const result = await updateArtistProfile(artist.name, {
         bio: bio.trim(),
         feedEnabled,
         ...changedProfileImageFields({ avatarUri, banner, avatarChanged, bannerChanged }),
@@ -109,13 +109,30 @@ export default function EditArtistProfileScreen({ artistName, onClose }) {
     }
   };
 
-  const preview = { avatarUri, initials: a.name.slice(0, 2).toUpperCase(), avatarColor: colors.amber };
+  const preview = {
+    avatarUri,
+    initials: artist.name.slice(0, 2).toUpperCase(),
+    avatarColor: colors.amber,
+  };
 
   return (
     <View style={styles.wrap}>
-      <SheetHeader title="Manage artist profile" onClose={onClose} action={{ label: saving ? "Saving..." : mediaBusy ? "Uploading..." : "Save", onPress: save, disabled: mediaBusy || saving }} />
+      <SheetHeader
+        title="Edit public page"
+        onClose={onClose}
+        action={{
+          label: saving ? "Saving..." : mediaBusy ? "Uploading..." : "Save",
+          onPress: save,
+          disabled: !artistPageEditReady(resource) || mediaBusy || saving,
+        }}
+      />
 
-      <ScrollView style={saving ? styles.savingLock : null} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+      <ScrollView
+        style={saving ? styles.savingLock : null}
+        contentContainerStyle={styles.content}
+        contentInsetAdjustmentBehavior="automatic"
+        keyboardShouldPersistTaps="handled"
+      >
         <Pressable
           style={styles.bannerEdit}
           onPress={pickBanner}
@@ -149,7 +166,9 @@ export default function EditArtistProfileScreen({ artistName, onClose }) {
             </Pressable>
           </View>
         </View>
-        <Pressable onPress={pickPhoto} disabled={uploadingAvatar || saving}
+        <Pressable
+          onPress={pickPhoto}
+          disabled={uploadingAvatar || saving}
           accessibilityRole="button"
           accessibilityLabel="Change artist profile photo"
           accessibilityHint={AVATAR_IMAGE_HINT}
@@ -181,15 +200,117 @@ export default function EditArtistProfileScreen({ artistName, onClose }) {
           </View>
         </Pressable>
 
-        <Button title={saving ? "Saving artist profile..." : mediaBusy ? "Uploading photo..." : "Save artist profile"} icon="check" onPress={save} disabled={mediaBusy || saving} style={{ marginTop: 28 }} />
+        <Button title={saving ? "Saving public page..." : mediaBusy ? "Uploading photo..." : "Save public page"} icon="check" onPress={save} disabled={!artistPageEditReady(resource) || mediaBusy || saving} style={{ marginTop: 28 }} />
       </ScrollView>
     </View>
   );
 }
 
+// The verified artist account and Pit staff edit the public artist page.
+// Personal member-profile details remain in the separate profile editor.
+export default function EditArtistProfileScreen({ artistName, onClose }) {
+  const {
+    session,
+    artistSummary,
+    loadArtistPage,
+    updateArtistProfile,
+    isArtistOwner,
+  } = useStore();
+  const artist = artistSummary(artistName);
+  const meta = artistMeta(artist.name);
+  const authorized = isArtistOwner(artist.name);
+  const artistKey = String(artist.name || artistName || "").trim().toLowerCase();
+  const editorScope = accountTargetScope(session?.id || null, `artist-page-editor:${artistKey}`);
+  const [requestVersion, setRequestVersion] = useState(0);
+  const [resource, setResource] = useState(() => createLoadState({
+    scope: editorScope,
+    status: "loading",
+    data: null,
+  }));
+  const scopedResource = projectLoadState(resource, editorScope, null);
+
+  useEffect(() => {
+    if (!authorized || !artistKey) return;
+    const controller = new AbortController();
+    let active = true;
+    setResource((current) => beginLoadState(current, {
+      scope: editorScope,
+      emptyData: null,
+      retainData: false,
+    }));
+    void loadArtistPage(artist.name, { signal: controller.signal }).then((result) => {
+      if (!active || controller.signal.aborted) return;
+      if (result?.ok) {
+        setResource(resolveLoadState({
+          scope: editorScope,
+          data: result.value,
+          updatedAt: result.value.loadedAt,
+        }));
+        return;
+      }
+      setResource((current) => rejectLoadState(current, {
+        scope: editorScope,
+        error: result.error,
+        emptyData: null,
+        retainData: false,
+      }));
+    });
+    return () => {
+      active = false;
+      controller.abort();
+    };
+    // Store reads are keyed by the authorized account and artist target.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authorized, artist.name, artistKey, editorScope, requestVersion]);
+
+  if (!authorized) {
+    return (
+      <View style={styles.wrap}>
+        <SheetHeader title="Edit public page" onClose={onClose} />
+        <Text style={styles.denied}>Only the verified {artist.name} account or Pit staff can edit this public page.</Text>
+      </View>
+    );
+  }
+
+  if (!artistPageEditReady(scopedResource)) {
+    const failed = scopedResource.status === "error";
+    return (
+      <View style={styles.wrap}>
+        <SheetHeader title="Edit public page" onClose={onClose} />
+        <View style={styles.editorGate} accessibilityLiveRegion="polite">
+          {failed
+            ? <Icon name="lock" size={28} color={colors.amber} />
+            : <ActivityIndicator size="small" color={colors.amber} />}
+          <Text style={styles.editorGateTitle}>{failed ? "Public page unavailable" : "Confirming the public page"}</Text>
+          <Text selectable style={styles.editorGateText}>
+            {failed
+              ? scopedResource.error?.userMessage || "Pit could not confirm the current public page. Nothing can be edited or saved until it is safely loaded."
+              : "Pit is loading the latest saved artist page before opening the editor."}
+          </Text>
+          {failed ? <Button title="Try again" icon="refresh" onPress={() => setRequestVersion((version) => version + 1)} small /> : null}
+        </View>
+      </View>
+    );
+  }
+
+  return (
+    <ConfirmedArtistProfileEditor
+      key={`${editorScope}:${scopedResource.updatedAt}`}
+      artist={artist}
+      confirmedProfile={scopedResource.data.profile}
+      meta={meta}
+      resource={scopedResource}
+      updateArtistProfile={updateArtistProfile}
+      onClose={onClose}
+    />
+  );
+}
 const styles = StyleSheet.create({
   savingLock: { pointerEvents: "none", opacity: 0.82 },
   wrap: { flex: 1, backgroundColor: colors.bg },
+  editorGate: { flex: 1, alignItems: "center", justifyContent: "center", gap: 12, paddingHorizontal: 28, paddingBottom: 48 },
+  editorGateTitle: { color: colors.text, fontSize: 19, fontWeight: "800", textAlign: "center" },
+  editorGateText: { color: colors.textDim, fontSize: 14, lineHeight: 21, textAlign: "center", maxWidth: 420 },
   topbar: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingBottom: 10 },
   cancel: { color: colors.textDim, fontSize: 15 },
   topTitle: { color: colors.textFaint, fontSize: 11, letterSpacing: 2, fontWeight: "700" },

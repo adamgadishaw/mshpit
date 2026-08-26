@@ -58,7 +58,9 @@ test("the shell keeps artist management, staff editing, and fan preview as disti
     assert.match(app, new RegExp(`${prop}=`), `ArtistHubScreen must receive ${prop}`);
   }
   assert.doesNotMatch(app, /<ArtistHubScreen[^;]+onOpenPublicPage=/);
-  assert.match(hub, /title="Manage artist profile"[\s\S]*?onPress=\{\(\) => onEditPage\?\.\(artistName\)\}/);
+  assert.match(hub, /title="Edit public page"[\s\S]*?onPress=\{openPageEditor\}/);
+  assert.match(hub, /if \(!artistPageEditReady\(scopedArtistPageResource\)\) return;/);
+  assert.match(hub, /onEditPage\?\.\(artistName\)/);
   assert.match(hub, /title="Personal account"[\s\S]*?onPress=\{onEditAccount\}/);
   assert.match(app, /onEditPage=\{\(name\) => name && requireVerifiedMutation\("artist", \(\) => go\(\{ editArtist: name \}\)\)\}/);
   assert.match(app, /onEditAccount=\{\(\) => requireVerifiedMutation\("profile", \(\) => go\(\{ editProfile: true \}\)\)\}/);
@@ -66,8 +68,8 @@ test("the shell keeps artist management, staff editing, and fan preview as disti
   assert.match(artist, /onEditArtistProfile/);
   assert.match(artist, /ownsNamedArtistPage && !previewAsFan && onManageArtistProfile/);
   assert.match(artist, /canModerate && !previewAsFan && onEditArtistProfile/);
-  assert.match(artist, /<Text style=\{styles\.editTxt\}>Manage artist profile<\/Text>/);
-  assert.match(artist, /<Text style=\{styles\.editTxt\}>Edit artist profile<\/Text>/);
+  assert.match(artist, /<Text style=\{styles\.editTxt\}>Artist HQ<\/Text>/);
+  assert.match(artist, /<Text style=\{styles\.editTxt\}>Edit public page<\/Text>/);
   assert.match(app, /onManageArtistProfile=\{\(\) => go\(\{ artistHub: true \}\)\}/);
   assert.match(app, /onEditArtistProfile=\{\(name\) => name && requireVerifiedMutation\("artist", \(\) => go\(\{ editArtist: name \}\)\)\}/);
   assert.match(app, /go\(\{ artistPreview: name \}\)/);
@@ -78,7 +80,7 @@ test("the shell keeps artist management, staff editing, and fan preview as disti
 
 test("Artist HQ exposes one primary action for each distinct job", () => {
   assert.equal((hub.match(/onPress=\{\(\) => onPreview\?\.\(artistName\)\}/g) || []).length, 1, "one public artist profile preview");
-  assert.equal((hub.match(/title="Manage artist profile"/g) || []).length, 1, "one artist-profile editor");
+  assert.equal((hub.match(/title="Edit public page"/g) || []).length, 1, "one public-page editor");
   assert.equal((hub.match(/onPress=\{onCampaignPost\}/g) || []).length, 1, "one artist-drop action");
   assert.equal((hub.match(/onPress=\{onTourDates\}/g) || []).length, 1, "one live-dates action");
   assert.equal((hub.match(/onPress=\{onEditAccount\}/g) || []).length, 1, "one personal-account action");
@@ -170,7 +172,8 @@ test("Artist HQ page reads expose a retryable scoped contract and gate unconfirm
   assert.match(hub, /beginLoadState\(current, \{/);
   assert.match(hub, /resolveLoadState\(\{/);
   assert.match(hub, /rejectLoadState\(current, \{/);
-  assert.match(hub, /const hasConfirmedArtistPage = scopedArtistPageResource\.updatedAt != null/);
+  assert.match(hub, /const hasConfirmedArtistPage = artistPageEditReady\(scopedArtistPageResource\)/);
+  assert.match(hub, /disabled=\{!hasConfirmedArtistPage\}/);
   assert.match(hub, /accessibilityLabel="Retry loading artist page data"/);
   assert.match(hub, /\{hasConfirmedArtistPage \? \(\s*<View style=\{styles\.statsRow\}>/);
   assert.match(hub, /hasConfirmedArtistPage && !model\.feedEnabled/);
@@ -188,7 +191,11 @@ test("page-update deletion lives in Artist HQ with confirmation, account scoping
 });
 
 test("page-update visibility is an accessible switch with explicit state", () => {
-  assert.match(artistEditor, /title="Manage artist profile"/);
+  assert.match(artistEditor, /title="Edit public page"/);
+  assert.match(artistEditor, /loadArtistPage\(artist\.name, \{ signal: controller\.signal \}\)/);
+  assert.match(artistEditor, /if \(!artistPageEditReady\(resource\) \|\| mediaBusy \|\| saving\) return;/);
+  assert.match(artistEditor, /confirmedProfile=\{scopedResource\.data\.profile\}/);
+  assert.doesNotMatch(artistEditor, /const prof = artistProfile\(/);
   assert.match(artistEditor, /accessibilityRole="switch"/);
   assert.match(artistEditor, /accessibilityState=\{\{ checked: feedEnabled, disabled: mediaBusy \|\| saving \}\}/);
   assert.match(artistEditor, /accessibilityValue=\{\{ text: feedEnabled \? "Shown" : "Hidden" \}\}/);

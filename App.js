@@ -87,7 +87,7 @@ import {
   restoreComposerFrame,
 } from "./src/domain/composerRecovery.mjs";
 import { trackKey } from "./src/domain/trackIdentity.mjs";
-import { ENABLE_CLIPS, ENABLE_DEMO_DATA } from "./src/config/runtime.mjs";
+import { ENABLE_CLIPS, ENABLE_DEMO_DATA, ENABLE_MUSIC_PLAYER } from "./src/config/runtime.mjs";
 import { analyticsDwellBucket } from "./src/domain/analyticsPolicy.mjs";
 import { ownedPlayerEnvelope, playerQueueWithEntryIds, restoreOwnedPlayerState } from "./src/domain/player-session.mjs";
 import { playerLookupIntent } from "./src/domain/playback.mjs";
@@ -319,7 +319,7 @@ function Root() {
   const playerAccountId = session?.id || null;
   const [playerState, setPlayerState] = useState(() => ({
     accountId: playerAccountId,
-    player: web && session?.id
+    player: ENABLE_MUSIC_PLAYER && web && session?.id
       ? restoreOwnedPlayerState(load(PLAYER_STATE_STORAGE_KEY, null), session.id)
       : null,
   }));
@@ -351,6 +351,7 @@ function Root() {
   }, [web]);
 
   useEffect(() => {
+    if (!ENABLE_MUSIC_PLAYER) return;
     if (!authReady) return;
     if (playerState.accountId !== playerAccountId) {
       const stored = web && playerAccountId ? load(PLAYER_STATE_STORAGE_KEY, null) : null;
@@ -359,6 +360,7 @@ function Root() {
     }
   }, [authReady, playerAccountId, playerState.accountId, web]);
   useEffect(() => {
+    if (!ENABLE_MUSIC_PLAYER) return;
     if (!web || !authReady || !playerStateIsScoped) return;
     remove("pit.player"); // scrub the legacy device-global queue
     const envelope = player ? ownedPlayerEnvelope(playerAccountId, player) : null;
@@ -805,6 +807,7 @@ function Root() {
     }, 3200);
   };
 
+  const musicPreviewAction = ENABLE_MUSIC_PLAYER ? showPreview : undefined;
   const openReport = (candidate) => requireVerifiedMutation("report", () => {
     if (!candidate) return;
     const target = candidate.targetType && candidate.targetId
@@ -918,6 +921,7 @@ function Root() {
   // Open the persistent top player. `queue` (optional) is a list of tracks so the
   // bar can skip prev/next; without it, a single track. player = { list, index }.
   const openPlayer = (media, queue) => {
+    if (!ENABLE_MUSIC_PLAYER) return;
     if (!media) return;
     // Always continue past the explicit queue with genre/taste-based recommendations
     // so "up next" is populated and playback never dead-ends after one song.
@@ -935,6 +939,7 @@ function Root() {
       playbackIntent: playerLookupIntent(list[index], "explicit"),
     });
   };
+  const musicPlayerAction = ENABLE_MUSIC_PLAYER ? openPlayer : undefined;
   const setPlayerIndex = (i, { trigger = "explicit" } = {}) => setPlayer((p) => {
     if (!p) return p;
     const idx = Math.max(0, Math.min(i, p.list.length - 1));
@@ -1007,18 +1012,18 @@ function Root() {
   else if (nav.venueReview) overlay = <VenueReviewScreen venueName={nav.venueReview} onClose={back} />;
   else if (nav.thread) overlay = <ThreadScreen otherId={nav.thread} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} onReport={openReport} />;
   else if (nav.inbox) overlay = <InboxScreen onClose={back} onOpenThread={openThread} />;
-  else if (nav.listeningHistory) overlay = <ListeningHistoryScreen onClose={back} onPlay={openPlayer} />;
+  else if (nav.listeningHistory) overlay = <ListeningHistoryScreen onClose={back} onPlay={musicPlayerAction} />;
   else if (nav.notifications) overlay = <NotificationsScreen onClose={back} onOpenProfile={openProfile} onOpenThread={openThread} onOpen={openShow} onOpenPost={openPost} />;
   else if (nav.calendar) overlay = <CalendarScreen onClose={back} onOpen={openShow} onOpenArtist={openArtist} />;
   else if (ENABLE_CLIPS && nav.clips) overlay = <ClipsScreen onClose={back} onOpenPost={openPost} onOpenProfile={openProfile} onOpenArtist={openArtist} onRequireAuth={() => go({ auth: true })} />;
-  else if (nav.profileId) overlay = <ProfileScreen userId={nav.profileId} onClose={back} onOpenShow={openShow} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenVenue={openVenue} onManageProfile={openProfileManagement} onPreview={showPreview} onMessage={openThread} onReport={openReport} onEditPost={openPostEditor} onOpenPhotos={openPhotos} onPlay={openPlayer} onRemoveMyPostTag={removePostTag} onOpenFollowList={openFollowList} onOpenBadges={openBadges} />;
+  else if (nav.profileId) overlay = <ProfileScreen userId={nav.profileId} onClose={back} onOpenShow={openShow} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenVenue={openVenue} onManageProfile={openProfileManagement} onPreview={musicPreviewAction} onMessage={openThread} onReport={openReport} onEditPost={openPostEditor} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onRemoveMyPostTag={removePostTag} onOpenFollowList={openFollowList} onOpenBadges={openBadges} />;
   else if (nav.fanClub) overlay = <FanClubScreen artist={nav.fanClub} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} onReport={openReport} />;
-  else if (nav.artistHub) overlay = <ArtistHubScreen onClose={back} onPreview={(name) => name && go({ artistPreview: name })} onEditPage={(name) => name && requireVerifiedMutation("artist", () => go({ editArtist: name }))} onEditAccount={() => requireVerifiedMutation("profile", () => go({ editProfile: true }))} onTourDates={() => requireVerifiedMutation("artist", () => go({ bulk: true }))} onCampaignPost={() => requireVerifiedMutation("artist", () => go({ logging: true, postMode: "campaign" }))} onPlay={openPlayer} />;
-  else if (nav.artistPreview) overlay = <ArtistScreen artistName={nav.artistPreview} previewAsFan onClose={back} onOpenShow={openShow} onOpenArchive={openArtistArchive} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenPhotos={openPhotos} onOpenProfile={openProfile} onPlay={openPlayer} onAddToPlaylist={openAddToPlaylist} />;
+  else if (nav.artistHub) overlay = <ArtistHubScreen onClose={back} onPreview={(name) => name && go({ artistPreview: name })} onEditPage={(name) => name && requireVerifiedMutation("artist", () => go({ editArtist: name }))} onEditAccount={() => requireVerifiedMutation("profile", () => go({ editProfile: true }))} onTourDates={() => requireVerifiedMutation("artist", () => go({ bulk: true }))} onCampaignPost={() => requireVerifiedMutation("artist", () => go({ logging: true, postMode: "campaign" }))} onPlay={musicPlayerAction} />;
+  else if (nav.artistPreview) overlay = <ArtistScreen artistName={nav.artistPreview} previewAsFan onClose={back} onOpenShow={openShow} onOpenArchive={openArtistArchive} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenPhotos={openPhotos} onOpenProfile={openProfile} onPlay={musicPlayerAction} onAddToPlaylist={openAddToPlaylist} />;
   else if (nav.editArtist) overlay = <EditArtistProfileScreen artistName={nav.editArtist} onClose={back} />;
   else if (nav.artistArchive) overlay = <ArtistArchiveScreen artistName={nav.artistArchive.name} artistKey={nav.artistArchive.artistKey} onClose={back} onOpenShow={openShow} onOpenTour={(tour) => openArtistTour(nav.artistArchive.name, nav.artistArchive.artistKey, tour)} onOpenPhotos={openPhotos} onOpenProfile={openProfile} />;
   else if (nav.artistTour) overlay = <TourArchiveScreen artistName={nav.artistTour.name} artistKey={nav.artistTour.artistKey} tourKey={nav.artistTour.tourKey} tourName={nav.artistTour.tourName} onClose={back} onOpenShow={openShow} onOpenPost={openPost} onOpenPhotos={openPhotos} onOpenProfile={openProfile} />;
-  else if (nav.artistName) overlay = <ArtistScreen artistName={nav.artistName} onClose={back} onOpenShow={openShow} onOpenArchive={openArtistArchive} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenPhotos={openPhotos} onOpenProfile={openProfile} onManageArtistProfile={() => go({ artistHub: true })} onEditArtistProfile={(name) => name && requireVerifiedMutation("artist", () => go({ editArtist: name }))} onPlay={openPlayer} onAddToPlaylist={openAddToPlaylist} onReport={openReport} />;
+  else if (nav.artistName) overlay = <ArtistScreen artistName={nav.artistName} onClose={back} onOpenShow={openShow} onOpenArchive={openArtistArchive} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenPhotos={openPhotos} onOpenProfile={openProfile} onManageArtistProfile={() => go({ artistHub: true })} onEditArtistProfile={(name) => name && requireVerifiedMutation("artist", () => go({ editArtist: name }))} onPlay={musicPlayerAction} onAddToPlaylist={openAddToPlaylist} onReport={openReport} />;
   else if (nav.venueName) overlay = <VenueScreen venueName={nav.venueName} onClose={back} onOpenShow={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onReviewVenue={openVenueReview} onOpenProfile={openProfile} onOpenPhotos={openPhotos} onReport={openReport} />;
   else if (nav.nearby) overlay = <NearbyScreen onClose={back} onOpenVenue={openVenue} onOpenArtist={openArtist} />;
   else if (nav.venues) overlay = <VenuesScreen onClose={back} onOpenVenue={openVenue} />;
@@ -1030,8 +1035,8 @@ function Root() {
   else if (nav.privacy) overlay = <PrivacyScreen onClose={back} />;
   else if (nav.terms) overlay = <TermsScreen onClose={back} />;
   else if (nav.lounge) overlay = <LoungeScreen log={nav.lounge} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} onReport={openReport} />;
-  else if (nav.openLog) overlay = <ShowScreen log={nav.openLog} onClose={back} onPreview={showPreview} onReview={reviewShow} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenArchive={openArtistArchive} onOpenVenue={openVenue} onOpenLounge={(log) => go({ lounge: log })} onOpenPost={openPost} onOpenPhotos={openPhotos} onRequireAuth={() => go({ auth: true })} />;
-  else if (nav.post) overlay = <PostScreen log={nav.post} onClose={back} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenShow={openShow} onReport={openReport} onEdit={openPostEditor} onOpenPhotos={openPhotos} onPlay={openPlayer} onRemoveMyPostTag={removePostTag} />;
+  else if (nav.openLog) overlay = <ShowScreen log={nav.openLog} onClose={back} onPreview={musicPreviewAction} onReview={reviewShow} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenArchive={openArtistArchive} onOpenVenue={openVenue} onOpenLounge={(log) => go({ lounge: log })} onOpenPost={openPost} onOpenPhotos={openPhotos} onRequireAuth={() => go({ auth: true })} />;
+  else if (nav.post) overlay = <PostScreen log={nav.post} onClose={back} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenShow={openShow} onReport={openReport} onEdit={openPostEditor} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onRemoveMyPostTag={removePostTag} />;
   else if (nav.badges) overlay = <BadgeLegendScreen userId={nav.badges.userId} onClose={back} />;
   else if (nav.topRated) overlay = <TopRatedScreen onClose={back} onOpen={openShow} />;
   else if (nav.admin) overlay = <AdminScreen onClose={back} />;
@@ -1128,7 +1133,7 @@ function Root() {
                   onNotInterested={(log) => requireVerifiedMutation("interact", () => notInterested(log?.id))}
                   onUndoNotInterested={(log) => requireVerifiedMutation("interact", () => undoNotInterested(log?.id))}
                   onComment={openPost}
-                  onPreview={showPreview}
+                  onPreview={musicPreviewAction}
                   onOpenProfile={openProfile}
                   onOpenArtist={openArtist}
                   onOpenVenue={openVenue}
@@ -1138,12 +1143,12 @@ function Root() {
                   onReport={openReport}
                   onEdit={openPostEditor}
                   onOpenPhotos={openPhotos}
-                  onPlay={openPlayer}
+                  onPlay={musicPlayerAction}
                   onRemoveMyPostTag={removePostTag}
                 />
               )}
-              {tab === "search" && <SearchScreen onOpen={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenProfile={openProfile} onPlay={openPlayer} onAddToPlaylist={openAddToPlaylist} />}
-              {tab === "discover" && <DiscoverScreen onOpenTopRated={() => go({ topRated: true })} onOpen={openShow} onOpenArtist={openArtist} onOpenNearby={() => go({ nearby: true })} onOpenFanClubs={() => go({ fanClubs: true })} onOpenVenues={() => go({ venues: true })} onOpenPhotos={openPhotos} onPlay={openPlayer} onAddToPlaylist={openAddToPlaylist} onOpenProfile={openProfile} />}
+              {tab === "search" && <SearchScreen onOpen={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenProfile={openProfile} onPlay={musicPlayerAction} onAddToPlaylist={openAddToPlaylist} />}
+              {tab === "discover" && <DiscoverScreen onOpenTopRated={() => go({ topRated: true })} onOpen={openShow} onOpenArtist={openArtist} onOpenNearby={() => go({ nearby: true })} onOpenFanClubs={() => go({ fanClubs: true })} onOpenVenues={() => go({ venues: true })} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onAddToPlaylist={openAddToPlaylist} onOpenProfile={openProfile} />}
               {tab === "you" && (
                 <YouScreen
                   onLogin={() => go({ auth: true })}
@@ -1160,7 +1165,7 @@ function Root() {
                   onListeningHistory={() => go({ listeningHistory: true })}
                   onOpenNearby={() => go({ nearby: true })}
                   homeCity={session?.home?.city}
-                  onPlay={openPlayer}
+                  onPlay={musicPlayerAction}
                   onOpenArtist={openArtist}
                 />
               )}
@@ -1231,7 +1236,7 @@ function Root() {
           nav.deleteAccount ? overlay : <AccountGate status={status} until={session?.suspendedUntil} onLogout={signOut} onExport={exportMyData} onDelete={() => go({ deleteAccount: true })} />
         ) : (
           <View style={[styles.appFrame, wide && styles.appFrameWide]}>
-            {(wide || (player && !(ENABLE_CLIPS && nav.clips))) && (
+            {ENABLE_MUSIC_PLAYER && (wide || (player && !(ENABLE_CLIPS && nav.clips))) && (
               <View style={wide ? [styles.playerColumn, { width: playerColumnWidth }] : styles.mobilePlayerSlot}>
                 <PlayerBar
                   player={player}
@@ -1248,7 +1253,7 @@ function Root() {
                   history={playHistory}
                   onRefreshHistory={() => loadPlayHistory()}
                   onSaveQueueAsPlaylist={saveQueueAsPlaylist}
-                  onPlayTrack={openPlayer}
+                  onPlayTrack={musicPlayerAction}
                   onPlaybackStarted={recordPlay}
                   onOpenArtist={openArtist}
                   onAddToPlaylist={openAddToPlaylist}
@@ -1298,7 +1303,7 @@ function Root() {
         {status === "ok" && session && session.emailVerified === false && (
           <VerifyEmailBanner
             email={session.email}
-            topOffset={!wide && player ? 72 : undefined}
+            topOffset={ENABLE_MUSIC_PLAYER && !wide && player ? 72 : undefined}
             onResend={resendEmailVerification}
             blockedAction={verificationPrompt}
             onCloseGate={() => setVerificationPrompt(null)}
@@ -1307,7 +1312,7 @@ function Root() {
 
         <FeedbackHost canViewDiagnostics={canViewDiagnostics} onOpenDiagnostics={() => { if (canViewDiagnostics) go({ diagnostics: true }); }} />
 
-        {status === "ok" && preview && (
+        {ENABLE_MUSIC_PLAYER && status === "ok" && preview && (
           <Animated.View style={[styles.preview, { opacity: fade }]}>
             <View style={styles.previewIcon}>
               <Icon name="play" size={14} color={colors.amber} />

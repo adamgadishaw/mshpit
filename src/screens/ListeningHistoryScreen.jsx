@@ -38,15 +38,14 @@ export default function ListeningHistoryScreen({ onClose, onPlay }) {
     const when = absoluteTime(item?.at);
     const relative = relativeTime(item?.at);
     const playedWhen = relative === "now" ? "played just now" : `played ${relative} ago`;
+    const StaticOrPlayable = track && onPlay ? Pressable : View;
     return (
-      <Pressable
+      <StaticOrPlayable
         style={styles.row}
-        onPress={() => track && onPlay?.(track)}
-        disabled={!track || !onPlay}
-        accessibilityRole="button"
-        accessibilityLabel={track ? `Play ${track.title} by ${track.artist}, ${playedWhen}` : "Unavailable listening-history entry"}
+        onPress={track && onPlay ? () => onPlay(track) : undefined}
+        accessibilityRole={track && onPlay ? "button" : undefined}
+        accessibilityLabel={track ? (onPlay ? `Play ${track.title} by ${track.artist}, ${playedWhen}` : `${track.title} by ${track.artist}, ${playedWhen}`) : "Unavailable listening-history entry"}
         accessibilityHint={when}
-        accessibilityState={{ disabled: !track || !onPlay }}
       >
         {track?.art ? <SmartImage uri={track.art} style={styles.art} contain={false} accessible={false} /> : <View style={[styles.art, styles.artEmpty]}><Icon name="music" size={18} color={colors.textFaint} /></View>}
         <View style={styles.rowCopy}>
@@ -54,8 +53,8 @@ export default function ListeningHistoryScreen({ onClose, onPlay }) {
           <Text style={styles.artist} numberOfLines={1}>{track?.artist || "Artist unavailable"}</Text>
           <Text style={styles.when} numberOfLines={1}>{when}</Text>
         </View>
-        {!!track && <View style={styles.play}><Icon name="play" size={13} color={colors.amber} /></View>}
-      </Pressable>
+        {!!track && !!onPlay && <View style={styles.play}><Icon name="play" size={13} color={colors.amber} /></View>}
+      </StaticOrPlayable>
     );
   };
 
@@ -90,7 +89,7 @@ export default function ListeningHistoryScreen({ onClose, onPlay }) {
           <Pressable style={styles.retry} onPress={refresh} accessibilityRole="button" accessibilityLabel="Retry loading listening history"><Text style={styles.retryText}>Try again</Text></Pressable>
         </View>
       ) : state === "empty" ? (
-        <View style={styles.center} accessibilityLiveRegion="polite"><Icon name="music" size={26} color={colors.textFaint} /><Text style={styles.stateTitle}>No plays yet</Text><Text style={styles.stateText}>Songs you play on Pit will appear here.</Text></View>
+        <View style={styles.center} accessibilityLiveRegion="polite"><Icon name="music" size={26} color={colors.textFaint} /><Text style={styles.stateTitle}>No plays yet</Text><Text style={styles.stateText}>{onPlay ? "Songs you play on Pit will appear here." : "Your previous Pit listening activity will appear here when available."}</Text></View>
       ) : (
         <FlatList
           data={rows}

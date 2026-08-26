@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { View, Text, StyleSheet, ScrollView, Pressable, Image, TextInput, ActivityIndicator } from "react-native";
+import { View, Text, StyleSheet, ScrollView, Pressable, Image, TextInput, ActivityIndicator, useWindowDimensions } from "react-native";
 import { colors, focusRing, mono, radius, shadow, space } from "../theme";
 import { useStore, isStaff } from "../store";
 import { artistMeta } from "../seed/ingested";
@@ -10,7 +10,7 @@ import Icon from "../components/Icon";
 import Avatar from "../components/Avatar";
 import ScreenHeader from "../components/ScreenHeader";
 import SmartImage from "../components/SmartImage";
-import Badge, { BadgeRow, BadgeChip } from "../components/Badge";
+import Badge, { BadgeRow } from "../components/Badge";
 import { proxied, isHttp } from "../lib/img";
 import { api } from "../lib/api";
 import { loadSelectedArtistDiscography } from "../lib/artistDiscographyApi";
@@ -29,6 +29,7 @@ import ArtistMemorialTribute from "../components/artist/ArtistMemorialTribute";
 import { useArtistMemorial } from "../features/artistMemorials/useArtistMemorial";
 import { PublicPressableLink } from "../components/PublicWebLinks";
 import { eventPath, postPath, profilePath } from "../domain/urls.mjs";
+import { ARTIST_PAGE_SECTIONS, artistPagePreview, artistPageSectionModel } from "../domain/artistPageSections.mjs";
 
 const cap = (s) => (s ? s.replace(/\b\w/g, (c) => c.toUpperCase()) : s);
 const compactCount = (value) => {
@@ -50,6 +51,34 @@ const TRACK_REPORT_TYPES = [
   { key: "missing", label: "Missing song" },
   { key: "other", label: "Other" },
 ];
+
+function ArtistPageSectionNav({ active, onChange }) {
+  return (
+    <View style={styles.sectionNav} accessibilityRole="tablist" accessibilityLabel="Artist page sections">
+      {ARTIST_PAGE_SECTIONS.map((section) => {
+        const selected = active === section.key;
+        return (
+          <Pressable
+            key={section.key}
+            style={({ pressed, focused }) => [
+              styles.sectionNavItem,
+              selected && styles.sectionNavItemOn,
+              pressed && styles.sectionNavItemPressed,
+              focused && focusRing,
+            ]}
+            onPress={() => onChange(section.key)}
+            accessibilityRole="tab"
+            accessibilityState={{ selected }}
+            accessibilityLabel={`${section.label} artist page section`}
+          >
+            <Icon name={section.icon} size={14} color={selected ? colors.amber : colors.textFaint} />
+            <Text style={[styles.sectionNavText, selected && styles.sectionNavTextOn]}>{section.label}</Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
+}
 
 // Album cover from the Cover Art Archive, served via the wsrv.nl image CDN -
 // the archive rate-limits direct traffic, while the CDN fetches once and
@@ -167,19 +196,26 @@ function TopReviewCard({ review, rank, artistName, onOpenShow, onOpenPhotos, onO
 
 // Artist page - the rollup of a band's live reputation across every night,
 // plus where to catch them next. Answers "is this band worth seeing?"
-export default function ArtistScreen({ artistName, previewAsFan = false, onClose, onOpenShow, onOpenArchive, onOpenFanClub, onOpenPhotos, onOpenProfile, onManageArtistProfile, onEditArtistProfile, onPlay, onAddToPlaylist, onReport }) {
+export default function ArtistScreen({ artistName, previewAsFan = false, onClose, onOpenShow, onOpenArchive, onOpenVenue, onOpenFanClub, onOpenPhotos, onOpenProfile, onManageArtistProfile, onEditArtistProfile, onPlay, onAddToPlaylist, onReport }) {
   const { session, artistSummary, albumRating, songRating, rateAlbum, rateSong, loadRating,
     isArtistOwner, artistPostsFor, loadArtistPage, artistPageCacheEpoch,
-    artistGallery, loadArtistPhotos, removePhoto, artistBadges, artistRank, remoteArtistMeta, resolveArtist,
+    artistGallery, loadArtistPhotos, removePhoto, artistBadges, remoteArtistMeta, resolveArtist,
     artistDiscography, artistSeenCount, reportTrack } = useStore();
   const a = artistSummary(artistName);
+  const { width } = useWindowDimensions();
+  const widePage = width >= 760;
+  const veryWidePage = width >= 1180;
+  const [sectionSelection, setSectionSelection] = useState(() => ({ artistKey: a.profileKey, section: "overview" }));
+  const activeSection = sectionSelection.artistKey === a.profileKey ? sectionSelection.section : "overview";
+  const sectionModel = artistPageSectionModel(activeSection);
+  const setActiveSection = (section) => setSectionSelection({ artistKey: a.profileKey, section });
+
   const { resource: memorialResource } = useArtistMemorial({
     accountId: session?.id || null,
     artistKey: a.profileKey,
   });
   const memorial = memorialResource.data;
   const badges = artistBadges(a.name);
-  const rank = artistRank(a.name);
   // Metadata: bundled catalog first, else the DB catalog (resolved from
   // MusicBrainz on demand if we've never seen this artist, no empty pages).
   const meta = artistMeta(a.name) || remoteArtistMeta(a.name);
@@ -193,6 +229,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
   // every public post photo ever, not just posts sitting in this device's feed.
   useEffect(() => { loadArtistPhotos(a.name, a.profileKey); }, [a.name, a.profileKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const gallery = artistGallery(a.name, 12, a.profileKey);
+  const visibleGallery = artistPagePreview(gallery, { condensed: sectionModel.condensed, limit: 6 });
   const { resource: topReviewsResource, reload: retryTopReviews } = useArtistTopReviews({
     accountId: session?.id || null,
     name: a.name,
@@ -205,11 +242,17 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
     accountId: session?.id || null,
     name: a.name,
     artistKey: a.profileKey,
+    enabled: sectionModel.loadFullArchive,
   });
-  const liveArchive = liveArchiveResource.updatedAt != null ? liveArchiveResource.data : null;
+  const liveArchive = sectionModel.loadFullArchive && liveArchiveResource.updatedAt != null ? liveArchiveResource.data : null;
   const archiveRatings = liveArchive?.shows?.reduce((sum, show) => sum + (Number(show.avgRating) || 0) * (Number(show.ratingCount) || 0), 0) || 0;
   const archiveRatingCount = Number(liveArchive?.totals?.ratings) || 0;
   const archiveAverage = archiveRatingCount ? archiveRatings / archiveRatingCount : 0;
+  const localRatingRows = a.nights.filter((night) => Number(night.overall) > 0);
+  const displayedAverage = liveArchive ? archiveAverage : (Number(a.avgOverall) || 0);
+  const displayedRatingCount = liveArchive ? archiveRatingCount : localRatingRows.length;
+  const displayedShowCount = liveArchive ? (Number(liveArchive?.totals?.shows) || 0) : localRatingRows.length;
+  const topPerformances = liveArchive?.topShows || [];
   const canModerate = isStaff(session?.role);
   const genre = a.genre !== "-" ? a.genre : cap(meta?.genre) || "-";
   const spotTracks = (meta?.topTracks || []).map((t, i) => {
@@ -235,7 +278,9 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
   const upcoming = previewAsFan ? a.upcoming.filter((date) => !date.scheduled) : a.upcoming;
   const [showAllUpcoming, setShowAllUpcoming] = useState(false);
   const upcomingPresentation = selectArtistUpcomingShows(upcoming, { expanded: showAllUpcoming });
-  const visibleUpcoming = upcomingPresentation.shows;
+  const visibleUpcoming = sectionModel.condensed
+    ? artistPagePreview(upcoming, { condensed: true, limit: 3 })
+    : upcomingPresentation.shows;
   const bio = a.ownerBio || meta?.bio;
   const bannerUri = a.banner || meta?.photo || null;
   const profileBannerPhotos = a.banner && a.ownerId
@@ -246,6 +291,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
     : null;
   const avatarUser = { avatarUri: a.photo || meta?.photo || null, initials: a.name.slice(0, 2).toUpperCase(), avatarColor: colors.amber };
   const posts = artistPostsFor(a.name);
+  const visiblePosts = artistPagePreview(posts.slice(0, 10), { condensed: sectionModel.condensed, limit: 1 });
 
   // Full discography (albums + tracklists) from Deezer, so the page has real depth:
   // open an album, see every song, rate them, play them in the top bar.
@@ -336,10 +382,11 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
 
   const [disco, setDisco] = useState(null);
   const [discoOwner, setDiscoOwner] = useState(a.name);
-  const [discoStatus, setDiscoStatus] = useState("loading");
+  const [discoStatus, setDiscoStatus] = useState("idle");
   const [discoError, setDiscoError] = useState("");
   const [openAlbum, setOpenAlbum] = useState(null);
   const [showAllSongs, setShowAllSongs] = useState(false);
+  const [showAllReleases, setShowAllReleases] = useState(false);
   const [identityOpen, setIdentityOpen] = useState(false);
   const [candidates, setCandidates] = useState(null);
   const [candidatesLoading, setCandidatesLoading] = useState(false);
@@ -376,8 +423,13 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
       });
   };
   useEffect(() => {
+    setDiscoOwner(a.name);
+    setDisco(null);
+    setDiscoStatus("idle");
+    setDiscoError("");
     setOpenAlbum(null);
     setShowAllSongs(false);
+    setShowAllReleases(false);
     setShowAllUpcoming(false);
     setIdentityOpen(false);
     setCandidates(null);
@@ -386,15 +438,22 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
     setIdentityError("");
     identityRequestRef.current?.abort();
     identityRequestRef.current = null;
-    loadDiscography();
+    catalogRequestRef.current?.abort();
+    catalogRequestRef.current = null;
     return () => {
       catalogRequestRef.current?.abort();
       identityRequestRef.current?.abort();
     };
-    // The artist name and request version own this read; store action identity
-    // changes are intentionally excluded to avoid restarting a live request.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [a.name]);
+
+  useEffect(() => {
+    if (!sectionModel.loadDiscography || discoOwner !== a.name || discoStatus !== "idle") return undefined;
+    void loadDiscography();
+    return undefined;
+    // Music catalog work is intentionally deferred until the listener opens
+    // Music. The player is paused; this request only supplies release metadata.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [a.name, discoOwner, discoStatus, sectionModel.loadDiscography]);
 
   const loadCandidates = async () => {
     setIdentityOpen(true);
@@ -437,6 +496,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
       setDiscoError("");
       setOpenAlbum(null);
       setShowAllSongs(false);
+      setShowAllReleases(false);
       setIdentityOpen(false);
     } catch (error) {
       if (!controller.signal.aborted && catalogRequestVersionRef.current === requestVersion) {
@@ -458,6 +518,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
   });
   const releases = [...discographyView.albums]
     .sort((left, right) => String(right?.year || "").localeCompare(String(left?.year || "")));
+  const visibleReleases = showAllReleases ? releases : releases.slice(0, 6);
 
   // The deep chart: the discography's 25-track list once it loads (fixes the
   // "cut off at ~10" complaint), else the seed list. Collapsed to 10 with a
@@ -580,7 +641,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
   })();
   // A resolved-but-empty artist (no photo, no songs). Show a "coming soon" note
   // and log the interest so an admin can seed it (see the admin Catalog tab).
-  const thin = !!meta && !meta.photo && !(meta.topTracks && meta.topTracks.length) && discographyView.state === "empty";
+  const thin = !!meta && !meta.photo && !(meta.topTracks && meta.topTracks.length);
 
   // Slice 7: hydrate the artist's owner overrides + updates feed, and the server
   // aggregates for each album/song rating shown on the page.
@@ -592,10 +653,11 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [a.name, artistPageCacheEpoch]);
   useEffect(() => {
+    if (!sectionModel.showMusic) return;
     (bundledAlbums || []).forEach((al) => loadRating("album", a.name, al.title));
     songs.forEach((s) => loadRating("song", a.name, s.title));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [a.name]);
+  }, [a.name, scopedDisco, sectionModel.showMusic]);
   return (
     <View style={styles.wrap}>
       <ScreenHeader kicker="ARTIST" title={a.name} onBack={onClose} />
@@ -639,20 +701,15 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
           </View>
           <View style={styles.profileActions}>
             {ownsNamedArtistPage && !previewAsFan && onManageArtistProfile ? (
-              <Pressable style={styles.editBtn} onPress={onManageArtistProfile} accessibilityRole="button" accessibilityLabel={`Manage ${a.name} artist profile`}>
+              <Pressable style={styles.editBtn} onPress={onManageArtistProfile} accessibilityRole="button" accessibilityLabel={`Open ${a.name} Artist HQ`}>
                 <Icon name="music" size={14} color={colors.amber} />
-                <Text style={styles.editTxt}>Manage artist profile</Text>
+                <Text style={styles.editTxt}>Artist HQ</Text>
               </Pressable>
             ) : canModerate && !previewAsFan && onEditArtistProfile ? (
-              <Pressable style={styles.editBtn} onPress={() => onEditArtistProfile(a.name)} accessibilityRole="button" accessibilityLabel={`Edit ${a.name} artist profile`}>
+              <Pressable style={styles.editBtn} onPress={() => onEditArtistProfile(a.name)} accessibilityRole="button" accessibilityLabel={`Edit ${a.name} public page`}>
                 <Icon name="edit" size={14} color={colors.amber} />
-                <Text style={styles.editTxt}>Edit artist profile</Text>
+                <Text style={styles.editTxt}>Edit public page</Text>
               </Pressable>
-            ) : badges.length ? (
-              <View style={styles.badgeChips}>
-                {badges.includes("verified") && <BadgeChip type="verified" label="VERIFIED" />}
-                {badges.includes("top100") && <BadgeChip type="top100" label={rank && rank <= 100 ? `TOP 100 · #${rank}` : "TOP 100"} />}
-              </View>
             ) : null}
             {!ownsArtistPage && a.ownerId && onReport ? (
               <Pressable
@@ -725,10 +782,10 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
           <View style={styles.metaLine}>
             {!!meta?.hometown && <Text style={styles.metaItem}><Icon name="pin" size={12} color={colors.textDim} /> {meta.hometown}</Text>}
             {!!meta?.formed && <Text style={styles.metaItem}>· since {meta.formed}</Text>}
-            <Text style={styles.metaItem}>· {genre}</Text>
           </View>
         )}
 
+        {sectionModel.showMusic && (<>
         <View style={styles.catalogIdentity}>
           <View style={styles.catalogIdentityIcon}><Icon name="music" size={15} color={colors.amber} /></View>
           <View style={{ flex: 1 }}>
@@ -810,17 +867,18 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
             )}
           </View>
         )}
+        </>)}
 
         <View style={styles.repCard}>
           <Text style={styles.repLabel}>LIVE REPUTATION</Text>
           <View style={styles.repRow}>
-            <Text style={styles.bigScore}>{liveArchive ? (archiveAverage ? archiveAverage.toFixed(1) : "-") : "…"}</Text>
+            <Text style={styles.bigScore}>{displayedRatingCount ? displayedAverage.toFixed(1) : "—"}</Text>
             <View style={{ flex: 1 }}>
-              <Stars value={archiveAverage} size={18} />
+              <Stars value={displayedAverage} size={18} />
               <Text style={styles.repSub}>
-                {liveArchive
-                  ? `${liveArchive.totals.shows} show${liveArchive.totals.shows === 1 ? "" : "s"} · ${archiveRatingCount} fan rating${archiveRatingCount === 1 ? "" : "s"}`
-                  : "Loading the complete fan archive…"}
+                {displayedRatingCount
+                  ? `${displayedShowCount} show${displayedShowCount === 1 ? "" : "s"} · ${displayedRatingCount} fan rating${displayedRatingCount === 1 ? "" : "s"}`
+                  : "No live rating yet"}
               </Text>
             </View>
           </View>
@@ -835,20 +893,22 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
           {liveArchiveResource.status === "error" && !liveArchive ? <Text style={styles.note}>The live reputation could not refresh. Open the archive to try again.</Text> : null}
         </View>
 
-        {/* fan club + listen */}
+        {/* Live-music actions remain primary while the built-in player is paused. */}
         <View style={styles.artistActions}>
           <Pressable style={styles.fcBtn} onPress={() => onOpenFanClub?.(a.name)}>
             <Icon name="comment" size={16} color="#1A1206" />
             <Text style={styles.fcTxt}>Fan Club</Text>
           </Pressable>
-          <Pressable style={styles.listenBtn} onPress={playRandom}>
-            <Icon name="play" size={15} color={colors.amber} />
-            <Text style={styles.listenTxt}>Listen</Text>
+          <Pressable style={styles.listenBtn} onPress={() => onOpenArchive?.(a.name, a.profileKey)}>
+            <Icon name="archive" size={15} color={colors.amber} />
+            <Text style={styles.listenTxt}>Live archive</Text>
           </Pressable>
         </View>
 
+        <ArtistPageSectionNav active={activeSection} onChange={setActiveSection} />
+
         {/* Top song — a "start here" pick beside the profile, one tap to play. */}
-        {topSong && (
+        {sectionModel.showMusic && onPlay && topSong && (
           <Pressable style={styles.topSong} onPress={() => playSingle(topSong.song)} accessibilityRole="button" accessibilityLabel={`Play top song ${topSong.song.title}`}>
             <View style={styles.topSongPlay}><Icon name="play" size={16} color="#1A1206" /></View>
             <View style={{ flex: 1 }}>
@@ -861,14 +921,14 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
 
         {/* Page updates are read-only here. Creation and removal live in the
             single management surface: Artist HQ. */}
-        {(a.feedEnabled || canManagePublicPage) && (
+        {sectionModel.showCommunity && (a.feedEnabled || canManagePublicPage) && (
           <>
             <View style={styles.feedHead}>
               <Text style={styles.sectionLabel}>PAGE UPDATES{posts.length ? ` · ${posts.length}` : ""}</Text>
               {canManagePublicPage && !a.feedEnabled && <Text style={styles.feedOff}>hidden from fans</Text>}
             </View>
             {posts.length === 0 && <Text style={styles.empty}>No page updates yet.</Text>}
-            {posts.map((p) => (
+            {visiblePosts.map((p) => (
               <View key={p.id} style={styles.postCard}>
                 <View style={styles.postTop}>
                   <Avatar user={avatarUser} size={28} />
@@ -898,11 +958,17 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
                 <Text style={styles.postText}>{p.text}</Text>
               </View>
             ))}
+            {sectionModel.condensed && posts.length > visiblePosts.length && (
+              <Pressable style={styles.showAllBtn} onPress={() => setActiveSection("community")} accessibilityRole="button" accessibilityLabel={`See all ${posts.length} ${a.name} page updates`}>
+                <Text style={styles.showAllTxt}>See every artist update</Text>
+                <Icon name="chevron-right" size={15} color={colors.amber} />
+              </Pressable>
+            )}
           </>
         )}
 
         {/* Upcoming shows first, this is a live-music app, gigs lead. */}
-        {upcoming.length > 0 && (
+        {sectionModel.showLive && upcoming.length > 0 && (
           <>
             <Text style={styles.sectionLabel}>UPCOMING · {upcoming.length}</Text>
             {visibleUpcoming.map((t) => (
@@ -936,17 +1002,19 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
             {upcomingPresentation.hasOverflow && (
               <Pressable
                 style={({ pressed, focused }) => [styles.showAllBtn, pressed && styles.archivePressed, focused && focusRing]}
-                onPress={() => setShowAllUpcoming((current) => !current)}
+                onPress={() => sectionModel.condensed ? setActiveSection("live") : setShowAllUpcoming((current) => !current)}
                 accessibilityRole="button"
-                accessibilityState={{ expanded: upcomingPresentation.expanded }}
-                accessibilityLabel={upcomingPresentation.expanded
-                  ? `Show fewer upcoming ${a.name} shows`
-                  : `Load ${upcomingPresentation.overflowCount} more upcoming ${a.name} shows`}
+                accessibilityState={{ expanded: sectionModel.condensed ? false : upcomingPresentation.expanded }}
+                accessibilityLabel={sectionModel.condensed
+                  ? `View every upcoming ${a.name} show`
+                  : upcomingPresentation.expanded
+                    ? `Show fewer upcoming ${a.name} shows`
+                    : `Load ${upcomingPresentation.overflowCount} more upcoming ${a.name} shows`}
               >
                 <Text style={styles.showAllTxt}>
-                  {upcomingPresentation.expanded ? "Show fewer" : `Load ${upcomingPresentation.overflowCount} more`}
+                  {sectionModel.condensed ? `View all ${upcoming.length} shows` : upcomingPresentation.expanded ? "Show fewer" : `Load ${upcomingPresentation.overflowCount} more`}
                 </Text>
-                <Icon name={upcomingPresentation.expanded ? "chevron-up" : "chevron-down"} size={15} color={colors.amber} />
+                <Icon name={sectionModel.condensed ? "chevron-right" : upcomingPresentation.expanded ? "chevron-up" : "chevron-down"} size={15} color={colors.amber} />
               </Pressable>
             )}
           </>
@@ -955,6 +1023,34 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
         {/* The complete archive is server-backed and groups many fan logs into
             one performance. Keep this profile preview compact; the virtualized
             archive owns the long history. */}
+        {sectionModel.showLive && (<>
+        {sectionModel.active === "live" && (
+          <>
+            <Text style={styles.sectionLabel}>TOP-RATED NIGHTS</Text>
+            <Text style={styles.topNightsIntro}>The three performances fans rate highest, weighted by real community depth.</Text>
+            {liveArchiveResource.status === "loading" && !liveArchive ? (
+              <View style={styles.inlineLoading}><ActivityIndicator size="small" color={colors.amber} /><Text style={styles.empty}>Opening the live history…</Text></View>
+            ) : topPerformances.length ? topPerformances.slice(0, 3).map((show, index) => (
+              <PublicPressableLink
+                key={show.key || show.id || index}
+                href={eventPath(show)}
+                onNavigate={() => onOpenShow?.(show)}
+                style={({ pressed, focused }) => [styles.topNightCard, index === 0 && styles.topNightCardLead, pressed && styles.archivePressed, focused && focusRing]}
+                accessibilityLabel={`Open number ${index + 1} rated ${a.name} performance at ${show.venue || "venue"}`}
+              >
+                <View style={[styles.topNightRank, index === 0 && styles.topNightRankLead]}><Text style={styles.topNightRankText}>#{index + 1}</Text></View>
+                <View style={styles.topNightCopy}>
+                  <Text style={styles.topNightVenue} numberOfLines={1}>{show.venue || "Venue to be announced"}</Text>
+                  <Text style={styles.topNightMeta} numberOfLines={1}>{[show.place, formatDate(show.date, "")].filter(Boolean).join(" · ")}</Text>
+                  {!!show.tour && <Text style={styles.topNightTour} numberOfLines={1}>{show.tour}</Text>}
+                </View>
+                <View style={styles.topNightScore}><Icon name="star" size={12} color={colors.gold} filled /><Text style={styles.topNightScoreText}>{Number(show.avgRating || 0).toFixed(1)}</Text></View>
+              </PublicPressableLink>
+            )) : (
+              <Text style={styles.empty}>The podium is open. Rated performances will rise here as fans add their nights.</Text>
+            )}
+          </>
+        )}
         <Text style={styles.sectionLabel}>LIVE ARCHIVE</Text>
         <Pressable
           style={({ pressed, focused }) => [styles.archiveCard, pressed && styles.archivePressed, focused && focusRing]}
@@ -970,9 +1066,10 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
           </View>
           <View style={styles.archiveArrow}><Icon name="chevron-right" size={17} color={colors.amber} /></View>
         </Pressable>
+        </>)}
 
         {/* The writing fans keep passing around, paired with its public media. */}
-        {(topReviews.length > 0 || topReviewsPresentation.initialError || topReviewsPresentation.refreshError) && (
+        {sectionModel.showCommunity && (topReviews.length > 0 || topReviewsPresentation.initialError || topReviewsPresentation.refreshError) && (
           <>
             <View style={styles.topReviewsHeading}>
               <View style={{ flex: 1 }}>
@@ -1028,13 +1125,13 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
         )}
 
         {/* Fan photos/media next. */}
-        {gallery.length > 0 && (
+        {sectionModel.showCommunity && gallery.length > 0 && (
           <>
             <Text style={styles.sectionLabel}>GALLERY · {gallery.length}</Text>
             <Text style={styles.bio}>Fan shots first, then licensed portraits & live photos. Stays full even when a photo is pulled.</Text>
             <View style={styles.fanGrid}>
-              {gallery.map((p, i) => (
-                <View key={p.uri || i} style={styles.fanTile}>
+              {visibleGallery.map((p, i) => (
+                <View key={p.uri || i} style={[styles.fanTile, { width: veryWidePage ? "19.2%" : widePage ? "23.8%" : "31.8%" }]}>
                   {/* SmartImage: proxies HEIC (iPhone shots) to JPEG so no tile
                       ever renders blank, and taps open the full-screen viewer. */}
                   <SmartImage uri={p.uri} posterUri={mediaPosterUri(p)} mediaKind={mediaDisplayKind(p)} accessibilityLabel={p.altText || `Open media from ${a.name}`} style={StyleSheet.absoluteFill} contain={false}
@@ -1050,35 +1147,33 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
                 </View>
               ))}
             </View>
+            {sectionModel.condensed && gallery.length > visibleGallery.length && (
+              <Pressable style={styles.showAllBtn} onPress={() => setActiveSection("community")} accessibilityRole="button" accessibilityLabel={`See all ${gallery.length} media items for ${a.name}`}>
+                <Text style={styles.showAllTxt}>Open the full fan gallery</Text>
+                <Icon name="chevron-right" size={15} color={colors.amber} />
+              </Pressable>
+            )}
           </>
         )}
 
-        {meta?.photos?.length > 1 && (
-          <>
-            <Text style={styles.sectionLabel}>PHOTOS · {meta.photos.length}</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.galleryRow}>
-              {meta.photos.map((p, i) => (
-                <Pressable key={i} onPress={() => onOpenPhotos?.(meta.photos, i)}>
-                  <SmartImage uri={p} style={styles.galleryTile} contain={false} />
-                </Pressable>
-              ))}
-            </ScrollView>
-          </>
-        )}
 
-        {!!bio && (
+        {sectionModel.showAbout && !!bio && (
           <>
             <Text style={styles.sectionLabel}>ABOUT</Text>
             <Text style={styles.bio}>{bio}</Text>
           </>
         )}
 
+        {sectionModel.showMusic && (<>
+        <View style={styles.musicPausedNote} accessibilityRole="summary">
+          <Icon name="music" size={16} color={colors.amber} />
+          <Text style={styles.musicPausedText}>MSHpit playback is paused while it is rebuilt. Releases and fan ratings remain available.</Text>
+        </View>
         {releases.length > 0 ? (
           <>
             <Text style={styles.sectionLabel}>DISCOGRAPHY · {releases.length} RELEASES</Text>
-            <Text style={styles.bio}>Albums and EPs across the full available back catalogue. Open one to see its tracklist, rate songs, and play it in the top bar.</Text>
-            <Text style={styles.bio}>Tap a song to play the album from there in order; shuffle takes over when it ends. ★ marks the fan-favorite to start with.</Text>
-            {releases.map((al) => {
+            <Text style={styles.bio}>Explore the available albums and EPs, open a release for its tracklist, and rate the music you know.</Text>
+            {visibleReleases.map((al) => {
               const ar = albumRating(a.name, al.title);
               const open = openAlbum === al.id;
               const playable = (al.tracks || []).some((t) => t?.title);
@@ -1099,7 +1194,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
                         <TapStars value={ar.mine} onChange={(n) => rateAlbum(a.name, al.title, n)} size={13} gap={2} />
                       </View>
                     </Pressable>
-                    {playable && (
+                    {onPlay && playable && (
                       <>
                         <Pressable style={styles.albAct} onPress={() => playAlbum(al, null, true)} hitSlop={6} accessibilityRole="button" accessibilityLabel={`Shuffle ${al.title}`}>
                           <Icon name="shuffle" size={15} color={colors.textDim} />
@@ -1124,7 +1219,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
                     return (
                       <View key={ti}>
                         <View style={styles.discTrack}>
-                          <Pressable style={styles.discTrackMain} onPress={() => playAlbum(al, t.title)} accessibilityRole="button" accessibilityLabel={`Play ${t.title} from here`}>
+                          <View style={styles.discTrackMain}>
                             <Text style={styles.discTrackNo}>{ti + 1}</Text>
                             <View style={{ flex: 1 }}>
                               <View style={styles.discTrackTitleRow}>
@@ -1133,9 +1228,9 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
                               </View>
                               {sr.count > 0 && <View style={styles.songMeta}><Stars value={sr.avg} size={10} /><Text style={styles.songAvg}>{sr.avg.toFixed(1)} · {sr.count}</Text></View>}
                             </View>
-                          </Pressable>
+                          </View>
                           <TapStars value={sr.mine} onChange={(n) => rateSong(a.name, t.title, n)} size={15} gap={2} />
-                          {session && (
+                          {session && onPlay && (
                             <Pressable style={styles.songAdd} onPress={() => toggleReportBox(reportDescriptor)} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Report the wrong video playing for ${t.title}`}>
                               <Icon name="flag" size={12} color={reportedSongs[reportIdentity] ? colors.good : colors.textFaint} />
                             </Pressable>
@@ -1145,17 +1240,25 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
                               <Icon name="plus" size={13} color={colors.textDim} />
                             </Pressable>
                           )}
-                          <Pressable style={styles.songPlay} onPress={() => playTrack(t, al.cover)} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Play ${t.title} as a single`}>
-                            <Icon name="play" size={13} color={colors.amber} />
-                          </Pressable>
+                          {onPlay && (
+                            <Pressable style={styles.songPlay} onPress={() => playTrack(t, al.cover)} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Play ${t.title} as a single`}>
+                              <Icon name="play" size={13} color={colors.amber} />
+                            </Pressable>
+                          )}
                         </View>
-                        {reportingSong?.key === reportIdentity && renderReportBox(reportDescriptor)}
+                        {onPlay && reportingSong?.key === reportIdentity && renderReportBox(reportDescriptor)}
                       </View>
                     );
                   })}
                 </View>
               );
             })}
+            {releases.length > 6 && (
+              <Pressable style={styles.showAllBtn} onPress={() => setShowAllReleases((current) => !current)} accessibilityRole="button" accessibilityState={{ expanded: showAllReleases }} accessibilityLabel={showAllReleases ? "Show fewer releases" : `Show all ${releases.length} releases`}>
+                <Text style={styles.showAllTxt}>{showAllReleases ? "Show fewer releases" : `Show all ${releases.length} releases`}</Text>
+                <Icon name={showAllReleases ? "chevron-up" : "chevron-down"} size={15} color={colors.amber} />
+              </Pressable>
+            )}
           </>
         ) : bundledAlbums.length > 0 ? (
           <>
@@ -1181,7 +1284,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
           <>
             <Text style={styles.sectionLabel}>POPULAR SONGS</Text>
             <Text style={styles.bio}>
-              {spotTracks.length ? "Their biggest tracks. Tap to play, rate the hits, stars show what fans think." : "Rate the hits. Stars show what fans think (real stream data comes later)."}
+              {spotTracks.length ? "Their biggest tracks, with fan ratings from the MSHpit community." : "Rate the songs you know. Community favorites rise with real fan input."}
             </Text>
             {songs.map((s) => {
               const sr = songRating(a.name, s.title);
@@ -1191,16 +1294,16 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
               return (
                 <View key={s.id}>
                   <View style={styles.songRow}>
-                    <Pressable style={styles.songMain} onPress={() => playSingle(s)} accessibilityRole="button" accessibilityLabel={`Play ${s.title}`}>
+                    <View style={styles.songMain}>
                       <Text style={styles.songTitle} numberOfLines={1}>{s.title}</Text>
                       {sr.count > 0 ? (
                         <View style={styles.songMeta}><Stars value={sr.avg} size={11} /><Text style={styles.songAvg}>{sr.avg.toFixed(1)} · {sr.count}</Text></View>
                       ) : (
-                        <Text style={styles.songMetaEmpty} numberOfLines={1}>{s.album ? s.album : "Tap to play · rate below"}</Text>
+                        <Text style={styles.songMetaEmpty} numberOfLines={1}>{s.album ? s.album : "Not rated yet"}</Text>
                       )}
-                    </Pressable>
+                    </View>
                     <TapStars value={sr.mine} onChange={(n) => rateSong(a.name, s.title, n)} size={16} gap={3} />
-                    {session && (
+                    {session && onPlay && (
                       <Pressable style={styles.songAdd} onPress={() => toggleReportBox(reportDescriptor)} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Report the wrong video playing for ${s.title}`}>
                         <Icon name="flag" size={12} color={reported ? colors.good : colors.textFaint} />
                       </Pressable>
@@ -1210,11 +1313,13 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
                         <Icon name="plus" size={13} color={colors.textDim} />
                       </Pressable>
                     )}
-                    <Pressable style={styles.songPlay} onPress={() => playSingle(s)} hitSlop={8}>
-                      <Icon name="play" size={13} color={colors.amber} />
-                    </Pressable>
+                    {onPlay && (
+                      <Pressable style={styles.songPlay} onPress={() => playSingle(s)} hitSlop={8}>
+                        <Icon name="play" size={13} color={colors.amber} />
+                      </Pressable>
+                    )}
                   </View>
-                  {reportingSong?.key === reportIdentity && renderReportBox(reportDescriptor)}
+                  {onPlay && reportingSong?.key === reportIdentity && renderReportBox(reportDescriptor)}
                 </View>
               );
             })}
@@ -1227,6 +1332,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
           </>
         )}
 
+        </>)}
       </ScrollView>
     </View>
   );
@@ -1239,7 +1345,17 @@ const styles = StyleSheet.create({
   backBtn: { flexDirection: "row", alignItems: "center", width: 56 },
   back: { color: colors.amber, fontSize: 15 },
   topTitle: { color: colors.textFaint, fontSize: 11, letterSpacing: 2, fontWeight: "700" },
-  content: { padding: 16, paddingBottom: 48 },
+  content: { width: "100%", maxWidth: 1120, alignSelf: "center", padding: 16, paddingBottom: 64 },
+  sectionNav: { flexDirection: "row", alignItems: "stretch", gap: 6, marginTop: 18, marginBottom: 2, padding: 4, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.bgElev },
+  sectionNavItem: { flex: 1, minWidth: 0, minHeight: 46, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingHorizontal: 7, borderRadius: radius.sm },
+  sectionNavItemOn: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.amber },
+  sectionNavItemPressed: { opacity: 0.72 },
+  sectionNavText: { color: colors.textFaint, fontSize: 11.5, fontWeight: "800" },
+  sectionNavTextOn: { color: colors.amber },
+  musicPausedNote: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: 16, padding: 12, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface },
+  musicPausedText: { flex: 1, color: colors.textDim, fontSize: 12.5, lineHeight: 18 },
+  inlineLoading: { minHeight: 54, flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 8 },
+  topNightsIntro: { color: colors.textDim, fontSize: 12.5, lineHeight: 18, marginTop: -5, marginBottom: 9 },
   fanPreviewNotice: { flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 12, paddingHorizontal: 12, paddingVertical: 9, borderRadius: radius.md, borderWidth: 1, borderColor: colors.amber, backgroundColor: colors.bgElev },
   fanPreviewIcon: { width: 28, height: 28, borderRadius: 14, alignItems: "center", justifyContent: "center", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line },
   fanPreviewTitle: { color: colors.amber, fontFamily: mono, fontSize: 10, fontWeight: "900", letterSpacing: 1.2 },
@@ -1438,6 +1554,17 @@ const styles = StyleSheet.create({
   archiveTitle: { color: colors.text, fontSize: 16, fontWeight: "900", letterSpacing: -0.2 },
   archiveText: { color: colors.textDim, fontSize: 12.5, lineHeight: 18, marginTop: 4 },
   archiveArrow: { width: 34, height: 34, borderRadius: 17, alignItems: "center", justifyContent: "center", backgroundColor: colors.surface },
+  topNightCard: { minHeight: 88, flexDirection: "row", alignItems: "center", gap: 11, padding: 12, marginBottom: 8, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface },
+  topNightCardLead: { borderColor: colors.gold, backgroundColor: "rgba(232,182,90,0.06)" },
+  topNightRank: { width: 36, height: 36, borderRadius: 18, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.line, backgroundColor: colors.bgElev },
+  topNightRankLead: { borderColor: colors.gold },
+  topNightRankText: { color: colors.amber, fontFamily: mono, fontSize: 11, fontWeight: "900" },
+  topNightCopy: { flex: 1, minWidth: 0, gap: 2 },
+  topNightVenue: { color: colors.text, fontSize: 14.5, fontWeight: "900" },
+  topNightMeta: { color: colors.textDim, fontSize: 11.5 },
+  topNightTour: { color: colors.cool, fontSize: 10.5, fontWeight: "800" },
+  topNightScore: { flexDirection: "row", alignItems: "center", gap: 4, paddingHorizontal: 9, paddingVertical: 6, borderRadius: radius.pill, backgroundColor: colors.bgElev },
+  topNightScoreText: { color: colors.gold, fontFamily: mono, fontSize: 12, fontWeight: "900" },
 
   nightRow: { flexDirection: "row", alignItems: "center", backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 14, marginBottom: 8 },
   nightVenue: { color: colors.text, fontSize: 15, fontWeight: "700" },

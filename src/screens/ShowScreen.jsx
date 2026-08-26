@@ -455,12 +455,12 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
                   <View key={i} style={styles.songRow}>
                     <Text style={styles.songNum}>{String(i + 1).padStart(2, "0")}</Text>
                     <Text style={styles.song}>{s}</Text>
-                    <Pressable style={styles.previewBtn} hitSlop={8} onPress={() => onPreview?.(s, artist)}>
+                    {onPreview && <Pressable style={styles.previewBtn} hitSlop={8} onPress={() => onPreview(s, artist)} accessibilityRole="button" accessibilityLabel={`Preview ${s} by ${artist}`}>
                       <Icon name="play" size={12} color={colors.amber} />
-                    </Pressable>
+                    </Pressable>}
                   </View>
                 ))}
-                <Text style={styles.previewHint}>Tap a song for a licensed 30s preview.</Text>
+                {onPreview && <Text style={styles.previewHint}>Tap a song for a licensed 30s preview.</Text>}
               </View>
             ) : (
               <Pressable style={styles.spoiler} onPress={() => setRevealed(true)}>

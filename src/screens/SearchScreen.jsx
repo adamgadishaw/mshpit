@@ -81,7 +81,7 @@ function SongRow({ song, onPress, onAdd }) {
   const mins = song.duration ? `${Math.floor(song.duration / 60)}:${String(song.duration % 60).padStart(2, "0")}` : null;
   return (
     <View style={styles.row}>
-      <Pressable style={styles.rowMain} onPress={onPress} accessibilityRole="button" accessibilityLabel={`Play ${song.title} by ${song.artist}`}>
+      <Pressable style={styles.rowMain} onPress={onPress || undefined} disabled={!onPress} accessibilityRole={onPress ? "button" : undefined} accessibilityLabel={onPress ? `Play ${song.title} by ${song.artist}` : `${song.title} by ${song.artist}`} accessibilityState={onPress ? undefined : { disabled: true }}>
         {song.art
           ? <Image source={{ uri: song.art }} style={styles.songArt} accessible={false} />
           : <View style={[styles.dot, { borderColor: colors.good }]}><Icon name="music" size={14} color={colors.good} /></View>}
@@ -89,7 +89,7 @@ function SongRow({ song, onPress, onAdd }) {
           <Text style={styles.rowName} numberOfLines={1}>{song.title}</Text>
           <Text style={styles.rowSub} numberOfLines={1}>{song.artist}{mins ? ` · ${mins}` : ""}</Text>
         </View>
-        <Icon name="play" size={14} color={colors.amber} />
+        {onPress && <Icon name="play" size={14} color={colors.amber} />}
       </Pressable>
       {onAdd && (
         <Pressable style={styles.secondaryAction} onPress={onAdd} accessibilityRole="button" accessibilityLabel={`Add ${song.title} to a playlist`}>
@@ -334,9 +334,9 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
     else if (e.type === "person" && e.id) openPerson({ id: e.id, name: e.label, handle: (e.sub || "").replace(/^@/, "") });
     else if (e.type === "song") {
       const recentTrack = recentSongTrack(e);
-      if (recentTrack) {
+      if (recentTrack && onPlay) {
         addRecentSearch?.(recentSongSearchEntry(recentTrack));
-        onPlay?.(recentTrack);
+        onPlay(recentTrack);
       } else setQ(e.label);
     }
     else setQ(e.label);
@@ -509,12 +509,12 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
                 const selected = recentSongTrack(song);
                 if (selected) onAddToPlaylist(selected);
               } : null}
-              onPress={() => {
+              onPress={onPlay ? () => {
                 const selected = recentSongTrack(song);
                 if (!selected) return;
                 addRecentSearch?.(recentSongSearchEntry(selected));
-                onPlay?.(selected);
-              }}
+                onPlay(selected);
+              } : null}
             />
           ))} />
 

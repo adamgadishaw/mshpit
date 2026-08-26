@@ -12,9 +12,10 @@ import { SectionHeading } from "./DiscoverPrimitives";
 
 function FriendTrack({ entry, onPlay, onAdd }) {
   const track = discoverPlaybackTrack(entry);
+  const TrackSurface = onPlay ? Pressable : View;
   const copy = (
     <>
-      {track ? <Icon name="play" size={11} color={colors.amber} /> : null}
+      {track && onPlay ? <Icon name="play" size={11} color={colors.amber} /> : null}
       <View style={styles.friendTrackCopy}>
         <Text style={styles.friendTrackTitle} numberOfLines={1}>{entry.track.title}</Text>
         <Text style={styles.friendTrackArtist} numberOfLines={1}>{entry.track.artist}</Text>
@@ -22,15 +23,15 @@ function FriendTrack({ entry, onPlay, onAdd }) {
       </View>
     </>
   );
-  if (!track) return <View style={styles.friendTrack}>{copy}</View>;
+  if (!track || (!onPlay && !onAdd)) return <View style={styles.friendTrack}>{copy}</View>;
   return (
     <View style={styles.friendTrackActions}>
-      <Pressable style={[styles.friendTrack, styles.friendTrackPlayable]} onPress={() => onPlay?.(track)} accessibilityRole="button" accessibilityLabel={`Play ${track.title} by ${track.artist}. ${entry.recency.label}`}>
+      <TrackSurface style={[styles.friendTrack, styles.friendTrackPlayable]} onPress={onPlay ? () => onPlay(track) : undefined} accessibilityRole={onPlay ? "button" : undefined} accessibilityLabel={onPlay ? `Play ${track.title} by ${track.artist}. ${entry.recency.label}` : `${track.title} by ${track.artist}. ${entry.recency.label}`}>
         {copy}
-      </Pressable>
-      <Pressable style={styles.friendTrackAdd} onPress={() => onAdd?.(track)} accessibilityRole="button" accessibilityLabel={`Add ${track.title} by ${track.artist} to a playlist`}>
+      </TrackSurface>
+      {onAdd && <Pressable style={styles.friendTrackAdd} onPress={() => onAdd(track)} accessibilityRole="button" accessibilityLabel={`Add ${track.title} by ${track.artist} to a playlist`}>
         <Icon name="plus" size={14} color={colors.textDim} />
-      </Pressable>
+      </Pressable>}
     </View>
   );
 }

@@ -12,6 +12,7 @@ import {
 import { useStore } from "../store";
 import { artistMeta } from "../seed/ingested";
 import { artistWorkspaceModel } from "../domain/artistWorkspace.mjs";
+import { artistPageEditReady } from "../domain/artistPageEditor.mjs";
 import { formatDate } from "../domain/dates.mjs";
 import {
   beginLoadState,
@@ -60,14 +61,16 @@ function MiniStat({ icon, value, label, accent = colors.amber }) {
   );
 }
 
-function ActionTile({ icon, title, detail, onPress, accent = colors.amber }) {
+function ActionTile({ icon, title, detail, onPress, accent = colors.amber, disabled = false }) {
   return (
     <Pressable
       onPress={onPress}
+      disabled={disabled}
       accessibilityRole="button"
       accessibilityLabel={title}
       accessibilityHint={detail}
-      style={({ pressed, focused }) => [styles.actionTile, pressed && styles.pressed, focused && focusRing]}
+      accessibilityState={{ disabled }}
+      style={({ pressed, focused }) => [styles.actionTile, disabled && styles.actionTileDisabled, pressed && !disabled && styles.pressed, focused && !disabled && focusRing]}
     >
       <View style={[styles.actionIcon, { backgroundColor: accent + "1A", borderColor: accent + "4D" }]}>
         <Icon name={icon} size={20} color={accent} strokeWidth={2.2} />
@@ -201,7 +204,7 @@ export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEdit
     data: null,
   }));
   const scopedArtistPageResource = projectLoadState(artistPageResource, artistPageScope, null);
-  const hasConfirmedArtistPage = scopedArtistPageResource.updatedAt != null;
+  const hasConfirmedArtistPage = artistPageEditReady(scopedArtistPageResource);
   const artistPostScope = accountTargetScope(session?.id || null, `artist-posts:${artistName.toLowerCase()}`);
   const publishRef = useRef({ sequence: 0, scope: artistPostScope, controller: null });
   const artistPostMutationRef = useRef({ sequence: 0, scope: artistPostScope, postId: null, controller: null });
@@ -274,11 +277,17 @@ export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEdit
   };
   const stats = model.stats;
   const spotlight = model.spotlightTrack;
+  const SpotlightSurface = onPlay ? Pressable : View;
   const nextShow = model.nextShow;
   const scoreColor = model.stageReady ? colors.good : model.score >= 50 ? colors.gold : colors.amber;
 
+  const openPageEditor = () => {
+    if (!artistPageEditReady(scopedArtistPageResource)) return;
+    onEditPage?.(artistName);
+  };
+
   const runAction = (action) => {
-    if (action === "edit") onEditPage?.(artistName);
+    if (action === "edit") openPageEditor();
     else if (action === "tour") onTourDates?.();
     else if (action === "preview") onPreview?.(artistName);
     else if (action === "post") inputRef.current?.focus?.();
@@ -412,7 +421,14 @@ export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEdit
           ) : null}
 
           <View style={styles.quickGrid}>
-            <ActionTile icon="photo" title="Manage artist profile" detail="Portrait, marquee, bio, and page-update visibility." onPress={() => onEditPage?.(artistName)} accent={colors.magenta} />
+            <ActionTile
+              icon="photo"
+              title="Edit public page"
+              detail={hasConfirmedArtistPage ? "Portrait, marquee, bio, and page-update visibility." : "Available after Pit confirms the current public page."}
+              onPress={openPageEditor}
+              disabled={!hasConfirmedArtistPage}
+              accent={colors.magenta}
+            />
             <ActionTile icon="star" title="Artist drop" detail="Publish one styled campaign post to the main feed." onPress={onCampaignPost} accent={colors.amber} />
             <ActionTile icon="calendar" title="Live dates" detail="Publish shows, official tickets, and scheduled dates." onPress={onTourDates} accent={colors.cool} />
             <ActionTile icon="you" title="Personal account" detail="Handle, city, listening taste, and personal music picks." onPress={onEditAccount} accent={colors.good} />
@@ -456,7 +472,7 @@ export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEdit
                   <Icon name="lock" size={16} color={colors.gold} />
                   <View style={styles.feedWarningCopy}>
                     <Text style={styles.feedWarningTitle}>Page updates are hidden</Text>
-                    <Text style={styles.feedWarningText}>Use Manage artist profile to show these updates publicly. Artist drops still reach the main feed.</Text>
+                    <Text style={styles.feedWarningText}>Use Edit public page to show these updates publicly. Artist drops still reach the main feed.</Text>
                   </View>
                 </View>
               ) : null}
@@ -618,20 +634,20 @@ export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEdit
             </View>
 
             <View style={[styles.panel, styles.musicPanel]}>
-              <SectionTitle eyebrow="MUSIC SPOTLIGHT" title={spotlight ? "Give them a place to start" : "Connect the catalog"} detail="Your public page turns a profile visit into a listening session." right={<View style={styles.musicIcon}><Icon name="music" size={19} color={colors.magenta} /></View>} />
+              <SectionTitle eyebrow="MUSIC SPOTLIGHT" title={spotlight ? "Give them a place to start" : "Connect the catalog"} detail={onPlay ? "Your public page turns a profile visit into a listening session." : "Keep the featured track and catalog identity ready for fans."} right={<View style={styles.musicIcon}><Icon name="music" size={19} color={colors.magenta} /></View>} />
               {spotlight ? (
-                <Pressable onPress={playSpotlight} style={({ pressed, focused }) => [styles.trackCard, pressed && styles.pressed, focused && focusRing]} accessibilityRole="button" accessibilityLabel={`Play ${spotlight.title}`}>
+                <SpotlightSurface onPress={onPlay ? playSpotlight : undefined} style={onPlay ? ({ pressed, focused }) => [styles.trackCard, pressed && styles.pressed, focused && focusRing] : styles.trackCard} accessibilityRole={onPlay ? "button" : undefined} accessibilityLabel={onPlay ? `Play ${spotlight.title}` : `Featured track ${spotlight.title}`}>
                   <View style={styles.trackArt}>
                     {catalog.photo ? <SmartImage uri={catalog.photo} style={StyleSheet.absoluteFill} contain={false} accessible={false} /> : <Icon name="music" size={24} color={colors.magenta} />}
-                    <View style={styles.trackPlay}><Icon name="play" size={14} color="#1A1206" /></View>
+                    {onPlay && <View style={styles.trackPlay}><Icon name="play" size={14} color="#1A1206" /></View>}
                   </View>
                   <View style={styles.trackCopy}>
                     <Text style={styles.trackKicker}>CURRENT STARTING POINT</Text>
                     <Text style={styles.trackTitle} numberOfLines={1}>{spotlight.title}</Text>
                     <Text style={styles.trackAlbum} numberOfLines={1}>{spotlight.album || artistName}</Text>
                   </View>
-                  <Icon name="chevron-right" size={17} color={colors.textFaint} />
-                </Pressable>
+                  {onPlay && <Icon name="chevron-right" size={17} color={colors.textFaint} />}
+                </SpotlightSurface>
               ) : (
                 <View style={styles.liveEmpty}>
                   <View style={[styles.liveEmptyIcon, { backgroundColor: colors.magenta + "16" }]}><Icon name="music" size={24} color={colors.magenta} /></View>
@@ -692,6 +708,7 @@ const styles = StyleSheet.create({
   statLabel: { color: colors.textDim, fontSize: 11, fontFamily: mono, textTransform: "uppercase", letterSpacing: 0.8, marginTop: 2 },
   quickGrid: { flexDirection: "row", flexWrap: "wrap", gap: space(3) },
   actionTile: { flex: 1, flexBasis: 250, minWidth: 220, flexDirection: "row", alignItems: "center", gap: space(3), minHeight: 94, padding: space(4), backgroundColor: colors.surface, borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderBottomWidth: 3, borderColor: colors.line, ...shadow.control },
+  actionTileDisabled: { opacity: 0.55 },
   actionIcon: { width: 44, height: 44, borderRadius: radius.sm, borderCurve: "continuous", borderWidth: 1, alignItems: "center", justifyContent: "center" },
   actionCopy: { flex: 1, minWidth: 0 },
   actionTitle: { color: colors.text, fontFamily: displayFont, fontSize: 15, fontWeight: "900" },

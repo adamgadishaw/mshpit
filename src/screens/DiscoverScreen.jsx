@@ -342,12 +342,12 @@ export default function DiscoverScreen({
         <OverviewState state={overviewState} region={region} onRetry={() => requestOverview({ force: true })} onWorldwide={() => pickRegion("Worldwide")} />
       ) : (
         <>
-          <DiscoverChart rows={overview.chart.rows} source={overview.chart.source} info={overview.chart} query={query} onQuery={setQuery} onOpenArtist={openArtist} onPlay={playArtistRow} onAdd={addArtistRow} compact={compact} narrow={veryCompact} />
-          <DiscoverGenres genres={overview.genres} selected={selectedGenre} onSelect={setSelectedGenre} total={overview.genreTotal} rows={genreRows} status={genreStatus} region={region} onOpenArtist={openArtist} onPlay={playArtistRow} onAdd={addArtistRow} onRetry={retryGenre} />
+          <DiscoverChart rows={overview.chart.rows} source={overview.chart.source} info={overview.chart} query={query} onQuery={setQuery} onOpenArtist={openArtist} onPlay={onPlay ? playArtistRow : undefined} onAdd={onAddToPlaylist ? addArtistRow : undefined} compact={compact} narrow={veryCompact} />
+          <DiscoverGenres genres={overview.genres} selected={selectedGenre} onSelect={setSelectedGenre} total={overview.genreTotal} rows={genreRows} status={genreStatus} region={region} onOpenArtist={openArtist} onPlay={onPlay ? playArtistRow : undefined} onAdd={onAddToPlaylist ? addArtistRow : undefined} onRetry={retryGenre} />
         </>
       )}
 
-      <FriendsListening rows={friendRows} loading={friendsLoading} error={friendsError} signedIn={!!session} onRetry={requestFriends} onOpenProfile={openProfile} onPlay={play} onAdd={addToPlaylist} />
+      <FriendsListening rows={friendRows} loading={friendsLoading} error={friendsError} signedIn={!!session} onRetry={requestFriends} onOpenProfile={openProfile} onPlay={onPlay ? play : undefined} onAdd={onAddToPlaylist ? addToPlaylist : undefined} />
       <DiscoverPhotos photos={photos} photoUris={photoUris} compact={compact} width={width} onOpenPhotos={openPhotos} />
     </ScrollView>
   );

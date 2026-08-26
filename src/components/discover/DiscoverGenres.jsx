@@ -21,10 +21,10 @@ function GenreArtist({ row, index, onOpen, onPlay, onAdd }) {
         <Text style={styles.genreArtistName} numberOfLines={1}>{row.name}</Text>
         <Text style={styles.genreArtistTrack} numberOfLines={1}>{row.topTrack?.title || row.genre || "Artist"}</Text>
       </PublicPressableLink>
-      {!!row.topTrack && (
+      {!!row.topTrack && (onAdd || onPlay) && (
         <View style={styles.trackActions}>
-          <Pressable style={styles.trackButton} onPress={() => onAdd?.(row)} accessibilityRole="button" accessibilityLabel={`Add ${row.topTrack.title} by ${row.name} to a playlist`} hitSlop={4}><Icon name="plus" size={14} color={colors.textDim} /></Pressable>
-          <Pressable style={[styles.trackButton, styles.playButton]} onPress={() => onPlay?.(row)} accessibilityRole="button" accessibilityLabel={`Play ${row.topTrack.title} by ${row.name}`} hitSlop={4}><Icon name="play" size={12} color={colors.amber} /></Pressable>
+          {onAdd && <Pressable style={styles.trackButton} onPress={() => onAdd(row)} accessibilityRole="button" accessibilityLabel={`Add ${row.topTrack.title} by ${row.name} to a playlist`} hitSlop={4}><Icon name="plus" size={14} color={colors.textDim} /></Pressable>}
+          {onPlay && <Pressable style={[styles.trackButton, styles.playButton]} onPress={() => onPlay(row)} accessibilityRole="button" accessibilityLabel={`Play ${row.topTrack.title} by ${row.name}`} hitSlop={4}><Icon name="play" size={12} color={colors.amber} /></Pressable>}
         </View>
       )}
     </View>

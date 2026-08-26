@@ -22,3 +22,8 @@ export const ENABLE_DEMO_DATA = demoDataEnabled(
 // pass, but is deliberately absent from navigation during ALPHA. Keeping this a
 // named gate avoids deleting the work or scattering temporary booleans in UI.
 export const ENABLE_CLIPS = false;
+
+// The built-in full-track music player is paused while its playback pipeline is
+// reworked. Keep this as one product-level gate so queue/history/playlist data
+// remains intact while every active player surface stays out of the UI.
+export const ENABLE_MUSIC_PLAYER = false;

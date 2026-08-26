@@ -57,10 +57,10 @@ function ArtistChartRow({ row, index, source, onOpen, onPlay, onAdd, narrow }) {
         <Text style={[styles.chartArtist, rank === 1 && styles.chartArtistLead]} numberOfLines={1}>{row.name}</Text>
         <Text style={styles.chartMeta} numberOfLines={1}>{[row.genre || "Artist", row.topTrack?.title].filter(Boolean).join(" · ")}</Text>
       </PublicPressableLink>
-      {!!row.topTrack && (
+      {!!row.topTrack && (onAdd || onPlay) && (
         <View style={styles.trackActions}>
-          <Pressable style={styles.trackButton} onPress={() => onAdd?.(row)} accessibilityRole="button" accessibilityLabel={`Add ${row.topTrack.title} by ${row.name} to a playlist`} hitSlop={4}><Icon name="plus" size={14} color={colors.textDim} /></Pressable>
-          <Pressable style={[styles.trackButton, styles.playButton]} onPress={() => onPlay?.(row)} accessibilityRole="button" accessibilityLabel={`Play ${row.topTrack.title} by ${row.name}`} hitSlop={4}><Icon name="play" size={13} color={colors.amber} /></Pressable>
+          {onAdd && <Pressable style={styles.trackButton} onPress={() => onAdd(row)} accessibilityRole="button" accessibilityLabel={`Add ${row.topTrack.title} by ${row.name} to a playlist`} hitSlop={4}><Icon name="plus" size={14} color={colors.textDim} /></Pressable>}
+          {onPlay && <Pressable style={[styles.trackButton, styles.playButton]} onPress={() => onPlay(row)} accessibilityRole="button" accessibilityLabel={`Play ${row.topTrack.title} by ${row.name}`} hitSlop={4}><Icon name="play" size={13} color={colors.amber} /></Pressable>}
         </View>
       )}
       {!narrow && <ChartMetric row={row} source={source} />}
