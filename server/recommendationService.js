@@ -3,6 +3,8 @@ import { db, parseJsonArray } from "./db.js";
 import { ApiError } from "./errors.js";
 import { rankRecommendations, RECOMMENDATION_ALGORITHM, recommendationKey } from "./recommendationRanking.js";
 import { activeAccountSql } from "./accountVisibility.js";
+import { projectArtistGenre } from "../src/domain/genre.mjs";
+import { ARTIST_GENRE_SQL_COLUMNS, projectArtistGenreColumns } from "./artistGenreProjection.js";
 
 const CANDIDATE_LIMIT = Math.max(200, Math.min(1200, Number(process.env.RECOMMENDATION_CANDIDATE_LIMIT) || 600));
 const CANDIDATE_SCAN_LIMIT = Math.min(2400, CANDIDATE_LIMIT * 4);
@@ -25,14 +27,13 @@ function postContentRevision() {
 export const RECOMMENDATION_CANDIDATE_SELECT = `
   SELECT p.id,p.user_id,p.artist,p.artist_key,p.city,p.created_at,p.kind,
     CASE WHEN json_valid(p.photos) THEN json_array_length(p.photos) ELSE 0 END AS media_count,
-    length(p.review) AS review_length,a.genre AS artist_genre,
+    length(p.review) AS review_length,
     (SELECT COUNT(*) FROM likes l JOIN users lu ON lu.id=l.user_id
       WHERE l.post_id=p.id AND ${activeAccountSql("lu")}) AS like_count,
     (SELECT COUNT(DISTINCT c.user_id) FROM comments c JOIN users cu ON cu.id=c.user_id
       WHERE c.post_id=p.id AND c.removed=0 AND c.user_id<>p.user_id AND ${activeAccountSql("cu")}) AS comment_count
   FROM posts p
   JOIN users u ON u.id=p.user_id
-  LEFT JOIN artists a ON a.norm=p.artist_key
 `;
 
 // These stay centralized so query-plan regression tests and operational
@@ -117,6 +118,21 @@ function hiddenRecommendationPostIds(viewer, at) {
     .filter(Boolean));
 }
 
+function candidateGenreMap(rows) {
+  const keys = [...new Set(rows.map((row) => row.artist_key).filter(Boolean))];
+  const genres = new Map();
+  for (let offset = 0; offset < keys.length; offset += 200) {
+    const batch = keys.slice(offset, offset + 200);
+    const placeholders = batch.map(() => "?").join(",");
+    const catalog = db.prepare(`SELECT a.norm,${ARTIST_GENRE_SQL_COLUMNS}
+      FROM artists a WHERE a.norm IN (${placeholders})`).all(...batch);
+    for (const artist of catalog) {
+      genres.set(artist.norm, projectArtistGenreColumns(artist));
+    }
+  }
+  return genres;
+}
+
 function candidateRows(viewer, at, hiddenIds = new Set()) {
   const blockSql = viewer?.id ? `AND NOT EXISTS (SELECT 1 FROM blocks b WHERE
     (b.blocker_id=? AND b.blocked_id=p.user_id) OR (b.blocker_id=p.user_id AND b.blocked_id=?))` : "";
@@ -129,13 +145,27 @@ function candidateRows(viewer, at, hiddenIds = new Set()) {
       ${blockSql}
     ORDER BY p.created_at DESC,p.id DESC LIMIT ?`).all(...args);
   const authorCounts = new Map();
-  return rows.filter((row) => {
+  const candidates = rows.filter((row) => {
     if (hiddenIds.has(row.id)) return false;
     const count = authorCounts.get(row.user_id) || 0;
     if (count >= CANDIDATE_AUTHOR_LIMIT) return false;
     authorCounts.set(row.user_id, count + 1);
     return true;
   }).slice(0, CANDIDATE_LIMIT);
+  const genres = candidateGenreMap(candidates);
+  return candidates.map((row) => ({
+    ...row,
+    verified_artist_genre: genres.get(row.artist_key) ?? null,
+  }));
+}
+
+export function projectedRecommendationGenre(columnGenre, artistData) {
+  let data = {};
+  try {
+    const parsed = JSON.parse(artistData || "{}");
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) data = parsed;
+  } catch { /* Invalid legacy metadata must not promote its typed genre. */ }
+  return projectArtistGenre(data, columnGenre).genre;
 }
 
 function rankingCandidate(row) {
@@ -144,7 +174,7 @@ function rankingCandidate(row) {
     userId: row.user_id,
     artist: row.artist,
     artistKey: row.artist_key,
-    genre: row.artist_genre,
+    genre: row.verified_artist_genre,
     city: row.city,
     createdAt: row.created_at,
     likes: row.like_count,

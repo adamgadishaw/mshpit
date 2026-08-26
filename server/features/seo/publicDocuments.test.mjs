@@ -21,7 +21,7 @@ function createDatabase() {
       suspended_until INTEGER,extras TEXT NOT NULL DEFAULT '{}'
     );
     CREATE TABLE artists (
-      norm TEXT PRIMARY KEY,name TEXT NOT NULL,public_slug TEXT,genre TEXT,bio TEXT,mbid TEXT,country TEXT,formed TEXT,
+      norm TEXT PRIMARY KEY,name TEXT NOT NULL,public_slug TEXT,genre TEXT,data TEXT,bio TEXT,mbid TEXT,country TEXT,formed TEXT,
       popularity INTEGER,rank_score INTEGER NOT NULL DEFAULT 0,updated_at INTEGER
     );
     CREATE TABLE artist_memorials (
@@ -106,10 +106,11 @@ function addUser(database, id, { name = id, handle = id, banned = false, suspend
 
 function addArtist(database, {
   key = "alpha", name = "Alpha", bio = "A real artist biography.", genre = "Rock", mbid = ARTIST_MBID,
+  data = {},
 } = {}) {
   database.prepare(`INSERT INTO artists
-    (norm,name,public_slug,genre,bio,mbid,country,formed,popularity,rank_score,updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(key, name, key, genre, bio, mbid, "Canada", "2012", 90, 100, 200);
+    (norm,name,public_slug,genre,data,bio,mbid,country,formed,popularity,rank_score,updated_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`).run(key, name, key, genre, JSON.stringify(data), bio, mbid, "Canada", "2012", 90, 100, 200);
 }
 
 function saveMemorial(database, overrides = {}) {
@@ -312,6 +313,51 @@ test("home document is substantive, contains WebSite JSON-LD, and excludes restr
     assert.doesNotMatch(html, /BANNED PRIVATE COPY/);
     assert.doesNotMatch(html, /\b\d[\d,]* members\b/i);
     assert.match(html, /<h1>Remember every show/);
+  } finally {
+    database.close();
+  }
+});
+
+test("crawler-readable artist surfaces never publish an unstructured legacy genre", () => {
+  const database = createDatabase();
+  try {
+    const bio = "A substantive artist biography covering live history, recordings, tours, collaborators, venues, and fan context.";
+    addArtist(database, {
+      key: "legacy-alternative",
+      name: "Legacy Alternative",
+      bio,
+      genre: "Alternative",
+      data: {},
+    });
+    addArtist(database, {
+      key: "verified-classical",
+      name: "Verified Classical",
+      bio,
+      genre: "Alternative",
+      data: { genreClaims: [{ value: "Classical", source: "staff", at: 2 }] },
+    });
+
+    const documents = service(database);
+    const surfaces = [
+      documents.homeDocument(),
+      documents.discoverDocument({ at: NOW, today: "2026-08-25" }),
+      documents.directoryDocument({ kind: "artists", at: NOW, today: "2026-08-25" }),
+    ];
+    for (const document of surfaces) {
+      const legacy = document.artists.find((artist) => artist.name === "Legacy Alternative");
+      const verified = document.artists.find((artist) => artist.name === "Verified Classical");
+      assert.deepEqual(legacy?.genre, []);
+      assert.deepEqual(verified?.genre, ["Classical"]);
+      const html = documents.render(document);
+      assert.doesNotMatch(html, />Alternative</);
+      assert.match(html, /Classical/);
+    }
+
+    const legacyArtist = documents.artistDocument({ artistKey: "legacy-alternative", at: NOW });
+    const verifiedArtist = documents.artistDocument({ artistKey: "verified-classical", at: NOW });
+    assert.deepEqual(legacyArtist.artist.genres, []);
+    assert.deepEqual(verifiedArtist.artist.genres, ["Classical"]);
+    assert.doesNotMatch(documents.render(legacyArtist), />Alternative</);
   } finally {
     database.close();
   }

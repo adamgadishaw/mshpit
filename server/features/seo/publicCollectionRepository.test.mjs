@@ -14,7 +14,7 @@ function createDatabase() {
       id TEXT PRIMARY KEY,is_banned INTEGER NOT NULL DEFAULT 0,suspended_until INTEGER
     );
     CREATE TABLE artists (
-      norm TEXT PRIMARY KEY,name TEXT NOT NULL,public_slug TEXT,genre TEXT,bio TEXT,updated_at INTEGER
+      norm TEXT PRIMARY KEY,name TEXT NOT NULL,public_slug TEXT,genre TEXT,data TEXT,bio TEXT,updated_at INTEGER
     );
     CREATE TABLE tour_dates (
       id TEXT PRIMARY KEY,artist TEXT NOT NULL,artist_key TEXT,venue TEXT,place TEXT,date TEXT,
@@ -54,8 +54,8 @@ function addUser(db,id,{ banned = false,suspended = false } = {}) {
     .run(id,banned ? 1 : 0,suspended ? NOW + 86_400_000 : null);
 }
 function addArtist(db,{ key = "alpha",name = "Alpha",slug = key,bio = "" } = {}) {
-  db.prepare("INSERT INTO artists (norm,name,public_slug,genre,bio,updated_at) VALUES (?,?,?,?,?,?)")
-    .run(key,name,slug,"Rock",bio,NOW);
+  db.prepare("INSERT INTO artists (norm,name,public_slug,genre,data,bio,updated_at) VALUES (?,?,?,?,?,?,?)")
+    .run(key,name,slug,"Rock",JSON.stringify({ genreClaims: [{ value: "Rock", source: "provider", at: 1 }] }),bio,NOW);
 }
 function addTour(db,{
   id,artist = "Alpha",artistKey = "alpha",venue = "Hall A",date = "2026-12-01",

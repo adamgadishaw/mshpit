@@ -1,5 +1,5 @@
 import { artistRow, artistStmts, db, normName, providerCacheStmts, ytStmts } from "./db.js";
-import { providerGenreFields } from "../src/domain/genre.mjs";
+import { deezerEnrichmentGenreFields, deezerReleaseGenreConsensus } from "./deezerGenre.js";
 import {
   legacyTrackOverrideIdentityKey,
   normalizeTrackIdentityText,
@@ -630,21 +630,19 @@ function storedDeezerId(name) {
   try { return JSON.parse(row.data)?.deezerId || null; } catch { return null; }
 }
 
-export function persistDeezerIdentity(name, deezerId, derivedGenre = null) {
+export function persistDeezerIdentity(name, deezerId, genreEvidence = null) {
   const existing = artistStmts.byNorm.get(normName(name));
   if (!existing || !deezerId) return;
   let data = {};
-  try { data = JSON.parse(existing.data || "{}"); } catch {}
-  // Deezer's album genre is a clean canonical label, so it corrects the noisy
-  // MusicBrainz tag that got written into `genre` (e.g. Justin Bieber -> "Metal").
-  const genre = derivedGenre && String(derivedGenre).trim() ? String(derivedGenre).trim() : null;
-  const genreFields = providerGenreFields(data, existing.genre, genre);
-  const priorProvider = Array.isArray(data.genreClaims)
-    ? data.genreClaims.find((claim) => claim?.source === "provider")?.value || null
-    : null;
+  try { data = JSON.parse(existing.data || "{}"); } catch { /* Corrupt legacy metadata contributes no provider state. */ }
+  // Artist-level genre is persisted only after several distinct releases agree.
+  // The evidence object makes that basis inspectable instead of hiding another
+  // heuristic behind a confident-looking provider label.
   const idUnchanged = String(data.deezerId || "") === String(deezerId);
-  const genreChanged = !!genre && genre !== priorProvider;
-  if (idUnchanged && !genreChanged) return;
+  const evidenceChanged = !!genreEvidence
+    && JSON.stringify(data.genreEvidence || null) !== JSON.stringify(genreEvidence);
+  if (idUnchanged && !evidenceChanged) return;
+  const genreFields = deezerEnrichmentGenreFields(data, existing.genre, { deezerId, genreEvidence });
   const merged = {
     ...data,
     name: existing.name,
@@ -761,13 +759,12 @@ export async function getDeezerDiscography(name, {
         };
       } catch { return null; }
     })).filter(Boolean);
-    // The artist's canonical genre is the one most of their releases carry. This
-    // corrects the wrong catalog genre (from MusicBrainz tags) the moment anyone
-    // opens the artist, so Discover and Search stop showing nonsense over time.
-    const genreCounts = {};
-    for (const al of fullAlbums) { const g = al.genre && al.genre.trim(); if (g) genreCounts[g] = (genreCounts[g] || 0) + 1; }
-    const derivedGenre = Object.entries(genreCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || null;
-    if (derivedGenre && !ephemeralSelection) persistDeezerIdentity(name, artist.id, derivedGenre);
+    // Several releases must agree before a release label becomes an artist fact.
+    const genreEvidence = deezerReleaseGenreConsensus(fullAlbums);
+    const derivedGenre = genreEvidence?.genre || null;
+    if (derivedGenre && !ephemeralSelection) {
+      persistDeezerIdentity(name, artist.id, genreEvidence);
+    }
     const data = {
       artist: { id: artist.id, name: artist.name, fans: artist.nb_fan, photo: artist.picture_xl || artist.picture_big || null, genre: derivedGenre || null },
       albums: fullAlbums,
@@ -848,7 +845,7 @@ export function playbackUrlExpiry(url, now = Date.now()) {
       const signedExpiry = signedToken.match(/(?:^|[~&])exp=(\d{10,13})(?:[~&]|$)/i);
       seconds = Number(signedExpiry?.[1]) || 0;
     }
-  } catch {}
+  } catch { /* Malformed preview URLs fall through to the bounded raw-token parser. */ }
   if (!seconds) {
     const match = raw.match(/(?:^|[?&~])exp(?:=|%3D)(\d{10,13})/i);
     seconds = Number(match?.[1]) || 0;

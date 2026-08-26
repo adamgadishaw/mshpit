@@ -1,7 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { crawlerGenreFields, growOutcome, shouldEnrichAfterCrawl } from "./catalogSeed.js";
+import {
+  crawlerGenreFields, growOutcome, refreshSongsAndGenres,
+  deezerEnrich, mergeGenreBackfillData, rotateRowsAfterCursor, shouldEnrichAfterCrawl,
+} from "./catalogSeed.js";
 import { displayGenre, resolveGenre, storedClaims } from "../src/domain/genre.mjs";
+import { artistRow, artistStmts } from "./db.js";
 
 // Regression cover for the 2026-07-14 incident. "Grow by 10k" added zero artists
 // (every genre cursor had reached the end of its results) yet reported success and
@@ -56,4 +60,85 @@ test("crawler buckets persist as review hints, never as factual genres", () => {
   const claims = storedClaims(fields, fields.genre);
   assert.equal(claims[0]?.source, "tag_hint");
   assert.equal(displayGenre(resolveGenre(claims)), null);
+});
+
+test("refresh processes genre-missing artists even when their songs are already complete", async () => {
+  const phases = [];
+  const result = await refreshSongsAndGenres({
+    enrichSongsImpl: async ({ tick }) => {
+      phases.push("songs");
+      tick({ ranked: 0, done: 0, of: 0 });
+      return 0;
+    },
+    beforeGenres: () => phases.push("before-genres"),
+    backfillGenresImpl: async ({ tick }) => {
+      phases.push("genres");
+      tick({ fixed: 1, done: 1, of: 1 });
+      return { fixed: 1, scanned: 1, pending: 1 };
+    },
+  });
+  assert.deepEqual(phases, ["songs", "before-genres", "genres"]);
+  assert.deepEqual(result, {
+    songs: 0,
+    genres: { fixed: 1, scanned: 1, pending: 1 },
+    stopped: false,
+  });
+});
+
+test("refresh honors a stop between songs and genres", async () => {
+  let stopped = false;
+  let genreRuns = 0;
+  const result = await refreshSongsAndGenres({
+    shouldStop: () => stopped,
+    enrichSongsImpl: async () => { stopped = true; return 2; },
+    backfillGenresImpl: async () => { genreRuns += 1; return { fixed: 1 }; },
+  });
+  assert.equal(genreRuns, 0);
+  assert.equal(result.stopped, true);
+  assert.equal(result.songs, 2);
+});
+
+test("genre backfill resumes after its last attempted artist and wraps fairly", () => {
+  const rows = [{ norm: "a" }, { norm: "b" }, { norm: "c" }, { norm: "d" }];
+  assert.deepEqual(rotateRowsAfterCursor(rows, "b").map((row) => row.norm), ["c", "d", "a", "b"]);
+  assert.deepEqual(rotateRowsAfterCursor(rows, "missing").map((row) => row.norm), ["a", "b", "c", "d"]);
+});
+
+test("background Deezer enrichment treats an auto-saved identity as a self-healing hint", async () => {
+  artistStmts.upsert.run(artistRow("background identity hint", {
+    name: "Background Identity Hint",
+    deezerId: 7001,
+  }, "deezer"));
+  let lookupOptions = null;
+  const enriched = await deezerEnrich("Background Identity Hint", {
+    findArtist: async (_name, options) => {
+      lookupOptions = options;
+      return null;
+    },
+  });
+  assert.equal(enriched, null);
+  assert.deepEqual(lookupOptions, { hintId: 7001 });
+  assert.equal(Object.hasOwn(lookupOptions, "preferredId"), false);
+});
+
+test("genre backfill saves a corrected Deezer identity while clearing the former proof", () => {
+  const evidence = {
+    genre: "Pop", provider: "deezer", basis: "release-consensus-v1",
+    sampleCount: 3, supportingCount: 2, share: 0.6667,
+    counts: [{ genre: "Pop", count: 2 }, { genre: "Rock", count: 1 }],
+  };
+  assert.equal(mergeGenreBackfillData({ name: "Offline", genre: "Pop" }, { deezerId: 11 }, null), null);
+
+  const merged = mergeGenreBackfillData(
+    { name: "Corrected Background Artist", genre: "Pop" },
+    {
+      deezerId: 11,
+      genreClaims: [{ value: "Pop", source: "release_consensus", at: 1 }],
+      genreEvidence: evidence,
+    },
+    { deezerId: 22, genreEvidence: null },
+  );
+  assert.equal(merged.deezerId, 22);
+  assert.deepEqual(merged.genreClaims, []);
+  assert.equal(merged.genreEvidence, undefined);
 });

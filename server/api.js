@@ -17,7 +17,9 @@ import { AUDIENCES, audienceSize, campaignProgress, drainCampaign, pauseCampaign
 import { db, DATABASE_PATH, q, emailStmts, badgeStmts, customBadgesFor, publicUser as storedPublicUser, parseJsonArray, parseJsonObject, artistStmts, publicArtist, artistRow, artistSearchKey, normName, pruneMissingArtists } from "./db.js";
 import { BADGE_COLORS, BADGE_GLYPHS, BADGE_KINDS, validateBadge } from "../src/domain/badgeArt.mjs";
 import { alertCooldownMs, alertRecipient, alertsEnabled, errorStats, maybeAlert, recentErrors, recordError } from "./errorLog.js";
-import { genreClaim, providerGenreFields, resolveGenre, storedClaims, upsertClaim, withoutSource } from "../src/domain/genre.mjs";
+import { genreClaim, resolveGenre, storedClaims, upsertClaim, withoutSource } from "../src/domain/genre.mjs";
+import { deezerEnrichmentGenreFields } from "./deezerGenre.js";
+import { ARTIST_GENRE_SQL_COLUMNS, projectArtistGenreColumns } from "./artistGenreProjection.js";
 import { hashPassword, verifyPassword, verifyPasswordForUser, createSession, destroySession, rateLimit, reserveRateLimits } from "./auth.js";
 import { createRecoveryResponseFloor } from "./authResponseFloor.js";
 import { startCatalogSeed, catalogSeedStatus, stopCatalogSeed, deezerEnrich } from "./catalogSeed.js";
@@ -1773,7 +1775,7 @@ async function enrichArtistFromDeezer(name) {
   const merged = {
     ...data,
     name: existing?.name || name,
-    ...providerGenreFields(data, existing?.genre, e.genre),
+    ...deezerEnrichmentGenreFields(data, existing?.genre, e),
     photo: e.photo || data.photo || null,
     mbid: existing?.mbid || null, country: existing?.country || null, beginYear: existing?.formed || null,
     popularity: e.popularity, followers: e.followers, topTracks: e.topTracks, deezerId: e.deezerId,
@@ -5042,6 +5044,20 @@ export const routes = {
       byResultBucket7d,
       daily: guestSearchDaily,
     };
+    const genreActivity = new Map();
+    for (const row of all(`SELECT ${ARTIST_GENRE_SQL_COLUMNS},COUNT(*) count
+      FROM posts p JOIN artists a ON a.norm=p.artist_key
+      WHERE p.removed=0 GROUP BY a.norm`)) {
+      const label = projectArtistGenreColumns(row);
+      if (!label) continue;
+      const key = label.toLocaleLowerCase("en-US");
+      const current = genreActivity.get(key) || { label, count: 0 };
+      current.count += Number(row.count) || 0;
+      genreActivity.set(key, current);
+    }
+    const topGenres = [...genreActivity.values()]
+      .sort((left, right) => right.count - left.count || left.label.localeCompare(right.label))
+      .slice(0, 12);
     return {
       totals,
       guestSearches,
@@ -5058,9 +5074,7 @@ export const routes = {
         WHERE removed=0 AND length(artist)>0 GROUP BY lower(artist) ORDER BY count DESC,label LIMIT 12`),
       topVenues: all(`SELECT venue label,COUNT(*) count FROM posts
         WHERE removed=0 AND length(venue)>0 GROUP BY lower(venue) ORDER BY count DESC,label LIMIT 12`),
-      topGenres: all(`SELECT a.genre label,COUNT(*) count FROM posts p JOIN artists a ON a.norm=p.artist_key
-        WHERE p.removed=0 AND a.genre IS NOT NULL AND length(a.genre)>0
-        GROUP BY lower(a.genre) ORDER BY count DESC,label LIMIT 12`),
+      topGenres,
       topSearches: [],
       postKeywords,
     };

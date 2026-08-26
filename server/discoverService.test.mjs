@@ -18,6 +18,13 @@ after(() => {
   rmSync(dataDir, { recursive: true, force: true });
 });
 
+function evidencedGenre(value, extra = {}) {
+  return JSON.stringify({
+    ...extra,
+    genreClaims: [{ value, source: "provider", at: 1 }],
+  });
+}
+
 function fixture() {
   const database = new DatabaseSync(":memory:");
   database.exec(`
@@ -42,9 +49,9 @@ function fixture() {
     CREATE TABLE plays (artist TEXT, user_id TEXT, created_at INTEGER);
   `);
   const addArtist = database.prepare("INSERT INTO artists VALUES (?,?,?,?,?,?,?,?)");
-  addArtist.run("alpha", "Alpha", "rap", "Canada", 90, 9, "alpha.jpg", JSON.stringify({ followers: 120, topTracks: [{ title: "First", url: "first.mp3" }] }));
-  addArtist.run("bravo", "Bravo", "Hip Hop", "United States", 98, 10, "bravo.jpg", "{}");
-  addArtist.run("charlie", "Charlie", "indie rock", "Canada", 80, 8, null, "{}");
+  addArtist.run("alpha", "Alpha", "rap", "Canada", 90, 9, "alpha.jpg", evidencedGenre("rap", { followers: 120, topTracks: [{ title: "First", url: "first.mp3" }] }));
+  addArtist.run("bravo", "Bravo", "Hip Hop", "United States", 98, 10, "bravo.jpg", evidencedGenre("Hip Hop"));
+  addArtist.run("charlie", "Charlie", "indie rock", "Canada", 80, 8, null, evidencedGenre("indie rock"));
   addArtist.run("delta", "Delta", "Soul", "Canada", 70, 7, null, "{}");
   const addPlay = database.prepare("INSERT INTO plays VALUES (?,?,?)");
   addPlay.run("Alpha", "member-1", 1);
@@ -68,6 +75,7 @@ test("Discover hides crawl hints and only filters or aggregates evidenced genres
   try {
     const addArtist = database.prepare("INSERT INTO artists VALUES (?,?,?,?,?,?,?,?)");
     addArtist.run("legacy-crawl", "Legacy Crawl", "Hardcore", "Canada", 99, 11, null, "{}");
+    addArtist.run("legacy-alternative", "Legacy Alternative", "Alternative", "Canada", 98, 10, null, "{}");
     addArtist.run("malformed-crawl", "Malformed Crawl", "Metal", "Canada", 97, 10, null, "{not-json");
     addArtist.run("provider-evidence", "Provider Evidence", "House", "Canada", 95, 10, null, JSON.stringify({
       genreClaims: [
@@ -80,11 +88,13 @@ test("Discover hides crawl hints and only filters or aggregates evidenced genres
     const chart = service.chart({ country: "Canada", limit: 10 });
     const byName = Object.fromEntries(chart.rows.map((row) => [row.name, row]));
     assert.equal(byName["Legacy Crawl"].genre, null, "a legacy crawl label must not be stated as fact");
+    assert.equal(byName["Legacy Alternative"].genre, null, "an unlisted bare legacy label must also fail closed");
     assert.equal(byName["Malformed Crawl"].genre, null, "malformed rich data must fail closed around a crawl label");
     assert.equal(byName["Provider Evidence"].genre, "R&B", "provider evidence should display and canonicalize");
 
     const genres = service.genres({ country: "Canada", limit: 12 });
     assert.equal(genres.genres.some((row) => row.genre === "Hardcore"), false);
+    assert.equal(genres.genres.some((row) => row.genre === "Alternative"), false);
     assert.equal(genres.genres.some((row) => row.genre === "House"), false, "the stale raw column must not be counted");
     assert.equal(genres.genres.find((row) => row.genre === "R&B")?.count, 1);
     assert.equal(genres.total, 3, "only the two existing provider genres and new provider claim are factual");

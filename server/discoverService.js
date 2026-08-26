@@ -1,5 +1,5 @@
 import { db } from "./db.js";
-import { displayGenre, resolveGenre, storedClaims } from "../src/domain/genre.mjs";
+import { projectArtistGenre } from "../src/domain/genre.mjs";
 
 const GENRE_ALIAS = {
   "hip hop": "Hip-Hop", hiphop: "Hip-Hop", "hip-hop": "Hip-Hop", rap: "Hip-Hop", trap: "Hip-Hop", "conscious hip hop": "Hip-Hop",
@@ -41,8 +41,8 @@ function artistData(row) {
 // data blob carries newer provider/staff claims. Only evidence-backed claims
 // may become a public genre; crawl labels remain useful internally as hints.
 function projectedGenre(artist, data = artistData(artist)) {
-  const record = resolveGenre(storedClaims(data, artist?.genre));
-  return canonicalGenre(displayGenre(record));
+  const projected = projectArtistGenre(data, artist?.genre);
+  return canonicalGenre(projected.genre);
 }
 
 function chartRow(name, artist, rank, extra = {}) {

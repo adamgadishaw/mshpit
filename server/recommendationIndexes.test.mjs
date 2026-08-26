@@ -7,11 +7,15 @@ import test, { after } from "node:test";
 const dataDir = mkdtempSync(join(tmpdir(), "pit-recommendation-indexes-"));
 process.env.PIT_DATA_DIR = dataDir;
 
-const { db, q } = await import("./db.js");
+const { artistRow, artistStmts, db, q } = await import("./db.js");
 const {
   RECOMMENDATION_CANDIDATE_SELECT,
   RECOMMENDATION_SIGNAL_SQL,
+  projectedRecommendationGenre,
 } = await import("./recommendationService.js");
+const {
+  ARTIST_GENRE_SQL_COLUMNS, projectArtistGenreColumns,
+} = await import("./artistGenreProjection.js");
 
 after(() => {
   db.close();
@@ -68,4 +72,34 @@ test("candidate momentum counts distinct non-author commenters, not author volum
   const plan = queryPlan(`${RECOMMENDATION_CANDIDATE_SELECT} WHERE p.id=?`, "post_candidate_comments");
   assert.ok(plan.some((detail) => detail.includes("idx_comments_post_distinct_users")), plan.join(" | "));
   assert.equal(plan.some((detail) => /TEMP B-TREE.*count\(DISTINCT\)/i.test(detail)), false, plan.join(" | "));
+});
+
+test("recommendation ranking ignores unsupported legacy artist genres", () => {
+  assert.equal(projectedRecommendationGenre("Alternative", "{}"), null);
+  assert.equal(projectedRecommendationGenre("Pop", JSON.stringify({
+    deezerId: 7,
+    genreClaims: [{ value: "Pop", source: "provider", at: 1 }],
+  })), null);
+  assert.equal(projectedRecommendationGenre("Classical", JSON.stringify({
+    genreClaims: [{ value: "Classical", source: "staff", at: 1 }],
+  })), "Classical");
+});
+
+test("candidate scans defer compact genre reads until after filtering", () => {
+  assert.doesNotMatch(RECOMMENDATION_CANDIDATE_SELECT, /\bJOIN\s+artists\b|\ba\.data\b|artist_data/i);
+  assert.match(ARTIST_GENRE_SQL_COLUMNS, /substr\(/i);
+
+  artistStmts.upsert.run(artistRow("compact legacy genre", {
+    name: "Compact Legacy Genre",
+    genre: "Alternative",
+  }, "legacy"));
+  artistStmts.upsert.run(artistRow("compact verified genre", {
+    name: "Compact Verified Genre",
+    genre: "Classical",
+    genreClaims: [{ value: "Classical", source: "staff", at: 1 }],
+  }, "staff"));
+
+  const select = db.prepare(`SELECT ${ARTIST_GENRE_SQL_COLUMNS} FROM artists a WHERE a.norm=?`);
+  assert.equal(projectArtistGenreColumns(select.get("compact legacy genre")), null);
+  assert.equal(projectArtistGenreColumns(select.get("compact verified genre")), "Classical");
 });

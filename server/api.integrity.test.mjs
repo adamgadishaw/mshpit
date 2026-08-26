@@ -2366,9 +2366,11 @@ test("unresolved artist search names expire after 30 days and the enrichment que
 test("Discover legacy routes share one service and overview opts into a bounded public cache", () => {
   artistStmts.upsert.run(artistRow("discover route alpha", {
     name: "Discover Route Alpha", genre: "rap", country: "Route Test Country", popularity: 99,
+    genreClaims: [{ value: "rap", source: "provider", at: 1 }],
   }, "test"));
   artistStmts.upsert.run(artistRow("discover route bravo", {
     name: "Discover Route Bravo", genre: "indie rock", country: "Route Test Country", popularity: 98,
+    genreClaims: [{ value: "indie rock", source: "provider", at: 1 }],
   }, "test"));
 
   const chartHeaders = {};
@@ -2495,8 +2497,20 @@ test("analytics is consented, allow-listed, IP-free, aggregated, and admin-only"
   addUser("u_analytics_member", "analytics-member@example.com", "analyticsmember");
   db.prepare("UPDATE users SET extras=? WHERE id=?").run(JSON.stringify({ consentAt: Date.now(), termsVersion: "2026-07" }), "u_analytics_member");
   const member = q.userById.get("u_analytics_member");
+  artistStmts.upsert.run(artistRow("analytics artist", {
+    name: "Analytics Artist",
+    genre: "Alternative",
+  }, "legacy"));
   db.prepare("INSERT INTO posts (id,user_id,artist,venue,overall,review,created_at) VALUES (?,?,?,?,?,?,?)")
     .run("p_internal_001", member.id, "Analytics Artist", "Analytics Venue", 4, "Public fixture", Date.now());
+  db.prepare("UPDATE posts SET artist_key=? WHERE id=?").run("analytics artist", "p_internal_001");
+  artistStmts.upsert.run(artistRow("analytics verified artist", {
+    name: "Analytics Verified Artist",
+    genre: "Classical",
+    genreClaims: [{ value: "Classical", source: "staff", at: 1 }],
+  }, "staff"));
+  db.prepare("INSERT INTO posts (id,user_id,artist,artist_key,venue,overall,review,created_at) VALUES (?,?,?,?,?,?,?,?)")
+    .run("p_internal_verified_genre", member.id, "Analytics Verified Artist", "analytics verified artist", "Analytics Venue", 4, "Verified genre fixture", Date.now());
   const ingest = routes["POST /api/events/batch"];
   const events = [
     { id: "evt_search_0001", name: "search", props: { q: "shoegaze", kind: "all", resultBucket: "one_to_five", secret: "must disappear" } },
@@ -2526,6 +2540,8 @@ test("analytics is consented, allow-listed, IP-free, aggregated, and admin-only"
   db.prepare("UPDATE users SET role='admin' WHERE id=?").run("u_analytics_admin");
   const admin = q.userById.get("u_analytics_admin");
   const dashboard = routes["GET /api/admin/analytics"]({ user: admin });
+  assert.equal(dashboard.topGenres.some((row) => row.label === "Alternative"), false);
+  assert.deepEqual(dashboard.topGenres.find((row) => row.label === "Classical"), { label: "Classical", count: 1 });
   assert.deepEqual(dashboard.topSearches, []);
   assert.equal(dashboard.growth.length, 30);
   assert.equal(dashboard.retentionDays, 30);
@@ -3458,8 +3474,12 @@ test("a crawl-bucket genre is offered as a hint, never stated as the artist's ge
   assert.equal(shown.genreHint, "Metal", "but it stays available for staff review");
   assert.equal(shown.genreSource, "tag_hint");
 
-  // Provider enrichment arrives lowercased and is real evidence, so it shows.
-  artistStmts.upsert.run(artistRow("taylor swift", { name: "Taylor Swift", genre: "pop" }, "deezer"));
+  // Provider enrichment is evidence because it records provenance, not because
+  // the stored string happens to be lowercased.
+  artistStmts.upsert.run(artistRow("taylor swift", {
+    name: "Taylor Swift", genre: "pop",
+    genreClaims: [{ value: "pop", source: "provider", at: 1 }],
+  }, "deezer"));
   const evidence = publicArtist(artistStmts.byNorm.get("taylor swift"));
   assert.equal(evidence.genre, "pop");
   assert.equal(evidence.genreSource, "provider");
@@ -3711,10 +3731,19 @@ test("admin Deezer enrichment records provider evidence and preserves staff auth
     if (value.includes("/search/artist")) {
       const name = decodeURIComponent(value).includes("Staff Genre Keeper") ? "Staff Genre Keeper" : "Provider Exact Label";
       payload = { data: [{ id: name.startsWith("Staff") ? 202 : 101, name, nb_fan: 1000 }] };
-    } else if (value.includes("/artist/202/top")) payload = { data: [{ id: 2, title: "Staff Song", album: { id: 2002 } }] };
-    else if (value.includes("/artist/101/top")) payload = { data: [{ id: 1, title: "Provider Song", album: { id: 1001 } }] };
-    else if (value.includes("/album/2002")) payload = { genres: { data: [{ name: "Pop" }] } };
-    else if (value.includes("/album/1001")) payload = { genres: { data: [{ name: "Pop" }] } };
+    } else if (value.includes("/artist/202/top")) payload = { data: [
+      { id: 2, title: "Staff Song One", album: { id: 2002 } },
+      { id: 3, title: "Staff Song Two", album: { id: 2003 } },
+      { id: 4, title: "Staff Song Three", album: { id: 2004 } },
+    ] };
+    else if (value.includes("/artist/101/top")) payload = { data: [
+      { id: 1, title: "Provider Song One", album: { id: 1001 } },
+      { id: 5, title: "Provider Song Two", album: { id: 1002 } },
+      { id: 6, title: "Provider Song Three", album: { id: 1003 } },
+    ] };
+    else if (/\/album\/(?:2002|2003|2004|1001|1002|1003)$/.test(value)) {
+      payload = { genres: { data: [{ name: "Pop" }] } };
+    }
     else throw new Error(`unexpected provider request: ${value}`);
     return { ok: true, status: 200, json: async () => payload };
   };
@@ -3731,12 +3760,15 @@ test("admin Deezer enrichment records provider evidence and preserves staff auth
 
   const provider = publicArtist(artistStmts.byNorm.get("provider exact label"));
   assert.equal(provider.genre, "Pop", "an exact-title provider label must not be demoted to a crawl hint");
-  assert.equal(provider.genreSource, "provider");
+  assert.equal(provider.genreSource, "release_consensus");
   const preserved = publicArtist(artistStmts.byNorm.get("staff genre keeper"));
   assert.equal(preserved.genre, "r&b");
   assert.equal(preserved.genreSource, "staff");
   const stored = JSON.parse(artistStmts.byNorm.get("staff genre keeper").data);
-  assert.equal(stored.genreClaims.find((claim) => claim.source === "provider")?.value, "Pop");
+  assert.equal(stored.genreClaims.find((claim) => claim.source === "release_consensus")?.value, "Pop");
+  assert.equal(stored.genreEvidence?.basis, "release-consensus-v1");
+  assert.equal(stored.genreEvidence?.sampleCount, 3);
+  assert.equal(stored.genreEvidence?.supportingCount, 3);
 });
 
 test("withdrawing a sole staff genre cannot resurrect the stale column as provider evidence", () => {

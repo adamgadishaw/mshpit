@@ -10,6 +10,7 @@ import {
   venuesPath,
 } from "../../../src/domain/urls.mjs";
 import { projectedTourDateTicketUrl } from "../../../src/domain/ticketLinks.mjs";
+import { projectArtistGenre } from "../../../src/domain/genre.mjs";
 import { SUPPORT_EMAIL } from "../../../src/domain/contact.mjs";
 import { postMediaStateByPost } from "../../mediaAssets.js";
 import { verifiedFinalizedLegacyMedia } from "../../mediaLegacyFinalize.js";
@@ -66,16 +67,26 @@ function parseArray(value) {
   }
 }
 
+function parseObject(value) {
+  if (value && typeof value === "object" && !Array.isArray(value)) return value;
+  try {
+    const parsed = JSON.parse(value || "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function publicArtistGenres(row) {
+  const projected = projectArtistGenre(parseObject(row?.data), row?.genre);
+  return projected.genre ? [cleanLine(projected.genre, 60)] : [];
+}
+
 function setlistItems(value) {
   return parseArray(value)
     .flatMap((item) => typeof item === "string" ? [cleanLine(item, 120)] : [])
     .filter(Boolean)
     .slice(0, 40);
-}
-
-function genres(value) {
-  const candidates = parseArray(value).length ? parseArray(value) : String(value || "").split(/[,;/|]/);
-  return [...new Set(candidates.map((genre) => cleanLine(genre, 60)).filter(Boolean))].slice(0, 8);
 }
 
 function count(value) {
@@ -628,7 +639,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       const artists = (raw.artists || []).map((row) => Object.freeze({
         name: cleanLine(row.name, 160),
         path: canonicalArtistPath(publicPaths, row),
-        genre: genres(row.genre),
+        genre: publicArtistGenres(row),
         description: summary(row.bio, 220),
         reviewCount: count(row.review_count),
       })).filter((artist) => artist.name);
@@ -664,7 +675,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       const artists = (raw.artists || []).slice(0, 24).map((row) => Object.freeze({
         name: cleanLine(row.name, 160),
         path: canonicalArtistPath(publicPaths, row),
-        genre: genres(row.genre),
+        genre: publicArtistGenres(row),
         description: summary(row.bio, 180),
       })).filter((artist) => artist.name && artist.path);
       const events = (raw.events || []).slice(0, 48)
@@ -877,7 +888,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
         imageWidth: socialProfileImage?.width || null,
         imageHeight: socialProfileImage?.height || null,
         imageMimeType: socialProfileImage?.mimeType || null,
-        artist: Object.freeze({ name, bio, genres: genres(source.genre), country: cleanLine(source.country, 100) || null, formed: cleanLine(source.formed, 80) || null }),
+        artist: Object.freeze({ name, bio, genres: publicArtistGenres(source), country: cleanLine(source.country, 100) || null, formed: cleanLine(source.formed, 80) || null }),
         memorial,
         stats: Object.freeze({ reviewCount, averageRating }),
         reviews,
@@ -1330,7 +1341,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       const artists = raw.kind === "artists" ? (raw.artists || []).slice(0, 200).map((row) => Object.freeze({
         name: cleanLine(row.name, 160),
         path: canonicalArtistPath(publicPaths, row),
-        genre: genres(row.genre),
+        genre: publicArtistGenres(row),
         description: summary(row.bio, 180),
       })).filter((artist) => artist.name && artist.path) : [];
       const events = raw.kind === "events" ? (raw.events || []).slice(0, 200).map((row) => eventCard(row, publicPaths)).filter(Boolean) : [];

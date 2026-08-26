@@ -15,10 +15,14 @@
 export const GENRE_SOURCES = {
   // A crawl bucket. Discovery only: enough to guess with, never to assert.
   tag_hint: { rank: 1, confidence: 0.25, evidence: false },
+  // A release label without enough agreement to classify the artist.
+  release_hint: { rank: 1, confidence: 0.35, evidence: false },
   // Two or more independent providers agreeing.
   consensus: { rank: 2, confidence: 0.7, evidence: true },
-  // A provider stating this artist's genre directly (a Deezer album genre, an
-  // explicit MusicBrainz genre), rather than us inferring it from a search.
+  // Several distinct releases from one provider agreeing by a clear majority.
+  release_consensus: { rank: 2, confidence: 0.7, evidence: true },
+  // A provider stating the artist's genre directly, rather than a release-level
+  // label or a search/crawl inference.
   provider: { rank: 3, confidence: 0.8, evidence: true },
   // A human decision. Always wins, never overwritten by an automated run.
   staff: { rank: 4, confidence: 1, evidence: true },
@@ -28,6 +32,50 @@ export const GENRE_SOURCES = {
 export const GENRE_DISPLAY_THRESHOLD = 0.5;
 
 const sourceOf = (name) => GENRE_SOURCES[name] || null;
+
+export function hasReleaseConsensusEvidence(data, value) {
+  const evidence = data?.genreEvidence;
+  if (!evidence || evidence.provider !== "deezer" || evidence.basis !== "release-consensus-v1") return false;
+  const evidenceGenre = String(evidence.genre || "").trim().toLocaleLowerCase("en-US");
+  const claimGenre = String(value || "").trim().toLocaleLowerCase("en-US");
+  const sampleCount = evidence.sampleCount;
+  const supportingCount = evidence.supportingCount;
+  const share = evidence.share;
+  const counts = new Map();
+  let countedSamples = 0;
+  if (!Array.isArray(evidence.counts) || !evidence.counts.length) return false;
+  for (const item of evidence.counts) {
+    const label = typeof item?.genre === "string" ? item.genre.trim() : "";
+    const key = label.toLocaleLowerCase("en-US");
+    const count = item?.count;
+    if (!key || label.length > 60 || !Number.isSafeInteger(count) || count < 1 || counts.has(key)) return false;
+    counts.set(key, count);
+    countedSamples += count;
+  }
+  const claimedSupport = counts.get(claimGenre) || 0;
+  const largestSupport = Math.max(...counts.values());
+  return !!claimGenre
+    && evidenceGenre === claimGenre
+    && Number.isSafeInteger(sampleCount) && sampleCount >= 3
+    && Number.isSafeInteger(supportingCount) && supportingCount >= 2
+    && supportingCount <= sampleCount
+    && countedSamples === sampleCount
+    && claimedSupport === supportingCount
+    && supportingCount === largestSupport
+    && Number.isFinite(share) && share >= 0.6 && share <= 1
+    && Math.abs((supportingCount / sampleCount) - share) <= 0.0001;
+}
+
+function storedClaim(data, claim) {
+  if (!claim?.value || !GENRE_SOURCES[claim.source]) return null;
+  if (claim.source === "release_consensus") {
+    return hasReleaseConsensusEvidence(data, claim.value) ? claim : { ...claim, source: "release_hint" };
+  }
+  if (claim.source === "provider" && data?.deezerId) {
+    return { ...claim, source: hasReleaseConsensusEvidence(data, claim.value) ? "release_consensus" : "release_hint" };
+  }
+  return claim;
+}
 
 // The crawl vocabulary, kept in sync with GENRE_TAGS in server/catalogSeed.js.
 // Membership is how a legacy row with no recorded provenance is identified: the
@@ -58,13 +106,15 @@ export function genreClaim(value, source, at = Date.now()) {
   return { value: clean, source, at };
 }
 
-// Reading a legacy row that predates provenance. The value is trusted only as
-// far as its shape allows: an exact crawl label is a hint, anything else came
-// from provider enrichment (those arrive lowercased, like "hip hop").
+// Reading a legacy row that predates provenance. A bare string cannot tell us
+// whether it came from a crawl bucket, an old import, or provider enrichment.
+// Treat every unstructured value as a hint. Modern writers persist an explicit
+// source in genreClaims; promoting a value based on casing or vocabulary is
+// what made Alternative look verified while equally bare Pop was hidden.
 export function classifyStoredGenre(value) {
   const clean = String(value ?? "").trim();
   if (!clean) return null;
-  return genreClaim(clean, isCrawlLabel(clean) ? "tag_hint" : "provider");
+  return genreClaim(clean, "tag_hint");
 }
 
 // The hierarchy. Highest rank wins; ties go to the more recent claim, so a
@@ -117,15 +167,20 @@ export function storedClaims(data, columnGenre) {
   // its old value (the additive artist upsert preserves null columns). Falling
   // through here would reclassify that withdrawn value as provider evidence.
   if (Array.isArray(data?.genreClaims)) {
-    return data.genreClaims.filter((c) => c && c.value && GENRE_SOURCES[c.source]);
+    return data.genreClaims.map((claim) => storedClaim(data, claim)).filter(Boolean);
   }
-  if (data?.genreRecord?.value) return [data.genreRecord];
+  if (data?.genreRecord?.value) {
+    const record = storedClaim(data, data.genreRecord);
+    return record ? [record] : [];
+  }
   // Early versions of the crawler stored its discovery bucket only as
   // `genreHint`. Retain that context for staff review, but explicitly mark it
   // as a non-displayable tag hint instead of promoting it through the legacy
   // column classifier.
   const hint = genreClaim(data?.genreHint, "tag_hint");
-  const legacy = classifyStoredGenre(columnGenre);
+  const legacy = hasReleaseConsensusEvidence(data, columnGenre)
+    ? genreClaim(columnGenre, "release_consensus")
+    : classifyStoredGenre(columnGenre);
   // The structured blob is newer than the typed legacy column. When both are
   // crawl hints, keep the explicit `genreHint`; when the column is provider
   // evidence, retain both and let the normal authority ranking resolve them.
@@ -158,6 +213,21 @@ export function displayGenre(record) {
   if (!record || !record.value) return null;
   const confidence = record.confidence ?? sourceOf(record.source)?.confidence ?? 0;
   return confidence >= GENRE_DISPLAY_THRESHOLD ? record.value : null;
+}
+
+// One public read boundary for API, Discover, and crawler-readable documents.
+// Keeping this projection here prevents those surfaces from slowly developing
+// different rules about which stored genres are safe to state as fact.
+export function projectArtistGenre(data, columnGenre) {
+  const record = resolveGenre(storedClaims(data, columnGenre));
+  const genre = displayGenre(record);
+  return {
+    record,
+    genre,
+    genreHint: genre ? null : (record?.value || null),
+    genreSource: record?.source || null,
+    genreConfidence: record?.confidence ?? null,
+  };
 }
 
 // True when a claim exists but is not good enough to show. Lets a surface offer

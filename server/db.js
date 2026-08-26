@@ -8,7 +8,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
 import { toIsoDate } from "../src/domain/dates.mjs";
-import { displayGenre, resolveGenre, storedClaims } from "../src/domain/genre.mjs";
+import { projectArtistGenre } from "../src/domain/genre.mjs";
 import { slugify } from "../src/domain/urls.mjs";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -2345,8 +2345,7 @@ export function publicArtist(r) {
   // admin review still has something to work with.
   // The column is kept by COALESCE on partial enrichment, so it can hold a
   // stale value; `data` carries the authoritative claims and wins.
-  const record = resolveGenre(storedClaims(data, r.genre));
-  const shown = displayGenre(record);
+  const projectedGenre = projectArtistGenre(data, r.genre);
   return {
     // `key` is the catalog's stable identity. The composer sends it back when a
     // suggestion is picked, so a review binds to this artist rather than to
@@ -2355,10 +2354,10 @@ export function publicArtist(r) {
     photo: r.photo, bio: r.bio, mbid: r.mbid, spotifyId: r.spotify_id,
     formed: r.formed || null,
     country: r.country, popularity: r.popularity,
-    genre: shown,
-    genreHint: shown ? null : (record?.value || null),
-    genreSource: record?.source || null,
-    genreConfidence: record?.confidence ?? null,
+    genre: projectedGenre.genre,
+    genreHint: projectedGenre.genreHint,
+    genreSource: projectedGenre.genreSource,
+    genreConfidence: projectedGenre.genreConfidence,
   };
 }
 

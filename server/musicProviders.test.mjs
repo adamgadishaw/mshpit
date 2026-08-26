@@ -147,25 +147,53 @@ test("bundle merge fills gaps but keeps richer production identity and tracks", 
   assert.deepEqual(merged.albums, [{ title: "Useful gap" }]);
 });
 
-test("discography persistence writes provider claims while preserving staff genres", () => {
+test("discography persistence requires release consensus while preserving staff genres", () => {
+  const evidence = {
+    genre: "Pop", provider: "deezer", basis: "release-consensus-v1",
+    sampleCount: 3, supportingCount: 3, share: 1,
+    counts: [{ genre: "Pop", count: 3 }],
+  };
   artistStmts.upsert.run(artistRow("Provider Claim Writer", { name: "Provider Claim Writer", genre: "Metal" }, "musicbrainz"));
-  persistDeezerIdentity("Provider Claim Writer", 501, "Pop");
+  persistDeezerIdentity("Provider Claim Writer", 501, evidence);
   const providerRow = artistStmts.byNorm.get("provider claim writer");
   const providerData = JSON.parse(providerRow.data);
   assert.equal(providerRow.genre, "Pop");
-  assert.equal(providerData.genreClaims.find((claim) => claim.source === "provider")?.value, "Pop");
+  assert.equal(providerData.genreClaims.find((claim) => claim.source === "release_consensus")?.value, "Pop");
 
   artistStmts.upsert.run(artistRow("Staff Claim Writer", {
     name: "Staff Claim Writer",
     genre: "r&b",
     genreClaims: [{ value: "r&b", source: "staff", at: 1 }],
   }, "staff"));
-  persistDeezerIdentity("Staff Claim Writer", 502, "Pop");
+  persistDeezerIdentity("Staff Claim Writer", 502, evidence);
   const staffRow = artistStmts.byNorm.get("staff claim writer");
   const staffData = JSON.parse(staffRow.data);
   assert.equal(staffRow.genre, "r&b");
-  assert.equal(staffData.genreClaims.find((claim) => claim.source === "provider")?.value, "Pop");
+  assert.equal(staffData.genreClaims.find((claim) => claim.source === "release_consensus")?.value, "Pop");
   assert.equal(staffData.genreClaims.find((claim) => claim.source === "staff")?.value, "r&b");
+});
+
+test("identity corrections clear the former artist's Deezer genre until new releases agree", () => {
+  const evidence = {
+    genre: "Pop", provider: "deezer", basis: "release-consensus-v1",
+    sampleCount: 3, supportingCount: 2, share: 0.6667,
+    counts: [{ genre: "Pop", count: 2 }, { genre: "Rock", count: 1 }],
+  };
+  artistStmts.upsert.run(artistRow("Corrected Identity Writer", { name: "Corrected Identity Writer" }, "deezer"));
+  persistDeezerIdentity("Corrected Identity Writer", 601, evidence);
+  persistDeezerIdentity("Corrected Identity Writer", 602);
+  const data = JSON.parse(artistStmts.byNorm.get("corrected identity writer").data);
+  assert.equal(data.deezerId, 602);
+  assert.equal(data.genreEvidence, undefined);
+  assert.equal(data.genreClaims.some((claim) => claim.source === "release_consensus"), false);
+});
+
+test("the Deezer identity writer rejects a bare unsupported genre", () => {
+  artistStmts.upsert.run(artistRow("Unsupported Genre Writer", { name: "Unsupported Genre Writer" }, "deezer"));
+  persistDeezerIdentity("Unsupported Genre Writer", 603, "Pop");
+  const data = JSON.parse(artistStmts.byNorm.get("unsupported genre writer").data);
+  assert.equal(Boolean(data.genreClaims?.some((claim) => claim.source === "release_consensus")), false);
+  assert.equal(data.genreEvidence, undefined);
 });
 
 test("Deezer track matching rejects karaoke and mismatched artists", () => {

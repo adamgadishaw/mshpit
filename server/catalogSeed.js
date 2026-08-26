@@ -9,7 +9,10 @@
 import { randomUUID } from "node:crypto";
 import { artistStmts, artistRow, normName, db } from "./db.js";
 import { findDeezerArtist, providerJson, ProviderError } from "./musicProviders.js";
-import { genreFieldsForClaim, providerGenreFields, resolveGenre, storedClaims } from "../src/domain/genre.mjs";
+import {
+  deezerEnrichmentGenreFields, deezerReleaseGenreConsensus, needsDeezerGenreRevalidation,
+} from "./deezerGenre.js";
+import { genreFieldsForClaim, resolveGenre, storedClaims } from "../src/domain/genre.mjs";
 import { privateErrorLabel } from "./errors.js";
 
 // Enrichment used to do `row.genre || e.genre`, which let a stale crawl-bucket
@@ -17,7 +20,6 @@ import { privateErrorLabel } from "./errors.js";
 // "Metal" from the tag crawl kept winning. Resolving through the provenance
 // hierarchy instead means evidence beats a hint, a staff decision beats both,
 // and a provider returning nothing leaves the record alone.
-const genreFields = providerGenreFields;
 
 export function crawlerGenreFields(genre) {
   const fields = genreFieldsForClaim({}, null, genre, "tag_hint");
@@ -82,28 +84,34 @@ async function mbTag(tag, offset) {
   throw lastError || new ProviderError("MusicBrainz", 502, "MusicBrainz could not be reached.");
 }
 
-// Deezer's genre labels are broad and a couple aren't useful as a music genre;
-// map the compound ones onto our vocabulary and drop the noise.
-const DZ_GENRE = { "Rap/Hip Hop": "Hip-Hop", "Soul & Funk": "Soul", "Electro": "Electronic", "Dance": "Electronic", "Latin Music": "Latin", "Films/Games": null, "Kids": null };
-const cleanDzGenre = (g) => (g == null ? null : g in DZ_GENRE ? DZ_GENRE[g] : g);
-
 // Full Deezer enrichment for one artist, with an EXACT-name-preferred match so we
 // never attach a same-named / tribute act's photo or songs (the cause of "wrong
 // photo / wrong songs" on profiles). Returns photo, popularity, followers, the top
-// tracks (title/album/preview) that power Discover's "top song", and a genre.
-export async function deezerEnrich(name) {
+// tracks that power Discover's "top song", and a genre only when several
+// distinct releases agree. A compilation or collaboration cannot decide it.
+export async function deezerEnrich(name, { findArtist = findDeezerArtist } = {}) {
   const row = artistStmts.byNorm.get(normName(name));
   let existing = {};
-  try { existing = JSON.parse(row?.data || "{}"); } catch {}
-  const match = await findDeezerArtist(name, { preferredId: existing.deezerId || null });
+  try { existing = JSON.parse(row?.data || "{}"); } catch { /* Corrupt legacy metadata fails closed to an empty provider hint. */ }
+  const match = await findArtist(name, { hintId: existing.deezerId || null });
   const dzA = match?.artist;
   if (!dzA) return null;
   const top = await providerJson("Deezer", `https://api.deezer.com/artist/${dzA.id}/top?limit=25`);
   await sleep(60);
   const topTracks = (top?.data || []).map((t) => ({ id: t.id || null, title: t.title, album: t.album?.title || null, duration: t.duration || 0 }));
-  let genre = null;
-  const albumId = top?.data?.[0]?.album?.id;
-  if (albumId) { const alb = await providerJson("Deezer", `https://api.deezer.com/album/${albumId}`); genre = cleanDzGenre(alb?.genres?.data?.[0]?.name || null); }
+  const albumIds = [...new Set((top?.data || []).map((track) => track?.album?.id).filter(Boolean))].slice(0, 5);
+  const releaseGenres = [];
+  for (const albumId of albumIds) {
+    try {
+      const album = await providerJson("Deezer", `https://api.deezer.com/album/${albumId}`);
+      releaseGenres.push(album?.genres?.data?.[0]?.name || null);
+    } catch {
+      // A removed/rate-limited album is one missing sample, not a failed artist.
+    }
+    await sleep(25);
+  }
+  const genreEvidence = deezerReleaseGenreConsensus(releaseGenres);
+  const genre = genreEvidence?.genre || null;
   return {
     deezerId: dzA.id,
     identityConfidence: match.confidence,
@@ -112,6 +120,7 @@ export async function deezerEnrich(name) {
     followers: dzA.nb_fan,
     topTracks,
     genre,
+    genreEvidence,
   };
 }
 
@@ -134,7 +143,7 @@ function reopenLegacyCursors() {
     }
     db.exec("COMMIT");
   } catch (error) {
-    try { db.exec("ROLLBACK"); } catch {}
+    try { db.exec("ROLLBACK"); } catch { /* Preserve the migration error that caused the rollback. */ }
     throw error;
   }
 }
@@ -183,9 +192,10 @@ export async function enrichThin({ shouldStop = () => false, tick = () => {} } =
     const e = await deezerEnrich(row.name);
     await sleep(80); // gentle on the keyless API
     if (e) {
-      let data = {}; try { data = JSON.parse(row.data || "{}"); } catch {}
+      let data = {}; try { data = JSON.parse(row.data || "{}"); } catch { /* Enrichment replaces no fields from corrupt metadata. */ }
       const merged = {
-        ...data, name: row.name, ...genreFields(data, row.genre, e.genre), mbid: row.mbid, country: row.country, beginYear: row.formed,
+        ...data, name: row.name, ...deezerEnrichmentGenreFields(data, row.genre, e),
+        mbid: row.mbid, country: row.country, beginYear: row.formed,
         popularity: e.popularity, followers: e.followers, deezerId: e.deezerId,
         photo: data.photo || e.photo, photoCredit: data.photo ? data.photoCredit : (e.photo ? "Deezer" : null),
         topTracks: (data.topTracks && data.topTracks.length) ? data.topTracks : e.topTracks,
@@ -212,8 +222,11 @@ export async function enrichSongs({ shouldStop = () => false, tick = () => {} } 
     const e = await deezerEnrich(row.name);
     await sleep(90);
     if (e && e.topTracks.length) {
-      let data = {}; try { data = JSON.parse(row.data || "{}"); } catch {}
-      const merged = { ...data, name: row.name, ...genreFields(data, row.genre, e.genre), topTracks: e.topTracks, photo: data.photo || e.photo, followers: data.followers ?? e.followers, deezerId: e.deezerId || data.deezerId };
+      let data = {}; try { data = JSON.parse(row.data || "{}"); } catch { /* Song refresh replaces no fields from corrupt metadata. */ }
+      const merged = {
+        ...data, name: row.name, ...deezerEnrichmentGenreFields(data, row.genre, e),
+        topTracks: e.topTracks, photo: data.photo || e.photo, followers: data.followers ?? e.followers, deezerId: e.deezerId || data.deezerId,
+      };
       artistStmts.upsert.run(artistRow(row.norm, merged, "deezer"));
       filled++;
     }
@@ -242,39 +255,70 @@ db.prepare("UPDATE seed_runs SET status='interrupted',error_code='CATALOG_JOB_IN
 // Genre backfill. The crawl published its discovery bucket as the artist's
 // genre, so most of the catalogue carries a hint rather than evidence and the
 // projection (rightly) refuses to state it. This asks Deezer what the artist
-// actually is and records it as a provider claim, which outranks the hint.
+// actually is and records it only when several distinct releases agree.
 //
 // Most-popular first, because that is what Discover surfaces, and resumable:
 // each run only touches artists that still lack an evidence-backed genre, so it
 // can be stopped and restarted without redoing work. Staff corrections are
-// untouched, since `provider` never outranks `staff`.
+// untouched, since release consensus never outranks `staff`.
+const GENRE_BACKFILL_CURSOR_KEY = "catalog_genre_backfill_cursor_v2";
+
+export function rotateRowsAfterCursor(rows, cursor) {
+  if (!cursor || !rows.length) return rows;
+  const index = rows.findIndex((row) => row.norm === cursor);
+  return index < 0 ? rows : [...rows.slice(index + 1), ...rows.slice(0, index + 1)];
+}
+
+export function mergeGenreBackfillData(row, data, enriched) {
+  if (!enriched?.deezerId) return null;
+  const genreFields = deezerEnrichmentGenreFields(data, row.genre, enriched);
+  if (!genreFields.genreClaims) return null;
+  return {
+    ...data,
+    name: row.name,
+    deezerId: enriched.deezerId,
+    ...genreFields,
+  };
+}
+
 export async function backfillGenres({ shouldStop = () => false, tick = () => {}, limit = 500 } = {}) {
-  const rows = db.prepare(`SELECT norm,name,genre,data FROM artists
-    ORDER BY popularity IS NULL, popularity DESC, rank_score DESC`).all();
+  const orderedRows = db.prepare(`SELECT norm,name,genre,data,source FROM artists
+    ORDER BY popularity IS NULL, popularity DESC, rank_score DESC, norm`).all();
+  const cursor = db.prepare("SELECT value FROM app_meta WHERE key=?").get(GENRE_BACKFILL_CURSOR_KEY)?.value || "";
+  const rows = rotateRowsAfterCursor(orderedRows, cursor);
 
   const pending = [];
   for (const row of rows) {
     let data = {};
-    try { data = JSON.parse(row.data || "{}"); } catch {}
+    try { data = JSON.parse(row.data || "{}"); } catch { /* Corrupt rows remain eligible for provider repair. */ }
     const record = resolveGenre(storedClaims(data, row.genre));
-    if (!record || !record.evidence) pending.push({ row, data });
+    if (!record || !record.evidence || needsDeezerGenreRevalidation(data, row.genre)) {
+      pending.push({ row, data });
+    }
     if (pending.length >= limit) break;
   }
 
-  let fixed = 0, done = 0;
+  let fixed = 0, done = 0, lastAttemptedNorm = "";
   for (const { row, data } of pending) {
     if (shouldStop()) break;
     let enriched = null;
     try { enriched = await deezerEnrich(row.name); } catch { enriched = null; }
     await sleep(90); // gentle on the keyless API
-    if (enriched?.genre) {
-      const merged = { ...data, name: row.name, ...genreFields(data, row.genre, enriched.genre) };
+    lastAttemptedNorm = row.norm;
+    const merged = mergeGenreBackfillData(row, data, enriched);
+    if (merged) {
       artistStmts.upsert.run(artistRow(row.norm, merged, row.source || "deezer"));
       fixed++;
     }
     if (++done % 25 === 0) tick({ phase: "genres", fixed, done, of: pending.length });
   }
   tick({ phase: "genres", fixed, done, of: pending.length });
+  if (lastAttemptedNorm) {
+    db.prepare(`INSERT INTO app_meta (key,value) VALUES (?,?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`)
+      .run(GENRE_BACKFILL_CURSOR_KEY, lastAttemptedNorm);
+  }
+
   return { fixed, scanned: done, pending: pending.length };
 }
 
@@ -319,20 +363,51 @@ export function stopCatalogSeed() {
   return catalogSeedStatus();
 }
 
+export async function refreshSongsAndGenres({
+  shouldStop = () => false,
+  songTick = () => {},
+  genreTick = () => {},
+  beforeGenres = () => {},
+  enrichSongsImpl = enrichSongs,
+  backfillGenresImpl = backfillGenres,
+} = {}) {
+  const songs = await enrichSongsImpl({ shouldStop, tick: songTick });
+  if (shouldStop()) {
+    return { songs, genres: { fixed: 0, scanned: 0, pending: 0 }, stopped: true };
+  }
+  beforeGenres();
+  const genres = await backfillGenresImpl({
+    shouldStop,
+    tick: (progress) => genreTick({ ...progress, songs }),
+  });
+  return { songs, genres, stopped: shouldStop() };
+}
+
 export function startCatalogSeed({ add = 2000, perTag = null, enrich = false, mode = "grow" } = {}) {
   if (state.running) return { started: false, reason: "already-running", status: catalogSeedStatus() };
   const startTotal = artistStmts.count.get().c;
   const shouldStop = () => state.stopRequested;
 
-  // "refresh" mode: no crawl, just backfill songs + genres for ranked artists that
-  // are still missing a top song (fixes blank "top song"s on Discover).
+  // "refresh" mode: no crawl. Songs and genres are separate bounded phases:
+  // an artist can already have tracks while still lacking a verified genre.
   if (mode === "refresh") {
     const runId = `seed_${randomUUID().slice(0, 12)}`;
     state = { runId, running: true, stopRequested: false, mode, phase: "songs", add: 0, target: startTotal, startTotal, added: 0, ranked: 0, total: startTotal, startedAt: Date.now(), finishedAt: 0, error: null, errorCode: null, note: "songs & genres" };
     seedRunInsert.run(runId, mode, "running", startTotal, startTotal, 0, 0, null, state.note, state.startedAt, null);
     void (async () => {
       try {
-        await enrichSongs({ shouldStop, tick: ({ ranked, done, of }) => { state.ranked = ranked; state.added = done; state.target = of; } });
+        const refresh = await refreshSongsAndGenres({
+          shouldStop,
+          songTick: ({ ranked, done, of }) => { state.ranked = ranked; state.added = done; state.target = of; },
+          beforeGenres: () => { state.phase = "genres"; },
+          genreTick: ({ fixed, done, of, songs }) => {
+            state.ranked = songs + fixed;
+            state.added = done;
+            state.target = of;
+          },
+        });
+        state.ranked = refresh.songs + refresh.genres.fixed;
+        state.note = `songs ${refresh.songs}; genres ${refresh.genres.fixed}`;
         state.phase = state.stopRequested ? "stopped" : "done"; state.finishedAt = Date.now();
       } catch (e) {
         state.error = String(e?.message || e);

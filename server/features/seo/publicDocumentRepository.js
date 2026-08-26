@@ -87,7 +87,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null }
     structuredShowLocationKey({ venue_city: city, venue_country_code: countryCode }));
 
 
-  const homeArtists = database.prepare(`SELECT a.norm,a.name,a.public_slug,a.genre,a.bio,a.country,a.formed,a.updated_at,
+  const homeArtists = database.prepare(`SELECT a.norm,a.name,a.public_slug,a.genre,a.data,a.bio,a.country,a.formed,a.updated_at,
       (SELECT COUNT(*) FROM posts rp JOIN users reviewer ON reviewer.id=rp.user_id
         WHERE rp.removed=0 AND COALESCE(rp.kind,'review')='review'
           AND (rp.artist_key=a.norm OR (rp.artist_key IS NULL AND LOWER(rp.artist)=LOWER(a.name)
@@ -125,9 +125,9 @@ export function createPublicDocumentRepository(database, { venueReviews = null }
       AND LENGTH(TRIM(COALESCE(p.review,'')))>=40
     ORDER BY (like_count+comment_count) DESC,p.created_at DESC,p.id DESC LIMIT ?`);
 
-  const artistByKey = database.prepare(`SELECT norm,name,public_slug,genre,bio,mbid,country,formed,updated_at
+  const artistByKey = database.prepare(`SELECT norm,name,public_slug,genre,data,bio,mbid,country,formed,updated_at
     FROM artists WHERE norm=? LIMIT 1`);
-  const artistByName = database.prepare(`SELECT norm,name,public_slug,genre,bio,mbid,country,formed,updated_at
+  const artistByName = database.prepare(`SELECT norm,name,public_slug,genre,data,bio,mbid,country,formed,updated_at
     FROM artists WHERE LOWER(name)=LOWER(?) ORDER BY rank_score DESC,norm LIMIT 1`);
   const artistProfile = database.prepare(`SELECT ap.bio,ap.banner,ap.avatar_uri,ap.feed_enabled,
       ap.owner_id,ap.updated_at
@@ -339,7 +339,7 @@ export function createPublicDocumentRepository(database, { venueReviews = null }
       AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1)
     ORDER BY td.date ASC,td.id ASC LIMIT ?`);
 
-  const directoryArtists = database.prepare(`SELECT a.norm,a.name,a.public_slug,a.genre,a.bio,a.updated_at,
+  const directoryArtists = database.prepare(`SELECT a.norm,a.name,a.public_slug,a.genre,a.data,a.bio,a.updated_at,
       COUNT(*) OVER () AS directory_total
     FROM artists a
     WHERE a.public_slug IS NOT NULL AND TRIM(a.public_slug)<>'' AND (

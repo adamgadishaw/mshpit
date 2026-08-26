@@ -279,10 +279,6 @@
       "count": 1,
       "fingerprint": "16decb03b99e283d549c"
     },
-    "server/catalogSeed.js": {
-      "count": 5,
-      "fingerprint": "9c7aec1c80ff23d94da7"
-    },
     "server/dataDirectory.js": {
       "count": 1,
       "fingerprint": "9c955b19e0848f2eae7a"
@@ -314,10 +310,6 @@
     "server/mp4Probe.js": {
       "count": 1,
       "fingerprint": "4d33ccc8d900df4e5739"
-    },
-    "server/musicProviders.js": {
-      "count": 2,
-      "fingerprint": "ada778a98a85bbefa1a2"
     },
     "server/rewards.js": {
       "count": 1,

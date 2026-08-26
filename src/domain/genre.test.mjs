@@ -4,7 +4,7 @@ import test from "node:test";
 import {
   classifyStoredGenre, displayGenre, genreClaim, isCrawlLabel,
   isUnverifiedGenre, mergeGenre, providerGenreFields, resolveGenre,
-  storedClaims, upsertClaim, withoutSource,
+  projectArtistGenre, storedClaims, upsertClaim, withoutSource,
 } from "./genre.mjs";
 
 // The artists the owner actually complained about. Each was discovered under a
@@ -26,10 +26,9 @@ test("a crawl bucket is never stated as an artist's genre", () => {
   }
 });
 
-test("provider enrichment is evidence and does display", () => {
-  // These arrive lowercased from Deezer/MusicBrainz, unlike the crawl labels.
+test("an explicitly sourced provider claim is evidence and does display", () => {
   for (const value of ["hip hop", "thrash metal", "reggaeton", "pop"]) {
-    const record = resolveGenre([classifyStoredGenre(value)]);
+    const record = resolveGenre([genreClaim(value, "provider")]);
     assert.equal(record.source, "provider");
     assert.equal(displayGenre(record), value);
   }
@@ -91,12 +90,43 @@ test("junk never enters the record", () => {
   assert.equal(displayGenre(null), null);
 });
 
-test("crawl labels are matched exactly, so a real genre string is not demoted", () => {
+test("the crawl vocabulary remains diagnostic but never authenticates a bare value", () => {
   assert.equal(isCrawlLabel("Metal"), true);
-  // Lowercase and compound provider values are not the seeder's labels.
   assert.equal(isCrawlLabel("metal"), false);
   assert.equal(isCrawlLabel("thrash metal"), false);
-  assert.equal(isCrawlLabel("metalcore"), false);
+  for (const value of ["Metal", "metal", "Alternative", "Asian Music", "pop"]) {
+    assert.equal(classifyStoredGenre(value)?.source, "tag_hint");
+    assert.equal(displayGenre(resolveGenre([classifyStoredGenre(value)])), null);
+  }
+});
+
+test("the shared public projection fails closed for legacy values and shows structured evidence", () => {
+  assert.equal(projectArtistGenre({}, "Alternative").genre, null);
+  assert.equal(projectArtistGenre({}, "Alternative").genreHint, "Alternative");
+  assert.equal(projectArtistGenre({ genreClaims: [genreClaim("Classical", "provider", 1)] }, "Alternative").genre, "Classical");
+});
+
+test("legacy Deezer provider claims require matching release-consensus evidence", () => {
+  const oldData = {
+    deezerId: 99,
+    genreClaims: [genreClaim("Pop", "provider", 1)],
+  };
+  assert.equal(projectArtistGenre(oldData, "Pop").genre, null);
+  assert.equal(projectArtistGenre(oldData, "Pop").genreSource, "release_hint");
+
+  const verified = {
+    ...oldData,
+    genreEvidence: {
+      genre: "Pop", provider: "deezer", basis: "release-consensus-v1",
+      sampleCount: 3, supportingCount: 2, share: 0.6667,
+      counts: [{ genre: "Pop", count: 2 }, { genre: "Rock", count: 1 }],
+    },
+  };
+  assert.equal(projectArtistGenre(verified, "Pop").genre, "Pop");
+  assert.equal(projectArtistGenre(verified, "Pop").genreSource, "release_consensus");
+
+  const forged = { ...verified, genreEvidence: { ...verified.genreEvidence, genre: "Rock" } };
+  assert.equal(projectArtistGenre(forged, "Pop").genre, null);
 });
 
 test("provider evidence overtakes a crawl bucket, which is what enrichment was failing to do", () => {
