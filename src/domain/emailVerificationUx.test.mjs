@@ -14,7 +14,9 @@ test("verification-first mutations preserve guest auth and verified access", () 
 test("verification prompts are action-specific and do not echo unknown input", () => {
   assert.match(verificationPromptCopy("post").title, /post/i);
   assert.match(verificationPromptCopy("artist").body, /artist page/i);
+  assert.match(verificationPromptCopy("artistPicks").body, /favorite artists/i);
   assert.match(verificationPromptCopy("report").body, /safety report/i);
+  assert.equal(verificationPromptCopy("playlist"), verificationPromptCopy("default"));
   const fallback = verificationPromptCopy("<private user text>");
   assert.match(fallback.title, /confirm your email/i);
   assert.doesNotMatch(`${fallback.title} ${fallback.body}`, /private user text/i);

@@ -196,7 +196,7 @@ export default function LogScreen({
   pendingMedia,
   onPendingMediaConsumed,
 }) {
-  const { searchArtistsApi, searchVenues, searchPeople, drafts, saveDraft, deleteDraft, myPlaylists, myPlaylistsStatus, loadMyPlaylists } = useStore();
+  const { searchArtistsApi, searchVenues, searchPeople, drafts, saveDraft, deleteDraft } = useStore();
   const initialRecoveryDraftRef = useRef(!editing && initialDraftId
     ? drafts.find((draft) => draft?.id === initialDraftId) || null
     : null);
@@ -255,16 +255,12 @@ export default function LogScreen({
   const [review, setReview] = useState(editing?.review || "");
   const [song, setSong] = useState(editing?.song || null);
   const [songUrl, setSongUrl] = useState(editing?.song?.url || "");
+  const [preservedPlaylist, setPreservedPlaylist] = useState(editing?.playlist || null);
   const [resolvingSong, setResolvingSong] = useState(false);
-  // Share one of your playlists on a status post. The chosen playlist is snapshotted
-  // server-side so the post keeps its songs even if the playlist later changes.
-  const [playlist, setPlaylist] = useState(editing?.playlist || null);
-  const [playlistPicker, setPlaylistPicker] = useState(false);
   // Which attachment panels are revealed. A panel auto-shows when it already has
   // content (editing a post, or after you attach something), so nothing hides.
   const [showSong, setShowSong] = useState(!!editing?.song);
   const [showPhotos, setShowPhotos] = useState((editing?.photos || []).length > 0);
-  const [showPlaylist, setShowPlaylist] = useState(!!editing?.playlist);
   const [taggedPeople, setTaggedPeople] = useState(() => normalizeTaggedPeople(editing?.taggedPeople));
   const [showPeople, setShowPeople] = useState(() => normalizeTaggedPeople(editing?.taggedPeople).length > 0);
   const [peopleQuery, setPeopleQuery] = useState("");
@@ -322,13 +318,6 @@ export default function LogScreen({
     setPeopleQuery("");
     setPeopleHits([]);
     setPeopleError("");
-  };
-  // Only shareable playlists (public/unlisted, with songs) can be attached.
-  const shareablePlaylists = (myPlaylists || []).filter((pl) => pl?.visibility !== "private" && (pl?.tracks?.length || 0) > 0);
-  const togglePlaylistPanel = () => {
-    const opening = !showPlaylist;
-    setShowPlaylist(opening);
-    if (opening && (myPlaylistsStatus === "error" || myPlaylistsStatus === "idle")) void loadMyPlaylists?.();
   };
   const [songError, setSongError] = useState("");
   const [postError, setPostError] = useState("");
@@ -879,7 +868,7 @@ export default function LogScreen({
         room: editing.room == null ? computed.room : Number(editing.room),
       }
     : computed;
-  const canPostStatus = !!(review.trim() || photos.filter(isDurableMediaUrl).length || song?.videoId || playlist);
+  const canPostStatus = !!(review.trim() || photos.filter(isDurableMediaUrl).length || song?.videoId);
   const canPostBase = isStatus ? canPostStatus : (artist.trim() && venue.trim() && computed.overall > 0);
   const canPost = !!canPostBase && studioAssets.length === 0;
   const submitBusy = uploadingPhotos || resolvingSong || posting;
@@ -910,13 +899,13 @@ export default function LogScreen({
     taggedPeople,
     song,
     songUrl,
-    playlist,
+    playlist: preservedPlaylist,
     photos: photos.filter(isDurableMediaUrl),
     mediaProject: draftMediaProject,
     photosPublic,
     landingShowcase: photosPublic && landingShowcase && hasLandingCompatiblePhoto,
-    panels: { song: showSong, photos: showPhotos, playlist: showPlaylist, people: showPeople },
-  }), [draftId, postType, isStatus, campaign, artist, artistPicked, artistKey, venue, city, tour, date, dims, review, tags, tagDraft, taggedPeople, song, songUrl, playlist, photos, draftMediaProject, photosPublic, landingShowcase, hasLandingCompatiblePhoto, showSong, showPhotos, showPlaylist, showPeople]);
+    panels: { song: showSong, photos: showPhotos, people: showPeople },
+  }), [draftId, postType, isStatus, campaign, artist, artistPicked, artistKey, venue, city, tour, date, dims, review, tags, tagDraft, taggedPeople, song, songUrl, preservedPlaylist, photos, draftMediaProject, photosPublic, landingShowcase, hasLandingCompatiblePhoto, showSong, showPhotos, showPeople]);
   const draftFingerprint = useMemo(() => composerDraftFingerprint(currentDraft), [currentDraft]);
   const hasContent = useMemo(() => composerDraftHasContent(currentDraft), [currentDraft]);
   const hasUnappliedStudioMedia = studioAssets.length > 0;
@@ -1020,14 +1009,14 @@ export default function LogScreen({
     const restoredProject = normalizeMediaProject(restored.mediaProject);
     const restoredPending = restoredProject.assets.filter((asset) => asset.status !== "ready" && (asset.durableLocalUri || asset.assetId));
     const restoredReady = restoredProject.assets.filter((asset) => !!asset.sourceUrl && !restoredPending.some((pending) => pending.id === asset.id));
-    setTour(restored.tour); setDate(toIsoDate(restored.date) || restored.date || todayStr); setDims(restored.dims); setReview(restored.review); setTags(restored.tags); setTagDraft(restored.tagDraft); setTaggedPeople(restored.taggedPeople); setSong(restored.song); setSongUrl(restored.songUrl); setPlaylist(restored.playlist); setPhotos(restoredPhotos); setMediaProject(normalizeMediaProject({ assets: restoredReady })); setStudioAssets(restoredPending); setPhotosPublic(restored.photosPublic); setLandingShowcase(restored.landingShowcase && hasLandingCompatibleImage(restoredPhotos));
+    setTour(restored.tour); setDate(toIsoDate(restored.date) || restored.date || todayStr); setDims(restored.dims); setReview(restored.review); setTags(restored.tags); setTagDraft(restored.tagDraft); setTaggedPeople(restored.taggedPeople); setSong(restored.song); setSongUrl(restored.songUrl); setPreservedPlaylist(restored.playlist); setPhotos(restoredPhotos); setMediaProject(normalizeMediaProject({ assets: restoredReady })); setStudioAssets(restoredPending); setPhotosPublic(restored.photosPublic); setLandingShowcase(restored.landingShowcase && hasLandingCompatibleImage(restoredPhotos));
     if (restoredPending.length) {
       void recoverMediaDraftAssets(restoredPending).then((recoverable) => {
         setStudioAssets(recoverable);
         if (recoverable.length < restoredPending.length) setMediaError("One staged media file was removed by the device. The rest of your draft is safe; choose that item again.");
       });
     }
-    setShowSong(restored.panels.song); setShowPhotos(restored.panels.photos); setShowPlaylist(restored.panels.playlist); setShowPeople(restored.panels.people || restored.taggedPeople.length > 0);
+    setShowSong(restored.panels.song); setShowPhotos(restored.panels.photos); setShowPeople(restored.panels.people || restored.taggedPeople.length > 0);
   };
 
   useEffect(() => {
@@ -1168,8 +1157,6 @@ export default function LogScreen({
           review: review.trim(),
           taggedPeople,
           song,
-          playlist,
-          playlistId: playlist?.id || null,
           photos: durablePhotos,
           ...(stableMediaAssetIds ? { mediaAssetIds: stableMediaAssetIds } : {}),
           media: publishedMedia,
@@ -1541,7 +1528,6 @@ export default function LogScreen({
           <AttachChip icon="camera" label={mediaAttachmentLabel} active={showPhotos || photos.length > 0 || studioAssets.length > 0} count={photos.length + studioAssets.length} onPress={toggleMediaPanel} disabled={submitBusy} />
           <AttachChip icon="play" label="YouTube" active={showSong || !!song?.videoId} onPress={() => setShowSong((v) => !v)} disabled={submitBusy} />
           <AttachChip icon="you" label="Friends" active={showPeople || taggedPeople.length > 0} count={taggedPeople.length} onPress={() => setShowPeople((v) => !v)} disabled={submitBusy} />
-          {isStatus && <AttachChip icon="feed" label="Playlist" active={showPlaylist || !!playlist} count={playlist ? (playlist.tracks?.length || 0) : 0} onPress={togglePlaylistPanel} disabled={submitBusy} />}
         </View>
         {(showPeople || taggedPeople.length > 0) && (
           <View style={styles.attachPanel}>
@@ -1630,7 +1616,7 @@ export default function LogScreen({
 
         {(showSong || song?.videoId) && (
         <View style={styles.attachPanel}>
-        <Text style={styles.attachHint}>Attach a song, review, breakdown, lesson, or performance. Pit plays exactly the YouTube video you chose.</Text>
+        <Text style={styles.attachHint}>Attach a song, review, breakdown, lesson, or performance. People can watch exactly the YouTube video you chose.</Text>
         {song?.videoId ? (
           <View style={styles.songPreview}>
             <SmartImage uri={song.thumb} style={styles.songArt} contain={false} />
@@ -1665,42 +1651,6 @@ export default function LogScreen({
         )}
         {!!songError && <Text style={styles.songError}>{songError}</Text>}
         </View>
-        )}
-
-        {isStatus && (showPlaylist || playlist) && (
-          <View style={styles.attachPanel}>
-            {playlist ? (
-              <View style={styles.songPreview}>
-                <View style={[styles.songArt, styles.playlistArt]}><Icon name="music" size={22} color={colors.amber} /></View>
-                <View style={{ flex: 1, minWidth: 0 }}>
-                  <Text style={styles.songReady}>PLAYLIST</Text>
-                  <Text style={styles.songTitle} numberOfLines={2}>{playlist.name}</Text>
-                  <Text style={styles.songArtist} numberOfLines={1}>{playlist.tracks?.length || 0} {(playlist.tracks?.length || 0) === 1 ? "song" : "songs"}</Text>
-                </View>
-                <Pressable onPress={() => { setPlaylist(null); setPlaylistPicker(false); }} hitSlop={8} disabled={submitBusy} accessibilityRole="button" accessibilityLabel="Remove shared playlist">
-                  <Icon name="x" size={17} color={colors.textDim} />
-                </Pressable>
-              </View>
-            ) : myPlaylistsStatus === "loading" ? (
-              <Text style={styles.plEmpty}>Loading your playlists...</Text>
-            ) : myPlaylistsStatus === "error" ? (
-              <Pressable onPress={() => void loadMyPlaylists?.()} accessibilityRole="button" accessibilityLabel="Retry loading playlists">
-                <Text style={[styles.plEmpty, styles.plRetry]}>Couldn't load playlists. Tap to retry.</Text>
-              </Pressable>
-            ) : shareablePlaylists.length ? (
-              <View style={styles.plList}>
-                {shareablePlaylists.slice(0, 8).map((pl) => (
-                  <Pressable key={pl.id} style={styles.plChip} onPress={() => setPlaylist(pl)} disabled={submitBusy} accessibilityRole="button" accessibilityLabel={`Share ${pl.name}`}>
-                    <Icon name="music" size={13} color={colors.amber} />
-                    <Text style={styles.plChipTxt} numberOfLines={1}>{pl.name}</Text>
-                    <Text style={styles.plChipCount}>{pl.tracks?.length || 0}</Text>
-                  </Pressable>
-                ))}
-              </View>
-            ) : (
-              <Text style={styles.plEmpty}>No shareable playlists yet. Build one from an artist page or the player, then share it here.</Text>
-            )}
-          </View>
         )}
 
         {(showPhotos || photos.length > 0) && (
@@ -1892,13 +1842,6 @@ const styles = StyleSheet.create({
   songError: { color: colors.danger, fontSize: 12.5, lineHeight: 18, marginTop: 7 },
   postErrorBox: { flexDirection: "row", alignItems: "center", gap: space(1.5), backgroundColor: colors.surface, borderColor: colors.danger, borderWidth: 1, borderRadius: radius.md, padding: space(2.5), marginTop: space(3) },
   postErrorTxt: { flex: 1, color: colors.danger, fontSize: 13, lineHeight: 18, fontWeight: "600" },
-  playlistArt: { alignItems: "center", justifyContent: "center", backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.line },
-  plRetry: { color: colors.amber, fontWeight: "800" },
-  plList: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
-  plChip: { flexDirection: "row", alignItems: "center", gap: 7, maxWidth: "100%", paddingHorizontal: 12, paddingVertical: 9, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
-  plChipTxt: { color: colors.text, fontSize: 13, fontWeight: "700", flexShrink: 1 },
-  plChipCount: { color: colors.amber, fontFamily: mono, fontSize: 11, fontWeight: "800" },
-  plEmpty: { color: colors.textDim, fontSize: 12.5, lineHeight: 18, fontStyle: "italic" },
   peopleSelected: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 10 },
   personChip: { minHeight: 44, maxWidth: "100%", flexDirection: "row", alignItems: "center", gap: 7, paddingHorizontal: 9, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.amber, backgroundColor: colors.surface },
   personChipText: { maxWidth: 180, color: colors.text, fontSize: 12.5, fontWeight: "800" },

@@ -10,6 +10,7 @@ import { clearStoredTheme, setTheme as applyTheme, storedThemeSelection, syncThe
 import { artistMeta, installIngestedCatalog } from "./seed/ingested";
 import { ACHIEVEMENTS } from "./domain/badges.mjs";
 import { ENABLE_DEMO_DATA, remoteIdentityValidationEnabled } from "./config/runtime.mjs";
+import { MUSIC_PLAYER_ENABLED } from "./domain/musicPlayerAvailability.mjs";
 import { isUpcomingEventDate, PERSISTED_FEED_LIMIT, publicProfileCacheEntry, sanitizePersistedStoreValue, sanitizeTourDates } from "./domain/dataPolicy.mjs";
 import { toIsoDate } from "./domain/dates.mjs";
 import { createTicketRegistry } from "./domain/latestWins.mjs";
@@ -89,6 +90,8 @@ import { removeMyPostTagRequest } from "./features/postTags/services/postTagApi.
 import { searchPeopleRequest } from "./features/people/services/peopleSearchApi.mjs";
 import { useAccountCommentCache } from "./features/comments/useAccountCommentCache";
 import { useAccountArtistPageCache } from "./features/artistPage/useAccountArtistPageCache";
+import { artistMemorialPreparationName } from "./domain/artistMemorialCandidate.mjs";
+import { prepareArtistMemorialCandidate } from "./features/artistMemorials/services/artistMemorialApi.mjs";
 import {
   adoptProfileHistoryAccount,
   removeProfileHistoryPost,
@@ -934,8 +937,12 @@ export function StoreProvider({ children }) {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.theme]);
-  // Keep the current user's playlists loaded (for the "add to playlist" picker + profile).
-  useEffect(() => { loadMyPlaylists(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [session?.id]);
+  // Keep dormant playlist data intact while avoiding hidden bootstrap traffic.
+  useEffect(() => {
+    if (!MUSIC_PLAYER_ENABLED) return;
+    loadMyPlaylists();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.id]);
 
   // --- SQLite migration slices 2 & 3: public feed + likes/comments -----------
   // Pull server posts (with current counts and viewer-like state) and upsert them
@@ -1538,6 +1545,7 @@ export function StoreProvider({ children }) {
     sourceId = "",
     signal,
   } = {}) => {
+    if (!MUSIC_PLAYER_ENABLED) return null;
     if (!title) return null;
     const tupleKey = trackTupleKey(title, artist);
     const source = { provider, sourceId };
@@ -1591,6 +1599,7 @@ export function StoreProvider({ children }) {
     ytCache.current[youtubeLookupCacheKey(title, artist, sessionRef.current, source)],
   );
   const invalidateYouTube = async (title, artist, videoId, source = null) => {
+    if (!MUSIC_PLAYER_ENABLED) return { ok: false, paused: true };
     if (!title || !videoId) return { ok: false };
     const ledger = currentYouTubeRejections();
     ledger.entries = withYouTubeVideoRejection(ledger.entries, title, artist, videoId, source);
@@ -1866,6 +1875,7 @@ export function StoreProvider({ children }) {
   };
 
   const resolveDeezerPreview = async (title, artist, { signal } = {}) => {
+    if (!MUSIC_PLAYER_ENABLED) return null;
     if (!title) return null;
     const k = trackTupleKey(title, artist);
     const hit = previewCache.current[k];
@@ -1879,6 +1889,7 @@ export function StoreProvider({ children }) {
   // Listening history is account-scoped locally and server-backed. Preserve the
   // exact resolved YouTube id so replay does not search for a different upload.
   const recordPlay = (t) => {
+    if (!MUSIC_PLAYER_ENABLED) return;
     // Private Listening is deliberately checked before local history, product
     // analytics, or the server write. A private play leaves no recommendation
     // or social-activity trail and the six-hour device timer expires itself.
@@ -1894,6 +1905,12 @@ export function StoreProvider({ children }) {
   };
 
   const loadPlayHistory = async ({ more = false, accountId = session?.id || null, cachedFallback = null } = {}) => {
+    if (!MUSIC_PLAYER_ENABLED) {
+      setPlayHistoryStatus("ready");
+      setPlayHistoryErrorMode(null);
+      setPlayHistoryNextCursor(null);
+      return load(playHistoryStorageKey(accountId), []);
+    }
     if (!accountId) {
       setPlayHistoryStatus("ready");
       setPlayHistoryErrorMode(null);
@@ -1908,7 +1925,7 @@ export function StoreProvider({ children }) {
     setPlayHistoryStatus(more ? "loading-more" : "loading");
     try {
       const query = `?limit=50${before ? `&before=${encodeURIComponent(before)}` : ""}`;
-      const { plays, nextCursor } = await api(`/api/me/plays${query}`, { context: more ? "Loading more listening history" : "Loading listening history", silent: true });
+      const { plays, nextCursor } = await api(`/api/me/plays${query}`, { context: more ? "Loading older play records" : "Loading play records", silent: true });
       if (playHistoryRequestRef.current.sequence !== sequence || playHistoryRequestRef.current.accountId !== accountId) return [];
       // `p.id` identifies the play EVENT, not the track. Keeping it in `id`
       // made the same song look different on every device and defeated recent-
@@ -1943,7 +1960,7 @@ export function StoreProvider({ children }) {
     setPlayHistory(Array.isArray(cached) ? cached : []);
     setPlayHistoryNextCursor(null);
     setPlayHistoryErrorMode(null);
-    if (accountId) loadPlayHistory({ accountId, cachedFallback: Array.isArray(cached) ? cached : [] });
+    if (MUSIC_PLAYER_ENABLED && accountId) loadPlayHistory({ accountId, cachedFallback: Array.isArray(cached) ? cached : [] });
     else setPlayHistoryStatus("ready");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.id]);
@@ -1953,6 +1970,7 @@ export function StoreProvider({ children }) {
   const friendsReadsRef = useRef(null);
   if (!friendsReadsRef.current) friendsReadsRef.current = createAccountReadCoordinator();
   const loadFriendsListeningStrict = async ({ signal } = {}) => {
+    if (!MUSIC_PLAYER_ENABLED) return [];
     const read = friendsReadsRef.current.claim("friends", sessionRef.current);
     if (!read) return [];
     const { listening } = await api("/api/plays/friends", {
@@ -1974,6 +1992,7 @@ export function StoreProvider({ children }) {
     setFriendsListening([]);
   }, [session?.id]);
   const userPlaylists = async (id, { signal, throwOnError = false } = {}) => {
+    if (!MUSIC_PLAYER_ENABLED) return [];
     try {
       const { playlists } = await api(`/api/users/${id}/playlists`, { signal, context: "Loading playlists", silent: true });
       return playlists || [];
@@ -2041,19 +2060,23 @@ export function StoreProvider({ children }) {
 
   // --- Playlists (build one song at a time or save the current queue) ---------
   const [myPlaylistState, setMyPlaylistState] = useState(() => ({ accountId: session?.id || null, rows: [] }));
-  const [myPlaylistsStatus, setMyPlaylistsStatus] = useState(session ? "loading" : "ready");
+  const [myPlaylistsStatus, setMyPlaylistsStatus] = useState(MUSIC_PLAYER_ENABLED && session ? "loading" : "ready");
   const playlistRequestRef = useRef({ sequence: 0, accountId: session?.id || null });
   const myPlaylistsAccountId = myPlaylistState.accountId;
   const scopedMyPlaylists = accountScopedRows(myPlaylistState.rows, myPlaylistsAccountId, activeAccountId);
   const scopedMyPlaylistsStatus = accountScopeMatches(myPlaylistsAccountId, activeAccountId)
     ? myPlaylistsStatus
-    : activeAccountId ? "loading" : "ready";
+    : MUSIC_PLAYER_ENABLED && activeAccountId ? "loading" : "ready";
   const setMyPlaylistsForAccount = (accountId, updater) => setMyPlaylistState((current) => {
     const base = accountScopeMatches(current.accountId, accountId) ? current.rows : [];
     const rows = typeof updater === "function" ? updater(base) : updater;
     return { accountId: accountId || null, rows: Array.isArray(rows) ? rows : [] };
   });
   const loadMyPlaylists = async () => {
+    if (!MUSIC_PLAYER_ENABLED) {
+      setMyPlaylistsStatus("ready");
+      return scopedMyPlaylists;
+    }
     const accountId = session?.id || null;
     const previousAccountId = playlistRequestRef.current.accountId;
     const sequence = ++playlistRequestRef.current.sequence;
@@ -2074,6 +2097,7 @@ export function StoreProvider({ children }) {
     }
   };
   const loadPlaylist = async (id) => {
+    if (!MUSIC_PLAYER_ENABLED) return null;
     if (!id) return null;
     try { const { playlist } = await api(`/api/playlists/${encodeURIComponent(id)}`, { context: "Loading this playlist", silent: true }); return playlist || null; }
     catch { return null; }
@@ -2090,6 +2114,7 @@ export function StoreProvider({ children }) {
     art: t.art || null,
   });
   const createPlaylist = async (name, tracks, visibility = "public") => {
+    if (!MUSIC_PLAYER_ENABLED) return null;
     const actor = sessionRef.current;
     if (!actor) return null;
     const list = (Array.isArray(tracks) ? tracks : [tracks]).filter((t) => t && t.title).map(cleanTrack);
@@ -2103,6 +2128,7 @@ export function StoreProvider({ children }) {
     } catch { return null; }
   };
   const addToPlaylist = async (id, track) => {
+    if (!MUSIC_PLAYER_ENABLED) return false;
     if (!session || !track?.title) return false;
     try {
       const { playlist } = await api(`/api/playlists/${encodeURIComponent(id)}`, { method: "PATCH", context: "Adding this song to your playlist", body: { track: cleanTrack(track) } });
@@ -2111,6 +2137,7 @@ export function StoreProvider({ children }) {
     } catch { return false; }
   };
   const updatePlaylist = async (id, changes) => {
+    if (!MUSIC_PLAYER_ENABLED) return null;
     if (!session || !id) return null;
     const body = {};
     if (Object.prototype.hasOwnProperty.call(changes || {}, "name")) body.name = changes.name;
@@ -2123,6 +2150,7 @@ export function StoreProvider({ children }) {
     } catch { return null; }
   };
   const deletePlaylist = async (id) => {
+    if (!MUSIC_PLAYER_ENABLED) return false;
     if (!session || !id) return false;
     try {
       await api(`/api/playlists/${encodeURIComponent(id)}`, { method: "DELETE", context: "Deleting your playlist" });
@@ -2133,6 +2161,7 @@ export function StoreProvider({ children }) {
   // Save a listening queue as a private playlist. A one-tap utility must
   // never silently publish listening context to somebody's public profile.
   const saveQueueAsPlaylist = async (tracks, name) => {
+    if (!MUSIC_PLAYER_ENABLED) return null;
     if (!session) return null;
     const list = (tracks || []).filter((t) => !!trackKey(t)).map(cleanTrack);
     if (!list.length) return null;
@@ -2988,19 +3017,22 @@ export function StoreProvider({ children }) {
     // actually owns; sending empty artist/venue would trip the review validators.
     if ((previous.kind || changes.kind) === "status") {
       const version = previous.version ?? previous.editedAt ?? previous.createdAt;
-      const playlistId = changes.playlistId ?? changes.playlist?.id ?? null;
+      const hasPlaylistIdChange = Object.prototype.hasOwnProperty.call(changes, "playlistId");
+      const hasPlaylistChange = hasPlaylistIdChange || Object.prototype.hasOwnProperty.call(changes, "playlist");
+      const playlistId = hasPlaylistIdChange ? changes.playlistId ?? null : changes.playlist?.id ?? null;
+      const effectivePlaylistId = hasPlaylistChange ? playlistId : previous.playlist?.id ?? previous.playlistId ?? null;
       const body = {
         review: clean(changes.review, { max: LIMITS.review, newlines: true }),
         taggedUserIds: taggedUserIdsFromPeople(changes.taggedPeople ?? previous.taggedPeople),
         song: changes.song?.videoId ? changes.song : null,
-        playlistId,
+        ...(hasPlaylistChange ? { playlistId } : {}),
         photos: Array.isArray(changes.photos) ? changes.photos.filter((item) => typeof item === "string").slice(0, MEDIA_POST_MAX_ATTACHMENTS) : [],
         ...(Array.isArray(changes.mediaAssetIds) ? { mediaAssetIds: changes.mediaAssetIds } : {}),
         photosPublic: changes.photosPublic !== false,
         campaign: normalizeArtistCampaign(Object.prototype.hasOwnProperty.call(changes, "campaign") ? changes.campaign : previous.campaign),
         ...(Number.isSafeInteger(version) ? { version } : {}),
       };
-      if (!body.review && !body.photos.length && !body.song && !playlistId) return { ok: false };
+      if (!body.review && !body.photos.length && !body.song && !effectivePlaylistId) return { ok: false };
       feedMutationRevisionRef.current += 1;
       try {
         const { post } = await api(`/api/posts/${encodeURIComponent(id)}`, { method: "PATCH", context: "Saving your update", body, silent: true });
@@ -4512,6 +4544,39 @@ export function StoreProvider({ children }) {
     try { return (await loadAdminMembersStrict(options)).users; }
     catch { return []; }
   };
+  const prepareMemorialArtist = async (value, { signal } = {}) => {
+    const context = "Finding exact artist for memorial";
+    const name = artistMemorialPreparationName(value);
+    const sessionAtStart = sessionRef.current;
+    const accountId = sessionAtStart?.id || null;
+    const scope = staffScopeFor(sessionAtStart);
+    if (!accountId || sessionAtStart?.role !== "admin" || !scope) {
+      throw new AppError("Memorial preparation requires an administrator session.", {
+        status: 403,
+        serverCode: "FORBIDDEN",
+        context,
+        source: "artist-memorials",
+      });
+    }
+    const artist = await prepareArtistMemorialCandidate(name, {
+      signal,
+      context,
+      expectedAccountId: accountId,
+    });
+    if (signal?.aborted) {
+      throw signal.reason || new Error("The exact artist lookup was cancelled.");
+    }
+    if (staffScopeFor(sessionRef.current) !== scope) {
+      throw new AppError("Your administrator session changed. Search again before preparing this memorial.", {
+        status: 409,
+        serverCode: "IDENTITY_CHANGED",
+        context,
+        source: "artist-memorials",
+      });
+    }
+    cacheArtists([artist]);
+    return artist;
+  };
   // Catalog queue (admin): thin/blank artists + searched-but-not-found names, and
   // the on-demand seed + purge actions.
   const adminArtistQueue = async () => { try { return await api("/api/admin/artist-queue"); } catch { return { thin: [], missing: [], thinTotal: 0 }; } };
@@ -5528,7 +5593,7 @@ export function StoreProvider({ children }) {
     isArtistOwner, artistProfile, loadArtistPage, updateArtistProfile, artistFeedEnabled,
     artistPageCacheEpoch: scopedArtistPageCache.boundaryEpoch,
     artistPostsFor, addArtistPost, removeArtistPost,
-    accountStatus, banUser, unbanUser, suspendUser, liftSuspension, setUserRole, setVerified, markEmailVerified, setSponsor, loadAdminMembers, loadAdminMembersStrict, loadMoreAdminMembersStrict, adminStats, adminArtistQueue, enrichArtists, purgeArtist, startCatalogSeed, catalogSeedStatus, stopCatalogSeed, catalogSeedRuns, removeLoungeMessage, removeComment, removeFanClubMessage,
+    accountStatus, banUser, unbanUser, suspendUser, liftSuspension, setUserRole, setVerified, markEmailVerified, setSponsor, loadAdminMembers, loadAdminMembersStrict, loadMoreAdminMembersStrict, adminStats, prepareMemorialArtist, adminArtistQueue, enrichArtists, purgeArtist, startCatalogSeed, catalogSeedStatus, stopCatalogSeed, catalogSeedRuns, removeLoungeMessage, removeComment, removeFanClubMessage,
     comments: scopedComments, fanClubMsgs, lounge,
     goingFor, isGoing, isGoingBusy, toggleGoing, attendeesFor,
     venueReviewsFor, loadVenueReviews, addVenueReview, venueRating, venueTopPhotos,

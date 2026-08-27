@@ -13,7 +13,8 @@ test("composer people search is abortable, bounded, recoverable, and submitted",
   assert.match(composer, /No matching friends found\./);
   assert.match(composer, /accessibilityLiveRegion="polite"/);
   assert.match(composer, /if \(!showPeople \|\| query\.length < 2[\s\S]*?setPeopleError\(""\)/);
-  assert.match(composer, /panels: \{ song: showSong, photos: showPhotos, playlist: showPlaylist, people: showPeople \}/);
+  assert.match(composer, /panels: \{ song: showSong, photos: showPhotos, people: showPeople \}/);
+  assert.doesNotMatch(composer, /showPlaylist|setShowPlaylist|label="Playlist"|Attach playlist|PlaylistAttachment/);
   assert.ok((composer.match(/\n\s+taggedPeople,/g) || []).length >= 3, "draft and both post modes carry selected people");
   const store = source("../store.js");
   const service = source("../features/people/services/peopleSearchApi.mjs");

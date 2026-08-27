@@ -10,7 +10,6 @@ import SpinStar from "./SpinStar";
 import AfterpartyPreview from "./AfterpartyPreview";
 import PostMediaGrid from "./PostMediaGrid";
 import SongAttachment from "./SongAttachment";
-import PlaylistAttachment from "./PlaylistAttachment";
 import { useStore } from "../store";
 import { BadgeRow } from "./Badge";
 import { formatDate, relativeTime } from "../domain/dates.mjs";
@@ -18,6 +17,7 @@ import { mediaDisplayItems } from "../domain/postMediaDisplay.mjs";
 import { recommendationDisclosure } from "../domain/feedExperience.mjs";
 import { artistCampaignPresentation } from "../domain/artistCampaignPost.mjs";
 import { normalizeTaggedPeople } from "../domain/postFriendTags.mjs";
+import { ENABLE_MUSIC_PLAYER } from "../config/runtime.mjs";
 import useReducedMotion from "../hooks/useReducedMotion";
 import { PublicPressableLink, PublicTextLink } from "./PublicWebLinks";
 import { artistPath, postPath, profilePath, venuePath } from "../domain/urls.mjs";
@@ -274,8 +274,7 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onNotInt
           <PublicPressableLink href={canonicalPostHref} onNavigate={() => (onComment || onOpen)?.(log)} accessibilityLabel="Open post and comments"><Text style={[styles.statusText, campaignPresentation && { color: campaignTreatment.textColor }]}>{log.review}</Text></PublicPressableLink>
         )}
         <TaggedPeopleRow people={taggedPeople} onOpenProfile={onOpenProfile} selfId={session?.id} onRemoveSelf={onRemoveMyPostTag ? removeSelfTag : undefined} palette={campaignTreatment} />
-        {!!log.song && <SongAttachment song={log.song} onPlay={onPlay} />}
-        {!!log.playlist && <PlaylistAttachment playlist={log.playlist} onPlay={onPlay} />}
+        {!!log.song && <SongAttachment song={log.song} onPlay={ENABLE_MUSIC_PLAYER ? onPlay : undefined} />}
         {statusMedia.length > 0 && (
           <PostMediaGrid media={statusMedia} viewable={mediaViewable} openerScope={log.id} onOpen={onOpenPhotos ? (i, opener) => onOpenPhotos(postMedia, postMedia.indexOf(statusMedia[i]), log.id, opener) : undefined} />
         )}
@@ -373,7 +372,7 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onNotInt
         )}
       </PublicPressableLink>
       <TaggedPeopleRow people={taggedPeople} onOpenProfile={onOpenProfile} selfId={session?.id} onRemoveSelf={onRemoveMyPostTag ? removeSelfTag : undefined} />
-      {!!log.song && <SongAttachment song={log.song} onPlay={onPlay} />}
+      {!!log.song && <SongAttachment song={log.song} onPlay={ENABLE_MUSIC_PLAYER ? onPlay : undefined} />}
       {postMedia.length > 0 && (
         <PostMediaGrid media={postMedia} viewable={mediaViewable} openerScope={log.id} onOpen={onOpenPhotos ? (i, opener) => onOpenPhotos(postMedia, i, log.id, opener) : undefined} />
       )}

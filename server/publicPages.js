@@ -163,13 +163,13 @@ const PAGES = Object.freeze({
       {
         heading: "Information you give us",
         paragraphs: [
-          "Account details (name, email, password, and the city you choose), your profile (bio, avatar, genres, favorite artists, and playlists), feed preferences such as Not for me, and everything you create on Pit: reviews, ratings, photos, comments, fan-club and lounge messages, direct messages, follows, and who or what you engage with. The suggestion box accepts an anonymous category, message, and optional general area of Pit; Pit does not attach the suggestion to an account or ask for contact details.",
+          "Account details (name, email, password, and the city you choose), your profile (bio, avatar, genres, and favorite artists), feed preferences such as Not for me, and everything you create on Pit: reviews, ratings, photos, comments, fan-club and lounge messages, direct messages, follows, and other content or settings you save. The suggestion box accepts an anonymous category, message, and optional general area of Pit; Pit does not attach the suggestion to an account or ask for contact details.",
         ],
       },
       {
         heading: "Information we collect automatically",
         paragraphs: [
-          "For signed-in accounts that have product analytics enabled, Pit records a limited, server-approved set of categorical events such as screen and feed usage, internal post impressions, opening content, time-range buckets, playback milestones, following, liking, and posting.",
+          "For signed-in accounts that have product analytics enabled, Pit records a limited, server-approved set of categorical events such as screen and feed usage, internal post impressions, opening content, time-range buckets, following, liking, and posting.",
           "Separately, when a guest searches, Pit increments daily aggregate counters for the search category, success or failure, and a coarse result-count range. These counters do not contain typed words, account or device identifiers, cookies, URLs, IP addresses, user agents, or exact request times, and cannot identify a unique visitor.",
           "Like every web service, Pit receives an IP address and basic request details when a device connects. Those details may be processed briefly for security and rate limiting, but raw IP addresses are not retained in product analytics or suggestion records.",
         ],
@@ -177,13 +177,13 @@ const PAGES = Object.freeze({
       {
         heading: "Cookies and similar technologies",
         paragraphs: [
-          "Pit uses first-party session cookies and local storage to keep you signed in, restore navigation, remember preferences, and make the app work. The embedded YouTube player can use Google or YouTube technologies under their own policies. Most browsers let you clear or block stored data, though sign-in and other features may stop working.",
+          "Pit uses first-party session cookies and local storage to keep you signed in, restore navigation, remember preferences, and make the app work. Links to third-party services are governed by those services' own privacy and cookie policies when you open them. Most browsers let you clear or block stored data, though sign-in and other features may stop working.",
         ],
       },
       {
         heading: "How we use your data",
         paragraphs: [
-          "We use information to provide and secure the service; deliver your feed, messages, local discovery, recommendations, search, playback, and account support; understand aggregate feature health; develop new features; detect abuse and enforce our Terms; and communicate with you when needed.",
+          "We use information to provide and secure the service; deliver your feed, messages, local discovery, recommendations, search, and account support; understand aggregate feature health; develop new features; detect abuse and enforce our Terms; and communicate with you when needed.",
         ],
       },
       {
@@ -205,13 +205,13 @@ const PAGES = Object.freeze({
       {
         heading: "How we share data",
         paragraphs: [
-          "We share information with service providers that host, secure, deliver email for, and operate Pit on our behalf; with YouTube when you use the embedded player; with Deezer when Pit resolves catalogue information or your device requests preview audio; with other users according to the feature you use (for example, a public review is public while a direct message is shown to its participants); and when required by law or reasonably necessary to protect people and the service. A business transfer may include data subject to appropriate safeguards.",
+          "We share information with service providers that host, secure, deliver email for, and operate Pit on our behalf; with YouTube when a signed-in member asks Pit to validate a YouTube link for a post; with Deezer when Pit resolves public music-catalogue metadata; with other users according to the feature you use (for example, a public review is public while a direct message is shown to its participants); and when required by law or reasonably necessary to protect people and the service. A business transfer may include data subject to appropriate safeguards.",
         ],
       },
       {
-        heading: "YouTube API Services",
+        heading: "YouTube links shared in posts",
         paragraphs: [
-          "Pit uses YouTube API Services and an embedded YouTube player to resolve and play requested tracks. When you use the player, Google and YouTube may receive information such as your IP address, device and browser details, the video requested, and your interactions with the embedded player, and may use cookies or similar technologies according to Google's privacy practices. Pit does not receive your YouTube password or download YouTube videos.",
+          "A signed-in member can attach a YouTube URL to a post. Pit sends the canonical URL to YouTube's oEmbed service to validate it and retrieve public display metadata such as the title, channel name, and thumbnail, then stores the chosen link and metadata with the post. Pit does not receive your YouTube password or download YouTube videos. If you open a YouTube link, YouTube receives that visit under Google's privacy practices.",
         ],
         links: [
           link("Google Privacy Policy", "https://policies.google.com/privacy"),
@@ -219,9 +219,9 @@ const PAGES = Object.freeze({
         ],
       },
       {
-        heading: "Music catalogue and preview audio",
+        heading: "Music catalogue metadata",
         paragraphs: [
-          "Pit currently uses Deezer catalogue information and short preview links. Pit's server sends a requested artist or track name to Deezer to resolve catalogue results. When you play a preview, your device requests the audio from Deezer or its delivery network, which can receive your IP address, device and request details, and the track requested. Pit does not receive a Deezer password or download full recordings.",
+          "Pit uses Deezer catalogue information to help identify artists and tracks and to display available public metadata such as titles, artwork, genres, rankings, and top tracks. Pit's server may send an artist or track search term to Deezer to resolve that metadata. Pit does not receive a Deezer password or download or provide Deezer recordings.",
         ],
         links: [link("Deezer privacy policy", "https://www.deezer.com/legal/personal-datas")],
       },
@@ -304,13 +304,13 @@ const PAGES = Object.freeze({
         paragraphs: ["Ticket links and some content point to third-party providers such as Ticketmaster. Purchases, their terms, and any issues are handled by those providers. Pit is not the seller and isn't responsible for those transactions or external sites."],
       },
       {
-        heading: "YouTube playback",
-        paragraphs: ["Pit uses YouTube API Services and YouTube's embedded player to find and play music videos. When you use these playback features, you also agree to be bound by YouTube's Terms of Service. YouTube controls the video, advertising, availability, and playback experience inside its player; Pit does not download or provide the underlying video content."],
+        heading: "YouTube links in posts",
+        paragraphs: ["Members may attach a YouTube link to a post. Pit may use YouTube's oEmbed service to validate that link and retrieve public display metadata, but Pit does not download, host, or provide the underlying YouTube video. You are responsible for the links you share, and YouTube's Terms of Service apply when you use YouTube."],
         links: [link("YouTube Terms of Service", "https://www.youtube.com/t/terms")],
       },
       {
-        heading: "Music catalogue and preview audio",
-        paragraphs: ["Pit currently uses Deezer catalogue information and links to short preview recordings. Preview availability and the underlying content are controlled by Deezer and its right holders; Pit does not download or provide full recordings. Preview recordings are for private, personal listening only and must not be copied, downloaded, redistributed, or used commercially."],
+        heading: "Music catalogue metadata",
+        paragraphs: ["Pit uses Deezer catalogue information for artist and track identification and related public metadata. That information remains controlled by Deezer and its right holders. Pit does not download or provide Deezer recordings, and catalogue references do not grant anyone rights to copy or redistribute third-party material."],
         links: [
           link("Deezer developer terms", "https://developers.deezer.com/termsofuse"),
           link("Deezer privacy policy", "https://www.deezer.com/legal/personal-datas"),
@@ -390,7 +390,7 @@ const PAGES = Object.freeze({
       },
       {
         heading: "What deletion removes",
-        paragraphs: ["Your profile, concert reviews, comments, messages, follows, ratings, fan-club activity, listening history, active product-analytics events, and other account-owned records are removed from the active service. Other people will no longer be able to find or contact the deleted account."],
+        paragraphs: ["Your profile, concert reviews, comments, messages, follows, ratings, fan-club activity, active product-analytics events, and other account-owned content and activity records are removed from the active service. Other people will no longer be able to find or contact the deleted account."],
       },
       {
         heading: "Storage and backup copies",

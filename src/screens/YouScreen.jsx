@@ -4,12 +4,10 @@ import { colors, mono, radius, shadow, displayFont, space } from "../theme";
 import Icon from "../components/Icon";
 import Avatar from "../components/Avatar";
 import SmartImage from "../components/SmartImage";
-import SoundDonut, { DONUT_PALETTE } from "../components/SoundDonut";
 import { BadgeRow } from "../components/Badge";
 import { useStore, isStaff, isMod } from "../store";
 import { formatDate } from "../domain/dates.mjs";
 import { concertMemoryShareText, selectConcertMemories } from "../domain/concertMemories.mjs";
-import { selectRediscoverTracks } from "../domain/listeningRediscovery.mjs";
 import { profileManagementAction } from "../domain/artistWorkspace.mjs";
 import { selectConcertReviews } from "../domain/profileTimeline.mjs";
 import { useProfileHistory } from "../features/profileHistory/useProfileHistory";
@@ -30,37 +28,10 @@ function Reveal({ delay = 0, children, style }) {
   );
 }
 
-// A chart row whose bar SWEEPS in to its share of the top count.
-function SongBar({ rank, title, sub, count, max, art, onPress, delay = 0 }) {
-  const t = useRef(new Animated.Value(0)).current;
-  useEffect(() => {
-    Animated.timing(t, { toValue: 1, duration: 620, delay: 180 + delay, easing: Easing.out(Easing.cubic), useNativeDriver: false }).start();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  const pct = Math.max(5, Math.round((count / (max || 1)) * 100));
-  return (
-    <Pressable style={styles.songRow} onPress={onPress} accessibilityRole={onPress ? "button" : undefined} accessibilityLabel={`${title}${sub ? " by " + sub : ""}, ${count} ${count === 1 ? "play" : "plays"}${onPress ? ", tap to play" : ""}`}>
-      <Text style={styles.songRank}>{rank}</Text>
-      {art ? <SmartImage uri={art} style={styles.songArt} contain={false} /> : <View style={[styles.songArt, styles.songArtEmpty]}><Icon name="music" size={12} color={colors.textFaint} /></View>}
-      <View style={{ flex: 1 }}>
-        <View style={styles.songTop}>
-          <Text style={styles.songTitle} numberOfLines={1}>{title}</Text>
-          <Text style={styles.songCount}>{count}</Text>
-        </View>
-        {!!sub && <Text style={styles.songSub} numberOfLines={1}>{sub}</Text>}
-        <View style={styles.songTrack}>
-          <Animated.View style={[styles.songFill, { width: t.interpolate({ inputRange: [0, 1], outputRange: ["0%", `${pct}%`] }) }]} />
-        </View>
-      </View>
-      {onPress && <View style={styles.songPlay}><Icon name="play" size={12} color={colors.amber} /></View>}
-    </Pressable>
-  );
-}
-
-// The You tab is the private dashboard: listening, memories, nearby activity,
-// and account tools. The public Profile screen owns the diary, media wall,
-// playlists, and posts so those features have one canonical home.
-export default function YouScreen({ onLogin, onLogout, onManageProfile, onSettings, onAdmin, onRequestArtist, onOpenProfile, onOpen, onActivity, onInbox, onCalendar, onListeningHistory, onOpenNearby, homeCity, onPlay, onOpenArtist }) {
-  const { session, logsByUser, unreadNotifications, inboxUnread, playHistory, genreOfArtist, userBadges, userPoints } = useStore();
+// The You tab is the private dashboard for memories, nearby activity, and
+// account tools. The public Profile screen owns the diary, media wall, and posts.
+export default function YouScreen({ onLogin, onLogout, onManageProfile, onSettings, onAdmin, onRequestArtist, onOpenProfile, onOpen, onActivity, onInbox, onCalendar, onOpenNearby, homeCity }) {
+  const { session, logsByUser, unreadNotifications, inboxUnread, genreOfArtist, userBadges, userPoints } = useStore();
   const history = useProfileHistory({ accountId: session?.id, targetId: session?.id, enabled: !!session });
   const cachedMine = session ? logsByUser(session.id) : [];
   const mine = session && (history.posts.length || history.status === "ready") ? history.posts : cachedMine;
@@ -69,33 +40,6 @@ export default function YouScreen({ onLogin, onLogout, onManageProfile, onSettin
   const unread = session ? inboxUnread() : 0;
   const profileAction = profileManagementAction(session);
   const [memoryStatus, setMemoryStatus] = useState("");
-
-  // ---- listening analytics, all from the server-backed play history ----
-  const sound = useMemo(() => {
-    const plays = playHistory || [];
-    const artists = {}; const songs = {}; const genres = {};
-    for (const p of plays) {
-      if (p.artist) {
-        (artists[p.artist] ||= { name: p.artist, count: 0, art: null }).count += 1;
-        if (p.art && !artists[p.artist].art) artists[p.artist].art = p.art;
-        const g = genreOfArtist(p.artist);
-        if (g) { const k = g.toLowerCase(); genres[k] = (genres[k] || 0) + 1; }
-      }
-      if (p.title) {
-        const key = `${(p.artist || "").toLowerCase()}|${p.title.toLowerCase()}`;
-        (songs[key] ||= { title: p.title, artist: p.artist, art: p.art || null, count: 0 }).count += 1;
-        if (p.art && !songs[key].art) songs[key].art = p.art;
-      }
-    }
-    const top = (m, n) => Object.values(m).sort((a, b) => b.count - a.count).slice(0, n);
-    return {
-      totalPlays: plays.length,
-      topArtists: top(artists, 6),
-      topSongs: top(songs, 5),
-      genres: Object.entries(genres).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([label, count]) => ({ label: label.replace(/\b\w/g, (c) => c.toUpperCase()), count })),
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [playHistory]);
 
   // ---- concert analytics, from the diary ----
   const live = useMemo(() => {
@@ -115,13 +59,6 @@ export default function YouScreen({ onLogin, onLogout, onManageProfile, onSettin
     () => selectConcertMemories(mine, { ownerId: session?.id, now: Date.now(), limit: 2 }),
     [mine, session?.id],
   );
-  const rediscover = useMemo(
-    () => selectRediscoverTracks(playHistory, { now: Date.now(), limit: 8 }),
-    [playHistory],
-  );
-
-  const playTrack = (t) => onPlay?.({ kind: "track", title: t.title, artist: t.artist, art: t.art || null });
-  const StaticOrPlayable = onPlay ? Pressable : View;
   const shareMemory = async (memory) => {
     try {
       setMemoryStatus(`Opening share options for ${memory.artist}.`);
@@ -158,11 +95,7 @@ export default function YouScreen({ onLogin, onLogout, onManageProfile, onSettin
   const publicProfileLabel = profileAction.destination === "artistHub" ? "View public artist page" : "View public profile";
   const publicProfileDetail = profileAction.destination === "artistHub"
     ? "See the official page exactly as fans do"
-    : "Your diary, photos, playlists, and public posts";
-  const podium = sound.topArtists.slice(0, 3);
-  const restArtists = sound.topArtists.slice(3, 6);
-  const MEDAL = [colors.gold, "#c9ccd4", "#c98d5a"];
-
+    : "Your diary, photos, and public posts";
   // Compact toolbelt instead of a wall of menu rows.
   const tools = [
     { icon: profileAction.icon, label: profileAction.title, onPress: onManageProfile },
@@ -210,7 +143,11 @@ export default function YouScreen({ onLogin, onLogout, onManageProfile, onSettin
               </Pressable>
             </View>
             <View style={styles.heroStats}>
-              {[[historyCount(concertLogs.length), "SHOWS"], [historyCount(live.artists), "ARTISTS"], [historyCount(live.venues), "VENUES"], [sound.totalPlays, "PLAYS"]].map(([v, l]) => (
+              {[
+                [historyCount(concertLogs.length), "SHOWS"],
+                [historyCount(live.artists), "ARTISTS"],
+                [historyCount(live.venues), "VENUES"],
+              ].map(([v, l]) => (
                 <View key={l} style={styles.heroStat}>
                   <Text style={styles.heroStatVal}>{v}</Text>
                   <Text style={styles.heroStatLabel}>{l}</Text>
@@ -288,84 +225,6 @@ export default function YouScreen({ onLogin, onLogout, onManageProfile, onSettin
             ))}
           </View>
           {!!memoryStatus && <Text style={styles.actionStatus} accessibilityLiveRegion="polite">{memoryStatus}</Text>}
-        </Reveal>
-      )}
-
-      {/* ---- YOUR SOUND: donut + legend, podium, song chart ---- */}
-      <Reveal delay={90}>
-        <Text style={styles.sectionLabel}>YOUR SOUND</Text>
-        <Pressable style={styles.historyLink} onPress={onListeningHistory} disabled={!onListeningHistory} accessibilityRole="button" accessibilityLabel="Open listening history" accessibilityState={{ disabled: !onListeningHistory }}>
-          <View style={styles.historyLinkIcon}><Icon name="clock" size={17} color={colors.amber} /></View>
-          <View style={{ flex: 1, minWidth: 0 }}>
-            <Text style={styles.historyLinkTitle}>Listening history</Text>
-            <Text style={styles.historyLinkSub}>{onPlay ? "Replay recent songs and load older plays" : "Review recent songs and load older listening history"}</Text>
-          </View>
-          <Icon name="chevron-right" size={17} color={colors.textDim} />
-        </Pressable>
-        {sound.totalPlays === 0 ? (
-          <View style={styles.card}><Text style={styles.emptyHint}>{onPlay ? "Play songs from any artist page and your charts build themselves." : "Your listening charts will remain here while the music player is paused."}</Text></View>
-        ) : (
-          <View style={styles.card}>
-            <View style={styles.donutRow}>
-              <View style={styles.donutSlot}>
-                <SoundDonut data={sound.genres.length ? sound.genres : [{ label: "Unsorted", count: sound.totalPlays }]} size={172} centerTop={String(sound.totalPlays)} centerSub="plays" />
-              </View>
-              <View style={styles.legend}>
-                {(sound.genres.length ? sound.genres : [{ label: "Unsorted", count: sound.totalPlays }]).map((g, i) => (
-                  <View key={g.label} style={styles.legendRow}>
-                    <View style={[styles.legendDot, { backgroundColor: DONUT_PALETTE[i % DONUT_PALETTE.length] }]} />
-                    <Text style={styles.legendTxt} numberOfLines={1}>{g.label}</Text>
-                    <Text style={styles.legendCount}>{g.count}</Text>
-                  </View>
-                ))}
-              </View>
-            </View>
-
-            {podium.length > 0 && (
-              <>
-                <Text style={styles.subLabel}>MOST PLAYED ARTISTS</Text>
-                <View style={styles.podium}>
-                  {podium.map((a, i) => (
-                    <Pressable key={a.name} style={[styles.podiumTile, i === 0 && styles.podiumTop]} onPress={() => (onOpenArtist ? onOpenArtist(a.name) : playTrack({ title: a.name, artist: a.name, art: a.art }))} accessibilityRole="button" accessibilityLabel={`${a.name}, ${a.count} plays, open artist`}>
-                      {a.art ? <SmartImage uri={a.art} style={styles.podiumArt} contain={false} /> : <View style={[styles.podiumArt, styles.songArtEmpty]}><Icon name="music" size={18} color={colors.textFaint} /></View>}
-                      <View style={[styles.podiumMedal, { backgroundColor: MEDAL[i] }]}><Text style={styles.podiumMedalTxt}>{i + 1}</Text></View>
-                      <Text style={styles.podiumName} numberOfLines={1}>{a.name}</Text>
-                      <Text style={styles.podiumCount}>{a.count} {a.count === 1 ? "play" : "plays"}</Text>
-                    </Pressable>
-                  ))}
-                </View>
-                {restArtists.map((a, i) => (
-                  <SongBar key={a.name} rank={i + 4} title={a.name} count={a.count} max={podium[0].count} art={a.art} delay={i * 90} onPress={() => (onOpenArtist ? onOpenArtist(a.name) : undefined)} />
-                ))}
-              </>
-            )}
-
-            {sound.topSongs.length > 0 && (
-              <>
-                <Text style={styles.subLabel}>MOST PLAYED SONGS</Text>
-                {sound.topSongs.map((s, i) => (
-                  <SongBar key={s.artist + s.title} rank={i + 1} title={s.title} sub={s.artist} count={s.count} max={sound.topSongs[0].count} art={s.art} delay={i * 90} onPress={onPlay ? () => playTrack(s) : undefined} />
-                ))}
-              </>
-            )}
-          </View>
-        )}
-      </Reveal>
-
-      {rediscover.length > 0 && (
-        <Reveal delay={140}>
-          <Text style={styles.sectionLabel}>REDISCOVER</Text>
-          <Text style={styles.scopeCopy}>From the listening history available on Pit—not a lifetime total.</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.rediscoverRail} accessibilityLabel="Tracks to rediscover">
-            {rediscover.map((track) => (
-              <StaticOrPlayable key={`${track.artist}|${track.title}`} style={styles.rediscoverCard} onPress={onPlay ? () => onPlay(track) : undefined} accessibilityRole={onPlay ? "button" : undefined} accessibilityLabel={onPlay ? `Play ${track.title} by ${track.artist}. ${track.ageLabel}` : `${track.title} by ${track.artist}. ${track.ageLabel}`}>
-                {track.art ? <SmartImage uri={track.art} style={styles.rediscoverArt} contain={false} accessible={false} /> : <View style={[styles.rediscoverArt, styles.songArtEmpty]}><Icon name="music" size={20} color={colors.textFaint} /></View>}
-                <Text style={styles.rediscoverTitle} numberOfLines={1}>{track.title}</Text>
-                <Text style={styles.rediscoverArtist} numberOfLines={1}>{track.artist}</Text>
-                <Text style={styles.rediscoverAge} numberOfLines={1}>{track.ageLabel}</Text>
-              </StaticOrPlayable>
-            ))}
-          </ScrollView>
         </Reveal>
       )}
 

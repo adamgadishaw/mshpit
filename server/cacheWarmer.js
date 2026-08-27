@@ -27,6 +27,7 @@ import {
 import { backfillChannelsFromWikidata } from "./wikidataChannels.js";
 import { backgroundJobEnabled } from "./backgroundJobs.js";
 import { runBackgroundJob } from "./backgroundJobCoordinator.js";
+import { MUSIC_PLAYER_ENABLED } from "../src/domain/musicPlayerAvailability.mjs";
 
 const PROGRESS_KEY = "warm:youtube:v1";
 const DAILY_MARKER_KEY = "warm:youtube:lastRun";
@@ -36,6 +37,10 @@ const DAILY_MARKER_KEY = "warm:youtube:lastRun";
 // remains enabled by default for backwards compatibility.
 export function isCacheWarmSchedulerEnabled(env = process.env) {
   return backgroundJobEnabled(env, "CACHE_WARM_ENABLED");
+}
+
+export function isYouTubePlaybackWarmEnabled(env = process.env) {
+  return MUSIC_PLAYER_ENABLED && !!String(env?.YOUTUBE_API_KEY || "").trim();
 }
 
 // Timer callbacks do not observe returned promises. Keep this wrapper as the
@@ -244,10 +249,12 @@ export function startCacheWarmScheduler({
     console.log("[pit] catalogue enrichment disabled; set CACHE_WARM_ENABLED=true to opt in on Render.");
     return;
   }
-  const youtubeConfigured = !!process.env.YOUTUBE_API_KEY;
-  console.log(youtubeConfigured
+  const youtubeWarmEnabled = isYouTubePlaybackWarmEnabled(process.env);
+  console.log(youtubeWarmEnabled
     ? `[pit] catalogue enrichment on (daily, ~${budget} general quota units; search disabled).`
-    : "[pit] Wikidata channel enrichment on; YouTube catalogue warming is idle until a key is configured.");
+    : MUSIC_PLAYER_ENABLED
+      ? "[pit] Wikidata channel enrichment on; YouTube catalogue warming is idle until a key is configured."
+      : "[pit] Wikidata catalogue enrichment on; built-in playback warming is paused.");
 
   const runOnce = async () => {
     if (ranToday()) return;
@@ -263,7 +270,7 @@ export function startCacheWarmScheduler({
     } catch (error) {
       console.log(`[pit] wikidata channel backfill skipped cause=${privateErrorLabel(error)}`);
     }
-    if (youtubeConfigured) {
+    if (youtubeWarmEnabled) {
       try {
         const stats = await warmYouTubeCache({ budget });
         console.log(`[pit] cache warm: ${stats.resolved} resolved, ${stats.skipped} fresh cache rows, ${stats.failed} deferred/unmatched, ~${stats.spent} general units.`);

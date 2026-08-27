@@ -23,7 +23,6 @@ export const ENABLE_DEMO_DATA = demoDataEnabled(
 // named gate avoids deleting the work or scattering temporary booleans in UI.
 export const ENABLE_CLIPS = false;
 
-// The built-in full-track music player is paused while its playback pipeline is
-// reworked. Keep this as one product-level gate so queue/history/playlist data
-// remains intact while every active player surface stays out of the UI.
-export const ENABLE_MUSIC_PLAYER = false;
+// The platform-neutral product policy is shared with the web server and
+// background jobs so the paused surface cannot be re-enabled by client drift.
+export { MUSIC_PLAYER_ENABLED as ENABLE_MUSIC_PLAYER } from "../domain/musicPlayerAvailability.mjs";

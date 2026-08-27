@@ -11,9 +11,11 @@ import { PLAYER_POSITION_STORAGE_KEY } from "../domain/accountLocalPrivacy.mjs";
 import { load, remove, save } from "../lib/persist";
 import {
   playerColdSearchAllowed,
+} from "../domain/playback.mjs";
+import {
   playerYouTubeLookupNotice,
   playerYouTubeStatusMessage,
-} from "../domain/playback.mjs";
+} from "../domain/playerYouTubeNotice.mjs";
 import {
   directPlayerVideoId,
   claimPlayerFailureDiagnostic,

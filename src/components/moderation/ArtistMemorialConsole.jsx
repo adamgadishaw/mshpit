@@ -37,7 +37,7 @@ const STATUS_LABELS = { draft: "Draft", published: "Published" };
 
 function errorMessage(value) {
   if (typeof value === "string") return value;
-  return value?.userMessage || value?.message || "";
+  return value?.message || value?.userMessage || "";
 }
 
 function dateTime(value) {
@@ -177,6 +177,7 @@ export default function ArtistMemorialConsole({
   error = "",
   onRefresh,
   onSearchArtists,
+  onResolveArtist,
   onSave,
   onSaved,
   sessionScope,
@@ -187,6 +188,7 @@ export default function ArtistMemorialConsole({
   const [catalogArtist, setCatalogArtist] = useState(null);
   const [lookupQuery, setLookupQuery] = useState("");
   const [lookupState, setLookupState] = useState({ scope: currentScope, query: "", status: "idle", results: [], error: "" });
+  const [resolveState, setResolveState] = useState({ scope: currentScope, query: "", status: "idle", error: "" });
   const [form, setForm] = useState(() => ({ ...EMPTY_FORM }));
   const [confirmedIndividual, setConfirmedIndividual] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -194,13 +196,24 @@ export default function ArtistMemorialConsole({
   const [success, setSuccess] = useState("");
   const operationId = useRef(0);
   const lookupSequence = useRef(0);
+  const resolveSequence = useRef(0);
+  const resolveController = useRef(null);
   const artistSearchRef = useRef(onSearchArtists);
+  const artistResolveRef = useRef(onResolveArtist);
   const scopeRef = useRef(currentScope);
   artistSearchRef.current = onSearchArtists;
+  artistResolveRef.current = onResolveArtist;
   scopeRef.current = currentScope;
   const rows = useMemo(() => Array.isArray(memorials) ? memorials.filter((item) => item?.artistKey) : [], [memorials]);
   const ownsSession = artistMemorialConsoleOwnsScope(ownerScope, currentScope);
-  const busy = loading || saving || submitting || !ownsSession;
+  const resolving = resolveState.scope === currentScope && resolveState.status === "loading";
+  const busy = loading || saving || submitting || resolving || !ownsSession;
+
+  useEffect(() => () => {
+    resolveSequence.current += 1;
+    resolveController.current?.abort();
+    resolveController.current = null;
+  }, []);
 
   useEffect(() => {
     const sequence = lookupSequence.current + 1;
@@ -247,11 +260,15 @@ export default function ArtistMemorialConsole({
     if (ownerScope === currentScope) return;
     operationId.current += 1;
     lookupSequence.current += 1;
+    resolveSequence.current += 1;
+    resolveController.current?.abort();
+    resolveController.current = null;
     setOwnerScope(currentScope);
     setSelectedKey(null);
     setCatalogArtist(null);
     setLookupQuery("");
     setLookupState({ scope: currentScope, query: "", status: "idle", results: [], error: "" });
+    setResolveState({ scope: currentScope, query: "", status: "idle", error: "" });
     setForm({ ...EMPTY_FORM });
     setConfirmedIndividual(false);
     setSubmitting(false);
@@ -270,10 +287,14 @@ export default function ArtistMemorialConsole({
   };
 
   const startNew = () => {
+    resolveSequence.current += 1;
+    resolveController.current?.abort();
+    resolveController.current = null;
     setSelectedKey(null);
     setCatalogArtist(null);
     setLookupQuery("");
     setLookupState({ scope: currentScope, query: "", status: "idle", results: [], error: "" });
+    setResolveState({ scope: currentScope, query: "", status: "idle", error: "" });
     setForm({ ...EMPTY_FORM });
     setConfirmedIndividual(false);
     setLocalError("");
@@ -281,10 +302,14 @@ export default function ArtistMemorialConsole({
   };
 
   const select = (memorial) => {
+    resolveSequence.current += 1;
+    resolveController.current?.abort();
+    resolveController.current = null;
     setSelectedKey(memorial.artistKey);
     setCatalogArtist(null);
     setLookupQuery("");
     setLookupState({ scope: currentScope, query: "", status: "idle", results: [], error: "" });
+    setResolveState({ scope: currentScope, query: "", status: "idle", error: "" });
     setForm(formFromMemorial(memorial));
     setConfirmedIndividual(false);
     setLocalError("");
@@ -309,20 +334,66 @@ export default function ArtistMemorialConsole({
 
   const changeCatalogArtist = () => {
     lookupSequence.current += 1;
+    resolveSequence.current += 1;
+    resolveController.current?.abort();
+    resolveController.current = null;
     setCatalogArtist(null);
     setLookupQuery("");
     setLookupState({ scope: currentScope, query: "", status: "idle", results: [], error: "" });
+    setResolveState({ scope: currentScope, query: "", status: "idle", error: "" });
     setForm({ ...EMPTY_FORM });
     setConfirmedIndividual(false);
     setLocalError("");
     setSuccess("");
   };
 
+  const resolveExactArtist = async () => {
+    if (!ownsSession || selectedKey || catalogArtist || typeof artistResolveRef.current !== "function") return;
+    const query = lookupQuery.trim();
+    if (query.length < 2) {
+      setLocalError("Enter the artist's full stage name before finding an exact identity.");
+      return;
+    }
+
+    resolveSequence.current += 1;
+    const sequence = resolveSequence.current;
+    resolveController.current?.abort();
+    const controller = new AbortController();
+    resolveController.current = controller;
+    const operationScope = currentScope;
+    setResolveState({ scope: operationScope, query, status: "loading", error: "" });
+    setLocalError("");
+    setSuccess("");
+    try {
+      const artist = await artistResolveRef.current(query, { signal: controller.signal });
+      if (controller.signal.aborted || resolveSequence.current !== sequence || scopeRef.current !== operationScope) return;
+      if (!isMemorialDraftCandidate(artist)) {
+        throw new TypeError("Pit could not confirm a valid MusicBrainz identity for that artist. Check the full stage name and try again.");
+      }
+      chooseCatalogArtist(artist);
+      setResolveState({ scope: operationScope, query, status: "ready", error: "" });
+    } catch (resolveError) {
+      if (controller.signal.aborted || resolveSequence.current !== sequence || scopeRef.current !== operationScope) return;
+      setResolveState({
+        scope: operationScope,
+        query,
+        status: "error",
+        error: errorMessage(resolveError) || "Pit could not verify an exact artist identity.",
+      });
+    } finally {
+      if (resolveController.current === controller) resolveController.current = null;
+    }
+  };
+
   const submit = async () => {
     if (!ownsSession) return;
+    if (!selectedKey && !isMemorialDraftCandidate(catalogArtist)) {
+      setLocalError("Choose an exact MusicBrainz-backed artist before saving this memorial.");
+      return;
+    }
     const key = form.artistKey.trim();
     if (!key || key.length > 180) {
-      setLocalError("Enter the exact artist key from the Pit catalog.");
+      setLocalError("Choose the exact artist from Pit before saving this memorial.");
       return;
     }
     const parsed = parseArtistMemorialAdminPayload({
@@ -459,7 +530,11 @@ export default function ArtistMemorialConsole({
                     accessibilityHint="Searches Pit's artist catalog and shows exact identities to choose from"
                     value={lookupQuery}
                     onChangeText={(value) => {
+                      resolveSequence.current += 1;
+                      resolveController.current?.abort();
+                      resolveController.current = null;
                       setLookupQuery(value);
+                      setResolveState({ scope: currentScope, query: value.trim(), status: "idle", error: "" });
                       setLocalError("");
                       setSuccess("");
                     }}
@@ -480,7 +555,23 @@ export default function ArtistMemorialConsole({
                   <Text selectable accessibilityLiveRegion="assertive" style={styles.lookupError}>{lookupState.error}</Text>
                 ) : null}
                 {lookupState.scope === currentScope && lookupState.status === "ready" && lookupState.results.length === 0 ? (
-                  <Text accessibilityLiveRegion="polite" style={styles.lookupEmpty}>No memorial-ready catalog matches. Try the artist's full stage name or enrich the artist in the Catalog tab first.</Text>
+                  <View style={styles.exactLookup} accessibilityLiveRegion="polite">
+                    <Text style={styles.lookupEmpty}>No exact memorial-ready match is stored in Pit yet.</Text>
+                    <Button
+                      title="Find exact artist & autofill"
+                      variant="secondary"
+                      icon="search"
+                      small
+                      loading={resolving}
+                      disabled={busy || typeof onResolveArtist !== "function"}
+                      onPress={resolveExactArtist}
+                      accessibilityHint="Verifies this stage name against MusicBrainz and fills a private draft without publishing it"
+                    />
+                    <Text style={styles.exactLookupHint}>Pit will verify one exact MusicBrainz identity and fill only the private draft. You must still enter the death date, source, and confirmation yourself.</Text>
+                    {resolveState.scope === currentScope && resolveState.status === "error" ? (
+                      <Text selectable accessibilityLiveRegion="assertive" style={styles.lookupError}>{resolveState.error}</Text>
+                    ) : null}
+                  </View>
                 ) : null}
                 {lookupState.scope === currentScope && lookupState.status === "ready" && lookupState.results.length > 0 ? (
                   <Text accessibilityLiveRegion="polite" style={styles.lookupCount}>{lookupState.results.length} memorial-ready {lookupState.results.length === 1 ? "artist" : "artists"} found.</Text>
@@ -512,15 +603,14 @@ export default function ArtistMemorialConsole({
 
         <FormField
           label="Artist key"
-          hint="Filled when you choose a catalog result. You may still enter an exact key manually; it cannot be changed while editing."
+          hint="Filled only after Pit confirms an exact MusicBrainz-backed artist. It cannot be entered manually."
           value={form.artistKey}
-          onChangeText={(value) => update("artistKey", value)}
-          editable={!busy && !selectedKey && !catalogArtist}
+          editable={false}
           maxLength={180}
           autoCapitalize="none"
           autoCorrect={false}
           placeholder="artist-catalog-key"
-          accessibilityState={{ disabled: busy || !!selectedKey || !!catalogArtist }}
+          accessibilityState={{ disabled: true }}
         />
 
         <View style={styles.field} accessibilityRole="radiogroup" accessibilityLabel="Memorial publication status">
@@ -629,7 +719,7 @@ export default function ArtistMemorialConsole({
           title={form.status === "published" ? "Save & publish tribute" : "Save private draft"}
           icon="check"
           loading={saving || submitting}
-          disabled={busy || !confirmedIndividual || typeof onSave !== "function"}
+          disabled={busy || !confirmedIndividual || typeof onSave !== "function" || (!selectedKey && !isMemorialDraftCandidate(catalogArtist))}
           onPress={submit}
           accessibilityHint="Validates the memorial and saves it to the selected artist"
         />
@@ -680,6 +770,8 @@ const styles = StyleSheet.create({
   lookupInput: { flex: 1, minWidth: 0, minHeight: 46, color: colors.text, fontSize: 13.5, lineHeight: 20, paddingVertical: space(2.5) },
   lookupError: { color: colors.danger, fontSize: 11.5, lineHeight: 17, fontWeight: "700" },
   lookupEmpty: { color: colors.textDim, fontSize: 11.5, lineHeight: 17 },
+  exactLookup: { alignItems: "flex-start", gap: space(2), padding: space(3), borderRadius: radius.sm, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface },
+  exactLookupHint: { maxWidth: 660, color: colors.textFaint, fontSize: 10.5, lineHeight: 16 },
   lookupCount: { color: colors.textDim, fontSize: 10.5, lineHeight: 16, fontWeight: "700" },
   lookupResults: { gap: space(2) },
   lookupResult: { minHeight: 54, flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: space(3), paddingHorizontal: space(3), paddingVertical: space(2.5), borderRadius: radius.sm, borderCurve: "continuous", borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface },

@@ -1,10 +1,13 @@
 import { ARTIST_MEMORIAL_LIMITS } from "../../domain/artistMemorial.mjs";
 import { clean } from "../../domain/validation.mjs";
+import {
+  artistMemorialCandidates,
+  isArtistMemorialCandidate,
+} from "../../domain/artistMemorialCandidate.mjs";
 
 const ARTIST_KEY_LIMIT = 180;
 const FACT_LIMIT = 120;
 const ALBUM_LIMIT = 3;
-const MUSICBRAINZ_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
 function object(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
@@ -88,28 +91,11 @@ function artistIdentity(value) {
 }
 
 export function isMemorialDraftCandidate(value) {
-  const artist = object(value);
-  return Boolean(
-    boundedText(artist.key, ARTIST_KEY_LIMIT)
-    && boundedText(artist.name, FACT_LIMIT)
-    && MUSICBRAINZ_ID.test(String(artist.mbid || "")),
-  );
+  return isArtistMemorialCandidate(value);
 }
 
 export function memorialDraftCandidates(values, { limit = 6 } = {}) {
-  if (!Array.isArray(values)) return [];
-  const take = Math.max(1, Math.min(20, Math.trunc(Number(limit) || 6)));
-  const seen = new Set();
-  const candidates = [];
-  for (const artist of values) {
-    if (!isMemorialDraftCandidate(artist)) continue;
-    const key = `${artist.key}\u0000${String(artist.mbid).toLowerCase()}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    candidates.push(artist);
-    if (candidates.length >= take) break;
-  }
-  return candidates;
+  return artistMemorialCandidates(values, { limit });
 }
 
 /**

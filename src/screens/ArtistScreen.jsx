@@ -30,6 +30,7 @@ import { useArtistMemorial } from "../features/artistMemorials/useArtistMemorial
 import { PublicPressableLink } from "../components/PublicWebLinks";
 import { eventPath, postPath, profilePath } from "../domain/urls.mjs";
 import { ARTIST_PAGE_SECTIONS, artistPagePreview, artistPageSectionModel } from "../domain/artistPageSections.mjs";
+import { ENABLE_MUSIC_PLAYER } from "../config/runtime.mjs";
 
 const cap = (s) => (s ? s.replace(/\b\w/g, (c) => c.toUpperCase()) : s);
 const compactCount = (value) => {
@@ -203,6 +204,8 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
     artistDiscography, artistSeenCount, reportTrack } = useStore();
   const a = artistSummary(artistName);
   const { width } = useWindowDimensions();
+  const playerEnabled = ENABLE_MUSIC_PLAYER && typeof onPlay === "function";
+  const playlistEnabled = ENABLE_MUSIC_PLAYER && typeof onAddToPlaylist === "function";
   const widePage = width >= 760;
   const veryWidePage = width >= 1180;
   const [sectionSelection, setSectionSelection] = useState(() => ({ artistKey: a.profileKey, section: "overview" }));
@@ -553,6 +556,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
     (tracks || []).forEach((t) => loadRating("song", a.name, t.title));
   };
   const playTrack = (t, cover) => {
+    if (!playerEnabled) return;
     // Every track is playable: the top player resolves it to a YouTube video by
     // title/artist, or a Deezer 30s preview mp3 when there's no match.
     const known = songQueue.find((s) => s.title === t.title);
@@ -572,6 +576,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
   // Listen = play a random song from this artist's catalog, with the rest queued up
   // (the player then keeps going with genre-matched recommendations).
   const playRandom = () => {
+    if (!playerEnabled) return;
     if (songQueue.length) {
       const shuffled = [...songQueue].sort(() => Math.random() - 0.5);
       onPlay?.(shuffled[0], shuffled);
@@ -580,7 +585,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
       onPlay?.({ kind: "track", title: a.name, artist: a.name, art: scopedDisco?.artist?.photo || a.photo || meta?.photo || null });
     }
   };
-  const addSong = (t) => onAddToPlaylist?.({
+  const addSong = (t) => playlistEnabled && onAddToPlaylist?.({
     title: t.title,
     artist: a.name,
     url: t.url || null,
@@ -593,6 +598,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
 
   // Play a single top-track (its own song, then genre-matched recs continue).
   const playSingle = (s) => {
+    if (!playerEnabled) return;
     onPlay?.({
       kind: "track",
       url: null,
@@ -619,6 +625,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
     art: al.cover || scopedDisco?.artist?.photo || a.photo || meta?.photo || null,
   });
   const playAlbum = (al, startTitle = null, shuffle = false) => {
+    if (!playerEnabled) return;
     let tracks = (al.tracks || []).map((t) => albumTrack(t, al)).filter((t) => t.title);
     if (!tracks.length) return;
     if (shuffle) tracks = [...tracks].sort(() => Math.random() - 0.5);
@@ -908,7 +915,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
         <ArtistPageSectionNav active={activeSection} onChange={setActiveSection} />
 
         {/* Top song — a "start here" pick beside the profile, one tap to play. */}
-        {sectionModel.showMusic && onPlay && topSong && (
+        {sectionModel.showMusic && playerEnabled && topSong && (
           <Pressable style={styles.topSong} onPress={() => playSingle(topSong.song)} accessibilityRole="button" accessibilityLabel={`Play top song ${topSong.song.title}`}>
             <View style={styles.topSongPlay}><Icon name="play" size={16} color="#1A1206" /></View>
             <View style={{ flex: 1 }}>
@@ -1165,10 +1172,6 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
         )}
 
         {sectionModel.showMusic && (<>
-        <View style={styles.musicPausedNote} accessibilityRole="summary">
-          <Icon name="music" size={16} color={colors.amber} />
-          <Text style={styles.musicPausedText}>MSHpit playback is paused while it is rebuilt. Releases and fan ratings remain available.</Text>
-        </View>
         {releases.length > 0 ? (
           <>
             <Text style={styles.sectionLabel}>DISCOGRAPHY · {releases.length} RELEASES</Text>
@@ -1194,7 +1197,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
                         <TapStars value={ar.mine} onChange={(n) => rateAlbum(a.name, al.title, n)} size={13} gap={2} />
                       </View>
                     </Pressable>
-                    {onPlay && playable && (
+                    {playerEnabled && playable && (
                       <>
                         <Pressable style={styles.albAct} onPress={() => playAlbum(al, null, true)} hitSlop={6} accessibilityRole="button" accessibilityLabel={`Shuffle ${al.title}`}>
                           <Icon name="shuffle" size={15} color={colors.textDim} />
@@ -1230,23 +1233,23 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
                             </View>
                           </View>
                           <TapStars value={sr.mine} onChange={(n) => rateSong(a.name, t.title, n)} size={15} gap={2} />
-                          {session && onPlay && (
+                          {session && playerEnabled && (
                             <Pressable style={styles.songAdd} onPress={() => toggleReportBox(reportDescriptor)} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Report the wrong video playing for ${t.title}`}>
                               <Icon name="flag" size={12} color={reportedSongs[reportIdentity] ? colors.good : colors.textFaint} />
                             </Pressable>
                           )}
-                          {onAddToPlaylist && (
+                          {playlistEnabled && (
                             <Pressable style={styles.songAdd} onPress={() => addSong({ title: t.title, preview: t.preview, art: al.cover })} hitSlop={8}>
                               <Icon name="plus" size={13} color={colors.textDim} />
                             </Pressable>
                           )}
-                          {onPlay && (
+                          {playerEnabled && (
                             <Pressable style={styles.songPlay} onPress={() => playTrack(t, al.cover)} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Play ${t.title} as a single`}>
                               <Icon name="play" size={13} color={colors.amber} />
                             </Pressable>
                           )}
                         </View>
-                        {onPlay && reportingSong?.key === reportIdentity && renderReportBox(reportDescriptor)}
+                        {playerEnabled && reportingSong?.key === reportIdentity && renderReportBox(reportDescriptor)}
                       </View>
                     );
                   })}
@@ -1303,23 +1306,23 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
                       )}
                     </View>
                     <TapStars value={sr.mine} onChange={(n) => rateSong(a.name, s.title, n)} size={16} gap={3} />
-                    {session && onPlay && (
+                    {session && playerEnabled && (
                       <Pressable style={styles.songAdd} onPress={() => toggleReportBox(reportDescriptor)} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Report the wrong video playing for ${s.title}`}>
                         <Icon name="flag" size={12} color={reported ? colors.good : colors.textFaint} />
                       </Pressable>
                     )}
-                    {onAddToPlaylist && (
+                    {playlistEnabled && (
                       <Pressable style={styles.songAdd} onPress={() => addSong(s)} hitSlop={8}>
                         <Icon name="plus" size={13} color={colors.textDim} />
                       </Pressable>
                     )}
-                    {onPlay && (
+                    {playerEnabled && (
                       <Pressable style={styles.songPlay} onPress={() => playSingle(s)} hitSlop={8}>
                         <Icon name="play" size={13} color={colors.amber} />
                       </Pressable>
                     )}
                   </View>
-                  {onPlay && reportingSong?.key === reportIdentity && renderReportBox(reportDescriptor)}
+                  {playerEnabled && reportingSong?.key === reportIdentity && renderReportBox(reportDescriptor)}
                 </View>
               );
             })}
@@ -1352,8 +1355,6 @@ const styles = StyleSheet.create({
   sectionNavItemPressed: { opacity: 0.72 },
   sectionNavText: { color: colors.textFaint, fontSize: 11.5, fontWeight: "800" },
   sectionNavTextOn: { color: colors.amber },
-  musicPausedNote: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: 16, padding: 12, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface },
-  musicPausedText: { flex: 1, color: colors.textDim, fontSize: 12.5, lineHeight: 18 },
   inlineLoading: { minHeight: 54, flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 8 },
   topNightsIntro: { color: colors.textDim, fontSize: 12.5, lineHeight: 18, marginTop: -5, marginBottom: 9 },
   fanPreviewNotice: { flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 12, paddingHorizontal: 12, paddingVertical: 9, borderRadius: radius.md, borderWidth: 1, borderColor: colors.amber, backgroundColor: colors.bgElev },

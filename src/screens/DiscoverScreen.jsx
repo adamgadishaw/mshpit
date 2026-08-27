@@ -6,18 +6,15 @@ import { countryForCity } from "../geo";
 import Icon from "../components/Icon";
 import DiscoverChart from "../components/discover/DiscoverChart";
 import DiscoverGenres from "../components/discover/DiscoverGenres";
-import { DiscoverPhotos, FriendsListening } from "../components/discover/DiscoverCommunity";
+import { DiscoverPhotos } from "../components/discover/DiscoverCommunity";
 import { MetricTile, OverviewState, QuickAction, SectionHeading } from "../components/discover/DiscoverPrimitives";
 import {
   cancelDiscoverRequest,
   compactDiscoverNumber,
-  discoverPlaybackTrack,
   discoverSectionState,
   hasDiscoverOverviewContent,
-  isCurrentDiscoverAccountRequest,
   normalizeDiscoverArtistRows,
   normalizeDiscoverOverview,
-  normalizeFriendsListening,
   orderDiscoverCountries,
   selectDiscoverPhotos,
 } from "../domain/discoverView.mjs";
@@ -30,31 +27,6 @@ function useLatestCallback(callback) {
   return useCallback((...args) => callbackRef.current?.(...args), []);
 }
 
-function SourceToggle({ value, onChange }) {
-  return (
-    <View style={styles.sourceToggle} accessibilityRole="tablist">
-      {[
-        { key: "popularity", label: "Trending" },
-        { key: "plays", label: "On Pit" },
-      ].map((option) => {
-        const selected = value === option.key;
-        return (
-          <Pressable
-            key={option.key}
-            style={[styles.sourceOption, selected && styles.sourceOptionSelected]}
-            onPress={() => onChange(option.key)}
-            accessibilityRole="tab"
-            accessibilityState={{ selected }}
-            accessibilityLabel={`${option.label} chart`}
-          >
-            <Text style={[styles.sourceOptionText, selected && styles.sourceOptionTextSelected]}>{option.label}</Text>
-          </Pressable>
-        );
-      })}
-    </View>
-  );
-}
-
 export default function DiscoverScreen({
   onOpenTopRated,
   onOpenArtist,
@@ -62,9 +34,6 @@ export default function DiscoverScreen({
   onOpenFanClubs,
   onOpenVenues,
   onOpenPhotos,
-  onPlay,
-  onAddToPlaylist,
-  onOpenProfile,
 }) {
   const {
     session,
@@ -75,7 +44,6 @@ export default function DiscoverScreen({
     loadDiscoverGenre,
     discoverStats,
     memberCount,
-    loadFriendsListeningStrict,
   } = useStore();
   const { width } = useWindowDimensions();
   const compact = width < 620;
@@ -87,31 +55,20 @@ export default function DiscoverScreen({
   const homeCountry = countryForCity(session?.home?.city);
   const [regionChoice, setRegionChoice] = useState(() => ({ accountId, value: homeCountry || "Worldwide", touched: false }));
   const region = regionChoice.accountId === accountId ? regionChoice.value : homeCountry || "Worldwide";
-  const [chartBy, setChartBy] = useState("popularity");
   const [query, setQuery] = useState("");
   const [overview, setOverview] = useState(EMPTY_OVERVIEW);
   const [overviewStatus, setOverviewStatus] = useState("idle");
   const [selectedGenre, setSelectedGenre] = useState(null);
   const [genreRows, setGenreRows] = useState([]);
   const [genreStatus, setGenreStatus] = useState("idle");
-  const [friendRows, setFriendRows] = useState([]);
-  const [friendsLoading, setFriendsLoading] = useState(!!session);
-  const [friendsError, setFriendsError] = useState(false);
-
   const overviewLoaderRef = useRef(loadDiscoverOverview);
   overviewLoaderRef.current = loadDiscoverOverview;
   const genreLoaderRef = useRef(loadDiscoverGenre);
   genreLoaderRef.current = loadDiscoverGenre;
-  const friendsLoaderRef = useRef(loadFriendsListeningStrict);
-  friendsLoaderRef.current = loadFriendsListeningStrict;
   const overviewRequestRef = useRef({ sequence: 0, controller: null });
   const genreRequestRef = useRef({ sequence: 0, controller: null });
-  const friendsRequestRef = useRef({ sequence: 0, accountId, controller: null });
   const openArtist = useLatestCallback(onOpenArtist);
-  const openProfile = useLatestCallback(onOpenProfile);
   const openPhotos = useLatestCallback(onOpenPhotos);
-  const play = useLatestCallback(onPlay);
-  const addToPlaylist = useLatestCallback(onAddToPlaylist);
 
   const localStatsRef = useRef(null);
   if (!localStatsRef.current) localStatsRef.current = discoverStats();
@@ -135,10 +92,10 @@ export default function DiscoverScreen({
       setOverview((current) => normalizeDiscoverOverview({ countries: current.countries }));
       setOverviewStatus("loading");
     }
-    overviewLoaderRef.current({ by: chartBy, country: region, signal: controller.signal, force })
+    overviewLoaderRef.current({ by: "popularity", country: region, signal: controller.signal, force })
       .then((payload) => {
         if (controller.signal.aborted || overviewRequestRef.current.sequence !== sequence) return;
-        const normalized = normalizeDiscoverOverview(payload, chartBy);
+        const normalized = normalizeDiscoverOverview(payload, "popularity");
         normalized.countries = orderDiscoverCountries(normalized.countries, homeCountry);
         setOverview(normalized);
         setOverviewStatus("ready");
@@ -147,7 +104,7 @@ export default function DiscoverScreen({
         if (!controller.signal.aborted && overviewRequestRef.current.sequence === sequence) setOverviewStatus("error");
       });
     return controller;
-  }, [chartBy, homeCountry, region]);
+  }, [homeCountry, region]);
 
   const requestGenre = useCallback(({ force = false } = {}) => {
     genreRequestRef.current.controller?.abort();
@@ -195,45 +152,6 @@ export default function DiscoverScreen({
     });
   }, [accountId, homeCountry]);
 
-  const requestFriends = useCallback(() => {
-    friendsRequestRef.current.controller?.abort();
-    const sequence = friendsRequestRef.current.sequence + 1;
-    const controller = accountId ? new AbortController() : null;
-    friendsRequestRef.current = { sequence, accountId, controller };
-    setFriendRows([]);
-    setFriendsError(false);
-    if (!accountId) {
-      setFriendsLoading(false);
-      return;
-    }
-    setFriendsLoading(true);
-    Promise.resolve()
-      .then(() => friendsLoaderRef.current({ signal: controller.signal }))
-      .then((rows) => {
-        if (isCurrentDiscoverAccountRequest(friendsRequestRef.current, sequence, accountId)) {
-          setFriendRows(normalizeFriendsListening(rows));
-        }
-      })
-      .catch(() => {
-        if (!controller.signal.aborted && isCurrentDiscoverAccountRequest(friendsRequestRef.current, sequence, accountId)) setFriendsError(true);
-      })
-      .finally(() => {
-        if (isCurrentDiscoverAccountRequest(friendsRequestRef.current, sequence, accountId)) setFriendsLoading(false);
-      });
-  }, [accountId]);
-
-  useEffect(() => {
-    requestFriends();
-    return () => {
-      friendsRequestRef.current.controller?.abort();
-      const sequence = friendsRequestRef.current.sequence;
-      friendsRequestRef.current = { sequence: sequence + 1, accountId: null, controller: null };
-    };
-    // Store actions are intentionally omitted: the legacy context recreates
-    // them on state changes and would restart these reads indefinitely.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accountId]);
-
   useEffect(() => {
     if (selectedGenre && !overview.genres.some((item) => item.genre === selectedGenre && item.genre !== "Other")) setSelectedGenre(null);
   }, [overview.genres, selectedGenre]);
@@ -242,18 +160,6 @@ export default function DiscoverScreen({
     setQuery("");
     setRegionChoice({ accountId, value: country, touched: true });
   };
-  const pickChartSource = (source) => {
-    setQuery("");
-    setChartBy(source);
-  };
-  const playArtistRow = useCallback((row) => {
-    const track = discoverPlaybackTrack(row);
-    if (track) play(track);
-  }, [play]);
-  const addArtistRow = useCallback((row) => {
-    const track = discoverPlaybackTrack(row);
-    if (track) addToPlaylist(track);
-  }, [addToPlaylist]);
   const retryGenre = useCallback(() => requestGenre({ force: true }), [requestGenre]);
 
   const overviewState = discoverSectionState({ status: overviewStatus, rows: overview.chart.rows });
@@ -291,9 +197,8 @@ export default function DiscoverScreen({
         <View style={[styles.controlTop, compact && styles.controlTopCompact]}>
           <View style={styles.controlCopy}>
             <Text style={styles.controlLabel}>CHART VIEW</Text>
-            <Text style={styles.controlHint}>{chartBy === "plays" ? "Real member listening" : "Current catalog momentum"}</Text>
+            <Text style={styles.controlHint}>Current catalog momentum</Text>
           </View>
-          <SourceToggle value={chartBy} onChange={pickChartSource} />
         </View>
         <Text style={styles.controlLabel}>SCENE</Text>
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.regionRail} accessibilityLabel="Choose a Discover region">
@@ -342,12 +247,11 @@ export default function DiscoverScreen({
         <OverviewState state={overviewState} region={region} onRetry={() => requestOverview({ force: true })} onWorldwide={() => pickRegion("Worldwide")} />
       ) : (
         <>
-          <DiscoverChart rows={overview.chart.rows} source={overview.chart.source} info={overview.chart} query={query} onQuery={setQuery} onOpenArtist={openArtist} onPlay={onPlay ? playArtistRow : undefined} onAdd={onAddToPlaylist ? addArtistRow : undefined} compact={compact} narrow={veryCompact} />
-          <DiscoverGenres genres={overview.genres} selected={selectedGenre} onSelect={setSelectedGenre} total={overview.genreTotal} rows={genreRows} status={genreStatus} region={region} onOpenArtist={openArtist} onPlay={onPlay ? playArtistRow : undefined} onAdd={onAddToPlaylist ? addArtistRow : undefined} onRetry={retryGenre} />
+          <DiscoverChart rows={overview.chart.rows} source={overview.chart.source} info={overview.chart} query={query} onQuery={setQuery} onOpenArtist={openArtist} compact={compact} narrow={veryCompact} />
+          <DiscoverGenres genres={overview.genres} selected={selectedGenre} onSelect={setSelectedGenre} total={overview.genreTotal} rows={genreRows} status={genreStatus} region={region} onOpenArtist={openArtist} onRetry={retryGenre} />
         </>
       )}
 
-      <FriendsListening rows={friendRows} loading={friendsLoading} error={friendsError} signedIn={!!session} onRetry={requestFriends} onOpenProfile={openProfile} onPlay={onPlay ? play : undefined} onAdd={onAddToPlaylist ? addToPlaylist : undefined} />
       <DiscoverPhotos photos={photos} photoUris={photoUris} compact={compact} width={width} onOpenPhotos={openPhotos} />
     </ScrollView>
   );

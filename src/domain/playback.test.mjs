@@ -7,11 +7,10 @@ import {
   CACHE_MS,
   playerColdSearchAllowed,
   playerLookupIntent,
-  playerYouTubeLookupNotice,
-  playerYouTubeStatusMessage,
   requestYouTubeTrackOnce,
   shouldUseYouTubeLookupCache,
 } from "./playback.mjs";
+import { playerYouTubeLookupNotice, playerYouTubeStatusMessage } from "./playerYouTubeNotice.mjs";
 import { shouldResolvePlayerYouTube } from "./playerSourceResolution.mjs";
 
 test("a resolved video is trusted and cached for a long time", () => {

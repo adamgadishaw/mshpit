@@ -21,13 +21,13 @@ export default function TermsScreen({ onClose }) {
         { h: "Moderation & enforcement", p: "Content is public when posted; the community can report it and moderators act on reports. We may remove content, limit features, or suspend or terminate accounts that break these terms or harm the community or service, and we keep a record of moderation actions. Where practical we'll explain enforcement, but we may act immediately in serious cases." },
         { h: "Tickets & third parties", p: "Ticket links and some content point to third-party providers (e.g. Ticketmaster). Purchases, their terms, and any issues are handled by those providers, Pit is not the seller and isn't responsible for those transactions or external sites." },
         {
-          h: "YouTube playback",
-          p: "Pit uses YouTube API Services and YouTube's embedded player to find and play music videos. When you use these playback features, you also agree to be bound by YouTube's Terms of Service. YouTube controls the video, advertising, availability, and playback experience inside its player; Pit does not download or provide the underlying video content.",
+          h: "YouTube links in posts",
+          p: "Members may attach a YouTube link to a post. Pit may use YouTube's oEmbed service to validate that link and retrieve public display metadata, but Pit does not download, host, or provide the underlying YouTube video. You are responsible for the links you share, and YouTube's Terms of Service apply when you use YouTube.",
           links: [{ label: "YouTube Terms of Service", url: "https://www.youtube.com/t/terms" }],
         },
         {
-          h: "Music catalogue & preview audio",
-          p: "Pit currently uses Deezer catalogue information and links to short preview recordings. Preview availability and the underlying content are controlled by Deezer and its right holders; Pit does not download or provide full recordings. Preview recordings are for private, personal listening only and must not be copied, downloaded, redistributed, or used commercially.",
+          h: "Music catalogue metadata",
+          p: "Pit uses Deezer catalogue information for artist and track identification and related public metadata. That information remains controlled by Deezer and its right holders. Pit does not download or provide Deezer recordings, and catalogue references do not grant anyone rights to copy or redistribute third-party material.",
           links: [
             { label: "Deezer Developer Terms", url: "https://developers.deezer.com/termsofuse" },
             { label: "Deezer Privacy Policy", url: "https://www.deezer.com/legal/personal-datas" },

@@ -260,8 +260,8 @@
   ],
   "unexplainedEmptyCatchSignaturesByFile": {
     "App.js": {
-      "count": 11,
-      "fingerprint": "1a9098e2dee70f46e200"
+      "count": 9,
+      "fingerprint": "9dd242f8fa40611954bf"
     },
     "server/analyticsService.js": {
       "count": 1,
@@ -546,8 +546,8 @@
       "fingerprint": "39b514a38dea7cafc475"
     },
     "src/screens/AdminScreen.jsx": {
-      "count": 2,
-      "fingerprint": "c3caa3ebf9f30b870b9a"
+      "count": 1,
+      "fingerprint": "039cbb3caffd0e821ab6"
     },
     "src/screens/LandingScreen.jsx": {
       "count": 1,

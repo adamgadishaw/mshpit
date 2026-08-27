@@ -23,9 +23,9 @@ const PROMPT_COPY = Object.freeze({
     title: "Confirm before managing an artist",
     body: "Confirm your email before requesting access, publishing a campaign, or changing an artist page.",
   }),
-  playlist: Object.freeze({
+  artistPicks: Object.freeze({
     title: "Confirm before saving",
-    body: "Confirm your email before creating or changing playlists and artist picks.",
+    body: "Confirm your email before changing favorite artists or the public profile attached to this account.",
   }),
   report: Object.freeze({
     title: "Confirm before sending a report",

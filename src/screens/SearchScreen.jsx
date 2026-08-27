@@ -21,6 +21,7 @@ import { searchLiveAnnouncement } from "../domain/searchAccessibility.mjs";
 import { accountTargetScope, isCurrentScreenRequest, scopedScreenValue } from "../domain/screenScope.mjs";
 import { openTicketLink } from "../lib/ticketLinks";
 import { recordGuestSearch } from "../features/analytics/services/guestSearchAnalyticsApi.mjs";
+import { ENABLE_MUSIC_PLAYER } from "../config/runtime.mjs";
 
 const EMPTY_LOOKUP_STATE = Object.freeze({ busy: false, message: "" });
 const SEARCH_CATEGORIES = Object.freeze([
@@ -29,7 +30,7 @@ const SEARCH_CATEGORIES = Object.freeze([
   { key: "shows", label: "Shows" },
   { key: "venues", label: "Venues" },
   { key: "people", label: "People" },
-  { key: "songs", label: "Songs" },
+  ...(ENABLE_MUSIC_PLAYER ? [{ key: "songs", label: "Songs" }] : []),
 ]);
 
 
@@ -232,7 +233,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
           // artist/song discovery look broken.
           session?.id ? searchPeople(query, requestOptions) : Promise.resolve([]),
           searchArtistsApi(query, requestOptions),
-          searchSongsApi(query, requestOptions),
+          ENABLE_MUSIC_PLAYER ? searchSongsApi(query, requestOptions) : Promise.resolve([]),
         ]);
         if (!live) return;
         setPeopleCache({ scope: peopleScope, query, rows: peopleRows || [] });
@@ -277,7 +278,8 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
     });
   }, [peopleCache, peopleScope, query, mine, blockedIds]);
   const visibleRecentSearches = useMemo(
-    () => withoutBlockedPersonSearches(recentSearches, blockedIds),
+    () => withoutBlockedPersonSearches(recentSearches, blockedIds)
+      .filter((entry) => ENABLE_MUSIC_PLAYER || entry?.type !== "song"),
     [recentSearches, blockedIds],
   );
 
@@ -332,7 +334,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
     if (e.type === "artist") openArtist(e.label);
     else if (e.type === "venue") openVenue(e.label);
     else if (e.type === "person" && e.id) openPerson({ id: e.id, name: e.label, handle: (e.sub || "").replace(/^@/, "") });
-    else if (e.type === "song") {
+    else if (ENABLE_MUSIC_PLAYER && e.type === "song") {
       const recentTrack = recentSongTrack(e);
       if (recentTrack && onPlay) {
         addRecentSearch?.(recentSongSearchEntry(recentTrack));
@@ -381,7 +383,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
           <Icon name="search" size={18} color={focused ? colors.amber : colors.textDim} />
           <TextInput
             style={styles.input}
-            placeholder="Search people, artists, songs, venues"
+            placeholder={ENABLE_MUSIC_PLAYER ? "Search people, artists, songs, venues" : "Search people, artists, venues"}
             placeholderTextColor={colors.textFaint}
             value={q}
             onChangeText={(value) => { setQ(value); setActionMessage(""); }}
@@ -390,7 +392,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
             autoCapitalize="none"
             maxLength={80}
             accessibilityLabel="Search Mshpit"
-            accessibilityHint="Search people, artists, songs, venues, events, and fan clubs"
+            accessibilityHint={ENABLE_MUSIC_PLAYER ? "Search people, artists, songs, venues, events, and fan clubs" : "Search people, artists, venues, events, and fan clubs"}
             accessibilityState={{ busy: searchLoading }}
           />
           {!!q && <Pressable style={styles.fieldAction} onPress={() => { setQ(""); setActiveCategory("all"); setActionMessage(""); }} accessibilityRole="button" accessibilityLabel="Clear search"><Icon name="x" size={16} color={colors.textFaint} /></Pressable>}
@@ -425,7 +427,9 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
       <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.list} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
         {showBrowse && (
           <Text style={styles.browseHint}>
-            Search Mshpit · people, artists, songs, venues, events, and fan clubs
+            {ENABLE_MUSIC_PLAYER
+              ? "Search Mshpit · people, artists, songs, venues, events, and fan clubs"
+              : "Search Mshpit · people, artists, venues, events, and fan clubs"}
           </Text>
         )}
 
@@ -458,7 +462,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
         {resultState === "loading" && (
           <View style={styles.loading} accessibilityRole="progressbar" accessibilityLabel="Searching Mshpit" accessibilityState={{ busy: true }}>
             <ActivityIndicator size="small" color={colors.amber} />
-            <Text style={styles.loadingText}>Searching people, artists, songs, venues, and events...</Text>
+            <Text style={styles.loadingText}>Searching Mshpit...</Text>
           </View>
         )}
 
@@ -497,7 +501,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
           ].filter(Boolean)}
         />
 
-        <Section
+        {ENABLE_MUSIC_PLAYER && <Section
           hidden={!showCategory("songs")}
           icon="music" tint={colors.good}
           title="SONGS" count={songs.length}
@@ -516,7 +520,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
                 onPlay(selected);
               } : null}
             />
-          ))} />
+          ))} />}
 
         <Section hidden={!showCategory("venues")} icon="pin" tint={colors.cool} title="VENUES" count={venues.length}
           rows={venues.map((v) => <VenueRow key={v.name} v={v} onPress={() => openVenue(v.name)} />)} />

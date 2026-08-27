@@ -1,6 +1,8 @@
 // Data-boundary helpers shared by store bootstrap and discovery calculations.
 // Keep these functions pure so production migrations can be tested without React.
 
+import { MUSIC_PLAYER_ENABLED } from "./musicPlayerAvailability.mjs";
+
 const DEMO_USER_IDS = new Set(["u_demo", "u_artist", "u_mara", "u_devon", "u_priya"]);
 const DEMO_FEED_IDS = new Set(["log_1", "log_2", "log_3"]);
 export const PERSISTED_FEED_LIMIT = 80;
@@ -11,7 +13,11 @@ const withoutIds = (value, ids) => asArray(value).filter((item) => !ids.has(Stri
 
 export function publicProfileCacheEntry(user) {
   if (!isObject(user) || !user.id) return null;
-  const keys = ["id", "name", "handle", "role", "verified", "sponsor", "artistName", "bio", "avatarUri", "avatarColor", "banner", "initials", "nowPlaying"];
+  const keys = [
+    "id", "name", "handle", "role", "verified", "sponsor", "artistName",
+    "bio", "avatarUri", "avatarColor", "banner", "initials",
+    ...(MUSIC_PLAYER_ENABLED ? ["nowPlaying"] : []),
+  ];
   const projected = Object.fromEntries(keys.filter((key) => user[key] !== undefined).map((key) => [key, user[key]]));
   if (Array.isArray(user.genres)) projected.genres = user.genres.filter((value) => typeof value === "string").slice(0, 12);
   if (Array.isArray(user.favoriteArtists)) projected.favoriteArtists = user.favoriteArtists.filter((value) => typeof value === "string").slice(0, 50);

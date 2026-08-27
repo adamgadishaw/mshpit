@@ -85,6 +85,10 @@ import {
   legacyImageRecoveryEnabled,
   startLegacyImageRecoveryScheduler,
 } from "./legacyPostImageRecovery.js";
+import {
+  isDisabledMusicPlayerApiRequest,
+  MUSIC_PLAYER_ENABLED,
+} from "../src/domain/musicPlayerAvailability.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 3000;
@@ -138,16 +142,16 @@ const HEADERS = {
     "img-src 'self' https: data: blob:",
     "media-src 'self' https: blob:",
     // Expo SDK 56's export uses external bundles; its inline shell content is
-    // CSS. Google Maps and the YouTube player still need these script origins.
-    "script-src 'self' https://*.googleapis.com https://*.gstatic.com https://www.youtube.com https://s.ytimg.com",
+    // CSS. User-shared YouTube links are validated server-side, so the browser
+    // needs provider script origins only when the built-in player is enabled.
+    `script-src 'self' https://*.googleapis.com https://*.gstatic.com${MUSIC_PLAYER_ENABLED ? " https://www.youtube.com https://s.ytimg.com" : ""}`,
     "style-src 'self' 'unsafe-inline'",
-    // Google Maps XHR + the YouTube player's own data/stats fetches.
-    `connect-src 'self' https://*.googleapis.com https://*.gstatic.com https://www.youtube.com https://*.googlevideo.com${MEDIA_CONNECT_ORIGIN ? ` ${MEDIA_CONNECT_ORIGIN}` : ""}`,
+    // Google Maps XHR and durable uploaded media remain available while the
+    // built-in music player is paused.
+    `connect-src 'self' https://*.googleapis.com https://*.gstatic.com${MUSIC_PLAYER_ENABLED ? " https://www.youtube.com https://*.googlevideo.com" : ""}${MEDIA_CONNECT_ORIGIN ? ` ${MEDIA_CONNECT_ORIGIN}` : ""}`,
     "worker-src 'self' blob:", // vector maps run in blob web workers
     "font-src 'self' data: https://*.gstatic.com",
-    // In-app player: YouTube video/audio is framed in-app so people never leave
-    // the site (full songs, no account needed).
-    "frame-src 'self' https://www.youtube.com https://www.youtube-nocookie.com",
+    `frame-src 'self'${MUSIC_PLAYER_ENABLED ? " https://www.youtube.com https://www.youtube-nocookie.com" : ""}`,
     "object-src 'none'",
     "base-uri 'self'",
     "form-action 'self'",
@@ -498,6 +502,10 @@ const server = createServer(async (req, res) => {
     }
 
     if (pathname.startsWith("/api/")) {
+      if (isDisabledMusicPlayerApiRequest(req.method, pathname, query)) {
+        return sendApiError(res, new ApiError(404, "Not found.", "NOT_FOUND"), requestId, cors);
+      }
+
       // Cookie authentication needs an explicit browser request boundary.
       // Native clients omit Origin/Fetch Metadata and remain supported; browser
       // writes must originate from the configured first-party app.
@@ -810,7 +818,7 @@ async function startServer() {
       console.log("[mail] automatic campaign recovery disabled; resume only after privacy replay and restore review.");
     }
     startTourDateScheduler(); // scrapes tour dates into the DB on a timer (no cron/redeploy)
-    startCacheWarmScheduler(); // warms popular YouTube lookups daily so first listens play the video, not a preview
+    startCacheWarmScheduler(); // runs keyless catalogue enrichment; provider playback warming obeys the shared product gate
     startBackupScheduler(); // verified daily SQLite snapshot on /data; private off-host copy when configured
     startMediaDeletionScheduler({ database: db }); // bounded, durable cleanup of active user-media objects only
     legacyVideoPosterScheduler = startLegacyVideoPosterVerificationScheduler({ database: db });

@@ -1,12 +1,9 @@
 import { useState, useEffect, useRef } from "react";
-import { ActivityIndicator, View, Text, StyleSheet, ScrollView, Pressable, Linking } from "react-native";
+import { ActivityIndicator, View, Text, StyleSheet, ScrollView, Pressable } from "react-native";
 import { colors, mono, radius, roleColor, space } from "../theme";
 import { useStore } from "../store";
-import { listenUrl } from "../seed/songs";
-import { artistMeta } from "../seed/ingested";
 import Avatar from "../components/Avatar";
 import Icon from "../components/Icon";
-import SpinningRecord from "../components/SpinningRecord";
 import TicketStub from "../components/TicketStub";
 import { BadgeRow } from "../components/Badge";
 import { ACHIEVEMENTS } from "../domain/badges.mjs";
@@ -14,7 +11,6 @@ import { showDateMs } from "../lib/showTime";
 import Countdown from "../components/Countdown";
 import SmartImage from "../components/SmartImage";
 import ClipPoster from "../components/ClipPoster";
-import { trackKey } from "../domain/trackIdentity.mjs";
 import { formatDate } from "../domain/dates.mjs";
 import { profileMediaItems } from "../domain/profileMedia.mjs";
 import { mediaDisplayKind, mediaPosterUri } from "../domain/postMediaDisplay.mjs";
@@ -23,7 +19,6 @@ import { tasteMatch } from "../domain/tasteMatch.mjs";
 import { selectConcertReviews, selectProfileTimeline } from "../domain/profileTimeline.mjs";
 import { useProfileHistory } from "../features/profileHistory/useProfileHistory";
 
-const EMPTY_PLAYLIST_STATE = Object.freeze({ status: "loading", rows: [], error: "" });
 const EMPTY_PROFILE_STATE = Object.freeze({ status: "loading", user: null, error: "" });
 
 function Stat({ value, label, onPress }) {
@@ -32,35 +27,6 @@ function Stat({ value, label, onPress }) {
       <Text style={styles.statVal}>{value}</Text>
       <Text style={styles.statLabel}>{label}</Text>
     </Pressable>
-  );
-}
-
-function TrebleBass({ kind, song, playing, onPlay, onOpenArtist }) {
-  const treble = kind === "treble";
-  const c = treble ? colors.amber : colors.magenta;
-  const art = song ? artistMeta(song.artist)?.photo : null;
-  const StaticOrPreviewable = song && onPlay ? Pressable : View;
-  return (
-    <StaticOrPreviewable style={[styles.tb, { borderColor: c }]} onPress={song && onPlay ? onPlay : undefined} accessibilityRole={song && onPlay ? "button" : undefined} accessibilityLabel={song && onPlay ? `Preview ${song.title} by ${song.artist}` : undefined}>
-      <Text style={[styles.tbKind, { color: c }]}>{treble ? "TREBLE" : "BASS"}</Text>
-      <View style={styles.tbRecord}>
-        <SpinningRecord size={72} playing={playing} color={c} art={art} />
-      </View>
-      {song ? (
-        <>
-          <Text style={styles.tbTitle} numberOfLines={1}>{song.title}</Text>
-          <Pressable onPress={() => onOpenArtist?.(song.artist)}>
-            <Text style={styles.tbArtist} numberOfLines={1}>{song.artist}</Text>
-          </Pressable>
-          <Pressable style={styles.tbListen} onPress={() => Linking.openURL(listenUrl(song))}>
-            <Icon name="play" size={11} color={c} />
-            <Text style={[styles.tbListenTxt, { color: c }]}>Listen</Text>
-          </Pressable>
-        </>
-      ) : (
-        <Text style={styles.tbEmpty}>{treble ? "top pick" : "underdog pick"}</Text>
-      )}
-    </StaticOrPreviewable>
   );
 }
 
@@ -84,10 +50,9 @@ function ProfileMediaTile({ item, index, onOpen }) {
   );
 }
 
-// MySpace-style profile - banner, pfp, now-playing, theme song, Treble/Bass top
-// artists, planned shows, reviews. Built to make people findable and followable.
-export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenProfile, onOpenArtist, onOpenVenue, onManageProfile, onPreview, onMessage, onReport, onEditPost, onOpenPhotos, onPlay, onRemoveMyPostTag, onOpenFollowList, onOpenBadges }) {
-  const { session, userById, logsByUser, isFollowing, follow, unfollow, followerCount, followingCount, goingFor, userBadges, sharedShows, userPlaylists, loadUser, isBlocked, blockUser, unblockUser, userPoints, userAchievements, loadRewards, deleteOwnPost } = useStore();
+// Public member profile: identity, concert diary, media, plans, and posts.
+export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenProfile, onOpenArtist, onOpenVenue, onManageProfile, onMessage, onReport, onEditPost, onOpenPhotos, onRemoveMyPostTag, onOpenFollowList, onOpenBadges }) {
+  const { session, userById, logsByUser, isFollowing, follow, unfollow, followerCount, followingCount, goingFor, userBadges, sharedShows, loadUser, isBlocked, blockUser, unblockUser, userPoints, userAchievements, loadRewards, deleteOwnPost } = useStore();
   const profileScope = accountTargetScope(session?.id, `profile:${userId || ""}`);
   const profileScopeRef = useRef(profileScope);
   profileScopeRef.current = profileScope;
@@ -106,34 +71,6 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenProfi
   const user = profileView.status === "missing" || !mayRenderProfile
     ? null
     : session?.id === userId ? { ...cachedUser, ...session } : cachedUser;
-  const playlistScope = accountTargetScope(session?.id, `profile:${userId || ""}`);
-  const playlistScopeRef = useRef(playlistScope);
-  playlistScopeRef.current = playlistScope;
-  const [playlistRevision, setPlaylistRevision] = useState(0);
-  const [playlistState, setPlaylistState] = useState(() => ({ scope: playlistScope, value: EMPTY_PLAYLIST_STATE }));
-  const playlistView = scopedScreenValue(playlistState, playlistScope, EMPTY_PLAYLIST_STATE);
-  const playlists = playlistView.rows;
-  const [playing, setPlaying] = useState(null);
-  useEffect(() => {
-    const requestScope = playlistScope;
-    const controller = new AbortController();
-    setPlaylistState({ scope: requestScope, value: { status: "loading", rows: [], error: "" } });
-    if (!userId) return () => controller.abort();
-    userPlaylists(userId, { signal: controller.signal, throwOnError: true })
-      .then((rows) => {
-        if (!controller.signal.aborted && playlistScopeRef.current === requestScope) {
-          setPlaylistState({ scope: requestScope, value: { status: "ready", rows: Array.isArray(rows) ? rows : [], error: "" } });
-        }
-      })
-      .catch((error) => {
-        if (!controller.signal.aborted && error?.name !== "AbortError" && playlistScopeRef.current === requestScope) {
-          setPlaylistState({ scope: requestScope, value: { status: "error", rows: [], error: "Playlists could not be loaded. Check your connection and try again." } });
-        }
-      });
-    return () => controller.abort();
-    // userPlaylists is supplied by the store; the account+profile scope owns refreshes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [playlistScope, playlistRevision, userId]);
   useEffect(() => { if (userId) loadRewards(userId); }, [userId]);
   // Always refresh from the server: fills real follower counts, and makes profiles
   // we've never cached (a follower from a notification) open instead of blanking.
@@ -221,10 +158,6 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenProfi
     if (result?.ok) history.removePost(postId);
     return result;
   };
-  // Play a saved playlist: first track opens the bar with the whole list queued.
-  const playPlaylist = (pl) => { const q = (pl.tracks || []).filter((t) => !!trackKey(t)); if (q.length) onPlay?.(q[0], q); };
-  const StaticOrPlayable = onPlay ? Pressable : View;
-  const StaticOrPreviewable = onPreview ? Pressable : View;
   // "Crossed paths", shows you've both been to (and artists you've both seen).
   const crossed = !isSelf && session ? sharedShows(user.id) : { shows: [], artists: [] };
   const match = !isSelf && session ? tasteMatch(session, user) : null;
@@ -236,12 +169,6 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenProfi
   const galleryViewerItems = gallery.map((item) => ({ ...item, by: user.name, ownerId: user.id }));
   const following = isFollowing(user.id);
   const roleLabel = user.role === "admin" ? "ADMIN" : user.role === "artist" ? "VERIFIED ARTIST" : "FAN";
-  const playSong = (slot, song) => {
-    if (!song || !onPreview) return;
-    setPlaying((p) => (p === slot ? null : slot));
-    onPreview?.(song.title, song.artist);
-  };
-
   return (
     <View style={styles.wrap}>
       <View style={styles.topbar}>
@@ -400,34 +327,6 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenProfi
           </View>
         )}
 
-        {/* One authoritative playlist section, loaded from the public profile API. */}
-        <Text style={styles.sectionLabel}>PLAYLISTS{playlistView.status === "ready" && playlists.length ? ` · ${playlists.length}` : ""}</Text>
-        {playlistView.status === "loading" ? (
-          <View style={styles.playlistState} accessibilityLiveRegion="polite">
-            <ActivityIndicator size="small" color={colors.amber} />
-            <Text style={styles.playlistStateText}>Loading playlists...</Text>
-          </View>
-        ) : playlistView.status === "error" ? (
-          <View style={styles.playlistState} accessibilityLiveRegion="assertive">
-            <Text style={styles.playlistError} selectable>{playlistView.error}</Text>
-            <Pressable style={styles.playlistRetry} onPress={() => setPlaylistRevision((value) => value + 1)} accessibilityRole="button" accessibilityLabel={`Retry loading ${user.name}'s playlists`}>
-              <Text style={styles.playlistRetryText}>Try again</Text>
-            </Pressable>
-          </View>
-        ) : playlists.length > 0 ? (
-          <>
-            {playlists.map((pl) => (
-              <StaticOrPlayable key={pl.id} style={styles.playlistRow} onPress={onPlay ? () => playPlaylist(pl) : undefined} accessibilityRole={onPlay ? "button" : undefined} accessibilityLabel={onPlay ? `Play playlist ${pl.name}, ${(pl.tracks || []).length} songs` : `Playlist ${pl.name}, ${(pl.tracks || []).length} songs`}>
-                <View style={styles.playlistIcon}><Icon name={onPlay ? "play" : "music"} size={16} color={colors.amber} /></View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.playlistName} numberOfLines={1}>{pl.name}</Text>
-                  <Text style={styles.playlistSub} numberOfLines={1}>{(pl.tracks || []).length} song{(pl.tracks || []).length === 1 ? "" : "s"} · {(pl.tracks || []).slice(0, 3).map((t) => t.artist).filter(Boolean).join(", ")}</Text>
-                </View>
-                {onPlay && <Icon name="chevron-right" size={16} color={colors.textDim} />}
-              </StaticOrPlayable>
-            ))}
-          </>
-        ) : <Text style={styles.empty}>No playlists are shared here yet.</Text>}
 
         {/* Media gallery, using the same resilient descriptor pipeline as You. */}
         {gallery.length > 0 && (
@@ -441,30 +340,7 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenProfi
           </>
         )}
 
-        {/* on rotation: now playing + treble/bass with spinning records */}
-        {!!user.nowPlaying && (
-          <StaticOrPreviewable style={styles.nowCard} onPress={onPreview ? () => playSong("now", user.nowPlaying) : undefined} accessibilityRole={onPreview ? "button" : undefined} accessibilityLabel={onPreview ? `Preview ${user.nowPlaying.title} by ${user.nowPlaying.artist}` : undefined}>
-            <SpinningRecord size={44} playing={playing === "now"} color={colors.good} art={artistMeta(user.nowPlaying.artist)?.photo} />
-            <View style={{ flex: 1 }}>
-              <Text style={styles.nowLabel}>NOW PLAYING</Text>
-              <Text style={styles.nowTxt} numberOfLines={1}>{user.nowPlaying.title} · {user.nowPlaying.artist}</Text>
-            </View>
-            <Pressable style={styles.listenBtn} onPress={() => Linking.openURL(listenUrl(user.nowPlaying))}>
-              <Text style={styles.listenTxt}>Listen</Text>
-            </Pressable>
-          </StaticOrPreviewable>
-        )}
 
-        {(user.treble || user.bass) && (
-          <>
-            <Text style={styles.sectionLabel}>TREBLE & BASS</Text>
-            <Text style={styles.hint}>{onPreview ? "Their top pick and underdog. Tap to preview, or use the external listen link." : "Their top pick and underdog, with external listen links."}</Text>
-            <View style={styles.topRow}>
-              <TrebleBass kind="treble" song={user.treble} playing={playing === "treble"} onPlay={onPreview ? () => playSong("treble", user.treble) : undefined} onOpenArtist={onOpenArtist} />
-              <TrebleBass kind="bass" song={user.bass} playing={playing === "bass"} onPlay={onPreview ? () => playSong("bass", user.bass) : undefined} onOpenArtist={onOpenArtist} />
-            </View>
-          </>
-        )}
 
         {/* planned shows, with a live T-minus countdown per show (Clock-app
             style list): the wait is half the fun. Past/undated rows show plain. */}
@@ -507,7 +383,6 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenProfi
               key={l.id}
               log={l}
               onOpen={onOpenShow}
-              onPreview={onPreview}
               onOpenProfile={onOpenProfile}
               onOpenArtist={onOpenArtist}
               onOpenVenue={onOpenVenue}
@@ -521,7 +396,6 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenProfi
                 ...(Number.isSafeInteger(version) ? { version, editedAt: version } : {}),
               }))}
               onOpenPhotos={onOpenPhotos}
-              onPlay={onPlay}
             />
           ))}
         </View>
@@ -614,15 +488,6 @@ const styles = StyleSheet.create({
   tasteMatchGenreChip: { minHeight: 32, justifyContent: "center", paddingHorizontal: 11, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
   tasteMatchGenreText: { color: colors.textDim, fontSize: 11.5, fontWeight: "700" },
   tasteMatchBasis: { color: colors.textFaint, fontSize: 10.5, lineHeight: 15 },
-  playlistRow: { flexDirection: "row", alignItems: "center", gap: 12, marginHorizontal: 16, marginBottom: 8, padding: 12, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface },
-  playlistIcon: { width: 40, height: 40, borderRadius: 20, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.amber, backgroundColor: colors.bgElev },
-  playlistName: { color: colors.text, fontSize: 14.5, fontWeight: "800" },
-  playlistSub: { color: colors.textDim, fontSize: 11.5, marginTop: 2 },
-  playlistState: { minHeight: 72, marginHorizontal: 16, padding: 12, gap: 9, alignItems: "center", justifyContent: "center", borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface },
-  playlistStateText: { color: colors.textDim, fontSize: 12.5 },
-  playlistError: { color: colors.danger, fontSize: 12.5, lineHeight: 18, textAlign: "center" },
-  playlistRetry: { minHeight: 44, justifyContent: "center", paddingHorizontal: 15, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.amber },
-  playlistRetryText: { color: colors.amber, fontSize: 12.5, fontWeight: "800" },
   stat: { flex: 1, alignItems: "center" },
   statVal: { color: colors.text, fontFamily: mono, fontSize: 20, fontWeight: "800" },
   statLabel: { color: colors.textFaint, fontSize: 9, letterSpacing: 1, marginTop: 4, fontWeight: "700" },

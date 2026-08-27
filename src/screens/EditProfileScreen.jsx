@@ -8,7 +8,6 @@ import Avatar from "../components/Avatar";
 import Icon from "../components/Icon";
 import LocationPicker from "../components/LocationPicker";
 import PickArtistsScreen from "./PickArtistsScreen";
-import SongPicker from "./SongPicker";
 import Button from "../components/Button";
 import SheetHeader from "../components/SheetHeader";
 import { isDurableMediaUrl, reportMediaPickerError, uploadMediaAsset } from "../lib/mediaUpload";
@@ -19,22 +18,6 @@ import {
 
 const AVATAR_IMAGE_HINT = profileImageSelectionHint("avatar");
 const BANNER_IMAGE_HINT = profileImageSelectionHint("banner");
-
-function SongField({ song, color, onPress, onClear }) {
-  return (
-    <Pressable style={styles.songField} onPress={onPress}>
-      <Icon name="music" size={16} color={color} />
-      <Text style={[styles.songFieldTxt, !song && styles.songFieldEmpty]} numberOfLines={1}>
-        {song ? `${song.title} · ${song.artist}` : "Pick a song"}
-      </Text>
-      {song ? (
-        <Pressable onPress={onClear} hitSlop={8}><Icon name="x" size={15} color={colors.textFaint} /></Pressable>
-      ) : (
-        <Icon name="chevron-right" size={16} color={colors.textDim} />
-      )}
-    </Pressable>
-  );
-}
 
 export default function EditProfileScreen({ onClose }) {
   const { session, users, updateProfile, locationCenter } = useStore();
@@ -49,11 +32,7 @@ export default function EditProfileScreen({ onClose }) {
   const [banner, setBanner] = useState(isDurableMediaUrl(session?.banner) ? session.banner : null);
   const [genres, setGenres] = useState(session?.genres || []);
   const [home, setHome] = useState(session?.home || null);
-  const [nowPlaying, setNowPlaying] = useState(session?.nowPlaying || null);
-  const [treble, setTreble] = useState(session?.treble || null);
-  const [bass, setBass] = useState(session?.bass || null);
   const [pickingCity, setPickingCity] = useState(false);
-  const [pickingSong, setPickingSong] = useState(null); // 'now' | 'treble' | 'bass'
   const [pickingArtists, setPickingArtists] = useState(false);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const [uploadingBanner, setUploadingBanner] = useState(false);
@@ -68,14 +47,6 @@ export default function EditProfileScreen({ onClose }) {
           setPickingCity(false);
         }}
       />
-    );
-  }
-
-  if (pickingSong) {
-    const setters = { now: setNowPlaying, treble: setTreble, bass: setBass };
-    const kick = pickingSong === "now" ? "NOW PLAYING" : pickingSong === "treble" ? "TREBLE · TOP PICK" : "BASS · UNDERDOG";
-    return (
-      <SongPicker kicker={kick} onClose={() => setPickingSong(null)} onSelect={(s) => { setters[pickingSong]({ title: s.title, artist: s.artist }); setPickingSong(null); }} />
     );
   }
 
@@ -139,7 +110,6 @@ export default function EditProfileScreen({ onClose }) {
     try {
       const result = await Promise.resolve(updateProfile({
         name: name.trim() || session.name, bio: bio.trim(), avatarUri, banner, genres, initials, home,
-        nowPlaying, treble, bass,
         ...(handleChanged && !handleTaken && !handleTooShort ? { handle } : {}),
       }));
       if (result?.ok !== false) onClose?.();
@@ -233,22 +203,6 @@ export default function EditProfileScreen({ onClose }) {
 
         <Text style={styles.label}>BIO</Text>
         <TextInput style={[styles.input, styles.multiline]} value={bio} onChangeText={setBio} placeholder="A line about you" placeholderTextColor={colors.textFaint} multiline maxLength={240} />
-
-        <Text style={styles.label}>NOW PLAYING</Text>
-        <SongField song={nowPlaying} color={colors.good} onPress={() => setPickingSong("now")} onClear={() => setNowPlaying(null)} />
-
-        <Text style={styles.label}>TREBLE & BASS</Text>
-        <Text style={styles.hint}>Your top pick and your underdog. Pick from the list, no typing.</Text>
-        <View style={{ flexDirection: "row", gap: 10 }}>
-          <View style={{ flex: 1 }}>
-            <Text style={[styles.miniLabel, { color: colors.amber }]}>TREBLE</Text>
-            <SongField song={treble} color={colors.amber} onPress={() => setPickingSong("treble")} onClear={() => setTreble(null)} />
-          </View>
-          <View style={{ flex: 1 }}>
-            <Text style={[styles.miniLabel, { color: colors.magenta }]}>BASS</Text>
-            <SongField song={bass} color={colors.magenta} onPress={() => setPickingSong("bass")} onClear={() => setBass(null)} />
-          </View>
-        </View>
 
         <Text style={styles.label}>YOUR ARTISTS</Text>
         <Pressable style={styles.artistsBtn} onPress={() => setPickingArtists(true)}>

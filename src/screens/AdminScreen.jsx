@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useRef } from "react";
-import { ActivityIndicator, Alert, Linking, View, Text, StyleSheet, ScrollView, Pressable, TextInput } from "react-native";
+import { ActivityIndicator, View, Text, StyleSheet, ScrollView, Pressable, TextInput } from "react-native";
 import { colors, mono, radius, space } from "../theme";
 import { useStore, isStaff, isMod } from "../store";
 import { api } from "../lib/api";
@@ -11,7 +11,7 @@ import BadgeConsole from "../components/BadgeConsole";
 import ModerationConsole from "../components/moderation/ModerationConsole";
 import SuggestionInbox from "../components/moderation/SuggestionInbox";
 import ArtistMemorialConsole from "../components/moderation/ArtistMemorialConsole";
-import { adminPlaybackHealthPresentation, normalizeAdminMemberQuery, staffActionStillOwned, trackReportDetails } from "../domain/moderationConsole.mjs";
+import { normalizeAdminMemberQuery } from "../domain/moderationConsole.mjs";
 import { staffScopeFor } from "../domain/staffReadCoordinator.mjs";
 import { readAdminHealth } from "../features/admin/services/adminHealthApi.mjs";
 import { listSuggestions, updateSuggestionStatus } from "../features/suggestions/suggestionService";
@@ -320,32 +320,22 @@ function SuggestionsPanel({ session }) {
 
 const roleColor = (r) => (r === "admin" ? colors.magenta : r === "moderator" ? colors.good : r === "artist" ? colors.amber : colors.textDim);
 
-const confirmStaffAction = (title, detail) => new Promise((resolve) => {
-  if (typeof window !== "undefined" && typeof window.confirm === "function") {
-    resolve(window.confirm(`${title}\n\n${detail}`));
-    return;
-  }
-  Alert.alert(title, detail, [
-    { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
-    { text: "Confirm", style: "destructive", onPress: () => resolve(true) },
-  ], { cancelable: true, onDismiss: () => resolve(false) });
-});
-
 export default function AdminScreen({ onClose }) {
   const {
     requests, users, adminMembers, adminMemberDirectory, feed, removedIds, reports, moderationConsole, session,
     comments, fanClubMsgs, lounge,
-    approveArtist, rejectArtist, removeContent, restoreContent, dismissReport,
+    approveArtist, rejectArtist, removeContent, restoreContent,
     suspendUser, liftSuspension, banUser, unbanUser, setUserRole, setVerified, markEmailVerified, setSponsor,
     removeComment, removeFanClubMessage, removeLoungeMessage,
     loadAdminMembersStrict, loadMoreAdminMembersStrict, adminStats, adminArtistQueue, enrichArtists, purgeArtist, startCatalogSeed, catalogSeedStatus, stopCatalogSeed, catalogSeedRuns,
-    searchArtistsApi,
-    adminSetTrackVideo, trackOverridesList, removeTrackOverride, loadModerationConsole, loadMoreModerationConsole, moderateReport,
+    searchArtistsApi, prepareMemorialArtist,
+    loadModerationConsole, loadMoreModerationConsole, moderateReport,
   } = useStore();
 
   const iAmAdmin = isStaff(session?.role); // full access; mods get a subset
   const [tab, setTab] = useState(iAmAdmin ? "overview" : "reports");
-  const activeTab = iAmAdmin || !ADMIN_ONLY_TABS.has(tab) ? tab : "reports";
+  const requestedTab = tab === "songs" ? (iAmAdmin ? "overview" : "reports") : tab;
+  const activeTab = iAmAdmin || !ADMIN_ONLY_TABS.has(requestedTab) ? requestedTab : "reports";
   // Admin-created badges available to grant. Retired ones are excluded here but
   // still render on anyone holding them, so they stay revocable.
   const [grantableBadges, setGrantableBadges] = useState([]);
@@ -353,11 +343,6 @@ export default function AdminScreen({ onClose }) {
   // store, so this holds the fresher server answer without refetching all 500.
   const [memberBadges, setMemberBadges] = useState({});
   const [errorLog, setErrorLog] = useState(null);
-  // Draft "correct link" per wrong-version track report.
-  const [trackFix, setTrackFix] = useState({});
-  const [trackQueueState, setTrackQueueState] = useState({ loading: false, error: "" });
-  const [trackActionState, setTrackActionState] = useState({ key: null, tone: "", message: "" });
-  const trackActionInFlight = useRef(null);
   const activeStaffSession = useRef(session);
   activeStaffSession.current = session;
   const artistRequestScope = staffScopeFor(session);
@@ -374,10 +359,6 @@ export default function AdminScreen({ onClose }) {
   useEffect(() => {
     if (tab !== activeTab) setTab(activeTab);
   }, [activeTab, tab]);
-  useEffect(() => {
-    trackActionInFlight.current = null;
-    setTrackActionState({ key: null, tone: "", message: "" });
-  }, [session?.id, session?.role]);
   useEffect(() => {
     const active = artistRequestActionRef.current;
     active.controller?.abort();
@@ -418,68 +399,6 @@ export default function AdminScreen({ onClose }) {
       if (artistRequestActionRef.current === operation) {
         artistRequestActionRef.current = { ...operation, controller: null };
       }
-    }
-  };
-  // Current song pins, live from the server (never trusts a login-time cache).
-  const [pins, setPins] = useState([]);
-  const refreshPins = () => trackOverridesList().then(setPins);
-  // The moderation queue is server-authoritative: re-pull it whenever a
-  // moderation tab opens so reports survive refreshes and other devices' work.
-  useEffect(() => {
-    if (activeTab !== "songs") return undefined;
-    let live = true;
-    setTrackQueueState({ loading: true, error: "" });
-    loadModerationConsole()
-      .then(() => { if (live) setTrackQueueState({ loading: false, error: "" }); })
-      .catch((error) => { if (live) setTrackQueueState({ loading: false, error: error?.message || "Song reports could not be refreshed." }); });
-    refreshPins();
-    return () => { live = false; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab]);
-  const loadOlderTrackReports = async () => {
-    if (trackQueueState.loading || !moderationConsole.nextCursor) return;
-    setTrackQueueState({ loading: true, error: "" });
-    try {
-      await loadMoreModerationConsole();
-      setTrackQueueState({ loading: false, error: "" });
-    } catch (error) {
-      setTrackQueueState({ loading: false, error: error?.message || "Older song reports could not be loaded." });
-    }
-  };
-  const runTrackAction = async ({ key, title, detail, success, run }) => {
-    if (trackActionInFlight.current) return false;
-    const initiatingScope = staffScopeFor(activeStaffSession.current);
-    if (!initiatingScope) {
-      setTrackActionState({ key: null, tone: "error", message: "Your staff session is no longer active. Sign in again before changing song moderation state." });
-      return false;
-    }
-    const operation = { key, initiatingScope };
-    trackActionInFlight.current = operation;
-    setTrackActionState({ key, tone: "", message: "" });
-    const approved = await confirmStaffAction(title, detail);
-    if (trackActionInFlight.current !== operation) return false;
-    if (!approved) {
-      trackActionInFlight.current = null;
-      setTrackActionState({ key: null, tone: "", message: "" });
-      return false;
-    }
-    if (!staffActionStillOwned(initiatingScope, activeStaffSession.current)) {
-      trackActionInFlight.current = null;
-      setTrackActionState({ key: null, tone: "error", message: "Your staff session changed before this action started. No song moderation write was attempted." });
-      return false;
-    }
-    try {
-      const result = await run({ initiatingScope });
-      if (trackActionInFlight.current !== operation) return false;
-      if (result === false || result?.ok === false) throw result?.error || new Error("The server did not apply this song moderation change.");
-      setTrackActionState({ key: null, tone: result?.partial ? "warning" : "success", message: result?.message || success });
-      return true;
-    } catch (error) {
-      if (trackActionInFlight.current !== operation) return false;
-      setTrackActionState({ key: null, tone: "error", message: error?.message || "That song moderation change was not applied." });
-      return false;
-    } finally {
-      if (trackActionInFlight.current === operation) trackActionInFlight.current = null;
     }
   };
   // Catalog queue: thin artists + searched-but-not-found names, seed on demand.
@@ -554,15 +473,17 @@ export default function AdminScreen({ onClose }) {
 
   const pending = requests.filter((r) => r.status === "pending");
   const openReports = reports.filter((r) => r.status === "open");
-  // Song reports get their own tab; content reports keep the classic queue.
-  const trackReports = openReports.filter((r) => r.targetType === "track");
   const contentReports = openReports.filter((r) => r.targetType !== "track");
   const serverOpenReportCount = Number(moderationConsole.summary?.open);
-  const openReportCount = Number.isFinite(serverOpenReportCount) ? Math.max(openReports.length, serverOpenReportCount) : openReports.length;
   const serverTrackReportCount = Number(moderationConsole.summary?.byType?.track);
-  const trackReportCount = Number.isFinite(serverTrackReportCount) ? Math.max(trackReports.length, serverTrackReportCount) : trackReports.length;
-  const contentReportCount = Math.max(contentReports.length, openReportCount - trackReportCount);
-  const trackActionBusy = !!trackActionState.key;
+  const loadedTrackReportCount = openReports.length - contentReports.length;
+  const dormantTrackReportCount = Number.isFinite(serverTrackReportCount)
+    ? Math.max(loadedTrackReportCount, serverTrackReportCount)
+    : loadedTrackReportCount;
+  const contentReportCount = Number.isFinite(serverOpenReportCount)
+    ? Math.max(contentReports.length, Math.max(0, serverOpenReportCount - dormantTrackReportCount))
+    : contentReports.length;
+  const openReportCount = contentReportCount;
   const userFor = (id) => users.find((u) => u.id === id);
   const adminMemberTotal = Number.isFinite(adminStats?.total) ? adminStats.total : adminMembers.length;
   const bannedCount = Number.isFinite(adminStats?.banned)
@@ -573,10 +494,9 @@ export default function AdminScreen({ onClose }) {
   const allFanMsgs = useMemo(() => Object.entries(fanClubMsgs).flatMap(([artist, arr]) => arr.map((m) => ({ artist, ...m }))), [fanClubMsgs]);
   const allLounge = useMemo(() => Object.entries(lounge).flatMap(([key, arr]) => arr.map((m) => ({ key, ...m }))), [lounge]);
 
-  // Playback health is operational data, so it comes from the authenticated
-  // staff projection. The public health route deliberately omits service and
-  // credential diagnostics and must never be interpreted as a missing key.
-  const [health, setHealth] = useState(null);
+  // Keep the authenticated operational-health request active for server-side
+  // diagnostics even while its dormant media-specific card is not rendered.
+  const [, setHealth] = useState(null);
   useEffect(() => {
     if (activeTab !== "overview" || !artistRequestScope) {
       setHealth(null);
@@ -600,7 +520,6 @@ export default function AdminScreen({ onClose }) {
     { key: "overview", label: "Overview", icon: "discover", admin: true },
     { key: "analytics", label: "Analytics", icon: "trophy", admin: true },
     { key: "reports", label: "Reports", icon: "flag", badge: contentReportCount || undefined },
-    { key: "songs", label: "Songs", icon: "music", badge: trackReportCount || undefined },
     { key: "members", label: "Members", icon: "you", badge: bannedCount || undefined },
     { key: "content", label: "Content", icon: "feed" },
     { key: "catalog", label: "Catalog", icon: "music", admin: true },
@@ -665,7 +584,7 @@ export default function AdminScreen({ onClose }) {
               mode="overview"
               session={session}
               isAdmin={iAmAdmin}
-              reports={reports}
+              reports={contentReports}
               moderationConsole={moderationConsole}
               users={users}
               adminMembers={adminMembers}
@@ -691,7 +610,6 @@ export default function AdminScreen({ onClose }) {
               toggleMemberBadge={toggleMemberBadge}
               onOpenReports={() => setTab("reports")}
               onOpenMembers={() => setTab("members")}
-              onOpenSongs={() => setTab("songs")}
             />
             <View style={styles.statRow}>
               <View style={styles.stat}><Text style={styles.statN}>{adminMemberTotal}</Text><Text style={styles.statL}>members</Text></View>
@@ -699,23 +617,6 @@ export default function AdminScreen({ onClose }) {
               <View style={styles.stat}><Text style={[styles.statN, openReportCount ? { color: colors.danger } : null]}>{openReportCount}</Text><Text style={styles.statL}>reports</Text></View>
               <View style={styles.stat}><Text style={[styles.statN, bannedCount ? { color: colors.danger } : null]}>{bannedCount}</Text><Text style={styles.statL}>banned</Text></View>
             </View>
-
-            {health && (() => {
-              const playbackHealth = adminPlaybackHealthPresentation(health);
-              return (
-                <View style={[styles.healthCard, playbackHealth.bad && styles.healthCardBad]}>
-                  <Text style={styles.healthTitle}>PLAYBACK LOOKUP</Text>
-                  <Text style={[styles.healthState, {
-                    color: playbackHealth.status === "unknown"
-                      ? colors.textDim
-                      : playbackHealth.bad ? colors.danger : colors.good,
-                  }]}>
-                    {playbackHealth.message}
-                  </Text>
-                  {!!playbackHealth.detail && <Text style={styles.healthSub}>{playbackHealth.detail}</Text>}
-                </View>
-              );
-            })()}
 
             {/* Aggregated server errors. One row per distinct problem, so the
                 count is the volume and the list is the work. */}
@@ -759,7 +660,7 @@ export default function AdminScreen({ onClose }) {
             mode="reports"
             session={session}
             isAdmin={iAmAdmin}
-            reports={reports}
+            reports={contentReports}
             moderationConsole={moderationConsole}
             users={users}
             adminMembers={adminMembers}
@@ -786,114 +687,13 @@ export default function AdminScreen({ onClose }) {
           />
         )}
 
-        {/* ---- SONGS: wrong-version reports + every pinned video ---- */}
-        {activeTab === "songs" && (
-          <>
-            <Text style={styles.policy}>Listeners can flag wrong videos, playback failures, preview-only fallbacks, and missing songs. Verify a candidate on YouTube, then pin its link to the exact provider recording when the report includes one.</Text>
-            {trackActionState.message ? <Text accessibilityLiveRegion={trackActionState.tone === "error" ? "assertive" : "polite"} selectable style={[styles.trackActionFeedback, trackActionState.tone === "error" ? styles.trackActionError : trackActionState.tone === "warning" ? styles.trackActionWarning : styles.trackActionSuccess]}>{trackActionState.message}</Text> : null}
-
-            <Text style={styles.catTitle}>WRONG-VERSION REPORTS / {trackReports.length} LOADED / {trackReportCount} OPEN</Text>
-            {trackQueueState.loading && !trackReports.length ? <View accessibilityLiveRegion="polite" style={styles.trackQueueStatus}><ActivityIndicator color={colors.amber} /><Text style={styles.catHint}>Loading song reports...</Text></View> : null}
-            {trackQueueState.error ? <Text accessibilityLiveRegion="assertive" selectable style={styles.growErr}>{trackQueueState.error}</Text> : null}
-            {trackReports.length === 0 && !trackQueueState.loading && <Text style={styles.empty}>{trackReportCount ? "No song reports are in the loaded page yet. Load older reports to continue." : "No open song reports."}</Text>}
-            {trackReports.map((r) => {
-              const t = trackReportDetails(r);
-              const reporter = r.reporter || userFor(r.reporterId);
-              const issueLabel = ({ wrong_video: "wrong video", wont_play: "won't play", preview_only: "preview only", missing: "missing song", other: "other playback issue" })[t.category] || "wrong video";
-              const draft = trackFix[r.id] ?? (t.suggestedVideoId ? `https://www.youtube.com/watch?v=${t.suggestedVideoId}` : "");
-              const sourceLabel = t.provider && t.sourceId ? `${t.provider} recording ${t.sourceId}` : "legacy title/artist recording";
-              return (
-                <View key={r.id} style={styles.card}>
-                  <View style={styles.reasonRow}>
-                    <Icon name="music" size={14} color={colors.gold} />
-                    <Text style={styles.reason}>{issueLabel}</Text>
-                  </View>
-                  <Text style={styles.artist}>{t.title || r.targetId}{t.artist ? ` / ${t.artist}` : ""}</Text>
-                  <Text style={styles.sub}>reported by {reporter ? `@${reporter.handle}` : "a user"} / {sourceLabel}{t.note ? ` / "${t.note}"` : ""}{t.suggestedVideoId ? " / suggested a link" : ""}</Text>
-                  <TextInput
-                    style={styles.trackFixInput}
-                    placeholder="Correct YouTube link"
-                    placeholderTextColor={colors.textFaint}
-                    value={draft}
-                    onChangeText={(v) => setTrackFix((m) => ({ ...m, [r.id]: v }))}
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    accessibilityLabel={`Correct YouTube link for ${t.title || r.targetId}`}
-                    returnKeyType="done"
-                  />
-                  <View style={styles.actions}>
-                    <Pressable accessibilityRole="link" accessibilityLabel={`Search YouTube candidates for ${t.title || r.targetId}`} disabled={trackActionBusy} style={[styles.btn, trackActionBusy && styles.pillDisabled]} onPress={() => Linking.openURL(`https://www.youtube.com/results?search_query=${encodeURIComponent(`${t.artist || ""} ${t.title || r.targetId} official audio`)}`).catch(() => setTrackActionState({ key: null, tone: "error", message: "YouTube search could not be opened on this device." }))}>
-                      <Icon name="search" size={14} color={colors.cool} /><Text style={[styles.dismissTxt, { color: colors.cool }]}>Search candidates</Text>
-                    </Pressable>
-                    <Pressable accessibilityRole="button" accessibilityLabel={`Pin video for ${t.title || r.targetId}`} accessibilityState={{ busy: trackActionState.key === `${r.id}:pin`, disabled: trackActionBusy || !draft.trim() }} disabled={trackActionBusy || !draft.trim()} style={[styles.btn, styles.trackPin, (trackActionBusy || !draft.trim()) && styles.pillDisabled]} onPress={() => runTrackAction({
-                      key: `${r.id}:pin`, title: `Pin this video for ${t.title || r.targetId}?`, detail: t.sourceId ? `The pin applies only to ${sourceLabel} and closes this report.` : "The pinned video replaces title/artist playback resolution and closes this report.", success: "Video pinned and song report closed.", run: async ({ initiatingScope }) => {
-                        const result = await adminSetTrackVideo({ title: t.title || r.targetId, artist: t.artist || "", url: draft.trim(), provider: t.provider, sourceId: t.sourceId });
-                        if (!result?.ok) return result;
-                        if (!staffActionStillOwned(initiatingScope, activeStaffSession.current)) return { ok: true, partial: true, message: "Video pin saved, but the report was not closed because your staff session changed." };
-                        refreshPins();
-                        setTrackFix((current) => { const next = { ...current }; delete next[r.id]; return next; });
-                        return true;
-                      },
-                    })}>
-                      {trackActionState.key === `${r.id}:pin` ? <ActivityIndicator color={colors.good} size="small" /> : <Icon name="check" size={15} color={colors.good} />}<Text style={[styles.dismissTxt, { color: colors.good }]}>Pin this video</Text>
-                    </Pressable>
-                    <Pressable accessibilityRole="button" accessibilityLabel={`Mark no correct video for ${t.title || r.targetId}`} accessibilityState={{ busy: trackActionState.key === `${r.id}:none`, disabled: trackActionBusy }} disabled={trackActionBusy} style={[styles.btn, styles.suspend, trackActionBusy && styles.pillDisabled]} onPress={() => runTrackAction({
-                      key: `${r.id}:none`, title: `Confirm no correct video for ${t.title || r.targetId}?`, detail: t.sourceId ? `Only ${sourceLabel} will use the fallback preview, and this report will close.` : "Listeners will receive the fallback preview and this report will close. Staff can remove the override later.", success: "No-video fallback saved and song report closed.", run: async ({ initiatingScope }) => {
-                        const result = await adminSetTrackVideo({ title: t.title || r.targetId, artist: t.artist || "", none: true, provider: t.provider, sourceId: t.sourceId });
-                        if (!result?.ok) return result;
-                        if (!staffActionStillOwned(initiatingScope, activeStaffSession.current)) return { ok: true, partial: true, message: "The no-video fallback was saved, but the report was not closed because your staff session changed." };
-                        refreshPins();
-                        return true;
-                      },
-                    })}>
-                      {trackActionState.key === `${r.id}:none` ? <ActivityIndicator color={colors.gold} size="small" /> : <Icon name="x" size={14} color={colors.gold} />}<Text style={[styles.dismissTxt, { color: colors.gold }]}>No correct video</Text>
-                    </Pressable>
-                    <Pressable accessibilityRole="button" accessibilityLabel={`Dismiss report for ${t.title || r.targetId}`} accessibilityState={{ busy: trackActionState.key === `${r.id}:dismiss`, disabled: trackActionBusy }} disabled={trackActionBusy} style={[styles.btn, styles.reject, trackActionBusy && styles.pillDisabled]} onPress={() => runTrackAction({ key: `${r.id}:dismiss`, title: `Dismiss this report for ${t.title || r.targetId}?`, detail: "Playback behavior will not change and the report will leave the open queue.", success: "Song report dismissed.", run: () => dismissReport(r.id) })}>
-                      {trackActionState.key === `${r.id}:dismiss` ? <ActivityIndicator color={colors.textDim} size="small" /> : null}<Text style={styles.dismissTxt}>Dismiss</Text>
-                    </Pressable>
-                  </View>
-                </View>
-              );
-            })}
-            {moderationConsole.nextCursor ? (
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="Load older report page"
-                accessibilityHint="Loads older reports from the server, including any older song reports"
-                accessibilityState={{ busy: trackQueueState.loading, disabled: trackQueueState.loading }}
-                disabled={trackQueueState.loading}
-                style={({ pressed }) => [styles.refreshBtn, pressed && !trackQueueState.loading && styles.pressed, trackQueueState.loading && styles.pillDisabled]}
-                onPress={loadOlderTrackReports}
-              >
-                {trackQueueState.loading ? <ActivityIndicator color={colors.amber} size="small" /> : <Icon name="chevron-down" size={14} color={colors.amber} />}
-                <Text style={styles.refreshTxt}>{trackQueueState.loading ? "Loading older reports..." : "Load older report page"}</Text>
-              </Pressable>
-            ) : null}
-
-            <Text style={styles.catTitle}>PINNED LINKS / {pins.length}</Text>
-            <Text style={styles.catHint}>Every song with a human-verified video (or a confirmed "no correct video"). Unpinning hands the song back to the search resolver.</Text>
-            {pins.length === 0 && <Text style={styles.empty}>Nothing pinned yet.</Text>}
-            {pins.map((p) => (
-              <View key={p.key} style={styles.pinRow}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.pinTitle} numberOfLines={1}>{p.title}{p.artist ? ` / ${p.artist}` : ""}</Text>
-                  <Text style={styles.pinSub} numberOfLines={1}>{p.provider && p.sourceId ? `${p.provider} ${p.sourceId} / ` : ""}{p.videoId ? `youtube.com/watch?v=${p.videoId}` : "confirmed: no correct video (plays preview)"}</Text>
-                </View>
-                <Pressable style={[styles.pinRemove, trackActionBusy && styles.pillDisabled]} disabled={trackActionBusy} onPress={() => runTrackAction({ key: `${p.key}:unpin`, title: `Remove the playback override for ${p.title}?`, detail: "The automatic resolver will choose playback again for future listeners.", success: "Playback override removed.", run: async () => { const result = await removeTrackOverride({ title: p.title, artist: p.artist, provider: p.provider, sourceId: p.sourceId }); if (result?.ok) refreshPins(); return result; } })} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Unpin ${p.title}`} accessibilityState={{ busy: trackActionState.key === `${p.key}:unpin`, disabled: trackActionBusy }}>
-                  {trackActionState.key === `${p.key}:unpin` ? <ActivityIndicator color={colors.textDim} size="small" /> : <Icon name="x" size={13} color={colors.textDim} />}
-                </Pressable>
-              </View>
-            ))}
-          </>
-        )}
-
         {/* ---- MEMBERS ---- */}
         {activeTab === "members" && (
           <ModerationConsole
             mode="members"
             session={session}
             isAdmin={iAmAdmin}
-            reports={reports}
+            reports={contentReports}
             moderationConsole={moderationConsole}
             users={users}
             adminMembers={adminMembers}
@@ -1132,6 +932,7 @@ export default function AdminScreen({ onClose }) {
             error={memorialAdmin.error}
             onRefresh={memorialAdmin.reload}
             onSearchArtists={searchArtistsApi}
+            onResolveArtist={prepareMemorialArtist}
             onSave={memorialAdmin.save}
           />
         )}
@@ -1281,12 +1082,6 @@ const styles = StyleSheet.create({
   remove: { borderColor: colors.danger, backgroundColor: "rgba(224,69,123,0.08)" },
   reject: { borderColor: colors.line },
   suspend: { borderColor: colors.gold, backgroundColor: "rgba(232,182,90,0.08)" },
-  trackPin: { borderColor: colors.good, backgroundColor: "rgba(111,207,151,0.08)" },
-  trackFixInput: { backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line, borderRadius: radius.sm, color: colors.text, fontSize: 12.5, paddingHorizontal: 10, paddingVertical: 8, marginTop: 10 },
-  pinRow: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: colors.surface, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.lineSoft, paddingHorizontal: 12, paddingVertical: 10, marginBottom: 7 },
-  pinTitle: { color: colors.text, fontSize: 13, fontWeight: "700" },
-  pinSub: { color: colors.textDim, fontFamily: mono, fontSize: 11, marginTop: 2 },
-  pinRemove: { width: 44, height: 44, borderRadius: 22, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },
   approve: { borderColor: colors.good, backgroundColor: colors.good },
   approveTxt: { color: "#0C1A0F", fontSize: 13, fontWeight: "800" },
   rejectTxt: { color: colors.danger, fontSize: 13, fontWeight: "700" },
@@ -1311,10 +1106,6 @@ const styles = StyleSheet.create({
   refreshBtn: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 6, alignSelf: "flex-start", marginTop: 12, paddingHorizontal: 12, paddingVertical: 8, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.amber, backgroundColor: "rgba(242,166,90,0.08)" },
   refreshTxt: { color: colors.amber, fontSize: 12.5, fontWeight: "800" },
   trackQueueStatus: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 8 },
-  trackActionFeedback: { borderWidth: 1, borderRadius: radius.sm, paddingHorizontal: 12, paddingVertical: 10, fontSize: 12, lineHeight: 18, fontWeight: "700", marginBottom: 12 },
-  trackActionError: { color: colors.danger, borderColor: colors.danger },
-  trackActionWarning: { color: colors.gold, borderColor: colors.gold },
-  trackActionSuccess: { color: colors.good, borderColor: colors.good },
   pressed: { opacity: 0.72 },
   growNotice: { marginTop: 10, padding: 11, borderRadius: radius.md, borderWidth: 1, borderColor: colors.gold, backgroundColor: "rgba(232,182,90,0.08)" },
   growNoticeTitle: { color: colors.gold, fontSize: 12, fontWeight: "900", letterSpacing: 0.3, marginBottom: 4, fontFamily: mono },

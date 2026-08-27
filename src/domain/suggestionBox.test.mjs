@@ -21,10 +21,12 @@ import {
 test("suggestion enums accept only bounded categorical values", () => {
   assert.deepEqual(SUGGESTION_CATEGORIES.map((category) => category.key), ["friction", "idea", "bug", "other"]);
   assert.ok(SUGGESTION_SAFE_SURFACES.includes("landing"));
+  assert.equal(SUGGESTION_SAFE_SURFACES.includes("player"), false);
   assert.deepEqual(SUGGESTION_STATUSES, ["new", "considering", "planned", "shipped", "closed"]);
   assert.equal(normalizeSuggestionCategory(" IDEA "), "idea");
   assert.equal(normalizeSuggestionCategory("feature-request-with-email@example.com"), null);
   assert.equal(normalizeSuggestionSurface(" Search "), "search");
+  assert.equal(normalizeSuggestionSurface("player"), null);
   assert.equal(normalizeSuggestionSurface("/search?q=private"), null);
   assert.equal(normalizeSuggestionStatus("Planned"), "planned");
   assert.equal(normalizeSuggestionStatus("deleted"), null);

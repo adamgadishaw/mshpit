@@ -244,9 +244,7 @@ function RailBtn({ icon, filled, tint, label, onPress, a11y }) {
 
 // Clips mode: a full-screen vertical swipe-through of the concert videos people
 // have posted (traditional horizontal video, not vertical). Its own volume +
-// swipe-to-skip; music and clips can play at once, so opening this pauses the
-// app's music player (App handles that via onEnter/onExit) rather than fighting
-// it for audio. One clip per post (its first video); the rest live on the post.
+// swipe-to-skip. One clip per post (its first video); the rest live on the post.
 export default function ClipsScreen({ onClose, onOpenPost, onOpenProfile, onOpenArtist, onRequireAuth }) {
   const { session, loadClips, toggleLike, track } = useStore();
   const { height: winH } = useWindowDimensions();

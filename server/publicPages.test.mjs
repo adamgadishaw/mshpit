@@ -87,7 +87,7 @@ test("trust-page metadata is canonical, brand-consistent, and does not invent po
 
   const privacyPage = structuredGraph(renderPublicPage("/privacy"))
     .find((node) => node["@id"].endsWith("#page"));
-  assert.equal(privacyPage.dateModified, "2026-08-25", "an exact published policy day is safe to expose");
+  assert.equal(privacyPage.dateModified, "2026-08-27", "an exact published policy day is safe to expose");
 
   for (const path of ["/community-guidelines", "/ratings-methodology", "/terms"]) {
     const html = renderPublicPage(path);
@@ -101,16 +101,18 @@ test("trust-page metadata is canonical, brand-consistent, and does not invent po
 
 test("privacy and terms mirror the dated in-app policies and expose support", () => {
   const privacy = renderPublicPage("/privacy");
-  assert.match(privacy, /Last updated August 25, 2026/);
+  assert.match(privacy, /Last updated August 27, 2026/);
   assert.match(privacy, /rolling 30-day period/);
   assert.match(privacy, /product analytics enabled/);
   assert.match(privacy, /daily aggregate counters/);
   assert.match(privacy, /cannot identify a unique visitor/);
   assert.match(privacy, /suggestion box accepts an anonymous category/);
   assert.match(privacy, /Aggregate guest-search counters are retained for up to 90 days/);
-  assert.match(privacy, /YouTube API Services/);
-  assert.match(privacy, /Music catalogue and preview audio/);
+  assert.match(privacy, /YouTube links shared in posts/);
+  assert.match(privacy, /YouTube(?:'|&#39;)s oEmbed service/);
+  assert.match(privacy, /Music catalogue metadata/);
   assert.match(privacy, /Deezer privacy policy/);
+  assert.doesNotMatch(privacy, /embedded YouTube player|preview audio|playback milestones|listening history/i);
   assert.match(privacy, /durably queued for active object-storage deletion/);
   assert.match(privacy, /keep your personal member profile out of search-engine results/);
   assert.match(privacy, /does not make public posts private/);
@@ -122,6 +124,9 @@ test("privacy and terms mirror the dated in-app policies and expose support", ()
   assert.match(terms, /Moderation and enforcement/);
   assert.match(terms, /YouTube Terms of Service/);
   assert.match(terms, /Deezer developer terms/);
+  assert.match(terms, /YouTube links in posts/);
+  assert.match(terms, /Music catalogue metadata/);
+  assert.doesNotMatch(terms, /YouTube playback|preview recordings|full recordings/i);
   assert.match(terms, /may in the future display advertising/);
   assert.doesNotMatch(terms, /is free and supported by advertising/);
   assert.doesNotMatch(terms, /building interest profiles and targeting/);
@@ -132,13 +137,17 @@ test("in-app legal copy matches the public provider disclosure and support route
     readFile(new URL("../src/screens/PrivacyScreen.jsx", import.meta.url), "utf8"),
     readFile(new URL("../src/screens/TermsScreen.jsx", import.meta.url), "utf8"),
   ]);
-  assert.match(privacySource, /Music catalogue & preview audio/);
+  assert.match(privacySource, /YouTube links shared in posts/);
+  assert.match(privacySource, /Music catalogue metadata/);
   assert.match(privacySource, /Deezer Privacy Policy/);
+  assert.doesNotMatch(privacySource, /embedded YouTube player|preview audio|playback milestones/i);
   assert.match(privacySource, /durably queued for active object-storage deletion/);
   assert.match(privacySource, /PROFILE_SEARCH_INDEXING_DISCLOSURE/);
   assert.match(termsSource, /updated="August 2026"/);
-  assert.match(termsSource, /Music catalogue & preview audio/);
+  assert.match(termsSource, /YouTube links in posts/);
+  assert.match(termsSource, /Music catalogue metadata/);
   assert.match(termsSource, /Deezer Developer Terms/);
+  assert.doesNotMatch(termsSource, /YouTube playback|preview recordings|full recordings/i);
   assert.match(termsSource, /Open Support from Settings/);
   assert.doesNotMatch(termsSource, /from your profile/);
 });

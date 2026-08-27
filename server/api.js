@@ -178,6 +178,8 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const VIDEO_VERIFY_USER_HOURLY_LIMIT = 240;
 const VIDEO_VERIFY_IP_HOURLY_LIMIT = 480;
 const VIDEO_VERIFY_GLOBAL_HOURLY_LIMIT = 2_000;
+const MUSICBRAINZ_ARTIST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+const MUSICBRAINZ_ARTIST_LOOKUP_TIMEOUT_MS = 12_000;
 const VIDEO_CACHED_FINALIZE_WAIT_MS = 18_000;
 const runtimeReadinessSuccessCache = createSuccessfulReadinessCache();
 const YOUTUBE_PLAYBACK_FAILURE_TTL_MS = 30 * DAY_MS;
@@ -1736,30 +1738,188 @@ function withCommentPreviews(posts, viewerId) {
   return posts.map((post) => ({ ...post, comment_preview: JSON.stringify(byPost.get(post.id) || []) }));
 }
 
-// Resolve an artist by name from MusicBrainz (CC0, keyless). One request per
-// lookup (their policy needs a real User-Agent); returns the catalog shape.
-async function resolveFromMusicBrainz(name) {
-  const url = `https://musicbrainz.org/ws/2/artist?query=${encodeURIComponent(`artist:"${name}"`)}&fmt=json&limit=5`;
-  let d;
-  try {
-    const r = await fetch(url, { headers: { "User-Agent": "Pit/1.0 (https://mshpit.com)" }, signal: AbortSignal.timeout(8000) });
-    if (!r.ok) return null;
-    d = await r.json();
-  } catch { return null; }
-  const items = d?.artists || [];
-  if (!items.length) return null;
-  const lower = name.toLowerCase();
-  const a = items.find((x) => (x.name || "").toLowerCase() === lower) || items[0];
-  const tags = (a.tags || []).slice().sort((x, y) => (y.count || 0) - (x.count || 0));
-  const genre = tags[0]?.name ? tags[0].name.replace(/\b\w/g, (c) => c.toUpperCase()) : null;
+// Resolve an artist by name from MusicBrainz (CC0, keyless). Public lookup may
+// return a transient fuzzy fallback, but staff identity creation must be exact.
+function normalizedMusicBrainzArtistName(value) {
+  const name = clean(typeof value === "string" ? value : "", { max: 241 });
+  if (!name || [...name].length > 120) return null;
+  return normName(name.normalize("NFKC"));
+}
+
+function musicBrainzArtistProjection(candidate) {
+  const name = clean(candidate?.name, { max: 241 });
+  const mbid = String(candidate?.id || "").trim().toLowerCase();
+  if (!name || [...name].length > 120 || !MUSICBRAINZ_ARTIST_ID.test(mbid)) return null;
+  const tags = Array.isArray(candidate?.tags)
+    ? candidate.tags.slice().sort((left, right) => (Number(right?.count) || 0) - (Number(left?.count) || 0))
+    : [];
+  const genre = tags[0]?.name
+    ? clean(tags[0].name, { max: 40 })
+      .split(" ")
+      .map((word) => word ? word[0].toUpperCase() + word.slice(1) : word)
+      .join(" ")
+    : null;
+  const score = Number(candidate?.score);
   return {
-    name: a.name,
-    mbid: a.id,
-    genre,
-    country: a.area?.name || a.country || null,
-    beginYear: (a["life-span"]?.begin || "").slice(0, 4) || null,
-    rank_score: a.score ? Number(a.score) : 1,
+    name,
+    mbid,
+    genre: genre || null,
+    country: clean(candidate?.area?.name || candidate?.country || "", { max: 80 }) || null,
+    beginYear: clean(candidate?.["life-span"]?.begin || "", { max: 20 }).slice(0, 4) || null,
+    rank_score: Number.isFinite(score) ? score : 1,
   };
+}
+
+async function readMusicBrainzArtistCandidates(name) {
+  const slash = String.fromCharCode(92);
+  const escapedName = name.split(slash).join(slash + slash).split('"').join(slash + '"');
+  const query = 'artist:"' + escapedName + '"';
+  const url = "https://musicbrainz.org/ws/2/artist?query="
+    + encodeURIComponent(query)
+    + "&fmt=json&limit=5";
+  let response;
+  try {
+    response = await fetch(url, {
+      headers: { "User-Agent": "Pit/1.0 (https://mshpit.com)", Accept: "application/json" },
+      signal: AbortSignal.timeout(MUSICBRAINZ_ARTIST_LOOKUP_TIMEOUT_MS),
+    });
+  } catch (error) {
+    throw new ProviderError("MusicBrainz", 502, "MusicBrainz could not be reached.", {
+      code: "network",
+      cause: error,
+    });
+  }
+  if (!response.ok) {
+    throw new ProviderError("MusicBrainz", response.status, "MusicBrainz did not return a usable response.", {
+      code: response.status === 429 ? "rate_limited" : "http_error",
+    });
+  }
+  let payload;
+  try {
+    payload = await response.json();
+  } catch (error) {
+    throw new ProviderError("MusicBrainz", 502, "MusicBrainz returned unreadable data.", {
+      code: "invalid_json",
+      cause: error,
+    });
+  }
+  return (Array.isArray(payload?.artists) ? payload.artists : [])
+    .map(musicBrainzArtistProjection)
+    .filter(Boolean);
+}
+
+async function resolveFromMusicBrainz(name, { requireExactIdentity = false } = {}) {
+  const requestedIdentity = normalizedMusicBrainzArtistName(name);
+  if (!requestedIdentity) {
+    if (requireExactIdentity) {
+      throw new ApiError(400, "Enter one complete artist name before resolving its identity.", "VALIDATION_FAILED");
+    }
+    return null;
+  }
+
+  let candidates;
+  try {
+    candidates = await readMusicBrainzArtistCandidates(name);
+  } catch (error) {
+    if (!requireExactIdentity) return null;
+    throw new ApiError(
+      502,
+      "MusicBrainz is unavailable right now. Retry the artist lookup before continuing.",
+      "PROVIDER_UNAVAILABLE",
+      error,
+    );
+  }
+
+  const exact = candidates.filter(
+    (candidate) => normalizedMusicBrainzArtistName(candidate.name) === requestedIdentity,
+  );
+  if (!requireExactIdentity) return exact[0] || candidates[0] || null;
+
+  const exactByIdentity = new Map(exact.map((candidate) => [candidate.mbid, candidate]));
+  if (!exactByIdentity.size) {
+    throw new ApiError(
+      404,
+      "MusicBrainz did not return an exact artist match. Check the official spelling before continuing.",
+      "NOT_FOUND",
+    );
+  }
+  if (exactByIdentity.size > 1) {
+    throw new ApiError(
+      409,
+      "That exact artist name maps to multiple MusicBrainz identities. Resolve the catalog identity before continuing.",
+      "CONFLICT",
+    );
+  }
+  return exactByIdentity.values().next().value;
+}
+
+const artistByOtherMusicBrainzIdentity = db.prepare(
+  "SELECT norm,name,mbid FROM artists WHERE mbid IS NOT NULL AND lower(mbid)=? AND norm<>? LIMIT 1",
+);
+
+async function persistExactMusicBrainzIdentity(name) {
+  const resolved = await resolveFromMusicBrainz(name, { requireExactIdentity: true });
+  const artistKey = normalizedMusicBrainzArtistName(resolved.name);
+  const mbid = resolved.mbid.toLowerCase();
+  const existing = artistStmts.byNorm.get(artistKey);
+  let existingData = {};
+  try {
+    existingData = existing?.data ? JSON.parse(existing.data) : {};
+  } catch {
+    existingData = {};
+  }
+  if (!existingData || typeof existingData !== "object" || Array.isArray(existingData)) existingData = {};
+
+  const recordedMbids = [existing?.mbid, existingData.mbid]
+    .map((value) => String(value || "").trim().toLowerCase())
+    .filter(Boolean);
+  if (recordedMbids.some((value) => !MUSICBRAINZ_ARTIST_ID.test(value) || value !== mbid)) {
+    throw new ApiError(
+      409,
+      "This catalog artist already has a different identity. Review that artist before replacing its MusicBrainz ID.",
+      "CONFLICT",
+    );
+  }
+
+  const identityOwner = artistByOtherMusicBrainzIdentity.get(mbid, artistKey);
+  if (identityOwner) {
+    throw new ApiError(
+      409,
+      "That MusicBrainz identity is already attached to another catalog artist. Merge or correct the catalog rows first.",
+      "CONFLICT",
+    );
+  }
+
+  const rankCandidates = [
+    Number(existingData.rank_score),
+    Number(existing?.rank_score),
+    Number(resolved.rank_score),
+  ].filter(Number.isFinite);
+  const merged = {
+    ...resolved,
+    ...existingData,
+    name: resolved.name,
+    mbid,
+    genre: existingData.genre ?? existing?.genre ?? resolved.genre ?? null,
+    photo: existingData.photo ?? existing?.photo ?? null,
+    bio: existingData.bio ?? existing?.bio ?? null,
+    spotifyId: existingData.spotifyId ?? existing?.spotify_id ?? null,
+    country: existingData.country ?? existing?.country ?? resolved.country ?? null,
+    beginYear: existingData.beginYear ?? existingData.formed ?? existing?.formed ?? resolved.beginYear ?? null,
+    popularity: existingData.popularity ?? existing?.popularity ?? null,
+    rank_score: rankCandidates.length ? Math.max(...rankCandidates) : 1,
+  };
+
+  artistStmts.upsert.run(artistRow(artistKey, merged, existing?.source || "musicbrainz"));
+  const persisted = artistStmts.byNorm.get(artistKey);
+  if (!persisted || String(persisted.mbid || "").toLowerCase() !== mbid) {
+    throw new ApiError(
+      409,
+      "The artist identity changed while it was being saved. Reload the catalog and try again.",
+      "CONFLICT",
+    );
+  }
+  return persisted;
 }
 
 // Enrich a (usually thin) catalog artist from Deezer: photo, popularity, top
@@ -1777,7 +1937,7 @@ async function enrichArtistFromDeezer(name) {
     name: existing?.name || name,
     ...deezerEnrichmentGenreFields(data, existing?.genre, e),
     photo: e.photo || data.photo || null,
-    mbid: existing?.mbid || null, country: existing?.country || null, beginYear: existing?.formed || null,
+    mbid: existing?.mbid || data.mbid || null, country: existing?.country || null, beginYear: existing?.formed || null,
     popularity: e.popularity, followers: e.followers, topTracks: e.topTracks, deezerId: e.deezerId,
   };
   artistStmts.upsert.run(artistRow(normName(name), merged, "deezer"));
@@ -6030,13 +6190,66 @@ export const routes = {
     };
   },
   // Seed info + photos for specific artists from Deezer (the targeted alternative
-  // to a blind 10M dump). Handles both thin artists and missing-search names.
+  // to a blind 10M dump). Exact identity mode first creates or verifies the
+  // canonical MusicBrainz row; Deezer remains optional enrichment.
   "POST /api/admin/artists/enrich": async (ctx) => {
     requireAdmin(ctx);
-    const names = Array.isArray(ctx.body?.names) ? ctx.body.names.slice(0, 40).map((n) => String(n).slice(0, 120)) : [];
+    if (ctx.body?.requireExactIdentity !== undefined
+      && typeof ctx.body.requireExactIdentity !== "boolean") {
+      throw new ApiError(400, "requireExactIdentity must be true or false.", "VALIDATION_FAILED");
+    }
+    const requireExactIdentity = ctx.body?.requireExactIdentity === true;
+    const rawNames = Array.isArray(ctx.body?.names) ? ctx.body.names.slice(0, 40) : [];
+    let names = rawNames.map((name) => String(name).slice(0, 120));
+    if (requireExactIdentity) {
+      const exactName = typeof rawNames[0] === "string"
+        ? clean(rawNames[0], { max: 241 })
+        : "";
+      if (rawNames.length !== 1 || !exactName || [...exactName].length > 120) {
+        throw new ApiError(
+          400,
+          "Exact identity enrichment requires one complete artist name.",
+          "VALIDATION_FAILED",
+        );
+      }
+      names = [exactName];
+    }
+
     let enriched = 0;
-    for (const n of names) { if (await enrichArtistFromDeezer(n)) { enriched++; artistStmts.clearMissing.run(normName(n)); } }
-    return { enriched, requested: names.length };
+    const artists = [];
+    for (const name of names) {
+      let expectedMbid = null;
+      let artistKey = normName(name);
+      let enrichmentName = name;
+      if (requireExactIdentity) {
+        const persisted = await persistExactMusicBrainzIdentity(name);
+        expectedMbid = String(persisted.mbid || "").toLowerCase();
+        artistKey = persisted.norm;
+        enrichmentName = persisted.name;
+      }
+
+      try {
+        if (await enrichArtistFromDeezer(enrichmentName)) enriched += 1;
+      } catch (error) {
+        if (!(requireExactIdentity && error instanceof ProviderError)) throw error;
+      }
+
+      const row = artistStmts.byNorm.get(artistKey);
+      if (requireExactIdentity
+        && (!row || String(row.mbid || "").toLowerCase() !== expectedMbid)) {
+        throw new ApiError(
+          409,
+          "The artist identity changed during enrichment. Reload the catalog and try again.",
+          "CONFLICT",
+        );
+      }
+      if (row) {
+        artistStmts.clearMissing.run(normName(name));
+        if (artistKey !== normName(name)) artistStmts.clearMissing.run(artistKey);
+        artists.push(publicArtist(row));
+      }
+    }
+    return { enriched, requested: names.length, artists };
   },
   // Staff correction for a genre. This is the top of the provenance hierarchy:
   // once set it outranks every automated run, so a re-crawl cannot put Justin

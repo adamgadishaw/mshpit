@@ -28,7 +28,7 @@ Pit is a home for your life in live music.
 Log the concerts you attend, rate the performance and the room, save photos and
 memories, and build a history that stays with you. Follow people whose taste you
 trust, explore artists and venues, see upcoming shows, and discover what the
-community is listening to.
+community recommends.
 
 With Pit you can:
 
@@ -36,7 +36,7 @@ With Pit you can:
 - Discover artists, venues, and upcoming events near you and around the world.
 - Follow friends and fans whose live-music taste matches yours.
 - Join artist fan clubs and show lounges.
-- Build playlists and use the in-app music player while you explore.
+- Share concert photos, videos, reviews, and YouTube links with the community.
 - Control recommendations with clear feedback such as Not for me.
 - Report content, block accounts, and manage your privacy and analytics choices.
 
@@ -76,10 +76,13 @@ photos, comments, direct messages, fan-club messages, and show-lounge messages.
 Users can report supported content, block accounts, and permanently delete their
 account from Settings. Staff process reports in the in-app moderation console.
 
-The music player uses embedded YouTube playback on web. The native iOS build
-uses short Deezer preview audio when available; it does not download or claim to
-provide full copyrighted tracks. Do not give this statement to App Review until
-the owner has documented Deezer approval or replaced/disabled that provider.
+Members may attach YouTube links to posts. Pit validates those links through
+YouTube's oEmbed service and stores the selected link plus public display
+metadata; it does not download or host the underlying video. Pit also uses
+Deezer catalogue metadata for artist and track identification, artwork, genres,
+rankings, and top-track references. It does not download or provide Deezer
+recordings. Do not give provider-rights claims to App Review until the owner has
+documented the required approvals or replaced the affected catalogue material.
 
 **Owner input before submission:**
 
@@ -95,7 +98,7 @@ The production API must remain online for the entire review period.
 ## TestFlight "What to test" draft
 
 Please focus on sign-up and email verification, feed loading, venue discovery,
-creating a concert review, selecting and uploading media, player controls and
+creating a concert review, selecting and uploading media, video viewing and
 swipe-to-close, reporting/blocking, poor-network recovery, background/foreground
 restoration, VoiceOver labels, and permanent account deletion. Report the app
 version/build, iPhone model, iOS version, and diagnostic reference shown by Pit.
@@ -107,15 +110,16 @@ version/build, iPhone model, iOS version, and diagnostic reference shown by Pit.
 - Final app-name availability, trademark clearance, pricing, countries, release
   strategy, and localization.
 - Final age-rating questionnaire answers. Open UGC, messaging, concert media,
-  profanity, alcohol/drug references, and embedded music/video must be answered
-  honestly; an all-minimum rating is not a safe default.
+  profanity, alcohol/drug references, and user-shared media or external video
+  links must be answered honestly; an all-minimum rating is not a safe default.
 - Final App Privacy answers for contact information, identifiers, coarse city,
   user content, usage data, diagnostics/security processing, and YouTube/service
   providers.
 - Rights confirmation for the Pit brand, icon/splash artwork, catalogue and venue
-  photography, user concert media, music/video embeds, and every screenshot.
+  photography, user concert media, external video-link presentation, and every
+  screenshot.
 - Written provider approval or replacement evidence for Deezer-derived catalogue
-  metadata, artist artwork, rankings, top tracks, and preview audio. The public
+  metadata, artist artwork, rankings, and top tracks. The public
   developer terms do not authorize Pit's planned commercial use by themselves.
 - Confirmation that `support@mshpit.com` exists and is actively monitored.
 

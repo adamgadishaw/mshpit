@@ -13,6 +13,7 @@ const {
   COST_CACHED_ARTIST,
   resetWarmProgress,
   isCacheWarmSchedulerEnabled,
+  isYouTubePlaybackWarmEnabled,
   runCacheWarmJobSafely,
 } = await import("./cacheWarmer.js");
 const {
@@ -106,6 +107,12 @@ test("tour-date restarts skip provider fan-out while the persisted refresh is fr
   assert.equal(shouldRefreshTourDates(0, now, 12), true);
   assert.equal(shouldRefreshTourDates(now - 60 * 60 * 1000, now, 12), false);
   assert.equal(shouldRefreshTourDates(now - 13 * 60 * 60 * 1000, now, 12), true);
+});
+
+test("the paused product keeps catalogue enrichment available without YouTube playback warming", () => {
+  assert.equal(isCacheWarmSchedulerEnabled({}), true, "keyless catalogue enrichment remains available locally");
+  assert.equal(isYouTubePlaybackWarmEnabled({ YOUTUBE_API_KEY: "configured" }), false);
+  assert.equal(isYouTubePlaybackWarmEnabled({}), false);
 });
 
 test("Ticketmaster searches request all locales and keep artist pages bounded", () => {

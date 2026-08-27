@@ -63,9 +63,9 @@ test("You is a private dashboard instead of a second public profile", () => {
   assert.match(you, /The You tab is the private dashboard/);
   assert.match(you, /View public (?:artist page|profile)/);
   assert.match(you, /CONCERT MEMORIES/);
-  assert.match(you, /YOUR SOUND/);
+  assert.doesNotMatch(you, /YOUR SOUND|Listening history|PLAYS/);
   assert.doesNotMatch(you, /YOUR PHOTO WALL|YOUR POSTS|PLAYLISTS ·|GOING TO ·/);
-  assert.doesNotMatch(you, /selectProfileTimeline|mediaDisplayItems|myPlaylists|goingFor/);
+  assert.doesNotMatch(you, /selectProfileTimeline|mediaDisplayItems|myPlaylists|goingFor|loadPlayHistory/);
 });
 
 test("the retired desktop rail cannot drift from the active top navigation", () => {

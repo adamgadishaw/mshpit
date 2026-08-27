@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import Constants from "expo-constants";
 import { Linking, View, Text, TextInput, StyleSheet, ScrollView, Pressable } from "react-native";
 import { colors, focusRing, radius, mono, THEMES, themeKey, space } from "../theme";
@@ -7,7 +7,6 @@ import SheetHeader from "../components/SheetHeader";
 import Icon from "../components/Icon";
 import Avatar from "../components/Avatar";
 import ThemeSwatch, { themeGridStyle } from "../components/ThemeSwatch";
-import { privateListeningRemainingLabel } from "../domain/privateListening.mjs";
 import { profileManagementAction } from "../domain/artistWorkspace.mjs";
 import { SUPPORT_EMAIL, SUPPORT_URL } from "../domain/contact.mjs";
 import { visibleThemeChoices } from "../domain/themeChoices.mjs";
@@ -58,7 +57,7 @@ function Toggle({ value, busy = false }) {
 }
 
 export default function SettingsScreen({ onClose, onManageProfile, onOpenProfile, onOpenPrivacy, onOpenTerms, onOpenDiagnostics, onOpenDeleteAccount, onLogout }) {
-  const { session, chooseTheme, blockedUsers, unblockUser, exportMyData, setAnalyticsEnabled, setProfileSearchIndexingEnabled, setAnnouncementEmailsEnabled, privateListeningActive, privateListeningUntil, setPrivateListening } = useStore();
+  const { session, chooseTheme, blockedUsers, unblockUser, exportMyData, setAnalyticsEnabled, setProfileSearchIndexingEnabled, setAnnouncementEmailsEnabled } = useStore();
   const blocked = session ? blockedUsers() : [];
   const [exporting, setExporting] = useState(false);
   const [exportResult, setExportResult] = useState(null);
@@ -71,7 +70,6 @@ export default function SettingsScreen({ onClose, onManageProfile, onOpenProfile
   const [announcementResult, setAnnouncementResult] = useState(null);
   const [supportError, setSupportError] = useState(null);
   const [showMoreThemes, setShowMoreThemes] = useState(false);
-  const [, setPrivateClock] = useState(0);
   const analyticsEnabled = !!(session?.analyticsConsentAt || session?.consentAt) && !session?.analyticsOptOut;
   const profileSearchIndexingEnabled = session?.searchIndexingOptOut !== true;
   const announcementsEnabled = !session?.marketingOptOut;
@@ -79,11 +77,6 @@ export default function SettingsScreen({ onClose, onManageProfile, onOpenProfile
   const publicProfileLabel = manageProfile.destination === "artistHub" ? "View public artist page" : "View public profile";
   const publicProfileDetail = manageProfile.destination === "artistHub" ? session?.artistName : `@${session?.handle || ""}`;
   const themeChoices = visibleThemeChoices(THEMES, { expanded: showMoreThemes, selectedKey: themeKey });
-  useEffect(() => {
-    if (!privateListeningActive) return undefined;
-    const timer = setInterval(() => setPrivateClock((value) => value + 1), 60_000);
-    return () => clearInterval(timer);
-  }, [privateListeningActive]);
   const doExport = async () => {
     if (exporting) return;
     setExporting(true);
@@ -167,17 +160,6 @@ export default function SettingsScreen({ onClose, onManageProfile, onOpenProfile
           <>
             <Text style={styles.section}>PRIVACY & SAFETY</Text>
             <Row
-              icon="lock"
-              label="Private listening"
-              sub={privateListeningActive
-                ? `${privateListeningRemainingLabel(privateListeningUntil)}. Plays stay out of history, activity, and recommendations.`
-                : "Off. Turn on a six-hour private session that records no plays, activity, or recommendation signals."}
-              onPress={() => setPrivateListening(!privateListeningActive)}
-              accessibilityRole="switch"
-              accessibilityState={{ checked: privateListeningActive }}
-              right={<Toggle value={privateListeningActive} />}
-            />
-            <Row
               icon="search"
               label="Show my profile in search engines"
               sub={profileSearchIndexingEnabled
@@ -244,7 +226,7 @@ export default function SettingsScreen({ onClose, onManageProfile, onOpenProfile
             <Row
               icon="share"
               label={exporting ? "Preparing your backup..." : "Download your data"}
-              sub="A portable backup of your profile, reviews, playlists, and activity (JSON)"
+              sub="A portable backup of your profile, reviews, posts, messages, and activity (JSON)"
               onPress={doExport}
               disabled={exporting || !exportPassword}
               accessibilityState={{ busy: exporting }}

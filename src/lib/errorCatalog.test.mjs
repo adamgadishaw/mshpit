@@ -81,8 +81,7 @@ test("diagnostic routes discard query values and private identifiers", () => {
   assert.equal(safeRouteTemplate("/api/posts/998812/comments?token=secret"), "/api/posts/:id/comments");
 });
 
-test("resolver capacity copy does not claim an unavailable fallback played", () => {
-  const entry = ERROR_CATALOG["PIT-MEDIA-002"];
-  assert.doesNotMatch(entry.message, /kept|fallback|preview/i);
-  assert.match(entry.message, /will not guess/i);
+test("paused built-in playback incidents stay out of the general feedback catalog", () => {
+  assert.equal(ERROR_CATALOG["PIT-MEDIA-001"], undefined);
+  assert.equal(ERROR_CATALOG["PIT-MEDIA-002"], undefined);
 });

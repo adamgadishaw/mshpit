@@ -22,6 +22,7 @@ import { privateErrorLabel } from "./errors.js";
 import { quarantineUnsafeLegacyImages } from "./publicMedia.js";
 import { ensurePostMediaCapacity, POST_MEDIA_MAX_POSITION } from "./postMediaSchema.js";
 import { registerPitSqliteFunctions } from "./sqliteFunctions.js";
+import { MUSIC_PLAYER_ENABLED } from "../src/domain/musicPlayerAvailability.mjs";
 
 export const artistSearchKey = (value) => String(value || "")
   .normalize("NFKD")
@@ -2527,9 +2528,15 @@ export function publicUser(u, { self = false, badges = false } = {}) {
   if (extras.nowPlaying && (!contentSafetyDecision(extras.nowPlaying.title).safe || !contentSafetyDecision(extras.nowPlaying.artist).safe)) {
     delete extras.nowPlaying;
   }
-  const publicExtras = Object.fromEntries(["theme", "nowPlaying"].filter((key) => extras[key] !== undefined).map((key) => [key, extras[key]]));
+  const publicExtraKeys = MUSIC_PLAYER_ENABLED ? ["theme", "nowPlaying"] : ["theme"];
+  const selfExtraKeys = [
+    "consentAt", "analyticsConsentAt", "termsAcceptedAt", "termsVersion",
+    "analyticsOptOut", "searchIndexingOptOut",
+    ...(MUSIC_PLAYER_ENABLED ? ["treble", "bass", "playlists"] : []),
+  ];
+  const publicExtras = Object.fromEntries(publicExtraKeys.filter((key) => extras[key] !== undefined).map((key) => [key, extras[key]]));
   const selfExtras = self
-    ? Object.fromEntries(["consentAt", "analyticsConsentAt", "termsAcceptedAt", "termsVersion", "analyticsOptOut", "searchIndexingOptOut", "treble", "bass", "playlists"].filter((key) => extras[key] !== undefined).map((key) => [key, extras[key]]))
+    ? Object.fromEntries(selfExtraKeys.filter((key) => extras[key] !== undefined).map((key) => [key, extras[key]]))
     : {};
 
   return {

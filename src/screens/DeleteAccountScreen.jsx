@@ -59,7 +59,7 @@ export default function DeleteAccountScreen({ onClose, onDeleted }) {
         {step === "warning" ? (
           <>
             <View style={styles.warningCard}>
-              <WarningLine>Your profile, concert reviews, comments, messages, follows, ratings, fan-club activity, and listening history are removed.</WarningLine>
+              <WarningLine>Your profile, concert reviews, comments, messages, follows, ratings, fan-club activity, and account activity are removed.</WarningLine>
               <WarningLine>Other people will no longer be able to find or contact this account.</WarningLine>
               <WarningLine>Account deletion removes your active records and durably queues Pit-owned uploaded photos and clips for object-storage deletion. Cleanup retries automatically but may not finish immediately. Separate database or storage backups can remain until their retention period ends, or longer when legally required.</WarningLine>
             </View>

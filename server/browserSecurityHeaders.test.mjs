@@ -11,15 +11,14 @@ test("browser isolation headers preserve OAuth/video popups without requiring cr
   assert.doesNotMatch(source, /"Cross-Origin-Embedder-Policy"/);
 });
 
-test("CSP permits Expo styles and required Google/YouTube scripts without inline JavaScript", () => {
-  const scriptDirective = source.match(/"script-src ([^"]+)"/)?.[1] || "";
+test("CSP permits Expo and Google scripts while gating dormant player providers", () => {
+  const scriptDirective = source.match(/`script-src ([^`]+)`/)?.[1] || "";
   assert.ok(scriptDirective, "script-src directive should exist");
   assert.doesNotMatch(scriptDirective, /'unsafe-inline'/);
   assert.match(scriptDirective, /'self'/);
   assert.match(scriptDirective, /https:\/\/\*\.googleapis\.com/);
   assert.match(scriptDirective, /https:\/\/\*\.gstatic\.com/);
-  assert.match(scriptDirective, /https:\/\/www\.youtube\.com/);
-  assert.match(scriptDirective, /https:\/\/s\.ytimg\.com/);
+  assert.match(scriptDirective, /MUSIC_PLAYER_ENABLED \? " https:\/\/www\.youtube\.com https:\/\/s\.ytimg\.com" : ""/);
   assert.match(source, /"style-src 'self' 'unsafe-inline'"/);
 });
 

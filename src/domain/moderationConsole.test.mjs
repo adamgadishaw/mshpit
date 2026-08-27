@@ -398,6 +398,8 @@ test("console source keeps bounded rendering, cursor reachability, and atomic ac
   assert.match(consoleSource, /Only this exact message will be hidden from both participants/);
   assert.match(consoleSource, /will not send another notification/);
   assert.match(adminSource, /adminMemberDirectory=\{adminMemberDirectory\}/);
-  assert.equal((adminSource.match(/dismissReport\(r\.id\)/g) || []).length, 1,
-    "pin/no-video actions use the server's disposition; only the explicit Dismiss button writes dismiss");
+  assert.match(consoleSource, /if \(row\.type === "track"\) return null/);
+  assert.match(consoleSource, /rows\.filter\(\(row\) => row\.type !== "track"\)/);
+  assert.doesNotMatch(consoleSource, /Review this report in Songs|verified video can be pinned|open song reports|Playback workflow|onOpenSongs/);
+  assert.doesNotMatch(adminSource, /dismissReport\(r\.id\)|activeTab === "songs"|onOpenSongs/);
 });

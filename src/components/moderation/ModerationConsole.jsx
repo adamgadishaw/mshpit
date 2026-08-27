@@ -177,7 +177,7 @@ function SummaryCard({ label, value, tone = "neutral", detail, onPress }) {
   );
 }
 
-function QueueLanding({ reportSummary, contentReportCount, memberSummary, memberStats, recentActions, trackCount, onOpenReports, onOpenMembers, onOpenSongs, loading }) {
+function QueueLanding({ reportSummary, contentReportCount, memberSummary, memberStats, recentActions, onOpenReports, onOpenMembers, loading }) {
   const memberDirectoryTruncated = memberSummary.total > 0 && Number(memberStats?.total) > memberSummary.total;
   return (
     <View style={styles.sectionStack}>
@@ -191,7 +191,6 @@ function QueueLanding({ reportSummary, contentReportCount, memberSummary, member
       </View>
       <View style={styles.summaryGrid}>
         <SummaryCard label="open content reports" value={contentReportCount} tone={contentReportCount ? "danger" : "success"} detail={contentReportCount > reportSummary.total ? `${reportSummary.total} loaded for triage` : reportSummary.missingContext ? `${reportSummary.missingContext} missing target` : "Ready to triage"} onPress={onOpenReports} />
-        <SummaryCard label="open song reports" value={trackCount} tone={trackCount ? "warning" : "success"} detail="Playback workflow" onPress={onOpenSongs} />
         <SummaryCard label="restricted in loaded members" value={memberSummary.restricted} tone={memberSummary.restricted ? "warning" : "success"} detail={memberDirectoryTruncated ? `Newest ${memberSummary.total}; ${memberStats.banned || 0} banned globally` : `${memberSummary.suspended} timed out / ${memberSummary.banned} banned`} onPress={onOpenMembers} />
       </View>
       {memberDirectoryTruncated ? <Text style={styles.guidance}>Member restrictions here cover the newest {memberSummary.total.toLocaleString()} of {Number(memberStats.total).toLocaleString()} accounts. Open Members for the scoped filters and global totals.</Text> : null}
@@ -213,6 +212,7 @@ function QueueLanding({ reportSummary, contentReportCount, memberSummary, member
 }
 
 function ReportCard({ row, selfId, canBan, busy, confirmation, onRequest, onConfirm, onCancel }) {
+  if (row.type === "track") return null;
   const authorStatus = moderationMemberStatus(row.author);
   const authorIsSelf = row.author?.id && row.author.id === selfId;
   const authorIsAdmin = row.author?.role === "admin";
@@ -276,9 +276,7 @@ function ReportCard({ row, selfId, canBan, busy, confirmation, onRequest, onConf
           <Text style={styles.personValue}>{row.author?.handle ? `@${row.author.handle}` : "Unavailable"}</Text>
         </View>
       </View>
-      {row.type === "track" ? (
-        <Text style={styles.guidance}>Review this report in Songs so a verified video can be pinned without removing content.</Text>
-      ) : !removable && !row.target.missing && !row.target.removed ? (
+      {!removable && !row.target.missing && !row.target.removed ? (
         <Text style={styles.guidance}>This target type cannot be removed from the report action. Use member controls when an account restriction is appropriate, or dismiss after review.</Text>
       ) : null}
       <View style={styles.actionRow}>
@@ -375,7 +373,6 @@ function ReportsWorkspace({ rows, queueSummary, nextCursor, loadingState, loadEr
         </View>
       ) : null}
       {undisplayedOpen ? <Text style={styles.guidance}>{undisplayedOpen.toLocaleString()} older open report{undisplayedOpen === 1 ? " is" : "s are"} outside this loaded window. Search covers loaded reports; {hasOlderPage ? "use Load older reports to reach the rest." : "the count changed while paging, so refresh before continuing."}</Text> : null}
-      {trackCount ? <Text style={styles.guidance}>{trackCount} song report{trackCount === 1 ? " is" : "s are"} intentionally routed to Songs for playback-specific review.</Text> : null}
       <SearchField label="Search loaded reports" placeholder="Search loaded reason, author, reporter, or target ID" value={query} onChangeText={setQuery} resultCount={filtered.length} />
       <ScrollView horizontal accessibilityRole="radiogroup" accessibilityLabel="Report type filter" keyboardShouldPersistTaps="handled" showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
         <FilterPill label="All" count={globalContentCount} selected={targetType === "all"} onPress={() => setTargetType("all")} />
@@ -659,7 +656,6 @@ export default function ModerationConsole({
   toggleMemberBadge,
   onOpenReports,
   onOpenMembers,
-  onOpenSongs,
 }) {
   const { width } = useWindowDimensions();
   const wide = width >= 780;
@@ -854,7 +850,7 @@ export default function ModerationConsole({
     <View style={styles.console}>
       <Feedback feedback={feedback} onClear={() => setFeedback(null)} />
       {mode === "overview" && (loadError || memberLoadError) ? <View accessibilityLiveRegion="assertive" style={[styles.feedback, styles.feedbackError]}><Icon name="x" size={15} color={colors.danger} /><Text selectable style={[styles.feedbackText, { color: colors.danger }]}>{[loadError, memberLoadError].filter(Boolean).join(" ")} Counts shown may be stale.</Text></View> : null}
-      {mode === "overview" ? <QueueLanding reportSummary={reportSummary} contentReportCount={contentReportCount} memberSummary={memberSummary} memberStats={adminStats} recentActions={moderationConsole.recentActions || []} trackCount={trackCount} onOpenReports={onOpenReports} onOpenMembers={onOpenMembers} onOpenSongs={onOpenSongs} loading={loadingState === "loading" || memberLoadingState === "loading"} /> : null}
+      {mode === "overview" ? <QueueLanding reportSummary={reportSummary} contentReportCount={contentReportCount} memberSummary={memberSummary} memberStats={adminStats} recentActions={moderationConsole.recentActions || []} onOpenReports={onOpenReports} onOpenMembers={onOpenMembers} loading={loadingState === "loading" || memberLoadingState === "loading"} /> : null}
       {mode === "reports" ? <ReportsWorkspace rows={rows} queueSummary={moderationConsole.summary} nextCursor={moderationConsole.nextCursor} loadingState={loadingState} loadError={loadError} loadingMore={loadingMoreReports} loadMoreError={loadMoreReportError} busy={actionLocked} confirmation={confirmation} actions={actions} selfId={session?.id} canBan={isAdmin} onRetry={() => requestReports()} onLoadMore={() => requestReports({ append: true })} onRequest={requestAction} onConfirm={confirmAction} onCancel={cancelAction} /> : null}
       {mode === "members" ? <MembersWorkspace users={adminMembers} adminStats={adminStats} directory={adminMemberDirectory} loadingState={memberLoadingState} loadError={memberLoadError} loadingMore={loadingMoreMembers} loadMoreError={loadMoreMemberError} onSearch={(scope) => requestMembers(scope)} onLoadMore={() => requestMembers({ append: true })} selfId={session?.id} canAdmin={isAdmin} grantableBadges={grantableBadges} memberBadges={memberBadges} busy={actionLocked} confirmation={confirmation} actions={actions} onRequest={requestAction} onConfirm={confirmAction} onCancel={cancelAction} wide={wide} /> : null}
     </View>

@@ -169,7 +169,7 @@ function ArtistPageReadNotice({ resource, onRetry }) {
   );
 }
 
-export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEditAccount, onTourDates, onCampaignPost, onPlay }) {
+export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEditAccount, onTourDates, onCampaignPost }) {
   const { width } = useWindowDimensions();
   const wide = width >= 820;
   const {
@@ -276,8 +276,6 @@ export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEdit
     avatarColor: colors.amber,
   };
   const stats = model.stats;
-  const spotlight = model.spotlightTrack;
-  const SpotlightSurface = onPlay ? Pressable : View;
   const nextShow = model.nextShow;
   const scoreColor = model.stageReady ? colors.good : model.score >= 50 ? colors.gold : colors.amber;
 
@@ -364,16 +362,6 @@ export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEdit
     }
   };
 
-  const playSpotlight = () => {
-    if (!spotlight) return;
-    onPlay?.({
-      ...spotlight,
-      id: spotlight.id || `artist-hq:${artistName}:${spotlight.title}`,
-      artist: artistName,
-      art: catalog.photo || summary.photo || null,
-    });
-  };
-
   return (
     <View style={styles.wrap}>
       <ScreenHeader kicker="ARTIST HQ" title={artistName} onBack={onClose} />
@@ -431,7 +419,7 @@ export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEdit
             />
             <ActionTile icon="star" title="Artist drop" detail="Publish one styled campaign post to the main feed." onPress={onCampaignPost} accent={colors.amber} />
             <ActionTile icon="calendar" title="Live dates" detail="Publish shows, official tickets, and scheduled dates." onPress={onTourDates} accent={colors.cool} />
-            <ActionTile icon="you" title="Personal account" detail="Handle, city, listening taste, and personal music picks." onPress={onEditAccount} accent={colors.good} />
+            <ActionTile icon="you" title="Personal account" detail="Handle, city, genres, and favorite artists." onPress={onEditAccount} accent={colors.good} />
           </View>
 
           <View style={[styles.columns, !wide && styles.columnsStack]}>
@@ -633,29 +621,6 @@ export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEdit
               )}
             </View>
 
-            <View style={[styles.panel, styles.musicPanel]}>
-              <SectionTitle eyebrow="MUSIC SPOTLIGHT" title={spotlight ? "Give them a place to start" : "Connect the catalog"} detail={onPlay ? "Your public page turns a profile visit into a listening session." : "Keep the featured track and catalog identity ready for fans."} right={<View style={styles.musicIcon}><Icon name="music" size={19} color={colors.magenta} /></View>} />
-              {spotlight ? (
-                <SpotlightSurface onPress={onPlay ? playSpotlight : undefined} style={onPlay ? ({ pressed, focused }) => [styles.trackCard, pressed && styles.pressed, focused && focusRing] : styles.trackCard} accessibilityRole={onPlay ? "button" : undefined} accessibilityLabel={onPlay ? `Play ${spotlight.title}` : `Featured track ${spotlight.title}`}>
-                  <View style={styles.trackArt}>
-                    {catalog.photo ? <SmartImage uri={catalog.photo} style={StyleSheet.absoluteFill} contain={false} accessible={false} /> : <Icon name="music" size={24} color={colors.magenta} />}
-                    {onPlay && <View style={styles.trackPlay}><Icon name="play" size={14} color="#1A1206" /></View>}
-                  </View>
-                  <View style={styles.trackCopy}>
-                    <Text style={styles.trackKicker}>CURRENT STARTING POINT</Text>
-                    <Text style={styles.trackTitle} numberOfLines={1}>{spotlight.title}</Text>
-                    <Text style={styles.trackAlbum} numberOfLines={1}>{spotlight.album || artistName}</Text>
-                  </View>
-                  {onPlay && <Icon name="chevron-right" size={17} color={colors.textFaint} />}
-                </SpotlightSurface>
-              ) : (
-                <View style={styles.liveEmpty}>
-                  <View style={[styles.liveEmptyIcon, { backgroundColor: colors.magenta + "16" }]}><Icon name="music" size={24} color={colors.magenta} /></View>
-                  <Text style={styles.liveEmptyTitle}>No music match yet</Text>
-                  <Text style={styles.liveEmptyText}>Preview the public page and choose the correct catalog identity before promoting it.</Text>
-                </View>
-              )}
-            </View>
           </View>
 
           <View style={styles.truthNote}>
@@ -720,7 +685,6 @@ const styles = StyleSheet.create({
   readinessPanel: { flex: 1.03 },
   publishPanel: { flex: 0.97 },
   livePanel: { minHeight: 350 },
-  musicPanel: { minHeight: 350 },
   sectionHead: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: space(3), marginBottom: space(5) },
   sectionCopy: { flex: 1, minWidth: 0 },
   eyebrow: { fontFamily: mono, fontSize: 9, fontWeight: "900", letterSpacing: 1.5, marginBottom: space(1) },
@@ -783,7 +747,6 @@ const styles = StyleSheet.create({
   emptyState: { alignItems: "center", justifyContent: "center", minHeight: 100, gap: space(2), backgroundColor: colors.bgElev, borderRadius: radius.md, padding: space(4) },
   emptyText: { color: colors.textDim, fontSize: 12, textAlign: "center" },
   liveIcon: { width: 40, height: 40, borderRadius: radius.sm, backgroundColor: colors.cool + "16", alignItems: "center", justifyContent: "center" },
-  musicIcon: { width: 40, height: 40, borderRadius: radius.sm, backgroundColor: colors.magenta + "16", alignItems: "center", justifyContent: "center" },
   showCard: { flexDirection: "row", alignItems: "stretch", gap: space(4), padding: space(4), borderRadius: radius.md, borderCurve: "continuous", backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line, minHeight: 155 },
   dateBlock: { width: 72, borderRadius: radius.md, backgroundColor: colors.cool + "18", alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.cool + "40" },
   dateMonth: { color: colors.cool, fontFamily: mono, fontSize: 10, fontWeight: "900", letterSpacing: 1 },
@@ -800,13 +763,6 @@ const styles = StyleSheet.create({
   liveEmptyIcon: { width: 52, height: 52, borderRadius: 26, alignItems: "center", justifyContent: "center", backgroundColor: colors.cool + "16", marginBottom: space(3) },
   liveEmptyTitle: { color: colors.text, fontFamily: displayFont, fontSize: 16, fontWeight: "900", textAlign: "center" },
   liveEmptyText: { color: colors.textDim, fontSize: 12, lineHeight: 18, textAlign: "center", maxWidth: 330, marginTop: space(1) },
-  trackCard: { flexDirection: "row", alignItems: "center", gap: space(4), padding: space(3), borderRadius: radius.md, borderCurve: "continuous", backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line, minHeight: 155 },
-  trackArt: { width: 112, height: 112, borderRadius: radius.md, overflow: "hidden", backgroundColor: colors.magenta + "12", alignItems: "center", justifyContent: "center" },
-  trackPlay: { position: "absolute", right: 8, bottom: 8, width: 34, height: 34, borderRadius: 17, backgroundColor: colors.amberStrong, alignItems: "center", justifyContent: "center", ...shadow.control },
-  trackCopy: { flex: 1, minWidth: 0 },
-  trackKicker: { color: colors.magenta, fontFamily: mono, fontSize: 8, fontWeight: "900", letterSpacing: 1.1 },
-  trackTitle: { color: colors.text, fontFamily: displayFont, fontSize: 18, fontWeight: "900", marginTop: space(1) },
-  trackAlbum: { color: colors.textDim, fontSize: 12, marginTop: 3 },
   truthNote: { flexDirection: "row", alignItems: "center", alignSelf: "center", gap: space(2), maxWidth: 720, paddingHorizontal: space(4) },
   truthText: { flex: 1, color: colors.textFaint, fontSize: 11, lineHeight: 16, textAlign: "center" },
 });

@@ -19,7 +19,6 @@ export const SUGGESTION_SAFE_SURFACES = Object.freeze([
   "you",
   "artist",
   "profile",
-  "player",
   "settings",
   "menu",
   "other",

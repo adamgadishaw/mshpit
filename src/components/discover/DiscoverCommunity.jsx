@@ -1,71 +1,12 @@
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { memo } from "react";
 import { colors, font, mono, radius, shadow } from "../../theme";
 import Icon from "../Icon";
-import Avatar from "../Avatar";
 import SmartImage from "../SmartImage";
 import ClipPoster from "../ClipPoster";
 import { mediaDisplayKind, mediaPosterUri } from "../../domain/postMediaDisplay.mjs";
-import { compactDiscoverNumber, discoverPlaybackTrack } from "../../domain/discoverView.mjs";
-import { presentFriendsListening } from "../../domain/listeningRediscovery.mjs";
+import { compactDiscoverNumber } from "../../domain/discoverView.mjs";
 import { SectionHeading } from "./DiscoverPrimitives";
-
-function FriendTrack({ entry, onPlay, onAdd }) {
-  const track = discoverPlaybackTrack(entry);
-  const TrackSurface = onPlay ? Pressable : View;
-  const copy = (
-    <>
-      {track && onPlay ? <Icon name="play" size={11} color={colors.amber} /> : null}
-      <View style={styles.friendTrackCopy}>
-        <Text style={styles.friendTrackTitle} numberOfLines={1}>{entry.track.title}</Text>
-        <Text style={styles.friendTrackArtist} numberOfLines={1}>{entry.track.artist}</Text>
-        <Text style={styles.friendTrackTime} numberOfLines={1} accessibilityLabel={entry.recency.label}>{entry.recency.label}</Text>
-      </View>
-    </>
-  );
-  if (!track || (!onPlay && !onAdd)) return <View style={styles.friendTrack}>{copy}</View>;
-  return (
-    <View style={styles.friendTrackActions}>
-      <TrackSurface style={[styles.friendTrack, styles.friendTrackPlayable]} onPress={onPlay ? () => onPlay(track) : undefined} accessibilityRole={onPlay ? "button" : undefined} accessibilityLabel={onPlay ? `Play ${track.title} by ${track.artist}. ${entry.recency.label}` : `${track.title} by ${track.artist}. ${entry.recency.label}`}>
-        {copy}
-      </TrackSurface>
-      {onAdd && <Pressable style={styles.friendTrackAdd} onPress={() => onAdd(track)} accessibilityRole="button" accessibilityLabel={`Add ${track.title} by ${track.artist} to a playlist`}>
-        <Icon name="plus" size={14} color={colors.textDim} />
-      </Pressable>}
-    </View>
-  );
-}
-
-export const FriendsListening = memo(function FriendsListening({ rows, loading, error, signedIn, onRetry, onOpenProfile, onPlay, onAdd }) {
-  const visibleRows = presentFriendsListening(rows, { now: Date.now() });
-  if (!signedIn || (!loading && !error && !visibleRows.length)) return null;
-  const hasFreshPlay = visibleRows.some((entry) => entry.recency.state === "fresh");
-  return (
-    <View style={styles.panel}>
-      <SectionHeading eyebrow="YOUR CIRCLE" title={hasFreshPlay ? "Fresh plays from friends" : "Friends' last plays"} detail="Recent activity from people you follow" />
-      {loading && !visibleRows.length ? (
-        <View style={styles.loading} accessibilityLiveRegion="polite" accessibilityLabel="Loading friends listening"><ActivityIndicator color={colors.amber} /><Text style={styles.stateCopy}>Checking your circle...</Text></View>
-      ) : error ? (
-        <View style={styles.loading} accessibilityLiveRegion="assertive">
-          <Text style={styles.stateCopy} selectable>Friends listening could not update. Check your connection and try again.</Text>
-          <Pressable style={styles.retryButton} onPress={onRetry} accessibilityRole="button" accessibilityLabel="Retry loading friends listening"><Text style={styles.retryText}>Try again</Text></Pressable>
-        </View>
-      ) : (
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.rail} accessibilityLabel="Friends listening">
-          {visibleRows.map((entry) => (
-            <View key={entry.user.id} style={styles.friendCard}>
-              <Pressable style={styles.friendPerson} onPress={() => onOpenProfile?.(entry.user.id)} accessibilityRole="button" accessibilityLabel={`Open ${entry.user.name}'s profile`}>
-                <Avatar user={entry.user} size={44} />
-                <Text style={styles.friendName} numberOfLines={1}>{entry.user.name}</Text>
-              </Pressable>
-              <FriendTrack entry={entry} onPlay={onPlay} onAdd={onAdd} />
-            </View>
-          ))}
-        </ScrollView>
-      )}
-    </View>
-  );
-});
 
 function PhotoTile({ photo, index, onOpen, width }) {
   const video = mediaDisplayKind(photo) === "video";
@@ -103,22 +44,7 @@ export const DiscoverPhotos = memo(function DiscoverPhotos({ photos, photoUris, 
 
 const styles = StyleSheet.create({
   panel: { borderRadius: radius.lg, borderCurve: "continuous", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.lineSoft, padding: 18, gap: 14, ...shadow.card },
-  loading: { minHeight: 100, alignItems: "center", justifyContent: "center", gap: 8 },
-  stateCopy: { color: colors.textDim, fontFamily: font, fontSize: 12.5, lineHeight: 18, textAlign: "center", maxWidth: 420 },
-  retryButton: { minHeight: 44, paddingHorizontal: 18, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.amber, alignItems: "center", justifyContent: "center" },
-  retryText: { color: colors.amber, fontFamily: font, fontSize: 12.5, fontWeight: "900" },
   rail: { gap: 11, paddingRight: 6 },
-  friendCard: { width: 166, padding: 11, gap: 9, borderRadius: radius.md, borderCurve: "continuous", backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.lineSoft },
-  friendPerson: { minHeight: 54, flexDirection: "row", alignItems: "center", gap: 8 },
-  friendName: { flex: 1, color: colors.text, fontFamily: font, fontSize: 12, fontWeight: "800" },
-  friendTrackActions: { flexDirection: "row", alignItems: "stretch", gap: 5 },
-  friendTrack: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 7, paddingHorizontal: 8, borderRadius: radius.sm, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line },
-  friendTrackPlayable: { flex: 1, minWidth: 0 },
-  friendTrackAdd: { width: 44, minHeight: 44, alignItems: "center", justifyContent: "center", borderRadius: radius.sm, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line },
-  friendTrackCopy: { flex: 1, minWidth: 0 },
-  friendTrackTitle: { color: colors.text, fontFamily: font, fontSize: 11, fontWeight: "800" },
-  friendTrackArtist: { color: colors.textDim, fontFamily: font, fontSize: 9.5, paddingTop: 1 },
-  friendTrackTime: { color: colors.textFaint, fontFamily: mono, fontSize: 8.5, paddingTop: 2 },
   photoTile: { overflow: "hidden", borderRadius: radius.md, borderCurve: "continuous", backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.lineSoft },
   photoImage: { width: "100%", aspectRatio: 1.28, backgroundColor: colors.bgElev },
   photoMeta: { minHeight: 54, flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 11, paddingVertical: 8 },

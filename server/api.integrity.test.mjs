@@ -2436,8 +2436,12 @@ test("PATCH /api/me schemas extras, filters public song text, and keeps trusted 
   assert.equal(result.user.verified, false);
   assert.equal(result.user.consentAt, undefined, "generic profile extras cannot forge analytics consent");
   assert.equal(result.user.termsAcceptedAt, undefined, "generic profile extras cannot forge Terms acceptance");
-  assert.deepEqual(result.user.nowPlaying, { title: "Safe Song", artist: "Safe Artist" });
-  assert.deepEqual(JSON.parse(q.userById.get(user.id).extras), { theme: "stage", nowPlaying: { title: "Safe Song", artist: "Safe Artist" } });
+  assert.equal(result.user.nowPlaying, undefined, "paused player state stays out of the profile response");
+  assert.deepEqual(
+    JSON.parse(q.userById.get(user.id).extras),
+    { theme: "stage", nowPlaying: { title: "Safe Song", artist: "Safe Artist" } },
+    "pausing the player does not erase the member's stored history",
+  );
 
   assert.throws(
     () => handler({ user: q.userById.get(user.id), ip: "profile-test", body: { searchIndexingOptOut: "yes" } }),
@@ -3754,6 +3758,8 @@ test("admin Deezer enrichment records provider evidence and preserves staff auth
       requestId: "provider-enrich-test",
     });
     assert.equal(result.enriched, 2);
+    assert.equal(result.requested, 2);
+    assert.equal(result.artists.length, 2);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -3771,6 +3777,170 @@ test("admin Deezer enrichment records provider evidence and preserves staff auth
   assert.equal(stored.genreEvidence?.supportingCount, 3);
 });
 
+test("admin exact identity enrichment persists a missing artist and keeps its MBID through Deezer", async () => {
+  const name = "Ｅxact Missing Artist Fixture";
+  const canonicalName = "EXACT MISSING ARTIST FIXTURE";
+  const mbid = "11111111-1111-4111-8111-111111111111";
+  const admin = addUser("u_exact_identity_admin", "exact-identity-admin@example.com", "exactidentityadmin");
+  db.prepare("UPDATE users SET role='admin' WHERE id=?").run(admin.id);
+  const staff = q.userById.get(admin.id);
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const value = String(url);
+    let payload;
+    if (value.includes("musicbrainz.org/ws/2/artist")) {
+      payload = {
+        artists: [{
+          id: mbid,
+          name: canonicalName,
+          score: 100,
+          area: { name: "Canada" },
+          "life-span": { begin: "2018-01-01" },
+          tags: [{ name: "indie rock", count: 9 }],
+        }],
+      };
+    } else if (value.includes("/search/artist")) {
+      payload = {
+        data: [{
+          id: 919,
+          name: canonicalName,
+          nb_fan: 12000,
+          picture_xl: "https://cdn.example.com/exact-missing-artist.jpg",
+        }],
+      };
+    } else if (value.includes("/artist/919/top")) {
+      payload = {
+        data: [
+          { id: 91, title: "Exact Song One", album: { id: 9191, title: "Exact Album One" } },
+          { id: 92, title: "Exact Song Two", album: { id: 9192, title: "Exact Album Two" } },
+          { id: 93, title: "Exact Song Three", album: { id: 9193, title: "Exact Album Three" } },
+        ],
+      };
+    } else if (value.includes("/album/")) {
+      payload = { genres: { data: [{ name: "Alternative" }] } };
+    } else {
+      throw new Error("unexpected provider request: " + value);
+    }
+    return { ok: true, status: 200, json: async () => payload };
+  };
+
+  let result;
+  try {
+    result = await routes["POST /api/admin/artists/enrich"]({
+      user: staff,
+      body: { names: [name], requireExactIdentity: true },
+      requestId: "exact-identity-create-test",
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(result.requested, 1);
+  assert.equal(result.enriched, 1);
+  assert.equal(result.artists.length, 1);
+  assert.equal(result.artists[0].mbid, mbid);
+  assert.equal(result.artists[0].deezerId, 919);
+  const persisted = artistStmts.byNorm.get("exact missing artist fixture");
+  assert.ok(persisted);
+  assert.equal(persisted.mbid, mbid);
+  const data = JSON.parse(persisted.data);
+  assert.equal(data.mbid, mbid, "Deezer enrichment must retain the exact MusicBrainz identity in rich data");
+  assert.equal(data.deezerId, 919);
+  assert.equal(data.country, "Canada");
+});
+
+test("admin exact identity enrichment rejects a fuzzy MusicBrainz result without persisting it", async () => {
+  const name = "Fuzzy Rejection Fixture";
+  const admin = addUser("u_fuzzy_identity_admin", "fuzzy-identity-admin@example.com", "fuzzyidentityadmin");
+  db.prepare("UPDATE users SET role='admin' WHERE id=?").run(admin.id);
+  const staff = q.userById.get(admin.id);
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    const value = String(url);
+    assert.ok(value.includes("musicbrainz.org/ws/2/artist"));
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        artists: [{
+          id: "22222222-2222-4222-8222-222222222222",
+          name: "Fuzzy Rejection Fixture Tribute",
+          score: 99,
+        }],
+      }),
+    };
+  };
+  try {
+    await assert.rejects(
+      () => routes["POST /api/admin/artists/enrich"]({
+        user: staff,
+        body: { names: [name], requireExactIdentity: true },
+        requestId: "exact-identity-fuzzy-test",
+      }),
+      (error) => {
+        assert.ok(error instanceof ApiError);
+        assert.equal(error.status, 404);
+        assert.equal(error.code, "NOT_FOUND");
+        assert.match(error.message, /exact artist match/i);
+        return true;
+      },
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+  assert.equal(artistStmts.byNorm.get("fuzzy rejection fixture"), undefined);
+});
+
+test("admin exact identity enrichment rejects a conflicting stored MBID without overwriting rich data", async () => {
+  const name = "Identity Conflict Fixture";
+  const storedMbid = "33333333-3333-4333-8333-333333333333";
+  const incomingMbid = "44444444-4444-4444-8444-444444444444";
+  artistStmts.upsert.run(artistRow(name, {
+    name,
+    mbid: storedMbid,
+    bio: "Keep this catalog biography.",
+    topTracks: [{ id: 1, title: "Keep This Track" }],
+  }, "musicbrainz"));
+
+  const admin = addUser("u_conflict_identity_admin", "conflict-identity-admin@example.com", "conflictidentityadmin");
+  db.prepare("UPDATE users SET role='admin' WHERE id=?").run(admin.id);
+  const staff = q.userById.get(admin.id);
+
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      artists: [{ id: incomingMbid, name, score: 100 }],
+    }),
+  });
+  try {
+    await assert.rejects(
+      () => routes["POST /api/admin/artists/enrich"]({
+        user: staff,
+        body: { names: [name], requireExactIdentity: true },
+        requestId: "exact-identity-conflict-test",
+      }),
+      (error) => {
+        assert.ok(error instanceof ApiError);
+        assert.equal(error.status, 409);
+        assert.equal(error.code, "CONFLICT");
+        assert.match(error.message, /different identity/i);
+        return true;
+      },
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  const persisted = artistStmts.byNorm.get("identity conflict fixture");
+  assert.equal(persisted.mbid, storedMbid);
+  const data = JSON.parse(persisted.data);
+  assert.equal(data.bio, "Keep this catalog biography.");
+  assert.deepEqual(data.topTracks, [{ id: 1, title: "Keep This Track" }]);
+});
 test("withdrawing a sole staff genre cannot resurrect the stale column as provider evidence", () => {
   artistStmts.upsert.run(artistRow("sole staff genre", {
     name: "Sole Staff Genre",
