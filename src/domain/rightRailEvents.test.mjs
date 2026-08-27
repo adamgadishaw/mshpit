@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { RIGHT_RAIL_EVENT_SCOPE, rightRailEventsForScope } from "./rightRailEvents.mjs";
+import {
+  RIGHT_RAIL_EVENT_SCOPE,
+  reconcileRightRailScopeChoice,
+  rightRailEventsForScope,
+  rightRailScopeIdentity,
+} from "./rightRailEvents.mjs";
 
 const nearEvents = [
   { id: "near-1", artist: "Local Artist" },
@@ -41,4 +46,45 @@ test("right rail event selection is defensive around malformed data and limits",
   assert.deepEqual(rightRailEventsForScope({ nearEvents: null }), []);
   assert.deepEqual(rightRailEventsForScope({ nearEvents, limit: -1 }), []);
   assert.deepEqual(rightRailEventsForScope({ nearEvents, limit: Number.NaN }), nearEvents);
+});
+
+test("right rail scope identity is account and home-area scoped", () => {
+  assert.equal(
+    rightRailScopeIdentity({ accountId: "User-1", homeCity: " New   York " }),
+    "user-1::new york",
+  );
+  assert.notEqual(
+    rightRailScopeIdentity({ accountId: "user-1", homeCity: "Toronto" }),
+    rightRailScopeIdentity({ accountId: "user-2", homeCity: "Toronto" }),
+  );
+});
+
+test("right rail preserves a deliberate scope choice only within one account and home area", () => {
+  const localContext = { accountId: "user-1", homeCity: "Toronto" };
+  const initial = reconcileRightRailScopeChoice(null, localContext);
+  assert.deepEqual(initial, {
+    identity: "user-1::toronto",
+    value: RIGHT_RAIL_EVENT_SCOPE.NEAR,
+    touched: false,
+  });
+
+  const chosenWorld = { ...initial, value: RIGHT_RAIL_EVENT_SCOPE.WORLD, touched: true };
+  assert.deepEqual(reconcileRightRailScopeChoice(chosenWorld, localContext), chosenWorld);
+
+  assert.deepEqual(
+    reconcileRightRailScopeChoice(chosenWorld, { accountId: "user-1", homeCity: "" }),
+    {
+      identity: "user-1::world",
+      value: RIGHT_RAIL_EVENT_SCOPE.WORLD,
+      touched: false,
+    },
+  );
+  assert.deepEqual(
+    reconcileRightRailScopeChoice(chosenWorld, { accountId: "user-2", homeCity: "Toronto" }),
+    {
+      identity: "user-2::toronto",
+      value: RIGHT_RAIL_EVENT_SCOPE.NEAR,
+      touched: false,
+    },
+  );
 });

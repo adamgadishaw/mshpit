@@ -278,11 +278,12 @@ function eventDetails(event) {
   const venue = link(event.venuePath, event.venue);
   const address = postalAddress(event.address);
   return `<dl class="event-facts">
-    <div><dt>Date</dt><dd><time datetime="${esc(event.startDateTime || event.date)}">${esc(date || event.date)}${event.localTime ? ` at ${esc(event.localTime)}` : ""}</time></dd></div>
+    <div><dt>Date</dt><dd><time datetime="${esc(event.startDateTime || event.date)}">${esc(date || event.date)}${event.localTime ? ` at ${esc(event.localTime)}` : ""}</time>${event.endDate ? ` through <time datetime="${esc(event.endDate)}">${esc(longDateLabel(event.endDate) || event.endDate)}</time>` : ""}</dd></div>
     <div><dt>Venue</dt><dd>${venue}</dd></div>
     ${event.place ? `<div><dt>Location</dt><dd>${esc(event.place)}</dd></div>` : ""}
     ${address ? `<div><dt>Venue address</dt><dd>${address}</dd></div>` : ""}
     ${event.statusLabel && event.statusLabel !== "scheduled" ? `<div><dt>Status</dt><dd>${esc(event.statusLabel)}</dd></div>` : ""}
+    ${event.eventKind !== "concert" ? `<div><dt>Event type</dt><dd>${esc(event.eventKind.replace("_", " "))}</dd></div>` : ""}
   </dl>${ticket ? `<p class="ticket-action"><a class="button primary" href="${esc(ticket)}" rel="sponsored noopener noreferrer">View tickets</a><small>Tickets are handled by the linked provider.</small></p>` : ""}`;
 }
 
@@ -292,8 +293,10 @@ function eventMain(document) {
   return `<main id="main">
     ${breadcrumbs(document)}
     <section class="profile-hero event-hero">
-      <p class="eyebrow">Live event</p>
-      <h1>${link(event.artistPath, event.artist)} <em>at ${link(event.venuePath, event.venue)}</em></h1>
+      <p class="eyebrow">Live music event</p>
+      <h1>${esc(event.name)}</h1>
+      <p class="hero-copy">${link(event.artistPath, event.artist)} · ${link(event.venuePath, event.venue)}</p>
+      ${event.billedArtists?.length > 1 ? `<p class="hero-copy"><strong>Lineup:</strong> ${event.billedArtists.map(esc).join(" · ")}</p>` : ""}
       ${eventDetails(event)}
     </section>
     ${posts ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">People who were there</p><h2>Fan memories from this show</h2></div></div><div class="post-list">${posts}</div></section>` : `<section class="section empty-state"><p class="eyebrow">The archive starts here</p><h2>No fan memories have been shared for this date yet.</h2><p>After the show, fans can log a review and choose which photos appear in public galleries.</p></section>`}

@@ -383,6 +383,14 @@ test("segmented sitemaps contain only substantive canonical public pages", async
     1_730_000_000_400,
   );
   db.prepare(`INSERT INTO tour_dates
+    (id,artist,venue,place,date,source,start_date_time,venue_address_line1,venue_city,
+      venue_country_code,updated_at,release_at,music_qualified)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0)`).run(
+    "td_sitemap_non_music", "Arena Spectacle", "Rich Evidence Hall", "Toronto, Canada",
+    "2026-12-07", "ticketmaster", "2026-12-07T18:00:00-05:00", "1 Music Way", "Toronto", "CA",
+    1_730_000_000_450, 0,
+  );
+  db.prepare(`INSERT INTO tour_dates
     (id,artist,venue,place,date,source,ticket_url,event_status,updated_at,release_at)
     VALUES (?,?,?,?,?,?,?,?,?,0)`).run(
     "td_sitemap_offsale_event", "Offsale Artist", "Offsale Hall", "Toronto, Canada",
@@ -478,7 +486,7 @@ test("segmented sitemaps contain only substantive canonical public pages", async
   assert.match(events, /\/event\/td_sitemap_public/);
   assert.match(events, /\/event\/td_sitemap_fan_event/);
   assert.match(events, /\/event\/td_sitemap_rich_event/);
-  assert.doesNotMatch(events, /td_sitemap_thin_event|td_sitemap_offsale_event/);
+  assert.doesNotMatch(events, /td_sitemap_thin_event|td_sitemap_offsale_event|td_sitemap_non_music/);
   const venues = sitemapXmlFor("/sitemaps/venues.xml", { database: db, now: 1_725_000_000_000 });
   assert.match(venues, /\/venue\/world-hall/);
   assert.match(venues, /\/venue\/sitemap-hall/);

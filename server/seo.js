@@ -85,9 +85,11 @@ const publicPostIdentity = db.prepare(`SELECT p.id FROM posts p JOIN users u ON 
   WHERE p.id=? AND p.removed=0 AND ${activeAccountSql("u")} LIMIT 1`);
 const publicEventIdentity = db.prepare(`SELECT td.id,td.event_name,td.artist,td.venue,td.place,td.date,
     td.start_date_time,td.start_local_time,td.event_timezone,td.event_status,td.ticket_url,td.sold_out,
-    td.source,td.owner_id,td.venue_provider_id
+    td.source,td.owner_id,td.venue_provider_id,td.event_kind,td.music_qualified,
+    td.music_evidence,td.billed_artists,td.event_end_date
   FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id
   WHERE td.id=? AND td.release_at<=?
+    AND COALESCE(td.music_qualified,1)=1
     AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
     AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1 OR td.date<?)
   LIMIT 1`);

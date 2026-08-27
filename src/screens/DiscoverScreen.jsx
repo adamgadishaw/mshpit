@@ -8,6 +8,19 @@ import DiscoverChart from "../components/discover/DiscoverChart";
 import DiscoverGenres from "../components/discover/DiscoverGenres";
 import { DiscoverPhotos } from "../components/discover/DiscoverCommunity";
 import { MetricTile, OverviewState, QuickAction, SectionHeading } from "../components/discover/DiscoverPrimitives";
+import { UpcomingEventCard, VenueDiscoveryCard } from "../components/VenueDiscoveryCards";
+import { EventScopeToggle, PopularLoungeCard } from "../components/LiveDiscoveryCards";
+import { PublicPressableLink } from "../components/PublicWebLinks";
+import { eventPath } from "../domain/urls.mjs";
+import {
+  LIVE_EVENT_SCOPE,
+  liveEventTitle,
+  liveScopeLabel,
+  localDiscoveryEvents,
+  projectWorldwideUpcomingEvents,
+  projectPopularLounges,
+  upcomingEventsForScope,
+} from "../domain/liveDiscovery.mjs";
 import {
   cancelDiscoverRequest,
   compactDiscoverNumber,
@@ -28,11 +41,14 @@ function useLatestCallback(callback) {
 }
 
 export default function DiscoverScreen({
+  onOpen,
   onOpenTopRated,
   onOpenArtist,
+  onOpenVenue,
   onOpenNearby,
   onOpenFanClubs,
   onOpenVenues,
+  onOpenLounge,
   onOpenPhotos,
 }) {
   const {
@@ -44,6 +60,9 @@ export default function DiscoverScreen({
     loadDiscoverGenre,
     discoverStats,
     memberCount,
+    discoverySidebar,
+    discoverySidebarStatus,
+    tourDates,
   } = useStore();
   const { width } = useWindowDimensions();
   const compact = width < 620;
@@ -52,13 +71,22 @@ export default function DiscoverScreen({
   const actionBasis = veryCompact ? "100%" : wide ? "23%" : "48%";
 
   const accountId = session?.id || null;
-  const homeCountry = countryForCity(session?.home?.city);
+  const homeCity = session?.home?.city || discoverySidebar?.location?.city || "";
+  const homeCountry = countryForCity(homeCity);
   const [regionChoice, setRegionChoice] = useState(() => ({ accountId, value: homeCountry || "Worldwide", touched: false }));
   const region = regionChoice.accountId === accountId ? regionChoice.value : homeCountry || "Worldwide";
   const [query, setQuery] = useState("");
   const [overview, setOverview] = useState(EMPTY_OVERVIEW);
   const [overviewStatus, setOverviewStatus] = useState("idle");
   const [selectedGenre, setSelectedGenre] = useState(null);
+  const [liveScopeChoice, setLiveScopeChoice] = useState(() => ({
+    accountId,
+    value: homeCity ? LIVE_EVENT_SCOPE.LOCAL : LIVE_EVENT_SCOPE.WORLDWIDE,
+    touched: false,
+  }));
+  const liveScope = liveScopeChoice.accountId === accountId
+    ? liveScopeChoice.value
+    : homeCity ? LIVE_EVENT_SCOPE.LOCAL : LIVE_EVENT_SCOPE.WORLDWIDE;
   const [genreRows, setGenreRows] = useState([]);
   const [genreStatus, setGenreStatus] = useState("idle");
   const overviewLoaderRef = useRef(loadDiscoverOverview);
@@ -81,6 +109,22 @@ export default function DiscoverScreen({
     postId: photo.logId,
     ownerId: photo.ownerId,
   })), [photos]);
+  const localEvents = useMemo(
+    () => localDiscoveryEvents(discoverySidebar?.upcomingEvents, { limit: 12 }),
+    [discoverySidebar?.upcomingEvents],
+  );
+  const worldwideEvents = useMemo(
+    () => projectWorldwideUpcomingEvents(tourDates, { limit: 12 }),
+    [tourDates],
+  );
+  const liveEvents = upcomingEventsForScope({
+    scope: liveScope,
+    localEvents,
+    worldwideEvents,
+    limit: 4,
+  });
+  const venueRows = Array.isArray(discoverySidebar?.trendingVenues) ? discoverySidebar.trendingVenues.slice(0, 3) : [];
+  const loungeRows = projectPopularLounges(discoverySidebar?.popularLounges, { limit: 4 });
 
   const requestOverview = useCallback(({ preserve = false, force = false } = {}) => {
     overviewRequestRef.current.controller?.abort();
@@ -153,6 +197,17 @@ export default function DiscoverScreen({
   }, [accountId, homeCountry]);
 
   useEffect(() => {
+    setLiveScopeChoice((current) => {
+      const fallback = homeCity ? LIVE_EVENT_SCOPE.LOCAL : LIVE_EVENT_SCOPE.WORLDWIDE;
+      if (current.accountId !== accountId) return { accountId, value: fallback, touched: false };
+      if (!current.touched && homeCity && current.value !== LIVE_EVENT_SCOPE.LOCAL) {
+        return { ...current, value: LIVE_EVENT_SCOPE.LOCAL };
+      }
+      return current;
+    });
+  }, [accountId, homeCity]);
+
+  useEffect(() => {
     if (selectedGenre && !overview.genres.some((item) => item.genre === selectedGenre && item.genre !== "Other")) setSelectedGenre(null);
   }, [overview.genres, selectedGenre]);
 
@@ -221,17 +276,106 @@ export default function DiscoverScreen({
         </ScrollView>
       </View>
 
+      <View style={styles.venueSection}>
+        <SectionHeading
+          eyebrow="LIVE ROOMS"
+          title="Venues"
+          detail="Start with the room: browse cities, lineups, and places fans keep coming back to."
+          action={(
+            <Pressable style={styles.sectionAction} onPress={onOpenVenues} accessibilityRole="button" accessibilityLabel="Browse all venues">
+              <Text style={styles.sectionActionText}>Browse all</Text>
+              <Icon name="chevron-right" size={14} color={colors.cool} />
+            </Pressable>
+          )}
+        />
+        <Pressable
+          style={({ pressed }) => [styles.venueHero, pressed && styles.cardPressed]}
+          onPress={onOpenVenues}
+          accessibilityRole="button"
+          accessibilityLabel="Open the venue directory"
+          accessibilityHint="Browse venues by city and upcoming lineup"
+        >
+          <View style={styles.venueHeroIcon}><Icon name="pin" size={24} color={colors.cool} /></View>
+          <View style={styles.venueHeroCopy}>
+            <Text style={styles.venueHeroTitle}>Find your next favourite room</Text>
+            <Text style={styles.venueHeroDetail}>{homeCity ? `Start around ${homeCity}, then explore worldwide.` : "Explore local stages and rooms around the world."}</Text>
+          </View>
+          <Icon name="chevron-right" size={21} color={colors.cool} />
+        </Pressable>
+        {venueRows.length > 0 ? (
+          <View style={styles.venueRows}>
+            {venueRows.map((venue) => (
+              <VenueDiscoveryCard key={`${venue.name}|${venue.place || ""}`} venue={venue} compact onPress={() => onOpenVenue?.(venue.name || venue)} />
+            ))}
+          </View>
+        ) : null}
+      </View>
+
       <View style={styles.quickSection}>
         <SectionHeading eyebrow="START HERE" title="Explore your way" detail="Shortcuts to the parts of Pit that help you make plans" />
         <View style={styles.quickGrid}>
-          <QuickAction icon="map" title="Near you" detail={session?.home?.city ? `Shows around ${session.home.city}` : "Shows and scenes close by"} tint={colors.good} onPress={onOpenNearby} basis={actionBasis} />
           <QuickAction icon="pin" title="Find venues" detail="Browse rooms by city and lineup" tint={colors.cool} onPress={onOpenVenues} basis={actionBasis} />
+          <QuickAction icon="map" title="Near you" detail={homeCity ? `Shows around ${homeCity}` : "Shows and scenes close by"} tint={colors.good} onPress={onOpenNearby} basis={actionBasis} />
           <QuickAction icon="trophy" title="Top-rated shows" detail="Concerts members loved most" tint={colors.gold} onPress={onOpenTopRated} basis={actionBasis} />
           <QuickAction icon="you" title="Fan clubs" detail="Join artist communities" tint={colors.magenta} onPress={onOpenFanClubs} basis={actionBasis} />
         </View>
       </View>
 
       <View style={[styles.metrics, compact && styles.metricsCompact]}>{metrics.map((metric) => <MetricTile key={metric.label} {...metric} compact={compact} />)}</View>
+
+      <View style={[styles.liveGrid, !wide && styles.liveGridStacked]}>
+        <View style={styles.livePanel}>
+          <View style={[styles.livePanelHead, compact && styles.livePanelHeadCompact]}>
+            <SectionHeading eyebrow="PLAN THE NEXT NIGHT" title="Upcoming live events" detail={liveScopeLabel({ scope: liveScope, homeCity })} />
+            <EventScopeToggle
+              scope={liveScope}
+              localLabel={homeCity ? `Near ${homeCity}` : "Near you"}
+              compact={compact}
+              onChange={(value) => setLiveScopeChoice({ accountId, value, touched: true })}
+            />
+          </View>
+          {liveEvents.length === 0 ? (
+            <View style={styles.liveEmpty} accessibilityLiveRegion="polite">
+              <Icon name={liveScope === LIVE_EVENT_SCOPE.WORLDWIDE ? "globe" : "pin"} size={19} color={colors.textFaint} />
+              <Text style={styles.liveEmptyText}>
+                {discoverySidebarStatus === "loading"
+                  ? "Loading upcoming live events…"
+                  : liveScope === LIVE_EVENT_SCOPE.LOCAL
+                    ? "No shows are listed near your saved home area yet. Try Worldwide."
+                    : "No worldwide live-event dates are available yet."}
+              </Text>
+            </View>
+          ) : (
+            <View style={styles.liveRows}>
+              {liveEvents.map((event) => (
+                <PublicPressableLink
+                  key={event.id || `${liveEventTitle(event)}|${event.venue}|${event.date}`}
+                  href={eventPath(event)}
+                  onNavigate={() => onOpen?.(event)}
+                  style={({ pressed }) => [styles.liveLink, pressed && styles.cardPressed]}
+                  accessibilityLabel={`Open ${liveEventTitle(event)} at ${event.venue || "the venue"}`}
+                >
+                  <UpcomingEventCard event={event} compact />
+                </PublicPressableLink>
+              ))}
+            </View>
+          )}
+        </View>
+
+        <View style={styles.livePanel}>
+          <SectionHeading eyebrow="FANS ARE TALKING" title="Popular lounges" detail="Active concert rooms ranked by aggregate conversation, never by private member data." />
+          {loungeRows.length === 0 ? (
+            <View style={styles.liveEmpty}>
+              <Icon name="comment" size={19} color={colors.textFaint} />
+              <Text style={styles.liveEmptyText}>Active lounges will appear when concert conversations pick up.</Text>
+            </View>
+          ) : (
+            <View style={styles.liveRows}>
+              {loungeRows.map((lounge) => <PopularLoungeCard key={lounge.key} lounge={lounge} compact onPress={() => onOpenLounge?.(lounge)} />)}
+            </View>
+          )}
+        </View>
+      </View>
 
       {overviewStatus === "refreshing" && showOverviewContent && (
         <View style={styles.refreshNotice} accessibilityLiveRegion="polite"><ActivityIndicator size="small" color={colors.amber} /><Text style={styles.refreshNoticeText}>Refreshing {region}</Text></View>
@@ -248,11 +392,13 @@ export default function DiscoverScreen({
       ) : (
         <>
           <DiscoverChart rows={overview.chart.rows} source={overview.chart.source} info={overview.chart} query={query} onQuery={setQuery} onOpenArtist={openArtist} compact={compact} narrow={veryCompact} />
-          <DiscoverGenres genres={overview.genres} selected={selectedGenre} onSelect={setSelectedGenre} total={overview.genreTotal} rows={genreRows} status={genreStatus} region={region} onOpenArtist={openArtist} onRetry={retryGenre} />
         </>
       )}
 
       <DiscoverPhotos photos={photos} photoUris={photoUris} compact={compact} width={width} onOpenPhotos={openPhotos} />
+      {showOverviewContent ? (
+        <DiscoverGenres genres={overview.genres} selected={selectedGenre} onSelect={setSelectedGenre} total={overview.genreTotal} rows={genreRows} status={genreStatus} region={region} onOpenArtist={openArtist} onRetry={retryGenre} />
+      ) : null}
     </ScrollView>
   );
 }
@@ -287,10 +433,29 @@ const styles = StyleSheet.create({
   regionTextSelected: { color: colors.amber, fontWeight: "900" },
   regionCount: { color: colors.textFaint, fontFamily: mono, fontSize: 10, fontWeight: "800" },
   regionCountSelected: { color: colors.amber },
+  venueSection: { gap: 10 },
+  sectionAction: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 4, paddingHorizontal: 10, borderRadius: radius.pill },
+  sectionActionText: { color: colors.cool, fontFamily: font, fontSize: 12, fontWeight: "900" },
+  venueHero: { minHeight: 96, flexDirection: "row", alignItems: "center", gap: 14, padding: 16, borderRadius: radius.lg, borderCurve: "continuous", borderWidth: 1, borderColor: `${colors.cool}66`, backgroundColor: `${colors.cool}0F`, ...shadow.card },
+  venueHeroIcon: { width: 50, height: 50, borderRadius: 17, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: `${colors.cool}55`, backgroundColor: colors.bgElev },
+  venueHeroCopy: { flex: 1, minWidth: 0 },
+  venueHeroTitle: { color: colors.text, fontFamily: displayFont, fontSize: 18, lineHeight: 23, fontWeight: "900" },
+  venueHeroDetail: { color: colors.textDim, fontFamily: font, fontSize: 12, lineHeight: 17, paddingTop: 3 },
+  venueRows: { gap: 8 },
   quickSection: { gap: 10 },
   quickGrid: { flexDirection: "row", flexWrap: "wrap", gap: 10 },
   metrics: { flexDirection: "row", gap: 10 },
   metricsCompact: { flexWrap: "wrap" },
+  liveGrid: { flexDirection: "row", alignItems: "flex-start", gap: 12 },
+  liveGridStacked: { flexDirection: "column" },
+  livePanel: { flex: 1, minWidth: 0, width: "100%", gap: 10, padding: 14, borderRadius: radius.lg, borderCurve: "continuous", borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.bgElev, ...shadow.card },
+  livePanelHead: { gap: 10 },
+  livePanelHeadCompact: { alignItems: "stretch" },
+  liveRows: { gap: 8 },
+  liveLink: { borderRadius: radius.md },
+  liveEmpty: { minHeight: 82, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 9, padding: 14, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface },
+  liveEmptyText: { flex: 1, color: colors.textDim, fontFamily: font, fontSize: 12, lineHeight: 17 },
+  cardPressed: { opacity: 0.82, transform: [{ scale: 0.99 }] },
   refreshNotice: { minHeight: 38, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, borderRadius: radius.pill, backgroundColor: colors.bgElev },
   refreshNoticeText: { color: colors.textDim, fontFamily: font, fontSize: 12, fontWeight: "700" },
   refreshError: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", flexWrap: "wrap", gap: 10, paddingHorizontal: 14, borderRadius: radius.md, borderWidth: 1, borderColor: `${colors.danger}55`, backgroundColor: colors.bgElev },

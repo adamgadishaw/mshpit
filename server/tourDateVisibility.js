@@ -11,7 +11,9 @@ export function visibleTourDateRowsFrom(database, viewer, {
   limit: rowLimit = 5000,
   at = Date.now(),
 } = {}) {
-  const filters = [];
+  // Legacy rows predate provider classification evidence and remain qualified.
+  // New imports can explicitly fail closed without leaking into discovery.
+  const filters = ["COALESCE(td.music_qualified,1)=1"];
   const prefix = [];
   if (today) {
     filters.push("td.date>=?");

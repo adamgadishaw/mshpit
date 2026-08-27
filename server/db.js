@@ -479,7 +479,12 @@ CREATE TABLE IF NOT EXISTS tour_dates (
   venue_country_code    TEXT,
   venue_country         TEXT,
   provider_active       INTEGER NOT NULL DEFAULT 1,
-  last_seen_at          INTEGER
+  last_seen_at          INTEGER,
+  event_kind            TEXT NOT NULL DEFAULT 'concert',
+  music_qualified       INTEGER NOT NULL DEFAULT 1,
+  music_evidence        TEXT,
+  billed_artists        TEXT NOT NULL DEFAULT '[]',
+  event_end_date        TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_tourdates_artist ON tour_dates(artist);
 
@@ -690,6 +695,8 @@ CREATE TABLE IF NOT EXISTS lounge_messages (
 );
 CREATE INDEX IF NOT EXISTS idx_lounge ON lounge_messages(lounge_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_lounge_cursor ON lounge_messages(lounge_id, removed, created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_lounge_recent_directory
+  ON lounge_messages(removed, created_at DESC, lower(lounge_id));
 
 -- Catalog-seed crawl cursor: how deep each genre tag has been crawled, so a
 -- re-run resumes instead of re-fetching MusicBrainz pages it already finished.
@@ -1455,6 +1462,11 @@ const additiveMigrations = [
   // the same stable provider identity on a later successful refresh.
   "ALTER TABLE tour_dates ADD COLUMN provider_active INTEGER NOT NULL DEFAULT 1",
   "ALTER TABLE tour_dates ADD COLUMN last_seen_at INTEGER",
+  "ALTER TABLE tour_dates ADD COLUMN event_kind TEXT NOT NULL DEFAULT 'concert'",
+  "ALTER TABLE tour_dates ADD COLUMN music_qualified INTEGER NOT NULL DEFAULT 1",
+  "ALTER TABLE tour_dates ADD COLUMN music_evidence TEXT",
+  "ALTER TABLE tour_dates ADD COLUMN billed_artists TEXT NOT NULL DEFAULT '[]'",
+  "ALTER TABLE tour_dates ADD COLUMN event_end_date TEXT",
   // Stable attendee pagination for existing rows (0 + user id) and all new rows.
   "ALTER TABLE going ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0",
   // Marketing consent. Broadcasts must honour this; password resets must not,
@@ -1811,6 +1823,7 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_posts_venue_public_slug
 db.exec(`CREATE INDEX IF NOT EXISTS idx_tourdates_provider_visibility
   ON tour_dates(provider_active, date, id) WHERE owner_id IS NULL`);
 db.exec("CREATE INDEX IF NOT EXISTS idx_going_cursor ON going(concert_key, created_at DESC, user_id DESC)");
+db.exec("CREATE INDEX IF NOT EXISTS idx_going_lounge_identity ON going(lower(concert_key), user_id)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_follows_followee_follower ON follows(followee_id, follower_id)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_posts_landing_media ON posts(landing_showcase, photos_public, removed, kind, created_at DESC, id DESC)");
 db.exec("CREATE INDEX IF NOT EXISTS idx_posts_venue_visibility ON posts(venue_key, removed, created_at DESC) WHERE venue_key IS NOT NULL");

@@ -1,12 +1,20 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Platform, View, Text, StyleSheet, Pressable, ScrollView } from "react-native";
 import { colors, displayFont, focusRing, font, mono, radius, roleColor, shadow } from "../theme";
 import Avatar from "./Avatar";
 import Icon from "./Icon";
 import { UpcomingEventCard } from "./VenueDiscoveryCards";
+import { PopularLoungeCard } from "./LiveDiscoveryCards";
 import { PublicPressableLink } from "./PublicWebLinks";
-import { RIGHT_RAIL_EVENT_SCOPE, rightRailEventsForScope } from "../domain/rightRailEvents.mjs";
-import { artistPath, eventPath, venuePath } from "../domain/urls.mjs";
+import {
+  RIGHT_RAIL_EVENT_SCOPE,
+  reconcileRightRailScopeChoice,
+  rightRailDefaultScope,
+  rightRailEventsForScope,
+  rightRailScopeIdentity,
+} from "../domain/rightRailEvents.mjs";
+import { liveEventTitle, localDiscoveryEvents } from "../domain/liveDiscovery.mjs";
+import { artistPath, eventPath } from "../domain/urls.mjs";
 
 const NAV = [
   { key: "feed", label: "Feed", icon: "feed" },
@@ -200,29 +208,45 @@ export function DesktopTopNav({
   );
 }
 
-// Right rail: contextual widgets, Top / A-Z artists, trending venues, upcoming
+// Right rail: contextual widgets, Top / A-Z artists, active lounges, upcoming
 // events. Read-only discovery surfaces that stay out of the feed's way.
 export function RightRail({
   topArtists,
   artistsAlphabetical,
-  trendingVenues,
   upcomingEvents,
   discoverySidebar = {},
   discoverySidebarStatus = "idle",
+  accountId,
+  homeCity,
   onOpenArtist,
-  onOpenVenue,
-  onFindVenues,
+  onOpenLounge,
+  onOpenDiscover,
   onOpenEvent,
 }) {
   const [artistMode, setArtistMode] = useState("top"); // 'top' | 'az'
-  const [eventScope, setEventScope] = useState(RIGHT_RAIL_EVENT_SCOPE.NEAR);
+  const eventScopeIdentity = rightRailScopeIdentity({ accountId, homeCity });
+  const defaultEventScope = rightRailDefaultScope({ homeCity });
+  const [eventScopeChoice, setEventScopeChoice] = useState(
+    () => reconcileRightRailScopeChoice(null, { accountId, homeCity }),
+  );
+  const eventScope = eventScopeChoice.identity === eventScopeIdentity
+    ? eventScopeChoice.value
+    : defaultEventScope;
+
+  useEffect(() => {
+    setEventScopeChoice((current) => reconcileRightRailScopeChoice(current, { accountId, homeCity }));
+  }, [accountId, defaultEventScope, eventScopeIdentity, homeCity]);
+
+  const chooseEventScope = (value) => {
+    setEventScopeChoice({ identity: eventScopeIdentity, value, touched: true });
+  };
   const artists = artistMode === "top"
     ? (discoverySidebar.topArtists?.length ? discoverySidebar.topArtists.slice(0, 8) : topArtists(8))
     : artistsAlphabetical(10);
-  const venues = discoverySidebar.trendingVenues?.length ? discoverySidebar.trendingVenues.slice(0, 6) : trendingVenues(6);
+  const lounges = Array.isArray(discoverySidebar.popularLounges) ? discoverySidebar.popularLounges.slice(0, 5) : [];
   const events = rightRailEventsForScope({
     scope: eventScope,
-    nearEvents: discoverySidebar.upcomingEvents,
+    nearEvents: localDiscoveryEvents(discoverySidebar.upcomingEvents, { limit: 6 }),
     worldEvents: eventScope === RIGHT_RAIL_EVENT_SCOPE.WORLD ? upcomingEvents?.(6) : [],
     limit: 6,
   });
@@ -282,29 +306,18 @@ export function RightRail({
         ))}
       </View>
 
-      {/* Trending venues */}
+      {/* Popular active concert lounges; aggregate activity only. */}
       <View style={styles.card}>
         <View style={styles.cardHead}>
-          <Text style={styles.cardTitle}>TRENDING VENUES</Text>
-          <Pressable onPress={onFindVenues}><Text style={styles.seeAll}>See all</Text></Pressable>
+          <Text style={styles.cardTitle}>POPULAR LOUNGES</Text>
+          <Pressable onPress={onOpenDiscover} disabled={!onOpenDiscover} accessibilityRole="button" accessibilityLabel="See all popular concert lounges" accessibilityState={{ disabled: !onOpenDiscover }}>
+            <Text style={styles.seeAll}>See all</Text>
+          </Pressable>
         </View>
-        {venues.length === 0 && <Text style={styles.empty}>{listingEmpty}</Text>}
-        {venues.map((v) => (
-          <PublicPressableLink
-            key={v.name}
-            href={venuePath(v)}
-            onNavigate={() => onOpenVenue?.(v)}
-            style={({ pressed, hovered, focused }) => [styles.aRow, hovered && styles.rowHover, pressed && styles.rowPressed, focused && focusRing]}
-            accessibilityLabel={`Open ${v.name}`}
-          >
-            <View style={styles.aDot}><Icon name="pin" size={13} color={colors.cool} /></View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.aName} numberOfLines={1}>{v.name}</Text>
-              <Text style={styles.aSub} numberOfLines={1}>{(v.place || "").split(",").slice(0, 2).join(", ")}</Text>
-            </View>
-            <View style={styles.upPill}><Text style={styles.upTxt}>{v.upcoming}</Text></View>
-          </PublicPressableLink>
-        ))}
+        {lounges.length === 0 && <Text style={styles.empty}>Active rooms appear here when fans are talking about a show.</Text>}
+        <View style={styles.loungeList}>
+          {lounges.map((lounge) => <PopularLoungeCard key={lounge.key} lounge={lounge} compact onPress={() => onOpenLounge?.(lounge)} />)}
+        </View>
       </View>
 
       {/* Upcoming events */}
@@ -318,7 +331,7 @@ export function RightRail({
         </View>
         <View style={[styles.toggle, styles.eventScopeToggle]} accessibilityRole="tablist" accessibilityLabel="Upcoming event area">
           <Pressable
-            onPress={() => setEventScope(RIGHT_RAIL_EVENT_SCOPE.NEAR)}
+            onPress={() => chooseEventScope(RIGHT_RAIL_EVENT_SCOPE.NEAR)}
             style={({ pressed, focused }) => [
               styles.eventScopeButton,
               eventScope === RIGHT_RAIL_EVENT_SCOPE.NEAR && styles.tgOn,
@@ -331,7 +344,7 @@ export function RightRail({
             <Text style={[styles.tgTxt, eventScope === RIGHT_RAIL_EVENT_SCOPE.NEAR && styles.tgTxtOn]}>Near</Text>
           </Pressable>
           <Pressable
-            onPress={() => setEventScope(RIGHT_RAIL_EVENT_SCOPE.WORLD)}
+            onPress={() => chooseEventScope(RIGHT_RAIL_EVENT_SCOPE.WORLD)}
             style={({ pressed, focused }) => [
               styles.eventScopeButton,
               eventScope === RIGHT_RAIL_EVENT_SCOPE.WORLD && styles.tgOn,
@@ -352,7 +365,7 @@ export function RightRail({
               href={eventPath(event)}
               onNavigate={() => (onOpenEvent ? onOpenEvent(event) : onOpenArtist?.(event.artist))}
               style={({ pressed, hovered, focused }) => [styles.eventPressable, hovered && styles.eventHover, pressed && styles.rowPressed, focused && focusRing]}
-              accessibilityLabel={`Open ${event.artist} at ${event.venue}${event.place ? `, ${event.place}` : ""}${event.date ? `, ${event.date}` : ""}`}
+              accessibilityLabel={`Open ${liveEventTitle(event)} at ${event.venue}${event.place ? `, ${event.place}` : ""}${event.date ? `, ${event.date}` : ""}`}
             >
               <UpcomingEventCard event={event} compact />
             </PublicPressableLink>
@@ -485,6 +498,7 @@ const styles = StyleSheet.create({
   eventScopeToggle: { alignSelf: "stretch", marginBottom: 10 },
   eventScopeButton: { flex: 1, minHeight: 44, alignItems: "center", justifyContent: "center", paddingHorizontal: 10, paddingVertical: 5, borderRadius: radius.pill },
   eventList: { gap: 8 },
+  loungeList: { gap: 8 },
   eventPressable: { borderRadius: radius.md, borderCurve: "continuous", ...Platform.select({ web: { cursor: "pointer", transitionDuration: "110ms", transitionProperty: "transform, filter" } }) },
   eventHover: { ...Platform.select({ web: { filter: "brightness(1.06)" } }) },
   empty: { color: colors.textDim, fontSize: 12, fontStyle: "italic" },

@@ -14,7 +14,7 @@ test("venue photo endpoint fails closed for the legacy unverified catalog", () =
 
   assert.equal(result.key, "wollman auditorium");
   assert.deepEqual(result.photos, []);
-  assert.equal(headers["Cache-Control"], "public, max-age=3600, stale-while-revalidate=86400");
+  assert.equal(headers["Cache-Control"], "public, max-age=60, must-revalidate");
 });
 
 test("venue photo endpoint handles missing pools and malformed route encoding safely", () => {

@@ -40,6 +40,14 @@ test("startup only pays for the core, and the heavy fields stay out of it", () =
   for (const field of ["galleryPool", "photos"]) {
     assert.equal(venues.some((v) => v[field]), false, `venue ${field} belongs in the lazy half`);
   }
+  const verifiedVenueLeads = venues.filter((venue) => venue.photo);
+  assert.ok(verifiedVenueLeads.length > 0, "verified venue leads must survive the split");
+  assert.equal(venues.some((venue) => venue.photoCredit && !venue.photo), false,
+    "legacy venue credits must not survive without an approved lead");
+  assert.equal(verifiedVenueLeads.some((venue) =>
+    !venue.photoCreator || !venue.photoLicense || !venue.photoLicenseUrl
+      || !venue.photoSourcePage || !venue.photoSource), false,
+  "every bundled venue lead must carry complete machine-verifiable provenance");
 
   // Regressing this number is what re-introduces the startup stall, so the
   // build checks it rather than trusting anyone to remember.

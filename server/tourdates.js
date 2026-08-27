@@ -11,6 +11,7 @@ import { backgroundJobEnabled } from "./backgroundJobs.js";
 import { runBackgroundJob } from "./backgroundJobCoordinator.js";
 import { privateErrorLabel } from "./errors.js";
 import { canonicalTicketUrl } from "../src/domain/ticketLinks.mjs";
+import { bandsintownMusicEvent, ticketmasterMusicEvent } from "./musicEventClassification.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CATALOG = join(HERE, "..", "src", "seed", "catalog.generated.json");
@@ -203,6 +204,8 @@ async function getJSON(url) {
 export function ticketmasterRows(data, { requestedArtist = null } = {}) {
   const out = [];
   for (const event of data?._embedded?.events || []) {
+    const musicEvent = ticketmasterMusicEvent(event, { requestedArtist });
+    if (!musicEvent) continue;
     const venue = event._embedded?.venues?.[0];
     const attractions = event._embedded?.attractions || [];
     const requestedIdentity = ticketmasterArtistIdentity(requestedArtist);
@@ -239,6 +242,11 @@ export function ticketmasterRows(data, { requestedArtist = null } = {}) {
       venue_country_code: countryCode?.toUpperCase() || null,
       venue_country: optionalText(venue.country?.name),
       provider_active: 1,
+      event_kind: musicEvent.kind,
+      music_qualified: 1,
+      music_evidence: musicEvent.evidence,
+      billed_artists: musicEvent.billedArtists,
+      event_end_date: musicEvent.endDate,
     });
   }
   return out;
@@ -277,6 +285,8 @@ async function tmCountryDates(countryCode) {
 export function bandsintownRows(data, { requestedArtist = null } = {}) {
   const out = [];
   for (const e of Array.isArray(data) ? data : []) {
+    const musicEvent = bandsintownMusicEvent(e, { requestedArtist });
+    if (!musicEvent) continue;
     const v = e.venue || {};
     const artist = optionalText(requestedArtist) || optionalText(e.artist?.name) || optionalText(e.lineup?.[0]);
     const localStart = optionalText(e.datetime);
@@ -309,6 +319,11 @@ export function bandsintownRows(data, { requestedArtist = null } = {}) {
       venue_country_code: countryCode?.toUpperCase() || null,
       venue_country: optionalText(v.country),
       provider_active: 1,
+      event_kind: musicEvent.kind,
+      music_qualified: 1,
+      music_evidence: musicEvent.evidence,
+      billed_artists: musicEvent.billedArtists,
+      event_end_date: musicEvent.endDate,
     });
   }
   return out;
@@ -388,12 +403,14 @@ const PROVIDER_TOUR_DATE_UPSERT_SQL = `
     id,artist,artist_key,venue,place,lat,lng,date,ticket_url,sold_out,source,updated_at,
     provider_event_id,event_name,start_date_time,start_local_time,event_timezone,event_status,
     venue_provider_id,venue_address_line1,venue_address_line2,venue_city,venue_region,
-    venue_postal_code,venue_country_code,venue_country,provider_active,last_seen_at
+    venue_postal_code,venue_country_code,venue_country,provider_active,last_seen_at,
+    event_kind,music_qualified,music_evidence,billed_artists,event_end_date
   ) VALUES (
     @id,@artist,@artist_key,@venue,@place,@lat,@lng,@date,@ticket_url,@sold_out,@source,@updated_at,
     @provider_event_id,@event_name,@start_date_time,@start_local_time,@event_timezone,@event_status,
     @venue_provider_id,@venue_address_line1,@venue_address_line2,@venue_city,@venue_region,
-    @venue_postal_code,@venue_country_code,@venue_country,@provider_active,@last_seen_at
+    @venue_postal_code,@venue_country_code,@venue_country,@provider_active,@last_seen_at,
+    @event_kind,@music_qualified,@music_evidence,@billed_artists,@event_end_date
   )
   ON CONFLICT(id) DO UPDATE SET
     artist=excluded.artist,artist_key=excluded.artist_key,venue=excluded.venue,place=excluded.place,
@@ -419,6 +436,11 @@ const PROVIDER_TOUR_DATE_UPSERT_SQL = `
       OR COALESCE(excluded.venue_postal_code,tour_dates.venue_postal_code) IS NOT tour_dates.venue_postal_code
       OR COALESCE(excluded.venue_country_code,tour_dates.venue_country_code) IS NOT tour_dates.venue_country_code
       OR COALESCE(excluded.venue_country,tour_dates.venue_country) IS NOT tour_dates.venue_country
+      OR excluded.event_kind IS NOT tour_dates.event_kind
+      OR excluded.music_qualified IS NOT tour_dates.music_qualified
+      OR excluded.music_evidence IS NOT tour_dates.music_evidence
+      OR excluded.billed_artists IS NOT tour_dates.billed_artists
+      OR excluded.event_end_date IS NOT tour_dates.event_end_date
       THEN excluded.updated_at ELSE tour_dates.updated_at END,
     provider_event_id=COALESCE(excluded.provider_event_id,tour_dates.provider_event_id),
     event_name=COALESCE(excluded.event_name,tour_dates.event_name),
@@ -434,6 +456,9 @@ const PROVIDER_TOUR_DATE_UPSERT_SQL = `
     venue_postal_code=COALESCE(excluded.venue_postal_code,tour_dates.venue_postal_code),
     venue_country_code=COALESCE(excluded.venue_country_code,tour_dates.venue_country_code),
     venue_country=COALESCE(excluded.venue_country,tour_dates.venue_country),
+    event_kind=excluded.event_kind,music_qualified=excluded.music_qualified,
+    music_evidence=excluded.music_evidence,billed_artists=excluded.billed_artists,
+    event_end_date=excluded.event_end_date,
     provider_active=excluded.provider_active,last_seen_at=excluded.last_seen_at
   WHERE tour_dates.owner_id IS NULL`;
 
@@ -467,6 +492,11 @@ function providerTourDateWrite(row, seenAt, artistKey) {
     venue_country: row.venue_country ?? null,
     provider_active: 1,
     last_seen_at: seenAt,
+    event_kind: row.event_kind || "concert",
+    music_qualified: row.music_qualified === 1 ? 1 : 0,
+    music_evidence: row.music_evidence ?? null,
+    billed_artists: JSON.stringify(Array.isArray(row.billed_artists) ? row.billed_artists.slice(0, 20) : []),
+    event_end_date: row.event_end_date ?? null,
   };
 }
 

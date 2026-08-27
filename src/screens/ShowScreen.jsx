@@ -21,6 +21,7 @@ import {
   CROWD_SCOPES, attendanceTotalForView, viewerGoingForCrowd,
 } from "../domain/showAttendance.mjs";
 import { hasPostDiscussion, showDiscussionCount } from "../domain/showDiscussion.mjs";
+import { liveEventLineupLabel, liveEventTitle } from "../domain/liveDiscovery.mjs";
 import { archiveCoverMedia, archiveReviewMedia } from "../domain/artistEventArchive.mjs";
 import { useArtistEventReviews } from "../features/artistEvents/useArtistEventArchive";
 import { readShowCrowdAttendance, readShowDocument, readShowLoungeMeta } from "../features/showSocial/showSocialService";
@@ -76,6 +77,15 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
     city,
     date: trustedShow?.localDate || trustedShow?.date || log.date,
   };
+  const eventTitle = liveEventTitle(norm);
+  const isNamedLiveEvent = eventTitle !== artist;
+  const eventLineup = isNamedLiveEvent ? liveEventLineupLabel(norm, { limit: 5 }) : "";
+  const eventEndDate = typeof norm.eventEndDate === "string"
+    && /^\d{4}-\d{2}-\d{2}$/.test(norm.eventEndDate)
+    && norm.eventEndDate !== norm.date
+    ? norm.eventEndDate
+    : null;
+  const socialObjectLabel = isNamedLiveEvent ? "event" : "show";
   const discussionCount = showDiscussionCount(log.comments);
   const discussionAvailable = hasPostDiscussion(norm);
   const coord = venueCoord(venue);
@@ -272,7 +282,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
   const [revealed, setRevealed] = useState(!log.inTourWindow);
   return (
     <View style={styles.wrap}>
-      <ScreenHeader kicker={presentation.screenKicker} title={artist} onBack={onClose} />
+      <ScreenHeader kicker={presentation.screenKicker} title={eventTitle} onBack={onClose} />
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         {/* Ticket-style hero: this is what makes a NIGHT read differently from
@@ -280,14 +290,28 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
             room + the date, like the ticket you'd have kept. */}
         <View style={styles.ticket}>
           <Text style={styles.ticketKicker}>{presentation.ticketKicker}</Text>
-          <Pressable
-            onPress={() => archiveShowKey ? onOpenArchive?.(artist, norm.artistKey || null) : onOpenArtist?.(artist)}
-            accessibilityRole="button"
-            accessibilityLabel={archiveShowKey ? `Open every recorded ${artist} night` : `Open ${artist}'s profile`}
-          >
-            <Text style={styles.artist}>{artist}</Text>
-            <Text style={styles.artistLink}>View all {artist} nights ›</Text>
-          </Pressable>
+          {isNamedLiveEvent ? (
+            <View>
+              <Text style={styles.artist}>{eventTitle}</Text>
+              {!!eventLineup && <Text style={styles.eventLineup} numberOfLines={2}>LINEUP · {eventLineup}</Text>}
+              <Pressable
+                onPress={() => onOpenArtist?.(artist)}
+                accessibilityRole="button"
+                accessibilityLabel={`Open ${artist}'s profile`}
+              >
+                <Text style={styles.artistLink}>Explore {artist} ›</Text>
+              </Pressable>
+            </View>
+          ) : (
+            <Pressable
+              onPress={() => archiveShowKey ? onOpenArchive?.(artist, norm.artistKey || null) : onOpenArtist?.(artist)}
+              accessibilityRole="button"
+              accessibilityLabel={archiveShowKey ? `Open every recorded ${artist} night` : `Open ${artist}'s profile`}
+            >
+              <Text style={styles.artist}>{artist}</Text>
+              <Text style={styles.artistLink}>View all {artist} nights ›</Text>
+            </Pressable>
+          )}
           <View style={styles.perfWrap}>
             <View style={[styles.notch, { left: -27 }]} />
             <View style={styles.dashed} />
@@ -307,7 +331,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
             <View style={styles.stubDivider} />
             <View style={{ alignItems: "flex-end" }}>
               <Text style={styles.stubLabel}>THE DATE</Text>
-              <Text style={styles.date}>{formatDate(norm.date, norm.date || "TBA")}</Text>
+              <Text style={styles.date}>{formatDate(norm.date, norm.date || "TBA")}{eventEndDate ? ` – ${formatDate(eventEndDate, eventEndDate)}` : ""}</Text>
               {log.soldOut ? <Text style={styles.soldOut}>SOLD OUT</Text> : null}
             </View>
           </View>
@@ -378,7 +402,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
           </View>
         )}
         {presentation.allowTickets && log.ticketUrl ? (
-          <Pressable style={styles.ticketsBtn} onPress={() => { void openTicketLink(log.ticketUrl); }} accessibilityRole="link" accessibilityLabel={`Get tickets for ${artist} at ${venue}`}>
+          <Pressable style={styles.ticketsBtn} onPress={() => { void openTicketLink(log.ticketUrl); }} accessibilityRole="link" accessibilityLabel={`Get tickets for ${eventTitle} at ${venue}`}>
             <Icon name="star" size={15} color="#1A1206" />
             <Text style={styles.ticketsTxt}>Get tickets</Text>
           </Pressable>
@@ -497,9 +521,9 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
         {/* review-in-post: log/review this exact show. Only a night that has
             actually happened can be reviewed. */}
         {presentation.showPostEvent && (
-          <Pressable style={styles.reviewCta} onPress={() => onReview?.(norm)} accessibilityRole="button" accessibilityLabel={`Log or review ${artist} at ${venue}`}>
+          <Pressable style={styles.reviewCta} onPress={() => onReview?.(norm)} accessibilityRole="button" accessibilityLabel={`Log or review ${eventTitle} at ${venue}`}>
             <Icon name="star" size={16} color="#1A1206" />
-            <Text style={styles.reviewCtaTxt}>Log / review this show</Text>
+            <Text style={styles.reviewCtaTxt}>Log / review this {socialObjectLabel}</Text>
           </Pressable>
         )}
 
@@ -729,6 +753,7 @@ const styles = StyleSheet.create({
   noScoreTitle: { color: colors.text, fontFamily: displayFont, fontSize: 16, fontWeight: "800" },
 
   artist: { color: colors.text, fontFamily: displayFont, fontSize: 30, fontWeight: "900", letterSpacing: -0.5 },
+  eventLineup: { color: colors.textDim, fontFamily: mono, fontSize: 10, lineHeight: 16, letterSpacing: 0.7, marginTop: 6 },
   artistLink: { color: colors.amber, fontSize: 12, marginTop: 4, fontWeight: "600" },
   seeRow: { flexDirection: "row", gap: 10, marginTop: 16 },
   seeBtn: { flex: 1, flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, paddingHorizontal: 12, paddingVertical: 13 },

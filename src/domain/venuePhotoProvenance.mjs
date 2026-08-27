@@ -14,7 +14,7 @@ export const VENUE_PHOTO_LICENSES = Object.freeze({
 });
 
 const PROVENANCE_SOURCES = new Set(["commons", "openverse", "licensed"]);
-const GENERIC_CREATORS = new Set(["source: web", "web", "unknown", "anonymous", "n/a"]);
+const GENERIC_CREATORS = new Set(["source: web", "web", "unknown", "anonymous", "n/a", "own work"]);
 
 function cleanText(value, max) {
   const text = typeof value === "string" ? value.normalize("NFKC").trim() : "";
@@ -57,7 +57,25 @@ export function licensedVenuePhoto(entry) {
   const creator = cleanText(entry.creator, 240);
   const license = cleanText(entry.license, 40)?.toUpperCase() || null;
   const definition = license ? VENUE_PHOTO_LICENSES[license] : null;
-  const provenanceSource = cleanText(entry.source, 30)?.toLowerCase() || "";
+  // Normalized records deliberately expose a generic public source while
+  // retaining the actual provider separately. Reading that provider first keeps
+  // validation idempotent instead of turning Commons/Openverse into "licensed"
+  // every time the same record crosses another server/client boundary.
+  const claimedProvenance = cleanText(entry.provenanceSource ?? entry.source, 30)?.toLowerCase() || "";
+  // A short-lived migration produced otherwise-complete Commons records with
+  // the generic normalized label in both source fields. Recover only the
+  // provider identity from Commons' canonical source-page host; no creator,
+  // license, or reuse right is inferred from the hostname.
+  let provenanceSource = claimedProvenance;
+  if (claimedProvenance === "licensed") {
+    try {
+      if (new URL(sourcePage).hostname.toLowerCase() === "commons.wikimedia.org") {
+        provenanceSource = "commons";
+      }
+    } catch {
+      return null;
+    }
+  }
   if (!uri || !sourcePage || !creator || GENERIC_CREATORS.has(creator.toLowerCase())) return null;
   if (!definition || !sameCanonicalUrl(entry.licenseUrl, definition.url)) return null;
   if (!PROVENANCE_SOURCES.has(provenanceSource)) return null;

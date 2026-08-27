@@ -1,6 +1,7 @@
 import { Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { colors, displayFont, focusRing, mono, radius, shadow } from "../theme";
 import { eventDateMeta, optionalDistanceKm, splitVenuePlace } from "../domain/venueDiscovery.mjs";
+import { liveEventLineupLabel, liveEventTitle } from "../domain/liveDiscovery.mjs";
 import { eventPath } from "../domain/urls.mjs";
 import Icon from "./Icon";
 import { PublicTextLink } from "./PublicWebLinks";
@@ -49,6 +50,10 @@ export function VenueDiscoveryCard({ venue, onPress, compact = false }) {
 
 export function UpcomingEventCard({ event, onOpenArtist, onOpenVenue, onOpenEvent, onTickets, compact = false, context }) {
   const date = eventDateMeta(event?.date);
+  const title = liveEventTitle(event);
+  const lineup = liveEventLineupLabel(event);
+  const artist = typeof event?.artist === "string" ? event.artist.trim() : "";
+  const titleIsArtist = !!artist && title === artist;
   const { city } = splitVenuePlace(event?.place);
   const distance = optionalDistanceKm(event?.distanceKm);
   const detail = [
@@ -57,7 +62,7 @@ export function UpcomingEventCard({ event, onOpenArtist, onOpenVenue, onOpenEven
     distance != null ? `${distance.toFixed(distance < 10 ? 1 : 0)} km` : null,
   ].filter(Boolean).join(" · ");
   return (
-    <View style={[styles.eventCard, compact && styles.eventCardCompact]} accessibilityLabel={`${event?.artist || "Upcoming event"}, ${detail}, ${date.timing}`}>
+    <View style={[styles.eventCard, compact && styles.eventCardCompact]} accessibilityLabel={`${title}, ${detail}, ${date.timing}`}>
       <View style={[styles.dateBadge, compact && styles.dateBadgeCompact]}>
         <Text style={styles.dateMonth}>{date.month}</Text>
         <Text style={[styles.dateDay, compact && styles.dateDayCompact]}>{date.day}</Text>
@@ -68,13 +73,14 @@ export function UpcomingEventCard({ event, onOpenArtist, onOpenVenue, onOpenEven
           {event?.soldOut ? <Text style={styles.soldOutTag}>SOLD OUT</Text> : null}
           {event?.scheduled ? <Text style={styles.scheduledTag}>SCHEDULED</Text> : null}
         </View>
-        {onOpenArtist ? (
-          <Pressable onPress={onOpenArtist} hitSlop={6} accessibilityRole="button" accessibilityLabel={`Open ${event?.artist}`}>
-            <Text style={[styles.artist, compact && styles.artistCompact]} numberOfLines={1}>{event?.artist || "Artist to be announced"}</Text>
+        {onOpenArtist && titleIsArtist ? (
+          <Pressable onPress={onOpenArtist} hitSlop={6} accessibilityRole="button" accessibilityLabel={`Open ${artist}`}>
+            <Text style={[styles.artist, compact && styles.artistCompact]} numberOfLines={1}>{title}</Text>
           </Pressable>
         ) : (
-          <Text style={[styles.artist, compact && styles.artistCompact]} numberOfLines={1}>{event?.artist || "Artist to be announced"}</Text>
+          <Text style={[styles.artist, compact && styles.artistCompact]} numberOfLines={1}>{title}</Text>
         )}
+        {!compact && !titleIsArtist && lineup ? <Text style={styles.lineup} numberOfLines={1}>Lineup: {lineup}</Text> : null}
         {onOpenVenue ? (
           <Pressable onPress={onOpenVenue} hitSlop={6} accessibilityRole="button" accessibilityLabel={`Open ${event?.venue}`}>
             <Text style={styles.eventPlace} numberOfLines={compact ? 2 : 1}>{detail || "Venue to be announced"}</Text>
@@ -88,7 +94,7 @@ export function UpcomingEventCard({ event, onOpenArtist, onOpenVenue, onOpenEven
             href={eventPath(event)}
             onNavigate={onOpenEvent}
             style={styles.eventDetails}
-            accessibilityLabel={`Open event details for ${event?.artist || "this show"}`}
+            accessibilityLabel={`Open event details for ${title}`}
           >
             Event details →
           </PublicTextLink>
@@ -99,7 +105,7 @@ export function UpcomingEventCard({ event, onOpenArtist, onOpenVenue, onOpenEven
           style={({ pressed, focused }) => [styles.ticketButton, pressed && styles.ticketPressed, focused && focusRing]}
           onPress={onTickets}
           accessibilityRole="link"
-          accessibilityLabel={`Tickets for ${event?.artist || "this event"}`}
+          accessibilityLabel={`Tickets for ${title}`}
         >
           <Icon name="ticket" size={15} color="#1A1206" />
           <Text style={styles.ticketText}>Tickets</Text>
@@ -136,6 +142,7 @@ const styles = StyleSheet.create({
   scheduledTag: { color: colors.cool, fontFamily: mono, fontSize: 8, fontWeight: "900", letterSpacing: 0.7 },
   artist: { color: colors.text, fontFamily: displayFont, fontSize: 17, fontWeight: "900", letterSpacing: -0.25, marginTop: 2 },
   artistCompact: { fontSize: 14 },
+  lineup: { color: colors.textFaint, fontSize: 10, lineHeight: 15, marginTop: 2 },
   eventPlace: { color: colors.textDim, fontSize: 12, lineHeight: 17, marginTop: 2 },
   genre: { alignSelf: "flex-start", color: colors.cool, fontSize: 10, fontWeight: "700", marginTop: 4 },
   eventDetails: { alignSelf: "flex-start", color: colors.amber, fontFamily: mono, fontSize: 10, lineHeight: 16, fontWeight: "900", marginTop: 5 },

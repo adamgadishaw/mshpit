@@ -63,7 +63,9 @@ function createDatabase() {
       start_date_time TEXT,start_local_time TEXT,event_timezone TEXT,event_status TEXT,venue_provider_id TEXT,
       venue_address_line1 TEXT,venue_address_line2 TEXT,venue_city TEXT,venue_region TEXT,
       venue_postal_code TEXT,venue_country_code TEXT,venue_country TEXT,
-      provider_active INTEGER NOT NULL DEFAULT 1,last_seen_at INTEGER
+      provider_active INTEGER NOT NULL DEFAULT 1,last_seen_at INTEGER,
+      event_kind TEXT NOT NULL DEFAULT 'concert',music_qualified INTEGER NOT NULL DEFAULT 1,
+      music_evidence TEXT,billed_artists TEXT NOT NULL DEFAULT '[]',event_end_date TEXT
     );
     CREATE TABLE media_objects (
       object_key TEXT PRIMARY KEY,owner_id TEXT NOT NULL,storage_scope TEXT NOT NULL,
@@ -914,6 +916,43 @@ test("event ticket offers require a supported future purchasable state and missi
     assert.equal(Object.hasOwn(past.jsonLd[0], "offers"), false);
     assert.equal(past.event.ticketUrl, null);
     assert.doesNotMatch(documents.render(past), /Buy tickets/);
+  } finally {
+    database.close();
+  }
+});
+
+test("provider-evidenced festivals expose cohesive visible and structured event data", () => {
+  const database = createDatabase();
+  try {
+    database.prepare(`INSERT INTO tour_dates
+      (id,artist,venue,place,date,start_date_time,event_name,event_kind,music_qualified,
+        music_evidence,billed_artists,event_end_date,venue_address_line1,venue_city,
+        venue_country_code,source,provider_event_id,release_at)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0)`).run(
+      "festival-event", "Headliner One", "Festival Park", "Chicago, IL",
+      "2026-09-01", "2026-09-01T16:00:00-05:00", "Lollapalooza",
+      "festival", 1, "ticketmaster:classification:music",
+      JSON.stringify(["Headliner One", "Headliner Two"]), "2026-09-04",
+      "1 Festival Way", "Chicago", "US", "ticketmaster", "tm-festival-1",
+    );
+    const documents = service(database);
+    const document = documents.eventDocument({
+      id: "festival-event", today: "2026-08-25", at: NOW,
+    });
+    const html = documents.render(document);
+    const schema = document.jsonLd.find((node) => node["@type"] === "MusicEvent");
+    assert.equal(document.title, "Lollapalooza — 2026-09-01 | Mshpit");
+    assert.equal(document.event.eventKind, "festival");
+    assert.deepEqual(document.event.billedArtists, ["Headliner One", "Headliner Two"]);
+    assert.equal(schema.name, "Lollapalooza");
+    assert.equal(schema.endDate, "2026-09-04");
+    assert.equal(Object.hasOwn(schema, "performer"), false,
+      "performer type stays omitted until provider evidence distinguishes people from groups");
+    assert.match(html, /<h1>Lollapalooza<\/h1>/);
+    assert.match(html, /Lineup:<\/strong> Headliner One · Headliner Two/);
+
+    database.prepare("UPDATE tour_dates SET music_qualified=0 WHERE id=?").run("festival-event");
+    assert.equal(documents.eventDocument({ id: "festival-event", today: "2026-08-25", at: NOW }), null);
   } finally {
     database.close();
   }

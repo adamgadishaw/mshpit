@@ -15,7 +15,6 @@ import { proxied, isHttp } from "../lib/img";
 import { api } from "../lib/api";
 import { loadSelectedArtistDiscography } from "../lib/artistDiscographyApi";
 import { openTicketLink } from "../lib/ticketLinks";
-import Svg, { Defs, LinearGradient, Stop, Rect } from "react-native-svg";
 import { formatDate } from "../domain/dates.mjs";
 import { discographyIdentityCopy, discographyPresentation } from "../domain/discographyView.mjs";
 import { mediaDisplayItems, mediaDisplayKind, mediaPosterUri } from "../domain/postMediaDisplay.mjs";
@@ -26,6 +25,7 @@ import { useArtistTopReviews } from "../features/artistReviews/useArtistTopRevie
 import { useArtistEventArchive } from "../features/artistEvents/useArtistEventArchive";
 import { selectArtistUpcomingShows } from "../domain/artistUpcomingShows.mjs";
 import ArtistMemorialTribute from "../components/artist/ArtistMemorialTribute";
+import ArtistCinematicCarousel from "../components/ArtistCinematicCarousel";
 import { useArtistMemorial } from "../features/artistMemorials/useArtistMemorial";
 import { PublicPressableLink } from "../components/PublicWebLinks";
 import { eventPath, postPath, profilePath } from "../domain/urls.mjs";
@@ -197,7 +197,7 @@ function TopReviewCard({ review, rank, artistName, onOpenShow, onOpenPhotos, onO
 
 // Artist page - the rollup of a band's live reputation across every night,
 // plus where to catch them next. Answers "is this band worth seeing?"
-export default function ArtistScreen({ artistName, previewAsFan = false, onClose, onOpenShow, onOpenArchive, onOpenVenue, onOpenFanClub, onOpenPhotos, onOpenProfile, onManageArtistProfile, onEditArtistProfile, onPlay, onAddToPlaylist, onReport }) {
+export default function ArtistScreen({ artistName, previewAsFan = false, onClose, onOpenShow, onOpenArchive, onOpenVenue, onOpenFanClub, onOpenPhotos, onOpenGallery, onOpenProfile, onManageArtistProfile, onEditArtistProfile, onPlay, onAddToPlaylist, onReport }) {
   const { session, artistSummary, albumRating, songRating, rateAlbum, rateSong, loadRating,
     isArtistOwner, artistPostsFor, loadArtistPage, artistPageCacheEpoch,
     artistGallery, loadArtistPhotos, removePhoto, artistBadges, remoteArtistMeta, resolveArtist,
@@ -286,9 +286,6 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
     : upcomingPresentation.shows;
   const bio = a.ownerBio || meta?.bio;
   const bannerUri = a.banner || meta?.photo || null;
-  const profileBannerPhotos = a.banner && a.ownerId
-    ? [{ uri: a.banner, ownerId: a.ownerId, artistProfileKey: a.profileKey, by: a.name }]
-    : null;
   const profileAvatarPhotos = a.profileAvatarUri && a.ownerId
     ? [{ uri: a.profileAvatarUri, ownerId: a.ownerId, artistProfileKey: a.profileKey, by: a.name }]
     : null;
@@ -683,24 +680,15 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
             </View>
           </View>
         )}
-        {/* Twitter-style header: banner, then the avatar punches through the
-            bottom edge inside a bg-colored ring (the "box"), action on the right. */}
-        <View style={styles.banner}>
-          {bannerUri ? (
-            <SmartImage uri={bannerUri} style={StyleSheet.absoluteFill} contain={false} onPress={() => onOpenPhotos?.(profileBannerPhotos || (meta?.photos?.length ? meta.photos : bannerUri ? [bannerUri] : []), 0)} />
-          ) : (
-            <View style={styles.bannerFallback} />
-          )}
-          <Svg style={[StyleSheet.absoluteFill, styles.noPointerEvents]}>
-            <Defs>
-              <LinearGradient id="heroFade" x1="0" y1="0" x2="0" y2="1">
-                <Stop offset="0.45" stopColor="#05060A" stopOpacity="0" />
-                <Stop offset="1" stopColor="#05060A" stopOpacity="0.9" />
-              </LinearGradient>
-            </Defs>
-            <Rect x="0" y="0" width="100%" height="100%" fill="url(#heroFade)" />
-          </Svg>
-        </View>
+        {/* One decoded frame at a time: artist-owned imagery leads, followed by
+            public fan photos. Motion is user-driven and respects Reduce Motion. */}
+        <ArtistCinematicCarousel
+          artistName={a.name}
+          bannerUri={bannerUri}
+          profileUri={a.photo || meta?.photo || null}
+          gallery={gallery}
+          onOpenMedia={onOpenPhotos}
+        />
 
         <View style={styles.headRow}>
           <View style={styles.avatarWrap}>
@@ -1131,35 +1119,55 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
           </>
         )}
 
-        {/* Fan photos/media next. */}
-        {sectionModel.showCommunity && gallery.length > 0 && (
+        {/* Public photos and clips, with a dedicated bounded gallery route. */}
+        {sectionModel.showCommunity && (
           <>
-            <Text style={styles.sectionLabel}>GALLERY · {gallery.length}</Text>
-            <Text style={styles.bio}>Fan shots first, then licensed portraits & live photos. Stays full even when a photo is pulled.</Text>
-            <View style={styles.fanGrid}>
-              {visibleGallery.map((p, i) => (
-                <View key={p.uri || i} style={[styles.fanTile, { width: veryWidePage ? "19.2%" : widePage ? "23.8%" : "31.8%" }]}>
-                  {/* SmartImage: proxies HEIC (iPhone shots) to JPEG so no tile
-                      ever renders blank, and taps open the full-screen viewer. */}
-                  <SmartImage uri={p.uri} posterUri={mediaPosterUri(p)} mediaKind={mediaDisplayKind(p)} accessibilityLabel={p.altText || `Open media from ${a.name}`} style={StyleSheet.absoluteFill} contain={false}
-                    onPress={() => onOpenPhotos?.(gallery.map((x) => ({ ...x, uri: x.uri, by: x.by, postId: x.postId, ownerId: x.ownerId })), i, p.postId || null)} />
-                  {p.source !== "fan" && !!p.by && (
-                    <View style={styles.creditTag} pointerEvents="none"><Text style={styles.creditTxt} numberOfLines={1}>{p.by}</Text></View>
-                  )}
-                  {canModerate && (
-                    <Pressable style={styles.modBtn} hitSlop={6} onPress={() => removePhoto(p.uri)}>
-                      <Icon name="x" size={12} color="#fff" />
-                    </Pressable>
-                  )}
-                </View>
-              ))}
+            <View style={styles.galleryHeading}>
+              <View style={{ flex: 1, minWidth: 0 }}>
+                <Text style={styles.sectionLabel}>PHOTOS & FAN GALLERY</Text>
+                <Text style={styles.bio}>Public fan shots and clips, alongside artist imagery. Private and moderated media stays out.</Text>
+              </View>
+              {onOpenGallery ? (
+                <Pressable
+                  style={({ pressed, focused }) => [styles.galleryOpenButton, pressed && styles.archivePressed, focused && focusRing]}
+                  onPress={() => onOpenGallery(a.name, a.profileKey)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Open the full ${a.name} photo and fan gallery`}
+                >
+                  <Text style={styles.galleryOpenText}>SEE ALL</Text>
+                  <Icon name="chevron-right" size={14} color={colors.amber} />
+                </Pressable>
+              ) : null}
             </View>
-            {sectionModel.condensed && gallery.length > visibleGallery.length && (
-              <Pressable style={styles.showAllBtn} onPress={() => setActiveSection("community")} accessibilityRole="button" accessibilityLabel={`See all ${gallery.length} media items for ${a.name}`}>
+            {gallery.length ? (
+              <View style={styles.fanGrid}>
+                {visibleGallery.map((p, i) => (
+                  <View key={p.uri || i} style={[styles.fanTile, { width: veryWidePage ? "19.2%" : widePage ? "23.8%" : "31.8%" }]}>
+                    <SmartImage uri={p.uri} posterUri={mediaPosterUri(p)} mediaKind={mediaDisplayKind(p)} accessibilityLabel={p.altText || `Open media from ${a.name}`} style={StyleSheet.absoluteFill} contain={false}
+                      onPress={() => onOpenPhotos?.(gallery.map((x) => ({ ...x, uri: x.uri, by: x.by, postId: x.postId, ownerId: x.ownerId })), i, p.postId || null)} />
+                    {p.source !== "fan" && !!p.by && (
+                      <View style={styles.creditTag} pointerEvents="none"><Text style={styles.creditTxt} numberOfLines={1}>{p.by}</Text></View>
+                    )}
+                    {canModerate && (
+                      <Pressable style={styles.modBtn} hitSlop={6} onPress={() => removePhoto(p.uri)} accessibilityRole="button" accessibilityLabel={`Hide this ${a.name} gallery item`}>
+                        <Icon name="x" size={12} color="#fff" />
+                      </Pressable>
+                    )}
+                  </View>
+                ))}
+              </View>
+            ) : (
+              <View style={styles.galleryEmpty} accessible accessibilityLabel={`No public fan media for ${a.name} yet`}>
+                <Icon name="photo" size={20} color={colors.textFaint} />
+                <Text style={styles.galleryEmptyText}>No public fan media yet. Shared concert photos will build this archive.</Text>
+              </View>
+            )}
+            {gallery.length > visibleGallery.length && onOpenGallery ? (
+              <Pressable style={styles.showAllBtn} onPress={() => onOpenGallery(a.name, a.profileKey)} accessibilityRole="button" accessibilityLabel={`Open the full ${a.name} media gallery`}>
                 <Text style={styles.showAllTxt}>Open the full fan gallery</Text>
                 <Icon name="chevron-right" size={15} color={colors.amber} />
               </Pressable>
-            )}
+            ) : null}
           </>
         )}
 
@@ -1342,7 +1350,6 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
 }
 
 const styles = StyleSheet.create({
-  noPointerEvents: { pointerEvents: "none" },
   wrap: { flex: 1, backgroundColor: colors.bg },
   topbar: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 16, paddingBottom: 10 },
   backBtn: { flexDirection: "row", alignItems: "center", width: 56 },
@@ -1361,8 +1368,6 @@ const styles = StyleSheet.create({
   fanPreviewIcon: { width: 28, height: 28, borderRadius: 14, alignItems: "center", justifyContent: "center", backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line },
   fanPreviewTitle: { color: colors.amber, fontFamily: mono, fontSize: 10, fontWeight: "900", letterSpacing: 1.2 },
   fanPreviewText: { color: colors.textDim, fontSize: 11.5, marginTop: 2 },
-  banner: { height: 168, borderRadius: radius.md, overflow: "hidden", backgroundColor: colors.surfaceAlt },
-  bannerFallback: { ...StyleSheet.absoluteFillObject, backgroundColor: colors.surfaceAlt },
   headRow: { flexDirection: "row", alignItems: "flex-end", justifyContent: "space-between", marginTop: -42, paddingLeft: 4 },
   avatarWrap: { borderWidth: 3, borderColor: colors.bg, borderRadius: 48, backgroundColor: colors.bg },
   profileActions: { alignItems: "flex-end", gap: 6, marginBottom: 4 },
@@ -1472,6 +1477,11 @@ const styles = StyleSheet.create({
   galleryRow: { gap: 10, paddingRight: 16 },
   galleryTile: { width: 140, height: 140, borderRadius: 10 },
   fanGrid: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginTop: 10 },
+  galleryHeading: { flexDirection: "row", alignItems: "flex-end", gap: 12, marginTop: 2 },
+  galleryOpenButton: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 4, paddingHorizontal: 12, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
+  galleryOpenText: { color: colors.amber, fontFamily: mono, fontSize: 9, fontWeight: "900", letterSpacing: 1 },
+  galleryEmpty: { minHeight: 110, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 10, marginTop: 10, padding: 18, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface },
+  galleryEmptyText: { flexShrink: 1, maxWidth: 420, color: colors.textDim, fontSize: 12.5, lineHeight: 18 },
   fanTile: { width: "31.8%", aspectRatio: 1, borderRadius: 8, overflow: "hidden", backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.lineSoft },
   creditTag: { position: "absolute", left: 0, right: 0, bottom: 0, backgroundColor: "rgba(5,6,10,0.62)", paddingHorizontal: 5, paddingVertical: 3 },
   creditTxt: { color: "rgba(255,255,255,0.82)", fontSize: 8 },

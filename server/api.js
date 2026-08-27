@@ -168,7 +168,9 @@ const uid = (p) => `${p}_${randomUUID().slice(0, 12)}`;
 const PROFILE_EXTRAS_MAX_BYTES = 8000;
 const CURRENT_TERMS_VERSION = "2026-08";
 const CURRENT_MARKETING_CONSENT_VERSION = "2026-08";
-const VENUE_PHOTO_CACHE_CONTROL = "public, max-age=3600, stale-while-revalidate=86400";
+// Corrected licensed inventory must replace previously cached empty responses.
+// Keep revalidation short until production has completed one healthy cache cycle.
+const VENUE_PHOTO_CACHE_CONTROL = "public, max-age=60, must-revalidate";
 const YOUTUBE_COLD_SEARCH_ACTOR_BUDGET_VERSION = 2;
 // v2 is charged once per explicit cold track attempt, not once per internal
 // provider request. Twenty listener attempts leaves useful room for discovery;
@@ -544,6 +546,14 @@ const TOUR_DATE_PLACE_LIMIT = 180;
 const TOUR_DATE_RELEASE_HORIZON_MS = 3 * 366 * 24 * 60 * 60 * 1000;
 
 function tourDateJson(row) {
+  let billedArtists = [];
+  if (row.music_evidence) {
+    try {
+      const parsed = JSON.parse(row.billed_artists || "[]");
+      if (Array.isArray(parsed)) billedArtists = parsed.slice(0, 20)
+        .filter((name) => typeof name === "string" && name.trim());
+    } catch { /* architecture: allow-empty-catch -- malformed provider evidence stays out of the public projection */ }
+  }
   return {
     id: row.id,
     artist: row.artist,
@@ -557,6 +567,12 @@ function tourDateJson(row) {
     source: row.source || null,
     releaseAt: Number(row.release_at) || 0,
     createdBy: row.owner_id || "import",
+    ...(row.music_evidence ? {
+      eventName: row.event_name || null,
+      eventKind: row.event_kind || "concert",
+      eventEndDate: row.event_end_date || null,
+      billedArtists,
+    } : {}),
   };
 }
 
@@ -3165,9 +3181,9 @@ export const routes = {
 
   // A deliberately tiny public projection for the logged-out hero. The service
   // accepts only explicitly opted-in review photos from PIT-owned media storage,
-  // applies account/report/block safety filters, and never returns a
-  // review, location, date, email, or user id. Keep this cache private because a
-  // signed-in cookie can make block filtering viewer-specific.
+  // applies account/report/block safety filters, and never returns a review,
+  // location, date, email, or user id. Keep this cache private because a signed-in
+  // cookie can make block filtering viewer-specific.
   "GET /api/landing/media": (ctx) => {
     ctx.setHeader?.("Cache-Control", "private, max-age=60");
     const timestamp = now();

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { View, Text, StyleSheet, Pressable, Animated, Easing, useWindowDimensions, Platform, ScrollView, AccessibilityInfo } from "react-native";
 import { Image as ExpoImage } from "expo-image";
 import Svg, { Defs, LinearGradient, Stop, Rect } from "react-native-svg";
@@ -22,6 +22,7 @@ import {
   landingStockStartIndex,
   rotateLandingFallbacks,
 } from "../domain/landingShowcase.mjs";
+import { liveEventTitle } from "../domain/liveDiscovery.mjs";
 
 // ----------------------------------------------------------------------------
 // The opening act, the way real music apps do it: full-bleed live-show
@@ -147,10 +148,49 @@ function LandingAttribution({ frame, caption, inline = false }) {
   );
 }
 
-export default function LandingScreen({ onLogin, onSignup, onBrowse, onSuggestion }) {
-  const { discoverStats } = useStore();
+function landingDateLabel(value) {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return "";
+  const date = new Date(value + "T12:00:00");
+  return Number.isNaN(date.getTime())
+    ? ""
+    : date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function LandingLiveRow({ item, onPress }) {
+  const title = liveEventTitle(item);
+  const location = [item?.venue, item?.city || item?.place?.split?.(",")?.[0]].filter(Boolean).join(" · ");
+  const signal = [landingDateLabel(item?.date), location].filter(Boolean).join(" · ");
+  const eventLabel = "Open " + title + (location ? " at " + location : "") + (item?.date ? ", " + item.date : "");
+  return (
+    <Pressable
+      style={({ pressed, hovered, focused }) => [
+        styles.liveRow,
+        hovered && styles.liveRowHovered,
+        pressed && styles.actionPressed,
+        focused && styles.liveRowFocused,
+      ]}
+      onPress={onPress}
+      disabled={!onPress}
+      accessibilityRole="button"
+      accessibilityState={{ disabled: !onPress }}
+      accessibilityLabel={eventLabel}
+    >
+      <View style={styles.liveRowIcon}>
+        <Icon name="calendar" size={15} color="#F2A65A" />
+      </View>
+      <View style={styles.liveRowCopy}>
+        <Text style={styles.liveRowTitle} numberOfLines={1}>{title}</Text>
+        <Text style={styles.liveRowDetail} numberOfLines={1}>{signal || "Details coming soon"}</Text>
+      </View>
+      <Icon name="chevron-right" size={14} color="rgba(244,239,231,0.5)" />
+    </Pressable>
+  );
+}
+
+export default function LandingScreen({ onLogin, onSignup, onBrowse, onSuggestion, onOpenEvent, onExploreLounges }) {
+  const { discoverStats, discoverySidebar } = useStore();
   const { width, height, fontScale } = useWindowDimensions();
-  const { wide, compact, scrollPitch, overlayCredit } = landingLayoutMode({ width, height, fontScale });
+  const { wide, compact, scrollPitch } = landingLayoutMode({ width, height, fontScale });
   const [reduceMotion, setReduceMotion] = useState(false);
   const reduceMotionRef = useRef(reduceMotion);
   const mountedAtRef = useRef(Date.now());
@@ -257,7 +297,6 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse, onSuggestio
           artists: typeof totals?.artists === "number" ? totals.artists : 0,
           venues: typeof totals?.venues === "number" ? totals.venues : 0,
         });
-
         const delay = landingCommunityAdvanceDelay({
           mountedAt: mountedAtRef.current,
           hasAdvanced: hasAdvancedRef.current,
@@ -301,19 +340,21 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse, onSuggestio
     artists: catalogTotals.artists || demoTotals?.artists || 0,
     venues: catalogTotals.venues || demoTotals?.venues || 0,
   });
+  // Discovery is already loaded once by StoreProvider. Reusing that bounded,
+  // public projection avoids a second event-catalogue query during startup.
+  const landingLiveEvents = useMemo(
+    () => Array.isArray(discoverySidebar?.upcomingEvents)
+      ? discoverySidebar.upcomingEvents.slice(0, 3)
+      : [],
+    [discoverySidebar?.upcomingEvents],
+  );
+  const hasLandingLive = landingLiveEvents.length > 0;
 
-  // On phones the pitch SCROLLS (centered when it fits, scrollable when the user
-  // has large text) so it can never overlap the top bar or get clipped. On desktop
-  // it's a bottom-anchored hero.
-  const Pitch = scrollPitch ? ScrollView : View;
-  const pitchProps = scrollPitch
-    ? {
-      style: styles.content,
-      contentContainerStyle: wide ? styles.scrollWideShort : styles.scrollNarrow,
-      showsVerticalScrollIndicator: false,
-      keyboardShouldPersistTaps: "handled",
-    }
-    : { style: [styles.content, styles.contentWide] };
+  // The landing shell never changes component type when async content arrives.
+  // It is always scrollable, while the viewport alone decides its alignment.
+  const pitchContentStyle = wide
+    ? (scrollPitch ? styles.scrollWideShort : styles.scrollWideHero)
+    : styles.scrollNarrow;
   const currentFrame = landingSlideFrame(slides[idx], failedCommunityIds);
   const currentCaption = currentFrame?.source === "community"
     ? [currentFrame.artist, currentFrame.venue].filter(Boolean).join(" · ")
@@ -399,7 +440,12 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse, onSuggestio
       </View>
 
       {/* ---- the pitch ---- */}
-      <Pitch {...pitchProps} style={[pitchProps.style, styles.boxNonePointerEvents]}>
+      <ScrollView
+        style={[styles.content, styles.boxNonePointerEvents]}
+        contentContainerStyle={pitchContentStyle}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+      >
         <View style={wide ? styles.blockWide : styles.blockNarrow}>
           <View style={[styles.kickerRow, !wide && styles.kickerRowNarrow]}>
             <Animated.View style={[styles.kickerLine, { opacity: glowOp }]} />
@@ -457,6 +503,57 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse, onSuggestio
             ))}
           </View>
 
+          {hasLandingLive ? (
+            <View style={[styles.liveRail, compact && styles.liveRailCompact]} accessibilityLabel="Worldwide live discovery on Mshpit">
+              <View style={styles.liveRailHead}>
+                <View>
+                  <Text style={styles.liveRailEyebrow}>HAPPENING ON MSHPIT</Text>
+                  <Text style={styles.liveRailTitle}>Shows ahead. Rooms waiting.</Text>
+                </View>
+                <View style={styles.worldPill}>
+                  <Icon name="globe" size={12} color="#F2A65A" />
+                  <Text style={styles.worldPillText}>WORLDWIDE</Text>
+                </View>
+              </View>
+              <View style={[styles.liveColumns, compact && styles.liveColumnsCompact]}>
+                <View style={styles.liveColumn}>
+                  <Text style={styles.liveColumnLabel}>UPCOMING LIVE EVENTS</Text>
+                  {landingLiveEvents.slice(0, compact ? 2 : 3).map((event) => (
+                    <LandingLiveRow
+                      key={event.id || [liveEventTitle(event), event.venue, event.date].join("|")}
+                      item={event}
+                      onPress={() => onOpenEvent?.(event)}
+                    />
+                  ))}
+                </View>
+                <View style={styles.liveColumn}>
+                  <Text style={styles.liveColumnLabel}>CONCERT LOUNGES</Text>
+                  <Pressable
+                    style={({ pressed, hovered, focused }) => [
+                      styles.loungeExplainer,
+                      hovered && styles.liveRowHovered,
+                      pressed && styles.actionPressed,
+                      focused && styles.liveRowFocused,
+                    ]}
+                    onPress={onExploreLounges}
+                    disabled={!onExploreLounges}
+                    accessibilityRole="button"
+                    accessibilityState={{ disabled: !onExploreLounges }}
+                    accessibilityLabel="Explore concert lounges"
+                    accessibilityHint="Opens Discover. Specific active rooms are shown after sign in."
+                  >
+                    <View style={[styles.liveRowIcon, styles.liveRowIconLounge]}><Icon name="comment" size={18} color="#E76A99" /></View>
+                    <View style={styles.liveRowCopy}>
+                      <Text style={styles.liveRowTitle}>Talk with the people going</Text>
+                      <Text style={styles.loungeExplainerDetail}>Each show has a gated room. Sign in to see active lounges and join a conversation.</Text>
+                    </View>
+                    <Icon name="chevron-right" size={14} color="rgba(244,239,231,0.5)" />
+                  </Pressable>
+                </View>
+              </View>
+            </View>
+          ) : null}
+
           {compact && <WebPublicNav compact />}
 
           {!!onSuggestion && (
@@ -477,27 +574,14 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse, onSuggestio
             </Pressable>
           )}
 
-          {!overlayCredit && (
-            <View style={styles.inlineFoot}>
-              <View style={styles.slideRail} accessible={false}>
-                {slides.map((slide, index) => <View key={`${slide.id}:${index}`} style={[styles.slideDot, index === idx && styles.slideDotActive]} />)}
-              </View>
-              <LandingAttribution frame={currentFrame} caption={currentCaption} inline />
+          <View style={styles.inlineFoot}>
+            <View style={styles.slideRail} accessible={false}>
+              {slides.map((slide, index) => <View key={`${slide.id}:${index}`} style={[styles.slideDot, index === idx && styles.slideDotActive]} />)}
             </View>
-          )}
-        </View>
-      </Pitch>
-
-      {/* Desktop attribution stays cinematic; short and narrow screens keep it
-          in normal scroll flow so it can never cover a CTA. */}
-      {overlayCredit && (
-        <View style={[styles.foot, styles.noPointerEvents]}>
-          <View style={styles.slideRail} accessible={false}>
-            {slides.map((slide, index) => <View key={`${slide.id}:${index}`} style={[styles.slideDot, index === idx && styles.slideDotActive]} />)}
+            <LandingAttribution frame={currentFrame} caption={currentCaption} inline />
           </View>
-          <LandingAttribution frame={currentFrame} caption={currentCaption} />
         </View>
-      )}
+      </ScrollView>
     </View>
   );
 }
@@ -530,11 +614,11 @@ const styles = StyleSheet.create({
   brandSub: { color: "rgba(244,239,231,0.58)", fontFamily: mono, fontSize: 8, lineHeight: 12, letterSpacing: 1.8, fontWeight: "800" },
 
   content: { flex: 1, zIndex: 4 },
-  contentWide: { justifyContent: "flex-end", paddingHorizontal: 72, paddingBottom: 86 },
   // grows to center the pitch when it fits, scrolls when large text makes it tall;
   // top padding always clears the brand/login bar.
   scrollNarrow: { flexGrow: 1, justifyContent: "center", alignItems: "center", paddingHorizontal: 20, paddingTop: 96, paddingBottom: 26 },
   scrollWideShort: { flexGrow: 1, justifyContent: "center", alignItems: "flex-start", paddingHorizontal: 72, paddingTop: 102, paddingBottom: 30 },
+  scrollWideHero: { flexGrow: 1, justifyContent: "flex-end", alignItems: "flex-start", paddingHorizontal: 72, paddingTop: 102, paddingBottom: 30 },
   blockWide: { width: "100%", maxWidth: 720 },
   blockNarrow: { width: "100%", maxWidth: 580, alignItems: "center" },
 
@@ -617,6 +701,33 @@ const styles = StyleSheet.create({
   proofCopy: { flex: 1, minWidth: 0 },
   proofTitle: { color: "#F4EFE7", fontFamily: mono, fontSize: 10, lineHeight: 14, letterSpacing: 1.15, fontWeight: "900" },
   proofDetail: { color: "rgba(244,239,231,0.62)", fontSize: 11, lineHeight: 15, fontWeight: "600", marginTop: 1 },
+
+  liveRail: {
+    width: "100%", maxWidth: 700, marginTop: 14, padding: 14, gap: 12,
+    borderWidth: 1, borderColor: "rgba(244,239,231,0.15)", borderRadius: radius.md,
+    backgroundColor: "rgba(5,6,11,0.68)",
+    ...Platform.select({ web: { backdropFilter: "blur(14px)", boxShadow: "0 12px 30px rgba(0,0,0,0.24)" } }),
+  },
+  liveRailCompact: { maxWidth: 360, padding: 11 },
+  liveRailHead: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12 },
+  liveRailEyebrow: { color: "#F2A65A", fontFamily: mono, fontSize: 8, lineHeight: 12, letterSpacing: 1.4, fontWeight: "900" },
+  liveRailTitle: { color: "#F4EFE7", fontFamily: displayFont, fontSize: 16, lineHeight: 21, fontWeight: "900" },
+  worldPill: { minHeight: 32, flexDirection: "row", alignItems: "center", gap: 5, paddingHorizontal: 9, borderRadius: radius.pill, borderWidth: 1, borderColor: "rgba(242,166,90,0.38)", backgroundColor: "rgba(242,166,90,0.09)" },
+  worldPillText: { color: "#F2A65A", fontFamily: mono, fontSize: 8, fontWeight: "900", letterSpacing: 0.8 },
+  liveColumns: { flexDirection: "row", alignItems: "stretch", gap: 10 },
+  liveColumnsCompact: { flexDirection: "column" },
+  liveColumn: { flex: 1, minWidth: 0, gap: 6 },
+  liveColumnLabel: { color: "rgba(244,239,231,0.52)", fontFamily: mono, fontSize: 7.5, fontWeight: "900", letterSpacing: 1.1 },
+  liveRow: { minHeight: 50, flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 9, paddingVertical: 7, borderRadius: radius.sm, borderWidth: 1, borderColor: "rgba(244,239,231,0.1)", backgroundColor: "rgba(244,239,231,0.045)", ...Platform.select({ web: { cursor: "pointer" } }) },
+  liveRowHovered: { borderColor: "rgba(242,166,90,0.42)", backgroundColor: "rgba(242,166,90,0.08)" },
+  liveRowFocused: { borderColor: "#F2A65A", borderWidth: 2 },
+  liveRowIcon: { width: 30, height: 30, borderRadius: 10, alignItems: "center", justifyContent: "center", backgroundColor: "rgba(242,166,90,0.11)" },
+  liveRowIconLounge: { backgroundColor: "rgba(231,106,153,0.12)" },
+  liveRowCopy: { flex: 1, minWidth: 0 },
+  liveRowTitle: { color: "#F4EFE7", fontFamily: displayFont, fontSize: 12, lineHeight: 16, fontWeight: "900" },
+  liveRowDetail: { color: "rgba(244,239,231,0.58)", fontSize: 9.5, lineHeight: 14, marginTop: 1 },
+  loungeExplainer: { flex: 1, minHeight: 106, flexDirection: "row", alignItems: "center", gap: 9, padding: 11, borderRadius: radius.sm, borderWidth: 1, borderColor: "rgba(231,106,153,0.25)", backgroundColor: "rgba(231,106,153,0.06)", ...Platform.select({ web: { cursor: "pointer" } }) },
+  loungeExplainerDetail: { color: "rgba(244,239,231,0.62)", fontSize: 10, lineHeight: 15, marginTop: 3 },
 
   feedbackLink: {
     minHeight: 44, marginTop: 12, flexDirection: "row", alignItems: "center", gap: 8,

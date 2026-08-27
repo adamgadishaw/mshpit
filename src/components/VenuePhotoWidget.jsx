@@ -4,7 +4,8 @@ import Svg, { Defs, LinearGradient, Stop, Rect } from "react-native-svg";
 import { colors, mono, radius } from "../theme";
 import Icon from "../components/Icon";
 import { mapsDir } from "../lib/afterparty";
-import { proxied, isHttp } from "../lib/img";
+import { displaySrc, proxied, isHttp } from "../lib/img";
+import { venuePhotoAttemptScope } from "../domain/venuePhotos.mjs";
 
 // An iOS-photo-widget-style rolling compilation for a venue: real photos when we
 // have them, a stage-light title card always on top (venue + city), and a Get
@@ -19,7 +20,7 @@ const GELS = [
 
 function Slide({ photo, idx, viaProxy, onError }) {
   if (photo?.uri) {
-    const src = viaProxy && isHttp(photo.uri) ? proxied(photo.uri) : photo.uri;
+    const src = viaProxy && isHttp(photo.uri) ? proxied(photo.uri) : displaySrc(photo.uri, 1600);
     return <Image accessible={false} source={{ uri: src }} style={StyleSheet.absoluteFill} resizeMode="cover" onError={onError} />;
   }
   const [a, b] = GELS[idx % GELS.length];
@@ -41,6 +42,7 @@ export default function VenuePhotoWidget({ photos = [], venueName, city, coord, 
   // Retry ladder per URL: direct -> wsrv.nl proxy -> drop. Only when every photo
   // exhausts both attempts does the themed gradient card show.
   const [attempt, setAttempt] = useState({}); // uri -> "proxy" | "dead"
+  const attemptScope = venuePhotoAttemptScope(venueName, photos);
   const real = photos.filter((p) => p?.uri && attempt[p.uri] !== "dead").slice(0, 5);
   const slides = real.length ? real : [{ uri: null }];
   const [i, setI] = useState(0);
@@ -48,6 +50,11 @@ export default function VenuePhotoWidget({ photos = [], venueName, city, coord, 
   const [reduceMotion, setReduceMotion] = useState(false);
   const [directionError, setDirectionError] = useState("");
   const failCur = (uri) => uri && setAttempt((a) => ({ ...a, [uri]: a[uri] === "proxy" ? "dead" : "proxy" }));
+
+  useEffect(() => {
+    setAttempt({});
+    setI(0);
+  }, [attemptScope]);
 
   useEffect(() => {
     let mounted = true;
@@ -71,21 +78,40 @@ export default function VenuePhotoWidget({ photos = [], venueName, city, coord, 
 
   const realCount = real.length;
   const cur = i % slides.length;
+  const hadPhotoCandidates = photos.some((photo) => !!photo?.uri);
+  const deliveryFailed = hadPhotoCandidates && realCount === 0;
   const move = (delta) => {
     setPaused(true);
     setI((current) => (current + delta + slides.length) % slides.length);
   };
+  const retryPhotos = () => {
+    setAttempt({});
+    setI(0);
+    if (error) onRetry?.();
+  };
+  const canRetryPhotos = realCount === 0 && ((error && !!onRetry) || deliveryFailed);
   const activatePhoto = () => {
-    if (error && !realCount) onRetry?.();
+    if (canRetryPhotos) retryPhotos();
     else if (onPress) onPress();
     else if (slides.length > 1) move(1);
   };
   const emptyMessage = loading
     ? "Loading venue photos..."
     : error
-      ? "Photos unavailable - tap to retry"
+      ? onRetry ? "Photos unavailable - tap to retry" : "Photos are temporarily unavailable"
+      : deliveryFailed
+        ? "Photos could not be displayed - tap to retry"
       : "No verified venue photos yet";
-  const photoInteractive = !!(error && !realCount ? onRetry : onPress || slides.length > 1);
+  const photoInteractive = !!(canRetryPhotos || onPress || slides.length > 1);
+  const frameLabel = realCount
+    ? `Photos of ${venueName}, photo ${cur + 1} of ${slides.length}`
+    : loading
+      ? `Loading photos of ${venueName}`
+      : canRetryPhotos
+        ? `Retry displaying photos of ${venueName}`
+        : error
+          ? `Photos of ${venueName} are temporarily unavailable`
+        : `No verified photos of ${venueName} are available yet`;
 
   return (
     <View>
@@ -95,13 +121,20 @@ export default function VenuePhotoWidget({ photos = [], venueName, city, coord, 
           onPress={activatePhoto}
           disabled={!photoInteractive}
           accessibilityRole={photoInteractive ? "button" : "image"}
-          accessibilityLabel={error && !realCount ? "Retry loading venue photos" : `Photos of ${venueName}, photo ${cur + 1} of ${slides.length}`}
+          accessibilityLabel={frameLabel}
           accessibilityHint={photoInteractive && slides.length > 1 && !onPress ? "Shows the next photo" : undefined}
           accessibilityState={{ disabled: !photoInteractive }}
           accessibilityValue={slides.length > 1 ? { text: `${cur + 1} of ${slides.length}` } : undefined}
         >
           <Slide photo={slides[cur]} idx={cur} viaProxy={attempt[slides[cur]?.uri] === "proxy"} onError={() => failCur(slides[cur]?.uri)} />
           <View style={styles.scrim} />
+          {!realCount && (
+            <View style={styles.emptyArtwork} pointerEvents="none" accessible={false}>
+              <View style={styles.emptyArtworkIcon}>
+                <Icon name="photo" size={28} color="rgba(255,255,255,0.78)" />
+              </View>
+            </View>
+          )}
           <View style={styles.title}>
             <Text style={styles.venue} numberOfLines={1}>{venueName}</Text>
             {!!city && <Text style={styles.city}>{city}</Text>}
@@ -118,6 +151,7 @@ export default function VenuePhotoWidget({ photos = [], venueName, city, coord, 
         {!realCount && (
           <View style={styles.photoStatus} pointerEvents="none" accessibilityLiveRegion="polite" role="status">
             {loading && <ActivityIndicator size="small" color={colors.amber} />}
+            {!loading && <Icon name="photo" size={14} color={colors.amber} />}
             <Text style={styles.photoStatusText}>{emptyMessage}</Text>
           </View>
         )}
@@ -167,6 +201,8 @@ export default function VenuePhotoWidget({ photos = [], venueName, city, coord, 
 const styles = StyleSheet.create({
   frame: { width: "100%", aspectRatio: 16 / 10, borderRadius: 16, overflow: "hidden", borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.bgElev },
   scrim: { ...StyleSheet.absoluteFillObject, backgroundColor: "transparent", borderRadius: 16 },
+  emptyArtwork: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center" },
+  emptyArtworkIcon: { width: 64, height: 64, borderRadius: 22, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: "rgba(255,255,255,0.18)", backgroundColor: "rgba(5,6,10,0.34)" },
   title: { position: "absolute", left: 16, bottom: 16, right: 16 },
   venue: {
     color: "#fff", fontSize: 22, fontWeight: "900", letterSpacing: -0.4,

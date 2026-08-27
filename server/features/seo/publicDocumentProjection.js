@@ -497,10 +497,17 @@ function eventCard(row, paths) {
     const parsed = new Date(value);
     return Number.isNaN(parsed.valueOf()) ? null : value;
   })();
+  const providerEvidence = cleanLine(row.music_evidence, 120);
+  const billedArtists = providerEvidence ? parseArray(row.billed_artists)
+    .slice(0, 20).map((name) => cleanLine(name, 160)).filter(Boolean) : [];
+  const eventKind = providerEvidence && ["concert", "festival", "fair", "rodeo", "multi_day"].includes(row.event_kind)
+    ? row.event_kind
+    : "concert";
+  const endDate = providerEvidence ? validDate(row.event_end_date) : null;
   return Object.freeze({
     id: String(row.id),
     providerEventId: cleanLine(row.provider_event_id, 180) || null,
-    name: cleanLine(row.event_name, 220) || `${artist} at ${venue}`,
+    name: (providerEvidence ? cleanLine(row.event_name, 220) : null) || `${artist} at ${venue}`,
     path: canonicalEventPath(paths, row),
     artist,
     artistPath: relatedArtistPath(paths, row),
@@ -509,6 +516,7 @@ function eventCard(row, paths) {
     providerVenueId: cleanLine(row.venue_provider_id, 180) || null,
     place: cleanLine(row.place, 180) || cleanLine([row.venue_city, row.venue_region, row.venue_country].filter(Boolean).join(", "), 180) || null,
     date,
+    endDate: endDate && endDate >= date ? endDate : null,
     startDateTime,
     localTime: cleanLine(row.start_local_time, 20) || null,
     timezone: cleanLine(row.event_timezone, 80) || null,
@@ -517,6 +525,8 @@ function eventCard(row, paths) {
     soldOut: !!row.sold_out,
     ticketUrl,
     source: cleanLine(row.source, 40) || null,
+    eventKind,
+    billedArtists,
     address: eventAddress(row),
     updatedAt: timestamp(row.updated_at),
   });
@@ -541,6 +551,7 @@ function eventSchema(event, origin, { image = null, description = null, today = 
     name: event.name,
     url: absolute(origin, event.path),
     startDate,
+    ...(event.endDate ? { endDate: event.endDate } : {}),
     ...(event.status ? { eventStatus: event.status } : {}),
     eventAttendanceMode: "https://schema.org/OfflineEventAttendanceMode",
     location,
@@ -1083,7 +1094,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       const image = primaryAsset?.kind === "image" ? primaryAsset.url : primaryAsset?.posterUrl || null;
       const description = summary(
         posts.find((post) => substantiveText(post.text, 40))?.text
-          || `${event.artist} performs at ${event.venue}${event.place ? ` in ${event.place}` : ""} on ${event.date}. Find show details and fan memories on Mshpit.`,
+          || `${event.name} brings live music to ${event.venue}${event.place ? ` in ${event.place}` : ""} on ${event.date}. Find event details and fan memories on Mshpit.`,
       );
       const breadcrumbs = Object.freeze([
         Object.freeze({ name: "Mshpit", path: "/" }),
@@ -1113,7 +1124,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       return Object.freeze({
         kind: "event",
         siteName: SITE_NAME,
-        title: `${event.artist} at ${event.venue} — ${event.date} | Mshpit`,
+        title: `${event.name} — ${event.date} | Mshpit`,
         description,
         canonicalPath: path,
         canonicalUrl: absolute(publicOrigin, path),

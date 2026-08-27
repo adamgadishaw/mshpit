@@ -11,9 +11,8 @@
  * Sources, in priority order (same chain as the artist enrichment):
  *   1. Wikimedia Commons geo-photos (ingest-venue-photos.mjs) — lead the pool
  *   2. **Openverse** — CC commercial+modifiable, creator/license/source stored
- *   3. **Open web** (source:"google"/"web") — final tier, only when 1+2 fall
- *      short. Not license-cleared: takedown-on-request (see DATA_SOURCES.md).
- *      Google Programmable Search when keyed; Bing Images keyless otherwise.
+ * Unlicensed open-web fallback is intentionally excluded. A thin verified
+ * gallery is safer than filling the venue with unverifiable inventory.
  *
  * Writes  venues[k].galleryPool : Array<{ uri, credit, source }>  and tops up
  * venues[k].photos / .photo.
@@ -21,35 +20,41 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { webImages } from "./lib/web-images.mjs";
+import { licensedVenuePhoto } from "../src/domain/venuePhotoProvenance.mjs";
 
-const UA = "PitConcertApp/0.1 (https://example.com; contact@example.com)";
+const UA = "MshpitVenuePhotoBackfill/1.0 (https://mshpit.com; founder@mshpit.com)";
+const OPENVERSE_TOKEN = String(process.env.OPENVERSE_API_TOKEN || "").trim();
 const OUT = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "seed", "catalog.generated.json");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const POOL_MAX = 10;
 const PHOTOS_MAX = 6;
 
 const getJSON = async (url, h = {}) => {
-  try {
-    const r = await fetch(url, { headers: { "User-Agent": UA, Accept: "application/json", ...h } });
-    return r.ok ? r.json() : null;
-  } catch {
-    return null;
-  }
+  const r = await fetch(url, { headers: { "User-Agent": UA, Accept: "application/json", ...h } });
+  if (r.status === 429) throw new Error(`Openverse rate limited this offline run; retry after ${r.headers.get("retry-after") || "the provider window"}.`);
+  if (!r.ok) throw new Error(`Openverse request failed with HTTP ${r.status}.`);
+  return r.json();
 };
-const credit = (r) =>
-  [r.creator, [r.license, r.license_version].filter(Boolean).join(" ").toUpperCase(), r.source && `(${r.source})`]
-    .filter(Boolean)
-    .join(" · ");
+const openverseLicense = (r) => {
+  const token = `${r.license || ""}-${r.license_version || ""}`.toUpperCase();
+  return ({ "BY-2.0": "CC-BY-2.0", "BY-SA-2.0": "CC-BY-SA-2.0",
+    "BY-3.0": "CC-BY-3.0", "BY-SA-3.0": "CC-BY-SA-3.0",
+    "BY-4.0": "CC-BY-4.0", "BY-SA-4.0": "CC-BY-SA-4.0" })[token] || null;
+};
 
 async function openverse(query) {
+  if (!OPENVERSE_TOKEN) throw new Error("Set OPENVERSE_API_TOKEN before running licensed Openverse enrichment.");
   const url =
     `https://api.openverse.org/v1/images/?q=${encodeURIComponent(query)}` +
     `&license_type=commercial,modification&page_size=10&mature=false`;
-  const d = await getJSON(url);
+  const d = await getJSON(url, { Authorization: `Bearer ${OPENVERSE_TOKEN}` });
   return (d?.results || [])
     .filter((r) => r.url && /\.(jpe?g|png)(\?|$)/i.test(r.url))
-    .map((r) => ({ uri: r.url, credit: credit(r), source: "openverse" }));
+    .map((r) => ({
+      uri: r.url, sourcePage: r.foreign_landing_url, creator: r.creator,
+      license: openverseLicense(r), licenseUrl: r.license_url, source: "openverse",
+    }))
+    .map(licensedVenuePhoto).filter(Boolean);
 }
 
 async function main() {
@@ -76,7 +81,8 @@ async function main() {
   for (const k of keys) {
     const v = venues[k];
     const city = (v.place || "").split(",")[0].trim();
-    const commons = (v.photos || []).map((uri) => ({ uri, credit: v.photoCredit || "Wikimedia Commons", source: "commons" }));
+    const commons = (v.galleryPool || []).map(licensedVenuePhoto).filter(Boolean)
+      .filter((photo) => photo.provenanceSource === "commons");
 
     const building = await openverse(`"${v.name}"${city ? " " + city : ""}`);
     await sleep(700);
@@ -94,17 +100,11 @@ async function main() {
       }
     };
     take([...commons, ...building, ...interior]);
-    // Final tier: open-web images (takedown-on-request) top up the rest.
-    if (pool.length < POOL_MAX) {
-      const g = await webImages(`${v.name}${city ? " " + city : ""} concert venue`, POOL_MAX);
-      await sleep(500);
-      take(g);
-    }
     if (pool.length) {
       v.galleryPool = pool;
       v.photos = [...new Set([...(v.photos || []), ...pool.map((p) => p.uri)])].slice(0, PHOTOS_MAX);
       if (!v.photo) v.photo = pool[0].uri;
-      if (!v.photoCredit) v.photoCredit = pool[0].credit;
+      if (!v.photoCredit) v.photoCredit = pool[0].by;
       filled++;
     }
     if (++done % 15 === 0) {

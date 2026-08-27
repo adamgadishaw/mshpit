@@ -3,6 +3,19 @@ import { licensedVenuePhoto } from "./venuePhotoProvenance.mjs";
 export const VENUE_PHOTO_CLIENT_CACHE_MAX = 32;
 export const VENUE_PHOTO_CLIENT_TTL_MS = 15 * 60 * 1000;
 export const VENUE_PHOTO_RESPONSE_MAX = 24;
+export const VENUE_PHOTO_CATALOG_VERSION = "licensed-v1";
+
+export function venuePhotoAttemptScope(venueName, photos) {
+  const venue = String(venueName || "").normalize("NFKC").trim().toLocaleLowerCase();
+  const uris = [];
+  for (const photo of Array.isArray(photos) ? photos : []) {
+    const uri = typeof photo?.uri === "string" ? photo.uri.trim() : "";
+    if (!uri) continue;
+    uris.push(uri);
+    if (uris.length >= VENUE_PHOTO_RESPONSE_MAX + 12) break;
+  }
+  return JSON.stringify([venue, uris]);
+}
 
 export function venuePhotoStateFor(catalogKey, pools) {
   // User-created/TBA venues have no server seed by definition. They are a
@@ -40,11 +53,15 @@ export function isFreshVenuePhotoEntry(entry, at = Date.now()) {
 }
 
 export function mergeVenuePhotoSources(remote, fan, isRemoved = () => false) {
-  const official = (remote || []).filter((photo) => photo.source === "commons");
-  const backfill = (remote || []).filter((photo) => photo.source !== "commons");
+  const isCommons = (photo) => photo?.provenanceSource === "commons" || photo?.source === "commons";
+  const official = (remote || []).filter(isCommons);
+  const backfill = (remote || []).filter((photo) => !isCommons(photo));
   const out = [];
   const seen = new Set();
-  for (const photo of [...official, ...(fan || []), ...backfill]) {
+  // The venue gallery belongs to the people who were there. Verified fan media
+  // leads when it exists; licensed provider imagery keeps the page useful while
+  // a venue's community archive is still growing.
+  for (const photo of [...(fan || []), ...official, ...backfill]) {
     if (!photo?.uri || seen.has(photo.uri) || isRemoved(photo.uri)) continue;
     seen.add(photo.uri);
     out.push(photo);

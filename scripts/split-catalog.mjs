@@ -24,17 +24,28 @@
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { licensedVenuePool } from "./lib/venue-photo-record.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SEED = join(HERE, "..", "src", "seed");
 const SOURCE = join(SEED, "catalog.generated.json");
 const CORE = join(SEED, "catalog.core.json");
 const VENUE_PHOTOS = join(SEED, "catalog.venue-photos.json");
+const VERIFIED_VENUE_PHOTOS = join(SEED, "catalog.venue-photos.verified.json");
 
 // Fields no screen needs until it is opened. Artist discographies are dropped
 // from the bundle entirely (the server serves them); venue photo pools are split
 // into a server-only file and returned by the API one normalized venue at a time.
 const DEFERRED = ["albums", "galleryPool", "photos"];
+const VENUE_LEAD_PHOTO_FIELDS = [
+  "photo",
+  "photoCredit",
+  "photoCreator",
+  "photoLicense",
+  "photoLicenseUrl",
+  "photoSource",
+  "photoSourcePage",
+];
 
 function build() {
   const source = JSON.parse(readFileSync(SOURCE, "utf8"));
@@ -59,6 +70,40 @@ function build() {
   const venuePhotos = {};
   core.artists = split(source.artists, deferred);
   core.venues = split(source.venues, venuePhotos);
+  // The scraper's historical lead URLs have no machine-verifiable attribution.
+  // Keep them out of the client bundle completely, then add back only leads that
+  // survive the same fail-closed provenance gate as the server gallery.
+  for (const venue of Object.values(core.venues)) {
+    for (const field of VENUE_LEAD_PHOTO_FIELDS) delete venue[field];
+  }
+  for (const [key, heavy] of Object.entries(venuePhotos)) {
+    const galleryPool = licensedVenuePool(heavy);
+    if (!galleryPool.length) {
+      delete venuePhotos[key];
+      continue;
+    }
+    venuePhotos[key] = {
+      galleryPool,
+      photos: galleryPool.slice(0, 6).map((photo) => photo.uri),
+    };
+  }
+  const verified = existsSync(VERIFIED_VENUE_PHOTOS)
+    ? JSON.parse(readFileSync(VERIFIED_VENUE_PHOTOS, "utf8")) : {};
+  for (const [key, entry] of Object.entries(verified)) {
+    const galleryPool = licensedVenuePool(entry);
+    if (!galleryPool.length) continue;
+    venuePhotos[key] = { galleryPool, photos: galleryPool.map((photo) => photo.uri) };
+    const lead = galleryPool[0];
+    if (core.venues[key]) Object.assign(core.venues[key], {
+      photo: lead.uri,
+      photoCreator: lead.creator,
+      photoLicense: lead.license,
+      photoLicenseUrl: lead.licenseUrl,
+      photoSourcePage: lead.sourcePage,
+      photoSource: lead.provenanceSource,
+      photoCredit: lead.by,
+    });
+  }
   return { core, deferred, venuePhotos };
 }
 

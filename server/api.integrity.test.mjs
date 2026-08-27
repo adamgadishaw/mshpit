@@ -3030,17 +3030,74 @@ test("feed cursor pagination is stable while offset remains compatible", () => {
 test("discovery sidebar returns real top artists and local-first shows and venues", () => {
   const user = addUser("u_sidebar", "sidebar@example.com", "sidebaruser");
   const insert = db.prepare(`INSERT INTO tour_dates
-    (id,artist,venue,place,lat,lng,date,ticket_url,sold_out,source,updated_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
-  insert.run("tm_sidebar_far", "Far Artist", "Far Hall", "Vancouver, British Columbia, Canada", 49.2827, -123.1207, "2099 · 08 · 20", "https://tickets.example/far", 0, "ticketmaster", Date.now());
-  insert.run("tm_sidebar_local", "Local Artist", "Local Hall", "Toronto, Ontario, Canada", 43.6532, -79.3832, "2099 · 09 · 01", "https://tickets.example/local", 0, "ticketmaster", Date.now());
+    (id,artist,venue,place,lat,lng,date,ticket_url,sold_out,source,updated_at,
+      venue_city,venue_region,venue_country_code,event_name,event_kind,music_qualified,
+      music_evidence,billed_artists,event_end_date)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+  insert.run("tm_sidebar_far", "Far Artist", "Far Hall", "Vancouver, British Columbia, Canada", 49.2827, -123.1207, "2099 · 08 · 20", "https://tickets.example/far", 0, "ticketmaster", Date.now(),
+    "Vancouver", "British Columbia", "CA", null, "concert", 1, null, "[]", null);
+  insert.run("tm_sidebar_local", "Local Artist", "Local Hall", "Not Toronto, Elsewhere", 43.6532, -79.3832, "2099 · 09 · 01", "https://tickets.example/local", 0, "ticketmaster", Date.now(),
+    "Toronto", "Ontario", "CA", "Toronto Music Festival", "festival", 1,
+    "ticketmaster:classification:music", '["Local Artist","Guest Artist"]', "2099-09-03");
+  insert.run("tm_sidebar_non_music", "Unknown", "Nearby Field", "Toronto, Ontario, Canada", 43.6533, -79.3833, "2099 · 08 · 01", null, 0, "ticketmaster", Date.now(),
+    "Toronto", "Ontario", "CA", "State Fair", "fair", 0, null, "[]", null);
 
   const result = routes["GET /api/discovery/sidebar"]({ user });
   assert.ok(result.topArtists.length >= 3);
   assert.equal(result.upcomingEvents[0].id, "tm_sidebar_local");
   assert.equal(result.upcomingEvents[0].local, true);
+  assert.equal(result.upcomingEvents[0].eventName, "Toronto Music Festival");
+  assert.equal(result.upcomingEvents[0].eventKind, "festival");
+  assert.deepEqual(result.upcomingEvents[0].billedArtists, ["Local Artist", "Guest Artist"]);
+  assert.equal(result.upcomingEvents.some((event) => event.id === "tm_sidebar_non_music"), false);
   assert.equal(result.trendingVenues[0].name, "Local Hall");
   assert.equal(result.location.city, "Toronto");
+  const afterFixture = discoverySidebar(user, {
+    at: Date.parse("2100-01-01T00:00:00.000Z"),
+    loungeLimit: 0,
+  });
+  assert.equal(afterFixture.upcomingEvents.some((event) => event.id === "tm_sidebar_local"), false,
+    "the supplied clock governs the upcoming-event boundary");
+});
+
+test("popular lounge discovery is signed-in, aggregate-only, recent, and bounded", () => {
+  const directoryIndexes = new Set(db.prepare(`SELECT name FROM sqlite_master
+    WHERE type='index' AND name IN ('idx_lounge_recent_directory','idx_going_lounge_identity')`).all()
+    .map((row) => row.name));
+  assert.deepEqual(directoryIndexes,
+    new Set(["idx_lounge_recent_directory", "idx_going_lounge_identity"]));
+  const member = addUser("u_lounge_directory", "lounge-directory@example.com", "loungedirectory");
+  const key = "directory band|directory room|2099-09-05";
+  db.prepare("INSERT INTO going (user_id,concert_key,artist,venue,city,date,created_at) VALUES (?,?,?,?,?,?,?)")
+    .run(member.id, key, "Directory Band", "Directory Room", "Toronto", "2099-09-05", Date.now());
+  db.prepare("INSERT INTO lounge_messages (id,lounge_id,user_id,text,created_at) VALUES (?,?,?,?,?)")
+    .run("lm_lounge_directory", key, member.id, "members only message", Date.now());
+
+  // Advance past any discovery result cached by the preceding test. The public
+  // projection itself must contain no member identity or message body.
+  const signedIn = discoverySidebar(member, { loungeLimit: 12, at: Date.now() + 120_000 });
+  assert.ok(signedIn.popularLounges.length <= 12);
+  const directoryLounge = signedIn.popularLounges.find((row) => row.key === key);
+  assert.ok(directoryLounge);
+  assert.deepEqual(directoryLounge, {
+    key,
+    artist: "Directory Band",
+    venue: "Directory Room",
+    city: "Toronto",
+    place: "Toronto",
+    date: "2099-09-05",
+    messageCount: 1,
+    attendeeCount: 1,
+    lastActivityAt: directoryLounge.lastActivityAt,
+  });
+  assert.equal("text" in directoryLounge, false);
+  assert.equal("userId" in directoryLounge, false);
+
+  const guest = discoverySidebar(null, { loungeLimit: 12, at: Date.now() + 240_000 });
+  assert.deepEqual(guest.popularLounges, []);
+  const landing = routes["GET /api/landing/media"]({ user: null, query: {}, setHeader() {} });
+  assert.equal(Object.hasOwn(landing, "live"), false,
+    "landing media does not duplicate the existing discovery request");
 });
 
 test("rewards use authoritative server activity and persist each award once", () => {

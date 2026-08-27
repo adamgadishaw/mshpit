@@ -75,6 +75,7 @@ import {
   venuePhotoStateFor,
   withBoundedVenuePhotoCache,
 } from "./domain/venuePhotos.mjs";
+import { fetchVenuePhotos } from "./features/venuePhotos/venuePhotoApi.mjs";
 import { venueCatalogPhotoFields } from "./domain/venuePhotoProvenance.mjs";
 import {
   mediaReactionsForAccountTransition,
@@ -219,6 +220,7 @@ const EMPTY_DISCOVERY_SIDEBAR = Object.freeze({
   topArtists: Object.freeze([]),
   trendingVenues: Object.freeze([]),
   upcomingEvents: Object.freeze([]),
+  popularLounges: Object.freeze([]),
   location: null,
   source: null,
 });
@@ -1265,6 +1267,7 @@ export function StoreProvider({ children }) {
           topArtists: Array.isArray(data?.topArtists) ? data.topArtists : [],
           trendingVenues: Array.isArray(data?.trendingVenues) ? data.trendingVenues : [],
           upcomingEvents: Array.isArray(data?.upcomingEvents) ? data.upcomingEvents : [],
+          popularLounges: Array.isArray(data?.popularLounges) ? data.popularLounges : [],
           location: data?.location || null,
           source: data?.source || null,
         };
@@ -4843,7 +4846,7 @@ export function StoreProvider({ children }) {
     .flatMap((r) => r.photos.map((p) => ({ uri: p, by: r.name, venueReviewId: r.id, ownerId: r.userId })))
     .slice(0, n);
   // All photos for a venue's widget, self-healing like the artist gallery:
-  //   1. official Commons building photo(s)  2. fan-uploaded review photos
+  //   1. fan-uploaded review photos  2. official Commons building photo(s)
   //   3. the Openverse backfill pool (licensed, attributed)
   // Moderated URLs drop out at every layer, so a pulled photo is replaced rather
   // than leaving the venue on the blank gradient card.
@@ -4889,11 +4892,7 @@ export function StoreProvider({ children }) {
 
     const controller = new AbortController();
     commitVenuePhotoEntry(key, { status: "loading", photos: cached?.photos || [], error: null, loadedAt: cached?.loadedAt || 0 });
-    const promise = api(`/api/venues/${encodeURIComponent(key)}/photos`, {
-      signal: controller.signal,
-      silent: true,
-      context: "Loading venue photos",
-    })
+    const promise = fetchVenuePhotos(key, { signal: controller.signal })
       .then(({ photos }) => {
         const cleanPhotos = cleanVenuePhotoResponse(photos);
         commitVenuePhotoEntry(key, { status: "ready", photos: cleanPhotos, error: null, loadedAt: Date.now() });
