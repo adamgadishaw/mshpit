@@ -17,6 +17,9 @@ after(() => {
 
 function addUser(id, role = "fan", artistName = null) {
   q.insertUser.run(id, `${id}@example.com`, id, id, "test-hash", role, "Toronto", 43.65, -79.38, "TU", "#123456", Date.now());
+  // This suite exercises each route's content boundary, not its email gate.
+  // Attendance now correctly requires a verified member before authored text is evaluated.
+  db.prepare("UPDATE users SET email_verified_at=? WHERE id=?").run(Date.now(), id);
   if (artistName) db.prepare("UPDATE users SET artist_name=? WHERE id=?").run(artistName, id);
   return q.userById.get(id);
 }

@@ -227,6 +227,15 @@ export const ERROR_CATALOG = Object.freeze({
     guidance: "Check available storage, then retry.",
     retryable: true,
   }),
+  "PIT-SHOW-001": Object.freeze({
+    category: "attendance",
+    severity: "warning",
+    title: "Check-in is not open",
+    message: "Live check-in is not available for this show right now. You can still mark Going or Went.",
+    failurePoint: "Live attendance window",
+    guidance: "Choose Going or Went, or check in while the verified show is happening.",
+    retryable: false,
+  }),
   "PIT-STORE-002": Object.freeze({
     category: "storage",
     severity: "warning",
@@ -270,6 +279,7 @@ export const SERVER_CODE_MAP = Object.freeze({
   RECOMMENDATION_CURSOR_EXPIRED: "PIT-REQ-004",
   NOT_FOUND: "PIT-REQ-002",
   CONFLICT: "PIT-REQ-003",
+  CHECK_IN_UNAVAILABLE: "PIT-SHOW-001",
   IDEMPOTENCY_MISMATCH: "PIT-REQ-003",
   IDENTITY_CHANGED: "PIT-AUTH-004",
   POST_REMOVED: "PIT-REQ-003",

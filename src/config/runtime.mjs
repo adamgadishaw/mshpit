@@ -23,6 +23,17 @@ export const ENABLE_DEMO_DATA = demoDataEnabled(
 // named gate avoids deleting the work or scattering temporary booleans in UI.
 export const ENABLE_CLIPS = false;
 
+// Kill switch for the additive canonical Show read. Default-on lets current
+// builds gain trusted lifecycle data while a remote build can explicitly fall
+// back to the existing heterogeneous ShowScreen inputs without changing URLs.
+export function canonicalShowReadEnabled(publicFlag) {
+  return publicFlag !== "false";
+}
+
+export const ENABLE_CANONICAL_SHOW_READ = canonicalShowReadEnabled(
+  process.env.EXPO_PUBLIC_ENABLE_CANONICAL_SHOW_READ,
+);
+
 // The platform-neutral product policy is shared with the web server and
 // background jobs so the paused surface cannot be re-enabled by client drift.
 export { MUSIC_PLAYER_ENABLED as ENABLE_MUSIC_PLAYER } from "../domain/musicPlayerAvailability.mjs";

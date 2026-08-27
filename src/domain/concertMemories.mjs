@@ -119,5 +119,5 @@ export function concertMemoryShareText(memory) {
   const artist = text(memory?.artist) || "a live show";
   const venue = text(memory?.venue);
   const date = text(memory?.date);
-  return [`Remembering ${artist}${venue ? ` at ${venue}` : ""}${date ? ` on ${date}` : ""}.`, "Saved in my concert diary on Pit."].join(" ");
+  return [`Remembering ${artist}${venue ? ` at ${venue}` : ""}${date ? ` on ${date}` : ""}.`, "Part of my live-music history on Mshpit."].join(" ");
 }

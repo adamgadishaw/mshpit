@@ -37,6 +37,7 @@ test("server failure codes normalize to stable PIT references", () => {
     RECOMMENDATION_CURSOR_EXPIRED: "PIT-REQ-004",
     NOT_FOUND: "PIT-REQ-002",
     CONFLICT: "PIT-REQ-003",
+    CHECK_IN_UNAVAILABLE: "PIT-SHOW-001",
     IDEMPOTENCY_MISMATCH: "PIT-REQ-003",
     IDENTITY_CHANGED: "PIT-AUTH-004",
     POST_REMOVED: "PIT-REQ-003",
@@ -84,4 +85,12 @@ test("diagnostic routes discard query values and private identifiers", () => {
 test("paused built-in playback incidents stay out of the general feedback catalog", () => {
   assert.equal(ERROR_CATALOG["PIT-MEDIA-001"], undefined);
   assert.equal(ERROR_CATALOG["PIT-MEDIA-002"], undefined);
+});
+
+test("closed live check-ins have specific safe recovery copy", () => {
+  assert.equal(catalogueCode({ serverCode: "CHECK_IN_UNAVAILABLE", status: 409 }), "PIT-SHOW-001");
+  const entry = catalogEntry("PIT-SHOW-001");
+  assert.equal(entry.retryable, false);
+  assert.match(entry.message, /Going or Went/);
+  assert.doesNotMatch(`${entry.message} ${entry.guidance}`, /provider|timezone|lifecycle|database/i);
 });

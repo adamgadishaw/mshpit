@@ -2661,7 +2661,7 @@ test("capped social endpoints return the newest window in chronological order", 
 });
 
 test("group-chat writes require membership and attendance, then succeed on retry", () => {
-  const user = addUser("u_chat_integrity", "chat-integrity@example.com", "chatintegrity");
+  const user = verifiedUser("u_chat_integrity", "chat-integrity@example.com", "chatintegrity");
   const fanMessage = routes["POST /api/fanclubs/:artist/messages"];
   const fanContext = (text) => ({ user, ip: "chat-integrity", params: { artist: "The Band" }, body: { text } });
 
@@ -2745,7 +2745,7 @@ test("group-chat reads require membership or attendance while gate metadata stay
 });
 
 test("desired-state social mutations are idempotent and old toggle calls still work", () => {
-  const user = addUser("u_toggle_a", "toggle-a@example.com", "togglea");
+  const user = verifiedUser("u_toggle_a", "toggle-a@example.com", "togglea");
   addUser("u_toggle_b", "toggle-b@example.com", "toggleb");
   const follow = routes["POST /api/users/:id/follow"];
   const followCtx = (body) => ({ user, ip: "toggle-test", params: { id: "u_toggle_b" }, body });
@@ -2963,7 +2963,7 @@ test("attendee pages expose a block-aware authoritative total beyond the page ca
   db.prepare("UPDATE users SET email_verified_at=? WHERE id=?").run(Date.now(), viewer.id);
   const verifiedViewer = q.userById.get(viewer.id);
   const key = "authority-band|large-hall|2099-01-01";
-  const attendees = Array.from({ length: 55 }, (_, index) => addUser(
+  const attendees = Array.from({ length: 55 }, (_, index) => verifiedUser(
     `u_attendee_${index}`,
     `attendee-${index}@example.com`,
     `attendee${index}`,
@@ -3319,6 +3319,12 @@ test("account export covers owned social data without secrets or raw IP addresse
   db.prepare("INSERT INTO blocks (blocker_id,blocked_id,created_at) VALUES (?,?,?)").run(user.id, blockedAccount.id, 18);
   db.prepare("INSERT INTO notifications (id,user_id,actor_id,type,text,created_at) VALUES (?,?,?,?,?,?)")
     .run("notif_export_in", user.id, other.id, "comment", "notification copy", 18);
+  db.prepare(`INSERT INTO shows
+    (id,canonical_key,artist,venue,city,date,created_at,updated_at)
+    VALUES ('show_export','export band|export room|2026-08-21','Export Band','Export Room','Toronto','2026-08-21',18,18)`).run();
+  db.prepare(`INSERT INTO show_attendance
+    (show_id,user_id,state,visibility,created_at,updated_at)
+    VALUES ('show_export',?,'went','private',18,18)`).run(user.id);
   const exportedCampaign = { version: 1, treatment: "after-dark", artistKey: "the band" };
   db.prepare(`INSERT INTO posts (id,user_id,kind,artist,venue,overall,review,campaign,created_at)
     VALUES (?,?,?,?,?,?,?,?,?)`).run(
@@ -3349,6 +3355,21 @@ test("account export covers owned social data without secrets or raw IP addresse
   assert.deepEqual(data.followers, [{ id: follower.id }]);
   assert.deepEqual(data.blocked, [{ id: blockedAccount.id }]);
   assert.deepEqual(data.notifications[0].from, { id: other.id });
+  assert.deepEqual(data.attendance, [{
+    showId: "show_export",
+    key: "export band|export room|2026-08-21",
+    canonicalKey: "export band|export room|2026-08-21",
+    artist: "Export Band",
+    venue: "Export Room",
+    city: "Toronto",
+    date: "2026-08-21",
+    state: "went",
+    visibility: "private",
+    checkedInAt: null,
+    verified: false,
+    createdAt: 18,
+    updatedAt: 18,
+  }]);
   assert.deepEqual(data.posts.find((post) => post.id === "post_export_campaign").campaign, exportedCampaign);
   assert.deepEqual(data.taggedInPosts.find((post) => post.postId === "post_export_tagged"), {
     postId: "post_export_tagged",
@@ -3388,6 +3409,23 @@ test("account deletion requires the password and erases SET NULL privacy rows at
   db.prepare("INSERT INTO posts (id,user_id,artist,venue,overall,tagged_user_ids,created_at) VALUES (?,?,?,?,?,?,?)")
     .run("post_delete_survivor_tag", survivor.id, "Band", "Venue", 4, JSON.stringify([user.id, survivor.id]), 26);
   db.prepare("INSERT INTO sessions (token_hash,user_id,created_at,expires_at) VALUES (?,?,?,?)").run("session_delete", user.id, 1, Date.now() + 100000);
+  const deleteShowKey = "delete band|delete venue|2026-08-27";
+  db.prepare(`INSERT INTO shows
+    (id,canonical_key,identity_source,created_at,updated_at)
+    VALUES ('show_delete_account',?,'member_legacy_alias',26,26)`).run(deleteShowKey);
+  db.prepare(`INSERT INTO show_aliases
+    (alias_type,alias_value,show_id,created_at)
+    VALUES ('legacy_concert_key',?,'show_delete_account',26)`).run(deleteShowKey);
+  db.prepare(`INSERT INTO show_attendance
+    (show_id,user_id,state,visibility,legacy_artist,legacy_venue,legacy_date,created_at,updated_at)
+    VALUES ('show_delete_account',?,'going','members','Delete Band','Delete Venue','2026-08-27',26,26)`)
+    .run(user.id);
+  db.prepare(`INSERT INTO show_attendance_verifications
+    (show_id,user_id,source,verified_at)
+    VALUES ('show_delete_account',?,'ticket_import',26)`).run(user.id);
+  db.prepare(`INSERT INTO going
+    (user_id,concert_key,artist,venue,city,date,created_at)
+    VALUES (?,?,'Delete Band','Delete Venue','Toronto','2026-08-27',26)`).run(user.id, deleteShowKey);
   const legacyStagingKey = `users/${user.id}/avatar/delete-legacy-staging.jpg`;
   const legacyOutputKey = `users/${user.id}/avatar/delete-legacy-safe.webp`;
   const legacyOutputUrl = `https://media.example.com/cdn/${legacyOutputKey}`;
@@ -3415,6 +3453,12 @@ test("account deletion requires the password and erases SET NULL privacy rows at
   assert.deepEqual(handler({ user: freshUser, ip: "delete-test", body: { password }, clearSession: () => { cleared = true; } }), { ok: true });
   assert.equal(cleared, true);
   assert.equal(q.userById.get(user.id), undefined);
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM show_attendance WHERE user_id=?").get(user.id).count, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM show_attendance_verifications WHERE user_id=?").get(user.id).count, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM going WHERE user_id=?").get(user.id).count, 0);
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM shows WHERE id='show_delete_account'").get().count, 1,
+    "shared blank Show identity may remain after the member relationship is erased");
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM show_aliases WHERE show_id='show_delete_account'").get().count, 1);
   assert.equal(db.prepare("SELECT COUNT(*) count FROM legacy_media_finalize_descriptors WHERE owner_id=?")
     .get(user.id).count, 0, "account erasure removes owner-bound legacy finalize descriptors");
   for (const key of [legacyStagingKey, legacyOutputKey]) {

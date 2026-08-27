@@ -67,7 +67,8 @@ test("PostScreen scopes comment reads and exposes honest loading failure recover
   assert.match(postScreen, /commentsUsable && tree\.length === 0/);
   assert.match(postScreen, /accessibilityLabel="Retry loading comments"/);
   assert.match(postScreen, /setCommentRequestVersion\(\(version\) => version \+ 1\)/);
-  assert.match(postScreen, /\}, \[commentScope, commentRequestVersion\]\)/);
+  assert.match(postScreen, /if \(!appActive\) return undefined/);
+  assert.match(postScreen, /\}, \[appActive, commentScope, commentRequestVersion\]\)/);
 
   assert.match(store, /const commentCache = useAccountCommentCache\(session\?\.id \|\| null\)/);
   assert.match(store, /commentRequestCacheKey\(claim\.accountId, id, safeLimit\)/);

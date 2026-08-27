@@ -160,6 +160,10 @@ import {
   recentSearchStorageKey,
   recommendationPreferenceStorageKey,
 } from "./domain/accountLocalPrivacy.mjs";
+import {
+  createSessionValidationCoordinator,
+  sessionValidationOutcome,
+} from "./domain/sessionValidation.mjs";
 
 const purgeLocalMediaDraftFiles = (accountId) => purgeAccountMediaDraftFiles({
   accountId,
@@ -576,7 +580,7 @@ export function StoreProvider({ children }) {
   // response that started before a local create/edit/like, while the request
   // state prevents overlapping refreshes from racing each other.
   const feedMutationRevisionRef = useRef(0);
-  const feedRefreshRef = useRef({ inFlight: false, sequence: 0 });
+  const feedRefreshRef = useRef({ inFlight: false, sequence: 0, wake: () => {} });
   const feedModeRef = useRef("for-you");
   const feedAlgorithmRef = useRef("global-personal-v1");
   const feedSnapshotIdentityRef = useRef(null);
@@ -1186,7 +1190,10 @@ export function StoreProvider({ children }) {
     };
     const run = async (initial) => {
       if (stopped) return;
-      if (!canRefresh()) return;
+      if (!canRefresh()) {
+        schedule(delay);
+        return;
+      }
       // Re-read the head as well as tombstoning cached IDs. The server reuses a
       // quiet snapshot cheaply and creates a fresh one only after a post is
       // published, so an open session can receive new community activity.
@@ -1201,15 +1208,15 @@ export function StoreProvider({ children }) {
       schedule(delay);
     };
     const wake = () => schedule(0);
-    const appStateSubscription = AppState.addEventListener("change", (state) => { if (state === "active") wake(); });
+    feedRefreshRef.current.wake = wake;
     run(true);
     return () => {
       stopped = true;
+      if (feedRefreshRef.current.wake === wake) feedRefreshRef.current.wake = () => {};
       if (timer) clearTimeout(timer);
       controller.abort();
       feedRefreshRef.current.sequence += 1;
       feedRefreshRef.current.inFlight = false;
-      appStateSubscription?.remove?.();
     };
     // Restart immediately when account scope changes. The cleanup aborts the old
     // viewer's request before the new personalized cache can accept a response.
@@ -1303,7 +1310,7 @@ export function StoreProvider({ children }) {
   const userByHandle = (h) => users.find((u) => u.handle === h);
   const logsByUser = (id) => feed.filter((l) => l.userId === id);
 
-  // "Crossed paths", shows YOU and another user have BOTH logged (same exact
+  // Shared attendance: shows YOU and another user have BOTH logged (same exact
   // performance: artist + venue + date). The overlap tracker: "this person's been
   // to N of the same concerts as you." Returns the list of shared performances,
   // most recent first. Also exposes the set of artists you've both seen live.
@@ -2230,7 +2237,7 @@ export function StoreProvider({ children }) {
   };
 
   // Fold a server user into local state so profiles/avatars resolve everywhere.
-  const absorbServerUser = (su, { announce = false } = {}) => {
+  const absorbServerUser = (su, { announce = false, hydrateAccount = true } = {}) => {
     const merged = { playlists: [], genres: [], favoriteArtists: [], ...su };
     resolveLegacyDraftsForIdentity(merged.id);
     authValidationSequenceRef.current += 1;
@@ -2249,6 +2256,7 @@ export function StoreProvider({ children }) {
     sessionRef.current = merged;
     setSession(merged);
     if (announce) broadcastAuthEpoch();
+    if (!hydrateAccount) return merged;
     // Hydrate the follow graph for this account from the server (see MIGRATION.md,
     // slice 1). Best-effort: if the endpoint/back-end isn't there we keep whatever
     // is cached locally.
@@ -2343,107 +2351,186 @@ export function StoreProvider({ children }) {
         })
         .catch(() => {});
     }
+    return merged;
   };
 
-  // Restore the session on reload. The httpOnly session cookie survives a refresh,
-  // so ask the server who we are and re-absorb, which re-runs ALL the per-account
-  // hydration (follows, DM threads, fan clubs, going, admin queues). Before this,
-  // a refresh skipped hydration entirely, so server-only state looked like it
-  // "didn't save." No-op for guests / offline (returns null / rejects).
+  // Cold boot blocks on the HttpOnly-cookie handshake. Once an identity is
+  // confirmed, ordinary foreground checks stay silent and retain the mounted UI.
+  // AppState and browser visibility can both fire for one return, so a shared
+  // coordinator deduplicates them and applies a freshness/background threshold.
   useEffect(() => {
     let stopped = false;
     let retryTimer = null;
-    let lastValidationAt = 0;
-    // A transient identity lock clears sessionRef so stale responses are rejected,
-    // but it must not forget which account needs retiring if a later retry proves
-    // the cookie was removed or replaced.
-    let lockedAccountId = null;
-    const validate = ({ force = false } = {}) => {
-      if (stopped || (!force && Date.now() - lastValidationAt < 1_000)) return;
-      lastValidationAt = Date.now();
+    let identityHasBeenConfirmed = authReadyRef.current;
+    let coordinator;
+
+    const lockIdentity = () => {
+      const accountId = sessionRef.current?.id || null;
+      configureProductAnalytics(null);
+      configureApiIdentity(accountId, { ready: false });
+      authReadyRef.current = false;
+      setAuthReady(false);
+    };
+
+    const publishAuthoritativeGuest = (departingAccountId) => {
+      resolveLegacyDraftsForIdentity(null);
+      if (departingAccountId) retireRevalidatedAccount(departingAccountId);
+      configureApiIdentity(null, { ready: true });
+      authReadyRef.current = true;
+      setAuthReady(true);
+      sessionRef.current = null;
+      adoptFeedAccount(null);
+      setSession(null);
+      identityHasBeenConfirmed = true;
+    };
+
+    const scheduleRetry = (strict) => {
+      if (stopped) return;
       if (retryTimer) clearTimeout(retryTimer);
+      retryTimer = setTimeout(() => {
+        retryTimer = null;
+        void coordinator.validate({ force: true, strict, reason: "retry" });
+      }, 5_000);
+    };
+
+    const runValidation = async (context) => {
+      if (stopped) return { authoritative: false };
+      if (retryTimer) {
+        clearTimeout(retryTimer);
+        retryTimer = null;
+      }
+
       // An explicitly opted-in development demo has no API identity to
-      // reconcile. Locking it behind /api/me makes Metro-only QA sit on the
-      // loading screen forever, because the development server is not PIT's
-      // API. Production can never enter this branch (runtime.mjs requires both
-      // __DEV__ and the public demo flag).
+      // reconcile. Production can never enter this branch.
       if (!remoteIdentityValidationEnabled(ENABLE_DEMO_DATA)) {
         configureApiIdentity(sessionRef.current?.id || null, { ready: true });
         authReadyRef.current = true;
         setAuthReady(true);
-        return;
+        identityHasBeenConfirmed = true;
+        return { authoritative: true };
       }
-      const accountBeforeValidation = sessionRef.current?.id || lockedAccountId || null;
-      if (accountBeforeValidation) lockedAccountId = accountBeforeValidation;
+
+      const confirmedBeforeValidation = identityHasBeenConfirmed || authReadyRef.current;
+      const accountBeforeValidation = sessionRef.current?.id || null;
       const sequence = ++authValidationSequenceRef.current;
-      configureProductAnalytics(null);
-      configureApiIdentity(sessionRef.current?.id || null, { ready: false });
-      authReadyRef.current = false;
-      setAuthReady(false);
-      if (!ENABLE_DEMO_DATA) {
-        sessionRef.current = null;
-        adoptFeedAccount(null);
-      }
-      api("/api/me", { silent: true, context: "Validating your account", skipIdentityCheck: true })
-        .then(({ user }) => {
-          if (stopped || sequence !== authValidationSequenceRef.current) return;
-          const departingAccountId = lockedAccountId;
-          if (user) {
-            if (departingAccountId && String(user.id) !== String(departingAccountId)) {
-              retireRevalidatedAccount(departingAccountId);
-            }
-            lockedAccountId = null;
-            absorbServerUser(user);
-          }
-          else {
-            resolveLegacyDraftsForIdentity(null);
-            if (departingAccountId) retireRevalidatedAccount(departingAccountId);
-            lockedAccountId = null;
-            configureApiIdentity(null, { ready: true });
-            authReadyRef.current = true;
-            setAuthReady(true);
-            sessionRef.current = null;
-            adoptFeedAccount(null);
-            setSession(null);
-          }
-        })
-        .catch((error) => {
-          if (stopped || sequence !== authValidationSequenceRef.current) return;
-          if (error?.status === 401) {
-            const departingAccountId = lockedAccountId;
-            resolveLegacyDraftsForIdentity(null);
-            if (departingAccountId) retireRevalidatedAccount(departingAccountId);
-            lockedAccountId = null;
-            configureApiIdentity(null, { ready: true });
-            authReadyRef.current = true;
-            setAuthReady(true);
-            sessionRef.current = null;
-            adoptFeedAccount(null);
-            setSession(null);
-            return;
-          }
-          // Render cold starts and transient mobile failures keep private state
-          // locked, then retry. A focus/resume also forces an immediate retry.
-          retryTimer = setTimeout(() => validate({ force: true }), 5_000);
+      if (!confirmedBeforeValidation) lockIdentity();
+
+      try {
+        const { user } = await api("/api/me", {
+          silent: true,
+          context: "Validating your account",
+          skipIdentityCheck: true,
         });
+        if (context.isSuperseded() || stopped || sequence !== authValidationSequenceRef.current) {
+          return { authoritative: false, stale: true };
+        }
+
+        const outcome = sessionValidationOutcome({
+          confirmed: confirmedBeforeValidation,
+          accountId: accountBeforeValidation,
+          user,
+        });
+        if (outcome.kind === "same-account") {
+          // Refresh safe account fields without replaying following, block, DM,
+          // fan-club, attendance, notification, or staff hydrations.
+          absorbServerUser(user, { hydrateAccount: false });
+          identityHasBeenConfirmed = true;
+          feedRefreshRef.current.wake();
+          return { authoritative: true, outcome: outcome.kind };
+        }
+        if (outcome.kind === "invalid-response") {
+          const mustStayLocked = !confirmedBeforeValidation || context.isStrict();
+          if (mustStayLocked) lockIdentity();
+          scheduleRetry(mustStayLocked);
+          return { authoritative: false, outcome: outcome.kind };
+        }
+        if (outcome.kind === "initial-account") {
+          absorbServerUser(user);
+          identityHasBeenConfirmed = true;
+          return { authoritative: true, outcome: outcome.kind };
+        }
+        if (outcome.kind === "account-changed") {
+          if (outcome.departingAccountId) {
+            if (!context.isStrict()) lockIdentity();
+            retireRevalidatedAccount(outcome.departingAccountId);
+          }
+          absorbServerUser(user);
+          identityHasBeenConfirmed = true;
+          return { authoritative: true, outcome: outcome.kind };
+        }
+
+        if (outcome.departingAccountId && !context.isStrict()) lockIdentity();
+        publishAuthoritativeGuest(outcome.departingAccountId);
+        if (confirmedBeforeValidation && !outcome.departingAccountId) feedRefreshRef.current.wake();
+        return { authoritative: true, outcome: outcome.kind };
+      } catch (error) {
+        if (context.isSuperseded() || stopped || sequence !== authValidationSequenceRef.current) {
+          return { authoritative: false, stale: true };
+        }
+        const outcome = sessionValidationOutcome({
+          confirmed: confirmedBeforeValidation,
+          accountId: accountBeforeValidation,
+          error,
+        });
+        if (outcome.kind === "authoritative-guest") {
+          if (outcome.departingAccountId && !context.isStrict()) lockIdentity();
+          publishAuthoritativeGuest(outcome.departingAccountId);
+          return { authoritative: true, outcome: outcome.kind };
+        }
+
+        // A routine resume failure leaves the confirmed session and UI intact.
+        // Cold starts and explicit cross-tab changes remain locked while retrying.
+        const mustStayLocked = !confirmedBeforeValidation || context.isStrict();
+        if (mustStayLocked) lockIdentity();
+        scheduleRetry(mustStayLocked);
+        return { authoritative: false, outcome: outcome.kind };
+      }
     };
-    validate({ force: true });
-    const appStateSubscription = AppState.addEventListener("change", (state) => {
-      if (state === "active") validate();
+
+    coordinator = createSessionValidationCoordinator({
+      run: runValidation,
+      onStrictRequest: lockIdentity,
     });
+    void coordinator.validate({ force: true, reason: "cold-start" });
+
+    const resume = () => {
+      // Brief returns deliberately do no auth or feed work. A longer return
+      // wakes the feed only after the identity check succeeds in runValidation.
+      void coordinator.resume();
+    };
+    const appStateSubscription = AppState.addEventListener("change", (state) => {
+      if (state === "active") resume();
+      else if (state === "background" || state === "inactive") coordinator.background();
+    });
+    const onVisibilityChange = () => {
+      if (document.hidden) coordinator.background();
+      else resume();
+    };
+    const onPageHide = () => coordinator.background();
+    const onPageShow = () => resume();
     const onStorage = (event) => {
       if (event.key !== AUTH_EPOCH_STORAGE_KEY) return;
       // Cookies are origin-wide. Another tab may have replaced the authenticated
       // account, so immediately lock this tab and ask /api/me before any further
       // account-scoped analytics or personalized requests.
-      validate({ force: true });
+      void coordinator.validate({ force: true, strict: true, reason: "auth-epoch" });
     };
-    if (Platform.OS === "web" && typeof window !== "undefined") window.addEventListener("storage", onStorage);
+    if (Platform.OS === "web" && typeof window !== "undefined") {
+      window.addEventListener("storage", onStorage);
+      window.addEventListener("pagehide", onPageHide);
+      window.addEventListener("pageshow", onPageShow);
+      if (typeof document !== "undefined") document.addEventListener("visibilitychange", onVisibilityChange);
+    }
     return () => {
       stopped = true;
       if (retryTimer) clearTimeout(retryTimer);
       appStateSubscription?.remove?.();
-      if (Platform.OS === "web" && typeof window !== "undefined") window.removeEventListener("storage", onStorage);
+      if (Platform.OS === "web" && typeof window !== "undefined") {
+        window.removeEventListener("storage", onStorage);
+        window.removeEventListener("pagehide", onPageHide);
+        window.removeEventListener("pageshow", onPageShow);
+        if (typeof document !== "undefined") document.removeEventListener("visibilitychange", onVisibilityChange);
+      }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

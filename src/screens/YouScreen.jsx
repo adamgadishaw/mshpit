@@ -29,7 +29,7 @@ function Reveal({ delay = 0, children, style }) {
 }
 
 // The You tab is the private dashboard for memories, nearby activity, and
-// account tools. The public Profile screen owns the diary, media wall, and posts.
+// account tools. The public Profile screen owns live history, media, and posts.
 export default function YouScreen({ onLogin, onLogout, onManageProfile, onSettings, onAdmin, onRequestArtist, onOpenProfile, onOpen, onActivity, onInbox, onCalendar, onOpenNearby, homeCity }) {
   const { session, logsByUser, unreadNotifications, inboxUnread, genreOfArtist, userBadges, userPoints } = useStore();
   const history = useProfileHistory({ accountId: session?.id, targetId: session?.id, enabled: !!session });
@@ -41,7 +41,7 @@ export default function YouScreen({ onLogin, onLogout, onManageProfile, onSettin
   const profileAction = profileManagementAction(session);
   const [memoryStatus, setMemoryStatus] = useState("");
 
-  // ---- concert analytics, from the diary ----
+  // ---- concert analytics, from this account's live-music history ----
   const live = useMemo(() => {
     const artists = new Set(); const venues = new Set(); const genres = {};
     let best = null;
@@ -77,7 +77,7 @@ export default function YouScreen({ onLogin, onLogout, onManageProfile, onSettin
             <Icon name="you" size={28} color={colors.textDim} />
           </View>
           <Text style={styles.heroName}>You&apos;re logged out</Text>
-          <Text style={styles.heroHandle}>Log in to keep a diary and post reviews.</Text>
+          <Text style={styles.heroHandle}>Log in to build your live-music history and post reviews.</Text>
           <Pressable style={styles.primary} onPress={onLogin}>
             <Text style={styles.primaryTxt}>LOG IN / SIGN UP</Text>
           </Pressable>
@@ -95,7 +95,7 @@ export default function YouScreen({ onLogin, onLogout, onManageProfile, onSettin
   const publicProfileLabel = profileAction.destination === "artistHub" ? "View public artist page" : "View public profile";
   const publicProfileDetail = profileAction.destination === "artistHub"
     ? "See the official page exactly as fans do"
-    : "Your diary, photos, and public posts";
+    : "Your shows, photos, and public posts";
   // Compact toolbelt instead of a wall of menu rows.
   const tools = [
     { icon: profileAction.icon, label: profileAction.title, onPress: onManageProfile },
@@ -198,7 +198,7 @@ export default function YouScreen({ onLogin, onLogout, onManageProfile, onSettin
       {memories.length > 0 && (
         <Reveal delay={70}>
           <Text style={styles.sectionLabel}>CONCERT MEMORIES</Text>
-          <Text style={styles.scopeCopy}>From your still-visible concert diary. You choose whether to open or share each memory.</Text>
+          <Text style={styles.scopeCopy}>From your still-visible concert history. You choose whether to open or share each memory.</Text>
           <View style={styles.memoryGrid}>
             {memories.map((memory) => (
               <View key={memory.id} style={styles.memoryCard}>

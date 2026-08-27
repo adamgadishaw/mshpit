@@ -1,0 +1,66 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import test from "node:test";
+
+const showScreen = readFileSync(new URL("../screens/ShowScreen.jsx", import.meta.url), "utf8");
+const showSocialApi = readFileSync(new URL("../features/showSocial/showSocialApi.mjs", import.meta.url), "utf8");
+const attendanceControls = readFileSync(new URL("../features/showSocial/ShowAttendanceControls.jsx", import.meta.url), "utf8");
+
+test("ShowScreen exposes privacy-filtered Crowd views without local identity fallback", () => {
+  assert.match(showScreen, /CROWD_SCOPES\.map/);
+  assert.match(showScreen, /Everyone/);
+  assert.match(showScreen, /Following/);
+  assert.match(showScreen, /Friends/);
+  assert.match(showScreen, /readShowCrowdAttendance/);
+  assert.match(showScreen, /readShowLoungeMeta/);
+  assert.match(showScreen, /features\/showSocial\/showSocialService/);
+  assert.doesNotMatch(showScreen, /\bapi\s*\(/);
+  assert.match(showSocialApi, /attendees\?scope=\$\{encodeURIComponent\(requestedScope\)\}/);
+  assert.match(showSocialApi, /expectedAccountId: expectedAccountId\(accountId\)/);
+  assert.match(showScreen, /localAttendees: \[\]/);
+  assert.doesNotMatch(showScreen, /attendeesFor\(key\)/);
+  assert.match(showScreen, /viewerVisibleInScope = viewerGoingForCrowd/);
+  assert.match(showScreen, /mutationPending: goingBusy/);
+  assert.match(showScreen, /serverViewerGoing: scopedSocialRead\?\.serverViewerGoing/);
+  assert.match(showScreen, /serverViewerGoing: serverViewerVisibleInScope/);
+  assert.match(showScreen, /viewerAttendance: attendanceReady \? attendance\.viewerAttendance : null/);
+  assert.match(showScreen, /\[key, accountId, crowdScope, goingBusy, attendanceRefreshVersion\]/);
+  assert.match(showScreen, /attendance\.scope === crowdScope/);
+  assert.match(showScreen, /controller\.signal\.aborted/);
+  assert.match(showScreen, /ENABLE_CANONICAL_SHOW_READ/);
+  assert.match(showScreen, /readShowDocument/);
+  assert.match(showScreen, /showDocumentIdentity\(key, accountId\)/);
+  assert.match(showScreen, /showDocumentRead\?\.identity === documentIdentity/);
+  assert.match(showScreen, /showLifecycleView/);
+  assert.match(showScreen, /status: attendanceReady \? "ready" : "error"/);
+  assert.match(showScreen, /THE CROWD/);
+  assert.match(showScreen, /Sign in to see attendees who chose to be visible/);
+  assert.match(showScreen, /verifiedAttendeeCount/);
+  assert.match(showScreen, /accessibilityRole="tablist"/);
+  assert.match(showScreen, /accessibilityLiveRegion="polite"/);
+  assert.match(showScreen, /colors\.good/);
+  assert.match(showScreen, /colors\.surfaceAlt/);
+  assert.doesNotMatch(showScreen, /colors\.(?:success|amberSoft)/);
+});
+
+test("trusted Show attendance is lifecycle-gated, stable-ID bound, and never calls transport from UI", () => {
+  assert.match(showScreen, /ShowAttendanceControls/);
+  assert.match(showScreen, /lifecycleView\.trusted/);
+  assert.match(showScreen, /currentAttendance=/);
+  assert.match(attendanceControls, /attendanceOptionsForPhase\(lifecycle\)/);
+  assert.match(attendanceControls, /attendanceControlsVisible/);
+  assert.match(attendanceControls, /currentAttendance: attendance/);
+  assert.match(attendanceControls, /options\.length > 0/);
+  assert.match(attendanceControls, /error\?\.userMessage/);
+  assert.doesNotMatch(attendanceControls, /error\?\.message/);
+  assert.match(attendanceControls, /showId: show\.id/);
+  assert.match(attendanceControls, /activeIdentityRef\.current !== claim/);
+  assert.match(attendanceControls, /writeShowAttendance/);
+  assert.match(attendanceControls, /Live check-ins start Only me/);
+  assert.match(attendanceControls, /This records your status\. It does not verify attendance\./);
+  assert.match(attendanceControls, /accessibilityRole="radiogroup"/);
+  assert.match(showSocialApi, /requiredStableShowId\(showId\)/);
+  assert.match(showSocialApi, /expectedAccountId: actorId/);
+  assert.doesNotMatch(attendanceControls, /\bapi\s*\(/);
+  assert.doesNotMatch(attendanceControls, /geolocation|latitude|longitude|\bGPS\b/iu);
+});

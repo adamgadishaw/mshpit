@@ -37,13 +37,13 @@ const link = (label, href) => ({ label, href });
 const PAGES = Object.freeze({
   "/about": {
     title: "About Mshpit",
-    description: "Mshpit is a social concert diary for remembering live shows, sharing honest fan reviews, and discovering music through people.",
+    description: "Mshpit is a live-music social network for remembering shows, sharing honest fan experiences, and discovering music through people.",
     intro: "Mshpit is built around the part of music that streaming cannot capture: being there. It gives concert fans one place to log their show history, preserve the feeling of a night, and discover artists, venues, and future shows through other people.",
     note: "Mshpit is an independent fan community. Artist, venue, and ticket-provider names identify the subject of a page and do not imply endorsement.",
     sections: [
       {
-        heading: "A concert diary with a community around it",
-        paragraphs: ["Members can record the date, artist, venue, rating, review, and media from a concert. Those memories build a personal diary while contributing to artist and concert archives that help other fans understand what a live show actually felt like."],
+        heading: "A live-music history built with other fans",
+        paragraphs: ["Members can record the date, artist, venue, rating, review, and media from a concert. Those memories build a personal live-music history while contributing to artist and concert communities that help other fans understand what a show actually felt like."],
       },
       {
         heading: "Discovery through real live-music taste",

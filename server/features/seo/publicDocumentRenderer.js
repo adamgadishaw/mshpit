@@ -1,3 +1,5 @@
+import { LANDING_IDENTITY_COPY, landingKicker } from "../../../src/domain/landingPresentation.mjs";
+
 const esc = (value) => String(value ?? "")
   .replace(/&/g, "&amp;")
   .replace(/</g, "&lt;")
@@ -157,11 +159,11 @@ function homeMain(document) {
   </li>`).join("");
   const posts = document.posts.map((post) => compactPost(post)).join("");
   return `<main id="main">
-    <section class="hero">
-      <p class="eyebrow">Your life's musical journey</p>
-      <h1>Remember every show.<br /><em>Find your people.</em></h1>
-      <p class="hero-copy">Log the nights that changed you, share what it really felt like to be there, and discover live music through people whose taste you trust.</p>
-      <div class="actions"><a class="button primary" href="/signup">Join Mshpit</a><a class="button" href="/events">Browse upcoming concerts</a></div>
+    <section class="hero landing-hero">
+      <p class="eyebrow">${esc(landingKicker(false))}</p>
+      <h1>${esc(LANDING_IDENTITY_COPY.headline)}<br /><em>${esc(LANDING_IDENTITY_COPY.headlineAccent)}</em></h1>
+      <p class="hero-copy">${esc(LANDING_IDENTITY_COPY.body)}</p>
+      <div class="actions"><a class="button primary" href="/signup">${esc(LANDING_IDENTITY_COPY.signupAction)}</a><a class="button" href="/feed">${esc(LANDING_IDENTITY_COPY.browseAction)}</a></div>
     </section>
     ${artists ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">In the pit now</p><h2>Artists worth exploring</h2></div><a href="/artists">Browse all artists</a></div><ul class="artist-grid">${artists}</ul></section>` : ""}
     ${posts ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">From the crowd</p><h2>Nights people remember</h2></div><a href="/feed">Open the feed</a></div><div class="post-list">${posts}</div></section>` : ""}
@@ -251,7 +253,7 @@ function memberMain(document) {
       ${member.bio ? `<div class="bio">${paragraphs(member.bio)}</div>` : ""}
       <dl class="stats"><div><dt>Posts</dt><dd>${esc(stats.postCount)}</dd></div><div><dt>Followers</dt><dd>${esc(stats.followerCount)}</dd></div></dl>
     </section>
-    ${posts ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">Concert diary</p><h2>Shared nights</h2></div></div><div class="post-list">${posts}</div></section>` : ""}
+    ${posts ? `<section class="section"><div class="section-heading"><div><p class="eyebrow">Live-music history</p><h2>Shared nights</h2></div></div><div class="post-list">${posts}</div></section>` : ""}
   </main>`;
 }
 
@@ -444,7 +446,12 @@ const STYLES = `
   .memorial{display:grid;grid-template-columns:auto 1fr;gap:1.25rem;background:linear-gradient(135deg,#211b16,#11100e);padding-left:clamp(1rem,3vw,2rem);padding-right:clamp(1rem,3vw,2rem)}.memorial-mark{display:grid;place-items:center;width:3.2rem;height:3.2rem;border:1px solid var(--gold);border-radius:50%;color:var(--gold);font:900 .52rem/1.05 ui-monospace,monospace;letter-spacing:.06em;text-align:center}.memorial h2{margin:0;font:800 clamp(2rem,5vw,3.6rem)/1.05 Georgia,serif}.memorial h3{margin:1.5rem 0 .5rem;font:800 1rem/1.2 ui-sans-serif,system-ui}.memorial-date{margin:.65rem 0;color:var(--muted)}.memorial-copy,.memorial-thanks{max-width:780px;color:#ddd4c8;font-size:1.08rem}.memorial-legacy ul{display:grid;gap:.4rem;max-width:780px;margin:.5rem 0 0;padding-left:1.2rem;color:#ddd4c8}.memorial-thanks p{margin:.5rem 0}.memorial-source{margin:1.2rem 0 0;color:var(--muted);font-size:.82rem}
   .profile-hero h1{max-width:850px}.profile-hero .bio{max-width:760px;margin-top:1.6rem;color:#d8d0c5;font-size:1.1rem}.stats{display:flex;flex-wrap:wrap;gap:2.4rem;margin:2rem 0 0}.stats div{display:flex;flex-direction:column-reverse}.stats dt{color:var(--muted);font-size:.75rem;text-transform:uppercase;letter-spacing:.1em}.stats dd{margin:0;font:900 2rem/1 Georgia,serif}.stats small{font-size:.8rem;color:var(--muted)}.event-list{list-style:none;padding:0;margin:0}.event-list li{display:grid;grid-template-columns:7rem 1fr auto;align-items:center;gap:1rem;padding:1.1rem 0;border-top:1px solid var(--line)}.event-list time{display:grid;gap:.2rem}.event-list time small,.archive-score{color:var(--muted);font-size:.75rem}.event-list h2,.event-list h3,.event-list p{margin:0}.event-list h2{font-size:1rem}.pill{border:1px solid var(--rose);border-radius:99px;padding:.25rem .55rem;color:var(--rose);font-size:.7rem}.event-facts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1rem;margin:2.5rem 0 0}.event-facts div{border-top:1px solid var(--line);padding-top:.8rem}.event-facts dt{color:var(--muted);font-size:.7rem;letter-spacing:.1em;text-transform:uppercase}.event-facts dd{margin:.25rem 0 0;font-weight:800}.ticket-action{display:flex;align-items:center;gap:1rem;margin-top:2rem}.ticket-action small{color:var(--muted)}.updates{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.8rem}.update p{margin:0}.update time{display:block;margin-top:1rem;color:var(--muted);font-size:.8rem}.member-hero{position:relative}.avatar{border:1px solid var(--line);border-radius:50%;object-fit:cover;margin-bottom:1.2rem}.avatar-fallback{display:grid;place-items:center;background:#241d12;color:var(--gold);font:900 3rem Georgia,serif}.comments ol{list-style:none;padding:0;margin:0}.comment{padding:1.2rem 0;border-top:1px solid var(--line)}.comment-reply{margin-left:clamp(1rem,5vw,4rem);border-left:2px solid var(--line);padding-left:1rem}.comment p{max-width:760px}.comment-meta{display:flex;justify-content:space-between;gap:1rem}.comment-meta time{color:var(--muted);font-size:.8rem}.empty-state{max-width:760px}.directory-grid{grid-template-columns:repeat(4,minmax(0,1fr))}
   .site-footer{max-width:var(--max);margin:auto;padding:2rem 1.3rem 3rem;display:flex;flex-wrap:wrap;justify-content:space-between;gap:1rem;color:var(--muted);font-size:.8rem}.site-footer div{display:flex;flex-wrap:wrap;gap:1rem}
+  .site-header .brand{color:#fff;font-size:1.35rem;letter-spacing:.25em}.site-header nav{align-items:center}.site-header nav a:last-child{display:inline-block;border:1px solid #6e675f;border-radius:999px;padding:.55rem .9rem;text-decoration:none;font-weight:800}
+  .landing-hero{position:relative;isolation:isolate;display:flex;min-height:min(720px,calc(100dvh - 5.5rem));max-width:none;margin-top:1.25rem;padding:clamp(3rem,8vw,6.5rem) clamp(1.4rem,6vw,5rem);flex-direction:column;justify-content:center;overflow:hidden;border:1px solid #423a34;border-radius:2rem;background:radial-gradient(circle at 78% 24%,rgba(255,145,72,.18),transparent 27rem),radial-gradient(circle at 18% 82%,rgba(44,128,133,.34),transparent 32rem),linear-gradient(145deg,#161b20,#0a0b0d 58%,#21150e)}
+  .landing-hero::after{content:"";position:absolute;z-index:-1;inset:0;background:linear-gradient(90deg,rgba(5,6,8,.18),rgba(5,6,8,.04) 55%,rgba(5,6,8,.38));pointer-events:none}.landing-hero .eyebrow{display:flex;align-items:center;gap:.75rem;color:#f2a65a;letter-spacing:.26em}.landing-hero .eyebrow::before{content:"";width:2.25rem;height:2px;border-radius:2px;background:#ff9148;box-shadow:0 0 14px rgba(255,145,72,.7)}
+  .landing-hero h1{max-width:800px;font-family:ui-rounded,"Arial Rounded MT Bold",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;font-size:clamp(3rem,7vw,5.4rem);font-style:normal;line-height:.98;letter-spacing:-.045em;text-shadow:0 2px 22px rgba(0,0,0,.55)}.landing-hero h1 em{color:#ff9148;font-style:normal;font-weight:900}.landing-hero .hero-copy{max-width:610px;color:#eee8df;font-size:clamp(1rem,2vw,1.25rem);line-height:1.55}.landing-hero .button{min-width:13rem;padding:1rem 1.35rem;text-align:center}.landing-hero .button.primary{background:#ff9148;border-color:#ffb07a;color:#160b05;box-shadow:0 10px 30px rgba(255,145,72,.2)}
   @media(max-width:900px){.directory-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:760px){nav a:nth-child(n+4){display:none}.artist-grid,.updates,.directory-grid{grid-template-columns:1fr}.media-grid{grid-template-columns:1fr}.event-list li{grid-template-columns:5.5rem 1fr}.event-list .pill,.archive-score{grid-column:2}.event-facts{grid-template-columns:1fr}.ticket-action{align-items:flex-start;flex-direction:column}.section-heading{align-items:start}.profile-hero h1,.hero h1,.directory-hero h1{font-size:clamp(3rem,15vw,5rem)}}
+  @media(max-width:760px){.site-header nav a:not(:last-child){display:none}.site-header nav a:last-child{display:inline-block}.landing-hero{min-height:calc(100dvh - 5.5rem);margin-top:.75rem;border-radius:1.5rem;text-align:center}.landing-hero .eyebrow,.landing-hero .actions{justify-content:center}.landing-hero .hero-copy{margin-left:auto;margin-right:auto}.landing-hero .button{width:100%}.landing-hero h1{font-size:clamp(2.8rem,13vw,4.4rem)}}
 `;
 
 export function renderPublicDocumentShell(document) {
@@ -456,7 +463,7 @@ export function renderPublicDocumentShell(document) {
   return `<style data-mshpit-public-document>${STYLES}</style>
     <div class="seo-document">
       <a class="skip" href="#main">Skip to content</a>
-      <header class="site-header"><div><a class="brand" href="/" aria-label="Mshpit home">Mshpit</a><nav aria-label="Main navigation"><a href="/artists">Artists</a><a href="/events">Events</a><a href="/venues">Venues</a><a href="/concerts">Concerts</a><a href="/discover">Discover</a><a href="/search">Search</a><a href="/login">Log in</a></nav></div></header>
+      <header class="site-header"><div><a class="brand" href="/" aria-label="Mshpit home">MSHPIT</a><nav aria-label="Main navigation"><a href="/artists">Artists</a><a href="/events">Events</a><a href="/venues">Venues</a><a href="/concerts">Concerts</a><a href="/discover">Discover</a><a href="/search">Search</a><a href="/login">Log in</a></nav></div></header>
       ${main}
       <footer class="site-footer"><span>© ${new Date().getUTCFullYear()} Mshpit</span><div><a href="/about">About</a><a href="/contact">Contact</a><a href="/community-guidelines">Guidelines</a><a href="/ratings-methodology">Ratings</a><a href="/privacy">Privacy</a><a href="/terms">Terms</a><a href="/support">Support</a></div></footer>
     </div>`;

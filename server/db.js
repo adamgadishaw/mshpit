@@ -23,6 +23,7 @@ import { quarantineUnsafeLegacyImages } from "./publicMedia.js";
 import { ensurePostMediaCapacity, POST_MEDIA_MAX_POSITION } from "./postMediaSchema.js";
 import { registerPitSqliteFunctions } from "./sqliteFunctions.js";
 import { MUSIC_PLAYER_ENABLED } from "../src/domain/musicPlayerAvailability.mjs";
+import { ensureShowSchema } from "./features/shows/showSchema.js";
 
 export const artistSearchKey = (value) => String(value || "")
   .normalize("NFKD")
@@ -1630,6 +1631,7 @@ try {
     if (!present) db.exec(stmt);
   }
   ensurePostMediaCapacity(db);
+  ensureShowSchema(db);
   ensureArtistPublicSlugs(db);
   db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_artists_public_slug
     ON artists(lower(public_slug)) WHERE public_slug IS NOT NULL AND public_slug<>''`);

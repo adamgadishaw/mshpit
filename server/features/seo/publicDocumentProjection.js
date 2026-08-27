@@ -12,6 +12,7 @@ import {
 import { projectedTourDateTicketUrl } from "../../../src/domain/ticketLinks.mjs";
 import { projectArtistGenre } from "../../../src/domain/genre.mjs";
 import { SUPPORT_EMAIL } from "../../../src/domain/contact.mjs";
+import { LANDING_IDENTITY_COPY } from "../../../src/domain/landingPresentation.mjs";
 import { postMediaStateByPost } from "../../mediaAssets.js";
 import { verifiedFinalizedLegacyMedia } from "../../mediaLegacyFinalize.js";
 import { safeOwnedReadyMediaUrl } from "../../publicMedia.js";
@@ -647,7 +648,7 @@ export function createPublicDocumentProjector({ database, origin = DEFAULT_ORIGI
       // the marketing homepage. The interactive landing reel has its own
       // landing_showcase publication gate; this document stays text-only.
       const posts = (raw.posts || []).map((row) => postCard(row, [], publicPaths, { textLimit: 420 }));
-      const description = "Log the concerts that shape your story, share the nights you were there, and discover live music through people whose taste you trust.";
+      const description = LANDING_IDENTITY_COPY.body;
       return Object.freeze({
         kind: "home",
         siteName: SITE_NAME,

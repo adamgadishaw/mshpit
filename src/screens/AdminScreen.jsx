@@ -16,6 +16,7 @@ import { staffScopeFor } from "../domain/staffReadCoordinator.mjs";
 import { readAdminHealth } from "../features/admin/services/adminHealthApi.mjs";
 import { listSuggestions, updateSuggestionStatus } from "../features/suggestions/suggestionService";
 import { useArtistMemorialAdmin } from "../features/artistMemorials/useArtistMemorial";
+import useAppActive from "../lib/useAppActive";
 
 const ADMIN_ONLY_TABS = new Set([
   "overview", "analytics", "catalog", "email", "badges", "suggestions", "memorials", "requests",
@@ -321,6 +322,7 @@ function SuggestionsPanel({ session }) {
 const roleColor = (r) => (r === "admin" ? colors.magenta : r === "moderator" ? colors.good : r === "artist" ? colors.amber : colors.textDim);
 
 export default function AdminScreen({ onClose }) {
+  const appActive = useAppActive();
   const {
     requests, users, adminMembers, adminMemberDirectory, feed, removedIds, reports, moderationConsole, session,
     comments, fanClubMsgs, lounge,
@@ -411,7 +413,13 @@ export default function AdminScreen({ onClose }) {
   const [seedRuns, setSeedRuns] = useState([]);
   const refreshSeed = () => catalogSeedStatus().then((s) => s && setSeedJob(s));
   const refreshRuns = () => catalogSeedRuns().then(setSeedRuns);
-  useEffect(() => { if (activeTab === "catalog") { refreshCatalog(); refreshSeed(); refreshRuns(); } }, [activeTab]);
+  useEffect(() => {
+    if (appActive && activeTab === "catalog") {
+      refreshCatalog();
+      refreshSeed();
+      refreshRuns();
+    }
+  }, [activeTab, appActive]);
   useEffect(() => {
     if (activeTab !== "members" || !iAmAdmin) return;
     let cancelled = false;
@@ -449,10 +457,10 @@ export default function AdminScreen({ onClose }) {
     } catch { return false; }
   };
   useEffect(() => {
-    if (activeTab !== "catalog" || !seedJob?.running) return;
+    if (!appActive || activeTab !== "catalog" || !seedJob?.running) return undefined;
     const id = setInterval(refreshSeed, 3000);
     return () => clearInterval(id);
-  }, [activeTab, seedJob?.running]);
+  }, [activeTab, appActive, seedJob?.running]);
   // When a job stops running, pull the durable record of what it actually did.
   const wasRunning = useRef(false);
   useEffect(() => {

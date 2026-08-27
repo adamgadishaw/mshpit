@@ -50,7 +50,7 @@ function ProfileMediaTile({ item, index, onOpen }) {
   );
 }
 
-// Public member profile: identity, concert diary, media, plans, and posts.
+// Public member profile: musical identity, live history, media, plans, and posts.
 export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenProfile, onOpenArtist, onOpenVenue, onManageProfile, onMessage, onReport, onEditPost, onOpenPhotos, onRemoveMyPostTag, onOpenFollowList, onOpenBadges }) {
   const { session, userById, logsByUser, isFollowing, follow, unfollow, followerCount, followingCount, goingFor, userBadges, sharedShows, loadUser, isBlocked, blockUser, unblockUser, userPoints, userAchievements, loadRewards, deleteOwnPost } = useStore();
   const profileScope = accountTargetScope(session?.id, `profile:${userId || ""}`);
@@ -158,7 +158,8 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenProfi
     if (result?.ok) history.removePost(postId);
     return result;
   };
-  // "Crossed paths", shows you've both been to (and artists you've both seen).
+  // Shared attendance: shows both accounts intentionally logged, never a claim
+  // that the people met or were physically near each other at the venue.
   const crossed = !isSelf && session ? sharedShows(user.id) : { shows: [], artists: [] };
   const match = !isSelf && session ? tasteMatch(session, user) : null;
 
@@ -273,7 +274,7 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenProfi
           <Icon name="chevron-right" size={16} color={colors.textDim} />
         </Pressable>
 
-        {/* Crossed paths, the concert-overlap tracker. */}
+        {/* Shared attendance, the concert-overlap tracker. */}
         {!isSelf && session && (crossed.shows.length > 0 || crossed.artists.length > 0) && (
           <Pressable
             style={styles.crossed}
@@ -283,7 +284,7 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenProfi
             {crossed.shows.length > 0 ? (
               <View style={{ flex: 1 }}>
                 <Text style={styles.crossedTitle}>
-                  You've crossed paths at <Text style={styles.crossedNum}>{crossed.shows.length}</Text> {crossed.shows.length === 1 ? "show" : "shows"}
+                  You both logged <Text style={styles.crossedNum}>{crossed.shows.length}</Text> {crossed.shows.length === 1 ? "show" : "shows"}
                 </Text>
                 <Text style={styles.crossedSub} numberOfLines={1}>
                   {crossed.shows.slice(0, 3).map((s) => s.artist).join(" · ")}{crossed.shows.length > 3 ? " …" : ""}

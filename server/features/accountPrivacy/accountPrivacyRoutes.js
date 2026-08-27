@@ -115,6 +115,34 @@ export function accountPrivacyRoutes({
         listeningHistory: database.prepare("SELECT title,artist,url,video_id,provider,source_id,created_at FROM plays WHERE user_id=? ORDER BY created_at DESC LIMIT 300").all(user.id)
           .map((row) => ({ title: row.title, artist: row.artist, url: row.url, videoId: row.video_id, provider: row.provider, sourceId: row.source_id, at: row.created_at })),
         going: database.prepare("SELECT artist,venue,city,date FROM going WHERE user_id=?").all(user.id),
+        attendance: database.prepare(`SELECT a.show_id,s.canonical_key,
+          COALESCE(a.legacy_concert_key,
+            (SELECT sa.alias_value FROM show_aliases sa
+              WHERE sa.show_id=s.id AND sa.alias_type='legacy_concert_key'
+              ORDER BY sa.alias_value LIMIT 1),s.canonical_key) AS preferred_key,
+          COALESCE(NULLIF(a.legacy_artist,''),s.artist) AS artist,
+          COALESCE(NULLIF(a.legacy_venue,''),s.venue) AS venue,
+          COALESCE(NULLIF(a.legacy_city,''),s.city) AS city,
+          COALESCE(NULLIF(a.legacy_date,''),s.date) AS date,
+          a.state,a.visibility,a.checked_in_at,a.created_at,a.updated_at,
+          EXISTS (SELECT 1 FROM show_attendance_verifications v
+            WHERE v.show_id=a.show_id AND v.user_id=a.user_id AND v.revoked_at IS NULL) AS verified
+          FROM show_attendance a JOIN shows s ON s.id=a.show_id
+          WHERE a.user_id=? ORDER BY a.updated_at DESC,a.show_id`).all(user.id).map((row) => ({
+            showId: row.show_id,
+            key: row.preferred_key,
+            canonicalKey: row.canonical_key,
+            artist: row.artist,
+            venue: row.venue,
+            city: row.city,
+            date: row.date,
+            state: row.state,
+            visibility: row.visibility,
+            checkedInAt: row.checked_in_at || null,
+            verified: !!row.verified,
+            createdAt: row.created_at,
+            updatedAt: row.updated_at,
+          })),
         ratings: database.prepare("SELECT kind,ref,rating FROM ratings WHERE user_id=?").all(user.id),
         venueReviews: database.prepare("SELECT id,venue_key,rating,text,photos,removed,created_at FROM venue_reviews WHERE user_id=? ORDER BY created_at DESC").all(user.id)
           .map((row) => ({ id: row.id, venueKey: row.venue_key, rating: row.rating, text: row.text, photos: parseJson(row.photos, []), removed: !!row.removed, createdAt: row.created_at })),

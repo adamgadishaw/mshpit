@@ -78,7 +78,7 @@
   },
   "legacyApi": {
     "file": "server/api.js",
-    "maxInlineRoutes": 164,
+    "maxInlineRoutes": 161,
     "allowedInlineRoutes": [
       "DELETE /api/admin/catalog/seed",
       "DELETE /api/admin/email/templates/:key",
@@ -127,7 +127,6 @@
       "GET /api/feed",
       "GET /api/feed/for-you",
       "GET /api/feed/preferences",
-      "GET /api/going/:key/attendees",
       "GET /api/health",
       "GET /api/landing/media",
       "GET /api/lounges/:key/messages",
@@ -136,7 +135,6 @@
       "GET /api/me/blocked",
       "GET /api/me/fanclubs",
       "GET /api/me/following",
-      "GET /api/me/going",
       "GET /api/me/notifications",
       "GET /api/me/plays",
       "GET /api/me/threads",
@@ -211,7 +209,6 @@
       "POST /api/feed/preferences/:postId",
       "POST /api/feed/revalidate",
       "POST /api/forgot",
-      "POST /api/going",
       "POST /api/login",
       "POST /api/logout",
       "POST /api/lounges/:key/messages",
@@ -488,10 +485,6 @@
     "src/screens/NotificationsScreen.jsx": {
       "count": 1,
       "fingerprint": "d3744694ee29d3ccd612"
-    },
-    "src/screens/ShowScreen.jsx": {
-      "count": 2,
-      "fingerprint": "c923239e8695f414f7b1"
     },
     "src/screens/UnsubscribeScreen.jsx": {
       "count": 1,

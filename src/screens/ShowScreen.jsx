@@ -13,13 +13,27 @@ import SmartImage from "../components/SmartImage";
 import { useStore } from "../store";
 import { showDateMs, fmtCountdown } from "../lib/showTime";
 import { formatDate } from "../domain/dates.mjs";
-import { api } from "../lib/api";
-import { normalizeLoungeMeta, normalizeShowAttendees, showSocialIdentity, showSocialView } from "../domain/showSocial.mjs";
-import { attendanceTotalForView, normalizeAttendanceSnapshot } from "../domain/showAttendance.mjs";
+import { normalizeShowAttendees, showSocialIdentity, showSocialView } from "../domain/showSocial.mjs";
+import {
+  showDocumentIdentity, showLifecycleView, showPresentationModel,
+} from "../domain/showDocument.mjs";
+import {
+  CROWD_SCOPES, attendanceTotalForView, viewerGoingForCrowd,
+} from "../domain/showAttendance.mjs";
 import { hasPostDiscussion, showDiscussionCount } from "../domain/showDiscussion.mjs";
 import { archiveCoverMedia, archiveReviewMedia } from "../domain/artistEventArchive.mjs";
 import { useArtistEventReviews } from "../features/artistEvents/useArtistEventArchive";
+import { readShowCrowdAttendance, readShowDocument, readShowLoungeMeta } from "../features/showSocial/showSocialService";
+import ShowAttendanceControls from "../features/showSocial/ShowAttendanceControls";
 import { openTicketLink } from "../lib/ticketLinks";
+import { ENABLE_CANONICAL_SHOW_READ } from "../config/runtime.mjs";
+
+const CROWD_FILTER_LABELS = Object.freeze({
+  everyone: "Everyone",
+  following: "Following",
+  friends: "Friends",
+});
+const ATTENDANCE_STATE_LABELS = Object.freeze({ going: "Going", here: "Here", went: "Went" });
 
 // The "performance page" - ONE artist, ONE venue, ONE date. This is the night
 // itself, not the room (that's the venue page): a ticket-style hero owns the
@@ -31,27 +45,46 @@ import { openTicketLink } from "../lib/ticketLinks";
 export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenProfile, onOpenArtist, onOpenArchive, onOpenVenue, onOpenLounge, onOpenPost, onOpenPhotos, onRequireAuth }) {
   const {
     venueCoord, venuePhotos, venuePhotoState, loadVenuePhotos,
-    session, concertKey, isGoing, isGoingBusy, toggleGoing, attendeesFor, loungeFor,
+    session, concertKey, isGoing, isGoingBusy, toggleGoing, loungeFor,
   } = useStore();
-  // Normalize the shapes this page can be handed: calendar/tour rows carry
-  // `place` instead of `venue`, and often no city, score, or setlist.
-  const venue = log.venue || log.place || "Venue TBA";
-  const city = log.city || (log.place && log.venue ? log.place : "") || "";
-  const artist = log.artist || "Unknown artist";
+  // Keep the legacy identity stable while a canonical read hydrates trusted
+  // provider fields. Existing URLs and member-created Show inputs remain valid.
+  const legacyVenue = log.venue || log.place || "Venue TBA";
+  const legacyCity = log.city || (log.place && log.venue ? log.place : "") || "";
+  const legacyArtist = log.artist || "Unknown artist";
+  const legacyNorm = { ...log, artist: legacyArtist, venue: legacyVenue, city: legacyCity };
+  const legacyKey = concertKey(legacyNorm);
+  const accountId = session?.id || null;
+  const [showDocumentRead, setShowDocumentRead] = useState(null);
+  const documentIdentity = showDocumentIdentity(legacyKey, accountId);
+  const trustedShow = ENABLE_CANONICAL_SHOW_READ
+    && showDocumentRead?.identity === documentIdentity
+    && showDocumentRead.status === "ready"
+    ? showDocumentRead.show
+    : null;
+  const venue = trustedShow?.venue || legacyVenue;
+  const city = trustedShow?.city || legacyCity;
+  const artist = trustedShow?.artist || legacyArtist;
   const overall = typeof log.overall === "number" ? log.overall : null;
   const setlist = Array.isArray(log.setlist) ? log.setlist : [];
-  const norm = { ...log, artist, venue, city };
+  const norm = {
+    ...log,
+    artist,
+    artistKey: trustedShow?.artistKey || log.artistKey,
+    venue,
+    venueKey: trustedShow?.venueKey || log.venueKey,
+    city,
+    date: trustedShow?.localDate || trustedShow?.date || log.date,
+  };
   const discussionCount = showDiscussionCount(log.comments);
   const discussionAvailable = hasPostDiscussion(norm);
   const coord = venueCoord(venue);
   const photos = venuePhotos(venue);
   const photoState = venuePhotoState(venue);
-  const key = concertKey(norm);
+  const key = legacyKey;
   const going = isGoing(key);
   const goingBusy = isGoingBusy(key);
-  const localAttendees = attendeesFor(key);
   const localLoungeCount = loungeFor(key).length;
-  const accountId = session?.id || null;
   const archiveShowKey = log.archiveShowKey || null;
   const archiveCover = archiveCoverMedia(log.cover);
   const {
@@ -69,23 +102,52 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
   const archiveReviewData = archiveReviewResource.data || {};
   const archiveReviews = Array.isArray(archiveReviewData.reviews) ? archiveReviewData.reviews : [];
   const [archiveLoadMoreFailed, setArchiveLoadMoreFailed] = useState(false);
+  const [crowdScope, setCrowdScope] = useState("everyone");
   const [socialRead, setSocialRead] = useState(null);
+  const [attendanceRefreshVersion, setAttendanceRefreshVersion] = useState(0);
+  const socialIdentity = showSocialIdentity(key, accountId);
+  const scopedSocialRead = socialRead?.identity === socialIdentity && socialRead?.scope === crowdScope
+    ? socialRead
+    : null;
+  const readMatches = scopedSocialRead?.status === "ready";
+  // The privacy-filtered endpoint is the only source of other people's
+  // identities. In Everyone, a pending local write owns the optimistic viewer
+  // row; otherwise the canonical response wins so Here/Went do not disappear
+  // merely because the legacy local projection contains only Going.
+  const serverViewerVisibleInScope = crowdScope === "everyone"
+    && readMatches
+    && scopedSocialRead.serverViewerGoing === true;
+  const viewerVisibleInScope = viewerGoingForCrowd({
+    scope: crowdScope,
+    localGoing: going,
+    mutationPending: goingBusy,
+    authoritativeReady: readMatches,
+    serverViewerGoing: scopedSocialRead?.serverViewerGoing,
+  });
+  const crowdViewer = session && readMatches && scopedSocialRead.viewerAttendance
+    ? {
+        ...session,
+        state: scopedSocialRead.viewerAttendance.state,
+        verifiedAttendance: scopedSocialRead.viewerAttendance.verified === true,
+      }
+    : session;
   const social = showSocialView({
-    read: socialRead,
+    read: scopedSocialRead,
     concertKey: key,
     accountId,
-    localAttendees,
+    localAttendees: [],
     localMessageCount: localLoungeCount,
-    viewer: session,
-    viewerGoing: going,
+    viewer: crowdViewer,
+    viewerGoing: viewerVisibleInScope,
   });
-  const readMatches = socialRead?.identity === showSocialIdentity(key, accountId) && socialRead?.status === "ready";
+  const crowdReadFailed = scopedSocialRead?.status === "error";
   const attendeeTotal = attendanceTotalForView({
-    total: readMatches ? socialRead.attendeeTotal : undefined,
-    serverViewerGoing: readMatches ? socialRead.serverViewerGoing : going,
-    viewerGoing: going,
+    total: readMatches ? scopedSocialRead.attendeeTotal : undefined,
+    serverViewerGoing: serverViewerVisibleInScope,
+    viewerGoing: viewerVisibleInScope,
     visibleCount: social.attendees.length,
   });
+  const verifiedAttendeeCount = readMatches ? scopedSocialRead.verifiedAttendeeCount || 0 : 0;
   const renderedAttendeeCount = Math.min(30, social.attendees.length);
   const hiddenAttendeeCount = Math.max(0, attendeeTotal - renderedAttendeeCount);
   useEffect(() => {
@@ -95,6 +157,36 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
   useEffect(() => {
     setArchiveLoadMoreFailed(false);
   }, [archiveShowKey]);
+
+  useEffect(() => {
+    if (!accountId) setCrowdScope("everyone");
+  }, [accountId]);
+
+  useEffect(() => {
+    if (!ENABLE_CANONICAL_SHOW_READ || !key) {
+      setShowDocumentRead(null);
+      return undefined;
+    }
+    const controller = new AbortController();
+    const identity = showDocumentIdentity(key, accountId);
+    setShowDocumentRead({ identity, status: "loading", show: null });
+    readShowDocument({ concertKey: key, accountId, signal: controller.signal })
+      .then((show) => {
+        if (controller.signal.aborted) return;
+        setShowDocumentRead({
+          identity,
+          status: show ? "ready" : "unavailable",
+          show,
+        });
+      })
+      .catch(() => {
+        if (controller.signal.aborted) return;
+        // A legacy/member-created key may intentionally have no public canonical
+        // document. Preserve the existing ShowScreen instead of surfacing noise.
+        setShowDocumentRead({ identity, status: "unavailable", show: null });
+      });
+    return () => controller.abort();
+  }, [key, accountId]);
 
   const loadMoreArchiveReviewsWithFeedback = async () => {
     setArchiveLoadMoreFailed(false);
@@ -112,45 +204,66 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
     if (!key) return undefined;
     const controller = new AbortController();
     const identity = showSocialIdentity(key, accountId);
-    setSocialRead({ identity, status: "loading", attendees: null, attendeeTotal: null, serverViewerGoing: false, loungeMeta: null });
+    setSocialRead({
+      identity,
+      scope: crowdScope,
+      status: "loading",
+      attendees: [],
+      attendeeTotal: null,
+      serverViewerGoing: false,
+      viewerAttendance: null,
+      loungeMeta: null,
+    });
     Promise.allSettled([
-      api(`/api/going/${encodeURIComponent(key)}/attendees`, {
+      readShowCrowdAttendance({
+        concertKey: key,
+        scope: crowdScope,
+        accountId,
         signal: controller.signal,
-        silent: true,
-        context: "Loading show attendees",
       }),
-      api(`/api/lounges/${encodeURIComponent(key)}/meta`, {
+      readShowLoungeMeta({
+        concertKey: key,
+        accountId,
         signal: controller.signal,
-        silent: true,
-        context: "Loading concert-lounge details",
       }),
     ]).then(([attendeeResult, loungeResult]) => {
       if (controller.signal.aborted) return;
       const attendance = attendeeResult.status === "fulfilled"
-        ? normalizeAttendanceSnapshot(attendeeResult.value)
+        ? attendeeResult.value
         : null;
+      // Older servers do not understand narrowed Crowd scopes and normalize to
+      // Everyone. Never render that broader response beneath Following/Friends.
+      const attendanceReady = !!attendance && attendance.scope === crowdScope;
       setSocialRead({
         identity,
-        status: "ready",
-        attendees: attendance ? normalizeShowAttendees(attendance.attendees) : null,
-        attendeeTotal: attendance?.total ?? null,
-        serverViewerGoing: attendance?.viewerGoing ?? false,
-        loungeMeta: loungeResult.status === "fulfilled" ? normalizeLoungeMeta(loungeResult.value) : null,
+        scope: crowdScope,
+        status: attendanceReady ? "ready" : "error",
+        attendees: attendanceReady ? normalizeShowAttendees(attendance.attendees) : [],
+        attendeeTotal: attendanceReady ? attendance.total : null,
+        serverViewerGoing: attendanceReady ? attendance.viewerGoing : false,
+        viewerAttendance: attendanceReady ? attendance.viewerAttendance : null,
+        verifiedAttendeeCount: attendanceReady ? attendance.verifiedAttendeeCount : 0,
+        loungeMeta: loungeResult.status === "fulfilled" ? loungeResult.value : null,
       });
     });
     return () => controller.abort();
-  }, [key, accountId]);
+  }, [key, accountId, crowdScope, goingBusy, attendanceRefreshVersion]);
 
   // Upcoming vs happened decides the whole page. A show with no parseable date
   // but a score is treated as happened; no date and no score reads as upcoming.
-  const targetMs = showDateMs(log.date);
-  const upcoming = targetMs != null ? targetMs - Date.now() > -86400000 : overall == null;
+  const lifecycleView = showLifecycleView(
+    trustedShow,
+    showDateMs(log.date),
+    overall != null,
+  );
+  const targetMs = lifecycleView.targetMs;
+  const presentation = showPresentationModel(lifecycleView);
   const [nowTick, setNowTick] = useState(() => Date.now());
   useEffect(() => {
-    if (!upcoming || targetMs == null) return;
+    if (!presentation.showCountdown || targetMs == null) return;
     const id = setInterval(() => setNowTick(Date.now()), 1000);
     return () => clearInterval(id);
-  }, [upcoming, targetMs]);
+  }, [presentation.showCountdown, targetMs]);
   const msLeft = targetMs != null ? targetMs - nowTick : null;
 
   // Setlists are spoiler-gated while a show sits inside the artist's active tour
@@ -159,16 +272,16 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
   const [revealed, setRevealed] = useState(!log.inTourWindow);
   return (
     <View style={styles.wrap}>
-      <ScreenHeader kicker={upcoming ? "UPCOMING PERFORMANCE" : "PERFORMANCE"} title={artist} onBack={onClose} />
+      <ScreenHeader kicker={presentation.screenKicker} title={artist} onBack={onClose} />
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         {/* Ticket-style hero: this is what makes a NIGHT read differently from
             a venue. Artist headline, then a perforated stub strip carrying the
             room + the date, like the ticket you'd have kept. */}
         <View style={styles.ticket}>
-          <Text style={styles.ticketKicker}>{upcoming ? "ONE NIGHT · NOT YET PLAYED" : "ONE NIGHT ONLY"}</Text>
+          <Text style={styles.ticketKicker}>{presentation.ticketKicker}</Text>
           <Pressable
-            onPress={() => archiveShowKey ? onOpenArchive?.(artist, log.artistKey || null) : onOpenArtist?.(artist)}
+            onPress={() => archiveShowKey ? onOpenArchive?.(artist, norm.artistKey || null) : onOpenArtist?.(artist)}
             accessibilityRole="button"
             accessibilityLabel={archiveShowKey ? `Open every recorded ${artist} night` : `Open ${artist}'s profile`}
           >
@@ -194,11 +307,11 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
             <View style={styles.stubDivider} />
             <View style={{ alignItems: "flex-end" }}>
               <Text style={styles.stubLabel}>THE DATE</Text>
-              <Text style={styles.date}>{formatDate(log.date, log.date || "TBA")}</Text>
+              <Text style={styles.date}>{formatDate(norm.date, norm.date || "TBA")}</Text>
               {log.soldOut ? <Text style={styles.soldOut}>SOLD OUT</Text> : null}
             </View>
           </View>
-          {upcoming && msLeft != null && (
+          {presentation.showCountdown && msLeft != null && (
             <View style={styles.countdownStrip}>
               <Icon name="clock" size={14} color={colors.amber} />
               <Text style={styles.countdownTxt}>{msLeft <= 0 ? "TONIGHT" : fmtCountdown(msLeft)}</Text>
@@ -239,7 +352,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
 
         {/* A night that happened gets its community score. An upcoming night
             gets tickets instead: never a fabricated 0.0. */}
-        {!upcoming && overall != null && (
+        {presentation.showPostEvent && overall != null && (
           <View style={styles.scoreCard}>
             <View style={{ alignItems: "center", marginBottom: 14 }}>
               <Text style={styles.bigScore}>{overall.toFixed(1)}</Text>
@@ -258,22 +371,38 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
             </Text>
           </View>
         )}
-        {!upcoming && overall == null && (
+        {presentation.showPostEvent && overall == null && (
           <View style={styles.scoreCard}>
             <Text style={styles.noScoreTitle}>No score yet</Text>
             <Text style={styles.note}>Nobody has logged this night. Were you there? Yours would be the first review.</Text>
           </View>
         )}
-        {upcoming && log.ticketUrl ? (
+        {presentation.allowTickets && log.ticketUrl ? (
           <Pressable style={styles.ticketsBtn} onPress={() => { void openTicketLink(log.ticketUrl); }} accessibilityRole="link" accessibilityLabel={`Get tickets for ${artist} at ${venue}`}>
             <Icon name="star" size={15} color="#1A1206" />
             <Text style={styles.ticketsTxt}>Get tickets</Text>
           </Pressable>
         ) : null}
 
-        {/* going + the concert lounge */}
+        {/* Typed attendance is available only when the canonical provider
+            lifecycle makes each state safe. Legacy/member-created Shows keep
+            the exact single Going toggle until they have trusted identity. */}
+        {lifecycleView.trusted ? (
+          <ShowAttendanceControls
+            accountId={accountId}
+            currentAttendance={readMatches
+              ? scopedSocialRead.viewerAttendance
+              : trustedShow?.viewerAttendance || null}
+            lifecycle={lifecycleView.lifecycle}
+            onRequireAuth={onRequireAuth}
+            onSaved={() => setAttendanceRefreshVersion((version) => version + 1)}
+            show={trustedShow}
+          />
+        ) : null}
+
+        {/* The lounge remains a quick social action in every lifecycle. */}
         <View style={styles.socialRow}>
-          <Pressable
+          {!lifecycleView.trusted && presentation.allowGoing ? <Pressable
             style={[styles.goingBtn, going && styles.goingOn, goingBusy && styles.goingBusy]}
             onPress={() => (session ? toggleGoing(norm) : onRequireAuth?.())}
             accessibilityRole="button"
@@ -284,37 +413,90 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
               <Icon name={going ? "check" : "calendar"} size={16} color={going ? "#1A1206" : colors.amber} />
             )}
             <Text style={[styles.goingTxt, going && { color: "#1A1206" }]}>{goingBusy ? "Saving…" : going ? "Going" : "I'm going"}</Text>
-          </Pressable>
+          </Pressable> : null}
           <Pressable style={styles.loungeBtn} onPress={() => onOpenLounge?.(norm)} accessibilityRole="button" accessibilityLabel={`Open concert lounge, ${social.messageCount} messages`}>
             <Icon name="comment" size={16} color={colors.amber} />
             <Text style={styles.loungeTxt}>Lounge</Text>
             <View style={styles.loungeCount}><Text style={styles.loungeCountTxt}>{social.messageCount}</Text></View>
           </Pressable>
         </View>
-        {attendeeTotal > 0 && (
+        {(attendeeTotal > 0 || !!session) && (
           <View style={styles.attendeesCard}>
-            <Text style={styles.attendeesTitle}>{attendeeTotal} going</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.attendeesList}>
-              {social.attendees.slice(0, 30).map((attendee) => (
-                <Pressable
-                  key={attendee.id}
-                  style={styles.attendeeChip}
-                  onPress={() => onOpenProfile?.(attendee.id)}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Open ${attendee.name}'s profile`}
-                >
-                  <Avatar user={attendee} size={30} />
-                  <Text style={styles.attendeeName} numberOfLines={1}>{attendee.name}</Text>
-                </Pressable>
-              ))}
-              {hiddenAttendeeCount > 0 && <Text style={styles.attendeeMore}>+{hiddenAttendeeCount} more</Text>}
-            </ScrollView>
+            <View style={styles.crowdHeader}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.crowdKicker}>THE CROWD</Text>
+                <Text style={styles.attendeesTitle} accessibilityLiveRegion="polite">
+                  {attendeeTotal} Mshpit {attendeeTotal === 1 ? "member" : "members"} in this show's Crowd
+                </Text>
+              </View>
+              {verifiedAttendeeCount > 0 ? (
+                <View accessible accessibilityRole="text" style={styles.verifiedCrowd} accessibilityLabel={`${verifiedAttendeeCount} verified attendees`}>
+                  <Icon name="check" size={12} color={colors.good} />
+                  <Text style={styles.verifiedCrowdText}>{verifiedAttendeeCount} verified</Text>
+                </View>
+              ) : null}
+            </View>
+            {session ? (
+              <View style={styles.crowdFilters} accessibilityRole="tablist" accessibilityLabel="Filter the Crowd">
+                {CROWD_SCOPES.map((scope) => {
+                  const selected = crowdScope === scope;
+                  return (
+                    <Pressable
+                      key={scope}
+                      style={[styles.crowdFilter, selected && styles.crowdFilterSelected]}
+                      onPress={() => setCrowdScope(scope)}
+                      accessibilityRole="tab"
+                      accessibilityState={{ selected }}
+                      accessibilityLabel={`Show ${CROWD_FILTER_LABELS[scope].toLowerCase()} in this Crowd`}
+                    >
+                      <Text style={[styles.crowdFilterText, selected && styles.crowdFilterTextSelected]}>{CROWD_FILTER_LABELS[scope]}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            ) : null}
+            {social.attendees.length > 0 ? (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.attendeesList}>
+                {social.attendees.slice(0, 30).map((attendee) => (
+                  <Pressable
+                    key={attendee.id}
+                    style={styles.attendeeChip}
+                    onPress={() => onOpenProfile?.(attendee.id)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Open ${attendee.name}'s profile${attendee.verifiedAttendance ? ", verified attendee" : ""}`}
+                  >
+                    <Avatar user={attendee} size={30} />
+                    <View style={styles.attendeeCopy}>
+                      <Text style={styles.attendeeName} numberOfLines={1}>{attendee.name}</Text>
+                      {ATTENDANCE_STATE_LABELS[attendee.state] ? (
+                        <Text style={styles.attendeeState}>{ATTENDANCE_STATE_LABELS[attendee.state]}{attendee.verifiedAttendance ? " · Verified" : ""}</Text>
+                      ) : null}
+                    </View>
+                  </Pressable>
+                ))}
+                {hiddenAttendeeCount > 0 && <Text style={styles.attendeeMore}>+{hiddenAttendeeCount} more</Text>}
+              </ScrollView>
+            ) : session ? (
+              <Text style={styles.crowdEmpty} accessibilityLiveRegion="polite">
+                {social.loading
+                  ? "Bringing the Crowd in…"
+                  : crowdReadFailed
+                    ? "The Crowd could not load right now. Try another filter or reopen this show."
+                    : crowdScope === "everyone"
+                      ? "No visible attendees yet."
+                      : `Nobody in ${CROWD_FILTER_LABELS[crowdScope].toLowerCase()} is visible here yet.`}
+              </Text>
+            ) : (
+              <Pressable style={styles.crowdSignIn} onPress={() => onRequireAuth?.()} accessibilityRole="button" accessibilityLabel="Sign in to see visible show attendees">
+                <Text style={styles.crowdSignInText}>Sign in to see attendees who chose to be visible</Text>
+              </Pressable>
+            )}
           </View>
         )}
 
         {/* review-in-post: log/review this exact show. Only a night that has
             actually happened can be reviewed. */}
-        {!upcoming && (
+        {presentation.showPostEvent && (
           <Pressable style={styles.reviewCta} onPress={() => onReview?.(norm)} accessibilityRole="button" accessibilityLabel={`Log or review ${artist} at ${venue}`}>
             <Icon name="star" size={16} color="#1A1206" />
             <Text style={styles.reviewCtaTxt}>Log / review this show</Text>
@@ -501,12 +683,26 @@ const styles = StyleSheet.create({
   loungeTxt: { color: colors.text, fontSize: 14, fontWeight: "700" },
   loungeCount: { backgroundColor: colors.amber, borderRadius: 999, minWidth: 20, paddingHorizontal: 6, paddingVertical: 1, alignItems: "center" },
   loungeCountTxt: { color: "#1A1206", fontSize: 11, fontWeight: "800", fontFamily: mono },
-  attendeesCard: { backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, marginTop: 10, padding: 11 },
-  attendeesTitle: { color: colors.textDim, fontFamily: mono, fontSize: 11, fontWeight: "800", letterSpacing: 0.5, marginBottom: 8 },
+  attendeesCard: { backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, marginTop: 10, padding: 12, gap: 10 },
+  crowdHeader: { flexDirection: "row", alignItems: "center", gap: 10 },
+  crowdKicker: { color: colors.amber, fontFamily: mono, fontSize: 9, fontWeight: "900", letterSpacing: 1.5, marginBottom: 3 },
+  attendeesTitle: { color: colors.text, fontSize: 13, fontWeight: "800" },
+  verifiedCrowd: { flexDirection: "row", alignItems: "center", gap: 4, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.bgElev, paddingHorizontal: 8, paddingVertical: 5 },
+  verifiedCrowdText: { color: colors.textDim, fontFamily: mono, fontSize: 9, fontWeight: "800" },
+  crowdFilters: { flexDirection: "row", gap: 6 },
+  crowdFilter: { flex: 1, minHeight: 44, alignItems: "center", justifyContent: "center", borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.bgElev, paddingHorizontal: 8 },
+  crowdFilterSelected: { borderColor: colors.amber, backgroundColor: colors.surfaceAlt },
+  crowdFilterText: { color: colors.textDim, fontSize: 11, fontWeight: "800" },
+  crowdFilterTextSelected: { color: colors.amber },
   attendeesList: { alignItems: "center", gap: 8, paddingRight: 4 },
-  attendeeChip: { flexDirection: "row", alignItems: "center", gap: 7, maxWidth: 160, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.bgElev, paddingLeft: 3, paddingRight: 10, paddingVertical: 3 },
-  attendeeName: { color: colors.text, fontSize: 12, fontWeight: "700", maxWidth: 105 },
+  attendeeChip: { flexDirection: "row", alignItems: "center", gap: 7, maxWidth: 184, minHeight: 44, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.bgElev, paddingLeft: 4, paddingRight: 11, paddingVertical: 3 },
+  attendeeCopy: { minWidth: 0, maxWidth: 120 },
+  attendeeName: { color: colors.text, fontSize: 12, fontWeight: "700" },
+  attendeeState: { color: colors.textFaint, fontFamily: mono, fontSize: 8.5, fontWeight: "700", marginTop: 1 },
   attendeeMore: { color: colors.textDim, fontFamily: mono, fontSize: 11, paddingHorizontal: 5 },
+  crowdEmpty: { color: colors.textDim, fontSize: 12, lineHeight: 18, paddingVertical: 4 },
+  crowdSignIn: { minHeight: 44, alignItems: "center", justifyContent: "center", borderRadius: radius.sm, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.bgElev, paddingHorizontal: 12 },
+  crowdSignInText: { color: colors.amber, fontSize: 12, fontWeight: "800", textAlign: "center" },
   reviewCta: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, backgroundColor: colors.amberStrong, borderRadius: radius.md, paddingVertical: 14, marginTop: 16 },
   reviewCtaTxt: { color: "#1A1206", fontSize: 15, fontWeight: "800", letterSpacing: 0.5 },
   spoiler: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.amber, borderStyle: "dashed", paddingHorizontal: 16, paddingVertical: 16, marginTop: 8 },

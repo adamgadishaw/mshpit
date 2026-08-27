@@ -59,6 +59,9 @@ import { artistReviewRoutes } from "./features/artistReviews/artistReviewRoutes.
 import { artistArchiveRoutes } from "./features/artistArchive/artistArchiveRoutes.js";
 import { accountPrivacyRoutes } from "./features/accountPrivacy/accountPrivacyRoutes.js";
 import { artistDiscographyRoutes } from "./features/artistDiscography/artistDiscographyRoutes.js";
+import { showAttendanceRoutes } from "./features/shows/showAttendanceRoutes.js";
+import { showRoutes } from "./features/shows/showRoutes.js";
+import { createShowAttendanceRepository } from "./features/shows/showAttendanceRepository.js";
 import {
   enqueueAllOwnedMedia,
   enqueueOwnedMediaKeys,
@@ -156,6 +159,7 @@ import { ownerApprovalRoutes } from "./features/ownerApprovals/ownerApprovalRout
 export { ApiError } from "./errors.js";
 
 const now = () => Date.now();
+const showAttendanceRepository = createShowAttendanceRepository(db);
 const artistMemorialService = createArtistMemorialService({
   repository: createArtistMemorialRepository(db),
 });
@@ -1556,7 +1560,7 @@ function reportableTargetFor(user, targetType, targetId) {
 
   if (targetType === "lounge_message") {
     const row = db.prepare("SELECT lounge_id,user_id,removed FROM lounge_messages WHERE id=?").get(targetId);
-    const attendee = row && db.prepare("SELECT 1 FROM going WHERE concert_key=? AND user_id=?").get(row.lounge_id, user.id);
+    const attendee = row && showAttendanceRepository.hasAttendeeAccess(user.id, row.lounge_id);
     if (!row || row.removed || !attendee || !publicAccountOrNull(row.user_id)
       || blockedEitherWay(user.id, row.user_id)) unavailableReportTarget();
     preventSelfReport(row.user_id, user.id);
@@ -2477,6 +2481,32 @@ export const routes = {
     blockedEitherWay,
     atomicWrite,
     ApiError,
+  }),
+  ...showAttendanceRoutes({
+    database: db,
+    attendanceRepository: showAttendanceRepository,
+    ApiError,
+    assertSafeAuthoredFields,
+    atomicWrite,
+    clean,
+    cleanDate,
+    decodeShowKey: (ctx) => decodedPathParam(ctx, "key", { max: 300, label: "show link" }),
+    finishPage,
+    limits: LIMITS,
+    now,
+    pageRequest,
+    projectUser: publicUser,
+    rateLimit: limit,
+    requireSessionUser,
+    requireUser,
+    requireVerifiedUser,
+    userById: q.userById,
+  }),
+  ...showRoutes({
+    database: db,
+    ApiError,
+    decodeShowKey: (ctx) => decodedPathParam(ctx, "key", { max: 300, label: "show link" }),
+    requireUser,
   }),
   ...guestSearchAnalyticsRoutes({
     database: db,
@@ -5029,7 +5059,7 @@ export const routes = {
     const u = requireUser(ctx);
     const key = decodedPathParam(ctx, "key", { max: 300, label: "lounge link" }).toLowerCase();
     if (!key) throw new ApiError(400, "Bad lounge.", "VALIDATION_FAILED");
-    const attendee = db.prepare("SELECT 1 FROM going WHERE user_id=? AND concert_key=?").get(u.id, key);
+    const attendee = showAttendanceRepository.hasAttendeeAccess(u.id, key);
     if (!attendee) throw new ApiError(403, "Join this show's Going list before opening the lounge.", "LOUNGE_ATTENDANCE_REQUIRED");
     const { cursor, limit } = pageRequest(ctx, 300, 300);
     const after = decodeCursor(ctx.query?.after);
@@ -5073,7 +5103,7 @@ export const routes = {
     const text = clean(ctx.body?.text, { max: LIMITS.message, newlines: true });
     if (!key || !text) throw new ApiError(400, "Say something first.");
     assertSafeAuthoredText(text, { field: "lounge message" });
-    const attendee = db.prepare("SELECT 1 FROM going WHERE user_id=? AND concert_key=?").get(u.id, key);
+    const attendee = showAttendanceRepository.hasAttendeeAccess(u.id, key);
     if (!attendee) throw new ApiError(403, "Join this show's Going list before posting in the lounge.", "LOUNGE_ATTENDANCE_REQUIRED");
     const mutationId = chatClientMutationId(ctx.body?.clientMutationId);
     const existing = mutationId
@@ -6403,72 +6433,6 @@ export const routes = {
     const agg = db.prepare(`SELECT AVG(r.rating) avg,COUNT(*) count FROM ratings r JOIN users u ON u.id=r.user_id
       WHERE r.kind=? AND r.ref=? AND ${activeAccountSql("u")}`).get(kind, ref);
     return { avg: agg.avg || 0, count: agg.count || 0, mine: rating };
-  },
-
-  // ---- going / attendance (slice 7) ----
-  "GET /api/me/going": (ctx) => {
-    const u = requireUser(ctx);
-    const rows = db.prepare("SELECT concert_key, artist, venue, city, date FROM going WHERE user_id=?").all(u.id);
-    return { going: rows.map((r) => ({ key: r.concert_key, artist: r.artist, venue: r.venue, city: r.city, date: r.date })) };
-  },
-  "POST /api/going": (ctx) => {
-    const u = requireUser(ctx);
-    limit(ctx, "going", 120, 10 * 60 * 1000);
-    const key = clean(ctx.body?.key, { max: 300 });
-    if (!key) throw new ApiError(400, "Missing key.");
-    const displayArtist = clean(ctx.body?.artist, { max: LIMITS.artist }) || "";
-    const displayVenue = clean(ctx.body?.venue, { max: LIMITS.venue }) || "";
-    const displayCity = clean(ctx.body?.city, { max: LIMITS.city }) || "";
-    assertSafeAuthoredFields({ artist: displayArtist, venue: displayVenue, city: displayCity });
-    const has = !!db.prepare("SELECT 1 FROM going WHERE user_id=? AND concert_key=?").get(u.id, key);
-    const going = desiredState(ctx.body, "going", has);
-    if (!going && has) db.prepare("DELETE FROM going WHERE user_id=? AND concert_key=?").run(u.id, key);
-    else if (going && !has) db.prepare("INSERT INTO going (user_id,concert_key,artist,venue,city,date,created_at) VALUES (?,?,?,?,?,?,?)")
-      .run(u.id, key, displayArtist, displayVenue,
-        // Denormalized display copy only (the key is what identifies the night),
-        // so an unparseable date is dropped rather than refused.
-        displayCity, cleanDate(ctx.body?.date) || "", now());
-    return { going };
-  },
-  "GET /api/going/:key/attendees": (ctx) => {
-    const key = decodedPathParam(ctx, "key", { max: 300, label: "show link" });
-    if (!key) throw new ApiError(400, "That show link is invalid.", "VALIDATION_FAILED");
-    const { cursor, limit: pageLimit } = pageRequest(ctx, 50, 100);
-    const viewer = ctx.user ? requireVerifiedUser(ctx).id : null;
-    const activeAt = now();
-    const blockSql = viewer ? `AND NOT EXISTS (SELECT 1 FROM blocks b WHERE
-      (b.blocker_id=? AND b.blocked_id=g.user_id) OR (b.blocker_id=g.user_id AND b.blocked_id=?))` : "";
-    const baseArgs = viewer ? [key, activeAt, viewer, viewer] : [key, activeAt];
-    const activeSql = "AND u.is_banned=0 AND (u.suspended_until IS NULL OR u.suspended_until<=?)";
-    const total = db.prepare(`SELECT COUNT(*) c FROM going g JOIN users u ON u.id=g.user_id
-      WHERE g.concert_key=? ${activeSql} ${blockSql}`).get(...baseArgs).c;
-    // Logged-out show pages may display aggregate social proof, but attendee
-    // identities are account discovery data. Return them only inside an active
-    // signed-in session, where block filtering is meaningful.
-    if (!viewer) return { attendees: [], total, nextCursor: null, viewerGoing: false };
-    const cursorSql = cursor ? "AND (g.created_at < ? OR (g.created_at = ? AND g.user_id < ?))" : "";
-    const pageArgs = [...baseArgs];
-    if (cursor) pageArgs.push(cursor.createdAt, cursor.createdAt, cursor.id);
-    pageArgs.push(pageLimit + 1);
-    const found = db.prepare(`SELECT g.user_id AS id,g.created_at FROM going g JOIN users u ON u.id=g.user_id
-      WHERE g.concert_key=? ${activeSql} ${blockSql} ${cursorSql}
-      ORDER BY g.created_at DESC,g.user_id DESC LIMIT ?`).all(...pageArgs);
-    const { rows, nextCursor } = finishPage(found, pageLimit);
-    return {
-      attendees: rows.map((row) => publicUser(q.userById.get(row.id))).filter(Boolean).map((person) => ({
-        id: person.id,
-        name: person.name,
-        handle: person.handle,
-        initials: person.initials,
-        avatarUri: person.avatarUri,
-        avatarColor: person.avatarColor,
-        role: person.role,
-        verified: person.verified,
-      })),
-      total,
-      nextCursor,
-      viewerGoing: !!(viewer && db.prepare("SELECT 1 FROM going WHERE user_id=? AND concert_key=?").get(viewer, key)),
-    };
   },
 
   // One bounded venue pool at a time. The 2.1 MB source stays server-side so a

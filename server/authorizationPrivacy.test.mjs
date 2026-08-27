@@ -207,12 +207,23 @@ test("people discovery is signed-in, alphabetical, block-aware, and has no globa
 test("anonymous attendance exposes only an aggregate while signed-in rows are minimal and block-aware", () => {
   const attendee = addUser("attendance_person");
   const viewer = addUser("attendance_viewer");
+  db.prepare("UPDATE users SET email_verified_at=? WHERE id=?").run(Date.now(), attendee.id);
   const key = "privacy artist|privacy venue|2099-01-01";
   db.prepare("INSERT INTO going (user_id,concert_key,artist,venue,created_at) VALUES (?,?,?,?,?)")
     .run(attendee.id, key, "Privacy Artist", "Privacy Venue", Date.now());
 
   const guest = routes["GET /api/going/:key/attendees"]({ params: { key }, query: {} });
-  assert.deepEqual(guest, { attendees: [], total: 1, nextCursor: null, viewerGoing: false });
+  assert.deepEqual({
+    attendees: guest.attendees,
+    total: guest.total,
+    nextCursor: guest.nextCursor,
+    viewerGoing: guest.viewerGoing,
+  }, { attendees: [], total: 1, nextCursor: null, viewerGoing: false });
+  assert.deepEqual(guest.stateCounts, { interested: 0, going: 1, here: 0, went: 0 });
+  assert.equal(guest.liveStateRedacted, true);
+  assert.equal(guest.verifiedAttendeeCount, 0);
+  assert.equal(JSON.stringify(guest).includes(attendee.id), false,
+    "additive show identity and aggregate fields cannot expose an attendee identity to guests");
   assert.throws(
     () => routes["GET /api/going/:key/attendees"]({ user: viewer, params: { key }, query: {} }),
     (error) => error.code === "EMAIL_VERIFICATION_REQUIRED",
@@ -236,7 +247,7 @@ test("anonymous attendance exposes only an aggregate while signed-in rows are mi
   assert.equal(signedIn.attendees[0].id, attendee.id);
   assert.equal(signedIn.attendees[0].home, undefined);
   assert.deepEqual(Object.keys(signedIn.attendees[0]).sort(),
-    ["avatarColor", "avatarUri", "handle", "id", "initials", "name", "role", "verified"].sort());
+    ["avatarColor", "avatarUri", "handle", "id", "initials", "name", "role", "state", "verified", "verifiedAttendance"].sort());
   db.prepare("INSERT INTO blocks (blocker_id,blocked_id,created_at) VALUES (?,?,?)").run(attendee.id, viewer.id, Date.now());
   const blocked = routes["GET /api/going/:key/attendees"]({ user: verifiedViewer, params: { key }, query: {} });
   assert.deepEqual(blocked.attendees, []);

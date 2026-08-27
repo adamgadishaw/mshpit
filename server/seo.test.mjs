@@ -250,7 +250,8 @@ test("a verified memorial makes only its canonical artist page crawlable", () =>
 test("crawlable HTML contains semantic content and keeps the interactive bundle", () => {
   const shell = `<!doctype html><html><head><title>Pit</title></head><body><div id="root"></div><script src="/app.js" defer></script></body></html>`;
   const html = injectHead(shell, "/");
-  assert.match(html, /<h1>Remember every show/);
+  assert.match(html, /<h1>The shows you saw\.<br \/><em>The taste you built\.<\/em><\/h1>/);
+  assert.match(html, /REMEMBER THE NIGHT\. FIND WHAT&#39;S NEXT\./);
   assert.match(html, /<script src="\/app\.js" defer><\/script>/);
   assert.match(html, /https:\/\/www\.example\.com\/og\.png/);
   assert.match(html, /data-mshpit-public-document/);

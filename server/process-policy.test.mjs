@@ -26,6 +26,8 @@ test("index delegates missing static files to the executable no-store policy", a
     body: { error: "Asset not found." },
     headers: { "Cache-Control": "no-store" },
   });
-  assert.equal(missingStaticAssetResponse("/concert/j-cole"), null,
-    "extensionless routes are classified by the SEO/app router instead of the static-asset policy");
+  assert.equal(missingStaticAssetResponse("/concert/show.opaque_key"), null,
+    "dotted opaque concert keys are classified by the SEO/app router instead of the static-asset policy");
+  assert.equal(missingStaticAssetResponse("/event/provider.event-id"), null,
+    "dotted provider event ids remain application routes");
 });

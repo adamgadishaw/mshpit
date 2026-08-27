@@ -189,7 +189,7 @@ test("Store wires the purge after personalized cache adoption and resets private
   assert.match(logout, /purgeLocalMediaDraftFiles\(departingAccountId\)/);
 });
 
-test("session revalidation retains the locked account until an authoritative boundary purges it", () => {
+test("session revalidation preserves confirmed UI until an authoritative boundary purges it", () => {
   const source = readFileSync(new URL("../store.js", import.meta.url), "utf8");
   const retireStart = source.indexOf("const retireRevalidatedAccount = (departingAccountId) => {");
   const retireEnd = source.indexOf("// Fold a server user", retireStart);
@@ -202,18 +202,21 @@ test("session revalidation retains the locked account until an authoritative bou
   assert.match(retire, /purgeProductAnalyticsAccount\(id\)/);
   assert.match(retire, /purgeLocalMediaDraftFiles\(id\)/);
 
-  const validationStart = source.indexOf("// Restore the session on reload.");
+  const validationStart = source.indexOf("// Cold boot blocks on the HttpOnly-cookie handshake.");
   const validationEnd = source.indexOf("// Server-first auth", validationStart);
   assert.ok(validationStart >= 0 && validationEnd > validationStart);
   const validation = source.slice(validationStart, validationEnd);
-  assert.match(validation, /let lockedAccountId = null/);
-  assert.match(validation, /const accountBeforeValidation = sessionRef\.current\?\.id \|\| lockedAccountId/);
-  assert.match(validation, /String\(user\.id\) !== String\(departingAccountId\)/);
-  assert.ok((validation.match(/retireRevalidatedAccount\(departingAccountId\)/g) || []).length >= 3);
+  assert.match(validation, /createSessionValidationCoordinator\(\{/);
+  assert.match(validation, /const accountBeforeValidation = sessionRef\.current\?\.id \|\| null/);
+  assert.match(validation, /outcome\.kind === "same-account"/);
+  assert.match(validation, /absorbServerUser\(user, \{ hydrateAccount: false \}\)/);
+  assert.match(validation, /outcome\.kind === "account-changed"/);
+  assert.ok((validation.match(/retireRevalidatedAccount\(/g) || []).length >= 2);
   assert.match(validation, /event\.key !== AUTH_EPOCH_STORAGE_KEY/);
   assert.match(validation, /window\.addEventListener\("storage", onStorage\)/);
-  assert.match(validation, /validate\(\{ force: true \}\)/);
-  const requestBoundary = validation.slice(0, validation.indexOf('api("/api/me"'));
+  assert.match(validation, /strict: true, reason: "auth-epoch"/);
+  const runStart = validation.indexOf("const runValidation = async");
+  const requestBoundary = validation.slice(runStart, validation.indexOf('api("/api/me"', runStart));
   assert.doesNotMatch(requestBoundary, /setSession\(null\)/,
     "a routine same-account focus check must not publish a false account exit");
 });

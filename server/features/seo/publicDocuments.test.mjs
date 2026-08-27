@@ -312,7 +312,10 @@ test("home document is substantive, contains WebSite JSON-LD, and excludes restr
     assert.match(html, /Crowd energy &amp; joy &lt;b&gt;all night&lt;\/b&gt;/);
     assert.doesNotMatch(html, /BANNED PRIVATE COPY/);
     assert.doesNotMatch(html, /\b\d[\d,]* members\b/i);
-    assert.match(html, /<h1>Remember every show/);
+    assert.match(html, /<h1>The shows you saw\.<br \/><em>The taste you built\.<\/em><\/h1>/);
+    assert.match(html, />Join the PIT<\/a>/);
+    assert.match(html, />Explore the PIT<\/a>/);
+    assert.doesNotMatch(html, /Remember every show\.<br \/><em>Find your people/);
   } finally {
     database.close();
   }

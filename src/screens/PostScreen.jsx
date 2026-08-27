@@ -12,6 +12,7 @@ import { applyPostLocalOverride, withRemovedSelfPostTag } from "../domain/postLo
 import { accountTargetScope } from "../domain/screenScope.mjs";
 import { PublicTextLink } from "../components/PublicWebLinks";
 import { profilePath } from "../domain/urls.mjs";
+import useAppActive from "../lib/useAppActive";
 
 const ago = (ts) => {
   if (!ts) return "";
@@ -114,9 +115,13 @@ export default function PostScreen({ log, onClose, onOpenProfile, onOpenArtist, 
     error: null,
   }));
   const scrollRef = useRef(null);
+  const appActive = useAppActive();
 
-  // Live comments: hydrate + poll so replies appear without a refresh.
+  // Live comments: hydrate + poll while this screen is actually visible. A
+  // tab/app return restarts this effect once instead of spending requests in
+  // the background or stacking multiple catch-up refreshes.
   useEffect(() => {
+    if (!appActive) return undefined;
     let active = true;
     const scope = commentScope;
     const hasCachedComments = flat.length > 0;
@@ -148,7 +153,7 @@ export default function PostScreen({ log, onClose, onOpenProfile, onOpenArtist, 
     };
     // Store actions are intentionally excluded: they are recreated as store state changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [commentScope, commentRequestVersion]);
+  }, [appActive, commentScope, commentRequestVersion]);
 
   // Never present another post's request state while navigation swaps the post
   // prop on this mounted screen.

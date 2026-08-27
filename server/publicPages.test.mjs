@@ -221,7 +221,7 @@ test("public SEO responses are cacheable, canonical, and fail closed during proj
 });
 
 test("trust pages explain the product, conduct, ratings, and monitored contact route", () => {
-  assert.match(renderPublicPage("/about"), /social concert diary/i);
+  assert.match(renderPublicPage("/about"), /live-music social network/i);
   assert.match(renderPublicPage("/about"), /independent fan community/i);
   assert.match(renderPublicPage("/contact"), new RegExp(SUPPORT_EMAIL.replace(".", "\\.")));
   assert.match(renderPublicPage("/community-guidelines"), /Review shows honestly/);
