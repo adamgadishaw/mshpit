@@ -105,11 +105,11 @@ test("photo selection excludes removed and blocked posts while keeping bounded t
     { id: "blocked", userId: "fan-2", photos: ["blocked.jpg"], likes: 90 },
     { id: "private", photosPublic: false, photos: ["private.jpg"], likes: 80 },
     { id: "visible-a", artist: "SZA", photos: ["a.jpg", "b.jpg"], likes: 5 },
-    { id: "visible-b", venue: "History", photos: ["c.jpg"], likes: 8 },
+    { id: "visible-b", venue: "History", date: "2026-08-27", photos: ["c.jpg"], likes: 8 },
   ], { removedIds: ["removed"], blockedIds: ["fan-2"], limit: 2 });
   assert.deepEqual(photos, [
-    { uri: "c.jpg", artist: null, venue: "History", by: "", likes: 8, logId: "visible-b", ownerId: null },
-    { uri: "a.jpg", artist: "SZA", venue: null, by: "", likes: 5, logId: "visible-a", ownerId: null },
+    { uri: "c.jpg", artist: null, venue: "History", date: "2026-08-27", by: "", likes: 8, logId: "visible-b", ownerId: null, source: "fan", photosPublic: true },
+    { uri: "a.jpg", artist: "SZA", venue: null, date: null, by: "", likes: 5, logId: "visible-a", ownerId: null, source: "fan", photosPublic: true },
   ]);
 });
 
@@ -136,6 +136,8 @@ test("Discover media keeps stable video posters, edits, and alt text for the vie
   assert.deepEqual(clip.editRecipe, { kind: "video", coverMs: 2400 });
   assert.equal(clip.logId, "clip-post");
   assert.equal(clip.ownerId, "fan-7");
+  assert.equal(clip.source, "fan");
+  assert.equal(clip.photosPublic, true);
 });
 
 test("regions put Worldwide first and the member home country second without duplicates", () => {

@@ -161,9 +161,14 @@ export function calendarDateKey(value) {
 }
 
 export function isUpcomingEventDate(event, now = Date.now()) {
-  const eventKey = calendarDateKey(event?.date);
-  if (eventKey == null) return false;
+  const startKey = calendarDateKey(event?.date);
+  if (startKey == null) return false;
   const today = new Date(now);
   const todayKey = today.getFullYear() * 10000 + (today.getMonth() + 1) * 100 + today.getDate();
-  return eventKey >= todayKey;
+  const endKey = calendarDateKey(event?.eventEndDate ?? event?.event_end_date);
+  // A real multi-day event remains current through its inclusive end date.
+  // Invalid, missing, or start-before-end-inverted ranges deliberately fall
+  // back to the one-day rule so stale rows cannot linger indefinitely.
+  if (endKey != null && endKey > startKey) return endKey >= todayKey;
+  return startKey >= todayKey;
 }

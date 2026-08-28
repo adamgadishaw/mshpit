@@ -74,7 +74,7 @@ import { getPendingImagePickerResult } from "./src/lib/imagePickerRecovery";
 import { lazyWithRetry } from "./src/lib/lazyWithRetry";
 import { artistPath, concertPath, eventPath, venuePath, postPath, profilePath, parsePath, isPublicEntityPath } from "./src/domain/urls.mjs";
 import { shouldRestorePersistedStack } from "./src/domain/browserNavigation.mjs";
-import { publicNavigationLinks } from "./src/domain/publicNavigationLinks.mjs";
+import { publicNavigationLinks, shouldShowMobilePublicTrail } from "./src/domain/publicNavigationLinks.mjs";
 import {
   composerNavigationTransition,
   isActiveComposer,
@@ -1098,6 +1098,7 @@ function Root() {
   );
 
   const hydratedPublicLinks = publicNavigationLinks(nav, { resolveUser: userById });
+  const showMobilePublicTrail = shouldShowMobilePublicTrail(nav);
   const hydratedDirectoryArtists = nav.directory === "artists"
     ? [
       ...(Array.isArray(discoverySidebar?.topArtists) ? discoverySidebar.topArtists : []),
@@ -1181,7 +1182,7 @@ function Root() {
                 />
               )}
               {tab === "search" && <SearchScreen onOpen={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenProfile={openProfile} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} />}
-              {tab === "discover" && <DiscoverScreen onOpenTopRated={() => go({ topRated: true })} onOpen={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenNearby={() => go({ nearby: true })} onOpenFanClubs={() => go({ fanClubs: true })} onOpenVenues={() => go({ venues: true })} onOpenLounge={(lounge) => go({ lounge })} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} onOpenProfile={openProfile} />}
+              {tab === "discover" && <DiscoverScreen onOpenTopRated={() => go({ topRated: true })} onOpenEvents={() => openPublicDirectory("events")} onOpen={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenNearby={() => go({ nearby: true })} onOpenFanClubs={() => go({ fanClubs: true })} onOpenVenues={() => go({ venues: true })} onOpenLounge={(lounge) => go({ lounge })} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} onOpenProfile={openProfile} />}
               {tab === "you" && (
                 <YouScreen
                   onLogin={() => go({ auth: true })}
@@ -1306,7 +1307,7 @@ function Root() {
             <View style={styles.appContent}>
               {wide ? desktop : (
                 <>
-                  <PublicWebTrail links={hydratedPublicLinks} onNavigate={openHydratedPublicTarget} />
+                  {showMobilePublicTrail ? <PublicWebTrail links={hydratedPublicLinks} onNavigate={openHydratedPublicTarget} /> : null}
                   <PublicDirectoryPanel
                     directory={nav.directory}
                     artists={hydratedDirectoryArtists}

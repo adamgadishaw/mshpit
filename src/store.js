@@ -3313,7 +3313,29 @@ export function StoreProvider({ children }) {
         body: {
           artist,
           releaseAt,
-          dates: rows.map(({ venue, place, date, ticketUrl }) => ({ venue, place, date, ticketUrl: ticketUrl || "" })),
+          dates: rows.map(({
+            venue,
+            place,
+            date,
+            ticketUrl,
+            eventName,
+            eventKind,
+            eventEndDate,
+            billedArtists,
+            eventSourceUrl,
+          }) => ({
+            venue,
+            place,
+            date,
+            ticketUrl: ticketUrl || "",
+            ...(eventName ? {
+              eventName,
+              eventKind,
+              eventEndDate: eventEndDate || null,
+              billedArtists: Array.isArray(billedArtists) ? billedArtists : [],
+              eventSourceUrl,
+            } : {}),
+          })),
         },
       });
       if (sessionRef.current?.id !== actor.id || !Array.isArray(result?.tourDates)) {

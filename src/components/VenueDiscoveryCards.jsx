@@ -2,6 +2,7 @@ import { Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { colors, displayFont, focusRing, mono, radius, shadow } from "../theme";
 import { eventDateMeta, optionalDistanceKm, splitVenuePlace } from "../domain/venueDiscovery.mjs";
 import { liveEventLineupLabel, liveEventTitle } from "../domain/liveDiscovery.mjs";
+import { LIVE_EVENT_PHASE, liveEventPhase } from "../domain/eventLifecycle.mjs";
 import { eventPath } from "../domain/urls.mjs";
 import Icon from "./Icon";
 import { PublicTextLink } from "./PublicWebLinks";
@@ -56,6 +57,11 @@ export function UpcomingEventCard({ event, onOpenArtist, onOpenVenue, onOpenEven
   const titleIsArtist = !!artist && title === artist;
   const { city } = splitVenuePlace(event?.place);
   const distance = optionalDistanceKm(event?.distanceKm);
+  const phase = liveEventPhase(event);
+  const endDate = event?.eventEndDate ? eventDateMeta(event.eventEndDate) : null;
+  const timing = phase === LIVE_EVENT_PHASE.ACTIVE
+    ? `Happening now${endDate?.iso ? ` · through ${endDate.month} ${endDate.day}` : ""}`
+    : context || date.timing;
   const detail = [
     event?.venue,
     city !== "Location unavailable" ? city : null,
@@ -69,7 +75,7 @@ export function UpcomingEventCard({ event, onOpenArtist, onOpenVenue, onOpenEven
       </View>
       <View style={styles.cardCopy}>
         <View style={styles.eventTopline}>
-          <Text style={styles.timing}>{context || date.timing}</Text>
+          <Text style={[styles.timing, phase === LIVE_EVENT_PHASE.ACTIVE && styles.timingActive]}>{timing}</Text>
           {event?.soldOut ? <Text style={styles.soldOutTag}>SOLD OUT</Text> : null}
           {event?.scheduled ? <Text style={styles.scheduledTag}>SCHEDULED</Text> : null}
         </View>
@@ -138,6 +144,7 @@ const styles = StyleSheet.create({
   dateDayCompact: { fontSize: 19, lineHeight: 22 },
   eventTopline: { minHeight: 15, flexDirection: "row", alignItems: "center", gap: 6 },
   timing: { color: colors.amber, fontFamily: mono, fontSize: 9, fontWeight: "800", letterSpacing: 0.6, textTransform: "uppercase" },
+  timingActive: { color: colors.good },
   soldOutTag: { color: colors.danger, fontFamily: mono, fontSize: 8, fontWeight: "900", letterSpacing: 0.7 },
   scheduledTag: { color: colors.cool, fontFamily: mono, fontSize: 8, fontWeight: "900", letterSpacing: 0.7 },
   artist: { color: colors.text, fontFamily: displayFont, fontSize: 17, fontWeight: "900", letterSpacing: -0.25, marginTop: 2 },

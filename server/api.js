@@ -145,10 +145,16 @@ import { canonicalProfileExtras } from "./profileExtras.js";
 import { licensedVenuePhoto, verifiedHttpsUrl } from "../src/domain/venuePhotoProvenance.mjs";
 import { accountIsPublic, activeAccountSql } from "./accountVisibility.js";
 import { visibleTourDateRows } from "./tourDateVisibility.js";
+import {
+  isCurrentOrUpcomingLiveEvent,
+  liveEventQueryFloorDate,
+  liveEventTimeZone,
+} from "../src/domain/eventLifecycle.mjs";
 import { safeOwnedReadyMediaUrl } from "./publicMedia.js";
 import { normalizeArtistCampaign } from "../src/domain/artistCampaignPost.mjs";
 import { normalizeTaggedUserIds } from "../src/domain/postFriendTags.mjs";
 import { canonicalTicketUrl, projectedTourDateTicketUrl } from "../src/domain/ticketLinks.mjs";
+import { publicTicketmasterEventImage } from "./providerEventImage.js";
 import { isOwnerId, ownerAccount } from "./ownerIdentity.js";
 import {
   createOwnerApprovalRequest,
@@ -544,6 +550,7 @@ function canManageArtistProfile(user, key, profile) {
 const TOUR_DATE_BATCH_LIMIT = 50;
 const TOUR_DATE_PLACE_LIMIT = 180;
 const TOUR_DATE_RELEASE_HORIZON_MS = 3 * 366 * 24 * 60 * 60 * 1000;
+const SPECIAL_EVENT_KINDS = new Set(["festival", "fair", "rodeo", "multi_day"]);
 
 function tourDateJson(row) {
   let billedArtists = [];
@@ -565,12 +572,15 @@ function tourDateJson(row) {
     ticketUrl: projectedTourDateTicketUrl(row),
     soldOut: !!row.sold_out,
     source: row.source || null,
+    eventImage: publicTicketmasterEventImage(row),
+    eventTimezone: liveEventTimeZone({ eventTimezone: row.event_timezone }),
     releaseAt: Number(row.release_at) || 0,
     createdBy: row.owner_id || "import",
     ...(row.music_evidence ? {
       eventName: row.event_name || null,
       eventKind: row.event_kind || "concert",
       eventEndDate: row.event_end_date || null,
+      eventSourceUrl: row.event_source_url || null,
       billedArtists,
     } : {}),
   };
@@ -581,6 +591,20 @@ function cleanTourTicketUrl(value) {
   const canonical = canonicalTicketUrl(value, { allowUntrusted: true });
   if (!canonical) throw new ApiError(400, "Ticket URLs must be safe public HTTPS links without credentials or ports.", "VALIDATION_FAILED");
   return canonical;
+}
+
+function cleanOfficialEventSourceUrl(value) {
+  if (typeof value !== "string" || [...value].length > 2_000) {
+    throw new ApiError(400, "Add a valid official HTTPS event source.", "VALIDATION_FAILED");
+  }
+  try {
+    const url = new URL(value.trim());
+    if (url.protocol !== "https:" || url.username || url.password || url.port) throw new TypeError("unsafe");
+    url.hash = "";
+    return url.toString();
+  } catch {
+    throw new ApiError(400, "Add a valid official HTTPS event source.", "VALIDATION_FAILED");
+  }
 }
 
 function cleanTourDateBatch(ctx, user) {
@@ -621,7 +645,30 @@ function cleanTourDateBatch(ctx, user) {
       throw new ApiError(400, `Tour date ${index + 1} needs a valid venue, place, and date.`, "VALIDATION_FAILED");
     }
     assertSafeAuthoredFields({ venue, place });
-    return { venue, place, date, ticketUrl };
+    const specialRequested = ["eventName", "eventKind", "eventEndDate", "billedArtists", "eventSourceUrl"]
+      .some((field) => entry[field] != null && entry[field] !== "" && (!Array.isArray(entry[field]) || entry[field].length));
+    if (!specialRequested) return { venue, place, date, ticketUrl };
+    if (user.role !== "admin") {
+      throw new ApiError(403, "Only administrators can publish verified parent events.", "FORBIDDEN");
+    }
+    if (typeof entry.eventName !== "string" || [...entry.eventName].length > 200) {
+      throw new ApiError(400, `Tour date ${index + 1} needs a valid event name.`, "VALIDATION_FAILED");
+    }
+    const eventName = clean(entry.eventName, { max: 200 });
+    const eventKind = clean(entry.eventKind, { max: 40 }).toLowerCase();
+    const eventEndDate = entry.eventEndDate ? cleanDate(entry.eventEndDate) : null;
+    const billedArtists = cleanStringArray(entry.billedArtists, { maxItems: 20, maxLen: LIMITS.artist });
+    const eventSourceUrl = cleanOfficialEventSourceUrl(entry.eventSourceUrl);
+    if (!eventName || !SPECIAL_EVENT_KINDS.has(eventKind)
+      || (entry.eventEndDate && !eventEndDate)
+      || (eventEndDate && eventEndDate < date)
+      || (eventKind === "multi_day" && (!eventEndDate || eventEndDate <= date))
+      || (entry.billedArtists != null && !Array.isArray(entry.billedArtists))) {
+      throw new ApiError(400, `Tour date ${index + 1} has invalid special-event details.`, "VALIDATION_FAILED");
+    }
+    assertSafeAuthoredText(eventName, { field: "event name" });
+    for (const billedArtist of billedArtists) assertSafeAuthoredText(billedArtist, { field: "billed artist" });
+    return { venue, place, date, ticketUrl, eventName, eventKind, eventEndDate, billedArtists, eventSourceUrl };
   });
   const naturalKeys = new Set();
   for (const entry of dates) {
@@ -3966,8 +4013,15 @@ export const routes = {
     // The legacy client snapshot is upcoming-only. Historical truth now lives
     // in the artist archive; letting expired provider rows consume this bounded
     // 5,000-row window would hide current worldwide dates as coverage grows.
-    const today = new Date(now()).toISOString().slice(0, 10);
-    const rows = visibleTourDateRows(ctx.user, { today });
+    const timestamp = now();
+    const rows = visibleTourDateRows(ctx.user, {
+      today: liveEventQueryFloorDate(timestamp),
+      at: timestamp,
+    }).filter((row) => isCurrentOrUpcomingLiveEvent({
+      date: row.date,
+      eventEndDate: row.event_end_date,
+      eventTimezone: row.event_timezone,
+    }, timestamp));
     return {
       tourDates: rows.map(tourDateJson),
     };
@@ -3988,13 +4042,21 @@ export const routes = {
       const id = existing?.id || uid("td");
       if (existing) {
         db.prepare(`UPDATE tour_dates SET artist=?,venue=?,place=?,lat=NULL,lng=NULL,ticket_url=?,sold_out=0,
-          source=?,updated_at=?,release_at=? WHERE id=? AND owner_id=?`)
-          .run(batch.artist, entry.venue, entry.place, entry.ticketUrl, source, updatedAt, batch.releaseAt, id, user.id);
+          source=?,updated_at=?,release_at=?,event_name=?,event_kind=?,event_end_date=?,billed_artists=?,
+          music_evidence=?,music_qualified=1,event_source_url=? WHERE id=? AND owner_id=?`)
+          .run(batch.artist, entry.venue, entry.place, entry.ticketUrl, source, updatedAt, batch.releaseAt,
+            entry.eventName || null, entry.eventKind || "concert", entry.eventEndDate || null,
+            JSON.stringify(entry.billedArtists || []), entry.eventName ? "staff:verified-official-source" : null,
+            entry.eventSourceUrl || null, id, user.id);
       } else {
         db.prepare(`INSERT INTO tour_dates
-          (id,artist,venue,place,lat,lng,date,ticket_url,sold_out,source,updated_at,owner_id,release_at)
-          VALUES (?,?,?,?,NULL,NULL,?,?,0,?,?,?,?)`)
-          .run(id, batch.artist, entry.venue, entry.place, entry.date, entry.ticketUrl, source, updatedAt, user.id, batch.releaseAt);
+          (id,artist,venue,place,lat,lng,date,ticket_url,sold_out,source,updated_at,owner_id,release_at,
+            event_name,event_kind,event_end_date,billed_artists,music_evidence,music_qualified,event_source_url)
+          VALUES (?,?,?,?,NULL,NULL,?,?,0,?,?,?,?,?,?,?,?,?,1,?)`)
+          .run(id, batch.artist, entry.venue, entry.place, entry.date, entry.ticketUrl, source, updatedAt, user.id, batch.releaseAt,
+            entry.eventName || null, entry.eventKind || "concert", entry.eventEndDate || null,
+            JSON.stringify(entry.billedArtists || []), entry.eventName ? "staff:verified-official-source" : null,
+            entry.eventSourceUrl || null);
       }
       return db.prepare("SELECT * FROM tour_dates WHERE id=?").get(id);
     }));

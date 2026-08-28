@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { publicDirectoryItems, publicNavigationLinks, shouldUseSpaLinkNavigation } from "./publicNavigationLinks.mjs";
+import {
+  publicDirectoryItems,
+  publicNavigationLinks,
+  shouldShowMobilePublicTrail,
+  shouldUseSpaLinkNavigation,
+} from "./publicNavigationLinks.mjs";
 
 test("public navigation always exposes the durable public hubs", () => {
   assert.deepEqual(
@@ -11,6 +16,14 @@ test("public navigation always exposes the durable public hubs", () => {
       { label: "Events", href: "/events" },
     ],
   );
+});
+
+test("the fixed mobile public trail appears only for real public routes", () => {
+  assert.equal(shouldShowMobilePublicTrail({}), false);
+  assert.equal(shouldShowMobilePublicTrail({ tab: "discover" }), false);
+  assert.equal(shouldShowMobilePublicTrail({ directory: "events" }), true);
+  assert.equal(shouldShowMobilePublicTrail({ artistName: "Sade" }), true);
+  assert.equal(shouldShowMobilePublicTrail({ openLog: { id: "event" } }), true);
 });
 
 test("event navigation retains useful artist and venue links after hydration", () => {
@@ -85,4 +98,18 @@ test("hydrated event directories retain several unique canonical event anchors",
     "/event/tm-4",
   ]);
   assert.ok(rows.every((row) => row.title && row.detail && row.action === "View event"));
+});
+
+test("event directories preserve a special event's own identity instead of using its first billed artist", () => {
+  const [cne] = publicDirectoryItems("events", [{
+    id: "cne-2026",
+    artist: "The Beaches",
+    eventName: "Canadian National Exhibition",
+    eventKind: "fair",
+    venue: "Exhibition Place",
+    place: "Toronto, Ontario",
+    date: "2026-08-21",
+  }]);
+  assert.equal(cne.title, "Canadian National Exhibition");
+  assert.equal(cne.href, "/event/cne-2026");
 });

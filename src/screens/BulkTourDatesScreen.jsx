@@ -9,7 +9,25 @@ import SheetHeader from "../components/SheetHeader";
 import { createBulkTourSubmissionLifecycle, scheduledTourRelease } from "../domain/bulkTourSubmission.mjs";
 
 let rowSequence = 0;
-const emptyRow = () => ({ id: `tour-date-${++rowSequence}`, venue: "", place: "", date: "", ticketUrl: "" });
+const SPECIAL_EVENT_KINDS = Object.freeze([
+  { value: "festival", label: "Festival" },
+  { value: "fair", label: "Fair" },
+  { value: "rodeo", label: "Rodeo" },
+  { value: "multi_day", label: "Multi-day" },
+]);
+const emptyRow = () => ({
+  id: `tour-date-${++rowSequence}`,
+  venue: "",
+  place: "",
+  date: "",
+  ticketUrl: "",
+  special: false,
+  eventName: "",
+  eventKind: "festival",
+  eventEndDate: "",
+  lineup: "",
+  eventSourceUrl: "",
+});
 const localIsoDate = (offsetDays = 0) => {
   const date = new Date();
   date.setDate(date.getDate() + offsetDays);
@@ -19,6 +37,7 @@ const localIsoDate = (offsetDays = 0) => {
 
 export default function BulkTourDatesScreen({ onClose }) {
   const { session, addTourDatesBatch } = useStore();
+  const isAdmin = session?.role === "admin";
   const [artist, setArtist] = useState(session?.artistName || "");
   const [rows, setRows] = useState([emptyRow()]);
   const [scheduled, setScheduled] = useState(false);
@@ -64,7 +83,13 @@ export default function BulkTourDatesScreen({ onClose }) {
   };
   const removeRow = (rowId) => { resetResult(); setRows((rs) => (rs.length === 1 ? rs : rs.filter((row) => row.id !== rowId))); };
 
-  const ready = rows.filter((r) => r.venue.trim() && r.place.trim() && r.date);
+  const ready = rows.filter((r) => r.venue.trim() && r.place.trim() && r.date
+    && (!r.special || (
+      r.eventName.trim()
+      && r.eventSourceUrl.trim()
+      && (!r.eventEndDate || r.eventEndDate >= r.date)
+      && (r.eventKind !== "multi_day" || (r.eventEndDate && r.eventEndDate > r.date))
+    )));
   const canSave = !formLocked && artist.trim() && ready.length === rows.length && (!scheduled || releaseDate);
 
   const save = async () => {
@@ -85,6 +110,13 @@ export default function BulkTourDatesScreen({ onClose }) {
         place: r.place.trim(),
         date: r.date,
         ticketUrl: r.ticketUrl.trim(),
+        ...(r.special ? {
+          eventName: r.eventName.trim(),
+          eventKind: r.eventKind,
+          eventEndDate: r.eventEndDate || null,
+          billedArtists: r.lineup.split(",").map((name) => name.trim()).filter(Boolean).slice(0, 20),
+          eventSourceUrl: r.eventSourceUrl.trim(),
+        } : {}),
       })),
       release.releaseAt,
     );
@@ -104,7 +136,7 @@ export default function BulkTourDatesScreen({ onClose }) {
     return (
       <View style={styles.wrap}>
         <Header onClose={closeScreen} title="TOUR DATES" />
-        <Text style={styles.denied}>Only approved artist accounts can post tour dates.</Text>
+        <Text style={styles.denied}>Only approved artist accounts and administrators can publish live dates.</Text>
       </View>
     );
   }
@@ -121,16 +153,17 @@ export default function BulkTourDatesScreen({ onClose }) {
       />
     );
   }
-  if (picker?.type === "date" || picker?.type === "release") {
+  if (picker?.type === "date" || picker?.type === "eventEnd" || picker?.type === "release") {
     return (
       <View style={styles.wrap}>
-        <Header onClose={() => setPicker(null)} title={picker.type === "release" ? "RELEASE DATE" : "SHOW DATE"} backLabel="cancel" />
+        <Header onClose={() => setPicker(null)} title={picker.type === "release" ? "RELEASE DATE" : picker.type === "eventEnd" ? "EVENT END DATE" : "SHOW DATE"} backLabel="cancel" />
         <View style={{ padding: 16 }}>
-          <DatePicker value={tempDate} onChange={setTempDate} accessibilityLabel={picker.type === "release" ? "Release date" : "Show date"} />
+          <DatePicker value={tempDate} onChange={setTempDate} accessibilityLabel={picker.type === "release" ? "Release date" : picker.type === "eventEnd" ? "Event end date" : "Show date"} />
           <Pressable
             style={[styles.primary, !tempDate && styles.disabled]}
             onPress={() => {
               if (picker.type === "release") setReleaseDate(tempDate);
+              else if (picker.type === "eventEnd") setRow(picker.rowId, { eventEndDate: tempDate });
               else setRow(picker.rowId, { date: tempDate });
               setPicker(null);
             }}
@@ -148,7 +181,7 @@ export default function BulkTourDatesScreen({ onClose }) {
 
   return (
     <View style={styles.wrap}>
-      <Header onClose={closeScreen} title="BULK TOUR DATES" leadDisabled={saving} />
+      <Header onClose={closeScreen} title={isAdmin ? "EVENTS & TOUR DATES" : "BULK TOUR DATES"} leadDisabled={saving} />
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <Text style={styles.label}>ARTIST</Text>
         <TextInput
@@ -156,13 +189,13 @@ export default function BulkTourDatesScreen({ onClose }) {
           value={artist}
           onChangeText={(value) => { resetResult(); setArtist(value); }}
           editable={!formLocked && session?.role !== "artist"}
-          placeholder="Artist"
+          placeholder={isAdmin ? "Primary artist or event organizer" : "Artist"}
           placeholderTextColor={colors.textFaint}
           accessibilityLabel="Artist name"
           accessibilityState={{ disabled: formLocked || session?.role === "artist" }}
         />
 
-        <Text style={[styles.label, { marginTop: 22 }]}>DATES · {ready.length} ready</Text>
+        <Text style={[styles.label, { marginTop: 22 }]}>{isAdmin ? "EVENTS & DATES" : "DATES"} · {ready.length} ready</Text>
         {rows.map((r, i) => (
           <View key={r.id} style={styles.rowCard} accessibilityLabel={`Tour date ${i + 1}`}>
             <View style={styles.rowHead}>
@@ -184,6 +217,96 @@ export default function BulkTourDatesScreen({ onClose }) {
               <Text style={[styles.pickTxt, !r.date && styles.pickPlaceholder]}>{r.date || "Pick date"}</Text>
               <Icon name="chevron-right" size={16} color={colors.textDim} />
             </Pressable>
+            {isAdmin ? (
+              <>
+                <View style={styles.entryTypeRow} accessibilityRole="radiogroup" accessibilityLabel={`Entry ${i + 1} type`}>
+                  <Pressable
+                    style={[styles.entryType, !r.special && styles.entryTypeOn]}
+                    onPress={() => setRow(r.id, { special: false })}
+                    disabled={formLocked}
+                    accessibilityRole="radio"
+                    accessibilityState={{ checked: !r.special, disabled: formLocked }}
+                  >
+                    <Text style={[styles.entryTypeText, !r.special && styles.entryTypeTextOn]}>Concert</Text>
+                  </Pressable>
+                  <Pressable
+                    style={[styles.entryType, r.special && styles.entryTypeOn]}
+                    onPress={() => setRow(r.id, { special: true })}
+                    disabled={formLocked}
+                    accessibilityRole="radio"
+                    accessibilityState={{ checked: r.special, disabled: formLocked }}
+                  >
+                    <Text style={[styles.entryTypeText, r.special && styles.entryTypeTextOn]}>Festival / fair</Text>
+                  </Pressable>
+                </View>
+                {r.special ? (
+                  <View style={styles.specialFields}>
+                    <Text style={styles.specialHint}>Verified parent event · use the official event name and source. Active date ranges stay pinned until their final day.</Text>
+                    <TextInput
+                      style={styles.input}
+                      value={r.eventName}
+                      onChangeText={(value) => setRow(r.id, { eventName: value })}
+                      editable={!formLocked}
+                      maxLength={200}
+                      placeholder="Event name, e.g. Canadian National Exhibition"
+                      placeholderTextColor={colors.textFaint}
+                      accessibilityLabel={`Entry ${i + 1}, event name`}
+                    />
+                    <View style={styles.kindGrid} accessibilityRole="radiogroup" accessibilityLabel={`Entry ${i + 1}, event type`}>
+                      {SPECIAL_EVENT_KINDS.map((kind) => {
+                        const selected = r.eventKind === kind.value;
+                        return (
+                          <Pressable
+                            key={kind.value}
+                            style={[styles.kindChip, selected && styles.kindChipOn]}
+                            onPress={() => setRow(r.id, { eventKind: kind.value })}
+                            disabled={formLocked}
+                            accessibilityRole="radio"
+                            accessibilityState={{ checked: selected, disabled: formLocked }}
+                          >
+                            <Text style={[styles.kindText, selected && styles.kindTextOn]}>{kind.label}</Text>
+                          </Pressable>
+                        );
+                      })}
+                    </View>
+                    <Pressable
+                      style={styles.pick}
+                      onPress={() => { setTempDate(r.eventEndDate || r.date || localIsoDate()); setPicker({ type: "eventEnd", rowId: r.id }); }}
+                      disabled={formLocked}
+                      accessibilityRole="button"
+                      accessibilityLabel={r.eventEndDate ? `Event ends ${r.eventEndDate}` : "Choose event end date"}
+                    >
+                      <Icon name="calendar" size={16} color={colors.good} />
+                      <Text style={[styles.pickTxt, !r.eventEndDate && styles.pickPlaceholder]}>{r.eventEndDate || "End date (required for multi-day)"}</Text>
+                      <Icon name="chevron-right" size={16} color={colors.textDim} />
+                    </Pressable>
+                    <TextInput
+                      style={styles.input}
+                      value={r.lineup}
+                      onChangeText={(value) => setRow(r.id, { lineup: value })}
+                      editable={!formLocked}
+                      maxLength={1200}
+                      placeholder="Billed artists, comma separated (optional)"
+                      placeholderTextColor={colors.textFaint}
+                      accessibilityLabel={`Entry ${i + 1}, billed artists`}
+                    />
+                    <TextInput
+                      style={styles.input}
+                      value={r.eventSourceUrl}
+                      onChangeText={(value) => setRow(r.id, { eventSourceUrl: value })}
+                      editable={!formLocked}
+                      maxLength={2000}
+                      keyboardType="url"
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      placeholder="Official event source URL"
+                      placeholderTextColor={colors.textFaint}
+                      accessibilityLabel={`Entry ${i + 1}, official event source URL`}
+                    />
+                  </View>
+                ) : null}
+              </>
+            ) : null}
             <TextInput
               style={styles.input}
               value={r.ticketUrl}
@@ -230,13 +353,13 @@ export default function BulkTourDatesScreen({ onClose }) {
         </Text>
 
         {!!error && <Text style={styles.error} accessibilityRole="alert" accessibilityLiveRegion="assertive">{error}</Text>}
-        {status === "success" && <Text style={styles.success} accessibilityLiveRegion="polite" role="status">All dates were published.</Text>}
+        {status === "success" && <Text style={styles.success} accessibilityLiveRegion="polite" role="status">Everything was published.</Text>}
         <Pressable
           style={[styles.primary, !canSave && styles.disabled]}
           onPress={save}
           disabled={!canSave}
           accessibilityRole="button"
-          accessibilityLabel={status === "saving" ? "Publishing tour dates" : "Publish tour dates"}
+          accessibilityLabel={status === "saving" ? "Publishing live dates" : "Publish live dates"}
           accessibilityState={{ disabled: !canSave, busy: status === "saving" }}
         >
           {status === "saving" ? <ActivityIndicator color="#1A1206" /> : (
@@ -270,6 +393,18 @@ const styles = StyleSheet.create({
   pick: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: colors.surface, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 14, paddingVertical: 13, marginBottom: 8 },
   pickTxt: { flex: 1, color: colors.text, fontSize: 14 },
   pickPlaceholder: { color: colors.textFaint },
+  entryTypeRow: { flexDirection: "row", gap: 8, marginBottom: 8 },
+  entryType: { minHeight: 44, flex: 1, alignItems: "center", justifyContent: "center", borderRadius: radius.sm, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
+  entryTypeOn: { borderColor: colors.amber, backgroundColor: colors.bgElev },
+  entryTypeText: { color: colors.textDim, fontSize: 12.5, fontWeight: "700" },
+  entryTypeTextOn: { color: colors.amber, fontWeight: "900" },
+  specialFields: { gap: 0, marginBottom: 4, padding: 10, borderRadius: radius.sm, borderWidth: 1, borderColor: `${colors.good}55`, backgroundColor: `${colors.good}0A` },
+  specialHint: { color: colors.textDim, fontSize: 11.5, lineHeight: 17, marginBottom: 9 },
+  kindGrid: { flexDirection: "row", flexWrap: "wrap", gap: 7, marginBottom: 8 },
+  kindChip: { minHeight: 40, alignItems: "center", justifyContent: "center", paddingHorizontal: 11, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
+  kindChipOn: { borderColor: colors.good, backgroundColor: `${colors.good}16` },
+  kindText: { color: colors.textDim, fontSize: 11, fontWeight: "800" },
+  kindTextOn: { color: colors.good },
   addRow: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 12, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.line, borderStyle: "dashed" },
   addRowTxt: { color: colors.amber, fontSize: 14, fontWeight: "600" },
   toggleRow: { flexDirection: "row", gap: 10 },

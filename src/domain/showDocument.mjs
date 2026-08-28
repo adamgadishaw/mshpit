@@ -1,4 +1,5 @@
 import { normalizeStableShowId } from "./showAttendance.mjs";
+import { LIVE_EVENT_PHASE, liveEventPhase } from "./eventLifecycle.mjs";
 
 const SHOW_LIFECYCLES = new Set([
   "unknown", "upcoming", "happening", "completed", "postponed", "cancelled",
@@ -6,6 +7,14 @@ const SHOW_LIFECYCLES = new Set([
 
 const text = (value) => typeof value === "string" && value.trim() ? value.trim() : null;
 const timestamp = (value) => Number.isFinite(Number(value)) && Number(value) > 0 ? Number(value) : null;
+const SPECIAL_EVENT_KINDS = new Set(["festival", "fair", "rodeo", "multi_day"]);
+
+export function isNamedSpecialEvent(event) {
+  const kind = text(event?.eventKind)?.toLowerCase();
+  const eventName = text(event?.eventName);
+  const artist = text(event?.artist);
+  return SPECIAL_EVENT_KINDS.has(kind) || (!!eventName && eventName !== artist);
+}
 
 export function showDocumentIdentity(concertKey, accountId) {
   return `${String(concertKey || "")}\u0000${accountId == null ? "guest" : String(accountId)}`;
@@ -58,27 +67,41 @@ export function normalizeShowDocument(payload) {
   };
 }
 
-export function showLifecycleView(document, legacyDate, hasScore, now = Date.now()) {
+export function showLifecycleView(document, legacyDate, hasScore, now = Date.now(), event = null) {
   const trusted = document?.provider?.backed === true;
+  const activeMultiDay = liveEventPhase(event, now) === LIVE_EVENT_PHASE.ACTIVE;
   if (trusted && document.lifecycle !== "unknown") {
+    const lifecycle = activeMultiDay && !["cancelled", "postponed"].includes(document.lifecycle)
+      ? "happening"
+      : document.lifecycle;
     return {
-      lifecycle: document.lifecycle,
+      lifecycle,
       targetMs: document.startsAt,
-      upcoming: ["upcoming", "happening", "postponed"].includes(document.lifecycle),
+      upcoming: ["upcoming", "happening", "postponed"].includes(lifecycle),
       trusted: true,
     };
   }
   const parsed = typeof legacyDate === "number" ? legacyDate : null;
   return {
-    lifecycle: "unknown",
+    lifecycle: activeMultiDay ? "happening" : "unknown",
     targetMs: parsed,
-    upcoming: parsed != null ? parsed - now > -86400000 : hasScore !== true,
+    upcoming: activeMultiDay || (parsed != null ? parsed - now > -86400000 : hasScore !== true),
     trusted: false,
   };
 }
 
 export function showPresentationModel(lifecycleView) {
   const view = lifecycleView || {};
+  if (view.lifecycle === "happening") {
+    return {
+      screenKicker: "HAPPENING NOW",
+      ticketKicker: "LIVE · HAPPENING NOW",
+      showCountdown: false,
+      showPostEvent: false,
+      allowTickets: true,
+      allowGoing: true,
+    };
+  }
   if (view.trusted !== true) {
     const upcoming = view.upcoming === true;
     return {
@@ -91,15 +114,6 @@ export function showPresentationModel(lifecycleView) {
     };
   }
   switch (view.lifecycle) {
-    case "happening":
-      return {
-        screenKicker: "HAPPENING NOW",
-        ticketKicker: "LIVE · HAPPENING NOW",
-        showCountdown: false,
-        showPostEvent: false,
-        allowTickets: true,
-        allowGoing: true,
-      };
     case "postponed":
       return {
         screenKicker: "POSTPONED PERFORMANCE",

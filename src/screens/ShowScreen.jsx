@@ -15,7 +15,7 @@ import { showDateMs, fmtCountdown } from "../lib/showTime";
 import { formatDate } from "../domain/dates.mjs";
 import { normalizeShowAttendees, showSocialIdentity, showSocialView } from "../domain/showSocial.mjs";
 import {
-  showDocumentIdentity, showLifecycleView, showPresentationModel,
+  isNamedSpecialEvent, showDocumentIdentity, showLifecycleView, showPresentationModel,
 } from "../domain/showDocument.mjs";
 import {
   CROWD_SCOPES, attendanceTotalForView, viewerGoingForCrowd,
@@ -78,7 +78,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
     date: trustedShow?.localDate || trustedShow?.date || log.date,
   };
   const eventTitle = liveEventTitle(norm);
-  const isNamedLiveEvent = eventTitle !== artist;
+  const isNamedLiveEvent = isNamedSpecialEvent(norm) || eventTitle !== artist;
   const eventLineup = isNamedLiveEvent ? liveEventLineupLabel(norm, { limit: 5 }) : "";
   const eventEndDate = typeof norm.eventEndDate === "string"
     && /^\d{4}-\d{2}-\d{2}$/.test(norm.eventEndDate)
@@ -263,8 +263,10 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
   // but a score is treated as happened; no date and no score reads as upcoming.
   const lifecycleView = showLifecycleView(
     trustedShow,
-    showDateMs(log.date),
+    showDateMs(norm.date),
     overall != null,
+    Date.now(),
+    norm,
   );
   const targetMs = lifecycleView.targetMs;
   const presentation = showPresentationModel(lifecycleView);

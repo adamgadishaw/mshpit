@@ -12,6 +12,7 @@ import { runBackgroundJob } from "./backgroundJobCoordinator.js";
 import { privateErrorLabel } from "./errors.js";
 import { canonicalTicketUrl } from "../src/domain/ticketLinks.mjs";
 import { bandsintownMusicEvent, ticketmasterMusicEvent } from "./musicEventClassification.js";
+import { selectTicketmasterEventImage } from "./providerEventImage.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CATALOG = join(HERE, "..", "src", "seed", "catalog.generated.json");
@@ -56,6 +57,16 @@ export function ticketmasterFutureBoundary(at = Date.now()) {
   const parsed = Number(at);
   const date = new Date(Number.isFinite(parsed) ? parsed : Date.now());
   return date.toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+export function ticketmasterActiveAndFutureRange(at = Date.now(), horizonDays = 3 * 366) {
+  const parsed = Number(at);
+  const start = Number.isFinite(parsed) ? parsed : Date.now();
+  const days = boundedInteger(horizonDays, 3 * 366, { min: 1, max: 5 * 366 });
+  return [
+    ticketmasterFutureBoundary(start),
+    ticketmasterFutureBoundary(start + days * DAY),
+  ];
 }
 
 // Ticketmaster's Discovery API is international, but its default locale is
@@ -121,6 +132,7 @@ export function ticketmasterEventSearchUrl({
   city,
   countryCode,
   startDateTime,
+  startEndDateTime,
   size = 20,
   sort = "date,asc",
 } = {}) {
@@ -129,6 +141,11 @@ export function ticketmasterEventSearchUrl({
   if (city) url.searchParams.set("city", String(city));
   if (countryCode) url.searchParams.set("countryCode", String(countryCode).toUpperCase());
   if (startDateTime) url.searchParams.set("startDateTime", String(startDateTime));
+  if (startEndDateTime) {
+    const range = Array.isArray(startEndDateTime) ? startEndDateTime : [startEndDateTime];
+    const values = range.map(String).map((value) => value.trim()).filter(Boolean).slice(0, 2);
+    if (values.length) url.searchParams.set("startEndDateTime", values.join(","));
+  }
   url.searchParams.set("classificationName", "music");
   url.searchParams.set("locale", "*");
   url.searchParams.set("includeTBA", "no");
@@ -216,6 +233,7 @@ export function ticketmasterRows(data, { requestedArtist = null } = {}) {
     if (!artist || !venue?.name || !date || !matchesRequestedArtist) continue;
     const localTime = optionalText(event.dates?.start?.localTime);
     const countryCode = optionalText(venue.country?.countryCode);
+    const eventImage = selectTicketmasterEventImage(event);
     out.push({
       id: event.id ? `tm_${event.id}` : slugId("tm", artist, venue.name, date), artist, venue: venue.name,
       place: [venue.city?.name, venue.state?.name, venue.country?.name].filter(Boolean).join(", "),
@@ -247,6 +265,10 @@ export function ticketmasterRows(data, { requestedArtist = null } = {}) {
       music_evidence: musicEvent.evidence,
       billed_artists: musicEvent.billedArtists,
       event_end_date: musicEvent.endDate,
+      event_image_url: eventImage?.uri ?? null,
+      event_image_attribution: eventImage?.attribution ?? null,
+      event_image_width: eventImage?.width ?? null,
+      event_image_height: eventImage?.height ?? null,
     });
   }
   return out;
@@ -258,7 +280,7 @@ async function tmDates(name) {
     apiKey: KEY,
     keyword: name,
     size: ARTIST_PAGE_SIZE,
-    startDateTime: ticketmasterFutureBoundary(),
+    startEndDateTime: ticketmasterActiveAndFutureRange(),
   }));
   return ticketmasterRows(data, { requestedArtist: name });
 }
@@ -269,7 +291,7 @@ async function tmDates(name) {
 // request per distinct member city gives the local rail useful coverage.
 async function tmCityDates(city) {
   if (!KEY || !city) return [];
-  const data = await getJSON(ticketmasterEventSearchUrl({ apiKey: KEY, city, size: 200, startDateTime: ticketmasterFutureBoundary() }));
+  const data = await getJSON(ticketmasterEventSearchUrl({ apiKey: KEY, city, size: 200, startEndDateTime: ticketmasterActiveAndFutureRange() }));
   return ticketmasterRows(data);
 }
 
@@ -278,7 +300,7 @@ async function tmCityDates(city) {
 // several scheduled runs, and the cursor survives restarts on the same disk.
 async function tmCountryDates(countryCode) {
   if (!KEY || !countryCode) return [];
-  const data = await getJSON(ticketmasterEventSearchUrl({ apiKey: KEY, countryCode, size: 200, startDateTime: ticketmasterFutureBoundary() }));
+  const data = await getJSON(ticketmasterEventSearchUrl({ apiKey: KEY, countryCode, size: 200, startEndDateTime: ticketmasterActiveAndFutureRange() }));
   return ticketmasterRows(data);
 }
 
@@ -404,13 +426,15 @@ const PROVIDER_TOUR_DATE_UPSERT_SQL = `
     provider_event_id,event_name,start_date_time,start_local_time,event_timezone,event_status,
     venue_provider_id,venue_address_line1,venue_address_line2,venue_city,venue_region,
     venue_postal_code,venue_country_code,venue_country,provider_active,last_seen_at,
-    event_kind,music_qualified,music_evidence,billed_artists,event_end_date
+    event_kind,music_qualified,music_evidence,billed_artists,event_end_date,
+    event_image_url,event_image_attribution,event_image_width,event_image_height
   ) VALUES (
     @id,@artist,@artist_key,@venue,@place,@lat,@lng,@date,@ticket_url,@sold_out,@source,@updated_at,
     @provider_event_id,@event_name,@start_date_time,@start_local_time,@event_timezone,@event_status,
     @venue_provider_id,@venue_address_line1,@venue_address_line2,@venue_city,@venue_region,
     @venue_postal_code,@venue_country_code,@venue_country,@provider_active,@last_seen_at,
-    @event_kind,@music_qualified,@music_evidence,@billed_artists,@event_end_date
+    @event_kind,@music_qualified,@music_evidence,@billed_artists,@event_end_date,
+    @event_image_url,@event_image_attribution,@event_image_width,@event_image_height
   )
   ON CONFLICT(id) DO UPDATE SET
     artist=excluded.artist,artist_key=excluded.artist_key,venue=excluded.venue,place=excluded.place,
@@ -441,6 +465,10 @@ const PROVIDER_TOUR_DATE_UPSERT_SQL = `
       OR excluded.music_evidence IS NOT tour_dates.music_evidence
       OR excluded.billed_artists IS NOT tour_dates.billed_artists
       OR excluded.event_end_date IS NOT tour_dates.event_end_date
+      OR excluded.event_image_url IS NOT tour_dates.event_image_url
+      OR excluded.event_image_attribution IS NOT tour_dates.event_image_attribution
+      OR excluded.event_image_width IS NOT tour_dates.event_image_width
+      OR excluded.event_image_height IS NOT tour_dates.event_image_height
       THEN excluded.updated_at ELSE tour_dates.updated_at END,
     provider_event_id=COALESCE(excluded.provider_event_id,tour_dates.provider_event_id),
     event_name=COALESCE(excluded.event_name,tour_dates.event_name),
@@ -459,6 +487,10 @@ const PROVIDER_TOUR_DATE_UPSERT_SQL = `
     event_kind=excluded.event_kind,music_qualified=excluded.music_qualified,
     music_evidence=excluded.music_evidence,billed_artists=excluded.billed_artists,
     event_end_date=excluded.event_end_date,
+    event_image_url=excluded.event_image_url,
+    event_image_attribution=excluded.event_image_attribution,
+    event_image_width=excluded.event_image_width,
+    event_image_height=excluded.event_image_height,
     provider_active=excluded.provider_active,last_seen_at=excluded.last_seen_at
   WHERE tour_dates.owner_id IS NULL`;
 
@@ -497,6 +529,10 @@ function providerTourDateWrite(row, seenAt, artistKey) {
     music_evidence: row.music_evidence ?? null,
     billed_artists: JSON.stringify(Array.isArray(row.billed_artists) ? row.billed_artists.slice(0, 20) : []),
     event_end_date: row.event_end_date ?? null,
+    event_image_url: row.event_image_url ?? null,
+    event_image_attribution: row.event_image_attribution ?? null,
+    event_image_width: row.event_image_width ?? null,
+    event_image_height: row.event_image_height ?? null,
   };
 }
 

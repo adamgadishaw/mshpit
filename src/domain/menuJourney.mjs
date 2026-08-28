@@ -46,7 +46,7 @@ export function journeyMenuModel({ session = null, inboxUnread = 0, notification
       ? [{ key: "admin", icon: "shield", title: "Moderation", detail: "Reports, members, and content" }]
       : []),
     ...(role === "admin"
-      ? [{ key: "tourDates", icon: "calendar", title: "Tour date tools", detail: "Staff publishing and scheduling" }]
+      ? [{ key: "tourDates", icon: "calendar", title: "Events & tour dates", detail: "Publish festivals, fairs, and artist dates" }]
       : []),
     ...(role === "fan"
       ? [{ key: "requestArtist", icon: "shield", title: "Claim an artist profile", detail: "Verify your relationship to an artist" }]

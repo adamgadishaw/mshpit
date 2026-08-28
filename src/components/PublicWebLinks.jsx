@@ -144,6 +144,7 @@ export function PublicDirectoryPanel({ directory, artists = [], events = [], onO
 const styles = StyleSheet.create({
   trail: {
     minHeight: 36,
+    flexShrink: 0,
     flexDirection: "row",
     alignItems: "center",
     gap: 10,

@@ -35,3 +35,18 @@ test("Bulk Tour JSX locks saving controls and owns its delayed-close cleanup", (
   assert.match(source, /lifecycleRef\.current\.isCurrent\(submission\)/);
   assert.match(source, /clearTimeout\(closeTimerRef\.current\)/);
 });
+
+test("Bulk Tour keeps verified parent-event controls admin-only and sends their complete evidence", () => {
+  const source = readFileSync(new URL("../screens/BulkTourDatesScreen.jsx", import.meta.url), "utf8");
+  assert.match(source, /const isAdmin = session\?\.role === "admin"/);
+  assert.match(source, /\{isAdmin \? \(/);
+  assert.match(source, /SPECIAL_EVENT_KINDS[\s\S]*"festival"[\s\S]*"fair"[\s\S]*"rodeo"[\s\S]*"multi_day"/);
+  assert.match(source, /eventName: r\.eventName\.trim\(\)/);
+  assert.match(source, /eventKind: r\.eventKind/);
+  assert.match(source, /eventEndDate: r\.eventEndDate \|\| null/);
+  assert.match(source, /billedArtists: r\.lineup\.split\(","\)[\s\S]*\.slice\(0, 20\)/);
+  assert.match(source, /eventSourceUrl: r\.eventSourceUrl\.trim\(\)/);
+  assert.match(source, /r\.eventSourceUrl\.trim\(\)/);
+  assert.match(source, /r\.eventKind !== "multi_day" \|\| \(r\.eventEndDate && r\.eventEndDate > r\.date\)/);
+  assert.match(source, /Active date ranges stay pinned until their final day/);
+});

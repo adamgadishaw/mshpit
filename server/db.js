@@ -484,7 +484,12 @@ CREATE TABLE IF NOT EXISTS tour_dates (
   music_qualified       INTEGER NOT NULL DEFAULT 1,
   music_evidence        TEXT,
   billed_artists        TEXT NOT NULL DEFAULT '[]',
-  event_end_date        TEXT
+  event_end_date        TEXT,
+  event_source_url      TEXT,
+  event_image_url       TEXT,
+  event_image_attribution TEXT,
+  event_image_width     INTEGER,
+  event_image_height    INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_tourdates_artist ON tour_dates(artist);
 
@@ -1467,6 +1472,16 @@ const additiveMigrations = [
   "ALTER TABLE tour_dates ADD COLUMN music_evidence TEXT",
   "ALTER TABLE tour_dates ADD COLUMN billed_artists TEXT NOT NULL DEFAULT '[]'",
   "ALTER TABLE tour_dates ADD COLUMN event_end_date TEXT",
+  // Staff-curated festivals/fairs must retain the official public source used
+  // to verify their live-music identity. It is never fetched server-side.
+  "ALTER TABLE tour_dates ADD COLUMN event_source_url TEXT",
+  // Ticketmaster supplies a bounded image descriptor with the event payload.
+  // Persist the chosen asset and its attribution/dimensions so render paths do
+  // not repeatedly search for or download venue/event imagery.
+  "ALTER TABLE tour_dates ADD COLUMN event_image_url TEXT",
+  "ALTER TABLE tour_dates ADD COLUMN event_image_attribution TEXT",
+  "ALTER TABLE tour_dates ADD COLUMN event_image_width INTEGER",
+  "ALTER TABLE tour_dates ADD COLUMN event_image_height INTEGER",
   // Stable attendee pagination for existing rows (0 + user id) and all new rows.
   "ALTER TABLE going ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0",
   // Marketing consent. Broadcasts must honour this; password resets must not,

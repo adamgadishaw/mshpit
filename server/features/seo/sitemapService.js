@@ -32,6 +32,7 @@ import {
   structuredCityIdentity,
 } from "./publicEntityPolicy.js";
 import { createPublicDocumentRepository } from "./publicDocumentRepository.js";
+import { currentOrUpcomingTourDateRow, effectiveTourDateEndSql } from "../../tourDateLifecycle.js";
 
 export const SITEMAP_MAX_URLS = 50_000;
 export const SITEMAP_MAX_BYTES = 50 * 1024 * 1024;
@@ -336,7 +337,7 @@ function visibleTourDateCandidates(database, {
   const today = new Date(at).toISOString().slice(0, 10);
   const rows = [];
   const statement = database.prepare(`SELECT td.id,td.provider_event_id,td.artist,td.artist_key,td.venue,td.place,td.source,
-      td.venue_provider_id,td.date,td.updated_at,td.owner_id,COALESCE(td.provider_active,1) AS provider_active,
+      td.venue_provider_id,td.date,td.event_end_date,td.updated_at,td.owner_id,COALESCE(td.provider_active,1) AS provider_active,
       td.event_status,td.ticket_url,td.start_date_time,td.venue_address_line1,td.venue_address_line2,
       td.venue_city,td.venue_region,td.venue_country_code,td.venue_country
     FROM tour_dates td INDEXED BY idx_tourdates_sitemap_cursor
@@ -346,7 +347,7 @@ function visibleTourDateCandidates(database, {
       AND td.date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'
       AND TRIM(COALESCE(td.artist,''))<>'' AND TRIM(COALESCE(td.venue,''))<>''
       AND (td.owner_id IS NULL OR ${activeAccountSql("owner")})
-      AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1 OR td.date<?)
+      AND (td.owner_id IS NOT NULL OR COALESCE(td.provider_active,1)=1 OR ${effectiveTourDateEndSql("td")}<?)
       AND (? IS NULL OR td.date>? OR (td.date=? AND td.id>?))
     ORDER BY td.date ASC,td.id ASC LIMIT ?`);
   let cursorDate = null;
@@ -389,7 +390,7 @@ export function materializeSitemapCandidates(database, {
     now: at,
     maximumRows: safeMaximum - posts.length,
   });
-  const upcomingEvents = tourDates.filter((row) => row.date >= today
+  const upcomingEvents = tourDates.filter((row) => currentOrUpcomingTourDateRow(row, today)
     && (row.owner_id != null || Number(row.provider_active) === 1));
   return Object.freeze({
     generatedAt: at,
@@ -507,7 +508,7 @@ export function artistSitemapEntries(database, { now = Date.now(), candidates = 
 
   const tourUpdates = new Map();
   const upcomingEvents = candidates?.upcomingEvents || visibleTourDateCandidates(database, { now: at })
-    .filter((row) => row.date >= today && (row.owner_id != null || Number(row.provider_active) === 1));
+    .filter((row) => currentOrUpcomingTourDateRow(row, today) && (row.owner_id != null || Number(row.provider_active) === 1));
   for (const row of upcomingEvents) {
     const byKey = artistByNorm.get(String(row.artist_key || "").trim().toLowerCase());
     const byName = artistByName.get(String(row.artist || "").trim().toLowerCase());
@@ -568,7 +569,7 @@ function visibleUpcomingEvents(database, { now = Date.now(), limit = -1, candida
   const at = Number.isSafeInteger(requestedAt) && requestedAt >= 0 ? requestedAt : Date.now();
   const today = new Date(at).toISOString().slice(0, 10);
   const rows = (candidates?.upcomingEvents || visibleTourDateCandidates(database, { now: at }))
-    .filter((row) => row.date >= today && (row.owner_id != null || Number(row.provider_active) === 1));
+    .filter((row) => currentOrUpcomingTourDateRow(row, today) && (row.owner_id != null || Number(row.provider_active) === 1));
   return Number.isSafeInteger(limit) && limit > 0 ? rows.slice(0, limit) : rows;
 }
 

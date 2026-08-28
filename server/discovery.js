@@ -3,6 +3,14 @@ import { activeAccountSql } from "./accountVisibility.js";
 import { visibleTourDateRows } from "./tourDateVisibility.js";
 import { projectedTourDateTicketUrl } from "../src/domain/ticketLinks.mjs";
 import { projectPopularLounges } from "../src/domain/liveDiscovery.mjs";
+import {
+  isCurrentOrUpcomingLiveEvent,
+  LIVE_EVENT_PHASE,
+  liveEventPhase,
+  liveEventQueryFloorDate,
+  liveEventTimeZone,
+} from "../src/domain/eventLifecycle.mjs";
+import { publicTicketmasterEventImage } from "./providerEventImage.js";
 
 const norm = (value) => String(value || "").trim().toLowerCase();
 const radians = (degrees) => degrees * Math.PI / 180;
@@ -46,6 +54,7 @@ function evidenceBackedEventFields(row) {
     eventName: row.event_name || null,
     eventKind: row.event_kind || "concert",
     eventEndDate: row.event_end_date || null,
+    eventSourceUrl: row.event_source_url || null,
     billedArtists,
   };
 }
@@ -62,6 +71,8 @@ function publicEvent(row) {
     ticketUrl: projectedTourDateTicketUrl(row),
     soldOut: !!row.sold_out,
     source: row.source,
+    eventImage: publicTicketmasterEventImage(row),
+    eventTimezone: liveEventTimeZone({ eventTimezone: row.event_timezone }),
     releaseAt: Number(row.release_at) || 0,
     createdBy: row.owner_id || "import",
     ...evidenceBackedEventFields(row),
@@ -134,11 +145,16 @@ function popularLounges({ limit = 6, at = Date.now() } = {}) {
 // instead of presenting three blank cards.
 export function discoverySidebar(viewer, { artistLimit = 8, eventLimit = 8, venueLimit = 8, loungeLimit = 6, at = Date.now() } = {}) {
   const timestamp = Number.isFinite(Number(at)) ? Number(at) : Date.now();
-  const today = new Date(timestamp).toISOString().slice(0, 10);
+  const today = liveEventQueryFloorDate(timestamp);
   // Visibility is enforced inside the service before ranking or aggregation.
   // Callers cannot inject a preselected row set and accidentally disclose an
   // unreleased, blocked, or restricted owner's date through venue metadata.
-  const rows = visibleTourDateRows(viewer, { today });
+  const rows = visibleTourDateRows(viewer, { today, at: timestamp }).filter((row) =>
+    isCurrentOrUpcomingLiveEvent({
+      date: row.date,
+      eventEndDate: row.event_end_date,
+      eventTimezone: row.event_timezone,
+    }, timestamp));
   const home = viewer?.home_city
     ? { city: viewer.home_city, lat: finite(viewer.home_lat), lng: finite(viewer.home_lng) }
     : null;
@@ -159,15 +175,35 @@ export function discoverySidebar(viewer, { artistLimit = 8, eventLimit = 8, venu
     else if (distance != null && distance <= 250) locality = 3;
     else if (homeCountry && norm(place.country) === homeCountry) locality = 2;
     else if (!home) locality = 1;
-    return { row, place, distance, locality };
+    const phase = liveEventPhase({
+      date: row.date,
+      eventEndDate: row.event_end_date,
+      eventTimezone: row.event_timezone,
+    }, timestamp);
+    return { row, place, distance, locality, active: phase === LIVE_EVENT_PHASE.ACTIVE };
   }).sort((a, b) =>
     b.locality - a.locality
+    || Number(b.active) - Number(a.active)
     || (a.distance ?? Number.POSITIVE_INFINITY) - (b.distance ?? Number.POSITIVE_INFINITY)
     || String(a.row.date).localeCompare(String(b.row.date))
     || String(a.row.artist).localeCompare(String(b.row.artist))
   );
 
-  const events = ranked.slice(0, eventLimit).map(({ row, distance, locality }) => ({
+  // Event selection has a different goal than venue ranking. Keep the local
+  // tier together, then pin an in-progress multi-day event ahead of future
+  // rows in that tier so a fair or festival is not trimmed out by a long list
+  // of exact-city announcements. Venue ranking below deliberately retains the
+  // established exact-locality-first order.
+  const eventRanked = [...ranked].sort((a, b) =>
+    Number(b.locality >= 4) - Number(a.locality >= 4)
+    || Number(b.active) - Number(a.active)
+    || b.locality - a.locality
+    || (a.distance ?? Number.POSITIVE_INFINITY) - (b.distance ?? Number.POSITIVE_INFINITY)
+    || String(a.row.date).localeCompare(String(b.row.date))
+    || String(a.row.artist).localeCompare(String(b.row.artist))
+  );
+
+  const events = eventRanked.slice(0, eventLimit).map(({ row, distance, locality }) => ({
     ...publicEvent(row),
     distanceKm: distance == null ? null : Math.round(distance),
     local: locality >= 4,

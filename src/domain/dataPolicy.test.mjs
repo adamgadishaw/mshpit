@@ -115,5 +115,8 @@ test("calendar filtering includes today and excludes past or invalid dates", () 
   assert.equal(isUpcomingEventDate({ date: "2026 · 07 · 11" }, localNoon), false);
   assert.equal(isUpcomingEventDate({ date: "2026-07-12T01:00:00Z" }, localNoon), true);
   assert.equal(isUpcomingEventDate({ date: "2026 · 07 · 13" }, localNoon), true);
+  assert.equal(isUpcomingEventDate({ date: "2026-07-01", eventEndDate: "2026-07-12" }, localNoon), true);
+  assert.equal(isUpcomingEventDate({ date: "2026-07-01", eventEndDate: "2026-07-11" }, localNoon), false);
+  assert.equal(isUpcomingEventDate({ date: "2026-07-13", eventEndDate: "2026-07-01" }, localNoon), true);
   assert.equal(isUpcomingEventDate({ date: "TBA" }, localNoon), false);
 });

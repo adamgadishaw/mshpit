@@ -2903,17 +2903,34 @@ test("tour-date batches are owner-authorized, atomic, canonical, and release-gat
     .run("provider_release_compat", "Provider Band", "Provider Hall", "Ottawa, Ontario", showDate, "", "ticketmaster", Date.now(), releaseAt);
   const publicSharedDate = new Date(Date.now() + 90 * 86400000).toISOString().slice(0, 10);
   db.prepare(`INSERT INTO tour_dates
-    (id,artist,venue,place,date,ticket_url,sold_out,source,updated_at,release_at)
-    VALUES (?,?,?,?,?,?,0,?,?,0)`)
-    .run("provider_shared_release", "Provider Band", "Valid Hall", "Toronto, Ontario", publicSharedDate, "https://www.ticketmaster.ca/event/1#buy", "ticketmaster", Date.now());
+    (id,artist,venue,place,date,ticket_url,sold_out,source,updated_at,release_at,
+      event_image_url,event_image_attribution,event_image_width,event_image_height)
+    VALUES (?,?,?,?,?,?,0,?,?,0,?,?,?,?)`)
+    .run("provider_shared_release", "Provider Band", "Valid Hall", "Toronto, Ontario", publicSharedDate,
+      "https://www.ticketmaster.ca/event/1#buy", "ticketmaster", Date.now(),
+      "https://s1.ticketm.net/dam/a/provider/show.jpg", "Ticketmaster / promoter", 1920, 1080);
   db.prepare(`INSERT INTO tour_dates
-    (id,artist,venue,place,date,ticket_url,sold_out,source,updated_at,release_at)
-    VALUES (?,?,?,?,?,?,0,?,?,0)`)
-    .run("provider_unsafe_ticket", "Provider Band", "Unsafe Hall", "Toronto, Ontario", publicSharedDate, "https://ticketmaster.com.evil-site.com/phish", "ticketmaster", Date.now());
+    (id,artist,venue,place,date,ticket_url,sold_out,source,updated_at,release_at,
+      event_image_url,event_image_attribution,event_image_width,event_image_height)
+    VALUES (?,?,?,?,?,?,0,?,?,0,?,?,?,?)`)
+    .run("provider_unsafe_ticket", "Provider Band", "Unsafe Hall", "Toronto, Ontario", publicSharedDate,
+      "https://ticketmaster.com.evil-site.com/phish", "ticketmaster", Date.now(),
+      "https://s1.ticketm.net/dam/a/provider/unsafe.jpg", "Ticketmaster", 1920, 1080);
   const publicTourDates = routes["GET /api/tourdates"]({}).tourDates;
-  assert.equal(publicTourDates.find((row) => row.id === "provider_shared_release")?.ticketUrl, "https://www.ticketmaster.ca/event/1");
-  assert.equal(publicTourDates.find((row) => row.id === "provider_unsafe_ticket")?.ticketUrl, "",
+  const publicSharedTourDate = publicTourDates.find((row) => row.id === "provider_shared_release");
+  assert.equal(publicSharedTourDate?.ticketUrl, "https://www.ticketmaster.ca/event/1");
+  assert.deepEqual(publicSharedTourDate?.eventImage, {
+    uri: "https://s1.ticketm.net/dam/a/provider/show.jpg",
+    attribution: "Ticketmaster / promoter",
+    width: 1920,
+    height: 1080,
+    sourcePage: "https://www.ticketmaster.ca/event/1",
+  });
+  const unsafeTicketTourDate = publicTourDates.find((row) => row.id === "provider_unsafe_ticket");
+  assert.equal(unsafeTicketTourDate?.ticketUrl, "",
     "unsafe legacy provider destinations are retained as dates but dropped from public projection");
+  assert.equal(unsafeTicketTourDate?.eventImage, null,
+    "provider imagery fails closed when its public Ticketmaster source page does not validate");
   const guestIds = new Set(routes["GET /api/tourdates"]({}).tourDates.map((row) => row.id));
   const otherIds = new Set(routes["GET /api/tourdates"]({ user: other }).tourDates.map((row) => row.id));
   const ownerIds = new Set(routes["GET /api/tourdates"]({ user: artist }).tourDates.map((row) => row.id));
@@ -2927,6 +2944,10 @@ test("tour-date batches are owner-authorized, atomic, canonical, and release-gat
   const guestDiscovery = discoverySidebar(null, { eventLimit: 5000, venueLimit: 5000 });
   assert.equal(guestDiscovery.upcomingEvents.find((row) => row.id === "provider_unsafe_ticket")?.ticketUrl, "",
     "direct discovery-service callers receive the same revalidated ticket projection");
+  assert.deepEqual(guestDiscovery.upcomingEvents.find((row) => row.id === "provider_shared_release")?.eventImage,
+    publicSharedTourDate.eventImage,
+    "tour-date and discovery projections expose the same attributed provider image descriptor");
+  assert.equal(guestDiscovery.upcomingEvents.find((row) => row.id === "provider_unsafe_ticket")?.eventImage, null);
   const guestSharedVenue = guestDiscovery.trendingVenues.find((row) => row.name === "Valid Hall");
   assert.equal(guestSharedVenue?.upcoming, 1, "hidden dates do not influence a public venue count");
   assert.equal(guestSharedVenue?.nextDate, publicSharedDate, "hidden dates do not reveal a venue's unreleased next date");
@@ -2956,6 +2977,114 @@ test("tour-date batches are owner-authorized, atomic, canonical, and release-gat
   assert.equal(adminRows[0].source, "admin-submitted");
   db.prepare("DELETE FROM tour_dates WHERE owner_id IN (?,?) OR id IN (?,?,?)")
     .run(artist.id, admin.id, "provider_release_compat", "provider_shared_release", "provider_unsafe_ticket");
+});
+
+test("verified special-event batches are admin-only, evidence-backed, and fully projected", () => {
+  const artistSeed = addUser("u_special_artist", "special-artist@example.com", "specialartist");
+  const adminSeed = addUser("u_special_admin", "special-admin@example.com", "specialadmin");
+  db.prepare("UPDATE users SET role='artist',artist_name='The Beaches' WHERE id=?").run(artistSeed.id);
+  db.prepare("UPDATE users SET role='admin' WHERE id=?").run(adminSeed.id);
+  const artist = q.userById.get(artistSeed.id);
+  const admin = q.userById.get(adminSeed.id);
+  const post = routes["POST /api/tourdates"];
+  const startAt = Date.now() + 120 * 86400000;
+  const date = new Date(startAt).toISOString().slice(0, 10);
+  const endDate = new Date(startAt + 17 * 86400000).toISOString().slice(0, 10);
+  const beforeDate = new Date(startAt - 86400000).toISOString().slice(0, 10);
+  const special = {
+    venue: "Bandshell Park",
+    place: "Toronto, Ontario, Canada",
+    date,
+    ticketUrl: "https://www.theex.com/tickets/",
+    eventName: "Canadian National Exhibition",
+    eventKind: "fair",
+    eventEndDate: endDate,
+    billedArtists: ["The Beaches", "The Reklaws", "Aysanabee"],
+    eventSourceUrl: "https://www.theex.com/?view=music#schedule",
+  };
+  const context = (user, entry, ip) => ({
+    user,
+    ip,
+    body: { artist: "The Beaches", releaseAt: 0, dates: [entry] },
+  });
+
+  assert.throws(
+    () => post(context(artist, special, "special-event-artist")),
+    (error) => error instanceof ApiError && error.status === 403 && error.code === "FORBIDDEN",
+    "an artist may publish ordinary dates, but cannot self-certify a parent event",
+  );
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM tour_dates WHERE owner_id=?").get(artist.id).count, 0);
+
+  for (const [label, patch] of [
+    ["an end before the start", { eventEndDate: beforeDate }],
+    ["a same-day multi-day event", { eventKind: "multi_day", eventEndDate: date }],
+    ["an insecure evidence URL", { eventSourceUrl: "http://www.theex.com/music" }],
+    ["a credential-bearing evidence URL", { eventSourceUrl: "https://staff:secret@www.theex.com/music" }],
+  ]) {
+    assert.throws(
+      () => post(context(admin, { ...special, ...patch }, `special-event-invalid-${label.replace(/\W+/g, "-")}`)),
+      (error) => error instanceof ApiError && error.status === 400 && error.code === "VALIDATION_FAILED",
+      label,
+    );
+  }
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM tour_dates WHERE owner_id=?").get(admin.id).count, 0,
+    "validation must finish before the batch writes anything");
+
+  const created = post(context(admin, special, "special-event-admin")).tourDates;
+  assert.equal(created.length, 1);
+  assert.deepEqual({
+    artist: created[0].artist,
+    venue: created[0].venue,
+    date: created[0].date,
+    source: created[0].source,
+    createdBy: created[0].createdBy,
+    eventName: created[0].eventName,
+    eventKind: created[0].eventKind,
+    eventEndDate: created[0].eventEndDate,
+    eventSourceUrl: created[0].eventSourceUrl,
+    billedArtists: created[0].billedArtists,
+  }, {
+    artist: "The Beaches",
+    venue: "Bandshell Park",
+    date,
+    source: "admin-submitted",
+    createdBy: admin.id,
+    eventName: "Canadian National Exhibition",
+    eventKind: "fair",
+    eventEndDate: endDate,
+    eventSourceUrl: "https://www.theex.com/?view=music",
+    billedArtists: ["The Beaches", "The Reklaws", "Aysanabee"],
+  });
+
+  const stored = db.prepare(`SELECT event_name,event_kind,event_end_date,event_source_url,
+    billed_artists,music_evidence,music_qualified FROM tour_dates WHERE id=?`).get(created[0].id);
+  assert.deepEqual({
+    eventName: stored.event_name,
+    eventKind: stored.event_kind,
+    eventEndDate: stored.event_end_date,
+    eventSourceUrl: stored.event_source_url,
+    billedArtists: JSON.parse(stored.billed_artists),
+    evidence: stored.music_evidence,
+    qualified: stored.music_qualified,
+  }, {
+    eventName: "Canadian National Exhibition",
+    eventKind: "fair",
+    eventEndDate: endDate,
+    eventSourceUrl: "https://www.theex.com/?view=music",
+    billedArtists: ["The Beaches", "The Reklaws", "Aysanabee"],
+    evidence: "staff:verified-official-source",
+    qualified: 1,
+  });
+
+  const publicRow = routes["GET /api/tourdates"]({}).tourDates.find((row) => row.id === created[0].id);
+  assert.ok(publicRow, "an immediately released verified event is publicly readable");
+  assert.equal(publicRow.eventName, "Canadian National Exhibition");
+  assert.equal(publicRow.eventKind, "fair");
+  assert.equal(publicRow.eventEndDate, endDate);
+  assert.equal(publicRow.eventSourceUrl, "https://www.theex.com/?view=music");
+  assert.deepEqual(publicRow.billedArtists, ["The Beaches", "The Reklaws", "Aysanabee"]);
+
+  db.prepare("DELETE FROM tour_dates WHERE id=?").run(created[0].id);
 });
 
 test("attendee pages expose a block-aware authoritative total beyond the page cap", () => {
@@ -3032,15 +3161,18 @@ test("discovery sidebar returns real top artists and local-first shows and venue
   const insert = db.prepare(`INSERT INTO tour_dates
     (id,artist,venue,place,lat,lng,date,ticket_url,sold_out,source,updated_at,
       venue_city,venue_region,venue_country_code,event_name,event_kind,music_qualified,
-      music_evidence,billed_artists,event_end_date)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+      music_evidence,billed_artists,event_end_date,event_timezone)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
   insert.run("tm_sidebar_far", "Far Artist", "Far Hall", "Vancouver, British Columbia, Canada", 49.2827, -123.1207, "2099 · 08 · 20", "https://tickets.example/far", 0, "ticketmaster", Date.now(),
-    "Vancouver", "British Columbia", "CA", null, "concert", 1, null, "[]", null);
+    "Vancouver", "British Columbia", "CA", null, "concert", 1, null, "[]", null, "America/Vancouver");
   insert.run("tm_sidebar_local", "Local Artist", "Local Hall", "Not Toronto, Elsewhere", 43.6532, -79.3832, "2099 · 09 · 01", "https://tickets.example/local", 0, "ticketmaster", Date.now(),
     "Toronto", "Ontario", "CA", "Toronto Music Festival", "festival", 1,
-    "ticketmaster:classification:music", '["Local Artist","Guest Artist"]', "2099-09-03");
+    "ticketmaster:classification:music", '["Local Artist","Guest Artist"]', "2099-09-03", "America/Toronto");
   insert.run("tm_sidebar_non_music", "Unknown", "Nearby Field", "Toronto, Ontario, Canada", 43.6533, -79.3833, "2099 · 08 · 01", null, 0, "ticketmaster", Date.now(),
-    "Toronto", "Ontario", "CA", "State Fair", "fair", 0, null, "[]", null);
+    "Toronto", "Ontario", "CA", "State Fair", "fair", 0, null, "[]", null, "America/Toronto");
+  insert.run("tm_sidebar_active_region", "Regional Artist", "Regional Fairgrounds", "Hamilton, Ontario, Canada", null, null, "2099 · 08 · 29", "https://www.ticketmaster.ca/event/active-fair", 0, "ticketmaster", Date.now(),
+    "Hamilton", "Ontario", "CA", "Ontario Summer Fair", "fair", 1,
+    "ticketmaster:classification:music", '["Regional Artist"]', "2099-09-05", "America/Toronto");
 
   const result = routes["GET /api/discovery/sidebar"]({ user });
   assert.ok(result.topArtists.length >= 3);
@@ -3052,6 +3184,31 @@ test("discovery sidebar returns real top artists and local-first shows and venue
   assert.equal(result.upcomingEvents.some((event) => event.id === "tm_sidebar_non_music"), false);
   assert.equal(result.trendingVenues[0].name, "Local Hall");
   assert.equal(result.location.city, "Toronto");
+  const duringRegionalFair = discoverySidebar(user, {
+    at: Date.parse("2099-08-31T12:00:00.000Z"),
+    eventLimit: 1,
+    venueLimit: 1,
+    loungeLimit: 0,
+  });
+  assert.equal(duringRegionalFair.upcomingEvents[0]?.id, "tm_sidebar_active_region",
+    "an active event in the local tier leads exact-city future announcements before event trimming");
+  assert.equal(duringRegionalFair.trendingVenues[0]?.name, "Local Hall",
+    "venue ranking remains exact-locality-first");
+  const finalTorontoEvening = discoverySidebar(user, {
+    at: Date.parse("2099-09-06T02:30:00.000Z"),
+    eventLimit: 5000,
+    loungeLimit: 0,
+  });
+  const finalEveningFair = finalTorontoEvening.upcomingEvents.find((event) => event.id === "tm_sidebar_active_region");
+  assert.equal(finalEveningFair?.eventTimezone, "America/Toronto");
+  assert.ok(finalEveningFair,
+    "Render UTC must not filter an event while its inclusive final day is still active at the venue");
+  const afterTorontoFinalDay = discoverySidebar(user, {
+    at: Date.parse("2099-09-06T05:30:00.000Z"),
+    eventLimit: 5000,
+    loungeLimit: 0,
+  });
+  assert.equal(afterTorontoFinalDay.upcomingEvents.some((event) => event.id === "tm_sidebar_active_region"), false);
   const afterFixture = discoverySidebar(user, {
     at: Date.parse("2100-01-01T00:00:00.000Z"),
     loungeLimit: 0,

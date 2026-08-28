@@ -110,10 +110,13 @@ export function selectDiscoverPhotos(feed, { removedIds = [], blockedIds = [], l
         uri,
         artist: text(post.artist).slice(0, 120) || null,
         venue: text(post.venue).slice(0, 160) || null,
+        date: text(post.date).slice(0, 40) || null,
         by: text(post.user?.name).slice(0, 120),
         likes: finiteCount(post.likes),
         logId: post.id || null,
         ownerId: post.userId || null,
+        source: "fan",
+        photosPublic: true,
         _order: order++,
       });
     }

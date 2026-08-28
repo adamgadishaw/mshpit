@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
-  normalizeShowDocument, showDocumentIdentity, showLifecycleView, showPresentationModel,
+  isNamedSpecialEvent, normalizeShowDocument, showDocumentIdentity, showLifecycleView, showPresentationModel,
 } from "./showDocument.mjs";
 import { canonicalShowReadEnabled } from "../config/runtime.mjs";
 
@@ -20,6 +21,68 @@ test("trusted provider lifecycle takes precedence over a contradictory legacy da
     upcoming: false,
     trusted: true,
   });
+});
+
+test("a real multi-day event remains happening through its inclusive end date", () => {
+  const completed = normalizeShowDocument({ show: {
+    id: `show_${"b".repeat(64)}`,
+    canonicalKey: "ticketmaster:cne",
+    lifecycle: "completed",
+    startsAt: Date.UTC(2026, 7, 21, 14),
+    provider: { name: "ticketmaster", eventId: "cne", backed: true },
+  } });
+  const cne = {
+    artist: "Canadian National Exhibition",
+    eventName: "Canadian National Exhibition",
+    eventKind: "fair",
+    date: "2026-08-21",
+    eventEndDate: "2026-09-07",
+  };
+  const during = new Date(2026, 8, 7, 12).getTime();
+  const after = new Date(2026, 8, 8, 12).getTime();
+
+  assert.equal(showLifecycleView(completed, 0, false, during, cne).lifecycle, "happening");
+  assert.equal(showLifecycleView(completed, 0, false, after, cne).lifecycle, "completed");
+  assert.equal(showPresentationModel(showLifecycleView(null, 0, false, during, cne)).screenKicker, "HAPPENING NOW",
+    "the event payload can preserve honest presentation while a canonical read is unavailable");
+});
+
+test("cancelled or postponed authority is never overwritten by an active date range", () => {
+  const trusted = (lifecycle) => normalizeShowDocument({ show: {
+    id: `show_${(lifecycle === "cancelled" ? "c" : "d").repeat(64)}`,
+    canonicalKey: `ticketmaster:${lifecycle}`,
+    lifecycle,
+    startsAt: Date.UTC(2026, 7, 21, 14),
+    provider: { name: "ticketmaster", eventId: lifecycle, backed: true },
+  } });
+  const active = { date: "2026-08-21", eventEndDate: "2026-09-07" };
+  const during = new Date(2026, 7, 27, 12).getTime();
+  assert.equal(showLifecycleView(trusted("cancelled"), 0, false, during, active).lifecycle, "cancelled");
+  assert.equal(showLifecycleView(trusted("postponed"), 0, false, during, active).lifecycle, "postponed");
+});
+
+test("special-event identity uses the provider kind even when artist and event name are equal", () => {
+  assert.equal(isNamedSpecialEvent({
+    artist: "Canadian National Exhibition",
+    eventName: "Canadian National Exhibition",
+    eventKind: "fair",
+  }), true);
+  assert.equal(isNamedSpecialEvent({
+    artist: "Solo Artist",
+    eventName: "Solo Artist",
+    eventKind: "concert",
+  }), false);
+  assert.equal(isNamedSpecialEvent({
+    artist: "Headliner",
+    eventName: "City Music Festival",
+    eventKind: "concert",
+  }), true);
+});
+
+test("ShowScreen supplies the full event range and kind to presentation helpers", () => {
+  const source = readFileSync(new URL("../screens/ShowScreen.jsx", import.meta.url), "utf8");
+  assert.match(source, /isNamedSpecialEvent\(norm\) \|\| eventTitle !== artist/);
+  assert.match(source, /showLifecycleView\(\s*trustedShow,\s*showDateMs\(norm\.date\),\s*overall != null,\s*Date\.now\(\),\s*norm,/);
 });
 
 test("untrusted or unavailable documents retain legacy lifecycle behavior", () => {

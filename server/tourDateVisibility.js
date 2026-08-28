@@ -1,5 +1,6 @@
 import { accountIsPublic, activeAccountSql } from "./accountVisibility.js";
 import { db } from "./db.js";
+import { currentOrUpcomingTourDateSql, effectiveTourDateEndSql } from "./tourDateLifecycle.js";
 
 // Apply release and account-state rules before tour dates reach discovery,
 // ranking, counts, or serialization. Keeping this query outside the API layer
@@ -16,7 +17,7 @@ export function visibleTourDateRowsFrom(database, viewer, {
   const filters = ["COALESCE(td.music_qualified,1)=1"];
   const prefix = [];
   if (today) {
-    filters.push("td.date>=?");
+    filters.push(currentOrUpcomingTourDateSql("td"));
     prefix.push(today);
   }
   if (artist) {
@@ -33,7 +34,8 @@ export function visibleTourDateRowsFrom(database, viewer, {
   // database as historical evidence, but an inactive event cannot keep
   // advertising itself as upcoming. `provider_active` never gates a member's
   // own authored row.
-  const publicProviderSql = "(td.owner_id IS NULL AND (COALESCE(td.provider_active,1)=1 OR td.date<?))";
+  const publicProviderSql = "(td.owner_id IS NULL AND (COALESCE(td.provider_active,1)=1 OR "
+    + effectiveTourDateEndSql("td") + "<?))";
   if (viewer?.id) {
     return database.prepare(`SELECT td.* FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id WHERE ${filterSql}
       (${publicProviderSql} OR (${activeAccountSql("owner")} AND (td.release_at<=? OR td.owner_id=?)

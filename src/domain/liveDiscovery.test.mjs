@@ -50,6 +50,15 @@ test("upcoming event scope deduplicates and bounds cards", () => {
   assert.deepEqual(upcomingEventsForScope({ worldwideEvents: rows, scope: LIVE_EVENT_SCOPE.WORLDWIDE, limit: -1 }), []);
 });
 
+test("active multi-day events stay pinned ahead of future concerts", () => {
+  const now = new Date(2026, 7, 27, 12).getTime();
+  const rows = [
+    { id: "future", date: "2026-08-28", releaseAt: 0 },
+    { id: "active", date: "2026-08-21", eventEndDate: "2026-09-07", releaseAt: 0 },
+  ];
+  assert.deepEqual(projectWorldwideUpcomingEvents(rows, { now }).map((event) => event.id), ["active", "future"]);
+});
+
 test("saved-area discovery excludes globally widened rows from the Local scope", () => {
   const rows = [
     { id: "city", local: true },

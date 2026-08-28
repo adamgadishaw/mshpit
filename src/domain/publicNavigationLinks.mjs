@@ -6,6 +6,7 @@ import {
   profilePath,
   venuePath,
 } from "./urls.mjs";
+import { liveEventTitle } from "./liveDiscovery.mjs";
 
 const text = (value) => String(value ?? "").trim();
 
@@ -45,7 +46,10 @@ export function publicDirectoryItems(directory, rows = [], limit = 10) {
     if (!href || seen.has(href)) continue;
     seen.add(href);
 
-    const title = text(artist?.name || event?.artist || event?.name) || "Upcoming event";
+    const projectedEventTitle = event ? liveEventTitle(event) : "";
+    const title = text(artist?.name
+      || (projectedEventTitle === "Event to be announced" ? event?.name : projectedEventTitle))
+      || "Upcoming event";
     const detail = artist
       ? text(artist.genre) || "Artist profile"
       : [event?.venue, event?.place, event?.date].map(text).filter(Boolean).join(" · ") || "Event details";
@@ -61,6 +65,20 @@ export function publicDirectoryItems(directory, rows = [], limit = 10) {
   }
 
   return items;
+}
+
+// The compact app tabs are not public documents and should not inherit a fixed
+// SEO breadcrumb. Keeping it only for real public routes prevents scrolled
+// cards from being visibly clipped beneath an unrelated opaque strip.
+export function shouldShowMobilePublicTrail(frame = {}) {
+  return !!(
+    frame?.directory
+    || frame?.artistName
+    || frame?.venueName
+    || frame?.profileId
+    || frame?.openLog
+    || frame?.post
+  );
 }
 
 /**

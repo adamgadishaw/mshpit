@@ -26,6 +26,7 @@ const {
   runTourDateJobSafely,
   shouldRefreshTourDates,
   ticketmasterArtistPageSize,
+  ticketmasterActiveAndFutureRange,
   ticketmasterCountryBatchSize,
   ticketmasterCountryCodes,
   ticketmasterCountryRotation,
@@ -116,11 +117,12 @@ test("the paused product keeps catalogue enrichment available without YouTube pl
 });
 
 test("Ticketmaster searches request all locales and keep artist pages bounded", () => {
+  const overlap = ticketmasterActiveAndFutureRange(Date.UTC(2026, 7, 24, 12, 34, 56), 30);
   const url = new URL(ticketmasterEventSearchUrl({
     apiKey: "test-key",
     keyword: "Björk & Friends",
     size: ticketmasterArtistPageSize(500),
-    startDateTime: ticketmasterFutureBoundary(Date.UTC(2026, 7, 24, 12, 34, 56)),
+    startEndDateTime: overlap,
   }));
   assert.equal(url.origin, "https://app.ticketmaster.com");
   assert.equal(url.pathname, "/discovery/v2/events.json");
@@ -129,7 +131,8 @@ test("Ticketmaster searches request all locales and keep artist pages bounded", 
   assert.equal(url.searchParams.get("locale"), "*");
   assert.equal(url.searchParams.get("includeTBA"), "no");
   assert.equal(url.searchParams.get("includeTBD"), "no");
-  assert.equal(url.searchParams.get("startDateTime"), "2026-08-24T12:34:56Z");
+  assert.equal(url.searchParams.get("startDateTime"), null);
+  assert.equal(url.searchParams.get("startEndDateTime"), "2026-08-24T12:34:56Z,2026-09-23T12:34:56Z");
   assert.equal(url.searchParams.get("size"), "200");
   assert.equal(url.searchParams.get("sort"), "date,asc");
   assert.equal(url.searchParams.get("apikey"), "test-key");
@@ -202,6 +205,14 @@ test("provider projections retain stable event, clock, status, and venue identit
         id: "tm-provider-42",
         name: "Foundation World Tour",
         url: "https://www.ticketmaster.com/event/42",
+        images: [{
+          url: "https://s1.ticketm.net/dam/a/foundation-world-tour.jpg",
+          ratio: "16_9",
+          width: 2048,
+          height: 1152,
+          fallback: false,
+          attribution: "Ticketmaster / Foundation Artist",
+        }],
         dates: {
           start: {
             localDate: "2032-05-10",
@@ -243,6 +254,10 @@ test("provider projections retain stable event, clock, status, and venue identit
   assert.equal(ticketmaster.venue_postal_code, "M5V 1A1");
   assert.equal(ticketmaster.venue_country_code, "CA");
   assert.equal(ticketmaster.venue_country, "Canada");
+  assert.equal(ticketmaster.event_image_url, "https://s1.ticketm.net/dam/a/foundation-world-tour.jpg");
+  assert.equal(ticketmaster.event_image_attribution, "Ticketmaster / Foundation Artist");
+  assert.equal(ticketmaster.event_image_width, 2048);
+  assert.equal(ticketmaster.event_image_height, 1152);
 
   const [bandsintown, localOnly] = bandsintownRows([{
     id: 84,
@@ -339,6 +354,10 @@ test("provider upserts persist the durable fields and reactivate a returned even
     venue_postal_code: "M5V 3C3",
     venue_country_code: "CA",
     venue_country: "Canada",
+    event_image_url: "https://s1.ticketm.net/dam/a/foundation-upsert.jpg",
+    event_image_attribution: "Ticketmaster / Foundation Artist",
+    event_image_width: 2048,
+    event_image_height: 1152,
   };
 
   assert.equal(upsertProviderTourDateRows(db, [row], { seenAt: 5000 }), 1);
@@ -349,6 +368,7 @@ test("provider upserts persist the durable fields and reactivate a returned even
     "provider_event_id", "event_name", "start_date_time", "start_local_time", "event_timezone",
     "event_status", "venue_provider_id", "venue_address_line1", "venue_address_line2", "venue_city",
     "venue_region", "venue_postal_code", "venue_country_code", "venue_country",
+    "event_image_url", "event_image_attribution", "event_image_width", "event_image_height",
   ]) assert.equal(inserted[field], row[field], `${field} should survive the provider upsert`);
   assert.equal(inserted.provider_active, 1);
   assert.equal(inserted.last_seen_at, 5000);
@@ -380,6 +400,49 @@ test("provider upserts persist the durable fields and reactivate a returned even
     { venue: "Upsert Hall Annex", last_seen_at: 9000, updated_at: 9000 },
     "a material provider correction advances both the liveness and public revision clocks",
   );
+  const updatedImage = {
+    ...row,
+    event_status: "offsale",
+    venue: "Upsert Hall Annex",
+    event_image_url: "https://s1.ticketm.net/dam/a/foundation-upsert-revised.jpg",
+    event_image_width: 1600,
+    event_image_height: 900,
+  };
+  upsertProviderTourDateRows(db, [updatedImage], { seenAt: 10000 });
+  assert.deepEqual(
+    { ...db.prepare(`SELECT event_image_url,event_image_attribution,event_image_width,event_image_height,
+      last_seen_at,updated_at FROM tour_dates WHERE id=?`).get(row.id) },
+    {
+      event_image_url: updatedImage.event_image_url,
+      event_image_attribution: updatedImage.event_image_attribution,
+      event_image_width: updatedImage.event_image_width,
+      event_image_height: updatedImage.event_image_height,
+      last_seen_at: 10000,
+      updated_at: 10000,
+    },
+    "a material provider image change advances the public revision clock",
+  );
+  const imageRemoved = {
+    ...updatedImage,
+    event_image_url: null,
+    event_image_attribution: null,
+    event_image_width: null,
+    event_image_height: null,
+  };
+  upsertProviderTourDateRows(db, [imageRemoved], { seenAt: 11000 });
+  assert.deepEqual(
+    { ...db.prepare(`SELECT event_image_url,event_image_attribution,event_image_width,event_image_height,
+      last_seen_at,updated_at FROM tour_dates WHERE id=?`).get(row.id) },
+    {
+      event_image_url: null,
+      event_image_attribution: null,
+      event_image_width: null,
+      event_image_height: null,
+      last_seen_at: 11000,
+      updated_at: 11000,
+    },
+    "provider removal clears stale event imagery and advances the public revision clock",
+  );
 });
 
 test("public tour visibility hides inactive upcoming providers without hiding authored dates or history", () => {
@@ -391,17 +454,20 @@ test("public tour visibility hides inactive upcoming providers without hiding au
   const artist = "Provider Visibility Foundation";
   const at = Date.parse("2035-01-01T12:00:00.000Z");
   const insert = db.prepare(`INSERT OR REPLACE INTO tour_dates
-    (id,artist,venue,date,source,updated_at,owner_id,release_at,provider_active,last_seen_at)
-    VALUES (?,?,?,?,?,?,?,?,?,?)`);
-  insert.run("tour_visibility_history", artist, "History Hall", "2034-06-01", "ticketmaster", 1, null, 0, 0, 1);
-  insert.run("tour_visibility_active", artist, "Active Hall", "2035-06-01", "ticketmaster", 1, null, 0, 1, 1);
-  insert.run("tour_visibility_inactive", artist, "Inactive Hall", "2035-07-01", "ticketmaster", 1, null, 0, 0, 1);
-  insert.run("tour_visibility_authored", artist, "Authored Hall", "2035-08-01", "artist-submitted", 1, ownerId, 0, 0, null);
-  insert.run("tour_visibility_unreleased", artist, "Private Hall", "2035-09-01", "artist-submitted", 1, ownerId, at + 1000, 0, null);
+    (id,artist,venue,date,event_end_date,source,updated_at,owner_id,release_at,provider_active,last_seen_at)
+    VALUES (?,?,?,?,?,?,?,?,?,?,?)`);
+  insert.run("tour_visibility_history", artist, "History Hall", "2034-06-01", null, "ticketmaster", 1, null, 0, 0, 1);
+  insert.run("tour_visibility_range", artist, "Festival Grounds", "2034-12-20", "2035-01-10", "ticketmaster", 1, null, 0, 1, 1);
+  insert.run("tour_visibility_inactive_range", artist, "Inactive Grounds", "2034-12-21", "2035-01-11", "ticketmaster", 1, null, 0, 0, 1);
+  insert.run("tour_visibility_active", artist, "Active Hall", "2035-06-01", null, "ticketmaster", 1, null, 0, 1, 1);
+  insert.run("tour_visibility_inactive", artist, "Inactive Hall", "2035-07-01", null, "ticketmaster", 1, null, 0, 0, 1);
+  insert.run("tour_visibility_authored", artist, "Authored Hall", "2035-08-01", null, "artist-submitted", 1, ownerId, 0, 0, null);
+  insert.run("tour_visibility_unreleased", artist, "Private Hall", "2035-09-01", null, "artist-submitted", 1, ownerId, at + 1000, 0, null);
 
   const ids = (viewer) => visibleTourDateRowsFrom(db, viewer, { artist, at }).map((row) => row.id);
   assert.deepEqual(ids(null), [
     "tour_visibility_history",
+    "tour_visibility_range",
     "tour_visibility_active",
     "tour_visibility_authored",
   ]);
@@ -410,17 +476,21 @@ test("public tour visibility hides inactive upcoming providers without hiding au
     today: "2035-01-01",
     at,
   }).map((row) => row.id), [
+    "tour_visibility_range",
     "tour_visibility_active",
     "tour_visibility_authored",
   ], "upcoming reads exclude both history and an inactive provider event");
   assert.deepEqual(ids({ id: ownerId, role: "artist" }), [
     "tour_visibility_history",
+    "tour_visibility_range",
     "tour_visibility_active",
     "tour_visibility_authored",
     "tour_visibility_unreleased",
   ]);
   assert.deepEqual(ids({ id: "admin", role: "admin", is_banned: 0, suspended_until: 0 }), [
     "tour_visibility_history",
+    "tour_visibility_range",
+    "tour_visibility_inactive_range",
     "tour_visibility_active",
     "tour_visibility_inactive",
     "tour_visibility_authored",

@@ -1,4 +1,8 @@
-import { calendarDateKey, isUpcomingEventDate } from "./dataPolicy.mjs";
+import { calendarDateKey } from "./dataPolicy.mjs";
+import {
+  compareCurrentAndUpcomingLiveEvents,
+  isCurrentOrUpcomingLiveEvent,
+} from "./eventLifecycle.mjs";
 
 export const LIVE_EVENT_SCOPE = Object.freeze({
   LOCAL: "local",
@@ -73,9 +77,10 @@ export function upcomingEventsForScope({
     if (!identity || seen.has(identity)) continue;
     seen.add(identity);
     rows.push(event);
-    if (rows.length >= max) break;
   }
-  return rows;
+  return rows
+    .sort((left, right) => compareCurrentAndUpcomingLiveEvents(left, right))
+    .slice(0, max);
 }
 
 export function localDiscoveryEvents(rows, { limit = 12 } = {}) {
@@ -97,10 +102,10 @@ export function projectWorldwideUpcomingEvents(rows, { limit = 12, now = Date.no
 
   for (const event of rows) {
     if (!event || typeof event !== "object") continue;
-    if (!isUpcomingEventDate(event, at) || !(event.releaseAt <= at)) continue;
+    if (!isCurrentOrUpcomingLiveEvent(event, at) || !(event.releaseAt <= at)) continue;
     const dateKey = calendarDateKey(event.date);
     if (dateKey == null) continue;
-    const insertAt = selected.findIndex((candidate) => candidate.dateKey > dateKey);
+    const insertAt = selected.findIndex((candidate) => compareCurrentAndUpcomingLiveEvents(event, candidate.event, at) < 0);
     if (insertAt < 0) {
       if (selected.length < max) selected.push({ dateKey, event });
       continue;
