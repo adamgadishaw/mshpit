@@ -31,12 +31,6 @@ export const PHOTO_PUBLISHING_UNAVAILABLE_COPY =
 export const MEDIA_PUBLISHING_UNAVAILABLE_COPY =
   "Photo and video uploads are temporarily unavailable. Your draft is safe; check again in a moment.";
 
-export const VIDEO_SELECTION_BLOCKED_COPY =
-  "That clip was not added because new clip publishing is being prepared. Existing clips remain viewable; you can still add photos.";
-
-export const PHOTO_SELECTION_BLOCKED_COPY =
-  "That photo was not added because photo uploads are temporarily unavailable. Your draft is safe; check again in a moment.";
-
 // The server owns this decision. Missing, empty, false, or misspelled values all
 // fail closed so a client bundle can never advertise a renderer that is not
 // deliberately enabled in the deployed runtime.
@@ -74,47 +68,10 @@ export function mediaPublishingAvailabilityCopy(capabilities = DEFAULT_MEDIA_PUB
   return MEDIA_PUBLISHING_UNAVAILABLE_COPY;
 }
 
-export function mediaPublishingAttachmentLabel(capabilities = DEFAULT_MEDIA_PUBLISHING_CAPABILITIES) {
-  const photos = capabilities?.photos === true;
-  const videos = capabilities?.videos === true;
-  if (photos && videos) return "Photo / video";
-  if (photos) return "Photos";
-  if (videos) return "Videos";
-  return "Media";
-}
-
 export function mediaPublishingSourceRequestAllowed(body, env = {}) {
   const contentType = typeof body?.contentType === "string"
     ? body.contentType.split(";", 1)[0].trim().toLowerCase()
     : "";
   if (!contentType.startsWith("video/")) return true;
   return mediaPublishingCapabilitiesForRuntime(env).videos;
-}
-
-function selectedVideoSourceType(asset) {
-  const mimeType = String(asset?.mimeType || "").split(";", 1)[0].trim().toLowerCase();
-  if (mimeType) return mimeType;
-  const name = String(asset?.fileName || asset?.name || asset?.uri || "").split(/[?#]/u, 1)[0].toLowerCase();
-  if (name.endsWith(".mov")) return "video/quicktime";
-  if (name.endsWith(".mp4")) return "video/mp4";
-  return "";
-}
-
-export function mediaPublishingSelection(assets, capabilities = DEFAULT_MEDIA_PUBLISHING_CAPABILITIES) {
-  const input = Array.isArray(assets) ? assets : [];
-  const photosEnabled = capabilities?.photos === true;
-  const videosEnabled = capabilities?.videos === true;
-  const accepted = [];
-  let blockedPhotos = 0;
-  let blockedVideos = 0;
-  const negotiatedSourceTypes = Array.isArray(capabilities?.sourceTypes) && capabilities.sourceTypes.length
-    ? new Set(capabilities.sourceTypes)
-    : null;
-  for (const asset of input) {
-    if (asset?.kind === "image" && !photosEnabled) blockedPhotos += 1;
-    else if (asset?.kind === "video" && (!videosEnabled
-      || (negotiatedSourceTypes && !negotiatedSourceTypes.has(selectedVideoSourceType(asset))))) blockedVideos += 1;
-    else accepted.push(asset);
-  }
-  return { accepted, blockedPhotos, blockedVideos };
 }

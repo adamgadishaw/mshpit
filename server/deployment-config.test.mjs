@@ -55,6 +55,14 @@ test("the test runner cannot inherit Render's hosted runtime or bootstrap approv
   assert.match(source, /env:\s*testEnvironment/);
 });
 
+test("Render promotes web releases only through the dependency-aware readiness contract", async () => {
+  const source = await readFile(new URL("render.yaml", ROOT), "utf8");
+  const healthPaths = [...source.matchAll(/^\s*healthCheckPath:\s*(\S+)$/gm)].map((match) => match[1]);
+  assert.deepEqual(healthPaths, ["/api/readiness", "/api/readiness"]);
+  assert.doesNotMatch(source, /^\s*healthCheckPath:\s*\/api\/health$/m,
+    "general liveness must not promote a release before enabled video dependencies are ready");
+});
+
 test("runtime bootstrap fails closed while production alone owns the bounded tour refresh", async () => {
   const source = await readFile(new URL("render.yaml", ROOT), "utf8");
   assert.equal(configuredFalseCount(source, "PIT_ALLOW_EMPTY_DB_BOOTSTRAP"), 2);

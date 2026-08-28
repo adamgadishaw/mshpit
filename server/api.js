@@ -2681,12 +2681,34 @@ function publicHealthProjection(ctx) {
   return {
     ok: true,
     ts: now(),
+    // The unversioned endpoint intentionally remains photo-only for legacy
+    // clients. Keep the actual runtime state separate and explicit so an
+    // operator cannot mistake that compatibility response for an outage.
+    mediaPublishingContract: {
+      negotiationRequired: !negotiated,
+      pipeline: VIDEO_VERIFIER_PIPELINE_VERSION,
+      state: capabilities.videos === true ? "ready" : "unavailable",
+    },
     capabilities: {
       mediaPublishing: negotiated
         ? capabilities
         : { photos: capabilities.photos, videos: false },
     },
   };
+}
+
+function deploymentReadinessProjection() {
+  // General liveness deliberately survives an optional media outage. Render's
+  // release gate is stricter: once production explicitly enables video, a new
+  // web release cannot be promoted until the exact signed verifier contract,
+  // durable media storage, and private-source isolation are all proven live.
+  runtimeReadiness();
+  const production = process.env.NODE_ENV === "production";
+  const videoRequired = production && mediaPublishingCapabilitiesForRuntime(process.env).videos === true;
+  if (videoRequired && runtimeMediaPublishingCapabilities().videos !== true) {
+    throw new ApiError(503, "Required publishing services are not ready.", "MEDIA_STORAGE_UNAVAILABLE");
+  }
+  return { ok: true, ts: now() };
 }
 
 function staffHealthProjection(actor) {
@@ -3031,10 +3053,11 @@ export const routes = {
     roleChangeTouchesHead,
     selectedRoleHandle,
   }),
-  // Render only needs liveness plus capability flags. Operational topology,
-  // commit ids, quota and mail diagnostics belong on the authenticated staff
-  // route so a public probe cannot inventory the deployment.
+  // Public liveness keeps the version-negotiated capability response consumed
+  // by clients. Render deploys use the separate dependency-aware readiness
+  // route, while operational topology remains authenticated staff-only.
   "GET /api/health": (ctx) => publicHealthProjection(ctx),
+  "GET /api/readiness": () => deploymentReadinessProjection(),
   "GET /api/admin/health": (ctx) => {
     const actor = requireModerator(ctx);
     return staffHealthProjection(actor);

@@ -113,6 +113,47 @@ test("picker assets become stable local draft entries without persisting opaque 
   assert.equal("file" in asset, false);
 });
 
+test("picker assets with missing or vendor type metadata retain their video identity", () => {
+  const missingType = mediaDraftAssetFromPicker({
+    type: null,
+    uri: "content://camera-roll/42",
+    fileName: "VID_0042.MP4",
+    mimeType: null,
+    duration: 12_000,
+  });
+  const vendorMime = mediaDraftAssetFromPicker({
+    type: null,
+    uri: "content://camera-roll/43",
+    mimeType: "video/x-m4v",
+    duration: 8_000,
+  });
+  const pairedVideo = mediaDraftAssetFromPicker({
+    type: "pairedVideo",
+    uri: "file:///live-motion.mov",
+    duration: 2_800,
+  });
+  const durationOnly = mediaDraftAssetFromPicker({
+    type: null,
+    mimeType: null,
+    uri: "content://camera-roll/extensionless",
+    duration: 6_500,
+  });
+  const webFileMime = mediaDraftAssetFromPicker({
+    type: null,
+    mimeType: null,
+    uri: "blob:camera-roll",
+    file: { type: "video/mp4" },
+    duration: null,
+  });
+  assert.equal(missingType.kind, "video");
+  assert.equal(missingType.durationMs, 12_000);
+  assert.equal(vendorMime.kind, "video");
+  assert.equal(pairedVideo.kind, "video");
+  assert.equal(durationOnly.kind, "video");
+  assert.equal(durationOnly.durationMs, 6_500);
+  assert.equal(webFileMime.kind, "video");
+});
+
 test("default image recipes remain unchanged and rotations snap predictably", () => {
   assert.equal(mediaEditHasChanges(defaultMediaEdit("image")), false);
   assert.equal(normalizeRotation(44), 0);

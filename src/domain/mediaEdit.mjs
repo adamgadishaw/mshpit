@@ -298,7 +298,18 @@ export function normalizeMediaDraftAsset(value = {}) {
 }
 
 export function mediaDraftAssetFromPicker(asset = {}, index = 0) {
-  const kind = asset.type === "video" ? "video" : "image";
+  const declaredMime = String(asset.mimeType || asset.file?.type || "").split(";", 1)[0].trim().toLowerCase();
+  const sourceName = String(asset.fileName || asset.uri || "").split(/[?#]/u, 1)[0];
+  const declaredDuration = Number(asset.duration);
+  // Expo allows both `type` and `mimeType` to be absent for some Android
+  // ContentProviders. Preserve a normal camera-roll clip as video whenever any
+  // available picker signal identifies it, then let byte sniffing and the
+  // server verifier make the authoritative format decision during upload.
+  const kind = asset.type === "video" || asset.type === "pairedVideo"
+    || declaredMime.startsWith("video/") || /\.(?:mp4|mov|m4v|webm)$/i.test(sourceName)
+    || (Number.isFinite(declaredDuration) && declaredDuration > 0)
+    ? "video"
+    : "image";
   const durationMs = kind === "video" ? Math.max(0, Math.round(finite(asset.duration))) : 0;
   return normalizeMediaDraftAsset({
     ...asset,

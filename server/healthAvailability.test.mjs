@@ -10,7 +10,7 @@ import {
   healthRateLimitPolicy,
 } from "./healthAvailability.js";
 
-test("public health probes use a dedicated per-IP allowance", () => {
+test("public liveness and deployment-readiness probes use a dedicated per-IP allowance", () => {
   assert.deepEqual(healthRateLimitPolicy("203.0.113.10"), {
     key: "health:ip:203.0.113.10",
     max: HEALTH_RATE_LIMIT_MAX,
@@ -21,7 +21,7 @@ test("public health probes use a dedicated per-IP allowance", () => {
   assert.equal(HEALTH_RATE_LIMIT_WINDOW_MS, 60_000);
 
   const source = readFileSync(new URL("./index.js", import.meta.url), "utf8");
-  assert.match(source, /if \(pathname === "\/api\/health"\) \{\s*const healthLimit = healthRateLimitPolicy\(ip\);\s*if \(!rateLimit\(healthLimit\.key, healthLimit\.max, healthLimit\.windowMs\)\)/);
+  assert.match(source, /if \(pathname === "\/api\/health" \|\| pathname === "\/api\/readiness"\) \{\s*const healthLimit = healthRateLimitPolicy\(ip\);\s*if \(!rateLimit\(healthLimit\.key, healthLimit\.max, healthLimit\.windowMs\)\)/);
 });
 
 test("private media probes degrade publishing without preventing core startup", () => {

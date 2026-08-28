@@ -78,7 +78,7 @@
   },
   "legacyApi": {
     "file": "server/api.js",
-    "maxInlineRoutes": 161,
+    "maxInlineRoutes": 162,
     "allowedInlineRoutes": [
       "DELETE /api/admin/catalog/seed",
       "DELETE /api/admin/email/templates/:key",
@@ -146,6 +146,7 @@
       "GET /api/posts/:id/comments",
       "GET /api/posts/:id/playlist",
       "GET /api/ratings",
+      "GET /api/readiness",
       "GET /api/resolve",
       "GET /api/songs/search",
       "GET /api/time",

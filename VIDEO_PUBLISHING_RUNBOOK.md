@@ -27,6 +27,7 @@ Source of truth:
 - Bounded MP4 admission: `server/mp4Probe.js`
 - Capability, actor, and demand gates: `server/api.js`
 - Health scheduler lifecycle: `server/index.js`
+- Render release-readiness gate: `GET /api/readiness` in `server/api.js` and `render.yaml`
 - Client negotiation: `src/domain/mediaPublishingCapabilities.mjs`
 - Client preflight: `src/domain/mediaPublishingPreflight.mjs`
 
@@ -43,6 +44,8 @@ The Blueprint defines a **production private service**, not a background worker,
 - internal port: `10001`
 
 Render private services have no public `onrender.com` address and are reachable only through the private network. The production web service receives `PIT_VIDEO_VERIFIER_HOSTPORT` from the verifier's Blueprint `hostport` property, so operators must not paste a public URL or manually construct a hostname. The verifier HMAC secret is generated on the private service and injected into the web service through a Blueprint `fromService` reference. See [Private Services](https://render.com/docs/private-services), [Private Network](https://render.com/docs/private-network), and [Blueprint YAML Reference](https://render.com/docs/blueprint-spec).
+
+Render promotes both web environments through `GET /api/readiness`, not the general `GET /api/health` liveness route. When a production-mode environment explicitly sets `PIT_VIDEO_PUBLISHING_ENABLED=true`, readiness remains `503` until the database/disk checks, private-source isolation proof, exact signed verifier health contract, and media storage configuration all make video publishing genuinely available. Setting the flag false is the deliberate rollback path and keeps the core web release deployable. Do not point Render back at `/api/health`; that would allow a cold release to become live during the temporary photo-only window before its verifier proof completes.
 
 The container pins its Node base image by immutable digest and pins and verifies the FFmpeg source release before building it. Its image build includes an encode/probe/full-decode smoke test, and the runtime uses the fixed `/opt/ffmpeg/bin/ffmpeg` and `/opt/ffmpeg/bin/ffprobe` paths. A successful image build is necessary but is not sufficient to enable publishing; live signed verifier health and storage checks must still pass. Decoder/base-image security updates require a rebuild and repeat canary before rollout.
 

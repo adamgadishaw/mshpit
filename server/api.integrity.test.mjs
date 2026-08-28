@@ -144,18 +144,35 @@ test("public health is minimal while detailed readiness requires active staff", 
   try {
     const health = routes["GET /api/health"]({});
     assert.equal(health.ok, true);
-    assert.deepEqual(Object.keys(health).sort(), ["capabilities", "ok", "ts"]);
+    assert.deepEqual(Object.keys(health).sort(), ["capabilities", "mediaPublishingContract", "ok", "ts"]);
     assert.equal(health.services, undefined);
     assert.equal(health.commit, undefined);
     assert.deepEqual(health.capabilities.mediaPublishing, { photos: true, videos: false });
+    assert.deepEqual(health.mediaPublishingContract, {
+      negotiationRequired: true,
+      pipeline: "private-derivative-v1",
+      state: "unavailable",
+    });
 
     process.env.PIT_VIDEO_PUBLISHING_ENABLED = "true";
-    assert.deepEqual(routes["GET /api/health"]({ query: {} }).capabilities.mediaPublishing,
+    const legacyHealth = routes["GET /api/health"]({ query: {} });
+    assert.deepEqual(legacyHealth.capabilities.mediaPublishing,
       { photos: true, videos: false }, "legacy clients never receive the new video contract");
+    assert.deepEqual(legacyHealth.mediaPublishingContract, {
+      negotiationRequired: true,
+      pipeline: "private-derivative-v1",
+      state: "unavailable",
+    }, "operators can distinguish a legacy response from actual runtime readiness");
     assert.deepEqual(routes["GET /api/health"]({ query: { mediaPipeline: "verified-v0" } }).capabilities.mediaPublishing,
       { photos: true, videos: false }, "misspelled/old pipeline opt-ins fail closed");
-    assert.deepEqual(routes["GET /api/health"]({ query: { mediaPipeline: "private-derivative-v1" } }).capabilities.mediaPublishing,
+    const negotiatedHealth = routes["GET /api/health"]({ query: { mediaPipeline: "private-derivative-v1" } });
+    assert.deepEqual(negotiatedHealth.capabilities.mediaPublishing,
       { photos: true, videos: false }, "a flag and client opt-in cannot bypass storage/verifier readiness");
+    assert.deepEqual(negotiatedHealth.mediaPublishingContract, {
+      negotiationRequired: false,
+      pipeline: "private-derivative-v1",
+      state: "unavailable",
+    });
 
     addUser("u_health_mod", "health-mod@example.com", "healthmod");
     db.prepare("UPDATE users SET role='moderator' WHERE id=?").run("u_health_mod");
@@ -509,10 +526,16 @@ test("public video capability requires exact private-derivative negotiation plus
       MEDIA_PUBLIC_BASE_URL: "https://media.example.com/cdn",
     });
     resetVideoVerifierStateForTests();
+    assert.throws(() => routes["GET /api/readiness"]({}),
+      (error) => error.status === 503 && error.code === "MEDIA_STORAGE_UNAVAILABLE",
+      "an enabled release cannot be promoted before its live verifier proof");
     await verifyPrivateMediaBucketIsolation({
       env: process.env,
       fetchImpl: async () => ({ status: 403 }),
     });
+    assert.throws(() => routes["GET /api/readiness"]({}),
+      (error) => error.status === 503 && error.code === "MEDIA_STORAGE_UNAVAILABLE",
+      "private storage readiness alone cannot bypass the verifier gate");
     const verifierHealth = (sourceTypes) => async (url, request) => {
       const path = new URL(url).pathname;
       const authenticated = verifyVideoVerifierRequest({
@@ -543,6 +566,7 @@ test("public video capability requires exact private-derivative negotiation plus
       env: process.env,
       fetchImpl: verifierHealth(["video/mp4", "video/quicktime"]),
     });
+    assert.deepEqual(Object.keys(routes["GET /api/readiness"]({})).sort(), ["ok", "ts"]);
     assert.deepEqual(routes["GET /api/health"]({ query: {} }).capabilities.mediaPublishing,
       { photos: true, videos: false });
     assert.deepEqual(routes["GET /api/health"]({ query: { mediaPipeline: "private-derivative-v1x" } }).capabilities.mediaPublishing,
@@ -559,6 +583,8 @@ test("public video capability requires exact private-derivative negotiation plus
         },
       });
     process.env.PIT_VIDEO_PUBLISHING_ENABLED = "false";
+    assert.equal(routes["GET /api/readiness"]({}).ok, true,
+      "an explicit rollback keeps the core web release deployable without advertising videos");
     assert.deepEqual(routes["GET /api/health"]({ query: { mediaPipeline: "private-derivative-v1" } }).capabilities.mediaPublishing,
       { photos: true, videos: false }, "capability environment flags are evaluated on every health response");
     process.env.PIT_VIDEO_PUBLISHING_ENABLED = "true";
@@ -578,6 +604,9 @@ test("public video capability requires exact private-derivative negotiation plus
     assert.equal(degraded.ok, true, "core liveness survives an unavailable optional media provider");
     assert.deepEqual(degraded.capabilities.mediaPublishing, { photos: false, videos: false },
       "a public/shared source bucket keeps every publishing capability fail closed");
+    assert.throws(() => routes["GET /api/readiness"]({}),
+      (error) => error.status === 503 && error.code === "MEDIA_STORAGE_UNAVAILABLE",
+      "enabled video plus degraded private storage blocks release promotion without breaking liveness");
     process.env.MEDIA_SOURCE_BUCKET = "pit-media-private";
 
     const videoBody = (clientAssetId) => ({

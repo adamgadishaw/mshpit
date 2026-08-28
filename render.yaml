@@ -19,7 +19,10 @@ services:
     # failed snapshot stops startup before migration (persistent-disk deploys
     # can be unavailable until the operator fixes the backup or rolls back).
     startCommand: node scripts/start-production.mjs
-    healthCheckPath: /api/health
+    # Keep general liveness available to members, but do not promote a release
+    # whose explicitly enabled video pipeline has not completed its signed
+    # verifier and private-storage readiness proofs yet.
+    healthCheckPath: /api/readiness
     autoDeploy: true
     disk:
       name: pit-data
@@ -272,7 +275,7 @@ services:
     branch: staging
     buildCommand: npm ci && mkdir -p /tmp/pit-build-data && PIT_DATA_DIR=/tmp/pit-build-data PIT_ALLOW_EMPTY_DB_BOOTSTRAP=true npm run check:deploy
     startCommand: node scripts/start-production.mjs
-    healthCheckPath: /api/health
+    healthCheckPath: /api/readiness
     autoDeploy: true
     disk:
       name: pit-staging-data           # a DIFFERENT disk; never point at pit-data

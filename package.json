@@ -64,6 +64,7 @@
     "check:architecture": "node scripts/check-architecture.mjs",
     "check:web-bundle": "node scripts/check-web-bundle-budget.mjs",
     "verify:seo": "node scripts/verify-public-seo.mjs",
+    "verify:production-media": "node scripts/verify-production-media.mjs",
     "inventory:seo": "node scripts/seo-inventory.mjs",
     "check:deploy": "npm run split:catalog && npm run test && npm run check:syntax && npm run check:architecture && npm run build:web",
     "check": "npm run split:catalog && npm run test && npm run check:dependencies && npm run check:syntax && npm run check:architecture && npm run build:web",

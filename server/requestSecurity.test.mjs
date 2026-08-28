@@ -64,15 +64,17 @@ test("production Host validation allows the custom domain and canonical apex pai
   }));
 });
 
-test("the Render hostname is limited to health checks and foreign or malformed hosts are rejected", () => {
-  assert.doesNotThrow(() => assertProductionRequestHost({
-    production: true,
-    method: "GET",
-    pathname: "/api/health",
-    host: "mshpit.onrender.com",
-    publicOrigin: "https://www.mshpit.com",
-    renderExternalHostname: "mshpit.onrender.com",
-  }));
+test("the Render hostname is limited to liveness/readiness probes and foreign or malformed hosts are rejected", () => {
+  for (const pathname of ["/api/health", "/api/readiness"]) {
+    assert.doesNotThrow(() => assertProductionRequestHost({
+      production: true,
+      method: "GET",
+      pathname,
+      host: "mshpit.onrender.com",
+      publicOrigin: "https://www.mshpit.com",
+      renderExternalHostname: "mshpit.onrender.com",
+    }));
+  }
   for (const candidate of [
     { host: "mshpit.onrender.com", pathname: "/api/me" },
     { host: "foreign.example", pathname: "/api/health" },

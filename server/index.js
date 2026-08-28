@@ -523,7 +523,7 @@ const server = createServer(async (req, res) => {
       // normal traffic could turn a busy minute into a restart loop. It still
       // receives its own generous per-address ceiling so the public endpoint
       // cannot be used as an unbounded readiness/SQLite polling surface.
-      if (pathname === "/api/health") {
+      if (pathname === "/api/health" || pathname === "/api/readiness") {
         const healthLimit = healthRateLimitPolicy(ip);
         if (!rateLimit(healthLimit.key, healthLimit.max, healthLimit.windowMs)) {
           return sendApiError(res, new ApiError(429, "Too many requests.", "RATE_LIMITED"), requestId, cors);

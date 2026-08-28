@@ -33,12 +33,7 @@ import { postMediaPickerOptions } from "../domain/mediaPickerOptions.mjs";
 import { MEDIA_POST_MAX_ATTACHMENTS } from "../domain/mediaUploadPolicy.mjs";
 import {
   DEFAULT_MEDIA_PUBLISHING_CAPABILITIES,
-  MEDIA_PUBLISHING_UNAVAILABLE_COPY,
-  PHOTO_SELECTION_BLOCKED_COPY,
-  VIDEO_SELECTION_BLOCKED_COPY,
-  mediaPublishingAttachmentLabel,
   mediaPublishingAvailabilityCopy,
-  mediaPublishingSelection,
 } from "../domain/mediaPublishingCapabilities.mjs";
 import {
   mediaPublishingPreflightMessage,
@@ -461,8 +456,6 @@ export default function LogScreen({
   const [uploadProgress, setUploadProgress] = useState(null);
   const [mediaError, setMediaError] = useState("");
   const [mediaPublishingCapabilities, setMediaPublishingCapabilities] = useState(DEFAULT_MEDIA_PUBLISHING_CAPABILITIES);
-  const [mediaPublishingCapabilitiesReady, setMediaPublishingCapabilitiesReady] = useState(false);
-  const [mediaPublishingCapabilitiesConfirmed, setMediaPublishingCapabilitiesConfirmed] = useState(false);
   const [mediaPublishingCapabilitiesRefreshing, setMediaPublishingCapabilitiesRefreshing] = useState(false);
   const mediaPublishingCapabilitiesRequestRef = useRef(null);
   const uploadControllerRef = useRef(null);
@@ -531,7 +524,6 @@ export default function LogScreen({
         setMediaPublishingCapabilities((current) => (
           sameMediaPublishingCapabilities(current, capabilities) ? current : capabilities
         ));
-        setMediaPublishingCapabilitiesConfirmed(true);
         return { ok: true, capabilities };
       } catch {
         // Preserve the last authoritative result. On a first-load network
@@ -541,7 +533,6 @@ export default function LogScreen({
         if (mediaPublishingCapabilitiesRequestRef.current === request) {
           mediaPublishingCapabilitiesRequestRef.current = null;
           if (!controller.signal.aborted) {
-            setMediaPublishingCapabilitiesReady(true);
             if (request.showRefreshing) setMediaPublishingCapabilitiesRefreshing(false);
           }
         }
@@ -565,14 +556,11 @@ export default function LogScreen({
     return () => subscription.remove();
   }, [refreshMediaPublishingCapabilities]);
   const mediaAvailabilityCopy = mediaPublishingAvailabilityCopy(mediaPublishingCapabilities);
-  const mediaAttachmentLabel = mediaPublishingAttachmentLabel(mediaPublishingCapabilities);
-  const mediaAddLabel = mediaPublishingCapabilities.photos && mediaPublishingCapabilities.videos
-    ? "Add media"
-    : mediaPublishingCapabilities.photos
-      ? "Add photos"
-      : mediaPublishingCapabilities.videos
-        ? "Add videos"
-        : "Check media";
+  // Availability changes the status message, never the local composer affordance.
+  // People can always choose and retain either kind while the API decides when
+  // the private upload may proceed.
+  const mediaAttachmentLabel = "Photo / video";
+  const mediaAddLabel = "Add media";
   const toggleMediaPanel = () => {
     if (!showPhotos) void refreshMediaPublishingCapabilities({ background: true });
     setShowPhotos((visible) => !visible);
@@ -594,21 +582,22 @@ export default function LogScreen({
   }));
   const [showDate, setShowDate] = useState(false);
 
-  async function stageSelectedAssets(assets, capabilities = mediaPublishingCapabilities) {
+  async function stageSelectedAssets(assets) {
     if (uploadingPhotos || posting || !Array.isArray(assets) || !assets.length) return;
     const remaining = Math.max(0, MEDIA_POST_MAX_ATTACHMENTS - photos.length - studioAssets.length);
     if (!remaining) return;
     const candidateAssets = mediaProjectFromPicker(
       assets.slice(0, remaining),
       `${submissionIdRef.current}:${Date.now().toString(36)}`,
-      { allowLivePhotoVideo: capabilities?.videos === true },
+      // Never throw away a picked clip or Live Photo motion pair because a
+      // short-lived health probe is unavailable. Studio keeps the local draft;
+      // the authenticated media endpoint remains the authoritative admission
+      // and format boundary when the user applies it.
+      { allowLivePhotoVideo: true },
     ).assets;
-    const selection = mediaPublishingSelection(candidateAssets, capabilities);
-    const preflight = mediaPublishingPreflightSelection(selection.accepted, { platform: Platform.OS });
+    const preflight = mediaPublishingPreflightSelection(candidateAssets, { platform: Platform.OS });
     const selected = preflight.accepted;
     const notices = [];
-    if (selection.blockedPhotos) notices.push(PHOTO_SELECTION_BLOCKED_COPY);
-    if (selection.blockedVideos) notices.push(VIDEO_SELECTION_BLOCKED_COPY);
     if (preflight.rejected.length) notices.push(mediaPublishingPreflightMessage(preflight.rejected));
     setMediaError(notices.join(" "));
     if (!selected.length) return;
@@ -632,19 +621,11 @@ export default function LogScreen({
   async function applyStudioMedia(result) {
     const selected = Array.isArray(result?.assets) ? result.assets.slice(0, MEDIA_POST_MAX_ATTACHMENTS) : [];
     if (!selected.length || uploadingPhotos || posting) return;
-    const refreshedCapabilities = await refreshMediaPublishingCapabilities({ force: true, background: true });
-    const activeCapabilities = refreshedCapabilities.ok
-      ? refreshedCapabilities.capabilities
-      : mediaPublishingCapabilities;
-    const selection = mediaPublishingSelection(selected, activeCapabilities);
-    const blockedCopy = [
-      selection.blockedPhotos ? PHOTO_SELECTION_BLOCKED_COPY : "",
-      selection.blockedVideos ? VIDEO_SELECTION_BLOCKED_COPY : "",
-    ].filter(Boolean).join(" ");
-    if (blockedCopy) {
-      setMediaError(blockedCopy);
-      throw new Error(blockedCopy);
-    }
+    // Refresh availability for honest UI copy, but do not make this advisory
+    // probe a second admission gate. A transient/failed health request must not
+    // block a healthy upload route; the API validates the byte-sniffed type and
+    // current worker/storage readiness before it signs the private source PUT.
+    void refreshMediaPublishingCapabilities({ force: true, background: true });
     const controller = new AbortController();
     uploadControllerRef.current?.abort();
     uploadControllerRef.current = controller;
@@ -743,29 +724,11 @@ export default function LogScreen({
 
   const addPhoto = async () => {
     if (uploadingPhotos || posting) return;
-    // Mobile web must keep the picker inside the original user gesture. Native
-    // can safely await the short cached/coalesced check so a first fast tap does
-    // not inherit the photos-only startup default and hide video selection.
-    let pickerCapabilities = mediaPublishingCapabilities;
-    if (Platform.OS === "web") {
-      // The browser picker must open synchronously inside this tap. Until the
-      // first health response arrives, offer both choices and validate the
-      // selected assets against the authoritative response immediately below.
-      // This keeps a fast first tap from silently becoming photo-only.
-      if (!mediaPublishingCapabilitiesConfirmed) {
-        pickerCapabilities = { photos: true, videos: true };
-      }
-      void refreshMediaPublishingCapabilities({ background: true });
-    } else {
-      const refreshedCapabilities = await refreshMediaPublishingCapabilities({ background: true });
-      if (refreshedCapabilities.ok) pickerCapabilities = refreshedCapabilities.capabilities;
-      else if (!mediaPublishingCapabilitiesConfirmed) pickerCapabilities = { photos: true, videos: true };
-    }
-    if (!pickerCapabilities.photos && !pickerCapabilities.videos) {
-      setShowPhotos(true);
-      setMediaError(MEDIA_PUBLISHING_UNAVAILABLE_COPY);
-      return;
-    }
+    // The picker is a local draft boundary, not a service-health boundary.
+    // Always let people choose either media type and keep this call inside the
+    // original web user gesture. The authenticated API remains authoritative.
+    const pickerCapabilities = { photos: true, videos: true };
+    void refreshMediaPublishingCapabilities({ background: true });
     if (mediaProjectRequiresLegacyUpload(mediaProject, photos)) {
       setMediaError("Remove all existing media from this older post before adding a new photo or clip. This prevents an unsafe mix of legacy URLs and verified PIT media.");
       return;
@@ -808,8 +771,7 @@ export default function LogScreen({
       studioReturnFocusRef.current = null;
       return;
     }
-    const latestCapabilities = await refreshMediaPublishingCapabilities({ background: true });
-    await stageSelectedAssets(res.assets, latestCapabilities.ok ? latestCapabilities.capabilities : pickerCapabilities);
+    await stageSelectedAssets(res.assets);
   };
 
   const cancelUpload = async () => {
@@ -1109,7 +1071,7 @@ export default function LogScreen({
 
   const pendingMediaHandledRef = useRef(null);
   useEffect(() => {
-    if (!draftRestoreReady || !mediaPublishingCapabilitiesReady || !pendingMedia?.requestId || pendingMedia.composerId !== composerId) return;
+    if (!draftRestoreReady || !pendingMedia?.requestId || pendingMedia.composerId !== composerId) return;
     if (pendingMediaHandledRef.current === pendingMedia.requestId) return;
     pendingMediaHandledRef.current = pendingMedia.requestId;
     const result = pendingMedia.result;
@@ -1126,7 +1088,7 @@ export default function LogScreen({
     // The request id is the ownership boundary. Other state changes during a
     // recovered upload must not enqueue the same Android selection twice.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draftRestoreReady, mediaPublishingCapabilitiesReady, pendingMedia?.requestId, composerId]);
+  }, [draftRestoreReady, pendingMedia?.requestId, composerId]);
 
   const discardCurrentDraft = () => {
     void retireRemoteDrafts();

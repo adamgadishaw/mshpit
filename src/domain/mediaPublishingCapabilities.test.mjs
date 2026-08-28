@@ -8,11 +8,9 @@ import {
   MEDIA_PUBLISHING_HEALTH_PATH,
   VIDEO_PUBLISHING_PREPARING_COPY,
   VIDEO_PUBLISHING_PIPELINE_VERSION,
-  mediaPublishingAttachmentLabel,
   mediaPublishingAvailabilityCopy,
   mediaPublishingCapabilitiesForRuntime,
   mediaPublishingCapabilitiesFromHealth,
-  mediaPublishingSelection,
   mediaPublishingSourceRequestAllowed,
 } from "./mediaPublishingCapabilities.mjs";
 
@@ -49,39 +47,10 @@ test("the client trusts only the explicit boolean health capability", () => {
   }).sourceTypes, ["video/mp4", "video/quicktime"]);
 });
 
-test("the selection gate preserves photos and rejects only new videos while disabled", () => {
-  const image = { id: "image", kind: "image" };
-  const video = { id: "video", kind: "video", mimeType: "video/mp4" };
-  assert.deepEqual(mediaPublishingSelection([image, video]), { accepted: [image], blockedPhotos: 0, blockedVideos: 1 });
-  assert.deepEqual(mediaPublishingSelection([image, video], { photos: true, videos: true }), {
-    accepted: [image, video],
-    blockedPhotos: 0,
-    blockedVideos: 0,
-  });
-  assert.deepEqual(mediaPublishingSelection([image, video], { photos: false, videos: true }), {
-    accepted: [video],
-    blockedPhotos: 1,
-    blockedVideos: 0,
-  });
-  assert.deepEqual(mediaPublishingSelection([image, video], { photos: false, videos: false }), {
-    accepted: [],
-    blockedPhotos: 1,
-    blockedVideos: 1,
-  });
-  const mov = { id: "mov", kind: "video", mimeType: "video/quicktime", fileName: "concert.mov" };
-  assert.deepEqual(mediaPublishingSelection([video, mov], {
-    photos: true,
-    videos: true,
-    sourceTypes: ["video/mp4"],
-  }), { accepted: [video], blockedPhotos: 0, blockedVideos: 1 });
-});
-
-test("composer availability copy and labels match each negotiated media type", () => {
+test("composer availability copy accurately reports each negotiated media type", () => {
   assert.equal(mediaPublishingAvailabilityCopy({ photos: true, videos: true }), "");
   assert.equal(mediaPublishingAvailabilityCopy({ photos: true, videos: false }), VIDEO_PUBLISHING_PREPARING_COPY);
   assert.equal(mediaPublishingAvailabilityCopy({ photos: false, videos: false }), MEDIA_PUBLISHING_UNAVAILABLE_COPY);
-  assert.equal(mediaPublishingAttachmentLabel({ photos: false, videos: false }), "Media");
-  assert.equal(mediaPublishingAttachmentLabel({ photos: false, videos: true }), "Videos");
   assert.doesNotMatch(VIDEO_PUBLISHING_PREPARING_COPY, /Photo Studio is available now/);
 });
 
@@ -95,7 +64,7 @@ test("source-ticket policy blocks video on absent and misspelled runtime flags w
   assert.equal(mediaPublishingSourceRequestAllowed(image, { PIT_VIDEO_PUBLISHING_ENABLED: "false" }), true);
 });
 
-test("the composer exposes the capability, honest transition copy, and both selection/upload gates", async () => {
+test("the composer exposes honest capability copy while leaving upload admission to the API", async () => {
   const source = await readFile(new URL("../screens/LogScreen.jsx", import.meta.url), "utf8");
   assert.match(VIDEO_PUBLISHING_PREPARING_COPY, /Photo uploads are available/);
   assert.match(VIDEO_PUBLISHING_PREPARING_COPY, /Existing clips remain viewable/);
@@ -105,9 +74,10 @@ test("the composer exposes the capability, honest transition copy, and both sele
   assert.match(source, /if \(state === "active"\) void refreshMediaPublishingCapabilities\(\{ background: true \}\)/);
   assert.match(source, /allowPhotos: pickerCapabilities\.photos/);
   assert.match(source, /allowVideos: pickerCapabilities\.videos/);
-  assert.match(source, /mediaPublishingSelection\(candidateAssets, capabilities\)/);
-  assert.match(source, /mediaPublishingSelection\(selected, activeCapabilities\)/);
-  assert.match(source, /await refreshMediaPublishingCapabilities\(\{ force: true, background: true \}\)/);
+  assert.match(source, /allowLivePhotoVideo: true/);
+  assert.doesNotMatch(source, /mediaPublishingSelection/);
+  assert.match(source, /void refreshMediaPublishingCapabilities\(\{ force: true, background: true \}\)/);
+  assert.match(source, /uploadStudioMediaAsset\(\{/);
   assert.match(source, /mediaPublishingAvailabilityCopy\(mediaPublishingCapabilities\)/);
   assert.match(source, /accessibilityLabel="Check media upload availability again"/);
 });

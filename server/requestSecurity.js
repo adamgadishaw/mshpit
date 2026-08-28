@@ -70,7 +70,8 @@ export function assertProductionRequestHost({
 
   const renderHost = normalizedHost(renderExternalHostname);
   const healthMethod = method === "GET" || method === "HEAD";
-  if (received && renderHost && received === renderHost && pathname === "/api/health" && healthMethod) return;
+  const platformProbe = pathname === "/api/health" || pathname === "/api/readiness";
+  if (received && renderHost && received === renderHost && platformProbe && healthMethod) return;
   throw new ApiError(400, "Invalid request host.", "VALIDATION_FAILED");
 }
 
