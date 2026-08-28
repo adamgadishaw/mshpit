@@ -3,8 +3,11 @@ import fs from "node:fs";
 import test from "node:test";
 import {
   CALENDAR_SHOW_VIEW,
+  calendarFocusForPost,
+  calendarShowFromPost,
   calendarShowsByDay,
   calendarShowsForView,
+  memberCalendarModel,
 } from "./calendarShows.mjs";
 
 const today = "2026-08-28";
@@ -29,7 +32,7 @@ test("Calendar exposes an accessible Upcoming and Past Shows period control", ()
 test("Calendar history is account-bound and keeps pagination under explicit user control", () => {
   assert.match(calendarScreen, /accountId: session\?\.id/);
   assert.match(calendarScreen, /targetId: session\?\.id/);
-  assert.match(calendarScreen, /enabled: !!session\?\.id && view === CALENDAR_SHOW_VIEW\.PAST/);
+  assert.match(calendarScreen, /enabled: !!session\?\.id/);
   assert.match(calendarScreen, /historyWindow\.hasBufferedPage/);
   assert.match(calendarScreen, /historyWindow\.hasServerPage/);
   assert.match(calendarScreen, /history\.loadMore\(\)/);
@@ -47,6 +50,54 @@ test("calendar upcoming keeps today and future shows while moving stale Going ro
   assert.equal(rows[1].going, true);
 });
 
+test("dated concert posts land in the correct period while unrelated statuses stay out", () => {
+  const model = memberCalendarModel({
+    today,
+    posts: [
+      show("past-review", "2026-08-20", { kind: "review" }),
+      show("future-review", "2026-09-20", { kind: "review" }),
+      show("future-context-post", "2026-10-20", { kind: "status" }),
+      { id: "plain", kind: "status", review: "No show context here" },
+    ],
+  });
+
+  assert.deepEqual(model.past.map(({ postId }) => postId), ["past-review"]);
+  assert.deepEqual(model.upcoming.map(({ postId }) => postId), ["future-review", "future-context-post"]);
+  assert.equal(model.past[0].logged, true);
+  assert.equal(model.upcoming[1].posted, true);
+  assert.equal(calendarShowFromPost({ id: "plain", kind: "status", review: "hello" }), null);
+  assert.equal(calendarFocusForPost({ id: "plain", kind: "status", review: "hello" }, today), null);
+});
+
+test("a server-owned Going post merges with its catalogue and private Going row once", () => {
+  const ticketPost = {
+    id: "post-ticket",
+    kind: "status",
+    attendanceTicket: {
+      state: "going",
+      tourDateId: "tm-123",
+      artist: "Earl Sweatshirt",
+      venue: "History",
+      city: "Toronto",
+      date: "2026-10-03",
+      tourName: "Live Laugh Love Tour",
+    },
+  };
+  const model = memberCalendarModel({
+    today,
+    posts: [ticketPost],
+    upcoming: [{ id: "tm-123", artist: "Earl Sweatshirt", venue: "History", city: "Toronto", date: "2026-10-03", ticketUrl: "https://tickets.example/event" }],
+    going: [{ key: "earl sweatshirt|history|2026-10-03", artist: "Earl Sweatshirt", venue: "History", city: "Toronto", date: "2026-10-03" }],
+  });
+
+  assert.equal(model.upcoming.length, 1);
+  assert.equal(model.upcoming[0].id, "tm-123", "catalogue event identity wins over the post id");
+  assert.equal(model.upcoming[0].postId, "post-ticket");
+  assert.equal(model.upcoming[0].posted, true);
+  assert.equal(model.upcoming[0].going, true);
+  assert.equal(model.upcoming[0].ticketUrl, "https://tickets.example/event");
+});
+
 test("calendar past shows use real logs and Here/Went history, never Interested or stale Going", () => {
   const rows = calendarShowsForView({
     view: CALENDAR_SHOW_VIEW.PAST,
@@ -59,7 +110,7 @@ test("calendar past shows use real logs and Here/Went history, never Interested 
       show("future-went", "2026-09-01", { state: "went" }),
     ],
     logs: [
-      show("status", "2026-08-24", { kind: "status" }),
+      { id: "status", kind: "status", review: "No attached show", date: "2026-08-24" },
       show("review", "2026-08-25", { kind: "review" }),
       show("legacy-review", "2026 · 08 · 26"),
     ],
@@ -81,6 +132,28 @@ test("calendar past deduplicates a logged night and attendance without mutating 
   assert.equal(grouped["2026-08-20"][0].attended, true);
   assert.equal(grouped["2026-08-20"][0].logged, true);
   assert.deepEqual({ attendance, logs }, before);
+});
+
+test("calendar focus classifies canonical show dates without treating plain posts as calendar items", () => {
+  assert.deepEqual(calendarFocusForPost(show("past", "2026-08-20", { kind: "review" }), today), {
+    date: "2026-08-20",
+    view: CALENDAR_SHOW_VIEW.PAST,
+  });
+  assert.deepEqual(calendarFocusForPost(show("future", "2026-09-20", { kind: "review" }), today), {
+    date: "2026-09-20",
+    view: CALENDAR_SHOW_VIEW.UPCOMING,
+  });
+  assert.deepEqual(calendarFocusForPost(
+    show("future-date-object", "2026-09-20", { kind: "review" }),
+    new Date(2026, 7, 28, 12),
+  ), {
+    date: "2026-09-20",
+    view: CALENDAR_SHOW_VIEW.UPCOMING,
+  }, "runtime Date objects must be converted at the local-calendar boundary");
+  assert.equal(memberCalendarModel({
+    today: new Date(2026, 7, 28, 12),
+    posts: [show("date-object-model", "2026-08-20", { kind: "review" })],
+  }).past.length, 1);
 });
 
 test("calendar ignores malformed and incomplete show identities", () => {

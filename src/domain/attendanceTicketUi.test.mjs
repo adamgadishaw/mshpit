@@ -1,0 +1,79 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+
+const sourceUrl = new URL("../components/ConcertTicketCard.jsx", import.meta.url);
+const source = await readFile(sourceUrl, "utf8");
+
+test("ticket card collapses failed artist artwork without generating a replacement", () => {
+  assert.match(source, /preview\.imageUri\s*&&\s*preview\.imageUri\s*!==\s*failedImageUri/);
+  assert.match(source, /onError=\{\(\)\s*=>\s*setFailedImageUri\(imageUri\)\}/);
+  assert.match(source, /setFailedImageUri\(null\)/);
+  assert.doesNotMatch(source, /PHOTO UNAVAILABLE|initials|fallback image/i);
+});
+
+test("ticket card renders only social attendance details, never purchase credentials", () => {
+  assert.doesNotMatch(source, /barcode|qr\s*code|order(?:\s*number|Id)|confirmation\s*number/i);
+  assert.doesNotMatch(source, /MSHPIT SHOW PASS|\bADMIT\b|OFFICIAL TOUR|OFFICIAL EVENT/);
+  assert.match(source, /NOT VALID FOR ENTRY/);
+  assert.match(source, /preview\.seatLocation/);
+  assert.match(source, /<SeatStub seatLocation=\{preview\.seatLocation\}/);
+  assert.match(source, /preview\.contextTitle/);
+  assert.doesNotMatch(source, /preview\.officialTitle|officialBlock|officialLabel|officialTitle/);
+  assert.match(source, /preview\.authorSentence/);
+  assert.match(source, /preview\.tourStopLabel/);
+});
+
+test("ticket card is responsive and uses the shared design system", () => {
+  assert.match(source, /useWindowDimensions\(\)/);
+  assert.match(source, /const \{ width, fontScale \} = useWindowDimensions\(\)/);
+  assert.match(source, /const WIDE_BREAKPOINT = 620/);
+  assert.match(source, /width >= WIDE_BREAKPOINT && fontScale < 1\.35 && !compact/);
+  assert.match(source, /artworkCompact/);
+  assert.match(source, /maxWidth: 900/);
+  assert.match(source, /colors,\s*displayFont,\s*focusRing,\s*font,\s*mono,\s*radius,\s*shadow,\s*space/);
+  assert.match(source, /focused && focusRing/);
+  assert.doesNotMatch(source, /#[0-9a-f]{3,8}/i);
+});
+
+test("ticket card keeps its interactive and summary modes accessible", () => {
+  assert.match(source, /accessibilityRole="button"/);
+  assert.match(source, /accessibilityRole="summary"/);
+  assert.match(source, /const cardAccessibilityLabel = "Mshpit social keepsake, not valid for entry\. "/);
+  assert.match(source, /accessibilityLabel=\{cardAccessibilityLabel\}/);
+  assert.match(source, /accessibilityHint=\{accessibilityHint \|\| "Opens the show page"\}/);
+  assert.match(source, /importantForAccessibility="no-hide-descendants"/);
+  assert.match(source, /minHeight: 44/);
+  assert.match(source, /fontVariant: \["tabular-nums"\]/);
+  assert.match(source, /useReducedMotion/);
+  assert.match(source, /transition=\{reduceMotion \? 0 : 160\}/);
+  assert.match(source, /pressed && !reduceMotion && styles\.cardPressedMotion/);
+});
+
+test("ticket artwork uses Expo Image caching and the ticket edge is presentational", () => {
+  assert.match(source, /Image as ExpoImage/);
+  assert.match(source, /cachePolicy="memory-disk"/);
+  assert.match(source, /recyclingKey=\{imageUri\}/);
+  assert.match(source, /borderStyle: "dashed"/);
+});
+
+test("ticket composition reads like a concert keepsake instead of a generic action card", () => {
+  assert.match(source, /MSHPIT \/ GOING/);
+  assert.match(source, /SOCIAL RSVP · NOT VALID FOR ENTRY/);
+  assert.match(source, /GOING/);
+  assert.match(source, /SOCIAL RSVP/);
+  assert.match(source, /SEATING/);
+  assert.match(source, /NOT SHARED/);
+  assert.match(source, /VIEW SHOW/);
+  assert.match(source, /RSVP CARD/);
+  assert.match(source, /ARTIST \//);
+  assert.match(source, /VENUE \/ CITY/);
+  assert.match(source, /MSHPIT SOCIAL RSVP/);
+  assert.doesNotMatch(source, /KEEP THE NIGHT|OPEN THE NIGHT|LIVE KEEPSAKE|THIS NIGHT/);
+  assert.match(source, /colorRegister/);
+  assert.match(source, /statusStamp/);
+  assert.match(source, /keepsakeDateParts/);
+  assert.doesNotMatch(source, /fontStyle: "italic"/);
+  assert.match(source, /borderRadius: radius\.sm/);
+  assert.match(source, /letterSpacing: 1\.35/);
+});

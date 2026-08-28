@@ -58,7 +58,7 @@ test("the shell keeps artist management, staff editing, and fan preview as disti
     assert.match(app, new RegExp(`${prop}=`), `ArtistHubScreen must receive ${prop}`);
   }
   assert.doesNotMatch(app, /<ArtistHubScreen[^;]+onOpenPublicPage=/);
-  assert.match(hub, /title="Edit public page"[\s\S]*?onPress=\{openPageEditor\}/);
+  assert.match(hub, /title="Edit artist page"[\s\S]*?onPress=\{openPageEditor\}/);
   assert.match(hub, /if \(!artistPageEditReady\(scopedArtistPageResource\)\) return;/);
   assert.match(hub, /onEditPage\?\.\(artistName\)/);
   assert.match(hub, /title="Personal account"[\s\S]*?onPress=\{onEditAccount\}/);
@@ -69,7 +69,7 @@ test("the shell keeps artist management, staff editing, and fan preview as disti
   assert.match(artist, /ownsNamedArtistPage && !previewAsFan && onManageArtistProfile/);
   assert.match(artist, /canModerate && !previewAsFan && onEditArtistProfile/);
   assert.match(artist, /<Text style=\{styles\.editTxt\}>Artist HQ<\/Text>/);
-  assert.match(artist, /<Text style=\{styles\.editTxt\}>Edit public page<\/Text>/);
+  assert.match(artist, /<Text style=\{styles\.editTxt\}>Edit artist page<\/Text>/);
   assert.match(app, /onManageArtistProfile=\{\(\) => go\(\{ artistHub: true \}\)\}/);
   assert.match(app, /onEditArtistProfile=\{\(name\) => name && requireVerifiedMutation\("artist", \(\) => go\(\{ editArtist: name \}\)\)\}/);
   assert.match(app, /go\(\{ artistPreview: name \}\)/);
@@ -80,18 +80,18 @@ test("the shell keeps artist management, staff editing, and fan preview as disti
 
 test("Artist HQ exposes one primary action for each distinct job", () => {
   assert.equal((hub.match(/onPress=\{\(\) => onPreview\?\.\(artistName\)\}/g) || []).length, 1, "one public artist profile preview");
-  assert.equal((hub.match(/title="Edit public page"/g) || []).length, 1, "one public-page editor");
+  assert.equal((hub.match(/title="Edit artist page"/g) || []).length, 1, "one artist-page editor");
   assert.equal((hub.match(/onPress=\{onCampaignPost\}/g) || []).length, 1, "one artist-drop action");
-  assert.equal((hub.match(/onPress=\{onTourDates\}/g) || []).length, 1, "one live-dates action");
+  assert.equal((hub.match(/onPress=\{onTourDates\}/g) || []).length, 1, "one upcoming-shows action");
   assert.equal((hub.match(/onPress=\{onEditAccount\}/g) || []).length, 1, "one personal-account action");
-  assert.match(hub, />Public artist profile<\/Text>/);
-  assert.match(hub, /title="Artist drop"/);
-  assert.match(hub, /title="Live dates"/);
+  assert.match(hub, />Preview artist page<\/Text>/);
+  assert.match(hub, /title="Featured feed post"/);
+  assert.match(hub, /title="Upcoming shows"/);
 });
 
 test("Artist HQ launches the artist-only campaign composer and the feed renders its trusted presentation", () => {
   assert.match(hub, /onCampaignPost/);
-  assert.match(hub, /title="Artist drop"/);
+  assert.match(hub, /title="Featured feed post"/);
   assert.match(app, /onCampaignPost=\{\(\) => requireVerifiedMutation\("artist", \(\) => go\(\{ logging: true, postMode: "campaign" \}\)\)\}/);
   assert.match(composer, /user\?\.role === "artist"/);
   assert.match(composer, /campaign: isCampaign \? campaign : null/);
@@ -99,11 +99,11 @@ test("Artist HQ launches the artist-only campaign composer and the feed renders 
   assert.match(composer, /media: publishedMedia/);
   assert.match(feedCard, /artistCampaignPresentation\(log\.campaign, postMedia\)/);
   assert.match(feedCard, /autoplay=\{!reduceMotion\}/);
-  assert.match(feedCard, /OFFICIAL ARTIST DROP|campaignTreatment\.eyebrow\.toUpperCase\(\)/);
+  assert.match(feedCard, /FEATURED ARTIST POST|campaignTreatment\.eyebrow\.toUpperCase\(\)/);
   assert.match(feedCard, /campaignTouchTarget: \{ minWidth: 44, minHeight: 44 \}/);
   assert.match(afterparty, /palette\?\.mutedTextColor/);
   assert.match(afterparty, /campaignSend: \{ width: 44, height: 44/);
-  assert.match(hub, /Artist drops still reach the main feed\./);
+  assert.match(hub, /Featured feed posts still appear in the main feed\./);
 });
 
 test("fan preview hides ownership affordances and unreleased dates", () => {
@@ -130,7 +130,7 @@ test("artist publishing reports authoritative outcomes and preserves failed draf
   assert.match(hub, /setDraft\(\(current\) => current === submittedDraft \? "" : current\)/);
   assert.match(hub, /draft is still here/i);
   assert.doesNotMatch(artist, /addArtistPost|removeArtistPost|Publish page update|deletePageUpdate/);
-  assert.match(artist, /Page updates are read-only here/);
+  assert.match(artist, /Artist posts are read-only here/);
 });
 
 test("Artist HQ retains confirmed page data on refresh failure without crossing account scope", () => {
@@ -177,21 +177,21 @@ test("Artist HQ page reads expose a retryable scoped contract and gate unconfirm
   assert.match(hub, /accessibilityLabel="Retry loading artist page data"/);
   assert.match(hub, /\{hasConfirmedArtistPage \? \(\s*<View style=\{styles\.statsRow\}>/);
   assert.match(hub, /hasConfirmedArtistPage && !model\.feedEnabled/);
-  assert.match(hub, /\{!hasConfirmedArtistPage \? \([\s\S]*Existing page updates will appear after the artist page is confirmed\./);
+  assert.match(hub, /\{!hasConfirmedArtistPage \? \([\s\S]*Existing artist posts will appear after the artist page loads\./);
   assert.match(artist, /loadArtistPage\(a\.name, \{ signal: controller\.signal \}\)/);
 });
 
 test("page-update deletion lives in Artist HQ with confirmation, account scoping, and retry", () => {
   assert.match(hub, /await removeArtistPost\(artistName, postId, \{ signal: controller\.signal \}\)/);
   assert.match(hub, /artistPostMutation\.scope === artistPostScope/);
-  assert.match(hub, /Remove this page update\?/);
-  assert.match(hub, /This page update was not removed, so it is still visible/);
+  assert.match(hub, /Remove this artist post\?/);
+  assert.match(hub, /This artist post was not removed, so it is still visible/);
   assert.match(hub, /error\?\.retryable/);
   assert.match(hub, /posts\.map\(\(item\) =>/);
 });
 
 test("page-update visibility is an accessible switch with explicit state", () => {
-  assert.match(artistEditor, /title="Edit public page"/);
+  assert.match(artistEditor, /title="Edit artist page"/);
   assert.match(artistEditor, /loadArtistPage\(artist\.name, \{ signal: controller\.signal \}\)/);
   assert.match(artistEditor, /if \(!artistPageEditReady\(resource\) \|\| mediaBusy \|\| saving\) return;/);
   assert.match(artistEditor, /confirmedProfile=\{scopedResource\.data\.profile\}/);
@@ -199,5 +199,5 @@ test("page-update visibility is an accessible switch with explicit state", () =>
   assert.match(artistEditor, /accessibilityRole="switch"/);
   assert.match(artistEditor, /accessibilityState=\{\{ checked: feedEnabled, disabled: mediaBusy \|\| saving \}\}/);
   assert.match(artistEditor, /accessibilityValue=\{\{ text: feedEnabled \? "Shown" : "Hidden" \}\}/);
-  assert.match(artistEditor, />Show page updates<\/Text>/);
+  assert.match(artistEditor, />Show artist posts<\/Text>/);
 });

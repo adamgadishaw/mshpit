@@ -20,21 +20,21 @@ function SearchBox({ value, onChange }) {
         style={styles.searchInput}
         value={value}
         onChangeText={onChange}
-        placeholder="Filter artists, genres, or songs"
+        placeholder="Search artists, genres, or songs"
         placeholderTextColor={colors.textFaint}
-        accessibilityLabel="Filter the current Discover chart"
+        accessibilityLabel="Search this artist list"
         returnKeyType="search"
         autoCapitalize="none"
         autoCorrect={false}
       />
-      {!!value && <Pressable style={styles.clearSearch} onPress={() => onChange("")} accessibilityRole="button" accessibilityLabel="Clear chart filter" hitSlop={8}><Icon name="x" size={15} color={colors.textDim} /></Pressable>}
+      {!!value && <Pressable style={styles.clearSearch} onPress={() => onChange("")} accessibilityRole="button" accessibilityLabel="Clear artist search" hitSlop={8}><Icon name="x" size={15} color={colors.textDim} /></Pressable>}
     </View>
   );
 }
 
 function ChartMetric({ row, source }) {
   const value = source === "plays" ? row?.plays : row?.popularity ?? row?.followers ?? row?.rating;
-  const label = source === "plays" ? "plays" : row?.popularity != null ? "pop" : row?.followers != null ? "fans" : row?.rating != null ? "rating" : "rank";
+  const label = source === "plays" ? "plays" : row?.popularity != null ? "popularity" : row?.followers != null ? "fans" : row?.rating != null ? "rating" : "rank";
   const displayValue = source === "plays" && row?.playsApproximate
     ? `${compactDiscoverNumber(value)}+`
     : compactDiscoverNumber(value);
@@ -77,26 +77,26 @@ function DiscoverChart({ rows, source, info, query, onQuery, onOpenArtist, onPla
   return (
     <View style={styles.panel}>
       <SectionHeading
-        eyebrow="LIVE CHART"
-        title={source === "plays" ? "What Pit is playing" : "Artists moving now"}
-        detail={info?.label || (source === "plays" ? "Most played by members" : "Catalog popularity")}
-        action={info?.live ? <View style={styles.livePill} accessible accessibilityLabel={source === "plays" ? "Live member chart" : "Current catalog chart"}><View style={styles.liveDot} /><Text style={styles.liveText}>{source === "plays" ? "LIVE" : "CURRENT"}</Text></View> : null}
+        eyebrow="POPULAR ARTISTS"
+        title={source === "plays" ? "What members are playing" : "Popular artists"}
+        detail={source === "plays" ? "Most played by members" : "Based on current artist popularity"}
+        action={info?.live ? <View style={styles.livePill} accessible accessibilityLabel={source === "plays" ? "Live member list" : "Current artist list"}><View style={styles.liveDot} /><Text style={styles.liveText}>{source === "plays" ? "LIVE" : "CURRENT"}</Text></View> : null}
       />
       <SearchBox value={query} onChange={onQuery} />
       {state === "no-results" ? (
         <View style={styles.inlineEmpty} accessibilityLiveRegion="polite">
           <Text style={styles.inlineEmptyTitle} selectable>No matches for “{query.trim()}”</Text>
-          <Pressable style={styles.clearFilterButton} onPress={() => onQuery("")} accessibilityRole="button" accessibilityLabel="Clear chart filter"><Text style={styles.textButton}>Clear filter</Text></Pressable>
+          <Pressable style={styles.clearFilterButton} onPress={() => onQuery("")} accessibilityRole="button" accessibilityLabel="Clear artist search"><Text style={styles.textButton}>Clear search</Text></Pressable>
         </View>
       ) : state === "empty" ? (
         <View style={styles.inlineEmpty} accessibilityLiveRegion="polite">
-          <Text style={styles.inlineEmptyTitle}>{source === "plays" ? "No member plays are ranked in this scene yet." : "No artists are ranked in this scene yet."}</Text>
+          <Text style={styles.inlineEmptyTitle}>{source === "plays" ? "No member listening activity here yet." : "No popular artists are listed here yet."}</Text>
         </View>
       ) : (
         <View style={styles.chartList}>{visible.map((row, index) => <ArtistChartRow key={`${row.name}_${row.rank || index}`} row={row} index={index} source={source} onOpen={onOpenArtist} onPlay={onPlay} onAdd={onAdd} narrow={narrow} />)}</View>
       )}
       {!query && filtered.length > limit && (
-        <Pressable style={styles.expandButton} onPress={() => setExpanded((value) => !value)} accessibilityRole="button" accessibilityState={{ expanded }} accessibilityLabel={expanded ? "Show fewer chart artists" : `Show all ${filtered.length} chart artists`}>
+        <Pressable style={styles.expandButton} onPress={() => setExpanded((value) => !value)} accessibilityRole="button" accessibilityState={{ expanded }} accessibilityLabel={expanded ? "Show fewer artists" : `Show all ${filtered.length} artists`}>
           <Text style={styles.expandText}>{expanded ? "Show fewer" : `Show all ${filtered.length}`}</Text>
           <Icon name={expanded ? "chevron-down" : "chevron-right"} size={15} color={colors.amber} />
         </Pressable>

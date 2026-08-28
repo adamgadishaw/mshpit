@@ -101,7 +101,7 @@ function CloseButton({ onPress, disabled }) {
       onPress={disabled ? undefined : onPress}
       disabled={disabled}
       accessibilityRole="button"
-      accessibilityLabel="Close PIT Studio"
+      accessibilityLabel="Close photo and video editor"
       accessibilityState={{ disabled }}
       style={({ pressed, focused }) => [styles.iconButton, disabled && styles.disabled, pressed && !disabled && styles.pressed, focused && focusRing]}
     >
@@ -260,10 +260,10 @@ export default function MediaEditorWorkspace({
       ? "Your selected media and reversible edits have not been applied to this post."
       : "Your selected media has not been applied to this post.";
     if (Platform.OS === "web" && typeof window !== "undefined") {
-      if (window.confirm(`Discard PIT Studio changes?\n\n${detail}`)) onClose?.();
+      if (window.confirm(`Discard photo and video changes?\n\n${detail}`)) onClose?.();
       return;
     }
-    Alert.alert("Discard PIT Studio changes?", detail, [
+    Alert.alert("Discard photo and video changes?", detail, [
       { text: "Keep editing", style: "cancel" },
       { text: "Discard", style: "destructive", onPress: () => onClose?.() },
     ]);
@@ -448,7 +448,7 @@ export default function MediaEditorWorkspace({
       try { element?.focus?.({ preventScroll: true }); } catch { try { element?.focus?.(); } catch {} }
     };
     const frame = requestAnimationFrame(() => focusElement(
-      root.querySelector?.('[aria-label="Close PIT Studio"]') || focusable()[0],
+      root.querySelector?.('[aria-label="Close photo and video editor"]') || focusable()[0],
     ));
     const trapFocus = (event) => {
       if (event.key !== "Tab") return;
@@ -614,7 +614,7 @@ export default function MediaEditorWorkspace({
           renders[asset.id] = render;
           committed.push(attachMediaEditArtifacts(asset, { renderedAsset: render }));
         } else if (asset.kind === "video") {
-          if (videoEditRequiresExport(asset.edit)) throw new Error("Trim, mute, crop, and video filters need PIT's authoritative video renderer and cannot be applied yet.");
+          if (videoEditRequiresExport(asset.edit)) throw new Error("Video trimming, muting, cropping, and filters are not available yet. Remove those edits to continue.");
           const cached = asset.edit.coverMode !== "manual" ? previewCoversRef.current[asset.id] : null;
           const cover = cached?.key === autoCoverCacheKey(asset) ? cached.cover : null;
           if (cover) renders[asset.id] = { cover };
@@ -639,7 +639,7 @@ export default function MediaEditorWorkspace({
       setProgress(null);
       setMessage(cancellingRef.current
         ? "Media processing was cancelled. Your originals are unchanged."
-        : (error?.message || "PIT Studio could not finish this edit. Your originals are unchanged."));
+        : (error?.message || "The photo and video editor could not finish this edit. Your original files are unchanged."));
     } finally {
       setSaving(false);
       setCancelling(false);
@@ -789,7 +789,7 @@ export default function MediaEditorWorkspace({
             <View style={styles.empty}>
               <Icon name="photo" size={32} color={colors.textFaint} />
               <Text style={styles.emptyTitle}>Choose media first</Text>
-              <Text style={styles.emptyBody}>PIT Studio opens after at least one photo or video is selected.</Text>
+              <Text style={styles.emptyBody}>The photo and video editor opens after you select at least one photo or video.</Text>
             </View>
           )}
           {wide || !keyboardOpen ? <MediaAssetRail

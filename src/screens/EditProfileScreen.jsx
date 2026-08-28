@@ -124,16 +124,16 @@ export default function EditProfileScreen({ onClose }) {
 
   return (
     <View style={styles.wrap}>
-      <SheetHeader title="Personal Pit profile" onClose={onClose} action={{ label: saving ? "Saving..." : mediaBusy ? "Uploading..." : "Save", onPress: save, disabled: mediaBusy || saving }} />
+      <SheetHeader title="Edit your profile" onClose={onClose} action={{ label: saving ? "Saving..." : mediaBusy ? "Uploading..." : "Save", onPress: save, disabled: mediaBusy || saving }} />
 
       <ScrollView style={saving ? styles.savingLock : null} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-        <Text style={styles.profileScope}>This is your personal identity across Pit. Artist page, promotion, and live-show tools stay in Artist HQ.</Text>
+        <Text style={styles.profileScope}>This is the profile people see for your personal account. Artist page, promotion, and show tools are in Artist HQ.</Text>
         <Pressable
           style={styles.bannerEdit}
           onPress={pickBanner}
           disabled={uploadingBanner || saving}
           accessibilityRole="button"
-          accessibilityLabel={banner ? "Change personal profile banner" : "Add a personal profile banner"}
+          accessibilityLabel={banner ? "Change profile banner" : "Add a profile banner"}
           accessibilityHint={BANNER_IMAGE_HINT}
         >
           {banner ? <Image source={{ uri: banner }} style={StyleSheet.absoluteFill} resizeMode="cover" /> : null}
@@ -153,7 +153,7 @@ export default function EditProfileScreen({ onClose }) {
             onPress={pickPhoto}
             disabled={uploadingAvatar || saving}
             accessibilityRole="button"
-            accessibilityLabel="Change personal profile photo"
+            accessibilityLabel="Change profile photo"
             accessibilityHint={AVATAR_IMAGE_HINT}
           >
             <Icon name="camera" size={16} color="#1A1206" />
@@ -163,7 +163,7 @@ export default function EditProfileScreen({ onClose }) {
           onPress={pickPhoto}
           disabled={uploadingAvatar || saving}
           accessibilityRole="button"
-          accessibilityLabel="Change personal profile photo"
+          accessibilityLabel="Change profile photo"
           accessibilityHint={AVATAR_IMAGE_HINT}
         >
           <Text style={styles.changePhoto}>{uploadingAvatar ? "Uploading photo..." : "Change photo"}</Text>
@@ -191,7 +191,7 @@ export default function EditProfileScreen({ onClose }) {
           )}
         </View>
         <Text style={styles.handleHint}>
-          {handleTooShort ? "At least 3 characters." : "Letters, numbers, and underscores. This is your @ across Pit."}
+          {handleTooShort ? "At least 3 characters." : "Use letters, numbers, or underscores. This is your @username across Mshpit."}
         </Text>
 
         <Text style={styles.label}>HOME CITY</Text>
@@ -202,18 +202,18 @@ export default function EditProfileScreen({ onClose }) {
         </Pressable>
 
         <Text style={styles.label}>BIO</Text>
-        <TextInput style={[styles.input, styles.multiline]} value={bio} onChangeText={setBio} placeholder="A line about you" placeholderTextColor={colors.textFaint} multiline maxLength={240} />
+        <TextInput style={[styles.input, styles.multiline]} value={bio} onChangeText={setBio} placeholder="Tell people about yourself" placeholderTextColor={colors.textFaint} multiline maxLength={240} />
 
-        <Text style={styles.label}>YOUR ARTISTS</Text>
+        <Text style={styles.label}>FAVORITE ARTISTS</Text>
         <Pressable style={styles.artistsBtn} onPress={() => setPickingArtists(true)}>
           <Icon name="music" size={16} color={colors.amber} />
           <Text style={styles.artistsBtnTxt}>
-            {session?.favoriteArtists?.length ? `${session.favoriteArtists.length} picked · tune your feed` : "Pick artists to personalize your feed"}
+            {session?.favoriteArtists?.length ? `${session.favoriteArtists.length} selected · used for your feed` : "Pick favorite artists for your feed"}
           </Text>
           <Icon name="chevron-right" size={16} color={colors.textDim} />
         </Pressable>
 
-        <Text style={styles.label}>PREFERRED GENRES</Text>
+        <Text style={styles.label}>FAVORITE GENRES</Text>
         <View style={styles.chips}>
           {GENRES.map((g) => {
             const on = genres.includes(g);

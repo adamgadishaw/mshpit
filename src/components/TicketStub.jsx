@@ -21,6 +21,8 @@ import { ENABLE_MUSIC_PLAYER } from "../config/runtime.mjs";
 import useReducedMotion from "../hooks/useReducedMotion";
 import { PublicPressableLink, PublicTextLink } from "./PublicWebLinks";
 import { artistPath, postPath, profilePath, venuePath } from "../domain/urls.mjs";
+import { buildAttendanceTicketPreview } from "../domain/attendanceTicket.mjs";
+import ConcertTicketCard from "./ConcertTicketCard";
 
 // "3rd time in the pit" needs a real ordinal, not "3th".
 const ordinal = (n) => {
@@ -31,7 +33,7 @@ const ordinal = (n) => {
 
 // Word-art tag chips: skewed, loud, but on-theme (no rainbow WordArt). Colors
 // rotate through the stage-light palette so a row reads as designed, not random.
-const TAG_COLORS = [colors.amber, colors.blue, colors.magenta, colors.gold];
+const TAG_COLORS = [colors.amber, colors.cool, colors.magenta, colors.gold];
 function TagRow({ tags, center = false }) {
   if (!tags?.length) return null;
   return (
@@ -139,7 +141,7 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onNotInt
   const recommendation = recommendationDisclosure(log.recommendation);
   // Editing is the author's alone. Admins moderate (remove/mute/ban); they
   // never rewrite someone's review, so no admin bypass here.
-  const canEdit = !!onEdit && !!session && session.id === log.userId;
+  const canEdit = !!onEdit && !!session && session.id === log.userId && !log.attendanceTicket;
   // Delete is the author's own. Like edit, admins moderate through their own
   // route rather than this button, so there is no staff bypass here.
   const canDelete = !!session && session.id === log.userId;
@@ -179,6 +181,16 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onNotInt
   const statusMedia = campaignBackground
     ? postMedia.filter((_, index) => index !== campaignBackgroundIndex)
     : postMedia;
+  const attendanceTicketCard = log.attendanceTicket?.kind === "attendance-ticket"
+    ? log.attendanceTicket
+    : log.attendanceTicket
+      ? buildAttendanceTicketPreview({
+        author,
+        show: log.attendanceTicket,
+        seatLocation: log.attendanceTicket.seat || log.attendanceTicket.seatLocation,
+        shareSeatLocation: !!(log.attendanceTicket.seat || log.attendanceTicket.seatLocation),
+      })
+      : null;
   // Score analytics: tap the star pill to see WHY the night got its score;
   // hovering it (web) previews the reviewer's tag words.
   const [statsOpen, setStatsOpen] = useState(false);
@@ -231,7 +243,7 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onNotInt
                 style={styles.campaignArtworkButton}
                 onPress={() => onOpenPhotos(postMedia, campaignBackgroundIndex, log.id)}
                 accessibilityRole="button"
-                accessibilityLabel={`Open artist drop artwork${campaignBackground.altText ? `, ${campaignBackground.altText}` : ""}`}
+                accessibilityLabel={`Open featured artist post background${campaignBackground.altText ? `, ${campaignBackground.altText}` : ""}`}
               >
                 <Icon name="photo" size={12} color="#FFF8EE" />
                 <Text style={styles.campaignArtworkText}>View artwork</Text>
@@ -272,6 +284,14 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onNotInt
             <Text style={styles.flaggedTxt}>REPORTED · {log.flags}</Text>
           </View>
         )}
+
+        {attendanceTicketCard ? (
+          <ConcertTicketCard
+            ticket={attendanceTicketCard}
+            onPress={() => onOpen?.(log)}
+            accessibilityHint="Open this Going post and its comments"
+          />
+        ) : null}
 
         {!!log.review && (
           <PublicPressableLink href={canonicalPostHref} onNavigate={() => (onComment || onOpen)?.(log)} accessibilityLabel="Open post and comments"><Text style={[styles.statusText, campaignPresentation && { color: campaignTreatment.textColor }]}>{log.review}</Text></PublicPressableLink>

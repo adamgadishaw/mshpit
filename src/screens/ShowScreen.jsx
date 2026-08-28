@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator } from "react-native";
 import { colors, displayFont, mono, radius, shadow, space } from "../theme";
 import Stars from "../components/Stars";
@@ -26,6 +26,7 @@ import { archiveCoverMedia, archiveReviewMedia } from "../domain/artistEventArch
 import { useArtistEventReviews } from "../features/artistEvents/useArtistEventArchive";
 import { readShowCrowdAttendance, readShowDocument, readShowLoungeMeta } from "../features/showSocial/showSocialService";
 import ShowAttendanceControls from "../features/showSocial/ShowAttendanceControls";
+import GoingTicketComposer from "../components/GoingTicketComposer";
 import { openTicketLink } from "../lib/ticketLinks";
 import { ENABLE_CANONICAL_SHOW_READ } from "../config/runtime.mjs";
 
@@ -46,7 +47,7 @@ const ATTENDANCE_STATE_LABELS = Object.freeze({ going: "Going", here: "Here", we
 export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenProfile, onOpenArtist, onOpenArchive, onOpenVenue, onOpenLounge, onOpenPost, onOpenPhotos, onRequireAuth }) {
   const {
     venueCoord, venuePhotos, venuePhotoState, loadVenuePhotos, venuePhotoPrivacyRevision,
-    session, concertKey, isGoing, isGoingBusy, toggleGoing, loungeFor,
+    session, concertKey, isGoing, isGoingBusy, toggleGoing, loungeFor, addLog, artistSummary,
   } = useStore();
   // Keep the legacy identity stable while a canonical read hydrates trusted
   // provider fields. Existing URLs and member-created Show inputs remain valid.
@@ -88,6 +89,18 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
   const socialObjectLabel = isNamedLiveEvent ? "event" : "show";
   const discussionCount = showDiscussionCount(log.comments);
   const discussionAvailable = hasPostDiscussion(norm);
+  const tourDateId = typeof norm.tourDateId === "string" && norm.tourDateId.trim()
+    ? norm.tourDateId.trim()
+    : (!norm.kind && typeof norm.id === "string" && norm.id.trim() ? norm.id.trim() : null);
+  const artistPhotoUri = useMemo(() => artistSummary?.(artist)?.photo || null, [artist, artistSummary]);
+  const ticketEvent = useMemo(() => ({
+    ...norm,
+    artistName: artist,
+    eventTitle,
+    tourName: norm.tourName || norm.tour || null,
+    imageUri: artistPhotoUri,
+    artistPhotoUri,
+  }), [artist, artistPhotoUri, eventTitle, norm]);
   const coord = venueCoord(venue);
   const photos = venuePhotos(venue);
   const photoState = venuePhotoState(venue);
@@ -115,6 +128,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
   const [crowdScope, setCrowdScope] = useState("everyone");
   const [socialRead, setSocialRead] = useState(null);
   const [attendanceRefreshVersion, setAttendanceRefreshVersion] = useState(0);
+  const [goingTicketPrompt, setGoingTicketPrompt] = useState(null);
   const socialIdentity = showSocialIdentity(key, accountId);
   const scopedSocialRead = socialRead?.identity === socialIdentity && socialRead?.scope === crowdScope
     ? socialRead
@@ -263,25 +277,64 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
   // but a score is treated as happened; no date and no score reads as upcoming.
   const lifecycleView = showLifecycleView(
     trustedShow,
-    showDateMs(norm.date),
+    showDateMs(norm.startDateTime || norm.startLocalTime || norm.date),
     overall != null,
     Date.now(),
     norm,
   );
-  const targetMs = lifecycleView.targetMs;
   const presentation = showPresentationModel(lifecycleView);
   const [nowTick, setNowTick] = useState(() => Date.now());
+  const verifiedDoorsMs = norm.doorsVerified === true ? Date.parse(norm.doorsAt || "") : NaN;
+  const providerAccessMs = Date.parse(norm.accessStartDateTime || "");
+  const countdownTimingKind = presentation.showCountdown
+    && Number.isFinite(verifiedDoorsMs) && verifiedDoorsMs > nowTick
+    ? "doors"
+    : presentation.showCountdown && Number.isFinite(providerAccessMs) && providerAccessMs > nowTick
+      ? "access"
+      : null;
+  const targetMs = countdownTimingKind === "doors"
+    ? verifiedDoorsMs
+    : countdownTimingKind === "access" ? providerAccessMs : lifecycleView.targetMs;
+  const hasExplicitShowTime = Number.isFinite(Number(trustedShow?.startsAt))
+    || !!String(norm.startDateTime || norm.startLocalTime || "").trim();
+  const hasAuthenticCountdownTarget = !!countdownTimingKind || hasExplicitShowTime;
   useEffect(() => {
-    if (!presentation.showCountdown || targetMs == null) return;
+    if (!presentation.showCountdown || !hasAuthenticCountdownTarget || targetMs == null) return;
     const id = setInterval(() => setNowTick(Date.now()), 1000);
     return () => clearInterval(id);
-  }, [presentation.showCountdown, targetMs]);
+  }, [hasAuthenticCountdownTarget, presentation.showCountdown, targetMs]);
   const msLeft = targetMs != null ? targetMs - nowTick : null;
 
   // Setlists are spoiler-gated while a show sits inside the artist's active tour
   // window: nobody wants the surprise ruined before their own night. Hidden by
   // default, one tap reveals.
   const [revealed, setRevealed] = useState(!log.inTourWindow);
+  const handleAttendanceSaved = (result, transition = {}) => {
+    setAttendanceRefreshVersion((version) => version + 1);
+    if (transition.requestedState !== "going") {
+      setGoingTicketPrompt(null);
+      return;
+    }
+    if (transition.previousState !== "going"
+      && result?.attendance?.visibility !== "private"
+      && tourDateId) {
+      setGoingTicketPrompt({ ready: true });
+    }
+  };
+  const toggleLegacyGoing = async () => {
+    if (!session) {
+      onRequireAuth?.();
+      return;
+    }
+    const wasGoing = going;
+    const result = await toggleGoing(norm);
+    if (!result?.ok) return;
+    if (!result.going) {
+      setGoingTicketPrompt(null);
+      return;
+    }
+    if (!wasGoing && tourDateId) setGoingTicketPrompt({ ready: true });
+  };
   return (
     <View style={styles.wrap}>
       <ScreenHeader kicker={presentation.screenKicker} title={eventTitle} onBack={onClose} />
@@ -337,11 +390,13 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
               {log.soldOut ? <Text style={styles.soldOut}>SOLD OUT</Text> : null}
             </View>
           </View>
-          {presentation.showCountdown && msLeft != null && (
+          {presentation.showCountdown && hasAuthenticCountdownTarget && msLeft != null && (
             <View style={styles.countdownStrip}>
               <Icon name="clock" size={14} color={colors.amber} />
               <Text style={styles.countdownTxt}>{msLeft <= 0 ? "TONIGHT" : fmtCountdown(msLeft)}</Text>
-              {msLeft > 0 && <Text style={styles.countdownSub}>until doors</Text>}
+              {msLeft > 0 && <Text style={styles.countdownSub}>{countdownTimingKind === "doors"
+                ? "until verified doors"
+                : countdownTimingKind === "access" ? "until event access" : "until showtime"}</Text>}
             </View>
           )}
         </View>
@@ -421,7 +476,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
               : trustedShow?.viewerAttendance || null}
             lifecycle={lifecycleView.lifecycle}
             onRequireAuth={onRequireAuth}
-            onSaved={() => setAttendanceRefreshVersion((version) => version + 1)}
+            onSaved={handleAttendanceSaved}
             show={trustedShow}
           />
         ) : null}
@@ -430,7 +485,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
         <View style={styles.socialRow}>
           {!lifecycleView.trusted && presentation.allowGoing ? <Pressable
             style={[styles.goingBtn, going && styles.goingOn, goingBusy && styles.goingBusy]}
-            onPress={() => (session ? toggleGoing(norm) : onRequireAuth?.())}
+            onPress={() => { void toggleLegacyGoing(); }}
             accessibilityRole="button"
             accessibilityLabel={going ? "Remove this show from Going" : "Add this show to Going"}
             accessibilityState={{ selected: going, busy: goingBusy }}
@@ -446,6 +501,15 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
             <View style={styles.loungeCount}><Text style={styles.loungeCountTxt}>{social.messageCount}</Text></View>
           </Pressable>
         </View>
+        {goingTicketPrompt && tourDateId ? (
+          <GoingTicketComposer
+            event={ticketEvent}
+            onDismiss={() => setGoingTicketPrompt(null)}
+            onPost={addLog}
+            tourDateId={tourDateId}
+            user={session}
+          />
+        ) : null}
         {(attendeeTotal > 0 || !!session) && (
           <View style={styles.attendeesCard}>
             <View style={styles.crowdHeader}>

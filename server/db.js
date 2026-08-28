@@ -114,6 +114,7 @@ CREATE TABLE IF NOT EXISTS posts (
   photos_public INTEGER NOT NULL DEFAULT 0,
   landing_showcase INTEGER NOT NULL DEFAULT 0,
   campaign      TEXT,
+  attendance_ticket TEXT,
   tagged_user_ids TEXT NOT NULL DEFAULT '[]',
   setlist       TEXT NOT NULL DEFAULT '[]',
   client_mutation_id TEXT,
@@ -467,8 +468,11 @@ CREATE TABLE IF NOT EXISTS tour_dates (
   release_at            INTEGER NOT NULL DEFAULT 0,
   provider_event_id     TEXT,
   event_name            TEXT,
+  tour_name             TEXT,
   start_date_time       TEXT,
   start_local_time      TEXT,
+  access_start_date_time TEXT,
+  access_start_approximate INTEGER,
   event_timezone        TEXT,
   event_status          TEXT,
   venue_provider_id     TEXT,
@@ -1416,6 +1420,9 @@ const additiveMigrations = [
   // status posts. The linked background remains a normal post_media asset so
   // moderation, deletion, ownership, and rendition guarantees stay unified.
   "ALTER TABLE posts ADD COLUMN campaign TEXT",
+  // Versioned ticket-card metadata for an explicitly shared attendance post.
+  // Nullable keeps old clients and rolling rollbacks compatible.
+  "ALTER TABLE posts ADD COLUMN attendance_ticket TEXT",
   "ALTER TABLE posts ADD COLUMN tagged_user_ids TEXT NOT NULL DEFAULT '[]'", // structured account ids; distinct from descriptive review tags
   "ALTER TABLE posts ADD COLUMN song TEXT", // JSON of a tagged YouTube song {videoId,title,artist,url,thumb}
   "ALTER TABLE posts ADD COLUMN playlist TEXT", // immutable playlist snapshot attached to a post
@@ -1455,8 +1462,15 @@ const additiveMigrations = [
   // wall-clock value without an offset must never be silently presented as UTC.
   "ALTER TABLE tour_dates ADD COLUMN provider_event_id TEXT",
   "ALTER TABLE tour_dates ADD COLUMN event_name TEXT",
+  // Discovery APIs do not expose a dependable tour field. This remains nullable
+  // and is populated only by conservative, explicit-title derivation.
+  "ALTER TABLE tour_dates ADD COLUMN tour_name TEXT",
   "ALTER TABLE tour_dates ADD COLUMN start_date_time TEXT",
   "ALTER TABLE tour_dates ADD COLUMN start_local_time TEXT",
+  // Ticketmaster calls this event access rather than guaranteed venue doors.
+  // Approximation remains nullable for legacy rows and providers without it.
+  "ALTER TABLE tour_dates ADD COLUMN access_start_date_time TEXT",
+  "ALTER TABLE tour_dates ADD COLUMN access_start_approximate INTEGER",
   "ALTER TABLE tour_dates ADD COLUMN event_timezone TEXT",
   "ALTER TABLE tour_dates ADD COLUMN event_status TEXT",
   "ALTER TABLE tour_dates ADD COLUMN venue_provider_id TEXT",

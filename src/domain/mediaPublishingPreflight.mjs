@@ -20,8 +20,8 @@ export function mediaPublishingPreflightIssue(asset = {}) {
   const kind = asset?.kind === "video" ? "video" : "image";
   if (!mediaSourceSizeAllowed(asset)) {
     return kind === "video"
-      ? issue(MEDIA_PREFLIGHT_CODES.videoTooLarge, ("That clip is over PIT's " + mediaUploadLimitLabel(MEDIA_VIDEO_SOURCE_MAX_BYTES) + " limit. Export a shorter or smaller MP4 before opening it in PIT Studio."))
-      : issue(MEDIA_PREFLIGHT_CODES.imageTooLarge, ("That photo is over PIT's " + mediaUploadLimitLabel(MEDIA_PHOTO_SOURCE_MAX_BYTES) + " limit. Export a smaller copy before opening it in PIT Studio."));
+      ? issue(MEDIA_PREFLIGHT_CODES.videoTooLarge, ("That clip is over the " + mediaUploadLimitLabel(MEDIA_VIDEO_SOURCE_MAX_BYTES) + " upload limit. Export a shorter or smaller MP4 before opening it in the photo and video editor."))
+      : issue(MEDIA_PREFLIGHT_CODES.imageTooLarge, ("That photo is over the " + mediaUploadLimitLabel(MEDIA_PHOTO_SOURCE_MAX_BYTES) + " upload limit. Export a smaller copy before opening it in the photo and video editor."));
   }
 
   if (kind === "image") {
@@ -50,6 +50,6 @@ export function mediaPublishingPreflightSelection(assets, options) {
 export function mediaPublishingPreflightMessage(rejected) {
   const failures = Array.isArray(rejected) ? rejected : [];
   if (!failures.length) return "";
-  const first = failures[0]?.message || "That media item is not ready for PIT Studio.";
+  const first = failures[0]?.message || "That media item is not ready for the photo and video editor.";
   return failures.length === 1 ? first : `${first} ${failures.length} selected items were skipped.`;
 }

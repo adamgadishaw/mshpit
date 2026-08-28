@@ -21,7 +21,7 @@ export default memo(function SoundDonut({
   data = [],
   size = 180,
   selected = null,
-  centerTop = "Tuning",
+  centerTop = "Loading",
   centerSub = "genre map",
 }) {
   const safeData = data

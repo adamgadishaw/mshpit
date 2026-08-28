@@ -41,7 +41,7 @@ test("artist update deletion is server-first and exposes scoped retry feedback",
   assert.match(source, /reconcileConfirmedArtistPostRemoval/);
   assert.match(artistHub, /await removeArtistPost\(artistName, postId, \{ signal: controller\.signal \}\)/);
   assert.match(artistHub, /artistPostMutation\.scope === artistPostScope/);
-  assert.match(artistHub, /This page update was not removed, so it is still visible/);
+  assert.match(artistHub, /This artist post was not removed, so it is still visible/);
 });
 
 test("notification read is server-first and never clears uncaptured rows", () => {

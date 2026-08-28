@@ -93,11 +93,11 @@ class StudioErrorBoundary extends Component {
     return (
       <View style={styles.studioLoading} accessibilityRole="alert">
         <Icon name="flag" size={22} color={colors.danger} />
-        <Text style={styles.studioLoadingTitle}>PIT Studio could not open</Text>
-        <Text style={styles.studioLoadingText}>Your selected media is still held in this composer.</Text>
+        <Text style={styles.studioLoadingTitle}>Photo and video editor could not open</Text>
+        <Text style={styles.studioLoadingText}>Your selected photos and videos are still attached to this post.</Text>
         <View style={styles.studioRecoveryRow}>
           <Pressable style={styles.studioRecoveryButton} onPress={this.props.onRetry} accessibilityRole="button"><Text style={styles.studioRecoveryText}>Try again</Text></Pressable>
-          <Pressable style={styles.studioRecoveryButton} onPress={this.props.onExit} accessibilityRole="button"><Text style={styles.studioRecoveryText}>Back to composer</Text></Pressable>
+          <Pressable style={styles.studioRecoveryButton} onPress={this.props.onExit} accessibilityRole="button"><Text style={styles.studioRecoveryText}>Back to post</Text></Pressable>
         </View>
       </View>
     );
@@ -223,7 +223,10 @@ export default function LogScreen({
   const [artist, setArtist] = useState(editing?.artist || prefill?.artist || "");
   const [venue, setVenue] = useState(editing?.venue || prefill?.venue || "");
   const [city, setCity] = useState(editing?.city || prefill?.city || "");
-  const [tour, setTour] = useState(editing?.tour || prefill?.tour || prefill?.eventName || "");
+  const [tour, setTour] = useState(editing?.tour || prefill?.tour || "");
+  const officialEventName = !editing && typeof prefill?.officialEventName === "string"
+    ? prefill.officialEventName.trim()
+    : "";
   // Artist autocomplete: bind the review to a REAL catalog artist so it links to
   // the artist page, instead of free text that may match nothing.
   const [artistHits, setArtistHits] = useState([]);
@@ -719,8 +722,8 @@ export default function LogScreen({
       }
     } catch (error) {
       const message = controller.signal.aborted
-        ? "Media upload stopped. Finished items are attached; unfinished edits remain open in PIT Studio."
-        : (error?.message || "PIT Studio could not finish that media. Finished items are attached and unfinished edits are still here.");
+        ? "Media upload stopped. Finished items are attached; unfinished edits remain open in the photo and video editor."
+        : (error?.message || "The photo and video editor could not finish that item. Finished items are attached, and unfinished edits are still here.");
       setMediaError(message);
       throw error;
     } finally {
@@ -811,7 +814,7 @@ export default function LogScreen({
 
   const cancelUpload = async () => {
     uploadControllerRef.current?.abort();
-    setMediaError("Upload stopped. Your edits remain open in PIT Studio so you can try again.");
+    setMediaError("Upload stopped. Your unfinished edits are still available so you can try again.");
     await retireRemoteDrafts();
   };
 
@@ -841,7 +844,7 @@ export default function LogScreen({
     setMediaError("");
     try {
       const hydrated = await Promise.all(ready.map(async (asset) => {
-        const response = await api(`/api/media/assets/${encodeURIComponent(asset.assetId)}`, { context: "Reopening PIT Studio media" });
+        const response = await api(`/api/media/assets/${encodeURIComponent(asset.assetId)}`, { context: "Reopening selected media" });
         const ownerAsset = response?.asset;
         if (!ownerAsset?.id || !ownerAsset.sourceUrl) throw new Error("That original media is no longer available for editing.");
         return normalizeMediaProjectAsset({
@@ -878,7 +881,7 @@ export default function LogScreen({
       }
       const hydrated = await Promise.all(recoverable.map(async (asset, index) => {
         if (!asset.assetId || (asset.uri && asset.uri !== asset.sourceUrl)) return asset;
-        const response = await api(`/api/media/assets/${encodeURIComponent(asset.assetId)}`, { context: "Recovering PIT Studio media" });
+        const response = await api(`/api/media/assets/${encodeURIComponent(asset.assetId)}`, { context: "Recovering selected media" });
         const ownerAsset = response?.asset;
         if (!ownerAsset?.id || !ownerAsset.sourceUrl) throw new Error("That original media is no longer available for editing.");
         return normalizeMediaProjectAsset({
@@ -896,7 +899,7 @@ export default function LogScreen({
       setStudioOpen(true);
     } catch (error) {
       studioReturnFocusRef.current = null;
-      setMediaError(error?.message || "PIT could not recover those Studio originals. Try again while connected.");
+      setMediaError(error?.message || "Mshpit could not recover the original files. Check your connection and try again.");
     } finally {
       setStudioHydrating(false);
     }
@@ -1061,7 +1064,7 @@ export default function LogScreen({
   const stash = () => {
     if (editing || submitBusy || !effectiveHasContent) return;
     if (hasUnpersistableStudioMedia) {
-      Alert.alert("Finish PIT Studio first", "This browser cannot preserve selected photo or video files across a restart. Apply the media, or reopen PIT Studio and discard it, before saving this draft.");
+      Alert.alert("Finish editing your media first", "This browser cannot save selected photo or video files after a restart. Apply the edits or discard the selection before saving this draft.");
       return;
     }
     persistDraftSnapshot(currentDraft);
@@ -1149,8 +1152,8 @@ export default function LogScreen({
     if (hasUnpersistableStudioMedia) {
       stay();
       Alert.alert(
-        "Selected media is still in PIT Studio",
-        "Reopen PIT Studio and apply or discard that selection before closing. This browser cannot preserve the selected files across a restart.",
+        "Selected media still has unfinished edits",
+        "Open the photo and video editor, then apply or discard the selection before closing. This browser cannot save the selected files after a restart.",
       );
       return;
     }
@@ -1299,7 +1302,7 @@ export default function LogScreen({
 
   return (
     <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-      <SheetHeader title={editing ? (isCampaign ? "Edit artist drop" : "Edit post") : isCampaign ? "New artist drop" : isStatus ? "New post" : "Log a show"} onClose={onCancel} leadDisabled={submitBusy} action={{ label: posting ? (editing ? "Saving..." : "Posting...") : uploadingPhotos ? "Uploading..." : resolvingSong ? "Checking..." : editing ? "Save" : "Post", onPress: submit, disabled: !canPost || submitBusy }} />
+      <SheetHeader title={editing ? (isCampaign ? "Edit featured post" : "Edit post") : isCampaign ? "New featured post" : isStatus ? "New post" : "Log a show"} onClose={onCancel} leadDisabled={submitBusy} action={{ label: posting ? (editing ? "Saving..." : "Posting...") : uploadingPhotos ? "Uploading..." : resolvingSong ? "Checking..." : editing ? "Save" : "Post", onPress: submit, disabled: !canPost || submitBusy }} />
 
       {studioOpen ? (
         <StudioErrorBoundary
@@ -1312,9 +1315,9 @@ export default function LogScreen({
         >
           <Suspense fallback={(
             <View style={styles.studioLoading} accessibilityLiveRegion="polite">
-              <Text style={styles.studioLoadingTitle}>Opening PIT Studio...</Text>
+              <Text style={styles.studioLoadingTitle}>Opening photo and video editor...</Text>
               <Pressable style={styles.studioRecoveryButton} onPress={() => setStudioOpen(false)} accessibilityRole="button">
-                <Text style={styles.studioRecoveryText}>Back to composer</Text>
+                <Text style={styles.studioRecoveryText}>Back to post</Text>
               </Pressable>
             </View>
           )}>
@@ -1345,14 +1348,14 @@ export default function LogScreen({
         {!!postError && <View style={styles.postErrorBox}><Icon name="flag" size={14} color={colors.danger} /><Text style={styles.postErrorTxt}>{postError}</Text></View>}
         {!editing && (
           <View style={styles.modeRow}>
-            <Pressable style={[styles.modeBtn, isStatus && !isCampaign && styles.modeBtnOn]} onPress={() => { setPostType("status"); setCampaign(null); }} accessibilityRole="button" accessibilityState={{ selected: isStatus && !isCampaign }} accessibilityLabel="Share a status update">
+            <Pressable style={[styles.modeBtn, isStatus && !isCampaign && styles.modeBtnOn]} onPress={() => { setPostType("status"); setCampaign(null); }} accessibilityRole="button" accessibilityState={{ selected: isStatus && !isCampaign }} accessibilityLabel="Create a regular post">
               <Icon name="edit" size={15} color={isStatus && !isCampaign ? "#1A1206" : colors.textDim} />
               <Text style={[styles.modeTxt, isStatus && !isCampaign && styles.modeTxtOn]}>Share</Text>
             </Pressable>
             {artistCampaignAllowed && (
-              <Pressable style={[styles.modeBtn, isCampaign && styles.modeBtnOn]} onPress={() => { setPostType("status"); setCampaign((current) => current || { version: 1, treatment: DEFAULT_ARTIST_CAMPAIGN_TREATMENT }); }} accessibilityRole="button" accessibilityState={{ selected: isCampaign }} accessibilityLabel="Create an artist drop">
+              <Pressable style={[styles.modeBtn, isCampaign && styles.modeBtnOn]} onPress={() => { setPostType("status"); setCampaign((current) => current || { version: 1, treatment: DEFAULT_ARTIST_CAMPAIGN_TREATMENT }); }} accessibilityRole="button" accessibilityState={{ selected: isCampaign }} accessibilityLabel="Create a featured artist post">
                 <Icon name="star" size={15} color={isCampaign ? "#1A1206" : colors.textDim} />
-                <Text style={[styles.modeTxt, isCampaign && styles.modeTxtOn]}>Artist drop</Text>
+                <Text style={[styles.modeTxt, isCampaign && styles.modeTxtOn]}>Featured</Text>
               </Pressable>
             )}
             <Pressable style={[styles.modeBtn, !isStatus && styles.modeBtnOn]} onPress={() => { setPostType("show"); setCampaign(null); }} accessibilityRole="button" accessibilityState={{ selected: !isStatus }} accessibilityLabel="Log a concert">
@@ -1372,7 +1375,7 @@ export default function LogScreen({
                   <Icon name={stored.postType === "status" ? "feed" : "edit"} size={14} color={colors.amber} />
                   <Pressable style={{ flex: 1 }} onPress={() => resume(d)} accessibilityRole="button" accessibilityLabel={`Resume ${composerDraftTitle(stored)}`}>
                     <Text style={styles.draftName} numberOfLines={1}>{composerDraftTitle(stored)}</Text>
-                    <Text style={styles.draftSub} numberOfLines={1}>{stored.postType === "status" ? "Status update" : [stored.city, formatDate(stored.date, "")].filter(Boolean).join(" · ") || "Concert review"}</Text>
+                    <Text style={styles.draftSub} numberOfLines={1}>{stored.postType === "status" ? "Post" : [stored.city, formatDate(stored.date, "")].filter(Boolean).join(" · ") || "Concert review"}</Text>
                   </Pressable>
                   <Pressable onPress={() => deleteDraft(d.id)} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Delete ${composerDraftTitle(stored)}`}><Icon name="x" size={14} color={colors.textFaint} /></Pressable>
                 </View>
@@ -1396,7 +1399,7 @@ export default function LogScreen({
             </View>
             <TextInput
               style={styles.statusBox}
-              placeholder="What's on your mind? A show, weekend plans, a hot take..."
+              placeholder="Write about music, a show, or what you plan to see next..."
               placeholderTextColor={colors.textFaint}
               value={review}
               onChangeText={setReview}
@@ -1409,14 +1412,14 @@ export default function LogScreen({
               <View style={styles.campaignStudioHead}>
                 <View style={styles.campaignStudioIcon}><Icon name="star" size={18} color={colors.amber} /></View>
                 <View style={{ flex: 1, minWidth: 0 }}>
-                  <Text style={styles.campaignStudioKicker}>ARTIST DROP</Text>
-                  <Text style={styles.campaignStudioTitle}>Give this post its own stage</Text>
+                  <Text style={styles.campaignStudioKicker}>FEATURED ARTIST POST</Text>
+                  <Text style={styles.campaignStudioTitle}>Choose a background for this post</Text>
                 </View>
-                <Pressable style={styles.campaignClearButton} onPress={() => setCampaign(null)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Remove artist drop styling">
-                  <Text style={styles.campaignClear}>Make regular</Text>
+                <Pressable style={styles.campaignClearButton} onPress={() => setCampaign(null)} hitSlop={8} accessibilityRole="button" accessibilityLabel="Change to a regular post">
+                  <Text style={styles.campaignClear}>Use regular post</Text>
                 </Pressable>
               </View>
-              <Text style={styles.campaignStudioCopy}>Pick a curated treatment, then optionally use one attached image as the canvas. Pit keeps the words and controls on a solid contrast panel.</Text>
+              <Text style={styles.campaignStudioCopy}>Choose a background style. You can also use one attached image. Text and buttons stay on a solid panel so they are easy to read.</Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.campaignTreatments} keyboardShouldPersistTaps="handled">
                 {Object.values(ARTIST_CAMPAIGN_TREATMENTS).map((treatment) => {
                   const selected = campaign.treatment === treatment.id;
@@ -1426,7 +1429,7 @@ export default function LogScreen({
                       onPress={() => setCampaign((current) => ({ ...(current || { version: 1 }), version: 1, treatment: treatment.id }))}
                       accessibilityRole="button"
                       accessibilityState={{ selected }}
-                      accessibilityLabel={`${treatment.label} artist drop treatment`}
+                      accessibilityLabel={`${treatment.label} featured post background`}
                       style={[styles.campaignTreatment, { backgroundColor: treatment.backgroundColor, borderColor: selected ? treatment.accentColor : colors.line }]}
                     >
                       <View style={[styles.campaignTreatmentDot, { backgroundColor: treatment.accentColor }]} />
@@ -1438,9 +1441,9 @@ export default function LogScreen({
               </ScrollView>
               <View style={styles.campaignCanvasState}>
                 <Icon name={campaign.backgroundAssetId ? "check" : "photo"} size={14} color={campaign.backgroundAssetId ? colors.good : colors.textDim} />
-                <Text style={styles.campaignCanvasText}>{campaign.backgroundAssetId ? "Attached artwork is set as the background." : "Attach an image below, then tap Use as background."}</Text>
+                <Text style={styles.campaignCanvasText}>{campaign.backgroundAssetId ? "An attached image is being used as the background." : "Attach an image below, then choose Use as background."}</Text>
                 {!!campaign.backgroundAssetId && (
-                  <Pressable style={styles.campaignClearButton} onPress={() => setCampaign((current) => current ? { ...current, backgroundAssetId: undefined } : current)} accessibilityRole="button" accessibilityLabel="Clear artist drop background image">
+                  <Pressable style={styles.campaignClearButton} onPress={() => setCampaign((current) => current ? { ...current, backgroundAssetId: undefined } : current)} accessibilityRole="button" accessibilityLabel="Remove featured post background image">
                     <Text style={styles.campaignClear}>Clear</Text>
                   </Pressable>
                 )}
@@ -1476,17 +1479,17 @@ export default function LogScreen({
                     </Text>
                   )}
                   {h.transient && !(h.genre || h.country || h.formed) && (
-                    <Text style={styles.hitGenre} numberOfLines={1}>Found in the wider artist directory</Text>
+                    <Text style={styles.hitGenre} numberOfLines={1}>Found in the full artist directory</Text>
                   )}
                 </Pressable>
               ))}
             </View>
           )}
-          {artistLoading && <Text style={styles.lookupStatus} accessibilityLiveRegion="polite">Searching the artist directory...</Text>}
-          {artistAttaching && <Text style={styles.lookupStatus} accessibilityLiveRegion="polite">Attaching this artist to the post...</Text>}
+          {artistLoading && <Text style={styles.lookupStatus} accessibilityLiveRegion="polite">Searching artists...</Text>}
+          {artistAttaching && <Text style={styles.lookupStatus} accessibilityLiveRegion="polite">Adding this artist to the post...</Text>}
           {!!artistError && <Text style={styles.lookupError} accessibilityLiveRegion="assertive">{artistError}</Text>}
           {artistPicked && !!artist.trim() && (
-            <View style={styles.linked}><Icon name="check" size={12} color={colors.good} /><Text style={styles.linkedTxt}>{artist.trim()} attached to this post</Text></View>
+            <View style={styles.linked}><Icon name="check" size={12} color={colors.good} /><Text style={styles.linkedTxt}>{artist.trim()} added to this post</Text></View>
           )}
         </View>
         <View style={{ flexDirection: "row", gap: 10 }}>
@@ -1511,14 +1514,25 @@ export default function LogScreen({
               </View>
             )}
             {venuePicked && !!venue.trim() && (
-              <View style={styles.linked}><Icon name="check" size={12} color={colors.good} /><Text style={styles.linkedTxt}>Linked to {venue.trim()}</Text></View>
+              <View style={styles.linked}><Icon name="check" size={12} color={colors.good} /><Text style={styles.linkedTxt}>Venue selected: {venue.trim()}</Text></View>
             )}
           </View>
           <TextInput style={[styles.input, { flex: 1 }]} placeholder="City" placeholderTextColor={colors.textFaint} value={city} onChangeText={setCity} />
         </View>
 
-        <Text style={styles.fieldLabel}>CONCERT, TOUR OR OCCASION <Text style={styles.optional}>optional</Text></Text>
-        <TextInput style={styles.input} placeholder="e.g. CHROMAKOPIA Tour, OVO Fest" placeholderTextColor={colors.textFaint} value={tour} onChangeText={setTour} maxLength={80} accessibilityLabel="Concert, tour, or occasion name" />
+        {officialEventName ? (
+          <View style={styles.officialEventCard} accessible accessibilityRole="text" accessibilityLabel={`Event listing name: ${officialEventName}`}>
+            <View style={styles.officialEventIcon}><Icon name="ticket" size={16} color={colors.amber} /></View>
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text style={styles.officialEventKicker}>EVENT LISTING NAME</Text>
+              <Text style={styles.officialEventTitle}>{officialEventName}</Text>
+              <Text style={styles.officialEventNote}>This name comes from the ticket provider. A tour name is filled in only when the listing clearly includes one.</Text>
+            </View>
+          </View>
+        ) : null}
+
+        <Text style={styles.fieldLabel}>TOUR OR SPECIAL EVENT <Text style={styles.optional}>optional</Text></Text>
+        <TextInput style={styles.input} placeholder="e.g. CHROMAKOPIA Tour, OVO Fest" placeholderTextColor={colors.textFaint} value={tour} onChangeText={setTour} maxLength={80} accessibilityLabel="Tour or special event name" />
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.presets} keyboardShouldPersistTaps="handled">
           {TOUR_PRESETS.map((p) => {
             const on = tour === p;
@@ -1547,7 +1561,7 @@ export default function LogScreen({
           <Text style={styles.overallNum}>{computed.overall ? computed.overall.toFixed(1) : "-"}</Text>
           <View>
             <Stars value={computed.overall} size={18} />
-            <Text style={styles.overallSub}>weighted overall · rate the factors below</Text>
+            <Text style={styles.overallSub}>overall score · based on the ratings below</Text>
           </View>
         </View>
 
@@ -1564,7 +1578,7 @@ export default function LogScreen({
           </View>
         ))}
 
-        <Text style={[styles.fieldLabel, { marginTop: 22 }]}>YOUR REVIEW <Text style={styles.optional}>· optional, tag words below can say it for you</Text></Text>
+        <Text style={[styles.fieldLabel, { marginTop: 22 }]}>YOUR REVIEW <Text style={styles.optional}>· optional, use quick tags if you do not want to write</Text></Text>
         <TextInput
           style={[styles.input, styles.multiline]}
           placeholder="What made the night? Be honest - this is what people read."
@@ -1576,7 +1590,7 @@ export default function LogScreen({
 
         {/* Tag words: post without writing a review. Up to five loud little
             descriptors that render as word-art chips on the card. */}
-        <Text style={[styles.fieldLabel, { marginTop: 22 }]}>TAG WORDS <Text style={styles.optional}>· up to 5, they show with your score</Text></Text>
+        <Text style={[styles.fieldLabel, { marginTop: 22 }]}>QUICK TAGS <Text style={styles.optional}>· up to 5, shown with your rating</Text></Text>
         {tags.length > 0 && (
           <View style={styles.tagEditRow}>
             {tags.map((t, i) => (
@@ -1590,7 +1604,7 @@ export default function LogScreen({
         {tags.length < 5 && (
           <TextInput
             style={styles.input}
-            placeholder={tags.length ? "Add another (enter or comma)" : "RAW · wall of sound · sweaty (enter or comma adds one)"}
+            placeholder={tags.length ? "Add another (press Enter or comma)" : "High energy, loud, emotional (press Enter or comma)"}
             placeholderTextColor={colors.textFaint}
             value={tagDraft}
             onChangeText={(text) => {
@@ -1614,7 +1628,7 @@ export default function LogScreen({
         </View>
         {(showPeople || taggedPeople.length > 0) && (
           <View style={styles.attachPanel}>
-            <Text style={styles.attachHint}>Tag friends who follow you back. Their names link to their Pit profiles, and they can remove their own tag anytime.</Text>
+            <Text style={styles.attachHint}>You can tag friends who follow you back. Their names link to their Mshpit profiles, and they can remove their tag at any time.</Text>
             {!!taggedPeople.length && (
               <View style={styles.peopleSelected}>
                 {taggedPeople.map((person) => (
@@ -1699,7 +1713,7 @@ export default function LogScreen({
 
         {(showSong || song?.videoId) && (
         <View style={styles.attachPanel}>
-        <Text style={styles.attachHint}>Attach a song, review, breakdown, lesson, or performance. People can watch exactly the YouTube video you chose.</Text>
+        <Text style={styles.attachHint}>Add a YouTube link to a song, review, interview, lesson, or performance. People can watch the exact video you choose.</Text>
         {song?.videoId ? (
           <View style={styles.songPreview}>
             <SmartImage uri={song.thumb} style={styles.songArt} contain={false} />
@@ -1739,20 +1753,20 @@ export default function LogScreen({
         {(showPhotos || photos.length > 0) && (
         <View style={styles.attachPanel}>
         {!studioOpen && studioAssets.length > 0 ? (
-          <Pressable style={styles.resumeStudio} onPress={openPendingStudio} disabled={studioHydrating || submitBusy} accessibilityRole="button" accessibilityLabel="Resume editing selected media in PIT Studio" accessibilityState={{ busy: studioHydrating, disabled: studioHydrating || submitBusy }}>
+          <Pressable style={styles.resumeStudio} onPress={openPendingStudio} disabled={studioHydrating || submitBusy} accessibilityRole="button" accessibilityLabel="Resume editing selected photos and videos" accessibilityState={{ busy: studioHydrating, disabled: studioHydrating || submitBusy }}>
             <Icon name="edit" size={16} color={colors.amber} />
             <View style={{ flex: 1 }}>
-              <Text style={styles.resumeStudioTitle}>{studioHydrating ? "Recovering originals..." : "Resume PIT Studio"}</Text>
-              <Text style={styles.resumeStudioCopy}>{studioAssets.length} selected {studioAssets.length === 1 ? "item is" : "items are"} waiting to be applied.</Text>
+              <Text style={styles.resumeStudioTitle}>{studioHydrating ? "Loading original files..." : "Resume editing"}</Text>
+              <Text style={styles.resumeStudioCopy}>{studioAssets.length} selected {studioAssets.length === 1 ? "item has" : "items have"} unfinished edits.</Text>
             </View>
           </Pressable>
         ) : null}
         {!editing && !studioOpen && studioAssets.length === 0 && mediaProject.assets.some((asset) => asset.assetId && asset.status === "ready") ? (
-          <Pressable style={styles.resumeStudio} onPress={reopenReadyMedia} disabled={submitBusy || studioHydrating} accessibilityRole="button" accessibilityLabel="Edit attached media again in PIT Studio" accessibilityState={{ busy: studioHydrating, disabled: submitBusy || studioHydrating }}>
+          <Pressable style={styles.resumeStudio} onPress={reopenReadyMedia} disabled={submitBusy || studioHydrating} accessibilityRole="button" accessibilityLabel="Edit attached photos and videos again" accessibilityState={{ busy: studioHydrating, disabled: submitBusy || studioHydrating }}>
             <Icon name="edit" size={16} color={colors.amber} />
             <View style={{ flex: 1 }}>
               <Text style={styles.resumeStudioTitle}>{studioHydrating ? "Opening originals..." : "Edit attached media"}</Text>
-              <Text style={styles.resumeStudioCopy}>Reopen the original source and reversible recipe before this post is published.</Text>
+              <Text style={styles.resumeStudioCopy}>Make more changes before you publish this post.</Text>
             </View>
           </Pressable>
         ) : null}
@@ -1772,10 +1786,10 @@ export default function LogScreen({
                   onPress={() => setCampaign((current) => current ? { ...current, backgroundAssetId: isCampaignBackground ? undefined : backgroundAssetId } : current)}
                   accessibilityRole="button"
                   accessibilityState={{ selected: isCampaignBackground }}
-                  accessibilityLabel={isCampaignBackground ? `Remove media ${i + 1} as artist drop background` : `Use media ${i + 1} as artist drop background`}
+                  accessibilityLabel={isCampaignBackground ? `Remove media ${i + 1} as featured post background` : `Use media ${i + 1} as featured post background`}
                 >
                   <Icon name={isCampaignBackground ? "check" : "photo"} size={10} color="#fff" />
-                  <Text style={styles.useBackgroundText}>{isCampaignBackground ? "BACKGROUND" : "USE AS BG"}</Text>
+                  <Text style={styles.useBackgroundText}>{isCampaignBackground ? "BACKGROUND" : "USE AS BACKGROUND"}</Text>
                 </Pressable>
               )}
               <Pressable style={styles.removeThumb} onPress={() => removeAttachedMedia(i)} disabled={submitBusy} accessibilityRole="button" accessibilityLabel={`Remove media ${i + 1}`}>
@@ -1822,14 +1836,14 @@ export default function LogScreen({
             accessibilityRole="checkbox"
             accessibilityState={{ checked: photosPublic }}
             accessibilityLabel={`Share my photos on ${artist || "the artist"}'s public page`}
-            accessibilityHint="Turning this off also removes permission to feature a photo in PIT community spotlights."
+            accessibilityHint="Turning this off also removes permission to feature a photo in Mshpit community highlights."
             onPress={() => setPhotosPublic((value) => {
             const next = !value;
             if (!next) setLandingShowcase(false);
             return next;
           })}>
             <View style={[styles.check, photosPublic && styles.checkOn]}>{photosPublic && <Icon name="check" size={13} color="#1A1206" />}</View>
-            <Text style={styles.consentTxt}>Let my photos show on the {artist || "artist"}'s page (top ones, by likes). You can change this later.</Text>
+            <Text style={styles.consentTxt}>Show these photos on {artist || "the artist"}'s public page. The most-liked photos may appear first. You can change this later.</Text>
           </Pressable>
         )}
         {!isStatus && hasLandingCompatiblePhoto && (
@@ -1837,7 +1851,7 @@ export default function LogScreen({
             style={styles.consent}
             accessibilityRole="checkbox"
             accessibilityState={{ checked: landingShowcase }}
-            accessibilityLabel="Feature one public artist-page photo in PIT community spotlights and on the homepage"
+            accessibilityLabel="Feature one public artist-page photo in Mshpit community highlights and on the homepage"
             accessibilityHint="The spotlight credits your handle and the concert's artist and venue. Photos are eligible after email confirmation and safety checks. You can turn this off later."
             onPress={() => setLandingShowcase((value) => {
             const next = !value;
@@ -1845,7 +1859,7 @@ export default function LogScreen({
             return next;
           })}>
             <View style={[styles.check, landingShowcase && styles.checkOn]}>{landingShowcase && <Icon name="check" size={13} color="#1A1206" />}</View>
-            <Text style={styles.consentTxt}>Feature one of these public artist-page photos in PIT community spotlights, including the homepage, after email confirmation and safety checks. Turning this on also enables public artist-page sharing and credits my handle, the artist, and the venue.</Text>
+            <Text style={styles.consentTxt}>Allow one of these public photos to appear in Mshpit community highlights or on the homepage. This also turns on public artist-page sharing. Mshpit will email you first, run safety checks, and credit your handle, the artist, and the venue.</Text>
           </Pressable>
         )}
         </View>
@@ -1944,6 +1958,11 @@ const styles = StyleSheet.create({
   post: { color: colors.amber, fontSize: 15, fontWeight: "700" },
   content: { padding: 16, paddingBottom: 60 },
   fieldLabel: { color: colors.textFaint, fontSize: 11, letterSpacing: 1.5, fontWeight: "700", marginBottom: 8 },
+  officialEventCard: { minHeight: 76, flexDirection: "row", alignItems: "flex-start", gap: 10, padding: 12, marginBottom: 14, borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: "rgba(242,166,90,0.34)", backgroundColor: "rgba(242,166,90,0.07)" },
+  officialEventIcon: { width: 34, height: 34, borderRadius: 17, alignItems: "center", justifyContent: "center", backgroundColor: colors.surface },
+  officialEventKicker: { color: colors.amber, fontFamily: mono, fontSize: 9, fontWeight: "900", letterSpacing: 1.3 },
+  officialEventTitle: { color: colors.text, fontFamily: displayFont, fontSize: 15, fontWeight: "900", marginTop: 3 },
+  officialEventNote: { color: colors.textDim, fontSize: 11, lineHeight: 15, marginTop: 4 },
   optional: { color: colors.textFaint, fontSize: 10, fontWeight: "700", letterSpacing: 0.5 },
   drafts: { backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 12, marginBottom: 16 },
   draftsLabel: { color: colors.textFaint, fontSize: 10, letterSpacing: 1.2, fontWeight: "800", marginBottom: 8 },

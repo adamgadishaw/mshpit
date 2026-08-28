@@ -219,6 +219,10 @@ test("provider projections retain stable event, clock, status, and venue identit
             localTime: "19:30:00",
             dateTime: "2032-05-10T23:30:00Z",
           },
+          access: {
+            startDateTime: "2032-05-10T22:30:00Z",
+            startApproximate: true,
+          },
           status: { code: "offsale" },
         },
         _embedded: {
@@ -241,8 +245,11 @@ test("provider projections retain stable event, clock, status, and venue identit
 
   assert.equal(ticketmaster.provider_event_id, "tm-provider-42");
   assert.equal(ticketmaster.event_name, "Foundation World Tour");
+  assert.equal(ticketmaster.tour_name, "Foundation World Tour");
   assert.equal(ticketmaster.start_date_time, "2032-05-10T23:30:00.000Z");
   assert.equal(ticketmaster.start_local_time, "2032-05-10T19:30:00");
+  assert.equal(ticketmaster.access_start_date_time, "2032-05-10T22:30:00.000Z");
+  assert.equal(ticketmaster.access_start_approximate, 1);
   assert.equal(ticketmaster.event_timezone, "America/Toronto");
   assert.equal(ticketmaster.event_status, "offsale");
   assert.equal(ticketmaster.sold_out, 0, "offsale is not evidence that an event sold out");
@@ -286,6 +293,9 @@ test("provider projections retain stable event, clock, status, and venue identit
   assert.equal(bandsintown.provider_event_id, "84");
   assert.equal(bandsintown.start_date_time, "2032-06-02T00:00:00.000Z");
   assert.equal(bandsintown.start_local_time, "2032-06-01T20:00:00-04:00");
+  assert.equal(bandsintown.tour_name, null);
+  assert.equal(bandsintown.access_start_date_time, null);
+  assert.equal(bandsintown.access_start_approximate, null);
   assert.equal(bandsintown.event_status, "rescheduled");
   assert.equal(bandsintown.venue_provider_id, "9");
   assert.equal(bandsintown.venue_country_code, "CA");
@@ -341,9 +351,12 @@ test("provider upserts persist the durable fields and reactivate a returned even
     sold_out: 0,
     source: "ticketmaster",
     provider_event_id: "foundation-upstream-id",
-    event_name: "Upsert Artist Live",
+    event_name: "Upsert Artist - Foundation World Tour",
+    tour_name: "Foundation World Tour",
     start_date_time: "2033-01-03T00:00:00.000Z",
     start_local_time: "2033-01-02T19:00:00",
+    access_start_date_time: "2033-01-02T23:00:00.000Z",
+    access_start_approximate: 0,
     event_timezone: "America/Toronto",
     event_status: "onsale",
     venue_provider_id: "upstream-venue-id",
@@ -365,7 +378,8 @@ test("provider upserts persist the durable fields and reactivate a returned even
   assert.equal(upsertProviderTourDateRows(db, [row], { seenAt: 5000 }), 1);
   const inserted = db.prepare("SELECT * FROM tour_dates WHERE id=?").get(row.id);
   for (const field of [
-    "provider_event_id", "event_name", "start_date_time", "start_local_time", "event_timezone",
+    "provider_event_id", "event_name", "tour_name", "start_date_time", "start_local_time",
+    "access_start_date_time", "access_start_approximate", "event_timezone",
     "event_status", "venue_provider_id", "venue_address_line1", "venue_address_line2", "venue_city",
     "venue_region", "venue_postal_code", "venue_country_code", "venue_country",
     "event_image_url", "event_image_attribution", "event_image_width", "event_image_height",
@@ -379,10 +393,22 @@ test("provider upserts persist the durable fields and reactivate a returned even
   assert.equal(db.prepare("SELECT artist_key FROM tour_dates WHERE id=?").get(row.id).artist_key, "radiohead");
   const returned = db.prepare("SELECT provider_active,last_seen_at,updated_at,event_status,sold_out FROM tour_dates WHERE id=?").get(row.id);
   assert.deepEqual({ ...returned }, { provider_active: 1, last_seen_at: 6000, updated_at: 6000, event_status: "offsale", sold_out: 0 });
-  upsertProviderTourDateRows(db, [{ ...row, event_name: null, event_status: null, venue_address_line2: null }], { seenAt: 7000 });
-  const partial = db.prepare("SELECT event_name,event_status,venue_address_line2,last_seen_at,updated_at FROM tour_dates WHERE id=?").get(row.id);
+  upsertProviderTourDateRows(db, [{
+    ...row,
+    event_name: null,
+    tour_name: null,
+    access_start_date_time: null,
+    access_start_approximate: null,
+    event_status: null,
+    venue_address_line2: null,
+  }], { seenAt: 7000 });
+  const partial = db.prepare(`SELECT event_name,tour_name,access_start_date_time,access_start_approximate,
+    event_status,venue_address_line2,last_seen_at,updated_at FROM tour_dates WHERE id=?`).get(row.id);
   assert.deepEqual({ ...partial }, {
     event_name: row.event_name,
+    tour_name: row.tour_name,
+    access_start_date_time: row.access_start_date_time,
+    access_start_approximate: row.access_start_approximate,
     event_status: "offsale",
     venue_address_line2: row.venue_address_line2,
     last_seen_at: 7000,
@@ -442,6 +468,16 @@ test("provider upserts persist the durable fields and reactivate a returned even
       updated_at: 11000,
     },
     "provider removal clears stale event imagery and advances the public revision clock",
+  );
+  upsertProviderTourDateRows(db, [{
+    ...imageRemoved,
+    event_name: "Upsert Artist Live",
+    tour_name: null,
+  }], { seenAt: 12000 });
+  assert.deepEqual(
+    { ...db.prepare("SELECT event_name,tour_name,last_seen_at,updated_at FROM tour_dates WHERE id=?").get(row.id) },
+    { event_name: "Upsert Artist Live", tour_name: null, last_seen_at: 12000, updated_at: 12000 },
+    "a new official title clears a previously derived tour instead of retaining stale metadata",
   );
 });
 

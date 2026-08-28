@@ -72,6 +72,26 @@ test("draft or stale memorial identity never suppresses another artist", () => {
   }
 });
 
+test("exact tour-date lookup stays bounded and preserves public visibility rules", () => {
+  const { database, addDate } = fixture();
+  try {
+    addDate.run("wanted", "Wanted Artist", null, "2026-09-01", null);
+    addDate.run("other", "Other Artist", null, "2026-09-02", null);
+    assert.deepEqual(visibleTourDateRowsFrom(database, null, {
+      id: "wanted",
+      at: Date.UTC(2026, 7, 28),
+      limit: 2,
+    }).map(({ id }) => id), ["wanted"]);
+    assert.deepEqual(visibleTourDateRowsFrom(database, null, {
+      id: "missing",
+      at: Date.UTC(2026, 7, 28),
+      limit: 2,
+    }), []);
+  } finally {
+    database.close();
+  }
+});
+
 test("published memorial lookup accepts a current exact key or unique display name", () => {
   const { database, addArtist, addMemorial } = fixture();
   try {

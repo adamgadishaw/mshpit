@@ -16,3 +16,10 @@ export function publicTourDateVenueFields(row) {
     venueCountry: text(row?.venue_country, 80) || null,
   });
 }
+
+// A place/city is useful location context, but it is not a venue. Consumers
+// that need a venue label must use only the dedicated venue column and choose
+// a neutral missing-venue state themselves.
+export function publicTourDateVenueName(row) {
+  return text(row?.venue, 160) || null;
+}

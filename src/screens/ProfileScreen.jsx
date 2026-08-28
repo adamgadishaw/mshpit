@@ -17,6 +17,7 @@ import { mediaDisplayKind, mediaPosterUri } from "../domain/postMediaDisplay.mjs
 import { accountTargetScope, scopedScreenValue } from "../domain/screenScope.mjs";
 import { tasteMatch } from "../domain/tasteMatch.mjs";
 import { selectConcertReviews, selectProfileTimeline } from "../domain/profileTimeline.mjs";
+import { memberCalendarModel } from "../domain/calendarShows.mjs";
 import { useProfileHistory } from "../features/profileHistory/useProfileHistory";
 
 const EMPTY_PROFILE_STATE = Object.freeze({ status: "loading", user: null, error: "" });
@@ -52,7 +53,7 @@ function ProfileMediaTile({ item, index, onOpen }) {
 
 // Public member profile: musical identity, live history, media, plans, and posts.
 export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenProfile, onOpenArtist, onOpenVenue, onManageProfile, onMessage, onReport, onEditPost, onOpenPhotos, onRemoveMyPostTag, onOpenFollowList, onOpenBadges }) {
-  const { session, userById, logsByUser, isFollowing, follow, unfollow, followerCount, followingCount, goingFor, userBadges, sharedShows, loadUser, isBlocked, blockUser, unblockUser, userPoints, userAchievements, loadRewards, deleteOwnPost } = useStore();
+  const { session, userById, logsByUser, isFollowing, follow, unfollow, followerCount, followingCount, goingFor, myAttendance, userBadges, sharedShows, loadUser, isBlocked, blockUser, unblockUser, userPoints, userAchievements, loadRewards, deleteOwnPost } = useStore();
   const profileScope = accountTargetScope(session?.id, `profile:${userId || ""}`);
   const profileScopeRef = useRef(profileScope);
   profileScopeRef.current = profileScope;
@@ -104,10 +105,6 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenProfi
     return () => controller.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profileScope, profileRevision, userId]);
-  // One shared 1s tick drives every GOING TO countdown row (no per-row timers).
-  // Lives above the loading early-return so the hook order never changes; only
-  // runs while a planned show actually has a parseable date.
-  const planned = user ? goingFor(user.id) : [];
   if (!user) {
     const missing = profileView.status === "missing";
     const failed = profileView.status === "error";
@@ -151,6 +148,18 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenProfi
   const reviews = selectConcertReviews(logs);
   const timeline = selectProfileTimeline(logs);
   const isSelf = session?.id === user.id;
+  // Private plans and attendance are owner-only; another member's profile can
+  // derive calendar summaries only from posts that its public-history endpoint
+  // already allowed this viewer to read.
+  const profileCalendar = memberCalendarModel({
+    today: new Date(),
+    going: isSelf ? goingFor(user.id) : [],
+    attendance: isSelf ? myAttendance : [],
+    posts: logs,
+  });
+  const planned = profileCalendar.upcoming;
+  const pastShows = profileCalendar.past;
+  const pastShowPreview = pastShows.slice(0, 3);
   const historyLoading = history.status === "idle" || history.status === "loading" || history.status === "refreshing";
   const historyCount = (value) => `${value}${history.complete ? "" : "+"}`;
   const deleteHistoryPost = async (postId) => {
@@ -259,7 +268,7 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenProfi
 
         <View style={styles.statsRow}>
           <Stat value={historyCount(reviews.length)} label="REVIEWS" />
-          <Stat value={planned.length} label="GOING" />
+          <Stat value={planned.length} label="UPCOMING" />
           <Stat value={followerCount(user.id)} label="FOLLOWERS" onPress={() => onOpenFollowList?.(user.id, "followers")} />
           <Stat value={followingCount(user.id)} label="FOLLOWING" onPress={() => onOpenFollowList?.(user.id, "following")} />
         </View>
@@ -343,19 +352,22 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenProfi
 
 
 
-        {/* planned shows, with a live T-minus countdown per show (Clock-app
-            style list): the wait is half the fun. Past/undated rows show plain. */}
-        <Text style={styles.sectionLabel}>GOING TO · {planned.length}</Text>
-        {planned.length === 0 && <Text style={styles.empty}>No planned shows yet.</Text>}
+        {/* One calendar projection powers both this summary and Calendar. A
+            dated post appears here immediately; plain statuses remain posts. */}
+        <Text style={styles.sectionLabel}>UPCOMING SHOWS · {planned.length}</Text>
+        {planned.length === 0 && <Text style={styles.empty}>No upcoming shows yet.</Text>}
         {planned.map((p) => {
           const target = showDateMs(p.date);
           return (
-            <Pressable key={p.key} style={styles.showRow} onPress={() => onOpenArtist?.(p.artist)}>
+            <Pressable key={p.calendarKey || p.key || p.postId} style={styles.showRow} onPress={() => onOpenShow?.(p)}>
               <View style={styles.goingDot}><Icon name="calendar" size={15} color={colors.amber} /></View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.showArtist}>{p.artist}</Text>
                 <Text style={styles.showVenue}>{p.venue} · {formatDate(p.date, p.date)}</Text>
               </View>
+              {p.going ? <View style={styles.showSource}><Text style={styles.showSourceTxt}>GOING</Text></View>
+                : p.logged ? <View style={styles.showSource}><Text style={styles.showSourceTxt}>LOGGED</Text></View>
+                  : p.posted ? <View style={styles.showSource}><Text style={styles.showSourceTxt}>POSTED</Text></View> : null}
               {target != null && target - Date.now() > -86400000 && (
                 <View style={styles.countdownBox}>
                   <Countdown target={target} style={styles.countdownT} />
@@ -365,6 +377,22 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenProfi
             </Pressable>
           );
         })}
+
+        <Text style={styles.sectionLabel}>PAST SHOWS · {historyCount(pastShows.length)}</Text>
+        {pastShowPreview.length === 0 && !historyLoading ? <Text style={styles.empty}>No past shows yet.</Text> : null}
+        {pastShowPreview.map((p) => (
+          <Pressable key={p.calendarKey || p.key || p.postId} style={styles.showRow} onPress={() => onOpenShow?.(p)}>
+            <View style={styles.goingDot}><Icon name="archive" size={15} color={colors.amber} /></View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.showArtist}>{p.artist}</Text>
+              <Text style={styles.showVenue}>{p.venue} · {formatDate(p.date, p.date)}</Text>
+            </View>
+            <View style={styles.showSource}><Text style={styles.showSourceTxt}>{p.logged ? "LOGGED" : p.attended ? "WENT" : "POSTED"}</Text></View>
+          </Pressable>
+        ))}
+        {pastShows.length > pastShowPreview.length ? (
+          <Text style={styles.calendarSummaryHint}>Most recent shows are summarized here; the full dated history remains in Calendar.</Text>
+        ) : null}
 
         {/* their posts, the same feed card as home, so a profile reads like a
             wall of everything this person has posted (Facebook/Letterboxd style) */}
@@ -501,6 +529,7 @@ const styles = StyleSheet.create({
   countdownBox: { alignItems: "flex-end" },
   countdownT: { color: colors.amber, fontFamily: mono, fontSize: 15, fontWeight: "800", letterSpacing: 0.5, fontVariant: ["tabular-nums"] },
   countdownLabel: { color: colors.textFaint, fontSize: 9.5, letterSpacing: 1, marginTop: 1, textTransform: "uppercase" },
+  calendarSummaryHint: { color: colors.textFaint, fontSize: 11.5, lineHeight: 17, marginHorizontal: 16, marginTop: 2 },
   hint: { color: colors.textDim, fontSize: 12, marginHorizontal: 16, marginTop: -6, marginBottom: 12 },
   empty: { color: colors.textDim, fontSize: 13, fontStyle: "italic", marginHorizontal: 16 },
   gallery: { flexDirection: "row", flexWrap: "wrap", gap: 6, marginHorizontal: 16 },
@@ -519,6 +548,8 @@ const styles = StyleSheet.create({
   goingDotTxt: {},
   showArtist: { color: colors.text, fontSize: 16, fontWeight: "700" },
   showVenue: { color: colors.textDim, fontSize: 12, marginTop: 2 },
+  showSource: { borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, paddingHorizontal: 7, paddingVertical: 3 },
+  showSourceTxt: { color: colors.amber, fontFamily: mono, fontSize: 8.5, fontWeight: "900", letterSpacing: 0.7 },
   postsWrap: { paddingHorizontal: 16 },
   reviewRow: { backgroundColor: colors.surface, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, padding: 14, marginBottom: 8, marginHorizontal: 16 },
   reviewTop: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },

@@ -63,6 +63,7 @@ import { artistDiscographyRoutes } from "./features/artistDiscography/artistDisc
 import { showAttendanceRoutes } from "./features/shows/showAttendanceRoutes.js";
 import { showRoutes } from "./features/shows/showRoutes.js";
 import { createShowAttendanceRepository } from "./features/shows/showAttendanceRepository.js";
+import { normalizeShowAliasKey } from "./features/shows/showIdentity.js";
 import {
   enqueueAllOwnedMedia,
   enqueueOwnedMediaKeys,
@@ -159,7 +160,11 @@ import { normalizeArtistCampaign } from "../src/domain/artistCampaignPost.mjs";
 import { normalizeTaggedUserIds } from "../src/domain/postFriendTags.mjs";
 import { canonicalTicketUrl, projectedTourDateTicketUrl } from "../src/domain/ticketLinks.mjs";
 import { publicTicketmasterEventImage } from "./providerEventImage.js";
-import { publicTourDateVenueFields } from "./publicTourDateVenueProjection.js";
+import {
+  publicTourDateVenueFields,
+  publicTourDateVenueName,
+} from "./publicTourDateVenueProjection.js";
+import { publicTourDateProviderFields } from "./tourDateMetadata.js";
 import { isOwnerId, ownerAccount } from "./ownerIdentity.js";
 import {
   createOwnerApprovalRequest,
@@ -580,13 +585,13 @@ function tourDateJson(row) {
     ticketUrl: projectedTourDateTicketUrl(row),
     soldOut: !!row.sold_out,
     source: row.source || null,
+    ...publicTourDateProviderFields(row),
     ...publicTourDateVenueFields(row),
     eventImage: publicTicketmasterEventImage(row),
     eventTimezone: liveEventTimeZone({ eventTimezone: row.event_timezone }),
     releaseAt: Number(row.release_at) || 0,
     createdBy: row.owner_id || "import",
     ...(row.music_evidence ? {
-      eventName: row.event_name || null,
       eventKind: row.event_kind || "concert",
       eventEndDate: row.event_end_date || null,
       eventSourceUrl: row.event_source_url || null,
@@ -757,6 +762,21 @@ function cleanPostRatingDims(value) {
 const postRow = db.prepare(`INSERT INTO posts (id,user_id,artist,venue,city,date,overall,band,room,dims,review,photos,photos_public,landing_showcase,campaign,setlist,tour,tags,tagged_user_ids,kind,song,playlist,artist_key,artist_mbid,venue_key,client_mutation_id,client_mutation_hash,created_at)
                             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
 const postByClientMutation = db.prepare("SELECT id,removed,client_mutation_hash FROM posts WHERE user_id=? AND client_mutation_id=? LIMIT 1");
+const postColumns = new Set(db.prepare("PRAGMA table_info(posts)").all().map(({ name }) => name));
+const postAttendanceTicketScrubSql = postColumns.has("attendance_ticket") ? ",attendance_ticket=NULL" : "";
+// Rolling deploys may briefly run this API before the additive post column has
+// landed. Ordinary posting remains available, while the new attachment fails
+// closed instead of publishing a card whose verified event snapshot vanished.
+const postAttendanceTicket = postColumns.has("attendance_ticket")
+  ? db.prepare("UPDATE posts SET attendance_ticket=? WHERE id=? AND user_id=?")
+  : null;
+const activeAttendanceTicketPost = postColumns.has("attendance_ticket")
+  ? db.prepare(`SELECT id FROM posts
+      WHERE user_id=? AND removed=0 AND kind='status'
+        AND attendance_ticket IS NOT NULL AND json_valid(attendance_ticket)
+        AND json_extract(attendance_ticket,'$.tourDateId')=?
+      ORDER BY created_at DESC,id DESC LIMIT 1`)
+  : null;
 
 function clientMutationId(value) {
   if (value == null || value === "") return null;
@@ -1311,8 +1331,372 @@ function cleanArtistCampaign(value, {
   };
 }
 
+const ATTENDANCE_TICKET_TOP_LEVEL_FIELDS = new Set([
+  "kind", "clientMutationId", "review", "note", "attendanceTicket",
+]);
+const ATTENDANCE_TICKET_INPUT_FIELDS = new Set([
+  "tourDateId", "includeSeat", "section", "row", "seat",
+]);
+const ATTENDANCE_TICKET_SECRET_KEYS = new Set([
+  "barcode", "qrcode", "qr", "order", "orderid", "ordernumber",
+  "purchase", "purchaseid", "confirmation", "confirmationnumber",
+  "bookingreference", "transactionid", "paymenttoken", "walletpass",
+  "password", "secret", "credential", "credentials",
+]);
+const ticketArtistProfile = db.prepare("SELECT owner_id,avatar_uri,removed FROM artist_profiles WHERE artist_key=?");
+const providerGoingAttendance = db.prepare(`SELECT 1 FROM show_attendance a
+  JOIN shows s ON s.id=a.show_id
+  WHERE a.user_id=? AND a.state='going'
+    AND lower(s.provider)=lower(?) AND s.provider_event_id=? LIMIT 1`);
+const legacyGoingAttendance = db.prepare("SELECT 1 FROM going WHERE user_id=? AND concert_key=? COLLATE NOCASE LIMIT 1");
+const canonicalLegacyGoingAttendance = db.prepare(`SELECT 1 FROM show_attendance a
+  JOIN shows s ON s.id=a.show_id
+  WHERE a.user_id=? AND a.state='going' AND (
+    a.legacy_concert_key=? COLLATE NOCASE
+    OR s.canonical_key=? COLLATE NOCASE
+    OR EXISTS (SELECT 1 FROM show_aliases alias
+      WHERE alias.show_id=a.show_id AND alias.alias_type='legacy_concert_key'
+        AND alias.alias_value=? COLLATE NOCASE)
+  ) LIMIT 1`);
+const possibleLegacyTicketDates = db.prepare(`SELECT id,artist,venue,place,date FROM tour_dates
+  WHERE date=? AND lower(trim(artist))=lower(trim(?))
+    AND lower(trim(COALESCE(NULLIF(trim(venue),''),NULLIF(trim(place),''),'Venue TBA')))=lower(trim(?))
+  ORDER BY id LIMIT 2`);
+
+function ticketSecretKey(value, depth = 0) {
+  if (!value || typeof value !== "object" || depth > 4) return null;
+  for (const [key, child] of Object.entries(value)) {
+    const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (ATTENDANCE_TICKET_SECRET_KEYS.has(normalized)
+      || normalized.includes("barcode") || normalized.includes("qrcode")) return key;
+    const nested = ticketSecretKey(child, depth + 1);
+    if (nested) return nested;
+  }
+  return null;
+}
+
+function exactTicketTourDateId(value) {
+  if (typeof value !== "string") return null;
+  const id = value.normalize("NFKC").trim();
+  return /^[A-Za-z0-9._:-]{1,200}$/u.test(id) ? id : null;
+}
+
+function ticketSeatField(value, max, label) {
+  if (value == null || value === "") return null;
+  if (typeof value !== "string" && typeof value !== "number") {
+    throw new ApiError(400, `${label} is invalid.`, "VALIDATION_FAILED");
+  }
+  const raw = String(value).normalize("NFKC").trim();
+  if ([...raw].length > max || /(?:https?:\/\/|www\.|data:|file:)/iu.test(raw)) {
+    throw new ApiError(400, `${label} is invalid.`, "VALIDATION_FAILED");
+  }
+  return clean(raw, { max }) || null;
+}
+
+function requestedAttendanceTicketSeat(input) {
+  if (typeof input.includeSeat !== "boolean") {
+    throw new ApiError(400, "Choose whether to share seat details.", "VALIDATION_FAILED");
+  }
+  // Privacy is fail-closed: supplied values are discarded unless the person
+  // explicitly opted in on this exact publish request.
+  if (!input.includeSeat) return null;
+  const seat = {
+    section: ticketSeatField(input.section, 40, "Ticket section"),
+    row: ticketSeatField(input.row, 30, "Ticket row"),
+    seat: ticketSeatField(input.seat, 30, "Ticket seat"),
+  };
+  return Object.values(seat).some(Boolean) ? seat : null;
+}
+
+function storedAttendanceTicketSeat(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const safe = (field, max) => {
+    if (typeof field !== "string" && typeof field !== "number") return null;
+    const raw = String(field).normalize("NFKC").trim();
+    if (!raw || [...raw].length > max || /(?:https?:\/\/|www\.|data:|file:)/iu.test(raw)) return null;
+    return clean(raw, { max }) || null;
+  };
+  const seat = {
+    section: safe(value.section, 40),
+    row: safe(value.row, 30),
+    seat: safe(value.seat, 30),
+  };
+  return Object.values(seat).some(Boolean) ? seat : null;
+}
+
+function ticketText(value, max) {
+  if (value == null || value === "") return null;
+  if (typeof value !== "string" && typeof value !== "number") return null;
+  const raw = String(value).normalize("NFKC").trim();
+  if (!raw || [...raw].length > max) return null;
+  return clean(raw, { max }) || null;
+}
+
+function storedAttendanceTicket(value) {
+  const raw = parsedStoredObject(value);
+  if (!raw || Number(raw.version) !== 1 || raw.state !== "going") return null;
+  const tourDateId = exactTicketTourDateId(raw.tourDateId);
+  const artist = ticketText(raw.artist, LIMITS.artist);
+  const venue = ticketText(raw.venue, LIMITS.venue);
+  const date = cleanDate(raw.date);
+  if (!tourDateId || !artist || !venue || !date) return null;
+
+  const provider = ticketText(raw.provider, 40)?.toLowerCase() || null;
+  const doorsVerified = raw.doorsVerified === true;
+  const doorsAt = doorsVerified ? ticketText(raw.doorsAt, 80) : null;
+  // Version-1 snapshots briefly stored Ticketmaster access time under doorsAt.
+  // Treat an unverified legacy value as access so old posts cannot acquire a
+  // stronger venue-door claim after this release.
+  const accessStartDateTime = ticketText(
+    raw.accessStartDateTime ?? (!doorsVerified ? raw.doorsAt : null),
+    80,
+  );
+  const accessApproximateValue = raw.accessStartApproximate
+    ?? (!doorsVerified ? raw.doorsApproximate : null);
+  return {
+    version: 1,
+    state: "going",
+    tourDateId,
+    provider,
+    providerEventId: ticketText(raw.providerEventId, 200),
+    artist,
+    artistKey: ticketText(raw.artistKey, 120),
+    eventName: ticketText(raw.eventName, 200),
+    tourName: ticketText(raw.tourName, 160),
+    eventKind: ticketText(raw.eventKind, 40),
+    venue,
+    venueKey: ticketText(raw.venueKey, 200),
+    place: ticketText(raw.place, TOUR_DATE_PLACE_LIMIT),
+    city: ticketText(raw.city, LIMITS.city),
+    date,
+    startDateTime: ticketText(raw.startDateTime, 80),
+    startLocalTime: ticketText(raw.startLocalTime, 80),
+    eventTimezone: liveEventTimeZone({ eventTimezone: raw.eventTimezone }),
+    accessStartDateTime,
+    accessStartApproximate: accessStartDateTime && accessApproximateValue != null
+      ? !!accessApproximateValue : null,
+    doorsAt,
+    doorsVerified: doorsAt ? true : null,
+    artistPhotoUri: verifiedHttpsUrl(raw.artistPhotoUri),
+    seat: storedAttendanceTicketSeat(raw.seat),
+  };
+}
+
+function attendanceTicketArtistPhoto(row) {
+  const key = normName(row.artist_key || row.artist);
+  if (!key) return null;
+  const profile = ticketArtistProfile.get(key);
+  if (profile?.owner_id && !profile.removed && publicAccountOrNull(profile.owner_id)) {
+    const profilePhoto = safePublicProfileImage(profile.owner_id, profile.avatar_uri);
+    if (profilePhoto) return profilePhoto;
+  }
+  // This is the same lower-priority provider/catalog fallback the Artist page
+  // uses. Ticketmaster event artwork is deliberately not substituted: a tour
+  // poster is not necessarily the artist's profile identity.
+  return verifiedHttpsUrl(publicArtist(artistStmts.byNorm.get(key))?.photo) || null;
+}
+
+function attendanceTicketSnapshot(row, seat) {
+  const providerFields = publicTourDateProviderFields(row);
+  const artist = ticketText(row.artist, LIMITS.artist);
+  const venue = ticketText(publicTourDateVenueName(row), LIMITS.venue) || "Venue TBA";
+  const date = cleanDate(row.date);
+  if (!artist || !venue || !date) {
+    throw new ApiError(404, "That event is not available to share.", "NOT_FOUND");
+  }
+  const provider = ticketText(row.source, 40)?.toLowerCase() || null;
+  const snapshot = {
+    version: 1,
+    state: "going",
+    tourDateId: row.id,
+    provider,
+    providerEventId: providerFields.providerEventId,
+    artist,
+    artistKey: ticketText(row.artist_key, 120),
+    eventName: providerFields.eventName,
+    tourName: providerFields.tourName,
+    eventKind: ticketText(row.event_kind, 40),
+    venue,
+    venueKey: row.venue ? venueBinding(row.venue) || null : null,
+    place: ticketText(row.place, TOUR_DATE_PLACE_LIMIT),
+    city: ticketText(row.venue_city || String(row.place || "").split(",")[0], LIMITS.city),
+    date,
+    startDateTime: providerFields.startDateTime,
+    startLocalTime: providerFields.startLocalTime,
+    eventTimezone: liveEventTimeZone(row),
+    // Ticketmaster calls this event access, not venue-confirmed doors. Keep the
+    // provider term and approximation flag intact in the durable snapshot.
+    accessStartDateTime: providerFields.accessStartDateTime,
+    accessStartApproximate: providerFields.accessStartDateTime
+      ? providerFields.accessStartApproximate : null,
+    artistPhotoUri: attendanceTicketArtistPhoto(row),
+    seat,
+  };
+  const projected = storedAttendanceTicket(snapshot);
+  if (!projected) throw new ApiError(404, "That event is not available to share.", "NOT_FOUND");
+  return projected;
+}
+
+function visibleTicketTourDate(user, tourDateId, at = now()) {
+  const row = visibleTourDateRows(user, {
+    id: tourDateId,
+    today: liveEventQueryFloorDate(at),
+    limit: 2,
+    at,
+  }).find((entry) => entry.id === tourDateId && isCurrentOrUpcomingLiveEvent({
+    date: entry.date,
+    eventEndDate: entry.event_end_date,
+    eventTimezone: entry.event_timezone,
+  }, at));
+  if (!row) throw new ApiError(404, "That event is not available to share.", "NOT_FOUND");
+  return row;
+}
+
+function legacyConcertKeyForTicket(ticket) {
+  return normalizeShowAliasKey(`${ticket.artist}|${ticket.venue}|${ticket.date}`);
+}
+
+function legacyAliasUniquelyIdentifiesTicket(ticket, legacyKey) {
+  const matches = possibleLegacyTicketDates.all(ticket.date, ticket.artist, ticket.venue)
+    .filter((row) => normalizeShowAliasKey(`${row.artist}|${row.venue || row.place || "Venue TBA"}|${row.date}`) === legacyKey);
+  return matches.length === 1 && matches[0].id === ticket.tourDateId;
+}
+
+function hasGoingAttendanceForTicket(userId, ticket) {
+  if (ticket.provider && ticket.providerEventId
+    && providerGoingAttendance.get(userId, ticket.provider, ticket.providerEventId)) return true;
+  const legacyKey = legacyConcertKeyForTicket(ticket);
+  if (!legacyKey || !legacyAliasUniquelyIdentifiesTicket(ticket, legacyKey)) return false;
+  return !!canonicalLegacyGoingAttendance.get(userId, legacyKey, legacyKey, legacyKey)
+    || !!legacyGoingAttendance.get(userId, legacyKey);
+}
+
+function assertGoingAttendanceForTicket(userId, ticket) {
+  if (!hasGoingAttendanceForTicket(userId, ticket)) {
+    throw new ApiError(403, "Mark Going for this exact event before sharing its ticket.", "FORBIDDEN");
+  }
+}
+
+function assertNoActiveAttendanceTicketPost(userId, ticket) {
+  const existing = activeAttendanceTicketPost?.get(userId, ticket.tourDateId);
+  if (existing) {
+    throw new ApiError(409, "You already shared a Going ticket for this event.", "CONFLICT");
+  }
+}
+
+function attendanceTicketNote(source) {
+  const hasNote = Object.prototype.hasOwnProperty.call(source, "note");
+  const hasReview = Object.prototype.hasOwnProperty.call(source, "review");
+  const normalize = (value) => {
+    if (value == null || value === "") return "";
+    if (typeof value !== "string" || [...value.normalize("NFKC")].length > LIMITS.note) {
+      throw new ApiError(400, "The ticket note is invalid.", "VALIDATION_FAILED");
+    }
+    return clean(value.normalize("NFKC"), { max: LIMITS.note, newlines: true });
+  };
+  const note = hasNote ? normalize(source.note) : "";
+  const review = hasReview ? normalize(source.review) : "";
+  if (hasNote && hasReview && note !== review) {
+    throw new ApiError(400, "Send one ticket note, not two different versions.", "VALIDATION_FAILED");
+  }
+  return hasNote ? note : review;
+}
+
+function canonicalAttendanceTicketCreateRequest(user, source, storedPost) {
+  if (!postAttendanceTicket) {
+    throw new ApiError(503, "Ticket sharing is temporarily unavailable.", "DATABASE_UNAVAILABLE");
+  }
+  const secretKey = ticketSecretKey(source);
+  if (secretKey) {
+    throw new ApiError(400, "Never include a barcode, QR code, order, purchase, or payment secret in a ticket post.", "VALIDATION_FAILED");
+  }
+  if (Object.keys(source).some((key) => !ATTENDANCE_TICKET_TOP_LEVEL_FIELDS.has(key))) {
+    throw new ApiError(400, "Ticket posts accept only an optional note and the seat-sharing choice.", "VALIDATION_FAILED");
+  }
+  const input = source.attendanceTicket;
+  if (!input || typeof input !== "object" || Array.isArray(input)
+    || Object.keys(input).some((key) => !ATTENDANCE_TICKET_INPUT_FIELDS.has(key))) {
+    throw new ApiError(400, "That ticket post is invalid.", "VALIDATION_FAILED");
+  }
+  const tourDateId = exactTicketTourDateId(input.tourDateId);
+  if (!tourDateId) throw new ApiError(400, "Choose an exact event to share.", "VALIDATION_FAILED");
+  const seat = requestedAttendanceTicketSeat(input);
+  const review = attendanceTicketNote(source);
+  assertSafeAuthoredFields({
+    "ticket note": review,
+    "ticket section": seat?.section,
+    "ticket row": seat?.row,
+    "ticket seat": seat?.seat,
+  });
+
+  let ticket;
+  const committed = storedAttendanceTicket(storedPost?.attendance_ticket);
+  if (storedPost) {
+    if (!committed || committed.tourDateId !== tourDateId
+      || JSON.stringify(committed.seat) !== JSON.stringify(seat)) {
+      throw new ApiError(409, "That retry belongs to an earlier version of this post. Reopen it before publishing your new changes.", "POST_MUTATION_CONFLICT");
+    }
+    // A lost-response retry reuses the immutable committed snapshot. Provider
+    // metadata, the event's visibility, or Going state may legitimately change
+    // after the first write and must not make that exact retry publish twice.
+    ticket = committed;
+  } else {
+    ticket = attendanceTicketSnapshot(visibleTicketTourDate(user, tourDateId), seat);
+    assertGoingAttendanceForTicket(user.id, ticket);
+  }
+
+  const values = {
+    review,
+    photos: [],
+    photosPublic: 1,
+    landingShowcase: 0,
+    song: null,
+    playlist: null,
+    campaign: null,
+    taggedUserIds: [],
+    mediaSelection: null,
+    attendanceTicket: ticket,
+  };
+  return {
+    kind: "status",
+    values,
+    canonical: {
+      kind: "status",
+      artist: "",
+      artistKey: null,
+      venue: "",
+      venueKey: null,
+      city: "",
+      date: "",
+      overall: 0,
+      band: null,
+      room: null,
+      dims: {},
+      review,
+      photos: [],
+      mediaAssetIds: [],
+      photosPublic: 1,
+      landingShowcase: 0,
+      setlist: [],
+      tour: null,
+      tags: [],
+      taggedUserIds: [],
+      song: null,
+      playlistId: null,
+      campaign: null,
+      attendanceTicket: ticket,
+    },
+  };
+}
+
 function canonicalCreateRequest(user, body, storedPost = null) {
   const source = body && typeof body === "object" && !Array.isArray(body) ? body : {};
+  if (Object.prototype.hasOwnProperty.call(source, "attendanceTicket")) {
+    if (source.kind !== "status") {
+      throw new ApiError(400, "A Going ticket must be shared as a status post.", "VALIDATION_FAILED");
+    }
+    return canonicalAttendanceTicketCreateRequest(user, source, storedPost);
+  }
   const stableMedia = requestedPostMediaSelection(user, source, storedPost);
   const taggedUserIds = validatedPostTaggedUserIds(user, source.taggedUserIds, {
     committedIds: storedPostTaggedUserIds(storedPost?.tagged_user_ids),
@@ -1488,6 +1872,7 @@ function canonicalStoredPost(row) {
   const song = cleanSong(parsedStoredObject(row?.song));
   const playlist = parsedStoredObject(row?.playlist);
   const campaign = kind === "status" ? normalizeArtistCampaign(parsedStoredObject(row?.campaign)) : null;
+  const attendanceTicket = kind === "status" ? storedAttendanceTicket(row?.attendance_ticket) : null;
   const dims = cleanPostRatingDims(parsedStoredObject(row?.dims) || {}) || {};
   return {
     kind,
@@ -1513,6 +1898,7 @@ function canonicalStoredPost(row) {
     song: song || null,
     playlistId: kind === "status" ? playlist?.id || null : null,
     campaign,
+    ...(attendanceTicket ? { attendanceTicket } : {}),
   };
 }
 // Insert a notification for a recipient (never notify yourself).
@@ -1705,6 +2091,7 @@ function postJson(p, viewerId) {
   }
   const media = photos.map((url) => stableByUrl.get(url) || legacyByUrl.get(url)).filter(Boolean);
   const storedCampaign = p.kind === "status" ? normalizeArtistCampaign(parsedStoredObject(p.campaign)) : null;
+  const attendanceTicket = p.kind === "status" ? storedAttendanceTicket(p.attendance_ticket) : null;
   // Official presentation is a live authorization claim, not a permanent
   // visual badge embedded in authored JSON. Every row source feeding this
   // projector supplies current role/artist identity aliases; an old or custom
@@ -1756,6 +2143,7 @@ function postJson(p, viewerId) {
     // loaded only when somebody presses Play, keeping 50-card feeds lightweight.
     playlist: playlistPostProjection(p.playlist),
     campaign,
+    ...(attendanceTicket ? { attendanceTicket } : {}),
     seen: p.seen_ordinal ?? null,
     ...(p.open_reports != null ? { flags: p.open_reports } : {}),
     likes: p.like_count ?? 0, comments: p.comment_count ?? 0,
@@ -4408,9 +4796,17 @@ export const routes = {
         // closes the gap before the durable post + notification write.
         const transactionTaggedUserIds = validatedPostTaggedUserIds(u, v.taggedUserIds);
         assertPostTagRecipientBudget(u.id, transactionTaggedUserIds);
+        if (v.attendanceTicket) {
+          // Recheck both facts under BEGIN IMMEDIATE: attendance cannot be
+          // withdrawn and another device cannot publish the same active ticket
+          // between validation and the durable post write.
+          assertGoingAttendanceForTicket(u.id, v.attendanceTicket);
+          assertNoActiveAttendanceTicketPost(u.id, v.attendanceTicket);
+        }
         postRow.run(id, u.id, "", "", "", "", 0, null, null,
           "{}", v.review, JSON.stringify(v.photos), v.photosPublic, 0, v.campaign ? JSON.stringify(v.campaign) : null, "[]", null,
           "[]", JSON.stringify(transactionTaggedUserIds), "status", v.song ? JSON.stringify(v.song) : null, v.playlist ? JSON.stringify(v.playlist) : null, null, null, null, mutationId, mutationHash, now());
+        if (v.attendanceTicket) postAttendanceTicket.run(JSON.stringify(v.attendanceTicket), id, u.id);
         markOwnedMediaAssociated(db, { ownerId: u.id, urls: v.photos, at: now() });
         if (v.mediaSelection) attachPostMedia(db, { postId: id, ownerId: u.id, selection: v.mediaSelection, at: now() });
         addPostTagNotifications(transactionTaggedUserIds, u.id, id);
@@ -4443,6 +4839,13 @@ export const routes = {
     // words, and moderation removes content, it never rewrites it.
     if (current.user_id !== u.id) {
       throw new ApiError(403, "Only the person who posted this review can edit it.", "FORBIDDEN");
+    }
+    // The verified event/attendance facts are an immutable attachment. A
+    // generic status edit could otherwise turn the surrounding post into an
+    // artist campaign, playlist, song, or media post while retaining a server-
+    // verified Going card. Delete and deliberately republish instead.
+    if (current.attendance_ticket != null && current.attendance_ticket !== "") {
+      throw new ApiError(409, "Going ticket posts cannot be edited. Remove it and share a new ticket instead.", "CONFLICT");
     }
 
     const body = ctx.body && typeof ctx.body === "object" && !Array.isArray(ctx.body) ? ctx.body : {};
@@ -4760,7 +5163,7 @@ export const routes = {
         db.prepare(`UPDATE posts SET removed=1,artist='',venue='',city='',date='',overall=0,
           band=NULL,room=NULL,dims='{}',review='',photos='[]',photos_public=0,landing_showcase=0,campaign=NULL,
           setlist='[]',tour=NULL,tags='[]',tagged_user_ids='[]',song=NULL,playlist=NULL,artist_key=NULL,artist_mbid=NULL,
-          venue_key=NULL,client_mutation_id=NULL,client_mutation_hash=NULL,updated_at=?
+          venue_key=NULL,client_mutation_id=NULL,client_mutation_hash=NULL${postAttendanceTicketScrubSql},updated_at=?
           WHERE id=? AND user_id=?`).run(now(), post.id, u.id);
         retireLegacyVideoPosters(db, { postId: post.id, ownerId: u.id, at: now() });
         const deletable = unreferencedOwnedMediaUrls(db, { ownerId: u.id, urls: attached });

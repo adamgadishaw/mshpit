@@ -250,7 +250,7 @@ function CoverPanel({ asset, edit, onEditChange, onSeal, coverAvailable, resolve
         />
         {!coverAvailable ? <CapabilityNotice title="Cover export unavailable" body="This device does not expose a verified frame-extraction engine. Your original video stays untouched." /> : null}
       </InspectorSection>
-      <InspectorSection title="Video editing scope" detail="These controls stay off until PIT has an authoritative renderer that can guarantee output codecs, orientation, audio, and metadata.">
+      <InspectorSection title="Video editing" detail="These controls are not available yet because Mshpit cannot safely save those video changes on every device.">
         <LockedFeature name="Trim" detail="No destructive cut is claimed or uploaded." />
         <LockedFeature name="Mute" detail="The source audio track remains unchanged." />
         <LockedFeature name="Video filters" detail="Photo looks are not silently applied to video." />

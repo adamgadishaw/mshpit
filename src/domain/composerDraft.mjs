@@ -98,7 +98,7 @@ export function composerDraftHasContent(value) {
 
 export function composerDraftTitle(value) {
   const draft = normalizeComposerDraft(value);
-  if (draft.postType === "status") return draft.review.trim() || (draft.campaign ? "Artist drop draft" : "Status draft");
+  if (draft.postType === "status") return draft.review.trim() || (draft.campaign ? "Featured post draft" : "Post draft");
   return `${draft.artist.trim() || "Untitled show"}${draft.venue.trim() ? ` ${String.fromCharCode(183)} ${draft.venue.trim()}` : ""}`;
 }
 

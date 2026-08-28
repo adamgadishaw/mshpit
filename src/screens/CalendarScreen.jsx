@@ -6,7 +6,8 @@ import ScreenHeader from "../components/ScreenHeader";
 import Icon from "./../components/Icon";
 import { exportCalendarEvents } from "../lib/calendarExport";
 import { openTicketLink } from "../lib/ticketLinks";
-import { CALENDAR_SHOW_VIEW, calendarShowsByDay } from "../domain/calendarShows.mjs";
+import { CALENDAR_SHOW_VIEW, memberCalendarModel } from "../domain/calendarShows.mjs";
+import { toIsoDate } from "../domain/dates.mjs";
 import {
   CALENDAR_HISTORY_PAGE_SIZE,
   calendarHistoryWindow,
@@ -39,14 +40,18 @@ const dateFromKey = (key) => {
 // Site-wide calendar: every upcoming show + the ones you're going to, laid out on a
 // real month grid. "Today" comes from the server clock (GET /api/time) so it's right
 // regardless of the device's clock. Tap a day to see its shows; tap a show to open it.
-export default function CalendarScreen({ onClose, onOpen, onOpenArtist }) {
+export default function CalendarScreen({ initialDate = null, initialView = CALENDAR_SHOW_VIEW.UPCOMING, onClose, onOpen, onOpenArtist }) {
   const { session, upcomingEvents, goingFor, myAttendance, serverTime } = useStore();
   const { width: viewportWidth } = useWindowDimensions();
-  const [view, setView] = useState(CALENDAR_SHOW_VIEW.UPCOMING);
+  const [view, setView] = useState(initialView === CALENDAR_SHOW_VIEW.PAST
+    ? CALENDAR_SHOW_VIEW.PAST
+    : CALENDAR_SHOW_VIEW.UPCOMING);
   const history = useProfileHistory({
     accountId: session?.id,
     targetId: session?.id,
-    enabled: !!session?.id && view === CALENDAR_SHOW_VIEW.PAST,
+    // Upcoming needs authored posts too: a dated future show post is a calendar
+    // item even when the member did not separately press Going.
+    enabled: !!session?.id,
   });
   const [historyVisibleLimit, setHistoryVisibleLimit] = useState(CALENDAR_HISTORY_PAGE_SIZE);
   const [historyOlderLoadFailed, setHistoryOlderLoadFailed] = useState(false);
@@ -74,24 +79,23 @@ export default function CalendarScreen({ onClose, onOpen, onOpenArtist }) {
 
   const todayKey = keyOf(today.getFullYear(), today.getMonth(), today.getDate());
 
-  const calendarViews = useMemo(() => {
-    const common = {
+  const calendarModel = useMemo(
+    () => memberCalendarModel({
       today: todayKey,
       upcoming: upcomingEvents(500) || [],
       going: session ? goingFor(session.id) || [] : [],
       attendance: session ? myAttendance || [] : [],
-      logs: session ? historyWindow.posts : [],
-    };
-    return {
-      [CALENDAR_SHOW_VIEW.UPCOMING]: calendarShowsByDay(common),
-      [CALENDAR_SHOW_VIEW.PAST]: calendarShowsByDay({ ...common, view: CALENDAR_SHOW_VIEW.PAST }),
-    };
-  }, [goingFor, historyWindow.posts, myAttendance, session, todayKey, upcomingEvents]);
+      posts: session ? historyWindow.posts : [],
+    }),
+    [goingFor, historyWindow.posts, myAttendance, session, todayKey, upcomingEvents],
+  );
+  const calendarViews = calendarModel.byDay;
   const byDay = calendarViews[view];
 
   // Start on today's month; if it's empty, jump to the first month that has shows.
   const firstEventKey = useMemo(() => Object.keys(byDay).filter((k) => k >= todayKey).sort()[0] || Object.keys(byDay).sort()[0] || null, [byDay, todayKey]);
-  const initial = byDay[todayKey] ? todayKey : firstEventKey || todayKey;
+  const requestedDate = toIsoDate(initialDate);
+  const initial = requestedDate || (byDay[todayKey] ? todayKey : firstEventKey || todayKey);
   const [cursor, setCursor] = useState(() => { const [y, m] = initial.split("-").map(Number); return { y, m: m - 1 }; });
   const [selected, setSelected] = useState(initial);
   const [calendarNotice, setCalendarNotice] = useState(null);
@@ -421,7 +425,9 @@ export default function CalendarScreen({ onClose, onOpen, onOpenArtist }) {
                   <Text style={styles.eventArtist} numberOfLines={1}>{ev.artist || "Show"}</Text>
                   <Text style={styles.eventVenue} numberOfLines={1}>{[ev.venue, ev.place || ev.city].filter(Boolean).join(" · ") || "Venue TBA"}</Text>
                 </View>
-                {ev.going ? <View style={styles.goingTag}><Text style={styles.goingTagTxt}>GOING</Text></View> : null}
+                {view === CALENDAR_SHOW_VIEW.UPCOMING && ev.going ? <View style={styles.goingTag}><Text style={styles.goingTagTxt}>GOING</Text></View> : null}
+                {view === CALENDAR_SHOW_VIEW.UPCOMING && !ev.going && ev.logged ? <View style={styles.goingTag}><Text style={styles.goingTagTxt}>LOGGED</Text></View> : null}
+                {view === CALENDAR_SHOW_VIEW.UPCOMING && !ev.going && !ev.logged && ev.posted ? <View style={styles.goingTag}><Text style={styles.goingTagTxt}>POSTED</Text></View> : null}
                 {view === CALENDAR_SHOW_VIEW.PAST && ev.logged ? <View style={styles.goingTag}><Text style={styles.goingTagTxt}>LOGGED</Text></View> : null}
                 {view === CALENDAR_SHOW_VIEW.PAST && !ev.logged && ev.attended ? <View style={styles.goingTag}><Text style={styles.goingTagTxt}>WENT</Text></View> : null}
                 {ev.soldOut ? <View style={styles.soldTag}><Text style={styles.soldTagTxt}>SOLD OUT</Text></View> : null}

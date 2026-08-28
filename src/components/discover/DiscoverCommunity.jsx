@@ -34,8 +34,8 @@ export const DiscoverPhotos = memo(function DiscoverPhotos({ photos, photoUris, 
   if (!photos.length) return null;
   return (
     <View style={styles.panel}>
-      <SectionHeading eyebrow="FROM THE CROWD" title="Media people are loving" detail="Most-liked concert photos and clips from the community" />
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.rail} accessibilityLabel="Top concert media">
+      <SectionHeading eyebrow="FAN PHOTOS AND VIDEOS" title="Popular photos and videos" detail="The most-liked concert photos and clips shared by fans" />
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.rail} accessibilityLabel="Popular concert photos and videos">
         {photos.map((photo, index) => <PhotoTile key={`${photo.logId}_${photo.uri}_${index}`} photo={photo} index={index} width={compact ? Math.min(236, width - 64) : 250} onOpen={() => onOpenPhotos?.(photoUris, index)} />)}
       </ScrollView>
     </View>

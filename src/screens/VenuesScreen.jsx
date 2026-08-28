@@ -77,7 +77,7 @@ export default function VenuesScreen({ initialRegion = "Worldwide", onClose, onO
 
   return (
     <View style={styles.wrap}>
-      <ScreenHeader kicker="LIVE ROOMS" title={title} onBack={goBack} />
+      <ScreenHeader kicker="VENUES" title={title} onBack={goBack} />
       <FlatList
         key={mode}
         data={data}

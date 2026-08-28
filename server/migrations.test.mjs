@@ -272,7 +272,7 @@ test("legacy artists receive unique immutable public slugs deterministically", a
   }
 });
 
-test("legacy attendance, tour-date, and campaign tables gain safe additive columns", async () => {
+test("legacy posts, attendance, tour-date, and campaign tables gain safe additive columns", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "pit-index-migration-order-"));
   process.env.PIT_DATA_DIR = dataDir;
 
@@ -302,7 +302,10 @@ test("legacy attendance, tour-date, and campaign tables gain safe additive colum
     DROP INDEX idx_tourdates_provider_venue;
     DROP INDEX idx_tourdates_provider_venue_public_slug;
     DROP INDEX idx_tourdates_provider_visibility;
+    ALTER TABLE posts DROP COLUMN attendance_ticket;
     ALTER TABLE going DROP COLUMN created_at;
+    ALTER TABLE tour_dates DROP COLUMN access_start_approximate;
+    ALTER TABLE tour_dates DROP COLUMN access_start_date_time;
     ALTER TABLE tour_dates DROP COLUMN last_seen_at;
     ALTER TABLE tour_dates DROP COLUMN provider_active;
     ALTER TABLE tour_dates DROP COLUMN venue_country;
@@ -317,6 +320,7 @@ test("legacy attendance, tour-date, and campaign tables gain safe additive colum
     ALTER TABLE tour_dates DROP COLUMN event_timezone;
     ALTER TABLE tour_dates DROP COLUMN start_local_time;
     ALTER TABLE tour_dates DROP COLUMN start_date_time;
+    ALTER TABLE tour_dates DROP COLUMN tour_name;
     ALTER TABLE tour_dates DROP COLUMN event_name;
     ALTER TABLE tour_dates DROP COLUMN provider_event_id;
     ALTER TABLE tour_dates DROP COLUMN release_at;
@@ -337,6 +341,7 @@ test("legacy attendance, tour-date, and campaign tables gain safe additive colum
   previous.db.prepare("INSERT INTO tour_dates (id,artist,updated_at) VALUES (?,?,?)").run("seo_ambiguous_event", "SEO Ambiguous", 1);
   const upgraded = await import(`./db.js?index-migration-upgrade=${encodeURIComponent(dataDir)}`);
   const goingColumns = new Set(upgraded.db.prepare("PRAGMA table_info(going)").all().map((row) => row.name));
+  const postColumns = new Set(upgraded.db.prepare("PRAGMA table_info(posts)").all().map((row) => row.name));
   const tourColumns = new Set(upgraded.db.prepare("PRAGMA table_info(tour_dates)").all().map((row) => row.name));
   const emailQueueColumns = new Set(upgraded.db.prepare("PRAGMA table_info(email_queue)").all().map((row) => row.name));
   const campaignColumns = new Set(upgraded.db.prepare("PRAGMA table_info(email_campaigns)").all().map((row) => row.name));
@@ -346,11 +351,13 @@ test("legacy attendance, tour-date, and campaign tables gain safe additive colum
   const artistIndexes = new Set(upgraded.db.prepare("PRAGMA index_list(artists)").all().map((row) => row.name));
 
   assert.ok(goingColumns.has("created_at"));
+  assert.ok(postColumns.has("attendance_ticket"));
   assert.ok(tourColumns.has("owner_id"));
   assert.ok(tourColumns.has("artist_key"));
   assert.ok(tourColumns.has("release_at"));
   for (const column of [
-    "provider_event_id", "event_name", "start_date_time", "start_local_time", "event_timezone",
+    "provider_event_id", "event_name", "tour_name", "start_date_time", "start_local_time",
+    "access_start_date_time", "access_start_approximate", "event_timezone",
     "event_status", "venue_provider_id", "venue_address_line1", "venue_address_line2", "venue_city",
     "venue_region", "venue_postal_code", "venue_country_code", "venue_country", "provider_active",
     "last_seen_at",

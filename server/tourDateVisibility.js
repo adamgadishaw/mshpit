@@ -8,6 +8,7 @@ import { tourDateHasNoPublishedMemorialSql } from "./artistMemorialTourDateVisib
 // prevents aggregate metadata (for example a venue's next date) from revealing
 // an artist's unreleased schedule.
 export function visibleTourDateRowsFrom(database, viewer, {
+  id = null,
   today = null,
   artist = null,
   limit: rowLimit = 5000,
@@ -17,6 +18,10 @@ export function visibleTourDateRowsFrom(database, viewer, {
   // New imports can explicitly fail closed without leaking into discovery.
   const filters = ["COALESCE(td.music_qualified,1)=1"];
   const prefix = [];
+  if (id) {
+    filters.push("td.id=?");
+    prefix.push(id);
+  }
   if (today) {
     filters.push(currentOrUpcomingTourDateSql("td"));
     filters.push(tourDateHasNoPublishedMemorialSql("td"));

@@ -36,14 +36,17 @@ test("unified search reuses local matches and production does not scan the demo 
   assert.match(server, /artistStmts\.searchPrefix\.all/);
 });
 
-test("the existing tour field carries event prefills into a visible concert title card", () => {
+test("official provider titles remain distinct while clear tour names prefill the review", () => {
   const app = source("../../App.js");
   const composer = source("../screens/LogScreen.jsx");
   const card = source("../components/TicketStub.jsx");
 
-  assert.match(app, /tour: log\.tour \|\| log\.eventName \|\| ""/);
-  assert.match(composer, /editing\?\.tour \|\| prefill\?\.tour \|\| prefill\?\.eventName/);
-  assert.match(composer, /CONCERT, TOUR OR OCCASION/);
+  assert.match(app, /tour: log\.tourName \|\| log\.tour \|\| ""/);
+  assert.match(app, /officialEventName: log\.eventName \|\| null/);
+  assert.match(composer, /editing\?\.tour \|\| prefill\?\.tour \|\| ""/);
+  assert.doesNotMatch(composer, /prefill\?\.tour \|\| prefill\?\.eventName/);
+  assert.match(composer, /EVENT LISTING NAME/);
+  assert.match(composer, /TOUR OR SPECIAL EVENT/);
   assert.match(card, /const performanceTitle = String\(log\.tour/);
   assert.match(card, /styles\.performanceCard/);
   assert.match(card, /<PublicTextLink href=\{artistHref\}[\s\S]*?\{performanceTitle\}<\/PublicTextLink>/);

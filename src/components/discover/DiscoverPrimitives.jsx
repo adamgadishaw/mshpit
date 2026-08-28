@@ -51,8 +51,8 @@ export function OverviewState({ state, region, onRetry, onWorldwide }) {
     return (
       <View style={styles.statePanel} accessibilityLiveRegion="polite" accessibilityLabel="Loading Discover">
         <ActivityIndicator color={colors.amber} size="small" />
-        <Text style={styles.stateTitle}>Tuning the scene</Text>
-        <Text style={styles.stateCopy}>Loading charts, genres, and regional signals together.</Text>
+        <Text style={styles.stateTitle}>Loading Discover</Text>
+        <Text style={styles.stateCopy}>Loading artists, genres, venues, and events.</Text>
       </View>
     );
   }
@@ -61,7 +61,7 @@ export function OverviewState({ state, region, onRetry, onWorldwide }) {
       <View style={[styles.statePanel, styles.errorPanel]} accessibilityLiveRegion="assertive">
         <View style={styles.stateIcon}><Icon name="volume-x" size={24} color={colors.danger} /></View>
         <Text style={styles.stateTitle} selectable>Discover could not load</Text>
-        <Text style={styles.stateCopy} selectable>Check your connection and try again. Your other Pit screens still work.</Text>
+        <Text style={styles.stateCopy} selectable>Check your connection and try again. You can still use the rest of Mshpit.</Text>
         <Pressable style={styles.primaryButton} onPress={onRetry} accessibilityRole="button" accessibilityLabel="Retry loading Discover">
           <Text style={styles.primaryButtonText}>Try again</Text>
         </Pressable>
@@ -72,8 +72,8 @@ export function OverviewState({ state, region, onRetry, onWorldwide }) {
     return (
       <View style={styles.statePanel} accessibilityLiveRegion="polite">
         <View style={styles.stateIcon}><Icon name="globe" size={24} color={colors.cool} /></View>
-        <Text style={styles.stateTitle}>No chart yet for {region}</Text>
-        <Text style={styles.stateCopy}>This scene is still taking shape. Try the worldwide view for more artists and genres.</Text>
+        <Text style={styles.stateTitle}>Nothing to show for {region} yet</Text>
+        <Text style={styles.stateCopy}>Try Worldwide to see more artists and genres.</Text>
         {region !== "Worldwide" && (
           <Pressable style={styles.secondaryButton} onPress={onWorldwide} accessibilityRole="button" accessibilityLabel="Show worldwide Discover results">
             <Text style={styles.secondaryButtonText}>Show worldwide</Text>

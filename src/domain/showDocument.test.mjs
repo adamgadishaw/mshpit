@@ -82,7 +82,12 @@ test("special-event identity uses the provider kind even when artist and event n
 test("ShowScreen supplies the full event range and kind to presentation helpers", () => {
   const source = readFileSync(new URL("../screens/ShowScreen.jsx", import.meta.url), "utf8");
   assert.match(source, /isNamedSpecialEvent\(norm\) \|\| eventTitle !== artist/);
-  assert.match(source, /showLifecycleView\(\s*trustedShow,\s*showDateMs\(norm\.date\),\s*overall != null,\s*Date\.now\(\),\s*norm,/);
+  assert.match(source, /showLifecycleView\(\s*trustedShow,\s*showDateMs\(norm\.startDateTime \|\| norm\.startLocalTime \|\| norm\.date\),\s*overall != null,\s*Date\.now\(\),\s*norm,/);
+  assert.match(source, /norm\.doorsVerified === true \? Date\.parse\(norm\.doorsAt \|\| ""\) : NaN/);
+  assert.match(source, /const providerAccessMs = Date\.parse\(norm\.accessStartDateTime \|\| ""\)/);
+  assert.match(source, /const hasAuthenticCountdownTarget = !!countdownTimingKind \|\| hasExplicitShowTime/);
+  assert.match(source, /presentation\.showCountdown && hasAuthenticCountdownTarget && msLeft != null/);
+  assert.match(source, /countdownTimingKind === "doors"\s*\? "until verified doors"\s*:\s*countdownTimingKind === "access" \? "until event access" : "until showtime"/);
 });
 
 test("untrusted or unavailable documents retain legacy lifecycle behavior", () => {

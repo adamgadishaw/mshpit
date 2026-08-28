@@ -80,7 +80,11 @@ export default function ShowAttendanceControls({
       });
       if (activeIdentityRef.current !== claim) return;
       setMutation({ identity: claim, status: "ready", attendance: result.attendance, error: null });
-      onSaved?.(result);
+      onSaved?.(result, {
+        previousState: previous?.state || null,
+        requestedState: state || null,
+        visibility: result.attendance?.visibility || visibility || null,
+      });
     } catch (error) {
       if (activeIdentityRef.current !== claim) return;
       setMutation({ identity: claim, status: "error", attendance: previous, error });

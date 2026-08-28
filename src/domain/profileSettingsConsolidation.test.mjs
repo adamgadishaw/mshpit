@@ -38,9 +38,9 @@ test("Settings owns a server-confirmed member search-indexing opt-out", () => {
   assert.match(store, /setProfileSearchIndexingEnabled, setAnnouncementEmailsEnabled/);
 });
 
-test("Edit Profile clearly owns the personal Pit identity without duplicating appearance", () => {
-  assert.match(editProfile, /title="Personal Pit profile"/);
-  assert.match(editProfile, /This is your personal identity across Pit/);
+test("Edit Profile clearly owns the personal profile without duplicating appearance", () => {
+  assert.match(editProfile, /title="Edit your profile"/);
+  assert.match(editProfile, /This is the profile people see for your personal account/);
   assert.doesNotMatch(editProfile, /ThemeSwatch/);
   assert.doesNotMatch(editProfile, /THEMES|themeKey|chooseTheme/);
 });

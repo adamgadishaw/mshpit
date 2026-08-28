@@ -14,7 +14,7 @@ test("desktop discovery rail promotes signed-in lounges without retaining the ve
 
 test("Discover leads with upcoming events, then Near you, then Venues, while retaining deeper discovery", async () => {
   const source = await read("../screens/DiscoverScreen.jsx");
-  const upcoming = source.indexOf('title="Upcoming live events"');
+  const upcoming = source.indexOf('title="Upcoming events"');
   const nearby = source.indexOf('title="Near you"');
   const venue = source.indexOf('title="Venues"');
   const chart = source.indexOf("<DiscoverChart");
@@ -25,7 +25,7 @@ test("Discover leads with upcoming events, then Near you, then Venues, while ret
   assert.match(source, /EventScopeToggle/);
   assert.match(source, /PopularLoungeCard/);
   assert.match(source, /onOpenLounge/);
-  assert.match(source, /saved home area/);
+  assert.match(source, /No events are listed near your home area yet/);
   assert.match(source, /DiscoverEventBanner/);
   assert.match(source, /eventImage[\s\S]*source: "provider"[\s\S]*provider: "ticketmaster"/);
   assert.match(source, /const liveEvents = useMemo\(\(\) => upcomingEventsForScope/);
@@ -61,9 +61,9 @@ test("Discover keeps scene controls inside their card and makes genre exploratio
   assert.match(screen, /filterDiscoverSceneRows\([\s\S]*projectPopularLounges/);
   assert.match(screen, /sceneProjection\.venues/);
   assert.match(genres, /<SoundDonut/);
-  assert.match(genres, /Recently attended/);
-  assert.match(genres, /The map is tuning up/);
-  assert.match(genres, /Popular right now/);
+  assert.match(genres, /From shows you attended/);
+  assert.match(genres, /Genre information is not ready/);
+  assert.match(genres, /Popular now/);
   assert.doesNotMatch(donut, /colors\.blue/);
   assert.doesNotMatch(donut, /Animated/);
   assert.match(donut, /importantForAccessibility="no-hide-descendants"/);

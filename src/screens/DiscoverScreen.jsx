@@ -293,7 +293,7 @@ export default function DiscoverScreen({
     : selectedCountryRow?.count ?? overview.genreTotal;
   const metrics = [
     { label: "artists", value: sceneArtistTotal, tint: colors.amber },
-    { label: "upcoming", value: sceneProjection.eventCount, tint: colors.gold },
+    { label: "upcoming events", value: sceneProjection.eventCount, tint: colors.gold },
     { label: "venues", value: sceneProjection.venueCount, tint: colors.cool },
     { label: "genres", value: overview.distinctGenres ?? localStats.genres, tint: colors.magenta },
   ];
@@ -308,11 +308,11 @@ export default function DiscoverScreen({
     >
       <View style={[styles.hero, compact && styles.heroCompact]}>
         <View style={styles.heroCopy}>
-          <Text style={styles.kicker}>FIND YOUR NEXT OBSESSION</Text>
+          <Text style={styles.kicker}>FIND MUSIC AND SHOWS</Text>
           <Text style={[styles.title, compact && styles.titleCompact]} accessibilityRole="header">Discover</Text>
-          <Text style={styles.tagline}>Live charts, local rooms, and sounds worth following - without the endless scroll.</Text>
+          <Text style={styles.tagline}>See upcoming events, popular artists, venues, and fan picks in one place.</Text>
         </View>
-        <View style={styles.scenePill} accessible accessibilityLabel={`Current Discover region: ${region}`}>
+        <View style={styles.scenePill} accessible accessibilityLabel={`Showing Discover for ${region}`}>
           <Icon name={region === "Worldwide" ? "globe" : "pin"} size={15} color={colors.amber} />
           <Text style={styles.scenePillText} numberOfLines={1}>{region}</Text>
         </View>
@@ -321,12 +321,12 @@ export default function DiscoverScreen({
       <View style={styles.controlsCard}>
         <View style={[styles.controlTop, compact && styles.controlTopCompact]}>
           <View style={styles.controlCopy}>
-            <Text style={styles.controlLabel}>DISCOVER AREA</Text>
-            <Text style={styles.controlHint}>Events, venues, and charts move together</Text>
+            <Text style={styles.controlLabel}>CHOOSE AN AREA</Text>
+            <Text style={styles.controlHint}>Events, venues, and artists update for the area you choose.</Text>
           </View>
         </View>
-        <Text style={styles.controlLabel}>NATION</Text>
-        <View style={styles.regionGrid} accessibilityRole="radiogroup" accessibilityLabel="Choose a Discover region">
+        <Text style={styles.controlLabel}>COUNTRY OR REGION</Text>
+        <View style={styles.regionGrid} accessibilityRole="radiogroup" accessibilityLabel="Choose an area to explore">
           {sceneCountries.map((country) => {
             const selected = country.country.toLocaleLowerCase() === region.toLocaleLowerCase();
             return (
@@ -336,7 +336,7 @@ export default function DiscoverScreen({
                 onPress={() => pickRegion(country.country)}
                 accessibilityRole="radio"
                 accessibilityState={{ selected }}
-                accessibilityLabel={country.country + (country.count != null ? ", " + country.count + " upcoming live events" : "")}
+                accessibilityLabel={country.country + (country.count != null ? ", " + country.count + " upcoming events" : "")}
               >
                 <View style={styles.regionChipCopy}>
                   <Text style={[styles.regionText, selected && styles.regionTextSelected]} numberOfLines={2}>{country.country}</Text>
@@ -352,11 +352,11 @@ export default function DiscoverScreen({
               onPress={() => setSceneExpanded((value) => !value)}
               accessibilityRole="button"
               accessibilityState={{ expanded: sceneExpanded }}
-              accessibilityLabel={sceneExpanded ? "Show fewer scenes" : "Show " + hiddenSceneCount + " more scenes"}
+              accessibilityLabel={sceneExpanded ? "Show fewer areas" : "Show " + hiddenSceneCount + " more areas"}
             >
               <View style={styles.regionChipCopy}>
-                <Text style={styles.regionText}>{sceneExpanded ? "Show fewer" : "More scenes"}</Text>
-                <Text style={styles.regionCount}>{sceneExpanded ? "Keep it focused" : "+" + hiddenSceneCount + " regions"}</Text>
+                <Text style={styles.regionText}>{sceneExpanded ? "Show fewer" : "More areas"}</Text>
+                <Text style={styles.regionCount}>{sceneExpanded ? "Fewer choices" : "+" + hiddenSceneCount + " areas"}</Text>
               </View>
               <Icon name={sceneExpanded ? "x" : "chevron-down"} size={14} color={colors.textDim} />
             </Pressable>
@@ -368,8 +368,8 @@ export default function DiscoverScreen({
         <View style={styles.livePanel}>
           <View style={[styles.livePanelHead, compact && styles.livePanelHeadCompact]}>
             <SectionHeading
-              eyebrow="PLAN THE NEXT NIGHT"
-              title="Upcoming live events"
+              eyebrow="PLAN A NIGHT OUT"
+              title="Upcoming events"
               detail={liveScope === LIVE_EVENT_SCOPE.LOCAL ? liveScopeLabel({ scope: liveScope, homeCity }) : region}
               action={(
                 <Pressable style={styles.sectionAction} onPress={() => onOpenEvents?.(region)} accessibilityRole="button" accessibilityLabel="Browse all events">
@@ -398,10 +398,10 @@ export default function DiscoverScreen({
               <Icon name={liveScope === LIVE_EVENT_SCOPE.WORLDWIDE ? "globe" : "pin"} size={19} color={colors.textFaint} />
               <Text style={styles.liveEmptyText}>
                 {discoverySidebarStatus === "loading"
-                  ? "Loading upcoming live events…"
+                  ? "Loading upcoming events…"
                   : liveScope === LIVE_EVENT_SCOPE.LOCAL
-                    ? "No shows are listed near your saved home area yet. Try Worldwide."
-                    : `No upcoming live events are indexed for ${region} yet.`}
+                    ? "No events are listed near your home area yet. Try Worldwide."
+                    : `No upcoming events are listed for ${region} yet.`}
               </Text>
             </View>
           ) : (
@@ -424,9 +424,9 @@ export default function DiscoverScreen({
 
       <View style={styles.nearSection}>
         <SectionHeading
-          eyebrow="CLOSE TO HOME"
+          eyebrow="AROUND YOU"
           title="Near you"
-          detail={homeCity ? `Shows, festivals, and live rooms around ${homeCity}.` : "Set your home area to make local discovery useful."}
+          detail={homeCity ? `Shows, festivals, and venues near ${homeCity}.` : "Add your home area to see nearby events."}
         />
         <Pressable
           style={({ pressed }) => [styles.nearHero, pressed && styles.cardPressed]}
@@ -436,8 +436,8 @@ export default function DiscoverScreen({
         >
           <View style={styles.nearHeroIcon}><Icon name="map" size={24} color={colors.good} /></View>
           <View style={styles.venueHeroCopy}>
-            <Text style={styles.venueHeroTitle}>{homeCity ? `What’s happening around ${homeCity}` : "Choose your local scene"}</Text>
-            <Text style={styles.venueHeroDetail}>Open the nearby map and date list without losing worldwide discovery.</Text>
+            <Text style={styles.venueHeroTitle}>{homeCity ? `What’s on near ${homeCity}` : "Add your home area"}</Text>
+            <Text style={styles.venueHeroDetail}>See nearby events on a map or by date.</Text>
           </View>
           <Icon name="chevron-right" size={21} color={colors.good} />
         </Pressable>
@@ -445,11 +445,11 @@ export default function DiscoverScreen({
 
       <View style={styles.venueSection}>
         <SectionHeading
-          eyebrow="LIVE ROOMS"
+          eyebrow="PLACES TO GO"
           title="Venues"
           detail={region === "Worldwide"
-            ? "Start with the room: browse cities, lineups, and places fans keep coming back to."
-            : `Rooms with upcoming live events in ${region}.`}
+            ? "Browse venues, cities, and upcoming lineups."
+            : `Venues with upcoming events in ${region}.`}
           action={(
             <Pressable style={styles.sectionAction} onPress={() => onOpenVenues?.(region)} accessibilityRole="button" accessibilityLabel="Browse all venues">
               <Text style={styles.sectionActionText}>Browse all</Text>
@@ -461,13 +461,13 @@ export default function DiscoverScreen({
           style={({ pressed }) => [styles.venueHero, pressed && styles.cardPressed]}
           onPress={() => onOpenVenues?.(region)}
           accessibilityRole="button"
-          accessibilityLabel="Open the venue directory"
-          accessibilityHint="Browse venues by city and upcoming lineup"
+          accessibilityLabel="Browse venues"
+          accessibilityHint="Browse venues by city and upcoming events"
         >
           <View style={styles.venueHeroIcon}><Icon name="pin" size={24} color={colors.cool} /></View>
           <View style={styles.venueHeroCopy}>
-            <Text style={styles.venueHeroTitle}>Find your next favourite room</Text>
-            <Text style={styles.venueHeroDetail}>{region === "Worldwide" ? "Explore local stages and rooms around the world." : `Browse stages and upcoming lineups across ${region}.`}</Text>
+            <Text style={styles.venueHeroTitle}>Find a venue</Text>
+            <Text style={styles.venueHeroDetail}>{region === "Worldwide" ? "Browse venues around the world." : `Browse venues and upcoming events in ${region}.`}</Text>
           </View>
           <Icon name="chevron-right" size={21} color={colors.cool} />
         </Pressable>
@@ -480,27 +480,27 @@ export default function DiscoverScreen({
         ) : (
           <View style={styles.liveEmpty} accessibilityLiveRegion="polite">
             <Icon name="pin" size={19} color={colors.textFaint} />
-            <Text style={styles.liveEmptyText}>No venues with upcoming dates are indexed for {region} yet.</Text>
+            <Text style={styles.liveEmptyText}>No venues with upcoming events are listed for {region} yet.</Text>
           </View>
         )}
       </View>
 
       <View style={styles.quickSection}>
-        <SectionHeading eyebrow="GO DEEPER" title="More ways to explore" detail="Community favourites and artist fan spaces" />
+        <SectionHeading eyebrow="MORE TO EXPLORE" title="More ways to explore" detail="Top-rated shows and artist communities" />
         <View style={styles.quickGrid}>
-          <QuickAction icon="trophy" title="Top-rated shows" detail={region === "Worldwide" ? "Concerts members loved most" : `Highly rated nights in ${region}`} tint={colors.gold} onPress={() => onOpenTopRated?.(region)} basis={actionBasis} />
-          <QuickAction icon="you" title="Fan clubs" detail="Join artist communities" tint={colors.magenta} onPress={onOpenFanClubs} basis={actionBasis} />
+          <QuickAction icon="trophy" title="Top-rated shows" detail={region === "Worldwide" ? "Shows members rated highest" : `Highly rated shows in ${region}`} tint={colors.gold} onPress={() => onOpenTopRated?.(region)} basis={actionBasis} />
+          <QuickAction icon="you" title="Fan clubs" detail="Meet other fans of an artist" tint={colors.magenta} onPress={onOpenFanClubs} basis={actionBasis} />
         </View>
       </View>
 
       <View style={[styles.metrics, compact && styles.metricsCompact]}>{metrics.map((metric) => <MetricTile key={metric.label} {...metric} compact={compact} />)}</View>
 
       <View style={styles.loungePanel}>
-        <SectionHeading eyebrow="FANS ARE TALKING" title="Popular lounges" detail={region === "Worldwide" ? "Active concert rooms ranked by aggregate conversation, never by private member data." : `Active concert conversations in ${region}, using aggregate activity only.`} />
+        <SectionHeading eyebrow="CONCERT CONVERSATIONS" title="Popular lounges" detail={region === "Worldwide" ? "The most active concert conversations. Private member data is not used." : `Active concert conversations in ${region}. Private member data is not used.`} />
         {loungeRows.length === 0 ? (
           <View style={styles.liveEmpty}>
             <Icon name="comment" size={19} color={colors.textFaint} />
-            <Text style={styles.liveEmptyText}>Active lounges in {region} will appear when concert conversations pick up.</Text>
+            <Text style={styles.liveEmptyText}>Concert lounges in {region} will appear when people start talking.</Text>
           </View>
         ) : (
           <View style={styles.liveRows}>
@@ -510,12 +510,12 @@ export default function DiscoverScreen({
       </View>
 
       {overviewStatus === "refreshing" && showOverviewContent && (
-        <View style={styles.refreshNotice} accessibilityLiveRegion="polite"><ActivityIndicator size="small" color={colors.amber} /><Text style={styles.refreshNoticeText}>Refreshing {region}</Text></View>
+        <View style={styles.refreshNotice} accessibilityLiveRegion="polite"><ActivityIndicator size="small" color={colors.amber} /><Text style={styles.refreshNoticeText}>Updating {region}</Text></View>
       )}
       {overviewStatus === "error" && showOverviewContent && (
         <View style={styles.refreshError} accessibilityLiveRegion="assertive">
-          <Text style={styles.refreshErrorText} selectable>Could not refresh. Showing the last loaded chart.</Text>
-          <Pressable style={styles.refreshRetryButton} onPress={() => requestOverview({ preserve: true, force: true })} accessibilityRole="button" accessibilityLabel="Retry refreshing Discover"><Text style={styles.refreshRetry}>Retry</Text></Pressable>
+          <Text style={styles.refreshErrorText} selectable>Could not update. Showing the last results.</Text>
+          <Pressable style={styles.refreshRetryButton} onPress={() => requestOverview({ preserve: true, force: true })} accessibilityRole="button" accessibilityLabel="Retry updating Discover"><Text style={styles.refreshRetry}>Retry</Text></Pressable>
         </View>
       )}
 

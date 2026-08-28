@@ -68,10 +68,10 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) 
         <SheetHeader title="Check your email" onClose={onCancel} />
         <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
           <Text style={styles.wordmark}>MSHPIT</Text>
-          <Text style={[styles.tag, { marginBottom: 20 }]} accessibilityRole="header">Account request received</Text>
+          <Text style={[styles.tag, { marginBottom: 20 }]} accessibilityRole="header">Finish signing up from your email</Text>
           <View style={styles.artistNote}>
             <Icon name="mail" size={16} color={colors.amber} />
-            <Text style={styles.artistNoteTxt} accessibilityLiveRegion="polite" role="status">If this is a new address, we sent a verification link. If it already belongs to a Pit account, log in or use password reset. This message is intentionally the same either way.</Text>
+            <Text style={styles.artistNoteTxt} accessibilityLiveRegion="polite" role="status">If this is a new email address, we sent a verification link. If it already has an account, log in or reset your password. For privacy, we show the same message either way.</Text>
           </View>
           <Pressable style={styles.primary} onPress={() => { setMode("login"); setSignupSubmitted(false); setPassword(""); setError(""); }} accessibilityRole="button">
             <Text style={styles.primaryTxt}>CONTINUE TO LOG IN</Text>
@@ -163,7 +163,7 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) 
 
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         <Text style={styles.wordmark}>MSHPIT</Text>
-        <Text style={styles.tag}>log the shows you go to</Text>
+        <Text style={styles.tag}>remember the shows you attend</Text>
 
         {mode === "signup" && (
           <TextInput
@@ -188,11 +188,11 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) 
             disabled={authBusy}
             accessibilityRole="button"
             accessibilityLabel={city ? `City, ${city.label}` : "Choose your city"}
-            accessibilityHint="Sets the local feed for this account"
+            accessibilityHint="Used to show nearby concerts and local posts"
             accessibilityState={{ disabled: authBusy }}
           >
             <Icon name="pin" size={16} color={colors.amber} />
-            <Text style={[styles.cityTxt, !city && styles.cityPlaceholder]}>{city ? city.label : "Your city (powers your local feed)"}</Text>
+            <Text style={[styles.cityTxt, !city && styles.cityPlaceholder]}>{city ? city.label : "Your city (shows events near you)"}</Text>
             <Icon name="chevron-right" size={16} color={colors.textDim} />
           </Pressable>
         )}
@@ -257,11 +257,11 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) 
         )}
 
         {mode === "signup" && (
-          <Pressable style={styles.consent} onPress={() => setAnalyticsConsent((value) => !value)} disabled={authBusy} accessibilityRole="checkbox" accessibilityState={{ checked: analyticsConsent, disabled: authBusy }} accessibilityLabel="Share optional privacy-filtered product analytics">
+          <Pressable style={styles.consent} onPress={() => setAnalyticsConsent((value) => !value)} disabled={authBusy} accessibilityRole="checkbox" accessibilityState={{ checked: analyticsConsent, disabled: authBusy }} accessibilityLabel="Share optional usage data with personal details removed">
             <View style={[styles.box, analyticsConsent && styles.boxOn]}>
               {analyticsConsent ? <Icon name="check" size={14} color="#1A1206" strokeWidth={3} /> : null}
             </View>
-            <Text style={styles.consentTxt}>Optional: share privacy-filtered product analytics so Pit can improve reliability and recommendations. You can change this any time in Settings.</Text>
+            <Text style={styles.consentTxt}>Optional: share limited app usage data with personal details removed. This helps Mshpit fix problems and improve recommendations. You can change this any time in Settings.</Text>
           </Pressable>
         )}
 
@@ -292,8 +292,8 @@ export default function AuthScreen({ onDone, onCancel, initialMode = "login" }) 
         <View style={styles.artistNote}>
           <Icon name="shield" size={16} color={colors.amber} />
           <Text style={styles.artistNoteTxt}>
-            Are you an artist? Create a personal account first, then claim your official artist
-            profile from Manage profile. Every claim is reviewed before approval.
+            Are you an artist? Create a personal account first. Then open your profile and choose
+            Claim artist profile. Every claim is reviewed before approval.
           </Text>
         </View>
       </ScrollView>

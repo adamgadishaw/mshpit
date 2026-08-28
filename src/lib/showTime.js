@@ -1,8 +1,15 @@
 // One place for "when is this show" math. Dates arrive in mixed shapes
 // ("2026-08-14", "2026 · 08 · 14", odd separators); pull the number groups and
-// aim at 8pm local, a sane default for doors.
+// use an explicit provider time when one exists. A date-only legacy record has
+// no real start time, so 8pm local is only a display/countdown fallback and is
+// never labelled as doors.
 export function showDateMs(s) {
-  const m = String(s || "").match(/(\d{4})\D+(\d{1,2})\D+(\d{1,2})/);
+  const raw = String(s || "").trim();
+  if (/^\d{4}-\d{2}-\d{2}T/.test(raw)) {
+    const exact = Date.parse(raw);
+    if (Number.isFinite(exact)) return exact;
+  }
+  const m = raw.match(/(\d{4})\D+(\d{1,2})\D+(\d{1,2})/);
   if (!m) return null;
   const d = new Date(+m[1], +m[2] - 1, +m[3], 20, 0, 0);
   return isNaN(d.getTime()) ? null : d.getTime();

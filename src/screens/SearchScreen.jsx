@@ -106,7 +106,7 @@ function VenueRow({ v, onPress }) {
       <View style={[styles.dot, { borderColor: colors.cool }]}><Icon name="pin" size={14} color={colors.cool} /></View>
       <View style={{ flex: 1 }}>
         <Text style={styles.rowName} numberOfLines={1}>{v.name}</Text>
-        <Text style={styles.rowSub} numberOfLines={1}>{v.place || "-"}</Text>
+        <Text style={styles.rowSub} numberOfLines={1}>{v.place || "Location not listed"}</Text>
       </View>
       {v.upcoming > 0 && <View style={styles.pill}><Text style={styles.pillTxt}>{v.upcoming}</Text></View>}
     </Pressable>
@@ -136,7 +136,7 @@ function EventRow({ t, onOpenArtist, onOpenVenue, onOpenTicket }) {
         <Icon name="pin" size={15} color={colors.cool} />
       </Pressable>
       {t.soldOut
-        ? <Text style={styles.soldOut}>SOLD</Text>
+        ? <Text style={styles.soldOut}>SOLD OUT</Text>
         : t.ticketUrl ? <Pressable style={styles.secondaryAction} onPress={() => onOpenTicket?.(t)} accessibilityRole="link" accessibilityLabel={`Open tickets for ${t.artist} at ${t.venue}`}><Icon name="external" size={15} color={colors.amber} /></Pressable> : null}
     </View>
   );
@@ -412,7 +412,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
           <Icon name="search" size={18} color={focused ? colors.amber : colors.textDim} />
           <TextInput
             style={styles.input}
-            placeholder={ENABLE_MUSIC_PLAYER ? "Search people, artists, songs, venues" : "Search people, artists, venues"}
+            placeholder={ENABLE_MUSIC_PLAYER ? "Search artists, people, songs, shows, venues" : "Search artists, people, shows, venues"}
             placeholderTextColor={colors.textFaint}
             value={q}
             onChangeText={(value) => { setQ(value); setActionMessage(""); }}
@@ -421,7 +421,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
             autoCapitalize="none"
             maxLength={80}
             accessibilityLabel="Search Mshpit"
-            accessibilityHint={ENABLE_MUSIC_PLAYER ? "Search people, artists, songs, venues, events, and fan clubs" : "Search people, artists, venues, events, and fan clubs"}
+            accessibilityHint={ENABLE_MUSIC_PLAYER ? "Find artists, people, songs, shows, venues, and fan clubs" : "Find artists, people, shows, venues, and fan clubs"}
             accessibilityState={{ busy: searchLoading }}
           />
           {!!q && <Pressable style={styles.fieldAction} onPress={() => { setQ(""); setActiveCategory("all"); setActionMessage(""); }} accessibilityRole="button" accessibilityLabel="Clear search"><Icon name="x" size={16} color={colors.textFaint} /></Pressable>}
@@ -457,8 +457,8 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
         {showBrowse && (
           <Text style={styles.browseHint}>
             {ENABLE_MUSIC_PLAYER
-              ? "Search Mshpit · people, artists, songs, venues, events, and fan clubs"
-              : "Search Mshpit · people, artists, venues, events, and fan clubs"}
+              ? "Find artists, people, songs, shows, venues, and fan clubs."
+              : "Find artists, people, shows, venues, and fan clubs."}
           </Text>
         )}
 
@@ -514,15 +514,15 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
         <Section
           hidden={!showCategory("artists")}
           icon="music" tint={colors.amber}
-          title={showBrowse ? "ARTISTS TO EXPLORE" : "ARTISTS"} count={artists.length}
+          title={showBrowse ? "SUGGESTED ARTISTS" : "ARTISTS"} count={artists.length}
           rows={[
             ...artists.map((a) => <ArtistRow key={a.name} name={a.name} genre={a.genre} memorial={a.memorial} onPress={() => openArtist(a)} />),
             query.length >= 2 && !exactArtist ? (
-              <Pressable key="_lookup" style={styles.row} onPress={() => lookUp(q.trim())} disabled={lookupBusy} accessibilityRole="button" accessibilityLabel={`Look up artist ${q.trim()}`} accessibilityHint="Searches MusicBrainz if the artist is not in Mshpit yet" accessibilityState={{ busy: lookupBusy, disabled: lookupBusy }}>
+              <Pressable key="_lookup" style={styles.row} onPress={() => lookUp(q.trim())} disabled={lookupBusy} accessibilityRole="button" accessibilityLabel={`Search the full artist directory for ${q.trim()}`} accessibilityHint="Use this when the artist is not on Mshpit yet" accessibilityState={{ busy: lookupBusy, disabled: lookupBusy }}>
                 <View style={[styles.dot, { borderColor: colors.good }]}><Icon name="search" size={14} color={colors.good} /></View>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.rowName} numberOfLines={1}>Look up “{q.trim()}”</Text>
-                  <Text style={styles.rowSub} numberOfLines={1}>Add from MusicBrainz if they're not here yet</Text>
+                  <Text style={styles.rowName} numberOfLines={1}>Search the full directory for “{q.trim()}”</Text>
+                  <Text style={styles.rowSub} numberOfLines={1}>Find an artist who is not on Mshpit yet</Text>
                 </View>
                 {lookupBusy ? <ActivityIndicator size="small" color={colors.good} /> : <Icon name="chevron-right" size={16} color={colors.textDim} />}
               </Pressable>

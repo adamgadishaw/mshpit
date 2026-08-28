@@ -703,9 +703,9 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
                 <Text style={styles.editTxt}>Artist HQ</Text>
               </Pressable>
             ) : canModerate && !previewAsFan && onEditArtistProfile ? (
-              <Pressable style={styles.editBtn} onPress={() => onEditArtistProfile(a.name)} accessibilityRole="button" accessibilityLabel={`Edit ${a.name} public page`}>
+              <Pressable style={styles.editBtn} onPress={() => onEditArtistProfile(a.name)} accessibilityRole="button" accessibilityLabel={`Edit ${a.name} artist page`}>
                 <Icon name="edit" size={14} color={colors.amber} />
-                <Text style={styles.editTxt}>Edit public page</Text>
+                <Text style={styles.editTxt}>Edit artist page</Text>
               </Pressable>
             ) : null}
             {!ownsArtistPage && a.ownerId && onReport ? (
@@ -916,15 +916,14 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
           </Pressable>
         )}
 
-        {/* Page updates are read-only here. Creation and removal live in the
-            single management surface: Artist HQ. */}
+        {/* Artist posts are read-only here. Creation and removal live in Artist HQ. */}
         {sectionModel.showCommunity && (a.feedEnabled || canManagePublicPage) && (
           <>
             <View style={styles.feedHead}>
-              <Text style={styles.sectionLabel}>PAGE UPDATES{posts.length ? ` · ${posts.length}` : ""}</Text>
+              <Text style={styles.sectionLabel}>ARTIST POSTS{posts.length ? ` · ${posts.length}` : ""}</Text>
               {canManagePublicPage && !a.feedEnabled && <Text style={styles.feedOff}>hidden from fans</Text>}
             </View>
-            {posts.length === 0 && <Text style={styles.empty}>No page updates yet.</Text>}
+            {posts.length === 0 && <Text style={styles.empty}>No artist posts yet.</Text>}
             {visiblePosts.map((p) => (
               <View key={p.id} style={styles.postCard}>
                 <View style={styles.postTop}>
@@ -956,7 +955,7 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
               </View>
             ))}
             {sectionModel.condensed && posts.length > visiblePosts.length && (
-              <Pressable style={styles.showAllBtn} onPress={() => setActiveSection("community")} accessibilityRole="button" accessibilityLabel={`See all ${posts.length} ${a.name} page updates`}>
+              <Pressable style={styles.showAllBtn} onPress={() => setActiveSection("community")} accessibilityRole="button" accessibilityLabel={`See all ${posts.length} ${a.name} artist posts`}>
                 <Text style={styles.showAllTxt}>See every artist update</Text>
                 <Icon name="chevron-right" size={15} color={colors.amber} />
               </Pressable>

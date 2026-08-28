@@ -15,9 +15,11 @@ test("Discover event banner uses one cached Expo image and respects Reduce Motio
 });
 
 test("Discover event banner exposes manual controls and a no-image fallback", () => {
-  assert.match(source, /Previous featured event/);
-  assert.match(source, /Next featured event/);
+  assert.match(source, /Previous event/);
+  assert.match(source, /Next event/);
   assert.match(source, /Auto-play disabled by Reduce Motion/);
+  assert.match(source, /Play event slideshow/);
+  assert.match(source, /Pause event slideshow/);
   assert.match(source, /styles\.fallback/);
   assert.match(source, /onError=\{\(\) => setFailed/);
   assert.match(source, /const slideSetKey = useMemo/);

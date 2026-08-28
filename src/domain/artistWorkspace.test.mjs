@@ -33,14 +33,14 @@ test("every account surface gets one consistently named management action", () =
     destination: "artistHub",
     icon: "music",
     title: "Manage profile",
-    detail: "Public artist profile, page updates, and live dates",
+    detail: "Artist page, posts, and upcoming shows",
   });
   assert.deepEqual(profileManagementAction({ id: "fan", role: "fan" }), {
     key: "manageProfile",
     destination: "editProfile",
     icon: "edit",
     title: "Manage profile",
-    detail: "Photo, bio, music, and personal details",
+    detail: "Profile photo, bio, favorite music, and personal details",
   });
 });
 

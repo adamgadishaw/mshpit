@@ -9,7 +9,7 @@ export const ARTIST_CAMPAIGN_TREATMENTS = Object.freeze({
   spotlight: treatment({
     id: "spotlight",
     label: "Spotlight",
-    eyebrow: "Official artist drop",
+    eyebrow: "Featured artist post",
     backgroundColor: "#1B100B",
     contentSurfaceColor: "#0C0A09",
     accentColor: "#FF8C42",
@@ -31,7 +31,7 @@ export const ARTIST_CAMPAIGN_TREATMENTS = Object.freeze({
   "after-dark": treatment({
     id: "after-dark",
     label: "After dark",
-    eyebrow: "Artist transmission",
+    eyebrow: "Artist update",
     backgroundColor: "#120D26",
     contentSurfaceColor: "#0C0A1A",
     accentColor: "#C084FC",

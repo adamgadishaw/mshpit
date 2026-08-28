@@ -19,7 +19,7 @@ const ERROR_MESSAGES = Object.freeze({
   [VIDEO_POSTER_ERROR_CODES.crossOriginBlocked]: "This legacy video host does not allow a safe preview to be created.",
   [VIDEO_POSTER_ERROR_CODES.loadFailed]: "The selected video could not be loaded.",
   [VIDEO_POSTER_ERROR_CODES.frameFailed]: "A preview frame could not be extracted from the video.",
-  [VIDEO_POSTER_ERROR_CODES.lowQuality]: "No clear automatic preview was found. Choose a cover frame in PIT Studio.",
+  [VIDEO_POSTER_ERROR_CODES.lowQuality]: "No clear automatic preview was found. Choose a cover frame in the photo and video editor.",
   [VIDEO_POSTER_ERROR_CODES.encodeFailed]: "The preview frame could not be saved.",
 });
 

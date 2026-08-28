@@ -48,7 +48,7 @@ export default function WelcomeScreen({ onClose, onOpenFanClub, onOpenShow, onOp
           </View>
           <JourneyStep number="1" title="Find a show" detail="Browse upcoming concerts, festivals, artists, and venues." />
           <JourneyStep number="2" title="Attend and log it" detail="A quick log can be just a rating, a photo, and whether you'd go again." />
-          <JourneyStep number="3" title="Share the night" detail="Your review and media join that exact show's fan archive." />
+          <JourneyStep number="3" title="Share the night" detail="Your review, photos, and videos appear on that show's page." />
           <JourneyStep number="4" title="Find your people" detail="Follow fans with similar taste and discover what to see next." />
         </View>
 
@@ -58,7 +58,7 @@ export default function WelcomeScreen({ onClose, onOpenFanClub, onOpenShow, onOp
             <View style={[styles.badge, { borderColor: colors.amber }]}><Icon name="you" size={18} color={colors.amber} /></View>
             <View style={{ flex: 1 }}>
               <Text style={styles.cardTitle}>{noFriends ? "Find your people" : "Meet more fans"}</Text>
-              <Text style={styles.cardSub}>New here and don't know anyone yet? Jump into a fan club, or the pre-show and afterparty of a gig near you. That's where the friends are.</Text>
+              <Text style={styles.cardSub}>Join a fan club or open a nearby show's discussion before or after the concert. It is an easy way to meet fans with similar taste.</Text>
             </View>
           </View>
 
@@ -88,7 +88,7 @@ export default function WelcomeScreen({ onClose, onOpenFanClub, onOpenShow, onOp
                 <Text style={styles.rowName} numberOfLines={1}>{s.artist}</Text>
                 <Text style={styles.rowSub} numberOfLines={1}>{s.venue}{s.city ? " · " + s.city : ""}</Text>
               </View>
-              <View style={styles.joinBtn}><Text style={styles.joinTxt}>Pre-show</Text></View>
+              <View style={styles.joinBtn}><Text style={styles.joinTxt}>View show</Text></View>
             </Pressable>
           ))}
 
@@ -99,7 +99,7 @@ export default function WelcomeScreen({ onClose, onOpenFanClub, onOpenShow, onOp
         </View>
 
         <Pressable style={styles.skip} onPress={onClose}>
-          <Text style={styles.skipTxt}>Explore on my own</Text>
+          <Text style={styles.skipTxt}>Start exploring</Text>
         </Pressable>
       </ScrollView>
     </View>

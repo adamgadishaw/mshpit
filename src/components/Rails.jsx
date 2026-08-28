@@ -253,7 +253,7 @@ export function RightRail({
   });
   const localLabel = discoverySidebar.location?.city ? ` near ${discoverySidebar.location.city}` : "";
   const listingEmpty = discoverySidebarStatus === "loading"
-    ? "Tuning your local lineup..."
+    ? "Finding shows near you..."
     : discoverySidebarStatus === "error"
       ? "The local lineup missed a beat. Try refreshing."
       : discoverySidebar.source?.providerConfigured === false

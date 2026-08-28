@@ -108,11 +108,11 @@ function CompletionRow({ item, onPress }) {
 function Unauthorized({ onClose }) {
   return (
     <View style={styles.wrap}>
-      <ScreenHeader kicker="ARTIST HQ" title="Backstage access" onBack={onClose} />
+      <ScreenHeader kicker="ARTIST HQ" title="Artist account required" onBack={onClose} />
       <View style={styles.denied}>
         <View style={styles.deniedIcon}><Icon name="lock" size={28} color={colors.amber} /></View>
-        <Text style={styles.deniedTitle}>This room is for verified artists</Text>
-        <Text style={styles.deniedCopy}>Sign in with an approved artist account to manage its public artist profile, page updates, live dates, and artist drops.</Text>
+        <Text style={styles.deniedTitle}>Sign in with a verified artist account</Text>
+        <Text style={styles.deniedCopy}>A verified artist account can edit its artist page, publish posts, and add upcoming shows.</Text>
       </View>
     </View>
   );
@@ -133,11 +133,11 @@ function ArtistPageReadNotice({ resource, onRetry }) {
       >
         <ActivityIndicator size="small" color={colors.amber} />
         <View style={styles.pageReadCopy}>
-          <Text style={styles.pageReadTitle}>{hasConfirmedData ? "Refreshing verified page data" : "Loading your verified page data"}</Text>
+          <Text style={styles.pageReadTitle}>{hasConfirmedData ? "Checking for artist page updates" : "Loading artist page"}</Text>
           <Text style={styles.pageReadText}>
             {hasConfirmedData
-              ? "Your last confirmed workspace stays visible while Pit checks for changes."
-              : "Stats and readiness will appear after Pit confirms the artist profile and page updates."}
+              ? "Your last saved artist page stays visible while Mshpit checks for changes."
+              : "Your page, posts, and stats will appear after Mshpit loads the artist page."}
           </Text>
         </View>
       </View>
@@ -148,19 +148,19 @@ function ArtistPageReadNotice({ resource, onRetry }) {
     <View style={[styles.pageReadNotice, styles.pageReadError]} accessibilityRole="alert" accessibilityLiveRegion="assertive">
       <View style={styles.pageReadErrorIcon}><Icon name="x" size={15} color={colors.danger} strokeWidth={2.5} /></View>
       <View style={styles.pageReadCopy}>
-        <Text style={styles.pageReadTitle}>{hasConfirmedData ? "Showing the last confirmed artist page" : "Artist page data is unavailable"}</Text>
+        <Text style={styles.pageReadTitle}>{hasConfirmedData ? "Showing the last saved artist page" : "Artist page is unavailable"}</Text>
         <Text selectable style={styles.pageReadText}>
-          {resource.error?.userMessage || resource.error?.message || "Pit could not load this artist page."}
+          {resource.error?.userMessage || resource.error?.message || "Mshpit could not load this artist page."}
           {hasConfirmedData
-            ? " Stats and readiness may be out of date until the refresh succeeds."
-            : " Pit will not turn that failed read into zero stats or an empty updates list."}
+            ? " Some posts and numbers may be out of date until the page refreshes."
+            : " Nothing will be changed until the artist page loads."}
         </Text>
         <Pressable
           style={({ pressed, focused }) => [styles.pageReadRetry, pressed && styles.pressed, focused && focusRing]}
           onPress={onRetry}
           accessibilityRole="button"
           accessibilityLabel="Retry loading artist page data"
-          accessibilityHint="Checks the artist profile and page updates again"
+          accessibilityHint="Checks the artist page and posts again"
         >
           <Text style={styles.pageReadRetryText}>Try again</Text>
         </Pressable>
@@ -310,19 +310,19 @@ export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEdit
         // A slow publish must not erase the next update the artist started
         // typing while the submitted text was in flight.
         setDraft((current) => current === submittedDraft ? "" : current);
-        setPublishState({ status: "success", message: "Page update published to your artist profile." });
+        setPublishState({ status: "success", message: "Artist post published to your page." });
         return;
       }
       setPublishState({
         status: "error",
-        message: result?.error?.userMessage || result?.error?.message || "That page update was not published. Your draft is still here.",
+        message: result?.error?.userMessage || result?.error?.message || "That artist post was not published. Your draft is still here.",
       });
     } catch (error) {
       if (!controller.signal.aborted && publishRef.current === operation
         && operation.scope === artistPostScope) {
         setPublishState({
           status: "error",
-          message: error?.userMessage || error?.message || "That page update was not published. Your draft is still here.",
+          message: error?.userMessage || error?.message || "That artist post was not published. Your draft is still here.",
         });
       }
     } finally {
@@ -374,20 +374,20 @@ export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEdit
             <View style={styles.heroTopline}>
               <View style={styles.verifiedPill}>
                 <Badge type="verified" size={15} tooltip={false} />
-                <Text style={styles.verifiedText}>VERIFIED ARTIST WORKSPACE</Text>
+                <Text style={styles.verifiedText}>VERIFIED ARTIST ACCOUNT</Text>
               </View>
               <Pressable onPress={() => onPreview?.(artistName)} style={({ pressed, focused }) => [styles.previewPill, pressed && styles.pressed, focused && focusRing]} accessibilityRole="button" accessibilityLabel="Preview artist page as a fan">
                 <Icon name="you" size={14} color={colors.text} />
-                <Text style={styles.previewText}>Public artist profile</Text>
+                <Text style={styles.previewText}>Preview artist page</Text>
               </Pressable>
             </View>
             <View style={styles.heroBottom}>
               <View style={styles.heroIdentity}>
                 <View style={styles.avatarRing}><Avatar user={avatarUser} size={82} /></View>
                 <View style={styles.heroCopy}>
-                  <Text style={styles.heroKicker}>YOUR PUBLIC ERA, CONTROLLED HERE</Text>
+                  <Text style={styles.heroKicker}>MANAGE YOUR ARTIST PAGE</Text>
                   <Text style={styles.heroName} numberOfLines={2}>{artistName}</Text>
-                  <Text style={styles.heroSub}>Shape the page. Signal the next move. Turn live interest into a room full of people.</Text>
+                  <Text style={styles.heroSub}>Update the page, share news, and add upcoming shows and ticket links.</Text>
                 </View>
               </View>
             </View>
@@ -401,38 +401,38 @@ export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEdit
           {hasConfirmedArtistPage ? (
             <View style={styles.statsRow}>
               <MiniStat icon="calendar" value={stats.upcomingShows} label="upcoming" accent={colors.cool} />
-              <MiniStat icon="comment" value={stats.updates} label="page updates" accent={colors.magenta} />
-              <MiniStat icon="feed" value={stats.nights} label="logged nights" accent={colors.amber} />
-              <MiniStat icon="star" value={stats.liveScore ? stats.liveScore.toFixed(1) : "—"} label="live score" accent={colors.gold} />
-              <MiniStat icon="you" value={stats.ratings} label="rating signals" accent={colors.good} />
+              <MiniStat icon="comment" value={stats.updates} label="artist posts" accent={colors.magenta} />
+              <MiniStat icon="feed" value={stats.nights} label="logged shows" accent={colors.amber} />
+              <MiniStat icon="star" value={stats.liveScore ? stats.liveScore.toFixed(1) : "—"} label="live rating" accent={colors.gold} />
+              <MiniStat icon="you" value={stats.ratings} label="ratings" accent={colors.good} />
             </View>
           ) : null}
 
           <View style={styles.quickGrid}>
             <ActionTile
               icon="photo"
-              title="Edit public page"
-              detail={hasConfirmedArtistPage ? "Portrait, marquee, bio, and page-update visibility." : "Available after Pit confirms the current public page."}
+              title="Edit artist page"
+              detail={hasConfirmedArtistPage ? "Profile photo, banner, bio, and whether artist posts are public." : "Available after Mshpit loads the artist page."}
               onPress={openPageEditor}
               disabled={!hasConfirmedArtistPage}
               accent={colors.magenta}
             />
-            <ActionTile icon="star" title="Artist drop" detail="Publish one styled campaign post to the main feed." onPress={onCampaignPost} accent={colors.amber} />
-            <ActionTile icon="calendar" title="Live dates" detail="Publish shows, official tickets, and scheduled dates." onPress={onTourDates} accent={colors.cool} />
-            <ActionTile icon="you" title="Personal account" detail="Handle, city, genres, and favorite artists." onPress={onEditAccount} accent={colors.good} />
+            <ActionTile icon="star" title="Featured feed post" detail="Create a feed post with a custom background." onPress={onCampaignPost} accent={colors.amber} />
+            <ActionTile icon="calendar" title="Upcoming shows" detail="Add shows, official ticket links, and dates." onPress={onTourDates} accent={colors.cool} />
+            <ActionTile icon="you" title="Personal account" detail="Edit your username, city, favorite genres, and artists." onPress={onEditAccount} accent={colors.good} />
           </View>
 
           <View style={[styles.columns, !wide && styles.columnsStack]}>
             {hasConfirmedArtistPage ? <View style={[styles.panel, styles.readinessPanel]}>
-              <SectionTitle eyebrow="PROMO READINESS" title="Make every visit count" detail="A practical check of what fans can act on right now." />
+              <SectionTitle eyebrow="PAGE SETUP" title="Finish your artist page" detail="Check what fans can see and use right now." />
               <View style={styles.scoreRow}>
                 <View style={[styles.scoreDisc, { borderColor: scoreColor }]}>
                   <Text style={[styles.score, { color: scoreColor }]}>{model.score}</Text>
                   <Text style={styles.scoreUnit}>%</Text>
                 </View>
                 <View style={styles.scoreCopy}>
-                  <Text style={styles.scoreTitle}>{model.stageReady ? "Your page is stage ready" : "Build the full campaign surface"}</Text>
-                  <Text style={styles.scoreDetail}>{model.completeCount} of {model.completion.length} essentials are live.</Text>
+                  <Text style={styles.scoreTitle}>{model.stageReady ? "Your page is ready for fans" : "Finish setting up your page"}</Text>
+                  <Text style={styles.scoreDetail}>{model.completeCount} of {model.completion.length} sections are complete.</Text>
                   <View style={styles.progressTrack} accessibilityRole="progressbar" accessibilityValue={{ min: 0, max: 100, now: model.score }}>
                     <View style={[styles.progressFill, { width: `${model.score}%`, backgroundColor: scoreColor }]} />
                   </View>
@@ -442,7 +442,7 @@ export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEdit
                 <Pressable onPress={() => runAction(model.nextMove.action)} style={({ pressed, focused }) => [styles.nextMove, pressed && styles.pressed, focused && focusRing]} accessibilityRole="button">
                   <View style={styles.nextMoveIcon}><Icon name="plus" size={17} color={colors.amber} strokeWidth={2.5} /></View>
                   <View style={styles.nextMoveCopy}>
-                    <Text style={styles.nextMoveKicker}>BEST NEXT MOVE</Text>
+                    <Text style={styles.nextMoveKicker}>NEXT STEP</Text>
                     <Text style={styles.nextMoveTitle}>{model.nextMove.label}</Text>
                   </View>
                   <Icon name="chevron-right" size={17} color={colors.amber} />
@@ -454,13 +454,13 @@ export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEdit
             </View> : null}
 
             <View style={[styles.panel, styles.publishPanel]}>
-              <SectionTitle eyebrow="PUBLIC ARTIST PROFILE" title="Page update" detail="Publish short news directly to the updates section of your artist profile." />
+              <SectionTitle eyebrow="POST TO YOUR ARTIST PAGE" title="Artist post" detail="Share a short update directly on the artist page." />
               {hasConfirmedArtistPage && !model.feedEnabled ? (
                 <View style={styles.feedWarning}>
                   <Icon name="lock" size={16} color={colors.gold} />
                   <View style={styles.feedWarningCopy}>
-                    <Text style={styles.feedWarningTitle}>Page updates are hidden</Text>
-                    <Text style={styles.feedWarningText}>Use Edit public page to show these updates publicly. Artist drops still reach the main feed.</Text>
+                    <Text style={styles.feedWarningTitle}>Artist posts are hidden</Text>
+                    <Text style={styles.feedWarningText}>Use Edit artist page to show these posts publicly. Featured feed posts still appear in the main feed.</Text>
                   </View>
                 </View>
               ) : null}
@@ -472,16 +472,16 @@ export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEdit
                   setDraft(value);
                   if (publishState.status !== "pending") setPublishState({ status: "idle", message: "" });
                 }}
-                placeholder="Share a page update with fans…"
+                placeholder="Share news with fans…"
                 placeholderTextColor={colors.textFaint}
                 multiline
                 maxLength={UPDATE_LIMIT}
                 textAlignVertical="top"
-                accessibilityLabel="Page update"
+                accessibilityLabel="Artist post"
               />
               <View style={styles.composerFoot}>
                 <Text style={styles.counter}>{draft.length}/{UPDATE_LIMIT}</Text>
-                <Button title="Publish page update" icon="share" onPress={() => void publish()} loading={publishState.status === "pending"} disabled={!draft.trim()} small />
+                <Button title="Publish artist post" icon="share" onPress={() => void publish()} loading={publishState.status === "pending"} disabled={!draft.trim()} small />
               </View>
               {!!publishState.message && (
                 <View style={[styles.publishStatus, publishState.status === "error" ? styles.publishError : styles.publishSuccess]} accessibilityRole={publishState.status === "error" ? "alert" : "text"} accessibilityLiveRegion="polite">
@@ -490,7 +490,7 @@ export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEdit
                 </View>
               )}
               <View style={styles.recentHead}>
-                <Text style={styles.recentLabel}>PAGE UPDATES</Text>
+                <Text style={styles.recentLabel}>ARTIST POSTS</Text>
                 {hasConfirmedArtistPage ? <Text style={styles.recentCount}>{posts.length} total</Text> : null}
               </View>
               {!hasConfirmedArtistPage ? (
@@ -500,8 +500,8 @@ export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEdit
                     : <Icon name="lock" size={20} color={colors.textFaint} />}
                   <Text style={styles.emptyText}>
                     {scopedArtistPageResource.status === "error"
-                      ? "Existing page updates are withheld because the artist page could not be confirmed."
-                      : "Existing page updates will appear after the artist page is confirmed."}
+                      ? "Existing artist posts are unavailable because the artist page could not be loaded."
+                      : "Existing artist posts will appear after the artist page loads."}
                   </Text>
                 </View>
               ) : posts.length ? posts.map((item) => (
@@ -512,14 +512,14 @@ export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEdit
                     <Text style={styles.updateTime}>{item.ts || "now"}</Text>
                     {confirmPostId === item.id && scopedArtistPostMutation.status !== "error" ? (
                       <View style={styles.updateConfirm} accessibilityRole="alert" accessibilityLiveRegion="polite">
-                        <Text style={styles.updateConfirmText}>Remove this page update? It will disappear from the public artist profile.</Text>
+                        <Text style={styles.updateConfirmText}>Remove this artist post? It will disappear from the public artist page.</Text>
                         <View style={styles.updateActions}>
                           <Pressable
                             style={({ pressed, focused }) => [styles.updateCancel, pressed && styles.pressed, focused && focusRing]}
                             onPress={() => setConfirmPostId(null)}
                             disabled={scopedArtistPostMutation.status === "pending"}
                             accessibilityRole="button"
-                            accessibilityLabel="Keep page update"
+                            accessibilityLabel="Keep artist post"
                           >
                             <Text style={styles.updateCancelText}>Keep it</Text>
                           </Pressable>
@@ -528,7 +528,7 @@ export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEdit
                             onPress={() => void deletePageUpdate(item.id)}
                             disabled={scopedArtistPostMutation.status === "pending"}
                             accessibilityRole="button"
-                            accessibilityLabel="Remove page update permanently"
+                            accessibilityLabel="Remove artist post permanently"
                             accessibilityState={{
                               disabled: scopedArtistPostMutation.status === "pending",
                               busy: scopedArtistPostMutation.status === "pending" && scopedArtistPostMutation.postId === item.id,
@@ -536,7 +536,7 @@ export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEdit
                           >
                             {scopedArtistPostMutation.status === "pending" && scopedArtistPostMutation.postId === item.id
                               ? <ActivityIndicator size="small" color="#FFF8EE" />
-                              : <Text style={styles.updateDeleteConfirmText}>Remove update</Text>}
+                              : <Text style={styles.updateDeleteConfirmText}>Remove post</Text>}
                           </Pressable>
                         </View>
                       </View>
@@ -544,11 +544,11 @@ export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEdit
                     {scopedArtistPostMutation.status === "error" && scopedArtistPostMutation.postId === item.id ? (
                       <View style={styles.updateError} accessibilityRole="alert" accessibilityLiveRegion="assertive">
                         <Text selectable style={styles.updateErrorText}>
-                          This page update was not removed, so it is still visible. {scopedArtistPostMutation.error?.userMessage || scopedArtistPostMutation.error?.message || "Try again."}
+                          This artist post was not removed, so it is still visible. {scopedArtistPostMutation.error?.userMessage || scopedArtistPostMutation.error?.message || "Try again."}
                         </Text>
                         <View style={styles.updateActions}>
                           {scopedArtistPostMutation.error?.retryable ? (
-                            <Pressable style={({ pressed, focused }) => [styles.updateRetry, pressed && styles.pressed, focused && focusRing]} onPress={() => void deletePageUpdate(item.id)} accessibilityRole="button" accessibilityLabel="Retry removing page update">
+                            <Pressable style={({ pressed, focused }) => [styles.updateRetry, pressed && styles.pressed, focused && focusRing]} onPress={() => void deletePageUpdate(item.id)} accessibilityRole="button" accessibilityLabel="Retry removing artist post">
                               <Text style={styles.updateRetryText}>Try again</Text>
                             </Pressable>
                           ) : null}
@@ -559,7 +559,7 @@ export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEdit
                               setConfirmPostId(null);
                             }}
                             accessibilityRole="button"
-                            accessibilityLabel="Dismiss page update error"
+                            accessibilityLabel="Dismiss artist post error"
                           >
                             <Text style={styles.updateCancelText}>Dismiss</Text>
                           </Pressable>
@@ -575,7 +575,7 @@ export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEdit
                     }}
                     disabled={scopedArtistPostMutation.status === "pending"}
                     accessibilityRole="button"
-                    accessibilityLabel={`Remove page update: ${item.text}`}
+                    accessibilityLabel={`Remove artist post: ${item.text}`}
                     accessibilityState={{ disabled: scopedArtistPostMutation.status === "pending", expanded: confirmPostId === item.id }}
                   >
                     <Icon name="x" size={15} color={colors.textFaint} />
@@ -584,7 +584,7 @@ export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEdit
               )) : (
                 <View style={styles.emptyState}>
                   <Icon name="comment" size={20} color={colors.textFaint} />
-                  <Text style={styles.emptyText}>Your first page update will appear here.</Text>
+                  <Text style={styles.emptyText}>Your first artist post will appear here.</Text>
                 </View>
               )}
             </View>
@@ -625,7 +625,7 @@ export default function ArtistHubScreen({ onClose, onPreview, onEditPage, onEdit
 
           <View style={styles.truthNote}>
             <Icon name="shield" size={16} color={colors.textFaint} />
-            <Text style={styles.truthText}>HQ only shows signals Pit can verify: published dates, page updates, logged nights, and real ratings. No invented reach numbers.</Text>
+            <Text style={styles.truthText}>These numbers come from published shows, artist posts, logged shows, and fan ratings.</Text>
           </View>
         </View>
       </ScrollView>

@@ -13,6 +13,7 @@ import { privateErrorLabel } from "./errors.js";
 import { canonicalTicketUrl } from "../src/domain/ticketLinks.mjs";
 import { bandsintownMusicEvent, ticketmasterMusicEvent } from "./musicEventClassification.js";
 import { selectTicketmasterEventImage } from "./providerEventImage.js";
+import { deriveTourNameFromEventTitle } from "./tourDateMetadata.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CATALOG = join(HERE, "..", "src", "seed", "catalog.generated.json");
@@ -234,6 +235,8 @@ export function ticketmasterRows(data, { requestedArtist = null } = {}) {
     const localTime = optionalText(event.dates?.start?.localTime);
     const countryCode = optionalText(venue.country?.countryCode);
     const eventImage = selectTicketmasterEventImage(event);
+    const officialEventName = optionalText(event.name);
+    const accessStartDateTime = absoluteIsoTime(event.dates?.access?.startDateTime);
     out.push({
       id: event.id ? `tm_${event.id}` : slugId("tm", artist, venue.name, date), artist, venue: venue.name,
       place: [venue.city?.name, venue.state?.name, venue.country?.name].filter(Boolean).join(", "),
@@ -246,9 +249,18 @@ export function ticketmasterRows(data, { requestedArtist = null } = {}) {
       sold_out: 0,
       source: "ticketmaster",
       provider_event_id: optionalText(event.id),
-      event_name: optionalText(event.name),
+      event_name: officialEventName,
+      tour_name: deriveTourNameFromEventTitle({
+        eventName: officialEventName,
+        artist,
+        eventKind: musicEvent.kind,
+      }),
       start_date_time: absoluteIsoTime(event.dates?.start?.dateTime),
       start_local_time: localTime ? `${date}T${localTime}` : date,
+      access_start_date_time: accessStartDateTime,
+      access_start_approximate: accessStartDateTime
+        ? (event.dates?.access?.startApproximate === true ? 1 : 0)
+        : null,
       event_timezone: optionalText(venue.timezone),
       event_status: optionalText(event.dates?.status?.code)?.toLowerCase() || null,
       venue_provider_id: optionalText(venue.id),
@@ -319,6 +331,7 @@ export function bandsintownRows(data, { requestedArtist = null } = {}) {
       || "https://www.bandsintown.com/";
     const countryCode = optionalText(v.country_code || v.countryCode);
     const explicitStatus = optionalText(e.status);
+    const officialEventName = optionalText(e.title);
     out.push({
       id: e.id ? `bit_${e.id}` : slugId("bit", artist, v.name, date), artist, venue: v.name,
       place: [v.city, v.region, v.country].filter(Boolean).join(", "),
@@ -327,9 +340,16 @@ export function bandsintownRows(data, { requestedArtist = null } = {}) {
       ticket_url: canonicalTicketUrl(ticketUrl, { source: "bandsintown", allowUntrusted: false }),
       sold_out: 0, source: "bandsintown",
       provider_event_id: optionalText(e.id),
-      event_name: optionalText(e.title) || optionalText(e.artist?.name) || artist,
+      event_name: officialEventName || optionalText(e.artist?.name) || artist,
+      tour_name: deriveTourNameFromEventTitle({
+        eventName: officialEventName,
+        artist,
+        eventKind: musicEvent.kind,
+      }),
       start_date_time: absoluteIsoTime(localStart),
       start_local_time: localStart,
+      access_start_date_time: null,
+      access_start_approximate: null,
       event_timezone: optionalText(e.timezone) || optionalText(v.timezone),
       event_status: (explicitStatus || (e.cancelled === true ? "cancelled" : null))?.toLowerCase() || null,
       venue_provider_id: optionalText(v.id),
@@ -423,14 +443,16 @@ async function fetchDates(name) {
 const PROVIDER_TOUR_DATE_UPSERT_SQL = `
   INSERT INTO tour_dates (
     id,artist,artist_key,venue,place,lat,lng,date,ticket_url,sold_out,source,updated_at,
-    provider_event_id,event_name,start_date_time,start_local_time,event_timezone,event_status,
+    provider_event_id,event_name,tour_name,start_date_time,start_local_time,
+    access_start_date_time,access_start_approximate,event_timezone,event_status,
     venue_provider_id,venue_address_line1,venue_address_line2,venue_city,venue_region,
     venue_postal_code,venue_country_code,venue_country,provider_active,last_seen_at,
     event_kind,music_qualified,music_evidence,billed_artists,event_end_date,
     event_image_url,event_image_attribution,event_image_width,event_image_height
   ) VALUES (
     @id,@artist,@artist_key,@venue,@place,@lat,@lng,@date,@ticket_url,@sold_out,@source,@updated_at,
-    @provider_event_id,@event_name,@start_date_time,@start_local_time,@event_timezone,@event_status,
+    @provider_event_id,@event_name,@tour_name,@start_date_time,@start_local_time,
+    @access_start_date_time,@access_start_approximate,@event_timezone,@event_status,
     @venue_provider_id,@venue_address_line1,@venue_address_line2,@venue_city,@venue_region,
     @venue_postal_code,@venue_country_code,@venue_country,@provider_active,@last_seen_at,
     @event_kind,@music_qualified,@music_evidence,@billed_artists,@event_end_date,
@@ -448,8 +470,11 @@ const PROVIDER_TOUR_DATE_UPSERT_SQL = `
       OR excluded.source IS NOT tour_dates.source OR excluded.provider_active IS NOT tour_dates.provider_active
       OR COALESCE(excluded.provider_event_id,tour_dates.provider_event_id) IS NOT tour_dates.provider_event_id
       OR COALESCE(excluded.event_name,tour_dates.event_name) IS NOT tour_dates.event_name
+      OR (CASE WHEN excluded.event_name IS NOT NULL THEN excluded.tour_name ELSE tour_dates.tour_name END) IS NOT tour_dates.tour_name
       OR COALESCE(excluded.start_date_time,tour_dates.start_date_time) IS NOT tour_dates.start_date_time
       OR COALESCE(excluded.start_local_time,tour_dates.start_local_time) IS NOT tour_dates.start_local_time
+      OR COALESCE(excluded.access_start_date_time,tour_dates.access_start_date_time) IS NOT tour_dates.access_start_date_time
+      OR COALESCE(excluded.access_start_approximate,tour_dates.access_start_approximate) IS NOT tour_dates.access_start_approximate
       OR COALESCE(excluded.event_timezone,tour_dates.event_timezone) IS NOT tour_dates.event_timezone
       OR COALESCE(excluded.event_status,tour_dates.event_status) IS NOT tour_dates.event_status
       OR COALESCE(excluded.venue_provider_id,tour_dates.venue_provider_id) IS NOT tour_dates.venue_provider_id
@@ -472,8 +497,11 @@ const PROVIDER_TOUR_DATE_UPSERT_SQL = `
       THEN excluded.updated_at ELSE tour_dates.updated_at END,
     provider_event_id=COALESCE(excluded.provider_event_id,tour_dates.provider_event_id),
     event_name=COALESCE(excluded.event_name,tour_dates.event_name),
+    tour_name=CASE WHEN excluded.event_name IS NOT NULL THEN excluded.tour_name ELSE tour_dates.tour_name END,
     start_date_time=COALESCE(excluded.start_date_time,tour_dates.start_date_time),
     start_local_time=COALESCE(excluded.start_local_time,tour_dates.start_local_time),
+    access_start_date_time=COALESCE(excluded.access_start_date_time,tour_dates.access_start_date_time),
+    access_start_approximate=COALESCE(excluded.access_start_approximate,tour_dates.access_start_approximate),
     event_timezone=COALESCE(excluded.event_timezone,tour_dates.event_timezone),
     event_status=COALESCE(excluded.event_status,tour_dates.event_status),
     venue_provider_id=COALESCE(excluded.venue_provider_id,tour_dates.venue_provider_id),
@@ -510,8 +538,17 @@ function providerTourDateWrite(row, seenAt, artistKey) {
     updated_at: seenAt,
     provider_event_id: row.provider_event_id ?? null,
     event_name: row.event_name ?? null,
+    tour_name: deriveTourNameFromEventTitle({
+      eventName: row.event_name,
+      artist: row.artist,
+      eventKind: row.event_kind || "concert",
+    }),
     start_date_time: row.start_date_time ?? null,
     start_local_time: row.start_local_time ?? null,
+    access_start_date_time: row.access_start_date_time ?? null,
+    access_start_approximate: row.access_start_approximate == null
+      ? null
+      : (row.access_start_approximate ? 1 : 0),
     event_timezone: row.event_timezone ?? null,
     event_status: row.event_status ?? null,
     venue_provider_id: row.venue_provider_id ?? null,

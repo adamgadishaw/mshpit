@@ -73,20 +73,20 @@ function DiscoverGenres({
   const hasGenres = chartData.length > 0;
   const loadingArtists = !!selected && (status === "idle" || status === "loading") && !rows?.length;
   const spotlightTitle = spotlight.recentCount
-    ? "Recently attended"
-    : selected ? "Popular in " + selected : "Popular right now";
+    ? "From shows you attended"
+    : selected ? "Popular in " + selected : "Popular now";
   const spotlightDetail = spotlight.recentCount
-    ? "Artists from your recent shows lead; popular artists fill the rest."
-    : selected ? "Popular artists in " + selected + "." : "Popular artists to start with while the genre map is tuning.";
+    ? "Starts with artists from your recent shows, then adds popular artists."
+    : selected ? "Popular artists in " + selected + "." : "Popular artists to start with.";
 
   return (
     <View style={styles.panel}>
       <SectionHeading
-        eyebrow="EXPLORE BY SOUND"
-        title="Your sound map"
+        eyebrow="BROWSE BY GENRE"
+        title="Genres"
         detail={hasGenres
-          ? verifiedTotal.toLocaleString() + " artists mapped by genre across " + region + "."
-          : "The " + region + " genre map is still tuning. Your artist picks are ready below."}
+          ? verifiedTotal.toLocaleString() + " artists grouped by genre in " + region + "."
+          : "Genre information for " + region + " is not ready yet. You can still browse artists below."}
       />
 
       <View style={[styles.experience, compact && styles.experienceCompact]}>
@@ -95,12 +95,12 @@ function DiscoverGenres({
             data={chartData}
             size={compact ? 164 : 184}
             selected={selected}
-            centerTop={hasGenres ? String(selectableGenres.length) : "Tuning"}
-            centerSub="verified genres"
+            centerTop={hasGenres ? String(selectableGenres.length) : "Not ready"}
+            centerSub="genres"
           />
 
           {hasGenres ? (
-            <View style={styles.legend} accessibilityLabel={"Verified genres in " + region}>
+            <View style={styles.legend} accessibilityLabel={"Genres in " + region}>
               {selectableGenres.map((item, index) => {
                 const active = item.genre === selected;
                 const tint = DONUT_PALETTE[index % DONUT_PALETTE.length];
@@ -141,8 +141,8 @@ function DiscoverGenres({
             <View style={styles.tuningState} accessible>
               <Icon name="music" size={18} color={colors.amber} />
               <View style={styles.tuningCopy}>
-                <Text style={styles.tuningTitle}>The map is tuning up</Text>
-                <Text style={styles.tuningDetail}>Artists join the map once their genre is confirmed. Recent shows and popular artists are ready beside it.</Text>
+                <Text style={styles.tuningTitle}>Genre information is not ready</Text>
+                <Text style={styles.tuningDetail}>Artists appear here once their genre is available. You can still browse recent and popular artists.</Text>
               </View>
             </View>
           )}
@@ -151,11 +151,11 @@ function DiscoverGenres({
         <View style={[styles.spotlightCard, compact && styles.compactCard]}>
           <View style={styles.spotlightHead}>
             <View style={styles.spotlightHeadCopy}>
-              <Text style={styles.spotlightEyebrow}>{selectedData ? selectedData.genre.toUpperCase() + " SPOTLIGHT" : "ARTIST SPOTLIGHT"}</Text>
+              <Text style={styles.spotlightEyebrow}>{selectedData ? selectedData.genre.toUpperCase() + " ARTISTS" : "ARTISTS TO TRY"}</Text>
               <Text style={styles.spotlightTitle}>{spotlightTitle}</Text>
               <Text style={styles.spotlightDetail}>{spotlightDetail}</Text>
             </View>
-            {!!spotlight.recentCount && <View style={styles.personalPill}><Text style={styles.personalPillText}>FOR YOU</Text></View>}
+            {!!spotlight.recentCount && <View style={styles.personalPill}><Text style={styles.personalPillText}>FROM YOUR SHOWS</Text></View>}
           </View>
 
           {loadingArtists ? (
@@ -171,7 +171,7 @@ function DiscoverGenres({
             </View>
           ) : (
             <View style={styles.genreLoading}>
-              <Text style={styles.emptyCopy}>Artist recommendations will appear as this scene gains verified activity.</Text>
+              <Text style={styles.emptyCopy}>More artist suggestions will appear as more information becomes available.</Text>
             </View>
           )}
         </View>

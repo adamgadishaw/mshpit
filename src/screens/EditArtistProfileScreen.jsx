@@ -118,7 +118,7 @@ function ConfirmedArtistProfileEditor({
   return (
     <View style={styles.wrap}>
       <SheetHeader
-        title="Edit public page"
+        title="Edit artist page"
         onClose={onClose}
         action={{
           label: saving ? "Saving..." : mediaBusy ? "Uploading..." : "Save",
@@ -178,29 +178,29 @@ function ConfirmedArtistProfileEditor({
         <Text style={styles.avatarFormat}>{AVATAR_IMAGE_HINT}</Text>
 
         <Text style={styles.label}>BIO</Text>
-        <TextInput style={[styles.input, styles.multiline]} value={bio} onChangeText={setBio} placeholder="Tell fans who you are" placeholderTextColor={colors.textFaint} multiline />
+        <TextInput style={[styles.input, styles.multiline]} value={bio} onChangeText={setBio} placeholder="Tell fans about the artist" placeholderTextColor={colors.textFaint} multiline />
 
-        <Text style={styles.label}>PAGE UPDATES</Text>
+        <Text style={styles.label}>ARTIST POSTS</Text>
         <Pressable
           style={styles.toggleRow}
           onPress={() => setFeedEnabled((value) => !value)}
           disabled={mediaBusy || saving}
           accessibilityRole="switch"
-          accessibilityLabel="Show page updates on the public artist profile"
-          accessibilityHint="Controls whether fans can see short updates published from Artist HQ"
+          accessibilityLabel="Show artist posts on the public artist page"
+          accessibilityHint="Choose whether fans can see short posts published from Artist HQ"
           accessibilityState={{ checked: feedEnabled, disabled: mediaBusy || saving }}
           accessibilityValue={{ text: feedEnabled ? "Shown" : "Hidden" }}
         >
           <View style={{ flex: 1 }}>
-            <Text style={styles.toggleTitle}>Show page updates</Text>
-            <Text style={styles.toggleSub}>{feedEnabled ? "Fans can see page updates published from Artist HQ." : "Page updates stay in Artist HQ until you make them public."}</Text>
+            <Text style={styles.toggleTitle}>Show artist posts</Text>
+            <Text style={styles.toggleSub}>{feedEnabled ? "Fans can see posts published from Artist HQ." : "Posts stay hidden until you turn this on."}</Text>
           </View>
           <View style={[styles.switch, feedEnabled && styles.switchOn]}>
             <View style={[styles.knob, feedEnabled && styles.knobOn]} />
           </View>
         </Pressable>
 
-        <Button title={saving ? "Saving public page..." : mediaBusy ? "Uploading photo..." : "Save public page"} icon="check" onPress={save} disabled={!artistPageEditReady(resource) || mediaBusy || saving} style={{ marginTop: 28 }} />
+        <Button title={saving ? "Saving artist page..." : mediaBusy ? "Uploading photo..." : "Save artist page"} icon="check" onPress={save} disabled={!artistPageEditReady(resource) || mediaBusy || saving} style={{ marginTop: 28 }} />
       </ScrollView>
     </View>
   );
@@ -266,8 +266,8 @@ export default function EditArtistProfileScreen({ artistName, onClose }) {
   if (!authorized) {
     return (
       <View style={styles.wrap}>
-        <SheetHeader title="Edit public page" onClose={onClose} />
-        <Text style={styles.denied}>Only the verified {artist.name} account or Pit staff can edit this public page.</Text>
+        <SheetHeader title="Edit artist page" onClose={onClose} />
+        <Text style={styles.denied}>Only the verified {artist.name} account or Mshpit staff can edit this artist page.</Text>
       </View>
     );
   }
@@ -276,16 +276,16 @@ export default function EditArtistProfileScreen({ artistName, onClose }) {
     const failed = scopedResource.status === "error";
     return (
       <View style={styles.wrap}>
-        <SheetHeader title="Edit public page" onClose={onClose} />
+        <SheetHeader title="Edit artist page" onClose={onClose} />
         <View style={styles.editorGate} accessibilityLiveRegion="polite">
           {failed
             ? <Icon name="lock" size={28} color={colors.amber} />
             : <ActivityIndicator size="small" color={colors.amber} />}
-          <Text style={styles.editorGateTitle}>{failed ? "Public page unavailable" : "Confirming the public page"}</Text>
+          <Text style={styles.editorGateTitle}>{failed ? "Artist page unavailable" : "Loading artist page"}</Text>
           <Text selectable style={styles.editorGateText}>
             {failed
-              ? scopedResource.error?.userMessage || "Pit could not confirm the current public page. Nothing can be edited or saved until it is safely loaded."
-              : "Pit is loading the latest saved artist page before opening the editor."}
+              ? scopedResource.error?.userMessage || "Mshpit could not load the latest artist page. Nothing can be changed until it loads."
+              : "Mshpit is loading the latest saved artist page before you make changes."}
           </Text>
           {failed ? <Button title="Try again" icon="refresh" onPress={() => setRequestVersion((version) => version + 1)} small /> : null}
         </View>

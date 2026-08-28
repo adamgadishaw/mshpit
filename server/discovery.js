@@ -12,6 +12,7 @@ import {
 } from "../src/domain/eventLifecycle.mjs";
 import { publicTicketmasterEventImage } from "./providerEventImage.js";
 import { publicTourDateVenueFields } from "./publicTourDateVenueProjection.js";
+import { publicTourDateProviderFields } from "./tourDateMetadata.js";
 
 const norm = (value) => String(value || "").trim().toLowerCase();
 const radians = (degrees) => degrees * Math.PI / 180;
@@ -52,7 +53,6 @@ function evidenceBackedEventFields(row) {
     if (Array.isArray(parsed)) billedArtists = parsed.slice(0, 20).filter((name) => typeof name === "string" && name.trim());
   } catch { /* architecture: allow-empty-catch -- malformed provider evidence degrades to the legacy event card */ }
   return {
-    eventName: row.event_name || null,
     eventKind: row.event_kind || "concert",
     eventEndDate: row.event_end_date || null,
     eventSourceUrl: row.event_source_url || null,
@@ -72,6 +72,7 @@ function publicEvent(row) {
     ticketUrl: projectedTourDateTicketUrl(row),
     soldOut: !!row.sold_out,
     source: row.source,
+    ...publicTourDateProviderFields(row),
     ...publicTourDateVenueFields(row),
     eventImage: publicTicketmasterEventImage(row),
     eventTimezone: liveEventTimeZone({ eventTimezone: row.event_timezone }),

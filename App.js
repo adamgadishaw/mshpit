@@ -103,6 +103,7 @@ import { readSensitiveFragmentToken, readSensitiveLinkToken, scrubSensitiveLinkT
 import { verifiedMutationDecision } from "./src/domain/emailVerificationUx.mjs";
 import { desktopRightRailLayout } from "./src/domain/desktopRailLayout.mjs";
 import { filterDiscoverSceneRows } from "./src/domain/discoverScene.mjs";
+import { calendarFocusForPost } from "./src/domain/calendarShows.mjs";
 import { countryForCity } from "./src/geo";
 import {
   PLAYER_POSITION_STORAGE_KEY,
@@ -868,8 +869,23 @@ function Root() {
     // opened. Publish still succeeded, but that stale operation no longer owns
     // navigation and must not pull the user away from their current screen.
     if (isActiveComposer(stackRef.current, composerId)) {
-      commitClear();
-      setTab("feed");
+      const calendarFocus = calendarFocusForPost(result?.post, new Date());
+      if (calendarFocus) {
+        CalendarScreen.preload?.().catch(() => { /* architecture: allow-empty-catch -- Calendar chunk preloading is optional; the mounted screen owns its visible loading state */ });
+        // Replace the completed composer with the exact saved night. The
+        // canonical post already updated profile history, so Calendar can show
+        // it immediately without a second write or a fragile local-only flag.
+        commitReplace({
+          calendar: true,
+          calendarDate: calendarFocus.date,
+          calendarView: calendarFocus.view,
+        });
+      } else {
+        // Ordinary text/photo statuses have no show identity and keep the
+        // familiar feed destination; they are never blocked by Calendar rules.
+        commitClear();
+        setTab("feed");
+      }
     }
     return result;
   };
@@ -1042,7 +1058,10 @@ function Root() {
       venue: log.venue,
       city: log.city,
       date: log.date || null,
-      tour: log.tour || log.eventName || "",
+      tour: log.tourName || log.tour || "",
+      officialEventName: log.eventName || null,
+      officialEventSource: log.source || null,
+      tourDateId: log.tourDateId || log.id || null,
     },
   }));
   const openInbox = () => requireAuth(() => go({ inbox: true }));
@@ -1068,7 +1087,7 @@ function Root() {
   else if (nav.inbox) overlay = <InboxScreen onClose={back} onOpenThread={openThread} />;
   else if (MUSIC_PLAYER_ENABLED && nav.listeningHistory) overlay = <ListeningHistoryScreen onClose={back} onPlay={musicPlayerAction} />;
   else if (nav.notifications) overlay = <NotificationsScreen onClose={back} onOpenProfile={openProfile} onOpenThread={openThread} onOpen={openShow} onOpenPost={openPost} />;
-  else if (nav.calendar) overlay = <CalendarScreen onClose={back} onOpen={openShow} onOpenArtist={openArtist} />;
+  else if (nav.calendar) overlay = <CalendarScreen initialDate={nav.calendarDate} initialView={nav.calendarView} onClose={back} onOpen={openShow} onOpenArtist={openArtist} />;
   else if (ENABLE_CLIPS && nav.clips) overlay = <ClipsScreen onClose={back} onOpenPost={openPost} onOpenProfile={openProfile} onOpenArtist={openArtist} onRequireAuth={() => go({ auth: true })} />;
   else if (nav.profileId) overlay = <ProfileScreen userId={nav.profileId} onClose={back} onOpenShow={openShow} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenVenue={openVenue} onManageProfile={openProfileManagement} onPreview={musicPreviewAction} onMessage={openThread} onReport={openReport} onEditPost={openPostEditor} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onRemoveMyPostTag={removePostTag} onOpenFollowList={openFollowList} onOpenBadges={openBadges} />;
   else if (nav.fanClub) overlay = <FanClubScreen artist={nav.fanClub} onClose={back} onOpenProfile={openProfile} onOpenProfileByHandle={openProfileByHandle} onReport={openReport} />;

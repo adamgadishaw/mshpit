@@ -289,6 +289,8 @@ const loadScopedFeed = (accountId) => {
 };
 const normalizeServerPost = (post) => ({
   ...post,
+  attendanceTicket: post?.attendanceTicket && typeof post.attendanceTicket === "object"
+    && !Array.isArray(post.attendanceTicket) ? post.attendanceTicket : null,
   campaign: normalizeArtistCampaign(post?.campaign),
   photos: Array.isArray(post?.photos) ? post.photos : [],
   media: Array.isArray(post?.media) ? post.media : [],
@@ -3144,6 +3146,9 @@ export function StoreProvider({ children }) {
       band: log.band == null ? log.band : clampRating(log.band),
       room: log.room == null ? log.room : clampRating(log.room),
       campaign: kind === "status" ? normalizeArtistCampaign(log.campaign) : null,
+      attendanceTicket: kind === "status" && log.attendanceTicket
+        && typeof log.attendanceTicket === "object" && !Array.isArray(log.attendanceTicket)
+        ? log.attendanceTicket : null,
       taggedPeople: normalizeTaggedPeople(log.taggedPeople),
       createdAt: Number(log.createdAt) > 0 ? Number(log.createdAt) : Date.now(),
       userId: session?.id,
@@ -3155,17 +3160,34 @@ export function StoreProvider({ children }) {
     // id so likes/comments on it key correctly. Best-effort (offline keeps local).
     if (session) {
       const body = kind === "status"
-        ? { clientMutationId: localId, kind: "status", review: safe.review, taggedUserIds: taggedUserIdsFromPeople(safe.taggedPeople), song: safe.song || null, photos: safe.photos || [], ...(Array.isArray(safe.mediaAssetIds) ? { mediaAssetIds: safe.mediaAssetIds } : {}), photosPublic: safe.photosPublic === false ? 0 : 1, ...(log.playlistId ? { playlistId: log.playlistId } : {}), campaign: safe.campaign }
+        ? safe.attendanceTicket
+          ? {
+            clientMutationId: localId,
+            kind: "status",
+            review: safe.review,
+            attendanceTicket: {
+              tourDateId: safe.attendanceTicket.tourDateId,
+              includeSeat: safe.attendanceTicket.includeSeat === true,
+              ...(safe.attendanceTicket.includeSeat === true ? {
+                section: safe.attendanceTicket.section || "",
+                row: safe.attendanceTicket.row || "",
+                seat: safe.attendanceTicket.seat || "",
+              } : {}),
+            },
+          }
+          : { clientMutationId: localId, kind: "status", review: safe.review, taggedUserIds: taggedUserIdsFromPeople(safe.taggedPeople), song: safe.song || null, photos: safe.photos || [], ...(Array.isArray(safe.mediaAssetIds) ? { mediaAssetIds: safe.mediaAssetIds } : {}), photosPublic: safe.photosPublic === false ? 0 : 1, ...(log.playlistId ? { playlistId: log.playlistId } : {}), campaign: safe.campaign }
         : buildReviewCreateBody(safe);
       return api("/api/posts", {
         method: "POST",
         context: kind === "status" ? "Posting your update" : "Posting your concert review",
         body,
-      })
+        })
         .then(({ id, post }) => {
           feedMutationRevisionRef.current += 1;
+          let canonicalPost = null;
           if (post) {
             const published = { ...normalizeServerPost(post), dims: post.dims || safe.dims };
+            canonicalPost = published;
             // The canonical row may already have arrived through feed polling
             // while the original POST response was lost. Collapse both IDs so
             // an idempotent retry cannot render the same post twice.
@@ -3177,7 +3199,10 @@ export function StoreProvider({ children }) {
             upsertProfileHistoryPost(session.id, session.id, published, { previousId: localId });
           }
           track("post", { kind: kind === "status" ? "status" : "review", mediaCount: Array.isArray(safe.photos) ? safe.photos.length : 0 });
-          return { ok: true, id: id || localId };
+          // Calendar focus is allowed only from the server projection. Older
+          // id-only responses keep their optimistic feed/history behavior but
+          // cannot make a client-authored artist/room/date look authoritative.
+          return { ok: true, id: id || localId, post: canonicalPost };
         })
         .catch((error) => {
           feedMutationRevisionRef.current += 1;
@@ -4026,7 +4051,16 @@ export function StoreProvider({ children }) {
     const actor = sessionRef.current;
     if (!actor || !log) return Promise.resolve({ ok: false });
     const key = concertKey(log);
-    const entry = { key, artist: log.artist, venue: log.venue, city: log.city, date: log.date };
+    const entry = {
+      key,
+      artist: log.artist,
+      artistKey: log.artistKey || null,
+      venue: log.venue,
+      venueKey: log.venueKey || null,
+      city: log.city,
+      date: log.date,
+      tour: log.tourName || log.tour || null,
+    };
     const scope = goingIntentKey(actor.id, key);
     const currentGoing = (goingRef.current[actor.id] || []).some((item) => item.key === key);
     if (!goingConfirmedRef.current.has(scope)) goingConfirmedRef.current.set(scope, currentGoing);
@@ -4060,7 +4094,15 @@ export function StoreProvider({ children }) {
         goingPendingRef.current = rest;
         setGoingPending(rest);
       }
-      return { ok: result.ok && typeof result.value?.going === "boolean", going: !!confirmed };
+      return {
+        ok: result.ok && typeof result.value?.going === "boolean",
+        going: !!confirmed,
+        showId: result.value?.showId || null,
+        state: result.value?.state || null,
+        visibility: result.value?.visibility || null,
+        attendance: result.value?.attendance || null,
+        show: result.value?.show || null,
+      };
     });
   };
 

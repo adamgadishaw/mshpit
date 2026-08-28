@@ -84,11 +84,11 @@ test("selected friends survive drafts and participate in dirty fingerprints", ()
   );
 });
 
-test("artist drop metadata survives status drafts without becoming fake post content", () => {
+test("featured post metadata survives status drafts without becoming fake post content", () => {
   const campaign = { version: 1, treatment: "after-dark", backgroundAssetId: "ma_abcdefgh12345678" };
   const draft = normalizeComposerDraft({ postType: "status", campaign, review: "New record at midnight." });
   assert.deepEqual(draft.campaign, campaign);
-  assert.equal(composerDraftTitle(normalizeComposerDraft({ postType: "status", campaign })), "Artist drop draft");
+  assert.equal(composerDraftTitle(normalizeComposerDraft({ postType: "status", campaign })), "Featured post draft");
   assert.equal(composerDraftHasContent({ postType: "status", campaign }), false, "styling alone cannot publish an empty post");
   assert.equal(normalizeComposerDraft({ postType: "show", campaign }).campaign, null);
   assert.notEqual(

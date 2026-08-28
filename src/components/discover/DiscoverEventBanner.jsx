@@ -151,7 +151,7 @@ export default function DiscoverEventBanner({
           )}
           <View pointerEvents="none" style={styles.scrim} />
           <View pointerEvents="none" style={styles.copy}>
-            <Text style={styles.kicker}>{current.phase === "active" ? "HAPPENING NOW" : current.endDate && current.endDate !== current.date ? "FEATURED MULTI-DAY EVENT" : "UPCOMING LIVE"}</Text>
+            <Text style={styles.kicker}>{current.phase === "active" ? "HAPPENING NOW" : current.endDate && current.endDate !== current.date ? "MULTI-DAY EVENT" : "UPCOMING EVENT"}</Text>
             <Text style={[styles.title, compact && styles.titleCompact]} numberOfLines={2}>{current.title}</Text>
             <Text style={styles.detail} numberOfLines={compact ? 2 : 1}>{detail}</Text>
             {media?.by && media.source === "fan" ? <Text style={styles.credit} numberOfLines={1}>{`Fan photo by ${media.by}`}</Text> : null}
@@ -191,8 +191,8 @@ export default function DiscoverEventBanner({
       </View>
 
       {safeSlides.length > 1 ? (
-        <View style={styles.controls} accessibilityLabel="Featured event controls">
-          <Pressable style={({ pressed, focused }) => [styles.control, pressed && styles.controlPressed, focused && focusRing]} onPress={() => move(-1)} accessibilityRole="button" accessibilityLabel="Previous featured event">
+        <View style={styles.controls} accessibilityLabel="Event slideshow controls">
+          <Pressable style={({ pressed, focused }) => [styles.control, pressed && styles.controlPressed, focused && focusRing]} onPress={() => move(-1)} accessibilityRole="button" accessibilityLabel="Previous event">
             <Icon name="chevron-left" size={18} color={colors.text} />
           </Pressable>
           <Pressable
@@ -201,14 +201,14 @@ export default function DiscoverEventBanner({
             disabled={reduceMotion}
             accessibilityRole="button"
             accessibilityState={{ disabled: reduceMotion }}
-            accessibilityLabel={reduceMotion ? "Auto-play disabled by Reduce Motion" : paused ? "Play featured event slideshow" : "Pause featured event slideshow"}
+            accessibilityLabel={reduceMotion ? "Auto-play disabled by Reduce Motion" : paused ? "Play event slideshow" : "Pause event slideshow"}
           >
             <Text style={styles.autoplayText}>{reduceMotion ? "AUTO-PLAY OFF" : paused ? "PLAY" : "PAUSE"}</Text>
           </Pressable>
           <View style={styles.counter} accessible accessibilityLabel={`Event ${index + 1} of ${safeSlides.length}`}>
             <Text style={styles.counterText}>{index + 1} / {safeSlides.length}</Text>
           </View>
-          <Pressable style={({ pressed, focused }) => [styles.control, pressed && styles.controlPressed, focused && focusRing]} onPress={() => move(1)} accessibilityRole="button" accessibilityLabel="Next featured event">
+          <Pressable style={({ pressed, focused }) => [styles.control, pressed && styles.controlPressed, focused && focusRing]} onPress={() => move(1)} accessibilityRole="button" accessibilityLabel="Next event">
             <Icon name="chevron-right" size={18} color={colors.text} />
           </Pressable>
         </View>

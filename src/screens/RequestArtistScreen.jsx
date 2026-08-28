@@ -42,7 +42,7 @@ export default function RequestArtistScreen({ onClose }) {
         {done ? (
           <View style={styles.doneBox}>
             <Icon name="check" size={28} color={colors.good} />
-            <Text style={styles.doneTxt} accessibilityLiveRegion="polite" role="status">Request saved for admin review. Your account is not verified until an admin approves it.</Text>
+            <Text style={styles.doneTxt} accessibilityLiveRegion="polite" role="status">Request sent for review. Your account is not verified until Mshpit approves it.</Text>
             <Pressable style={styles.primary} onPress={onClose} accessibilityRole="button">
               <Text style={styles.primaryTxt}>DONE</Text>
             </Pressable>
@@ -66,18 +66,18 @@ export default function RequestArtistScreen({ onClose }) {
               accessibilityLabel="Artist or band name"
               accessibilityState={{ disabled: busy }}
             />
-            <Text style={styles.label}>VERIFICATION NOTE</Text>
+            <Text style={styles.label}>HOW WE CAN VERIFY YOU</Text>
             <TextInput
               style={[styles.input, styles.multiline]}
               value={note}
               onChangeText={(value) => { setNote(value); setError(""); }}
-              placeholder="How can we verify you represent this artist? (socials, label, etc.)"
+              placeholder="Add an official website, social account, label, or manager contact we can check"
               placeholderTextColor={colors.textFaint}
               maxLength={500}
               multiline
               editable={!busy}
-              accessibilityLabel="Verification note"
-              accessibilityHint="Add official social, label, or management details that can verify your relationship to the artist"
+              accessibilityLabel="Artist verification details"
+              accessibilityHint="Add official contact or account details that show your relationship to the artist"
               accessibilityState={{ disabled: busy }}
             />
             {!!error && <Text style={styles.error} accessibilityRole="alert" accessibilityLiveRegion="assertive">{error}</Text>}
@@ -88,7 +88,7 @@ export default function RequestArtistScreen({ onClose }) {
               accessibilityRole="button"
               accessibilityState={{ disabled: !valid || busy, busy }}
             >
-              <Text style={styles.primaryTxt}>{busy ? "SUBMITTING..." : "SUBMIT CLAIM"}</Text>
+              <Text style={styles.primaryTxt}>{busy ? "SENDING..." : "SEND FOR REVIEW"}</Text>
             </Pressable>
           </>
         )}

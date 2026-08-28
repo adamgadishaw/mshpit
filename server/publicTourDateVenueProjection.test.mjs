@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { publicTourDateVenueFields } from "./publicTourDateVenueProjection.js";
+import {
+  publicTourDateVenueFields,
+  publicTourDateVenueName,
+} from "./publicTourDateVenueProjection.js";
 
 test("tour-date venue projection preserves provider namespace and structured location", () => {
   assert.deepEqual(publicTourDateVenueFields({
@@ -33,4 +36,17 @@ test("an unnamespaced venue id fails closed while safe location fields remain", 
     venueCountryCode: "GB",
     venueCountry: null,
   });
+});
+
+test("place and city can never be promoted into the venue label", () => {
+  assert.equal(publicTourDateVenueName({
+    venue: null,
+    place: "Toronto, Ontario, Canada",
+    venue_city: "Toronto",
+  }), null);
+  assert.equal(publicTourDateVenueName({
+    venue: "  History Toronto  ",
+    place: "Toronto, Ontario, Canada",
+    venue_city: "Toronto",
+  }), "History Toronto");
 });

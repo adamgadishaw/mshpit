@@ -26,8 +26,8 @@ export function profileManagementAction(session) {
     icon: destination === "artistHub" ? "music" : "edit",
     title: "Manage profile",
     detail: destination === "artistHub"
-      ? "Public artist profile, page updates, and live dates"
-      : "Photo, bio, music, and personal details",
+      ? "Artist page, posts, and upcoming shows"
+      : "Profile photo, bio, favorite music, and personal details",
   };
 }
 
@@ -71,14 +71,14 @@ export function artistWorkspaceModel({ session, summary = {}, profile = {}, post
   const feedEnabled = profile.feedEnabled === true || summary.feedEnabled === true;
 
   const completion = [
-    completionItem("avatar", "Add an artist portrait", "Make the profile recognizable everywhere in Pit.", hasAvatar, "edit"),
-    completionItem("banner", "Dress the marquee", "Use a wide live shot, campaign image, or current era artwork.", hasBanner, "edit"),
-    completionItem("bio", "Tell the current story", "Give fans at least a few lines about this era of the artist.", bio.length >= 40, "edit"),
-    completionItem("catalog", "Connect the music", "A matched catalog lets fans move from discovery to listening.", topTracks.length > 0, "preview"),
-    completionItem("show", "Put a show on the board", "Upcoming performances make the page useful right now.", upcoming.length > 0, "tour"),
-    completionItem("tickets", "Add an official ticket path", "Turn show interest into a real next step without invented links.", hasTicket, "tour"),
-    completionItem("feed", "Show page updates", "Give short announcements a verified home on the public artist profile.", feedEnabled, "edit"),
-    completionItem("update", "Publish the first page update", "Share release news, a live clip, a ticket alert, or a studio note.", updates.length > 0, "post"),
+    completionItem("avatar", "Add a profile photo", "Help fans recognize the artist across Mshpit.", hasAvatar, "edit"),
+    completionItem("banner", "Add a page banner", "Use a wide live photo, current artwork, or promotion image.", hasBanner, "edit"),
+    completionItem("bio", "Write a bio", "Tell fans what the artist is doing now.", bio.length >= 40, "edit"),
+    completionItem("catalog", "Add music", "Connect songs so fans can listen from the artist page.", topTracks.length > 0, "preview"),
+    completionItem("show", "Add an upcoming show", "Give fans a show they can plan for.", upcoming.length > 0, "tour"),
+    completionItem("tickets", "Add a ticket link", "Link fans to an official ticket page.", hasTicket, "tour"),
+    completionItem("feed", "Show artist posts", "Let fans see short posts on the artist page.", feedEnabled, "edit"),
+    completionItem("update", "Publish the first artist post", "Share release news, a live clip, a ticket alert, or a studio update.", updates.length > 0, "post"),
   ];
   const completeCount = completion.filter((item) => item.complete).length;
   const score = Math.round((completeCount / completion.length) * 100);

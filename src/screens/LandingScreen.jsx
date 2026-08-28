@@ -482,7 +482,7 @@ export default function LandingScreen({ onLogin, onSignup, onBrowse, onSuggestio
             />
           </View>
 
-          <View style={[styles.proofRail, compact && styles.proofRailCompact]} accessibilityLabel="Mshpit catalogue and rating features">
+          <View style={[styles.proofRail, compact && styles.proofRailCompact]} accessibilityLabel="Mshpit artist, venue, and rating features">
             {proofItems.map((item, index) => (
               <View
                 key={item.key}
