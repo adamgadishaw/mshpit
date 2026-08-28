@@ -1838,6 +1838,18 @@ db.exec("CREATE INDEX IF NOT EXISTS idx_tourdates_artist_visibility ON tour_date
 db.exec(`CREATE INDEX IF NOT EXISTS idx_tourdates_structured_city_date
   ON tour_dates(venue_country_code, venue_city, release_at, date, provider_active, id)
   WHERE venue_country_code IS NOT NULL AND venue_city IS NOT NULL`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_tourdates_range_country_code_city_date
+  ON tour_dates(venue_country_code COLLATE NOCASE, venue_city COLLATE NOCASE, date, id)
+  WHERE venue_country_code IS NOT NULL AND venue_city IS NOT NULL`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_tourdates_range_country_city_date
+  ON tour_dates(venue_country COLLATE NOCASE, venue_city COLLATE NOCASE, date, id)
+  WHERE venue_country IS NOT NULL AND venue_city IS NOT NULL`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_tourdates_range_country_code_date
+  ON tour_dates(venue_country_code COLLATE NOCASE, date, id)
+  WHERE venue_country_code IS NOT NULL`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_tourdates_range_country_date
+  ON tour_dates(venue_country COLLATE NOCASE, date, id)
+  WHERE venue_country IS NOT NULL`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_tourdates_provider_identity
   ON tour_dates(source, provider_event_id)
   WHERE owner_id IS NULL AND provider_event_id IS NOT NULL`);

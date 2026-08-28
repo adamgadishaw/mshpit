@@ -146,13 +146,30 @@ function popularLounges({ limit = 6, at = Date.now() } = {}) {
 // from the signed-in account on the server, so a stale browser cache cannot rank
 // the wrong city. When a city has no dates, results widen to nearby/region/global
 // instead of presenting three blank cards.
-export function discoverySidebar(viewer, { artistLimit = 8, eventLimit = 8, venueLimit = 8, loungeLimit = 6, at = Date.now() } = {}) {
+export function discoverySidebar(viewer, {
+  artistLimit = 8,
+  eventLimit = 8,
+  venueLimit = 8,
+  loungeLimit = 6,
+  through = null,
+  city = null,
+  countryCode = null,
+  country = null,
+  at = Date.now(),
+} = {}) {
   const timestamp = Number.isFinite(Number(at)) ? Number(at) : Date.now();
   const today = liveEventQueryFloorDate(timestamp);
   // Visibility is enforced inside the service before ranking or aggregation.
   // Callers cannot inject a preselected row set and accidentally disclose an
   // unreleased, blocked, or restricted owner's date through venue metadata.
-  const rows = visibleTourDateRows(viewer, { today, at: timestamp }).filter((row) =>
+  const rows = visibleTourDateRows(viewer, {
+    today,
+    through,
+    city,
+    countryCode,
+    country,
+    at: timestamp,
+  }).filter((row) =>
     isCurrentOrUpcomingLiveEvent({
       date: row.date,
       eventEndDate: row.event_end_date,

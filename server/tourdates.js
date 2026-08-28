@@ -296,7 +296,7 @@ export function ticketmasterRows(data, { requestedArtist = null } = {}) {
 }
 
 const TICKETMASTER_CITY_PAGE_SIZE = 200;
-const TICKETMASTER_CITY_COVERAGE_DAYS = 30;
+const TICKETMASTER_CITY_COVERAGE_DAYS = 90;
 const TICKETMASTER_CITY_MAX_PAGES = 5;
 
 function ticketmasterCoverageDate(startEndDateTime, coverageDays) {
@@ -315,17 +315,19 @@ function ticketmasterResponseExhausted(data, requestedPage, pageSize) {
   return ticketmasterResponseEvents(data).length < pageSize;
 }
 
-// Dense cities can fill Ticketmaster's first 200 chronological results before
-// day 30. Continue through a small, provider-safe page budget until the response
-// proves that the first 30 days are covered. The original multi-year range is
-// kept intact; this only prevents page zero from becoming an accidental horizon.
+// Dense cities and countries can fill Ticketmaster's first 200 chronological
+// results before day 90. Continue through a small, provider-safe page budget
+// until the response proves that the first 90 days are covered. The original
+// multi-year range is kept intact; this only prevents page zero from becoming
+// an accidental horizon.
 //
 // A later-page failure returns the already verified rows with `complete:false`.
 // The caller persists that useful partial work but records a provider failure,
 // which prevents a partial scan from authorizing source-wide stale cleanup.
-export async function collectTicketmasterCityPages({
+export async function collectTicketmasterRangePages({
   apiKey,
   city,
+  countryCode,
   startEndDateTime = ticketmasterActiveAndFutureRange(),
   fetchJson = getJSON,
   wait = sleep,
@@ -334,7 +336,7 @@ export async function collectTicketmasterCityPages({
   coverageDays = TICKETMASTER_CITY_COVERAGE_DAYS,
   maxPages = TICKETMASTER_CITY_MAX_PAGES,
 } = {}) {
-  if (!apiKey || !city) {
+  if (!apiKey || (!city && !countryCode)) {
     return { rows: [], complete: true, coverageReached: false, pagesFetched: 0 };
   }
   const safePageSize = boundedInteger(pageSize, TICKETMASTER_CITY_PAGE_SIZE, { min: 1, max: 200 });
@@ -356,6 +358,7 @@ export async function collectTicketmasterCityPages({
       data = await fetchJson(ticketmasterEventSearchUrl({
         apiKey,
         city,
+        countryCode,
         size: safePageSize,
         page,
         startEndDateTime,
@@ -379,7 +382,7 @@ export async function collectTicketmasterCityPages({
     }
     // Only a row that passed the music/event/venue qualification proves useful
     // catalogue coverage. A filtered sports event or malformed provider row at
-    // day 30 must not end the city scan before later music pages are checked.
+    // day 90 must not end the market scan before later music pages are checked.
     if (pageRows.some((row) => row.date >= targetDate)) coverageReached = true;
     const exhausted = ticketmasterResponseExhausted(data, page, safePageSize);
     if (coverageReached || exhausted) {
@@ -393,7 +396,7 @@ export async function collectTicketmasterCityPages({
   }
 
   // The provider's deep-page ceiling was reached before its chronological
-  // result set demonstrated 30-day coverage. Keep the rows, but fail closed for
+  // result set demonstrated 90-day coverage. Keep the rows, but fail closed for
   // stale reconciliation rather than pretending this was a complete scan.
   return {
     rows: [...rowsById.values()],
@@ -401,6 +404,14 @@ export async function collectTicketmasterCityPages({
     coverageReached,
     pagesFetched,
   };
+}
+
+export function collectTicketmasterCityPages(options = {}) {
+  return collectTicketmasterRangePages(options);
+}
+
+export function collectTicketmasterCountryPages(options = {}) {
+  return collectTicketmasterRangePages(options);
 }
 
 async function tmDates(name) {
@@ -428,8 +439,7 @@ async function tmCityDates(city) {
 // several scheduled runs, and the cursor survives restarts on the same disk.
 async function tmCountryDates(countryCode) {
   if (!KEY || !countryCode) return [];
-  const data = await getJSON(ticketmasterEventSearchUrl({ apiKey: KEY, countryCode, size: 200, startEndDateTime: ticketmasterActiveAndFutureRange() }));
-  return ticketmasterRows(data);
+  return collectTicketmasterCountryPages({ apiKey: KEY, countryCode });
 }
 
 export function bandsintownRows(data, { requestedArtist = null } = {}) {

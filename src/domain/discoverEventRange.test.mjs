@@ -1,0 +1,91 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import {
+  discoverySidebarRangeRequestPath,
+  mergeDiscoverRangePages,
+  parseTourDateRangeResponse,
+  selectDiscoverRangeEvents,
+  tourDateRangeRequestPath,
+} from "./discoverEventRange.mjs";
+
+const NOW = Date.UTC(2026, 7, 28, 12);
+
+test("Discover range keeps day 30 and excludes day 31", () => {
+  const rows = [
+    { id: "day-30", date: "2026-09-27", releaseAt: 0 },
+    { id: "day-31", date: "2026-09-28", releaseAt: 0 },
+  ];
+  assert.deepEqual(selectDiscoverRangeEvents(rows, { days: 30, now: NOW }).map(({ id }) => id), ["day-30"]);
+});
+
+test("Discover range extends predictably to 60 and 90 days", () => {
+  const rows = [
+    { id: "day-60", date: "2026-10-27", releaseAt: 0 },
+    { id: "day-61", date: "2026-10-28", releaseAt: 0 },
+    { id: "day-90", date: "2026-11-26", releaseAt: 0 },
+  ];
+  assert.deepEqual(selectDiscoverRangeEvents(rows, { days: 60, now: NOW }).map(({ id }) => id), ["day-60"]);
+  assert.deepEqual(selectDiscoverRangeEvents(rows, { days: 90, now: NOW }).map(({ id }) => id), ["day-60", "day-61", "day-90"]);
+});
+
+test("Discover range preserves active multi-day events and removes ended events", () => {
+  const rows = [
+    { id: "ended", date: "2026-08-20", eventEndDate: "2026-08-27", releaseAt: 0 },
+    { id: "active", date: "2026-08-20", eventEndDate: "2026-09-02", releaseAt: 0 },
+    { id: "future", date: "2026-08-29", releaseAt: 0 },
+  ];
+  assert.deepEqual(selectDiscoverRangeEvents(rows, { now: NOW }).map(({ id }) => id), ["active", "future"]);
+});
+
+test("Discover range parses legacy and paged server responses defensively", () => {
+  const first = parseTourDateRangeResponse({
+    tourDates: [{ id: "one" }],
+    nextCursor: "next cursor",
+    range: { through: "2026-11-26" },
+  });
+  const second = parseTourDateRangeResponse({ items: [{ id: "two" }, { id: "one" }], nextCursor: null });
+  assert.deepEqual(first, { tourDates: [{ id: "one" }], nextCursor: "next cursor", through: "2026-11-26" });
+  assert.deepEqual(second, { tourDates: [{ id: "two" }, { id: "one" }], nextCursor: null, through: null });
+  assert.deepEqual(
+    parseTourDateRangeResponse([{ id: "legacy" }]),
+    { tourDates: [{ id: "legacy" }], nextCursor: null, through: null },
+  );
+  assert.equal(parseTourDateRangeResponse({ range: { through: "2026-02-30" } }).through, null);
+  assert.equal(parseTourDateRangeResponse({ range: { through: "2026-11-26-extra" } }).through, null);
+  assert.deepEqual(mergeDiscoverRangePages(first.tourDates, second.tourDates).map(({ id }) => id), ["one", "two"]);
+  const path = tourDateRangeRequestPath({ days: 90, limit: 250, after: "next cursor/+", city: "Toronto", country: "Canada" });
+  assert.match(path, /^\/api\/tourdates\?days=90&limit=250&after=next\+cursor%2F%2B&country=CA$/);
+  assert.doesNotMatch(path, /[?&]city=/);
+  const fullCountryPath = tourDateRangeRequestPath({ days: 60, country: "Italy" });
+  assert.match(fullCountryPath, /[?&]country=Italy(?:&|$)/);
+  assert.doesNotMatch(tourDateRangeRequestPath({ days: 90, country: "Worldwide" }), /[?&]country=/);
+  assert.equal(
+    discoverySidebarRangeRequestPath({ days: 90, city: "Toronto", country: "Canada" }),
+    "/api/discovery/sidebar?days=90&limit=500",
+  );
+  assert.deepEqual(
+    parseTourDateRangeResponse({ upcomingEvents: [{ id: "nearby" }] }),
+    { tourDates: [{ id: "nearby" }], nextCursor: null, through: null },
+  );
+});
+
+test("Discover range uses a UTC calendar boundary on every device", () => {
+  const lateUtc = Date.UTC(2026, 7, 28, 23, 30);
+  const rows = [
+    { id: "utc-day-30", date: "2026-09-27", releaseAt: 0 },
+    { id: "utc-day-31", date: "2026-09-28", releaseAt: 0 },
+  ];
+  assert.deepEqual(selectDiscoverRangeEvents(rows, { days: 30, now: lateUtc }).map(({ id }) => id), ["utc-day-30"]);
+});
+
+test("Discover range honors a valid server-authoritative through date", () => {
+  const rows = [
+    { id: "inside-server-range", date: "2026-09-05", releaseAt: 0 },
+    { id: "outside-server-range", date: "2026-09-06", releaseAt: 0 },
+  ];
+  assert.deepEqual(
+    selectDiscoverRangeEvents(rows, { days: 90, through: "2026-09-05", now: NOW }).map(({ id }) => id),
+    ["inside-server-range"],
+  );
+});

@@ -155,6 +155,7 @@ import {
   liveEventQueryFloorDate,
   liveEventTimeZone,
 } from "../src/domain/eventLifecycle.mjs";
+import { calendarDateKey } from "../src/domain/dataPolicy.mjs";
 import { safeOwnedReadyMediaUrl } from "./publicMedia.js";
 import { normalizeArtistCampaign } from "../src/domain/artistCampaignPost.mjs";
 import { normalizeTaggedUserIds } from "../src/domain/postFriendTags.mjs";
@@ -563,7 +564,131 @@ function canManageArtistProfile(user, key, profile) {
 const TOUR_DATE_BATCH_LIMIT = 50;
 const TOUR_DATE_PLACE_LIMIT = 180;
 const TOUR_DATE_RELEASE_HORIZON_MS = 3 * 366 * 24 * 60 * 60 * 1000;
+const TOUR_DATE_RANGE_DEFAULT_DAYS = 90;
+const TOUR_DATE_RANGE_MAX_DAYS = 90;
+const TOUR_DATE_RANGE_DEFAULT_LIMIT = 250;
+const TOUR_DATE_RANGE_MAX_LIMIT = 500;
+const TOUR_DATE_RANGE_SCAN_BATCH = 500;
+const TOUR_DATE_RANGE_MAX_RAW_SCAN = 5000;
+const TOUR_DATE_RANGE_QUERY_KEYS = Object.freeze(["days", "limit", "after", "city", "country"]);
 const SPECIAL_EVENT_KINDS = new Set(["festival", "fair", "rodeo", "multi_day"]);
+
+function encodeTourDateCursor(row) {
+  return Buffer.from(JSON.stringify([row.date, row.id]), "utf8").toString("base64url");
+}
+
+function decodeTourDateCursor(value) {
+  if (!value) return null;
+  try {
+    if (typeof value !== "string" || value.length > 1000) throw new Error();
+    const [rawDate, id] = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+    const date = clean(rawDate, { max: 40 });
+    const cursorId = clean(id, { max: 180 });
+    if (!date || date !== rawDate || calendarDateKey(date) == null
+      || !cursorId || cursorId !== id) throw new Error();
+    return { date, id: cursorId };
+  } catch {
+    throw new ApiError(400, "That concert page link is invalid. Refresh and try again.", "VALIDATION_FAILED");
+  }
+}
+
+function tourDateRangeRequest(ctx, at) {
+  const query = ctx.query || {};
+  const enabled = TOUR_DATE_RANGE_QUERY_KEYS.some((key) => Object.prototype.hasOwnProperty.call(query, key));
+  if (!enabled) return null;
+
+  const requestedDays = query.days == null || query.days === ""
+    ? TOUR_DATE_RANGE_DEFAULT_DAYS : Number(query.days);
+  if (!Number.isSafeInteger(requestedDays) || requestedDays <= 0) {
+    throw new ApiError(400, "Choose a concert range between 1 and 90 days.", "VALIDATION_FAILED");
+  }
+  const days = Math.min(requestedDays, TOUR_DATE_RANGE_MAX_DAYS);
+
+  const requestedLimit = query.limit == null || query.limit === ""
+    ? TOUR_DATE_RANGE_DEFAULT_LIMIT : Number(query.limit);
+  if (!Number.isSafeInteger(requestedLimit) || requestedLimit <= 0) {
+    throw new ApiError(400, "Choose a valid number of concerts to load.", "VALIDATION_FAILED");
+  }
+  const limit = Math.min(requestedLimit, TOUR_DATE_RANGE_MAX_LIMIT);
+  const city = clean(query.city, { max: 120 }) || null;
+  const requestedCountry = clean(query.country, { max: 80 }) || null;
+  const countryCode = requestedCountry && /^[A-Za-z]{2}$/.test(requestedCountry)
+    ? requestedCountry.toUpperCase() : null;
+  const country = countryCode ? null : requestedCountry;
+  const timestamp = Number.isFinite(Number(at)) ? Number(at) : Date.now();
+  const start = new Date(timestamp);
+  const startDay = Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate());
+  const through = new Date(startDay + days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  return {
+    days,
+    limit,
+    through,
+    city,
+    countryCode,
+    country,
+    countryLabel: requestedCountry,
+    after: decodeTourDateCursor(query.after),
+  };
+}
+
+function tourDateRangePage(viewer, range, timestamp) {
+  const visible = [];
+  let cursor = range.after;
+  let lastScanned = null;
+  let scanned = 0;
+  let exhausted = false;
+
+  // The SQL lifecycle predicate deliberately includes one prior UTC day so a
+  // negative-offset event is not dropped before its local day ends. Apply the
+  // timezone-aware predicate while filling the requested page, rather than
+  // limiting raw candidates first and returning a short or empty page.
+  while (visible.length <= range.limit && scanned < TOUR_DATE_RANGE_MAX_RAW_SCAN) {
+    const batchLimit = Math.min(TOUR_DATE_RANGE_SCAN_BATCH, TOUR_DATE_RANGE_MAX_RAW_SCAN - scanned);
+    const candidates = visibleTourDateRows(viewer, {
+      today: liveEventQueryFloorDate(timestamp),
+      at: timestamp,
+      through: range.through,
+      city: range.city,
+      countryCode: range.countryCode,
+      country: range.country,
+      after: cursor,
+      limit: batchLimit,
+    });
+    if (!candidates.length) {
+      exhausted = true;
+      break;
+    }
+
+    scanned += candidates.length;
+    const tail = candidates.at(-1);
+    lastScanned = { date: tail.date, id: tail.id };
+    for (const row of candidates) {
+      if (isCurrentOrUpcomingLiveEvent({
+        date: row.date,
+        eventEndDate: row.event_end_date,
+        eventTimezone: row.event_timezone,
+      }, timestamp)) visible.push(row);
+      if (visible.length > range.limit) break;
+    }
+
+    if (visible.length > range.limit) break;
+    if (candidates.length < batchLimit) {
+      exhausted = true;
+      break;
+    }
+    cursor = lastScanned;
+  }
+
+  const rows = visible.slice(0, range.limit);
+  if (visible.length > range.limit && rows.length) {
+    return { rows, nextCursor: encodeTourDateCursor(rows.at(-1)) };
+  }
+  // A pathological prior-day backlog can consume the bounded scan budget. In
+  // that case advance past every inspected row (all eligible rows were already
+  // returned) so the next request makes progress without losing unseen data.
+  const nextCursor = !exhausted && lastScanned ? encodeTourDateCursor(lastScanned) : null;
+  return { rows, nextCursor };
+}
 
 function tourDateJson(row) {
   let billedArtists = [];
@@ -4529,16 +4654,43 @@ export const routes = {
   },
 
   // ---- authoritative tour dates (provider imports + artist/admin batches) ----
-  "GET /api/discovery/sidebar": (ctx) => discoverySidebar(ctx.user),
+  "GET /api/discovery/sidebar": (ctx) => {
+    const timestamp = now();
+    const range = tourDateRangeRequest(ctx, timestamp);
+    if (!range) return discoverySidebar(ctx.user, { at: timestamp });
+    return discoverySidebar(ctx.user, {
+      at: timestamp,
+      eventLimit: range.limit,
+      through: range.through,
+      city: range.city,
+      countryCode: range.countryCode,
+      country: range.country,
+    });
+  },
 
   "GET /api/tourdates": (ctx) => {
     // The legacy client snapshot is upcoming-only. Historical truth now lives
     // in the artist archive; letting expired provider rows consume this bounded
     // 5,000-row window would hide current worldwide dates as coverage grows.
     const timestamp = now();
+    const range = tourDateRangeRequest(ctx, timestamp);
+    if (range) {
+      const result = tourDateRangePage(ctx.user, range, timestamp);
+      return {
+        tourDates: result.rows.map(tourDateJson),
+        nextCursor: result.nextCursor,
+        range: {
+          days: range.days,
+          through: range.through,
+          city: range.city,
+          country: range.countryLabel,
+        },
+      };
+    }
     const rows = visibleTourDateRows(ctx.user, {
       today: liveEventQueryFloorDate(timestamp),
       at: timestamp,
+      limit: 5000,
     }).filter((row) => isCurrentOrUpcomingLiveEvent({
       date: row.date,
       eventEndDate: row.event_end_date,

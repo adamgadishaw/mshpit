@@ -80,6 +80,7 @@ import {
 } from "./domain/venuePhotos.mjs";
 import { canonicalVenueKey, resolveVenueCatalogKey } from "./domain/venueIdentity.mjs";
 import { fetchVenuePhotos } from "./features/venuePhotos/venuePhotoApi.mjs";
+import { fetchDiscoverTourDateRange } from "./features/discovery/tourDateRangeApi.mjs";
 import { venueCatalogPhotoFields } from "./domain/venuePhotoProvenance.mjs";
 import {
   mediaReactionsForAccountTransition,
@@ -1317,6 +1318,17 @@ export function StoreProvider({ children }) {
     tourDatesRef.current = next;
     setTourDates(next);
     return next;
+  };
+
+  // This opt-in read stays screen-local: it never replaces the canonical
+  // snapshot that the rest of the app uses for first paint.
+  const loadDiscoverTourDateRange = async ({ days, limit, after, country, local = false, signal } = {}) => {
+    const parsed = await fetchDiscoverTourDateRange({ days, limit, after, country, local, signal });
+    return {
+      tourDates: sanitizeTourDates(parsed.tourDates, ENABLE_DEMO_DATA),
+      nextCursor: parsed.nextCursor,
+      through: parsed.through,
+    };
   };
 
   // Re-read at every authenticated scope boundary so an owner's scheduled
@@ -5946,6 +5958,7 @@ export function StoreProvider({ children }) {
     saveQueueAsPlaylist, friendsListening, loadFriendsListening, loadFriendsListeningStrict, userPlaylists,
     favoriteGenre, genreOfArtist, recommendTracks, autoplayQueue, searchSongsApi, myPlaylists: scopedMyPlaylists, myPlaylistsAccountId, myPlaylistsStatus: scopedMyPlaylistsStatus, loadMyPlaylists, loadPlaylist, createPlaylist, addToPlaylist, updatePlaylist, deletePlaylist,
     drafts: draftsForAccount(drafts, session?.id), saveDraft, deleteDraft,
+    loadDiscoverTourDateRange,
     visibleFeed, followingFeed, loadMoreFeed, feedHasMore, feedLoadingMore, loadClips, notInterested, undoNotInterested, refreshTourDates, visibleTourDates, artistSummary, venueSummary,
     localVenues, regionShows, localFeed, recommendedShows, venueCoord, locationCenter,
     searchVenues, venuesByCity, venueUpcomingCount,

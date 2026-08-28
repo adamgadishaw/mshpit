@@ -10,7 +10,12 @@ import { tourDateHasNoPublishedMemorialSql } from "./artistMemorialTourDateVisib
 export function visibleTourDateRowsFrom(database, viewer, {
   id = null,
   today = null,
+  through = null,
   artist = null,
+  city = null,
+  countryCode = null,
+  country = null,
+  after = null,
   limit: rowLimit = 5000,
   at = Date.now(),
 } = {}) {
@@ -27,9 +32,32 @@ export function visibleTourDateRowsFrom(database, viewer, {
     filters.push(tourDateHasNoPublishedMemorialSql("td"));
     prefix.push(today);
   }
+  if (through) {
+    // The upper bound applies to event start dates. A currently active
+    // multi-day event starts before it and remains eligible through today.
+    filters.push("td.date<=?");
+    prefix.push(through);
+  }
   if (artist) {
     filters.push("LOWER(td.artist)=LOWER(?)");
     prefix.push(artist);
+  }
+  if (city) {
+    // Range browsing uses canonical provider location columns only. Free-form
+    // place text is not authoritative enough for location filtering.
+    filters.push("td.venue_city=? COLLATE NOCASE");
+    prefix.push(city);
+  }
+  if (countryCode) {
+    filters.push("td.venue_country_code=? COLLATE NOCASE");
+    prefix.push(countryCode);
+  } else if (country) {
+    filters.push("td.venue_country=? COLLATE NOCASE");
+    prefix.push(country);
+  }
+  if (after?.date && after?.id) {
+    filters.push("(td.date>? OR (td.date=? AND td.id>?))");
+    prefix.push(after.date, after.date, after.id);
   }
   const filterSql = filters.length ? `${filters.join(" AND ")} AND ` : "";
   if (viewer?.role === "admin" && accountIsPublic(viewer, at)) {

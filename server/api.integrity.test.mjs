@@ -3039,6 +3039,161 @@ test("tour-date batches are owner-authorized, atomic, canonical, and release-gat
     .run(artist.id, admin.id, "provider_release_compat", "provider_shared_release", "provider_unsafe_ticket");
 });
 
+test("tour-date range browsing is bounded, cursor-paged, canonical-location scoped, and privacy safe", () => {
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const dateAt = (days) => new Date(Date.now() + days * DAY_MS).toISOString().slice(0, 10);
+  const hiddenOwner = addUser("u_range_hidden", "range-hidden@example.com", "rangehidden");
+  const ids = [
+    "range_api_active", "range_api_ca_10", "range_api_ca_20", "range_api_ca_30",
+    "range_api_us_5", "range_api_ca_100", "range_api_hidden",
+  ];
+  const insert = db.prepare(`INSERT INTO tour_dates (
+    id,artist,venue,place,date,ticket_url,sold_out,source,updated_at,owner_id,release_at,
+    venue_city,venue_region,venue_country_code,venue_country,music_qualified,provider_active,
+    event_kind,event_end_date,event_timezone
+  ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+  const add = ({ id, days, countryCode = "CA", country = "Canada", ownerId = null,
+    releaseAt = 0, eventKind = "concert", eventEndDate = null }) => insert.run(
+    id, `Artist ${id}`, "Range Hall", `Rangeville, Ontario, ${country}`, dateAt(days), "", 0,
+    ownerId ? "artist-submitted" : "ticketmaster", Date.now(), ownerId, releaseAt,
+    "Rangeville", "Ontario", countryCode, country, 1, 1, eventKind, eventEndDate, "America/Toronto",
+  );
+  const rangeIndexes = db.prepare(`
+    SELECT name FROM sqlite_master
+    WHERE type='index' AND name IN (
+      'idx_tourdates_range_country_code_city_date',
+      'idx_tourdates_range_country_city_date',
+      'idx_tourdates_range_country_code_date',
+      'idx_tourdates_range_country_date'
+    )
+    ORDER BY name
+  `).all().map((row) => row.name);
+  assert.deepEqual(rangeIndexes, [
+    "idx_tourdates_range_country_city_date",
+    "idx_tourdates_range_country_code_city_date",
+    "idx_tourdates_range_country_code_date",
+    "idx_tourdates_range_country_date",
+  ], "bounded location/date browsing keeps its covering indexes");
+  const countryCodePlan = db.prepare(`EXPLAIN QUERY PLAN
+    SELECT id FROM tour_dates
+    WHERE venue_country_code=? COLLATE NOCASE AND date>=?
+    ORDER BY date,id LIMIT ?`).all("CA", dateAt(0), 20);
+  assert.match(countryCodePlan.map((row) => row.detail).join(" "),
+    /idx_tourdates_range_country_code_date/,
+    "country-only range browsing uses the country-code/date cursor index");
+  const countryNamePlan = db.prepare(`EXPLAIN QUERY PLAN
+    SELECT id FROM tour_dates
+    WHERE venue_country=? COLLATE NOCASE AND date>=?
+    ORDER BY date,id LIMIT ?`).all("Canada", dateAt(0), 20);
+  assert.match(countryNamePlan.map((row) => row.detail).join(" "),
+    /idx_tourdates_range_country_date/,
+    "country-only range browsing uses the country-name/date cursor index");
+
+  try {
+    add({ id: ids[0], days: -3, eventKind: "fair", eventEndDate: dateAt(2) });
+    add({ id: ids[1], days: 10 });
+    add({ id: ids[2], days: 20 });
+    add({ id: ids[3], days: 30 });
+    add({ id: ids[4], days: 5, countryCode: "US", country: "United States" });
+    add({ id: ids[5], days: 100 });
+    add({ id: ids[6], days: 15, ownerId: hiddenOwner.id, releaseAt: Date.now() + DAY_MS });
+
+    const route = routes["GET /api/tourdates"];
+    assert.deepEqual(Object.keys(route({})), ["tourDates"],
+      "the no-query response shape remains backward compatible");
+
+    const first = route({ query: { days: "90", limit: "2", city: "Rangeville", country: "Canada" } });
+    assert.deepEqual(first.tourDates.map((row) => row.id), [ids[0], ids[1]],
+      "a currently active multi-day event stays pinned inside the range");
+    assert.ok(first.nextCursor);
+    assert.deepEqual(first.range, {
+      days: 90,
+      through: dateAt(90),
+      city: "Rangeville",
+      country: "Canada",
+    });
+
+    const second = route({ query: {
+      days: "90", limit: "2", city: "Rangeville", country: "Canada", after: first.nextCursor,
+    } });
+    assert.deepEqual(second.tourDates.map((row) => row.id), [ids[2], ids[3]]);
+    assert.equal(second.nextCursor, null);
+    assert.equal([...first.tourDates, ...second.tourDates].some((row) => row.id === ids[4]), false,
+      "a different canonical country cannot crowd into the page");
+    assert.equal([...first.tourDates, ...second.tourDates].some((row) => row.id === ids[5]), false,
+      "events beyond the requested 90-day window stay out");
+    assert.equal([...first.tourDates, ...second.tourDates].some((row) => row.id === ids[6]), false,
+      "an unreleased artist-owned date remains private");
+
+    const byCode = route({ query: { days: "90", limit: "20", city: "Rangeville", country: "CA" } });
+    assert.deepEqual(byCode.tourDates.map((row) => row.id), [ids[0], ids[1], ids[2], ids[3]],
+      "two-letter codes use the canonical provider country code");
+
+    const sidebar = routes["GET /api/discovery/sidebar"]({
+      query: { days: "90", limit: "2", city: "Rangeville", country: "CA" },
+    });
+    assert.deepEqual(sidebar.upcomingEvents.map((row) => row.id), [ids[0], ids[1]],
+      "the opt-in sidebar range uses the same bounded canonical location filter");
+
+    const clamped = route({ query: { days: "999", limit: "999", city: "Rangeville", country: "CA" } });
+    assert.equal(clamped.range.days, 90);
+    assert.throws(() => route({ query: {
+      days: "90", limit: "20", city: "Rangeville", country: "CA", after: "not-a-cursor",
+    } }), (error) => error.status === 400 && error.code === "VALIDATION_FAILED");
+    assert.throws(() => route({ query: {
+      days: "90", limit: "20", city: "Rangeville", country: "CA", after: "a".repeat(1001),
+    } }), (error) => error.status === 400 && error.code === "VALIDATION_FAILED");
+  } finally {
+    db.prepare(`DELETE FROM tour_dates WHERE id IN (${ids.map(() => "?").join(",")})`).run(...ids);
+    db.prepare("DELETE FROM users WHERE id=?").run(hiddenOwner.id);
+  }
+});
+
+test("tour-date range pagination fills pages after the timezone safety overlap", () => {
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const dateAt = (days) => new Date(Date.now() + days * DAY_MS).toISOString().slice(0, 10);
+  const insert = db.prepare(`INSERT INTO tour_dates (
+    id,artist,venue,place,date,ticket_url,sold_out,source,updated_at,release_at,
+    venue_city,venue_region,venue_country_code,venue_country,music_qualified,provider_active,
+    event_kind,event_timezone
+  ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+  const expiredIds = Array.from({ length: 520 }, (_, index) => `range_scan_expired_${String(index).padStart(3, "0")}`);
+  const futureIds = Array.from({ length: 45 }, (_, index) => `range_scan_future_${String(index).padStart(3, "0")}`);
+  const add = (id, date) => insert.run(
+    id, `Artist ${id}`, "Paging Hall", "Paging City, Testland", date, "", 0,
+    "ticketmaster", Date.now(), 0, "Paging City", "Test Region", "ZZ", "Testland",
+    1, 1, "concert", "UTC",
+  );
+
+  try {
+    db.exec("BEGIN");
+    for (const id of expiredIds) add(id, dateAt(-1));
+    for (const id of futureIds) add(id, dateAt(1));
+    db.exec("COMMIT");
+
+    const route = routes["GET /api/tourdates"];
+    const first = route({ query: { days: "30", limit: "2", city: "Paging City", country: "ZZ" } });
+    assert.deepEqual(first.tourDates.map((row) => row.id), futureIds.slice(0, 2),
+      "completed rows admitted by the one-day SQL overlap cannot consume the visible page limit");
+    assert.ok(first.nextCursor);
+    const second = route({ query: {
+      days: "30", limit: "2", city: "Paging City", country: "ZZ", after: first.nextCursor,
+    } });
+    assert.deepEqual(second.tourDates.map((row) => row.id), futureIds.slice(2, 4),
+      "the visible-row cursor continues without gaps or duplicate concerts");
+
+    const sidebar = routes["GET /api/discovery/sidebar"]({
+      query: { days: "30", limit: "45", city: "Paging City", country: "ZZ" },
+    });
+    assert.equal(sidebar.upcomingEvents.length, 45,
+      "the opt-in range sidebar is not truncated by the legacy eight-card default or old 40-row cap");
+  } finally {
+    try { db.exec("ROLLBACK"); }
+    catch { /* test cleanup: the committed fixture has no active transaction */ }
+    db.prepare("DELETE FROM tour_dates WHERE id LIKE 'range_scan_expired_%' OR id LIKE 'range_scan_future_%'").run();
+  }
+});
+
 test("verified special-event batches are admin-only, evidence-backed, and fully projected", () => {
   const artistSeed = addUser("u_special_artist", "special-artist@example.com", "specialartist");
   const adminSeed = addUser("u_special_admin", "special-admin@example.com", "specialadmin");

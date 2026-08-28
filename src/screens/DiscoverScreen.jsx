@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View, useWindowDimensions } from "react-native";
-import { colors, displayFont, font, mono, radius, shadow } from "../theme";
+import { colors, displayFont, focusRing, font, mono, radius, shadow } from "../theme";
 import { useStore } from "../store";
 import { countryForCity } from "../geo";
 import Icon from "../components/Icon";
@@ -38,6 +38,14 @@ import {
   upcomingEventsForScope,
 } from "../domain/liveDiscovery.mjs";
 import {
+  DISCOVER_RANGE_BATCH,
+  DISCOVER_RANGE_DAYS,
+  DISCOVER_RANGE_MAX_EVENTS,
+  DISCOVER_RANGE_REQUEST_LIMIT,
+  mergeDiscoverRangePages,
+  selectDiscoverRangeEvents,
+} from "../domain/discoverEventRange.mjs";
+import {
   cancelDiscoverRequest,
   compactDiscoverNumber,
   discoverSectionState,
@@ -52,6 +60,7 @@ import {
 } from "../domain/discoverView.mjs";
 
 const EMPTY_OVERVIEW = normalizeDiscoverOverview({});
+const EMPTY_EVENT_RANGE = Object.freeze({ scopeKey: "", days: null, through: null, rows: [], nextCursor: null, status: "idle" });
 
 function useLatestCallback(callback) {
   const callbackRef = useRef(callback);
@@ -78,6 +87,7 @@ export default function DiscoverScreen({
     blockedIds,
     loadDiscoverOverview,
     loadDiscoverGenre,
+    loadDiscoverTourDateRange,
     discoverStats,
     discoverySidebar,
     discoverySidebarStatus,
@@ -100,6 +110,7 @@ export default function DiscoverScreen({
   const liveScope = discoverAreaIsLocal(resolvedArea)
     ? LIVE_EVENT_SCOPE.LOCAL
     : LIVE_EVENT_SCOPE.WORLDWIDE;
+  const rangeScopeKey = `${liveScope}|${region}|${homeCity}|${homeCountry || ""}`;
   const [query, setQuery] = useState("");
   const [overview, setOverview] = useState(EMPTY_OVERVIEW);
   const [overviewStatus, setOverviewStatus] = useState("idle");
@@ -110,12 +121,17 @@ export default function DiscoverScreen({
     ? genreResult.rows
     : [];
   const [genreStatus, setGenreStatus] = useState("idle");
+  const [eventRange, setEventRange] = useState(EMPTY_EVENT_RANGE);
+  const [visibleEventCount, setVisibleEventCount] = useState(DISCOVER_RANGE_BATCH);
   const overviewLoaderRef = useRef(loadDiscoverOverview);
   overviewLoaderRef.current = loadDiscoverOverview;
   const genreLoaderRef = useRef(loadDiscoverGenre);
   genreLoaderRef.current = loadDiscoverGenre;
+  const rangeLoaderRef = useRef(loadDiscoverTourDateRange);
+  rangeLoaderRef.current = loadDiscoverTourDateRange;
   const overviewRequestRef = useRef({ sequence: 0, controller: null });
   const genreRequestRef = useRef({ sequence: 0, controller: null });
+  const rangeRequestRef = useRef({ sequence: 0, controller: null });
   const openArtist = useLatestCallback(onOpenArtist);
   const openPhotos = useLatestCallback(onOpenPhotos);
 
@@ -149,26 +165,58 @@ export default function DiscoverScreen({
     () => localDiscoveryEvents(discoverySidebar?.upcomingEvents, { limit: 12 }),
     [discoverySidebar?.upcomingEvents],
   );
+  const initialRangeEvents = useMemo(() => selectDiscoverRangeEvents(
+    liveScope === LIVE_EVENT_SCOPE.LOCAL ? localEvents : sceneProjection.events,
+    {
+      days: DISCOVER_RANGE_DAYS[0],
+      region: liveScope === LIVE_EVENT_SCOPE.LOCAL ? "Worldwide" : region,
+      countryForCity,
+    },
+  ), [liveScope, localEvents, region, sceneProjection.events]);
   const liveEvents = useMemo(() => upcomingEventsForScope({
-    scope: liveScope,
-    localEvents,
-    worldwideEvents: sceneProjection.events,
+    scope: LIVE_EVENT_SCOPE.WORLDWIDE,
+    worldwideEvents: initialRangeEvents,
     limit: 4,
-  }), [liveScope, localEvents, sceneProjection.events]);
-  const eventArtwork = useMemo(() => liveEvents.flatMap((event) => event?.eventImage ? [{
+  }), [initialRangeEvents]);
+  const rangeMatchesScene = eventRange.scopeKey === rangeScopeKey
+    && (eventRange.status === "ready" || eventRange.rows.length > 0);
+  const rangeEvents = useMemo(() => {
+    if (!rangeMatchesScene) return [];
+    const scopedRows = liveScope === LIVE_EVENT_SCOPE.LOCAL
+      ? localDiscoveryEvents(eventRange.rows, { limit: DISCOVER_RANGE_MAX_EVENTS })
+      : eventRange.rows;
+    return selectDiscoverRangeEvents(scopedRows, {
+      days: eventRange.days,
+      through: eventRange.through,
+      region: liveScope === LIVE_EVENT_SCOPE.LOCAL ? "Worldwide" : region,
+      countryForCity,
+    });
+  }, [eventRange.days, eventRange.rows, eventRange.through, liveScope, rangeMatchesScene, region]);
+  const visibleLiveEvents = useMemo(() => rangeMatchesScene ? upcomingEventsForScope({
+    scope: LIVE_EVENT_SCOPE.WORLDWIDE,
+    worldwideEvents: rangeEvents,
+    limit: visibleEventCount,
+  }) : liveEvents, [liveEvents, rangeEvents, rangeMatchesScene, visibleEventCount]);
+  const selectedRangeDays = eventRange.scopeKey === rangeScopeKey && eventRange.days
+    ? eventRange.days
+    : DISCOVER_RANGE_DAYS[0];
+  const rangeHasMore = !rangeMatchesScene
+    || rangeEvents.length > visibleEventCount
+    || (!!eventRange.nextCursor && eventRange.rows.length < DISCOVER_RANGE_MAX_EVENTS);
+  const eventArtwork = useMemo(() => visibleLiveEvents.flatMap((event) => event?.eventImage ? [{
     ...event.eventImage,
     eventId: event.id,
     source: "provider",
     provider: "ticketmaster",
     by: event.eventImage.attribution,
-  }] : []), [liveEvents]);
+  }] : []), [visibleLiveEvents]);
   const eventBannerMedia = useMemo(() => [...photoUris, ...eventArtwork], [eventArtwork, photoUris]);
   const eventBannerSlides = useMemo(() => buildDiscoverEventBannerSlides({
-    events: liveEvents,
+    events: visibleLiveEvents,
     media: eventBannerMedia,
     blockedIds,
     limit: 4,
-  }), [blockedIds, eventBannerMedia, liveEvents]);
+  }), [blockedIds, eventBannerMedia, visibleLiveEvents]);
   const homeSceneSelected = discoverCountryIdentity(region) === discoverCountryIdentity(homeCountry);
   const venueRows = sceneProjection.venues.length
     ? sceneProjection.venues.slice(0, 3)
@@ -232,6 +280,75 @@ export default function DiscoverScreen({
       });
     return controller;
   }, [region, selectedGenre]);
+
+  const requestEventRange = useCallback((days, { after = null, append = false } = {}) => {
+    rangeRequestRef.current.controller?.abort();
+    const controller = new AbortController();
+    const sequence = rangeRequestRef.current.sequence + 1;
+    rangeRequestRef.current = { sequence, controller };
+    setEventRange((current) => ({
+      scopeKey: rangeScopeKey,
+      days,
+      through: append && current.scopeKey === rangeScopeKey && current.days === days ? current.through : null,
+      rows: append && current.scopeKey === rangeScopeKey && current.days === days ? current.rows : [],
+      nextCursor: append && current.scopeKey === rangeScopeKey && current.days === days ? current.nextCursor : null,
+      status: "loading",
+    }));
+    const worldwideIdentity = discoverCountryIdentity("Worldwide");
+    const local = liveScope === LIVE_EVENT_SCOPE.LOCAL;
+    const requestCountry = local || discoverCountryIdentity(region) === worldwideIdentity ? undefined : region;
+    rangeLoaderRef.current({
+      days,
+      limit: DISCOVER_RANGE_REQUEST_LIMIT,
+      after,
+      country: requestCountry,
+      local,
+      signal: controller.signal,
+    }).then(({ tourDates: rows, nextCursor, through }) => {
+      if (controller.signal.aborted || rangeRequestRef.current.sequence !== sequence) return;
+      setEventRange((current) => ({
+        scopeKey: rangeScopeKey,
+        days,
+        through,
+        rows: append && current.scopeKey === rangeScopeKey && current.days === days
+          ? mergeDiscoverRangePages(current.rows, rows)
+          : mergeDiscoverRangePages([], rows),
+        nextCursor,
+        status: "ready",
+      }));
+    }).catch(() => {
+      if (!controller.signal.aborted && rangeRequestRef.current.sequence === sequence) {
+        setEventRange((current) => ({ ...current, scopeKey: rangeScopeKey, days, status: "error" }));
+      }
+    });
+  }, [liveScope, rangeScopeKey, region]);
+
+  const selectEventRange = useCallback((days) => {
+    setVisibleEventCount(DISCOVER_RANGE_BATCH);
+    requestEventRange(days);
+  }, [requestEventRange]);
+
+  const loadMoreEvents = useCallback(() => {
+    if (eventRange.status === "loading") return;
+    const nextVisibleCount = visibleEventCount + DISCOVER_RANGE_BATCH;
+    setVisibleEventCount(nextVisibleCount);
+    if (!rangeMatchesScene) {
+      requestEventRange(selectedRangeDays);
+      return;
+    }
+    if (rangeEvents.length < nextVisibleCount && eventRange.nextCursor
+      && eventRange.rows.length < DISCOVER_RANGE_MAX_EVENTS) {
+      requestEventRange(eventRange.days, { after: eventRange.nextCursor, append: true });
+    }
+  }, [eventRange.days, eventRange.nextCursor, eventRange.rows.length, eventRange.status, rangeEvents.length, rangeMatchesScene, requestEventRange, selectedRangeDays, visibleEventCount]);
+
+  useEffect(() => {
+    setVisibleEventCount(DISCOVER_RANGE_BATCH);
+    return () => {
+      rangeRequestRef.current.controller?.abort();
+      rangeRequestRef.current.sequence += 1;
+    };
+  }, [rangeScopeKey]);
 
   useEffect(() => {
     requestOverview();
@@ -385,6 +502,43 @@ export default function DiscoverScreen({
               compact={compact}
               onChange={pickLiveScope}
             />
+            <View style={styles.rangeControl}>
+              <Text style={styles.rangeLabel}>HOW FAR AHEAD?</Text>
+              <Text style={styles.rangeHint}>Choose how far ahead to plan. We'll keep your current events here while we find more.</Text>
+              <View style={styles.rangeOptions} accessibilityRole="radiogroup" accessibilityLabel="Choose how far ahead to look for events">
+                {DISCOVER_RANGE_DAYS.map((days) => {
+                  const selected = selectedRangeDays === days;
+                  return (
+                    <Pressable
+                      key={days}
+                      style={({ focused, pressed }) => [
+                        styles.rangeOption,
+                        selected && styles.rangeOptionSelected,
+                        pressed && styles.cardPressed,
+                        focused && focusRing,
+                      ]}
+                      onPress={() => selectEventRange(days)}
+                      accessibilityRole="radio"
+                      accessibilityState={{ selected }}
+                      accessibilityLabel={`Show events over the next ${days} days`}
+                    >
+                      <Text style={[styles.rangeOptionText, selected && styles.rangeOptionTextSelected]}>{days} days</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+              {eventRange.scopeKey === rangeScopeKey && eventRange.status === "loading" && !rangeMatchesScene ? (
+                <View style={styles.rangeStatus} accessibilityLiveRegion="polite">
+                  <ActivityIndicator size="small" color={colors.amber} />
+                  <Text style={styles.rangeStatusText}>Finding more upcoming events...</Text>
+                </View>
+              ) : null}
+              {eventRange.scopeKey === rangeScopeKey && eventRange.status === "error" ? (
+                <Pressable style={({ focused, pressed }) => [styles.rangeRetry, pressed && styles.cardPressed, focused && focusRing]} onPress={() => selectEventRange(eventRange.days || selectedRangeDays)} accessibilityRole="button" accessibilityLabel="Try loading this event range again">
+                  <Text style={styles.rangeRetryText}>Couldn't load more dates. Try again.</Text>
+                </Pressable>
+              ) : null}
+            </View>
           </View>
           <DiscoverEventBanner
             key={`events:${liveScope}:${discoverCountryIdentity(region)}`}
@@ -393,7 +547,7 @@ export default function DiscoverScreen({
             active
             onOpenEvent={onOpen}
           />
-          {liveEvents.length === 0 ? (
+          {visibleLiveEvents.length === 0 ? (
             <View style={styles.liveEmpty} accessibilityLiveRegion="polite">
               <Icon name={liveScope === LIVE_EVENT_SCOPE.WORLDWIDE ? "globe" : "pin"} size={19} color={colors.textFaint} />
               <Text style={styles.liveEmptyText}>
@@ -406,7 +560,7 @@ export default function DiscoverScreen({
             </View>
           ) : (
             <View style={styles.liveRows}>
-              {liveEvents.map((event) => (
+              {visibleLiveEvents.map((event) => (
                 <PublicPressableLink
                   key={event.id || `${liveEventTitle(event)}|${event.venue}|${event.date}`}
                   href={eventPath(event)}
@@ -419,6 +573,24 @@ export default function DiscoverScreen({
               ))}
             </View>
           )}
+          {rangeMatchesScene && eventRange.status === "ready" ? (
+            <Text style={styles.rangeSummary} accessibilityLiveRegion="polite">
+              {"Showing " + visibleLiveEvents.length + " event" + (visibleLiveEvents.length === 1 ? "" : "s") + " over the next " + selectedRangeDays + " days."}
+            </Text>
+          ) : null}
+          {rangeHasMore ? (
+            <Pressable
+              style={({ focused, pressed }) => [styles.loadMoreEvents, pressed && styles.cardPressed, focused && focusRing, eventRange.status === "loading" && styles.loadMoreEventsDisabled]}
+              onPress={loadMoreEvents}
+              disabled={eventRange.status === "loading"}
+              accessibilityRole="button"
+              accessibilityState={{ disabled: eventRange.status === "loading" }}
+              accessibilityLabel={`Load ${DISCOVER_RANGE_BATCH} more upcoming events`}
+            >
+              {eventRange.status === "loading" ? <ActivityIndicator size="small" color={colors.amber} /> : null}
+              <Text style={styles.loadMoreEventsText}>{eventRange.status === "loading" ? "Finding more events..." : `Load ${DISCOVER_RANGE_BATCH} more events`}</Text>
+            </Pressable>
+          ) : null}
         </View>
       </View>
 
@@ -604,8 +776,24 @@ const styles = StyleSheet.create({
   loungePanel: { width: "100%", gap: 10, padding: 14, borderRadius: radius.lg, borderCurve: "continuous", borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.bgElev, ...shadow.card },
   livePanelHead: { gap: 10 },
   livePanelHeadCompact: { alignItems: "stretch" },
+  rangeControl: { gap: 7, paddingTop: 2 },
+  rangeLabel: { color: colors.textFaint, fontFamily: mono, fontSize: 9.5, fontWeight: "900", letterSpacing: 1.2 },
+  rangeHint: { color: colors.textDim, fontFamily: font, fontSize: 12, lineHeight: 17 },
+  rangeOptions: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  rangeOption: { minHeight: 44, minWidth: 78, alignItems: "center", justifyContent: "center", paddingHorizontal: 12, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
+  rangeOptionSelected: { borderColor: colors.amber, backgroundColor: `${colors.amber}16` },
+  rangeOptionText: { color: colors.textDim, fontFamily: font, fontSize: 12, fontWeight: "900" },
+  rangeOptionTextSelected: { color: colors.amber },
+  rangeStatus: { minHeight: 30, flexDirection: "row", alignItems: "center", gap: 7 },
+  rangeStatusText: { color: colors.textDim, fontFamily: font, fontSize: 12 },
+  rangeRetry: { minHeight: 44, justifyContent: "center" },
+  rangeRetryText: { color: colors.danger, fontFamily: font, fontSize: 12, fontWeight: "900" },
+  rangeSummary: { color: colors.textFaint, fontFamily: font, fontSize: 11, lineHeight: 16, textAlign: "center" },
   liveRows: { gap: 8 },
   liveLink: { borderRadius: radius.md },
+  loadMoreEvents: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, borderRadius: radius.md, borderWidth: 1, borderColor: `${colors.amber}66`, backgroundColor: `${colors.amber}0F` },
+  loadMoreEventsDisabled: { opacity: 0.72 },
+  loadMoreEventsText: { color: colors.amber, fontFamily: font, fontSize: 12, fontWeight: "900" },
   liveEmpty: { minHeight: 82, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 9, padding: 14, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface },
   liveEmptyText: { flex: 1, color: colors.textDim, fontFamily: font, fontSize: 12, lineHeight: 17 },
   cardPressed: { opacity: 0.82, transform: [{ scale: 0.99 }] },

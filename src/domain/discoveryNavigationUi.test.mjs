@@ -33,7 +33,8 @@ test("Discover leads with upcoming events, then Near you, then Venues, while ret
   assert.equal((source.match(/title="Near you"/g) || []).length, 1, "Near you should not be duplicated in the shortcut grid");
   assert.equal((source.match(/title="Find venues"/g) || []).length, 0, "Venues already owns a full section");
   assert.match(source, /const sceneProjection = useMemo\(\(\) => projectDiscoverScene\(tourDates, \{[\s\S]*region,[\s\S]*eventLimit: 12,[\s\S]*venueLimit: 8,[\s\S]*countryForCity,[\s\S]*\}\), \[region, tourDates\]\)/);
-  assert.match(source, /worldwideEvents: sceneProjection\.events/);
+  assert.match(source, /const initialRangeEvents = useMemo\(\(\) => selectDiscoverRangeEvents\([\s\S]*localEvents : sceneProjection\.events/);
+  assert.match(source, /worldwideEvents: initialRangeEvents/);
   assert.match(source, /const \[areaChoice, setAreaChoice\] = useState\(\(\) => defaultDiscoverAreaChoice\(areaContext\)\)/);
   assert.match(source, /selectDiscoverCountryArea/);
   assert.match(source, /selectDiscoverScopeArea/);

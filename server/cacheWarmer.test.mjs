@@ -20,6 +20,7 @@ const {
   bandsintownRows,
   collectNamedTourProviderResults,
   collectTicketmasterCityPages,
+  collectTicketmasterCountryPages,
   collectTourProviderResults,
   DEFAULT_TICKETMASTER_COUNTRIES,
   hasSuccessfulTourProviderWork,
@@ -202,20 +203,20 @@ test("Ticketmaster search URLs propagate pages without crossing the deep-page bo
     "existing one-page callers do not gain a query parameter unless they opt in");
 });
 
-test("dense city pagination includes page-two events beyond day 30 and deduplicates overlaps", async () => {
+test("dense city pagination includes page-two events beyond day 90 and deduplicates overlaps", async () => {
   const requests = [];
   const waits = [];
   const pages = [
     ticketmasterPage(0, 3, [
       ticketmasterPageEvent("duplicate", "2026-08-20"),
       {
-        ...ticketmasterPageEvent("filtered-late", "2026-09-10"),
+        ...ticketmasterPageEvent("filtered-late", "2026-11-10"),
         classifications: [{ segment: { name: "Sports" } }],
       },
     ]),
     ticketmasterPage(1, 3, [
       ticketmasterPageEvent("duplicate", "2026-08-20"),
-      ticketmasterPageEvent("after-day-30", "2026-09-01"),
+      ticketmasterPageEvent("after-day-90", "2026-11-01"),
     ]),
   ];
   const result = await collectTicketmasterCityPages({
@@ -244,8 +245,43 @@ test("dense city pagination includes page-two events beyond day 30 and deduplica
   assert.equal(result.pagesFetched, 2);
   assert.deepEqual(result.rows.map((row) => row.provider_event_id), [
     "duplicate",
-    "after-day-30",
+    "after-day-90",
   ], "a later raw event that fails music qualification cannot end pagination early");
+});
+
+test("country ingestion pages until it proves 90-day coverage", async () => {
+  const requests = [];
+  const waits = [];
+  const pages = [
+    ticketmasterPage(0, 3, [ticketmasterPageEvent("country-near", "2026-08-20")]),
+    ticketmasterPage(1, 3, [ticketmasterPageEvent("country-day-90", "2026-11-01")]),
+  ];
+  const result = await collectTicketmasterCountryPages({
+    apiKey: "test-key",
+    countryCode: "jp",
+    startEndDateTime: ["2026-08-01T00:00:00Z", "2029-08-01T00:00:00Z"],
+    fetchJson: async (value) => {
+      const url = new URL(value);
+      requests.push({
+        page: Number(url.searchParams.get("page")),
+        countryCode: url.searchParams.get("countryCode"),
+        city: url.searchParams.get("city"),
+      });
+      return pages[Number(url.searchParams.get("page"))];
+    },
+    wait: async (delay) => { waits.push(delay); },
+    requestDelayMs: 550,
+  });
+
+  assert.deepEqual(requests, [
+    { page: 0, countryCode: "JP", city: null },
+    { page: 1, countryCode: "JP", city: null },
+  ]);
+  assert.deepEqual(waits, [550]);
+  assert.equal(result.complete, true);
+  assert.equal(result.coverageReached, true);
+  assert.equal(result.pagesFetched, 2);
+  assert.deepEqual(result.rows.map((row) => row.provider_event_id), ["country-near", "country-day-90"]);
 });
 
 test("dense city pagination stops at Ticketmaster's five-page budget", async () => {
@@ -267,7 +303,7 @@ test("dense city pagination stops at Ticketmaster's five-page budget", async () 
 
   assert.deepEqual(requests, [0, 1, 2, 3, 4]);
   assert.equal(result.complete, false,
-    "hitting the request cap without 30-day coverage must not claim a complete scan");
+    "hitting the request cap without 90-day coverage must not claim a complete scan");
   assert.equal(result.coverageReached, false);
   assert.equal(result.pagesFetched, 5);
   assert.equal(result.rows.filter((row) => row.provider_event_id === "shared").length, 1);

@@ -295,6 +295,10 @@ test("legacy posts, attendance, tour-date, and campaign tables gain safe additiv
     DROP INDEX idx_tourdates_owner_show;
     DROP INDEX idx_tourdates_artist_visibility;
     DROP INDEX idx_tourdates_structured_city_date;
+    DROP INDEX idx_tourdates_range_country_code_city_date;
+    DROP INDEX idx_tourdates_range_country_city_date;
+    DROP INDEX idx_tourdates_range_country_code_date;
+    DROP INDEX idx_tourdates_range_country_date;
     DROP INDEX idx_tourdates_visibility;
     DROP INDEX idx_tourdates_sitemap_cursor;
     DROP INDEX idx_tourdates_owner;
@@ -379,6 +383,10 @@ test("legacy posts, attendance, tour-date, and campaign tables gain safe additiv
   );
   assert.ok(tourIndexes.has("idx_tourdates_artist_visibility"));
   assert.ok(tourIndexes.has("idx_tourdates_structured_city_date"));
+  assert.ok(tourIndexes.has("idx_tourdates_range_country_code_city_date"));
+  assert.ok(tourIndexes.has("idx_tourdates_range_country_city_date"));
+  assert.ok(tourIndexes.has("idx_tourdates_range_country_code_date"));
+  assert.ok(tourIndexes.has("idx_tourdates_range_country_date"));
   assert.ok(tourIndexes.has("idx_tourdates_sitemap_cursor"));
   const legacyCampaign = upgraded.emailStmts.campaignById.get("legacy_tested_campaign");
   assert.equal(legacyCampaign.content_revision, 1);
