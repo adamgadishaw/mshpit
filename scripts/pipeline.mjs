@@ -26,9 +26,12 @@ import { readFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { needsLicensedVenuePhotoAcross } from "./lib/venue-photo-record.mjs";
+import { verifiedVenuePhotoBackfillConfigured } from "./lib/venue-photo-enrichment.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CAT = join(HERE, "..", "src", "seed", "catalog.generated.json");
+const VERIFIED_VENUE_PHOTOS = join(HERE, "..", "src", "seed", "catalog.venue-photos.verified.json");
 const ARTIST_TARGET = Number(process.env.ARTIST_TARGET) || 10000;
 const PER_TAG = Number(process.env.PER_TAG) || 400; // deep-crawl depth per genre tag (paginated) so the roster can climb toward ARTIST_TARGET
 const CYCLE_H = Number(process.env.CYCLE_H) || 6;
@@ -61,8 +64,11 @@ function run(script, args = [], env = {}) {
 
 async function stats() {
   const cat = JSON.parse(await readFile(CAT, "utf8"));
+  const verifiedVenuePhotos = JSON.parse(
+    await readFile(VERIFIED_VENUE_PHOTOS, "utf8").catch(() => "{}"),
+  );
   const artists = Object.values(cat.artists || {});
-  const venues = Object.values(cat.venues || {});
+  const venues = Object.entries(cat.venues || {});
   const { arenaVenues } = await import("../src/seed/arenas.js");
   return {
     artistCount: artists.length,
@@ -70,16 +76,18 @@ async function stats() {
     missingPopularity: artists.filter((a) => a.popularity == null).length, // Deezer fills this (Spotify strips it now)
     missingArt: artists.filter((a) => !(a.albums || []).some((x) => x.art)).length,
     missingTracks: artists.filter((a) => !(a.topTracks || []).length).length,
-    blankVenues: venues.filter((v) => !(v.galleryPool || []).length && !v.photo).length,
+    missingVenuePhotos: venues.filter(([key, venue]) =>
+      needsLicensedVenuePhotoAcross(venue, verifiedVenuePhotos[key])).length,
     missingAnchors: Object.keys(arenaVenues).filter((k) => !cat.venues?.[k]).length,
   };
 }
 
 async function cycle(n) {
   const s = await stats();
-  log(`cycle ${n} — artists ${s.artistCount}/${ARTIST_TARGET} · missing: spotify ${s.missingSpotify}, covers ${s.missingArt}, tracks ${s.missingTracks} · blank venues ${s.blankVenues} · unsynced anchors ${s.missingAnchors}`);
+  log(`cycle ${n} — artists ${s.artistCount}/${ARTIST_TARGET} · missing: spotify ${s.missingSpotify}, covers ${s.missingArt}, tracks ${s.missingTracks} · venues without licensed photos ${s.missingVenuePhotos} · unsynced anchors ${s.missingAnchors}`);
 
   let did = false;
+  let venuePhotosSkipped = false;
   if (!stopping && s.artistCount < ARTIST_TARGET) {
     log("stage: roster growth");
     await run("ingest-artists.mjs", [], { PER_TAG: String(PER_TAG), ARTIST_TARGET: String(ARTIST_TARGET) });
@@ -115,10 +123,15 @@ async function cycle(n) {
     await run("enrich-toptracks.mjs");
     did = true;
   }
-  if (!stopping && s2.blankVenues > 0) {
-    log(`stage: venue photos (${s2.blankVenues} venues)`);
-    await run("enrich-venue-photos.mjs");
-    did = true;
+  if (!stopping && s2.missingVenuePhotos > 0) {
+    if (verifiedVenuePhotoBackfillConfigured(process.env)) {
+      log(`stage: licensed venue photos (${s2.missingVenuePhotos} venues)`);
+      await run("enrich-venue-photos.mjs");
+      did = true;
+    } else {
+      venuePhotosSkipped = true;
+      log(`stage skipped: ${s2.missingVenuePhotos} venues still need licensed photos, but public media storage is not configured. Configure controlled storage before running the resumable Commons backfill.`);
+    }
   }
   // Tour dates from the official Ticketmaster Discovery API. Runs only when a key
   // is set; polls the top artists by popularity each cycle so newly-announced
@@ -128,7 +141,11 @@ async function cycle(n) {
     await run("enrich-tourdates.mjs");
     did = true;
   }
-  if (!did) log("nothing to do — catalog is complete and fresh (no writes, no reloads). Set TICKETMASTER_KEY to also pull tour dates.");
+  if (!did) {
+    log(venuePhotosSkipped
+      ? "no runnable enrichment stages — venue-photo coverage remains incomplete; the pipeline will retry after configuration changes."
+      : "nothing to do — catalog is complete and fresh (no writes, no reloads). Set TICKETMASTER_KEY to also pull tour dates.");
+  }
   return did;
 }
 

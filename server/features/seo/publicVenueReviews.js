@@ -67,6 +67,7 @@ function boundedLimit(value) {
 }
 
 function publicPhotos(database, row, verificationCache) {
+  if (!row.photos_public) return [];
   const photos = [];
   const seen = new Set();
   for (const candidate of parsedPhotoCandidates(row.photos)) {
@@ -107,7 +108,7 @@ function projectedReview(row, { text, photos, rating }) {
 export function createPublicVenueReviewService(database) {
   if (!database?.prepare) throw new TypeError("Public venue reviews require a database");
 
-  const rowsForVenue = database.prepare(`SELECT r.id,r.user_id,r.rating,r.text,r.photos,r.created_at,
+  const rowsForVenue = database.prepare(`SELECT r.id,r.user_id,r.rating,r.text,r.photos,r.photos_public,r.created_at,
       u.name,u.handle
     FROM venue_reviews r
     JOIN users u ON u.id=r.user_id

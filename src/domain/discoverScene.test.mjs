@@ -1,0 +1,103 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import {
+  discoverCountryIdentity,
+  discoverRowMatchesRegion,
+  discoverVenueIdentity,
+  filterDiscoverSceneRows,
+  projectDiscoverScene,
+} from "./discoverScene.mjs";
+
+const NOW = Date.UTC(2026, 7, 28, 12);
+
+test("Discover scene country matching handles provider codes, names, and city-only community rows", () => {
+  assert.equal(discoverCountryIdentity("USA"), "united states");
+  assert.equal(discoverRowMatchesRegion({ place: "Toronto, Ontario, Canada" }, "Canada"), true);
+  assert.equal(discoverRowMatchesRegion({ venueCountryCode: "US" }, "United States"), true);
+  assert.equal(discoverRowMatchesRegion({ place: "Dublin, Ireland" }, "Canada"), false);
+  assert.equal(discoverRowMatchesRegion({ place: "Toronto, Ontario" }, "Canada", {
+    countryForCity: (city) => city === "Toronto" ? "Canada" : null,
+  }), true);
+  assert.deepEqual(filterDiscoverSceneRows([
+    { id: "toronto", city: "Toronto" },
+    { id: "chicago", city: "Chicago" },
+    { id: "unknown", city: "Atlantis" },
+  ], {
+    region: "Canada",
+    countryForCity: (city) => ({ Toronto: "Canada", Chicago: "United States" })[city],
+  }).map((row) => row.id), ["toronto"]);
+});
+
+test("scene projection changes upcoming events and venues together without leaking another country", () => {
+  const rows = [
+    { id: "ca-2", artist: "Two", venue: "History", place: "Toronto, Ontario, Canada", date: "2026-09-03", releaseAt: 0 },
+    { id: "us-1", artist: "US", venue: "Metro", place: "Chicago, Illinois, United States of America", date: "2026-09-01", releaseAt: 0 },
+    { id: "ca-1", artist: "One", venue: "History", place: "Toronto, Ontario, CA", date: "2026-09-02", releaseAt: 0 },
+    { id: "hidden", artist: "Later", venue: "Future Hall", place: "Toronto, Ontario, Canada", date: "2026-09-01", releaseAt: NOW + 1 },
+    { id: "past", artist: "Past", venue: "Old Hall", place: "Toronto, Ontario, Canada", date: "2026-08-01", releaseAt: 0 },
+  ];
+  const canada = projectDiscoverScene(rows, { region: "Canada", now: NOW, eventLimit: 4, venueLimit: 3 });
+  assert.deepEqual(canada.events.map((row) => row.id), ["ca-1", "ca-2"]);
+  assert.equal(canada.eventCount, 2);
+  assert.deepEqual(canada.venues, [{
+    identity: "place:history:toronto:canada",
+    name: "History",
+    place: "Toronto, Ontario, Canada",
+    source: null,
+    providerVenueId: null,
+    venueCity: null,
+    venueRegion: null,
+    venueCountryCode: null,
+    venueCountry: null,
+    upcoming: 2,
+    nextDate: "2026-09-02",
+  }]);
+  assert.equal(canada.venueCount, 1);
+
+  const unitedStates = projectDiscoverScene(rows, { region: "United States", now: NOW });
+  assert.deepEqual(unitedStates.events.map((row) => row.id), ["us-1"]);
+  assert.deepEqual(unitedStates.venues.map((row) => row.name), ["Metro"]);
+});
+
+test("venue projection keeps same-named rooms separate by provider identity and structured country", () => {
+  const canada = {
+    id: "ca",
+    venue: "The Hall",
+    place: "London, Ontario, Canada",
+    date: "2026-09-01",
+    source: "ticketmaster",
+    providerVenueId: "ca-hall",
+    venueCity: "London",
+    venueCountryCode: "CA",
+  };
+  const britain = {
+    id: "gb",
+    venue: "The Hall",
+    place: "London, England, United Kingdom",
+    date: "2026-09-02",
+    source: "ticketmaster",
+    providerVenueId: "gb-hall",
+    venueCity: "London",
+    venueCountryCode: "GB",
+  };
+  assert.equal(discoverVenueIdentity(canada), "provider:ticketmaster:ca-hall");
+  assert.equal(discoverVenueIdentity(britain), "provider:ticketmaster:gb-hall");
+  const result = projectDiscoverScene([canada, britain], { region: "Worldwide", now: NOW });
+  assert.equal(result.venueCount, 2);
+  assert.deepEqual(result.venues.map((venue) => venue.providerVenueId), ["ca-hall", "gb-hall"]);
+});
+
+test("scene projection keeps active multi-day events pinned and bounds rendered work", () => {
+  const rows = [
+    { id: "future-b", venue: "B", place: "Toronto, Canada", date: "2026-09-02", releaseAt: 0 },
+    { id: "active", venue: "Fairgrounds", place: "Toronto, Canada", date: "2026-08-20", eventEndDate: "2026-09-07", releaseAt: 0 },
+    { id: "future-a", venue: "A", place: "Toronto, Canada", date: "2026-09-01", releaseAt: 0 },
+  ];
+  const result = projectDiscoverScene(rows, { region: "Canada", now: NOW, eventLimit: 2, venueLimit: 1 });
+  assert.deepEqual(result.events.map((row) => row.id), ["active", "future-a"]);
+  assert.equal(result.events.length, 2);
+  assert.equal(result.venues.length, 1);
+  assert.equal(result.eventCount, 3);
+  assert.equal(result.venueCount, 3);
+});

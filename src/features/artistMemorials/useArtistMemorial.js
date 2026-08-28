@@ -58,7 +58,7 @@ export function useArtistMemorial({ accountId = null, artistKey = null, enabled 
   };
 }
 
-export function useArtistMemorialAdmin({ accountId = null, sessionScope = null, enabled = true } = {}) {
+export function useArtistMemorialAdmin({ accountId = null, sessionScope = null, enabled = true, onSaved = null } = {}) {
   const scope = artistMemorialAdminScope({ accountId, sessionScope });
   const [resource, setResource] = useState(() => createLoadState({ data: EMPTY_ARTIST_MEMORIALS }));
   const [revision, setRevision] = useState(0);
@@ -110,6 +110,7 @@ export function useArtistMemorialAdmin({ accountId = null, sessionScope = null, 
         ? resolveLoadState({ scope: initiatingScope, data: mergeArtistMemorial(current.data, saved) })
         : current);
       setSaveState({ scope: initiatingScope, saving: false, error: null });
+      if (typeof onSaved === "function") onSaved(saved);
       return saved;
     } catch (error) {
       if (!isLoadCancellation(error, controller.signal) && scopeRef.current === initiatingScope) {
@@ -119,7 +120,7 @@ export function useArtistMemorialAdmin({ accountId = null, sessionScope = null, 
     } finally {
       if (saveController.current === controller) saveController.current = null;
     }
-  }, [accountId, enabled, scope, sessionScope]);
+  }, [accountId, enabled, onSaved, scope, sessionScope]);
 
   const projected = projectArtistMemorialAdmin(resource, { accountId, sessionScope });
   const currentSave = saveState.scope === scope ? saveState : { saving: false, error: null };

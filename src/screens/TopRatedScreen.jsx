@@ -1,14 +1,48 @@
-import { useMemo, useState } from "react";
-import { View, Text, StyleSheet, ScrollView, TextInput, Pressable } from "react-native";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { ActivityIndicator, View, Text, StyleSheet, ScrollView, TextInput, Pressable } from "react-native";
 import { colors, mono, radius } from "../theme";
-import { cities, rankShows } from "../data";
+import { useStore } from "../store";
 import Stars from "../components/Stars";
 import Icon from "../components/Icon";
 import SheetHeader from "../components/SheetHeader";
+import {
+  normalizeTopRatedShows,
+  topRatedShowCities,
+  topRatedShowMatchesCity,
+  topRatedShowNavigation,
+} from "../domain/topRatedShows.mjs";
 
-export default function TopRatedScreen({ onClose, onOpen }) {
-  const cityNames = Object.keys(cities);
-  const [loc, setLoc] = useState("San Francisco");
+export default function TopRatedScreen({ initialRegion = "Worldwide", onClose, onOpen }) {
+  const { loadDiscoverOverview } = useStore();
+  const requestedRegion = String(initialRegion || "Worldwide").trim() || "Worldwide";
+  const loaderRef = useRef(loadDiscoverOverview);
+  loaderRef.current = loadDiscoverOverview;
+  const requestRef = useRef({ sequence: 0, controller: null });
+  const [resource, setResource] = useState({ status: "loading", rows: [] });
+  const [retryRevision, setRetryRevision] = useState(0);
+  const [loc, setLoc] = useState("");
+
+  useEffect(() => {
+    const controller = new AbortController();
+    const sequence = requestRef.current.sequence + 1;
+    requestRef.current.controller?.abort();
+    requestRef.current = { sequence, controller };
+    setLoc("");
+    setResource((current) => ({ status: current.rows.length ? "refreshing" : "loading", rows: current.rows }));
+    loaderRef.current({ country: requestedRegion, signal: controller.signal, force: retryRevision > 0 })
+      .then((payload) => {
+        if (controller.signal.aborted || requestRef.current.sequence !== sequence) return;
+        setResource({ status: "ready", rows: normalizeTopRatedShows(payload?.topRatedShows) });
+      })
+      .catch(() => {
+        if (!controller.signal.aborted && requestRef.current.sequence === sequence) {
+          setResource((current) => ({ ...current, status: "error" }));
+        }
+      });
+    return () => controller.abort();
+  }, [requestedRegion, retryRevision]);
+
+  const cityNames = useMemo(() => topRatedShowCities(resource.rows), [resource.rows]);
 
   // Resolve the typed location to a known city (best prefix match).
   const resolved = useMemo(() => {
@@ -18,9 +52,11 @@ export default function TopRatedScreen({ onClose, onOpen }) {
     if (exact) return exact;
     const prefixMatches = cityNames.filter((city) => city.toLowerCase().startsWith(q));
     return prefixMatches.length === 1 ? prefixMatches[0] : null;
-  }, [loc]);
+  }, [cityNames, loc]);
 
-  const ranked = useMemo(() => (resolved ? rankShows(cities[resolved]) : []), [resolved]);
+  const ranked = useMemo(() => (
+    resolved ? resource.rows.filter((row) => topRatedShowMatchesCity(row, resolved)) : resource.rows
+  ), [resolved, resource.rows]);
   const invalidCity = !!loc.trim() && !resolved;
 
   return (
@@ -28,7 +64,7 @@ export default function TopRatedScreen({ onClose, onOpen }) {
       <SheetHeader title="Top-rated shows" onBack={onClose} />
 
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-        <Text style={styles.h1}>Top-rated shows near you</Text>
+        <Text style={styles.h1}>{requestedRegion === "Worldwide" ? "Top-rated shows" : `Top-rated shows in ${requestedRegion}`}</Text>
 
         <View style={styles.locField}>
           <Icon name="pin" size={16} color={colors.amber} />
@@ -36,16 +72,22 @@ export default function TopRatedScreen({ onClose, onOpen }) {
             style={styles.locInput}
             value={loc}
             onChangeText={setLoc}
-            placeholder="Enter a city"
+            placeholder="Filter by city (optional)"
             placeholderTextColor={colors.textFaint}
             autoCapitalize="words"
             autoCorrect={false}
+            editable={cityNames.length > 0}
             accessibilityLabel="City"
             accessibilityHint="Enter or choose one of the listed cities"
             aria-invalid={invalidCity}
           />
         </View>
         <View style={styles.chips} accessibilityRole="radiogroup" accessibilityLabel="Available cities">
+          {cityNames.length > 0 && (
+            <Pressable style={[styles.chip, !loc.trim() && styles.chipOn]} onPress={() => setLoc("")} accessibilityRole="radio" accessibilityState={{ checked: !loc.trim() }}>
+              <Text style={[styles.chipTxt, !loc.trim() && styles.chipTxtOn]}>All {requestedRegion === "Worldwide" ? "cities" : requestedRegion}</Text>
+            </Pressable>
+          )}
           {cityNames.map((c) => (
             <Pressable key={c} style={[styles.chip, resolved === c && styles.chipOn]} onPress={() => setLoc(c)} accessibilityRole="radio" accessibilityState={{ checked: resolved === c }}>
               <Text style={[styles.chipTxt, resolved === c && styles.chipTxtOn]}>{c}</Text>
@@ -54,51 +96,52 @@ export default function TopRatedScreen({ onClose, onOpen }) {
         </View>
 
         {invalidCity && <Text style={styles.cityError} accessibilityRole="alert" accessibilityLiveRegion="polite">Choose a listed city. Pit will not substitute a different location.</Text>}
-        {!loc.trim() && <Text style={styles.cityHint} accessibilityLiveRegion="polite">Enter or choose a city to see its rankings.</Text>}
+        {resource.status === "loading" && (
+          <View style={styles.loading} accessibilityRole="progressbar" accessibilityLabel="Loading top-rated shows" accessibilityState={{ busy: true }}>
+            <ActivityIndicator size="small" color={colors.amber} />
+            <Text style={styles.cityHint}>Loading real community ratings…</Text>
+          </View>
+        )}
+        {resource.status === "error" && (
+          <View style={styles.errorState} accessibilityRole="alert">
+            <Text style={styles.cityError}>Top-rated shows could not refresh.</Text>
+            <Pressable style={styles.retry} onPress={() => setRetryRevision((value) => value + 1)} accessibilityRole="button" accessibilityLabel="Retry top-rated shows">
+              <Text style={styles.retryText}>Try again</Text>
+            </Pressable>
+          </View>
+        )}
 
         {ranked.map((s, i) => (
           <Pressable
-            key={s.id}
+            key={s.key}
             style={styles.row}
             accessibilityRole="button"
-            accessibilityLabel={`Number ${i + 1}, ${s.artist} at ${s.venue}, ${s.rating.toFixed(1)} stars from ${s.reviews} logs`}
-            onPress={() =>
-              onOpen?.({
-                id: s.id,
-                user: { name: "Community", handle: "pit", initials: "PT" },
-                timeAgo: "aggregate",
-                artist: s.artist,
-                venue: s.venue,
-                city: s.city,
-                date: "2026 · tour",
-                media: 0,
-                overall: s.rating,
-                band: s.band,
-                room: s.room,
-                review: `Aggregate of ${s.reviews} logs - one of the best-rated ${s.artist} nights near you.`,
-                setlist: s.setlist,
-                likes: s.reviews,
-                comments: Math.round(s.reviews / 6),
-                inTourWindow: false,
-              })
-            }
+            accessibilityLabel={`Number ${i + 1}, ${s.artist} at ${s.venue}, ${s.avgRating.toFixed(1)} stars from ${s.ratingCount} ratings`}
+            onPress={() => onOpen?.(topRatedShowNavigation(s))}
           >
             <Text style={styles.rank}>{i + 1}</Text>
             <View style={{ flex: 1 }}>
               <Text style={styles.artist}>{s.artist}</Text>
-              <Text style={styles.venue}>{s.venue} · {s.city}</Text>
+              <Text style={styles.venue}>{s.venue}{s.venueCity || s.city ? ` · ${s.venueCity || s.city}` : ""} · {s.date}</Text>
               <View style={styles.metaRow}>
-                <Stars value={s.rating} size={12} />
-                <Text style={styles.meta}>{s.rating.toFixed(1)} · {s.reviews} logs · {s.distance.toFixed(0)} mi</Text>
+                <Stars value={s.avgRating} size={12} />
+                <Text style={styles.meta}>{s.avgRating.toFixed(1)} · {s.ratingCount} {s.ratingCount === 1 ? "rating" : "ratings"}{s.reviewCount ? ` · ${s.reviewCount} reviews` : ""}</Text>
               </View>
             </View>
           </Pressable>
         ))}
 
-        {resolved && (
+        {resource.status === "ready" && ranked.length === 0 && (
+          <Text style={styles.empty} accessibilityLiveRegion="polite">
+            {resolved
+              ? `No rated concert nights are indexed for ${resolved} yet.`
+              : `No real public show ratings are indexed for ${requestedRegion} yet.`}
+          </Text>
+        )}
+
+        {ranked.length > 0 && (
           <Text style={styles.note}>
-            Ranked by rating quality (weighted by how many people logged it, so a 5.0 from a handful
-            doesn&apos;t beat a 4.7 from hundreds) combined with distance from {resolved}.
+            Ranked from real public Mshpit ratings. Each account counts once per show, and rating confidence keeps one perfect score from overpowering a well-supported crowd result.
           </Text>
         )}
       </ScrollView>
@@ -134,6 +177,11 @@ const styles = StyleSheet.create({
   chipTxtOn: { color: colors.amber, fontWeight: "700" },
   cityError: { color: colors.danger, fontSize: 12.5, lineHeight: 18, marginTop: 6 },
   cityHint: { color: colors.textDim, fontSize: 12.5, lineHeight: 18, marginTop: 6 },
+  loading: { flexDirection: "row", alignItems: "center", gap: 9, marginTop: 12 },
+  errorState: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 12, marginTop: 10 },
+  retry: { minHeight: 44, justifyContent: "center", paddingHorizontal: 12, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.amber },
+  retryText: { color: colors.amber, fontSize: 12, fontWeight: "800" },
+  empty: { color: colors.textDim, fontSize: 13, lineHeight: 20, textAlign: "center", paddingVertical: 28 },
 
   row: {
     flexDirection: "row",

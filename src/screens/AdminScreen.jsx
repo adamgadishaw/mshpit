@@ -17,6 +17,7 @@ import { readAdminHealth } from "../features/admin/services/adminHealthApi.mjs";
 import { listSuggestions, updateSuggestionStatus } from "../features/suggestions/suggestionService";
 import { useArtistMemorialAdmin } from "../features/artistMemorials/useArtistMemorial";
 import useAppActive from "../lib/useAppActive";
+import { captureAppError } from "../lib/diagnostics";
 
 const ADMIN_ONLY_TABS = new Set([
   "overview", "analytics", "catalog", "email", "badges", "suggestions", "memorials", "requests",
@@ -330,7 +331,7 @@ export default function AdminScreen({ onClose }) {
     suspendUser, liftSuspension, banUser, unbanUser, setUserRole, setVerified, markEmailVerified, setSponsor,
     removeComment, removeFanClubMessage, removeLoungeMessage,
     loadAdminMembersStrict, loadMoreAdminMembersStrict, adminStats, adminArtistQueue, enrichArtists, purgeArtist, startCatalogSeed, catalogSeedStatus, stopCatalogSeed, catalogSeedRuns,
-    searchArtistsApi, prepareMemorialArtist,
+    searchArtistsApi, prepareMemorialArtist, refreshTourDates,
     loadModerationConsole, loadMoreModerationConsole, moderateReport,
   } = useStore();
 
@@ -352,6 +353,15 @@ export default function AdminScreen({ onClose }) {
     accountId: session?.id || null,
     sessionScope: artistRequestScope,
     enabled: iAmAdmin && activeTab === "memorials",
+    onSaved: () => {
+      void refreshTourDates().catch((error) => captureAppError(error, {
+        code: "PIT-MEMORIAL-DATES-001",
+        context: "Refreshing tour dates after memorial publication",
+        source: "artist-memorial",
+        severity: "warning",
+        toast: false,
+      }));
+    },
   });
   const artistRequestActionRef = useRef({ sequence: 0, scope: artistRequestScope, requestId: null, action: null, controller: null });
   const [artistRequestAction, setArtistRequestAction] = useState({ scope: artistRequestScope, requestId: null, action: null, status: "idle", error: null });

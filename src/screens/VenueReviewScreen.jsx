@@ -16,6 +16,7 @@ export default function VenueReviewScreen({ venueName, onClose }) {
   const [rating, setRating] = useState(0);
   const [text, setText] = useState("");
   const [photos, setPhotos] = useState([]);
+  const [photosPublic, setPhotosPublic] = useState(false);
   const [uploadingPhotos, setUploadingPhotos] = useState(false);
   const [posting, setPosting] = useState(false);
 
@@ -58,7 +59,12 @@ export default function VenueReviewScreen({ venueName, onClose }) {
     if (!canPost || submitBusy) return;
     setPosting(true);
     try {
-      const result = await addVenueReview(venueName, { rating, text, photos: photos.filter(isDurableMediaUrl) });
+      const result = await addVenueReview(venueName, {
+        rating,
+        text,
+        photos: photos.filter(isDurableMediaUrl),
+        photosPublic: photos.length > 0 && photosPublic,
+      });
       if (result?.ok !== false) onClose?.();
     } catch {
       // Keep the review editable; the API layer already logged and displayed it.
@@ -89,7 +95,11 @@ export default function VenueReviewScreen({ venueName, onClose }) {
           {photos.map((uri, i) => (
             <View key={i} style={styles.thumb}>
               <Image source={{ uri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
-              <Pressable style={styles.removeThumb} onPress={() => setPhotos((p) => p.filter((_, idx) => idx !== i))} disabled={submitBusy}>
+              <Pressable style={styles.removeThumb} onPress={() => {
+                const next = photos.filter((_, idx) => idx !== i);
+                setPhotos(next);
+                if (!next.length) setPhotosPublic(false);
+              }} disabled={submitBusy} accessibilityRole="button" accessibilityLabel={`Remove venue photo ${i + 1}`}>
                 <Icon name="x" size={12} color="#fff" />
               </Pressable>
             </View>
@@ -101,6 +111,26 @@ export default function VenueReviewScreen({ venueName, onClose }) {
             </Pressable>
           )}
         </View>
+
+        {photos.length > 0 && (
+          <Pressable
+            style={[styles.consentCard, photosPublic && styles.consentCardOn]}
+            onPress={() => setPhotosPublic((value) => !value)}
+            disabled={submitBusy}
+            accessibilityRole="checkbox"
+            accessibilityLabel="Add these photos to the public venue gallery"
+            accessibilityHint="Off by default. Public photos may appear on Mshpit venue pages and search engines."
+            accessibilityState={{ checked: photosPublic, disabled: submitBusy }}
+          >
+            <View style={[styles.checkbox, photosPublic && styles.checkboxOn]}>
+              {photosPublic && <Icon name="check" size={14} color="#1A1206" />}
+            </View>
+            <View style={styles.consentCopy}>
+              <Text style={styles.consentTitle}>Add these to the public venue gallery</Text>
+              <Text style={styles.consentText}>Optional and off by default. If enabled, these photos may appear on public Mshpit venue pages and crawler-readable concert archives. Your written review posts either way.</Text>
+            </View>
+          </Pressable>
+        )}
 
         <Button title={posting ? "Posting review..." : uploadingPhotos ? "Uploading photos..." : "Post venue review"} icon="check" onPress={save} disabled={!canPost || submitBusy} style={{ marginTop: 28 }} />
       </ScrollView>
@@ -126,6 +156,13 @@ const styles = StyleSheet.create({
   removeThumb: { position: "absolute", top: 3, right: 3, width: 20, height: 20, borderRadius: 10, backgroundColor: "rgba(0,0,0,0.6)", alignItems: "center", justifyContent: "center" },
   addThumb: { width: 76, height: 76, borderRadius: 10, borderWidth: 1, borderColor: colors.line, borderStyle: "dashed", alignItems: "center", justifyContent: "center", gap: 4, backgroundColor: colors.surface },
   addThumbTxt: { color: colors.amber, fontSize: 12 },
+  consentCard: { marginTop: 16, flexDirection: "row", alignItems: "flex-start", gap: 12, padding: 14, borderRadius: radius.sm, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
+  consentCardOn: { borderColor: colors.amber },
+  checkbox: { width: 24, height: 24, borderRadius: 7, borderWidth: 1, borderColor: colors.textFaint, alignItems: "center", justifyContent: "center" },
+  checkboxOn: { borderColor: colors.amberStrong, backgroundColor: colors.amberStrong },
+  consentCopy: { flex: 1 },
+  consentTitle: { color: colors.text, fontSize: 14, fontWeight: "800", marginBottom: 4 },
+  consentText: { color: colors.textDim, fontSize: 12, lineHeight: 18 },
   primary: { backgroundColor: colors.amberStrong, borderRadius: radius.md, paddingVertical: 15, alignItems: "center", marginTop: 28 },
   primaryTxt: { color: "#1A1206", fontSize: 15, fontWeight: "800", letterSpacing: 1 },
 });

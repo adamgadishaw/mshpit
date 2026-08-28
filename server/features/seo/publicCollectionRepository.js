@@ -2,6 +2,7 @@ import { activeAccountSql } from "../../accountVisibility.js";
 import { slugify } from "../../../src/domain/urls.mjs";
 import { archiveIdentityPart } from "../artistArchive/artistArchiveKeys.js";
 import { currentOrUpcomingTourDateSql, effectiveTourDateEndSql } from "../../tourDateLifecycle.js";
+import { tourDateHasNoPublishedMemorialSql } from "../../artistMemorialTourDateVisibility.js";
 import {
   PUBLIC_ENTITY_THRESHOLDS,
   isStrictCalendarDate,
@@ -117,6 +118,7 @@ export function createPublicCollectionRepository(database) {
     FROM tour_dates td LEFT JOIN users owner ON owner.id=td.owner_id
     WHERE ${publicTourVisibility("td", "owner", "?1")}
       AND ${validCalendarDateSql("td")} AND ${structuredLocationSql("td")} AND ${currentOrUpcomingTourDateSql("td", "?2")}
+      AND ${tourDateHasNoPublishedMemorialSql("td")}
       AND TRIM(COALESCE(td.artist,''))<>'' AND TRIM(COALESCE(td.venue,''))<>''
       AND UPPER(TRIM(td.venue_country_code))=?3 AND LOWER(TRIM(td.venue_city))=LOWER(?4)
       AND ${noLocationConflictSql("td")}

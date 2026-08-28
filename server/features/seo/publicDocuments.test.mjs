@@ -90,7 +90,8 @@ function createDatabase() {
     );
     CREATE TABLE venue_reviews (
       id TEXT PRIMARY KEY,user_id TEXT NOT NULL,venue_key TEXT NOT NULL,rating REAL,text TEXT,
-      photos TEXT NOT NULL DEFAULT '[]',removed INTEGER NOT NULL DEFAULT 0,created_at INTEGER NOT NULL
+      photos TEXT NOT NULL DEFAULT '[]',photos_public INTEGER NOT NULL DEFAULT 0,
+      removed INTEGER NOT NULL DEFAULT 0,created_at INTEGER NOT NULL
     );
   `);
   return database;
@@ -196,12 +197,13 @@ function addVenueReview(database, {
   rating = 4,
   text = "A detailed account of the room, sound, sightlines, staff, atmosphere, and accessibility.",
   photos = [],
+  photosPublic = false,
   removed = false,
   createdAt = 1_000,
 } = {}) {
   database.prepare(`INSERT INTO venue_reviews
-    (id,user_id,venue_key,rating,text,photos,removed,created_at) VALUES (?,?,?,?,?,?,?,?)`).run(
-    id, userId, venueKey, rating, text, JSON.stringify(photos), removed ? 1 : 0, createdAt,
+    (id,user_id,venue_key,rating,text,photos,photos_public,removed,created_at) VALUES (?,?,?,?,?,?,?,?,?)`).run(
+    id, userId, venueKey, rating, text, JSON.stringify(photos), photosPublic ? 1 : 0, removed ? 1 : 0, createdAt,
   );
 }
 
@@ -585,12 +587,28 @@ test("canonical artist documents expose only an identity-bound published memoria
       accomplishments: ["A <b>lasting</b> songbook", "Decades of memorable performances"],
       sourceTitle: "Verified <public> & announcement",
     }).ok, true);
+    database.prepare(`INSERT INTO tour_dates
+      (id,artist,artist_key,venue,place,date,ticket_url,source,updated_at,release_at,provider_active)
+      VALUES (?,?,?,?,?,?,?,?,?,?,1)`).run(
+      "memorial-future", "Alpha", "alpha", "Future Hall", "Toronto, Canada", "2026-09-25",
+      "https://tickets.example/memorial-future", "ticketmaster", NOW, 0,
+    );
+    database.prepare(`INSERT INTO tour_dates
+      (id,artist,artist_key,venue,place,date,source,updated_at,release_at,provider_active)
+      VALUES (?,?,?,?,?,?,?,?,?,1)`).run(
+      "memorial-past", "Alpha", "alpha", "Archive Hall", "Toronto, Canada", "2026-08-20",
+      "ticketmaster", NOW, 0,
+    );
     database.prepare("UPDATE artist_memorials SET reviewer_secret=? WHERE artist_key=?")
       .run("PRIVATE REVIEWER AND AUDIT MATERIAL", "alpha");
 
     const documents = service(database);
     const canonical = documents.artistDocument({ artistKey: "alpha", at: NOW });
     const html = documents.render(canonical);
+    assert.deepEqual(canonical.events, [], "a memorialized artist has no future tour dates");
+    assert.equal(documents.eventDocument({ id: "memorial-future", today: "2026-08-25", at: NOW }), null);
+    assert.ok(documents.eventDocument({ id: "memorial-past", today: "2026-08-25", at: NOW }),
+      "historical event documents remain available");
     assert.deepEqual(canonical.memorial, {
       deathDate: "2026-08-25",
       summary: "A generous <script>songwriter</script> whose work gave generations a place to gather and remember.",
@@ -1385,6 +1403,7 @@ test("venue pages show real public ratings and safely render only eligible recen
       rating: 4.5,
       text: "<script>alert('review')</script> The sound, staff, sightlines, and atmosphere made this a memorable room.",
       photos: [verifiedUrl, "https://unverified.example/not-owned.jpg"],
+      photosPublic: true,
       createdAt: 4_000,
     });
     addVenueReview(database, {

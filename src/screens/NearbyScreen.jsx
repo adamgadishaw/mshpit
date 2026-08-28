@@ -43,6 +43,7 @@ export default function NearbyScreen({ onClose, onOpenVenue, onOpenArtist }) {
       lng: venue.coord.lng,
       distanceKm: venue.distanceKm,
       photo: summary.photo || null,
+      photoProvenance: summary.photoProvenance || null,
       sub: venue.place || center?.city || "",
       rating: summary.avgOverall || 0,
       reviews: summary.totalShows || 0,

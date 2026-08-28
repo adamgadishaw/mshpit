@@ -69,19 +69,25 @@ import {
   verificationResendState,
 } from "./domain/emailVerification.mjs";
 import {
+  cleanVenueFanPhotoResponse,
   cleanVenuePhotoResponse,
   isFreshVenuePhotoEntry,
   mergeVenuePhotoSources,
+  venuePhotoScopedCacheKey,
   venuePhotoStateFor,
+  venuePhotoViewerScope,
   withBoundedVenuePhotoCache,
 } from "./domain/venuePhotos.mjs";
+import { canonicalVenueKey, resolveVenueCatalogKey } from "./domain/venueIdentity.mjs";
 import { fetchVenuePhotos } from "./features/venuePhotos/venuePhotoApi.mjs";
 import { venueCatalogPhotoFields } from "./domain/venuePhotoProvenance.mjs";
 import {
   mediaReactionsForAccountTransition,
   replaceVenueReviewSnapshot,
   venueReviewStorageKey,
+  venueReviewsForPrivacyScope,
   withoutVenueReviewsByUser,
+  withoutVenueReviewsByUsers,
 } from "./domain/accountMediaCache.mjs";
 import { mediaDisplayItems, sameMediaDisplayItems } from "./domain/postMediaDisplay.mjs";
 import { normalizeArtistCampaign } from "./domain/artistCampaignPost.mjs";
@@ -89,6 +95,7 @@ import { normalizeTaggedPeople, taggedUserIdsFromPeople } from "./domain/postFri
 import { writeDirectMessageRead } from "./features/chat/services/dmReadApi.mjs";
 import { removeMyPostTagRequest } from "./features/postTags/services/postTagApi.mjs";
 import { searchPeopleRequest } from "./features/people/services/peopleSearchApi.mjs";
+import { attachArtistSuggestion, fetchArtistSuggestions } from "./features/artistSearch/artistSearchApi.mjs";
 import { useAccountCommentCache } from "./features/comments/useAccountCommentCache";
 import { useAccountArtistPageCache } from "./features/artistPage/useAccountArtistPageCache";
 import { artistMemorialPreparationName } from "./domain/artistMemorialCandidate.mjs";
@@ -765,8 +772,56 @@ export function StoreProvider({ children }) {
   // Only pools for venues this session actually opens. The 2.1 MB seed stays on
   // the server; this LRU is capped at 32 normalized pools and expires after 15m.
   const [venuePhotoPools, setVenuePhotoPools] = useState({});
-  const venuePhotoCacheRef = useRef(new Map());
+  const venuePhotoCacheRef = useRef({
+    entries: new Map(),
+    privacyEpoch: 0,
+    privacy: {
+      accountId: session?.id || null,
+      blockGraphAuthoritative: ENABLE_DEMO_DATA || !session?.id,
+      pendingMutations: new Set(),
+      revision: 0,
+    },
+  });
   const venuePhotoInflightRef = useRef(new Map());
+  const venuePhotoPrivacyRevision = Number(venuePhotoPools.__privacyRevision) || 0;
+  const currentVenuePhotoViewerScope = () => venuePhotoViewerScope(
+    sessionRef.current?.id || null,
+    blockedIdsRef.current,
+    venuePhotoCacheRef.current.privacyEpoch,
+  );
+  const rotateVenuePhotoPrivacyScope = ({
+    accountId = sessionRef.current?.id || null,
+    blockGraphAuthoritative = venuePhotoCacheRef.current.privacy.blockGraphAuthoritative,
+  } = {}) => {
+    const previousPrivacy = venuePhotoCacheRef.current.privacy;
+    venuePhotoCacheRef.current.privacyEpoch += 1;
+    const revision = previousPrivacy.revision + 1;
+    venuePhotoCacheRef.current.privacy = {
+      accountId: accountId || null,
+      blockGraphAuthoritative: !!blockGraphAuthoritative,
+      pendingMutations: previousPrivacy.accountId === (accountId || null)
+        ? new Set(previousPrivacy.pendingMutations || [])
+        : new Set(),
+      revision,
+    };
+    for (const request of venuePhotoInflightRef.current.values()) request.controller.abort();
+    venuePhotoInflightRef.current.clear();
+    venuePhotoCacheRef.current.entries.clear();
+    setVenuePhotoPools({ __privacyRevision: revision });
+  };
+  const beginVenuePhotoPrivacyMutation = (userId) => {
+    if (!userId) return;
+    venuePhotoCacheRef.current.privacy.pendingMutations.add(String(userId));
+    rotateVenuePhotoPrivacyScope();
+  };
+  const finishVenuePhotoPrivacyMutation = (userId) => {
+    if (!userId) return;
+    venuePhotoCacheRef.current.privacy.pendingMutations.delete(String(userId));
+    // A gallery GET issued at the optimistic boundary may beat the server write.
+    // Rotate after confirmation/rollback so mounted screens discard that result
+    // and refetch against the authoritative relationship graph.
+    rotateVenuePhotoPrivacyScope();
+  };
   // Direct messages - keyed by the sorted pair of user ids; plus read markers.
   const [dms, setDms] = usePrivateEphemeral("pit.dms", demoSeed({
     u_demo__u_mara: [
@@ -843,6 +898,10 @@ export function StoreProvider({ children }) {
     adoptCommentAccount(nextAccountId);
     adoptArtistPageAccount(nextAccountId);
     if (nextAccountId === feedAccountIdRef.current) return;
+    rotateVenuePhotoPrivacyScope({
+      accountId: nextAccountId,
+      blockGraphAuthoritative: ENABLE_DEMO_DATA || !nextAccountId,
+    });
     accountMutationEpochRef.current += 1;
     // Rating aggregates include the viewer's `mine` field. Drop them at the
     // synchronous identity boundary instead of waiting for a passive effect.
@@ -1238,28 +1297,33 @@ export function StoreProvider({ children }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.id]);
 
-  // Canonical server snapshot, re-read at every authenticated scope boundary so
-  // an owner's scheduled dates appear on a new device and disappear before a
-  // different account can render. Empty snapshots are authoritative too.
-  useEffect(() => {
-    if (!authReady) return undefined;
-    const controller = new AbortController();
+  // Canonical server snapshot. Memorial publication also calls this explicitly
+  // so dates hidden by the new memorial cannot linger until the next login.
+  const refreshTourDates = async ({ signal } = {}) => {
+    if (!authReady) return null;
     const accountId = session?.id || null;
     const sequence = ++tourDateReadRef.current.sequence;
     tourDateReadRef.current.accountId = accountId;
-    api("/api/tourdates", { signal: controller.signal, silent: true, context: "Loading tour dates" })
-      .then(({ tourDates: live }) => {
-        if (controller.signal.aborted || tourDateReadRef.current.sequence !== sequence
-          || tourDateReadRef.current.accountId !== accountId
-          || (sessionRef.current?.id || null) !== accountId) return;
-        const accepted = sanitizeTourDates(live, ENABLE_DEMO_DATA);
-        const next = ENABLE_DEMO_DATA
-          ? [...new Map([...accepted, ...tourDatesRef.current].map((event) => [event.id, event])).values()]
-          : accepted;
-        tourDatesRef.current = next;
-        setTourDates(next);
-      })
-      .catch(() => {});
+    const { tourDates: live } = await api("/api/tourdates", { signal, silent: true, context: "Loading tour dates" });
+    if (signal?.aborted || tourDateReadRef.current.sequence !== sequence
+      || tourDateReadRef.current.accountId !== accountId
+      || (sessionRef.current?.id || null) !== accountId) return null;
+    const accepted = sanitizeTourDates(live, ENABLE_DEMO_DATA);
+    const next = ENABLE_DEMO_DATA
+      ? [...new Map([...accepted, ...tourDatesRef.current].map((event) => [event.id, event])).values()]
+      : accepted;
+    tourDatesRef.current = next;
+    setTourDates(next);
+    return next;
+  };
+
+  // Re-read at every authenticated scope boundary so an owner's scheduled
+  // dates appear on a new device and disappear before another account renders.
+  // Empty snapshots are authoritative too.
+  useEffect(() => {
+    if (!authReady) return undefined;
+    const controller = new AbortController();
+    refreshTourDates({ signal: controller.signal }).catch(() => {});
     return () => controller.abort();
   }, [authReady, session?.id]);
 
@@ -1496,13 +1560,39 @@ export function StoreProvider({ children }) {
   };
   // Search the DB catalog (notable-first). Powers Search so ANY catalog artist is
   // findable, not just the ~1.6k bundled ones.
-  const searchArtistsApi = async (query, { signal, throwOnError = false } = {}) => {
-    try { const { artists } = await api(`/api/artists?q=${encodeURIComponent(query || "")}`, { signal, silent: true, context: "Searching artists" }); cacheArtists(artists); return artists || []; }
+  const searchArtistsApi = async (query, {
+    signal,
+    throwOnError = false,
+    limit = 20,
+    remoteFallback = false,
+    force = false,
+  } = {}) => {
+    const term = String(query || "").trim().slice(0, 80);
+    const boundedLimit = Math.min(40, Math.max(1, Number(limit) || 20));
+    try {
+      const artists = await fetchArtistSuggestions(term, {
+        apiClient: api,
+        signal,
+        limit: boundedLimit,
+        remoteFallback,
+        force,
+      });
+      if (signal?.aborted) return [];
+      const rows = Array.isArray(artists) ? artists : [];
+      cacheArtists(rows);
+      return rows;
+    }
     catch (error) {
       if (throwOnError) throw error;
       // architecture: allow-ambiguous-result -- legacy browse callers treat catalog suggestions as optional; measured search opts into strict errors
       return [];
     }
+  };
+  const attachArtistSuggestionApi = async (artist, { signal } = {}) => {
+    const attached = await attachArtistSuggestion(artist, { apiClient: api, signal });
+    if (signal?.aborted) return null;
+    cacheArtists([attached]);
+    return attached;
   };
   // Song search for the search box, so not knowing the artist is no longer a
   // dead end. Server-side this is Deezer (keyless), so it costs no YouTube
@@ -2285,6 +2375,8 @@ export function StoreProvider({ children }) {
         if (sessionRef.current?.id !== su.id || !Array.isArray(list)) return;
         const ids = list.map((x) => x.id);
         blockedIdsRef.current = ids;
+        setVenueReviews((groups) => withoutVenueReviewsByUsers(groups, ids));
+        rotateVenuePhotoPrivacyScope({ accountId: su.id, blockGraphAuthoritative: true });
         setBlockedIds(ids);
         absorbUsers(list);
       })
@@ -3473,12 +3565,14 @@ export function StoreProvider({ children }) {
   // DMs, hides posts; locally we mirror the list so the UI reacts instantly. ---
   const isBlocked = (id) => blockedIds.includes(id);
   const blockUser = (id) => {
-    if (!session || !id || isBlocked(id)) return;
+    if (!session || !id || isBlocked(id)
+      || venuePhotoCacheRef.current.privacy.pendingMutations.has(String(id))) return;
     const accountId = session.id;
     const mineBefore = follows[accountId] || [];
     const theirsBefore = follows[id] || [];
     const nextBlocked = [...new Set([...blockedIdsRef.current, id])];
     blockedIdsRef.current = nextBlocked;
+    beginVenuePhotoPrivacyMutation(id);
     setBlockedIds(nextBlocked);
     // Artist page snapshots are personalized by this block graph. Clear them
     // before React can render the optimistic boundary and reject older reads.
@@ -3491,6 +3585,7 @@ export function StoreProvider({ children }) {
       .then(() => {
         scrubBlockedProfileHistoryPerson(accountId, id);
         if (sessionRef.current?.id !== accountId) return;
+        finishVenuePhotoPrivacyMutation(id);
         setFeed((rows) => rows
           .filter((post) => post.userId !== id)
           .map((post) => {
@@ -3510,16 +3605,19 @@ export function StoreProvider({ children }) {
         if (sessionRef.current?.id !== accountId) return;
         const restored = blockedIdsRef.current.filter((x) => x !== id);
         blockedIdsRef.current = restored;
+        finishVenuePhotoPrivacyMutation(id);
         setBlockedIds(restored);
         setFollows((f) => ({ ...f, [accountId]: mineBefore, [id]: theirsBefore }));
       });
     track("block");
   };
   const unblockUser = (id) => {
-    if (!session || !isBlocked(id)) return;
+    if (!session || !isBlocked(id)
+      || venuePhotoCacheRef.current.privacy.pendingMutations.has(String(id))) return;
     const accountId = session.id;
     const nextBlocked = blockedIdsRef.current.filter((x) => x !== id);
     blockedIdsRef.current = nextBlocked;
+    beginVenuePhotoPrivacyMutation(id);
     setBlockedIds(nextBlocked);
     api(`/api/users/${id}/block`, { method: "POST", body: { blocked: false }, context: "Unblocking this account" })
       .then(() => {
@@ -3527,12 +3625,16 @@ export function StoreProvider({ children }) {
         // confirmed unblock must drop that account cache so the next visit can
         // read the newly visible server projection from scratch.
         resetProfileHistoryAccount(accountId);
-        if (sessionRef.current?.id === accountId) invalidateArtistPageCache();
+        if (sessionRef.current?.id === accountId) {
+          finishVenuePhotoPrivacyMutation(id);
+          invalidateArtistPageCache();
+        }
       })
       .catch(() => {
         if (sessionRef.current?.id !== accountId) return;
         const restored = [...new Set([...blockedIdsRef.current, id])];
         blockedIdsRef.current = restored;
+        finishVenuePhotoPrivacyMutation(id);
         setBlockedIds(restored);
       });
   };
@@ -4839,7 +4941,12 @@ export function StoreProvider({ children }) {
   const attendeesFor = (key) => users.filter((u) => (going[u.id] || []).some((g) => g.key === key));
 
   // --- Venue reviews + photos ---
-  const venueReviewsFor = (venueName) => venueReviews[norm(venueName)] || [];
+  const venueReviewsFor = (venueName) => venueReviewsForPrivacyScope(venueReviews, norm(venueName), {
+    cacheAccountId: venueReviewsAccountIdRef.current,
+    viewerAccountId: session?.id || null,
+    blockGraphAuthoritative: venuePhotoCacheRef.current.privacy.blockGraphAuthoritative,
+    blockedIds,
+  });
   // Slice 7: hydrate a venue's reviews from the server. This is an
   // authoritative snapshot, including an empty array after moderation; merging
   // would preserve removed/blocked photos forever in the local cache.
@@ -4847,9 +4954,11 @@ export function StoreProvider({ children }) {
     const venueKey = norm(venueName);
     const enc = encodeURIComponent(venueKey);
     const accountId = sessionRef.current?.id || null;
+    const privacyRevision = venuePhotoCacheRef.current.privacy.revision;
     api(`/api/venues/${enc}/reviews`)
       .then(({ reviews }) => {
-        if (!Array.isArray(reviews) || (sessionRef.current?.id || null) !== accountId) return;
+        if (!Array.isArray(reviews) || (sessionRef.current?.id || null) !== accountId
+          || venuePhotoCacheRef.current.privacy.revision !== privacyRevision) return;
         const blocked = new Set(blockedIdsRef.current);
         const snapshot = reviews
           .filter((r) => !blocked.has(r.userId))
@@ -4865,15 +4974,16 @@ export function StoreProvider({ children }) {
           }));
         setVenueReviews((m) => replaceVenueReviewSnapshot(m, venueKey, snapshot));
       })
-      .catch(() => {});
+      .catch(() => { /* architecture: allow-empty-catch -- venue reviews are optional continuity data and the licensed venue gallery remains usable */ });
   };
-  const addVenueReview = (venueName, { rating, text, photos }) => {
+  const addVenueReview = (venueName, { rating, text, photos, photosPublic = false }) => {
     if (!session) return Promise.resolve({ ok: false });
     const localId = "vr_" + Date.now();
-    const r = { id: localId, userId: session.id, name: session.name, initials: session.initials, rating: clampRating(rating), text: clean(text, { max: LIMITS.review, newlines: true }), photos: (photos || []).slice(0, MEDIA_POST_MAX_ATTACHMENTS), ts: "now" };
+    const selectedPhotos = (photos || []).slice(0, MEDIA_POST_MAX_ATTACHMENTS);
+    const r = { id: localId, userId: session.id, name: session.name, initials: session.initials, rating: clampRating(rating), text: clean(text, { max: LIMITS.review, newlines: true }), photos: photosPublic ? selectedPhotos : [], ts: "now" };
     setVenueReviews((m) => ({ ...m, [norm(venueName)]: [r, ...(m[norm(venueName)] || [])] }));
     const enc = encodeURIComponent(norm(venueName));
-    return api(`/api/venues/${enc}/reviews`, { method: "POST", body: { rating: r.rating, text: r.text, photos: r.photos }, context: "Posting your venue review" })
+    return api(`/api/venues/${enc}/reviews`, { method: "POST", body: { rating: r.rating, text: r.text, photos: selectedPhotos, photosPublic: !!photosPublic }, context: "Posting your venue review" })
       .then(({ id }) => {
         if (id) setVenueReviews((m) => ({ ...m, [norm(venueName)]: (m[norm(venueName)] || []).map((x) => (x.id === localId ? { ...x, id } : x)) }));
         return { ok: true, id: id || localId };
@@ -4888,74 +4998,105 @@ export function StoreProvider({ children }) {
     .flatMap((r) => r.photos.map((p) => ({ uri: p, by: r.name, venueReviewId: r.id, ownerId: r.userId })))
     .slice(0, n);
   // All photos for a venue's widget, self-healing like the artist gallery:
-  //   1. fan-uploaded review photos  2. official Commons building photo(s)
-  //   3. the Openverse backfill pool (licensed, attributed)
+  //   1. fan-uploaded review photos
+  //   2. relevance-checked Commons photos mirrored to MSHpit storage with attribution
   // Moderated URLs drop out at every layer, so a pulled photo is replaced rather
   // than leaving the venue on the blank gradient card.
-  // Relaxed catalog lookup: exact key first, then a punctuation/"the"-insensitive
-  // match so "Fillmore Detroit" still finds "The Fillmore Detroit" instead of
-  // rendering a blank hero.
+  // Venue aliases are explicit identity decisions. Equality normalization can
+  // fix typography, but it must never guess between similarly named rooms.
   const venueCatalogKey = (venueName) => {
-    const k = norm(venueName);
-    if (catalogVenues[k]) return k;
-    const loose = (s) => s.replace(/^the\s+/, "").replace(/[^a-z0-9]/g, "");
-    const lk = loose(k);
-    if (!lk) return null;
-    for (const key of Object.keys(catalogVenues)) {
-      if (loose(key) === lk) return key;
-    }
+    const canonical = canonicalVenueKey(venueName);
+    if (!canonical) return null;
+    const catalogMatch = resolveVenueCatalogKey(canonical, Object.keys(catalogVenues));
+    if (catalogMatch) return canonicalVenueKey(catalogMatch);
     // Production venue media is resolved by the server and does not require a
     // bundled catalogue row merely to form its normalized lookup key.
-    return ENABLE_DEMO_DATA ? null : k;
+    return ENABLE_DEMO_DATA ? null : canonical;
   };
   const venuePhotoState = (venueName) => {
-    const key = venueCatalogKey(venueName);
-    return venuePhotoStateFor(key, venuePhotoPools);
+    const venueKey = venueCatalogKey(venueName);
+    if (!venueKey) return venuePhotoStateFor(null, venuePhotoPools);
+    const cacheKey = venuePhotoScopedCacheKey(venueKey, currentVenuePhotoViewerScope());
+    return venuePhotoStateFor(cacheKey, venuePhotoPools);
   };
 
-  const commitVenuePhotoEntry = (key, entry) => {
-    const next = withBoundedVenuePhotoCache(venuePhotoCacheRef.current, key, entry);
-    venuePhotoCacheRef.current = next;
-    setVenuePhotoPools(Object.fromEntries(next));
+  const commitVenuePhotoEntry = (cacheKey, entry) => {
+    const next = withBoundedVenuePhotoCache(venuePhotoCacheRef.current.entries, cacheKey, entry);
+    venuePhotoCacheRef.current.entries = next;
+    setVenuePhotoPools({
+      ...Object.fromEntries(next),
+      __privacyRevision: venuePhotoCacheRef.current.privacy.revision,
+    });
   };
 
   // Concurrent VenueScreen/ShowScreen opens share one request. Results live in a
-  // small session LRU; the browser/CDN also observes the endpoint's HTTP cache.
+  // small viewer-scoped LRU. Personalized JSON bypasses browser caches, while
+  // the separately hosted image bytes retain their own safe cache policy.
   const loadVenuePhotos = (venueName, { force = false } = {}) => {
-    const key = venueCatalogKey(venueName);
-    if (!key) return Promise.resolve([]);
-    const cached = venuePhotoCacheRef.current.get(key);
+    const venueKey = venueCatalogKey(venueName);
+    if (!venueKey) return Promise.resolve([]);
+    const viewerScope = currentVenuePhotoViewerScope();
+    const cacheKey = venuePhotoScopedCacheKey(venueKey, viewerScope);
+    const cached = venuePhotoCacheRef.current.entries.get(cacheKey);
     if (!force && isFreshVenuePhotoEntry(cached)) {
-      commitVenuePhotoEntry(key, cached); // touch its LRU position
+      commitVenuePhotoEntry(cacheKey, cached); // touch its LRU position
       return Promise.resolve(cached.photos);
     }
-    const active = venuePhotoInflightRef.current.get(key);
+    const active = venuePhotoInflightRef.current.get(cacheKey);
     if (active) return active.promise;
 
     const controller = new AbortController();
-    commitVenuePhotoEntry(key, { status: "loading", photos: cached?.photos || [], error: null, loadedAt: cached?.loadedAt || 0 });
-    const promise = fetchVenuePhotos(key, { signal: controller.signal })
-      .then(({ photos }) => {
+    commitVenuePhotoEntry(cacheKey, {
+      status: "loading",
+      photos: cached?.photos || [],
+      fanPhotos: cached?.fanPhotos || [],
+      error: null,
+      loadedAt: cached?.loadedAt || 0,
+    });
+    const promise = fetchVenuePhotos(venueKey, { signal: controller.signal })
+      .then(({ photos, fanPhotos }) => {
         const cleanPhotos = cleanVenuePhotoResponse(photos);
-        commitVenuePhotoEntry(key, { status: "ready", photos: cleanPhotos, error: null, loadedAt: Date.now() });
+        const cleanFanPhotos = cleanVenueFanPhotoResponse(fanPhotos);
+        if (controller.signal.aborted || currentVenuePhotoViewerScope() !== viewerScope) return cleanPhotos;
+        commitVenuePhotoEntry(cacheKey, {
+          status: "ready",
+          photos: cleanPhotos,
+          fanPhotos: cleanFanPhotos,
+          error: null,
+          loadedAt: Date.now(),
+        });
         return cleanPhotos;
       })
       .catch((error) => {
-        if (!controller.signal.aborted) {
-          commitVenuePhotoEntry(key, { status: "error", photos: cached?.photos || [], error, loadedAt: cached?.loadedAt || 0 });
+        if (!controller.signal.aborted && currentVenuePhotoViewerScope() === viewerScope) {
+          commitVenuePhotoEntry(cacheKey, {
+            status: "error",
+            photos: cached?.photos || [],
+            fanPhotos: cached?.fanPhotos || [],
+            error,
+            loadedAt: cached?.loadedAt || 0,
+          });
         }
         throw error;
       })
       .finally(() => {
-        if (venuePhotoInflightRef.current.get(key)?.promise === promise) venuePhotoInflightRef.current.delete(key);
+        if (venuePhotoInflightRef.current.get(cacheKey)?.promise === promise) venuePhotoInflightRef.current.delete(cacheKey);
       });
-    venuePhotoInflightRef.current.set(key, { controller, promise });
+    venuePhotoInflightRef.current.set(cacheKey, { controller, promise });
     return promise;
   };
 
   const venuePhotos = (venueName) => {
-    const remote = venuePhotoState(venueName).photos;
-    const fan = venueTopPhotos(venueName, 12).map((p) => ({ ...p, source: "fan" }));
+    const state = venuePhotoState(venueName);
+    const remote = state.photos;
+    const privacy = venuePhotoCacheRef.current.privacy;
+    const hiddenOwners = new Set([...blockedIds, ...(privacy.pendingMutations || [])].map(String));
+    // Licensed imagery remains visible, but account media stays hidden while a
+    // block write is unsettled. A confirmed rotation replaces any raced GET.
+    const fan = privacy.pendingMutations?.size ? [] : [
+      ...venueTopPhotos(venueName, 12).map((p) => ({ ...p, source: "fan" })),
+      ...(state.fanPhotos || []).filter((photo) => !photo.ownerId || !hiddenOwners.has(String(photo.ownerId))),
+    ];
     return mergeVenuePhotoSources(remote, fan, isPhotoRemoved);
   };
 
@@ -5249,6 +5390,7 @@ export function StoreProvider({ children }) {
       place,
       photo: catalogPhoto.photo,
       photoCredit: catalogPhoto.photoCredit,
+      photoProvenance: catalogPhoto.photoProvenance,
       capacity: (cat && cat.capacity) || null,
       nights,
       upcoming,
@@ -5536,9 +5678,15 @@ export function StoreProvider({ children }) {
   const searchVenues = (query, limit = 50) => {
     const q = norm(query);
     if (!q) return [];
+    const upcomingByVenue = new Map();
+    for (const event of tourDates) {
+      if (!isUpcomingEventDate(event) || event.releaseAt > Date.now()) continue;
+      const key = norm(event.venue);
+      if (key) upcomingByVenue.set(key, (upcomingByVenue.get(key) || 0) + 1);
+    }
     return allVenues()
       .filter((v) => norm(v.name).includes(q) || norm(v.place).includes(q))
-      .map((v) => ({ ...v, upcoming: venueUpcomingCount(v.name) }))
+      .map((v) => ({ ...v, upcoming: upcomingByVenue.get(norm(v.name)) || 0 }))
       .sort((a, b) => b.upcoming - a.upcoming || a.name.localeCompare(b.name))
       .slice(0, limit);
   };
@@ -5698,7 +5846,7 @@ export function StoreProvider({ children }) {
     recentSearches, addRecentSearch, removeRecentSearch, clearRecentSearches,
     loadUser, followersOf, followingOf,
     isBlocked, blockUser, unblockUser, blockedUsers, exportMyData,
-    searchArtistsApi, resolveArtist, remoteArtistMeta, artistDiscography, resolveYouTube, invalidateYouTube, youtubeVideoRejected, youtubeLookupStatus, resolveDeezerPreview,
+    searchArtistsApi, attachArtistSuggestionApi, resolveArtist, remoteArtistMeta, artistDiscography, resolveYouTube, invalidateYouTube, youtubeVideoRejected, youtubeLookupStatus, resolveDeezerPreview,
     discoverChart, discoverGenres, discoverCountries, loadDiscoverOverview, loadDiscoverGenre, serverTime,
     artistSeenCount, reportTrack, adminSetTrackVideo, trackOverridesList, removeTrackOverride, loadModerationQueue, loadModerationConsole, loadMoreModerationConsole, moderateReport,
     mediaReactions, loadMediaReactions, toggleMediaReaction,
@@ -5707,7 +5855,7 @@ export function StoreProvider({ children }) {
     saveQueueAsPlaylist, friendsListening, loadFriendsListening, loadFriendsListeningStrict, userPlaylists,
     favoriteGenre, genreOfArtist, recommendTracks, autoplayQueue, searchSongsApi, myPlaylists: scopedMyPlaylists, myPlaylistsAccountId, myPlaylistsStatus: scopedMyPlaylistsStatus, loadMyPlaylists, loadPlaylist, createPlaylist, addToPlaylist, updatePlaylist, deletePlaylist,
     drafts: draftsForAccount(drafts, session?.id), saveDraft, deleteDraft,
-    visibleFeed, followingFeed, loadMoreFeed, feedHasMore, feedLoadingMore, loadClips, notInterested, undoNotInterested, visibleTourDates, artistSummary, venueSummary,
+    visibleFeed, followingFeed, loadMoreFeed, feedHasMore, feedLoadingMore, loadClips, notInterested, undoNotInterested, refreshTourDates, visibleTourDates, artistSummary, venueSummary,
     localVenues, regionShows, localFeed, recommendedShows, venueCoord, locationCenter,
     searchVenues, venuesByCity, venueUpcomingCount,
     allArtists, topArtists, artistsAlphabetical, upcomingEvents, trendingVenues,
@@ -5725,7 +5873,7 @@ export function StoreProvider({ children }) {
     comments: scopedComments, fanClubMsgs, lounge,
     goingFor, myAttendance, isGoing, isGoingBusy, toggleGoing, attendeesFor,
     venueReviewsFor, loadVenueReviews, addVenueReview, venueRating, venueTopPhotos,
-    venuePhotos, venuePhotoState, loadVenuePhotos, artistFanPhotos, loadArtistPhotos,
+    venuePhotos, venuePhotoState, loadVenuePhotos, venuePhotoPrivacyRevision, artistFanPhotos, loadArtistPhotos,
     artistGallery, isPhotoRemoved, removePhoto, restorePhoto,
     chatAuthEpoch, retryChatMessage, cancelChatMessage,
     threadMessages, sendDM, loadThread, loadInboxThreads, markThreadRead, inboxThreads, mainThreads, requestThreads, inboxUnread, requestCount,

@@ -2298,7 +2298,8 @@ export function clearYouTubeTrackCache(title, artist, {
 // the act can still find it. Deezer's search is keyless and costs no YouTube
 // quota, which matters because YouTube search has a small separate daily call
 // bucket; a video is only resolved later, if and when the song is played.
-export async function searchDeezerTracks(query, { limit = 12, fetchImpl = fetch } = {}) {
+export async function searchDeezerTracks(query, { limit = 12, fetchImpl = fetch, signal } = {}) {
+  throwIfAborted(signal);
   const q = String(query || "").trim();
   if (q.length < 2) return [];
   const key = `dz:tracksearch:v1:${q.toLowerCase()}:${limit}`;
@@ -2315,7 +2316,12 @@ export async function searchDeezerTracks(query, { limit = 12, fetchImpl = fetch 
     `https://api.deezer.com/search?q=${encodeURIComponent(`track:"${q}"`)}&limit=25`,
     `https://api.deezer.com/search?q=${encodeURIComponent(q)}&limit=25`,
   ];
-  const responses = await Promise.allSettled(urls.map((url) => providerJson("Deezer", url, { fetchImpl })));
+  const responses = await Promise.allSettled(
+    urls.map((url) => providerJson("Deezer", url, { fetchImpl, signal })),
+  );
+  // A browser moving on to another query closes this request. Do not keep
+  // ranking or caching an obsolete provider result after that cancellation.
+  throwIfAborted(signal);
   const rows = responses.flatMap((r) => (r.status === "fulfilled" ? r.value?.data || [] : []));
   if (!rows.length) return [];
 
@@ -2371,6 +2377,7 @@ export async function searchDeezerTracks(query, { limit = 12, fetchImpl = fetch 
   // returned, and "bohemian rhapsody" came back without Queen in it at all.
   items.sort((a, b) => b.score - a.score);
   items.length = Math.min(items.length, limit);
+  throwIfAborted(signal);
   writeProviderCache(key, { items }, DEEZER_DISCOGRAPHY_TTL_MS);
   return items;
 }

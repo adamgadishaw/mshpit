@@ -101,6 +101,9 @@ import { profileManagementAction, publicIdentityTarget } from "./src/domain/arti
 import { prepareShowNavigation, showNavigationPostId } from "./src/domain/showNavigation.mjs";
 import { readSensitiveFragmentToken, readSensitiveLinkToken, scrubSensitiveLinkToken } from "./src/domain/sensitiveLinkTokens.mjs";
 import { verifiedMutationDecision } from "./src/domain/emailVerificationUx.mjs";
+import { desktopRightRailLayout } from "./src/domain/desktopRailLayout.mjs";
+import { filterDiscoverSceneRows } from "./src/domain/discoverScene.mjs";
+import { countryForCity } from "./src/geo";
 import {
   PLAYER_POSITION_STORAGE_KEY,
   PLAYER_STATE_STORAGE_KEY,
@@ -159,7 +162,7 @@ function Root() {
     feedHasMore, feedLoadingMore, notInterested, undoNotInterested, logout, exportMyData, userByHandle,
     searchPeople, inboxUnread, accountStatus, track, unreadNotifications, recordPlay, playHistory,
     loadPlayHistory, saveQueueAsPlaylist, autoplayQueue, followingCount, resendEmailVerification,
-    topArtists, artistsAlphabetical, upcomingEvents, discoverySidebar, discoverySidebarStatus,
+    topArtists, artistsAlphabetical, upcomingEvents, discoverySidebar, discoverySidebarStatus, tourDates,
     remoteArtistMeta,
     resolveYouTube, invalidateYouTube, youtubeVideoRejected, resolveDeezerPreview,
     youtubeLookupStatus, mediaReactions, loadMediaReactions, toggleMediaReaction,
@@ -175,7 +178,6 @@ function Root() {
   // Only true desktops get the persistent player column + top navigation. Below
   // this, tablets, split-screen windows, and phones keep the compact shell.
   const wide = Platform.OS === "web" && width >= 1200;
-  const showRightRail = wide && width >= 1480;
 
   const web = Platform.OS === "web" && typeof window !== "undefined";
 
@@ -346,6 +348,13 @@ function Root() {
   // The player starts COLLAPSED (a slim rail on desktop, hidden on mobile) and
   // opens itself the moment something plays; collapsing pauses (YouTube terms).
   const [playerMinimized, setPlayerMinimized] = useState(true);
+  const playerColumnWidth = playerMinimized ? 82 : Math.max(356, Math.min(460, Math.round(width * 0.25)));
+  const rightRailLayout = desktopRightRailLayout({
+    viewportWidth: width,
+    desktop: wide,
+    playerColumnWidth: MUSIC_PLAYER_ENABLED && wide ? playerColumnWidth : 0,
+  });
+  const showRightRail = rightRailLayout.visible;
   // iOS Safari zooms the whole page in when you focus a text field smaller than
   // 16px, and does not cleanly zoom back out. Many of the app's inputs are 13-15px
   // by design, so every search/compose box was jerking the viewport on a phone,
@@ -602,14 +611,17 @@ function Root() {
     setTab(key);
     commitClear();
   });
-  const openPublicDirectory = (directory) => {
+  const openPublicDirectory = (directory, { region } = {}) => {
     if (directory !== "artists" && directory !== "events") return;
     runAfterComposerClose(() => {
       // architecture: allow-empty-catch -- Directory chunk preloading is optional; Suspense owns the visible loading and retry state.
       DiscoverScreen.preload?.().catch(() => {});
       setLanding(false);
       setTab("discover");
-      commitGo({ directory });
+      commitGo({
+        directory,
+        ...(directory === "events" && region && region !== "Worldwide" ? { discoverRegion: region } : {}),
+      });
     });
   };
 
@@ -1022,7 +1034,17 @@ function Root() {
   const musicPlaylistAction = MUSIC_PLAYER_ENABLED ? openAddToPlaylist : undefined;
   const musicListeningHistoryAction = MUSIC_PLAYER_ENABLED ? () => go({ listeningHistory: true }) : undefined;
   const openFollowList = (userId, mode) => go({ followList: { userId, mode } });
-  const reviewShow = (log) => requireVerifiedMutation("review", () => go({ logging: true, prefill: { artist: log.artist, artistKey: log.artistKey || null, venue: log.venue, city: log.city, date: log.date || null } }));
+  const reviewShow = (log) => requireVerifiedMutation("review", () => go({
+    logging: true,
+    prefill: {
+      artist: log.artist,
+      artistKey: log.artistKey || null,
+      venue: log.venue,
+      city: log.city,
+      date: log.date || null,
+      tour: log.tour || log.eventName || "",
+    },
+  }));
   const openInbox = () => requireAuth(() => go({ inbox: true }));
   const openNotifications = () => requireAuth(() => go({ notifications: true }));
   const openThread = (otherId) => requireAuth(() => go({ thread: otherId }));
@@ -1059,7 +1081,7 @@ function Root() {
   else if (nav.artistName) overlay = <ArtistScreen artistName={nav.artistName} onClose={back} onOpenShow={openShow} onOpenArchive={openArtistArchive} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenPhotos={openPhotos} onOpenGallery={openArtistGallery} onOpenProfile={openProfile} onManageArtistProfile={() => go({ artistHub: true })} onEditArtistProfile={(name) => name && requireVerifiedMutation("artist", () => go({ editArtist: name }))} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} onReport={openReport} />;
   else if (nav.venueName) overlay = <VenueScreen venueName={nav.venueName} onClose={back} onOpenShow={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onReviewVenue={openVenueReview} onOpenProfile={openProfile} onOpenPhotos={openPhotos} onReport={openReport} />;
   else if (nav.nearby) overlay = <NearbyScreen onClose={back} onOpenVenue={openVenue} onOpenArtist={openArtist} />;
-  else if (nav.venues) overlay = <VenuesScreen onClose={back} onOpenVenue={openVenue} />;
+  else if (nav.venues) overlay = <VenuesScreen initialRegion={nav.discoverRegion} onClose={back} onOpenVenue={openVenue} />;
   else if (nav.fanClubs) overlay = <FanClubsScreen onClose={back} onOpenFanClub={openFanClub} />;
   else if (nav.suggestion) overlay = <SuggestionBoxScreen onClose={back} initialSurface={nav.suggestion.surface} />;
   else if (nav.settings) overlay = <SettingsScreen onClose={back} onManageProfile={openProfileManagement} onOpenProfile={() => (session ? openProfile(session.id) : go({ auth: true }))} onOpenPrivacy={() => go({ privacy: true })} onOpenTerms={() => go({ terms: true })} onOpenDiagnostics={() => { if (canViewDiagnostics) go({ diagnostics: true }); }} onOpenDeleteAccount={() => go({ deleteAccount: true })} onLogout={signOut} />;
@@ -1071,7 +1093,7 @@ function Root() {
   else if (nav.openLog) overlay = <ShowScreen log={nav.openLog} onClose={back} onPreview={musicPreviewAction} onReview={reviewShow} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenArchive={openArtistArchive} onOpenVenue={openVenue} onOpenLounge={(log) => go({ lounge: log })} onOpenPost={openPost} onOpenPhotos={openPhotos} onRequireAuth={() => go({ auth: true })} />;
   else if (nav.post) overlay = <PostScreen log={nav.post} onClose={back} onOpenProfile={openProfile} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenShow={openShow} onReport={openReport} onEdit={openPostEditor} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onRemoveMyPostTag={removePostTag} />;
   else if (nav.badges) overlay = <BadgeLegendScreen userId={nav.badges.userId} onClose={back} />;
-  else if (nav.topRated) overlay = <TopRatedScreen onClose={back} onOpen={openShow} />;
+  else if (nav.topRated) overlay = <TopRatedScreen initialRegion={nav.discoverRegion} onClose={back} onOpen={openShow} />;
   else if (nav.admin) overlay = <AdminScreen onClose={back} />;
   else if (nav.bulk) overlay = <BulkTourDatesScreen onClose={back} />;
   else if (nav.reqArtist) overlay = <RequestArtistScreen onClose={back} />;
@@ -1091,6 +1113,7 @@ function Root() {
       onAdmin={() => replace({ admin: true })}
       onTourDates={() => requireVerifiedMutation("artist", () => replace({ bulk: true }))}
       onRequestArtist={() => requireVerifiedMutation("artist", () => replace({ reqArtist: true }))}
+      onHowItWorks={() => setWelcome(true)}
       onLogin={() => replace({ auth: true })}
       onLogout={signOut}
       onBackToLanding={exitToLanding}
@@ -1109,13 +1132,18 @@ function Root() {
     }).slice(0, 10)
     : [];
   const hydratedDirectoryEvents = nav.directory === "events"
-    ? [
+    ? filterDiscoverSceneRows([
+      ...(Array.isArray(tourDates) ? tourDates : []),
       ...(Array.isArray(discoverySidebar?.upcomingEvents) ? discoverySidebar.upcomingEvents : []),
       ...(typeof upcomingEvents === "function" ? upcomingEvents(12) : []),
     ].filter((event, index, rows) => {
       const href = eventPath(event);
       return !!href && rows.findIndex((candidate) => eventPath(candidate) === href) === index;
-    }).slice(0, 10)
+    }), {
+      region: nav.discoverRegion || "Worldwide",
+      countryForCity,
+      limit: 10,
+    })
     : [];
   const openHydratedPublicTarget = (target) => {
     if (!target) return;
@@ -1182,7 +1210,7 @@ function Root() {
                 />
               )}
               {tab === "search" && <SearchScreen onOpen={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenFanClub={openFanClub} onOpenProfile={openProfile} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} />}
-              {tab === "discover" && <DiscoverScreen onOpenTopRated={() => go({ topRated: true })} onOpenEvents={() => openPublicDirectory("events")} onOpen={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenNearby={() => go({ nearby: true })} onOpenFanClubs={() => go({ fanClubs: true })} onOpenVenues={() => go({ venues: true })} onOpenLounge={(lounge) => go({ lounge })} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} onOpenProfile={openProfile} />}
+              {tab === "discover" && <DiscoverScreen onOpenTopRated={(discoverRegion) => go({ topRated: true, discoverRegion })} onOpenEvents={(discoverRegion) => openPublicDirectory("events", { region: discoverRegion })} onOpen={openShow} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenNearby={() => go({ nearby: true })} onOpenFanClubs={() => go({ fanClubs: true })} onOpenVenues={(discoverRegion) => go({ venues: true, discoverRegion })} onOpenLounge={(lounge) => go({ lounge })} onOpenPhotos={openPhotos} onPlay={musicPlayerAction} onAddToPlaylist={musicPlaylistAction} onOpenProfile={openProfile} />}
               {tab === "you" && (
                 <YouScreen
                   onLogin={() => go({ auth: true })}
@@ -1233,6 +1261,7 @@ function Root() {
         <View style={styles.deskCenter}>
           <PublicDirectoryPanel
             directory={nav.directory}
+            region={nav.discoverRegion}
             artists={hydratedDirectoryArtists}
             events={hydratedDirectoryEvents}
             onOpenArtist={openArtist}
@@ -1240,11 +1269,10 @@ function Root() {
           />
           <Suspense fallback={<ScreenLoading />}>{overlay || tabScreens}</Suspense>
         </View>
-        {showRightRail && <RightRail topArtists={topArtists} artistsAlphabetical={artistsAlphabetical} upcomingEvents={upcomingEvents} discoverySidebar={discoverySidebar} discoverySidebarStatus={discoverySidebarStatus} accountId={session?.id || null} homeCity={session?.home?.city} onOpenArtist={openArtist} onOpenLounge={(lounge) => go({ lounge })} onOpenDiscover={() => switchTab("discover")} onOpenEvent={openShow} />}
+        {showRightRail && <RightRail railWidth={rightRailLayout.width} topArtists={topArtists} artistsAlphabetical={artistsAlphabetical} upcomingEvents={upcomingEvents} discoverySidebar={discoverySidebar} discoverySidebarStatus={discoverySidebarStatus} accountId={session?.id || null} homeCity={session?.home?.city} onOpenArtist={openArtist} onOpenLounge={(lounge) => go({ lounge })} onOpenDiscover={() => switchTab("discover")} onOpenEvent={openShow} />}
       </View>
     </View>
   );
-  const playerColumnWidth = playerMinimized ? 82 : Math.max(356, Math.min(460, Math.round(width * 0.25)));
   // Clips mode has its own audio; obscuring pauses the music player so the two
   // don't talk over each other (the clip drives sound while you're in there).
   // Full-screen clips and gallery videos own audio while visible. Pause the
@@ -1310,6 +1338,7 @@ function Root() {
                   {showMobilePublicTrail ? <PublicWebTrail links={hydratedPublicLinks} onNavigate={openHydratedPublicTarget} /> : null}
                   <PublicDirectoryPanel
                     directory={nav.directory}
+                    region={nav.discoverRegion}
                     artists={hydratedDirectoryArtists}
                     events={hydratedDirectoryEvents}
                     onOpenArtist={openArtist}

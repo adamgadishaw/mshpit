@@ -44,9 +44,23 @@ function fixture() {
     CREATE TRIGGER trg_artist_projection_delete AFTER DELETE ON artists BEGIN
       UPDATE artist_projection_revision SET revision = revision + 1 WHERE singleton = 1;
     END;
-    CREATE TABLE users (id TEXT PRIMARY KEY, is_banned INTEGER NOT NULL DEFAULT 0);
-    INSERT INTO users VALUES ('member-1', 0), ('member-2', 0), ('banned-member', 1);
+    CREATE TABLE users (
+      id TEXT PRIMARY KEY,
+      is_banned INTEGER NOT NULL DEFAULT 0,
+      suspended_until INTEGER
+    );
+    INSERT INTO users VALUES ('member-1', 0, NULL), ('member-2', 0, NULL), ('banned-member', 1, NULL);
     CREATE TABLE plays (artist TEXT, user_id TEXT, created_at INTEGER);
+    CREATE TABLE posts (
+      id TEXT PRIMARY KEY,user_id TEXT NOT NULL,artist TEXT NOT NULL,artist_key TEXT,
+      venue TEXT NOT NULL,venue_key TEXT,city TEXT,date TEXT,overall REAL,review TEXT,
+      tour TEXT,kind TEXT,removed INTEGER NOT NULL DEFAULT 0,created_at INTEGER,updated_at INTEGER
+    );
+    CREATE TABLE tour_dates (
+      id TEXT PRIMARY KEY,artist TEXT,artist_key TEXT,venue TEXT,place TEXT,date TEXT,
+      source TEXT,venue_provider_id TEXT,venue_city TEXT,venue_region TEXT,
+      venue_country_code TEXT,venue_country TEXT,owner_id TEXT,updated_at INTEGER
+    );
   `);
   const addArtist = database.prepare("INSERT INTO artists VALUES (?,?,?,?,?,?,?,?)");
   addArtist.run("alpha", "Alpha", "rap", "Canada", 90, 9, "alpha.jpg", evidencedGenre("rap", { followers: 120, topTracks: [{ title: "First", url: "first.mp3" }] }));

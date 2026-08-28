@@ -75,6 +75,7 @@ import {
   normalizeArtistCampaign,
 } from "../domain/artistCampaignPost.mjs";
 import { MAX_POST_TAGGED_PEOPLE, normalizeTaggedPeople } from "../domain/postFriendTags.mjs";
+import { COMPOSER_ARTIST_SEARCH_LIMIT } from "../features/artistSearch/artistSearchApi.mjs";
 
 const createMediaEditorWorkspace = (attempt) => lazyWithRetry(
   () => import("../components/media-editor"),
@@ -196,7 +197,7 @@ export default function LogScreen({
   pendingMedia,
   onPendingMediaConsumed,
 }) {
-  const { searchArtistsApi, searchVenues, searchPeople, drafts, saveDraft, deleteDraft } = useStore();
+  const { searchArtistsApi, attachArtistSuggestionApi, searchVenues, searchPeople, drafts, saveDraft, deleteDraft } = useStore();
   const initialRecoveryDraftRef = useRef(!editing && initialDraftId
     ? drafts.find((draft) => draft?.id === initialDraftId) || null
     : null);
@@ -222,26 +223,100 @@ export default function LogScreen({
   const [artist, setArtist] = useState(editing?.artist || prefill?.artist || "");
   const [venue, setVenue] = useState(editing?.venue || prefill?.venue || "");
   const [city, setCity] = useState(editing?.city || prefill?.city || "");
-  const [tour, setTour] = useState(editing?.tour || "");
+  const [tour, setTour] = useState(editing?.tour || prefill?.tour || prefill?.eventName || "");
   // Artist autocomplete: bind the review to a REAL catalog artist so it links to
   // the artist page, instead of free text that may match nothing.
   const [artistHits, setArtistHits] = useState([]);
+  const [artistLoading, setArtistLoading] = useState(false);
+  const [artistAttaching, setArtistAttaching] = useState(false);
+  const [artistError, setArtistError] = useState("");
   const [artistPicked, setArtistPicked] = useState(!!editing?.artistKey || !!prefill?.artistKey);
   // The identity behind the name. Picking a suggestion binds the review to that
   // catalog entity; typing over it drops the binding, so free text can never
   // inherit the last artist's page. The server re-checks this before storing.
   const [artistKey, setArtistKey] = useState(editing?.artistKey || prefill?.artistKey || null);
   const artistRequestRef = useRef(0);
+  const artistAttachRef = useRef({ sequence: 0, controller: null });
   useEffect(() => {
     const q = artist.trim();
     const sequence = ++artistRequestRef.current;
     const controller = new AbortController();
-    if (artistPicked || q.length < 2) { setArtistHits([]); return () => controller.abort(); }
-    const id = setTimeout(() => searchArtistsApi(q, { signal: controller.signal }).then((list) => {
-      if (!controller.signal.aborted && sequence === artistRequestRef.current) setArtistHits((list || []).slice(0, 6));
-    }), 220);
+    if (artistPicked || artistAttaching || q.length < 2) {
+      setArtistHits([]);
+      setArtistLoading(false);
+      setArtistError("");
+      return () => controller.abort();
+    }
+    setArtistLoading(true);
+    setArtistError("");
+    const id = setTimeout(() => searchArtistsApi(q, {
+      signal: controller.signal,
+      throwOnError: true,
+      limit: COMPOSER_ARTIST_SEARCH_LIMIT,
+      remoteFallback: true,
+    }).then((list) => {
+      if (!controller.signal.aborted && sequence === artistRequestRef.current) {
+        setArtistHits((list || []).slice(0, COMPOSER_ARTIST_SEARCH_LIMIT));
+      }
+    }).catch((error) => {
+      if (!controller.signal.aborted && error?.name !== "AbortError" && sequence === artistRequestRef.current) {
+        setArtistHits([]);
+        setArtistError("Artist search could not update. Check your connection and try again.");
+      }
+    }).finally(() => {
+      if (!controller.signal.aborted && sequence === artistRequestRef.current) setArtistLoading(false);
+    }), 320);
     return () => { clearTimeout(id); controller.abort(); };
-  }, [artist, artistPicked]);
+  }, [artist, artistAttaching, artistPicked]);
+  useEffect(() => () => artistAttachRef.current.controller?.abort(), []);
+
+  const changeArtistText = (value) => {
+    artistAttachRef.current.controller?.abort();
+    artistAttachRef.current = { sequence: artistAttachRef.current.sequence + 1, controller: null };
+    setArtistAttaching(false);
+    setArtist(value);
+    setArtistPicked(false);
+    setArtistKey(null);
+    setArtistError("");
+  };
+
+  const chooseArtist = async (candidate) => {
+    artistAttachRef.current.controller?.abort();
+    const sequence = artistAttachRef.current.sequence + 1;
+    const name = String(candidate?.name || "").trim();
+    setArtist(name);
+    setArtistHits([]);
+    setArtistError("");
+    if (!candidate?.transient) {
+      artistAttachRef.current = { sequence, controller: null };
+      setArtistKey(candidate?.key || candidate?.norm || name);
+      setArtistPicked(true);
+      setArtistAttaching(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    artistAttachRef.current = { sequence, controller };
+    setArtistKey(null);
+    setArtistPicked(false);
+    setArtistAttaching(true);
+    try {
+      const attached = await attachArtistSuggestionApi(candidate, { signal: controller.signal });
+      if (controller.signal.aborted || artistAttachRef.current.sequence !== sequence || !attached) return;
+      setArtist(attached.name);
+      setArtistKey(attached.key || attached.norm || attached.name);
+      setArtistPicked(true);
+    } catch (error) {
+      if (!controller.signal.aborted && artistAttachRef.current.sequence === sequence && error?.name !== "AbortError") {
+        setArtistError("That artist could not be attached yet. Search again, or post without linking an artist page.");
+      }
+    } finally {
+      if (!controller.signal.aborted && artistAttachRef.current.sequence === sequence) {
+        artistAttachRef.current = { sequence, controller: null };
+        setArtistAttaching(false);
+      }
+    }
+  };
   const [venueHits, setVenueHits] = useState([]);
   const [venuePicked, setVenuePicked] = useState(!!editing?.venue || !!prefill?.venue);
   useEffect(() => {
@@ -871,7 +946,7 @@ export default function LogScreen({
   const canPostStatus = !!(review.trim() || photos.filter(isDurableMediaUrl).length || song?.videoId);
   const canPostBase = isStatus ? canPostStatus : (artist.trim() && venue.trim() && computed.overall > 0);
   const canPost = !!canPostBase && studioAssets.length === 0;
-  const submitBusy = uploadingPhotos || resolvingSong || posting;
+  const submitBusy = uploadingPhotos || resolvingSong || posting || artistAttaching;
 
   const draftMediaProject = useMemo(() => normalizeMediaProject({
     assets: [
@@ -1382,13 +1457,15 @@ export default function LogScreen({
             placeholder="Artist"
             placeholderTextColor={colors.textFaint}
             value={artist}
-            onChangeText={(t) => { setArtist(t); setArtistPicked(false); setArtistKey(null); }}
+            onChangeText={changeArtistText}
             autoCapitalize="words"
+            accessibilityLabel="Artist"
+            accessibilityState={{ busy: artistLoading || artistAttaching }}
           />
           {artistHits.length > 0 && (
             <View style={styles.hits}>
               {artistHits.map((h) => (
-                <Pressable key={h.key || h.name} style={styles.hit} onPress={() => { setArtist(h.name); setArtistKey(h.key || h.norm || h.name); setArtistPicked(true); setArtistHits([]); }}>
+                <Pressable key={h.key || h.name} style={styles.hit} onPress={() => { void chooseArtist(h); }}>
                   <Icon name="music" size={13} color={colors.amber} />
                   <Text style={styles.hitName} numberOfLines={1}>{h.name}</Text>
                   {/* Disambiguating evidence, so two same-named acts are
@@ -1398,12 +1475,18 @@ export default function LogScreen({
                       {[h.genre, h.country, h.formed].filter(Boolean).join(" · ")}
                     </Text>
                   )}
+                  {h.transient && !(h.genre || h.country || h.formed) && (
+                    <Text style={styles.hitGenre} numberOfLines={1}>Found in the wider artist directory</Text>
+                  )}
                 </Pressable>
               ))}
             </View>
           )}
+          {artistLoading && <Text style={styles.lookupStatus} accessibilityLiveRegion="polite">Searching the artist directory...</Text>}
+          {artistAttaching && <Text style={styles.lookupStatus} accessibilityLiveRegion="polite">Attaching this artist to the post...</Text>}
+          {!!artistError && <Text style={styles.lookupError} accessibilityLiveRegion="assertive">{artistError}</Text>}
           {artistPicked && !!artist.trim() && (
-            <View style={styles.linked}><Icon name="check" size={12} color={colors.good} /><Text style={styles.linkedTxt}>Linked to {artist.trim()}'s page</Text></View>
+            <View style={styles.linked}><Icon name="check" size={12} color={colors.good} /><Text style={styles.linkedTxt}>{artist.trim()} attached to this post</Text></View>
           )}
         </View>
         <View style={{ flexDirection: "row", gap: 10 }}>
@@ -1434,8 +1517,8 @@ export default function LogScreen({
           <TextInput style={[styles.input, { flex: 1 }]} placeholder="City" placeholderTextColor={colors.textFaint} value={city} onChangeText={setCity} />
         </View>
 
-        <Text style={styles.fieldLabel}>TOUR OR OCCASION <Text style={styles.optional}>optional</Text></Text>
-        <TextInput style={styles.input} placeholder="Tour name (or pick below)" placeholderTextColor={colors.textFaint} value={tour} onChangeText={setTour} />
+        <Text style={styles.fieldLabel}>CONCERT, TOUR OR OCCASION <Text style={styles.optional}>optional</Text></Text>
+        <TextInput style={styles.input} placeholder="e.g. CHROMAKOPIA Tour, OVO Fest" placeholderTextColor={colors.textFaint} value={tour} onChangeText={setTour} maxLength={80} accessibilityLabel="Concert, tour, or occasion name" />
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.presets} keyboardShouldPersistTaps="handled">
           {TOUR_PRESETS.map((p) => {
             const on = tour === p;
@@ -1873,6 +1956,8 @@ const styles = StyleSheet.create({
   hit: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, paddingVertical: 10, borderTopWidth: 1, borderTopColor: colors.lineSoft },
   hitName: { color: colors.text, fontSize: 14, fontWeight: "700", flexShrink: 1 },
   hitGenre: { color: colors.textDim, fontSize: 11, fontFamily: mono, marginLeft: "auto" },
+  lookupStatus: { color: colors.textDim, fontSize: 11.5, marginTop: -2, marginBottom: 10 },
+  lookupError: { color: colors.danger, fontSize: 11.5, lineHeight: 16, marginTop: -2, marginBottom: 10 },
   venuePlace: { color: colors.textDim, fontSize: 11, marginTop: 2 },
   linked: { flexDirection: "row", alignItems: "center", gap: 5, marginTop: -4, marginBottom: 10 },
   linkedTxt: { color: colors.good, fontSize: 11.5, fontWeight: "700" },

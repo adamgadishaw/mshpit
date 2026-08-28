@@ -30,9 +30,26 @@ export default function WelcomeScreen({ onClose, onOpenFanClub, onOpenShow, onOp
     <View style={styles.wrap}>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <View style={styles.hero}>
-          <Text style={styles.kicker}>WELCOME TO PIT</Text>
+          <Text style={styles.kicker}>WELCOME TO MSHPIT</Text>
           <Text style={styles.title}>You're in, {name}.</Text>
-          <Text style={styles.sub}>Two quick things to get the full experience, then you're off.</Text>
+          <Text style={styles.sub}>
+            MSHpit is the social network for live music: remember the shows you attend,
+            share what the night felt like, and find your next one through other fans.
+          </Text>
+        </View>
+
+        <View style={[styles.card, styles.journeyCard]}>
+          <View style={styles.cardHead}>
+            <View style={[styles.badge, { borderColor: colors.magenta }]}><Icon name="ticket" size={18} color={colors.magenta} /></View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.cardTitle}>How MSHpit works</Text>
+              <Text style={styles.cardSub}>Start anywhere. You do not need to fill out everything before exploring.</Text>
+            </View>
+          </View>
+          <JourneyStep number="1" title="Find a show" detail="Browse upcoming concerts, festivals, artists, and venues." />
+          <JourneyStep number="2" title="Attend and log it" detail="A quick log can be just a rating, a photo, and whether you'd go again." />
+          <JourneyStep number="3" title="Share the night" detail="Your review and media join that exact show's fan archive." />
+          <JourneyStep number="4" title="Find your people" detail="Follow fans with similar taste and discover what to see next." />
         </View>
 
         {/* Find your people */}
@@ -89,6 +106,18 @@ export default function WelcomeScreen({ onClose, onOpenFanClub, onOpenShow, onOp
   );
 }
 
+function JourneyStep({ number, title, detail }) {
+  return (
+    <View style={styles.journeyStep}>
+      <View style={styles.journeyNumber}><Text style={styles.journeyNumberText}>{number}</Text></View>
+      <View style={{ flex: 1 }}>
+        <Text style={styles.journeyTitle}>{title}</Text>
+        <Text style={styles.journeyDetail}>{detail}</Text>
+      </View>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   wrap: { flex: 1, backgroundColor: colors.bg },
   content: { padding: 16, paddingBottom: 40 },
@@ -97,11 +126,17 @@ const styles = StyleSheet.create({
   title: { color: colors.text, fontSize: 26, fontWeight: "900", marginTop: 8, letterSpacing: -0.5 },
   sub: { color: colors.textDim, fontSize: 14, lineHeight: 20, marginTop: 6 },
   card: { backgroundColor: colors.surface, borderRadius: radius.lg, borderWidth: 1, borderColor: colors.line, padding: 16, marginBottom: 14, ...shadow.card },
+  journeyCard: { borderColor: colors.magenta },
   cardSpotify: { borderColor: colors.good, backgroundColor: "rgba(111,207,151,0.06)" },
   cardHead: { flexDirection: "row", gap: 12, alignItems: "flex-start" },
   badge: { width: 40, height: 40, borderRadius: 20, borderWidth: 1, alignItems: "center", justifyContent: "center", backgroundColor: colors.bgElev },
   cardTitle: { color: colors.text, fontSize: 17, fontWeight: "800" },
   cardSub: { color: colors.textDim, fontSize: 13, lineHeight: 19, marginTop: 3 },
+  journeyStep: { flexDirection: "row", alignItems: "flex-start", gap: 11, marginTop: 14 },
+  journeyNumber: { width: 28, height: 28, borderRadius: 14, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.bgElev, alignItems: "center", justifyContent: "center" },
+  journeyNumberText: { color: colors.amber, fontFamily: mono, fontSize: 11, fontWeight: "900" },
+  journeyTitle: { color: colors.text, fontSize: 14, fontWeight: "800" },
+  journeyDetail: { color: colors.textDim, fontSize: 12.5, lineHeight: 18, marginTop: 2 },
   primary: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, borderRadius: radius.md, paddingVertical: 13, marginTop: 14 },
   primaryTxt: { color: "#08120D", fontSize: 15, fontWeight: "800" },
   groupLabel: { color: colors.textFaint, fontFamily: mono, fontSize: 10, letterSpacing: 1.4, fontWeight: "800", marginTop: 14, marginBottom: space(2) },

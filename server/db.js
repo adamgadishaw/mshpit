@@ -262,6 +262,7 @@ CREATE TABLE IF NOT EXISTS venue_reviews (
   rating     REAL NOT NULL,
   text       TEXT NOT NULL DEFAULT '',
   photos     TEXT NOT NULL DEFAULT '[]',
+  photos_public INTEGER NOT NULL DEFAULT 0,
   removed    INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL
 );
@@ -1404,6 +1405,9 @@ const additiveMigrations = [
   "ALTER TABLE users ADD COLUMN reset_expires INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE posts ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'", // short word-art descriptors on a review
   "ALTER TABLE posts ADD COLUMN kind TEXT NOT NULL DEFAULT 'review'", // 'review' = a logged show, 'status' = a plain post
+  // Venue-review images are private account media unless the author explicitly
+  // allows aggregate public/crawler venue-gallery reuse.
+  "ALTER TABLE venue_reviews ADD COLUMN photos_public INTEGER NOT NULL DEFAULT 0",
   // Separate, default-off consent for marketing-surface community imagery.
   // Existing artist-page photo consent must never silently become permission
   // to feature an old upload as the full-screen logged-out homepage.
@@ -2260,6 +2264,13 @@ export const artistStmts = {
   byPublicSlug: db.prepare(`SELECT * FROM artists
     WHERE public_slug IS NOT NULL AND public_slug<>'' AND lower(public_slug)=lower(?)`),
   count: db.prepare("SELECT COUNT(*) c FROM artists"),
+  // Most type-ahead searches begin at the artist's first character. Let both
+  // canonical names and punctuation-folded names use their indexes for that
+  // common path; the API falls back to the bounded substring query only when
+  // neither prefix has a hit (for searches such as a surname).
+  searchPrefix: db.prepare(`SELECT * FROM artists
+    WHERE (norm >= ? AND norm < ?) OR (search_key >= ? AND search_key < ?)
+    ORDER BY (norm = ?) DESC, (search_key = ?) DESC, rank_score DESC, name LIMIT ?`),
   search: db.prepare(`SELECT * FROM artists WHERE norm LIKE ? OR search_key LIKE ?
     ORDER BY (norm = ?) DESC, (search_key = ?) DESC, rank_score DESC, name LIMIT ?`),
   top: db.prepare("SELECT * FROM artists ORDER BY rank_score DESC, name LIMIT ?"),

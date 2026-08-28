@@ -1,5 +1,6 @@
 import { db } from "./db.js";
 import { projectArtistGenre } from "../src/domain/genre.mjs";
+import { createTopRatedShowService } from "./features/discovery/topRatedShowService.js";
 
 const GENRE_ALIAS = {
   "hip hop": "Hip-Hop", hiphop: "Hip-Hop", "hip-hop": "Hip-Hop", rap: "Hip-Hop", trap: "Hip-Hop", "conscious hip hop": "Hip-Hop",
@@ -69,6 +70,7 @@ export function createDiscoverService({ database = db, clock = Date.now } = {}) 
   const PUBLIC_PLAY_DELAY_MS = 6 * 60 * 60 * 1000;
   const PUBLIC_PLAY_MIN_LISTENERS = 3;
   let projectionCache = { version: null, at: 0, rows: [] };
+  const topRatedShows = createTopRatedShowService({ database, clock });
 
   function projectionVersion() {
     return Number(database.prepare("SELECT revision FROM artist_projection_revision WHERE singleton = 1").get()?.revision) || 0;
@@ -199,6 +201,7 @@ export function createDiscoverService({ database = db, clock = Date.now } = {}) 
       distinctGenres: genreResult.distinctGenres,
       catalogTotal: genreResult.catalogTotal,
       countries: countries({ min: 5 }).countries,
+      topRatedShows: topRatedShows.read({ country, limit: 24 }),
       generatedAt: new Date(clock()).toISOString(),
     };
   }

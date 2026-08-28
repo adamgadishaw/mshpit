@@ -2824,7 +2824,7 @@ test("tour-date batches are owner-authorized, atomic, canonical, and release-gat
   const other = addUser("u_tour_other", "tour-other@example.com", "tourother");
   const moderatorSeed = addUser("u_tour_mod", "tour-mod@example.com", "tourmoderator");
   const adminSeed = addUser("u_tour_admin", "tour-admin@example.com", "touradmin");
-  db.prepare("UPDATE users SET role='artist',artist_name='Authority Band' WHERE id=?").run(artistSeed.id);
+  db.prepare("UPDATE users SET role='artist',artist_name='API Tour Fixture 2822' WHERE id=?").run(artistSeed.id);
   db.prepare("UPDATE users SET role='moderator' WHERE id=?").run(moderatorSeed.id);
   db.prepare("UPDATE users SET role='admin' WHERE id=?").run(adminSeed.id);
   const artist = q.userById.get(artistSeed.id);
@@ -2836,7 +2836,7 @@ test("tour-date batches are owner-authorized, atomic, canonical, and release-gat
   const context = (user, dates, extra = {}) => ({
     user,
     ip: `tour-${user?.id || "guest"}`,
-    body: { artist: "Authority Band", releaseAt, dates, ...extra },
+    body: { artist: "API Tour Fixture 2822", releaseAt, dates, ...extra },
   });
 
   assert.throws(() => post({ ip: "tour-guest", body: context(artist, [{ venue: "Room", place: "Toronto, ON", date: showDate }]).body }),
@@ -2885,7 +2885,7 @@ test("tour-date batches are owner-authorized, atomic, canonical, and release-gat
     { venue: "Second Hall", place: "Montreal, Quebec", date: showDate, ticketUrl: "" },
   ])).tourDates;
   assert.equal(created.length, 2);
-  assert.equal(created[0].artist, "Authority Band");
+  assert.equal(created[0].artist, "API Tour Fixture 2822");
   assert.equal(created[0].venue, "Valid Hall");
   assert.equal(created[0].ticketUrl, "https://tickets.example.com/show");
   assert.equal(created[0].source, "artist-submitted");
@@ -2975,6 +2975,37 @@ test("tour-date batches are owner-authorized, atomic, canonical, and release-gat
 
   const adminRows = post(context(admin, [{ venue: "Admin Hall", place: "Calgary, Alberta", date: showDate, ticketUrl: "" }], { releaseAt: 0 })).tourDates;
   assert.equal(adminRows[0].source, "admin-submitted");
+  const memorialAt = Date.now();
+  const memorialMbid = "11111111-1111-4111-8111-111111111111";
+  db.prepare(`INSERT INTO artists (norm,name,mbid,created_at,updated_at)
+    VALUES (?,?,?,?,?) ON CONFLICT(norm) DO UPDATE SET name=excluded.name,mbid=excluded.mbid,updated_at=excluded.updated_at`)
+    .run("api tour fixture 2822", "API Tour Fixture 2822", memorialMbid, memorialAt, memorialAt);
+  db.prepare(`INSERT INTO artist_memorials (
+      artist_key,artist_name,artist_mbid,status,death_date,summary,thank_you,accomplishments,
+      source_url,published_at,spotlight_started_at,created_at,updated_at
+    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    .run("api tour fixture 2822", "API Tour Fixture 2822", memorialMbid, "published", "2026-08-28",
+      "A verified memorial used to keep future tour dates off every live product surface.",
+      "Thank you for the music.", JSON.stringify(["A lasting live legacy"]),
+      "https://example.com/authority-band-memorial", memorialAt, memorialAt, memorialAt, memorialAt);
+  assert.throws(() => post(context(artist, [
+    { venue: "Future Memorial Hall", place: "Toronto, Ontario", date: showDate },
+  ], { releaseAt: 0 })),
+  (error) => error.status === 409 && error.code === "ARTIST_MEMORIALIZED");
+  const historicalMemorialDate = "2001-06-15";
+  const historicalRows = post(context(artist, [
+    { venue: "Memorial Archive Hall", place: "Toronto, Ontario", date: historicalMemorialDate },
+  ], { releaseAt: 0 })).tourDates;
+  assert.equal(historicalRows.length, 1, "a memorial must not erase or block legitimate historical archive imports");
+  assert.equal(historicalRows[0].date, historicalMemorialDate);
+  assert.equal(routes["GET /api/tourdates"]({ user: admin }).tourDates
+    .some((row) => row.artist === "API Tour Fixture 2822"), false,
+  "memorialized artists have no current or future dates even for staff");
+  assert.equal(routes["GET /api/discovery/sidebar"]({ user: artist }).upcomingEvents
+    .some((row) => row.artist === "API Tour Fixture 2822"), false,
+  "memorialized artists have no current or future dates in discovery");
+  db.prepare("DELETE FROM artist_memorials WHERE artist_key=?").run("api tour fixture 2822");
+  db.prepare("DELETE FROM artists WHERE norm=?").run("api tour fixture 2822");
   db.prepare("DELETE FROM tour_dates WHERE owner_id IN (?,?) OR id IN (?,?,?)")
     .run(artist.id, admin.id, "provider_release_compat", "provider_shared_release", "provider_unsafe_ticket");
 });
@@ -4106,6 +4137,81 @@ test("admin exact identity enrichment persists a missing artist and keeps its MB
   assert.equal(data.mbid, mbid, "Deezer enrichment must retain the exact MusicBrainz identity in rich data");
   assert.equal(data.deezerId, 919);
   assert.equal(data.country, "Canada");
+});
+
+test("a verified composer selection persists an exact MusicBrainz identity before post binding", async () => {
+  const name = "Composer Durable Artist Fixture";
+  const mbid = "77777777-7777-4777-8777-777777777777";
+  const user = verifiedUser("u_composer_artist", "composer-artist@example.com", "composerartist");
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options = {}) => {
+    assert.match(String(url), /musicbrainz\.org\/ws\/2\/artist/);
+    assert.ok(options.signal, "provider lookup must receive the request cancellation signal");
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ artists: [{ id: mbid, name, score: 100, area: { name: "Canada" } }] }),
+    };
+  };
+
+  let attached;
+  try {
+    attached = await routes["POST /api/artists/resolve"]({
+      user,
+      body: { name, mbid },
+      ip: "198.51.100.77",
+      signal: new AbortController().signal,
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(attached.created, true);
+  assert.equal(attached.artist.key, name.toLowerCase());
+  assert.equal(artistStmts.byNorm.get(name.toLowerCase())?.mbid, mbid);
+
+  const created = routes["POST /api/posts"]({
+    user,
+    ip: "198.51.100.77",
+    body: {
+      clientMutationId: "composer_artist_binding_1",
+      artist: name,
+      artistKey: attached.artist.key,
+      venue: "History",
+      city: "Toronto",
+      date: "2026-08-20",
+      overall: 5,
+      band: 5,
+      room: 4,
+      review: "A durable artist binding test.",
+    },
+  });
+  assert.equal(created.post.artistKey, name.toLowerCase());
+  assert.equal(created.post.artistMbid, mbid);
+});
+
+test("cancelling public artist resolution aborts the outbound MusicBrainz request", async () => {
+  const controller = new AbortController();
+  const originalFetch = globalThis.fetch;
+  let providerSignal = null;
+  globalThis.fetch = async (_url, options = {}) => new Promise((_resolve, reject) => {
+    providerSignal = options.signal;
+    options.signal?.addEventListener("abort", () => reject(options.signal.reason), { once: true });
+  });
+
+  const pending = routes["GET /api/artists/resolve"]({
+    query: { name: "Cancelled Composer Fixture" },
+    ip: "198.51.100.78",
+    signal: controller.signal,
+  });
+  try {
+    await eventually(() => providerSignal, Boolean);
+    controller.abort();
+    await assert.rejects(pending, (error) => error?.name === "AbortError");
+    assert.equal(providerSignal.aborted, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("admin exact identity enrichment rejects a fuzzy MusicBrainz result without persisting it", async () => {

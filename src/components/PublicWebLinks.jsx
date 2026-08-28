@@ -87,7 +87,7 @@ export function PublicWebTrail({ links = [], onNavigate }) {
   );
 }
 
-const directoryCopy = (directory) => directory === "artists"
+const directoryCopy = (directory, region = "Worldwide") => directory === "artists"
   ? {
     eyebrow: "ARTIST DIRECTORY",
     title: "Find the artists fans are talking about",
@@ -95,13 +95,13 @@ const directoryCopy = (directory) => directory === "artists"
   }
   : {
     eyebrow: "GLOBAL EVENT DIRECTORY",
-    title: "Upcoming concerts around the world",
-    body: "Browse released event pages with artists, venues, dates, locations, fan activity, and official ticket links.",
+    title: region && region !== "Worldwide" ? `Upcoming concerts in ${region}` : "Upcoming concerts around the world",
+    body: `Browse released event pages${region && region !== "Worldwide" ? ` in ${region}` : ""} with artists, venues, dates, locations, fan activity, and official ticket links.`,
   };
 
-export function PublicDirectoryPanel({ directory, artists = [], events = [], onOpenArtist, onOpenEvent }) {
+export function PublicDirectoryPanel({ directory, region = "Worldwide", artists = [], events = [], onOpenArtist, onOpenEvent }) {
   if (Platform.OS !== "web" || (directory !== "artists" && directory !== "events")) return null;
-  const copy = directoryCopy(directory);
+  const copy = directoryCopy(directory, region);
   const rows = publicDirectoryItems(directory, directory === "artists" ? artists : events);
   return (
     <View style={styles.directoryPanel} accessibilityLabel={copy.eyebrow.toLowerCase()}>

@@ -33,6 +33,7 @@ import {
 } from "./publicEntityPolicy.js";
 import { createPublicDocumentRepository } from "./publicDocumentRepository.js";
 import { currentOrUpcomingTourDateRow, effectiveTourDateEndSql } from "../../tourDateLifecycle.js";
+import { tourDateHasNoPublishedMemorialSql } from "../../artistMemorialTourDateVisibility.js";
 
 export const SITEMAP_MAX_URLS = 50_000;
 export const SITEMAP_MAX_BYTES = 50 * 1024 * 1024;
@@ -339,7 +340,8 @@ function visibleTourDateCandidates(database, {
   const statement = database.prepare(`SELECT td.id,td.provider_event_id,td.artist,td.artist_key,td.venue,td.place,td.source,
       td.venue_provider_id,td.date,td.event_end_date,td.updated_at,td.owner_id,COALESCE(td.provider_active,1) AS provider_active,
       td.event_status,td.ticket_url,td.start_date_time,td.venue_address_line1,td.venue_address_line2,
-      td.venue_city,td.venue_region,td.venue_country_code,td.venue_country
+      td.venue_city,td.venue_region,td.venue_country_code,td.venue_country,
+      CASE WHEN ${tourDateHasNoPublishedMemorialSql("td")} THEN 0 ELSE 1 END AS memorialized
     FROM tour_dates td INDEXED BY idx_tourdates_sitemap_cursor
     LEFT JOIN users owner ON owner.id=td.owner_id
     WHERE td.release_at<=?
@@ -391,7 +393,8 @@ export function materializeSitemapCandidates(database, {
     maximumRows: safeMaximum - posts.length,
   });
   const upcomingEvents = tourDates.filter((row) => currentOrUpcomingTourDateRow(row, today)
-    && (row.owner_id != null || Number(row.provider_active) === 1));
+    && (row.owner_id != null || Number(row.provider_active) === 1)
+    && Number(row.memorialized) !== 1);
   return Object.freeze({
     generatedAt: at,
     today,
@@ -569,7 +572,9 @@ function visibleUpcomingEvents(database, { now = Date.now(), limit = -1, candida
   const at = Number.isSafeInteger(requestedAt) && requestedAt >= 0 ? requestedAt : Date.now();
   const today = new Date(at).toISOString().slice(0, 10);
   const rows = (candidates?.upcomingEvents || visibleTourDateCandidates(database, { now: at }))
-    .filter((row) => currentOrUpcomingTourDateRow(row, today) && (row.owner_id != null || Number(row.provider_active) === 1));
+    .filter((row) => currentOrUpcomingTourDateRow(row, today)
+      && (row.owner_id != null || Number(row.provider_active) === 1)
+      && Number(row.memorialized) !== 1);
   return Number.isSafeInteger(limit) && limit > 0 ? rows.slice(0, limit) : rows;
 }
 

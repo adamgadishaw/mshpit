@@ -1,6 +1,7 @@
 import { accountIsPublic, activeAccountSql } from "./accountVisibility.js";
 import { db } from "./db.js";
 import { currentOrUpcomingTourDateSql, effectiveTourDateEndSql } from "./tourDateLifecycle.js";
+import { tourDateHasNoPublishedMemorialSql } from "./artistMemorialTourDateVisibility.js";
 
 // Apply release and account-state rules before tour dates reach discovery,
 // ranking, counts, or serialization. Keeping this query outside the API layer
@@ -18,6 +19,7 @@ export function visibleTourDateRowsFrom(database, viewer, {
   const prefix = [];
   if (today) {
     filters.push(currentOrUpcomingTourDateSql("td"));
+    filters.push(tourDateHasNoPublishedMemorialSql("td"));
     prefix.push(today);
   }
   if (artist) {

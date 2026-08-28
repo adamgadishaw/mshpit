@@ -150,7 +150,7 @@ function JourneyHero({ session, onProfile, onLogin, wide }) {
   );
 }
 
-export default function MenuScreen({ onClose, onNear, onVenues, onFanClubs, onTopRated, onInbox, onActivity, onSuggestion, onProfile, onManageProfile, onSettings, onAdmin, onTourDates, onRequestArtist, onLogin, onLogout, onBackToLanding }) {
+export default function MenuScreen({ onClose, onNear, onVenues, onFanClubs, onTopRated, onInbox, onActivity, onSuggestion, onProfile, onManageProfile, onSettings, onAdmin, onTourDates, onRequestArtist, onHowItWorks, onLogin, onLogout, onBackToLanding }) {
   const { width } = useWindowDimensions();
   const wide = width >= 920;
   const narrow = width < 560;
@@ -175,6 +175,7 @@ export default function MenuScreen({ onClose, onNear, onVenues, onFanClubs, onTo
     admin: onAdmin,
     tourDates: onTourDates,
     requestArtist: onRequestArtist,
+    howItWorks: onHowItWorks,
   };
 
   return (
@@ -203,6 +204,21 @@ export default function MenuScreen({ onClose, onNear, onVenues, onFanClubs, onTo
             </View>
 
             <View style={[styles.sideColumn, wide && styles.sideColumnWide]}>
+              {!!onHowItWorks && (
+                <View style={styles.sideSection}>
+                  <SectionHeading eyebrow="START HERE" title="Make your first night count" />
+                  <ListGroup
+                    items={[{
+                      key: "howItWorks",
+                      icon: "discover",
+                      title: "How MSHpit works",
+                      detail: "Discover a show, attend, log the night, and find your people.",
+                    }]}
+                    actions={actions}
+                  />
+                </View>
+              )}
+
               <View style={styles.sideSection}>
                 <SectionHeading eyebrow="CONNECTIONS" title="Stay in the loop" />
                 <ListGroup items={model.connection} actions={actions} />

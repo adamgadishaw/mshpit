@@ -144,8 +144,8 @@ export function accountPrivacyRoutes({
             updatedAt: row.updated_at,
           })),
         ratings: database.prepare("SELECT kind,ref,rating FROM ratings WHERE user_id=?").all(user.id),
-        venueReviews: database.prepare("SELECT id,venue_key,rating,text,photos,removed,created_at FROM venue_reviews WHERE user_id=? ORDER BY created_at DESC").all(user.id)
-          .map((row) => ({ id: row.id, venueKey: row.venue_key, rating: row.rating, text: row.text, photos: parseJson(row.photos, []), removed: !!row.removed, createdAt: row.created_at })),
+        venueReviews: database.prepare("SELECT id,venue_key,rating,text,photos,photos_public,removed,created_at FROM venue_reviews WHERE user_id=? ORDER BY created_at DESC").all(user.id)
+          .map((row) => ({ id: row.id, venueKey: row.venue_key, rating: row.rating, text: row.text, photos: parseJson(row.photos, []), photosPublic: !!row.photos_public, removed: !!row.removed, createdAt: row.created_at })),
         fanClubs: {
           memberships: database.prepare("SELECT artist FROM fan_club_members WHERE user_id=? ORDER BY artist COLLATE NOCASE").all(user.id).map((row) => row.artist),
           messages: database.prepare("SELECT id,artist,text,removed,created_at FROM fan_club_messages WHERE user_id=? ORDER BY created_at DESC").all(user.id)

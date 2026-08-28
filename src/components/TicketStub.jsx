@@ -188,6 +188,9 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onNotInt
   const commentCount = commentsFor(log.id).length || log.comments || 0;
   // Server posts can arrive with null scores (photo-only posts); never crash the feed.
   const band = log.band ?? 0, room = log.room ?? 0, overall = log.overall ?? 0;
+  const performanceTitle = String(log.tour || "").trim() || log.artist || "Live show";
+  const titledPerformance = !!String(log.tour || "").trim()
+    && String(log.tour).trim().toLowerCase() !== String(log.artist || "").trim().toLowerCase();
   const factors = log.dims
     ? `Band ${band.toFixed(1)} · Room ${room.toFixed(1)} · Night ${(((log.dims.crowd || 0) + (log.dims.experience || 0)) / 2 || overall).toFixed(1)}`
     : `Band ${band.toFixed(1)} · Room ${room.toFixed(1)}`;
@@ -337,10 +340,23 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onNotInt
         </View>
       )}
 
-      <Text style={styles.ratedLine}>
-        reviewed <PublicTextLink href={artistHref} onNavigate={() => onOpenArtist?.(log.artist)} style={styles.artistLink}>{log.artist}</PublicTextLink>
-        {log.seen > 1 ? <Text style={styles.seenTxt}>  ·  {ordinal(log.seen)} time in the pit</Text> : null}
-      </Text>
+      <View style={styles.performanceCard}>
+        <Text style={styles.performanceEyebrow}>{titledPerformance ? "CONCERT / TOUR" : "LIVE SHOW"}</Text>
+        <Text style={styles.performanceTitle} numberOfLines={2}>
+          {titledPerformance
+            ? performanceTitle
+            : <PublicTextLink href={artistHref} onNavigate={() => onOpenArtist?.(log.artist)} style={styles.performanceTitle}>{performanceTitle}</PublicTextLink>}
+        </Text>
+        <Text style={styles.performanceMeta}>
+          {titledPerformance ? (
+            <><PublicTextLink href={artistHref} onNavigate={() => onOpenArtist?.(log.artist)} style={styles.performanceArtist}>{log.artist}</PublicTextLink><Text style={styles.dim}> · </Text></>
+          ) : null}
+          <PublicTextLink href={venueHref} onNavigate={() => onOpenVenue?.(log.venue)} style={styles.performanceVenue}>{log.venue}</PublicTextLink>
+          {!!log.city && <Text style={styles.dim}> · {log.city}</Text>}
+          {!!log.date && <Text style={styles.performanceDate}> · {formatDate(log.date, log.date)}</Text>}
+        </Text>
+        {log.seen > 1 ? <Text style={styles.seenTxt}>{ordinal(log.seen)} time in the pit</Text> : null}
+      </View>
 
       {/* Score analytics: the template every review shares. The twirling star +
           per-dimension bars show exactly why the night earned its score. */}
@@ -490,8 +506,13 @@ const styles = StyleSheet.create({
   taggedPersonText: { flexShrink: 1, fontSize: 11.5, fontWeight: "800" },
   taggedPersonRemove: { width: 44, height: 44, alignItems: "center", justifyContent: "center", borderLeftWidth: 1, borderLeftColor: colors.lineSoft },
 
-  ratedLine: { color: colors.textDim, fontFamily: font, fontSize: 13, marginTop: 12 },
-  artistLink: { color: colors.text, fontFamily: displayFont, fontSize: 16, fontWeight: "800", letterSpacing: -0.15 },
+  performanceCard: { marginTop: 12, padding: 12, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.bgElev },
+  performanceEyebrow: { color: colors.amber, fontFamily: mono, fontSize: 9, fontWeight: "900", letterSpacing: 1.35 },
+  performanceTitle: { color: colors.text, fontFamily: displayFont, fontSize: 19, lineHeight: 23, fontWeight: "900", letterSpacing: -0.2, marginTop: 4 },
+  performanceMeta: { color: colors.textDim, fontFamily: font, fontSize: 12.5, lineHeight: 18, marginTop: 5 },
+  performanceArtist: { color: colors.text, fontWeight: "800" },
+  performanceVenue: { color: colors.cool, fontWeight: "800" },
+  performanceDate: { color: colors.amber, fontFamily: mono, fontSize: 11.5 },
 
   reviewWrap: { borderLeftWidth: 3, borderLeftColor: colors.amber, paddingLeft: 12, marginTop: 10 },
   review: { color: colors.text, fontFamily: font, fontSize: 16, lineHeight: 24, fontWeight: "500" },

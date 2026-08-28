@@ -11,6 +11,7 @@ import {
   liveEventTimeZone,
 } from "../src/domain/eventLifecycle.mjs";
 import { publicTicketmasterEventImage } from "./providerEventImage.js";
+import { publicTourDateVenueFields } from "./publicTourDateVenueProjection.js";
 
 const norm = (value) => String(value || "").trim().toLowerCase();
 const radians = (degrees) => degrees * Math.PI / 180;
@@ -71,6 +72,7 @@ function publicEvent(row) {
     ticketUrl: projectedTourDateTicketUrl(row),
     soldOut: !!row.sold_out,
     source: row.source,
+    ...publicTourDateVenueFields(row),
     eventImage: publicTicketmasterEventImage(row),
     eventTimezone: liveEventTimeZone({ eventTimezone: row.event_timezone }),
     releaseAt: Number(row.release_at) || 0,

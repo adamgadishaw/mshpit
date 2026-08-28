@@ -65,7 +65,7 @@ function apiFailure(error, { path, method, context, silent, kind, status, reques
 // `context` is a short operation label for Diagnostics. `silent` suppresses the
 // toast only; the failure is still recorded. Existing { method, body } calls are
 // fully backward compatible.
-export async function api(path, { method = "GET", body, context, silent = false, signal, headers, timeoutMs, expectedAccountId, skipIdentityCheck = false } = {}) {
+export async function api(path, { method = "GET", body, context, silent = false, signal, headers, timeoutMs, expectedAccountId, skipIdentityCheck = false, cache } = {}) {
   const verb = String(method || "GET").toUpperCase();
   const operation = context || operationContext(verb);
   const identityAtInvocation = apiIdentity;
@@ -115,6 +115,7 @@ export async function api(path, { method = "GET", body, context, silent = false,
         : { ...identityHeaders, ...headers },
       body: payload,
       signal: control.signal,
+      ...(cache ? { cache } : {}),
     });
   } catch (error) {
     // Leaving a live screen intentionally cancels its read. That is lifecycle

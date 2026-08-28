@@ -25,6 +25,7 @@ import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { licensedVenuePool } from "./lib/venue-photo-record.mjs";
+import { isStructurallyMirroredVenuePhoto } from "./lib/venue-photo-mirror-batch.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SEED = join(HERE, "..", "src", "seed");
@@ -77,7 +78,11 @@ function build() {
     for (const field of VENUE_LEAD_PHOTO_FIELDS) delete venue[field];
   }
   for (const [key, heavy] of Object.entries(venuePhotos)) {
-    const galleryPool = licensedVenuePool(heavy);
+    const galleryPool = licensedVenuePool({
+      galleryPool: (Array.isArray(heavy?.galleryPool) ? heavy.galleryPool : [])
+        .filter(isStructurallyMirroredVenuePhoto),
+      photos: heavy?.photos,
+    });
     if (!galleryPool.length) {
       delete venuePhotos[key];
       continue;
@@ -90,7 +95,11 @@ function build() {
   const verified = existsSync(VERIFIED_VENUE_PHOTOS)
     ? JSON.parse(readFileSync(VERIFIED_VENUE_PHOTOS, "utf8")) : {};
   for (const [key, entry] of Object.entries(verified)) {
-    const galleryPool = licensedVenuePool(entry);
+    const galleryPool = licensedVenuePool({
+      galleryPool: (Array.isArray(entry?.galleryPool) ? entry.galleryPool : [])
+        .filter(isStructurallyMirroredVenuePhoto),
+      photos: entry?.photos,
+    });
     if (!galleryPool.length) continue;
     venuePhotos[key] = { galleryPool, photos: galleryPool.map((photo) => photo.uri) };
     const lead = galleryPool[0];

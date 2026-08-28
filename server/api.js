@@ -56,6 +56,7 @@ import { mediaLegacyFinalizeRoutes } from "./mediaLegacyFinalizeRoutes.js";
 import { directMessageReadProjection, dmReadRoutes } from "./dmReadRoutes.js";
 import { postTagRoutes } from "./postTagRoutes.js";
 import { artistReviewRoutes } from "./features/artistReviews/artistReviewRoutes.js";
+import { artistResolveRoutes } from "./features/artistSearch/artistResolveRoutes.js";
 import { artistArchiveRoutes } from "./features/artistArchive/artistArchiveRoutes.js";
 import { accountPrivacyRoutes } from "./features/accountPrivacy/accountPrivacyRoutes.js";
 import { artistDiscographyRoutes } from "./features/artistDiscography/artistDiscographyRoutes.js";
@@ -143,8 +144,11 @@ import { createSuccessfulReadinessCache } from "./healthAvailability.js";
 import { assertSafeAuthoredFields, assertSafeAuthoredText } from "./contentSafety.js";
 import { canonicalProfileExtras } from "./profileExtras.js";
 import { licensedVenuePhoto, verifiedHttpsUrl } from "../src/domain/venuePhotoProvenance.mjs";
+import { canonicalVenueKey, resolveVenueCatalogKey, venueLookupKeys } from "../src/domain/venueIdentity.mjs";
+import { publicVenueFanPhotos } from "./venueGallery.js";
 import { accountIsPublic, activeAccountSql } from "./accountVisibility.js";
 import { visibleTourDateRows } from "./tourDateVisibility.js";
+import { artistHasPublishedMemorial } from "./artistMemorialTourDateVisibility.js";
 import {
   isCurrentOrUpcomingLiveEvent,
   liveEventQueryFloorDate,
@@ -155,6 +159,7 @@ import { normalizeArtistCampaign } from "../src/domain/artistCampaignPost.mjs";
 import { normalizeTaggedUserIds } from "../src/domain/postFriendTags.mjs";
 import { canonicalTicketUrl, projectedTourDateTicketUrl } from "../src/domain/ticketLinks.mjs";
 import { publicTicketmasterEventImage } from "./providerEventImage.js";
+import { publicTourDateVenueFields } from "./publicTourDateVenueProjection.js";
 import { isOwnerId, ownerAccount } from "./ownerIdentity.js";
 import {
   createOwnerApprovalRequest,
@@ -174,9 +179,10 @@ const uid = (p) => `${p}_${randomUUID().slice(0, 12)}`;
 const PROFILE_EXTRAS_MAX_BYTES = 8000;
 const CURRENT_TERMS_VERSION = "2026-08";
 const CURRENT_MARKETING_CONSENT_VERSION = "2026-08";
-// Corrected licensed inventory must replace previously cached empty responses.
-// Keep revalidation short until production has completed one healthy cache cycle.
-const VENUE_PHOTO_CACHE_CONTROL = "public, max-age=60, must-revalidate";
+// This response combines licensed inventory with fan media filtered by the
+// viewer's two-way block graph. Keep it out of shared and browser-private HTTP
+// caches; the image objects themselves retain their independent cache policy.
+const VENUE_PHOTO_CACHE_CONTROL = "private, no-store";
 const YOUTUBE_COLD_SEARCH_ACTOR_BUDGET_VERSION = 2;
 // v2 is charged once per explicit cold track attempt, not once per internal
 // provider request. Twenty listener attempts leaves useful room for discovery;
@@ -228,7 +234,9 @@ function venuePhotoSeed() {
 }
 
 function normalizedVenuePhotoPool(key) {
-  const raw = venuePhotoSeed()[key];
+  const seed = venuePhotoSeed();
+  const catalogKey = resolveVenueCatalogKey(key, Object.keys(seed));
+  const raw = catalogKey ? seed[catalogKey] : null;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
   const gallery = Array.isArray(raw.galleryPool) ? raw.galleryPool : [];
   const licensed = gallery.map(licensedVenuePhoto).filter(Boolean);
@@ -572,6 +580,7 @@ function tourDateJson(row) {
     ticketUrl: projectedTourDateTicketUrl(row),
     soldOut: !!row.sold_out,
     source: row.source || null,
+    ...publicTourDateVenueFields(row),
     eventImage: publicTicketmasterEventImage(row),
     eventTimezone: liveEventTimeZone({ eventTimezone: row.event_timezone }),
     releaseAt: Number(row.release_at) || 0,
@@ -810,7 +819,7 @@ function resolveArtistBinding(name, claimedKey) {
 // Venues live in the bundled catalog rather than a table, so the normalized name
 // is the stable key. Recording it means a same-named room in another city is a
 // different venue the moment the catalog can tell them apart.
-const venueBinding = (name) => normName(clean(name, { max: LIMITS.venue })) || null;
+const venueBinding = (name) => canonicalVenueKey(clean(name, { max: LIMITS.venue }));
 
 // A tagged YouTube video on a post. Only the canonical video id is authoritative.
 // Build the thumbnail URL ourselves so a post cannot persist an arbitrary remote
@@ -1837,7 +1846,7 @@ function musicBrainzArtistProjection(candidate) {
   };
 }
 
-async function readMusicBrainzArtistCandidates(name) {
+async function readMusicBrainzArtistCandidates(name, { signal } = {}) {
   const slash = String.fromCharCode(92);
   const escapedName = name.split(slash).join(slash + slash).split('"').join(slash + '"');
   const query = 'artist:"' + escapedName + '"';
@@ -1846,11 +1855,13 @@ async function readMusicBrainzArtistCandidates(name) {
     + "&fmt=json&limit=5";
   let response;
   try {
+    const timeoutSignal = AbortSignal.timeout(MUSICBRAINZ_ARTIST_LOOKUP_TIMEOUT_MS);
     response = await fetch(url, {
       headers: { "User-Agent": "Pit/1.0 (https://mshpit.com)", Accept: "application/json" },
-      signal: AbortSignal.timeout(MUSICBRAINZ_ARTIST_LOOKUP_TIMEOUT_MS),
+      signal: signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal,
     });
   } catch (error) {
+    if (signal?.aborted) throw signal.reason || error;
     throw new ProviderError("MusicBrainz", 502, "MusicBrainz could not be reached.", {
       code: "network",
       cause: error,
@@ -1875,7 +1886,7 @@ async function readMusicBrainzArtistCandidates(name) {
     .filter(Boolean);
 }
 
-async function resolveFromMusicBrainz(name, { requireExactIdentity = false } = {}) {
+async function resolveFromMusicBrainz(name, { requireExactIdentity = false, signal } = {}) {
   const requestedIdentity = normalizedMusicBrainzArtistName(name);
   if (!requestedIdentity) {
     if (requireExactIdentity) {
@@ -1886,8 +1897,9 @@ async function resolveFromMusicBrainz(name, { requireExactIdentity = false } = {
 
   let candidates;
   try {
-    candidates = await readMusicBrainzArtistCandidates(name);
+    candidates = await readMusicBrainzArtistCandidates(name, { signal });
   } catch (error) {
+    if (signal?.aborted) throw signal.reason || error;
     if (!requireExactIdentity) return null;
     throw new ApiError(
       502,
@@ -1924,10 +1936,18 @@ const artistByOtherMusicBrainzIdentity = db.prepare(
   "SELECT norm,name,mbid FROM artists WHERE mbid IS NOT NULL AND lower(mbid)=? AND norm<>? LIMIT 1",
 );
 
-async function persistExactMusicBrainzIdentity(name) {
-  const resolved = await resolveFromMusicBrainz(name, { requireExactIdentity: true });
+async function persistExactMusicBrainzIdentity(name, { signal, expectedMbid = null } = {}) {
+  const resolved = await resolveFromMusicBrainz(name, { requireExactIdentity: true, signal });
   const artistKey = normalizedMusicBrainzArtistName(resolved.name);
   const mbid = resolved.mbid.toLowerCase();
+  const expectedIdentity = String(expectedMbid || "").trim().toLowerCase();
+  if (expectedIdentity && (!MUSICBRAINZ_ARTIST_ID.test(expectedIdentity) || expectedIdentity !== mbid)) {
+    throw new ApiError(
+      409,
+      "That artist result changed before it could be attached. Search again and choose the current match.",
+      "CONFLICT",
+    );
+  }
   const existing = artistStmts.byNorm.get(artistKey);
   let existingData = {};
   try {
@@ -2519,6 +2539,17 @@ export const routes = {
     rateLimit: limit,
     requireUser,
   }),
+  ...artistResolveRoutes({
+    ApiError,
+    clean,
+    clearMissingArtist: (key) => artistStmts.clearMissing.run(key),
+    findArtist: (key) => artistStmts.byNorm.get(key) || null,
+    normName,
+    persistExactMusicBrainzIdentity,
+    projectArtist: publicArtist,
+    rateLimit: limit,
+    requireVerifiedUser,
+  }),
   ...artistReviewRoutes({
     database: db,
     ApiError,
@@ -2895,9 +2926,28 @@ export const routes = {
     const lim = Math.min(40, Math.max(1, Number(ctx.query.limit) || 20));
     const literal = term.replace(/[%_\\]/g, "");
     const folded = artistSearchKey(term);
-    const rows = term.length >= 1
-      ? artistStmts.search.all(`%${literal}%`, folded ? `%${folded}%` : "\u0000", term, folded, lim)
-      : artistStmts.top.all(lim);
+    if (term) limit(ctx, "artist-search", 240, 10 * 60 * 1000);
+    let rows;
+    if (!term) {
+      rows = artistStmts.top.all(lim);
+    } else if (!literal && !folded) {
+      rows = [];
+    } else {
+      const literalPrefix = literal || "\u0000";
+      const foldedPrefix = folded || "\u0000";
+      const prefixRows = artistStmts.searchPrefix.all(
+        literalPrefix,
+        `${literalPrefix}\uffff`,
+        foldedPrefix,
+        `${foldedPrefix}\uffff`,
+        term,
+        folded,
+        lim,
+      );
+      rows = prefixRows.length
+        ? prefixRows
+        : artistStmts.search.all(`%${literal}%`, folded ? `%${folded}%` : "\u0000", term, folded, lim);
+    }
     const artistMbids = new Map(rows.map((row) => [row.norm, row.mbid]));
     const memorials = artistMemorialService.readPublicForArtistKeys({
       artistKeys: rows.map((row) => row.norm),
@@ -2950,7 +3000,7 @@ export const routes = {
 
     let remote = [];
     try {
-      remote = await searchDeezerTracks(term, { limit: want });
+      remote = await searchDeezerTracks(term, { limit: want, signal: ctx.signal });
     } catch {
       // A provider outage must not take the whole search box down. The
       // catalogue results above still stand, and the other sections (people,
@@ -2997,11 +3047,10 @@ export const routes = {
     const existing = artistStmts.byNorm.get(normName(name));
     if (existing) return { artist: publicArtist(existing), created: false };
     limit(ctx, "resolve", 90, 10 * 60 * 1000); // cap outbound MB lookups per client
-    const mb = await resolveFromMusicBrainz(name);
+    const mb = await resolveFromMusicBrainz(name, { signal: ctx.signal });
     if (!mb) return { artist: null, created: false };
     return { artist: publicArtist(artistRow(mb.name, mb, "musicbrainz")), created: false, transient: true };
   },
-
 
   // Same-named artists disambiguation: a short list of Deezer candidates (fans,
   // photo, album count) so a listener can pick the one they actually mean and
@@ -4031,6 +4080,16 @@ export const routes = {
     const user = requireUser(ctx);
     limit(ctx, "tour-date-batch", 20, 60 * 60 * 1000);
     const batch = cleanTourDateBatch(ctx, user);
+    const includesCurrentOrFutureDate = batch.dates.some((entry) => isCurrentOrUpcomingLiveEvent({
+      date: entry.date,
+      eventEndDate: entry.eventEndDate,
+    }, now()));
+    if (includesCurrentOrFutureDate && artistHasPublishedMemorial(db, {
+      artistKey: normName(batch.artist),
+      artist: batch.artist,
+    })) {
+      throw new ApiError(409, "Future dates cannot be published for a memorialized artist.", "ARTIST_MEMORIALIZED");
+    }
     const writtenAt = now();
     const source = user.role === "artist" ? "artist-submitted" : "admin-submitted";
     const rows = atomicWrite(() => batch.dates.map((entry) => {
@@ -6330,7 +6389,7 @@ export const routes = {
       let artistKey = normName(name);
       let enrichmentName = name;
       if (requireExactIdentity) {
-        const persisted = await persistExactMusicBrainzIdentity(name);
+        const persisted = await persistExactMusicBrainzIdentity(name, { signal: ctx.signal });
         expectedMbid = String(persisted.mbid || "").toLowerCase();
         artistKey = persisted.norm;
         enrichmentName = persisted.name;
@@ -6516,26 +6575,34 @@ export const routes = {
   // One bounded venue pool at a time. The 2.1 MB source stays server-side so a
   // phone opening the app no longer downloads every venue's gallery.
   "GET /api/venues/:key/photos": (ctx) => {
-    const key = decodedPathParam(ctx, "key", { max: 200, label: "venue link" }).toLowerCase();
+    const key = canonicalVenueKey(decodedPathParam(ctx, "key", { max: 200, label: "venue link" }));
     if (!key) throw new ApiError(400, "Choose a venue first.", "VALIDATION_FAILED");
     ctx.setHeader?.("Cache-Control", VENUE_PHOTO_CACHE_CONTROL);
-    return { key, photos: normalizedVenuePhotoPool(key) };
+    const viewerId = accountIsPublic(ctx.user) ? ctx.user.id : null;
+    return {
+      key,
+      photos: normalizedVenuePhotoPool(key),
+      fanPhotos: publicVenueFanPhotos(db, { venueKey: key, viewerId }),
+    };
   },
 
   // ---- venue reviews (slice 7) ----
   "GET /api/venues/:key/reviews": (ctx) => {
-    const key = decodedPathParam(ctx, "key", { max: 200, label: "venue link" }).toLowerCase();
+    const key = canonicalVenueKey(decodedPathParam(ctx, "key", { max: 200, label: "venue link" }));
+    if (!key) throw new ApiError(400, "Choose a venue first.", "VALIDATION_FAILED");
+    const lookupKeys = venueLookupKeys(key);
     const viewer = ctx.user?.id || null;
     const { cursor, limit } = pageRequest(ctx, 200, 200);
     const blockSql = viewer ? `AND NOT EXISTS (SELECT 1 FROM blocks b WHERE
       (b.blocker_id=? AND b.blocked_id=r.user_id) OR (b.blocker_id=r.user_id AND b.blocked_id=?))` : "";
     const cursorSql = cursor ? "AND (r.created_at < ? OR (r.created_at = ? AND r.id < ?))" : "";
-    const args = [key];
+    const args = [...lookupKeys];
     if (viewer) args.push(viewer, viewer);
     if (cursor) args.push(cursor.createdAt, cursor.createdAt, cursor.id);
     args.push(limit + 1);
+    const keyPlaceholders = lookupKeys.map(() => "?").join(",");
     const found = db.prepare(`SELECT r.*, u.name, u.initials FROM venue_reviews r JOIN users u ON u.id=r.user_id
-                             WHERE r.venue_key=? AND r.removed=0 AND ${activeAccountSql("u")} ${blockSql} ${cursorSql}
+                             WHERE r.venue_key IN (${keyPlaceholders}) AND r.removed=0 AND ${activeAccountSql("u")} ${blockSql} ${cursorSql}
                              ORDER BY r.created_at DESC, r.id DESC LIMIT ?`).all(...args);
     const { rows, nextCursor } = finishPage(found, limit);
     return { reviews: rows.map((r) => ({
@@ -6545,19 +6612,22 @@ export const routes = {
       initials: r.initials,
       rating: r.rating,
       text: r.text,
-      photos: parseJsonArray(r.photos).filter((url) => !!safePublicProfileImage(r.user_id, url)),
+      photos: r.photos_public
+        ? parseJsonArray(r.photos).filter((url) => !!safePublicProfileImage(r.user_id, url))
+        : [],
       createdAt: r.created_at,
     })), nextCursor };
   },
   "POST /api/venues/:key/reviews": (ctx) => {
     const u = requireUser(ctx);
     limit(ctx, "venuereview", 30, 60 * 60 * 1000);
-    const key = decodedPathParam(ctx, "key", { max: 200, label: "venue link" }).toLowerCase();
+    const key = canonicalVenueKey(decodedPathParam(ctx, "key", { max: 200, label: "venue link" }));
     const rating = clampRating(ctx.body?.rating);
     if (!key || !rating) throw new ApiError(400, "Bad review.");
     const text = clean(ctx.body?.text, { max: LIMITS.review, newlines: true });
     assertSafeAuthoredText(text, { field: "venue review" });
     const photos = cleanStringArray(ctx.body?.photos, { maxItems: MEDIA_POST_MAX_ATTACHMENTS, maxLen: 2000 });
+    const photosPublic = photos.length > 0 && (ctx.body?.photosPublic === true || ctx.body?.photosPublic === 1);
     if ((photos || []).some(isLegacyVideoUrl)) {
       throw new ApiError(400, "Venue reviews support photos only until verified venue clips are available.", "VALIDATION_FAILED");
     }
@@ -6566,8 +6636,8 @@ export const routes = {
     const id = uid("vr");
     atomicWrite(() => {
       associateNewFinalizedImageUrls(u.id, photos, [], venuePhotoPurposes);
-      db.prepare("INSERT INTO venue_reviews (id,venue_key,user_id,rating,text,photos,created_at) VALUES (?,?,?,?,?,?,?)")
-        .run(id, key, u.id, rating, text || "", JSON.stringify(photos || []), now());
+      db.prepare("INSERT INTO venue_reviews (id,venue_key,user_id,rating,text,photos,photos_public,created_at) VALUES (?,?,?,?,?,?,?,?)")
+        .run(id, key, u.id, rating, text || "", JSON.stringify(photos || []), photosPublic ? 1 : 0, now());
       markOwnedMediaAssociated(db, { ownerId: u.id, urls: photos, at: now() });
     });
     return { id };

@@ -94,6 +94,31 @@ export function licensedVenuePhoto(entry) {
   };
 }
 
+// Presentation code gets an allowlisted projection rather than reading raw
+// provider records. This keeps source/license links behind the same provenance
+// validation that decides whether the photo may be published at all.
+export function venuePhotoAttribution(entry) {
+  const photo = licensedVenuePhoto(entry);
+  if (!photo) return null;
+  const definition = VENUE_PHOTO_LICENSES[photo.license];
+  if (!definition) return null;
+  return {
+    creator: photo.creator,
+    license: definition.label,
+    sourcePage: photo.sourcePage,
+    licenseUrl: photo.licenseUrl,
+    ...(photo.modificationNotice ? { modificationNotice: photo.modificationNotice } : {}),
+  };
+}
+
+export function venueMapPhotoPresentation(entry, expectedUri) {
+  const photo = licensedVenuePhoto(entry);
+  const attribution = venuePhotoAttribution(entry);
+  const requestedUri = verifiedHttpsUrl(expectedUri);
+  if (!photo || !attribution || !requestedUri || photo.uri !== requestedUri) return null;
+  return { uri: photo.uri, attribution };
+}
+
 // The compact venue catalog predates the provenance schema used by the photo
 // endpoint. Never treat a human-written `photoCredit` string as proof of rights:
 // only explicit, separately stored license/creator/source-page fields can make a

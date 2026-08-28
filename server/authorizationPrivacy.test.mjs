@@ -311,7 +311,7 @@ test("new profile, artist, and venue-review media must be a ready image owned by
   }
   const review = routes["POST /api/venues/:key/reviews"]({
     user: q.userById.get(owner.id), ip: "venue-media-own", params: { key: "media venue" },
-    body: { rating: 4, text: "Review", photos: ownReviewAlbum },
+    body: { rating: 4, text: "Review", photos: ownReviewAlbum, photosPublic: true },
   });
   assert.deepEqual(JSON.parse(db.prepare("SELECT photos FROM venue_reviews WHERE id=?").get(review.id).photos), ownReviewAlbum);
   assert.deepEqual(routes["GET /api/venues/:key/reviews"]({

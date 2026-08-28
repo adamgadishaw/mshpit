@@ -32,8 +32,10 @@ test("Discover leads with upcoming events, then Near you, then Venues, while ret
   assert.match(source, /accessibilityLabel="Browse all events"/);
   assert.equal((source.match(/title="Near you"/g) || []).length, 1, "Near you should not be duplicated in the shortcut grid");
   assert.equal((source.match(/title="Find venues"/g) || []).length, 0, "Venues already owns a full section");
-  assert.match(source, /const worldwideEvents = useMemo\([\s\S]*projectWorldwideUpcomingEvents\(tourDates, \{ limit: 12 \}\)[\s\S]*\[tourDates\]/);
-  assert.doesNotMatch(source, /const worldwideEvents = typeof upcomingEvents === "function"/);
+  assert.match(source, /const sceneProjection = useMemo\(\(\) => projectDiscoverScene\(tourDates, \{[\s\S]*region,[\s\S]*eventLimit: 12,[\s\S]*venueLimit: 8,[\s\S]*countryForCity,[\s\S]*\}\), \[region, tourDates\]\)/);
+  assert.match(source, /worldwideEvents: sceneProjection\.events/);
+  assert.match(source, /setLiveScopeChoice\(\{ accountId, value: LIVE_EVENT_SCOPE\.WORLDWIDE, touched: true \}\)/);
+  assert.match(source, /worldLabel=\{region\}/);
 });
 
 test("Discover keeps scene controls inside their card and makes genre exploration useful without a tap", async () => {
@@ -47,7 +49,10 @@ test("Discover keeps scene controls inside their card and makes genre exploratio
   assert.match(screen, /selectDefaultDiscoverGenre/);
   assert.match(screen, /genreResult\.genre === selectedGenre && genreResult\.region === region/);
   assert.match(screen, /fallbackRows=\{overview\.chart\.rows\}/);
-  assert.match(screen, /attendanceRows=\{myAttendance\}/);
+  assert.match(screen, /attendanceRows=\{sceneAttendance\}/);
+  assert.match(screen, /filterDiscoverSceneRows\(photos/);
+  assert.match(screen, /filterDiscoverSceneRows\([\s\S]*projectPopularLounges/);
+  assert.match(screen, /sceneProjection\.venues/);
   assert.match(genres, /<SoundDonut/);
   assert.match(genres, /Recently attended/);
   assert.match(genres, /The map is tuning up/);
@@ -83,8 +88,11 @@ test("App routes venue and lounge discovery through existing navigation without 
   assert.match(source, /onOpenVenue=\{openVenue\}/);
   assert.match(source, /onOpenLounge=\{\(lounge\) => go\(\{ lounge \}\)\}/);
   assert.match(source, /onExploreLounges=.*setTab\("discover"\).*authMode: "login"/s);
-  assert.match(source, /onOpenEvents=\{\(\) => openPublicDirectory\("events"\)\}/);
+  assert.match(source, /onOpenEvents=\{\(discoverRegion\) => openPublicDirectory\("events", \{ region: discoverRegion \}\)\}/);
+  assert.match(source, /onOpenVenues=\{\(discoverRegion\) => go\(\{ venues: true, discoverRegion \}\)\}/);
   assert.match(source, /nav\.artistGallery/);
   assert.match(source, /accountId=\{session\?\.id \|\| null\}/);
   assert.match(source, /showMobilePublicTrail \? <PublicWebTrail/);
+  assert.match(source, /onOpenTopRated=\{\(discoverRegion\) => go\(\{ topRated: true, discoverRegion \}\)\}/);
+  assert.match(source, /<TopRatedScreen initialRegion=\{nav\.discoverRegion\}/);
 });

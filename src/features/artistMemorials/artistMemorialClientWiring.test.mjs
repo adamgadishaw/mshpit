@@ -8,6 +8,7 @@ const store = read("../../store.js");
 const adminScreen = read("../../screens/AdminScreen.jsx");
 const consoleSource = read("../../components/moderation/ArtistMemorialConsole.jsx");
 const memorialService = read("./services/artistMemorialApi.mjs");
+const memorialHook = read("./useArtistMemorial.js");
 
 function between(source, start, end) {
   const startIndex = source.indexOf(start);
@@ -49,6 +50,14 @@ test("the memorial service owns the exact-identity API contract and validates it
 test("the admin screen supplies the exact resolver to the memorial console", () => {
   assert.match(adminScreen, /searchArtistsApi, prepareMemorialArtist,/);
   assert.match(adminScreen, /onResolveArtist=\{prepareMemorialArtist\}/);
+});
+
+test("saving a memorial refreshes the canonical tour-date snapshot in the same session", () => {
+  assert.match(memorialHook, /typeof onSaved === "function"\) onSaved\(saved\)/);
+  assert.match(adminScreen, /prepareMemorialArtist, refreshTourDates/);
+  assert.match(adminScreen, /onSaved: \(\) => \{[\s\S]*?refreshTourDates\(\)/);
+  assert.match(store, /const refreshTourDates = async/);
+  assert.match(store, /refreshTourDates, visibleTourDates/);
 });
 
 test("the memorial console recovers empty catalog searches without manual artist keys or auto-publishing", () => {

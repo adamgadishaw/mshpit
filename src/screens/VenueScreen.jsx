@@ -22,7 +22,7 @@ export default function VenueScreen({ venueName, onClose, onOpenShow, onOpenArti
   const wide = width >= 760;
   const {
     venueSummary, venueCoord, venueReviewsFor, loadVenueReviews, venueRating, venueTopPhotos,
-    session, venuePhotos, venuePhotoState, loadVenuePhotos, userByHandle,
+    session, venuePhotos, venuePhotoState, loadVenuePhotos, venuePhotoPrivacyRevision, userByHandle,
   } = useStore();
   const venue = venueSummary(venueName);
   const coord = venueCoord(venue.name);
@@ -36,8 +36,8 @@ export default function VenueScreen({ venueName, onClose, onOpenShow, onOpenArti
     setVisibleReviewCount(REVIEW_BATCH);
     setVisibleHistoryCount(HISTORY_BATCH);
     loadVenueReviews(venue.name);
-    void loadVenuePhotos(venue.name).catch(() => {});
-  }, [venue.name]);
+    void loadVenuePhotos(venue.name).catch(() => { /* architecture: allow-empty-catch -- the venue page retains its licensed empty state and visible retry control */ });
+  }, [venue.name, venuePhotoPrivacyRevision]);
 
   const fanRating = venueRating(venue.name);
   const gridPhotos = venueTopPhotos(venue.name, wide ? 24 : 18);
@@ -67,7 +67,7 @@ export default function VenueScreen({ venueName, onClose, onOpenShow, onOpenArti
             coord={coord}
             loading={photoState.status === "idle" || photoState.status === "loading"}
             error={photoState.status === "error"}
-            onRetry={() => { void loadVenuePhotos(venue.name, { force: true }).catch(() => {}); }}
+            onRetry={() => { void loadVenuePhotos(venue.name, { force: true }).catch(() => { /* architecture: allow-empty-catch -- the visible retry state reports this optional gallery failure */ }); }}
             onPress={openPhotoWidget}
           />
           <View style={styles.heroMeta}>

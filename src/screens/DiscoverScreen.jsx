@@ -15,11 +15,15 @@ import { PublicPressableLink } from "../components/PublicWebLinks";
 import { eventPath } from "../domain/urls.mjs";
 import { buildDiscoverEventBannerSlides } from "../domain/discoverEventBanner.mjs";
 import {
+  discoverCountryIdentity,
+  filterDiscoverSceneRows,
+  projectDiscoverScene,
+} from "../domain/discoverScene.mjs";
+import {
   LIVE_EVENT_SCOPE,
   liveEventTitle,
   liveScopeLabel,
   localDiscoveryEvents,
-  projectWorldwideUpcomingEvents,
   projectPopularLounges,
   upcomingEventsForScope,
 } from "../domain/liveDiscovery.mjs";
@@ -64,7 +68,6 @@ export default function DiscoverScreen({
     loadDiscoverOverview,
     loadDiscoverGenre,
     discoverStats,
-    memberCount,
     discoverySidebar,
     discoverySidebarStatus,
     tourDates,
@@ -112,27 +115,34 @@ export default function DiscoverScreen({
   if (!localStatsRef.current) localStatsRef.current = discoverStats();
   const localStats = localStatsRef.current;
   const photos = useMemo(() => selectDiscoverPhotos(feed, { removedIds, blockedIds, limit: 30 }), [blockedIds, feed, removedIds]);
-  const photoUris = useMemo(() => photos.map((photo) => ({
+  const scenePhotos = useMemo(() => filterDiscoverSceneRows(photos, {
+    region,
+    countryForCity,
+    limit: 30,
+  }), [photos, region]);
+  const photoUris = useMemo(() => scenePhotos.map((photo) => ({
     ...photo,
     uri: photo.uri,
     by: photo.by,
     postId: photo.logId,
     ownerId: photo.ownerId,
-  })), [photos]);
+  })), [scenePhotos]);
+  const sceneProjection = useMemo(() => projectDiscoverScene(tourDates, {
+    region,
+    eventLimit: 12,
+    venueLimit: 8,
+    countryForCity,
+  }), [region, tourDates]);
   const localEvents = useMemo(
     () => localDiscoveryEvents(discoverySidebar?.upcomingEvents, { limit: 12 }),
     [discoverySidebar?.upcomingEvents],
   );
-  const worldwideEvents = useMemo(
-    () => projectWorldwideUpcomingEvents(tourDates, { limit: 12 }),
-    [tourDates],
-  );
   const liveEvents = useMemo(() => upcomingEventsForScope({
     scope: liveScope,
     localEvents,
-    worldwideEvents,
+    worldwideEvents: sceneProjection.events,
     limit: 4,
-  }), [liveScope, localEvents, worldwideEvents]);
+  }), [liveScope, localEvents, sceneProjection.events]);
   const eventArtwork = useMemo(() => liveEvents.flatMap((event) => event?.eventImage ? [{
     ...event.eventImage,
     eventId: event.id,
@@ -147,8 +157,21 @@ export default function DiscoverScreen({
     blockedIds,
     limit: 4,
   }), [blockedIds, eventBannerMedia, liveEvents]);
-  const venueRows = Array.isArray(discoverySidebar?.trendingVenues) ? discoverySidebar.trendingVenues.slice(0, 3) : [];
-  const loungeRows = projectPopularLounges(discoverySidebar?.popularLounges, { limit: 4 });
+  const homeSceneSelected = discoverCountryIdentity(region) === discoverCountryIdentity(homeCountry);
+  const venueRows = sceneProjection.venues.length
+    ? sceneProjection.venues.slice(0, 3)
+    : (!tourDates.length && homeSceneSelected && Array.isArray(discoverySidebar?.trendingVenues)
+      ? discoverySidebar.trendingVenues.slice(0, 3)
+      : []);
+  const loungeRows = useMemo(() => filterDiscoverSceneRows(
+    projectPopularLounges(discoverySidebar?.popularLounges, { limit: 12 }),
+    { region, countryForCity, limit: 4 },
+  ), [discoverySidebar?.popularLounges, region]);
+  const sceneAttendance = useMemo(() => filterDiscoverSceneRows(myAttendance, {
+    region,
+    countryForCity,
+    limit: 200,
+  }), [myAttendance, region]);
 
   const requestOverview = useCallback(({ preserve = false, force = false } = {}) => {
     overviewRequestRef.current.controller?.abort();
@@ -240,6 +263,15 @@ export default function DiscoverScreen({
     setQuery("");
     setSceneExpanded(false);
     setRegionChoice({ accountId, value: country, touched: true });
+    setLiveScopeChoice({ accountId, value: LIVE_EVENT_SCOPE.WORLDWIDE, touched: true });
+  };
+  const pickLiveScope = (value) => {
+    if (value === LIVE_EVENT_SCOPE.LOCAL && homeCountry) {
+      setQuery("");
+      setSceneExpanded(false);
+      setRegionChoice({ accountId, value: homeCountry, touched: true });
+    }
+    setLiveScopeChoice({ accountId, value, touched: true });
   };
   const retryGenre = useCallback(() => requestGenre({ force: true }), [requestGenre]);
 
@@ -249,10 +281,14 @@ export default function DiscoverScreen({
   const countries = overview.countries.length ? overview.countries : orderDiscoverCountries([], homeCountry);
   const sceneCountries = visibleDiscoverCountries(countries, region, { compact, expanded: sceneExpanded, limit: 3 });
   const hiddenSceneCount = Math.max(0, countries.length - sceneCountries.length);
+  const selectedCountryRow = countries.find((row) => discoverCountryIdentity(row.country) === discoverCountryIdentity(region));
+  const sceneArtistTotal = region === "Worldwide"
+    ? overview.catalogTotal ?? localStats.artists
+    : selectedCountryRow?.count ?? overview.genreTotal;
   const metrics = [
-    { label: "members", value: overview.memberTotal ?? memberCount ?? localStats.members, tint: colors.gold },
-    { label: "artists", value: overview.catalogTotal ?? localStats.artists, tint: colors.amber },
-    { label: "venues", value: localStats.venues, tint: colors.cool },
+    { label: "artists", value: sceneArtistTotal, tint: colors.amber },
+    { label: "upcoming", value: sceneProjection.eventCount, tint: colors.gold },
+    { label: "venues", value: sceneProjection.venueCount, tint: colors.cool },
     { label: "genres", value: overview.distinctGenres ?? localStats.genres, tint: colors.magenta },
   ];
 
@@ -328,9 +364,9 @@ export default function DiscoverScreen({
             <SectionHeading
               eyebrow="PLAN THE NEXT NIGHT"
               title="Upcoming live events"
-              detail={liveScopeLabel({ scope: liveScope, homeCity })}
+              detail={liveScope === LIVE_EVENT_SCOPE.LOCAL ? liveScopeLabel({ scope: liveScope, homeCity }) : region}
               action={(
-                <Pressable style={styles.sectionAction} onPress={onOpenEvents} accessibilityRole="button" accessibilityLabel="Browse all events">
+                <Pressable style={styles.sectionAction} onPress={() => onOpenEvents?.(region)} accessibilityRole="button" accessibilityLabel="Browse all events">
                   <Text style={styles.eventSectionActionText}>Browse all</Text>
                   <Icon name="chevron-right" size={14} color={colors.amber} />
                 </Pressable>
@@ -339,8 +375,9 @@ export default function DiscoverScreen({
             <EventScopeToggle
               scope={liveScope}
               localLabel={homeCity ? `Near ${homeCity}` : "Near you"}
+              worldLabel={region}
               compact={compact}
-              onChange={(value) => setLiveScopeChoice({ accountId, value, touched: true })}
+              onChange={pickLiveScope}
             />
           </View>
           <DiscoverEventBanner
@@ -357,7 +394,7 @@ export default function DiscoverScreen({
                   ? "Loading upcoming live events…"
                   : liveScope === LIVE_EVENT_SCOPE.LOCAL
                     ? "No shows are listed near your saved home area yet. Try Worldwide."
-                    : "No worldwide live-event dates are available yet."}
+                    : `No upcoming live events are indexed for ${region} yet.`}
               </Text>
             </View>
           ) : (
@@ -403,9 +440,11 @@ export default function DiscoverScreen({
         <SectionHeading
           eyebrow="LIVE ROOMS"
           title="Venues"
-          detail="Start with the room: browse cities, lineups, and places fans keep coming back to."
+          detail={region === "Worldwide"
+            ? "Start with the room: browse cities, lineups, and places fans keep coming back to."
+            : `Rooms with upcoming live events in ${region}.`}
           action={(
-            <Pressable style={styles.sectionAction} onPress={onOpenVenues} accessibilityRole="button" accessibilityLabel="Browse all venues">
+            <Pressable style={styles.sectionAction} onPress={() => onOpenVenues?.(region)} accessibilityRole="button" accessibilityLabel="Browse all venues">
               <Text style={styles.sectionActionText}>Browse all</Text>
               <Icon name="chevron-right" size={14} color={colors.cool} />
             </Pressable>
@@ -413,7 +452,7 @@ export default function DiscoverScreen({
         />
         <Pressable
           style={({ pressed }) => [styles.venueHero, pressed && styles.cardPressed]}
-          onPress={onOpenVenues}
+          onPress={() => onOpenVenues?.(region)}
           accessibilityRole="button"
           accessibilityLabel="Open the venue directory"
           accessibilityHint="Browse venues by city and upcoming lineup"
@@ -421,23 +460,28 @@ export default function DiscoverScreen({
           <View style={styles.venueHeroIcon}><Icon name="pin" size={24} color={colors.cool} /></View>
           <View style={styles.venueHeroCopy}>
             <Text style={styles.venueHeroTitle}>Find your next favourite room</Text>
-            <Text style={styles.venueHeroDetail}>{homeCity ? `Start around ${homeCity}, then explore worldwide.` : "Explore local stages and rooms around the world."}</Text>
+            <Text style={styles.venueHeroDetail}>{region === "Worldwide" ? "Explore local stages and rooms around the world." : `Browse stages and upcoming lineups across ${region}.`}</Text>
           </View>
           <Icon name="chevron-right" size={21} color={colors.cool} />
         </Pressable>
         {venueRows.length > 0 ? (
           <View style={styles.venueRows}>
             {venueRows.map((venue) => (
-              <VenueDiscoveryCard key={`${venue.name}|${venue.place || ""}`} venue={venue} compact onPress={() => onOpenVenue?.(venue.name || venue)} />
+              <VenueDiscoveryCard key={venue.identity || `${venue.name}|${venue.place || ""}`} venue={venue} compact onPress={() => onOpenVenue?.(venue)} />
             ))}
           </View>
-        ) : null}
+        ) : (
+          <View style={styles.liveEmpty} accessibilityLiveRegion="polite">
+            <Icon name="pin" size={19} color={colors.textFaint} />
+            <Text style={styles.liveEmptyText}>No venues with upcoming dates are indexed for {region} yet.</Text>
+          </View>
+        )}
       </View>
 
       <View style={styles.quickSection}>
         <SectionHeading eyebrow="GO DEEPER" title="More ways to explore" detail="Community favourites and artist fan spaces" />
         <View style={styles.quickGrid}>
-          <QuickAction icon="trophy" title="Top-rated shows" detail="Concerts members loved most" tint={colors.gold} onPress={onOpenTopRated} basis={actionBasis} />
+          <QuickAction icon="trophy" title="Top-rated shows" detail={region === "Worldwide" ? "Concerts members loved most" : `Highly rated nights in ${region}`} tint={colors.gold} onPress={() => onOpenTopRated?.(region)} basis={actionBasis} />
           <QuickAction icon="you" title="Fan clubs" detail="Join artist communities" tint={colors.magenta} onPress={onOpenFanClubs} basis={actionBasis} />
         </View>
       </View>
@@ -445,11 +489,11 @@ export default function DiscoverScreen({
       <View style={[styles.metrics, compact && styles.metricsCompact]}>{metrics.map((metric) => <MetricTile key={metric.label} {...metric} compact={compact} />)}</View>
 
       <View style={styles.loungePanel}>
-        <SectionHeading eyebrow="FANS ARE TALKING" title="Popular lounges" detail="Active concert rooms ranked by aggregate conversation, never by private member data." />
+        <SectionHeading eyebrow="FANS ARE TALKING" title="Popular lounges" detail={region === "Worldwide" ? "Active concert rooms ranked by aggregate conversation, never by private member data." : `Active concert conversations in ${region}, using aggregate activity only.`} />
         {loungeRows.length === 0 ? (
           <View style={styles.liveEmpty}>
             <Icon name="comment" size={19} color={colors.textFaint} />
-            <Text style={styles.liveEmptyText}>Active lounges will appear when concert conversations pick up.</Text>
+            <Text style={styles.liveEmptyText}>Active lounges in {region} will appear when concert conversations pick up.</Text>
           </View>
         ) : (
           <View style={styles.liveRows}>
@@ -476,7 +520,7 @@ export default function DiscoverScreen({
         </>
       )}
 
-      <DiscoverPhotos photos={photos} photoUris={photoUris} compact={compact} width={width} onOpenPhotos={openPhotos} />
+      <DiscoverPhotos photos={scenePhotos} photoUris={photoUris} compact={compact} width={width} onOpenPhotos={openPhotos} />
       {showOverviewContent ? (
         <DiscoverGenres
           genres={overview.genres}
@@ -485,7 +529,7 @@ export default function DiscoverScreen({
           total={overview.genreTotal}
           rows={genreRows}
           fallbackRows={overview.chart.rows}
-          attendanceRows={myAttendance}
+          attendanceRows={sceneAttendance}
           status={genreStatus}
           region={region}
           compact={compact}

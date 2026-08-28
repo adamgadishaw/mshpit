@@ -278,7 +278,9 @@ export default function ArtistScreen({ artistName, previewAsFan = false, onClose
   const ownsArtistPage = isArtistOwner(a.name);
   const ownsNamedArtistPage = artistWorkspaceOwnsArtist(session, a.name);
   const canManagePublicPage = ownsArtistPage && !previewAsFan;
-  const upcoming = previewAsFan ? a.upcoming.filter((date) => !date.scheduled) : a.upcoming;
+  const upcoming = memorial?.deceased
+    ? []
+    : previewAsFan ? a.upcoming.filter((date) => !date.scheduled) : a.upcoming;
   const [showAllUpcoming, setShowAllUpcoming] = useState(false);
   const upcomingPresentation = selectArtistUpcomingShows(upcoming, { expanded: showAllUpcoming });
   const visibleUpcoming = sectionModel.condensed

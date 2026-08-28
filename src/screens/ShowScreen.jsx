@@ -45,7 +45,7 @@ const ATTENDANCE_STATE_LABELS = Object.freeze({ going: "Going", here: "Here", we
 // field is guarded; a tour date has no score and that's a mode, not a crash.
 export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenProfile, onOpenArtist, onOpenArchive, onOpenVenue, onOpenLounge, onOpenPost, onOpenPhotos, onRequireAuth }) {
   const {
-    venueCoord, venuePhotos, venuePhotoState, loadVenuePhotos,
+    venueCoord, venuePhotos, venuePhotoState, loadVenuePhotos, venuePhotoPrivacyRevision,
     session, concertKey, isGoing, isGoingBusy, toggleGoing, loungeFor,
   } = useStore();
   // Keep the legacy identity stable while a canonical read hydrates trusted
@@ -161,8 +161,8 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
   const renderedAttendeeCount = Math.min(30, social.attendees.length);
   const hiddenAttendeeCount = Math.max(0, attendeeTotal - renderedAttendeeCount);
   useEffect(() => {
-    void loadVenuePhotos(venue).catch(() => {});
-  }, [venue]);
+    void loadVenuePhotos(venue).catch(() => { /* architecture: allow-empty-catch -- the show page remains usable while its optional venue gallery exposes a retry state */ });
+  }, [venue, venuePhotoPrivacyRevision]);
 
   useEffect(() => {
     setArchiveLoadMoreFailed(false);

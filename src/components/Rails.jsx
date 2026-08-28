@@ -211,6 +211,7 @@ export function DesktopTopNav({
 // Right rail: contextual widgets, Top / A-Z artists, active lounges, upcoming
 // events. Read-only discovery surfaces that stay out of the feed's way.
 export function RightRail({
+  railWidth = 340,
   topArtists,
   artistsAlphabetical,
   upcomingEvents,
@@ -268,7 +269,7 @@ export function RightRail({
     : (discoverySidebar.location?.city ? `Near ${discoverySidebar.location.city}` : "Near you");
 
   return (
-    <ScrollView style={styles.right} contentContainerStyle={styles.rightContent} showsVerticalScrollIndicator={false}>
+    <ScrollView style={[styles.right, { width: railWidth, flexBasis: railWidth }]} contentContainerStyle={styles.rightContent} showsVerticalScrollIndicator={false}>
       {/* Artists, Top / A-Z toggle */}
       <View style={styles.card}>
         <View style={styles.cardHead}>

@@ -21,7 +21,7 @@ import { searchLiveAnnouncement } from "../domain/searchAccessibility.mjs";
 import { accountTargetScope, isCurrentScreenRequest, scopedScreenValue } from "../domain/screenScope.mjs";
 import { openTicketLink } from "../lib/ticketLinks";
 import { recordGuestSearch } from "../features/analytics/services/guestSearchAnalyticsApi.mjs";
-import { ENABLE_MUSIC_PLAYER } from "../config/runtime.mjs";
+import { ENABLE_DEMO_DATA, ENABLE_MUSIC_PLAYER } from "../config/runtime.mjs";
 
 const EMPTY_LOOKUP_STATE = Object.freeze({ busy: false, message: "" });
 const SEARCH_CATEGORIES = Object.freeze([
@@ -113,6 +113,16 @@ function VenueRow({ v, onPress }) {
   );
 }
 function EventRow({ t, onOpenArtist, onOpenVenue, onOpenTicket }) {
+  const venue = {
+    name: t.venue,
+    place: t.place || t.city || "",
+    source: t.source || null,
+    providerVenueId: t.providerVenueId || null,
+    venueCity: t.venueCity || t.city || null,
+    venueRegion: t.venueRegion || null,
+    venueCountryCode: t.venueCountryCode || null,
+    venueCountry: t.venueCountry || null,
+  };
   return (
     <View style={styles.row}>
       <Pressable style={styles.rowMain} onPress={() => onOpenArtist?.(t.artist)} accessibilityRole="button" accessibilityLabel={`Open artist ${t.artist}. Event at ${t.venue}, ${formatDate(t.date, t.date)}`}>
@@ -122,7 +132,7 @@ function EventRow({ t, onOpenArtist, onOpenVenue, onOpenTicket }) {
           <Text style={styles.rowSub} numberOfLines={1}>{t.venue} · {formatDate(t.date, t.date)}</Text>
         </View>
       </Pressable>
-      <Pressable style={styles.secondaryAction} onPress={() => onOpenVenue?.(t.venue)} accessibilityRole="button" accessibilityLabel={`Open venue ${t.venue}`}>
+      <Pressable style={styles.secondaryAction} onPress={() => onOpenVenue?.(venue)} accessibilityRole="button" accessibilityLabel={`Open venue ${t.venue}`}>
         <Icon name="pin" size={15} color={colors.cool} />
       </Pressable>
       {t.soldOut
@@ -155,7 +165,7 @@ function searchResultBucket(count) {
 }
 
 export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpenFanClub, onOpenProfile, onPlay, onAddToPlaylist }) {
-  const { tourDates, searchVenues, artistsAlphabetical, venuesByCity, upcomingEvents, fanClubsDirectory, commentsFor, track,
+  const { tourDates, searchVenues, artistsAlphabetical, venuesByCity, upcomingEvents, fanClubsDirectory, fanClubDirectoryStatus, loadFanClubsDirectory, commentsFor, track,
     session, blockedIds, isFollowing, follow, unfollow, searchPeople, searchArtistsApi, resolveArtist,
     recentSearches, addRecentSearch, removeRecentSearch, clearRecentSearches, searchSongsApi } = useStore();
   const searchAccountScope = accountTargetScope(session?.id, "search");
@@ -187,6 +197,8 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
   const setActionMessage = (message) => updateLookupState({ message });
   const peopleScope = unifiedPeopleSearchScope(session?.id, blockedIds);
   const [peopleCache, setPeopleCache] = useState({ scope: null, query: "", rows: [] });
+  const fanClubDirectoryLoaderRef = useRef(loadFanClubsDirectory);
+  fanClubDirectoryLoaderRef.current = loadFanClubsDirectory;
 
   useEffect(() => {
     setQueryState({ scope: searchAccountScope, value: "" });
@@ -202,6 +214,23 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
     const active = lookupRequestRef.current;
     lookupRequestRef.current = { sequence: active.sequence + 1, scope: null, target: null };
   }, []);
+  useEffect(() => {
+    const controller = new AbortController();
+    fanClubDirectoryLoaderRef.current?.({ signal: controller.signal })
+      .catch(() => { /* architecture: allow-empty-catch -- search keeps its existing local fan-club snapshot when the optional directory refresh fails */ });
+    return () => controller.abort();
+  }, [searchAccountScope]);
+
+  // Local sections are computed once for each query and reused by rendering and
+  // analytics. Previously venue/event/club matching ran again after the remote
+  // branches settled, which doubled the most expensive catalog work on every
+  // successful search.
+  const venues = useMemo(() => (query ? searchVenues(query, 24) : []), [query, tourDates]);
+  const events = useMemo(() => (query ? tourDates.filter((t) => `${t.artist} ${t.venue} ${t.place || t.city || ""}`.toLowerCase().includes(query)).slice(0, 24) : []), [query, tourDates]);
+  const clubs = useMemo(() => {
+    if (!query) return [];
+    return fanClubsDirectory().filter((c) => c.artist.toLowerCase().includes(query)).slice(0, 12);
+  }, [fanClubDirectoryStatus, query]);
 
   // Pull the artist catalog on open and whenever the box is cleared. A typed
   // query searches people, artists, and songs together; one shared abort signal
@@ -243,10 +272,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
         // Search text stays inside the search requests. Analytics receives only a
         // coarse result-count bucket, computed after this query's remote and local
         // result sets settle, so stale requests cannot emit a misleading funnel.
-        const venueCount = searchVenues(query, 24).length;
-        const eventCount = tourDates.filter((t) => `${t.artist} ${t.venue} ${t.place || t.city || ""}`.toLowerCase().includes(query)).slice(0, 24).length;
-        const clubCount = fanClubsDirectory().filter((c) => c.artist.toLowerCase().includes(query)).slice(0, 12).length;
-        const resultCount = (peopleRows?.length || 0) + (artistRows?.length || 0) + (songRows?.length || 0) + venueCount + eventCount + clubCount;
+        const resultCount = (peopleRows?.length || 0) + (artistRows?.length || 0) + (songRows?.length || 0) + venues.length + events.length + clubs.length;
         const resultBucket = searchResultBucket(resultCount);
         if (session?.id) {
           track("search", { kind: "all", resultBucket });
@@ -267,7 +293,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
       }
     }, 250);
     return () => { live = false; clearTimeout(id); controller.abort(); };
-  }, [query, peopleScope, searchRevision, session?.id]);
+  }, [query, peopleScope, searchRevision, session?.id, venues.length, events.length, clubs.length]);
 
   const mine = session?.id;
   // People are pure type-ahead (like every social app): never a full list, always
@@ -289,21 +315,18 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
     // DB catalog first (notable-first, includes on-demand-resolved artists).
     dbArtists.forEach((a) => add(a.name, a.genre, a.memorial));
     if (!query) {
-      artistsAlphabetical(24).forEach((a) => add(a.name, a.genre));
+      // The API already returned ranked browse rows. Only fall back to a local
+      // alphabetical sort while that first response is unavailable.
+      if (!map.size) artistsAlphabetical(24).forEach((a) => add(a.name, a.genre));
       return [...map.values()].slice(0, 24);
     }
     ratedShows.forEach((s) => s.artist.toLowerCase().includes(query) && add(s.artist, s.genre));
     tourDates.forEach((t) => t.artist.toLowerCase().includes(query) && add(t.artist, t.genre));
-    Object.values(ingestedArtists).forEach((a) => a.name.toLowerCase().includes(query) && add(a.name, a.genre));
+    // This mutable fixture is development-only. Production must not scan a
+    // second full artist catalog after the indexed server result arrives.
+    if (ENABLE_DEMO_DATA) Object.values(ingestedArtists).forEach((a) => a.name.toLowerCase().includes(query) && add(a.name, a.genre));
     return [...map.values()].slice(0, 30);
   }, [query, tourDates, dbArtists]);
-
-  const venues = useMemo(() => (query ? searchVenues(query, 24) : []), [query, tourDates]);
-  const events = useMemo(() => (query ? tourDates.filter((t) => `${t.artist} ${t.venue} ${t.place || t.city || ""}`.toLowerCase().includes(query)).slice(0, 24) : []), [query, tourDates]);
-  const clubs = useMemo(() => {
-    if (!query) return [];
-    return fanClubsDirectory().filter((c) => c.artist.toLowerCase().includes(query)).slice(0, 12);
-  }, [query]);
 
   const showBrowse = !query;
   const exactArtist = artists.some((a) => a.name.toLowerCase() === query);
@@ -328,7 +351,13 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
     addRecentSearch?.({ type: "artist", label: name });
     onOpenArtist?.(payload || name);
   };
-  const openVenue = (name) => { addRecentSearch?.({ type: "venue", label: name }); onOpenVenue?.(name); };
+  const openVenue = (venue) => {
+    const payload = venue && typeof venue === "object" ? venue : { name: venue };
+    const name = String(payload?.name || "").trim();
+    if (!name) return;
+    addRecentSearch?.({ type: "venue", label: name });
+    onOpenVenue?.(payload);
+  };
   const openPerson = (u) => { addRecentSearch?.({ type: "person", label: u.name, id: u.id, sub: `@${u.handle}` }); onOpenProfile?.(u.id); };
   const reopenRecent = (e) => {
     if (e.type === "artist") openArtist(e.label);
@@ -523,7 +552,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
           ))} />}
 
         <Section hidden={!showCategory("venues")} icon="pin" tint={colors.cool} title="VENUES" count={venues.length}
-          rows={venues.map((v) => <VenueRow key={v.name} v={v} onPress={() => openVenue(v.name)} />)} />
+          rows={venues.map((v) => <VenueRow key={v.identity || `${v.name}|${v.place || ""}|${v.source || ""}|${v.providerVenueId || ""}`} v={v} onPress={() => openVenue(v)} />)} />
 
         <Section hidden={!showCategory("shows")} icon="calendar" tint={colors.amber} title="SHOWS" count={events.length}
           rows={events.map((t) => <EventRow key={t.id} t={t} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenTicket={openTicket} />)} />

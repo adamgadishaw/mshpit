@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Linking, View, Text, StyleSheet, Pressable, Platform, Modal } from "react-native";
 import { useEvent } from "expo";
 import { useVideoPlayer, VideoView } from "expo-video";
-import { colors, mono, radius } from "../theme";
+import { colors, focusRing, mono, radius } from "../theme";
 import Icon from "./Icon";
 import ClipPoster from "./ClipPoster";
 import SmartImage from "./SmartImage";
@@ -20,8 +20,16 @@ import {
 } from "../domain/mediaViewer.mjs";
 import { analyticsDurationBucket } from "../domain/analyticsPolicy.mjs";
 import { pendingVideoMilestones } from "../domain/mediaAnalytics.mjs";
+import { venuePhotoAttribution, verifiedHttpsUrl } from "../domain/venuePhotoProvenance.mjs";
 
 const web = Platform.OS === "web";
+
+function webAttributionLinkProps(value) {
+  const href = verifiedHttpsUrl(value);
+  return web && href
+    ? { href, hrefAttrs: { target: "_blank", rel: "noopener noreferrer" } }
+    : {};
+}
 
 function ClipPlayer({ uri, posterUri, postId, onRetry, onTrack, onVideoSize, altText }) {
   const player = useVideoPlayer(uri);
@@ -265,6 +273,8 @@ export default function PhotoViewer({
   const mediaHeight = typeof p === "object" && p ? Number(p.height) || 0 : 0;
   const altText = typeof p === "object" && p ? p.altText || "" : "";
   const by = typeof p === "object" && p ? p.by : null;
+  const venueAttribution = venuePhotoAttribution(p);
+  const [attributionError, setAttributionError] = useState("");
   const currentPostId = galleryItemPostId(p, postId);
   const reactionItems = photos.map((item) => ({
     url: mediaDisplayUri(item),
@@ -283,6 +293,10 @@ export default function PhotoViewer({
   useEffect(() => {
     setI(normalizedGalleryIndex(index, photos.length));
   }, [index, photos.length]);
+
+  useEffect(() => {
+    setAttributionError("");
+  }, [venueAttribution?.sourcePage, venueAttribution?.licenseUrl]);
 
   // One batch read when the set opens; likes render instantly after.
   useEffect(() => { loadMediaReactions(reactionItems); }, [reactionScope]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -372,6 +386,16 @@ export default function PhotoViewer({
       ? { targetType: "post", targetId: currentPostId, targetName: video ? "video" : "photo" }
       : null;
   const canReport = !!onReport && !!parentTarget?.targetId && (!session || !ownerId || session.id !== ownerId);
+  const openAttributionLink = (value, label) => {
+    setAttributionError("");
+    const url = verifiedHttpsUrl(value);
+    if (!url) {
+      setAttributionError(`${label} is unavailable.`);
+      return;
+    }
+    if (web) return;
+    void Linking.openURL(url).catch(() => setAttributionError(`${label} could not be opened on this device.`));
+  };
 
   return (
     <Modal
@@ -442,7 +466,41 @@ export default function PhotoViewer({
 
       {/* The photo's own footer: who shot it + its own like. */}
       <View style={styles.footer} pointerEvents="box-none">
-        {!!by && <Text style={styles.by}>{video ? "Shared" : "Photo"} by {by}</Text>}
+        {venueAttribution ? (
+          <View style={styles.venueAttribution} accessible={false}>
+            <Text style={styles.by} selectable>{`Photo by ${venueAttribution.creator} · ${venueAttribution.license}`}</Text>
+            <View style={styles.venueAttributionActions}>
+              <Pressable
+                {...webAttributionLinkProps(venueAttribution.sourcePage)}
+                onPress={() => openAttributionLink(venueAttribution.sourcePage, "Photo source")}
+                style={({ pressed, focused }) => [styles.venueAttributionLink, pressed && styles.venueAttributionLinkPressed, focused && focusRing]}
+                accessibilityRole="link"
+                accessibilityLabel={`Photo by ${venueAttribution.creator}. Open original source in browser.`}
+              >
+                <Text style={styles.venueAttributionLinkText}>SOURCE</Text>
+                <Icon name="external" size={12} color="rgba(255,255,255,0.72)" />
+              </Pressable>
+              <Pressable
+                {...webAttributionLinkProps(venueAttribution.licenseUrl)}
+                onPress={() => openAttributionLink(venueAttribution.licenseUrl, "License terms")}
+                style={({ pressed, focused }) => [styles.venueAttributionLink, pressed && styles.venueAttributionLinkPressed, focused && focusRing]}
+                accessibilityRole="link"
+                accessibilityLabel={`Open ${venueAttribution.license} license terms in browser`}
+              >
+                <Text style={styles.venueAttributionLinkText}>LICENSE</Text>
+                <Icon name="external" size={12} color="rgba(255,255,255,0.72)" />
+              </Pressable>
+            </View>
+            {venueAttribution.modificationNotice ? (
+              <Text style={styles.venueModificationNotice} selectable>{venueAttribution.modificationNotice}</Text>
+            ) : null}
+            {attributionError ? (
+              <Text style={styles.venueAttributionError} accessibilityRole="alert" accessibilityLiveRegion="assertive">{attributionError}</Text>
+            ) : null}
+          </View>
+        ) : !!by ? (
+          <Text style={styles.by}>{video ? "Shared" : "Photo"} by {by}</Text>
+        ) : null}
         <Pressable
           style={[styles.likeBtn, r.mine && styles.likeBtnOn, (!session || !currentPostId) && styles.likeBtnDisabled]}
           onPress={() => toggleMediaReaction(uri, currentPostId)}
@@ -495,6 +553,13 @@ const styles = StyleSheet.create({
   arrow: { position: "absolute", top: "50%", marginTop: -24, width: 48, height: 48, borderRadius: 24, backgroundColor: "rgba(255,255,255,0.12)", alignItems: "center", justifyContent: "center" },
   footer: { alignItems: "center", gap: 8, paddingBottom: 22, paddingTop: 8 },
   by: { color: "rgba(255,255,255,0.7)", fontSize: 13, textAlign: "center" },
+  venueAttribution: { width: "100%", maxWidth: 680, alignItems: "center", gap: 7, paddingHorizontal: 16 },
+  venueAttributionActions: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8 },
+  venueAttributionLink: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 5, paddingHorizontal: 13, borderRadius: radius.pill, borderWidth: 1, borderColor: "rgba(255,255,255,0.18)", backgroundColor: "rgba(255,255,255,0.08)" },
+  venueAttributionLinkPressed: { opacity: 0.72 },
+  venueAttributionLinkText: { color: "rgba(255,255,255,0.84)", fontFamily: mono, fontSize: 9, fontWeight: "800", letterSpacing: 0.7 },
+  venueModificationNotice: { color: "rgba(255,255,255,0.56)", fontSize: 10.5, lineHeight: 15, textAlign: "center" },
+  venueAttributionError: { color: colors.danger, fontSize: 11.5, lineHeight: 16, textAlign: "center" },
   likeBtn: { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: "rgba(255,255,255,0.10)", borderRadius: radius.pill, paddingHorizontal: 16, paddingVertical: 9 },
   likeBtnOn: { backgroundColor: "rgba(217,70,160,0.16)" },
   likeBtnDisabled: { opacity: 0.55 },

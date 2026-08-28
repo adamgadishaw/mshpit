@@ -1,11 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { View, Text, StyleSheet, Pressable, ScrollView, Platform, useWindowDimensions } from "react-native";
+import { ActivityIndicator, View, Text, StyleSheet, Pressable, ScrollView, Platform, useWindowDimensions } from "react-native";
 import { colors, mono, radius, shadow, space } from "../theme";
 import { useStore } from "../store";
 import ScreenHeader from "../components/ScreenHeader";
 import Icon from "./../components/Icon";
 import { exportCalendarEvents } from "../lib/calendarExport";
 import { openTicketLink } from "../lib/ticketLinks";
+import { CALENDAR_SHOW_VIEW, calendarShowsByDay } from "../domain/calendarShows.mjs";
+import {
+  CALENDAR_HISTORY_PAGE_SIZE,
+  calendarHistoryWindow,
+  nextCalendarHistoryLimit,
+} from "../domain/calendarHistoryWindow.mjs";
+import { useProfileHistory } from "../features/profileHistory/useProfileHistory";
 
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const DOW = [
@@ -19,17 +26,6 @@ const DOW = [
 ];
 const pad = (n) => String(n).padStart(2, "0");
 const keyOf = (y, m, d) => `${y}-${pad(m + 1)}-${pad(d)}`;
-// Dates in this app come in mixed shapes: ISO "2026-06-21", the seed's
-// "2026 · 08 · 14" (middot), and the odd mojibake separator. Pull the first
-// year/month/day number groups regardless of separator, else fall back to Date.
-const dayKeyFromDate = (s) => {
-  if (!s) return null;
-  const str = String(s);
-  const m = str.match(/(\d{4})\D+(\d{1,2})\D+(\d{1,2})/);
-  if (m) return `${m[1]}-${pad(+m[2])}-${pad(+m[3])}`;
-  const d = new Date(str);
-  return isNaN(d.getTime()) ? null : keyOf(d.getFullYear(), d.getMonth(), d.getDate());
-};
 const prettyDay = (k) => {
   const [y, m, d] = k.split("-").map(Number);
   const dt = new Date(y, m - 1, d);
@@ -44,8 +40,28 @@ const dateFromKey = (key) => {
 // real month grid. "Today" comes from the server clock (GET /api/time) so it's right
 // regardless of the device's clock. Tap a day to see its shows; tap a show to open it.
 export default function CalendarScreen({ onClose, onOpen, onOpenArtist }) {
-  const { session, upcomingEvents, goingFor, serverTime } = useStore();
+  const { session, upcomingEvents, goingFor, myAttendance, serverTime } = useStore();
   const { width: viewportWidth } = useWindowDimensions();
+  const [view, setView] = useState(CALENDAR_SHOW_VIEW.UPCOMING);
+  const history = useProfileHistory({
+    accountId: session?.id,
+    targetId: session?.id,
+    enabled: !!session?.id && view === CALENDAR_SHOW_VIEW.PAST,
+  });
+  const [historyVisibleLimit, setHistoryVisibleLimit] = useState(CALENDAR_HISTORY_PAGE_SIZE);
+  const [historyOlderLoadFailed, setHistoryOlderLoadFailed] = useState(false);
+  useEffect(() => {
+    setHistoryVisibleLimit(CALENDAR_HISTORY_PAGE_SIZE);
+    setHistoryOlderLoadFailed(false);
+  }, [session?.id]);
+  const historyWindow = useMemo(
+    () => calendarHistoryWindow(history.posts, historyVisibleLimit, history.nextCursor),
+    [history.nextCursor, history.posts, historyVisibleLimit],
+  );
+  const historyInitialLoading = !!session?.id
+    && !history.updatedAt
+    && !history.error
+    && (history.status === "idle" || history.status === "loading" || history.status === "refreshing");
 
   // Authoritative "today" from the server, device clock as the fallback.
   const [today, setToday] = useState(() => new Date());
@@ -58,24 +74,20 @@ export default function CalendarScreen({ onClose, onOpen, onOpenArtist }) {
 
   const todayKey = keyOf(today.getFullYear(), today.getMonth(), today.getDate());
 
-  // All calendar events, keyed by day. Shows you're "going" to are flagged so they
-  // stand out from the general upcoming-shows firehose.
-  const byDay = useMemo(() => {
-    const map = {};
-    const add = (ev, going) => {
-      const dk = dayKeyFromDate(ev.date);
-      if (!dk || !/^\d{4}-\d{2}-\d{2}$/.test(dk)) return;
-      const id = `${(ev.artist || "").toLowerCase()}|${(ev.venue || "").toLowerCase()}|${dk}`;
-      (map[dk] ||= {});
-      const prev = map[dk][id];
-      map[dk][id] = { ...ev, dayKey: dk, going: going || prev?.going || false };
+  const calendarViews = useMemo(() => {
+    const common = {
+      today: todayKey,
+      upcoming: upcomingEvents(500) || [],
+      going: session ? goingFor(session.id) || [] : [],
+      attendance: session ? myAttendance || [] : [],
+      logs: session ? historyWindow.posts : [],
     };
-    (upcomingEvents(500) || []).forEach((e) => add(e, false));
-    if (session) (goingFor(session.id) || []).forEach((e) => add(e, true));
-    const out = {};
-    for (const dk of Object.keys(map)) out[dk] = Object.values(map[dk]).sort((a, b) => (a.artist || "").localeCompare(b.artist || ""));
-    return out;
-  }, [upcomingEvents, goingFor, session]);
+    return {
+      [CALENDAR_SHOW_VIEW.UPCOMING]: calendarShowsByDay(common),
+      [CALENDAR_SHOW_VIEW.PAST]: calendarShowsByDay({ ...common, view: CALENDAR_SHOW_VIEW.PAST }),
+    };
+  }, [goingFor, historyWindow.posts, myAttendance, session, todayKey, upcomingEvents]);
+  const byDay = calendarViews[view];
 
   // Start on today's month; if it's empty, jump to the first month that has shows.
   const firstEventKey = useMemo(() => Object.keys(byDay).filter((k) => k >= todayKey).sort()[0] || Object.keys(byDay).sort()[0] || null, [byDay, todayKey]);
@@ -86,6 +98,7 @@ export default function CalendarScreen({ onClose, onOpen, onOpenArtist }) {
   const [exportingKey, setExportingKey] = useState("");
   const dayRefs = useRef(new Map());
   const pendingFocusKey = useRef(null);
+  const pendingPastPosition = useRef(false);
 
   const { y, m } = cursor;
   const daysInMonth = new Date(y, m + 1, 0).getDate();
@@ -96,6 +109,7 @@ export default function CalendarScreen({ onClose, onOpen, onOpenArtist }) {
   while (cells.length % 7 !== 0) cells.push(null);
 
   const shiftMonth = (delta) => {
+    pendingPastPosition.current = false;
     const nm = m + delta;
     const ny = y + Math.floor(nm / 12);
     const mm = ((nm % 12) + 12) % 12;
@@ -114,6 +128,7 @@ export default function CalendarScreen({ onClose, onOpen, onOpenArtist }) {
   }, [selected, y, m]);
 
   const selectDay = (key, { focus = false } = {}) => {
+    pendingPastPosition.current = false;
     const date = dateFromKey(key);
     setSelected(key);
     if (date.getFullYear() !== y || date.getMonth() !== m) {
@@ -121,6 +136,29 @@ export default function CalendarScreen({ onClose, onOpen, onOpenArtist }) {
     }
     if (focus && Platform.OS === "web") pendingFocusKey.current = key;
   };
+
+  const selectView = (nextView) => {
+    if (nextView === view) return;
+    const keys = Object.keys(calendarViews[nextView]).sort();
+    pendingPastPosition.current = nextView === CALENDAR_SHOW_VIEW.PAST && keys.length === 0;
+    const target = nextView === CALENDAR_SHOW_VIEW.PAST
+      ? keys.at(-1) || todayKey
+      : keys.find((key) => key >= todayKey) || keys[0] || todayKey;
+    const date = dateFromKey(target);
+    setView(nextView);
+    setCursor({ y: date.getFullYear(), m: date.getMonth() });
+    setSelected(target);
+  };
+
+  useEffect(() => {
+    if (view !== CALENDAR_SHOW_VIEW.PAST || !pendingPastPosition.current) return;
+    const target = Object.keys(calendarViews[CALENDAR_SHOW_VIEW.PAST]).sort().at(-1);
+    if (!target) return;
+    pendingPastPosition.current = false;
+    const date = dateFromKey(target);
+    setCursor({ y: date.getFullYear(), m: date.getMonth() });
+    setSelected(target);
+  }, [calendarViews, view]);
 
   const onDayKeyDown = (event, key) => {
     if (Platform.OS !== "web") return;
@@ -162,6 +200,29 @@ export default function CalendarScreen({ onClose, onOpen, onOpenArtist }) {
     if (onOpen) onOpen({ artist: ev.artist, venue: ev.venue, city: ev.city || ev.place, date: ev.date, ...ev });
   };
 
+  const loadEarlierHistory = async () => {
+    if (history.loadingMore) return;
+    if (historyWindow.hasBufferedPage) {
+      setHistoryVisibleLimit((current) => nextCalendarHistoryLimit(current));
+      return;
+    }
+    if (!historyWindow.hasServerPage) return;
+    setHistoryOlderLoadFailed(false);
+    const previousCount = history.posts.length;
+    const result = await history.loadMore();
+    if (result?.error) {
+      setHistoryOlderLoadFailed(true);
+    } else if ((result?.data?.posts?.length || 0) > previousCount) {
+      setHistoryVisibleLimit((current) => nextCalendarHistoryLimit(current));
+    }
+  };
+
+  const retryHistory = () => {
+    if (historyOlderLoadFailed && historyWindow.hasServerPage) return loadEarlierHistory();
+    setHistoryOlderLoadFailed(false);
+    return history.retry();
+  };
+
   return (
     <View style={styles.wrap}>
       <ScreenHeader
@@ -171,6 +232,27 @@ export default function CalendarScreen({ onClose, onOpen, onOpenArtist }) {
         right={<Pressable style={styles.todayTarget} onPress={() => { setCursor({ y: today.getFullYear(), m: today.getMonth() }); setSelected(todayKey); }} accessibilityRole="button" accessibilityLabel="Go to today"><Text style={styles.todayBtn}>Today</Text></Pressable>}
       />
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
+        <View style={styles.viewTabs} accessibilityRole="tablist" accessibilityLabel="Calendar show period">
+          {[
+            [CALENDAR_SHOW_VIEW.UPCOMING, "Upcoming"],
+            [CALENDAR_SHOW_VIEW.PAST, "Past shows"],
+          ].map(([key, label]) => {
+            const selectedView = view === key;
+            return (
+              <Pressable
+                key={key}
+                style={[styles.viewTab, selectedView && styles.viewTabSelected]}
+                onPress={() => selectView(key)}
+                accessibilityRole="tab"
+                accessibilityLabel={`Show ${label.toLocaleLowerCase()}`}
+                accessibilityState={{ selected: selectedView }}
+              >
+                <Text style={[styles.viewTabText, selectedView && styles.viewTabTextSelected]}>{label}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
+
         {/* month nav */}
         <View style={styles.monthBar}>
           <Pressable style={styles.navBtn} onPress={() => shiftMonth(-1)} accessibilityRole="button" accessibilityLabel={`Previous month, ${MONTHS[(m + 11) % 12]}`}><Icon name="chevron-left" size={18} color={colors.text} /></Pressable>
@@ -194,8 +276,10 @@ export default function CalendarScreen({ onClose, onOpen, onOpenArtist }) {
                 const evs = byDay[k];
                 const isToday = k === todayKey;
                 const isSel = k === selected;
-                const hasGoing = evs?.some((e) => e.going);
-                const goingCount = evs?.filter((event) => event.going).length || 0;
+                const hasGoing = evs?.some((event) => view === CALENDAR_SHOW_VIEW.PAST ? event.attended : event.going);
+                const goingCount = view === CALENDAR_SHOW_VIEW.UPCOMING
+                  ? evs?.filter((event) => event.going).length || 0
+                  : 0;
                 const label = `${prettyDay(k)}${isToday ? ", today" : ""}${evs ? `, ${evs.length} show${evs.length === 1 ? "" : "s"}` : ", no shows"}${goingCount ? `, going to ${goingCount}` : ""}`;
                 return (
                   <Pressable
@@ -218,12 +302,62 @@ export default function CalendarScreen({ onClose, onOpen, onOpenArtist }) {
         </ScrollView>
 
         <View style={styles.legendRow}>
-          <View style={styles.legendItem}><View style={[styles.dot, { backgroundColor: colors.amber }]} /><Text style={styles.legendTxt}>You're going</Text></View>
-          <View style={styles.legendItem}><View style={[styles.dot, { backgroundColor: colors.textFaint }]} /><Text style={styles.legendTxt}>Upcoming show</Text></View>
+          {view === CALENDAR_SHOW_VIEW.UPCOMING ? (
+            <>
+              <View style={styles.legendItem}><View style={[styles.dot, { backgroundColor: colors.amber }]} /><Text style={styles.legendTxt}>You're going</Text></View>
+              <View style={styles.legendItem}><View style={[styles.dot, { backgroundColor: colors.textFaint }]} /><Text style={styles.legendTxt}>Upcoming show</Text></View>
+            </>
+          ) : (
+            <View style={styles.legendItem}><View style={[styles.dot, { backgroundColor: colors.amber }]} /><Text style={styles.legendTxt}>Your show history</Text></View>
+          )}
           {tz ? <Text style={styles.tzTxt}>{tz}</Text> : null}
         </View>
 
-        {goingEvents.length > 0 ? (
+        {view === CALENDAR_SHOW_VIEW.PAST && session && (historyInitialLoading || history.error || historyWindow.hasMore) ? (
+          <View style={styles.historyProgress} accessibilityLiveRegion={history.error ? "assertive" : "polite"}>
+            {historyInitialLoading ? (
+              <>
+                <ActivityIndicator size="small" color={colors.amber} />
+                <Text style={styles.historyProgressText}>Loading your logged shows… Confirmed Here and Went attendance is already included.</Text>
+              </>
+            ) : history.error ? (
+              <>
+                <Icon name="x" size={17} color={colors.danger} />
+                <Text style={styles.historyProgressText}>{historyOlderLoadFailed
+                  ? "Some earlier logged shows could not be loaded. Your confirmed attendance is still shown."
+                  : history.posts.length
+                    ? "Your logged-show history could not be refreshed. Previously loaded shows and confirmed attendance are still shown."
+                  : "Your logged shows could not be loaded. Your confirmed attendance is still shown."}</Text>
+                <Pressable
+                  style={styles.historyProgressButton}
+                  onPress={retryHistory}
+                  accessibilityRole="button"
+                  accessibilityLabel="Retry loading past shows"
+                >
+                  <Text style={styles.historyProgressButtonText}>Try again</Text>
+                </Pressable>
+              </>
+            ) : historyWindow.hasMore ? (
+              <>
+                <Icon name="archive" size={17} color={colors.amber} />
+                <Text style={styles.historyProgressText}>Older logged shows load in small batches so the calendar stays quick.</Text>
+                <Pressable
+                  style={[styles.historyProgressButton, history.loadingMore && styles.disabled]}
+                  onPress={loadEarlierHistory}
+                  disabled={history.loadingMore}
+                  accessibilityRole="button"
+                  accessibilityLabel="Load earlier past shows"
+                  accessibilityState={{ disabled: history.loadingMore, busy: history.loadingMore }}
+                >
+                  {history.loadingMore ? <ActivityIndicator size="small" color={colors.amber} /> : null}
+                  <Text style={styles.historyProgressButtonText}>{history.loadingMore ? "Loading…" : "Load earlier shows"}</Text>
+                </Pressable>
+              </>
+            ) : null}
+          </View>
+        ) : null}
+
+        {view === CALENDAR_SHOW_VIEW.UPCOMING && goingEvents.length > 0 ? (
           <Pressable
             style={[styles.exportAllBtn, !!exportingKey && styles.disabled]}
             onPress={() => saveCalendar(goingEvents, "all")}
@@ -253,8 +387,26 @@ export default function CalendarScreen({ onClose, onOpen, onOpenArtist }) {
           // blank days (tour dates arrive from providers; Going pins are yours).
           <View style={styles.empty}>
             <Icon name="calendar" size={20} color={colors.textFaint} />
-            <Text style={styles.emptyTxt}>Nothing on the calendar yet.</Text>
-            <Text style={styles.emptyHint}>Tour dates land here automatically as they're announced. Tap "Going" on any show to pin your own plans.</Text>
+            <Text style={styles.emptyTxt}>{view === CALENDAR_SHOW_VIEW.PAST
+              ? !session
+                ? "Sign in to see your past shows."
+                : historyInitialLoading
+                  ? "Loading past shows…"
+                  : history.error
+                    ? "Some past shows may be unavailable."
+                    : historyWindow.hasMore
+                      ? "No past shows in the loaded history yet."
+                    : "No past shows yet."
+              : "Nothing on the calendar yet."}</Text>
+            <Text style={styles.emptyHint}>{view === CALENDAR_SHOW_VIEW.PAST
+              ? historyInitialLoading
+                ? "Your confirmed attendance can appear first while logged reviews load."
+                : history.error
+                  ? "Try again above. Confirmed Here and Went attendance is still included without exposing it publicly."
+                  : historyWindow.hasMore
+                    ? "Load earlier shows above to keep looking through your history."
+                  : "Shows you log or mark Went appear here on the night they happened."
+              : "Tour dates land here automatically as they're announced. Tap “Going” on any show to pin your own plans."}</Text>
           </View>
         ) : selectedEvents.length === 0 ? (
           <View style={styles.empty}>
@@ -270,6 +422,8 @@ export default function CalendarScreen({ onClose, onOpen, onOpenArtist }) {
                   <Text style={styles.eventVenue} numberOfLines={1}>{[ev.venue, ev.place || ev.city].filter(Boolean).join(" · ") || "Venue TBA"}</Text>
                 </View>
                 {ev.going ? <View style={styles.goingTag}><Text style={styles.goingTagTxt}>GOING</Text></View> : null}
+                {view === CALENDAR_SHOW_VIEW.PAST && ev.logged ? <View style={styles.goingTag}><Text style={styles.goingTagTxt}>LOGGED</Text></View> : null}
+                {view === CALENDAR_SHOW_VIEW.PAST && !ev.logged && ev.attended ? <View style={styles.goingTag}><Text style={styles.goingTagTxt}>WENT</Text></View> : null}
                 {ev.soldOut ? <View style={styles.soldTag}><Text style={styles.soldTagTxt}>SOLD OUT</Text></View> : null}
               </Pressable>
               <View style={styles.eventActions}>
@@ -307,6 +461,17 @@ const styles = StyleSheet.create({
   scroll: { padding: space(4), paddingTop: 8 },
   todayTarget: { minWidth: 44, minHeight: 44, alignItems: "center", justifyContent: "center" },
   todayBtn: { color: colors.amber, fontSize: 13, fontWeight: "800" },
+
+  viewTabs: { flexDirection: "row", padding: 4, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface, marginBottom: 12 },
+  viewTab: { flex: 1, minHeight: 44, alignItems: "center", justifyContent: "center", borderRadius: radius.sm },
+  viewTabSelected: { backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.line },
+  viewTabText: { color: colors.textDim, fontSize: 13, fontWeight: "800" },
+  viewTabTextSelected: { color: colors.amber },
+
+  historyProgress: { minHeight: 54, marginTop: 10, paddingHorizontal: 12, paddingVertical: 10, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.surface, flexDirection: "row", alignItems: "center", gap: 9, flexWrap: "wrap" },
+  historyProgressText: { flex: 1, minWidth: 190, color: colors.textDim, fontSize: 11.5, lineHeight: 17 },
+  historyProgressButton: { minHeight: 44, paddingHorizontal: 13, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.amber, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6 },
+  historyProgressButtonText: { color: colors.amber, fontSize: 11.5, fontWeight: "800" },
 
   monthBar: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 6, marginBottom: 12 },
   navBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, alignItems: "center", justifyContent: "center" },

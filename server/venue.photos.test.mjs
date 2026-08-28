@@ -14,13 +14,15 @@ test("venue photo endpoint fails closed for the legacy unverified catalog", () =
 
   assert.equal(result.key, "wollman auditorium");
   assert.deepEqual(result.photos, []);
-  assert.equal(headers["Cache-Control"], "public, max-age=60, must-revalidate");
+  assert.deepEqual(result.fanPhotos, []);
+  assert.equal(headers["Cache-Control"], "private, no-store");
 });
 
 test("venue photo endpoint handles missing pools and malformed route encoding safely", () => {
   assert.deepEqual(getPhotos({ params: { key: "venue-with-no-photo-pool" } }), {
     key: "venue-with-no-photo-pool",
     photos: [],
+    fanPhotos: [],
   });
   assert.throws(
     () => getPhotos({ params: { key: "%E0%A4%A" } }),

@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { View, Text, Image, StyleSheet, Platform } from "react-native";
+import { View, Text, Image, Linking, Pressable, StyleSheet, Platform } from "react-native";
 import { colors, mono, radius, shadow } from "../theme";
 import { GOOGLE_KEY } from "../mapConfig";
 import { proxied, isHttp } from "../lib/img";
 import Stars from "./Stars";
+import { venueMapPhotoPresentation, verifiedHttpsUrl } from "../domain/venuePhotoProvenance.mjs";
 
 // A REAL, interactive Google map (pan / zoom / clickable pins), the "actual map
 // embedded in the program." Renders on web when a Google key is present; on
@@ -102,6 +103,7 @@ export default function LiveMap({ points = [], highlight, focalName, label, onOp
   const markersRef = useRef([]);
   const overlayRef = useRef(null);
   const projRef = useRef(null);
+  const hoverTimerRef = useRef(null);
   const [failed, setFailed] = useState(false);
   const [hover, setHover] = useState(null); // { x, y, point }
 
@@ -165,6 +167,7 @@ export default function LiveMap({ points = [], highlight, focalName, label, onOp
         const showCard = (p, marker) => {
           const proj = projRef.current;
           if (!proj || !p.name || p.kind === "spot") return;
+          clearTimeout(hoverTimerRef.current);
           const px = proj.fromLatLngToContainerPixel(marker.getPosition());
           if (px) setHover({ x: px.x, y: px.y, point: p });
         };
@@ -184,7 +187,10 @@ export default function LiveMap({ points = [], highlight, focalName, label, onOp
             if (p.name && (p.focal || p.kind !== "spot")) onOpenVenue && onOpenVenue(p.name);
           });
           marker.addListener("mouseover", () => showCard(p, marker));
-          marker.addListener("mouseout", () => setHover(null));
+          marker.addListener("mouseout", () => {
+            clearTimeout(hoverTimerRef.current);
+            hoverTimerRef.current = setTimeout(() => setHover(null), 140);
+          });
           markersRef.current.push(marker);
           bounds.extend({ lat: p.lat, lng: p.lng });
         });
@@ -204,6 +210,7 @@ export default function LiveMap({ points = [], highlight, focalName, label, onOp
 
     return () => {
       cancelled = true;
+      clearTimeout(hoverTimerRef.current);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sig]);
@@ -220,19 +227,30 @@ export default function LiveMap({ points = [], highlight, focalName, label, onOp
           <Text style={styles.labelTxt}>{label}</Text>
         </View>
       ) : null}
-      {hover ? <HoverCard hover={hover} /> : null}
+      {hover ? (
+        <HoverCard
+          hover={hover}
+          onHoverIn={() => clearTimeout(hoverTimerRef.current)}
+          onHoverOut={() => {
+            clearTimeout(hoverTimerRef.current);
+            hoverTimerRef.current = setTimeout(() => setHover(null), 100);
+          }}
+        />
+      ) : null}
     </View>
   );
 }
 
 // A little floating place-card, positioned so its bottom tail sits just above the
 // pin tip. Purely presentational (pointerEvents none) so it never eats a click.
-function HoverCard({ hover }) {
+function HoverCard({ hover, onHoverIn, onHoverOut }) {
   const { x, y, point: p } = hover;
-  const photo = p.photo && isHttp(p.photo) ? proxied(p.photo, 320) : p.photo;
+  const presentation = venueMapPhotoPresentation(p.photoProvenance, p.photo);
+  const photo = presentation?.uri && isHttp(presentation.uri) ? proxied(presentation.uri, 320) : null;
+  const attribution = presentation?.attribution || null;
   const rating = typeof p.rating === "number" && p.rating > 0 ? p.rating : null;
   return (
-    <View style={[styles.cardAnchor, { left: x, top: y }, styles.noPointerEvents]}>
+    <Pressable style={[styles.cardAnchor, { left: x, top: y }]} onHoverIn={onHoverIn} onHoverOut={onHoverOut}>
       <View style={styles.card}>
         {photo ? (
           <Image source={{ uri: photo }} style={styles.cardPhoto} resizeMode="cover" />
@@ -251,10 +269,36 @@ function HoverCard({ hover }) {
           ) : (
             <Text style={styles.cardMuted}>No reviews yet</Text>
           )}
+          {attribution ? (
+            <View style={styles.cardAttribution}>
+              <Text style={styles.cardAttributionLabel} numberOfLines={1}>Photo: {attribution.creator}</Text>
+              <View style={styles.cardAttributionLinks}>
+                <SafeAttributionLink label="Source" url={attribution.sourcePage} />
+                <SafeAttributionLink label={attribution.license} url={attribution.licenseUrl} />
+              </View>
+            </View>
+          ) : null}
         </View>
       </View>
       <View style={styles.cardTail} />
-    </View>
+    </Pressable>
+  );
+}
+
+function SafeAttributionLink({ label, url }) {
+  const safeUrl = verifiedHttpsUrl(url);
+  if (!safeUrl) return null;
+  return (
+    <Pressable
+      accessibilityRole="link"
+      accessibilityLabel={"Open venue photo " + label}
+      onPress={() => {
+        void Linking.openURL(safeUrl)
+          .catch(() => { /* architecture: allow-empty-catch -- a declined external attribution link does not affect the map */ });
+      }}
+    >
+      <Text style={styles.cardAttributionLink}>{label}</Text>
+    </Pressable>
   );
 }
 
@@ -276,5 +320,9 @@ const styles = StyleSheet.create({
   cardRating: { flexDirection: "row", alignItems: "center", gap: 5, marginTop: 7 },
   cardScore: { color: colors.gold, fontFamily: mono, fontSize: 12, fontWeight: "800" },
   cardMuted: { color: colors.textFaint, fontSize: 11, marginTop: 7 },
+  cardAttribution: { marginTop: 8, paddingTop: 7, borderTopWidth: 1, borderTopColor: colors.lineSoft },
+  cardAttributionLabel: { color: colors.textFaint, fontSize: 9.5 },
+  cardAttributionLinks: { flexDirection: "row", alignItems: "center", gap: 10, marginTop: 4 },
+  cardAttributionLink: { color: colors.cool, fontSize: 9.5, fontWeight: "800", textDecorationLine: "underline" },
   cardTail: { position: "absolute", left: -7, bottom: 33, width: 14, height: 14, backgroundColor: colors.surface, borderRightWidth: 1, borderBottomWidth: 1, borderColor: colors.line, transform: [{ rotate: "45deg" }] },
 });

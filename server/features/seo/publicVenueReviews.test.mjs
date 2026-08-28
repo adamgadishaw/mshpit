@@ -48,18 +48,20 @@ function addReview({
   rating = 4,
   text = "A detailed venue review covering the sound, sightlines, room, crowd flow, and atmosphere.",
   photos = [],
+  photosPublic = false,
   removed = false,
   createdAt = 1,
 }) {
   db.prepare(`INSERT INTO venue_reviews
-    (id,venue_key,user_id,rating,text,photos,removed,created_at)
-    VALUES (?,?,?,?,?,?,?,?)`).run(
+    (id,venue_key,user_id,rating,text,photos,photos_public,removed,created_at)
+    VALUES (?,?,?,?,?,?,?,?,?)`).run(
     id,
     venueKey,
     userId,
     rating,
     text,
     JSON.stringify(photos),
+    photosPublic ? 1 : 0,
     removed ? 1 : 0,
     createdAt,
   );
@@ -118,6 +120,7 @@ test("public venue reviews exclude hidden accounts and require substantive text 
   const textAuthor = addUser("u_vr_text", "vrtext", { name: "Text Reviewer" });
   const photoAuthor = addUser("u_vr_photo", "vrphoto", { name: "Photo Reviewer" });
   const unverifiedAuthor = addUser("u_vr_unverified", "vrunverified");
+  const privatePhotoAuthor = addUser("u_vr_private_photo", "vrprivatephoto");
   const banned = addUser("u_vr_banned", "vrbanned", { banned: true });
   const suspended = addUser("u_vr_suspended", "vrsuspended", { suspended: true });
   const removed = addUser("u_vr_removed", "vrremoved");
@@ -129,6 +132,7 @@ test("public venue reviews exclude hidden accounts and require substantive text 
     ownerId: photoAuthor.id,
   }));
   const unverifiedUrl = "https://media.example.test/not-verified.jpg";
+  const privateVerified = addVerifiedReadyImage({ id: "vr-photo-private", ownerId: privatePhotoAuthor.id });
   addReview({ id: "vr_text", venueKey: "seo venue", userId: textAuthor.id, rating: 4, createdAt: 100 });
   addReview({
     id: "vr_photo",
@@ -137,7 +141,18 @@ test("public venue reviews exclude hidden accounts and require substantive text 
     rating: 5,
     text: "photo",
     photos: [...verified, unverifiedUrl],
+    photosPublic: true,
     createdAt: 110,
+  });
+  addReview({
+    id: "vr_private_photo",
+    venueKey: "seo venue",
+    userId: privatePhotoAuthor.id,
+    rating: 5,
+    text: "photo",
+    photos: [privateVerified],
+    photosPublic: false,
+    createdAt: 115,
   });
   addReview({
     id: "vr_unverified",
@@ -158,6 +173,7 @@ test("public venue reviews exclude hidden accounts and require substantive text 
   assert.deepEqual(result.reviews.map((review) => review.id), ["vr_photo", "vr_text"]);
   assert.deepEqual(result.reviews[0].photos, verified.slice(0, 3));
   assert.equal(result.reviews.some((review) => review.photos.includes(unverifiedUrl)), false);
+  assert.equal(result.reviews.some((review) => review.photos.includes(privateVerified)), false);
   assert.deepEqual(result.stats, { reviewCount: 2, ratingCount: 2, averageRating: 4.5 });
   assert.equal(JSON.stringify(result).includes("userId"), false);
   assert.equal(JSON.stringify(result).includes("@private.example.test"), false);

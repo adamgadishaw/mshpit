@@ -37,9 +37,9 @@ const IRREVERSIBLE_MEDIA_REMOVAL = Object.freeze({
     hasNonUrlAssociation: (row) => !!row.photos_public || !!row.landing_showcase,
   },
   venue_review: {
-    select: "user_id media_owner_id,photos media_json",
-    scrub: "photos='[]'",
-    hasNonUrlAssociation: () => false,
+    select: "user_id media_owner_id,photos media_json,photos_public",
+    scrub: "photos='[]',photos_public=0",
+    hasNonUrlAssociation: (row) => !!row.photos_public,
   },
   artist_profile: {
     select: "owner_id media_owner_id,banner media_banner,avatar_uri media_avatar",

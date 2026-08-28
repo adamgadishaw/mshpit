@@ -1,11 +1,12 @@
 import { useState, useEffect } from "react";
 import { View, Text, StyleSheet, Image, Pressable, Linking, Platform, ActivityIndicator, AccessibilityInfo } from "react-native";
 import Svg, { Defs, LinearGradient, Stop, Rect } from "react-native-svg";
-import { colors, mono, radius } from "../theme";
+import { colors, focusRing, mono, radius } from "../theme";
 import Icon from "../components/Icon";
 import { mapsDir } from "../lib/afterparty";
 import { displaySrc, proxied, isHttp } from "../lib/img";
 import { venuePhotoAttemptScope } from "../domain/venuePhotos.mjs";
+import { venuePhotoAttribution, verifiedHttpsUrl } from "../domain/venuePhotoProvenance.mjs";
 
 // An iOS-photo-widget-style rolling compilation for a venue: real photos when we
 // have them, a stage-light title card always on top (venue + city), and a Get
@@ -17,6 +18,13 @@ const GELS = [
   ["#2A2140", "#0B0E16"],
   ["#13302A", "#0B0E16"],
 ];
+
+function webExternalLinkProps(value) {
+  const href = verifiedHttpsUrl(value);
+  return Platform.OS === "web" && href
+    ? { href, hrefAttrs: { target: "_blank", rel: "noopener noreferrer" } }
+    : {};
+}
 
 function Slide({ photo, idx, viaProxy, onError }) {
   if (photo?.uri) {
@@ -49,6 +57,7 @@ export default function VenuePhotoWidget({ photos = [], venueName, city, coord, 
   const [paused, setPaused] = useState(false);
   const [reduceMotion, setReduceMotion] = useState(false);
   const [directionError, setDirectionError] = useState("");
+  const [creditError, setCreditError] = useState("");
   const failCur = (uri) => uri && setAttempt((a) => ({ ...a, [uri]: a[uri] === "proxy" ? "dead" : "proxy" }));
 
   useEffect(() => {
@@ -78,11 +87,23 @@ export default function VenuePhotoWidget({ photos = [], venueName, city, coord, 
 
   const realCount = real.length;
   const cur = i % slides.length;
+  const attribution = venuePhotoAttribution(slides[cur]);
   const hadPhotoCandidates = photos.some((photo) => !!photo?.uri);
   const deliveryFailed = hadPhotoCandidates && realCount === 0;
   const move = (delta) => {
     setPaused(true);
+    setCreditError("");
     setI((current) => (current + delta + slides.length) % slides.length);
+  };
+  const openCreditLink = (value, label) => {
+    setCreditError("");
+    const url = verifiedHttpsUrl(value);
+    if (!url) {
+      setCreditError(`${label} is unavailable.`);
+      return;
+    }
+    if (Platform.OS === "web") return;
+    void Linking.openURL(url).catch(() => setCreditError(`${label} could not be opened on this device.`));
   };
   const retryPhotos = () => {
     setAttempt({});
@@ -144,8 +165,8 @@ export default function VenuePhotoWidget({ photos = [], venueName, city, coord, 
               <View key={d} style={[styles.dot, d === cur && styles.dotOn]} />
             ))}
           </View>
-          {slides[cur]?.uri && slides[cur]?.source && slides[cur].source !== "fan" && !!slides[cur].by && (
-            <View style={styles.credit}><Text style={styles.creditTxt} numberOfLines={1}>{slides[cur].by}</Text></View>
+          {attribution && (
+            <View style={styles.credit}><Text style={styles.creditTxt} numberOfLines={1}>{`${attribution.creator} · ${attribution.license}`}</Text></View>
           )}
         </Pressable>
         {!realCount && (
@@ -177,6 +198,45 @@ export default function VenuePhotoWidget({ photos = [], venueName, city, coord, 
           </Pressable>
         </View>
       )}
+
+      {attribution ? (
+        <View style={styles.attributionCard} accessible={false}>
+          <View style={styles.attributionTop}>
+            <View style={styles.attributionCopy}>
+              <Text style={styles.attributionCreator} selectable numberOfLines={2}>{`Photo by ${attribution.creator}`}</Text>
+              <Text style={styles.attributionLicense} selectable>{attribution.license}</Text>
+            </View>
+            <View style={styles.attributionActions}>
+              <Pressable
+                {...webExternalLinkProps(attribution.sourcePage)}
+                onPress={() => openCreditLink(attribution.sourcePage, "Photo source")}
+                style={({ pressed, focused }) => [styles.attributionLink, pressed && styles.attributionLinkPressed, focused && focusRing]}
+                accessibilityRole="link"
+                accessibilityLabel={`Photo by ${attribution.creator}. Open original source in browser.`}
+              >
+                <Text style={styles.attributionLinkText}>SOURCE</Text>
+                <Icon name="external" size={12} color={colors.textDim} />
+              </Pressable>
+              <Pressable
+                {...webExternalLinkProps(attribution.licenseUrl)}
+                onPress={() => openCreditLink(attribution.licenseUrl, "License terms")}
+                style={({ pressed, focused }) => [styles.attributionLink, pressed && styles.attributionLinkPressed, focused && focusRing]}
+                accessibilityRole="link"
+                accessibilityLabel={`Open ${attribution.license} license terms in browser`}
+              >
+                <Text style={styles.attributionLinkText}>LICENSE</Text>
+                <Icon name="external" size={12} color={colors.textDim} />
+              </Pressable>
+            </View>
+          </View>
+          {attribution.modificationNotice ? (
+            <Text style={styles.modificationNotice} selectable>{attribution.modificationNotice}</Text>
+          ) : null}
+          {creditError ? (
+            <Text style={styles.creditError} accessibilityRole="alert" accessibilityLiveRegion="assertive">{creditError}</Text>
+          ) : null}
+        </View>
+      ) : null}
 
       {coord && coord.lat != null && (
         <Pressable
@@ -214,6 +274,17 @@ const styles = StyleSheet.create({
   },
   credit: { position: "absolute", right: 10, bottom: 10, maxWidth: "60%", backgroundColor: "rgba(5,6,10,0.55)", borderRadius: 6, paddingHorizontal: 7, paddingVertical: 3 },
   creditTxt: { color: "rgba(255,255,255,0.8)", fontSize: 9 },
+  attributionCard: { marginTop: 10, gap: 7, borderWidth: 1, borderColor: colors.lineSoft, borderRadius: radius.md, backgroundColor: colors.surface, padding: 11 },
+  attributionTop: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 },
+  attributionCopy: { flex: 1, minWidth: 150, gap: 2 },
+  attributionCreator: { color: colors.text, fontSize: 12.5, lineHeight: 17, fontWeight: "700" },
+  attributionLicense: { color: colors.textDim, fontFamily: mono, fontSize: 9.5, letterSpacing: 0.5 },
+  attributionActions: { flexDirection: "row", alignItems: "center", gap: 6 },
+  attributionLink: { minHeight: 44, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 5, borderWidth: 1, borderColor: colors.line, borderRadius: radius.pill, paddingHorizontal: 11, backgroundColor: colors.bgElev },
+  attributionLinkPressed: { opacity: 0.72 },
+  attributionLinkText: { color: colors.textDim, fontFamily: mono, fontSize: 9, fontWeight: "800", letterSpacing: 0.7 },
+  modificationNotice: { color: colors.textDim, fontSize: 10.5, lineHeight: 15 },
+  creditError: { color: colors.danger, fontSize: 11.5, lineHeight: 16 },
   dots: { position: "absolute", top: 12, right: 12, flexDirection: "row", gap: 5 },
   dot: { width: 6, height: 6, borderRadius: 3, backgroundColor: "rgba(255,255,255,0.4)" },
   dotOn: { backgroundColor: colors.amber, width: 16 },

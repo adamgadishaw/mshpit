@@ -6,15 +6,21 @@ import ScreenHeader from "../components/ScreenHeader";
 import Icon from "../components/Icon";
 import { VenueDiscoveryCard } from "../components/VenueDiscoveryCards";
 import { venueDirectoryTotals, venueHomePlaceId } from "../domain/venueDiscovery.mjs";
+import { discoverRowMatchesRegion } from "../domain/discoverScene.mjs";
+import { countryForCity } from "../geo";
 
-export default function VenuesScreen({ onClose, onOpenVenue }) {
+export default function VenuesScreen({ initialRegion = "Worldwide", onClose, onOpenVenue }) {
   const { venuesByCity, searchVenues, session, tourDates } = useStore();
   const [q, setQ] = useState("");
   const [city, setCity] = useState(null); // complete place identity, not ambiguous city text
   const query = q.trim();
   // The core catalog is static, but upcoming dates hydrate after mount. Rebuild
   // only when that source changes so counts/order cannot remain stuck at zero.
-  const cities = useMemo(() => venuesByCity(), [tourDates]);
+  const region = String(initialRegion || "Worldwide").trim() || "Worldwide";
+  const cities = useMemo(() => venuesByCity().filter((entry) => discoverRowMatchesRegion({
+    city: entry.city,
+    place: [entry.city, entry.region].filter(Boolean).join(", "),
+  }, region, { countryForCity })), [region, tourDates]);
   const totals = useMemo(() => venueDirectoryTotals(cities), [cities]);
   const homePlaceId = useMemo(() => venueHomePlaceId(session?.home, cities), [cities, session?.home]);
   const cityList = useMemo(() => {
@@ -25,10 +31,12 @@ export default function VenuesScreen({ onClose, onOpenVenue }) {
     });
   }, [cities, homePlaceId]);
   const selected = city ? cities.find((entry) => entry.id === city) : null;
-  const venueResults = query ? searchVenues(query) : [];
+  const venueResults = query ? searchVenues(query).filter((venue) => (
+    discoverRowMatchesRegion(venue, region, { countryForCity })
+  )) : [];
   const mode = query ? "search" : selected ? "city" : "cities";
   const data = mode === "search" ? venueResults : mode === "city" ? selected.venues : cityList;
-  const title = mode === "search" ? "Venue search" : selected?.city || "Find venues";
+  const title = mode === "search" ? "Venue search" : selected?.city || (region === "Worldwide" ? "Find venues" : `Venues in ${region}`);
 
   const goBack = () => {
     if (query) setQ("");
@@ -65,7 +73,7 @@ export default function VenuesScreen({ onClose, onOpenVenue }) {
     );
   };
 
-  const renderVenue = ({ item }) => <VenueDiscoveryCard venue={item} onPress={() => onOpenVenue?.(item.name)} />;
+  const renderVenue = ({ item }) => <VenueDiscoveryCard venue={item} onPress={() => onOpenVenue?.(item)} />;
 
   return (
     <View style={styles.wrap}>
@@ -74,7 +82,7 @@ export default function VenuesScreen({ onClose, onOpenVenue }) {
         key={mode}
         data={data}
         renderItem={mode === "cities" ? renderCity : renderVenue}
-        keyExtractor={(item) => mode === "cities" ? item.id : item.name}
+        keyExtractor={(item) => mode === "cities" ? item.id : item.identity || `${item.name}|${item.place || ""}`}
         ItemSeparatorComponent={ListGap}
         contentContainerStyle={styles.content}
         contentInsetAdjustmentBehavior="automatic"

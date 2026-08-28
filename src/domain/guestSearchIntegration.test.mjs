@@ -18,7 +18,7 @@ test("guest search measurement sends only coarse outcomes after search settles",
 });
 
 test("unified artist outages reach the failed guest-search counter", () => {
-  assert.match(store, /const searchArtistsApi = async \(query, \{ signal, throwOnError = false \} = \{\}\)/);
+  assert.match(store, /const searchArtistsApi = async \(query, \{[\s\S]*?signal,[\s\S]*?throwOnError = false,[\s\S]*?\} = \{\}\)/);
   assert.match(store, /if \(throwOnError\) throw error;/);
   assert.match(source, /searchArtistsApi\(query, requestOptions\)/);
 });

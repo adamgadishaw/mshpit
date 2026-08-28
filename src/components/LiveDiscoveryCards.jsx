@@ -3,10 +3,10 @@ import { colors, displayFont, focusRing, mono, radius } from "../theme";
 import { LIVE_EVENT_SCOPE } from "../domain/liveDiscovery.mjs";
 import Icon from "./Icon";
 
-export function EventScopeToggle({ scope, onChange, localLabel = "Near you", compact = false }) {
+export function EventScopeToggle({ scope, onChange, localLabel = "Near you", worldLabel = "Worldwide", compact = false }) {
   const options = [
     { value: LIVE_EVENT_SCOPE.LOCAL, label: localLabel },
-    { value: LIVE_EVENT_SCOPE.WORLDWIDE, label: "Worldwide" },
+    { value: LIVE_EVENT_SCOPE.WORLDWIDE, label: worldLabel },
   ];
   return (
     <View style={[styles.scopeToggle, compact && styles.scopeToggleCompact]} accessibilityRole="tablist" accessibilityLabel="Upcoming concert area">
