@@ -20,6 +20,9 @@ test("Discover event banner exposes manual controls and a no-image fallback", ()
   assert.match(source, /Auto-play disabled by Reduce Motion/);
   assert.match(source, /styles\.fallback/);
   assert.match(source, /onError=\{\(\) => setFailed/);
+  assert.match(source, /const slideSetKey = useMemo/);
+  assert.match(source, /setIndex\(0\);[\s\S]*setPaused\(false\);[\s\S]*setFailed\(new Set\(\)\);/);
+  assert.match(source, /\}, \[slideSetKey\]\);/);
 });
 
 test("Discover event banner leaves nested controls reachable and gives Pause button semantics", () => {

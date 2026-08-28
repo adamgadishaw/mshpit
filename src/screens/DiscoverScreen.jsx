@@ -15,7 +15,17 @@ import { PublicPressableLink } from "../components/PublicWebLinks";
 import { eventPath } from "../domain/urls.mjs";
 import { buildDiscoverEventBannerSlides } from "../domain/discoverEventBanner.mjs";
 import {
+  DISCOVER_AREA_SCOPE,
+  defaultDiscoverAreaChoice,
+  discoverAreaIsLocal,
+  resolveDiscoverAreaChoice,
+  selectDiscoverCountryArea,
+  selectDiscoverScopeArea,
+  syncDiscoverAreaChoice,
+} from "../domain/discoverArea.mjs";
+import {
   discoverCountryIdentity,
+  discoverEventCountryFacets,
   filterDiscoverSceneRows,
   projectDiscoverScene,
 } from "../domain/discoverScene.mjs";
@@ -31,6 +41,7 @@ import {
   cancelDiscoverRequest,
   compactDiscoverNumber,
   discoverSectionState,
+  discoverNationOptions,
   hasDiscoverOverviewContent,
   normalizeDiscoverArtistRows,
   normalizeDiscoverOverview,
@@ -82,21 +93,18 @@ export default function DiscoverScreen({
   const accountId = session?.id || null;
   const homeCity = session?.home?.city || discoverySidebar?.location?.city || "";
   const homeCountry = countryForCity(homeCity);
-  const [regionChoice, setRegionChoice] = useState(() => ({ accountId, value: homeCountry || "Worldwide", touched: false }));
-  const region = regionChoice.accountId === accountId ? regionChoice.value : homeCountry || "Worldwide";
+  const areaContext = { accountId, homeCity, homeCountry };
+  const [areaChoice, setAreaChoice] = useState(() => defaultDiscoverAreaChoice(areaContext));
+  const resolvedArea = resolveDiscoverAreaChoice(areaChoice, areaContext);
+  const region = resolvedArea.region;
+  const liveScope = discoverAreaIsLocal(resolvedArea)
+    ? LIVE_EVENT_SCOPE.LOCAL
+    : LIVE_EVENT_SCOPE.WORLDWIDE;
   const [query, setQuery] = useState("");
   const [overview, setOverview] = useState(EMPTY_OVERVIEW);
   const [overviewStatus, setOverviewStatus] = useState("idle");
   const [selectedGenre, setSelectedGenre] = useState(null);
   const [sceneExpanded, setSceneExpanded] = useState(false);
-  const [liveScopeChoice, setLiveScopeChoice] = useState(() => ({
-    accountId,
-    value: homeCity ? LIVE_EVENT_SCOPE.LOCAL : LIVE_EVENT_SCOPE.WORLDWIDE,
-    touched: false,
-  }));
-  const liveScope = liveScopeChoice.accountId === accountId
-    ? liveScopeChoice.value
-    : homeCity ? LIVE_EVENT_SCOPE.LOCAL : LIVE_EVENT_SCOPE.WORLDWIDE;
   const [genreResult, setGenreResult] = useState({ genre: null, region: null, rows: [] });
   const genreRows = genreResult.genre === selectedGenre && genreResult.region === region
     ? genreResult.rows
@@ -133,6 +141,10 @@ export default function DiscoverScreen({
     venueLimit: 8,
     countryForCity,
   }), [region, tourDates]);
+  const eventCountryFacets = useMemo(() => discoverEventCountryFacets(tourDates, {
+    countryForCity,
+    limit: 40,
+  }), [tourDates]);
   const localEvents = useMemo(
     () => localDiscoveryEvents(discoverySidebar?.upcomingEvents, { limit: 12 }),
     [discoverySidebar?.upcomingEvents],
@@ -236,23 +248,8 @@ export default function DiscoverScreen({
   }, [requestGenre]);
 
   useEffect(() => {
-    setRegionChoice((current) => {
-      if (current.accountId !== accountId) return { accountId, value: homeCountry || "Worldwide", touched: false };
-      if (!current.touched && homeCountry && current.value !== homeCountry) return { ...current, value: homeCountry };
-      return current;
-    });
-  }, [accountId, homeCountry]);
-
-  useEffect(() => {
-    setLiveScopeChoice((current) => {
-      const fallback = homeCity ? LIVE_EVENT_SCOPE.LOCAL : LIVE_EVENT_SCOPE.WORLDWIDE;
-      if (current.accountId !== accountId) return { accountId, value: fallback, touched: false };
-      if (!current.touched && homeCity && current.value !== LIVE_EVENT_SCOPE.LOCAL) {
-        return { ...current, value: LIVE_EVENT_SCOPE.LOCAL };
-      }
-      return current;
-    });
-  }, [accountId, homeCity]);
+    setAreaChoice((current) => syncDiscoverAreaChoice(current, { accountId, homeCity, homeCountry }));
+  }, [accountId, homeCity, homeCountry]);
 
   useEffect(() => {
     const nextGenre = selectDefaultDiscoverGenre(overview.genres, selectedGenre);
@@ -262,26 +259,35 @@ export default function DiscoverScreen({
   const pickRegion = (country) => {
     setQuery("");
     setSceneExpanded(false);
-    setRegionChoice({ accountId, value: country, touched: true });
-    setLiveScopeChoice({ accountId, value: LIVE_EVENT_SCOPE.WORLDWIDE, touched: true });
+    setAreaChoice((current) => selectDiscoverCountryArea(
+      resolveDiscoverAreaChoice(current, areaContext),
+      country,
+    ));
   };
   const pickLiveScope = (value) => {
     if (value === LIVE_EVENT_SCOPE.LOCAL && homeCountry) {
       setQuery("");
       setSceneExpanded(false);
-      setRegionChoice({ accountId, value: homeCountry, touched: true });
     }
-    setLiveScopeChoice({ accountId, value, touched: true });
+    setAreaChoice((current) => selectDiscoverScopeArea(
+      resolveDiscoverAreaChoice(current, areaContext),
+      value === LIVE_EVENT_SCOPE.LOCAL ? DISCOVER_AREA_SCOPE.LOCAL : DISCOVER_AREA_SCOPE.COUNTRY,
+      { homeCountry },
+    ));
   };
   const retryGenre = useCallback(() => requestGenre({ force: true }), [requestGenre]);
 
   const overviewState = discoverSectionState({ status: overviewStatus, rows: overview.chart.rows });
   const showOverviewContent = hasDiscoverOverviewContent(overview)
     && (overviewStatus === "ready" || overviewStatus === "refreshing" || overviewStatus === "error");
-  const countries = overview.countries.length ? overview.countries : orderDiscoverCountries([], homeCountry);
+  const countries = discoverNationOptions(eventCountryFacets, {
+    homeCountry,
+    selectedRegion: region,
+    limit: 12,
+  });
   const sceneCountries = visibleDiscoverCountries(countries, region, { compact, expanded: sceneExpanded, limit: 3 });
   const hiddenSceneCount = Math.max(0, countries.length - sceneCountries.length);
-  const selectedCountryRow = countries.find((row) => discoverCountryIdentity(row.country) === discoverCountryIdentity(region));
+  const selectedCountryRow = overview.countries.find((row) => discoverCountryIdentity(row.country) === discoverCountryIdentity(region));
   const sceneArtistTotal = region === "Worldwide"
     ? overview.catalogTotal ?? localStats.artists
     : selectedCountryRow?.count ?? overview.genreTotal;
@@ -315,11 +321,11 @@ export default function DiscoverScreen({
       <View style={styles.controlsCard}>
         <View style={[styles.controlTop, compact && styles.controlTopCompact]}>
           <View style={styles.controlCopy}>
-            <Text style={styles.controlLabel}>CHART VIEW</Text>
-            <Text style={styles.controlHint}>Current catalog momentum</Text>
+            <Text style={styles.controlLabel}>DISCOVER AREA</Text>
+            <Text style={styles.controlHint}>Events, venues, and charts move together</Text>
           </View>
         </View>
-        <Text style={styles.controlLabel}>SCENE</Text>
+        <Text style={styles.controlLabel}>NATION</Text>
         <View style={styles.regionGrid} accessibilityRole="radiogroup" accessibilityLabel="Choose a Discover region">
           {sceneCountries.map((country) => {
             const selected = country.country.toLocaleLowerCase() === region.toLocaleLowerCase();
@@ -330,11 +336,11 @@ export default function DiscoverScreen({
                 onPress={() => pickRegion(country.country)}
                 accessibilityRole="radio"
                 accessibilityState={{ selected }}
-                accessibilityLabel={country.country + (country.count != null ? ", " + country.count + " artists" : "")}
+                accessibilityLabel={country.country + (country.count != null ? ", " + country.count + " upcoming live events" : "")}
               >
                 <View style={styles.regionChipCopy}>
                   <Text style={[styles.regionText, selected && styles.regionTextSelected]} numberOfLines={2}>{country.country}</Text>
-                  {country.count != null && <Text style={[styles.regionCount, selected && styles.regionCountSelected]}>{compactDiscoverNumber(country.count)} artists</Text>}
+                  {country.count != null && <Text style={[styles.regionCount, selected && styles.regionCountSelected]}>{compactDiscoverNumber(country.count)} upcoming</Text>}
                 </View>
                 {selected && <Icon name="check" size={14} color={colors.amber} />}
               </Pressable>
@@ -381,6 +387,7 @@ export default function DiscoverScreen({
             />
           </View>
           <DiscoverEventBanner
+            key={`events:${liveScope}:${discoverCountryIdentity(region)}`}
             slides={eventBannerSlides}
             compact={compact}
             active

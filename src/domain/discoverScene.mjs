@@ -7,6 +7,43 @@ const text = (value, max = 180) => typeof value === "string"
   ? value.replace(/[\u0000-\u001f\u007f]/g, "").replace(/\s+/g, " ").trim().slice(0, max)
   : "";
 
+const COUNTRY_CODE_NAMES = Object.freeze({
+  AE: "United Arab Emirates",
+  AR: "Argentina",
+  AT: "Austria",
+  AU: "Australia",
+  BE: "Belgium",
+  BR: "Brazil",
+  CA: "Canada",
+  CH: "Switzerland",
+  CZ: "Czechia",
+  DE: "Germany",
+  DK: "Denmark",
+  ES: "Spain",
+  FI: "Finland",
+  FR: "France",
+  GB: "United Kingdom",
+  GR: "Greece",
+  HU: "Hungary",
+  IE: "Ireland",
+  IN: "India",
+  IT: "Italy",
+  JP: "Japan",
+  KR: "South Korea",
+  MX: "Mexico",
+  NL: "Netherlands",
+  NO: "Norway",
+  NZ: "New Zealand",
+  PL: "Poland",
+  PT: "Portugal",
+  RO: "Romania",
+  SE: "Sweden",
+  SG: "Singapore",
+  TR: "Turkey",
+  US: "United States",
+  ZA: "South Africa",
+});
+
 const COUNTRY_ALIASES = new Map([
   ["ca", "canada"],
   ["can", "canada"],
@@ -23,37 +60,72 @@ const COUNTRY_ALIASES = new Map([
   ["aus", "australia"],
   ["nz", "new zealand"],
   ["nzl", "new zealand"],
+  ["czech republic", "czechia"],
+  ["republic of korea", "south korea"],
+  ["turkiye", "turkey"],
+  ["uae", "united arab emirates"],
 ]);
 
+const normalizedCountryText = (value) => text(value, 80)
+  .normalize("NFKD")
+  .replace(/[\u0300-\u036f]/g, "")
+  .toLocaleLowerCase()
+  .replace(/[.]/g, "")
+  .replace(/\s+/g, " ")
+  .trim();
+
+const COUNTRY_LABELS = new Map(Object.values(COUNTRY_CODE_NAMES)
+  .map((label) => [normalizedCountryText(label), label]));
+for (const [alias, identity] of COUNTRY_ALIASES) {
+  const label = COUNTRY_LABELS.get(identity);
+  if (label) COUNTRY_LABELS.set(alias, label);
+}
+
 export function discoverCountryIdentity(value) {
-  const normalized = text(value, 80)
-    .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .toLocaleLowerCase()
-    .replace(/[.]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
+  const normalized = normalizedCountryText(value);
   if (!normalized) return "";
   return COUNTRY_ALIASES.get(normalized) || normalized;
 }
 
-export function discoverRowCountry(row, { countryForCity } = {}) {
+const canonicalCountryLabel = (value) => {
+  const source = text(value, 80);
+  if (!source) return "";
+  const codeLabel = COUNTRY_CODE_NAMES[source.toLocaleUpperCase()];
+  if (codeLabel) return codeLabel;
+  return COUNTRY_LABELS.get(discoverCountryIdentity(source)) || "";
+};
+
+export function discoverRowCountryLabel(row, { countryForCity } = {}) {
   if (!row || typeof row !== "object") return "";
-  const explicit = row.venueCountry
-    ?? row.venue_country
-    ?? row.venueCountryCode
-    ?? row.venue_country_code
-    ?? row.country
-    ?? row.countryCode
-    ?? row.country_code;
-  if (text(explicit, 80)) return discoverCountryIdentity(explicit);
+  const namedCountry = [row.venueCountry, row.venue_country, row.country]
+    .map((value) => text(value, 80))
+    .find(Boolean) || "";
+  if (namedCountry) return canonicalCountryLabel(namedCountry) || namedCountry;
+
+  const countryCode = [row.venueCountryCode, row.venue_country_code, row.countryCode, row.country_code]
+    .map((value) => text(value, 8))
+    .find(Boolean) || "";
+  const codeLabel = canonicalCountryLabel(countryCode);
+  if (codeLabel) return codeLabel;
 
   const place = text(row.place, 240);
   const parts = place.split(",").map((part) => part.trim()).filter(Boolean);
+  const lastPart = parts.length > 1 ? parts.at(-1) : "";
+  const explicitPlaceCountry = canonicalCountryLabel(lastPart);
+  // A validated explicit place tail beats city inference. This matters for
+  // ambiguous names such as Athens, Greece (the city directory also contains
+  // Athens, Georgia). Unknown free-form tails are not promoted into nation
+  // controls; structured provider country fields above remain authoritative.
+  if (explicitPlaceCountry) return explicitPlaceCountry;
+
   const city = text(row.city || row.venueCity || row.venue_city || parts[0], 120);
   const inferred = typeof countryForCity === "function" ? countryForCity(city) : null;
-  if (text(inferred, 80)) return discoverCountryIdentity(inferred);
-  return parts.length > 1 ? discoverCountryIdentity(parts.at(-1)) : "";
+  if (text(inferred, 80)) return canonicalCountryLabel(inferred) || text(inferred, 80);
+  return "";
+}
+
+export function discoverRowCountry(row, options = {}) {
+  return discoverCountryIdentity(discoverRowCountryLabel(row, options));
 }
 
 export function discoverRowMatchesRegion(row, region, options = {}) {
@@ -72,6 +144,32 @@ export function filterDiscoverSceneRows(rows, { region = "Worldwide", countryFor
     if (selected.length >= maximum) break;
   }
   return selected;
+}
+
+export function discoverEventCountryFacets(rows, {
+  now = Date.now(),
+  countryForCity,
+  limit = 40,
+} = {}) {
+  const at = Number.isFinite(Number(now)) ? Number(now) : Date.now();
+  const maximum = Number.isFinite(Number(limit)) ? Math.max(0, Math.floor(Number(limit))) : 40;
+  if (!maximum) return [];
+  const counts = new Map();
+  for (const event of Array.isArray(rows) ? rows : []) {
+    if (!event || typeof event !== "object") continue;
+    const releaseAt = Number(event.releaseAt);
+    if (Number.isFinite(releaseAt) && releaseAt > at) continue;
+    if (!isCurrentOrUpcomingLiveEvent(event, at)) continue;
+    const country = discoverRowCountryLabel(event, { countryForCity });
+    const identity = discoverCountryIdentity(country);
+    if (!identity || identity === "worldwide") continue;
+    const current = counts.get(identity) || { country, count: 0 };
+    current.count += 1;
+    counts.set(identity, current);
+  }
+  return [...counts.values()]
+    .sort((left, right) => right.count - left.count || left.country.localeCompare(right.country))
+    .slice(0, maximum);
 }
 
 const eventIdentity = (event) => text(event?.id, 240)

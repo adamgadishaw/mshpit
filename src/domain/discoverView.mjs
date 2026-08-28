@@ -1,4 +1,5 @@
 import { mediaDisplayItems } from "./postMediaDisplay.mjs";
+import { discoverCountryIdentity } from "./discoverScene.mjs";
 
 const text = (value) => typeof value === "string" ? value.trim() : "";
 const finiteCount = (value) => Number.isFinite(Number(value)) ? Math.max(0, Number(value)) : 0;
@@ -188,6 +189,25 @@ export function orderDiscoverCountries(countries, homeCountry, limit = 12) {
     seen.add(identity);
     return true;
   }).slice(0, Math.max(1, limit));
+}
+
+export function discoverNationOptions(facets, {
+  homeCountry = "",
+  selectedRegion = "Worldwide",
+  limit = 12,
+} = {}) {
+  const source = Array.isArray(facets) ? facets : [];
+  const selectedIdentity = discoverCountryIdentity(selectedRegion);
+  const selected = source.find((row) => discoverCountryIdentity(row?.country) === selectedIdentity);
+  const pinned = selectedIdentity && selectedIdentity !== "worldwide"
+    ? [selected || { country: text(selectedRegion) || "Worldwide", count: 0 }, ...source.filter((row) => (
+      discoverCountryIdentity(row?.country) !== selectedIdentity
+    ))]
+    : source;
+  const total = source.reduce((sum, row) => sum + finiteCount(row?.count), 0);
+  return orderDiscoverCountries(pinned, homeCountry, limit).map((row) => (
+    row.country === "Worldwide" ? { ...row, count: total } : row
+  ));
 }
 
 export function visibleDiscoverCountries(countries, selectedCountry, { compact = false, expanded = false, limit = 3 } = {}) {

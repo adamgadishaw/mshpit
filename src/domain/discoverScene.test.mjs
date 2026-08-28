@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   discoverCountryIdentity,
+  discoverEventCountryFacets,
   discoverRowMatchesRegion,
   discoverVenueIdentity,
   filterDiscoverSceneRows,
@@ -15,7 +16,14 @@ test("Discover scene country matching handles provider codes, names, and city-on
   assert.equal(discoverCountryIdentity("USA"), "united states");
   assert.equal(discoverRowMatchesRegion({ place: "Toronto, Ontario, Canada" }, "Canada"), true);
   assert.equal(discoverRowMatchesRegion({ venueCountryCode: "US" }, "United States"), true);
+  assert.equal(discoverRowMatchesRegion({ venueCountry: "", venue_country: "France" }, "France"), true);
   assert.equal(discoverRowMatchesRegion({ place: "Dublin, Ireland" }, "Canada"), false);
+  assert.equal(discoverRowMatchesRegion({ place: "Athens, Greece" }, "Greece", {
+    countryForCity: (city) => city === "Athens" ? "United States" : null,
+  }), true, "an explicit country in the place must beat an ambiguous city-name lookup");
+  assert.equal(discoverRowMatchesRegion({ place: "Athens, Greece" }, "United States", {
+    countryForCity: (city) => city === "Athens" ? "United States" : null,
+  }), false);
   assert.equal(discoverRowMatchesRegion({ place: "Toronto, Ontario" }, "Canada", {
     countryForCity: (city) => city === "Toronto" ? "Canada" : null,
   }), true);
@@ -27,6 +35,24 @@ test("Discover scene country matching handles provider codes, names, and city-on
     region: "Canada",
     countryForCity: (city) => ({ Toronto: "Canada", Chicago: "United States" })[city],
   }).map((row) => row.id), ["toronto"]);
+});
+
+test("live-event country facets contain only current event countries and use event counts", () => {
+  const rows = [
+    { id: "ca-1", place: "Toronto, Ontario, Canada", date: "2026-09-02", releaseAt: 0 },
+    { id: "ca-2", venueCountryCode: "CA", date: "2026-09-03", releaseAt: 0 },
+    { id: "us-1", venueCountry: "United States of America", date: "2026-09-04", releaseAt: 0 },
+    { id: "gr-1", place: "Athens, Greece", date: "2026-09-05", releaseAt: 0 },
+    { id: "hidden", venueCountry: "Canada", date: "2026-09-01", releaseAt: NOW + 1 },
+    { id: "past", venueCountry: "France", date: "2026-07-01", releaseAt: 0 },
+    { id: "unknown", place: "Mystery room", date: "2026-09-06", releaseAt: 0 },
+    { id: "malformed", place: "Mystery, State, ST", date: "2026-09-06", releaseAt: 0 },
+  ];
+  assert.deepEqual(discoverEventCountryFacets(rows, { now: NOW }), [
+    { country: "Canada", count: 2 },
+    { country: "Greece", count: 1 },
+    { country: "United States", count: 1 },
+  ]);
 });
 
 test("scene projection changes upcoming events and venues together without leaking another country", () => {

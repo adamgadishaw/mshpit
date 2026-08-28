@@ -6,6 +6,7 @@ import {
   cancelDiscoverRequest,
   compactDiscoverNumber,
   discoverGenreDistribution,
+  discoverNationOptions,
   discoverSectionState,
   discoverPlaybackTrack,
   filterDiscoverRows,
@@ -177,6 +178,30 @@ test("compact scene choices never expose an arbitrary partial country and keep t
   );
   assert.equal(visibleDiscoverCountries(countries, "Canada", { compact: true, expanded: true }).length, 5);
   assert.equal(visibleDiscoverCountries(countries, "Canada", { compact: false }).length, 5);
+});
+
+test("event nation options pin a selected low-volume country and keep worldwide counts honest", () => {
+  const facets = Array.from({ length: 15 }, (_, index) => ({
+    country: `Country ${index + 1}`,
+    count: 100 - index,
+  }));
+  assert.deepEqual(discoverNationOptions(facets, {
+    homeCountry: "Country 2",
+    selectedRegion: "Country 15",
+    limit: 12,
+  }).slice(0, 3), [
+    { country: "Worldwide", count: 1_395 },
+    { country: "Country 2", count: 99 },
+    { country: "Country 15", count: 86 },
+  ]);
+
+  const emptySelected = discoverNationOptions(facets, {
+    homeCountry: "Country 2",
+    selectedRegion: "France",
+    limit: 12,
+  });
+  assert.ok(emptySelected.some((row) => row.country === "France" && row.count === 0));
+  assert.equal(emptySelected[0].count, 1_395, "the synthetic zero-count selection must not inflate Worldwide");
 });
 
 test("genre exploration defaults to the first verified genre and preserves a valid choice", () => {

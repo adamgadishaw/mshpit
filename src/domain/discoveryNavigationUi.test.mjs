@@ -34,8 +34,15 @@ test("Discover leads with upcoming events, then Near you, then Venues, while ret
   assert.equal((source.match(/title="Find venues"/g) || []).length, 0, "Venues already owns a full section");
   assert.match(source, /const sceneProjection = useMemo\(\(\) => projectDiscoverScene\(tourDates, \{[\s\S]*region,[\s\S]*eventLimit: 12,[\s\S]*venueLimit: 8,[\s\S]*countryForCity,[\s\S]*\}\), \[region, tourDates\]\)/);
   assert.match(source, /worldwideEvents: sceneProjection\.events/);
-  assert.match(source, /setLiveScopeChoice\(\{ accountId, value: LIVE_EVENT_SCOPE\.WORLDWIDE, touched: true \}\)/);
+  assert.match(source, /const \[areaChoice, setAreaChoice\] = useState\(\(\) => defaultDiscoverAreaChoice\(areaContext\)\)/);
+  assert.match(source, /selectDiscoverCountryArea/);
+  assert.match(source, /selectDiscoverScopeArea/);
+  assert.doesNotMatch(source, /regionChoice|liveScopeChoice/);
+  assert.match(source, /discoverEventCountryFacets\(tourDates/);
+  assert.match(source, /discoverNationOptions\(eventCountryFacets/);
+  assert.match(source, />\{compactDiscoverNumber\(country\.count\)\} upcoming</);
   assert.match(source, /worldLabel=\{region\}/);
+  assert.match(source, /key=\{`events:\$\{liveScope\}:\$\{discoverCountryIdentity\(region\)\}`\}/);
 });
 
 test("Discover keeps scene controls inside their card and makes genre exploration useful without a tap", async () => {

@@ -64,6 +64,9 @@ export default function DiscoverEventBanner({
 }) {
   const reduceMotion = useReducedMotion();
   const safeSlides = useMemo(() => (Array.isArray(slides) ? slides.slice(0, 8) : []), [slides]);
+  const slideSetKey = useMemo(() => safeSlides
+    .map((slide) => `${slide?.id || ""}:${slide?.media?.uri || ""}`)
+    .join("\u0000"), [safeSlides]);
   const [index, setIndex] = useState(0);
   const [paused, setPaused] = useState(false);
   const [failed, setFailed] = useState(() => new Set());
@@ -79,9 +82,13 @@ export default function DiscoverEventBanner({
   const media = (licensedSource || providerSource) && !attribution ? null : candidateMedia;
 
   useEffect(() => {
-    setIndex((value) => safeSlides.length ? value % safeSlides.length : 0);
+    // A new country is a new reel, not a continuation at the old slide number.
+    // Resetting all carousel state prevents a valid filter change from looking
+    // stale when the previous and next scenes share an early event.
+    setIndex(0);
+    setPaused(false);
     setFailed(new Set());
-  }, [safeSlides]);
+  }, [slideSetKey]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener("change", (state) => setForeground(state === "active"));
