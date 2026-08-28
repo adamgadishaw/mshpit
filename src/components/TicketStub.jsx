@@ -360,22 +360,39 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onNotInt
         </View>
       )}
 
-      <View style={styles.performanceCard}>
-        <Text style={styles.performanceEyebrow}>{titledPerformance ? "CONCERT / TOUR" : "LIVE SHOW"}</Text>
-        <Text style={styles.performanceTitle} numberOfLines={2}>
-          {titledPerformance
-            ? performanceTitle
-            : <PublicTextLink href={artistHref} onNavigate={() => onOpenArtist?.(log.artist)} style={styles.performanceTitle}>{performanceTitle}</PublicTextLink>}
-        </Text>
-        <Text style={styles.performanceMeta}>
-          {titledPerformance ? (
-            <><PublicTextLink href={artistHref} onNavigate={() => onOpenArtist?.(log.artist)} style={styles.performanceArtist}>{log.artist}</PublicTextLink><Text style={styles.dim}> · </Text></>
-          ) : null}
-          <PublicTextLink href={venueHref} onNavigate={() => onOpenVenue?.(log.venue)} style={styles.performanceVenue}>{log.venue}</PublicTextLink>
-          {!!log.city && <Text style={styles.dim}> · {log.city}</Text>}
-          {!!log.date && <Text style={styles.performanceDate}> · {formatDate(log.date, log.date)}</Text>}
-        </Text>
-        {log.seen > 1 ? <Text style={styles.seenTxt}>{ordinal(log.seen)} time in the pit</Text> : null}
+      <View style={styles.performanceCardShadow}>
+        <View style={styles.performanceCard}>
+          <View style={styles.performanceRegister} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+            <View style={styles.performanceRegisterAmber} />
+            <View style={styles.performanceRegisterMagenta} />
+            <View style={styles.performanceRegisterCool} />
+          </View>
+          <View style={styles.performanceCardBody}>
+            <View style={styles.performanceTopline}>
+              <Text style={styles.performanceEyebrow}>{titledPerformance ? "CONCERT / TOUR" : "LIVE SHOW"}</Text>
+              <Text style={styles.performanceArchiveMark}>MSHPIT / LIVE MEMORY</Text>
+            </View>
+            <Text style={styles.performanceTitle} numberOfLines={3}>
+              {titledPerformance
+                ? performanceTitle
+                : <PublicTextLink href={artistHref} onNavigate={() => onOpenArtist?.(log.artist)} style={styles.performanceTitle}>{performanceTitle}</PublicTextLink>}
+            </Text>
+            <View style={styles.performancePerforation} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+              <View style={styles.performancePerforationLine} />
+              <View style={styles.performancePerforationDot} />
+              <View style={styles.performancePerforationLine} />
+            </View>
+            <Text style={styles.performanceMeta}>
+              {titledPerformance ? (
+                <><PublicTextLink href={artistHref} onNavigate={() => onOpenArtist?.(log.artist)} style={styles.performanceArtist}>{log.artist}</PublicTextLink><Text style={styles.dim}> · </Text></>
+              ) : null}
+              <PublicTextLink href={venueHref} onNavigate={() => onOpenVenue?.(log.venue)} style={styles.performanceVenue}>{log.venue}</PublicTextLink>
+              {!!log.city && <Text style={styles.dim}> · {log.city}</Text>}
+              {!!log.date && <Text style={styles.performanceDate}> · {formatDate(log.date, log.date)}</Text>}
+            </Text>
+            {log.seen > 1 ? <Text style={styles.seenTxt}>{ordinal(log.seen)} time in the pit</Text> : null}
+          </View>
+        </View>
       </View>
 
       {/* Score analytics: the template every review shares. The twirling star +
@@ -526,10 +543,21 @@ const styles = StyleSheet.create({
   taggedPersonText: { flexShrink: 1, fontSize: 11.5, fontWeight: "800" },
   taggedPersonRemove: { width: 44, height: 44, alignItems: "center", justifyContent: "center", borderLeftWidth: 1, borderLeftColor: colors.lineSoft },
 
-  performanceCard: { marginTop: 12, padding: 12, borderRadius: radius.md, borderWidth: 1, borderColor: colors.lineSoft, backgroundColor: colors.bgElev },
+  performanceCardShadow: { marginTop: 12, borderRadius: radius.md, borderCurve: "continuous", ...shadow.card },
+  performanceCard: { overflow: "hidden", borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: colors.line, backgroundColor: colors.bgElev },
+  performanceRegister: { height: 4, flexDirection: "row" },
+  performanceRegisterAmber: { flex: 2, backgroundColor: colors.amberStrong },
+  performanceRegisterMagenta: { flex: 1, backgroundColor: colors.magenta },
+  performanceRegisterCool: { flex: 1, backgroundColor: colors.cool },
+  performanceCardBody: { paddingHorizontal: 15, paddingTop: 13, paddingBottom: 15 },
+  performanceTopline: { minWidth: 0, flexDirection: "row", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", columnGap: 10, rowGap: 4 },
   performanceEyebrow: { color: colors.amber, fontFamily: mono, fontSize: 9, fontWeight: "900", letterSpacing: 1.35 },
-  performanceTitle: { color: colors.text, fontFamily: displayFont, fontSize: 19, lineHeight: 23, fontWeight: "900", letterSpacing: -0.2, marginTop: 4 },
-  performanceMeta: { color: colors.textDim, fontFamily: font, fontSize: 12.5, lineHeight: 18, marginTop: 5 },
+  performanceArchiveMark: { flexShrink: 1, color: colors.textFaint, fontFamily: mono, fontSize: 7.5, lineHeight: 11, fontWeight: "900", letterSpacing: 1.05 },
+  performanceTitle: { color: colors.text, fontFamily: displayFont, fontSize: 22, lineHeight: 26, fontWeight: "900", letterSpacing: -0.45, marginTop: 8 },
+  performancePerforation: { height: 17, flexDirection: "row", alignItems: "center", gap: 7 },
+  performancePerforationLine: { flex: 1, borderTopWidth: 1, borderStyle: "dashed", borderColor: colors.line },
+  performancePerforationDot: { width: 5, height: 5, borderRadius: 3, backgroundColor: colors.amberStrong },
+  performanceMeta: { color: colors.textDim, fontFamily: font, fontSize: 12.5, lineHeight: 18 },
   performanceArtist: { color: colors.text, fontWeight: "800" },
   performanceVenue: { color: colors.cool, fontWeight: "800" },
   performanceDate: { color: colors.amber, fontFamily: mono, fontSize: 11.5 },

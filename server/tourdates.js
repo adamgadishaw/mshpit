@@ -135,6 +135,7 @@ export function ticketmasterEventSearchUrl({
   startDateTime,
   startEndDateTime,
   size = 20,
+  page,
   sort = "date,asc",
 } = {}) {
   const url = new URL("https://app.ticketmaster.com/discovery/v2/events.json");
@@ -151,7 +152,15 @@ export function ticketmasterEventSearchUrl({
   url.searchParams.set("locale", "*");
   url.searchParams.set("includeTBA", "no");
   url.searchParams.set("includeTBD", "no");
-  url.searchParams.set("size", String(boundedInteger(size, 20, { min: 1, max: 200 })));
+  const pageSize = boundedInteger(size, 20, { min: 1, max: 200 });
+  url.searchParams.set("size", String(pageSize));
+  if (page !== undefined && page !== null && page !== "") {
+    // Ticketmaster rejects deep pages where size * page reaches 1,000. Clamp
+    // centrally so every caller, including future ones, stays inside that
+    // provider boundary (size 200 therefore permits pages 0 through 4).
+    const maxPage = Math.floor(999 / pageSize);
+    url.searchParams.set("page", String(boundedInteger(page, 0, { min: 0, max: maxPage })));
+  }
   url.searchParams.set("sort", sort);
   url.searchParams.set("apikey", String(apiKey || ""));
   return url.toString();
@@ -286,6 +295,114 @@ export function ticketmasterRows(data, { requestedArtist = null } = {}) {
   return out;
 }
 
+const TICKETMASTER_CITY_PAGE_SIZE = 200;
+const TICKETMASTER_CITY_COVERAGE_DAYS = 30;
+const TICKETMASTER_CITY_MAX_PAGES = 5;
+
+function ticketmasterCoverageDate(startEndDateTime, coverageDays) {
+  const start = Date.parse(Array.isArray(startEndDateTime) ? startEndDateTime[0] : startEndDateTime);
+  const base = Number.isFinite(start) ? start : Date.now();
+  return new Date(base + coverageDays * DAY).toISOString().slice(0, 10);
+}
+
+function ticketmasterResponseEvents(data) {
+  return Array.isArray(data?._embedded?.events) ? data._embedded.events : [];
+}
+
+function ticketmasterResponseExhausted(data, requestedPage, pageSize) {
+  const totalPages = Number(data?.page?.totalPages);
+  if (Number.isSafeInteger(totalPages) && totalPages >= 0) return requestedPage + 1 >= totalPages;
+  return ticketmasterResponseEvents(data).length < pageSize;
+}
+
+// Dense cities can fill Ticketmaster's first 200 chronological results before
+// day 30. Continue through a small, provider-safe page budget until the response
+// proves that the first 30 days are covered. The original multi-year range is
+// kept intact; this only prevents page zero from becoming an accidental horizon.
+//
+// A later-page failure returns the already verified rows with `complete:false`.
+// The caller persists that useful partial work but records a provider failure,
+// which prevents a partial scan from authorizing source-wide stale cleanup.
+export async function collectTicketmasterCityPages({
+  apiKey,
+  city,
+  startEndDateTime = ticketmasterActiveAndFutureRange(),
+  fetchJson = getJSON,
+  wait = sleep,
+  requestDelayMs = TM_REQUEST_DELAY_MS,
+  pageSize = TICKETMASTER_CITY_PAGE_SIZE,
+  coverageDays = TICKETMASTER_CITY_COVERAGE_DAYS,
+  maxPages = TICKETMASTER_CITY_MAX_PAGES,
+} = {}) {
+  if (!apiKey || !city) {
+    return { rows: [], complete: true, coverageReached: false, pagesFetched: 0 };
+  }
+  const safePageSize = boundedInteger(pageSize, TICKETMASTER_CITY_PAGE_SIZE, { min: 1, max: 200 });
+  // With 200 results per page, five pages (0..4) is Ticketmaster's hard deep-
+  // paging ceiling. A lower test page size still uses this same conservative
+  // request-count cap to keep the web process responsive.
+  const safeMaxPages = boundedInteger(maxPages, TICKETMASTER_CITY_MAX_PAGES, { min: 1, max: 5 });
+  const safeCoverageDays = boundedInteger(coverageDays, TICKETMASTER_CITY_COVERAGE_DAYS, { min: 1, max: 366 });
+  const safeDelay = boundedInteger(requestDelayMs, TM_REQUEST_DELAY_MS, { min: 0, max: 5000 });
+  const targetDate = ticketmasterCoverageDate(startEndDateTime, safeCoverageDays);
+  const rowsById = new Map();
+  let pagesFetched = 0;
+  let coverageReached = false;
+
+  for (let page = 0; page < safeMaxPages; page += 1) {
+    if (page > 0 && safeDelay > 0) await wait(safeDelay);
+    let data;
+    try {
+      data = await fetchJson(ticketmasterEventSearchUrl({
+        apiKey,
+        city,
+        size: safePageSize,
+        page,
+        startEndDateTime,
+      }));
+    } catch (error) {
+      if (pagesFetched === 0) throw error;
+      return {
+        rows: [...rowsById.values()],
+        complete: false,
+        coverageReached,
+        pagesFetched,
+        error,
+      };
+    }
+
+    pagesFetched += 1;
+    const pageRows = ticketmasterRows(data);
+    for (const row of pageRows) {
+      const identity = row.provider_event_id || row.id;
+      if (identity && !rowsById.has(identity)) rowsById.set(identity, row);
+    }
+    // Only a row that passed the music/event/venue qualification proves useful
+    // catalogue coverage. A filtered sports event or malformed provider row at
+    // day 30 must not end the city scan before later music pages are checked.
+    if (pageRows.some((row) => row.date >= targetDate)) coverageReached = true;
+    const exhausted = ticketmasterResponseExhausted(data, page, safePageSize);
+    if (coverageReached || exhausted) {
+      return {
+        rows: [...rowsById.values()],
+        complete: true,
+        coverageReached,
+        pagesFetched,
+      };
+    }
+  }
+
+  // The provider's deep-page ceiling was reached before its chronological
+  // result set demonstrated 30-day coverage. Keep the rows, but fail closed for
+  // stale reconciliation rather than pretending this was a complete scan.
+  return {
+    rows: [...rowsById.values()],
+    complete: false,
+    coverageReached,
+    pagesFetched,
+  };
+}
+
 async function tmDates(name) {
   if (!KEY) return [];
   const data = await getJSON(ticketmasterEventSearchUrl({
@@ -303,8 +420,7 @@ async function tmDates(name) {
 // request per distinct member city gives the local rail useful coverage.
 async function tmCityDates(city) {
   if (!KEY || !city) return [];
-  const data = await getJSON(ticketmasterEventSearchUrl({ apiKey: KEY, city, size: 200, startEndDateTime: ticketmasterActiveAndFutureRange() }));
-  return ticketmasterRows(data);
+  return collectTicketmasterCityPages({ apiKey: KEY, city });
 }
 
 // A small rotating country batch gives Pit representative worldwide coverage
@@ -393,15 +509,33 @@ export function hasSuccessfulTourProviderWork(successes) {
   return Number.isSafeInteger(count) && count > 0;
 }
 
-async function collectNamedTourProviderResults(providers) {
+export async function collectNamedTourProviderResults(providers) {
   const active = (providers || []).filter((provider) => provider && typeof provider.run === "function");
   const settled = await Promise.allSettled(active.map((provider) => provider.run()));
+  const normalized = settled.map((result) => {
+    if (result.status !== "fulfilled") return { rows: [], complete: false };
+    if (Array.isArray(result.value)) return { rows: result.value, complete: true };
+    if (result.value && typeof result.value === "object" && Array.isArray(result.value.rows)) {
+      return { rows: result.value.rows, complete: result.value.complete !== false };
+    }
+    return { rows: [], complete: true };
+  });
   return {
-    rows: settled.filter((result) => result.status === "fulfilled").flatMap((result) => Array.isArray(result.value) ? result.value : []),
+    rows: normalized.flatMap((result) => result.rows),
     successes: settled.filter((result) => result.status === "fulfilled").length,
-    failures: settled.filter((result) => result.status === "rejected").length,
-    outcomes: settled.map((result, index) => ({ source: active[index].source, ok: result.status === "fulfilled" })),
+    failures: settled.filter((result) => result.status === "rejected").length
+      + normalized.filter((result, index) => settled[index].status === "fulfilled" && !result.complete).length,
+    outcomes: settled.map((result, index) => ({
+      source: active[index].source,
+      ok: result.status === "fulfilled" && normalized[index].complete,
+    })),
   };
+}
+
+export function sourcesEligibleForStaleReconciliation(providerStats) {
+  return [...(providerStats || new Map())]
+    .filter(([, stats]) => stats.successes > 0 && stats.failures === 0)
+    .map(([source]) => source);
 }
 
 export function reconcileStaleProviderTourDates(database, {
@@ -676,9 +810,7 @@ async function refresh() {
     // Reconcile only a provider that completed EVERY attempted call. Never let
     // one healthy API deactivate another provider's cache, and never touch member or
     // staff-authored rows (`owner_id` is non-null).
-    const successfulSources = [...providerStats]
-      .filter(([, stats]) => stats.successes > 0 && stats.failures === 0)
-      .map(([source]) => source);
+    const successfulSources = sourcesEligibleForStaleReconciliation(providerStats);
     reconcileStaleProviderTourDates(db, {
       successfulSources,
       staleBefore: Date.now() - 30 * DAY,

@@ -17,7 +17,7 @@ test("ticket card renders only social attendance details, never purchase credent
   assert.doesNotMatch(source, /MSHPIT SHOW PASS|\bADMIT\b|OFFICIAL TOUR|OFFICIAL EVENT/);
   assert.match(source, /NOT VALID FOR ENTRY/);
   assert.match(source, /preview\.seatLocation/);
-  assert.match(source, /<SeatStub seatLocation=\{preview\.seatLocation\}/);
+  assert.match(source, /<SeatStub seatLocation=\{preview\.seatLocation\} narrow=\{narrow\}/);
   assert.match(source, /preview\.contextTitle/);
   assert.doesNotMatch(source, /preview\.officialTitle|officialBlock|officialLabel|officialTitle/);
   assert.match(source, /preview\.authorSentence/);
@@ -28,9 +28,16 @@ test("ticket card is responsive and uses the shared design system", () => {
   assert.match(source, /useWindowDimensions\(\)/);
   assert.match(source, /const \{ width, fontScale \} = useWindowDimensions\(\)/);
   assert.match(source, /const WIDE_BREAKPOINT = 620/);
-  assert.match(source, /width >= WIDE_BREAKPOINT && fontScale < 1\.35 && !compact/);
+  assert.match(source, /const PHONE_BREAKPOINT = 430/);
+  assert.match(source, /cardWidth > 0[\s\S]*?\? Math\.min\(cardWidth, width\)[\s\S]*?: Math\.min\(width, PHONE_BREAKPOINT - 1\)/);
+  assert.match(source, /responsiveWidth >= WIDE_BREAKPOINT && fontScale < 1\.35 && !compact/);
+  assert.match(source, /responsiveWidth < PHONE_BREAKPOINT \|\| fontScale >= 1\.25/);
+  assert.match(source, /onLayout=\{measureCard\}/);
   assert.match(source, /artworkCompact/);
   assert.match(source, /maxWidth: 900/);
+  for (const style of ["scheduleNarrow", "detailsNarrow", "detailProminentNarrow", "stubNarrow", "openActionNarrow"]) {
+    assert.ok(source.includes(style), style + " should guard narrow ticket boundaries");
+  }
   assert.match(source, /colors,\s*displayFont,\s*focusRing,\s*font,\s*mono,\s*radius,\s*shadow,\s*space/);
   assert.match(source, /focused && focusRing/);
   assert.doesNotMatch(source, /#[0-9a-f]{3,8}/i);
@@ -73,6 +80,9 @@ test("ticket composition reads like a concert keepsake instead of a generic acti
   assert.match(source, /colorRegister/);
   assert.match(source, /statusStamp/);
   assert.match(source, /keepsakeDateParts/);
+  assert.match(source, /TICKET_BRAND_MARK = require\("\.\.\/\.\.\/assets\/pit-favicon-v1\.png"\)/);
+  assert.match(source, /source=\{TICKET_BRAND_MARK\}/);
+  assert.doesNotMatch(source, /brandMarkText|>M<\/Text>/);
   assert.doesNotMatch(source, /fontStyle: "italic"/);
   assert.match(source, /borderRadius: radius\.sm/);
   assert.match(source, /letterSpacing: 1\.35/);

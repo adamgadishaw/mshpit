@@ -6,6 +6,11 @@ import { buildAttendanceTicketPreview } from "../domain/attendanceTicket.mjs";
 import useReducedMotion from "../hooks/useReducedMotion";
 
 const WIDE_BREAKPOINT = 620;
+const PHONE_BREAKPOINT = 430;
+// Reuse the small mark already loaded by the public landing page. Pulling the
+// 1024px App Store source into a feed card would add hundreds of kilobytes to
+// the web asset graph for a 28px decorative lockup.
+const TICKET_BRAND_MARK = require("../../assets/pit-favicon-v1.png");
 
 const isPreview = (value) =>
   value?.kind === "attendance-ticket"
@@ -20,36 +25,51 @@ const keepsakeDateParts = (value) => {
   return { day: parts[0], date: parts[1], year: parts[2] };
 };
 
-function Detail({ label, value, prominent = false }) {
+function Detail({ label, value, prominent = false, narrow = false }) {
   if (!value) return null;
   return (
-    <View style={styles.detail}>
+    <View style={[
+      styles.detail,
+      narrow && styles.detailNarrow,
+      narrow && prominent && styles.detailProminentNarrow,
+    ]}>
       <Text style={styles.detailLabel}>{label}</Text>
-      <Text style={[styles.detailValue, prominent && styles.detailValueProminent]} numberOfLines={2}>
+      <Text
+        style={[styles.detailValue, prominent && styles.detailValueProminent]}
+        numberOfLines={narrow && prominent ? 3 : 2}
+      >
         {value}
       </Text>
     </View>
   );
 }
 
-function DateBlock({ value, compact }) {
+function DateBlock({ value, compact, narrow }) {
   if (!value) return null;
   const date = keepsakeDateParts(value);
   return (
-    <View style={[styles.dateBlock, compact && styles.dateBlockCompact]}>
-      <Text style={styles.dateDay}>{date.day || "DATE"}</Text>
-      <Text style={[styles.dateMain, compact && styles.dateMainCompact]} numberOfLines={1}>
+    <View style={[
+      styles.dateBlock,
+      narrow && styles.dateBlockNarrow,
+      compact && styles.dateBlockCompact,
+    ]}>
+      <Text style={[styles.dateDay, narrow && styles.dateDayNarrow]}>{date.day || "DATE"}</Text>
+      <Text style={[
+        styles.dateMain,
+        narrow && styles.dateMainNarrow,
+        compact && styles.dateMainCompact,
+      ]} numberOfLines={1}>
         {date.date}
       </Text>
-      {date.year ? <Text style={styles.dateYear}>{date.year}</Text> : null}
+      {date.year ? <Text style={[styles.dateYear, narrow && styles.dateYearNarrow]}>{date.year}</Text> : null}
     </View>
   );
 }
 
-function SeatStub({ seatLocation }) {
+function SeatStub({ seatLocation, narrow = false }) {
   if (!seatLocation) {
     return (
-      <View style={styles.stubFallback}>
+      <View style={[styles.stubFallback, narrow && styles.stubFallbackNarrow]}>
         <Text style={styles.stubLabel}>SEATING</Text>
         <Text style={styles.stubValue}>NOT SHARED</Text>
       </View>
@@ -61,7 +81,7 @@ function SeatStub({ seatLocation }) {
     ["SEAT", seatLocation.seat],
   ].filter(([, value]) => value);
   return (
-    <View style={styles.seatGrid}>
+    <View style={[styles.seatGrid, narrow && styles.seatGridNarrow]}>
       {fields.map(([label, value]) => (
         <View key={label} style={styles.seatField}>
           <Text style={styles.stubLabel}>{label}</Text>
@@ -86,7 +106,12 @@ export default function ConcertTicketCard({
 }) {
   const { width, fontScale } = useWindowDimensions();
   const reduceMotion = useReducedMotion();
-  const wide = width >= WIDE_BREAKPOINT && fontScale < 1.35 && !compact;
+  const [cardWidth, setCardWidth] = useState(0);
+  const responsiveWidth = cardWidth > 0
+    ? Math.min(cardWidth, width)
+    : Math.min(width, PHONE_BREAKPOINT - 1);
+  const wide = responsiveWidth >= WIDE_BREAKPOINT && fontScale < 1.35 && !compact;
+  const narrow = responsiveWidth < PHONE_BREAKPOINT || fontScale >= 1.25;
   const preview = useMemo(
     () => (isPreview(ticket) ? ticket : buildAttendanceTicketPreview(ticket)),
     [ticket],
@@ -106,17 +131,27 @@ export default function ConcertTicketCard({
   const location = [preview.venue, preview.city].filter(Boolean).join(" · ");
   const contextLabel = preview.isTourTitle ? "TOUR" : "EVENT";
   const cardAccessibilityLabel = "Mshpit social keepsake, not valid for entry. " + preview.accessibilityLabel;
+  const measureCard = (event) => {
+    const measuredWidth = Math.round(event?.nativeEvent?.layout?.width || 0);
+    if (measuredWidth > 0) {
+      setCardWidth((current) => Math.abs(current - measuredWidth) > 1 ? measuredWidth : current);
+    }
+  };
 
   const cardContent = (
     <>
-      <View style={[styles.printRail, compact && styles.printRailCompact]}>
+      <View style={[
+        styles.printRail,
+        narrow && styles.printRailNarrow,
+        compact && styles.printRailCompact,
+      ]}>
         <View style={styles.brandLockup}>
           <View style={styles.brandMark} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
-            <Text style={styles.brandMarkText}>M</Text>
+            <ExpoImage source={TICKET_BRAND_MARK} style={styles.brandMarkImage} contentFit="cover" />
           </View>
           <Text style={styles.brandText}>MSHPIT / GOING</Text>
         </View>
-        <Text style={styles.disclaimer}>SOCIAL RSVP · NOT VALID FOR ENTRY</Text>
+        <Text style={[styles.disclaimer, narrow && styles.disclaimerNarrow]}>SOCIAL RSVP · NOT VALID FOR ENTRY</Text>
       </View>
 
       <View style={styles.colorRegister} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
@@ -152,6 +187,7 @@ export default function ConcertTicketCard({
         <View style={[
           styles.copy,
           wide && styles.copyWide,
+          narrow && styles.copyNarrow,
           compact && styles.copyCompact,
           !imageUri && styles.copyWithoutArtwork,
         ]}>
@@ -168,6 +204,7 @@ export default function ConcertTicketCard({
             <Text style={[
               styles.eventTitle,
               wide && styles.eventTitleWide,
+              narrow && styles.eventTitleNarrow,
               compact && styles.eventTitleCompact,
             ]} numberOfLines={3}>
               {preview.eventTitle}
@@ -178,14 +215,14 @@ export default function ConcertTicketCard({
             ) : null}
           </View>
 
-          <View style={styles.schedule}>
-            <DateBlock value={preview.dateLabel} compact={compact} />
-            <View style={styles.details}>
-              <Detail label="VENUE / CITY" value={location} prominent />
+          <View style={[styles.schedule, narrow && styles.scheduleNarrow]}>
+            <DateBlock value={preview.dateLabel} compact={compact} narrow={narrow} />
+            <View style={[styles.details, narrow && styles.detailsNarrow]}>
+              <Detail label="VENUE / CITY" value={location} prominent narrow={narrow} />
               {timing.map((item) => (
-                <Detail key={item.kind} label={item.label} value={item.value} />
+                <Detail key={item.kind} label={item.label} value={item.value} narrow={narrow} />
               ))}
-              <Detail label="TOUR POSITION" value={preview.tourStopLabel} />
+              <Detail label="TOUR POSITION" value={preview.tourStopLabel} narrow={narrow} />
             </View>
           </View>
         </View>
@@ -199,14 +236,14 @@ export default function ConcertTicketCard({
         <View style={styles.notchRight} />
       </View>
 
-      <View style={[styles.stub, compact && styles.stubCompact]}>
-        <View style={styles.statusStamp}>
+      <View style={[styles.stub, narrow && styles.stubNarrow, compact && styles.stubCompact]}>
+        <View style={[styles.statusStamp, narrow && styles.statusStampNarrow]}>
           <Text style={styles.statusStampLead}>GOING</Text>
           <Text style={styles.statusStampSub}>SOCIAL RSVP</Text>
         </View>
-        <SeatStub seatLocation={preview.seatLocation} />
+        <SeatStub seatLocation={preview.seatLocation} narrow={narrow} />
         {onPress ? (
-          <View style={styles.openAction} pointerEvents="none">
+          <View style={[styles.openAction, narrow && styles.openActionNarrow]} pointerEvents="none">
             <Text style={styles.openActionText}>VIEW SHOW</Text>
             <Text style={styles.openActionArrow}>→</Text>
           </View>
@@ -222,6 +259,7 @@ export default function ConcertTicketCard({
       <Pressable
         testID={testID}
         onPress={onPress}
+        onLayout={measureCard}
         style={({ pressed, focused }) => [
           styles.card,
           compact && styles.cardCompact,
@@ -242,6 +280,7 @@ export default function ConcertTicketCard({
   return (
     <View
       testID={testID}
+      onLayout={measureCard}
       style={[styles.card, compact && styles.cardCompact, style]}
       accessible
       accessibilityRole="summary"
@@ -257,6 +296,9 @@ const styles = StyleSheet.create({
   card: {
     width: "100%",
     maxWidth: 900,
+    minWidth: 0,
+    alignSelf: "stretch",
+    flexShrink: 1,
     overflow: "hidden",
     borderRadius: radius.sm,
     borderCurve: "continuous",
@@ -288,6 +330,12 @@ const styles = StyleSheet.create({
   printRailCompact: {
     paddingHorizontal: space(3),
   },
+  printRailNarrow: {
+    minHeight: 50,
+    paddingHorizontal: space(3),
+    columnGap: space(2),
+    rowGap: space(1),
+  },
   brandLockup: {
     minWidth: 0,
     flexDirection: "row",
@@ -295,21 +343,16 @@ const styles = StyleSheet.create({
     gap: space(2),
   },
   brandMark: {
-    width: 26,
-    height: 26,
+    width: 28,
+    height: 28,
     borderRadius: 7,
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 1,
-    borderColor: colors.amber,
-    backgroundColor: colors.amberStrong,
+    overflow: "hidden",
+    backgroundColor: colors.bg,
     transform: [{ rotate: "-2deg" }],
   },
-  brandMarkText: {
-    color: colors.bg,
-    fontFamily: displayFont,
-    fontSize: 13,
-    fontWeight: "900",
+  brandMarkImage: {
+    width: "100%",
+    height: "100%",
   },
   brandText: {
     flexShrink: 1,
@@ -327,6 +370,11 @@ const styles = StyleSheet.create({
     lineHeight: 12,
     fontWeight: "900",
     letterSpacing: 1.15,
+  },
+  disclaimerNarrow: {
+    flexShrink: 1,
+    fontSize: 7,
+    letterSpacing: 0.8,
   },
   colorRegister: {
     height: 4,
@@ -388,6 +436,11 @@ const styles = StyleSheet.create({
     paddingVertical: space(4),
     gap: space(3),
   },
+  copyNarrow: {
+    paddingHorizontal: space(4),
+    paddingVertical: space(4),
+    gap: space(3),
+  },
   copyWithoutArtwork: {
     paddingTop: space(6),
   },
@@ -440,6 +493,11 @@ const styles = StyleSheet.create({
     lineHeight: 27,
     letterSpacing: -0.45,
   },
+  eventTitleNarrow: {
+    fontSize: 27,
+    lineHeight: 30,
+    letterSpacing: -0.6,
+  },
   artistLine: {
     color: colors.amber,
     fontFamily: mono,
@@ -453,6 +511,11 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
     alignItems: "stretch",
     gap: space(4),
+  },
+  scheduleNarrow: {
+    flexDirection: "column",
+    flexWrap: "nowrap",
+    gap: space(3),
   },
   dateBlock: {
     minWidth: 124,
@@ -469,12 +532,26 @@ const styles = StyleSheet.create({
     paddingHorizontal: space(2),
     paddingVertical: space(2),
   },
+  dateBlockNarrow: {
+    width: "100%",
+    minWidth: 0,
+    minHeight: 58,
+    paddingHorizontal: space(3),
+    paddingVertical: space(2),
+    flexDirection: "row",
+    alignItems: "baseline",
+    justifyContent: "flex-start",
+    gap: space(2),
+  },
   dateDay: {
     color: colors.amber,
     fontFamily: mono,
     fontSize: 9,
     fontWeight: "900",
     letterSpacing: 1.4,
+  },
+  dateDayNarrow: {
+    minWidth: 30,
   },
   dateMain: {
     color: colors.text,
@@ -488,6 +565,11 @@ const styles = StyleSheet.create({
     fontSize: 18,
     lineHeight: 23,
   },
+  dateMainNarrow: {
+    flexShrink: 1,
+    fontSize: 20,
+    lineHeight: 25,
+  },
   dateYear: {
     color: colors.textDim,
     fontFamily: mono,
@@ -495,6 +577,9 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     letterSpacing: 1.2,
     fontVariant: ["tabular-nums"],
+  },
+  dateYearNarrow: {
+    marginLeft: "auto",
   },
   details: {
     flex: 1,
@@ -504,12 +589,26 @@ const styles = StyleSheet.create({
     alignContent: "flex-start",
     gap: space(4),
   },
+  detailsNarrow: {
+    width: "100%",
+    minWidth: 0,
+    gap: space(3),
+  },
   detail: {
     minWidth: 108,
     maxWidth: 260,
     flexGrow: 1,
     flexBasis: 108,
     gap: 3,
+  },
+  detailNarrow: {
+    minWidth: 0,
+    maxWidth: "100%",
+    flexBasis: "45%",
+  },
+  detailProminentNarrow: {
+    width: "100%",
+    flexBasis: "100%",
   },
   detailLabel: {
     color: colors.textFaint,
@@ -584,6 +683,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: space(4),
     gap: space(3),
   },
+  stubNarrow: {
+    minHeight: 112,
+    paddingHorizontal: space(4),
+    paddingTop: space(3),
+    paddingBottom: space(3),
+    alignItems: "center",
+    columnGap: space(3),
+    rowGap: space(2),
+  },
   statusStamp: {
     minWidth: 78,
     paddingHorizontal: space(2),
@@ -593,6 +701,10 @@ const styles = StyleSheet.create({
     borderColor: colors.amber,
     borderRadius: radius.sm,
     transform: [{ rotate: "-1.5deg" }],
+  },
+  statusStampNarrow: {
+    minWidth: 82,
+    flexShrink: 0,
   },
   statusStampLead: {
     color: colors.amber,
@@ -617,6 +729,10 @@ const styles = StyleSheet.create({
     flexWrap: "wrap",
     gap: space(4),
   },
+  seatGridNarrow: {
+    minWidth: 0,
+    gap: space(2),
+  },
   seatField: {
     minWidth: 48,
     maxWidth: 110,
@@ -626,6 +742,9 @@ const styles = StyleSheet.create({
     flex: 1,
     minWidth: 96,
     gap: 2,
+  },
+  stubFallbackNarrow: {
+    minWidth: 0,
   },
   stubLabel: {
     color: colors.textFaint,
@@ -651,6 +770,12 @@ const styles = StyleSheet.create({
     gap: space(2),
     borderBottomWidth: 1,
     borderBottomColor: colors.amber,
+  },
+  openActionNarrow: {
+    width: "100%",
+    flexBasis: "100%",
+    paddingHorizontal: space(1),
+    justifyContent: "space-between",
   },
   openActionText: {
     color: colors.amber,

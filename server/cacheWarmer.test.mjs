@@ -18,6 +18,8 @@ const {
 } = await import("./cacheWarmer.js");
 const {
   bandsintownRows,
+  collectNamedTourProviderResults,
+  collectTicketmasterCityPages,
   collectTourProviderResults,
   DEFAULT_TICKETMASTER_COUNTRIES,
   hasSuccessfulTourProviderWork,
@@ -25,6 +27,7 @@ const {
   reconcileStaleProviderTourDates,
   runTourDateJobSafely,
   shouldRefreshTourDates,
+  sourcesEligibleForStaleReconciliation,
   ticketmasterArtistPageSize,
   ticketmasterActiveAndFutureRange,
   ticketmasterCountryBatchSize,
@@ -69,6 +72,37 @@ function fakeResolver({ fail = new Set() } = {}) {
 
 const noSleep = { sleepMs: 0 };
 const noCircuit = () => ({ dataCircuitOpen: false });
+
+function ticketmasterPageEvent(id, date) {
+  return {
+    id,
+    name: `Artist ${id} Live`,
+    classifications: [{ segment: { name: "Music" } }],
+    dates: { start: { localDate: date, localTime: "20:00:00" } },
+    _embedded: {
+      attractions: [{ name: `Artist ${id}` }],
+      venues: [{
+        id: `venue-${id}`,
+        name: "Pagination Hall",
+        city: { name: "Toronto" },
+        state: { name: "Ontario", stateCode: "ON" },
+        country: { name: "Canada", countryCode: "CA" },
+      }],
+    },
+  };
+}
+
+function ticketmasterPage(number, totalPages, events) {
+  return {
+    _embedded: { events },
+    page: {
+      number,
+      size: 200,
+      totalPages,
+      totalElements: totalPages * 200,
+    },
+  };
+}
 
 test("background schedulers stay local-default-on but require hosted opt-in", () => {
   assert.equal(isCacheWarmSchedulerEnabled({}), true);
@@ -142,6 +176,136 @@ test("Ticketmaster searches request all locales and keep artist pages bounded", 
   assert.equal(ticketmasterArtistIdentity("Beyoncé"), "beyonce");
   assert.equal(ticketmasterArtistIdentity("P!nk"), "p nk");
   assert.equal(ticketmasterArtistIdentity("Simon & Garfunkel"), "simon and garfunkel");
+});
+
+test("Ticketmaster search URLs propagate pages without crossing the deep-page boundary", () => {
+  const pageFour = new URL(ticketmasterEventSearchUrl({
+    apiKey: "test-key",
+    city: "Toronto",
+    size: 200,
+    page: 4,
+  }));
+  assert.equal(pageFour.searchParams.get("page"), "4");
+  assert.equal(pageFour.searchParams.get("size"), "200");
+
+  const clamped = new URL(ticketmasterEventSearchUrl({
+    apiKey: "test-key",
+    city: "Toronto",
+    size: 200,
+    page: 99,
+  }));
+  assert.equal(clamped.searchParams.get("page"), "4",
+    "size 200 permits only zero-based pages 0 through 4");
+
+  const legacy = new URL(ticketmasterEventSearchUrl({ apiKey: "test-key", city: "Toronto" }));
+  assert.equal(legacy.searchParams.get("page"), null,
+    "existing one-page callers do not gain a query parameter unless they opt in");
+});
+
+test("dense city pagination includes page-two events beyond day 30 and deduplicates overlaps", async () => {
+  const requests = [];
+  const waits = [];
+  const pages = [
+    ticketmasterPage(0, 3, [
+      ticketmasterPageEvent("duplicate", "2026-08-20"),
+      {
+        ...ticketmasterPageEvent("filtered-late", "2026-09-10"),
+        classifications: [{ segment: { name: "Sports" } }],
+      },
+    ]),
+    ticketmasterPage(1, 3, [
+      ticketmasterPageEvent("duplicate", "2026-08-20"),
+      ticketmasterPageEvent("after-day-30", "2026-09-01"),
+    ]),
+  ];
+  const result = await collectTicketmasterCityPages({
+    apiKey: "test-key",
+    city: "Toronto",
+    startEndDateTime: ["2026-08-01T00:00:00Z", "2029-08-01T00:00:00Z"],
+    fetchJson: async (value) => {
+      const url = new URL(value);
+      requests.push({
+        page: Number(url.searchParams.get("page")),
+        range: url.searchParams.get("startEndDateTime"),
+      });
+      return pages[Number(url.searchParams.get("page"))];
+    },
+    wait: async (delay) => { waits.push(delay); },
+    requestDelayMs: 550,
+  });
+
+  assert.deepEqual(requests, [
+    { page: 0, range: "2026-08-01T00:00:00Z,2029-08-01T00:00:00Z" },
+    { page: 1, range: "2026-08-01T00:00:00Z,2029-08-01T00:00:00Z" },
+  ], "pagination preserves the existing multi-year query range");
+  assert.deepEqual(waits, [550], "extra pages retain provider request pacing");
+  assert.equal(result.complete, true);
+  assert.equal(result.coverageReached, true);
+  assert.equal(result.pagesFetched, 2);
+  assert.deepEqual(result.rows.map((row) => row.provider_event_id), [
+    "duplicate",
+    "after-day-30",
+  ], "a later raw event that fails music qualification cannot end pagination early");
+});
+
+test("dense city pagination stops at Ticketmaster's five-page budget", async () => {
+  const requests = [];
+  const result = await collectTicketmasterCityPages({
+    apiKey: "test-key",
+    city: "Dense City",
+    startEndDateTime: ["2026-08-01T00:00:00Z", "2029-08-01T00:00:00Z"],
+    fetchJson: async (value) => {
+      const page = Number(new URL(value).searchParams.get("page"));
+      requests.push(page);
+      return ticketmasterPage(page, 99, [
+        ticketmasterPageEvent("shared", "2026-08-10"),
+        ticketmasterPageEvent(`page-${page}`, "2026-08-10"),
+      ]);
+    },
+    requestDelayMs: 0,
+  });
+
+  assert.deepEqual(requests, [0, 1, 2, 3, 4]);
+  assert.equal(result.complete, false,
+    "hitting the request cap without 30-day coverage must not claim a complete scan");
+  assert.equal(result.coverageReached, false);
+  assert.equal(result.pagesFetched, 5);
+  assert.equal(result.rows.filter((row) => row.provider_event_id === "shared").length, 1);
+  assert.equal(result.rows.length, 6);
+});
+
+test("a later city page failure keeps verified rows but blocks Ticketmaster stale reconciliation", async () => {
+  const partial = await collectTicketmasterCityPages({
+    apiKey: "test-key",
+    city: "Toronto",
+    startEndDateTime: ["2026-08-01T00:00:00Z", "2029-08-01T00:00:00Z"],
+    fetchJson: async (value) => {
+      const page = Number(new URL(value).searchParams.get("page"));
+      if (page === 1) throw new Error("page two failed");
+      return ticketmasterPage(0, 3, [ticketmasterPageEvent("verified-page-one", "2026-08-20")]);
+    },
+    requestDelayMs: 0,
+  });
+  assert.equal(partial.complete, false);
+  assert.equal(partial.pagesFetched, 1);
+  assert.deepEqual(partial.rows.map((row) => row.provider_event_id), ["verified-page-one"]);
+
+  const collected = await collectNamedTourProviderResults([
+    { source: "ticketmaster", run: async () => partial },
+    { source: "bandsintown", run: async () => [] },
+  ]);
+  assert.equal(collected.successes, 2, "partial verified rows remain useful work");
+  assert.equal(collected.failures, 1, "an incomplete fulfilled scan is still a provider failure");
+  assert.deepEqual(collected.outcomes, [
+    { source: "ticketmaster", ok: false },
+    { source: "bandsintown", ok: true },
+  ]);
+  const providerStats = new Map([
+    ["ticketmaster", { successes: 1, failures: 1 }],
+    ["bandsintown", { successes: 1, failures: 0 }],
+  ]);
+  assert.deepEqual(sourcesEligibleForStaleReconciliation(providerStats), ["bandsintown"],
+    "a partial Ticketmaster page cannot authorize source-wide stale cleanup");
 });
 
 test("Ticketmaster global countries rotate deterministically within a bounded batch", () => {

@@ -49,6 +49,13 @@ test("official provider titles remain distinct while clear tour names prefill th
   assert.match(composer, /TOUR OR SPECIAL EVENT/);
   assert.match(card, /const performanceTitle = String\(log\.tour/);
   assert.match(card, /styles\.performanceCard/);
+  assert.match(card, /styles\.performanceRegister/);
+  assert.match(card, /MSHPIT \/ LIVE MEMORY/);
+  assert.match(card, /styles\.performancePerforation/);
+  assert.match(card, /style=\{styles\.performanceCardShadow\}[\s\S]*?style=\{styles\.performanceCard\}/);
+  assert.match(card, /performanceCardShadow: \{[^}]*\.\.\.shadow\.card \}/);
+  assert.match(card, /performanceCard: \{ overflow: "hidden",[^}]*backgroundColor: colors\.bgElev \}/);
+  assert.doesNotMatch(card, /performanceCard: \{[^}]*\.\.\.shadow\.card/);
   assert.match(card, /<PublicTextLink href=\{artistHref\}[\s\S]*?\{performanceTitle\}<\/PublicTextLink>/);
   for (const field of ["log.artist", "log.venue", "log.city", "log.date"]) assert.ok(card.includes(field));
 });

@@ -2,6 +2,11 @@ import { toIsoDate } from "./dates.mjs";
 
 const MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
 
+// Keep the plain-language countdown useful for a full month of upcoming live
+// shows. Beyond this boundary the compact card falls back to an exact date,
+// which stays clearer than an increasingly large relative-day number.
+export const LIVE_SHOW_COUNTDOWN_DAYS = 30;
+
 const locationKey = (value) => String(value || "")
   .normalize("NFKD")
   .replace(/[\u0300-\u036f]/g, "")
@@ -174,7 +179,7 @@ export function eventDateMeta(value, now = new Date()) {
     ? "Tonight"
     : daysAway === 1
       ? "Tomorrow"
-      : daysAway > 1 && daysAway < 31
+      : daysAway > 1 && daysAway <= LIVE_SHOW_COUNTDOWN_DAYS
         ? `In ${daysAway} days`
         : `${MONTHS[month - 1]} ${day}`;
   return {

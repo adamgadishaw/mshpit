@@ -5,6 +5,7 @@ import {
   canonicalVenueCountry,
   eventDateMeta,
   isVenuePlaceActionable,
+  LIVE_SHOW_COUNTDOWN_DAYS,
   locationCenterFromVenues,
   nearestMapPoints,
   optionalDistanceKm,
@@ -85,10 +86,13 @@ test("directory totals are bounded and derived only from supplied city counts", 
 
 test("event date metadata creates a compact badge and useful relative timing", () => {
   const now = new Date(2026, 7, 13, 23, 30);
+  assert.equal(LIVE_SHOW_COUNTDOWN_DAYS, 30);
   assert.deepEqual(eventDateMeta("2026-08-14", now), {
     iso: "2026-08-14", month: "AUG", day: "14", year: "2026", timing: "Tomorrow",
   });
   assert.equal(eventDateMeta("2026-08-20", now).timing, "In 7 days");
+  assert.equal(eventDateMeta("2026-09-12", now).timing, "In 30 days");
+  assert.equal(eventDateMeta("2026-09-13", now).timing, "SEP 13");
   assert.equal(eventDateMeta("not-a-date", now).timing, "Date to be announced");
 });
 
