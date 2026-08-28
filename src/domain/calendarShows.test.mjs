@@ -95,6 +95,7 @@ test("a server-owned Going post merges with its catalogue and private Going row 
   assert.equal(model.upcoming[0].postId, "post-ticket");
   assert.equal(model.upcoming[0].posted, true);
   assert.equal(model.upcoming[0].going, true);
+  assert.equal(model.upcoming[0].performanceEvent, true);
   assert.equal(model.upcoming[0].ticketUrl, "https://tickets.example/event");
 });
 

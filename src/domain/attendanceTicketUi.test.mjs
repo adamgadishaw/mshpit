@@ -39,7 +39,10 @@ test("ticket card is responsive and uses the shared design system", () => {
     assert.ok(source.includes(style), style + " should guard narrow ticket boundaries");
   }
   assert.match(source, /colors,\s*displayFont,\s*focusRing,\s*font,\s*mono,\s*radius,\s*shadow,\s*space/);
-  assert.match(source, /focused && focusRing/);
+  assert.match(source, /Platform\.select\(\{[\s\S]*?outlineOffset: -3/);
+  assert.match(source, /target\.matches\(":focus-visible"\)/);
+  assert.match(source, /focusVisible && ticketFocusRing/);
+  assert.doesNotMatch(source, /focused && focusRing/);
   assert.doesNotMatch(source, /#[0-9a-f]{3,8}/i);
 });
 

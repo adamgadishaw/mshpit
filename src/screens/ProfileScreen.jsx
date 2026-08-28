@@ -412,6 +412,7 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenProfi
               key={l.id}
               log={l}
               onOpen={onOpenShow}
+              onOpenShow={onOpenShow}
               onOpenProfile={onOpenProfile}
               onOpenArtist={onOpenArtist}
               onOpenVenue={onOpenVenue}

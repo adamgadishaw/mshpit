@@ -94,10 +94,22 @@ test("a legacy display key never impersonates one of two exact catalogue events"
 
 test("the shared post renderer owns ticket presentation and disables generic edits", () => {
   const card = source("../components/TicketStub.jsx");
+  const feed = source("../screens/FeedScreen.jsx");
+  const post = source("../screens/PostScreen.jsx");
+  const profile = source("../screens/ProfileScreen.jsx");
+  const app = source("../../App.js");
   assert.match(card, /buildAttendanceTicketPreview/);
+  assert.match(card, /calendarShowFromPost/);
   assert.match(card, /<ConcertTicketCard/);
   assert.match(card, /&& !log\.attendanceTicket/);
   assert.match(card, /seatLocation: log\.attendanceTicket\.seat \|\| log\.attendanceTicket\.seatLocation/);
+  assert.match(card, /onPress=\{attendanceTicketShow && onOpenShow \? \(\) => onOpenShow\(attendanceTicketShow\) : undefined\}/);
+  assert.doesNotMatch(card, /onPress=\{\(\) => onOpen\?\.\(log\)\}\s*accessibilityHint="Open this Going post and its comments"/);
+  assert.match(feed, /onOpenShow=\{\(show\) => onOpen\?\.\(show, \{ surface, position: itemIndex \}\)\}/);
+  assert.match(post, /onOpenShow=\{onOpenShow\}/);
+  assert.match(profile, /onOpenShow=\{onOpenShow\}/);
+  assert.match(app, /log\.kind === "status" && log\.performanceEvent !== true/);
+  assert.match(app, /frame\.openLog\?\.performanceEvent && frame\.openLog\?\.id\) return eventPath\(frame\.openLog\.id\)/);
 });
 
 test("the show surface keeps provider access distinct from verified venue doors", () => {

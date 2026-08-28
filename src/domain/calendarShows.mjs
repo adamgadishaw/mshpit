@@ -75,6 +75,10 @@ export function calendarShowFromPost(post) {
     logged,
     attended: logged,
     goingPost: kind === "status" && source.state === "going",
+    // This object is a projection of the exact event, not the surrounding
+    // status post. The marker keeps every navigation surface on the Show page
+    // while ordinary statuses continue to open their comments.
+    ...(ticket?.tourDateId ? { performanceEvent: true } : {}),
   };
 }
 

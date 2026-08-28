@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { prepareShowNavigation, showNavigationPostId } from "./showNavigation.mjs";
+import { calendarShowFromPost } from "./calendarShows.mjs";
 
 test("provider and artist-created tour dates stay performance events", () => {
   for (const event of [
@@ -47,4 +48,31 @@ test("restored performance tags cannot be upgraded into post routes", () => {
   assert.equal(navigation.kind, "performance");
   assert.equal(navigation.postId, null);
   assert.equal(showNavigationPostId(restored), null);
+});
+
+test("a Going ticket opens its exact event rather than its surrounding status post", () => {
+  const show = calendarShowFromPost({
+    id: "post_going_42",
+    kind: "status",
+    userId: "fan-1",
+    attendanceTicket: {
+      state: "going",
+      tourDateId: "tm_exact_42",
+      artist: "Wu-Tang Clan",
+      venue: "RBC Amphitheatre",
+      city: "Toronto",
+      date: "2026-09-08",
+      tourName: "Wu-Tang Forever: The Final Chamber",
+    },
+  });
+  const navigation = prepareShowNavigation(show);
+
+  assert.equal(show.id, "tm_exact_42");
+  assert.equal(show.postId, "post_going_42");
+  assert.equal(show.performanceEvent, true);
+  assert.equal(navigation.kind, "performance");
+  assert.equal(navigation.destination.id, "tm_exact_42");
+  assert.equal(navigation.destination.tourDateId, "tm_exact_42");
+  assert.equal(navigation.postId, null);
+  assert.equal(showNavigationPostId(navigation.destination), null);
 });

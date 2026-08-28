@@ -917,10 +917,11 @@ function Root() {
     });
     go({ post: log });
   };
-  // A status update has no performance page, so "open" it as its own post detail.
+  // Ordinary statuses open their discussion. A Going ticket can instead pass
+  // the exact performance projection produced by calendarShowFromPost.
   const openShow = (log, analytics = {}) => {
     if (!log) return;
-    if (log.kind === "status") return openPost(log, analytics);
+    if (log.kind === "status" && log.performanceEvent !== true) return openPost(log, analytics);
     const navigation = prepareShowNavigation(log);
     if (!navigation) return;
     const { destination } = navigation;

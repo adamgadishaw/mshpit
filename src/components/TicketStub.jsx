@@ -22,6 +22,7 @@ import useReducedMotion from "../hooks/useReducedMotion";
 import { PublicPressableLink, PublicTextLink } from "./PublicWebLinks";
 import { artistPath, postPath, profilePath, venuePath } from "../domain/urls.mjs";
 import { buildAttendanceTicketPreview } from "../domain/attendanceTicket.mjs";
+import { calendarShowFromPost } from "../domain/calendarShows.mjs";
 import ConcertTicketCard from "./ConcertTicketCard";
 
 // "3rd time in the pit" needs a real ordinal, not "3th".
@@ -123,7 +124,7 @@ function NotForMeButton({ onPress, palette = null }) {
 // Review-forward feed card: the review is the centerpiece. Artist / venue / date
 // sit on a ticket-stub line below, the score reads at a glance, and the footer
 // opens the Afterparty (like + comments) for that concert.
-export default function TicketStub({ log, mediaViewable = null, onOpen, onNotInterested, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenVenue, onReport, onEdit, onDelete, onOpenPhotos, onPlay, onRemoveMyPostTag, onSelfTagRemoved, showComments = true }) {
+export default function TicketStub({ log, mediaViewable = null, onOpen, onOpenShow, onNotInterested, onComment, onPreview, onOpenProfile, onOpenArtist, onOpenVenue, onReport, onEdit, onDelete, onOpenPhotos, onPlay, onRemoveMyPostTag, onSelfTagRemoved, showComments = true }) {
   const openComments = () => (onComment || onOpen)?.(log);
   const { userById, likeInfo, toggleLike, commentsFor, session, userBadges, deleteOwnPost } = useStore();
   const author = userById?.(log.userId) || { initials: log.user?.initials, name: log.user?.name, handle: log.user?.handle };
@@ -191,6 +192,9 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onNotInt
         shareSeatLocation: !!(log.attendanceTicket.seat || log.attendanceTicket.seatLocation),
       })
       : null;
+  const attendanceTicketShow = log.attendanceTicket?.tourDateId
+    ? calendarShowFromPost(log)
+    : null;
   // Score analytics: tap the star pill to see WHY the night got its score;
   // hovering it (web) previews the reviewer's tag words.
   const [statsOpen, setStatsOpen] = useState(false);
@@ -288,8 +292,8 @@ export default function TicketStub({ log, mediaViewable = null, onOpen, onNotInt
         {attendanceTicketCard ? (
           <ConcertTicketCard
             ticket={attendanceTicketCard}
-            onPress={() => onOpen?.(log)}
-            accessibilityHint="Open this Going post and its comments"
+            onPress={attendanceTicketShow && onOpenShow ? () => onOpenShow(attendanceTicketShow) : undefined}
+            accessibilityHint={attendanceTicketShow && onOpenShow ? "Open the exact show or event page" : undefined}
           />
         ) : null}
 

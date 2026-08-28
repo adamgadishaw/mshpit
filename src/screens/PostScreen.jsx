@@ -207,7 +207,7 @@ export default function PostScreen({ log, onClose, onOpenProfile, onOpenArtist, 
     <View style={styles.wrap}>
       <ScreenHeader kicker="POST" title="Comments" onBack={onClose} />
       <ScrollView ref={scrollRef} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-        <TicketStub log={activeLog} showComments={false} onOpen={() => onOpenShow?.(activeLog)} onOpenProfile={onOpenProfile} onOpenArtist={onOpenArtist} onOpenVenue={onOpenVenue} onReport={onReport} onEdit={onEdit} onDelete={removePost} onOpenPhotos={onOpenPhotos} onPlay={onPlay} onRemoveMyPostTag={onRemoveMyPostTag} onSelfTagRemoved={reconcileSelfTagRemoval} />
+        <TicketStub log={activeLog} showComments={false} onOpen={() => onOpenShow?.(activeLog)} onOpenShow={onOpenShow} onOpenProfile={onOpenProfile} onOpenArtist={onOpenArtist} onOpenVenue={onOpenVenue} onReport={onReport} onEdit={onEdit} onDelete={removePost} onOpenPhotos={onOpenPhotos} onPlay={onPlay} onRemoveMyPostTag={onRemoveMyPostTag} onSelfTagRemoved={reconcileSelfTagRemoval} />
 
         <Text style={styles.sectionLabel}>
           {commentsUsable ? `${flat.length} COMMENT${flat.length === 1 ? "" : "S"}` : "COMMENTS"}

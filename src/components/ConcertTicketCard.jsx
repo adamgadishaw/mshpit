@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Pressable, StyleSheet, Text, useWindowDimensions, View } from "react-native";
+import { Platform, Pressable, StyleSheet, Text, useWindowDimensions, View } from "react-native";
 import { Image as ExpoImage } from "expo-image";
 import { colors, displayFont, focusRing, font, mono, radius, shadow, space } from "../theme";
 import { buildAttendanceTicketPreview } from "../domain/attendanceTicket.mjs";
@@ -7,6 +7,13 @@ import useReducedMotion from "../hooks/useReducedMotion";
 
 const WIDE_BREAKPOINT = 620;
 const PHONE_BREAKPOINT = 430;
+// A ticket already owns a printed edge. Keep keyboard focus unmistakable, but
+// draw it inside that edge so Safari does not leave a second external border
+// behind after a pointer/touch interaction.
+const ticketFocusRing = Platform.select({
+  web: { ...focusRing, outlineOffset: -3 },
+  default: focusRing,
+});
 // Reuse the small mark already loaded by the public landing page. Pulling the
 // 1024px App Store source into a feed card would add hundreds of kilobytes to
 // the web asset graph for a 28px decorative lockup.
@@ -107,6 +114,7 @@ export default function ConcertTicketCard({
   const { width, fontScale } = useWindowDimensions();
   const reduceMotion = useReducedMotion();
   const [cardWidth, setCardWidth] = useState(0);
+  const [focusVisible, setFocusVisible] = useState(false);
   const responsiveWidth = cardWidth > 0
     ? Math.min(cardWidth, width)
     : Math.min(width, PHONE_BREAKPOINT - 1);
@@ -136,6 +144,11 @@ export default function ConcertTicketCard({
     if (measuredWidth > 0) {
       setCardWidth((current) => Math.abs(current - measuredWidth) > 1 ? measuredWidth : current);
     }
+  };
+  const handleFocus = (event) => {
+    if (Platform.OS !== "web") return;
+    const target = event?.currentTarget;
+    setFocusVisible(typeof target?.matches === "function" ? target.matches(":focus-visible") : true);
   };
 
   const cardContent = (
@@ -260,13 +273,15 @@ export default function ConcertTicketCard({
         testID={testID}
         onPress={onPress}
         onLayout={measureCard}
-        style={({ pressed, focused }) => [
+        onFocus={handleFocus}
+        onBlur={() => setFocusVisible(false)}
+        style={({ pressed }) => [
           styles.card,
           compact && styles.cardCompact,
           style,
           pressed && styles.cardPressed,
           pressed && !reduceMotion && styles.cardPressedMotion,
-          focused && focusRing,
+          focusVisible && ticketFocusRing,
         ]}
         accessibilityRole="button"
         accessibilityLabel={cardAccessibilityLabel}
