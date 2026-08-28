@@ -112,6 +112,26 @@ function markAttendance(user, event, state = "going") {
   });
 }
 
+function markExactAttendance(user, event, state = "going") {
+  return routes["POST /api/going"]({
+    user,
+    ip: `exact-attendance-${user.id}-${state}`,
+    body: {
+      tourDateId: event.id,
+      key: attendanceKey(event),
+      // Exact writes must ignore these client copies and project the event from
+      // the server-owned tour_dates row instead.
+      artist: "Forged Client Artist",
+      venue: "Forged Client Venue",
+      city: "Forged Client City",
+      date: "2099-01-01",
+      tour: "Forged Client Tour",
+      state,
+      visibility: "private",
+    },
+  });
+}
+
 function ticketBody(tourDateId, mutationId, extra = {}) {
   return {
     kind: "status",
@@ -290,6 +310,53 @@ test("ambiguous legacy attendance cannot authorize either of two same-night prov
       user,
       ip: "ticket-ambiguous",
       body: ticketBody(first.id, "attendance_ticket_collision_001"),
+    }),
+    (error) => error instanceof ApiError && error.status === 403 && error.code === "FORBIDDEN",
+  );
+});
+
+test("exact attendance authorizes only its tour date when two events share artist venue and date", () => {
+  const user = addUser("ticket_exact_collision");
+  const first = { id: "tm_ticket_exact_collision_1", providerEventId: "exact-collision-1", date: `${FUTURE_YEAR}-12-12` };
+  const second = { id: "tm_ticket_exact_collision_2", providerEventId: "exact-collision-2", date: `${FUTURE_YEAR}-12-12` };
+  addEvent(first);
+  addEvent(second);
+
+  const marked = markExactAttendance(user, first);
+  assert.equal(marked.show.tourDateId, first.id);
+  assert.equal(marked.attendance.tourDateId, first.id);
+  const hydrated = routes["GET /api/me/going"]({ user });
+  assert.equal(hydrated.attendance.find((entry) => entry.tourDateId === first.id)?.state, "going",
+    "the private canonical attendance response must restore exact Going state after reload");
+  const canonical = db.prepare(`SELECT s.tour_date_id,s.provider,s.provider_event_id,
+    a.legacy_artist,a.legacy_venue,a.legacy_date
+    FROM shows s JOIN show_attendance a ON a.show_id=s.id
+    WHERE a.user_id=?`).get(user.id);
+  assert.deepEqual({ ...canonical }, {
+    tour_date_id: first.id,
+    provider: "ticketmaster",
+    provider_event_id: first.providerEventId,
+    legacy_artist: "Server Artist",
+    legacy_venue: "Server Room",
+    legacy_date: first.date,
+  });
+  assert.equal(db.prepare("SELECT COUNT(*) count FROM show_aliases WHERE show_id=?")
+    .get(marked.showId).count, 0, "a colliding display key must not become an alias for either exact event");
+  const repeated = markExactAttendance(user, first);
+  assert.equal(repeated.showId, marked.showId);
+  assert.equal(repeated.attendance.createdAt, marked.attendance.createdAt);
+
+  const created = routes["POST /api/posts"]({
+    user,
+    ip: "ticket-exact-collision-a",
+    body: ticketBody(first.id, "attendance_ticket_exact_collision_001"),
+  });
+  assert.equal(created.post.attendanceTicket.tourDateId, first.id);
+  assert.throws(
+    () => routes["POST /api/posts"]({
+      user,
+      ip: "ticket-exact-collision-b",
+      body: ticketBody(second.id, "attendance_ticket_exact_collision_002"),
     }),
     (error) => error instanceof ApiError && error.status === 403 && error.code === "FORBIDDEN",
   );

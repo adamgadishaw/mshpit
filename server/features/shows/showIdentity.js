@@ -20,6 +20,7 @@ export const SHOW_CROWD_SCOPES = Object.freeze([
 ]);
 
 const STABLE_SHOW_ID_PATTERN = /^show_[a-f0-9]{64}$/u;
+const TOUR_DATE_ID_PATTERN = /^[A-Za-z0-9._:-]{1,200}$/u;
 const ATTENDANCE_STATE_SET = new Set(SHOW_ATTENDANCE_STATES);
 const ATTENDANCE_VISIBILITY_SET = new Set(SHOW_ATTENDANCE_VISIBILITIES);
 const CROWD_SCOPE_SET = new Set(SHOW_CROWD_SCOPES);
@@ -34,6 +35,18 @@ export function normalizeStableShowId(value) {
   if (typeof value !== "string") return null;
   const id = value.normalize("NFKC").trim();
   return STABLE_SHOW_ID_PATTERN.test(id) ? id : null;
+}
+
+export function normalizeTourDateId(value) {
+  if (typeof value !== "string") return null;
+  const id = value.normalize("NFKC").trim();
+  return TOUR_DATE_ID_PATTERN.test(id) ? id : null;
+}
+
+export function stableShowIdForTourDateId(value) {
+  const id = normalizeTourDateId(value);
+  if (!id) return null;
+  return `show_${createHash("sha256").update(`mshpit-show-v1\0tour_date_id\0${id}`, "utf8").digest("hex")}`;
 }
 
 export function stableShowIdForAlias(value, aliasType = "legacy_concert_key") {

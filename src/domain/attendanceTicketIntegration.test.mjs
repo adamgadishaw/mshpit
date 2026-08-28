@@ -22,6 +22,7 @@ test("a new Going transition offers an optional public ticket post without auto-
 
 test("ticket transport sends only the exact event identity and explicit seat consent", () => {
   const store = source("../store.js");
+  const show = source("../screens/ShowScreen.jsx");
   const composer = source("../components/GoingTicketComposer.jsx");
   const ticketBranch = store.slice(
     store.indexOf("attendanceTicket: {", store.indexOf("const body = kind")),
@@ -36,6 +37,11 @@ test("ticket transport sends only the exact event identity and explicit seat con
   }
   assert.doesNotMatch(ticketBranch, /\.\.\.safe\.attendanceTicket/);
   assert.doesNotMatch(composer, /showId:/);
+  assert.match(store, /\.\.\.\(tourDateId \? \{ tourDateId \} : \{\}\)/,
+    "legacy Going writes retain the exact catalogue event alongside the display key");
+  assert.match(show, /toggleGoing\(\{ \.\.\.norm, tourDateId \}\)/);
+  assert.match(show, /show=\{\{ \.\.\.trustedShow, tourDateId \}\}/,
+    "typed attendance writes retain the same exact catalogue identity");
 });
 
 test("a lost-response retry reuses the same per-event ticket mutation id", () => {
@@ -47,6 +53,43 @@ test("a lost-response retry reuses the same per-event ticket mutation id", () =>
   assert.match(composer, /id:\s*clientMutationId/);
   assert.match(store, /const localId = log\.id \|\| "p_local_" \+ Date\.now\(\)/);
   assert.match(store, /clientMutationId:\s*localId/);
+  assert.match(store, /if \(!safe\.attendanceTicket\) \{[\s\S]*?setFeed[\s\S]*?upsertProfileHistoryPost/,
+    "a server-owned ticket cannot briefly appear published before exact-event authorization succeeds");
+});
+
+test("ticket share owns one safe error message while ordinary posts keep global feedback", () => {
+  const show = source("../screens/ShowScreen.jsx");
+  const store = source("../store.js");
+  const composer = source("../components/GoingTicketComposer.jsx");
+
+  assert.match(store, /const addLog = \(log, \{ silent = false \} = \{\}\) =>/,
+    "ordinary post writes keep the existing global feedback by default");
+  assert.match(store, /return api\("\/api\/posts", \{[\s\S]*?body,[\s\S]*?silent,[\s\S]*?\}\)/);
+  assert.match(show, /onPost=\{\(post\) => addLog\(post, \{ silent: true \}\)\}/,
+    "the ticket composer suppresses only the duplicate global toast");
+  assert.doesNotMatch(composer, /result\?\.error\?\.message/,
+    "raw internal errors never render on the member-facing ticket composer");
+  assert.doesNotMatch(composer, /result\?\.error\?\.userMessage/,
+    "generic catalogue copy cannot replace the ticket-specific recovery message");
+  assert.match(composer, /Couldn't share this ticket right now\. Your Going status is still saved\./);
+});
+
+test("exact Going attendance survives account hydration even without an ambiguous legacy alias", () => {
+  const store = source("../store.js");
+
+  assert.match(store, /const exactGoingRows = canonicalAttendance\.filter/);
+  assert.match(store, /const exactDisplayKeys = new Set/);
+  assert.match(store, /rows\.filter\(\(entry\) => goingTourDateId\(entry\)/,
+    "an exact row replaces its same-key legacy calendar projection instead of duplicating it");
+  assert.match(store, /goingEntryIdentity\(candidate\) === identity/,
+    "the private canonical attendance projection restores exact Going identity after reload");
+});
+
+test("a legacy display key never impersonates one of two exact catalogue events", () => {
+  const store = source("../store.js");
+
+  assert.match(store, /if \(exactId\) return goingTourDateId\(entry\) === exactId;/,
+    "exact event controls require exact event attendance and can safely upgrade old legacy rows");
 });
 
 test("the shared post renderer owns ticket presentation and disables generic edits", () => {

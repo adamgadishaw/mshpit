@@ -2,8 +2,10 @@ import {
   isAttendeeState,
   normalizeShowAliasKey,
   normalizeStableShowId,
+  normalizeTourDateId,
   showCheckInAvailable,
   stableShowIdForAlias,
+  stableShowIdForTourDateId,
 } from "./showIdentity.js";
 
 const LEGACY_ALIAS_TYPE = "legacy_concert_key";
@@ -25,11 +27,13 @@ function rowShow(row, aliases = []) {
     city: row.city || "",
     date: row.date || "",
     tour: row.tour || null,
+    tourDateId: row.tour_date_id || null,
     startAt: row.start_at || null,
     timezone: row.timezone || null,
     lifecycle: row.lifecycle || "unknown",
     provider: row.provider || null,
     providerEventId: row.provider_event_id || null,
+    identitySource: row.identity_source || "legacy_concert_key",
     publicEligible: !!row.public_eligible,
     aliases,
     persisted: true,
@@ -43,6 +47,9 @@ export function createShowAttendanceRepository(database) {
     JOIN shows s ON s.id=a.show_id WHERE a.alias_type=? AND a.alias_value=?`);
   const showById = database.prepare("SELECT * FROM shows WHERE id=?");
   const showByCanonicalKey = database.prepare("SELECT * FROM shows WHERE canonical_key=?");
+  const showByTourDateId = database.prepare("SELECT * FROM shows WHERE tour_date_id=?");
+  const showByProviderIdentity = database.prepare(`SELECT * FROM shows
+    WHERE lower(provider)=lower(?) AND provider_event_id=? LIMIT 1`);
   const aliasesByShow = database.prepare(`SELECT alias_type,alias_value FROM show_aliases
     WHERE show_id=? ORDER BY alias_type,alias_value`);
   const insertShow = database.prepare(`INSERT OR IGNORE INTO shows
@@ -50,6 +57,19 @@ export function createShowAttendanceRepository(database) {
     VALUES (?,?,'member_legacy_alias',0,?,?)`);
   const insertAlias = database.prepare(`INSERT OR IGNORE INTO show_aliases
     (alias_type,alias_value,show_id,created_at) VALUES (?,?,?,?)`);
+  const insertExactShow = database.prepare(`INSERT OR IGNORE INTO shows
+    (id,canonical_key,artist,artist_key,venue,venue_key,city,date,local_date,start_at,
+      start_local_time,timezone,lifecycle,tour,tour_date_id,provider,provider_event_id,
+      identity_source,public_eligible,created_at,updated_at)
+    VALUES (@id,@canonicalKey,@artist,@artistKey,@venue,@venueKey,@city,@date,@localDate,@startAt,
+      @startLocalTime,@timezone,@lifecycle,@tour,@tourDateId,@provider,@providerEventId,
+      @identitySource,@publicEligible,@createdAt,@updatedAt)`);
+  const updateExactShow = database.prepare(`UPDATE OR IGNORE shows SET
+    artist=@artist,artist_key=@artistKey,venue=@venue,venue_key=@venueKey,city=@city,
+    date=@date,local_date=@localDate,start_at=@startAt,start_local_time=@startLocalTime,
+    timezone=@timezone,lifecycle=@lifecycle,tour=@tour,tour_date_id=@tourDateId,
+    provider=@provider,provider_event_id=@providerEventId,identity_source=@identitySource,
+    public_eligible=@publicEligible,updated_at=@updatedAt WHERE id=@id`);
   const attendanceByUserShow = database.prepare(`SELECT a.*,
     EXISTS (SELECT 1 FROM show_attendance_verifications v
       WHERE v.show_id=a.show_id AND v.user_id=a.user_id AND v.revoked_at IS NULL) AS attendance_verified
@@ -138,6 +158,103 @@ export function createShowAttendanceRepository(database) {
     return resolveShow(key);
   }
 
+  function exactShowDescriptor(input, at) {
+    const tourDateId = normalizeTourDateId(input?.tourDateId);
+    if (!tourDateId) return null;
+    const id = stableShowIdForTourDateId(tourDateId);
+    const text = (value, max) => typeof value === "string"
+      ? value.replace(/[\u0000-\u001f\u007f]/gu, "").replace(/\s+/gu, " ").trim().slice(0, max)
+      : "";
+    const provider = text(input?.provider, 40).toLowerCase() || null;
+    const providerEventId = text(input?.providerEventId, 200) || null;
+    const providerBacked = !!provider && !!providerEventId;
+    const lifecycle = ["unknown", "upcoming", "happening", "completed", "postponed", "cancelled"]
+      .includes(input?.lifecycle) ? input.lifecycle : "unknown";
+    const startAt = Number.isFinite(Number(input?.startAt)) ? Number(input.startAt) : null;
+    return {
+      id,
+      canonicalKey: `tour_date_${id.slice(5)}`,
+      artist: text(input?.artist, 160),
+      artistKey: text(input?.artistKey, 180) || null,
+      venue: text(input?.venue, 160),
+      venueKey: text(input?.venueKey, 200) || null,
+      city: text(input?.city, 120),
+      date: text(input?.date, 10),
+      localDate: text(input?.localDate || input?.date, 10) || null,
+      startAt,
+      startLocalTime: text(input?.startLocalTime, 80) || null,
+      timezone: text(input?.timezone, 80) || null,
+      lifecycle,
+      tour: text(input?.tour, 160) || null,
+      tourDateId,
+      provider: providerBacked ? provider : null,
+      providerEventId: providerBacked ? providerEventId : null,
+      identitySource: providerBacked ? provider : "tour_date",
+      publicEligible: providerBacked ? 1 : 0,
+      legacyKey: normalizeShowAliasKey(input?.legacyKey),
+      claimLegacyAlias: input?.claimLegacyAlias === true,
+      createdAt: at,
+      updatedAt: at,
+    };
+  }
+
+  function exactShowRow(descriptor) {
+    return showByTourDateId.get(descriptor.tourDateId)
+      || (descriptor.provider && descriptor.providerEventId
+        ? showByProviderIdentity.get(descriptor.provider, descriptor.providerEventId) : null);
+  }
+
+  function exactShowSqlValues(descriptor, id = descriptor.id) {
+    const {
+      canonicalKey, artist, artistKey, venue, venueKey, city, date, localDate, startAt,
+      startLocalTime, timezone, lifecycle, tour, tourDateId, provider, providerEventId,
+      identitySource, publicEligible, createdAt, updatedAt,
+    } = descriptor;
+    return {
+      id, canonicalKey, artist, artistKey, venue, venueKey, city, date, localDate, startAt,
+      startLocalTime, timezone, lifecycle, tour, tourDateId, provider, providerEventId,
+      identitySource, publicEligible, createdAt, updatedAt,
+    };
+  }
+
+  function exactShowUpdateValues(descriptor, id) {
+    const { canonicalKey: _canonicalKey, createdAt: _createdAt, ...values } = exactShowSqlValues(descriptor, id);
+    return values;
+  }
+
+  function legacyClaimCandidate(descriptor) {
+    if (!descriptor.claimLegacyAlias || !descriptor.legacyKey) return null;
+    const candidate = showByAlias.get(LEGACY_ALIAS_TYPE, descriptor.legacyKey)
+      || showByCanonicalKey.get(descriptor.legacyKey);
+    return candidate && candidate.identity_source === "member_legacy_alias"
+      && !candidate.tour_date_id && !candidate.provider && !candidate.provider_event_id
+      ? candidate : null;
+  }
+
+  function resolveExactShow(input) {
+    const descriptor = exactShowDescriptor(input, 0);
+    if (!descriptor) return null;
+    const row = exactShowRow(descriptor) || legacyClaimCandidate(descriptor);
+    return row ? resolveShow(row.id) : null;
+  }
+
+  function ensureExactShow(input, at) {
+    const descriptor = exactShowDescriptor(input, at);
+    if (!descriptor) return null;
+    let row = exactShowRow(descriptor) || legacyClaimCandidate(descriptor);
+    if (row) {
+      updateExactShow.run(exactShowUpdateValues(descriptor, row.id));
+    } else {
+      insertExactShow.run(exactShowSqlValues(descriptor));
+    }
+    row = exactShowRow(descriptor);
+    if (!row) throw new Error("Exact show identity could not be allocated");
+    if (descriptor.claimLegacyAlias && descriptor.legacyKey) {
+      insertAlias.run(LEGACY_ALIAS_TYPE, descriptor.legacyKey, row.id, at);
+    }
+    return resolveShow(row.id);
+  }
+
   function aliasKeys(show, requestedKey) {
     const requested = normalizeStableShowId(requestedKey) ? null : normalizeShowAliasKey(requestedKey);
     const keys = [...(show?.aliases || []), requested];
@@ -161,12 +278,14 @@ export function createShowAttendanceRepository(database) {
     for (const alias of show?.aliases || []) {
       if (keyResolvesToShow(alias, show?.id)) return normalizeShowAliasKey(alias);
     }
+    if (show?.identitySource !== "member_legacy_alias") return null;
     const canonical = normalizeShowAliasKey(show?.canonicalKey);
     return canonical && keyResolvesToShow(canonical, show?.id) ? canonical : null;
   }
 
   function preferredLegacyKey(row) {
-    for (const candidate of [row.legacy_concert_key, row.fallback_legacy_key, row.canonical_key]) {
+    const canonical = row.identity_source === "member_legacy_alias" ? row.canonical_key : null;
+    for (const candidate of [row.legacy_concert_key, row.fallback_legacy_key, canonical]) {
       const key = normalizeShowAliasKey(candidate);
       if (key && keyResolvesToShow(key, row.show_id)) return key;
     }
@@ -223,17 +342,18 @@ export function createShowAttendanceRepository(database) {
     };
   }
 
-  function writeAttendance({ userId, key, state, visibility, artist, artistKey, venue, venueKey, city, date, tour, at }) {
+  function writeAttendance({ userId, key, state, visibility, artist, artistKey, venue, venueKey, city, date, tour, at,
+    show: suppliedShow = null }) {
     if (!state) {
-      const existing = ownAttendance(userId, key);
-      const show = existing.show;
+      const existing = ownAttendance(userId, suppliedShow?.id || key);
+      const show = suppliedShow || existing.show;
       const aliases = aliasKeys(show, key);
       deleteLegacyAttendance(userId, aliases);
       if (show?.persisted) deleteAttendance.run(show.id, userId);
       return { show, attendance: null, previous: existing.attendance };
     }
-    const existing = ownAttendance(userId, key);
-    const show = ensureShow({ key, at });
+    const existing = ownAttendance(userId, suppliedShow?.id || key);
+    const show = suppliedShow || ensureShow({ key, at });
     if (!show) return { show: null, attendance: null, previous: existing.attendance };
     const aliases = aliasKeys(show, key);
     const legacyKey = legacyKeyForShow(show, key);
@@ -260,7 +380,7 @@ export function createShowAttendanceRepository(database) {
       } else {
         deleteLegacyAttendance(userId, aliases);
       }
-      return { show, attendance: ownAttendance(userId, key).attendance, previous };
+      return { show, attendance: ownAttendance(userId, suppliedShow?.id || key).attendance, previous };
     }
     deleteLegacyAttendance(userId, aliases);
     const checkedInAt = state === "here"
@@ -275,11 +395,35 @@ export function createShowAttendanceRepository(database) {
       insertLegacyGoing.run(userId, legacyKey, snapshot.artist,
         snapshot.venue, snapshot.city, snapshot.date, createdAt);
     }
-    return { show, attendance: ownAttendance(userId, key).attendance, previous };
+    return { show, attendance: ownAttendance(userId, suppliedShow?.id || key).attendance, previous };
+  }
+
+  function ownExactAttendance(userId, input) {
+    const show = resolveExactShow(input);
+    if (show) return ownAttendance(userId, show.id);
+    const descriptor = exactShowDescriptor(input, 0);
+    if (descriptor?.claimLegacyAlias && descriptor.legacyKey) return ownAttendance(userId, descriptor.legacyKey);
+    return { show: null, attendance: null };
+  }
+
+  function writeExactAttendance({ descriptor, ...values }) {
+    const show = ensureExactShow(descriptor, values.at);
+    return writeAttendance({
+      ...values,
+      key: descriptor.legacyKey || show.id,
+      show,
+      artist: descriptor.artist,
+      artistKey: descriptor.artistKey,
+      venue: descriptor.venue,
+      venueKey: descriptor.venueKey,
+      city: descriptor.city,
+      date: descriptor.date,
+      tour: descriptor.tour,
+    });
   }
 
   function listForUser(userId) {
-    const canonicalRows = database.prepare(`SELECT a.*,s.canonical_key,
+    const canonicalRows = database.prepare(`SELECT a.*,s.canonical_key,s.tour_date_id,s.identity_source,
       (SELECT sa.alias_value FROM show_aliases sa
         WHERE sa.show_id=s.id AND sa.alias_type='legacy_concert_key'
         ORDER BY sa.alias_value LIMIT 1) AS fallback_legacy_key,
@@ -292,6 +436,7 @@ export function createShowAttendanceRepository(database) {
       WHERE a.user_id=? ORDER BY a.updated_at DESC,s.id`).all(userId);
     const byShow = new Map(canonicalRows.map((row) => [row.show_id, {
       showId: row.show_id,
+      tourDateId: row.tour_date_id || null,
       // Alias-first resolution is repeated at read time because a provider
       // alias added later can legitimately shadow a stored canonical value.
       // Never hand old clients a key that now identifies a different Show.
@@ -448,11 +593,14 @@ export function createShowAttendanceRepository(database) {
     checkInAvailable: (key, at) => showCheckInAvailable(resolveShow(key), at),
     crowdSnapshot,
     ensureShow,
+    ensureExactShow,
     hasAttendeeAccess: (userId, key) => isAttendeeState(ownAttendance(userId, key).attendance?.state),
     listForUser,
     ownAttendance,
+    ownExactAttendance,
     resolveShow,
     writeAttendance,
+    writeExactAttendance,
   });
 
 }

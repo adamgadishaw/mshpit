@@ -2435,11 +2435,27 @@ export function StoreProvider({ children }) {
           || goingMutationRevisionRef.current !== goingHydrationRevision
           || goingRef.attendance.accountId !== su.id) return;
         const canonicalAttendance = Array.isArray(attendanceRows) ? attendanceRows : [];
+        const exactGoingRows = canonicalAttendance.filter((entry) => entry?.state === "going"
+          && typeof entry?.tourDateId === "string" && entry.tourDateId.trim());
+        const exactDisplayKeys = new Set(exactGoingRows
+          .map((entry) => entry.key || concertKey(entry))
+          .filter(Boolean));
+        const hydratedGoingRows = rows.filter((entry) => goingTourDateId(entry)
+          || !exactDisplayKeys.has(entry?.key));
+        exactGoingRows.forEach((entry) => {
+          const identity = goingEntryIdentity(entry);
+          if (!hydratedGoingRows.some((candidate) => goingEntryIdentity(candidate) === identity)) {
+            hydratedGoingRows.push(entry);
+          }
+        });
         const nextAttendanceState = { accountId: su.id, rows: canonicalAttendance };
         goingRef.attendance = nextAttendanceState;
-        const next = { ...goingRef.current, [su.id]: rows };
+        const next = { ...goingRef.current, [su.id]: hydratedGoingRows };
         goingRef.current = next;
-        rows.forEach((entry) => goingConfirmedRef.current.set(goingIntentKey(su.id, entry.key), true));
+        hydratedGoingRows.forEach((entry) => goingConfirmedRef.current.set(
+          goingIntentKey(su.id, goingEntryIdentity(entry)),
+          true,
+        ));
         setGoing(next);
       })
       .catch(() => {});
@@ -3129,7 +3145,7 @@ export function StoreProvider({ children }) {
       });
   };
 
-  const addLog = (log) => {
+  const addLog = (log, { silent = false } = {}) => {
     const localId = log.id || "p_local_" + Date.now();
     // A plain status/update post ("post whatever") shares this path with a show
     // review; it just carries no artist/venue/rating and renders as a social card.
@@ -3154,8 +3170,13 @@ export function StoreProvider({ children }) {
       userId: session?.id,
     };
     feedMutationRevisionRef.current += 1;
-    setFeed((f) => [safe, ...f]);
-    if (session?.id) upsertProfileHistoryPost(session.id, session.id, safe);
+    // Ticket cards carry a server-owned event snapshot. Do not flash the client
+    // preview in Feed/Profile before the server confirms the exact Show identity;
+    // ordinary posts keep their existing optimistic publishing experience.
+    if (!safe.attendanceTicket) {
+      setFeed((f) => [safe, ...f]);
+      if (session?.id) upsertProfileHistoryPost(session.id, session.id, safe);
+    }
     // Slice 2 write-through: persist the post server-side, then adopt the server
     // id so likes/comments on it key correctly. Best-effort (offline keeps local).
     if (session) {
@@ -3181,6 +3202,7 @@ export function StoreProvider({ children }) {
         method: "POST",
         context: kind === "status" ? "Posting your update" : "Posting your concert review",
         body,
+        silent,
         })
         .then(({ id, post }) => {
           feedMutationRevisionRef.current += 1;
@@ -4037,12 +4059,30 @@ export function StoreProvider({ children }) {
   // such a log still gets a consistent key of its own.
   const concertKey = (log) => `${norm(log.artist)}|${norm(log.venue)}|${toIsoDate(log.date) || log.date || ""}`.toLowerCase();
 
+  const goingTourDateId = (log) => {
+    const value = typeof log?.tourDateId === "string" ? log.tourDateId.trim() : "";
+    return value || null;
+  };
+  const goingEntryIdentity = (log) => {
+    const tourDateId = goingTourDateId(log);
+    return tourDateId ? `tour-date:${tourDateId}` : `legacy-show:${log?.key || concertKey(log || {})}`;
+  };
+  const goingEntryMatches = (entry, key, tourDateId = null) => {
+    const exactId = typeof tourDateId === "string" && tourDateId.trim() ? tourDateId.trim() : null;
+    if (exactId) return goingTourDateId(entry) === exactId;
+    return !goingTourDateId(entry) && entry?.key === key;
+  };
+
   const commitGoingState = (accountId, entry, desired) => {
     const current = goingRef.current;
     const mine = current[accountId] || [];
+    const identity = goingEntryIdentity(entry);
+    const exactUpgrade = !!goingTourDateId(entry);
     const nextMine = desired
-      ? [...mine.filter((item) => item.key !== entry.key), entry]
-      : mine.filter((item) => item.key !== entry.key);
+      ? [...mine.filter((item) => goingEntryIdentity(item) !== identity
+        && !(exactUpgrade && !goingTourDateId(item) && item.key === entry.key)), entry]
+      : mine.filter((item) => goingEntryIdentity(item) !== identity
+        && !(exactUpgrade && !goingTourDateId(item) && item.key === entry.key));
     const next = { ...current, [accountId]: nextMine };
     goingRef.current = next;
     setGoing(next);
@@ -4051,8 +4091,10 @@ export function StoreProvider({ children }) {
     const actor = sessionRef.current;
     if (!actor || !log) return Promise.resolve({ ok: false });
     const key = concertKey(log);
+    const tourDateId = goingTourDateId(log);
     const entry = {
       key,
+      ...(tourDateId ? { tourDateId } : {}),
       artist: log.artist,
       artistKey: log.artistKey || null,
       venue: log.venue,
@@ -4061,8 +4103,9 @@ export function StoreProvider({ children }) {
       date: log.date,
       tour: log.tourName || log.tour || null,
     };
-    const scope = goingIntentKey(actor.id, key);
-    const currentGoing = (goingRef.current[actor.id] || []).some((item) => item.key === key);
+    const scope = goingIntentKey(actor.id, goingEntryIdentity(entry));
+    const currentGoing = (goingRef.current[actor.id] || [])
+      .some((item) => goingEntryMatches(item, key, tourDateId));
     if (!goingConfirmedRef.current.has(scope)) goingConfirmedRef.current.set(scope, currentGoing);
     goingMutationRevisionRef.current += 1;
     commitGoingState(actor.id, entry, desired);
@@ -4969,13 +5012,19 @@ export function StoreProvider({ children }) {
 
   // --- Planned attendance ---
   const goingFor = (userId) => going[userId] || [];
-  const isGoing = (key) => (going[session?.id] || []).some((g) => g.key === key);
-  const isGoingBusy = (key) => !!goingPending[goingIntentKey(session?.id, key)];
+  const isGoing = (key, tourDateId = null) => (going[session?.id] || [])
+    .some((entry) => goingEntryMatches(entry, key, tourDateId));
+  const isGoingBusy = (key, tourDateId = null) => {
+    const identity = tourDateId ? `tour-date:${tourDateId}` : `legacy-show:${key}`;
+    return !!goingPending[goingIntentKey(session?.id, identity)];
+  };
   const toggleGoing = (log) => {
     const actor = sessionRef.current;
     if (!actor) return Promise.resolve({ ok: false });
     const key = concertKey(log);
-    const desired = !(goingRef.current[actor.id] || []).some((entry) => entry.key === key);
+    const tourDateId = goingTourDateId(log);
+    const desired = !(goingRef.current[actor.id] || [])
+      .some((entry) => goingEntryMatches(entry, key, tourDateId));
     return setGoingIntent(log, desired, desired
       ? "Adding this show to your calendar"
       : "Removing this show from your calendar");

@@ -21,6 +21,7 @@ export function ensureShowSchema(database) {
       lifecycle     TEXT NOT NULL DEFAULT 'unknown'
         CHECK (lifecycle IN ('unknown','upcoming','happening','completed','postponed','cancelled')),
       tour          TEXT,
+      tour_date_id  TEXT,
       provider      TEXT,
       provider_event_id TEXT,
       identity_source TEXT NOT NULL DEFAULT 'legacy_concert_key',
@@ -193,6 +194,11 @@ export function ensureShowSchema(database) {
   if (!showColumns.has("public_eligible")) {
     database.exec("ALTER TABLE shows ADD COLUMN public_eligible INTEGER NOT NULL DEFAULT 0 CHECK (public_eligible IN (0,1))");
   }
+  if (!showColumns.has("tour_date_id")) {
+    database.exec("ALTER TABLE shows ADD COLUMN tour_date_id TEXT");
+  }
+  database.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_shows_tour_date_identity
+    ON shows(tour_date_id) WHERE tour_date_id IS NOT NULL`);
   const attendanceColumns = new Set(database.prepare("PRAGMA table_info(show_attendance)").all()
     .map(({ name }) => name));
   const additiveAttendanceColumns = [

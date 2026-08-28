@@ -66,7 +66,7 @@ export default function GoingTicketComposer({
       onDismiss?.();
       return;
     }
-    setError(result?.error?.userMessage || result?.error?.message || "The Going post was not published. Your Going status is still saved.");
+    setError("Couldn't share this ticket right now. Your Going status is still saved.");
   };
 
   return (

@@ -6,6 +6,7 @@ import {
   normalizeCrowdScope,
   normalizeShowAliasKey,
   normalizeStableShowId,
+  normalizeTourDateId,
 } from "./showIdentity.js";
 
 const TEN_MINUTES = 10 * 60 * 1000;
@@ -15,6 +16,7 @@ const noStore = (ctx) => ctx.setHeader?.("Cache-Control", "no-store");
 function publicShow(show, requestedKey) {
   return {
     id: show.id,
+    tourDateId: show.tourDateId || null,
     key: show.canonicalKey,
     requestedKey: normalizeShowAliasKey(requestedKey),
     aliases: show.aliases,
@@ -39,6 +41,7 @@ export function showAttendanceRoutes({
   requireSessionUser,
   requireUser,
   requireVerifiedUser,
+  resolveTourDateShow = null,
   userById,
 }) {
   if (!database?.prepare || typeof ApiError !== "function" || typeof assertSafeAuthoredFields !== "function"
@@ -61,6 +64,7 @@ export function showAttendanceRoutes({
         // Exact legacy projection: current clients treat this as a boolean list.
         going: attendance.filter(({ state, key }) => state === "going" && !!key).map((entry) => ({
           key: entry.key,
+          ...(entry.tourDateId ? { tourDateId: entry.tourDateId } : {}),
           artist: entry.artist,
           venue: entry.venue,
           city: entry.city,
@@ -68,6 +72,7 @@ export function showAttendanceRoutes({
         })),
         attendance: attendance.map((entry) => ({
           showId: entry.showId,
+          tourDateId: entry.tourDateId,
           key: entry.key,
           canonicalKey: entry.canonicalKey,
           artist: entry.artist,
@@ -92,7 +97,15 @@ export function showAttendanceRoutes({
       rateLimit(ctx, "going", 120, TEN_MINUTES);
       noStore(ctx);
       const key = normalizeShowAliasKey(clean(ctx.body?.key, { max: 300 }));
-      if (!key) throw new ApiError(400, "Missing key.", "VALIDATION_FAILED");
+      const hasTourDateId = Object.prototype.hasOwnProperty.call(ctx.body || {}, "tourDateId");
+      const tourDateId = hasTourDateId ? normalizeTourDateId(ctx.body?.tourDateId) : null;
+      if (hasTourDateId && !tourDateId) {
+        throw new ApiError(400, "Choose an exact event.", "VALIDATION_FAILED");
+      }
+      if (!key && !tourDateId) throw new ApiError(400, "Missing key.", "VALIDATION_FAILED");
+      if (tourDateId && typeof resolveTourDateShow !== "function") {
+        throw new ApiError(503, "Exact event attendance is temporarily unavailable.", "DATABASE_UNAVAILABLE");
+      }
       const stableShowId = normalizeStableShowId(key);
 
       const hasState = Object.prototype.hasOwnProperty.call(ctx.body || {}, "state");
@@ -128,8 +141,12 @@ export function showAttendanceRoutes({
         // share one IMMEDIATE transaction. A concurrent removal or transition
         // can never turn an authorized privacy retry into a new attendance or
         // let a stale Here snapshot bypass the live check-in window.
-        const existing = repository.ownAttendance(user.id, key);
-        if (stableShowId && !existing.show) {
+        const operationAt = now();
+        const exactDescriptor = tourDateId ? resolveTourDateShow(user, tourDateId, operationAt) : null;
+        const existing = exactDescriptor
+          ? repository.ownExactAttendance(user.id, exactDescriptor)
+          : repository.ownAttendance(user.id, key);
+        if (!exactDescriptor && stableShowId && !existing.show) {
           throw new ApiError(404, "That show is not available.", "NOT_FOUND");
         }
         const current = existing.attendance;
@@ -172,25 +189,31 @@ export function showAttendanceRoutes({
         let tour = null;
         let date = "";
         if (!removal && !privacyOnly) {
-          artist = clean(ctx.body?.artist, { max: limits.artist }) || "";
-          venue = clean(ctx.body?.venue, { max: limits.venue }) || "";
-          city = clean(ctx.body?.city, { max: limits.city }) || "";
-          artistKey = clean(ctx.body?.artistKey, { max: 180 }) || null;
-          venueKey = clean(ctx.body?.venueKey, { max: 200 }) || null;
-          tour = clean(ctx.body?.tour, { max: 120 }) || null;
-          assertSafeAuthoredFields({ artist, venue, city, tour: tour || "" });
-          date = cleanDate(ctx.body?.date) || "";
+          if (exactDescriptor) {
+            ({ artist, venue, city, artistKey, venueKey, tour, date } = exactDescriptor);
+          } else {
+            artist = clean(ctx.body?.artist, { max: limits.artist }) || "";
+            venue = clean(ctx.body?.venue, { max: limits.venue }) || "";
+            city = clean(ctx.body?.city, { max: limits.city }) || "";
+            artistKey = clean(ctx.body?.artistKey, { max: 180 }) || null;
+            venueKey = clean(ctx.body?.venueKey, { max: 200 }) || null;
+            tour = clean(ctx.body?.tour, { max: 120 }) || null;
+            assertSafeAuthoredFields({ artist, venue, city, tour: tour || "" });
+            date = cleanDate(ctx.body?.date) || "";
+          }
         }
 
         const writeAt = now();
-        if (freshLiveTransition && !repository.checkInAvailable(key, writeAt)) {
+        const exactShow = freshLiveTransition && exactDescriptor
+          ? repository.ensureExactShow(exactDescriptor, writeAt) : null;
+        if (freshLiveTransition && !repository.checkInAvailable(exactShow?.id || key, writeAt)) {
           throw new ApiError(
             409,
             "Live check-in is not available for this show yet. You can still mark Going or Went.",
             "CHECK_IN_UNAVAILABLE",
           );
         }
-        return repository.writeAttendance({
+        const values = {
           userId: user.id,
           key,
           state,
@@ -203,11 +226,15 @@ export function showAttendanceRoutes({
           date,
           tour,
           at: writeAt,
-        });
+        };
+        return exactDescriptor
+          ? repository.writeExactAttendance({ ...values, descriptor: exactDescriptor })
+          : repository.writeAttendance(values);
       });
       if (!result?.show) throw new ApiError(404, "That show is not available.", "NOT_FOUND");
       const attendance = result.attendance ? {
         showId: result.show.id,
+        tourDateId: result.show.tourDateId || null,
         state: result.attendance.state,
         visibility: result.attendance.visibility,
         verified: result.attendance.verified,

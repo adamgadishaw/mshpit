@@ -99,6 +99,7 @@ test("typed attendance writes use only a stable Show ID and preserve Here's serv
       venue: "The Room",
       city: "Toronto",
       localDate: "2026-08-27",
+      tourDateId: "tm_exact_show",
     },
   }, {
     apiCall: async (path, options) => {
@@ -123,6 +124,7 @@ test("typed attendance writes use only a stable Show ID and preserve Here's serv
     city: "Toronto",
     date: "2026-08-27",
     tour: undefined,
+    tourDateId: "tm_exact_show",
   });
   assert.equal(Object.hasOwn(calls[0].options.body, "visibility"), false,
     "fresh Here lets the server choose Private instead of exposing live attendance");

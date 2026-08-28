@@ -63,7 +63,7 @@ import { artistDiscographyRoutes } from "./features/artistDiscography/artistDisc
 import { showAttendanceRoutes } from "./features/shows/showAttendanceRoutes.js";
 import { showRoutes } from "./features/shows/showRoutes.js";
 import { createShowAttendanceRepository } from "./features/shows/showAttendanceRepository.js";
-import { normalizeShowAliasKey } from "./features/shows/showIdentity.js";
+import { normalizeShowAliasKey, normalizeTourDateId } from "./features/shows/showIdentity.js";
 import {
   enqueueAllOwnedMedia,
   enqueueOwnedMediaKeys,
@@ -1348,6 +1348,9 @@ const providerGoingAttendance = db.prepare(`SELECT 1 FROM show_attendance a
   JOIN shows s ON s.id=a.show_id
   WHERE a.user_id=? AND a.state='going'
     AND lower(s.provider)=lower(?) AND s.provider_event_id=? LIMIT 1`);
+const exactTourDateGoingAttendance = db.prepare(`SELECT 1 FROM show_attendance a
+  JOIN shows s ON s.id=a.show_id
+  WHERE a.user_id=? AND a.state='going' AND s.tour_date_id=? LIMIT 1`);
 const legacyGoingAttendance = db.prepare("SELECT 1 FROM going WHERE user_id=? AND concert_key=? COLLATE NOCASE LIMIT 1");
 const canonicalLegacyGoingAttendance = db.prepare(`SELECT 1 FROM show_attendance a
   JOIN shows s ON s.id=a.show_id
@@ -1376,9 +1379,7 @@ function ticketSecretKey(value, depth = 0) {
 }
 
 function exactTicketTourDateId(value) {
-  if (typeof value !== "string") return null;
-  const id = value.normalize("NFKC").trim();
-  return /^[A-Za-z0-9._:-]{1,200}$/u.test(id) ? id : null;
+  return normalizeTourDateId(value);
 }
 
 function ticketSeatField(value, max, label) {
@@ -1552,6 +1553,65 @@ function visibleTicketTourDate(user, tourDateId, at = now()) {
   return row;
 }
 
+function tourDateShowLifecycle(row, at) {
+  const status = String(row?.event_status || "").trim().toLowerCase();
+  if (status === "cancelled" || status === "canceled") return "cancelled";
+  if (status === "postponed") return "postponed";
+  const startAt = Date.parse(row?.start_date_time || "");
+  if (Number.isFinite(startAt)) {
+    if (at < startAt) return "upcoming";
+    return at <= startAt + 12 * 60 * 60 * 1000 ? "happening" : "completed";
+  }
+  const today = liveEventQueryFloorDate(at);
+  if (row?.date < today) return "completed";
+  if (row?.date > today) return "upcoming";
+  return "unknown";
+}
+
+function exactAttendanceTourDateShow(user, tourDateId, at = now()) {
+  const id = normalizeTourDateId(tourDateId);
+  const row = id ? visibleTourDateRows(user, { id, limit: 2, at })
+    .find((entry) => entry.id === id) : null;
+  if (!row) throw new ApiError(404, "That event is not available.", "NOT_FOUND");
+  if (isCurrentOrUpcomingLiveEvent({
+    date: row.date,
+    eventEndDate: row.event_end_date,
+    eventTimezone: row.event_timezone,
+  }, at)) visibleTicketTourDate(user, id, at);
+
+  const providerFields = publicTourDateProviderFields(row);
+  const artist = ticketText(row.artist, LIMITS.artist);
+  const venue = ticketText(publicTourDateVenueName(row), LIMITS.venue) || "Venue TBA";
+  const date = cleanDate(row.date);
+  if (!artist || !date) throw new ApiError(404, "That event is not available.", "NOT_FOUND");
+  const legacyKey = normalizeShowAliasKey(`${artist}|${venue}|${date}`);
+  const matches = legacyKey ? possibleLegacyTicketDates.all(date, artist, venue)
+    .filter((entry) => normalizeShowAliasKey(
+      `${entry.artist}|${entry.venue || entry.place || "Venue TBA"}|${entry.date}`,
+    ) === legacyKey) : [];
+  const startAt = Date.parse(row.start_date_time || "");
+  const provider = ticketText(row.source, 40)?.toLowerCase() || null;
+  return {
+    tourDateId: id,
+    artist,
+    artistKey: ticketText(row.artist_key, 180),
+    venue,
+    venueKey: row.venue ? venueBinding(row.venue) || null : null,
+    city: ticketText(row.venue_city || String(row.place || "").split(",")[0], LIMITS.city) || "",
+    date,
+    localDate: date,
+    startAt: Number.isFinite(startAt) ? startAt : null,
+    startLocalTime: providerFields.startLocalTime,
+    timezone: liveEventTimeZone(row),
+    lifecycle: tourDateShowLifecycle(row, at),
+    tour: providerFields.tourName,
+    provider: providerFields.providerEventId ? provider : null,
+    providerEventId: provider && providerFields.providerEventId ? providerFields.providerEventId : null,
+    legacyKey,
+    claimLegacyAlias: matches.length === 1 && matches[0].id === id,
+  };
+}
+
 function legacyConcertKeyForTicket(ticket) {
   return normalizeShowAliasKey(`${ticket.artist}|${ticket.venue}|${ticket.date}`);
 }
@@ -1563,6 +1623,7 @@ function legacyAliasUniquelyIdentifiesTicket(ticket, legacyKey) {
 }
 
 function hasGoingAttendanceForTicket(userId, ticket) {
+  if (exactTourDateGoingAttendance.get(userId, ticket.tourDateId)) return true;
   if (ticket.provider && ticket.providerEventId
     && providerGoingAttendance.get(userId, ticket.provider, ticket.providerEventId)) return true;
   const legacyKey = legacyConcertKeyForTicket(ticket);
@@ -3004,6 +3065,7 @@ export const routes = {
     requireSessionUser,
     requireUser,
     requireVerifiedUser,
+    resolveTourDateShow: exactAttendanceTourDateShow,
     userById: q.userById,
   }),
   ...showRoutes({

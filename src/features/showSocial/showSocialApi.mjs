@@ -104,6 +104,7 @@ export async function writeShowAttendance(options = {}, services = {}) {
     city: optionalText(show?.city),
     date: optionalText(show?.localDate || show?.date),
     tour: optionalText(show?.tour),
+    tourDateId: optionalText(show?.tourDateId),
   };
   const payload = await requiredApiCall(services)("/api/going", {
     method: "POST",

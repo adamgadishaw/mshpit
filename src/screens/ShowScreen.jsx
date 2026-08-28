@@ -105,8 +105,8 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
   const photos = venuePhotos(venue);
   const photoState = venuePhotoState(venue);
   const key = legacyKey;
-  const going = isGoing(key);
-  const goingBusy = isGoingBusy(key);
+  const going = isGoing(key, tourDateId);
+  const goingBusy = isGoingBusy(key, tourDateId);
   const localLoungeCount = loungeFor(key).length;
   const archiveShowKey = log.archiveShowKey || null;
   const archiveCover = archiveCoverMedia(log.cover);
@@ -327,7 +327,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
       return;
     }
     const wasGoing = going;
-    const result = await toggleGoing(norm);
+    const result = await toggleGoing({ ...norm, tourDateId });
     if (!result?.ok) return;
     if (!result.going) {
       setGoingTicketPrompt(null);
@@ -477,7 +477,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
             lifecycle={lifecycleView.lifecycle}
             onRequireAuth={onRequireAuth}
             onSaved={handleAttendanceSaved}
-            show={trustedShow}
+            show={{ ...trustedShow, tourDateId }}
           />
         ) : null}
 
@@ -505,7 +505,7 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
           <GoingTicketComposer
             event={ticketEvent}
             onDismiss={() => setGoingTicketPrompt(null)}
-            onPost={addLog}
+            onPost={(post) => addLog(post, { silent: true })}
             tourDateId={tourDateId}
             user={session}
           />
