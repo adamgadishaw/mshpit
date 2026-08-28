@@ -36,6 +36,27 @@ test("Discover leads with upcoming events, then Near you, then Venues, while ret
   assert.doesNotMatch(source, /const worldwideEvents = typeof upcomingEvents === "function"/);
 });
 
+test("Discover keeps scene controls inside their card and makes genre exploration useful without a tap", async () => {
+  const screen = await read("../screens/DiscoverScreen.jsx");
+  const genres = await read("../components/discover/DiscoverGenres.jsx");
+  const donut = await read("../components/SoundDonut.jsx");
+  assert.match(screen, /visibleDiscoverCountries/);
+  assert.match(screen, /style=\{styles\.regionGrid\}/);
+  assert.doesNotMatch(screen, /contentContainerStyle=\{styles\.regionRail\}/);
+  assert.match(screen, /controlsCard: \{ width: "100%", minWidth: 0, overflow: "hidden"/);
+  assert.match(screen, /selectDefaultDiscoverGenre/);
+  assert.match(screen, /genreResult\.genre === selectedGenre && genreResult\.region === region/);
+  assert.match(screen, /fallbackRows=\{overview\.chart\.rows\}/);
+  assert.match(screen, /attendanceRows=\{myAttendance\}/);
+  assert.match(genres, /<SoundDonut/);
+  assert.match(genres, /Recently attended/);
+  assert.match(genres, /The map is tuning up/);
+  assert.match(genres, /Popular right now/);
+  assert.doesNotMatch(donut, /colors\.blue/);
+  assert.doesNotMatch(donut, /Animated/);
+  assert.match(donut, /importantForAccessibility="no-hide-descendants"/);
+});
+
 test("logged-out landing labels events worldwide and explains lounges without activity-derived rows", async () => {
   const source = await read("../screens/LandingScreen.jsx");
   assert.match(source, />WORLDWIDE</);

@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  buildDiscoverArtistSpotlight,
   cancelDiscoverRequest,
   compactDiscoverNumber,
+  discoverGenreDistribution,
   discoverSectionState,
   discoverPlaybackTrack,
   filterDiscoverRows,
@@ -13,7 +15,9 @@ import {
   normalizeDiscoverOverview,
   normalizeFriendsListening,
   orderDiscoverCountries,
+  selectDefaultDiscoverGenre,
   selectDiscoverPhotos,
+  visibleDiscoverCountries,
 } from "./discoverView.mjs";
 
 test("overview normalization accepts the combined payload and rejects malformed rows", () => {
@@ -157,6 +161,81 @@ test("a small home scene remains selectable when it is absent from the API list"
     { country: "United States", count: 50 },
   ]);
   assert.deepEqual(orderDiscoverCountries([{ country: "canada", count: 10 }, { country: "Canada", count: 9 }], "Canada").map((row) => row.country), ["Worldwide", "canada"]);
+});
+
+test("compact scene choices never expose an arbitrary partial country and keep the active scene visible", () => {
+  const countries = [
+    { country: "Worldwide", count: null },
+    { country: "Canada", count: 461 },
+    { country: "United States", count: 5_200 },
+    { country: "United Kingdom", count: 900 },
+    { country: "Ireland", count: 120 },
+  ];
+  assert.deepEqual(
+    visibleDiscoverCountries(countries, "Ireland", { compact: true }).map((row) => row.country),
+    ["Worldwide", "Canada", "Ireland"],
+  );
+  assert.equal(visibleDiscoverCountries(countries, "Canada", { compact: true, expanded: true }).length, 5);
+  assert.equal(visibleDiscoverCountries(countries, "Canada", { compact: false }).length, 5);
+});
+
+test("genre exploration defaults to the first verified genre and preserves a valid choice", () => {
+  const genres = [{ genre: "Hip-Hop" }, { genre: "Other" }, { genre: "R&B" }];
+  assert.equal(selectDefaultDiscoverGenre(genres, null), "Hip-Hop");
+  assert.equal(selectDefaultDiscoverGenre(genres, "R&B"), "R&B");
+  assert.equal(selectDefaultDiscoverGenre(genres, "Metal"), "Hip-Hop");
+  assert.equal(selectDefaultDiscoverGenre([{ genre: "Other" }], null), null);
+});
+
+test("genre distribution keeps the donut honest with an aggregated remainder", () => {
+  const distribution = discoverGenreDistribution([
+    { genre: "Pop", count: 40 },
+    { genre: "Rock", count: 30 },
+    { genre: "Jazz", count: 10 },
+    { genre: "Other", count: 20 },
+  ], 120, { limit: 2 });
+  assert.deepEqual(distribution.genres.map((item) => item.genre), ["Pop", "Rock"]);
+  assert.equal(distribution.verifiedTotal, 120);
+  assert.equal(distribution.remainderCount, 50);
+});
+
+test("genre artist spotlight prioritizes recent attendance, deduplicates, and falls back to popularity", () => {
+  const genreRows = [
+    { name: "SZA", genre: "R&B" },
+    { name: "Frank Ocean", genre: "R&B" },
+    { name: "H.E.R.", genre: "R&B" },
+  ];
+  const attendanceRows = [
+    { artist: "SZA", state: "going", date: "2026-09-02" },
+    { artist: "Frank Ocean", state: "went", date: "2026-08-01" },
+    { artist: "Frank Ocean", state: "went", date: "2025-06-01" },
+    { artist: "An unrelated artist", state: "went", date: "2026-08-20" },
+  ];
+  const spotlight = buildDiscoverArtistSpotlight({ genreRows, attendanceRows, selectedGenre: "R&B", limit: 3 });
+  assert.deepEqual(spotlight.rows.map((row) => row.name), ["Frank Ocean", "SZA", "H.E.R."]);
+  assert.equal(spotlight.rows[0].discoveryReason, "Recently attended");
+  assert.equal(spotlight.recentCount, 1);
+
+  const fallback = buildDiscoverArtistSpotlight({
+    fallbackRows: [{ name: "SZA" }, { name: "Doechii" }],
+    attendanceRows: [{ artist: "IDLES", state: "went", date: "2026-07-01" }],
+    limit: 3,
+  });
+  assert.deepEqual(fallback.rows.map((row) => row.name), ["IDLES", "SZA", "Doechii"]);
+  assert.equal(fallback.source, "recent");
+});
+
+test("genre artist spotlight preserves global artist names outside Latin script", () => {
+  const spotlight = buildDiscoverArtistSpotlight({
+    attendanceRows: [
+      { artist: "宇多田ヒカル", state: "went", date: "2026-08-20" },
+      { artist: "방탄소년단", state: "went", date: "2026-08-19" },
+    ],
+    fallbackRows: [{ name: "宇多田ヒカル" }],
+    limit: 4,
+  });
+  assert.deepEqual(spotlight.rows.map((row) => row.name), ["宇多田ヒカル", "방탄소년단"]);
+  assert.equal(spotlight.recentCount, 2);
 });
 
 test("chart search spans artist, genre, country, and lead track", () => {

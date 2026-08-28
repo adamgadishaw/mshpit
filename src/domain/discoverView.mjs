@@ -188,6 +188,106 @@ export function orderDiscoverCountries(countries, homeCountry, limit = 12) {
   }).slice(0, Math.max(1, limit));
 }
 
+export function visibleDiscoverCountries(countries, selectedCountry, { compact = false, expanded = false, limit = 3 } = {}) {
+  const source = Array.isArray(countries) ? countries : [];
+  if (!compact || expanded || source.length <= limit) return source;
+  const maximum = Math.max(1, Math.trunc(Number(limit) || 3));
+  const selected = text(selectedCountry).toLocaleLowerCase();
+  const visible = source.slice(0, maximum);
+  const selectedRow = source.find((row) => text(row?.country).toLocaleLowerCase() === selected);
+  if (selectedRow && !visible.some((row) => text(row?.country).toLocaleLowerCase() === selected)) {
+    visible[visible.length - 1] = selectedRow;
+  }
+  return visible;
+}
+
+export function selectDefaultDiscoverGenre(genres, selectedGenre) {
+  const selectable = (Array.isArray(genres) ? genres : [])
+    .filter((item) => text(item?.genre) && text(item.genre) !== "Other")
+    .slice(0, 7);
+  const selected = text(selectedGenre);
+  if (selected && selectable.some((item) => item.genre === selected)) return selected;
+  return selectable[0]?.genre || null;
+}
+
+export function discoverGenreDistribution(genres, total, { limit = 7 } = {}) {
+  const maximum = boundedLimit(limit, 7, 12);
+  const normalized = (Array.isArray(genres) ? genres : [])
+    .filter((item) => text(item?.genre) && finiteCount(item?.count) > 0);
+  const visible = normalized.filter((item) => text(item.genre) !== "Other").slice(0, maximum);
+  const mappedTotal = normalized.reduce((sum, item) => sum + finiteCount(item.count), 0);
+  const verifiedTotal = Math.max(finiteCount(total), mappedTotal);
+  const displayedTotal = visible.reduce((sum, item) => sum + finiteCount(item.count), 0);
+  return {
+    genres: visible,
+    verifiedTotal,
+    remainderCount: Math.max(0, verifiedTotal - displayedTotal),
+  };
+}
+
+const artistNameIdentity = (value) => text(value)
+  .normalize("NFKD")
+  .replace(/[\u0300-\u036f]/g, "")
+  .toLocaleLowerCase()
+  .replace(/[^\p{L}\p{N}]+/gu, "")
+  .slice(0, 160);
+
+const artistIdentitySet = (row) => new Set([
+  text(row?.artistKey),
+  text(row?.key),
+  text(row?.publicSlug),
+  text(row?.public_slug),
+  artistNameIdentity(row?.name || row?.artist),
+].filter(Boolean).map((value) => value.toLocaleLowerCase()));
+
+const sameArtist = (left, right) => {
+  const leftIds = artistIdentitySet(left);
+  return [...artistIdentitySet(right)].some((identity) => leftIds.has(identity));
+};
+
+export function buildDiscoverArtistSpotlight({
+  genreRows = [],
+  fallbackRows = [],
+  attendanceRows = [],
+  selectedGenre = null,
+  limit = 6,
+} = {}) {
+  const maximum = boundedLimit(limit, 6, 12);
+  const baseRows = normalizeDiscoverArtistRows(selectedGenre ? genreRows : fallbackRows, 60);
+  const recentAttendance = (Array.isArray(attendanceRows) ? attendanceRows : [])
+    .filter((row) => (row?.state === "here" || row?.state === "went") && text(row?.artist))
+    .sort((left, right) => text(right?.date).localeCompare(text(left?.date)));
+  const selected = [];
+  const seen = new Set();
+  let recentCount = 0;
+
+  const add = (row, discoveryReason) => {
+    const name = text(row?.name || row?.artist).slice(0, 120);
+    const identity = artistNameIdentity(name);
+    if (!name || !identity || seen.has(identity) || selected.length >= maximum) return;
+    seen.add(identity);
+    selected.push({ ...row, name, discoveryReason });
+    if (discoveryReason === "Recently attended") recentCount += 1;
+  };
+
+  for (const attendance of recentAttendance) {
+    if (selectedGenre) {
+      const matchingRow = baseRows.find((row) => sameArtist(row, attendance));
+      if (matchingRow) add(matchingRow, "Recently attended");
+    } else {
+      add({
+        name: attendance.artist,
+        artistKey: attendance.artistKey || null,
+        publicSlug: attendance.artistPublicSlug || null,
+        photo: attendance.artistPhoto || null,
+      }, "Recently attended");
+    }
+  }
+
+  for (const row of baseRows) add(row, selectedGenre ? `Popular in ${selectedGenre}` : "Popular now");
+  return { rows: selected, recentCount, source: recentCount ? "recent" : "popular" };
+}
+
 export function filterDiscoverRows(rows, query) {
   const source = Array.isArray(rows) ? rows : [];
   const needle = text(query).toLocaleLowerCase();

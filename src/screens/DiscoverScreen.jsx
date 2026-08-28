@@ -31,7 +31,9 @@ import {
   normalizeDiscoverArtistRows,
   normalizeDiscoverOverview,
   orderDiscoverCountries,
+  selectDefaultDiscoverGenre,
   selectDiscoverPhotos,
+  visibleDiscoverCountries,
 } from "../domain/discoverView.mjs";
 
 const EMPTY_OVERVIEW = normalizeDiscoverOverview({});
@@ -66,6 +68,7 @@ export default function DiscoverScreen({
     discoverySidebar,
     discoverySidebarStatus,
     tourDates,
+    myAttendance = [],
   } = useStore();
   const { width } = useWindowDimensions();
   const compact = width < 620;
@@ -82,6 +85,7 @@ export default function DiscoverScreen({
   const [overview, setOverview] = useState(EMPTY_OVERVIEW);
   const [overviewStatus, setOverviewStatus] = useState("idle");
   const [selectedGenre, setSelectedGenre] = useState(null);
+  const [sceneExpanded, setSceneExpanded] = useState(false);
   const [liveScopeChoice, setLiveScopeChoice] = useState(() => ({
     accountId,
     value: homeCity ? LIVE_EVENT_SCOPE.LOCAL : LIVE_EVENT_SCOPE.WORLDWIDE,
@@ -90,7 +94,10 @@ export default function DiscoverScreen({
   const liveScope = liveScopeChoice.accountId === accountId
     ? liveScopeChoice.value
     : homeCity ? LIVE_EVENT_SCOPE.LOCAL : LIVE_EVENT_SCOPE.WORLDWIDE;
-  const [genreRows, setGenreRows] = useState([]);
+  const [genreResult, setGenreResult] = useState({ genre: null, region: null, rows: [] });
+  const genreRows = genreResult.genre === selectedGenre && genreResult.region === region
+    ? genreResult.rows
+    : [];
   const [genreStatus, setGenreStatus] = useState("idle");
   const overviewLoaderRef = useRef(loadDiscoverOverview);
   overviewLoaderRef.current = loadDiscoverOverview;
@@ -170,19 +177,19 @@ export default function DiscoverScreen({
   const requestGenre = useCallback(({ force = false } = {}) => {
     genreRequestRef.current.controller?.abort();
     if (!selectedGenre) {
-      setGenreRows([]);
+      setGenreResult({ genre: null, region: null, rows: [] });
       setGenreStatus("idle");
       return null;
     }
     const controller = new AbortController();
     const sequence = genreRequestRef.current.sequence + 1;
     genreRequestRef.current = { sequence, controller };
-    setGenreRows([]);
+    setGenreResult({ genre: selectedGenre, region, rows: [] });
     setGenreStatus("loading");
     genreLoaderRef.current({ genre: selectedGenre, country: region, limit: 12, signal: controller.signal, force })
       .then((result) => {
         if (controller.signal.aborted || genreRequestRef.current.sequence !== sequence) return;
-        setGenreRows(normalizeDiscoverArtistRows(result?.rows, 12));
+        setGenreResult({ genre: selectedGenre, region, rows: normalizeDiscoverArtistRows(result?.rows, 12) });
         setGenreStatus("ready");
       })
       .catch(() => {
@@ -225,11 +232,13 @@ export default function DiscoverScreen({
   }, [accountId, homeCity]);
 
   useEffect(() => {
-    if (selectedGenre && !overview.genres.some((item) => item.genre === selectedGenre && item.genre !== "Other")) setSelectedGenre(null);
+    const nextGenre = selectDefaultDiscoverGenre(overview.genres, selectedGenre);
+    if (nextGenre !== selectedGenre) setSelectedGenre(nextGenre);
   }, [overview.genres, selectedGenre]);
 
   const pickRegion = (country) => {
     setQuery("");
+    setSceneExpanded(false);
     setRegionChoice({ accountId, value: country, touched: true });
   };
   const retryGenre = useCallback(() => requestGenre({ force: true }), [requestGenre]);
@@ -238,6 +247,8 @@ export default function DiscoverScreen({
   const showOverviewContent = hasDiscoverOverviewContent(overview)
     && (overviewStatus === "ready" || overviewStatus === "refreshing" || overviewStatus === "error");
   const countries = overview.countries.length ? overview.countries : orderDiscoverCountries([], homeCountry);
+  const sceneCountries = visibleDiscoverCountries(countries, region, { compact, expanded: sceneExpanded, limit: 3 });
+  const hiddenSceneCount = Math.max(0, countries.length - sceneCountries.length);
   const metrics = [
     { label: "members", value: overview.memberTotal ?? memberCount ?? localStats.members, tint: colors.gold },
     { label: "artists", value: overview.catalogTotal ?? localStats.artists, tint: colors.amber },
@@ -273,24 +284,42 @@ export default function DiscoverScreen({
           </View>
         </View>
         <Text style={styles.controlLabel}>SCENE</Text>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.regionRail} accessibilityLabel="Choose a Discover region">
-          {countries.map((country) => {
+        <View style={styles.regionGrid} accessibilityRole="radiogroup" accessibilityLabel="Choose a Discover region">
+          {sceneCountries.map((country) => {
             const selected = country.country.toLocaleLowerCase() === region.toLocaleLowerCase();
             return (
               <Pressable
                 key={country.country}
-                style={[styles.regionChip, selected && styles.regionChipSelected]}
+                style={[styles.regionChip, compact && styles.regionChipCompact, veryCompact && styles.regionChipVeryCompact, selected && styles.regionChipSelected]}
                 onPress={() => pickRegion(country.country)}
-                accessibilityRole="button"
+                accessibilityRole="radio"
                 accessibilityState={{ selected }}
-                accessibilityLabel={`${country.country}${country.count != null ? `, ${country.count} artists` : ""}`}
+                accessibilityLabel={country.country + (country.count != null ? ", " + country.count + " artists" : "")}
               >
-                <Text style={[styles.regionText, selected && styles.regionTextSelected]}>{country.country}</Text>
-                {country.count != null && <Text style={[styles.regionCount, selected && styles.regionCountSelected]}>{compactDiscoverNumber(country.count)}</Text>}
+                <View style={styles.regionChipCopy}>
+                  <Text style={[styles.regionText, selected && styles.regionTextSelected]} numberOfLines={2}>{country.country}</Text>
+                  {country.count != null && <Text style={[styles.regionCount, selected && styles.regionCountSelected]}>{compactDiscoverNumber(country.count)} artists</Text>}
+                </View>
+                {selected && <Icon name="check" size={14} color={colors.amber} />}
               </Pressable>
             );
           })}
-        </ScrollView>
+          {compact && countries.length > 3 && (
+            <Pressable
+              style={[styles.regionChip, styles.moreScenesChip, styles.regionChipCompact, veryCompact && styles.regionChipVeryCompact]}
+              onPress={() => setSceneExpanded((value) => !value)}
+              accessibilityRole="button"
+              accessibilityState={{ expanded: sceneExpanded }}
+              accessibilityLabel={sceneExpanded ? "Show fewer scenes" : "Show " + hiddenSceneCount + " more scenes"}
+            >
+              <View style={styles.regionChipCopy}>
+                <Text style={styles.regionText}>{sceneExpanded ? "Show fewer" : "More scenes"}</Text>
+                <Text style={styles.regionCount}>{sceneExpanded ? "Keep it focused" : "+" + hiddenSceneCount + " regions"}</Text>
+              </View>
+              <Icon name={sceneExpanded ? "x" : "chevron-down"} size={14} color={colors.textDim} />
+            </Pressable>
+          )}
+        </View>
       </View>
 
       <View style={styles.upcomingSection}>
@@ -449,7 +478,20 @@ export default function DiscoverScreen({
 
       <DiscoverPhotos photos={photos} photoUris={photoUris} compact={compact} width={width} onOpenPhotos={openPhotos} />
       {showOverviewContent ? (
-        <DiscoverGenres genres={overview.genres} selected={selectedGenre} onSelect={setSelectedGenre} total={overview.genreTotal} rows={genreRows} status={genreStatus} region={region} onOpenArtist={openArtist} onRetry={retryGenre} />
+        <DiscoverGenres
+          genres={overview.genres}
+          selected={selectedGenre}
+          onSelect={setSelectedGenre}
+          total={overview.genreTotal}
+          rows={genreRows}
+          fallbackRows={overview.chart.rows}
+          attendanceRows={myAttendance}
+          status={genreStatus}
+          region={region}
+          compact={compact}
+          onOpenArtist={openArtist}
+          onRetry={retryGenre}
+        />
       ) : null}
     </ScrollView>
   );
@@ -467,7 +509,7 @@ const styles = StyleSheet.create({
   tagline: { color: colors.textDim, fontFamily: font, fontSize: 15, lineHeight: 22, paddingTop: 6, maxWidth: 560 },
   scenePill: { maxWidth: 220, minHeight: 38, flexDirection: "row", alignItems: "center", gap: 7, paddingHorizontal: 12, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.bgElev },
   scenePillText: { color: colors.text, fontFamily: font, fontSize: 12.5, fontWeight: "800", flexShrink: 1 },
-  controlsCard: { backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.lineSoft, borderRadius: radius.md, borderCurve: "continuous", padding: 14, gap: 10 },
+  controlsCard: { width: "100%", minWidth: 0, overflow: "hidden", backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.lineSoft, borderRadius: radius.md, borderCurve: "continuous", padding: 14, gap: 10 },
   controlTop: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", gap: 16 },
   controlTopCompact: { alignItems: "stretch", flexDirection: "column", gap: 10 },
   controlCopy: { flex: 1 },
@@ -478,12 +520,16 @@ const styles = StyleSheet.create({
   sourceOptionSelected: { backgroundColor: colors.amberStrong },
   sourceOptionText: { color: colors.textDim, fontFamily: font, fontSize: 12.5, fontWeight: "800" },
   sourceOptionTextSelected: { color: "#1A1206" },
-  regionRail: { gap: 8, paddingRight: 10 },
-  regionChip: { minHeight: 44, flexDirection: "row", alignItems: "center", gap: 7, paddingHorizontal: 13, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
-  regionChipSelected: { borderColor: colors.amber, backgroundColor: `${colors.amber}16` },
-  regionText: { color: colors.textDim, fontFamily: font, fontSize: 12.5, fontWeight: "700" },
+  regionGrid: { width: "100%", minWidth: 0, flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  regionChip: { flexBasis: 180, flexGrow: 1, minWidth: 0, minHeight: 58, flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 13, paddingVertical: 8, borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: colors.line, backgroundColor: colors.surface },
+  regionChipCompact: { flexBasis: "47%" },
+  regionChipVeryCompact: { flexBasis: "100%" },
+  regionChipCopy: { flex: 1, minWidth: 0, justifyContent: "center" },
+  moreScenesChip: { borderStyle: "dashed", backgroundColor: colors.bgElev },
+  regionChipSelected: { borderColor: colors.amber, backgroundColor: colors.amber + "16" },
+  regionText: { color: colors.textDim, fontFamily: font, fontSize: 12.5, lineHeight: 16, fontWeight: "800" },
   regionTextSelected: { color: colors.amber, fontWeight: "900" },
-  regionCount: { color: colors.textFaint, fontFamily: mono, fontSize: 10, fontWeight: "800" },
+  regionCount: { color: colors.textFaint, fontFamily: mono, fontSize: 8.5, lineHeight: 12, fontWeight: "800", paddingTop: 2, textTransform: "uppercase" },
   regionCountSelected: { color: colors.amber },
   venueSection: { gap: 10 },
   upcomingSection: { gap: 10 },

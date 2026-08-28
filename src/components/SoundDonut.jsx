@@ -1,111 +1,98 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react";
-import { Animated, Easing, Platform, Text, View, StyleSheet } from "react-native";
+import { memo, useMemo } from "react";
+import { StyleSheet, Text, View } from "react-native";
 import Svg, { Circle, Path } from "react-native-svg";
-import { colors, mono } from "../theme";
+import { colors, font, mono } from "../theme";
 
-const web = Platform.OS === "web";
-export const DONUT_PALETTE = [colors.amber, colors.blue, colors.magenta, colors.gold, colors.good, "#8f7ee0", "#5bc8c8"];
+export const DONUT_PALETTE = [colors.amber, colors.cool, colors.magenta, colors.gold, colors.good, "#8F7EE0", "#5BC8C8", "#E8794B"];
 
-const arcPath = (cx, cy, rad, start, end) => {
+const arcPath = (cx, cy, radius, start, end) => {
   const large = end - start > Math.PI ? 1 : 0;
-  const x0 = cx + rad * Math.cos(start), y0 = cy + rad * Math.sin(start);
-  const x1 = cx + rad * Math.cos(end), y1 = cy + rad * Math.sin(end);
-  return `M${x0.toFixed(2)} ${y0.toFixed(2)} A${rad} ${rad} 0 ${large} 1 ${x1.toFixed(2)} ${y1.toFixed(2)}`;
+  const x0 = cx + radius * Math.cos(start);
+  const y0 = cy + radius * Math.sin(start);
+  const x1 = cx + radius * Math.cos(end);
+  const y1 = cy + radius * Math.sin(end);
+  return `M${x0.toFixed(2)} ${y0.toFixed(2)} A${radius} ${radius} 0 ${large} 1 ${x1.toFixed(2)} ${y1.toFixed(2)}`;
 };
 
-// The springy candy-segment donut from Discover, made reusable. Feed it counts;
-// it draws rounded-cap arcs with a soft gap, pops in with a bouncy scale, and
-// tapping a slice highlights it (glow + center label) like the Discover pie.
-export default memo(function SoundDonut({ data = [], size = 180, centerTop, centerSub }) {
-  const cx = size / 2, cy = size / 2;
-  // Reserve enough margin that an ACTIVE slice — its widened stroke plus the
-  // soft glow — still fits inside the size×size SVG box. SVG does not clip, so
-  // too little margin here is exactly what let a lit slice bleed over the
-  // neighbouring tile. margin = active-stroke/2 + glow.
-  const STROKE = 22, ACTIVE_STROKE = STROKE + 4, GLOW = 6;
-  const R = size / 2 - ACTIVE_STROKE / 2 - GLOW;
-  const GAP = 0.06;
-  const total = data.reduce((s, d) => s + (d.count || 0), 0) || 1;
-  const [active, setActive] = useState(null);
+// A visual summary only. The adjacent labelled controls own interaction and
+// accessibility, so every user gets the exact values without having to target
+// a narrow SVG arc.
+export default memo(function SoundDonut({
+  data = [],
+  size = 180,
+  selected = null,
+  centerTop = "Tuning",
+  centerSub = "genre map",
+}) {
+  const safeData = data
+    .map((item, index) => ({
+      label: String(item?.label || "").trim(),
+      count: Math.max(0, Number(item?.count) || 0),
+      color: item?.color || DONUT_PALETTE[index % DONUT_PALETTE.length],
+    }))
+    .filter((item) => item.label && item.count > 0);
+  const total = safeData.reduce((sum, item) => sum + item.count, 0);
+  const cx = size / 2;
+  const cy = size / 2;
+  const stroke = Math.max(18, Math.round(size * 0.13));
+  const activeStroke = stroke + 4;
+  const radius = size / 2 - activeStroke / 2 - 4;
+  const gap = safeData.length > 1 ? 0.055 : 0.012;
 
-  const grow = useRef(new Animated.Value(0)).current;
-  const sig = data.map((d) => `${d.label}:${d.count}`).join("|");
-  useEffect(() => {
-    grow.setValue(0);
-    Animated.timing(grow, { toValue: 1, duration: 520, easing: Easing.out(Easing.back(1.4)), useNativeDriver: !web }).start();
-  }, [sig]); // eslint-disable-line react-hooks/exhaustive-deps
-  const scale = grow.interpolate({ inputRange: [0, 1], outputRange: [0.84, 1] });
-
-  const segs = useMemo(() => {
-    let a0 = -Math.PI / 2;
-    return data.map((d, i) => {
-      const frac = Math.min(0.9999, Math.max(0.004, (d.count || 0) / total));
-      const a1 = a0 + frac * Math.PI * 2;
-      const s = a0 + GAP / 2, e = Math.max(a0 + GAP / 2 + 0.02, a1 - GAP / 2);
-      const seg = { label: d.label, count: d.count, color: DONUT_PALETTE[i % DONUT_PALETTE.length], d: arcPath(cx, cy, R, s, e), a0, a1 };
-      a0 = a1;
-      return seg;
+  const segments = useMemo(() => {
+    if (!total) return [];
+    let start = -Math.PI / 2;
+    return safeData.map((item) => {
+      const fraction = Math.min(0.9995, Math.max(0.003, item.count / total));
+      const end = start + fraction * Math.PI * 2;
+      const segment = {
+        ...item,
+        path: arcPath(cx, cy, radius, start + gap / 2, Math.max(start + gap / 2 + 0.02, end - gap / 2)),
+      };
+      start = end;
+      return segment;
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sig, size]);
+  }, [cx, cy, gap, radius, safeData, total]);
 
-  // Hover highlights (web): one mousemove on the container, hit-tested by angle
-  // and radius, because the SVG library only forwards click. Slices light up as
-  // the cursor sweeps the ring, no clicking needed; touch still taps.
-  const onMouseMove = web ? (e) => {
-    const node = e.currentTarget;
-    if (!node?.getBoundingClientRect) return;
-    const rect = node.getBoundingClientRect();
-    const me = e.nativeEvent || e;
-    const dx = me.clientX - (rect.left + rect.width / 2);
-    const dy = me.clientY - (rect.top + rect.height / 2);
-    const r = Math.hypot(dx, dy);
-    if (r < R - STROKE || r > R + STROKE) { setActive(null); return; }
-    let a = Math.atan2(dy, dx);
-    while (a < -Math.PI / 2) a += Math.PI * 2;
-    const hit = segs.find((s) => a >= s.a0 && a <= s.a1);
-    setActive(hit ? hit.label : null);
-  } : undefined;
-  const onMouseLeave = web ? () => setActive(null) : undefined;
-
-  const activeSeg = segs.find((s) => s.label === active);
+  const active = segments.find((item) => item.label === selected) || null;
   return (
-    <Animated.View style={{ width: size, height: size, opacity: grow, transform: [{ scale }] }} onMouseMove={onMouseMove} onMouseLeave={onMouseLeave}>
-      <Svg width={size} height={size}>
-        <Circle cx={cx} cy={cy} r={R} stroke={colors.bgElev} strokeWidth={STROKE} fill="none" opacity={0.5} />
-        {segs.map((s, i) => {
-          const on = s.label === active;
-          const dim = active && !on;
+    <View
+      style={{ width: size, height: size }}
+      accessible={false}
+      accessibilityElementsHidden
+      importantForAccessibility="no-hide-descendants"
+    >
+      <Svg width={size} height={size} accessible={false}>
+        <Circle cx={cx} cy={cy} r={radius} stroke={colors.lineSoft} strokeWidth={stroke} fill="none" opacity={0.8} />
+        {segments.map((segment) => {
+          const isActive = segment.label === selected;
           return (
             <Path
-              key={s.label + i}
-              d={s.d}
-              stroke={s.color}
-              strokeWidth={on ? ACTIVE_STROKE : STROKE}
+              key={segment.label}
+              d={segment.path}
+              stroke={segment.color}
+              strokeWidth={isActive ? activeStroke : stroke}
               strokeLinecap="round"
               fill="none"
-              opacity={dim ? 0.35 : 1}
-              onPress={() => setActive((cur) => (cur === s.label ? null : s.label))}
-              // The lift is stroke width + a contained glow only. The old
-              // scale(1.08) grew the arc geometry outward past the SVG box and
-              // over adjacent content; the reserved margin above holds this in.
-              style={web ? { cursor: "pointer", transition: "stroke-width .22s, opacity .22s, filter .22s", filter: on ? `drop-shadow(0 0 ${GLOW}px ${s.color})` : "none" } : null}
+              opacity={selected && !isActive ? 0.38 : 1}
             />
           );
         })}
       </Svg>
       <View style={styles.center} pointerEvents="none">
-        <Text style={[styles.num, activeSeg && { color: activeSeg.color, fontSize: 17 }]} numberOfLines={1}>
-          {activeSeg ? activeSeg.label : centerTop}
+        <Text style={[styles.top, active && { color: active.color }]} numberOfLines={2}>
+          {active?.label || centerTop}
         </Text>
-        <Text style={styles.sub}>{activeSeg ? `${activeSeg.count} ${activeSeg.count === 1 ? "play" : "plays"}` : centerSub}</Text>
+        <Text style={styles.sub} numberOfLines={2}>
+          {active ? `${active.count.toLocaleString()} ${active.count === 1 ? "artist" : "artists"}` : centerSub}
+        </Text>
       </View>
-    </Animated.View>
+    </View>
   );
 });
 
 const styles = StyleSheet.create({
-  center: { ...StyleSheet.absoluteFillObject, alignItems: "center", justifyContent: "center" },
-  num: { color: colors.text, fontFamily: mono, fontSize: 24, fontWeight: "900" },
-  sub: { color: colors.textFaint, fontSize: 10.5, letterSpacing: 1, marginTop: 2, textTransform: "uppercase" },
+  center: { ...StyleSheet.absoluteFillObject, paddingHorizontal: 30, alignItems: "center", justifyContent: "center" },
+  top: { color: colors.text, fontFamily: font, fontSize: 15, lineHeight: 18, fontWeight: "900", textAlign: "center" },
+  sub: { color: colors.textFaint, fontFamily: mono, fontSize: 8.5, lineHeight: 12, letterSpacing: 0.8, marginTop: 3, textAlign: "center", textTransform: "uppercase" },
 });

@@ -701,6 +701,17 @@ export function StoreProvider({ children }) {
   }, {}));
   const goingRef = useRef(going);
   goingRef.current = going;
+  // Canonical Interested/Going/Here/Went history is private account data. Keep
+  // it memory-only and scope the visible projection to the currently confirmed
+  // cookie identity so a shared device can never flash the prior member's rows.
+  if (!goingRef.attendance) {
+    goingRef.attendance = { accountId: session?.id || null, rows: [] };
+  }
+  const myAttendance = accountScopedRows(
+    goingRef.attendance.rows,
+    goingRef.attendance.accountId,
+    activeAccountId,
+  );
   const goingConfirmedRef = useRef(new Map());
   const goingIntentRef = useRef(null);
   if (!goingIntentRef.current) goingIntentRef.current = createGoingIntentCoordinator();
@@ -851,6 +862,8 @@ export function StoreProvider({ children }) {
     goingMutationRevisionRef.current += 1;
     goingPendingRef.current = {};
     setGoingPending({});
+    const clearedAttendance = { accountId: nextAccountId || null, rows: [] };
+    goingRef.attendance = clearedAttendance;
     // This is the synchronous privacy boundary for chat. Resetting the read
     // epoch rejects every prior response before React commits the new session;
     // changing the exposed epoch also remounts each screen's polling loop.
@@ -2318,11 +2331,18 @@ export function StoreProvider({ children }) {
       .then(({ artists }) => { if (sessionRef.current?.id === su.id && Array.isArray(artists)) setFanClubs((f) => ({ ...f, [su.id]: artists })); })
       .catch(() => {});
     // Slice 7: hydrate my "going" list so planned attendance survives a new device.
+    // The same response also carries canonical private attendance history. It
+    // stays memory-only and powers owner-visible personalization without ever
+    // entering a public/cacheable API.
     const goingHydrationRevision = goingMutationRevisionRef.current;
     api("/api/me/going")
-      .then(({ going: rows }) => {
+      .then(({ going: rows, attendance: attendanceRows }) => {
         if (sessionRef.current?.id !== su.id || !Array.isArray(rows)
-          || goingMutationRevisionRef.current !== goingHydrationRevision) return;
+          || goingMutationRevisionRef.current !== goingHydrationRevision
+          || goingRef.attendance.accountId !== su.id) return;
+        const canonicalAttendance = Array.isArray(attendanceRows) ? attendanceRows : [];
+        const nextAttendanceState = { accountId: su.id, rows: canonicalAttendance };
+        goingRef.attendance = nextAttendanceState;
         const next = { ...goingRef.current, [su.id]: rows };
         goingRef.current = next;
         rows.forEach((entry) => goingConfirmedRef.current.set(goingIntentKey(su.id, entry.key), true));
@@ -5703,7 +5723,7 @@ export function StoreProvider({ children }) {
     artistPostsFor, addArtistPost, removeArtistPost,
     accountStatus, banUser, unbanUser, suspendUser, liftSuspension, setUserRole, setVerified, markEmailVerified, setSponsor, loadAdminMembers, loadAdminMembersStrict, loadMoreAdminMembersStrict, adminStats, prepareMemorialArtist, adminArtistQueue, enrichArtists, purgeArtist, startCatalogSeed, catalogSeedStatus, stopCatalogSeed, catalogSeedRuns, removeLoungeMessage, removeComment, removeFanClubMessage,
     comments: scopedComments, fanClubMsgs, lounge,
-    goingFor, isGoing, isGoingBusy, toggleGoing, attendeesFor,
+    goingFor, myAttendance, isGoing, isGoingBusy, toggleGoing, attendeesFor,
     venueReviewsFor, loadVenueReviews, addVenueReview, venueRating, venueTopPhotos,
     venuePhotos, venuePhotoState, loadVenuePhotos, artistFanPhotos, loadArtistPhotos,
     artistGallery, isPhotoRemoved, removePhoto, restorePhoto,
