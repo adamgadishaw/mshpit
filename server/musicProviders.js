@@ -47,6 +47,11 @@ const previewCache = new Map();
 const youtubeInflight = new Map();
 const youtubeChannelInflight = new Map();
 const youtubeCatalogueInflight = new Map();
+const deezerTrackSearchInflight = new Map();
+const deezerArtistCandidateInflight = new Map();
+const deezerDiscographyInflight = new Map();
+const providerFetchScopes = new WeakMap();
+let providerFetchScopeSequence = 0;
 const youtubeDemandCallbackScopes = new WeakMap();
 let youtubeDemandCallbackSequence = 0;
 const youtubeMetrics = {
@@ -75,7 +80,7 @@ const youtubeCircuits = {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-function abortReason(signal, message = "YouTube provider work was cancelled.") {
+function abortReason(signal, message = "Provider work was cancelled.") {
   return signal?.reason || new DOMException(message, "AbortError");
 }
 
@@ -91,7 +96,7 @@ function fetchWithSignal(fetchImpl, signal) {
   });
 }
 
-function waitForYouTubeJob(job, signal) {
+function waitForCoalescedProviderJob(job, signal, abandonedMessage) {
   if (signal?.aborted) return Promise.reject(abortReason(signal));
   job.waiters += 1;
   return new Promise((resolve, reject) => {
@@ -102,7 +107,7 @@ function waitForYouTubeJob(job, signal) {
       signal?.removeEventListener("abort", onAbort);
       job.waiters = Math.max(0, job.waiters - 1);
       if (!job.settled && job.waiters === 0 && !job.controller.signal.aborted) {
-        job.controller.abort(new DOMException("All YouTube resolution callers disconnected.", "AbortError"));
+        job.controller.abort(new DOMException(abandonedMessage, "AbortError"));
       }
       return true;
     };
@@ -124,7 +129,16 @@ function waitForYouTubeJob(job, signal) {
   });
 }
 
-function coalescedYouTubeJob({ map, key, signal, deadlineMs = 0, onCoalesced, run }) {
+function coalescedProviderJob({
+  map,
+  key,
+  signal,
+  deadlineMs = 0,
+  deadlineMessage = "Provider deadline exceeded.",
+  abandonedMessage = "All provider callers disconnected.",
+  onCoalesced,
+  run,
+}) {
   if (signal?.aborted) return Promise.reject(abortReason(signal));
   let job = map.get(key);
   if (job?.controller.signal.aborted && !job.settled && job.waiters === 0) {
@@ -133,7 +147,7 @@ function coalescedYouTubeJob({ map, key, signal, deadlineMs = 0, onCoalesced, ru
   }
   if (job) {
     onCoalesced?.();
-    return waitForYouTubeJob(job, signal);
+    return waitForCoalescedProviderJob(job, signal, abandonedMessage);
   }
 
   const controller = new AbortController();
@@ -141,7 +155,7 @@ function coalescedYouTubeJob({ map, key, signal, deadlineMs = 0, onCoalesced, ru
   if (deadlineMs > 0) {
     job.deadlineTimer = setTimeout(() => {
       if (!controller.signal.aborted) {
-        controller.abort(new DOMException("YouTube resolution deadline exceeded.", "TimeoutError"));
+        controller.abort(new DOMException(deadlineMessage, "TimeoutError"));
       }
     }, deadlineMs);
     job.deadlineTimer.unref?.();
@@ -154,7 +168,17 @@ function coalescedYouTubeJob({ map, key, signal, deadlineMs = 0, onCoalesced, ru
       if (map.get(key) === job) map.delete(key);
     });
   map.set(key, job);
-  return waitForYouTubeJob(job, signal);
+  return waitForCoalescedProviderJob(job, signal, abandonedMessage);
+}
+
+function providerFetchScope(fetchImpl) {
+  if ((typeof fetchImpl !== "function" && typeof fetchImpl !== "object") || fetchImpl === null) return "default";
+  let scope = providerFetchScopes.get(fetchImpl);
+  if (scope) return scope;
+  providerFetchScopeSequence += 1;
+  scope = `fetch-${providerFetchScopeSequence}`;
+  providerFetchScopes.set(fetchImpl, scope);
+  return scope;
 }
 
 export class ProviderError extends Error {
@@ -619,8 +643,16 @@ export async function providerJson(provider, url, { timeoutMs = 10_000, fetchImp
   return data;
 }
 
-export async function findDeezerArtist(name, { preferredId = null, hintId = null, fetchImpl = fetch } = {}) {
-  const data = await providerJson("Deezer", `https://api.deezer.com/search/artist?q=${encodeURIComponent(name)}&limit=10`, { fetchImpl });
+export async function findDeezerArtist(name, {
+  preferredId = null,
+  hintId = null,
+  fetchImpl = fetch,
+  signal,
+} = {}) {
+  const data = await providerJson("Deezer", `https://api.deezer.com/search/artist?q=${encodeURIComponent(name)}&limit=10`, {
+    fetchImpl,
+    signal,
+  });
   return selectDeezerArtist(name, data?.data || [], preferredId, { hintId });
 }
 
@@ -678,11 +710,13 @@ function writeProviderCache(key, data, ttlMs) {
   providerCacheStmts.set.run(key, JSON.stringify(data), at, at + ttlMs);
 }
 
-async function inBatches(items, size, mapper) {
+async function inBatches(items, size, mapper, { signal } = {}) {
   const out = [];
   for (let index = 0; index < items.length; index += size) {
+    throwIfAborted(signal);
     const batch = await Promise.all(items.slice(index, index + size).map(mapper));
     out.push(...batch);
+    throwIfAborted(signal);
     if (index + size < items.length) await sleep(75);
   }
   return out;
@@ -690,18 +724,39 @@ async function inBatches(items, size, mapper) {
 
 // Deezer artist candidates for disambiguation: many acts share a name, so the
 // UI can show fans/photo/album-count and let the listener pick the right one.
-export async function findDeezerArtistCandidates(name, { fetchImpl = fetch, limit = 8 } = {}) {
-  const data = await providerJson("Deezer", `https://api.deezer.com/search/artist?q=${encodeURIComponent(name)}&limit=${limit}`, { fetchImpl });
+async function findDeezerArtistCandidatesUnshared(name, { fetchImpl, limit, signal }) {
+  const data = await providerJson("Deezer", `https://api.deezer.com/search/artist?q=${encodeURIComponent(name)}&limit=${limit}`, {
+    fetchImpl,
+    signal,
+  });
   return (data?.data || [])
     .filter((a) => a?.id && a?.name)
     .map((a) => ({ id: a.id, name: a.name, fans: Number(a.nb_fan) || 0, albums: Number(a.nb_album) || 0, photo: a.picture_medium || a.picture || null }));
 }
 
-export async function getDeezerDiscography(name, {
+export async function findDeezerArtistCandidates(name, { fetchImpl = fetch, limit = 8, signal } = {}) {
+  throwIfAborted(signal);
+  const normalizedName = String(name || "").trim();
+  return coalescedProviderJob({
+    map: deezerArtistCandidateInflight,
+    key: `${normalizeMusicText(normalizedName)}|${limit}|${providerFetchScope(fetchImpl)}`,
+    signal,
+    abandonedMessage: "All Deezer artist-search callers disconnected.",
+    run: (jobSignal) => findDeezerArtistCandidatesUnshared(normalizedName, {
+      fetchImpl,
+      limit,
+      signal: jobSignal,
+    }),
+  });
+}
+
+async function getDeezerDiscographyUnshared(name, {
   fetchImpl = fetch,
   deezerId = null,
   ephemeralSelection = false,
+  signal,
 } = {}) {
+  throwIfAborted(signal);
   if (deezerId && !ephemeralSelection) {
     throw new TypeError("A caller-selected Deezer identity must be request-scoped");
   }
@@ -717,19 +772,24 @@ export async function getDeezerDiscography(name, {
   try {
     // The listener's explicit pick overrides everything; a previously auto-saved
     // id is only a hint, so a bad one can be corrected instead of sticking.
-    const identity = await findDeezerArtist(name, { preferredId: deezerId, hintId: storedDeezerId(name), fetchImpl });
+    const identity = await findDeezerArtist(name, {
+      preferredId: deezerId,
+      hintId: storedDeezerId(name),
+      fetchImpl,
+      signal,
+    });
     if (!identity) return cached ? { ...cached.data, status: "stale", stale: true } : { albums: [], status: "not_found", stale: false };
     const artist = identity.artist;
     if (!ephemeralSelection) persistDeezerIdentity(name, artist.id);
     // A deep popular-songs chart (up to 25) so the artist page isn't cut off at
     // ~10. Resolved live for ANY artist, not just ones the seeder pre-enriched.
-    const topData = await providerJson("Deezer", `https://api.deezer.com/artist/${artist.id}/top?limit=25`, { fetchImpl });
+    const topData = await providerJson("Deezer", `https://api.deezer.com/artist/${artist.id}/top?limit=25`, { fetchImpl, signal });
     const topTracks = (topData?.data || []).map((t) => ({ id: t.id || null, title: t.title, album: t.album?.title || null, duration: t.duration || 0 }));
     // Full discography: albums AND EPs (not just the most recent LPs), newest
     // first, capped high enough to cover a deep back catalogue. Previously this
     // kept only `record_type === "album"` and sliced to 12, so earlier releases
     // and every EP silently vanished from the page.
-    const albumData = await providerJson("Deezer", `https://api.deezer.com/artist/${artist.id}/albums?limit=300`, { fetchImpl });
+    const albumData = await providerJson("Deezer", `https://api.deezer.com/artist/${artist.id}/albums?limit=300`, { fetchImpl, signal });
     const seen = new Set();
     const picks = (albumData?.data || [])
       .filter((album) => (album.record_type === "album" || album.record_type === "ep") && album.title
@@ -741,24 +801,33 @@ export async function getDeezerDiscography(name, {
     // and throw away the entire discography AND the song chart (this is why some
     // artists showed no songs at all). Now a failed album is just skipped.
     // Slightly wider batches with fewer albums also cut the artist-page load.
-    const fullAlbums = (await inBatches(picks, 6, async (album) => {
+    const albumResults = await inBatches(picks, 6, async (album) => {
       try {
-        const full = await providerJson("Deezer", `https://api.deezer.com/album/${album.id}`, { fetchImpl });
+        const full = await providerJson("Deezer", `https://api.deezer.com/album/${album.id}`, { fetchImpl, signal });
         return {
-          id: album.id,
-          title: album.title,
-          type: album.record_type === "ep" ? "ep" : "album",
-          year: String(album.release_date || "").slice(0, 4),
-          cover: album.cover_medium || album.cover || null,
-          // Deezer's clean, canonical genre label for this release (used to
-          // correct the artist's noisy catalog genre below).
-          genre: full?.genres?.data?.[0]?.name || null,
-          // Never persist Deezer's signed preview URL. It expires in minutes and
-          // is resolved by getFreshDeezerPreview only when a listener presses play.
-          tracks: (full?.tracks?.data || []).map((track) => ({ id: track.id || null, title: track.title, duration: track.duration || 0 })),
+          status: "available",
+          album: {
+            id: album.id,
+            title: album.title,
+            type: album.record_type === "ep" ? "ep" : "album",
+            year: String(album.release_date || "").slice(0, 4),
+            cover: album.cover_medium || album.cover || null,
+            // Deezer's clean, canonical genre label for this release (used to
+            // correct the artist's noisy catalog genre below).
+            genre: full?.genres?.data?.[0]?.name || null,
+            // Never persist Deezer's signed preview URL. It expires in minutes and
+            // is resolved by getFreshDeezerPreview only when a listener presses play.
+            tracks: (full?.tracks?.data || []).map((track) => ({ id: track.id || null, title: track.title, duration: track.duration || 0 })),
+          },
         };
-      } catch { return null; }
-    })).filter(Boolean);
+      } catch (error) {
+        if (signal?.aborted) throw signal.reason || error;
+        return { status: "unavailable", album: null };
+      }
+    }, { signal });
+    const fullAlbums = albumResults
+      .filter((result) => result.status === "available")
+      .map((result) => result.album);
     // Several releases must agree before a release label becomes an artist fact.
     const genreEvidence = deezerReleaseGenreConsensus(fullAlbums);
     const derivedGenre = genreEvidence?.genre || null;
@@ -778,9 +847,37 @@ export async function getDeezerDiscography(name, {
     }
     return { ...data, status: "fresh", stale: false };
   } catch (error) {
+    if (signal?.aborted) throw signal.reason || error;
     if (cached) return { ...cached.data, status: "stale", stale: true };
     throw error;
   }
+}
+
+export async function getDeezerDiscography(name, {
+  fetchImpl = fetch,
+  deezerId = null,
+  ephemeralSelection = false,
+  signal,
+} = {}) {
+  throwIfAborted(signal);
+  const normalizedName = String(name || "").trim();
+  return coalescedProviderJob({
+    map: deezerDiscographyInflight,
+    key: JSON.stringify([
+      normName(normalizedName),
+      deezerId == null ? null : String(deezerId),
+      !!ephemeralSelection,
+      providerFetchScope(fetchImpl),
+    ]),
+    signal,
+    abandonedMessage: "All Deezer discography callers disconnected.",
+    run: (jobSignal) => getDeezerDiscographyUnshared(normalizedName, {
+      fetchImpl,
+      deezerId,
+      ephemeralSelection,
+      signal: jobSignal,
+    }),
+  });
 }
 
 // Resolve a pasted YouTube link to a tagged song for a post: its stable video id,
@@ -1435,10 +1532,11 @@ function resolveArtistChannel(artist, apiKey, fetchImpl, options = {}) {
     normalizeYouTubeCacheText(artist),
     options.allowSearch === false ? "catalogue-only" : "interactive",
   ]);
-  return coalescedYouTubeJob({
+  return coalescedProviderJob({
     map: youtubeChannelInflight,
     key,
     signal: options.signal,
+    abandonedMessage: "All YouTube resolution callers disconnected.",
     onCoalesced: () => { youtubeMetrics.channelCoalesced += 1; },
     run: (signal) => resolveArtistChannelUnshared(artist, apiKey, fetchImpl, { ...options, signal }),
   });
@@ -1560,10 +1658,11 @@ async function getArtistCatalogueUnshared(artist, channelId, apiKey, fetchImpl, 
 
 function getArtistCatalogue(artist, channelId, apiKey, fetchImpl, { signal } = {}) {
   const key = String(channelId || "");
-  return coalescedYouTubeJob({
+  return coalescedProviderJob({
     map: youtubeCatalogueInflight,
     key,
     signal,
+    abandonedMessage: "All YouTube resolution callers disconnected.",
     onCoalesced: () => { youtubeMetrics.catalogueCoalesced += 1; },
     run: (jobSignal) => getArtistCatalogueUnshared(artist, channelId, apiKey, fetchImpl, { signal: jobSignal }),
   });
@@ -2235,11 +2334,13 @@ export function resolveYouTubeTrack(title, artist, options = {}) {
       : YOUTUBE_INTERACTIVE_RESOLVE_DEADLINE_MS)
     : 0;
   const key = `${youtubeCacheKey(title, artist, recordingIdentity)}|${durationBucket}|${resolutionMode}|${excluded}|${demandScope}|${deadlineMs}`;
-  return coalescedYouTubeJob({
+  return coalescedProviderJob({
     map: youtubeInflight,
     key,
     signal: options.signal,
     deadlineMs,
+    deadlineMessage: "YouTube resolution deadline exceeded.",
+    abandonedMessage: "All YouTube resolution callers disconnected.",
     onCoalesced: () => { youtubeMetrics.trackCoalesced += 1; },
     run: async (signal) => {
       try {
@@ -2298,14 +2399,7 @@ export function clearYouTubeTrackCache(title, artist, {
 // the act can still find it. Deezer's search is keyless and costs no YouTube
 // quota, which matters because YouTube search has a small separate daily call
 // bucket; a video is only resolved later, if and when the song is played.
-export async function searchDeezerTracks(query, { limit = 12, fetchImpl = fetch, signal } = {}) {
-  throwIfAborted(signal);
-  const q = String(query || "").trim();
-  if (q.length < 2) return [];
-  const key = `dz:tracksearch:v1:${q.toLowerCase()}:${limit}`;
-  const cached = readProviderCache(key);
-  if (cached?.fresh) return cached.data?.items || [];
-
+async function searchDeezerTracksUnshared(q, { key, limit, fetchImpl, signal }) {
   // Two queries, because Deezer's plain relevance search drops the recording
   // most people mean: `q=bohemian rhapsody` returns 36 rows without Queen in
   // them at all, while the field-qualified `track:"bohemian rhapsody"` returns
@@ -2380,6 +2474,32 @@ export async function searchDeezerTracks(query, { limit = 12, fetchImpl = fetch,
   throwIfAborted(signal);
   writeProviderCache(key, { items }, DEEZER_DISCOGRAPHY_TTL_MS);
   return items;
+}
+
+export async function searchDeezerTracks(query, { limit = 12, fetchImpl = fetch, signal } = {}) {
+  throwIfAborted(signal);
+  const q = String(query || "").trim();
+  if (q.length < 2) return [];
+  const key = `dz:tracksearch:v1:${q.toLowerCase()}:${limit}`;
+  const cached = readProviderCache(key);
+  if (cached?.fresh) return cached.data?.items || [];
+
+  // Universal search can issue the same request from multiple mounted surfaces
+  // (and several members can type the same trending title at once). Share only
+  // identical provider work. Each browser remains independently cancellable;
+  // the two Deezer requests stop only after every waiter has moved on.
+  return coalescedProviderJob({
+    map: deezerTrackSearchInflight,
+    key: `${key}|${providerFetchScope(fetchImpl)}`,
+    signal,
+    abandonedMessage: "All Deezer search callers disconnected.",
+    run: (jobSignal) => searchDeezerTracksUnshared(q, {
+      key,
+      limit,
+      fetchImpl,
+      signal: jobSignal,
+    }),
+  });
 }
 
 // ---- catalogue song index -------------------------------------------------

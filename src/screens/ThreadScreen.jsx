@@ -9,6 +9,7 @@ import MentionText from "../components/MentionText";
 import useLiveChat from "../lib/useLiveChat";
 import useChatScroll from "../lib/useChatScroll";
 import { accountTargetScope, scopedScreenValue } from "../domain/screenScope.mjs";
+import { latestIncomingDirectMessageId } from "../domain/directMessageRead.mjs";
 
 const EMPTY_COMPOSER = Object.freeze({ text: "", sending: false });
 
@@ -29,6 +30,7 @@ export default function ThreadScreen({ otherId, onClose, onOpenProfile, onOpenPr
   }));
   const { scrollRef, onScroll, onContentSizeChange } = useChatScroll();
   const messages = threadMessages(otherId);
+  const incomingReadTarget = latestIncomingDirectMessageId(messages, session?.id);
 
   useEffect(() => {
     setComposerState({ scope: composerScope, value: EMPTY_COMPOSER });
@@ -41,7 +43,14 @@ export default function ThreadScreen({ otherId, onClose, onOpenProfile, onOpenPr
   // A DM notification can open a chat with someone this device never cached;
   // fetch them so the name + avatar resolve instead of a nameless "Chat".
   useEffect(() => { if (otherId && !userById(otherId)) loadUser(otherId); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [otherId]);
-  useEffect(() => { markThreadRead(otherId); }, [otherId, messages.length]);
+  // Opening a thread and receiving a new inbound message advance the durable
+  // marker. The viewer's own optimistic send must not manufacture a read write.
+  useEffect(() => {
+    if (otherId && incomingReadTarget) void markThreadRead(otherId);
+    // The Store command is intentionally omitted: Context recreates the facade,
+    // while account + thread + latest inbound identity own this mutation.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [incomingReadTarget, otherId, session?.id]);
 
   const send = async () => {
     const submitted = text;

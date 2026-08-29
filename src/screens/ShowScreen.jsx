@@ -23,6 +23,7 @@ import {
 import { hasPostDiscussion, showDiscussionCount } from "../domain/showDiscussion.mjs";
 import { liveEventLineupLabel, liveEventTitle } from "../domain/liveDiscovery.mjs";
 import { archiveCoverMedia, archiveReviewMedia } from "../domain/artistEventArchive.mjs";
+import useAppActive from "../lib/useAppActive";
 import { useArtistEventReviews } from "../features/artistEvents/useArtistEventArchive";
 import { readShowCrowdAttendance, readShowDocument, readShowLoungeMeta } from "../features/showSocial/showSocialService";
 import ShowAttendanceControls from "../features/showSocial/ShowAttendanceControls";
@@ -45,6 +46,7 @@ const ATTENDANCE_STATE_LABELS = Object.freeze({ going: "Going", here: "Here", we
 // logged review, a bare tour date from the calendar, a lounge link - so every
 // field is guarded; a tour date has no score and that's a mode, not a crash.
 export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenProfile, onOpenArtist, onOpenArchive, onOpenVenue, onOpenLounge, onOpenPost, onOpenPhotos, onRequireAuth }) {
+  const appActive = useAppActive();
   const {
     venueCoord, venuePhotos, venuePhotoState, loadVenuePhotos, venuePhotoPrivacyRevision,
     session, concertKey, isGoing, isGoingBusy, toggleGoing, loungeFor, addLog, artistSummary,
@@ -299,10 +301,17 @@ export default function ShowScreen({ log, onClose, onPreview, onReview, onOpenPr
     || !!String(norm.startDateTime || norm.startLocalTime || "").trim();
   const hasAuthenticCountdownTarget = !!countdownTimingKind || hasExplicitShowTime;
   useEffect(() => {
-    if (!presentation.showCountdown || !hasAuthenticCountdownTarget || targetMs == null) return;
-    const id = setInterval(() => setNowTick(Date.now()), 1000);
+    if (!appActive || !presentation.showCountdown || !hasAuthenticCountdownTarget || targetMs == null) return;
+    if (targetMs <= Date.now()) return;
+    const id = setInterval(() => {
+      const currentTime = Date.now();
+      setNowTick(currentTime);
+      // The label is static after the doors/access/show target. Stop waking and
+      // rerendering the entire show page once the countdown has completed.
+      if (currentTime >= targetMs) clearInterval(id);
+    }, 1000);
     return () => clearInterval(id);
-  }, [hasAuthenticCountdownTarget, presentation.showCountdown, targetMs]);
+  }, [appActive, hasAuthenticCountdownTarget, presentation.showCountdown, targetMs]);
   const msLeft = targetMs != null ? targetMs - nowTick : null;
 
   // Setlists are spoiler-gated while a show sits inside the artist's active tour

@@ -37,10 +37,12 @@ function fixture({ loadDiscography = async (...args) => ({ args }) } = {}) {
 
 test("public discography reads cannot supply or persist a caller-selected provider identity", async () => {
   const { routes, calls } = fixture();
+  const signal = new AbortController().signal;
   const result = await routes["GET /api/artists/discography"]({
     query: { name: "  Same Name  ", deezerId: "999" },
+    signal,
   });
-  assert.deepEqual(result.args, ["Same Name"]);
+  assert.deepEqual(result.args, ["Same Name", { signal }]);
   assert.equal(calls.auth, 0);
   assert.equal(calls.limits[0].key, "discography");
 });
@@ -52,11 +54,13 @@ test("same-name provider selection requires an account and is explicitly ephemer
     (error) => error.status === 401 && error.code === "AUTH_REQUIRED",
   );
 
+  const signal = new AbortController().signal;
   const result = await routes["POST /api/artists/discography/selection"]({
     user: { id: "u_test" },
     body: { name: "Artist", deezerId: "123" },
+    signal,
   });
-  assert.deepEqual(result.args, ["Artist", { deezerId: 123, ephemeralSelection: true }]);
+  assert.deepEqual(result.args, ["Artist", { deezerId: 123, ephemeralSelection: true, signal }]);
   assert.equal(calls.auth, 2);
   assert.equal(calls.limits.at(-1).key, "discography-selection");
 });

@@ -72,6 +72,7 @@ export async function uploadOriginalMediaAsset({
       body: sourceFinalizeBody,
       signal,
       onStage,
+      onRemoteDraft,
     });
   } else {
     const sourcePrepared = await prepareAsset({ ...asset, file: asset.runtimeFile || asset.file }, {
@@ -114,31 +115,20 @@ export async function uploadOriginalMediaAsset({
       onRemoteDraft?.({ assetId, duplicate: !!created.duplicate, sourceUploaded: true });
     }
 
-    onStage?.("verifying-source");
     result = await finalizeMediaSourceV1({
       apiCall,
       assetId,
       kind,
       signal,
       body: sourceFinalizeBody,
+      onStage,
     });
   }
 
-  // The verifier owns the real duration. Rebase the constant original recipe
-  // onto that measured value before saving metadata, so picker/hydration drift
-  // can never become a trim operation.
-  const authoritativeDurationMs = result?.asset?.durationMs ?? sourceDurationMs ?? asset.durationMs;
-  const authoritativeOriginalRecipe = defaultMediaEdit(kind, { durationMs: authoritativeDurationMs });
-  result = await apiCall(`/api/media/assets/${encodeURIComponent(assetId)}`, {
-    method: "PATCH",
-    context: "Saving original media details",
-    signal,
-    body: {
-      editRecipe: authoritativeOriginalRecipe,
-      altText: typeof asset.altText === "string" ? asset.altText : "",
-    },
-  });
-
+  // Finalization already persisted the normalized original recipe and alt text
+  // in the same transaction that made the delivery ready. Do not gate a
+  // successfully verified upload on a second identical PATCH that can fail or
+  // be cancelled after all expensive work has completed.
   const finalAsset = result?.asset || (await apiCall(`/api/media/assets/${encodeURIComponent(assetId)}`, {
     context: "Checking your Mshpit media",
     signal,
@@ -149,6 +139,9 @@ export async function uploadOriginalMediaAsset({
   if (kind === "video" && !finalAsset.posterUrl) {
     throw mediaPipelineError("VIDEO_POSTER_REQUIRED", "The video preview was not verified. Try that upload again.");
   }
+  const authoritativeDurationMs = finalAsset.durationMs ?? sourceDurationMs ?? asset.durationMs;
+  const authoritativeOriginalRecipe = finalAsset.editRecipe
+    || defaultMediaEdit(kind, { durationMs: authoritativeDurationMs });
   onStage?.("ready");
   return {
     ...asset,

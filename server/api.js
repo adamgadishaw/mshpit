@@ -121,6 +121,7 @@ import {
 import { verifyVideoObject, videoVerifierRuntimeStatus } from "./videoVerifier.js";
 import { VIDEO_VERIFIER_PIPELINE_VERSION } from "./videoVerifierProtocol.js";
 import {
+  cancelVideoFinalizeJob,
   startVideoFinalizeJob,
   videoFinalizeState,
   waitForVideoFinalizeCompletion,
@@ -147,6 +148,7 @@ import { canonicalProfileExtras } from "./profileExtras.js";
 import { licensedVenuePhoto, verifiedHttpsUrl } from "../src/domain/venuePhotoProvenance.mjs";
 import { canonicalVenueKey, resolveVenueCatalogKey, venueLookupKeys } from "../src/domain/venueIdentity.mjs";
 import { publicVenueFanPhotos } from "./venueGallery.js";
+import { attachViewerLikes } from "./postViewerLikes.js";
 import { accountIsPublic, activeAccountSql } from "./accountVisibility.js";
 import { visibleTourDateRows } from "./tourDateVisibility.js";
 import {
@@ -2363,7 +2365,9 @@ function postJson(p, viewerId) {
     ...(p.open_reports != null ? { flags: p.open_reports } : {}),
     likes: p.like_count ?? 0, comments: p.comment_count ?? 0,
     ...(p.comment_preview != null ? { commentPreview: parseJsonArray(p.comment_preview) } : {}),
-    liked: viewerId ? !!db.prepare("SELECT 1 FROM likes WHERE post_id=? AND user_id=?").get(p.id, viewerId) : false,
+    liked: p.viewer_liked != null
+      ? !!p.viewer_liked
+      : viewerId ? !!db.prepare("SELECT 1 FROM likes WHERE post_id=? AND user_id=?").get(p.id, viewerId) : false,
     createdAt: p.created_at,
     editedAt: p.updated_at || null,
     version: p.updated_at || p.created_at,
@@ -3120,7 +3124,7 @@ async function searchYouTubeTrack(ctx, input) {
 
 // route table: "METHOD /path" -> handler(ctx) ; :params exposed as ctx.params
 export const routes = {
-  ...mediaAssetRoutes({ database: db, requireUser, now }),
+  ...mediaAssetRoutes({ database: db, requireUser, now, cancelFinalizeJob: cancelVideoFinalizeJob }),
   ...mediaLegacyFinalizeRoutes({ database: db, requireUser, now }),
   ...artistArchiveRoutes({
     database: db,
@@ -3386,7 +3390,7 @@ export const routes = {
         assetId,
         fingerprint: operationFingerprint,
         at: now(),
-        run: async () => {
+        run: async ({ signal: jobSignal }) => {
           try {
             return await finalizeMediaAsset(db, {
               ownerId,
@@ -3401,9 +3405,15 @@ export const routes = {
                 "verify",
               ),
               // Deliberately no caller signal: a browser disconnect or proxy
-              // timeout must not cancel the shared process-local job.
+              // timeout must not cancel the shared process-local job. The job's
+              // own signal is cancelled only when this owner deletes the draft.
+              signal: jobSignal,
             });
           } catch (error) {
+            // Owner cancellation is lifecycle control, not a production fault.
+            // Do not create an error event or attempt terminal cleanup after
+            // the DELETE route has already retired this exact draft.
+            if (jobSignal.aborted) throw jobSignal.reason || error;
             observeBackgroundVideoFinalizeFailure(error);
             if (isTerminalMediaSourceFailure(error)) {
               cancelMediaAsset(db, { ownerId, assetId, at: now() });
@@ -3695,8 +3705,9 @@ export const routes = {
     const name = clean(ctx.query.name, { max: 120 });
     if (!name) throw new ApiError(400, "Missing name.");
     limit(ctx, "artist-candidates", 60, 10 * 60 * 1000);
-    try { return { candidates: await findDeezerArtistCandidates(name) }; }
+    try { return { candidates: await findDeezerArtistCandidates(name, { signal: ctx.signal }) }; }
     catch (error) {
+      if (ctx.signal?.aborted) throw ctx.signal.reason || error;
       if (error instanceof ProviderError) return { candidates: [] };
       throw error;
     }
@@ -4815,7 +4826,11 @@ export const routes = {
       WHERE p.removed=0 AND ${activeAccountSql("u")} ${cursorSql} ${blockSql}
       ORDER BY p.created_at DESC, p.id DESC LIMIT ?${cursor ? "" : " OFFSET ?"}`).all(...args);
     const { rows, nextCursor } = finishPage(found, lim);
-    const projectedRows = withTaggedPeople(withCommentPreviews(rows, viewer), viewer);
+    const projectedRows = attachViewerLikes(
+      db,
+      withTaggedPeople(withCommentPreviews(rows, viewer), viewer),
+      viewer,
+    );
     return { posts: projectedRows.map((p) => postJson(p, viewer)), nextCursor };
   },
 
@@ -4835,7 +4850,11 @@ export const routes = {
       limit: pageSize,
       at: now(),
     });
-    const projectedRows = withTaggedPeople(withCommentPreviews(result.rows, ctx.user?.id), ctx.user?.id);
+    const projectedRows = attachViewerLikes(
+      db,
+      withTaggedPeople(withCommentPreviews(result.rows, ctx.user?.id), ctx.user?.id),
+      ctx.user?.id,
+    );
     const projected = projectedRows.map((row) => ({
       ...postJson(row, ctx.user?.id),
       recommendation: result.recommendations.get(row.id),
@@ -4914,7 +4933,11 @@ export const routes = {
     if (!row || row.removed || blockedEitherWay(ctx.user?.id, row.user_id)) {
       throw new ApiError(404, "That post left the stage.", "NOT_FOUND");
     }
-    const projected = withTaggedPeople(withCommentPreviews([row], ctx.user?.id), ctx.user?.id)[0];
+    const projected = attachViewerLikes(
+      db,
+      withTaggedPeople(withCommentPreviews([row], ctx.user?.id), ctx.user?.id),
+      ctx.user?.id,
+    )[0];
     return { post: postJson(projected, ctx.user?.id) };
   },
 
@@ -4978,7 +5001,11 @@ export const routes = {
       // DB lookups per row even though none can ever enter the reel.
       const plausible = found.filter((row) => row.has_stable_video
         || parseJsonArray(row.photos).some((uri) => isLegacyVideoUrl(uri)));
-      const projectedCandidates = withTaggedPeople(withCommentPreviews(plausible, viewer), viewer);
+      const projectedCandidates = attachViewerLikes(
+        db,
+        withTaggedPeople(withCommentPreviews(plausible, viewer), viewer),
+        viewer,
+      );
       for (const p of projectedCandidates) {
         const projected = postJson(p, viewer); // photos already parsed here
         const descriptorClips = new Set((projected.media || [])
@@ -5025,7 +5052,11 @@ export const routes = {
       ORDER BY p.created_at DESC, p.id DESC LIMIT ?`).all(...args);
     const { rows, nextCursor } = finishPage(found, pageLimit);
     return {
-      posts: withTaggedPeople(withCommentPreviews(rows, ctx.user?.id), ctx.user?.id)
+      posts: attachViewerLikes(
+        db,
+        withTaggedPeople(withCommentPreviews(rows, ctx.user?.id), ctx.user?.id),
+        ctx.user?.id,
+      )
         .map((p) => postJson(p, ctx.user?.id)),
       nextCursor,
     };

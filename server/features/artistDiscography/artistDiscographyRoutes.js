@@ -31,7 +31,7 @@ export function artistDiscographyRoutes({
       const name = artistName(ctx);
       rateLimit(ctx, "discography", 40, TEN_MINUTES);
       try {
-        return await loadDiscography(name);
+        return await loadDiscography(name, { signal: ctx.signal });
       } catch (error) {
         return providerBoundary(error, { ApiError, ProviderError });
       }
@@ -48,7 +48,11 @@ export function artistDiscographyRoutes({
       }
       rateLimit(ctx, "discography-selection", 20, TEN_MINUTES);
       try {
-        return await loadDiscography(name, { deezerId: Number(rawId), ephemeralSelection: true });
+        return await loadDiscography(name, {
+          deezerId: Number(rawId),
+          ephemeralSelection: true,
+          signal: ctx.signal,
+        });
       } catch (error) {
         return providerBoundary(error, { ApiError, ProviderError });
       }

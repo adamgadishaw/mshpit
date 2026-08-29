@@ -1,3 +1,4 @@
+import { attachViewerLikes } from "../../postViewerLikes.js";
 import { createArtistReviewRepository } from "./artistReviewRepository.js";
 import { createArtistReviewService } from "./artistReviewService.js";
 
@@ -9,7 +10,11 @@ export function artistReviewRoutes({ database, ApiError, clean, normName, projec
     throw new TypeError("Artist review routes require the API boundary dependencies");
   }
   const repository = createArtistReviewRepository(database);
-  const service = createArtistReviewService({ repository, projectPost });
+  const service = createArtistReviewService({
+    repository,
+    projectPost,
+    attachViewerLikes: (rows, viewerId) => attachViewerLikes(database, rows, viewerId),
+  });
 
   return {
     "GET /api/artists/reviews": (ctx) => {

@@ -2,7 +2,14 @@
 // phone clip can take longer to normalize on a small worker. Poll for a finite
 // 18-minute envelope without holding one proxy request open that whole time.
 export const MEDIA_SOURCE_FINALIZE_V1_TIMEOUT_MS = 18 * 60_000;
-export const MEDIA_SOURCE_FINALIZE_REQUEST_TIMEOUT_MS = 210_000;
+// Current servers acknowledge detached video work; a lost acknowledgement is
+// reconciled through the owner-only GET below. Do not hold the composer behind
+// a proxy request for minutes before beginning that reconciliation.
+export const MEDIA_SOURCE_FINALIZE_REQUEST_TIMEOUT_MS = 30_000;
+// Starting or recovering a detached job is a short control-plane operation.
+// The long envelope above begins only after the server explicitly reports that
+// authoritative processing is underway.
+export const MEDIA_SOURCE_FINALIZE_START_TIMEOUT_MS = 90_000;
 // Five seconds avoids noisy polling while still giving quick completion
 // feedback. Poll reads have no member-facing upload count allowance.
 export const MEDIA_SOURCE_FINALIZE_POLL_INTERVAL_MS = 5_000;
@@ -64,12 +71,22 @@ function deadlineFailure(lastError) {
   return error;
 }
 
+function startFailure(lastError) {
+  const error = new Error("PIT could not start processing this media. Your upload is saved—try again to resume it.",
+    lastError ? { cause: lastError } : undefined);
+  error.code = "MEDIA_STORAGE_UNAVAILABLE";
+  error.status = 503;
+  error.retryable = true;
+  return error;
+}
+
 export async function finalizeMediaSourceV1({
   apiCall,
   assetId,
   kind,
   body,
   signal,
+  onStage,
   now = Date.now,
   wait = waitForPoll,
   pollIntervalMs = MEDIA_SOURCE_FINALIZE_POLL_INTERVAL_MS,
@@ -82,12 +99,14 @@ export async function finalizeMediaSourceV1({
   }
   const startedAt = Number(now());
   if (!Number.isFinite(startedAt)) throw new Error("PIT could not verify that media source.");
-  const deadline = startedAt + MEDIA_SOURCE_FINALIZE_V1_TIMEOUT_MS;
+  const startDeadline = startedAt + MEDIA_SOURCE_FINALIZE_START_TIMEOUT_MS;
+  let processingDeadline = null;
   const interval = Math.max(250, Math.min(5_000, Math.round(Number(pollIntervalMs)
     || MEDIA_SOURCE_FINALIZE_POLL_INTERVAL_MS)));
   const path = `/api/media/assets/${encodeURIComponent(assetId)}`;
   let submissions = 0;
   let lastError = null;
+  let reportedStage = null;
   // Video finalization owns the authoritative public rendition and must reach
   // `ready`. Photo source finalization intentionally stops at `render_pending`
   // so the client can upload its separately sanitized rendition next.
@@ -99,6 +118,25 @@ export async function finalizeMediaSourceV1({
       // only `{ asset }` here and from the owner GET. These explicit photo
       // states are already source-finalized; coordinator metadata is optional.
       && ["render_pending", "render_unavailable"].includes(value?.asset?.status));
+
+  const reportStage = (stage) => {
+    if (reportedStage === stage) return;
+    reportedStage = stage;
+    onStage?.(stage);
+  };
+
+  const noteProcessing = (value) => {
+    if (value?.finalize?.state !== "processing") return false;
+    if (processingDeadline === null) {
+      const acknowledgedAt = Number(now());
+      if (!Number.isFinite(acknowledgedAt)) throw new Error("PIT could not verify that media source.");
+      processingDeadline = acknowledgedAt + MEDIA_SOURCE_FINALIZE_V1_TIMEOUT_MS;
+    }
+    reportStage("processing-source");
+    return true;
+  };
+
+  const activeDeadline = () => processingDeadline ?? startDeadline;
 
   const submit = async () => {
     submissions += 1;
@@ -117,29 +155,40 @@ export async function finalizeMediaSourceV1({
   };
 
   let current;
+  reportStage("starting-source");
   try {
     current = await submit();
+    noteProcessing(current);
   } catch (error) {
     if (signal?.aborted) throw abortError(signal);
     if (!retryableRequestFailure(error)) throw error;
     lastError = error;
+    reportStage("reconnecting-source");
   }
 
   while (true) {
     if (completed(current)) return current;
     const failed = processingFailure(current);
     if (failed) throw failed;
+    noteProcessing(current);
     if (signal?.aborted) throw abortError(signal);
-    const remaining = deadline - Number(now());
-    if (!Number.isFinite(remaining) || remaining <= 0) throw deadlineFailure(lastError);
+    const remaining = activeDeadline() - Number(now());
+    if (!Number.isFinite(remaining) || remaining <= 0) {
+      throw processingDeadline === null ? startFailure(lastError) : deadlineFailure(lastError);
+    }
     await wait(Math.min(interval, remaining), signal);
+
+    const readRemaining = activeDeadline() - Number(now());
+    if (!Number.isFinite(readRemaining) || readRemaining <= 0) {
+      throw processingDeadline === null ? startFailure(lastError) : deadlineFailure(lastError);
+    }
 
     try {
       current = await apiCall(path, {
         method: "GET",
         context: "Checking your PIT media",
         signal,
-        timeoutMs: Math.min(20_000, Math.max(1, deadline - Number(now()))),
+        timeoutMs: Math.min(20_000, readRemaining),
       });
       lastError = null;
     } catch (error) {
@@ -147,19 +196,23 @@ export async function finalizeMediaSourceV1({
       if (!retryableRequestFailure(error)) throw error;
       lastError = error;
       current = null;
+      reportStage("reconnecting-source");
       continue;
     }
 
     if (completed(current)) return current;
     const polledFailure = processingFailure(current);
     if (polledFailure) throw polledFailure;
+    if (noteProcessing(current)) continue;
     // A Render restart forgets only the process-local coordinator; the private
     // source and deterministic asset remain. Resubmit the identical finalize
     // operation at a bounded cadence so the new instance safely resumes it.
-    if ((!current?.finalize || current.finalize.state === "idle")
-        && submissions < MAX_RESTART_SUBMISSIONS) {
+    if (!current?.finalize || current.finalize.state === "idle") {
+      if (submissions >= MAX_RESTART_SUBMISSIONS) throw startFailure(lastError);
+      reportStage("reconnecting-source");
       try {
         current = await submit();
+        noteProcessing(current);
       } catch (error) {
         if (signal?.aborted) throw abortError(signal);
         if (!retryableRequestFailure(error)) throw error;
@@ -183,6 +236,7 @@ export async function resumeExistingMediaSourceV1({
   body,
   signal,
   onStage,
+  onRemoteDraft,
 } = {}) {
   const assetId = typeof asset?.assetId === "string" ? asset.assetId : "";
   if (typeof apiCall !== "function" || !assetId) {
@@ -196,6 +250,10 @@ export async function resumeExistingMediaSourceV1({
   }
 
   const path = `/api/media/assets/${encodeURIComponent(assetId)}`;
+  // A restored draft already owns this opaque server identity. Surface it to
+  // the composer before the first network wait so Cancel can retire the source
+  // even if this owner read is interrupted.
+  onRemoteDraft?.({ assetId, duplicate: true, sourceUploaded: true });
   onStage?.("checking-source");
   let result = await apiCall(path, {
     context: "Checking your PIT media source",
@@ -205,8 +263,7 @@ export async function resumeExistingMediaSourceV1({
     throw mediaSourceError("MEDIA_ASSET_INVALID", "That PIT media source is no longer available.");
   }
   if (result.asset.status === "upload_pending") {
-    onStage?.("verifying-source");
-    result = await finalizeMediaSourceV1({ apiCall, assetId, kind, body, signal });
+    result = await finalizeMediaSourceV1({ apiCall, assetId, kind, body, signal, onStage });
   }
   return result;
 }

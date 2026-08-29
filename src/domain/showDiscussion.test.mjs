@@ -62,7 +62,10 @@ test("aggregate show review pagination keeps loaded reviews and exposes retry fe
 
 test("PostScreen scopes comment reads and exposes honest loading failure recovery", () => {
   assert.match(postScreen, /const commentScope = accountTargetScope\(session\?\.id, `post-comments:\$\{String\(log\.id \|\| ""\)\}`\)/);
-  assert.match(postScreen, /const result = await loadComments\(log\.id, \{ limit: 50, force: true \}\)/);
+  assert.match(postScreen, /const forcedCommentRevisionRef = useRef\(-1\)/);
+  assert.match(postScreen, /const result = await loadComments\(log\.id, \{ limit: 50, force \}\)/);
+  assert.match(postScreen, /void refresh\(\{ force: forceInitialRefresh \}\)/);
+  assert.match(postScreen, /setInterval\(\(\) => void refresh\(\{ background: true, force: true \}\), 15_000\)/);
   assert.match(postScreen, /commentResource\.scope === commentScope/);
   assert.match(postScreen, /commentsUsable && tree\.length === 0/);
   assert.match(postScreen, /accessibilityLabel="Retry loading comments"/);

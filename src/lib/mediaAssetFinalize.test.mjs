@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   MEDIA_SOURCE_FINALIZE_REQUEST_TIMEOUT_MS,
+  MEDIA_SOURCE_FINALIZE_START_TIMEOUT_MS,
   MEDIA_SOURCE_FINALIZE_V1_TIMEOUT_MS,
   finalizeMediaSourceV1,
   resumeExistingMediaSourceV1,
@@ -30,6 +31,8 @@ test("an immediately ready source uses a bounded request inside the longer resum
   assert.equal(result.asset.status, "ready");
   assert.equal(captured.path, "/api/media/assets/ma_abcdefgh12345678/finalize");
   assert.equal(captured.options.timeoutMs, MEDIA_SOURCE_FINALIZE_REQUEST_TIMEOUT_MS);
+  assert.equal(MEDIA_SOURCE_FINALIZE_REQUEST_TIMEOUT_MS, 30_000,
+    "async acknowledgement must not hold the composer behind a multi-minute request");
   assert.ok(MEDIA_SOURCE_FINALIZE_V1_TIMEOUT_MS > captured.options.timeoutMs);
   assert.equal(resolveRequestTimeout("POST", captured.options.timeoutMs), captured.options.timeoutMs,
     "the shared request controller must not silently shorten the rolling-deploy request budget");
@@ -37,12 +40,14 @@ test("an immediately ready source uses a bounded request inside the longer resum
 
 test("accepted video finalization polls until the authoritative asset is ready", async () => {
   const calls = [];
+  const stages = [];
   let clock = 1_000;
   let reads = 0;
   const result = await finalizeMediaSourceV1({
     ...input,
     now: () => clock,
     wait: async (ms) => { clock += ms; },
+    onStage: (stage) => stages.push(stage),
     apiCall: async (path, options) => {
       calls.push({ path, method: options.method, body: options.body });
       if (options.method === "POST") return processing();
@@ -53,6 +58,7 @@ test("accepted video finalization polls until the authoritative asset is ready",
   assert.equal(result.asset.status, "ready");
   assert.deepEqual(calls.map((call) => call.method), ["POST", "GET", "GET"]);
   assert.deepEqual(calls[0].body, { ...input.body, async: true });
+  assert.deepEqual(stages, ["starting-source", "processing-source"]);
 });
 
 test("metadata-poor video still polls by media kind without inventing dimensions or duration", async () => {
@@ -115,11 +121,13 @@ test("a lost photo POST recovers from a prior server's metadata-free GET", async
 
 test("a pending remote video resumes GET plus finalize polling without another source PUT", async () => {
   const calls = [];
+  const remoteDrafts = [];
   let reads = 0;
   const result = await resumeExistingMediaSourceV1({
     asset: { assetId: input.assetId, status: "selected" },
     kind: "video",
     body: input.body,
+    onRemoteDraft: (draft) => remoteDrafts.push(draft),
     apiCall: async (path, options = {}) => {
       calls.push({ path, method: options.method || "GET" });
       if (!options.method || options.method === "GET") {
@@ -138,6 +146,7 @@ test("a pending remote video resumes GET plus finalize polling without another s
   assert.equal(calls.some(({ method }) => method === "PUT"), false);
   assert.equal(calls.some(({ path }) => path === "/api/media/assets"), false,
     "resume never creates a second source ticket");
+  assert.deepEqual(remoteDrafts, [{ assetId: input.assetId, duplicate: true, sourceUploaded: true }]);
 });
 
 test("a genuinely ready video remains blocked from unsupported cover re-edit", async () => {
@@ -197,7 +206,52 @@ test("the overall processing deadline is bounded and leaves the resumable source
     },
   }), (error) => error.code === "MEDIA_STORAGE_UNAVAILABLE" && error.status === 503
     && error.retryable === true && /upload is saved/u.test(error.message));
-  assert.equal(reads, MEDIA_SOURCE_FINALIZE_V1_TIMEOUT_MS / 5_000, "polling remains bounded instead of hot-looping");
+  assert.equal(reads, (MEDIA_SOURCE_FINALIZE_V1_TIMEOUT_MS / 5_000) - 1,
+    "polling remains bounded and does not start a read after the processing deadline");
+});
+
+test("confirmed idle state fails as soon as the bounded restart submissions are exhausted", async () => {
+  let clock = 40_000;
+  let submissions = 0;
+  let reads = 0;
+  const stages = [];
+  await assert.rejects(() => finalizeMediaSourceV1({
+    ...input,
+    now: () => clock,
+    wait: async (ms) => { clock += ms; },
+    onStage: (stage) => stages.push(stage),
+    apiCall: async (_path, options) => {
+      if (options.method === "POST") {
+        submissions += 1;
+        throw Object.assign(new Error("worker unavailable before acceptance"), { status: 503 });
+      }
+      reads += 1;
+      return { asset: { id: input.assetId, status: "upload_pending" }, finalize: { state: "idle" } };
+    },
+  }), (error) => error.code === "MEDIA_STORAGE_UNAVAILABLE" && error.status === 503
+    && error.retryable === true && /could not start processing/u.test(error.message)
+    && /upload is saved/u.test(error.message));
+  assert.equal(submissions, 3);
+  assert.equal(reads, 3);
+  assert.ok(clock - 40_000 < MEDIA_SOURCE_FINALIZE_START_TIMEOUT_MS,
+    "a confirmed idle source must not consume the start envelope after its retry budget");
+  assert.deepEqual(stages, ["starting-source", "reconnecting-source"]);
+});
+
+test("the long processing envelope does not apply before a job is acknowledged", async () => {
+  const startedAt = 50_000;
+  let clock = startedAt;
+  await assert.rejects(() => finalizeMediaSourceV1({
+    ...input,
+    now: () => clock,
+    wait: async (ms) => { clock += ms; },
+    apiCall: async () => {
+      throw Object.assign(new Error("control plane unavailable"), { status: 503 });
+    },
+  }), (error) => error.code === "MEDIA_STORAGE_UNAVAILABLE" && error.retryable === true
+    && /could not start processing/u.test(error.message));
+  assert.equal(clock - startedAt, MEDIA_SOURCE_FINALIZE_START_TIMEOUT_MS);
+  assert.ok(MEDIA_SOURCE_FINALIZE_START_TIMEOUT_MS < MEDIA_SOURCE_FINALIZE_V1_TIMEOUT_MS);
 });
 
 test("an idle coordinator after restart resubmits the identical finalize operation once", async () => {

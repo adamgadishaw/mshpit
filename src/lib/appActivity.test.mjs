@@ -30,7 +30,7 @@ test("recurring screen work is gated by the shared application activity hook", (
   assert.match(hook, /window\.addEventListener\("pageshow", onPageShow\)/);
 
   assert.match(post, /const appActive = useAppActive\(\)/);
-  assert.match(post, /if \(!appActive\) return undefined;[\s\S]*setInterval\(\(\) => void refresh\(\{ background: true \}\), 15_000\)/);
+  assert.match(post, /if \(!appActive\) return undefined;[\s\S]*setInterval\(\(\) => void refresh\(\{ background: true, force: true \}\), 15_000\)/);
 
   assert.match(admin, /const appActive = useAppActive\(\)/);
   assert.match(admin, /if \(!appActive \|\| activeTab !== "catalog" \|\| !seedJob\?\.running\) return undefined;[\s\S]*setInterval\(refreshSeed, 3000\)/);

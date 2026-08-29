@@ -182,13 +182,12 @@ function Root() {
 
   const web = Platform.OS === "web" && typeof window !== "undefined";
 
-  // Posting is the primary write action. Warm its small lazy chunk once the
-  // signed-in shell has settled so the first phone tap opens immediately.
-  useEffect(() => {
-    if (!session?.id) return undefined;
-    const timer = setTimeout(() => { LogScreen.preload?.().catch(() => {}); }, 1200);
-    return () => clearTimeout(timer);
-  }, [session?.id]);
+  // Keep the composer out of startup. Warm it only from a real posting gesture
+  // so feed hydration, images, and account reads never compete with a screen
+  // somebody may not open during this visit.
+  const preloadComposer = () => {
+    LogScreen.preload?.().catch(() => { /* architecture: allow-empty-catch -- Intent warming is optional; Suspense owns visible loading and retry. */ });
+  };
 
   // Restore the last tab on reload so a refresh doesn't dump you back on the feed.
   const [tab, setTab] = useState(() => (web ? load("pit.tab", "feed") : "feed"));
@@ -1266,6 +1265,7 @@ function Root() {
         notifUnread={session ? unreadNotifications() : 0}
         compact={width < 1500}
         onHome={() => switchTab("feed")}
+        onLogIntent={preloadComposer}
         onLog={() => requireVerifiedMutation("post", () => go({ logging: true, postMode: "status" }))}
         onActivity={openNotifications}
         onInbox={openInbox}
@@ -1370,7 +1370,14 @@ function Root() {
                       <View style={styles.tabbar}>
                         {LEFT.map((t) => <TabButton key={t.key} tab={t} active={tab} onPress={switchTab} />)}
                         <View style={styles.fabCol}>
-                          <Pressable style={styles.fab} onPress={() => requireVerifiedMutation("post", () => go({ logging: true, postMode: "status" }))} accessibilityLabel="Make a post">
+                          <Pressable
+                            style={styles.fab}
+                            onPressIn={preloadComposer}
+                            onHoverIn={preloadComposer}
+                            onFocus={preloadComposer}
+                            onPress={() => requireVerifiedMutation("post", () => go({ logging: true, postMode: "status" }))}
+                            accessibilityLabel="Make a post"
+                          >
                             <Icon name="plus" size={26} color="#1A1206" strokeWidth={2.6} />
                           </Pressable>
                           <Text style={styles.fabLabel}>Post</Text>

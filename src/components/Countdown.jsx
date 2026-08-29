@@ -13,17 +13,21 @@ import { fmtCountdown } from "../lib/showTime";
 // only thing React re-renders each second is this one Text node.
 //
 // `target` is the show's start in epoch ms, or null when it is unknown.
-export default function Countdown({ target, style, tonightLabel = "TONIGHT", fallback = "" }) {
+export default function Countdown({ target, style, tonightLabel = "TONIGHT", fallback = "", active = true }) {
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
-    if (target == null) return undefined;
+    if (!active || target == null) return undefined;
     // Once the show has started there is nothing left to count, so the timer
     // stops rather than ticking forever behind a static label.
     if (target - Date.now() <= 0) return undefined;
-    const id = setInterval(() => setNow(Date.now()), 1000);
+    const id = setInterval(() => {
+      const currentTime = Date.now();
+      setNow(currentTime);
+      if (currentTime >= target) clearInterval(id);
+    }, 1000);
     return () => clearInterval(id);
-  }, [target]);
+  }, [active, target]);
 
   if (target == null) return <Text style={style}>{fallback}</Text>;
   const left = target - now;

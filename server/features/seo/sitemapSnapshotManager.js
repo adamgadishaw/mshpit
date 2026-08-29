@@ -8,8 +8,14 @@ import {
 } from "./sitemapService.js";
 
 const SNAPSHOT_VERSION = 1;
+// Bump this when sitemap selection/canonicalization policy changes without a
+// persistence-format change. A prior deploy's otherwise valid XML then gets one
+// deliberate rebuild instead of being reused under rules it never evaluated.
+export const SITEMAP_SNAPSHOT_REVISION = 1;
 const SNAPSHOT_FILENAME = "seo-sitemap-snapshot-v1.json";
 const DEFAULT_RETRY_SECONDS = 30;
+export const DEFAULT_SITEMAP_STARTUP_REUSE_MS = 15 * 60 * 1_000;
+const MAX_STARTUP_CLOCK_SKEW_MS = 60 * 1_000;
 export const SITEMAP_MAX_PERSISTED_SNAPSHOT_BYTES = 96 * 1024 * 1024;
 
 function canonicalOrigin(env = process.env) {
@@ -47,6 +53,7 @@ function sanitizedStats(value, { totalUrls, shardCount }) {
 
 export function validateSitemapSnapshotPayload(payload, { env = process.env } = {}) {
   if (!payload || payload.version !== SNAPSHOT_VERSION) throw new TypeError("SITEMAP_SNAPSHOT_VERSION");
+  if (payload.revision !== SITEMAP_SNAPSHOT_REVISION) throw new TypeError("SITEMAP_SNAPSHOT_REVISION");
   const generatedAt = Number(payload.generatedAt);
   if (!Number.isSafeInteger(generatedAt) || generatedAt < 0) throw new TypeError("SITEMAP_SNAPSHOT_TIME");
   if (!Array.isArray(payload.paths) || !payload.paths.length || payload.paths.length > SITEMAP_MAX_URLS) {
@@ -107,6 +114,7 @@ export function validateSitemapSnapshotPayload(payload, { env = process.env } = 
   ));
   return Object.freeze({
     version: SNAPSHOT_VERSION,
+    revision: SITEMAP_SNAPSHOT_REVISION,
     generatedAt,
     paths: Object.freeze(paths),
     documents,
@@ -121,6 +129,7 @@ function payloadFromSnapshot(snapshot, env) {
   );
   return validateSitemapSnapshotPayload({
     version: SNAPSHOT_VERSION,
+    revision: SITEMAP_SNAPSHOT_REVISION,
     generatedAt: snapshot?.generatedAt,
     paths,
     documents,
@@ -131,6 +140,8 @@ function payloadFromSnapshot(snapshot, env) {
 function hydratedSnapshot(payload) {
   const documents = payload.documents;
   return Object.freeze({
+    version: payload.version,
+    revision: payload.revision,
     generatedAt: payload.generatedAt,
     paths: payload.paths,
     stats: payload.stats,
@@ -138,6 +149,43 @@ function hydratedSnapshot(payload) {
       return Object.hasOwn(documents, pathname) ? documents[pathname] : null;
     },
   });
+}
+
+/**
+ * Decide whether startup must rebuild after load() has validated a persisted
+ * snapshot. Validation proves schema, revision, canonical origin, membership,
+ * size, and URL uniqueness; this final gate proves it is also recent enough.
+ */
+export function sitemapStartupRefreshDecision(loadResult, {
+  now = Date.now(),
+  maximumAgeMs = DEFAULT_SITEMAP_STARTUP_REUSE_MS,
+} = {}) {
+  if (!loadResult?.ok || !loadResult.snapshot) {
+    return Object.freeze({ refresh: true, force: true, reason: loadResult?.reason || "unavailable" });
+  }
+  const snapshot = loadResult.snapshot;
+  if (snapshot.version !== SNAPSHOT_VERSION) {
+    return Object.freeze({ refresh: true, force: true, reason: "schema" });
+  }
+  if (snapshot.revision !== SITEMAP_SNAPSHOT_REVISION) {
+    return Object.freeze({ refresh: true, force: true, reason: "revision" });
+  }
+  const at = Number(now);
+  const generatedAt = Number(snapshot.generatedAt);
+  const boundedMaximumAge = Number.isFinite(Number(maximumAgeMs)) && Number(maximumAgeMs) >= 0
+    ? Number(maximumAgeMs)
+    : DEFAULT_SITEMAP_STARTUP_REUSE_MS;
+  if (!Number.isSafeInteger(generatedAt) || !Number.isFinite(at)) {
+    return Object.freeze({ refresh: true, force: true, reason: "timestamp" });
+  }
+  if (generatedAt > at + MAX_STARTUP_CLOCK_SKEW_MS) {
+    return Object.freeze({ refresh: true, force: true, reason: "future" });
+  }
+  const ageMs = Math.max(0, at - generatedAt);
+  if (ageMs > boundedMaximumAge) {
+    return Object.freeze({ refresh: true, force: true, reason: "stale", ageMs });
+  }
+  return Object.freeze({ refresh: false, force: false, reason: "fresh", ageMs });
 }
 
 function failureCategory(error, phase) {

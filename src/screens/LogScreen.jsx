@@ -39,7 +39,7 @@ import {
   mediaPublishingPreflightMessage,
   mediaPublishingPreflightSelection,
 } from "../domain/mediaPublishingPreflight.mjs";
-import { mediaUploadProgressCopy } from "../domain/mediaTransferProgress.mjs";
+import { createMediaTransferProgressPublisher, mediaUploadProgressCopy } from "../domain/mediaTransferProgress.mjs";
 import { hasLandingCompatibleImage } from "../domain/landingShowcase.mjs";
 import { remove, save } from "../lib/persist";
 import { uploadOriginalMediaAsset } from "../lib/mediaAssetUpload";
@@ -49,7 +49,6 @@ import {
   recoverMediaDraftAssets,
   releaseMediaDraftAsset,
   releaseMediaDraftAssets,
-  stageMediaDraftAssets,
 } from "../lib/mediaDraftStaging";
 import {
   mediaAssetIdsMatchingPhotos,
@@ -382,12 +381,17 @@ export default function LogScreen({
   const [uploadProgress, setUploadProgress] = useState(null);
   const [mediaError, setMediaError] = useState("");
   const [mediaPublishingCapabilities, setMediaPublishingCapabilities] = useState(DEFAULT_MEDIA_PUBLISHING_CAPABILITIES);
+  const [mediaPublishingCapabilitiesLoaded, setMediaPublishingCapabilitiesLoaded] = useState(false);
   const [mediaPublishingCapabilitiesRefreshing, setMediaPublishingCapabilitiesRefreshing] = useState(false);
   const mediaPublishingCapabilitiesRequestRef = useRef(null);
   const uploadControllerRef = useRef(null);
+  const uploadOperationRef = useRef(null);
   const remoteDraftAssetIdsRef = useRef(new Map());
   const submissionIdRef = useRef(editing?.id || submissionId());
-  useEffect(() => () => uploadControllerRef.current?.abort(), []);
+  useEffect(() => () => {
+    uploadControllerRef.current?.abort();
+    uploadOperationRef.current = null;
+  }, []);
 
   async function retireRemoteDrafts(localIds = null) {
     const selected = localIds ? new Set(localIds) : null;
@@ -450,6 +454,7 @@ export default function LogScreen({
         setMediaPublishingCapabilities((current) => (
           sameMediaPublishingCapabilities(current, capabilities) ? current : capabilities
         ));
+        setMediaPublishingCapabilitiesLoaded(true);
         return { ok: true, capabilities };
       } catch {
         // Preserve the last authoritative result. On a first-load network
@@ -481,7 +486,9 @@ export default function LogScreen({
     });
     return () => subscription.remove();
   }, [refreshMediaPublishingCapabilities]);
-  const mediaAvailabilityCopy = mediaPublishingAvailabilityCopy(mediaPublishingCapabilities);
+  const mediaAvailabilityCopy = mediaPublishingCapabilitiesLoaded
+    ? mediaPublishingAvailabilityCopy(mediaPublishingCapabilities)
+    : "";
   // Availability changes the status message, never the local composer affordance.
   // People can always choose and retain either kind while the API decides when
   // the private upload may proceed.
@@ -512,18 +519,24 @@ export default function LogScreen({
     const selected = (Array.isArray(selectedAssets) ? selectedAssets : [])
       .slice(0, MEDIA_POST_MAX_ATTACHMENTS)
       .map((asset, index) => originalMediaProjectAsset(asset, index));
-    if (!selected.length || uploadingPhotos || posting) return { ok: false, skipped: true };
-    // Refresh availability for honest UI copy, but do not make this advisory
-    // probe a second admission gate. A transient/failed health request must not
-    // block a healthy upload route; the API validates the byte-sniffed type and
-    // current worker/storage readiness before it signs the private source PUT.
-    void refreshMediaPublishingCapabilities({ force: true, background: true });
+    if (!selected.length || uploadOperationRef.current || uploadingPhotos || posting) return { ok: false, skipped: true };
+    // The authenticated upload route is the authoritative admission check. The
+    // composer already refreshes advisory availability on open, panel intent,
+    // foreground, and explicit retry; do not start another health request in
+    // parallel with the actual upload.
     const controller = new AbortController();
     uploadControllerRef.current?.abort();
     uploadControllerRef.current = controller;
+    const operation = { controller, token: Symbol("media-upload") };
+    uploadOperationRef.current = operation;
+    const ownsOperation = () => uploadOperationRef.current === operation;
+    const operationIsActive = () => ownsOperation() && !controller.signal.aborted;
+    const progressPublisher = createMediaTransferProgressPublisher({
+      publish: (value) => { if (operationIsActive()) setUploadProgress(value); },
+    });
     setUploadingPhotos(true);
     setMediaError("");
-    setUploadProgress({ current: 1, total: selected.length, completed: 0 });
+    progressPublisher.publish({ current: 1, total: selected.length, completed: 0, stage: "preparing" }, { immediate: true });
     const completedAssets = [];
     // A URL-only historical post cannot safely mix attachment identity models
     // in one PATCH. New additions fail closed until the legacy attachments are
@@ -535,21 +548,24 @@ export default function LogScreen({
       }
       for (let index = 0; index < selected.length; index++) {
         const asset = selected[index];
-        setUploadProgress({ current: index + 1, total: selected.length, completed: completedAssets.length, stage: "preparing" });
+        progressPublisher.publish({ current: index + 1, total: selected.length, completed: completedAssets.length, stage: "preparing" }, { immediate: true });
         let ready;
         ready = await uploadOriginalMediaAsset({
           asset,
           signal: controller.signal,
-          onStage: (stage) => setUploadProgress({
-            current: index + 1,
-            total: selected.length,
-            completed: completedAssets.length,
-            stage,
-            fraction: stage === "ready" || stage.startsWith("verifying-") ? 1 : 0,
-          }),
+          onStage: (stage) => {
+            if (!operationIsActive()) return;
+            progressPublisher.publish({
+              current: index + 1,
+              total: selected.length,
+              completed: completedAssets.length,
+              stage,
+              fraction: stage === "ready" ? 1 : 0,
+            }, { immediate: true });
+          },
           onProgress: (progress) => {
-            if (controller.signal.aborted) return;
-            setUploadProgress({
+            if (!operationIsActive()) return;
+            progressPublisher.publish({
               current: index + 1,
               total: selected.length,
               completed: completedAssets.length,
@@ -560,7 +576,7 @@ export default function LogScreen({
             });
           },
           onRemoteDraft: ({ assetId, sourceUploaded }) => {
-            if (!controller.signal.aborted && assetId) {
+            if (operationIsActive() && assetId) {
               remoteDraftAssetIdsRef.current.set(asset.id, assetId);
               if (sourceUploaded !== true) return;
               // Keep the opaque server identity in the recoverable upload
@@ -575,6 +591,7 @@ export default function LogScreen({
             }
           },
         });
+        if (!operationIsActive()) return { ok: false, stale: true };
         remoteDraftAssetIdsRef.current.delete(asset.id);
         completedAssets.push(ready);
         // Commit each verified asset immediately. If a later item fails, a
@@ -597,11 +614,13 @@ export default function LogScreen({
       const message = controller.signal.aborted
         ? "Media upload stopped. Finished items are attached; the remaining originals are ready to retry."
         : (error?.message || "Mshpit could not upload that item. Finished items are attached, and the remaining originals are ready to retry.");
-      setMediaError(message);
+      if (ownsOperation()) setMediaError(message);
       return { ok: false, error };
     } finally {
-      if (uploadControllerRef.current === controller) {
-        uploadControllerRef.current = null;
+      progressPublisher.cancel();
+      if (ownsOperation()) {
+        uploadOperationRef.current = null;
+        if (uploadControllerRef.current === controller) uploadControllerRef.current = null;
         setUploadingPhotos(false);
         setUploadProgress(null);
       }
@@ -609,7 +628,7 @@ export default function LogScreen({
   }
 
   async function stageSelectedAssets(assets) {
-    if (uploadingPhotos || posting || !Array.isArray(assets) || !assets.length) return;
+    if (uploadOperationRef.current || uploadingPhotos || posting || !Array.isArray(assets) || !assets.length) return;
     const remaining = Math.max(0, MEDIA_POST_MAX_ATTACHMENTS - photos.length - pendingMediaAssets.length);
     if (!remaining) return;
     const candidateAssets = mediaProjectFromPicker(
@@ -630,21 +649,18 @@ export default function LogScreen({
       setMediaError("This older post still uses legacy attachments. Remove all of its existing media before adding a new photo or clip, or publish the new media in a separate post.");
       return;
     }
-    try {
-      const staged = (await stageMediaDraftAssets(selected, {
-        ownerId: user?.id,
-        projectId: submissionIdRef.current,
-      })).map((asset, index) => originalMediaProjectAsset(asset, index));
-      if (!notices.length) setMediaError("");
-      setPendingMediaAssets((current) => normalizeMediaProject({ assets: [...current, ...staged] }).assets);
-      await uploadOriginalMedia(staged);
-    } catch (error) {
-      setMediaError(error?.message || "Mshpit could not make a private recovery copy of that selection. Choose the media again.");
-    }
+    // ImagePicker already returns a readable local asset. Queue it in memory
+    // before the first await, then upload that original directly instead of
+    // copying a potentially huge album into PIT's document directory first.
+    // Older drafts with durableLocalUri remain recoverable through the retry
+    // path below; only new selections skip the duplicate native copy.
+    if (!notices.length) setMediaError("");
+    setPendingMediaAssets((current) => normalizeMediaProject({ assets: [...current, ...selected] }).assets);
+    await uploadOriginalMedia(selected);
   }
 
   const addPhoto = async () => {
-    if (uploadingPhotos || posting) return;
+    if (uploadOperationRef.current || uploadingPhotos || posting) return;
     // The picker is a local draft boundary, not a service-health boundary.
     // Always let people choose either media type and keep this call inside the
     // original web user gesture. The authenticated API remains authoritative.
@@ -659,9 +675,16 @@ export default function LogScreen({
     let res;
     let pickerRequestId = null;
     try {
-      // SDK 56's system library picker does not need a broad permission prompt
-      // for this H.264 export path. Ask only when a future feature truly needs
-      // full-library access; selection itself remains a direct user gesture.
+      // SDK 56 requires library permission to return an original iOS video via
+      // Passthrough. Ask before opening Photos so the prompt never appears only
+      // after someone has already made a selection.
+      if (Platform.OS === "ios") {
+        const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (!permission?.granted) {
+          Alert.alert("Photo library access is needed", "Allow Mshpit to access your library so you can attach original photos and videos.");
+          return;
+        }
+      }
       if (Platform.OS === "android" && composerId) {
         // Persist both the latest draft and exact picker owner before handing
         // control to Android's external activity. MainActivity can be destroyed
@@ -675,8 +698,8 @@ export default function LogScreen({
       res = await ImagePicker.launchImageLibraryAsync(postMediaPickerOptions({
         platform: Platform.OS,
         remaining,
-        iosH264Preset: ImagePicker.VideoExportPreset.H264_1920x1080,
-        iosCompatibleRepresentation: ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible,
+        iosPassthroughPreset: ImagePicker.VideoExportPreset.Passthrough,
+        iosCurrentRepresentation: ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Current,
         allowPhotos: pickerCapabilities.photos,
         allowVideos: pickerCapabilities.videos,
       }));
@@ -715,14 +738,21 @@ export default function LogScreen({
   };
 
   const retryPendingMedia = async () => {
-    if (!pendingMediaAssets.length || submitBusy) return;
+    if (!pendingMediaAssets.length || uploadOperationRef.current || submitBusy) return;
     setMediaError("");
     try {
-      const recoverable = await recoverMediaDraftAssets(pendingMediaAssets);
-      if (recoverable.length !== pendingMediaAssets.length) {
+      // New picker assets upload directly while this composer is alive. Only
+      // legacy app-owned draft copies need filesystem recovery; a remote asset
+      // id can resume from the server without reading the local source again.
+      const staged = pendingMediaAssets.filter((asset) => asset.durableLocalUri && !asset.assetId);
+      const recoverableStaged = await recoverMediaDraftAssets(staged);
+      if (recoverableStaged.length !== staged.length) {
         throw new Error("A staged media file was removed by the device. Choose that item again before continuing.");
       }
-      const originals = recoverable.map((asset, index) => originalMediaProjectAsset(asset, index));
+      const recoveredIds = new Set(recoverableStaged.map((asset) => asset.id));
+      const originals = pendingMediaAssets
+        .filter((asset) => asset.assetId || !asset.durableLocalUri || recoveredIds.has(asset.id))
+        .map((asset, index) => originalMediaProjectAsset(asset, index));
       setPendingMediaAssets(originals);
       await uploadOriginalMedia(originals);
     } catch (error) {

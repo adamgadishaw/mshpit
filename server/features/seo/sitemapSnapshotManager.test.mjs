@@ -5,8 +5,10 @@ import { join } from "node:path";
 import test from "node:test";
 import { sitemapIndexXml, urlsetParts } from "./sitemapService.js";
 import {
+  SITEMAP_SNAPSHOT_REVISION,
   SITEMAP_MAX_PERSISTED_SNAPSHOT_BYTES,
   createSitemapSnapshotManager,
+  sitemapStartupRefreshDecision,
   validateSitemapSnapshotPayload,
 } from "./sitemapSnapshotManager.js";
 
@@ -222,6 +224,7 @@ test("persisted snapshots are fully validated before becoming serveable", async 
   try {
     writeFileSync(manager.persistedPath, JSON.stringify({
       version: 1,
+      revision: SITEMAP_SNAPSHOT_REVISION,
       generatedAt: 1_725_000_000_000,
       paths: ["/sitemaps/pages.xml", "/sitemaps/pages-2.xml"],
       documents: {
@@ -246,12 +249,19 @@ test("payload validation enforces canonical host, shard membership, and global U
   const paths = [...valid.paths];
   const payload = {
     version: 1,
+    revision: SITEMAP_SNAPSHOT_REVISION,
     generatedAt: valid.generatedAt,
     paths,
     documents: Object.fromEntries(["/sitemap.xml", ...paths].map((path) => [path, valid.xmlFor(path)])),
     stats: valid.stats,
   };
   assert.equal(validateSitemapSnapshotPayload(payload, { env: ENV }).stats.totalUrls, 1);
+
+  assert.throws(
+    () => validateSitemapSnapshotPayload({ ...payload, revision: SITEMAP_SNAPSHOT_REVISION + 1 }, { env: ENV }),
+    /SITEMAP_SNAPSHOT_REVISION/,
+    "a deploy with changed sitemap policy rebuilds instead of reusing old selection rules",
+  );
 
   const foreign = structuredClone(payload);
   foreign.documents[paths[0]] = foreign.documents[paths[0]].replace(
@@ -269,4 +279,53 @@ test("payload validation enforces canonical host, shard membership, and global U
     () => validateSitemapSnapshotPayload(extra, { env: ENV }),
     /SITEMAP_SNAPSHOT_DOCUMENT_SET/,
   );
+});
+
+test("startup reuses only a fresh validated snapshot from the current sitemap revision", async () => {
+  let clock = 1_725_000_000_000;
+  const { dataDir, manager } = createTempManager({
+    now: () => clock,
+    buildSnapshot() { return testSnapshot("startup-reuse", { generatedAt: clock }); },
+  });
+  try {
+    assert.equal((await manager.refresh()).ok, true);
+    const loadedManager = createSitemapSnapshotManager({
+      database: DATABASE,
+      dataDir,
+      env: ENV,
+      now: () => clock,
+      buildSnapshot() { throw new Error("startup policy must not build"); },
+    });
+    const loaded = await loadedManager.load();
+    assert.equal(loaded.ok, true);
+    assert.equal(loaded.snapshot.revision, SITEMAP_SNAPSHOT_REVISION);
+
+    clock += 5_000;
+    assert.deepEqual(sitemapStartupRefreshDecision(loaded, {
+      now: clock,
+      maximumAgeMs: 10_000,
+    }), { refresh: false, force: false, reason: "fresh", ageMs: 5_000 });
+
+    clock += 5_001;
+    assert.deepEqual(sitemapStartupRefreshDecision(loaded, {
+      now: clock,
+      maximumAgeMs: 10_000,
+    }), { refresh: true, force: true, reason: "stale", ageMs: 10_001 });
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("startup rejects missing, incompatible, and implausibly future snapshot state", () => {
+  assert.deepEqual(sitemapStartupRefreshDecision({ ok: false, reason: "missing" }), {
+    refresh: true, force: true, reason: "missing",
+  });
+  assert.equal(sitemapStartupRefreshDecision({
+    ok: true,
+    snapshot: { version: 1, revision: SITEMAP_SNAPSHOT_REVISION + 1, generatedAt: 100 },
+  }, { now: 100 }).reason, "revision");
+  assert.equal(sitemapStartupRefreshDecision({
+    ok: true,
+    snapshot: { version: 1, revision: SITEMAP_SNAPSHOT_REVISION, generatedAt: 61_001 },
+  }, { now: 1_000 }).reason, "future");
 });

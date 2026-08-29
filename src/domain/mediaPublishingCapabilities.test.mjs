@@ -76,7 +76,8 @@ test("the composer exposes honest capability copy while leaving upload admission
   assert.match(source, /allowVideos: pickerCapabilities\.videos/);
   assert.match(source, /allowLivePhotoVideo: true/);
   assert.doesNotMatch(source, /mediaPublishingSelection/);
-  assert.match(source, /void refreshMediaPublishingCapabilities\(\{ force: true, background: true \}\)/);
+  const uploadStart = source.slice(source.indexOf("async function uploadOriginalMedia"), source.indexOf("async function stageSelectedAssets"));
+  assert.doesNotMatch(uploadStart, /refreshMediaPublishingCapabilities/, "starting the authoritative upload must not launch a duplicate advisory health request");
   assert.match(source, /uploadOriginalMediaAsset\(\{/);
   assert.match(source, /mediaPublishingAvailabilityCopy\(mediaPublishingCapabilities\)/);
   assert.match(source, /accessibilityLabel="Check media upload availability again"/);

@@ -10,6 +10,7 @@ import {
   verifyVideoObject,
   videoVerifierRuntimeStatus,
   VIDEO_VERIFIER_HEALTH_FRESH_MS,
+  VIDEO_VERIFIER_JOB_TIMEOUT_MS,
 } from "./videoVerifier.js";
 import {
   signVideoVerifierResponse,
@@ -534,6 +535,58 @@ test("authenticated worker busy rolls back the scarce permit and preserves fresh
   });
   assert.equal(busyHealth.ready, true);
   assert.equal(busyHealth.lastAttemptAt, at, "capacity does not overwrite the latest proven health attempt");
+});
+
+test("an admitted active verification holds only its exact fresh health proof for a bounded job lease", async () => {
+  const at = Date.now();
+  await refreshVideoVerifierHealth({
+    env: ENV,
+    at,
+    fetchImpl: (url, request) => signedResponse({
+      path: new URL(url).pathname,
+      request,
+      payload: healthyPayload(),
+    }),
+  });
+  const gate = deferred();
+  const active = verifyVideoObject(verificationInput({
+    fetchImpl: async (url, request) => {
+      await gate.promise;
+      return signedResponse({ path: new URL(url).pathname, request, payload: decodedPayload });
+    },
+  }));
+
+  assert.equal(videoVerifierRuntimeStatus(ENV, at + VIDEO_VERIFIER_HEALTH_FRESH_MS + 1).ready, true,
+    "the admitted job does not make video publishing disappear when the ordinary probe ages out");
+  assert.equal(videoVerifierRuntimeStatus(ENV, at + VIDEO_VERIFIER_JOB_TIMEOUT_MS + 5_000).ready, false,
+    "a hung job cannot keep an arbitrarily stale worker marked ready");
+
+  gate.resolve();
+  await active;
+});
+
+test("an active verification started without fresh health cannot manufacture readiness", async () => {
+  const at = Date.now();
+  await refreshVideoVerifierHealth({
+    env: ENV,
+    at: at - VIDEO_VERIFIER_HEALTH_FRESH_MS - 1_000,
+    fetchImpl: (url, request) => signedResponse({
+      path: new URL(url).pathname,
+      request,
+      payload: healthyPayload(),
+    }),
+  });
+  assert.equal(videoVerifierRuntimeStatus(ENV, at).ready, false);
+  const gate = deferred();
+  const active = verifyVideoObject(verificationInput({
+    fetchImpl: async (url, request) => {
+      await gate.promise;
+      return signedResponse({ path: new URL(url).pathname, request, payload: decodedPayload });
+    },
+  }));
+  assert.equal(videoVerifierRuntimeStatus(ENV, at + 1).ready, false);
+  gate.resolve();
+  await active;
 });
 
 test("authenticated source/decode conflict stays 409 and consumes an admitted job once", async () => {

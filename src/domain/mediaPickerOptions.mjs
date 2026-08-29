@@ -3,8 +3,8 @@ import { MEDIA_POST_MAX_ATTACHMENTS } from "./mediaUploadPolicy.mjs";
 export function postMediaPickerOptions({
   platform,
   remaining,
-  iosH264Preset,
-  iosCompatibleRepresentation,
+  iosPassthroughPreset,
+  iosCurrentRepresentation,
   allowPhotos = true,
   allowVideos = false,
 }) {
@@ -39,18 +39,17 @@ export function postMediaPickerOptions({
       orderedSelection: true,
       // SDK 56 otherwise leaves iCloud-only assets remote and unreadable.
       shouldDownloadFromNetwork: true,
-      // Ask Photos for its broadly readable representation instead of making
-      // every downstream consumer guess whether an IMG.HEIC name contains
-      // HEIC bytes or a system-converted JPEG.
-      ...(iosCompatibleRepresentation != null
-        ? { preferredAssetRepresentationMode: iosCompatibleRepresentation }
+      // Keep the exact representation selected in Photos. The authenticated
+      // media pipeline sniffs and normalizes the original bytes after upload;
+      // asking iOS for a compatible copy first adds a large export delay.
+      ...(iosCurrentRepresentation != null
+        ? { preferredAssetRepresentationMode: iosCurrentRepresentation }
         : {}),
     } : {}),
-    // Expo SDK 56 otherwise uses Passthrough on iOS, preserving a QuickTime
-    // MOV container that has uneven desktop-browser support. This preset emits
-    // an actual H.264/AAC MP4 and caps giant phone captures at 1080p.
-    ...(platform === "ios" && allowVideos === true && iosH264Preset != null
-      ? { videoExportPreset: iosH264Preset }
+    // SDK 56 Passthrough returns the original without an eager H.264 export.
+    // The server verifier owns codec compatibility and public derivatives.
+    ...(platform === "ios" && allowVideos === true && iosPassthroughPreset != null
+      ? { videoExportPreset: iosPassthroughPreset }
       : {}),
   };
 }

@@ -99,12 +99,18 @@ export function startVideoFinalizeJob({ ownerId, assetId, fingerprint, run, at =
     settledAt: null,
     error: null,
     fingerprint,
+    controller: new AbortController(),
   };
   jobs.set(key, entry);
 
   // Queue the work after the route has constructed its response. The job owns
   // its verifier lifecycle; an HTTP disconnect must not abort shared work.
-  const promise = Promise.resolve().then(run).then((result) => {
+  const promise = Promise.resolve().then(() => {
+    if (entry.controller.signal.aborted) {
+      throw entry.controller.signal.reason || new DOMException("Media finalization was cancelled.", "AbortError");
+    }
+    return run({ signal: entry.controller.signal });
+  }).then((result) => {
     if (result?.asset?.status !== "ready") {
       throw new ApiError(503, "Clip processing did not produce a ready asset.", "MEDIA_STORAGE_UNAVAILABLE");
     }
@@ -129,6 +135,26 @@ export function startVideoFinalizeJob({ ownerId, assetId, fingerprint, run, at =
     },
   );
   return { finalize: { state: "processing" }, joined: false, completion: promise };
+}
+
+// Draft deletion is the only public cancellation boundary. Scope the signal to
+// the exact owner + asset job, remove the coordinator entry before aborting,
+// and let late/non-cooperative work settle without repopulating the map. The
+// media_assets transaction separately prevents a late worker from committing
+// variants after the owning draft has been deleted.
+export function cancelVideoFinalizeJob({
+  ownerId,
+  assetId,
+  reason = new DOMException("Media draft was cancelled by its owner.", "AbortError"),
+  at = Date.now(),
+} = {}) {
+  prune(at);
+  const key = jobKey(ownerId, assetId);
+  const current = jobs.get(key);
+  if (!current || current.state !== "processing") return false;
+  jobs.delete(key);
+  if (!current.controller.signal.aborted) current.controller.abort(reason);
+  return true;
 }
 
 export function waitForVideoFinalizeCompletion(completion, {
@@ -161,5 +187,10 @@ export function waitForVideoFinalizeCompletion(completion, {
 }
 
 export function resetVideoFinalizeJobsForTests() {
+  for (const entry of jobs.values()) {
+    if (entry.state === "processing" && !entry.controller.signal.aborted) {
+      entry.controller.abort(new DOMException("Video finalization state reset.", "AbortError"));
+    }
+  }
   jobs.clear();
 }

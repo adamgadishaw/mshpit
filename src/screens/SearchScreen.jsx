@@ -231,6 +231,11 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
     if (!query) return [];
     return fanClubsDirectory().filter((c) => c.artist.toLowerCase().includes(query)).slice(0, 12);
   }, [fanClubDirectoryStatus, query]);
+  // Local venue/event/club indexes can finish hydrating while the remote search
+  // is in flight. Keep their latest count for analytics without making those
+  // unrelated updates cancel and restart people/artist/song requests.
+  const localResultCountRef = useRef(0);
+  localResultCountRef.current = venues.length + events.length + clubs.length;
 
   // Pull the artist catalog on open and whenever the box is cleared. A typed
   // query searches people, artists, and songs together; one shared abort signal
@@ -272,7 +277,10 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
         // Search text stays inside the search requests. Analytics receives only a
         // coarse result-count bucket, computed after this query's remote and local
         // result sets settle, so stale requests cannot emit a misleading funnel.
-        const resultCount = (peopleRows?.length || 0) + (artistRows?.length || 0) + (songRows?.length || 0) + venues.length + events.length + clubs.length;
+        const resultCount = (peopleRows?.length || 0)
+          + (artistRows?.length || 0)
+          + (songRows?.length || 0)
+          + localResultCountRef.current;
         const resultBucket = searchResultBucket(resultCount);
         if (session?.id) {
           track("search", { kind: "all", resultBucket });
@@ -293,7 +301,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
       }
     }, 250);
     return () => { live = false; clearTimeout(id); controller.abort(); };
-  }, [query, peopleScope, searchRevision, session?.id, venues.length, events.length, clubs.length]);
+  }, [query, peopleScope, searchRevision, session?.id]);
 
   const mine = session?.id;
   // People are pure type-ahead (like every social app): never a full list, always

@@ -258,8 +258,8 @@
   ],
   "unexplainedEmptyCatchSignaturesByFile": {
     "App.js": {
-      "count": 9,
-      "fingerprint": "9dd242f8fa40611954bf"
+      "count": 8,
+      "fingerprint": "ae99386bb46507007763"
     },
     "server/analyticsService.js": {
       "count": 1,
@@ -292,10 +292,6 @@
     "server/errorLog.js": {
       "count": 1,
       "fingerprint": "e8485f04df62b46f322a"
-    },
-    "server/index.js": {
-      "count": 1,
-      "fingerprint": "0ec1ae026137ff72fc6d"
     },
     "server/mediaDeletion.js": {
       "count": 2,
@@ -506,10 +502,6 @@
     "App.js": {
       "count": 1,
       "fingerprint": "3b9bc393e377e0c78f89"
-    },
-    "server/musicProviders.js": {
-      "count": 1,
-      "fingerprint": "73fcade72c0a0ebbb7ef"
     },
     "server/wikidataChannels.js": {
       "count": 1,

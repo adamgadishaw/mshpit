@@ -116,6 +116,7 @@ export default function PostScreen({ log, onClose, onOpenProfile, onOpenArtist, 
   }));
   const scrollRef = useRef(null);
   const appActive = useAppActive();
+  const forcedCommentRevisionRef = useRef(-1);
 
   // Live comments: hydrate + poll while this screen is actually visible. A
   // tab/app return restarts this effect once instead of spending requests in
@@ -125,14 +126,16 @@ export default function PostScreen({ log, onClose, onOpenProfile, onOpenArtist, 
     let active = true;
     const scope = commentScope;
     const hasCachedComments = flat.length > 0;
-    const refresh = async ({ background = false } = {}) => {
+    const forceInitialRefresh = forcedCommentRevisionRef.current !== commentRequestVersion;
+    if (forceInitialRefresh) forcedCommentRevisionRef.current = commentRequestVersion;
+    const refresh = async ({ background = false, force = false } = {}) => {
       if (!background) {
         setCommentResource((current) => {
           const loaded = current.scope === scope ? current.loaded : hasCachedComments;
           return { scope, status: loaded ? "refreshing" : "loading", loaded, error: null };
         });
       }
-      const result = await loadComments(log.id, { limit: 50, force: true });
+      const result = await loadComments(log.id, { limit: 50, force });
       if (!active) return;
       setCommentResource((current) => {
         const loaded = current.scope === scope && current.loaded;
@@ -145,8 +148,11 @@ export default function PostScreen({ log, onClose, onOpenProfile, onOpenArtist, 
         };
       });
     };
-    void refresh();
-    const t = setInterval(() => void refresh({ background: true }), 15_000);
+    // First open and explicit retries remain authoritative. A tab/app return can
+    // reuse the Store's 30-second freshness and in-flight guards, while the live
+    // interval still performs its intentional server refresh every 15 seconds.
+    void refresh({ force: forceInitialRefresh });
+    const t = setInterval(() => void refresh({ background: true, force: true }), 15_000);
     return () => {
       active = false;
       clearInterval(t);

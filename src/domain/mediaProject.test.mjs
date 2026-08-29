@@ -264,6 +264,22 @@ test("serialized drafts retain only PIT-managed local recovery files", () => {
   assert.equal(JSON.stringify(serialized).includes("runtimeFile"), false);
 });
 
+test("serialized drafts retain a server-resumable asset ID without leaking its picker path", () => {
+  const project = normalizeMediaProject({ assets: [{
+    id: "source-uploaded",
+    assetId: "ma_sourceuploaded1234",
+    uri: "file:///private/mobile/IMG_0042.MOV",
+    kind: "video",
+    status: "finalizing",
+  }] });
+  const serialized = serializableMediaProject(project);
+  assert.equal(serialized.assets.length, 1);
+  assert.equal(serialized.assets[0].assetId, "ma_sourceuploaded1234");
+  assert.equal(serialized.assets[0].status, "finalizing");
+  assert.equal(Object.hasOwn(serialized.assets[0], "uri"), false);
+  assert.equal(JSON.stringify(serialized).includes("file:///private"), false);
+});
+
 test("a stable asset keeps its explicit editing state across process-death serialization", () => {
   const project = normalizeMediaProject({ assets: [{
     id: "stable-edit",

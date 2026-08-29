@@ -32,6 +32,8 @@ const VIDEO_MAX_BYTES = MEDIA_VIDEO_SOURCE_MAX_BYTES;
 const VIDEO_MAX_DURATION_MS = MEDIA_VIDEO_MAX_DURATION_MS;
 const VIDEO_MAX_EDGE = 4_096;
 const VIDEO_MAX_SAMPLES = MEDIA_VIDEO_MAX_SAMPLES;
+const DELIVERY_MAX_WIDTH = 1_920;
+const DELIVERY_MAX_HEIGHT = 1_080;
 const VIDEO_MAX_CODED_PIXEL_SAMPLES = 120n * 68n * 256n * BigInt(MEDIA_VIDEO_MAX_SAMPLES);
 const POSTER_MAX_BYTES = 1_500_000;
 const POSTER_MAX_EDGE = 1_280;
@@ -569,22 +571,57 @@ async function decodeAllStreams(filePath, config, { runProcess, directory, signa
   ], { cwd: directory, signal });
 }
 
-async function transcodeSanitizedDelivery(sourcePath, deliveryPath, config, { runProcess, directory, signal }) {
-  const videoFilter = "scale=w='min(1920,iw)':h='min(1080,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1";
-  await runProcess(config.ffmpeg, [
+export function videoDeliveryStrategy(video = {}) {
+  return video?.codec === "h264"
+    && new Set(["aac", "none"]).has(video?.audioCodec)
+    && Number(video?.rotation) === 0
+    && Number.isSafeInteger(video?.width)
+    && video.width >= 1
+    && video.width <= DELIVERY_MAX_WIDTH
+    && Number.isSafeInteger(video?.height)
+    && video.height >= 1
+    && video.height <= DELIVERY_MAX_HEIGHT
+    ? "remux"
+    : "transcode";
+}
+
+async function createSanitizedDelivery(
+  sourcePath,
+  deliveryPath,
+  sourceVideo,
+  structural,
+  config,
+  { runProcess, directory, signal },
+) {
+  const strategy = videoDeliveryStrategy(sourceVideo);
+  const commonInput = [
     "-nostdin", "-v", "error", "-xerror", "-err_detect", "explode",
     "-threads", "2", "-filter_threads", "1",
     "-protocol_whitelist", "file,pipe", "-f", "mov", "-i", sourcePath,
     "-map", "0:v:0", "-map", "0:a:0?",
-    "-vf", videoFilter,
-    // Concert footage is often grainy enough that unconstrained CRF H.264 can
-    // expand beyond the bounded delivery contract even from a smaller HEVC
-    // source. VBV keeps the sanitized output inside that contract while CRF
-    // still spends fewer bits on easier scenes.
-    "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
-    "-maxrate", "11M", "-bufsize", "22M",
-    "-profile:v", "high", "-level:v", "4.2", "-pix_fmt", "yuv420p",
-    "-c:a", "aac", "-profile:a", "aac_low", "-ac", "2", "-ar", "48000", "-b:a", "160k",
+  ];
+  const output = strategy === "remux"
+    ? [
+        // The source has already passed the strict H.264/AAC/container probe.
+        // Stream-copy only when no scale or rotation normalization is needed;
+        // selecting A/V streams plus dropping metadata/chapters removes camera
+        // location, device and discarded QuickTime tracks without re-encoding.
+        "-c:v", "copy", "-c:a", "copy",
+      ]
+    : [
+        `-vf`, `scale=w='min(${DELIVERY_MAX_WIDTH},iw)':h='min(${DELIVERY_MAX_HEIGHT},ih)':force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1`,
+        // Concert footage is often grainy enough that unconstrained CRF H.264 can
+        // expand beyond the bounded delivery contract even from a smaller HEVC
+        // source. VBV keeps the sanitized output inside that contract while CRF
+        // still spends fewer bits on easier scenes.
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "21",
+        "-maxrate", "11M", "-bufsize", "22M",
+        "-profile:v", "high", "-level:v", "4.2", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-profile:a", "aac_low", "-ac", "2", "-ar", "48000", "-b:a", "160k",
+      ];
+  await runProcess(config.ffmpeg, [
+    ...commonInput,
+    ...output,
     "-map_metadata", "-1", "-map_chapters", "-1", "-metadata:s:v:0", "rotate=0",
     "-movflags", "+faststart", "-brand", "mp42", "-f", "mp4", "-y", deliveryPath,
   ], { cwd: directory, signal });
@@ -592,10 +629,28 @@ async function transcodeSanitizedDelivery(sourcePath, deliveryPath, config, { ru
   if (!file.isFile() || file.size < 16 || file.size > VIDEO_MAX_BYTES) {
     throw serviceError("delivery_invalid", "Sanitized delivery is outside its byte limit.");
   }
-  const video = await probeVideo(deliveryPath, config, { runProcess, directory, signal });
+  const video = await probeVideo(deliveryPath, config, {
+    runProcess,
+    directory,
+    signal,
+    // A stream copy preserves the already-proven AVC coded envelope. Passing
+    // that signed envelope also lets reviewed iPhone AVC files retain their
+    // valid implicit square-pixel representation when ffprobe omits SAR.
+    structural: strategy === "remux" ? structural : undefined,
+  });
   if (video.rotation !== 0) throw serviceError("delivery_invalid", "Sanitized delivery retained rotation metadata.");
+  if (strategy === "remux" && (video.codec !== "h264"
+      || video.audioCodec !== sourceVideo.audioCodec
+      || video.width !== sourceVideo.width
+      || video.height !== sourceVideo.height
+      || Math.abs(video.durationMs - sourceVideo.durationMs) > 1_500)) {
+    throw serviceError("delivery_invalid", "Sanitized remux changed the admitted clip streams.");
+  }
+  // Stream-copy deliberately does not decode source packets. This full output
+  // pass remains mandatory for both strategies, so corrupt later access units
+  // cannot be published merely because metadata and the first frame looked safe.
   await decodeAllStreams(deliveryPath, config, { runProcess, directory, signal });
-  return { file, video };
+  return { file, video, strategy };
 }
 
 async function sha256File(filePath) {
@@ -753,7 +808,14 @@ export async function runVideoVerifierJob(payload, {
     // The following xerror/err_detect transcode necessarily decodes every
     // selected source frame and audio packet. A separate full source decode was
     // redundant and doubled the slowest HEVC path without adding a new proof.
-    const delivery = await transcodeSanitizedDelivery(sourcePath, deliveryPath, config, { runProcess, directory, signal });
+    const delivery = await createSanitizedDelivery(
+      sourcePath,
+      deliveryPath,
+      video,
+      job.structural,
+      config,
+      { runProcess, directory, signal },
+    );
     const poster = await generateAndVerifyPoster(deliveryPath, posterPath, job, delivery.video, config, { runProcess, directory, signal });
     if (!SHA256.test(poster.sha256)) throw serviceError("poster_invalid", "Generated cover hash is invalid.");
     const published = await uploadSanitizedDelivery(job, deliveryPath, delivery, { fetchImpl, signal });

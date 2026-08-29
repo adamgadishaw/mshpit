@@ -65,6 +65,7 @@ export function DesktopTopNav({
   notifUnread = 0,
   compact = false,
   onHome,
+  onLogIntent,
   onLog,
   onActivity,
   onInbox,
@@ -124,6 +125,9 @@ export function DesktopTopNav({
           pressed && styles.topPostPressed,
           focused && focusRing,
         ]}
+        onPressIn={onLogIntent}
+        onHoverIn={onLogIntent}
+        onFocus={onLogIntent}
         onPress={onLog}
         disabled={!onLog}
         accessibilityRole="button"

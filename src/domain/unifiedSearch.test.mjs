@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 
 import {
@@ -111,4 +112,20 @@ test("fresh people results and recent searches still filter blocked members", ()
     { type: "person", id: "blocked", label: "Blocked Fan" },
     { type: "artist", id: "blocked", label: "Unrelated Artist" },
   ], ["blocked"]), [{ type: "artist", id: "blocked", label: "Unrelated Artist" }]);
+});
+
+test("local catalogue hydration does not cancel and restart remote unified search", () => {
+  const source = readFileSync(new URL("../screens/SearchScreen.jsx", import.meta.url), "utf8");
+  const effectStart = source.indexOf("// Pull the artist catalog on open");
+  const effectEnd = source.indexOf("const mine = session?.id", effectStart);
+  assert.ok(effectStart >= 0 && effectEnd > effectStart);
+  const requestEffect = source.slice(effectStart, effectEnd);
+
+  assert.match(requestEffect, /localResultCountRef\.current/);
+  assert.match(requestEffect, /\}, \[query, peopleScope, searchRevision, session\?\.id\]\);/);
+  assert.doesNotMatch(
+    requestEffect,
+    /\[(?:[^\]]*\b(?:venues|events|clubs)\.length\b[^\]]*)\]/,
+    "local result-count changes must not own the remote request lifecycle",
+  );
 });

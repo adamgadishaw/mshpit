@@ -285,13 +285,29 @@ export function videoVerifierRuntimeStatus(env = process.env, at = Date.now()) {
   const config = getVideoVerifierConfig(env);
   const sameRuntime = config.configured && runtime.fingerprint === config.fingerprint;
   const ageMs = sameRuntime && runtime.lastSuccessAt ? Math.max(0, at - runtime.lastSuccessAt) : null;
+  const freshProof = sameRuntime
+    && ageMs !== null
+    && ageMs <= VIDEO_VERIFIER_HEALTH_FRESH_MS
+    && runtime.lastErrorCode === null
+    && runtime.lastSuccessAt >= runtime.lastAttemptAt;
+  // A healthy worker cannot answer the periodic decoder probe while its one
+  // slot is processing an admitted clip. Preserve only the exact fresh health
+  // proof captured when that job took the slot, and bound it by the same hard
+  // timeout as the control-plane request. A job started from stale/unproven
+  // health receives no lease and can never make publishing appear ready.
+  const admission = activeVerification?.healthAdmission;
+  const admittedActiveProof = sameRuntime
+    && activeVerification?.settled === false
+    && admission?.fingerprint === config.fingerprint
+    && admission?.lastSuccessAt === runtime.lastSuccessAt
+    && runtime.lastErrorCode === null
+    && Number.isSafeInteger(admission?.admittedAt)
+    && Number.isSafeInteger(admission?.expiresAt)
+    && at >= admission.admittedAt
+    && at <= admission.expiresAt;
   return {
     configured: config.configured,
-    ready: !!(sameRuntime
-      && ageMs !== null
-      && ageMs <= VIDEO_VERIFIER_HEALTH_FRESH_MS
-      && runtime.lastErrorCode === null
-      && runtime.lastSuccessAt >= runtime.lastAttemptAt),
+    ready: !!(freshProof || admittedActiveProof),
     pipeline: VIDEO_VERIFIER_PIPELINE_VERSION,
     lastSuccessAt: sameRuntime ? runtime.lastSuccessAt || null : null,
     lastAttemptAt: sameRuntime ? runtime.lastAttemptAt || null : null,
@@ -633,10 +649,21 @@ export async function verifyVideoObject({
     }
     demandReservation = reservationResult || null;
   }
+  const admittedAt = Date.now();
+  const admissionStatus = videoVerifierRuntimeStatus(env, admittedAt);
+  const healthAdmission = admissionStatus.ready && Number.isSafeInteger(admissionStatus.lastSuccessAt)
+    ? Object.freeze({
+        fingerprint: config.fingerprint,
+        lastSuccessAt: admissionStatus.lastSuccessAt,
+        admittedAt,
+        expiresAt: admittedAt + VIDEO_VERIFIER_JOB_TIMEOUT_MS,
+      })
+    : null;
   const controller = new AbortController();
   const job = {
     identity,
     controller,
+    healthAdmission,
     promise: null,
     settled: false,
     waiters: 0,

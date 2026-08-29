@@ -1252,6 +1252,10 @@ export function StoreProvider({ children }) {
   // pause in the background, abort on unmount, back off after failures, and do
   // not reset the older-page cursor after the initial load.
   useEffect(() => {
+    // Production starts with an untrusted guest-shaped client state while the
+    // HttpOnly cookie is validated. Starting a personalized feed in that window
+    // only guarantees that a confirmed account will abort and repeat the work.
+    if (!authReady) return undefined;
     let stopped = false;
     let timer = null;
     let delay = FEED_REFRESH_MS;
@@ -1298,7 +1302,7 @@ export function StoreProvider({ children }) {
     // Restart immediately when account scope changes. The cleanup aborts the old
     // viewer's request before the new personalized cache can accept a response.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session?.id]);
+  }, [authReady, session?.id]);
 
   // Canonical server snapshot. Memorial publication also calls this explicitly
   // so dates hidden by the new memorial cannot linger until the next login.
@@ -1344,14 +1348,22 @@ export function StoreProvider({ children }) {
   // The server ranks real provider dates against the signed-in account's saved
   // location and widens gracefully if the exact city has no upcoming listings.
   useEffect(() => {
+    // Wait for the cookie handshake so this request is born in its final account
+    // scope instead of doing a guest read that login immediately throws away.
+    if (!authReady) return undefined;
     let active = true;
+    const controller = new AbortController();
     const requestScope = activeDiscoverySidebarScope;
     setDiscoverySidebarResource((current) => beginLoadState(current, {
       scope: requestScope,
       emptyData: EMPTY_DISCOVERY_SIDEBAR,
       retainData: false,
     }));
-    api("/api/discovery/sidebar", { context: "Loading your local concert lineup", silent: true })
+    api("/api/discovery/sidebar", {
+      context: "Loading your local concert lineup",
+      silent: true,
+      signal: controller.signal,
+    })
       .then((data) => {
         if (!active || discoverySidebarScopeRef.current !== requestScope) return;
         const next = {
@@ -1372,8 +1384,11 @@ export function StoreProvider({ children }) {
           retainData: false,
         }));
       });
-    return () => { active = false; };
-  }, [activeDiscoverySidebarScope]);
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [activeDiscoverySidebarScope, authReady]);
 
   // --- Privacy-safe first-party product analytics ----------------------------
   // The facade sanitizes before a durable retry batch is written, while the API

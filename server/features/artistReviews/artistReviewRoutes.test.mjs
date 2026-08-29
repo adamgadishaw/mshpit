@@ -132,7 +132,7 @@ function projectPost(row, viewerId) {
     song: { videoId: "youtube-123", title: "Midnight", artist: row.artist },
     likes: row.like_count,
     comments: row.comment_count,
-    liked: viewerId === "viewer",
+    liked: !!row.viewer_liked,
     createdAt: row.created_at,
     editedAt: row.updated_at,
     version: row.updated_at || row.created_at,
@@ -244,6 +244,7 @@ test("route bounds the read, validates identity, and fails closed for non-galler
         photosPublic: index !== 0,
       });
     }
+    database.prepare("INSERT INTO likes (post_id,user_id) VALUES (?,?)").run("post-00", "viewer");
     const rateCalls = [];
     const routes = artistReviewRoutes({
       database,
@@ -259,6 +260,8 @@ test("route bounds the read, validates identity, and fails closed for non-galler
 
     assert.equal(response.reviews.length, 10);
     assert.equal(response.reviews[0].id, "post-00");
+    assert.equal(response.reviews[0].liked, true);
+    assert.equal(response.reviews[1].liked, false);
     assert.deepEqual(response.reviews[0].photos, []);
     assert.deepEqual(response.reviews[0].media, []);
     assert.deepEqual(response.reviews[0].mediaAssetIds, []);

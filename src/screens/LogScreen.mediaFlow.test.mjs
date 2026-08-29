@@ -6,16 +6,19 @@ const source = await readFile(new URL("./LogScreen.jsx", import.meta.url), "utf8
 const includes = (text, needle) => assert.ok(text.includes(needle), `Expected source to include: ${needle}`);
 const excludes = (text, needle) => assert.ok(!text.includes(needle), `Expected source not to include: ${needle}`);
 
-test("composer stages picker selections and immediately uploads their original assets", () => {
+test("composer queues picker selections synchronously and uploads originals without a native staging copy", () => {
   const stage = source.slice(source.indexOf("async function stageSelectedAssets"), source.indexOf("const addPhoto"));
   const preflight = stage.indexOf("mediaPublishingPreflightSelection(candidateAssets");
-  const persist = stage.indexOf("stageMediaDraftAssets(selected");
-  const upload = stage.indexOf("await uploadOriginalMedia(staged)");
+  const pending = stage.indexOf("setPendingMediaAssets((current)");
+  const upload = stage.indexOf("await uploadOriginalMedia(selected)");
   assert.ok(preflight >= 0);
-  assert.ok(persist > preflight);
-  assert.ok(upload > persist);
+  assert.ok(pending > preflight);
+  assert.ok(upload > pending);
   includes(stage, "allowLivePhotoVideo: true");
   includes(stage, "originalMediaProjectAsset(asset, index)");
+  includes(stage, "uploadOperationRef.current");
+  excludes(stage, "stageMediaDraftAssets");
+  excludes(source, "stageMediaDraftAssets,");
   includes(source, "stageSelectedAssets(result.assets)");
   excludes(source, "components/media-editor");
   excludes(source, "MediaEditorWorkspace");
@@ -25,12 +28,21 @@ test("composer stages picker selections and immediately uploads their original a
 test("original upload leaves admission to the authenticated route and keeps progress, retry, and cancellation", () => {
   const upload = source.slice(source.indexOf("async function uploadOriginalMedia"), source.indexOf("async function stageSelectedAssets"));
   includes(upload, ".map((asset, index) => originalMediaProjectAsset(asset, index))");
-  includes(upload, "void refreshMediaPublishingCapabilities({ force: true, background: true })");
+  excludes(upload, "refreshMediaPublishingCapabilities");
   excludes(upload, "mediaPublishingSelection");
   includes(upload, "const controller = new AbortController()");
+  includes(upload, "if (!selected.length || uploadOperationRef.current");
+  includes(upload, "uploadOperationRef.current = operation");
+  includes(upload, "const operationIsActive = () => ownsOperation() && !controller.signal.aborted");
   excludes(upload, "renderedAsset");
   includes(upload, "onProgress: (progress) =>");
+  includes(upload, "createMediaTransferProgressPublisher({");
+  includes(upload, "progressPublisher.publish({");
+  includes(upload, "progressPublisher.cancel()");
+  excludes(upload, "setUploadProgress({");
   includes(upload, "fraction: progress.fraction");
+  includes(upload, 'fraction: stage === "ready" ? 1 : 0');
+  excludes(upload, 'stage.startsWith("verifying-") ? 1');
   includes(source, "uploadControllerRef.current?.abort()");
   includes(upload, "onRemoteDraft: ({ assetId, sourceUploaded }) =>");
   includes(upload, "if (sourceUploaded !== true) return");
@@ -62,25 +74,33 @@ test("composer exposes no filter, crop, cover, trim, or media-editor entry point
   includes(source, 'items will"} upload without filters or edits');
 });
 
-test("picker preserves local media while refreshing the exact server contract for status", () => {
+test("picker requests iOS permission before original passthrough selection", () => {
   includes(source, "loadMediaPublishingCapabilities({");
   includes(source, "apiCall: api");
   includes(source, "signal: controller.signal");
   excludes(source, "api(MEDIA_PUBLISHING_HEALTH_PATH");
   includes(source, "allowPhotos: pickerCapabilities.photos");
   includes(source, "allowVideos: pickerCapabilities.videos");
-  includes(source, "iosCompatibleRepresentation: ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Compatible");
+  includes(source, "iosPassthroughPreset: ImagePicker.VideoExportPreset.Passthrough");
+  includes(source, "iosCurrentRepresentation: ImagePicker.UIImagePickerPreferredAssetRepresentationMode.Current");
   includes(source, "allowLivePhotoVideo: true");
   includes(source, "label={mediaAttachmentLabel}");
   includes(source, 'AppState.addEventListener("change"');
   includes(source, 'state === "active") void refreshMediaPublishingCapabilities({ background: true })');
   includes(source, "sameMediaPublishingCapabilities(current, capabilities) ? current : capabilities");
+  includes(source, "setMediaPublishingCapabilitiesLoaded(true)");
+  includes(source, "mediaPublishingCapabilitiesLoaded");
+  includes(source, '? mediaPublishingAvailabilityCopy(mediaPublishingCapabilities)');
   includes(source, "refreshMediaPublishingCapabilities({ force: true, background: false })");
   includes(source, 'accessibilityLabel="Check media upload availability again"');
   excludes(source, "Photo Studio is available now");
   const picker = source.slice(source.indexOf("const addPhoto"), source.indexOf("const cancelUpload"));
   includes(picker, "const pickerCapabilities = { photos: true, videos: true }");
   includes(picker, "void refreshMediaPublishingCapabilities({ background: true })");
+  const permission = picker.indexOf("await ImagePicker.requestMediaLibraryPermissionsAsync()");
+  const launch = picker.indexOf("await ImagePicker.launchImageLibraryAsync(");
+  assert.ok(permission >= 0 && launch > permission);
+  includes(picker, "if (!permission?.granted)");
   includes(picker, "await stageSelectedAssets(res.assets)");
   excludes(picker, "await refreshMediaPublishingCapabilities");
   includes(source, 'const mediaAttachmentLabel = "Photo / video"');

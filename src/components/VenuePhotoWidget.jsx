@@ -7,6 +7,7 @@ import { mapsDir } from "../lib/afterparty";
 import { displaySrc, proxied, isHttp } from "../lib/img";
 import { venuePhotoAttemptScope } from "../domain/venuePhotos.mjs";
 import { venuePhotoAttribution, verifiedHttpsUrl } from "../domain/venuePhotoProvenance.mjs";
+import useAppActive from "../lib/useAppActive";
 
 // An iOS-photo-widget-style rolling compilation for a venue: real photos when we
 // have them, a stage-light title card always on top (venue + city), and a Get
@@ -46,6 +47,7 @@ function Slide({ photo, idx, viaProxy, onError }) {
 }
 
 export default function VenuePhotoWidget({ photos = [], venueName, city, coord, loading = false, error = false, onRetry, onPress }) {
+  const appActive = useAppActive();
   // Some hosts block browser loads (hotlink/CORS) even when the URL is alive.
   // Retry ladder per URL: direct -> wsrv.nl proxy -> drop. Only when every photo
   // exhausts both attempts does the themed gradient card show.
@@ -80,10 +82,10 @@ export default function VenuePhotoWidget({ photos = [], venueName, city, coord, 
   }, [slides.length]);
 
   useEffect(() => {
-    if (slides.length < 2 || paused || reduceMotion) return undefined;
+    if (!appActive || slides.length < 2 || paused || reduceMotion) return undefined;
     const id = setInterval(() => setI((x) => (x + 1) % slides.length), 3600);
     return () => clearInterval(id);
-  }, [paused, reduceMotion, slides.length]);
+  }, [appActive, paused, reduceMotion, slides.length]);
 
   const realCount = real.length;
   const cur = i % slides.length;

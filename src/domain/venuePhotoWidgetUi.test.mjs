@@ -11,6 +11,8 @@ test("venue photo widget remains parseable and scopes failed deliveries to the a
   assert.match(source, /const attemptScope = venuePhotoAttemptScope\(venueName, photos\)/);
   assert.match(source, /useEffect\(\(\) => \{\s*setAttempt\(\{\}\);\s*setI\(0\);\s*\}, \[attemptScope\]\)/s);
   assert.match(source, /const retryPhotos = \(\) => \{\s*setAttempt\(\{\}\);\s*setI\(0\);/s);
+  assert.match(source, /const appActive = useAppActive\(\)/);
+  assert.match(source, /if \(!appActive \|\| slides\.length < 2 \|\| paused \|\| reduceMotion\) return undefined/);
 });
 
 test("venue photo widget uses shared display compatibility and never leaves an empty dark frame", () => {

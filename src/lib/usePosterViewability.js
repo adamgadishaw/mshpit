@@ -13,8 +13,11 @@ export default function usePosterViewability(explicitViewable = null) {
   const measurementEpochRef = useRef(0);
   const explicitRef = useRef(false);
   const [autoViewable, setAutoViewable] = useState(false);
-  const blocked = explicitViewable === false;
-  explicitRef.current = blocked;
+  const hasExplicitViewability = explicitViewable === true || explicitViewable === false;
+  // An explicit answer already owns the visibility decision. Fence any delayed
+  // measurement for both true and false so a stale native callback cannot
+  // overwrite it after a virtualized surface advances to another item.
+  explicitRef.current = hasExplicitViewability;
 
   useEffect(() => {
     mountedRef.current = true;
@@ -44,10 +47,10 @@ export default function usePosterViewability(explicitViewable = null) {
         viewportHeight: viewport.height,
       }));
     });
-  }, [blocked]);
+  }, [hasExplicitViewability]);
 
   useEffect(() => {
-    if (blocked) {
+    if (hasExplicitViewability) {
       measurementEpochRef.current += 1;
       setAutoViewable(false);
       return undefined;
@@ -101,11 +104,13 @@ export default function usePosterViewability(explicitViewable = null) {
       if (timer) clearTimeout(timer);
       subscription?.remove?.();
     };
-  }, [blocked, measureNative]);
+  }, [hasExplicitViewability, measureNative]);
 
   return {
     targetRef,
-    autoViewable,
-    onLayout: blocked || Platform.OS === "web" ? undefined : measureNative,
+    // Callers with authoritative viewability never need a 450 ms measurement
+    // loop just to rediscover the answer they already supplied.
+    autoViewable: explicitViewable === true ? true : autoViewable,
+    onLayout: hasExplicitViewability || Platform.OS === "web" ? undefined : measureNative,
   };
 }

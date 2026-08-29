@@ -235,15 +235,16 @@ export function moveMediaProjectAsset(project, assetId, toIndex) {
   return { ...current, assets };
 }
 
-// Composer persistence may retain durable server descriptors and native files
-// explicitly copied into PIT's account/project-scoped document directory. Raw
-// picker/content/blob paths never cross this boundary.
+// Composer persistence may retain durable server descriptors, opaque asset IDs
+// whose source PUT already completed, and older native files explicitly copied
+// into PIT's account/project-scoped document directory. Raw picker/content/blob
+// paths never cross this boundary.
 export function serializableMediaProject(project) {
   const current = normalizeMediaProject(project);
   return {
     version: current.version,
     assets: current.assets
-      .filter((asset) => asset.sourceUrl || asset.durableLocalUri)
+      .filter((asset) => asset.sourceUrl || asset.assetId || asset.durableLocalUri)
       .map((asset) => ({
         id: asset.id,
         assetId: asset.assetId,

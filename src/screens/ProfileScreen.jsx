@@ -19,6 +19,7 @@ import { tasteMatch } from "../domain/tasteMatch.mjs";
 import { selectConcertReviews, selectProfileTimeline } from "../domain/profileTimeline.mjs";
 import { memberCalendarModel } from "../domain/calendarShows.mjs";
 import { useProfileHistory } from "../features/profileHistory/useProfileHistory";
+import useAppActive from "../lib/useAppActive";
 
 const EMPTY_PROFILE_STATE = Object.freeze({ status: "loading", user: null, error: "" });
 
@@ -53,6 +54,7 @@ function ProfileMediaTile({ item, index, onOpen }) {
 
 // Public member profile: musical identity, live history, media, plans, and posts.
 export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenProfile, onOpenArtist, onOpenVenue, onManageProfile, onMessage, onReport, onEditPost, onOpenPhotos, onRemoveMyPostTag, onOpenFollowList, onOpenBadges }) {
+  const appActive = useAppActive();
   const { session, userById, logsByUser, isFollowing, follow, unfollow, followerCount, followingCount, goingFor, myAttendance, userBadges, sharedShows, loadUser, isBlocked, blockUser, unblockUser, userPoints, userAchievements, loadRewards, deleteOwnPost } = useStore();
   const profileScope = accountTargetScope(session?.id, `profile:${userId || ""}`);
   const profileScopeRef = useRef(profileScope);
@@ -370,7 +372,7 @@ export default function ProfileScreen({ userId, onClose, onOpenShow, onOpenProfi
                   : p.posted ? <View style={styles.showSource}><Text style={styles.showSourceTxt}>POSTED</Text></View> : null}
               {target != null && target - Date.now() > -86400000 && (
                 <View style={styles.countdownBox}>
-                  <Countdown target={target} style={styles.countdownT} />
+                  <Countdown target={target} active={appActive} style={styles.countdownT} />
                   {target - Date.now() > 0 && <Text style={styles.countdownLabel}>until doors</Text>}
                 </View>
               )}

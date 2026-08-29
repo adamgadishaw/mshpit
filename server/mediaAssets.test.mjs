@@ -41,6 +41,7 @@ const {
   recordMediaObjectTicket,
 } = await import("./mediaDeletion.js");
 const { inspectImageBytes } = await import("./imageInspection.js");
+const { startVideoFinalizeJob, videoFinalizeState } = await import("./videoFinalizeJobs.js");
 
 after(() => {
   db.close();
@@ -607,16 +608,39 @@ test("owner cancellation atomically queues every draft object, honors PUT barrie
     assetId: "ma_routecancelroutecancelroute",
     at: Date.now(),
   });
+  let routeJobSignal = null;
+  const routeJob = startVideoFinalizeJob({
+    ownerId: owner.id,
+    assetId: routeDraft.asset.id,
+    fingerprint: "d".repeat(64),
+    run: async ({ signal }) => {
+      routeJobSignal = signal;
+      await new Promise((resolve, reject) => {
+        const stop = () => reject(signal.reason || new DOMException("Cancelled", "AbortError"));
+        if (signal.aborted) stop();
+        else signal.addEventListener("abort", stop, { once: true });
+      });
+      return { asset: { id: routeDraft.asset.id, status: "ready" } };
+    },
+  });
+  await Promise.resolve();
+  assert.equal(routeJobSignal?.aborted, false);
   assert.deepEqual(routes["DELETE /api/media/assets/:id"]({
     user: stranger,
     ip: "asset-cancel-route-stranger",
     params: { id: routeDraft.asset.id },
   }), { removed: false, queuedObjects: 0 });
+  assert.equal(routeJobSignal.aborted, false, "a foreign delete cannot cancel the owner's verifier");
   assert.deepEqual(routes["DELETE /api/media/assets/:id"]({
     user: owner,
     ip: "asset-cancel-route-owner",
     params: { id: routeDraft.asset.id },
   }), { removed: true, queuedObjects: 1 });
+  assert.equal(routeJobSignal.aborted, true, "deleting the owner draft aborts its detached verifier");
+  await assert.rejects(routeJob.completion, (error) => error?.name === "AbortError");
+  assert.deepEqual(videoFinalizeState({ ownerId: owner.id, assetId: routeDraft.asset.id }), { state: "idle" });
+  assert.equal(db.prepare("SELECT 1 FROM media_assets WHERE id=?").get(routeDraft.asset.id), undefined,
+    "a cancelled verifier cannot recreate the deleted draft");
   assert.deepEqual(routes["DELETE /api/media/assets/:id"]({
     user: owner,
     ip: "asset-cancel-route-owner-retry",

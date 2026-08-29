@@ -18,6 +18,7 @@ import {
   getVideoVerifierServiceConfig,
   runVideoVerifierJob,
   validateVideoVerifierJob,
+  videoDeliveryStrategy,
 } from "./videoVerifierService.js";
 import {
   signVideoVerifierRequest,
@@ -317,10 +318,10 @@ function videoProbe({
 function fakeRunner({
   probe = videoProbe(),
   deliveryProbe = videoProbe({
-    rotation: 0, width: 720, height: 1_280, codedWidth: 720, codedHeight: 1_280,
+    rotation: 0, width: 1_920, height: 1_080, codedWidth: 1_920, codedHeight: 1_088,
   }),
   posterProbe = JSON.stringify({
-    streams: [{ codec_type: "video", codec_name: "mjpeg", width: 720, height: 1_280 }],
+    streams: [{ codec_type: "video", codec_name: "mjpeg", width: 1_280, height: 720 }],
   }),
 } = {}) {
   const calls = [];
@@ -344,9 +345,24 @@ function fakeRunner({
   return runProcess;
 }
 
-test("authoritative MP4 job accepts omitted square-pixel metadata, forces local demux/full decode, and cleans temp state", async () => {
+test("delivery strategy remuxes only bounded unrotated H.264 and preserves every transcode boundary", () => {
+  assert.equal(videoDeliveryStrategy({ codec: "h264", audioCodec: "aac", rotation: 0, width: 1_920, height: 1_080 }), "remux");
+  assert.equal(videoDeliveryStrategy({ codec: "h264", audioCodec: "none", rotation: 0, width: 1_280, height: 720 }), "remux");
+  for (const video of [
+    { codec: "hevc", audioCodec: "aac", rotation: 0, width: 1_920, height: 1_080 },
+    { codec: "h264", audioCodec: "aac", rotation: 90, width: 1_920, height: 1_080 },
+    { codec: "h264", audioCodec: "aac", rotation: 0, width: 1_921, height: 1_080 },
+    { codec: "h264", audioCodec: "aac", rotation: 0, width: 1_920, height: 1_081 },
+    { codec: "h264", audioCodec: "mp3", rotation: 0, width: 1_920, height: 1_080 },
+  ]) assert.equal(videoDeliveryStrategy(video), "transcode");
+});
+
+test("authoritative bounded H.264 job strips metadata by remux, fully decodes output, and cleans temp state", async () => {
   const root = await mkdtemp(join(tmpdir(), "pit-verifier-test-"));
-  const runProcess = fakeRunner({ probe: videoProbe({ omitSampleAspectRatio: true }) });
+  const runProcess = fakeRunner({
+    probe: videoProbe({ rotation: 0, omitSampleAspectRatio: true }),
+    deliveryProbe: videoProbe({ rotation: 0, omitSampleAspectRatio: true }),
+  });
   const fetchImpl = async (url, request) => {
     assert.equal(new URL(url).origin, "https://objects.example.com");
     assert.equal(request.redirect, "error");
@@ -373,7 +389,7 @@ test("authoritative MP4 job accepts omitted square-pixel metadata, forces local 
       signal: AbortSignal.timeout(5_000),
       temporaryRoot: root,
     });
-    assert.equal(result.video.rotation, 90);
+    assert.equal(result.video.rotation, 0);
     assert.deepEqual({
       key: result.delivery.key,
       contentType: result.delivery.contentType,
@@ -384,29 +400,32 @@ test("authoritative MP4 job accepts omitted square-pixel metadata, forces local 
     }, {
       key: "users/u_video/post/delivery.mp4",
       contentType: "video/mp4",
-      width: 720,
-      height: 1_280,
+      width: 1_920,
+      height: 1_080,
       rotation: 0,
       uploadStatus: "created",
     });
     assert.match(result.delivery.sha256, /^[a-f0-9]{64}$/);
-    assert.deepEqual({ width: result.poster.width, height: result.poster.height }, { width: 720, height: 1_280 });
+    assert.deepEqual({ width: result.poster.width, height: result.poster.height }, { width: 1_280, height: 720 });
     const ffmpegCalls = runProcess.calls.filter((call) => call.executable === "ffmpeg");
     assert.equal(ffmpegCalls.some((call) => call.args.includes("-f") && call.args.includes("mov")
       && call.args.includes("-protocol_whitelist")), true);
     assert.equal(ffmpegCalls.some((call) => call.args.includes("-map") && call.args.includes("0:v:0")
       && call.args.includes("0:a:0?")), true);
-    assert.equal(ffmpegCalls.some((call) => call.args.includes("libx264")
-      && call.args.includes("-maxrate") && call.args.includes("11M")
-      && call.args.includes("-bufsize") && call.args.includes("22M")
-      && call.args.includes("-map_metadata") && call.args.includes("-map_chapters")
-      && call.args.some((value) => String(value).endsWith("delivery.mp4"))), true);
+    const deliveryCreation = ffmpegCalls.find((call) => call.args.at(-1)?.endsWith("delivery.mp4"));
+    assert.ok(deliveryCreation);
+    assert.equal(deliveryCreation.args.includes("copy"), true);
+    assert.equal(deliveryCreation.args.includes("libx264"), false);
+    assert.equal(deliveryCreation.args.includes("-map_metadata") && deliveryCreation.args.includes("-map_chapters"), true);
+    assert.equal(ffmpegCalls.some((call) => call.args.includes("-i")
+      && call.args.some((value) => String(value).endsWith("delivery.mp4"))
+      && call.args.includes("null")), true, "the remuxed delivery still receives a complete decode pass");
     assert.equal(ffmpegCalls.some((call) => call.args.includes("-flags:v")
       && call.args.includes("+bitexact")
       && call.args.some((value) => String(value).endsWith("poster.jpg"))), true,
     "worker covers must omit FFmpeg's Lavc comment metadata");
     const sourceConsumers = runProcess.calls.filter((call) => call.args.some((value) => String(value).endsWith("source.mp4")));
-    assert.equal(sourceConsumers.length, 2, "one metadata probe and one full transcode consume the source");
+    assert.equal(sourceConsumers.length, 2, "one metadata probe and one sanitized remux consume the source");
     assert.equal(sourceConsumers.every((call) => call.args.includes("-protocol_whitelist")
       && call.args.includes("file,pipe") && call.args.includes("-f") && call.args.includes("mov")), true);
     assert.equal(sourceConsumers.some((call) => JSON.stringify(call.args).includes("https://")
@@ -496,14 +515,22 @@ test("authoritative worker accepts the reviewed iPhone AVC probe shape", async (
       codec_tag_string: "mebx",
     })),
   ];
-  const runProcess = fakeRunner({ probe: videoProbe({
-    rotation: 0,
-    majorBrand: "qt  ",
-    compatibleBrands: "qt  ",
-    omitSampleAspectRatio: true,
-    codedHeight: 1_080,
-    metadataStreams,
-  }) });
+  const runProcess = fakeRunner({
+    probe: videoProbe({
+      rotation: 0,
+      majorBrand: "qt  ",
+      compatibleBrands: "qt  ",
+      omitSampleAspectRatio: true,
+      codedHeight: 1_080,
+      metadataStreams,
+    }),
+    deliveryProbe: videoProbe({
+      rotation: 0,
+      codedHeight: 1_080,
+      omitSampleAspectRatio: true,
+      metadataStreams: [metadataStreams[0]],
+    }),
+  });
   const base = validJob();
   const payload = validJob({
     object: {

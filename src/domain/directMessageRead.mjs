@@ -18,6 +18,18 @@ export function latestDirectMessageReadCursor(left, right) {
   return b.createdAt > a.createdAt || (b.createdAt === a.createdAt && b.id > a.id) ? b : a;
 }
 
+export function latestIncomingDirectMessageId(messages, accountId) {
+  const ownerId = typeof accountId === "string" ? accountId.trim() : "";
+  if (!ownerId || !Array.isArray(messages)) return null;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    const id = typeof message?.id === "string" ? message.id.trim() : "";
+    const senderId = typeof message?.from === "string" ? message.from.trim() : "";
+    if (id && senderId && senderId !== ownerId) return id;
+  }
+  return null;
+}
+
 export function directMessageIsAfterCursor(message, cursor) {
   const read = cleanCursor(cursor);
   if (!read) return true;

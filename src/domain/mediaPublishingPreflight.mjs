@@ -15,7 +15,7 @@ const issue = (code, message) => ({ code, message });
 // Picker metadata is only an early UX boundary. The server still measures the
 // immutable upload and authoritatively verifies video duration/dimensions and
 // codecs before publishing. This check prevents known-dead-end files from
-// entering the upload queue while allowing native staging to measure a missing size.
+// entering the upload queue while upload preparation can measure a missing size.
 export function mediaPublishingPreflightIssue(asset = {}) {
   const kind = asset?.kind === "video" ? "video" : "image";
   if (!mediaSourceSizeAllowed(asset)) {
@@ -31,8 +31,8 @@ export function mediaPublishingPreflightIssue(asset = {}) {
     return null;
   }
 
-  // Picker MIME, container, duration and dimensions are advisory. Stage the
-  // readable bytes and let the authoritative verifier inspect the source.
+  // Picker MIME, container, duration and dimensions are advisory. Upload the
+  // readable original and let the authoritative verifier inspect the source.
   return null;
 }
 

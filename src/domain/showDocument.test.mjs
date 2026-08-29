@@ -87,6 +87,9 @@ test("ShowScreen supplies the full event range and kind to presentation helpers"
   assert.match(source, /const providerAccessMs = Date\.parse\(norm\.accessStartDateTime \|\| ""\)/);
   assert.match(source, /const hasAuthenticCountdownTarget = !!countdownTimingKind \|\| hasExplicitShowTime/);
   assert.match(source, /presentation\.showCountdown && hasAuthenticCountdownTarget && msLeft != null/);
+  assert.match(source, /if \(targetMs <= Date\.now\(\)\) return/);
+  assert.match(source, /if \(currentTime >= targetMs\) clearInterval\(id\)/);
+  assert.match(source, /if \(!appActive \|\| !presentation\.showCountdown/);
   assert.match(source, /countdownTimingKind === "doors"\s*\? "until verified doors"\s*:\s*countdownTimingKind === "access" \? "until event access" : "until showtime"/);
 });
 

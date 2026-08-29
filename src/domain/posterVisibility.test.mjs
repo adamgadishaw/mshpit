@@ -83,5 +83,13 @@ test("delayed native measurements are fenced after unmount and explicit visibili
   const hook = readFileSync(new URL("../lib/usePosterViewability.js", import.meta.url), "utf8");
   assert.match(hook, /mountedRef\.current = false;[\s\S]*measurementEpochRef\.current \+= 1/);
   assert.match(hook, /if \(!mountedRef\.current \|\| explicitRef\.current \|\| measurementEpoch !== measurementEpochRef\.current\) return/);
-  assert.match(hook, /if \(blocked\) \{[\s\S]*measurementEpochRef\.current \+= 1/);
+  assert.match(hook, /const hasExplicitViewability = explicitViewable === true \|\| explicitViewable === false/);
+  assert.match(hook, /if \(hasExplicitViewability\) \{[\s\S]*measurementEpochRef\.current \+= 1/);
+});
+
+test("an explicit visible tile skips automatic visibility work", () => {
+  const hook = readFileSync(new URL("../lib/usePosterViewability.js", import.meta.url), "utf8");
+  assert.match(hook, /autoViewable: explicitViewable === true \? true : autoViewable/);
+  assert.match(hook, /onLayout: hasExplicitViewability \|\| Platform\.OS === "web" \? undefined : measureNative/);
+  assert.match(hook, /\}, \[hasExplicitViewability, measureNative\]\);/);
 });

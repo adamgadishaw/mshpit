@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   directMessageIsAfterCursor,
   directMessageUnreadCount,
   latestDirectMessageReadCursor,
+  latestIncomingDirectMessageId,
   normalizeDirectMessageReadCursor,
 } from "./directMessageRead.mjs";
 
@@ -43,4 +45,29 @@ test("invalid cursors cannot hide messages and demo count markers remain compati
   assert.equal(normalizeDirectMessageReadCursor({ createdAt: "bad", id: "dm_a" }), null);
   const messages = [{ id: "a", from: "other" }, { id: "b", from: "me" }, { id: "c", from: "other" }];
   assert.equal(directMessageUnreadCount(messages, { accountId: "me", legacyReadCount: 2 }), 1);
+});
+
+test("outgoing optimistic messages do not advance the inbound read target", () => {
+  const messages = [
+    { id: "dm_in_1", from: "other", at: 100 },
+    { id: "dm_out_1", from: "me", at: 101, pending: true },
+  ];
+  assert.equal(latestIncomingDirectMessageId(messages, "me"), "dm_in_1");
+  assert.equal(
+    latestIncomingDirectMessageId([...messages, { id: "dm_out_2", from: "me", at: 102, pending: true }], "me"),
+    "dm_in_1",
+  );
+  assert.equal(
+    latestIncomingDirectMessageId([...messages, { id: "dm_in_2", from: "other", at: 103 }], "me"),
+    "dm_in_2",
+  );
+  assert.equal(latestIncomingDirectMessageId([{ id: "unknown_sender", at: 104 }], "me"), null);
+  assert.equal(latestIncomingDirectMessageId(messages, null), null);
+});
+
+test("ThreadScreen owns read writes by inbound identity rather than total message count", () => {
+  const source = readFileSync(new URL("../screens/ThreadScreen.jsx", import.meta.url), "utf8");
+  assert.match(source, /const incomingReadTarget = latestIncomingDirectMessageId\(messages, session\?\.id\)/);
+  assert.match(source, /\}, \[incomingReadTarget, otherId, session\?\.id\]\);/);
+  assert.doesNotMatch(source, /markThreadRead\(otherId\); \}, \[otherId, messages\.length\]/);
 });

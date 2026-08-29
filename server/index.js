@@ -16,6 +16,8 @@ import { routes } from "./api.js";
 import { ApiError, errorEnvelope } from "./errors.js";
 import { assertExpectedAccount } from "./identityBinding.js";
 import { maybeAlert, pruneErrors, recordError } from "./errorLog.js";
+import { createAlertDrainScheduler } from "./alertDrainScheduler.js";
+import { sitemapStartupRefreshDecision } from "./features/seo/sitemapSnapshotManager.js";
 import {
   injectHead,
   drainSitemapSnapshotRefresh,
@@ -660,11 +662,12 @@ setInterval(() => {
 }, 60 * 60 * 1000).unref();
 
 // Alerting is deferred off the request path so a slow mail provider can never
-// add latency to the response that triggered it. maybeAlert owns its own
-// cooldown, so calling this on every 500 still sends at most one digest per
-// window; that is the whole point of the digest shape.
+// add latency to the response that triggered it. One pending drain covers every
+// error already recorded before its timer runs; a storm no longer creates one
+// zero-delay timer per request. maybeAlert still owns the delivery cooldown.
+const alertDrains = createAlertDrainScheduler({ drain: () => maybeAlert() });
 function scheduleAlert() {
-  setTimeout(() => { maybeAlert().catch(() => {}); }, 0).unref?.();
+  alertDrains.schedule();
 }
 
 // graceful shutdown, finish in-flight requests and campaign work, then close
@@ -802,6 +805,9 @@ function startSitemapRefreshScheduler() {
 
 async function startServer() {
   const loadedSitemap = await loadSitemapSnapshot();
+  const startupSitemapRefresh = sitemapStartupRefreshDecision(loadedSitemap, {
+    maximumAgeMs: sitemapRefreshIntervalMs(),
+  });
   if (!loadedSitemap.ok && loadedSitemap.reason !== "missing") {
     console.error(`[seo] persisted sitemap rejected safely: category=${loadedSitemap.reason}`);
   }
@@ -831,9 +837,13 @@ async function startServer() {
     startMediaDeletionScheduler({ database: db }); // bounded, durable cleanup of active user-media objects only
     legacyVideoPosterScheduler = startLegacyVideoPosterVerificationScheduler({ database: db });
     startVideoVerifierHealthScheduler();
-    // Sitemap reads serve only the validated persisted/current LKG. A refresh
-    // begins after readiness and is never invoked by an HTTP request.
-    void refreshSitemapSafely("startup", { force: true });
+    // Sitemap reads serve only the validated persisted/current LKG. Reuse a
+    // fresh current-revision snapshot across deploys; missing, stale, future,
+    // or incompatible snapshots still rebuild after readiness. HTTP reads never
+    // invoke a materialization.
+    if (startupSitemapRefresh.refresh) {
+      void refreshSitemapSafely("startup", { force: startupSitemapRefresh.force });
+    }
     startSitemapRefreshScheduler();
     // Do not couple core availability to an optional remote provider. Until
     // this proof succeeds, capabilities stay off and private media operations

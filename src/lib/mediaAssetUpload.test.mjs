@@ -19,25 +19,20 @@ test("the client uploader is original-only and cannot accept any media transform
   excludes(source, "uploadStudioMediaAsset");
 });
 
-test("verifier-measured duration is authoritative when the constant original recipe is saved", () => {
+test("source finalization is the single metadata save boundary", () => {
   const recipe = source.indexOf("const sourceRecipe = defaultMediaEdit(kind, { durationMs: asset.durationMs })");
   const finalizeBody = source.indexOf("const sourceFinalizeBody =");
-  const finalize = source.indexOf("result = await finalizeMediaSourceV1", source.indexOf('onStage?.("verifying-source")'));
-  const patch = source.indexOf('method: "PATCH"', finalize);
+  const finalize = source.indexOf("result = await finalizeMediaSourceV1");
   assert.ok(recipe >= 0 && recipe < finalizeBody);
   assert.ok(finalizeBody < finalize);
-  assert.ok(patch > finalize);
   includes(source.slice(finalizeBody, finalize), "editRecipe: sourceRecipe");
   includes(source.slice(finalizeBody, finalize), 'deliveryMode: "server"');
   includes(source.slice(finalizeBody, finalize), "altText:");
-  includes(source.slice(finalize, patch), "body: sourceFinalizeBody");
-  const authoritativeDuration = source.indexOf("const authoritativeDurationMs =", finalize);
-  const authoritativeRecipe = source.indexOf("const authoritativeOriginalRecipe =", authoritativeDuration);
-  assert.ok(authoritativeDuration > finalize && authoritativeDuration < patch);
-  assert.ok(authoritativeRecipe > authoritativeDuration && authoritativeRecipe < patch);
-  includes(source.slice(authoritativeDuration, patch), "result?.asset?.durationMs ?? sourceDurationMs ?? asset.durationMs");
-  includes(source.slice(authoritativeDuration, patch), "defaultMediaEdit(kind, { durationMs: authoritativeDurationMs })");
-  includes(source.slice(patch), "editRecipe: authoritativeOriginalRecipe");
+  includes(source.slice(finalize), "body: sourceFinalizeBody");
+  excludes(upload, 'method: "PATCH"');
+  includes(upload, "const finalAsset = result?.asset ||");
+  includes(upload, "const authoritativeDurationMs = finalAsset.durationMs ?? sourceDurationMs ?? asset.durationMs");
+  includes(upload, "const authoritativeOriginalRecipe = finalAsset.editRecipe");
 });
 
 test("unknown picker dimensions and duration are omitted instead of fabricated", () => {
@@ -55,7 +50,16 @@ test("unknown picker dimensions and duration are omitted instead of fabricated",
 test("an interrupted upload resumes by stable asset id without re-reading the device source", () => {
   const branch = source.slice(source.indexOf("if (assetId)"), source.indexOf("} else {", source.indexOf("if (assetId)")));
   includes(branch, "resumeExistingMediaSourceV1");
+  includes(branch, "onRemoteDraft");
   excludes(branch, "prepareAsset");
+});
+
+test("finalizer lifecycle is forwarded without a redundant post-verification save", () => {
+  const finalize = source.indexOf("result = await finalizeMediaSourceV1");
+  assert.ok(finalize >= 0);
+  includes(source.slice(finalize), "onStage,");
+  excludes(upload, 'onStage?.("saving-source")');
+  excludes(upload, 'context: "Saving original media details"');
 });
 
 test("verified uploads stop drafts from pointing at released staging files", () => {
