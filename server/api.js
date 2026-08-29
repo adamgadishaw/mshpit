@@ -1,4 +1,5 @@
 import { MEDIA_POST_MAX_ATTACHMENTS } from "../src/domain/mediaUploadPolicy.mjs";
+import { MUSIC_PLAYER_ENABLED } from "../src/domain/musicPlayerAvailability.mjs";
 // API routes. Conventions that keep this hard to crash and easy to fix:
 // - every route: authenticate -> rate-limit -> validate (shape) -> act -> respond
 // - all handlers are wrapped by the server's try/catch; throwing ApiError(status,
@@ -3603,8 +3604,18 @@ export const routes = {
     return {
       artists: rows.map((row) => {
         const memorial = memorials.get(row.norm);
+        const artist = publicArtist(row);
+        // Type-ahead needs identity and profile presentation, not the deep
+        // release/playback arrays that have their own deferred artist-page
+        // request. While the player is paused those arrays accounted for most
+        // of every artist-search response and were immediately discarded.
+        if (!MUSIC_PLAYER_ENABLED) {
+          delete artist.albums;
+          if (Array.isArray(artist.topTracks)) artist.topTracks = artist.topTracks.slice(0, 1);
+          artist.searchSummary = true;
+        }
         return {
-          ...publicArtist(row),
+          ...artist,
           // Search receives only the compact public marker. The complete prose,
           // accomplishments, thank-you, and citation load on the artist page.
           memorial: memorial ? {
@@ -3647,7 +3658,8 @@ export const routes = {
     let remote = [];
     try {
       remote = await searchDeezerTracks(term, { limit: want, signal: ctx.signal });
-    } catch {
+    } catch (error) {
+      if (ctx.signal?.aborted) throw ctx.signal.reason || error;
       // A provider outage must not take the whole search box down. The
       // catalogue results above still stand, and the other sections (people,
       // artists, venues, events) are unaffected.
@@ -4451,8 +4463,6 @@ export const routes = {
     if (!postTagEligibleOnly) limit(ctx, "people-search", 120, 10 * 60 * 1000);
     const cols = "id,name,handle,initials,avatar_uri,avatar_color,verified,role,home_city";
     const map = (r) => ({ id: r.id, name: r.name, handle: r.handle, initials: r.initials, avatarUri: safePublicProfileImage(r.id, r.avatar_uri), avatarColor: r.avatar_color, verified: !!r.verified, role: r.role, home: { city: r.home_city } });
-    // Never surface someone you've blocked (or who blocked you) in search.
-    const hidden = blockedIdSet(viewer?.id);
     if (postTagEligibleOnly) {
       limit(ctx, "post-tag-people", 120, 10 * 60 * 1000);
       let postId = null;
@@ -4476,32 +4486,37 @@ export const routes = {
         JOIN follows theirs ON theirs.follower_id=mine.followee_id AND theirs.followee_id=mine.follower_id
         JOIN users ON users.id=mine.followee_id
         WHERE mine.follower_id=? AND users.id<>? AND ${activeAccountSql("users")}
-          AND NOT EXISTS (SELECT 1 FROM blocks post_tag_block WHERE
-            (post_tag_block.blocker_id=? AND post_tag_block.blocked_id=users.id) OR
-            (post_tag_block.blocker_id=users.id AND post_tag_block.blocked_id=?))
+          AND NOT EXISTS (SELECT 1 FROM blocks mine_block
+            WHERE mine_block.blocker_id=? AND mine_block.blocked_id=users.id)
+          AND NOT EXISTS (SELECT 1 FROM blocks their_block
+            WHERE their_block.blocker_id=users.id AND their_block.blocked_id=?)
           ${rejectionSql}`;
       const eligibleArgs = [viewer.id, viewer.id, viewer.id, viewer.id, ...(postId ? [postId] : [])];
       const total = db.prepare(`SELECT COUNT(*) c ${eligibleFrom}`).get(...eligibleArgs).c;
       if (term.length < 1) {
         const rows = db.prepare(`SELECT ${cols} ${eligibleFrom} ORDER BY name COLLATE NOCASE LIMIT 40`).all(...eligibleArgs);
-        return { users: rows.filter((r) => !hidden.has(r.id)).map(map), total };
+        return { users: rows.map(map), total };
       }
-      const like = `%${term.replace(/[%_\\]/g, "")}%`;
       const rows = db.prepare(`SELECT ${cols} ${eligibleFrom}
-        AND (lower(name) LIKE ? OR lower(handle) LIKE ?)
+        AND (instr(lower(name), ?) > 0 OR instr(lower(handle), ?) > 0)
         ORDER BY (lower(handle)=? OR lower(name)=?) DESC, name COLLATE NOCASE LIMIT 30`)
-        .all(...eligibleArgs, like, like, term, term);
-      return { users: rows.filter((r) => !hidden.has(r.id)).map(map), total };
+        .all(...eligibleArgs, term, term, term, term);
+      return { users: rows.map(map), total };
     }
+    const visibleFrom = `FROM users WHERE ${activeAccountSql("users")} AND users.id<>?
+      AND NOT EXISTS (SELECT 1 FROM blocks mine_block
+        WHERE mine_block.blocker_id=? AND mine_block.blocked_id=users.id)
+      AND NOT EXISTS (SELECT 1 FROM blocks their_block
+        WHERE their_block.blocker_id=users.id AND their_block.blocked_id=?)`;
+    const visibleArgs = [viewer.id, viewer.id, viewer.id];
     if (term.length < 1) {
-      const rows = db.prepare(`SELECT ${cols} FROM users WHERE ${activeAccountSql("users")} ORDER BY name COLLATE NOCASE,id LIMIT 60`).all();
-      return { users: rows.filter((r) => !hidden.has(r.id)).map(map).slice(0, 40) };
+      const rows = db.prepare(`SELECT ${cols} ${visibleFrom} ORDER BY name COLLATE NOCASE,id LIMIT 40`).all(...visibleArgs);
+      return { users: rows.map(map) };
     }
-    const like = `%${term.replace(/[%_\\]/g, "")}%`;
     const rows = db.prepare(
-      `SELECT ${cols} FROM users WHERE ${activeAccountSql("users")} AND (lower(name) LIKE ? OR lower(handle) LIKE ?) ORDER BY (lower(handle)=? OR lower(name)=?) DESC, name LIMIT 40`
-    ).all(like, like, term, term);
-    return { users: rows.filter((r) => !hidden.has(r.id)).map(map).slice(0, 30) };
+      `SELECT ${cols} ${visibleFrom} AND (instr(lower(name), ?) > 0 OR instr(lower(handle), ?) > 0) ORDER BY (lower(handle)=? OR lower(name)=?) DESC, name LIMIT 30`
+    ).all(...visibleArgs, term, term, term, term);
+    return { users: rows.map(map) };
   },
 
   "GET /api/users/:id": (ctx) => {

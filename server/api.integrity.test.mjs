@@ -123,6 +123,7 @@ test("publicUser treats extras as untrusted and tolerates malformed stored JSON"
 
 test("public profile and people search expose city only while self keeps coordinates", () => {
   const user = addUser("u_location_projection", "location-projection@example.com", "locationprojection");
+  const viewer = addUser("u_location_search_viewer", "location-search-viewer@example.com", "locationsearchviewer");
   const self = routes["GET /api/me"]({ user });
   assert.deepEqual(self.user.home, { city: "Toronto", lat: 43.65, lng: -79.38 });
 
@@ -131,7 +132,7 @@ test("public profile and people search expose city only while self keeps coordin
   assert.equal(profile.user.home.lat, undefined);
   assert.equal(profile.user.home.lng, undefined);
 
-  const search = routes["GET /api/people"]({ user, ip: "location-search", query: { q: "locationprojection" } });
+  const search = routes["GET /api/people"]({ user: viewer, ip: "location-search", query: { q: "locationprojection" } });
   const result = search.users.find((entry) => entry.id === user.id);
   assert.deepEqual(result.home, { city: "Toronto" });
   assert.equal(result.home.lat, undefined);

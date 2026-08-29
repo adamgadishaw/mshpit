@@ -11,6 +11,9 @@ import { formatDate } from "../domain/dates.mjs";
 import {
   recentSongSearchEntry,
   recentSongTrack,
+  settleUnifiedSearchRequests,
+  unifiedSearchCategories,
+  unifiedSearchPreviewRows,
   unifiedPeopleSearchScope,
   unifiedSearchRequestOptions,
   unifiedSearchState,
@@ -24,15 +27,8 @@ import { recordGuestSearch } from "../features/analytics/services/guestSearchAna
 import { ENABLE_DEMO_DATA, ENABLE_MUSIC_PLAYER } from "../config/runtime.mjs";
 
 const EMPTY_LOOKUP_STATE = Object.freeze({ busy: false, message: "" });
-const SEARCH_CATEGORIES = Object.freeze([
-  { key: "all", label: "All" },
-  { key: "artists", label: "Artists" },
-  { key: "shows", label: "Shows" },
-  { key: "venues", label: "Venues" },
-  { key: "people", label: "People" },
-  ...(ENABLE_MUSIC_PLAYER ? [{ key: "songs", label: "Songs" }] : []),
-]);
-
+const EMPTY_ROWS = Object.freeze([]);
+const SEARCH_ALL_PREVIEW_LIMIT = 5;
 
 // ---- result rows (shared by every section of the unified dropdown) ----
 function PersonRow({ u, following, canFollow, onFollow, onOpen }) {
@@ -112,7 +108,7 @@ function VenueRow({ v, onPress }) {
     </Pressable>
   );
 }
-function EventRow({ t, onOpenArtist, onOpenVenue, onOpenTicket }) {
+function EventRow({ t, onOpenShow, onOpenVenue, onOpenTicket }) {
   const venue = {
     name: t.venue,
     place: t.place || t.city || "",
@@ -125,7 +121,7 @@ function EventRow({ t, onOpenArtist, onOpenVenue, onOpenTicket }) {
   };
   return (
     <View style={styles.row}>
-      <Pressable style={styles.rowMain} onPress={() => onOpenArtist?.(t.artist)} accessibilityRole="button" accessibilityLabel={`Open artist ${t.artist}. Event at ${t.venue}, ${formatDate(t.date, t.date)}`}>
+      <Pressable style={styles.rowMain} onPress={() => onOpenShow?.(t)} accessibilityRole="button" accessibilityLabel={`Open show for ${t.artist} at ${t.venue}, ${formatDate(t.date, t.date)}`}>
         <View style={[styles.dot, { borderColor: colors.line }]}><Icon name="calendar" size={14} color={colors.amber} /></View>
         <View style={{ flex: 1 }}>
           <Text style={styles.rowName} numberOfLines={1}>{t.artist}</Text>
@@ -165,7 +161,7 @@ function searchResultBucket(count) {
 }
 
 export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpenFanClub, onOpenProfile, onPlay, onAddToPlaylist }) {
-  const { tourDates, searchVenues, artistsAlphabetical, venuesByCity, upcomingEvents, fanClubsDirectory, fanClubDirectoryStatus, loadFanClubsDirectory, commentsFor, track,
+  const { tourDates, searchVenues, artistsAlphabetical, fanClubsDirectory, fanClubDirectoryStatus, loadFanClubsDirectory, track,
     session, blockedIds, isFollowing, follow, unfollow, searchPeople, searchArtistsApi, resolveArtist,
     recentSearches, addRecentSearch, removeRecentSearch, clearRecentSearches, searchSongsApi } = useStore();
   const searchAccountScope = accountTargetScope(session?.id, "search");
@@ -179,13 +175,23 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
   };
   const [focused, setFocused] = useState(false);
   const [activeCategory, setActiveCategory] = useState("all");
-  const [dbArtists, setDbArtists] = useState([]); // from the DB catalog API (scales past the bundle)
-  const [songs, setSongs] = useState([]);
+  const [artistCache, setArtistCache] = useState({ scope: null, rows: [] });
+  const [songCache, setSongCache] = useState({ scope: null, rows: [] });
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState("");
   const [searchRevision, setSearchRevision] = useState(0);
   const query = q.trim().toLowerCase();
+  const [settledQuery, setSettledQuery] = useState(query);
+  const activeSearchControllerRef = useRef(null);
+  const previousQueryRef = useRef(query);
   const lookupScope = accountTargetScope(session?.id, `search:${query}`);
+  const remoteSearchScope = accountTargetScope(session?.id, `search:${settledQuery}`);
+  const dbArtists = artistCache.scope === lookupScope ? artistCache.rows : EMPTY_ROWS;
+  const songs = songCache.scope === lookupScope ? songCache.rows : EMPTY_ROWS;
+  const searchCategories = useMemo(() => unifiedSearchCategories({
+    canSearchPeople: Boolean(session?.id),
+    canSearchSongs: ENABLE_MUSIC_PLAYER,
+  }), [session?.id]);
   const lookupScopeRef = useRef(lookupScope);
   lookupScopeRef.current = lookupScope;
   const [lookupState, setLookupState] = useState(() => ({ scope: lookupScope, value: EMPTY_LOOKUP_STATE }));
@@ -195,6 +201,15 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
     value: { ...scopedScreenValue(current, lookupScope, EMPTY_LOOKUP_STATE), ...changes },
   }));
   const setActionMessage = (message) => updateLookupState({ message });
+  const changeQuery = (value) => {
+    setQ(value);
+    // Case-only and whitespace-only edits keep the same normalized scope. Clear
+    // an old lookup message explicitly, but avoid another state write while the
+    // lookup state is already empty.
+    if (lookupBusy || actionMessage) {
+      setLookupState({ scope: lookupScope, value: EMPTY_LOOKUP_STATE });
+    }
+  };
   const peopleScope = unifiedPeopleSearchScope(session?.id, blockedIds);
   const [peopleCache, setPeopleCache] = useState({ scope: null, query: "", rows: [] });
   const fanClubDirectoryLoaderRef = useRef(loadFanClubsDirectory);
@@ -207,13 +222,30 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
     setSearchError("");
     setLookupState({ scope: accountTargetScope(session?.id, "search:"), value: EMPTY_LOOKUP_STATE });
   }, [searchAccountScope, session?.id]);
-  useEffect(() => {
-    setLookupState({ scope: lookupScope, value: EMPTY_LOOKUP_STATE });
-  }, [lookupScope]);
   useEffect(() => () => {
     const active = lookupRequestRef.current;
     lookupRequestRef.current = { sequence: active.sequence + 1, scope: null, target: null };
   }, []);
+  useEffect(() => {
+    // Stop the previous request as soon as the text changes, not after the next
+    // debounce finishes. Expensive local scans and remote requests then share the
+    // same settled query and execute only once for a typing pause.
+    const previousQuery = previousQueryRef.current;
+    previousQueryRef.current = query;
+    activeSearchControllerRef.current?.abort();
+    if (!query) {
+      setSettledQuery("");
+      setSearchLoading(false);
+      setSearchError("");
+      setActiveCategory("all");
+      if (previousQuery) setSearchRevision((value) => value + 1);
+      return undefined;
+    }
+    setSearchLoading(true);
+    setSearchError("");
+    const id = setTimeout(() => setSettledQuery(query), 250);
+    return () => clearTimeout(id);
+  }, [query]);
   useEffect(() => {
     const controller = new AbortController();
     fanClubDirectoryLoaderRef.current?.({ signal: controller.signal })
@@ -225,12 +257,16 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
   // analytics. Previously venue/event/club matching ran again after the remote
   // branches settled, which doubled the most expensive catalog work on every
   // successful search.
-  const venues = useMemo(() => (query ? searchVenues(query, 24) : []), [query, tourDates]);
-  const events = useMemo(() => (query ? tourDates.filter((t) => `${t.artist} ${t.venue} ${t.place || t.city || ""}`.toLowerCase().includes(query)).slice(0, 24) : []), [query, tourDates]);
-  const clubs = useMemo(() => {
-    if (!query) return [];
-    return fanClubsDirectory().filter((c) => c.artist.toLowerCase().includes(query)).slice(0, 12);
-  }, [fanClubDirectoryStatus, query]);
+  const searchedVenues = useMemo(() => (settledQuery ? searchVenues(settledQuery, 24) : []), [settledQuery, tourDates]);
+  const searchedEvents = useMemo(() => (settledQuery ? tourDates.filter((t) => `${t.artist} ${t.venue} ${t.place || t.city || ""}`.toLowerCase().includes(settledQuery)).slice(0, 24) : []), [settledQuery, tourDates]);
+  const searchedClubs = useMemo(() => {
+    if (!settledQuery) return [];
+    return fanClubsDirectory().filter((c) => c.artist.toLowerCase().includes(settledQuery)).slice(0, 12);
+  }, [fanClubDirectoryStatus, settledQuery]);
+  const queryIsSettled = query === settledQuery;
+  const venues = queryIsSettled ? searchedVenues : [];
+  const events = queryIsSettled ? searchedEvents : [];
+  const clubs = queryIsSettled ? searchedClubs : [];
   // Local venue/event/club indexes can finish hydrating while the remote search
   // is in flight. Keep their latest count for analytics without making those
   // unrelated updates cancel and restart people/artist/song requests.
@@ -238,70 +274,99 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
   localResultCountRef.current = venues.length + events.length + clubs.length;
 
   // Pull the artist catalog on open and whenever the box is cleared. A typed
-  // query searches people, artists, and songs together; one shared abort signal
-  // plus a short debounce keeps cross-device results current without stale writes.
+  // query searches every available remote source together. The caches are
+  // request-scoped, so an old query disappears synchronously and never flashes
+  // beneath newly typed text while its replacement is debouncing.
   useEffect(() => {
     let live = true;
     const controller = new AbortController();
+    activeSearchControllerRef.current = controller;
     const requestOptions = unifiedSearchRequestOptions(controller);
-    if (!query) {
+    const requestScope = remoteSearchScope;
+    const searchQuery = settledQuery;
+    if (!searchQuery) {
       setSearchLoading(false);
       setSearchError("");
-      setPeopleCache({ scope: peopleScope, query: "", rows: [] });
-      setSongs([]);
       searchArtistsApi("", requestOptions)
-        .then((rows) => { if (live) setDbArtists(rows || []); })
-        .catch(() => { if (live) setDbArtists([]); });
-      return () => { live = false; controller.abort(); };
+        .then((rows) => {
+          if (live && !controller.signal.aborted) setArtistCache({ scope: requestScope, rows: rows || [] });
+        })
+        .catch((error) => {
+          if (live && !controller.signal.aborted && error?.name !== "AbortError") {
+            setArtistCache({ scope: requestScope, rows: [] });
+          }
+        })
+        .finally(() => {
+          if (activeSearchControllerRef.current === controller) activeSearchControllerRef.current = null;
+        });
+      return () => {
+        live = false;
+        controller.abort();
+        if (activeSearchControllerRef.current === controller) activeSearchControllerRef.current = null;
+      };
     }
     setSearchLoading(true);
     setSearchError("");
-    setPeopleCache({ scope: peopleScope, query, rows: [] });
-    setDbArtists([]);
-    setSongs([]);
-    const id = setTimeout(async () => {
+    const run = async () => {
       try {
-        const [peopleRows, artistRows, songRows] = await Promise.all([
-          // People search is intentionally member-only. Calling it from a guest
-          // query turns the entire combined Promise into a 401 and makes public
-          // artist/song discovery look broken.
-          session?.id ? searchPeople(query, requestOptions) : Promise.resolve([]),
-          searchArtistsApi(query, requestOptions),
-          ENABLE_MUSIC_PLAYER ? searchSongsApi(query, requestOptions) : Promise.resolve([]),
-        ]);
-        if (!live) return;
-        setPeopleCache({ scope: peopleScope, query, rows: peopleRows || [] });
-        setDbArtists(artistRows || []);
-        setSongs(songRows || []);
+        const remote = await settleUnifiedSearchRequests({
+          // People search is intentionally member-only. Guests should not see a
+          // People filter that can never produce a result or call its private API.
+          people: session?.id ? searchPeople(searchQuery, requestOptions) : null,
+          artists: searchArtistsApi(searchQuery, requestOptions),
+          songs: ENABLE_MUSIC_PLAYER ? searchSongsApi(searchQuery, requestOptions) : null,
+        });
+        if (!live || controller.signal.aborted || remote.aborted) return;
+        setPeopleCache({ scope: peopleScope, query: searchQuery, rows: remote.people });
+        setArtistCache({ scope: requestScope, rows: remote.artists });
+        setSongCache({ scope: requestScope, rows: remote.songs });
+
+        const localResultCount = localResultCountRef.current;
 
         // Search text stays inside the search requests. Analytics receives only a
         // coarse result-count bucket, computed after this query's remote and local
         // result sets settle, so stale requests cannot emit a misleading funnel.
-        const resultCount = (peopleRows?.length || 0)
-          + (artistRows?.length || 0)
-          + (songRows?.length || 0)
-          + localResultCountRef.current;
+        const resultCount = remote.people.length
+          + remote.artists.length
+          + remote.songs.length
+          + localResultCount;
+        const requestHadSuccess = remote.succeeded > 0 || localResultCount > 0;
+        if (remote.failures.length) {
+          setSearchError(resultCount > 0
+            ? "Some results could not load. The matches below are still ready."
+            : requestHadSuccess
+              ? "Some parts of search could not load. Try again to check every source."
+              : "Search could not update. Check your connection and try again.");
+        }
         const resultBucket = searchResultBucket(resultCount);
         if (session?.id) {
           track("search", { kind: "all", resultBucket });
-        } else {
+        } else if (requestHadSuccess) {
           // This request contains no search text or browser/account identity;
           // the server increments one coarse daily aggregate counter only.
           void recordGuestSearch({ kind: "all", resultBucket, outcome: "success" }, { signal: controller.signal });
+        } else {
+          void recordGuestSearch({ kind: "all", resultBucket: "unknown", outcome: "failed" }, { signal: controller.signal });
         }
       } catch (error) {
-        if (live && error?.name !== "AbortError") {
+        if (live && !controller.signal.aborted && error?.name !== "AbortError") {
           setSearchError("Search could not update. Check your connection and try again.");
           if (!session?.id) {
             void recordGuestSearch({ kind: "all", resultBucket: "unknown", outcome: "failed" }, { signal: controller.signal });
           }
         }
       } finally {
-        if (live) setSearchLoading(false);
+        if (live && !controller.signal.aborted) setSearchLoading(false);
+        if (activeSearchControllerRef.current === controller) activeSearchControllerRef.current = null;
       }
-    }, 250);
-    return () => { live = false; clearTimeout(id); controller.abort(); };
-  }, [query, peopleScope, searchRevision, session?.id]);
+    };
+    void run();
+    return () => {
+      live = false;
+      controller.abort();
+      if (activeSearchControllerRef.current === controller) activeSearchControllerRef.current = null;
+    };
+  }, [peopleScope, remoteSearchScope, searchRevision, session?.id, settledQuery]);
 
   const mine = session?.id;
   // People are pure type-ahead (like every social app): never a full list, always
@@ -317,38 +382,49 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
     [recentSearches, blockedIds],
   );
 
-  const artists = useMemo(() => {
+  const searchedArtists = useMemo(() => {
     const map = new Map();
     const add = (name, genre, memorial = null) => { const k = name.toLowerCase(); if (name && !map.has(k)) map.set(k, { name, genre, memorial }); };
     // DB catalog first (notable-first, includes on-demand-resolved artists).
     dbArtists.forEach((a) => add(a.name, a.genre, a.memorial));
-    if (!query) {
+    if (!settledQuery) {
       // The API already returned ranked browse rows. Only fall back to a local
       // alphabetical sort while that first response is unavailable.
       if (!map.size) artistsAlphabetical(24).forEach((a) => add(a.name, a.genre));
       return [...map.values()].slice(0, 24);
     }
-    ratedShows.forEach((s) => s.artist.toLowerCase().includes(query) && add(s.artist, s.genre));
-    tourDates.forEach((t) => t.artist.toLowerCase().includes(query) && add(t.artist, t.genre));
+    ratedShows.forEach((s) => s.artist.toLowerCase().includes(settledQuery) && add(s.artist, s.genre));
+    tourDates.forEach((t) => t.artist.toLowerCase().includes(settledQuery) && add(t.artist, t.genre));
     // This mutable fixture is development-only. Production must not scan a
     // second full artist catalog after the indexed server result arrives.
-    if (ENABLE_DEMO_DATA) Object.values(ingestedArtists).forEach((a) => a.name.toLowerCase().includes(query) && add(a.name, a.genre));
+    if (ENABLE_DEMO_DATA) Object.values(ingestedArtists).forEach((a) => a.name.toLowerCase().includes(settledQuery) && add(a.name, a.genre));
     return [...map.values()].slice(0, 30);
-  }, [query, tourDates, dbArtists]);
+  }, [settledQuery, tourDates, dbArtists]);
+  const artists = queryIsSettled ? searchedArtists : [];
 
   const showBrowse = !query;
   const exactArtist = artists.some((a) => a.name.toLowerCase() === query);
-  const resultState = unifiedSearchState({ query, loading: searchLoading, people, artists, songs, venues, events, clubs });
+  const resultState = unifiedSearchState({ query, loading: searchLoading || !queryIsSettled, people, artists, songs, venues, events, clubs });
   const resultGroups = { people, artists, songs, venues, events, clubs };
   const categoryGroupKey = activeCategory === "shows" ? "events" : activeCategory;
   const selectedRows = activeCategory === "all" ? [] : resultGroups[categoryGroupKey] || [];
   const visibleResultState = activeCategory === "all"
     ? resultState
-    : searchLoading ? "loading" : selectedRows.length ? "results" : "no-results";
+    : (searchLoading || !queryIsSettled) ? "loading" : selectedRows.length ? "results" : "no-results";
   const visibleResultGroups = activeCategory === "all" ? resultGroups : { [categoryGroupKey]: selectedRows };
-  const activeCategoryLabel = SEARCH_CATEGORIES.find((item) => item.key === activeCategory)?.label || "Results";
+  const activeCategoryLabel = searchCategories.find((item) => item.key === activeCategory)?.label || "Results";
   const showCategory = (key) => activeCategory === "all" || activeCategory === key;
-  const liveAnnouncement = actionMessage || searchLiveAnnouncement({ query, state: visibleResultState, error: searchError, groups: visibleResultGroups });
+  const visibleSearchError = queryIsSettled ? searchError : "";
+  const liveAnnouncement = actionMessage || searchLiveAnnouncement({ query, state: visibleResultState, error: visibleSearchError, groups: visibleResultGroups });
+  const previewRows = (rows, category) => showBrowse ? rows : unifiedSearchPreviewRows(rows, {
+    activeCategory, category, limit: SEARCH_ALL_PREVIEW_LIMIT,
+  });
+  const peopleRows = previewRows(people, "people");
+  const artistRows = previewRows(artists, "artists");
+  const songRows = previewRows(songs, "songs");
+  const venueRows = previewRows(venues, "venues");
+  const eventRows = previewRows(events, "shows");
+  const clubRows = previewRows(clubs, "clubs");
 
   // Opening any result records it as a recent search, so the empty state stays
   // useful (like every big app). Re-opening a recent bumps it back to the top.
@@ -420,19 +496,23 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
           <Icon name="search" size={18} color={focused ? colors.amber : colors.textDim} />
           <TextInput
             style={styles.input}
-            placeholder={ENABLE_MUSIC_PLAYER ? "Search artists, people, songs, shows, venues" : "Search artists, people, shows, venues"}
+            placeholder={session?.id ? "Search artists, people, shows, venues" : "Search artists, shows, venues"}
             placeholderTextColor={colors.textFaint}
             value={q}
-            onChangeText={(value) => { setQ(value); setActionMessage(""); }}
+            onChangeText={changeQuery}
             onFocus={() => setFocused(true)}
             onBlur={() => setFocused(false)}
             autoCapitalize="none"
+            autoCorrect={false}
+            autoComplete="off"
+            spellCheck={false}
             maxLength={80}
             accessibilityLabel="Search Mshpit"
-            accessibilityHint={ENABLE_MUSIC_PLAYER ? "Find artists, people, songs, shows, venues, and fan clubs" : "Find artists, people, shows, venues, and fan clubs"}
-            accessibilityState={{ busy: searchLoading }}
+            accessibilityHint={session?.id ? "Find artists, people, shows, venues, and fan clubs" : "Find artists, shows, venues, and fan clubs"}
+            accessibilityState={{ busy: searchLoading || !queryIsSettled }}
+            returnKeyType="search"
           />
-          {!!q && <Pressable style={styles.fieldAction} onPress={() => { setQ(""); setActiveCategory("all"); setActionMessage(""); }} accessibilityRole="button" accessibilityLabel="Clear search"><Icon name="x" size={16} color={colors.textFaint} /></Pressable>}
+          {!!q && <Pressable style={styles.fieldAction} onPress={() => { changeQuery(""); setSearchError(""); }} accessibilityRole="button" accessibilityLabel="Clear search"><Icon name="x" size={16} color={colors.textFaint} /></Pressable>}
         </View>
         {!!query && (
           <ScrollView
@@ -441,7 +521,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
             contentContainerStyle={styles.categoryRail}
             accessibilityLabel="Filter search results"
           >
-            {SEARCH_CATEGORIES.map((item) => {
+            {searchCategories.map((item) => {
               const selected = item.key === activeCategory;
               return (
                 <Pressable key={item.key} style={[styles.categoryChip, selected && styles.categoryChipSelected]} onPress={() => setActiveCategory(item.key)} accessibilityRole="tab" accessibilityState={{ selected }}>
@@ -452,9 +532,9 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
           </ScrollView>
         )}
         {!!liveAnnouncement && (
-          <Text style={[styles.resultStatus, (searchError || actionMessage) && styles.resultError]} accessibilityRole="summary" accessibilityLiveRegion={searchError || actionMessage ? "assertive" : "polite"}>{liveAnnouncement}</Text>
+          <Text style={[styles.resultStatus, (visibleSearchError || actionMessage) && styles.resultError]} accessibilityRole="summary" accessibilityLiveRegion={visibleSearchError || actionMessage ? "assertive" : "polite"}>{liveAnnouncement}</Text>
         )}
-        {!!searchError && (
+        {!!visibleSearchError && (
           <Pressable style={styles.retrySearch} onPress={() => { setSearchError(""); setSearchRevision((value) => value + 1); }} accessibilityRole="button" accessibilityLabel="Retry search">
             <Text style={styles.retrySearchText}>Try search again</Text>
           </Pressable>
@@ -466,7 +546,9 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
           <Text style={styles.browseHint}>
             {ENABLE_MUSIC_PLAYER
               ? "Find artists, people, songs, shows, venues, and fan clubs."
-              : "Find artists, people, shows, venues, and fan clubs."}
+              : session?.id
+                ? "Find artists, people, shows, venues, and fan clubs."
+                : "Find artists, shows, venues, and fan clubs."}
           </Text>
         )}
 
@@ -507,7 +589,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
           hidden={!showCategory("people")}
           icon="you" tint={colors.gold}
           title="PEOPLE" count={people.length}
-          rows={people.map((u) => (
+          rows={peopleRows.map((u) => (
             <PersonRow
               key={u.id}
               u={u}
@@ -524,8 +606,8 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
           icon="music" tint={colors.amber}
           title={showBrowse ? "SUGGESTED ARTISTS" : "ARTISTS"} count={artists.length}
           rows={[
-            ...artists.map((a) => <ArtistRow key={a.name} name={a.name} genre={a.genre} memorial={a.memorial} onPress={() => openArtist(a)} />),
-            query.length >= 2 && !exactArtist ? (
+            ...artistRows.map((a) => <ArtistRow key={a.name} name={a.name} genre={a.genre} memorial={a.memorial} onPress={() => openArtist(a)} />),
+            showCategory("artists") && query.length >= 2 && !exactArtist ? (
               <Pressable key="_lookup" style={styles.row} onPress={() => lookUp(q.trim())} disabled={lookupBusy} accessibilityRole="button" accessibilityLabel={`Search the full artist directory for ${q.trim()}`} accessibilityHint="Use this when the artist is not on Mshpit yet" accessibilityState={{ busy: lookupBusy, disabled: lookupBusy }}>
                 <View style={[styles.dot, { borderColor: colors.good }]}><Icon name="search" size={14} color={colors.good} /></View>
                 <View style={{ flex: 1 }}>
@@ -542,7 +624,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
           hidden={!showCategory("songs")}
           icon="music" tint={colors.good}
           title="SONGS" count={songs.length}
-          rows={songs.map((song) => (
+          rows={songRows.map((song) => (
             <SongRow
               key={`${song.id || song.title}|${song.artist}`}
               song={song}
@@ -560,13 +642,13 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
           ))} />}
 
         <Section hidden={!showCategory("venues")} icon="pin" tint={colors.cool} title="VENUES" count={venues.length}
-          rows={venues.map((v) => <VenueRow key={v.identity || `${v.name}|${v.place || ""}|${v.source || ""}|${v.providerVenueId || ""}`} v={v} onPress={() => openVenue(v)} />)} />
+          rows={venueRows.map((v) => <VenueRow key={v.identity || `${v.name}|${v.place || ""}|${v.source || ""}|${v.providerVenueId || ""}`} v={v} onPress={() => openVenue(v)} />)} />
 
         <Section hidden={!showCategory("shows")} icon="calendar" tint={colors.amber} title="SHOWS" count={events.length}
-          rows={events.map((t) => <EventRow key={t.id} t={t} onOpenArtist={openArtist} onOpenVenue={openVenue} onOpenTicket={openTicket} />)} />
+          rows={eventRows.map((t) => <EventRow key={t.id || `${t.artist}|${t.venue}|${t.date}`} t={t} onOpenShow={onOpen} onOpenVenue={openVenue} onOpenTicket={openTicket} />)} />
 
-        <Section hidden={activeCategory !== "all"} icon="comment" tint={colors.magenta} title="FAN CLUBS" count={clubs.length}
-          rows={clubs.map((c) => (
+        <Section hidden={!showCategory("clubs")} icon="comment" tint={colors.magenta} title="FAN CLUBS" count={clubs.length}
+          rows={clubRows.map((c) => (
             <Pressable key={"fc_" + c.artist} style={styles.row} onPress={() => onOpenFanClub?.(c.artist)} accessibilityRole="button" accessibilityLabel={`Open ${c.artist} fan club${c.members > 0 ? `, ${c.members} members` : ""}`}>
               <View style={[styles.dot, { borderColor: colors.magenta }]}><Icon name="comment" size={14} color={colors.magenta} /></View>
               <View style={{ flex: 1 }}>
@@ -578,7 +660,7 @@ export default function SearchScreen({ onOpen, onOpenArtist, onOpenVenue, onOpen
           ))}
         />
 
-        {!searchError && visibleResultState === "no-results" && (
+        {!visibleSearchError && visibleResultState === "no-results" && (
           <Text style={styles.empty}>No {activeCategory === "all" ? "matches" : activeCategoryLabel.toLowerCase()} for “{q}”.</Text>
         )}
       </ScrollView>
@@ -624,7 +706,6 @@ const styles = StyleSheet.create({
   dot: { width: 32, height: 32, borderRadius: 16, backgroundColor: colors.bgElev, borderWidth: 1, alignItems: "center", justifyContent: "center" },
   rowName: { color: colors.text, fontSize: 14.5, fontWeight: "700" },
   rowSub: { color: colors.textDim, fontSize: 11.5, marginTop: 1 },
-  link: { color: colors.text, fontWeight: "700" },
   pill: { backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.amber, borderRadius: radius.pill, minWidth: 22, paddingHorizontal: 7, paddingVertical: 1, alignItems: "center" },
   pillTxt: { color: colors.amber, fontSize: 11, fontWeight: "800" },
   memorialPill: { flexDirection: "row", alignItems: "center", gap: 3, flexShrink: 0, paddingHorizontal: 6, paddingVertical: 2, borderRadius: radius.pill, borderWidth: 1, borderColor: `${colors.gold}66`, backgroundColor: `${colors.gold}12` },

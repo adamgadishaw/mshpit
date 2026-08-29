@@ -176,7 +176,7 @@ const styles = StyleSheet.create({
   composeBtnTxtOn: { color: colors.text },
   composePanel: { marginHorizontal: 16, marginTop: 10, backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.lineSoft, borderRadius: radius.md, padding: 12 },
   searchBox: { flexDirection: "row", alignItems: "center", gap: 9, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.line, borderRadius: radius.sm, paddingHorizontal: 12 },
-  searchInput: { flex: 1, color: colors.text, fontSize: 14, paddingVertical: 11, outlineStyle: "none" },
+  searchInput: { flex: 1, color: colors.text, fontSize: 14, paddingVertical: 11 },
   searchHint: { color: colors.textDim, fontSize: 12.5, lineHeight: 18, paddingHorizontal: 4, paddingTop: 10, paddingBottom: 2 },
   searchError: { gap: 8, paddingHorizontal: 4, paddingTop: 10 },
   searchErrorText: { color: colors.danger, fontSize: 12.5, lineHeight: 18 },

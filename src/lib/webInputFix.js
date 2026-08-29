@@ -1,21 +1,43 @@
 import { Platform } from "react-native";
+import {
+  WEB_INPUT_FOCUS_ATTRIBUTE,
+  findWebInputFocusBoundary,
+  isWebFocusVisible,
+  isWebInputControl,
+} from "./webInputFocus.mjs";
 
 // react-native-web renders TextInput as a real <input>/<textarea>, which the
-// browser decorates with its default focus *outline*, the harsh square box the
-// app's inputs were showing on focus. We replace it app-wide with a subtle,
-// on-theme amber treatment: no outline, and a soft amber border + faint glow on
-// focus so every field reads the same way (Search, Edit Profile, Auth, chat…).
+// browser decorates with its default focus *outline*. Many Mshpit fields put
+// their visible border on a rounded parent View (icon + input + clear button),
+// so highlighting the raw input creates a smaller rectangular box. Find the
+// nearest actual painted field boundary and put keyboard focus on that instead.
 // No-op on iOS/Android (no `document`).
-if (Platform.OS === "web" && typeof document !== "undefined" && !document.getElementById("pit-input-fix")) {
-  const el = document.createElement("style");
-  el.id = "pit-input-fix";
-  el.textContent = `
-    input, textarea, select { outline: none !important; }
+if (Platform.OS === "web" && typeof document !== "undefined") {
+  if (!document.getElementById("pit-input-fix")) {
+    const el = document.createElement("style");
+    el.id = "pit-input-fix";
+    el.textContent = `
+    input, textarea, select {
+      outline: none !important;
+      -webkit-tap-highlight-color: transparent;
+    }
     input:focus, textarea:focus, select:focus {
       outline: none !important;
-      border-color: rgba(242,166,90,0.85) !important;
-      box-shadow: 0 0 0 3px rgba(242,166,90,0.15) !important;
-      transition: border-color .12s ease, box-shadow .12s ease;
+      box-shadow: none !important;
+    }
+    [${WEB_INPUT_FOCUS_ATTRIBUTE}="true"] {
+      outline: 2px solid transparent !important;
+      box-shadow: 0 0 0 3px rgba(242,166,90,0.42) !important;
+      transition: box-shadow .12s ease;
+    }
+    @media (forced-colors: active) {
+      [${WEB_INPUT_FOCUS_ATTRIBUTE}="true"] {
+        outline-color: Highlight !important;
+        box-shadow: none !important;
+      }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      [${WEB_INPUT_FOCUS_ATTRIBUTE}="true"] { transition: none; }
     }
     input::placeholder, textarea::placeholder { opacity: 1; }
 
@@ -31,5 +53,34 @@ if (Platform.OS === "web" && typeof document !== "undefined" && !document.getEle
     *::-webkit-scrollbar-thumb { background: rgba(100,107,130,0.35); border-radius: 99px; }
     *::-webkit-scrollbar-thumb:hover { background: rgba(100,107,130,0.6); }
   `;
-  document.head.appendChild(el);
+    document.head.appendChild(el);
+  }
+
+  const installKey = "__mshpitInputFocusBoundaryCleanup";
+  globalThis[installKey]?.();
+  let activeBoundary = null;
+
+  const clearBoundary = () => {
+    activeBoundary?.removeAttribute?.(WEB_INPUT_FOCUS_ATTRIBUTE);
+    activeBoundary = null;
+  };
+  const showBoundary = (control) => {
+    clearBoundary();
+    if (!isWebInputControl(control) || !isWebFocusVisible(control)) return;
+    activeBoundary = findWebInputFocusBoundary(control);
+    activeBoundary?.setAttribute?.(WEB_INPUT_FOCUS_ATTRIBUTE, "true");
+  };
+  const onFocusIn = (event) => showBoundary(event.target);
+  const onFocusOut = (event) => {
+    if (event.target === document.activeElement) return;
+    clearBoundary();
+  };
+
+  document.addEventListener("focusin", onFocusIn);
+  document.addEventListener("focusout", onFocusOut);
+  globalThis[installKey] = () => {
+    clearBoundary();
+    document.removeEventListener("focusin", onFocusIn);
+    document.removeEventListener("focusout", onFocusOut);
+  };
 }

@@ -107,7 +107,7 @@ const styles = StyleSheet.create({
   bubbleName: { color: colors.text, fontFamily: font, fontSize: 12.5, fontWeight: "800" },
   bubbleText: { color: colors.text, fontFamily: font, fontSize: 14, lineHeight: 19, marginTop: 1 },
   composer: { flexDirection: "row", alignItems: "center", gap: 8 },
-  input: { flex: 1, backgroundColor: colors.surfaceAlt, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, color: colors.text, paddingHorizontal: 14, paddingVertical: web ? 9 : 7, fontSize: 14, ...(web ? { outlineStyle: "none" } : null) },
+  input: { flex: 1, backgroundColor: colors.surfaceAlt, borderRadius: radius.pill, borderWidth: 1, borderColor: colors.line, color: colors.text, paddingHorizontal: 14, paddingVertical: web ? 9 : 7, fontSize: 14 },
   campaignInput: { backgroundColor: "rgba(255,255,255,0.06)", borderColor: "rgba(255,255,255,0.16)" },
   send: { width: 32, height: 32, borderRadius: 16, backgroundColor: colors.amberStrong, alignItems: "center", justifyContent: "center" },
   campaignSend: { width: 44, height: 44, borderRadius: 22 },

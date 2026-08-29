@@ -189,7 +189,7 @@ const styles = StyleSheet.create({
   statValueAccent: { color: colors.amber },
   statLabel: { color: colors.textFaint, fontFamily: mono, fontSize: 8, fontWeight: "800", letterSpacing: 0.8, marginTop: 3 },
   searchField: { minHeight: 52, flexDirection: "row", alignItems: "center", gap: 10, paddingLeft: 15, paddingRight: 6, backgroundColor: colors.surface, borderRadius: radius.md, borderCurve: "continuous", borderWidth: 1, borderColor: colors.line, ...shadow.control },
-  input: { flex: 1, minWidth: 0, color: colors.text, fontSize: 15, paddingVertical: 13, ...Platform.select({ web: { outlineStyle: "none" } }) },
+  input: { flex: 1, minWidth: 0, color: colors.text, fontSize: 15, paddingVertical: 13 },
   clearButton: { width: 42, height: 42, alignItems: "center", justifyContent: "center", borderRadius: radius.sm },
   cityOverview: { minHeight: 78, flexDirection: "row", alignItems: "center", gap: 12, padding: 14, borderRadius: radius.md, borderCurve: "continuous", backgroundColor: colors.surfaceAlt, borderWidth: 1, borderColor: colors.line },
   overviewIcon: { width: 46, height: 46, borderRadius: 15, alignItems: "center", justifyContent: "center", backgroundColor: colors.bgElev, borderWidth: 1, borderColor: colors.line },

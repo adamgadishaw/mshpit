@@ -1,5 +1,50 @@
 const rowCount = (rows) => Array.isArray(rows) ? rows.length : 0;
 
+const SEARCH_CATEGORY_DEFINITIONS = Object.freeze([
+  Object.freeze({ key: "all", label: "All" }),
+  Object.freeze({ key: "artists", label: "Artists" }),
+  Object.freeze({ key: "shows", label: "Shows" }),
+  Object.freeze({ key: "venues", label: "Venues" }),
+  Object.freeze({ key: "people", label: "People" }),
+  Object.freeze({ key: "clubs", label: "Fan clubs" }),
+  Object.freeze({ key: "songs", label: "Songs" }),
+]);
+
+export function unifiedSearchCategories({ canSearchPeople = false, canSearchSongs = false } = {}) {
+  return SEARCH_CATEGORY_DEFINITIONS.filter((category) => (
+    (category.key !== "people" || canSearchPeople)
+    && (category.key !== "songs" || canSearchSongs)
+  ));
+}
+
+export function unifiedSearchPreviewRows(rows, { activeCategory = "all", category, limit = 5 } = {}) {
+  const safeRows = Array.isArray(rows) ? rows : [];
+  if (activeCategory === "all" && category !== "all") {
+    return safeRows.slice(0, Math.max(0, Number(limit) || 0));
+  }
+  return activeCategory === category ? safeRows : [];
+}
+
+export async function settleUnifiedSearchRequests(requests = {}) {
+  const entries = Object.entries(requests)
+    .filter(([key, request]) => ["people", "artists", "songs"].includes(key) && request);
+  const settled = await Promise.allSettled(entries.map(([, request]) => request));
+  const result = {
+    people: [], artists: [], songs: [], attempted: entries.length, succeeded: 0, failures: [], aborted: false,
+  };
+  settled.forEach((outcome, index) => {
+    const key = entries[index][0];
+    if (outcome.status === "fulfilled") {
+      result[key] = Array.isArray(outcome.value) ? outcome.value : [];
+      result.succeeded += 1;
+      return;
+    }
+    result.failures.push(key);
+    if (outcome.reason?.name === "AbortError") result.aborted = true;
+  });
+  return result;
+}
+
 export function unifiedSearchResultCount({ people, artists, songs, venues, events, clubs } = {}) {
   return rowCount(people) + rowCount(artists) + rowCount(songs) + rowCount(venues) + rowCount(events) + rowCount(clubs);
 }

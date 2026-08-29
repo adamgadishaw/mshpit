@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 import { parse } from "@babel/parser";
+import { unifiedSearchCategories } from "./unifiedSearch.mjs";
 
 const read = (relative) => readFileSync(new URL(relative, import.meta.url), "utf8");
 const app = read("../../App.js");
@@ -32,13 +33,15 @@ test("the feed uses the Mshpit brand and separates For You from Discover", () =>
 });
 
 test("universal search offers typed result filters without member-count marketing", () => {
-  for (const label of ["All", "Artists", "Shows", "Venues", "People", "Songs"]) {
-    assert.match(search, new RegExp(`label: "${label}"`));
-  }
-  assert.match(search, /SEARCH_CATEGORIES\.map/);
+  assert.deepEqual(
+    unifiedSearchCategories({ canSearchPeople: true, canSearchSongs: true }).map(({ label }) => label),
+    ["All", "Artists", "Shows", "Venues", "People", "Fan clubs", "Songs"],
+  );
+  assert.match(search, /searchCategories\.map/);
   assert.match(search, /accessibilityLabel="Filter search results"/);
   assert.match(search, /hidden=\{!showCategory\("artists"\)\}/);
   assert.match(search, /hidden=\{!showCategory\("shows"\)\}/);
+  assert.match(search, /hidden=\{!showCategory\("clubs"\)\}/);
   assert.match(search, /searchLiveAnnouncement\(\{ query, state: visibleResultState/);
   assert.doesNotMatch(search, /memberCount|loadMembers/);
 });

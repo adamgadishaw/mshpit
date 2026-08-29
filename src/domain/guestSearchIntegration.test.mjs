@@ -8,7 +8,8 @@ const [source, store] = await Promise.all([
 ]);
 
 test("guest unified search never calls the member-only people endpoint", () => {
-  assert.match(source, /session\?\.id \? searchPeople\(query, requestOptions\) : Promise\.resolve\(\[\]\)/);
+  assert.match(source, /people: session\?\.id \? searchPeople\(searchQuery, requestOptions\) : null/);
+  assert.match(source, /canSearchPeople: Boolean\(session\?\.id\)/);
 });
 
 test("guest search measurement sends only coarse outcomes after search settles", () => {
@@ -20,5 +21,5 @@ test("guest search measurement sends only coarse outcomes after search settles",
 test("unified artist outages reach the failed guest-search counter", () => {
   assert.match(store, /const searchArtistsApi = async \(query, \{[\s\S]*?signal,[\s\S]*?throwOnError = false,[\s\S]*?\} = \{\}\)/);
   assert.match(store, /if \(throwOnError\) throw error;/);
-  assert.match(source, /searchArtistsApi\(query, requestOptions\)/);
+  assert.match(source, /searchArtistsApi\(searchQuery, requestOptions\)/);
 });

@@ -96,7 +96,7 @@ import { normalizeTaggedPeople, taggedUserIdsFromPeople } from "./domain/postFri
 import { writeDirectMessageRead } from "./features/chat/services/dmReadApi.mjs";
 import { removeMyPostTagRequest } from "./features/postTags/services/postTagApi.mjs";
 import { searchPeopleRequest } from "./features/people/services/peopleSearchApi.mjs";
-import { attachArtistSuggestion, fetchArtistSuggestions } from "./features/artistSearch/artistSearchApi.mjs";
+import { attachArtistSuggestion, fetchArtistSuggestions, mergeArtistSearchCacheEntry } from "./features/artistSearch/artistSearchApi.mjs";
 import { useAccountCommentCache } from "./features/comments/useAccountCommentCache";
 import { useAccountArtistPageCache } from "./features/artistPage/useAccountArtistPageCache";
 import { artistMemorialPreparationName } from "./domain/artistMemorialCandidate.mjs";
@@ -1583,7 +1583,11 @@ export function StoreProvider({ children }) {
     if (!Array.isArray(list) || !list.length) return;
     setRemoteArtists((m) => {
       const n = { ...m };
-      for (const a of list) if (a?.name) n[norm(a.name)] = a;
+      for (const a of list) {
+        if (!a?.name) continue;
+        const key = norm(a.name);
+        n[key] = mergeArtistSearchCacheEntry(n[key], a);
+      }
       return n;
     });
   };

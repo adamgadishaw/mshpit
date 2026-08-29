@@ -27,6 +27,27 @@ function boundedArtists(value, limit) {
   return out;
 }
 
+// Search summaries intentionally omit deep release data while the player is
+// paused. Never let a later type-ahead response downgrade richer metadata that
+// an artist page already resolved; a full response still replaces/augments a
+// previously cached summary in the normal direction.
+export function mergeArtistSearchCacheEntry(current, incoming) {
+  if (!incoming || typeof incoming !== "object") return current || incoming;
+  if (!current || typeof current !== "object") return incoming;
+  const merged = { ...current, ...incoming };
+  if (incoming.searchSummary === true) {
+    for (const field of ["albums", "topTracks"]) {
+      const currentRows = Array.isArray(current[field]) ? current[field] : [];
+      const incomingRows = Array.isArray(incoming[field]) ? incoming[field] : [];
+      if (currentRows.length > incomingRows.length) merged[field] = currentRows;
+    }
+    if (current.searchSummary !== true) delete merged.searchSummary;
+  } else {
+    delete merged.searchSummary;
+  }
+  return merged;
+}
+
 function abortError(signal) {
   if (signal?.reason instanceof Error) return signal.reason;
   const error = new Error("Artist search was cancelled.");

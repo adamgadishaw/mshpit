@@ -6,6 +6,7 @@ import {
   COMPOSER_ARTIST_SEARCH_LIMIT,
   attachArtistSuggestion,
   fetchArtistSuggestions,
+  mergeArtistSearchCacheEntry,
 } from "./artistSearchApi.mjs";
 
 test("composer artist lookup uses the catalog first and only falls back remotely on a miss", async () => {
@@ -102,4 +103,35 @@ test("choosing a transient result performs one verified mutation and returns a d
   });
   assert.equal(calls[0].options.method, "POST");
   assert.equal(calls[0].options.signal, controller.signal);
+});
+
+test("artist search summaries cannot downgrade richer cached artist metadata", () => {
+  const full = {
+    key: "cache-safe-artist",
+    name: "Cache Safe Artist",
+    bio: "Original profile",
+    albums: [{ title: "First" }, { title: "Second" }],
+    topTracks: [{ title: "One" }, { title: "Two" }],
+  };
+  const summary = {
+    key: "cache-safe-artist",
+    name: "Cache Safe Artist",
+    bio: "Updated profile",
+    topTracks: [{ title: "One" }],
+    searchSummary: true,
+  };
+  const preserved = mergeArtistSearchCacheEntry(full, summary);
+  assert.equal(preserved.bio, "Updated profile");
+  assert.deepEqual(preserved.albums, full.albums);
+  assert.deepEqual(preserved.topTracks, full.topTracks);
+  assert.equal(preserved.searchSummary, undefined);
+
+  const resolved = mergeArtistSearchCacheEntry(summary, {
+    ...full,
+    bio: "Resolved profile",
+  });
+  assert.equal(resolved.bio, "Resolved profile");
+  assert.deepEqual(resolved.albums, full.albums);
+  assert.deepEqual(resolved.topTracks, full.topTracks);
+  assert.equal(resolved.searchSummary, undefined);
 });

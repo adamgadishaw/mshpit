@@ -5,13 +5,53 @@ import test from "node:test";
 import {
   recentSongSearchEntry,
   recentSongTrack,
+  settleUnifiedSearchRequests,
+  unifiedSearchCategories,
   unifiedPeopleSearchScope,
+  unifiedSearchPreviewRows,
   unifiedSearchRequestOptions,
   unifiedSearchResultCount,
   unifiedSearchState,
   visibleUnifiedPeople,
   withoutBlockedPersonSearches,
 } from "./unifiedSearch.mjs";
+
+test("search categories expose only capabilities that can actually return results", () => {
+  assert.deepEqual(
+    unifiedSearchCategories().map(({ key }) => key),
+    ["all", "artists", "shows", "venues", "clubs"],
+  );
+  assert.deepEqual(
+    unifiedSearchCategories({ canSearchPeople: true, canSearchSongs: true }).map(({ key }) => key),
+    ["all", "artists", "shows", "venues", "people", "clubs", "songs"],
+  );
+});
+
+test("All previews stay bounded while a selected category keeps every result", () => {
+  const rows = Array.from({ length: 12 }, (_, id) => ({ id }));
+  assert.deepEqual(unifiedSearchPreviewRows(rows, { activeCategory: "all", category: "artists", limit: 5 }), rows.slice(0, 5));
+  assert.deepEqual(unifiedSearchPreviewRows(rows, { activeCategory: "artists", category: "artists", limit: 5 }), rows);
+  assert.deepEqual(unifiedSearchPreviewRows(rows, { activeCategory: "venues", category: "artists", limit: 5 }), []);
+});
+
+test("one failed provider does not discard successful unified search sections", async () => {
+  const partial = await settleUnifiedSearchRequests({
+    people: Promise.resolve([{ id: "fan" }]),
+    artists: Promise.reject(Object.assign(new Error("catalog unavailable"), { name: "ApiError" })),
+    songs: Promise.resolve([{ id: "song" }]),
+  });
+  assert.deepEqual(partial.people, [{ id: "fan" }]);
+  assert.deepEqual(partial.artists, []);
+  assert.deepEqual(partial.songs, [{ id: "song" }]);
+  assert.deepEqual(partial.failures, ["artists"]);
+  assert.equal(partial.succeeded, 2);
+  assert.equal(partial.aborted, false);
+
+  const aborted = await settleUnifiedSearchRequests({
+    artists: Promise.reject(Object.assign(new Error("cancelled"), { name: "AbortError" })),
+  });
+  assert.equal(aborted.aborted, true);
+});
 
 test("song-only searches are real results and never render the empty state", () => {
   const sections = { people: [], artists: [], songs: [{ title: "Nights" }], venues: [], events: [], clubs: [] };
@@ -122,10 +162,20 @@ test("local catalogue hydration does not cancel and restart remote unified searc
   const requestEffect = source.slice(effectStart, effectEnd);
 
   assert.match(requestEffect, /localResultCountRef\.current/);
-  assert.match(requestEffect, /\}, \[query, peopleScope, searchRevision, session\?\.id\]\);/);
+  assert.match(requestEffect, /\}, \[peopleScope, remoteSearchScope, searchRevision, session\?\.id, settledQuery\]\);/);
   assert.doesNotMatch(
     requestEffect,
     /\[(?:[^\]]*\b(?:venues|events|clubs)\.length\b[^\]]*)\]/,
     "local result-count changes must not own the remote request lifecycle",
   );
+});
+
+test("local catalogue work shares the debounced query and show rows open the show page", () => {
+  const source = readFileSync(new URL("../screens/SearchScreen.jsx", import.meta.url), "utf8");
+  assert.match(source, /setTimeout\(\(\) => setSettledQuery\(query\), 250\)/);
+  assert.match(source, /searchVenues\(settledQuery, 24\)/);
+  assert.match(source, /includes\(settledQuery\)/);
+  assert.doesNotMatch(source, /searchVenues\(query, 24\)/);
+  assert.match(source, /<EventRow[\s\S]*?onOpenShow=\{onOpen\}/);
+  assert.match(source, /onPress=\{\(\) => onOpenShow\?\.\(t\)\}/);
 });
